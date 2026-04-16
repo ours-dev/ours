@@ -1,0 +1,15 @@
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "sources",
+    srcs = [
+        "clock-event-device.cpp",
+        "clock-source.cpp",
+        "tick-device.cpp",
+        "tick-sched.cpp",
+        "timer.cpp",
+        "timer-queue.cpp",
+        "timer-scheduler.cpp",
+    ],
+    visibility = ["//kernel/main:__pkg__"],
+)

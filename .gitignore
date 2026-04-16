@@ -39,3 +39,15 @@
 
 # debug information files
 *.dwo
+
+# Bazel
+.bazelrc
+bazel-bin
+bazel-out
+bazel-ours
+bazel-testlogs
+external
+MODULE.bazel.lock
+
+# Python
+.venv

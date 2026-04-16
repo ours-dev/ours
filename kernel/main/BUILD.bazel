@@ -1,0 +1,25 @@
+load("//build/cpp:library_header.bzl", "library_header")
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "sources",
+    srcs = [
+        "//kernel/main/mem:sources",
+        "//kernel/main/irq:sources",
+        "//kernel/main/sync:sources",
+        "//kernel/main/task:sources",
+        "//kernel/main/time:sources",
+        "//kernel/main/top:sources",
+    ],
+    visibility = ["//kernel/arch:__subpackages__"],
+)
+
+library_header(
+    name = "headers",
+    deps = [
+        "//system/public:headers",
+        "@lockdep//:lockdep",
+    ],
+    visibility = ["//visibility:public"],
+)

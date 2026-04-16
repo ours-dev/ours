@@ -1,0 +1,12 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef OURS_TASK_CONFIG_HPP
+#define OURS_TASK_CONFIG_HPP 1
+
+#ifndef OURS_CONFIG_MAX_THREADS_PER_PROCESS
+#   define MAX_THREADS_PER_PROCESS 32
+#else
+#   define MAX_THREADS_PER_PROCESS OURS_CONFIG_MAX_THREADS_PER_PROCESS
+#endif
+
+#endif // #ifndef OURS_TASK_CONFIG_HPP

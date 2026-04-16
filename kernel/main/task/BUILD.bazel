@@ -1,0 +1,14 @@
+filegroup(
+    name = "sources",
+    srcs = [
+        "dpc.cpp",
+        "idle-thread.cpp",
+        "init.cpp",
+        "ipi-service.cpp",
+        "preemption-state.cpp",
+        "thread.cpp",
+
+        "//kernel/main/task/sched:sources",
+    ],
+    visibility = ["//kernel/main:__pkg__"],
+)

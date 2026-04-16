@@ -1,0 +1,33 @@
+#include <ours/arch/x86/feature.hpp>
+#include <ours/mem/cpu-local.hpp>
+
+#include <ours/init.hpp>
+
+#include <arch/processor.hpp>
+
+namespace ours {
+    CPU_LOCAL
+    static arch::X86CpuInfo g_x86_cpu_info;
+
+    auto x86_has_feature(CpuFeatureType type) -> bool {
+        auto &cpuinfo = mem::CpuLocal::access(g_x86_cpu_info);
+
+        return cpuinfo.feature().has_feature(type);
+    }
+
+    bool g_feature_has_fsgsbase = false;
+
+    INIT_CODE
+    auto x86_init_feature_percpu(CpuNum cpunum) -> void {
+        auto &cpuinfo = mem::CpuLocal::access(g_x86_cpu_info, cpunum);
+        cpuinfo.init();
+
+        g_feature_has_fsgsbase = x86_has_feature(CpuFeatureType::FsGsBase);
+    }
+
+    INIT_CODE
+    auto x86_init_feature_early() -> void {
+        x86_init_feature_percpu(0);
+    }
+
+} // namespace ours

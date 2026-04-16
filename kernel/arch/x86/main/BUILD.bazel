@@ -1,0 +1,86 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc/toolchains:feature.bzl", "cc_feature")
+load("@rules_cc//cc/toolchains:args.bzl", "cc_args")
+load("//build/cpp:library_header.bzl", "library_header")
+
+load("//build/cpp:rules.bzl", "config")
+
+cc_args(
+    name = "retpoline_args",
+    actions = ["@rules_cc//cc/toolchains/actions:compile_actions"],
+    args = ["-DKERNEL_RETPOLINE=1"] + select({
+        "@bazel_tools//tools/cpp:clang": ["-mretpoline"],
+        "@bazel_tools//tools/cpp:gcc": [
+            "-mindirect-branch=thunk-inline",
+            "-mindirect-branch-register",
+        ],
+    }),
+    visibility = ["//visibility:private"],
+)
+
+cc_feature(
+    name = "retpoline",
+    feature_name = "retpoline",
+    args = [":retpoline_args"],
+    visibility = ["//visibility:public"],
+)
+
+cc_args(
+    name = "abi_args",
+    actions = ["@rules_cc//cc/toolchains/actions:compile_actions"],
+    args = [
+        "-mno-red-zone",
+
+        # context switch routines conditionally use these instructions.
+        "-mfsgsbase",
+
+        # Hard disable floating point in the kernel.
+        "-msoft-float",
+        "-mno-mmx",
+        "-mno-sse",
+        "-mno-sse2",
+        "-mno-3dnow",
+        "-mno-avx",
+        "-mno-avx2",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+cc_feature(
+    name = "abi",
+    feature_name = "abi",
+    args = [":abi_args"],
+    visibility = ["//visibility:public"],
+    implies = [ ":retpoline" ]
+)
+
+cc_library(
+    name = "main_x86",
+    srcs = [
+        "bootstrap.cpp",
+        "descriptor.cpp",
+        "faults.cpp",
+        "feature.cpp",
+        "idt.cpp",
+        "init.cpp",
+        "mp.cpp",
+
+        "gdt.S",
+        "idt.S",
+
+        "//kernel/main:sources",
+    ],
+    deps = [
+        ":headers",
+    ],
+    defines = [
+        "ARCH_X86=1",
+    ],
+)
+
+library_header(
+    name = "headers",
+    deps = [
+        "//kernel/main:headers",
+    ]
+)

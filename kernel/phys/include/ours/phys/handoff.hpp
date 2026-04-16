@@ -1,0 +1,69 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef OURS_PHYS_HANDOFF_HPP
+#define OURS_PHYS_HANDOFF_HPP 1
+
+#include <ours/cpu-mask.hpp>
+#include <ours/assert.hpp>
+#include <ours/mem/cfg.hpp>
+#include <ours/mem/node-mask.hpp>
+#include <ours/phys/arch-handoff.hpp>
+#include <ours/phys/arch-bootmem.hpp>
+
+#include <ustl/views/span.hpp>
+#include <ustl/function/fn.hpp>
+
+namespace ours::phys {
+    struct EarlyMem {
+        template <typename T>
+        using Fn = ustl::function::Fn<T>;
+
+        // auto protect(base, size) -> void 
+        Fn<auto (PhysAddr, PhysAddr) -> void> protect;
+
+        // auto protect(base, size) -> void 
+        Fn<auto (PhysAddr, PhysAddr, NnId) -> void> set_node;
+
+        // auto (size, alignment, start, end, nid) -> PhysAddr
+        Fn<auto (usize, usize, PhysAddr, PhysAddr, NnId) -> PhysAddr> allocate;
+
+        // auto deallocate(base, size) -> void
+        Fn<auto (PhysAddr, PhysAddr) -> void> deallocate;
+
+        // auto deallocate(BootMem::IterationContext &) -> void
+        Fn<auto (BootMem::IterationContext &) -> ustl::Option<bootmem::Region>> iterate;
+
+        PhysAddr min_address;
+        PhysAddr max_address;
+    };
+
+    struct MemoryHandoff {
+        EarlyMem bootmem;
+        PhysAddr kernel_load_addr;
+    };
+
+    ///
+    struct Handoff {
+        CXX11_CONSTEXPR
+        static u32 const kMagic = 0xA1B2C3D4;
+
+        FORCE_INLINE
+        auto verify() const -> bool {
+            return magic == kMagic;
+        }
+
+        u32 const magic = kMagic;
+        u32 nr_cpus;
+        PhysAddr efi_system_table;
+        PhysAddr acpi_rsdp;
+        MemoryHandoff mem;
+        ustl::views::Span<CpuTopologyNode> cpu_topology;
+
+        // Optional and only to provide unusal quirks from a part of architectures, so put it here.
+        ArchHandOff arch;
+    };
+    static_assert(sizeof(Handoff) <= PAGE_SIZE, "the size of Handoff must be lesser than 4096 for the zero page");
+
+} // namespace ours::phys
+
+#endif // #ifndef OURS_PHYS_HANDOFF_HPP

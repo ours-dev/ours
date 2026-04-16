@@ -1,0 +1,27 @@
+load("//build/cpp:rules.bzl", "config")
+
+config(
+    name = "kernel_config",
+    configs = [
+        ":sched_config",
+        ":lockdep_config",
+    ],
+    linkopts = [],
+)
+
+config(
+    name = "sched_config",
+    defines = [
+        "SCHED_DELAY_DEQUEUE=1",
+        "SCHED_UNPARK_PREEMPT=1",
+        "SCHED_HPTICK=1",
+    ],
+)
+
+config(
+    name = "lockdep_config",
+    flag_defines = {
+        "//:lockdep_enabled": "LOCKDEP_ENABLED={}",
+        "//:lockdep_feature_level": "LOCKDEP_ENABLED_FEATURE_LEVEL={}",
+    },
+)

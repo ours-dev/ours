@@ -1,0 +1,28 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef OURS_ARCH_MEM_CFG_HPP
+#define OURS_ARCH_MEM_CFG_HPP 1
+
+#include <ours/mem/init.hpp>
+#include <ustl/util/type-list.hpp>
+
+#define ARCH_MAX_DMA_PFN        (MB(16) >> PAGE_SHIFT)
+#define ARCH_MAX_DMA32_PFN      (MB(512) >> PAGE_SHIFT)
+#define ARHC_MAX_PFN_LIMIT      (GB(64) >> PAGE_SHIFT)
+
+namespace ours {
+    template <mem::ZoneType>
+    struct Selector;
+
+    template <mem::ZoneType Type, usize Pfn, bool Enable = true>
+    using MaxZonePfn = ustl::TypeList<Selector<Type>,
+                                     ustl::traits::IntegralConstant<usize, Pfn>,
+                                     ustl::traits::BoolConstant<Enable>>;
+    using ArchPmmZoneConfig = ustl::TypeList<
+         MaxZonePfn<mem::ZoneType::Dma, ARCH_MAX_DMA_PFN, OURS_CONFIG_ZONE_DMA>,
+         MaxZonePfn<mem::ZoneType::Dma32, ARCH_MAX_DMA32_PFN, OURS_CONFIG_ZONE_DMA32>,
+         MaxZonePfn<mem::ZoneType::Normal, ARHC_MAX_PFN_LIMIT>
+     >;
+} // namespace ours
+
+#endif // #ifndef OURS_ARCH_MEM_CFG_HPP

@@ -1,0 +1,9 @@
+[submodule "system/lib/lockdep"]
+	path = system/lib/lockdep
+	url = git@github.com:ours-dev/lockdep.git
+[submodule "system/lib/concurrent"]
+	path = system/lib/concurrent
+	url = git@github.com:ours-dev/concurrent.git
+[submodule "system/lib/bits"]
+	path = system/lib/bits
+	url = git@github.com:ours-dev/bits.git

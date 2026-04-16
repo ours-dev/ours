@@ -1,0 +1,212 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef OURS_MEM_VM_OBJECT_HPP
+#define OURS_MEM_VM_OBJECT_HPP
+
+#include <ours/mem/types.hpp>
+#include <ours/mem/vm_mapping.hpp>
+#include <ours/mem/vm_page.hpp>
+#include <ours/status.hpp>
+
+#include <ustl/option.hpp>
+#include <ustl/collections/intrusive/list.hpp>
+
+#include <gktl/range.hpp>
+#include <gktl/canary.hpp>
+#include <ktl/name.hpp>
+
+namespace ours::mem {
+    class VmObject: public ustl::RefCounter<VmObject> {
+        using Self = VmObject;
+      public:
+        class Builder;
+
+        enum class Type {
+            Paged = gktl::magic("VmObjectPaged"),
+            Physical = gktl::magic("VmObjectPhysical"),
+        };
+
+        enum class Flags: u8 {
+            /// Can not be swaped out.
+            Pinned = BIT(0),
+
+            /// Never pre-commit pages, only when the page access fault occurs.
+            Lazy = BIT(1),
+
+            /// 
+            Resizable = BIT(2),
+        };
+        USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
+        enum class CommitOptions {
+            /// No any effect, just for semantics.
+            None,
+
+            /// The pages mapped will not be swaped out.
+            Pin = BIT(0),
+
+            /// Map imediately but wait a page access fault come.
+            Write = BIT(1),
+        };
+        USTL_ENABLE_INNER_ENUM_BITMASK(CommitOptions);
+
+        /// Commit the given range [offset, offset + size) to address space with |options|.
+        ///
+        /// Return Status::Ok if successfully commited. Otherwise failed to.
+        virtual auto commit_range(VirtAddr offset, usize size, CommitOptions options = CommitOptions::None) -> Status  {
+            return Status::Unimplemented;
+        }
+
+        /// Decommit the given range [offset, offset + size) from address space. 
+        /// However whether the range was mapped.
+        ///
+        /// Return Status::Ok if successfully decommited. Otherwise failed to.
+        virtual auto decommit(VirtAddr offset, usize size) -> Status {
+            return Status::Unimplemented;
+        } 
+
+        /// Remove all pages in range [pgoff, pgoff + n) to |pages|.
+        ///
+        /// Return Status::Ok if successfully taken.
+        virtual auto take_pages(VirtAddr offset, usize size, VmPage::List *pages) -> Status {
+            return Status::Unsupported;
+        } 
+
+        enum class SupplyOption: u8 {
+            /// Overwrite those pages which already exists.
+            TransferData = BIT(0),
+
+            /// If the range already exists, release the pages supplied.
+            AutoRelease = BIT(1),
+
+            Default = AutoRelease,
+        };
+        /// Using enum bitflags for the extension in future.
+        USTL_ENABLE_INNER_ENUM_BITMASK(SupplyOption);
+
+        /// Supplies this VMO with |pages| for the page range [pgoff, pgoff + n).
+        /// Typically it should be invoked by PageProvider.
+        virtual auto supply_pages(VirtAddr offset, usize size, VmPage::List *pages, 
+                                  SupplyOption = SupplyOption::Default) -> Status {
+            return Status::Unsupported;
+        } 
+
+        /// Read the |size| of bytes from |offset| into |out|
+        virtual auto read(void *outbuf, VirtAddr offset, usize size) -> Status {
+            return Status::Unsupported;
+        }
+
+        /// Read the |size| of bytes from |offset| into |out|
+        virtual auto write(void *inbuf, VirtAddr offset, usize size) -> Status {
+            return Status::Unsupported;
+        }
+
+        virtual auto dirty_pages(VirtAddr offset, usize size) -> Status {
+            return Status::Unimplemented;
+        }
+
+        virtual auto write_back_preamble(VirtAddr offset, usize size) -> Status {
+            return Status::Unimplemented;
+        }
+
+        virtual auto write_back_postamble(VirtAddr offset, usize size) -> Status {
+            return Status::Unimplemented;
+        }
+
+        FORCE_INLINE
+        auto commit_range_pinned(usize offset, usize len, bool write) -> Status {
+            auto options = CommitOptions::Pin;
+            if (write) {
+                options |= CommitOptions::Write;
+            }
+            return commit_range(offset, len, options);
+        }
+
+        FORCE_INLINE
+        auto set_name(char const *name) -> void {
+            m_name.set(name);
+        }
+
+        FORCE_INLINE
+        auto type() const -> Type {
+            return static_cast<Type>(m_canary.magic());
+        }
+      protected:
+        friend class VmMapping;
+
+        template <typename Derived>
+        CXX11_CONSTEXPR
+        friend auto as(Self *self) -> Derived *;
+
+        VmObject(Type type, Flags vmof);
+
+        virtual ~VmObject() = default;
+        USTL_NO_MOVEABLE_AND_COPYABLE(VmObject);
+
+        FORCE_INLINE
+        auto add_mapping(VmMapping &mapping) -> void {
+            m_mappings.push_back(mapping);
+        }
+
+        FORCE_INLINE
+        auto remove_mapping(VmMapping &mapping) -> void {
+            m_mappings.erase(m_mappings.iterator_to(mapping));
+        }
+
+        gktl::Canary m_canary;
+        Type const m_type;
+        Flags m_flags;
+        VmMapping::List m_mappings;
+
+        CXX11_CONSTEXPR 
+        static auto const kMaxNameSize = 32;
+        ktl::Name<kMaxNameSize> m_name;
+
+        ustl::collections::intrusive::ListMemberHook<> m_children_hook;
+        USTL_DECLARE_HOOK_OPTION(Self, m_children_hook, ChildrenOptions);
+        ustl::collections::intrusive::List<Self, ChildrenOptions>  m_children;
+    };
+
+    using VmoFlags = VmObject::Flags;
+
+    template <typename Derived>
+    FORCE_INLINE CXX11_CONSTEXPR
+    auto as(VmObject *vmo) -> Derived * {
+        using ustl::traits::IsSameV;
+
+        auto const type = static_cast<VmObject::Type>(vmo->m_canary.magic());
+        if CXX17_CONSTEXPR (IsSameV<Derived, VmObjectPaged>) {
+            if (type == VmObject::Type::Paged) {
+                return static_cast<Derived *>(vmo);
+            }
+        } else if CXX17_CONSTEXPR (IsSameV<Derived, VmObjectPhysical>) {
+            if (type == VmObject::Type::Physical) {
+                return static_cast<Derived *>(vmo);
+            }
+        }
+        return nullptr;
+    }
+
+    template <typename Derived>
+    FORCE_INLINE CXX11_CONSTEXPR
+    auto as(ustl::Rc<VmObject> vmo) -> ustl::Rc<Derived> {
+        return ustl::make_rc<Derived>(as<Derived>(vmo.as_ptr_mut()));
+    }
+
+    class VmObject::Builder {
+        using Self = Builder;
+      public:
+        auto set_type(Type type) -> Self & {
+            m_type = type;
+            return *this;
+        }
+
+        auto build(ustl::Rc<VmObject> &out) -> Status;
+      private:
+        Type m_type;
+        usize m_offset;
+    };
+
+} // namespace ours::mem 
+
+#endif // #ifndef OURS_MEM_PM_OBJECT_HPP 

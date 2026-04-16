@@ -1,0 +1,9 @@
+* text=auto
+
+# Always perform LF normalization on these files.
+*.c    text
+*.cpp  text
+*.hpp  text
+*.md   text
+*.bazel  text
+*.S text whitespace=-indent-with-non-tab

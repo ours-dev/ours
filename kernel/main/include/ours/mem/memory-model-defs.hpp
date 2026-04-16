@@ -1,0 +1,11 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef OURS_MEM_MEMORY_MODEL_DEFS_HPP
+#define OURS_MEM_MEMORY_MODEL_DEFS_HPP 1
+
+#ifndef CONFIG_MEMORY_MODEL_VMEMMAP
+#   define MEMORY_MODEL_VMEMMAP CONFIG_MEMORY_MODEL_VMEMMAP
+#endif
+
+
+#endif // #ifndef OURS_MEM_MEMORY_MODEL_DEFS_HPP

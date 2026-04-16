@@ -1,0 +1,22 @@
+CompileFlags:
+  # 对应 --compile-commands-dir
+  CompilationDatabase: "."
+
+Index:
+  Background: Build
+
+; Diagnostics:
+;   # 对应 --clang-tidy
+;   ClangTidy:
+;     # 对应 --clang-tidy-checks
+;     Add: ["*"]
+;     Remove: ["clang-analyzer-*"]
+;   # 对应 --log=info (注：.clangd文件内通常不控制日志级别，建议保留在编辑器设置中)
+
+Completion:
+  # 对应 --completion-style=detailed
+  AllScopes: true
+  # 对应 --header-insertion=iwyu
+  HeaderInsertion: iwyu
+  # 对应 --limit-results=50
+  Limit: 50

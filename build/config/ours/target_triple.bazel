@@ -1,0 +1,18 @@
+def target_triple(arch, platform):
+    if arch in ("arm64", "aarch64"):
+        tc_cpu = "aarch64"
+    elif arch in ("x64", "x86_64"):
+        tc_cpu = "x86_64"
+    elif arch == "riscv64":
+        tc_cpu = "riscv64"
+    elif arch == "riscv32":
+        tc_cpu = "riscv32"
+    else:
+        tc_cpu = arch
+
+    if platform == "win":
+        return tc_cpu + "-windows-msvc"
+    elif platform == "linux":
+        return tc_cpu + "-linux-gnu"
+    else:
+        return tc_cpu + "-" + platform

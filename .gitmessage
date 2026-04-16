@@ -1,0 +1,54 @@
+# <type>: <description>
+# 
+# [optional body]
+# 
+# [optional footer(s)]
+
+# Type 
+#
+# The type must be non-empty, and all lower case. The following is a list of accepted types.
+#
+# 1. chore: For commits that complete routine/automated tasks such as upgrading dependencies.
+#
+# 2. deprecate: For commits that deprecate functionality.
+#
+# 3. feat: For commits that add new functionality to ours.
+#
+# 4. fix: For commits that fix bugs/errors in ours.
+#
+# 5. release: For commits that relate to the release of a new version.
+#
+# 6. refactor: For commits that improve existing code without adding new functionality or fixing bugs.
+#
+# 7. style: For commits that improve the formatting/style of the code.
+#
+# 8. test: For commits that add tests or improve test coverage.
+#
+# 9. docs: For commits that improve the documentation.
+#
+# 10. ci: For commits that improve the continuous integration (CI) pipeline.
+#
+# 11. perf: For commits that improve the performance of the code.
+
+# Description
+#
+# The description must be non-empty, and must be under 256 characters.
+
+# Body
+# The body is optional. If it is provided there should be a blank line between it and the description. 
+# It must be broken into lines of no more than 256 characters.
+# 
+# Note that usually, it is advisable to put this kind of information in your pull request description, 
+# in addition to/rather than directly in the commit.
+
+# Footer
+# The footer is optional. If it is provided there should be a blank line between it and the body. 
+# It must be broken into lines of no more than 256 characters.
+# 
+# The footer must start with a keyword (e.g. Closes, Resolves, Related to etc.) and optionally a ticket number.
+#
+# Examples:
+#
+# Resolves: #123
+# Related to: #123, #456
+# See also: #789

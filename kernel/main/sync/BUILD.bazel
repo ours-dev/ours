@@ -1,0 +1,14 @@
+filegroup(
+    name = "sources",
+    srcs = [
+        "cpu-stopper.cpp",
+        "event.cpp",
+        "mutex.cpp",
+        "owned-wait-queue.cpp",
+        "rwlock.cpp",
+        "semaphore.cpp",
+        "spin-lock.cpp",
+        "wait-queue.cpp",
+    ],
+    visibility = ["//kernel/main:__pkg__"],
+)

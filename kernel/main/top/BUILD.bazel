@@ -1,0 +1,8 @@
+filegroup(
+    name = "sources",
+    srcs = [
+        "main.cpp",
+        "panic.cpp",
+    ],
+    visibility = ["//kernel/main:__pkg__"],
+)

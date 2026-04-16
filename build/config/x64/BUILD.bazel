@@ -1,0 +1,13 @@
+load("@rules_cc//cc/toolchains:args.bzl", "cc_args")
+
+cc_args(
+    name = "x64",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:compile_actions",
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    args = [
+        "-march=x86-64-v2",
+        "-mtune=generic",
+    ]
+)

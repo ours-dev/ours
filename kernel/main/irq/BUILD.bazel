@@ -1,0 +1,12 @@
+# This file is part of the OURS project.
+
+filegroup(
+    name = "sources",
+    srcs = [
+        "init.cpp",
+        "irq_dispatcher.cpp",
+        "irq_object.cpp",
+        "mod.cpp",
+    ],
+    visibility = ["//kernel/main:__pkg__"],
+)

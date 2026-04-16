@@ -1,0 +1,37 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//build/cpp:library_header.bzl", "library_header")
+
+cc_library(
+    name = "object",
+    srcs = [
+        "dispatcher.cpp",
+        "resource-dispatcher.cpp",
+        "thread-dispatcher.cpp",
+        "process-dispatcher.cpp",
+    ],
+    deps = [
+        ":headers",
+    ],
+)
+
+library_header(
+    name = "headers",
+    hdrs = [
+        "include/ours/object/observer.hpp",
+        "include/ours/object/dispatcher.hpp",
+
+        "include/ours/object/handle.hpp",
+        "include/ours/object/handle-table.hpp",
+
+        "include/ours/object/channel-dispatcher.hpp",
+        "include/ours/object/job-dispatcher.hpp",
+        "include/ours/object/pager-dispatcher.hpp",
+        "include/ours/object/process-dispatcher.hpp",
+        "include/ours/object/resource-dispatcher.hpp",
+        "include/ours/object/thread-dispatcher.hpp",
+        "include/ours/object/vm-area-dispatcher.hpp",
+    ],
+    deps = [
+        "//kernel/main:headers",
+    ]
+)

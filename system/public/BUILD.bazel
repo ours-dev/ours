@@ -1,0 +1,11 @@
+load("//build/cpp:library_header.bzl", "library_header")
+
+library_header(
+    name = "headers",
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        # <bits/bitmask.hpp> in <ours/signals.hpp> and e.g.
+        "@bits//:bits"
+    ]
+)
