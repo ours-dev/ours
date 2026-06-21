@@ -1,12 +1,8 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@rules_cc//cc/toolchains:feature.bzl", "cc_feature")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc/toolchains:args.bzl", "cc_args")
-load("//build/cpp:library_header.bzl", "library_header")
-
-load("//build/cpp:rules.bzl", "config")
 
 cc_args(
-    name = "retpoline_args",
+    name = "retpoline",
     actions = ["@rules_cc//cc/toolchains/actions:compile_actions"],
     args = ["-DKERNEL_RETPOLINE=1"] + select({
         "@bazel_tools//tools/cpp:clang": ["-mretpoline"],
@@ -18,15 +14,8 @@ cc_args(
     visibility = ["//visibility:private"],
 )
 
-cc_feature(
-    name = "retpoline",
-    feature_name = "retpoline",
-    args = [":retpoline_args"],
-    visibility = ["//visibility:public"],
-)
-
 cc_args(
-    name = "abi_args",
+    name = "abi",
     actions = ["@rules_cc//cc/toolchains/actions:compile_actions"],
     args = [
         "-mno-red-zone",
@@ -46,16 +35,8 @@ cc_args(
     visibility = ["//visibility:private"],
 )
 
-cc_feature(
-    name = "abi",
-    feature_name = "abi",
-    args = [":abi_args"],
-    visibility = ["//visibility:public"],
-    implies = [ ":retpoline" ]
-)
-
 cc_library(
-    name = "main_x86",
+    name = "main",
     srcs = [
         "bootstrap.cpp",
         "descriptor.cpp",
@@ -67,8 +48,6 @@ cc_library(
 
         "gdt.S",
         "idt.S",
-
-        "//kernel/main:sources",
     ],
     deps = [
         ":headers",
@@ -78,9 +57,7 @@ cc_library(
     ],
 )
 
-library_header(
+cc_library(
     name = "headers",
-    deps = [
-        "//kernel/main:headers",
-    ]
+    includes = ["includes"],
 )

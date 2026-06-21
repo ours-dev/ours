@@ -156,6 +156,7 @@ namespace {
         }
     }
 
+    [[=sched::ScheduleOp]]
     class Fair final: public Schedule {
         using Self = Fair;
       public:

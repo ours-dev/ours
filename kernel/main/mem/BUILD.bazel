@@ -1,5 +1,10 @@
-filegroup(
-    name = "sources",
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "mem",
+    hdrs = [
+        "slab.hpp"
+    ],
     srcs = [
         "cpu-local.cpp",
         "early-mem.cpp",
@@ -13,7 +18,6 @@ filegroup(
         "pm-node.cpp",
         "pm-zone.cpp",
         "pmm.cpp",
-        "slab.cpp",
 
         "stack.cpp",
         "vflat-model.cpp",
@@ -27,5 +31,5 @@ filegroup(
         "vm_object.cpp",
         "vmm.cpp",
     ],
-    visibility = ["//kernel/main:__pkg__"],
+    visibility = ["//kernel/main/top:__pkg__"],
 )

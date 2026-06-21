@@ -436,7 +436,7 @@ namespace {
             }
         } else if (!is_involuntary) {
             // The |curr| is sleeping.
-            auto const control = DequeueControl::SkipClock | DequeueControl::Sleep;
+            constexpr auto control = DequeueControl::SkipClock | DequeueControl::Sleep;
             if (Status::Ok == dequeue_thread(curr, control)) {
                 rqs.set_transient_state_migrating();
             }

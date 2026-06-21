@@ -1,16 +1,13 @@
-# x86 physical/boot layer - placeholder for Bazel migration.
-# Full implementation exists in CMake; add sources as migration progresses.
-
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@//build/cpp:library_header.bzl", "library_header")
 
 cc_library(
     name = "phys",
     srcs = [],
+    deps = [":headers"],
     visibility = ["//visibility:public"],
 )
 
-library_header(
+cc_library(
     name = "headers",
     hdrs = [
         "include/ours/arch/x86/phys/acpi.hpp",
@@ -21,4 +18,5 @@ library_header(
         "include/ours/arch/x86/phys/elf-image.hpp",
         "include/ours/arch/x86/phys/raw-image.hpp",
     ],
+    includes = ["include"]
 )

@@ -1,4 +1,3 @@
-#include <ours/start.hpp>
 #include <ours/init.hpp>
 #include <ours/cpu-mask.hpp>
 #include <ours/task/thread.hpp>

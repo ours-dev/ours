@@ -4,8 +4,10 @@
 #ifndef OURS_STATUS_HPP
 #define OURS_STATUS_HPP 1
 
+#include <ours/types.hpp>
+
 namespace ours {
-    enum class Status {
+    enum class Status : u32 {
         /// Indicates a successful operation.
         Ok,
 

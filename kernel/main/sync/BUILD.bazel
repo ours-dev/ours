@@ -1,5 +1,7 @@
-filegroup(
-    name = "sources",
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
+cc_library(
+    name = "sync",
     srcs = [
         "cpu-stopper.cpp",
         "event.cpp",
@@ -10,5 +12,5 @@ filegroup(
         "spin-lock.cpp",
         "wait-queue.cpp",
     ],
-    visibility = ["//kernel/main:__pkg__"],
+    visibility = ["//kernel/main/top:__pkg__"],
 )

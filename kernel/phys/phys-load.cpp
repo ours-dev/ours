@@ -8,28 +8,30 @@
 #include <ours/phys/print.hpp>
 
 namespace ours::phys {
+namespace {
     Handoff g_handoff;
     BootOptions g_boot_options;
 
     FORCE_INLINE
-    static auto patch_kernel(KernelImage &image) -> void {
+    auto patch_kernel(KernelImage &image) -> void {
     }
 
     FORCE_INLINE
-    static auto relocate_kernel(KernelImage &image, usize load_address) -> void {
+    auto relocate_kernel(KernelImage &image, usize load_address) -> void {
         image.relocate(load_address);
 
         dprintln("Relocate kenrel with offset=0x{:X}", load_address);
     }
 
     FORCE_INLINE
-    static auto load_kernel(KernelBoot &kboot) -> void {
+    auto load_kernel(KernelBoot &kboot) -> void {
         kboot.load();
 
         dprintln("Kernel image entry point: 0x{:X}", kboot.kernel_entry_point());
         dprintln("Kernel image start address: 0x{:X}", kboot.kernel_addr());
         dprintln("Kernel image size: 0x{:X}", kboot.kernel_size());
     }
+}
 
     NO_RETURN
     auto obi_main(PhysAddr obi) -> void {

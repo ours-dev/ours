@@ -22,8 +22,7 @@ namespace ours::mem {
         static_assert(sizeof(Object) == sizeof(usize));
         static_assert(sizeof(Object::List) == sizeof(usize));
 
-        CXX11_CONSTEXPR
-        static auto kRole = Role::Slab;
+        static constexpr auto ROLE = Role::Slab;
 
         static auto create(MemCache *owner, Gaf gaf, usize order, usize size, NnId nid) -> Self *;
 

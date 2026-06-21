@@ -31,8 +31,7 @@ namespace {
         VmaFlags vmaf;
     };
 
-    CXX11_CONSTEXPR
-    MmuFlags const kPresetVmaMmuFlags = MmuFlags::PermMask;
+    constexpr auto kPresetVmaMmuFlags = MmuFlags::PermMask;
 
     /// Used in init_vmm_postheap.
     /// TODO(SmallHuaZi) These be provided by PhysBoot through HandOff rather than

@@ -1,12 +1,12 @@
-# This file is part of the OURS project.
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
-filegroup(
-    name = "sources",
+cc_library(
+    name = "irq",
     srcs = [
         "init.cpp",
         "irq_dispatcher.cpp",
         "irq_object.cpp",
         "mod.cpp",
     ],
-    visibility = ["//kernel/main:__pkg__"],
+    visibility = ["//kernel/main/top:__pkg__"],
 )

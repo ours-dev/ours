@@ -6,7 +6,7 @@
 #include <arch/macro/system.hpp>
 #include <arch/macro/msr.hpp>
 
-/// Why do we need to use this?
+/// Why do we need this?
 ///
 /// Since under real mode, we are limited to just access the memory space lower than
 /// 1 MB, but our main module which include the following trampoline code was loaded 

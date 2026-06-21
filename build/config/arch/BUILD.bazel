@@ -1,0 +1,11 @@
+load("@rules_cc//cc/toolchains:make_variable.bzl", "cc_make_variable")
+
+cc_make_variable(
+    name = "ours_cpu",
+    variable_name = "OURS_CPU",
+    value = select({
+        "@platforms//cpu:x86_64": "x86",
+        "@platforms//cpu:riscv64": "riscv",
+        "//conditions:default": "arm"
+    }),
+)

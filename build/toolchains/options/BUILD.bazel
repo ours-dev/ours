@@ -1,0 +1,108 @@
+load("//build/toolchains:args.bzl", "cc_args")
+
+cc_args(
+    name = "no_exceptions",
+    copts = ["-fno-exceptions"],
+)
+
+cc_args(
+    name = "no_rtti",
+    copts = ["-fno-rtti"],
+)
+
+cc_args(
+    name = "gc_sections",
+    linkopts = ["-Wl,--gc-sections"],
+)
+
+cc_args(
+    name = "data_sections",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:compile_actions",
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    copts = ["-fdata-sections"],
+    linkopts = copts,
+)
+
+cc_args(
+    name = "function_sections",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:compile_actions",
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    args = ["-ffunction-sections"],
+)
+
+cc_args(
+    name = "freestanding",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:compile_actions",
+    ],
+    args = ["-ffreestanding"],
+)
+
+cc_args(
+    name = "no_builtin",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:compile_actions",
+    ],
+    args = ["-fno-builtin"],
+)
+
+cc_args(
+    name = "no_stdlib",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:cpp_compile_actions",
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    args = ["-nostdlib", "-nostdlib++"],
+)
+
+cc_args(
+    name = "pic-compile",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:compile_actions",
+    ],
+    args = ["-fPIC"]
+)
+
+cc_args(
+    name = "pic-link",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    args = ["-Wl,-pic"],
+)
+
+cc_args(
+    name = "pie-compile",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:compile_actions",
+    ],
+    args = ["-fPIE"]
+)
+
+cc_args(
+    name = "pie-link",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    args = ["-Wl,-pie"],
+)
+
+cc_args(
+    name = "no-dyn-link",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    args = ["-Wl,--no-dynamic-linker"]
+)
+
+cc_args(
+    name = "static-link",
+    actions = [
+        "@rules_cc//cc/toolchains/actions:link_actions",
+    ],
+    args = ["-Wl,-static"],
+)

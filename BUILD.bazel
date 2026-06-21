@@ -1,10 +1,9 @@
-load("@bazel_skylib//rules:common_settings.bzl", "string_flag", "bool_flag", "int_flag")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "int_flag")
 
 package(default_visibility = ["//visibility:public"])
 
-string_flag(name = "c_language_version", build_setting_default = "c11")
-
-string_flag(name = "cxx_language_version", build_setting_default = "c++23")
+int_flag(name = "c_language_version", build_setting_default = 11)
+int_flag(name = "cxx_language_version", build_setting_default = 23)
 
 bool_flag(name = "kaslr", build_setting_default = True)
 bool_flag(name = "acpi", build_setting_default = True)
@@ -16,12 +15,3 @@ bool_flag(name = "zone_dynamic", build_setting_default = True)
 
 bool_flag(name = "lockdep_enabled", build_setting_default = True)
 int_flag(name = "lockdep_feature_level", build_setting_default = 2)
-
-platform(
-    name = "x86_64-linux-clang",
-    constraint_values = [
-        "@bazel_tools//tools/cpp:clang",
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-    ]
-)

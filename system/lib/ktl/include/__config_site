@@ -1,0 +1,33 @@
+#ifndef OURS_SYSTEM_LIB_KTL_INCLUDE___CONFIG_SITE_
+#define OURS_SYSTEM_LIB_KTL_INCLUDE___CONFIG_SITE_
+
+// Kernel libc++ configuration for OURS.
+//
+// libc++ includes this header from <__config>. The normal toolchain-provided
+// __config_site is tied to hosted runtimes and target triples; the kernel uses
+// libc++ headers without linking a hosted C++ runtime.
+
+#define _LIBCPP_ABI_VERSION 2
+#define _LIBCPP_ABI_NAMESPACE __ktl
+#define _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS 1
+
+#define _LIBCPP_DISABLE_EXTERN_TEMPLATE 1
+#define _LIBCPP_HAS_NO_PLATFORM_WAIT 1
+#define _LIBCPP_HAS_THREAD_API_EXTERNAL 1
+#define _LIBCPP_HAS_THREAD_LIBRARY_EXTERNAL 1
+#define _LIBCPP_HAS_THREADS 1
+#define _LIBCPP_HAS_MONOTONIC_CLOCK 1
+
+#define _LIBCPP_HAS_NO_C11_ALIGNED_ALLOC 1
+#define _LIBCPP_HAS_NO_LOCALIZATION 1
+#define _LIBCPP_HAS_WIDE_CHARACTERS 1
+#define _LIBCPP_NO_VCRUNTIME 1
+#define _LIBCPP_PSTL_CPU_BACKEND_SERIAL 1
+#define _LIBCPP_REMOVE_TRANSITIVE_INCLUDES 1
+
+#define _LIBCPP_INSTRUMENTED_WITH_ASAN __has_feature(address_sanitizer)
+#define _LIBCPP_HARDENING_MODE_DEFAULT _LIBCPP_HARDENING_MODE_NONE
+#define _LIBCPP_ASSERTION_SEMANTIC_DEFAULT \
+  _LIBCPP_ASSERTION_SEMANTIC_HARDENING_DEPENDENT
+
+#endif // OURS_SYSTEM_LIB_KTL_INCLUDE___CONFIG_SITE_

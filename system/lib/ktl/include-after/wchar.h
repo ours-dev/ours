@@ -1,0 +1,7 @@
+#ifndef OURS_SYSTEM_LIB_KTL_INCLUDE_AFTER_WCHAR_H_
+#define OURS_SYSTEM_LIB_KTL_INCLUDE_AFTER_WCHAR_H_
+
+typedef int wchar_t;
+typedef int wint_t;
+
+#endif // OURS_SYSTEM_LIB_KTL_INCLUDE_AFTER_WCHAR_H_

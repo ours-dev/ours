@@ -1,7 +1,7 @@
-package(default_visibility = ["//visibility:public"])
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 
-filegroup(
-    name = "sources",
+cc_library(
+    name = "time",
     srcs = [
         "clock-event-device.cpp",
         "clock-source.cpp",
@@ -10,6 +10,9 @@ filegroup(
         "timer.cpp",
         "timer-queue.cpp",
         "timer-scheduler.cpp",
+        "clock.cpp",
+        "init.cpp",
+        "mod.cpp",
     ],
-    visibility = ["//kernel/main:__pkg__"],
+    visibility = ["//kernel/main/top:__pkg__"]
 )

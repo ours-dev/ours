@@ -21,8 +21,7 @@ namespace ours::phys {
     /// We do not require any architecture to provide an implementation
     /// for this.
     WEAK_LINK
-    auto arch_detect_memory() -> void
-    {}
+    auto arch_detect_memory() -> void {}
 
     auto init_memory(PhysAddr obi, Aspace *aspace) -> void {
         auto const mem = global_bootmem();

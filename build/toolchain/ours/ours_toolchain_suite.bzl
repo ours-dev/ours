@@ -1,1 +1,0 @@
-load("//build/toolchain:variant_toolchain_suite.bzl", "variant_toolchain_suite")
