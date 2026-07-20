@@ -69,6 +69,7 @@ class ActionSpec:
     schema_version: int
     callback: ActionCallback | None = None
     command: tuple[str, ...] | None = None
+    declared_outputs: tuple[PurePosixPath, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.canonical_name or any(
@@ -85,6 +86,10 @@ class ActionSpec:
             raise RegistryError("provide exactly one callback or command")
         if self.command is not None and not self.command:
             raise RegistryError("external action command must not be empty")
+        if any(path.is_absolute() or ".." in path.parts for path in self.declared_outputs):
+            raise RegistryError("declared outputs must be relative paths")
+        if len(set(self.declared_outputs)) != len(self.declared_outputs):
+            raise RegistryError("declared outputs must be unique")
 
 
 def normalize_command(command: Sequence[str]) -> tuple[str, ...]:

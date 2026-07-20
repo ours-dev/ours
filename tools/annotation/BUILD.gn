@@ -10,12 +10,13 @@ action("process") {
     "protocol.py",
     "actions.py",
     "tests/annotation_input.cpp",
+    "tests/annotation_action.py",
     "tests/annotation_action_config.json",
     "tests/fake_clang.py",
     "tests/ast_fixture.json",
   ]
   outputs = [
-    "$target_gen_dir/generated/action.txt",
+    "$target_gen_dir/generated/annotation_generated.cpp",
     "$target_gen_dir/annotation-manifest.json",
   ]
   args = [
@@ -29,12 +30,20 @@ action("process") {
     rebase_path("tests/annotation_action_config.json", root_build_dir),
     "--output-root",
     rebase_path(target_gen_dir, root_build_dir),
+    "--build-root",
+    rebase_path(root_build_dir, root_build_dir),
     "--manifest",
     rebase_path("$target_gen_dir/annotation-manifest.json", root_build_dir),
   ]
 }
 
+source_set("smoke") {
+  testonly = true
+  sources = [ "$target_gen_dir/generated/annotation_generated.cpp" ]
+  public_deps = [ ":process" ]
+}
+
 group("tests") {
   testonly = true
-  public_deps = [ ":process" ]
+  public_deps = [ ":smoke" ]
 }

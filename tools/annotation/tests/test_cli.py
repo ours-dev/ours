@@ -19,6 +19,10 @@ class CliTest(unittest.TestCase):
             str(config),
             "--source",
             str(source),
+            "--source-root",
+            str(source.parent),
+            "--build-root",
+            str(output_root.parent),
             "--output-root",
             str(output_root),
             "--manifest",
@@ -53,6 +57,7 @@ class CliTest(unittest.TestCase):
                                 "attribute": "ours::generate",
                                 "declaration_kinds": ["function"],
                                 "schema_version": 1,
+                                "outputs": ["generated/action.txt"],
                                 "command": [sys.executable, str(FIXTURES / "external_action.py")],
                             }
                         ]
@@ -91,6 +96,7 @@ class CliTest(unittest.TestCase):
                                 "attribute": "ours::generate",
                                 "declaration_kinds": ["function"],
                                 "schema_version": 1,
+                                "outputs": ["generated/action.txt"],
                                 "command": [sys.executable, str(action)],
                             }
                         ]
@@ -106,6 +112,28 @@ class CliTest(unittest.TestCase):
             self.assertEqual(status, 1)
             self.assertFalse(manifest.exists())
             self.assertFalse(output_root.exists())
+
+    def test_rejects_output_root_outside_build_root(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = pathlib.Path(directory_name)
+            compiler = self.fake_compiler(directory)
+            source = directory / "sample.cpp"
+            source.write_text("source", encoding="utf-8")
+            config = directory / "registrations.json"
+            config.write_text(json.dumps({"actions": []}), encoding="utf-8")
+
+            status = main(
+                self.command(
+                    compiler,
+                    config,
+                    directory / "outside",
+                    directory / "manifest.json",
+                    source,
+                )
+                + ["--build-root", str(directory / "build")]
+            )
+
+            self.assertEqual(status, 1)
 
 
 if __name__ == "__main__":

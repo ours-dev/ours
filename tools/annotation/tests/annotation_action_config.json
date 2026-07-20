@@ -4,6 +4,7 @@
       "attribute": "ours::generate",
       "declaration_kinds": ["function"],
       "schema_version": 1,
+      "outputs": ["generated/annotation_generated.cpp"],
       "command": ["python3", "annotation_action.py"]
     }
   ]

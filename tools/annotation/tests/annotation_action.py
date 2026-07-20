@@ -9,7 +9,10 @@ json.dump(
     {
         "schema_version": request["schema_version"],
         "generated_files": [
-            {"path": "generated/action.txt", "contents": "annotation action ran\n"}
+            {
+                "path": "generated/annotation_generated.cpp",
+                "contents": "int annotation_generated = 1;\n",
+            }
         ],
         "dependencies": [item["source_file"] for item in request["annotations"]],
         "diagnostics": [],

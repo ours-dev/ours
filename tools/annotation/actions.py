@@ -15,6 +15,9 @@ def _validate_output_root(result: ActionResult, output_root: pathlib.Path) -> Ac
             candidate.relative_to(root)
         except ValueError as error:
             raise ActionError(f"generated file escapes output root: {generated.path}") from error
+    paths = [generated.path for generated in result.generated_files]
+    if len(paths) != len(set(paths)):
+        raise ActionError("action returned duplicate generated file paths")
     return result
 
 
@@ -51,6 +54,15 @@ def dispatch(
         )
     if result.exit_status != 0:
         raise ActionError(f"action returned failure status {result.exit_status}")
+    if spec.declared_outputs:
+        undeclared = {
+            generated.path for generated in result.generated_files
+        } - set(spec.declared_outputs)
+        if undeclared:
+            raise ActionError(
+                "action returned undeclared generated files: "
+                + ", ".join(sorted(path.as_posix() for path in undeclared))
+            )
     return _validate_output_root(result, output_root)
 
 

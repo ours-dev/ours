@@ -13,13 +13,13 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
     from tools.annotation.actions import ActionError, dispatch
     from tools.annotation.config import load_config, register_builtins
-    from tools.annotation.discovery import DiscoveryError, discover_from_ast, run_clang_ast_dump
+    from tools.annotation.discovery import DiscoveryError, discover_source, run_clang_ast_dump
     from tools.annotation.model import ActionRequest, ActionResult
     from tools.annotation.registry import Registry
 else:
     from .actions import ActionError, dispatch
     from .config import load_config, register_builtins
-    from .discovery import DiscoveryError, discover_from_ast, run_clang_ast_dump
+    from .discovery import DiscoveryError, discover_source, run_clang_ast_dump
     from .model import ActionRequest, ActionResult
     from .registry import Registry
 
@@ -32,7 +32,14 @@ def _relative_source(source: pathlib.Path, source_root: pathlib.Path) -> pathlib
     try:
         return pathlib.PurePosixPath(source.resolve().relative_to(source_root.resolve()).as_posix())
     except ValueError:
-        return pathlib.PurePosixPath(source.name)
+        raise CliError(f"source is outside source root: {source}")
+
+
+def _validate_output_root(output_root: pathlib.Path, build_root: pathlib.Path) -> None:
+    try:
+        output_root.resolve().relative_to(build_root.resolve())
+    except ValueError as error:
+        raise CliError(f"output root must be inside build root: {output_root}") from error
 
 
 def _write_atomic(path: pathlib.Path, contents: str) -> None:
@@ -100,6 +107,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--config", required=True, type=pathlib.Path)
     parser.add_argument("--source-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--output-root", required=True, type=pathlib.Path)
+    parser.add_argument("--build-root", required=True, type=pathlib.Path)
     parser.add_argument("--manifest", required=True, type=pathlib.Path)
     return parser.parse_args(argv)
 
@@ -108,13 +116,15 @@ def run(args: argparse.Namespace) -> None:
     registry = Registry()
     register_builtins(registry)
     load_config(args.config.resolve(), registry)
+    _validate_output_root(args.output_root, args.build_root)
     records = []
     for source_name in args.source:
         source = pathlib.Path(source_name)
         ast = run_clang_ast_dump(args.compiler, args.flag, source)
         records.extend(
-            discover_from_ast(
+            discover_source(
                 ast,
+                source.read_text(encoding="utf-8"),
                 _relative_source(source, args.source_root),
                 registry,
             )

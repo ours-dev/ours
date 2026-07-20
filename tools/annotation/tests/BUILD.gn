@@ -2,5 +2,5 @@
 
 group("tests") {
   testonly = true
-  public_deps = [ "//tools/annotation:process" ]
+  public_deps = [ "//tools/annotation:smoke" ]
 }

@@ -6,6 +6,7 @@ import unittest
 from tools.annotation.discovery import (
     DiscoveryError,
     discover_from_ast,
+    discover_source,
     run_clang_ast_dump,
 )
 from tools.annotation.model import ActionSpec
@@ -118,6 +119,24 @@ class DiscoveryTest(unittest.TestCase):
 
             with self.assertRaisesRegex(DiscoveryError, "invalid Clang AST JSON"):
                 run_clang_ast_dump(str(compiler), [], pathlib.Path("sample.cpp"))
+
+    def test_rejects_registered_source_attribute_missing_from_ast(self):
+        with self.assertRaisesRegex(DiscoveryError, "compiler did not preserve"):
+            discover_source(
+                {"kind": "TranslationUnitDecl", "inner": []},
+                "[[ours::generate]] void missing();",
+                pathlib.PurePosixPath("sample.cpp"),
+                make_registry(),
+            )
+
+    def test_rejects_unknown_source_attribute_in_registered_namespace(self):
+        with self.assertRaisesRegex(DiscoveryError, "unknown registered annotation"):
+            discover_source(
+                {"kind": "TranslationUnitDecl", "inner": []},
+                "[[ours::unknown]] void missing();",
+                pathlib.PurePosixPath("sample.cpp"),
+                make_registry(),
+            )
 
 
 if __name__ == "__main__":

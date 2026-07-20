@@ -87,6 +87,26 @@ class ActionsTest(unittest.TestCase):
         with self.assertRaises(ActionError):
             result_from_json(json.dumps(payload))
 
+    def test_rejects_duplicate_generated_paths(self):
+        def callback(value: ActionRequest) -> ActionResult:
+            from tools.annotation.model import GeneratedFile
+
+            return ActionResult(
+                1,
+                (
+                    GeneratedFile(pathlib.PurePosixPath("same.cpp"), "one"),
+                    GeneratedFile(pathlib.PurePosixPath("same.cpp"), "two"),
+                ),
+                (),
+                (),
+                0,
+            )
+
+        spec = ActionSpec("ours::generate", ("record",), 1, callback=callback)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ActionError):
+                dispatch(spec, request(), pathlib.Path(directory))
+
 
 if __name__ == "__main__":
     unittest.main()

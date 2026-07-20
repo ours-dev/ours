@@ -146,6 +146,66 @@ def discover_from_ast(
     )
 
 
+def _line_column(source_text: str, offset: int) -> tuple[int, int]:
+    line = source_text.count("\n", 0, offset) + 1
+    last_newline = source_text.rfind("\n", 0, offset)
+    return line, offset - last_newline
+
+
+def _source_attributes(source_text: str) -> Iterable[tuple[str, int]]:
+    offset = source_text.find("[[")
+    while offset >= 0:
+        closing = source_text.find("]]", offset + 2)
+        if closing < 0:
+            yield "", offset
+            return
+        body = source_text[offset + 2 : closing].strip()
+        name_end = len(body)
+        for delimiter in (" ", "\t", "\n", "("):
+            position = body.find(delimiter)
+            if position >= 0:
+                name_end = min(name_end, position)
+        yield body[:name_end], offset
+        offset = source_text.find("[[", closing + 2)
+
+
+def discover_source(
+    ast: dict[str, Any],
+    source_text: str,
+    source_file: pathlib.PurePosixPath,
+    registry: Registry,
+) -> list[AnnotationInfo]:
+    records = discover_from_ast(ast, source_file, registry)
+    namespaces = {
+        spec.canonical_name.rsplit("::", 1)[0]
+        for spec in registry.items()
+    }
+    source_counts: dict[str, int] = {}
+    for canonical_name, offset in _source_attributes(source_text):
+        if not canonical_name:
+            line, column = _line_column(source_text, offset)
+            raise DiscoveryError(f"{source_file}:{line}:{column}: unterminated annotation")
+        if not any(canonical_name.startswith(namespace + "::") for namespace in namespaces):
+            continue
+        line, column = _line_column(source_text, offset)
+        if registry.resolve(canonical_name) is None:
+            raise DiscoveryError(
+                f"{source_file}:{line}:{column}: unknown registered annotation "
+                f"{canonical_name}"
+            )
+        source_counts[canonical_name] = source_counts.get(canonical_name, 0) + 1
+    record_counts: dict[str, int] = {}
+    for record in records:
+        record_counts[record.canonical_name] = record_counts.get(record.canonical_name, 0) + 1
+    for canonical_name, count in source_counts.items():
+        if record_counts.get(canonical_name, 0) < count:
+            raise DiscoveryError(
+                f"{source_file}: compiler did not preserve registered annotation "
+                f"{canonical_name} ({record_counts.get(canonical_name, 0)} of {count})"
+            )
+    return records
+
+
 def run_clang_ast_dump(
     compiler: str,
     flags: list[str],

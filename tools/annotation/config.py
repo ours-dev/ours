@@ -48,11 +48,17 @@ def load_config(config_path: pathlib.Path, registry: Registry) -> None:
         schema_version = action.get("schema_version")
         if not isinstance(schema_version, int):
             raise ValueError("schema_version must be an integer")
+        outputs = action.get("outputs", [])
+        if not isinstance(outputs, list) or not all(isinstance(item, str) for item in outputs):
+            raise ValueError("outputs must be a string array")
         registry.register(
             ActionSpec(
                 canonical_name=action.get("attribute", ""),
                 declaration_kinds=tuple(declaration_kinds),
                 schema_version=schema_version,
                 command=_resolve_command(command, config_path),
+                declared_outputs=tuple(
+                    pathlib.PurePosixPath(item) for item in outputs
+                ),
             )
         )
