@@ -23,9 +23,13 @@ class TestRecord:
     source_path: pathlib.PurePath
     line: int
     column: int
+    parameter_value: int | None = None
 
 
 _CONTEXT_SIGNATURE = re.compile(r"void\s*\(\s*hsien::Context\s*&\s*\)$")
+_PARAMETER_SIGNATURE = re.compile(
+    r"void\s*\(\s*hsien::Context\s*&\s*,\s*int\s*\)$"
+)
 
 
 def _walk(value: Any) -> Iterable[dict[str, Any]]:
@@ -36,6 +40,14 @@ def _walk(value: Any) -> Iterable[dict[str, Any]]:
     elif isinstance(value, list):
         for child in value:
             yield from _walk(child)
+
+
+def _index_nodes(ast: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        node["id"]: node
+        for node in _walk(ast)
+        if isinstance(node.get("id"), str)
+    }
 
 
 def _location(node: dict[str, Any], source_path: pathlib.PurePath) -> tuple[int, int]:
@@ -67,8 +79,43 @@ def _is_hsien_test(annotation: dict[str, Any]) -> bool:
     return False
 
 
+def _annotation_kind(annotation: dict[str, Any]) -> str | None:
+    annotation_type = _annotation_type(annotation) or ""
+    if annotation_type in {"hsien::test_t", "test_t"} and _is_hsien_test(annotation):
+        return "test"
+    if annotation_type.startswith("hsien::values_t<") or annotation_type.startswith(
+        "values_t<"
+    ):
+        return "values"
+    return None
+
+
+def _annotation_values(
+    annotation: dict[str, Any], node_index: dict[str, dict[str, Any]]
+) -> list[int]:
+    values = []
+    nodes = list(_walk(annotation.get("inner", [])))
+    for node in nodes:
+        if node.get("kind") != "DeclRefExpr":
+            continue
+        referenced_id = node.get("referencedDecl", {}).get("id")
+        if referenced_id in node_index:
+            nodes.extend(_walk(node_index[referenced_id]))
+    for node in nodes:
+        if node.get("kind") != "TemplateArgument" or "value" not in node:
+            continue
+        value = node["value"]
+        if not isinstance(value, int):
+            raise AnnotationError("hsien::values_t accepts only integral values in V1")
+        values.append(value)
+    if not values:
+        raise AnnotationError("hsien::values_t requires at least one value")
+    return values
+
+
 def scan_ast(ast: dict[str, Any], source_path: pathlib.PurePath) -> list[TestRecord]:
     records: list[TestRecord] = []
+    node_index = _index_nodes(ast)
     for function in _walk(ast):
         if function.get("kind") != "FunctionDecl":
             continue
@@ -79,30 +126,54 @@ def scan_ast(ast: dict[str, Any], source_path: pathlib.PurePath) -> list[TestRec
         ]
         if not annotations:
             continue
-        if len(annotations) != 1 or not _is_hsien_test(annotations[0]):
+        kinds = [_annotation_kind(annotation) for annotation in annotations]
+        if any(kind is None for kind in kinds) or kinds.count("test") != 1:
             line, column = _location(function, source_path)
             raise AnnotationError(
                 f"{source_path}:{line}:{column}: unsupported hsien annotation"
             )
 
         type_name = function.get("type", {}).get("qualType", "")
-        if _CONTEXT_SIGNATURE.fullmatch(type_name) is None:
+        parameter_annotation = next(
+            (
+                annotation
+                for annotation, kind in zip(annotations, kinds)
+                if kind == "values"
+            ),
+            None,
+        )
+        parameter_values = (
+            _annotation_values(parameter_annotation, node_index)
+            if parameter_annotation is not None
+            else []
+        )
+        expected_signature = (
+            _PARAMETER_SIGNATURE if parameter_annotation is not None else _CONTEXT_SIGNATURE
+        )
+        if expected_signature.fullmatch(type_name) is None:
             line, column = _location(function, source_path)
             raise AnnotationError(
                 f"{source_path}:{line}:{column}: hsien test must have signature "
-                "void(hsien::Context&)"
+                + ("void(hsien::Context&, int)" if parameter_annotation else "void(hsien::Context&)")
             )
 
         line, column = _location(function, source_path)
-        records.append(
-            TestRecord(
-                name=function["name"],
-                qualified_name=function.get("qualifiedName", function["name"]),
-                source_path=source_path,
-                line=line,
-                column=column,
+        instances = parameter_values if parameter_annotation is not None else [None]
+        for index, parameter_value in enumerate(instances):
+            records.append(
+                TestRecord(
+                    name=(
+                        f"{function['name']}/{index}"
+                        if parameter_annotation
+                        else function["name"]
+                    ),
+                    qualified_name=function.get("qualifiedName", function["name"]),
+                    source_path=source_path,
+                    line=line,
+                    column=column,
+                    parameter_value=(parameter_value if parameter_annotation else None),
+                )
             )
-        )
     return records
 
 
@@ -130,13 +201,26 @@ def render_wrapper(
         "",
     ]
     for index, record in enumerate(records, start=record_offset):
+        invoke_name = record.qualified_name
+        if record.parameter_value is not None:
+            invoke_name = f"hsien_invoke_{index}"
+            lines.extend(
+                [
+                    "namespace {",
+                    f"auto {invoke_name}(hsien::Context& context) -> void {{",
+                    f"    {record.qualified_name}(context, {record.parameter_value});",
+                    "}",
+                    "} // namespace",
+                    "",
+                ]
+            )
         lines.extend(
             [
                 "namespace {",
                 "__attribute__((section(\".hsien.tests\"), used))",
                 f"constinit hsien::TestRecord hsien_record_{index} {{",
                 f"    .name = {_cpp_string(record.name)},",
-                f"    .invoke = &{record.qualified_name},",
+                f"    .invoke = &{invoke_name},",
                 "    .location = std::source_location::current(),",
                 "};",
                 "} // namespace",

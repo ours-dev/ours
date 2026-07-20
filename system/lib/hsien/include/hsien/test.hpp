@@ -10,6 +10,12 @@ struct test_t {};
 
 inline constexpr test_t test {};
 
+template <auto... Values>
+struct values_t {};
+
+template <auto... Values>
+inline constexpr values_t<Values...> values {};
+
 struct Failure {
     char const* test_name;
     std::source_location location;
