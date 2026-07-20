@@ -57,6 +57,22 @@ def _source_error(source_file: pathlib.PurePosixPath, node: dict[str, Any], mess
     return DiscoveryError(f"{source_file}:{line}:{column}: {message}")
 
 
+def _belongs_to_source(
+    node: dict[str, Any],
+    source_file: pathlib.PurePosixPath,
+    source_identity: pathlib.Path | None,
+) -> bool:
+    location_file = node.get("loc", {}).get("file")
+    if not isinstance(location_file, str):
+        return True
+    if source_identity is not None:
+        try:
+            return pathlib.Path(location_file).resolve() == source_identity.resolve()
+        except OSError:
+            return False
+    return pathlib.PurePosixPath(location_file).as_posix() == source_file.as_posix()
+
+
 def _arguments(node: dict[str, Any]) -> dict[str, object]:
     value = node.get("arguments", {})
     if isinstance(value, dict):
@@ -82,9 +98,12 @@ def discover_from_ast(
     ast: dict[str, Any],
     source_file: pathlib.PurePosixPath,
     registry: Registry,
+    source_identity: pathlib.Path | None = None,
 ) -> list[AnnotationInfo]:
     records: list[AnnotationInfo] = []
     for declaration in _walk(ast):
+        if not _belongs_to_source(declaration, source_file, source_identity):
+            continue
         declaration_kind = _DECLARATION_KINDS.get(declaration.get("kind"))
         if declaration_kind is None:
             continue
@@ -152,6 +171,64 @@ def _line_column(source_text: str, offset: int) -> tuple[int, int]:
     return line, offset - last_newline
 
 
+def _mask_non_code(source_text: str) -> str:
+    characters = list(source_text)
+    state = "code"
+    index = 0
+    while index < len(characters):
+        current = characters[index]
+        following = characters[index + 1] if index + 1 < len(characters) else ""
+        if state == "code" and current == "/" and following == "/":
+            state = "line_comment"
+            characters[index] = characters[index + 1] = " "
+            index += 2
+            continue
+        if state == "code" and current == "/" and following == "*":
+            state = "block_comment"
+            characters[index] = characters[index + 1] = " "
+            index += 2
+            continue
+        if state == "code" and current in {'"', "'"}:
+            state = "string" if current == '"' else "character"
+            characters[index] = " "
+            index += 1
+            continue
+        if state == "line_comment":
+            if current == "\n":
+                state = "code"
+            else:
+                characters[index] = " "
+            index += 1
+            continue
+        if state == "block_comment":
+            if current == "*" and following == "/":
+                characters[index] = characters[index + 1] = " "
+                index += 2
+                state = "code"
+                continue
+            if current != "\n":
+                characters[index] = " "
+            index += 1
+            continue
+        if state in {"string", "character"}:
+            if current == "\\":
+                characters[index] = " "
+                if index + 1 < len(characters) and characters[index + 1] != "\n":
+                    characters[index + 1] = " "
+                    index += 2
+                    continue
+            elif (state == "string" and current == '"') or (
+                state == "character" and current == "'"
+            ):
+                state = "code"
+            elif current != "\n":
+                characters[index] = " "
+            index += 1
+            continue
+        index += 1
+    return "".join(characters)
+
+
 def _source_attributes(source_text: str) -> Iterable[tuple[str, int]]:
     offset = source_text.find("[[")
     while offset >= 0:
@@ -174,14 +251,16 @@ def discover_source(
     source_text: str,
     source_file: pathlib.PurePosixPath,
     registry: Registry,
+    source_identity: pathlib.Path | None = None,
 ) -> list[AnnotationInfo]:
-    records = discover_from_ast(ast, source_file, registry)
+    records = discover_from_ast(ast, source_file, registry, source_identity)
+    masked_source = _mask_non_code(source_text)
     namespaces = {
         spec.canonical_name.rsplit("::", 1)[0]
         for spec in registry.items()
     }
     source_counts: dict[str, int] = {}
-    for canonical_name, offset in _source_attributes(source_text):
+    for canonical_name, offset in _source_attributes(masked_source):
         if not canonical_name:
             line, column = _line_column(source_text, offset)
             raise DiscoveryError(f"{source_file}:{line}:{column}: unterminated annotation")

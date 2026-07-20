@@ -138,6 +138,40 @@ class DiscoveryTest(unittest.TestCase):
                 make_registry(),
             )
 
+    def test_ignores_attribute_text_in_comments_and_strings(self):
+        ast = {"kind": "TranslationUnitDecl", "inner": []}
+        source = '// [[ours::unknown]]\nconst char* text = "[[ours::unknown]]";\n'
+
+        self.assertEqual(
+            discover_source(ast, source, pathlib.PurePosixPath("sample.cpp"), make_registry()),
+            [],
+        )
+
+    def test_ignores_annotated_declaration_from_included_header(self):
+        ast = {
+            "kind": "TranslationUnitDecl",
+            "inner": [
+                {
+                    "kind": "FunctionDecl",
+                    "name": "header_function",
+                    "qualifiedName": "header_function",
+                    "loc": {"file": "/workspace/include/header.hpp", "line": 4, "col": 1},
+                    "inner": [{"kind": "CXX11Attribute", "name": "ours::generate"}],
+                }
+            ],
+        }
+
+        self.assertEqual(
+            discover_source(
+                ast,
+                "void source_function();",
+                pathlib.PurePosixPath("source.cpp"),
+                make_registry(),
+                source_identity=pathlib.Path("/workspace/source.cpp"),
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

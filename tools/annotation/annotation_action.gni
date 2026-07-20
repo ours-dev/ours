@@ -1,0 +1,47 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+
+template("annotation_action") {
+  assert(defined(invoker.compiler), "annotation_action requires compiler")
+  assert(defined(invoker.sources), "annotation_action requires sources")
+  assert(defined(invoker.config), "annotation_action requires config")
+  assert(defined(invoker.generated_outputs), "annotation_action requires generated_outputs")
+
+  action(target_name) {
+    script = "//tools/annotation/cli.py"
+    inputs = invoker.sources + [
+               invoker.config,
+               "//tools/annotation/actions.py",
+               "//tools/annotation/cli.py",
+               "//tools/annotation/config.py",
+               "//tools/annotation/discovery.py",
+               "//tools/annotation/model.py",
+               "//tools/annotation/protocol.py",
+               "//tools/annotation/registry.py",
+             ] + (defined(invoker.inputs) ? invoker.inputs : [])
+    outputs = []
+    foreach(output, invoker.generated_outputs) {
+      outputs += [ "$target_gen_dir/$output" ]
+    }
+    outputs += [ "$target_gen_dir/${invoker.manifest}" ]
+    args = [
+      "--compiler",
+      invoker.compiler,
+      "--source-root",
+      rebase_path(invoker.source_root, root_build_dir),
+      "--config",
+      rebase_path(invoker.config, root_build_dir),
+      "--output-root",
+      rebase_path(target_gen_dir, root_build_dir),
+      "--build-root",
+      rebase_path(root_build_dir, root_build_dir),
+      "--manifest",
+      rebase_path("$target_gen_dir/${invoker.manifest}", root_build_dir),
+    ]
+    foreach(flag, defined(invoker.flags) ? invoker.flags : []) {
+      args += [ "--flag", flag ]
+    }
+    foreach(source, invoker.sources) {
+      args += [ "--source", rebase_path(source, root_build_dir) ]
+    }
+  }
+}

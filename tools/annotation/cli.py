@@ -42,6 +42,13 @@ def _validate_output_root(output_root: pathlib.Path, build_root: pathlib.Path) -
         raise CliError(f"output root must be inside build root: {output_root}") from error
 
 
+def _validate_manifest(manifest: pathlib.Path, build_root: pathlib.Path) -> None:
+    try:
+        manifest.resolve().relative_to(build_root.resolve())
+    except ValueError as error:
+        raise CliError(f"manifest must be inside build root: {manifest}") from error
+
+
 def _write_atomic(path: pathlib.Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -117,6 +124,7 @@ def run(args: argparse.Namespace) -> None:
     register_builtins(registry)
     load_config(args.config.resolve(), registry)
     _validate_output_root(args.output_root, args.build_root)
+    _validate_manifest(args.manifest, args.build_root)
     records = []
     for source_name in args.source:
         source = pathlib.Path(source_name)
@@ -127,6 +135,7 @@ def run(args: argparse.Namespace) -> None:
                 source.read_text(encoding="utf-8"),
                 _relative_source(source, args.source_root),
                 registry,
+                source_identity=source,
             )
         )
     grouped: dict[str, list] = defaultdict(list)

@@ -135,6 +135,27 @@ class CliTest(unittest.TestCase):
 
             self.assertEqual(status, 1)
 
+    def test_rejects_manifest_outside_build_root(self):
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = pathlib.Path(directory_name)
+            compiler = self.fake_compiler(directory)
+            source = directory / "sample.cpp"
+            source.write_text("source", encoding="utf-8")
+            config = directory / "registrations.json"
+            config.write_text(json.dumps({"actions": []}), encoding="utf-8")
+
+            status = main(
+                self.command(
+                    compiler,
+                    config,
+                    directory / "build" / "out",
+                    directory / "manifest.json",
+                    source,
+                )
+            )
+
+            self.assertEqual(status, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
