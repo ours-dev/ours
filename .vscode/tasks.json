@@ -7,6 +7,22 @@
             "label": "echo",
             "type": "shell",
             "command": "echo ${workspaceFolder:cxxabi}"
+        },
+        {
+            "label": "hsien: quick verify",
+            "type": "shell",
+            "command": "PYTHONPYCACHEPREFIX=/tmp/hsien-pycache python3 -m unittest discover -s system/lib/hsien/tools/tests -v && clang++ -std=c++20 -fno-exceptions -Wall -Wextra -I system/lib/hsien/include system/lib/hsien/runner.cpp system/lib/hsien/tests/runtime_test.cpp -o /tmp/hsien-runtime-test && /tmp/hsien-runtime-test && clang++ -std=c++20 -ffreestanding -fno-exceptions -fno-rtti -Wall -Wextra -I system/lib/hsien/include -fsyntax-only system/lib/hsien/runner.cpp system/lib/hsien/section.cpp",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
         }
     ]
 }
