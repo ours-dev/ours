@@ -1,0 +1,14 @@
+{
+  "kind": "TranslationUnitDecl",
+  "inner": [
+    {
+      "kind": "FunctionDecl",
+      "name": "annotation_smoke_function",
+      "qualifiedName": "annotation_smoke_function",
+      "loc": {"line": 2, "col": 6},
+      "inner": [
+        {"kind": "CXX11Attribute", "name": "ours::generate"}
+      ]
+    }
+  ]
+}

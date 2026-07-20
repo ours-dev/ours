@@ -4,15 +4,24 @@ import argparse
 import json
 import os
 import pathlib
+import sys
 import tempfile
 from collections import defaultdict
 from collections.abc import Sequence
 
-from .actions import ActionError, dispatch
-from .config import load_config, register_builtins
-from .discovery import DiscoveryError, discover_from_ast, run_clang_ast_dump
-from .model import ActionRequest, ActionResult
-from .registry import Registry
+if __package__ in (None, ""):
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+    from tools.annotation.actions import ActionError, dispatch
+    from tools.annotation.config import load_config, register_builtins
+    from tools.annotation.discovery import DiscoveryError, discover_from_ast, run_clang_ast_dump
+    from tools.annotation.model import ActionRequest, ActionResult
+    from tools.annotation.registry import Registry
+else:
+    from .actions import ActionError, dispatch
+    from .config import load_config, register_builtins
+    from .discovery import DiscoveryError, discover_from_ast, run_clang_ast_dump
+    from .model import ActionRequest, ActionResult
+    from .registry import Registry
 
 
 class CliError(ValueError):
@@ -133,7 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         run(_parse_args(argv))
     except (ActionError, CliError, DiscoveryError, OSError, ValueError) as error:
-        print(error, file=os.sys.stderr)
+        print(error, file=sys.stderr)
         return 1
     return 0
 

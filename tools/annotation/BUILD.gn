@@ -1,0 +1,40 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+
+action("process") {
+  script = "cli.py"
+  inputs = [
+    "config.py",
+    "model.py",
+    "registry.py",
+    "discovery.py",
+    "protocol.py",
+    "actions.py",
+    "tests/annotation_input.cpp",
+    "tests/annotation_action_config.json",
+    "tests/fake_clang.py",
+    "tests/ast_fixture.json",
+  ]
+  outputs = [
+    "$target_gen_dir/generated/action.txt",
+    "$target_gen_dir/annotation-manifest.json",
+  ]
+  args = [
+    "--compiler",
+    "python3",
+    "--flag",
+    rebase_path("tests/fake_clang.py", root_build_dir),
+    "--source",
+    rebase_path("tests/annotation_input.cpp", root_build_dir),
+    "--config",
+    rebase_path("tests/annotation_action_config.json", root_build_dir),
+    "--output-root",
+    rebase_path(target_gen_dir, root_build_dir),
+    "--manifest",
+    rebase_path("$target_gen_dir/annotation-manifest.json", root_build_dir),
+  ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ ":process" ]
+}

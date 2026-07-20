@@ -1,0 +1,6 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+
+group("tests") {
+  testonly = true
+  public_deps = [ "//tools/annotation:process" ]
+}

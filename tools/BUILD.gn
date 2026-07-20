@@ -1,0 +1,36 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+_unavailable_metadata = {
+  unavailable_components = [
+    {
+      component = "tools-zbi"
+      reason = "Ours boot-container format has not been selected"
+    },
+    {
+      component = "tools-zither"
+      reason = "Ours syscall IDL and binding-generation contract is undefined"
+    },
+  ]
+  unavailable_components_barrier = []
+}
+
+group("unavailable") {
+  visibility = [
+    ":tests",
+    "//:*",
+  ]
+  metadata = _unavailable_metadata
+}
+
+# Canonical Zircon tools test rollup.  It resolves for discovery, but remains
+# empty until the local zbi and zither tool modules exist.
+group("tests") {
+  testonly = true
+  public_deps = [
+    ":unavailable",
+    "//tools/annotation/tests:tests",
+  ]
+  metadata = _unavailable_metadata
+}

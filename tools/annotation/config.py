@@ -15,7 +15,11 @@ def register_builtins(registry: Registry) -> None:
 def _resolve_command(command: list[str], config_path: pathlib.Path) -> tuple[str, ...]:
     resolved: list[str] = []
     for index, token in enumerate(command):
-        if index > 0 and ("/" in token or token.startswith(".")):
+        if index > 0 and (
+            "/" in token
+            or token.startswith(".")
+            or (config_path.parent / token).is_file()
+        ):
             path = pathlib.Path(token)
             if not path.is_absolute():
                 path = (config_path.parent / path).resolve()
