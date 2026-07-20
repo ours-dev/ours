@@ -1,0 +1,15 @@
+{
+  "kind": "TranslationUnitDecl",
+  "inner": [
+    {
+      "kind": "FunctionDecl",
+      "loc": {"line": 11, "col": 1},
+      "inner": [
+        {
+          "kind": "CXX11Attribute",
+          "name": "ours::generate"
+        }
+      ]
+    }
+  ]
+}

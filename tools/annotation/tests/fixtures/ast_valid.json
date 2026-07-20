@@ -1,0 +1,31 @@
+{
+  "kind": "TranslationUnitDecl",
+  "inner": [
+    {
+      "kind": "FunctionDecl",
+      "name": "make",
+      "qualifiedName": "sample::make",
+      "loc": {"line": 8, "col": 5},
+      "inner": [
+        {
+          "kind": "CXX11Attribute",
+          "name": "ours::generate",
+          "arguments": {"format": "binary"}
+        }
+      ]
+    },
+    {
+      "kind": "FunctionDecl",
+      "name": "parse",
+      "qualifiedName": "sample::parse",
+      "loc": {"line": 3, "col": 5},
+      "inner": [
+        {
+          "kind": "CXX11Attribute",
+          "name": "ours::generate",
+          "arguments": {"format": "text"}
+        }
+      ]
+    }
+  ]
+}
