@@ -53,7 +53,7 @@ template("hsien_test_bundle") {
     testonly = true
     sources = [ _generated_source ]
     deps = [ ":${target_name}.scan" ]
-    public_deps = [ ":hsien" ]
+    public_deps = [ "//system/lib/hsien:hsien" ]
     visibility = [ "*" ]
   }
 }
