@@ -1,0 +1,13 @@
+{
+  "actions": [
+    {
+      "attribute": "ours::generate",
+      "declaration_kinds": ["function"],
+      "schema_version": 1,
+      "command": [
+        "python3",
+        "external_action.py"
+      ]
+    }
+  ]
+}
