@@ -127,7 +127,11 @@ def scan_ast(ast: dict[str, Any], source_path: pathlib.PurePath) -> list[TestRec
         if not annotations:
             continue
         kinds = [_annotation_kind(annotation) for annotation in annotations]
-        if any(kind is None for kind in kinds) or kinds.count("test") != 1:
+        if (
+            any(kind is None for kind in kinds)
+            or kinds.count("test") != 1
+            or kinds.count("values") > 1
+        ):
             line, column = _location(function, source_path)
             raise AnnotationError(
                 f"{source_path}:{line}:{column}: unsupported hsien annotation"

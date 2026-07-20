@@ -169,6 +169,19 @@ class ScanAnnotationsTest(unittest.TestCase):
         self.assertIn("test_one(context, 42);", wrapper)
         self.assertIn(".name = \"test_one/0\"", wrapper)
 
+    def test_rejects_multiple_parameter_annotations(self):
+        node = function_node(
+            type_name="void (hsien::Context &, int)",
+            parameter_values=[1, 2],
+        )
+        node["inner"].append(node["inner"][-1])
+
+        with self.assertRaises(scan_annotations.AnnotationError):
+            scan_annotations.scan_ast(
+                {"kind": "TranslationUnitDecl", "inner": [node]},
+                pathlib.PurePosixPath("tests/sample.cpp"),
+            )
+
     def test_multi_source_output_uses_unique_record_symbols(self):
         first = scan_annotations.scan_ast(
             {"kind": "TranslationUnitDecl", "inner": [function_node(name="first")]},
