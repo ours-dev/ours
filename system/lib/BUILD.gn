@@ -1,0 +1,13 @@
+# Zircon's system/ulib root is a test-discovery rollup rather than a library
+# dependency bundle.  Keep the same shape for the system libraries that exist
+# locally.
+group("tests") {
+  testonly = true
+  deps = [
+    "concurrent:tests",
+    "derive:tests",
+    "hsien:tests",
+    "lockdep:tests",
+    "ustl:tests",
+  ]
+}

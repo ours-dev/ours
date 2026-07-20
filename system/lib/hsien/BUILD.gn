@@ -1,0 +1,64 @@
+import("//build/cpp/cpp_interface.gni")
+import("//build/toolchain/environment.gni")
+
+declare_args() {
+  # P2996-capable compiler used by the optional annotation scan action.
+  hsien_annotation_compiler = ""
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/hsien/runner.hpp",
+    "include/hsien/section.hpp",
+    "include/hsien/test.hpp",
+  ]
+  public_deps = [ "//system/public" ]
+  visibility = [ "*" ]
+}
+
+source_set("hsien") {
+  testonly = true
+  sources = [ "runner.cpp" ]
+  if (toolchain_environment == "kernel") {
+    sources += [ "section.cpp" ]
+  }
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+template("hsien_test_bundle") {
+  assert(defined(invoker.sources), "hsien_test_bundle() requires sources")
+  assert(hsien_annotation_compiler != "",
+         "hsien_test_bundle() requires hsien_annotation_compiler")
+
+  _generated_source = "$target_gen_dir/$target_name.cpp"
+  action("${target_name}.scan") {
+    script = "//system/lib/hsien/tools/scan_annotations.py"
+    sources = invoker.sources
+    outputs = [ _generated_source ]
+    args = [
+      "--compiler",
+      hsien_annotation_compiler,
+      "--flag=-std=c++26",
+      "--flag=-freflection-latest",
+      "--output",
+      rebase_path(_generated_source, root_build_dir),
+    ]
+    foreach(source, invoker.sources) {
+      args += [ rebase_path(source, root_build_dir) ]
+    }
+  }
+
+  source_set(target_name) {
+    testonly = true
+    sources = [ _generated_source ]
+    deps = [ ":${target_name}.scan" ]
+    public_deps = [ ":hsien" ]
+    visibility = [ "*" ]
+  }
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ ":hsien" ]
+}

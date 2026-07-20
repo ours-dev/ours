@@ -1,0 +1,15 @@
+import("//system/lib/hsien/BUILD.gn")
+
+if (hsien_annotation_compiler != "") {
+  hsien_test_bundle("section-tests") {
+    sources = [ "section_test.cpp" ]
+  }
+}
+
+group("tests") {
+  testonly = true
+  deps = [ "//system/lib/hsien:tests" ]
+  if (hsien_annotation_compiler != "") {
+    deps += [ ":section-tests" ]
+  }
+}
