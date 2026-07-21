@@ -83,14 +83,6 @@ def _annotation_kind(annotation: dict[str, Any]) -> str | None:
     annotation_type = _annotation_type(annotation) or ""
     if annotation_type in {"hsien::test_t", "test_t"} and _is_hsien_test(annotation):
         return "test"
-    if annotation_type.startswith("hsien::value_test_t<") or annotation_type.startswith(
-        "value_test_t<"
-    ):
-        return "value_test"
-    if annotation_type.startswith("hsien::fixture_test_t<") or annotation_type.startswith(
-        "fixture_test_t<"
-    ):
-        return "fixture_test"
     if annotation_type.startswith("hsien::values_t<") or annotation_type.startswith(
         "values_t<"
     ):
@@ -135,15 +127,10 @@ def scan_ast(ast: dict[str, Any], source_path: pathlib.PurePath) -> list[TestRec
         if not annotations:
             continue
         kinds = [_annotation_kind(annotation) for annotation in annotations]
-        primary_kinds = [
-            kind for kind in kinds if kind in {"test", "value_test", "fixture_test"}
-        ]
         if (
             any(kind is None for kind in kinds)
-            or len(primary_kinds) != 1
+            or kinds.count("test") != 1
             or kinds.count("values") > 1
-            or (kinds.count("values") == 1 and primary_kinds[0] != "value_test")
-            or (kinds.count("values") == 0 and primary_kinds[0] == "value_test")
         ):
             line, column = _location(function, source_path)
             raise AnnotationError(
@@ -165,38 +152,30 @@ def scan_ast(ast: dict[str, Any], source_path: pathlib.PurePath) -> list[TestRec
             else []
         )
         expected_signature = (
-            _PARAMETER_SIGNATURE
-            if primary_kinds[0] == "value_test"
-            else _CONTEXT_SIGNATURE
+            _PARAMETER_SIGNATURE if parameter_annotation is not None else _CONTEXT_SIGNATURE
         )
         if expected_signature.fullmatch(type_name) is None:
             line, column = _location(function, source_path)
             raise AnnotationError(
                 f"{source_path}:{line}:{column}: hsien test must have signature "
-                + (
-                    "void(hsien::Context&, int)"
-                    if primary_kinds[0] == "value_test"
-                    else "void(hsien::Context&)"
-                )
+                + ("void(hsien::Context&, int)" if parameter_annotation else "void(hsien::Context&)")
             )
 
         line, column = _location(function, source_path)
-        instances = parameter_values if primary_kinds[0] == "value_test" else [None]
+        instances = parameter_values if parameter_annotation is not None else [None]
         for index, parameter_value in enumerate(instances):
             records.append(
                 TestRecord(
                     name=(
                         f"{function['name']}/{index}"
-                        if primary_kinds[0] == "value_test"
+                        if parameter_annotation
                         else function["name"]
                     ),
                     qualified_name=function.get("qualifiedName", function["name"]),
                     source_path=source_path,
                     line=line,
                     column=column,
-                    parameter_value=(
-                        parameter_value if primary_kinds[0] == "value_test" else None
-                    ),
+                    parameter_value=(parameter_value if parameter_annotation else None),
                 )
             )
     return records

@@ -18,8 +18,8 @@ fixture、runner 和 reporter 提供。
 | GoogleTest | 语义 | Hsien 映射 | 方式 |
 | --- | --- | --- | --- |
 | `TEST(Suite, Name)` | 无 fixture 的普通测试 | `[[=hsien::test]]` | 当前实现：函数名作为测试名；后续可增加 suite/name annotation |
-| `TEST_F(Fixture, Name)` | 使用 fixture 的测试 | `[[=hsien::fixture_test<Fixture>]]` | annotation 选择 fixture，runner 创建新实例 |
-| `TEST_P(Fixture, Name)` | value-parameterized fixture 测试 | `[[=hsien::fixture_test<Fixture>]] [[=hsien::values<...>]]` | fixture 参数化测试后续复用 `value_test` 的值展开模型 |
+| `TEST_F(Fixture, Name)` | 使用 fixture 的测试 | `[[=hsien::test]] [[=hsien::fixture<Fixture>]]` | annotation 选择 fixture，runner 创建新实例 |
+| `TEST_P(Fixture, Name)` | value-parameterized fixture 测试 | `[[=hsien::test]] [[=hsien::fixture<Fixture>]] [[=hsien::values<...>]]` | 当前实现已支持无 fixture 的整型值版本 |
 | `TYPED_TEST(Fixture, Name)` | 对已知类型列表重复测试 | `[[=hsien::test]] [[=hsien::types<...>]]` | 每个类型生成一个 record |
 | `TYPED_TEST_P` + `REGISTER_TYPED_TEST_SUITE_P` | 先定义类型测试模式，稍后实例化 | `[[=hsien::test_pattern]]` + `[[=hsien::instantiate_types<...>]]` | 需要独立的 pattern/instantiation 模型 |
 | `RegisterTest(...)` | 运行时动态注册 | 不提供用户接口 | hsien 注册必须在编译前由 annotation 发现完成 |
@@ -59,7 +59,11 @@ struct PmmFixture {
     PmmState state;
 };
 
-[[=hsien::fixture_test<PmmFixture>]]
+[[=hsien::fixture<PmmFixture>]]
+struct PmmTests {};
+
+[[=hsien::test]]
+[[=hsien::fixture<PmmFixture>]]
 void releases_frame(hsien::Context&, PmmFixture&);
 ```
 
@@ -95,7 +99,7 @@ namespace hsien {
     inline constexpr values_t<Values...> values {};
 }
 
-[[=hsien::value_test<>]]
+[[=hsien::test]]
 [[=hsien::values<1, 2, 3>]]
 void checks_size(hsien::Context&, int value);
 ```
@@ -299,8 +303,7 @@ hosted 可以提供 console/XML/JSON reporter；kernel 可以提供串口 report
 ```text
 Declaration metadata
   [[=hsien::test]]
-  [[=hsien::value_test<>]]
-  [[=hsien::fixture_test<...>]]
+  [[=hsien::fixture<...>]]
   [[=hsien::values<...>]]
   [[=hsien::types<...>]]
           |

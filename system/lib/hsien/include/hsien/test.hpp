@@ -16,18 +16,6 @@ struct values_t {};
 template <auto... Values>
 inline constexpr values_t<Values...> values {};
 
-template <typename Parameter = void>
-struct value_test_t {};
-
-template <typename Parameter = void>
-inline constexpr value_test_t<Parameter> value_test {};
-
-template <typename Fixture = void>
-struct fixture_test_t {};
-
-template <typename Fixture = void>
-inline constexpr fixture_test_t<Fixture> fixture_test {};
-
 struct Failure {
     char const* test_name;
     std::source_location location;
