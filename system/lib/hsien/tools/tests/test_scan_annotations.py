@@ -134,6 +134,7 @@ class ScanAnnotationsTest(unittest.TestCase):
                 "kind": "TranslationUnitDecl",
                 "inner": [
                     function_node(
+                        annotation_type="hsien::value_test_t<void>",
                         type_name="void (hsien::Context &, int)",
                         parameter_values=[1, 2, 3],
                     )
@@ -154,6 +155,7 @@ class ScanAnnotationsTest(unittest.TestCase):
                 "kind": "TranslationUnitDecl",
                 "inner": [
                     function_node(
+                        annotation_type="hsien::value_test_t<void>",
                         type_name="void (hsien::Context &, int)",
                         parameter_values=[42],
                     )
@@ -171,6 +173,7 @@ class ScanAnnotationsTest(unittest.TestCase):
 
     def test_rejects_multiple_parameter_annotations(self):
         node = function_node(
+            annotation_type="hsien::value_test_t<void>",
             type_name="void (hsien::Context &, int)",
             parameter_values=[1, 2],
         )
@@ -179,6 +182,32 @@ class ScanAnnotationsTest(unittest.TestCase):
         with self.assertRaises(scan_annotations.AnnotationError):
             scan_annotations.scan_ast(
                 {"kind": "TranslationUnitDecl", "inner": [node]},
+                pathlib.PurePosixPath("tests/sample.cpp"),
+            )
+
+    def test_scans_fixture_test_annotation(self):
+        records = scan_annotations.scan_ast(
+            {
+                "kind": "TranslationUnitDecl",
+                "inner": [function_node(annotation_type="hsien::fixture_test_t<void>")],
+            },
+            pathlib.PurePosixPath("tests/sample.cpp"),
+        )
+
+        self.assertEqual([record.name for record in records], ["test_one"])
+
+    def test_rejects_legacy_test_values_combination(self):
+        with self.assertRaises(scan_annotations.AnnotationError):
+            scan_annotations.scan_ast(
+                {
+                    "kind": "TranslationUnitDecl",
+                    "inner": [
+                        function_node(
+                            type_name="void (hsien::Context &, int)",
+                            parameter_values=[1, 2],
+                        )
+                    ],
+                },
                 pathlib.PurePosixPath("tests/sample.cpp"),
             )
 
