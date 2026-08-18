@@ -1,0 +1,50 @@
+import("//build/cpp/cpp_interface.gni")
+
+# RISC-V architecture configuration.  Sources are added as the architecture
+# implementation lands; these targets keep the supported `riscv` identifier
+# structurally complete in the GN graph.
+config("abi") {
+  configs = [
+    ":abi.integer-register",
+    ":abi.percpu",
+  ]
+}
+
+# The kernel and phys ABI is integer-only even though the generic RISC-V
+# baseline supports the full G profile for future user artifacts.
+config("abi.integer-register") {
+  cflags = [
+    "-march=rv64ima_zicsr_zifencei",
+    "-mabi=lp64",
+  ]
+  asmflags = cflags
+}
+
+# Reserve s11/x27 for the per-CPU pointer ABI.
+config("abi.percpu") {
+  cflags = [ "-ffixed-x27" ]
+}
+
+config("kernel") {
+  defines = [ "ARCH_RISCV" ]
+  include_dirs = [ "include" ]
+}
+
+cpp_interface("headers") {
+  include_dir = "lib/arch/include"
+  public = [
+    "arch/riscv/halt.hpp",
+    "arch/riscv/interrupt.hpp",
+    "arch/riscv/random.hpp",
+    "arch/riscv/tick.hpp",
+  ]
+
+  # Architecture-neutral arch/* headers (asm macros, generic paging
+  # abstractions, MmuFlags, ...) that this riscv-specific set doesn't
+  # override.
+  public_deps = [ "//kernel/lib/arch:headers" ]
+}
+
+group("kernel-tests") {
+  testonly = true
+}
