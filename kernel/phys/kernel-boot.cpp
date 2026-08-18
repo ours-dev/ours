@@ -1,128 +1,154 @@
-#include <ours/phys/kernel-boot.hpp>
-#include <ours/phys/kernel-image.hpp>
-#include <ours/phys/kernel-package.hpp>
-#include <ours/phys/handoff.hpp>
-#include <ours/phys/aspace.hpp>
-#include <ours/phys/init.hpp>
-#include <ours/phys/print.hpp>
-#include <ours/phys/boot-options.hpp>
-
-#include <ours/arch/aspace_layout.hpp>
-
 #include <arch/random.hpp>
 #include <arch/tick.hpp>
-#include <obi/obi-header.hpp>
-#include <eftl/elf/views.hpp>
+#include <ours/arch/aspace_layout.hpp>
+#include <ours/phys/aspace.hpp>
+#include <ours/phys/boot-options.hpp>
+#include <ours/phys/handoff.hpp>
+#include <ours/phys/init.hpp>
+#include <ours/phys/kernel-boot.hpp>
+#include <ours/phys/kernel-image.hpp>
+#include <ours/phys/kernel-package-loader.hpp>
+#include <ours/phys/print.hpp>
+#include <ustl/mem/align.hpp>
+
+#include <cstring>
 
 namespace ours::phys {
-    auto KernelBoot::gen_load_bias(usize const limit) -> usize {
-        usize offset;
-        if (!arch::rand(&offset)) {
-            offset = arch::Tick::get().tsc;
+namespace {
+    auto handoff_reserve(void *context, bootmem::Range const range) -> Status {
+        return static_cast<BootMem *>(context)->reserve(range);
+    }
+
+    auto handoff_assign_node(void *context, bootmem::Range const range, NnId const node) -> Status {
+        return static_cast<BootMem *>(context)->assign_node(range, node);
+    }
+
+    auto handoff_allocate(void *context, bootmem::AllocationRequest const request,
+                          bootmem::Range *const result) -> Status {
+        if (result == nullptr) {
+            return Status::InvalidArgument;
         }
-        return offset % limit;
-    }
-
-    auto KernelBoot::init(KernelPackage &kpackage) -> void {
-        CXX11_CONSTEXPR
-        static auto const kMetaDataSize = sizeof(obi::ObiExeSign);
-        auto const package = kpackage.package();
-        auto const exe_signature = *reinterpret_cast<obi::ObiExeSign *>(package.data());
-
-        // FIXME(SmallHuaZi) a way transition to the impletation of InitFs
-        initfs_ = InitFs(package.data() + kMetaDataSize, package.size() - kMetaDataSize);
-        // TODO(SmallHuaZi) Base on the passed option selecting target to load.
-        // auto mmod = initfs_.read(global_boot_options()->load_target);
-        auto mmod = initfs_;
-
-        if (exe_signature == obi::ObiExeSign::Raw) {
-            auto status = kimage_.init(KernelImage::Type::RawImage, mmod);
-            if (status != Status::Ok) {
-                panic("Failed to initialize an raw image: {}", to_string(status));
-            }
-        } else if (exe_signature == obi::ObiExeSign::Elf) {
-            auto status = kimage_.init(KernelImage::Type::ElfImage, mmod);
-            if (status != Status::Ok) {
-                panic("Failed to initialize an elf image: {}", to_string(status));
-            }
-        } else {
-            panic("Unrecognized executable type");
+        auto const allocation = static_cast<BootMem *>(context)->allocate(request);
+        if (allocation.is_err()) {
+            return allocation.unwrap_err();
         }
-
-        if (!global_boot_options()->aslr_disabled) {
-            kaslr_offset_ = gen_load_bias(GB(1));
-            // Do check
-        } else {
-            kaslr_offset_ = 0;
-        }
+        *result = allocation.unwrap();
+        return Status::Ok;
     }
 
-    auto KernelBoot::load() -> void {
-        auto const image_size = ustl::mem::align_up(kimage_.size(), PAGE_SIZE);
-        auto const mem = global_bootmem();
-        PhysAddr target_addr = mem->allocate(image_size, PAGE_SIZE);
-        if (!target_addr) {
-            panic("No enough memory to place image");
-        }
-        ustl::algorithms::fill_n(reinterpret_cast<usize *>(target_addr), image_size / sizeof(usize), 0);
-
-        auto result = kimage_.load_at(target_addr);
-        if (result.is_err()) {
-            panic("Failed to load image at {}, given a reason: {}", target_addr, to_string(result.unwrap_err()));
-        }
-
-        kernel_entry_ = result.unwrap();
-        kernel_size_ = image_size;
-        kernel_addr_ = target_addr;
+    auto handoff_release(void *context, bootmem::Range const range) -> Status {
+        return static_cast<BootMem *>(context)->release(range);
     }
 
-    auto KernelBoot::build_kernel_aspace() -> void {
-        CXX11_CONSTEXPR
-        auto const kDefaultKernelMmuFlags = mem::MmuFlags::PermMask | mem::MmuFlags::Present;
+    auto handoff_visit(void *context, bootmem::MemoryQuery const query,
+                       bootmem::MemoryVisitor const visitor, void *const visitor_context)
+        -> Status {
+        return static_cast<BootMem *>(context)->visit(query, visitor, visitor_context);
+    }
+} // namespace
 
-        auto aspace = global_aspace();
-        DEBUG_ASSERT(aspace, "Global aspace must be initialized");
+auto KernelBoot::gen_load_bias(usize const limit) -> usize {
+    if (limit < PAGE_SIZE) {
+        return 0;
+    }
+    usize offset;
+    if (!arch::rand(&offset)) {
+        offset = arch::Tick::get().tsc;
+    }
+    return ustl::mm::align_down(offset % limit, PAGE_SIZE);
+}
 
-        auto const nr_pages = ustl::mem::align_up(kernel_size_, PAGE_SIZE) / PAGE_SIZE;
-        auto result = aspace->map(KERNEL_LOAD_BASE + kaslr_offset_, nr_pages , kernel_addr_, kDefaultKernelMmuFlags);
-        DEBUG_ASSERT(result.is_ok(), "Failed to map kernel image");
-
-        kernel_entry_  = kernel_entry_ - kernel_addr_ + KERNEL_LOAD_BASE + kaslr_offset_;
-
-        result = aspace->map(KERNEL_ASPACE_BASE, ARCH_PHYSMAP_SIZE / PAGE_SIZE, 0, kDefaultKernelMmuFlags);
-        DEBUG_ASSERT(result.is_ok(), "Failed to map physmap area");
-
-        auto fix_status = kimage_.fix_mapping(*aspace);
-        DEBUG_ASSERT(fix_status == Status::Ok, "Failed to fix kernel mapping: {}", to_string(fix_status));
+auto KernelBoot::init(KernelPackageLoader &kpackage) -> void {
+    auto const status = kimage_.init(kpackage.kernel());
+    if (status != Status::Ok) {
+        panic("Failed to initialize kernel image: {}", static_cast<u32>(status));
     }
 
-    auto KernelBoot::boot() -> void {
-        build_kernel_aspace();
-        do_handoff();
+    package_handoff_ = kpackage.handoff();
+
+    if (!global_boot_options()->aslr_disabled) {
+        kaslr_offset_ = gen_load_bias(GB(1));
+        // Do check
+    } else {
+        kaslr_offset_ = 0;
+    }
+}
+
+auto KernelBoot::load() -> void {
+    auto const image_size = ustl::mm::align_up(kimage_.size(), PAGE_SIZE);
+    auto const mem = global_bootmem();
+    auto const allocation = mem->allocate({
+        .size = image_size,
+        .alignment = PAGE_SIZE,
+        .lower = mem->min_address(),
+        .upper = mem->max_address(),
+        .node = bootmem::kAnyNode,
+        .direction = bootmem::AllocationDirection::TopDown,
+    });
+    if (allocation.is_err()) {
+        panic("No enough memory to place image");
+    }
+    auto const target_addr = allocation.unwrap().base;
+    std::memset(reinterpret_cast<void *>(target_addr), 0, image_size);
+
+    auto result = kimage_.load_at(target_addr);
+    if (result.is_err()) {
+        panic("Failed to load image at {}, given a reason: {}", target_addr,
+              static_cast<u32>(result.unwrap_err()));
     }
 
-    WEAK_LINK
-    auto KernelBoot::arch_do_handoff() -> void 
-    {}
+    kernel_entry_ = result.unwrap();
+    kernel_size_ = image_size;
+    kernel_addr_ = target_addr;
+}
 
-    auto KernelBoot::do_handoff() -> void {
-        auto const handoff = global_handoff();
-        DEBUG_ASSERT(handoff, "Global handoff must be initialized");
-
-        auto const mem = global_bootmem();
-        handoff->mem.bootmem = {
-            .protect = std::bind_front(&BootMem::protect, mem),
-            .set_node = std::bind_front(&BootMem::set_node, mem),
-            .allocate = std::bind_front(&BootMem::allocate_bounded, mem),
-            .deallocate = std::bind_front(&BootMem::deallocate, mem),
-            .iterate = std::bind_front(&BootMem::iterate, mem),
-            .min_address = mem->start_address(),
-            .max_address = mem->end_address(),
-        };
-
-        handoff->mem.kernel_load_addr = kernel_addr_;
-
-        invoke_kernel(handoff);
+auto KernelBoot::build_kernel_aspace() -> void {
+    auto aspace = global_aspace();
+    DEBUG_ASSERT(aspace, "Global aspace must be initialized");
+    auto const target_base = KERNEL_LOAD_BASE + kaslr_offset_;
+    auto const fix_status = kimage_.fix_mapping(*aspace, target_base);
+    if (fix_status != Status::Ok) {
+        panic("Failed to map kernel ELF segments: {}", static_cast<u32>(fix_status));
     }
+
+    kernel_entry_ = kernel_entry_ - kernel_addr_ + target_base;
+
+    constexpr auto const kPhysmapMmuFlags = MmuFlags::PermMask | MmuFlags::Present;
+    auto const physmap_result =
+        aspace->map(KERNEL_ASPACE_BASE, ARCH_PHYSMAP_SIZE / PAGE_SIZE, 0, kPhysmapMmuFlags);
+    if (physmap_result.is_err()) {
+        panic("Failed to map physmap area");
+    }
+}
+
+auto KernelBoot::boot() -> void {
+    build_kernel_aspace();
+    do_handoff();
+}
+
+WEAK_LINK
+auto KernelBoot::arch_do_handoff() -> void {}
+
+auto KernelBoot::do_handoff() -> void {
+    auto const handoff = global_handoff();
+    DEBUG_ASSERT(handoff, "Global handoff must be initialized");
+
+    auto const mem = global_bootmem();
+    handoff->mem.bootmem = {
+        .context = mem,
+        .reserve = handoff_reserve,
+        .assign_node = handoff_assign_node,
+        .allocate = handoff_allocate,
+        .release = handoff_release,
+        .visit = handoff_visit,
+        .min_address = mem->min_address(),
+        .max_address = mem->max_address(),
+    };
+
+    handoff->mem.kernel_load_addr = kernel_addr_;
+    handoff->boot_package = package_handoff_;
+
+    invoke_kernel(handoff);
+}
 
 } // namespace ours::phys
