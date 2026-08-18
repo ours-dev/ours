@@ -1,0 +1,71 @@
+import("//build/cpp/cpp_interface.gni")
+
+# Generic paging and register interfaces.  Architecture directories provide
+# the architecture-specific paging dispatcher and PTE flag conversion.
+cpp_interface("headers") {
+  public = [
+    "include/arch/asm.hpp",
+    "include/arch/auto-interrupt-disabler.hpp",
+    "include/arch/halt.hpp",
+    "include/arch/interrupt.hpp",
+    "include/arch/io/register_addr.hpp",
+    "include/arch/io/register_base.hpp",
+    "include/arch/io/register_io.hpp",
+    "include/arch/options.hpp",
+    "include/arch/paging.hpp",
+    "include/arch/paging/controls.hpp",
+    "include/arch/paging/mapping_context.hpp",
+    "include/arch/paging/mmu_flags.hpp",
+    "include/arch/paging/mod.hpp",
+    "include/arch/paging/options.hpp",
+    "include/arch/paging/paging_dispatcher.hpp",
+    "include/arch/paging/paging_traits.hpp",
+    "include/arch/paging/visitors.hpp",
+    "include/arch/random.hpp",
+    "include/arch/sysreg.hpp",
+    "include/arch/tick.hpp",
+    "include/arch/tlb.hpp",
+    "include/arch/types.hpp",
+  ]
+
+  public_configs = [ "//kernel/mm:headers.config" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+executable("x86-paging-smoke") {
+  testonly = true
+  sources = [ "test/x86_paging_smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//kernel/arch/x86:headers",
+  ]
+}
+
+executable("x86-system-smoke") {
+  testonly = true
+  sources = [ "test/x86_system_smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//kernel/arch/x86:headers",
+  ]
+}
+
+executable("cpu-mask-smoke") {
+  testonly = true
+  sources = [ "test/cpu_mask_smoke.cpp" ]
+  include_dirs = [ "//kernel/include" ]
+  defines = [ "MP_MAX_CPUS=16" ]
+  deps = [ "//system/public" ]
+}
+
+executable("x86-feature-smoke") {
+  testonly = true
+  sources = [ "test/x86_feature_smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//kernel/arch/x86:headers",
+  ]
+}
