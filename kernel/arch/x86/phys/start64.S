@@ -1,10 +1,10 @@
 #include <ours/arch/asm.hpp>
-#include <ours/mem/cfg.hpp>
+#include <ours/mm/cfg.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 
-#include <arch/macro/mmu.hpp>
-#include <arch/macro/msr.hpp>
-#include <arch/macro/system.hpp>
+#include <arch/x86/macro/mmu.hpp>
+#include <arch/x86/macro/msr.hpp>
+#include <arch/x86/macro/system.hpp>
 
 // Supposing _start64 is the head of phys, nameyly the first symbol.
 #define rva(symbol) (symbol - _start64)
@@ -205,3 +205,5 @@ startup64:
 .object g_pd, type=bss, align=PAGE_SIZE
     .skip (PAGE_SIZE << 2)
 .end_object
+
+.section .note.GNU-stack,"",@progbits
