@@ -1,0 +1,52 @@
+import("//build/cpp/cpp_interface.gni")
+
+# AArch64 architecture configuration under Ours' `arm` identifier.
+config("abi") {
+  configs = [
+    ":abi.integer-register",
+    ":abi.percpu",
+    ":abi.thread-pointer",
+  ]
+}
+
+# Privileged code must not consume FP/SIMD registers that can still contain
+# user state, and must not emit out-of-line atomic helper calls.
+config("abi.integer-register") {
+  cflags = [
+    "-mgeneral-regs-only",
+    "-mno-outline-atomics",
+  ]
+}
+
+# Reserve x20 for the per-CPU pointer ABI shared by kernel and phys code.
+config("abi.percpu") {
+  cflags = [ "-ffixed-x20" ]
+}
+
+# __builtin_thread_pointer() must use TPIDR_EL1 in privileged code.
+config("abi.thread-pointer") {
+  cflags = [ "-mtp=el1" ]
+}
+
+config("kernel") {
+  defines = [ "ARCH_ARM" ]
+  include_dirs = [ "include" ]
+}
+
+cpp_interface("headers") {
+  include_dir = "lib/arch/include"
+  public = [
+    "arch/arm/halt.hpp",
+    "arch/arm/interrupt.hpp",
+    "arch/arm/random.hpp",
+    "arch/arm/tick.hpp",
+  ]
+
+  # Architecture-neutral arch/* headers (asm macros, generic paging
+  # abstractions, MmuFlags, ...) that this arm-specific set doesn't override.
+  public_deps = [ "//kernel/lib/arch:headers" ]
+}
+
+group("kernel-tests") {
+  testonly = true
+}
