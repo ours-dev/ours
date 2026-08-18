@@ -1,0 +1,42 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef ARCH_X86_MACRO_MMU_HPP
+#define ARCH_X86_MACRO_MMU_HPP 1
+
+#include <ours/macro_abi.hpp>
+
+#define X86_MMUF_PRESENT BIT(0)
+#define X86_MMUF_WRITABLE BIT(1)
+#define X86_MMUF_USER BIT(2)
+#define X86_MMUF_WRITE_THROUGH BIT(3)
+#define X86_MMUF_DISCACHE BIT(4)
+#define X86_MMUF_ACCESSED BIT(5)
+#define X86_MMUF_DIRTY BIT(6)
+#define X86_MMUF_PAGE_SIZE BIT(7)
+#define X86_MMUF_GLOBAL BIT(8)
+#define X86_MMUF_NOEXECUTABLE BIT(63)
+
+#define X86_KERNEL_PD_FLAGS                                                                        \
+    (X86_MMUF_PRESENT | X86_MMUF_ACCESSED | X86_MMUF_WRITABLE | X86_MMUF_GLOBAL)
+#define X86_KERNEL_PAGE_FLAGS (X86_KERNEL_PD_FLAGS | X86_MMUF_DIRTY)
+#define X86_KERNEL_HUGE_PAGE_FLAGS (X86_KERNEL_PAGE_FLAGS | X86_MMUF_PAGE_SIZE)
+
+#define X86_MMUF_MASK                                                                              \
+    (X86_MMUF_PRESENT | X86_MMUF_WRITABLE | X86_MMUF_USER | X86_MMUF_WRITE_THROUGH |               \
+     X86_MMUF_DISCACHE | X86_MMUF_ACCESSED | X86_MMUF_DIRTY | X86_MMUF_PAGE_SIZE |                 \
+     X86_MMUF_GLOBAL | X86_MMUF_NOEXECUTABLE)
+
+#define X86_PML5_SHIFT 48
+#define X86_PML4_SHIFT 39
+#define X86_PDP_SHIFT 30
+#define X86_PD_SHIFT 21
+#define X86_PT_SHIFT 12
+
+#define X86_PAGE_SHIFT 12
+#define X86_PG_FRAME ((~(BIT(X86_PAGE_SHIFT) - 1)) & (~X86_MMUF_NOEXECUTABLE))
+#define X86_PD_FRAME ((~(BIT(X86_PD_SHIFT) - 1)) & (~X86_MMUF_NOEXECUTABLE))
+#define X86_PDP_FRAME ((~(BIT(X86_PDP_SHIFT) - 1)) & (~X86_MMUF_NOEXECUTABLE))
+
+#define X86_MAX_PTES 512
+
+#endif // ARCH_X86_MACRO_MMU_HPP
