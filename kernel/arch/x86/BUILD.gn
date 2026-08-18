@@ -1,0 +1,109 @@
+import("//build/cpp/cpp_interface.gni")
+import("//build/toolchain/toolchain_environment.gni")
+config("abi") {
+  configs = [
+    ":abi.integer-register",
+    ":abi.stack-pointer",
+    ":abi.thread-pointer",
+  ]
+}
+
+config("abi.integer-register") {
+  cflags = [
+    "-msoft-float",
+    "-mno-mmx",
+    "-mno-sse",
+    "-mno-sse2",
+    "-mno-3dnow",
+    "-mno-avx",
+    "-mno-avx2",
+  ]
+
+  asmflags = cflags
+}
+
+config("abi.thread-pointer") {
+  if (is_clang) {
+    # Clang needs -mcmodel=kernel to tell it to use the right safe-stack ABI for
+    # the kernel.  It doesn't have any other effects that matter when using -fPIE
+    # as we do; it's not useful to us at all in GCC and doesn't exist for x86-32.el.
+    cflags = [ "-mcmodel=kernel" ]
+    asmflags = cflags
+    ldflags = cflags
+  }
+}
+
+config("abi.stack-pointer") {
+  rustflags = [ "-Cno-redzone" ]
+  cflags = [ "-mno-red-zone" ]
+  asmflags = cflags
+  ldflags = cflags
+}
+
+config("retpoline") {
+  visibility = [ ":*" ]
+  if (is_gcc) {
+    cflags = [
+      "-mindirect-branch=thunk-inline",
+      "-mindirect-branch-register",
+    ]
+  } else {
+    cflags = [ "-mretpoline" ]
+    if (toolchain_environment == "kernel") {
+      # The kernel proper uses its own optimized thunks, but phys and
+      # multiboot can just use the compiler's safe default thunks.
+      cflags += [ "-mretpoline-external-thunk" ]
+    }
+  }
+  defines = [ "KERNEL_RETPOLINE=1" ]
+
+  # TODO(https://fxbug.dev/507570739): Need equivalent rustflags.
+}
+
+config("kernel") {
+  defines = [ "ARCH_X86" ]
+}
+
+# The x86-specific implementation of //kernel/lib/arch (headers only; see
+# lib/arch/include/arch for the real content). Kept at this stable
+# label/directory so every existing dependent (toolchain prefix_configs,
+# kernel/lib/arch's test executables, kernel/arch/x86/phys, kernel/mm/tests)
+# picks up the fix without changes.
+cpp_interface("headers") {
+  include_dir = "lib/arch/include"
+  public = [
+    "arch/paging/arch_mmu_flags.hpp",
+    "arch/paging/x86_pagings.hpp",
+    "arch/x86/apic/common.hpp",
+    "arch/x86/apic/ioapic.hpp",
+    "arch/x86/apic/xapic.hpp",
+    "arch/x86/cache.hpp",
+    "arch/x86/cpuid-observer.hpp",
+    "arch/x86/descriptor.hpp",
+    "arch/x86/fsgs.hpp",
+    "arch/x86/halt.hpp",
+    "arch/x86/interrupt.hpp",
+    "arch/x86/io.hpp",
+    "arch/x86/macro/irqframe.hpp",
+    "arch/x86/macro/mmu.hpp",
+    "arch/x86/macro/msr.hpp",
+    "arch/x86/macro/system.hpp",
+    "arch/x86/msr.hpp",
+    "arch/x86/page_table.hpp",
+    "arch/x86/processor.hpp",
+    "arch/x86/processor/feature.hpp",
+    "arch/x86/random.hpp",
+    "arch/x86/system.hpp",
+    "arch/x86/tick.hpp",
+    "arch/x86/tlb.hpp",
+  ]
+
+  # Architecture-neutral arch/* headers (asm macros, generic paging
+  # abstractions, MmuFlags, ...) that this x86-specific set doesn't
+  # override.
+  public_deps = [ "//kernel/lib/arch:headers" ]
+}
+
+group("kernel-tests") {
+  testonly = true
+}
