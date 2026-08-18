@@ -1,0 +1,61 @@
+# Root build entry for the Ours kernel.
+#
+# Products are defined under //products/.  The selected product (ours_product
+# build arg, default "bringup") is built by the default target:
+#
+#   tools/set.py bringup.x86          # writes args.gn + runs gn gen
+#   ninja -C out/bringup.x86 //products/bringup:bringup
+#   → out/bringup.x86/kernel.dev.obi
+#     out/bringup.x86/kernel.dev.dbg_1.obi
+#     out/bringup.x86/product_info.json
+
+group("default") {
+  testonly = true
+  deps = [
+    # The selected product (ours_product build arg, default "bringup").
+    "//products/$ours_product:$ours_product",
+
+    # C++-free smoke of the three-layer distribution pipeline; keeps the
+    # fini_manifest() path exercised on every default build.  The
+    # intentionally-failing :collision target stays out of this graph.
+    "//tests/dist-smoke:good",
+    "//tests/dist-smoke:with_rename",
+    "//tests/dist-smoke:obi_smoke",
+    "//tests/hermetic-smoke:hermetic",
+    "//tests/hermetic-smoke:extract_ifs",
+
+    # C++-free smoke of the product() assembly engine; exercises the
+    # product-level cmdline/bootfs injection + product_info.json that the
+    # bringup product itself leaves empty.
+    "//tests/product-smoke:product_smoke",
+
+    # Rust-free-optional smoke of the rustc toolchain wiring (rust_bin tool
+    # of the host toolchain); keeps the Rust contract exercised on every
+    # default build.
+    "//build/rust:rust-toolchain-smoke-test($host_toolchain)",
+
+    # Host-toolchain smoke of the C++ side (see
+    # //build/toolchain/host-smoke-test/BUILD.gn — deliberately not in
+    # //build/toolchain/ours, which defines toolchain() instances);
+    # explicit ($host_toolchain) because the default toolchain carries
+    # target identity.
+    "//build/toolchain/host-smoke-test:host-toolchain-smoke-test($host_toolchain)",
+
+    # Logic-only unit tests for //kernel/lib/arch and //system/lib/ustl.
+    # These exercise pure bit-layout code (no inline asm) and are written
+    # as plain hosted `int main()` + <cassert> programs, so they belong on
+    # the host toolchain like the smoke tests above — the default toolchain
+    # is a bare switchset mount point with no prelude/libc++ wiring of its
+    # own (see //kernel/products:headers vs. the per-toolchain overrides in
+    # //build/toolchain/ours/BUILD.gn).
+    "//kernel/lib/arch:x86-system-smoke($host_toolchain)",
+    "//kernel/lib/arch:x86-feature-smoke($host_toolchain)",
+    "//kernel/lib/arch:x86-paging-smoke($host_toolchain)",
+    "//kernel/lib/arch:cpu-mask-smoke($host_toolchain)",
+    "//system/lib/ustl:bitfields-test($host_toolchain)",
+
+    # //kernel/lib/acpi is pure table decoding behind a single mapper seam, so
+    # the whole library runs on the host against synthesised table images.
+    "//kernel/lib/acpi:tests($host_toolchain)",
+  ]
+}
