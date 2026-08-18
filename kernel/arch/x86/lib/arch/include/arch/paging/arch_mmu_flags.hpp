@@ -1,0 +1,73 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef ARCH_PAGING_ARCH_MMU_FLAGS_HPP
+#define ARCH_PAGING_ARCH_MMU_FLAGS_HPP 1
+
+#include <arch/x86/macro/mmu.hpp>
+#include <arch/paging/mmu_flags.hpp>
+#include <ustl/util/enum_bits.hpp>
+
+namespace arch::paging {
+enum class X86MmuFlags : usize {
+    Present = X86_MMUF_PRESENT,
+    Writable = X86_MMUF_WRITABLE,
+    User = X86_MMUF_USER,
+    WriteThrough = X86_MMUF_WRITE_THROUGH,
+    Discache = X86_MMUF_DISCACHE,
+    Accessed = X86_MMUF_ACCESSED,
+    Dirty = X86_MMUF_DIRTY,
+    PageSize = X86_MMUF_PAGE_SIZE,
+    Global = X86_MMUF_GLOBAL,
+    NoExecutable = X86_MMUF_NOEXECUTABLE,
+};
+USTL_ENABLE_ENUM_BITMASK(X86MmuFlags);
+
+template <>
+struct MmuFlagsConv<X86MmuFlags> final {
+    [[nodiscard]]
+    static constexpr auto to_arch(MmuFlags const flags) -> X86MmuFlags {
+        X86MmuFlags target{};
+        if (!!(flags & MmuFlags::Present)) {
+            target |= X86MmuFlags::Present;
+        }
+        if (!(flags & MmuFlags::Executable)) {
+            target |= X86MmuFlags::NoExecutable;
+        }
+        if (!!(flags & MmuFlags::Writable)) {
+            target |= X86MmuFlags::Writable;
+        }
+        if (!!(flags & MmuFlags::User)) {
+            target |= X86MmuFlags::User;
+        }
+        if (!!(flags & MmuFlags::Discache)) {
+            target |= X86MmuFlags::Discache;
+        }
+        return target;
+    }
+
+    [[nodiscard]]
+    static constexpr auto from_arch(X86MmuFlags const flags) -> MmuFlags {
+        auto target = MmuFlags::Readable;
+        if (!!(flags & X86MmuFlags::Present)) {
+            target |= MmuFlags::Present;
+        }
+        if (!(flags & X86MmuFlags::NoExecutable)) {
+            target |= MmuFlags::Executable;
+        }
+        if (!!(flags & X86MmuFlags::Writable)) {
+            target |= MmuFlags::Writable;
+        }
+        if (!!(flags & X86MmuFlags::User)) {
+            target |= MmuFlags::User;
+        }
+        if (!!(flags & X86MmuFlags::Discache)) {
+            target |= MmuFlags::Discache;
+        }
+        return target;
+    }
+};
+
+using ArchMmuFlags = X86MmuFlags;
+} // namespace arch::paging
+
+#endif // ARCH_PAGING_ARCH_MMU_FLAGS_HPP
