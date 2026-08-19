@@ -1,0 +1,18 @@
+source_set("sync") {
+    sources = [
+        "event.cpp",
+        "mutex.cpp",
+        "owned-wait-queue.cpp",
+        "rwlock.cpp",
+        "semaphore.cpp",
+        "spin-lock.cpp",
+        "wait-queue.cpp",
+    ]
+    deps = [
+        "//kernel/lib/gktl:headers",
+        "//kernel/lib/ktl:headers",
+        "//kernel/mm:headers",
+        "//system/lib/lockdep",
+    ]
+    visibility = ["*"]
+}
