@@ -48,11 +48,7 @@ namespace spinlock {
         constexpr auto kSpinTimesPerTry = sizeof(usize) << 3;
         while (!try_acquire()) {
             for (usize i = 0; i < kSpinTimesPerTry; ++i) {
-#if defined(ARCH_X86)
-                asm volatile("pause" ::: "memory");
-#else
-                asm volatile("" ::: "memory");
-#endif
+                arch::suspend();
             }
         }
 

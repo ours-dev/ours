@@ -21,7 +21,7 @@ concept PropagatingStream = requires {
          ustl::traits::IsSameV<Downstream, task::Thread>);
 };
 
-class OwnedWaitQueue: public WaitQueue {
+class OwnedWaitQueue: protected WaitQueue {
     using Base = WaitQueue;
     using Self = OwnedWaitQueue;
 
