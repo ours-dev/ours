@@ -1,30 +1,24 @@
-#include <ours/sync/spin-lock.hpp>
-
-#include <ours/task/thread.hpp>
-
-#include <gktl/counter.hpp>
-
 #include <arch/halt.hpp>
+#include <gktl/counter.hpp>
+#include <ours/sync/spin-lock.hpp>
+#include <ours/task/thread.hpp>
 
 using ours::task::Thread;
 using ustl::sync::MemoryOrder;
 
 namespace {
-    GKTL_COUNTER(sp_spinlock_num_held, "sp.spinlock.num_held");
-} // namespace anonymous
+GKTL_COUNTER(sp_spinlock_num_held, "sp.spinlock.num_held");
+} // namespace
 
 namespace ours::sync {
 namespace spinlock {
-    CXX11_CONSTEXPR
-    static auto const kUnlockedState = 0u;
+    constexpr static auto const kUnlockedState = 0u;
 
     template <Option Options>
-    SpinLock<Options>::SpinLock()
-        : m_lockval(kUnlockedState)
-    {}
+    SpinLock<Options>::SpinLock() : m_lockval(kUnlockedState) {}
 
     template <Option Options>
-    SpinLock<Options>::~SpinLock() { 
+    SpinLock<Options>::~SpinLock() {
         DEBUG_ASSERT(!is_locked());
     }
 
@@ -33,7 +27,7 @@ namespace spinlock {
         auto const current_thread = Thread::Current::get();
         auto const new_state = reinterpret_cast<usize>(current_thread);
 
-        if CXX17_CONSTEXPR(kIsAutoPreemptDisable) {
+        if constexpr (kIsAutoPreemptDisable) {
             current_thread->preemption_state().disable_preemption();
         }
 
@@ -43,7 +37,7 @@ namespace spinlock {
             return true;
         }
 
-        if CXX17_CONSTEXPR(kIsAutoPreemptDisable) {
+        if constexpr (kIsAutoPreemptDisable) {
             current_thread->preemption_state().enable_preemption();
         }
         return false;
@@ -53,7 +47,7 @@ namespace spinlock {
     auto SpinLock<Options>::acquire() -> void {
         constexpr auto kSpinTimesPerTry = sizeof(usize) << 3;
         while (!try_acquire()) {
-            for (auto i = 0; i < kSpinTimesPerTry; ++i) {
+            for (usize i = 0; i < kSpinTimesPerTry; ++i) {
                 arch::suspend();
             }
         }
@@ -69,7 +63,7 @@ namespace spinlock {
 
         m_lockval.store(kUnlockedState, MemoryOrder::Release);
 
-        if CXX17_CONSTEXPR(kIsAutoPreemptDisable) {
+        if constexpr (kIsAutoPreemptDisable) {
             Thread::Current::preemption_state().enable_preemption();
         }
     }
@@ -111,5 +105,5 @@ namespace spinlock {
     template class SpinLock<kMonitoredOptions>;
     template class SpinLock<kNoTraceOptions>;
 
-} // namespace ours::sync::spinlock
+} // namespace spinlock
 } // namespace ours::sync

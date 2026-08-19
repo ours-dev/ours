@@ -5,127 +5,134 @@
 
 #include <ours/sync/wait-queue.hpp>
 #include <ours/task/sched/profiles.hpp>
-
-#include <ustl/function/fn.hpp>
 #include <ustl/collections/intrusive/list.hpp>
+#include <ustl/function/fn.hpp>
+#include <ustl/traits/is_same.hpp>
 
 namespace ours::sync {
-    template <typename Upstream, typename Downstream>
-    concept PropagatingStream = requires {
-        // From thread to OWQ.
-        ustl::traits::IsSameV<Upstream, task::Thread> && ustl::traits::IsSameV<Downstream, OwnedWaitQueue> ||
+template <typename Upstream, typename Downstream>
+concept PropagatingStream = requires {
+    // From thread to OWQ.
+    (ustl::traits::IsSameV<Upstream, task::Thread> &&
+     ustl::traits::IsSameV<Downstream, OwnedWaitQueue>) ||
 
         // From OWQ to thread.
-        ustl::traits::IsSameV<Upstream, OwnedWaitQueue> && ustl::traits::IsSameV<Downstream, task::Thread>;
+        (ustl::traits::IsSameV<Upstream, OwnedWaitQueue> &&
+         ustl::traits::IsSameV<Downstream, task::Thread>);
+};
+
+class OwnedWaitQueue: protected WaitQueue {
+    using Base = WaitQueue;
+    using Self = OwnedWaitQueue;
+
+  public:
+    enum class NotifyControl {
+        None,
     };
 
-    class OwnedWaitQueue: protected WaitQueue {
-        using Base = WaitQueue;
-        using Self = OwnedWaitQueue;
-      public:
-        enum class NotifyControl {
-            None,
-        };
-
-        enum class PropagateOp {
-            AddSingleEdge,
-            RemoveSingleEdge,
-            BaseProfileOverrided,
-        };
-
-        struct INotifyRequeueHook {
-            ustl::function::Fn<auto () -> bool> allow;
-            ustl::function::Fn<auto () -> bool> on_notify;
-            ustl::function::Fn<auto () -> bool> on_requeue;
-        };
-
-        template <PropagateOp>
-        struct PropagateTag {};
-
-        CXX11_CONSTEXPR
-        static auto const kAddSingleEdgeOp = PropagateTag<PropagateOp::AddSingleEdge>{};
-
-        CXX11_CONSTEXPR
-        static auto const kRemoveSingleEdgeOp = PropagateTag<PropagateOp::RemoveSingleEdge>{};
-
-        CXX11_CONSTEXPR
-        static auto const kBaseProfileOverridedOp = PropagateTag<PropagateOp::BaseProfileOverrided>{};
-
-        static auto default_wake_hook() -> INotifyRequeueHook &;
-
-        static auto disown_all_queues(task::Thread *thread) -> void;
-
-        static auto override_thread_base_profile(task::Thread *thread, task::sched::BaseProfile const &profile) -> void;
-
-        OwnedWaitQueue();
-
-        ~OwnedWaitQueue();
-
-        auto assign_owner(task::Thread *new_owner) -> Status;
-
-        auto park_and_assign_owner(task::Thread *const curr, time::Deadline const &, Interruptible) -> Status;
-
-        auto park_and_assign_owner_preamble(task::Thread *const curr, task::Thread *new_owner) -> void;
-        auto park_and_assign_owner_postamble(task::Thread *const curr, task::Thread *new_owner) -> void;
-
-        template <typename UnparkThreads> // Thread::UnparkList
-        auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &, UnparkThreads &) -> bool;
-
-        template <typename UnparkThreads> // Thread::UnparkList
-        auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyControl) -> void;
-
-        using Base::is_empty;
-        using Base::peek;
-      private:
-        template <PropagateOp Op, typename Upstream, typename Downstream>
-            requires PropagatingStream<Upstream, Downstream>
-        static auto begin_propagate(Upstream &, Downstream &, PropagateTag<Op>) -> void;
-
-        template <PropagateOp Op, typename Upstream, typename Downstream>
-            requires PropagatingStream<Upstream, Downstream>
-        static auto complete_propagate(Upstream &, Downstream &, task::sched::InheritedProfile const *,
-                                     task::sched::InheritedProfile const *, PropagateTag<Op>) -> void;
-
-        static auto lock_for_owner_replacement(task::Thread* new_owner, task::Thread *blocking_thread) -> void;
-
-        template <typename Applicant>
-        static auto lock_pi_chain_common(Applicant* start, task::Thread *blocking_thread) -> void;
-
-        template <typename Applicant>
-        static auto unlock_pi_chain_common(Applicant *start, void *stop_point) -> void;
-
-        static auto snapshot_thread_inherited_profile(task::Thread *thread) -> task::sched::InheritedProfile;
-
-        auto park_and_assign_owner_locked(task::Thread *const curr, time::Deadline const &, Interruptible) -> Status;
-
-        auto set_owner(task::Thread *thread) -> void;
-
-        auto reset_owner() -> void;
-
-        friend class WaitQueue;
-
-        CXX11_CONSTEXPR
-        static auto kOwnedMagic = gktl::magic("OwnedWaitQueue");
-
-        task::Thread *m_owner;
-        task::sched::InheritedProfile m_ipv;
-
-        ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
-      public:
-        USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOptions);
-        USTL_DECLARE_LIST(Self, List, ManagedOptions);
+    enum class PropagateOp {
+        AddSingleEdge,
+        RemoveSingleEdge,
+        BaseProfileOverrided,
     };
 
-    template <>
-    FORCE_INLINE
-    auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
-        DEBUG_ASSERT(self);
-        if (self->m_canary.magic() == OwnedWaitQueue::kOwnedMagic) {
-            return static_cast<OwnedWaitQueue *>(self);
-        }
+    struct INotifyRequeueHook {
+        ustl::function::Fn<auto()->bool> allow;
+        ustl::function::Fn<auto()->bool> on_notify;
+        ustl::function::Fn<auto()->bool> on_requeue;
+    };
 
-        return 0;
+    template <PropagateOp>
+    struct PropagateTag {};
+
+    constexpr static auto const kAddSingleEdgeOp = PropagateTag<PropagateOp::AddSingleEdge>{};
+
+    constexpr static auto const kRemoveSingleEdgeOp = PropagateTag<PropagateOp::RemoveSingleEdge>{};
+
+    constexpr static auto const kBaseProfileOverridedOp =
+        PropagateTag<PropagateOp::BaseProfileOverrided>{};
+
+    static auto default_wake_hook() -> INotifyRequeueHook &;
+
+    static auto disown_all_queues(task::Thread *thread) -> void;
+
+    static auto override_thread_base_profile(task::Thread *thread,
+                                             task::sched::BaseProfile const &profile) -> void;
+
+    OwnedWaitQueue();
+
+    ~OwnedWaitQueue();
+
+    auto assign_owner(task::Thread *new_owner) -> Status;
+
+    auto park_and_assign_owner(task::Thread *const curr, time::Deadline const &, Interruptible)
+        -> Status;
+
+    auto park_and_assign_owner_preamble(task::Thread *const curr, task::Thread *new_owner) -> void;
+    auto park_and_assign_owner_postamble(task::Thread *const curr, task::Thread *new_owner) -> void;
+
+    template <typename UnparkThreads> // Thread::UnparkList
+    auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &, UnparkThreads &) -> bool;
+
+    template <typename UnparkThreads> // Thread::UnparkList
+    auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyControl) -> void;
+
+    using Base::is_empty;
+    using Base::peek;
+
+  private:
+    template <PropagateOp Op, typename Upstream, typename Downstream>
+        requires PropagatingStream<Upstream, Downstream>
+    static auto begin_propagate(Upstream &, Downstream &, PropagateTag<Op>) -> void;
+
+    template <PropagateOp Op, typename Upstream, typename Downstream>
+        requires PropagatingStream<Upstream, Downstream>
+    static auto complete_propagate(Upstream &, Downstream &, task::sched::InheritedProfile const *,
+                                   task::sched::InheritedProfile const *, PropagateTag<Op>) -> void;
+
+    static auto lock_for_owner_replacement(task::Thread *new_owner, task::Thread *blocking_thread)
+        -> void;
+
+    template <typename Applicant>
+    static auto lock_pi_chain_common(Applicant *start, task::Thread *blocking_thread) -> void;
+
+    template <typename Applicant>
+    static auto unlock_pi_chain_common(Applicant *start, void *stop_point) -> void;
+
+    static auto snapshot_thread_inherited_profile(task::Thread *thread)
+        -> task::sched::InheritedProfile;
+
+    auto park_and_assign_owner_locked(task::Thread *const curr, time::Deadline const &,
+                                      Interruptible) -> Status;
+
+    auto set_owner(task::Thread *thread) -> void;
+
+    auto reset_owner() -> void;
+
+    friend class WaitQueue;
+
+    constexpr static auto kOwnedMagic = gktl::magic("OwnedWaitQueue");
+
+    task::Thread *m_owner;
+    task::sched::InheritedProfile m_ipv;
+
+    ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
+
+  public:
+    USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOptions);
+    USTL_DECLARE_LIST(Self, List, ManagedOptions);
+};
+
+template <>
+FORCE_INLINE auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
+    DEBUG_ASSERT(self);
+    if (self->m_canary.magic() == OwnedWaitQueue::kOwnedMagic) {
+        // The canary establishes the dynamic type and WaitQueue is the sole base.
+        return reinterpret_cast<OwnedWaitQueue *>(self);
     }
+
+    return 0;
+}
 } // namespace ours::sync
 
 #endif // #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP

@@ -3,19 +3,17 @@
 #ifndef OURS_SYNC_RWLOCK_HPP
 #define OURS_SYNC_RWLOCK_HPP 1
 
+#include <gktl/canary.hpp>
+#include <ktl/result.hpp>
 #include <ours/sync/types.hpp>
 #include <ours/task/types.hpp>
-
-#include <ktl/result.hpp>
-#include <gktl/canary.hpp>
-
 #include <ustl/limits.hpp>
 #include <ustl/sync/atomic.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::sync {
 namespace priv {
-    enum class EnablePi: bool {
+    enum class EnablePi : bool {
         No = false,
         Yes = true,
     };
@@ -60,6 +58,7 @@ namespace priv {
     template <EnablePi PI>
     class RwLock {
         using Self = RwLock;
+
       public:
         enum class Owner {
             Writer,
@@ -69,7 +68,7 @@ namespace priv {
         template <Owner Owner>
         class Guard;
 
-        /// RAII object type. 
+        /// RAII object type.
         using ReaderGuard = Guard<Owner::Reader>;
         using WriterGuard = Guard<Owner::Writer>;
 
@@ -81,6 +80,7 @@ namespace priv {
 
         auto read_release() -> void;
         auto write_release() -> void;
+
       private:
         gktl::Canary m_canary;
 
@@ -95,11 +95,11 @@ namespace priv {
     template <RwLock<PI>::Owner Owner>
     class RwLock<PI>::Guard<Owner> {
         using Self = Guard;
+
       public:
         FORCE_INLINE
-        Guard(RwLock &lock) 
-            : m_lock(lock) {
-            if CXX17_CONSTEXPR (Owner == Owner::Reader) {
+        Guard(RwLock &lock) : m_lock(lock) {
+            if constexpr (Owner == Owner::Reader) {
                 m_lock.read_acquire();
             } else {
                 m_lock.write_acquire();
@@ -113,7 +113,7 @@ namespace priv {
                 return;
             }
 
-            if CXX17_CONSTEXPR (Owner == Owner::Reader) {
+            if constexpr (Owner == Owner::Reader) {
                 m_lock.read_release();
             } else {
                 m_lock.write_release();
@@ -126,6 +126,7 @@ namespace priv {
         ~Guard() {
             unguard();
         }
+
       private:
         USTL_NOCOPYABLE(Guard);
 
@@ -133,25 +134,25 @@ namespace priv {
         RwLock &m_lock;
     };
 
-} // namespace ours::sync::priv
+} // namespace priv
 
-    /// @Usage
-    ///
-    /// 1) Acquires a reader lock.
-    ///   a) By inner guard type of lock.
-    ///   {
-    ///     RwLock::ReaderGuard guard{rwlock};
-    ///     ...
-    ///   }
-    /// 
-    ///   b) By public interfaces RwLock::[try_]read.
-    ///
-    /// 2) Acquires a writer lock, same as case 1) above.
-    using RwLockNoPi = priv::RwLock<priv::EnablePi::No>;
-    using RwLockPi = priv::RwLock<priv::EnablePi::Yes>;
+/// @Usage
+///
+/// 1) Acquires a reader lock.
+///   a) By inner guard type of lock.
+///   {
+///     RwLock::ReaderGuard guard{rwlock};
+///     ...
+///   }
+///
+///   b) By public interfaces RwLock::[try_]read.
+///
+/// 2) Acquires a writer lock, same as case 1) above.
+using RwLockNoPi = priv::RwLock<priv::EnablePi::No>;
+using RwLockPi = priv::RwLock<priv::EnablePi::Yes>;
 
-    template <typename Class>
-    using RwLock = priv::RwLock<priv::EnablePi::Yes>;
+template <typename Class>
+using RwLock = priv::RwLock<priv::EnablePi::Yes>;
 
 } // namespace ours::sync
 
