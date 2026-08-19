@@ -26,6 +26,7 @@ namespace ours::sync {
         : m_canary(magic)
         , m_waiters()
         , m_lock()
+        , m_next_seq(0)
     {}
 
     auto WaitQueue::park_thread(Thread *thread, time::Deadline deadline, Signals sigmask, Interruptible interruptible) -> Status {
@@ -93,54 +94,118 @@ namespace ours::sync {
     }
 
     auto WaitQueue::unpark_thread(Thread *thread, Status status) -> void {
-        DEBUG_ASSERT(thread->state() == Thread::State::Running);
+        DEBUG_ASSERT(!!(thread->state() & Thread::State::Parked));
+
+        if (!dequeue_waiter(thread->waiter_state(), status)) {
+            // Already claimed by a racing notify or timeout; that path owns
+            // the wake.
+            return;
+        }
+
+        wake_dequeued_thread(thread, status);
+    }
+
+    auto WaitQueue::update_parked_thread_effective_profile(Thread *thread) -> void {
+        m_canary.verify<Self>();
 
         auto &waiter = thread->waiter_state();
 
-        dequeue_waiter(waiter, status);
+        Guard<SpinLock> guard(m_lock);
+        if (waiter.m_waitqueue != this) {
+            return;
+        }
+
+        // The key is part of the tree's ordering invariant, so the node has to
+        // come out before it changes and go back in afterwards. The arrival
+        // sequence is deliberately left alone: a waiter re-keyed by PI should
+        // not lose the tiebreak it earned by getting here first.
+        static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
+        waiter.m_queue_key.vdeadline = thread->scheduling_context().deadline();
+        static_cast<void>(m_waiters.insert(waiter));
+    }
+
+    auto WaitQueue::enqueue_waiter(WaiterState &waiter) -> void {
+        auto const thread = Thread::of(&waiter);
+
+        Guard<SpinLock> guard(m_lock);
+
+        // Snapshotted here rather than read on every comparison: the tree is
+        // walked under m_lock, and the scheduling context is guarded by the
+        // thread's PI lock, which the caller already holds.
+        waiter.m_queue_key.vdeadline = thread->scheduling_context().deadline();
+        waiter.m_queue_key.seq = m_next_seq++;
+        waiter.m_waitqueue = this;
+        static_cast<void>(m_waiters.insert(waiter));
+    }
+
+    auto WaitQueue::dequeue_waiter(WaiterState &waiter, Status status) -> bool {
+        Guard<SpinLock> guard(m_lock);
+
+        // A timeout firing on one CPU can meet a notify on another, both aimed
+        // at this waiter. Whoever takes the lock second must not erase the
+        // node a second time.
+        if (waiter.m_waitqueue != this) {
+            return false;
+        }
+
+        static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
+        waiter.m_waitqueue = nullptr;
+        waiter.m_blocked_status = status;
+        return true;
+    }
+
+    auto WaitQueue::wake_dequeued_thread(Thread *thread, Status status) -> void {
         if (auto owq = as<OwnedWaitQueue>(this)) {
             OwnedWaitQueue::begin_propagate(*thread, *owq, OwnedWaitQueue::kRemoveSingleEdgeOp);
         }
 
-        waiter.unsleep(thread, status);
-    }
-
-    auto WaitQueue::update_parked_thread_effective_profile(Thread *thread) -> void {
-
-    }
-
-    auto WaitQueue::enqueue_waiter(WaiterState &waiter) -> void {
-        {
-            Guard<SpinLock> guard(m_lock);
-            static_cast<void>(m_waiters.insert(waiter));
-        }
-        waiter.m_waitqueue = this;
-    }
-
-    auto WaitQueue::dequeue_waiter(WaiterState &waiter, Status status) -> void {
-        {
-            Guard<SpinLock> guard(m_lock);
-            static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
-        }
-        waiter.m_waitqueue = 0;
-        waiter.m_blocked_status = status;
+        thread->waiter_state().unsleep(thread, status);
     }
 
     auto WaitQueue::notify_one(Status status) -> void {
+        m_canary.verify<Self>();
+
         Thread *thread = nullptr;
         {
             Guard<SpinLock> guard(m_lock);
-            if (!m_waiters.empty()) {
-                thread = Thread::of(&*m_waiters.begin());
+            if (m_waiters.empty()) {
+                return;
             }
+
+            // begin() is the earliest virtual deadline, i.e. the waiter the
+            // scheduler would have run first had none of them blocked.
+            auto &waiter = *m_waiters.begin();
+            static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
+            waiter.m_waitqueue = nullptr;
+            waiter.m_blocked_status = status;
+            thread = Thread::of(&waiter);
         }
 
-        if (thread != nullptr) {
-            unpark_thread(thread, status);
-        }
+        // Dequeued under the lock above, so no timeout can still be holding a
+        // claim on it; the wake itself runs with the queue lock dropped.
+        wake_dequeued_thread(thread, status);
     }
 
-    auto WaitQueue::notify_all(Status) -> void {
+    auto WaitQueue::notify_all(Status status) -> void {
+        m_canary.verify<Self>();
+
+        for (;;) {
+            Thread *thread = nullptr;
+            {
+                Guard<SpinLock> guard(m_lock);
+                if (m_waiters.empty()) {
+                    return;
+                }
+
+                auto &waiter = *m_waiters.begin();
+                static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
+                waiter.m_waitqueue = nullptr;
+                waiter.m_blocked_status = status;
+                thread = Thread::of(&waiter);
+            }
+
+            wake_dequeued_thread(thread, status);
+        }
     }
 
     template <typename UnparkThreads>
