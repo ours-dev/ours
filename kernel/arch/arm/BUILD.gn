@@ -37,6 +37,7 @@ cpp_interface("headers") {
   include_dir = "lib/arch/include"
   public = [
     "arch/arm/halt.hpp",
+    "arch/arm/spin-hint.hpp",
     "arch/arm/interrupt.hpp",
     "arch/arm/random.hpp",
     "arch/arm/tick.hpp",

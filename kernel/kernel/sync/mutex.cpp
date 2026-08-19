@@ -7,7 +7,7 @@
 
 #include <ours/mm/cpu-local.hpp>
 
-#include <arch/halt.hpp>
+#include <arch/spin-hint.hpp>
 
 using ustl::sync::MemoryOrder;
 using ours::task::Thread;
@@ -98,7 +98,7 @@ namespace ours::sync {
                 }
             }
 
-            arch::halt();
+            arch::spin_hint();
             now_ticks = time::SteadyClock::ticks();
         } while (now_ticks < deadline_ticks);
 
