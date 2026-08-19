@@ -1,13 +1,15 @@
 #ifndef OURS_SYNC_SEQLOCK_HPP
 #define OURS_SYNC_SEQLOCK_HPP 1
 
-#include <atomic>
+#include <ours/types.hpp>
+
+#include <ustl/sync/atomic.hpp>
 
 namespace ours::sync {
     class SeqLock {
         using Self = SeqLock;
       public:
-        std::atomic<u64> m_;
+        ustl::sync::Atomic<u64> m_;
     };
 } // namespace ours::sync
 

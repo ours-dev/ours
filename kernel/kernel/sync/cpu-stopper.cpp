@@ -3,14 +3,14 @@
 #include <ours/task/thread.hpp>
 #include <ours/task/auto-preempt-disabler.hpp>
 
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
 #include <ours/lockdep.hpp>
 
 #include <builtin/instruction-pointer.hpp>
 
 namespace ours {
-    class CpuStopper::Current: public mem::CpuLocal::Current<CpuStopper> 
+    class CpuStopper::Current: public mm::CpuLocal::Current<CpuStopper> 
     {}; // class CpuStopper::Current
     
     auto CpuStopper::stop_cpu(CpuNum cpu, Fn fn) -> Status {
@@ -89,7 +89,7 @@ namespace ours {
             auto &stopper = Current::get(cpu);
             stopper.m_canary.verify<Self>();
 
-            ustl::mem::construct_at(&stopper.m_stop_work, fn, builtin::return_address(), done);
+            ustl::mm::construct_at(&stopper.m_stop_work, fn, builtin::return_address(), done);
             if (stopper.queue_work(stopper.m_stop_work)) {
                 is_queued = true;
             }

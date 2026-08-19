@@ -10,7 +10,7 @@ namespace ours::sync {
     using task::Scheduler;
 
     auto Event::wait_etc(time::Deadline deadline, Interruptible interruptible, Signals sigmask) -> Status {
-        if (m_result.has_value()) {
+        if (m_result.is_some()) {
             auto const current_thread = Thread::Current::get();
             Guard guard{current_thread->get_pi_lock()};
             m_wq.park_thread(current_thread, deadline, sigmask, interruptible);
@@ -22,7 +22,7 @@ namespace ours::sync {
         Guard guard{m_wq.get_lock()};
 
         // We have been signaled.
-        if (m_result.has_value()) {
+        if (m_result.is_some()) {
             DEBUG_ASSERT(m_wq.size() == 0);
             return;
         }

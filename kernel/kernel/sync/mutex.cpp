@@ -5,13 +5,13 @@
 
 #include <ours/time/clock.hpp>
 
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
 #include <arch/halt.hpp>
 
 using ustl::sync::MemoryOrder;
 using ours::task::Thread;
-using ours::mem::CpuLocal;
+using ours::mm::CpuLocal;
 
 namespace ours::sync {
     FORCE_INLINE
@@ -129,7 +129,7 @@ namespace ours::sync {
 
         auto const do_wake = !to_wake.empty();
         if (do_wake) {
-            new_owner = &to_wake.front(); 
+            new_owner = &*to_wake.front();
             new_mutex_state = static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended;
         } else {
             new_owner = nullptr;
