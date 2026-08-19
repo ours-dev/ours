@@ -34,6 +34,7 @@ cpp_interface("headers") {
   include_dir = "lib/arch/include"
   public = [
     "arch/riscv/halt.hpp",
+    "arch/riscv/spin-hint.hpp",
     "arch/riscv/interrupt.hpp",
     "arch/riscv/random.hpp",
     "arch/riscv/tick.hpp",

@@ -22,6 +22,7 @@ cpp_interface("headers") {
     "include/arch/paging/paging_traits.hpp",
     "include/arch/paging/visitors.hpp",
     "include/arch/random.hpp",
+    "include/arch/spin-hint.hpp",
     "include/arch/sysreg.hpp",
     "include/arch/tick.hpp",
     "include/arch/tlb.hpp",

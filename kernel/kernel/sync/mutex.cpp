@@ -7,7 +7,7 @@
 
 #include <ours/mm/cpu-local.hpp>
 
-#include <arch/halt.hpp>
+#include <arch/spin-hint.hpp>
 
 using ustl::sync::MemoryOrder;
 using ours::task::Thread;
@@ -29,7 +29,7 @@ namespace ours::sync {
                                TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension) 
     -> bool {
         auto const current_thread = Thread::Current::get();
-        auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
+        auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
 
         {
             auto set_timeslice_extension = false;            
@@ -56,18 +56,21 @@ namespace ours::sync {
 
     template <bool TimesliceExtensionEnabled>
     auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_thread,
-                                 TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension) 
+                                 TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension)
     -> bool {
-        auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
+        auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
 
         task::AutoPreemptDisabler preempt_disabler{task::AutoPreemptDisabler::Defer};
         if constexpr (TimesliceExtensionEnabled) {
             preempt_disabler.disable();
         }
 
-        for (;;) {
+        auto now_ticks = time::SteadyClock::ticks();
+        auto const deadline_ticks = now_ticks; // FIXME(SmallHuaZi)
+
+        do {
             auto old_mutex_state = State::Available;
-            if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, 
+            if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
                                               MemoryOrder::Acquire, MemoryOrder::Relaxed)) {
                 record_initial_assigned_cpu();
 
@@ -77,10 +80,14 @@ namespace ours::sync {
                 return false;
             }
 
-            if (!(old_mutex_state & State::Contended)) {
-                auto const contended_state = old_mutex_state | State::Contended;
-                static_cast<void>(m_state.compare_exchange_weak(
-                    old_mutex_state, contended_state, MemoryOrder::Acquire, MemoryOrder::Relaxed));
+            if (!!(old_mutex_state & State::Contended)) {
+                // Stop spinning because the mutex has been contested by other thread.
+                break;
+            }
+
+            auto const curr_cpu = Cpu::id();
+            if (curr_cpu == m_cpunum.load(MemoryOrder::Relaxed)) {
+                break;
             }
 
             if constexpr (TimesliceExtensionEnabled) {
@@ -91,12 +98,9 @@ namespace ours::sync {
                 }
             }
 
-#if defined(ARCH_X86)
-            asm volatile("pause" ::: "memory");
-#else
-            asm volatile("" ::: "memory");
-#endif
-        }
+            arch::spin_hint();
+            now_ticks = time::SteadyClock::ticks();
+        } while (now_ticks < deadline_ticks);
     }
 
     auto Mutex::try_release(Thread *current_thread) -> State {

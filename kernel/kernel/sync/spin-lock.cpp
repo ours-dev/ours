@@ -1,4 +1,4 @@
-#include <arch/halt.hpp>
+#include <arch/spin-hint.hpp>
 #include <gktl/counter.hpp>
 #include <ours/sync/spin-lock.hpp>
 #include <ours/task/thread.hpp>
@@ -48,7 +48,7 @@ namespace spinlock {
         constexpr auto kSpinTimesPerTry = sizeof(usize) << 3;
         while (!try_acquire()) {
             for (usize i = 0; i < kSpinTimesPerTry; ++i) {
-                arch::suspend();
+                arch::spin_hint();
             }
         }
 
