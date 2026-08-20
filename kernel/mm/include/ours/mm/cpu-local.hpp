@@ -99,7 +99,9 @@ class CpuLocal {
     template <typename T, typename F>
     FORCE_INLINE static auto with_current(T &t, F &&f)
         -> ustl::traits::InvokeResultT<F, CpuNum, T &> {
-        auto const cpu = Cpu::id();
+        // current_cpu() rather than Cpu::id(): identical value, but Cpu::id()
+        // is now a forwarder to it, and this is the hot path.
+        auto const cpu = Self::current_cpu();
         DEBUG_ASSERT(Cpu::online_mask().test(cpu), "Invalid CPU Number");
         return ustl::function::invoke(f, cpu, Self::access(t, cpu));
     }

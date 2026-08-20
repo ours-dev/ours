@@ -20,7 +20,10 @@ class Cpu {
     };
 
     static auto id() -> CpuNum;
-    static auto nid() -> NnId;
+
+    /// For the node a CPU belongs to, use mm::PmNode::Current::nid(). `Cpu::nid()`
+    /// used to duplicate it from a function-local `CPU_LOCAL static` that could
+    /// never be written, so it always answered 0; it had no callers.
 
     [[nodiscard]] static auto is_online(CpuNum cpu) -> bool {
         return state_mask(State::Online).test(cpu);

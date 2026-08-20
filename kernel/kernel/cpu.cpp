@@ -8,14 +8,12 @@ namespace ours {
 
 ustl::Array<CpuMask, static_cast<usize>(Cpu::State::Count)> Cpu::g_states;
 
+/// The CPU number lives in the per-CPU area, written when a CPU attaches to its
+/// unit. It used to be kept here in a function-local `CPU_LOCAL static`, which
+/// nothing outside this function could take the address of, let alone assign --
+/// so every CPU read back the initialiser and `id()` was 0 everywhere.
 auto Cpu::id() -> CpuNum {
-    CPU_LOCAL static CpuNum current_cpunum = 0;
-    return mm::CpuLocal::read(current_cpunum);
-}
-
-auto Cpu::nid() -> NnId {
-    CPU_LOCAL static NnId current_nid = 0;
-    return mm::CpuLocal::read(current_nid);
+    return mm::CpuLocal::current_cpu();
 }
 
 }  // namespace ours

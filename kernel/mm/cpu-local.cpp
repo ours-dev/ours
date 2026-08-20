@@ -319,8 +319,11 @@ namespace {
     decltype(CpuLocal::g_states) CpuLocal::g_states;
     decltype(CpuLocal::g_cpu_offsets) CpuLocal::g_cpu_offsets;
 
+    /// Zero rather than INVALID_CPU_NUM: until init() runs, the canonical copy
+    /// *is* the boot CPU's storage, and the boot CPU is CPU 0. Cpu::id() reads
+    /// this, and it has callers that run before init_early() installs anything.
     CPU_LOCAL
-    decltype(CpuLocal::g_current_cpunum) CpuLocal::g_current_cpunum = INVALID_CPU_NUM;
+    decltype(CpuLocal::g_current_cpunum) CpuLocal::g_current_cpunum = 0;
 
     CPU_LOCAL
     decltype(CpuLocal::g_current_cpu_offset) CpuLocal::g_current_cpu_offset = 0;
@@ -351,9 +354,7 @@ namespace {
             offset = 0;
         }
 
-        // Cpu::id() itself reads a CPU_LOCAL variable, so it can only be trusted
-        // once a base register is installed. With offset zero it resolves to the
-        // canonical copy, which is how the boot CPU learns it is CPU 0.
+        // The boot CPU is CPU 0 by construction, so there is nothing to look up.
         attach_to_unit(0, 0);
 
         g_states[usize(State::Online)].reset().set(0);
@@ -402,7 +403,7 @@ namespace {
         }
 
         // The boot CPU has been running on the canonical area; move it across.
-        auto const boot = Cpu::id();
+        auto const boot = current_cpu();
         attach_to_unit(boot, g_cpu_offsets[boot]);
 
         bootstrap(CpuMask::of(boot));
