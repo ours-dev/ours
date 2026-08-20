@@ -9,14 +9,6 @@ namespace ours::sync {
 
     class Event;
     class Semaphore;
-
-    class WaitQueue;
-    class OwnedWaitQueue;
-
-    enum class Interruptible {
-        Yes,
-        No,
-    };
 } // namespace ours::sync
 
 #endif // #ifndef OURS_SYNC_TYPES_HPP

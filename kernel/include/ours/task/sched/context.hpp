@@ -228,7 +228,7 @@ namespace ours::task::sched {
       private:
         friend class Scheduler;
         friend class Fair;
-        friend class sync::OwnedWaitQueue;
+        friend class OwnedWaitQueue;
 
         CpuAffinity m_affinity;
         RunQueueState m_runqueue_state;

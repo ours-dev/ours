@@ -17,6 +17,18 @@ namespace ours::task {
     class AutoPreemptDisabler;
     class AutoEagerReschedDisabler;
 
+    class WaiterState;
+    class WaitQueue;
+    class OwnedWaitQueue;
+
+    /// Whether a thread parked on a wait queue may be woken by a signal.
+    /// Lives here rather than in sync because it describes how a thread
+    /// blocks, and the queues that read it are task's.
+    enum class Interruptible {
+        Yes,
+        No,
+    };
+
 } // namespace ours::task
 
 #endif // #ifndef OURS_TASK_TYPES_HPP

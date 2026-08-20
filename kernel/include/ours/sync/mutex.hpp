@@ -64,7 +64,7 @@ namespace ours::sync {
 
         ustl::sync::Atomic<State> m_state;
         ustl::sync::Atomic<CpuNum> m_cpunum;
-        OwnedWaitQueue m_waiters;
+        task::OwnedWaitQueue m_waiters;
     };
 
     template <>

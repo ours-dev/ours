@@ -21,13 +21,13 @@
 
 #include <gktl/canary.hpp>
 
-namespace ours::sync {
+namespace ours::task {
     class WaiterState {
         using Self = WaiterState;
       public:
-        auto sleep(task::Thread *, Interruptible, Status) -> void;
+        auto sleep(Thread *, Interruptible, Status) -> void;
 
-        auto unsleep(task::Thread *, Status status) -> void;
+        auto unsleep(Thread *, Status status) -> void;
 
         auto wait_queue() -> WaitQueue * {
           return m_waitqueue;
@@ -75,7 +75,7 @@ namespace ours::sync {
                 return seq < other.seq;
             }
 
-            task::sched::SchedTime vdeadline;
+            sched::SchedTime vdeadline;
             u64 seq;
         };
 
@@ -115,14 +115,14 @@ namespace ours::sync {
 
         /// Puts the current thread at the end of waiter queue and then blocks
         /// until some threads wakes the queue up again.
-        auto park_thread(task::Thread *, time::Deadline = time::Deadline::infinite(),
+        auto park_thread(Thread *, time::Deadline = time::Deadline::infinite(),
                          Signals = Signals::None, Interruptible = Interruptible::Yes) -> Status;
 
-        auto park_thread_common(task::Thread *thread, time::Deadline, Signals) -> Status;
+        auto park_thread_common(Thread *thread, time::Deadline, Signals) -> Status;
 
-        auto unpark_thread(task::Thread *thread, Status = Status::Ok) -> void;
+        auto unpark_thread(Thread *thread, Status = Status::Ok) -> void;
 
-        auto update_parked_thread_effective_profile(task::Thread *thread) -> void;
+        auto update_parked_thread_effective_profile(Thread *thread) -> void;
 
         template <typename UnparkThreads> // Thread::UnparkList
         auto lock_for_notify_one(Status) -> ustl::Option<UnparkThreads>;
@@ -141,16 +141,16 @@ namespace ours::sync {
         auto is_empty() const -> bool { return m_waiters.empty(); }
 
         FORCE_INLINE
-        auto peek() -> task::Thread * { return 0; }
+        auto peek() -> Thread * { return 0; }
 
         FORCE_INLINE
-        auto get_lock() -> SpinLock & { return m_lock; }
+        auto get_lock() -> sync::SpinLock & { return m_lock; }
       protected:
         WaitQueue(u32 magic);
 
-        auto park_thread_preamble(task::Thread *, time::Deadline, Signals, Interruptible) -> Status;
+        auto park_thread_preamble(Thread *, time::Deadline, Signals, Interruptible) -> Status;
 
-        auto park_thread_postamble(task::Thread *, time::Deadline) -> Status;
+        auto park_thread_postamble(Thread *, time::Deadline) -> Status;
 
         /// Both of these expect the caller to hold |waiter|'s thread PI lock.
         /// The queue's own spin lock is taken underneath it, never the other
@@ -164,10 +164,10 @@ namespace ours::sync {
         /// Second half of a wake: propagates the lost PI edge and resumes the
         /// thread. Must be called with the queue lock dropped, and only for a
         /// thread this queue actually dequeued.
-        auto wake_dequeued_thread(task::Thread *thread, Status status) -> void;
+        auto wake_dequeued_thread(Thread *thread, Status status) -> void;
 
         /// Handler for time counted tasks.
-        static auto handle_timeout(task::Thread *thread) -> void;
+        static auto handle_timeout(Thread *thread) -> void;
 
         static constexpr auto MAGIC = gktl::magic("WaitQueue");
 
@@ -176,7 +176,7 @@ namespace ours::sync {
                               ustl::collections::intrusive::Compare<WaiterOrder>,
                               WaiterState::ManagedOption);
         Queue m_waiters;
-        SpinLock m_lock;
+        sync::SpinLock m_lock;
         /// Hands out QueueKey::seq. Per-queue rather than global: it only has
         /// to order waiters against their own queue's peers.
         u64 m_next_seq;

@@ -6,9 +6,7 @@
 
 #include <ours/lockdep.hpp>
 
-namespace ours::sync {
-    using task::Thread;
-    using task::Scheduler;
+namespace ours::task {
 
     auto WaiterState::sleep(Thread *thread, Interruptible interruptible, Status status) -> void {
         m_blocked_status = status;
@@ -110,7 +108,7 @@ namespace ours::sync {
 
         auto &waiter = thread->waiter_state();
 
-        Guard<SpinLock> guard(m_lock);
+        Guard<sync::SpinLock> guard(m_lock);
         if (waiter.m_waitqueue != this) {
             return;
         }
@@ -127,7 +125,7 @@ namespace ours::sync {
     auto WaitQueue::enqueue_waiter(WaiterState &waiter) -> void {
         auto const thread = Thread::of(&waiter);
 
-        Guard<SpinLock> guard(m_lock);
+        Guard<sync::SpinLock> guard(m_lock);
 
         // Snapshotted here rather than read on every comparison: the tree is
         // walked under m_lock, and the scheduling context is guarded by the
@@ -139,7 +137,7 @@ namespace ours::sync {
     }
 
     auto WaitQueue::dequeue_waiter(WaiterState &waiter, Status status) -> bool {
-        Guard<SpinLock> guard(m_lock);
+        Guard<sync::SpinLock> guard(m_lock);
 
         // A timeout firing on one CPU can meet a notify on another, both aimed
         // at this waiter. Whoever takes the lock second must not erase the
@@ -167,7 +165,7 @@ namespace ours::sync {
 
         Thread *thread = nullptr;
         {
-            Guard<SpinLock> guard(m_lock);
+            Guard<sync::SpinLock> guard(m_lock);
             if (m_waiters.empty()) {
                 return;
             }
@@ -192,7 +190,7 @@ namespace ours::sync {
         for (;;) {
             Thread *thread = nullptr;
             {
-                Guard<SpinLock> guard(m_lock);
+                Guard<sync::SpinLock> guard(m_lock);
                 if (m_waiters.empty()) {
                     return;
                 }
