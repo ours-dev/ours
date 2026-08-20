@@ -6,7 +6,7 @@
 #include <ours/task/thread.hpp>
 #include <ours/arch/idle-thread.hpp>
 
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
 #include <ustl/lazy_init.hpp>
 #include <ustl/sync/atomic.hpp>
@@ -24,7 +24,7 @@ namespace ours::task {
             Suspend,
         };
 
-        auto init() -> void;
+        auto init(CpuNum cpunum) -> void;
 
         /// Run loop executed by the CPU's idle/power thread.
         auto run() -> void;
@@ -39,7 +39,7 @@ namespace ours::task {
             State target;
         };
 
-        IdleThread();
+        explicit IdleThread(CpuNum cpunum);
         ~IdleThread() = default;
 
         ustl::sync::Atomic<StateMachine> m_states;
@@ -50,7 +50,7 @@ namespace ours::task {
         Duration m_cumulative_idle_time;
     };
 
-    class IdleThread::Current: public mem::CpuLocal::Current<IdleThread> {
+    class IdleThread::Current: public mm::CpuLocal::Current<IdleThread> {
       public:
         FORCE_INLINE
         static auto run() -> void {
