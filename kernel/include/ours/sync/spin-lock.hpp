@@ -16,13 +16,34 @@
 
 namespace ours::sync {
 namespace spinlock {
+    /// Two of these are placeholders for machinery this kernel does not have
+    /// yet. They are kept because they name real axes of the design they come
+    /// from -- Zircon's Monitored/Unmonitored split and its lockdep exclusion
+    /// are separate concerns, not two spellings of one -- but neither is read
+    /// anywhere today, so do not expect a lock to behave differently for
+    /// selecting them.
     enum class Option {
+        /// For the lockup detector: a monitored lock times its own critical
+        /// section, so a CPU wedged holding one can be spotted. Unimplemented;
+        /// there is no lockup detector here yet, and the detector is also why
+        /// the axis has to exist at all -- it takes spin locks itself and must
+        /// not recurse into its own instrumentation.
         Monitored = 0_bit,
 
+        /// For lockdep: the dependency tracker takes spin locks of its own, so
+        /// the locks beneath it have to stay out of the graph. Unimplemented;
+        /// lockdep here is still headers over a six-line translation unit, and
+        /// spin-lock.cpp does not call into it at all.
         NoTrace = 1_bit,
 
+        /// Holds off preemption for as long as the lock is held. The only
+        /// option with an implementation behind it, and every lock type that
+        /// ships sets it -- see kDefaultOptions below.
         DisablePreempt = 2_bit,
 
+        /// Unimplemented, and unlike the two above this one would be unsafe to
+        /// ignore quietly, so asking for it fails to compile. See the
+        /// static_assert in SpinLock.
         DisableIrq = 3_bit,
     };
     USTL_ENABLE_ENUM_BITMASK(Option);
@@ -44,6 +65,8 @@ namespace spinlock {
         using Self = SpinLock;
 
       public:
+        /// Both are unused: they are here ready for the lockup detector and
+        /// lockdep to be wired in, and are what those call sites will test.
         constexpr static auto const kIsMonitored = !!(Options & Option::Monitored);
 
         constexpr static auto const kIsNoTrace = !!(Options & Option::NoTrace);
