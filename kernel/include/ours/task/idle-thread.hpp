@@ -24,7 +24,7 @@ namespace ours::task {
             Suspend,
         };
 
-        auto init() -> void;
+        auto init(CpuNum cpunum) -> void;
 
         /// Run loop executed by the CPU's idle/power thread.
         auto run() -> void;
@@ -39,7 +39,7 @@ namespace ours::task {
             State target;
         };
 
-        IdleThread();
+        explicit IdleThread(CpuNum cpunum);
         ~IdleThread() = default;
 
         ustl::sync::Atomic<StateMachine> m_states;
