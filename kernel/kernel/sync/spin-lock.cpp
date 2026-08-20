@@ -31,8 +31,11 @@ namespace spinlock {
             current_thread->preemption_state().disable_preemption();
         }
 
+        // strong, not weak: weak may fail spuriously on a free lock, and the
+        // caller of a try_ has no loop to absorb that -- it would just be told
+        // the lock was taken when it was not.
         usize old_state = kUnlockedState;
-        if (m_lockval.compare_exchange_weak(old_state, new_state, MemoryOrder::Acquire)) {
+        if (m_lockval.compare_exchange_strong(old_state, new_state, MemoryOrder::Acquire)) {
             sp_spinlock_num_held.add(1);
             return true;
         }
@@ -45,6 +48,17 @@ namespace spinlock {
 
     template <Option Options>
     auto SpinLock<Options>::acquire() -> void {
+        // The ownership token is the running thread, and preemption is
+        // disabled through it, so this lock needs Thread::Current to be live.
+        // start_kernel() establishes that in task::init_early(), well ahead of
+        // init_vmm() and everything below it that reaches for a lock, so this
+        // only fires if something new gets hoisted above that point.
+        DEBUG_ASSERT(Thread::Current::get() != nullptr);
+
+        // Re-acquiring from the holder itself can never succeed, so without
+        // this the CPU just spins here forever with nothing to show for it.
+        DEBUG_ASSERT(!is_held());
+
         constexpr auto kSpinTimesPerTry = sizeof(usize) << 3;
         while (!try_acquire()) {
             for (usize i = 0; i < kSpinTimesPerTry; ++i) {

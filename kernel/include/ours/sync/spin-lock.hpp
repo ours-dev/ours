@@ -27,11 +27,16 @@ namespace spinlock {
     };
     USTL_ENABLE_ENUM_BITMASK(Option);
 
+    /// Every one of these disables preemption. A spin lock whose holder can
+    /// be preempted is a deadlock waiting to happen: the thread scheduled in
+    /// its place spins forever on the same CPU, and every other CPU spins
+    /// until the holder is scheduled back. Monitored and NoTrace only select
+    /// how much bookkeeping the lock does, never whether it is safe to hold.
     constexpr static auto const kDefaultOptions = Option::DisablePreempt;
 
-    constexpr static auto const kMonitoredOptions = Option::Monitored;
+    constexpr static auto const kMonitoredOptions = Option::Monitored | Option::DisablePreempt;
 
-    constexpr static auto const kNoTraceOptions = Option::NoTrace;
+    constexpr static auto const kNoTraceOptions = Option::NoTrace | Option::DisablePreempt;
 
     template <Option Options>
     class TA_CAP("SpinLock") SpinLock
@@ -54,26 +59,23 @@ namespace spinlock {
         /// Acquire the lock.
         auto acquire() -> void;
 
-        /// Acquire the lock.
-        auto acquire(char const *critial_section_name) -> void;
-
         /// Try to acquire the lock, return true if success.
         auto try_acquire() -> bool;
 
         /// Release the lock.
         auto release() -> void;
 
-        /// Release the lock.
-        auto release(char const *critial_section_name) -> void;
-
         auto acquire_irq_save(arch::IrqSavedState &state) -> void {
             state = arch::local_irq_save_state();
             acquire();
         }
 
+        /// Order matters: the lock has to be dropped before interrupts come
+        /// back. Restoring first leaves a window in which an interrupt taken
+        /// on this CPU can reach for this same lock and self-deadlock.
         auto release_irq_restore(arch::IrqSavedState state) -> void {
-            arch::local_irq_restore_state(state);
             release();
+            arch::local_irq_restore_state(state);
         }
 
         auto is_locked() const -> bool;
@@ -88,9 +90,17 @@ namespace spinlock {
         USTL_NO_MOVEABLE_AND_COPYABLE(SpinLock);
 
       private:
-        constexpr static auto const kIsAutoPreemptDisable = !!(Options & Option::NoTrace);
+        constexpr static auto const kIsAutoPreemptDisable = !!(Options & Option::DisablePreempt);
 
-        auto do_lock() -> bool;
+        /// Nothing stands behind Option::DisableIrq: acquire() never touches
+        /// the interrupt state, so a lock declared with it would be no safer
+        /// than a plain one while reading as though it were. Interrupt-safe
+        /// sections go through acquire_irq_save()/release_irq_restore(),
+        /// which keep the saved state on the caller's stack, where nesting
+        /// still works. Refuse to compile rather than quietly do nothing.
+        static_assert(!(Options & Option::DisableIrq),
+                      "Option::DisableIrq is not implemented; use "
+                      "acquire_irq_save()/release_irq_restore() instead");
 
         ustl::sync::AtomicUsize m_lockval;
     };
