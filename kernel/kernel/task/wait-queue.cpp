@@ -1,4 +1,4 @@
-#include <ours/sync/wait-queue.hpp>
+#include <ours/task/wait-queue.hpp>
 
 #include <ours/task/thread.hpp>
 #include <ours/task/scheduler.hpp>

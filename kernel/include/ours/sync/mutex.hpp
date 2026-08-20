@@ -5,7 +5,7 @@
 
 #include <ours/sync/config.hpp>
 #include <ours/sync/priv/lock-name-storage.hpp>
-#include <ours/sync/owned-wait-queue.hpp>
+#include <ours/task/owned-wait-queue.hpp>
 
 #include <ours/time/types.hpp>
 

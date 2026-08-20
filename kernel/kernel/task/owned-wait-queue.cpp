@@ -1,6 +1,6 @@
 #include <gktl/counter.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/sync/owned-wait-queue.hpp>
+#include <ours/task/owned-wait-queue.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
 #include <ustl/util/tuple.hpp>

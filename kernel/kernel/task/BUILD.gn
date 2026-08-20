@@ -4,9 +4,20 @@ source_set("task") {
     "idle-thread.cpp",
     "init.cpp",
     "ipi-service.cpp",
+    "owned-wait-queue.cpp",
     "preemption-state.cpp",
     "thread.cpp",
+    "wait-queue.cpp",
   ]
-  deps = [ "//kernel/kernel/task/sched" ]
+  deps = [
+    "//kernel/kernel/task/sched",
+
+    # Carried over with the wait queues, which reach for the kernel counters
+    # and the lock annotations.
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//kernel/mm:headers",
+    "//system/lib/lockdep",
+  ]
   visibility = [ "*" ]
 }
