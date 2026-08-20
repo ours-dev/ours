@@ -3,7 +3,7 @@
 #ifndef OURS_EVENT_HPP
 #define OURS_EVENT_HPP 1
 
-#include <ours/sync/wait-queue.hpp>
+#include <ours/task/wait-queue.hpp>
 #include <ours/status.hpp>
 
 #include <gktl/canary.hpp>

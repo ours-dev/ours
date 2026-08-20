@@ -17,8 +17,8 @@
 #include <ours/task/sched/context.hpp>
 #include <ours/task/preemption-state.hpp>
 
-#include <ours/sync/wait-queue.hpp>
-#include <ours/sync/owned-wait-queue.hpp>
+#include <ours/task/wait-queue.hpp>
+#include <ours/task/owned-wait-queue.hpp>
 #include <ours/sync/spin-lock.hpp>
 
 #include <ours/mem/types.hpp>

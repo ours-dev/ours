@@ -3,7 +3,7 @@
 #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP
 #define OURS_TASK_OWNED_WAIT_QUEUE_HPP 1
 
-#include <ours/sync/wait-queue.hpp>
+#include <ours/task/wait-queue.hpp>
 #include <ours/task/sched/profiles.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/fn.hpp>
