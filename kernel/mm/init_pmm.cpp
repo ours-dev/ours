@@ -69,6 +69,12 @@ namespace ours::mm {
 
         EarlyMem::do_handoff();
 
+        // Must sit between the buddy allocator coming up and the slab being
+        // built: it allocates the per-CPU units from the buddy, and the slab
+        // cannot be initialised before it, because MemCache::init() reaches
+        // CpuLocal::allocate<CpuCache>() for every cache it creates.
+        CpuLocal::init();
+
         MemCache::init();
 
         ktl::init_kmalloc();

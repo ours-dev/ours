@@ -131,8 +131,13 @@ class CpuLocal {
     /// `init()` have been handed to the CPUs that own them.
     static auto bootstrap(CpuMask const &cpus) -> void;
 
-    /// Reserves `n` objects of `T` on every possible CPU and value-initializes
-    /// each copy. The result is empty if the dynamic area is exhausted.
+    /// Reserves `n` objects of `T` on every CPU slot and value-initializes each
+    /// copy. The result is empty if the dynamic area is exhausted.
+    ///
+    /// Every slot up to MAX_CPU is constructed, not just the possible ones: the
+    /// first chunk is built before the MADT has been parsed, so `possible_mask`
+    /// is not yet meaningful when the slab calls this. Constructing the full
+    /// range keeps a CPU that comes online later from finding raw storage.
     template <typename T>
     static auto allocate(usize n, usize align) -> PerCpu<T>;
 
@@ -221,10 +226,13 @@ class CpuLocal::PerCpu {
         return CpuLocal::access(*m_pointer, cpunum);
     }
 
+    /// Unlike the static `CpuLocal::with_current`, the callback takes only the
+    /// object: a handle already names one thing, and the CPU number is a
+    /// `current_cpu()` away. This is the shape PmZone::alloc_frame() uses.
     template <typename F>
-    FORCE_INLINE auto with_current(F &&f) -> ustl::traits::InvokeResultT<F, CpuNum, T &> {
+    FORCE_INLINE auto with_current(F &&f) -> ustl::traits::InvokeResultT<F, T &> {
         DEBUG_ASSERT(m_pointer, "Dereferencing an empty PerCpu");
-        return CpuLocal::with_current(*m_pointer, ustl::forward<F>(f));
+        return ustl::function::invoke(f, CpuLocal::access(*m_pointer));
     }
 
     template <typename F>
@@ -240,12 +248,14 @@ class CpuLocal::PerCpu {
             return;
         }
 
-        Cpu::possible_mask().for_each([this](CpuNum cpunum) {
+        // Mirrors allocate(): every slot was constructed, so every slot is
+        // destroyed, independent of which CPUs happen to be possible now.
+        for (auto cpunum = CpuNum(0); cpunum < MAX_CPU; ++cpunum) {
             auto *base = &CpuLocal::access(*m_pointer, cpunum);
             for (auto i = m_count; i-- > 0;) {
                 base[i].~T();
             }
-        });
+        }
 
         CpuLocal::free_raw(reinterpret_cast<VirtAddr>(m_pointer), m_count * sizeof(T));
         m_pointer = nullptr;
@@ -275,12 +285,12 @@ auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
     }
 
     auto *pointer = reinterpret_cast<T *>(canonical);
-    Cpu::possible_mask().for_each([pointer, n](CpuNum cpunum) {
+    for (auto cpunum = CpuNum(0); cpunum < MAX_CPU; ++cpunum) {
         auto *base = &Self::access(*pointer, cpunum);
         for (auto i = usize(0); i < n; ++i) {
             new (static_cast<void *>(base + i)) T();
         }
-    });
+    }
 
     return PerCpu<T>(pointer, n);
 }

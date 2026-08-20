@@ -84,7 +84,8 @@ auto start_kernel(PhysAddr handoff) -> void {
     mm::init_vmm();
     set_init_level(InitLevel::Vmm);
 
-    mm::CpuLocal::init();
+    // CpuLocal::init() itself now runs inside init_pmm(), ahead of the slab that
+    // depends on it; this only publishes the level for hooks ordered after it.
     set_init_level(InitLevel::CpuLocal);
 
     // TODO(SmallHuaZi): It seems like doing nothing. Consider to remove

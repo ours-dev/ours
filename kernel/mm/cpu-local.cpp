@@ -5,9 +5,6 @@
 #include <ours/mm/pm-node.hpp>
 #include <ours/mm/pmm.hpp>
 
-#include <ktl/kmalloc.hpp>
-#include <ktl/new.hpp>
-
 #include <ustl/algorithms/copy.hpp>
 #include <ustl/algorithms/minmax.hpp>
 #include <ustl/collections/intrusive/list.hpp>
@@ -23,11 +20,14 @@ namespace ours::mm {
 namespace {
     /// Allocation granularity of the dynamic area. Every reservation is a whole
     /// number of cells so the bitmap has one bit per cell.
-    constexpr
-    auto const kDynCellSize = usize(sizeof(usize));
+    constexpr auto const kDynCellSize = usize(sizeof(usize));
 
-    constexpr
-    auto const kInvalidUnit = u32(-1);
+    constexpr auto const kWordBits = usize(sizeof(usize) * 8);
+
+    /// The dynamic area is exactly one `kDynFirstChunkSize` per unit, so the
+    /// bitmap is a compile-time size and needs no allocator.
+    constexpr auto const kDynCells = ArchCpuLocal::kDynFirstChunkSize / kDynCellSize;
+    constexpr auto const kDynWords = (kDynCells + kWordBits - 1) / kWordBits;
 
     FORCE_INLINE
     auto initial_area_size() -> usize {
@@ -44,33 +44,14 @@ namespace {
         return va >= VirtAddr(kInitialCpuLocalStart) && va < VirtAddr(kInitialCpuLocalEnd);
     }
 
-    /// Allocates `n` default-constructed `T` from the kernel heap.
+    /// Bytes the static half of a unit occupies.
     ///
-    /// Returns an empty span on failure.
-    template <typename T>
-    auto make_span(usize n) -> ustl::views::Span<T> {
-        auto raw = static_cast<T *>(ktl::kmalloc(n * sizeof(T), kGafKernel));
-        if (!raw) {
-            return {};
-        }
-
-        for (auto i = usize(0); i < n; ++i) {
-            new (static_cast<void *>(raw + i)) T();
-        }
-        return ustl::views::make_span(raw, n);
-    }
-
-    template <typename T>
-    auto drop_span(ustl::views::Span<T> &span) -> void {
-        if (span.empty()) {
-            return;
-        }
-
-        for (auto &item : span) {
-            item.~T();
-        }
-        ktl::kfree(span.data());
-        span = {};
+    /// Rounded to the unit alignment so the dynamic area that follows starts on
+    /// a page boundary. That is what lets the dynamic allocator satisfy any
+    /// alignment up to a page by looking at cell indices alone.
+    FORCE_INLINE
+    auto static_span() -> usize {
+        return align_up(initial_area_size(), ArchCpuLocal::kUnitAlign);
     }
 } // namespace anonymous
 
@@ -88,18 +69,14 @@ namespace {
 
     /// Owns the per-CPU units and the topology maps that place them.
     ///
-    /// A `group` is a NUMA node that owns at least one possible CPU; a `unit` is
-    /// one CPU's slice of its group's allocation. Both are numbered densely so
-    /// sparse APIC/node ids do not waste memory.
+    /// A `group` is a NUMA node the units are drawn from; a `unit` is one CPU's
+    /// slice of its group's allocation. Every bound here is a compile-time
+    /// constant (MAX_CPU, NUMA_MAX_NODE), so the whole map is static storage --
+    /// see the note on the allocator cycle above `CpuLocal::init()`.
     class CpuLocal::Mapper {
         using Self = CpuLocal::Mapper;
 
       public:
-        enum class AddrType: u8 {
-            Static,
-            Dynamic,
-        };
-
         auto init() -> Status;
 
         /// Canonical offset of `unit`, i.e. `unit_base - __cpu_local_start`.
@@ -112,216 +89,103 @@ namespace {
         }
 
         auto unit_size() const -> usize {
-            return m_unit_size;
+            return static_span() + ArchCpuLocal::kDynFirstChunkSize;
         }
 
         /// Canonical bounds of the dynamic area inside every unit.
         auto dyn_base() const -> VirtAddr {
-            return canonical_base() + align_up(initial_area_size(), kDynCellSize);
+            return canonical_base() + static_span();
         }
 
         auto dyn_size() const -> usize {
-            return m_unit_size - (dyn_base() - canonical_base());
-        }
-
-        auto get_addr_type(VirtAddr va) const -> AddrType {
-            return is_in_initial_area(va) ? AddrType::Static : AddrType::Dynamic;
-        }
-
-        auto num_groups() const -> u32 {
-            return u32(m_offsets_per_group.size());
-        }
-
-        auto num_units() const -> u32 {
-            return u32(m_offsets_per_unit.size());
+            return ArchCpuLocal::kDynFirstChunkSize;
         }
 
       private:
         auto create_first_chunk() -> Status;
 
-        auto compactify_sparse_topology_ids() -> void;
+        auto distribute_units() -> void;
 
-        auto release() -> void;
+        ustl::Array<u32, MAX_CPU> m_cpu_to_unit;
+        ustl::Array<u32, MAX_CPU> m_unit_to_cpu;
+        ustl::Array<isize, MAX_CPU> m_offsets_per_unit;
 
-        usize m_unit_size;
+        ustl::Array<u32, NUMA_MAX_NODE> m_group_to_node;
+        ustl::Array<u32, NUMA_MAX_NODE> m_num_units_per_group;
+        ustl::Array<PmFrame::List, NUMA_MAX_NODE> m_group_frames;
 
-        ustl::views::Span<u32> m_cpu_to_unit;    // CPU -> Unit
-        ustl::views::Span<u32> m_unit_to_cpu;    // Unit -> CPU
-        ustl::views::Span<u32> m_node_to_group;  // Node -> Group
-        ustl::views::Span<u32> m_group_to_node;  // Group -> Node
-
-        ustl::views::Span<isize> m_offsets_per_unit;
-        ustl::views::Span<isize> m_offsets_per_group;
-        ustl::views::Span<u32> m_num_units_per_group;
-        ustl::views::Span<PmFrame::List> m_group_frames;
+        u32 m_num_groups;
     };
 
-    auto CpuLocal::Mapper::init() -> Status {
-        auto const nr_units = u32(Cpu::possible_mask().count());
-        if (!nr_units) {
-            return Status::InvalidArguments;
-        }
-
-        // A node earns a group only if it owns a possible CPU, so the upper
-        // bound is the smaller of the two counts.
-        auto nr_groups = u32(0);
-        auto const &nodes = mm::node_possible_mask();
-        for (auto nid = usize(0); nid < nodes.size(); ++nid) {
-            if (nodes.test(nid)) {
-                ++nr_groups;
-            }
-        }
-        if (!nr_groups) {
-            nr_groups = 1;
-        }
-        // One spare slot so CPUs that no node claims can still form a group.
-        ++nr_groups;
-
-        m_unit_size = align_up(initial_area_size() + ArchCpuLocal::kDynFirstChunkSize,
-                               ArchCpuLocal::kUnitAlign);
-
-        m_cpu_to_unit = make_span<u32>(MAX_CPU);
-        m_unit_to_cpu = make_span<u32>(nr_units);
-        m_node_to_group = make_span<u32>(NUMA_MAX_NODE);
-        m_group_to_node = make_span<u32>(nr_groups);
-        m_offsets_per_unit = make_span<isize>(nr_units);
-        m_offsets_per_group = make_span<isize>(nr_groups);
-        m_num_units_per_group = make_span<u32>(nr_groups);
-        m_group_frames = make_span<PmFrame::List>(nr_groups);
-
-        if (m_cpu_to_unit.empty() || m_unit_to_cpu.empty() || m_node_to_group.empty() ||
-            m_group_to_node.empty() || m_offsets_per_unit.empty() ||
-            m_offsets_per_group.empty() || m_num_units_per_group.empty() ||
-            m_group_frames.empty()) {
-            release();
-            return Status::OutOfMem;
-        }
-
-        for (auto &unit : m_cpu_to_unit) {
-            unit = kInvalidUnit;
-        }
-
-        compactify_sparse_topology_ids();
-
-        auto const status = create_first_chunk();
-        if (Status::Ok != status) {
-            release();
-        }
-        return status;
-    }
-
-    auto CpuLocal::Mapper::release() -> void {
-        drop_span(m_cpu_to_unit);
-        drop_span(m_unit_to_cpu);
-        drop_span(m_node_to_group);
-        drop_span(m_group_to_node);
-        drop_span(m_offsets_per_unit);
-        drop_span(m_offsets_per_group);
-        drop_span(m_num_units_per_group);
-        drop_span(m_group_frames);
-    }
-
-    /// Numbers nodes and CPUs densely, keeping every group's units contiguous so
-    /// one allocation per group can back all of them.
+    /// Spreads the units over the nodes that have memory.
     ///
-    /// Time Complexity: O(m * n)
-    /// Space Complexity: O(m + n)
-    auto CpuLocal::Mapper::compactify_sparse_topology_ids() -> void {
-        auto const &cpus = Cpu::possible_mask();
+    /// This deliberately does not consult `cpu_to_node()`. The first chunk is
+    /// built before the MADT is parsed, so no CPU-to-node relation exists yet;
+    /// node *memory* topology, on the other hand, is already known because
+    /// PmNode::bootstrap() ran first. Even placement across those nodes is the
+    /// best that can be done without CPU topology. Once CPU enumeration moves
+    /// ahead of the PMM this is the one function that needs rewriting.
+    auto CpuLocal::Mapper::distribute_units() -> void {
         auto const &nodes = mm::node_possible_mask();
 
-        auto uid = u32(0);
-        auto gid = u32(0);
-        for (auto nid = usize(0); nid < nodes.size() && gid < num_groups(); ++nid) {
-            if (!nodes.test(nid)) {
-                continue;
+        m_num_groups = 0;
+        for (auto nid = usize(0); nid < nodes.size() && m_num_groups < NUMA_MAX_NODE; ++nid) {
+            if (nodes.test(nid)) {
+                m_group_to_node[m_num_groups] = u32(nid);
+                ++m_num_groups;
             }
-
-            auto units_here = u32(0);
-            for (auto cpu = CpuNum(0); cpu < cpus.size(); ++cpu) {
-                if (!cpus.test(cpu) || mm::cpu_to_node(cpu) != NnId(nid)) {
-                    continue;
-                }
-
-                m_cpu_to_unit[cpu] = uid;
-                m_unit_to_cpu[uid] = cpu;
-                ++uid;
-                ++units_here;
-            }
-
-            // A node with no CPUs of its own never becomes a group.
-            if (!units_here) {
-                continue;
-            }
-
-            m_node_to_group[nid] = gid;
-            m_group_to_node[gid] = u32(nid);
-            m_num_units_per_group[gid] = units_here;
-            ++gid;
+        }
+        if (!m_num_groups) {
+            m_group_to_node[0] = 0;
+            m_num_groups = 1;
         }
 
-        // Any possible CPU that no node claimed still needs a unit, so a broken
-        // or absent SRAT cannot leave one unmapped. They go into a group of
-        // their own: a group's units have to stay contiguous, and `uid` has
-        // already moved past every group placed above.
-        auto orphans = u32(0);
-        for (auto cpu = CpuNum(0); cpu < cpus.size(); ++cpu) {
-            if (!cpus.test(cpu) || m_cpu_to_unit[cpu] != kInvalidUnit) {
-                continue;
-            }
+        // Units are identity-mapped to CPU slots and handed out in contiguous
+        // runs, because a group is backed by one allocation.
+        auto const per_group = u32(MAX_CPU) / m_num_groups;
+        auto const remainder = u32(MAX_CPU) % m_num_groups;
 
-            m_cpu_to_unit[cpu] = uid;
-            m_unit_to_cpu[uid] = cpu;
-            ++uid;
-            ++orphans;
+        for (auto group = u32(0); group < m_num_groups; ++group) {
+            m_num_units_per_group[group] = per_group + (group < remainder ? 1 : 0);
         }
 
-        if (orphans) {
-            DEBUG_ASSERT(gid < num_groups(), "No group slot left for unclaimed CPUs");
-            m_group_to_node[gid] = 0;
-            m_num_units_per_group[gid] = orphans;
+        for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
+            m_cpu_to_unit[unit] = unit;
+            m_unit_to_cpu[unit] = unit;
         }
     }
 
     auto CpuLocal::Mapper::create_first_chunk() -> Status {
-        auto const nr_groups = num_groups();
+        // One allocation per unit rather than one per group. A group-sized block
+        // would be MAX_CPU * unit_size of *contiguous* frames -- an order the
+        // buddy allocator may well refuse this early -- and nothing needs units
+        // to be adjacent, because every unit carries its own offset.
+        auto const num_frames = align_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
+        auto const order = mm::get_order(num_frames);
 
-        for (auto group = u32(0); group < nr_groups; ++group) {
-            auto const nr_units = m_num_units_per_group[group];
-            if (!nr_units) {
-                continue;
-            }
-
+        for (auto group = u32(0), unit = u32(0); group < m_num_groups; ++group) {
             auto const nid = NnId(m_group_to_node[group]);
-            auto const num_frames = align_up(m_unit_size * nr_units, PAGE_SIZE) / PAGE_SIZE;
-            auto const order = mm::get_order(num_frames);
 
-            auto frame = alloc_frames(nid, mm::kGafBoot, order);
-            if (!frame) {
-                for (auto done = u32(0); done < group; ++done) {
-                    free_frames(&m_group_frames[done]);
+            for (auto i = u32(0); i < m_num_units_per_group[group]; ++i, ++unit) {
+                auto frame = alloc_frames(nid, mm::kGafBoot, order);
+                if (!frame) {
+                    for (auto done = u32(0); done < m_num_groups; ++done) {
+                        free_frames(&m_group_frames[done]);
+                    }
+                    return Status::OutOfMem;
                 }
-                return Status::OutOfMem;
-            }
 
-            m_group_frames[group].push_back(*frame);
-        }
-
-        for (auto group = u32(0), unit = u32(0); group < nr_groups; ++group) {
-            auto const nr_units = m_num_units_per_group[group];
-            if (!nr_units) {
-                continue;
-            }
-
-            auto const addr = frame_to_virt(&m_group_frames[group].front());
-            m_offsets_per_group[group] = isize(addr - canonical_base());
-
-            for (auto i = u32(0); i < nr_units; ++i, ++unit) {
-                m_offsets_per_unit[unit] = isize(addr + m_unit_size * i - canonical_base());
+                m_group_frames[group].push_back(*frame);
+                m_offsets_per_unit[unit] = isize(frame_to_virt(frame) - canonical_base());
             }
         }
 
         return Status::Ok;
+    }
+
+    auto CpuLocal::Mapper::init() -> Status {
+        distribute_units();
+        return create_first_chunk();
     }
 
     /// Runtime cpu local allocator.
@@ -332,7 +196,7 @@ namespace {
         using Self = CpuLocal::Dyn;
 
       public:
-        auto init(Mapper &mapper) -> Status;
+        auto init(Mapper &mapper) -> void;
 
         auto allocate(usize size, usize align) -> VirtAddr;
 
@@ -354,30 +218,23 @@ namespace {
             }
         }
 
-        constexpr
-        static auto const kWordBits = usize(sizeof(usize) * 8);
-
         ustl::collections::intrusive::List<DynChunk> m_dynchunks;
         DynChunk m_first_chunk;
+        ustl::Array<usize, kDynWords> m_first_bitmap;
     };
 
-    auto CpuLocal::Dyn::init(Mapper &mapper) -> Status {
-        auto const size = mapper.dyn_size();
-        auto const num_cells = size / kDynCellSize;
-        auto const num_words = (num_cells + kWordBits - 1) / kWordBits;
-
-        m_first_chunk.bitmap = make_span<usize>(num_words);
-        if (m_first_chunk.bitmap.empty()) {
-            return Status::OutOfMem;
+    auto CpuLocal::Dyn::init(Mapper &mapper) -> void {
+        for (auto &word : m_first_bitmap) {
+            word = 0;
         }
 
+        m_first_chunk.bitmap = ustl::views::make_span(m_first_bitmap.data(), kDynWords);
         m_first_chunk.base = mapper.dyn_base();
-        m_first_chunk.size = size;
-        m_first_chunk.num_cells = num_cells;
+        m_first_chunk.size = mapper.dyn_size();
+        m_first_chunk.num_cells = mapper.dyn_size() / kDynCellSize;
         m_first_chunk.num_cells_used = 0;
 
         m_dynchunks.push_back(m_first_chunk);
-        return Status::Ok;
     }
 
     auto CpuLocal::Dyn::owns(VirtAddr canonical) const -> bool {
@@ -397,6 +254,8 @@ namespace {
         auto const cells = align_up(size, kDynCellSize) / kDynCellSize;
         auto const align_bytes = ustl::algorithms::max(align, kDynCellSize);
         DEBUG_ASSERT(!(align_bytes & (align_bytes - 1)), "Alignment must be a power of two");
+        DEBUG_ASSERT(align_bytes <= ArchCpuLocal::kUnitAlign,
+                     "Alignment beyond a unit boundary is not supported");
 
         auto const step = align_bytes / kDynCellSize;
 
@@ -405,20 +264,16 @@ namespace {
                 continue;
             }
 
-            // Alignment is a property of the address, not of the cell index: the
-            // chunk base is only cell-aligned, so anchor the scan on the first
-            // cell whose address satisfies `align_bytes` and step in whole
-            // multiples of it from there.
-            auto const first = (align_up(chunk.base, align_bytes) - chunk.base) / kDynCellSize;
-
-            for (auto start = first; start + cells <= chunk.num_cells; start += step) {
+            // The chunk base is unit-aligned, so cell k sits at a
+            // `k * kDynCellSize` offset from an aligned address and stepping in
+            // multiples of `step` keeps every candidate aligned.
+            for (auto start = usize(0); start + cells <= chunk.num_cells; start += step) {
                 auto taken = false;
                 for (auto i = usize(0); i < cells; ++i) {
                     if (test(chunk, start + i)) {
                         taken = true;
-                        // Resume past the blocking cell, keeping the alignment
-                        // residue established by `first`.
-                        start = first + align_up(start + i + 1 - first, step) - step;
+                        // Resume past the blocking cell instead of rescanning it.
+                        start = align_up(start + i + 1, step) - step;
                         break;
                     }
                 }
@@ -470,6 +325,13 @@ namespace {
     CPU_LOCAL
     decltype(CpuLocal::g_current_cpu_offset) CpuLocal::g_current_cpu_offset = 0;
 
+    /// Static, because the slab cannot be used to build the thing the slab
+    /// depends on. See the note above `CpuLocal::init()`.
+    namespace {
+        CpuLocal::Mapper g_mapper_storage;
+        CpuLocal::Dyn g_dyn_storage;
+    } // namespace anonymous
+
     CpuLocal::Mapper *CpuLocal::g_mapper;
     CpuLocal::Dyn *CpuLocal::g_dyn;
 
@@ -483,44 +345,49 @@ namespace {
     }
 
     auto CpuLocal::init_early() -> void {
-        auto const cpu = Cpu::id();
-
         // Before the allocator exists there is only the linker-provided area, so
         // the boot CPU runs on the canonical copy itself: offset zero.
         for (auto &offset : g_cpu_offsets) {
             offset = 0;
         }
 
-        attach_to_unit(cpu, 0);
+        // Cpu::id() itself reads a CPU_LOCAL variable, so it can only be trusted
+        // once a base register is installed. With offset zero it resolves to the
+        // canonical copy, which is how the boot CPU learns it is CPU 0.
+        attach_to_unit(0, 0);
 
-        g_states[usize(State::Online)].reset().set(cpu);
+        g_states[usize(State::Online)].reset().set(0);
         g_states[usize(State::Offline)].reset();
     }
 
+    /// Builds the real per-CPU units.
+    ///
+    /// This has to run *before* the slab is initialised, and must not allocate
+    /// through it, because the slab is one of its users: MemCache::init() ->
+    /// CpuCache::on_mem_cache_init() -> CpuLocal::allocate<CpuCache>(). Taking
+    /// even one kmalloc() here would close the loop.
+    ///
+    /// Everything it needs is therefore either static (the Mapper/Dyn maps,
+    /// all bounded by MAX_CPU and NUMA_MAX_NODE) or comes straight from the
+    /// buddy allocator (the units themselves). That leaves exactly one
+    /// precondition: PmNode::bootstrap() and EarlyMem::do_handoff() have run.
     auto CpuLocal::init() -> void {
-        DEBUG_ASSERT(get_init_stage() >= InitStage::Pmm,
-                     "CpuLocal::init() needs the physical allocator");
+        DEBUG_ASSERT(!g_mapper, "CpuLocal::init() ran twice");
 
-        // Placement-new onto checked storage: the Gaf form of operator new is not
-        // declared noexcept, so it gets no implicit null check.
-        auto *mapper_storage = ktl::kmalloc(sizeof(Mapper), kGafKernel);
-        auto *dyn_storage = ktl::kmalloc(sizeof(Dyn), kGafKernel);
-        ASSERT(mapper_storage && dyn_storage, "Failed to allocate the cpu local bookkeeping");
-
-        g_mapper = new (mapper_storage) Mapper();
-        g_dyn = new (dyn_storage) Dyn();
-
+        g_mapper = &g_mapper_storage;
         ASSERT(Status::Ok == g_mapper->init(), "Failed to lay out cpu local units");
-        ASSERT(Status::Ok == g_dyn->init(*g_mapper), "Failed to init cpu local allocator");
+
+        g_dyn = &g_dyn_storage;
+        g_dyn->init(*g_mapper);
 
         // Seed every unit from the canonical area so each CPU starts from the
         // initialisers the linker wrote, then publish the offsets.
-        auto const &cpus = Cpu::possible_mask();
-        for (auto cpu = CpuNum(0); cpu < cpus.size(); ++cpu) {
-            if (!cpus.test(cpu)) {
-                continue;
-            }
-
+        //
+        // The copy has to happen before the boot CPU switches over: subsystems
+        // that ran earlier (PmNode::Current among them) have already written
+        // per-CPU state into the canonical area, and this is what carries it
+        // into every unit rather than stranding it.
+        for (auto cpu = CpuNum(0); cpu < MAX_CPU; ++cpu) {
             auto const offset = g_mapper->offset_of_unit(g_mapper->unit_of_cpu(cpu));
             auto *unit = reinterpret_cast<u8 *>(canonical_base() + offset);
             ustl::algorithms::copy_n(kInitialCpuLocalStart, initial_area_size(),
@@ -543,7 +410,7 @@ namespace {
 
     auto CpuLocal::init_percpu(CpuNum cpu) -> void {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        DEBUG_ASSERT(Cpu::possible_mask().test(cpu), "Bringing up an impossible CPU");
+        DEBUG_ASSERT(g_mapper, "Bringing up a CPU before CpuLocal::init()");
 
         attach_to_unit(cpu, g_cpu_offsets[cpu]);
 
@@ -552,8 +419,6 @@ namespace {
     }
 
     auto CpuLocal::bootstrap(CpuMask const &cpus) -> void {
-        DEBUG_ASSERT(get_init_stage() >= InitStage::Pmm, "Bootstrapping before the allocator");
-
         cpus.for_each([](CpuNum cpu) {
             g_states[usize(State::Online)].set(cpu);
             g_states[usize(State::Offline)].set(cpu, false);
