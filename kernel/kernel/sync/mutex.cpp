@@ -117,7 +117,7 @@ namespace ours::sync {
     auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> void {
         Thread::UnparkList to_wake;
 
-        auto &default_hook = OwnedWaitQueue::default_wake_hook();
+        auto &default_hook = task::OwnedWaitQueue::default_wake_hook();
         if (!m_waiters.lock_for_notify_operation(1, default_hook, to_wake)) {
             // ???
         }
@@ -140,7 +140,7 @@ namespace ours::sync {
         }
 
         if (do_wake) {
-            m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook, OwnedWaitQueue::NotifyControl::None);
+            m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook, task::OwnedWaitQueue::NotifyControl::None);
         }
     }
 

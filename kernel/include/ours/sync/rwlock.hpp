@@ -23,12 +23,12 @@ namespace priv {
 
     template <>
     struct DispatchWaitQueue<EnablePi::No> {
-        using Type = sync::WaitQueue;
+        using Type = task::WaitQueue;
     };
 
     template <>
     struct DispatchWaitQueue<EnablePi::Yes> {
-        using Type = sync::OwnedWaitQueue;
+        using Type = task::OwnedWaitQueue;
     };
 
     template <EnablePi>

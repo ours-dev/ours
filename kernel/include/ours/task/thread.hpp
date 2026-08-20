@@ -85,7 +85,7 @@ namespace task {
       private:
         i32 m_retcode;
         ThreadStartRoutine m_entry_point;
-        sync::WaitQueue m_result_wait_queue;
+        WaitQueue m_result_wait_queue;
     };
 
     class Thread {
@@ -220,7 +220,7 @@ namespace task {
         auto get_pi_lock() -> sync::SpinLock & { return m_pi_lock; }
 
         FORCE_INLINE
-        auto waiter_state() -> sync::WaiterState & { return m_waiter_state; }
+        auto waiter_state() -> WaiterState & { return m_waiter_state; }
 
         FORCE_INLINE
         auto preemption_state() -> PreemptionState & { return m_preemption_state; }
@@ -269,7 +269,7 @@ namespace task {
         }
 
         FORCE_INLINE
-        static auto of(sync::WaiterState *waiter) -> Self * {
+        static auto of(WaiterState *waiter) -> Self * {
             return ustl::mem::container_of(waiter, &Self::m_waiter_state);
         }
 
@@ -329,8 +329,8 @@ namespace task {
         friend sched::Fair;
         friend class object::ProcessDispatcher;
 
-        friend sync::WaitQueue;
-        friend sync::OwnedWaitQueue;
+        friend WaitQueue;
+        friend OwnedWaitQueue;
 
         [[noreturn]]
         static auto trampoline() -> void;
@@ -369,9 +369,9 @@ namespace task {
         sched::Context m_scheduling_context TA_GUARD(get_pi_lock());
         PreemptionState m_preemption_state;
         TaskState m_task_state TA_GUARD(get_resource_lock());
-        sync::WaiterState m_waiter_state;
+        WaiterState m_waiter_state;
         mm::MemoryAllocationState m_memory_allocation_state;
-        sync::OwnedWaitQueue::List m_owned_wait_queues;
+        OwnedWaitQueue::List m_owned_wait_queues;
 
         /// [Optional] Available on LockDep enabled.
         [[no_unique_address]] 
@@ -412,15 +412,15 @@ namespace task {
       public:
         template <typename DurationT>
         FORCE_INLINE
-        static auto sleep_for(DurationT duration, sync::Interruptible interruptible) -> Status {
+        static auto sleep_for(DurationT duration, Interruptible interruptible) -> Status {
             return sleep_for(duration_cast<Duration>(duration), interruptible);
         }
 
-        static auto sleep_for(Duration, sync::Interruptible) -> Status;
+        static auto sleep_for(Duration, Interruptible) -> Status;
 
-        static auto sleep_etc(time::Deadline const &, sync::Interruptible, TimePoint<> now) -> Status;
+        static auto sleep_etc(time::Deadline const &, Interruptible, TimePoint<> now) -> Status;
 
-        static auto sleep_until(time::Deadline const &, sync::Interruptible) -> Status;
+        static auto sleep_until(time::Deadline const &, Interruptible) -> Status;
 
         [[noreturn]] INIT_CODE
         static auto become_idle() -> void;
@@ -469,7 +469,7 @@ namespace task {
         }
 
         FORCE_INLINE
-        static auto waiter_state() -> sync::WaiterState & {
+        static auto waiter_state() -> WaiterState & {
             return Thread::Current::get()->waiter_state();
         }
 

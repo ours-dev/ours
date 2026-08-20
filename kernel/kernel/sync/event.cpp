@@ -9,7 +9,7 @@ namespace ours::sync {
     using task::Thread;
     using task::Scheduler;
 
-    auto Event::wait_etc(time::Deadline deadline, Interruptible interruptible, Signals sigmask) -> Status {
+    auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible, Signals sigmask) -> Status {
         if (m_result.is_some()) {
             auto const current_thread = Thread::Current::get();
             Guard guard{current_thread->get_pi_lock()};

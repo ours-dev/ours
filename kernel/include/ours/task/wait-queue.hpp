@@ -21,13 +21,13 @@
 
 #include <gktl/canary.hpp>
 
-namespace ours::sync {
+namespace ours::task {
     class WaiterState {
         using Self = WaiterState;
       public:
-        auto sleep(task::Thread *, Interruptible, Status) -> void;
+        auto sleep(Thread *, Interruptible, Status) -> void;
 
-        auto unsleep(task::Thread *, Status status) -> void;
+        auto unsleep(Thread *, Status status) -> void;
 
         auto wait_queue() -> WaitQueue * {
           return m_waitqueue;
@@ -75,7 +75,7 @@ namespace ours::sync {
                 return seq < other.seq;
             }
 
-            task::sched::SchedTime vdeadline;
+            sched::SchedTime vdeadline;
             u64 seq;
         };
 
@@ -91,10 +91,92 @@ namespace ours::sync {
         WaitQueue *m_waitqueue;
         Status m_blocked_status;
         Interruptible m_interruptible;
+        QueueKey m_queue_key;
+        ustl::collections::intrusive::SetMemberHook<> m_managed_hook;
+      public:
+        USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOption);
+    };
+
+    /// noexcept is load-bearing: the intrusive tree static_asserts that its
+    /// comparator cannot throw.
+    using WaiterOrder = decltype([](WaiterState const &lhs, WaiterState const &rhs) noexcept {
+        return lhs.queue_key() < rhs.queue_key();
+    });
+
+    class WaitQueue {
+        using Self = WaitQueue;
+      public:
+        template <typename Derived>
+        static auto as(Self *self) -> Derived *;
+
+        WaitQueue() = default;
+
+        ~WaitQueue() = default;
+
+        /// Puts the current thread at the end of waiter queue and then blocks
+        /// until some threads wakes the queue up again.
+        auto park_thread(Thread *, time::Deadline = time::Deadline::infinite(),
+                         Signals = Signals::None, Interruptible = Interruptible::Yes) -> Status;
+
+        auto park_thread_common(Thread *thread, time::Deadline, Signals) -> Status;
+
+        auto unpark_thread(Thread *thread, Status = Status::Ok) -> void;
+
+        auto update_parked_thread_effective_profile(Thread *thread) -> void;
+
+        template <typename UnparkThreads> // Thread::UnparkList
+        auto lock_for_notify_one(Status) -> ustl::Option<UnparkThreads>;
+
+        template <typename UnparkThreads> // Thread::UnparkList
+        auto lock_for_notify_all(Status) -> ustl::Option<UnparkThreads>;
+
+        auto notify_one(Status) -> void;
+
+        auto notify_all(Status) -> void;
+
+        FORCE_INLINE
+        auto size() const -> usize { return m_waiters.size(); }
+
+        FORCE_INLINE
+        auto is_empty() const -> bool { return m_waiters.empty(); }
+
+        FORCE_INLINE
+        auto peek() -> Thread * { return 0; }
+
+        FORCE_INLINE
+        auto get_lock() -> sync::SpinLock & { return m_lock; }
+      protected:
+        WaitQueue(u32 magic);
+
+        auto park_thread_preamble(Thread *, time::Deadline, Signals, Interruptible) -> Status;
+
+        auto park_thread_postamble(Thread *, time::Deadline) -> Status;
+
+        /// Both of these expect the caller to hold |waiter|'s thread PI lock.
+        /// The queue's own spin lock is taken underneath it, never the other
+        /// way round.
+        auto enqueue_waiter(WaiterState &waiter) -> void;
+
+        /// Returns false if the waiter was already off this queue, which is
+        /// the normal outcome when a timeout and a notify race for it.
+        auto dequeue_waiter(WaiterState &waiter, Status status) -> bool;
+
+        /// Second half of a wake: propagates the lost PI edge and resumes the
+        /// thread. Must be called with the queue lock dropped, and only for a
+        /// thread this queue actually dequeued.
+        auto wake_dequeued_thread(Thread *thread, Status status) -> void;
+
+        /// Handler for time counted tasks.
+        static auto handle_timeout(Thread *thread) -> void;
+
+        static constexpr auto MAGIC = gktl::magic("WaitQueue");
+
+        gktl::Canary m_canary;
+        USTL_DECLARE_MULTISET(WaiterState, Queue,
                               ustl::collections::intrusive::Compare<WaiterOrder>,
                               WaiterState::ManagedOption);
         Queue m_waiters;
-        SpinLock m_lock;
+        sync::SpinLock m_lock;
         /// Hands out QueueKey::seq. Per-queue rather than global: it only has
         /// to order waiters against their own queue's peers.
         u64 m_next_seq;

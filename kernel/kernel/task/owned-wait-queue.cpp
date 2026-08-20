@@ -5,14 +5,12 @@
 #include <ours/task/thread.hpp>
 #include <ustl/util/tuple.hpp>
 
-using ours::task::Scheduler;
-using ours::task::Thread;
 using ours::task::sched::BaseProfile;
 using ours::task::sched::InheritedProfile;
 
 using ustl::traits::IsSameV;
 
-namespace ours::sync {
+namespace ours::task {
 namespace {
     GKTL_COUNTER(pi_promotions, "kernel.pi.adjustment.promotions");
     GKTL_COUNTER(pi_demotions, "kernel.pi.adjustment.demotions");

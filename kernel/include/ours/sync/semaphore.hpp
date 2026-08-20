@@ -13,7 +13,7 @@ namespace ours::sync {
         auto wait() -> Status;
         auto post() -> void;
       private:
-        sync::WaitQueue m_waiters;
+        task::WaitQueue m_waiters;
     };
 } // namespace ours::sync
 

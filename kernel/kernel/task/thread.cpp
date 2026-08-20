@@ -29,10 +29,7 @@ GKTL_COUNTER(thread_destroy_count, "thread.destroy");
 } // namespace
 
 namespace ours::task {
-using sync::Interruptible;
-using sync::OwnedWaitQueue;
 using sync::SpinLock;
-using sync::WaitQueue;
 
 using mm::ObjectCache;
 
@@ -416,7 +413,7 @@ auto Thread::Current::become_idle() -> void {
     IdleThread::Current::run();
 }
 
-auto Thread::Current::sleep_etc(time::Deadline const &deadline, sync::Interruptible interruptible,
+auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible interruptible,
                                 TimePoint<> now) -> Status {
     using namespace time;
 
