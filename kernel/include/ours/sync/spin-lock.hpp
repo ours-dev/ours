@@ -115,6 +115,11 @@ namespace spinlock {
       private:
         constexpr static auto const kIsAutoPreemptDisable = !!(Options & Option::DisablePreempt);
 
+        /// The bare exchange, with none of the preemption bookkeeping around
+        /// it. acquire() and try_acquire() both come through here and differ
+        /// only in where they disable preemption and what they do on failure.
+        auto do_lock(task::Thread *current) -> bool;
+
         /// Nothing stands behind Option::DisableIrq: acquire() never touches
         /// the interrupt state, so a lock declared with it would be no safer
         /// than a plain one while reading as though it were. Interrupt-safe
