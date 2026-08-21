@@ -1,3 +1,83 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+///
+/// How this lock waits, and why it waits that way.
+///
+/// The lock word holds kUnlockedState when free and the holder's Thread*
+/// otherwise, so acquiring is one compare-exchange of 0 -> self. That much is
+/// ordinary. What follows is about the wait, which is where the cost of a
+/// contended lock actually lives.
+///
+/// Everything below rests on one hardware rule: a core may read a cache line
+/// that other cores also hold, but to *write* one it must first own it
+/// exclusively, which means invalidating every other copy and waiting for the
+/// acknowledgements. Reads share; writes serialise.
+///
+/// -- Why the wait loop reads instead of exchanging ------------------------
+///
+/// A compare-exchange is a read-modify-write, so the hardware has to take the
+/// line exclusively for the whole operation -- even on the attempts that
+/// decide not to write anything. A wait loop built out of exchanges therefore
+/// has every waiter tearing the line out of every other waiter's cache, and
+/// none of those attempts can succeed while the lock is held. Three costs
+/// come out of that, in rising order of how much they hurt:
+///
+///   1. Each invalidation turns the next read into a cache miss: tens of
+///      cycles where an L1 hit would have been a handful.
+///   2. Only one core can own the line at a time, so the attempts serialise.
+///      Eight spinners are not eight cores spinning in parallel, they are one
+///      cache line being dragged around a ring of eight.
+///   3. The holder is in that queue too. Releasing the lock is a write, so it
+///      needs the line exclusively like everyone else -- and the more waiters
+///      there are, the longer the holder waits to get it. Contention stretches
+///      the critical section, which produces more waiters, which stretches it
+///      further. This is why a contended spin lock degrades off a cliff
+///      rather than gradually.
+///
+/// So the loop waits on a plain relaxed load. The line settles in Shared on
+/// every waiter, reads hit L1, and the interconnect goes quiet until the
+/// holder writes the release -- at which point every copy is invalidated once
+/// and the waiters re-read, find it free, and try the exchange. Head and tail
+/// pay for a line transfer; the middle pays nothing. The point is less that
+/// waiters read faster and more that they stop obstructing the holder.
+///
+/// -- Why preemption is disabled outside the loop -------------------------
+///
+/// try_acquire() has to enable preemption again when it fails, so driving the
+/// wait through it meant two updates of the preemption counter per failed
+/// round, and a window between the enable and the next disable in which the
+/// waiter could be preempted away mid-spin. acquire() disables once, for the
+/// whole wait: its caller is going to hold the lock, so there is nothing to
+/// roll back.
+///
+/// -- Why the exchange names its failure order ----------------------------
+///
+/// Acquire on success is what pairs with the Release store in release().
+/// Failure is a different question: nothing was acquired, so nothing needs
+/// ordering, and Relaxed is right. It has to be said out loud because the
+/// default is SeqCst -- which __atomic_compare_exchange does not permit above
+/// the success order, and which would put a full barrier on the one path that
+/// runs most.
+///
+/// Even uncontended, a lock-prefixed instruction is not free: x86 gives it
+/// full-barrier semantics, so it drains the store buffer before completing.
+/// That is most of the ~20 cycles it costs with the line already local,
+/// against ~4 for an ordinary load.
+///
+/// -- What this shape still does not solve --------------------------------
+///
+/// Fairness. Waiters all leave the read loop together and race on the
+/// exchange, and whoever wins is whoever the coherence fabric happened to
+/// serve first -- arrival order is not recorded anywhere. A core in a tight
+/// acquire/release loop is favoured further still, because it releases with
+/// the line already in its own cache and can re-take it before anyone else
+/// has even re-read it. A waiter can lose arbitrarily many rounds.
+///
+/// Fixing that means recording arrival, which is what a ticket lock does: a
+/// counter handed out by fetch_add, and a second one naming whose turn it is.
+/// It costs the holder identity currently kept in the lock word, so it is a
+/// design decision rather than a drop-in change.
+
 #include <arch/spin-hint.hpp>
 #include <gktl/counter.hpp>
 #include <ours/sync/spin-lock.hpp>
@@ -25,15 +105,12 @@ namespace spinlock {
     template <Option Options>
     auto SpinLock<Options>::do_lock(Thread *current) -> bool {
         // strong, not weak: weak may fail spuriously on a free lock, and
-        // try_acquire's caller has no loop to absorb that -- it would just be
-        // told the lock was taken when it was not.
+        // try_acquire's caller has no loop to absorb that. See the file header
+        // for the two memory orders.
         //
-        // Acquire on success is what pairs with the Release store in
-        // release(). Relaxed on failure, spelled out rather than left to the
-        // default: nothing is acquired when the exchange fails, and the
-        // default is SeqCst, which is both stronger than the success order --
-        // which the builtin does not allow -- and a full barrier on the
-        // hottest path this lock has.
+        // Reset every call: a failed exchange writes the observed value back
+        // into old_state, so reusing it would compare against the last
+        // holder's pointer and fail again by construction.
         usize old_state = kUnlockedState;
         if (!m_lockval.compare_exchange_strong(old_state, reinterpret_cast<usize>(current),
                                                MemoryOrder::Acquire, MemoryOrder::Relaxed)) {
@@ -79,21 +156,16 @@ namespace spinlock {
         // this the CPU just spins here forever with nothing to show for it.
         DEBUG_ASSERT(!is_held());
 
-        // Disabled once for the whole wait, rather than per attempt. Going
-        // through try_acquire() every round cost two updates of the preemption
-        // counter on each failure, and reopened a window between them where
-        // this thread could be preempted away in the middle of spinning.
+        // Once, for the whole wait -- see the file header.
         if constexpr (kIsAutoPreemptDisable) {
             current_thread->preemption_state().disable_preemption();
         }
 
         while (!do_lock(current_thread)) {
-            // Test-and-test-and-set. A failing compare-exchange still has to
-            // take the cache line exclusively, so spinning on it means every
-            // waiter keeps tearing the line away from the others and from the
-            // holder trying to release it. Wait on a plain load instead: the
-            // line stays Shared on every waiter until the lock actually goes
-            // free, and only then does anyone attempt the exchange again.
+            // Test-and-test-and-set: wait on a load, not on the exchange.
+            // The hint comes first because reaching here means the exchange
+            // just failed, so the lock is certainly held right now and there
+            // is nothing to re-read yet.
             do {
                 arch::spin_hint();
             } while (m_lockval.load(MemoryOrder::Relaxed) != kUnlockedState);
