@@ -143,7 +143,7 @@ namespace ours::task::sched {
         TA_ACQUIRE(get_lock())
         auto unpark_common(Thread *curr, Mode mode) -> void;
 
-        TA_REQUIRE(get_lock())
+        TA_REQUIRES(get_lock())
         auto update_runtime() -> void;
 
         /// Drop the current scheduler's lock, and then switch context from |curr|'s to |next|'s.
@@ -152,10 +152,10 @@ namespace ours::task::sched {
 
         auto finish_switch_context() -> void;
 
-        TA_REQUIRE(get_lock())
+        TA_REQUIRES(get_lock())
         auto enqueue_thread(Thread *thread, EnqueueControl control) -> Status;
 
-        TA_REQUIRE(get_lock())
+        TA_REQUIRES(get_lock())
         auto dequeue_thread(Thread *thread, DequeueControl control) -> Status;
 
         /// The routine called in timer interrupt routine.
@@ -199,10 +199,10 @@ namespace ours::task::sched {
         TA_ACQUIRE(m_runtime.migrating_threads_lock)
         auto process_migrating_threads(SchedTime now) -> void;
 
-        TA_REQUIRE(thread->get_pi_lock())
+        TA_REQUIRES(thread->get_pi_lock())
         auto finish_transition(Thread *thread) -> void;
 
-        TA_REQUIRE(get_lock())
+        TA_REQUIRES(get_lock())
         auto set_state(State state, bool on) -> void;
 
         auto put_prev_thread(Thread *thread) -> void;
@@ -224,27 +224,27 @@ namespace ours::task::sched {
     class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
       public:
         /// Reschedule at IDLE mode
-        TA_REQUIRE(curr->get_pi_lock())
+        TA_REQUIRES(curr->get_pi_lock())
         static auto idle(Thread *curr) -> void;
 
         /// Reschedule at Preempt mode
-        TA_REQUIRE(curr->get_pi_lock())
+        TA_REQUIRES(curr->get_pi_lock())
         static auto preempt(Thread *curr) -> void;
 
         /// Reschedule at Regular mode
-        TA_REQUIRE(curr->get_pi_lock())
+        TA_REQUIRES(curr->get_pi_lock())
         static auto reschedule(Thread *curr) -> void;
 
-        TA_REQUIRE(curr->get_pi_lock())
+        TA_REQUIRES(curr->get_pi_lock())
         static auto yield_thread(Thread *curr) -> void;
 
-        TA_REQUIRE(curr->get_pi_lock())
+        TA_REQUIRES(curr->get_pi_lock())
         static auto yield_to_thread(Thread *curr, Thread *next) -> Status;
 
         /// Called when a thread is forced to wait, e.g. waiting for a mutex or a signal.
         /// Mainly used by WaitQueue. 
         /// 
-        TA_REQUIRE(curr->get_pi_lock())
+        TA_REQUIRES(curr->get_pi_lock())
         static auto park_thread(Thread *curr) -> void;
 
         static auto tick(SchedTime now) -> void;
