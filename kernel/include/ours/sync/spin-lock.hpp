@@ -60,7 +60,7 @@ namespace spinlock {
     constexpr static auto const kNoTraceOptions = Option::NoTrace | Option::DisablePreempt;
 
     template <Option Options>
-    class TA_CAP("SpinLock") SpinLock
+    class TA_CAPABILITY("SpinLock") SpinLock
         : public priv::LockNameStorage<SpinLock<Options>, kLockTracingEnabled> {
         using Self = SpinLock;
 

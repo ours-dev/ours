@@ -84,14 +84,14 @@ namespace ours::task::sched {
         /// Requires the runqueue lock of runtime is been holding by caller.
         ///
         /// Return Status::Ok if enqueue action really happened.
-        TA_REQUIRE(runtime.rqlock)
+        TA_REQUIRES(runtime.rqlock)
         virtual auto enqueue_thread(Runtime &runtime, Thread *, EnqueueControl) -> Status = 0;
 
         /// [Required] Remove |thread| from runqueue.
         ///
         /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
         /// to dequeue.
-        TA_REQUIRE(runtime.rqlock)
+        TA_REQUIRES(runtime.rqlock)
         virtual auto dequeue_thread(Runtime &runtime, Thread *, DequeueControl) -> Status = 0;
 
         virtual auto yield_thread(Runtime &, Thread *curr) -> void {}

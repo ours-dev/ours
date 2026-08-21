@@ -13,7 +13,7 @@
 #include <gktl/canary.hpp>
 
 namespace ours::sync {
-    class TA_CAP("Mutex") Mutex: public priv::LockNameStorage<Mutex, kLockTracingEnabled> {
+    class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, kLockTracingEnabled> {
         using Base = priv::LockNameStorage<Mutex, kLockTracingEnabled>;
         using Self = Mutex;
       public:
@@ -77,7 +77,7 @@ namespace ours::sync {
     };
 
     /// Using a timeslice extension to avoid being preempted for time-sensitive tasks.
-    class TA_CAP("Cirtical-Mutex") CirticalMutex
+    class TA_CAPABILITY("Cirtical-Mutex") CirticalMutex
         : protected Mutex {
         using Base = Mutex;
         using Self = CirticalMutex;

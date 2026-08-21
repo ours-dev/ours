@@ -347,27 +347,27 @@ namespace task {
         auto erase_from_global_list_locked() -> void;
 
         gktl::Canary m_canary;
-        ArchThread m_arch_thread TA_GUARD(get_resource_lock());
+        ArchThread m_arch_thread TA_GUARDED(get_resource_lock());
         Name m_name;
 
         /// Null if kernel thread.
         ustl::Weak<mem::VmAspace> m_aspace;
         ustl::Rc<object::ThreadDispatcher> m_user_thread;
-        mem::Stack m_stack TA_GUARD(get_resource_lock());
+        mem::Stack m_stack TA_GUARDED(get_resource_lock());
 
         /// Using a KoId if kernel thread, otherwise an user-space thread id
         /// copied from object::ThreadDispatcher.
         KoId m_tid;
 
         sync::SpinLock m_resource_lock;
-        Flags m_flags TA_GUARD(get_resource_lock());
+        Flags m_flags TA_GUARDED(get_resource_lock());
         State m_state;
         Signal m_signals;
 
         sync::SpinLock m_pi_lock;
-        sched::Context m_scheduling_context TA_GUARD(get_pi_lock());
+        sched::Context m_scheduling_context TA_GUARDED(get_pi_lock());
         PreemptionState m_preemption_state;
-        TaskState m_task_state TA_GUARD(get_resource_lock());
+        TaskState m_task_state TA_GUARDED(get_resource_lock());
         WaiterState m_waiter_state;
         mem::MemoryAllocationState m_memory_allocation_state;
         OwnedWaitQueue::List m_owned_wait_queues;
