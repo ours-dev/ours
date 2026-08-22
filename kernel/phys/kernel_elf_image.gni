@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/compiler/clang.gni")
 import("//kernel/lib/code-patching/code-patching.gni")
 
 # Produces a fully stripped ELF image and represents it in kernel-package
@@ -70,7 +71,10 @@ template("kernel_elf_image") {
     depfile = _package_depfile
     script = "//kernel/phys/strip-kernel-elf.py"
     args = [
-      "objcopy",
+      # llvm-objcopy, not a bare `objcopy`: --strip-sections is an LLVM
+      # extension, and the host binutils on a cross-build host cannot read
+      # the target image anyway.
+      rebase_path("$clang_tool_dir/llvm-objcopy", root_build_dir),
       rebase_path(_debug_path, root_build_dir),
       rebase_path(_package_path, root_build_dir),
       rebase_path(_package_depfile, root_build_dir),
