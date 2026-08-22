@@ -1,0 +1,121 @@
+# The nested obi::KernelPackageView/BootPackageView/PackageView design was
+# replaced by the flat StorageKernel BootFS model: obi::KernelPackage,
+# obi::BootObi, and phys::KernelPackageLoader.  The old
+# kernel-package-smoke/kernel-package-view-test sources for that design were
+# removed.
+
+executable("obi-smoke") {
+  testonly = true
+  sources = [ "smoke.cpp" ]
+  deps = [ "//kernel/lib/obi:obi" ]
+  visibility = [ "*" ]
+}
+
+executable("memory-config-smoke") {
+  testonly = true
+  sources = [ "memory-config-smoke.cpp" ]
+  deps = [ "//kernel/lib/obi:obi" ]
+  visibility = [ "*" ]
+}
+
+executable("parser-fuzz-smoke") {
+  testonly = true
+  sources = [ "parser-fuzz-smoke.cpp" ]
+  deps = [ "//kernel/lib/obi:obi" ]
+  visibility = [ "*" ]
+}
+
+executable("lz4-wrapper-smoke") {
+  testonly = true
+  sources = [ "lz4-wrapper-smoke.cpp" ]
+  deps = [ "//kernel/lib/lz4:lz4" ]
+  visibility = [ "*" ]
+}
+
+executable("boot-options-smoke") {
+  testonly = true
+  sources = [
+    "//kernel/phys/boot-options.cpp",
+    "boot-options-smoke.cpp",
+  ]
+  include_dirs = [ "//kernel/phys/include" ]
+  deps = [ "//kernel/lib/obi:obi" ]
+  visibility = [ "*" ]
+}
+
+executable("cli-smoke") {
+  testonly = true
+  sources = [ "cli-smoke.cpp" ]
+  deps = [ "//kernel/lib/obi:obi" ]
+  visibility = [ "*" ]
+
+  # cli-smoke.cpp textually includes ../cli/main.cpp behind `#define main
+  # obit_main` so it can drive the CLI in-process.  Depending on
+  # //kernel/lib/obi/cli:obit instead would link a second main(), so the
+  # include deliberately has no matching dependency for `gn check` to find.
+  check_includes = false
+}
+
+executable("container-view-test") {
+  testonly = true
+  sources = [ "container-view-test.cpp" ]
+  deps = [
+    "//kernel/lib/obi:obi",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+executable("package-builder-test") {
+  testonly = true
+  sources = [ "package-builder-test.cpp" ]
+  deps = [
+    "//kernel/lib/obi:obi",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+action("pack-smoke") {
+  testonly = true
+  deps = [ "//kernel/lib/obi/cli:obit" ]
+  script = "pack-smoke.py"
+  sources = [
+    "pack-smoke.py",
+    "//build/obi/pack_action.py",
+  ]
+  outputs = [ "$target_gen_dir/pack-smoke.stamp" ]
+  args = [
+    "--stamp",
+    rebase_path(outputs[0], root_build_dir),
+    "--obit",
+    rebase_path(get_label_info("//kernel/lib/obi/cli:obit", "target_out_dir") +
+                    "/" +
+                    get_label_info("//kernel/lib/obi/cli:obit", "name"),
+                root_build_dir),
+  ]
+  visibility = [ "*" ]
+}
+
+action("differential-smoke") {
+  testonly = true
+  deps = [ "//kernel/lib/obi/cli:obit" ]
+  script = "differential-smoke.py"
+  sources = [
+    "differential-smoke.py",
+    "//build/obi/pack_action.py",
+  ]
+  outputs = [ "$target_gen_dir/differential-smoke.stamp" ]
+  args = [
+    "--stamp",
+    rebase_path(outputs[0], root_build_dir),
+    "--obit",
+    rebase_path(get_label_info("//kernel/lib/obi/cli:obit", "target_out_dir") +
+                    "/" +
+                    get_label_info("//kernel/lib/obi/cli:obit", "name"),
+                root_build_dir),
+  ]
+  visibility = [ "*" ]
+}

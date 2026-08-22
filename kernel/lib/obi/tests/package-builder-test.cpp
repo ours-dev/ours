@@ -1,0 +1,182 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+
+#include <obi/boot-obi.hpp>
+#include <obi/container-view.hpp>
+#include <obi/package-builder.hpp>
+
+#include <array>
+#include <string_view>
+
+#include <gtest/gtest.h>
+
+namespace {
+using obi::Compression;
+using obi::ContainerView;
+using obi::ItemFlags;
+using obi::ItemFormat;
+using obi::ItemSource;
+using obi::ItemType;
+using obi::PackageBuilder;
+
+auto item(std::string name, ItemType type, ItemFormat format, ustl::views::Span<u8 const> data)
+    -> ItemSource {
+    return ItemSource{
+        .name = std::move(name),
+        .type = type,
+        .format = format,
+        .data = data,
+        .flags = ItemFlags::Required,
+        .memory_size = data.size(),
+        .alignment = 8,
+        .compression = Compression::None,
+    };
+}
+
+TEST(PackageBuilder, BuildsAContainerThatContainerViewCanRead) {
+    constexpr auto kernel_bytes = std::array<u8, 4>{0x7F, 'E', 'L', 'F'};
+    constexpr auto setup_bytes = std::array<u8, 3>{'v', '1', '\n'};
+
+    PackageBuilder builder;
+    ASSERT_TRUE(builder
+                    .add_item(item("kernel", ItemType::Executable, ItemFormat::Elf,
+                                   {kernel_bytes.data(), kernel_bytes.size()}))
+                    .is_ok());
+    ASSERT_TRUE(builder
+                    .add_item(item("setup", ItemType::Config, ItemFormat::Yaml,
+                                   {setup_bytes.data(), setup_bytes.size()}))
+                    .is_ok());
+
+    auto const container = builder.build(/*crc=*/false);
+    ASSERT_FALSE(container.empty());
+    EXPECT_EQ(container.size() % obi::ContainerHeader::kAlignment, 0u);
+
+    auto view = ContainerView::from(container.data(), container.size());
+    ASSERT_TRUE(view.is_ok());
+    EXPECT_EQ(view.unwrap().item_count(), 2u);
+
+    auto const kernel = view.unwrap().find("kernel");
+    ASSERT_TRUE(kernel.is_ok() && kernel.unwrap().is_some());
+    EXPECT_EQ(kernel.unwrap().value().format(), ItemFormat::Elf);
+
+    // "setup" is named+typed exactly as PackageBuilder's setup-index
+    // convention expects (name=="setup", Config/Yaml), so build() must
+    // have pointed setup_item_index at it automatically.
+    EXPECT_NE(view.unwrap().setup_item_index(), obi::ContainerHeader::kNoSetupItem);
+}
+
+TEST(PackageBuilder, RejectsDuplicateItemNames) {
+    constexpr auto bytes = std::array<u8, 1>{'x'};
+    PackageBuilder builder;
+    ASSERT_TRUE(
+        builder.add_item(item("dup", ItemType::Data, ItemFormat::Raw, {bytes.data(), bytes.size()}))
+            .is_ok());
+    EXPECT_TRUE(
+        builder.add_item(item("dup", ItemType::Data, ItemFormat::Raw, {bytes.data(), bytes.size()}))
+            .is_err());
+}
+
+TEST(PackageBuilder, RejectsEmptyName) {
+    constexpr auto bytes = std::array<u8, 1>{'x'};
+    PackageBuilder builder;
+    EXPECT_TRUE(
+        builder.add_item(item("", ItemType::Data, ItemFormat::Raw, {bytes.data(), bytes.size()}))
+            .is_err());
+}
+
+TEST(PackageBuilder, CrcRoundTripsAndDetectsCorruption) {
+    constexpr auto bytes = std::array<u8, 6>{'p', 'a', 'y', 'l', 'o', 'a'};
+    PackageBuilder builder;
+    ASSERT_TRUE(builder
+                    .add_item(item("payload", ItemType::Data, ItemFormat::Raw,
+                                   {bytes.data(), bytes.size()}))
+                    .is_ok());
+
+    auto container = builder.build(/*crc=*/true);
+    ASSERT_FALSE(container.empty());
+    EXPECT_TRUE(ContainerView::from(container.data(), container.size()).is_ok());
+
+    container[container.size() - 1] ^= 0xFF;
+    EXPECT_TRUE(ContainerView::from(container.data(), container.size()).is_err());
+}
+
+TEST(PackageBuilder, EmptyBuilderProducesNothing) {
+    PackageBuilder builder;
+    EXPECT_TRUE(builder.build(/*crc=*/false).empty());
+}
+
+// The boot contract BootObi::from() enforces on kernel_image() output:
+// exactly one StorageKernel package, plus an Executable entry-point item
+// (index 0 after build()'s sort) exposed by executable().
+// NOLINTNEXTLINE(readability-identifier-naming) — gtest TEST macro, file-wide pattern
+TEST(BootObi, AcceptsExactlyOneKernelPackageAndExposesTheExecutable) {
+    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
+    constexpr auto elf_bytes = std::array<u8, 4>{0x7F, 'E', 'L', 'F'};
+    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
+    constexpr auto bootfs_bytes = std::array<u8, 3>{'b', 't', 's'};
+
+    PackageBuilder builder;
+    ASSERT_TRUE(builder
+                    .add_item(item("physload", ItemType::Executable, ItemFormat::Elf,
+                                   {elf_bytes.data(), elf_bytes.size()}))
+                    .is_ok());
+    ASSERT_TRUE(builder
+                    .add_item(item("kernel", ItemType::StorageKernel, ItemFormat::BootFs,
+                                   {bootfs_bytes.data(), bootfs_bytes.size()}))
+                    .is_ok());
+
+    auto const container = builder.build(/*crc=*/false);
+    auto view = ContainerView::from(container.data(), container.size());
+    ASSERT_TRUE(view.is_ok());
+
+    auto boot = obi::BootObi::from(view.unwrap());
+    ASSERT_TRUE(boot.is_ok());
+    auto const executable = boot.unwrap().executable();
+    ASSERT_TRUE(executable.is_some());
+    EXPECT_EQ(executable.value().name(), std::string_view("physload"));
+}
+
+// NOLINTNEXTLINE(readability-identifier-naming) — gtest TEST macro, file-wide pattern
+TEST(BootObi, RejectsMissingKernelPackage) {
+    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
+    constexpr auto elf_bytes = std::array<u8, 4>{0x7F, 'E', 'L', 'F'};
+
+    PackageBuilder builder;
+    ASSERT_TRUE(builder
+                    .add_item(item("physload", ItemType::Executable, ItemFormat::Elf,
+                                   {elf_bytes.data(), elf_bytes.size()}))
+                    .is_ok());
+
+    auto const container = builder.build(/*crc=*/false);
+    auto view = ContainerView::from(container.data(), container.size());
+    ASSERT_TRUE(view.is_ok());
+
+    auto boot = obi::BootObi::from(view.unwrap());
+    ASSERT_TRUE(boot.is_err());
+    EXPECT_EQ(boot.unwrap_err(), ours::Status::NotFound);
+}
+
+// NOLINTNEXTLINE(readability-identifier-naming) — gtest TEST macro, file-wide pattern
+TEST(BootObi, RejectsMultipleKernelPackages) {
+    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
+    constexpr auto bootfs_bytes = std::array<u8, 3>{'b', 't', 's'};
+
+    PackageBuilder builder;
+    ASSERT_TRUE(builder
+                    .add_item(item("kernel", ItemType::StorageKernel, ItemFormat::BootFs,
+                                   {bootfs_bytes.data(), bootfs_bytes.size()}))
+                    .is_ok());
+    ASSERT_TRUE(builder
+                    .add_item(item("kernel-2", ItemType::StorageKernel, ItemFormat::BootFs,
+                                   {bootfs_bytes.data(), bootfs_bytes.size()}))
+                    .is_ok());
+
+    auto const container = builder.build(/*crc=*/false);
+    auto view = ContainerView::from(container.data(), container.size());
+    ASSERT_TRUE(view.is_ok());
+
+    auto boot = obi::BootObi::from(view.unwrap());
+    ASSERT_TRUE(boot.is_err());
+    EXPECT_EQ(boot.unwrap_err(), ours::Status::AlreadyExists);
+}
+} // namespace
