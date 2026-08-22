@@ -14,38 +14,6 @@
 #include <cstring>
 
 namespace ours::phys {
-namespace {
-    auto handoff_reserve(void *context, bootmem::Range const range) -> Status {
-        return static_cast<BootMem *>(context)->reserve(range);
-    }
-
-    auto handoff_assign_node(void *context, bootmem::Range const range, NnId const node) -> Status {
-        return static_cast<BootMem *>(context)->assign_node(range, node);
-    }
-
-    auto handoff_allocate(void *context, bootmem::AllocationRequest const request,
-                          bootmem::Range *const result) -> Status {
-        if (result == nullptr) {
-            return Status::InvalidArgument;
-        }
-        auto const allocation = static_cast<BootMem *>(context)->allocate(request);
-        if (allocation.is_err()) {
-            return allocation.unwrap_err();
-        }
-        *result = allocation.unwrap();
-        return Status::Ok;
-    }
-
-    auto handoff_release(void *context, bootmem::Range const range) -> Status {
-        return static_cast<BootMem *>(context)->release(range);
-    }
-
-    auto handoff_visit(void *context, bootmem::MemoryQuery const query,
-                       bootmem::MemoryVisitor const visitor, void *const visitor_context)
-        -> Status {
-        return static_cast<BootMem *>(context)->visit(query, visitor, visitor_context);
-    }
-} // namespace
 
 auto KernelBoot::gen_load_bias(usize const limit) -> usize {
     if (limit < PAGE_SIZE) {
@@ -58,7 +26,9 @@ auto KernelBoot::gen_load_bias(usize const limit) -> usize {
     return ustl::mm::align_down(offset % limit, PAGE_SIZE);
 }
 
-auto KernelBoot::init(KernelPackageLoader &kpackage) -> void {
+auto KernelBoot::init(KernelPackageLoader &kpackage, EarlyMem const &early) -> void {
+    early_ = early;
+
     auto const status = kimage_.init(kpackage.kernel());
     if (status != Status::Ok) {
         panic("Failed to initialize kernel image: {}", static_cast<u32>(status));
@@ -76,19 +46,19 @@ auto KernelBoot::init(KernelPackageLoader &kpackage) -> void {
 
 auto KernelBoot::load() -> void {
     auto const image_size = ustl::mm::align_up(kimage_.size(), PAGE_SIZE);
-    auto const mem = global_bootmem();
-    auto const allocation = mem->allocate({
+    bootmem::Range placement{};
+    auto const allocation = early_.allocate(early_.context, {
         .size = image_size,
         .alignment = PAGE_SIZE,
-        .lower = mem->min_address(),
-        .upper = mem->max_address(),
+        .lower = early_.min_address,
+        .upper = early_.max_address,
         .node = bootmem::kAnyNode,
         .direction = bootmem::AllocationDirection::TopDown,
-    });
-    if (allocation.is_err()) {
+    }, &placement);
+    if (allocation != Status::Ok) {
         panic("No enough memory to place image");
     }
-    auto const target_addr = allocation.unwrap().base;
+    auto const target_addr = placement.base;
     std::memset(reinterpret_cast<void *>(target_addr), 0, image_size);
 
     auto result = kimage_.load_at(target_addr);
@@ -133,18 +103,7 @@ auto KernelBoot::do_handoff() -> void {
     auto const handoff = global_handoff();
     DEBUG_ASSERT(handoff, "Global handoff must be initialized");
 
-    auto const mem = global_bootmem();
-    handoff->mem.bootmem = {
-        .context = mem,
-        .reserve = handoff_reserve,
-        .assign_node = handoff_assign_node,
-        .allocate = handoff_allocate,
-        .release = handoff_release,
-        .visit = handoff_visit,
-        .min_address = mem->min_address(),
-        .max_address = mem->max_address(),
-    };
-
+    handoff->mem.bootmem = early_;
     handoff->mem.kernel_load_addr = kernel_addr_;
     handoff->boot_package = package_handoff_;
 

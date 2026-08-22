@@ -1,160 +1,203 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #ifndef OURS_PHYS_KERNEL_IMAGE_HPP
-#define OURS_PHYS_KERNEL_IMAGE_HPP
+#define OURS_PHYS_KERNEL_IMAGE_HPP 1
 
-#include <ours/types.hpp>
+#include <obi/container-view.hpp>
 #include <ours/compiler.hpp>
-#include <ours/status.hpp>
 #include <ours/phys/aspace.hpp>
-#include <ours/phys/init-fs.hpp>
+#include <ours/status.hpp>
+#include <ours/types.hpp>
 
+#include <ustl/collections/static-vec.hpp>
+#include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <ustl/variant.hpp>
-#include <ustl/views/span.hpp>
 
-#include <eftl/elf/views.hpp>
+#include <limits>
+#include <utility>
+#include <span>
+
+#include <eftl/elf/binary.hpp>
+#include <eftl/elf/link.hpp>
+#include <eftl/elf/load_policy.hpp>
+#include <eftl/elf/parser.hpp>
 #include <eftl/elf/relocations.hpp>
 
-#include <obi/obi-header.hpp>
-
 namespace ours::phys {
-    class IKernelImage {
-        using Self = IKernelImage;
-      public:
-        IKernelImage() = default;
-        virtual ~IKernelImage() = default;
+class RawImage final {
+  public:
+    [[nodiscard]]
+    auto init(std::span<u8 const> file, usize memory_size) -> Status;
+    [[nodiscard]]
+    auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
+    auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
+    auto relocate(usize) -> void {}
 
-        virtual auto init(ustl::views::Span<u8> file) -> Status = 0;
+    [[nodiscard]]
+    auto size() const -> usize {
+        return m_memory_size;
+    }
 
-        // virtual auto patch(ustl::views::Span<u8> patch_file) -> Status = 0;
+  private:
+    std::span<u8 const> m_file;
+    usize m_memory_size{0};
+    PhysAddr m_pa_load{0};
+};
 
-        virtual auto size() const -> usize = 0;
+class ElfImage final {
+  public:
+    static constexpr auto K_MAX_LOAD_SEGMENTS = usize{6};
 
-        /// If successful, return the physical address of final enter point.
-        virtual auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> = 0;
+    [[nodiscard]]
+    auto init(std::span<u8 const> file, usize memory_size) -> Status;
+    [[nodiscard]]
+    auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
+    auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
 
-        virtual auto fix_mapping(Aspace &aspace) -> Status {
-            return Status::Unsupported;
+    [[nodiscard]]
+    auto size() const -> usize {
+        return m_load_plan.image_size();
+    }
+
+    auto relocate(usize load_address) -> void;
+
+  private:
+    using Traits = eftl::elf::TraitsNative;
+
+#if defined(__x86_64__)
+    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::X86_64;
+#elif defined(__i386__)
+    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::I386;
+#elif defined(__aarch64__) || defined(__arm64__)
+    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::AARCH64;
+#elif defined(__riscv)
+    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::RISCV;
+#else
+#error "The phys ELF loader has no machine mapping for this compilation target"
+#endif
+
+    template <typename T>
+    using LoadPlanCollection = ustl::collections::StaticVec<T, K_MAX_LOAD_SEGMENTS>;
+    using LoadPlan = eftl::elf::LoadPlan<Traits, LoadPlanCollection>;
+    using LoadPolicy =
+        eftl::elf::KernelElfLoadPolicy<Traits, LoadPlanCollection, K_TARGET_ELF_MACHINE, PAGE_SIZE>;
+
+    VirtAddr m_va_load{};
+    PhysAddr m_pa_load{};
+    ustl::Option<eftl::elf::FileImpl<Traits>> m_binary;
+    LoadPlan m_load_plan;
+};
+
+class KernelImage final {
+  private:
+    using ImageStorage = ustl::Variant<RawImage, ElfImage>;
+
+    template <typename Function>
+    FORCE_INLINE constexpr auto visit_image(Function &&function) -> decltype(auto) {
+        return ustl::visit(std::forward<Function>(function), m_storage);
+    }
+
+    template <typename Function>
+    FORCE_INLINE constexpr auto visit_image(Function &&function) const -> decltype(auto) {
+        return ustl::visit(std::forward<Function>(function), m_storage);
+    }
+
+  public:
+    [[nodiscard]]
+    auto init(obi::ItemView const &item) -> Status {
+        if (item.type() != obi::ItemType::Executable) {
+            m_initialized = false;
+            return Status::BadType;
+        }
+        if (item.compression() != obi::Compression::None) {
+            m_initialized = false;
+            return Status::NotSupported;
+        }
+        switch (item.format()) {
+            case obi::ItemFormat::Raw:
+                m_storage.emplace<RawImage>();
+                break;
+            case obi::ItemFormat::Elf:
+                m_storage.emplace<ElfImage>();
+                break;
+            default:
+                m_initialized = false;
+                return Status::BadType;
         }
 
-        /// `|offset|` is just valid on KASLR enabled.
-        virtual auto relocate(usize offset) -> void {}
-    };
-
-    class RawImage: public IKernelImage {
-        using Base = IKernelImage;
-        using Self = RawImage;
-      public:
-        RawImage() = default;
-        virtual ~RawImage() = default;
-
-        auto init(ustl::views::Span<u8> file) -> Status override;
-
-        // auto patch(ustl::views::Span<u8> patch_file) -> Status override;
-
-        auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> override;
-
-        auto size() const -> usize override {
-            return file_.size() - sizeof(header_) + header_.reserved_size;
-        }
-
-        ustl::views::Span<u8> file_;
-        obi::ObiRawExeHeader header_;
-    };
-
-    class ElfImage: public IKernelImage {
-        using Base = IKernelImage;
-        using Self = ElfImage;
-      public:
-        ElfImage() = default;
-        virtual ~ElfImage() = default;
-
-        CXX11_CONSTEXPR
-        static auto const kMaxLoadSegments = 6;
-
-        /// Stub type alias for the future InitFs support.
-        auto init(ustl::views::Span<u8> file) -> Status override;
-
-        auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> override;
-
-        auto fix_mapping(Aspace &aspace) -> Status override;
-
-        auto size() const -> usize override {
-            return loadinfo_.va_maximal_ - loadinfo_.va_minimal_;
-        }
-
-        auto relocate(usize load_address) -> void override;
-      private:
-        using ElfTraits = eftl::elf::ElfTraitsNative;
-        using ElfView = eftl::elf::View<ElfTraits>;
-
-        template <typename T>
-        using LoadInfoCollection = ustl::collections::StaticVec<T, kMaxLoadSegments>;
-        using LoadInfo = eftl::elf::LoadInfo<ElfTraits, LoadInfoCollection>;
-
-        VirtAddr va_load_;
-        PhysAddr pa_load_;
-        LoadInfo loadinfo_;
-        ElfView::Dynamics dynamics_;
-
-        using Relocations = eftl::elf::Relocations<ElfTraits>;
-        using InitInfo = eftl::elf::InitFiniInfo<ElfTraits>;
-        using StrTableInfo = eftl::elf::StrTableInfo<ElfTraits>;
-        ElfView view_;
-    };
-
-    class KernelImage {
-        using Self = KernelImage;
-      public:
-        enum class Type {
-            RawImage,
-            ElfImage,
-        };
-
-        auto init(Type type, ustl::views::Span<u8> file) -> Status {
-            switch (type) {
-                case Type::RawImage: {
-                    storage_.emplace<RawImage>();
-                    break;
-                }
-                case Type::ElfImage: {
-                    storage_.emplace<ElfImage>();
-                    image_ = ustl::mem::address_of(ustl::get<ElfImage>(storage_));
-                    break;
-                }
+        auto const declared_memory_size = item.memory_size();
+        if constexpr (sizeof(usize) < sizeof(declared_memory_size)) {
+            if (declared_memory_size >
+                static_cast<decltype(declared_memory_size)>(std::numeric_limits<usize>::max())) {
+                m_initialized = false;
+                return Status::InvalidArgument;
             }
-
-            DEBUG_ASSERT(image_, "Unrecognized image type");
-            return image_->init(file);
         }
+        auto const memory_size = static_cast<usize>(declared_memory_size);
+        auto const status =
+            visit_image([&](auto &image) { return image.init(item.payload(), memory_size); });
+        m_initialized = status == Status::Ok;
+        return status;
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto relocate(usize offset) -> void {
-            image_->relocate(offset);
+    /// Initialize from a raw file image (the flat kernel-package model:
+    /// the kernel ELF is a file inside the StorageKernel BootFS, with no
+    /// separate memory-size declaration).  Detects ELF vs raw by magic.
+    [[nodiscard]]
+    auto init(std::span<u8 const> file) -> Status {
+        if (file.data() == nullptr && file.size() != 0) {
+            m_initialized = false;
+            return Status::InvalidArgument;
         }
-
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto size() const -> usize {
-            return image_->size();
+        auto const is_elf = file.size() >= 4 && static_cast<u8>(file[0]) == 0x7F &&
+                            file[1] == static_cast<u8>('E') && file[2] == static_cast<u8>('L') &&
+                            file[3] == static_cast<u8>('F');
+        if (is_elf) {
+            m_storage.emplace<ElfImage>();
+            auto const status = visit_image([&](auto &image) { return image.init(file, 0); });
+            m_initialized = status == Status::Ok;
+            return status;
         }
+        m_storage.emplace<RawImage>();
+        auto const status = visit_image([&](auto &image) { return image.init(file, file.size()); });
+        m_initialized = status == Status::Ok;
+        return status;
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
-            return image_->load_at(phys_addr);
+    FORCE_INLINE constexpr auto relocate(usize offset) -> void {
+        if (!m_initialized) {
+            return;
         }
+        visit_image([offset](auto &image) { image.relocate(offset); });
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto fix_mapping(Aspace &aspace) -> Status {
-            return image_->fix_mapping(aspace);
+    [[nodiscard]]
+    FORCE_INLINE constexpr auto size() const -> usize {
+        return m_initialized ? visit_image([](auto const &image) { return image.size(); }) : 0;
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE constexpr auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
+        if (!m_initialized) {
+            return ustl::err(Status::BadState);
         }
+        return visit_image([phys_addr](auto &image) { return image.load_at(phys_addr); });
+    }
 
-        IKernelImage *image_;
+    [[nodiscard]]
+    FORCE_INLINE constexpr auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
+        if (!m_initialized) {
+            return Status::BadState;
+        }
+        return visit_image(
+            [&aspace, target_base](auto &image) { return image.fix_mapping(aspace, target_base); });
+    }
 
-        using ImageStorage = ustl::Variant<RawImage, ElfImage>;
-        ImageStorage  storage_;
-    };
-
+  private:
+    ImageStorage m_storage;
+    bool m_initialized{false};
+};
 } // namespace ours::phys
 
 #endif // OURS_PHYS_KERNEL_IMAGE_HPP
