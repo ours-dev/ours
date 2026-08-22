@@ -1,0 +1,38 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//kernel/phys/kernel_elf_binary.gni")
+
+# Defines a position-independent ELF module intended for the physload runtime.
+# This migrates Zircon's target topology and defaults, but does not itself
+# define the Ours PhysLoadModuleMain ABI.  No production target instantiates
+# this template until //kernel/phys:physload.module has a real implementation.
+#
+# Parameters:
+#   has_patches (optional)
+#     As for kernel_elf_image(), but defaults to false for modules.
+#   All other parameters are as for kernel_elf_binary().  target_type is
+#   reserved and always set to loadable_module.
+template("physload_module") {
+  kernel_elf_binary(target_name) {
+    assert_no_deps = []
+    deps = []
+    has_patches = false
+    forward_variables_from(invoker, "*", [ "target_type" ])
+
+    target_type = "loadable_module"
+    # Every phys module links as an ET_DYN image whose e_entry is the
+    # phys_load_handoff adapter (see phys-module.ld).
+    configs += [ "//kernel/phys:phys-module.link" ]
+    deps += [ "//kernel/phys:physload.module" ]
+    assert_no_deps += [ "//kernel/phys:uart-console" ]
+  }
+}
+
+set_defaults("physload_module") {
+  # These modules use the freestanding executable configuration even though
+  # they are ET_DYN images: physload performs relocation without symbolic
+  # dynamic linking or an instrumentation runtime.
+  configs = default_executable_configs
+}

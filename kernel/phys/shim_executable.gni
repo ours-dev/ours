@@ -1,0 +1,38 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//kernel/phys/phys_executable.gni")
+
+# Defines a phys executable that is discoverable as an emulator boot shim.
+# Unlike Zircon's Fuchsia product adapter, this localized template does not
+# choose a global QEMU-default shim or archive policy; those are product
+# decisions and no such Ours interface exists yet.
+#
+# Parameters:
+#   import (optional)
+#     A .gni file defining target_type when it is not already visible here.
+#   target_type (optional)
+#     Target template to instantiate.  Defaults to phys_executable.
+#   All other parameters are forwarded to that target template.
+template("shim_executable") {
+  if (defined(invoker.import)) {
+    import(invoker.import)
+  }
+
+  if (defined(invoker.target_type)) {
+    _target_type = invoker.target_type
+  } else {
+    _target_type = "phys_executable"
+  }
+
+  target(_target_type, target_name) {
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "import",
+                             "target_type",
+                           ])
+    emulator_support_aib = true
+  }
+}

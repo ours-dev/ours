@@ -12,8 +12,8 @@ SECTIONS {
     PROVIDE_HIDDEN(__executable_start = .);
     . = ALIGN(8);
     .boot : {
-        *(.boot.header*)
-        *(.boot.text*)
+        KEEP(*(.boot.header*))
+        KEEP(*(.boot.text*))
     } :code
     
     . = ALIGN(8);
@@ -38,14 +38,14 @@ SECTIONS {
     } :rodata
 
     . = ALIGN(8);
-    .init_array : {
-        PROVIDE_HIDDEN(__ctors_start = .);
+    .ccrt_init : {
+        PROVIDE_HIDDEN(__ccrt_init_start = .);
         KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
         KEEP(*(SORT_BY_INIT_PRIORITY(.ctors.*)))
         KEEP(*(.init_array))
-        PROVIDE_HIDDEN(__ctors_end  = .);
+        PROVIDE_HIDDEN(__ccrt_init_end  = .);
 
-        ASSERT(ALIGNOF(.init_array) == 8 || SIZEOF(.init_array) == 0, ".init_array overalignment -> maybe padding gaps"); */
+        ASSERT(ALIGNOF(.ccrt_init) == 8 || SIZEOF(.ccrt_init) == 0, ".ccrt_init overalignment -> maybe padding gaps");
     }
 
     .data : {

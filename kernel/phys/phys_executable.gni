@@ -1,0 +1,317 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/elf/elf_build_id.gni")
+import("//build/elf/elf_raw_image.gni")
+import("//build/ours/cpu.gni")
+
+# Defines a public raw phys image, its underlying `.binary` ELF linker target,
+# and deterministic build-id post-processing.
+#
+# Parameters:
+#
+#   output_dir (optional)
+#     Directory for the public raw image.  Defaults to target_out_dir.
+#
+#   output_extension (optional)
+#     Raw-image extension without a leading dot.  Defaults to "bin".
+#
+#   output_name (optional)
+#     Base name for both the private ELF and public raw image.
+#
+#   images_metadata (optional)
+#     Scope overriding fields in the `images` metadata entry except `path`.
+#
+#   release_output (optional)
+#     Publishes the raw image through the `exported_files` build API when true.
+#     Defaults to false.
+#
+#   emulator_support_aib (optional)
+#     Publishes this raw image through Zircon's emulator-support assembly-input
+#     metadata seam when true.  Defaults to false.
+#
+#   embed_in_obi (optional)
+#     Self-registers this raw image as a `--type=container` OBI input, so any
+#     obi() target reachable through `deps` picks it up automatically.
+#     Defaults to false.  Only single-image boot models (the whole raw image
+#     *is* the bootloader-loaded file) need this; targets loaded as a
+#     separate bootloader module (e.g. a Multiboot2 module) must leave it
+#     off, since embedding would place a second, unused copy inside the OBI.
+#
+#   obi_executable_item (optional)
+#     Distributes a stripped ELF of this image and self-registers it as a
+#     `--type=executable` OBI input (item 0 — the entry point the boot shim
+#     loads from the container).  The default-toolchain group also gains a
+#     real dependency into the phys toolchain, so any image depending on
+#     this target actually builds it.  Mutually exclusive with
+#     embed_in_obi.  Defaults to false.
+template("phys_executable") {
+  if (defined(invoker.embed_in_obi)) {
+    _embed_in_obi = invoker.embed_in_obi
+  } else {
+    _embed_in_obi = false
+  }
+  if (defined(invoker.obi_executable_item)) {
+    _obi_executable_item = invoker.obi_executable_item
+  } else {
+    _obi_executable_item = false
+  }
+  assert(!(_embed_in_obi && _obi_executable_item),
+         "phys_executable($target_name): embed_in_obi and obi_executable_item are exclusive")
+
+  if (toolchain_environment != "kernel.phys") {
+    group(target_name) {
+      forward_variables_from(invoker,
+                             [
+                               "testonly",
+                               "visibility",
+                             ])
+      if (_embed_in_obi) {
+        if (defined(invoker.output_dir)) {
+          _out_dir = invoker.output_dir
+        } else {
+          _out_dir = target_out_dir
+        }
+        if (defined(invoker.output_extension)) {
+          _out_ext = invoker.output_extension
+        } else {
+          _out_ext = "bin"
+        }
+        if (defined(invoker.output_name)) {
+          _out_name = invoker.output_name
+        } else {
+          _out_name = target_name
+        }
+        _raw = "$_out_dir/$_out_name.$_out_ext"
+
+        metadata = {
+          obi_input_args = []
+          obi_input_args_barrier = []
+          obi_input_args += [
+            "--reset",
+            "--type=container",
+            rebase_path(_raw, root_build_dir),
+          ]
+        }
+      }
+
+      if (_obi_executable_item) {
+        # Without this edge the group is empty and the phys image is never
+        # built by image-level deps.  The phys-toolchain group carries the
+        # --type=executable metadata for the parent obi().
+        public_deps = [ ":$target_name(:kernel.phys_$current_cpu)" ]
+      }
+    }
+    not_needed(invoker, "*")
+  } else {
+    _main_target = target_name
+    _binary_target = "$target_name.binary"
+    _build_id_target = "_phys_executable.$target_name.build-id"
+    _raw_image_target = "_phys_executable.$target_name.raw-image"
+    _elf_item_target = "_phys_executable.$target_name.elf-item"
+    _elf_item_path = "$target_out_dir/$target_name.elf"
+
+    if (defined(invoker.output_name)) {
+      _output_name = invoker.output_name
+    } else {
+      _output_name = target_name
+    }
+    if (defined(invoker.output_dir)) {
+      _raw_output_dir = invoker.output_dir
+    } else {
+      _raw_output_dir = target_out_dir
+    }
+    if (defined(invoker.output_extension)) {
+      _raw_output_extension = invoker.output_extension
+    } else {
+      _raw_output_extension = "bin"
+    }
+
+    # The private ELF path is always target-local.  output_dir and
+    # output_extension describe only the public flat image.
+    _image_path = "$target_out_dir/$_output_name"
+    _debug_path = "$_image_path${ours_toolchain.link_output_suffix}"
+    _build_id_file = "$_image_path.build-id"
+    _raw_image_path = "$_raw_output_dir/$_output_name.$_raw_output_extension"
+
+    executable(_binary_target) {
+      configs += [ "//kernel/phys:phys.link" ]
+      forward_variables_from(invoker,
+                             "*",
+                             [
+                               "configs",
+                               "data_deps",
+                               "emulator_support_aib",
+                               "images_metadata",
+                               "metadata",
+                               "output_dir",
+                               "output_extension",
+                               "output_name",
+                               "release_output",
+                               "validations",
+                               "visibility",
+                             ])
+      forward_variables_from(invoker, [ "visibility" ])
+      if (!defined(visibility)) {
+        visibility = []
+      }
+      visibility += [
+        ":$_build_id_target",
+        ":$_main_target",
+        ":$_raw_image_target",
+      ]
+      if (_obi_executable_item) {
+        visibility += [ ":$_elf_item_target" ]
+      }
+      if (defined(invoker.configs)) {
+        configs += invoker.configs
+      }
+      output_name = _output_name
+    }
+
+    elf_build_id(_build_id_target) {
+      visibility = [ ":*" ]
+      forward_variables_from(invoker, [ "testonly" ])
+      deps = [ ":$_binary_target" ]
+      elf = _image_path
+      output = _build_id_file
+    }
+
+    elf_raw_image(_raw_image_target) {
+      visibility = [ ":*" ]
+      forward_variables_from(invoker, [ "testonly" ])
+      deps = [ ":$_binary_target" ]
+      elf = _debug_path
+      output = _raw_image_path
+    }
+
+    if (_obi_executable_item) {
+      # The ELF distributed as the container's item 0.  --strip-sections
+      # keeps the program headers (all the boot shim needs to load the
+      # image) while dropping the section-header table.  NOTE: the GNU
+      # build-id note is not covered by a PT_NOTE segment today, so it does
+      # NOT survive this strip; a future loader/module pairing check must
+      # revisit before relying on it (deferred, see
+      # .agents/tasks/phys-module-and-obi-tree).
+      action(_elf_item_target) {
+        visibility = [ ":*" ]
+        forward_variables_from(invoker, [ "testonly" ])
+        deps = [ ":$_binary_target" ]
+        sources = [ _debug_path ]
+        outputs = [ _elf_item_path ]
+        depfile = "$_elf_item_path.d"
+        script = "//kernel/phys/strip-kernel-elf.py"
+        args = [
+          rebase_path("$clang_tool_dir/llvm-objcopy", root_build_dir),
+          rebase_path(_debug_path, root_build_dir),
+          rebase_path(_elf_item_path, root_build_dir),
+          rebase_path("$_elf_item_path.d", root_build_dir),
+        ]
+      }
+    }
+
+    group(_main_target) {
+      public_deps = [ ":$_binary_target" ]
+      data_deps = [
+        ":$_build_id_target",
+        ":$_raw_image_target",
+      ]
+      if (_obi_executable_item) {
+        # Hard edge on the stripped ELF so any obi() consuming the metadata
+        # below packs a file that actually exists.
+        deps = [ ":$_elf_item_target" ]
+      }
+      if (defined(invoker.data_deps)) {
+        data_deps += invoker.data_deps
+      }
+      forward_variables_from(invoker,
+                             [
+                               "testonly",
+                               "validations",
+                               "visibility",
+                             ])
+      if (defined(visibility)) {
+        visibility += [ ":$_main_target" ]
+      }
+
+      metadata = {
+        binaries = []
+        debug_symbol_files = []
+        images = []
+        images_barrier = []
+        obi_input_args = []
+        obi_input_args_barrier = []
+
+        if (defined(invoker.metadata)) {
+          forward_variables_from(invoker.metadata, "*")
+        }
+
+        binaries += [
+          {
+            cpu = current_cpu
+            debug = rebase_path(_debug_path, root_build_dir)
+            elf_build_id = rebase_path(_build_id_file, root_build_dir)
+            environment = toolchain_environment
+            label = get_label_info(":$_main_target", "label_with_toolchain")
+            os = current_os
+            type = "executable"
+            if (ours_toolchain.link_output_suffix != "") {
+              dist = rebase_path(_image_path, root_build_dir)
+            }
+          },
+        ]
+        debug_symbol_files += [
+          {
+            cpu = current_cpu
+            debug = rebase_path(_debug_path, root_build_dir)
+            elf_build_id_file = rebase_path(_build_id_file, root_build_dir)
+            label = get_label_info(":$_main_target", "label_with_toolchain")
+            os = current_os
+          },
+        ]
+        if (_embed_in_obi) {
+          obi_input_args += [
+            "--reset",
+            "--type=container",
+            rebase_path(_raw_image_path, root_build_dir),
+          ]
+        }
+        if (_obi_executable_item) {
+          obi_input_args += [
+            "--reset",
+            "--type=executable",
+            rebase_path(_elf_item_path, root_build_dir),
+          ]
+        }
+        if (defined(invoker.release_output) && invoker.release_output) {
+          if (!defined(exported_files)) {
+            exported_files = []
+          }
+          exported_files += [
+            {
+              name = _main_target
+              path = rebase_path(_raw_image_path, root_build_dir)
+            },
+          ]
+        }
+
+        if (defined(invoker.emulator_support_aib) &&
+            invoker.emulator_support_aib) {
+          if (!defined(emulator_support_aib_input)) {
+            emulator_support_aib_input = []
+          }
+          if (!defined(emulator_support_aib_input_barrier)) {
+            emulator_support_aib_input_barrier = []
+          }
+          emulator_support_aib_input += [
+            {
+              label = get_label_info(":$_main_target", "label_with_toolchain")
+              path = rebase_path(_raw_image_path, root_build_dir)
+            },
+          ]
+        }
+      }
+    }
+  }
+}
