@@ -1,8 +1,0 @@
-build:conf_x86 --cpu=x86_64
-
-build:conf_arm --cpu=arm
-
-build:conf_riscv --cpu=riscv
-
-build --features=ours.kernel
-# build --platforms=//build/toolchain/platform:x86_64_none_elf

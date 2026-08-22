@@ -1,3 +1,0 @@
-constraint_setting(name = "enviroment")
-constraint_value(name = "kernel.phys", constraint_setting = ":enviroment")
-constraint_value(name = "kernel.main", constraint_setting = ":enviroment")
