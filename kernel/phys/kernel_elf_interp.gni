@@ -1,0 +1,65 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Defines a link-input target whose PT_INTERP string is the canonical GNU
+# build ID of exactly one executable-like target reached through `deps`.
+template("kernel_elf_interp") {
+  assert(defined(invoker.deps), "kernel_elf_interp($target_name) requires deps")
+
+  _main_target = target_name
+  _metadata_target = "_kernel_elf_interp.$target_name.metadata"
+  _generate_target = "_kernel_elf_interp.$target_name.generate"
+  _metadata_file = "$target_gen_dir/$target_name.build-id.json"
+  _include_file = "$target_gen_dir/$target_name.elf-interp.inc"
+
+  generated_file(_metadata_target) {
+    visibility = [ ":$_generate_target" ]
+    deps = invoker.deps
+    outputs = [ _metadata_file ]
+    data_keys = [ "elf_build_ids" ]
+    output_conversion = "json"
+    forward_variables_from(invoker, [ "testonly" ])
+  }
+
+  action(_generate_target) {
+    visibility = [ ":$_main_target" ]
+    script = "//kernel/phys/generate-elf-interp.py"
+    deps = [ ":$_metadata_target" ]
+    sources = [ _metadata_file ]
+    outputs = [ _include_file ]
+    depfile = "$_include_file.d"
+    args = rebase_path([
+                         _metadata_file,
+                         _include_file,
+                         depfile,
+                       ],
+                       root_build_dir)
+    forward_variables_from(invoker, [ "testonly" ])
+
+    metadata = {
+      # This dependency exists solely to read one link output's build ID.  It
+      # must not make that ELF's boot or package payloads appear as contents of
+      # the executable that links this generated PT_INTERP section.
+      images_barrier = []
+      # Renamed to the three-layer distribution key (see //build/dist).
+      distribution_entries_barrier = []
+      obi_input_args_barrier = []
+    }
+  }
+
+  source_set(_main_target) {
+    forward_variables_from(invoker,
+                           [
+                             "data_deps",
+                             "metadata",
+                             "testonly",
+                             "visibility",
+                           ])
+    sources = [ "//kernel/phys/elf-interp.S" ]
+    defines = [ "ELF_INTERP_INC=\"$target_name.elf-interp.inc\"" ]
+    include_dirs = [ target_gen_dir ]
+    inputs = [ _include_file ]
+    deps = [ ":$_generate_target" ]
+  }
+}

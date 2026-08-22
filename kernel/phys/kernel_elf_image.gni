@@ -1,0 +1,200 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//kernel/lib/code-patching/code-patching.gni")
+
+# Produces a fully stripped ELF image and represents it in kernel-package
+# metadata, optionally alongside code-patching payloads.
+#
+# Parameters:
+#
+#   deps (required)
+#     Must reach the single linker target represented by this image.
+#
+#   elf (required, local adapter parameter)
+#     Path to that linker target's unstripped ELF output.  Zircon obtains this
+#     through link-output metadata; Ours passes it explicitly until the local
+#     toolchain exposes an equivalent response-file seam.
+#
+#   has_patches (optional)
+#     Whether to package code-patching metadata.  Defaults to true, matching
+#     Zircon.  Callers for binaries known not to contain patches should pass
+#     false explicitly.
+#
+#   output_name (optional)
+#     Destination name inside the kernel package.  Defaults to target_name.
+#
+#   binary_type (optional, local adapter parameter)
+#     GN target type represented in the `binaries` Build API metadata.
+#     Defaults to "executable".
+template("kernel_elf_image") {
+  assert(defined(invoker.deps), "kernel_elf_image($target_name) requires deps")
+  assert(defined(invoker.elf), "kernel_elf_image($target_name) requires elf")
+
+  _main_target = target_name
+
+  if (defined(invoker.binary_type)) {
+    _binary_type = invoker.binary_type
+  } else {
+    _binary_type = "executable"
+  }
+
+  if (defined(invoker.output_name)) {
+    _image_name = invoker.output_name
+  } else {
+    _image_name = target_name
+  }
+
+  _image_path = invoker.elf
+  _debug_suffix = ""
+  if (ours_toolchain != false) {
+    _debug_suffix = ours_toolchain.link_output_suffix
+  }
+  _debug_path = "${invoker.elf}${_debug_suffix}"
+
+  # Physical outputs are target-unique.  _image_name is only the package
+  # destination and can intentionally be shared by mutually exclusive kernel
+  # variants such as vmours and vmours.with-tests.
+  _package_path = "$target_out_dir/$_main_target.image.elf"
+  _package_depfile = "$_package_path.d"
+  _package_target = "_kernel_elf_image.$target_name.strip"
+  _has_patches = !defined(invoker.has_patches) || invoker.has_patches
+
+  action(_package_target) {
+    visibility = [ ":*" ]
+    forward_variables_from(invoker, [ "testonly" ])
+    deps = invoker.deps
+    sources = [ _debug_path ]
+    outputs = [ _package_path ]
+    depfile = _package_depfile
+    script = "//kernel/phys/strip-kernel-elf.py"
+    args = [
+      "objcopy",
+      rebase_path(_debug_path, root_build_dir),
+      rebase_path(_package_path, root_build_dir),
+      rebase_path(_package_depfile, root_build_dir),
+    ]
+  }
+
+  if (_has_patches) {
+    _code_patches_target = "_kernel_elf_image.$_main_target.code-patches"
+    code_patches(_code_patches_target) {
+      visibility = [ ":*" ]
+      forward_variables_from(invoker, [ "testonly" ])
+      deps = invoker.deps
+      elf = _debug_path
+      output = "$target_out_dir/$_main_target.code-patches.bin"
+    }
+  }
+
+  group(_main_target) {
+    public_deps = invoker.deps
+    data_deps = [ ":$_package_target" ]
+    if (defined(invoker.data_deps)) {
+      data_deps += invoker.data_deps
+    }
+    if (_has_patches) {
+      data_deps += [ ":$_code_patches_target" ]
+    }
+    forward_variables_from(invoker,
+                           [
+                             "testonly",
+                             "validations",
+                             "visibility",
+                           ])
+
+    metadata = {
+      binaries = []
+      debug_symbol_files = []
+      images = []
+      images_barrier = []
+      # Three-layer distribution manifest keys (see //build/dist):
+      # kernel ELF payloads are collected by fini_manifest() through
+      # distribution_entries; the barrier stops the walk at this group's deps.
+      distribution_entries = []
+      distribution_entries_barrier = []
+
+      if (defined(invoker.metadata)) {
+        forward_variables_from(invoker.metadata, "*")
+      }
+
+      binaries += [
+        {
+          cpu = current_cpu
+          debug = rebase_path(_debug_path, root_build_dir)
+          elf_build_id = rebase_path("$_image_path.build-id", root_build_dir)
+          environment = toolchain_environment
+          label = get_label_info(":$target_name", "label_with_toolchain")
+          os = current_os
+          type = _binary_type
+          if (ours_toolchain.link_output_suffix != "") {
+            dist = rebase_path(_image_path, root_build_dir)
+          }
+        },
+      ]
+      debug_symbol_files += [
+        {
+          cpu = current_cpu
+          debug = rebase_path(_debug_path, root_build_dir)
+          elf_build_id_file =
+              rebase_path("$_image_path.build-id", root_build_dir)
+          label = get_label_info(":$target_name", "label_with_toolchain")
+          os = current_os
+        },
+      ]
+      if (_has_patches) {
+        images += [
+          {
+            type = "code-patches"
+            elf = rebase_path(_debug_path, root_build_dir)
+            label = get_label_info(":$_main_target", "label_with_toolchain")
+            path = rebase_path("$target_out_dir/$_main_target.code-patches.bin",
+                               root_build_dir)
+            destination = "$_image_name/code-patches"
+          },
+        ]
+        distribution_entries += [
+          {
+            destination = "$_image_name/code-patches"
+            source = rebase_path("$target_out_dir/$_main_target.code-patches.bin",
+                                 root_build_dir)
+            label = get_label_info(":$_main_target", "label_with_toolchain")
+          },
+        ]
+      }
+      images += [
+        {
+          type = "kernel-elf"
+          label = get_label_info(":$_main_target", "label_with_toolchain")
+          name = _image_name
+          path = rebase_path(_package_path, root_build_dir)
+          # Zircon convention: with code-patches the kernel ELF and the
+          # patches live in an "$install_name/" subtree (image.elf +
+          # code-patches.bin); without patches the ELF is a bare file at
+          # $install_name.
+          if (_has_patches) {
+            destination = "$_image_name/image.elf"
+          } else {
+            destination = _image_name
+          }
+          stripped = true
+        },
+      ]
+      distribution_entries += [
+        {
+          # Same convention as the `images` metadata above: the kernel ELF
+          # is one file in an "$install_name/" subtree when code-patches
+          # are packaged, or a bare "$install_name" file otherwise.
+          if (_has_patches) {
+            destination = "$_image_name/image.elf"
+          } else {
+            destination = _image_name
+          }
+          source = rebase_path(_package_path, root_build_dir)
+          label = get_label_info(":$_main_target", "label_with_toolchain")
+        },
+      ]
+    }
+  }
+}

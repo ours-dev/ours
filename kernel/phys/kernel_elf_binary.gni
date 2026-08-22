@@ -1,0 +1,110 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/elf/elf_build_id.gni")
+import("//kernel/phys/kernel_elf_image.gni")
+
+# Defines an ELF image target and its underlying `$target_name.binary` linker
+# target. This mirrors Zircon's public target topology while using the local
+# linker toolchain directly.
+#
+# Parameters:
+#
+#   install_name (optional)
+#     Package destination for the ELF image.  Defaults to target_name.  This
+#     does not change the underlying linker output name.
+#
+#   target_type (optional)
+#     GN binary target type.  Defaults to executable.
+#
+#   output_dir, output_extension
+#     Not allowed.  The image and build-ID helpers derive their paths from the
+#     target-local linker output and require that stable layout.
+template("kernel_elf_binary") {
+  assert(!defined(invoker.output_dir),
+         "kernel_elf_binary($target_name) does not allow output_dir")
+  assert(!defined(invoker.output_extension),
+         "kernel_elf_binary($target_name) does not allow output_extension")
+
+  _image_target = target_name
+  _binary_target = "$target_name.binary"
+  _build_id_target = "_kernel_elf_binary.$target_name.build-id"
+  _image_path = "$target_out_dir/$target_name"
+  _build_id_file = "$_image_path.build-id"
+
+  if (defined(invoker.target_type)) {
+    _binary_target_type = invoker.target_type
+  } else {
+    _binary_target_type = "executable"
+  }
+
+  if (defined(invoker.install_name)) {
+    _install_name = invoker.install_name
+  } else {
+    _install_name = _image_target
+  }
+
+  kernel_elf_image(_image_target) {
+    forward_variables_from(invoker,
+                           [
+                             "has_patches",
+                             "metadata",
+                             "testonly",
+                             "validations",
+                             "visibility",
+                           ])
+    output_name = _install_name
+    binary_type = _binary_target_type
+    deps = [ ":$_binary_target" ]
+    elf = _image_path
+    data_deps = [ ":$_build_id_target" ]
+    if (defined(invoker.data_deps)) {
+      data_deps += invoker.data_deps
+    }
+  }
+
+  elf_build_id(_build_id_target) {
+    visibility = [ ":*" ]
+    forward_variables_from(invoker, [ "testonly" ])
+    deps = [ ":$_binary_target" ]
+    elf = _image_path
+    output = _build_id_file
+  }
+
+  target(_binary_target_type, _binary_target) {
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "data_deps",
+                             "has_patches",
+                             "install_name",
+                             "metadata",
+                             "output_dir",
+                             "output_extension",
+                             "output_name",
+                             "target_type",
+                             "testonly",
+                             "validations",
+                             "visibility",
+                           ])
+    forward_variables_from(invoker,
+                           [
+                             "testonly",
+                             "visibility",
+                           ])
+    if (defined(visibility)) {
+      # The wrapper owns build-id, stripping, and optional code-patch helper
+      # targets in this package.  Callers should not need their private names
+      # merely to set an external visibility policy.
+      visibility += [ ":*" ]
+    }
+
+    output_name = _image_target
+    output_extension = ""
+  }
+}
+
+set_defaults("kernel_elf_binary") {
+  configs = default_executable_configs
+}
