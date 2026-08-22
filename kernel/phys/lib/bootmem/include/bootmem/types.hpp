@@ -3,91 +3,82 @@
 #ifndef BOOTMEM_TYPES_HPP
 #define BOOTMEM_TYPES_HPP 1
 
-#include <ours/compiler.hpp>
-#include <ours/mem/cfg.hpp>
-#include <ours/mem/types.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
-#include <ustl/bitfields.hpp>
+#include <limits>
 
 namespace bootmem {
-    using ours::i32;
-    using ours::isize;
-    using ours::PhysAddr;
-    using ours::Status;
-    using ours::u16;
-    using ours::u32;
-    using ours::usize;
-    using ours::NnId;
-    using ours::mem::Pfn;
-    using ours::usize;
+using ours::NnId;
+using ours::PhysAddr;
+using ours::Status;
 
-    enum class RegionType : u16 {
-        Normal,
-        Unused,
-        Reserved,
-        ReservedAndNoInit,
-        MaxNumType,
-    };
+inline constexpr auto kAnyNode = std::numeric_limits<NnId>::max();
 
-    FORCE_INLINE CXX11_CONSTEXPR 
-    auto to_string(RegionType type) -> char const * {
-        switch (type) {
-            case RegionType::Normal : return "Reserved";
-            case RegionType::Reserved: return "Reserved";
-            case RegionType::Unused : return "Unused";
-            case RegionType::ReservedAndNoInit: return "ReservedAndNoInit";
+struct Range final {
+    PhysAddr base{};
+    usize size{};
+
+    [[nodiscard]]
+    static constexpr auto from(PhysAddr const base, usize const size)
+        -> ustl::Result<Range, Status> {
+        if (size == 0) {
+            return ustl::err(Status::InvalidArgument);
         }
-        return "???";
+        if (base > std::numeric_limits<PhysAddr>::max() - size) {
+            return ustl::err(Status::OutOfRange);
+        }
+        return ustl::ok(Range{.base = base, .size = size});
     }
 
-namespace details {
-    using ustl::Field;
-    using ustl::BitFields;
-    namespace bf = ustl::bitfields;
+    [[nodiscard]]
+    constexpr auto end() const -> PhysAddr {
+        return base + size;
+    }
+};
 
-    struct RegionFlags {
-        enum FieldId {
-            Type,
-            Node,
-        };
+struct MemoryRegion final {
+    Range range{};
+    NnId node{};
+};
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto type() const -> RegionType {
-            return inner_.get<Type>();
-        }
+enum class AllocationDirection : u8 {
+    BottomUp,
+    TopDown,
+};
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto set_type(RegionType type) -> void {
-            inner_.set<Type>(type);
-        }
+struct AllocationRequest final {
+    usize size{};
+    usize alignment{};
+    PhysAddr lower{};
+    PhysAddr upper{};
+    NnId node{kAnyNode};
+    AllocationDirection direction{AllocationDirection::BottomUp};
+};
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto nid() const -> NnId {
-            return inner_.get<Node>();
-        }
+enum class MemoryView : u8 {
+    Usable,
+    Free,
+};
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto set_nid(NnId nid) -> void {
-            inner_.set<Node>(nid);
-        }
+struct MemoryQuery final {
+    PhysAddr lower{};
+    PhysAddr upper{};
+    NnId node{kAnyNode};
+    MemoryView view{MemoryView::Usable};
+};
 
-        typedef BitFields<
-            bf::Field<bf::Id<Type>, bf::Bits<BIT_WIDTH(u16(RegionType::MaxNumType))>, bf::Name<"Type">, bf::Type<RegionType>>,
-            bf::Field<bf::Id<Node>, bf::Bits<NUMA_MAX_NODES_BITS>, bf::Name<"Nid">, bf::Type<NnId>>
-        > Inner;
-        Inner   inner_;
-    };
-} // namespace details
-    using details::RegionFlags;
+struct PhysicalMemoryStorage final {
+    ustl::views::Span<MemoryRegion> usable{};
+    ustl::views::Span<Range> reservations{};
+};
 
-    enum class AllocationControl {
-        BottomUp,
-        TopDown = BIT(0),
-    };
-    USTL_ENABLE_ENUM_BITMASK(AllocationControl);
+using MemoryVisitor = auto (*)(void *, MemoryRegion) -> bool;
 
 } // namespace bootmem
+
+namespace bootmm = bootmem;
 
 #endif // #ifndef BOOTMEM_TYPES_HPP

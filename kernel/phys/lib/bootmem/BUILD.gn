@@ -1,0 +1,32 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = []
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+# The local implementation is currently header-only, as declared by its CMake
+# target.  Keep a self-named dependency seam so sources can be added without
+# changing callers.
+group("bootmem") {
+  public_deps = [ ":headers" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [ ":physical-memory-smoke" ]
+}
+
+executable("physical-memory-smoke") {
+  testonly = true
+  sources = [ "physical-memory-smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
