@@ -3,66 +3,67 @@
 #ifndef OURS_PHYS_HANDOFF_HPP
 #define OURS_PHYS_HANDOFF_HPP 1
 
-#include <ours/cpu-mask.hpp>
 #include <ours/assert.hpp>
-#include <ours/mem/cfg.hpp>
-#include <ours/mem/node-mask.hpp>
-#include <ours/phys/arch-handoff.hpp>
+#include <ours/mm/cfg.hpp>
 #include <ours/phys/arch-bootmem.hpp>
-
+#include <ours/phys/arch-handoff.hpp>
+#include <ours/phys/kernel-package-handoff.hpp>
 #include <ustl/views/span.hpp>
-#include <ustl/function/fn.hpp>
 
 namespace ours::phys {
-    struct EarlyMem {
-        template <typename T>
-        using Fn = ustl::function::Fn<T>;
+struct EarlyMem {
+    using ReserveFn = auto (*)(void *, bootmem::Range) -> Status;
+    using AssignNodeFn = auto (*)(void *, bootmem::Range, NnId) -> Status;
+    using AllocateFn = auto (*)(void *, bootmem::AllocationRequest, bootmem::Range *) -> Status;
+    using ReleaseFn = auto (*)(void *, bootmem::Range) -> Status;
+    using VisitFn = auto (*)(void *, bootmem::MemoryQuery, bootmem::MemoryVisitor, void *)
+        -> Status;
 
-        // auto protect(base, size) -> void 
-        Fn<auto (PhysAddr, PhysAddr) -> void> protect;
+    void *context;
+    ReserveFn reserve;
+    AssignNodeFn assign_node;
+    AllocateFn allocate;
+    ReleaseFn release;
+    VisitFn visit;
 
-        // auto protect(base, size) -> void 
-        Fn<auto (PhysAddr, PhysAddr, NnId) -> void> set_node;
+    PhysAddr min_address;
+    PhysAddr max_address;
 
-        // auto (size, alignment, start, end, nid) -> PhysAddr
-        Fn<auto (usize, usize, PhysAddr, PhysAddr, NnId) -> PhysAddr> allocate;
+    [[nodiscard]]
+    auto valid() const -> bool {
+        return context != nullptr && reserve != nullptr && assign_node != nullptr &&
+               allocate != nullptr && release != nullptr && visit != nullptr &&
+               min_address < max_address;
+    }
+};
 
-        // auto deallocate(base, size) -> void
-        Fn<auto (PhysAddr, PhysAddr) -> void> deallocate;
+struct MemoryHandoff {
+    EarlyMem bootmem;
+    PhysAddr kernel_load_addr;
+};
 
-        // auto deallocate(BootMem::IterationContext &) -> void
-        Fn<auto (BootMem::IterationContext &) -> ustl::Option<bootmem::Region>> iterate;
+///
+struct Handoff {
+    static constexpr u32 kMagic = 0xA1B2C3D4;
 
-        PhysAddr min_address;
-        PhysAddr max_address;
-    };
+    FORCE_INLINE
+    auto verify() const -> bool {
+        return magic == kMagic && mem.bootmem.valid() && boot_package.valid();
+    }
 
-    struct MemoryHandoff {
-        EarlyMem bootmem;
-        PhysAddr kernel_load_addr;
-    };
+    u32 const magic = kMagic;
+    u32 nr_cpus;
+    PhysAddr efi_system_table;
+    PhysAddr acpi_rsdp;
+    MemoryHandoff mem;
+    BootPackageHandoff boot_package;
+    ustl::views::Span<CpuTopologyNode> cpu_topology;
 
-    ///
-    struct Handoff {
-        CXX11_CONSTEXPR
-        static u32 const kMagic = 0xA1B2C3D4;
-
-        FORCE_INLINE
-        auto verify() const -> bool {
-            return magic == kMagic;
-        }
-
-        u32 const magic = kMagic;
-        u32 nr_cpus;
-        PhysAddr efi_system_table;
-        PhysAddr acpi_rsdp;
-        MemoryHandoff mem;
-        ustl::views::Span<CpuTopologyNode> cpu_topology;
-
-        // Optional and only to provide unusal quirks from a part of architectures, so put it here.
-        ArchHandOff arch;
-    };
-    static_assert(sizeof(Handoff) <= PAGE_SIZE, "the size of Handoff must be lesser than 4096 for the zero page");
+    // Optional and only to provide unusal quirks from a part of architectures, so put it here.
+    ArchHandOff arch;
+};
+static_assert(sizeof(Handoff) <= PAGE_SIZE,
+              "the size of Handoff must be lesser than 4096 for the zero page");
 
 } // namespace ours::phys
 
