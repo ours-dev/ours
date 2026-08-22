@@ -1,0 +1,26 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/obi/obi_input.gni")
+
+# kernel_cmdline() — convenience wrapper around obi_input for cmdline entries.
+#
+# Parameters:
+#   args (required)  — list of "key=value" strings.
+#   deps, testonly, visibility (optional)
+template("kernel_cmdline") {
+  assert(defined(invoker.args),
+         "kernel_cmdline($target_name) requires `args`")
+
+  obi_input(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "testonly",
+                             "visibility",
+                           ])
+    type = "cmdline"
+    entries = invoker.args
+  }
+}

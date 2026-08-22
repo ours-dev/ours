@@ -1,0 +1,122 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/dist/fini_manifest.gni")
+
+# obi_input() — declares one OBI input block.
+#
+# Internally generates a fini manifest from deps, then emits obi_input_args
+# metadata.  A single obi_input() is one GN target — no intermediate targets
+# needed.  This matches Fuchsia's zbi_input() pattern.
+#
+# Parameters:
+#   type (optional)
+#     "cmdline" → --type=cmdline + --entry=...
+#     "kernel-storage" → --files-type=kernel-storage
+#     "" (default) → plain --files
+#   prefix (optional)
+#     Path prefix prepended to every destination in the fini manifest.
+#   compressed (optional)
+#     Compression for this block: "lz4", "zstd", or "".
+#   entries (optional)
+#     List of cmdline strings (--entry=...).  Only used with type="cmdline".
+#   container (optional)
+#     Label of a pre-built OBI container → --type=container <path>.
+#   sources (optional)
+#     List of raw files passed directly to obit (not through manifest).
+#   args (optional)
+#     Extra raw args appended after the generated ones.
+#   deps, testonly, visibility (optional)
+template("obi_input") {
+  _manifest_file = "$target_gen_dir/$target_name.fini"
+
+  fini_manifest(target_name) {
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "args",
+                             "compressed",
+                             "container",
+                             "entries",
+                             "files_type",
+                             "metadata",
+                             "prefix",
+                             "sources",
+                             "type",
+                           ])
+
+    metadata = {
+      obi_input_args = []
+      obi_input_args_barrier = []
+
+      if (defined(invoker.metadata)) {
+        forward_variables_from(invoker.metadata, "*")
+      }
+
+      if (defined(invoker.deps)) {
+        obi_input_args_barrier += invoker.deps
+      }
+
+      # Each block resets state so inputs are independent.  --reset alone
+      # is enough: it puts PackState back to its defaults (prefix="",
+      # files_type="bootfs", compressed=false).  A bare "--files" or
+      # "--compressed" here would be wrong — obit's .rsp state machine
+      # treats "--files" as always consuming the *next* token as a
+      # manifest path, and "--compressed" as unconditionally turning
+      # compression back on right after the reset.
+      obi_input_args += [
+        "--reset",
+      ]
+
+      if (defined(invoker.type) && invoker.type != "") {
+        if (invoker.type == "cmdline") {
+          obi_input_args += [ "--type=cmdline" ]
+          _entries = []
+          if (defined(invoker.entries)) {
+            _entries = invoker.entries
+          }
+          if (_entries == []) {
+            # An empty cmdline still materializes as an empty-payload CONFIG
+            # item, so a boot image always carries its cmdline node.
+            obi_input_args += [ "--entry=" ]
+          } else {
+            foreach(_entry, _entries) {
+              obi_input_args += [ "--entry=" + _entry ]
+            }
+          }
+        } else if (invoker.type == "kernel-storage") {
+          obi_input_args += [ "--files-type=kernel-storage" ]
+        }
+      }
+
+      if (defined(invoker.prefix) && invoker.prefix != "") {
+        obi_input_args += [ "--prefix=" + invoker.prefix ]
+      }
+
+      if (defined(invoker.compressed) && invoker.compressed != "") {
+        obi_input_args += [ "--compressed=" + invoker.compressed ]
+      }
+
+      if (defined(invoker.container)) {
+        _container_path =
+            get_label_info(invoker.container, "target_out_dir") + "/" +
+            get_label_info(invoker.container, "name") + ".obi"
+        obi_input_args += [
+          "--type=container",
+          rebase_path(_container_path, root_build_dir),
+        ]
+      }
+
+      if (defined(invoker.args)) {
+        obi_input_args += invoker.args
+      }
+
+      # Always include the manifest generated from deps.
+      obi_input_args += [
+        "--files",
+        rebase_path(_manifest_file, root_build_dir),
+      ]
+    }
+  }
+}

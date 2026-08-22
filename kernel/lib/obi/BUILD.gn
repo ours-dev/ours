@@ -1,0 +1,67 @@
+import("//build/cpp/cpp_interface.gni")
+
+source_set("obi") {
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+group("obit") {
+  public_deps = [ "cli:obit" ]
+  visibility = [ "*" ]
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/obi/boot-obi.hpp",
+    "include/obi/checksum.hpp",
+    "include/obi/command-line-view.hpp",
+    "include/obi/compression.hpp",
+    "include/obi/container-view.hpp",
+    "include/obi/item-view.hpp",
+    "include/obi/kernel-package.hpp",
+    "include/obi/memory-config-view.hpp",
+    "include/obi/package-builder.hpp",
+    "include/obi/package-format.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/bootfs:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [
+    # Plain hosted programs — they must build in the host toolchain; the
+    # default toolchain carries target identity (freestanding kernel) and
+    # has no hosted libc wiring for them.
+    "//kernel/lib/obi/tests:boot-options-smoke($host_toolchain)",
+    "//kernel/lib/obi/tests:cli-smoke($host_toolchain)",
+    "//kernel/lib/obi/tests:container-view-test($host_toolchain)",
+    "//kernel/lib/obi/tests:differential-smoke($host_toolchain)",
+    "//kernel/lib/obi/tests:lz4-wrapper-smoke($host_toolchain)",
+    "//kernel/lib/obi/tests:memory-config-smoke($host_toolchain)",
+    "//kernel/lib/obi/tests:obi-smoke($host_toolchain)",
+    "//kernel/lib/obi/tests:pack-smoke($host_toolchain)",
+    "//kernel/lib/obi/tests:package-builder-test($host_toolchain)",
+    "//kernel/lib/obi/tests:parser-fuzz-smoke($host_toolchain)",
+  ]
+
+  # The nested-package smoke/view tests were removed with the reverted
+  # obi::KernelPackageView/BootPackageView design; the flat StorageKernel
+  # BootFS model is covered by obi::KernelPackage / obi::BootObi and
+  # phys::KernelPackageLoader.
+}
+
+foreach(test_target,
+        [
+          "kernel-tests",
+          "phys-tests",
+          "boot_tests",
+        ]) {
+  group(test_target) {
+    testonly = true
+  }
+}
