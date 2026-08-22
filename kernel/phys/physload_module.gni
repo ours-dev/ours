@@ -83,6 +83,16 @@ template("physload_module") {
                 "//kernel/phys:phys-module",
               ]
 
+    # Every module carries physload's build ID as its PT_INTERP -- the
+    # loader/module pairing check ModuleLoader runs before calling into the
+    # module (kernel/phys/build-id.hpp).  Not caller-specified: a module
+    # author has no reason to opt out of the one check that keeps a stale
+    # module from running against raw struct layouts it no longer matches.
+    if (!defined(deps)) {
+      deps = []
+    }
+    deps += [ ":physload.interp" ]
+
     output_name = _main_target
     output_extension = "module"
   }

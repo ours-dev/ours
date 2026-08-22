@@ -38,17 +38,38 @@ SECTIONS {
     } :rodata
 
     /*
+     * physload's own build ID, kept locatable at runtime rather than only
+     * in the section-header table (which strip-sections drops from the
+     * item physload actually ships as).  Assigned to both :rodata (so it is
+     * physically loaded) and :note (so a PT_NOTE-walking tool finds it the
+     * ordinary way too).  ModuleLoader compares a loaded module's PT_INTERP
+     * against this before calling into it (ours/phys/build-id.hpp).
+     */
+    . = ALIGN(8);
+    .note.gnu.build-id : {
+        PROVIDE_HIDDEN(__build_id_note_start = .);
+        KEEP(*(.note.gnu.build-id))
+        PROVIDE_HIDDEN(__build_id_note_end = .);
+    } :rodata :note
+
+    /*
      * physload's module ABI.  gen-phys-exports.py emits one
      * {name, address} row per exported symbol; ModuleLoader scans this
      * range to bind a module's undefined symbols (ours/phys/exports.hpp).
      * KEEP: nothing references the rows, so --gc-sections would drop them.
+     *
+     * Explicit :rodata (not just inherited): the .note.gnu.build-id section
+     * above closes with :rodata :note, and an untagged section inherits
+     * whatever PHDR list came before it -- without this tag, .phys.exports
+     * (and .ccrt_init after it) would silently fall into :note too,
+     * stretching the PT_NOTE segment over sections that are not notes.
      */
     . = ALIGN(8);
     .phys.exports : {
         PROVIDE_HIDDEN(__phys_exports_start = .);
         KEEP(*(.phys.exports))
         PROVIDE_HIDDEN(__phys_exports_end = .);
-    }
+    } :rodata
 
     . = ALIGN(8);
     .ccrt_init : {

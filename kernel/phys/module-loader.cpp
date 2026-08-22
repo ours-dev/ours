@@ -2,6 +2,7 @@
 
 #include <bootfs/view.hpp>
 #include <obi/kernel-package.hpp>
+#include <ours/phys/build-id.hpp>
 #include <ours/phys/exports.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
@@ -111,6 +112,28 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
 
     if (auto const placed = m_image.load_at(target); placed.is_err()) {
         return placed.unwrap_err();
+    }
+
+    // Refuse before doing anything else with this image.  Everything from
+    // here on -- symbol binding, the PhysModule descriptor, and every call
+    // the module's own logic makes back into physload -- trusts that both
+    // images agree on raw struct layouts with no ABI versioning of their
+    // own.  That trust is only sound if they came from the exact same
+    // build: kernel_elf_interp.gni bakes this physload's build ID into
+    // every physload_module()'s PT_INTERP at build time, and
+    // own_build_id() (ours/phys/build-id.hpp) reads this physload's own
+    // copy back out of its own image right now, so the two can be compared.
+    auto const interp = m_image.section(".interp");
+    auto pt_interp =
+        std::string_view(reinterpret_cast<char const *>(interp.data()), interp.size());
+    if (!pt_interp.empty() && pt_interp.back() == '\0') {
+        pt_interp.remove_suffix(1); // elf-interp.S null-terminates the string.
+    }
+    auto const expected_build_id = own_build_id();
+    if (expected_build_id.empty() || pt_interp.empty() || pt_interp != expected_build_id) {
+        println("phys module '{}' PT_INTERP '{}' does not match this physload's build ID '{}'",
+                name, pt_interp, expected_build_id);
+        return Status::Unsupported;
     }
 
     // The module links at base 0, so the relocation bias is the placement.

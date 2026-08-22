@@ -113,6 +113,8 @@ if (toolchain_environment == "kernel.phys") {
       "acpi.cpp",
       "aspace.cpp",
       "boot-options.cpp",
+      "build-id-note.cpp",
+      "build-id.cpp",
       "console.cpp",
       "elf-image.cpp",
       "exports.cpp",
@@ -137,6 +139,15 @@ if (toolchain_environment == "kernel.phys") {
       "//kernel/lib/acpi",
     ]
     visibility = [ "*" ]
+  }
+
+  # physload's own build ID, embedded into every physload_module()'s
+  # PT_INTERP so ModuleLoader can refuse to load one built against a
+  # different physload (ours/phys/build-id.hpp reads the runtime half of
+  # this pairing).  Not a module's own deps entry: physload_module() below
+  # links it into every module automatically.
+  kernel_elf_interp("physload.interp") {
+    deps = [ ":physload" ]
   }
 
   # The physboot module, packaged as the bare BootFS file "physboot"
@@ -258,4 +269,26 @@ kernel_package("physboot") {
   # the product's target machine rather than the build host, and kernel/phys
   # toolchain contexts set current_cpu through toolchain_args.
   deps = [ ":physboot.module(:kernel.phys_$current_cpu)" ]
+}
+group("tests") {
+  testonly = true
+  # The default toolchain here is kernel-x86, not host-capable (see
+  # kernel/lib/obi:tests for the same fix, documented in
+  # .agents/tasks/phys-module-and-obi-tree/DESIGN.md §8.1) -- a plain
+  # dependency compiles under it and fails on the missing host prelude.
+  deps = [ ":build-id-note-smoke($host_toolchain)" ]
+}
+
+executable("build-id-note-smoke") {
+  testonly = true
+  sources = [
+    "build-id-note-smoke.cpp",
+    "build-id-note.cpp",
+  ]
+  deps = [
+    ":headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
 }
