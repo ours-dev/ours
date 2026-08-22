@@ -130,30 +130,30 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     // What to run is the module's own declaration, not an address in the
     // ELF header: PHYS_MODULE() put a descriptor in .phys.module and the
     // pass above fixed up the pointers inside it.
-    auto const descriptor = m_image.section(PhysModule::kSection);
-    if (descriptor.size() < sizeof(PhysModule)) {
+    auto const record = m_image.section(PhysModule::kSection);
+    if (record.size() < sizeof(PhysModule)) {
         println("phys module '{}' declares no {} descriptor", name, PhysModule::kSection);
         return Status::NotFound;
     }
-    auto const *module = reinterpret_cast<PhysModule const *>(descriptor.data());
-    if (module->abi_version != PhysModule::kAbiVersion) {
+    auto const *descriptor = reinterpret_cast<PhysModule const *>(record.data());
+    if (descriptor->abi_version != PhysModule::kAbiVersion) {
         println("phys module '{}' speaks module ABI {}, physload speaks {}", name,
-                module->abi_version, PhysModule::kAbiVersion);
+                descriptor->abi_version, PhysModule::kAbiVersion);
         return Status::Unsupported;
     }
-    if (module->init == nullptr) {
+    if (descriptor->init == nullptr) {
         println("phys module '{}' declares a null entry", name);
         return Status::InvalidArgument;
     }
 
-    m_module = module;
-    dprintln("Loaded phys module '{}' at 0x{:X}, entry 0x{:X}", module->name, target,
-             reinterpret_cast<usize>(module->init));
+    m_descriptor = descriptor;
+    dprintln("Loaded phys module '{}' at 0x{:X}, entry 0x{:X}", descriptor->name, target,
+             reinterpret_cast<usize>(descriptor->init));
     return Status::Ok;
 }
 
 auto ModuleLoader::start(PhysLoadHandoff const &handoff) -> void {
-    if (m_module == nullptr) {
+    if (m_descriptor == nullptr) {
         panic("No phys module loaded");
     }
 
@@ -167,11 +167,11 @@ auto ModuleLoader::start(PhysLoadHandoff const &handoff) -> void {
     // that the module has no startup code of its own.
     arch_on_phys_load_handoff(handoff);
 
-    m_module->init(handoff);
+    m_descriptor->init(handoff);
 
     // The descriptor's contract says init() never returns; it is a plain
     // function pointer, so the compiler cannot know that.
-    panic("phys module '{}' returned from its entry", m_module->name);
+    panic("phys module '{}' returned from its entry", m_descriptor->name);
 }
 
 auto ModuleLoader::run_initializers() -> void {

@@ -45,9 +45,13 @@ class ModuleLoader final {
     auto start(PhysLoadHandoff const &handoff) -> void;
 
     /// The descriptor the loaded module declared about itself.
+    ///
+    /// Spelled `descriptor`, not `module`: since C++20 `module` is an
+    /// identifier with special meaning, and a line that starts with it can
+    /// be taken for a module-directive.
     [[nodiscard]]
-    auto module() const -> PhysModule const * {
-        return m_module;
+    auto descriptor() const -> PhysModule const * {
+        return m_descriptor;
     }
 
     /// The materialized kernel-package BootFS range handed to the module.
@@ -66,7 +70,7 @@ class ModuleLoader final {
     auto run_initializers() -> void;
 
     ElfImage m_image;
-    PhysModule const *m_module{nullptr};
+    PhysModule const *m_descriptor{nullptr};
     PhysAddr m_storage_base{0};
     usize m_storage_size{0};
 };
