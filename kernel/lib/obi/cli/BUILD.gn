@@ -1,0 +1,16 @@
+executable("obit") {
+  sources = [
+    "extract.cpp",
+    "list.cpp",
+    "main.cpp",
+    "modify.cpp",
+    "pack.cpp",
+    "validate.cpp",
+  ]
+  deps = [
+    "//kernel/lib/bootfs:bootfs",
+    "//kernel/lib/obi:obi",
+    "//vendor/cxxopt",
+  ]
+  visibility = [ "*" ]
+}
