@@ -1,4 +1,5 @@
 #include <ours/arch/asm.hpp>
+#include <ours/arch/x86/descriptor.hpp>
 #include <ours/macro_abi.hpp>
 
 // [[no_return]] auto x86_start(LegacyBootParam %esi) -> void
@@ -53,4 +54,6 @@ FUNCTION_NOCFI(_start32)
 idle:
     cli
     hlt
-    jmp idle 
+    jmp idle
+
+.section .note.GNU-stack,"",@progbits
