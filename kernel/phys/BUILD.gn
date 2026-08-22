@@ -65,21 +65,6 @@ if (current_toolchain == default_toolchain) {
     symbols = [ "PHYS_LOAD_ADDRESS=0" ]
   }
 
-  # physload-loaded modules are ET_DYN images linked at base 0 whose
-  # e_entry is the phys_load_handoff adapter (see phys-module.ld).
-  link_config("phys-module.link") {
-    link_script = "phys-module.ld"
-  }
-
-  # How a module reaches physload.
-  #
-  # -fPIC, because the module is an ET_DYN image loaded at an address
-  # physload picks at runtime.  -fno-plt, because a call through a PLT stub
-  # would need a .plt section and lazy-binding machinery that nothing in a
-  # boot image can service; without it every imported symbol -- function or
-  # variable alike -- becomes a single R_X86_64_GLOB_DAT against the GOT,
-  # which is the one relocation ModuleLoader has to understand.  -z now
-  # keeps the linker from assuming anything will bind lazily later.
   # The first pass of an export_table image (phys_executable.gni).  Section
   # GC is off here, and only here: a function that physload defines but
   # never calls itself is exactly what a module wants to bind to, and if GC
@@ -90,12 +75,30 @@ if (current_toolchain == default_toolchain) {
     ldflags = [ "-Wl,--no-gc-sections" ]
   }
 
-  config("phys-module.compile") {
+  # How a phys module is built and how it reaches physload
+  # (physload_module.gni).
+  #
+  # -fPIC because physload picks the load address at run time.  -fno-plt
+  # because a call through a PLT stub needs lazy-binding machinery no boot
+  # image can service; without it an imported function reaches the GOT the
+  # same way an imported variable does, leaving ModuleLoader a single
+  # relocation type to apply.  -z now says the same thing to the linker.
+  #
+  # -nostdlib rather than the executable set's -nostartfiles/-nolibc: a
+  # module has no startup files to suppress in the first place.  There is
+  # no linker script either -- the default shared-object layout is what the
+  # loader reads.
+  config("phys-module") {
     cflags = [
       "-fPIC",
       "-fno-plt",
     ]
-    ldflags = [ "-Wl,-z,now" ]
+    ldflags = [
+      "-nostdlib",
+      "-nostdlib++",
+      "-Wl,-z,now",
+      "-Wl,--no-dynamic-linker",
+    ]
   }
 }
 
@@ -136,9 +139,8 @@ if (toolchain_environment == "kernel.phys") {
     visibility = [ "*" ]
   }
 
-  # The physboot module: an ET_DYN image packaged as the bare BootFS file
-  # "physboot" (kernel_package("physboot") below), loaded and relocated by
-  # physload's ModuleLoader.
+  # The physboot module, packaged as the bare BootFS file "physboot"
+  # (kernel_package("physboot") below) and loaded by physload at run time.
   #
   # Sources are physboot's own logic and nothing else.  The console, panic,
   # boot memory, address space and ELF loader it uses stay undefined here and

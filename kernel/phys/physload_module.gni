@@ -2,40 +2,150 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//kernel/phys/kernel_elf_binary.gni")
+import("//build/config/compiler/clang.gni")
+import("//build/elf/elf_build_id.gni")
 
-# Defines a position-independent ELF module intended for the physload runtime.
-# This migrates Zircon's target topology and defaults, but does not itself
-# define the Ours PhysLoadModuleMain ABI.  No production target instantiates
-# this template until //kernel/phys:physload.module has a real implementation.
+# Defines a phys module: an image physload loads at run time, out of the
+# kernel package.
+#
+# This builds a loadable module, not a freestanding executable that happens
+# to be relocatable.  The distinction is the point of the template:
+#
+#   * loadable_module, with the shared-object config set.  A module has no
+#     entry point, no startup files, and no link-time closure over its
+#     symbols -- the executable config set assumes all three.
+#   * -fPIC: physload picks the load address at run time.
+#   * Undefined symbols are expected, not an error.  A module carries only
+#     its own logic; the phys runtime it uses stays undefined here and is
+#     bound to physload's definitions when the module is loaded (see
+#     ours/phys/exports.hpp).
+#   * -fno-plt with -z now: an imported function then reaches the GOT the
+#     same way an imported variable does, so the loader has one relocation
+#     type to apply and never has to service a lazy PLT stub.
+#   * No linker script.  The default shared-object layout is what the loader
+#     reads: .init_array for constructors, .phys.module for the entry the
+#     module declared with PHYS_MODULE().
+#   * Section headers survive packaging.  They are how the loader finds
+#     those two sections; a kernel image would be stripped of them.
+#   * A build ID, which the executable config set would have supplied.  It
+#     is what a future loader/module pairing check would compare.
+#
+# Subtargets:
+#
+#   $target_name.module
+#     The underlying linker target.
 #
 # Parameters:
-#   has_patches (optional)
-#     As for kernel_elf_image(), but defaults to false for modules.
-#   All other parameters are as for kernel_elf_binary().  target_type is
-#   reserved and always set to loadable_module.
+#
+#   install_name (optional)
+#     BootFS file name for the packaged module.  Defaults to target_name.
+#     This is the name `kernel.phys.next` selects.
+#
+#   deps, sources, configs, testonly, visibility
+#     Standard GN meanings.
 template("physload_module") {
-  kernel_elf_binary(target_name) {
-    assert_no_deps = []
-    deps = []
-    has_patches = false
-    forward_variables_from(invoker, "*", [ "target_type" ])
+  _main_target = target_name
+  _module_target = "$target_name.module"
+  _build_id_target = "_physload_module.$target_name.build-id"
+  _package_target = "_physload_module.$target_name.strip"
 
-    target_type = "loadable_module"
-    # Every phys module links as an ET_DYN image whose e_entry is the
-    # phys_load_handoff adapter (see phys-module.ld).
-    configs += [
-      "//kernel/phys:phys-module.compile",
-      "//kernel/phys:phys-module.link",
+  _module_path = "$target_out_dir/$target_name.module"
+  _package_path = "$target_out_dir/$target_name.bootfs"
+
+  if (defined(invoker.install_name)) {
+    _install_name = invoker.install_name
+  } else {
+    _install_name = _main_target
+  }
+
+  loadable_module(_module_target) {
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "configs",
+                             "install_name",
+                             "metadata",
+                             "output_dir",
+                             "output_extension",
+                             "output_name",
+                             "visibility",
+                           ])
+    forward_variables_from(invoker, [ "visibility" ])
+    if (defined(visibility)) {
+      visibility += [ ":*" ]
+    }
+    # Replace rather than append: this template's set_defaults() below has
+    # already put the shared-object config set on `invoker.configs`, and
+    # loadable_module's own defaults are the same list.
+    configs = []
+    configs = invoker.configs + [
+                "//build/config:build_id",
+                "//kernel/phys:phys-module",
+              ]
+
+    output_name = _main_target
+    output_extension = "module"
+  }
+
+  elf_build_id(_build_id_target) {
+    visibility = [ ":*" ]
+    forward_variables_from(invoker, [ "testonly" ])
+    deps = [ ":$_module_target" ]
+    elf = _module_path
+    output = "$_module_path.build-id"
+  }
+
+  # --strip-debug, not --strip-sections: the loader reads .phys.module and
+  # .init_array out of the section table, so the section headers have to
+  # survive.  Debug information does not.
+  action(_package_target) {
+    visibility = [ ":*" ]
+    forward_variables_from(invoker, [ "testonly" ])
+    deps = [ ":$_module_target" ]
+    sources = [ _module_path ]
+    outputs = [ _package_path ]
+    script = "//kernel/phys/strip-phys-module.py"
+    args = [
+      "--objcopy",
+      rebase_path("$clang_tool_dir/llvm-objcopy", root_build_dir),
+      "--input",
+      rebase_path(_module_path, root_build_dir),
+      "--output",
+      rebase_path(_package_path, root_build_dir),
     ]
-    deps += [ "//kernel/phys:physload.module" ]
-    assert_no_deps += [ "//kernel/phys:uart-console" ]
+  }
+
+  group(_main_target) {
+    forward_variables_from(invoker,
+                           [
+                             "testonly",
+                             "visibility",
+                           ])
+    public_deps = [ ":$_module_target" ]
+    data_deps = [
+      ":$_build_id_target",
+      ":$_package_target",
+    ]
+
+    metadata = {
+      distribution_entries = []
+      distribution_entries_barrier = []
+      distribution_entries += [
+        {
+          # A bare BootFS name: physload looks the module up by the name
+          # `kernel.phys.next` carries, with no directory around it.
+          destination = _install_name
+          source = rebase_path(_package_path, root_build_dir)
+          label = get_label_info(":$_main_target", "label_with_toolchain")
+        },
+      ]
+    }
   }
 }
 
 set_defaults("physload_module") {
-  # These modules use the freestanding executable configuration even though
-  # they are ET_DYN images: physload performs relocation without symbolic
-  # dynamic linking or an instrumentation runtime.
-  configs = default_executable_configs
+  # The shared-object config set, which is what a loadable module is.  The
+  # executable set adds -nostartfiles/--no-dynamic-linker/build-id and a
+  # closed-world link policy that does not describe a module.
+  configs = default_shared_library_configs
 }

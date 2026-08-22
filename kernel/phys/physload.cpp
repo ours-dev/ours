@@ -5,12 +5,12 @@
 ///   2. Applies early boot options (KASLR, load target)
 ///   3. Initializes physical memory (BootMem) and the temporary address space
 ///   4. [Phase B] Decompresses KERNEL_STORAGE and loads the next phys module
-///   5. Hands off to physload-module (the standard adapter) which calls
-///      the module's own phys_load_module_main.
+///   5. Calls the entry the module declared through PHYS_MODULE()
 ///
 /// physload materializes the kernel package, loads the next phys module
-/// (`kernel.phys.next`, physboot by default) as a separate ET_DYN ELF,
-/// relocates it, and tail-calls its phys_load_handoff entry.
+/// (`kernel.phys.next`, physboot by default) as a separate image, relocates
+/// it, binds its undefined symbols to physload's own definitions, and calls
+/// the entry named by the module's descriptor.
 
 #include <ccrt/runtime.hpp>
 #include <obi/boot-obi.hpp>
@@ -27,6 +27,12 @@
 namespace ours::phys {
 Handoff g_handoff;
 BootOptions g_boot_options;
+
+/// Default: nothing to do between loading a module and entering it.  An
+/// architecture overrides this to install a page-table root or reserve
+/// arch-specific memory (ours/phys/physload.hpp).
+WEAK_LINK
+auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
 
 NO_RETURN
 auto obi_main(PhysAddr package_base, usize package_size) -> void {
@@ -95,14 +101,10 @@ auto obi_main(PhysAddr package_base, usize package_size) -> void {
 
     // ---- Stage 5: Hand off to the next phys module ----
     //
-    // Tail-call the module's entry (phys_load_handoff — the standard
-    // adapter that installs module services and calls the module's
-    // phys_load_module_main).  Neither returns: the module either boots
-    // the kernel or panics.
-    auto const module_entry = reinterpret_cast<PhysLoadHandoffFunction>(loader.entry());
-    module_entry(phys_handoff);
-
-    panic("Never reach at here");
+    // The module declared its own entry through PHYS_MODULE(); start()
+    // runs the module's constructors and calls it.  Never returns: the
+    // module either boots the kernel or panics.
+    loader.start(phys_handoff);
 }
 
 } // namespace ours::phys

@@ -3,6 +3,7 @@
 #include <bootfs/view.hpp>
 #include <obi/kernel-package.hpp>
 #include <ours/phys/exports.hpp>
+#include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/print.hpp>
 #include <ustl/mem/align.hpp>
@@ -108,9 +109,8 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     auto const placement = bootmem_allocate(total, PAGE_SIZE);
     auto const target = placement.base;
 
-    auto const entry = m_image.load_at(target);
-    if (entry.is_err()) {
-        return entry.unwrap_err();
+    if (auto const placed = m_image.load_at(target); placed.is_err()) {
+        return placed.unwrap_err();
     }
 
     // The module links at base 0, so the relocation bias is the placement.
@@ -126,10 +126,64 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     if (auto const status = m_image.relocate_and_bind(target, binder); status != Status::Ok) {
         return status;
     }
-    m_entry = entry.unwrap();
-    dprintln("Loaded phys module '{}' at 0x{:X}, entry 0x{:X}", options.next_module, target,
-             m_entry);
+
+    // What to run is the module's own declaration, not an address in the
+    // ELF header: PHYS_MODULE() put a descriptor in .phys.module and the
+    // pass above fixed up the pointers inside it.
+    auto const descriptor = m_image.section(PhysModule::kSection);
+    if (descriptor.size() < sizeof(PhysModule)) {
+        println("phys module '{}' declares no {} descriptor", name, PhysModule::kSection);
+        return Status::NotFound;
+    }
+    auto const *module = reinterpret_cast<PhysModule const *>(descriptor.data());
+    if (module->abi_version != PhysModule::kAbiVersion) {
+        println("phys module '{}' speaks module ABI {}, physload speaks {}", name,
+                module->abi_version, PhysModule::kAbiVersion);
+        return Status::Unsupported;
+    }
+    if (module->init == nullptr) {
+        println("phys module '{}' declares a null entry", name);
+        return Status::InvalidArgument;
+    }
+
+    m_module = module;
+    dprintln("Loaded phys module '{}' at 0x{:X}, entry 0x{:X}", module->name, target,
+             reinterpret_cast<usize>(module->init));
     return Status::Ok;
+}
+
+auto ModuleLoader::start(PhysLoadHandoff const &handoff) -> void {
+    if (m_module == nullptr) {
+        panic("No phys module loaded");
+    }
+
+    // The module's own constructors, over its own image.  physload ran its
+    // own in its own image; the objects those built -- the console list, the
+    // allocator, the address space -- are the ones the module is bound to,
+    // so nothing here re-creates them.
+    run_initializers();
+
+    // Architecture-specific post-load setup lives on physload's side now
+    // that the module has no startup code of its own.
+    arch_on_phys_load_handoff(handoff);
+
+    m_module->init(handoff);
+
+    // The descriptor's contract says init() never returns; it is a plain
+    // function pointer, so the compiler cannot know that.
+    panic("phys module '{}' returned from its entry", m_module->name);
+}
+
+auto ModuleLoader::run_initializers() -> void {
+    using Initializer = auto (*)() -> void;
+
+    auto const array = m_image.section(".init_array");
+    auto const *entries = reinterpret_cast<Initializer const *>(array.data());
+    for (auto index = usize{0}; index < array.size() / sizeof(Initializer); ++index) {
+        if (entries[index] != nullptr) {
+            entries[index]();
+        }
+    }
 }
 
 } // namespace ours::phys

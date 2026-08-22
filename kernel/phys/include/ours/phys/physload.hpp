@@ -20,9 +20,11 @@ class Aspace;
 /// to the next phys module (e.g. physboot), via physload-module's standard
 /// adapter.
 ///
-/// In Phase A (same-ELF modularization) this is passed by const-ref through
-/// a direct function call.  In Phase B (multi-ELF) physload will fill it and
-/// pass it to the relocated module through phys_load_handoff().
+/// physload fills it in and passes it to the entry the module declared
+/// through PHYS_MODULE() (ours/phys/module.hpp).  Everything else the module
+/// needs -- the console, the allocator, the address space -- it reaches by
+/// binding to physload's definitions, so this carries only what is specific
+/// to one load.
 struct PhysLoadHandoff {
     /// Type-erased bootmem allocator: reserve / assign_node / allocate /
     /// release / visit callbacks backed by the global BootMem instance.
@@ -55,29 +57,12 @@ struct PhysLoadHandoff {
     u32 nr_cpus;
 };
 
-/// Entry-point signature for a physload-loaded module.  physload relocates
-/// the module ELF, verifies its build ID, and then calls this function with
-/// the populated handoff.  The implementation must be NO_MANGLE (extern "C")
-/// so that physload can locate it by symbol name.
+/// Architecture-specific hook run just before a loaded module's entry.
 ///
-/// Implemented by physload-module (the standard adapter library linked into
-/// every phys module).
-using PhysLoadHandoffFunction = auto (*)(PhysLoadHandoff const &handoff) -> void;
-
-/// Standard adapter entry point, provided by physload-module.
-///
-/// physload calls this after initializing the boot environment.  It installs
-/// standard services (console, allocation pool, symbolize), calls
-/// arch_on_phys_load_handoff(), and then delegates to phys_load_module_main().
-/// This function is NO_RETURN — it either boots the kernel or panics.
-NO_MANGLE NO_RETURN auto phys_load_handoff(PhysLoadHandoff const &handoff) -> void;
-
-/// Architecture-specific hook invoked by phys_load_handoff() after the
-/// handoff is received and before phys_load_module_main().
-///
-/// The default implementation is a no-op.  Each architecture overrides it
-/// (via WEAK_LINK) to perform post-handoff setup such as installing a new
-/// page table root or reserving arch-specific memory regions.
+/// This lives in physload, not in the module: the module has no startup
+/// code of its own to hang it off any more.  The default is a no-op; an
+/// architecture overrides it (via WEAK_LINK) for post-load setup such as
+/// installing a page-table root or reserving arch-specific memory.
 auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void;
 
 } // namespace ours::phys

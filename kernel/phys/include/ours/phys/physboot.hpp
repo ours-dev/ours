@@ -12,15 +12,13 @@
 
 namespace ours::phys {
 
-/// Each phys module (physboot, netboot, fastboot, ...) implements this
-/// function.  physload-module calls it after installing the standard
-/// services (console, allocation pool, symbolize) and running the
-/// architecture handoff hook.
-///
-/// The implementation must be NO_RETURN — control never returns to
-/// physload-module.
+/// physboot's module entry, declared to physload through PHYS_MODULE() in
+/// physboot.cpp.  The name is physboot's own business -- physload finds it
+/// through the module descriptor, never by symbol -- and this declaration
+/// exists only so the definition and the PHYS_MODULE() reference to it can
+/// sit in the same translation unit.
 NO_RETURN
-auto phys_load_module_main(PhysLoadHandoff const &handoff) -> void;
+auto physboot_init(PhysLoadHandoff const &handoff) -> void;
 
 } // namespace ours::phys
 

@@ -1,8 +1,9 @@
 /// physboot — the default phys module that boots the Ours kernel (vmours)
 ///
-/// phys_load_module_main is reached through phys_load_handoff (the standard
-/// adapter physload-module) after physload loaded this module out of the
-/// kernel package.  It resolves the kernel ELF inside the `kernel.name`
+/// physload loads this module out of the kernel package, binds its imports
+/// against physload's export table and runs its static constructors, then
+/// calls the entry declared by PHYS_MODULE() at the bottom of this file.
+/// From there physboot resolves the kernel ELF inside the `kernel.name`
 /// BootFS directory, loads it, applies KASLR relocation, and hands off to
 /// the kernel.
 
@@ -14,6 +15,7 @@
 #include <ours/phys/kernel-boot.hpp>
 #include <ours/phys/kernel-image.hpp>
 #include <ours/phys/kernel-package-loader.hpp>
+#include <ours/phys/module.hpp>
 #include <ours/phys/physboot.hpp>
 #include <ours/phys/print.hpp>
 
@@ -43,7 +45,7 @@ namespace {
 } // namespace
 
 NO_RETURN
-auto phys_load_module_main(PhysLoadHandoff const &handoff) -> void {
+auto physboot_init(PhysLoadHandoff const &handoff) -> void {
     // 1. View the kernel-package BootFS physload materialized — no outer
     //    OBI re-parsing, no decompression, no scratch ownership here.
     auto const storage = KernelPackageLoader::Bytes(
@@ -78,3 +80,5 @@ auto phys_load_module_main(PhysLoadHandoff const &handoff) -> void {
 }
 
 } // namespace ours::phys
+
+PHYS_MODULE("physboot", ours::phys::physboot_init);

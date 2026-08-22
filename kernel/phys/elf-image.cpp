@@ -329,6 +329,45 @@ auto ElfImage::relocate_and_bind(usize const load_address, SymbolBinder const &b
     return Status::Ok;
 }
 
+auto ElfImage::section(std::string_view const name) const -> std::span<u8 const> {
+    if (m_binary.is_none() || m_pa_load == 0) {
+        return {};
+    }
+
+    auto const &binary = m_binary.value();
+    auto const sections = binary.sections();
+    for (usize index = 0; index < sections.size(); ++index) {
+        auto const found = binary.section_name(index);
+        if (found.is_none()) {
+            continue;
+        }
+        auto const spelling =
+            std::string_view(reinterpret_cast<char const *>(found->data()), found->size());
+        if (spelling != name) {
+            continue;
+        }
+
+        auto const header = sections.at(index);
+        if (header.is_none()) {
+            return {};
+        }
+        // SHF_ALLOC only: a section with no runtime address was never
+        // loaded, and reporting one would hand back a wild pointer.
+        constexpr auto kAlloc = u64{0x2};
+        if ((static_cast<u64>(header->sh_flags) & kAlloc) == 0) {
+            return {};
+        }
+
+        auto const offset = static_cast<usize>(header->sh_addr) - m_load_plan.image_base();
+        auto const size = static_cast<usize>(header->sh_size);
+        if (offset > this->size() || size > this->size() - offset) {
+            return {};
+        }
+        return {reinterpret_cast<u8 const *>(m_pa_load + offset), size};
+    }
+    return {};
+}
+
 // Map each ELF load interval independently.  Page-granularity mappings cover a
 // segment's leading and trailing partial pages, while page-sized gaps remain unmapped.
 auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {

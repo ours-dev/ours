@@ -85,6 +85,19 @@ class PHYS_EXPORT ElfImage final {
     [[nodiscard]]
     auto relocate_and_bind(usize load_address, SymbolBinder const &binder) -> Status;
 
+    /// A named section of the loaded image, at the address it now occupies.
+    ///
+    /// This is how physload finds what a module declared about itself --
+    /// the PHYS_MODULE() descriptor and the constructor array -- without
+    /// either side agreeing on a symbol name.  Reads the section table, so
+    /// it needs an image whose section headers survived packaging; a
+    /// module keeps them for exactly this reason.
+    ///
+    /// Only meaningful after relocate_and_bind(): pointers inside the
+    /// section are fixed up by the same pass that binds everything else.
+    [[nodiscard]]
+    auto section(std::string_view name) const -> std::span<u8 const>;
+
   private:
     using Traits = eftl::elf::TraitsNative;
 
