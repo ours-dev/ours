@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/compiler/clang.gni")
 import("//build/elf/elf_build_id.gni")
 import("//build/elf/elf_raw_image.gni")
 import("//build/ours/cpu.gni")
@@ -38,6 +39,13 @@ import("//build/ours/cpu.gni")
 #     *is* the bootloader-loaded file) need this; targets loaded as a
 #     separate bootloader module (e.g. a Multiboot2 module) must leave it
 #     off, since embedding would place a second, unused copy inside the OBI.
+#
+#   export_table (optional)
+#     Publishes this image's module ABI: the image is linked twice, and the
+#     second pass gains a .phys.exports table naming every symbol the first
+#     pass left GLOBAL with default visibility (see PHYS_EXPORT in
+#     ours/phys/exports.hpp).  physload_module() images bind their undefined
+#     symbols against that table.  Defaults to false.
 #
 #   obi_executable_item (optional)
 #     Distributes a stripped ELF of this image and self-registers it as a
@@ -105,6 +113,12 @@ template("phys_executable") {
     }
     not_needed(invoker, "*")
   } else {
+    if (defined(invoker.export_table)) {
+      _export_table = invoker.export_table
+    } else {
+      _export_table = false
+    }
+
     _main_target = target_name
     _binary_target = "$target_name.binary"
     _build_id_target = "_phys_executable.$target_name.build-id"
@@ -135,23 +149,73 @@ template("phys_executable") {
     _build_id_file = "$_image_path.build-id"
     _raw_image_path = "$_raw_output_dir/$_output_name.$_raw_output_extension"
 
+    _link_pass_exclusions = [
+      "configs",
+      "data_deps",
+      "emulator_support_aib",
+      "export_table",
+      "images_metadata",
+      "metadata",
+      "output_dir",
+      "output_extension",
+      "output_name",
+      "release_output",
+      "validations",
+      "visibility",
+    ]
+
+    if (_export_table) {
+      # Pass 1.  Identical inputs to the real link, minus the export table
+      # that does not exist yet; phys.ld's PROVIDE_HIDDEN leaves
+      # __phys_exports_start == __phys_exports_end, so resolve_export() sees
+      # an empty table and this image simply cannot load modules.
+      _prelink_target = "_phys_executable.$target_name.prelink"
+      _prelink_name = "$_output_name.prelink"
+      _prelink_path =
+          "$target_out_dir/$_prelink_name${ours_toolchain.link_output_suffix}"
+      _exports_target = "_phys_executable.$target_name.exports"
+      _exports_source = "$target_gen_dir/$target_name.exports.S"
+
+      executable(_prelink_target) {
+        visibility = [ ":*" ]
+        configs += [
+          "//kernel/phys:phys.link",
+          "//kernel/phys:phys-prelink",
+        ]
+        forward_variables_from(invoker, "*", _link_pass_exclusions)
+        if (defined(invoker.configs)) {
+          configs += invoker.configs
+        }
+        output_name = _prelink_name
+      }
+
+      # Pass 1 -> table.  Addresses move between the passes, so the table
+      # names its targets as symbols and lets the second-pass linker place
+      # them; only the *set* of exported symbols is read from pass 1.
+      action(_exports_target) {
+        visibility = [ ":*" ]
+        forward_variables_from(invoker, [ "testonly" ])
+        deps = [ ":$_prelink_target" ]
+        script = "//kernel/phys/gen-phys-exports.py"
+        sources = [ _prelink_path ]
+        outputs = [ _exports_source ]
+        depfile = "$_exports_source.d"
+        args = [
+          "--readelf",
+          rebase_path("$clang_tool_dir/llvm-readelf", root_build_dir),
+          "--image",
+          rebase_path(_prelink_path, root_build_dir),
+          "--output",
+          rebase_path(_exports_source, root_build_dir),
+          "--depfile",
+          rebase_path("$_exports_source.d", root_build_dir),
+        ]
+      }
+    }
+
     executable(_binary_target) {
       configs += [ "//kernel/phys:phys.link" ]
-      forward_variables_from(invoker,
-                             "*",
-                             [
-                               "configs",
-                               "data_deps",
-                               "emulator_support_aib",
-                               "images_metadata",
-                               "metadata",
-                               "output_dir",
-                               "output_extension",
-                               "output_name",
-                               "release_output",
-                               "validations",
-                               "visibility",
-                             ])
+      forward_variables_from(invoker, "*", _link_pass_exclusions)
       forward_variables_from(invoker, [ "visibility" ])
       if (!defined(visibility)) {
         visibility = []
@@ -166,6 +230,16 @@ template("phys_executable") {
       }
       if (defined(invoker.configs)) {
         configs += invoker.configs
+      }
+      if (_export_table) {
+        if (!defined(sources)) {
+          sources = []
+        }
+        sources += [ _exports_source ]
+        if (!defined(deps)) {
+          deps = []
+        }
+        deps += [ ":$_exports_target" ]
       }
       output_name = _output_name
     }

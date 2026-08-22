@@ -25,7 +25,7 @@ namespace ours::phys {
 /// console.  Constructors only run when the image entry point calls
 /// activate(), which init_early_console() (ours/phys/init.hpp) invokes on
 /// every registered console before the first print.
-class Console {
+class PHYS_EXPORT Console {
     using Self = Console;
 
   public:

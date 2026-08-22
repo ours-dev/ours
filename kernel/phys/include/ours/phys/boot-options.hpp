@@ -4,6 +4,7 @@
 #define OURS_PHYS_BOOT_OPTIONS_HPP 1
 
 #include <obi/command-line-view.hpp>
+#include <ours/compiler.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
@@ -28,10 +29,12 @@ struct BootOptions {
 
 /// Apply the subset of OBI cmdline options consumed before the kernel is
 /// loaded. Unknown tokens are intentionally left for later boot stages.
-auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline) -> Status;
+PHYS_EXPORT auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline) -> Status;
+
+/// physload owns the parsed options; modules bind to this object.
+PHYS_EXPORT extern BootOptions g_boot_options;
 
 inline auto global_boot_options() -> BootOptions * {
-    extern BootOptions g_boot_options;
     return &g_boot_options;
 }
 

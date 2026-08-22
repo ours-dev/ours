@@ -37,6 +37,19 @@ SECTIONS {
         *(.rodata*)
     } :rodata
 
+    /*
+     * physload's module ABI.  gen-phys-exports.py emits one
+     * {name, address} row per exported symbol; ModuleLoader scans this
+     * range to bind a module's undefined symbols (ours/phys/exports.hpp).
+     * KEEP: nothing references the rows, so --gc-sections would drop them.
+     */
+    . = ALIGN(8);
+    .phys.exports : {
+        PROVIDE_HIDDEN(__phys_exports_start = .);
+        KEEP(*(.phys.exports))
+        PROVIDE_HIDDEN(__phys_exports_end = .);
+    }
+
     . = ALIGN(8);
     .ccrt_init : {
         PROVIDE_HIDDEN(__ccrt_init_start = .);

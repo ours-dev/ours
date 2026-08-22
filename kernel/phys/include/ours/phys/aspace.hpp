@@ -16,7 +16,7 @@
 namespace ours::phys {
 using MmuFlags = arch::paging::MmuFlags;
 
-class Aspace {
+class PHYS_EXPORT Aspace {
     using Self = Aspace;
 
   public:

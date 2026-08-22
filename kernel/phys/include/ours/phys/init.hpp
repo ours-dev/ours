@@ -15,26 +15,31 @@ namespace ours::phys {
 struct Handoff;
 class Aspace;
 
+/// physload defines all three.  A physload-loaded module declares them the
+/// same way and binds to physload's objects at load time, so there is one
+/// BootMem, one Handoff and one Aspace in the system rather than a copy per
+/// image (ours/phys/exports.hpp).
+PHYS_EXPORT extern BootMem g_bootmem;
+PHYS_EXPORT extern Handoff g_handoff;
+PHYS_EXPORT extern Aspace *g_aspace;
+
 inline auto global_bootmem() -> BootMem * {
-    extern BootMem g_bootmem;
     return &g_bootmem;
 }
 
 inline auto global_handoff() -> Handoff * {
-    extern Handoff g_handoff;
     return &g_handoff;
 }
 
 inline auto global_aspace() -> Aspace * {
-    extern Aspace *g_aspace;
     return g_aspace;
 }
 
-auto init_early_console() -> void;
+PHYS_EXPORT auto init_early_console() -> void;
 
 /// The global BootMem wrapped as the type-erased EarlyMem service that
 /// crosses the physload→module and phys→kernel handoff boundaries.
-auto early_mem() -> EarlyMem;
+PHYS_EXPORT auto early_mem() -> EarlyMem;
 
 /// Arch-implementation
 ///
