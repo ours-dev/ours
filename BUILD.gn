@@ -29,6 +29,12 @@ group("default") {
     # bringup product itself leaves empty.
     "//tests/product-smoke:product_smoke",
 
+    # The phys boot chain assembled around a stand-in kernel.  vmours does
+    # not build yet, so this is what keeps physload, the physboot module and
+    # the packaging path exercised end to end on every default build; see
+    # //kernel/tests/fake-kernel/README.md.
+    "//kernel/products/image/fake:fake",
+
     # Rust-free-optional smoke of the rustc toolchain wiring (rust_bin tool
     # of the host toolchain); keeps the Rust contract exercised on every
     # default build.

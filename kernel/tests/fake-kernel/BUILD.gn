@@ -1,0 +1,37 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/ours/cpu.gni")
+import("//build/toolchain/toolchain_environment.gni")
+import("//kernel/phys/kernel_elf_binary.gni")
+
+# A kernel-shaped ELF that only reports the handoff it was given.  See
+# README.md: it stands in for vmours so the phys boot chain can be assembled
+# and booted end to end while the kernel proper is still under construction.
+if (toolchain_environment == "kernel") {
+  # kernel_elf_binary() rather than kernel_executable(): the latter pulls in
+  # //kernel/top and the platform layer, which is exactly the code this
+  # target exists to boot without.
+  kernel_elf_binary("fake-kernel") {
+    testonly = true
+    visibility = [
+      "//kernel/products/image/*",
+      "//products/*",
+      "//tests/*",
+    ]
+
+    # Packaged as fake-kernel/image.elf + fake-kernel/code-patches, the same
+    # subtree shape vmours uses, so physboot resolves it through the ordinary
+    # `kernel.name` lookup with nothing special-cased.
+    install_name = "fake-kernel"
+    has_patches = true
+
+    sources = [
+      "entry-$ours_cpu.S",
+      "fake-kernel.cpp",
+    ]
+    configs += [ "//kernel/products:kernel.link" ]
+    deps = [ "//kernel/phys:handoff" ]
+  }
+}

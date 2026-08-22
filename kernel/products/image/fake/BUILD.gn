@@ -1,0 +1,72 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The fake kernel image: the phys boot chain assembled around
+# //kernel/tests/fake-kernel instead of vmours.
+#
+# Everything below the kernel is the real thing -- the same physload, the
+# same physboot module, the same packaging path as //kernel/products/image/dev.
+# Only the payload differs, which is what makes this image a test of the
+# chain rather than of the kernel:
+#
+#   ninja -C out/bringup.x86 kernel/products/image/fake:fake
+#   obit list out/bringup.x86/fake.obi
+#   qemu-system-x86_64 -kernel ... -serial stdio     # expect "[fake-kernel] handoff ok"
+#
+# It exists because vmours does not build yet.  When it does, this image
+# stays useful: a failure here is in phys, a failure there is in the kernel.
+
+import("//build/obi/kernel_cmdline.gni")
+import("//kernel/kernel_image.gni")
+import("//kernel/kernel_package.gni")
+
+# The kernel storage block.  prefix = "" for the same reason as the dev
+# image: BootFS is a flat namespace and the GN target name is not a path
+# component, so the payload lands at fake-kernel/image.elf.
+kernel_package("fake-kernel") {
+  visibility = [
+    ":*",
+    "//products/*",
+  ]
+  testonly = true
+  prefix = ""
+  deps = [
+    "..:common_package_items",
+    "//kernel/tests/fake-kernel:fake-kernel(//build/switch/set/debug_level_0:kernel_${target_cpu}.debug_level_0)",
+  ]
+}
+
+# `kernel.name` is what makes this image work without a single conditional
+# in phys: physboot resolves the kernel image directory by name, and this is
+# the one place that name differs from the default.
+kernel_cmdline("cmdline") {
+  visibility = [
+    ":*",
+    "//products/*",
+  ]
+  args = [ "kernel.name=fake-kernel" ]
+}
+
+kernel_image("fake") {
+  # Also visible to //:default -- unlike the product images, this one is a
+  # test fixture that the default build runs directly rather than something
+  # a product selects.
+  visibility = [
+    "//:*",
+    "//products/*",
+    "//tests/*",
+  ]
+  testonly = true
+  output_name = "fake"
+
+  # Order is the OBI topology: physload is item 0 (--bootable asserts it),
+  # then the image-level cmdline, then the two packages that merge into the
+  # single kernel-storage item.
+  deps = [
+    "//kernel/phys:physload",
+    ":cmdline",
+    ":fake-kernel",
+    "//kernel/phys:physboot",
+  ]
+}
