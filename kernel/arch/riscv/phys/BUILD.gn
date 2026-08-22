@@ -1,0 +1,17 @@
+import("//build/cpp/cpp_interface.gni")
+
+# RISC-V early-boot implementation seam.  Startup and platform discovery
+# sources will be added here without changing //kernel/phys callers.
+if (toolchain_environment == "kernel.phys") {
+  source_set("riscv") {
+    public_deps = [ ":headers" ]
+  }
+}
+
+cpp_interface("headers") {
+  public = []
+}
+
+group("tests") {
+  testonly = true
+}

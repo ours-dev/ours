@@ -21,6 +21,10 @@ if (current_toolchain == default_toolchain) {
       cpu = cpu
       os = target_os
       environment = "kernel.phys"
+      # Link with the target GNU ld rather than the Clang driver.  The driver
+      # hands an ELF-target link off to the host `gcc`, which rejects the
+      # cross-architecture flags outright on a non-x86 host.
+      elf_linker = true
       # Resolve the compiler through clang_tool_dir like every other kernel
       # suite (//build/toolchain/ours/BUILD.gn, //build/switch/*).  Without
       # this the tools fall back to bare PATH names, which is not reproducible
@@ -66,11 +70,41 @@ if (current_toolchain == default_toolchain) {
   link_config("phys-module.link") {
     link_script = "phys-module.ld"
   }
+
+  # How a module reaches physload.
+  #
+  # -fPIC, because the module is an ET_DYN image loaded at an address
+  # physload picks at runtime.  -fno-plt, because a call through a PLT stub
+  # would need a .plt section and lazy-binding machinery that nothing in a
+  # boot image can service; without it every imported symbol -- function or
+  # variable alike -- becomes a single R_X86_64_GLOB_DAT against the GOT,
+  # which is the one relocation ModuleLoader has to understand.  -z now
+  # keeps the linker from assuming anything will bind lazily later.
+  # The first pass of an export_table image (phys_executable.gni).  Section
+  # GC is off here, and only here: a function that physload defines but
+  # never calls itself is exactly what a module wants to bind to, and if GC
+  # drops it before the table is generated the export disappears silently.
+  # The second pass keeps its GC -- the table references every exported
+  # symbol, so nothing it names can be collected.
+  config("phys-prelink") {
+    ldflags = [ "-Wl,--no-gc-sections" ]
+  }
+
+  config("phys-module.compile") {
+    cflags = [
+      "-fPIC",
+      "-fno-plt",
+    ]
+    ldflags = [ "-Wl,-z,now" ]
+  }
 }
 
 if (toolchain_environment == "kernel.phys") {
-  # The physload side of the split: everything except the physboot module.
-  # physload ends with ModuleLoader tail-calling into the module ELF.
+  # physload carries the whole phys runtime.  A physload_module() links none
+  # of it -- ModuleLoader binds the module's undefined symbols against the
+  # export table this image publishes (ours/phys/exports.hpp), so there is
+  # one console list, one BootMem and one Aspace in the system rather than
+  # a copy per ELF.
   source_set("physload.core") {
     sources = [
       "acpi.cpp",
@@ -78,6 +112,7 @@ if (toolchain_environment == "kernel.phys") {
       "boot-options.cpp",
       "console.cpp",
       "elf-image.cpp",
+      "exports.cpp",
       "memory.cpp",
       "module-loader.cpp",
       "panic.cpp",
@@ -85,7 +120,6 @@ if (toolchain_environment == "kernel.phys") {
       "raw-image.cpp",
     ]
     deps = [
-      "//kernel/arch/$ours_cpu/phys:$ours_cpu",
       "//kernel/lib/ccrt",
       "//kernel/lib/eftl",
       "//kernel/lib/ktl:headers",
@@ -94,6 +128,9 @@ if (toolchain_environment == "kernel.phys") {
     ]
     public_deps = [
       ":headers",
+      # Public: phys sources reach the architecture's paging and boot-memory
+      # types straight out of these headers.
+      "//kernel/arch/$ours_cpu/phys:$ours_cpu",
       "//kernel/lib/acpi",
     ]
     visibility = [ "*" ]
@@ -102,23 +139,35 @@ if (toolchain_environment == "kernel.phys") {
   # The physboot module: an ET_DYN image packaged as the bare BootFS file
   # "physboot" (kernel_package("physboot") below), loaded and relocated by
   # physload's ModuleLoader.
+  #
+  # Sources are physboot's own logic and nothing else.  The console, panic,
+  # boot memory, address space and ELF loader it uses stay undefined here and
+  # bind to physload at load time; deps carry only headers, so the module
+  # picks up no object code it would otherwise duplicate.
   physload_module("physboot.module") {
     visibility = [ ":*" ]
     install_name = "physboot"
     sources = [
-      "elf-image.cpp",
       "kernel-boot.cpp",
       "kernel-package-loader.cpp",
       "physboot.cpp",
-      "raw-image.cpp",
     ]
     deps = [
-      "//kernel/arch/$ours_cpu/phys:$ours_cpu",
-      "//kernel/lib/ccrt",
-      "//kernel/lib/eftl",
+      ":headers",
+      "//kernel/arch/$ours_cpu:headers",
+      # kernel-boot.hpp reaches the kernel's address-space layout constants.
+      "//kernel/arch/$ours_cpu/kernel:headers",
+      "//kernel/arch/$ours_cpu/phys:headers",
+      "//kernel/lib/arch:headers",
+      "//kernel/lib/eftl:headers",
       "//kernel/lib/ktl:headers",
-      "//kernel/lib/libc:string",
       "//kernel/lib/obi",
+
+      # Linked, not bound: ccrt drives *this* image's .ccrt_init array, and
+      # the compiler open-codes calls to memcpy/memset that must resolve
+      # inside the module.  Everything else comes from physload.
+      "//kernel/lib/ccrt",
+      "//kernel/lib/libc:string",
     ]
   }
 }
@@ -166,8 +215,8 @@ if (toolchain_environment == "kernel.phys") {
     sources = [ "physload-module.cpp" ]
     deps = [
       ":headers",
-      "//kernel/arch/$ours_cpu/phys:$ours_cpu",
-      "//kernel/lib/ccrt",
+      "//kernel/arch/$ours_cpu/phys:headers",
+      "//kernel/lib/ccrt:headers",
     ]
     visibility = [
       ":*",
@@ -185,6 +234,7 @@ phys_executable("physload") {
   output_extension = "bin"
   release_output = true
   obi_executable_item = true
+  export_table = true
   deps = [ ":physload.core" ]
 }
 

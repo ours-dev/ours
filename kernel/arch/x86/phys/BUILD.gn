@@ -1,0 +1,74 @@
+import("//build/cpp/cpp_interface.gni")
+
+if (toolchain_environment == "kernel.phys") {
+  # Arch support for physload.  A physload_module() links none of this: it
+  # binds the symbols it needs against physload's export table at load time
+  # (ours/phys/exports.hpp), so there is exactly one console list, one page
+  # table and one boot-memory allocator in the system.
+  source_set("x86") {
+    sources = [
+      "aspace.cpp",
+      "boot-shim/shim.cpp",
+      "gdt.S",
+      "legacy-boot.cpp",
+      "legacy-multiboot-start.S",
+      "legacy-multiboot.cpp",
+      "memory.cpp",
+      "serial_console.cpp",
+      "start32.S",
+      "start64.S",
+      "topology.cpp",
+      "vga_console.cpp",
+    ]
+    deps = [
+      ":headers",
+      "//kernel/lib/ccrt",
+    ]
+    public_deps = [
+      "//kernel/arch/x86:headers",
+      "//kernel/arch/x86/kernel:headers",
+      "//kernel/phys:headers",
+    ]
+    visibility = [ "*" ]
+  }
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/ours/phys/arch-bootmem.hpp",
+    "include/ours/phys/arch-handoff.hpp",
+    "include/ours/phys/arch-paging.hpp",
+  ]
+  public_deps = [ "//kernel/phys/lib/bootmem:headers" ]
+}
+
+executable("multiboot-view-smoke") {
+  testonly = true
+  sources = [ "multiboot-view-smoke.cpp" ]
+  deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+executable("multiboot-memory-map-smoke") {
+  testonly = true
+  sources = [ "multiboot-memory-map-smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//kernel/arch/x86:headers",
+    "//kernel/phys/lib/bootmem:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [
+    ":multiboot-memory-map-smoke",
+    ":multiboot-view-smoke",
+  ]
+}
