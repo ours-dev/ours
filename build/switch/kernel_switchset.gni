@@ -48,6 +48,9 @@ template("kernel_switchset") {
       os = target_os
       environment = "kernel"
       tool_dir = clang_tool_dir
+      # Same reason as the phys toolchains: the kernel ELF is freestanding
+      # and must not be linked through the host compiler driver.
+      elf_linker = true
       tags = [
         "kernel",
         "custom-abi",

@@ -71,10 +71,16 @@ import("//build/toolchain/restat.gni")
 #     Default: "--strip-all"
 #
 #   elf_linker (optional)
-#     Name of a target GNU linker binary (e.g. "x86_64-elf-ld") resolved
-#     through gcc_tool_dir. When set, link steps invoke it through the
-#     elf_link.py wrapper instead of the compiler driver. Freestanding
-#     physical boot images use this to bypass host-linker interference.
+#     Link with a linker binary directly instead of through the compiler
+#     driver.  `true` selects ld.lld from clang_tool_dir -- the linker this
+#     toolchain already compiles for.  A string names a target GNU linker
+#     (e.g. "x86_64-elf-ld") resolved through gcc_tool_dir instead.  Either
+#     way the link runs through the elf_link.py wrapper, which strips the
+#     driver-only flags out of the shared GN configs.
+#
+#     Freestanding images need this: the Clang driver hands an ELF-target
+#     link to the host `gcc`, which cannot produce an image for a different
+#     architecture than the host's.
 #
 #   toolchain_deps (optional)
 #     Dependencies of the toolchain() target itself (e.g. tools the tool
@@ -165,12 +171,20 @@ template("ours_toolchain") {
   # host Clang driver on macOS otherwise invokes the host linker even for an
   # ELF target triple.  The linker is a GNU tool, so it always resolves
   # through gcc_tool_dir.  The wrapper filters shared Clang/lld-only flags.
-  if (defined(invoker.elf_linker) && invoker.elf_linker != "") {
+  if (defined(invoker.elf_linker) && invoker.elf_linker != "" &&
+      invoker.elf_linker != false) {
     _elf_link_wrapper =
         rebase_path("//build/toolchain/ours/elf_link.py", root_build_dir)
-    _elf_linker_bin =
-        rebase_path(gcc_tool_dir, root_build_dir) + "/" + invoker.elf_linker
-    ld = "python3 $_elf_link_wrapper --linker $_elf_linker_bin"
+    if (invoker.elf_linker == true) {
+      _elf_linker_flavor = "lld"
+      _elf_linker_bin = "${dir_prefix}ld.lld"
+    } else {
+      _elf_linker_flavor = "gnu"
+      _elf_linker_bin =
+          rebase_path(gcc_tool_dir, root_build_dir) + "/" + invoker.elf_linker
+    }
+    ld = "python3 $_elf_link_wrapper --flavor $_elf_linker_flavor " +
+         "--linker $_elf_linker_bin"
     link_target_flag = ""
   } else {
     ld = cxx

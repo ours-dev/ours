@@ -39,6 +39,10 @@ ours_toolchain("kernel-x86") {
   cpu = "x86"
   os = target_os
   environment = "kernel"
+  # Link with lld directly.  Left to itself the Clang driver hands an
+  # ELF-target link to the host `gcc`, which cannot build an image for
+  # another architecture (ours_toolchain.gni, elf_linker).
+  elf_linker = true
   tags = [ "kernel" ]
   tool_dir = clang_tool_dir
   strip = ours_strip_kernel_binaries
@@ -58,6 +62,10 @@ ours_toolchain("kernel-riscv") {
   cpu = "riscv"
   os = target_os
   environment = "kernel"
+  # Link with lld directly.  Left to itself the Clang driver hands an
+  # ELF-target link to the host `gcc`, which cannot build an image for
+  # another architecture (ours_toolchain.gni, elf_linker).
+  elf_linker = true
   tags = [ "kernel" ]
   tool_dir = clang_tool_dir
   strip = ours_strip_kernel_binaries
@@ -77,6 +85,10 @@ ours_toolchain("kernel-arm") {
   cpu = "arm"
   os = target_os
   environment = "kernel"
+  # Link with lld directly.  Left to itself the Clang driver hands an
+  # ELF-target link to the host `gcc`, which cannot build an image for
+  # another architecture (ours_toolchain.gni, elf_linker).
+  elf_linker = true
   tags = [ "kernel" ]
   tool_dir = clang_tool_dir
   strip = ours_strip_kernel_binaries
@@ -98,7 +110,7 @@ ours_toolchain("kernel-phys-x86") {
   cpu = "x86"
   os = target_os
   environment = "kernel.phys"
-  elf_linker = "x86_64-elf-ld"
+  elf_linker = true
   tags = [ "kernel" ]
   exclude_variant_tags = [ "instrumentation-runtime" ]
   tool_dir = clang_tool_dir
@@ -117,6 +129,10 @@ ours_toolchain("kernel-phys-riscv") {
   cpu = "riscv"
   os = target_os
   environment = "kernel.phys"
+  # Link with lld directly.  Left to itself the Clang driver hands an
+  # ELF-target link to the host `gcc`, which cannot build an image for
+  # another architecture (ours_toolchain.gni, elf_linker).
+  elf_linker = true
   tags = [ "kernel" ]
   exclude_variant_tags = [ "instrumentation-runtime" ]
   tool_dir = clang_tool_dir
@@ -135,6 +151,10 @@ ours_toolchain("kernel-phys-arm") {
   cpu = "arm"
   os = target_os
   environment = "kernel.phys"
+  # Link with lld directly.  Left to itself the Clang driver hands an
+  # ELF-target link to the host `gcc`, which cannot build an image for
+  # another architecture (ours_toolchain.gni, elf_linker).
+  elf_linker = true
   tags = [ "kernel" ]
   exclude_variant_tags = [ "instrumentation-runtime" ]
   tool_dir = clang_tool_dir
