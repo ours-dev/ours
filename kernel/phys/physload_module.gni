@@ -24,7 +24,10 @@ template("physload_module") {
     target_type = "loadable_module"
     # Every phys module links as an ET_DYN image whose e_entry is the
     # phys_load_handoff adapter (see phys-module.ld).
-    configs += [ "//kernel/phys:phys-module.link" ]
+    configs += [
+      "//kernel/phys:phys-module.compile",
+      "//kernel/phys:phys-module.link",
+    ]
     deps += [ "//kernel/phys:physload.module" ]
     assert_no_deps += [ "//kernel/phys:uart-console" ]
   }

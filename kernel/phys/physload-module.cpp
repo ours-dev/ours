@@ -2,9 +2,13 @@
 ///
 /// This file is linked into every phys module (physboot, netboot, ...).
 /// It provides phys_load_handoff, the single entry point physload
-/// tail-calls after loading and relocating the module ELF: it mirrors the
-/// loader-side globals the module's code reaches through the init.hpp
-/// accessors, then calls the module's own phys_load_module_main.
+/// tail-calls after loading and relocating the module ELF.
+///
+/// There is nothing to mirror here: physload carries the phys runtime, and
+/// ModuleLoader has already bound this image's references to g_handoff,
+/// g_boot_options, g_aspace and the rest straight to physload's definitions
+/// (ours/phys/exports.hpp).  The adapter only has to bring the module's own
+/// image to life and hand control on.
 
 #include <ccrt/runtime.hpp>
 #include <ours/phys/boot-options.hpp>
@@ -15,12 +19,6 @@
 #include <ours/phys/print.hpp>
 
 namespace ours::phys {
-
-/// Module-side storage for the globals that physload owns in its own ELF.
-/// Filled from the PhysLoadHandoff below, before any module code runs.
-Handoff g_handoff;
-BootOptions g_boot_options;
-Aspace *g_aspace = nullptr;
 
 /// Architecture-specific hook called after the handoff is received
 /// and before phys_load_module_main.  Default is a no-op; each architecture
@@ -34,17 +32,11 @@ auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
 /// MUST have C linkage so the entry resolves reliably across toolchains.
 NO_MANGLE NO_RETURN
 auto phys_load_handoff(PhysLoadHandoff const &handoff) -> void {
-    // The module's own console instances register during this pass and
-    // activate below (serial is re-initialized; VGA is cleared).  Output
-    // before this point went through the loader's consoles.
+    // Run this image's own static constructors.  Each ELF has its own
+    // .ccrt_init array, so this covers the module's statics only —
+    // physload's ran in physload's image, and the console list, BootMem and
+    // Aspace they built are the ones the module has just been bound to.
     ccrt::init_global_static_objects();
-    init_early_console();
-
-    // Mirror the loader-side globals for the module's lifetime.
-    g_boot_options = *handoff.boot_options;
-    g_aspace = handoff.aspace;
-    g_handoff.acpi_rsdp = handoff.acpi_rsdp;
-    g_handoff.nr_cpus = handoff.nr_cpus;
 
     // 1. Architecture-specific post-handoff initialization.
     arch_on_phys_load_handoff(handoff);

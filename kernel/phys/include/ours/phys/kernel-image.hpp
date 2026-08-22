@@ -17,6 +17,7 @@
 #include <limits>
 #include <utility>
 #include <span>
+#include <string_view>
 
 #include <eftl/elf/binary.hpp>
 #include <eftl/elf/link.hpp>
@@ -25,7 +26,7 @@
 #include <eftl/elf/relocations.hpp>
 
 namespace ours::phys {
-class RawImage final {
+class PHYS_EXPORT RawImage final {
   public:
     [[nodiscard]]
     auto init(std::span<u8 const> file, usize memory_size) -> Status;
@@ -45,7 +46,16 @@ class RawImage final {
     PhysAddr m_pa_load{0};
 };
 
-class ElfImage final {
+/// Resolves an undefined symbol of a loaded image to a definition the
+/// loader already has.  A plain context pointer and function pointer rather
+/// than a closure: the same shape crosses the loader/module boundary as
+/// EarlyMem does, and neither side may assume the other's C++ layout.
+struct SymbolBinder {
+    void *context;
+    auto (*resolve)(void *context, std::string_view name) -> void const *;
+};
+
+class PHYS_EXPORT ElfImage final {
   public:
     static constexpr auto K_MAX_LOAD_SEGMENTS = usize{6};
 
@@ -61,6 +71,19 @@ class ElfImage final {
     }
 
     auto relocate(usize load_address) -> void;
+
+    /// Relocate, then bind the image's undefined symbols.
+    ///
+    /// This is the physload_module() path: the module carries no copy of the
+    /// phys runtime, so every symbol it uses from physload is left undefined
+    /// at link time and reaches the image as an R_X86_64_GLOB_DAT (or the
+    /// equivalent) against its GOT.  `binder` maps a linker name to the
+    /// address physload defines it at -- see ours/phys/exports.hpp.
+    ///
+    /// A name the binder does not know is an unresolved module dependency
+    /// and fails the load; it is never bound to zero.
+    [[nodiscard]]
+    auto relocate_and_bind(usize load_address, SymbolBinder const &binder) -> Status;
 
   private:
     using Traits = eftl::elf::TraitsNative;
@@ -89,7 +112,7 @@ class ElfImage final {
     LoadPlan m_load_plan;
 };
 
-class KernelImage final {
+class PHYS_EXPORT KernelImage final {
   private:
     using ImageStorage = ustl::Variant<RawImage, ElfImage>;
 

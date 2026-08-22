@@ -15,10 +15,16 @@ SECTIONS {
         *(.text .text.*)
     }
 
+    /*
+     * Modules are compiled -fno-plt, so their own calls reach imports
+     * through the GOT.  Objects shared with physload (ccrt, libc) are not,
+     * and lld gives those calls PLT stubs.  ModuleLoader binds the
+     * R_*_JUMP_SLOT relocations eagerly -- with -z now nothing ever tries
+     * to resolve a stub lazily, which is what a boot image could not
+     * service.
+     */
     .plt : { *(.plt) }
-    ASSERT(SIZEOF(.plt) == 0, "unexpected '.plt' entries")
     .plt.got : { *(.plt.got) }
-    ASSERT(SIZEOF(.plt.got) == 0, "unexpected '.plt.got' entries")
 
     .rodata : {
         *(.rodata .rodata.*)

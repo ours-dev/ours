@@ -1,5 +1,7 @@
 #include <ours/phys/kernel-image.hpp>
 
+#include <ours/phys/print.hpp>
+
 #include <limits>
 #include <type_traits>
 
@@ -50,6 +52,29 @@ namespace {
         }
         return eftl::elf::relocate_relative(memory, relocations, bias,
                                             std::forward<IsRelative>(is_relative));
+    }
+
+    /// Relocation types that take a symbol value plus an addend and store
+    /// the result as a full-width address.  These are all a phys module can
+    /// produce: it is compiled -fno-plt, so an imported function reaches the
+    /// GOT the same way an imported variable does (kernel/phys/BUILD.gn,
+    /// config("phys-module.compile")), and nothing in a boot image could
+    /// service a lazily-bound PLT stub anyway.
+    [[nodiscard]]
+    auto symbolic_relocation_type(eftl::elf::Arch machine, u32 type) -> bool {
+        switch (machine) {
+            case eftl::elf::Arch::X86_64:
+                // R_X86_64_64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT
+                return type == 1 || type == 6 || type == 7;
+            case eftl::elf::Arch::AARCH64:
+                // R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT
+                return type == 257 || type == 1025 || type == 1026;
+            case eftl::elf::Arch::RISCV:
+                // R_RISCV_64, R_RISCV_JUMP_SLOT
+                return type == 2 || type == 5;
+            default:
+                return false;
+        }
     }
 
     [[nodiscard]]
@@ -190,6 +215,118 @@ auto ElfImage::relocate(usize load_address) -> void {
     }
 
     m_va_load = load_address;
+}
+
+namespace {
+    /// Bind one .rela table against the loader's definitions.
+    template <typename Traits, typename Relas, typename Symbols>
+    [[nodiscard]]
+    auto bind_rela_table(eftl::elf::MappedMemory<Traits> &memory, Relas const &relocations,
+                         Symbols const &symbols, typename Traits::Addr bias,
+                         eftl::elf::Arch machine, SymbolBinder const &binder) -> Status {
+        for (usize index = 0; index < relocations.size(); ++index) {
+            auto const entry = relocations.relocation_at(index);
+            if (entry.is_none()) {
+                return Status::InvalidArgument;
+            }
+            auto const &rela = entry.value();
+
+            auto const symbol_index = Relas::symbol_index(rela);
+            if (symbol_index == 0) {
+                // No symbol: a relative relocation, already applied.
+                continue;
+            }
+
+            auto const type = Relas::type(rela);
+            if (!symbolic_relocation_type(machine, type)) {
+                dprintln("Module carries unsupported relocation type {}", type);
+                return Status::Unsupported;
+            }
+
+            auto const symbol = symbols.symbol_at(static_cast<usize>(symbol_index));
+            if (symbol.is_none()) {
+                return Status::InvalidArgument;
+            }
+
+            usize address = 0;
+            if (symbol->st_shndx != 0) {
+                // Defined in this image: the reference goes through the GOT
+                // only because the symbol has default visibility.  Bind it
+                // to the module's own definition rather than shadowing it
+                // with physload's, which may be a different function that
+                // merely shares a name.
+                address = static_cast<usize>(symbol->st_value) + static_cast<usize>(bias);
+            } else {
+                auto const name = symbols.symbol_name(static_cast<usize>(symbol_index));
+                if (name.is_none()) {
+                    return Status::InvalidArgument;
+                }
+                auto const spelling = std::string_view(
+                    reinterpret_cast<char const *>(name->data()), name->size());
+
+                auto const *definition = binder.resolve(binder.context, spelling);
+                if (definition == nullptr) {
+                    // Loud on purpose: the alternative is binding to zero and
+                    // faulting somewhere unrelated once the module runs.
+                    println("Module needs symbol '{}', which physload does not export",
+                            spelling);
+                    return Status::NotFound;
+                }
+                address = reinterpret_cast<usize>(definition);
+            }
+
+            auto const value = static_cast<typename Traits::Addr>(
+                address + static_cast<usize>(static_cast<isize>(rela.r_addend)));
+            if (!memory.template write<typename Traits::Addr>(
+                    static_cast<typename Traits::Addr>(rela.r_offset) + bias, value)) {
+                return Status::OutOfRange;
+            }
+        }
+        return Status::Ok;
+    }
+} // namespace
+
+auto ElfImage::relocate_and_bind(usize const load_address, SymbolBinder const &binder) -> Status {
+    relocate(load_address);
+
+    auto const image = m_binary.value().dynamic_image();
+    if (image.is_none()) {
+        // Nothing dynamic to bind: a module with no imports is legal.
+        return Status::Ok;
+    }
+
+    auto const symbols = image->dynamic_symbols();
+    auto const relas = image->dynamic_rela_table();
+    auto const plt_relas = image->dynamic_plt_rela_table();
+    if (relas.is_none() && plt_relas.is_none()) {
+        return Status::Ok;
+    }
+    if (symbols.is_none()) {
+        // There are symbolic relocations but no readable .dynsym to name
+        // them; binding cannot proceed.
+        return Status::InvalidArgument;
+    }
+
+    eftl::elf::MappedMemory<Traits> memory(reinterpret_cast<u8 *>(m_pa_load), size(),
+                                           m_load_plan.regions());
+    auto const bias = static_cast<typename Traits::Addr>(load_address - m_load_plan.image_base());
+    auto const machine = static_cast<eftl::elf::Arch>(m_binary.value().elf_header().e_machine);
+
+    if (relas.is_some()) {
+        auto const status =
+            bind_rela_table<Traits>(memory, relas.value(), symbols.value(), bias, machine, binder);
+        if (status != Status::Ok) {
+            return status;
+        }
+    }
+    if (plt_relas.is_some()) {
+        auto const status = bind_rela_table<Traits>(memory, plt_relas.value(), symbols.value(),
+                                                    bias, machine, binder);
+        if (status != Status::Ok) {
+            return status;
+        }
+    }
+    return Status::Ok;
 }
 
 // Map each ELF load interval independently.  Page-granularity mappings cover a

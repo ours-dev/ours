@@ -2,6 +2,7 @@
 
 #include <bootfs/view.hpp>
 #include <obi/kernel-package.hpp>
+#include <ours/phys/exports.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/print.hpp>
 #include <ustl/mem/align.hpp>
@@ -111,8 +112,20 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     if (entry.is_err()) {
         return entry.unwrap_err();
     }
+
     // The module links at base 0, so the relocation bias is the placement.
-    m_image.relocate(target);
+    // Beyond that it arrives with its imports unresolved: physload owns the
+    // phys runtime, and the module reaches it through the export table
+    // rather than carrying a second copy (ours/phys/exports.hpp).
+    SymbolBinder const binder{
+        .context = nullptr,
+        .resolve = [](void *, std::string_view const name) -> void const * {
+            return resolve_export(name);
+        },
+    };
+    if (auto const status = m_image.relocate_and_bind(target, binder); status != Status::Ok) {
+        return status;
+    }
     m_entry = entry.unwrap();
     dprintln("Loaded phys module '{}' at 0x{:X}, entry 0x{:X}", options.next_module, target,
              m_entry);
