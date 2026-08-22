@@ -1,40 +1,36 @@
 #include <ours/phys/console.hpp>
+#include <ours/phys/init.hpp>
 #include <ours/phys/print.hpp>
-
-#include <ustl/mem/object.hpp>
-#include <ustl/fmt/format_to.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::phys {
-    [[gnu::init_priority(999)]]
-    static ustl::collections::intrusive::List<Console, Console::ManagedOptions>  CONSOLE_LIST;
+namespace {
+    using ConsoleList = ustl::collections::intrusive::List<Console, Console::ManagedOptions>;
 
-    Console::Console(char const *name)
-        : hook_(),
-          name_(name) {
+    /// Constant-initialized, so it is ready before the first Console
+    /// constructor runs — console instances are ordinary static objects
+    /// brought to life by ccrt::init_global_static_objects().
+    constinit ConsoleList g_consoles{};
+} // namespace
 
-        CONSOLE_LIST.push_back(*this);
+Console::Console(char const *name) : m_name(name), m_hook() {
+    g_consoles.push_back(*this);
+}
+
+auto init_early_console() -> void {
+    for (auto &console: g_consoles) {
+        console.activate();
     }
+}
 
-    auto init_early_console() -> void {
-        for (auto &console : CONSOLE_LIST) {
-            console.activate();
-        }
+auto Console::write_all(char const *s, u32 n) -> void {
+    for (auto &console: g_consoles) {
+        console.write(s, n);
     }
+}
 
-    auto vprint(ustl::views::StringView fmt) -> void {
-        for (auto &console : CONSOLE_LIST) {
-            console.write(fmt.begin(), fmt.size());
-        }
-    }
-
-    auto vprint(ustl::views::StringView fmt, ustl::fmt::FormatArgs const &args) -> void {
-        static char FORMAT_BUFFER[512];
-
-        auto end = ustl::fmt::vformat_to(FORMAT_BUFFER, fmt, args);
-        for (auto &console : CONSOLE_LIST) {
-            console.write(FORMAT_BUFFER, end - FORMAT_BUFFER);
-        }
-    }
+auto vprint(ustl::views::StringView fmt) -> void {
+    Console::write_all(fmt.data(), static_cast<u32>(fmt.size()));
+}
 
 } // namespace ours::phys
