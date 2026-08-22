@@ -193,13 +193,13 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
     return ustl::ok(m_pa_load + entry_offset.value());
 }
 
-auto ElfImage::relocate(usize load_address) -> void {
+auto ElfImage::relocate(usize load_address) -> Status {
     if (m_binary.is_none() || load_address < m_load_plan.image_base()) {
-        panic("Kernel load address precedes the ELF virtual base");
+        return Status::InvalidArgument;
     }
     if constexpr (sizeof(usize) > sizeof(Traits::Addr)) {
         if (load_address > std::numeric_limits<typename Traits::Addr>::max()) {
-            panic("Kernel load address does not fit the ELF address width");
+            return Status::OutOfRange;
         }
     }
 
@@ -211,10 +211,11 @@ auto ElfImage::relocate(usize load_address) -> void {
     if (!apply_kernel_relative_relocations(m_binary.value(), image, load_bias, [machine](u32 type) {
             return relative_relocation_type(machine, type);
         })) {
-        panic("Failed to relocate kernel ELF image");
+        return Status::InvalidArgument;
     }
 
     m_va_load = load_address;
+    return Status::Ok;
 }
 
 namespace {
@@ -248,15 +249,18 @@ namespace {
                 return Status::InvalidArgument;
             }
 
+            // SHN_UNDEF (0): unresolved, look up in physload.  SHN_ABS
+            // (0xfff1): an absolute symbol -- st_value already is the final
+            // address, not an offset into some section, so it must not take
+            // `bias`.  Anything else: defined in this image at a
+            // section-relative value, which does take the bias.  Binding it
+            // to the module's own definition (rather than shadowing it with
+            // physload's) matters because a same-named physload symbol may
+            // be a different function entirely.
+            constexpr auto kShnAbs = decltype(symbol->st_shndx){0xfff1};
+
             usize address = 0;
-            if (symbol->st_shndx != 0) {
-                // Defined in this image: the reference goes through the GOT
-                // only because the symbol has default visibility.  Bind it
-                // to the module's own definition rather than shadowing it
-                // with physload's, which may be a different function that
-                // merely shares a name.
-                address = static_cast<usize>(symbol->st_value) + static_cast<usize>(bias);
-            } else {
+            if (symbol->st_shndx == 0) {
                 auto const name = symbols.symbol_name(static_cast<usize>(symbol_index));
                 if (name.is_none()) {
                     return Status::InvalidArgument;
@@ -273,6 +277,10 @@ namespace {
                     return Status::NotFound;
                 }
                 address = reinterpret_cast<usize>(definition);
+            } else if (symbol->st_shndx == kShnAbs) {
+                address = static_cast<usize>(symbol->st_value);
+            } else {
+                address = static_cast<usize>(symbol->st_value) + static_cast<usize>(bias);
             }
 
             auto const value = static_cast<typename Traits::Addr>(
@@ -287,7 +295,9 @@ namespace {
 } // namespace
 
 auto ElfImage::relocate_and_bind(usize const load_address, SymbolBinder const &binder) -> Status {
-    relocate(load_address);
+    if (auto const status = relocate(load_address); status != Status::Ok) {
+        return status;
+    }
 
     auto const image = m_binary.value().dynamic_image();
     if (image.is_none()) {

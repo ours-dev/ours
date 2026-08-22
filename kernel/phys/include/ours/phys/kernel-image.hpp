@@ -33,7 +33,12 @@ class PHYS_EXPORT RawImage final {
     [[nodiscard]]
     auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
     auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
-    auto relocate(usize) -> void {}
+    [[nodiscard]]
+    auto relocate(usize) -> Status {
+        // A raw image carries no relocations; there is nothing to do, and
+        // that is success, not a no-op the caller should ignore.
+        return Status::Ok;
+    }
 
     [[nodiscard]]
     auto size() const -> usize {
@@ -55,22 +60,30 @@ struct SymbolBinder {
     auto (*resolve)(void *context, std::string_view name) -> void const *;
 };
 
-class PHYS_EXPORT ElfImage final {
+// ElfImage is not PHYS_EXPORT as a whole: relocate_and_bind() and section()
+// below are ModuleLoader's own tools for loading *other* images (physboot
+// among them) and have no legitimate module-side caller.  Class-wide export
+// would hand every module a way to load and relocate arbitrary images of its
+// own -- exactly the kind of accidental surface widening PHYS_EXPORT's
+// per-declaration marking is meant to prevent.  Only the four methods a
+// module actually calls (to load its own kernel payload) are marked.
+class ElfImage final {
   public:
     static constexpr auto K_MAX_LOAD_SEGMENTS = usize{6};
 
     [[nodiscard]]
-    auto init(std::span<u8 const> file, usize memory_size) -> Status;
+    PHYS_EXPORT auto init(std::span<u8 const> file, usize memory_size) -> Status;
     [[nodiscard]]
-    auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
-    auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
+    PHYS_EXPORT auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
+    PHYS_EXPORT auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
 
     [[nodiscard]]
     auto size() const -> usize {
         return m_load_plan.image_size();
     }
 
-    auto relocate(usize load_address) -> void;
+    [[nodiscard]]
+    PHYS_EXPORT auto relocate(usize load_address) -> Status;
 
     /// Relocate, then bind the image's undefined symbols.
     ///
@@ -82,6 +95,9 @@ class PHYS_EXPORT ElfImage final {
     ///
     /// A name the binder does not know is an unresolved module dependency
     /// and fails the load; it is never bound to zero.
+    ///
+    /// ModuleLoader-only: not PHYS_EXPORT.  A module loads its own kernel
+    /// payload with plain relocate(), never this.
     [[nodiscard]]
     auto relocate_and_bind(usize load_address, SymbolBinder const &binder) -> Status;
 
@@ -95,6 +111,9 @@ class PHYS_EXPORT ElfImage final {
     ///
     /// Only meaningful after relocate_and_bind(): pointers inside the
     /// section are fixed up by the same pass that binds everything else.
+    ///
+    /// ModuleLoader-only: not PHYS_EXPORT, for the same reason as
+    /// relocate_and_bind() above.
     [[nodiscard]]
     auto section(std::string_view name) const -> std::span<u8 const>;
 
@@ -201,11 +220,12 @@ class PHYS_EXPORT KernelImage final {
         return status;
     }
 
-    FORCE_INLINE constexpr auto relocate(usize offset) -> void {
+    [[nodiscard]]
+    FORCE_INLINE constexpr auto relocate(usize offset) -> Status {
         if (!m_initialized) {
-            return;
+            return Status::InvalidArgument;
         }
-        visit_image([offset](auto &image) { image.relocate(offset); });
+        return visit_image([offset](auto &image) { return image.relocate(offset); });
     }
 
     [[nodiscard]]

@@ -31,7 +31,9 @@ namespace {
     }
 
     FORCE_INLINE auto relocate_kernel(KernelImage &image, usize const load_address) -> void {
-        image.relocate(load_address);
+        if (auto const status = image.relocate(load_address); status != Status::Ok) {
+            panic("Failed to relocate kernel image: {}", static_cast<u32>(status));
+        }
         dprintln("Relocated kernel with offset=0x{:X}", load_address);
     }
 
