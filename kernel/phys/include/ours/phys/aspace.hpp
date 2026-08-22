@@ -3,104 +3,114 @@
 #ifndef OURS_PHYS_ASPACE_HPP
 #define OURS_PHYS_ASPACE_HPP 1
 
-#include <ours/phys/arch-paging.hpp>
 #include <arch/paging.hpp>
-#include <ours/mem/types.hpp>
 #include <ktl/result.hpp>
-#include <ustl/option.hpp>
-#include <ustl/limits.hpp>
+#include <ours/assert.hpp>
+#include <ours/phys/arch-paging.hpp>
 #include <ours/types.hpp>
+#include <ustl/option.hpp>
+
+#include <limits>
+#include <type_traits>
 
 namespace ours::phys {
-    struct Aspace {
-        typedef arch::Paging<ArchLowerPaging>   LowerPaging;
-        typedef arch::Paging<ArchUpperPaging>   UpperPaging;
-        typedef arch::paging::MapError          MapError;
-        
-        CXX11_CONSTEXPR
-        static auto const kDualAspace = !ustl::traits::IsSameV<LowerPaging, UpperPaging>;
+using MmuFlags = arch::paging::MmuFlags;
 
-        auto init() -> void {
-            typedef LowerPaging::PagingTraits   LowerPagingTraits;
-            lower_pgd_ = alloc_page_table(LowerPagingTraits::kSizeOfTable<LowerPagingTraits::kPagingLevel>,
-                                          LowerPagingTraits::kTableAlignment);
-            DEBUG_ASSERT(lower_pgd_, "");
+class Aspace {
+    using Self = Aspace;
 
-            if CXX11_CONSTEXPR (!kDualAspace) {
-                return;
-            }
+  public:
+    using LowerPaging = arch::Paging<ArchLowerPaging>;
+    using UpperPaging = arch::Paging<ArchUpperPaging>;
+    using MapError = arch::paging::MapError;
 
-            typedef UpperPaging::PagingTraits   UpperPagingTraits;
-            upper_pgd_ = alloc_page_table(UpperPagingTraits::kSizeOfTable<UpperPagingTraits::kPagingLevel>,
-                                          UpperPagingTraits::kTableAlignment);
-            DEBUG_ASSERT(lower_pgd_, "");
+    static constexpr auto kDualAspace = !std::is_same_v<LowerPaging, UpperPaging>;
+
+    auto init() -> void {
+        using LowerPagingTraits = LowerPaging::PagingTraits;
+        m_lower_pgd =
+            alloc_page_table(LowerPagingTraits::kSizeOfTable<LowerPagingTraits::kPagingLevel>,
+                             LowerPagingTraits::kTableAlignment);
+        DEBUG_ASSERT(m_lower_pgd, "");
+
+        if constexpr (!kDualAspace) {
+            return;
         }
 
-        auto map(VirtAddr va, usize n, PhysAddr pa, mem::MmuFlags flags) -> ustl::Result<void, MapError>;
+        typedef UpperPaging::PagingTraits UpperPagingTraits;
+        m_upper_pgd =
+            alloc_page_table(UpperPagingTraits::kSizeOfTable<UpperPagingTraits::kPagingLevel>,
+                             UpperPagingTraits::kTableAlignment);
+        DEBUG_ASSERT(m_lower_pgd, "");
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto map_identically(VirtAddr va, usize n, mem::MmuFlags flags) -> ustl::Result<void, MapError> {
-            return map(va, n, va, flags);
-        }
+    auto map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags) -> ustl::Result<void, MapError>;
 
-        auto unmap(VirtAddr va, usize n) -> Status;
+    FORCE_INLINE constexpr auto map_identically(VirtAddr va, usize n, MmuFlags flags)
+        -> ustl::Result<void, MapError> {
+        return map(va, n, va, flags);
+    }
 
-        auto query(VirtAddr va) -> ktl::Result<usize>;
+    auto unmap(VirtAddr va, usize n) -> Status;
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto pgd() -> PhysAddr {
-            return lower_pgd_;
-        }
+    auto query(VirtAddr va) -> ktl::Result<usize>;
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto lower_pgd() -> PhysAddr {
-            return lower_pgd_;
-        }
+    FORCE_INLINE
+    constexpr auto pgd() -> PhysAddr {
+        return m_lower_pgd;
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto upper_pgd() -> PhysAddr {
-            return upper_pgd_;
-        }
+    FORCE_INLINE
+    constexpr auto lower_pgd() -> PhysAddr {
+        return m_lower_pgd;
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto install() const -> void {
-            arch_install();
-        }
+    FORCE_INLINE
+    constexpr auto upper_pgd() -> PhysAddr {
+        return m_upper_pgd;
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto install(PhysAddr new_pgd) -> void {
-            lower_pgd_ = new_pgd;
-            arch_install();
-        }
+    FORCE_INLINE
+    constexpr auto install() const -> void {
+        arch_install();
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto install(PhysAddr lower_pgd, PhysAddr upper_pgd) -> void {
-            lower_pgd_ = lower_pgd;
-            upper_pgd_ = upper_pgd;
-            arch_install();
-        }
+    FORCE_INLINE
+    constexpr auto install(PhysAddr new_pgd) -> void {
+        m_lower_pgd = new_pgd;
+        arch_install();
+    }
 
-        FORCE_INLINE CXX11_CONSTEXPR
-        auto set_allocation_bounds(PhysAddr lower_bound, PhysAddr upper_bound) -> void {
-            allocation_lower_bound_ = lower_bound;
-            allocation_upper_bound_ = upper_bound;
-        }
-    private:
-        /// Arch-implementation
-        auto arch_install() const -> void;
-        auto alloc_page_table(usize size, usize alignment) const -> PhysAddr;
+    FORCE_INLINE
+    constexpr auto install(PhysAddr lower_pgd, PhysAddr upper_pgd) -> void {
+        m_lower_pgd = lower_pgd;
+        m_upper_pgd = upper_pgd;
+        arch_install();
+    }
 
-        PhysAddr lower_pgd_;
-        PhysAddr upper_pgd_;
-        PhysAddr allocation_lower_bound_;
-        PhysAddr allocation_upper_bound_;
-    };
+    FORCE_INLINE
+    constexpr auto set_allocation_bounds(PhysAddr lower_bound, PhysAddr upper_bound) -> void {
+        m_allocation_lower_bound = lower_bound;
+        m_allocation_upper_bound = upper_bound;
+    }
 
-    /// Provided by architecture-specific code.
-    auto arch_setup_aspace(Aspace &aspace) -> void;
+  private:
+    /// Arch-implementation
+    auto arch_install() const -> void;
+    auto alloc_page_table(usize size, usize alignment) const -> PhysAddr;
 
-    /// Identically map the ram memory under |max_limit| to virtual address space.
-    auto create_identity_map_for_ram(Aspace &aspace, PhysAddr = ustl::NumericLimits<PhysAddr>::max()) -> void;
+    PhysAddr m_lower_pgd;
+    PhysAddr m_upper_pgd;
+    PhysAddr m_allocation_lower_bound;
+    PhysAddr m_allocation_upper_bound;
+};
+
+/// Provided by architecture-specific code.
+auto arch_setup_aspace(Aspace &aspace) -> void;
+
+/// Identically map the ram memory under |max_limit| to virtual address space.
+auto create_identity_map_for_ram(Aspace &aspace, PhysAddr = std::numeric_limits<PhysAddr>::max())
+    -> void;
 
 } // namespace ours::phys
 

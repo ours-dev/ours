@@ -1,20 +1,23 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
 #include <ours/phys/acpi.hpp>
-#include <acpi/numa.hpp>
-#include <ours/phys/print.hpp>
 
 namespace ours::phys {
-    struct PhysToVirtForIdentityMapping: public acpi::IPhysToVirt {
-        virtual ~PhysToVirtForIdentityMapping() = default;
-
-        auto phys_to_virt(PhysAddr addr, usize size) -> ktl::Result<ai_virt void const *> override {
+namespace {
+    /// //kernel/phys runs identity mapped, so every physical address is already
+    /// readable at the same value.  The mapping is the whole address space and
+    /// outlives everything, which satisfies acpi::PhysMapper's contract.
+    struct IdentityMapper final: public acpi::PhysMapper {
+        auto map(PhysAddr addr, usize size) -> ktl::Result<void const *> override {
             return ktl::ok(reinterpret_cast<void const *>(addr));
         }
     };
 
-    static PhysToVirtForIdentityMapping S_P2V;
+    IdentityMapper s_mapper;
+} // namespace
 
-    auto make_apic_parser(PhysAddr rsdp) -> ktl::Result<acpi::AcpiParser> {
-        return acpi::AcpiParser::from_rsdp(&S_P2V, rsdp);
-    }
+auto make_acpi_table_set(PhysAddr rsdp) -> ktl::Result<acpi::TableSet> {
+    return acpi::TableSet::from_rsdp(s_mapper, rsdp);
+}
 
 } // namespace ours::phys

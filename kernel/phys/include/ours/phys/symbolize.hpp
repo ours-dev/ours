@@ -4,9 +4,9 @@
 #define OURS_PHYS_SYMBOLIZE_HPP 1
 
 namespace ours::phys {
-    struct Symbolize {
-        char const *name_;
-    };
+struct Symbolize {
+    char const *name_;
+};
 
 } // namespace ours::phys
 

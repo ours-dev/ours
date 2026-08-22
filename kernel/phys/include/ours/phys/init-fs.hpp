@@ -7,9 +7,9 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::phys {
-    // FIXME(SmallHuaZi) Temporary type alias for maintaining the consistency of interface.
-    // It should be removed after providing the implementation of `InitFs`
-    using InitFs = ustl::views::Span<u8>;
+// FIXME(SmallHuaZi) Temporary type alias for maintaining the consistency of interface.
+// It should be removed after providing the implementation of `InitFs`
+using InitFs = ustl::views::Span<u8>;
 } // namespace ours::phys
 
-#endif // #ifndef OURS_PHYS_INIT_FS_HPP 
+#endif // #ifndef OURS_PHYS_INIT_FS_HPP

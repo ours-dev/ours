@@ -3,10 +3,10 @@
 #ifndef OURS_PHYS_ACPI_HPP
 #define OURS_PHYS_ACPI_HPP 1
 
-#include <acpi/parser.hpp>
+#include <acpi/table_set.hpp>
 
 namespace ours::phys {
-    auto make_apic_parser(PhysAddr rsdp) -> ktl::Result<acpi::AcpiParser>;
+auto make_acpi_table_set(PhysAddr rsdp) -> ktl::Result<acpi::TableSet>;
 
 } // namespace ours::phys
 
