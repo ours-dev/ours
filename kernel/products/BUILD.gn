@@ -74,6 +74,17 @@ config("warnings") {
 
 config("kernel_debug") {
   defines = [ "KERNEL_DEBUG_LEVEL=$kernel_debug_level" ]
+
+  # <ours/assert.hpp> tests OURS_DEBUG to decide whether DEBUG_ASSERT expands
+  # to anything, so it has to be defined wherever KERNEL_DEBUG_LEVEL is --
+  # an undefined macro inside `if constexpr` is a compile error, not a
+  # silently-off feature. It follows the debug level rather than being a
+  # switch of its own.
+  if (kernel_debug_level > 0) {
+    defines += [ "OURS_DEBUG=1" ]
+  } else {
+    defines += [ "OURS_DEBUG=0" ]
+  }
 }
 
 config("unit-tests-enabled") {
