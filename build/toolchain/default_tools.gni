@@ -1,0 +1,22 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Every toolchain must define "stamp" and "copy" tools, but they are always
+# the same in every toolchain.  Define them once here and import this file
+# from each toolchain template (ours_toolchain(), basic_toolchain()).
+#
+# The copy command goes through copy_command.sh: hard-link first (fast and
+# mtime-preserving), fall back to a real copy, refuse directory copies (which
+# would break Ninja's per-file dependency tracking).
+#
+# PROVENANCE: adapted from Fuchsia's //build/toolchain/default_tools.gni
+# (Copyright 2020 The Fuchsia Authors, BSD-style license).  Verbatim.
+
+stamp_command = "touch {{output}}"
+stamp_description = "STAMP {{output}}"
+
+_rebased_copy_command =
+    rebase_path("//build/toolchain/copy_command.sh", root_build_dir)
+copy_command = "${_rebased_copy_command} {{source}} {{output}}"
+copy_description = "COPY {{source}} {{output}}"

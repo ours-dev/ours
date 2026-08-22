@@ -1,0 +1,61 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Template to define a variant in the `ours_known_variants` registry
+# (//build/config/ours/variants.gni).
+#
+# A variant is a config() plus up to four dependency-injection groups:
+#   * deps               -- added to every terminal target linked in this
+#                          variant (via toolchain_variant.deps)
+#   * executable_deps    -- added to every executable target
+#   * link_deps          -- added to every linking target
+#   * source_deps        -- added to every target compiling sources
+# These groups let a variant pull in runtime/plugin dependencies (e.g. a
+# sanitizer runtime or an LTO plugin) without every target knowing about it.
+#
+# Fuchsia implements this on top of its compiler_config() template (which
+# also translates c_family_flags/llvm_flags etc. across languages).  Ours is
+# a Clang-only C++ kernel with no Rust, so this local version defines the
+# config() and the dep groups directly -- same interface, much smaller body.
+#
+# PROVENANCE: adapted from Fuchsia's //build/toolchain/variant.gni
+# (Copyright 2017 The Fuchsia Authors, BSD-style license).
+#
+# Parameters (all optional):
+#   configs, cflags, cflags_c, cflags_cc, asmflags, ldflags, defines,
+#   include_dirs, inputs -- forwarded to config().
+#   deps, executable_deps, link_deps, source_deps -- dependency groups.
+template("variant") {
+  config(target_name) {
+    forward_variables_from(invoker, "*", [
+      "deps",
+      "executable_deps",
+      "link_deps",
+      "source_deps",
+    ])
+  }
+
+  group("${target_name}_deps") {
+    # public_deps so targets in deps can have public_configs applied to
+    # variant executables.
+    if (defined(invoker.deps)) {
+      public_deps = invoker.deps
+    }
+  }
+  group("${target_name}_executable_deps") {
+    if (defined(invoker.executable_deps)) {
+      public_deps = invoker.executable_deps
+    }
+  }
+  group("${target_name}_link_deps") {
+    if (defined(invoker.link_deps)) {
+      public_deps = invoker.link_deps
+    }
+  }
+  group("${target_name}_source_deps") {
+    if (defined(invoker.source_deps)) {
+      public_deps = invoker.source_deps
+    }
+  }
+}

@@ -1,0 +1,119 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/current_target_tuple.gni")
+
+# Like action() but using utility binaries from the Clang toolchain
+# (llvm-objcopy, llvm-readelf, llvm-ifs, cc, ...).
+#
+# Parameters:
+#   utils (required): utilities to use, e.g. "objcopy", "llvm-readelf".
+#     If "cc" is listed it must be the only utility (it gets an explicit
+#     --target=$current_target_tuple).
+#   script (optional): driver script; the resolved utility paths are passed
+#     as leading arguments.  If true, a standard rspfile-aware script is
+#     used (toolchain_utils_action.py -- the Python port of Fuchsia's bash
+#     script, because .gn sets script_executable = "python3") which records
+#     @rspfile contents in the depfile.
+#   args (required): extra arguments.
+#   depfile, deps, inputs, outputs, sources, testonly, visibility: as for
+#     action().
+#
+# NOTE(ours): Fuchsia's c_utils.gni also supports a GCC binutils variant
+# and a hermetic_action_ignored_prefixes annotation for its action tracer;
+# the Ours build is Clang-only and has no tracer, so both are dropped.
+#
+# PROVENANCE: adapted from Fuchsia //build/zircon/c_utils.gni
+# (Copyright 2019 The Fuchsia Authors, BSD-style license).
+
+_clang_utils = {
+  dir = clang_tool_dir
+  prefix = "llvm-"
+  cc = "clang"
+  cc_extra_args = []
+  if (current_target_tuple != "") {
+    cc_extra_args = [ "--target=$current_target_tuple" ]
+  }
+}
+
+template("toolchain_utils_action") {
+  assert(defined(invoker.utils),
+         "toolchain_utils_action(\"$target_name\") requires `utils`")
+
+  utils_inputs = []
+  utils_paths = []
+  util_extra_args = []
+  foreach(util, invoker.utils) {
+    # An explicit "llvm-" prefix selects the LLVM tool regardless; plain
+    # names also resolve to the LLVM tools (Clang-only build).
+    util_no_llvm = string_replace(util, "llvm-", "", 1)
+    if (util_no_llvm != util) {
+      util = util_no_llvm
+    }
+    if (util == "cc") {
+      util = _clang_utils.cc
+      assert(utils_paths == [],
+             "\"cc\" must be used alone in toolchain_utils_action() `utils` list")
+      util_extra_args = _clang_utils.cc_extra_args
+    } else {
+      util = _clang_utils.prefix + util
+    }
+    util = "${_clang_utils.dir}/$util"
+    utils_inputs += [ util ]
+    utils_paths += [ rebase_path(util, root_build_dir) ]
+  }
+
+  action(target_name) {
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "args",
+                             "target",
+                             "utils",
+                           ])
+    if (!defined(inputs)) {
+      inputs = []
+    }
+    inputs += utils_inputs
+    if (defined(script)) {
+      if (script == true) {
+        assert(!defined(depfile),
+               "script=true is incompatible with setting depfile")
+        script = "//build/toolchain/toolchain_utils_action.py"
+        depfile = "$target_out_dir/_host_tool_action.$target_name.d"
+        args = [
+          rebase_path(outputs[0], root_build_dir),
+          rebase_path(depfile, root_build_dir),
+        ]
+      } else {
+        script = script
+        args = []
+      }
+      args += utils_paths + util_extra_args + invoker.args
+    } else {
+      script = rebase_path(utils_paths[0], "", root_build_dir)
+      assert(utils_paths == [ utils_paths[0] ],
+             "toolchain_utils_action(\"$target_name\") without `script` must have exactly one element in `utils`")
+      args = util_extra_args + invoker.args
+    }
+  }
+}
+
+# generated_file() containing the output file name(s) of linking targets
+# reached by $deps.  Consumed by link_output_rspfile() consumers.
+template("link_output_rspfile") {
+  generated_file(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "metadata",
+                             "outputs",
+                             "testonly",
+                             "visibility",
+                           ])
+    data_keys = [ "link_output_path" ]
+    walk_keys = [ "link_output_barrier" ]
+    output_conversion = "list lines"
+  }
+}

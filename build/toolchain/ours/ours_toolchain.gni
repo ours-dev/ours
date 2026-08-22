@@ -1,0 +1,577 @@
+# Copyright 2025 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/compiler/clang.gni")
+import("//build/config/compiler/compiler.gni")
+import("//build/config/compiler/gcc.gni")
+import("//build/config/compiler/rust.gni")
+import("//build/config/ours/standard.gni")
+import("//build/toolchain/default_tools.gni")
+import("//build/toolchain/restat.gni")
+
+# Defines an Ours toolchain.
+#
+# The C/C++ compiler is selected by the cxx_compiler build argument
+# (see //build/config/compiler/compiler.gni):
+#   * "clang" (default) — Clang/LLVM from clang_tool_dir, linked with lld.
+#   * "gcc"             — <cpu>-elf-* cross tools from gcc_tool_dir,
+#                         linked with BFD ld.
+# LLVM binutils (llvm-strip, llvm-ifs, ...) are always resolved through
+# clang_tool_dir regardless of the C/C++ compiler in use.
+#
+# Rust tools (rust_bin, rust_rlib, ...) always use rust_tool_dir and are
+# independent of the C/C++ compiler selection.
+#
+# Parameters:
+#
+#   cpu (required)
+#     Ours architecture identifier: "x86", "arm", "riscv".
+#
+#   os (required)
+#     Operating-system identifier supplied by `ours_os`.
+#
+#   environment (required)
+#     Runtime environment in which the compiled artifact will execute, for
+#     example "kernel" or "kernel.phys".
+#
+#   tool_dir (optional)
+#     Directory containing the Clang/LLVM binaries. Defaults to
+#     clang_tool_dir (the project prebuilt). In GCC mode this still
+#     locates the LLVM binutils and libc++ headers.
+#
+#   strip (optional)
+#     If true, strip debug info into a separate .debug file.
+#     Default: false
+#
+#   tags (optional)
+#     List of variant tags for this toolchain instance.
+#
+#   exclude_variant_tags (optional)
+#     Variant tags this runtime environment cannot support.  The suite uses
+#     these to omit incompatible named toolchains, and the base toolchain
+#     retains the list for target-level variant selection.
+#
+#   variant_name, variant_suffix (optional)
+#     Identity of a named toolchain variant. Base toolchains leave both empty.
+#
+#   host (optional)
+#     If true, this is a build-host toolchain. This controls only whether it
+#     carries Ours kernel identity; it does not define the artifact runtime
+#     environment, which is always the required `environment` parameter.
+#     Host toolchains are always Clang: GCC builds native host binaries
+#     through a different mechanism than the prebuilt cross tools.
+#
+#   cc, cxx, ar, ld, strip (optional)
+#     Override the tool binaries (defaults: per-compiler names from the
+#     tool directories above; ld defaults to the C++ driver).
+#
+#   strip_args (optional)
+#     Arguments passed to the strip tool when `strip` is true.
+#     Default: "--strip-all"
+#
+#   elf_linker (optional)
+#     Name of a target GNU linker binary (e.g. "x86_64-elf-ld") resolved
+#     through gcc_tool_dir. When set, link steps invoke it through the
+#     elf_link.py wrapper instead of the compiler driver. Freestanding
+#     physical boot images use this to bypass host-linker interference.
+#
+#   toolchain_deps (optional)
+#     Dependencies of the toolchain() target itself (e.g. tools the tool
+#     commands invoke).
+#
+# PROVENANCE: the Rust tool() definitions are adapted from Fuchsia
+# //build/toolchain/clang_toolchain.gni (Copyright 2021 The Fuchsia
+# Authors, BSD-style license), simplified for single-machine builds:
+# no RBE wrappers, no restat launcher, no response files.
+
+template("ours_toolchain") {
+  # Map Ours architecture identifiers to the LLVM triple architecture field.
+  tc_cpu = ""
+  foreach(target, standard_ours_targets) {
+    if (target.cpu == invoker.cpu) {
+      tc_cpu = target.triple_cpu
+    }
+  }
+  assert(tc_cpu != "", "Unsupported Ours architecture '${invoker.cpu}'")
+
+  # A host runtime target must follow the compiler's native platform ABI.
+  # Kernel and phys artifacts use the explicit Ours ELF triple.
+  _is_host = defined(invoker.host) && invoker.host
+
+  # The host toolchain always uses Clang: GCC builds native host binaries
+  # through a different mechanism than the prebuilt cross tools. GCC mode
+  # (cxx_compiler = "gcc") therefore applies to kernel/phys toolchains only.
+  _use_gcc = is_gcc && !_is_host
+
+  if (_is_host) {
+    target_flag = ""
+  } else {
+    # LLVM target triple: architecture-vendor-operating-system-ABI.
+    target_triple = "${tc_cpu}-${ours_vendor}-${invoker.os}-elf"
+    if (_use_gcc) {
+      # The cross-GCC binary already encodes its target triple; --target
+      # is a Clang-only switch.
+      target_flag = ""
+    } else {
+      target_flag = "--target=$target_triple"
+    }
+  }
+
+  assert(defined(invoker.environment),
+         "ours_toolchain() requires an 'environment' argument")
+
+  # ---- Clang/LLVM tool paths ----
+  # LLVM binutils and the libc++ headers are resolved through clang_tool_dir
+  # in both compiler modes.
+
+  _clang_tool_dir = clang_tool_dir
+  if (defined(invoker.tool_dir) && invoker.tool_dir != "") {
+    _clang_tool_dir = invoker.tool_dir
+  }
+  if (_clang_tool_dir != "") {
+    dir_prefix = rebase_path(_clang_tool_dir, root_build_dir) + "/"
+    clang_root_dir = get_path_info(_clang_tool_dir, "dir")
+    clang_cxx_include_dir = "$clang_root_dir/include/c++/v1"
+  } else {
+    dir_prefix = ""
+    clang_cxx_include_dir = ""
+  }
+
+  # ---- C/C++ compiler tool paths ----
+
+  if (_use_gcc) {
+    _gcc_prefix = rebase_path(gcc_tool_dir, root_build_dir) + "/"
+    _gcc_tool_prefix = "${tc_cpu}-elf-"
+    cc = "${_gcc_prefix}${_gcc_tool_prefix}gcc"
+    cxx = "${_gcc_prefix}${_gcc_tool_prefix}g++"
+    ar = "${_gcc_prefix}${_gcc_tool_prefix}gcc-ar"
+  } else {
+    cc = "${dir_prefix}clang"
+    cxx = "${dir_prefix}clang++"
+    ar = "${dir_prefix}llvm-ar"
+  }
+  if (defined(invoker.cc)) {
+    cc = invoker.cc
+  }
+  if (defined(invoker.cxx)) {
+    cxx = invoker.cxx
+  }
+  if (defined(invoker.ar)) {
+    ar = invoker.ar
+  }
+
+  # Freestanding physical boot images can opt into a target GNU linker.  A
+  # host Clang driver on macOS otherwise invokes the host linker even for an
+  # ELF target triple.  The linker is a GNU tool, so it always resolves
+  # through gcc_tool_dir.  The wrapper filters shared Clang/lld-only flags.
+  if (defined(invoker.elf_linker) && invoker.elf_linker != "") {
+    _elf_link_wrapper =
+        rebase_path("//build/toolchain/ours/elf_link.py", root_build_dir)
+    _elf_linker_bin =
+        rebase_path(gcc_tool_dir, root_build_dir) + "/" + invoker.elf_linker
+    ld = "python3 $_elf_link_wrapper --linker $_elf_linker_bin"
+    link_target_flag = ""
+  } else {
+    ld = cxx
+    link_target_flag = target_flag
+  }
+  if (defined(invoker.ld)) {
+    ld = invoker.ld
+  }
+
+  use_strip = defined(invoker.strip) && invoker.strip != false
+
+  # In GCC mode the Clang directory still hosts the LLVM binutils, but the
+  # paths above are only consumed when stripping (llvm-strip) or when the
+  # Clang compiler branch runs; silence the unused-variable check otherwise.
+  if (_use_gcc) {
+    not_needed([ "clang_cxx_include_dir" ])
+    if (!use_strip) {
+      not_needed([ "dir_prefix" ])
+    }
+  }
+
+  # ---- Rust tool paths ----
+  # rustc resolves its own sysroot relative to the binary, so the prebuilt
+  # link is sufficient. The target triple comes from the rust_target build
+  # argument when set, else from the per-CPU freestanding map (host
+  # toolchains compile for the host by default).
+
+  _rustc = rebase_path(rust_tool_dir, root_build_dir) + "/rustc"
+  if (rust_target != "") {
+    _rust_target_flag = "--target=$rust_target"
+  } else if (_is_host) {
+    _rust_target_flag = ""
+  } else {
+    _rust_target = ""
+    foreach(t, standard_ours_rust_targets) {
+      if (t.cpu == invoker.cpu) {
+        _rust_target = t.rust_target
+      }
+    }
+    assert(_rust_target != "",
+           "No Rust target triple mapped for '${invoker.cpu}'")
+    _rust_target_flag = "--target=$_rust_target"
+  }
+
+  # The freestanding kernel has no unwinder; host Rust uses the default
+  # unwinding strategy.
+  if (_is_host) {
+    _rust_panic = "unwind"
+  } else {
+    _rust_panic = rust_panic
+  }
+
+  # ---- Common compilation settings ----
+
+  _compile_common = {
+    outputs =
+        [ "{{source_out_dir}}/{{target_output_name}}.{{source_file_part}}.o" ]
+    depfile = "{{output}}.d"
+    depsformat = "gcc"
+    switches = "-MD -MF $depfile -o {{output}} {{defines}} {{include_dirs}}"
+  }
+
+  # ---- Common Rust compilation settings ----
+  # Note: GN's rust tools accept depfile but not depsformat (unlike cc/cxx);
+  # ninja parses the depfile without the deps-log optimization. Fuchsia's
+  # rust tools behave the same way.
+
+  _rust_common = {
+    depfile = "{{output}}.d"
+    switches = "--color=always $_rust_target_flag -Cpanic=$_rust_panic " +
+               "--crate-name={{crate_name}} {{source}} " +
+               "--crate-type={{crate_type}} {{rustflags}} {{rustdeps}} " +
+               "{{externs}} --emit=dep-info=$depfile,link"
+  }
+
+  # ---- Common link settings ----
+
+  _link_common = {
+    lib_switch = "-l"
+    lib_dir_switch = "-L"
+    default_output_dir = "{{target_out_dir}}"
+    outfile = "{{output_dir}}/{{target_output_name}}{{output_extension}}"
+    runtime_outputs = [ outfile ]
+    outputs = runtime_outputs
+
+    if (use_strip) {
+      unstripped_outfile = "${outfile}.debug"
+      outputs += [ unstripped_outfile ]
+
+      # Strip tool + arguments, scoped here so unused variables do not trip
+      # the GN "assignment had no effect" check for non-stripping toolchains.
+      # LLVM binutils handle GCC-built ELF as well; resolved through the
+      # Clang tool directory in both compiler modes.
+      strip_tool = "${dir_prefix}llvm-strip"
+      strip_args = "--strip-all"
+      if (defined(invoker.strip_tool)) {
+        strip_tool = invoker.strip_tool
+      }
+      if (defined(invoker.strip_args)) {
+        strip_args = invoker.strip_args
+      }
+      strip_command =
+          " && $strip_tool $strip_args -o \"$outfile\" \"$unstripped_outfile\""
+    } else {
+      unstripped_outfile = outfile
+      strip_command = ""
+    }
+
+    rspfile = "${outfile}.rsp"
+    switches = "-o $unstripped_outfile {{ldflags}}"
+    rspfile_content = "{{inputs}} {{solibs}}"
+    link_inputs = "'@$rspfile' {{libs}}"
+  }
+
+  # ---- Toolchain definition ----
+
+  toolchain(target_name) {
+    propagates_configs = true
+
+    if (defined(invoker.toolchain_deps)) {
+      deps = invoker.toolchain_deps
+    }
+
+    # Stamp tool (shared definition, see default_tools.gni)
+    tool("stamp") {
+      command = stamp_command
+      description = stamp_description
+    }
+
+    # Copy tool (hard-link first, mtime-preserving; see default_tools.gni /
+    # copy_command.sh -- safer for Ninja dependency tracking than bare cp)
+    tool("copy") {
+      command = copy_command
+      description = copy_description
+    }
+
+    # Assembler
+    tool("asm") {
+      forward_variables_from(_compile_common, "*")
+      description = "ASM {{output}}"
+      command = "$cc $target_flag $switches {{asmflags}} -c {{source}}"
+      restat = true
+    }
+
+    # C compiler
+    tool("cc") {
+      forward_variables_from(_compile_common, "*")
+      description = "CC {{output}}"
+      command =
+          "$cc $target_flag $switches {{cflags}} {{cflags_c}} -c {{source}}"
+      restat = true
+      if (restat_cc) {
+        # Concatenated into $command (not the command_launcher property,
+        # which GN does not substitution-expand) so {{output}} resolves.
+        command = string_join(" ", restat_command_launcher.local) + " " + command
+      }
+    }
+
+    # C++ compiler
+    tool("cxx") {
+      forward_variables_from(_compile_common, "*")
+      description = "CXX {{output}}"
+      command =
+          "$cxx $target_flag $switches {{cflags}} {{cflags_cc}} -c {{source}}"
+      restat = true
+      if (restat_cc) {
+        command = string_join(" ", restat_command_launcher.local) + " " + command
+      }
+    }
+
+    # Static library archiver
+    tool("alink") {
+      description = "AR {{output}}"
+      rspfile = "{{output}}.rsp"
+      command =
+          "rm -f {{output}} && $ar {{arflags}} rcsD {{output}} \"@$rspfile\""
+      rspfile_content = "{{inputs}}"
+      default_output_dir = "{{target_out_dir}}"
+      default_output_extension = ".a"
+      output_prefix = "lib"
+      outputs = [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+    }
+
+    # Executable linker.  Large link actions (especially LTO) dominate
+    # memory; the highmem pool throttles them independently of compiles
+    # (depths computed from host memory at gen time).
+    tool("link") {
+      forward_variables_from(_link_common, "*")
+      description = "LINK $outfile"
+      command = "$ld $link_target_flag $switches $link_inputs$strip_command"
+      pool = "//build/config:highmem($default_toolchain)"
+    }
+
+    # Shared libraries and ELF loadable modules use the same linker inputs as
+    # executables, but produce ET_DYN images.  A loadable module deliberately
+    # has no implicit `lib` prefix; kernel_elf_binary() controls its complete
+    # packaged name.
+    tool("solink") {
+      forward_variables_from(_link_common, "*")
+      description = "SOLINK $outfile"
+      command =
+          "$ld $link_target_flag $switches -Wl,-shared $link_inputs$strip_command"
+      default_output_extension = ".so"
+      output_prefix = "lib"
+      link_output = unstripped_outfile
+      depend_output = outfile
+      pool = "//build/config:highmem($default_toolchain)"
+    }
+
+    tool("solink_module") {
+      forward_variables_from(_link_common, "*")
+      description = "SOLINK_MODULE $outfile"
+      command =
+          "$ld $link_target_flag $switches -Wl,-shared $link_inputs$strip_command"
+      default_output_extension = ".so"
+      output_prefix = ""
+      link_output = unstripped_outfile
+      depend_output = outfile
+      pool = "//build/config:highmem($default_toolchain)"
+    }
+
+    # ---- Rust tools ----
+    # All crate types share the _rust_common invocation shape; only the
+    # output naming and crate-type-specific behavior differ. GN selects the
+    # tool from the target type (executable -> rust_bin, rust_library ->
+    # rust_rlib, ...).
+
+    tool("rust_bin") {
+      forward_variables_from(_rust_common, "*")
+      description = "RUST {{output}}"
+      command = "$_rustc $switches -o {{output}}"
+      default_output_dir = "{{target_out_dir}}"
+      outputs = [ "{{output_dir}}/{{target_output_name}}" ]
+      runtime_outputs = outputs
+    }
+
+    tool("rust_rlib") {
+      forward_variables_from(_rust_common, "*")
+      description = "RUST {{output}}"
+      command = "$_rustc $switches -o {{output}}"
+      default_output_dir = "{{target_out_dir}}"
+      output_prefix = "lib"
+      default_output_extension = ".rlib"
+      outputs =
+          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+    }
+
+    tool("rust_staticlib") {
+      forward_variables_from(_rust_common, "*")
+      description = "RUST {{output}}"
+      command = "$_rustc $switches -o {{output}}"
+      default_output_dir = "{{target_out_dir}}"
+      output_prefix = "lib"
+      default_output_extension = ".a"
+      outputs =
+          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+    }
+
+    tool("rust_cdylib") {
+      forward_variables_from(_rust_common, "*")
+      description = "RUST {{output}}"
+      command = "$_rustc $switches -o {{output}}"
+      default_output_dir = "{{target_out_dir}}"
+      output_prefix = "lib"
+      default_output_extension = ".so"
+      outputs =
+          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+    }
+
+    # Procedural macros execute at compile time on the build host.
+    # Toolchain-level wiring builds them through a host toolchain; the tool
+    # definition only adds the proc_macro extern crate.
+    tool("rust_macro") {
+      forward_variables_from(_rust_common, "*")
+      description = "RUST {{output}}"
+      command = "$_rustc $switches --extern proc_macro -o {{output}}"
+      default_output_dir = "{{target_out_dir}}"
+      output_prefix = "lib"
+      default_output_extension = ".so"
+      outputs =
+          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+    }
+
+    # ---- Toolchain-scope arguments ----
+    # These propagate to all targets built with this toolchain.
+
+    toolchain_args = {
+      current_cpu = invoker.cpu
+      current_os = invoker.os
+      in_default_toolchain = false
+
+      if (defined(invoker.toolchain_args)) {
+        forward_variables_from(invoker.toolchain_args,
+                               "*",
+                               [
+                                 "cpu",
+                                 "os",
+                                 "environment",
+                                 "toolchain_environment",
+                                 "toolchain_variant",
+                               ])
+      }
+
+      runtime_environment = invoker.environment
+
+      # The libc++ include wiring is Clang-specific: it pairs with the
+      # -nostdinc++ switch in //build/config:compiler. GCC builds use the
+      # cross-GCC's own standard library discovery.
+      if (_use_gcc) {
+        ours_clang_cxx_include_dir = ""
+      } else {
+        ours_clang_cxx_include_dir = clang_cxx_include_dir
+      }
+
+      # Logical tool names used by toolchain_action(). The default toolchain
+      # is LLVM; GCC toolchains resolve through the cross-GCC directory and
+      # its <cpu>-elf- tool prefix. LLVM-only utilities (llvm-ifs and
+      # friends) resolve through clang_tool_dir in their own templates.
+      toolchain_tools = {}
+      if (_use_gcc) {
+        toolchain_tools = {
+          directory = rebase_path(gcc_tool_dir, root_build_dir) + "/"
+          prefix = "${tc_cpu}-elf-"
+        }
+      } else {
+        toolchain_tools = {
+          directory = dir_prefix
+          prefix = "llvm-"
+        }
+      }
+
+      # Build the toolchain_variant scope.
+      # This controls variant-specific config selection.
+      # Clear the propagated value from BUILDCONFIG.gn first.
+      toolchain_variant = {}
+      toolchain_variant = {
+        base = get_label_info(":$target_name", "label_no_toolchain")
+        if (defined(invoker.variant_name)) {
+          name = invoker.variant_name
+        } else {
+          name = ""
+        }
+        if (defined(invoker.variant_suffix)) {
+          suffix = invoker.variant_suffix
+        } else {
+          suffix = ""
+        }
+        is_pic_default = false
+        with_shared = false
+        configs = []
+        executable_configs = []
+        prefix_configs = []
+        remove_common_configs = []
+        remove_executable_configs = []
+        remove_shared_configs = []
+        tags = []
+        exclude_variant_tags = []
+        deps = []
+        source_deps = []
+        link_deps = []
+
+        if (defined(invoker.tags)) {
+          tags += invoker.tags
+        }
+        if (defined(invoker.exclude_variant_tags)) {
+          exclude_variant_tags += invoker.exclude_variant_tags
+        }
+        if (defined(invoker.configs)) {
+          configs += invoker.configs
+        }
+        if (defined(invoker.prefix_configs)) {
+          prefix_configs += invoker.prefix_configs
+        }
+        if (defined(invoker.remove_common_configs)) {
+          remove_common_configs += invoker.remove_common_configs
+        }
+
+        instrumented = tags + [ "instrumented" ] - [ "instrumented" ] != tags
+      }
+
+      # The ours_toolchain scope provides toolchain identity and
+      # configuration to BUILD.gn rules. It is NOT set for host
+      # toolchains — rules check `ours_toolchain != false` to
+      # detect kernel context.
+      if (_is_host) {
+        ours_toolchain = false
+      } else {
+        ours_toolchain = {
+          # Keep the public architecture identity aligned with directory and
+          # GN labels.  The LLVM spelling belongs only in target_triple.
+          cpu = invoker.cpu
+          target_triple = target_triple
+          environment = invoker.environment
+
+          if (use_strip) {
+            link_output_suffix = ".debug"
+          } else {
+            link_output_suffix = ""
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 ours Developers
+//
+// Project-provided backend for libc++'s external threading API
+// (`_LIBCPP_HAS_THREAD_API_EXTERNAL`, see `__config_site`).
+//
+// The kernel links no libc++ runtime. Today it only uses lock-free
+// `std::atomic` operations, which never call into the primitives below, so the
+// trivial helpers are defined inline and everything else is *declared only*:
+// a TU that actually uses `<mutex>` / `<condition_variable>` / `<thread>` or
+// `std::atomic::wait`/`notify` will fail at link time, which is the intended
+// loud failure until these are wired to kernel primitives (sync::Mutex,
+// sched::Thread, ...).
+//
+// The contract is libc++'s `__thread/support.h` (see the prebuilt headers);
+// `__thread/support/pthread.h` is the reference implementation.
+
+// NOLINTBEGIN(readability-identifier-naming)
+// The `__libcpp_*` identifiers and the include guard below are mandated by
+// libc++'s external threading API contract (see libc++ `__thread/support.h`);
+// they are not free to rename, so the naming check is disabled for this header.
+#ifndef OURS_BUILD_CONFIG_CLANG_INCLUDE___EXTERNAL_THREADING_
+#define OURS_BUILD_CONFIG_CLANG_INCLUDE___EXTERNAL_THREADING_
+
+#include <chrono>
+
+#include <cstdint>
+
+#include <__config>
+
+_LIBCPP_BEGIN_NAMESPACE_STD
+
+using __libcpp_timespec_t = struct {
+    long tv_sec;
+    long tv_nsec;
+};
+
+// Mutex
+using __libcpp_mutex_t = void *;
+#define _LIBCPP_MUTEX_INITIALIZER nullptr
+
+using __libcpp_recursive_mutex_t = void *;
+
+int __libcpp_recursive_mutex_init(__libcpp_recursive_mutex_t *);
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_recursive_mutex_lock(__libcpp_recursive_mutex_t *);
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS bool
+__libcpp_recursive_mutex_trylock(__libcpp_recursive_mutex_t *);
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_recursive_mutex_unlock(__libcpp_recursive_mutex_t *);
+int __libcpp_recursive_mutex_destroy(__libcpp_recursive_mutex_t *);
+
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_mutex_lock(__libcpp_mutex_t *);
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS bool __libcpp_mutex_trylock(__libcpp_mutex_t *);
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_mutex_unlock(__libcpp_mutex_t *);
+int __libcpp_mutex_destroy(__libcpp_mutex_t *);
+
+// Condition variable
+using __libcpp_condvar_t = void *;
+#define _LIBCPP_CONDVAR_INITIALIZER nullptr
+
+int __libcpp_condvar_signal(__libcpp_condvar_t *);
+int __libcpp_condvar_broadcast(__libcpp_condvar_t *);
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS int __libcpp_condvar_wait(__libcpp_condvar_t *,
+                                                            __libcpp_mutex_t *);
+_LIBCPP_NO_THREAD_SAFETY_ANALYSIS
+int __libcpp_condvar_timedwait(__libcpp_condvar_t *, __libcpp_mutex_t *, __libcpp_timespec_t *);
+int __libcpp_condvar_destroy(__libcpp_condvar_t *);
+
+// Execute once
+using __libcpp_exec_once_flag = void *;
+#define _LIBCPP_EXEC_ONCE_INITIALIZER nullptr
+
+int __libcpp_execute_once(__libcpp_exec_once_flag *, void (*__init_routine)());
+
+// Thread id
+using __libcpp_thread_id = std::uintptr_t;
+
+inline bool __libcpp_thread_id_equal(__libcpp_thread_id __t1, __libcpp_thread_id __t2) {
+    return __t1 == __t2;
+}
+
+inline bool __libcpp_thread_id_less(__libcpp_thread_id __t1, __libcpp_thread_id __t2) {
+    return __t1 < __t2;
+}
+
+// Thread
+#define _LIBCPP_NULL_THREAD nullptr
+using __libcpp_thread_t = void *;
+
+inline __libcpp_thread_id __libcpp_thread_get_id(const __libcpp_thread_t *__t) {
+    return reinterpret_cast<std::uintptr_t>(*__t);
+}
+
+inline bool __libcpp_thread_isnull(const __libcpp_thread_t *__t) {
+    return __libcpp_thread_get_id(__t) == 0;
+}
+
+int __libcpp_thread_create(__libcpp_thread_t *, void *(*__func)(void *), void *__arg);
+
+inline __libcpp_thread_id __libcpp_thread_get_current_id() {
+    return 0;
+}
+
+int __libcpp_thread_join(__libcpp_thread_t *);
+int __libcpp_thread_detach(__libcpp_thread_t *);
+
+inline void __libcpp_thread_yield() {}
+
+inline void __libcpp_thread_sleep_for(const chrono::nanoseconds &) {}
+
+// Thread local storage
+#define _LIBCPP_TLS_DESTRUCTOR_CC /* nothing */
+using __libcpp_tls_key = std::uintptr_t;
+
+int __libcpp_tls_create(__libcpp_tls_key *, void (*__at_exit)(void *));
+void *__libcpp_tls_get(__libcpp_tls_key);
+int __libcpp_tls_set(__libcpp_tls_key, void *);
+
+_LIBCPP_END_NAMESPACE_STD
+
+// NOLINTEND(readability-identifier-naming)
+
+#endif // OURS_BUILD_CONFIG_CLANG_INCLUDE___EXTERNAL_THREADING_

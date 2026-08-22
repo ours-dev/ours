@@ -1,0 +1,19 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# rustc_library() -- a Rust library (crate-type rlib).
+#
+# See rustc_artifact() for the shared parameters.
+#
+# PROVENANCE: adapted from Fuchsia //build/rust/rustc_library.gni
+# (Copyright 2021 The Fuchsia Authors, BSD-style license).
+
+import("rustc_artifact.gni")
+
+template("rustc_library") {
+  rustc_artifact(target_name) {
+    output_type = "rust_library"
+    forward_variables_from(invoker, "*", [ "output_type" ])
+  }
+}

@@ -1,0 +1,11 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Linkage symbols that are normal, harmless references implicitly emitted
+# by the compiler but always provided by the "builtins" library.  The
+# hermetic link (hermetic_source_set) always allows these to be
+# undefined.
+#
+# PROVENANCE: copied from Fuchsia //build/config/x64/builtins_linkage_symbols.gni (Copyright 2025 The Fuchsia Authors, BSD-style license); the x86-64 compiler emits no builtin references.
+builtins_linkage_symbols = []

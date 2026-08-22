@@ -1,0 +1,51 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Extracts the deterministic GNU ELF build ID from one linked binary.
+template("elf_build_id") {
+  assert(defined(invoker.deps), "elf_build_id($target_name) requires deps")
+  assert(defined(invoker.elf), "elf_build_id($target_name) requires elf")
+
+  if (defined(invoker.output)) {
+    _output = invoker.output
+  } else {
+    _output = "$target_gen_dir/$target_name.build-id"
+  }
+  _depfile = "$_output.d"
+
+  if (clang_tool_dir != "") {
+    _readelf = rebase_path("$clang_tool_dir/llvm-readelf", root_build_dir)
+  } else {
+    _readelf = "llvm-readelf"
+  }
+
+  action(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "testonly",
+                             "visibility",
+                           ])
+    script = "//build/elf/extract-build-id.py"
+    sources = [ invoker.elf ]
+    outputs = [ _output ]
+    depfile = _depfile
+    args = [
+      _readelf,
+      rebase_path(invoker.elf, root_build_dir),
+      rebase_path(_output, root_build_dir),
+      rebase_path(_depfile, root_build_dir),
+    ]
+
+    metadata = {
+      elf_build_ids = [
+        {
+          build_id = rebase_path(_output, root_build_dir)
+          elf = rebase_path(invoker.elf, root_build_dir)
+          label = get_label_info(":$target_name", "label_with_toolchain")
+        },
+      ]
+    }
+  }
+}

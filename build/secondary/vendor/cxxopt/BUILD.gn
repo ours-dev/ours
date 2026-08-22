@@ -1,0 +1,13 @@
+# cxxopts — lightweight C++ command-line option parsing.
+# Release: v3.3.1
+# Upstream: https://github.com/jarro2783/cxxopts
+
+config("cxxopt.config") {
+  include_dirs = [ "//vendor/cxxopt/include" ]
+}
+
+source_set("cxxopt") {
+  public_configs = [ ":cxxopt.config" ]
+  sources = [ "//vendor/cxxopt/include/cxxopts.hpp" ]
+  visibility = [ "*" ]
+}

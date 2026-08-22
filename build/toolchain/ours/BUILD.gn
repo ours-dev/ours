@@ -1,0 +1,155 @@
+# Copyright 2025 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Toolchain instantiations for the Ours kernel.
+# Each ours_toolchain() call creates a complete GN toolchain with
+# its own compiler, linker, and toolchain_args.
+
+import("//build/toolchain/ours/ours_toolchain.gni")
+
+if (host_cpu == "x64") {
+  _host_ours_cpu = "x86"
+} else if (host_cpu == "arm64") {
+  _host_ours_cpu = "arm"
+} else if (host_cpu == "riscv64") {
+  _host_ours_cpu = "riscv"
+} else {
+  assert(false, "Unsupported host CPU '$host_cpu'")
+}
+
+# Host toolchain.  It builds native host tools/tests and runs host actions;
+# kernel artifacts are selected through kernel switchset toolchains.
+# The host toolchain is a secondary toolchain (the default carries target
+# identity), so its toolchain_args DO apply: runtime_environment = "host"
+# and toolchain_variant.base = this label.  The host C++ prelude include
+# keys off that identity in BUILDCONFIG.gn (//kernel/products:host-prelude).
+ours_toolchain("host") {
+  cpu = _host_ours_cpu
+  os = host_os
+  environment = "host"
+  host = true
+  tool_dir = clang_tool_dir
+}
+
+# ---- Kernel toolchains ----
+# These are ELF-targeting, freestanding toolchains for kernel code.
+
+ours_toolchain("kernel-x86") {
+  cpu = "x86"
+  os = target_os
+  environment = "kernel"
+  tags = [ "kernel" ]
+  tool_dir = clang_tool_dir
+  strip = ours_strip_kernel_binaries
+  prefix_configs = [
+    "//system/lib/ustl:headers.config",
+    "//kernel/lib/arch:headers.config",
+    "//kernel/mm:headers.config",
+    "//kernel/platform:headers.config",
+    "//kernel/arch/x86:headers.config",
+    "//kernel/arch/x86/kernel:headers.config",
+    "//kernel/arch/x86/mm:headers.config",
+  ]
+  configs = [ "//kernel/products:kernel.config" ]
+}
+
+ours_toolchain("kernel-riscv") {
+  cpu = "riscv"
+  os = target_os
+  environment = "kernel"
+  tags = [ "kernel" ]
+  tool_dir = clang_tool_dir
+  strip = ours_strip_kernel_binaries
+  prefix_configs = [
+    "//system/lib/ustl:headers.config",
+    "//kernel/lib/arch:headers.config",
+    "//kernel/mm:headers.config",
+    "//kernel/platform:headers.config",
+    "//kernel/arch/riscv:headers.config",
+    "//kernel/arch/riscv/kernel:headers.config",
+    "//kernel/arch/riscv/mm:headers.config",
+  ]
+  configs = [ "//kernel/products:kernel.config" ]
+}
+
+ours_toolchain("kernel-arm") {
+  cpu = "arm"
+  os = target_os
+  environment = "kernel"
+  tags = [ "kernel" ]
+  tool_dir = clang_tool_dir
+  strip = ours_strip_kernel_binaries
+  prefix_configs = [
+    "//system/lib/ustl:headers.config",
+    "//kernel/lib/arch:headers.config",
+    "//kernel/mm:headers.config",
+    "//kernel/platform:headers.config",
+    "//kernel/arch/arm:headers.config",
+    "//kernel/arch/arm/kernel:headers.config",
+    "//kernel/arch/arm/mm:headers.config",
+  ]
+  configs = [ "//kernel/products:kernel.config" ]
+}
+
+# Physboot runs before the kernel proper.  It uses a distinct runtime
+# environment while retaining the same Ours CPU and OS identity.
+ours_toolchain("kernel-phys-x86") {
+  cpu = "x86"
+  os = target_os
+  environment = "kernel.phys"
+  elf_linker = "x86_64-elf-ld"
+  tags = [ "kernel" ]
+  exclude_variant_tags = [ "instrumentation-runtime" ]
+  tool_dir = clang_tool_dir
+  strip = ours_strip_phys_binaries
+  prefix_configs = [
+    "//system/lib/ustl:headers.config",
+    "//kernel/lib/arch:headers.config",
+    "//kernel/phys:headers.config",
+    "//kernel/arch/x86:headers.config",
+    "//kernel/arch/x86/kernel:headers.config",
+  ]
+  configs = [ "//kernel/phys:phys.config" ]
+}
+
+ours_toolchain("kernel-phys-riscv") {
+  cpu = "riscv"
+  os = target_os
+  environment = "kernel.phys"
+  tags = [ "kernel" ]
+  exclude_variant_tags = [ "instrumentation-runtime" ]
+  tool_dir = clang_tool_dir
+  strip = ours_strip_phys_binaries
+  prefix_configs = [
+    "//system/lib/ustl:headers.config",
+    "//kernel/lib/arch:headers.config",
+    "//kernel/phys:headers.config",
+    "//kernel/arch/riscv:headers.config",
+    "//kernel/arch/riscv/kernel:headers.config",
+  ]
+  configs = [ "//kernel/phys:phys.config" ]
+}
+
+ours_toolchain("kernel-phys-arm") {
+  cpu = "arm"
+  os = target_os
+  environment = "kernel.phys"
+  tags = [ "kernel" ]
+  exclude_variant_tags = [ "instrumentation-runtime" ]
+  tool_dir = clang_tool_dir
+  strip = ours_strip_phys_binaries
+  prefix_configs = [
+    "//system/lib/ustl:headers.config",
+    "//kernel/lib/arch:headers.config",
+    "//kernel/phys:headers.config",
+    "//kernel/arch/arm:headers.config",
+    "//kernel/arch/arm/kernel:headers.config",
+  ]
+  configs = [ "//kernel/phys:phys.config" ]
+}
+
+# The host-toolchain smoke test lives in its own directory
+# (//build/toolchain/host-smoke-test) — deliberately not here.  See that
+# BUILD.gn for why a file that calls toolchain() must never also define a
+# regular target referenced with an explicit toolchain suffix.

@@ -1,0 +1,91 @@
+import("//build/config/ours/standard.gni")
+import("//build/toolchain/ours/ours_toolchain_suite.gni")
+
+# Creates a suite of kernel toolchains for a named compile-time policy — one
+# per supported CPU.  Toolchain definitions are cheap GN metadata; GN only
+# loads BUILD files into a toolchain when a dependency edge reaches it.
+#
+# `target_cpu` (set via `tools/set.py <arch>` or `gn args`) selects which
+# architecture the build graph targets, but all toolchains remain available
+# for cross-compile validation and multi-arch CI checks.
+#
+# Parameters:
+#
+#   lk_debug_level (required)
+#     Integer debug policy in the Zircon-compatible range 0..2.  It maps to
+#     Ours' local kernel_debug_level toolchain argument; it does not define the
+#     still-unresolved OURS_DEBUG source contract.
+#
+#   unit_tests_enabled (required)
+#     Whether UNITTESTS_ENABLED is defined for targets in this switchset.
+template("kernel_switchset") {
+  assert(in_default_toolchain,
+         "kernel_switchset() is only valid in the default toolchain")
+
+  _switchset_dir = get_label_info(":$target_name", "dir")
+  _expected_dir = "//build/switch/set/$target_name"
+  assert(
+      _switchset_dir == _expected_dir,
+      "kernel_switchset($target_name) must be instantiated in $_expected_dir")
+
+  assert(defined(invoker.lk_debug_level),
+         "kernel_switchset($target_name) requires lk_debug_level")
+  _debug_level = invoker.lk_debug_level
+  _allowed_debug_levels = [
+    0,
+    1,
+    2,
+  ]
+  assert(_allowed_debug_levels + [ _debug_level ] - [ _debug_level ] !=
+         _allowed_debug_levels, "lk_debug_level must be one of 0, 1, or 2")
+
+  assert(defined(invoker.unit_tests_enabled),
+         "kernel_switchset($target_name) requires unit_tests_enabled")
+
+  foreach(cpu, standard_ours_cpus) {
+    ours_toolchain_suite("kernel_${cpu}.${target_name}") {
+      cpu = cpu
+      os = target_os
+      environment = "kernel"
+      tool_dir = clang_tool_dir
+      tags = [
+        "kernel",
+        "custom-abi",
+        "no-floating-point",
+        "standalone",
+      ]
+
+      strip = ours_strip_kernel_binaries
+      remove_common_configs = [
+        "//build/config:default_frame_pointers"
+      ]
+      prefix_configs = [
+        "//kernel/lib/arch:headers.config",
+
+        # gktl::Canary needed by all classes
+        "//kernel/lib/gktl:headers.config",
+
+        "//kernel/arch/$cpu:headers.config",
+        "//kernel/arch/$cpu/kernel:headers.config",
+
+        "//kernel/mm:headers.config",
+        "//kernel/platform:headers.config",
+
+        "//system/lib/ustl:headers.config",
+      ]
+      configs = [
+        "//build/config:frame_pointers",
+        "//kernel/products:kernel.config",
+      ]
+      if (cpu == "x86") {
+        # Keep section GC explicit for the x86 kernel even when a variant
+        # replaces the common default config wrapper.
+        configs += [ "//build/config:linker_gc" ]
+      }
+      toolchain_args = {
+        kernel_debug_level = _debug_level
+        kernel_unit_tests_enabled = invoker.unit_tests_enabled
+      }
+    }
+  }
+}

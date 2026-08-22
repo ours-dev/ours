@@ -1,0 +1,46 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# GCC toolchain configuration for the Ours build.
+#
+# gcc_tool_dir selects where the GCC cross-compiler binaries live.  It is
+# only consulted when cxx_compiler = "gcc" (see compiler.gni); Clang
+# remains the default compiler.  The directory is expected to contain the
+# freestanding ELF cross tools for every Ours target CPU:
+#   x86_64-elf-gcc / aarch64-elf-gcc / riscv64-elf-gcc  (and friends)
+#
+# PROVENANCE: adapted from Fuchsia //build/toolchain/zircon/gcc.gni
+# (Copyright 2020 The Fuchsia Authors, BSD-style license).
+
+declare_args() {
+  # Directory containing the GCC cross-compiler binaries.  The default is
+  # the project prebuilt; override to point at another cross-GCC install.
+  gcc_tool_dir = ""
+}
+
+# The prebuilt location is fixed so its version stamp can always be read,
+# even when gcc_tool_dir is overridden to a custom installation.
+_prebuilt_gcc_root = "//prebuilt/gcc/${host_os}-${host_cpu}"
+_prebuilt_gcc_version =
+    read_file("$_prebuilt_gcc_root/.versions/gcc.cipd_version", "json")
+
+if (gcc_tool_dir == "") {
+  gcc_tool_dir = "$_prebuilt_gcc_root/bin"
+  gcc_version_string = _prebuilt_gcc_version.instance_id
+} else {
+  # An overridden toolchain has no version stamp; its directory path is
+  # unique enough to key toolchain-version rebuild triggers on.
+  gcc_version_string = gcc_tool_dir
+}
+
+# GNU linkers add these synthetic symbols to every linked image.  They are
+# not part of any DSO's real ABI surface, so llvm-ifs must exclude them
+# from ABI tracking and shared-object stub creation (consumed by
+# //build/config/compiler/ifs.gni).
+gnu_linker_synthetic_symbols = [
+  "__bss_start",
+  "_edata",
+  "_end",
+  "_stack",
+]

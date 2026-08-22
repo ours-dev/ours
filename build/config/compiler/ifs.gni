@@ -1,0 +1,25 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Unified llvm-ifs switches for ABI stub generation.
+#
+# llvm-ifs itself is always an LLVM tool (resolved through clang_tool_dir
+# even in GCC builds), but the *linker* that produced the binaries being
+# scanned differs: GNU linkers synthesize extra symbols that must be
+# excluded from ABI tracking.
+#
+# PROVENANCE: adapted from Fuchsia //build/toolchain/zircon/gcc.gni
+# (Copyright 2020 The Fuchsia Authors, BSD-style license), split out so
+# the switches are computed once for all consumers
+# (ifs_shared_library.gni, ifs_extract.gni).
+
+import("//build/config/compiler/compiler.gni")
+import("//build/config/compiler/gcc.gni")
+
+ifs_extra_switches = []
+if (is_gcc) {
+  foreach(symbol, gnu_linker_synthetic_symbols) {
+    ifs_extra_switches += [ "--exclude=$symbol" ]
+  }
+}

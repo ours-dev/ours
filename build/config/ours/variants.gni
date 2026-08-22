@@ -1,0 +1,103 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Named variants that are meaningful without a userspace instrumentation
+# runtime. This is the local registry corresponding to Zircon's known_variants.
+ours_known_variants = [
+  {
+    name = "lto"
+    configs = [ "//build/config/variants:lto" ]
+    tags = [ "lto" ]
+  },
+  {
+    name = "thinlto"
+    configs = [ "//build/config/variants:thinlto" ]
+    tags = [ "lto" ]
+  },
+  {
+    name = "ubsan-trap"
+    configs = [ "//build/config/variants:ubsan-trap" ]
+    tags = [
+      "instrumented",
+      "ubsan",
+    ]
+  },
+]
+
+declare_args() {
+  # Ordered variant selectors. A string is a non-host catch-all shortcut. A
+  # scope requires `variant` and may constrain host, kernel, testonly,
+  # target_type, output_name, label, name, or dir. First match wins.
+  select_variant = []
+}
+
+ours_variant_selectors = []
+foreach(selector, select_variant) {
+  if (selector == "$selector") {
+    ours_variant_selectors += [
+      {
+        variant = selector
+        host = false
+        target_type = []
+        output_name = []
+        label = []
+        name = []
+        dir = []
+      },
+    ]
+  } else {
+    assert(defined(selector.variant),
+           "select_variant scope requires a variant field: $selector")
+    ours_variant_selectors += [
+      {
+        target_type = []
+        output_name = []
+        label = []
+        name = []
+        dir = []
+        forward_variables_from(selector, "*")
+      },
+    ]
+  }
+}
+
+ours_enabled_variants = []
+ours_enabled_variant_names = []
+foreach(selector, ours_variant_selectors) {
+  if (selector.variant != false) {
+    _known_variant = false
+    foreach(variant, ours_known_variants) {
+      if (variant.name == selector.variant) {
+        _known_variant = true
+        if (ours_enabled_variant_names + [ variant.name ] - [ variant.name ] ==
+            ours_enabled_variant_names) {
+          ours_enabled_variant_names += [ variant.name ]
+          ours_enabled_variants += [ variant ]
+        }
+      }
+    }
+    assert(_known_variant, "Unknown Ours variant '${selector.variant}'")
+  }
+}
+
+# Compatibility identity for the original one-string global shortcut. Scoped
+# selection can choose different variants for different kernel entry targets,
+# so it intentionally has no single global suffix.
+ours_variant_name = ""
+ours_variant_suffix = ""
+ours_variant_configs = []
+ours_variant_tags = []
+if (select_variant != [] && select_variant == [ select_variant[0] ]) {
+  _only_selector = select_variant[0]
+  if (_only_selector == "$_only_selector") {
+    ours_variant_name = _only_selector
+    ours_variant_suffix = "-$ours_variant_name"
+    foreach(variant, ours_known_variants) {
+      if (variant.name == ours_variant_name) {
+        ours_variant_configs += variant.configs
+        ours_variant_tags += variant.tags
+      }
+    }
+  }
+}

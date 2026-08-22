@@ -1,0 +1,19 @@
+standard_ours_targets = [
+  {
+    cpu = "x86"
+    triple_cpu = "x86_64"
+  },
+  {
+    cpu = "arm"
+    triple_cpu = "aarch64"
+  },
+  {
+    cpu = "riscv"
+    triple_cpu = "riscv64"
+  },
+]
+
+standard_ours_cpus = []
+foreach(target, standard_ours_targets) {
+  standard_ours_cpus += [ target.cpu ]
+}

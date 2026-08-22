@@ -1,0 +1,15 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# AArch64 architecture configuration for the Ours `arm` identifier.
+# Kernel targets keep the plain ARMv8-A baseline (matching Fuchsia's
+# kernel arm64 config); userspace extension profiles (+simd+crc+crypto)
+# arrive with userspace toolchains.
+
+import("//build/config/compiler_config.gni")
+
+# ISA baseline: minimum hardware requirements for Ours on AArch64.
+compiler_config("arm") {
+  c_family_flags = [ "-march=armv8-a" ]
+}

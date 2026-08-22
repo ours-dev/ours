@@ -1,0 +1,40 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Clang/LLVM toolchain configuration for the Ours build.
+#
+# clang_tool_dir is the single switch that selects where the Clang/LLVM
+# binaries live.  The default resolves to the project prebuilt, which is
+# the supported configuration: kernel builds also consume its libc++
+# headers (include/c++/v1) and LLVM binutils (llvm-ar, llvm-strip,
+# llvm-ifs, llvm-readelf, ...) next to the compiler itself.
+#
+# PROVENANCE: adapted from Fuchsia
+#   //build/toolchain/zircon/clang.gni
+#   //build/config/clang/clang_prefix.gni
+# (Copyright 2020 The Fuchsia Authors, BSD-style license).  Fuchsia keys
+# rebuilds on the CIPD instance ID of its prebuilt; Ours reads the
+# equivalent .versions stamp maintained next to the prebuilt.
+
+declare_args() {
+  # Directory containing the Clang/LLVM toolchain binaries (clang, clang++,
+  # llvm-ar, llvm-strip, llvm-ifs, ...).  The default is the project
+  # prebuilt; override to point at another LLVM installation.
+  clang_tool_dir = ""
+}
+
+# The prebuilt location is fixed so its version stamp can always be read,
+# even when clang_tool_dir is overridden to a custom installation.
+_prebuilt_clang_root = "//prebuilt/clang/llvm-22"
+_prebuilt_clang_version =
+    read_file("$_prebuilt_clang_root/.versions/clang.cipd_version", "json")
+
+if (clang_tool_dir == "") {
+  clang_tool_dir = "$_prebuilt_clang_root/bin"
+  clang_version_string = _prebuilt_clang_version.instance_id
+} else {
+  # An overridden toolchain has no version stamp; its directory path is
+  # unique enough to key toolchain-version rebuild triggers on.
+  clang_version_string = clang_tool_dir
+}

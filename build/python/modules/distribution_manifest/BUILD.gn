@@ -1,0 +1,21 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Documentation + test entry for the distribution_manifest Python module.
+#
+# The module itself is consumed by build actions through plain path
+# references in their `inputs` (Fuchsia wraps it in a python_library()
+# template; Ours has no such template and the module is plain Python, so no
+# GN target is required for the module to work).
+#
+# The unittest runner lives at //build/dist/distribution_manifest_unittests.py
+# and is invoked directly with python3 (Phase 5 validation):
+#   python3 build/dist/distribution_manifest_unittests.py
+
+group("distribution_manifest") {
+  testonly = true
+
+  # No deps: the module files are referenced by path from actions in
+  # //build/dist (fini_manifest(), distribution_manifest()).
+}

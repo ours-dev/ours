@@ -1,0 +1,34 @@
+
+# Parameters
+#
+#   * link_script:
+#       - Required:
+#       - Type:
+#
+#   * symbols:
+#       - Required:
+#       - Type:
+template("link_config") {
+  assert(defined(invoker.link_script),
+         "link_config($target_name) requires a link_script")
+
+  config(target_name) {
+    inputs = [ invoker.link_script ]
+    ldflags = [
+      "-Wl,-T," + rebase_path(inputs[0], root_build_dir),
+    ]
+    if (defined(invoker.symbols)) {
+      foreach(symbol, invoker.symbols) {
+        ldflags += [ "-Wl,-defsym,$symbol" ]
+      }
+    }
+
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "inputs",
+                             "link_script",
+                             "symbols",
+                           ])
+  }
+}

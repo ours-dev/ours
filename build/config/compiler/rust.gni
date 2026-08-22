@@ -1,0 +1,71 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Rust toolchain configuration for the Ours build.
+#
+# The Rust toolchain is independent of the C/C++ compiler selection
+# (see compiler.gni).  rust_tool_dir selects where the rustc binaries
+# live; the default is the project prebuilt.
+#
+# PROVENANCE: adapted from Fuchsia
+#   //build/rust/config.gni
+#   //build/toolchain/rust_toolchain_vars.gni
+# (Copyright 2021 The Fuchsia Authors, BSD-style license), simplified for
+# a single-machine build: no RBE wrappers, no incremental-compile cache,
+# no ice-detection timeouts.
+
+declare_args() {
+  # Directory containing the Rust toolchain binaries (rustc, rustdoc).
+  # The default is the project prebuilt; override to point at another
+  # Rust installation.
+  rust_tool_dir = ""
+
+  # Override the Rust target triple.  Empty selects the per-CPU default
+  # computed by ours_toolchain() for kernel toolchains, and the host
+  # triple for host toolchains.
+  rust_target = ""
+
+  # Panic strategy baked into compiled crates: "abort" or "unwind".
+  # The freestanding kernel has no unwinder, so abort is the default;
+  # host toolchains override this to "unwind".
+  rust_panic = "abort"
+
+  # Rust edition used by the rustc_* target templates' default.
+  rust_edition = "2021"
+}
+
+# The prebuilt location is fixed so its version stamp can always be read,
+# even when rust_tool_dir is overridden to a custom installation.
+_prebuilt_rust_root = "//prebuilt/rust/stable"
+_prebuilt_rust_version =
+    read_file("$_prebuilt_rust_root/.versions/rust.cipd_version", "json")
+
+if (rust_tool_dir == "") {
+  rust_tool_dir = "$_prebuilt_rust_root/bin"
+  rust_version_string = _prebuilt_rust_version.instance_id
+} else {
+  # An overridden toolchain has no version stamp; its directory path is
+  # unique enough to key toolchain-version rebuild triggers on.
+  rust_version_string = rust_tool_dir
+}
+
+# Map Ours CPU identifiers to freestanding Rust target triples, mirroring
+# standard_ours_targets in //build/config/ours/standard.gni.  Kernel Rust
+# code is no_std and links against no runtime; the *-unknown-none family
+# matches the kernel's ELF triples.  rustup must have the matching
+# rust-std component installed for these targets.
+standard_ours_rust_targets = [
+  {
+    cpu = "x86"
+    rust_target = "x86_64-unknown-none"
+  },
+  {
+    cpu = "arm"
+    rust_target = "aarch64-unknown-none-softfloat"
+  },
+  {
+    cpu = "riscv"
+    rust_target = "riscv64gc-unknown-none-elf"
+  },
+]

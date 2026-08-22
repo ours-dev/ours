@@ -1,0 +1,438 @@
+# Copyright 2025 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Build configuration for the Ours microkernel.
+# This file defines GN configs used across all target types.
+# Config layering follows Fuchsia's pattern:
+#   prefix_configs -> common_binary_configs -> variant configs -> executable configs
+#
+# Organization rule: each config expresses exactly ONE concern.  Composite
+# configs (e.g. :compiler, :default_warnings, :hermetic_code_blob) exist
+# only to aggregate single-concern configs, never to declare flags of
+# their own.  Compiler-specific flags are guarded by is_clang/is_gcc (see
+# //build/config/compiler/compiler.gni).
+
+import("//build/config/cxx_version.gni")
+import("//build/toolchain/toolchain_environment.gni")
+
+# --- Language standard ---
+
+config("language") {
+  cflags_c = [ "-std=c11" ]
+  cflags_cc = [ "-std=c++$ours_cxx_version" ]
+}
+
+# --- Exception & RTTI ---
+
+config("no_exceptions") {
+  cflags_cc = [ "-fno-exceptions" ]
+  ldflags = cflags_cc
+}
+
+config("no_rtti") {
+  cflags_cc = [ "-fno-rtti" ]
+  ldflags = cflags_cc
+}
+
+# --- Compiler identification ---
+# Aggregate entry: diagnostics colors + C ABI conformance + (kernel) the
+# freestanding libc++ include wiring.  Referenced by BUILDCONFIG.gn.
+
+config("compiler") {
+  configs = [
+    ":color_diagnostics",
+    ":no_common",
+  ]
+  if (is_kernel) {
+    configs += [ ":kernel_libcxx_include" ]
+  }
+}
+
+# Reject tentative definitions with distinct addresses in different
+# translation units (C89 common symbols).
+config("no_common") {
+  cflags = [ "-fno-common" ]
+}
+
+# Freestanding libc++ wiring for kernel C++: the Ours-site libc++ config
+# macros and, when a prebuilt Clang is active, its libc++ headers in place
+# of the host installation's.
+config("kernel_libcxx_include") {
+  if (is_clang) {
+    include_dirs = [ "//build/config/clang/include" ]
+    if (ours_clang_cxx_include_dir != "") {
+      cflags_cc = [
+        "-nostdinc++",
+        "-isystem",
+        rebase_path(ours_clang_cxx_include_dir, root_build_dir),
+      ]
+    }
+  }
+}
+
+config("color_diagnostics") {
+  if (is_clang) {
+    cflags = [ "-fcolor-diagnostics" ]
+    asmflags = cflags
+    if (is_kernel) {
+      ldflags = [ "-Wl,--color-diagnostics" ]
+    }
+  } else {
+    cflags = [ "-fdiagnostics-color=always" ]
+    asmflags = cflags
+  }
+}
+
+# --- Optimization levels ---
+
+config("default_optimize") {
+  configs = [ ":optimize_moderate" ]
+}
+
+config("optimize_none") {
+  cflags = [ "-O0" ]
+  ldflags = cflags
+}
+
+config("optimize_debug") {
+  cflags = [ "-Og" ]
+  ldflags = cflags
+}
+
+config("optimize_moderate") {
+  cflags = [ "-O2" ]
+  ldflags = cflags
+}
+
+config("optimize_size") {
+  cflags = [ "-Oz" ]
+  ldflags = cflags
+}
+
+config("optimize_speed") {
+  cflags = [ "-O3" ]
+  ldflags = cflags
+}
+
+# --- Debug info ---
+
+config("default_debuginfo") {
+  configs = [ ":debuginfo_debug" ]
+}
+
+config("debuginfo_none") {
+  cflags = [ "-g0" ]
+}
+
+config("debuginfo_backtrace") {
+  cflags = [ "-g1" ]
+}
+
+config("debuginfo_debug") {
+  cflags = [ "-g2" ]
+}
+
+# --- Warnings ---
+# Aggregate entry split by intent: baseline set, strict opt-ins, and
+# policy-approved suppressions.
+
+config("default_warnings") {
+  configs = [
+    ":warn_common",
+    ":warn_strict",
+    ":warn_suppress",
+  ]
+}
+
+# The baseline warning set every language front end agrees on.
+config("warn_common") {
+  cflags = [
+    "-Wall",
+    "-Wextra",
+  ]
+}
+
+# Stricter diagnostics the kernel opts into beyond the baseline.
+config("warn_strict") {
+  cflags = [
+    "-Wconversion",
+    "-Wimplicit-fallthrough",
+    "-Wwrite-strings",
+  ]
+}
+
+# Accepted-by-policy exceptions to the strict set above.  Every entry
+# should be justifiable: unused parameters in interface implementations,
+# sign conversions inside comparison-heavy code.
+config("warn_suppress") {
+  cflags = [
+    "-Wno-sign-conversion",
+    "-Wno-unused-parameter",
+  ]
+}
+
+config("werror") {
+  cflags = [ "-Werror" ]
+  asmflags = [ "-Wa,--fatal-warnings" ]
+}
+
+# --- Paths ---
+
+config("relative_paths") {
+  cflags = [ "-fmacro-prefix-map=//=" ]
+}
+
+# --- Frame pointers ---
+
+config("default_frame_pointers") {
+  configs = [ ":frame_pointers" ]
+}
+
+config("frame_pointers") {
+  cflags = [
+    "-fno-omit-frame-pointer",
+    "-momit-leaf-frame-pointer",
+  ]
+  ldflags = cflags
+}
+
+config("no_frame_pointers") {
+  cflags = [ "-fomit-frame-pointer" ]
+  ldflags = cflags
+}
+
+# --- Symbol visibility ---
+
+config("symbol_visibility_hidden") {
+  cflags = [
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+  ]
+  asmflags = cflags
+}
+
+# --- Dead code elimination ---
+
+config("default_linker_gc") {
+  configs = [ ":linker_gc" ]
+}
+
+config("linker_gc") {
+  configs = [ ":linker_gc_compile" ]
+  ldflags = [ "-Wl,--gc-sections" ]
+}
+
+config("linker_gc_compile") {
+  cflags = [
+    "-fdata-sections",
+    "-ffunction-sections",
+  ]
+  ldflags = cflags
+}
+
+# --- Include directories ---
+
+config("default_include_dirs") {
+  include_dirs = [
+    "//",
+    root_gen_dir,
+  ]
+  if (is_kernel) {
+    configs = [ "//kernel/lib/libc:headers.after" ]
+  }
+}
+
+# --- Executable linking ---
+
+config("executable_config") {
+  ldflags = [
+    "-nostartfiles",
+    "-nolibc",
+    "-Wl,--no-dynamic-linker",
+  ]
+  if (is_clang) {
+    # The Clang driver needs an explicit opt-out from its default C++
+    # standard library; GCC links none unless asked.
+    ldflags += [ "-nostdlib++" ]
+  }
+}
+
+config("default_libs") {
+  # Kernel links against nothing — all symbols must be provided by the
+  # kernel's own code (including compiler builtins resolved through libclang_rt).
+}
+
+# Content-derived ELF identity used by symbol and artifact indexing tools.
+config("build_id") {
+  ldflags = [ "-Wl,--build-id=sha1" ]
+}
+
+# Hermetic code blob: a single, position-independent leaf routine linked
+# into an ELF whose loadable image contains only code (and, when
+# explicitly allowed, read-only data).  The linker script enforces the
+# closed-world constraints used by kernel code patching alternatives.
+# Aggregate entry; each concern below is independently reusable.
+config("hermetic_code_blob") {
+  configs = [
+    ":hermetic_freestanding_pic",
+    ":hermetic_no_startup",
+    ":hermetic_no_runtime",
+    ":hermetic_linker_policy",
+    ":hermetic_linker_script",
+  ]
+}
+
+# Freestanding compilation as position-independent code.
+config("hermetic_freestanding_pic") {
+  cflags = [
+    "-ffreestanding",
+    "-fPIE",
+  ]
+  asmflags = cflags
+}
+
+# No startup files: the blob defines its own entry points.
+config("hermetic_no_startup") {
+  ldflags = [ "-nostartfiles" ]
+}
+
+# No runtime dependencies of any kind: no libc, no C++ runtime, no unwind.
+config("hermetic_no_runtime") {
+  ldflags = [
+    "-nolibc",
+    "-nostdlib++",
+    "-unwindlib=none",
+  ]
+}
+
+# Closed-world image policy: no dynamic linker, no exception tables, no
+# build ID, and a non-PIE image (the blob's loader applies its own
+# relocation policy).
+config("hermetic_linker_policy") {
+  ldflags = [
+    "-Wl,--no-dynamic-linker",
+    "-Wl,--no-eh-frame-hdr",
+    "-Wl,--build-id=none",
+    "-Wl,--no-pie",
+  ]
+}
+
+# The linker script that constrains the loadable image.
+config("hermetic_linker_script") {
+  inputs = [ "hermetic-code-blob.ld" ]
+  ldflags = [ "-Wl,-T," + rebase_path(inputs[0], root_build_dir) ]
+}
+
+# --- Template backtrace limit ---
+
+config("no_template_backtrace_limit") {
+  if (is_clang) {
+    cflags_cc = [ "-ftemplate-backtrace-limit=0" ]
+  }
+}
+
+# --- Identical Code Folding ---
+
+config("icf") {
+  # Only apply ICF when optimizing (not at -O0 or -Og).
+  configs = [ ":icf_link" ]
+}
+
+config("icf_link") {
+  # --icf is lld-only; GNU ld has no equivalent.
+  if (is_clang) {
+    ldflags = [ "-Wl,--icf=all" ]
+  }
+}
+
+# --- Kernel-specific ---
+
+config("kernel") {
+  configs = [ ":no_stack_protector" ]
+}
+
+config("no_stack_protector") {
+  cflags = [ "-fno-stack-protector" ]
+}
+
+# --- Thread safety annotations ---
+
+config("thread_safety_annotations") {
+  if (is_clang) {
+    cflags_cc = [ "-Wno-thread-safety-attributes" ]
+  }
+}
+
+# --- Release/Debug ---
+
+config("release") {
+  defines = [ "NDEBUG=1" ]
+}
+
+config("debug") {
+}
+
+# --- CPU architecture baseline ---
+# Delegates to the arch-specific config at //build/config/$current_cpu
+
+config("cpu_baseline") {
+  configs = [ "//build/config/$current_cpu:$current_cpu" ]
+}
+
+# --- Freestanding kernel environment ---
+# This is applied as a prefix_config on kernel toolchains to ensure
+# the kernel's own include paths come before compiler-provided ones.
+
+config("freestanding") {
+  cflags = [ "-ffreestanding" ]
+  ldflags = cflags
+}
+
+config("no-pie-link") {
+  ldflags = [ "-Wl,--no-pie" ]
+}
+
+config("pic-link") {
+  ldflags = [ "-Wl,--pic" ]
+}
+
+config("static-link") {
+  ldflags = [ "-static" ]
+}
+
+# ---- Concurrency pools ----
+# Used by toolchain link/compile tools for memory-intensive actions
+# (see //build/toolchain/concurrent_jobs.gni).  Depths are computed from
+# host memory at gen time; the exec_script probe and the pools are only
+# defined in the default toolchain, because the pools must exist exactly
+# once for the whole build (same pattern as Fuchsia).
+if (current_toolchain == default_toolchain) {
+  import("//build/toolchain/default_concurrent_jobs.gni")
+
+  pool("local") {
+    depth = default_concurrent_jobs.local
+  }
+
+  # For actions that consume exceptionally large amounts of memory
+  # (the largest LTO link actions may fall into this category).
+  pool("highmem") {
+    depth = default_concurrent_jobs.highmem
+  }
+}
+
+# ---- Hermetic link support ----
+# Reject undefined symbols at link time (used by hermetic_source_set).
+config("symbol_no_undefined") {
+  ldflags = [ "-Wl,--no-undefined" ]
+}
+
+config("ifs-as-needed") {
+  # Directory holding no-link-input stub files for ifs_shared_library()
+  # `.as-needed` subtargets (see //build/toolchain/ifs_shared_library.gni).
+  # The dir is anchored on the DEFAULT toolchain's root gen dir because the
+  # stubs are generated once per build and reused across toolchains.
+  lib_dirs = [
+    get_label_info(".($default_toolchain)", "root_gen_dir") + "/ifs-as-needed"
+  ]
+}

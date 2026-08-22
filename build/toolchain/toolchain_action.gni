@@ -1,0 +1,63 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# toolchain_action() -- one action target that resolves a logical tool name
+# (e.g. "objcopy") through the active toolchain contract
+# (toolchain_tools.directory + toolchain_tools.prefix, e.g. "/path/to/bin"
+# + "llvm-") and runs a script with the resolved tool path first, followed
+# by the caller's extra arguments.
+#
+# The contract is populated in BUILDCONFIG.gn (default: directory "" and
+# prefix "llvm-") and overridden per toolchain in ours_toolchain() via
+# toolchain_args.  Missing contract fields are a gen-time error so mis-
+# configured toolchains fail early.
+#
+# Parameters:
+#   tool (required)   -- logical tool name, e.g. "objcopy".
+#   script (required) -- Python driver script (invoked via script_executable).
+#   sources, outputs (required) -- as for action().
+#   args (optional)   -- appended after the resolved tool path.
+#   inputs, deps, data_deps, depfile, metadata, testonly, visibility
+#     (optional) -- forwarded to action().
+template("toolchain_action") {
+  assert(defined(invoker.tool),
+         "toolchain_action($target_name) requires tool")
+  assert(defined(invoker.script),
+         "toolchain_action($target_name) requires script")
+  assert(defined(invoker.sources),
+         "toolchain_action($target_name) requires sources")
+  assert(defined(invoker.outputs),
+         "toolchain_action($target_name) requires outputs")
+  assert(defined(toolchain_tools),
+         "toolchain_action($target_name) requires toolchain_tools")
+  assert(defined(toolchain_tools.directory),
+         "toolchain_tools requires directory")
+  assert(defined(toolchain_tools.prefix),
+         "toolchain_tools requires prefix")
+
+  # Resolve "objcopy" -> "<directory><prefix>objcopy", e.g.
+  # "/usr/lib/llvm-22/bin/llvm-objcopy" (directory keeps its trailing
+  # slash when non-empty).
+  _tool = "${toolchain_tools.directory}${toolchain_tools.prefix}${invoker.tool}"
+
+  action(target_name) {
+    script = invoker.script
+    sources = invoker.sources
+    outputs = invoker.outputs
+    args = [ _tool ]
+    if (defined(invoker.args)) {
+      args += invoker.args
+    }
+    forward_variables_from(invoker,
+                           [
+                             "data_deps",
+                             "depfile",
+                             "deps",
+                             "inputs",
+                             "metadata",
+                             "testonly",
+                             "visibility",
+                           ])
+  }
+}

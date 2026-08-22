@@ -1,0 +1,37 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Converts one linked ELF into a flat binary containing its loadable bytes.
+template("elf_raw_image") {
+  assert(defined(invoker.deps), "elf_raw_image($target_name) requires deps")
+  assert(defined(invoker.elf), "elf_raw_image($target_name) requires elf")
+  assert(defined(invoker.output), "elf_raw_image($target_name) requires output")
+
+  if (clang_tool_dir != "") {
+    _objcopy = rebase_path("$clang_tool_dir/llvm-objcopy", root_build_dir)
+  } else {
+    _objcopy = "llvm-objcopy"
+  }
+  _depfile = "${invoker.output}.d"
+
+  action(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "metadata",
+                             "testonly",
+                             "visibility",
+                           ])
+    script = "//build/elf/elf-to-raw.py"
+    sources = [ invoker.elf ]
+    outputs = [ invoker.output ]
+    depfile = _depfile
+    args = [
+      _objcopy,
+      rebase_path(invoker.elf, root_build_dir),
+      rebase_path(invoker.output, root_build_dir),
+      rebase_path(_depfile, root_build_dir),
+    ]
+  }
+}

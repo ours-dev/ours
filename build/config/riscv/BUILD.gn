@@ -1,0 +1,23 @@
+# Copyright 2025 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# RISC-V 64 architecture configuration.
+
+import("//build/config/compiler_config.gni")
+
+# ISA baseline: RV64GC (IMAFDC) with the double-float ABI.
+compiler_config("riscv") {
+  c_family_flags = [
+    "-march=rv64gc",
+    "-mabi=lp64d",
+  ]
+
+  # Don't use .sdata/.sbss sections: the compiler would place read-only
+  # data there, which is suboptimal for security and sharing.  This is
+  # already the default under -fPIC and Clang warns about specifying it
+  # redundantly, so only set it for non-PIC toolchains.
+  if (!toolchain_variant.is_pic_default) {
+    cflags = [ "-msmall-data-limit=0" ]
+  }
+}

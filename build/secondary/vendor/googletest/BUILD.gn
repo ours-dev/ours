@@ -1,0 +1,29 @@
+# GoogleTest — C++ testing framework.
+# Release: v1.18.0
+# Upstream: https://github.com/google/googletest
+
+config("gtest.config") {
+  include_dirs = [ "//vendor/googletest/googletest/include" ]
+}
+
+# Internal include path (for gtest's own headers under googletest/src and
+# googletest/, not exported to consumers) — needed only while compiling
+# gtest-all.cc itself.
+config("gtest.internal_config") {
+  include_dirs = [ "//vendor/googletest/googletest" ]
+  visibility = [ ":*" ]
+}
+
+source_set("gtest") {
+  public_configs = [ ":gtest.config" ]
+  configs += [ ":gtest.internal_config" ]
+  sources = [ "//vendor/googletest/googletest/src/gtest-all.cc" ]
+  visibility = [ "*" ]
+}
+
+source_set("gtest_main") {
+  public_configs = [ ":gtest.config" ]
+  sources = [ "//vendor/googletest/googletest/src/gtest_main.cc" ]
+  deps = [ ":gtest" ]
+  visibility = [ "*" ]
+}

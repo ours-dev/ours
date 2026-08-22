@@ -1,0 +1,37 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Rust build templates and smoke tests for the Ours build.
+#
+# rust-analyzer integration: `gn gen --export-rust-project` (also passed
+# by tools/set.py) writes rust-project.json into the output directory;
+# point rust-analyzer's linkedProjects at it.
+
+import("rustc_binary.gni")
+import("rustc_library.gni")
+import("rustc_test.gni")
+
+# Library half: exercises the rust_rlib tool.
+rustc_library("rust-smoke-lib") {
+  visibility = [ ":*" ]
+  crate_root = "rust-smoke-lib.rs"
+}
+
+# Binary half: exercises the rust_bin tool and the --extern wiring from
+# the rlib above.  Built on demand; also part of the default build's
+# smoke set (see //BUILD.gn).
+rustc_binary("rust-toolchain-smoke-test") {
+  testonly = true
+  visibility = [ "//:*" ]
+  crate_root = "rust-smoke-test.rs"
+  deps = [ ":rust-smoke-lib" ]
+}
+
+# Unit-test half: exercises rustc_test()'s --test harness wiring.
+rustc_test("rust-smoke-unit") {
+  testonly = true
+  visibility = [ "//:*" ]
+  crate_root = "rust-smoke-unit.rs"
+  deps = [ ":rust-smoke-lib" ]
+}

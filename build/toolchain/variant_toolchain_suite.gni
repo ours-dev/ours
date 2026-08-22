@@ -1,0 +1,245 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/ours/variants.gni")
+import("//build/toolchain/ours/ours_toolchain.gni")
+import("//build/toolchain/toolchain_tags.gni")
+import("//build/toolchain/variant_tags.gni")
+
+# NOTE: Even though this file does not directly reference ours_toolchain(),
+# invoking it through toolchain_template below requires the template to be
+# defined in this scope, or GN reports "Not a known target type".  This is
+# the same trick Fuchsia uses (its variant_toolchain_suite imports both
+# clang_toolchain.gni and zircon_toolchain.gni).
+
+# Defines a standard suite of toolchain variants.
+#
+# Instantiates the base toolchain (named $target_name) and every variant
+# selected by the global `select_variant` list, following Fuchsia's
+# variant_toolchain_suite() algorithm but operating on the local registry
+# (ours_known_variants / ours_variant_selectors).
+#
+# Key semantics (ported from Fuchsia):
+#   * A variant toolchain is named `${base}-${variant}` and carries the
+#     variant's configs and tags through toolchain_args.toolchain_variant.
+#   * Variants whose tags collide with exclude_variant_tags are skipped;
+#     "kernel-excluded" / "kernel-only" are merged automatically based on
+#     whether the suite carries the "kernel" toolchain tag.
+#   * Unknown variant names in select_variant and unknown exclude/toolchain
+#     tags are gen-time errors.
+#   * enable_variants can force-include variants independent of select_variant.
+#   * with_shared instantiates a `-shared` companion for each variant.
+#
+# NOTE(ours): Fuchsia additionally computes is_pic_default and the
+# fuchsia-only/fuchsia-excluded tag merges; the Ours build has no fuchsia
+# target OS, so those two are omitted.  The local call sites pass toolchain
+# tags through the `tags` parameter (not Fuchsia's `toolchain_tags`), so the
+# suite accepts either for the kernel-excluded/kernel-only merge.
+#
+# PROVENANCE: adapted from Fuchsia's
+#   //build/toolchain/variant_toolchain_suite.gni
+# (Copyright 2020 The Fuchsia Authors, BSD-style license).
+#
+# Parameters:
+#   toolchain_template (required): name of the GN template that instantiates
+#     the actual toolchain() (e.g. "ours_toolchain").
+#   toolchain_tags / tags: toolchain tags applied to every toolchain in the
+#     suite (toolchain_tags preferred, falls back to tags).
+#   exclude_variant_tags: variant tags that must not be instantiated.
+#   enable_variants: variant names always enabled (independent of
+#     select_variant).
+#   with_shared: instantiate a "-shared" companion per variant.
+#   All other parameters are forwarded to $toolchain_template().
+template("variant_toolchain_suite") {
+  assert(defined(invoker.toolchain_template),
+         "variant_toolchain_suite($target_name) requires toolchain_template")
+  assert(in_default_toolchain,
+         "variant_toolchain_suite() is only valid in the default toolchain")
+
+  # ---- Validate and merge the tag lists ----
+
+  _exclude_tags = []
+  if (defined(invoker.exclude_variant_tags)) {
+    _exclude_tags = invoker.exclude_variant_tags
+    # Set difference: elements of _exclude_tags not in all_variant_tags.
+    _unknown_tags = _exclude_tags + all_variant_tags - all_variant_tags
+    assert(_unknown_tags == [],
+           "Unknown exclude_variant_tags ${_unknown_tags} in toolchain suite definition ${target_name}")
+  }
+
+  # The suite-level toolchain tags.  Local call sites pass these through the
+  # plain `tags` parameter; Fuchsia uses a dedicated `toolchain_tags` one.
+  # _toolchain_tags feeds the kernel-excluded/kernel-only merge; _suite_tags
+  # are the tags appended to every variant on top of the invoker's own tags.
+  _toolchain_tags = []
+  _suite_tags = []
+  if (defined(invoker.toolchain_tags)) {
+    _toolchain_tags = invoker.toolchain_tags
+    _suite_tags = invoker.toolchain_tags
+  } else if (defined(invoker.tags)) {
+    _toolchain_tags = invoker.tags
+  }
+  if (_toolchain_tags != []) {
+    _unknown_tags = _suite_tags + all_toolchain_tags - all_toolchain_tags
+    assert(_unknown_tags == [],
+           "Unknown toolchain_tags ${_unknown_tags} in toolchain suite definition ${target_name}")
+  }
+
+  # As a special case, always ensure that "kernel-excluded" or "kernel-only"
+  # is part of exclude_tags, based on whether "kernel" appears in
+  # toolchain_tags (same rule as Fuchsia).
+  _is_kernel = _toolchain_tags + [ "kernel" ] - [ "kernel" ] != _toolchain_tags
+  if (_is_kernel) {
+    _kernel_exclude_tags = [ "kernel-excluded" ]
+  } else {
+    _kernel_exclude_tags = [ "kernel-only" ]
+  }
+  _exclude_tags += _kernel_exclude_tags
+  _exclude_tags -= _kernel_exclude_tags
+  _exclude_tags += _kernel_exclude_tags
+
+  # NOTE(ours): Fuchsia merges fuchsia-only/fuchsia-excluded here based on
+  # toolchain_os == "fuchsia".  Ours never targets fuchsia, so that merge is
+  # omitted.
+
+  # ---- Build the candidate variant list (base + every known variant) ----
+  # The base variant (name = "") is always instantiated; its configs are
+  # empty and its tags are the suite-level toolchain tags.
+  _variants = [
+    {
+      name = ""
+      suffix = ""
+      configs = []
+      tags = _suite_tags
+    },
+  ]
+  foreach(_known, ours_known_variants) {
+    _variants += [
+      {
+        name = _known.name
+        suffix = "-${_known.name}"
+        configs = []
+        tags = _suite_tags
+        if (defined(_known.configs)) {
+          configs += _known.configs
+        }
+        if (defined(_known.tags)) {
+          tags += _known.tags
+        }
+      },
+    ]
+  }
+
+  # ---- Resolve enable_variants (force-include independent of select_variant) ----
+  _enabled_names = []
+  if (defined(invoker.enable_variants) && invoker.enable_variants != []) {
+    _all_variant_names = []
+    foreach(_variant, _variants) {
+      _all_variant_names += [ _variant.name ]
+    }
+    _enabled_names = invoker.enable_variants
+    _unknown_enabled = invoker.enable_variants + _all_variant_names - _all_variant_names
+    assert(_unknown_enabled == [],
+           "Unknown variant names in enable_variants argument: $_unknown_enabled")
+  }
+
+  _with_shared = defined(invoker.with_shared) && invoker.with_shared
+
+  # ---- Instantiate the base and each selected variant ----
+  foreach(_variant, _variants) {
+    # A variant is used if it is the base, is force-enabled, or matches a
+    # selector in the global select_variant list with compatible tags.
+    _variant_used = _variant.name == ""
+    if (!_variant_used) {
+      foreach(_selector, ours_variant_selectors) {
+        if (_selector.variant == _variant.name) {
+          # Only use the variant if its tags allow it.
+          if (_variant.tags + _exclude_tags - _exclude_tags == _variant.tags) {
+            _variant_used = true
+          }
+        }
+      }
+    }
+    if (_enabled_names + [ _variant.name ] - [ _variant.name ] != _enabled_names) {
+      _variant_used = true
+    }
+
+    if (_variant_used) {
+      # Pass the merged exclude list through toolchain_variant so targets can
+      # filter variants at BUILD time (same as Fuchsia).
+      _exclude_variant_tags = []
+      _exclude_variant_tags += _exclude_tags
+
+      target(invoker.toolchain_template, "${target_name}${_variant.suffix}") {
+        forward_variables_from(invoker,
+                               "*",
+                               [
+                                 "configs",
+                                 "enable_variants",
+                                 "exclude_variant_tags",
+                                 "tags",
+                                 "toolchain_tags",
+                                 "toolchain_template",
+                                 "with_shared",
+                               ])
+
+        # configs/tags are rebuilt here: invoker first, then the suite- and
+        # variant-level values on top.  (Base variant: invoker configs plus
+        # suite toolchain tags; named variants: plus the variant's own.)
+        configs = []
+        tags = []
+        if (defined(invoker.configs)) {
+          configs += invoker.configs
+        }
+        if (defined(invoker.tags)) {
+          tags += invoker.tags
+        }
+        configs += _variant.configs
+        tags += _variant.tags
+
+        if (_variant.name != "") {
+          # A named variant: install the variant identity and the merged
+          # exclude list.
+          variant_name = _variant.name
+          variant_suffix = _variant.suffix
+          exclude_variant_tags = _exclude_variant_tags
+        }
+      }
+
+      if (_with_shared) {
+        target(invoker.toolchain_template, "${target_name}${_variant.suffix}-shared") {
+          forward_variables_from(invoker,
+                                 "*",
+                                 [
+                                   "configs",
+                                   "enable_variants",
+                                   "exclude_variant_tags",
+                                   "tags",
+                                   "toolchain_tags",
+                                   "toolchain_template",
+                                   "with_shared",
+                                 ])
+          propagates_configs = true
+          configs = []
+          tags = []
+          if (defined(invoker.configs)) {
+            configs += invoker.configs
+          }
+          if (defined(invoker.tags)) {
+            tags += invoker.tags
+          }
+          configs += _variant.configs
+          tags += _variant.tags
+          if (_variant.name != "") {
+            variant_name = _variant.name
+            variant_suffix = _variant.suffix
+            exclude_variant_tags = _exclude_variant_tags
+          }
+          # The shared companion makes PIC the default.
+          is_pic_default = true
+        }
+      }
+    }
+  }
+}

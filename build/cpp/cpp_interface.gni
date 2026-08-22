@@ -1,0 +1,66 @@
+# Copyright 2025 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Convenience templates for C/C++ targets .
+#
+# Note: We intentionally do NOT wrap the built-in GN target types
+# (source_set, executable, static_library, etc.) because:
+#   1. Default configs are already set via set_defaults() in BUILDCONFIG.gn.
+#   2. Transparent wrappers add indirection without value.
+#   3. Fuchsia itself uses set_defaults() rather than wrapper templates.
+#
+# If custom behavior is needed later (e.g., variant support, metadata),
+# it can be added by wrapping the built-in targets in BUILDCONFIG.gn.
+
+# cpp_interface() is a thin helper for those interface library targets.
+# It automatically publishes an include directory and uses a source_set to
+# enable IDE indexing of the headers. Header paths use GN's normal
+# source-relative spelling; the template never rewrites them.
+#
+# Parameters:
+#   public (optional): Header files (indexed but not compiled).
+#   include_dirs (optional): Include directories. Defaults to ["include"].
+#   public_configs (optional): Additional configs propagated to dependents.
+#   Other native source_set variables are forwarded unchanged.
+template("cpp_interface") {
+  assert(defined(invoker.headers) != defined(invoker.public),
+         "Exactly one of `headers` and `public` must be specified.")
+
+  _include_dir = "include"
+  if (defined(invoker.include_dir)) {
+    _include_dir = invoker.include_dir
+  }
+
+  config("${target_name}.config") {
+    forward_variables_from(invoker, [ "defines" ])
+    include_dirs = [ _include_dir ]
+  }
+
+  source_set(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "public",
+                             "public_configs",
+                             "public_deps",
+                             "testonly",
+                             "visibility",
+                           ])
+
+    if (!defined(public)) {
+      public = []
+      foreach(header, invoker.headers) {
+        public += [ "${_include_dir}/$header" ]
+      }
+    }
+
+    # Header targets do not compile sources, so they must not inherit the
+    # consuming toolchain's binary configs.
+    configs = []
+    if (!defined(public_configs)) {
+      public_configs = []
+    }
+    public_configs += [ ":${target_name}.config" ]
+  }
+}

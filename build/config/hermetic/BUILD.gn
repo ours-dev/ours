@@ -1,0 +1,37 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Configs for the hermetic link subsystem (hermetic_source_set).
+# PROVENANCE: adapted from Fuchsia //build/config/zircon/BUILD.gn
+# (Copyright 2019 The Fuchsia Authors, BSD-style license); the Ours build
+# keeps the configs that make sense for a Clang-only freestanding kernel
+# and drops the Fuchsia-only branches.
+
+config("no-synthetic-sections") {
+  # These may be necessary to override earlier explicit switches passed by
+  # //build/config:compiler and its dependencies, e.g. when using -r.
+  # These are linker (lld) flags; -Wl, makes the Clang driver forward them.
+  ldflags = [
+    "-Wl,--build-id=none",  # Don't generate .note.gnu.build-id section.
+    "-Wl,--no-eh-frame-hdr",  # Don't generate .eh_frame_hdr section.
+    "-Wl,--no-dynamic-linker",  # Don't generate .interp section.
+  ]
+}
+
+config("static-libc++") {
+  # Link the C++ standard library statically in the hermetic partial link.
+  ldflags = [ "-static-libstdc++" ]
+}
+
+# Used by the basic_executable() for an hermetic partial link step: the
+# relocatable link (-r) keeps sections alive that the outer link will
+# reference later (e.g. unwinding info via .eh_frame_hdr).
+config("hermetic_source_set.config") {
+  ldflags = [
+    "-r",
+    "-static",
+  ]
+  inputs = [ "//build/toolchain/hermetic_source_set.ld" ]
+  ldflags += [ "-T" + rebase_path(inputs[0], root_build_dir) ]
+}

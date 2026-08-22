@@ -1,0 +1,21 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Deliberately its own directory/BUILD.gn, separate from
+# //build/toolchain/ours/BUILD.gn (which defines the ours_toolchain()
+# instances). A BUILD.gn that calls toolchain() gets its whole file
+# re-executed every time GN loads it under a *different* toolchain context
+# (which an explicit ($host_toolchain) reference to a plain target in that
+# same file forces) — redefining every toolchain() in it a second time and
+# tripping GN's "Duplicate definition" check. Regular buildable targets that
+# need to live in the host toolchain must not share a BUILD.gn with any
+# toolchain() definitions.
+
+if (is_host_toolchain) {
+  executable("host-toolchain-smoke-test") {
+    testonly = true
+    visibility = [ "//:*" ]
+    sources = [ "host-toolchain-smoke-test.cc" ]
+  }
+}

@@ -1,0 +1,260 @@
+# Copyright 2025 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The central build configuration for the Ours microkernel.
+# This file is loaded by GN for every BUILD.gn file in the project.
+# Architecture follows Fuchsia's BUILDCONFIG.gn pattern with simplifications
+# appropriate for a small kernel project.
+
+import("//build/config/compiler/clang.gni")
+import("//build/config/compiler/compiler.gni")
+import("//build/config/cxx_version.gni")
+import("//build/config/ours/variants.gni")
+import("//build/cpp/cpp_interface.gni")
+
+declare_args() {
+  # The target OS for the build.
+  # Allow overwriting by OS developers to build their own OS on ours kernel.
+  ours_os = "none"
+
+  ours_vendor = "unknown"
+
+  # The product to build; must match //products/<name>.gni.  The root
+  # default target depends on //products/$ours_product:$ours_product.
+  # Selected with: tools/set.py <product>.<arch>
+  ours_product = "bringup"
+}
+
+# ---- Target and toolchain defaults ----
+
+if (target_os == "") {
+  target_os = ours_os
+}
+if (target_cpu == "") {
+  # Ours' target architecture defaults to x86 (the 64-bit x86 directory).
+  target_cpu = "x86"
+}
+target_platform = "${target_cpu}-${target_os}"
+
+if (current_cpu == "") {
+  # The default toolchain carries TARGET identity (the Fuchsia model):
+  # GN ignores toolchain_args for the default toolchain, so its context
+  # falls back here and current_cpu names the machine the product targets,
+  # not the build host.  Host artifacts are built in the secondary host
+  # toolchain via ($host_toolchain) references.  This is what lets label
+  # suffixes like (:kernel.phys_$current_cpu) resolve correctly in any
+  # context, including the default one.
+  current_cpu = target_cpu
+}
+if (current_os == "") {
+  current_os = target_os
+}
+current_platform = "${current_cpu}-${current_os}"
+
+# ---- Build arguments ----
+#
+# These are declared via declare_args() so they can be overridden in
+# toolchain_args by toolchain definitions.  When a toolchain sets a
+# value here, targets resolved in that toolchain see the overridden
+# value rather than the default.
+
+declare_args() {
+  # Controls which kernel assertions are enabled.
+  kernel_assert_level = 2
+
+  # Whether to treat warnings as errors.
+  deny_warnings = true
+
+  # Debug policy applied by the named kernel switchsets.
+  kernel_debug_level = 0
+
+  # Whether the selected kernel switchset compiles its in-kernel unittest
+  # surface.  Switchsets override this; ordinary toolchains leave it disabled.
+  kernel_unit_tests_enabled = false
+
+  # Runtime environment of the artifact currently being described. This is
+  # distinct from the build host and from target_os.
+  runtime_environment = "host"
+
+  # Keep an unstripped `.debug` ELF while using a stripped runtime image.
+  ours_strip_kernel_binaries = false
+  ours_strip_phys_binaries = false
+
+  # Require and package the kernel ELF `.code-patches` section.
+  ours_kernel_has_code_patches = false
+
+  # libc++ include directory derived by ours_toolchain() for secondary
+  # toolchains. Empty leaves Clang's standard discovery in place.
+  ours_clang_cxx_include_dir = ""
+
+  # Set to false by non-default toolchains.  Used to detect whether
+  # BUILDCONFIG.gn is executing in the default toolchain context.
+  in_default_toolchain = true
+
+  # The toolchain variant configuration.  Toolchains override this via
+  # toolchain_args to select variant-specific configs (sanitizers, LTO, etc.).
+  toolchain_variant = {
+    base = ""
+    name = ""
+    suffix = ""
+    configs = []
+    prefix_configs = []
+    executable_configs = []
+    remove_common_configs = []
+    remove_executable_configs = []
+    remove_shared_configs = []
+    is_pic_default = false
+    with_shared = false
+    instrumented = false
+    tags = []
+    exclude_variant_tags = []
+    deps = []
+    source_deps = []
+    link_deps = []
+  }
+
+  # Identifies local kernel toolchains. Set by toolchain_args
+  # to a scope with .cpu, .target_triple, .environment, .link_output_suffix.
+  # Host (non-kernel) toolchains leave this as `false`.
+  ours_toolchain = false
+
+  # Logical tool names used by toolchain_actions(). The default toolchain is
+  # LLVM; secondary toolchains replace the directory through toolchain_args.
+  toolchain_tools = {
+    directory = ""
+    prefix = "llvm-"
+  }
+}
+
+# Import after declare_args so toolchain_environment.gni can inspect the default versus
+# secondary toolchain context.
+import("//build/toolchain/toolchain_environment.gni")
+
+# Resolve the runtime environment only after the build arguments above exist.
+# The default toolchain is the kernel toolchain; secondary toolchains carry
+# their concrete environment through ours_toolchain.
+
+# Compiler identity (is_clang / is_gcc) comes from the
+# //build/config/compiler/compiler.gni import above; it is driven by the
+# cxx_compiler build argument, not by variant tags.
+
+# A kernel build is defined by where the artifact runs, not by whether a
+# toolchain happened to attach a variant tag. Keep the kernel and phys
+# environments in the same freestanding/default-config family.
+is_kernel =
+    toolchain_environment == "kernel" || toolchain_environment == "kernel.phys"
+
+# ---- Default toolchain ----
+# The Fuchsia model: the DEFAULT toolchain carries target identity, so
+# current_cpu/current_os name the product's target machine in the default
+# context (see the fallback above) and every label suffix can use
+# $current_cpu uniformly across contexts.  GN ignores toolchain_args for
+# the default toolchain, so the default context also keeps ours_toolchain
+# = false / toolchain_environment = "host": it describes the action and
+# metadata graph (is_kernel = false there), never compiled artifacts.
+# Host binaries (build-time tools like obit) are built in the secondary
+# host toolchain below via ($host_toolchain) references.
+host_toolchain = "//build/toolchain/ours:host"
+target_toolchain = "//build/toolchain/ours:kernel-$target_cpu"
+
+# True only inside the host toolchain context (the local equivalent of
+# Fuchsia's is_fuchsia_host).  toolchain_variant.base is set per
+# toolchain via toolchain_args; in the default context it stays empty.
+is_host_toolchain = (toolchain_variant.base == host_toolchain)
+
+set_default_toolchain(target_toolchain)
+
+# ---- Default config lists ----
+# These compute the configs that apply to each target type based on
+# the current toolchain_variant and ours_toolchain values.
+
+# Configs applied to ALL binary target types (source_set, static_library,
+# executable, etc.). Individual target types may add more.
+default_common_binary_configs = toolchain_variant.prefix_configs + [
+                                  "//build/config:language",
+                                  "//build/config:compiler",
+                                  "//build/config:default_optimize",
+                                  "//build/config:default_debuginfo",
+                                  "//build/config:default_warnings",
+                                  "//build/config:relative_paths",
+                                  "//build/config:default_frame_pointers",
+                                  "//build/config:symbol_visibility_hidden",
+                                  "//build/config:default_include_dirs",
+                                  "//build/config:no_template_backtrace_limit",
+                                  "//build/config:cpu_baseline",
+                                ]
+
+# Kernel-specific additions.
+if (is_kernel) {
+  default_common_binary_configs += [
+    "//build/config:default_linker_gc",
+    "//build/config:no_exceptions",
+    "//build/config:no_rtti",
+    "//build/config:kernel",
+    "//build/config:icf",
+    "//build/config:thread_safety_annotations",
+    "//system/public:public.config",
+  ]
+}
+
+# Apply variant config layer: remove configs the variant doesn't want,
+# then add configs the variant does want.
+default_common_binary_configs -= toolchain_variant.remove_common_configs
+default_common_binary_configs += toolchain_variant.configs
+
+# Host C++ (e.g. obit) includes kernel headers (system/public/ours/*) that
+# rely on the global integer aliases from prelude.hpp — force the same
+# prelude the kernel toolchains get via //kernel/products:headers.  Only
+# applies inside the host toolchain (cflags_cc, so C compiles untouched).
+if (is_host_toolchain) {
+  default_common_binary_configs += [ "//kernel/products:host-prelude" ]
+}
+
+# Warnings-as-errors: applied after variant configs so variants can
+# control whether warnings are fatal.
+if (deny_warnings) {
+  default_common_binary_configs += [ "//build/config:werror" ]
+}
+
+# Executable configs = common + runtime-environment-specific link policy.
+# Host executables use the native compiler driver's startup files and runtime;
+# freestanding kernel and phys executables provide every symbol themselves.
+default_executable_configs = default_common_binary_configs
+if (is_kernel) {
+  default_executable_configs += [
+    "//build/config:build_id",
+    "//build/config:executable_config",
+    "//build/config:default_libs",
+  ]
+}
+default_executable_configs -= toolchain_variant.remove_executable_configs
+default_executable_configs += toolchain_variant.executable_configs
+
+# Shared objects and loadable modules compile under the same language,
+# architecture, and runtime-environment contract as other binary targets.
+# Variants may still remove configs specifically for shared outputs.
+default_shared_library_configs = default_common_binary_configs
+default_shared_library_configs -= toolchain_variant.remove_shared_configs
+
+# ---- Built-in target defaults ----
+
+set_defaults("source_set") {
+  configs = default_common_binary_configs
+}
+
+set_defaults("static_library") {
+  configs = default_common_binary_configs
+}
+
+set_defaults("executable") {
+  configs = default_executable_configs
+}
+
+set_defaults("shared_library") {
+  configs = default_shared_library_configs
+}
+
+set_defaults("loadable_module") {
+  configs = default_shared_library_configs
+}

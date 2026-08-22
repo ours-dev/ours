@@ -1,0 +1,42 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Ninja `restat` can lead to on-the-fly pruning of the overall action graph
+# when intermediate files are unchanged as a result of re-running an action.
+#
+# This file exposes the launcher that makes a tool command restat-friendly:
+# prepend restat_command_launcher.local (as a list) to a tool() command and
+# set `restat = true` on that tool.  The launcher backs up the declared
+# outputs, runs the command, and only replaces outputs whose content
+# actually changed -- unchanged outputs keep their old mtime, so Ninja can
+# prune downstream actions.
+#
+# The launcher is opt-in per tool; nothing in ours_toolchain() enables it
+# by default.  Typical use (inside a tool()):
+#   command = restat_command_launcher.local + [ "cc", ... ]
+#   restat = true
+#
+# NOTE(ours): Fuchsia keys the defaults off RBE and wraps the launcher
+# through a python interpreter; the Ours build is local-only with
+# script_executable = "python3", so the launcher invokes the script directly
+# (it has a shebang) and defaults to off.
+#
+# PROVENANCE: adapted from Fuchsia //build/toolchain/restat.gni
+# (Copyright 2021 The Fuchsia Authors, BSD-style license).
+
+declare_args() {
+  # Set to true to make C++ compiles preserve timestamps of unchanged
+  # outputs (write-if-change) at the cost of wrapper overhead.
+  restat_cc = false
+}
+
+restat_command_launcher = {
+  # Local-only execution uses the wrapper script directly.
+  local = [
+    rebase_path("//build/toolchain/restat_cacher.py", root_build_dir),
+    "--outputs",
+    "{{output}}",
+    "--",
+  ]
+}

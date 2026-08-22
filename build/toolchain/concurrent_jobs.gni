@@ -1,0 +1,39 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Job-concurrency configuration for memory-intensive build actions.
+#
+# Principles (from Fuchsia):
+#   * If a job requires "high" memory, constrain it to a pool with fewer
+#     slots so it cannot exhaust the host alongside other high-memory jobs.
+#   * Local-only builds never run remote jobs, so no unbounded remote pools
+#     exist here.
+#
+# To use a configuration:
+#   _concurrent_jobs = concurrent_jobs.NAME
+#   configs += _concurrent_jobs.configs
+#   forward_variables_from(_concurrent_jobs.vars, "*")
+#
+# NOTE(ours): Fuchsia's version adds RBE (remote execution) branches to each
+# configuration and a `remote` pool; the Ours build is local-only (plan
+# section 8: distributed build excluded), so those branches are stripped.
+#
+# PROVENANCE: adapted from Fuchsia's //build/toolchain/concurrent_jobs.gni
+# (Copyright 2019 The Fuchsia Authors, BSD-style license).
+
+concurrent_jobs = {
+  # Configuration for tools that run locally.
+  local = {
+    pool = "//build/config:local($default_toolchain)"
+  },
+
+  # Configuration for exceptionally memory-intensive link jobs: restrict to a
+  # lower-concurrency pool to avoid OOM on large kernel/LTO links.
+  link_highmem = {
+    configs = []
+    vars = {
+      pool = "//build/config:highmem($default_toolchain)"
+    },
+  },
+}

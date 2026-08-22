@@ -1,0 +1,13 @@
+import("//build/config/ours/debug_level.gni")
+
+assert(is_kernel,
+       "kernel switches are only valid in a kernel runtime environment")
+
+# Preserve the named debug-level labels used by Zircon-shaped switchsets.
+# Active Ours switchsets normally pass kernel_debug_level through toolchain
+# arguments instead.
+foreach(level, ours_debug_levels) {
+  config("debug_level_${level}") {
+    defines = [ "KERNEL_DEBUG_LEVEL=$level" ]
+  }
+}

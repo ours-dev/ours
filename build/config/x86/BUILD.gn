@@ -1,0 +1,29 @@
+# Copyright 2025 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# x86_64 architecture configuration, split by concern so future userspace
+# toolchains can take the ISA baseline without the kernel-mode constraints.
+# Each config below expresses exactly one concern.
+
+import("//build/config/compiler_config.gni")
+
+# ISA baseline: minimum hardware requirements for Ours on x86-64.
+compiler_config("x86-isa") {
+  c_family_flags = [
+    "-march=x86-64-v2",
+    "-mtune=generic",
+  ]
+}
+
+# Kernel-mode ABI constraints (no red zone, no MMX/SSE, -mcmodel=kernel, ...)
+# live in //kernel/arch/x86:abi and are applied only to kernel toolchains
+# via //kernel/products:kernel.config. This universal entry point must stay
+# ISA-only: cpu_baseline applies it to every target in every toolchain,
+# including host binaries that have no business being built under kernel
+# ABI constraints.
+
+# Entry point referenced by //build/config:cpu_baseline.
+compiler_config("x86") {
+  compiler_configs = [ ":x86-isa" ]
+}

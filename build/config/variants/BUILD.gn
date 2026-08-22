@@ -1,0 +1,22 @@
+# Whole-program LLVM optimization.
+config("lto") {
+  cflags = [ "-flto" ]
+  ldflags = cflags
+}
+
+# Incremental whole-program LLVM optimization.
+config("thinlto") {
+  cflags = [ "-flto=thin" ]
+  ldflags = cflags
+}
+
+# Undefined-behavior instrumentation that traps in place and requires no
+# freestanding sanitizer runtime.
+config("ubsan-trap") {
+  cflags = [
+    "-fsanitize=undefined",
+    "-fsanitize-trap=undefined",
+    "-fno-sanitize-recover=all",
+  ]
+  ldflags = cflags
+}

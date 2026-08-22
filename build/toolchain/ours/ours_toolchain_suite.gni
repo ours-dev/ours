@@ -1,0 +1,30 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/ours/ours_toolchain.gni")
+import("//build/toolchain/variant_toolchain_suite.gni")
+
+# Instantiates the base Ours toolchain and every named variant selected by
+# the global select_variant list, as a thin wrapper around
+# variant_toolchain_suite() with toolchain_template = "ours_toolchain".
+#
+# All variant semantics (enable_variants, with_shared, exclude-tag merging,
+# selector validation) live in variant_toolchain_suite.gni; this template
+# only fixes the toolchain template.
+#
+# PROVENANCE: local file; mirrors Fuchsia's clang_toolchain_suite.gni
+# (Copyright 2020 The Fuchsia Authors, BSD-style license) with the
+# clang-specific pieces replaced by ours_toolchain().
+template("ours_toolchain_suite") {
+  variant_toolchain_suite(target_name) {
+    toolchain_template = "ours_toolchain"
+    forward_variables_from(invoker, "*", [ "toolchain_template" ])
+  }
+}
+
+set_defaults("ours_toolchain_suite") {
+  # Kernel toolchains do not build shared libraries for the kernel; keep
+  # the -shared companions off by default.
+  with_shared = false
+}

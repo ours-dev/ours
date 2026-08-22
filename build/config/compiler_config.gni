@@ -1,0 +1,215 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Define a config() with conveniences for cross-language flag plumbing.
+#
+# This is a thin wrapper around config() that handles passing related
+# switches to the compiler and/or linker for the C family (C, C++,
+# Assembly) and Rust. It exists so that a flag with cross-language
+# implications is declared once instead of being hand-copied into
+# cflags/asmflags/ldflags/rustflags with per-driver syntax.
+#
+# PROVENANCE: adapted from Fuchsia //build/config/compiler_config.gni
+# (Copyright 2026 The Fuchsia Authors, BSD-style license).  Ours drops the
+# kernel-environment Rust custom-target JSON editing (rust_target_edits /
+# .rust-target-edits groups): the Ours kernel uses stock freestanding Rust
+# targets (see standard_ours_rust_targets), not per-toolchain custom
+# target JSON files.
+#
+# Parameters
+#
+#   * configs
+#     - Optional: As for config().  Other compiler_config()s **must** be
+#     reached via $compiler_configs instead.
+#     - Type: list(label_no_toolchain)
+#     - Default: []
+#
+#   * compiler_configs
+#     - Optional: List of other compiler_config() labels to include, like
+#     $configs includes other config() labels.  Kept as a distinct name so
+#     a plain config() cannot accidentally be wired into the
+#     cross-language plumbing.
+#     - Type: list(label_no_toolchain)
+#     - Default: []
+#
+#   * c_family_flags
+#     - Optional: Shorthand for adding to all of $asmflags, $cflags,
+#     $ldflags.
+#     - Type: list(string)
+#     - Default: []
+#
+#   * llvm_flags
+#     - Optional: LLVM "backend" flags for both Clang and Rust compilers.
+#     These are added to $cflags, $ldflags, and $rustflags, with the
+#     appropriate syntax for each compiler driver.  This is implicitly
+#     ignored under `is_gcc`, so setting it doesn't need to be
+#     conditionalized.
+#     - Type: list(string)
+#     - Default: []
+#
+#   * linker_flags
+#     - Optional: Flags for the underlying linker.  These are added to
+#     $ldflags and $rustflags with the appropriate syntax for the C++ and
+#     Rust compiler drivers, respectively.
+#     - Type: list(string)
+#     - Default: []
+#
+#   * rust_linker_flags
+#     - Optional: Flags for the underlying linker, but only for Rust
+#     links.  These are added only to $rustflags, with the appropriate
+#     syntax for the Rust compiler driver.
+#     - Type: list(string)
+#     - Default: []
+#
+#   * linker_llvm_flags
+#     - Optional: LLVM "backend" flags plumbed directly to the **linker**
+#     (for LTO code generation).  These are added to both $ldflags and
+#     $rustflags with the appropriate syntax for each compiler driver.
+#     This is implicitly ignored under `is_gcc`.
+#     - Type: list(string)
+#     - Default: []
+#
+#   * rust_linker_llvm_flags
+#     - Optional: LLVM "backend" flags plumbed directly to the **linker**
+#     (for LTO code generation), but only for Rust.
+#     - Type: list(string)
+#     - Default: []
+#
+#   * rust_target_features
+#     - Optional: List of features as used in -Ctarget-feature=...
+#     switches, added to $rustflags that way.
+#     - Type: list(string)
+#     - Default: []
+#
+# Other parameters are as for config() (cflags, cflags_c, cflags_cc,
+# defines, include_dirs, rustflags, ...).
+
+import("//build/config/compiler/compiler.gni")
+
+template("compiler_config") {
+  _compiler_configs = []
+  if (defined(invoker.compiler_configs)) {
+    _compiler_configs = invoker.compiler_configs
+  }
+
+  _c_family_flags = []
+  if (defined(invoker.c_family_flags)) {
+    _c_family_flags = invoker.c_family_flags
+  }
+
+  _linker_flags = []
+  if (defined(invoker.linker_flags)) {
+    _linker_flags = invoker.linker_flags
+  }
+
+  _rust_linker_flags = _linker_flags
+  if (defined(invoker.rust_linker_flags)) {
+    _rust_linker_flags += invoker.rust_linker_flags
+  }
+
+  _llvm_flags = []
+  _rust_llvm_flags = []
+  if (defined(invoker.llvm_flags)) {
+    if (!is_gcc) {
+      _llvm_flags += invoker.llvm_flags
+    }
+    _rust_llvm_flags += invoker.llvm_flags
+  }
+  if (defined(invoker.rust_llvm_flags)) {
+    _rust_llvm_flags += invoker.rust_llvm_flags
+  }
+
+  # The Rust _compiler_ is always LLVM-based and so takes LLVM backend flags
+  # even in is_gcc contexts.  However, the _linker_ it invokes in is_gcc
+  # contexts is the GNU linker that doesn't take any LLVM flags.
+  if (is_gcc) {
+    not_needed(invoker,
+               [
+                 "linker_llvm_flags",
+                 "rust_linker_llvm_flags",
+               ])
+  } else {
+    if (defined(invoker.linker_llvm_flags)) {
+      foreach(arg, invoker.linker_llvm_flags) {
+        _linker_flags += [ "--mllvm=$arg" ]
+        _rust_linker_flags += [ "--mllvm=$arg" ]
+      }
+    }
+    if (defined(invoker.rust_linker_llvm_flags)) {
+      foreach(arg, invoker.rust_linker_llvm_flags) {
+        _rust_linker_flags += [ "--mllvm=$arg" ]
+      }
+    }
+  }
+
+  _features = []
+  if (defined(invoker.rust_target_features)) {
+    _features = invoker.rust_target_features
+  }
+
+  config(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "visibility",
+                             "testonly",
+                           ])
+    configs = []
+    asmflags = []
+    cflags = []
+    ldflags = []
+    rustflags = []
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "c_family_flags",
+                             "compiler_configs",
+                             "linker_flags",
+                             "linker_llvm_flags",
+                             "llvm_flags",
+                             "rust_linker_flags",
+                             "rust_linker_llvm_flags",
+                             "rust_target_features",
+                             "testonly",
+                             "visibility",
+                           ])
+
+    configs += _compiler_configs
+
+    asmflags += _c_family_flags
+    cflags += _c_family_flags
+    ldflags += _c_family_flags
+
+    foreach(arg, _llvm_flags) {
+      cflags += [
+        "-mllvm",
+        arg,
+      ]
+      ldflags += [
+        "-mllvm",
+        arg,
+      ]
+    }
+
+    foreach(arg, _rust_llvm_flags) {
+      rustflags += [ "-Cllvm-args=$arg" ]
+    }
+
+    if (_linker_flags != []) {
+      ldflags += [ "-Wl," + string_join(",", _linker_flags) ]
+    }
+
+    if (_rust_linker_flags != []) {
+      # rustc invokes the C compiler driver on Ours targets; split
+      # -Clink-arg= spelling passes each flag separately, which works
+      # regardless of the driver's ability to split -Wl, lists.
+      foreach(arg, _rust_linker_flags) {
+        rustflags += [ "-Clink-arg=$arg" ]
+      }
+    }
+
+    foreach(feature, _features) {
+      rustflags += [ "-Ctarget-feature=$feature" ]
+    }
+  }
+}

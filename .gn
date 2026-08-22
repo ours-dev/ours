@@ -1,0 +1,16 @@
+# The location of the build configuration file.
+buildconfig = "//build/config/BUILDCONFIG.gn"
+
+# The secondary source root is a parallel directory tree where GN build files
+# are placed when they can not be placed directly in the source tree, e.g. for
+# third party source trees.
+secondary_source = "//build/secondary/"
+
+# All repository actions are Python 3 scripts.  Spell out the interpreter so
+# generated Ninja files do not depend on a legacy `python` command existing.
+script_executable = "python3"
+
+# Causes a Clang compilation database to be written to
+# $root_build_dir/compile_commands.json. It will contain the compilation
+# commands for these patterns and all of their recursive dependencies.
+export_compile_commands = [ "//:default" ]

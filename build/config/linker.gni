@@ -1,0 +1,19 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The `linker` global variable indicates which linker is used to build
+# binaries:
+#   - "lld": the LLVM linker (always used with Clang);
+#   - "":    the compiler driver's default linker (BFD with GCC).
+#
+# PROVENANCE: adapted from Fuchsia //build/config/linker.gni
+# (Copyright 2020 The Fuchsia Authors, BSD-style license).  The Ours build
+# is Clang-only, so the gold option is dropped.
+if (is_gcc) {
+  # The "system default" with GCC means BFD ld.
+  linker = ""
+} else {
+  # Always use lld with Clang.
+  linker = "lld"
+}

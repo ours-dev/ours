@@ -1,0 +1,33 @@
+// Copyright 2026 The Ours Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef OURS_BUILD_CONFIG_CLANG_INCLUDE___CONFIG_SITE_
+#define OURS_BUILD_CONFIG_CLANG_INCLUDE___CONFIG_SITE_
+
+// libc++'s <__config> requires a site configuration.  Normal hosted triples
+// receive one from the toolchain, but the Ours kernel uses freestanding ELF
+// triples and intentionally links no libc++ binary.  Keep the profile in the
+// project include path, ahead of the toolchain headers, just as Zircon's KTL
+// configuration does for kernel and phys environments.
+#define _LIBCPP_ABI_VERSION 2
+#define _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS 1
+#define _LIBCPP_ABI_NAMESPACE __ours
+#define _LIBCPP_NO_VCRUNTIME 1
+#define _LIBCPP_DISABLE_EXTERN_TEMPLATE 1
+#define _LIBCPP_HAS_NO_PLATFORM_WAIT 1
+#define _LIBCPP_HAS_THREAD_API_EXTERNAL 1
+#define _LIBCPP_HAS_THREAD_LIBRARY_EXTERNAL 1
+#define _LIBCPP_HAS_THREADS 1
+#define _LIBCPP_HAS_MONOTONIC_CLOCK 1
+#define _LIBCPP_HAS_NO_C11_ALIGNED_ALLOC 1
+#define _LIBCPP_REMOVE_TRANSITIVE_INCLUDES 1
+#define _LIBCPP_HAS_NO_LOCALIZATION 1
+#define _LIBCPP_HAS_WIDE_CHARACTERS 0
+#define _LIBCPP_PSTL_CPU_BACKEND_SERIAL 1
+#define _LIBCPP_INSTRUMENTED_WITH_ASAN __has_feature(address_sanitizer)
+#define _LIBCPP_HARDENING_MODE_DEFAULT _LIBCPP_HARDENING_MODE_NONE
+#define _LIBCPP_ASSERTION_SEMANTIC_DEFAULT \
+  _LIBCPP_ASSERTION_SEMANTIC_HARDENING_DEPENDENT
+
+#endif  // OURS_BUILD_CONFIG_CLANG_INCLUDE___CONFIG_SITE_

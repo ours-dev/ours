@@ -1,0 +1,8 @@
+# Keep Ours' public CPU spelling (`x86`, `arm`, `riscv`) intact.  The default
+# toolchain is a host/meta toolchain, so it must describe target_cpu rather
+# than the host CPU; real Ours toolchains carry their own current_cpu.
+if (defined(ours_toolchain) && ours_toolchain != false) {
+  ours_cpu = current_cpu
+} else {
+  ours_cpu = target_cpu
+}

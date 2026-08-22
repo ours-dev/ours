@@ -1,0 +1,33 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Unified compiler selection for the Ours build.
+#
+# This file is the single source of C/C++ compiler identity.  Downstream
+# code should import it (or rely on BUILDCONFIG.gn, which imports it) and
+# use `is_clang` / `is_gcc` rather than inspecting tool directories or
+# command names.  Tool locations live in sibling files:
+#   clang.gni — Clang/LLVM binaries and version stamp
+#   gcc.gni   — GCC cross binaries, version stamp, GNU linker symbols
+#   rust.gni  — rustc binaries and Rust target mapping
+#   ifs.gni   — unified llvm-ifs switches
+#
+# PROVENANCE: adapted from Fuchsia's dual-compiler model where
+# //build/toolchain/zircon/zircon_toolchain.gni supports both Clang and
+# GCC via the "gcc" variant tag (Copyright 2020 The Fuchsia Authors,
+# BSD-style license).  The Ours build elevates the choice to a top-level
+# build argument so every toolchain variant can be built with either
+# compiler without a separate variant definition.
+
+declare_args() {
+  # C/C++ compiler toolchain to use.
+  #   "clang" — Clang/LLVM from the prebuilt (default; links with lld)
+  #   "gcc"   — GCC cross-compiler from the prebuilt (links with BFD ld)
+  # Note: the build-host toolchain is always Clang; GCC applies to the
+  # freestanding kernel/phys toolchains.
+  cxx_compiler = "clang"
+}
+
+is_gcc = (cxx_compiler == "gcc")
+is_clang = !is_gcc

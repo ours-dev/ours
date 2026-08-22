@@ -1,0 +1,46 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Writes one root-build-directory JSON module and contributes its name to the
+# top-level build API index.
+template("build_api_module") {
+  if (current_toolchain == default_toolchain) {
+    generated_file(target_name) {
+      outputs = [ "$root_build_dir/$target_name.json" ]
+      forward_variables_from(invoker,
+                             [
+                               "contents",
+                               "data_keys",
+                               "deps",
+                               "rebase",
+                               "testonly",
+                               "visibility",
+                               "walk_keys",
+                             ])
+      output_conversion = "json"
+
+      metadata = {
+        build_api_modules = [ target_name ]
+        build_api_files = [
+          {
+            name = target_name
+            path = rebase_path(outputs[0], root_build_dir)
+          },
+        ]
+
+        if (defined(invoker.metadata)) {
+          forward_variables_from(invoker.metadata,
+                                 "*",
+                                 [
+                                   "build_api_files",
+                                   "build_api_modules",
+                                 ])
+        }
+      }
+    }
+  } else {
+    not_needed([ "target_name" ])
+    not_needed(invoker, "*")
+  }
+}
