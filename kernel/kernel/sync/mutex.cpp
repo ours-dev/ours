@@ -5,13 +5,13 @@
 
 #include <ours/time/clock.hpp>
 
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
-#include <arch/halt.hpp>
+#include <arch/spin-hint.hpp>
 
 using ustl::sync::MemoryOrder;
 using ours::task::Thread;
-using ours::mem::CpuLocal;
+using ours::mm::CpuLocal;
 
 namespace ours::sync {
     FORCE_INLINE
@@ -98,7 +98,7 @@ namespace ours::sync {
                 }
             }
 
-            arch::halt();
+            arch::spin_hint();
             now_ticks = time::SteadyClock::ticks();
         } while (now_ticks < deadline_ticks);
 
@@ -119,7 +119,7 @@ namespace ours::sync {
     auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> void {
         Thread::UnparkList to_wake;
 
-        auto &default_hook = OwnedWaitQueue::default_wake_hook();
+        auto &default_hook = task::OwnedWaitQueue::default_wake_hook();
         if (!m_waiters.lock_for_notify_operation(1, default_hook, to_wake)) {
             // ???
         }
@@ -129,7 +129,7 @@ namespace ours::sync {
 
         auto const do_wake = !to_wake.empty();
         if (do_wake) {
-            new_owner = &to_wake.front(); 
+            new_owner = &*to_wake.front();
             new_mutex_state = static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended;
         } else {
             new_owner = nullptr;
@@ -142,7 +142,7 @@ namespace ours::sync {
         }
 
         if (do_wake) {
-            m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook, OwnedWaitQueue::NotifyControl::None);
+            m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook, task::OwnedWaitQueue::NotifyControl::None);
         }
     }
 

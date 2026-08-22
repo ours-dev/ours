@@ -115,7 +115,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
     auto const now = time::SteadyClock::now();
     log::trace("CPU[0]-time={}ns", now.time_since_epoch().count());
 
-    Thread::Current::sleep_for(Milliseconds(10), sync::Interruptible::No);
+    Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
     auto const vec = arch::IrqVec(trampoline >> PAGE_SHIFT);
 
     DEBUG_ASSERT(MAX_CPU < 1000'000'000'000'000'000);
@@ -135,7 +135,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
 
         arch::local_irq_disable();
 
-        Thread::Current::sleep_for(Milliseconds(1), sync::Interruptible::Yes);
+        Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes);
 
         // Waiting until |cpu| is online.
         while (!Cpu::is_online(cpu))

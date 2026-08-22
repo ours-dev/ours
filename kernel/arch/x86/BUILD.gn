@@ -82,6 +82,7 @@ cpp_interface("headers") {
     "arch/x86/descriptor.hpp",
     "arch/x86/fsgs.hpp",
     "arch/x86/halt.hpp",
+    "arch/x86/spin-hint.hpp",
     "arch/x86/interrupt.hpp",
     "arch/x86/io.hpp",
     "arch/x86/macro/irqframe.hpp",

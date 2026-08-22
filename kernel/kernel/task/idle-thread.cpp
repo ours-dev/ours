@@ -11,15 +11,19 @@ using ustl::sync::MemoryOrder;
 namespace ours::task {
 using mm::CpuLocal;
 
-IdleThread::IdleThread()
+// Ordered as the members are declared; m_thread and m_arch used to be listed
+// the other way round, which -Wreorder rejects under -Werror.
+IdleThread::IdleThread(CpuNum cpunum)
     : m_states({.current = State::Booting, .target = State::Running})
-    , m_cpu(Cpu::id())
-    , m_thread()
+    , m_cpu(cpunum)
     , m_arch()
+    , m_thread()
     , m_cumulative_idle_time() {}
 
-auto IdleThread::init() -> void {
-    new (this) IdleThread();
+// |cpunum| is the CPU this idler belongs to, which is not necessarily the one
+// running this code: the boot CPU sets up every CPU's idler during task::init().
+auto IdleThread::init(CpuNum cpunum) -> void {
+    new (this) IdleThread(cpunum);
 
     constexpr auto const dummy_start_routine = [] NO_RETURN() -> i32 {
         auto const cpunum = Cpu::id();

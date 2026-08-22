@@ -3,7 +3,7 @@
 #ifndef OURS_EVENT_HPP
 #define OURS_EVENT_HPP 1
 
-#include <ours/sync/wait-queue.hpp>
+#include <ours/task/wait-queue.hpp>
 #include <ours/status.hpp>
 
 #include <gktl/canary.hpp>
@@ -20,15 +20,15 @@ namespace ours::sync {
         auto unsignal() -> void;
 
         auto wait() -> Status {
-            return wait_etc(time::Deadline::infinite(), Interruptible::No, Signals::None);
+            return wait_etc(time::Deadline::infinite(), task::Interruptible::No, Signals::None);
         }
 
         auto wait(time::Deadline const &deadline) -> Status {
-            return wait_etc(deadline, Interruptible::Yes, Signals::None);
+            return wait_etc(deadline, task::Interruptible::Yes, Signals::None);
         }
 
         auto wait(time::Deadline const &deadline, Signals sigmask) -> Status {
-            return wait_etc(deadline, Interruptible::Yes, sigmask);
+            return wait_etc(deadline, task::Interruptible::Yes, sigmask);
         }
       protected:
         enum class Flags {
@@ -37,12 +37,12 @@ namespace ours::sync {
         };
         USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
-        auto wait_etc(time::Deadline, Interruptible interruptible, Signals sigmask) -> Status;
+        auto wait_etc(time::Deadline, task::Interruptible interruptible, Signals sigmask) -> Status;
       private:
         gktl::Canary m_canary;
         ustl::Option<Status> m_result;
         Flags m_flags;
-        sync::WaitQueue m_wq;
+        task::WaitQueue m_wq;
     };
 
 } // namespace ours::sync

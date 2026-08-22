@@ -5,7 +5,7 @@
 
 #include <ours/sync/config.hpp>
 #include <ours/sync/priv/lock-name-storage.hpp>
-#include <ours/sync/owned-wait-queue.hpp>
+#include <ours/task/owned-wait-queue.hpp>
 
 #include <ours/time/types.hpp>
 
@@ -13,7 +13,7 @@
 #include <gktl/canary.hpp>
 
 namespace ours::sync {
-    class TA_CAP("Mutex") Mutex: public priv::LockNameStorage<Mutex, kLockTracingEnabled> {
+    class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, kLockTracingEnabled> {
         using Base = priv::LockNameStorage<Mutex, kLockTracingEnabled>;
         using Self = Mutex;
       public:
@@ -64,7 +64,7 @@ namespace ours::sync {
 
         ustl::sync::Atomic<State> m_state;
         ustl::sync::Atomic<CpuNum> m_cpunum;
-        OwnedWaitQueue m_waiters;
+        task::OwnedWaitQueue m_waiters;
     };
 
     template <>
@@ -77,7 +77,7 @@ namespace ours::sync {
     };
 
     /// Using a timeslice extension to avoid being preempted for time-sensitive tasks.
-    class TA_CAP("Cirtical-Mutex") CirticalMutex
+    class TA_CAPABILITY("Cirtical-Mutex") CirticalMutex
         : protected Mutex {
         using Base = Mutex;
         using Self = CirticalMutex;

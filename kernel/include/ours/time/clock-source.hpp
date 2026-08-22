@@ -135,7 +135,7 @@ namespace ours::time {
         static inline sync::SpinLock s_spinlock;
 
         /// One unit is equal to 1/HZ second.
-        static inline Ticks s_ticks TA_GUARD(s_spinlock);
+        static inline Ticks s_ticks TA_GUARDED(s_spinlock);
         static inline Ticks s_last_ticks;
         static inline TimePoint<> s_next_period;
     };
