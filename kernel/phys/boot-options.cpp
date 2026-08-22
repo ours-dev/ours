@@ -1,0 +1,56 @@
+#include <ours/phys/boot-options.hpp>
+
+#include <string_view>
+
+namespace ours::phys {
+namespace {
+    auto parse_bool(std::string_view value, bool &result) -> bool {
+        if (value == "1" || value == "true" || value == "yes") {
+            result = true;
+            return true;
+        }
+        if (value == "0" || value == "false" || value == "no") {
+            result = false;
+            return true;
+        }
+        return false;
+    }
+
+    /// Copy a value into one of the fixed-size BootOptions name buffers.
+    /// A value that does not fit is a malformed command line, not a
+    /// truncatable one.
+    auto parse_name(std::string_view value, char *buffer, usize capacity) -> bool {
+        if (value.empty() || value.size() >= capacity) {
+            return false;
+        }
+        auto *cursor = buffer;
+        for (auto const character: value) {
+            *cursor++ = character;
+        }
+        *cursor = '\0';
+        return true;
+    }
+} // namespace
+
+auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline) -> Status {
+    if (cmdline.contains("aslr.disabled")) {
+        options.aslr_disabled = true;
+    }
+    if (auto const value = cmdline.value("aslr.disabled"); value.is_some()) {
+        if (!parse_bool(value.value(), options.aslr_disabled)) {
+            return Status::InvalidArgument;
+        }
+    }
+    if (auto const value = cmdline.value("kernel.phys.next"); value.is_some()) {
+        if (!parse_name(value.value(), options.next_module, sizeof(options.next_module))) {
+            return Status::InvalidArgument;
+        }
+    }
+    if (auto const value = cmdline.value("kernel.name"); value.is_some()) {
+        if (!parse_name(value.value(), options.kernel_name, sizeof(options.kernel_name))) {
+            return Status::InvalidArgument;
+        }
+    }
+    return Status::Ok;
+}
+} // namespace ours::phys
