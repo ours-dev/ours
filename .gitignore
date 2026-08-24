@@ -50,6 +50,7 @@ MODULE.bazel.lock
 
 # Python
 .venv
+.cache
 .codex
 .claude
 .reasonix
@@ -69,3 +70,5 @@ prebuilt/
 
 # macOS finder metadata
 .DS_Store
+
+compile_commands.json
