@@ -12,17 +12,18 @@
 #define ARCH_PHYSMAP_VIRT_BASE  KERNEL_ASPACE_BASE
 #define ARCH_PHYSMAP_SIZE       GB(32)
 
-/// Virtual window the per-CPU units live in, taken from the gap between the
-/// physmap and the kernel image.
+/// Virtual window per-CPU chunks may be placed in, taken from the gap between
+/// the physmap and the kernel image.
 ///
-/// Each CPU gets `ARCH_CPU_LOCAL_UNIT_STRIDE` of *reserved address space* and
-/// only as many backing frames as it currently needs. Because the stride is
-/// constant, unit N sits at a fixed distance from unit 0, so one offset per CPU
-/// relocates every per-CPU object, and growing the populated part never moves
-/// anything that is already handed out.
-#define ARCH_CPU_LOCAL_VIRT_BASE   (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE)
-#define ARCH_CPU_LOCAL_UNIT_STRIDE MB(2)
-#define ARCH_CPU_LOCAL_SIZE        MB(64)
+/// The window is carved into slots of `ARCH_CPU_LOCAL_CHUNK_SLOT`, one per
+/// chunk. A slot has to hold `MAX_CPU * unit_size`. Placing a chunk here rather
+/// than in one contiguous physical block is optional -- it avoids needing a
+/// large contiguous allocation, and lets each unit be backed from its own NUMA
+/// node -- so an architecture with no address space to spare simply reports
+/// `ArchCpuLocal::kHasReservedWindow == false` and does without.
+#define ARCH_CPU_LOCAL_VIRT_BASE  (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE)
+#define ARCH_CPU_LOCAL_CHUNK_SLOT MB(2)
+#define ARCH_CPU_LOCAL_SIZE       MB(64)
 
 #define KERNEL_LOAD_BASE (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE + GB(1))
 

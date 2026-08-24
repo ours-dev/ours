@@ -4,6 +4,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/arch-vm-aspace.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/mm/early-mem.hpp>
 #include <ours/mm/init.hpp>
 #include <ours/mm/pm-node.hpp>
 #include <ours/mm/pmm.hpp>
@@ -19,11 +20,12 @@
 
 /// An architecture whose ArchCpuLocal reports `kHasReservedWindow == false` has
 /// no window to describe, and should not have to invent one to compile this
-/// file. The paged layout is never selected there, so these are never read.
+/// file. The paged chunk allocator is never selected there, so these are never
+/// read.
 #ifndef ARCH_CPU_LOCAL_VIRT_BASE
 #   define ARCH_CPU_LOCAL_VIRT_BASE 0
+#   define ARCH_CPU_LOCAL_CHUNK_SLOT PAGE_SIZE
 #   define ARCH_CPU_LOCAL_SIZE 0
-#   define ARCH_CPU_LOCAL_UNIT_STRIDE PAGE_SIZE
 #endif
 
 using ustl::mm::align_up;
@@ -33,18 +35,15 @@ extern char const kInitialCpuLocalEnd[] LINK_NAME("__cpu_local_end");
 
 namespace ours::mm {
 namespace {
-    /// Address space reserved per CPU. Only the populated prefix has frames
-    /// behind it; the rest is there so the dynamic area can grow in place.
-    constexpr auto const kUnitStride = usize(ARCH_CPU_LOCAL_UNIT_STRIDE);
-
     /// Allocation granularity of the dynamic area. Every reservation is a whole
     /// number of cells so the bitmap has one bit per cell.
     constexpr auto const kDynCellSize = usize(sizeof(usize));
 
     constexpr auto const kWordBits = usize(sizeof(usize) * 8);
 
-    /// The first chunk is exactly `kDynFirstChunkSize`, so its bitmap is a
-    /// compile-time size and needs no allocator at all.
+    /// Chunk 0's dynamic area is exactly `kDynFirstChunkSize` per CPU (see
+    /// Mapper::unit_size), so its bitmap is a compile-time size and needs no
+    /// allocator at all.
     constexpr auto const kDynCells = ArchCpuLocal::kDynFirstChunkSize / kDynCellSize;
     constexpr auto const kDynWords = (kDynCells + kWordBits - 1) / kWordBits;
 
@@ -61,6 +60,12 @@ namespace {
         return kInitialCpuLocalEnd - kInitialCpuLocalStart;
     }
 
+    /// Origin of handle space: the address the linker gave the template.
+    ///
+    /// Nothing is ever read or written through it after init_early(). It is the
+    /// zero point that `access()` measures from, no more -- which matters,
+    /// because the template itself lives in the `.init` area and is handed back
+    /// to the allocator by reclaim_init_area().
     FORCE_INLINE
     auto canonical_base() -> VirtAddr {
         return VirtAddr(kInitialCpuLocalStart);
@@ -80,7 +85,7 @@ namespace {
 } // namespace anonymous
 
     struct DynChunk: ustl::collections::intrusive::ListBaseHook<> {
-        /// Canonical address of the first byte this chunk manages.
+        /// Handle-space address of the first byte this chunk manages.
         VirtAddr base;
         usize size;
 
@@ -91,144 +96,146 @@ namespace {
         usize num_cells_used;
     };
 
-    /// Places the per-CPU units and reports where they landed.
+    /// Places the per-CPU units.
     ///
-    /// Both layouts below produce the same thing -- a per-unit base whose
-    /// interior is `[static copy | dynamic area]` -- because that is what the
-    /// single-offset invariant needs:
+    /// Everything rests on one requirement, and it is weaker than it looks:
+    /// **every chunk lays its CPUs out with the same stride.** A chunk spans
+    /// `MAX_CPU * unit_size` and is divided
     ///
-    ///     unit_base(n)                          +static_span   +dyn_limit
-    ///     |                                              |            |
-    ///     +----------------------------------------------+------------+
-    ///     | copy of [__cpu_local_start, __cpu_local_end) | dynamic    |
-    ///     +----------------------------------------------+------------+
+    ///     chunk_base
+    ///     |
+    ///     +------------+------------+-----+------------+
+    ///     | CPU 0 unit | CPU 1 unit | ... | CPU N unit |
+    ///     +------------+------------+-----+------------+
+    ///      \_ unit_size _/
     ///
-    /// An object at `static_span + k` is that same distance from *every* CPU's
-    /// static block, so one canonical address names it everywhere. Where the two
-    /// layouts differ is what sits behind the unit, and therefore whether the
-    /// dynamic area can ever get bigger.
+    /// so CPU n's slice of *any* chunk is at `chunk_base + n * unit_size`. The
+    /// difference `base[n] - base[0]` is therefore `n * unit_size` for every
+    /// chunk alike, and one number per CPU resolves an object in any of them.
     ///
-    /// **Embedded** (`kHasReservedWindow == false`). Each unit is a single buddy
-    /// allocation living in the physmap, at an address unrelated to its
-    /// neighbours. Costs no address space, so it suits an architecture that
-    /// cannot spare a large contiguous window -- a 32-bit kernel, say. The
-    /// dynamic area is fixed at `kDynFirstChunkSize`: a second block would sit
-    /// at a *different* distance from the static copy on each CPU, and no single
-    /// offset could describe it.
+    /// What this does *not* require is that chunks sit next to each other, or
+    /// next to the linker template. They can be anywhere. A handle is just
+    /// `address_in_cpu0_slice - base[0]`, and `access()` adds `base[cpu]` back;
+    /// the stride is what makes that work, so where the chunk itself landed
+    /// never enters into it.
     ///
-    /// **Paged** (`kHasReservedWindow == true`). Every unit gets `kUnitStride` of
-    /// reserved virtual address space and only as many frames as it needs.
-    /// Growing maps more frames into space already reserved, so the distance from
-    /// the static copy is unchanged and nothing already handed out moves.
+    /// Two ways to obtain a chunk, differing only in that:
+    ///
+    ///   Contiguous  one buddy allocation of `MAX_CPU * unit_size`. Needs no
+    ///               address space and touches no page table, so it works on an
+    ///               architecture with no window to spare. Costs a physically
+    ///               contiguous block, and puts every unit on one node.
+    ///
+    ///   Paged       a slot of reserved address space with frames mapped into
+    ///               it. No large contiguous block needed, and each unit can be
+    ///               backed from its own NUMA node.
     class CpuLocal::Mapper {
         using Self = CpuLocal::Mapper;
 
       public:
         enum class Layout : u8 {
-            Embedded,
+            Contiguous,
             Paged,
         };
 
         Mapper()
             : m_aspace(ARCH_CPU_LOCAL_VIRT_BASE, ARCH_CPU_LOCAL_SIZE, VmasFlags::Kernel),
-              m_cpu_to_unit(),
-              m_unit_to_group(),
-              m_offsets_per_unit(),
               m_group_to_node(),
               m_num_groups(0),
-              m_populated(0),
-              m_layout(Layout::Embedded) {}
+              m_chunk0(0),
+              m_next_slot(0),
+              m_layout(Layout::Contiguous) {}
 
-        auto init() -> Status;
-
-        auto layout() const -> Layout {
-            return m_layout;
+        /// Bytes one CPU owns in a chunk. Fixed, and identical for every chunk --
+        /// it is the stride the whole scheme is built on.
+        static auto unit_size() -> usize {
+            return align_up(static_span() + ArchCpuLocal::kDynFirstChunkSize,
+                            ArchCpuLocal::kUnitAlign);
         }
 
-        /// Canonical offset of `unit`, i.e. `unit_base - __cpu_local_start`.
+        static auto chunk_span() -> usize {
+            return unit_size() * MAX_CPU;
+        }
+
+        /// Claims chunk 0 from the boot allocator.
         ///
-        /// Stored per unit rather than derived from a stride, because under the
-        /// embedded layout there is no stride to derive it from.
-        auto offset_of_unit(u32 unit) const -> isize {
-            return m_offsets_per_unit[unit];
+        /// Runs before the PMM exists, so EarlyMem is the only source. The block
+        /// is permanent: CPU 0 keeps the slice it takes here for good.
+        auto init_early() -> Status;
+
+        /// Chooses how *later* chunks are obtained. Chunk 0 already exists.
+        auto init() -> void;
+
+        auto ready() const -> bool {
+            return m_chunk0 != 0;
         }
 
-        auto unit_of_cpu(CpuNum cpu) const -> u32 {
-            return m_cpu_to_unit[cpu];
+        auto offset_of_cpu(CpuNum cpu) const -> isize {
+            return isize(m_chunk0 + usize(cpu) * unit_size() - canonical_base());
         }
 
-        /// Canonical start of the dynamic area inside every unit.
+        /// Handle-space address matching a chunk that starts at `chunk_base`.
+        auto handle_of(VirtAddr chunk_base) const -> VirtAddr {
+            return canonical_base() + (chunk_base - m_chunk0);
+        }
+
+        /// Handle-space start of the dynamic area inside chunk 0.
         auto dyn_base() const -> VirtAddr {
             return canonical_base() + static_span();
         }
 
-        /// Canonical address the dynamic area can never pass.
-        auto dyn_limit() const -> VirtAddr {
-            return Layout::Paged == m_layout
-                       ? canonical_base() + kUnitStride
-                       : dyn_base() + ArchCpuLocal::kDynFirstChunkSize;
-        }
+        /// Obtains another chunk. Returns its base address, or 0.
+        auto alloc_chunk(Gaf gaf) -> VirtAddr;
 
-        /// Bytes of every unit that currently have frames behind them.
-        auto populated() const -> usize {
-            return m_populated;
-        }
-
-        /// Whether the dynamic area can still be extended.
         auto can_grow() const -> bool {
-            return Layout::Paged == m_layout && canonical_base() + m_populated < dyn_limit();
+            return Layout::Contiguous == m_layout || m_next_slot < kNumSlots;
         }
-
-        /// Backs `[populated(), target)` of every unit with frames.
-        ///
-        /// Paged layout only -- the embedded one has nowhere to put the frames.
-        /// `target` is met exactly (after page rounding) rather than rounded up
-        /// to one buddy order: the chunk that will cover the new space is sized
-        /// from `target`, and any surplus past it would be populated but
-        /// unreachable.
-        auto populate(usize target, Gaf gaf) -> Status;
 
       private:
-        auto init_embedded() -> Status;
+        constexpr static auto const kNumSlots =
+            usize(ARCH_CPU_LOCAL_SIZE) / usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
 
-        auto init_paged() -> Status;
+        auto alloc_chunk_contiguous(Gaf gaf) -> VirtAddr;
 
-        auto distribute_units() -> void;
+        auto alloc_chunk_paged(Gaf gaf) -> VirtAddr;
 
-        static auto paged_unit_base(u32 unit) -> VirtAddr {
-            return VirtAddr(ARCH_CPU_LOCAL_VIRT_BASE) + usize(unit) * kUnitStride;
-        }
+        auto distribute_groups() -> void;
 
         auto node_of_unit(u32 unit) const -> NnId {
-            return NnId(m_group_to_node[m_unit_to_group[unit]]);
+            return NnId(m_group_to_node[unit % ustl::algorithms::max(m_num_groups, u32(1))]);
         }
 
         /// Private rather than borrowed from VmAspace::kernel_aspace(): that one
         /// is built by init_vmm(), which needs the slab, which needs us. This one
         /// costs nothing to stand up because a kernel ArchVmAspace just adopts
-        /// the PGD kernel.phys already installed. Unused under the embedded
-        /// layout, which maps nothing.
+        /// the PGD kernel.phys already installed.
         ArchVmAspace m_aspace;
 
-        ustl::Array<u32, MAX_CPU> m_cpu_to_unit;
-        ustl::Array<u32, MAX_CPU> m_unit_to_group;
-        ustl::Array<isize, MAX_CPU> m_offsets_per_unit;
         ustl::Array<u32, NUMA_MAX_NODE> m_group_to_node;
-
         u32 m_num_groups;
-        usize m_populated;
+
+        VirtAddr m_chunk0;
+        usize m_next_slot;
         Layout m_layout;
     };
 
-    /// Spreads the units over the nodes that have memory.
+    auto CpuLocal::Mapper::init_early() -> Status {
+        auto *block =
+            EarlyMem::allocate<u8>(chunk_span(), ArchCpuLocal::kUnitAlign, bootmem::kAnyNode);
+        if (!block) {
+            return Status::OutOfMem;
+        }
+
+        m_chunk0 = VirtAddr(block);
+        return Status::Ok;
+    }
+
+    /// Spreads later chunks' units over the nodes that have memory.
     ///
-    /// This deliberately does not consult `cpu_to_node()`. The units are built
+    /// This deliberately does not consult `cpu_to_node()`. Chunks are obtained
     /// before the MADT is parsed, so no CPU-to-node relation exists yet; node
-    /// *memory* topology, on the other hand, is already known because
-    /// PmNode::bootstrap() ran first. Even placement across those nodes is the
-    /// best that can be done without CPU topology, and this is the one function
-    /// that needs rewriting once CPU enumeration moves ahead of the PMM.
-    auto CpuLocal::Mapper::distribute_units() -> void {
+    /// *memory* topology is already known because PmNode::bootstrap() ran first.
+    auto CpuLocal::Mapper::distribute_groups() -> void {
         auto const &nodes = mm::node_possible_mask();
 
         m_num_groups = 0;
@@ -242,130 +249,89 @@ namespace {
             m_group_to_node[0] = 0;
             m_num_groups = 1;
         }
-
-        for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
-            m_cpu_to_unit[unit] = unit;
-            m_unit_to_group[unit] = unit % m_num_groups;
-        }
     }
 
-    /// One buddy allocation per unit, taken from its group's node and used where
-    /// the physmap already maps it. No address space is reserved and no page
-    /// table is touched, which is the whole point: this is the layout for an
-    /// architecture that has no window to spare.
-    auto CpuLocal::Mapper::init_embedded() -> Status {
-        auto const span = static_span() + ArchCpuLocal::kDynFirstChunkSize;
-        auto const order = mm::get_order(align_up(span, PAGE_SIZE) / PAGE_SIZE);
+    auto CpuLocal::Mapper::init() -> void {
+        distribute_groups();
 
-        for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
-            // kGafBoot implies Gaf::Zero, so a unit's dynamic area starts clean.
-            auto frame = alloc_frames(node_of_unit(unit), mm::kGafBoot, order);
-            if (!frame) {
-                // Earlier units keep their blocks. The per-CPU area is never torn
-                // down, and the only caller is init(), which panics.
-                return Status::OutOfMem;
+        // Prefer paged chunks where the architecture has a window: they need no
+        // large contiguous block and let each unit come from its own node. Fall
+        // back rather than fail -- contiguous needs strictly less.
+        if constexpr (ArchCpuLocal::kHasReservedWindow) {
+            if (chunk_span() <= usize(ARCH_CPU_LOCAL_CHUNK_SLOT) &&
+                Status::Ok == m_aspace.init()) {
+                m_layout = Layout::Paged;
+                return;
             }
-
-            m_offsets_per_unit[unit] = isize(frame_to_virt(frame) - canonical_base());
         }
 
-        m_populated = span;
-        m_layout = Layout::Embedded;
-        return Status::Ok;
+        m_layout = Layout::Contiguous;
     }
 
-    /// Units at a constant stride through the reserved window, backed on demand.
-    auto CpuLocal::Mapper::init_paged() -> Status {
-        static_assert(usize(MAX_CPU) * kUnitStride <= usize(ARCH_CPU_LOCAL_SIZE),
-                      "The reserved cpu local window cannot hold MAX_CPU units");
-        static_assert(ArchCpuLocal::kUnitAlign <= kUnitStride,
-                      "A unit must be at least as large as its alignment");
-
-        auto status = m_aspace.init();
-        if (Status::Ok != status) {
-            return status;
+    auto CpuLocal::Mapper::alloc_chunk_contiguous(Gaf gaf) -> VirtAddr {
+        auto const pages = align_up(chunk_span(), PAGE_SIZE) / PAGE_SIZE;
+        auto const order = mm::get_order(pages);
+        if (order > MAX_FRAME_ORDER) {
+            return 0;
         }
+
+        auto frame = alloc_frames(NnId(m_group_to_node[0]), gaf, order);
+        return frame ? frame_to_virt(frame) : 0;
+    }
+
+    auto CpuLocal::Mapper::alloc_chunk_paged(Gaf gaf) -> VirtAddr {
+        if (m_next_slot >= kNumSlots) {
+            return 0;
+        }
+
+        auto const slot = VirtAddr(ARCH_CPU_LOCAL_VIRT_BASE) +
+                          m_next_slot * usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
+        auto const pages = align_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
 
         for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
-            m_offsets_per_unit[unit] = isize(paged_unit_base(unit) - canonical_base());
-        }
+            auto const unit_va = slot + usize(unit) * unit_size();
 
-        m_layout = Layout::Paged;
-        m_populated = 0;
+            // Exactly `pages`, walked with descending power-of-two blocks.
+            // Rounding up to one order would map past the unit and collide with
+            // the next one, since unit_size need not be a power of two pages.
+            for (auto done = usize(0); done < pages;) {
+                auto const remaining = pages - done;
+                auto const order = ustl::algorithms::min(usize(ustl::bit_width(remaining)) - 1,
+                                                         usize(MAX_FRAME_ORDER));
+                auto const n = usize(BIT(order));
 
-        // kGafBoot implies Gaf::Zero, so a unit's dynamic area starts clean.
-        status = populate(static_span() + ArchCpuLocal::kDynFirstChunkSize, mm::kGafBoot);
-        if (Status::Ok != status) {
-            m_populated = 0;
-        }
-        return status;
-    }
-
-    auto CpuLocal::Mapper::populate(usize target, Gaf gaf) -> Status {
-        DEBUG_ASSERT(Layout::Paged == m_layout, "The embedded layout cannot populate");
-
-        target = align_up(target, PAGE_SIZE);
-        if (target <= m_populated) {
-            return Status::Ok;
-        }
-        if (target > kUnitStride) {
-            return Status::OutOfRange;
-        }
-
-        // Cover the span with descending power-of-two blocks so it is met
-        // exactly instead of overshooting to a single order.
-        while (m_populated < target) {
-            auto const remaining = (target - m_populated) / PAGE_SIZE;
-            auto const order = ustl::algorithms::min(usize(ustl::bit_width(remaining)) - 1,
-                                                     usize(MAX_FRAME_ORDER));
-            auto const pages = usize(BIT(order));
-
-            for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
                 auto frame = alloc_frames(node_of_unit(unit), gaf, order);
                 if (!frame) {
-                    // Whatever was mapped for earlier units stays mapped. The
-                    // per-CPU area is never torn down, and a failure here is
-                    // either fatal (init) or simply refuses to grow.
-                    return Status::OutOfMem;
+                    // Earlier units stay mapped. The slot is abandoned rather
+                    // than unwound; the area is never torn down anyway.
+                    return 0;
                 }
 
                 auto mapped = usize(0);
                 auto const status =
-                    m_aspace.map(paged_unit_base(unit) + m_populated, frame_to_phys(frame), pages,
-                                 kMapFlags, MapControl::ErrorIfExisting, &mapped);
+                    m_aspace.map(unit_va + done * PAGE_SIZE, frame_to_phys(frame), n, kMapFlags,
+                                 MapControl::ErrorIfExisting, &mapped);
                 if (Status::Ok != status) {
-                    return status;
+                    return 0;
                 }
-            }
 
-            m_populated += pages * PAGE_SIZE;
+                done += n;
+            }
         }
 
-        return Status::Ok;
+        ++m_next_slot;
+        return slot;
     }
 
-    auto CpuLocal::Mapper::init() -> Status {
-        distribute_units();
-
-        // Prefer the paged layout where the architecture has a window for it, but
-        // fall back rather than fail: the embedded layout needs strictly less
-        // (no address space, no page tables) and still yields a working first
-        // chunk -- one that simply cannot grow.
-        if constexpr (ArchCpuLocal::kHasReservedWindow) {
-            if (Status::Ok == init_paged()) {
-                return Status::Ok;
-            }
-        }
-
-        return init_embedded();
+    auto CpuLocal::Mapper::alloc_chunk(Gaf gaf) -> VirtAddr {
+        return Layout::Paged == m_layout ? alloc_chunk_paged(gaf) : alloc_chunk_contiguous(gaf);
     }
 
     /// Runtime cpu local allocator.
     ///
-    /// Hands out canonical addresses from the dynamic part of every unit. One
-    /// reservation covers all CPUs at once -- the same canonical range is taken
-    /// in every unit -- so a single bitmap describes them all and the allocator
-    /// never needs to know how many CPUs there are.
+    /// Hands out handles, not pointers. One reservation covers all CPUs at once
+    /// -- it is the same slice of every unit -- so a single bitmap describes
+    /// them all and the allocator never needs to know how many CPUs there are.
     class CpuLocal::Dyn {
         using Self = CpuLocal::Dyn;
 
@@ -374,15 +340,11 @@ namespace {
 
         auto allocate(usize size, usize align) -> VirtAddr;
 
-        auto deallocate(VirtAddr canonical, usize size) -> void;
+        auto deallocate(VirtAddr handle, usize size) -> void;
 
-        auto owns(VirtAddr canonical) const -> bool;
+        auto owns(VirtAddr handle) const -> bool;
 
       private:
-        /// How much address space one growth step claims. Sized so a chunk's
-        /// bookkeeping still fits in the single page that carries it.
-        constexpr static auto const kGrowStep = usize(KB(64));
-
         auto grow() -> bool;
 
         auto allocate_locked(usize cells, usize align_bytes) -> VirtAddr;
@@ -414,6 +376,9 @@ namespace {
             word = 0;
         }
 
+        // Chunk 0 is the one whose unit carries the static copy, so its dynamic
+        // part is what is left over -- exactly kDynFirstChunkSize, since
+        // static_span() is already a multiple of kUnitAlign.
         m_first_chunk.base = mapper.dyn_base();
         m_first_chunk.size = ArchCpuLocal::kDynFirstChunkSize;
         m_first_chunk.bitmap = ustl::views::make_span(m_first_bitmap.data(), kDynWords);
@@ -423,27 +388,21 @@ namespace {
         m_dynchunks.push_back(m_first_chunk);
     }
 
-    /// Claims another slice of the reserved window and puts a chunk over it.
+    /// Takes another chunk and puts a DynChunk over it.
     ///
-    /// The chunk header and its bitmap live in one buddy page rather than coming
-    /// from the slab: CpuLocal must not depend on an allocator it is a
-    /// prerequisite of, and that stays true after boot, not just during it.
+    /// Later chunks carry no static copy, so the whole unit is dynamic. The
+    /// chunk header and its bitmap share one buddy page rather than coming from
+    /// the slab: CpuLocal must not depend on an allocator it is a prerequisite
+    /// of, and that stays true after boot, not just during it.
     auto CpuLocal::Dyn::grow() -> bool {
-        // Under the embedded layout there is nowhere to grow into: a second
-        // block would sit at a different distance from the static copy on each
-        // CPU, and no single offset could name it. The first chunk is all there
-        // will ever be.
         if (!m_mapper->can_grow()) {
             return false;
         }
 
-        auto const before = m_mapper->populated();
-        auto const room = m_mapper->dyn_limit() - (canonical_base() + before);
-        auto const step = ustl::algorithms::min(usize(kGrowStep), room);
-        if (Status::Ok != m_mapper->populate(before + step, kGafGrow)) {
+        auto const base = m_mapper->alloc_chunk(kGafGrow);
+        if (!base) {
             return false;
         }
-        auto const after = m_mapper->populated();
 
         auto frame = alloc_frames(kGafGrow, usize(0));
         if (!frame) {
@@ -457,25 +416,25 @@ namespace {
         auto *chunk = new (static_cast<void *>(page)) DynChunk();
         auto *bits = reinterpret_cast<usize *>(page + header);
 
-        chunk->base = canonical_base() + before;
-        chunk->size = after - before;
+        chunk->base = m_mapper->handle_of(base);
+        chunk->size = Mapper::unit_size();
         chunk->num_cells = chunk->size / kDynCellSize;
         chunk->num_cells_used = 0;
 
-        // A step whose bitmap would not fit in the page it shares is a
+        // A unit whose bitmap would not fit in the page it shares is a
         // misconfiguration, not a runtime condition.
-        DEBUG_ASSERT(chunk->num_cells <= words * kWordBits, "Growth step outruns its bitmap");
+        DEBUG_ASSERT(chunk->num_cells <= words * kWordBits, "Unit size outruns its bitmap");
         chunk->bitmap = ustl::views::make_span(bits, words);
 
         m_dynchunks.push_back(*chunk);
         return true;
     }
 
-    auto CpuLocal::Dyn::owns(VirtAddr canonical) const -> bool {
+    auto CpuLocal::Dyn::owns(VirtAddr handle) const -> bool {
         Guard guard{m_lock};
 
         for (auto const &chunk : m_dynchunks) {
-            if (canonical >= chunk.base && canonical < chunk.base + chunk.size) {
+            if (handle >= chunk.base && handle < chunk.base + chunk.size) {
                 return true;
             }
         }
@@ -543,8 +502,8 @@ namespace {
         return allocate_locked(cells, align_bytes);
     }
 
-    auto CpuLocal::Dyn::deallocate(VirtAddr canonical, usize size) -> void {
-        if (!canonical || !size) {
+    auto CpuLocal::Dyn::deallocate(VirtAddr handle, usize size) -> void {
+        if (!handle || !size) {
             return;
         }
 
@@ -553,11 +512,11 @@ namespace {
         Guard guard{m_lock};
 
         for (auto &chunk : m_dynchunks) {
-            if (canonical < chunk.base || canonical >= chunk.base + chunk.size) {
+            if (handle < chunk.base || handle >= chunk.base + chunk.size) {
                 continue;
             }
 
-            auto const start = (canonical - chunk.base) / kDynCellSize;
+            auto const start = (handle - chunk.base) / kDynCellSize;
             DEBUG_ASSERT(start + cells <= chunk.num_cells, "Freeing past the end of a chunk");
             for (auto i = usize(0); i < cells; ++i) {
                 DEBUG_ASSERT(test(chunk, start + i), "Double free of cpu local storage");
@@ -573,9 +532,8 @@ namespace {
     decltype(CpuLocal::g_states) CpuLocal::g_states;
     decltype(CpuLocal::g_cpu_offsets) CpuLocal::g_cpu_offsets;
 
-    /// Zero rather than INVALID_CPU_NUM: until init() runs, the canonical copy
-    /// *is* the boot CPU's storage, and the boot CPU is CPU 0. Cpu::id() reads
-    /// this, and it has callers that run before init_early() installs anything.
+    /// Zero rather than INVALID_CPU_NUM: the template is what CPU 0 reads until
+    /// init_early() moves it onto a real unit, and the boot CPU is CPU 0.
     CPU_LOCAL
     decltype(CpuLocal::g_current_cpunum) CpuLocal::g_current_cpunum = 0;
 
@@ -583,7 +541,6 @@ namespace {
     decltype(CpuLocal::g_current_cpu_offset) CpuLocal::g_current_cpu_offset = 0;
 
     /// Static, because the slab cannot be used to build what the slab depends on.
-    /// See the note above `CpuLocal::init()`.
     namespace {
         CpuLocal::Mapper g_mapper_storage;
         CpuLocal::Dyn g_dyn_storage;
@@ -594,79 +551,84 @@ namespace {
 
     /// Order matters: the base register has to be live before any `read`/`write`
     /// can reach the unit, so it is installed first and the bookkeeping written
-    /// through it afterwards.
+    /// through it afterwards. Writing first would land in the template, which is
+    /// exactly what must not be written.
     auto CpuLocal::attach_to_unit(CpuNum cpunum, isize offset) -> void {
         ArchCpuLocal::install(offset);
         Self::write(g_current_cpu_offset, offset);
         Self::write(g_current_cpunum, cpunum);
     }
 
+    /// Gets the boot CPU onto a unit of its own, as early as possible.
+    ///
+    /// It cannot simply run on the template at offset zero. That memory belongs
+    /// to the `.init` area and is handed back to the allocator by
+    /// reclaim_init_area(); it is a read-only image of the defaults, not
+    /// storage. So chunk 0 is claimed from the boot allocator here and CPU 0 is
+    /// seeded from the template and moved onto it straight away.
+    ///
+    /// Only CPU 0. The other units in the chunk stay untouched until init()
+    /// seeds them -- from the template, so that they get pristine defaults
+    /// rather than whatever CPU 0 has been accumulating in the meantime.
     auto CpuLocal::init_early() -> void {
-        // Before the allocator exists there is only the linker-provided area, so
-        // the boot CPU runs on the canonical copy itself: offset zero.
+        g_mapper = &g_mapper_storage;
+        ASSERT(Status::Ok == g_mapper->init_early(), "Failed to claim the cpu local first chunk");
+
         for (auto &offset : g_cpu_offsets) {
             offset = 0;
         }
 
-        // The boot CPU is CPU 0 by construction, so there is nothing to look up.
-        attach_to_unit(0, 0);
+        // The boot CPU is CPU 0 by construction, so there is nothing to look up
+        // -- which also avoids asking Cpu::id(), whose answer lives in the very
+        // storage being set up here.
+        auto const boot = CpuNum(0);
+        auto const offset = g_mapper->offset_of_cpu(boot);
 
-        g_states[usize(State::Online)].reset().set(0);
+        ustl::algorithms::copy_n(kInitialCpuLocalStart, initial_area_size(),
+                                 reinterpret_cast<char *>(canonical_base() + offset));
+
+        g_cpu_offsets[boot] = offset;
+        attach_to_unit(boot, offset);
+
+        g_states[usize(State::Online)].reset().set(boot);
         g_states[usize(State::Offline)].reset();
     }
 
-    /// Builds the real per-CPU units.
+    /// Finishes what init_early() started, once the PMM exists.
     ///
     /// This has to run *before* the slab is initialised, and must not allocate
     /// through it, because the slab is one of its users: MemCache::init() ->
     /// CpuCache::on_mem_cache_init() -> CpuLocal::allocate<CpuCache>(). Taking
     /// even one kmalloc() here would close the loop.
-    ///
-    /// Everything it needs is therefore either static (the Mapper/Dyn maps, all
-    /// bounded by MAX_CPU and NUMA_MAX_NODE) or comes straight from the buddy
-    /// allocator (the frames behind the units, and the page tables that map
-    /// them). That leaves exactly one precondition: PmNode::bootstrap() and
-    /// EarlyMem::do_handoff() have run.
     auto CpuLocal::init() -> void {
-        DEBUG_ASSERT(!g_mapper, "CpuLocal::init() ran twice");
+        DEBUG_ASSERT(g_mapper && g_mapper->ready(), "CpuLocal::init_early() has not run");
+        DEBUG_ASSERT(!g_dyn, "CpuLocal::init() ran twice");
 
-        g_mapper = &g_mapper_storage;
-        ASSERT(Status::Ok == g_mapper->init(), "Failed to lay out cpu local units");
+        // Decide how later chunks will be obtained now that there is a PMM.
+        g_mapper->init();
 
-        g_dyn = &g_dyn_storage;
-        g_dyn->init(*g_mapper);
-
-        // Seed every unit from the canonical area so each CPU starts from the
-        // initialisers the linker wrote, then publish the offsets.
-        //
-        // The copy has to happen before the boot CPU switches over: subsystems
-        // that ran earlier (PmNode::Current among them) have already written
-        // per-CPU state into the canonical area, and this is what carries it into
-        // every unit rather than stranding it.
-        for (auto cpu = CpuNum(0); cpu < MAX_CPU; ++cpu) {
-            auto const offset = g_mapper->offset_of_unit(g_mapper->unit_of_cpu(cpu));
-            auto *unit = reinterpret_cast<u8 *>(canonical_base() + offset);
+        // Seed the remaining units from the template. CPU 0 is deliberately left
+        // alone: it has been running on its slice since init_early() and its
+        // state must survive, whereas the others must start from the defaults.
+        for (auto cpu = CpuNum(1); cpu < MAX_CPU; ++cpu) {
+            auto const offset = g_mapper->offset_of_cpu(cpu);
             ustl::algorithms::copy_n(kInitialCpuLocalStart, initial_area_size(),
-                                     reinterpret_cast<char *>(unit));
+                                     reinterpret_cast<char *>(canonical_base() + offset));
             g_cpu_offsets[cpu] = offset;
 
-            // The copy carried the boot CPU's bookkeeping into every unit. Fix it
-            // here, while `access()` still works from the outside, so a unit is
-            // already self-describing before its CPU attaches to it.
+            // Fix each unit's own bookkeeping while access() still works from the
+            // outside, so a unit is self-describing before its CPU attaches.
             Self::access(g_current_cpu_offset, cpu) = offset;
             Self::access(g_current_cpunum, cpu) = cpu;
         }
 
-        // The boot CPU has been running on the canonical area; move it across.
-        auto const boot = current_cpu();
-        attach_to_unit(boot, g_cpu_offsets[boot]);
-
-        bootstrap(CpuMask::of(boot));
+        g_dyn = &g_dyn_storage;
+        g_dyn->init(*g_mapper);
     }
 
     auto CpuLocal::init_percpu(CpuNum cpu) -> void {
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        DEBUG_ASSERT(g_mapper, "Bringing up a CPU before CpuLocal::init()");
+        DEBUG_ASSERT(g_dyn, "Bringing up a CPU before CpuLocal::init()");
 
         attach_to_unit(cpu, g_cpu_offsets[cpu]);
 
@@ -682,12 +644,7 @@ namespace {
     }
 
     auto CpuLocal::translate(VirtAddr va) -> VirtAddr {
-        // Before init() the canonical area is the only area there is.
-        if (!g_mapper) {
-            return is_in_initial_area(va) ? va : 0;
-        }
-
-        if (!is_in_initial_area(va) && !g_dyn->owns(va)) {
+        if (!is_in_initial_area(va) && (!g_dyn || !g_dyn->owns(va))) {
             return 0;
         }
 
@@ -701,11 +658,11 @@ namespace {
         return g_dyn->allocate(size, align);
     }
 
-    auto CpuLocal::free_raw(VirtAddr canonical, usize size) -> void {
+    auto CpuLocal::free_raw(VirtAddr handle, usize size) -> void {
         if (!g_dyn) {
             return;
         }
-        return g_dyn->deallocate(canonical, size);
+        return g_dyn->deallocate(handle, size);
     }
 
 } // namespace ours::mm
