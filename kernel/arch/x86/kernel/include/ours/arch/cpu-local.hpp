@@ -16,6 +16,15 @@ struct ArchCpuLocal {
 
     constexpr static usize const kUnitAlign = PAGE_SIZE;
 
+    /// Whether this architecture can spare a contiguous virtual window for the
+    /// per-CPU units (see ARCH_CPU_LOCAL_VIRT_BASE).
+    ///
+    /// True here because a 64-bit kernel address space has room to burn. An
+    /// architecture that says false gets the embedded layout instead: units come
+    /// straight out of the physmap at unrelated addresses, which costs no address
+    /// space but fixes the dynamic area at kDynFirstChunkSize forever.
+    constexpr static bool const kHasReservedWindow = true;
+
     template <typename T>
     FORCE_INLINE static auto install(T base) -> void {
         static_assert(ustl::traits::IsIntegralV<T> || ustl::traits::IsPtrV<T>);
