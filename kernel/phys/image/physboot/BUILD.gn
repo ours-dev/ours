@@ -1,0 +1,21 @@
+import("//kernel/kernel_package.gni")
+
+kernel_package("physboot") {
+  # 产品的镜像配方（product() 的 extra_deps）把 physboot 模块收进镜像。
+  visibility = [
+    "//kernel/*",
+    "//products/*",
+    "//tests/*",
+  ]
+  # BootFS 顶层是扁平命名空间：physboot 模块以裸名 "physboot" 打包，
+  # 不带 kernel_package 目标名前缀（见 .agents/tasks/phys-module-and-obi-tree）。
+  prefix = ""
+  # The packaged input is the module ELF itself (ET_DYN, e_entry =
+  # phys_load_handoff); physload loads it via ModuleLoader.
+  #
+  # $current_cpu is correct in every context (Fuchsia spells it the same way):
+  # the default toolchain carries target identity, so its current_cpu names
+  # the product's target machine rather than the build host, and kernel/phys
+  # toolchain contexts set current_cpu through toolchain_args.
+  deps = [ "..:physboot.module(//build/switch/set/phys.dbg_0:kernel.phys_$current_cpu.phys.dbg_0)" ]
+}

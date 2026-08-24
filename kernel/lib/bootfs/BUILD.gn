@@ -1,0 +1,19 @@
+import("//build/cpp/cpp_interface.gni")
+
+source_set("bootfs") {
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/bootfs/builder.hpp",
+    "include/bootfs/format.hpp",
+    "include/bootfs/view.hpp",
+  ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

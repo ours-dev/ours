@@ -4,14 +4,14 @@
 #define OURS_TIME_TICK_SCHED_HPP 1
 
 #include <ours/time/timer.hpp>
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 #include <ours/syscall/time.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::time {
     /// Emulates a tick device, which generates periodic tick events for scheduler.
-    class TickSched: public mem::CpuLocal::Current<TickSched> {
+    class TickSched: public mm::CpuLocal::Current<TickSched> {
         using Self = TickSched;
       public:
         enum class WorkMode {
@@ -47,6 +47,8 @@ namespace ours::time {
         gktl::Canary m_canary;
         Timer m_timer;
         WorkMode m_workmode;
+        Ticks m_last_tick;
+        Ticks m_next_tick;
     };
 
 } // namespace ours::time

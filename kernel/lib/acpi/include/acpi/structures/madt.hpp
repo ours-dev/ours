@@ -1,236 +1,276 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef ACPI_MADT_HPP
-#define ACPI_MADT_HPP 1
+#ifndef ACPI_STRUCTURES_MADT_HPP
+#define ACPI_STRUCTURES_MADT_HPP 1
 
-#include <acpi/types.hpp>
 #include <acpi/structures/header.hpp>
-
-#include <ustl/io/binary_reader.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace acpi::madt {
-    enum class Type: u8 {
-        LocalApic,
-        IoApic,
-        InterruptOverride,
-        Nmi,
-        LocalApicNmi,
-        IoSapic,
-        LocalSapic,
-        PlatformInterruptSource,
-        LocalX2Apic,
-        IoX2Apic,
-        LocalX2ApicNmi,
-        GicCpuInterface,
-        GicDistributor,
-        GicMsiFrame,
-        GicRedistributor,
-        GicExtendedRegister,
-        Count,
-    };
+/// Interrupt controller structure types.
+///
+/// Reference: ACPI v6.5 Table 5.20.
+///
+/// The previous spelling of this enum omitted `LocalApicAddressOverride` (0x05)
+/// and invented an `IoX2Apic` that the specification does not define.  The two
+/// mistakes cancelled at 0x0A, so 0x05 through 0x09 all named the wrong
+/// structure while the tail happened to look correct.
+enum class Type : u8 {
+    LocalApic = 0x00,
+    IoApic = 0x01,
+    InterruptSourceOverride = 0x02,
+    NmiSource = 0x03,
+    LocalApicNmi = 0x04,
+    LocalApicAddressOverride = 0x05,
+    IoSapic = 0x06,
+    LocalSapic = 0x07,
+    PlatformInterruptSources = 0x08,
+    LocalX2Apic = 0x09,
+    LocalX2ApicNmi = 0x0A,
+    GicCpuInterface = 0x0B,
+    GicDistributor = 0x0C,
+    GicMsiFrame = 0x0D,
+    GicRedistributor = 0x0E,
+    GicInterruptTranslationService = 0x0F,
+    MultiprocessorWakeup = 0x10,
+};
 
-    enum class Flag {
-        PolarityConforms = 0,
-        PolarityHigh = 0b01,
-        PolarityLow = 0b11,
-        PolarityMask = 0b11,
+/// MPS INTI flags, carried by the interrupt source override and NMI entries.
+///
+/// Reference: ACPI v6.5 Table 5.26.
+///
+/// These are two-bit *fields*, not independent bits, so they are decoded with
+/// accessors rather than exposed as a bitmask enum -- `flags & PolarityLow`
+/// is true for `PolarityHigh` as well, which is exactly the trap the old
+/// `madt::Flag` enum set up.
+enum class Polarity : u8 {
+    Conforms = 0b00,
+    ActiveHigh = 0b01,
+    Reserved = 0b10,
+    ActiveLow = 0b11,
+};
 
-        TriggerConforms = 0b0000,
-        TriggerEdge = 0b0100,
-        TriggerLevel = 0b1100,
-        TriggerMask = 0b1100,
-    };
+enum class TriggerMode : u8 {
+    Conforms = 0b00,
+    Edge = 0b01,
+    Reserved = 0b10,
+    Level = 0b11,
+};
 
-    /// Multiple APIC Description Table
-    struct PACKED Table {
-        TableHeader header;
-        u32 lapic_addr;
-        u32 flags;
+[[nodiscard]]
+constexpr auto polarity_of(u16 inti_flags) -> Polarity {
+    return Polarity(inti_flags & 0b11);
+}
 
-        CXX11_CONSTEXPR
-        static auto const kSignature = Signature("APIC");
-    };
+[[nodiscard]]
+constexpr auto trigger_mode_of(u16 inti_flags) -> TriggerMode {
+    return TriggerMode((inti_flags >> 2) & 0b11);
+}
 
-    // MADT Entry Type 0: Processor Local APIC
-    struct PACKED LocalApicEntry {
-        EntryHeader header;
-        u8 acpi_processor_id;
-        u8 apic_id;
+/// Reference: ACPI v6.5 Table 5.23.
+enum class LocalApicFlag : u32 {
+    Enabled = 0x01,
+    OnlineCapable = 0x02,
+};
+USTL_ENABLE_ENUM_BITMASK(LocalApicFlag);
 
-        // Flags (bit 0 = Processor Enabled) (bit 1 = Online Capable)
-        u32 flags; 
+/// Multiple APIC description table.
+///
+/// Reference: ACPI v6.5 Section 5.2.12.
+struct PACKED Table {
+    [[nodiscard]]
+    constexpr auto size() const -> u32 {
+        return header.length;
+    }
 
-        static constexpr auto kType = Type::LocalApic;
-    };
+    TableHeader header;
+    u32 lapic_addr;
+    u32 flags;
 
-    // MADT Entry Type 1: I/O APIC
-    struct PACKED IoApicEntry {
-        EntryHeader header;
-        u8 io_apic_id;        // I/O APIC ID
-        u8 reserved;          // Reserved
-        u32 io_apic_address;  // I/O APIC address
-        u32 global_irq_base;  // Global interrupt base
+    constexpr static Signature kSignature = Signature::from_chars("APIC");
+};
+static_assert(sizeof(Table) == 44);
 
-        static constexpr auto kType = Type::IoApic;
-    };
+/// Type 0x00. Reference: ACPI v6.5 Section 5.2.12.2.
+struct PACKED LocalApicEntry {
+    EntryHeader header;
+    u8 acpi_processor_uid;
+    u8 apic_id;
+    LocalApicFlag flags;
 
-    // MADT Entry Type 2: Interrupt Override
-    struct PACKED InterruptOverrideEntry {
-        EntryHeader header;
-        u8 bus;               // Bus number
-        u8 source;            // Interrupt source number
-        u32 global_irq;       // Global interrupt number
-        u8 flags;             // Flags
+    constexpr static Type kType = Type::LocalApic;
+};
+static_assert(sizeof(LocalApicEntry) == 8);
 
-        static constexpr auto kType = Type::InterruptOverride;
-    };
+/// Type 0x01. Reference: ACPI v6.5 Section 5.2.12.3.
+struct PACKED IoApicEntry {
+    EntryHeader header;
+    u8 io_apic_id;
+    u8 reserved;
+    u32 io_apic_address;
+    u32 global_irq_base;
 
-    // MADT Entry Type 3: NMI Interrupt
-    struct PACKED NmiEntry {
-        EntryHeader header;
-        u8 acpi_processor_id; // ACPI processor ID
-        u16 flags;            // Flags
-        u8 global_irq;        // Global interrupt number
+    constexpr static Type kType = Type::IoApic;
+};
+static_assert(sizeof(IoApicEntry) == 12);
 
-        static constexpr auto kType = Type::Nmi;
-    };
+/// Type 0x02. Reference: ACPI v6.5 Section 5.2.12.5.
+///
+/// `flags` is a WORD in the specification.  It used to be declared `u8`, which
+/// made the structure 9 bytes instead of 10; it only appeared to work because
+/// the polarity and trigger fields live in the low byte on little-endian
+/// targets.
+struct PACKED InterruptSourceOverrideEntry {
+    [[nodiscard]]
+    constexpr auto polarity() const -> Polarity {
+        return polarity_of(flags);
+    }
 
-    // MADT Entry Type 4: Local APIC NMI
-    struct PACKED LocalApicNmiEntry {
-        EntryHeader header;
-        u8 acpi_processor_id; // ACPI processor ID
-        u16 flags;            // Flags
-        u8 local_apic_lint;   // Local APIC LINT pin
+    [[nodiscard]]
+    constexpr auto trigger_mode() const -> TriggerMode {
+        return trigger_mode_of(flags);
+    }
 
-        static constexpr auto kType = Type::LocalApicNmi;
-    };
+    EntryHeader header;
+    u8 bus;
+    u8 source;
+    u32 global_irq;
+    u16 flags;
 
-    // MADT Entry Type 5: I/O SAPIC
-    struct PACKED IoSapicEntry {
-        EntryHeader header;
-        u8 acpi_processor_id; // ACPI processor ID
-        u8 io_sapic_id;       // I/O SAPIC ID
-        u32 flags;            // Flags
-        u32 io_sapic_address; // I/O SAPIC address
+    constexpr static Type kType = Type::InterruptSourceOverride;
+};
+static_assert(sizeof(InterruptSourceOverrideEntry) == 10);
 
-        static constexpr auto kType = Type::IoSapic;
-    };
+/// Type 0x03. Reference: ACPI v6.5 Section 5.2.12.6.
+///
+/// This is the NMI *source* structure: flags then a global system interrupt.
+/// The previous definition carried a processor id and a one byte interrupt,
+/// which is the shape of the Local APIC NMI structure (type 0x04).
+struct PACKED NmiSourceEntry {
+    [[nodiscard]]
+    constexpr auto polarity() const -> Polarity {
+        return polarity_of(flags);
+    }
 
-    // MADT Entry Type 6: Local SAPIC
-    struct PACKED LocalSapicEntry {
-        EntryHeader header;
-        u8 acpi_processor_id; // ACPI processor ID
-        u8 local_sapic_id;    // Local SAPIC ID
-        u8 local_sapic_eid;   // Local SAPIC EID
-        u32 flags;            // Flags
-        u32 reserved[2];      // Reserved
+    [[nodiscard]]
+    constexpr auto trigger_mode() const -> TriggerMode {
+        return trigger_mode_of(flags);
+    }
 
-        static constexpr auto kType = Type::LocalSapic;
-    };
+    EntryHeader header;
+    u16 flags;
+    u32 global_irq;
 
-    // MADT Entry Type 7: Platform Interrupt Source
-    struct PACKED PlatformInterruptSourceEntry {
-        EntryHeader header;
-        u8 type;              // Interrupt source type
-        u8 reserved;          // Reserved
-        u16 flags;            // Flags
-        u32 global_irq;       // Global interrupt number
+    constexpr static Type kType = Type::NmiSource;
+};
+static_assert(sizeof(NmiSourceEntry) == 8);
 
-        static constexpr auto kType = Type::PlatformInterruptSource;
-    };
+/// Type 0x04. Reference: ACPI v6.5 Section 5.2.12.7.
+struct PACKED LocalApicNmiEntry {
+    EntryHeader header;
+    u8 acpi_processor_uid;
+    u16 flags;
+    u8 local_apic_lint;
 
-    // MADT Entry Type 8: Processor Local x2APIC
-    struct PACKED LocalX2ApicEntry {
-        EntryHeader header;
-        u8 reserved[3];       // Reserved
-        u8 apic_id;           // x2APIC ID
-        u32 flags;            // Flags
-        u32 acpi_processor_id;// ACPI processor ID
+    constexpr static Type kType = Type::LocalApicNmi;
+};
+static_assert(sizeof(LocalApicNmiEntry) == 6);
 
-        static constexpr auto kType = Type::LocalX2Apic;
-    };
+/// Type 0x05. Reference: ACPI v6.5 Section 5.2.12.8.
+///
+/// Missing entirely from the previous definitions, which is what shifted every
+/// following type number by one.
+struct PACKED LocalApicAddressOverrideEntry {
+    EntryHeader header;
+    u16 reserved;
+    u64 local_apic_address;
 
-    // MADT Entry Type 9: I/O x2APIC
-    struct PACKED IoX2ApicEntry {
-        EntryHeader header;
-        u8 reserved[3];       // Reserved
-        u8 io_apic_id;        // I/O x2APIC ID
-        u32 flags;            // Flags
-        u32 io_apic_address;  // I/O x2APIC address
-        u32 global_irq_base;  // Global interrupt base
+    constexpr static Type kType = Type::LocalApicAddressOverride;
+};
+static_assert(sizeof(LocalApicAddressOverrideEntry) == 12);
 
-        static constexpr auto kType = Type::IoX2Apic;
-    };
+/// Type 0x06. Reference: ACPI v6.5 Section 5.2.12.9.
+struct PACKED IoSapicEntry {
+    EntryHeader header;
+    u8 io_apic_id;
+    u8 reserved;
+    u32 global_irq_base;
+    u64 io_sapic_address;
 
-    // MADT Entry Type 10: Local x2APIC NMI
-    struct PACKED LocalX2ApicNmiEntry {
-        EntryHeader header;
-        u8 reserved[3];       // Reserved
-        u8 apic_id;           // x2APIC ID
-        u16 flags;            // Flags
-        u8 local_apic_lint;   // Local x2APIC LINT pin
+    constexpr static Type kType = Type::IoSapic;
+};
+static_assert(sizeof(IoSapicEntry) == 16);
 
-        static constexpr auto kType = Type::LocalX2ApicNmi;
-    };
+/// Type 0x07. Reference: ACPI v6.5 Section 5.2.12.10.
+///
+/// Variable length: a NUL terminated ACPI processor UID string follows the
+/// fixed part, so `header.length` may exceed `sizeof(LocalSapicEntry)`.
+struct PACKED LocalSapicEntry {
+    EntryHeader header;
+    u8 acpi_processor_id;
+    u8 local_sapic_id;
+    u8 local_sapic_eid;
+    u8 reserved[3];
+    LocalApicFlag flags;
+    u32 acpi_processor_uid;
 
-    // MADT Entry Type 11: GIC CPU Interface
-    struct PACKED GicCpuInterfaceEntry {
-        EntryHeader header;
-        u8 acpi_processor_id; // ACPI processor ID
-        u8 flags;             // Flags
-        u16 reserved;         // Reserved
-        u32 gic_cpu_interface_number; // GIC CPU interface number
+    constexpr static Type kType = Type::LocalSapic;
+};
+static_assert(sizeof(LocalSapicEntry) == 16);
 
-        static constexpr auto kType = Type::GicCpuInterface;
-    };
+/// Type 0x08. Reference: ACPI v6.5 Section 5.2.12.11.
+struct PACKED PlatformInterruptSourcesEntry {
+    EntryHeader header;
+    u16 flags;
+    u8 interrupt_type;
+    u8 processor_id;
+    u8 processor_eid;
+    u8 io_sapic_vector;
+    u32 global_irq;
+    u32 platform_interrupt_source_flags;
 
-    // MADT Entry Type 12: GIC Distributor
-    struct PACKED GicDistributorEntry {
-        EntryHeader header;
-        u8 reserved[3];       // Reserved
-        u8 gic_distributor_id;// GIC Distributor ID
-        u32 flags;            // Flags
-        u32 gic_distributor_base_address; // GIC Distributor base address
+    constexpr static Type kType = Type::PlatformInterruptSources;
+};
+static_assert(sizeof(PlatformInterruptSourcesEntry) == 16);
 
-        static constexpr auto kType = Type::GicDistributor;
-    };
+/// Type 0x09. Reference: ACPI v6.5 Section 5.2.12.12.
+///
+/// `x2apic_id` is a DWORD.  It used to be declared `u8` behind a three byte
+/// reserved field, making the structure 14 bytes instead of 16 and reading the
+/// wrong offset for every field after it.
+struct PACKED LocalX2ApicEntry {
+    EntryHeader header;
+    u16 reserved;
+    u32 x2apic_id;
+    LocalApicFlag flags;
+    u32 acpi_processor_uid;
 
-    // MADT Entry Type 13: GIC MSI Frame
-    struct PACKED GicMsiFrameEntry {
-        EntryHeader header;
-        u8 reserved[3];       // Reserved
-        u8 gic_msi_frame_id;  // GIC MSI Frame ID
-        u32 flags;            // Flags
-        u32 gic_msi_frame_base_address; // GIC MSI Frame base address
-        u32 reserved2;        // Reserved
+    constexpr static Type kType = Type::LocalX2Apic;
+};
+static_assert(sizeof(LocalX2ApicEntry) == 16);
 
-        static constexpr auto kType = Type::GicMsiFrame;
-    };
+/// Type 0x0A. Reference: ACPI v6.5 Section 5.2.12.13.
+struct PACKED LocalX2ApicNmiEntry {
+    EntryHeader header;
+    u16 flags;
+    u32 acpi_processor_uid;
+    u8 local_x2apic_lint;
+    u8 reserved[3];
 
-    // MADT Entry Type 14: GIC Redistributor
-    struct PACKED GicRedistributorEntry {
-        EntryHeader header;
-        u8 reserved[3];       // Reserved
-        u8 gic_redistributor_id; // GIC Redistributor ID
-        u32 flags;            // Flags
-        u32 gic_redistributor_base_address; // GIC Redistributor base address
-        u32 reserved2;        // Reserved
+    constexpr static Type kType = Type::LocalX2ApicNmi;
+};
+static_assert(sizeof(LocalX2ApicNmiEntry) == 12);
 
-        static constexpr auto kType = Type::GicRedistributor;
-    };
-
-    // MADT Entry Type 15: GIC Extended Register
-    struct PACKED GicExtendedRegisterEntry {
-        EntryHeader header;
-        u8 reserved[3];       // Reserved
-        u8 gic_extended_register_id; // GIC Extended Register ID
-        u32 flags;            // Flags
-        u32 gic_extended_register_base_address; // GIC Extended Register base address
-        u32 reserved2;        // Reserved
-
-        static constexpr auto kType = Type::GicExtendedRegister;
-    };
+// Types 0x0B through 0x0F (the GIC family) are deliberately not defined here.
+//
+// They used to be, but every one of those definitions was fabricated -- the GIC
+// CPU interface structure is 80 bytes in ACPI 6.4 and 82 in 6.5, and the
+// declaration here claimed 10.  Nothing in this tree consumes them: the library
+// is only wired into the x86 platform and arch paths today.  A wrong layout is
+// worse than an absent one, so whoever brings up ARM ACPI should add these back
+// against the specification rather than inherit these.  The `Type` enumerators
+// above are complete regardless, so type dispatch stays correct.
 
 } // namespace acpi::madt
 
-#endif // #ifndef ACPI_MADT_HPP
+#endif // #ifndef ACPI_STRUCTURES_MADT_HPP

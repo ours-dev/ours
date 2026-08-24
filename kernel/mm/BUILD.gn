@@ -1,0 +1,59 @@
+import("//build/cpp/cpp_interface.gni")
+import("//build/ours/cpu.gni")
+import("//build/toolchain/toolchain_environment.gni")
+
+if (toolchain_environment == "kernel") {
+  source_set("mm") {
+    sources = [
+      "core/frame-buddy.cpp",
+      "cpu-local.cpp",
+      "early-mem.cpp",
+      "init_pmm.cpp",
+      "init_vmm.cpp",
+      "memory-model.cpp",
+      "object-cache.cpp",
+      "page-queues.cpp",
+      "pm-frame.cpp",
+      "pm-node.cpp",
+      "pm-zone.cpp",
+      "pmm.cpp",
+      "slab.hpp",
+      "stack.cpp",
+      "vflat-model.cpp",
+      "vm_area.cpp",
+      "vm_area_or_mapping.cpp",
+      "vm_aspace.cpp",
+      "vm_cow_pages.cpp",
+      "vm_mapping.cpp",
+      "vm_object.cpp",
+      "vm_object_paged.cpp",
+      "vm_object_physical.cpp",
+      "vmm.cpp",
+    ]
+    deps = [
+      "//kernel/arch/$ours_cpu/mm",
+      "//kernel/lib/logz4:headers",
+    ]
+    public_deps = [ ":headers" ]
+    visibility = [ "*" ]
+  }
+}
+
+cpp_interface("headers") {
+  public = []
+  public_configs = [ "//kernel/arch/$ours_cpu/mm:headers.config" ]
+  public_deps = [
+    "//kernel/phys:handoff",
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//system/lib/derive:headers",
+    "//system/lib/lockdep",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "tests:tests" ]
+}

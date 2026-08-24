@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080">
+  <defs>
+    <filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".13"/></filter>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker>
+    <marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#2563EB"/></marker>
+    <style>.t{font-family:"Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#0f172a}.title{font-size:34px;font-weight:700}.sub{font-size:17px;fill:#64748b}.h{font-size:20px;font-weight:700}.p{font-size:15px;fill:#334155}.sm{font-size:13px;fill:#475569}.tag{font-size:13px;font-weight:700;fill:#1d4ed8}</style>
+  </defs>
+  <rect width="1800" height="1080" fill="#F8FAFC"/>
+  <text x="70" y="65" class="t title">Linux IRQ 框架 · 模块图</text>
+  <text x="70" y="96" class="t sub">模块边界、职责与主要依赖关系。实线表示运行时调用路径，虚线表示启动 / 配置阶段的关系。</text>
+
+  <!-- groups -->
+  <rect x="55" y="140" width="1690" height="160" rx="22" fill="#ECFDF5" stroke="#6EE7B7" stroke-width="2"/>
+  <text x="85" y="178" class="t h">硬件层</text>
+  <rect x="250" y="170" width="225" height="94" rx="14" fill="#fff" stroke="#34D399" filter="url(#s)"/>
+  <text x="362" y="208" text-anchor="middle" class="t h">事件源</text><text x="362" y="234" text-anchor="middle" class="t p">Timer · UART · 网卡</text>
+  <rect x="570" y="170" width="250" height="94" rx="14" fill="#fff" stroke="#34D399" filter="url(#s)"/>
+  <text x="695" y="208" text-anchor="middle" class="t h">子级 irqchip</text><text x="695" y="234" text-anchor="middle" class="t p">GPIO / PMIC / 扩展控制器</text>
+  <rect x="930" y="170" width="270" height="94" rx="14" fill="#fff" stroke="#34D399" filter="url(#s)"/>
+  <text x="1065" y="208" text-anchor="middle" class="t h">根中断控制器</text><text x="1065" y="234" text-anchor="middle" class="t p">GIC · APIC · PLIC</text>
+  <rect x="1310" y="170" width="260" height="94" rx="14" fill="#fff" stroke="#34D399" filter="url(#s)"/>
+  <text x="1440" y="208" text-anchor="middle" class="t h">PCI / MSI 子系统</text><text x="1440" y="234" text-anchor="middle" class="t p">MSI / MSI-X 消息中断</text>
+
+  <rect x="55" y="340" width="1690" height="135" rx="22" fill="#FFF7ED" stroke="#FDBA74" stroke-width="2"/>
+  <text x="85" y="378" class="t h">体系结构层</text>
+  <rect x="420" y="370" width="350" height="70" rx="14" fill="#fff" stroke="#FB923C" filter="url(#s)"/>
+  <text x="595" y="400" text-anchor="middle" class="t h">CPU 异常 / 中断入口</text><text x="595" y="424" text-anchor="middle" class="t p">ARM exception vector · x86 IDT</text>
+  <rect x="1000" y="370" width="350" height="70" rx="14" fill="#fff" stroke="#FB923C" filter="url(#s)"/>
+  <text x="1175" y="400" text-anchor="middle" class="t h">架构 irqchip glue</text><text x="1175" y="424" text-anchor="middle" class="t p">读取 hwirq · EOI · CPU affinity</text>
+
+  <rect x="55" y="515" width="1690" height="330" rx="22" fill="#EEF2FF" stroke="#818CF8" stroke-width="2"/>
+  <text x="85" y="554" class="t h">Generic IRQ Core（与架构无关）</text>
+  <rect x="125" y="592" width="290" height="200" rx="15" fill="#fff" stroke="#60A5FA" filter="url(#s)"/>
+  <text x="270" y="631" text-anchor="middle" class="t h">IRQ Domain</text>
+  <text x="270" y="663" text-anchor="middle" class="t p">固件中断描述 → hwirq → virq</text>
+  <text x="270" y="692" text-anchor="middle" class="t sm">支持线性、树状、层级 domain</text>
+  <text x="270" y="720" text-anchor="middle" class="t sm">每个控制器维护自己的编号空间</text>
+  <rect x="505" y="592" width="310" height="200" rx="15" fill="#fff" stroke="#60A5FA" filter="url(#s)"/>
+  <text x="660" y="631" text-anchor="middle" class="t h">IRQ Descriptor</text>
+  <text x="660" y="663" text-anchor="middle" class="t p">irq_desc / irq_data</text>
+  <text x="660" y="692" text-anchor="middle" class="t sm">Linux virq 的状态、映射和父级关系</text>
+  <text x="660" y="720" text-anchor="middle" class="t sm">关联 irq_chip、flow handler、action</text>
+  <rect x="905" y="592" width="310" height="200" rx="15" fill="#fff" stroke="#60A5FA" filter="url(#s)"/>
+  <text x="1060" y="631" text-anchor="middle" class="t h">IRQ Flow</text>
+  <text x="1060" y="663" text-anchor="middle" class="t p">generic_handle_* / flow handler</text>
+  <text x="1060" y="692" text-anchor="middle" class="t sm">edge · level · fasteoi · percpu</text>
+  <text x="1060" y="720" text-anchor="middle" class="t sm">mask / ack / dispatch / eoi</text>
+  <rect x="1305" y="592" width="350" height="200" rx="15" fill="#fff" stroke="#60A5FA" filter="url(#s)"/>
+  <text x="1480" y="631" text-anchor="middle" class="t h">IRQ Chip / Affinity</text>
+  <text x="1480" y="663" text-anchor="middle" class="t p">控制器硬件操作抽象</text>
+  <text x="1480" y="692" text-anchor="middle" class="t sm">mask · unmask · ack · eoi</text>
+  <text x="1480" y="720" text-anchor="middle" class="t sm">CPU 路由、优先级、唤醒能力</text>
+
+  <rect x="55" y="885" width="1690" height="140" rx="22" fill="#FDF2F8" stroke="#F9A8D4" stroke-width="2"/>
+  <text x="85" y="924" class="t h">驱动与延后处理层</text>
+  <rect x="420" y="914" width="300" height="72" rx="14" fill="#fff" stroke="#F472B6" filter="url(#s)"/>
+  <text x="570" y="944" text-anchor="middle" class="t h">驱动 top-half</text><text x="570" y="968" text-anchor="middle" class="t p">request_irq() / ISR</text>
+  <rect x="900" y="914" width="390" height="72" rx="14" fill="#fff" stroke="#F472B6" filter="url(#s)"/>
+  <text x="1095" y="944" text-anchor="middle" class="t h">Bottom-half / 线程上下文</text><text x="1095" y="968" text-anchor="middle" class="t p">NAPI · softirq · workqueue · threaded IRQ</text>
+
+  <!-- runtime path -->
+  <path d="M475 217H560" stroke="#475569" stroke-width="3" marker-end="url(#a)"/>
+  <path d="M820 217H920" stroke="#475569" stroke-width="3" marker-end="url(#a)"/>
+  <path d="M1065 264V355H595V370" fill="none" stroke="#475569" stroke-width="3" marker-end="url(#a)"/>
+  <path d="M770 405H990" stroke="#475569" stroke-width="3" marker-end="url(#a)"/>
+  <path d="M1175 440V560H1060V592" fill="none" stroke="#2563EB" stroke-width="4" marker-end="url(#b)"/>
+  <path d="M505 692H425" stroke="#2563EB" stroke-width="4" marker-end="url(#b)"/>
+  <path d="M815 692H895" stroke="#2563EB" stroke-width="4" marker-end="url(#b)"/>
+  <path d="M1215 692H1295" stroke="#2563EB" stroke-width="4" marker-end="url(#b)"/>
+  <path d="M1060 792V875H570V914" fill="none" stroke="#2563EB" stroke-width="4" marker-end="url(#b)"/>
+  <path d="M720 950H890" stroke="#2563EB" stroke-width="4" marker-end="url(#b)"/>
+  <text x="790" y="859" class="t tag">运行时：hwirq → domain → virq → irq_desc → handler</text>
+
+  <!-- setup dependencies -->
+  <path d="M1440 264V545H270V592" fill="none" stroke="#7C3AED" stroke-width="2.5" stroke-dasharray="9 7" marker-end="url(#a)"/>
+  <path d="M695 264V520H270" fill="none" stroke="#7C3AED" stroke-width="2.5" stroke-dasharray="9 7"/>
+  <text x="1180" y="531" class="t sm">启动时：控制器驱动创建 domain；固件 / PCI 描述触发映射建立</text>
+  <text x="70" y="1062" class="t sm">图例：蓝色实线 = 中断分发　 紫色虚线 = 启动配置 / 映射建立</text>
+</svg>

@@ -1,0 +1,180 @@
+{
+  "Ours Source Comment": {
+    "scope": "*",
+    "prefix": "fh",
+    "body": [
+      "/// Copyright ${CURRENT_YEAR} The Ours Authors",
+      "///",
+      "/// Use of this source code is governed by a MIT-style",
+      "/// license that can be found in the LICENSE file or at",
+      "/// https://opensource.org/licenses/MIT",
+      "",
+    ],
+    "description": "Insert Ours license header and include guard",
+    "isFileTemplate": true
+  },
+  "Ours Source Guard": {
+    "scope": "cpp,c",
+    "prefix": "ours.guard.source",
+    "body": [
+      "/// Copyright ${CURRENT_YEAR} The Ours Authors",
+      "///",
+      "/// Use of this source code is governed by a MIT-style",
+      "/// license that can be found in the LICENSE file or at",
+      "/// https://opensource.org/licenses/MIT",
+      "",
+      "namespace ${TM_DIRECTORY/.*[\\\\/]include[\\\\/]|([\\\\/])/${1:+::}/g} {",
+      "$0",
+      "} // namespace ${TM_DIRECTORY/.*[\\\\/]include[\\\\/]|([\\\\/])/${1:+::}/g}",
+    ],
+    "description": "Insert Ours license header and include guard"
+  },
+  "Ours Header Guard": {
+    "scope": "cpp,c",
+    "prefix": "ours.guard.header",
+    "body": [
+      "/// Copyright ${CURRENT_YEAR} The Ours Authors",
+      "///",
+      "/// Use of this source code is governed by a MIT-style",
+      "/// license that can be found in the LICENSE file or at",
+      "/// https://opensource.org/licenses/MIT",
+      "",
+      "#ifndef ${TM_FILEPATH/.*[\\\\/]include[\\\\/]|([^A-Za-z0-9])|([a-z])/${1:+_}${2:/upcase}/g}",
+      "#define ${TM_FILEPATH/.*[\\\\/]include[\\\\/]|([^A-Za-z0-9])|([a-z])/${1:+_}${2:/upcase}/g}",
+      "",
+      "namespace ${TM_DIRECTORY/.*[\\\\/]include[\\\\/]|([\\\\/])/${1:+::}/g} {",
+      "$0",
+      "} // namespace ${TM_DIRECTORY/.*[\\\\/]include[\\\\/]|([\\\\/])/${1:+::}/g}",
+      "",
+      "#endif // ${TM_FILEPATH/.*[\\\\/]include[\\\\/]|([^A-Za-z0-9])|([a-z])/${1:+_}${2:/upcase}/g}"
+    ],
+    "description": "Insert Ours license header, include guard and namespace"
+  },
+  "Ours Basic Class": {
+    "scope": "cpp,c",
+    "prefix": "cls",
+    "body": [
+      "class ${1:ClassName} {",
+      "    using Self = ${1:ClassName};",
+      "  public:",
+      "    $0",
+      "  private:",
+      "};"
+    ],
+    "description": "Basic class template"
+  },
+
+  "Ours Derived Class": {
+    "scope": "cpp,c",
+    "prefix": "cls",
+    "body": [
+      "class ${1:ClassName}: ${2:public} ${3:Base} {",
+      "    using Self = ${1:ClassName};",
+      "    using Base = ${3:Base};",
+      "  public:",
+      "    $0",
+      "  private:",
+      "};"
+    ],
+    "description": "Class template with inheritance"
+  },
+
+  "Ours Basic Template Class": {
+    "scope": "cpp,c",
+    "prefix": "cls",
+    "body": [
+      "template <${2:typename T}>",
+      "class ${1:ClassName} {",
+      "    using Self = ${1:ClassName};",
+      "  public:",
+      "    $0",
+      "  private:",
+      "};"
+    ],
+    "description": "Basic template class"
+  },
+
+  "Ours Derived Template Class": {
+    "scope": "cpp,c",
+    "prefix": "cls",
+    "body": [
+      "template <${4:typename T}>",
+      "class ${1:ClassName}: ${2:public} ${3:Base} {",
+      "    using Self = ${1:ClassName};",
+      "    using Base = ${3:Base};",
+      "  public:",
+      "    $0",
+      "  private:",
+      "};"
+    ],
+    "description": "Template class with inheritance"
+  },
+  "Ours Function": {
+    "scope": "cpp,c",
+    "prefix": "fn",
+    "body": [
+      "auto ${1:function_name}(${2:}) -> ${3:void} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Function with trailing return type"
+  },
+
+  "Ours Template Function": {
+    "scope": "cpp,c",
+    "prefix": "tfn",
+    "body": [
+      "template <${1:typename T}>",
+      "auto ${2:function_name}(${3:T value}) -> ${4:void} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Template function with trailing return type"
+  },
+
+  "Ours Constexpr Function": {
+    "scope": "cpp,c",
+    "prefix": "cfn",
+    "body": [
+      "constexpr auto ${1:function_name}(${2:}) -> ${3:void} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Constexpr function with trailing return type"
+  },
+
+  "Ours Constexpr Template Function": {
+    "scope": "cpp,c",
+    "prefix": "ctfn",
+    "body": [
+      "template <${1:typename T}>",
+      "constexpr auto ${2:function_name}(${3:T value}) -> ${4:void} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Constexpr template function with trailing return type"
+  },
+
+  "Ours Noexcept Function": {
+    "scope": "cpp,c",
+    "prefix": "nfn",
+    "body": [
+      "auto ${1:function_name}(${2:}) noexcept -> ${3:void} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Noexcept function with trailing return type"
+  },
+
+  "Ours Noexcept Template Function": {
+    "scope": "cpp,c",
+    "prefix": "ntfn",
+    "body": [
+      "template <${1:typename T}>",
+      "auto ${2:function_name}(${3:T value}) noexcept -> ${4:void} {",
+      "    $0",
+      "}"
+    ],
+    "description": "Noexcept template function with trailing return type"
+  }
+}

@@ -7,7 +7,8 @@
 /// BootFS directory, loads it, applies KASLR relocation, and hands off to
 /// the kernel.
 
-#include <obi/kernel-package.hpp>
+#include "physboot.hpp"
+
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/boot-options.hpp>
 #include <ours/phys/handoff.hpp>
@@ -16,7 +17,6 @@
 #include <ours/phys/kernel-image.hpp>
 #include <ours/phys/kernel-package-loader.hpp>
 #include <ours/phys/module.hpp>
-#include <ours/phys/physboot.hpp>
 #include <ours/phys/print.hpp>
 
 #include <string_view>

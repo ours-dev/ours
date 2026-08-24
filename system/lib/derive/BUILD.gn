@@ -1,0 +1,16 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/derive/debug.hpp",
+    "include/derive/enumask.hpp",
+  ]
+}
+
+group("derive") {
+  public_deps = [ ":headers" ]
+}
+
+group("tests") {
+  testonly = true
+}

@@ -1,0 +1,13 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [ "include/lz4/lz4.hpp" ]
+  public_deps = [ "//system/public" ]
+  visibility = [ "*" ]
+}
+
+source_set("lz4") {
+  sources = [ "lz4.cpp" ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}

@@ -1,29 +1,17 @@
-/// Copyright(C) 2026 ours Developers
 /// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
 
 #ifndef USTL_COLLECTIONS_PMR_BTREE_SET_HPP
 #define USTL_COLLECTIONS_PMR_BTREE_SET_HPP 1
 
+#include <ustl/collections/allocator.hpp>
 #include <ustl/collections/btree.hpp>
 
-#include <boost/container/pmr/set.hpp>
-
-#include <functional>
-
 namespace ustl::collections::pmr {
-    template <
-        typename Key,
-        typename Compare = std::less<Key>,
-        typename Observer = NullBTreeObserver,
-        typename Options = BTreeDefaultOptions
-    >
-    using BTreeSet = ustl::collections::BTreeSet<
-        Key,
-        Compare,
-        boost::container::pmr::polymorphic_allocator<Key>,
-        Observer,
-        Options
-    >;
+    template <typename Key, typename Compare = ustl::collections::detail::DefaultCompare<Key>,
+              typename Observer = ustl::collections::NullBTreeObserver,
+              typename Options = ustl::collections::BTreeDefaultOptions>
+    using BTreeSet = ustl::collections::BTreeSet<Key, Compare, PolymorphicAllocator<Key>, Observer, Options>;
 } // namespace ustl::collections::pmr
 
-#endif // #ifndef USTL_COLLECTIONS_PMR_BTREE_SET_HPP
+#endif // USTL_COLLECTIONS_PMR_BTREE_SET_HPP

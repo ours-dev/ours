@@ -13,6 +13,14 @@ namespace {
     // console, so it drives the UART itself.  No initialization: the boot
     // shim has already configured the port, and re-initializing it here
     // would hide a chain that got this far with a broken console.
+    //
+    // This is the same port ours::phys::Handoff::uart names -- kept as its
+    // own constant rather than read from the handoff because the first
+    // write below happens before the handoff pointer is even checked for
+    // null, the same way a real kernel's own bootstrap console has to
+    // assume something before it has verified anything.  handoff->uart is
+    // checked further down instead, as a report on whether physload's copy
+    // agrees with this one.
     constexpr u16 kComPort = 0x3F8;
     constexpr u16 kComLineStatus = kComPort + 5;
     constexpr u8 kTransmitterEmpty = 1U << 5;
@@ -81,26 +89,34 @@ NO_MANGLE NO_RETURN auto fake_kernel_main(ours::phys::Handoff const *handoff) ->
     write_line("[fake-kernel] handoff at   ", reinterpret_cast<u64>(handoff));
     write_line("[fake-kernel] magic        ", handoff->magic);
 
-    if (handoff->magic != ours::phys::Handoff::kMagic) {
+    if (handoff->magic != ours::phys::Handoff::MAGIC) {
         write("[fake-kernel] FAIL: bad handoff magic\n");
         halt();
     }
 
-    // The three things physload/physboot are responsible for filling in.
+    // The things physload/physboot are responsible for filling in.
     // Reporting them before verify() means a failure names which one is
     // wrong instead of just saying the handoff is bad.
-    write_line("[fake-kernel] cpus         ", handoff->nr_cpus);
-    write_line("[fake-kernel] acpi rsdp    ", handoff->acpi_rsdp);
+    write_line("[fake-kernel] acpi rsdp    ",
+               handoff->acpi_rsdp.is_some() ? handoff->acpi_rsdp.value() : 0);
     write_line("[fake-kernel] kernel at    ", handoff->mem.kernel_load_addr);
-    write_line("[fake-kernel] bootmem low  ", handoff->mem.bootmem.min_address);
-    write_line("[fake-kernel] bootmem high ", handoff->mem.bootmem.max_address);
+    write_line("[fake-kernel] memory ranges", handoff->mem.ranges.size());
+    write_line("[fake-kernel] uart kind    ", static_cast<u64>(handoff->uart.kind));
+    write_line("[fake-kernel] uart base    ", handoff->uart.base);
 
-    if (!handoff->mem.bootmem.valid()) {
-        write("[fake-kernel] FAIL: boot-memory service table incomplete\n");
+    if (handoff->mem.ranges.empty()) {
+        write("[fake-kernel] FAIL: memory map is empty\n");
         halt();
     }
     if (!handoff->boot_package.valid()) {
         write("[fake-kernel] FAIL: boot package ranges inconsistent\n");
+        halt();
+    }
+    // Proves the handoff plumbing actually carried this, not just that this
+    // file's own hardcoded kComPort happens to work regardless.
+    if (handoff->uart.kind != ours::phys::UartKind::X86Pio16550 ||
+        handoff->uart.base != kComPort) {
+        write("[fake-kernel] FAIL: handoff uart does not match the port in use\n");
         halt();
     }
 

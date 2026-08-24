@@ -15,174 +15,209 @@ declare_args() {
   all_cpu_phys_boot_tests = false
 }
 
-if (current_toolchain == default_toolchain) {
-  foreach(cpu, standard_ours_cpus) {
-    ours_toolchain_suite("kernel.phys_${cpu}") {
-      cpu = cpu
-      os = target_os
-      environment = "kernel.phys"
-      # Link with the target GNU ld rather than the Clang driver.  The driver
-      # hands an ELF-target link off to the host `gcc`, which rejects the
-      # cross-architecture flags outright on a non-x86 host.
-      elf_linker = true
-      # Resolve the compiler through clang_tool_dir like every other kernel
-      # suite (//build/toolchain/ours/BUILD.gn, //build/switch/*).  Without
-      # this the tools fall back to bare PATH names, which is not reproducible
-      # across machines.
-      tool_dir = clang_tool_dir
-      tags = [
-        "kernel",
-        "no-floating-point",
-        "standalone",
-      ]
-
-      configs = [
-        "//build/config:frame_pointers",
-        "//kernel/products:kernel.config",
-        # Provides PHYS_ENVIRONMENT=1 / KERNEL_DEBUG_LEVEL=2 and the
-        # standalone/warnings/abi config stack — without it the phys
-        # sources compile against the hosted print/ABI paths.
-        "//kernel/phys:phys.config",
-      ]
-    }
-  }
-} else if (toolchain_environment == "kernel.phys") {
-  config("phys.config") {
-    configs = [
-      "//kernel/products:standalone",
-      "//kernel/products:warnings",
-      "//kernel/arch/$ours_cpu:abi",
-    ]
-    # KERNEL_DEBUG_LEVEL comes from //kernel/products:kernel.config (the
-    # switchset-selected level); this config adds only the phys identity.
-    defines = [
-      "PHYS_ENVIRONMENT=1",
-    ]
-  }
-
-  link_config("phys.link") {
-    link_script = "phys.ld"
-    symbols = [ "PHYS_LOAD_ADDRESS=0" ]
-  }
-
-  # The first pass of an export_table image (phys_executable.gni).  Section
-  # GC is off here, and only here: a function that physload defines but
-  # never calls itself is exactly what a module wants to bind to, and if GC
-  # drops it before the table is generated the export disappears silently.
-  # The second pass keeps its GC -- the table references every exported
-  # symbol, so nothing it names can be collected.
-  config("phys-prelink") {
-    ldflags = [ "-Wl,--no-gc-sections" ]
-  }
-
-  # How a phys module is built and how it reaches physload
-  # (physload_module.gni).
-  #
-  # -fPIC because physload picks the load address at run time.  -fno-plt
-  # because a call through a PLT stub needs lazy-binding machinery no boot
-  # image can service; without it an imported function reaches the GOT the
-  # same way an imported variable does, leaving ModuleLoader a single
-  # relocation type to apply.  -z now says the same thing to the linker.
-  #
-  # -nostdlib rather than the executable set's -nostartfiles/-nolibc: a
-  # module has no startup files to suppress in the first place.  There is
-  # no linker script either -- the default shared-object layout is what the
-  # loader reads.
-  config("phys-module") {
-    cflags = [
-      "-fPIC",
-      "-fno-plt",
-    ]
-    ldflags = [
-      "-nostdlib",
-      "-nostdlib++",
-      "-Wl,-z,now",
-      "-Wl,--no-dynamic-linker",
-    ]
-  }
+config("phys.config") {
+  configs = [
+    "//kernel/products:standalone",
+    "//kernel/products:warnings",
+    "//kernel/arch/$ours_cpu:abi",
+  ]
+  # KERNEL_DEBUG_LEVEL comes from //kernel/products:kernel.config (the
+  # switchset-selected level); this config adds only the phys identity.
+  defines = [
+    "PHYS_ENVIRONMENT=1",
+  ]
 }
 
-if (toolchain_environment == "kernel.phys") {
-  # physload carries the whole phys runtime.  A physload_module() links none
-  # of it -- ModuleLoader binds the module's undefined symbols against the
-  # export table this image publishes (ours/phys/exports.hpp), so there is
-  # one console list, one BootMem and one Aspace in the system rather than
-  # a copy per ELF.
-  source_set("physload.core") {
-    sources = [
-      "acpi.cpp",
-      "aspace.cpp",
-      "boot-options.cpp",
-      "build-id-note.cpp",
-      "build-id.cpp",
-      "console.cpp",
-      "elf-image.cpp",
-      "exports.cpp",
-      "memory.cpp",
-      "module-loader.cpp",
-      "panic.cpp",
-      "physload.cpp",
-      "raw-image.cpp",
-    ]
-    deps = [
-      "//kernel/lib/ccrt",
-      "//kernel/lib/eftl",
-      "//kernel/lib/ktl:headers",
-      "//kernel/lib/libc:string",
-      "//kernel/lib/obi",
-    ]
-    public_deps = [
-      ":headers",
-      # Public: phys sources reach the architecture's paging and boot-memory
-      # types straight out of these headers.
-      "//kernel/arch/$ours_cpu/phys:$ours_cpu",
-      "//kernel/lib/acpi",
-    ]
-    visibility = [ "*" ]
-  }
+link_config("phys.link") {
+  link_script = "phys.ld"
+  symbols = [ "PHYS_LOAD_ADDRESS=0" ]
+}
 
-  # physload's own build ID, embedded into every physload_module()'s
-  # PT_INTERP so ModuleLoader can refuse to load one built against a
-  # different physload (ours/phys/build-id.hpp reads the runtime half of
-  # this pairing).  Not a module's own deps entry: physload_module() below
-  # links it into every module automatically.
-  kernel_elf_interp("physload.interp") {
-    deps = [ ":physload" ]
-  }
+# physload's own link policy: ET_DYN at base 0, loaded and relocated by
+# boot-shim rather than GRUB.  No PHYS_LOAD_ADDRESS -- physload.ld links
+# at 0 unconditionally, the way any ET_DYN image does.
+link_config("physload.link") {
+  link_script = "physload.ld"
+}
 
-  # The physboot module, packaged as the bare BootFS file "physboot"
-  # (kernel_package("physboot") below) and loaded by physload at run time.
-  #
-  # Sources are physboot's own logic and nothing else.  The console, panic,
-  # boot memory, address space and ELF loader it uses stay undefined here and
-  # bind to physload at load time; deps carry only headers, so the module
-  # picks up no object code it would otherwise duplicate.
-  physload_module("physboot.module") {
-    visibility = [ ":*" ]
-    install_name = "physboot"
-    sources = [
-      "kernel-boot.cpp",
-      "kernel-package-loader.cpp",
-      "physboot.cpp",
-    ]
-    deps = [
-      ":headers",
-      "//kernel/arch/$ours_cpu:headers",
-      # kernel-boot.hpp reaches the kernel's address-space layout constants.
-      "//kernel/arch/$ours_cpu/kernel:headers",
-      "//kernel/arch/$ours_cpu/phys:headers",
-      "//kernel/lib/arch:headers",
-      "//kernel/lib/eftl:headers",
-      "//kernel/lib/ktl:headers",
-      "//kernel/lib/obi",
+# The first pass of an export_table image (phys_executable.gni).  Section
+# GC is off here, and only here: a function that physload defines but
+# never calls itself is exactly what a module wants to bind to, and if GC
+# drops it before the table is generated the export disappears silently.
+# The second pass keeps its GC -- the table references every exported
+# symbol, so nothing it names can be collected.
+config("phys-prelink") {
+  ldflags = [ "-Wl,--no-gc-sections" ]
+}
 
-      # Linked, not bound: ccrt drives *this* image's .ccrt_init array, and
-      # the compiler open-codes calls to memcpy/memset that must resolve
-      # inside the module.  Everything else comes from physload.
-      "//kernel/lib/ccrt",
-      "//kernel/lib/libc:string",
-    ]
-  }
+# How a phys module is built and how it reaches physload
+# (physload_module.gni).
+#
+# -fPIC because physload picks the load address at run time.  -fno-plt
+# because a call through a PLT stub needs lazy-binding machinery no boot
+# image can service; without it an imported function reaches the GOT the
+# same way an imported variable does, leaving ModuleLoader a single
+# relocation type to apply.  -z now says the same thing to the linker.
+#
+# -nostdlib rather than the executable set's -nostartfiles/-nolibc: a
+# module has no startup files to suppress in the first place.  There is
+# no linker script either -- the default shared-object layout is what the
+# loader reads.
+#
+# -shared: redundant for a physload_module() (its loadable_module GN
+# target type already gets this from the toolchain's solink_module tool)
+# but required for physload itself, which is a plain executable() target
+# (phys_executable.gni) reusing this same config for its compile/link
+# flags -- without it the linker produces a fixed-address EXEC image with
+# no dynamic table at all, silently ignoring -fPIC.
+config("phys-module") {
+  cflags = [
+    "-fPIC",
+    "-fno-plt",
+  ]
+  asmflags = [ "-fPIC" ]
+  ldflags = [
+    "-shared",
+    "-nostdlib",
+    "-nostdlib++",
+    "-Wl,-z,now",
+    "-Wl,--no-dynamic-linker",
+
+    # There is no dynamic linker (the flag above), so a default-visibility
+    # defined symbol has nothing that could ever preempt it and nothing
+    # able to resolve a deferred lookup for it if the linker left one.
+    # -Bsymbolic makes the linker resolve those symbols at link time
+    # instead: an ordinary R_X86_64_RELATIVE entry boot-shim's relocation
+    # pass already handles, rather than a dynamic (`.rela.dyn`
+    # non-RELATIVE) entry that would need a resolver which does not
+    # exist.  Physload's export table (.phys.exports, ours/phys/exports.hpp)
+    # is exactly this: absolute pointers to its own default-visibility
+    # functions, referenced from hand-written assembly with no PLT/GOT
+    # indirection of its own.
+    "-Wl,-Bsymbolic",
+  ]
+}
+
+# physload carries the whole phys runtime.  A physload_module() links none
+# of it -- ModuleLoader binds the module's undefined symbols against the
+# export table this image publishes (ours/phys/exports.hpp), so there is
+# one console list, one BootMem and one Aspace in the system rather than
+# a copy per ELF.
+source_set("physload.core") {
+  sources = [
+    "acpi.cpp",
+    "aspace.cpp",
+    "boot-options.cpp",
+    "build-id-note.cpp",
+    "build-id.cpp",
+    "console.cpp",
+    "elf-image-mapping.cpp",
+    "elf-image.cpp",
+    "exports.cpp",
+    "memory.cpp",
+    "module-loader.cpp",
+    "panic.cpp",
+    "physload.cpp",
+    "raw-image.cpp",
+  ]
+  # phys-module's cflags (-fPIC -fno-plt), not just its ldflags: this is
+  # the source_set whose *compiled objects* end up in physload's final
+  # ET_DYN link (phys_executable("physload") below has no sources of its
+  # own to apply configs to -- everything it links comes through deps).
+  configs += [ "//kernel/phys:phys-module" ]
+  deps = [
+    "//kernel/lib/ccrt",
+    "//kernel/lib/eftl",
+    "//kernel/lib/ktl:headers",
+    "//kernel/lib/libc:string",
+    "//kernel/lib/obi",
+  ]
+  public_deps = [
+    ":headers",
+    # Public: phys sources reach the architecture's paging and boot-memory
+    # types straight out of these headers.
+    "//kernel/arch/$ours_cpu/phys:$ours_cpu",
+    "//kernel/lib/acpi",
+  ]
+  visibility = [ "*" ]
+}
+
+# The arch-neutral pieces boot-shim needs to load and jump to physload:
+# the ELF loader (init/load_at/relocate -- not relocate_and_bind or
+# section, which only ModuleLoader uses, and not fix_mapping, which
+# elf-image-mapping.cpp keeps out of this on purpose since it would drag
+# in Aspace/BootMem, neither of which exists yet at this point), plus a
+# console and panic() to have somewhere to report a failure before
+# physload exists to report it through.  Everything else physload.core
+# has -- BootMem, module loading, the export table -- is physload's own
+# job, not boot-shim's.
+source_set("boot-shim.core") {
+  sources = [
+    "console.cpp",
+    "elf-image.cpp",
+    "panic.cpp",
+  ]
+  deps = [
+    "//kernel/lib/ccrt",
+    "//kernel/lib/eftl",
+    "//kernel/lib/ktl:headers",
+    "//kernel/lib/libc:string",
+  ]
+  public_deps = [
+    ":headers",
+    # elf-image.cpp's declarations reach Aspace (kernel-image.hpp's
+    # fix_mapping() signature, even though boot-shim.core never compiles
+    # that body -- elf-image-mapping.cpp stays out of these sources), and
+    # Aspace pulls in the architecture's paging types straight out of
+    # these headers, same as physload.core does via its own arch dep.
+    "//kernel/arch/$ours_cpu:headers",
+    "//kernel/arch/$ours_cpu/phys:headers",
+    "//kernel/lib/obi",
+  ]
+  visibility = [ "*" ]
+}
+
+# physload's own build ID, embedded into every physload_module()'s
+# PT_INTERP so ModuleLoader can refuse to load one built against a
+# different physload (ours/phys/build-id.hpp reads the runtime half of
+# this pairing).  Not a module's own deps entry: physload_module() below
+# links it into every module automatically.
+kernel_elf_interp("physload.interp") {
+  deps = [ ":physload" ]
+}
+
+# The physboot module, packaged as the bare BootFS file "physboot"
+# (kernel_package("physboot") below) and loaded by physload at run time.
+#
+# Sources are physboot's own logic and nothing else.  The console, panic,
+# boot memory, address space and ELF loader it uses stay undefined here and
+# bind to physload at load time; deps carry only headers, so the module
+# picks up no object code it would otherwise duplicate.
+physload_module("physboot") {
+  visibility = [ "image/*" ]
+  install_name = "physboot"
+  sources = [
+    "kernel-boot.cpp",
+    "kernel-package-loader.cpp",
+    "physboot.cpp",
+  ]
+  deps = [
+    ":headers",
+    "//kernel/arch/$ours_cpu:headers",
+    # kernel-boot.hpp reaches the kernel's address-space layout constants.
+    "//kernel/arch/$ours_cpu/kernel:headers",
+    "//kernel/arch/$ours_cpu/phys:headers",
+    "//kernel/lib/arch:headers",
+    "//kernel/lib/eftl:headers",
+    "//kernel/lib/ktl:headers",
+    "//kernel/lib/obi",
+
+    # Linked, not bound: ccrt drives *this* image's .ccrt_init array, and
+    # the compiler open-codes calls to memcpy/memset that must resolve
+    # inside the module.  Everything else comes from physload.
+    "//kernel/lib/ccrt",
+    "//kernel/lib/libc:string",
+  ]
 }
 
 cpp_interface("headers") {
@@ -193,6 +228,7 @@ cpp_interface("headers") {
   # boundary so both phys sources and kernel-side consumers receive the same
   # include contract rather than relying on a toolchain-global include path.
   public_deps = [
+    ":boot-obi",
     "//kernel/lib/acpi:header",
     "//kernel/lib/arch:headers",
     "//kernel/arch/$ours_cpu/phys:headers",
@@ -205,6 +241,23 @@ cpp_interface("headers") {
   ]
 }
 
+# obi only provides the base container/item format (ContainerView, ItemView,
+# PackageBuilder, ...); BootObi and KernelPackage are phys's own second-order
+# reading of that format -- the specific boot contract ("exactly one
+# StorageKernel item", "index 0 is the Executable entry point") and the flat
+# BootFS-inside-a-StorageKernel-item model neither of which obi itself knows
+# or needs to know about.
+cpp_interface("boot-obi") {
+  public = [
+    "include/ours/phys/boot-obi.hpp",
+    "include/ours/phys/kernel-package.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/bootfs:headers",
+    "//kernel/lib/obi",
+  ]
+}
+
 # Kernel-side ABI seam for the handoff structure.  The phys executable owns
 # its implementation, while the kernel only needs this propagated header
 # interface and the generated PT_INTERP dependency below.
@@ -213,6 +266,7 @@ cpp_interface("handoff") {
     "include/ours/phys/handoff.hpp",
   ]
   public_deps = [
+    ":boot-obi",
     "//kernel/arch/$ours_cpu/phys:headers",
     "//kernel/lib/obi",
     "//kernel/phys/lib/bootmem:headers",
@@ -220,63 +274,34 @@ cpp_interface("handoff") {
   ]
 }
 
-if (toolchain_environment == "kernel.phys") {
-  # Standard adapter linked into every physload-loaded module (physboot,
-  # netboot, fastboot, ...).  Provides the PhysLoadHandoff entry point
-  # that physload calls after loading and relocating the module ELF.
-  source_set("physload.module") {
-    sources = [ "physload-module.cpp" ]
-    deps = [
-      ":headers",
-      "//kernel/arch/$ours_cpu/phys:headers",
-      "//kernel/lib/ccrt:headers",
-    ]
-    visibility = [
-      ":*",
-      "//kernel/phys/*",
-    ]
-  }
-}
-
-# physload — the first-stage loader.  The bootloader (Multiboot2) hands the
-# OBI container to the x86 boot shim, which loads the physload ELF from the
-# container's item 0 (obi_executable_item below); the raw .bin remains the
-# direct-load distribution for the GRUB two-file flow.
+# physload — the first-stage loader, and everything downstream of GRUB's
+# Multiboot2 handoff understands from here on: boot-shim (the arch-specific
+# GRUB entry point, //kernel/arch/x86/phys/boot-shim) loads this out of the
+# OBI container's item 0 (obi_executable_item below) as a separate,
+# position-independent image, the same way physload itself loads physboot.
+# physload.link (base 0, ET_DYN, no fixed load address) replaces the
+# GRUB-facing phys.link default; phys-module supplies the PIC compile flags
+# module builds already use, reused here for the same reason -- physload is
+# now placed at an address only known at boot, just like a module.
 phys_executable("physload") {
-  output_dir = target_out_dir
-  output_extension = "bin"
-  release_output = true
+  link_config = "//kernel/phys:physload.link"
+  configs = [ "//kernel/phys:phys-module" ]
   obi_executable_item = true
   export_table = true
   deps = [ ":physload.core" ]
 }
 
-kernel_package("physboot") {
-  # 产品的镜像配方（product() 的 extra_deps）把 physboot 模块收进镜像。
-  visibility = [
-    "//kernel/*",
-    "//products/*",
-    "//tests/*",
-  ]
-  # BootFS 顶层是扁平命名空间：physboot 模块以裸名 "physboot" 打包，
-  # 不带 kernel_package 目标名前缀（见 .agents/tasks/phys-module-and-obi-tree）。
-  prefix = ""
-  # The packaged input is the module ELF itself (ET_DYN, e_entry =
-  # phys_load_handoff); physload loads it via ModuleLoader.
-  #
-  # $current_cpu is correct in every context (Fuchsia spells it the same way):
-  # the default toolchain carries target identity, so its current_cpu names
-  # the product's target machine rather than the build host, and kernel/phys
-  # toolchain contexts set current_cpu through toolchain_args.
-  deps = [ ":physboot.module(:kernel.phys_$current_cpu)" ]
-}
+
 group("tests") {
   testonly = true
   # The default toolchain here is kernel-x86, not host-capable (see
   # kernel/lib/obi:tests for the same fix, documented in
   # .agents/tasks/phys-module-and-obi-tree/DESIGN.md §8.1) -- a plain
   # dependency compiles under it and fails on the missing host prelude.
-  deps = [ ":build-id-note-smoke($host_toolchain)" ]
+  deps = [
+    ":boot-obi-test($host_toolchain)",
+    ":build-id-note-smoke($host_toolchain)",
+  ]
 }
 
 executable("build-id-note-smoke") {
@@ -289,6 +314,21 @@ executable("build-id-note-smoke") {
     ":headers",
     "//system/lib/ustl:headers",
     "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# BootObi's boot-contract behavior (moved from kernel/lib/obi/tests --
+# obi's own PackageBuilder/ContainerView round-trip tests stay there;
+# these specifically exercise phys's reading of that format).
+executable("boot-obi-test") {
+  testonly = true
+  sources = [ "boot-obi-test.cpp" ]
+  deps = [
+    ":boot-obi",
+    "//kernel/lib/obi",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
   ]
   visibility = [ "*" ]
 }

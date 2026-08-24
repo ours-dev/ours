@@ -1,0 +1,10 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/mtl/ratio.hpp",
+    "include/mtl/scale.hpp",
+  ]
+
+  public_deps = [ "//system/lib/ustl:headers" ]
+}

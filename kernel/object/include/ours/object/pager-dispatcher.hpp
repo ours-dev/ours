@@ -20,7 +20,7 @@ namespace ours::object {
             WriteBackPostamble,
         };
 
-        auto operate_range(Operation op, ustl::Rc<mem::VmObject> vmo, usize offset, usize len, usize priv_data) -> Status;
+        auto operate_range(Operation op, ustl::Arc<mm::VmObject> vmo, usize offset, usize len, usize priv_data) -> Status;
       private:
         static constexpr auto MAGIC = gktl::magic("PagerDispatcher");
     };

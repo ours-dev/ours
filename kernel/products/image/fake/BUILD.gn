@@ -33,7 +33,7 @@ kernel_package("fake-kernel") {
   prefix = ""
   deps = [
     "..:common_package_items",
-    "//kernel/tests/fake-kernel:fake-kernel(//build/switch/set/debug_level_0:kernel_${target_cpu}.debug_level_0)",
+    "//kernel/tests/fake-kernel:fake-kernel(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
   ]
 }
 
@@ -64,9 +64,9 @@ kernel_image("fake") {
   # then the image-level cmdline, then the two packages that merge into the
   # single kernel-storage item.
   deps = [
-    "//kernel/phys:physload",
+    "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     ":cmdline",
     ":fake-kernel",
-    "//kernel/phys:physboot",
+    "//kernel/phys:physboot(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
   ]
 }

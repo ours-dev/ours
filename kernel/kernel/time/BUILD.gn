@@ -1,0 +1,16 @@
+source_set("time") {
+    sources = [
+        "clock-event-device.cpp",
+        "clock-source.cpp",
+        "tick-device.cpp",
+        "tick-sched.cpp",
+        "timer.cpp",
+        "timer-queue.cpp",
+        "timer-scheduler.cpp",
+        "clock.cpp",
+        "init.cpp",
+        "mod.cpp",
+    ]
+    visibility = ["*"]
+}
+

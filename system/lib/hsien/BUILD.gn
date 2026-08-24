@@ -1,5 +1,4 @@
 import("//build/cpp/cpp_interface.gni")
-import("//build/toolchain/environment.gni")
 
 declare_args() {
   # P2996-capable compiler used by the optional annotation scan action.

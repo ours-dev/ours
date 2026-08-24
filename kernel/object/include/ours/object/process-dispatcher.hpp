@@ -8,7 +8,7 @@
 #include <ours/object/handle-table.hpp>
 
 #include <ours/task/thread.hpp>
-#include <ours/mem/types.hpp>
+#include <ours/mm/types.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
 
@@ -28,12 +28,12 @@ namespace ours::object {
             Dead,
         };
 
-        static auto create(ustl::Rc<JobDispatcher> &job, char const *name, 
+        static auto create(ustl::Arc<JobDispatcher> &job, char const *name, 
                            KernelHandle<Self> &process_out, Rights &process_rights, 
                            KernelHandle<VmAreaDispatcher> &root_vma, Rights &root_vma_rights)
                            -> Status;
 
-        static auto create_shared(ustl::Rc<JobDispatcher> &job, char const *name, 
+        static auto create_shared(ustl::Arc<JobDispatcher> &job, char const *name, 
                                   KernelHandle<Self> &process_out, Rights &process_rights, 
                                   KernelHandle<VmAreaDispatcher> &root_vma, Rights &root_vma_rights)
                            -> Status;
@@ -43,14 +43,14 @@ namespace ours::object {
         auto detach_thread(ThreadDispatcher &thread) -> Status;
 
         FORCE_INLINE
-        auto aspace() -> mem::VmAspace * { return m_aspace; }
+        auto aspace() -> mm::VmAspace * { return m_aspace; }
       private:
         Self *m_parent;
 
         State m_state;
 
         /// Unique address space per each process.
-        mem::VmAspace *m_aspace;
+        mm::VmAspace *m_aspace;
 
         /// All sub-process forked from this process.
         ustl::collections::intrusive::ListMemberHook<>  m_sibling_hook;

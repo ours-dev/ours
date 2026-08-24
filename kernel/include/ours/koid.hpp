@@ -6,17 +6,17 @@
 
 #include <ours/types.hpp>
 
-#include <atomic> // std::atomic<T>
+#include <ustl/sync/atomic.hpp>
 
 namespace ours {
     class KoIdGenerator {
         using Self = KoIdGenerator;
       public:
         static auto generate(usize count = 1) -> KoId {
-            return g_tracker.fetch_add(count, std::memory_order_relaxed);
+            return g_tracker.fetch_add(count, ustl::sync::MemoryOrder::Relaxed);
         }
       private:
-        static inline std::atomic<KoId> g_tracker{0};
+        static inline ustl::sync::Atomic<KoId> g_tracker {0};
     };
 } // namespace ours
 

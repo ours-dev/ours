@@ -1,0 +1,28 @@
+source_set("pc") {
+  sources = [
+    # acpi.cpp was absent from this list, so g_acpi_parser had no definition and
+    # the AcpiInit hook that fills it never got linked in.
+    "acpi.cpp",
+    "init.cpp",
+    "memory.cpp",
+    "hpet.cpp",
+    "interrupt.cpp",
+    "keyboard.cpp",
+  ]
+  public_deps = [ "//kernel/platform:headers" ]
+
+  # This target declared no deps at all, so every source in it failed at "file
+  # not found" long before the stale API names inside them could be reported.
+  deps = [
+    "//kernel/arch/x86/kernel:headers",
+    "//kernel/lib/acpi",
+    "//kernel/lib/gktl",
+    "//kernel/lib/ktl:headers",
+    "//kernel/lib/logz4:headers",
+    "//kernel/mm:headers",
+  ]
+}
+
+group("kernel-tests") {
+  testonly = true
+}

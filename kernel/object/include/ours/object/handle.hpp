@@ -19,14 +19,14 @@ namespace ours::object {
     class Handle final {
         using Self = Handle;
       public:
-        static auto make(KernelHandle<Dispatcher> kernel_handle, Rights rights) -> ustl::mem::Box<Self>;
+        static auto make(KernelHandle<Dispatcher> kernel_handle, Rights rights) -> ustl::mm::Box<Self>;
 
-        static auto make(ustl::Rc<Dispatcher> kernel_handle, Rights rights) -> ustl::mem::Box<Self>;
+        static auto make(ustl::Arc<Dispatcher> kernel_handle, Rights rights) -> ustl::mm::Box<Self>;
 
-        static auto clone(Self *kernel_handle, Rights rights) -> ustl::mem::Box<Self>;
+        static auto clone(Self *kernel_handle, Rights rights) -> ustl::mm::Box<Self>;
       private:
         ustl::sync::Atomic<KoId> m_table_koid;
-        ustl::Rc<Dispatcher> m_dispatcher;
+        ustl::Arc<Dispatcher> m_dispatcher;
 
         Rights m_rights;
         u32 m_baseval;
@@ -46,7 +46,7 @@ namespace ours::object {
 
         template <typename U>
         FORCE_INLINE
-        KernelHandle(ustl::Rc<U> object)
+        KernelHandle(ustl::Arc<U> object)
             : m_dispatcher(ustl::move(object)) { 
             DEBUG_ASSERT(object); 
         }
@@ -60,13 +60,13 @@ namespace ours::object {
         ~KernelHandle() = default;
 
         FORCE_INLINE
-        auto dispatcher() const -> ustl::Rc<T> const & {
+        auto dispatcher() const -> ustl::Arc<T> const & {
             return m_dispatcher;
         }
 
         template <typename U>
         FORCE_INLINE
-        auto reset(ustl::Rc<U> dispatcher) -> void {
+        auto reset(ustl::Arc<U> dispatcher) -> void {
             static_assert(ustl::traits::IsBaseOfV<Dispatcher, U>);
             if (m_dispatcher) {
                 m_dispatcher->on_zero();
@@ -77,14 +77,14 @@ namespace ours::object {
 
         USTL_NOCOPYABLE(KernelHandle);
       private:
-        ustl::Rc<T> m_dispatcher;
+        ustl::Arc<T> m_dispatcher;
     };
 
     template <typename KernelObject>
     KernelHandle(KernelObject *) -> KernelHandle<KernelObject>;
 
     template <typename KernelObject>
-    KernelHandle(ustl::Rc<KernelObject>) -> KernelHandle<KernelObject>;
+    KernelHandle(ustl::Arc<KernelObject>) -> KernelHandle<KernelObject>;
 
 } // namespace ours::object
 

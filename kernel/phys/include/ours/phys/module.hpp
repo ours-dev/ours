@@ -4,10 +4,14 @@
 #define OURS_PHYS_MODULE_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/phys/physload.hpp>
 #include <ours/types.hpp>
 
 namespace ours::phys {
+
+/// Defined in physload.hpp, which stays out of the public include path on
+/// purpose: nothing outside kernel/phys's own sources constructs or reads
+/// one, so this only needs to name the type for init's signature below.
+struct PhysLoadHandoff;
 
 /// What a phys module tells physload about itself.
 ///

@@ -1,0 +1,45 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/obi/obi.gni")
+
+# kernel_image() — convenience wrapper around obi() for bootable kernel images.
+#
+# Parameters:
+#   deps (required)     — obi_input / kernel_package / kernel_cmdline targets.
+#   output_name          — basename of the output .obi (default: target_name).
+#   product_dir          — optional product subdirectory under root_out_dir.
+#   compressed           — global compression ("lz4"/"zstd"/""; default "lz4").
+#   testonly, visibility
+template("kernel_image") {
+  assert(defined(invoker.deps),
+         "kernel_image($target_name) requires `deps`")
+
+  if (defined(invoker.output_name)) {
+    _output_name = invoker.output_name
+  } else {
+    _output_name = target_name
+  }
+  if (defined(invoker.product_dir) && invoker.product_dir != "") {
+    _output_dir = "$root_out_dir/" + invoker.product_dir
+  } else {
+    _output_dir = root_out_dir
+  }
+
+  obi(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "testonly",
+                             "visibility",
+                           ])
+    output_name = _output_name
+    output_dir = _output_dir
+    compressed = "lz4"
+    if (defined(invoker.compressed)) {
+      compressed = invoker.compressed
+    }
+    bootable = target_cpu
+  }
+}

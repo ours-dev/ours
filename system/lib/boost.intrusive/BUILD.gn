@@ -1,0 +1,11 @@
+import("//build/cpp/cpp_interface.gni")
+
+# Boost.Intrusive is header-only. Keep the upstream include layout intact so
+# consumers can use the standard <boost/intrusive/...> paths.
+cpp_interface("headers") {
+  public = glob([ "include/**/*.h", "include/**/*.hpp" ])
+}
+
+group("boost_intrusive") {
+  public_deps = [ ":headers" ]
+}

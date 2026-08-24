@@ -12,7 +12,7 @@
 #include <ours/compiler.hpp>
 #include <ours/cpu-mask.hpp>
 
-#include <bits/bitmask.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/util/noncopyable.hpp>
@@ -47,7 +47,7 @@ namespace ours::task::sched {
         /// Forcelly require the given thread to run on current CPU.
         ThisCpu = 12_bit,
     };
-    BITS_IMPL_BITMASK(EnqueueControl);
+    USTL_ENABLE_ENUM_BITMASK(EnqueueControl);
 
     /// [[=bits::Enumask]]
     enum class DequeueControl {
@@ -73,11 +73,11 @@ namespace ours::task::sched {
         /// 
         Delayed = 10_bit,
     };
-    BITS_IMPL_BITMASK(DequeueControl);
+    USTL_ENABLE_ENUM_BITMASK(DequeueControl);
 
     /// Schedule operation should be exclusively implemented for per discipline.
-    class Schedule {
-        using Self = Schedule;
+    class ISchedule {
+        using Self = ISchedule;
       public:
         /// [Required] Insert |thread| to runqueue.
         ///
@@ -127,7 +127,7 @@ namespace ours::task::sched {
         ///
         /// Return `kInvalidCpuNum` if failed to assign.
         virtual auto select_target_cpu(Thread *, CpuMask const &) -> CpuNum {
-            return kInvalidCpuNum;
+            return INVALID_CPU_NUM;
         }
 
         /// [Optional] Migrates |thread| onto new CPU specified by |cpunum|.
@@ -136,37 +136,19 @@ namespace ours::task::sched {
         virtual auto migrate_thread(Thread *, CpuNum) -> Status {
             return Status::Unsupported;
         }
-
-        FORCE_INLINE
-        auto num_queued() const -> usize {
-            m_canary.verify<Self>();
-            return m_num_queued;
-        }
       protected:
-        USTL_NO_MOVEABLE_AND_COPYABLE(Schedule);
+        USTL_NO_MOVEABLE_AND_COPYABLE(ISchedule);
 
-        FORCE_INLINE
-        Schedule(char const *name)
-            : m_canary()
-            , m_name(name)
-            , m_num_queued(0)
-        {}
+        virtual ~ISchedule() = default;
+    };
 
-        virtual ~Schedule() = default;
-
-        gktl::Canary m_canary;
-        char const *const m_name;
-        usize m_num_queued;
+    template <typename Derived, Discipline Discipline>
+    class Schedule: public ISchedule {
+       
+      private:
+        static Derived X; 
     };
 
 } // namespace ours::task::sched
-
-#define OURS_DEFINE_SCHEDULE(TYPE, NAME) \
-  CPU_LOCAL_SPECIAL(".schedules") \
-  static TYPE s_##NAME; \
-  extern Schedule * const g_##NAME = &s_##NAME;
-
-#define OURS_DECLARE_SCHEDULE(TYPE, NAME) \
-  extern Schedule * const g_##NAME;
 
 #endif // #ifndef OURS_TASK_SCHED_SCHEDULE_HPP

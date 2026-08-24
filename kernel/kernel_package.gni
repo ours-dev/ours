@@ -1,0 +1,37 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/obi/obi_input.gni")
+
+# kernel_package() — convenience wrapper around obi_input for kernel storage.
+#
+# Collects kernel ELF and support files from deps, emits obi_input_args so
+# the parent obi() includes them as a STORAGE_KERNEL item (compressed BootFS).
+#
+# Parameters:
+#   deps (required)     — kernel executable + support files.
+#   prefix              — BootFS directory prefix (default: target_name).
+#   testonly, visibility
+template("kernel_package") {
+  assert(defined(invoker.deps),
+         "kernel_package($target_name) requires `deps`")
+
+  if (defined(invoker.prefix)) {
+    _prefix = invoker.prefix
+  } else {
+    _prefix = target_name
+  }
+
+  obi_input(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "testonly",
+                             "visibility",
+                           ])
+    type = "kernel-storage"
+    prefix = _prefix
+    compressed = "lz4"
+  }
+}

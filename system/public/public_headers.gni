@@ -1,0 +1,18 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Headers that form the Ours system interface exposed to kernel code and to
+# future operating systems built on Ours.  Paths are relative to
+# //system/public so the same list can drive both the source interface target
+# and the generated sysroot.
+ours_public_headers = [
+  "ours/assert.hpp",
+  "ours/compiler.hpp",
+  "ours/macro_abi.hpp",
+  "ours/panic.hpp",
+  "ours/rights.hpp",
+  "ours/signals.hpp",
+  "ours/status.hpp",
+  "ours/types.hpp",
+]

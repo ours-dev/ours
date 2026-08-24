@@ -1,0 +1,81 @@
+import("//build/cpp/cpp_interface.gni")
+
+source_set("acpi") {
+  sources = [
+    "debug.cpp",
+    "numa.cpp",
+    "table_set.cpp",
+  ]
+  public_deps = [ ":header" ]
+  visibility = [ "*" ]
+}
+
+cpp_interface("header") {
+  public = [
+    "include/acpi/debug.hpp",
+    "include/acpi/numa.hpp",
+    "include/acpi/signature.hpp",
+    "include/acpi/structures/dbg2.hpp",
+    "include/acpi/structures/header.hpp",
+    "include/acpi/structures/hpet.hpp",
+    "include/acpi/structures/madt.hpp",
+    "include/acpi/structures/root.hpp",
+    "include/acpi/structures/slit.hpp",
+    "include/acpi/structures/srat.hpp",
+    "include/acpi/table_set.hpp",
+    "include/acpi/types.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/ktl:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+# Logic-only unit tests: the library is pure table decoding, so the whole thing
+# runs on the host against in-memory blobs.  Same shape as //system/lib/ustl's
+# tests -- plain `int main()` + <cassert>, built for $host_toolchain.
+executable("table-set-test") {
+  testonly = true
+  sources = [
+    "test/table_set_test.cpp",
+    "table_set.cpp",
+  ]
+  deps = [ ":header" ]
+}
+
+executable("structures-test") {
+  testonly = true
+  sources = [ "test/structures_test.cpp" ]
+  deps = [ ":header" ]
+}
+
+executable("numa-test") {
+  testonly = true
+  sources = [
+    "numa.cpp",
+    "table_set.cpp",
+    "test/numa_test.cpp",
+  ]
+  deps = [ ":header" ]
+}
+
+executable("debug-test") {
+  testonly = true
+  sources = [
+    "debug.cpp",
+    "table_set.cpp",
+    "test/debug_test.cpp",
+  ]
+  deps = [ ":header" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [
+    ":debug-test",
+    ":numa-test",
+    ":structures-test",
+    ":table-set-test",
+  ]
+}

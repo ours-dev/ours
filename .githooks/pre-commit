@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+
+"""Format staged C and C++ files before committing."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+
+
+SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc")
+
+
+def run(*args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(args, check=True, stdout=subprocess.PIPE)
+
+
+def main() -> int:
+    if shutil.which("clang-format") is None:
+        print(
+            "pre-commit: clang-format is required but was not found in PATH",
+            file=sys.stderr,
+        )
+        return 1
+
+    staged = run("git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+    formatted = 0
+
+    for raw_path in staged.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        path = os.fsdecode(raw_path)
+        if not path.endswith(SOURCE_SUFFIXES):
+            continue
+
+        run("clang-format", "-i", "--style=file", "--", path)
+        run("git", "add", "--", path)
+        formatted += 1
+
+    if formatted:
+        print(f"pre-commit: formatted and re-staged {formatted} C/C++ file(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

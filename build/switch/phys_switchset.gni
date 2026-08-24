@@ -11,7 +11,7 @@ import("//build/toolchain/ours/ours_toolchain_suite.gni")
 #
 # Parameters:
 #
-#   lk_debug_level (required)
+#   debug_level (required)
 #     Integer debug policy in the Zircon-compatible range 0..2.  It maps to
 #     Ours' local kernel_debug_level toolchain argument; it does not define the
 #     still-unresolved OURS_DEBUG source contract.
@@ -28,16 +28,16 @@ template("phys_switchset") {
       _switchset_dir == _expected_dir,
       "phys_switchset($target_name) must be instantiated in $_expected_dir")
 
-  assert(defined(invoker.lk_debug_level),
+  assert(defined(invoker.debug_level),
          "phys_switchset($target_name) requires lk_debug_level")
-  _debug_level = invoker.lk_debug_level
+  _debug_level = invoker.debug_level
   _allowed_debug_levels = [
     0,
     1,
     2,
   ]
   assert(_allowed_debug_levels + [ _debug_level ] - [ _debug_level ] !=
-         _allowed_debug_levels, "lk_debug_level must be one of 0, 1, or 2")
+         _allowed_debug_levels, "debug_level must be one of 0, 1, or 2")
 
   assert(defined(invoker.unit_tests_enabled),
          "phys_switchset($target_name) requires unit_tests_enabled")
@@ -47,6 +47,11 @@ template("phys_switchset") {
       cpu = cpu
       os = target_os
       environment = "kernel.phys"
+      # Link with the target GNU ld rather than the Clang driver.  The
+      # driver hands an ELF-target link off to the host `gcc`, which
+      # rejects the cross-architecture flags outright on a non-x86 host
+      # (same reason kernel_switchset.gni sets this).
+      elf_linker = true
       tool_dir = clang_tool_dir
       tags = [
         "custom-abi",
@@ -57,6 +62,7 @@ template("phys_switchset") {
       configs = [
         "//build/config:frame_pointers",
         "//kernel/products:kernel.config",
+        "//kernel/phys:phys.config",
       ]
       if (cpu == "x86") {
         # Keep section GC explicit for the x86 kernel even when a variant

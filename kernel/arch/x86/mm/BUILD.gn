@@ -1,0 +1,36 @@
+import("//build/cpp/cpp_interface.gni")
+import("//kernel/kernel_params.gni")
+
+if (toolchain_environment == "kernel") {
+  source_set("mm") {
+    sources = [
+      "arch-vm-aspace.cpp",
+      "fault.cpp",
+      "mmu.cpp",
+      "page-table.cpp",
+    ]
+
+    if (mm_numa || mm_numa_emulation) {
+      sources += [
+        "numa.cpp",
+        "srat.cpp",
+      ]
+    }
+
+    public_deps = [
+      ":headers",
+      "//kernel/arch/x86/kernel:headers",
+
+      # srat.cpp reaches the ACPI tables through <ours/platform/acpi.hpp>.  The
+      # platform include directory is on the toolchain's global -I list, so this
+      # dependency has to be spelled out rather than arriving transitively.
+      "//kernel/lib/acpi:header",
+      "//kernel/lib/logz4:headers",
+      "//kernel/mm:headers",
+    ]
+  }
+}
+
+cpp_interface("headers") {
+  public = [ "include/ours/mm/arch-vm-aspace.hpp" ]
+}

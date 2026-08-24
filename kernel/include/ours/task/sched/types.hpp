@@ -28,12 +28,12 @@ namespace ours::task::sched {
     };
     USTL_ENABLE_ENUM_BITMASK(UnparkControl);
 
-    class Runtime;
+    struct Runtime;
     class Scheduler;
-    class Schedule;
+    class ISchedule;
     class Fair;
 
-    class BaseProfile;
+    struct BaseProfile;
 
 } // namespace ours::task::sched
 

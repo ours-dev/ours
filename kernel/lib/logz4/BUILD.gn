@@ -1,0 +1,13 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public_deps = [ "//system/lib/ustl:headers" ]
+  public = [
+    "include/logz4/level.hpp",
+    "include/logz4/log.hpp",
+    "include/logz4/logger.hpp",
+    "include/logz4/record.hpp",
+    "include/logz4/ring-buffer.hpp",
+    "include/logz4/types.hpp",
+  ]
+}

@@ -1,0 +1,50 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# dev 内核镜像（带单测的开发内核）。
+#
+# 对标 Fuchsia //zircon/kernel/image/user/BUILD.gn：一个镜像 = 一个子目录，
+# 内含 kernel_package（内核存储块，按 switchset 工具链编译内核可执行文件）+
+# kernel_cmdline（镜像级 cmdline）+ kernel_image（组装产物）。产品
+# （//products/<name>.gni）只按 label 选择，不在这里实例化。
+#
+# 产物：$root_out_dir/kernel.dev.obi（默认扁平输出在 out 根）。
+
+import("//build/obi/kernel_cmdline.gni")
+import("//kernel/kernel_image.gni")
+import("//kernel/kernel_package.gni")
+
+# 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0 switchset
+# 工具链，对标 Fuchsia kernel_package("zircon") 的 deps 写法）。prefix=""
+# ——BootFS 顶层是扁平命名空间，内核落在 vmours/image.elf 等顶层路径。
+kernel_package("ours") {
+  visibility = [ ":*", "//products/*" ]
+  # 含带单测的内核（vmours.with-tests 是 testonly），必须 testonly。
+  testonly = true
+  prefix = ""
+  deps = [
+    "..:common_package_items",
+    "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
+  ]
+}
+
+# 镜像级内核 cmdline（空 = 维持 phys 侧默认启动行为）。
+kernel_cmdline("cmdline") {
+  visibility = [ ":*", "//products/*" ]
+  args = []
+}
+
+# dev 镜像：physload 以 stripped ELF 进入 OBI item 0（x86 boot shim 从容器
+# 里加载它）；GRUB 双文件流程的 physload.bin 仍照常发布。rsp 顺序 =
+# kernel_image deps 的后序 DFS，physload 声明在首位即 item 0（--bootable
+# 在打包期断言该拓扑）。
+kernel_image("dev") {
+  visibility = [ "//products/*" ]
+  testonly = true
+  deps = [
+    ":ours",
+    ":cmdline",
+    "//kernel/phys/image/physboot",
+  ]
+}

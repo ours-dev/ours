@@ -14,11 +14,11 @@
 #include <ustl/option.hpp>
 
 namespace ours::phys {
-class Aspace;
+class PHYS_EXPORT Aspace;
 struct KernelBoot {
-    /// `early` is the type-erased allocator received from physload — the
-    /// module has no BootMem of its own and allocates through it.
-    auto init(KernelPackageLoader &kpackage, EarlyMem const &early) -> void;
+    /// `bootmem` is physload's live allocator -- the module has no BootMem
+    /// of its own and allocates through this pointer.
+    auto init(KernelPackageLoader &kpackage, BootMem *bootmem) -> void;
 
     auto load() -> void;
 
@@ -50,6 +50,10 @@ struct KernelBoot {
     auto do_handoff() -> void;
     auto arch_do_handoff() -> void;
 
+    /// Top-down allocate()-or-panic through bootmem_, spanning its full
+    /// address range.  `what` names the allocation in the panic message.
+    auto alloc_top_down(usize size, usize alignment, char const *what) -> PhysAddr;
+
     template <typename... Args>
     auto invoke_kernel(Args... args) -> void {
         (*reinterpret_cast<auto (*)(Args...)->void>(kernel_entry_))(args...);
@@ -59,7 +63,7 @@ struct KernelBoot {
     PhysAddr kernel_size_;
     VirtAddr kernel_entry_;
     usize kaslr_offset_;
-    EarlyMem early_;
+    BootMem *bootmem_;
     BootPackageHandoff package_handoff_;
     KernelImage kimage_;
 };

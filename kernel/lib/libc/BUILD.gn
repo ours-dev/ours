@@ -1,0 +1,29 @@
+config("headers.after") {
+  visibility = [ "*" ]
+
+  # libc++ must be searched before the C headers so its wrapper headers can
+  # delegate to this freestanding C surface with include_next.
+  cflags_c = [
+    "-isystem",
+    rebase_path("//system/lib/libc/include", root_build_dir),
+  ]
+  cflags_cc = [
+    "-isystem",
+    rebase_path("//system/lib/libc/include", root_build_dir),
+  ]
+}
+
+source_set("string") {
+  sources = [ "string.cpp" ]
+  visibility = [ "*" ]
+}
+
+source_set("libc") {
+  sources = [
+    "boost.cpp",
+    "cpp_dependencies.cpp",
+    "libcxx.cpp",
+  ]
+  deps = [ ":string" ]
+  visibility = [ "*" ]
+}

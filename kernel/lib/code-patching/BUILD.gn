@@ -1,0 +1,39 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The extraction and hermetic-alternative build templates live in
+# code-patching.gni.  Runtime headers are in include/.
+source_set("code-patching") {
+  public_deps = [ ":headers" ]
+  sources = [ "code-patching.cc" ]
+  deps = [
+    "//kernel/lib/arch:headers",
+    "//system/public",
+  ]
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/lib/code-patching/asm.hpp",
+    "include/lib/code-patching/code-patching.hpp",
+  ]
+}
+
+source_set("self-test") {
+  testonly = true
+  public_deps = [ ":headers" ]
+}
+
+# To run the assembly macro tests manually:
+#   kernel/lib/code-patching/tests/run-tests.sh
+
+foreach(test_target,
+        [
+          "tests",
+          "kernel-tests",
+          "phys-tests",
+          "boot_tests",
+        ]) {
+  group(test_target) {
+    testonly = true
+  }
+}

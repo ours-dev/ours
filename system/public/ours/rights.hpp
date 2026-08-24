@@ -6,7 +6,7 @@
 
 #include <ours/types.hpp>
 
-#include <bits/bitmask.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours {
     enum class Rights: u32 {
@@ -21,7 +21,7 @@ namespace ours {
 
         Default = Duplicate,
     };
-    BITS_IMPL_BITMASK(Rights);
+    USTL_ENABLE_ENUM_BITMASK(Rights);
 
     constexpr auto RIGHTS_DEFAULT_THREAD = Rights::Signal | Rights::Io;
     constexpr auto RIGHTS_DEFAULT_PROCESS = Rights::Signal | Rights::Io;

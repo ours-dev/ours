@@ -1,0 +1,42 @@
+# Development container for the Ours kernel workspace.
+#
+# Usage:
+#   docker compose -f docker/dev.compose up -d --build
+#   docker compose -f docker/dev.compose exec dev bash
+#
+# Persistence model — all state lives in docker-managed named volumes, so
+# rebuilding the image (up -d --build) or removing the container loses
+# nothing; only `docker compose -f docker/dev.compose down -v` wipes them:
+#
+#   /home/developer — dev-home:   user-level state (~/.cache, ~/.cargo,
+#                                  shell config) plus the persisted apt
+#                                  package list (.ours-dev-packages).
+#   /usr/local      — dev-usrlocal: tools installed from source or tarballs
+#                                  with a /usr/local prefix.
+#   /opt            — dev-opt:     big tarball-distributed toolchains.
+#
+# apt packages that install into /usr are recorded by the entrypoint
+# (docker/entrypoint.sh) and automatically reinstalled the next time a
+# container starts from a rebuilt image — you never maintain the list by
+# hand.  Note /usr itself is deliberately NOT a volume: a volume there
+# would shadow every package upgrade in new images.
+
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/dev.dockerfile
+    image: ours-dev:latest
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+      - dev-home:/home/developer
+      - dev-usrlocal:/usr/local
+      - dev-opt:/opt
+    stdin_open: true
+    tty: true
+
+volumes:
+  dev-home:
+  dev-usrlocal:
+  dev-opt:

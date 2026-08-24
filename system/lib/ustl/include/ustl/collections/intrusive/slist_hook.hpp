@@ -1,38 +1,170 @@
-/// Copyright(C) 2024 smallhuazi
-///
-/// This program is free software; you can redistribute it and/or modify
-/// it under the terms of the GNU General Public License as published
-/// by the Free Software Foundation; either version 2 of the License, or
-/// (at your option) any later version.
-///
-/// For additional information, please refer to the following website:
-/// https://opensource.org/license/gpl-2-0
-///
-
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
 #ifndef USTL_COLLECTIONS_INTRUSIVE_SLIST_HOOK_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_SLIST_HOOK_HPP 1
 
-#include <boost/intrusive/slist_hook.hpp>
+#include <ustl/collections/intrusive/circular_slist_algorithms.hpp>
+#include <ustl/collections/intrusive/detail/assert.hpp>
+#include <ustl/collections/intrusive/detail/slist_node.hpp>
+#include <ustl/collections/intrusive/link_mode.hpp>
+#include <ustl/collections/intrusive/options.hpp>
+#include <ustl/collections/intrusive/pack_options.hpp>
+#include <ustl/collections/intrusive/pointer_traits.hpp>
 
 namespace ustl::collections::intrusive {
-    namespace internal = boost::intrusive;
+    template <typename... Options>
+    class SlistBaseHook;
 
-    template <typename Parent, typename Hook, Hook Parent::*PtrToMember>
-    using MemberHook = internal::member_hook<Parent, Hook, PtrToMember>;
+    template <typename... Options>
+    class SlistMemberHook;
 
-    template <typename... T>
-    using SlistBaseHook = internal::slist_base_hook<T...>;
+    template <typename... Options>
+    struct MakeSlistBaseHook final {
+        using Type = SlistBaseHook<Options...>;
+    };
 
-    template <typename... T>
-    using SlistMemberHook = internal::slist_member_hook<T...>;
+    template <typename... Options>
+    struct MakeSlistMemberHook final {
+        using Type = SlistMemberHook<Options...>;
+    };
 
+    template <typename... Options>
+    class SlistBaseHook
+        : public SlistNode<typename PackOptions<HookDefaults, Options...>::Type::VoidPointer> {
+        using PackedOptions = typename PackOptions<HookDefaults, Options...>::Type;
+        using Node = SlistNode<typename PackedOptions::VoidPointer>;
+        using Algorithms = CircularSlistAlgorithms<SlistNodeTraits<typename PackedOptions::VoidPointer>>;
+
+    public:
+        using NodeTraits = SlistNodeTraits<typename PackedOptions::VoidPointer>;
+        using NodePtr = typename NodeTraits::NodePtr;
+        using ConstNodePtr = typename NodeTraits::ConstNodePtr;
+
+        struct HookTags final {
+            using NodeTraits = SlistNodeTraits<typename PackedOptions::VoidPointer>;
+            using Tag = typename PackedOptions::Tag;
+            static constexpr LinkModeType LINK_MODE = PackedOptions::LINK_MODE;
+            static constexpr bool IS_BASE_HOOK = true;
+        };
+
+        constexpr SlistBaseHook() noexcept {
+            if constexpr (IsSafeAutounlink<PackedOptions::LINK_MODE>::VALUE) {
+                Algorithms::init(this_ptr());
+            }
+        }
+
+        constexpr SlistBaseHook(SlistBaseHook const &) noexcept
+            : SlistBaseHook() {}
+
+        constexpr auto operator=(SlistBaseHook const &) noexcept -> SlistBaseHook & {
+            return *this;
+        }
+
+        constexpr ~SlistBaseHook() noexcept {
+            if constexpr (PackedOptions::LINK_MODE == LinkModeType::SafeLink) {
+                detail::require(!is_linked());
+            } else if constexpr (PackedOptions::LINK_MODE == LinkModeType::AutoUnlink) {
+                unlink();
+            }
+        }
+
+        [[nodiscard]] constexpr auto this_ptr() noexcept -> NodePtr {
+            return PointerTraits<NodePtr>::pointer_to(static_cast<Node &>(*this));
+        }
+
+        [[nodiscard]] constexpr auto this_ptr() const noexcept -> ConstNodePtr {
+            return PointerTraits<ConstNodePtr>::pointer_to(static_cast<Node const &>(*this));
+        }
+
+        constexpr auto swap_nodes(SlistBaseHook &other) noexcept -> void {
+            Algorithms::swap_nodes(this_ptr(), other.this_ptr());
+        }
+
+        [[nodiscard]] constexpr auto is_linked() const noexcept -> bool {
+            static_assert(IsSafeAutounlink<PackedOptions::LINK_MODE>::VALUE,
+                          "is_linked requires SafeLink or AutoUnlink mode.");
+            return !Algorithms::unique(this_ptr());
+        }
+
+        constexpr auto unlink() noexcept -> void {
+            static_assert(PackedOptions::LINK_MODE == LinkModeType::AutoUnlink,
+                          "unlink requires AutoUnlink mode.");
+            const auto node = this_ptr();
+            if (!Algorithms::inited(node)) {
+                Algorithms::unlink(node);
+                Algorithms::init(node);
+            }
+        }
+    };
+
+    template <typename... Options>
+    class SlistMemberHook final
+        : public SlistNode<typename PackOptions<HookDefaults, Options...>::Type::VoidPointer> {
+        using PackedOptions = typename PackOptions<HookDefaults, Options...>::Type;
+        using Node = SlistNode<typename PackedOptions::VoidPointer>;
+        using Algorithms = CircularSlistAlgorithms<SlistNodeTraits<typename PackedOptions::VoidPointer>>;
+
+    public:
+        using NodeTraits = SlistNodeTraits<typename PackedOptions::VoidPointer>;
+        using NodePtr = typename NodeTraits::NodePtr;
+        using ConstNodePtr = typename NodeTraits::ConstNodePtr;
+
+        struct HookTags final {
+            using NodeTraits = SlistNodeTraits<typename PackedOptions::VoidPointer>;
+            using Tag = MemberTag;
+            static constexpr LinkModeType LINK_MODE = PackedOptions::LINK_MODE;
+            static constexpr bool IS_BASE_HOOK = false;
+        };
+
+        constexpr SlistMemberHook() noexcept {
+            if constexpr (IsSafeAutounlink<PackedOptions::LINK_MODE>::VALUE) {
+                Algorithms::init(this_ptr());
+            }
+        }
+
+        constexpr SlistMemberHook(SlistMemberHook const &) noexcept
+            : SlistMemberHook() {}
+
+        constexpr auto operator=(SlistMemberHook const &) noexcept -> SlistMemberHook & {
+            return *this;
+        }
+
+        constexpr ~SlistMemberHook() noexcept {
+            if constexpr (PackedOptions::LINK_MODE == LinkModeType::SafeLink) {
+                detail::require(!is_linked());
+            } else if constexpr (PackedOptions::LINK_MODE == LinkModeType::AutoUnlink) {
+                unlink();
+            }
+        }
+
+        [[nodiscard]] constexpr auto this_ptr() noexcept -> NodePtr {
+            return PointerTraits<NodePtr>::pointer_to(static_cast<Node &>(*this));
+        }
+
+        [[nodiscard]] constexpr auto this_ptr() const noexcept -> ConstNodePtr {
+            return PointerTraits<ConstNodePtr>::pointer_to(static_cast<Node const &>(*this));
+        }
+
+        constexpr auto swap_nodes(SlistMemberHook &other) noexcept -> void {
+            Algorithms::swap_nodes(this_ptr(), other.this_ptr());
+        }
+
+        [[nodiscard]] constexpr auto is_linked() const noexcept -> bool {
+            static_assert(IsSafeAutounlink<PackedOptions::LINK_MODE>::VALUE,
+                          "is_linked requires SafeLink or AutoUnlink mode.");
+            return !Algorithms::unique(this_ptr());
+        }
+
+        constexpr auto unlink() noexcept -> void {
+            static_assert(PackedOptions::LINK_MODE == LinkModeType::AutoUnlink,
+                          "unlink requires AutoUnlink mode.");
+            const auto node = this_ptr();
+            if (!Algorithms::inited(node)) {
+                Algorithms::unlink(node);
+                Algorithms::init(node);
+            }
+        }
+    };
 } // namespace ustl::collections::intrusive
 
-#ifndef USTL_DECLARE_HOOK_OPTION
-#   define USTL_DECLARE_HOOK_OPTION(OWNER, MEMBER, ALIAS) \
-        typedef ustl::collections::intrusive::MemberHook<OWNER, \
-                decltype(OWNER::MEMBER), &OWNER::MEMBER> \
-            ALIAS;
-#endif
-
-#endif // #ifndef USTL_COLLECTIONS_INTRUSIVE_SLIST_HOOK_HPP
+#endif // USTL_COLLECTIONS_INTRUSIVE_SLIST_HOOK_HPP

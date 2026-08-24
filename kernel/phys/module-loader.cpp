@@ -1,11 +1,13 @@
 #include <ours/phys/module-loader.hpp>
 
+#include "physload.hpp"
+
 #include <bootfs/view.hpp>
-#include <obi/kernel-package.hpp>
 #include <ours/phys/build-id.hpp>
 #include <ours/phys/exports.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
+#include <ours/phys/kernel-package.hpp>
 #include <ours/phys/print.hpp>
 #include <ustl/mem/align.hpp>
 
@@ -36,7 +38,7 @@ namespace {
     }
 } // namespace
 
-auto ModuleLoader::init(obi::BootObi const &boot) -> Status {
+auto ModuleLoader::init(BootObi const &boot) -> Status {
     // Locate the single StorageKernel item (BootObi::from() has already
     // asserted there is exactly one).
     auto const &package = boot.package();
@@ -55,7 +57,7 @@ auto ModuleLoader::init(obi::BootObi const &boot) -> Status {
         auto const scratch = bootmem_allocate(view.memory_size(), PAGE_SIZE);
         auto const storage = ustl::views::Span<u8>(
             reinterpret_cast<u8 *>(scratch.base), scratch.size);
-        auto const materialized = obi::KernelPackage::from(view, storage);
+        auto const materialized = KernelPackage::from(view, storage);
         if (materialized.is_err()) {
             return materialized.unwrap_err();
         }

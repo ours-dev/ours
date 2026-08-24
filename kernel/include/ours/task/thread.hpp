@@ -21,14 +21,14 @@
 #include <ours/sync/owned-wait-queue.hpp>
 #include <ours/sync/spin-lock.hpp>
 
-#include <ours/mem/types.hpp>
-#include <ours/mem/stack.hpp>
-#include <ours/mem/cpu-local.hpp>
-#include <ours/mem/memory-allocation-state.hpp>
+#include <ours/mm/types.hpp>
+#include <ours/mm/stack.hpp>
+#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/memory-allocation-state.hpp>
 
 #include <ours/syscall/time.hpp>
 
-#include <bits/bitmask.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 #include <ustl/rc.hpp>
 #include <ustl/mem/container_of.hpp>
@@ -43,13 +43,14 @@
 
 namespace ours {
 namespace object {
+    class ProcessDispatcher;
     class ThreadDispatcher;
 } // namespace object
 
 namespace task {
-    using sched::kLowestPriority;
-    using sched::kHighestPriority;
-    using sched::kDefaultPriority;
+    using sched::LOWEST_PRIORITY;
+    using sched::HIGHEST_PRIORITY;
+    using sched::DEFAULT_PRIORITY;
 
     class TaskState {
         using Self = TaskState;
@@ -105,7 +106,7 @@ namespace task {
 
            Special = Parked | Sleeping | Suspend,
         };
-        BITS_IMPL_BITMASK(State);
+        USTL_ENABLE_INNER_ENUM_BITMASK(State);
 
         friend auto to_string(Thread::State state) -> char const *;
 
@@ -158,7 +159,7 @@ namespace task {
 
         auto override_base_profile(sched::BaseProfile const &profile) -> void;
 
-        auto bind_user_thread(ustl::Rc<object::ThreadDispatcher> user_thread) -> void;
+        auto bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -> void;
 
         /// The followings is a group of accessor.
         FORCE_INLINE
@@ -171,10 +172,10 @@ namespace task {
         auto signals() -> Signals { return m_signals; }
 
         FORCE_INLINE
-        auto aspace() -> mem::VmAspace * { return m_aspace.as_ptr_mut(); }
+        auto aspace() -> mm::VmAspace * { return m_aspace; }
 
         FORCE_INLINE
-        auto kernel_stack() -> mem::Stack & { return m_stack; }
+        auto kernel_stack() -> mm::Stack & { return m_stack; }
 
         FORCE_INLINE
         auto last_cpu() const -> CpuNum { return m_scheduling_context.last_cpu(); }
@@ -225,7 +226,7 @@ namespace task {
         auto preemption_state() -> PreemptionState & { return m_preemption_state; }
 
         FORCE_INLINE
-        auto memory_allocation_state() -> mem::MemoryAllocationState & { return m_memory_allocation_state; }
+        auto memory_allocation_state() -> mm::MemoryAllocationState & { return m_memory_allocation_state; }
 
         FORCE_INLINE
         auto check_kill_signal() const -> bool { return !!(m_signals & Signals::Kill); }
@@ -233,9 +234,9 @@ namespace task {
         FORCE_INLINE
         auto check_kill_or_suspend_signal() const -> Status { 
             if (!!(m_signals & Signals::Kill)) {
-                return Status::IntrKilled;
+                return Status::InternalIrqKilled;
             } else if (!!(m_signals & Signals::Suspend)) {
-                return Status::IntrShouldRetry;
+                return Status::InternalIrqRetry;
             }
 
             return Status::Ok;
@@ -253,7 +254,7 @@ namespace task {
 
             NoFree = 30_bit,
         };
-        BITS_IMPL_BITMASK(Flags);
+        USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
         static auto switch_thread(Self *curr, Self *next) -> void;
 
@@ -326,7 +327,7 @@ namespace task {
 
         friend sched::Scheduler;
         friend sched::Fair;
-        friend object::ProcessDispatcher;
+        friend class object::ProcessDispatcher;
 
         friend sync::WaitQueue;
         friend sync::OwnedWaitQueue;
@@ -351,9 +352,9 @@ namespace task {
         Name m_name;
 
         /// Null if kernel thread.
-        ustl::Weak<mem::VmAspace> m_aspace;
-        ustl::Rc<object::ThreadDispatcher> m_user_thread;
-        mem::Stack m_stack TA_GUARD(get_resource_lock());
+        mm::VmAspace *m_aspace;
+        ustl::Arc<object::ThreadDispatcher> m_user_thread;
+        mm::Stack m_stack TA_GUARD(get_resource_lock());
 
         /// Using a KoId if kernel thread, otherwise an user-space thread id
         /// copied from object::ThreadDispatcher.
@@ -362,14 +363,14 @@ namespace task {
         sync::SpinLock m_resource_lock;
         Flags m_flags TA_GUARD(get_resource_lock());
         State m_state;
-        Signal m_signals;
+        Signals m_signals;
 
         sync::SpinLock m_pi_lock;
         sched::Context m_scheduling_context TA_GUARD(get_pi_lock());
         PreemptionState m_preemption_state;
         TaskState m_task_state TA_GUARD(get_resource_lock());
         sync::WaiterState m_waiter_state;
-        mem::MemoryAllocationState m_memory_allocation_state;
+        mm::MemoryAllocationState m_memory_allocation_state;
         sync::OwnedWaitQueue::List m_owned_wait_queues;
 
         /// [Optional] Available on LockDep enabled.
@@ -407,7 +408,7 @@ namespace task {
         return Self::spawn(name, profile, entry_point);
     }
 
-    class Thread::Current: public mem::CpuLocal::Current<Thread *> {
+    class Thread::Current: public mm::CpuLocal::Current<Thread *> {
       public:
         template <typename DurationT>
         FORCE_INLINE
@@ -453,17 +454,17 @@ namespace task {
 
         static auto migrate_to(CpuNum dest) -> void;
 
-        static auto page_fault(VirtAddr va, mem::VmfCause cause) -> Status;
+        static auto page_fault(VirtAddr va, mm::VmfCause cause) -> Status;
 
-        static auto soft_fault(VirtAddr va, mem::VmfCause cause) -> Status;
+        static auto soft_fault(VirtAddr va, mm::VmfCause cause) -> Status;
 
         FORCE_INLINE
         static auto tid() -> KoId {
-            return mem::CpuLocal::read(g_current_instance->m_tid);
+            return mm::CpuLocal::read(g_current_instance->m_tid);
         }
 
         FORCE_INLINE
-        static auto memory_allocation_state() -> mem::MemoryAllocationState & {
+        static auto memory_allocation_state() -> mm::MemoryAllocationState & {
             return Thread::Current::get()->memory_allocation_state();
         }
 
@@ -483,7 +484,7 @@ namespace task {
         }
 
         FORCE_INLINE
-        static auto aspace() -> mem::VmAspace * {
+        static auto aspace() -> mm::VmAspace * {
             return Thread::Current::get()->aspace();
         }
       private:

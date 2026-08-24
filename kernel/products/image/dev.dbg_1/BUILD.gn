@@ -1,0 +1,36 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# kernel.dev.dbg_1 内核镜像（无单测的调试镜像，dev 的对照）。
+#
+# 同 //kernel/products/image/kernel.dev/：镜像本体定义在这里，产品只选择。
+#
+# 产物：$root_out_dir/kernel.dev.dbg_1.obi（默认扁平输出在 out 根）。
+
+import("//build/obi/kernel_cmdline.gni")
+import("//kernel/kernel_image.gni")
+import("//kernel/kernel_package.gni")
+
+kernel_package("ours") {
+  visibility = [ ":*", "//products/*" ]
+  prefix = ""
+  deps = [
+    "..:common_package_items",
+    "//kernel/products/bin:vmours(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
+  ]
+}
+
+kernel_cmdline("cmdline") {
+  visibility = [ ":*", "//products/*" ]
+  args = []
+}
+
+kernel_image("dev.dbg_1") {
+  visibility = [ "//products/*" ]
+  deps = [
+    ":ours",
+    ":cmdline",
+    "//kernel/phys/image/physboot",
+  ]
+}

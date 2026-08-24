@@ -35,6 +35,18 @@ group("default") {
     # //kernel/tests/fake-kernel/README.md.
     "//kernel/products/image/fake:fake",
 
+    # The x86 GRUB-facing artifact: parses Multiboot2, loads physload out of
+    # the OBI container above as a separate image, and jumps to it.  Not
+    # itself an OBI item -- the "GRUB two-file flow" pairs this binary with
+    # a .obi handed to GRUB as a Multiboot2 module.
+    #
+    # Explicit toolchain suffix: phys_executable() targets only exist in the
+    # kernel.phys toolchain family (see //build/switch/phys_switchset.gni)
+    # and carry no default-toolchain redirect of their own -- every caller
+    # outside that family names the toolchain itself, the same way
+    # //kernel/products/image/dev already does for vmours.
+    "//kernel/arch/x86/phys/boot-shim:boot-shim(//build/switch/set/phys.dbg_0:kernel.phys_$current_cpu.phys.dbg_0)",
+
     # Rust-free-optional smoke of the rustc toolchain wiring (rust_bin tool
     # of the host toolchain); keeps the Rust contract exercised on every
     # default build.

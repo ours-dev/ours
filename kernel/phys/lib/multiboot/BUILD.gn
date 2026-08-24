@@ -1,0 +1,55 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/multiboot/memory-map.hpp",
+    "include/multiboot/multiboot2.hpp",
+    "include/multiboot/view.hpp",
+  ]
+  public_deps = [
+    "//kernel/phys/lib/bootmem:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+# Header-only today, same seam bootmem keeps for the same reason: sources
+# can be added later without changing callers.
+group("multiboot") {
+  public_deps = [ ":headers" ]
+}
+
+group("tests") {
+  testonly = true
+  # Plain hosted programs: they must build in the host toolchain (see
+  # kernel/lib/obi:tests for the same fix) -- the default toolchain is a
+  # bare switchset mount point with no hosted-libc/prelude wiring of its
+  # own.
+  deps = [
+    ":memory-map-smoke($host_toolchain)",
+    ":view-smoke($host_toolchain)",
+  ]
+}
+
+executable("view-smoke") {
+  testonly = true
+  sources = [ "view-smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+executable("memory-map-smoke") {
+  testonly = true
+  sources = [ "memory-map-smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//kernel/phys/lib/bootmem:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

@@ -1,0 +1,14 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+
+# Zircon's RISC-V hypervisor target is also currently a structural group.
+if (toolchain_environment == "kernel") {
+  group("hypervisor") {
+  }
+}
+
+group("kernel-tests") {
+  testonly = true
+}

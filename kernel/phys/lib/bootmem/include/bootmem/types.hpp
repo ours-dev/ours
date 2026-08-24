@@ -44,6 +44,15 @@ struct MemoryRegion final {
     NnId node{};
 };
 
+/// One range plus whether it is currently free, for handing the whole
+/// memory map to a consumer that should read it rather than share this
+/// allocator's live state -- see PhysicalMemory::snapshot() and
+/// ours::phys::MemoryHandoff.
+struct MemRange final {
+    Range range{};
+    bool used{};
+};
+
 enum class AllocationDirection : u8 {
     BottomUp,
     TopDown,

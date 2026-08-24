@@ -1,44 +1,267 @@
-/// Copyright(C) 2024 smallhuazi
-///
-/// This program is free software; you can redistribute it and/or modify
-/// it under the terms of the GNU General Public License as published
-/// by the Free Software Foundation; either version 2 of the License, or
-/// (at your option) any later version.
-///
-/// For additional information, please refer to the following website:
-/// https://opensource.org/license/gpl-2-0
-///
-
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
 #ifndef USTL_COLLECTIONS_INTRUSIVE_OPTIONS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_OPTIONS_HPP 1
 
-#include <boost/intrusive/options.hpp>
+#include <ustl/collections/intrusive/intrusive_fwd.hpp>
+#include <ustl/collections/intrusive/link_mode.hpp>
+#include <ustl/collections/intrusive/pack_options.hpp>
 
 namespace ustl::collections::intrusive {
-    template <typename Size>
-    using SizeType = boost::intrusive::size_type<Size>;
+    struct Empty {};
 
-    template <bool Enable>
-    using ConstantTimeSize = boost::intrusive::constant_time_size<Enable>;
+    template <typename Functor>
+    struct Fhtraits;
 
-    template <bool Enable>
-    using CacheLast = boost::intrusive::cache_last<Enable>;
+    template <typename T, typename Hook, Hook T::*PtrMut>
+    struct Mhtraits;
 
-    template <typename HeaderHolder>
-    using HeaderHolderType = boost::intrusive::header_holder_type<HeaderHolder>;
+    struct DftTag;
+    struct MemberTag;
 
-    template <typename Comp>
-    using Compare = boost::intrusive::compare<Comp>;
+    template <typename SupposedValueTraits>
+    struct IsDefaultHookTag;
 
-    template <typename Box>
-    using PtrBox = boost::intrusive::void_pointer<Box>;
+    template <bool Enabled>
+    struct ConstantTimeSize final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool CONSTANT_TIME_SIZE = Enabled;
+        };
+    };
 
-    template <typename Hook>
-    using BaseHook = boost::intrusive::base_hook<Hook>;
+    template <typename T>
+    struct HeaderHolderType final {
+        template <typename Base>
+        struct Pack : Base {
+            using HeaderHolderType = T;
+        };
+    };
 
-    template <typename CustomTraits>
-    using ValueTraits = boost::intrusive::value_traits<CustomTraits>;
+    template <typename T>
+    struct Size final {
+        template <typename Base>
+        struct Pack : Base {
+            using Size = T;
+        };
+    };
 
+    template <typename T>
+    struct Compare final {
+        template <typename Base>
+        struct Pack : Base {
+            using Compare = T;
+        };
+    };
+
+    template <typename T>
+    struct KeyOfValue final {
+        template <typename Base>
+        struct Pack : Base {
+            using KeyOfValue = T;
+        };
+    };
+
+    template <typename T>
+    struct PriorityOfValue final {
+        template <typename Base>
+        struct Pack : Base {
+            using PriorityOfValue = T;
+        };
+    };
+
+    template <bool Enabled>
+    struct FloatingPoint final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool FLOATING_POINT = Enabled;
+        };
+    };
+
+    template <typename T>
+    struct Equal final {
+        template <typename Base>
+        struct Pack : Base {
+            using Equal = T;
+        };
+    };
+
+    template <typename T>
+    struct Priority final {
+        template <typename Base>
+        struct Pack : Base {
+            using Priority = T;
+        };
+    };
+
+    template <typename T>
+    struct Hash final {
+        template <typename Base>
+        struct Pack : Base {
+            using Hash = T;
+        };
+    };
+
+    template <typename T>
+    struct ValueTraits final {
+        template <typename Base>
+        struct Pack : Base {
+            using ProtoValueTraits = T;
+        };
+    };
+
+    template <typename Parent, typename TMemberHook, TMemberHook Parent::*PtrMut>
+    struct MemberHook final {
+        using MemberValueTraits = Mhtraits<Parent, TMemberHook, PtrMut>;
+
+        template <typename Base>
+        struct Pack : Base {
+            using ProtoValueTraits = MemberValueTraits;
+        };
+    };
+
+    template <typename T>
+    struct FunctionHook final {
+        template <typename Base>
+        struct Pack : Base {
+            using ProtoValueTraits = Fhtraits<T>;
+        };
+    };
+
+    template <typename T>
+    struct BaseHook final {
+        template <typename Base>
+        struct Pack : Base {
+            using ProtoValueTraits = T;
+        };
+    };
+
+    template <typename T>
+    struct VoidPointer final {
+        template <typename Base>
+        struct Pack : Base {
+            using VoidPointer = T;
+        };
+    };
+
+    template <typename T>
+    struct Tag final {
+        template <typename Base>
+        struct Pack : Base {
+            using Tag = T;
+        };
+    };
+
+    template <bool Enabled>
+    struct OptimizeSize final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool OPTIMIZE_SIZE = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct Linear final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool LINEAR = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct CacheLast final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool CACHE_LAST = Enabled;
+        };
+    };
+
+    template <typename T>
+    struct BucketTraits final {
+        template <typename Base>
+        struct Pack : Base {
+            using BucketTraits = T;
+        };
+    };
+
+    template <bool Enabled>
+    struct StoreHash final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool STORE_HASH = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct OptimizeMultikey final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool OPTIMIZE_MULTIKEY = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct Power2Buckets final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool POWER_2_BUCKETS = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct FastmodBuckets final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool FASTMOD_BUCKETS = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct CacheBegin final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool CACHE_BEGIN = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct CompareHash final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool COMPARE_HASH = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct Incremental final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool INCREMENTAL = Enabled;
+        };
+    };
+
+    template <bool Enabled>
+    struct LinearBuckets final {
+        template <typename Base>
+        struct Pack : Base {
+            static constexpr bool LINEAR_BUCKETS = Enabled;
+        };
+    };
+
+    struct HookDefaults {
+        using VoidPointer = void *;
+        static constexpr LinkModeType LINK_MODE = LinkModeType::SafeLink;
+        using Tag = DftTag;
+        static constexpr bool OPTIMIZE_SIZE = false;
+        static constexpr bool STORE_HASH = false;
+        static constexpr bool LINEAR = false;
+        static constexpr bool OPTIMIZE_MULTIKEY = false;
+    };
 } // namespace ustl::collections::intrusive
 
-#endif // #ifndef USTL_COLLECTIONS_INTRUSIVE_OPTIONS_HPP
+#ifndef USTL_DECLARE_HOOK_OPTION
+#define USTL_DECLARE_HOOK_OPTION(OWNER, MEMBER, ALIAS) \
+    using ALIAS = ::ustl::collections::intrusive::MemberHook<OWNER, decltype(OWNER::MEMBER), &OWNER::MEMBER>
+#endif
+
+#endif // USTL_COLLECTIONS_INTRUSIVE_OPTIONS_HPP

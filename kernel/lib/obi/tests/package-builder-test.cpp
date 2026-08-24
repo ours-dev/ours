@@ -1,7 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <obi/boot-obi.hpp>
 #include <obi/container-view.hpp>
 #include <obi/package-builder.hpp>
 
@@ -104,79 +103,9 @@ TEST(PackageBuilder, EmptyBuilderProducesNothing) {
     PackageBuilder builder;
     EXPECT_TRUE(builder.build(/*crc=*/false).empty());
 }
-
-// The boot contract BootObi::from() enforces on kernel_image() output:
-// exactly one StorageKernel package, plus an Executable entry-point item
-// (index 0 after build()'s sort) exposed by executable().
-// NOLINTNEXTLINE(readability-identifier-naming) — gtest TEST macro, file-wide pattern
-TEST(BootObi, AcceptsExactlyOneKernelPackageAndExposesTheExecutable) {
-    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
-    constexpr auto elf_bytes = std::array<u8, 4>{0x7F, 'E', 'L', 'F'};
-    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
-    constexpr auto bootfs_bytes = std::array<u8, 3>{'b', 't', 's'};
-
-    PackageBuilder builder;
-    ASSERT_TRUE(builder
-                    .add_item(item("physload", ItemType::Executable, ItemFormat::Elf,
-                                   {elf_bytes.data(), elf_bytes.size()}))
-                    .is_ok());
-    ASSERT_TRUE(builder
-                    .add_item(item("kernel", ItemType::StorageKernel, ItemFormat::BootFs,
-                                   {bootfs_bytes.data(), bootfs_bytes.size()}))
-                    .is_ok());
-
-    auto const container = builder.build(/*crc=*/false);
-    auto view = ContainerView::from(container.data(), container.size());
-    ASSERT_TRUE(view.is_ok());
-
-    auto boot = obi::BootObi::from(view.unwrap());
-    ASSERT_TRUE(boot.is_ok());
-    auto const executable = boot.unwrap().executable();
-    ASSERT_TRUE(executable.is_some());
-    EXPECT_EQ(executable.value().name(), std::string_view("physload"));
-}
-
-// NOLINTNEXTLINE(readability-identifier-naming) — gtest TEST macro, file-wide pattern
-TEST(BootObi, RejectsMissingKernelPackage) {
-    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
-    constexpr auto elf_bytes = std::array<u8, 4>{0x7F, 'E', 'L', 'F'};
-
-    PackageBuilder builder;
-    ASSERT_TRUE(builder
-                    .add_item(item("physload", ItemType::Executable, ItemFormat::Elf,
-                                   {elf_bytes.data(), elf_bytes.size()}))
-                    .is_ok());
-
-    auto const container = builder.build(/*crc=*/false);
-    auto view = ContainerView::from(container.data(), container.size());
-    ASSERT_TRUE(view.is_ok());
-
-    auto boot = obi::BootObi::from(view.unwrap());
-    ASSERT_TRUE(boot.is_err());
-    EXPECT_EQ(boot.unwrap_err(), ours::Status::NotFound);
-}
-
-// NOLINTNEXTLINE(readability-identifier-naming) — gtest TEST macro, file-wide pattern
-TEST(BootObi, RejectsMultipleKernelPackages) {
-    // NOLINTNEXTLINE(readability-identifier-naming) — matches the pre-existing kernel_bytes/setup_bytes fixtures below
-    constexpr auto bootfs_bytes = std::array<u8, 3>{'b', 't', 's'};
-
-    PackageBuilder builder;
-    ASSERT_TRUE(builder
-                    .add_item(item("kernel", ItemType::StorageKernel, ItemFormat::BootFs,
-                                   {bootfs_bytes.data(), bootfs_bytes.size()}))
-                    .is_ok());
-    ASSERT_TRUE(builder
-                    .add_item(item("kernel-2", ItemType::StorageKernel, ItemFormat::BootFs,
-                                   {bootfs_bytes.data(), bootfs_bytes.size()}))
-                    .is_ok());
-
-    auto const container = builder.build(/*crc=*/false);
-    auto view = ContainerView::from(container.data(), container.size());
-    ASSERT_TRUE(view.is_ok());
-
-    auto boot = obi::BootObi::from(view.unwrap());
-    ASSERT_TRUE(boot.is_err());
-    EXPECT_EQ(boot.unwrap_err(), ours::Status::AlreadyExists);
-}
 } // namespace
+
+// The boot contract itself (exactly one StorageKernel package, an
+// Executable entry point at item 0) is phys::BootObi's reading of this
+// container format, not part of the format -- see
+// //kernel/phys/boot-obi-test.cpp.

@@ -3,10 +3,10 @@
 #ifndef OURS_PHYS_BOOTMEM_HPP
 #define OURS_PHYS_BOOTMEM_HPP 1
 
-#include <bootmem/memblock.hpp>
+#include <bootmem/physical-memory.hpp>
 
 namespace ours::phys {
-    using BootMem = bootmem::MemBlock<>;
+    using BootMem = bootmem::PhysicalMemory;
 
 } // namespace ours::phys
 

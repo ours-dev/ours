@@ -1,0 +1,99 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/eftl/binary.hpp",
+    "include/eftl/binary_stream.hpp",
+    "include/eftl/elf/binary.hpp",
+    "include/eftl/elf/checked_reader.hpp",
+    "include/eftl/elf/compression.hpp",
+    "include/eftl/elf/config.hpp",
+    "include/eftl/elf/details/dyn.hpp",
+    "include/eftl/elf/details/segment.hpp",
+    "include/eftl/elf/details/structures.hpp",
+    "include/eftl/elf/details/types.hpp",
+    "include/eftl/elf/dynamic.hpp",
+    "include/eftl/elf/dynamic_array.hpp",
+    "include/eftl/elf/dynamic_image.hpp",
+    "include/eftl/elf/dynamic_linkage.hpp",
+    "include/eftl/elf/dynamic_section.hpp",
+    "include/eftl/elf/encoding.hpp",
+    "include/eftl/elf/enums.hpp",
+    "include/eftl/elf/gnu_hash.hpp",
+    "include/eftl/elf/gnu_property.hpp",
+    "include/eftl/elf/gnu_stack.hpp",
+    "include/eftl/elf/group.hpp",
+    "include/eftl/elf/link.hpp",
+    "include/eftl/elf/load.hpp",
+    "include/eftl/elf/load_policy.hpp",
+    "include/eftl/elf/mapped_memory.hpp",
+    "include/eftl/elf/note.hpp",
+    "include/eftl/elf/observable.hpp",
+    "include/eftl/elf/parser.hpp",
+    "include/eftl/elf/relocation_section.hpp",
+    "include/eftl/elf/relocation_catalog.hpp",
+    "include/eftl/elf/relro.hpp",
+    "include/eftl/elf/relocations.hpp",
+    "include/eftl/elf/section.hpp",
+    "include/eftl/elf/segment.hpp",
+    "include/eftl/elf/symbol.hpp",
+    "include/eftl/elf/sysv_hash.hpp",
+    "include/eftl/elf/table.hpp",
+    "include/eftl/elf/tls.hpp",
+    "include/eftl/elf/traits.hpp",
+    "include/eftl/elf/version_definition.hpp",
+    "include/eftl/elf/version_binding.hpp",
+    "include/eftl/elf/version_detail.hpp",
+    "include/eftl/elf/version_requirement.hpp",
+    "include/eftl/elf/version_symbol.hpp",
+    "include/eftl/elf/views.hpp",
+  ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+source_set("eftl") {
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [
+    "tests:binary",
+    "tests:binary-stream",
+    "tests:checked-reader",
+    "tests:compressed-section",
+    "tests:dynamic-section",
+    "tests:dynamic-image",
+    "tests:dynamic-linkage",
+    "tests:dynamic-relocation",
+    "tests:elf-parser",
+    "tests:gnu-hash",
+    "tests:gnu-property",
+    "tests:gnu-stack",
+    "tests:section-group",
+    "tests:interpreter",
+    "tests:layout",
+    "tests:load",
+    "tests:load-policy",
+    "tests:mapped-memory",
+    "tests:native-image",
+    "tests:note-section",
+    "tests:relocation-section",
+    "tests:relro",
+    "tests:relocations",
+    "tests:section",
+    "tests:symbol",
+    "tests:sysv-hash",
+    "tests:tls-template",
+    "tests:version-definition",
+    "tests:version-binding",
+    "tests:version-requirement",
+    "tests:version-symbol",
+    "tests:view",
+  ]
+}

@@ -1,0 +1,19 @@
+# Public Ours headers, modeled after Zircon's system/public GN target.
+#
+# Kernel toolchains consume :public.config through BUILDCONFIG.gn. Future OS
+# products can depend on :public to propagate the same include directory.
+import("public_headers.gni")
+
+source_set("public") {
+  public = ours_public_headers
+
+  # This target indexes and publishes headers only.  Do not attach implicit
+  # compile or link inputs from the consuming toolchain's defaults.
+  configs = []
+  public_configs = [ ":public.config" ]
+}
+
+config("public.config") {
+  visibility = [ "*" ]
+  include_dirs = [ "." ]
+}

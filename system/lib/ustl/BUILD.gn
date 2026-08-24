@@ -1,0 +1,226 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/ustl/option.hpp",
+    "include/ustl/result.hpp",
+    "include/ustl/rc.hpp",
+    "include/ustl/array.hpp",
+    "include/ustl/bitfields.hpp",
+    "include/ustl/bit.hpp",
+    "include/ustl/bitset.hpp",
+    "include/ustl/algorithms/minmax.hpp",
+    "include/ustl/algorithms/copy.hpp",
+    "include/ustl/algorithms/generation.hpp",
+    "include/ustl/chrono/duration.hpp",
+    "include/ustl/io/direct_memory.hpp",
+    "include/ustl/io/binary_reader.hpp",
+    "include/ustl/lazy_init.hpp",
+    "include/ustl/mem/align.hpp",
+    "include/ustl/mem/address_of.hpp",
+    "include/ustl/mem/container_of.hpp",
+    "include/ustl/mem/object.hpp",
+    "include/ustl/traits/integral_constant.hpp",
+    "include/ustl/traits/conditional.hpp",
+    "include/ustl/traits/cv.hpp",
+    "include/ustl/traits/integral.hpp",
+    "include/ustl/traits/is_base_of.hpp",
+    "include/ustl/traits/invoke_args.hpp",
+    "include/ustl/traits/is_invocable.hpp",
+    "include/ustl/traits/is_same.hpp",
+    "include/ustl/traits/ptr.hpp",
+    "include/ustl/traits/underlying.hpp",
+    "include/ustl/util/enum_bits.hpp",
+    "include/ustl/util/move.hpp",
+    "include/ustl/util/pair.hpp",
+    "include/ustl/util/tuple.hpp",
+    "include/ustl/util/type-map.hpp",
+    "include/ustl/util/type-list.hpp",
+    "include/ustl/util/nonconstructible.hpp",
+    "include/ustl/util/noncopyable.hpp",
+    "include/ustl/variant.hpp",
+    "include/ustl/limits.hpp",
+    "include/ustl/iterator/function.hpp",
+    "include/ustl/iterator/reverse_iterator.hpp",
+    "include/ustl/iterator/traits.hpp",
+    "include/ustl/function/fn.hpp",
+    "include/ustl/function/bind.hpp",
+    "include/ustl/function/invoke.hpp",
+    "include/ustl/fmt/format_args.hpp",
+    "include/ustl/fmt/format_to.hpp",
+    "include/ustl/fmt/formatter.hpp",
+    "include/ustl/fmt/make_format_args.hpp",
+    "include/ustl/source_location.hpp",
+    "include/ustl/sync/atomic.hpp",
+    "include/ustl/views/span.hpp",
+    "include/ustl/views/string_view.hpp",
+    "include/ustl/collections/allocator.hpp",
+    "include/ustl/collections/btree.hpp",
+    "include/ustl/collections/deque.hpp",
+    "include/ustl/collections/detail/btree.hpp",
+    "include/ustl/collections/detail/btree_node_algorithms.hpp",
+    "include/ustl/collections/error.hpp",
+    "include/ustl/collections/intrusive/any_hook.hpp",
+    "include/ustl/collections/intrusive/avl_set_hook.hpp",
+    "include/ustl/collections/intrusive/avl_set.hpp",
+    "include/ustl/collections/intrusive/avltree_algorithms.hpp",
+    "include/ustl/collections/intrusive/avltree.hpp",
+    "include/ustl/collections/intrusive/bstree_algorithms.hpp",
+    "include/ustl/collections/intrusive/bstree.hpp",
+    "include/ustl/collections/intrusive/bs_set.hpp",
+    "include/ustl/collections/intrusive/bs_set_hook.hpp",
+    "include/ustl/collections/intrusive/circular_list_algorithms.hpp",
+    "include/ustl/collections/intrusive/circular_slist_algorithms.hpp",
+    "include/ustl/collections/intrusive/derivation_value_traits.hpp",
+    "include/ustl/collections/intrusive/detail/assert.hpp",
+    "include/ustl/collections/intrusive/detail/any_node_and_algorithms.hpp",
+    "include/ustl/collections/intrusive/detail/avltree_node.hpp",
+    "include/ustl/collections/intrusive/detail/bstree_algorithms_base.hpp",
+    "include/ustl/collections/intrusive/detail/config_begin.hpp",
+    "include/ustl/collections/intrusive/detail/config_end.hpp",
+    "include/ustl/collections/intrusive/detail/common_slist_algorithms.hpp",
+    "include/ustl/collections/intrusive/detail/hashtable_node.hpp",
+    "include/ustl/collections/intrusive/detail/iiterator.hpp",
+    "include/ustl/collections/intrusive/detail/list_node.hpp",
+    "include/ustl/collections/intrusive/detail/parent_from_member.hpp",
+    "include/ustl/collections/intrusive/detail/list_iterator.hpp",
+    "include/ustl/collections/intrusive/detail/key_node_ptr_compare.hpp",
+    "include/ustl/collections/intrusive/detail/rbtree_node.hpp",
+    "include/ustl/collections/intrusive/detail/reverse_iter.hpp",
+    "include/ustl/collections/intrusive/rbtree_algorithms.hpp",
+    "include/ustl/collections/intrusive/rbtree.hpp",
+    "include/ustl/collections/intrusive/detail/slist_node.hpp",
+    "include/ustl/collections/intrusive/detail/slist_iterator.hpp",
+    "include/ustl/collections/intrusive/detail/tree_node.hpp",
+    "include/ustl/collections/intrusive/detail/tree_iterator.hpp",
+    "include/ustl/collections/intrusive/intrusive_fwd.hpp",
+    "include/ustl/collections/intrusive/hashtable.hpp",
+    "include/ustl/collections/intrusive/link_mode.hpp",
+    "include/ustl/collections/intrusive/list.hpp",
+    "include/ustl/collections/intrusive/list_hook.hpp",
+    "include/ustl/collections/intrusive/member_value_traits.hpp",
+    "include/ustl/collections/intrusive/linear_slist_algorithms.hpp",
+    "include/ustl/collections/intrusive/options.hpp",
+    "include/ustl/collections/intrusive/pack_options.hpp",
+    "include/ustl/collections/intrusive/parent_from_member.hpp",
+    "include/ustl/collections/intrusive/pointer_rebind.hpp",
+    "include/ustl/collections/intrusive/pointer_plus_bits.hpp",
+    "include/ustl/collections/intrusive/pointer_traits.hpp",
+    "include/ustl/collections/intrusive/priority_compare.hpp",
+    "include/ustl/collections/intrusive/set.hpp",
+    "include/ustl/collections/intrusive/set_hook.hpp",
+    "include/ustl/collections/intrusive/sg_set.hpp",
+    "include/ustl/collections/intrusive/sgtree_algorithms.hpp",
+    "include/ustl/collections/intrusive/sgtree.hpp",
+    "include/ustl/collections/intrusive/splay_set_hook.hpp",
+    "include/ustl/collections/intrusive/splay_set.hpp",
+    "include/ustl/collections/intrusive/splaytree_algorithms.hpp",
+    "include/ustl/collections/intrusive/splaytree.hpp",
+    "include/ustl/collections/intrusive/slist.hpp",
+    "include/ustl/collections/intrusive/slist_hook.hpp",
+    "include/ustl/collections/intrusive/trivial_value_traits.hpp",
+    "include/ustl/collections/intrusive/treap_algorithms.hpp",
+    "include/ustl/collections/intrusive/treap.hpp",
+    "include/ustl/collections/intrusive/treap_set.hpp",
+    "include/ustl/collections/intrusive/unordered_set_hook.hpp",
+    "include/ustl/collections/intrusive/unordered_set.hpp",
+    "include/ustl/collections/memory_resource.hpp",
+    "include/ustl/collections/pmr/btree_map.hpp",
+    "include/ustl/collections/pmr/btree_set.hpp",
+    "include/ustl/collections/pmr/deque.hpp",
+    "include/ustl/collections/pmr/map.hpp",
+    "include/ustl/collections/pmr/memory_resource.hpp",
+    "include/ustl/collections/pmr/monotonic_buffer_resource.hpp",
+    "include/ustl/collections/pmr/vec.hpp",
+    "include/ustl/collections/static-vec.hpp",
+    "include/ustl/collections/vec.hpp",
+  ]
+}
+
+group("ustl") {
+  public_deps = [ ":headers" ]
+}
+
+executable("enum-bits-test") {
+  testonly = true
+  sources = [ "test/enum_bits_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("minmax-test") {
+  testonly = true
+  sources = [ "test/minmax_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("bitfields-test") {
+  testonly = true
+  sources = [ "test/bitfields_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("binary-reader-test") {
+  testonly = true
+  sources = [ "test/binary_reader_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("option-test") {
+  testonly = true
+  sources = [ "test/option_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("lazy-init-test") {
+  testonly = true
+  sources = [ "test/lazy_init_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("atomic-test") {
+  testonly = true
+  sources = [ "test/atomic_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("set-test") {
+  testonly = true
+  sources = [ "test/set_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("rc-test") {
+  testonly = true
+  sources = [ "test/rc_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("rc-race-test") {
+  testonly = true
+  sources = [ "test/rc_race_test.cpp" ]
+  deps = [ ":headers" ]
+  libs = [ "pthread" ]
+}
+
+executable("rc-doc-examples-test") {
+  testonly = true
+  sources = [ "test/rc_doc_examples_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+group("tests") {
+  testonly = true
+  deps = [
+    ":bitfields-test",
+    ":atomic-test",
+    ":binary-reader-test",
+    ":enum-bits-test",
+    ":lazy-init-test",
+    ":minmax-test",
+    ":option-test",
+    ":rc-test",
+    ":rc-race-test",
+    ":rc-doc-examples-test",
+    ":set-test",
+  ]
+}

@@ -40,4 +40,64 @@ typedef __UINTMAX_TYPE__ uintmax_t;
 typedef __PTRDIFF_TYPE__ ptrdiff_t;
 typedef __SIZE_TYPE__ size_t;
 
+#define INT8_MIN (-__INT8_MAX__ - 1)
+#define INT8_MAX __INT8_MAX__
+#define UINT8_MAX __UINT8_MAX__
+#define INT16_MIN (-__INT16_MAX__ - 1)
+#define INT16_MAX __INT16_MAX__
+#define UINT16_MAX __UINT16_MAX__
+#define INT32_MIN (-__INT32_MAX__ - 1)
+#define INT32_MAX __INT32_MAX__
+#define UINT32_MAX __UINT32_MAX__
+#define INT64_MIN (-__INT64_MAX__ - 1)
+#define INT64_MAX __INT64_MAX__
+#define UINT64_MAX __UINT64_MAX__
+
+#define INT_LEAST8_MIN INT8_MIN
+#define INT_LEAST8_MAX INT8_MAX
+#define UINT_LEAST8_MAX UINT8_MAX
+#define INT_LEAST16_MIN INT16_MIN
+#define INT_LEAST16_MAX INT16_MAX
+#define UINT_LEAST16_MAX UINT16_MAX
+#define INT_LEAST32_MIN INT32_MIN
+#define INT_LEAST32_MAX INT32_MAX
+#define UINT_LEAST32_MAX UINT32_MAX
+#define INT_LEAST64_MIN INT64_MIN
+#define INT_LEAST64_MAX INT64_MAX
+#define UINT_LEAST64_MAX UINT64_MAX
+
+#define INT_FAST8_MIN (-__INT_FAST8_MAX__ - 1)
+#define INT_FAST8_MAX __INT_FAST8_MAX__
+#define UINT_FAST8_MAX __UINT_FAST8_MAX__
+#define INT_FAST16_MIN (-__INT_FAST16_MAX__ - 1)
+#define INT_FAST16_MAX __INT_FAST16_MAX__
+#define UINT_FAST16_MAX __UINT_FAST16_MAX__
+#define INT_FAST32_MIN (-__INT_FAST32_MAX__ - 1)
+#define INT_FAST32_MAX __INT_FAST32_MAX__
+#define UINT_FAST32_MAX __UINT_FAST32_MAX__
+#define INT_FAST64_MIN (-__INT_FAST64_MAX__ - 1)
+#define INT_FAST64_MAX __INT_FAST64_MAX__
+#define UINT_FAST64_MAX __UINT_FAST64_MAX__
+
+#define SIZE_MAX __SIZE_MAX__
+#define PTRDIFF_MIN (-__PTRDIFF_MAX__ - 1)
+#define PTRDIFF_MAX __PTRDIFF_MAX__
+#define INTPTR_MIN (-__INTPTR_MAX__ - 1)
+#define INTPTR_MAX __INTPTR_MAX__
+#define UINTPTR_MAX __UINTPTR_MAX__
+#define INTMAX_MIN (-__INTMAX_MAX__ - 1)
+#define INTMAX_MAX __INTMAX_MAX__
+#define UINTMAX_MAX __UINTMAX_MAX__
+
+#define INT8_C(value) value
+#define INT16_C(value) value
+#define INT32_C(value) value
+#define INT64_C(value) value##L
+#define UINT8_C(value) value
+#define UINT16_C(value) value
+#define UINT32_C(value) value##U
+#define UINT64_C(value) value##UL
+#define INTMAX_C(value) value##L
+#define UINTMAX_C(value) value##UL
+
 #endif // OURS_SYSTEM_LIB_LIBC_INCLUDE_STDINT_H_

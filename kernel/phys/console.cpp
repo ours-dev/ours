@@ -23,6 +23,11 @@ auto init_early_console() -> void {
     }
 }
 
+WEAK_LINK
+auto arch_uart_handoff() -> UartHandoff {
+    return {};
+}
+
 auto Console::write_all(char const *s, u32 n) -> void {
     for (auto &console: g_consoles) {
         console.write(s, n);

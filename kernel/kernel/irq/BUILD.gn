@@ -1,0 +1,16 @@
+source_set("irq") {
+  sources = [
+    "init.cpp",
+    "irq_dispatcher.cpp",
+    "irq_object.cpp",
+    "mod.cpp",
+  ]
+  deps = [
+    "//kernel/lib/gktl",
+    "//kernel/lib/ktl:headers",
+    "//kernel/lib/logz4:headers",
+    "//kernel/mm:headers",
+    "//system/lib/lockdep",
+  ]
+  visibility = [ "*" ]
+}

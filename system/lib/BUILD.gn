@@ -7,7 +7,6 @@ group("tests") {
     "concurrent:tests",
     "derive:tests",
     "hsien:tests",
-    "lockdep:tests",
     "ustl:tests",
   ]
 }

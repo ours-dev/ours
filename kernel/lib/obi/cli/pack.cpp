@@ -248,8 +248,9 @@ namespace {
 
     // Enforce the boot topology contract when --bootable is given: item 0
     // must be the Executable entry point and the container must carry
-    // exactly one StorageKernel package.  BootObi::from() rejects anything
-    // else at boot time; this turns that into a build-time error.
+    // exactly one StorageKernel package.  phys::BootObi::from() (built on
+    // top of this container format, not part of it) rejects anything else
+    // at boot time; this turns that into a build-time error.
     auto validate_bootable(std::vector<u8> const &container) -> int {
         auto view = obi::ContainerView::from(container.data(), container.size());
         if (view.is_err()) {

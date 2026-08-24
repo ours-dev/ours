@@ -4,16 +4,16 @@
 #ifndef USTL_COLLECTIONS_DETAIL_BTREE_NODE_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_DETAIL_BTREE_NODE_ALGORITHMS_HPP 1
 
-#include <ours/types.hpp>
+#include <cstddef>
 
 namespace ustl::collections::priv {
-    using ours::usize;
+    using Size = std::size_t;
 
-    inline constexpr auto kDefaultBTreeOrder = usize(8);
+    inline constexpr auto DEFAULT_BTREE_ORDER = Size(8);
 
-    template <typename NodeTraits_>
+    template <typename NodeTraitsType>
     struct BTreeNodeAlgorithmsImpl {
-        using NodeTraits = NodeTraits_;
+        using NodeTraits = NodeTraitsType;
         using Node = typename NodeTraits::Node;
         using NodePtr = typename NodeTraits::NodePtr;
         using NodePtrMut = typename NodeTraits::NodePtrMut;
@@ -27,22 +27,22 @@ namespace ustl::collections::priv {
 
         template <typename Ptr>
         struct Position {
-            Ptr node {};
-            usize slot {};
+            Ptr m_node {};
+            Size m_slot {};
         };
 
         using PositionPtr = Position<NodePtr>;
         using PositionPtrMut = Position<NodePtrMut>;
 
-        static constexpr auto min_degree(usize order) -> usize {
+        static constexpr auto min_degree(Size order) -> Size {
             return order;
         }
 
-        static constexpr auto max_values(usize order) -> usize {
+        static constexpr auto max_values(Size order) -> Size {
             return (order * 2) - 1;
         }
 
-        static constexpr auto max_children(usize order) -> usize {
+        static constexpr auto max_children(Size order) -> Size {
             return order * 2;
         }
 
@@ -52,12 +52,12 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto child(Ptr node, usize slot) -> Ptr {
+        static constexpr auto child(Ptr node, Size slot) -> Ptr {
             return NodeTraits::get_child(node, slot);
         }
 
         template <typename Ptr>
-        static constexpr auto count(Ptr node) -> usize {
+        static constexpr auto count(Ptr node) -> Size {
             return NodeTraits::get_count(node);
         }
 
@@ -67,23 +67,23 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto is_full(Ptr node, usize order) -> bool {
+        static constexpr auto is_full(Ptr node, Size order) -> bool {
             return count(node) == max_values(order);
         }
 
         template <typename Ptr>
-        static constexpr auto has_min_degree(Ptr node, usize order) -> bool {
+        static constexpr auto has_min_degree(Ptr node, Size order) -> bool {
             return count(node) >= min_degree(order);
         }
 
         template <typename Ptr>
-        static constexpr auto needs_fill(Ptr node, usize order) -> bool {
+        static constexpr auto needs_fill(Ptr node, Size order) -> bool {
             return count(node) < min_degree(order);
         }
 
         template <typename Ptr>
-        static constexpr auto child_index(Ptr parent, Ptr child) -> usize {
-            for (usize i = 0; i <= count(parent); ++i) {
+        static constexpr auto child_index(Ptr parent, Ptr child) -> Size {
+            for (Size i = 0; i <= count(parent); ++i) {
                 if (BTreeNodeAlgorithmsImpl::child(parent, i) == child) {
                     return i;
                 }
@@ -113,7 +113,7 @@ namespace ustl::collections::priv {
                 return nullptr;
             }
 
-            for (usize i = 0; i <= count(node); ++i) {
+            for (Size i = 0; i <= count(node); ++i) {
                 if (auto child = BTreeNodeAlgorithmsImpl::child(node, i); child != nullptr) {
                     return child;
                 }
@@ -122,22 +122,22 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto next_position(Ptr node, usize slot) -> Position<Ptr> {
+        static constexpr auto next_position(Ptr node, Size slot) -> Position<Ptr> {
             if (node == nullptr) {
                 return {};
             }
 
             if (!is_leaf(node)) {
                 return {
-                    .node = leftmost(child(node, slot + 1)),
-                    .slot = 0,
+                    .m_node = leftmost(child(node, slot + 1)),
+                    .m_slot = 0,
                 };
             }
 
             if (slot + 1 < count(node)) {
                 return {
-                    .node = node,
-                    .slot = slot + 1,
+                    .m_node = node,
+                    .m_slot = slot + 1,
                 };
             }
 
@@ -147,8 +147,8 @@ namespace ustl::collections::priv {
                 auto const child_slot = child_index(parent, child);
                 if (child_slot < count(parent)) {
                     return {
-                        .node = parent,
-                        .slot = child_slot,
+                        .m_node = parent,
+                        .m_slot = child_slot,
                     };
                 }
                 child = parent;
@@ -159,27 +159,27 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto prev_position(Ptr root, Ptr node, usize slot) -> Position<Ptr> {
+        static constexpr auto prev_position(Ptr root, Ptr node, Size slot) -> Position<Ptr> {
             if (node == nullptr) {
                 auto right = rightmost(root);
                 return {
-                    .node = right,
-                    .slot = right == nullptr ? 0 : count(right) - 1,
+                    .m_node = right,
+                    .m_slot = right == nullptr ? 0 : count(right) - 1,
                 };
             }
 
             if (!is_leaf(node)) {
                 auto pred = rightmost(child(node, slot));
                 return {
-                    .node = pred,
-                    .slot = count(pred) - 1,
+                    .m_node = pred,
+                    .m_slot = count(pred) - 1,
                 };
             }
 
             if (slot > 0) {
                 return {
-                    .node = node,
-                    .slot = slot - 1,
+                    .m_node = node,
+                    .m_slot = slot - 1,
                 };
             }
 
@@ -189,8 +189,8 @@ namespace ustl::collections::priv {
                 auto const child_slot = child_index(parent, child);
                 if (child_slot > 0) {
                     return {
-                        .node = parent,
-                        .slot = child_slot - 1,
+                        .m_node = parent,
+                        .m_slot = child_slot - 1,
                     };
                 }
                 child = parent;
@@ -198,18 +198,18 @@ namespace ustl::collections::priv {
             }
 
             return {
-                .node = node,
-                .slot = slot,
+                .m_node = node,
+                .m_slot = slot,
             };
         }
 
-        static constexpr auto move_upper_children_after_split(NodePtrMut left, NodePtrMut right, usize order) -> void {
+        static constexpr auto move_upper_children_after_split(NodePtrMut left, NodePtrMut right, Size order) -> void {
             if (is_leaf(left)) {
                 return;
             }
 
             auto const degree = min_degree(order);
-            for (usize i = 0; i < degree; ++i) {
+            for (Size i = 0; i < degree; ++i) {
                 auto child = BTreeNodeAlgorithmsImpl::child(left, i + degree);
                 NodeTraits::set_child(right, i, child);
                 if (child != nullptr) {
@@ -219,8 +219,8 @@ namespace ustl::collections::priv {
             }
         }
 
-        static constexpr auto insert_child_after_split(NodePtrMut parent, usize slot, NodePtrMut right) -> void {
-            for (usize i = count(parent) + 1; i > slot + 1; --i) {
+        static constexpr auto insert_child_after_split(NodePtrMut parent, Size slot, NodePtrMut right) -> void {
+            for (Size i = count(parent) + 1; i > slot + 1; --i) {
                 NodeTraits::set_child(parent, i, child(parent, i - 1));
             }
             NodeTraits::set_child(parent, slot + 1, right);
@@ -235,11 +235,11 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto search_child(Ptr node, usize slot) -> Ptr {
+        static constexpr auto search_child(Ptr node, Size slot) -> Ptr {
             return is_leaf(node) ? nullptr : child(node, slot);
         }
 
-        static constexpr auto select_rebalance_plan(NodePtrMut node, usize slot, usize order) -> RebalancePlan {
+        static constexpr auto select_rebalance_plan(NodePtrMut node, Size slot, Size order) -> RebalancePlan {
             if (slot > 0 && has_min_degree(child(node, slot - 1), order)) {
                 return RebalancePlan::BorrowFromPrev;
             }
@@ -249,13 +249,13 @@ namespace ustl::collections::priv {
             return slot < count(node) ? RebalancePlan::MergeWithNext : RebalancePlan::MergeWithPrev;
         }
 
-        static constexpr auto move_children_for_merge(NodePtrMut left, NodePtrMut right, usize order) -> void {
+        static constexpr auto move_children_for_merge(NodePtrMut left, NodePtrMut right, Size order) -> void {
             if (is_leaf(left)) {
                 return;
             }
 
             auto const degree = min_degree(order);
-            for (usize i = 0; i <= count(right); ++i) {
+            for (Size i = 0; i <= count(right); ++i) {
                 auto child = BTreeNodeAlgorithmsImpl::child(right, i);
                 NodeTraits::set_child(left, i + degree, child);
                 if (child != nullptr) {
@@ -265,21 +265,21 @@ namespace ustl::collections::priv {
             }
         }
 
-        static constexpr auto erase_child_after_merge(NodePtrMut parent, usize slot) -> void {
-            for (usize i = slot; i + 1 < count(parent); ++i) {
+        static constexpr auto erase_child_after_merge(NodePtrMut parent, Size slot) -> void {
+            for (Size i = slot; i + 1 < count(parent); ++i) {
                 NodeTraits::set_child(parent, i + 1, child(parent, i + 2));
             }
             NodeTraits::set_child(parent, count(parent), nullptr);
         }
 
-        static constexpr auto shift_children_right(NodePtrMut node, usize first, usize last) -> void {
-            for (usize i = last; i > first; --i) {
+        static constexpr auto shift_children_right(NodePtrMut node, Size first, Size last) -> void {
+            for (Size i = last; i > first; --i) {
                 NodeTraits::set_child(node, i, child(node, i - 1));
             }
         }
 
-        static constexpr auto shift_children_left(NodePtrMut node, usize first, usize last) -> void {
-            for (usize i = first; i < last; ++i) {
+        static constexpr auto shift_children_left(NodePtrMut node, Size first, Size last) -> void {
+            for (Size i = first; i < last; ++i) {
                 NodeTraits::set_child(node, i, child(node, i + 1));
             }
             NodeTraits::set_child(node, last, nullptr);
@@ -327,7 +327,7 @@ namespace ustl::collections::priv {
             return child;
         }
 
-        static constexpr auto detach_from_parent(NodePtrMut node, usize order) -> NodePtrMut {
+        static constexpr auto detach_from_parent(NodePtrMut node, Size order) -> NodePtrMut {
             auto parent = BTreeNodeAlgorithmsImpl::parent(node);
             if (parent != nullptr) {
                 auto const slot = child_index(parent, node);
@@ -343,11 +343,11 @@ namespace ustl::collections::priv {
     ///
     /// This class is a compile-time-order facade. `Impl` owns the algorithms;
     /// this wrapper only forwards `ORDER` for call sites that know it statically.
-    template <typename NodeTraits_, usize Order_>
+    template <typename NodeTraitsType, Size OrderValue>
     struct BTreeNodeAlgorithms {
-        static_assert(Order_ >= 3, "BTree order must be at least 3");
+        static_assert(OrderValue >= 3, "BTree order must be at least 3");
 
-        using Impl = BTreeNodeAlgorithmsImpl<NodeTraits_>;
+        using Impl = BTreeNodeAlgorithmsImpl<NodeTraitsType>;
 
         using NodeTraits = typename Impl::NodeTraits;
         using Node = typename Impl::Node;
@@ -357,7 +357,7 @@ namespace ustl::collections::priv {
         using Position = typename Impl::PositionPtr;
         using PositionMut = typename Impl::PositionPtrMut;
 
-        static constexpr auto ORDER = Order_;
+        static constexpr auto ORDER = OrderValue;
         static constexpr auto MIN_DEGREE = Impl::min_degree(ORDER);
         static constexpr auto MAX_VALUES = Impl::max_values(ORDER);
         static constexpr auto MAX_CHILDREN = Impl::max_children(ORDER);
@@ -368,12 +368,12 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto child(Ptr node, usize slot) -> Ptr {
+        static constexpr auto child(Ptr node, Size slot) -> Ptr {
             return Impl::child(node, slot);
         }
 
         template <typename Ptr>
-        static constexpr auto count(Ptr node) -> usize {
+        static constexpr auto count(Ptr node) -> Size {
             return Impl::count(node);
         }
 
@@ -398,7 +398,7 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto child_index(Ptr parent, Ptr child) -> usize {
+        static constexpr auto child_index(Ptr parent, Ptr child) -> Size {
             return Impl::child_index(parent, child);
         }
 
@@ -417,19 +417,19 @@ namespace ustl::collections::priv {
             return Impl::first_child(node);
         }
 
-        static constexpr auto next_position(NodePtr node, usize slot) -> Position {
+        static constexpr auto next_position(NodePtr node, Size slot) -> Position {
             return Impl::next_position(node, slot);
         }
 
-        static constexpr auto next_position(NodePtrMut node, usize slot) -> PositionMut {
+        static constexpr auto next_position(NodePtrMut node, Size slot) -> PositionMut {
             return Impl::next_position(node, slot);
         }
 
-        static constexpr auto prev_position(NodePtr root, NodePtr node, usize slot) -> Position {
+        static constexpr auto prev_position(NodePtr root, NodePtr node, Size slot) -> Position {
             return Impl::prev_position(root, node, slot);
         }
 
-        static constexpr auto prev_position(NodePtrMut root, NodePtrMut node, usize slot) -> PositionMut {
+        static constexpr auto prev_position(NodePtrMut root, NodePtrMut node, Size slot) -> PositionMut {
             return Impl::prev_position(root, node, slot);
         }
 
@@ -437,7 +437,7 @@ namespace ustl::collections::priv {
             Impl::move_upper_children_after_split(left, right, ORDER);
         }
 
-        static constexpr auto insert_child_after_split(NodePtrMut parent, usize slot, NodePtrMut right) -> void {
+        static constexpr auto insert_child_after_split(NodePtrMut parent, Size slot, NodePtrMut right) -> void {
             Impl::insert_child_after_split(parent, slot, right);
         }
 
@@ -446,11 +446,11 @@ namespace ustl::collections::priv {
         }
 
         template <typename Ptr>
-        static constexpr auto search_child(Ptr node, usize slot) -> Ptr {
+        static constexpr auto search_child(Ptr node, Size slot) -> Ptr {
             return Impl::search_child(node, slot);
         }
 
-        static constexpr auto select_rebalance_plan(NodePtrMut node, usize slot) -> RebalancePlan {
+        static constexpr auto select_rebalance_plan(NodePtrMut node, Size slot) -> RebalancePlan {
             return Impl::select_rebalance_plan(node, slot, ORDER);
         }
 
@@ -458,15 +458,15 @@ namespace ustl::collections::priv {
             Impl::move_children_for_merge(left, right, ORDER);
         }
 
-        static constexpr auto erase_child_after_merge(NodePtrMut parent, usize slot) -> void {
+        static constexpr auto erase_child_after_merge(NodePtrMut parent, Size slot) -> void {
             Impl::erase_child_after_merge(parent, slot);
         }
 
-        static constexpr auto shift_children_right(NodePtrMut node, usize first, usize last) -> void {
+        static constexpr auto shift_children_right(NodePtrMut node, Size first, Size last) -> void {
             Impl::shift_children_right(node, first, last);
         }
 
-        static constexpr auto shift_children_left(NodePtrMut node, usize first, usize last) -> void {
+        static constexpr auto shift_children_left(NodePtrMut node, Size first, Size last) -> void {
             Impl::shift_children_left(node, first, last);
         }
 

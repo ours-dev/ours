@@ -5,6 +5,7 @@ SECTIONS {
 
     PROVIDE_HIDDEN(__executable_start = .);
 
+    /* Build ID */
     .interp : { *(.interp) }
     .dynamic : { *(.dynamic) }
     .hash : { *(.hash) }
@@ -118,18 +119,23 @@ SECTIONS {
         KEEP(*(SORT_BY_ALIGNMENT(.gktl.init_hook*)))
         PROVIDE_HIDDEN(__init_hook_end = .);
 
+        /* gktl::Counter descriptors */
+        PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.gktl.counter.descs)))
+        PROVIDE_HIDDEN(__gktl_counter_desc_end = .);
+
         *(SORT_BY_ALIGNMENT(.init.rodata*))
     }
 
-    .init_array : {
-        PROVIDE_HIDDEN(__ctors_start = .);
+    .ccrt_init : {
+        PROVIDE_HIDDEN(__ccrt_init_start = .);
         KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)
                SORT_BY_INIT_PRIORITY(.ctors.*)))
         KEEP(*(.init_array .ctors))
-        PROVIDE_HIDDEN(__ctors_end  = .);
+        PROVIDE_HIDDEN(__ccrt_init_end  = .);
 
-        ASSERT(ALIGNOF(.init_array) == 8 || SIZEOF(.init_array) == 0,
-               ".init_array overalignment -> maybe padding gaps");
+        ASSERT(ALIGNOF(.ccrt_init) == 8 || SIZEOF(.ccrt_init) == 0,
+               ".ccrt_init overalignment -> maybe padding gaps");
     }
     . = ALIGN(CONSTANT(MAXPAGESIZE));
     PROVIDE_HIDDEN(__init_rodata_end = .);

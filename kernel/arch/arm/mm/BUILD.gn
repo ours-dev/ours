@@ -1,0 +1,12 @@
+import("//build/cpp/cpp_interface.gni")
+
+# Placeholder for the future AArch64 MM implementation.
+if (toolchain_environment == "kernel") {
+  source_set("mm") {
+    public_deps = [ ":headers" ]
+  }
+}
+
+cpp_interface("headers") {
+  public = []
+}

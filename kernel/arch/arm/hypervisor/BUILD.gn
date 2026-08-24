@@ -1,0 +1,13 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+
+if (toolchain_environment == "kernel") {
+  group("hypervisor") {
+  }
+}
+
+group("kernel-tests") {
+  testonly = true
+}

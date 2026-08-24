@@ -71,7 +71,12 @@ config("kernel") {
 # picks up the fix without changes.
 cpp_interface("headers") {
   include_dir = "lib/arch/include"
-  public = [
+
+  # `headers` rather than `public`: cpp_interface only prefixes include_dir onto
+  # the former.  Spelled as `public`, these 24 paths were taken source-relative
+  # and resolved to //kernel/arch/x86/arch/... which does not exist, so none of
+  # them were indexed and `gn check` reported all 24 as missing.
+  headers = [
     "arch/paging/arch_mmu_flags.hpp",
     "arch/paging/x86_pagings.hpp",
     "arch/x86/apic/common.hpp",

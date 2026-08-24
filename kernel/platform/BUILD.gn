@@ -1,0 +1,28 @@
+import("//build/cpp/cpp_interface.gni")
+import("//build/ours/cpu.gni")
+
+# Stable platform seam used by the kernel executable. Architecture-specific
+# implementations stay behind the local x86/arm/riscv directory names.
+if (toolchain_environment == "kernel") {
+  source_set("platform") {
+    public_deps = [ ":headers" ]
+  }
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/ours/platform/acpi.hpp",
+    "include/ours/platform/init.hpp",
+    "include/ours/platform/interrupt.hpp",
+    "include/ours/platform/isa.hpp",
+    "include/ours/platform/timer.hpp",
+  ]
+
+  # ours/platform/acpi.hpp includes <acpi/table_set.hpp>.
+  public_deps = [ "//kernel/lib/acpi:header" ]
+}
+
+group("kernel-tests") {
+  testonly = true
+  deps = [ "//kernel/platform/$ours_cpu:kernel-tests" ]
+}

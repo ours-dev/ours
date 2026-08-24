@@ -4,7 +4,6 @@
 #define OURS_PHYS_KERNEL_PACKAGE_LOADER_HPP 1
 
 #include <bootfs/view.hpp>
-#include <obi/kernel-package.hpp>
 #include <ours/compiler.hpp>
 #include <ours/phys/kernel-package-handoff.hpp>
 #include <ours/status.hpp>
@@ -19,7 +18,7 @@ namespace ours::phys {
     /// it views the decompressed BootFS directly and locates the kernel
     /// image inside the `kernel.name` directory (the fixed file-name
     /// vocabulary — image.elf / code-patches — is owned by
-    /// obi::KernelPackage).
+    /// KernelPackage).
     class KernelPackageLoader final {
       public:
         using Bytes = ustl::views::Span<u8 const>;

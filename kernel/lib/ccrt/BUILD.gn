@@ -1,0 +1,15 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [ "include/ccrt/runtime.hpp" ]
+  visibility = [ "*" ]
+}
+
+source_set("ccrt") {
+  sources = [
+    "compiler/itanium.cpp",
+    "runtime.cpp",
+  ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}

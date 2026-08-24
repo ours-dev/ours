@@ -1,0 +1,41 @@
+import("//build/cpp/cpp_interface.gni")
+
+if (toolchain_environment == "kernel") {
+  source_set("object") {
+    sources = [
+      "dispatcher.cpp",
+      "process-dispatcher.cpp",
+      "resource-dispatcher.cpp",
+      "thread-dispatcher.cpp",
+    ]
+    public_deps = [ ":headers" ]
+  }
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/ours/object/channel-dispatcher.hpp",
+    "include/ours/object/dispatcher.hpp",
+    "include/ours/object/handle-table.hpp",
+    "include/ours/object/handle.hpp",
+    "include/ours/object/job-dispatcher.hpp",
+    "include/ours/object/observer.hpp",
+    "include/ours/object/pager-dispatcher.hpp",
+    "include/ours/object/process-dispatcher.hpp",
+    "include/ours/object/resource-dispatcher.hpp",
+    "include/ours/object/thread-dispatcher.hpp",
+    "include/ours/object/types.hpp",
+    "include/ours/object/vm-area-dispatcher.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//kernel/mm:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+group("kernel-tests") {
+  testonly = true
+}

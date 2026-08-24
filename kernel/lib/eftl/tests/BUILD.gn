@@ -1,0 +1,223 @@
+executable("binary") {
+  testonly = true
+  sources = [ "binary_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("binary-stream") {
+  testonly = true
+  sources = [ "binary_stream_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("checked-reader") {
+  testonly = true
+  sources = [ "checked_reader_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("compressed-section") {
+  testonly = true
+  sources = [ "compressed_section_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("dynamic-section") {
+  testonly = true
+  sources = [ "dynamic_section_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("dynamic-image") {
+  testonly = true
+  sources = [ "dynamic_image_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("dynamic-linkage") {
+  testonly = true
+  sources = [ "dynamic_linkage_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("dynamic-relocation") {
+  testonly = true
+  sources = [ "dynamic_relocation_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("elf-parser") {
+  testonly = true
+  sources = [ "elf_parser_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("gnu-hash") {
+  testonly = true
+  sources = [ "gnu_hash_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("gnu-property") {
+  testonly = true
+  sources = [ "gnu_property_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("gnu-stack") {
+  testonly = true
+  sources = [ "gnu_stack_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("interpreter") {
+  testonly = true
+  sources = [ "interpreter_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("layout") {
+  testonly = true
+  sources = [ "layout_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("load") {
+  testonly = true
+  sources = [ "load_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("load-policy") {
+  testonly = true
+  sources = [ "load_policy_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("mapped-memory") {
+  testonly = true
+  sources = [ "mapped_memory_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("native-image") {
+  testonly = true
+  sources = [ "native_image_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("note-section") {
+  testonly = true
+  sources = [ "note_section_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("relocation-section") {
+  testonly = true
+  sources = [ "relocation_section_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("relro") {
+  testonly = true
+  sources = [ "relro_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("relocations") {
+  testonly = true
+  sources = [ "relocations_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("section") {
+  testonly = true
+  sources = [ "section_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("section-group") {
+  testonly = true
+  sources = [ "section_group_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("symbol") {
+  testonly = true
+  sources = [ "symbol_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("sysv-hash") {
+  testonly = true
+  sources = [ "sysv_hash_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("tls-template") {
+  testonly = true
+  sources = [ "tls_template_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("version-definition") {
+  testonly = true
+  sources = [ "version_definition_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("version-binding") {
+  testonly = true
+  sources = [ "version_binding_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("version-requirement") {
+  testonly = true
+  sources = [ "version_requirement_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("version-symbol") {
+  testonly = true
+  sources = [ "version_symbol_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}
+
+executable("view") {
+  testonly = true
+  sources = [ "view_test.cpp" ]
+  deps = [ "//kernel/lib/eftl:eftl" ]
+  visibility = [ "*" ]
+}

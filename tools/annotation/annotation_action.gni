@@ -17,7 +17,10 @@ template("annotation_action") {
                "//tools/annotation/model.py",
                "//tools/annotation/protocol.py",
                "//tools/annotation/registry.py",
-             ] + (defined(invoker.inputs) ? invoker.inputs : [])
+             ]
+    if (defined(invoker.inputs)) {
+      inputs += invoker.inputs
+    }
     outputs = []
     foreach(output, invoker.generated_outputs) {
       outputs += [ "$target_gen_dir/$output" ]
@@ -37,8 +40,10 @@ template("annotation_action") {
       "--manifest",
       rebase_path("$target_gen_dir/${invoker.manifest}", root_build_dir),
     ]
-    foreach(flag, defined(invoker.flags) ? invoker.flags : []) {
-      args += [ "--flag", flag ]
+    if (defined(invoker.flags)) {
+      foreach(flag, invoker.flags) {
+        args += [ "--flag", flag ]
+      }
     }
     foreach(source, invoker.sources) {
       args += [ "--source", rebase_path(source, root_build_dir) ]

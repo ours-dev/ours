@@ -1,0 +1,7 @@
+import("//build/switch/kernel_switchset.gni")
+
+# Engineering policy with the full local diagnostic level and in-kernel tests.
+kernel_switchset("dbg.2") {
+  lk_debug_level = 2
+  unit_tests_enabled = true
+}

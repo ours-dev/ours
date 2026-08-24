@@ -12,13 +12,11 @@ group("obit") {
 
 cpp_interface("headers") {
   public = [
-    "include/obi/boot-obi.hpp",
     "include/obi/checksum.hpp",
     "include/obi/command-line-view.hpp",
     "include/obi/compression.hpp",
     "include/obi/container-view.hpp",
     "include/obi/item-view.hpp",
-    "include/obi/kernel-package.hpp",
     "include/obi/memory-config-view.hpp",
     "include/obi/package-builder.hpp",
     "include/obi/package-format.hpp",
@@ -51,8 +49,8 @@ group("tests") {
 
   # The nested-package smoke/view tests were removed with the reverted
   # obi::KernelPackageView/BootPackageView design; the flat StorageKernel
-  # BootFS model is covered by obi::KernelPackage / obi::BootObi and
-  # phys::KernelPackageLoader.
+  # BootFS model is covered by phys::KernelPackage / phys::BootObi
+  # (//kernel/phys) and phys::KernelPackageLoader.
 }
 
 foreach(test_target,

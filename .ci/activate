@@ -1,5 +1,0 @@
-# Fetching dependencies 
-git submodule update --init
-
-# Generating compile_commands.json for clangd
-bazel run @hedron_compile_commands//:refresh_all

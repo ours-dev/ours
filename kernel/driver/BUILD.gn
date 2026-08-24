@@ -1,0 +1,7 @@
+# Kernel driver subsystem.
+group("init") {
+}
+
+source_set("headers") {
+  public = []
+}

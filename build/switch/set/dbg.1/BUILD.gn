@@ -1,0 +1,7 @@
+import("//build/switch/kernel_switchset.gni")
+
+# Production-like kernel policy with runtime diagnostics enabled.
+kernel_switchset("dbg.1") {
+  lk_debug_level = 1
+  unit_tests_enabled = false
+}

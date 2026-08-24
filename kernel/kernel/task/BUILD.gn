@@ -1,0 +1,12 @@
+source_set("task") {
+  sources = [
+    "dpc.cpp",
+    "idle-thread.cpp",
+    "init.cpp",
+    "ipi-service.cpp",
+    "preemption-state.cpp",
+    "thread.cpp",
+  ]
+  deps = [ "//kernel/kernel/task/sched" ]
+  visibility = [ "*" ]
+}

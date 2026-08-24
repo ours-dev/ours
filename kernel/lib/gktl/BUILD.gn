@@ -1,0 +1,24 @@
+import("//build/cpp/cpp_interface.gni")
+
+source_set("gktl") {
+  sources = [
+    "src/command.cpp",
+    "src/init-hook.cpp",
+  ]
+  public_deps = [ ":headers" ]
+}
+
+cpp_interface("headers") {
+  public = [
+    "include/gktl/chain-buffer.hpp",
+    "include/gktl/command.hpp",
+    "include/gktl/counter.hpp",
+    "include/gktl/dyn.hpp",
+    "include/gktl/experiment.hpp",
+    "include/gktl/init_hook.hpp",
+    "include/gktl/init-hook.hpp",
+    "include/gktl/radix-tree.hpp",
+    "include/gktl/types.hpp",
+    "include/gktl/vtable-packer.hpp",
+  ]
+}

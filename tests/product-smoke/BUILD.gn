@@ -1,0 +1,60 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# C++-free smoke test for the product() assembly engine (//build/product).
+#
+# bringup 产品刻意保持 cmdline/bootfs 为空（维持 phys 侧默认启动行为），所以
+# product() 的 v2 注入能力在这里用一个"假内核"产品来验证 —— 不编译任何内核
+# C++，只走完整的装配流水线：
+#
+#   gn gen out/smoke --args='target_cpu="x86"'
+#   ninja -C out/smoke //tests/product-smoke:product_smoke
+#   obit list out/smoke/product-smoke/smoke.obi
+#
+# 期望产物：
+#   out/smoke/product-smoke/smoke.obi
+#      ├── [CONF] cmdline  ← 产品级 kernel_cmdline 已注入
+#      ├── [KSTR] kernel   ← 假内核存储块（resource → distribution_entries）
+#      └── [BTSF] bootfs   ← 产品级 bootfs 资源已注入
+#   out/smoke/product-smoke/product_info.json
+#
+# 与真实产品的差异：kernel_images[].package 指向本地 resource() 组（发出
+# distribution_entries 即可被 kernel_package 收集），而不是内核可执行文件。
+
+import("//build/obi/resource.gni")
+import("//build/product/product.gni")
+
+# ---- 假"内核存储"载荷 ----
+# resource() 发出 distribution_entries，kernel_package() 把它们收进
+# kernel-storage 的压缩 BootFS 块 —— 无需任何内核 C++。
+resource("fake_kernel") {
+  sources = [ "fake-kernel.txt" ]
+  outputs = [ "vmours" ]
+}
+
+group("fake_pkg") {
+  deps = [ ":fake_kernel" ]
+}
+
+# ---- 产品级 BOOTFS 资源（注入到每个镜像的 BootFS 根） ----
+resource("bootfs_data") {
+  sources = [ "bootfs-extra.txt" ]
+  outputs = [ "data/bootfs-extra.txt" ]
+}
+
+# ---- 冒烟产品：单镜像 + 产品级 cmdline + 产品级 bootfs ----
+product("product_smoke") {
+  kernel_images = [
+    {
+      output_name = "smoke"
+      package = "//tests/product-smoke:fake_pkg"
+    },
+  ]
+  kernel_cmdline = [
+    "aslr.disabled=1",
+    "log.level=2",
+  ]
+  bootfs = [ ":bootfs_data" ]
+  output_dir = "product-smoke"
+}

@@ -53,8 +53,11 @@ class PHYS_EXPORT RawImage final {
 
 /// Resolves an undefined symbol of a loaded image to a definition the
 /// loader already has.  A plain context pointer and function pointer rather
-/// than a closure: the same shape crosses the loader/module boundary as
-/// EarlyMem does, and neither side may assume the other's C++ layout.
+/// than a closure: unlike the rest of the loader/module handoff (which
+/// shares concrete types freely -- physload and its modules are always
+/// compiled together), this specific boundary is dynamic ELF symbol
+/// resolution, where the loader has no compile-time visibility into what
+/// it is binding at all.
 struct SymbolBinder {
     void *context;
     auto (*resolve)(void *context, std::string_view name) -> void const *;

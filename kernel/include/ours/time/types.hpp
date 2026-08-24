@@ -3,8 +3,7 @@
 #ifndef OURS_TIME_TYPES_HPP
 #define OURS_TIME_TYPES_HPP 1
 
-#include <ours/types.hpp>
-#include <ustl/chrono/duration.hpp>
+#include <ours/syscall/time.hpp>
 
 namespace ours::time {
     class Timer;

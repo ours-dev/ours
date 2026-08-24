@@ -1,0 +1,55 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# 产品定义：bringup（最小可启动镜像集合）。
+#
+# 对标 Fuchsia products/<name>.gni：声明"产品包含什么 + 什么策略"。本 scope
+# 是 //products/bringup/BUILD.gn 中 product() 模板的输入，由 product() 一次性
+# 装配出该产品的全部产物（镜像 .obi + product_info.json）。
+# 选择：tools/set.py bringup.<arch>  或  args.gn: ours_product = "bringup"
+#
+# 本产品选择两个内核镜像（镜像本体定义在 kernel/products/image/，对标 Fuchsia
+# zircon/kernel/image/$name）：
+#   kernel.dev      —— 带单测的开发内核（GRUB 双文件模型中与 physload 一起加载）
+#   kernel.dev.dbg_1 —— 无单测的独立调试镜像
+# 内核可执行文件在镜像定义处的 dbg.0 switchset 工具链下编译；cmdline
+# 为空，维持 phys 侧默认启动行为（如 KASLR 默认禁用，见 kernel/phys/boot-options.cpp）。
+product = {
+  name = "bringup"
+
+  kernel_images = [
+    {
+      # dev：带单测的内核。镜像本体（kernel_package + cmdline + kernel_image +
+      # physboot 依赖）定义在 //kernel/products/image/kernel.dev/（对标 Fuchsia
+      # zircon/kernel/image/$name），这里只按 label 选择。
+      image = "//kernel/products/image/dev"
+    },
+    {
+      # dbg_1：无单测的调试镜像（dev 的对照）。
+      image = "//kernel/products/image/dev.dbg_1"
+    },
+  ]
+
+  # 产品级内核 cmdline（注入到每个镜像）；空 = 不附加。
+  kernel_cmdline = []
+
+  # 产品级 BOOTFS 资源（resource() 目标 label）；空 = 无。
+  bootfs = []
+
+  # 内核编译策略（//build/switch/set/<name> 下的 switchset 名）。
+  switchset = "dbg.0"
+
+  # 输出目录：默认空 = 直接落在 $root_out_dir（对标 Fuchsia 的 bringup.zbi
+  # 在 out 根，无产品名子目录）；如需子目录可显式设 output_dir。
+
+  # 打包策略（透传给 kernel_image；实际压缩由 obi 决定）
+  compressed = "lz4"
+
+  # 架构约束：空 = 任意 arch 可构建（bootable 校验交给镜像）
+  boards = []
+
+  # 声明性策略字段（实际编译策略由 switchset 决定，写入 product_info）
+  debug_level = 0
+  unit_tests_enabled = false
+}

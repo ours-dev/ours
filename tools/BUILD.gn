@@ -5,10 +5,6 @@
 _unavailable_metadata = {
   unavailable_components = [
     {
-      component = "tools-zbi"
-      reason = "Ours boot-container format has not been selected"
-    },
-    {
       component = "tools-zither"
       reason = "Ours syscall IDL and binding-generation contract is undefined"
     },
@@ -24,8 +20,8 @@ group("unavailable") {
   metadata = _unavailable_metadata
 }
 
-# Canonical Zircon tools test rollup.  It resolves for discovery, but remains
-# empty until the local zbi and zither tool modules exist.
+# Canonical tool test rollup. OBI's host tool is exposed through :obit; the
+# remaining Zither seam stays unavailable until its IDL contract is selected.
 group("tests") {
   testonly = true
   public_deps = [
@@ -33,4 +29,8 @@ group("tests") {
     "//tools/annotation/tests:tests",
   ]
   metadata = _unavailable_metadata
+}
+
+group("obit") {
+  public_deps = [ "//kernel/lib/obi:obit" ]
 }

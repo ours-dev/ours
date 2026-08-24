@@ -1,8 +1,11 @@
-/// SPDX-License-Identifier: MIT
-/// Copyright (c) 2026 ours Developers
+/// Copyright 2026 The Ours Authors
+///
+/// Use of this source code is governed by a MIT-style
+/// license that can be found in the LICENSE file or at
+/// https://opensource.org/licenses/MIT
 
 #ifndef OURS_ASSERT_HPP
-#define OURS_ASSERT_HPP 1
+#define OURS_ASSERT_HPP
 
 #include <ours/panic.hpp>
 
@@ -17,11 +20,15 @@
         }\
     } while (0)
 
-#define DEBUG_ASSERT(condition, ...) \
-    do {\
-        if constexpr (OURS_DEBUG) {\
-            ASSERT(condition, __VA_ARGS__);\
-        }\
-    } while (0)
+#ifdef DEBUG
+#   define DEBUG_ASSERT(condition, ...) \
+        do {\
+            if constexpr (DEBUG) {\
+                ASSERT(condition, __VA_ARGS__);\
+            }\
+        } while (0)
+#else
+#   define DEBUG_ASSERT(condition, ...)
+#endif // DEBUG
 
-#endif // #ifndef OURS_ASSERT_HPP
+#endif // OURS_ASSERT_HPP

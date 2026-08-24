@@ -14,7 +14,7 @@ namespace ours::object {
     class JobDispatcher: public JobDispatcherBase {
         using Self = JobDispatcher;
       public:
-        static auto root_job() -> ustl::Rc<Self> &;
+        static auto root_job() -> ustl::Arc<Self> &;
     };
 } // namespace ours::object
 

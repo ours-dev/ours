@@ -1,36 +1,70 @@
 import("//build/cpp/cpp_interface.gni")
 
-if (toolchain_environment == "kernel.phys") {
-  # Arch support for physload.  A physload_module() links none of this: it
-  # binds the symbols it needs against physload's export table at load time
-  # (ours/phys/exports.hpp), so there is exactly one console list, one page
-  # table and one boot-memory allocator in the system.
-  source_set("x86") {
-    sources = [
-      "aspace.cpp",
-      "boot-shim/shim.cpp",
-      "gdt.S",
-      "legacy-boot.cpp",
-      "legacy-multiboot-start.S",
-      "legacy-multiboot.cpp",
-      "memory.cpp",
-      "serial_console.cpp",
-      "start32.S",
-      "start64.S",
-      "topology.cpp",
-      "vga_console.cpp",
-    ]
-    deps = [
-      ":headers",
-      "//kernel/lib/ccrt",
-    ]
-    public_deps = [
-      "//kernel/arch/x86:headers",
-      "//kernel/arch/x86/kernel:headers",
-      "//kernel/phys:headers",
-    ]
-    visibility = [ "*" ]
-  }
+# Arch support for physload.  A physload_module() links none of this: it
+# binds the symbols it needs against physload's export table at load time
+# (ours/phys/exports.hpp), so there is exactly one console list, one page
+# table and one boot-memory allocator in the system.
+#
+# boot-shim links none of this either, and for the mirror-image reason:
+# physload does not exist yet when the shim runs, so the shim cannot bind
+# against it -- it carries its own copy of whatever it needs (console,
+# ElfImage) in its own image, per :boot-shim below.
+#
+# This file only exists in the kernel.phys toolchain family (see
+# //build/switch/phys_switchset.gni) -- it declares what's here, not which
+# toolchain builds it; a caller elsewhere reaches these targets with an
+# explicit toolchain-qualified label instead of a bare reference.
+source_set("x86") {
+  sources = [
+    "aspace.cpp",
+    "memory.cpp",
+    "serial_console.cpp",
+    "topology.cpp",
+    "vga_console.cpp",
+  ]
+  # These sources end up in physload's ET_DYN link; phys-module's cflags
+  # (-fPIC -fno-plt) are what make that legal.  :boot-shim below stays
+  # off this config on purpose -- boot-shim keeps the fixed-address EXEC
+  # model, since it is what GRUB loads directly.
+  configs += [ "//kernel/phys:phys-module" ]
+  deps = [
+    ":headers",
+    "//kernel/lib/ccrt",
+  ]
+  public_deps = [
+    "//kernel/arch/x86:headers",
+    "//kernel/arch/x86/kernel:headers",
+    "//kernel/phys:headers",
+  ]
+  visibility = [ "*" ]
+}
+
+# The x86 boot shim: GRUB's actual Multiboot2 entry point, the 32->64-bit
+# transition (start64.S: CPUID long-mode check, an identity-mapped 4 GiB
+# of 2 MiB pages, GDT/paging/long-mode setup), and Multiboot2 info
+# parsing.  Its own console -- physload has not been loaded yet at any
+# point this runs.
+source_set("boot-shim") {
+  sources = [
+    "boot-shim/shim.cpp",
+    "gdt.S",
+    "legacy-multiboot-start.S",
+    "legacy-multiboot.cpp",
+    "serial_console.cpp",
+    "start64.S",
+    "vga_console.cpp",
+  ]
+  deps = [
+    ":headers",
+    "//kernel/lib/ccrt",
+    "//kernel/phys/lib/multiboot",
+  ]
+  public_deps = [
+    "//kernel/arch/x86:headers",
+    "//kernel/arch/x86/kernel:headers",
+    "//kernel/phys:headers",
+  ]
+  visibility = [ "*" ]
 }
 
 cpp_interface("headers") {
@@ -42,33 +76,7 @@ cpp_interface("headers") {
   public_deps = [ "//kernel/phys/lib/bootmem:headers" ]
 }
 
-executable("multiboot-view-smoke") {
-  testonly = true
-  sources = [ "multiboot-view-smoke.cpp" ]
-  deps = [
-    "//system/lib/ustl:headers",
-    "//system/public",
-  ]
-  visibility = [ "*" ]
-}
-
-executable("multiboot-memory-map-smoke") {
-  testonly = true
-  sources = [ "multiboot-memory-map-smoke.cpp" ]
-  deps = [
-    ":headers",
-    "//kernel/arch/x86:headers",
-    "//kernel/phys/lib/bootmem:headers",
-    "//system/lib/ustl:headers",
-    "//system/public",
-  ]
-  visibility = [ "*" ]
-}
-
 group("tests") {
   testonly = true
-  deps = [
-    ":multiboot-memory-map-smoke",
-    ":multiboot-view-smoke",
-  ]
+  deps = [ "//kernel/phys/lib/multiboot:tests" ]
 }

@@ -1,0 +1,318 @@
+#include <gktl/init_hook.hpp>
+#include <ktl/new.hpp>
+#include <logz4/log.hpp>
+#include <ours/mm/object-cache.hpp>
+#include <ours/mm/vm_area.hpp>
+#include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_object.hpp>
+#include <ours/mm/vm_object_paged.hpp>
+#include <ours/mm/vm_object_physical.hpp>
+#include <ustl/algorithms/minmax.hpp>
+
+namespace ours::mm {
+using VmaCache =
+    ObjectCache::Instance<VmArea,
+                          ObjectCache::Option::AddInitHook<"VmaCache", ObjectCache::Flags::Folio,
+                                                           gktl::InitLevel::PlatformEarly>>;
+
+VmArea::VmArea(VirtAddr base, usize size, VmaFlags vmaf, Self *parent, VmAspace *aspace,
+               char const *name)
+    : Base(kAreaMagic, base, size, vmaf, parent, aspace, name), m_num_mappings(), m_subvmas() {}
+
+auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *parent,
+                           VmAspace *aspace, char const *name, ustl::Arc<Self> *out) -> Status {
+    DEBUG_ASSERT(aspace, "Given a invalid aspace");
+    DEBUG_ASSERT(out, "`out` can not be null");
+
+    auto self = VmaCache::get(kGafKernel, base, size, vmaf, parent, aspace, name);
+    if (!self) {
+        return Status::OutOfMem;
+    }
+    if (!parent) {
+        // A root VMA has no parent so just mark it active.
+        self->mark_active();
+    } else {
+        self->activate();
+    }
+
+    *out = ustl::Arc<VmArea>::adopt(self);
+    return Status::Ok;
+}
+
+auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr upper_limit)
+    -> ktl::Result<VirtAddr> {
+    m_canary.verify(kAreaMagic);
+    if (align < PAGE_SIZE) {
+        align = PAGE_SIZE;
+    }
+    return m_subvmas.find_spot(size, align, lower_limit, upper_limit);
+}
+
+auto VmArea::create_subvma(usize vma_ofs, usize vma_size, VmaFlags vmaf, char const *name,
+                           VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
+    m_canary.verify(kAreaMagic);
+
+    auto const result = create_subaom_preamble(vma_ofs, vma_size, m_vmaf, option);
+    if (result.is_err()) {
+        return result.unwrap_err();
+    }
+
+    auto const [base, size] = *result;
+
+    ustl::Arc<VmAreaOrMapping> aom;
+    auto const status = Builder(&m_aspace, m_vmaf, size)
+                            .set_parent(this)
+                            .set_base(base)
+                            .set_vmo_offset(vma_ofs)
+                            .set_option(option)
+                            .set_name(name)
+                            .build(&aom);
+
+    if (Status::Ok != status) {
+        return status;
+    }
+    *out = ustl::downcast<VmArea>(ustl::move(aom));
+
+    return Status::Ok;
+}
+
+auto VmArea::create_mapping(usize vma_ofs, usize vma_size, usize vmo_ofs, MmuFlags mmuf,
+                            ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
+                            ustl::Arc<VmMapping> *out) -> Status {
+    m_canary.verify(kAreaMagic);
+
+    auto const result = create_subaom_preamble(vma_ofs, vma_size, m_vmaf, option);
+    if (result.is_err()) {
+        return result.unwrap_err();
+    }
+
+    auto const [base, size] = *result;
+
+    ustl::Arc<VmAreaOrMapping> out_aom;
+    auto const status = Builder(&m_aspace, m_vmaf, size)
+                            .set_parent(this)
+                            .set_base(base)
+                            .set_vmo(ustl::move(vmo))
+                            .set_vmo_offset(vma_ofs)
+                            .set_name(name)
+                            .set_mmuf(mmuf)
+                            .set_option(option)
+                            .build(&out_aom);
+
+    if (Status::Ok != status) {
+        return status;
+    }
+    *out = ustl::downcast<VmMapping>(ustl::move(out_aom));
+    m_num_mappings += 1;
+
+    return Status::Ok;
+}
+
+auto VmArea::create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmMapOption option)
+    -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
+    if (!is_active()) {
+        // Operate an illegal VMA.
+        return ktl::err(Status::BadState);
+    }
+
+    // Check if the given MMU flags have the same or lower permissions than
+    // those allowed by this VMA.
+    if (!validate_vmaflags(vmaf)) {
+        // Unallowed permissions.
+        return ktl::err(Status::InvalidArguments);
+    }
+
+    auto [base_aligned, size_aligned] = resolve_page_range(m_base + offset, size);
+
+    auto const is_fixed_noreplace = (!!(option & VmMapOption::FixedNoReplace));
+    auto const is_fixed = (!!(option & VmMapOption::Fixed)) || is_fixed_noreplace;
+    if (is_fixed) {
+        if (m_subvmas.has_range(base_aligned, size_aligned)) {
+            if (is_fixed_noreplace) {
+                return ktl::err(Status::AlreadyExists);
+            }
+
+            // Overwrite the primitive regions.
+            DEBUG_ASSERT(false, "Now we don't support to overwrite a group of existent pages");
+        }
+    } else {
+        // If no given **Fixed** options, the specific address would be overwritten.
+        // FIXME(SmallHuaZi) (base_ + size_) may causes an overflow error.
+        auto result = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
+        if (!result) {
+            return ktl::err(Status::InvalidArguments);
+        }
+    }
+
+    return ktl::ok(ustl::make_pair(base_aligned, size_aligned));
+}
+
+auto VmArea::map_at(PhysAddr phys_base, VirtAddr *virt_base, usize size, MmuFlags mmuf,
+                    VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
+    m_canary.verify(kAreaMagic);
+
+    DEBUG_ASSERT(ustl::mm::is_aligned(phys_base, PAGE_SIZE));
+    size = ustl::mm::align_up(size, PAGE_SIZE);
+    if (!size) {
+        return ustl::err(Status::InvalidArguments);
+    }
+    if (virt_base) {
+        *virt_base = ustl::mm::align_down(*virt_base, PAGE_SIZE);
+    }
+
+    ustl::Arc<VmObjectPhysical> vmo;
+    auto status = VmObjectPhysical::create(phys_base, size, VmoFlags::Pinned, &vmo);
+    if (Status::Ok != status) {
+        return ustl::err(status);
+    }
+
+    return map_with_vmo(virt_base, size, mmuf, ustl::move(vmo), options, name);
+}
+
+auto VmArea::map(VirtAddr *base, usize size, MmuFlags mmuf, VmMapOption options, char const *name)
+    -> ktl::Result<ustl::Arc<VmMapping>> {
+    m_canary.verify(kAreaMagic);
+
+    DEBUG_ASSERT(!(options & VmMapOption::Fixed), "Now we don't support the overwritting option");
+    size = ustl::mm::align_up(size, PAGE_SIZE);
+    if (!size) {
+        return ustl::err(Status::InvalidArguments);
+    }
+    if (base) {
+        *base = ustl::mm::align_down(*base, PAGE_SIZE);
+    }
+
+    ustl::Arc<VmObjectPaged> vmo;
+    auto status = VmObjectPaged::create(kGafKernel, size, VmoFlags::Pinned, &vmo);
+    if (Status::Ok != status) {
+        return ustl::err(status);
+    }
+
+    return map_with_vmo(base, size, mmuf, ustl::move(vmo), options, name);
+}
+
+auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<VmObject> vmo,
+                          VmMapOption option, char const *name)
+    -> ktl::Result<ustl::Arc<VmMapping>> {
+    m_canary.verify(kAreaMagic);
+
+    VirtAddr vma_ofs = 0;
+    if (base && *base >= m_base) {
+        vma_ofs = *base - m_base;
+    }
+
+    ustl::Arc<VmMapping> mapping;
+    auto status = create_mapping(vma_ofs, size, 0, mmuf, vmo, name, option, &mapping);
+    if (Status::Ok != status) {
+        return ustl::err(status);
+    }
+
+    // Do we immediately commit current mapping request?
+    if (!!(VmMapOption::Commit & option)) {
+        status = vmo->commit_range(0, size);
+        if (Status::Ok != status) {
+            return ustl::err(status);
+        }
+
+        status = mapping->map(0, size, true, MapControl::ErrorIfExisting);
+        if (Status::Ok != status) {
+            return ustl::err(status);
+        }
+    }
+
+    if (base) {
+        *base = mapping->base();
+    }
+
+    return ustl::ok(ustl::move(mapping));
+}
+
+auto VmArea::unmap(usize offset, usize size) -> Status {
+    m_canary.verify(kAreaMagic);
+
+    m_subvmas.upper_bound(m_base + offset);
+    return Status::Unimplemented;
+}
+
+auto VmArea::protect(usize offset, usize size, MmuFlags flags) -> Status {
+    m_canary.verify(kAreaMagic);
+    return Status::Unimplemented;
+}
+
+auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const *name) -> Status {
+    m_canary.verify(kAreaMagic);
+    auto [base, size] = resolve_page_range(m_base + vma_off, size_bytes);
+    if (!size) {
+        return Status::InvalidArguments;
+    }
+
+    if (!validate_mmuflags(mmuf)) {
+        return Status::InvalidArguments;
+    }
+
+    // TODO(SmallHuaZi) Should we provide a specific way to make these kind of zero length VMO.
+    ustl::Arc<VmObjectPaged> vmo;
+    auto status = VmObjectPaged::create(kGafKernel, 0, VmoFlags::Pinned, &vmo);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    ustl::Arc<VmMapping> mapping;
+    status = VmMapping::create(this, base, size, m_vmaf, ustl::move(vmo), 0, mmuf, name, &mapping);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    // The mappings are existing, just update the permission of them.
+    status = m_aspace->arch_aspace().protect(base, size >> PAGE_SHIFT, mmuf);
+    return status;
+}
+
+auto VmArea::destroy() -> Status {
+    m_canary.verify(kAreaMagic);
+
+    ustl::Arc<Self> curr(this);
+    while (curr) {
+        while (!curr->m_subvmas.empty()) {
+            ustl::Arc<Base> aom(&*curr->m_subvmas.begin());
+            if (!aom->is_mapping()) {
+                // If not a mapping, recursive to keep destroying.
+                curr = ustl::move(aom);
+                continue;
+            }
+
+            auto status = aom->destroy();
+            if (Status::Ok != status) {
+                return status;
+            }
+        }
+
+        // Destroy current node.
+        auto parent = m_parent;
+        curr->Base::destroy();
+        if (curr == this) {
+            break;
+        }
+
+        // Traverse up.
+        curr = parent;
+    }
+
+    m_num_mappings = 0;
+    return Status::Ok;
+}
+
+auto VmArea::dump() const -> void {
+    m_canary.verify(kAreaMagic);
+
+    log::trace("VMA {}: [0x{:X}, 0x{:X}]", m_name, m_base, m_size);
+    for (auto &child: m_subvmas) {
+        if (child.is_mapping()) {
+            log::trace("  M {:<10}: [0x{:X}, 0x{:X}]", child.m_name, child.base(), child.size());
+        } else {
+            log::trace("  A {:<10}: [0x{:X}, 0x{:X}]", child.m_name, child.base(), child.size());
+        }
+    }
+}
+
+} // namespace ours::mm

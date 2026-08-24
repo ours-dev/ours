@@ -1,0 +1,42 @@
+# Product-facing kernel image rollup.
+
+import("//build/config/ours/standard.gni")
+
+declare_args() {
+  # Generate structural boot-test graphs for every supported Ours CPU rather
+  # than only target_cpu.  Concrete runners remain a separate product seam.
+  all_cpu_kernel_boot_tests = false
+}
+
+group("tests") {
+  testonly = true
+  deps = [
+    "lib:tests",
+    "mm:tests",
+    "phys:tests",
+  ]
+  metadata = {
+    # Test dependencies must not accidentally become image contents.
+    boot_input_barrier = []
+  }
+}
+
+group("boot_tests") {
+  testonly = true
+  deps = [
+    "lib:boot_tests",
+    "phys:boot_tests",
+  ]
+  if (all_cpu_kernel_boot_tests) {
+    foreach(cpu, standard_ours_cpus) {
+      deps += [ ":boot_tests.$cpu" ]
+    }
+  }
+}
+
+foreach(cpu, standard_ours_cpus) {
+  group("boot_tests.$cpu") {
+    testonly = true
+    deps = [ "phys:boot_tests.$cpu" ]
+  }
+}

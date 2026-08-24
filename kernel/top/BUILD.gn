@@ -1,0 +1,20 @@
+import("//build/ours/cpu.gni")
+import("//build/toolchain/toolchain_environment.gni")
+
+source_set("top") {
+  sources = [
+    "handoff.cpp",
+    "main.cpp",
+    "panic.cpp",
+  ]
+  deps = [
+    "//kernel/arch/$ours_cpu/kernel",
+    "//kernel/kernel",
+    "//kernel/object",
+    "//kernel/phys:handoff",
+    "//kernel/mm:mm",
+
+    "//kernel/lib/ccrt",
+    "//kernel/lib/gktl",
+  ]
+}

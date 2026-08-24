@@ -1,0 +1,49 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# C++-free-smoke for the hermetic link subsystem (hermetic_source_set):
+# exercises the -r partial link, llvm-objcopy symbol localization and
+# verify-undefined-symbols.py on a tiny libc-free TU in the host toolchain.
+#
+#   ninja -C out/x86 tests/hermetic-smoke:hermetic
+# The output object (out/x86/obj/tests/hermetic-smoke/hermetic.o) has only
+# hermetic_smoke_symbol exported; all other symbols are localized.
+
+import("//build/toolchain/hermetic_source_set.gni")
+
+hermetic_source_set("hermetic") {
+  testonly = true
+  sources = [ "smoke.cpp" ]
+  global_symbols = [ "hermetic_smoke_symbol" ]
+  # No undefined symbols may remain (host x86 builtins list is empty).
+  undefined_symbols = false
+
+  # This host has no libc++ runtime installed; the smoke TU needs none.
+  hermetic_libs = []
+}
+
+
+import("//build/toolchain/ifs_extract.gni")
+
+# A tiny host shared library whose .ifs we extract.  The local build does
+# not (yet) inject link_output_path metadata into every linking target the
+# way Fuchsia's BUILDCONFIG does, so this smoke declares it explicitly.
+shared_library("ifs-lib") {
+  testonly = true
+  sources = [ "ifs-lib.cpp" ]
+  metadata = {
+    link_output_barrier = []
+    link_output_path = [
+      # The host toolchain's solink tool writes into target_out_dir.
+      rebase_path("$target_out_dir/libifs-lib.so", root_build_dir),
+    ]
+  }
+}
+
+# Extract the text ABI (.ifs) of the shared library with llvm-ifs.
+ifs_extract("extract_ifs") {
+  testonly = true
+  deps = [ ":ifs-lib" ]
+  outputs = [ "$target_gen_dir/ifs-lib.ifs" ]
+}

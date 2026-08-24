@@ -1,0 +1,28 @@
+---
+BasedOnStyle: InheritParentConfig
+
+# Per-library include ordering: <eftl/...> comes first within this library.
+IncludeCategories:
+  # 1. Library-internal
+  - Regex: '^<eftl/'
+    Priority: 1
+  - Regex: '^"'
+    Priority: 2
+
+  # 2. C++ standard library
+  - Regex: '^<[a-bd-z][a-z_0-9]*>$'
+    Priority: 3
+  - Regex: '^<(charconv|chrono|codecvt|compare|complex|concepts|condition_variable|coroutine)>$'
+    Priority: 3
+
+  # 3. C standard library
+  - Regex: '^<c[a-z_]+>$'
+    Priority: 4
+  - Regex: '^<[a-z_]+\.h>$'
+    Priority: 4
+
+  # 4. Third-party / everything else
+  - Regex: '^<'
+    Priority: 5
+  - Regex: '.*'
+    Priority: 6

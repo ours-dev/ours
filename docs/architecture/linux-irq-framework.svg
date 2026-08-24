@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1280" viewBox="0 0 1800 1280">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F8FAFC"/><stop offset="1" stop-color="#EEF2FF"/></linearGradient>
+    <linearGradient id="linux" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#EFF6FF"/><stop offset="1" stop-color="#E0E7FF"/></linearGradient>
+    <linearGradient id="hw" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ECFDF5"/><stop offset="1" stop-color="#D1FAE5"/></linearGradient>
+    <linearGradient id="cpu" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFF7ED"/><stop offset="1" stop-color="#FFEDD5"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#0F172A" flood-opacity=".13"/></filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto"><path d="M0,0 L11,5.5 L0,11 Z" fill="#475569"/></marker>
+    <marker id="blueArrow" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto"><path d="M0,0 L11,5.5 L0,11 Z" fill="#2563EB"/></marker>
+    <style>
+      .t { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; fill:#0F172A; }
+      .title { font-size:34px; font-weight:700; }
+      .subtitle { font-size:17px; fill:#475569; }
+      .section { font-size:19px; font-weight:700; letter-spacing:1px; }
+      .box-title { font-size:20px; font-weight:700; }
+      .box-text { font-size:15px; fill:#334155; }
+      .small { font-size:13px; fill:#475569; }
+      .label { font-size:14px; font-weight:700; fill:#1E3A8A; }
+      .pill { font-size:13px; font-weight:700; fill:#1E40AF; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1280" fill="url(#bg)"/>
+  <text x="80" y="72" class="t title">Linux 通用 IRQ 框架：从硬件事件到驱动处理</text>
+  <text x="80" y="104" class="t subtitle">蓝色：Linux IRQ 核心　·　绿色：硬件 / 中断控制器　·　橙色：CPU 架构入口　·　实线：运行时路径　·　虚线：启动时建立的关系</text>
+
+  <!-- Hardware sources -->
+  <text x="80" y="164" class="t section">① 硬件事件源</text>
+  <g filter="url(#shadow)">
+    <rect x="80" y="190" width="220" height="92" rx="16" fill="url(#hw)" stroke="#34D399"/>
+    <rect x="330" y="190" width="220" height="92" rx="16" fill="url(#hw)" stroke="#34D399"/>
+    <rect x="580" y="190" width="220" height="92" rx="16" fill="url(#hw)" stroke="#34D399"/>
+    <rect x="830" y="190" width="220" height="92" rx="16" fill="url(#hw)" stroke="#34D399"/>
+  </g>
+  <text x="190" y="230" text-anchor="middle" class="t box-title">定时器 / IPI</text><text x="190" y="256" text-anchor="middle" class="t box-text">每 CPU 本地中断</text>
+  <text x="440" y="230" text-anchor="middle" class="t box-title">GPIO 引脚</text><text x="440" y="256" text-anchor="middle" class="t box-text">按键、传感器、触摸</text>
+  <text x="690" y="230" text-anchor="middle" class="t box-title">平台设备</text><text x="690" y="256" text-anchor="middle" class="t box-text">UART、I²C、DMA</text>
+  <text x="940" y="230" text-anchor="middle" class="t box-title">PCI / VirtIO 设备</text><text x="940" y="256" text-anchor="middle" class="t box-text">MSI / MSI-X 消息</text>
+
+  <!-- cascaded hardware -->
+  <path d="M440 282 V338" stroke="#475569" stroke-width="3" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)"><rect x="320" y="350" width="240" height="105" rx="16" fill="url(#hw)" stroke="#10B981" stroke-width="2"/></g>
+  <text x="440" y="390" text-anchor="middle" class="t box-title">GPIO 中断控制器</text>
+  <text x="440" y="417" text-anchor="middle" class="t box-text">读取 pending：GPIO hwirq 7</text>
+  <text x="440" y="441" text-anchor="middle" class="t small">将多个引脚汇总为一条父级中断线</text>
+
+  <!-- root controller -->
+  <path d="M440 455 V516 H910" stroke="#475569" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+  <path d="M690 282 V516" stroke="#475569" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M940 282 V516" stroke="#475569" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M190 282 V516" stroke="#475569" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="535" y="504" class="t small">父级 IRQ，例如 GIC hwirq 40</text>
+  <g filter="url(#shadow)"><rect x="760" y="530" width="330" height="115" rx="18" fill="url(#hw)" stroke="#059669" stroke-width="2"/></g>
+  <text x="925" y="573" text-anchor="middle" class="t box-title">根中断控制器</text>
+  <text x="925" y="600" text-anchor="middle" class="t box-text">GIC / APIC / PLIC</text>
+  <text x="925" y="624" text-anchor="middle" class="t small">仲裁优先级，选择 CPU，报告本地 hwirq</text>
+
+  <!-- CPU -->
+  <path d="M1090 587 H1180" stroke="#475569" stroke-width="3" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)"><rect x="1200" y="530" width="290" height="115" rx="18" fill="url(#cpu)" stroke="#FB923C" stroke-width="2"/></g>
+  <text x="1345" y="573" text-anchor="middle" class="t box-title">CPU / 架构相关入口</text>
+  <text x="1345" y="600" text-anchor="middle" class="t box-text">ARM 异常向量 / x86 IDT</text>
+  <text x="1345" y="624" text-anchor="middle" class="t small">保存上下文，读取 IAR / APIC 向量</text>
+
+  <!-- Linux core container -->
+  <rect x="80" y="700" width="1640" height="485" rx="26" fill="url(#linux)" stroke="#818CF8" stroke-width="2"/>
+  <text x="115" y="744" class="t section" fill="#3730A3">② Linux Generic IRQ Core</text>
+  <text x="115" y="770" class="t subtitle">将“控制器内部编号 hwirq”统一为“Linux IRQ 编号 virq”，然后分发给设备驱动</text>
+
+  <!-- Domain -->
+  <g filter="url(#shadow)"><rect x="120" y="810" width="310" height="185" rx="18" fill="#FFFFFF" stroke="#60A5FA" stroke-width="2"/></g>
+  <text x="275" y="852" text-anchor="middle" class="t box-title">irq_domain</text>
+  <text x="275" y="881" text-anchor="middle" class="t box-text">每个控制器各有自己的 domain</text>
+  <rect x="148" y="906" width="254" height="29" rx="14" fill="#DBEAFE"/><text x="275" y="926" text-anchor="middle" class="t pill">GIC：hwirq 40 → virq 80</text>
+  <rect x="148" y="947" width="254" height="29" rx="14" fill="#E0E7FF"/><text x="275" y="967" text-anchor="middle" class="t pill">GPIO：hwirq 7 → virq 100</text>
+
+  <!-- desc -->
+  <g filter="url(#shadow)"><rect x="510" y="800" width="385" height="210" rx="18" fill="#FFFFFF" stroke="#818CF8" stroke-width="2"/></g>
+  <text x="702" y="842" text-anchor="middle" class="t box-title">irq_desc[virq]</text>
+  <text x="542" y="878" class="t box-text">irq_data</text><text x="670" y="878" class="t small">domain、hwirq、parent_data</text>
+  <line x1="540" y1="893" x2="864" y2="893" stroke="#E2E8F0"/>
+  <text x="542" y="924" class="t box-text">irq_chip</text><text x="670" y="924" class="t small">mask / unmask / ack / eoi / affinity</text>
+  <line x1="540" y1="939" x2="864" y2="939" stroke="#E2E8F0"/>
+  <text x="542" y="970" class="t box-text">flow handler</text><text x="700" y="970" class="t small">edge / level / fasteoi / percpu</text>
+
+  <!-- driver action -->
+  <g filter="url(#shadow)"><rect x="985" y="810" width="300" height="185" rx="18" fill="#FFFFFF" stroke="#818CF8" stroke-width="2"/></g>
+  <text x="1135" y="852" text-anchor="middle" class="t box-title">irqaction 链表</text>
+  <text x="1135" y="881" text-anchor="middle" class="t box-text">request_irq() 注册</text>
+  <rect x="1015" y="907" width="240" height="35" rx="10" fill="#EEF2FF"/><text x="1135" y="930" text-anchor="middle" class="t label">top-half handler()</text>
+  <text x="1135" y="971" text-anchor="middle" class="t small">共享 IRQ 时可有多个 action</text>
+
+  <!-- deferred -->
+  <g filter="url(#shadow)"><rect x="1375" y="810" width="300" height="185" rx="18" fill="#FFFFFF" stroke="#818CF8" stroke-width="2"/></g>
+  <text x="1525" y="852" text-anchor="middle" class="t box-title">延后处理</text>
+  <text x="1525" y="881" text-anchor="middle" class="t box-text">避免硬中断上下文做重活</text>
+  <rect x="1405" y="907" width="240" height="35" rx="10" fill="#EEF2FF"/><text x="1525" y="930" text-anchor="middle" class="t label">NAPI / softirq / workqueue</text>
+  <text x="1525" y="971" text-anchor="middle" class="t small">或 threaded IRQ（允许睡眠）</text>
+
+  <!-- arrows runtime into core -->
+  <path d="M1345 645 V730 H275 V800" stroke="#2563EB" stroke-width="4" fill="none" marker-end="url(#blueArrow)"/>
+  <rect x="916" y="674" width="300" height="28" rx="14" fill="#DBEAFE"/><text x="1066" y="694" text-anchor="middle" class="t label">generic_handle_domain_irq(domain, hwirq)</text>
+  <path d="M430 902 H500" stroke="#2563EB" stroke-width="4" marker-end="url(#blueArrow)"/>
+  <path d="M895 902 H975" stroke="#2563EB" stroke-width="4" marker-end="url(#blueArrow)"/>
+  <path d="M1285 902 H1365" stroke="#2563EB" stroke-width="4" marker-end="url(#blueArrow)"/>
+  <text x="465" y="883" text-anchor="middle" class="t small">查表得到 virq</text>
+  <text x="935" y="883" text-anchor="middle" class="t small">调用已注册 handler</text>
+  <text x="1325" y="883" text-anchor="middle" class="t small">调度后半部</text>
+
+  <!-- chained detail -->
+  <rect x="120" y="1050" width="1555" height="105" rx="16" fill="#F8FAFC" stroke="#CBD5E1" stroke-dasharray="7 6"/>
+  <text x="150" y="1082" class="t box-title">级联中断的特殊分支（GPIO 示例）</text>
+  <text x="150" y="1112" class="t box-text">GIC hwirq 40 → GIC domain → 父级 virq → gpio_parent_handler() → 读 GPIO pending → generic_handle_domain_irq(gpio_domain, 7) → GPIO7 的 virq / 设备 handler</text>
+  <text x="150" y="1140" class="t small">注意：irq_find_mapping(domain, hwirq) 只查“当前传入的 domain”；GIC 不会直接知道 GPIO7，必须由 GPIO 控制器读取 pending 状态后继续分发。</text>
+
+  <!-- setup dashed arrows -->
+  <path d="M440 350 C450 760, 255 760, 255 810" stroke="#7C3AED" stroke-width="2.5" fill="none" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+  <path d="M925 645 C920 750, 300 755, 300 810" stroke="#7C3AED" stroke-width="2.5" fill="none" stroke-dasharray="8 7"/>
+  <text x="485" y="733" class="t small" fill="#6D28D9">启动时：控制器驱动创建 domain、建立 hwirq → virq 映射</text>
+
+  <!-- legend -->
+  <line x1="80" y1="1233" x2="125" y2="1233" stroke="#2563EB" stroke-width="4" marker-end="url(#blueArrow)"/><text x="140" y="1238" class="t small">运行时中断分发</text>
+  <line x1="340" y1="1233" x2="385" y2="1233" stroke="#7C3AED" stroke-width="3" stroke-dasharray="8 7"/><text x="400" y="1238" class="t small">启动时配置 / 映射建立</text>
+  <text x="1720" y="1238" text-anchor="end" class="t small">Linux Generic IRQ Architecture</text>
+</svg>

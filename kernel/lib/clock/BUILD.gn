@@ -1,0 +1,23 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = []
+  visibility = [ "*" ]
+}
+
+source_set("clock") {
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+foreach(test_target,
+        [
+          "tests",
+          "kernel-tests",
+          "phys-tests",
+          "boot_tests",
+        ]) {
+  group(test_target) {
+    testonly = true
+  }
+}

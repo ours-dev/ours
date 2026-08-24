@@ -12,18 +12,17 @@
 #include <ours/time/timer.hpp>
 
 #include <ours/sync/spin-lock.hpp>
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
 #include <ours/lockdep.hpp>
 
 #include <ours/platform/timer.hpp>
 
-#include <array>
-#include <atomic>
 #include <span>
 
 #include <gktl/canary.hpp>
 
+#include <ustl/array.hpp>
 #include <ustl/views/span.hpp>
 #include <ustl/chrono/duration.hpp>
 #include <ustl/sync/atomic.hpp>
@@ -86,7 +85,7 @@ namespace ours::task::sched {
 
         FORCE_INLINE
         static auto peek_active_mask() -> CpuMask {
-            return g_states[usize(State::Active)].load(std::memoryorder_relaxed);
+            return g_states[usize(State::Active)].load(ustl::sync::MemoryOrder::Relaxed);
         }
 
         auto init() -> void;
@@ -217,12 +216,12 @@ namespace ours::task::sched {
 
         Thread *m_idle_thread;
 
-        static constexpr usize kNumState = static_cast<usize>(State::Count);
-        static std::array<std::atomic<CpuMask>, kNumState> g_states;
+        static constexpr auto NUM_STATE = static_cast<usize>(State::Count);
+        static inline ustl::Array<ustl::sync::Atomic<CpuMask>, NUM_STATE> g_states {};
     };
 
     /// This helper class was designed for conviencies and securities.
-    class Scheduler::Current: public mem::CpuLocal::Current<Scheduler> {
+    class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
       public:
         /// Reschedule at IDLE mode
         TA_REQUIRE(curr->get_pi_lock())

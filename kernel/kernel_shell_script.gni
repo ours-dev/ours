@@ -1,0 +1,31 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/obi/kernel_cmdline.gni")
+
+# Defines a container-neutral kernel command-line input whose value follows
+# Zircon's kernel.shell.script encoding: commands are joined with semicolons
+# and spaces become plus signs.  This template only describes the build input;
+# products must not use it until the Ours kernel implements that boot option.
+#
+# Parameters:
+#   script (required)
+#     List of kernel shell command lines.
+#   deps, visibility, testonly (optional)
+#     Forwarded to kernel_cmdline().
+template("kernel_shell_script") {
+  assert(defined(invoker.script),
+         "kernel_shell_script($target_name) requires a script list")
+
+  kernel_cmdline(target_name) {
+    forward_variables_from(invoker,
+                           [
+                             "deps",
+                             "testonly",
+                             "visibility",
+                           ])
+    args = [ "kernel.shell.script=" +
+             string_replace(string_join(";", invoker.script), " ", "+") ]
+  }
+}

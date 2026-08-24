@@ -6,7 +6,7 @@
 #include <ours/task/thread.hpp>
 #include <ours/arch/idle-thread.hpp>
 
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
 #include <ustl/lazy_init.hpp>
 #include <ustl/sync/atomic.hpp>
@@ -50,7 +50,7 @@ namespace ours::task {
         Duration m_cumulative_idle_time;
     };
 
-    class IdleThread::Current: public mem::CpuLocal::Current<IdleThread> {
+    class IdleThread::Current: public mm::CpuLocal::Current<IdleThread> {
       public:
         FORCE_INLINE
         static auto run() -> void {

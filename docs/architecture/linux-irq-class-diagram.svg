@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1120" viewBox="0 0 1800 1120">
+  <defs>
+    <filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".13"/></filter>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker>
+    <style>.t{font-family:"Noto Sans CJK SC","Microsoft YaHei",Arial,sans-serif;fill:#0f172a}.title{font-size:34px;font-weight:700}.sub{font-size:17px;fill:#64748b}.n{font-size:20px;font-weight:700}.f{font-size:14px;fill:#334155}.m{font-size:13px;fill:#475569}.rel{font-size:13px;font-weight:700;fill:#1d4ed8}</style>
+  </defs>
+  <rect width="1800" height="1120" fill="#F8FAFC"/>
+  <text x="70" y="65" class="t title">Linux IRQ 框架 · 核心对象关系图</text>
+  <text x="70" y="96" class="t sub">这是概念化的结构图：突出对象职责和引用关系，不试图逐字段复刻特定内核版本的 C 结构体布局。</text>
+
+  <!-- irq domain -->
+  <g filter="url(#s)"><rect x="90" y="170" width="380" height="295" rx="16" fill="#EFF6FF" stroke="#60A5FA" stroke-width="2"/></g>
+  <rect x="90" y="170" width="380" height="54" rx="16" fill="#DBEAFE"/><text x="280" y="204" text-anchor="middle" class="t n">struct irq_domain</text>
+  <line x1="90" y1="266" x2="470" y2="266" stroke="#93C5FD"/>
+  <text x="120" y="250" class="t f">fwnode · host_data · flags</text>
+  <text x="120" y="296" class="t f">ops : irq_domain_ops *</text>
+  <text x="120" y="326" class="t f">parent : irq_domain *</text>
+  <text x="120" y="356" class="t f">reverse map（hwirq → virq）</text>
+  <line x1="90" y1="387" x2="470" y2="387" stroke="#93C5FD"/>
+  <text x="120" y="419" class="t m">职责：管理一个中断控制器的 hwirq 编号空间，</text>
+  <text x="120" y="443" class="t m">建立 / 查询 hwirq 到 Linux virq 的映射。</text>
+
+  <!-- ops -->
+  <g filter="url(#s)"><rect x="90" y="590" width="380" height="245" rx="16" fill="#F5F3FF" stroke="#A78BFA" stroke-width="2"/></g>
+  <rect x="90" y="590" width="380" height="54" rx="16" fill="#EDE9FE"/><text x="280" y="624" text-anchor="middle" class="t n">struct irq_domain_ops</text>
+  <line x1="90" y1="686" x2="470" y2="686" stroke="#C4B5FD"/>
+  <text x="120" y="670" class="t f">translate() · alloc() · free()</text>
+  <text x="120" y="716" class="t f">activate() · deactivate()</text>
+  <text x="120" y="746" class="t f">select() · match()</text>
+  <line x1="90" y1="776" x2="470" y2="776" stroke="#C4B5FD"/>
+  <text x="120" y="808" class="t m">职责：由具体控制器驱动提供，解释固件中断规格，</text>
+  <text x="120" y="832" class="t m">并创建层级 IRQ 的资源关系。</text>
+
+  <!-- desc -->
+  <g filter="url(#s)"><rect x="690" y="145" width="440" height="355" rx="16" fill="#EEF2FF" stroke="#818CF8" stroke-width="2"/></g>
+  <rect x="690" y="145" width="440" height="54" rx="16" fill="#E0E7FF"/><text x="910" y="179" text-anchor="middle" class="t n">struct irq_desc</text>
+  <text x="720" y="231" class="t f">irq_data（该 Linux virq 的根 irq_data）</text>
+  <text x="720" y="261" class="t f">handle_irq : flow handler</text>
+  <text x="720" y="291" class="t f">action : irqaction *</text>
+  <text x="720" y="321" class="t f">lock · depth · istate · irq_count</text>
+  <line x1="690" y1="351" x2="1130" y2="351" stroke="#A5B4FC"/>
+  <text x="720" y="384" class="t m">职责：Linux virq 的中心状态容器；承载分发规则、</text>
+  <text x="720" y="408" class="t m">同步状态、flow handler 与已注册的驱动 action。</text>
+  <text x="720" y="462" class="t rel">一个 virq 对应一个 irq_desc</text>
+
+  <!-- irq data -->
+  <g filter="url(#s)"><rect x="690" y="625" width="440" height="260" rx="16" fill="#FFF7ED" stroke="#FB923C" stroke-width="2"/></g>
+  <rect x="690" y="625" width="440" height="54" rx="16" fill="#FFEDD5"/><text x="910" y="659" text-anchor="middle" class="t n">struct irq_data</text>
+  <text x="720" y="711" class="t f">irq（Linux virq）· hwirq</text>
+  <text x="720" y="741" class="t f">domain : irq_domain *</text>
+  <text x="720" y="771" class="t f">chip : irq_chip * · chip_data</text>
+  <text x="720" y="801" class="t f">parent_data : irq_data *</text>
+  <line x1="690" y1="826" x2="1130" y2="826" stroke="#FED7AA"/>
+  <text x="720" y="858" class="t m">职责：描述“此层 domain 中的 hwirq”及其 irq_chip；</text>
+  <text x="720" y="882" class="t m">层级 domain 用 parent_data 串起父级控制器信息。</text>
+
+  <!-- chip -->
+  <g filter="url(#s)"><rect x="1350" y="150" width="355" height="270" rx="16" fill="#ECFDF5" stroke="#34D399" stroke-width="2"/></g>
+  <rect x="1350" y="150" width="355" height="54" rx="16" fill="#D1FAE5"/><text x="1527" y="184" text-anchor="middle" class="t n">struct irq_chip</text>
+  <text x="1380" y="236" class="t f">irq_mask() · irq_unmask()</text>
+  <text x="1380" y="266" class="t f">irq_ack() · irq_eoi()</text>
+  <text x="1380" y="296" class="t f">irq_set_type()</text>
+  <text x="1380" y="326" class="t f">irq_set_affinity()</text>
+  <line x1="1350" y1="351" x2="1705" y2="351" stroke="#A7F3D0"/>
+  <text x="1380" y="384" class="t m">职责：抽象具体中断控制器的硬件操作。</text>
+
+  <!-- action -->
+  <g filter="url(#s)"><rect x="1320" y="565" width="385" height="320" rx="16" fill="#FDF2F8" stroke="#F472B6" stroke-width="2"/></g>
+  <rect x="1320" y="565" width="385" height="54" rx="16" fill="#FCE7F3"/><text x="1512" y="599" text-anchor="middle" class="t n">struct irqaction</text>
+  <text x="1350" y="651" class="t f">handler : irq_handler_t</text>
+  <text x="1350" y="681" class="t f">thread_fn : irq_handler_t</text>
+  <text x="1350" y="711" class="t f">dev_id · name · flags</text>
+  <text x="1350" y="741" class="t f">next : irqaction *</text>
+  <line x1="1320" y1="772" x2="1705" y2="772" stroke="#FBCFE8"/>
+  <text x="1350" y="805" class="t m">职责：一次 request_irq() 注册产生一个 action。</text>
+  <text x="1350" y="829" class="t m">共享 IRQ 通过 next 形成 action 链表。</text>
+
+  <!-- relations -->
+  <path d="M280 465V580" fill="none" stroke="#7C3AED" stroke-width="3" stroke-dasharray="8 6" marker-end="url(#a)"/>
+  <text x="298" y="534" class="t rel">ops</text>
+  <path d="M470 320H675" fill="none" stroke="#2563EB" stroke-width="3" marker-end="url(#a)"/>
+  <text x="520" y="302" class="t rel">映射 / 关联</text>
+  <path d="M910 500V610" fill="none" stroke="#2563EB" stroke-width="3" marker-end="url(#a)"/>
+  <text x="928" y="563" class="t rel">包含</text>
+  <path d="M1130 750H1335" fill="none" stroke="#059669" stroke-width="3" marker-end="url(#a)"/>
+  <text x="1176" y="731" class="t rel">chip</text>
+  <path d="M1130 290H1335" fill="none" stroke="#DB2777" stroke-width="3" marker-end="url(#a)"/>
+  <text x="1188" y="271" class="t rel">action *</text>
+  <path d="M690 760H490V410" fill="none" stroke="#2563EB" stroke-width="3" marker-end="url(#a)"/>
+  <text x="512" y="594" class="t rel">domain</text>
+  <path d="M1130 870H1305" fill="none" stroke="#DB2777" stroke-width="3" marker-end="url(#a)"/>
+  <text x="1185" y="852" class="t rel">handler() / thread_fn()</text>
+
+  <rect x="90" y="960" width="1615" height="100" rx="16" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="120" y="995" class="t n">读图方式</text>
+  <text x="120" y="1025" class="t f">irq_domain 管“翻译”：hwirq → virq；irq_desc 管“这个 virq 的状态与分发”；irq_data 管“某一层控制器的 hwirq / chip”；irqaction 管“哪个驱动函数被调用”。</text>
+  <text x="120" y="1052" class="t m">层级 IRQ domain 中，同一 Linux IRQ 可由一串 irq_data（child → parent）描述；级联控制器也可通过父 IRQ 的 chained handler 手动继续分发。</text>
+</svg>

@@ -16,6 +16,7 @@
 #include <ours/mm/cpu-local.hpp>
 
 #include <ustl/bit.hpp>
+#include <ustl/lazy_init.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/views/span.hpp>
 #include <ustl/traits/is_invocable.hpp>
@@ -33,6 +34,20 @@ using ustl::algorithms::max;
 using ustl::algorithms::clamp;
 
 namespace ours::mm {
+    namespace {
+        /// vmours never shares physload's live BootMem: it reads the flat
+        /// memory map physload hands off once and rebuilds its own
+        /// physical-memory bookkeeping from it, replaying the same
+        /// add_usable()/reserve() calls physload itself used to build that
+        /// map in the first place.  Capacity mirrors x86/phys's own
+        /// BootMem storage (see kernel/arch/x86/phys/memory.cpp).
+        constexpr usize kMaxEarlyMemoryRegions = 128;
+
+        INIT_DATA bootmem::MemoryRegion s_usable_storage[kMaxEarlyMemoryRegions];
+        INIT_DATA bootmem::Range s_reservation_storage[kMaxEarlyMemoryRegions];
+        INIT_DATA ustl::LazyInit<bootmem::PhysicalMemory> s_kernel_bootmem;
+    } // namespace
+
     INIT_CODE
     auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
         ASSERT(!max_zone_pfn.empty());
@@ -64,14 +79,36 @@ namespace ours::mm {
 
     INIT_CODE
     auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {
-        EarlyMem::s_bootmem = &mh.bootmem;
+        // mh.ranges is split at every reservation boundary, so its own size
+        // is not the right bound to check here -- add_usable()/reserve()
+        // below coalesce adjacent same-node regions as they go, so what
+        // actually has to fit s_usable_storage/s_reservation_storage is the
+        // number of *distinct* usable/reserved regions, which each call
+        // reports for itself via its return status.
+        auto *const bootmem = s_kernel_bootmem.init(bootmem::PhysicalMemoryStorage{
+            .usable = s_usable_storage,
+            .reservations = s_reservation_storage,
+        });
+        // Every entry -- free or not -- is RAM physload knew about, so it
+        // is all usable(); the entries flagged used are additionally
+        // reserved(), same as physload's own construction from an OBI
+        // memory item (kernel/phys/memory.cpp's apply_memory_range).
+        for (auto const &entry: mh.ranges) {
+            if (bootmem->add_usable(entry.range, 0) != Status::Ok) {
+                return Status::BadState;
+            }
+            if (entry.used && bootmem->reserve(entry.range) != Status::Ok) {
+                return Status::BadState;
+            }
+        }
+
+        EarlyMem::s_bootmem = bootmem;
         mm::g_kernel_phys_base = mh.kernel_load_addr;
 
-        mm::priv::g_max_phys_addr = EarlyMem::s_bootmem->max_address;
-        mm::priv::g_min_phys_addr = EarlyMem::s_bootmem->min_address;
+        mm::priv::g_max_phys_addr = bootmem->max_address();
+        mm::priv::g_min_phys_addr = bootmem->min_address();
 
-        // Verifies the signature of bootmem
-        return Status::Ok; 
+        return Status::Ok;
     }
 
     INIT_CODE

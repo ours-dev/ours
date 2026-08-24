@@ -20,12 +20,15 @@ namespace ours {
 
         /// The operation is not supported, implemented or enabled.
         NotSupported,
+        Unsupported = NotSupported,
+        Unimplemented = NotSupported,
 
         /// The object is not found.
         NotFound,
 
         /// The memory is not enough.
         NoMemory,
+        OutOfMem = NoMemory,
 
         /// The filesystem or device space is exhausted.
         NoSpace,
@@ -42,6 +45,7 @@ namespace ours {
         AlreadyBound,
 
         InvalidArgument,
+        InvalidArguments = InvalidArgument,
 
         /// An argument is outside the valid range for this operation.
         OutOfRange,

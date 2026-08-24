@@ -17,7 +17,7 @@ import("//kernel/kernel_package.gni")
 #   * kernel/products/          — 内核怎么编译（configs）
 #   * kernel/products/bin       — 内核可执行文件（vmours / vmours.with-tests）
 #   * kernel/products/image     — 共享镜像配方（common_package_items 等）
-#   * build/switch/set/         — 内核编译策略 switchset（debug_level_0..2）
+#   * build/switch/set/         — 内核编译策略 switchset（dbg.0..2）
 #   * products/<name>.gni       — 产品定义（选哪些镜像 + 什么策略）【本模板的输入】
 #   * product()                 — 把产品定义装配成构建目标【本模板】
 #
@@ -43,7 +43,7 @@ import("//kernel/kernel_package.gni")
 #   bootfs (optional, default [])
 #     产品级 BOOTFS 资源（resource() 目标 label 列表），注入到每个镜像的
 #     BootFS 根（对标 Fuchsia product config 的 bootfs_files）。
-#   switchset (optional, default "debug_level_0")
+#   switchset (optional, default "dbg.0")
 #     内核编译策略，即 //build/switch/set/<name> 下的 switchset 名；内联镜像的
 #     内核可执行文件在该 switchset 的工具链（kernel_<cpu>.<name>）下编译；
 #     预定义镜像的 switchset 在其定义处（kernel/products/image/$name/）决定。
@@ -102,7 +102,7 @@ template("product") {
   }
 
   # ---- 产品策略（带默认值） ----
-  _switchset = "debug_level_0"
+  _switchset = "dbg.0"
   if (defined(invoker.switchset)) {
     _switchset = invoker.switchset
   }

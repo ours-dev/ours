@@ -12,17 +12,20 @@
 /// it, binds its undefined symbols to physload's own definitions, and calls
 /// the entry named by the module's descriptor.
 
+#include "physload.hpp"
+
 #include <ccrt/runtime.hpp>
-#include <obi/boot-obi.hpp>
 #include <obi/container-view.hpp>
 #include <ours/phys/aspace.hpp>
+#include <ours/phys/boot-obi.hpp>
 #include <ours/phys/boot-options.hpp>
 #include <ours/phys/boot-package-input.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/module-loader.hpp>
-#include <ours/phys/physload.hpp>
 #include <ours/phys/print.hpp>
+
+#include <span>
 
 namespace ours::phys {
 Handoff g_handoff;
@@ -30,17 +33,23 @@ BootOptions g_boot_options;
 
 /// Default: nothing to do between loading a module and entering it.  An
 /// architecture overrides this to install a page-table root or reserve
-/// arch-specific memory (ours/phys/physload.hpp).
+/// arch-specific memory (physload.hpp).
 WEAK_LINK
 auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
 
 NO_RETURN
-auto obi_main(PhysAddr package_base, usize package_size) -> void {
+auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy)
+    -> void {
     // Static console instances self-register during this pass (each
     // Console constructor links into the constinit global list); printing
     // before this point goes nowhere.
     ccrt::init_global_static_objects();
     init_early_console();
+    g_handoff.uart = arch_uart_handoff();
+
+    if (legacy != nullptr) {
+        g_handoff.acpi_rsdp = legacy->acpi_rsdp;
+    }
 
     // ---- Stage 1: Validate the OBI boot package ----
     auto const input = BootPackageInput::from(package_base, package_size);
@@ -53,7 +62,7 @@ auto obi_main(PhysAddr package_base, usize package_size) -> void {
         panic("Invalid OBI package: {}", static_cast<u32>(package_result.unwrap_err()));
     }
     auto package = package_result.unwrap();
-    auto boot_package_result = obi::BootObi::from(package);
+    auto boot_package_result = BootObi::from(package);
     if (boot_package_result.is_err()) {
         panic("Invalid OBI boot package: {}", static_cast<u32>(boot_package_result.unwrap_err()));
     }
@@ -69,7 +78,10 @@ auto obi_main(PhysAddr package_base, usize package_size) -> void {
 
     // ---- Stage 3: Initialize memory and address space ----
     Aspace aspace;
-    init_memory(boot.package(), input.unwrap(), &aspace);
+    std::span<obi::MemoryRange const> const legacy_memory_ranges =
+        legacy == nullptr ? std::span<obi::MemoryRange const>{}
+                         : std::span(legacy->memory_ranges, legacy->memory_range_count);
+    init_memory(boot.package(), input.unwrap(), legacy_memory_ranges, &aspace);
 
     // ---- Stage 4: Load the next phys module ----
     //
@@ -89,7 +101,7 @@ auto obi_main(PhysAddr package_base, usize package_size) -> void {
     }
 
     PhysLoadHandoff phys_handoff{};
-    phys_handoff.bootmem = early_mem();
+    phys_handoff.bootmem = global_bootmem();
     phys_handoff.aspace = &aspace;
     phys_handoff.kernel_storage_base = loader.storage_base();
     phys_handoff.kernel_storage_size = loader.storage_size();
@@ -97,7 +109,6 @@ auto obi_main(PhysAddr package_base, usize package_size) -> void {
     phys_handoff.obi_package_size = package_size;
     phys_handoff.boot_options = &g_boot_options;
     phys_handoff.acpi_rsdp = g_handoff.acpi_rsdp;
-    phys_handoff.nr_cpus = g_handoff.nr_cpus;
 
     // ---- Stage 5: Hand off to the next phys module ----
     //

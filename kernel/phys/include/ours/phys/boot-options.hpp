@@ -22,17 +22,19 @@ struct BootOptions {
 
     /// The kernel image directory physboot boots (`kernel.name=<dir>`),
     /// resolved inside the same kernel-package BootFS.  File names inside
-    /// the directory are fixed vocabulary owned by obi::KernelPackage
+    /// the directory are fixed vocabulary owned by KernelPackage
     /// (kImageElf / kCodePatches), not boot parameters.
     char kernel_name[64]{"vmours"};
 };
 
 /// Apply the subset of OBI cmdline options consumed before the kernel is
 /// loaded. Unknown tokens are intentionally left for later boot stages.
-PHYS_EXPORT auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline) -> Status;
+PHYS_EXPORT 
+auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline) -> Status;
 
 /// physload owns the parsed options; modules bind to this object.
-PHYS_EXPORT extern BootOptions g_boot_options;
+PHYS_EXPORT 
+extern BootOptions g_boot_options;
 
 inline auto global_boot_options() -> BootOptions * {
     return &g_boot_options;

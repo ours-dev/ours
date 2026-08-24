@@ -1,4 +1,4 @@
-#include "multiboot2.hpp"
+#include <multiboot/multiboot2.hpp>
 #include <ours/arch/asm.hpp>
 #include <ours/macro_abi.hpp>
 
@@ -8,14 +8,23 @@
 .section .boot.header, "a", @progbits
     jmp     _start
 
-.align 4
+.align 8
 MULTIBOOT_HEADER:
     .long MULTIBOOT2_HEADER_MAGIC       // Magic
     .long MULTIBOOT_ARCHITECTURE_I386   // ISA: I386
     .long MBH_SIZE                      // Header length
     .long MBH_CHECKSUM                  // Check sum
-    
-.align 4
+
+.align 8
+INFORMATION_REQUEST_TAG:
+    .short MULTIBOOT_HEADER_TAG_INFORMATION_REQUEST
+    .short 0
+    .long INFORMATION_REQUEST_TAG_END - INFORMATION_REQUEST_TAG
+    .long MULTIBOOT_TAG_TYPE_MODULE
+    .long MULTIBOOT_TAG_TYPE_MMAP
+INFORMATION_REQUEST_TAG_END:
+
+.align 8
 FINAL_TAG:
     // End tag
     .short MULTIBOOT_HEADER_TAG_END
@@ -45,3 +54,5 @@ PHYS_ENTRY = _start;
 
 .global ENTRY_POINT
 ENTRY_POINT = x86_start
+
+.section .note.GNU-stack,"",@progbits

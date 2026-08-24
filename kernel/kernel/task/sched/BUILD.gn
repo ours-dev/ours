@@ -1,0 +1,11 @@
+source_set("sched") {
+    sources = [
+        "driver.cpp",
+        "fair.cpp",
+        "scheduler.cpp",
+        "scheduler-pi.cpp",
+        "scheduler-migrator.cpp",
+    ]
+    visibility = ["*"]
+}
+

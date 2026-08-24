@@ -6,7 +6,7 @@
 
 #include <ours/types.hpp>
 
-#include <bits/bitmask.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours {
     enum class Signals: u32 {
@@ -16,7 +16,7 @@ namespace ours {
 
         MaxCount,
     };
-    BITS_IMPL_BITMASK(Signals);
+    USTL_ENABLE_ENUM_BITMASK(Signals);
 } // namespace ours
 
 #endif // #ifndef OURS_RIGHTS_HPP

@@ -1,0 +1,33 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+_rust_arch_unavailable = {
+  unavailable_components = [
+    {
+      component = "kernel-arch-rust"
+      reason = "Ours has no kernel Rust toolchain or Rust/C++ arch ABI yet"
+    },
+  ]
+  unavailable_components_barrier = []
+}
+
+# Canonical C++ side of Zircon's architecture Rust FFI seam.  It deliberately
+# contains no invented extern symbols until the Ours Rust/C++ ABI is defined.
+source_set("ffi") {
+  visibility = [
+    ":arch-rs",
+    "//:*",
+  ]
+  sources = []
+  metadata = _rust_arch_unavailable
+}
+
+# Structural stand-in for Zircon's rustc_library("arch-rs").  A group is used
+# intentionally so no target can mistake this for an rlib or link Rust symbols
+# that do not exist.  It is not part of the production kernel graph.
+group("arch-rs") {
+  visibility = [ "//:*" ]
+  public_deps = [ ":ffi" ]
+  metadata = _rust_arch_unavailable
+}

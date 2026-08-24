@@ -250,6 +250,74 @@ class PhysicalMemory final {
         return Status::Ok;
     }
 
+    /// The most entries snapshot() can ever write: each of the usable_count_
+    /// regions, split by at most every reservation it overlaps (each
+    /// reservation contributes at most one extra split point beyond the
+    /// region it falls within).  `extra_reservations` accounts for
+    /// reservations the caller is about to add (e.g. for a buffer to hold
+    /// the snapshot itself) but hasn't yet -- each one costs the same two
+    /// extra entries a reservation already on the books would.
+    [[nodiscard]]
+    constexpr auto max_snapshot_entries(usize const extra_reservations = 0) const -> usize {
+        return usable_count_ + 2 * (reservation_count_ + extra_reservations);
+    }
+
+    /// The final, read-only memory map, one MemRange per maximal run of
+    /// either free or reserved space within usable RAM, in address order.
+    /// This is what crosses a handoff boundary to a consumer that should
+    /// read the map rather than share this live, mutable allocator -- see
+    /// ours::phys::MemoryHandoff.  Returns NoMemory if `out` is smaller
+    /// than max_snapshot_entries().
+    [[nodiscard]]
+    auto snapshot(ustl::views::Span<MemRange> const out) const
+        -> ustl::Result<ustl::views::Span<MemRange const>, Status> {
+        auto count = usize{0};
+        auto const emit = [&](Range const range, bool const used) -> bool {
+            if (count >= out.size()) {
+                return false;
+            }
+            out[count++] = MemRange{.range = range, .used = used};
+            return true;
+        };
+
+        for (auto usable_index = usize{0}; usable_index < usable_count_; ++usable_index) {
+            auto const usable = storage_.usable[usable_index];
+            auto const end = usable.range.end();
+            auto cursor = usable.range.base;
+
+            for (auto reservation_index = usize{0}; reservation_index < reservation_count_;
+                 ++reservation_index) {
+                auto const reserved = storage_.reservations[reservation_index];
+                if (reserved.end() <= cursor) {
+                    continue;
+                }
+                if (reserved.base >= end) {
+                    break;
+                }
+                if (cursor < reserved.base) {
+                    if (!emit(make_range(cursor, reserved.base), /*used=*/false)) {
+                        return ustl::err(Status::NoMemory);
+                    }
+                    cursor = reserved.base;
+                }
+                auto const used_end = min_value(reserved.end(), end);
+                if (cursor < used_end) {
+                    if (!emit(make_range(cursor, used_end), /*used=*/true)) {
+                        return ustl::err(Status::NoMemory);
+                    }
+                    cursor = used_end;
+                }
+                if (cursor >= end) {
+                    break;
+                }
+            }
+            if (cursor < end && !emit(make_range(cursor, end), /*used=*/false)) {
+                return ustl::err(Status::NoMemory);
+            }
+        }
+        return ustl::ok(ustl::views::Span<MemRange const>(out.data(), count));
+    }
+
     [[nodiscard]]
     constexpr auto min_address() const -> PhysAddr {
         return usable_count_ == 0 ? PhysAddr{} : storage_.usable[0].range.base;

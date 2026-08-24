@@ -76,7 +76,15 @@ def render(names: list[str]) -> str:
 
     lines += [
         "",
-        '\t.section .phys.exports,"a",@progbits',
+        # "aw", not "a": each row's second word is an absolute pointer to
+        # the exported symbol, which under -fPIC the linker resolves as an
+        # R_X86_64_RELATIVE relocation fixed up at load time.  A relocation
+        # target has to be in a writable section for the linker to accept
+        # it -- lld refuses outright ("recompile with -fPIC", a symptom
+        # rather than the cause) if the section's own flags don't declare
+        # SHF_WRITE, regardless of which PHDR physload.ld later assigns it
+        # to.
+        '\t.section .phys.exports,"aw",@progbits',
         "\t.balign 8",
     ]
     for index, name in enumerate(names):

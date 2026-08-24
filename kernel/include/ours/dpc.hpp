@@ -10,7 +10,7 @@
 #include <ours/sync/event.hpp>
 #include <ours/sync/spin-lock.hpp>
 #include <ours/task/types.hpp>
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
 #include <utility>
 #include <functional>
@@ -47,7 +47,7 @@ namespace ours {
     class DpcRunner {
         using Self = DpcRunner;
       public:
-        using Current = mem::CpuLocal::Current<DpcRunner>;
+        using Current = mm::CpuLocal::Current<DpcRunner>;
 
         static auto init() -> void;
 

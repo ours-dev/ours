@@ -3,29 +3,20 @@
 #ifndef ACPI_TYPES_HPP
 #define ACPI_TYPES_HPP 1
 
-#include <cstdint>
-#include <cstddef>
-
 #include <ours/compiler.hpp>
 #include <ours/status.hpp>
+#include <ours/types.hpp>
 
 namespace acpi {
-    using i8    = ::int8_t;
-    using i16   = ::int16_t;
-    using i32   = ::int32_t;
-    using i64   = ::int64_t;
-    using isize = ::ptrdiff_t;
+// The integer aliases (u8 ... usize) already exist at global scope; they come
+// from ours/prelude.hpp, which every toolchain in this tree force-includes --
+// including the host toolchain (see //kernel/products:host-prelude, wired up in
+// build/config/BUILDCONFIG.gn).  Re-declaring them here, as this header used to,
+// only created a second spelling of the same types.
+using ours::PhysAddr;
+using ours::Status;
+using ours::VirtAddr;
 
-    using u8    = ::uint8_t;
-    using u16   = ::uint16_t;
-    using u32   = ::uint32_t;
-    using u64   = ::uint64_t;
-    using usize = ::size_t;
-
-    using VirtAddr  = usize;
-    using PhysAddr  = usize;
-
-    using ours::Status;
 } // namespace acpi
 
 #endif // #ifndef ACPI_TYPES_HPP

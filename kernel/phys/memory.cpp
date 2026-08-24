@@ -13,6 +13,47 @@ Aspace *g_aspace;
 
 using MemoryInitializationResult = ustl::Result<bool, ours::Status>;
 
+namespace {
+    /// Validate and register one range against BootMem.  Shared by
+    /// obi_init_memory() (decoding a real OBI memory item) and
+    /// arch_detect_memory()'s callers (boot-shim's platform snapshot) so
+    /// the two delivery mechanisms for the same obi::MemoryRange vocabulary
+    /// stay behaviorally identical.  `added_usable`, when given, is set on
+    /// a successfully-registered Ram range; only obi_init_memory() needs
+    /// to know that (to reject an item with no Ram range at all).
+    [[nodiscard]]
+    auto apply_memory_range(obi::MemoryRange const &value, bool *const added_usable = nullptr)
+        -> Status {
+        if (value.length == 0 || value.base > std::numeric_limits<u64>::max() - value.length ||
+            value.base > std::numeric_limits<usize>::max() ||
+            value.length > std::numeric_limits<usize>::max() ||
+            value.length > std::numeric_limits<usize>::max() - static_cast<usize>(value.base)) {
+            return ours::Status::OutOfRange;
+        }
+
+        auto const physical =
+            bootmem::Range::from(PhysAddr(value.base), static_cast<usize>(value.length));
+        if (physical.is_err()) {
+            return physical.unwrap_err();
+        }
+
+        auto const mem = global_bootmem();
+        switch (static_cast<obi::MemoryRangeType>(value.type)) {
+            case obi::MemoryRangeType::Ram: {
+                auto const status = mem->add_usable(physical.unwrap(), 0);
+                if (status == ours::Status::Ok && added_usable != nullptr) {
+                    *added_usable = true;
+                }
+                return status;
+            }
+            case obi::MemoryRangeType::Peripheral:
+            case obi::MemoryRangeType::Reserved:
+                return mem->reserve(physical.unwrap());
+        }
+        return ours::Status::InvalidArgument;
+    }
+} // namespace
+
 auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationResult {
     auto const memory = package.find("memory");
     if (memory.is_err()) {
@@ -29,7 +70,6 @@ auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationR
         return ustl::err(ranges.unwrap_err());
     }
 
-    auto const mem = global_bootmem();
     auto added_usable = false;
     for (usize index = 0; index < ranges.unwrap().count(); ++index) {
         auto range = ranges.unwrap().range(index);
@@ -37,35 +77,7 @@ auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationR
             dprintln("OBI memory range {} is invalid", index);
             return ustl::err(range.unwrap_err());
         }
-        auto const value = range.unwrap();
-        if (value.length == 0 || value.base > std::numeric_limits<u64>::max() - value.length ||
-            value.base > std::numeric_limits<usize>::max() ||
-            value.length > std::numeric_limits<usize>::max() ||
-            value.length > std::numeric_limits<usize>::max() - static_cast<usize>(value.base)) {
-            dprintln("OBI memory range {} is out of range", index);
-            return ustl::err(ours::Status::OutOfRange);
-        }
-
-        auto const physical =
-            bootmem::Range::from(PhysAddr(value.base), static_cast<usize>(value.length));
-        if (physical.is_err()) {
-            dprintln("OBI memory range {} is out of range", index);
-            return ustl::err(physical.unwrap_err());
-        }
-
-        auto status = ours::Status::InvalidArgument;
-        switch (static_cast<obi::MemoryRangeType>(value.type)) {
-            case obi::MemoryRangeType::Ram:
-                status = mem->add_usable(physical.unwrap(), 0);
-                added_usable = status == ours::Status::Ok || added_usable;
-                break;
-            case obi::MemoryRangeType::Peripheral:
-                status = mem->reserve(physical.unwrap());
-                break;
-            case obi::MemoryRangeType::Reserved:
-                status = mem->reserve(physical.unwrap());
-                break;
-        }
+        auto const status = apply_memory_range(range.unwrap(), &added_usable);
         if (status != ours::Status::Ok) {
             dprintln("OBI memory range {} could not be registered", index);
             return ustl::err(status);
@@ -78,56 +90,18 @@ auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationR
 }
 
 WEAK_LINK
-auto arch_detect_memory() -> void {}
-
-namespace {
-    auto early_reserve(void *context, bootmem::Range const range) -> Status {
-        return static_cast<BootMem *>(context)->reserve(range);
-    }
-
-    auto early_assign_node(void *context, bootmem::Range const range, NnId const node) -> Status {
-        return static_cast<BootMem *>(context)->assign_node(range, node);
-    }
-
-    auto early_allocate(void *context, bootmem::AllocationRequest const request,
-                        bootmem::Range *const result) -> Status {
-        if (result == nullptr) {
-            return Status::InvalidArgument;
+auto arch_detect_memory(std::span<obi::MemoryRange const> const ranges) -> void {
+    for (auto const &value: ranges) {
+        auto const status = apply_memory_range(value);
+        if (status != ours::Status::Ok) {
+            panic("Legacy platform memory range could not be registered: {}",
+                  static_cast<u32>(status));
         }
-        auto const allocation = static_cast<BootMem *>(context)->allocate(request);
-        if (allocation.is_err()) {
-            return allocation.unwrap_err();
-        }
-        *result = allocation.unwrap();
-        return Status::Ok;
     }
-
-    auto early_release(void *context, bootmem::Range const range) -> Status {
-        return static_cast<BootMem *>(context)->release(range);
-    }
-
-    auto early_visit(void *context, bootmem::MemoryQuery const query,
-                     bootmem::MemoryVisitor const visitor, void *const visitor_context)
-        -> Status {
-        return static_cast<BootMem *>(context)->visit(query, visitor, visitor_context);
-    }
-} // namespace
-
-auto early_mem() -> EarlyMem {
-    auto const mem = global_bootmem();
-    return {
-        .context = mem,
-        .reserve = early_reserve,
-        .assign_node = early_assign_node,
-        .allocate = early_allocate,
-        .release = early_release,
-        .visit = early_visit,
-        .min_address = mem->min_address(),
-        .max_address = mem->max_address(),
-    };
 }
 
-auto init_memory(obi::ContainerView const &package, BootPackageInput const &input, Aspace *aspace)
+auto init_memory(obi::ContainerView const &package, BootPackageInput const &input,
+                 std::span<obi::MemoryRange const> const legacy_memory_ranges, Aspace *aspace)
     -> void {
     auto const mem = global_bootmem();
     auto const initialized = obi_init_memory(package);
@@ -135,7 +109,7 @@ auto init_memory(obi::ContainerView const &package, BootPackageInput const &inpu
         panic("Invalid OBI memory configuration: {}", static_cast<u32>(initialized.unwrap_err()));
     }
     if (!initialized.unwrap()) {
-        arch_detect_memory();
+        arch_detect_memory(legacy_memory_ranges);
     }
 
     auto const phys_start = PhysAddr(kPhysLoadStart);

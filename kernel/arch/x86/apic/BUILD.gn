@@ -1,0 +1,16 @@
+
+if (toolchain_environment == "kernel") {
+  source_set("apic") {
+    sources = [
+      "io-apic.cpp",
+      "ipi.cpp",
+      "local-apic.cpp",
+    ]
+    deps = [
+      "//kernel/lib/mtl:headers",
+      "//kernel/lib/logz4:headers",
+      "//kernel/mm:headers",
+      "//system/lib/lockdep",
+    ]
+  }
+}

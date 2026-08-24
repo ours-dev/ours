@@ -1,0 +1,36 @@
+# Kernel library aggregation.  Keep structural stubs in this discovery graph,
+# but do not claim that they provide tests.
+_libraries = [
+  "acpi",
+  "ccrt",
+  "clock",
+  "code-patching",
+  "eftl",
+  "gktl",
+  "ktl",
+  "lz4",
+  "obi",
+  "syscall",
+]
+
+group("standalone-libs") {
+  deps = _libraries
+}
+
+group("lib") {
+  public_deps = [ ":standalone-libs" ]
+}
+
+# Only include sublibraries that publish a concrete test entry point.
+group("tests") {
+  testonly = true
+  deps = [
+    "eftl:tests",
+    "obi:tests",
+  ]
+}
+
+group("boot_tests") {
+  testonly = true
+  deps = [ "obi:boot_tests" ]
+}

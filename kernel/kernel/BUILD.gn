@@ -1,0 +1,17 @@
+source_set("kernel") {
+  sources = [ "cpu.cpp" ]
+
+  deps = [
+    "//kernel/kernel/irq",
+    "//kernel/kernel/sync",
+    "//kernel/kernel/task",
+    "//kernel/kernel/time",
+
+    "//kernel/lib/ktl",
+    "//kernel/lib/libc",
+  ]
+}
+
+group("kernel-tests") {
+  testonly = true
+}

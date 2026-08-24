@@ -3,7 +3,7 @@
 #ifndef OURS_PHYS_MODULE_LOADER_HPP
 #define OURS_PHYS_MODULE_LOADER_HPP 1
 
-#include <obi/boot-obi.hpp>
+#include <ours/phys/boot-obi.hpp>
 #include <ours/phys/boot-options.hpp>
 #include <ours/phys/kernel-image.hpp>
 #include <ours/compiler.hpp>
@@ -33,7 +33,7 @@ class ModuleLoader final {
     /// Decompress the kernel package into bootmem scratch memory.  The
     /// buffer's ownership moves to the loaded module through
     /// PhysLoadHandoff::kernel_storage_base/size and is never released.
-    auto init(obi::BootObi const &boot) -> Status;
+    auto init(BootObi const &boot) -> Status;
 
     /// Find, load, relocate and bind the module named by
     /// `options.next_module`, and read its descriptor.

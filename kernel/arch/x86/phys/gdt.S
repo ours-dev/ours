@@ -1,6 +1,6 @@
 #include <ours/arch/asm.hpp>
 #include <ours/macro_abi.hpp>
-#include <ours/mem/cfg.hpp>
+#include <ours/mm/cfg.hpp>
 
 /// Common to 32/64 bits platform.
 .object g_temp_gdtr, type=data, scope=global, align=8
@@ -36,3 +36,5 @@
     .skip (PAGE_SIZE << 2) // 16K
 .label g_early_stack_end, global
 .end_object
+
+.section .note.GNU-stack,"",@progbits

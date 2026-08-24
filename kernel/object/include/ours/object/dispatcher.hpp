@@ -3,101 +3,98 @@
 #ifndef OURS_OBJECT_DISPATCHER_HPP
 #define OURS_OBJECT_DISPATCHER_HPP 1
 
-#include <ours/types.hpp>
-#include <ours/rights.hpp>
+#include <gktl/canary.hpp>
+#include <ktl/name.hpp>
 #include <ours/compiler.hpp>
+#include <ours/object/observer.hpp>
+#include <ours/object/types.hpp>
+#include <ours/rights.hpp>
 #include <ours/signals.hpp>
 #include <ours/sync/mutex.hpp>
-#include <ours/object/types.hpp>
-#include <ours/object/observer.hpp>
-
-#include <ustl/rc.hpp>
+#include <ours/types.hpp>
 #include <ustl/option.hpp>
+#include <ustl/rc.hpp>
 #include <ustl/sync/atomic.hpp>
 
-#include <ktl/name.hpp>
-#include <gktl/canary.hpp>
-
 namespace ours::object {
-    class Dispatcher: public ustl::RefCounter<Dispatcher> {
-        using Self = Dispatcher;
-        using Base = ustl::RefCounter<Dispatcher>;
-      public:
-        auto koid() const -> KoId { 
-            return m_koid;
-        }
+class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy> {
+    using Self = Dispatcher;
+    using Base = ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
 
-        auto get_lock() -> sync::Mutex & { 
-            return m_lock;
-        }
+  public:
+    auto koid() const -> KoId {
+        return m_koid;
+    }
 
-        auto increase_handle_count() -> void { 
-            m_handle_count.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
-        }
+    auto get_lock() -> sync::Mutex & {
+        return m_lock;
+    }
 
-        auto decrease_handle_count() -> bool { 
-            return m_handle_count.fetch_sub(1, ustl::sync::MemoryOrder::AcqRel) == 1;
-        }
+    auto increase_handle_count() -> void {
+        m_handle_count.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
+    }
 
-        auto attach_observer(SignalObserver *, void const *handle, Signals) -> Status;
+    auto decrease_handle_count() -> bool {
+        return m_handle_count.fetch_sub(1, ustl::sync::MemoryOrder::AcqRel) == 1;
+    }
 
-        auto detach_observer(SignalObserver *, Signals *) -> Status;
+    auto attach_observer(SignalObserver *, void const *handle, Signals) -> Status;
 
-        virtual auto on_zero_handles() -> void {}
-      protected:
-        auto notify_observers_locked(Signals signals) -> void;
+    auto detach_observer(SignalObserver *, Signals *) -> Status;
 
-        Dispatcher(u32 magic);
-        virtual ~Dispatcher() = default;
+    virtual auto on_zero_handles() -> void {}
 
-        gktl::Canary m_canary;
-        KoId m_koid;
-        sync::Mutex m_lock;
-        ustl::sync::AtomicU32 m_handle_count;
-        ustl::sync::Atomic<Signal> m_signals;
+  protected:
+    auto notify_observers_locked(Signals signals) -> void;
 
-        SignalObserver::List m_observers;
-    };
+    Dispatcher(u32 magic);
+    virtual ~Dispatcher() = default;
 
-    template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>
-    class SoloDispatcher: public Dispatcher {
-        using Base = Dispatcher;
-        using Self = SoloDispatcher;
-      public:
-        CXX11_CONSTEXPR
-        static auto default_right() -> Rights {
-            return DefaultRights;
-        }
+    gktl::Canary m_canary;
+    KoId m_koid;
+    sync::Mutex m_lock;
+    ustl::sync::AtomicU32 m_handle_count;
+    ustl::sync::Atomic<Signals> m_signals;
 
-        SoloDispatcher() 
-            : Base(kMagic<Derived>)
-        {}
+    SignalObserver::List m_observers;
+};
 
-        ~SoloDispatcher() = default;
+template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>
+class SoloDispatcher: public Dispatcher {
+    using Base = Dispatcher;
+    using Self = SoloDispatcher;
 
-        auto verify_canary() const -> void {
-            m_canary.verify(kMagic<Derived>);
-        }
-    };
+  public:
+    constexpr static auto default_right() -> Rights {
+        return DefaultRights;
+    }
 
-    template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>
-    class PeeredDispatcher: public Dispatcher {
-        using Base = Dispatcher;
-        using Self = PeeredDispatcher;
-      public:
-        CXX11_CONSTEXPR
-        static auto default_right() -> Rights {
-            return DefaultRights;
-        }
+    SoloDispatcher() : Base(kMagic<Derived>) {}
 
-        auto verify_canary() const -> void {
-            m_canary.verify(kMagic<Derived>);
-        }
+    ~SoloDispatcher() = default;
 
-        auto on_zero_handles() -> void final {
-        }
-    };
+    auto verify_canary() const -> void {
+        m_canary.verify(kMagic<Derived>);
+    }
+};
 
-} // namespace ours
+template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>
+class PeeredDispatcher: public Dispatcher {
+    using Base = Dispatcher;
+    using Self = PeeredDispatcher;
+
+  public:
+    constexpr static auto default_right() -> Rights {
+        return DefaultRights;
+    }
+
+    auto verify_canary() const -> void {
+        m_canary.verify(kMagic<Derived>);
+    }
+
+    auto on_zero_handles() -> void final {}
+};
+
+} // namespace ours::object
 
 #endif // #ifndef OURS_OBJECT_DISPATCHER_HPP

@@ -1,0 +1,22 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# 内核镜像定义（对标 Fuchsia //zircon/kernel/image）。
+#
+# 每个镜像 = 一个子目录（kernel.dev/、kernel.dev.dbg_1/），内含 kernel_package
+# （内核存储块，按 switchset 工具链编译内核可执行文件）+ kernel_cmdline（镜像级
+# cmdline）+ kernel_image（组装产物）；产品（//products/<name>.gni）只按 label
+# 选择镜像，不在这里实例化。
+#
+# 本文件只放所有镜像共用的组装零件：
+#   common_package_items —— 供所有产品的 kernel_package 引用（当前为空，作为
+#   未来共享 bootfs/支持文件的挂载点）。
+
+group("common_package_items") {
+  visibility = [
+    "./*",
+    "//products/*",
+    "//tests/*",
+  ]
+}

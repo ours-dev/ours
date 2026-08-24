@@ -1,0 +1,133 @@
+# Native kernel compile/link policy.  Artifact construction (physboot, kernel
+# packages, validation, and product images) stays in the dedicated templates
+# and product targets rather than being exposed through these configs.
+
+import("//build/ours/cpu.gni")
+import("//kernel/kernel_params.gni")
+
+config("headers") {
+  include_dirs = [
+    "//kernel/include",
+    "//system/public",
+  ]
+  inputs = [ "//kernel/include/ours/prelude.hpp" ]
+  cflags = [
+    "-include",
+    rebase_path(inputs[0], root_build_dir),
+  ]
+}
+
+config("host-prelude") {
+  # Host-built C++（如 obit）会 include system/public/ours/* 头，这些头依赖
+  # prelude.hpp 定义的全局整数别名（u8/u32/usize/...）。内核工具链通过上面的
+  # config("headers") 强制 -include prelude；host 工具链的 C++ 目标需要同样的
+  # prelude（仅 cflags_cc：prelude 是 C++ 头，不能喂给 C 编译）。
+  inputs = [ "//kernel/include/ours/prelude.hpp" ]
+  cflags_cc = [
+    "-include",
+    rebase_path(inputs[0], root_build_dir),
+  ]
+}
+
+config("standalone") {
+  configs = [
+    "//build/config:freestanding",
+    "//build/config:no-pie-link",
+    ":debug-only-unwind-tables",
+    ":kernel-heap-alignment",
+    ":static-pic-link",
+  ]
+}
+
+config("static-pic-link") {
+  configs = [ "//build/config:static-link" ]
+  inputs = [ "//kernel/include/ours/hidden.hpp" ]
+  cflags = [
+    "-include",
+    rebase_path(inputs[0], root_build_dir),
+  ]
+  ldflags = [ "-nostdlib" ]
+}
+
+config("debug-only-unwind-tables") {
+  inputs = [ "//kernel/debug-frame.S" ]
+  cflags = [ "-fno-unwind-tables" ]
+  asmflags = [
+    "-include",
+    rebase_path(inputs[0], root_build_dir),
+  ]
+}
+
+config("kernel-heap-alignment") {
+  cflags_cc = [ "-faligned-new=8" ]
+}
+
+config("warnings") {
+  cflags = [
+    "-Wformat=2",
+    "-Wmissing-declarations",
+    "-Wshadow",
+    "-Wvla",
+  ]
+  cflags_c = [ "-Wmissing-prototypes" ]
+}
+
+config("kernel_debug") {
+  defines = [ "KERNEL_DEBUG_LEVEL=$kernel_debug_level" ]
+}
+
+config("unit-tests-enabled") {
+  if (kernel_unit_tests_enabled) {
+    defines = [ "UNITTESTS_ENABLED" ]
+  }
+}
+
+config("lockdep") {
+  defines = []
+  if (lockdep_enable) {
+    defines += [
+      "CONFIG_LOCK_DEP=1",
+      "LOCK_DEP_ENABLED_FEATURE_LEVEL=2",
+    ]
+  } else if (lockdep_metadata_only || lockdep_lock_name_tracing) {
+    defines += [
+      "CONFIG_LOCK_DEP=1",
+      "LOCK_DEP_ENABLED_FEATURE_LEVEL=1",
+    ]
+  }
+}
+
+config("scheduler") {
+  defines = [
+    "SCHED_HPTICK=$sched_hptick",
+    "SCHED_DELAY_DEQUEUE=$sched_delay_dequeue",
+    "SCHED_EXTRA_INVARIANT_VALIDATION=$sched_extra_invariant_validation",
+  ]
+}
+
+config("kernel.config") {
+  configs = [
+    ":headers",
+    ":standalone",
+    ":kernel_debug",
+    ":lockdep",
+    ":scheduler",
+    ":unit-tests-enabled",
+    ":warnings",
+    "//kernel/arch/$ours_cpu:abi",
+    "//kernel/arch/$ours_cpu:kernel",
+  ]
+  defines = [
+              "MP_MAX_CPUS=$mp_max_cpus",
+            ] + kernel_extra_defines
+  cflags = [ "-fpie" ]
+}
+
+config("kernel.link") {
+  inputs = [ "//kernel/kernel.ld" ]
+  ldflags = [
+    "-Wl,-T," + rebase_path(inputs[0], root_build_dir),
+    "-Wl,-defsym,KERNEL_GOT_TOLERANCE=0",
+    "-Wl,-defsym,KERNEL_BASE_ADDRESS=0",
+  ]
+}

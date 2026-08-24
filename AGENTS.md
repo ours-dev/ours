@@ -1,4 +1,4 @@
-# AGENTS.md
+# Agents
 
 This file provides guidance to AI coding agents (Claude Code, Cursor, Codex, Copilot, Antigravity, etc.) when working with code in this repository.
 
@@ -22,6 +22,11 @@ A microkernel **modeled after** these proven architectures, designed to explore 
 - 
 
 ## Workflow
+
+Whenever a user presents a request, the first step should always be to ask for additional information to clarify and refine the requirements. Next, break the request down into a set of separate subtasks.
+
+For each subtask, we may need to explicitly create a plan, track progress, validate the results, and review the completed work. Therefore, create a dedicated workspace for each subtask under `.agents/tasks` in the project root to record and manage these materials.
+
 
 ## Extension
 

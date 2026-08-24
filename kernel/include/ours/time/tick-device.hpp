@@ -6,7 +6,7 @@
 #include <ours/time/cfg.hpp>
 #include <ours/time/clock-event-device.hpp>
 
-#include <ours/mem/cpu-local.hpp>
+#include <ours/mm/cpu-local.hpp>
 
 #include <ours/sync/spin-lock.hpp>
 
@@ -62,20 +62,20 @@ namespace ours::time {
         Mode m_mode;
     };
 
-    class TickDevice::Current: public mem::CpuLocal::Current<TickDevice> {
+    class TickDevice::Current: public mm::CpuLocal::Current<TickDevice> {
         using Self = TickDevice::Current;
       public:
         /// Override methods faster than the way through Current::get().*();
         FORCE_INLINE
         static auto is_mode_oneshot() -> bool {
             arch::AutoInterruptDisabler guard;
-            return mem::CpuLocal::read(g_current_instance.m_mode) == Mode::Oneshot;
+            return mm::CpuLocal::read(g_current_instance.m_mode) == Mode::Oneshot;
         }
 
         FORCE_INLINE
         static auto is_mode_periodic() -> bool {
             arch::AutoInterruptDisabler guard;
-            return mem::CpuLocal::read(g_current_instance.m_mode) == Mode::Periodic;
+            return mm::CpuLocal::read(g_current_instance.m_mode) == Mode::Periodic;
         }
     };
 

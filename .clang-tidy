@@ -8,19 +8,21 @@ Checks: >
   bugprone-use-after-move
 
 CheckOptions:
+  # USTL collection API aliases: Element, Size, IterMut/Iter,
+  # RefMut/Ref, and PtrMut/Ptr. Do not introduce legacy STL aliases.
   # ----------------------------------------------------------------------------
   # Types (PascalCase) - Matches Rust structs/enums
   # ----------------------------------------------------------------------------
   - key: readability-identifier-naming.ClassCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.StructCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.TypedefCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.EnumCase
-    value: PascalCase
+    value: CamelCase
   - key: readability-identifier-naming.TemplateParameterCase
-    value: PascalCase
+    value: CamelCase
 
   # ----------------------------------------------------------------------------
   # Functions & Methods (snake_case) - Matches Rust Function
@@ -41,17 +43,13 @@ CheckOptions:
     value: lower_case
 
   # ----------------------------------------------------------------------------
-  # Members (m_snake_case)
+  # Members
   # ----------------------------------------------------------------------------
-  # Public struct members (like a Rust struct) -> x, y, width
-  - key: readability-identifier-naming.StructMemberIgnoredRegexp
-    value: ^_[a-z0-9_]*$
-  
-  # Private/Protected class members -> m_parser, m_count
+  # Struct members are public by default → snake_case, no prefix
+  # Class members are private/protected by convention → m_snake_case
+  # (clang-tidy has no separate StructMemberPrefix; we rely on access control.)
   - key: readability-identifier-naming.PublicMemberCase
     value: lower_case
-  - key: readability-identifier-naming.PublicMemberPrefix
-    value: m_
   - key: readability-identifier-naming.PrivateMemberCase
     value: lower_case
   - key: readability-identifier-naming.PrivateMemberPrefix
@@ -69,7 +67,7 @@ CheckOptions:
   - key: readability-identifier-naming.ConstexprVariableCase
     value: UPPER_CASE
   - key: readability-identifier-naming.EnumConstantCase
-    value: PascalCase 
+    value: CamelCase 
     # Note: Rust uses PascalCase for Enum Variants (Option::None). 
     # Change to UPPER_CASE if you prefer C-style enums.
 
@@ -80,13 +78,16 @@ CheckOptions:
     value: UPPER_CASE
   
   - key: readability-identifier-naming.TypeTemplateParameterCase
-    value: PascalCase 
+    value: CamelCase 
   
   - key: readability-identifier-naming.ValueTemplateParameterCase
-    value: PascalCase 
+    value: CamelCase 
 
+  # Template constexpr variables may use CamelCase with a trailing V,
+  # e.g. IsRegionIteratorV. clang-tidy has no separate template-variable
+  # category, so exempt only this naming form from the constexpr rule.
   - key: readability-identifier-naming.ConstexprVariableIgnoredRegexp
-    value: ^_[a-z0-9_]*$V
+    value: ^[A-Z][A-Za-z0-9]*V$
 
   - key: portability-restrict-system-includes.Includes
     value: "*,ours/*"

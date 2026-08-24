@@ -1,0 +1,19 @@
+declare_args() {
+  # Compatibility names used by the existing Ours GN and source macros.
+  # Keeping these as arguments means old command lines still override them;
+  # otherwise they inherit the canonical values above.
+  mp_max_cpus = 16
+  kernel_extra_defines = []
+
+  lockdep_enable = false 
+  lockdep_metadata_only = false 
+  lockdep_lock_name_tracing = false 
+
+  sched_hptick = false
+  sched_delay_dequeue = false
+  sched_extra_invariant_validation = false 
+
+  mm_numa = false
+  mm_numa_emulation = false
+  mm_allocation_policy = false
+}

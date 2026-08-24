@@ -4,9 +4,13 @@
 #define OURS_PHYS_SYMBOLIZE_HPP 1
 
 namespace ours::phys {
-struct Symbolize {
-    char const *name_;
-};
+    
+    class Symbolize {
+        using Self = Symbolize;
+      public:
+        
+      private:
+    };
 
 } // namespace ours::phys
 

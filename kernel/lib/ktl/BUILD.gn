@@ -1,0 +1,30 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/ktl/allocator.hpp",
+    "include/ktl/kmalloc.hpp",
+    "include/ktl/name.hpp",
+    "include/ktl/new.hpp",
+    "include/ktl/result.hpp",
+    "include/ktl/rwonce.hpp",
+    "include/ktl/timed-loop.hpp",
+    "include/ktl/types.hpp",
+    "include/ktl/vec.hpp",
+    "include/ktl/xarray.hpp",
+  ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+source_set("ktl") {
+  sources = [
+    "kmalloc.cpp",
+    "new.cpp",
+  ]
+  deps = [ "//kernel/mm:headers" ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}

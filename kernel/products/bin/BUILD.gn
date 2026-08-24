@@ -1,0 +1,35 @@
+# Compatibility labels for the pre-canonicalized products path.  New build
+# definitions should use //kernel/bin, matching the Zircon directory seam.
+import("//kernel/kernel_executable.gni")
+import("//build/toolchain/toolchain_environment.gni")
+
+assert(toolchain_environment == "kernel")
+
+# Kernel without test-only command and unittest dependencies.
+kernel_executable("vmours") {
+  visibility = [
+    "//kernel/products/bin:*",
+    "//kernel/products/image/*",
+    # 产品的 kernel_package 在所选 switchset 工具链下引用内核可执行文件。
+    "//products/*",
+    "//tests/*",
+  ]
+  # 子树形态：镜像内打包为 vmours/image.elf + vmours/code-patches（目标树
+  # 契约，见 .agents/tasks/phys-module-and-obi-tree）。
+  has_patches = true
+  deps = []
+}
+
+# Test-capable kernel matching Zircon's binary topology.  Its current test
+# dependency graph remains structural until the local unittest runtime exists.
+kernel_executable("vmours.with-tests") {
+  testonly = true
+  visibility = [
+    "//kernel/products/bin:*",
+    "//kernel/products/image/*",
+    "//products/*",
+    "//tests/*",
+  ]
+  has_patches = true
+  deps = [ "//kernel/tests:kernel.tests" ]
+}

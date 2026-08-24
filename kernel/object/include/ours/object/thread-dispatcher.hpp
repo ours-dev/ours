@@ -38,7 +38,7 @@ namespace ours::object {
             usize arg2 = 0;
         };
 
-        static auto spawn(ustl::Rc<ProcessDispatcher> process, char const *name,
+        static auto spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
                           KernelHandle<Self> *out) -> Status;
         
         auto start(TaskState const &state) -> Status;
@@ -64,7 +64,7 @@ namespace ours::object {
 
         static auto trampoline(Self *) -> i32;
 
-        ThreadDispatcher(ustl::Rc<ProcessDispatcher> process, char const *name);
+        ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name);
         ~ThreadDispatcher() = default;
 
         auto on_exit() -> Status;
@@ -80,7 +80,7 @@ namespace ours::object {
         ParkedReason m_parked_reason;
         task::Thread *m_kernel_thread;
 
-        ustl::Rc<ProcessDispatcher> m_process;
+        ustl::Arc<ProcessDispatcher> m_process;
         ustl::Option<TaskState> m_user_entry;
 
         ustl::collections::intrusive::ListMemberHook<> m_managed_hook;

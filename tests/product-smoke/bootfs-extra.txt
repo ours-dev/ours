@@ -1,0 +1,1 @@
+this is a product-level bootfs resource for the product() smoke test

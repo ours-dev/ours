@@ -1,0 +1,72 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/ours/cpu.gni")
+import("//kernel/phys/kernel_elf_binary.gni")
+
+_kernel_executable_deps = [
+  "//kernel/top",
+]
+
+_kernel_executable_cpu_deps = {
+  arm = [ "//kernel/platform/arm:platform" ]
+  riscv = [ "//kernel/platform/riscv:platform" ]
+  x86 = [ "//kernel/platform/pc" ]
+}
+
+# Represents a freestanding kernel ELF evaluated in the current kernel
+# switchset.
+#
+# Subtargets:
+#
+#   $target_name.binary
+#     The underlying linker target.
+#
+#   $target_name.rsp
+#     A response file containing the unstripped kernel ELF path.
+#
+# Parameters:
+#
+#   deps (optional)
+#     Additional code linked into the kernel.
+#
+#   data_deps (optional)
+#     Additional package/image inputs carried by the ELF image target.
+#
+#   testonly, visibility (optional)
+#     Standard GN meanings.
+template("kernel_executable") {
+  assert(toolchain_environment == "kernel",
+         "kernel_executable() requires the kernel runtime environment")
+
+  _main_target = target_name
+
+  _kernel_deps = _kernel_executable_deps + _kernel_executable_cpu_deps[ours_cpu]
+  if (defined(invoker.deps)) {
+    _kernel_deps += invoker.deps
+  }
+
+  kernel_elf_binary(_main_target) {
+    forward_variables_from(invoker,
+                           [
+                             "data_deps",
+                             "testonly",
+                             "visibility",
+                           ])
+    if (defined(visibility)) {
+      visibility += [ ":*" ]
+    }
+
+    install_name = "vmours"
+    if (defined(invoker.has_patches)) {
+      # A caller's explicit choice overrides the global default (e.g. the
+      # image tree contract wants the vmours/ subtree with code-patches).
+      has_patches = invoker.has_patches
+    } else {
+      has_patches = ours_kernel_has_code_patches
+    }
+    configs += [ "//kernel/products:kernel.link" ]
+    deps = _kernel_deps
+  }
+}

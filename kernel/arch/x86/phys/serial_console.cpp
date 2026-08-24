@@ -1,11 +1,13 @@
 #include <arch/x86/io.hpp>
 #include <ours/phys/console.hpp>
+#include <ours/phys/handoff.hpp>
 #include <ustl/mem/object.hpp>
 
 namespace ours::phys {
-constexpr static u16 const COM1 = 0x3F8;
 
 struct SerialConsole: public Console {
+    static constexpr u16 const COM1 = 0x3F8;
+
     SerialConsole() : Console("Serial"), port_(COM1) {}
 
     auto init() -> void;
@@ -64,5 +66,11 @@ namespace {
     // ccrt::init_global_static_objects() runs (see ours/phys/console.hpp).
     SerialConsole g_serial_console;
 } // namespace
+
+// Reads g_serial_console's own port rather than re-asserting COM1
+// independently, so there is one source of truth for which port is live.
+auto arch_uart_handoff() -> UartHandoff {
+    return {.kind = UartKind::X86Pio16550, .base = g_serial_console.port_};
+}
 
 } // namespace ours::phys

@@ -38,6 +38,12 @@ namespace ours::sync {
         auto status() const -> Status {
             return m_blocked_status;
         }
+
+        struct QueueOrder {
+            auto operator()(Self const &left, Self const &right) const noexcept -> bool {
+                return reinterpret_cast<usize>(&left) < reinterpret_cast<usize>(&right);
+            }
+        };
       private:
         friend class WaitQueue;
         friend class OwnedWaitQueue;
@@ -46,6 +52,9 @@ namespace ours::sync {
         WaitQueue *m_waitqueue;
         Status m_blocked_status;
         Interruptible m_interruptible;
+        ustl::collections::intrusive::SetMemberHook<> m_managed_hook;
+      public:
+        USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOption);
     };
 
     class WaitQueue {
@@ -107,7 +116,9 @@ namespace ours::sync {
         static constexpr auto MAGIC = gktl::magic("WaitQueue");
 
         gktl::Canary m_canary;
-        USTL_DECLARE_MULTISET(WaiterState, Queue, WaiterState::ManagedOption);
+        USTL_DECLARE_MULTISET(WaiterState, Queue,
+                              ustl::collections::intrusive::Compare<WaiterState::QueueOrder>,
+                              WaiterState::ManagedOption);
         Queue m_waiters;
         SpinLock m_lock;
     };

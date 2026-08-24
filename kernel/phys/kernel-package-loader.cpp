@@ -1,6 +1,6 @@
 #include <ours/phys/kernel-package-loader.hpp>
 
-#include <obi/kernel-package.hpp>
+#include <ours/phys/kernel-package.hpp>
 
 #include <cstring>
 
@@ -39,7 +39,7 @@ auto KernelPackageLoader::init(Bytes const storage, PhysAddr const package_base,
 
     // 2. Locate the kernel ELF inside the kernel-name directory.
     char path[160];
-    auto const joined = join_path(path, sizeof(path), kernel_dir, obi::KernelPackage::kImageElf);
+    auto const joined = join_path(path, sizeof(path), kernel_dir, KernelPackage::kImageElf);
     if (joined != Status::Ok) {
         return joined;
     }

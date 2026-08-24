@@ -1,0 +1,12 @@
+import("//build/cpp/cpp_interface.gni")
+
+# Placeholder for the future AArch64 kernel implementation.
+if (toolchain_environment == "kernel") {
+  source_set("kernel") {
+    public_deps = [ ":headers" ]
+  }
+}
+
+cpp_interface("headers") {
+  public = []
+}
