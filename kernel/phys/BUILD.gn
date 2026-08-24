@@ -229,6 +229,35 @@ cpp_interface("headers") {
   # include contract rather than relying on a toolchain-global include path.
   public_deps = [
     ":boot-obi",
+    "//kernel/lib/acpi:header",
+    "//kernel/lib/arch:headers",
+    "//kernel/arch/$ours_cpu/phys:headers",
+    "//kernel/lib/eftl:headers",
+    "//kernel/lib/ktl:headers",
+    "//kernel/mm:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+    "//kernel/lib/obi",
+  ]
+}
+
+# obi only provides the base container/item format (ContainerView, ItemView,
+# PackageBuilder, ...); BootObi and KernelPackage are phys's own second-order
+# reading of that format -- the specific boot contract ("exactly one
+# StorageKernel item", "index 0 is the Executable entry point") and the flat
+# BootFS-inside-a-StorageKernel-item model neither of which obi itself knows
+# or needs to know about.
+cpp_interface("boot-obi") {
+  public = [
+    "include/ours/phys/boot-obi.hpp",
+    "include/ours/phys/kernel-package.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/bootfs:headers",
+    "//kernel/lib/obi",
+  ]
+}
+
 # Kernel-side ABI seam for the handoff structure.  The phys executable owns
 # its implementation, while the kernel only needs this propagated header
 # interface and the generated PT_INTERP dependency below.
@@ -238,3 +267,68 @@ cpp_interface("handoff") {
   ]
   public_deps = [
     ":boot-obi",
+    "//kernel/arch/$ours_cpu/phys:headers",
+    "//kernel/lib/obi",
+    "//kernel/phys/lib/bootmem:headers",
+    "//system/lib/ustl:headers",
+  ]
+}
+
+# physload — the first-stage loader, and everything downstream of GRUB's
+# Multiboot2 handoff understands from here on: boot-shim (the arch-specific
+# GRUB entry point, //kernel/arch/x86/phys/boot-shim) loads this out of the
+# OBI container's item 0 (obi_executable_item below) as a separate,
+# position-independent image, the same way physload itself loads physboot.
+# physload.link (base 0, ET_DYN, no fixed load address) replaces the
+# GRUB-facing phys.link default; phys-module supplies the PIC compile flags
+# module builds already use, reused here for the same reason -- physload is
+# now placed at an address only known at boot, just like a module.
+phys_executable("physload") {
+  link_config = "//kernel/phys:physload.link"
+  configs = [ "//kernel/phys:phys-module" ]
+  obi_executable_item = true
+  export_table = true
+  deps = [ ":physload.core" ]
+}
+
+
+group("tests") {
+  testonly = true
+  # The default toolchain here is kernel-x86, not host-capable (see
+  # kernel/lib/obi:tests for the same fix, documented in
+  # .agents/tasks/phys-module-and-obi-tree/DESIGN.md §8.1) -- a plain
+  # dependency compiles under it and fails on the missing host prelude.
+  deps = [
+    ":boot-obi-test($host_toolchain)",
+    ":build-id-note-smoke($host_toolchain)",
+  ]
+}
+
+executable("build-id-note-smoke") {
+  testonly = true
+  sources = [
+    "build-id-note-smoke.cpp",
+    "build-id-note.cpp",
+  ]
+  deps = [
+    ":headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# BootObi's boot-contract behavior (moved from kernel/lib/obi/tests --
+# obi's own PackageBuilder/ContainerView round-trip tests stay there;
+# these specifically exercise phys's reading of that format).
+executable("boot-obi-test") {
+  testonly = true
+  sources = [ "boot-obi-test.cpp" ]
+  deps = [
+    ":boot-obi",
+    "//kernel/lib/obi",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
