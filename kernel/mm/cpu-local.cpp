@@ -60,7 +60,8 @@ namespace {
         return kInitialCpuLocalEnd - kInitialCpuLocalStart;
     }
 
-    /// Origin of handle space: the address the linker gave the template.
+    /// Origin offsets are measured from: the address the linker gave the
+    /// template.
     ///
     /// Nothing is ever read or written through it after init_early(). It is the
     /// zero point that `access()` measures from, no more -- which matters,
@@ -85,8 +86,8 @@ namespace {
 } // namespace anonymous
 
     struct DynChunk: ustl::collections::intrusive::ListBaseHook<> {
-        /// Handle-space address of the first byte this chunk manages.
-        VirtAddr base;
+        /// Offset of the first byte this chunk manages.
+        usize base;
         usize size;
 
         /// One bit per `kDynCellSize` bytes; set means taken.
@@ -174,14 +175,18 @@ namespace {
             return isize(unit_base(unit) - canonical_base());
         }
 
-        /// Real address to handle. The legacy `fix_addr`.
-        auto handle_of(VirtAddr real) const -> VirtAddr {
-            return real - (m_base - canonical_base());
+        /// The offset naming an address inside CPU 0's slice of a chunk.
+        ///
+        /// Offsets are measured from the area base, which is why the CPU drops
+        /// out: an object at `B + m_unit_offset[n] + d` is at
+        /// `base(cpu) + (B - m_base + d)` for every n alike.
+        auto offset_of_address(VirtAddr real) const -> usize {
+            return real - m_base;
         }
 
-        /// Handle-space start of the dynamic area inside every unit.
-        static auto dyn_base() -> VirtAddr {
-            return canonical_base() + static_span();
+        /// Offset at which every unit's dynamic area begins.
+        static auto dyn_offset() -> usize {
+            return static_span();
         }
 
         /// Reproduces the unit table over a fresh span. Returns the new chunk's
@@ -437,7 +442,7 @@ namespace {
 
     /// Runtime cpu local allocator.
     ///
-    /// Hands out handles, not pointers. One reservation covers all CPUs at once
+    /// Hands out offsets, not pointers. One reservation covers all CPUs at once
     /// -- it is the same slice of every unit -- so a single bitmap describes
     /// them all and the allocator never needs to know how many CPUs there are.
     class CpuLocal::Dyn {
@@ -446,16 +451,16 @@ namespace {
       public:
         auto init(Mapper &mapper) -> void;
 
-        auto allocate(usize size, usize align) -> VirtAddr;
+        auto allocate(usize size, usize align) -> usize;
 
-        auto deallocate(VirtAddr handle, usize size) -> void;
+        auto deallocate(usize offset, usize size) -> void;
 
-        auto owns(VirtAddr handle) const -> bool;
+        auto owns(usize offset) const -> bool;
 
       private:
         auto grow() -> bool;
 
-        auto allocate_locked(usize cells, usize align_bytes) -> VirtAddr;
+        auto allocate_locked(usize cells, usize align_bytes) -> usize;
 
         static auto test(DynChunk const &chunk, usize cell) -> bool {
             return (chunk.bitmap[cell / kWordBits] & (usize(1) << (cell % kWordBits))) != 0;
@@ -487,7 +492,7 @@ namespace {
         // Chunk 0 is the one whose unit carries the static copy, so its dynamic
         // part is what is left over -- exactly kDynFirstChunkSize, since
         // static_span() is already a multiple of kUnitAlign.
-        m_first_chunk.base = mapper.dyn_base();
+        m_first_chunk.base = Mapper::dyn_offset();
         m_first_chunk.size = ArchCpuLocal::kDynFirstChunkSize;
         m_first_chunk.bitmap = ustl::views::make_span(m_first_bitmap.data(), kDynWords);
         m_first_chunk.num_cells = kDynCells;
@@ -524,7 +529,7 @@ namespace {
         auto *chunk = new (static_cast<void *>(page)) DynChunk();
         auto *bits = reinterpret_cast<usize *>(page + header);
 
-        chunk->base = m_mapper->handle_of(base);
+        chunk->base = m_mapper->offset_of_address(base);
         chunk->size = Mapper::unit_size();
         chunk->num_cells = chunk->size / kDynCellSize;
         chunk->num_cells_used = 0;
@@ -538,18 +543,18 @@ namespace {
         return true;
     }
 
-    auto CpuLocal::Dyn::owns(VirtAddr handle) const -> bool {
+    auto CpuLocal::Dyn::owns(usize offset) const -> bool {
         Guard guard{m_lock};
 
         for (auto const &chunk : m_dynchunks) {
-            if (handle >= chunk.base && handle < chunk.base + chunk.size) {
+            if (offset >= chunk.base && offset < chunk.base + chunk.size) {
                 return true;
             }
         }
         return false;
     }
 
-    auto CpuLocal::Dyn::allocate_locked(usize cells, usize align_bytes) -> VirtAddr {
+    auto CpuLocal::Dyn::allocate_locked(usize cells, usize align_bytes) -> usize {
         auto const step = align_bytes / kDynCellSize;
 
         for (auto &chunk : m_dynchunks) {
@@ -585,12 +590,12 @@ namespace {
             }
         }
 
-        return 0;
+        return kNowhere;
     }
 
-    auto CpuLocal::Dyn::allocate(usize size, usize align) -> VirtAddr {
+    auto CpuLocal::Dyn::allocate(usize size, usize align) -> usize {
         if (!size) {
-            return 0;
+            return kNowhere;
         }
 
         auto const cells = align_up(size, kDynCellSize) / kDynCellSize;
@@ -601,17 +606,15 @@ namespace {
 
         Guard guard{m_lock};
 
-        if (auto const found = allocate_locked(cells, align_bytes)) {
-            return found;
+        auto found = allocate_locked(cells, align_bytes);
+        if (kNowhere == found && grow()) {
+            found = allocate_locked(cells, align_bytes);
         }
-        if (!grow()) {
-            return 0;
-        }
-        return allocate_locked(cells, align_bytes);
+        return found;
     }
 
-    auto CpuLocal::Dyn::deallocate(VirtAddr handle, usize size) -> void {
-        if (!handle || !size) {
+    auto CpuLocal::Dyn::deallocate(usize offset, usize size) -> void {
+        if (offset == kNowhere || !size) {
             return;
         }
 
@@ -620,11 +623,11 @@ namespace {
         Guard guard{m_lock};
 
         for (auto &chunk : m_dynchunks) {
-            if (handle < chunk.base || handle >= chunk.base + chunk.size) {
+            if (offset < chunk.base || offset >= chunk.base + chunk.size) {
                 continue;
             }
 
-            auto const start = (handle - chunk.base) / kDynCellSize;
+            auto const start = (offset - chunk.base) / kDynCellSize;
             DEBUG_ASSERT(start + cells <= chunk.num_cells, "Freeing past the end of a chunk");
             for (auto i = usize(0); i < cells; ++i) {
                 DEBUG_ASSERT(test(chunk, start + i), "Double free of cpu local storage");
@@ -709,8 +712,8 @@ namespace {
         attach_to_unit(boot, offset);
 
         // The first dynamic chunk lives in the tail of this unit. It is recorded
-        // in handle space, so it survives the migration in init() untouched --
-        // the same handle simply resolves against a different unit base.
+        // as an offset, so it survives the migration in init() untouched --
+        // the same offset simply resolves against a different unit base.
         g_dyn = &g_dyn_storage;
         g_dyn->init(*g_mapper);
 
@@ -789,26 +792,36 @@ namespace {
         });
     }
 
-    auto CpuLocal::translate(VirtAddr va) -> VirtAddr {
-        if (!is_in_initial_area(va) && (!g_dyn || !g_dyn->owns(va))) {
-            return 0;
-        }
-
-        return va + read(g_current_cpu_offset);
+    auto CpuLocal::origin() -> VirtAddr {
+        return canonical_base();
     }
 
-    auto CpuLocal::allocate_raw(usize size, usize align) -> VirtAddr {
+    auto CpuLocal::base(CpuNum cpu) -> VirtAddr {
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
+        return canonical_base() + usize(g_cpu_offsets[cpu]);
+    }
+
+    /// The contract `resolve()` rests on: an offset names either a byte of the
+    /// static block or a byte of some live dynamic chunk, and nothing else.
+    auto CpuLocal::holds(usize offset) -> bool {
+        if (offset < initial_area_size()) {
+            return true;
+        }
+        return g_dyn && g_dyn->owns(offset);
+    }
+
+    auto CpuLocal::allocate_raw(usize size, usize align) -> usize {
         if (!g_dyn) {
-            return 0;
+            return kNowhere;
         }
         return g_dyn->allocate(size, align);
     }
 
-    auto CpuLocal::free_raw(VirtAddr handle, usize size) -> void {
+    auto CpuLocal::free_raw(usize offset, usize size) -> void {
         if (!g_dyn) {
             return;
         }
-        return g_dyn->deallocate(handle, size);
+        return g_dyn->deallocate(offset, size);
     }
 
 } // namespace ours::mm
