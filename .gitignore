@@ -50,6 +50,10 @@ MODULE.bazel.lock
 
 # Python
 .venv
+.cache
 .codex
 .claude
+.reasonix
 .mypy_cache
+
+compile_commands.json
