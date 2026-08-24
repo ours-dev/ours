@@ -97,61 +97,84 @@ namespace {
         usize num_cells_used;
     };
 
-    /// Places the per-CPU units and keeps the map from CPU to unit.
+    /// Places the per-CPU units.
     ///
-    /// Handle space is the "dummy region" starting at `__cpu_local_start`: an
-    /// address nothing is ever read or written through, existing only so an
-    /// object has one name that means the same thing on every CPU. A handle is
-    /// `real_address - (m_base - __cpu_local_start)`, and `access()` adds
-    /// `g_cpu_offsets[cpu]` back.
+    /// A *chunk* is one reservation covering every CPU at once, divided into
+    /// `MAX_CPU` units of `unit_size` each:
     ///
-    /// Units are grouped by NUMA node: one allocation per node, units of the
-    /// CPUs on that node laid contiguously inside it. Nodes are unrelated to
-    /// each other, so `m_unit_offset` is a table rather than a stride --
-    ///
-    ///     m_base
+    ///     chunk_base
     ///     |
-    ///     +-- node 0 block --------+      +-- node 1 block ---------+
-    ///     | unit(c0) | unit(c1)    |      | unit(c2) | unit(c3)     |
-    ///     +------------------------+      +-------------------------+
-    ///      \_unit_size_/                   \_unit_size_/
+    ///     +----------+----------+-----+----------+
+    ///     |  unit 0  |  unit 1  | ... |  unit N  |
+    ///     +----------+----------+-----+----------+
+    ///      \_unit_size_/
     ///
-    /// -- and the offsets need not be related at all. What growth *does* need is
-    /// that a later chunk reproduce the same table against its own base: an
-    /// object at `B + m_unit_offset[n] + d` has handle
-    /// `B - m_base + __cpu_local_start + d`, which drops the `n` and so names it
-    /// on every CPU at once. Reserved address space makes that easy; without it
-    /// the table has to fit inside one contiguous block, which only holds when
-    /// there is a single group.
+    /// Every chunk repeats that spacing, which is the whole trick: an object at
+    /// `B + n * unit_size + d` is named by `offset = B - m_base + d`, with the
+    /// per-CPU term cancelled. `base(cpu) + offset` is then correct on every CPU,
+    /// in any chunk, without the caller or the allocator knowing which chunk it
+    /// fell in.
+    ///
+    /// Reproducing the spacing requires being able to *choose* where a chunk's
+    /// units land, so the units are packed densely in **address space** while
+    /// each one's frames still come from its owner's node. Locality is paid for
+    /// by the page tables, not by scattering the layout.
+    ///
+    /// `Scattered` is the fallback for an architecture with no window to spare:
+    /// one buddy allocation per node, units contiguous only within a node. The
+    /// resulting table cannot be reproduced by a later chunk -- the span from
+    /// the lowest allocation to the highest is unbounded -- so that layout gets
+    /// the first chunk and no growth, and `can_grow()` says so rather than
+    /// failing silently later.
     class CpuLocal::Mapper {
         using Self = CpuLocal::Mapper;
 
       public:
+        enum class Layout : u8 {
+            Dense,
+            Scattered,
+        };
+
         Mapper()
             : m_aspace(ARCH_CPU_LOCAL_VIRT_BASE, ARCH_CPU_LOCAL_SIZE, VmasFlags::Kernel),
-              m_c2u(), m_u2c(), m_n2g(), m_g2n(), m_unit_offset(),
-              m_group_num_units(), m_group_frames(), m_base(0), m_replica(0), m_num_units(0),
-              m_num_groups(0), m_next_slot(0), m_paged(false) {}
+              m_c2u(), m_u2c(), m_n2g(), m_g2n(), m_unit_group(), m_unit_offset(),
+              m_group_num_units(),
+              m_group_frames(), m_base(0), m_replica(0), m_num_units(0), m_num_groups(0),
+              m_next_slot(0), m_layout(Layout::Scattered) {}
 
-        /// One unit's worth: the static copy plus the first dynamic chunk.
+        /// Bytes one CPU owns in a chunk, and the spacing every chunk repeats.
         ///
-        /// Rounded to a whole buddy order so the boot replica can be handed back
-        /// exactly, rather than by an order that covers more than was taken.
+        /// `static_span()` is a multiple of `kUnitAlign` and `kDynFirstChunkSize`
+        /// is a multiple of a page, so this is exactly
+        /// `static_span() + kDynFirstChunkSize` -- which is what lets chunk 0's
+        /// dynamic tail be a compile-time size.
         static auto unit_size() -> usize {
-            auto const want = align_up(static_span() + ArchCpuLocal::kDynFirstChunkSize,
-                                       ArchCpuLocal::kUnitAlign);
-            return usize(BIT(mm::get_order(want / PAGE_SIZE))) * PAGE_SIZE;
+            return align_up(static_span() + ArchCpuLocal::kDynFirstChunkSize,
+                            ArchCpuLocal::kUnitAlign);
+        }
+
+        /// What one chunk spans: every unit, back to back.
+        static auto chunk_span() -> usize {
+            return unit_size() * MAX_CPU;
+        }
+
+        /// The provisional unit, rounded to a whole buddy order.
+        ///
+        /// Only this allocation is rounded, and only so that init() can hand it
+        /// back with a single `free_frames`. Rounding `unit_size()` itself would
+        /// inflate every unit of every chunk to buy that one convenience.
+        static auto replica_span() -> usize {
+            auto const pages = align_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
+            return usize(BIT(mm::get_order(pages))) * PAGE_SIZE;
         }
 
         /// Claims the boot CPU's provisional unit from the boot allocator.
         ///
-        /// One unit, for CPU 0, and nothing else: the other CPUs are not even
-        /// enumerated this early. It is provisional because init() will place
-        /// CPU 0 on a NUMA-correct unit alongside everyone else and hand this
-        /// block back.
+        /// One unit, for CPU 0, and nothing else -- no other CPU is enumerated
+        /// this early, and there is no PMM to map anything with yet.
         auto init_early() -> Status;
 
-        /// Builds the real areas: node groups, unit offsets, backing frames.
+        /// Builds chunk 0 and the unit table.
         auto init() -> Status;
 
         auto replica() const -> VirtAddr {
@@ -175,11 +198,7 @@ namespace {
             return isize(unit_base(unit) - canonical_base());
         }
 
-        /// The offset naming an address inside CPU 0's slice of a chunk.
-        ///
-        /// Offsets are measured from the area base, which is why the CPU drops
-        /// out: an object at `B + m_unit_offset[n] + d` is at
-        /// `base(cpu) + (B - m_base + d)` for every n alike.
+        /// The offset naming an address in CPU 0's slice of some chunk.
         auto offset_of_address(VirtAddr real) const -> usize {
             return real - m_base;
         }
@@ -189,11 +208,12 @@ namespace {
             return static_span();
         }
 
-        /// Reproduces the unit table over a fresh span. Returns the new chunk's
-        /// base address, or 0.
+        /// Takes another chunk, laid out like the first. Returns its base, or 0.
         auto alloc_chunk(Gaf gaf) -> VirtAddr;
 
-        auto can_grow() const -> bool;
+        auto can_grow() const -> bool {
+            return Layout::Dense == m_layout && m_next_slot < kNumSlots;
+        }
 
       private:
         constexpr static auto const kNumSlots =
@@ -201,18 +221,29 @@ namespace {
 
         auto build_map_info() -> void;
 
-        auto build_area_info() -> Status;
+        auto build_dense(VirtAddr slot, Gaf gaf) -> Status;
 
-        /// Bytes from the lowest unit to the end of the highest -- what a chunk
-        /// must span to hold the whole table.
-        auto table_span() const -> usize;
+        auto build_scattered() -> Status;
 
+        auto slot_at(usize index) const -> VirtAddr {
+            return VirtAddr(ARCH_CPU_LOCAL_VIRT_BASE) + index * usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
+        }
+
+        auto node_of_unit(u32 unit) const -> NnId {
+            return NnId(m_g2n[m_unit_group[unit]]);
+        }
+
+        /// Private rather than borrowed from VmAspace::kernel_aspace(): that one
+        /// is built by init_vmm(), which needs the slab, which needs us. This one
+        /// costs nothing to stand up because a kernel ArchVmAspace just adopts
+        /// the PGD kernel.phys already installed.
         ArchVmAspace m_aspace;
 
         ustl::Array<i32, MAX_CPU> m_c2u;          // CPU   -> unit
         ustl::Array<i32, MAX_CPU> m_u2c;          // unit  -> CPU
         ustl::Array<i32, NUMA_MAX_NODE> m_n2g;    // node  -> group
         ustl::Array<i32, NUMA_MAX_NODE> m_g2n;    // group -> node
+        ustl::Array<u32, MAX_CPU> m_unit_group;   // unit  -> group
         ustl::Array<isize, MAX_CPU> m_unit_offset;
         ustl::Array<u32, NUMA_MAX_NODE> m_group_num_units;
         ustl::Array<PmFrame::List, NUMA_MAX_NODE> m_group_frames;
@@ -222,12 +253,12 @@ namespace {
         u32 m_num_units;
         u32 m_num_groups;
         usize m_next_slot;
-        bool m_paged;
+        Layout m_layout;
     };
 
     auto CpuLocal::Mapper::init_early() -> Status {
-        auto *block = EarlyMem::allocate<u8>(unit_size(), ArchCpuLocal::kUnitAlign,
-                                             bootmem::kAnyNode);
+        auto const span = replica_span();
+        auto *block = EarlyMem::allocate<u8>(span, span, bootmem::kAnyNode);
         if (!block) {
             return Status::OutOfMem;
         }
@@ -236,85 +267,125 @@ namespace {
         return Status::Ok;
     }
 
-    /// Numbers nodes and CPUs densely, keeping every group's units contiguous so
-    /// one allocation per node can back all of them.
+    /// Builds the node groups and assigns every CPU slot a unit.
     ///
-    /// A CPU that no node claims still needs a unit -- a missing or broken SRAT
-    /// must not leave one unmapped -- so those trail the nodes in their own
-    /// group.
+    /// A unit is created for all `MAX_CPU` slots, not just the CPUs that are
+    /// currently possible: chunk 0 is built before the MADT is parsed, so
+    /// `possible_mask()` is not yet meaningful, and `allocate()` constructs on
+    /// every slot. Leaving a slot without a unit would leave its offset at zero,
+    /// which resolves into the template -- the one region that must never be
+    /// written.
+    ///
+    /// Groups exist to source frames per node. `node_hard_affinity()` is
+    /// consulted where it answers, and the rest are spread round-robin over the
+    /// nodes that have memory; real affinity has to wait for CPU enumeration to
+    /// move ahead of the PMM.
     auto CpuLocal::Mapper::build_map_info() -> void {
-        auto const &cpus = Cpu::possible_mask();
         auto const &nodes = mm::node_possible_mask();
 
-        for (auto &unit : m_c2u) {
-            unit = -1;
+        m_num_groups = 0;
+        for (auto nid = usize(0); nid < nodes.size() && m_num_groups < NUMA_MAX_NODE; ++nid) {
+            if (nodes.test(nid)) {
+                m_n2g[nid] = i32(m_num_groups);
+                m_g2n[m_num_groups] = i32(nid);
+                ++m_num_groups;
+            }
+        }
+        if (!m_num_groups) {
+            m_g2n[0] = 0;
+            m_num_groups = 1;
         }
 
-        auto unit = u32(0);
-        auto group = u32(0);
-        for (auto nid = usize(0); nid < nodes.size(); ++nid) {
-            if (!nodes.test(nid)) {
-                continue;
-            }
-
-            auto const *affinity = mm::node_hard_affinity(NnId(nid));
-            if (!affinity) {
-                continue;
-            }
-
-            auto here = u32(0);
-            for (auto cpu = CpuNum(0); cpu < cpus.size(); ++cpu) {
-                if (!cpus.test(cpu) || !affinity->test(cpu) || m_c2u[cpu] >= 0) {
-                    continue;
-                }
-
-                m_c2u[cpu] = i32(unit);
-                m_u2c[unit] = i32(cpu);
-                ++unit;
-                ++here;
-            }
-
-            if (!here) {
-                continue;
-            }
-
-            m_n2g[nid] = i32(group);
-            m_g2n[group] = i32(nid);
-            m_group_num_units[group] = here;
-            ++group;
+        for (auto &count : m_group_num_units) {
+            count = 0;
         }
 
-        auto orphans = u32(0);
-        for (auto cpu = CpuNum(0); cpu < cpus.size(); ++cpu) {
-            if (!cpus.test(cpu) || m_c2u[cpu] >= 0) {
-                continue;
-            }
-
+        for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
+            auto const cpu = CpuNum(unit);
             m_c2u[cpu] = i32(unit);
             m_u2c[unit] = i32(cpu);
-            ++unit;
-            ++orphans;
+
+            auto group = u32(unit % m_num_groups);
+            for (auto g = u32(0); g < m_num_groups; ++g) {
+                auto const *affinity = mm::node_hard_affinity(NnId(m_g2n[g]));
+                if (affinity && affinity->test(cpu)) {
+                    group = g;
+                    break;
+                }
+            }
+
+            m_unit_group[unit] = u32(group);
+            ++m_group_num_units[group];
         }
 
-        if (orphans) {
-            DEBUG_ASSERT(group < NUMA_MAX_NODE, "No group left for unclaimed CPUs");
-            m_g2n[group] = 0;
-            m_group_num_units[group] = orphans;
-            ++group;
-        }
-
-        m_num_units = unit;
-        m_num_groups = group;
+        m_num_units = MAX_CPU;
     }
 
-    auto CpuLocal::Mapper::build_area_info() -> Status {
+    /// Units packed back to back in the reserved window, each backed from its
+    /// own node.
+    ///
+    /// The packing is what makes the table reproducible; the per-unit node is
+    /// what keeps allocation local. Both at once is only possible because the
+    /// address and the frames are chosen independently.
+    auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf gaf) -> Status {
+        auto const pages = align_up(unit_size(), PAGE_SIZE) / PAGE_SIZE;
+
+        for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
+            auto const va = slot + usize(unit) * unit_size();
+            auto const nid = node_of_unit(unit);
+
+            // Exactly `pages`, walked with descending power-of-two blocks:
+            // rounding up to one order would map past the unit and collide with
+            // the next, since unit_size need not be a power of two pages.
+            for (auto done = usize(0); done < pages;) {
+                auto const remaining = pages - done;
+                auto const order = ustl::algorithms::min(usize(ustl::bit_width(remaining)) - 1,
+                                                         usize(MAX_FRAME_ORDER));
+                auto const n = usize(BIT(order));
+
+                auto frame = alloc_frames(nid, gaf, order);
+                if (!frame) {
+                    // Earlier units stay mapped. Nothing here is ever torn down,
+                    // and the only caller that can fail is init(), which panics.
+                    return Status::OutOfMem;
+                }
+
+                auto mapped = usize(0);
+                auto const status =
+                    m_aspace.map(va + done * PAGE_SIZE, frame_to_phys(frame), n, kMapFlags,
+                                 MapControl::ErrorIfExisting, &mapped);
+                if (Status::Ok != status) {
+                    return status;
+                }
+
+                done += n;
+            }
+        }
+
+        return Status::Ok;
+    }
+
+    /// One buddy allocation per node, units contiguous only within a node.
+    ///
+    /// Costs no address space and touches no page table, which is the point --
+    /// but the table it produces spans from the lowest allocation to the
+    /// highest, so no later chunk can reproduce it. This layout gets chunk 0
+    /// and nothing more.
+    auto CpuLocal::Mapper::build_scattered() -> Status {
         auto const size = unit_size();
 
         m_base = ustl::NumericLimits<VirtAddr>::max();
         for (auto group = u32(0); group < m_num_groups; ++group) {
-            auto const nid = NnId(m_g2n[group]);
             auto const nr_units = m_group_num_units[group];
+            if (!nr_units) {
+                continue;
+            }
+
+            auto const nid = NnId(m_g2n[group]);
             auto const order = mm::get_order(align_up(size * nr_units, PAGE_SIZE) / PAGE_SIZE);
+            if (order > MAX_FRAME_ORDER) {
+                return Status::OutOfRange;
+            }
 
             // kGafBoot implies Gaf::Zero, so a unit's dynamic area starts clean.
             auto frame = alloc_frames(nid, mm::kGafBoot, order);
@@ -329,11 +400,18 @@ namespace {
             m_base = ustl::algorithms::min(m_base, frame_to_virt(frame));
         }
 
-        for (auto group = u32(0), unit = u32(0); group < m_num_groups; ++group) {
-            auto const addr = frame_to_virt(&m_group_frames[group].front());
+        for (auto group = u32(0); group < m_num_groups; ++group) {
+            if (!m_group_num_units[group]) {
+                continue;
+            }
 
-            for (auto i = u32(0); i < m_group_num_units[group]; ++i, ++unit) {
-                m_unit_offset[unit] = isize(addr + size * i - m_base);
+            auto const addr = frame_to_virt(&m_group_frames[group].front());
+            auto slot = u32(0);
+            for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
+                if (m_unit_group[unit] == group) {
+                    m_unit_offset[unit] = isize(addr + size * slot - m_base);
+                    ++slot;
+                }
             }
         }
 
@@ -341,99 +419,44 @@ namespace {
     }
 
     auto CpuLocal::Mapper::init() -> Status {
+        static_assert(usize(ARCH_CPU_LOCAL_SIZE) % usize(ARCH_CPU_LOCAL_CHUNK_SLOT) == 0,
+                      "The cpu local window must divide into whole slots");
+
         build_map_info();
         if (!m_num_units) {
             return Status::InvalidArguments;
         }
 
-        auto const status = build_area_info();
-        if (Status::Ok != status) {
-            return status;
-        }
-
-        // Later chunks have to reproduce the unit table, which is easy against
-        // reserved address space and otherwise needs the whole table to fit one
-        // contiguous block.
         if constexpr (ArchCpuLocal::kHasReservedWindow) {
-            m_paged = table_span() <= usize(ARCH_CPU_LOCAL_CHUNK_SLOT) &&
-                      Status::Ok == m_aspace.init();
+            if (chunk_span() <= usize(ARCH_CPU_LOCAL_CHUNK_SLOT) &&
+                Status::Ok == m_aspace.init()) {
+                auto const slot = slot_at(m_next_slot);
+                // kGafBoot implies Gaf::Zero, so a unit's dynamic area starts
+                // clean.
+                if (Status::Ok == build_dense(slot, mm::kGafBoot)) {
+                    ++m_next_slot;
+                    m_base = slot;
+                    for (auto unit = u32(0); unit < MAX_CPU; ++unit) {
+                        m_unit_offset[unit] = isize(usize(unit) * unit_size());
+                    }
+                    m_layout = Layout::Dense;
+                    return Status::Ok;
+                }
+            }
         }
 
-        return Status::Ok;
-    }
-
-    auto CpuLocal::Mapper::table_span() const -> usize {
-        auto highest = usize(0);
-        for (auto unit = u32(0); unit < m_num_units; ++unit) {
-            highest = ustl::algorithms::max(highest, usize(m_unit_offset[unit]) + unit_size());
-        }
-        return highest;
-    }
-
-    auto CpuLocal::Mapper::can_grow() const -> bool {
-        if (m_paged) {
-            return m_next_slot < kNumSlots;
-        }
-
-        // Without address space a chunk is one contiguous block, so the table
-        // has to be dense -- which it only is when every unit came from the
-        // same group.
-        return m_num_groups == 1 &&
-               mm::get_order(align_up(table_span(), PAGE_SIZE) / PAGE_SIZE) <= MAX_FRAME_ORDER;
+        m_layout = Layout::Scattered;
+        return build_scattered();
     }
 
     auto CpuLocal::Mapper::alloc_chunk(Gaf gaf) -> VirtAddr {
-        auto const size = unit_size();
-        auto const span = table_span();
-
-        if (!m_paged) {
-            auto const order = mm::get_order(align_up(span, PAGE_SIZE) / PAGE_SIZE);
-            if (order > MAX_FRAME_ORDER) {
-                return 0;
-            }
-            auto frame = alloc_frames(NnId(m_g2n[0]), gaf, order);
-            return frame ? frame_to_virt(frame) : 0;
-        }
-
-        if (m_next_slot >= kNumSlots) {
+        if (!can_grow()) {
             return 0;
         }
 
-        auto const slot = VirtAddr(ARCH_CPU_LOCAL_VIRT_BASE) +
-                          m_next_slot * usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
-        auto const pages = size / PAGE_SIZE;
-
-        // One unit at a time, at the offset the table dictates, and from the
-        // node that unit belongs to.
-        for (auto group = u32(0), unit = u32(0); group < m_num_groups; ++group) {
-            auto const nid = NnId(m_g2n[group]);
-
-            for (auto i = u32(0); i < m_group_num_units[group]; ++i, ++unit) {
-                auto const va = slot + usize(m_unit_offset[unit]);
-
-                for (auto done = usize(0); done < pages;) {
-                    auto const remaining = pages - done;
-                    auto const order = ustl::algorithms::min(
-                        usize(ustl::bit_width(remaining)) - 1, usize(MAX_FRAME_ORDER));
-                    auto const n = usize(BIT(order));
-
-                    auto frame = alloc_frames(nid, gaf, order);
-                    if (!frame) {
-                        // Earlier units stay mapped; the slot is abandoned
-                        // rather than unwound, as nothing here is ever freed.
-                        return 0;
-                    }
-
-                    auto mapped = usize(0);
-                    if (Status::Ok != m_aspace.map(va + done * PAGE_SIZE, frame_to_phys(frame), n,
-                                                   kMapFlags, MapControl::ErrorIfExisting,
-                                                   &mapped)) {
-                        return 0;
-                    }
-
-                    done += n;
-                }
-            }
+        auto const slot = slot_at(m_next_slot);
+        if (Status::Ok != build_dense(slot, gaf)) {
+            return 0;
         }
 
         ++m_next_slot;
@@ -766,11 +789,11 @@ namespace {
             Self::access(g_current_cpunum, cpu) = cpu;
         }
 
-        // Move CPU 0 onto its real unit and release the provisional one. The
-        // unit size is a whole buddy order, so this hands back exactly what was
-        // taken.
+        // Move CPU 0 onto its real unit and release the provisional one. Only
+        // that allocation was rounded to a whole buddy order, so this hands back
+        // exactly what was taken without inflating unit_size() everywhere.
         attach_to_unit(0, g_cpu_offsets[0]);
-        free_frames(replica, mm::get_order(Mapper::unit_size() / PAGE_SIZE));
+        free_frames(replica, mm::get_order(Mapper::replica_span() / PAGE_SIZE));
 
         bootstrap(CpuMask::of(0));
     }
