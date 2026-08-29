@@ -1,0 +1,40 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/unwind/cfi.hpp",
+    "include/unwind/cursor.hpp",
+    "include/unwind/fde_index.hpp",
+    "include/unwind/registers.hpp",
+    "include/unwind/unwinder.hpp",
+  ]
+  visibility = [ "*" ]
+}
+
+source_set("unwind") {
+  sources = [
+    "unwind/cfi.cpp",
+    "unwind/cursor.cpp",
+    "unwind/fde_index.cpp",
+    "unwind/unwinder.cpp",
+  ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  # Hosted gtest programs — the default toolchain carries target identity
+  # (freestanding kernel) and has no hosted libc wiring for them.
+  public_deps = [
+    "tests:cfi($host_toolchain)",
+    "tests:unwind($host_toolchain)",
+  ]
+}
+
+group("kernel-tests") {
+}
+group("phys-tests") {
+}
+group("boot_tests") {
+}

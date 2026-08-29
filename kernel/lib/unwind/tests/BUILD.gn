@@ -1,0 +1,21 @@
+executable("cfi") {
+  testonly = true
+  sources = [ "cfi_test.cpp" ]
+  deps = [
+    "//kernel/lib/unwind:unwind",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+executable("unwind") {
+  testonly = true
+  sources = [ "unwind_test.cpp" ]
+  deps = [
+    "//kernel/lib/unwind:unwind",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

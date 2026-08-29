@@ -11,6 +11,7 @@ _libraries = [
   "lz4",
   "obi",
   "syscall",
+  "unwind",
 ]
 
 group("standalone-libs") {
@@ -27,6 +28,7 @@ group("tests") {
   deps = [
     "eftl:tests",
     "obi:tests",
+    "unwind:tests",
   ]
 }
 

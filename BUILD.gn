@@ -88,6 +88,10 @@ group("default") {
     # deps decoupled from that file before they can build at all.
     "//kernel/lib/obi:tests",
 
+    # The DWARF CFI unwinder core: pure, allocation-free parsing/evaluation
+    # over synthesised .eh_frame byte streams on the host.
+    "//kernel/lib/unwind:tests",
+
     # The bootshim's machine-independent half (memory-map conversion and
     # image placement) and the Multiboot2 parse it reads.  Neither needs a
     # machine, and until they were wired in here neither group was built by
