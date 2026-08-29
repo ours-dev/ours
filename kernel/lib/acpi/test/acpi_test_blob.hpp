@@ -152,7 +152,7 @@ class Machine {
     }
 
     /// Builds the XSDT and the ACPI 2.0 RSDP that points at it.
-    auto finish(u8 revision = sdt::Rsdp::kRevisionV2) -> void {
+    auto finish(u8 revision = sdt::Rsdp::REVISION_V2) -> void {
         // Seal every table now that the caller has finished writing its body.
         for (usize i = 0; i < tables_.size(); ++i) {
             reseal(i);
@@ -161,7 +161,7 @@ class Machine {
         auto const xsdt_len = sizeof(sdt::Xsdt) + tables_.size() * sizeof(u64);
         xsdt_ = alloc(xsdt_len);
         auto *xsdt = xsdt_->as<sdt::Xsdt>();
-        make_table_header(xsdt, sdt::Xsdt::kSignature, u32(xsdt_len));
+        make_table_header(xsdt, sdt::Xsdt::SIGNATURE, u32(xsdt_len));
         for (usize i = 0; i < tables_.size(); ++i) {
             auto const addr = u64(tables_[i]->phys());
             std::memcpy(xsdt_->data() + sizeof(sdt::Xsdt) + i * sizeof(u64), &addr, sizeof(addr));
@@ -171,7 +171,7 @@ class Machine {
         auto const rsdt_len = sizeof(sdt::Rsdt) + tables_.size() * sizeof(u32);
         rsdt_ = alloc(rsdt_len);
         auto *rsdt = rsdt_->as<sdt::Rsdt>();
-        make_table_header(rsdt, sdt::Rsdt::kSignature, u32(rsdt_len));
+        make_table_header(rsdt, sdt::Rsdt::SIGNATURE, u32(rsdt_len));
         for (usize i = 0; i < tables_.size(); ++i) {
             auto const addr = u32(tables_[i]->phys());
             std::memcpy(rsdt_->data() + sizeof(sdt::Rsdt) + i * sizeof(u32), &addr, sizeof(addr));
@@ -180,8 +180,8 @@ class Machine {
 
         rsdp_ = alloc(sizeof(sdt::RsdpV2));
         auto *rsdp = rsdp_->as<sdt::RsdpV2>();
-        rsdp->v1.sig_low = sdt::Rsdp::kSignatureLow;
-        rsdp->v1.sig_high = sdt::Rsdp::kSignatureHigh;
+        rsdp->v1.sig_low = sdt::Rsdp::SIGNATURE_LOW;
+        rsdp->v1.sig_high = sdt::Rsdp::SIGNATURE_HIGH;
         rsdp->v1.revision = revision;
         rsdp->v1.rsdt_addr = u32(rsdt_->phys());
         std::memcpy(rsdp->v1.oem_id, "OURS  ", 6);

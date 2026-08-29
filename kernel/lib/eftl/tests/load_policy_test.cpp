@@ -24,8 +24,8 @@ using TwoSegments = ustl::collections::StaticVec<T, 2>;
 
 using Policy = eftl::elf::KernelElfLoadPolicy<Traits, TwoSegments, eftl::elf::Arch::X86_64, 0x1000>;
 
-constexpr u16 K_ET_REL = 1;
-constexpr u16 K_ET_EXEC = 2;
+constexpr u16 ET_REL = 1;
+constexpr u16 ET_EXEC = 2;
 
 template <typename T, usize Size>
 auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
@@ -34,8 +34,8 @@ auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
 
 auto make_header(u16 type) -> Header {
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = type;
@@ -46,8 +46,8 @@ auto make_header(u16 type) -> Header {
 }
 
 template <usize SegmentCount>
-auto make_image(u16 type, std::array<Segment, SegmentCount> const &segments,
-                u64 entrypoint) -> std::array<u8, 1024> {
+auto make_image(u16 type, std::array<Segment, SegmentCount> const &segments, u64 entrypoint)
+    -> std::array<u8, 1024> {
     std::array<u8, 1024> image{};
     auto header = make_header(type);
     header.e_entry = entrypoint;
@@ -62,9 +62,8 @@ auto make_image(u16 type, std::array<Segment, SegmentCount> const &segments,
     return image;
 }
 
-auto load_segment(u64 file_offset, u64 virtual_start, u64 file_size,
-                  u64 memory_size, u64 alignment, eftl::elf::SegPerms permissions)
-    -> Segment {
+auto load_segment(u64 file_offset, u64 virtual_start, u64 file_size, u64 memory_size, u64 alignment,
+                  eftl::elf::SegPerms permissions) -> Segment {
     Segment segment{};
     segment.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     segment.p_flags = static_cast<u32>(permissions);
@@ -82,7 +81,7 @@ auto test_makes_sparse_two_segment_executable_plan() -> int {
                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     auto const second = load_segment(0x280, 0x402000, 0x18, 0x30, 0x8,
                                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
-    auto image = make_image(K_ET_EXEC, std::array{first, second}, 0x400208);
+    auto image = make_image(ET_EXEC, std::array{first, second}, 0x400208);
     for (usize index = 0; index < 0x10; ++index) {
         image[0x200 + index] = static_cast<u8>(index + 1);
     }
@@ -127,7 +126,7 @@ auto test_makes_sparse_two_segment_executable_plan() -> int {
 auto test_rejects_rel_after_structural_parse() -> int {
     auto const load = load_segment(0x100, 0x400100, 0x10, 0x10, 0x10,
                                    eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
-    auto const image = make_image(K_ET_REL, std::array{load}, 0x400100);
+    auto const image = make_image(ET_REL, std::array{load}, 0x400100);
     auto const parsed = File::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
@@ -141,7 +140,7 @@ auto test_rejects_rel_after_structural_parse() -> int {
 auto test_rejects_unmapped_entrypoint() -> int {
     auto const load = load_segment(0x100, 0x400100, 0x10, 0x20, 0x10,
                                    eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
-    auto const image = make_image(K_ET_EXEC, std::array{load}, 0x401000);
+    auto const image = make_image(ET_EXEC, std::array{load}, 0x401000);
     auto const parsed = File::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
@@ -158,7 +157,7 @@ auto test_rejects_segment_capacity_excess() -> int {
                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     auto const second = load_segment(0x200, 0x400200, 0x10, 0x10, 0x10,
                                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
-    auto const image = make_image(K_ET_EXEC, std::array{first, second}, 0x400100);
+    auto const image = make_image(ET_EXEC, std::array{first, second}, 0x400100);
     auto const parsed = File::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
@@ -179,8 +178,8 @@ auto test_rejects_segment_capacity_excess() -> int {
 auto test_rejects_wrong_target_machine() -> int {
     auto const load = load_segment(0x100, 0x400100, 0x10, 0x10, 0x10,
                                    eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
-    auto image = make_image(K_ET_EXEC, std::array{load}, 0x400100);
-    auto header = make_header(K_ET_EXEC);
+    auto image = make_image(ET_EXEC, std::array{load}, 0x400100);
+    auto header = make_header(ET_EXEC);
     header.e_machine = static_cast<u16>(eftl::elf::Arch::AARCH64);
     header.e_entry = 0x400100;
     header.e_phoff = sizeof(Header);
@@ -209,7 +208,7 @@ auto test_rejects_overlapping_memory_ranges() -> int {
                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     auto const second = load_segment(0x200, 0x400120, 0x10, 0x40, 0x10,
                                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
-    auto const image = make_image(K_ET_EXEC, std::array{first, second}, 0x400100);
+    auto const image = make_image(ET_EXEC, std::array{first, second}, 0x400100);
     auto const parsed = File::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
@@ -229,7 +228,7 @@ auto test_rejects_byte_disjoint_segments_sharing_a_mapping_page() -> int {
                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     auto const second = load_segment(0x200, 0x400200, 0x10, 0x100, 1,
                                      eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
-    auto const image = make_image(K_ET_EXEC, std::array{first, second}, 0x400100);
+    auto const image = make_image(ET_EXEC, std::array{first, second}, 0x400100);
     auto const parsed = File::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
@@ -254,11 +253,11 @@ auto test_elf32_top_address_uses_u64_interval_endpoints() -> int {
 
     std::array<u8, 512> image{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
-    header.e_type = K_ET_EXEC;
+    header.e_type = ET_EXEC;
     header.e_machine = static_cast<u16>(eftl::elf::Arch::I386);
     header.e_version = 1;
     header.e_ehsize = sizeof(Header32);

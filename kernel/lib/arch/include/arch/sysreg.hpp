@@ -42,7 +42,7 @@ struct SysRegIo {
 /// installed via `ARCH_*_SYSREG(Derived, "regname")` right after Derived's
 /// definition.
 template <typename Derived, typename Layout>
-class SysReg : public RegisterLayout<Derived, Layout> {
+class SysReg: public RegisterLayout<Derived, Layout> {
     using Base = RegisterLayout<Derived, Layout>;
 
   public:
@@ -71,16 +71,16 @@ class SysReg : public RegisterLayout<Derived, Layout> {
 //   class Cr0 : public SysReg<Cr0, ...> { ... };
 //   ARCH_X86_SYSREG(Cr0, "cr0");
 #if defined(__x86_64__) || defined(__i386__)
-#define ARCH_X86_SYSREG(Tag, RegName)                                  \
-    template <>                                                       \
-    inline auto SysRegIo<Tag>::read() -> usize {                      \
-        usize value;                                                  \
-        asm volatile("mov %%" RegName ", %0" : "=r"(value));          \
-        return value;                                                 \
-    }                                                                 \
-    template <>                                                       \
-    inline auto SysRegIo<Tag>::write(usize value) -> void {           \
-        asm volatile("mov %0, %%" RegName : : "r"(value) : "memory"); \
+#define ARCH_X86_SYSREG(Tag, RegName)                                                              \
+    template <>                                                                                    \
+    inline auto SysRegIo<Tag>::read() -> usize {                                                   \
+        usize value;                                                                               \
+        asm volatile("mov %%" RegName ", %0" : "=r"(value));                                       \
+        return value;                                                                              \
+    }                                                                                              \
+    template <>                                                                                    \
+    inline auto SysRegIo<Tag>::write(usize value) -> void {                                        \
+        asm volatile("mov %0, %%" RegName : : "r"(value) : "memory");                              \
     }
 #else
 // Not callable on non-x86; using it (via SysReg<Tag,...>::read/write) will

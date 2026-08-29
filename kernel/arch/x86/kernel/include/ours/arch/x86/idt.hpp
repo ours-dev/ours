@@ -6,13 +6,13 @@
 #include <arch/x86/interrupt.hpp>
 
 namespace ours {
-    auto x86_init_idt_early() -> void;
+auto x86_init_idt_early() -> void;
 
-    auto x86_setup_idt() -> void;
+auto x86_setup_idt() -> void;
 
-    auto x86_load_idt() -> void;
+auto x86_load_idt() -> void;
 
-    auto x86_dump_idt() -> void;
+auto x86_dump_idt() -> void;
 
 } // namespace ours
 

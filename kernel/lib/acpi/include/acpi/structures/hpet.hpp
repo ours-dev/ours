@@ -28,7 +28,7 @@ struct PACKED HpetTable {
     u16 minimum_tick;
     u8 page_protection;
 
-    constexpr static Signature kSignature = Signature::from_chars("HPET");
+    constexpr static Signature SIGNATURE = Signature::from_chars("HPET");
 };
 static_assert(sizeof(HpetTable) == 56);
 

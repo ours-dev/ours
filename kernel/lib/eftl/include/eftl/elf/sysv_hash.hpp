@@ -35,16 +35,15 @@ class SysvHashTableView final {
         }
         auto const words =
             Words::from_checked_bytes(entries, entries.size() / sizeof(Word), decoder);
-        if (words.is_none() || words->size() < K_HEADER_WORDS) {
+        if (words.is_none() || words->size() < HEADER_WORDS) {
             return ustl::NONE;
         }
 
         auto const bucket_count = static_cast<usize>((*words)[0]);
         auto const chain_count = static_cast<usize>((*words)[1]);
-        if (bucket_count == 0 ||
-            bucket_count > std::numeric_limits<usize>::max() - K_HEADER_WORDS ||
-            chain_count > std::numeric_limits<usize>::max() - K_HEADER_WORDS - bucket_count ||
-            words->size() != K_HEADER_WORDS + bucket_count + chain_count ||
+        if (bucket_count == 0 || bucket_count > std::numeric_limits<usize>::max() - HEADER_WORDS ||
+            chain_count > std::numeric_limits<usize>::max() - HEADER_WORDS - bucket_count ||
+            words->size() != HEADER_WORDS + bucket_count + chain_count ||
             chain_count != symbols.size()) {
             return ustl::NONE;
         }
@@ -69,7 +68,7 @@ class SysvHashTableView final {
     [[nodiscard]]
     auto bucket_at(usize index) const noexcept -> ustl::Option<Word> {
         if (index < m_bucket_count) {
-            return m_words.at(K_HEADER_WORDS + index);
+            return m_words.at(HEADER_WORDS + index);
         }
         return ustl::NONE;
     }
@@ -77,7 +76,7 @@ class SysvHashTableView final {
     [[nodiscard]]
     auto chain_at(usize symbol_index) const noexcept -> ustl::Option<Word> {
         if (symbol_index < m_chain_count) {
-            return m_words.at(K_HEADER_WORDS + m_bucket_count + symbol_index);
+            return m_words.at(HEADER_WORDS + m_bucket_count + symbol_index);
         }
         return ustl::NONE;
     }
@@ -130,7 +129,7 @@ class SysvHashTableView final {
     }
 
   private:
-    static constexpr usize K_HEADER_WORDS = 2;
+    static constexpr usize HEADER_WORDS = 2;
 
     constexpr SysvHashTableView(Words words, Symbols symbols, usize bucket_count,
                                 usize chain_count) noexcept

@@ -42,8 +42,7 @@ class TableView final {
       private:
         friend class TableView;
 
-        constexpr Iterator(u8 const *data, usize const index,
-                           Decoder const decoder) noexcept
+        constexpr Iterator(u8 const *data, usize const index, Decoder const decoder) noexcept
             : m_data(data), m_index(index), m_decoder(decoder) {}
 
         u8 const *m_data{nullptr};
@@ -114,8 +113,7 @@ class TableView final {
         return entry;
     }
 
-    constexpr TableView(u8 const *data, usize const count,
-                        Decoder const decoder) noexcept
+    constexpr TableView(u8 const *data, usize const count, Decoder const decoder) noexcept
         : m_data(data), m_count(count), m_decoder(decoder) {}
 
     [[nodiscard]]

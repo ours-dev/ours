@@ -3,7 +3,6 @@
 #ifndef MULTIBOOT_VIEW_HPP
 #define MULTIBOOT_VIEW_HPP 1
 
-#include <multiboot/multiboot2.hpp>
 #include <ours/status.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
@@ -13,6 +12,8 @@
 
 #include <cstdint>
 #include <cstring>
+
+#include <multiboot/multiboot2.hpp>
 
 namespace multiboot {
 using ours::Status;

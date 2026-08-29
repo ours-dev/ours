@@ -12,25 +12,23 @@
 #include <ustl/function/bind.hpp>
 #include <ustl/mem/object.hpp>
 #include <ustl/util/enum_sequence.hpp>
+
 #include <algorithm>
 namespace ours::mm {
 namespace {
     GKTL_COUNTER(pm_node_local_hit, "pm.node.local.hit");
     GKTL_COUNTER(pm_node_local_miss, "pm.node.local.miss");
 
-    INIT_DATA
-    Pfn g_zone_lower_pfn[NR_ZONES_PER_NODE];
+    INIT_DATA Pfn g_zone_lower_pfn[NR_ZONES_PER_NODE];
 
-    INIT_DATA
-    Pfn g_zone_upper_pfn[NR_ZONES_PER_NODE];
+    INIT_DATA Pfn g_zone_upper_pfn[NR_ZONES_PER_NODE];
 
-    FORCE_INLINE
-    auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
-        return std::clamp(pfn, g_zone_lower_pfn[static_cast<usize>(ztype)], g_zone_upper_pfn[static_cast<usize>(ztype)]);
+    FORCE_INLINE auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
+        return std::clamp(pfn, g_zone_lower_pfn[static_cast<usize>(ztype)],
+                          g_zone_upper_pfn[static_cast<usize>(ztype)]);
     }
 
-    FORCE_INLINE
-    auto gaf_to_allocation_control(Gaf gaf) -> AllocationControl {
+    FORCE_INLINE auto gaf_to_allocation_control(Gaf gaf) -> AllocationControl {
         return AllocationControl();
     }
 
@@ -58,8 +56,7 @@ ZoneQueues::insert_remote_queue<ZoneQueues::QueueType::SharedSequential>(ZoneQue
     -> void {}
 
 // Automatically dispatches insertion logic among different queues.
-FORCE_INLINE
-auto ZoneQueues::insert_remote_queue(ZoneQueue const &queue) -> void {
+FORCE_INLINE auto ZoneQueues::insert_remote_queue(ZoneQueue const &queue) -> void {
     [&]<QueueType... Types>(ustl::EnumSequence<QueueType, Types...>) {
         (insert_remote_queue<Types>(queue), ...);
     }(ustl::MakeEnumSequenceT<QueueType, LocalContiguous + 1, MaxNumQueues>());
@@ -93,7 +90,7 @@ static auto to_string(ZoneQueues::QueueType type) -> char const * {
         case ZoneQueues::SharedSequential:
             return "s-seq";
         case ZoneQueues::MaxNumQueues:
-            break;  // Sentinel, not a queue.
+            break; // Sentinel, not a queue.
     }
 
     return "Unknown";
@@ -167,7 +164,7 @@ decltype(PmNode::g_nodes) PmNode::g_nodes;
 decltype(PmNode::g_num_nodes) PmNode::g_num_nodes;
 decltype(PmNode::g_num_online_nodes) PmNode::g_num_online_nodes;
 decltype(PmNode::g_node_distance) PmNode::g_node_distance;
-decltype(PmNode::g_allowed_gaf) PmNode::g_allowed_gaf = kGafBoot;
+decltype(PmNode::g_allowed_gaf) PmNode::g_allowed_gaf = GAF_BOOT;
 
 PmNode::PmNode(NnId nid)
     : m_canary()
@@ -184,7 +181,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
 
     // Records all nodes that own a usable memory range.
     auto const visit_status =
-        EarlyMem::visit_usable(EarlyMem::min_address(), EarlyMem::max_address(), bootmem::kAnyNode,
+        EarlyMem::visit_usable(EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
                                [](bootmem::MemoryRegion const region) {
                                    PmNode::set_state(region.node, State::Possible);
                                    return true;
@@ -500,8 +497,7 @@ auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
 }
 
 auto PmNode::free_frames(PmFrame::List *list) -> void {
-    list->clear_and_dispose(
-        [](PmFrame *frame) noexcept { free_frames(frame, frame->order()); });
+    list->clear_and_dispose([](PmFrame *frame) noexcept { free_frames(frame, frame->order()); });
 }
 
 auto PmNode::dump() const -> void {

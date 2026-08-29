@@ -5,23 +5,24 @@
 #define OURS_KOID_HPP 1
 
 #include <ours/types.hpp>
-
 #include <ustl/sync/atomic.hpp>
 
 namespace ours {
-    /// Reserved: KoIdGenerator never hands this out, so callers can use it to
-    /// mean "no object".
-    constexpr KoId KOID_INVALID = 0;
+/// Reserved: KoIdGenerator never hands this out, so callers can use it to
+/// mean "no object".
+constexpr KoId KOID_INVALID = 0;
 
-    class KoIdGenerator {
-        using Self = KoIdGenerator;
-      public:
-        static auto generate(KoId count = 1) -> KoId {
-            return g_tracker.fetch_add(count, ustl::sync::MemoryOrder::Relaxed);
-        }
-      private:
-        static inline ustl::sync::Atomic<KoId> g_tracker {KOID_INVALID + 1};
-    };
+class KoIdGenerator {
+    using Self = KoIdGenerator;
+
+  public:
+    static auto generate(KoId count = 1) -> KoId {
+        return g_tracker.fetch_add(count, ustl::sync::MemoryOrder::Relaxed);
+    }
+
+  private:
+    static inline ustl::sync::Atomic<KoId> g_tracker{KOID_INVALID + 1};
+};
 } // namespace ours
 
 #endif // #ifndef OURS_KOID_HPP

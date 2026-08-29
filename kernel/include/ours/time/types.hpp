@@ -6,10 +6,10 @@
 #include <ours/syscall/time.hpp>
 
 namespace ours::time {
-    class Timer;
-    class TimerQueue;
-    class ClockSource;
-    class ClockEventDevice;
+class Timer;
+class TimerQueue;
+class ClockSource;
+class ClockEventDevice;
 
 } // namespace ours::time
 

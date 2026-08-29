@@ -4,35 +4,31 @@
 #ifndef OURS_COMPILER_HPP
 #define OURS_COMPILER_HPP 1
 
-#define USED                        [[gnu::used]]
-#define NAKED	                      [[gnu::naked]]
-#define PACKED	                    [[gnu::packed]]
+#define USED [[gnu::used]]
+#define NAKED [[gnu::naked]]
+#define PACKED [[gnu::packed]]
 
-#define NO_INLINE	                  [[gnu::noinline]]
-#define NO_RETURN                   [[noreturn]]
-// The bare attribute. This is the form to use where a declaration specifier
-// cannot go -- on a lambda, for instance: `[] FORCE_INLINE_ATTR(int x) {...}`.
+#define NO_INLINE [[gnu::noinline]]
+#define NO_RETURN [[noreturn]]
+// An attribute and nothing else. Note that it only tells the optimiser what to
+// do -- it confers no inline linkage, so a function *defined* in a header still
+// needs `inline` written out, or every translation unit including it emits its
+// own copy and the linker reports a duplicate symbol.
 #if defined(_MSC_VER)
-#  define FORCE_INLINE_ATTR         [[msvc::force_inline]]
+#define FORCE_INLINE [[msvc::force_inline]]
 #else
-#  define FORCE_INLINE_ATTR         [[gnu::always_inline]]
+#define FORCE_INLINE [[gnu::always_inline]]
 #endif
 
-// The attribute *plus* `inline`, which is what a function definition wants.
-//
-// always_inline only tells the optimiser what to do; it does not give the
-// function inline linkage. A free function defined in a header and marked with
-// the bare attribute alone therefore keeps external linkage and is emitted by
-// every translation unit that includes it, which the linker reports as a
-// duplicate symbol -- and only at link time, so it stays invisible for as long
-// as the kernel does not link.
-#define FORCE_INLINE                FORCE_INLINE_ATTR inline
+// Spelling used where a declaration specifier cannot go -- on a lambda, for
+// instance: `[] FORCE_INLINE_ATTR(int x) {...}`.
+#define FORCE_INLINE_ATTR FORCE_INLINE
 
-#define WEAK_LINK                   [[gnu::weak]]
-#define LINK_SECTION(name)          [[gnu::section(name)]]
-#define LINK_NAME(name)             asm(name)
+#define WEAK_LINK [[gnu::weak]]
+#define LINK_SECTION(name) [[gnu::section(name)]]
+#define LINK_NAME(name) asm(name)
 
-#define NO_MANGLE                   extern "C"
+#define NO_MANGLE extern "C"
 
 // Part of physload's module ABI.
 //
@@ -45,33 +41,33 @@
 // apply.  Keeping the definitions alive is the link's job -- physload's
 // first pass runs without --gc-sections so that a function only modules
 // call still reaches the export table.
-#define PHYS_EXPORT                 [[gnu::visibility("default")]]
+#define PHYS_EXPORT [[gnu::visibility("default")]]
 
 #if defined(_WIN32)
-#  define KERNEL_API
+#define KERNEL_API
 #else
-#  define KERNEL_API __attribute__((visibility("hidden")))
+#define KERNEL_API __attribute__((visibility("hidden")))
 #endif
 
 // The given C++ class or struct need not have a unique address when part of
 // a larger struct or class, but can be safely collapsed into a zero-byte
 // object by the compiler.
 #if defined(__ASSEMBLER__) || defined(__ASSEMBLY__)
-#   define NO_UNIQUE_ADDRESS
+#define NO_UNIQUE_ADDRESS
 #elif __has_cpp_attribute(no_unique_address)
-#   define NO_UNIQUE_ADDRESS [[no_unique_address]]
+#define NO_UNIQUE_ADDRESS [[no_unique_address]]
 #elif __has_cpp_attribute(msvc::no_unique_address)
 // msvc targets, as used by efi, have a different attribute name, even when
 // targeting C++20.
-#   define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
 #else
-#   define NO_UNIQUE_ADDRESS
+#define NO_UNIQUE_ADDRESS
 #endif
 
 #ifdef __clang__
-#   define THREAD_ANNOTATE(x) __attribute__((x))
+#define THREAD_ANNOTATE(x) __attribute__((x))
 #else
-#   define THREAD_ANNOTATE(...)
+#define THREAD_ANNOTATE(...)
 #endif
 
 #define TA_CAPABILITY(x) THREAD_ANNOTATE(__capability__(x))
@@ -79,8 +75,7 @@
 #define TA_ACQUIRE(...) THREAD_ANNOTATE(__acquire_capability__(__VA_ARGS__))
 #define TA_ACQUIRE_SHARED(...) THREAD_ANNOTATE(__acquire_shared_capability__(__VA_ARGS__))
 #define TA_TRY_ACQUIRE(...) THREAD_ANNOTATE(__try_acquire_capability__(__VA_ARGS__))
-#define TA_TRY_ACQUIRE_SHARED(...) \
-  THREAD_ANNOTATE(__try_acquire_shared_capability__(__VA_ARGS__))
+#define TA_TRY_ACQUIRE_SHARED(...) THREAD_ANNOTATE(__try_acquire_shared_capability__(__VA_ARGS__))
 // Neither ACQUIRED_BEFORE nor ACQUIRED_AFTER are implemented in clang. Users of these macros must
 // not rely upon them to catch lock ordering bugs, and must treat them as documentation only.
 // See:

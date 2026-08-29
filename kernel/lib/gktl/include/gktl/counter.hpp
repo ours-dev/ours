@@ -44,13 +44,11 @@ class Counter {
     }
 
     auto max_across_all_cpus() -> isize {
-        return operate_across_all_cpus(std::numeric_limits<isize>::min(),
-                                       std::greater<isize>());
+        return operate_across_all_cpus(std::numeric_limits<isize>::min(), std::greater<isize>());
     }
 
     auto min_across_all_cpus() -> isize {
-        return operate_across_all_cpus(std::numeric_limits<isize>::max(),
-                                       std::less<isize>());
+        return operate_across_all_cpus(std::numeric_limits<isize>::max(), std::less<isize>());
     }
 
     auto set(isize value) const -> void {

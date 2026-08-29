@@ -9,72 +9,72 @@
 #include <ours/types.hpp>
 
 namespace {
-    // COM1.  The kernel runs in its own image and cannot reach physload's
-    // console, so it drives the UART itself.  No initialization: the boot
-    // shim has already configured the port, and re-initializing it here
-    // would hide a chain that got this far with a broken console.
-    //
-    // This is the same port ours::phys::Handoff::uart names -- kept as its
-    // own constant rather than read from the handoff because the first
-    // write below happens before the handoff pointer is even checked for
-    // null, the same way a real kernel's own bootstrap console has to
-    // assume something before it has verified anything.  handoff->uart is
-    // checked further down instead, as a report on whether physload's copy
-    // agrees with this one.
-    constexpr u16 kComPort = 0x3F8;
-    constexpr u16 kComLineStatus = kComPort + 5;
-    constexpr u8 kTransmitterEmpty = 1U << 5;
+// COM1.  The kernel runs in its own image and cannot reach physload's
+// console, so it drives the UART itself.  No initialization: the boot
+// shim has already configured the port, and re-initializing it here
+// would hide a chain that got this far with a broken console.
+//
+// This is the same port ours::phys::Handoff::uart names -- kept as its
+// own constant rather than read from the handoff because the first
+// write below happens before the handoff pointer is even checked for
+// null, the same way a real kernel's own bootstrap console has to
+// assume something before it has verified anything.  handoff->uart is
+// checked further down instead, as a report on whether physload's copy
+// agrees with this one.
+constexpr u16 COM_PORT = 0x3F8;
+constexpr u16 COM_LINE_STATUS = COM_PORT + 5;
+constexpr u8 TRANSMITTER_EMPTY = 1U << 5;
 
-    FORCE_INLINE auto outb(u16 const port, u8 const value) -> void {
-        __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+FORCE_INLINE auto outb(u16 const port, u8 const value) -> void {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+FORCE_INLINE auto inb(u16 const port) -> u8 {
+    u8 value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
+auto write_char(char const character) -> void {
+    while ((inb(COM_LINE_STATUS) & TRANSMITTER_EMPTY) == 0) {
     }
+    outb(COM_PORT, static_cast<u8>(character));
+}
 
-    FORCE_INLINE auto inb(u16 const port) -> u8 {
-        u8 value;
-        __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
-        return value;
-    }
-
-    auto write_char(char const character) -> void {
-        while ((inb(kComLineStatus) & kTransmitterEmpty) == 0) {
+auto write(char const *text) -> void {
+    for (; *text != '\0'; ++text) {
+        if (*text == '\n') {
+            write_char('\r');
         }
-        outb(kComPort, static_cast<u8>(character));
+        write_char(*text);
     }
+}
 
-    auto write(char const *text) -> void {
-        for (; *text != '\0'; ++text) {
-            if (*text == '\n') {
-                write_char('\r');
-            }
-            write_char(*text);
-        }
+auto write_hex(u64 value) -> void {
+    char buffer[16];
+    for (auto index = usize{0}; index < sizeof(buffer); ++index) {
+        auto const nibble = static_cast<u8>(value & 0xF);
+        buffer[sizeof(buffer) - 1 - index] =
+            static_cast<char>(nibble < 10 ? '0' + nibble : 'a' + (nibble - 10));
+        value >>= 4;
     }
+    write("0x");
+    for (auto const character: buffer) {
+        write_char(character);
+    }
+}
 
-    auto write_hex(u64 value) -> void {
-        char buffer[16];
-        for (auto index = usize{0}; index < sizeof(buffer); ++index) {
-            auto const nibble = static_cast<u8>(value & 0xF);
-            buffer[sizeof(buffer) - 1 - index] =
-                static_cast<char>(nibble < 10 ? '0' + nibble : 'a' + (nibble - 10));
-            value >>= 4;
-        }
-        write("0x");
-        for (auto const character: buffer) {
-            write_char(character);
-        }
-    }
+auto write_line(char const *label, u64 const value) -> void {
+    write(label);
+    write_hex(value);
+    write("\n");
+}
 
-    auto write_line(char const *label, u64 const value) -> void {
-        write(label);
-        write_hex(value);
-        write("\n");
+NO_RETURN auto halt() -> void {
+    for (;;) {
+        __asm__ volatile("cli; hlt");
     }
-
-    NO_RETURN auto halt() -> void {
-        for (;;) {
-            __asm__ volatile("cli; hlt");
-        }
-    }
+}
 } // namespace
 
 /// Entered from entry-x86.S with the pointer physboot passed to the kernel.
@@ -113,9 +113,8 @@ NO_MANGLE NO_RETURN auto fake_kernel_main(ours::phys::Handoff const *handoff) ->
         halt();
     }
     // Proves the handoff plumbing actually carried this, not just that this
-    // file's own hardcoded kComPort happens to work regardless.
-    if (handoff->uart.kind != ours::phys::UartKind::X86Pio16550 ||
-        handoff->uart.base != kComPort) {
+    // file's own hardcoded COM_PORT happens to work regardless.
+    if (handoff->uart.kind != ours::phys::UartKind::X86Pio16550 || handoff->uart.base != COM_PORT) {
         write("[fake-kernel] FAIL: handoff uart does not match the port in use\n");
         halt();
     }

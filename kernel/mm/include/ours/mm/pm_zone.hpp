@@ -15,6 +15,7 @@
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
 #include <ustl/sync/atomic.hpp>
+
 #include <array>
 
 namespace ours::mm {
@@ -63,7 +64,7 @@ class PmZone {
 
   public:
     /// FIXME(SmallHuaZi) The cache per cpu has not been finished
-    constexpr static usize const kMaxPcpuCacheOrder = 0;
+    constexpr static usize const MAX_PCPU_CACHE_ORDER = 0;
 
     enum class WaterMark {
         Critical,   // 0 - %10
@@ -138,9 +139,8 @@ class PmZone {
 
     friend class PmNode;
 
-    FORCE_INLINE
-    static auto is_order_within_pcpu_cache_limit(usize order) -> bool {
-        return order < kMaxPcpuCacheOrder;
+    FORCE_INLINE static auto is_order_within_pcpu_cache_limit(usize order) -> bool {
+        return order < MAX_PCPU_CACHE_ORDER;
     }
 
     auto finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void;
@@ -180,7 +180,7 @@ class PmZone {
 
     std::array<PmFrame::List, NR_FRAME_ORDERS> m_frames;
 
-    typedef FramePcpuCache<kMaxPcpuCacheOrder> PcpuCache;
+    typedef FramePcpuCache<MAX_PCPU_CACHE_ORDER> PcpuCache;
     CpuLocal::PerCpu<PcpuCache> m_frame_cache;
 
     FrameSet m_fset;

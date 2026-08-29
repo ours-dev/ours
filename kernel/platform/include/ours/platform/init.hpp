@@ -11,7 +11,7 @@
 #include <ustl/traits/underlying.hpp>
 
 namespace ours {
-constexpr static auto const kDeltaBetweenPlatformInitLevels = 0x100;
+constexpr static auto const DELTA_BETWEEN_PLATFORM_INIT_LEVELS = 0x100;
 
 enum class PlatformInitLevel {
     /// Represents the entry point for platform-specific early initialization.
@@ -34,9 +34,9 @@ enum class PlatformInitLevel {
     /// - **Critical Constraints**:
     ///   Must complete *before* PMM initializes its internal allocators. All gathered metadata shall be
     ///   stored in pre-allocated architecture-specific buffers to avoid premature heap usage.
-    PrePmm = StartUp + kDeltaBetweenPlatformInitLevels,
+    PrePmm = StartUp + DELTA_BETWEEN_PLATFORM_INIT_LEVELS,
 
-    Pmm = PrePmm + kDeltaBetweenPlatformInitLevels,
+    Pmm = PrePmm + DELTA_BETWEEN_PLATFORM_INIT_LEVELS,
 };
 
 FORCE_INLINE constexpr static auto operator+(PlatformInitLevel level, i32 offset)
@@ -51,16 +51,14 @@ FORCE_INLINE constexpr static auto operator-(PlatformInitLevel level, i32 offset
 
 INIT_CODE FORCE_INLINE constexpr static auto set_platform_init_level(PlatformInitLevel level)
     -> void {
-    gktl::set_init_level(gktl::InitLevel(level), kDeltaBetweenPlatformInitLevels);
+    gktl::set_init_level(gktl::InitLevel(level), DELTA_BETWEEN_PLATFORM_INIT_LEVELS);
 }
 
 /// The followings are private to platform code.
 
-INIT_CODE
-auto platform_init_pmm() -> void;
+INIT_CODE auto platform_init_pmm() -> void;
 
-INIT_CODE
-auto platform_init_keyboard() -> void;
+INIT_CODE auto platform_init_keyboard() -> void;
 
 /// The followings just be public to `start_kernel`
 

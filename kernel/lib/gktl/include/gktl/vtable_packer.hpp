@@ -19,7 +19,7 @@ struct VtablePacker {
             //
             // In OS based C, the begin part of these kin of function in OPS design is
             // usually like the following.
-            return [] FORCE_INLINE_ATTR(T * self, Args... args) {
+            return [] FORCE_INLINE_ATTR(T *self, Args... args) {
                 auto impl = ustl::mem::container_of(self, Member);
                 return (impl->*Method)(ustl::forward<Args>(args)...);
             };

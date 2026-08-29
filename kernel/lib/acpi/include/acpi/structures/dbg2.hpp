@@ -38,7 +38,7 @@ struct PACKED Table {
     u32 device_info_offset;
     u32 device_info_count;
 
-    constexpr static Signature kSignature = Signature::from_chars("DBG2");
+    constexpr static Signature SIGNATURE = Signature::from_chars("DBG2");
 };
 static_assert(sizeof(Table) == 44);
 

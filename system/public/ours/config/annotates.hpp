@@ -5,4 +5,4 @@
 
 #include <ours/compiler.hpp>
 
-#endif  // OURS_CONFIG_ANNOTATES_HPP
+#endif // OURS_CONFIG_ANNOTATES_HPP

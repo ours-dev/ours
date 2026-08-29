@@ -4,11 +4,11 @@
 #include <cstdint>
 
 namespace {
-    struct alignas(32) Value {
-        explicit Value(std::uint32_t value) : value(value) {}
+struct alignas(32) Value {
+    explicit Value(std::uint32_t value) : value(value) {}
 
-        std::uint32_t value;
-    };
+    std::uint32_t value;
+};
 } // namespace
 
 auto main() -> int {

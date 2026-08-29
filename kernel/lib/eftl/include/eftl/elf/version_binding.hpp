@@ -47,14 +47,14 @@ class VersionResolver final {
         }
         auto const index = Versions::version_index(version.value());
         auto const hidden = Versions::is_hidden(version.value());
-        if (index == K_LOCAL_INDEX) {
+        if (index == LOCAL_INDEX) {
             return ustl::some(Binding{
                 .m_kind = VersionBindingKind::Local,
                 .m_index = index,
                 .m_hidden = hidden,
             });
         }
-        if (index == K_GLOBAL_INDEX) {
+        if (index == GLOBAL_INDEX) {
             return ustl::some(Binding{
                 .m_kind = VersionBindingKind::Global,
                 .m_index = index,
@@ -147,8 +147,8 @@ class VersionResolver final {
         bool m_hidden{false};
     };
 
-    static constexpr Version K_LOCAL_INDEX = 0;
-    static constexpr Version K_GLOBAL_INDEX = 1;
+    static constexpr Version LOCAL_INDEX = 0;
+    static constexpr Version GLOBAL_INDEX = 1;
 
     [[nodiscard]]
     static auto version_at(Versions const &versions, usize symbol_index) noexcept

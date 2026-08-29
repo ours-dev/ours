@@ -1,15 +1,15 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cstddef>
-
 #include <ustl/collections/intrusive/circular_slist_algorithms.hpp>
 #include <ustl/collections/intrusive/detail/slist_node.hpp>
 
+#include <cstddef>
+
 namespace {
-    using Node = ustl::collections::intrusive::SlistNode<void *>;
-    using Traits = ustl::collections::intrusive::SlistNodeTraits<void *>;
-    using Algorithms = ustl::collections::intrusive::CircularSlistAlgorithms<Traits>;
+using Node = ustl::collections::intrusive::SlistNode<void *>;
+using Traits = ustl::collections::intrusive::SlistNodeTraits<void *>;
+using Algorithms = ustl::collections::intrusive::CircularSlistAlgorithms<Traits>;
 } // namespace
 
 auto main() -> int {
@@ -34,9 +34,11 @@ auto main() -> int {
         Algorithms::end_node(static_cast<const Node *>(&header)) != &header ||
         Algorithms::get_previous_node(&first) != &header ||
         Algorithms::get_previous_previous_node(&first) != &third ||
-        Algorithms::move_backwards(&second, 0) != nullptr || Algorithms::move_forward(&second, 0) != nullptr ||
-        Algorithms::move_backwards(&second, 3) != nullptr || Algorithms::move_forward(&second, 3) != nullptr ||
-        Traits::get_next(&header) != &first || Traits::get_next(&first) != &second) {
+        Algorithms::move_backwards(&second, 0) != nullptr ||
+        Algorithms::move_forward(&second, 0) != nullptr ||
+        Algorithms::move_backwards(&second, 3) != nullptr ||
+        Algorithms::move_forward(&second, 3) != nullptr || Traits::get_next(&header) != &first ||
+        Traits::get_next(&first) != &second) {
         return 1;
     }
 
@@ -66,7 +68,9 @@ auto main() -> int {
     }
 
     Algorithms::StablePartitionInfo info{};
-    Algorithms::stable_partition(&header, &header, [&second](Node *const node) noexcept -> bool { return node != &second; }, info);
+    Algorithms::stable_partition(
+        &header, &header, [&second](Node *const node) noexcept -> bool { return node != &second; },
+        info);
     if (info.m_num_first_partition != 2 || info.m_num_second_partition != 1 ||
         info.m_begin_second_partition != &second || info.m_new_last_node != &second ||
         Traits::get_next(&header) != &third || Traits::get_next(&third) != &first ||
@@ -75,7 +79,8 @@ auto main() -> int {
     }
 
     Algorithms::swap_nodes(&spare, &first);
-    if (!Algorithms::inited(&first) || Traits::get_next(&header) != &third || Traits::get_next(&third) != &spare) {
+    if (!Algorithms::inited(&first) || Traits::get_next(&header) != &third ||
+        Traits::get_next(&third) != &spare) {
         return 8;
     }
 
@@ -86,7 +91,8 @@ auto main() -> int {
     }
 
     auto disposed = 0;
-    const auto count = Algorithms::detach_and_dispose(&destination, [&disposed](Node *const) noexcept -> void { ++disposed; });
+    const auto count = Algorithms::detach_and_dispose(
+        &destination, [&disposed](Node *const) noexcept -> void { ++disposed; });
     if (count != 3 || disposed != 3 || !Algorithms::is_empty(&destination)) {
         return 10;
     }

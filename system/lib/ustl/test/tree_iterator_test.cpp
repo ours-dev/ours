@@ -5,26 +5,27 @@
 #include <ustl/collections/intrusive/detail/tree_node.hpp>
 
 namespace {
-    struct Item final : ustl::collections::intrusive::TreeNode<void *> {
-        int m_value {};
-    };
+struct Item final: ustl::collections::intrusive::TreeNode<void *> {
+    int m_value{};
+};
 
-    struct StaticValueTraits final {
-        using NodeTraits = ustl::collections::intrusive::TreeNodeTraits<void *>;
-        using NodePtr = typename NodeTraits::NodePtr;
-        using Element = Item;
-        using PtrMut = Item *;
-        using Ptr = Item const *;
+struct StaticValueTraits final {
+    using NodeTraits = ustl::collections::intrusive::TreeNodeTraits<void *>;
+    using NodePtr = typename NodeTraits::NodePtr;
+    using Element = Item;
+    using PtrMut = Item *;
+    using Ptr = Item const *;
 
-        static constexpr bool IS_STATEFUL_VALUE_TRAITS = false;
+    static constexpr bool IS_STATEFUL_VALUE_TRAITS = false;
 
-        [[nodiscard]] static constexpr auto to_value_ptr(NodePtr const node) noexcept -> PtrMut {
-            return static_cast<PtrMut>(node);
-        }
-    };
+    [[nodiscard]]
+    static constexpr auto to_value_ptr(NodePtr const node) noexcept -> PtrMut {
+        return static_cast<PtrMut>(node);
+    }
+};
 
-    using IterMut = ustl::collections::intrusive::detail::TreeIter<StaticValueTraits, false>;
-    using Iter = ustl::collections::intrusive::detail::TreeIter<StaticValueTraits, true>;
+using IterMut = ustl::collections::intrusive::detail::TreeIter<StaticValueTraits, false>;
+using Iter = ustl::collections::intrusive::detail::TreeIter<StaticValueTraits, true>;
 } // namespace
 
 auto main() -> int {
@@ -56,8 +57,10 @@ auto main() -> int {
     }
 
     IterMut root_iterator(&root);
-    if (root_iterator.go_left().pointed_node() != &left || root_iterator.go_parent().pointed_node() != &root ||
-        root_iterator.go_right().pointed_node() != &right || root_iterator.end_iterator_from_it().pointed_node() != &header) {
+    if (root_iterator.go_left().pointed_node() != &left ||
+        root_iterator.go_parent().pointed_node() != &root ||
+        root_iterator.go_right().pointed_node() != &right ||
+        root_iterator.end_iterator_from_it().pointed_node() != &header) {
         return 2;
     }
 

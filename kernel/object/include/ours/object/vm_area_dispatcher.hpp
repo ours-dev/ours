@@ -6,14 +6,12 @@
 #include <ours/object/dispatcher.hpp>
 
 namespace ours::object {
-    /// Rights a freshly created VMAR handle carries.
-    constexpr auto RIGHTS_DEFAULT_VMAR = Rights::Signal | Rights::Io;
+/// Rights a freshly created VMAR handle carries.
+constexpr auto RIGHTS_DEFAULT_VMAR = Rights::Signal | Rights::Io;
 
-    using VmAreaDispatcherBase = SoloDispatcher<VmAreaDispatcher,
-                                                RIGHTS_DEFAULT_VMAR,
-                                                Signals::None>;
+using VmAreaDispatcherBase = SoloDispatcher<VmAreaDispatcher, RIGHTS_DEFAULT_VMAR, Signals::None>;
 
-    class VmAreaDispatcher: public VmAreaDispatcherBase {};
+class VmAreaDispatcher: public VmAreaDispatcherBase {};
 
 } // namespace ours::object
 

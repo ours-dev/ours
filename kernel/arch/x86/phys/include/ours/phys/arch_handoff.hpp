@@ -6,7 +6,7 @@
 #include <ours/types.hpp>
 
 namespace ours::phys {
-    struct ArchHandOff {};
+struct ArchHandOff {};
 
 } // namespace ours::phys
 

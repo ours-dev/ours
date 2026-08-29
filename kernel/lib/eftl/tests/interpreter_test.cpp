@@ -13,9 +13,9 @@ using Binary = eftl::elf::FileImpl<Traits>;
 using Header = Traits::Header;
 using Segment = Traits::Segment;
 
-constexpr usize K_INTERPRETER_OFFSET = 0x200;
-constexpr usize K_LOAD_OFFSET = 0x300;
-constexpr std::array<u8, 16> K_INTERPRETER_PATH{
+constexpr usize INTERPRETER_OFFSET = 0x200;
+constexpr usize LOAD_OFFSET = 0x300;
+constexpr std::array<u8, 16> INTERPRETER_PATH{
     '/', 'l', 'i', 'b', '/', 'l', 'd', '-', 'o', 'u', 'r', 's', '.', 's', 'o', 0,
 };
 
@@ -26,8 +26,8 @@ auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
 
 auto make_header(u16 segment_count) -> Header {
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
@@ -42,15 +42,15 @@ auto make_header(u16 segment_count) -> Header {
 auto interpreter_segment() -> Segment {
     Segment segment{};
     segment.p_type = static_cast<u32>(eftl::elf::SegType::Interp);
-    segment.p_offset = K_INTERPRETER_OFFSET;
-    segment.p_filesz = K_INTERPRETER_PATH.size();
+    segment.p_offset = INTERPRETER_OFFSET;
+    segment.p_filesz = INTERPRETER_PATH.size();
     return segment;
 }
 
 auto load_segment() -> Segment {
     Segment segment{};
     segment.p_type = static_cast<u32>(eftl::elf::SegType::Load);
-    segment.p_offset = K_LOAD_OFFSET;
+    segment.p_offset = LOAD_OFFSET;
     segment.p_vaddr = 0x400000;
     segment.p_filesz = 16;
     segment.p_memsz = 16;
@@ -64,8 +64,8 @@ auto make_interpreter_image() -> std::array<u8, 1024> {
     put(image, 0, header);
     put(image, sizeof(Header), interpreter_segment());
     put(image, sizeof(Header) + sizeof(Segment), load_segment());
-    std::memcpy(image.data() + K_INTERPRETER_OFFSET, K_INTERPRETER_PATH.data(),
-                K_INTERPRETER_PATH.size());
+    std::memcpy(image.data() + INTERPRETER_OFFSET, INTERPRETER_PATH.data(),
+                INTERPRETER_PATH.size());
     return image;
 }
 
@@ -107,7 +107,7 @@ auto test_rejects_invalid_interpreter_segments() -> int {
     }
 
     auto unterminated = make_interpreter_image();
-    unterminated[K_INTERPRETER_OFFSET + K_INTERPRETER_PATH.size() - 1] = 'x';
+    unterminated[INTERPRETER_OFFSET + INTERPRETER_PATH.size() - 1] = 'x';
     auto const unterminated_result = Binary::from_raw(unterminated.data(), unterminated.size());
     if (unterminated_result.is_ok() ||
         unterminated_result.unwrap_err() != eftl::elf::ParseError::InvalidSegment) {
@@ -115,7 +115,7 @@ auto test_rejects_invalid_interpreter_segments() -> int {
     }
 
     auto embedded_nul = make_interpreter_image();
-    embedded_nul[K_INTERPRETER_OFFSET + 4] = 0;
+    embedded_nul[INTERPRETER_OFFSET + 4] = 0;
     auto const embedded_nul_result = Binary::from_raw(embedded_nul.data(), embedded_nul.size());
     if (embedded_nul_result.is_ok() ||
         embedded_nul_result.unwrap_err() != eftl::elf::ParseError::InvalidSegment) {
@@ -151,11 +151,11 @@ auto test_elf32_observes_interpreter_path() -> int {
     using Header32 = Traits32::Header;
     using Segment32 = Traits32::Segment;
 
-    constexpr usize K_PATH_OFFSET = 0x140;
+    constexpr usize PATH_OFFSET = 0x140;
     std::array<u8, 512> image{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
@@ -167,11 +167,11 @@ auto test_elf32_observes_interpreter_path() -> int {
     put(image, 0, header);
     Segment32 interpreter{};
     interpreter.p_type = static_cast<u32>(eftl::elf::SegType::Interp);
-    interpreter.p_offset = K_PATH_OFFSET;
+    interpreter.p_offset = PATH_OFFSET;
     interpreter.p_filesz = 9;
     put(image, sizeof(Header32), interpreter);
     std::array<u8, 9> const path{'/', 'l', 'i', 'b', '/', 'l', 'd', '3', 0};
-    std::memcpy(image.data() + K_PATH_OFFSET, path.data(), path.size());
+    std::memcpy(image.data() + PATH_OFFSET, path.data(), path.size());
 
     auto const parsed = Binary32::from_raw(image.data(), image.size());
     auto const observed = [&]() -> ustl::Option<eftl::ByteRange> {

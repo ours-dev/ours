@@ -6,8 +6,8 @@
 // Only ever reached via <arch/interrupt.hpp>'s own #include — don't include
 // this file directly.
 
-#include <arch/x86/macro/irqframe.hpp>
 #include <arch/types.hpp>
+#include <arch/x86/macro/irqframe.hpp>
 
 #include <cstddef>
 
@@ -125,8 +125,8 @@ class ArchCpuState final {
         if constexpr (bit == IOPL) {
             m_value = (m_value & ~(usize{3} << IOPL)) | ((static_cast<usize>(value) & 3) << IOPL);
         } else {
-            m_value =
-                static_cast<bool>(value) ? m_value | (usize{1} << bit) : m_value & ~(usize{1} << bit);
+            m_value = static_cast<bool>(value) ? m_value | (usize{1} << bit)
+                                               : m_value & ~(usize{1} << bit);
         }
         return *this;
     }

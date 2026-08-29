@@ -82,11 +82,9 @@ namespace {
     /// FIXME(SmallHuaZi) Temporary mapping to forward development in CpuLocal.
     /// It should be the content of topology.
     auto bind_node_to_cpu(acpi::srat::Table const &srat) -> Status {
-        INIT_DATA
-        static usize apicids[MAX_CPU];
+        INIT_DATA static usize apicids[MAX_CPU];
 
-        INIT_DATA
-        static usize cpus[MAX_CPU];
+        INIT_DATA static usize cpus[MAX_CPU];
 
         usize count = 0;
         return acpi::numa::for_each_cpu_binding(srat, [&](acpi::numa::CpuBinding const &binding) {

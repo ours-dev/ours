@@ -340,7 +340,7 @@ class PhysicalMemory final {
 
         for (auto usable_index = usize{0}; usable_index < usable_count_; ++usable_index) {
             auto const usable = storage_.usable[usable_index];
-            if (query.node != kAnyNode && usable.node != query.node) {
+            if (query.node != ANY_NODE && usable.node != query.node) {
                 continue;
             }
 
@@ -571,7 +571,7 @@ class PhysicalMemory final {
 
         for (auto usable_index = usize{0}; usable_index < usable_count_; ++usable_index) {
             auto const usable = storage_.usable[usable_index];
-            if (request.node != kAnyNode && usable.node != request.node) {
+            if (request.node != ANY_NODE && usable.node != request.node) {
                 continue;
             }
 

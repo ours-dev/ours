@@ -8,6 +8,6 @@
 namespace ustl {
 using std::forward;
 using std::move;
-}
+} // namespace ustl
 
-#endif  // USTL_UTIL_MOVE_HPP
+#endif // USTL_UTIL_MOVE_HPP

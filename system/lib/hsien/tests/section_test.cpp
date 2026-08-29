@@ -2,7 +2,6 @@
 
 namespace {
 
-[[=hsien::test]]
-auto section_test(hsien::Context&) -> void {}
+[[= hsien::test]] auto section_test(hsien::Context &) -> void {}
 
 } // namespace

@@ -38,13 +38,13 @@ struct Relocations final: Observable<Traits, Relocations<Traits>> {
     };
     // NOLINTEND(readability-identifier-naming)
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto relative_reltable() -> RelTable {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto relative_reltable() -> RelTable {
         return m_rel_table.subspan(0, m_rel_count);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto relative_relatable() -> RelaTable {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto relative_relatable() -> RelaTable {
         return m_rela_table.subspan(0, m_rela_count);
     }
 
@@ -212,8 +212,8 @@ struct RelocationObserver final: public RelocationObserverBase<Traits> {
     using Base::write_back;
 
     template <typename Memory, DynTag Tag>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto observe(Memory &&memory, Addr val, DynTagMatcher<Tag> tag) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto observe(Memory &&memory, Addr val, DynTagMatcher<Tag> tag) -> bool {
         if constexpr (Tag == DynTag::RelEnt) {
             return val == sizeof(Rel);
         } else if constexpr (Tag == DynTag::RelaEnt) {
@@ -226,8 +226,8 @@ struct RelocationObserver final: public RelocationObserverBase<Traits> {
     }
 
     template <typename Memory>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto finish(Memory &&memory) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto finish(Memory &&memory) -> bool {
         // PLT/symbolic relocations need a symbol and string-table resolver. Reject them instead
         // of silently ignoring a table that the relative-only loader cannot apply.
         if (Base::template has<DynTag::JmpRel>() || Base::template has<DynTag::PltRelSz>() ||
@@ -261,8 +261,8 @@ struct InitFiniInfo final: Observable<Traits, InitFiniInfo<Traits>> {
     }
 
     template <typename Visitor>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto visit(Visitor &&visitor) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto visit(Visitor &&visitor) -> bool {
         for (auto &item: array_) {
             if (!visitor(item)) {
                 return false;
@@ -304,16 +304,16 @@ struct DynInitFiniObserver final: public DynInitFiniObserverBase<Traits, Array, 
     using Base::observe;
 
     template <typename Memory>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto observe(Memory &memory, Addr val, DynTagMatcher<Legacy>) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto observe(Memory &memory, Addr val, DynTagMatcher<Legacy>) -> bool {
         (void)memory;
         this->info().set_legacy(val);
         return true;
     }
 
     template <typename Memory>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto finish(Memory &&memory) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto finish(Memory &&memory) -> bool {
         return Base::template write_back<Addr, &InfoType::set_array, Array, ArraySz>(memory);
     }
 };
@@ -337,8 +337,8 @@ struct StrTableInfo final: public Observable<Traits, StrTableInfo<Traits>> {
     }
 
     template <typename Visitor>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto visit(Visitor &&visitor) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto visit(Visitor &&visitor) -> bool {
         for (auto &item: strtable_) {
             if (!visitor(item)) {
                 return false;
@@ -369,8 +369,8 @@ struct DynStrObserver final: public DynStrObserverBase<Traits> {
     using InfoType = typename Base::InfoType;
 
     template <typename Memory>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto finish(Memory &&memory) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto finish(Memory &&memory) -> bool {
         return Base::template write_back<u8, &InfoType::set_str_table, DynTag::StrTab,
                                          DynTag::StrSz>(memory);
     }

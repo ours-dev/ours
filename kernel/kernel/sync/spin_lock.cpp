@@ -3,7 +3,7 @@
 ///
 /// How this lock waits, and why it waits that way.
 ///
-/// The lock word holds kUnlockedState when free and one plus the holder's CPU
+/// The lock word holds UNLOCKED_STATE when free and one plus the holder's CPU
 /// number otherwise, so acquiring is one compare-exchange of 0 -> one plus the
 /// calling CPU's number. That much is ordinary. What follows is about the
 /// wait, which is where the cost of a contended lock actually lives.
@@ -93,7 +93,7 @@ GKTL_COUNTER(sp_spinlock_num_held, "sync.spinlock.num_held");
 
 namespace ours::sync {
 namespace spinlock {
-    constexpr static auto const kUnlockedState = 0u;
+    constexpr static auto const UNLOCKED_STATE = 0u;
 
     /// The state the word takes when `cpu` holds the lock: one plus the CPU
     /// number, so that zero stays free to name "unlocked" -- CPU 0 legitimately
@@ -103,7 +103,7 @@ namespace spinlock {
     }
 
     template <Option Options>
-    SpinLock<Options>::SpinLock() : m_lockval(kUnlockedState) {}
+    SpinLock<Options>::SpinLock() : m_lockval(UNLOCKED_STATE) {}
 
     template <Option Options>
     SpinLock<Options>::~SpinLock() {
@@ -119,7 +119,7 @@ namespace spinlock {
         // Reset every call: a failed exchange writes the observed value back
         // into old_state, so reusing it would compare against the last
         // holder's state and fail again by construction.
-        usize old_state = kUnlockedState;
+        usize old_state = UNLOCKED_STATE;
         if (!m_lockval.compare_exchange_strong(old_state, holder, MemoryOrder::Acquire,
                                                MemoryOrder::Relaxed)) {
             return false;
@@ -152,7 +152,7 @@ namespace spinlock {
             // is nothing to re-read yet.
             do {
                 arch::spin_hint();
-            } while (m_lockval.load(MemoryOrder::Relaxed) != kUnlockedState);
+            } while (m_lockval.load(MemoryOrder::Relaxed) != UNLOCKED_STATE);
         }
 
         assert_held();
@@ -164,14 +164,14 @@ namespace spinlock {
 
         sp_spinlock_num_held.add(-1);
 
-        m_lockval.store(kUnlockedState, MemoryOrder::Release);
+        m_lockval.store(UNLOCKED_STATE, MemoryOrder::Release);
     }
 
     template <Option Options>
     auto SpinLock<Options>::is_locked() const -> bool {
         // Just observes the state of this lock. It does not change the state
         // therefore using relaxed memory order.
-        return m_lockval.load(MemoryOrder::Relaxed) != kUnlockedState;
+        return m_lockval.load(MemoryOrder::Relaxed) != UNLOCKED_STATE;
     }
 
     template <Option Options>
@@ -194,9 +194,9 @@ namespace spinlock {
         return sp_spinlock_num_held.get();
     }
 
-    template class SpinLock<kDefaultOptions>;
-    template class SpinLock<kMonitoredOptions>;
-    template class SpinLock<kNoTraceOptions>;
+    template class SpinLock<DEFAULT_OPTIONS>;
+    template class SpinLock<MONITORED_OPTIONS>;
+    template class SpinLock<NO_TRACE_OPTIONS>;
 
 } // namespace spinlock
 } // namespace ours::sync

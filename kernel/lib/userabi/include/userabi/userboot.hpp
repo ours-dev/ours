@@ -4,9 +4,9 @@
 #define USERABI_USERBOOT_HPP 1
 
 namespace userabi {
-    enum class HandleIndex {
+enum class HandleIndex {
 
-    };
+};
 } // namespace userabi
 
 #endif // #ifndef USERABI_USERBOOT_HPP

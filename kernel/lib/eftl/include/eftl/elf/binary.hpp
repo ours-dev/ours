@@ -56,9 +56,9 @@ enum class ParseError {
     NotLoadable,
 };
 
-inline constexpr u16 K_PN_XNUM = 0xffff;
-inline constexpr u16 K_SHN_LORESERVE = 0xff00;
-inline constexpr u16 K_SHN_XINDEX = 0xffff;
+inline constexpr u16 PN_XNUM = 0xffff;
+inline constexpr u16 SHN_LORESERVE = 0xff00;
+inline constexpr u16 SHN_XINDEX = 0xffff;
 
 [[nodiscard]]
 constexpr auto to_string(ParseError parse_error) noexcept -> char const * {
@@ -232,8 +232,7 @@ class FileImpl final {
     }
 
     [[nodiscard]]
-    auto symbol_table(usize section_index) const noexcept
-        -> ustl::Option<SymbolTableView<Traits>> {
+    auto symbol_table(usize section_index) const noexcept -> ustl::Option<SymbolTableView<Traits>> {
         auto const section = m_sections.at(section_index);
         if (section.is_none() ||
             (static_cast<SectionType>(section->sh_type) != SectionType::Symtab &&
@@ -261,8 +260,7 @@ class FileImpl final {
     auto section_group(usize section_index) const noexcept -> ustl::Option<SectionGroupView> {
         auto const section = m_sections.at(section_index);
         if (section.is_none() || static_cast<SectionType>(section->sh_type) != SectionType::Group ||
-            section->sh_entsize != sizeof(u32) ||
-            section->sh_addralign != alignof(u32)) {
+            section->sh_entsize != sizeof(u32) || section->sh_addralign != alignof(u32)) {
             return ustl::NONE;
         }
         auto const symbol_section_index = to_usize(section->sh_link);
@@ -287,11 +285,11 @@ class FileImpl final {
     [[nodiscard]]
     auto compressed_section(usize section_index) const noexcept
         -> ustl::Option<SectionCompressionView<Traits>> {
-        constexpr auto K_COMPRESSED_FLAG = static_cast<u64>(SectionFlags::Compressed);
+        constexpr auto COMPRESSED_FLAG = static_cast<u64>(SectionFlags::Compressed);
         auto const section = m_sections.at(section_index);
         if (section.is_none() ||
             static_cast<SectionType>(section->sh_type) == SectionType::Nobits ||
-            (static_cast<u64>(section->sh_flags) & K_COMPRESSED_FLAG) == 0) {
+            (static_cast<u64>(section->sh_flags) & COMPRESSED_FLAG) == 0) {
             return ustl::NONE;
         }
         auto const bytes = section_bytes(section.value());
@@ -386,9 +384,8 @@ class FileImpl final {
     }
 
     [[nodiscard]]
-    auto version_definition_binding(usize dynamic_symbols_index,
-                                    usize version_symbols_index, usize definition_index,
-                                    usize symbol_index) const noexcept
+    auto version_definition_binding(usize dynamic_symbols_index, usize version_symbols_index,
+                                    usize definition_index, usize symbol_index) const noexcept
         -> ustl::Option<VersionBinding<Traits>> {
         auto const versions = linked_version_symbols(dynamic_symbols_index, version_symbols_index);
         auto const definitions = version_definition_table(definition_index);
@@ -400,10 +397,8 @@ class FileImpl final {
     }
 
     [[nodiscard]]
-    auto version_requirement_binding(usize dynamic_symbols_index,
-                                     usize version_symbols_index,
-                                     usize requirement_index,
-                                     usize symbol_index) const noexcept
+    auto version_requirement_binding(usize dynamic_symbols_index, usize version_symbols_index,
+                                     usize requirement_index, usize symbol_index) const noexcept
         -> ustl::Option<VersionBinding<Traits>> {
         auto const versions = linked_version_symbols(dynamic_symbols_index, version_symbols_index);
         auto const requirements = version_requirement_table(requirement_index);
@@ -514,8 +509,7 @@ class FileImpl final {
     }
 
     [[nodiscard]]
-    auto note_section(usize section_index) const noexcept
-        -> ustl::Option<NoteSectionView<Traits>> {
+    auto note_section(usize section_index) const noexcept -> ustl::Option<NoteSectionView<Traits>> {
         auto const section = m_sections.at(section_index);
         if (section.is_none() || static_cast<SectionType>(section->sh_type) != SectionType::Note) {
             return ustl::NONE;
@@ -528,8 +522,7 @@ class FileImpl final {
     }
 
     [[nodiscard]]
-    auto note_segment(usize segment_index) const noexcept
-        -> ustl::Option<NoteSectionView<Traits>> {
+    auto note_segment(usize segment_index) const noexcept -> ustl::Option<NoteSectionView<Traits>> {
         auto const segment = m_segments.at(segment_index);
         if (segment.is_none() || static_cast<SegType>(segment->p_type) != SegType::Note) {
             return ustl::NONE;
@@ -604,8 +597,8 @@ class FileImpl final {
             return ustl::some(ParseError::InvalidHeader);
         }
         auto const *const ident = ident_bytes.unwrap().data();
-        if (std::memcmp(ident, K_ELF_MAGIC, sizeof(K_ELF_MAGIC)) != 0 ||
-            ident[4] != Traits::K_ELF_CLASS || ident[6] != 1) {
+        if (std::memcmp(ident, ELF_MAGIC, sizeof(ELF_MAGIC)) != 0 ||
+            ident[4] != Traits::ELF_CLASS || ident[6] != 1) {
             return ustl::some(ParseError::InvalidHeader);
         }
         if (ident[5] == 1) {
@@ -763,19 +756,19 @@ class FileImpl final {
 
     [[nodiscard]]
     auto resolve_table_counts() -> ustl::Result<HeaderTableCounts, ParseError> {
-        if ((m_header.e_shnum != 0 && m_header.e_shnum >= K_SHN_LORESERVE) ||
-            (m_header.e_shstrndx >= K_SHN_LORESERVE && m_header.e_shstrndx != K_SHN_XINDEX)) {
+        if ((m_header.e_shnum != 0 && m_header.e_shnum >= SHN_LORESERVE) ||
+            (m_header.e_shstrndx >= SHN_LORESERVE && m_header.e_shstrndx != SHN_XINDEX)) {
             return ustl::err(ParseError::InvalidSection);
         }
 
-        auto const needs_section_zero = m_header.e_phnum == K_PN_XNUM ||
+        auto const needs_section_zero = m_header.e_phnum == PN_XNUM ||
                                         (m_header.e_shnum == 0 && m_header.e_shoff != 0) ||
-                                        m_header.e_shstrndx == K_SHN_XINDEX;
+                                        m_header.e_shstrndx == SHN_XINDEX;
 
         Section section_zero{};
         if (needs_section_zero) {
-            auto const table_zero = table<Section>(
-                m_header.e_shoff, usize{1}, m_header.e_shentsize, ParseError::InvalidSection);
+            auto const table_zero = table<Section>(m_header.e_shoff, usize{1}, m_header.e_shentsize,
+                                                   ParseError::InvalidSection);
             if (table_zero.is_err()) {
                 return ustl::err(table_zero.unwrap_err());
             }
@@ -786,10 +779,10 @@ class FileImpl final {
         }
 
         HeaderTableCounts counts{};
-        if (m_header.e_phnum == K_PN_XNUM) {
+        if (m_header.e_phnum == PN_XNUM) {
             auto const program_headers = to_usize(section_zero.sh_info);
             if (program_headers.is_none() ||
-                program_headers.value() < static_cast<usize>(K_PN_XNUM)) {
+                program_headers.value() < static_cast<usize>(PN_XNUM)) {
                 return ustl::err(ParseError::InvalidSegment);
             }
             counts.m_program_headers = program_headers.value();
@@ -799,8 +792,7 @@ class FileImpl final {
 
         if (m_header.e_shnum == 0 && m_header.e_shoff != 0) {
             auto const sections = to_usize(section_zero.sh_size);
-            if (sections.is_none() ||
-                sections.value() < static_cast<usize>(K_SHN_LORESERVE)) {
+            if (sections.is_none() || sections.value() < static_cast<usize>(SHN_LORESERVE)) {
                 return ustl::err(ParseError::InvalidSection);
             }
             counts.m_sections = sections.value();
@@ -808,10 +800,10 @@ class FileImpl final {
             counts.m_sections = static_cast<usize>(m_header.e_shnum);
         }
 
-        if (m_header.e_shstrndx == K_SHN_XINDEX) {
+        if (m_header.e_shstrndx == SHN_XINDEX) {
             auto const name_table_index = to_usize(section_zero.sh_link);
             if (name_table_index.is_none() ||
-                name_table_index.value() < static_cast<usize>(K_SHN_LORESERVE)) {
+                name_table_index.value() < static_cast<usize>(SHN_LORESERVE)) {
                 return ustl::err(ParseError::InvalidSection);
             }
             counts.m_section_name_table = ustl::Option<usize>(name_table_index.value());
@@ -1020,7 +1012,7 @@ class FileImpl final {
                 return false;
             }
             for (auto const symbol: symbols.value()) {
-                if (symbol.st_shndx == static_cast<typename Traits::Half>(K_SHN_XINDEX) &&
+                if (symbol.st_shndx == static_cast<typename Traits::Half>(SHN_XINDEX) &&
                     symbol_section_indices(section_index).is_none()) {
                     return false;
                 }
@@ -1031,8 +1023,8 @@ class FileImpl final {
 
     [[nodiscard]]
     auto initialize_group_sections() const noexcept -> bool {
-        constexpr auto K_GROUP_FLAG = static_cast<u64>(SectionFlags::Group);
-        constexpr typename Traits::Half K_ET_REL = 1;
+        constexpr auto GROUP_FLAG = static_cast<u64>(SectionFlags::Group);
+        constexpr typename Traits::Half ET_REL = 1;
 
         for (usize group_index = 0; group_index < m_sections.size(); ++group_index) {
             auto const section = m_sections.at(group_index);
@@ -1040,15 +1032,14 @@ class FileImpl final {
                 static_cast<SectionType>(section->sh_type) != SectionType::Group) {
                 continue;
             }
-            if (m_header.e_type != K_ET_REL) {
+            if (m_header.e_type != ET_REL) {
                 return false;
             }
             auto const group = section_group(group_index);
             if (group.is_none()) {
                 return false;
             }
-            for (usize member_index = 0; member_index < group->member_count();
-                 ++member_index) {
+            for (usize member_index = 0; member_index < group->member_count(); ++member_index) {
                 auto const member_section_index = group->member_section_at(member_index);
                 ustl::Option<Section> member_section;
                 if (member_section_index.is_some()) {
@@ -1058,7 +1049,7 @@ class FileImpl final {
                 }
                 if (member_section_index.is_none() || member_section_index.value() <= group_index ||
                     member_section.is_none() ||
-                    (static_cast<u64>(member_section->sh_flags) & K_GROUP_FLAG) == 0) {
+                    (static_cast<u64>(member_section->sh_flags) & GROUP_FLAG) == 0) {
                     return false;
                 }
                 for (usize earlier_group_index = 0; earlier_group_index < group_index;
@@ -1088,11 +1079,10 @@ class FileImpl final {
 
         for (usize section_index = 0; section_index < m_sections.size(); ++section_index) {
             auto const section = m_sections.at(section_index);
-            if (section.is_none() ||
-                (static_cast<u64>(section->sh_flags) & K_GROUP_FLAG) == 0) {
+            if (section.is_none() || (static_cast<u64>(section->sh_flags) & GROUP_FLAG) == 0) {
                 continue;
             }
-            if (m_header.e_type != K_ET_REL) {
+            if (m_header.e_type != ET_REL) {
                 return false;
             }
             auto is_member = false;
@@ -1106,8 +1096,7 @@ class FileImpl final {
                 if (group.is_none()) {
                     return false;
                 }
-                for (usize member_index = 0; member_index < group->member_count();
-                     ++member_index) {
+                for (usize member_index = 0; member_index < group->member_count(); ++member_index) {
                     auto const member_section_index = group->member_section_at(member_index);
                     if (member_section_index.is_none()) {
                         return false;
@@ -1124,16 +1113,15 @@ class FileImpl final {
 
     [[nodiscard]]
     auto initialize_compressed_sections() const noexcept -> bool {
-        constexpr auto K_ALLOC_FLAG = static_cast<u64>(SectionFlags::Alloc);
-        constexpr auto K_COMPRESSED_FLAG = static_cast<u64>(SectionFlags::Compressed);
+        constexpr auto ALLOC_FLAG = static_cast<u64>(SectionFlags::Alloc);
+        constexpr auto COMPRESSED_FLAG = static_cast<u64>(SectionFlags::Compressed);
 
         for (usize section_index = 0; section_index < m_sections.size(); ++section_index) {
             auto const section = m_sections.at(section_index);
-            if (section.is_none() ||
-                (static_cast<u64>(section->sh_flags) & K_COMPRESSED_FLAG) == 0) {
+            if (section.is_none() || (static_cast<u64>(section->sh_flags) & COMPRESSED_FLAG) == 0) {
                 continue;
             }
-            if ((static_cast<u64>(section->sh_flags) & K_ALLOC_FLAG) != 0 ||
+            if ((static_cast<u64>(section->sh_flags) & ALLOC_FLAG) != 0 ||
                 compressed_section(section_index).is_none()) {
                 return false;
             }
@@ -1202,8 +1190,8 @@ class FileImpl final {
             } else {
                 symbol_decoder = &RecordCodec<Traits, Symbol>::decode_big;
             }
-            auto const indices = TableView<u32>::from_checked_bytes(
-                index_data.value(), symbol_count, index_decoder);
+            auto const indices =
+                TableView<u32>::from_checked_bytes(index_data.value(), symbol_count, index_decoder);
             auto const symbols = TableView<Symbol>::from_checked_bytes(
                 symbol_data.value(), symbol_count, symbol_decoder);
             if (indices.is_none() || symbols.is_none()) {
@@ -1213,9 +1201,9 @@ class FileImpl final {
                 auto const symbol = symbols->at(symbol_index);
                 auto const index = indices->at(symbol_index);
                 if (symbol.is_none() || index.is_none() ||
-                    (symbol->st_shndx != static_cast<typename Traits::Half>(K_SHN_XINDEX) &&
+                    (symbol->st_shndx != static_cast<typename Traits::Half>(SHN_XINDEX) &&
                      index.value() != 0) ||
-                    (symbol->st_shndx == static_cast<typename Traits::Half>(K_SHN_XINDEX) &&
+                    (symbol->st_shndx == static_cast<typename Traits::Half>(SHN_XINDEX) &&
                      static_cast<usize>(index.value()) >= m_sections.size())) {
                     return false;
                 }
@@ -1612,8 +1600,7 @@ class FileImpl final {
 
         auto const symbol_count = symbol_bytes.value() / sizeof(Symbol);
         for (auto const relocation: relocations.value()) {
-            if (static_cast<usize>(Traits::relocation_symbol(relocation.r_info)) >=
-                symbol_count) {
+            if (static_cast<usize>(Traits::relocation_symbol(relocation.r_info)) >= symbol_count) {
                 return false;
             }
         }
@@ -1677,7 +1664,7 @@ class BasicImage final: public eftl::Binary {
     [[nodiscard]]
     static auto from(File const &file) noexcept -> ustl::Option<BasicImage> {
         auto const &header = file.elf_header();
-        if (header.e_type != K_EXECUTABLE && header.e_type != K_SHARED_OBJECT) {
+        if (header.e_type != EXECUTABLE && header.e_type != SHARED_OBJECT) {
             return ustl::NONE;
         }
 
@@ -1767,8 +1754,7 @@ class BasicImage final: public eftl::Binary {
             auto const file_offset = to_usize(segment.p_offset);
             auto const offset_delta = to_usize(virtual_delta);
             if (file_offset.is_none() || offset_delta.is_none() ||
-                file_offset.value() >
-                    std::numeric_limits<usize>::max() - offset_delta.value()) {
+                file_offset.value() > std::numeric_limits<usize>::max() - offset_delta.value()) {
                 return ustl::NONE;
             }
             return ustl::some(file_offset.value() + offset_delta.value());
@@ -1777,8 +1763,8 @@ class BasicImage final: public eftl::Binary {
     }
 
   private:
-    static constexpr u16 K_EXECUTABLE = 2;
-    static constexpr u16 K_SHARED_OBJECT = 3;
+    static constexpr u16 EXECUTABLE = 2;
+    static constexpr u16 SHARED_OBJECT = 3;
 
     explicit constexpr BasicImage(File const &file, u64 image_base) noexcept
         : m_file(file), m_image_base(image_base) {}
@@ -1862,8 +1848,7 @@ class Binary final: public eftl::Binary {
     }
 
     [[nodiscard]]
-    auto virtual_address_to_offset(u64 vaddr) const noexcept
-        -> ustl::Option<usize> override {
+    auto virtual_address_to_offset(u64 vaddr) const noexcept -> ustl::Option<usize> override {
         return ustl::visit(
             [vaddr](auto const &img) { return img.virtual_address_to_offset(vaddr); }, m_image);
     }

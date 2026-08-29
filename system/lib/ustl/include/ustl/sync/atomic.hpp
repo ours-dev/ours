@@ -31,7 +31,9 @@ class Atomic {
         return *this;
     }
 
-    operator T() const noexcept { return load(); }
+    operator T() const noexcept {
+        return load();
+    }
 
     auto load(int order = MemoryOrder::SeqCst) const noexcept -> T {
         T value;
@@ -90,7 +92,7 @@ class Atomic {
     }
 
   private:
-    alignas(T) T value_ {};
+    alignas(T) T value_{};
 };
 
 template <typename T>
@@ -101,7 +103,9 @@ class AtomicRef {
     AtomicRef(AtomicRef const &) = default;
     auto operator=(AtomicRef const &) -> AtomicRef & = delete;
 
-    operator T() const noexcept { return load(); }
+    operator T() const noexcept {
+        return load();
+    }
 
     auto load(int order = MemoryOrder::SeqCst) const noexcept -> T {
         T value;
@@ -172,6 +176,6 @@ inline auto atomic_thread_fence(int order) noexcept -> void {
     __atomic_thread_fence(order);
 }
 
-}  // namespace ustl::sync
+} // namespace ustl::sync
 
-#endif  // USTL_SYNC_ATOMIC_HPP
+#endif // USTL_SYNC_ATOMIC_HPP

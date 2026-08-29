@@ -1,166 +1,164 @@
+#include <arch/spin_hint.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/sync/mutex.hpp>
-
-#include <ours/task/thread.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
-
+#include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
-#include <ours/mm/cpu_local.hpp>
-
-#include <arch/spin_hint.hpp>
-
-using ustl::sync::MemoryOrder;
-using ours::task::Thread;
 using ours::mm::CpuLocal;
+using ours::task::Thread;
+using ustl::sync::MemoryOrder;
 
 namespace ours::sync {
-    FORCE_INLINE
-    auto Mutex::record_initial_assigned_cpu() -> void {
-        m_cpunum.store(Cpu::id(), MemoryOrder::Relaxed);
-    }
+FORCE_INLINE auto Mutex::record_initial_assigned_cpu() -> void {
+    m_cpunum.store(Cpu::id(), MemoryOrder::Relaxed);
+}
 
-    FORCE_INLINE
-    auto Mutex::reset_initial_assigned_cpu() -> void {
-        m_cpunum.store(INVALID_CPU_NUM, MemoryOrder::Relaxed);
-    }
+FORCE_INLINE auto Mutex::reset_initial_assigned_cpu() -> void {
+    m_cpunum.store(INVALID_CPU_NUM, MemoryOrder::Relaxed);
+}
 
-    template <bool TimesliceExtensionEnabled>
-    auto Mutex::acquire_common(Duration spining_duration, 
-                               TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension) 
+template <bool TimesliceExtensionEnabled>
+auto Mutex::acquire_common(Duration spining_duration,
+                           TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension)
     -> bool {
-        auto const current_thread = Thread::Current::get();
-        auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
+    auto const current_thread = Thread::Current::get();
+    auto const new_mutex_state =
+        static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
 
-        {
-            if constexpr (TimesliceExtensionEnabled) {
-                current_thread->preemption_state().set_timeslice_extension(timeslice_extension.value);
-            }
-
-            /// First attempt to acquire this mutex.
-            auto old_mutex_state = State::Available;
-            if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, 
-                                              MemoryOrder::Acquire, MemoryOrder::Relaxed)) {
-                record_initial_assigned_cpu();
-
-                return false;
-            } 
-
-            if constexpr (TimesliceExtensionEnabled) {
-                current_thread->preemption_state().cancel_timeslice_extension();
-            }
-        }
-
-        return acquire_slowpath(spining_duration, current_thread, timeslice_extension);
-    }
-
-    template <bool TimesliceExtensionEnabled>
-    auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_thread,
-                                 TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension)
-    -> bool {
-        auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
-
-        task::AutoPreemptDisabler preempt_disabler{task::AutoPreemptDisabler::Defer};
+    {
         if constexpr (TimesliceExtensionEnabled) {
-            preempt_disabler.disable();
+            current_thread->preemption_state().set_timeslice_extension(timeslice_extension.value);
         }
 
-        auto now_ticks = time::SteadyClock::ticks();
-        auto const deadline_ticks = now_ticks; // FIXME(SmallHuaZi)
+        /// First attempt to acquire this mutex.
+        auto old_mutex_state = State::Available;
+        if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, MemoryOrder::Acquire,
+                                          MemoryOrder::Relaxed)) {
+            record_initial_assigned_cpu();
 
-        do {
-            auto old_mutex_state = State::Available;
-            if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
-                                              MemoryOrder::Acquire, MemoryOrder::Relaxed)) {
-                record_initial_assigned_cpu();
+            return false;
+        }
 
-                if constexpr (TimesliceExtensionEnabled) {
-                    current_thread->preemption_state().set_timeslice_extension(timeslice_extension.value);
-                }
-                return false;
-            }
+        if constexpr (TimesliceExtensionEnabled) {
+            current_thread->preemption_state().cancel_timeslice_extension();
+        }
+    }
 
-            if (!!(old_mutex_state & State::Contended)) {
-                // Stop spinning because the mutex has been contested by other thread.
-                break;
-            }
+    return acquire_slowpath(spining_duration, current_thread, timeslice_extension);
+}
 
-            auto const curr_cpu = Cpu::id();
-            if (curr_cpu == m_cpunum.load(MemoryOrder::Relaxed)) {
-                break;
-            }
+template <bool TimesliceExtensionEnabled>
+auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_thread,
+                             TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension)
+    -> bool {
+    auto const new_mutex_state =
+        static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
+
+    task::AutoPreemptDisabler preempt_disabler{task::AutoPreemptDisabler::Defer};
+    if constexpr (TimesliceExtensionEnabled) {
+        preempt_disabler.disable();
+    }
+
+    auto now_ticks = time::SteadyClock::ticks();
+    auto const deadline_ticks = now_ticks; // FIXME(SmallHuaZi)
+
+    do {
+        auto old_mutex_state = State::Available;
+        if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, MemoryOrder::Acquire,
+                                          MemoryOrder::Relaxed)) {
+            record_initial_assigned_cpu();
 
             if constexpr (TimesliceExtensionEnabled) {
-                if (current_thread->preemption_state().has_preempt_request()) {
-                    preempt_disabler.enable();
-                    // Give current CPU a chance to reschedule.
-                    preempt_disabler.disable();
-                }
+                current_thread->preemption_state().set_timeslice_extension(
+                    timeslice_extension.value);
             }
+            return false;
+        }
 
-            arch::spin_hint();
-            now_ticks = time::SteadyClock::ticks();
-        } while (now_ticks < deadline_ticks);
+        if (!!(old_mutex_state & State::Contended)) {
+            // Stop spinning because the mutex has been contested by other thread.
+            break;
+        }
 
-        // Every exit above either returns false on a successful CAS or breaks
-        // here: contended by another thread, self-owned, or the spin deadline
-        // passed. None of those acquired the mutex.
-        return true;
+        auto const curr_cpu = Cpu::id();
+        if (curr_cpu == m_cpunum.load(MemoryOrder::Relaxed)) {
+            break;
+        }
+
+        if constexpr (TimesliceExtensionEnabled) {
+            if (current_thread->preemption_state().has_preempt_request()) {
+                preempt_disabler.enable();
+                // Give current CPU a chance to reschedule.
+                preempt_disabler.disable();
+            }
+        }
+
+        arch::spin_hint();
+        now_ticks = time::SteadyClock::ticks();
+    } while (now_ticks < deadline_ticks);
+
+    // Every exit above either returns false on a successful CAS or breaks
+    // here: contended by another thread, self-owned, or the spin deadline
+    // passed. None of those acquired the mutex.
+    return true;
+}
+
+auto Mutex::try_release(Thread *current_thread) -> State {
+    auto old_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
+    if (m_state.compare_exchange_weak(old_mutex_state, State::Available, MemoryOrder::Acquire,
+                                      MemoryOrder::Relaxed)) {
+        return State::Available;
     }
 
-    auto Mutex::try_release(Thread *current_thread) -> State {
-        auto old_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
-        if (m_state.compare_exchange_weak(old_mutex_state, State::Available, 
-                                         MemoryOrder::Acquire, MemoryOrder::Relaxed)) {
-            return State::Available;
-        }
+    return old_mutex_state;
+}
 
-        return old_mutex_state;
+/// Pick new owner and hand off this mutex to it.
+auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> void {
+    Thread::UnparkList to_wake;
+
+    auto &default_hook = task::OwnedWaitQueue::default_wake_hook();
+    if (!m_waiters.lock_for_notify_operation(1, default_hook, to_wake)) {
+        // ???
     }
 
-    /// Pick new owner and hand off this mutex to it.
-    auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> void {
-        Thread::UnparkList to_wake;
+    State new_mutex_state;
+    Thread *new_owner;
 
-        auto &default_hook = task::OwnedWaitQueue::default_wake_hook();
-        if (!m_waiters.lock_for_notify_operation(1, default_hook, to_wake)) {
-            // ???
-        }
-
-        State new_mutex_state;
-        Thread *new_owner;
-
-        auto const do_wake = !to_wake.empty();
-        if (do_wake) {
-            new_owner = &*to_wake.front();
-            new_mutex_state = static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended;
-        } else {
-            new_owner = nullptr;
-            new_mutex_state = State::Available;
-        }
-
-        if (!m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
-                                           MemoryOrder::Acquire, MemoryOrder::Relaxed)) [[unlikely]] {
-            panic("Mutex handoff state changed");
-        }
-
-        if (do_wake) {
-            m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook, task::OwnedWaitQueue::NotifyControl::None);
-        }
+    auto const do_wake = !to_wake.empty();
+    if (do_wake) {
+        new_owner = &*to_wake.front();
+        new_mutex_state = static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended;
+    } else {
+        new_owner = nullptr;
+        new_mutex_state = State::Available;
     }
 
-    auto Mutex::release() -> void {
-        m_canary.verify<Self>();
-
-        reset_initial_assigned_cpu();
-
-        auto const current_thread = Thread::Current::get();
-        if (auto const old_mutex_state = try_release(current_thread);
-            old_mutex_state != State::Available) {
-            release_slowpath(current_thread, old_mutex_state);
-        }
+    if (!m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, MemoryOrder::Acquire,
+                                       MemoryOrder::Relaxed)) [[unlikely]] {
+        panic("Mutex handoff state changed");
     }
 
-    template auto Mutex::acquire_common(Duration, TimesliceExtension<false>) -> bool;
-    template auto Mutex::acquire_common(Duration, TimesliceExtension<true>) -> bool;
+    if (do_wake) {
+        m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook,
+                                        task::OwnedWaitQueue::NotifyControl::None);
+    }
+}
+
+auto Mutex::release() -> void {
+    m_canary.verify<Self>();
+
+    reset_initial_assigned_cpu();
+
+    auto const current_thread = Thread::Current::get();
+    if (auto const old_mutex_state = try_release(current_thread);
+        old_mutex_state != State::Available) {
+        release_slowpath(current_thread, old_mutex_state);
+    }
+}
+
+template auto Mutex::acquire_common(Duration, TimesliceExtension<false>) -> bool;
+template auto Mutex::acquire_common(Duration, TimesliceExtension<true>) -> bool;
 
 } // namespace ours::sync

@@ -14,7 +14,7 @@
 #include <bootfs/format.hpp>
 
 namespace bootfs {
-inline constexpr auto kAlignment = u64{8};
+inline constexpr auto ALIGNMENT = u64{8};
 
 struct File final {
     std::string name;
@@ -60,7 +60,7 @@ class Builder final {
         std::vector<u8> blob(static_cast<std::size_t>(total), u8{0});
 
         Header hdr{};
-        hdr.magic = Header::kMagic;
+        hdr.magic = Header::MAGIC;
         hdr.file_count = count;
         hdr.name_table_size = static_cast<u32>(name_sz);
         hdr.total_size = total;
@@ -74,7 +74,7 @@ class Builder final {
             e.name_size = static_cast<u16>(files_[i].name.size());
             e.data_offset = layouts[i].off;
             e.data_size = static_cast<u64>(files_[i].data.size());
-            e.alignment = kAlignment;
+            e.alignment = ALIGNMENT;
             std::memcpy(&entries[i], &e, sizeof(e));
             name_cursor += e.name_size;
         }
@@ -102,7 +102,7 @@ class Builder final {
         return sz;
     }
 
-    static auto align_up(u64 v, u64 a = kAlignment) -> u64 {
+    static auto align_up(u64 v, u64 a = ALIGNMENT) -> u64 {
         return (v + a - 1) & ~(a - 1);
     }
 

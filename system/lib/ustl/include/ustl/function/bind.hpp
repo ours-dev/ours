@@ -3,14 +3,14 @@
 #ifndef USTL_FUNCTION_BIND_HPP
 #define USTL_FUNCTION_BIND_HPP 1
 
-#include <functional>
-
 #include <ustl/util/move.hpp>
+
+#include <functional>
 
 namespace ustl::function {
 using std::bind;
 using std::bind_back;
 using std::bind_front;
-}
+} // namespace ustl::function
 
-#endif  // USTL_FUNCTION_BIND_HPP
+#endif // USTL_FUNCTION_BIND_HPP

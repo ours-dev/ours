@@ -3,10 +3,10 @@
 #ifndef OURS_PHYS_MODULE_LOADER_HPP
 #define OURS_PHYS_MODULE_LOADER_HPP 1
 
+#include <ours/compiler.hpp>
 #include <ours/phys/boot_obi.hpp>
 #include <ours/phys/boot_options.hpp>
 #include <ours/phys/elf_image.hpp>
-#include <ours/compiler.hpp>
 #include <ours/phys/module.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>

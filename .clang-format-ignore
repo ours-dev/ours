@@ -1,0 +1,7 @@
+# These headers are assembler sources wearing a .hpp extension: their bodies sit
+# inside `#if defined(__ASSEMBLER__)` and are GNU as directives (.macro/.endm),
+# not C++. clang-format reflows them as C++ and the assembler then rejects the
+# result, so it must not touch them at all.
+kernel/arch/x86/kernel/include/ours/arch/asm.hpp
+kernel/lib/arch/include/arch/asm.hpp
+kernel/lib/code_patching/include/lib/code_patching/asm.hpp

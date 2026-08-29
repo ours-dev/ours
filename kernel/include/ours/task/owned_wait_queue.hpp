@@ -3,8 +3,8 @@
 #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP
 #define OURS_TASK_OWNED_WAIT_QUEUE_HPP 1
 
-#include <ours/task/wait_queue.hpp>
 #include <ours/task/sched/profiles.hpp>
+#include <ours/task/wait_queue.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/fn.hpp>
 #include <ustl/traits/is_same.hpp>
@@ -45,19 +45,20 @@ class OwnedWaitQueue: protected WaitQueue {
     template <PropagateOp>
     struct PropagateTag {};
 
-    constexpr static auto const kAddSingleEdgeOp = PropagateTag<PropagateOp::AddSingleEdge>{};
+    constexpr static auto const ADD_SINGLE_EDGE_OP = PropagateTag<PropagateOp::AddSingleEdge>{};
 
-    constexpr static auto const kRemoveSingleEdgeOp = PropagateTag<PropagateOp::RemoveSingleEdge>{};
+    constexpr static auto const REMOVE_SINGLE_EDGE_OP =
+        PropagateTag<PropagateOp::RemoveSingleEdge>{};
 
-    constexpr static auto const kBaseProfileOverridedOp =
+    constexpr static auto const BASE_PROFILE_OVERRIDED_OP =
         PropagateTag<PropagateOp::BaseProfileOverrided>{};
 
     static auto default_wake_hook() -> INotifyRequeueHook &;
 
     static auto disown_all_queues(Thread *thread) -> void;
 
-    static auto override_thread_base_profile(Thread *thread,
-                                             sched::BaseProfile const &profile) -> void;
+    static auto override_thread_base_profile(Thread *thread, sched::BaseProfile const &profile)
+        -> void;
 
     OwnedWaitQueue();
 
@@ -65,8 +66,7 @@ class OwnedWaitQueue: protected WaitQueue {
 
     auto assign_owner(Thread *new_owner) -> Status;
 
-    auto park_and_assign_owner(Thread *const curr, time::Deadline const &, Interruptible)
-        -> Status;
+    auto park_and_assign_owner(Thread *const curr, time::Deadline const &, Interruptible) -> Status;
 
     auto park_and_assign_owner_preamble(Thread *const curr, Thread *new_owner) -> void;
     auto park_and_assign_owner_postamble(Thread *const curr, Thread *new_owner) -> void;
@@ -90,8 +90,7 @@ class OwnedWaitQueue: protected WaitQueue {
     static auto complete_propagate(Upstream &, Downstream &, sched::InheritedProfile const *,
                                    sched::InheritedProfile const *, PropagateTag<Op>) -> void;
 
-    static auto lock_for_owner_replacement(Thread *new_owner, Thread *blocking_thread)
-        -> void;
+    static auto lock_for_owner_replacement(Thread *new_owner, Thread *blocking_thread) -> void;
 
     template <typename Applicant>
     static auto lock_pi_chain_common(Applicant *start, Thread *blocking_thread) -> void;
@@ -99,11 +98,10 @@ class OwnedWaitQueue: protected WaitQueue {
     template <typename Applicant>
     static auto unlock_pi_chain_common(Applicant *start, void *stop_point) -> void;
 
-    static auto snapshot_thread_inherited_profile(Thread *thread)
-        -> sched::InheritedProfile;
+    static auto snapshot_thread_inherited_profile(Thread *thread) -> sched::InheritedProfile;
 
-    auto park_and_assign_owner_locked(Thread *const curr, time::Deadline const &,
-                                      Interruptible) -> Status;
+    auto park_and_assign_owner_locked(Thread *const curr, time::Deadline const &, Interruptible)
+        -> Status;
 
     auto set_owner(Thread *thread) -> void;
 
@@ -111,7 +109,7 @@ class OwnedWaitQueue: protected WaitQueue {
 
     friend class WaitQueue;
 
-    constexpr static auto kOwnedMagic = gktl::magic("OwnedWaitQueue");
+    constexpr static auto OWNED_MAGIC = gktl::magic("OwnedWaitQueue");
 
     Thread *m_owner;
     sched::InheritedProfile m_ipv;
@@ -124,9 +122,9 @@ class OwnedWaitQueue: protected WaitQueue {
 };
 
 template <>
-FORCE_INLINE auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
+FORCE_INLINE inline auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
     DEBUG_ASSERT(self);
-    if (self->m_canary.magic() == OwnedWaitQueue::kOwnedMagic) {
+    if (self->m_canary.magic() == OwnedWaitQueue::OWNED_MAGIC) {
         // The canary establishes the dynamic type and WaitQueue is the sole base.
         return reinterpret_cast<OwnedWaitQueue *>(self);
     }

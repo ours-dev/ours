@@ -6,7 +6,7 @@
 #include <bootmem/physical_memory.hpp>
 
 namespace ours::phys {
-    using BootMem = bootmem::PhysicalMemory;
+using BootMem = bootmem::PhysicalMemory;
 
 } // namespace ours::phys
 

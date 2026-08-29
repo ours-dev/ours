@@ -90,35 +90,35 @@ constexpr auto to_string(ApicTriggerMode value) noexcept -> char const * {
 class IpiRequest final {
   public:
     constexpr auto set_vector(u32 vector) noexcept -> IpiRequest & {
-        return set_field(kVectorMask, 0, vector);
+        return set_field(VECTOR_MASK, 0, vector);
     }
 
     constexpr auto set_delivery_mode(ApicDeliveryMode mode) noexcept -> IpiRequest & {
-        return set_field(kDeliveryModeMask, 8, static_cast<u8>(mode));
+        return set_field(DELIVERY_MODE_MASK, 8, static_cast<u8>(mode));
     }
 
     constexpr auto set_dest_mode(ApicDestinationMode mode) noexcept -> IpiRequest & {
-        return set_field(kDestinationModeMask, 11, static_cast<u8>(mode));
+        return set_field(DESTINATION_MODE_MASK, 11, static_cast<u8>(mode));
     }
 
     constexpr auto set_delivery_status(ApicDeliveryStatus status) noexcept -> IpiRequest & {
-        return set_field(kDeliveryStatusMask, 12, static_cast<u8>(status));
+        return set_field(DELIVERY_STATUS_MASK, 12, static_cast<u8>(status));
     }
 
     constexpr auto set_level(ApicIpiLevel level) noexcept -> IpiRequest & {
-        return set_field(kLevelMask, 14, static_cast<u8>(level));
+        return set_field(LEVEL_MASK, 14, static_cast<u8>(level));
     }
 
     constexpr auto set_trigger_mode(ApicTriggerMode mode) noexcept -> IpiRequest & {
-        return set_field(kTriggerModeMask, 15, static_cast<u8>(mode));
+        return set_field(TRIGGER_MODE_MASK, 15, static_cast<u8>(mode));
     }
 
     constexpr auto set_target(ApicIpiTarget target) noexcept -> IpiRequest & {
-        return set_field(kTargetMask, 18, static_cast<u8>(target));
+        return set_field(TARGET_MASK, 18, static_cast<u8>(target));
     }
 
     constexpr auto set_dest(u32 apic_id) noexcept -> IpiRequest & {
-        return set_field(kDestinationMask, 56, apic_id);
+        return set_field(DESTINATION_MASK, 56, apic_id);
     }
 
     [[nodiscard]]
@@ -132,14 +132,14 @@ class IpiRequest final {
     }
 
   private:
-    static constexpr auto kVectorMask = u64{0xFF};
-    static constexpr auto kDeliveryModeMask = u64{0x7};
-    static constexpr auto kDestinationModeMask = u64{0x1};
-    static constexpr auto kDeliveryStatusMask = u64{0x1};
-    static constexpr auto kLevelMask = u64{0x1};
-    static constexpr auto kTriggerModeMask = u64{0x1};
-    static constexpr auto kTargetMask = u64{0x3};
-    static constexpr auto kDestinationMask = u64{0xFF};
+    static constexpr auto VECTOR_MASK = u64{0xFF};
+    static constexpr auto DELIVERY_MODE_MASK = u64{0x7};
+    static constexpr auto DESTINATION_MODE_MASK = u64{0x1};
+    static constexpr auto DELIVERY_STATUS_MASK = u64{0x1};
+    static constexpr auto LEVEL_MASK = u64{0x1};
+    static constexpr auto TRIGGER_MODE_MASK = u64{0x1};
+    static constexpr auto TARGET_MASK = u64{0x3};
+    static constexpr auto DESTINATION_MASK = u64{0xFF};
 
     constexpr auto set_field(u64 mask, usize shift, u64 value) noexcept -> IpiRequest & {
         value_ = (value_ & ~(mask << shift)) | ((value & mask) << shift);
@@ -149,7 +149,7 @@ class IpiRequest final {
     u64 value_{};
 };
 
-inline constexpr auto kNumIsaIrqs = usize{16};
+inline constexpr auto NUM_ISA_IRQS = usize{16};
 } // namespace arch
 
 #endif // ARCH_X86_APIC_COMMON_HPP

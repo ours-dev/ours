@@ -2,8 +2,8 @@
 #include <ktl/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
-#include <ours/arch/hpet_regs.hpp>
 #include <ours/arch/hpet.hpp>
+#include <ours/arch/hpet_regs.hpp>
 #include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
@@ -25,7 +25,7 @@ namespace ours {
 using time::ClockEventDevice;
 using time::ClockSource;
 
-constexpr static auto kHpetMinCycles = 128;
+constexpr static auto HPET_MIN_CYCLES = 128;
 
 class HpetChannel;
 
@@ -39,7 +39,7 @@ class HpetClockSource {
     using Self = HpetClockSource;
 
   public:
-    HpetClockSource() : m_canary(), m_spinlock(), m_clksrc("HPET-CLKSRC", &kVtable), m_cache(0) {}
+    HpetClockSource() : m_canary(), m_spinlock(), m_clksrc("HPET-CLKSRC", &VTABLE), m_cache(0) {}
 
     auto read() -> u64 {
         m_canary.verify<Self>();
@@ -85,7 +85,7 @@ class HpetClockSource {
     usize m_cache;
 
     using Packer = ClockSource::Vtable::Packer<&Self::m_clksrc>;
-    constexpr static const ClockSource::Vtable kVtable{
+    constexpr static const ClockSource::Vtable VTABLE{
         .read = Packer::pack<&Self::read>(),
         .enable = nullptr,
         .disable = nullptr,
@@ -103,7 +103,7 @@ class HpetChannel {
         : m_canary()
         , id_(0)
         , regs_mmio_(0)
-        , m_clkevt("HPET", &Self::kVtable,
+        , m_clkevt("HPET", &Self::VTABLE,
                    ClockEventDevice::Feature::Periodic | ClockEventDevice::Feature::Oneshot, 0) {}
 
     ~HpetChannel() = default;
@@ -148,8 +148,7 @@ class HpetChannel {
         return Status::Ok;
     }
 
-    FORCE_INLINE
-    auto device() -> ClockEventDevice & {
+    FORCE_INLINE auto device() -> ClockEventDevice & {
         return m_clkevt;
     }
 
@@ -160,7 +159,7 @@ class HpetChannel {
     ClockEventDevice m_clkevt;
 
     using Packer = ClockEventDevice::Vtable::Packer<&Self::m_clkevt>;
-    constexpr static const ClockEventDevice::Vtable kVtable{
+    constexpr static const ClockEventDevice::Vtable VTABLE{
         .set_next_event_tick = Packer::pack<&Self::set_next_event_tick>(),
         .set_next_event_time = Packer::pack<&Self::set_next_event_time>(),
         .set_mode_periodic = Packer::pack<&Self::set_mode_periodic>(),
@@ -173,8 +172,7 @@ class HpetChannel {
     };
 };
 
-INIT_CODE
-static auto hpet_init_internal() -> Status {
+INIT_CODE static auto hpet_init_internal() -> Status {
     DEBUG_ASSERT(s_hpet_mmio);
     auto const mmio = s_hpet_mmio;
 
@@ -189,7 +187,7 @@ static auto hpet_init_internal() -> Status {
         return Status::NoResource;
     }
 
-    auto const channels = new (mm::kGafKernel) HpetChannel[num_channels];
+    auto const channels = new (mm::GAF_KERNEL) HpetChannel[num_channels];
     if (!channels) {
         return Status::OutOfMem;
     }
@@ -199,7 +197,7 @@ static auto hpet_init_internal() -> Status {
         s_hpet_channels[i].init(i, &mmio->timers[i]);
     }
 
-    constexpr auto const kFemtosecondsPerSecond = duration_cast<Femtoseconds>(Seconds(1)).count();
+    constexpr auto const FEMTOSECONDS_PER_SECOND = duration_cast<Femtoseconds>(Seconds(1)).count();
     auto const period = mmio->general_caps.period();
     if (period == 0) {
         log::info("HPET: Invalid period.");
@@ -207,7 +205,7 @@ static auto hpet_init_internal() -> Status {
     }
 
     // HZ: How many ticks in one second.
-    s_hpet_frequency = (kFemtosecondsPerSecond + period - 1) / period;
+    s_hpet_frequency = (FEMTOSECONDS_PER_SECOND + period - 1) / period;
     log::info("HPET Frequency = {}", s_hpet_frequency);
 
     if (mmio->general_caps.support_legacy()) {
@@ -227,8 +225,7 @@ static auto hpet_init_internal() -> Status {
     return Status::Ok;
 }
 
-INIT_CODE
-static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
+INIT_CODE static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
     using namespace mm;
 
     VirtAddr hpet_mmio = 0;
@@ -250,8 +247,7 @@ static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
 /// 3. Save minimal tick (either from ACPI table or configuration register).
 /// 4. Initialize comparators.
 /// 5. Set ENABLE_CNF bit.
-INIT_CODE
-auto hpet_init(PhysAddr mmio) -> Status {
+INIT_CODE auto hpet_init(PhysAddr mmio) -> Status {
     DEBUG_ASSERT(mmio);
 
     auto status = setup_hpet_mmio(mmio);
@@ -269,7 +265,7 @@ auto hpet_init(PhysAddr mmio) -> Status {
     ClockSource::enroll(&s_hpet_clock_source.high_level_source(), s_hpet_frequency);
 
     auto &device = s_hpet_channels[0].device();
-    ClockEventDevice::entroll(device, s_hpet_frequency, kHpetMinCycles, 0x7FFFFFFF);
+    ClockEventDevice::entroll(device, s_hpet_frequency, HPET_MIN_CYCLES, 0x7FFFFFFF);
 
     time::g_clock_event = &device;
     return Status::Ok;

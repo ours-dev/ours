@@ -66,8 +66,7 @@ class X86CpuFeature {
     }
 
   private:
-    static auto cpuid(u32 leaf, u32 subleaf, u32 &eax, u32 &ebx,
-                      u32 &ecx, u32 &edx) -> void {
+    static auto cpuid(u32 leaf, u32 subleaf, u32 &eax, u32 &ebx, u32 &ecx, u32 &edx) -> void {
 #if defined(__i386__) || defined(__x86_64__)
         asm volatile("cpuid"
                      : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)

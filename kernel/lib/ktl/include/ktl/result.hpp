@@ -7,11 +7,11 @@
 #include <ustl/result.hpp>
 
 namespace ktl {
-    template <typename T>
-    using Result = ustl::Result<T, ours::Status>;
+template <typename T>
+using Result = ustl::Result<T, ours::Status>;
 
-    using ustl::ok; 
-    using ustl::err;
+using ustl::err;
+using ustl::ok;
 
 } // namespace ktl
 

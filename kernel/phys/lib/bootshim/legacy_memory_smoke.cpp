@@ -6,10 +6,6 @@
 /// tests synthesise one the same way //kernel/phys/lib/multiboot's own
 /// smoke test does.
 
-#include <bootshim/legacy_memory.hpp>
-
-#include <multiboot/view.hpp>
-
 #include <array>
 #include <vector>
 
@@ -17,9 +13,12 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <bootshim/legacy_memory.hpp>
+#include <multiboot/view.hpp>
+
 namespace {
-using bootshim::kMaxLegacyMemoryRanges;
 using bootshim::LegacyMemoryRanges;
+using bootshim::MAX_LEGACY_MEMORY_RANGES;
 using multiboot::MultibootMemoryMap;
 using multiboot::MultibootMmapEntry;
 using multiboot::View;
@@ -178,35 +177,35 @@ auto empty_map_converts_to_nothing() -> void {
 
 auto exactly_full_map_drops_nothing() -> void {
     std::vector<MultibootMemoryMap> entries;
-    for (usize index = 0; index < kMaxLegacyMemoryRanges; ++index) {
+    for (usize index = 0; index < MAX_LEGACY_MEMORY_RANGES; ++index) {
         entries.push_back(available(0x1000 * (index + 1), 0x800));
     }
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        require(map.count() == kMaxLegacyMemoryRanges);
+        require(map.count() == MAX_LEGACY_MEMORY_RANGES);
         LegacyMemoryRanges out{};
         auto const result = bootshim::convert_memory_map(map, out);
-        require(result.converted == kMaxLegacyMemoryRanges);
+        require(result.converted == MAX_LEGACY_MEMORY_RANGES);
         require(result.dropped == 0);
-        require(out[kMaxLegacyMemoryRanges - 1].base == 0x1000 * kMaxLegacyMemoryRanges);
+        require(out[MAX_LEGACY_MEMORY_RANGES - 1].base == 0x1000 * MAX_LEGACY_MEMORY_RANGES);
     });
 }
 
 auto oversized_map_reports_what_it_dropped() -> void {
-    constexpr auto kExtra = usize{7};
+    constexpr auto EXTRA = usize{7};
     std::vector<MultibootMemoryMap> entries;
-    for (usize index = 0; index < kMaxLegacyMemoryRanges + kExtra; ++index) {
+    for (usize index = 0; index < MAX_LEGACY_MEMORY_RANGES + EXTRA; ++index) {
         entries.push_back(available(0x1000 * (index + 1), 0x800));
     }
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         LegacyMemoryRanges out{};
         auto const result = bootshim::convert_memory_map(map, out);
-        require(result.converted == kMaxLegacyMemoryRanges);
-        require(result.dropped == kExtra);
+        require(result.converted == MAX_LEGACY_MEMORY_RANGES);
+        require(result.dropped == EXTRA);
 
         // Conversion is in map order, so what survives is the head of the
         // firmware's own list -- not a selection of the useful ranges.
         require(out[0].base == 0x1000);
-        require(out[kMaxLegacyMemoryRanges - 1].base == 0x1000 * kMaxLegacyMemoryRanges);
+        require(out[MAX_LEGACY_MEMORY_RANGES - 1].base == 0x1000 * MAX_LEGACY_MEMORY_RANGES);
     });
 }
 
@@ -214,7 +213,7 @@ auto oversized_map_reports_what_it_dropped() -> void {
 // find_scratch
 // ---------------------------------------------------------------------
 
-constexpr auto kPage = usize{0x1000};
+constexpr auto PAGE = usize{0x1000};
 
 auto scratch_takes_the_first_region_that_fits() -> void {
     auto const entries = std::vector<MultibootMemoryMap>{
@@ -222,7 +221,7 @@ auto scratch_takes_the_first_region_that_fits() -> void {
         available(0x80000, 0x40000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found = bootshim::find_scratch(map, 0, 0x2000, kPage);
+        auto const found = bootshim::find_scratch(map, 0, 0x2000, PAGE);
         require(found.is_some() && found.value() == 0x10000);
     });
 }
@@ -236,7 +235,7 @@ auto scratch_skips_regions_that_are_not_available() -> void {
         available(0x400000, 0x10000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found = bootshim::find_scratch(map, 0, 0x8000, kPage);
+        auto const found = bootshim::find_scratch(map, 0, 0x8000, PAGE);
         require(found.is_some() && found.value() == 0x400000);
     });
 }
@@ -248,7 +247,7 @@ auto scratch_skips_regions_that_are_too_small() -> void {
         available(0x30000, 0x20000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found = bootshim::find_scratch(map, 0, 0x8000, kPage);
+        auto const found = bootshim::find_scratch(map, 0, 0x8000, PAGE);
         require(found.is_some() && found.value() == 0x30000);
     });
 }
@@ -258,7 +257,7 @@ auto scratch_starts_at_the_floor_inside_a_region() -> void {
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         // The floor lands inside the region: the placement moves up to it
         // rather than taking the region's own base.
-        auto const found = bootshim::find_scratch(map, 0x40000, 0x1000, kPage);
+        auto const found = bootshim::find_scratch(map, 0x40000, 0x1000, PAGE);
         require(found.is_some() && found.value() == 0x40000);
     });
 }
@@ -268,7 +267,7 @@ auto scratch_aligns_the_floor_up() -> void {
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         // An unaligned floor -- the end of some image the caller must not
         // overwrite -- rounds up, never down.
-        auto const found = bootshim::find_scratch(map, 0x40001, 0x1000, kPage);
+        auto const found = bootshim::find_scratch(map, 0x40001, 0x1000, PAGE);
         require(found.is_some() && found.value() == 0x41000);
 
         // A larger alignment rounds further.
@@ -284,7 +283,7 @@ auto scratch_rejects_a_region_the_floor_has_eaten() -> void {
         available(0x100000, 0x10000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        auto const found = bootshim::find_scratch(map, 0x1F000, 0x8000, kPage);
+        auto const found = bootshim::find_scratch(map, 0x1F000, 0x8000, PAGE);
         require(found.is_some() && found.value() == 0x100000);
     });
 }
@@ -296,9 +295,9 @@ auto scratch_rejects_a_region_alignment_has_eaten() -> void {
     // running 0x800 bytes past the end of usable memory.
     auto const entries = std::vector<MultibootMemoryMap>{available(0x10001, 0x7FFF)};
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        require(bootshim::find_scratch(map, 0, 0x7800, kPage).is_none());
+        require(bootshim::find_scratch(map, 0, 0x7800, PAGE).is_none());
         // The largest request the aligned start can still satisfy.
-        auto const fits = bootshim::find_scratch(map, 0, 0x7000, kPage);
+        auto const fits = bootshim::find_scratch(map, 0, 0x7000, PAGE);
         require(fits.is_some() && fits.value() == 0x11000);
     });
 }
@@ -309,7 +308,7 @@ auto scratch_fails_when_the_floor_is_above_everything() -> void {
         available(0x30000, 0x10000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        require(bootshim::find_scratch(map, 0x100000, 0x1000, kPage).is_none());
+        require(bootshim::find_scratch(map, 0x100000, 0x1000, PAGE).is_none());
     });
 }
 
@@ -319,13 +318,13 @@ auto scratch_fails_when_nothing_is_big_enough() -> void {
         available(0x20000, 0x1000),
     };
     with_parsed_map(entries, [](View::MemoryMap const &map) {
-        require(bootshim::find_scratch(map, 0, 0x8000, kPage).is_none());
+        require(bootshim::find_scratch(map, 0, 0x8000, PAGE).is_none());
     });
 }
 
 auto scratch_fails_on_an_empty_map() -> void {
     with_parsed_map({}, [](View::MemoryMap const &map) {
-        require(bootshim::find_scratch(map, 0, 0x1000, kPage).is_none());
+        require(bootshim::find_scratch(map, 0, 0x1000, PAGE).is_none());
     });
 }
 
@@ -350,10 +349,10 @@ auto scratch_fits_a_region_exactly() -> void {
     with_parsed_map(entries, [](View::MemoryMap const &map) {
         // A request that consumes the region down to its last byte is a fit,
         // not an overrun.
-        auto const found = bootshim::find_scratch(map, 0, 0x10000, kPage);
+        auto const found = bootshim::find_scratch(map, 0, 0x10000, PAGE);
         require(found.is_some() && found.value() == 0x10000);
         // One byte more is not.
-        require(bootshim::find_scratch(map, 0, 0x10001, kPage).is_none());
+        require(bootshim::find_scratch(map, 0, 0x10001, PAGE).is_none());
     });
 }
 

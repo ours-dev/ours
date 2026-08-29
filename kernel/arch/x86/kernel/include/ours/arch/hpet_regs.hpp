@@ -29,20 +29,20 @@ struct HpetTimerRegs {
         using Self = ConfigAndCapRegs;
 
         enum FieldId {
-            kReserved0,
-            kIntrTypeConfig,
-            kIntrEnableConfig,
-            kTimerTypeConfig,
-            kPeriodicCap,
-            kSizeCap,
-            kValSetConfig,
-            kReserved1,
+            RESERVED0,
+            INTR_TYPE_CONFIG,
+            INTR_ENABLE_CONFIG,
+            TIMER_TYPE_CONFIG,
+            PERIODIC_CAP,
+            SIZE_CAP,
+            VAL_SET_CONFIG,
+            RESERVED1,
             k32ModeConfig,
-            kIntrRouteConfig,
-            kTnFSBEnConfig,
-            kTnFSBIntrDelCap,
-            kReserved2,
-            kTnIntrRouteCap,
+            INTR_ROUTE_CONFIG,
+            TN_FSB_EN_CONFIG,
+            TN_FSB_INTR_DEL_CAP,
+            RESERVED2,
+            TN_INTR_ROUTE_CAP,
         };
 
         enum class TriggerMode {
@@ -50,83 +50,76 @@ struct HpetTimerRegs {
             Level,
         };
 
-        FORCE_INLINE
-        auto mask(bool mask = true) volatile -> Self volatile & {
-            inner.set<kIntrEnableConfig>(!mask);
+        FORCE_INLINE auto mask(bool mask = true) volatile -> Self volatile & {
+            inner.set<INTR_ENABLE_CONFIG>(!mask);
             return *this;
         }
 
-        FORCE_INLINE
-        auto irq() const volatile -> usize {
-            return inner.get<kIntrRouteConfig>();
+        FORCE_INLINE auto irq() const volatile -> usize {
+            return inner.get<INTR_ROUTE_CONFIG>();
         }
 
-        FORCE_INLINE
-        auto configure_irq(usize irqnum) volatile -> Self volatile & {
-            inner.set<kIntrRouteConfig>(irqnum);
+        FORCE_INLINE auto configure_irq(usize irqnum) volatile -> Self volatile & {
+            inner.set<INTR_ROUTE_CONFIG>(irqnum);
             return *this;
         }
 
-        FORCE_INLINE
-        auto support_periodic() const volatile -> bool {
-            return inner.get<kPeriodicCap>();
+        FORCE_INLINE auto support_periodic() const volatile -> bool {
+            return inner.get<PERIODIC_CAP>();
         }
 
-        FORCE_INLINE
-        auto set_mode_periodic() volatile -> Self volatile & {
+        FORCE_INLINE auto set_mode_periodic() volatile -> Self volatile & {
             DEBUG_ASSERT(support_periodic());
-            inner.set<kTimerTypeConfig>(1);
-            inner.set<kValSetConfig>(1);
+            inner.set<TIMER_TYPE_CONFIG>(1);
+            inner.set<VAL_SET_CONFIG>(1);
             return *this;
         }
 
         /// One-shot is mandatory for every HPET timer, so unlike
         /// set_mode_periodic() this asserts nothing.  It used to assert
         /// support_periodic(), copied from the function above.
-        FORCE_INLINE
-        auto set_mode_oneshot() volatile -> Self volatile & {
-            inner.set<kTimerTypeConfig>(0);
-            inner.set<kValSetConfig>(1);
+        FORCE_INLINE auto set_mode_oneshot() volatile -> Self volatile & {
+            inner.set<TIMER_TYPE_CONFIG>(0);
+            inner.set<VAL_SET_CONFIG>(1);
             return *this;
         }
 
-        FORCE_INLINE
-        auto trigger_mode() volatile -> TriggerMode {
-            return TriggerMode(inner.get<kIntrTypeConfig>());
+        FORCE_INLINE auto trigger_mode() volatile -> TriggerMode {
+            return TriggerMode(inner.get<INTR_TYPE_CONFIG>());
         }
 
         volatile ustl::BitFields<
-            Field<kReserved0, 1, "Reserved">,
+            Field<RESERVED0, 1, "Reserved">,
             // 0-edge-triggered interrupts.
             // 1-level-triggered interrupts.
-            Field<kIntrTypeConfig, 1, "IntrTypeConfig">,
+            Field<INTR_TYPE_CONFIG, 1, "IntrTypeConfig">,
             // 0-this timer will still set Tn_INT_STS.
             // 1-enables triggering of interrupts.
-            Field<kIntrEnableConfig, 1, "IntrEnableConfig">,
+            Field<INTR_ENABLE_CONFIG, 1, "IntrEnableConfig">,
             // 1-enables periodic type.
             // 0-enables oneshot type.
-            Field<kTimerTypeConfig, 1, "TimerTypeConfig">,
+            Field<TIMER_TYPE_CONFIG, 1, "TimerTypeConfig">,
             // Read-only.
             // 1-this timer supports periodic mode.
-            Field<kPeriodicCap, 1, "PeriodicCap">,
+            Field<PERIODIC_CAP, 1, "PeriodicCap">,
             // 1-supports 64-bit.
             // 0-supports 32-bit.
-            Field<kSizeCap, 1, "SizeCap">,
+            Field<SIZE_CAP, 1, "SizeCap">,
             // Be used to allow software to directly set periodic timer's accumulator.
-            Field<kValSetConfig, 1, "ValSetConfig">, Field<kReserved1, 1, "Reserved">,
+            Field<VAL_SET_CONFIG, 1, "ValSetConfig">, Field<RESERVED1, 1, "Reserved">,
             // Force to enable 32-bit timer.
             Field<k32ModeConfig, 1, "32ModeConfig">,
             // This field indicates I/O APIC routing. Allowed values can be determined
             // using Tn_INT_ROUTE_CAP. If an illegal value is written, then value read
             // back from this field will not match the written value.
-            Field<kIntrRouteConfig, 5, "IntrRouteConfig">,
+            Field<INTR_ROUTE_CONFIG, 5, "IntrRouteConfig">,
             // 1-this timer will use FSB interrupt mapping.
-            Field<kTnFSBEnConfig, 1, "TnFSBEnConfig">,
+            Field<TN_FSB_EN_CONFIG, 1, "TnFSBEnConfig">,
             // 1-this timer supports FSB interrupt mapping.
-            Field<kTnFSBIntrDelCap, 1, "TnFSBIntrDelCap">, Field<kReserved2, 16, "Reserved">,
+            Field<TN_FSB_INTR_DEL_CAP, 1, "TnFSBIntrDelCap">, Field<RESERVED2, 16, "Reserved">,
             // Timer n Interrupt Routing Capability. If bit X is set in this field,
             // it means that this timer can be mapped to IRQX line of I/O APIC.
-            Field<kTnIntrRouteCap, 32, "TnIntrRouteCap">>
+            Field<TN_INTR_ROUTE_CAP, 32, "TnIntrRouteCap">>
             inner;
     };
 

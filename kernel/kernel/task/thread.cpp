@@ -134,7 +134,7 @@ auto Thread::spawn(char const *name, StartRoutine entry, sched::BaseProfile cons
     }
 
     // spawn_etc placement-news into this, so take raw storage.
-    auto self = ThreadCache::allocate(mm::kGafKernel);
+    auto self = ThreadCache::allocate(mm::GAF_KERNEL);
     if (!self) {
         return 0;
     }
@@ -385,8 +385,7 @@ auto Thread::Current::migrate_to(CpuNum dest) -> void {
     Thread::Current::get()->set_cpu_affinity_hard(CpuMask::of(dest));
 }
 
-INIT_CODE
-auto Thread::Current::become_idle() -> void {
+INIT_CODE auto Thread::Current::become_idle() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
 

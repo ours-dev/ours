@@ -9,4 +9,4 @@ namespace ustl::function {
 using std::invoke;
 }
 
-#endif  // USTL_FUNCTION_INVOKE_HPP
+#endif // USTL_FUNCTION_INVOKE_HPP

@@ -32,8 +32,8 @@ class KernelPackage final {
     /// the kernel_package()/kernel_elf_image() GN output convention.
     /// Consumers compose "<install dir>/<name>" (e.g. "vmours/image.elf");
     /// the names themselves are fixed vocabulary, not boot parameters.
-    static constexpr std::string_view kImageElf{"image.elf"};
-    static constexpr std::string_view kCodePatches{"code-patches"};
+    static constexpr std::string_view IMAGE_ELF{"image.elf"};
+    static constexpr std::string_view CODE_PATCHES{"code-patches"};
 
     /// Parse and validate a StorageKernel item, materializing
     /// (decompressing) its payload into `output`.  `output` must be at
@@ -96,7 +96,8 @@ class KernelPackage final {
     }
 
   private:
-    KernelPackage(obi::ItemView envelope, bootfs::View bootfs) : envelope_(envelope), bootfs_(bootfs) {}
+    KernelPackage(obi::ItemView envelope, bootfs::View bootfs)
+        : envelope_(envelope), bootfs_(bootfs) {}
 
     obi::ItemView envelope_;
     bootfs::View bootfs_;

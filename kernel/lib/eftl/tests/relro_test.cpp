@@ -21,8 +21,8 @@ auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
 
 auto make_header(u16 segment_count) -> Header {
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
@@ -103,8 +103,8 @@ auto test_elf32_relro_end_is_widened() -> int {
 
     std::array<u8, 256> image{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;

@@ -1,16 +1,16 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <concepts>
-
 #include <ustl/collections/intrusive/pointer_plus_bits.hpp>
 
-namespace {
-    struct alignas(8) Node final {
-        int m_value = 0;
-    };
+#include <concepts>
 
-    using TaggedPointer = ustl::collections::intrusive::PointerPlusBits<Node *, 2>;
+namespace {
+struct alignas(8) Node final {
+    int m_value = 0;
+};
+
+using TaggedPointer = ustl::collections::intrusive::PointerPlusBits<Node *, 2>;
 } // namespace
 
 static_assert(ustl::collections::intrusive::MaxPointerPlusBits<void *, alignof(Node)>::VALUE >= 3);
@@ -27,5 +27,7 @@ auto main() -> int {
     }
 
     TaggedPointer::set_pointer(tagged, &second);
-    return TaggedPointer::get_pointer(tagged) == &second && TaggedPointer::get_bits(tagged) == 3 ? 0 : 2;
+    return TaggedPointer::get_pointer(tagged) == &second && TaggedPointer::get_bits(tagged) == 3
+               ? 0
+               : 2;
 }

@@ -23,34 +23,34 @@ struct Dbg2Layout {
     u32 *address_size;
 };
 
-constexpr usize kDeviceOffset = sizeof(acpi::dbg2::Table);
-constexpr usize kAddressOffset = sizeof(acpi::dbg2::Device);
-constexpr usize kAddressSizeOffset = kAddressOffset + sizeof(acpi::GenericAddress);
-constexpr usize kDeviceLength = kAddressSizeOffset + sizeof(u32);
+constexpr usize DEVICE_OFFSET = sizeof(acpi::dbg2::Table);
+constexpr usize ADDRESS_OFFSET = sizeof(acpi::dbg2::Device);
+constexpr usize ADDRESS_SIZE_OFFSET = ADDRESS_OFFSET + sizeof(acpi::GenericAddress);
+constexpr usize DEVICE_LENGTH = ADDRESS_SIZE_OFFSET + sizeof(u32);
 
 auto add_dbg2(Machine &machine) -> Dbg2Layout {
-    auto const length = kDeviceOffset + kDeviceLength;
-    auto *table = machine.add_table<acpi::dbg2::Table>(acpi::dbg2::Table::kSignature, length);
-    table->device_info_offset = u32(kDeviceOffset);
+    auto const length = DEVICE_OFFSET + DEVICE_LENGTH;
+    auto *table = machine.add_table<acpi::dbg2::Table>(acpi::dbg2::Table::SIGNATURE, length);
+    table->device_info_offset = u32(DEVICE_OFFSET);
     table->device_info_count = 1;
 
     auto *bytes = reinterpret_cast<u8 *>(table);
-    auto *device = reinterpret_cast<acpi::dbg2::Device *>(bytes + kDeviceOffset);
+    auto *device = reinterpret_cast<acpi::dbg2::Device *>(bytes + DEVICE_OFFSET);
     device->revision = 0;
-    device->length = u16(kDeviceLength);
+    device->length = u16(DEVICE_LENGTH);
     device->register_count = 1;
     device->port_type = acpi::dbg2::PortType::Serial;
     device->port_subtype = acpi::dbg2::PortSubType::Serial16550Compatible;
-    device->base_address_offset = u16(kAddressOffset);
-    device->address_size_offset = u16(kAddressSizeOffset);
+    device->base_address_offset = u16(ADDRESS_OFFSET);
+    device->address_size_offset = u16(ADDRESS_SIZE_OFFSET);
 
     auto *address =
-        reinterpret_cast<acpi::GenericAddress *>(bytes + kDeviceOffset + kAddressOffset);
+        reinterpret_cast<acpi::GenericAddress *>(bytes + DEVICE_OFFSET + ADDRESS_OFFSET);
     address->address_space_id = u8(acpi::AddressSpace::SystemMemory);
     address->register_bit_width = 32;
     address->address = 0xfedc'0000;
 
-    auto *address_size = reinterpret_cast<u32 *>(bytes + kDeviceOffset + kAddressSizeOffset);
+    auto *address_size = reinterpret_cast<u32 *>(bytes + DEVICE_OFFSET + ADDRESS_SIZE_OFFSET);
     *address_size = 0x1000;
 
     return Dbg2Layout{table, device, address, address_size};
@@ -97,17 +97,17 @@ auto test_malformed_offsets_are_rejected() -> void {
     // A device offset pointing back into the table header.
     layout.table->device_info_offset = 4;
     require(!acpi::parse_debug_port(*layout.table));
-    layout.table->device_info_offset = u32(kDeviceOffset);
+    layout.table->device_info_offset = u32(DEVICE_OFFSET);
 
     // A device claiming to be longer than the table.
     layout.device->length = 0xffff;
     require(!acpi::parse_debug_port(*layout.table));
-    layout.device->length = u16(kDeviceLength);
+    layout.device->length = u16(DEVICE_LENGTH);
 
     // A base address offset that would read past the device.
-    layout.device->base_address_offset = u16(kDeviceLength - 4);
+    layout.device->base_address_offset = u16(DEVICE_LENGTH - 4);
     require(!acpi::parse_debug_port(*layout.table));
-    layout.device->base_address_offset = u16(kAddressOffset);
+    layout.device->base_address_offset = u16(ADDRESS_OFFSET);
 
     // A device count larger than the table can hold.  The first device has to be
     // one the decoder skips, otherwise it returns a port before it ever looks at
@@ -126,7 +126,7 @@ auto test_missing_address_size_falls_back_to_bit_width() -> void {
     auto layout = add_dbg2(machine);
     // Point the size array past the end of the device: the decoder falls back
     // to the width the generic address itself declares.
-    layout.device->address_size_offset = u16(kDeviceLength);
+    layout.device->address_size_offset = u16(DEVICE_LENGTH);
 
     auto port = acpi::parse_debug_port(*layout.table);
     require(bool(port));

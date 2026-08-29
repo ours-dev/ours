@@ -7,9 +7,9 @@
 #include <ustl/util/pack_options.hpp>
 
 namespace arch::paging {
-    USTL_TYPE_OPTION(PageAllocator, PageAllocator);
+USTL_TYPE_OPTION(PageAllocator, PageAllocator);
 
-    USTL_CONSTANT_OPTION(PagingLevel, usize, kPagingLevel);
+USTL_CONSTANT_OPTION(PagingLevel, usize, PAGING_LEVEL);
 
 } // namespace arch::paging
 

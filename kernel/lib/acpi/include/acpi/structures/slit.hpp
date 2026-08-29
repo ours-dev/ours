@@ -24,7 +24,7 @@ struct PACKED Table {
     u64 locality_count;
     u8 entry[];
 
-    constexpr static Signature kSignature = Signature::from_chars("SLIT");
+    constexpr static Signature SIGNATURE = Signature::from_chars("SLIT");
 };
 static_assert(sizeof(Table) == 44);
 

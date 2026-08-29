@@ -10,7 +10,7 @@
 namespace ustl::iterator {
 
 template <typename Iterator>
-struct IterTraits : std::iterator_traits<Iterator> {
+struct IterTraits: std::iterator_traits<Iterator> {
     using Element = typename std::iterator_traits<Iterator>::value_type;
     using Distance = typename std::iterator_traits<Iterator>::difference_type;
     using Category = typename std::iterator_traits<Iterator>::iterator_category;

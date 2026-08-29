@@ -1,4 +1,3 @@
 #include <hsien/test.hpp>
 
-[[=hsien::test]]
-void invalid_test() {}
+[[= hsien::test]] void invalid_test() {}

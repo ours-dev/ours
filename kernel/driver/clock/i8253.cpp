@@ -8,15 +8,15 @@
 namespace ours {
 using time::ClockEventDevice;
 
-constexpr static auto const kPitMode = 0x43;
+constexpr static auto const PIT_MODE = 0x43;
 
-constexpr static auto const kPitCh0 = 0x40;
+constexpr static auto const PIT_CH0 = 0x40;
 
-constexpr static auto const kPitCh2 = 0x42;
+constexpr static auto const PIT_CH2 = 0x42;
 
-constexpr static auto const kPitLatch = 0;
+constexpr static auto const PIT_LATCH = 0;
 
-constexpr static auto const kPitFrequency = 1193182ul;
+constexpr static auto const PIT_FREQUENCY = 1193182ul;
 
 class I8253ClockDevice {
     using Self = I8253ClockDevice;
@@ -24,37 +24,37 @@ class I8253ClockDevice {
   public:
     constexpr I8253ClockDevice()
         : m_lock()
-        , m_clkevt("I8253", &kVtable,
+        , m_clkevt("I8253", &VTABLE,
                    ClockEventDevice::Feature::Periodic | ClockEventDevice::Feature::Oneshot, 0) {}
 
     constexpr ~I8253ClockDevice() = default;
 
     auto shutdown() -> void {
         Guard guard{m_lock};
-        arch::outb(kPitMode, 0x30);
-        arch::outb(kPitCh0, 0);
-        arch::outb(kPitCh2, 0);
-        arch::outb(kPitMode, 0x30);
+        arch::outb(PIT_MODE, 0x30);
+        arch::outb(PIT_CH0, 0);
+        arch::outb(PIT_CH2, 0);
+        arch::outb(PIT_MODE, 0x30);
     }
 
     auto set_mode_oneshot() -> Status {
         Guard guard{m_lock};
-        arch::outb(kPitMode, 0x38);
+        arch::outb(PIT_MODE, 0x38);
         return Status::Ok;
     }
 
     auto set_mode_periodic() -> Status {
         Guard guard{m_lock};
-        arch::outb(kPitMode, 0x34);
-        arch::outb(kPitCh0, static_cast<u8>(kPitLatch & 0xffu));        // LSB
-        arch::outb(kPitCh0, static_cast<u8>((kPitLatch >> 8) & 0xffu)); // MSB
+        arch::outb(PIT_MODE, 0x34);
+        arch::outb(PIT_CH0, static_cast<u8>(PIT_LATCH & 0xffu));        // LSB
+        arch::outb(PIT_CH0, static_cast<u8>((PIT_LATCH >> 8) & 0xffu)); // MSB
         return Status::Ok;
     }
 
     auto set_next_event_tick(Ticks delta) -> Status {
         Guard guard{m_lock};
-        arch::outb(kPitCh0, static_cast<u8>(delta & 0xffu));        // LSB
-        arch::outb(kPitCh0, static_cast<u8>((delta >> 8) & 0xffu)); // MSB
+        arch::outb(PIT_CH0, static_cast<u8>(delta & 0xffu));        // LSB
+        arch::outb(PIT_CH0, static_cast<u8>((delta >> 8) & 0xffu)); // MSB
         return Status::Ok;
     }
 
@@ -70,7 +70,7 @@ class I8253ClockDevice {
 
     using Packer = ClockEventDevice::Vtable::Packer<&Self::m_clkevt>;
 
-    constexpr static const ClockEventDevice::Vtable kVtable{
+    constexpr static const ClockEventDevice::Vtable VTABLE{
         .set_next_event_tick = Packer::pack<&Self::set_next_event_tick>(),
         .set_next_event_time = nullptr,
         .set_mode_periodic = Packer::pack<&Self::set_mode_periodic>(),
@@ -86,12 +86,11 @@ class I8253ClockDevice {
 static ustl::LazyInit<I8253ClockDevice> s_i8253_clkevt;
 ClockEventDevice *g_i8253_clkevt;
 
-INIT_CODE
-auto i8253_init(bool oneshot) -> void {
+INIT_CODE auto i8253_init(bool oneshot) -> void {
     s_i8253_clkevt.init();
     g_i8253_clkevt = s_i8253_clkevt->device();
 
-    ClockEventDevice::entroll(*g_i8253_clkevt, kPitFrequency, 0xF, 0x7FFF);
+    ClockEventDevice::entroll(*g_i8253_clkevt, PIT_FREQUENCY, 0xF, 0x7FFF);
 }
 
 } // namespace ours

@@ -16,14 +16,14 @@ struct InvokeArgs<Result(Parameters...)> {
 };
 
 template <typename Result, typename... Parameters>
-struct InvokeArgs<Result (*)(Parameters...)> : InvokeArgs<Result(Parameters...)> {};
+struct InvokeArgs<Result (*)(Parameters...)>: InvokeArgs<Result(Parameters...)> {};
 
 template <typename Result, typename Class, typename... Parameters>
-struct InvokeArgs<Result (Class::*)(Parameters...)> : InvokeArgs<Result(Parameters...)> {};
+struct InvokeArgs<Result (Class::*)(Parameters...)>: InvokeArgs<Result(Parameters...)> {};
 
 template <typename Result, typename Class, typename... Parameters>
-struct InvokeArgs<Result (Class::*)(Parameters...) const> : InvokeArgs<Result(Parameters...)> {};
+struct InvokeArgs<Result (Class::*)(Parameters...) const>: InvokeArgs<Result(Parameters...)> {};
 
-}  // namespace ustl::traits
+} // namespace ustl::traits
 
-#endif  // USTL_TRAITS_INVOKE_ARGS_HPP
+#endif // USTL_TRAITS_INVOKE_ARGS_HPP

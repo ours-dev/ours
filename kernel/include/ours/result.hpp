@@ -7,11 +7,11 @@
 #include <ustl/result.hpp>
 
 namespace ours {
-    using ustl::err;
-    using ustl::ok;
+using ustl::err;
+using ustl::ok;
 
-    template <typename T>
-    using Result = ustl::Result<T, Status>;
+template <typename T>
+using Result = ustl::Result<T, Status>;
 
 } // namespace ours
 

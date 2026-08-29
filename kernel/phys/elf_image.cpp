@@ -1,5 +1,4 @@
 #include <ours/phys/elf_image.hpp>
-
 #include <ours/phys/print.hpp>
 
 #include <limits>
@@ -227,7 +226,7 @@ namespace {
             // to the module's own definition (rather than shadowing it with
             // physload's) matters because a same-named physload symbol may
             // be a different function entirely.
-            constexpr auto kShnAbs = decltype(symbol->st_shndx){0xfff1};
+            constexpr auto SHN_ABS = decltype(symbol->st_shndx){0xfff1};
 
             usize address = 0;
             if (symbol->st_shndx == 0) {
@@ -235,19 +234,18 @@ namespace {
                 if (name.is_none()) {
                     return Status::InvalidArgument;
                 }
-                auto const spelling = std::string_view(
-                    reinterpret_cast<char const *>(name->data()), name->size());
+                auto const spelling =
+                    std::string_view(reinterpret_cast<char const *>(name->data()), name->size());
 
                 auto const *definition = binder.resolve(binder.context, spelling);
                 if (definition == nullptr) {
                     // Loud on purpose: the alternative is binding to zero and
                     // faulting somewhere unrelated once the module runs.
-                    println("Module needs symbol '{}', which physload does not export",
-                            spelling);
+                    println("Module needs symbol '{}', which physload does not export", spelling);
                     return Status::NotFound;
                 }
                 address = reinterpret_cast<usize>(definition);
-            } else if (symbol->st_shndx == kShnAbs) {
+            } else if (symbol->st_shndx == SHN_ABS) {
                 address = static_cast<usize>(symbol->st_value);
             } else {
                 address = static_cast<usize>(symbol->st_value) + static_cast<usize>(bias);
@@ -333,8 +331,8 @@ auto ElfImage::section(std::string_view const name) const -> std::span<u8 const>
         }
         // SHF_ALLOC only: a section with no runtime address was never
         // loaded, and reporting one would hand back a wild pointer.
-        constexpr auto kAlloc = u64{0x2};
-        if ((static_cast<u64>(header->sh_flags) & kAlloc) == 0) {
+        constexpr auto ALLOC = u64{0x2};
+        if ((static_cast<u64>(header->sh_flags) & ALLOC) == 0) {
             return {};
         }
 

@@ -27,6 +27,7 @@ namespace ours::phys {
 /// every registered console before the first print.
 class PHYS_EXPORT Console {
     using Self = Console;
+
   public:
     Console(Console const &) = delete;
     auto operator=(Console const &) = delete;

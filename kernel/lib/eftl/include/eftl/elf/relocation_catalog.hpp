@@ -32,7 +32,7 @@ struct RelocationCatalog<Arch::I386> final {
 
     [[nodiscard]]
     static constexpr auto entries() noexcept -> ustl::views::Span<Info const> {
-        return {K_ENTRIES.data(), K_ENTRIES.size()};
+        return {ENTRIES.data(), ENTRIES.size()};
     }
 
     [[nodiscard]]
@@ -46,7 +46,7 @@ struct RelocationCatalog<Arch::I386> final {
     }
 
   private:
-    inline static constexpr auto K_ENTRIES = std::to_array<Info>({
+    inline static constexpr auto ENTRIES = std::to_array<Info>({
         Info{Arch::I386, 0, "X86_NONE"},
         Info{Arch::I386, 1, "X86_32"},
         Info{Arch::I386, 2, "X86_PC32"},
@@ -98,7 +98,7 @@ struct RelocationCatalog<Arch::X86_64> final {
 
     [[nodiscard]]
     static constexpr auto entries() noexcept -> ustl::views::Span<Info const> {
-        return {K_ENTRIES.data(), K_ENTRIES.size()};
+        return {ENTRIES.data(), ENTRIES.size()};
     }
 
     [[nodiscard]]
@@ -112,7 +112,7 @@ struct RelocationCatalog<Arch::X86_64> final {
     }
 
   private:
-    inline static constexpr auto K_ENTRIES = std::to_array<Info>({
+    inline static constexpr auto ENTRIES = std::to_array<Info>({
         Info{Arch::X86_64, 0, "X86_64_NONE"},
         Info{Arch::X86_64, 1, "X86_64_64"},
         Info{Arch::X86_64, 2, "X86_64_PC32"},

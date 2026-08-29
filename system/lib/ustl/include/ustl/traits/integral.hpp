@@ -13,6 +13,6 @@ using IsIntegral = std::is_integral<T>;
 template <typename T>
 inline constexpr bool IsIntegralV = std::is_integral_v<T>;
 
-}  // namespace ustl::traits
+} // namespace ustl::traits
 
-#endif  // USTL_TRAITS_INTEGRAL_HPP
+#endif // USTL_TRAITS_INTEGRAL_HPP

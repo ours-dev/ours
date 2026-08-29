@@ -7,12 +7,13 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/panic.hpp>
+
 #include <algorithm>
 namespace ours::mm {
 namespace {
     auto dump_present_sections(MemSection *section, usize level) -> void {
         char const *format_auxiliary_spaces[] = {"      ", "    ", "  ", ""};
-        for (usize i = 0; i < MemoryModel::kEntriesPerSection; ++i) {
+        for (usize i = 0; i < MemoryModel::ENTRIES_PER_SECTION; ++i) {
             if (!section[i].is_state_present()) {
                 continue;
             }
@@ -47,7 +48,7 @@ FORCE_INLINE constexpr auto MemoryModel::Impl::allocate(usize n, usize a, Gaf ga
                                                         Args &&...args) -> T * {
     T *object;
     if (pmm_enabled()) {
-        object = new (kGafKernel, nid) T[n](ustl::forward<Args>(args)...);
+        object = new (GAF_KERNEL, nid) T[n](ustl::forward<Args>(args)...);
     } else {
         object = EarlyMem::allocate<T>(n, a, nid);
         if (!object) {
@@ -62,12 +63,11 @@ FORCE_INLINE constexpr auto MemoryModel::Impl::allocate(usize n, usize a, Gaf ga
 
 auto MemoryModel::dump() -> void {
     log::debug("Section mapping information");
-    dump_present_sections(m_root_section, kTopLevel);
+    dump_present_sections(m_root_section, TOP_LEVEL);
 }
 
-INIT_CODE
-auto MemoryModel::init(bool map_init) -> Status {
-    auto root_section = Impl::allocate<MemSection>(kEntriesPerSection, PAGE_SIZE, kGafKernel, 0);
+INIT_CODE auto MemoryModel::init(bool map_init) -> Status {
+    auto root_section = Impl::allocate<MemSection>(ENTRIES_PER_SECTION, PAGE_SIZE, GAF_KERNEL, 0);
     if (!root_section) {
         panic("Failed to allocate memory for root section");
     }
@@ -97,9 +97,8 @@ auto MemoryModel::init(bool map_init) -> Status {
     return Status::Ok;
 }
 
-INIT_CODE
-auto MemoryModel::init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid)
-    -> void {
+INIT_CODE auto MemoryModel::init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype,
+                                                 NnId nid) -> void {
     for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
         if (!exist(pfn)) {
             continue;
@@ -111,8 +110,8 @@ auto MemoryModel::init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztyp
     }
 }
 
-INIT_CODE
-auto MemoryModel::init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid) -> void {
+INIT_CODE auto MemoryModel::init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid)
+    -> void {
     for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
         auto frame = pfn_to_frame(pfn);
         DEBUG_ASSERT(frame, "");
@@ -121,9 +120,8 @@ auto MemoryModel::init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, 
     }
 }
 
-INIT_CODE
-auto MemoryModel::init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
-                                   Pfn hole_start, NnId nid) -> Pfn {
+INIT_CODE auto MemoryModel::init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start,
+                                             Pfn end, Pfn hole_start, NnId nid) -> Pfn {
     start = std::clamp(start, zone_start, zone_end);
     end = std::clamp(end, zone_start, zone_end);
 
@@ -138,12 +136,11 @@ auto MemoryModel::init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, 
     return end;
 }
 
-INIT_CODE
-auto MemoryModel::init_memmap() -> void {
+INIT_CODE auto MemoryModel::init_memmap() -> void {
     Pfn hole_start_pfn = 0, start_pfn = 0, end_pfn = 0;
     [[maybe_unused]]
     auto const status = EarlyMem::visit_usable(
-        EarlyMem::min_address(), EarlyMem::max_address(), bootmem::kAnyNode,
+        EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
         [this, &hole_start_pfn, &start_pfn, &end_pfn](bootmem::MemoryRegion const region) {
             auto const node = PmNode::node(region.node);
             DEBUG_ASSERT(node != nullptr, "");
@@ -160,7 +157,7 @@ auto MemoryModel::init_memmap() -> void {
     DEBUG_ASSERT(status == Status::Ok, "Failed to enumerate early memory");
 
     // A gift for zero number of node.
-    end_pfn = ustl::mm::align_up(end_pfn, kFramesPerLevel[0]);
+    end_pfn = ustl::mm::align_up(end_pfn, FRAMES_PER_LEVEL[0]);
     if (hole_start_pfn < end_pfn) {
         init_memmap_reserved(hole_start_pfn, end_pfn, ZoneType::Normal, 0);
     }
@@ -172,7 +169,7 @@ auto MemoryModel::init_index(usize level, SecNum secnum, NnId nid)
     auto section = m_root_section;
 
     // Establish all of interminal indexies.
-    for (auto i = static_cast<usize>(kTopLevel); i > level; --i) {
+    for (auto i = static_cast<usize>(TOP_LEVEL); i > level; --i) {
         auto const index = secnum_to_index(i, secnum);
         section = ustl::mem::address_of(section[index]);
 
@@ -182,7 +179,7 @@ auto MemoryModel::init_index(usize level, SecNum secnum, NnId nid)
         } else {
             // No sub section map, need we to create a new.
             auto submap =
-                Impl::allocate<MemSection>(kEntriesPerSection, PAGE_SIZE, kGafKernel, nid);
+                Impl::allocate<MemSection>(ENTRIES_PER_SECTION, PAGE_SIZE, GAF_KERNEL, nid);
             if (!submap) {
                 return ustl::err(Status::OutOfMem);
             }
@@ -215,8 +212,8 @@ auto MemoryModel::activate_section(MemSection *section, NnId nid) -> ustl::Resul
         return ustl::ok(section->memmap());
     }
 
-    auto const nr_frames = kFramesPerLevel[section->level()];
-    auto memmap = Impl::allocate<PmFrame>(nr_frames, PAGE_SIZE, kGafKernel, nid);
+    auto const nr_frames = FRAMES_PER_LEVEL[section->level()];
+    auto memmap = Impl::allocate<PmFrame>(nr_frames, PAGE_SIZE, GAF_KERNEL, nid);
     if (!memmap) {
         return ustl::err(Status::OutOfMem);
     }
@@ -228,9 +225,9 @@ auto MemoryModel::activate_section(MemSection *section, NnId nid) -> ustl::Resul
 
 template <typename F>
 auto MemoryModel::descend(SecNum begin, SecNum end, F &&f) -> Status {
-    for (isize level = kMappingLevel - 1; level >= 0; --level) {
-        for (auto this_end = begin + kLeavesPerLevel[level]; this_end <= end;
-             this_end += kLeavesPerLevel[level]) {
+    for (isize level = MAPPING_LEVEL - 1; level >= 0; --level) {
+        for (auto this_end = begin + LEAVES_PER_LEVEL[level]; this_end <= end;
+             this_end += LEAVES_PER_LEVEL[level]) {
             auto status = ustl::function::invoke(ustl::forward<F>(f), level, begin);
             if (Status::Ok != status) {
                 return status;
@@ -270,7 +267,7 @@ auto MemoryModel::mark_section(SecNum begin, SecNum end, MemSection::State state
     while (begin != end) {
         auto section = secnum_to_section(begin);
         section->set_state(state);
-        begin += kLeavesPerLevel[section->level()];
+        begin += LEAVES_PER_LEVEL[section->level()];
     }
 }
 

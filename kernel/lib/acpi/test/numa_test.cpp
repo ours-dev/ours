@@ -26,7 +26,7 @@ auto add_srat(Machine &machine) -> SratLayout {
     auto const length = sizeof(acpi::srat::Table) + sizeof(acpi::srat::MemoryAffinityEntry) +
                         sizeof(acpi::srat::ProcessorAffinityEntry) +
                         sizeof(acpi::srat::ProcessorX2ApicAffinityEntry);
-    auto *srat = machine.add_table<acpi::srat::Table>(acpi::srat::Table::kSignature, length);
+    auto *srat = machine.add_table<acpi::srat::Table>(acpi::srat::Table::SIGNATURE, length);
 
     auto *cursor = reinterpret_cast<u8 *>(srat) + sizeof(acpi::srat::Table);
 
@@ -118,13 +118,13 @@ auto test_cpu_bindings_skip_disabled() -> void {
 
 auto test_distance_matrix() -> void {
     Machine machine;
-    constexpr u64 kCount = 3;
-    auto const length = sizeof(acpi::slit::Table) + kCount * kCount;
-    auto *slit = machine.add_table<acpi::slit::Table>(acpi::slit::Table::kSignature, length);
-    slit->locality_count = kCount;
-    for (u64 i = 0; i < kCount; ++i) {
-        for (u64 j = 0; j < kCount; ++j) {
-            slit->entry[i * kCount + j] = u8(i == j ? 10 : 20 + i * kCount + j);
+    constexpr u64 COUNT = 3;
+    auto const length = sizeof(acpi::slit::Table) + COUNT * COUNT;
+    auto *slit = machine.add_table<acpi::slit::Table>(acpi::slit::Table::SIGNATURE, length);
+    slit->locality_count = COUNT;
+    for (u64 i = 0; i < COUNT; ++i) {
+        for (u64 j = 0; j < COUNT; ++j) {
+            slit->entry[i * COUNT + j] = u8(i == j ? 10 : 20 + i * COUNT + j);
         }
     }
     machine.finish();
@@ -146,7 +146,7 @@ auto test_distance_matrix_rejects_lying_count() -> void {
     // Room for a 2x2 matrix, but the table claims 64 localities.  Trusting that
     // count would index 4096 bytes into a 48 byte payload.
     auto const length = sizeof(acpi::slit::Table) + 4;
-    auto *slit = machine.add_table<acpi::slit::Table>(acpi::slit::Table::kSignature, length);
+    auto *slit = machine.add_table<acpi::slit::Table>(acpi::slit::Table::SIGNATURE, length);
     slit->locality_count = 64;
     machine.finish();
 
@@ -175,7 +175,7 @@ auto test_truncated_slit_is_rejected() -> void {
     // refuses it on its own too.
     std::vector<u8> bytes(sizeof(acpi::slit::Table), 0);
     auto *slit = reinterpret_cast<acpi::slit::Table *>(bytes.data());
-    acpi::test::make_table_header(slit, acpi::slit::Table::kSignature,
+    acpi::test::make_table_header(slit, acpi::slit::Table::SIGNATURE,
                                   u32(sizeof(acpi::slit::Table) - 4));
     require(!acpi::numa::DistanceMatrix::from_table(*slit));
 }

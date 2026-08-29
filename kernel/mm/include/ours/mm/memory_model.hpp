@@ -10,7 +10,6 @@
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/status.hpp>
-#include <array>
 #include <ustl/bitfields.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/mem/address_of.hpp>
@@ -19,15 +18,16 @@
 #include <ustl/traits/ptr.hpp>
 #include <ustl/util/type_list.hpp>
 
+#include <array>
 #include <tuple>
 
 namespace ours::mm {
 namespace {
     template <typename T>
     FORCE_INLINE constexpr auto check_n_ptr(T p) -> bool {
-        constexpr static auto kPtrDepth = ustl::traits::PtrDepthV<T>;
+        constexpr static auto PTR_DEPTH = ustl::traits::PtrDepthV<T>;
 
-        if constexpr (kPtrDepth != 0) {
+        if constexpr (PTR_DEPTH != 0) {
             return p && check_n_ptr(*p);
         } else {
             return true;
@@ -103,7 +103,7 @@ class MemSection {
         Count,
     };
 
-    constexpr static auto const kMaxLevel = 3;
+    constexpr static auto const MAX_LEVEL = 3;
 
     FORCE_INLINE constexpr auto state() const -> State {
         return m_value.get<Index::State>();
@@ -197,7 +197,7 @@ class MemSection {
         ustl::bitfields::StorageUnit<usize>,
         std::tuple<Field<Index::State, State, ustl::bit_width(static_cast<usize>(State::Count))>,
                    Field<Index::Type, Type, ustl::bit_width(static_cast<usize>(Type::Count))>,
-                   Field<Index::Level, usize, ustl::bit_width<usize>(kMaxLevel)>,
+                   Field<Index::Level, usize, ustl::bit_width<usize>(MAX_LEVEL)>,
                    // FIXME(SmallHuaZi): Hard code.
                    Field<Index::Map, void *, 58, true>>>;
     Value m_value;
@@ -210,51 +210,48 @@ class MemoryModel {
     using Self = MemoryModel;
 
   public:
-    constexpr static usize const kMappingLevel = MemSection::kMaxLevel;
+    constexpr static usize const MAPPING_LEVEL = MemSection::MAX_LEVEL;
 
-    constexpr static usize const kTopLevel = kMappingLevel - 1;
+    constexpr static usize const TOP_LEVEL = MAPPING_LEVEL - 1;
 
-    constexpr static usize const kEntriesPerSection = PAGE_SIZE / sizeof(MemSection);
+    constexpr static usize const ENTRIES_PER_SECTION = PAGE_SIZE / sizeof(MemSection);
 
-    constexpr static usize const kFramesPerSection = BIT(SECTION_SHIFT - PAGE_SHIFT);
+    constexpr static usize const FRAMES_PER_SECTION = BIT(SECTION_SHIFT - PAGE_SHIFT);
 
-    constexpr static auto const kLeavesPerLevel =
+    constexpr static auto const LEAVES_PER_LEVEL =
         []<usize... Levels>(ustl::IndexSequence<Levels...>) {
-            static_assert(sizeof...(Levels) == kMappingLevel);
+            static_assert(sizeof...(Levels) == MAPPING_LEVEL);
             std::array<usize, sizeof...(Levels)> array;
             // L0 entry is a leaf itself.
             array[0] = 1;
             for (usize i = 1; i < array.size(); ++i) {
-                array[i] = array[i - 1] * kEntriesPerSection;
+                array[i] = array[i - 1] * ENTRIES_PER_SECTION;
             }
             return array;
-        }(ustl::MakeIndexSequenceT<kMappingLevel>());
+        }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
 
-    constexpr static auto const kFramesPerLevel =
+    constexpr static auto const FRAMES_PER_LEVEL =
         []<usize... Levels>(ustl::IndexSequence<Levels...>) {
-            static_assert(sizeof...(Levels) == kMappingLevel);
+            static_assert(sizeof...(Levels) == MAPPING_LEVEL);
             std::array<usize, sizeof...(Levels)> array;
             array[0] = BIT(SECTION_SHIFT - PAGE_SHIFT);
             for (usize i = 1; i < array.size(); ++i) {
-                array[i] = array[i - 1] * kEntriesPerSection;
+                array[i] = array[i - 1] * ENTRIES_PER_SECTION;
             }
             return array;
-        }(ustl::MakeIndexSequenceT<kMappingLevel>());
+        }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
 
-    constexpr static usize const kIndexBits = {
-        (ustl::NumericLimits<usize>::DIGITS - SECTION_SIZE_BITS + kMappingLevel) / kMappingLevel};
+    constexpr static usize const INDEX_BITS = {
+        (ustl::NumericLimits<usize>::DIGITS - SECTION_SIZE_BITS + MAPPING_LEVEL) / MAPPING_LEVEL};
 
-    FORCE_INLINE
-    static auto get() -> Self & {
+    FORCE_INLINE static auto get() -> Self & {
         static Self g_memory_model;
         return g_memory_model;
     }
 
-    INIT_CODE
-    auto init(bool map_init) -> Status;
+    INIT_CODE auto init(bool map_init) -> Status;
 
-    INIT_CODE
-    auto init_memmap() -> void;
+    INIT_CODE auto init_memmap() -> void;
 
     /// Estimate whether the frame descriptor of given pfn exist. It is do not means that
     /// the memory that descriptor represents is available (may hole).
@@ -318,8 +315,7 @@ class MemoryModel {
 
     auto init_index(usize level, SecNum begin, NnId nid) -> ustl::Result<MemSection *, Status>;
 
-    FORCE_INLINE
-    auto activate_section(SecNum secnum, NnId nid) -> ustl::Result<MemMap, Status> {
+    FORCE_INLINE auto activate_section(SecNum secnum, NnId nid) -> ustl::Result<MemMap, Status> {
         auto section = secnum_to_section(secnum);
         if (!section) {
             return ustl::err(Status::OutOfMem);
@@ -335,19 +331,16 @@ class MemoryModel {
     /// the `|zone|` managed memory regions.
     ///
     /// Return the pfn of the first frame which not be initialized.
-    INIT_CODE
-    auto init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
-                          Pfn hole_start, NnId nid) -> Pfn;
+    INIT_CODE auto init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
+                                    Pfn hole_start, NnId nid) -> Pfn;
 
-    INIT_CODE
-    auto init_memmap_nid(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
-                         Pfn hole_start, NnId nid) -> Pfn;
+    INIT_CODE auto init_memmap_nid(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
+                                   Pfn hole_start, NnId nid) -> Pfn;
 
-    INIT_CODE
-    auto init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType zone, NnId nid) -> void;
+    INIT_CODE auto init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType zone, NnId nid) -> void;
 
-    INIT_CODE
-    auto init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid) -> void;
+    INIT_CODE auto init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid)
+        -> void;
 
     MEM_INIT_CODE
     auto populate_memmap(Pfn start, usize nr_frames, NnId nid) -> ustl::Result<MemMap, Status>;
@@ -357,16 +350,16 @@ class MemoryModel {
     auto mark_section(SecNum begin, SecNum end, MemSection::State) -> void;
 
     FORCE_INLINE constexpr static auto secnum_to_index(usize level, SecNum secnum) -> usize {
-        constinit static auto const kShift = []() {
-            std::array<usize, kMappingLevel> array;
+        constinit static auto const SHIFT = []() {
+            std::array<usize, MAPPING_LEVEL> array;
             array[0] = 0;
             for (usize i = 1; i < array.size(); ++i) {
-                array[i] = array[i - 1] + kIndexBits;
+                array[i] = array[i - 1] + INDEX_BITS;
             }
             return array;
         }();
 
-        return (secnum >> kShift[level]) & (BIT(kIndexBits) - 1);
+        return (secnum >> SHIFT[level]) & (BIT(INDEX_BITS) - 1);
     }
 
     FORCE_INLINE constexpr auto priv_secnum_to_section(SecNum secnum) const -> MemSection * {
@@ -374,7 +367,7 @@ class MemoryModel {
 
         /// A short loop will be unfold.
         MemSection *section = m_root_section;
-        for (isize level = kMappingLevel - 1; level >= 0; --level) {
+        for (isize level = MAPPING_LEVEL - 1; level >= 0; --level) {
             section = ustl::mem::address_of(section[secnum_to_index(level, secnum)]);
             if (!section->is_state_present()) {
                 return nullptr;
@@ -442,7 +435,7 @@ FORCE_INLINE constexpr auto frame_to_virt(PmFrame *frame) -> T * {
 /// its distance from the head (see PageFrame::compound_offset), and this is
 /// just that subtraction. A frame that is not part of a larger block reports a
 /// zero offset, so this is the identity for it.
-FORCE_INLINE auto frame_to_folio(PmFrame *frame) -> PmFolio * {
+FORCE_INLINE inline auto frame_to_folio(PmFrame *frame) -> PmFolio * {
     return frame ? frame - frame->compound_offset() : nullptr;
 }
 

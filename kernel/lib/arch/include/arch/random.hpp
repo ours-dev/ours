@@ -9,7 +9,8 @@ namespace arch {
 
 /// Fills `*value` with a hardware-generated random number, returning `false`
 /// if the current CPU doesn't support the instruction this needs.
-[[nodiscard]] auto rand(usize *value) -> bool;
+[[nodiscard]]
+auto rand(usize *value) -> bool;
 
 } // namespace arch
 

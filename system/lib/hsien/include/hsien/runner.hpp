@@ -5,8 +5,7 @@
 
 namespace hsien {
 
-auto run(TestRecord const* begin, TestRecord const* end, Reporter& reporter) noexcept
-    -> Summary;
+auto run(TestRecord const *begin, TestRecord const *end, Reporter &reporter) noexcept -> Summary;
 
 } // namespace hsien
 

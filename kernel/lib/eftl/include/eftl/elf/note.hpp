@@ -84,22 +84,20 @@ class NoteSectionView final {
         : m_bytes(bytes), m_count(count), m_byte_order(byte_order) {}
 
     [[nodiscard]]
-    static constexpr auto align_word(usize const value) noexcept
-        -> ustl::Option<usize> {
+    static constexpr auto align_word(usize const value) noexcept -> ustl::Option<usize> {
         // GNU/Linux note sections (e.g. .note.gnu.build-id) are always
         // 4-byte aligned regardless of ELF class; the strict ELF64 gABI's
         // 8-byte word alignment is not what real toolchains emit.
-        constexpr usize K_ALIGNMENT = 4;
-        if (value > std::numeric_limits<usize>::max() - (K_ALIGNMENT - 1)) {
+        constexpr usize ALIGNMENT = 4;
+        if (value > std::numeric_limits<usize>::max() - (ALIGNMENT - 1)) {
             return ustl::NONE;
         }
-        return ustl::some((value + K_ALIGNMENT - 1) & ~(K_ALIGNMENT - 1));
+        return ustl::some((value + ALIGNMENT - 1) & ~(ALIGNMENT - 1));
     }
 
     [[nodiscard]]
     static constexpr auto end_offset(usize const begin, usize const size,
-                                     usize const limit) noexcept
-        -> ustl::Option<usize> {
+                                     usize const limit) noexcept -> ustl::Option<usize> {
         if (begin > limit || size > limit - begin) {
             return ustl::NONE;
         }
@@ -130,8 +128,8 @@ class NoteSectionView final {
         if (descriptor_offset.is_none() || descriptor_offset.value() > bytes.size()) {
             return ustl::NONE;
         }
-        auto const descriptor_end = end_offset(
-            descriptor_offset.value(), static_cast<usize>(header.n_descsz), bytes.size());
+        auto const descriptor_end = end_offset(descriptor_offset.value(),
+                                               static_cast<usize>(header.n_descsz), bytes.size());
         if (descriptor_end.is_none()) {
             return ustl::NONE;
         }

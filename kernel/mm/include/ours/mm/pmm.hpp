@@ -59,13 +59,11 @@ auto node_possible_mask() -> NodeMask const &;
 
 auto num_nodes() -> usize;
 
-FORCE_INLINE
-auto num_online_nodes() -> usize {
+FORCE_INLINE inline auto num_online_nodes() -> usize {
     return node_online_mask().count();
 }
 
-FORCE_INLINE
-auto num_possible_nodes() -> usize {
+FORCE_INLINE inline auto num_possible_nodes() -> usize {
     return node_possible_mask().count();
 }
 
@@ -86,9 +84,9 @@ auto alloc_frames(Gaf, PhysAddr *addr, usize order = 0) -> PmFrame *;
 auto alloc_frames_fragment(Gaf, usize, NodeMask const & = node_online_mask())
     -> ktl::Result<PmFrame::List>;
 
-[[nodiscard]]
-FORCE_INLINE auto alloc_frame_n(Gaf gaf, usize nr_frames,
-                                       NodeMask const &nodes = node_online_mask()) -> PmFrame * {
+FORCE_INLINE [[nodiscard]]
+inline auto alloc_frame_n(Gaf gaf, usize nr_frames, NodeMask const &nodes = node_online_mask())
+    -> PmFrame * {
     return alloc_frames(gaf, get_order(nr_frames), nodes);
 }
 
@@ -100,9 +98,9 @@ auto alloc_frames(NnId, Gaf, PmFrame::List *, usize, NodeMask const & = node_onl
 [[nodiscard]]
 auto alloc_frames(NnId, Gaf, usize, NodeMask const & = node_online_mask()) -> PmFrame *;
 
-[[nodiscard]]
-FORCE_INLINE auto alloc_frame_n(NnId nid, Gaf gaf, usize nr_frames,
-                                       NodeMask const &nodes = node_online_mask()) -> PmFrame * {
+FORCE_INLINE [[nodiscard]]
+inline auto alloc_frame_n(NnId nid, Gaf gaf, usize nr_frames,
+                          NodeMask const &nodes = node_online_mask()) -> PmFrame * {
     return alloc_frames(nid, gaf, get_order(nr_frames), nodes);
 }
 
@@ -140,8 +138,7 @@ OM_API FORCE_INLINE auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame,
 
 auto free_frames(PmFrame *frame, usize order = 0) -> void;
 
-FORCE_INLINE
-auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
+FORCE_INLINE inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
     return free_frames(virt_to_frame(virt_addr), order);
 }
 

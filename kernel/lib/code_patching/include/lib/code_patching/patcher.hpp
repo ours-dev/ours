@@ -10,21 +10,21 @@
 #include <span>
 
 namespace code_patching {
-    struct Directive {
-        u32 start;
-        u32 end;
-        u32 id; 
-    };
+struct Directive {
+    u32 start;
+    u32 end;
+    u32 id;
+};
 
-    class Patcher {
-        using Self = Patcher;
-      public:
-        auto patch_with_alternative() -> void;
-        
-      private:
-        std::span<Directive const> m_directives;
+class Patcher {
+    using Self = Patcher;
 
-    };
+  public:
+    auto patch_with_alternative() -> void;
+
+  private:
+    std::span<Directive const> m_directives;
+};
 } // namespace code_patching
 
 #endif // LIB_CODE_PATCHING_PATCHER_HPP

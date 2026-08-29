@@ -11,31 +11,28 @@ namespace gktl {
 
 template <class T, class A, class KofT, class KeyEncoder>
 class RadixTree final {
-public:
+  public:
     using Value = T;
     using Allocator = A;
     using KeyOfValue = KofT;
     using Encoder = KeyEncoder;
 
-    static constexpr auto kNumChildren = Encoder::kNumChildren;
-    static constexpr auto kBitsPerCode = Encoder::kBitsPerCode;
-    static constexpr auto kCodesPerKey = Encoder::kCodesPerKey;
-    static constexpr auto kKeyBits = kCodesPerKey * kBitsPerCode;
-    static constexpr auto kKeyMask = [] {
-        if constexpr (kKeyBits >= 64) {
+    static constexpr auto NUM_CHILDREN = Encoder::NUM_CHILDREN;
+    static constexpr auto BITS_PER_CODE = Encoder::BITS_PER_CODE;
+    static constexpr auto CODES_PER_KEY = Encoder::CODES_PER_KEY;
+    static constexpr auto KEY_BITS = CODES_PER_KEY * BITS_PER_CODE;
+    static constexpr auto KEY_MASK = [] {
+        if constexpr (KEY_BITS >= 64) {
             return ~0_u64;
         } else {
-            return (1_u64 << kKeyBits) - 1;
+            return (1_u64 << KEY_BITS) - 1;
         }
-    } ();
+    }();
 
     RadixTree() = default;
 
     explicit RadixTree(Allocator const &allocator, KeyOfValue key_of = {}, Encoder encoder = {})
-        : m_node_allocator(allocator)
-        , m_key_of(key_of)
-        , m_encoder(encoder)
-    {}
+        : m_node_allocator(allocator), m_key_of(key_of), m_encoder(encoder) {}
 
     RadixTree(RadixTree const &) = delete;
     auto operator=(RadixTree const &) -> RadixTree & = delete;
@@ -89,7 +86,7 @@ public:
         while (!key_is_end(key, offset)) {
             auto const code = encode_at(key, offset);
             auto const slot = child_slot(code);
-            if (code == 0 || slot >= kNumChildren) {
+            if (code == 0 || slot >= NUM_CHILDREN) {
                 return false;
             }
 
@@ -124,7 +121,7 @@ public:
         while (!key_is_end(key, offset)) {
             auto const code = encode_at(key, offset);
             auto const slot = child_slot(code);
-            if (code == 0 || slot >= kNumChildren || node->children[slot] == nullptr) {
+            if (code == 0 || slot >= NUM_CHILDREN || node->children[slot] == nullptr) {
                 return nullptr;
             }
 
@@ -163,19 +160,16 @@ public:
         return count;
     }
 
-private:
+  private:
     struct Node {
-        u64 key {};
-        usize length {};
-        Value const *value {};
-        Node *children[kNumChildren] {};
+        u64 key{};
+        usize length{};
+        Value const *value{};
+        Node *children[NUM_CHILDREN]{};
 
         Node() = default;
 
-        Node(u64 key, usize length)
-            : key(key & kKeyMask)
-            , length(length)
-        {}
+        Node(u64 key, usize length) : key(key & KEY_MASK), length(length) {}
     };
 
     using NodeAllocator = typename std::allocator_traits<Allocator>::template rebind_alloc<Node>;
@@ -205,12 +199,12 @@ private:
 
     [[nodiscard]]
     static auto get_code(u64 key, usize index) -> u64 {
-        return (key >> (index * kBitsPerCode)) & ((1_u64 << kBitsPerCode) - 1);
+        return (key >> (index * BITS_PER_CODE)) & ((1_u64 << BITS_PER_CODE) - 1);
     }
 
     [[nodiscard]]
     static auto mask_for_length(usize length) -> u64 {
-        auto const bits = length * kBitsPerCode;
+        auto const bits = length * BITS_PER_CODE;
         if (bits >= 64) {
             return ~0_u64;
         }
@@ -221,7 +215,7 @@ private:
     static auto slice_key(u64 key, usize offset, usize length) -> u64 {
         auto result = 0_u64;
         for (usize i = 0; i < length; ++i) {
-            result |= get_code(key, offset + i) << (i * kBitsPerCode);
+            result |= get_code(key, offset + i) << (i * BITS_PER_CODE);
         }
         return result;
     }
@@ -273,14 +267,14 @@ private:
     auto make_edge(Key const key, usize offset, usize *length) const -> u64 {
         auto result = 0_u64;
         *length = 0;
-        while (*length < kCodesPerKey && !key_is_end(key, offset + *length)) {
+        while (*length < CODES_PER_KEY && !key_is_end(key, offset + *length)) {
             auto const code = encode_at(key, offset + *length);
             if (code == 0) {
                 *length = 0;
                 return 0;
             }
 
-            result |= code << (*length * kBitsPerCode);
+            result |= code << (*length * BITS_PER_CODE);
             ++(*length);
         }
         return result;
@@ -313,7 +307,7 @@ private:
             }
 
             auto const slot = child_slot_from_key(edge);
-            if (slot >= kNumChildren || node->children[slot] != nullptr) {
+            if (slot >= NUM_CHILDREN || node->children[slot] != nullptr) {
                 return false;
             }
 
@@ -332,8 +326,8 @@ private:
     }
 
     template <class Key>
-    auto split_child(Node *parent, Node *child, usize prefix_length,
-                     Key const key, usize suffix_offset, Value const &value) -> bool {
+    auto split_child(Node *parent, Node *child, usize prefix_length, Key const key,
+                     usize suffix_offset, Value const &value) -> bool {
         if (prefix_length == 0) {
             return false;
         }
@@ -360,12 +354,12 @@ private:
         return append_suffix(split, key, suffix_offset, value);
     }
 
-    NO_UNIQUE_ADDRESS NodeAllocator m_node_allocator {};
-    NO_UNIQUE_ADDRESS KeyOfValue m_key_of {};
-    NO_UNIQUE_ADDRESS Encoder m_encoder {};
-    Node *m_nodes {};
-    usize m_capacity {};
-    usize m_size {};
+    NO_UNIQUE_ADDRESS NodeAllocator m_node_allocator{};
+    NO_UNIQUE_ADDRESS KeyOfValue m_key_of{};
+    NO_UNIQUE_ADDRESS Encoder m_encoder{};
+    Node *m_nodes{};
+    usize m_capacity{};
+    usize m_size{};
 };
 
 } // namespace gktl

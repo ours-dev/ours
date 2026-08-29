@@ -4,7 +4,7 @@
 #define OURS_ARCH_CPU_HPP 1
 
 namespace ours {
-    auto cpu_relax() -> void;
+auto cpu_relax() -> void;
 
 } // namespace ours
 

@@ -209,16 +209,16 @@ namespace {
     // extension, matching ingest_container()'s raw-image convention.
     auto add_executable_item(obi::PackageBuilder &builder, std::string const &path, Arena &arena)
         -> int {
-        // NOLINTNEXTLINE(readability-identifier-naming) — kCamelCase is the obi/ constant convention (kMagic et al.)
-        static constexpr std::array<u8, 4> kElfMagic{0x7F, 'E', 'L', 'F'};
+        // NOLINTNEXTLINE(readability-identifier-naming) — CAMEL_CASE is the obi/ constant convention (MAGIC et al.)
+        static constexpr std::array<u8, 4> ELF_MAGIC{0x7F, 'E', 'L', 'F'};
 
         auto data = read_file(path);
         if (!data) {
             std::println(std::cerr, "obit: cannot read executable: {}", path);
             return 2;
         }
-        if (data->size() < kElfMagic.size() ||
-            !std::equal(kElfMagic.begin(), kElfMagic.end(), data->begin())) {
+        if (data->size() < ELF_MAGIC.size() ||
+            !std::equal(ELF_MAGIC.begin(), ELF_MAGIC.end(), data->begin())) {
             std::println(std::cerr, "obit: not an ELF file: {}", path);
             return 2;
         }

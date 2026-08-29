@@ -11,15 +11,15 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::task::sched {
-    // [[=bits::bitmask]]
-    enum class Feature {
-        DelayDequeue = 0_bit,
+// [[=bits::bitmask]]
+enum class Feature {
+    DelayDequeue = 0_bit,
 
-        HpTick = 1_bit,
-    };
-    USTL_ENABLE_ENUM_BITMASK(Feature);
+    HpTick = 1_bit,
+};
+USTL_ENABLE_ENUM_BITMASK(Feature);
 
-    auto has_feature(Feature features) -> bool;
+auto has_feature(Feature features) -> bool;
 
 } // namespace ours::task::sched
 

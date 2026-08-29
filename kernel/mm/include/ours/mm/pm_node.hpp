@@ -16,7 +16,6 @@
 #include <ours/mm/priv/memory_allocation_context.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <array>
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
 #include <ustl/function/bind.hpp>
@@ -30,6 +29,8 @@
 #include <ustl/traits/is_same.hpp>
 #include <ustl/util/pair.hpp>
 #include <ustl/views/span.hpp>
+
+#include <array>
 
 namespace ours::mm {
 struct NodeRoute {
@@ -48,8 +49,7 @@ struct NodeRoute {
         // path_ has a fixed capacity, so the only failure is overflow -- which
         // would also desynchronise count_ from it.
         auto const result = path_.push_back(to);
-        DEBUG_ASSERT(result, "NodeRoute overflowed its {} hop capacity",
-                     NUMA_MAX_NODE - 1);
+        DEBUG_ASSERT(result, "NodeRoute overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
         count_ += 1;
     }
 
@@ -89,8 +89,7 @@ class ZoneQueues {
         MaxNumQueues,
     };
 
-    ZoneQueues(NnId nid)
-        : queue_storage_(), queue_sizes_(), queues_(), connected_(), nid_(nid) {
+    ZoneQueues(NnId nid) : queue_storage_(), queue_sizes_(), queues_(), connected_(), nid_(nid) {
         init_queues();
     }
 
@@ -150,12 +149,12 @@ class ZoneQueues {
         queue_sizes_[type] += 1;
     }
 
-    constexpr static usize const kNumLocalQueues = SharedAffinity;
+    constexpr static usize const NUM_LOCAL_QUEUES = SharedAffinity;
 
-    constexpr static usize const kMaxZoneRef = {NUMA_MAX_NODE * (MaxNumQueues - kNumLocalQueues) +
-                                                (NR_ZONES_PER_NODE * kNumLocalQueues)};
+    constexpr static usize const MAX_ZONE_REF = {NUMA_MAX_NODE * (MaxNumQueues - NUM_LOCAL_QUEUES) +
+                                                 (NR_ZONES_PER_NODE * NUM_LOCAL_QUEUES)};
 
-    std::array<PmZone *, kMaxZoneRef> queue_storage_;
+    std::array<PmZone *, MAX_ZONE_REF> queue_storage_;
     usize queue_sizes_[MaxNumQueues];
     ZoneQueue queues_[MaxNumQueues];
     NodeMask connected_;
@@ -198,13 +197,11 @@ class PmNode {
         });
     }
 
-    FORCE_INLINE
-    static auto node_online_mask() -> NodeMask const & {
+    FORCE_INLINE static auto node_online_mask() -> NodeMask const & {
         return g_states[static_cast<usize>(State::Online)];
     }
 
-    FORCE_INLINE
-    static auto node_possible_mask() -> NodeMask const & {
+    FORCE_INLINE static auto node_possible_mask() -> NodeMask const & {
         return g_states[static_cast<usize>(State::Possible)];
     }
 
@@ -379,8 +376,8 @@ class PmNode {
     [[no_unique_address]]
     MemoryAllocationPolicy m_node_policy;
 
-    constexpr static usize kNumStates = static_cast<usize>(State::NumStates);
-    static std::array<NodeMask, kNumStates> g_states;
+    constexpr static usize NUM_STATES = static_cast<usize>(State::NumStates);
+    static std::array<NodeMask, NUM_STATES> g_states;
 
     static std::array<PmNode *, NUMA_MAX_NODE> g_nodes;
 
@@ -409,24 +406,20 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     static auto alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback = node_online_mask())
         -> ktl::Result<PmFrame::List>;
 
-    FORCE_INLINE
-    static auto hard_affinity() -> CpuMask const & {
+    FORCE_INLINE static auto hard_affinity() -> CpuMask const & {
         return CpuLocal::access(g_current_instance->m_hard_affinity);
     }
 
-    FORCE_INLINE
-    static auto nid() -> NnId {
+    FORCE_INLINE static auto nid() -> NnId {
         return CpuLocal::read(g_current_instance->m_id);
     }
 
-    FORCE_INLINE
-    static auto nid(CpuNum cpunum) -> NnId {
+    FORCE_INLINE static auto nid(CpuNum cpunum) -> NnId {
         return CpuLocal::access(g_current_instance->m_id, cpunum);
     }
 
     /// Used only on the early stage.
-    FORCE_INLINE
-    static auto set_nid_early(CpuNum cpunum, NnId nid) -> void {
+    FORCE_INLINE static auto set_nid_early(CpuNum cpunum, NnId nid) -> void {
         g_static_cpu_to_node[cpunum] = nid;
         g_dynamic_cpu_to_node[cpunum] = nid;
     }

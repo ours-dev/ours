@@ -15,9 +15,9 @@ using Dynamic = Traits::Dyn;
 using Header = Traits::Header;
 using Section = Traits::Section;
 
-constexpr usize K_SECTION_TABLE_OFFSET = sizeof(Header);
-constexpr usize K_STRING_TABLE_OFFSET = 0x200;
-constexpr usize K_DYNAMIC_TABLE_OFFSET = 0x240;
+constexpr usize SECTION_TABLE_OFFSET = sizeof(Header);
+constexpr usize STRING_TABLE_OFFSET = 0x200;
+constexpr usize DYNAMIC_TABLE_OFFSET = 0x240;
 
 template <typename T, usize Size>
 auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
@@ -26,14 +26,14 @@ auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
 
 auto make_header() -> Header {
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header);
-    header.e_shoff = K_SECTION_TABLE_OFFSET;
+    header.e_shoff = SECTION_TABLE_OFFSET;
     header.e_shentsize = sizeof(Section);
     header.e_shnum = 3;
     return header;
@@ -46,26 +46,26 @@ auto make_dynamic_image() -> std::array<u8, 1024> {
 
     Section strings{};
     strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
-    strings.sh_offset = K_STRING_TABLE_OFFSET;
+    strings.sh_offset = STRING_TABLE_OFFSET;
     strings.sh_size = 24;
     strings.sh_addralign = 1;
 
     Section dynamics{};
     dynamics.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynamic);
-    dynamics.sh_offset = K_DYNAMIC_TABLE_OFFSET;
+    dynamics.sh_offset = DYNAMIC_TABLE_OFFSET;
     dynamics.sh_size = 3 * sizeof(Dynamic);
     dynamics.sh_link = 1;
     dynamics.sh_addralign = alignof(Dynamic);
     dynamics.sh_entsize = sizeof(Dynamic);
 
-    put(image, K_SECTION_TABLE_OFFSET + sizeof(Section), strings);
-    put(image, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
+    put(image, SECTION_TABLE_OFFSET + sizeof(Section), strings);
+    put(image, SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
 
     std::array<u8, 24> const names{
         0, 'l', 'i', 'b', 'a', 'l', 'p', 'h', 'a', '.', 's', 'o',
         0, 'l', 'i', 'b', 's', 'e', 'l', 'f', '.', 's', 'o', 0,
     };
-    std::memcpy(image.data() + K_STRING_TABLE_OFFSET, names.data(), names.size());
+    std::memcpy(image.data() + STRING_TABLE_OFFSET, names.data(), names.size());
 
     Dynamic needed{};
     needed.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Needed);
@@ -75,9 +75,9 @@ auto make_dynamic_image() -> std::array<u8, 1024> {
     soname.d_val = 13;
     Dynamic terminator{};
     terminator.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::DtNull);
-    put(image, K_DYNAMIC_TABLE_OFFSET, needed);
-    put(image, K_DYNAMIC_TABLE_OFFSET + sizeof(Dynamic), soname);
-    put(image, K_DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic), terminator);
+    put(image, DYNAMIC_TABLE_OFFSET, needed);
+    put(image, DYNAMIC_TABLE_OFFSET + sizeof(Dynamic), soname);
+    put(image, DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic), terminator);
     return image;
 }
 
@@ -154,11 +154,11 @@ auto test_observes_dynamic_entries_and_names() -> int {
 auto test_rejects_invalid_dynamic_section_relationships() -> int {
     auto wrong_entry_size = make_dynamic_image();
     Section dynamics{};
-    std::memcpy(&dynamics, wrong_entry_size.data() + K_SECTION_TABLE_OFFSET + 2 * sizeof(Section),
+    std::memcpy(&dynamics, wrong_entry_size.data() + SECTION_TABLE_OFFSET + 2 * sizeof(Section),
                 sizeof(dynamics));
     dynamics.sh_size = 2 * sizeof(Dynamic);
     dynamics.sh_entsize = 2 * sizeof(Dynamic);
-    put(wrong_entry_size, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
+    put(wrong_entry_size, SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
     auto const wrong_entry_size_result =
         Binary::from_raw(wrong_entry_size.data(), wrong_entry_size.size());
     if (wrong_entry_size_result.is_ok() ||
@@ -167,10 +167,10 @@ auto test_rejects_invalid_dynamic_section_relationships() -> int {
     }
 
     auto wrong_link = make_dynamic_image();
-    std::memcpy(&dynamics, wrong_link.data() + K_SECTION_TABLE_OFFSET + 2 * sizeof(Section),
+    std::memcpy(&dynamics, wrong_link.data() + SECTION_TABLE_OFFSET + 2 * sizeof(Section),
                 sizeof(dynamics));
     dynamics.sh_link = 0;
-    put(wrong_link, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
+    put(wrong_link, SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
     auto const wrong_link_result = Binary::from_raw(wrong_link.data(), wrong_link.size());
     if (wrong_link_result.is_ok() ||
         wrong_link_result.unwrap_err() != eftl::elf::ParseError::InvalidDynamic) {
@@ -178,10 +178,10 @@ auto test_rejects_invalid_dynamic_section_relationships() -> int {
     }
 
     auto nonzero_info = make_dynamic_image();
-    std::memcpy(&dynamics, nonzero_info.data() + K_SECTION_TABLE_OFFSET + 2 * sizeof(Section),
+    std::memcpy(&dynamics, nonzero_info.data() + SECTION_TABLE_OFFSET + 2 * sizeof(Section),
                 sizeof(dynamics));
     dynamics.sh_info = 1;
-    put(nonzero_info, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
+    put(nonzero_info, SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamics);
     auto const nonzero_info_result = Binary::from_raw(nonzero_info.data(), nonzero_info.size());
     if (nonzero_info_result.is_ok() ||
         nonzero_info_result.unwrap_err() != eftl::elf::ParseError::InvalidDynamic) {
@@ -190,11 +190,11 @@ auto test_rejects_invalid_dynamic_section_relationships() -> int {
 
     auto missing_terminator = make_dynamic_image();
     Dynamic entry{};
-    std::memcpy(&entry, missing_terminator.data() + K_DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic),
+    std::memcpy(&entry, missing_terminator.data() + DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic),
                 sizeof(entry));
     entry.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Needed);
     entry.d_val = 1;
-    put(missing_terminator, K_DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic), entry);
+    put(missing_terminator, DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic), entry);
     auto const missing_terminator_result =
         Binary::from_raw(missing_terminator.data(), missing_terminator.size());
     if (missing_terminator_result.is_ok() ||
@@ -203,13 +203,13 @@ auto test_rejects_invalid_dynamic_section_relationships() -> int {
     }
 
     auto nonnull_after_terminator = make_dynamic_image();
-    std::memcpy(&entry, nonnull_after_terminator.data() + K_DYNAMIC_TABLE_OFFSET + sizeof(Dynamic),
+    std::memcpy(&entry, nonnull_after_terminator.data() + DYNAMIC_TABLE_OFFSET + sizeof(Dynamic),
                 sizeof(entry));
     entry.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::DtNull);
-    put(nonnull_after_terminator, K_DYNAMIC_TABLE_OFFSET + sizeof(Dynamic), entry);
+    put(nonnull_after_terminator, DYNAMIC_TABLE_OFFSET + sizeof(Dynamic), entry);
     entry.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Needed);
     entry.d_val = 1;
-    put(nonnull_after_terminator, K_DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic), entry);
+    put(nonnull_after_terminator, DYNAMIC_TABLE_OFFSET + 2 * sizeof(Dynamic), entry);
     auto const nonnull_after_terminator_result =
         Binary::from_raw(nonnull_after_terminator.data(), nonnull_after_terminator.size());
     if (nonnull_after_terminator_result.is_ok() ||
@@ -218,9 +218,9 @@ auto test_rejects_invalid_dynamic_section_relationships() -> int {
     }
 
     auto invalid_needed_name = make_dynamic_image();
-    std::memcpy(&entry, invalid_needed_name.data() + K_DYNAMIC_TABLE_OFFSET, sizeof(entry));
+    std::memcpy(&entry, invalid_needed_name.data() + DYNAMIC_TABLE_OFFSET, sizeof(entry));
     entry.d_val = 24;
-    put(invalid_needed_name, K_DYNAMIC_TABLE_OFFSET, entry);
+    put(invalid_needed_name, DYNAMIC_TABLE_OFFSET, entry);
     auto const invalid_needed_name_result =
         Binary::from_raw(invalid_needed_name.data(), invalid_needed_name.size());
     if (invalid_needed_name_result.is_err() &&
@@ -237,41 +237,41 @@ auto test_elf32_observes_dynamic_entries() -> int {
     using Header32 = Traits32::Header;
     using Section32 = Traits32::Section;
 
-    constexpr usize K_SECTION_OFFSET = sizeof(Header32);
-    constexpr usize K_STRING_OFFSET = 0x100;
-    constexpr usize K_DYNAMIC_OFFSET = 0x120;
+    constexpr usize SECTION_OFFSET = sizeof(Header32);
+    constexpr usize STRING_OFFSET = 0x100;
+    constexpr usize DYNAMIC_OFFSET = 0x120;
     std::array<u8, 512> image{};
 
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header32);
-    header.e_shoff = K_SECTION_OFFSET;
+    header.e_shoff = SECTION_OFFSET;
     header.e_shentsize = sizeof(Section32);
     header.e_shnum = 3;
     put(image, 0, header);
 
     Section32 strings{};
     strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
-    strings.sh_offset = K_STRING_OFFSET;
+    strings.sh_offset = STRING_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     Section32 dynamics{};
     dynamics.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynamic);
-    dynamics.sh_offset = K_DYNAMIC_OFFSET;
+    dynamics.sh_offset = DYNAMIC_OFFSET;
     dynamics.sh_size = 3 * sizeof(Dynamic32);
     dynamics.sh_link = 1;
     dynamics.sh_addralign = alignof(Dynamic32);
     dynamics.sh_entsize = sizeof(Dynamic32);
-    put(image, K_SECTION_OFFSET + sizeof(Section32), strings);
-    put(image, K_SECTION_OFFSET + 2 * sizeof(Section32), dynamics);
+    put(image, SECTION_OFFSET + sizeof(Section32), strings);
+    put(image, SECTION_OFFSET + 2 * sizeof(Section32), dynamics);
 
     std::array<u8, 5> const names{0, 'f', 'o', 'o', 0};
-    std::memcpy(image.data() + K_STRING_OFFSET, names.data(), names.size());
+    std::memcpy(image.data() + STRING_OFFSET, names.data(), names.size());
     Dynamic32 needed{};
     needed.d_tag = static_cast<Traits32::Sword>(eftl::elf::DynTag::Needed);
     needed.d_val = 1;
@@ -280,9 +280,9 @@ auto test_elf32_observes_dynamic_entries() -> int {
     flags.d_val = 0x12345678U;
     Dynamic32 terminator{};
     terminator.d_tag = static_cast<Traits32::Sword>(eftl::elf::DynTag::DtNull);
-    put(image, K_DYNAMIC_OFFSET, needed);
-    put(image, K_DYNAMIC_OFFSET + sizeof(Dynamic32), flags);
-    put(image, K_DYNAMIC_OFFSET + 2 * sizeof(Dynamic32), terminator);
+    put(image, DYNAMIC_OFFSET, needed);
+    put(image, DYNAMIC_OFFSET + sizeof(Dynamic32), flags);
+    put(image, DYNAMIC_OFFSET + 2 * sizeof(Dynamic32), terminator);
 
     auto const parsed = Binary32::from_raw(image.data(), image.size());
     auto const table = [&]() -> decltype(parsed->dynamic_table(2)) {

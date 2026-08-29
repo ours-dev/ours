@@ -71,9 +71,11 @@
 #include <ours/task/sched/features.hpp>
 #include <ours/task/sched/schedule.hpp>
 #include <ours/task/sched/scheduler.hpp>
+#include <ours/task/sched/scheduler_inline.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer_queue.hpp>
+
 #include <utility>
 
 using ustl::sync::MemoryOrder;
@@ -82,8 +84,8 @@ using ours::sync::SpinLock;
 
 namespace ours::task::sched {
 namespace {
-    extern "C" ScheduleEntry const kSchedulesStart[] LINK_NAME("__schedules_start");
-    extern "C" ScheduleEntry const kSchedulesEnd[] LINK_NAME("__schedules_end");
+    extern "C" ScheduleEntry const SCHEDULES_START[] LINK_NAME("__schedules_start");
+    extern "C" ScheduleEntry const SCHEDULES_END[] LINK_NAME("__schedules_end");
 
     GKTL_COUNTER(schedule_idle_past, "schedule.idle_past");
     GKTL_COUNTER(schedule_preempt_past, "schedule.preempt_past");
@@ -209,15 +211,14 @@ auto Scheduler::reschedule_mask(CpuMask const &mask) -> void {
     Scheduler::Current::preempt(current_thread);
 }
 
-INIT_CODE
-auto Scheduler::init() -> void {
+INIT_CODE auto Scheduler::init() -> void {
     new (this) Self();
 
-    auto const num_schedule = kSchedulesEnd - kSchedulesStart;
+    auto const num_schedule = SCHEDULES_END - SCHEDULES_START;
     DEBUG_ASSERT(num_schedule > 0);
 
     for (auto i = 0; i < num_schedule; ++i) {
-        auto const &entry = kSchedulesStart[i];
+        auto const &entry = SCHEDULES_START[i];
         m_schedules[static_cast<usize>(entry.discipline)] = entry.instance;
     }
 
@@ -340,31 +341,6 @@ auto Scheduler::finish_transition(Thread *thread) -> void {
     using TransientState = RunQueueState::TransientState;
     if (rqs.m_transient_state == TransientState::Migrating) {
     }
-}
-
-/// Hands |thread| back to its discipline as the outgoing thread.
-///
-/// The Scheduler-level pair is only the dispatch: which discipline a thread
-/// belongs to is recorded in its own context, so the work itself lives in
-/// ISchedule (Fair::put_prev_thread / Fair::set_next_thread).
-auto Scheduler::put_prev_thread(Thread *thread) -> void {
-    if (!thread) {
-        return;
-    }
-
-    auto *const schedule = thread->scheduling_context().schedule();
-    DEBUG_ASSERT(schedule, "thread has no schedule assigned");
-    schedule->put_prev_thread(m_runtime, thread);
-}
-
-auto Scheduler::set_next_thread(Thread *thread) -> void {
-    if (!thread) {
-        return;
-    }
-
-    auto *const schedule = thread->scheduling_context().schedule();
-    DEBUG_ASSERT(schedule, "thread has no schedule assigned");
-    schedule->set_next_thread(m_runtime, thread);
 }
 
 auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {

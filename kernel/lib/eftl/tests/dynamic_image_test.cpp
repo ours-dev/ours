@@ -17,15 +17,14 @@ using Dynamic = Traits::Dyn;
 using Header = Traits::Header;
 using Segment = Traits::Segment;
 
-constexpr usize K_PROGRAM_HEADERS_OFFSET = sizeof(Header);
-constexpr usize K_PRIMARY_LOAD_OFFSET = 0x300;
-constexpr usize K_DYNAMIC_OFFSET = K_PRIMARY_LOAD_OFFSET + 0x40;
-constexpr u64 K_PRIMARY_LOAD_ADDRESS = 0x400000;
-constexpr u64 K_DYNAMIC_ADDRESS = K_PRIMARY_LOAD_ADDRESS + 0x40;
+constexpr usize PROGRAM_HEADERS_OFFSET = sizeof(Header);
+constexpr usize PRIMARY_LOAD_OFFSET = 0x300;
+constexpr usize DYNAMIC_OFFSET = PRIMARY_LOAD_OFFSET + 0x40;
+constexpr u64 PRIMARY_LOAD_ADDRESS = 0x400000;
+constexpr u64 DYNAMIC_ADDRESS = PRIMARY_LOAD_ADDRESS + 0x40;
 
 template <typename Value, usize Size>
-auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian)
-    -> void {
+auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian) -> void {
     static_assert(std::is_unsigned_v<Value>);
     if (!big_endian) {
         std::memcpy(image.data() + offset, &value, sizeof(value));
@@ -56,8 +55,8 @@ auto put_header(std::array<u8, Size> &image, Header const &header, bool big_endi
 }
 
 template <usize Size>
-auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segment,
-                 bool big_endian) -> void {
+auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segment, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Segment, p_type), segment.p_type, big_endian);
     put_scalar(image, offset + offsetof(Segment, p_flags), segment.p_flags, big_endian);
     put_scalar(image, offset + offsetof(Segment, p_offset), segment.p_offset, big_endian);
@@ -69,8 +68,8 @@ auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segme
 }
 
 template <usize Size>
-auto put_dynamic(std::array<u8, Size> &image, usize offset, Dynamic const &dynamic,
-                 bool big_endian) -> void {
+auto put_dynamic(std::array<u8, Size> &image, usize offset, Dynamic const &dynamic, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Dynamic, d_tag), static_cast<u64>(dynamic.d_tag),
                big_endian);
     put_scalar(image, offset + offsetof(Dynamic, d_val), dynamic.d_val, big_endian);
@@ -79,8 +78,8 @@ auto put_dynamic(std::array<u8, Size> &image, usize offset, Dynamic const &dynam
 auto make_dynamic_image(bool big_endian = false) -> std::array<u8, 2048> {
     std::array<u8, 2048> image{};
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     if (big_endian) {
         header.e_ident[5] = 2;
     } else {
@@ -90,23 +89,23 @@ auto make_dynamic_image(bool big_endian = false) -> std::array<u8, 2048> {
     header.e_type = 3;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header);
-    header.e_phoff = K_PROGRAM_HEADERS_OFFSET;
+    header.e_phoff = PROGRAM_HEADERS_OFFSET;
     header.e_phentsize = sizeof(Segment);
     header.e_phnum = 3;
     put_header(image, header, big_endian);
 
     Segment load{};
     load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
-    load.p_offset = K_PRIMARY_LOAD_OFFSET;
-    load.p_vaddr = K_PRIMARY_LOAD_ADDRESS;
+    load.p_offset = PRIMARY_LOAD_OFFSET;
+    load.p_vaddr = PRIMARY_LOAD_ADDRESS;
     load.p_filesz = 0x100;
     load.p_memsz = 0x120;
     load.p_align = 0x10;
 
     Segment dynamic{};
     dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Dynamic);
-    dynamic.p_offset = K_DYNAMIC_OFFSET;
-    dynamic.p_vaddr = K_DYNAMIC_ADDRESS;
+    dynamic.p_offset = DYNAMIC_OFFSET;
+    dynamic.p_vaddr = DYNAMIC_ADDRESS;
     dynamic.p_filesz = 2 * sizeof(Dynamic);
     dynamic.p_memsz = 2 * sizeof(Dynamic);
     dynamic.p_align = alignof(Dynamic);
@@ -119,17 +118,17 @@ auto make_dynamic_image(bool big_endian = false) -> std::array<u8, 2048> {
     second_load.p_memsz = 0x20;
     second_load.p_align = 0x10;
 
-    put_segment(image, K_PROGRAM_HEADERS_OFFSET, load, big_endian);
-    put_segment(image, K_PROGRAM_HEADERS_OFFSET + sizeof(Segment), dynamic, big_endian);
-    put_segment(image, K_PROGRAM_HEADERS_OFFSET + 2 * sizeof(Segment), second_load, big_endian);
+    put_segment(image, PROGRAM_HEADERS_OFFSET, load, big_endian);
+    put_segment(image, PROGRAM_HEADERS_OFFSET + sizeof(Segment), dynamic, big_endian);
+    put_segment(image, PROGRAM_HEADERS_OFFSET + 2 * sizeof(Segment), second_load, big_endian);
 
     Dynamic needed{};
     needed.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Needed);
     needed.d_val = 0x32;
     Dynamic terminator{};
     terminator.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::DtNull);
-    put_dynamic(image, K_DYNAMIC_OFFSET, needed, big_endian);
-    put_dynamic(image, K_DYNAMIC_OFFSET + sizeof(Dynamic), terminator, big_endian);
+    put_dynamic(image, DYNAMIC_OFFSET, needed, big_endian);
+    put_dynamic(image, DYNAMIC_OFFSET + sizeof(Dynamic), terminator, big_endian);
     return image;
 }
 
@@ -150,14 +149,14 @@ auto test_observes_sectionless_dynamic_image() -> int {
     }
     ustl::Option<eftl::ByteRange> mapped = ustl::NONE;
     if (image.is_some()) {
-        mapped = image->bytes_at_virtual_address(K_DYNAMIC_ADDRESS, sizeof(Dynamic));
+        mapped = image->bytes_at_virtual_address(DYNAMIC_ADDRESS, sizeof(Dynamic));
     }
     if (image.is_some() && image->size() == 1 && entries.size() == 2 && entry.is_some() &&
         eftl::elf::DynamicImageView<Traits>::tag(entry.value()) == eftl::elf::DynTag::Needed &&
         eftl::elf::DynamicImageView<Traits>::value(entry.value()) == 0x32 && mapped.is_some() &&
-        mapped->data() == bytes.data() + K_DYNAMIC_OFFSET && mapped->size() == sizeof(Dynamic) &&
-        image->bytes_at_virtual_address(K_PRIMARY_LOAD_ADDRESS + 0x100, 1).is_none() &&
-        image->bytes_at_virtual_address(K_PRIMARY_LOAD_ADDRESS + 0xf8, 0x100).is_none()) {
+        mapped->data() == bytes.data() + DYNAMIC_OFFSET && mapped->size() == sizeof(Dynamic) &&
+        image->bytes_at_virtual_address(PRIMARY_LOAD_ADDRESS + 0x100, 1).is_none() &&
+        image->bytes_at_virtual_address(PRIMARY_LOAD_ADDRESS + 0xf8, 0x100).is_none()) {
         return 0;
     }
     return 1;
@@ -191,8 +190,8 @@ auto test_observes_elf32_sectionless_dynamic_image() -> int {
 
     std::array<u8, 512> bytes{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
@@ -251,9 +250,9 @@ auto test_rejects_malformed_dynamic_images() -> int {
     header.e_phnum = 4;
     std::memcpy(duplicate.data(), &header, sizeof(header));
     Segment dynamic{};
-    std::memcpy(&dynamic, duplicate.data() + K_PROGRAM_HEADERS_OFFSET + sizeof(Segment),
+    std::memcpy(&dynamic, duplicate.data() + PROGRAM_HEADERS_OFFSET + sizeof(Segment),
                 sizeof(dynamic));
-    std::memcpy(duplicate.data() + K_PROGRAM_HEADERS_OFFSET + 3 * sizeof(Segment), &dynamic,
+    std::memcpy(duplicate.data() + PROGRAM_HEADERS_OFFSET + 3 * sizeof(Segment), &dynamic,
                 sizeof(dynamic));
     auto const duplicate_parsed = Binary::from_raw(duplicate.data(), duplicate.size());
     if (duplicate_parsed.is_err() || duplicate_parsed->dynamic_image().is_some()) {
@@ -264,7 +263,7 @@ auto test_rejects_malformed_dynamic_images() -> int {
     Dynamic nonnull{};
     nonnull.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Needed);
     nonnull.d_val = 0x33;
-    put_dynamic(missing_terminator, K_DYNAMIC_OFFSET + sizeof(Dynamic), nonnull, false);
+    put_dynamic(missing_terminator, DYNAMIC_OFFSET + sizeof(Dynamic), nonnull, false);
     auto const missing_terminator_parsed =
         Binary::from_raw(missing_terminator.data(), missing_terminator.size());
     if (missing_terminator_parsed.is_err() ||
@@ -273,10 +272,10 @@ auto test_rejects_malformed_dynamic_images() -> int {
     }
 
     auto zero_fill_dynamic = make_dynamic_image();
-    std::memcpy(&dynamic, zero_fill_dynamic.data() + K_PROGRAM_HEADERS_OFFSET + sizeof(Segment),
+    std::memcpy(&dynamic, zero_fill_dynamic.data() + PROGRAM_HEADERS_OFFSET + sizeof(Segment),
                 sizeof(dynamic));
-    dynamic.p_vaddr = K_PRIMARY_LOAD_ADDRESS + 0x100;
-    std::memcpy(zero_fill_dynamic.data() + K_PROGRAM_HEADERS_OFFSET + sizeof(Segment), &dynamic,
+    dynamic.p_vaddr = PRIMARY_LOAD_ADDRESS + 0x100;
+    std::memcpy(zero_fill_dynamic.data() + PROGRAM_HEADERS_OFFSET + sizeof(Segment), &dynamic,
                 sizeof(dynamic));
     auto const zero_fill_parsed =
         Binary::from_raw(zero_fill_dynamic.data(), zero_fill_dynamic.size());
@@ -285,10 +284,10 @@ auto test_rejects_malformed_dynamic_images() -> int {
     }
 
     auto no_dynamic = make_dynamic_image();
-    std::memcpy(&dynamic, no_dynamic.data() + K_PROGRAM_HEADERS_OFFSET + sizeof(Segment),
+    std::memcpy(&dynamic, no_dynamic.data() + PROGRAM_HEADERS_OFFSET + sizeof(Segment),
                 sizeof(dynamic));
     dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Note);
-    std::memcpy(no_dynamic.data() + K_PROGRAM_HEADERS_OFFSET + sizeof(Segment), &dynamic,
+    std::memcpy(no_dynamic.data() + PROGRAM_HEADERS_OFFSET + sizeof(Segment), &dynamic,
                 sizeof(dynamic));
     auto const no_dynamic_parsed = Binary::from_raw(no_dynamic.data(), no_dynamic.size());
     if (no_dynamic_parsed.is_err() || no_dynamic_parsed->dynamic_image().is_some()) {
@@ -300,8 +299,8 @@ auto test_rejects_malformed_dynamic_images() -> int {
     header.e_phnum = 4;
     std::memcpy(ambiguous_mapping.data(), &header, sizeof(header));
     Segment load{};
-    std::memcpy(&load, ambiguous_mapping.data() + K_PROGRAM_HEADERS_OFFSET, sizeof(load));
-    std::memcpy(ambiguous_mapping.data() + K_PROGRAM_HEADERS_OFFSET + 3 * sizeof(Segment), &load,
+    std::memcpy(&load, ambiguous_mapping.data() + PROGRAM_HEADERS_OFFSET, sizeof(load));
+    std::memcpy(ambiguous_mapping.data() + PROGRAM_HEADERS_OFFSET + 3 * sizeof(Segment), &load,
                 sizeof(load));
     auto const ambiguous_parsed =
         Binary::from_raw(ambiguous_mapping.data(), ambiguous_mapping.size());

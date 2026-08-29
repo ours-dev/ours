@@ -3,16 +3,16 @@
 #ifndef USTL_UTIL_NONCOPYABLE_HPP
 #define USTL_UTIL_NONCOPYABLE_HPP 1
 
-#define USTL_NOMOVEABLE(TYPE) \
-    TYPE(TYPE &&) = delete; \
-    auto operator=(TYPE &&) -> TYPE & = delete
+#define USTL_NOMOVEABLE(TYPE)                                                                      \
+    TYPE(TYPE &&) = delete;                                                                        \
+    auto operator=(TYPE &&)->TYPE & = delete
 
-#define USTL_NOCOPYABLE(TYPE) \
-    TYPE(TYPE const &) = delete; \
-    auto operator=(TYPE const &) -> TYPE & = delete
+#define USTL_NOCOPYABLE(TYPE)                                                                      \
+    TYPE(TYPE const &) = delete;                                                                   \
+    auto operator=(TYPE const &)->TYPE & = delete
 
-#define USTL_NO_MOVEABLE_AND_COPYABLE(TYPE) \
-    USTL_NOMOVEABLE(TYPE); \
+#define USTL_NO_MOVEABLE_AND_COPYABLE(TYPE)                                                        \
+    USTL_NOMOVEABLE(TYPE);                                                                         \
     USTL_NOCOPYABLE(TYPE)
 
 #define USTL_NOT_COPYABLE_AND_MOVEABLE(TYPE) USTL_NO_MOVEABLE_AND_COPYABLE(TYPE)
@@ -29,6 +29,6 @@ struct NonCopyable {
     auto operator=(NonCopyable const &) -> NonCopyable & = delete;
 };
 
-}  // namespace ustl
+} // namespace ustl
 
-#endif  // USTL_UTIL_NONCOPYABLE_HPP
+#endif // USTL_UTIL_NONCOPYABLE_HPP

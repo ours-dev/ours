@@ -5,9 +5,9 @@
 #include <ustl/collections/intrusive/linear_slist_algorithms.hpp>
 
 namespace {
-    using Node = ustl::collections::intrusive::SlistNode<void *>;
-    using Traits = ustl::collections::intrusive::SlistNodeTraits<void *>;
-    using Algorithms = ustl::collections::intrusive::LinearSlistAlgorithms<Traits>;
+using Node = ustl::collections::intrusive::SlistNode<void *>;
+using Traits = ustl::collections::intrusive::SlistNodeTraits<void *>;
+using Algorithms = ustl::collections::intrusive::LinearSlistAlgorithms<Traits>;
 } // namespace
 
 auto main() -> int {
@@ -35,14 +35,15 @@ auto main() -> int {
     }
 
     const auto backward = Algorithms::move_first_n_backwards(&first, 1);
-    if (backward.m_first != &second || backward.m_second != &first || Traits::get_next(&third) != &first ||
-        Traits::get_next(&first) != nullptr) {
+    if (backward.m_first != &second || backward.m_second != &first ||
+        Traits::get_next(&third) != &first || Traits::get_next(&first) != nullptr) {
         return 2;
     }
     Traits::set_next(&source, backward.m_first);
 
     const auto forward = Algorithms::move_first_n_forward(backward.m_first, 1);
-    if (forward.m_first != &first || forward.m_second != &third || Traits::get_next(&third) != nullptr) {
+    if (forward.m_first != &first || forward.m_second != &third ||
+        Traits::get_next(&third) != nullptr) {
         return 3;
     }
     Traits::set_next(&source, forward.m_first);
@@ -59,7 +60,8 @@ auto main() -> int {
     }
 
     auto disposed = 0;
-    const auto disposed_count = Algorithms::detach_and_dispose(&source, [&disposed](Node *const) noexcept -> void { ++disposed; });
+    const auto disposed_count = Algorithms::detach_and_dispose(
+        &source, [&disposed](Node *const) noexcept -> void { ++disposed; });
     if (disposed_count != 3 || disposed != 3 || !Algorithms::is_empty(&source)) {
         return 6;
     }
@@ -75,8 +77,8 @@ auto main() -> int {
     Algorithms::link_after(&first, &second);
     Algorithms::link_after(&second, &third);
     const auto reversed = Algorithms::reverse(&first);
-    return reversed == &third && Traits::get_next(&third) == &second && Traits::get_next(&second) == &first &&
-                   Traits::get_next(&first) == nullptr
+    return reversed == &third && Traits::get_next(&third) == &second &&
+                   Traits::get_next(&second) == &first && Traits::get_next(&first) == nullptr
                ? 0
                : 8;
 }

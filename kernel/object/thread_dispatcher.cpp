@@ -15,7 +15,7 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
 
 auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
                              KernelHandle<Self> *out) -> Status {
-    auto self = ustl::Arc<Self>::adopt(new (mm::kGafUser) Self(process, name));
+    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(process, name));
     if (!self) {
         return Status::OutOfMem;
     }

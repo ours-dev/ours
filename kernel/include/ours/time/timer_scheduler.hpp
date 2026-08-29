@@ -6,31 +6,33 @@
 #include <ours/time/timer_queue.hpp>
 
 namespace ours::time {
-    /// Per-CPU timer scheduler that manages the execution of timers.
-    class TimerScheduler {
-        using Self = TimerScheduler;
-      public:
-        class Current;
+/// Per-CPU timer scheduler that manages the execution of timers.
+class TimerScheduler {
+    using Self = TimerScheduler;
 
-        auto run_queues() -> void;
-      private:
-        friend class Timer;
+  public:
+    class Current;
 
-        static auto activate_timer(Timer &timer) -> void;
+    auto run_queues() -> void;
 
-        gktl::Canary m_canary;
-        CpuNum cpunum_;
-        TimerQueue perclock_[usize(ClockId::MaxNumClocks)];
-    };
+  private:
+    friend class Timer;
 
-    class TimerScheduler::Current {
-        using Singleton = mm::CpuLocal::Current<TimerScheduler>;
-      public:
-        FORCE_INLINE
-        static auto run_local_queues() -> void {
-            Singleton::get().run_queues();
-        }
-    };
+    static auto activate_timer(Timer &timer) -> void;
+
+    gktl::Canary m_canary;
+    CpuNum cpunum_;
+    TimerQueue perclock_[usize(ClockId::MaxNumClocks)];
+};
+
+class TimerScheduler::Current {
+    using Singleton = mm::CpuLocal::Current<TimerScheduler>;
+
+  public:
+    FORCE_INLINE static auto run_local_queues() -> void {
+        Singleton::get().run_queues();
+    }
+};
 
 } // namespace ours::time
 

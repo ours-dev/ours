@@ -1,5 +1,4 @@
 #include <ours/boot/handoff.hpp>
-
 #include <ours/mm/init.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/panic.hpp>
@@ -9,16 +8,16 @@ namespace {
     phys::Handoff const *g_handoff;
 
     auto handoff_fits_physmap(PhysAddr const base) -> bool {
-        if (base < mm::PhysMap::kPhysBase) {
+        if (base < mm::PhysMap::PHYS_BASE) {
             return false;
         }
-        auto const offset = base - mm::PhysMap::kPhysBase;
-        return offset <= mm::PhysMap::kSize && sizeof(phys::Handoff) <= mm::PhysMap::kSize - offset;
+        auto const offset = base - mm::PhysMap::PHYS_BASE;
+        return offset <= mm::PhysMap::SIZE && sizeof(phys::Handoff) <= mm::PhysMap::SIZE - offset;
     }
 
     auto boot_package_from_handoff(phys::BootPackageHandoff const &record)
         -> phys::BootObi::Result {
-        if (!record.fits_within(mm::PhysMap::kPhysBase, mm::PhysMap::kSize)) {
+        if (!record.fits_within(mm::PhysMap::PHYS_BASE, mm::PhysMap::SIZE)) {
             return ustl::err(Status::BadState);
         }
 
@@ -43,7 +42,7 @@ auto setup_handoff(PhysAddr const handoff_phys) -> void {
     if (value == nullptr || !value->verify()) {
         panic("Kernel handoff is invalid");
     }
-    if (!value->boot_package.fits_within(mm::PhysMap::kPhysBase, mm::PhysMap::kSize)) {
+    if (!value->boot_package.fits_within(mm::PhysMap::PHYS_BASE, mm::PhysMap::SIZE)) {
         panic("Boot package is outside the physmap");
     }
     auto const package = boot_package_from_handoff(value->boot_package);

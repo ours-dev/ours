@@ -55,8 +55,7 @@
 namespace ours::phys {
 PHYS_EXPORT auto vprint(ustl::views::StringView fmt) -> void;
 #if !defined(PHYS_ENVIRONMENT)
-PHYS_EXPORT auto vprint(ustl::views::StringView fmt,
-                        ustl::fmt::FormatArgs const &args) -> void;
+PHYS_EXPORT auto vprint(ustl::views::StringView fmt, ustl::fmt::FormatArgs const &args) -> void;
 #endif
 
 template <typename... Args>

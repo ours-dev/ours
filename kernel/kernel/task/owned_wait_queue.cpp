@@ -20,7 +20,7 @@ namespace {
         requires PropagatingStream<Upstream, Downstream>
     [[maybe_unused]]
     auto propagate(Upstream &upstream, Downstream &downstream,
-                   decltype(OwnedWaitQueue::kRemoveSingleEdgeOp)) -> void {
+                   decltype(OwnedWaitQueue::REMOVE_SINGLE_EDGE_OP)) -> void {
         Scheduler::split_node_from_pi_graph(upstream, downstream);
         if constexpr (IsSameV<Downstream, Thread>) {
             pi_demotions.add(1);
@@ -31,7 +31,7 @@ namespace {
         requires PropagatingStream<Upstream, Downstream>
     [[maybe_unused]]
     auto propagate(Upstream &upstream, Downstream &downstream,
-                   decltype(OwnedWaitQueue::kAddSingleEdgeOp)) -> void {
+                   decltype(OwnedWaitQueue::ADD_SINGLE_EDGE_OP)) -> void {
         Scheduler::join_node_to_pi_graph(upstream, downstream);
         if constexpr (IsSameV<Downstream, Thread>) {
             pi_promotions.add(1);
@@ -42,7 +42,7 @@ namespace {
         requires PropagatingStream<Upstream, Downstream>
     [[maybe_unused]]
     auto propagate(Upstream &upstream, Downstream &downstream,
-                   decltype(OwnedWaitQueue::kBaseProfileOverridedOp)) -> void {
+                   decltype(OwnedWaitQueue::BASE_PROFILE_OVERRIDED_OP)) -> void {
         Scheduler::on_upstream_thread_base_profile_overrided(upstream, downstream);
         if constexpr (IsSameV<Downstream, Thread>) {
             pi_base_profile_overrided.add(1);
@@ -51,7 +51,7 @@ namespace {
 
 } // namespace
 
-OwnedWaitQueue::OwnedWaitQueue() : Base(kOwnedMagic), m_owner(), m_managed_hook() {}
+OwnedWaitQueue::OwnedWaitQueue() : Base(OWNED_MAGIC), m_owner(), m_managed_hook() {}
 
 OwnedWaitQueue::~OwnedWaitQueue() {
     DEBUG_ASSERT(m_owner == nullptr);
@@ -148,7 +148,7 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
 
     InheritedProfile oldip;
     if (owq) {
-        owq->m_canary.verify(kOwnedMagic);
+        owq->m_canary.verify(OWNED_MAGIC);
         oldip = Self::snapshot_thread_inherited_profile(thread);
     }
 
@@ -159,7 +159,7 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
 
     if (owq) {
         auto newip = Self::snapshot_thread_inherited_profile(thread);
-        Self::complete_propagate(*thread, *owq, &newip, &oldip, kBaseProfileOverridedOp);
+        Self::complete_propagate(*thread, *owq, &newip, &oldip, BASE_PROFILE_OVERRIDED_OP);
     }
 
     pi_base_profile_overrided.add(1);
@@ -175,13 +175,13 @@ auto OwnedWaitQueue::assign_owner(Thread *new_owner) -> Status {
     Self::lock_for_owner_replacement(new_owner, 0);
     if (m_owner != nullptr) {
         m_owner->get_pi_lock().assert_held();
-        Self::begin_propagate(*this, *m_owner, kRemoveSingleEdgeOp);
+        Self::begin_propagate(*this, *m_owner, REMOVE_SINGLE_EDGE_OP);
         Self::unlock_pi_chain_common(this, 0);
     }
 
     if (new_owner != nullptr) {
         new_owner->get_pi_lock().assert_held();
-        Self::begin_propagate(*this, *new_owner, kAddSingleEdgeOp);
+        Self::begin_propagate(*this, *new_owner, ADD_SINGLE_EDGE_OP);
         Self::unlock_pi_chain_common(this, 0);
     }
 
@@ -192,7 +192,7 @@ auto OwnedWaitQueue::lock_for_owner_replacement(Thread *new_owner, Thread *) -> 
 
 auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline const &,
                                            Interruptible interruptible) -> Status {
-    m_canary.verify(kOwnedMagic);
+    m_canary.verify(OWNED_MAGIC);
     return Status::Ok;
 }
 
@@ -287,6 +287,6 @@ auto OwnedWaitQueue::unlock_pi_chain_common(Applicant *new_owner, void *stop_poi
 
 /// Exported to WaitQueue::unpark_thread
 template auto OwnedWaitQueue::begin_propagate(Thread &, OwnedWaitQueue &,
-                                              decltype(kRemoveSingleEdgeOp)) -> void;
+                                              decltype(REMOVE_SINGLE_EDGE_OP)) -> void;
 
-} // namespace ours::sync
+} // namespace ours::task

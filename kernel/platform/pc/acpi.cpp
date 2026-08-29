@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/handoff.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/platform/acpi.hpp>
 #include <ours/platform/init.hpp>
-#include <logz4/log.hpp>
 #include <ustl/lazy_init.hpp>
 #include <ustl/util/move.hpp>
 

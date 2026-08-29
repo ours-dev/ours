@@ -3,10 +3,9 @@
 #ifndef OURS_SYNC_PRIV_STATE_SAVER_HPP
 #define OURS_SYNC_PRIV_STATE_SAVER_HPP 1
 
-#include <ours/sync/types.hpp>
 #include <lockdep/state_saver.hpp>
+#include <ours/sync/types.hpp>
 
-namespace ours::sync::priv {
-} // namespace ours::sync::priv
+namespace ours::sync::priv {} // namespace ours::sync::priv
 
 #endif // #ifndef OURS_SYNC_PRIV_STATE_SAVER_HPP

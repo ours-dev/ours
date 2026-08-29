@@ -48,7 +48,7 @@ TEST(PackageBuilder, BuildsAContainerThatContainerViewCanRead) {
 
     auto const container = builder.build(/*crc=*/false);
     ASSERT_FALSE(container.empty());
-    EXPECT_EQ(container.size() % obi::ContainerHeader::kAlignment, 0u);
+    EXPECT_EQ(container.size() % obi::ContainerHeader::ALIGNMENT, 0u);
 
     auto view = ContainerView::from(container.data(), container.size());
     ASSERT_TRUE(view.is_ok());
@@ -61,7 +61,7 @@ TEST(PackageBuilder, BuildsAContainerThatContainerViewCanRead) {
     // "setup" is named+typed exactly as PackageBuilder's setup-index
     // convention expects (name=="setup", Config/Yaml), so build() must
     // have pointed setup_item_index at it automatically.
-    EXPECT_NE(view.unwrap().setup_item_index(), obi::ContainerHeader::kNoSetupItem);
+    EXPECT_NE(view.unwrap().setup_item_index(), obi::ContainerHeader::NO_SETUP_ITEM);
 }
 
 TEST(PackageBuilder, RejectsDuplicateItemNames) {

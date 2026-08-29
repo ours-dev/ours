@@ -1,5 +1,6 @@
 #include "ours/task/sched/profiles.hpp"
 #include <logz4/log.hpp>
+#include <mtl/ratio.hpp>
 #include <ours/task/sched/config.hpp>
 #include <ours/task/sched/context.hpp>
 #include <ours/task/sched/fair.hpp>
@@ -12,12 +13,10 @@
 #include <ours/time/timer_queue.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/mem/address_of.hpp>
-#include <mtl/ratio.hpp>
 
 namespace ours::task::sched {
 namespace {
-    FORCE_INLINE
-    auto calc_weighted_time(SchedDuration duration, Weight weight) -> SchedDuration {
+    FORCE_INLINE auto calc_weighted_time(SchedDuration duration, Weight weight) -> SchedDuration {
         if (weight == MID_WEIGHT) {
             return duration;
         }
@@ -161,8 +160,7 @@ class Fair final: public Schedule<Fair, Discipline::Normal> {
 ///
 /// When the lag of a task is greater than or equal to zero, it is eligible,
 /// otherwise ineligible.
-FORCE_INLINE
-auto Fair::is_object_eligible(Context const &object) const -> bool {
+FORCE_INLINE auto Fair::is_object_eligible(Context const &object) const -> bool {
     auto &rq = Scheduler::Current::get().fair_run_queue();
     auto const total_vruntime = rq.total_vruntime();
     auto const weight_sum = rq.total_weight();
@@ -189,8 +187,7 @@ auto Fair::adjust_vlag(Runtime &runtime, Context &ctx) -> void {
     params.vdeadline = params.vruntime + calc_weighted_time(timeslice.length(), ctx.weight());
 }
 
-FORCE_INLINE
-auto Fair::update_vlag(Context &object) -> void {
+FORCE_INLINE auto Fair::update_vlag(Context &object) -> void {
     object.m_params.vlag = Scheduler::Current::get().fair_run_queue().lag_of(object);
 }
 

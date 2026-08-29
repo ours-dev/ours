@@ -6,40 +6,42 @@
 #include <ours/mm/vm_object.hpp>
 
 namespace ours::mm {
-    /// The object to describe a section of physical memory (Unpaged RAM fragment, Device Memory and e.g.)
-    class VmObjectPhysical: public VmObject {
-        using Self = VmObjectPhysical;
-        using Base = VmObject;
-      public:
-        static auto create(PhysAddr pa, usize size, Flags VmoFlags, ustl::Arc<Self> *out) -> Status;
+/// The object to describe a section of physical memory (Unpaged RAM fragment, Device Memory and e.g.)
+class VmObjectPhysical: public VmObject {
+    using Self = VmObjectPhysical;
+    using Base = VmObject;
 
-        /// 
-        virtual auto commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status override {
-            m_canary.verify(static_cast<u32>(Type::Physical));
+  public:
+    static auto create(PhysAddr pa, usize size, Flags VmoFlags, ustl::Arc<Self> *out) -> Status;
 
-            if (offset > size_ || size > size_ || offset > size_ - size) {
-                return Status::OutOfRange;
-            }
-            return Status::Ok;
+    ///
+    virtual auto commit_range(VirtAddr offset, usize size, CommitOptions option)
+        -> Status override {
+        m_canary.verify(static_cast<u32>(Type::Physical));
+
+        if (offset > size_ || size > size_ || offset > size_ - size) {
+            return Status::OutOfRange;
+        }
+        return Status::Ok;
+    }
+
+    auto lookup_range(usize offset, usize size, PhysAddr *pa) -> Status {
+        m_canary.verify(static_cast<u32>(Type::Physical));
+
+        if (offset > size_ || size > size_ || offset > size_ - size) {
+            return Status::OutOfRange;
         }
 
-        auto lookup_range(usize offset, usize size, PhysAddr *pa) -> Status {
-            m_canary.verify(static_cast<u32>(Type::Physical));
+        *pa = phys_base_ + offset;
+        return Status::Ok;
+    }
 
-            if (offset > size_ || size > size_ || offset > size_ - size) {
-                return Status::OutOfRange;
-            }
+  private:
+    VmObjectPhysical(PhysAddr pa, usize size, Flags VmoFlags);
 
-            *pa = phys_base_ + offset;
-            return Status::Ok;
-        }
-
-      private:
-        VmObjectPhysical(PhysAddr pa, usize size, Flags VmoFlags);
-
-        PhysAddr phys_base_;
-        usize size_;
-    };
+    PhysAddr phys_base_;
+    usize size_;
+};
 
 } // namespace ours::mm
 

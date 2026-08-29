@@ -12,18 +12,18 @@
 #define OURS_SYSCALL_RESOURCE_HPP 1
 
 namespace ours {
-    enum class RsrcKind {
-        MmIo,
-        Irq,
-        IoPort,
-        Root,
-        System,
-        NumKinds,
-    };
+enum class RsrcKind {
+    MmIo,
+    Irq,
+    IoPort,
+    Root,
+    System,
+    NumKinds,
+};
 
-    enum class RsrcFlag {
+enum class RsrcFlag {
 
-    };
+};
 
 } // namespace ours
 

@@ -7,7 +7,8 @@
 #include <type_traits>
 
 namespace ustl::traits {
-template <auto Value> using IntConstant = std::integral_constant<decltype(Value), Value>;
+template <auto Value>
+using IntConstant = std::integral_constant<decltype(Value), Value>;
 }
 
 #endif // USTL_TRAITS_INTEGRAL_CONSTANT_HPP

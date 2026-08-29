@@ -12,8 +12,8 @@
 #include <ustl/views/span.hpp>
 
 #include <limits>
-#include <string_view>
 #include <span>
+#include <string_view>
 
 #include <cstring>
 
@@ -136,17 +136,17 @@ class ContainerView final {
 
         ContainerHeader header{};
         std::memcpy(&header, data, sizeof(header));
-        if (header.magic != ContainerHeader::kMagic || header.major != ContainerHeader::kMajor ||
+        if (header.magic != ContainerHeader::MAGIC || header.major != ContainerHeader::MAJOR ||
             header.header_size != sizeof(ContainerHeader) || header.reserved0 != 0 ||
             header.reserved != 0 ||
             (header.flags & ~static_cast<u32>(ContainerFlags::Crc32)) != 0 ||
-            header.item_count > ContainerHeader::kMaxItems ||
+            header.item_count > ContainerHeader::MAX_ITEMS ||
             header.container_size < header.header_size || header.container_size != size ||
-            header.container_size % ContainerHeader::kAlignment != 0 ||
+            header.container_size % ContainerHeader::ALIGNMENT != 0 ||
             header.container_size > std::numeric_limits<usize>::max()) {
             return ustl::err(ours::Status::InvalidArgument);
         }
-        if (header.minor > ContainerHeader::kMinor) {
+        if (header.minor > ContainerHeader::MINOR) {
             return ustl::err(ours::Status::NotSupported);
         }
 
@@ -155,7 +155,7 @@ class ContainerView final {
         auto const item_table_size = static_cast<u64>(header.item_count) * sizeof(ItemDescriptor);
         auto const item_table_end = checked_add(item_table_offset, item_table_size);
         if (item_table_end.is_none() || item_table_offset != header.header_size ||
-            item_table_offset % ContainerHeader::kAlignment != 0 ||
+            item_table_offset % ContainerHeader::ALIGNMENT != 0 ||
             item_table_end.value() > header.container_size) {
             return ustl::err(ours::Status::OutOfRange);
         }
@@ -167,7 +167,7 @@ class ContainerView final {
             return ustl::err(ours::Status::OutOfRange);
         }
 
-        if (header.setup_item_index != ContainerHeader::kNoSetupItem &&
+        if (header.setup_item_index != ContainerHeader::NO_SETUP_ITEM &&
             header.setup_item_index >= header.item_count) {
             return ustl::err(ours::Status::OutOfRange);
         }
@@ -179,12 +179,12 @@ class ContainerView final {
             ItemDescriptor item{};
             std::memcpy(&item, items + index * sizeof(ItemDescriptor), sizeof(item));
             if (item.reserved_name != 0 || item.reserved != 0 || item.name_size == 0 ||
-                (item.flags & ~kSupportedItemFlags) != 0 ||
+                (item.flags & ~SUPPORTED_ITEM_FLAGS) != 0 ||
                 item.name_size > header.string_table_size ||
                 static_cast<u64>(item.name_offset) + item.name_size > header.string_table_size ||
                 item.payload_offset < string_table_end.value() ||
                 item.payload_offset < minimum_payload_offset ||
-                item.payload_offset % ContainerHeader::kAlignment != 0 ||
+                item.payload_offset % ContainerHeader::ALIGNMENT != 0 ||
                 !is_power_of_two(item.alignment) || item.payload_offset % item.alignment != 0 ||
                 item.memory_size > std::numeric_limits<usize>::max()) {
                 return ustl::err(ours::Status::InvalidArgument);

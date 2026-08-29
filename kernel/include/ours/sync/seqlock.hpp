@@ -41,7 +41,6 @@
 #include <ours/assert.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/types.hpp>
-
 #include <ustl/function/invoke.hpp>
 #include <ustl/sync/atomic.hpp>
 #include <ustl/traits/is_invocable.hpp>
@@ -49,149 +48,151 @@
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::sync {
-    /// The counter on its own, for callers that already have a single writer.
-    class SeqCount {
-        using Self = SeqCount;
-      public:
-        /// 32 bits, not 8. The counter moves twice per write, so a narrow one
-        /// wraps in ordinary time -- at 8 bits, after 128 writes -- and a
-        /// reader delayed across a wrap reads the same value twice and
-        /// concludes, wrongly, that nothing happened. 32 bits needs two
-        /// billion writes to come back around.
-        using Sequence = u32;
+/// The counter on its own, for callers that already have a single writer.
+class SeqCount {
+    using Self = SeqCount;
 
-        constexpr SeqCount() : m_sequence(0) {}
+  public:
+    /// 32 bits, not 8. The counter moves twice per write, so a narrow one
+    /// wraps in ordinary time -- at 8 bits, after 128 writes -- and a
+    /// reader delayed across a wrap reads the same value twice and
+    /// concludes, wrongly, that nothing happened. 32 bits needs two
+    /// billion writes to come back around.
+    using Sequence = u32;
 
-        /// Runs |fn| until it sees a snapshot no writer cut into, and returns
-        /// what that run produced. |fn| may run several times, and every run
-        /// but the last is discarded -- see rule 1 above.
-        template <typename F>
-            requires ustl::traits::Invocable<F>
-        auto read(F &&fn) const -> ustl::traits::InvokeResultT<F> {
-            using Result = ustl::traits::InvokeResultT<F>;
+    constexpr SeqCount() : m_sequence(0) {}
 
-            for (;;) {
-                auto const start = read_begin();
+    /// Runs |fn| until it sees a snapshot no writer cut into, and returns
+    /// what that run produced. |fn| may run several times, and every run
+    /// but the last is discarded -- see rule 1 above.
+    template <typename F>
+        requires ustl::traits::Invocable<F>
+    auto read(F &&fn) const -> ustl::traits::InvokeResultT<F> {
+        using Result = ustl::traits::InvokeResultT<F>;
 
-                if constexpr (ustl::traits::IsSameV<Result, void>) {
-                    ustl::function::invoke(fn);
-                    if (!read_retry(start)) {
-                        return;
-                    }
-                } else {
-                    Result result = ustl::function::invoke(fn);
-                    if (!read_retry(start)) {
-                        return result;
-                    }
+        for (;;) {
+            auto const start = read_begin();
+
+            if constexpr (ustl::traits::IsSameV<Result, void>) {
+                ustl::function::invoke(fn);
+                if (!read_retry(start)) {
+                    return;
+                }
+            } else {
+                Result result = ustl::function::invoke(fn);
+                if (!read_retry(start)) {
+                    return result;
                 }
             }
         }
+    }
 
-        /// Runs |fn| with the counter held odd. Callers must ensure no other
-        /// writer is running -- see rule 2 above.
-        template <typename F>
-            requires ustl::traits::Invocable<F>
-        auto write(F &&fn) -> void {
-            write_begin();
-            ustl::function::invoke(fn);
-            write_end();
-        }
+    /// Runs |fn| with the counter held odd. Callers must ensure no other
+    /// writer is running -- see rule 2 above.
+    template <typename F>
+        requires ustl::traits::Invocable<F>
+    auto write(F &&fn) -> void {
+        write_begin();
+        ustl::function::invoke(fn);
+        write_end();
+    }
 
-        /// For assertions. True while a writer sits between begin and end.
-        auto is_writing() const -> bool {
-            return (m_sequence.load(ustl::sync::MemoryOrder::Relaxed) & 1) != 0;
-        }
+    /// For assertions. True while a writer sits between begin and end.
+    auto is_writing() const -> bool {
+        return (m_sequence.load(ustl::sync::MemoryOrder::Relaxed) & 1) != 0;
+    }
 
-      private:
-        USTL_NO_MOVEABLE_AND_COPYABLE(SeqCount);
+  private:
+    USTL_NO_MOVEABLE_AND_COPYABLE(SeqCount);
 
-        auto read_begin() const -> Sequence {
-            for (;;) {
-                // Acquire: the read of the data must not be hoisted above this.
-                auto const seq = m_sequence.load(ustl::sync::MemoryOrder::Acquire);
-                if ((seq & 1) == 0) {
-                    return seq;
-                }
-
-                // Odd, so a write is in flight and reading now would only be
-                // thrown away. Wait on it the way any spin waits.
-                arch::spin_hint();
+    auto read_begin() const -> Sequence {
+        for (;;) {
+            // Acquire: the read of the data must not be hoisted above this.
+            auto const seq = m_sequence.load(ustl::sync::MemoryOrder::Acquire);
+            if ((seq & 1) == 0) {
+                return seq;
             }
+
+            // Odd, so a write is in flight and reading now would only be
+            // thrown away. Wait on it the way any spin waits.
+            arch::spin_hint();
         }
+    }
 
-        auto read_retry(Sequence start) const -> bool {
-            // The mirror of the acquire above: the read of the data must not
-            // sink past this second look at the counter, or the comparison
-            // would be covering nothing.
-            ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Acquire);
-            return m_sequence.load(ustl::sync::MemoryOrder::Relaxed) != start;
-        }
+    auto read_retry(Sequence start) const -> bool {
+        // The mirror of the acquire above: the read of the data must not
+        // sink past this second look at the counter, or the comparison
+        // would be covering nothing.
+        ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Acquire);
+        return m_sequence.load(ustl::sync::MemoryOrder::Relaxed) != start;
+    }
 
-        auto write_begin() -> void {
-            auto const seq = m_sequence.load(ustl::sync::MemoryOrder::Relaxed);
+    auto write_begin() -> void {
+        auto const seq = m_sequence.load(ustl::sync::MemoryOrder::Relaxed);
 
-            // Catches the overlap rule 2 warns about, in the one case where it
-            // is catchable: a second writer arriving while the first is inside.
-            DEBUG_ASSERT((seq & 1) == 0, "SeqCount: overlapping writers");
+        // Catches the overlap rule 2 warns about, in the one case where it
+        // is catchable: a second writer arriving while the first is inside.
+        DEBUG_ASSERT((seq & 1) == 0, "SeqCount: overlapping writers");
 
-            m_sequence.store(seq + 1, ustl::sync::MemoryOrder::Relaxed);
-            ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Release);
-        }
+        m_sequence.store(seq + 1, ustl::sync::MemoryOrder::Relaxed);
+        ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Release);
+    }
 
-        auto write_end() -> void {
-            // Release before the counter goes even, so that a reader seeing
-            // the even value sees every write that came before it.
-            ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Release);
-            m_sequence.store(m_sequence.load(ustl::sync::MemoryOrder::Relaxed) + 1,
-                             ustl::sync::MemoryOrder::Relaxed);
-        }
+    auto write_end() -> void {
+        // Release before the counter goes even, so that a reader seeing
+        // the even value sees every write that came before it.
+        ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Release);
+        m_sequence.store(m_sequence.load(ustl::sync::MemoryOrder::Relaxed) + 1,
+                         ustl::sync::MemoryOrder::Relaxed);
+    }
 
-        ustl::sync::Atomic<Sequence> m_sequence;
-    };
+    ustl::sync::Atomic<Sequence> m_sequence;
+};
 
-    /// The counter with the writer's lock attached, which is what most call
-    /// sites want: it serialises writers and keeps interrupts off across the
-    /// write, so rules 2 and 3 are handled rather than delegated.
-    class SeqLock {
-        using Self = SeqLock;
-      public:
-        using Sequence = SeqCount::Sequence;
+/// The counter with the writer's lock attached, which is what most call
+/// sites want: it serialises writers and keeps interrupts off across the
+/// write, so rules 2 and 3 are handled rather than delegated.
+class SeqLock {
+    using Self = SeqLock;
 
-        SeqLock() = default;
+  public:
+    using Sequence = SeqCount::Sequence;
 
-        /// Readers do not take the lock. That is the whole point of the type:
-        /// a reader costs two counter loads and never delays a writer.
-        template <typename F>
-            requires ustl::traits::Invocable<F>
-        auto read(F &&fn) const -> ustl::traits::InvokeResultT<F> {
-            return m_seq.read(static_cast<F &&>(fn));
-        }
+    SeqLock() = default;
 
-        template <typename F>
-            requires ustl::traits::Invocable<F>
-        auto write(F &&fn) -> void {
-            // Interrupts stay off for the whole write, not merely for the
-            // lock. A reader taken as an interrupt on this CPU would spin on
-            // the odd counter, waiting on a writer that cannot resume until
-            // that interrupt returns.
-            arch::IrqSavedState state;
-            m_lock.acquire_irq_save(state);
+    /// Readers do not take the lock. That is the whole point of the type:
+    /// a reader costs two counter loads and never delays a writer.
+    template <typename F>
+        requires ustl::traits::Invocable<F>
+    auto read(F &&fn) const -> ustl::traits::InvokeResultT<F> {
+        return m_seq.read(static_cast<F &&>(fn));
+    }
 
-            m_seq.write(static_cast<F &&>(fn));
+    template <typename F>
+        requires ustl::traits::Invocable<F>
+    auto write(F &&fn) -> void {
+        // Interrupts stay off for the whole write, not merely for the
+        // lock. A reader taken as an interrupt on this CPU would spin on
+        // the odd counter, waiting on a writer that cannot resume until
+        // that interrupt returns.
+        arch::IrqSavedState state;
+        m_lock.acquire_irq_save(state);
 
-            m_lock.release_irq_restore(state);
-        }
+        m_seq.write(static_cast<F &&>(fn));
 
-        auto is_writing() const -> bool {
-            return m_seq.is_writing();
-        }
+        m_lock.release_irq_restore(state);
+    }
 
-      private:
-        USTL_NO_MOVEABLE_AND_COPYABLE(SeqLock);
+    auto is_writing() const -> bool {
+        return m_seq.is_writing();
+    }
 
-        SeqCount m_seq;
-        SpinLock m_lock;
-    };
+  private:
+    USTL_NO_MOVEABLE_AND_COPYABLE(SeqLock);
+
+    SeqCount m_seq;
+    SpinLock m_lock;
+};
 
 } // namespace ours::sync
 

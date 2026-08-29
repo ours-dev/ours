@@ -7,15 +7,15 @@
 #include <ours/time/types.hpp>
 
 namespace ours::time {
-    extern ClockEventDevice *g_clock_event;
+extern ClockEventDevice *g_clock_event;
 
-    inline auto global_clock_event() -> ClockEventDevice * {
-        return g_clock_event;
-    }
+inline auto global_clock_event() -> ClockEventDevice * {
+    return g_clock_event;
+}
 
-    auto hpet_init() -> Status;
-    auto pit_init() -> Status;
+auto hpet_init() -> Status;
+auto pit_init() -> Status;
 
-} // namespace ours
+} // namespace ours::time
 
 #endif // #ifndef OURS_ARCH_TIME_HPP

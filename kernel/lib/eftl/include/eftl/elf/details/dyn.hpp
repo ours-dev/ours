@@ -63,13 +63,13 @@ enum class DynTag : u64 {
 
 template <typename Traits, typename Derived>
 struct DynBase: public Observable<Traits, Derived> {
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto tag() const noexcept -> DynTag {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto tag() const noexcept -> DynTag {
         return DynTag(static_cast<Derived const *>(this)->d_tag);
     };
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto value() const noexcept -> usize {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto value() const noexcept -> usize {
         return static_cast<usize>(static_cast<Derived const *>(this)->d_val);
     };
 };

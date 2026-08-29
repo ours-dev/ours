@@ -7,14 +7,16 @@
 #include <ours/task/wait_queue.hpp>
 
 namespace ours::sync {
-    class Semaphore {
-        using Self = Semaphore;
-      public:
-        auto wait() -> Status;
-        auto post() -> void;
-      private:
-        task::WaitQueue m_waiters;
-    };
+class Semaphore {
+    using Self = Semaphore;
+
+  public:
+    auto wait() -> Status;
+    auto post() -> void;
+
+  private:
+    task::WaitQueue m_waiters;
+};
 } // namespace ours::sync
 
 #endif // #ifndef OURS_SYNC_SEMAPHORE_HPP

@@ -21,8 +21,7 @@ class ByteRange final {
   public:
     constexpr ByteRange() noexcept = default;
 
-    constexpr ByteRange(u8 const *data, usize size) noexcept
-        : m_data(data), m_size(size) {}
+    constexpr ByteRange(u8 const *data, usize size) noexcept : m_data(data), m_size(size) {}
 
     [[nodiscard]]
     constexpr auto data() const noexcept -> u8 const * {
@@ -49,8 +48,7 @@ class BinaryStream final {
     constexpr BinaryStream() noexcept = default;
 
     [[nodiscard]]
-    static auto from(void const *data, usize size)
-        -> ustl::Result<BinaryStream, StreamError> {
+    static auto from(void const *data, usize size) -> ustl::Result<BinaryStream, StreamError> {
         if (size != 0 && data == nullptr) {
             return ustl::err(StreamError::NullData);
         }
@@ -63,8 +61,7 @@ class BinaryStream final {
     }
 
     [[nodiscard]]
-    auto bytes(usize offset, usize count) const
-        -> ustl::Result<ByteRange, StreamError> {
+    auto bytes(usize offset, usize count) const -> ustl::Result<ByteRange, StreamError> {
         if (!contains(offset, count)) {
             return ustl::err(StreamError::OutOfRange);
         }
@@ -112,8 +109,7 @@ class BinaryStream final {
     }
 
   private:
-    constexpr BinaryStream(u8 const *data, usize size) noexcept
-        : m_data(data), m_size(size) {}
+    constexpr BinaryStream(u8 const *data, usize size) noexcept : m_data(data), m_size(size) {}
 
     [[nodiscard]]
     constexpr auto contains(usize offset, usize count) const noexcept -> bool {

@@ -11,10 +11,10 @@
 
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/boot_options.hpp>
+#include <ours/phys/elf_image.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/kernel_boot.hpp>
-#include <ours/phys/elf_image.hpp>
 #include <ours/phys/kernel_package_loader.hpp>
 #include <ours/phys/module.hpp>
 #include <ours/phys/print.hpp>
@@ -46,8 +46,7 @@ namespace {
 
 } // namespace
 
-NO_RETURN
-auto physboot_init(PhysLoadHandoff const &handoff) -> void {
+NO_RETURN auto physboot_init(PhysLoadHandoff const &handoff) -> void {
     // 1. View the kernel-package BootFS physload materialized — no outer
     //    OBI re-parsing, no decompression, no scratch ownership here.
     auto const storage = KernelPackageLoader::Bytes(
@@ -56,9 +55,9 @@ auto physboot_init(PhysLoadHandoff const &handoff) -> void {
     // 2. Resolve the kernel ELF inside the `kernel.name` directory
     //    (default "vmours"; file names are KernelPackage's fixed vocabulary).
     KernelPackageLoader kpackage;
-    auto const package_status = kpackage.init(storage, handoff.obi_package_base,
-                                              handoff.obi_package_size,
-                                              handoff.boot_options->kernel_name);
+    auto const package_status =
+        kpackage.init(storage, handoff.obi_package_base, handoff.obi_package_size,
+                      handoff.boot_options->kernel_name);
     if (package_status != Status::Ok) {
         panic("Invalid kernel package: {}", static_cast<u32>(package_status));
     }

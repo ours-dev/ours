@@ -33,7 +33,7 @@ class View final {
 
         Header header{};
         std::memcpy(&header, data.data(), sizeof(header));
-        if (header.magic != Header::kMagic || header.reserved != 0 || header.reserved2 != 0 ||
+        if (header.magic != Header::MAGIC || header.reserved != 0 || header.reserved2 != 0 ||
             header.file_count == 0) {
             return ustl::err(ours::Status::InvalidArgument);
         }

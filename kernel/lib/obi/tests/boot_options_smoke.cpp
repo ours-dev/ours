@@ -113,7 +113,9 @@ auto main() -> int {
     // A bootloader hands over a C string, so one trailing NUL is trimmed
     // rather than rejected.
     require(obi::CommandLineView::from_text({}).is_ok());
-    require(obi::CommandLineView::from_text("kernel.name=vmours\0"sv).unwrap().value("kernel.name")
+    require(obi::CommandLineView::from_text("kernel.name=vmours\0"sv)
+                .unwrap()
+                .value("kernel.name")
                 .value() == "vmours");
     // An interior NUL is not a command line, it is two of them.
     require(obi::CommandLineView::from_text("kernel.name=a\0kernel.name=b"sv).is_err());

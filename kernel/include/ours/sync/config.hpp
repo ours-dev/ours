@@ -8,7 +8,7 @@
 #define OURS_CONFIG_LOCK_TRACING 1
 
 namespace ours::sync {
-constexpr static bool const kLockTracingEnabled = OURS_CONFIG_LOCK_TRACING;
+constexpr static bool const LOCK_TRACING_ENABLED = OURS_CONFIG_LOCK_TRACING;
 } // namespace ours::sync
 
 #endif // #ifndef OURS_SYNC_CONFIG_HPP

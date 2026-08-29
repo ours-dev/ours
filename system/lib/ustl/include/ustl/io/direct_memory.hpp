@@ -5,11 +5,12 @@
 #define USTL_IO_DIRECT_MEMORY_HPP 1
 
 #include <ours/types.hpp>
+#include <ustl/views/span.hpp>
 
-#include <cstring>
 #include <limits>
 #include <type_traits>
-#include <ustl/views/span.hpp>
+
+#include <cstring>
 
 namespace ustl::io {
 struct DirectMemory final {
@@ -68,8 +69,7 @@ struct DirectMemory final {
 
     template <typename T>
     [[nodiscard]]
-    auto read_at_n(usize offset, usize count) const noexcept
-        -> ustl::views::Span<T const> {
+    auto read_at_n(usize offset, usize count) const noexcept -> ustl::views::Span<T const> {
         static_assert(std::is_trivially_copyable_v<T>);
         if (count > std::numeric_limits<usize>::max() / sizeof(T)) {
             return {};
@@ -98,8 +98,7 @@ struct DirectMemory final {
 
     template <typename T>
     [[nodiscard]]
-    auto read_and_cast(usize offset, usize size) const noexcept
-        -> ustl::views::Span<T const> {
+    auto read_and_cast(usize offset, usize size) const noexcept -> ustl::views::Span<T const> {
         if (size % sizeof(T) != 0) {
             return {};
         }
@@ -111,8 +110,7 @@ struct DirectMemory final {
     auto write(usize offset, T const &value) noexcept -> bool {
         static_assert(std::is_trivially_copyable_v<T>);
         auto *const destination = read_at<T>(offset);
-        if (destination == nullptr ||
-            (reinterpret_cast<usize>(destination) % alignof(T)) != 0) {
+        if (destination == nullptr || (reinterpret_cast<usize>(destination) % alignof(T)) != 0) {
             return false;
         }
         std::memcpy(destination, &value, sizeof(T));

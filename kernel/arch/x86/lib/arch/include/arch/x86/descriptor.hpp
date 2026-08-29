@@ -5,6 +5,11 @@
 
 #include <arch/types.hpp>
 
+// PACKED below comes from here. The header used to rely on some earlier
+// include pulling it in, so it only compiled when it happened to be included
+// after one -- which include sorting no longer guarantees.
+#include <ours/compiler.hpp>
+
 #include <cstddef>
 
 namespace arch {
@@ -25,7 +30,7 @@ enum class SegGran : u8 {
     Page = 1,
 };
 
-inline constexpr auto kMaxIoBitmapBytes = usize{8192};
+inline constexpr auto MAX_IO_BITMAP_BYTES = usize{8192};
 
 [[nodiscard]]
 constexpr auto to_string(SegType const type) -> char const * {
@@ -79,17 +84,17 @@ struct PACKED GdtDesc32 {
     [[nodiscard]]
     constexpr auto limit() const -> usize {
         return static_cast<usize>(m_limit_low) |
-               (static_cast<usize>(m_limit_high_and_flags & kLimitHighMask) << 16);
+               (static_cast<usize>(m_limit_high_and_flags & LIMIT_HIGH_MASK) << 16);
     }
 
     [[nodiscard]]
     constexpr auto type() const -> SegType {
-        return static_cast<SegType>(m_access & kTypeMask);
+        return static_cast<SegType>(m_access & TYPE_MASK);
     }
 
     [[nodiscard]]
     constexpr auto dpl() const -> Dpl {
-        return static_cast<Dpl>((m_access >> kDplShift) & kDplMask);
+        return static_cast<Dpl>((m_access >> DPL_SHIFT) & DPL_MASK);
     }
 
     constexpr auto set_base(usize const value) -> Self & {
@@ -101,49 +106,49 @@ struct PACKED GdtDesc32 {
 
     constexpr auto set_limit(usize const value) -> Self & {
         m_limit_low = static_cast<u16>(value);
-        m_limit_high_and_flags = static_cast<u8>((m_limit_high_and_flags & ~kLimitHighMask) |
-                                                 ((value >> 16) & kLimitHighMask));
+        m_limit_high_and_flags = static_cast<u8>((m_limit_high_and_flags & ~LIMIT_HIGH_MASK) |
+                                                 ((value >> 16) & LIMIT_HIGH_MASK));
         return *this;
     }
 
     constexpr auto set_type(SegType const value) -> Self & {
-        m_access = static_cast<u8>((m_access & ~kTypeMask) | static_cast<u8>(value));
+        m_access = static_cast<u8>((m_access & ~TYPE_MASK) | static_cast<u8>(value));
         return *this;
     }
 
     constexpr auto set_present(bool const value) -> Self & {
-        m_access = value ? static_cast<u8>(m_access | kPresentMask)
-                         : static_cast<u8>(m_access & ~kPresentMask);
+        m_access = value ? static_cast<u8>(m_access | PRESENT_MASK)
+                         : static_cast<u8>(m_access & ~PRESENT_MASK);
         return *this;
     }
 
     constexpr auto set_dpl(Dpl const value) -> Self & {
-        m_access = static_cast<u8>((m_access & ~(kDplMask << kDplShift)) |
-                                   (static_cast<u8>(value) << kDplShift));
+        m_access = static_cast<u8>((m_access & ~(DPL_MASK << DPL_SHIFT)) |
+                                   (static_cast<u8>(value) << DPL_SHIFT));
         return *this;
     }
 
     constexpr auto set_granularity(SegGran const value) -> Self & {
         m_limit_high_and_flags = value == SegGran::Page
-                                     ? static_cast<u8>(m_limit_high_and_flags | kGranularityMask)
-                                     : static_cast<u8>(m_limit_high_and_flags & ~kGranularityMask);
+                                     ? static_cast<u8>(m_limit_high_and_flags | GRANULARITY_MASK)
+                                     : static_cast<u8>(m_limit_high_and_flags & ~GRANULARITY_MASK);
         return *this;
     }
 
     constexpr auto set_longmode(bool const value) -> Self & {
-        m_limit_high_and_flags = value ? static_cast<u8>(m_limit_high_and_flags | kLongModeMask)
-                                       : static_cast<u8>(m_limit_high_and_flags & ~kLongModeMask);
+        m_limit_high_and_flags = value ? static_cast<u8>(m_limit_high_and_flags | LONG_MODE_MASK)
+                                       : static_cast<u8>(m_limit_high_and_flags & ~LONG_MODE_MASK);
         return *this;
     }
 
   private:
-    static constexpr auto kTypeMask = u8{0x0f};
-    static constexpr auto kDplMask = u8{0x03};
-    static constexpr auto kDplShift = u8{5};
-    static constexpr auto kPresentMask = u8{1} << 7;
-    static constexpr auto kLimitHighMask = u8{0x0f};
-    static constexpr auto kLongModeMask = u8{1} << 5;
-    static constexpr auto kGranularityMask = u8{1} << 7;
+    static constexpr auto TYPE_MASK = u8{0x0f};
+    static constexpr auto DPL_MASK = u8{0x03};
+    static constexpr auto DPL_SHIFT = u8{5};
+    static constexpr auto PRESENT_MASK = u8{1} << 7;
+    static constexpr auto LIMIT_HIGH_MASK = u8{0x0f};
+    static constexpr auto LONG_MODE_MASK = u8{1} << 5;
+    static constexpr auto GRANULARITY_MASK = u8{1} << 7;
 
     u16 m_limit_low{};
     u16 m_base_low{};

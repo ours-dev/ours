@@ -6,13 +6,15 @@
 #include <ours/sync/config.hpp>
 
 namespace ours::sync {
-    class TA_CAPABILITY("LocalLock") LocalLock {
-        using Self = LocalLock;
-      public:
-        auto acquire() -> void;
-        auto release() -> void;
-      private:
-    };
+class TA_CAPABILITY("LocalLock") LocalLock {
+    using Self = LocalLock;
+
+  public:
+    auto acquire() -> void;
+    auto release() -> void;
+
+  private:
+};
 } // namespace ours::sync
 
 #endif // #ifndef OURS_SYNC_LOCAL_LOCK_HPP

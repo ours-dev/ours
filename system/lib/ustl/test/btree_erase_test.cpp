@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cassert>
-
 #include <ustl/collections/btree.hpp>
 
+#include <cassert>
+
 auto main() -> int {
-    ustl::collections::BTreeSet<int> tree {};
+    ustl::collections::BTreeSet<int> tree{};
     for (auto value = 1; value <= 20; ++value) {
         const auto inserted = tree.insert(value);
         assert(inserted.is_ok());

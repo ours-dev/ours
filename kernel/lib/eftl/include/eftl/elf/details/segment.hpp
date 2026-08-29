@@ -49,44 +49,44 @@ enum class SegType : u64 {
 /// CRTP class help us define a group of consistent interface.
 template <typename Traits, typename Derived>
 struct SegmentBase: public Observable<Traits, Derived> {
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto va_begin() const noexcept -> usize {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto va_begin() const noexcept -> usize {
         return static_cast<usize>(static_cast<Derived const *>(this)->p_vaddr);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto va_limit() const noexcept -> usize {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto va_limit() const noexcept -> usize {
         return static_cast<usize>(static_cast<Derived const *>(this)->p_vaddr) +
                static_cast<usize>(static_cast<Derived const *>(this)->p_memsz);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto va_size() const noexcept -> usize {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto va_size() const noexcept -> usize {
         return static_cast<usize>(static_cast<Derived const *>(this)->p_memsz);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto file_offset() const noexcept -> usize {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto file_offset() const noexcept -> usize {
         return static_cast<usize>(static_cast<Derived const *>(this)->p_offset);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto file_size() const noexcept -> usize {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto file_size() const noexcept -> usize {
         return static_cast<usize>(static_cast<Derived const *>(this)->p_filesz);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto alignment() const noexcept -> usize {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto alignment() const noexcept -> usize {
         return static_cast<usize>(static_cast<Derived const *>(this)->p_align);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto permissions() const noexcept -> SegPerms {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto permissions() const noexcept -> SegPerms {
         return static_cast<SegPerms>(static_cast<Derived const *>(this)->p_flags);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto type() const noexcept -> SegType {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto type() const noexcept -> SegType {
         return static_cast<SegType>(static_cast<Derived const *>(this)->p_type);
     }
 };

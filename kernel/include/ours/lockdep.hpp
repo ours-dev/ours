@@ -8,11 +8,11 @@
 #include <lockdep/state_saver.hpp>
 
 namespace ours {
-    struct IrqSave {};
-    struct PreemptDisable {};
+struct IrqSave {};
+struct PreemptDisable {};
 
-    using lockdep::Guard;
-    using lockdep::ScopedGuard;
+using lockdep::Guard;
+using lockdep::ScopedGuard;
 
 } // namespace ours
 

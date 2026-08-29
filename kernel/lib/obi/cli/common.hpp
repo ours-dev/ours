@@ -104,11 +104,13 @@ class OpenedContainer final {
     OpenedContainer(OpenedContainer const &) = delete;
     auto operator=(OpenedContainer const &) -> OpenedContainer & = delete;
 
-    [[nodiscard]] auto view() const -> ContainerView const & {
+    [[nodiscard]]
+    auto view() const -> ContainerView const & {
         return m_view;
     }
 
-    [[nodiscard]] auto bytes() const -> Bytes {
+    [[nodiscard]]
+    auto bytes() const -> Bytes {
         return {m_bytes.data(), m_bytes.size()};
     }
 

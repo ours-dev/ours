@@ -7,8 +7,8 @@
 #include <ustl/collections/vec.hpp>
 
 namespace ktl {
-    template <typename T, typename A = ktl::Allocator<T>>
-    using Vec = ::ustl::collections::Vec<T, A>;
+template <typename T, typename A = ktl::Allocator<T>>
+using Vec = ::ustl::collections::Vec<T, A>;
 
 } // namespace ktl
 

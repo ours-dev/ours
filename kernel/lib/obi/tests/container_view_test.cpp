@@ -20,7 +20,7 @@ using obi::ItemDescriptor;
 using obi::ItemFormat;
 using obi::ItemType;
 
-constexpr auto kImageSize = std::size_t{1024};
+constexpr auto IMAGE_SIZE = std::size_t{1024};
 
 auto write_string(std::vector<u8> &strings, char const *value) -> std::pair<u32, u16> {
     auto const offset = static_cast<u32>(strings.size());
@@ -29,16 +29,16 @@ auto write_string(std::vector<u8> &strings, char const *value) -> std::pair<u32,
     return {offset, size};
 }
 
-auto make_image() -> std::array<u8, kImageSize> {
-    alignas(ContainerHeader) std::array<u8, kImageSize> image{};
+auto make_image() -> std::array<u8, IMAGE_SIZE> {
+    alignas(ContainerHeader) std::array<u8, IMAGE_SIZE> image{};
     std::vector<u8> strings;
     auto const [config_name_offset, config_name_size] = write_string(strings, "cmdline");
     auto const [setup_name_offset, setup_name_size] = write_string(strings, "setup");
 
     auto *header = reinterpret_cast<ContainerHeader *>(image.data());
-    header->magic = ContainerHeader::kMagic;
-    header->major = ContainerHeader::kMajor;
-    header->minor = ContainerHeader::kMinor;
+    header->magic = ContainerHeader::MAGIC;
+    header->major = ContainerHeader::MAJOR;
+    header->minor = ContainerHeader::MINOR;
     header->header_size = sizeof(ContainerHeader);
     header->container_size = image.size();
     header->item_table_offset = sizeof(ContainerHeader);

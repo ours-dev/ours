@@ -24,7 +24,7 @@ struct TraitsDispatcher;
 
 struct ElfSiginfo;
 struct ClassTraitsBase {
-    static constexpr char K_ELF_MAGIC[] = {'\x7f', 'E', 'L', 'F'};
+    static constexpr char ELF_MAGIC[] = {'\x7f', 'E', 'L', 'F'};
 
     using Siginfo = ElfSiginfo; // Signal information
 };
@@ -47,7 +47,7 @@ struct Elf32FileEntry;
 struct Elf32Timeval;
 
 struct Traits32: public ClassTraitsBase {
-    static constexpr u8 K_ELF_CLASS = 1;
+    static constexpr u8 ELF_CLASS = 1;
     using Addr = Elf32Addr;
     using Off = Elf32Off;
     using Half = Elf32Half;
@@ -105,7 +105,7 @@ struct Elf64FileEntry;
 struct Elf64Timeval;
 
 struct Traits64: public ClassTraitsBase {
-    static constexpr u8 K_ELF_CLASS = 2;
+    static constexpr u8 ELF_CLASS = 2;
     using Addr = Elf64Addr;
     using Off = Elf64Off;
     using Half = Elf64Half;

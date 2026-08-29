@@ -33,7 +33,7 @@ struct PACKED Table {
     TableHeader header;
     u8 reserved[12];
 
-    constexpr static Signature kSignature = Signature::from_chars("SRAT");
+    constexpr static Signature SIGNATURE = Signature::from_chars("SRAT");
 };
 static_assert(sizeof(Table) == 48);
 
@@ -62,7 +62,7 @@ struct PACKED ProcessorAffinityEntry {
     u8 proximity_domain_high[3];
     u32 clock_domain;
 
-    constexpr static Type kType = Type::ProcessorAffinity;
+    constexpr static Type TYPE = Type::ProcessorAffinity;
 };
 static_assert(sizeof(ProcessorAffinityEntry) == 16);
 
@@ -97,7 +97,7 @@ struct PACKED MemoryAffinityEntry {
     u32 reserved3;
     u32 reserved4;
 
-    constexpr static Type kType = Type::MemoryAffinity;
+    constexpr static Type TYPE = Type::MemoryAffinity;
 };
 static_assert(sizeof(MemoryAffinityEntry) == 40);
 
@@ -118,7 +118,7 @@ struct PACKED ProcessorX2ApicAffinityEntry {
     u32 clock_domain;
     u32 reserved2;
 
-    constexpr static Type kType = Type::ProcessorX2ApicAffinity;
+    constexpr static Type TYPE = Type::ProcessorX2ApicAffinity;
 };
 static_assert(sizeof(ProcessorX2ApicAffinityEntry) == 24);
 

@@ -7,8 +7,8 @@
 typedef __SIZE_TYPE__ size_t;
 typedef __PTRDIFF_TYPE__ ptrdiff_t;
 typedef struct {
-  long long __ours_ll;
-  long double __ours_ld;
+    long long __ours_ll;
+    long double __ours_ld;
 } max_align_t;
 
 #ifndef __cplusplus

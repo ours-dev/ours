@@ -25,7 +25,7 @@ struct ItemSource final {
     ustl::views::Span<u8 const> data;
     ItemFlags flags = ItemFlags::Required;
     u64 memory_size = 0; // defaults to data.size()
-    u64 alignment = ContainerHeader::kAlignment;
+    u64 alignment = ContainerHeader::ALIGNMENT;
     Compression compression = Compression::None;
 };
 
@@ -39,13 +39,13 @@ class PackageBuilder final {
         if (source.name.empty() || source.name.size() > 0xFFFF) {
             return ustl::err(ours::Status::InvalidArgument);
         }
-        if ((static_cast<u32>(source.flags) & ~kSupportedItemFlags) != 0) {
+        if ((static_cast<u32>(source.flags) & ~SUPPORTED_ITEM_FLAGS) != 0) {
             return ustl::err(ours::Status::InvalidArgument);
         }
         if (source.compression != Compression::None && source.compression != Compression::Lz4) {
             return ustl::err(ours::Status::NotSupported);
         }
-        if (sources_.size() >= ContainerHeader::kMaxItems) {
+        if (sources_.size() >= ContainerHeader::MAX_ITEMS) {
             return ustl::err(ours::Status::NoSpace);
         }
         if (source.alignment == 0 || (source.alignment & (source.alignment - 1)) != 0) {
@@ -85,7 +85,7 @@ class PackageBuilder final {
 
         // Layout payloads: each starts at an aligned offset.
         auto cursor = string_table_offset + static_cast<u64>(string_table_size);
-        cursor = align_up(cursor, ContainerHeader::kAlignment);
+        cursor = align_up(cursor, ContainerHeader::ALIGNMENT);
 
         struct PayloadLayout {
             u64 offset;
@@ -95,7 +95,7 @@ class PackageBuilder final {
         layouts.reserve(sources_.size());
 
         for (auto const &source: sources_) {
-            auto const align = std::max(ContainerHeader::kAlignment, source.alignment);
+            auto const align = std::max(ContainerHeader::ALIGNMENT, source.alignment);
             cursor = align_up(cursor, align);
             layouts.push_back({cursor, static_cast<u64>(source.data.size())});
             cursor += static_cast<u64>(source.data.size());
@@ -104,15 +104,15 @@ class PackageBuilder final {
         // The container's overall size must itself be a multiple of the
         // alignment (ContainerView::from() requires this), even though
         // the last payload's own end may not land on that boundary.
-        auto const container_size = align_up(cursor, ContainerHeader::kAlignment);
+        auto const container_size = align_up(cursor, ContainerHeader::ALIGNMENT);
 
         std::vector<u8> container(static_cast<std::size_t>(container_size), u8{0});
 
         // Header
         ContainerHeader header{};
-        header.magic = ContainerHeader::kMagic;
-        header.major = ContainerHeader::kMajor;
-        header.minor = ContainerHeader::kMinor;
+        header.magic = ContainerHeader::MAGIC;
+        header.major = ContainerHeader::MAJOR;
+        header.minor = ContainerHeader::MINOR;
         header.header_size = sizeof(ContainerHeader);
         header.container_size = container_size;
         header.item_table_offset = item_table_offset;
@@ -195,7 +195,7 @@ class PackageBuilder final {
                 return i;
             }
         }
-        return ContainerHeader::kNoSetupItem;
+        return ContainerHeader::NO_SETUP_ITEM;
     }
 
     [[nodiscard]]

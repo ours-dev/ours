@@ -22,14 +22,46 @@ namespace detail {
     // These enum values are the single source of truth for bit position:
     // FieldAt<Id> below reads the position straight off the Id, so it's
     // never repeated (and can't drift out of sync) as a separate StartBit.
-    enum class Cr0Bits : usize { Pe = 0, Mp = 1, Em = 2, Ts = 3, Et = 4, Ne = 5,
-                                  Wp = 16, Am = 18, Nw = 29, Cd = 30, Pg = 31 };
+    enum class Cr0Bits : usize {
+        Pe = 0,
+        Mp = 1,
+        Em = 2,
+        Ts = 3,
+        Et = 4,
+        Ne = 5,
+        Wp = 16,
+        Am = 18,
+        Nw = 29,
+        Cd = 30,
+        Pg = 31
+    };
     enum class Cr2Bits : usize { Address = 0 };
     enum class Cr3Bits : usize { Pcid = 0, PageTableAddress = 12, NoFlush = 63 };
-    enum class Cr4Bits : usize { Vme = 0, Pvi = 1, Tsd = 2, De = 3, Pse = 4, Pae = 5, Mce = 6,
-                                  Pge = 7, Pce = 8, OsFxsr = 9, OsMmexcpt = 10, Umip = 11,
-                                  La57 = 12, Vmxe = 13, Smxe = 14, FsGsBase = 16, Pcide = 17,
-                                  OsxSave = 18, Smep = 20, Smap = 21, Pke = 22, Cet = 23, Pks = 24 };
+    enum class Cr4Bits : usize {
+        Vme = 0,
+        Pvi = 1,
+        Tsd = 2,
+        De = 3,
+        Pse = 4,
+        Pae = 5,
+        Mce = 6,
+        Pge = 7,
+        Pce = 8,
+        OsFxsr = 9,
+        OsMmexcpt = 10,
+        Umip = 11,
+        La57 = 12,
+        Vmxe = 13,
+        Smxe = 14,
+        FsGsBase = 16,
+        Pcide = 17,
+        OsxSave = 18,
+        Smep = 20,
+        Smap = 21,
+        Pke = 22,
+        Cet = 23,
+        Pks = 24
+    };
 
     // Every register here is a 64-bit-wide instruction target (`mov %crN,
     // %rax` moves the full 64 bits, even where the upper bits are reserved),
@@ -37,44 +69,51 @@ namespace detail {
     // to BitFields' bit-count-driven default (which would pick a narrower
     // type for e.g. Cr0's 32 significant bits and break the ValueType match
     // SysRegIo's usize-returning read()/write() expect).
-    using Cr0Layout = ustl::BitFields<ustl::bitfields::StorageUnit<usize>, std::tuple<
-        ustl::FieldAt<Cr0Bits::Pe>, ustl::FieldAt<Cr0Bits::Mp>, ustl::FieldAt<Cr0Bits::Em>,
-        ustl::FieldAt<Cr0Bits::Ts>, ustl::FieldAt<Cr0Bits::Et>, ustl::FieldAt<Cr0Bits::Ne>,
-        ustl::FieldAt<Cr0Bits::Wp>, ustl::FieldAt<Cr0Bits::Am>, ustl::FieldAt<Cr0Bits::Nw>,
-        ustl::FieldAt<Cr0Bits::Cd>, ustl::FieldAt<Cr0Bits::Pg>>>;
+    using Cr0Layout = ustl::BitFields<
+        ustl::bitfields::StorageUnit<usize>,
+        std::tuple<
+            ustl::FieldAt<Cr0Bits::Pe>, ustl::FieldAt<Cr0Bits::Mp>, ustl::FieldAt<Cr0Bits::Em>,
+            ustl::FieldAt<Cr0Bits::Ts>, ustl::FieldAt<Cr0Bits::Et>, ustl::FieldAt<Cr0Bits::Ne>,
+            ustl::FieldAt<Cr0Bits::Wp>, ustl::FieldAt<Cr0Bits::Am>, ustl::FieldAt<Cr0Bits::Nw>,
+            ustl::FieldAt<Cr0Bits::Cd>, ustl::FieldAt<Cr0Bits::Pg>>>;
 
-    using Cr2Layout = ustl::BitFields<ustl::bitfields::StorageUnit<usize>, std::tuple<
-        ustl::FieldAt<Cr2Bits::Address, 64, usize>>>;
+    using Cr2Layout = ustl::BitFields<ustl::bitfields::StorageUnit<usize>,
+                                      std::tuple<ustl::FieldAt<Cr2Bits::Address, 64, usize>>>;
 
-    using Cr3Layout = ustl::BitFields<ustl::bitfields::StorageUnit<usize>, std::tuple<
-        ustl::FieldAt<Cr3Bits::Pcid, 12, usize>,
-        ustl::FieldAt<Cr3Bits::PageTableAddress, 40, usize, /*IsNatural=*/true>,
-        ustl::FieldAt<Cr3Bits::NoFlush>>>;
+    using Cr3Layout = ustl::BitFields<
+        ustl::bitfields::StorageUnit<usize>,
+        std::tuple<ustl::FieldAt<Cr3Bits::Pcid, 12, usize>,
+                   ustl::FieldAt<Cr3Bits::PageTableAddress, 40, usize, /*IsNatural=*/true>,
+                   ustl::FieldAt<Cr3Bits::NoFlush>>>;
 
-    using Cr4Layout = ustl::BitFields<ustl::bitfields::StorageUnit<usize>, std::tuple<
-        ustl::FieldAt<Cr4Bits::Vme>, ustl::FieldAt<Cr4Bits::Pvi>, ustl::FieldAt<Cr4Bits::Tsd>,
-        ustl::FieldAt<Cr4Bits::De>, ustl::FieldAt<Cr4Bits::Pse>, ustl::FieldAt<Cr4Bits::Pae>,
-        ustl::FieldAt<Cr4Bits::Mce>, ustl::FieldAt<Cr4Bits::Pge>, ustl::FieldAt<Cr4Bits::Pce>,
-        ustl::FieldAt<Cr4Bits::OsFxsr>, ustl::FieldAt<Cr4Bits::OsMmexcpt>, ustl::FieldAt<Cr4Bits::Umip>,
-        ustl::FieldAt<Cr4Bits::La57>, ustl::FieldAt<Cr4Bits::Vmxe>, ustl::FieldAt<Cr4Bits::Smxe>,
-        ustl::FieldAt<Cr4Bits::FsGsBase>, ustl::FieldAt<Cr4Bits::Pcide>, ustl::FieldAt<Cr4Bits::OsxSave>,
-        ustl::FieldAt<Cr4Bits::Smep>, ustl::FieldAt<Cr4Bits::Smap>, ustl::FieldAt<Cr4Bits::Pke>,
-        ustl::FieldAt<Cr4Bits::Cet>, ustl::FieldAt<Cr4Bits::Pks>>>;
+    using Cr4Layout = ustl::BitFields<
+        ustl::bitfields::StorageUnit<usize>,
+        std::tuple<
+            ustl::FieldAt<Cr4Bits::Vme>, ustl::FieldAt<Cr4Bits::Pvi>, ustl::FieldAt<Cr4Bits::Tsd>,
+            ustl::FieldAt<Cr4Bits::De>, ustl::FieldAt<Cr4Bits::Pse>, ustl::FieldAt<Cr4Bits::Pae>,
+            ustl::FieldAt<Cr4Bits::Mce>, ustl::FieldAt<Cr4Bits::Pge>, ustl::FieldAt<Cr4Bits::Pce>,
+            ustl::FieldAt<Cr4Bits::OsFxsr>, ustl::FieldAt<Cr4Bits::OsMmexcpt>,
+            ustl::FieldAt<Cr4Bits::Umip>, ustl::FieldAt<Cr4Bits::La57>,
+            ustl::FieldAt<Cr4Bits::Vmxe>, ustl::FieldAt<Cr4Bits::Smxe>,
+            ustl::FieldAt<Cr4Bits::FsGsBase>, ustl::FieldAt<Cr4Bits::Pcide>,
+            ustl::FieldAt<Cr4Bits::OsxSave>, ustl::FieldAt<Cr4Bits::Smep>,
+            ustl::FieldAt<Cr4Bits::Smap>, ustl::FieldAt<Cr4Bits::Pke>, ustl::FieldAt<Cr4Bits::Cet>,
+            ustl::FieldAt<Cr4Bits::Pks>>>;
 } // namespace detail
 
-class Cr0 : public SysReg<Cr0, detail::Cr0Layout> {
+class Cr0: public SysReg<Cr0, detail::Cr0Layout> {
   public:
     using enum detail::Cr0Bits;
 };
 ARCH_X86_SYSREG(Cr0, "cr0");
 
-class Cr2 : public SysReg<Cr2, detail::Cr2Layout> {
+class Cr2: public SysReg<Cr2, detail::Cr2Layout> {
   public:
     using enum detail::Cr2Bits;
 };
 ARCH_X86_SYSREG(Cr2, "cr2");
 
-class Cr3 : public SysReg<Cr3, detail::Cr3Layout> {
+class Cr3: public SysReg<Cr3, detail::Cr3Layout> {
     using Base = SysReg<Cr3, detail::Cr3Layout>;
 
   public:
@@ -96,7 +135,7 @@ class Cr3 : public SysReg<Cr3, detail::Cr3Layout> {
 };
 ARCH_X86_SYSREG(Cr3, "cr3");
 
-class Cr4 : public SysReg<Cr4, detail::Cr4Layout> {
+class Cr4: public SysReg<Cr4, detail::Cr4Layout> {
   public:
     using enum detail::Cr4Bits;
 };

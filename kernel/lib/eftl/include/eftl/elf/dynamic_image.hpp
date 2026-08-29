@@ -395,8 +395,7 @@ class DynamicImageView final {
             }
             auto const file_size = static_cast<u64>(segment.p_filesz);
             auto const virtual_begin = static_cast<u64>(segment.p_vaddr);
-            if (file_size == 0 ||
-                virtual_begin > std::numeric_limits<u64>::max() - file_size ||
+            if (file_size == 0 || virtual_begin > std::numeric_limits<u64>::max() - file_size ||
                 virtual_address < virtual_begin || virtual_end > virtual_begin + file_size) {
                 continue;
             }
@@ -404,8 +403,7 @@ class DynamicImageView final {
             auto const file_offset = to_usize(segment.p_offset);
             auto const virtual_delta = to_usize(virtual_address - virtual_begin);
             if (file_offset.is_none() || virtual_delta.is_none() ||
-                file_offset.value() >
-                    std::numeric_limits<usize>::max() - virtual_delta.value()) {
+                file_offset.value() > std::numeric_limits<usize>::max() - virtual_delta.value()) {
                 return ustl::NONE;
             }
             auto const bytes = m_stream.bytes(file_offset.value() + virtual_delta.value(), count);
@@ -464,20 +462,20 @@ class DynamicImageView final {
     [[nodiscard]]
     auto sysv_hash_layout() const noexcept -> ustl::Option<SysvHashLayout> {
         using Word = u32;
-        constexpr usize K_HEADER_WORDS = 2;
-        constexpr usize K_HEADER_BYTES = K_HEADER_WORDS * sizeof(Word);
+        constexpr usize HEADER_WORDS = 2;
+        constexpr usize HEADER_BYTES = HEADER_WORDS * sizeof(Word);
 
         auto const address = unique_tag_value(DynTag::Hash);
         if (address.is_none()) {
             return ustl::NONE;
         }
-        auto const header_bytes = bytes_at_virtual_address(address.value(), K_HEADER_BYTES);
+        auto const header_bytes = bytes_at_virtual_address(address.value(), HEADER_BYTES);
         if (header_bytes.is_none()) {
             return ustl::NONE;
         }
         auto const decoder = decoder_for<ScalarCodec<Word>>(m_byte_order);
         auto const header =
-            TableView<Word>::from_checked_bytes(header_bytes.value(), K_HEADER_WORDS, decoder);
+            TableView<Word>::from_checked_bytes(header_bytes.value(), HEADER_WORDS, decoder);
         if (header.is_none()) {
             return ustl::NONE;
         }
@@ -485,12 +483,12 @@ class DynamicImageView final {
         auto const symbol_count = to_usize((*header)[1]);
         if (bucket_count.is_none() || symbol_count.is_none() || bucket_count.value() == 0 ||
             symbol_count.value() == 0 ||
-            bucket_count.value() > std::numeric_limits<usize>::max() - K_HEADER_WORDS ||
+            bucket_count.value() > std::numeric_limits<usize>::max() - HEADER_WORDS ||
             symbol_count.value() >
-                std::numeric_limits<usize>::max() - K_HEADER_WORDS - bucket_count.value()) {
+                std::numeric_limits<usize>::max() - HEADER_WORDS - bucket_count.value()) {
             return ustl::NONE;
         }
-        auto const word_count = K_HEADER_WORDS + bucket_count.value() + symbol_count.value();
+        auto const word_count = HEADER_WORDS + bucket_count.value() + symbol_count.value();
         if (word_count > std::numeric_limits<usize>::max() / sizeof(Word)) {
             return ustl::NONE;
         }
@@ -508,20 +506,20 @@ class DynamicImageView final {
     auto gnu_hash_layout() const noexcept -> ustl::Option<GnuHashLayout> {
         using Word = u32;
         using BloomWord = typename Traits::Addr;
-        constexpr usize K_HEADER_WORDS = 4;
-        constexpr usize K_HEADER_BYTES = K_HEADER_WORDS * sizeof(Word);
+        constexpr usize HEADER_WORDS = 4;
+        constexpr usize HEADER_BYTES = HEADER_WORDS * sizeof(Word);
 
         auto const address = unique_tag_value(DynTag::GnuHash);
         if (address.is_none()) {
             return ustl::NONE;
         }
         auto const tail = bytes_to_file_backed_segment_end(address.value());
-        if (tail.is_none() || tail->size() < K_HEADER_BYTES) {
+        if (tail.is_none() || tail->size() < HEADER_BYTES) {
             return ustl::NONE;
         }
         auto const word_decoder = decoder_for<ScalarCodec<Word>>(m_byte_order);
         auto const header = TableView<Word>::from_checked_bytes(
-            ByteRange(tail->data(), K_HEADER_BYTES), K_HEADER_WORDS, word_decoder);
+            ByteRange(tail->data(), HEADER_BYTES), HEADER_WORDS, word_decoder);
         if (header.is_none()) {
             return ustl::NONE;
         }
@@ -536,7 +534,7 @@ class DynamicImageView final {
             return ustl::NONE;
         }
 
-        auto prefix_size = K_HEADER_BYTES;
+        auto prefix_size = HEADER_BYTES;
         if (!extend_size(prefix_size, bloom_count.value(), sizeof(BloomWord)) ||
             !extend_size(prefix_size, bucket_count.value(), sizeof(Word)) ||
             prefix_size > tail->size()) {
@@ -544,7 +542,7 @@ class DynamicImageView final {
         }
         auto const bucket_size = bucket_count.value() * sizeof(Word);
         auto const buckets = TableView<Word>::from_checked_bytes(
-            ByteRange(tail->data() + K_HEADER_BYTES + bloom_count.value() * sizeof(BloomWord),
+            ByteRange(tail->data() + HEADER_BYTES + bloom_count.value() * sizeof(BloomWord),
                       bucket_size),
             bucket_count.value(), word_decoder);
         if (buckets.is_none()) {
@@ -635,8 +633,7 @@ class DynamicImageView final {
             if (relocation.is_none()) {
                 return ustl::NONE;
             }
-            auto const symbol_index =
-                static_cast<usize>(Table::symbol_index(relocation.value()));
+            auto const symbol_index = static_cast<usize>(Table::symbol_index(relocation.value()));
             if (symbol_index == 0) {
                 continue;
             }
@@ -736,8 +733,7 @@ class DynamicImageView final {
             }
             auto const file_size = static_cast<u64>(segment.p_filesz);
             auto const virtual_begin = static_cast<u64>(segment.p_vaddr);
-            if (file_size == 0 ||
-                virtual_begin > std::numeric_limits<u64>::max() - file_size ||
+            if (file_size == 0 || virtual_begin > std::numeric_limits<u64>::max() - file_size ||
                 virtual_address < virtual_begin || virtual_address >= virtual_begin + file_size) {
                 continue;
             }
@@ -745,8 +741,7 @@ class DynamicImageView final {
             auto const virtual_delta = to_usize(virtual_address - virtual_begin);
             auto const remaining = to_usize(file_size - (virtual_address - virtual_begin));
             if (file_offset.is_none() || virtual_delta.is_none() || remaining.is_none() ||
-                file_offset.value() >
-                    std::numeric_limits<usize>::max() - virtual_delta.value()) {
+                file_offset.value() > std::numeric_limits<usize>::max() - virtual_delta.value()) {
                 return ustl::NONE;
             }
             auto const bytes =
@@ -760,8 +755,8 @@ class DynamicImageView final {
     }
 
     [[nodiscard]]
-    static constexpr auto extend_size(usize &size, usize count,
-                                      usize element_size) noexcept -> bool {
+    static constexpr auto extend_size(usize &size, usize count, usize element_size) noexcept
+        -> bool {
         if (count > std::numeric_limits<usize>::max() / element_size) {
             return false;
         }

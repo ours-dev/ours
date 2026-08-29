@@ -1,25 +1,25 @@
 #include "ours/task/sched/schedule.hpp"
 #include "ours/task/sched/scheduler.hpp"
-
-#include <ours/task/sched/scheduler_inline.hpp>
 #include <ours/task/owned_wait_queue.hpp>
+#include <ours/task/sched/scheduler_inline.hpp>
 
 namespace ours::task::sched {
 /// CRTP base class.
 class Scheduler::Pi {
     using Self = Scheduler::Pi;
+
   public:
     template <typename Upstream, typename UpdateDynamicParams>
-    static auto common(Upstream &upstream, Thread &thread, 
+    static auto common(Upstream &upstream, Thread &thread,
                        UpdateDynamicParams update_dynamic_params) -> void;
 
     template <typename Upstream, typename UpdateDynamicParams>
-    static auto common(Upstream &upstream, OwnedWaitQueue &owq, 
+    static auto common(Upstream &upstream, OwnedWaitQueue &owq,
                        UpdateDynamicParams update_dynamic_params) -> void;
 };
 
 template <typename Upstream, typename UpdateDynamicParams>
-auto Scheduler::Pi::common(Upstream &upstream, Thread &thread, 
+auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
                            UpdateDynamicParams update_dynamic_params) -> void {
     auto &context = thread.scheduling_context();
     auto &profile = context.m_profile;
@@ -70,24 +70,18 @@ auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
 
 template <typename Upstream, typename UpdateDynamicParams>
 auto Scheduler::Pi::common(Upstream &upstream, OwnedWaitQueue &owq,
-                           UpdateDynamicParams update_dynamic_params) -> void {
+                           UpdateDynamicParams update_dynamic_params) -> void {}
 
-}
-
-auto Scheduler::on_thread_base_profile_overrided(Thread &thread) -> void {
-}
+auto Scheduler::on_thread_base_profile_overrided(Thread &thread) -> void {}
 
 template <typename Target>
-auto Scheduler::on_upstream_thread_base_profile_overrided(Thread &thread, Target &target) -> void {
-}
+auto Scheduler::on_upstream_thread_base_profile_overrided(Thread &thread, Target &target) -> void {}
 
 template <typename Upstream, typename Target>
-auto Scheduler::join_node_to_pi_graph(Upstream &upstream, Target &target) -> void {
-}
+auto Scheduler::join_node_to_pi_graph(Upstream &upstream, Target &target) -> void {}
 
 template <typename Upstream, typename Target>
-auto Scheduler::split_node_from_pi_graph(Upstream &upstream, Target &target) -> void {
-}
+auto Scheduler::split_node_from_pi_graph(Upstream &upstream, Target &target) -> void {}
 
 template auto Scheduler::on_upstream_thread_base_profile_overrided(Thread &, Thread &) -> void;
 template auto Scheduler::on_upstream_thread_base_profile_overrided(Thread &, OwnedWaitQueue &)

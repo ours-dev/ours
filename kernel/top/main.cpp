@@ -1,12 +1,15 @@
 #include <ours/boot/handoff.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
-#include <ours/start.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/start.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
 
 /// Init calls
+#include <ccrt/runtime.hpp>
+#include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
 #include <ours/irq/init.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/init.hpp>
@@ -16,17 +19,12 @@
 #include <ours/task/init.hpp>
 #include <ours/time/init.hpp>
 
-#include <ccrt/runtime.hpp>
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
-
 using gktl::InitLevel;
 using ours::task::Thread;
 
 namespace ours {
 namespace {
-    INIT_CODE
-    auto labour_routine() -> i32 {
+    INIT_CODE auto labour_routine() -> i32 {
         init_arch();
         set_init_level(InitLevel::Arch);
 
@@ -65,8 +63,7 @@ namespace {
 ///
 /// Assumptions:
 ///     1). The early memory allocator has been initialized.
-NO_MANGLE INIT_CODE 
-auto start_kernel(PhysAddr handoff) -> void {
+NO_MANGLE INIT_CODE auto start_kernel(PhysAddr handoff) -> void {
     ccrt::init_global_static_objects();
 
     boot::setup_handoff(handoff);

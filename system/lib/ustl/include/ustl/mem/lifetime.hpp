@@ -4,9 +4,10 @@
 #ifndef USTL_MEM_LIFETIME_HPP
 #define USTL_MEM_LIFETIME_HPP 1
 
-#include <cstddef>
 #include <new>
 #include <type_traits>
+
+#include <cstddef>
 
 namespace ustl::mem {
 /// Begins the lifetime of a `T` in storage that already holds its
@@ -36,8 +37,8 @@ namespace ustl::mem {
 /// constructor does real work, which is exactly the point -- a type that needs
 /// its constructor run cannot be conjured out of existing bytes.
 template <typename T>
-[[nodiscard]]
-[[gnu::always_inline]] inline auto start_lifetime_as(void *storage) noexcept -> T * {
+[[nodiscard]] [[gnu::always_inline]]
+inline auto start_lifetime_as(void *storage) noexcept -> T * {
     static_assert(__builtin_is_implicit_lifetime(T),
                   "start_lifetime_as requires an implicit-lifetime type: a constructor that has "
                   "to run cannot be conjured out of bytes that are already there.");
@@ -45,26 +46,24 @@ template <typename T>
 }
 
 template <typename T>
-[[nodiscard]]
-[[gnu::always_inline]] inline auto start_lifetime_as(void const *storage) noexcept -> T const * {
+[[nodiscard]] [[gnu::always_inline]]
+inline auto start_lifetime_as(void const *storage) noexcept -> T const * {
     return start_lifetime_as<T>(const_cast<void *>(storage));
 }
 
 /// The array form: begins the lifetime of `count` consecutive `T`s, and of the
 /// array object containing them.
 template <typename T>
-[[nodiscard]]
-[[gnu::always_inline]] inline auto start_lifetime_as_array(void *storage, std::size_t count) noexcept -> T * {
+[[nodiscard]] [[gnu::always_inline]]
+inline auto start_lifetime_as_array(void *storage, std::size_t count) noexcept -> T * {
     static_assert(__builtin_is_implicit_lifetime(T),
                   "start_lifetime_as_array requires an implicit-lifetime type.");
-    return std::launder(
-        static_cast<T *>(__builtin_memmove(storage, storage, sizeof(T) * count)));
+    return std::launder(static_cast<T *>(__builtin_memmove(storage, storage, sizeof(T) * count)));
 }
 
 template <typename T>
-[[nodiscard]]
-[[gnu::always_inline]] inline auto start_lifetime_as_array(void const *storage, std::size_t count) noexcept
-    -> T const * {
+[[nodiscard]] [[gnu::always_inline]]
+inline auto start_lifetime_as_array(void const *storage, std::size_t count) noexcept -> T const * {
     return start_lifetime_as_array<T>(const_cast<void *>(storage), count);
 }
 

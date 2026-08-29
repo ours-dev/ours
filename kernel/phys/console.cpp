@@ -23,8 +23,7 @@ auto init_early_console() -> void {
     }
 }
 
-WEAK_LINK
-auto arch_uart_handoff() -> UartHandoff {
+WEAK_LINK auto arch_uart_handoff() -> UartHandoff {
     return {};
 }
 

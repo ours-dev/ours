@@ -1,6 +1,6 @@
 #include <arch/halt.hpp>
-#include <arch/x86/system.hpp>
 #include <arch/x86/msr.hpp>
+#include <arch/x86/system.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/arch/x86/descriptor.hpp>
@@ -15,8 +15,7 @@
 #include <ours/start.hpp>
 
 namespace ours {
-INIT_CODE
-static auto x86_enable_syscall() -> void {
+INIT_CODE static auto x86_enable_syscall() -> void {
     using namespace arch;
 
     // Enable system call. It is required by Intel.
@@ -28,9 +27,9 @@ static auto x86_enable_syscall() -> void {
     /// On sysexit,
     ///     CS = IA32_STAR_MSR[63:48] + 16
     ///     SS = IA32_STAR_MSR[63:48] + 8
-    constexpr auto const kCsAndSs((usize(X86_GDT_KERNEL_CODE64) << 32) |
-                                  (usize(X86_GDT_USER_CODE32) << 48));
-    MsrIo::write(MsrRegAddr::IA32Star, kCsAndSs);
+    constexpr auto const CS_AND_SS((usize(X86_GDT_KERNEL_CODE64) << 32) |
+                                   (usize(X86_GDT_USER_CODE32) << 48));
+    MsrIo::write(MsrRegAddr::IA32Star, CS_AND_SS);
 
     // Set system call entry point to x86_syscall
     MsrIo::write(MsrRegAddr::IA32Lstar, reinterpret_cast<usize>(&x86_syscall));
@@ -43,18 +42,17 @@ static auto x86_enable_syscall() -> void {
     // 1. Disable nested interrupt.
     // 2. Escalates IO privilege level(U->K).
     // 3. Clear those unused status bits.
-    constexpr usize kRflagsStatusMask = (usize{1} << 0) | (usize{1} << 2) | (usize{1} << 4) |
-                                        (usize{1} << 6) | (usize{1} << 7) | (usize{1} << 11);
-    constexpr usize kRflagsInterruptFlag = usize{1} << 9;
-    constexpr usize kRflagsIoplMask = usize{3} << 12;
-    constexpr usize kRflagsNestedTask = usize{1} << 14;
-    constexpr usize kDisabledFlagBitMask =
-        kRflagsStatusMask | kRflagsInterruptFlag | kRflagsIoplMask | kRflagsNestedTask;
-    MsrIo::write(MsrRegAddr::IA32Fmask, kDisabledFlagBitMask);
+    constexpr usize RFLAGS_STATUS_MASK = (usize{1} << 0) | (usize{1} << 2) | (usize{1} << 4) |
+                                         (usize{1} << 6) | (usize{1} << 7) | (usize{1} << 11);
+    constexpr usize RFLAGS_INTERRUPT_FLAG = usize{1} << 9;
+    constexpr usize RFLAGS_IOPL_MASK = usize{3} << 12;
+    constexpr usize RFLAGS_NESTED_TASK = usize{1} << 14;
+    constexpr usize DISABLED_FLAG_BIT_MASK =
+        RFLAGS_STATUS_MASK | RFLAGS_INTERRUPT_FLAG | RFLAGS_IOPL_MASK | RFLAGS_NESTED_TASK;
+    MsrIo::write(MsrRegAddr::IA32Fmask, DISABLED_FLAG_BIT_MASK);
 }
 
-INIT_CODE
-auto x86_init_percpu(CpuNum cpunum) -> void {
+INIT_CODE auto x86_init_percpu(CpuNum cpunum) -> void {
     using arch::Cr4;
 
     x86_init_feature_percpu(cpunum);

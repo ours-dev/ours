@@ -39,8 +39,7 @@ namespace detail {
 
     template <typename Value>
     [[nodiscard]]
-    constexpr auto decode_signed_scalar(u8 const *data, ByteOrder byte_order) noexcept
-        -> Value {
+    constexpr auto decode_signed_scalar(u8 const *data, ByteOrder byte_order) noexcept -> Value {
         static_assert(std::is_signed_v<Value>);
         using Unsigned = std::make_unsigned_t<Value>;
         return std::bit_cast<Value>(decode_scalar<Unsigned>(data, byte_order));
@@ -159,8 +158,7 @@ namespace detail {
     }
 
     [[nodiscard]]
-    inline auto decode_note_header(u8 const *data, ByteOrder byte_order) noexcept
-        -> ElfNoteHeader {
+    inline auto decode_note_header(u8 const *data, ByteOrder byte_order) noexcept -> ElfNoteHeader {
         auto header = ElfNoteHeader{};
         header.n_namesz = decode_scalar<decltype(header.n_namesz)>(
             data + offsetof(ElfNoteHeader, n_namesz), byte_order);
@@ -259,8 +257,7 @@ namespace detail {
 
     template <typename Definition>
     [[nodiscard]]
-    auto decode_version_definition(u8 const *data, ByteOrder byte_order) noexcept
-        -> Definition {
+    auto decode_version_definition(u8 const *data, ByteOrder byte_order) noexcept -> Definition {
         auto definition = Definition{};
         definition.vd_version = decode_scalar<decltype(definition.vd_version)>(
             data + offsetof(Definition, vd_version), byte_order);
@@ -293,8 +290,7 @@ namespace detail {
 
     template <typename Requirement>
     [[nodiscard]]
-    auto decode_version_requirement(u8 const *data, ByteOrder byte_order) noexcept
-        -> Requirement {
+    auto decode_version_requirement(u8 const *data, ByteOrder byte_order) noexcept -> Requirement {
         auto requirement = Requirement{};
         requirement.vn_version = decode_scalar<decltype(requirement.vn_version)>(
             data + offsetof(Requirement, vn_version), byte_order);

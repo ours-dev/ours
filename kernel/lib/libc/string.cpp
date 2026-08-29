@@ -52,8 +52,7 @@ NO_MANGLE WEAK_LINK auto memcmp(void const *x, void const *y, size_t n) -> int {
     return 0;
 }
 
-WEAK_LINK
-auto memchr(void const *str, int c, size_t n) -> void const * {
+WEAK_LINK auto memchr(void const *str, int c, size_t n) -> void const * {
     auto p = static_cast<char const *>(str);
 
     for (size_t i = 0; i < n; i++) {

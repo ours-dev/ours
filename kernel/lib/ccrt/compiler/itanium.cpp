@@ -67,8 +67,10 @@ auto atexit(ccrt::ExitFunction function) noexcept -> int {
 #pragma clang diagnostic ignored "-Wpragma-clang-attribute"
 _LIBCPP_BEGIN_NAMESPACE_STD
 _LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
-[[noreturn]] _LIBCPP_OVERRIDABLE_FUNC_VIS _LIBCPP_ATTRIBUTE_FORMAT(__printf__, 1, 2)
-auto __libcpp_verbose_abort(char const *, ...) noexcept -> void {
+[[noreturn]]
+_LIBCPP_OVERRIDABLE_FUNC_VIS
+_LIBCPP_ATTRIBUTE_FORMAT(__printf__, 1, 2) auto __libcpp_verbose_abort(char const *, ...) noexcept
+    -> void {
     ours::panic("libc++ invariant failed in physical boot");
 }
 _LIBCPP_END_EXPLICIT_ABI_ANNOTATIONS

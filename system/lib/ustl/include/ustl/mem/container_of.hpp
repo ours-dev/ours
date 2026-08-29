@@ -20,10 +20,12 @@ inline auto container_of(Member *member, Member Container::*field) noexcept -> C
 }
 
 template <typename Container, typename Member>
-inline auto container_of(Member const *member, Member Container::*field) noexcept -> Container const * {
-    return reinterpret_cast<Container const *>(reinterpret_cast<char const *>(member) - offset_of(field));
+inline auto container_of(Member const *member, Member Container::*field) noexcept
+    -> Container const * {
+    return reinterpret_cast<Container const *>(reinterpret_cast<char const *>(member) -
+                                               offset_of(field));
 }
 
-}  // namespace ustl::mem
+} // namespace ustl::mem
 
-#endif  // USTL_MEM_CONTAINER_OF_HPP
+#endif // USTL_MEM_CONTAINER_OF_HPP

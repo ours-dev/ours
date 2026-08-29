@@ -19,9 +19,9 @@ using Header = Traits::Header;
 using Segment = Traits::Segment;
 using Section = Traits::Section;
 
-constexpr u16 K_ET_REL = 1;
-constexpr u16 K_ET_EXEC = 2;
-constexpr u16 K_ET_CORE = 4;
+constexpr u16 ET_REL = 1;
+constexpr u16 ET_EXEC = 2;
+constexpr u16 ET_CORE = 4;
 
 template <typename T, usize Size>
 auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
@@ -30,8 +30,8 @@ auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
 
 auto make_header(u16 type) -> Header {
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = type;
@@ -48,15 +48,13 @@ auto make_empty_image(u16 type) -> std::array<u8, 512> {
 }
 
 template <usize Size>
-auto put_big_endian_u16(std::array<u8, Size> &image, usize offset, u16 value)
-    -> void {
+auto put_big_endian_u16(std::array<u8, Size> &image, usize offset, u16 value) -> void {
     image[offset] = static_cast<u8>(value >> 8);
     image[offset + 1] = static_cast<u8>(value);
 }
 
 template <usize Size>
-auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, u32 value)
-    -> void {
+auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, u32 value) -> void {
     image[offset] = static_cast<u8>(value >> 24);
     image[offset + 1] = static_cast<u8>(value >> 16);
     image[offset + 2] = static_cast<u8>(value >> 8);
@@ -64,8 +62,7 @@ auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, u32 value)
 }
 
 template <usize Size>
-auto put_big_endian_u64(std::array<u8, Size> &image, usize offset, u64 value)
-    -> void {
+auto put_big_endian_u64(std::array<u8, Size> &image, usize offset, u64 value) -> void {
     image[offset] = static_cast<u8>(value >> 56);
     image[offset + 1] = static_cast<u8>(value >> 48);
     image[offset + 2] = static_cast<u8>(value >> 40);
@@ -78,8 +75,8 @@ auto put_big_endian_u64(std::array<u8, Size> &image, usize offset, u64 value)
 
 auto make_big_endian_empty_image(u16 type) -> std::array<u8, 512> {
     std::array<u8, 512> image{};
-    std::memcpy(image.data(), eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    image[4] = Traits::K_ELF_CLASS;
+    std::memcpy(image.data(), eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    image[4] = Traits::ELF_CLASS;
     image[5] = 2;
     image[6] = 1;
     put_big_endian_u16(image, offsetof(Header, e_type), type);
@@ -90,12 +87,12 @@ auto make_big_endian_empty_image(u16 type) -> std::array<u8, 512> {
 
 auto make_big_endian_image_with_load() -> std::array<u8, 512> {
     std::array<u8, 512> image{};
-    std::memcpy(image.data(), eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    image[4] = Traits::K_ELF_CLASS;
+    std::memcpy(image.data(), eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    image[4] = Traits::ELF_CLASS;
     image[5] = 2;
     image[6] = 1;
 
-    put_big_endian_u16(image, offsetof(Header, e_type), K_ET_EXEC);
+    put_big_endian_u16(image, offsetof(Header, e_type), ET_EXEC);
     put_big_endian_u32(image, offsetof(Header, e_version), 1);
     put_big_endian_u64(image, offsetof(Header, e_entry), 0x400184);
     put_big_endian_u64(image, offsetof(Header, e_phoff), sizeof(Header));
@@ -103,130 +100,129 @@ auto make_big_endian_image_with_load() -> std::array<u8, 512> {
     put_big_endian_u16(image, offsetof(Header, e_phentsize), sizeof(Segment));
     put_big_endian_u16(image, offsetof(Header, e_phnum), 1);
 
-    constexpr usize K_SEGMENT_OFFSET = sizeof(Header);
-    put_big_endian_u32(image, K_SEGMENT_OFFSET + offsetof(Segment, p_type),
+    constexpr usize SEGMENT_OFFSET = sizeof(Header);
+    put_big_endian_u32(image, SEGMENT_OFFSET + offsetof(Segment, p_type),
                        static_cast<u32>(eftl::elf::SegType::Load));
     put_big_endian_u32(
-        image, K_SEGMENT_OFFSET + offsetof(Segment, p_flags),
+        image, SEGMENT_OFFSET + offsetof(Segment, p_flags),
         static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable));
-    put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_offset), 0x180);
-    put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_vaddr), 0x400180);
-    put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_filesz), 8);
-    put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_memsz), 16);
-    put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_align), 8);
+    put_big_endian_u64(image, SEGMENT_OFFSET + offsetof(Segment, p_offset), 0x180);
+    put_big_endian_u64(image, SEGMENT_OFFSET + offsetof(Segment, p_vaddr), 0x400180);
+    put_big_endian_u64(image, SEGMENT_OFFSET + offsetof(Segment, p_filesz), 8);
+    put_big_endian_u64(image, SEGMENT_OFFSET + offsetof(Segment, p_memsz), 16);
+    put_big_endian_u64(image, SEGMENT_OFFSET + offsetof(Segment, p_align), 8);
     return image;
 }
 
 auto make_big_endian_image_with_section() -> std::array<u8, 512> {
     std::array<u8, 512> image{};
-    std::memcpy(image.data(), eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    image[4] = Traits::K_ELF_CLASS;
+    std::memcpy(image.data(), eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    image[4] = Traits::ELF_CLASS;
     image[5] = 2;
     image[6] = 1;
 
-    put_big_endian_u16(image, offsetof(Header, e_type), K_ET_REL);
+    put_big_endian_u16(image, offsetof(Header, e_type), ET_REL);
     put_big_endian_u32(image, offsetof(Header, e_version), 1);
     put_big_endian_u64(image, offsetof(Header, e_shoff), sizeof(Header));
     put_big_endian_u16(image, offsetof(Header, e_ehsize), sizeof(Header));
     put_big_endian_u16(image, offsetof(Header, e_shentsize), sizeof(Section));
     put_big_endian_u16(image, offsetof(Header, e_shnum), 2);
 
-    constexpr usize K_DATA_OFFSET = 0x180;
-    constexpr usize K_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
-    put_big_endian_u32(image, K_SECTION_OFFSET + offsetof(Section, sh_type),
+    constexpr usize DATA_OFFSET = 0x180;
+    constexpr usize SECTION_OFFSET = sizeof(Header) + sizeof(Section);
+    put_big_endian_u32(image, SECTION_OFFSET + offsetof(Section, sh_type),
                        static_cast<u32>(eftl::elf::SectionType::Strtab));
-    put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_offset), K_DATA_OFFSET);
-    put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_size), 1);
-    put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_addralign), 1);
+    put_big_endian_u64(image, SECTION_OFFSET + offsetof(Section, sh_offset), DATA_OFFSET);
+    put_big_endian_u64(image, SECTION_OFFSET + offsetof(Section, sh_size), 1);
+    put_big_endian_u64(image, SECTION_OFFSET + offsetof(Section, sh_addralign), 1);
     return image;
 }
 
 auto make_big_endian_image_with_note_section() -> std::array<u8, 512> {
     auto image = make_big_endian_image_with_section();
-    constexpr usize K_NOTE_OFFSET = 0x180;
-    constexpr usize K_NOTE_SIZE = 24;
-    constexpr usize K_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
-    put_big_endian_u32(image, K_SECTION_OFFSET + offsetof(Section, sh_type),
+    constexpr usize NOTE_OFFSET = 0x180;
+    constexpr usize NOTE_SIZE = 24;
+    constexpr usize SECTION_OFFSET = sizeof(Header) + sizeof(Section);
+    put_big_endian_u32(image, SECTION_OFFSET + offsetof(Section, sh_type),
                        static_cast<u32>(eftl::elf::SectionType::Note));
-    put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_size), K_NOTE_SIZE);
-    put_big_endian_u32(image, K_NOTE_OFFSET, 0);
-    put_big_endian_u32(image, K_NOTE_OFFSET + 4, 1);
-    put_big_endian_u32(image, K_NOTE_OFFSET + 8, 7);
-    image[K_NOTE_OFFSET + 16] = 0xab;
+    put_big_endian_u64(image, SECTION_OFFSET + offsetof(Section, sh_size), NOTE_SIZE);
+    put_big_endian_u32(image, NOTE_OFFSET, 0);
+    put_big_endian_u32(image, NOTE_OFFSET + 4, 1);
+    put_big_endian_u32(image, NOTE_OFFSET + 8, 7);
+    image[NOTE_OFFSET + 16] = 0xab;
     return image;
 }
 
 auto make_big_endian_image_with_dynamic_section() -> std::array<u8, 512> {
     auto image = make_big_endian_image_with_section();
-    constexpr usize K_STRING_TABLE_OFFSET = 0x180;
-    constexpr usize K_DYNAMIC_TABLE_OFFSET = 0x1a0;
-    constexpr usize K_STRING_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
-    constexpr usize K_DYNAMIC_SECTION_OFFSET = sizeof(Header) + 2 * sizeof(Section);
+    constexpr usize STRING_TABLE_OFFSET = 0x180;
+    constexpr usize DYNAMIC_TABLE_OFFSET = 0x1a0;
+    constexpr usize STRING_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
+    constexpr usize DYNAMIC_SECTION_OFFSET = sizeof(Header) + 2 * sizeof(Section);
     put_big_endian_u16(image, offsetof(Header, e_shnum), 3);
-    put_big_endian_u64(image, K_STRING_SECTION_OFFSET + offsetof(Section, sh_size), 5);
+    put_big_endian_u64(image, STRING_SECTION_OFFSET + offsetof(Section, sh_size), 5);
     std::array<u8, 5> const strings{0, 'f', 'o', 'o', 0};
-    std::memcpy(image.data() + K_STRING_TABLE_OFFSET, strings.data(), strings.size());
+    std::memcpy(image.data() + STRING_TABLE_OFFSET, strings.data(), strings.size());
 
-    put_big_endian_u32(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_type),
+    put_big_endian_u32(image, DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_type),
                        static_cast<u32>(eftl::elf::SectionType::Dynamic));
-    put_big_endian_u64(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_offset),
-                       K_DYNAMIC_TABLE_OFFSET);
-    put_big_endian_u64(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_size),
+    put_big_endian_u64(image, DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_offset),
+                       DYNAMIC_TABLE_OFFSET);
+    put_big_endian_u64(image, DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_size),
                        2 * sizeof(Traits::Dyn));
-    put_big_endian_u32(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_link), 1);
-    put_big_endian_u64(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_addralign), 8);
-    put_big_endian_u64(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_entsize),
+    put_big_endian_u32(image, DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_link), 1);
+    put_big_endian_u64(image, DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_addralign), 8);
+    put_big_endian_u64(image, DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_entsize),
                        sizeof(Traits::Dyn));
-    put_big_endian_u64(image, K_DYNAMIC_TABLE_OFFSET,
-                       static_cast<u64>(eftl::elf::DynTag::Needed));
-    put_big_endian_u64(image, K_DYNAMIC_TABLE_OFFSET + sizeof(u64), 1);
+    put_big_endian_u64(image, DYNAMIC_TABLE_OFFSET, static_cast<u64>(eftl::elf::DynTag::Needed));
+    put_big_endian_u64(image, DYNAMIC_TABLE_OFFSET + sizeof(u64), 1);
     return image;
 }
 
 auto make_big_endian_image_with_symbol_section() -> std::array<u8, 512> {
     auto image = make_big_endian_image_with_section();
-    constexpr usize K_STRING_TABLE_OFFSET = 0x160;
-    constexpr usize K_SYMBOL_TABLE_OFFSET = 0x180;
-    constexpr usize K_SECTION_INDEX_OFFSET = 0x1c0;
-    constexpr usize K_STRING_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
-    constexpr usize K_SYMBOL_SECTION_OFFSET = sizeof(Header) + 2 * sizeof(Section);
-    constexpr usize K_SECTION_INDEX_SECTION_OFFSET = sizeof(Header) + 3 * sizeof(Section);
+    constexpr usize STRING_TABLE_OFFSET = 0x160;
+    constexpr usize SYMBOL_TABLE_OFFSET = 0x180;
+    constexpr usize SECTION_INDEX_OFFSET = 0x1c0;
+    constexpr usize STRING_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
+    constexpr usize SYMBOL_SECTION_OFFSET = sizeof(Header) + 2 * sizeof(Section);
+    constexpr usize SECTION_INDEX_SECTION_OFFSET = sizeof(Header) + 3 * sizeof(Section);
     put_big_endian_u16(image, offsetof(Header, e_shnum), 4);
-    put_big_endian_u64(image, K_STRING_SECTION_OFFSET + offsetof(Section, sh_offset),
-                       K_STRING_TABLE_OFFSET);
-    put_big_endian_u64(image, K_STRING_SECTION_OFFSET + offsetof(Section, sh_size), 5);
+    put_big_endian_u64(image, STRING_SECTION_OFFSET + offsetof(Section, sh_offset),
+                       STRING_TABLE_OFFSET);
+    put_big_endian_u64(image, STRING_SECTION_OFFSET + offsetof(Section, sh_size), 5);
     std::array<u8, 5> const strings{0, 'f', 'o', 'o', 0};
-    std::memcpy(image.data() + K_STRING_TABLE_OFFSET, strings.data(), strings.size());
+    std::memcpy(image.data() + STRING_TABLE_OFFSET, strings.data(), strings.size());
 
-    put_big_endian_u32(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_type),
+    put_big_endian_u32(image, SYMBOL_SECTION_OFFSET + offsetof(Section, sh_type),
                        static_cast<u32>(eftl::elf::SectionType::Dynsym));
-    put_big_endian_u64(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_offset),
-                       K_SYMBOL_TABLE_OFFSET);
-    put_big_endian_u64(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_size),
+    put_big_endian_u64(image, SYMBOL_SECTION_OFFSET + offsetof(Section, sh_offset),
+                       SYMBOL_TABLE_OFFSET);
+    put_big_endian_u64(image, SYMBOL_SECTION_OFFSET + offsetof(Section, sh_size),
                        2 * sizeof(Traits::Symbol));
-    put_big_endian_u32(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_link), 1);
-    put_big_endian_u32(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_info), 1);
-    put_big_endian_u64(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_addralign), 8);
-    put_big_endian_u64(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_entsize),
+    put_big_endian_u32(image, SYMBOL_SECTION_OFFSET + offsetof(Section, sh_link), 1);
+    put_big_endian_u32(image, SYMBOL_SECTION_OFFSET + offsetof(Section, sh_info), 1);
+    put_big_endian_u64(image, SYMBOL_SECTION_OFFSET + offsetof(Section, sh_addralign), 8);
+    put_big_endian_u64(image, SYMBOL_SECTION_OFFSET + offsetof(Section, sh_entsize),
                        sizeof(Traits::Symbol));
 
-    put_big_endian_u32(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_type),
+    put_big_endian_u32(image, SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_type),
                        static_cast<u32>(eftl::elf::SectionType::SymtabShndx));
-    put_big_endian_u64(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_offset),
-                       K_SECTION_INDEX_OFFSET);
-    put_big_endian_u64(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_size), 8);
-    put_big_endian_u32(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_link), 2);
-    put_big_endian_u64(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_addralign), 4);
-    put_big_endian_u64(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_entsize), 4);
+    put_big_endian_u64(image, SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_offset),
+                       SECTION_INDEX_OFFSET);
+    put_big_endian_u64(image, SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_size), 8);
+    put_big_endian_u32(image, SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_link), 2);
+    put_big_endian_u64(image, SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_addralign), 4);
+    put_big_endian_u64(image, SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_entsize), 4);
 
-    constexpr usize K_SYMBOL_OFFSET = K_SYMBOL_TABLE_OFFSET + sizeof(Traits::Symbol);
-    put_big_endian_u32(image, K_SYMBOL_OFFSET, 1);
-    image[K_SYMBOL_OFFSET + 4] = 0x12;
-    image[K_SYMBOL_OFFSET + 5] = 3;
-    put_big_endian_u16(image, K_SYMBOL_OFFSET + 6, eftl::elf::K_SHN_XINDEX);
-    put_big_endian_u64(image, K_SYMBOL_OFFSET + 8, 0x400080);
-    put_big_endian_u64(image, K_SYMBOL_OFFSET + 16, 0x10);
-    put_big_endian_u32(image, K_SECTION_INDEX_OFFSET + 4, 3);
+    constexpr usize SYMBOL_OFFSET = SYMBOL_TABLE_OFFSET + sizeof(Traits::Symbol);
+    put_big_endian_u32(image, SYMBOL_OFFSET, 1);
+    image[SYMBOL_OFFSET + 4] = 0x12;
+    image[SYMBOL_OFFSET + 5] = 3;
+    put_big_endian_u16(image, SYMBOL_OFFSET + 6, eftl::elf::SHN_XINDEX);
+    put_big_endian_u64(image, SYMBOL_OFFSET + 8, 0x400080);
+    put_big_endian_u64(image, SYMBOL_OFFSET + 16, 0x10);
+    put_big_endian_u32(image, SECTION_INDEX_OFFSET + 4, 3);
     return image;
 }
 
@@ -243,74 +239,71 @@ auto make_image_with_segment(u16 type, Segment const &segment, u64 entrypoint = 
     return image;
 }
 
-constexpr usize K_EXTENDED_PROGRAM_COUNT = static_cast<usize>(eftl::elf::K_PN_XNUM);
-constexpr usize K_EXTENDED_SECTION_COUNT =
-    static_cast<usize>(eftl::elf::K_SHN_LORESERVE) + 1;
-constexpr usize K_PROGRAM_TABLE_OFFSET = 0x80;
-constexpr usize K_SECTION_TABLE_OFFSET =
-    K_PROGRAM_TABLE_OFFSET + K_EXTENDED_PROGRAM_COUNT * sizeof(Segment);
-constexpr usize K_NAME_TABLE_OFFSET =
-    K_SECTION_TABLE_OFFSET + K_EXTENDED_SECTION_COUNT * sizeof(Section);
-constexpr usize K_TEXT_OFFSET = K_NAME_TABLE_OFFSET + 17;
-using ExtendedImage = std::array<u8, K_TEXT_OFFSET + 4>;
+constexpr usize EXTENDED_PROGRAM_COUNT = static_cast<usize>(eftl::elf::PN_XNUM);
+constexpr usize EXTENDED_SECTION_COUNT = static_cast<usize>(eftl::elf::SHN_LORESERVE) + 1;
+constexpr usize PROGRAM_TABLE_OFFSET = 0x80;
+constexpr usize SECTION_TABLE_OFFSET =
+    PROGRAM_TABLE_OFFSET + EXTENDED_PROGRAM_COUNT * sizeof(Segment);
+constexpr usize NAME_TABLE_OFFSET = SECTION_TABLE_OFFSET + EXTENDED_SECTION_COUNT * sizeof(Section);
+constexpr usize TEXT_OFFSET = NAME_TABLE_OFFSET + 17;
+using ExtendedImage = std::array<u8, TEXT_OFFSET + 4>;
 
 auto make_extended_numbering_image() -> ExtendedImage & {
     static ExtendedImage image{};
     image.fill(0);
 
-    auto header = make_header(K_ET_EXEC);
-    header.e_phoff = K_PROGRAM_TABLE_OFFSET;
+    auto header = make_header(ET_EXEC);
+    header.e_phoff = PROGRAM_TABLE_OFFSET;
     header.e_phentsize = sizeof(Segment);
-    header.e_phnum = eftl::elf::K_PN_XNUM;
-    header.e_shoff = K_SECTION_TABLE_OFFSET;
+    header.e_phnum = eftl::elf::PN_XNUM;
+    header.e_shoff = SECTION_TABLE_OFFSET;
     header.e_shentsize = sizeof(Section);
     header.e_shnum = 0;
-    header.e_shstrndx = eftl::elf::K_SHN_XINDEX;
+    header.e_shstrndx = eftl::elf::SHN_XINDEX;
     put(image, 0, header);
 
     Section section_zero{};
-    section_zero.sh_size = K_EXTENDED_SECTION_COUNT;
-    section_zero.sh_link = eftl::elf::K_SHN_LORESERVE;
-    section_zero.sh_info = K_EXTENDED_PROGRAM_COUNT;
+    section_zero.sh_size = EXTENDED_SECTION_COUNT;
+    section_zero.sh_link = eftl::elf::SHN_LORESERVE;
+    section_zero.sh_info = EXTENDED_PROGRAM_COUNT;
 
     Section names{};
     names.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
-    names.sh_offset = K_NAME_TABLE_OFFSET;
+    names.sh_offset = NAME_TABLE_OFFSET;
     names.sh_size = 17;
     names.sh_addralign = 1;
 
     Section text{};
     text.sh_name = 11;
     text.sh_type = static_cast<u32>(eftl::elf::SectionType::Progbits);
-    text.sh_offset = K_TEXT_OFFSET;
+    text.sh_offset = TEXT_OFFSET;
     text.sh_size = 4;
     text.sh_addralign = 4;
 
-    put(image, K_SECTION_TABLE_OFFSET, section_zero);
+    put(image, SECTION_TABLE_OFFSET, section_zero);
     put(image,
-        K_SECTION_TABLE_OFFSET +
-            static_cast<usize>(eftl::elf::K_SHN_LORESERVE) * sizeof(Section),
+        SECTION_TABLE_OFFSET + static_cast<usize>(eftl::elf::SHN_LORESERVE) * sizeof(Section),
         names);
-    put(image, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), text);
+    put(image, SECTION_TABLE_OFFSET + 2 * sizeof(Section), text);
 
     std::array<u8, 17> const string_table{
         0, '.', 's', 'h', 's', 't', 'r', 't', 'a', 'b', 0, '.', 't', 'e', 'x', 't', 0,
     };
-    std::memcpy(image.data() + K_NAME_TABLE_OFFSET, string_table.data(), string_table.size());
-    image[K_TEXT_OFFSET] = 0x12;
-    image[K_TEXT_OFFSET + 1] = 0x34;
-    image[K_TEXT_OFFSET + 2] = 0x56;
-    image[K_TEXT_OFFSET + 3] = 0x78;
+    std::memcpy(image.data() + NAME_TABLE_OFFSET, string_table.data(), string_table.size());
+    image[TEXT_OFFSET] = 0x12;
+    image[TEXT_OFFSET + 1] = 0x34;
+    image[TEXT_OFFSET + 2] = 0x56;
+    image[TEXT_OFFSET + 3] = 0x78;
     return image;
 }
 
 auto test_rel_without_program_table() -> int {
-    auto const image = make_empty_image(K_ET_REL);
+    auto const image = make_empty_image(ET_REL);
     auto const parsed = Binary::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
     }
-    if (parsed->elf_header().e_type != K_ET_REL) {
+    if (parsed->elf_header().e_type != ET_REL) {
         return 2;
     }
     if (!parsed->segments().empty() || !parsed->sections().empty()) {
@@ -325,7 +318,7 @@ auto test_rel_without_program_table() -> int {
 auto test_core_note_without_load() -> int {
     Segment note{};
     note.p_type = static_cast<u32>(eftl::elf::SegType::Note);
-    auto const image = make_image_with_segment(K_ET_CORE, note);
+    auto const image = make_image_with_segment(ET_CORE, note);
     auto const parsed = Binary::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
@@ -343,8 +336,8 @@ auto test_core_note_without_load() -> int {
 }
 
 auto test_rejects_truncated_program_table() -> int {
-    auto image = make_empty_image(K_ET_EXEC);
-    auto header = make_header(K_ET_EXEC);
+    auto image = make_empty_image(ET_EXEC);
+    auto header = make_header(ET_EXEC);
     header.e_phoff = image.size() - sizeof(Segment) + 1;
     header.e_phentsize = sizeof(Segment);
     header.e_phnum = 1;
@@ -367,7 +360,7 @@ auto test_decodes_big_endian_header_and_segment() -> int {
     if (parsed.is_err()) {
         return 1;
     }
-    if (parsed->elf_header().e_type != K_ET_EXEC || parsed->elf_header().e_entry != 0x400184 ||
+    if (parsed->elf_header().e_type != ET_EXEC || parsed->elf_header().e_entry != 0x400184 ||
         parsed->segments().size() != 1) {
         return 2;
     }
@@ -512,7 +505,7 @@ auto test_load_mapping_excludes_zero_fill() -> int {
     load.p_memsz = 0x20;
     load.p_align = 0x8;
 
-    auto const image = make_image_with_segment(K_ET_EXEC, load, 0x400104);
+    auto const image = make_image_with_segment(ET_EXEC, load, 0x400104);
     auto const parsed = Binary::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
@@ -538,8 +531,8 @@ auto test_load_mapping_excludes_zero_fill() -> int {
 }
 
 auto test_load_mapping_preserves_separate_file_backed_intervals() -> int {
-    auto image = make_empty_image(K_ET_EXEC);
-    auto header = make_header(K_ET_EXEC);
+    auto image = make_empty_image(ET_EXEC);
+    auto header = make_header(ET_EXEC);
     header.e_phoff = sizeof(Header);
     header.e_phentsize = sizeof(Segment);
     header.e_phnum = 2;
@@ -593,9 +586,8 @@ auto test_elf64_resolves_extended_header_numbering() -> int {
     if (parsed.is_err()) {
         return 1;
     }
-    if (parsed->segments().size() != K_EXTENDED_PROGRAM_COUNT ||
-        parsed->sections().size() != K_EXTENDED_SECTION_COUNT ||
-        parsed->section_data(0).is_some()) {
+    if (parsed->segments().size() != EXTENDED_PROGRAM_COUNT ||
+        parsed->sections().size() != EXTENDED_SECTION_COUNT || parsed->section_data(0).is_some()) {
         return 2;
     }
     auto const name = parsed->section_name(2);
@@ -606,9 +598,9 @@ auto test_elf64_resolves_extended_header_numbering() -> int {
 }
 
 auto test_elf64_rejects_invalid_extended_header_numbering() -> int {
-    auto missing_section_zero = make_empty_image(K_ET_EXEC);
-    auto missing_header = make_header(K_ET_EXEC);
-    missing_header.e_phnum = eftl::elf::K_PN_XNUM;
+    auto missing_section_zero = make_empty_image(ET_EXEC);
+    auto missing_header = make_header(ET_EXEC);
+    missing_header.e_phnum = eftl::elf::PN_XNUM;
     put(missing_section_zero, 0, missing_header);
     auto const missing_section_zero_result =
         Binary::from_raw(missing_section_zero.data(), missing_section_zero.size());
@@ -619,10 +611,10 @@ auto test_elf64_rejects_invalid_extended_header_numbering() -> int {
 
     auto &zero_section_count = make_extended_numbering_image();
     Section section_zero{};
-    std::memcpy(&section_zero, zero_section_count.data() + K_SECTION_TABLE_OFFSET,
+    std::memcpy(&section_zero, zero_section_count.data() + SECTION_TABLE_OFFSET,
                 sizeof(section_zero));
     section_zero.sh_size = 0;
-    put(zero_section_count, K_SECTION_TABLE_OFFSET, section_zero);
+    put(zero_section_count, SECTION_TABLE_OFFSET, section_zero);
     auto const zero_section_count_result =
         Binary::from_raw(zero_section_count.data(), zero_section_count.size());
     if (zero_section_count_result.is_ok() ||
@@ -631,10 +623,10 @@ auto test_elf64_rejects_invalid_extended_header_numbering() -> int {
     }
 
     auto &invalid_name_index = make_extended_numbering_image();
-    std::memcpy(&section_zero, invalid_name_index.data() + K_SECTION_TABLE_OFFSET,
+    std::memcpy(&section_zero, invalid_name_index.data() + SECTION_TABLE_OFFSET,
                 sizeof(section_zero));
-    section_zero.sh_link = static_cast<u32>(K_EXTENDED_SECTION_COUNT);
-    put(invalid_name_index, K_SECTION_TABLE_OFFSET, section_zero);
+    section_zero.sh_link = static_cast<u32>(EXTENDED_SECTION_COUNT);
+    put(invalid_name_index, SECTION_TABLE_OFFSET, section_zero);
     auto const invalid_name_index_result =
         Binary::from_raw(invalid_name_index.data(), invalid_name_index.size());
     if (invalid_name_index_result.is_err() &&
@@ -646,10 +638,10 @@ auto test_elf64_rejects_invalid_extended_header_numbering() -> int {
 
 auto test_elf64_rejects_noncanonical_extended_header_numbering() -> int {
     std::array<u8, 512> image{};
-    auto header = make_header(K_ET_EXEC);
+    auto header = make_header(ET_EXEC);
     header.e_phoff = sizeof(Header) + sizeof(Section);
     header.e_phentsize = sizeof(Segment);
-    header.e_phnum = eftl::elf::K_PN_XNUM;
+    header.e_phnum = eftl::elf::PN_XNUM;
     header.e_shoff = sizeof(Header);
     header.e_shentsize = sizeof(Section);
     header.e_shnum = 1;
@@ -665,7 +657,7 @@ auto test_elf64_rejects_noncanonical_extended_header_numbering() -> int {
     }
 
     image.fill(0);
-    header = make_header(K_ET_EXEC);
+    header = make_header(ET_EXEC);
     header.e_shoff = sizeof(Header);
     header.e_shentsize = sizeof(Section);
     header.e_shnum = 0;
@@ -682,7 +674,7 @@ auto test_elf64_rejects_noncanonical_extended_header_numbering() -> int {
 
     image.fill(0);
     header.e_shnum = 2;
-    header.e_shstrndx = eftl::elf::K_SHN_XINDEX;
+    header.e_shstrndx = eftl::elf::SHN_XINDEX;
     put(image, 0, header);
     section_zero = {};
     section_zero.sh_link = 1;
@@ -705,7 +697,7 @@ auto test_elf64_rejects_reserved_ordinary_section_fields() -> int {
     auto &reserved_name_index = make_extended_numbering_image();
     Header header{};
     std::memcpy(&header, reserved_name_index.data(), sizeof(header));
-    header.e_shstrndx = eftl::elf::K_SHN_LORESERVE;
+    header.e_shstrndx = eftl::elf::SHN_LORESERVE;
     put(reserved_name_index, 0, header);
     auto const reserved_name_result =
         Binary::from_raw(reserved_name_index.data(), reserved_name_index.size());
@@ -716,7 +708,7 @@ auto test_elf64_rejects_reserved_ordinary_section_fields() -> int {
 
     auto &reserved_section_count = make_extended_numbering_image();
     std::memcpy(&header, reserved_section_count.data(), sizeof(header));
-    header.e_shnum = eftl::elf::K_SHN_LORESERVE;
+    header.e_shnum = eftl::elf::SHN_LORESERVE;
     header.e_shstrndx = 0;
     put(reserved_section_count, 0, header);
     auto const reserved_count_result =
@@ -734,11 +726,11 @@ auto test_elf32_rel_without_program_table() -> int {
 
     std::array<u8, sizeof(Header32)> image{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
-    header.e_type = K_ET_REL;
+    header.e_type = ET_REL;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header32);
     std::memcpy(image.data(), &header, sizeof(header));
@@ -747,7 +739,7 @@ auto test_elf32_rel_without_program_table() -> int {
     if (parsed.is_err()) {
         return 1;
     }
-    if (parsed->elf_header().e_type != K_ET_REL || !parsed->segments().empty()) {
+    if (parsed->elf_header().e_type != ET_REL || !parsed->segments().empty()) {
         return 2;
     }
     return 0;
@@ -760,49 +752,49 @@ auto test_elf32_resolves_extended_program_count() -> int {
     using Segment32 = Traits32::Segment;
     using Section32 = Traits32::Section;
 
-    constexpr usize K_ELF32_SECTION_TABLE_OFFSET =
-        sizeof(Header32) + K_EXTENDED_PROGRAM_COUNT * sizeof(Segment32);
-    static std::array<u8, K_ELF32_SECTION_TABLE_OFFSET + sizeof(Section32)> image{};
+    constexpr usize ELF32_SECTION_TABLE_OFFSET =
+        sizeof(Header32) + EXTENDED_PROGRAM_COUNT * sizeof(Segment32);
+    static std::array<u8, ELF32_SECTION_TABLE_OFFSET + sizeof(Section32)> image{};
     image.fill(0);
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
-    header.e_type = K_ET_REL;
+    header.e_type = ET_REL;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header32);
     header.e_phoff = sizeof(Header32);
     header.e_phentsize = sizeof(Segment32);
-    header.e_phnum = eftl::elf::K_PN_XNUM;
-    header.e_shoff = K_ELF32_SECTION_TABLE_OFFSET;
+    header.e_phnum = eftl::elf::PN_XNUM;
+    header.e_shoff = ELF32_SECTION_TABLE_OFFSET;
     header.e_shentsize = sizeof(Section32);
     header.e_shnum = 1;
     put(image, 0, header);
 
     Section32 section_zero{};
-    section_zero.sh_info = K_EXTENDED_PROGRAM_COUNT;
-    put(image, K_ELF32_SECTION_TABLE_OFFSET, section_zero);
+    section_zero.sh_info = EXTENDED_PROGRAM_COUNT;
+    put(image, ELF32_SECTION_TABLE_OFFSET, section_zero);
 
     auto const parsed = Binary32::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
     }
-    if (parsed->segments().size() == K_EXTENDED_PROGRAM_COUNT && parsed->sections().size() == 1) {
+    if (parsed->segments().size() == EXTENDED_PROGRAM_COUNT && parsed->sections().size() == 1) {
         return 0;
     }
     return 1;
 }
 
 auto test_runtime_parser_dispatches_elf64() -> int {
-    auto const image = make_empty_image(K_ET_EXEC);
+    auto const image = make_empty_image(ET_EXEC);
     auto const parsed = eftl::elf::Parser::parse(image.data(), image.size());
     if (parsed.is_err()) {
         return 1;
     }
 
     auto const file = parsed.unwrap();
-    auto const structural = file.type() == K_ET_EXEC && file.native_image().is_none();
+    auto const structural = file.type() == ET_EXEC && file.native_image().is_none();
     if (!structural) {
         return 2;
     }
@@ -815,11 +807,11 @@ auto test_runtime_parser_dispatches_elf32_without_program_table() -> int {
 
     std::array<u8, sizeof(Header32)> image{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
-    header.e_type = K_ET_REL;
+    header.e_type = ET_REL;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header32);
     std::memcpy(image.data(), &header, sizeof(header));
@@ -836,21 +828,21 @@ auto test_runtime_parser_dispatches_elf32_without_program_table() -> int {
 }
 
 auto test_runtime_parser_rejects_invalid_identity() -> int {
-    auto invalid_magic = make_empty_image(K_ET_EXEC);
+    auto invalid_magic = make_empty_image(ET_EXEC);
     invalid_magic[0] = 0;
     auto const magic_result = eftl::elf::Parser::parse(invalid_magic.data(), invalid_magic.size());
     if (magic_result.is_ok() || magic_result.unwrap_err() != eftl::elf::ParseError::InvalidHeader) {
         return 1;
     }
 
-    auto invalid_class = make_empty_image(K_ET_EXEC);
+    auto invalid_class = make_empty_image(ET_EXEC);
     invalid_class[4] = 3;
     auto const class_result = eftl::elf::Parser::parse(invalid_class.data(), invalid_class.size());
     if (class_result.is_ok() || class_result.unwrap_err() != eftl::elf::ParseError::InvalidHeader) {
         return 2;
     }
 
-    auto invalid_byte_order = make_empty_image(K_ET_EXEC);
+    auto invalid_byte_order = make_empty_image(ET_EXEC);
     invalid_byte_order[5] = 0;
     auto const byte_order_result =
         eftl::elf::Parser::parse(invalid_byte_order.data(), invalid_byte_order.size());
@@ -859,7 +851,7 @@ auto test_runtime_parser_rejects_invalid_identity() -> int {
         return 3;
     }
 
-    auto malformed_big_endian = make_big_endian_empty_image(K_ET_EXEC);
+    auto malformed_big_endian = make_big_endian_empty_image(ET_EXEC);
     malformed_big_endian[6] = 0;
     auto const malformed_big_endian_result =
         eftl::elf::Parser::parse(malformed_big_endian.data(), malformed_big_endian.size());

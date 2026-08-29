@@ -24,30 +24,29 @@ using Relocations = eftl::elf::RelocationTableView<Traits, Rel>;
 using RelaRelocations = eftl::elf::RelocationTableView<Traits, Rela>;
 using Relr = eftl::elf::TableView<Traits::Addr>;
 
-constexpr usize K_PROGRAM_HEADERS_OFFSET = sizeof(Header);
-constexpr usize K_LOAD_OFFSET = 0x300;
-constexpr u64 K_LOAD_ADDRESS = 0x400000;
-constexpr usize K_DYNAMIC_OFFSET = K_LOAD_OFFSET + 0x40;
-constexpr u64 K_DYNAMIC_ADDRESS = K_LOAD_ADDRESS + 0x40;
-constexpr usize K_DYNAMIC_COUNT = 18;
-constexpr usize K_STRING_OFFSET = K_LOAD_OFFSET + 0x180;
-constexpr u64 K_STRING_ADDRESS = K_LOAD_ADDRESS + 0x180;
-constexpr usize K_SYMBOL_OFFSET = K_LOAD_OFFSET + 0x1a0;
-constexpr u64 K_SYMBOL_ADDRESS = K_LOAD_ADDRESS + 0x1a0;
-constexpr usize K_HASH_OFFSET = K_LOAD_OFFSET + 0x200;
-constexpr u64 K_HASH_ADDRESS = K_LOAD_ADDRESS + 0x200;
-constexpr usize K_REL_OFFSET = K_LOAD_OFFSET + 0x240;
-constexpr u64 K_REL_ADDRESS = K_LOAD_ADDRESS + 0x240;
-constexpr usize K_RELA_OFFSET = K_LOAD_OFFSET + 0x260;
-constexpr u64 K_RELA_ADDRESS = K_LOAD_ADDRESS + 0x260;
-constexpr usize K_RELR_OFFSET = K_LOAD_OFFSET + 0x280;
-constexpr u64 K_RELR_ADDRESS = K_LOAD_ADDRESS + 0x280;
-constexpr usize K_PLT_RELA_OFFSET = K_LOAD_OFFSET + 0x2a0;
-constexpr u64 K_PLT_RELA_ADDRESS = K_LOAD_ADDRESS + 0x2a0;
+constexpr usize PROGRAM_HEADERS_OFFSET = sizeof(Header);
+constexpr usize LOAD_OFFSET = 0x300;
+constexpr u64 LOAD_ADDRESS = 0x400000;
+constexpr usize DYNAMIC_OFFSET = LOAD_OFFSET + 0x40;
+constexpr u64 DYNAMIC_ADDRESS = LOAD_ADDRESS + 0x40;
+constexpr usize DYNAMIC_COUNT = 18;
+constexpr usize STRING_OFFSET = LOAD_OFFSET + 0x180;
+constexpr u64 STRING_ADDRESS = LOAD_ADDRESS + 0x180;
+constexpr usize SYMBOL_OFFSET = LOAD_OFFSET + 0x1a0;
+constexpr u64 SYMBOL_ADDRESS = LOAD_ADDRESS + 0x1a0;
+constexpr usize HASH_OFFSET = LOAD_OFFSET + 0x200;
+constexpr u64 HASH_ADDRESS = LOAD_ADDRESS + 0x200;
+constexpr usize REL_OFFSET = LOAD_OFFSET + 0x240;
+constexpr u64 REL_ADDRESS = LOAD_ADDRESS + 0x240;
+constexpr usize RELA_OFFSET = LOAD_OFFSET + 0x260;
+constexpr u64 RELA_ADDRESS = LOAD_ADDRESS + 0x260;
+constexpr usize RELR_OFFSET = LOAD_OFFSET + 0x280;
+constexpr u64 RELR_ADDRESS = LOAD_ADDRESS + 0x280;
+constexpr usize PLT_RELA_OFFSET = LOAD_OFFSET + 0x2a0;
+constexpr u64 PLT_RELA_ADDRESS = LOAD_ADDRESS + 0x2a0;
 
 template <typename Value, usize Size>
-auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian)
-    -> void {
+auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian) -> void {
     static_assert(std::is_unsigned_v<Value>);
     if (!big_endian) {
         std::memcpy(image.data() + offset, &value, sizeof(value));
@@ -78,8 +77,8 @@ auto put_header(std::array<u8, Size> &image, Header const &header, bool big_endi
 }
 
 template <usize Size>
-auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segment,
-                 bool big_endian) -> void {
+auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segment, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Segment, p_type), segment.p_type, big_endian);
     put_scalar(image, offset + offsetof(Segment, p_flags), segment.p_flags, big_endian);
     put_scalar(image, offset + offsetof(Segment, p_offset), segment.p_offset, big_endian);
@@ -91,16 +90,16 @@ auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segme
 }
 
 template <usize Size>
-auto put_dynamic(std::array<u8, Size> &image, usize offset, Dynamic const &dynamic,
-                 bool big_endian) -> void {
+auto put_dynamic(std::array<u8, Size> &image, usize offset, Dynamic const &dynamic, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Dynamic, d_tag), static_cast<u64>(dynamic.d_tag),
                big_endian);
     put_scalar(image, offset + offsetof(Dynamic, d_val), dynamic.d_val, big_endian);
 }
 
 template <usize Size>
-auto put_symbol(std::array<u8, Size> &image, usize offset, Symbol const &symbol,
-                bool big_endian) -> void {
+auto put_symbol(std::array<u8, Size> &image, usize offset, Symbol const &symbol, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Symbol, st_name), symbol.st_name, big_endian);
     image[offset + offsetof(Symbol, st_info)] = symbol.st_info;
     image[offset + offsetof(Symbol, st_other)] = symbol.st_other;
@@ -110,27 +109,27 @@ auto put_symbol(std::array<u8, Size> &image, usize offset, Symbol const &symbol,
 }
 
 template <usize Size>
-auto put_rel(std::array<u8, Size> &image, usize offset, Rel const &relocation,
-             bool big_endian) -> void {
+auto put_rel(std::array<u8, Size> &image, usize offset, Rel const &relocation, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Rel, r_offset), relocation.r_offset, big_endian);
     put_scalar(image, offset + offsetof(Rel, r_info), relocation.r_info, big_endian);
 }
 
 template <usize Size>
-auto put_rela(std::array<u8, Size> &image, usize offset, Rela const &relocation,
-              bool big_endian) -> void {
+auto put_rela(std::array<u8, Size> &image, usize offset, Rela const &relocation, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Rela, r_offset), relocation.r_offset, big_endian);
     put_scalar(image, offset + offsetof(Rela, r_info), relocation.r_info, big_endian);
-    put_scalar(image, offset + offsetof(Rela, r_addend),
-               static_cast<u64>(relocation.r_addend), big_endian);
+    put_scalar(image, offset + offsetof(Rela, r_addend), static_cast<u64>(relocation.r_addend),
+               big_endian);
 }
 
 auto make_dynamic_relocation_image(bool big_endian = false, bool plt_rel = false)
     -> std::array<u8, 2048> {
     std::array<u8, 2048> image{};
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     if (big_endian) {
         header.e_ident[5] = 2;
     } else {
@@ -140,59 +139,58 @@ auto make_dynamic_relocation_image(bool big_endian = false, bool plt_rel = false
     header.e_type = 3;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header);
-    header.e_phoff = K_PROGRAM_HEADERS_OFFSET;
+    header.e_phoff = PROGRAM_HEADERS_OFFSET;
     header.e_phentsize = sizeof(Segment);
     header.e_phnum = 2;
     put_header(image, header, big_endian);
 
     Segment load{};
     load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
-    load.p_offset = K_LOAD_OFFSET;
-    load.p_vaddr = K_LOAD_ADDRESS;
+    load.p_offset = LOAD_OFFSET;
+    load.p_vaddr = LOAD_ADDRESS;
     load.p_filesz = 0x500;
     load.p_memsz = 0x500;
     load.p_align = 0x10;
-    put_segment(image, K_PROGRAM_HEADERS_OFFSET, load, big_endian);
+    put_segment(image, PROGRAM_HEADERS_OFFSET, load, big_endian);
 
     Segment dynamic{};
     dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Dynamic);
-    dynamic.p_offset = K_DYNAMIC_OFFSET;
-    dynamic.p_vaddr = K_DYNAMIC_ADDRESS;
-    dynamic.p_filesz = K_DYNAMIC_COUNT * sizeof(Dynamic);
+    dynamic.p_offset = DYNAMIC_OFFSET;
+    dynamic.p_vaddr = DYNAMIC_ADDRESS;
+    dynamic.p_filesz = DYNAMIC_COUNT * sizeof(Dynamic);
     dynamic.p_memsz = dynamic.p_filesz;
     dynamic.p_align = alignof(Dynamic);
-    put_segment(image, K_PROGRAM_HEADERS_OFFSET + sizeof(Segment), dynamic, big_endian);
+    put_segment(image, PROGRAM_HEADERS_OFFSET + sizeof(Segment), dynamic, big_endian);
 
-    std::array<Dynamic, K_DYNAMIC_COUNT> entries{
+    std::array<Dynamic, DYNAMIC_COUNT> entries{
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::StrTab),
-                .d_val = K_STRING_ADDRESS},
+                .d_val = STRING_ADDRESS},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::StrSz), .d_val = 9},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::SymTab),
-                .d_val = K_SYMBOL_ADDRESS},
+                .d_val = SYMBOL_ADDRESS},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Syment),
                 .d_val = sizeof(Symbol)},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Hash),
-                .d_val = K_HASH_ADDRESS},
-        Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Rel),
-                .d_val = K_REL_ADDRESS},
+                .d_val = HASH_ADDRESS},
+        Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Rel), .d_val = REL_ADDRESS},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::RelSz),
                 .d_val = sizeof(Rel)},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::RelEnt),
                 .d_val = sizeof(Rel)},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Rela),
-                .d_val = K_RELA_ADDRESS},
+                .d_val = RELA_ADDRESS},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::RelaSz),
                 .d_val = sizeof(Rela)},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::RelaEnt),
                 .d_val = sizeof(Rela)},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Relr),
-                .d_val = K_RELR_ADDRESS},
+                .d_val = RELR_ADDRESS},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::RelrSz),
                 .d_val = 2 * sizeof(Traits::Addr)},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::RelrEnt),
                 .d_val = sizeof(Traits::Addr)},
         Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::JmpRel),
-                .d_val = K_PLT_RELA_ADDRESS},
+                .d_val = PLT_RELA_ADDRESS},
     };
     if (plt_rel) {
         entries[15] = Dynamic{.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::PltRelSz),
@@ -204,45 +202,44 @@ auto make_dynamic_relocation_image(bool big_endian = false, bool plt_rel = false
         entries[16] = Dynamic{.d_tag = static_cast<u64>(eftl::elf::DynTag::Rela)};
     }
     for (usize index = 0; index < entries.size(); ++index) {
-        put_dynamic(image, K_DYNAMIC_OFFSET + index * sizeof(Dynamic), entries[index], big_endian);
+        put_dynamic(image, DYNAMIC_OFFSET + index * sizeof(Dynamic), entries[index], big_endian);
     }
 
     std::array<u8, 9> const strings{0, 'f', 'o', 'o', 0, 'b', 'a', 'r', 0};
-    std::memcpy(image.data() + K_STRING_OFFSET, strings.data(), strings.size());
+    std::memcpy(image.data() + STRING_OFFSET, strings.data(), strings.size());
     Symbol foo{};
     foo.st_name = 1;
-    put_symbol(image, K_SYMBOL_OFFSET + sizeof(Symbol), foo, big_endian);
+    put_symbol(image, SYMBOL_OFFSET + sizeof(Symbol), foo, big_endian);
     Symbol bar{};
     bar.st_name = 5;
-    put_symbol(image, K_SYMBOL_OFFSET + 2 * sizeof(Symbol), bar, big_endian);
+    put_symbol(image, SYMBOL_OFFSET + 2 * sizeof(Symbol), bar, big_endian);
 
     std::array<u32, 6> const hash_words{1, 3, 1, 0, 2, 0};
     for (usize index = 0; index < hash_words.size(); ++index) {
-        put_scalar(image, K_HASH_OFFSET + index * sizeof(u32), hash_words[index], big_endian);
+        put_scalar(image, HASH_OFFSET + index * sizeof(u32), hash_words[index], big_endian);
     }
     Rel relative{};
     relative.r_offset = 0x400100;
     relative.r_info = 8;
-    put_rel(image, K_REL_OFFSET, relative, big_endian);
+    put_rel(image, REL_OFFSET, relative, big_endian);
     Rela named{};
     named.r_offset = 0x400200;
     named.r_info = (static_cast<u64>(1) << 32U) | 1U;
     named.r_addend = -16;
-    put_rela(image, K_RELA_OFFSET, named, big_endian);
-    put_scalar(image, K_RELR_OFFSET, static_cast<Traits::Addr>(0x400300), big_endian);
-    put_scalar(image, K_RELR_OFFSET + sizeof(Traits::Addr), static_cast<Traits::Addr>(3),
-               big_endian);
+    put_rela(image, RELA_OFFSET, named, big_endian);
+    put_scalar(image, RELR_OFFSET, static_cast<Traits::Addr>(0x400300), big_endian);
+    put_scalar(image, RELR_OFFSET + sizeof(Traits::Addr), static_cast<Traits::Addr>(3), big_endian);
     if (plt_rel) {
         Rel plt{};
         plt.r_offset = 0x400400;
         plt.r_info = (static_cast<u64>(2) << 32U) | 1U;
-        put_rel(image, K_PLT_RELA_OFFSET, plt, big_endian);
+        put_rel(image, PLT_RELA_OFFSET, plt, big_endian);
     } else {
         Rela plt{};
         plt.r_offset = 0x400400;
         plt.r_info = (static_cast<u64>(2) << 32U) | 1U;
         plt.r_addend = 4;
-        put_rela(image, K_PLT_RELA_OFFSET, plt, big_endian);
+        put_rela(image, PLT_RELA_OFFSET, plt, big_endian);
     }
     return image;
 }
@@ -394,9 +391,9 @@ auto test_observes_rel_encoded_plt_relocations() -> int {
 
 auto test_rejects_malformed_dynamic_relocation_metadata() -> int {
     auto bad_entry_size = make_dynamic_relocation_image();
-    constexpr u64 K_BAD_REL_ENT = sizeof(Rel) - 1;
-    put_scalar(bad_entry_size, K_DYNAMIC_OFFSET + 7 * sizeof(Dynamic) + offsetof(Dynamic, d_val),
-               K_BAD_REL_ENT, false);
+    constexpr u64 BAD_REL_ENT = sizeof(Rel) - 1;
+    put_scalar(bad_entry_size, DYNAMIC_OFFSET + 7 * sizeof(Dynamic) + offsetof(Dynamic, d_val),
+               BAD_REL_ENT, false);
     auto const bad_entry_parsed = File::from_raw(bad_entry_size.data(), bad_entry_size.size());
     ustl::Option<DynamicImage> bad_entry_image;
     if (bad_entry_parsed.is_ok()) {
@@ -409,9 +406,9 @@ auto test_rejects_malformed_dynamic_relocation_metadata() -> int {
     }
 
     auto invalid_plt_type = make_dynamic_relocation_image();
-    constexpr u64 K_BAD_PLT_TYPE = 0;
-    put_scalar(invalid_plt_type, K_DYNAMIC_OFFSET + 16 * sizeof(Dynamic) + offsetof(Dynamic, d_val),
-               K_BAD_PLT_TYPE, false);
+    constexpr u64 BAD_PLT_TYPE = 0;
+    put_scalar(invalid_plt_type, DYNAMIC_OFFSET + 16 * sizeof(Dynamic) + offsetof(Dynamic, d_val),
+               BAD_PLT_TYPE, false);
     auto const invalid_plt_parsed =
         File::from_raw(invalid_plt_type.data(), invalid_plt_type.size());
     ustl::Option<DynamicImage> invalid_plt_image;
@@ -427,9 +424,9 @@ auto test_rejects_malformed_dynamic_relocation_metadata() -> int {
 
     auto out_of_range_symbol = make_dynamic_relocation_image();
     Rela bad_symbol{};
-    std::memcpy(&bad_symbol, out_of_range_symbol.data() + K_RELA_OFFSET, sizeof(bad_symbol));
+    std::memcpy(&bad_symbol, out_of_range_symbol.data() + RELA_OFFSET, sizeof(bad_symbol));
     bad_symbol.r_info = (static_cast<u64>(3) << 32U) | 1U;
-    put_rela(out_of_range_symbol, K_RELA_OFFSET, bad_symbol, false);
+    put_rela(out_of_range_symbol, RELA_OFFSET, bad_symbol, false);
     auto const bad_symbol_parsed =
         File::from_raw(out_of_range_symbol.data(), out_of_range_symbol.size());
     ustl::Option<DynamicImage> bad_symbol_image;
@@ -444,10 +441,10 @@ auto test_rejects_malformed_dynamic_relocation_metadata() -> int {
 
     auto duplicate_rel = make_dynamic_relocation_image();
     Dynamic duplicate{};
-    std::memcpy(&duplicate, duplicate_rel.data() + K_DYNAMIC_OFFSET + 6 * sizeof(Dynamic),
+    std::memcpy(&duplicate, duplicate_rel.data() + DYNAMIC_OFFSET + 6 * sizeof(Dynamic),
                 sizeof(duplicate));
     duplicate.d_tag = static_cast<Traits::Sword>(eftl::elf::DynTag::Rel);
-    put_dynamic(duplicate_rel, K_DYNAMIC_OFFSET + 6 * sizeof(Dynamic), duplicate, false);
+    put_dynamic(duplicate_rel, DYNAMIC_OFFSET + 6 * sizeof(Dynamic), duplicate, false);
     auto const duplicate_parsed = File::from_raw(duplicate_rel.data(), duplicate_rel.size());
     ustl::Option<DynamicImage> duplicate_image;
     if (duplicate_parsed.is_ok()) {

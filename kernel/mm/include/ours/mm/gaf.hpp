@@ -48,9 +48,9 @@ enum class Gaf : u32 {
 };
 USTL_ENABLE_ENUM_BITMASK(Gaf);
 
-inline constexpr auto kGafBoot = Gaf::Boot;
-inline constexpr auto kGafUser = Gaf::User;
-inline constexpr auto kGafKernel = Gaf::Kernel;
+inline constexpr auto GAF_BOOT = Gaf::Boot;
+inline constexpr auto GAF_USER = Gaf::User;
+inline constexpr auto GAF_KERNEL = Gaf::Kernel;
 
 FORCE_INLINE constexpr auto gaf_zone_type(Gaf gaf) -> ZoneType {
     using Underlying = ustl::traits::UnderlyingTypeT<Gaf>;

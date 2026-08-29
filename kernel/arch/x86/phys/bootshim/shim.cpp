@@ -23,34 +23,32 @@
 /// items instead is deferred; see
 /// .agents/tasks/phys-module-and-obi-tree/DESIGN.md.
 
+#include "../legacy_boot.hpp"
+#include <ccrt/runtime.hpp>
+#include <obi/container_view.hpp>
 #include <ours/panic.hpp>
 #include <ours/phys/boot_obi.hpp>
 #include <ours/phys/console.hpp>
-#include <ours/phys/init.hpp>
 #include <ours/phys/elf_image.hpp>
+#include <ours/phys/init.hpp>
 #include <ours/phys/legacy_platform_info.hpp>
 #include <ours/phys/print.hpp>
-
-#include <bootshim/legacy_memory.hpp>
-#include <multiboot/view.hpp>
-#include <obi/container_view.hpp>
-
-#include "../legacy_boot.hpp"
-
-#include <ccrt/runtime.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/option.hpp>
 
 #include <algorithm>
 #include <array>
 
+#include <bootshim/legacy_memory.hpp>
+#include <multiboot/view.hpp>
+
 namespace ours::phys {
 namespace {
     extern "C" char const __executable_start[];
     extern "C" char const __executable_end[];
 
-    using bootshim::kMaxLegacyMemoryRanges;
     using bootshim::LegacyMemoryRanges;
+    using bootshim::MAX_LEGACY_MEMORY_RANGES;
 
     /// Load physload out of the OBI container's item 0 and jump to it.
     /// Never returns.  `mbi_base` is the raw Multiboot2 info block address
@@ -91,10 +89,9 @@ namespace {
         // ElfImage::load_at is about to read from it while writing
         // somewhere else -- letting the two ranges overlap could have it
         // read its own half-written output).
-        auto const floor =
-            std::max({PhysAddr(__executable_end),
-                      PhysAddr(legacy.ramdisk.data()) + legacy.ramdisk.size(),
-                      mbi_base + legacy.mbi_size});
+        auto const floor = std::max({PhysAddr(__executable_end),
+                                     PhysAddr(legacy.ramdisk.data()) + legacy.ramdisk.size(),
+                                     mbi_base + legacy.mbi_size});
         auto const total = ustl::mm::align_up(image.size(), PAGE_SIZE);
         auto const target =
             bootshim::find_scratch(legacy.memory_map.value(), floor, total, PAGE_SIZE);
@@ -124,13 +121,14 @@ namespace {
             // becomes "not usable", so an operator wondering where their RAM
             // went has to be able to see this happen.
             println("boot-shim: memory map has {} ranges, only converting the first {}",
-                    converted.converted + converted.dropped, kMaxLegacyMemoryRanges);
+                    converted.converted + converted.dropped, MAX_LEGACY_MEMORY_RANGES);
         }
         // cmdline/name point into the Multiboot info block, which the floor
         // above already keeps physload off of, so they stay readable for as
         // long as obi_main() cares to read them.
         LegacyPlatformInfo const info{
-            .acpi_rsdp = legacy.acpi_rsdp != 0 ? ustl::some(PhysAddr(legacy.acpi_rsdp)) : ustl::NONE,
+            .acpi_rsdp =
+                legacy.acpi_rsdp != 0 ? ustl::some(PhysAddr(legacy.acpi_rsdp)) : ustl::NONE,
             .memory_ranges = ranges.data(),
             .memory_range_count = converted.converted,
             .cmdline = legacy.cmdline,
@@ -138,16 +136,14 @@ namespace {
         };
 
         auto const module_entry =
-            reinterpret_cast<void (*)(PhysAddr, usize, LegacyPlatformInfo const *)>(
-                entry.unwrap());
+            reinterpret_cast<void (*)(PhysAddr, usize, LegacyPlatformInfo const *)>(entry.unwrap());
         module_entry(PhysAddr(module.data()), module.size(), &info);
 
         panic("Never reach at here");
     }
 } // namespace
 
-NO_MANGLE NO_RETURN
-auto phys_main(PhysAddr loader_param) -> void {
+NO_MANGLE NO_RETURN auto phys_main(PhysAddr loader_param) -> void {
     ccrt::init_global_static_objects();
     init_early_console();
     println("boot-shim: loader params at 0x{:X}", loader_param);

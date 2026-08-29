@@ -10,6 +10,6 @@ struct NonConstructible {
     ~NonConstructible() = delete;
 };
 
-}  // namespace ustl
+} // namespace ustl
 
-#endif  // USTL_UTIL_NONCONSTRUCTIBLE_HPP
+#endif // USTL_UTIL_NONCONSTRUCTIBLE_HPP

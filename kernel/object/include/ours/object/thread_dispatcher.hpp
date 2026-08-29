@@ -3,96 +3,98 @@
 #ifndef OURS_OBJECT_THREAD_DISPATCHER_HPP
 #define OURS_OBJECT_THREAD_DISPATCHER_HPP 1
 
+#include <gktl/canary.hpp>
+#include <ktl/name.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/task/types.hpp>
-
-#include <ktl/name.hpp>
-#include <gktl/canary.hpp>
-#include <ustl/option.hpp>
 #include <ustl/collections/intrusive/list.hpp>
+#include <ustl/option.hpp>
 
 namespace ours::object {
-    /// Rights a freshly created thread handle carries.
-    constexpr auto RIGHTS_DEFAULT_THREAD = Rights::Signal | Rights::Io;
+/// Rights a freshly created thread handle carries.
+constexpr auto RIGHTS_DEFAULT_THREAD = Rights::Signal | Rights::Io;
 
-    using ThreadDispatcherBase = SoloDispatcher<ThreadDispatcher,
-                                                RIGHTS_DEFAULT_THREAD,
-                                                Signals::Suspend>;
+using ThreadDispatcherBase =
+    SoloDispatcher<ThreadDispatcher, RIGHTS_DEFAULT_THREAD, Signals::Suspend>;
 
-    class ThreadDispatcher: public ThreadDispatcherBase {
-        using Self = ThreadDispatcher;
-        using Base = ThreadDispatcherBase;
-      public:
-        enum class State {
-            Running,
-        };
+class ThreadDispatcher: public ThreadDispatcherBase {
+    using Self = ThreadDispatcher;
+    using Base = ThreadDispatcherBase;
 
-        enum class ParkedReason: u16 {
-        };
+  public:
+    enum class State {
+        Running,
+    };
 
-        struct TaskState {
-            VirtAddr entry = 0;
-            VirtAddr stack = 0;
-            usize arg1 = 0;
-            usize arg2 = 0;
-        };
+    enum class ParkedReason : u16 {};
 
-        static auto spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
-                          KernelHandle<Self> *out) -> Status;
-        
-        auto start(TaskState const &state) -> Status;
+    struct TaskState {
+        VirtAddr entry = 0;
+        VirtAddr stack = 0;
+        usize arg1 = 0;
+        usize arg2 = 0;
+    };
 
-        auto resume() -> void;
+    static auto spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
+                      KernelHandle<Self> *out) -> Status;
 
-        auto suspend() -> void;
+    auto start(TaskState const &state) -> Status;
 
-        auto activate(bool suspend) -> Status;
+    auto resume() -> void;
 
-        FORCE_INLINE
-        auto process() -> ProcessDispatcher & { return m_process.as_ref_mut(); }
+    auto suspend() -> void;
 
-        FORCE_INLINE
-        auto mark_active() -> void { m_flags |= Flags::Active; }
-      private:
-        enum class Flags {
-            Active = 0_bit,
-        };
-        USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+    auto activate(bool suspend) -> Status;
 
-        friend class task::Thread;
+    FORCE_INLINE auto process() -> ProcessDispatcher & {
+        return m_process.as_ref_mut();
+    }
 
-        // SoloDispatcher's constructor reads Derived::MAGIC to build the
-        // canary; MAGIC stays private otherwise, so it needs this base in.
-        template <typename, Rights, Signals>
-        friend class SoloDispatcher;
+    FORCE_INLINE auto mark_active() -> void {
+        m_flags |= Flags::Active;
+    }
 
-        static auto trampoline(Self *) -> i32;
+  private:
+    enum class Flags {
+        Active = 0_bit,
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
-        ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name);
-        ~ThreadDispatcher() = default;
+    friend class task::Thread;
 
-        auto on_exit() -> Status;
+    // SoloDispatcher's constructor reads Derived::MAGIC to build the
+    // canary; MAGIC stays private otherwise, so it needs this base in.
+    template <typename, Rights, Signals>
+    friend class SoloDispatcher;
 
-        auto on_resume() -> Status;
+    static auto trampoline(Self *) -> i32;
 
-        auto on_suspend() -> Status;
+    ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name);
+    ~ThreadDispatcher() = default;
 
-        static constexpr auto MAGIC = gktl::magic("ThreadDispatcher");
+    auto on_exit() -> Status;
 
-        Flags m_flags;
-        State m_state;
-        ParkedReason m_parked_reason;
-        task::Thread *m_kernel_thread;
+    auto on_resume() -> Status;
 
-        ustl::Arc<ProcessDispatcher> m_process;
-        ustl::Option<TaskState> m_user_entry;
+    auto on_suspend() -> Status;
 
-        ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
-        USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOption);
-      public:
-        USTL_DECLARE_LIST(Self, List, ManagedOption);
-    }; // class ThreadDispatcher
+    static constexpr auto MAGIC = gktl::magic("ThreadDispatcher");
+
+    Flags m_flags;
+    State m_state;
+    ParkedReason m_parked_reason;
+    task::Thread *m_kernel_thread;
+
+    ustl::Arc<ProcessDispatcher> m_process;
+    ustl::Option<TaskState> m_user_entry;
+
+    ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
+    USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOption);
+
+  public:
+    USTL_DECLARE_LIST(Self, List, ManagedOption);
+}; // class ThreadDispatcher
 
 } // namespace ours::object
 

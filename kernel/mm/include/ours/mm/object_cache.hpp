@@ -15,6 +15,7 @@
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/mem/object.hpp>
 #include <ustl/rc.hpp>
+
 #include <array>
 
 namespace ours::mm {
@@ -64,8 +65,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
 
     auto alias(char const *name, usize size, usize align, Option, ustl::Arc<Self> *) -> Status;
 
-    FORCE_INLINE
-    auto name() const -> char const * {
+    FORCE_INLINE auto name() const -> char const * {
         return m_name;
     }
 
@@ -190,7 +190,8 @@ class ObjectCache::Instance {
     /// it would silently never be emitted. Callers therefore place a plain
     /// namespace-scope GKTL_INIT_HOOK that calls this.
     static auto init_from_option() -> Status
-        requires(sizeof...(Options) == 1) {
+        requires(sizeof...(Options) == 1)
+    {
         return init_one<Options...>();
     }
 

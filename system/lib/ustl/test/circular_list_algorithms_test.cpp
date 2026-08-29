@@ -5,9 +5,9 @@
 #include <ustl/collections/intrusive/detail/list_node.hpp>
 
 namespace {
-    using Node = ustl::collections::intrusive::ListNode<void *>;
-    using Traits = ustl::collections::intrusive::ListNodeTraits<void *>;
-    using Algorithms = ustl::collections::intrusive::CircularListAlgorithms<Traits>;
+using Node = ustl::collections::intrusive::ListNode<void *>;
+using Traits = ustl::collections::intrusive::ListNodeTraits<void *>;
+using Algorithms = ustl::collections::intrusive::CircularListAlgorithms<Traits>;
 } // namespace
 
 auto main() -> int {
@@ -34,27 +34,28 @@ auto main() -> int {
 
     Algorithms::transfer(&second_header, &first, &third);
     if (Algorithms::count(&header) != 2 || Algorithms::count(&second_header) != 3 ||
-        Traits::get_next(&second_header) != &first || Traits::get_previous(&second_header) != &second) {
+        Traits::get_next(&second_header) != &first ||
+        Traits::get_previous(&second_header) != &second) {
         return 2;
     }
 
     Algorithms::reverse(&second_header);
     Algorithms::move_backwards(&second, 1);
-    if (Traits::get_next(&second_header) != &first || Traits::get_previous(&second_header) != &second) {
+    if (Traits::get_next(&second_header) != &first ||
+        Traits::get_previous(&second_header) != &second) {
         return 3;
     }
 
     Algorithms::move_forward(&second, 1);
-    if (Traits::get_next(&second_header) != &second || Traits::get_previous(&second_header) != &first) {
+    if (Traits::get_next(&second_header) != &second ||
+        Traits::get_previous(&second_header) != &first) {
         return 4;
     }
 
     Algorithms::StablePartitionInfo info{};
     Algorithms::stable_partition(
-        Traits::get_next(&second_header),
-        &second_header,
-        [&first](Node *const node) noexcept -> bool { return node == &first; },
-        info);
+        Traits::get_next(&second_header), &second_header,
+        [&first](Node *const node) noexcept -> bool { return node == &first; }, info);
     if (info.m_num_first_partition != 1 || info.m_num_second_partition != 1 ||
         info.m_begin_second_partition != &second || Traits::get_next(&second_header) != &first) {
         return 5;

@@ -12,31 +12,31 @@ namespace arch {
 class IoApicRouteEntry final {
   public:
     constexpr auto set_vector(IrqVec vector) noexcept -> IoApicRouteEntry & {
-        return set_field(kVectorMask, 0, static_cast<u32>(vector));
+        return set_field(VECTOR_MASK, 0, static_cast<u32>(vector));
     }
 
     constexpr auto set_delivery_mode(ApicDeliveryMode mode) noexcept -> IoApicRouteEntry & {
-        return set_field(kDeliveryModeMask, 8, static_cast<u8>(mode));
+        return set_field(DELIVERY_MODE_MASK, 8, static_cast<u8>(mode));
     }
 
     constexpr auto set_dest_mode(ApicDestinationMode mode) noexcept -> IoApicRouteEntry & {
-        return set_field(kDestinationModeMask, 11, static_cast<u8>(mode));
+        return set_field(DESTINATION_MODE_MASK, 11, static_cast<u8>(mode));
     }
 
     constexpr auto set_polarity(ApicInterruptPolarity polarity) noexcept -> IoApicRouteEntry & {
-        return set_field(kPolarityMask, 13, static_cast<u8>(polarity));
+        return set_field(POLARITY_MASK, 13, static_cast<u8>(polarity));
     }
 
     constexpr auto set_trigger_mode(ApicTriggerMode mode) noexcept -> IoApicRouteEntry & {
-        return set_field(kTriggerModeMask, 15, static_cast<u8>(mode));
+        return set_field(TRIGGER_MODE_MASK, 15, static_cast<u8>(mode));
     }
 
     constexpr auto set_masked(bool masked) noexcept -> IoApicRouteEntry & {
-        return set_field(kMaskMask, 16, masked ? 1 : 0);
+        return set_field(MASK_MASK, 16, masked ? 1 : 0);
     }
 
     constexpr auto set_dest(u8 destination) noexcept -> IoApicRouteEntry & {
-        return set_field(kDestinationMask, 56, destination);
+        return set_field(DESTINATION_MASK, 56, destination);
     }
 
     [[nodiscard]]
@@ -49,13 +49,13 @@ class IoApicRouteEntry final {
     }
 
   private:
-    static constexpr auto kVectorMask = u64{0xFF};
-    static constexpr auto kDeliveryModeMask = u64{0x7};
-    static constexpr auto kDestinationModeMask = u64{0x1};
-    static constexpr auto kPolarityMask = u64{0x1};
-    static constexpr auto kTriggerModeMask = u64{0x1};
-    static constexpr auto kMaskMask = u64{0x1};
-    static constexpr auto kDestinationMask = u64{0xFF};
+    static constexpr auto VECTOR_MASK = u64{0xFF};
+    static constexpr auto DELIVERY_MODE_MASK = u64{0x7};
+    static constexpr auto DESTINATION_MODE_MASK = u64{0x1};
+    static constexpr auto POLARITY_MASK = u64{0x1};
+    static constexpr auto TRIGGER_MODE_MASK = u64{0x1};
+    static constexpr auto MASK_MASK = u64{0x1};
+    static constexpr auto DESTINATION_MASK = u64{0xFF};
 
     constexpr auto set_field(u64 mask, usize shift, u64 value) noexcept -> IoApicRouteEntry & {
         value_ = (value_ & ~(mask << shift)) | ((value & mask) << shift);
@@ -124,20 +124,20 @@ class IoApic final {
 
     [[nodiscard]]
     auto read(Register address) const noexcept -> u32 {
-        *control_register(kIoRegSel) = static_cast<u32>(address);
-        return *control_register(kIoWindow);
+        *control_register(IO_REG_SEL) = static_cast<u32>(address);
+        return *control_register(IO_WINDOW);
     }
 
     auto write(Register address, u32 value) noexcept -> void {
-        *control_register(kIoRegSel) = static_cast<u32>(address);
-        *control_register(kIoWindow) = value;
+        *control_register(IO_REG_SEL) = static_cast<u32>(address);
+        *control_register(IO_WINDOW) = value;
     }
 
     auto issue_eoi(HIrqNum irq) noexcept -> ours::Status {
-        if (version_ < kEoiRegisterMinVersion) {
+        if (version_ < EOI_REGISTER_MIN_VERSION) {
             return ours::Status::NotSupported;
         }
-        *control_register(kEoiRegister) = static_cast<u32>(irq);
+        *control_register(EOI_REGISTER) = static_cast<u32>(irq);
         return ours::Status::Ok;
     }
 
@@ -168,10 +168,10 @@ class IoApic final {
     }
 
   private:
-    static constexpr auto kIoRegSel = usize{0};
-    static constexpr auto kIoWindow = usize{0x10};
-    static constexpr auto kEoiRegister = usize{0x40};
-    static constexpr auto kEoiRegisterMinVersion = u32{0x20};
+    static constexpr auto IO_REG_SEL = usize{0};
+    static constexpr auto IO_WINDOW = usize{0x10};
+    static constexpr auto EOI_REGISTER = usize{0x40};
+    static constexpr auto EOI_REGISTER_MIN_VERSION = u32{0x20};
 
     [[nodiscard]]
     auto control_register(usize offset) const noexcept -> volatile u32 * {

@@ -1,9 +1,9 @@
-#include <multiboot/view.hpp>
-
 #include <array>
 
 #include <cstdlib>
 #include <cstring>
+
+#include <multiboot/view.hpp>
 
 namespace {
 using multiboot::MultibootMemoryMap;
@@ -144,9 +144,10 @@ auto memory_map_is_typed_and_unique() -> void {
 
     auto bad_version = bytes;
     auto version = u32{1};
-    auto constexpr kModuleTagSize = sizeof(MultibootTagModule);
-    auto constexpr kMemoryMapVersionOffset = offsetof(MultibootTagMmap, entry_version);
-    std::memcpy(bad_version.data() + sizeof(InfoHeader) + kModuleTagSize + kMemoryMapVersionOffset,
+    auto constexpr MODULE_TAG_SIZE = sizeof(MultibootTagModule);
+    auto constexpr MEMORY_MAP_VERSION_OFFSET = offsetof(MultibootTagMmap, entry_version);
+    std::memcpy(bad_version.data() + sizeof(InfoHeader) + MODULE_TAG_SIZE +
+                    MEMORY_MAP_VERSION_OFFSET,
                 &version, sizeof(version));
     auto const bad_view = View::from(bad_version.data(), cursor);
     require(bad_view.is_ok());

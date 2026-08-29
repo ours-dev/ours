@@ -25,10 +25,10 @@ struct PhysModule {
     /// Bumped whenever the shape of this record or the meaning of `init`
     /// changes.  A module built against an older physload fails the load
     /// with a diagnostic rather than running against the wrong contract.
-    static constexpr u32 kAbiVersion = 1;
+    static constexpr u32 ABI_VERSION = 1;
 
     /// Section physload looks in, and the section PHYS_MODULE() writes to.
-    static constexpr char const *kSection = ".phys.module";
+    static constexpr char const *SECTION = ".phys.module";
 
     u32 abi_version;
     u32 reserved;
@@ -55,13 +55,13 @@ struct PhysModule {
 /// the only consumer is a loader reading the section from outside.
 #define PHYS_MODULE(module_name, init_function)                                                    \
     namespace {                                                                                    \
-    [[gnu::used, gnu::retain, gnu::section(".phys.module")]]                                        \
-    ::ours::phys::PhysModule const g_phys_module{                                                   \
-        .abi_version = ::ours::phys::PhysModule::kAbiVersion,                                       \
-        .reserved = 0,                                                                              \
-        .name = (module_name),                                                                      \
-        .init = (init_function),                                                                    \
-    };                                                                                             \
+        [[gnu::used, gnu::retain, gnu::section(".phys.module")]]                                   \
+        ::ours::phys::PhysModule const g_phys_module{                                              \
+            .abi_version = ::ours::phys::PhysModule::ABI_VERSION,                                  \
+            .reserved = 0,                                                                         \
+            .name = (module_name),                                                                 \
+            .init = (init_function),                                                               \
+        };                                                                                         \
     } /* namespace */
 
 #endif // #ifndef OURS_PHYS_MODULE_HPP

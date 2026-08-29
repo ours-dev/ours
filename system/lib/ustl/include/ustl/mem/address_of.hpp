@@ -6,10 +6,10 @@
 #include <memory>
 
 namespace ustl::mem {
-    template <typename T>
-    constexpr auto address_of(T &value) noexcept -> T * {
-        return std::addressof(value);
-    }
+template <typename T>
+constexpr auto address_of(T &value) noexcept -> T * {
+    return std::addressof(value);
+}
 } // namespace ustl::mem
 
 #endif // USTL_MEM_ADDRESS_OF_HPP

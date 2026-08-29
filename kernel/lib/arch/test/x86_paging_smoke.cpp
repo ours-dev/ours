@@ -37,18 +37,19 @@ auto verify_mapping(ours::VirtAddr virtual_address, ours::PhysAddr physical_addr
     };
 
     auto const flags = MmuFlags::Present | MmuFlags::Writable | MmuFlags::Executable;
-    auto result = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
-                               virtual_address, physical_address, pages, flags);
+    auto result = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                               allocator, virtual_address, physical_address, pages, flags);
     if (result.is_err()) {
         return false;
     }
 
-    auto query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, virtual_address);
+    auto query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                                virtual_address);
     // x86 page tables have no read-disable bit: every present mapping reads
     // back as readable, regardless of whether callers named that implied bit.
     auto const canonical_flags = flags | MmuFlags::Readable;
-    return query && query.value().phys == physical_address && query.value().size == expected_page_size &&
-           query.value().flags == canonical_flags;
+    return query && query.value().phys == physical_address &&
+           query.value().size == expected_page_size && query.value().flags == canonical_flags;
 }
 
 auto verify_empty_and_invalid_ranges() -> bool {
@@ -59,13 +60,13 @@ auto verify_empty_and_invalid_ranges() -> bool {
     };
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
-    auto empty = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
-                              0, 0, 0, flags);
+    auto empty = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                              allocator, 0, 0, 0, flags);
     if (empty.is_err() || pool.next != 0) {
         return false;
     }
-    auto unaligned = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
-                                  1, 0, 1, flags);
+    auto unaligned = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                                  allocator, 1, 0, 1, flags);
     return unaligned.is_err() && unaligned.error() == MapError::InvalidArgument;
 }
 
@@ -79,19 +80,20 @@ auto verify_unmapping_removes_an_existing_mapping() -> bool {
     auto const physical_address = MB(6);
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
-    auto const mapped = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
-                                     virtual_address, physical_address, 1, flags);
+    auto const mapped = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                                     allocator, virtual_address, physical_address, 1, flags);
     if (mapped.is_err()) {
         return false;
     }
 
-    auto const unmapped = PageMap::unmap(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
-                                         virtual_address, 1);
+    auto const unmapped = PageMap::unmap(reinterpret_cast<ours::PhysAddr>(root),
+                                         IdentityPhysToVirt{}, virtual_address, 1);
     if (unmapped.is_err() || unmapped.unwrap() != 1) {
         return false;
     }
 
-    return !PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, virtual_address);
+    return !PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                           virtual_address);
 }
 
 auto verify_protection_updates_an_existing_mapping() -> bool {
@@ -102,22 +104,26 @@ auto verify_protection_updates_an_existing_mapping() -> bool {
     };
     auto const virtual_address = MB(8);
     auto const physical_address = MB(10);
-    auto const initial_flags = MmuFlags::Present | MmuFlags::Writable | MmuFlags::User | MmuFlags::Executable;
+    auto const initial_flags =
+        MmuFlags::Present | MmuFlags::Writable | MmuFlags::User | MmuFlags::Executable;
 
-    auto const mapped = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
-                                     virtual_address, physical_address, 1, initial_flags);
+    auto const mapped =
+        PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
+                     virtual_address, physical_address, 1, initial_flags);
     if (mapped.is_err()) {
         return false;
     }
 
     auto const final_flags = MmuFlags::Present | MmuFlags::Readable | MmuFlags::User;
-    auto const protected_pages = PageMap::protect(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
-                                                  virtual_address, 1, final_flags);
+    auto const protected_pages =
+        PageMap::protect(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                         virtual_address, 1, final_flags);
     if (protected_pages.is_err() || protected_pages.unwrap() != 1) {
         return false;
     }
 
-    auto const query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, virtual_address);
+    auto const query = PageMap::query(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
+                                      virtual_address);
     return query && query.value().phys == physical_address && query.value().flags == final_flags;
 }
 
@@ -131,8 +137,9 @@ auto verify_large_mapping_query_includes_page_offset() -> bool {
     auto const physical_address = MB(18);
     auto const flags = MmuFlags::Present | MmuFlags::Writable;
 
-    auto const mapped = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
-                                     virtual_address, physical_address, MB(2) / PAGE_SIZE, flags);
+    auto const mapped =
+        PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{}, allocator,
+                     virtual_address, physical_address, MB(2) / PAGE_SIZE, flags);
     if (mapped.is_err()) {
         return false;
     }
@@ -142,7 +149,7 @@ auto verify_large_mapping_query_includes_page_offset() -> bool {
                                       virtual_address + offset);
     return query && query.value().size == MB(2) && query.value().phys == physical_address + offset;
 }
-}  // namespace
+} // namespace
 
 auto main() -> int {
     if (!verify_mapping(MB(2), MB(2), 1, PAGE_SIZE)) {

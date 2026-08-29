@@ -5,11 +5,12 @@
 #include <ustl/collections/intrusive/list_hook.hpp>
 
 namespace {
-    using SafeHook = ustl::collections::intrusive::ListBaseHook<>;
-    using AutoHook = ustl::collections::intrusive::ListBaseHook<ustl::collections::intrusive::AutoUnlink>;
-    using MemberHook = ustl::collections::intrusive::ListMemberHook<>;
-    using Traits = SafeHook::NodeTraits;
-    using Algorithms = ustl::collections::intrusive::CircularListAlgorithms<Traits>;
+using SafeHook = ustl::collections::intrusive::ListBaseHook<>;
+using AutoHook =
+    ustl::collections::intrusive::ListBaseHook<ustl::collections::intrusive::AutoUnlink>;
+using MemberHook = ustl::collections::intrusive::ListMemberHook<>;
+using Traits = SafeHook::NodeTraits;
+using Algorithms = ustl::collections::intrusive::CircularListAlgorithms<Traits>;
 } // namespace
 
 auto main() -> int {

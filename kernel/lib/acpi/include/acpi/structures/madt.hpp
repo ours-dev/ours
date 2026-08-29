@@ -87,7 +87,7 @@ struct PACKED Table {
     u32 lapic_addr;
     u32 flags;
 
-    constexpr static Signature kSignature = Signature::from_chars("APIC");
+    constexpr static Signature SIGNATURE = Signature::from_chars("APIC");
 };
 static_assert(sizeof(Table) == 44);
 
@@ -98,7 +98,7 @@ struct PACKED LocalApicEntry {
     u8 apic_id;
     LocalApicFlag flags;
 
-    constexpr static Type kType = Type::LocalApic;
+    constexpr static Type TYPE = Type::LocalApic;
 };
 static_assert(sizeof(LocalApicEntry) == 8);
 
@@ -110,7 +110,7 @@ struct PACKED IoApicEntry {
     u32 io_apic_address;
     u32 global_irq_base;
 
-    constexpr static Type kType = Type::IoApic;
+    constexpr static Type TYPE = Type::IoApic;
 };
 static_assert(sizeof(IoApicEntry) == 12);
 
@@ -137,7 +137,7 @@ struct PACKED InterruptSourceOverrideEntry {
     u32 global_irq;
     u16 flags;
 
-    constexpr static Type kType = Type::InterruptSourceOverride;
+    constexpr static Type TYPE = Type::InterruptSourceOverride;
 };
 static_assert(sizeof(InterruptSourceOverrideEntry) == 10);
 
@@ -161,7 +161,7 @@ struct PACKED NmiSourceEntry {
     u16 flags;
     u32 global_irq;
 
-    constexpr static Type kType = Type::NmiSource;
+    constexpr static Type TYPE = Type::NmiSource;
 };
 static_assert(sizeof(NmiSourceEntry) == 8);
 
@@ -172,7 +172,7 @@ struct PACKED LocalApicNmiEntry {
     u16 flags;
     u8 local_apic_lint;
 
-    constexpr static Type kType = Type::LocalApicNmi;
+    constexpr static Type TYPE = Type::LocalApicNmi;
 };
 static_assert(sizeof(LocalApicNmiEntry) == 6);
 
@@ -185,7 +185,7 @@ struct PACKED LocalApicAddressOverrideEntry {
     u16 reserved;
     u64 local_apic_address;
 
-    constexpr static Type kType = Type::LocalApicAddressOverride;
+    constexpr static Type TYPE = Type::LocalApicAddressOverride;
 };
 static_assert(sizeof(LocalApicAddressOverrideEntry) == 12);
 
@@ -197,7 +197,7 @@ struct PACKED IoSapicEntry {
     u32 global_irq_base;
     u64 io_sapic_address;
 
-    constexpr static Type kType = Type::IoSapic;
+    constexpr static Type TYPE = Type::IoSapic;
 };
 static_assert(sizeof(IoSapicEntry) == 16);
 
@@ -214,7 +214,7 @@ struct PACKED LocalSapicEntry {
     LocalApicFlag flags;
     u32 acpi_processor_uid;
 
-    constexpr static Type kType = Type::LocalSapic;
+    constexpr static Type TYPE = Type::LocalSapic;
 };
 static_assert(sizeof(LocalSapicEntry) == 16);
 
@@ -229,7 +229,7 @@ struct PACKED PlatformInterruptSourcesEntry {
     u32 global_irq;
     u32 platform_interrupt_source_flags;
 
-    constexpr static Type kType = Type::PlatformInterruptSources;
+    constexpr static Type TYPE = Type::PlatformInterruptSources;
 };
 static_assert(sizeof(PlatformInterruptSourcesEntry) == 16);
 
@@ -245,7 +245,7 @@ struct PACKED LocalX2ApicEntry {
     LocalApicFlag flags;
     u32 acpi_processor_uid;
 
-    constexpr static Type kType = Type::LocalX2Apic;
+    constexpr static Type TYPE = Type::LocalX2Apic;
 };
 static_assert(sizeof(LocalX2ApicEntry) == 16);
 
@@ -257,7 +257,7 @@ struct PACKED LocalX2ApicNmiEntry {
     u8 local_x2apic_lint;
     u8 reserved[3];
 
-    constexpr static Type kType = Type::LocalX2ApicNmi;
+    constexpr static Type TYPE = Type::LocalX2ApicNmi;
 };
 static_assert(sizeof(LocalX2ApicNmiEntry) == 12);
 

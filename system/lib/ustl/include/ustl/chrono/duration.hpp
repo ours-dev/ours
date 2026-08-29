@@ -4,6 +4,7 @@
 #define USTL_CHRONO_DURATION_HPP 1
 
 #include <chrono>
+
 #include <cstdint>
 
 namespace ustl::chrono {
@@ -18,7 +19,7 @@ using Minutes = std::chrono::minutes;
 using Years = std::chrono::years;
 
 template <typename ClockT, typename DurationT>
-struct TimePoint : std::chrono::time_point<ClockT, DurationT> {
+struct TimePoint: std::chrono::time_point<ClockT, DurationT> {
     using Base = std::chrono::time_point<ClockT, DurationT>;
     using Duration = DurationT;
 
@@ -33,6 +34,6 @@ struct TimePoint : std::chrono::time_point<ClockT, DurationT> {
 using std::chrono::duration_cast;
 using std::chrono::time_point_cast;
 
-}  // namespace ustl::chrono
+} // namespace ustl::chrono
 
-#endif  // USTL_CHRONO_DURATION_HPP
+#endif // USTL_CHRONO_DURATION_HPP

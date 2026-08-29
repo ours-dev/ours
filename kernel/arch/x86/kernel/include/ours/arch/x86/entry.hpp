@@ -3,19 +3,18 @@
 #ifndef OURS_ARCH_X86_ENTRY_HPP
 #define OURS_ARCH_X86_ENTRY_HPP 1
 
+#include <arch/interrupt.hpp>
 #include <ours/compiler.hpp>
 
-#include <arch/interrupt.hpp>
-
 namespace ours {
-    NO_MANGLE 
-    auto x86_syscall(arch::IrqFrame *) -> void;
+NO_MANGLE
+auto x86_syscall(arch::IrqFrame *) -> void;
 
-    NO_MANGLE [[noreturn]] 
-    auto x86_enter_uspace(arch::IrqFrame *) -> void;
+NO_MANGLE [[noreturn]]
+auto x86_enter_uspace(arch::IrqFrame *) -> void;
 
-    NO_MANGLE
-    auto x86_switch_context(VirtAddr *prev, VirtAddr next) -> void;
+NO_MANGLE
+auto x86_switch_context(VirtAddr *prev, VirtAddr next) -> void;
 
 } // namespace ours
 

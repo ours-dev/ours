@@ -31,7 +31,7 @@ class MappedMemory final {
     auto read_at(Addr address) noexcept -> T * {
         static_assert(std::is_trivially_copyable_v<T>);
         auto const offset = translate(address, sizeof(T), false);
-        if (offset == K_INVALID_OFFSET) {
+        if (offset == INVALID_OFFSET) {
             return nullptr;
         }
         return m_memory.template read_at<T>(offset);
@@ -45,7 +45,7 @@ class MappedMemory final {
             return {};
         }
         auto const offset = translate(address, count * sizeof(T), false);
-        if (offset == K_INVALID_OFFSET) {
+        if (offset == INVALID_OFFSET) {
             return {};
         }
         return m_memory.template read_at_n<T>(offset, count);
@@ -56,11 +56,11 @@ class MappedMemory final {
     auto write(Addr address, T const &value) noexcept -> bool {
         static_assert(std::is_trivially_copyable_v<T>);
         auto const offset = translate(address, sizeof(T), true);
-        return offset != K_INVALID_OFFSET && m_memory.template write<T>(offset, value);
+        return offset != INVALID_OFFSET && m_memory.template write<T>(offset, value);
     }
 
   private:
-    static constexpr usize K_INVALID_OFFSET = std::numeric_limits<usize>::max();
+    static constexpr usize INVALID_OFFSET = std::numeric_limits<usize>::max();
 
     [[nodiscard]]
     static constexpr auto effective_size(void *data, usize size) noexcept -> usize {
@@ -73,50 +73,50 @@ class MappedMemory final {
     [[nodiscard]]
     auto translate(Addr address, usize request_size, bool requires_write) const noexcept -> usize {
         if (!m_backing_is_valid) {
-            return K_INVALID_OFFSET;
+            return INVALID_OFFSET;
         }
         if constexpr (sizeof(usize) > sizeof(u64)) {
             if (request_size > static_cast<usize>(std::numeric_limits<u64>::max())) {
-                return K_INVALID_OFFSET;
+                return INVALID_OFFSET;
             }
         }
 
         auto const virtual_address = static_cast<u64>(address);
         auto const virtual_size = static_cast<u64>(request_size);
         if (virtual_address > std::numeric_limits<u64>::max() - virtual_size) {
-            return K_INVALID_OFFSET;
+            return INVALID_OFFSET;
         }
         auto const virtual_end = virtual_address + virtual_size;
 
         for (auto const &region: m_regions) {
             if (region.virtual_end < region.virtual_start) {
-                return K_INVALID_OFFSET;
+                return INVALID_OFFSET;
             }
         }
 
-        auto mapped_offset = K_INVALID_OFFSET;
+        auto mapped_offset = INVALID_OFFSET;
         bool found_mapping = false;
         for (auto const &region: m_regions) {
             if (virtual_address < region.virtual_start || virtual_end > region.virtual_end) {
                 continue;
             }
             if (found_mapping) {
-                return K_INVALID_OFFSET;
+                return INVALID_OFFSET;
             }
             if (requires_write &&
                 static_cast<unsigned>(region.permissions & SegPerms::Writable) == 0U) {
-                return K_INVALID_OFFSET;
+                return INVALID_OFFSET;
             }
 
             auto const virtual_offset = virtual_address - region.virtual_start;
             if constexpr (sizeof(u64) > sizeof(usize)) {
                 if (virtual_offset > static_cast<u64>(std::numeric_limits<usize>::max())) {
-                    return K_INVALID_OFFSET;
+                    return INVALID_OFFSET;
                 }
             }
             auto const native_virtual_offset = static_cast<usize>(virtual_offset);
             if (region.image_offset > std::numeric_limits<usize>::max() - native_virtual_offset) {
-                return K_INVALID_OFFSET;
+                return INVALID_OFFSET;
             }
             auto const image_offset = region.image_offset + native_virtual_offset;
             if (image_offset <= m_memory.size() && request_size <= m_memory.size() - image_offset) {
@@ -124,7 +124,7 @@ class MappedMemory final {
                 found_mapping = true;
                 continue;
             }
-            return K_INVALID_OFFSET;
+            return INVALID_OFFSET;
         }
         return mapped_offset;
     }

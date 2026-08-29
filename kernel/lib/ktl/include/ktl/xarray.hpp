@@ -5,11 +5,11 @@
 
 #include <ktl/result.hpp>
 #include <ours/types.hpp>
-#include <array>
 #include <ustl/bitfields.hpp>
 #include <ustl/bitset.hpp>
 #include <ustl/option.hpp>
 
+#include <array>
 #include <limits>
 
 namespace ktl {
@@ -19,9 +19,9 @@ namespace xarray {
                                          ustl::bitfields::Bits<Bits>>;
 
     struct XArryDefaultConfig {
-        constexpr static auto const kSlotsBits = 6;
+        constexpr static auto const SLOTS_BITS = 6;
 
-        constexpr static auto const kNumBitTags = 4;
+        constexpr static auto const NUM_BIT_TAGS = 4;
     };
 
     template <typename A, typename C = XArryDefaultConfig>
@@ -29,13 +29,13 @@ namespace xarray {
         using Self = XArray;
 
       public:
-        constexpr static auto const kNumBitTags = C::kNumBitTags;
+        constexpr static auto const NUM_BIT_TAGS = C::NUM_BIT_TAGS;
 
-        constexpr static auto const kSlotsBits = C::kSlotsBits;
+        constexpr static auto const SLOTS_BITS = C::SLOTS_BITS;
 
-        constexpr static auto const kSlotsMask = (1 << kSlotsBits) - 1;
+        constexpr static auto const SLOTS_MASK = (1 << SLOTS_BITS) - 1;
 
-        constexpr static auto const kMaxSlots = (1 << kSlotsBits);
+        constexpr static auto const MAX_SLOTS = (1 << SLOTS_BITS);
 
         class Cursor;
 
@@ -50,11 +50,11 @@ namespace xarray {
                 MaxNumType,
             };
 
-            constexpr static auto kTypeBits = ustl::bit_width(usize(Type::MaxNumType));
+            constexpr static auto TYPE_BITS = ustl::bit_width(usize(Type::MaxNumType));
 
-            constexpr static auto kValueBits = std::numeric_limits<usize>::digits - kTypeBits;
+            constexpr static auto VALUE_BITS = std::numeric_limits<usize>::digits - TYPE_BITS;
 
-            using Inner = ustl::BitFields<Field<0, Type, kTypeBits>, Field<1, usize, kValueBits>>;
+            using Inner = ustl::BitFields<Field<0, Type, TYPE_BITS>, Field<1, usize, VALUE_BITS>>;
 
             FORCE_INLINE constexpr auto max_index() const -> usize {
                 if (is_node()) {
@@ -124,11 +124,11 @@ namespace xarray {
 
             Inner inner;
         };
-        using Slots = std::array<Entry, kMaxSlots>;
+        using Slots = std::array<Entry, MAX_SLOTS>;
 
         struct Node {
             auto get_offset(usize index) const -> usize {
-                return (index >> shift) & kSlotsMask;
+                return (index >> shift) & SLOTS_MASK;
             }
 
             auto get_entry(usize index) const -> Entry {
@@ -141,7 +141,7 @@ namespace xarray {
             }
 
             auto max_index() const -> usize {
-                return (kMaxSlots << shift) - 1;
+                return (MAX_SLOTS << shift) - 1;
             }
 
             u8 shift;  // The order of number of slots, if zero the slot is a leaf node.
@@ -157,7 +157,7 @@ namespace xarray {
         typedef typename A::template RebindT<Node> Allocator;
 
         auto make_cursor(usize index, usize shift) -> Cursor {
-            return Cursor(this, index, shift, 0, 0, Cursor::kRootTag, 0);
+            return Cursor(this, index, shift, 0, 0, Cursor::ROOT_TAG, 0);
         }
 
         auto load(usize index) -> Entry;
@@ -194,7 +194,7 @@ namespace xarray {
         usize m_shift;
         usize m_offset;
         NodePtrMut m_node; // Node we are operating on.
-        ustl::BitSet<kMaxSlots * kNumBitTags> m_tags;
+        ustl::BitSet<MAX_SLOTS * NUM_BIT_TAGS> m_tags;
     };
 
 } // namespace xarray

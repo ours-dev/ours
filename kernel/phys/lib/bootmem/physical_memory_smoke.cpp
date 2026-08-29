@@ -54,7 +54,7 @@ auto request(AllocationDirection const direction) -> AllocationRequest {
         .alignment = 0x1000,
         .lower = 0x1000,
         .upper = 0x9000,
-        .node = bootmem::kAnyNode,
+        .node = bootmem::ANY_NODE,
         .direction = direction,
     };
 }
@@ -63,7 +63,7 @@ auto free_query() -> MemoryQuery {
     return {
         .lower = 0x1000,
         .upper = 0x9000,
-        .node = bootmem::kAnyNode,
+        .node = bootmem::ANY_NODE,
         .view = MemoryView::Free,
     };
 }
@@ -233,7 +233,7 @@ auto trim_discards_partial_pages_and_updates_bounds() -> void {
     auto const collected = collect(fixture.memory(), {
                                                          .lower = 0x1000,
                                                          .upper = 0x6000,
-                                                         .node = bootmem::kAnyNode,
+                                                         .node = bootmem::ANY_NODE,
                                                          .view = MemoryView::Usable,
                                                      });
     require(collected.count == 1);

@@ -1,6 +1,5 @@
-#include <ours/compiler.hpp>
-
 #include <ccrt/runtime.hpp>
+#include <ours/compiler.hpp>
 
 extern "C" ccrt::Initializer const INITIALIZERS_START[] LINK_NAME("__ccrt_init_start") = {nullptr};
 extern "C" ccrt::Initializer const INITIALIZERS_END[] LINK_NAME("__ccrt_init_end") = {nullptr};

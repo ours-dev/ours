@@ -26,10 +26,10 @@ template <typename T>
 using RemovePtrT = std::remove_pointer_t<T>;
 
 template <typename T>
-struct PtrDepth : std::integral_constant<int, 0> {};
+struct PtrDepth: std::integral_constant<int, 0> {};
 
 template <typename T>
-struct PtrDepth<T *> : std::integral_constant<int, PtrDepth<T>::value + 1> {};
+struct PtrDepth<T *>: std::integral_constant<int, PtrDepth<T>::value + 1> {};
 
 template <typename T>
 inline constexpr int PtrDepthV = PtrDepth<T>::value;
@@ -60,6 +60,6 @@ struct RemovePtrDepth<T, 0> {
 template <typename T, int Depth>
 using RemovePtrDepthT = typename RemovePtrDepth<T, Depth>::Type;
 
-}  // namespace ustl::traits
+} // namespace ustl::traits
 
-#endif  // USTL_TRAITS_PTR_HPP
+#endif // USTL_TRAITS_PTR_HPP

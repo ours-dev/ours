@@ -27,11 +27,11 @@ enum class XApicRegType : u32 {
     TimerDivConf = 0x3E0,
 };
 
-inline constexpr auto kInvalidApicId = u32{0xFFFF'FFFF};
-inline constexpr auto kApicPhysBase = PhysAddr{0xFEE0'0000};
-inline constexpr auto kIa32ApicBaseBsp = usize{1} << 8;
-inline constexpr auto kIa32ApicBaseX2ApicEnable = usize{1} << 10;
-inline constexpr auto kIa32ApicBaseXapicEnable = usize{1} << 11;
+inline constexpr auto INVALID_APIC_ID = u32{0xFFFF'FFFF};
+inline constexpr auto APIC_PHYS_BASE = PhysAddr{0xFEE0'0000};
+inline constexpr auto IA32_APIC_BASE_BSP = usize{1} << 8;
+inline constexpr auto IA32_APIC_BASE_X2_APIC_ENABLE = usize{1} << 10;
+inline constexpr auto IA32_APIC_BASE_XAPIC_ENABLE = usize{1} << 11;
 
 class XApic final {
   public:
@@ -62,15 +62,15 @@ class XApic final {
 
     auto enable_tsc(IrqVec vector, TscMode mode = TscMode::OneShot) noexcept -> void {
         auto value = read_reg(XApicRegType::LvtTimer);
-        value &= ~(kVectorMask | kTimerModeMask | kInterruptMask);
-        value |= static_cast<u32>(vector) & kVectorMask;
+        value &= ~(VECTOR_MASK | TIMER_MODE_MASK | INTERRUPT_MASK);
+        value |= static_cast<u32>(vector) & VECTOR_MASK;
         value |= static_cast<u32>(mode) << 17;
         write_reg(XApicRegType::LvtTimer, value);
     }
 
     auto disable_tsc(IrqVec vector) noexcept -> void {
         auto value = read_reg(XApicRegType::LvtTimer);
-        value = (value & ~kVectorMask) | (static_cast<u32>(vector) & kVectorMask) | kInterruptMask;
+        value = (value & ~VECTOR_MASK) | (static_cast<u32>(vector) & VECTOR_MASK) | INTERRUPT_MASK;
         write_reg(XApicRegType::LvtTimer, value);
     }
 
@@ -80,7 +80,7 @@ class XApic final {
 
     [[nodiscard]]
     auto tsc_deadline_enabled() const noexcept -> bool {
-        return (read_reg(XApicRegType::LvtTimer) & kTimerModeMask) == (u32{2} << 17);
+        return (read_reg(XApicRegType::LvtTimer) & TIMER_MODE_MASK) == (u32{2} << 17);
     }
 
     auto issue_eoi() noexcept -> void {
@@ -114,11 +114,11 @@ class XApic final {
     }
 
     auto mask(XApicRegType type) noexcept -> void {
-        write_reg(type, read_reg(type) | kInterruptMask);
+        write_reg(type, read_reg(type) | INTERRUPT_MASK);
     }
 
     auto unmask(XApicRegType type) noexcept -> void {
-        write_reg(type, read_reg(type) & ~kInterruptMask);
+        write_reg(type, read_reg(type) & ~INTERRUPT_MASK);
     }
 
     [[nodiscard]]
@@ -144,9 +144,9 @@ class XApic final {
         }
     }
 
-    static constexpr auto kVectorMask = u32{0xFF};
-    static constexpr auto kInterruptMask = u32{1} << 16;
-    static constexpr auto kTimerModeMask = u32{3} << 17;
+    static constexpr auto VECTOR_MASK = u32{0xFF};
+    static constexpr auto INTERRUPT_MASK = u32{1} << 16;
+    static constexpr auto TIMER_MODE_MASK = u32{3} << 17;
 
     volatile u32 *mmio_base_{};
 };

@@ -1,13 +1,11 @@
 #include "legacy_boot.hpp"
-
 #include <ours/phys/init.hpp>
 #include <ours/phys/print.hpp>
 
 #include <cstring>
 namespace ours::phys {
 namespace {
-    auto parse_string(multiboot::View::Tag const &tag, ustl::views::StringView &output)
-        -> Status {
+    auto parse_string(multiboot::View::Tag const &tag, ustl::views::StringView &output) -> Status {
         auto const bytes = tag.bytes();
         if (bytes.size() <= sizeof(multiboot::MultibootTag)) {
             return Status::InvalidArgument;
@@ -22,8 +20,8 @@ namespace {
         return Status::Ok;
     }
 
-    auto parse_acpi(multiboot::View::Tag const &tag, usize const minimum_size,
-                    usize const version, usize &acpi_version, usize &acpi_rsdp) -> Status {
+    auto parse_acpi(multiboot::View::Tag const &tag, usize const minimum_size, usize const version,
+                    usize &acpi_version, usize &acpi_rsdp) -> Status {
         if (tag.bytes().size() < minimum_size) {
             return Status::InvalidArgument;
         }
@@ -47,7 +45,7 @@ auto LegacyBoot::parse_params(usize const param) -> Status {
     }
 
     auto const *data = reinterpret_cast<u8 const *>(param);
-    u32 total_size {};
+    u32 total_size{};
     std::memcpy(&total_size, data, sizeof(total_size));
     mbi_size = total_size;
     auto const view = multiboot::View::from(data, total_size);
@@ -68,7 +66,8 @@ auto LegacyBoot::parse_params(usize const param) -> Status {
         reinterpret_cast<u8 *>(static_cast<usize>(module.unwrap().start)),
         static_cast<usize>(module.unwrap().end - module.unwrap().start),
     };
-    println("[info]: `ours.obi` is at 0x{:X}, size {} bytes", module.unwrap().start, ramdisk.size());
+    println("[info]: `ours.obi` is at 0x{:X}, size {} bytes", module.unwrap().start,
+            ramdisk.size());
 
     auto tags = view.unwrap().iterator();
     while (auto const tag = tags.next()) {

@@ -82,9 +82,8 @@ auto init_memory(obi::ContainerView const &package, BootPackageInput const &inpu
 /// call (obi_main never returns, so "the duration of this call" is
 /// forever in practice) -- boot-shim's own stack frame is fine, since nothing
 /// downstream of here switches stacks.
-NO_MANGLE NO_RETURN
-auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy)
-    -> void;
+NO_MANGLE NO_RETURN auto obi_main(PhysAddr package_base, usize package_size,
+                                  LegacyPlatformInfo const *legacy) -> void;
 
 NO_MANGLE NO_RETURN auto phys_main(PhysAddr boot_params) -> void;
 

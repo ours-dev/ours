@@ -6,16 +6,18 @@
 #include <arch/paging/x86_pagings.hpp>
 
 namespace ours::phys {
-    using ArchLowerPaging = arch::paging::PagingDispatcher<arch::paging::X86PagingLevel::PageMapLevel4>::Type;
-    using ArchUpperPaging = arch::paging::PagingDispatcher<arch::paging::X86PagingLevel::PageMapLevel4>::Type;
+using ArchLowerPaging =
+    arch::paging::PagingDispatcher<arch::paging::X86PagingLevel::PageMapLevel4>::Type;
+using ArchUpperPaging =
+    arch::paging::PagingDispatcher<arch::paging::X86PagingLevel::PageMapLevel4>::Type;
 
-    constexpr PhysAddr const LOWER_MAPPING_BASE = 0;
+constexpr PhysAddr const LOWER_MAPPING_BASE = 0;
 
-    constexpr PhysAddr const LOWER_MAPPING_SIZE = GB(1);
+constexpr PhysAddr const LOWER_MAPPING_SIZE = GB(1);
 
-    constexpr PhysAddr const UPPER_MAPPING_BASE = 0;
+constexpr PhysAddr const UPPER_MAPPING_BASE = 0;
 
-    constexpr PhysAddr const UPPER_MAPPING_SIZE = GB(32);
+constexpr PhysAddr const UPPER_MAPPING_SIZE = GB(32);
 
 } // namespace ours::phys
 

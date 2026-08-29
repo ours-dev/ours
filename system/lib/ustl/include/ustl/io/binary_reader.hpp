@@ -20,9 +20,14 @@ class BinaryReader {
         return {begin + sizeof(Table), begin + total_size};
     }
 
-    [[nodiscard]] constexpr auto valid() const -> bool { return valid_; }
+    [[nodiscard]]
+    constexpr auto valid() const -> bool {
+        return valid_;
+    }
 
-    explicit constexpr operator bool() const { return valid_ && current_ != end_; }
+    explicit constexpr operator bool() const {
+        return valid_ && current_ != end_;
+    }
 
     template <typename Entry>
     auto read() -> Entry const * {
@@ -46,7 +51,8 @@ class BinaryReader {
     constexpr BinaryReader(char const *begin, char const *end)
         : current_(begin), end_(end), valid_(true) {}
 
-    [[nodiscard]] constexpr auto remaining() const -> std::size_t {
+    [[nodiscard]]
+    constexpr auto remaining() const -> std::size_t {
         return static_cast<std::size_t>(end_ - current_);
     }
 

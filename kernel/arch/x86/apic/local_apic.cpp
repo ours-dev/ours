@@ -13,10 +13,11 @@
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/time/clock_event_device.hpp>
 #include <ours/time/clock_source.hpp>
-#include <array>
 #include <ustl/bit.hpp>
 #include <ustl/limits.hpp>
+
 #include <algorithm>
+#include <array>
 
 namespace ours {
 namespace {
@@ -28,7 +29,7 @@ namespace {
     constinit auto s_cpu_to_apicid = []() constexpr -> std::array<u32, MAX_CPU> {
         std::array<u32, MAX_CPU> apicids{};
         for (auto &apicid: apicids) {
-            apicid = arch::kInvalidApicId;
+            apicid = arch::INVALID_APIC_ID;
         }
         return apicids;
     }();
@@ -50,10 +51,8 @@ using namespace irq;
 using namespace time;
 using mm::CpuLocal;
 
-INIT_CODE
-auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
-    INIT_DATA
-    static CpuMask assigned;
+INIT_CODE auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
+    INIT_DATA static CpuMask assigned;
 
     if (apicid >= MAX_CPU) {
         return INVALID_CPU_NUM;
@@ -78,11 +77,11 @@ auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
 
 auto cpunum_to_apic_id(CpuNum cpunum) -> u32 {
     if (cpunum >= MAX_CPU) {
-        return arch::kInvalidApicId;
+        return arch::INVALID_APIC_ID;
     }
 
     auto const apicid = s_cpu_to_apicid[cpunum];
-    DEBUG_ASSERT(apicid != arch::kInvalidApicId);
+    DEBUG_ASSERT(apicid != arch::INVALID_APIC_ID);
     return apicid;
 }
 
@@ -191,13 +190,13 @@ auto ApicTimerEvent::set_next_event_tick(Ticks delta) -> Status {
             }
         }
 
-        constexpr static u32 const kDivisor[] = {0xb, 0, 1, 2, 3, 8, 9, 10};
+        constexpr static u32 const DIVISOR[] = {0xb, 0, 1, 2, 3, 8, 9, 10};
 
-        if (divisor == 0 || divisor > (sizeof(kDivisor) / sizeof(kDivisor[0]))) {
+        if (divisor == 0 || divisor > (sizeof(DIVISOR) / sizeof(DIVISOR[0]))) {
             return Status::InvalidArguments;
         }
 
-        divisor = kDivisor[divisor - 1];
+        divisor = DIVISOR[divisor - 1];
     }
 
     s_xapic.write_reg(arch::XApicRegType::TimerInitCount, count);
@@ -263,8 +262,7 @@ auto apic_handle_timer_irq() -> void {
     s_lapic_timer_event->handle_event();
 }
 
-FORCE_INLINE
-static auto apic_timer_current_count() -> u64 {
+FORCE_INLINE static auto apic_timer_current_count() -> u64 {
     return s_xapic.read_reg(arch::XApicRegType::TimerCurrentCount);
 }
 
@@ -285,12 +283,11 @@ struct Calibration {
     usize tsc_cycle_first = 0;
     usize tsc_cycle_last = 0;
 };
-INIT_CODE
-static auto calibrate_apic_clock_single(u32 periods, u32 apic_advisor) -> u32 {
-    constexpr static auto const kApicInitCount = ustl::NumericLimits<u32>::max();
+INIT_CODE static auto calibrate_apic_clock_single(u32 periods, u32 apic_advisor) -> u32 {
+    constexpr static auto const APIC_INIT_COUNT = ustl::NumericLimits<u32>::max();
 
     Calibration calibration{};
-    auto status = ApicTimerEvent::setup_timer(kApicInitCount, true, true);
+    auto status = ApicTimerEvent::setup_timer(APIC_INIT_COUNT, true, true);
     ASSERT(Status::Ok == status);
 
     calibration.start();
@@ -306,20 +303,19 @@ static auto calibrate_apic_clock_single(u32 periods, u32 apic_advisor) -> u32 {
     return static_cast<u32>(calibration.apic_cycle_last - calibration.apic_cycle_first);
 }
 
-INIT_CODE
-auto apic_calibrate_clock() -> bool {
-    constexpr static auto const kNumTrails = 4;
+INIT_CODE auto apic_calibrate_clock() -> bool {
+    constexpr static auto const NUM_TRAILS = 4;
 
-    constexpr static auto const kInvalidTickNum = ustl::NumericLimits<u32>::max();
+    constexpr static auto const INVALID_TICK_NUM = ustl::NumericLimits<u32>::max();
 
-    u32 best_time[kNumTrails];
-    std::fill_n(best_time, kNumTrails, kInvalidTickNum);
+    u32 best_time[NUM_TRAILS];
+    std::fill_n(best_time, NUM_TRAILS, INVALID_TICK_NUM);
 
-    u32 periods[kNumTrails] = {1, 2, 4, 8};
+    u32 periods[NUM_TRAILS] = {1, 2, 4, 8};
     u32 apic_advisor = 1;
 
     DEBUG_ASSERT(!arch::irqs_disabled());
-    for (auto trail = 0; trail < kNumTrails; ++trail) {
+    for (auto trail = 0; trail < NUM_TRAILS; ++trail) {
         for (auto i = 0; i < 2; ++i) {
             u32 elapsed_ticks = calibrate_apic_clock_single(periods[trail], apic_advisor);
             log::trace("Calibration result for duration {} ms: {} ticks/ms.", periods[trail],
@@ -327,7 +323,7 @@ auto apic_calibrate_clock() -> bool {
 
             if (elapsed_ticks < best_time[trail]) {
                 best_time[trail] = elapsed_ticks;
-            } else if (best_time[trail] == kInvalidTickNum) {
+            } else if (best_time[trail] == INVALID_TICK_NUM) {
                 i -= 1;
                 apic_advisor = u8(apic_advisor << 1);
             }
@@ -340,13 +336,11 @@ auto apic_calibrate_clock() -> bool {
     return true;
 }
 
-INIT_CODE
-auto current_apic_id_early() -> u32 {
+INIT_CODE auto current_apic_id_early() -> u32 {
     return s_xapic.id();
 }
 
-INIT_CODE
-static auto init_apic_timer() -> void {
+INIT_CODE static auto init_apic_timer() -> void {
     using namespace arch;
 
     // By default to let timer work on periodic mode.
@@ -358,33 +352,30 @@ static auto init_apic_timer() -> void {
 }
 
 /// Initialize APIC performance monitoring interrupt.
-INIT_CODE
-static auto init_apic_pmi() -> void {
+INIT_CODE static auto init_apic_pmi() -> void {
     using namespace arch;
     s_xapic.write_reg(XApicRegType::LvtPmi, IrqVec::ApicPmi);
     s_xapic.mask(arch::XApicRegType::LvtPmi);
 }
 
-INIT_CODE
-static auto init_apic_error() -> void {
+INIT_CODE static auto init_apic_error() -> void {
     using namespace arch;
     s_xapic.write_reg(XApicRegType::LvtError, IrqVec::ApicError);
     s_xapic.write_reg(XApicRegType::Esr, 0);
 }
 
-INIT_CODE
-auto init_local_apic_percpu() -> void {
+INIT_CODE auto init_local_apic_percpu() -> void {
     using namespace arch;
     auto apic_base = MsrIo::read<usize>(MsrRegAddr::IA32ApicBase);
-    if (apic_base & arch::kIa32ApicBaseBsp) {
+    if (apic_base & arch::IA32_APIC_BASE_BSP) {
         if (x86_has_feature(CpuFeatureType::X2Apic)) {
             log::trace("X2-APIC enabled");
         }
     }
 
-    apic_base |= arch::kIa32ApicBaseXapicEnable;
+    apic_base |= arch::IA32_APIC_BASE_XAPIC_ENABLE;
     if (s_x2apic_enabled) {
-        apic_base |= arch::kIa32ApicBaseX2ApicEnable;
+        apic_base |= arch::IA32_APIC_BASE_X2_APIC_ENABLE;
     }
 
     // Enable X[2]-APIC
@@ -393,15 +384,14 @@ auto init_local_apic_percpu() -> void {
     // Save ID of this local APIC
     CpuLocal::write(s_apic_id, s_xapic.id());
 
-    if (!(apic_base & arch::kIa32ApicBaseBsp)) {
+    if (!(apic_base & arch::IA32_APIC_BASE_BSP)) {
         init_apic_timer();
     }
     init_apic_error();
     init_apic_pmi();
 }
 
-INIT_CODE
-auto init_local_apic() -> void {
+INIT_CODE auto init_local_apic() -> void {
     // Section 10.4.1 has the following:
     // In MP system configurations, the APIC registers for Intel 64 or IA-32 processors on
     // the system bus are initially mapped to the same 4-KByte region of the physical address
@@ -411,7 +401,7 @@ auto init_local_apic() -> void {
     //
     // We map it to the same 4K region for all the local APICs.
     auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_at(
-        arch::kApicPhysBase, 0, PAGE_SIZE,
+        arch::APIC_PHYS_BASE, 0, PAGE_SIZE,
         // `Discache` is required to prevent
         mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
         mm::VmMapOption::Commit | mm::VmMapOption::Pinned, "Local-APIC");

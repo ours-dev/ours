@@ -6,15 +6,15 @@
 #include <ours/task/sched/scheduler.hpp>
 
 namespace ours::task {
-    using sched::UnparkControl;
+using sched::UnparkControl;
 
-    using sched::LOWEST_PRIORITY;
-    using sched::HIGHEST_PRIORITY;
-    using sched::DEFAULT_PRIORITY;
-    using sched::IDLE_PRIORITY;
+using sched::DEFAULT_PRIORITY;
+using sched::HIGHEST_PRIORITY;
+using sched::IDLE_PRIORITY;
+using sched::LOWEST_PRIORITY;
 
-    using sched::CpuAffinity;
-    using sched::Scheduler;
+using sched::CpuAffinity;
+using sched::Scheduler;
 
 } // namespace ours::task
 

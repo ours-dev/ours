@@ -5,6 +5,7 @@
 #include <ours/platform/init.hpp>
 #include <ustl/bit.hpp>
 #include <ustl/lazy_init.hpp>
+
 #include <array>
 
 using ours::mm::MemCache;
@@ -93,16 +94,14 @@ auto kfree(void *object) -> void {
     cache->free(object);
 }
 
-INIT_CODE
-auto init_kmalloc() -> void {
+INIT_CODE auto init_kmalloc() -> void {
     for (usize i = 0; i < s_kmalloc_cache.size(); ++i) {
         // data(), not init(): create_boot() initializes the cache in place,
         // exactly as MemCache::init() does for its own bootstrap caches.
         // Calling init() would need a default constructor MemCache does not
         // have -- its constructors are private and take the layout up front.
         [[maybe_unused]]
-        auto const status = MemCache::create_boot(*s_kmalloc_cache[i].data(),
-                                                  MALLOC_CACHE_NAMES[i],
+        auto const status = MemCache::create_boot(*s_kmalloc_cache[i].data(), MALLOC_CACHE_NAMES[i],
                                                   BIT(i + MALLOC_MIN_ORDER), alignof(usize),
                                                   MemCache::Option::CacheAlign);
         DEBUG_ASSERT(Status::Ok == status);

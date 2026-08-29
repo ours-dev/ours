@@ -6,9 +6,9 @@
 #include <ours/syscall/time.hpp>
 
 namespace ours::time {
-    auto current_mono_time() -> Time;
+auto current_mono_time() -> Time;
 
-    auto calculate_mult_shift(usize *mult, usize *shift, usize from, usize to, usize maxsec) -> void;
+auto calculate_mult_shift(usize *mult, usize *shift, usize from, usize to, usize maxsec) -> void;
 
 } // namespace ours::time
 

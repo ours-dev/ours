@@ -4,8 +4,8 @@
 #define GKTL_ACTION_HPP 1
 
 namespace gktl::action {
-    template <auto... Args>
-    struct Parameters;
+template <auto... Args>
+struct Parameters;
 
 } // namespace gktl::action
 

@@ -18,7 +18,7 @@ struct PACKED Rsdp {
     /// and get dereferenced as an RSDP.
     [[nodiscard]]
     constexpr auto validate_signature() const -> bool {
-        return sig_low == kSignatureLow && sig_high == kSignatureHigh;
+        return sig_low == SIGNATURE_LOW && sig_high == SIGNATURE_HIGH;
     }
 
     /// Signature plus the ACPI 1.0 checksum, which covers the first 20 bytes.
@@ -32,12 +32,12 @@ struct PACKED Rsdp {
     u8 revision;
     u32 rsdt_addr; // Deprecated from revision 2 onwards; prefer RsdpV2::xsdt_addr.
 
-    constexpr static Signature kSignatureLow = Signature::from_chars("RSD ");
-    constexpr static Signature kSignatureHigh = Signature::from_chars("PTR ");
+    constexpr static Signature SIGNATURE_LOW = Signature::from_chars("RSD ");
+    constexpr static Signature SIGNATURE_HIGH = Signature::from_chars("PTR ");
 
     /// `revision` is 0 for ACPI 1.0 and 2 for 2.0+; a revision below this has
     /// no XSDT and no extended checksum.
-    constexpr static u8 kRevisionV2 = 2;
+    constexpr static u8 REVISION_V2 = 2;
 };
 static_assert(sizeof(Rsdp) == 20);
 
@@ -83,7 +83,7 @@ struct PACKED Rsdt {
     TableHeader header;
     u32 addr32[];
 
-    constexpr static Signature kSignature = Signature::from_chars("RSDT");
+    constexpr static Signature SIGNATURE = Signature::from_chars("RSDT");
 };
 static_assert(sizeof(Rsdt) == 36);
 
@@ -104,7 +104,7 @@ struct PACKED Xsdt {
     TableHeader header;
     u64 addr64[];
 
-    constexpr static Signature kSignature = Signature::from_chars("XSDT");
+    constexpr static Signature SIGNATURE = Signature::from_chars("XSDT");
 };
 static_assert(sizeof(Xsdt) == 36);
 

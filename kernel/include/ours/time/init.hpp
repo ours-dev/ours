@@ -6,8 +6,7 @@
 #include <ours/init.hpp>
 
 namespace ours::time {
-    INIT_CODE
-    auto init() -> void;
+INIT_CODE auto init() -> void;
 } // namespace ours::time
 
 #endif // #ifndef OURS_TIME_INIT_HPP

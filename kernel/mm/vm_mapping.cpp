@@ -1,5 +1,3 @@
-#include <algorithm>
-
 #include <gktl/init_hook.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
@@ -12,22 +10,22 @@
 #include <ustl/iterator/function.hpp>
 #include <ustl/mem/align.hpp>
 
+#include <algorithm>
+
 namespace ours::mm {
 using VmMappingCache = ObjectCache::Instance<VmMapping>;
 using ProtectionRegionCache = ObjectCache::Instance<MappingProtectionRanges::Region>;
 
 template <typename... Args>
 FORCE_INLINE auto MappingProtectionRanges::alloc_region(Args &&...args) -> Region * {
-    return ProtectionRegionCache::get(kGafKernel, args...);
+    return ProtectionRegionCache::get(GAF_KERNEL, args...);
 }
 
-FORCE_INLINE
-auto MappingProtectionRanges::free_region(Region *region) -> void {
+FORCE_INLINE auto MappingProtectionRanges::free_region(Region *region) -> void {
     ProtectionRegionCache::put(region);
 }
 
-FORCE_INLINE
-auto MappingProtectionRanges::init(VirtAddr end, MmuFlags mmuf) -> Status {
+FORCE_INLINE auto MappingProtectionRanges::init(VirtAddr end, MmuFlags mmuf) -> Status {
     auto first_region = alloc_region(end, mmuf);
     if (!first_region) {
         return Status::OutOfMem;
@@ -39,10 +37,10 @@ auto MappingProtectionRanges::init(VirtAddr end, MmuFlags mmuf) -> Status {
 
 auto MappingProtectionRanges::make_enumerator(VirtAddr base, usize size) -> Enumerator {
     auto first = std::lower_bound(regions_.begin(), regions_.end(), base,
-                             [](auto const &x, auto y) { return x.end <= y; });
+                                  [](auto const &x, auto y) { return x.end <= y; });
 
     auto last = std::upper_bound(first, regions_.end(), base + size,
-                            [](auto x, auto const &y) { return x <= y.end; });
+                                 [](auto x, auto const &y) { return x <= y.end; });
 
     if (last != regions_.end()) {
         ++last;
@@ -61,8 +59,9 @@ auto MappingProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf, V
     // LM is the region containing base, while RM is the region containing
     // the last byte of the half-open range [base, end).
     auto lm = std::lower_bound(regions_.begin(), regions_.end(), base,
-                          [](auto const &x, auto y) { return x.end <= y; });
-    auto rm = std::lower_bound(lm, regions_.end(), end, [](auto const &x, auto y) { return x.end < y; });
+                               [](auto const &x, auto y) { return x.end <= y; });
+    auto rm =
+        std::lower_bound(lm, regions_.end(), end, [](auto const &x, auto y) { return x.end < y; });
 
     if (lm == regions_.end() || rm == regions_.end()) {
         return Status::InvalidArguments;
@@ -140,8 +139,7 @@ auto MappingProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf, V
     // together before changing keep_boundary->end, which is the tree key.
     if (delete_first != delete_last) {
         (void)regions_.erase_and_dispose(
-            delete_first, delete_last,
-            [](Region *region) noexcept { Self::free_region(region); });
+            delete_first, delete_last, [](Region *region) noexcept { Self::free_region(region); });
     }
     keep_boundary->end = final_end;
     keep_boundary->mmuf = mmuf;
@@ -209,7 +207,7 @@ FORCE_INLINE auto MappingCoalescer<MaxNumPages>::commit() -> Status {
 
 VmMapping::VmMapping(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
                      ustl::Arc<VmObject> vmo, usize vmo_off, const char *name)
-    : Base(kMappingMagic, base, size, vmaf | VmaFlags::Mapping, parent,
+    : Base(MAPPING_MAGIC, base, size, vmaf | VmaFlags::Mapping, parent,
            parent->aspace().as_ptr_mut(), name)
     // Initializer order follows the member declaration order in the header.
     , m_vmo(ustl::move(vmo))
@@ -224,7 +222,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     }
 
     auto mapping =
-        VmMappingCache::get(kGafKernel, parent, base, size, vmaf, ustl::move(vmo), vmo_off, name);
+        VmMappingCache::get(GAF_KERNEL, parent, base, size, vmaf, ustl::move(vmo), vmo_off, name);
     if (!mapping) {
         return Status::OutOfMem;
     }
@@ -240,7 +238,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
 }
 
 auto VmMapping::activate() -> Status {
-    m_canary.verify(kMappingMagic);
+    m_canary.verify(MAPPING_MAGIC);
 
     Base::activate();
 
@@ -253,7 +251,7 @@ auto VmMapping::activate() -> Status {
 }
 
 auto VmMapping::destroy() -> Status {
-    m_canary.verify(kMappingMagic);
+    m_canary.verify(MAPPING_MAGIC);
 
     auto status = m_aspace->arch_aspace().unmap(m_base, m_size >> PAGE_SHIFT, {}, 0);
     if (Status::Ok != status) {
@@ -269,10 +267,9 @@ auto VmMapping::destroy() -> Status {
     return Status::Ok;
 }
 
-FORCE_INLINE
-auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
-                          MapControl control) -> Status {
-    m_canary.verify(kMappingMagic);
+FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
+                                       MapControl control) -> Status {
+    m_canary.verify(MAPPING_MAGIC);
 
     DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
     DEBUG_ASSERT(ustl::mm::is_aligned(size, PAGE_SIZE));
@@ -282,7 +279,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
     // immediately via the coalescer.
     (void)commit;
 
-    constexpr static auto const kMaxBatchPages = 32;
+    constexpr static auto const MAX_BATCH_PAGES = 32;
 
     auto cursor = vmo->make_cursor(base, size);
     if (!cursor) {
@@ -292,7 +289,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto region = enumerator.next()) {
         auto [region_base, region_size, mmuf] = *region;
-        MappingCoalescer<kMaxBatchPages> coalescer(this, region_base, mmuf, control);
+        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, control);
 
         // TODO: Request pages in larger batches (e.g. folios) instead of
         // page-by-page.  Currently require_owned_page(1) is called per
@@ -314,10 +311,9 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
     return Status::Ok;
 }
 
-FORCE_INLINE
-auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, MapControl control)
-    -> Status {
-    m_canary.verify(kMappingMagic);
+FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size,
+                                          MapControl control) -> Status {
+    m_canary.verify(MAPPING_MAGIC);
 
     DEBUG_ASSERT(vmo);
     PhysAddr phys_base;
@@ -326,12 +322,12 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
         return status;
     }
 
-    constexpr static auto const kMaxBatchPages = 32;
+    constexpr static auto const MAX_BATCH_PAGES = 32;
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto region = enumerator.next()) {
         auto [region_base, region_size, mmuf] = *region;
-        MappingCoalescer<kMaxBatchPages> coalescer(this, region_base, mmuf, control);
+        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, control);
         for (usize offset = 0; offset < region_size; offset += PAGE_SIZE) {
             coalescer.append(phys_base + offset);
         }
@@ -344,7 +340,7 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
 
 /// Do check arguments and dispatch the request to correct sub-routine for different VmObjects.
 auto VmMapping::map(VirtAddr offset, usize size, bool commit, MapControl control) -> Status {
-    m_canary.verify(kMappingMagic);
+    m_canary.verify(MAPPING_MAGIC);
 
     // FIXME: map() does not acquire m_aspace->get_lock(), unlike protect()
     // and unmap() which both take the lock via Guard{get_lock()}.  This is
@@ -372,7 +368,7 @@ auto VmMapping::map(VirtAddr offset, usize size, bool commit, MapControl control
 }
 
 auto VmMapping::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
-    m_canary.verify(kMappingMagic);
+    m_canary.verify(MAPPING_MAGIC);
 
     if (!is_active()) {
         return Status::BadState;
@@ -421,7 +417,7 @@ auto VmMapping::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
 }
 
 auto VmMapping::unmap(usize offset, usize size, UnmapControl control) -> Status {
-    m_canary.verify(kMappingMagic);
+    m_canary.verify(MAPPING_MAGIC);
 
     if (!is_active()) {
         return Status::BadState;
@@ -465,19 +461,18 @@ auto VmMapping::unmap(usize offset, usize size, UnmapControl control) -> Status 
 // implement its own fault logic (e.g. CoW resolution) or delegate entirely
 // to the VMO.
 auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
-    m_canary.verify(kMappingMagic);
+    m_canary.verify(MAPPING_MAGIC);
     return {Status::NotSupported, 0};
 }
 
-INIT_CODE
-auto init_vm_mapping_cache() -> void {
+INIT_CODE auto init_vm_mapping_cache() -> void {
     if (Status::Ok != VmMappingCache::init("vm-mapping-cache", ObjectCache::Flags::Folio)) {
         panic("Failed to create object cache for VmMapping");
     }
     log::trace("VmMappingCache has been created");
 
-    if (Status::Ok != ProtectionRegionCache::init("vm-mapping-region-cache",
-                                                  ObjectCache::Flags::Folio)) {
+    if (Status::Ok !=
+        ProtectionRegionCache::init("vm-mapping-region-cache", ObjectCache::Flags::Folio)) {
         panic("Failed to create object cache for MappingProtectionRanges::Region");
     }
     log::trace("MappingRegionCache has been created");

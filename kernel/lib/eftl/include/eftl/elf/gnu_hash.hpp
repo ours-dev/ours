@@ -28,7 +28,7 @@ class GnuHashTableView final {
     static auto from(ByteRange entries, Symbols symbols,
                      ByteOrder byte_order = ByteOrder::Little) noexcept
         -> ustl::Option<GnuHashTableView> {
-        if (entries.size() < K_HEADER_BYTES || entries.data() == nullptr) {
+        if (entries.size() < HEADER_BYTES || entries.data() == nullptr) {
             return ustl::NONE;
         }
         auto word_decoder = &ScalarCodec<Word>::decode_little;
@@ -37,8 +37,8 @@ class GnuHashTableView final {
             word_decoder = &ScalarCodec<Word>::decode_big;
             bloom_decoder = &ScalarCodec<BloomWord>::decode_big;
         }
-        auto const header = Words::from_checked_bytes(ByteRange(entries.data(), K_HEADER_BYTES),
-                                                      K_HEADER_WORDS, word_decoder);
+        auto const header = Words::from_checked_bytes(ByteRange(entries.data(), HEADER_BYTES),
+                                                      HEADER_WORDS, word_decoder);
         if (header.is_none()) {
             return ustl::NONE;
         }
@@ -52,7 +52,7 @@ class GnuHashTableView final {
             return ustl::NONE;
         }
 
-        auto size = K_HEADER_BYTES;
+        auto size = HEADER_BYTES;
         if (!extend_size(size, bloom_count, sizeof(BloomWord)) ||
             !extend_size(size, bucket_count, sizeof(Word)) ||
             !extend_size(size, symbols.size() - symbol_offset, sizeof(Word)) ||
@@ -63,13 +63,13 @@ class GnuHashTableView final {
         auto const bloom_bytes = bloom_count * sizeof(BloomWord);
         auto const bucket_bytes = bucket_count * sizeof(Word);
         auto const bloom = Bloom::from_checked_bytes(
-            ByteRange(entries.data() + K_HEADER_BYTES, bloom_bytes), bloom_count, bloom_decoder);
+            ByteRange(entries.data() + HEADER_BYTES, bloom_bytes), bloom_count, bloom_decoder);
         auto const buckets = Words::from_checked_bytes(
-            ByteRange(entries.data() + K_HEADER_BYTES + bloom_bytes, bucket_bytes), bucket_count,
+            ByteRange(entries.data() + HEADER_BYTES + bloom_bytes, bucket_bytes), bucket_count,
             word_decoder);
         auto const chains = Words::from_checked_bytes(
-            ByteRange(entries.data() + K_HEADER_BYTES + bloom_bytes + bucket_bytes,
-                      entries.size() - K_HEADER_BYTES - bloom_bytes - bucket_bytes),
+            ByteRange(entries.data() + HEADER_BYTES + bloom_bytes + bucket_bytes,
+                      entries.size() - HEADER_BYTES - bloom_bytes - bucket_bytes),
             symbols.size() - symbol_offset, word_decoder);
         if (bloom.is_none() || buckets.is_none() || chains.is_none()) {
             return ustl::NONE;
@@ -190,13 +190,13 @@ class GnuHashTableView final {
     }
 
   private:
-    static constexpr usize K_HEADER_WORDS = 4;
-    static constexpr usize K_HEADER_BYTES = K_HEADER_WORDS * sizeof(Word);
-    static constexpr usize K_BLOOM_WORD_BITS = std::numeric_limits<BloomWord>::digits;
+    static constexpr usize HEADER_WORDS = 4;
+    static constexpr usize HEADER_BYTES = HEADER_WORDS * sizeof(Word);
+    static constexpr usize BLOOM_WORD_BITS = std::numeric_limits<BloomWord>::digits;
 
     constexpr GnuHashTableView(Bloom bloom, Words buckets, Words chains, Symbols symbols,
-                               usize bucket_count, usize symbol_offset,
-                               usize bloom_count, Word bloom_shift) noexcept
+                               usize bucket_count, usize symbol_offset, usize bloom_count,
+                               Word bloom_shift) noexcept
         : m_bloom(bloom)
         , m_buckets(buckets)
         , m_chains(chains)
@@ -207,8 +207,8 @@ class GnuHashTableView final {
         , m_bloom_shift(bloom_shift) {}
 
     [[nodiscard]]
-    static constexpr auto extend_size(usize &size, usize count,
-                                      usize element_size) noexcept -> bool {
+    static constexpr auto extend_size(usize &size, usize count, usize element_size) noexcept
+        -> bool {
         if (count > std::numeric_limits<usize>::max() / element_size) {
             return false;
         }
@@ -229,14 +229,13 @@ class GnuHashTableView final {
     [[nodiscard]]
     auto maybe_contains_hash(Word value) const noexcept -> bool {
         auto const bloom_index =
-            (static_cast<usize>(value) / K_BLOOM_WORD_BITS) & (m_bloom_count - 1);
+            (static_cast<usize>(value) / BLOOM_WORD_BITS) & (m_bloom_count - 1);
         auto const bloom_word = bloom_at(bloom_index);
         if (bloom_word.is_none()) {
             return false;
         }
-        auto const first_bit = static_cast<usize>(value) % K_BLOOM_WORD_BITS;
-        auto const second_bit =
-            static_cast<usize>(value >> m_bloom_shift) % K_BLOOM_WORD_BITS;
+        auto const first_bit = static_cast<usize>(value) % BLOOM_WORD_BITS;
+        auto const second_bit = static_cast<usize>(value >> m_bloom_shift) % BLOOM_WORD_BITS;
         auto const mask =
             static_cast<BloomWord>((BloomWord{1} << first_bit) | (BloomWord{1} << second_bit));
         return (bloom_word.value() & mask) == mask;
@@ -271,8 +270,7 @@ class GnuHashTableView final {
             if (first_hash.is_none()) {
                 return false;
             }
-            auto const expected_bucket =
-                static_cast<usize>(first_hash.value() % m_bucket_count);
+            auto const expected_bucket = static_cast<usize>(first_hash.value() % m_bucket_count);
             auto const bucket = bucket_at(expected_bucket);
             if (bucket.is_none() || static_cast<usize>(bucket.value()) != symbol_index) {
                 return false;

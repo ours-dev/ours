@@ -6,13 +6,13 @@
 #include <ktl/types.hpp>
 
 namespace ktl {
-    auto init_kmalloc() -> void;
+auto init_kmalloc() -> void;
 
-    auto kmalloc(usize size, Gaf gaf) -> void *;
+auto kmalloc(usize size, Gaf gaf) -> void *;
 
-    auto kmalloc(usize size, Gaf gaf, NnId nid) -> void *;
+auto kmalloc(usize size, Gaf gaf, NnId nid) -> void *;
 
-    auto kfree(void *object) -> void;
+auto kfree(void *object) -> void;
 
 } // namespace ktl
 

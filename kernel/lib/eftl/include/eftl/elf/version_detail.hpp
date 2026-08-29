@@ -41,8 +41,8 @@ constexpr auto version_to_usize(Value value) noexcept -> ustl::Option<usize> {
 
 template <typename Value>
 [[nodiscard]]
-auto version_relative_offset(usize origin, Value delta, usize minimum,
-                             usize size) noexcept -> ustl::Option<usize> {
+auto version_relative_offset(usize origin, Value delta, usize minimum, usize size) noexcept
+    -> ustl::Option<usize> {
     auto const delta_size = version_to_usize(delta);
     if (delta_size.is_none() || delta_size.value() < minimum || origin > size ||
         delta_size.value() > size - origin) {

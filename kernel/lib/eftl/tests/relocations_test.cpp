@@ -53,15 +53,15 @@ auto test_rejects_unrepresentable_dynamic_table_address() -> int {
 }
 
 auto test_relocation_info_decoding() -> int {
-    constexpr u32 K_ELF32_INFO = (u32(7) << 8) | u32(8);
-    if (eftl::elf::Traits32::relocation_type(K_ELF32_INFO) != 8 ||
-        eftl::elf::Traits32::relocation_symbol(K_ELF32_INFO) != 7) {
+    constexpr u32 ELF32_INFO = (u32(7) << 8) | u32(8);
+    if (eftl::elf::Traits32::relocation_type(ELF32_INFO) != 8 ||
+        eftl::elf::Traits32::relocation_symbol(ELF32_INFO) != 7) {
         return 1;
     }
 
-    constexpr u64 K_ELF64_INFO = (u64(7) << 32) | u64(8);
-    if (eftl::elf::Traits64::relocation_type(K_ELF64_INFO) != 8 ||
-        eftl::elf::Traits64::relocation_symbol(K_ELF64_INFO) != 7) {
+    constexpr u64 ELF64_INFO = (u64(7) << 32) | u64(8);
+    if (eftl::elf::Traits64::relocation_type(ELF64_INFO) != 8 ||
+        eftl::elf::Traits64::relocation_symbol(ELF64_INFO) != 7) {
         return 2;
     }
 
@@ -158,10 +158,10 @@ auto test_rejects_relr_address_overflow() -> int {
     using Traits = eftl::elf::Traits64;
     using Addr = Traits::Addr;
 
-    constexpr Addr K_WRAP_ANCHOR =
+    constexpr Addr WRAP_ANCHOR =
         std::numeric_limits<Addr>::max() - static_cast<Addr>(sizeof(Addr) - 1);
     std::array<Addr, 2> const entries{
-        K_WRAP_ANCHOR,
+        WRAP_ANCHOR,
         3,
     };
 

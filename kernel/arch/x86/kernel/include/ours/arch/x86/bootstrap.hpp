@@ -61,10 +61,9 @@ static_assert(offsetof(BootstrapData, stack_top) == X86_BOOTSTRAP_OFFSET_STACK_T
 static_assert(offsetof(BootstrapData, cpunum) == X86_BOOTSTRAP_OFFSET_CPUNUM);
 static_assert(offsetof(BootstrapData, percpu) == X86_BOOTSTRAP_OFFSET_PERCPU);
 
-constexpr static auto const kMinBootstrap16BufferSize = PAGE_SIZE * 3;
+constexpr static auto const MIN_BOOTSTRAP16_BUFFER_SIZE = PAGE_SIZE * 3;
 
-INIT_CODE
-auto set_bootstrap16_buffer(PhysAddr base) -> void;
+INIT_CODE auto set_bootstrap16_buffer(PhysAddr base) -> void;
 
 INIT_CODE [[nodiscard]]
 auto make_bootstrap_area(BootstrapData **data) -> PhysAddr;

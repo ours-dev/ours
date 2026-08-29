@@ -13,32 +13,32 @@ namespace ours::mm {
 /// how much to map but it's usually a fairly large chunk at the base of the kernel
 /// address space.
 struct PhysMap {
-    constexpr static PhysAddr kPhysBase = ARCH_PHYSMAP_PHYS_BASE;
+    constexpr static PhysAddr PHYS_BASE = ARCH_PHYSMAP_PHYS_BASE;
 
-    constexpr static VirtAddr kVirtBase = ARCH_PHYSMAP_VIRT_BASE;
-    static_assert(!(kVirtBase & ((MAX_PAGE_SIZE)-1)), "");
+    constexpr static VirtAddr VIRT_BASE = ARCH_PHYSMAP_VIRT_BASE;
+    static_assert(!(VIRT_BASE & ((MAX_PAGE_SIZE)-1)), "");
 
-    constexpr static usize const kSize = ARCH_PHYSMAP_SIZE;
+    constexpr static usize const SIZE = ARCH_PHYSMAP_SIZE;
 
     template <typename T>
     FORCE_INLINE constexpr static auto is_valid_phys_addr(T phys_addr) -> bool {
         static_assert(sizeof(usize) == sizeof(T));
-        return kPhysBase <= reinterpret_cast<PhysAddr>(phys_addr) &&
-               reinterpret_cast<PhysAddr>(phys_addr) - kPhysBase < kSize;
+        return PHYS_BASE <= reinterpret_cast<PhysAddr>(phys_addr) &&
+               reinterpret_cast<PhysAddr>(phys_addr) - PHYS_BASE < SIZE;
     }
 
     template <typename T>
     FORCE_INLINE constexpr static auto is_valid_virt_addr(T virt_addr) -> bool {
         static_assert(sizeof(usize) == sizeof(T));
-        return kVirtBase <= reinterpret_cast<VirtAddr>(virt_addr) &&
-               reinterpret_cast<VirtAddr>(virt_addr) - kVirtBase < kSize;
+        return VIRT_BASE <= reinterpret_cast<VirtAddr>(virt_addr) &&
+               reinterpret_cast<VirtAddr>(virt_addr) - VIRT_BASE < SIZE;
     }
 
     template <typename T>
     FORCE_INLINE constexpr static auto phys_to_virt(T phys_addr) -> VirtAddr {
         static_assert(sizeof(usize) == sizeof(T));
         if (PhysMap::is_valid_phys_addr(phys_addr)) {
-            return VirtAddr(kVirtBase + (phys_addr - kPhysBase));
+            return VirtAddr(VIRT_BASE + (phys_addr - PHYS_BASE));
         }
         return VirtAddr();
     }
@@ -53,7 +53,7 @@ struct PhysMap {
     FORCE_INLINE constexpr static auto virt_to_phys(T virt_addr) -> PhysAddr {
         static_assert(sizeof(usize) == sizeof(T));
         if (PhysMap::is_valid_virt_addr(virt_addr)) {
-            return PhysAddr(kPhysBase + (reinterpret_cast<VirtAddr>(virt_addr) - kVirtBase));
+            return PhysAddr(PHYS_BASE + (reinterpret_cast<VirtAddr>(virt_addr) - VIRT_BASE));
         }
         return PhysAddr();
     }

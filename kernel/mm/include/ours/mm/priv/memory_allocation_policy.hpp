@@ -10,7 +10,8 @@
 #define MEMORY_ALLOCATION_POLICY 1
 
 namespace ours::mm {
-class MemoryAllocationPolicy: public ustl::RefCounted<MemoryAllocationPolicy, ustl::sync::ThreadSafePolicy> {
+class MemoryAllocationPolicy
+    : public ustl::RefCounted<MemoryAllocationPolicy, ustl::sync::ThreadSafePolicy> {
     using Self = MemoryAllocationPolicy;
 
   public:
@@ -23,8 +24,7 @@ class MemoryAllocationPolicy: public ustl::RefCounted<MemoryAllocationPolicy, us
         NumPolicies,
     };
 
-    FORCE_INLINE
-    auto kind() const -> Kind {
+    FORCE_INLINE auto kind() const -> Kind {
         return m_kind;
     }
 

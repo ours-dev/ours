@@ -5,9 +5,9 @@
 #include <ustl/collections/intrusive/detail/tree_node.hpp>
 
 namespace {
-    using Node = ustl::collections::intrusive::TreeNode<void *>;
-    using Traits = ustl::collections::intrusive::TreeNodeTraits<void *>;
-    using Algorithms = ustl::collections::intrusive::detail::BstreeAlgorithmsBase<Traits>;
+using Node = ustl::collections::intrusive::TreeNode<void *>;
+using Traits = ustl::collections::intrusive::TreeNodeTraits<void *>;
+using Algorithms = ustl::collections::intrusive::detail::BstreeAlgorithmsBase<Traits>;
 } // namespace
 
 auto main() -> int {
@@ -30,8 +30,10 @@ auto main() -> int {
     Traits::set_right(&right, nullptr);
 
     return Algorithms::minimum(&root) == &left && Algorithms::maximum(&root) == &right &&
-                   Algorithms::next_node(&left) == &root && Algorithms::next_node(&root) == &right &&
-                   Algorithms::next_node(&right) == &header && Algorithms::prev_node(&header) == &right &&
+                   Algorithms::next_node(&left) == &root &&
+                   Algorithms::next_node(&root) == &right &&
+                   Algorithms::next_node(&right) == &header &&
+                   Algorithms::prev_node(&header) == &right &&
                    Algorithms::prev_node(&right) == &root && Algorithms::is_header(&header) &&
                    !Algorithms::is_header(&root) && Algorithms::get_header(&left) == &header
                ? 0

@@ -67,8 +67,8 @@ class TlsTemplate final {
     }
 
   private:
-    constexpr TlsTemplate(ByteRange initialized, u64 virtual_start, u64 memory_size,
-                          u64 alignment, SegPerms permissions) noexcept
+    constexpr TlsTemplate(ByteRange initialized, u64 virtual_start, u64 memory_size, u64 alignment,
+                          SegPerms permissions) noexcept
         : m_initialized(initialized)
         , m_virtual_start(virtual_start)
         , m_memory_size(memory_size)

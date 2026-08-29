@@ -27,8 +27,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;
 
-    FORCE_INLINE
-    auto size_locked() const -> usize {
+    FORCE_INLINE auto size_locked() const -> usize {
         return m_size;
     }
 

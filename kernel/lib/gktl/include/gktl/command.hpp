@@ -6,24 +6,23 @@
 #include <gktl/types.hpp>
 
 namespace gktl {
-    struct Command {
-        using Callback = auto (*)(int argc, char **argv) -> int;
+struct Command {
+    using Callback = auto (*)(int argc, char **argv) -> int;
 
-        char const *cmd;
-        char const *help;
-        Callback callback;
-    };
+    char const *cmd;
+    char const *help;
+    Callback callback;
+};
 
-    auto run_command(int argc, char **argv) -> void;
+auto run_command(int argc, char **argv) -> void;
 
 } // namespace gktl
 
-#define GKTL_COMMAND(NAME, CMD, HANDLER, HELP) \
-namespace commands::NAME { \
-    LINK_SECTION(".gktl.commands") FORCE_USED \
-    static ::gktl::Command const s_command_##NAME {\
-        .cmd = CMD, .help = HELP, .callback = HANDLER \
-    };\
-}
+#define GKTL_COMMAND(NAME, CMD, HANDLER, HELP)                                                     \
+    namespace commands::NAME {                                                                     \
+        LINK_SECTION(".gktl.commands")                                                             \
+        FORCE_USED static ::gktl::Command const s_command_##NAME{                                  \
+            .cmd = CMD, .help = HELP, .callback = HANDLER};                                        \
+    }
 
 #endif // #ifndef GKTL_COMMAND_HPP

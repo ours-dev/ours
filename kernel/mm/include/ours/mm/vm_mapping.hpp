@@ -16,6 +16,7 @@
 #include <ustl/rc.hpp>
 #include <ustl/result.hpp>
 #include <ustl/util/pair.hpp>
+
 #include <algorithm>
 
 namespace ours::mm {
@@ -67,8 +68,7 @@ class MappingProtectionRanges {
     // caught and would corrupt the implicit-left-bound invariant.  Use Set
     // instead of MultiSet so the data structure rejects duplicates for you.
     struct RegionOrder final {
-        FORCE_INLINE
-        auto operator()(Region const &x, Region const &y) const noexcept -> bool {
+        FORCE_INLINE auto operator()(Region const &x, Region const &y) const noexcept -> bool {
             return x.end < y.end;
         }
     };
@@ -102,8 +102,7 @@ class MappingProtectionRanges::Enumerator {
 
     ~Enumerator() = default;
 
-    FORCE_INLINE
-    auto shift(usize delta) -> void {
+    FORCE_INLINE auto shift(usize delta) -> void {
         // TODO: Enumerator::shift() is defined but never called anywhere
         // in the codebase.  Either wire it up in a consumer or remove it.
         base_ += delta;
@@ -115,8 +114,7 @@ class MappingProtectionRanges::Enumerator {
         MmuFlags mmuf;
     };
 
-    FORCE_INLINE
-    auto next() -> ustl::Option<NextResult> {
+    FORCE_INLINE auto next() -> ustl::Option<NextResult> {
         if (iter_ == end_ || base_ >= upper_bound_) {
             return ustl::none();
         }
@@ -128,8 +126,7 @@ class MappingProtectionRanges::Enumerator {
         return ustl::some(NextResult{obase, base_ - obase, mmuf});
     }
 
-    FORCE_INLINE
-    friend auto operator!=(Self const &x, Self const &y) -> bool {
+    FORCE_INLINE friend auto operator!=(Self const &x, Self const &y) -> bool {
         return x.iter_ != y.iter_;
     }
 

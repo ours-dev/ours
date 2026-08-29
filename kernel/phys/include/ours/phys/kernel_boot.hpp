@@ -5,8 +5,8 @@
 
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/phys/boot_options.hpp>
-#include <ours/phys/handoff.hpp>
 #include <ours/phys/elf_image.hpp>
+#include <ours/phys/handoff.hpp>
 #include <ours/phys/kernel_package_handoff.hpp>
 #include <ours/phys/kernel_package_loader.hpp>
 #include <ustl/collections/intrusive/slist.hpp>

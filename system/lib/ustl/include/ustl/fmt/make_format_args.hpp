@@ -4,9 +4,9 @@
 
 #pragma once
 
-#include <format>
-
 #include <ustl/fmt/format_args.hpp>
+
+#include <format>
 
 namespace ustl::fmt {
 

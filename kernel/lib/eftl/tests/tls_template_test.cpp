@@ -14,8 +14,8 @@ using Binary = eftl::elf::FileImpl<Traits>;
 using Header = Traits::Header;
 using Segment = Traits::Segment;
 
-constexpr usize K_TLS_OFFSET = 0x200;
-constexpr std::array<u8, 4> K_TLS_BYTES{0x10, 0x20, 0x30, 0x40};
+constexpr usize TLS_OFFSET = 0x200;
+constexpr std::array<u8, 4> TLS_BYTES{0x10, 0x20, 0x30, 0x40};
 
 template <typename T, usize Size>
 auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
@@ -24,8 +24,8 @@ auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
 
 auto make_header(u16 segment_count) -> Header {
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
@@ -42,9 +42,9 @@ auto tls_segment() -> Segment {
     segment.p_type = static_cast<u32>(eftl::elf::SegType::Tls);
     segment.p_flags =
         static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
-    segment.p_offset = K_TLS_OFFSET;
+    segment.p_offset = TLS_OFFSET;
     segment.p_vaddr = 0x600000;
-    segment.p_filesz = K_TLS_BYTES.size();
+    segment.p_filesz = TLS_BYTES.size();
     segment.p_memsz = 16;
     segment.p_align = 8;
     return segment;
@@ -55,7 +55,7 @@ auto make_tls_image() -> std::array<u8, 1024> {
     auto const header = make_header(1);
     put(image, 0, header);
     put(image, sizeof(Header), tls_segment());
-    std::memcpy(image.data() + K_TLS_OFFSET, K_TLS_BYTES.data(), K_TLS_BYTES.size());
+    std::memcpy(image.data() + TLS_OFFSET, TLS_BYTES.data(), TLS_BYTES.size());
     return image;
 }
 
@@ -68,8 +68,8 @@ auto test_observes_tls_template() -> int {
         }
         return ustl::NONE;
     }();
-    if (tls.is_none() || tls->initialized().size() != K_TLS_BYTES.size() ||
-        std::memcmp(tls->initialized().data(), K_TLS_BYTES.data(), K_TLS_BYTES.size()) != 0) {
+    if (tls.is_none() || tls->initialized().size() != TLS_BYTES.size() ||
+        std::memcmp(tls->initialized().data(), TLS_BYTES.data(), TLS_BYTES.size()) != 0) {
         return 1;
     }
     if (tls->virtual_start() == 0x600000 && tls->memory_size() == 16 && tls->alignment() == 8 &&
@@ -126,7 +126,7 @@ auto test_rejects_invalid_tls_segments() -> int {
 
     auto oversized_file = make_tls_image();
     auto oversized_file_segment = tls_segment();
-    oversized_file_segment.p_memsz = K_TLS_BYTES.size() - 1;
+    oversized_file_segment.p_memsz = TLS_BYTES.size() - 1;
     put(oversized_file, sizeof(Header), oversized_file_segment);
     auto const oversized_file_result =
         Binary::from_raw(oversized_file.data(), oversized_file.size());
@@ -148,7 +148,7 @@ auto test_rejects_invalid_tls_segments() -> int {
 
     auto incongruent = make_tls_image();
     auto incongruent_segment = tls_segment();
-    incongruent_segment.p_offset = K_TLS_OFFSET + 1;
+    incongruent_segment.p_offset = TLS_OFFSET + 1;
     put(incongruent, sizeof(Header), incongruent_segment);
     auto const incongruent_result = Binary::from_raw(incongruent.data(), incongruent.size());
     if (incongruent_result.is_ok() ||
@@ -177,11 +177,11 @@ auto test_elf32_observes_tls_template() -> int {
     using Header32 = Traits32::Header;
     using Segment32 = Traits32::Segment;
 
-    constexpr usize K_TLS32_OFFSET = 0x180;
+    constexpr usize TLS32_OFFSET = 0x180;
     std::array<u8, 512> image{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
@@ -194,7 +194,7 @@ auto test_elf32_observes_tls_template() -> int {
 
     Segment32 segment{};
     segment.p_type = static_cast<u32>(eftl::elf::SegType::Tls);
-    segment.p_offset = K_TLS32_OFFSET;
+    segment.p_offset = TLS32_OFFSET;
     segment.p_vaddr = 0x8048000;
     segment.p_filesz = 4;
     segment.p_memsz = 8;
@@ -202,7 +202,7 @@ auto test_elf32_observes_tls_template() -> int {
         static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
     segment.p_align = 4;
     put(image, sizeof(Header32), segment);
-    std::memcpy(image.data() + K_TLS32_OFFSET, K_TLS_BYTES.data(), K_TLS_BYTES.size());
+    std::memcpy(image.data() + TLS32_OFFSET, TLS_BYTES.data(), TLS_BYTES.size());
 
     auto const parsed = Binary32::from_raw(image.data(), image.size());
     auto const tls = [&]() -> ustl::Option<eftl::elf::TlsTemplate<Traits32>> {
@@ -211,7 +211,7 @@ auto test_elf32_observes_tls_template() -> int {
         }
         return ustl::NONE;
     }();
-    if (tls.is_some() && tls->initialized().size() == K_TLS_BYTES.size() &&
+    if (tls.is_some() && tls->initialized().size() == TLS_BYTES.size() &&
         tls->virtual_start() == 0x8048000 && tls->memory_size() == 8 && tls->alignment() == 4) {
         return 0;
     }

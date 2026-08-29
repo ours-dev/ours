@@ -7,16 +7,16 @@
 #include <ours/object/handle.hpp>
 
 namespace ours::object {
-    using ChannelDispatcherBase = PeeredDispatcher<ChannelDispatcher,
-                                                 Rights::Default,
-                                                 Signals::None>;
+using ChannelDispatcherBase = PeeredDispatcher<ChannelDispatcher, Rights::Default, Signals::None>;
 
-    class ChannelDispatcher: public ChannelDispatcherBase {
-        using Base = ChannelDispatcherBase;
-        using Self = ChannelDispatcher;
-      public:
-        static auto create(KernelHandle<Self> *handle0, KernelHandle<Self> *handle1, Signals *signals) -> Status;
-    };
+class ChannelDispatcher: public ChannelDispatcherBase {
+    using Base = ChannelDispatcherBase;
+    using Self = ChannelDispatcher;
+
+  public:
+    static auto create(KernelHandle<Self> *handle0, KernelHandle<Self> *handle1, Signals *signals)
+        -> Status;
+};
 
 } // namespace ours::object
 

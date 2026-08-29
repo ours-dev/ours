@@ -14,7 +14,7 @@ auto VmObjectPhysical::create(PhysAddr base, usize size, Flags vmof, ustl::Arc<S
         return Status::InvalidArguments;
     }
 
-    auto self = new (kGafKernel) VmObjectPhysical(base, size, vmof);
+    auto self = new (GAF_KERNEL) VmObjectPhysical(base, size, vmof);
     if (!self) {
         return Status::OutOfMem;
     }

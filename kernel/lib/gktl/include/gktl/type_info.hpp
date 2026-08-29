@@ -6,8 +6,8 @@
 namespace gktl {
 namespace priv {
     template <typename Type>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto pretty_function() noexcept -> char const * {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto pretty_function() noexcept -> char const * {
 #if defined OURS_PRETTY_FUNCTION
         return static_cast<const char *>(OURS_PRETTY_FUNCTION);
 #else
@@ -16,8 +16,8 @@ namespace priv {
     }
 
     template <typename Type>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto strip_type_name() noexcept {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto strip_type_name() noexcept {
 #if defined OURS_PRETTY_FUNCTION
         const std::string_view full_name{pretty_function<Type>()};
         auto first = full_name.find_first_not_of(
@@ -31,15 +31,15 @@ namespace priv {
     }
 
     template <typename Type, auto = stripped_type_name<Type>().find_first_of('.')>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto type_name(int) noexcept {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto type_name(int) noexcept {
         constexpr auto value = strip_type_name<Type>();
         return value;
     }
 
     template <typename Type>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto type_name(char) noexcept {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto type_name(char) noexcept {
         constexpr static auto value = strip_type_name<Type>();
         return value;
     }
@@ -47,13 +47,13 @@ namespace priv {
 
 template <typename Type, typename = void>
 struct TypeName final {
-    [[nodiscard]]
-    FORCE_INLINE constexpr static auto value() noexcept {
+    FORCE_INLINE [[nodiscard]]
+    constexpr static auto value() noexcept {
         return priv::type_name<Type>(0);
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr operator ustl::views::StringView() const noexcept {
+    FORCE_INLINE [[nodiscard]]
+    constexpr operator ustl::views::StringView() const noexcept {
         return value();
     }
 };

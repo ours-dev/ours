@@ -12,7 +12,7 @@ namespace eftl::elf {
 // ELF ABI field names intentionally match the specification.
 // NOLINTBEGIN(readability-identifier-naming)
 /** Object file magic string. */
-static constexpr char K_ELF_MAGIC[] = {'\x7f', 'E', 'L', 'F'};
+static constexpr char ELF_MAGIC[] = {'\x7f', 'E', 'L', 'F'};
 
 /** 32-bits ELF header */
 struct Elf32Ehdr {

@@ -7,7 +7,8 @@
 #include <variant>
 
 namespace ustl {
-template <typename... Types> using Variant = std::variant<Types...>;
+template <typename... Types>
+using Variant = std::variant<Types...>;
 
 using std::get;
 using std::visit;

@@ -70,15 +70,16 @@ class MsrIo final {
 namespace detail {
     enum class EferBits : usize { Sce = 0, Lme = 8, Lma = 10, Nxe = 11 };
 
-    using EferLayout = ustl::BitFields<ustl::bitfields::StorageUnit<usize>, std::tuple<
-        ustl::FieldAt<EferBits::Sce>, ustl::FieldAt<EferBits::Lme>,
-        ustl::FieldAt<EferBits::Lma>, ustl::FieldAt<EferBits::Nxe>>>;
+    using EferLayout =
+        ustl::BitFields<ustl::bitfields::StorageUnit<usize>,
+                        std::tuple<ustl::FieldAt<EferBits::Sce>, ustl::FieldAt<EferBits::Lme>,
+                                   ustl::FieldAt<EferBits::Lma>, ustl::FieldAt<EferBits::Nxe>>>;
 } // namespace detail
 
 // [intel/sdm] 2.2.1 Extended Feature Enable Register (IA32_EFER). `Lma` is
 // a status bit set by the processor (long mode active); it's exposed for
 // `get<>()` like the others but writing it has no defined effect.
-class X86Efer : public io::RegisterBase<X86Efer, detail::EferLayout> {
+class X86Efer: public io::RegisterBase<X86Efer, detail::EferLayout> {
     using Base = io::RegisterBase<X86Efer, detail::EferLayout>;
 
   public:

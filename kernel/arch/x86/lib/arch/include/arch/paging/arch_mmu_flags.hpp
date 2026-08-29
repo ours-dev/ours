@@ -3,8 +3,8 @@
 #ifndef ARCH_PAGING_ARCH_MMU_FLAGS_HPP
 #define ARCH_PAGING_ARCH_MMU_FLAGS_HPP 1
 
-#include <arch/x86/macro/mmu.hpp>
 #include <arch/paging/mmu_flags.hpp>
+#include <arch/x86/macro/mmu.hpp>
 #include <ustl/util/enum_bits.hpp>
 
 namespace arch::paging {

@@ -51,7 +51,9 @@ auto IdleThread::init(CpuNum cpunum) -> void {
 }
 
 auto IdleThread::run() -> void {
-    for ([[maybe_unused]] auto &preemption_state = Thread::Current::get()->preemption_state();;) {
+    for ([[maybe_unused]]
+         auto &preemption_state = Thread::Current::get()->preemption_state();
+         ;) {
         arch::AutoInterruptDisabler irq_disabler;
         AutoPreemptDisabler preempt_disaber;
 

@@ -8,7 +8,7 @@
 
 namespace ours {
 namespace {
-    constexpr char const *kLevelNames[static_cast<usize>(DpcPriority::Count)] = {
+    constexpr char const *LEVEL_NAMES[static_cast<usize>(DpcPriority::Count)] = {
         "Low",
         "Normal",
         "High",
@@ -90,12 +90,12 @@ auto DpcRunner::init() -> void {
 
     for (auto i = usize(0); i < static_cast<usize>(Level::Count); ++i) {
         char name[24];
-        ustl::fmt::format_to(name, "Dpc/{}/{}\0", cpu, kLevelNames[i]);
+        ustl::fmt::format_to(name, "Dpc/{}/{}\0", cpu, LEVEL_NAMES[i]);
 
         [[maybe_unused]]
         auto const status = runner.m_dpc_queues[i].start(name, cpu);
         DEBUG_ASSERT(Status::Ok == status, "Failed to start Dpc worker[{}] on cpu {}",
-                     kLevelNames[i], cpu);
+                     LEVEL_NAMES[i], cpu);
     }
 }
 

@@ -35,11 +35,9 @@ BootOptions g_boot_options;
 /// Default: nothing to do between loading a module and entering it.  An
 /// architecture overrides this to install a page-table root or reserve
 /// arch-specific memory (physload.hpp).
-WEAK_LINK
-auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
+WEAK_LINK auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
 
-NO_RETURN
-auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy)
+NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy)
     -> void {
     // Static console instances self-register during this pass (each
     // Console constructor links into the constinit global list); printing
@@ -102,7 +100,7 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
     Aspace aspace;
     std::span<obi::MemoryRange const> const legacy_memory_ranges =
         legacy == nullptr ? std::span<obi::MemoryRange const>{}
-                         : std::span(legacy->memory_ranges, legacy->memory_range_count);
+                          : std::span(legacy->memory_ranges, legacy->memory_range_count);
     init_memory(boot.package(), input.unwrap(), legacy_memory_ranges, &aspace);
 
     // ---- Stage 4: Load the next phys module ----

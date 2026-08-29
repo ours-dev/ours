@@ -88,58 +88,49 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
 
     using Flags = VmaFlags;
 
-    FORCE_INLINE
-    auto aspace() -> ustl::Arc<VmAspace> & {
+    FORCE_INLINE auto aspace() -> ustl::Arc<VmAspace> & {
         return m_aspace;
     }
 
-    FORCE_INLINE
-    auto base() const -> VirtAddr {
+    FORCE_INLINE auto base() const -> VirtAddr {
         return m_base;
     }
 
-    FORCE_INLINE
-    auto size() const -> VirtAddr {
+    FORCE_INLINE auto size() const -> VirtAddr {
         return m_size;
     }
 
-    FORCE_INLINE
-    auto is_active() const -> bool {
+    FORCE_INLINE auto is_active() const -> bool {
         return !!(m_vmaf & VmaFlags::Active);
     }
 
-    FORCE_INLINE
-    auto is_mapping() const -> bool {
+    FORCE_INLINE auto is_mapping() const -> bool {
         return !!(m_vmaf & VmaFlags::Mapping);
     }
 
-    FORCE_INLINE
-    auto get_lock() -> sync::SpinLock & {
+    FORCE_INLINE auto get_lock() -> sync::SpinLock & {
         return m_aspace->get_lock();
     }
 
-    FORCE_INLINE
-    auto check_range(VirtAddr base, usize size) const -> bool {
+    FORCE_INLINE auto check_range(VirtAddr base, usize size) const -> bool {
         return base >= m_base && size <= m_size && (base - m_base) <= m_size - size;
     }
 
     /// This for the collections to compare two VMA.
-    FORCE_INLINE
-    friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
+    FORCE_INLINE friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
         return x.m_base < y.m_base;
     }
 
     struct BaseOrder final {
-        FORCE_INLINE
-        auto operator()(Self const &x, Self const &y) const noexcept -> bool {
+        FORCE_INLINE auto operator()(Self const &x, Self const &y) const noexcept -> bool {
             return x.m_base < y.m_base;
         }
     };
 
   protected:
-    constexpr static auto const kAreaMagic = gktl::magic("VmArea");
+    constexpr static auto const AREA_MAGIC = gktl::magic("VmArea");
 
-    constexpr static auto const kMappingMagic = gktl::magic("VmMapping");
+    constexpr static auto const MAPPING_MAGIC = gktl::magic("VmMapping");
 
     VmAreaOrMapping(u32 magic, VirtAddr base, usize size, VmaFlags vmaf, VmArea *, VmAspace *,
                     char const *);
@@ -149,8 +140,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     auto validate_mmuflags(MmuFlags mmuf) const -> bool;
 
     /// Check whether a given `|vmaflags|` is valid. True if valid, otherwise invalid.
-    FORCE_INLINE
-    auto validate_vmaflags(VmaFlags vmaf) const -> bool {
+    FORCE_INLINE auto validate_vmaflags(VmaFlags vmaf) const -> bool {
         auto perm_allowed = (m_vmaf & VmaFlags::PermMask);
         if (((vmaf & VmaFlags::PermMask) | perm_allowed) != perm_allowed) {
             return false;
@@ -159,8 +149,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         return true;
     }
 
-    FORCE_INLINE
-    auto mark_active() -> void {
+    FORCE_INLINE auto mark_active() -> void {
         m_vmaf |= VmaFlags::Active;
     }
 
@@ -277,44 +266,37 @@ class VmaSet: public VmaSetBase {
     // Now there are so many restrictions that we must manually manage those reference counters
     // from instances of VmAom.
 
-    FORCE_INLINE
-    auto insert(Iter hint, RefMut value) -> IterMut {
+    FORCE_INLINE auto insert(Iter hint, RefMut value) -> IterMut {
         value.retain();
         return Base::insert(hint, value);
     }
 
-    FORCE_INLINE
-    auto insert(RefMut value) -> IterMut {
+    FORCE_INLINE auto insert(RefMut value) -> IterMut {
         value.retain();
         return Base::insert(value);
     }
 
-    FORCE_INLINE
-    auto erase(Iter pos) -> IterMut {
+    FORCE_INLINE auto erase(Iter pos) -> IterMut {
         pos.unconst()->release();
         return Base::erase(pos);
     }
 
-    FORCE_INLINE
-    auto erase(Iter first, Iter last) -> IterMut {
+    FORCE_INLINE auto erase(Iter first, Iter last) -> IterMut {
         return Base::erase_and_dispose(first, last,
                                        [](PtrMut value) noexcept { value->release(); });
     }
 
     /// Find the first existent VMA whose'end < addr.
-    FORCE_INLINE
-    auto lower_bound(VirtAddr addr) -> IterMut {
+    FORCE_INLINE auto lower_bound(VirtAddr addr) -> IterMut {
         return Base::lower_bound(addr, [](Ref x, VirtAddr y) noexcept { return x.m_base < y; });
     }
 
-    FORCE_INLINE
-    auto lower_bound(VirtAddr addr) const -> Iter {
+    FORCE_INLINE auto lower_bound(VirtAddr addr) const -> Iter {
         return Base::lower_bound(addr, [](Ref x, VirtAddr y) noexcept { return x.m_base < y; });
     }
 
     /// Find the first existent VMA whose'base > addr.
-    FORCE_INLINE
-    auto upper_bound(VirtAddr addr) -> IterMut {
+    FORCE_INLINE auto upper_bound(VirtAddr addr) -> IterMut {
         return Base::upper_bound(addr, [](VirtAddr y, Ref x) noexcept { return y <= x.m_base; });
     }
 

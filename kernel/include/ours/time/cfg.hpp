@@ -13,7 +13,7 @@
 #include <ours/types.hpp>
 
 namespace ours::time {
-constexpr static auto kNsecPerTick = (duration_cast<Nanoseconds>(Seconds(1)) / HZ);
+constexpr static auto NSEC_PER_TICK = (duration_cast<Nanoseconds>(Seconds(1)) / HZ);
 
 } // namespace ours::time
 

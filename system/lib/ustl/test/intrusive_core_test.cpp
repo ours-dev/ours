@@ -1,23 +1,24 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <concepts>
-#include <cstddef>
-
 #include <ustl/collections/intrusive/link_mode.hpp>
 #include <ustl/collections/intrusive/options.hpp>
 #include <ustl/collections/intrusive/pack_options.hpp>
 
-namespace {
-    struct Defaults {
-        using Size = std::size_t;
-        [[maybe_unused]] static constexpr bool CONSTANT_TIME_SIZE = true;
-    };
+#include <concepts>
 
-    using Config = typename ustl::collections::intrusive::PackOptions<
-        Defaults,
-        ustl::collections::intrusive::Size<unsigned short>,
-        ustl::collections::intrusive::ConstantTimeSize<false>>::Type;
+#include <cstddef>
+
+namespace {
+struct Defaults {
+    using Size = std::size_t;
+    [[maybe_unused]]
+    static constexpr bool CONSTANT_TIME_SIZE = true;
+};
+
+using Config = typename ustl::collections::intrusive::PackOptions<
+    Defaults, ustl::collections::intrusive::Size<unsigned short>,
+    ustl::collections::intrusive::ConstantTimeSize<false>>::Type;
 } // namespace
 
 static_assert(std::same_as<Config::Size, unsigned short>);

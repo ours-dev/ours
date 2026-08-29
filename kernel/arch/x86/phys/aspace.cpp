@@ -2,6 +2,7 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/init.hpp>
+
 #include <algorithm>
 namespace ours::phys {
 auto Aspace::arch_install() const -> void {

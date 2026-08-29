@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <concepts>
-
 #include <ustl/collections/intrusive/detail/rbtree_node.hpp>
+
+#include <concepts>
 
 using namespace ustl::collections::intrusive;
 
@@ -21,7 +21,8 @@ auto main() -> int {
     NormalTraits::set_right(&root, &child);
     NormalTraits::set_color(&root, NormalTraits::red());
     if (NormalTraits::get_parent(&child) != &root || NormalTraits::get_left(&root) != &child ||
-        NormalTraits::get_right(&root) != &child || NormalTraits::get_color(&root) != NormalTraits::red()) {
+        NormalTraits::get_right(&root) != &child ||
+        NormalTraits::get_color(&root) != NormalTraits::red()) {
         return 1;
     }
 

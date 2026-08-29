@@ -23,13 +23,11 @@ class CpuAffinity {
   public:
     enum class Kind { Hard, Soft };
 
-    FORCE_INLINE
-    auto set_affinity_soft(CpuMask const &affinity_mask) -> void {
+    FORCE_INLINE auto set_affinity_soft(CpuMask const &affinity_mask) -> void {
         m_soft_affinity = &affinity_mask;
     }
 
-    FORCE_INLINE
-    auto set_affinity_hard(CpuMask const &affinity_mask) -> void {
+    FORCE_INLINE auto set_affinity_hard(CpuMask const &affinity_mask) -> void {
         m_hard_affinity = &affinity_mask;
     }
 
@@ -159,9 +157,9 @@ struct Metric {
 
 class Timeslice {
   public:
-    constexpr static auto const kTimesliceExtensionBit = BIT(31);
+    constexpr static auto const TIMESLICE_EXTENSION_BIT = BIT(31);
 
-    constexpr static auto const kTimesliceCustomBit = BIT(30);
+    constexpr static auto const TIMESLICE_CUSTOM_BIT = BIT(30);
 
     auto evaluate() -> bool;
 
@@ -170,11 +168,11 @@ class Timeslice {
     }
 
     auto has_timelice_extension() const -> bool {
-        return m_extension & kTimesliceExtensionBit;
+        return m_extension & TIMESLICE_EXTENSION_BIT;
     }
 
     auto is_custom_timeslice() const -> bool {
-        return m_extension & kTimesliceCustomBit;
+        return m_extension & TIMESLICE_CUSTOM_BIT;
     }
 
   private:
@@ -199,53 +197,43 @@ class Context: public gktl::mixin::Comparable<Context> {
     Context(BaseProfile profile)
         : m_affinity(), m_runqueue_state(), m_runqueue_hook(), m_metric(), m_profile(profile) {}
 
-    FORCE_INLINE
-    auto discipline() const -> Discipline {
+    FORCE_INLINE auto discipline() const -> Discipline {
         return m_profile.effective.discipline;
     }
 
-    FORCE_INLINE
-    auto deadline() const -> SchedTime {
+    FORCE_INLINE auto deadline() const -> SchedTime {
         return m_params.deadline;
     }
 
-    FORCE_INLINE
-    auto runtime() const -> SchedDuration {
+    FORCE_INLINE auto runtime() const -> SchedDuration {
         return m_params.runtime;
     }
 
-    FORCE_INLINE
-    auto weight() -> Weight {
+    FORCE_INLINE auto weight() -> Weight {
         return m_profile.effective.weight;
     }
 
-    FORCE_INLINE
-    auto metric() -> Metric & {
+    FORCE_INLINE auto metric() -> Metric & {
         return m_metric;
     }
 
-    FORCE_INLINE
-    auto last_cpu() const -> CpuNum {
+    FORCE_INLINE auto last_cpu() const -> CpuNum {
         return m_last_cpu;
     }
 
-    FORCE_INLINE
-    auto curr_cpu() const -> CpuNum {
+    FORCE_INLINE auto curr_cpu() const -> CpuNum {
         return m_curr_cpu;
     }
 
-    FORCE_INLINE
-    auto schedule() -> ISchedule * {
+    FORCE_INLINE auto schedule() -> ISchedule * {
         return m_schedule;
     }
 
-    FORCE_INLINE
-    auto runqueue_state() -> RunQueueState & {
+    FORCE_INLINE auto runqueue_state() -> RunQueueState & {
         return m_runqueue_state;
     }
 
-    FORCE_INLINE
-    auto cpu_affinity() -> CpuAffinity & {
+    FORCE_INLINE auto cpu_affinity() -> CpuAffinity & {
         return m_affinity;
     }
 

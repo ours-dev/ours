@@ -62,20 +62,20 @@ struct DynInfoObserver: public DynamicObserver<Observer, Tags...> {
 
     DynInfoObserver(Info &info) : m_info(std::addressof(info)), m_caches(), m_seen() {}
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto info() -> InfoType & {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto info() -> InfoType & {
         return *m_info;
     }
 
     template <DynTag Tag>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto has() const noexcept -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto has() const noexcept -> bool {
         return m_seen[INDEX_V<Tag>];
     }
 
     template <typename Memory, DynTag Tag>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto observe(Memory &&memory, Addr val, DynTagMatcher<Tag>) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto observe(Memory &&memory, Addr val, DynTagMatcher<Tag>) -> bool {
         (void)memory;
         static_assert(!std::is_same_v<ustl::TypeAlgos::Find<TagIndexMap, DynTagMatcher<Tag>>,
                                       ustl::TypeAlgos::NotFound>,
@@ -147,8 +147,8 @@ struct DynInfoObserver: public DynamicObserver<Observer, Tags...> {
     }
 
     template <DynTag Tag>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto at() -> Addr {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto at() -> Addr {
         return m_caches[INDEX_V<Tag>];
     }
 

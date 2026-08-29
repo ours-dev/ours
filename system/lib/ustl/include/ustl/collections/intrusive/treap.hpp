@@ -3,12 +3,6 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_TREAP_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_TREAP_HPP 1
 
-#include <cstddef>
-#include <functional>
-#include <type_traits>
-#include <utility>
-
-#include <ustl/option.hpp>
 #include <ustl/collections/intrusive/bs_set_hook.hpp>
 #include <ustl/collections/intrusive/detail/key_node_ptr_compare.hpp>
 #include <ustl/collections/intrusive/detail/value_traits_access.hpp>
@@ -17,192 +11,245 @@
 #include <ustl/collections/intrusive/pointer_traits.hpp>
 #include <ustl/collections/intrusive/priority_compare.hpp>
 #include <ustl/collections/intrusive/treap_algorithms.hpp>
+#include <ustl/option.hpp>
+
+#include <functional>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
 
 namespace ustl::collections::intrusive {
-    namespace detail {
-        template <typename T>
-        struct IdentityPriorityOfValue final {
-            using Type = T;
+namespace detail {
+    template <typename T>
+    struct IdentityPriorityOfValue final {
+        using Type = T;
 
-            [[nodiscard]] constexpr auto operator()(T const &value) const noexcept -> T const & {
-                return value;
-            }
-        };
-    } // namespace detail
-
-    template <typename T, typename... Options>
-    class Treap final {
-        using DefaultPriorityOfValue = detail::IdentityPriorityOfValue<T>;
-        struct Defaults : HookDefaults {
-            using ProtoValueTraits = BsSetBaseHook<>;
-            using Compare = std::less<T>;
-            using PriorityOfValue = DefaultPriorityOfValue;
-            using Priority = void;
-        };
-
-        using PackedOptions = typename PackOptions<Defaults, Options...>::Type;
-        using Hook = typename PackedOptions::ProtoValueTraits;
-        using ValueAccess = detail::ValueTraitsAccess<T, Hook>;
-        using NodeTraits = typename Hook::NodeTraits;
-        using Node = typename NodeTraits::Node;
-        using NodePtr = typename NodeTraits::NodePtr;
-        using Algorithms = TreapAlgorithms<NodeTraits>;
-        using PriorityOfValueType = typename PackedOptions::PriorityOfValue;
-        using PriorityType = std::remove_cvref_t<std::invoke_result_t<PriorityOfValueType const &, T const &>>;
-        using ConfiguredPriorityCompare = typename PackedOptions::Priority;
-        using PriorityCompareType = std::conditional_t<
-            std::same_as<ConfiguredPriorityCompare, void>,
-            ::ustl::collections::intrusive::PriorityCompare<PriorityType>,
-            ConfiguredPriorityCompare>;
-        using NodeCompare = detail::KeyNodePtrCompare<typename PackedOptions::Compare, ValueAccess>;
-        using NodePriorityCompare = detail::KeyNodePtrCompare<PriorityCompareType, ValueAccess, PriorityOfValueType>;
-
-    public:
-        template <typename ValuePointer>
-        class BasicIterator final {
-        public:
-            constexpr BasicIterator() noexcept = default;
-
-            [[nodiscard]] constexpr auto operator*() const noexcept -> decltype(*std::declval<ValuePointer>()) {
-                return *operator->();
-            }
-            [[nodiscard]] constexpr auto operator->() const noexcept -> ValuePointer { return to_value(m_node); }
-
-            constexpr auto operator++() noexcept -> BasicIterator & {
-                m_node = Algorithms::next_node(m_node);
-                return *this;
-            }
-
-            constexpr auto operator--() noexcept -> BasicIterator & {
-                m_node = Algorithms::prev_node(m_node);
-                return *this;
-            }
-
-            [[nodiscard]] friend constexpr auto operator==(BasicIterator const &left, BasicIterator const &right) noexcept -> bool {
-                return left.m_node == right.m_node;
-            }
-
-        private:
-            friend class Treap;
-
-            constexpr explicit BasicIterator(NodePtr const node) noexcept
-                : m_node(node) {}
-
-            NodePtr m_node {};
-        };
-
-        using IterMut = BasicIterator<T *>;
-        using Iter = BasicIterator<T const *>;
-        using Element = T;
-        using Size = std::size_t;
-        using KeyCompare = typename PackedOptions::Compare;
-        using PriorityOfValue = PriorityOfValueType;
-        using PriorityCompare = PriorityCompareType;
-        using InsertCommitData = typename Algorithms::InsertCommitData;
-
-        static_assert(std::is_nothrow_invocable_v<KeyCompare const &, T const &, T const &>);
-        static_assert(std::is_nothrow_invocable_v<PriorityOfValue const &, T const &>);
-        static_assert(std::is_nothrow_invocable_r_v<bool, PriorityCompare const &, PriorityType const &, PriorityType const &>);
-
-        constexpr Treap() noexcept { Algorithms::init_header(&m_header); }
-
-        constexpr explicit Treap(KeyCompare compare, PriorityCompare priority_compare = {}) noexcept
-            : m_compare(std::move(compare)), m_priority_compare(std::move(priority_compare)) {
-            Algorithms::init_header(&m_header);
+        [[nodiscard]]
+        constexpr auto operator()(T const &value) const noexcept -> T const & {
+            return value;
         }
-
-        constexpr Treap(Treap const &) = delete;
-        constexpr auto operator=(Treap const &) -> Treap & = delete;
-        constexpr ~Treap() noexcept { clear(); }
-
-        [[nodiscard]] constexpr auto begin() noexcept -> IterMut { return IterMut(Algorithms::begin_node(&m_header)); }
-        [[nodiscard]] constexpr auto begin() const noexcept -> Iter { return Iter(Algorithms::begin_node(&m_header)); }
-        [[nodiscard]] constexpr auto end() noexcept -> IterMut { return IterMut(Algorithms::end_node(&m_header)); }
-        [[nodiscard]] constexpr auto end() const noexcept -> Iter { return Iter(Algorithms::end_node(&m_header)); }
-        [[nodiscard]] constexpr auto empty() const noexcept -> bool { return m_size == 0U; }
-        [[nodiscard]] constexpr auto size() const noexcept -> Size { return m_size; }
-        [[nodiscard]] constexpr auto top() noexcept -> IterMut {
-            return empty() ? end() : IterMut(Algorithms::root_node(&m_header));
-        }
-        [[nodiscard]] constexpr auto top() const noexcept -> Iter {
-            return empty() ? end() : Iter(Algorithms::root_node(&m_header));
-        }
-        [[nodiscard]] constexpr auto priority_comp() const noexcept -> PriorityCompare const & { return m_priority_compare; }
-
-        [[nodiscard]] constexpr auto insert_unique(T &value) noexcept -> std::pair<IterMut, bool> {
-            InsertCommitData commit_data {};
-            const auto [existing, inserted] = Algorithms::insert_unique_check(
-                &m_header, to_node(value), NodeCompare {&m_compare}, NodePriorityCompare {&m_priority_compare}, commit_data);
-            if (!inserted) {
-                return {IterMut(existing), false};
-            }
-            Algorithms::insert_unique_commit(&m_header, to_node(value), commit_data);
-            ++m_size;
-            return {IterMut(to_node(value)), true};
-        }
-
-        [[nodiscard]] constexpr auto insert_equal(T &value) noexcept -> IterMut {
-            const auto node = to_node(value);
-            Algorithms::insert_equal_upper_bound(
-                &m_header, node, NodeCompare {&m_compare}, NodePriorityCompare {&m_priority_compare});
-            ++m_size;
-            return IterMut(node);
-        }
-
-        constexpr auto erase(T &value) noexcept -> void {
-            const auto node = to_node(value);
-            if (!Algorithms::unique(node)) {
-                static_cast<void>(Algorithms::erase(
-                    &m_header, node, NodePriorityCompare {&m_priority_compare}));
-                --m_size;
-            }
-        }
-
-        constexpr auto clear() noexcept -> void {
-            while (!empty()) {
-                static_cast<void>(Algorithms::erase(
-                    &m_header, Algorithms::begin_node(&m_header), NodePriorityCompare {&m_priority_compare}));
-                --m_size;
-            }
-        }
-
-        [[nodiscard]] constexpr auto find(T const &value) noexcept -> ustl::Option<T &> {
-            const auto node = Algorithms::find(&m_header, value, NodeCompare {&m_compare});
-            return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some(*to_value(node));
-        }
-
-        [[nodiscard]] constexpr auto find(T const &value) const noexcept -> ustl::Option<T const &> {
-            const auto node = Algorithms::find(&m_header, value, NodeCompare {&m_compare});
-            return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some(*to_value(node));
-        }
-
-        [[nodiscard]] constexpr auto count(T const &value) const noexcept -> Size {
-            return Algorithms::count(&m_header, value, NodeCompare {&m_compare});
-        }
-
-    private:
-        [[nodiscard]] static constexpr auto to_node(T &value) noexcept -> NodePtr {
-            if constexpr (requires { Hook::to_node_ptr(value); }) {
-                return Hook::to_node_ptr(value);
-            } else {
-                return static_cast<Hook &>(value).this_ptr();
-            }
-        }
-
-        [[nodiscard]] static constexpr auto to_value(NodePtr const node) noexcept -> T * {
-            if constexpr (requires { Hook::to_value_ptr(node); }) {
-                return PointerTraits<decltype(Hook::to_value_ptr(node))>::to_raw_pointer(Hook::to_value_ptr(node));
-            } else {
-                auto *const hook = static_cast<Hook *>(static_cast<Node *>(node));
-                return static_cast<T *>(hook);
-            }
-        }
-
-        Node m_header {};
-        KeyCompare m_compare {};
-        [[no_unique_address]] PriorityCompare m_priority_compare {};
-        Size m_size {};
     };
+} // namespace detail
+
+template <typename T, typename... Options>
+class Treap final {
+    using DefaultPriorityOfValue = detail::IdentityPriorityOfValue<T>;
+    struct Defaults: HookDefaults {
+        using ProtoValueTraits = BsSetBaseHook<>;
+        using Compare = std::less<T>;
+        using PriorityOfValue = DefaultPriorityOfValue;
+        using Priority = void;
+    };
+
+    using PackedOptions = typename PackOptions<Defaults, Options...>::Type;
+    using Hook = typename PackedOptions::ProtoValueTraits;
+    using ValueAccess = detail::ValueTraitsAccess<T, Hook>;
+    using NodeTraits = typename Hook::NodeTraits;
+    using Node = typename NodeTraits::Node;
+    using NodePtr = typename NodeTraits::NodePtr;
+    using Algorithms = TreapAlgorithms<NodeTraits>;
+    using PriorityOfValueType = typename PackedOptions::PriorityOfValue;
+    using PriorityType =
+        std::remove_cvref_t<std::invoke_result_t<PriorityOfValueType const &, T const &>>;
+    using ConfiguredPriorityCompare = typename PackedOptions::Priority;
+    using PriorityCompareType =
+        std::conditional_t<std::same_as<ConfiguredPriorityCompare, void>,
+                           ::ustl::collections::intrusive::PriorityCompare<PriorityType>,
+                           ConfiguredPriorityCompare>;
+    using NodeCompare = detail::KeyNodePtrCompare<typename PackedOptions::Compare, ValueAccess>;
+    using NodePriorityCompare =
+        detail::KeyNodePtrCompare<PriorityCompareType, ValueAccess, PriorityOfValueType>;
+
+  public:
+    template <typename ValuePointer>
+    class BasicIterator final {
+      public:
+        constexpr BasicIterator() noexcept = default;
+
+        [[nodiscard]]
+        constexpr auto operator*() const noexcept -> decltype(*std::declval<ValuePointer>()) {
+            return *operator->();
+        }
+        [[nodiscard]]
+        constexpr auto operator->() const noexcept -> ValuePointer {
+            return to_value(m_node);
+        }
+
+        constexpr auto operator++() noexcept -> BasicIterator & {
+            m_node = Algorithms::next_node(m_node);
+            return *this;
+        }
+
+        constexpr auto operator--() noexcept -> BasicIterator & {
+            m_node = Algorithms::prev_node(m_node);
+            return *this;
+        }
+
+        [[nodiscard]]
+        friend constexpr auto operator==(BasicIterator const &left,
+                                         BasicIterator const &right) noexcept -> bool {
+            return left.m_node == right.m_node;
+        }
+
+      private:
+        friend class Treap;
+
+        constexpr explicit BasicIterator(NodePtr const node) noexcept : m_node(node) {}
+
+        NodePtr m_node{};
+    };
+
+    using IterMut = BasicIterator<T *>;
+    using Iter = BasicIterator<T const *>;
+    using Element = T;
+    using Size = std::size_t;
+    using KeyCompare = typename PackedOptions::Compare;
+    using PriorityOfValue = PriorityOfValueType;
+    using PriorityCompare = PriorityCompareType;
+    using InsertCommitData = typename Algorithms::InsertCommitData;
+
+    static_assert(std::is_nothrow_invocable_v<KeyCompare const &, T const &, T const &>);
+    static_assert(std::is_nothrow_invocable_v<PriorityOfValue const &, T const &>);
+    static_assert(std::is_nothrow_invocable_r_v<bool, PriorityCompare const &, PriorityType const &,
+                                                PriorityType const &>);
+
+    constexpr Treap() noexcept {
+        Algorithms::init_header(&m_header);
+    }
+
+    constexpr explicit Treap(KeyCompare compare, PriorityCompare priority_compare = {}) noexcept
+        : m_compare(std::move(compare)), m_priority_compare(std::move(priority_compare)) {
+        Algorithms::init_header(&m_header);
+    }
+
+    constexpr Treap(Treap const &) = delete;
+    constexpr auto operator=(Treap const &) -> Treap & = delete;
+    constexpr ~Treap() noexcept {
+        clear();
+    }
+
+    [[nodiscard]]
+    constexpr auto begin() noexcept -> IterMut {
+        return IterMut(Algorithms::begin_node(&m_header));
+    }
+    [[nodiscard]]
+    constexpr auto begin() const noexcept -> Iter {
+        return Iter(Algorithms::begin_node(&m_header));
+    }
+    [[nodiscard]]
+    constexpr auto end() noexcept -> IterMut {
+        return IterMut(Algorithms::end_node(&m_header));
+    }
+    [[nodiscard]]
+    constexpr auto end() const noexcept -> Iter {
+        return Iter(Algorithms::end_node(&m_header));
+    }
+    [[nodiscard]]
+    constexpr auto empty() const noexcept -> bool {
+        return m_size == 0U;
+    }
+    [[nodiscard]]
+    constexpr auto size() const noexcept -> Size {
+        return m_size;
+    }
+    [[nodiscard]]
+    constexpr auto top() noexcept -> IterMut {
+        return empty() ? end() : IterMut(Algorithms::root_node(&m_header));
+    }
+    [[nodiscard]]
+    constexpr auto top() const noexcept -> Iter {
+        return empty() ? end() : Iter(Algorithms::root_node(&m_header));
+    }
+    [[nodiscard]]
+    constexpr auto priority_comp() const noexcept -> PriorityCompare const & {
+        return m_priority_compare;
+    }
+
+    [[nodiscard]]
+    constexpr auto insert_unique(T &value) noexcept -> std::pair<IterMut, bool> {
+        InsertCommitData commit_data{};
+        const auto [existing, inserted] =
+            Algorithms::insert_unique_check(&m_header, to_node(value), NodeCompare{&m_compare},
+                                            NodePriorityCompare{&m_priority_compare}, commit_data);
+        if (!inserted) {
+            return {IterMut(existing), false};
+        }
+        Algorithms::insert_unique_commit(&m_header, to_node(value), commit_data);
+        ++m_size;
+        return {IterMut(to_node(value)), true};
+    }
+
+    [[nodiscard]]
+    constexpr auto insert_equal(T &value) noexcept -> IterMut {
+        const auto node = to_node(value);
+        Algorithms::insert_equal_upper_bound(&m_header, node, NodeCompare{&m_compare},
+                                             NodePriorityCompare{&m_priority_compare});
+        ++m_size;
+        return IterMut(node);
+    }
+
+    constexpr auto erase(T &value) noexcept -> void {
+        const auto node = to_node(value);
+        if (!Algorithms::unique(node)) {
+            static_cast<void>(
+                Algorithms::erase(&m_header, node, NodePriorityCompare{&m_priority_compare}));
+            --m_size;
+        }
+    }
+
+    constexpr auto clear() noexcept -> void {
+        while (!empty()) {
+            static_cast<void>(Algorithms::erase(&m_header, Algorithms::begin_node(&m_header),
+                                                NodePriorityCompare{&m_priority_compare}));
+            --m_size;
+        }
+    }
+
+    [[nodiscard]]
+    constexpr auto find(T const &value) noexcept -> ustl::Option<T &> {
+        const auto node = Algorithms::find(&m_header, value, NodeCompare{&m_compare});
+        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some(*to_value(node));
+    }
+
+    [[nodiscard]]
+    constexpr auto find(T const &value) const noexcept -> ustl::Option<T const &> {
+        const auto node = Algorithms::find(&m_header, value, NodeCompare{&m_compare});
+        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some(*to_value(node));
+    }
+
+    [[nodiscard]]
+    constexpr auto count(T const &value) const noexcept -> Size {
+        return Algorithms::count(&m_header, value, NodeCompare{&m_compare});
+    }
+
+  private:
+    [[nodiscard]]
+    static constexpr auto to_node(T &value) noexcept -> NodePtr {
+        if constexpr (requires { Hook::to_node_ptr(value); }) {
+            return Hook::to_node_ptr(value);
+        } else {
+            return static_cast<Hook &>(value).this_ptr();
+        }
+    }
+
+    [[nodiscard]]
+    static constexpr auto to_value(NodePtr const node) noexcept -> T * {
+        if constexpr (requires { Hook::to_value_ptr(node); }) {
+            return PointerTraits<decltype(Hook::to_value_ptr(node))>::to_raw_pointer(
+                Hook::to_value_ptr(node));
+        } else {
+            auto *const hook = static_cast<Hook *>(static_cast<Node *>(node));
+            return static_cast<T *>(hook);
+        }
+    }
+
+    Node m_header{};
+    KeyCompare m_compare{};
+    [[no_unique_address]]
+    PriorityCompare m_priority_compare{};
+    Size m_size{};
+};
 } // namespace ustl::collections::intrusive
 
 #endif // USTL_COLLECTIONS_INTRUSIVE_TREAP_HPP

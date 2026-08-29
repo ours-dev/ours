@@ -55,23 +55,23 @@ namespace spinlock {
     /// concern. Monitored, NoTrace and DisablePreempt only select how much
     /// bookkeeping the lock will eventually do. Note that until the Guard
     /// learns to save that state, holding this lock disables nothing at all.
-    constexpr static auto const kDefaultOptions = Option::DisablePreempt;
+    constexpr static auto const DEFAULT_OPTIONS = Option::DisablePreempt;
 
-    constexpr static auto const kMonitoredOptions = Option::Monitored | Option::DisablePreempt;
+    constexpr static auto const MONITORED_OPTIONS = Option::Monitored | Option::DisablePreempt;
 
-    constexpr static auto const kNoTraceOptions = Option::NoTrace | Option::DisablePreempt;
+    constexpr static auto const NO_TRACE_OPTIONS = Option::NoTrace | Option::DisablePreempt;
 
     template <Option Options>
     class TA_CAPABILITY("SpinLock") SpinLock
-        : public priv::LockNameStorage<SpinLock<Options>, kLockTracingEnabled> {
+        : public priv::LockNameStorage<SpinLock<Options>, LOCK_TRACING_ENABLED> {
         using Self = SpinLock;
 
       public:
         /// Both are unused: they are here ready for the lockup detector and
         /// lockdep to be wired in, and are what those call sites will test.
-        constexpr static auto const kIsMonitored = !!(Options & Option::Monitored);
+        constexpr static auto const IS_MONITORED = !!(Options & Option::Monitored);
 
-        constexpr static auto const kIsNoTrace = !!(Options & Option::NoTrace);
+        constexpr static auto const IS_NO_TRACE = !!(Options & Option::NoTrace);
 
         static auto num_held() -> usize;
 
@@ -134,9 +134,9 @@ namespace spinlock {
 
 } // namespace spinlock
 
-using SpinLock = spinlock::SpinLock<spinlock::kDefaultOptions>;
-using MonitoredSpinLock = spinlock::SpinLock<spinlock::kMonitoredOptions>;
-using NoTraceSpinLock = spinlock::SpinLock<spinlock::kNoTraceOptions>;
+using SpinLock = spinlock::SpinLock<spinlock::DEFAULT_OPTIONS>;
+using MonitoredSpinLock = spinlock::SpinLock<spinlock::MONITORED_OPTIONS>;
+using NoTraceSpinLock = spinlock::SpinLock<spinlock::NO_TRACE_OPTIONS>;
 
 LOCKDEP_STATE_SAVER(SpinLock, lockdep::SavedStateOption::IrqSave, ::arch::AutoInterruptDisabler);
 LOCKDEP_STATE_SAVER(SpinLock, lockdep::SavedStateOption::PreemptDisable, task::AutoPreemptDisabler);

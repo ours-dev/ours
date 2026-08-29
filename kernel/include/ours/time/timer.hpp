@@ -3,19 +3,17 @@
 #ifndef OURS_TIME_TIMER_HPP
 #define OURS_TIME_TIMER_HPP 1
 
+#include <gktl/canary.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/platform/timer.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/mod.hpp>
 #include <ours/time/types.hpp>
-
-#include <atomic>
-
-#include <gktl/canary.hpp>
-
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/function/fn.hpp>
+
+#include <atomic>
 
 namespace ours::time {
 class TimeSlack {
@@ -68,7 +66,7 @@ class Deadline {
     }
 
     FORCE_INLINE constexpr static auto infinite() -> Self {
-        return Self(kInfiniteTime.time_since_epoch());
+        return Self(INFINITE_TIME.time_since_epoch());
     }
 
     FORCE_INLINE constexpr friend auto operator==(Self const &x, Self const &y) -> bool {
@@ -127,29 +125,24 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
 
     auto set_deadline(Deadline expiry) -> void;
 
-    FORCE_INLINE
-    auto on_expired() -> HandlerResult {
+    FORCE_INLINE auto on_expired() -> HandlerResult {
         DEBUG_ASSERT(m_on_expired);
         return m_on_expired(this);
     }
 
-    FORCE_INLINE
-    auto timer_queue() -> TimerQueue * {
+    FORCE_INLINE auto timer_queue() -> TimerQueue * {
         return m_queue;
     }
 
-    FORCE_INLINE
-    auto deadline() const -> Deadline {
+    FORCE_INLINE auto deadline() const -> Deadline {
         return m_deadline;
     }
 
-    FORCE_INLINE
-    auto clockid() const -> ClockId {
+    FORCE_INLINE auto clockid() const -> ClockId {
         return m_clockid;
     }
 
-    FORCE_INLINE
-    friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
+    FORCE_INLINE friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
         return x.m_deadline.latest() < y.m_deadline.latest();
     }
 

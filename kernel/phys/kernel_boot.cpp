@@ -3,10 +3,10 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/boot_options.hpp>
+#include <ours/phys/elf_image.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/kernel_boot.hpp>
-#include <ours/phys/elf_image.hpp>
 #include <ours/phys/kernel_package_loader.hpp>
 #include <ours/phys/print.hpp>
 #include <ustl/mem/align.hpp>
@@ -51,7 +51,7 @@ auto KernelBoot::alloc_top_down(usize const size, usize const alignment, char co
         .alignment = alignment,
         .lower = bootmem_->min_address(),
         .upper = bootmem_->max_address(),
-        .node = bootmem::kAnyNode,
+        .node = bootmem::ANY_NODE,
         .direction = bootmem::AllocationDirection::TopDown,
     });
     if (allocation.is_err()) {
@@ -100,8 +100,7 @@ auto KernelBoot::boot() -> void {
     do_handoff();
 }
 
-WEAK_LINK
-auto KernelBoot::arch_do_handoff() -> void {}
+WEAK_LINK auto KernelBoot::arch_do_handoff() -> void {}
 
 auto KernelBoot::do_handoff() -> void {
     auto const handoff = global_handoff();
@@ -115,8 +114,7 @@ auto KernelBoot::do_handoff() -> void {
     auto const buffer = alloc_top_down(max_entries * sizeof(bootmem::MemRange),
                                        alignof(bootmem::MemRange), "the boot memory map snapshot");
     auto *const entries = reinterpret_cast<bootmem::MemRange *>(buffer);
-    auto const snapshot =
-        bootmem_->snapshot({entries, max_entries});
+    auto const snapshot = bootmem_->snapshot({entries, max_entries});
     if (snapshot.is_err()) {
         panic("Boot memory map snapshot overflowed its own capacity estimate");
     }

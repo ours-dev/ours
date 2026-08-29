@@ -8,21 +8,21 @@
 #include <ours/types.hpp>
 
 namespace arch {
-    struct IrqFrame;
+struct IrqFrame;
 }
 
 namespace ours {
-    class CpuMask;
+class CpuMask;
 }
 
 namespace ours::irq {
-    auto init_early(usize num_irqs) -> void;
-    auto request_irq(VIrqNum virqnum, IrqHandler handler, IrqFlags flags, char const *name) -> Status;
-    auto release_irq(VIrqNum virqnum) -> Status;
-    auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
-    auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;
-    auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void;
-    auto handle_irq_postamble() -> bool;
+auto init_early(usize num_irqs) -> void;
+auto request_irq(VIrqNum virqnum, IrqHandler handler, IrqFlags flags, char const *name) -> Status;
+auto release_irq(VIrqNum virqnum) -> Status;
+auto set_affinity(VIrqNum virqnum, CpuMask const &targets) -> Status;
+auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn;
+auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void;
+auto handle_irq_postamble() -> bool;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_MOD_HPP

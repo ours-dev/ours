@@ -13,7 +13,7 @@ using Binary = eftl::elf::FileImpl<Traits>;
 using Header = Traits::Header;
 using Segment = Traits::Segment;
 
-constexpr u64 K_STACK_SIZE = 0x24000;
+constexpr u64 STACK_SIZE = 0x24000;
 
 template <typename T, usize Size>
 auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
@@ -22,8 +22,8 @@ auto put(std::array<u8, Size> &image, usize offset, T const &value) -> void {
 
 auto make_header(u16 segment_count) -> Header {
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;
@@ -40,7 +40,7 @@ auto gnu_stack_segment() -> Segment {
     segment.p_type = static_cast<u32>(eftl::elf::SegType::GnuStack);
     segment.p_flags =
         static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
-    segment.p_memsz = K_STACK_SIZE;
+    segment.p_memsz = STACK_SIZE;
     return segment;
 }
 
@@ -61,7 +61,7 @@ auto test_observes_gnu_stack() -> int {
         }
         return ustl::NONE;
     }();
-    if (stack.is_some() && stack->size_hint() == K_STACK_SIZE &&
+    if (stack.is_some() && stack->size_hint() == STACK_SIZE &&
         stack->permissions() == (eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable)) {
         return 0;
     }
@@ -99,8 +99,8 @@ auto test_elf32_observes_gnu_stack() -> int {
 
     std::array<u8, 256> image{};
     Header32 header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits32::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits32::ELF_CLASS;
     header.e_ident[5] = 1;
     header.e_ident[6] = 1;
     header.e_type = 3;

@@ -46,20 +46,20 @@ auto check(bool ok, char const *what) -> int {
 }
 
 auto test_exhaust_and_coalesce() -> int {
-    constexpr auto kOrder = 8;
-    constexpr auto kNumFrames = usize{1} << kOrder;
+    constexpr auto ORDER = 8;
+    constexpr auto NUM_FRAMES = usize{1} << ORDER;
 
-    auto frames = make_frames(kNumFrames);
-    FrameBuddy buddy(frames.get(), kNumFrames, 0);
+    auto frames = make_frames(NUM_FRAMES);
+    FrameBuddy buddy(frames.get(), NUM_FRAMES, 0);
 
-    buddy.release(&frames[0], kOrder);
-    if (check(buddy.free_count(kOrder) == 1, "populate creates one order-8 block")) {
+    buddy.release(&frames[0], ORDER);
+    if (check(buddy.free_count(ORDER) == 1, "populate creates one order-8 block")) {
         return 1;
     }
 
     std::vector<PmFrame *> got;
-    got.reserve(kNumFrames);
-    for (usize i = 0; i < kNumFrames; ++i) {
+    got.reserve(NUM_FRAMES);
+    for (usize i = 0; i < NUM_FRAMES; ++i) {
         auto *frame = buddy.allocate(0);
         if (!frame) {
             std::fprintf(stderr, "FAILED: exhausted at frame %zu\n", i);
@@ -74,7 +74,7 @@ auto test_exhaust_and_coalesce() -> int {
     for (auto *frame: got) {
         buddy.release(frame, 0);
     }
-    return check(buddy.free_count(kOrder) == 1, "full coalesce back to one order-8 block");
+    return check(buddy.free_count(ORDER) == 1, "full coalesce back to one order-8 block");
 }
 
 auto test_upper_buddy_merge() -> int {
@@ -94,12 +94,12 @@ auto test_upper_buddy_merge() -> int {
 }
 
 auto test_split_shapes() -> int {
-    constexpr auto kOrder = 8;
-    constexpr auto kNumFrames = usize{1} << kOrder;
+    constexpr auto ORDER = 8;
+    constexpr auto NUM_FRAMES = usize{1} << ORDER;
 
-    auto frames = make_frames(kNumFrames);
-    FrameBuddy buddy(frames.get(), kNumFrames, 0);
-    buddy.release(&frames[0], kOrder);
+    auto frames = make_frames(NUM_FRAMES);
+    FrameBuddy buddy(frames.get(), NUM_FRAMES, 0);
+    buddy.release(&frames[0], ORDER);
 
     auto *allocated = buddy.allocate(3);
     if (check(allocated == &frames[0], "allocate(3) returns the base frame")) {

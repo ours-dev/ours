@@ -21,7 +21,7 @@ class GnuPropertyNoteView final {
   public:
     [[nodiscard]]
     static constexpr auto is_gnu_property_note(NoteRecord const &note) noexcept -> bool {
-        return note.m_type == K_NOTE_TYPE && note.m_name.size() == sizeof(K_GNU_NAME) &&
+        return note.m_type == NOTE_TYPE && note.m_name.size() == sizeof(GNU_NAME) &&
                note.m_name.data() != nullptr && note.m_name.data()[0] == 'G' &&
                note.m_name.data()[1] == 'N' && note.m_name.data()[2] == 'U' &&
                note.m_name.data()[3] == 0;
@@ -79,31 +79,30 @@ class GnuPropertyNoteView final {
     }
 
   private:
-    static constexpr u32 K_NOTE_TYPE = 5;
-    static constexpr u8 K_GNU_NAME[] = {'G', 'N', 'U', 0};
-    static constexpr usize K_PROPERTY_HEADER_SIZE = 2 * sizeof(u32);
+    static constexpr u32 NOTE_TYPE = 5;
+    static constexpr u8 GNU_NAME[] = {'G', 'N', 'U', 0};
+    static constexpr usize PROPERTY_HEADER_SIZE = 2 * sizeof(u32);
 
     struct ParsedProperty final {
         GnuPropertyRecord m_record{};
         usize m_next_offset{0};
     };
 
-    constexpr GnuPropertyNoteView(ByteRange descriptor, usize count,
-                                  ByteOrder byte_order) noexcept
+    constexpr GnuPropertyNoteView(ByteRange descriptor, usize count, ByteOrder byte_order) noexcept
         : m_descriptor(descriptor), m_count(count), m_byte_order(byte_order) {}
 
     [[nodiscard]]
     static constexpr auto align_word(usize value) noexcept -> ustl::Option<usize> {
-        constexpr usize K_ALIGNMENT = sizeof(typename Traits::Addr);
-        if (value > std::numeric_limits<usize>::max() - (K_ALIGNMENT - 1)) {
+        constexpr usize ALIGNMENT = sizeof(typename Traits::Addr);
+        if (value > std::numeric_limits<usize>::max() - (ALIGNMENT - 1)) {
             return ustl::NONE;
         }
-        return ustl::some((value + K_ALIGNMENT - 1) & ~(K_ALIGNMENT - 1));
+        return ustl::some((value + ALIGNMENT - 1) & ~(ALIGNMENT - 1));
     }
 
     [[nodiscard]]
-    static constexpr auto end_offset(usize begin, usize size,
-                                     usize limit) noexcept -> ustl::Option<usize> {
+    static constexpr auto end_offset(usize begin, usize size, usize limit) noexcept
+        -> ustl::Option<usize> {
         if (begin > limit || size > limit - begin) {
             return ustl::NONE;
         }
@@ -113,7 +112,7 @@ class GnuPropertyNoteView final {
     [[nodiscard]]
     static auto parse_at(ByteRange descriptor, usize offset, ByteOrder byte_order) noexcept
         -> ustl::Option<ParsedProperty> {
-        auto const header_end = end_offset(offset, K_PROPERTY_HEADER_SIZE, descriptor.size());
+        auto const header_end = end_offset(offset, PROPERTY_HEADER_SIZE, descriptor.size());
         if (header_end.is_none()) {
             return ustl::NONE;
         }

@@ -8,42 +8,42 @@
 #define OURS_TYPES_HPP 1
 
 namespace ours {
-    using VirtAddr  = usize;
-    using PhysAddr  = usize;
+using VirtAddr = usize;
+using PhysAddr = usize;
 
-    using HIrqNum   = u32;
-    using VIrqNum   = u32;
+using HIrqNum = u32;
+using VIrqNum = u32;
 
-    using CpuNum    = u32;
-    constexpr auto INVALID_CPU_NUM = static_cast<CpuNum>(-1);
+using CpuNum = u32;
+constexpr auto INVALID_CPU_NUM = static_cast<CpuNum>(-1);
 
-    using NnId      = u32;
+using NnId = u32;
 
-    using PgOff   = isize;
+using PgOff = isize;
 
-    using Ticks     = usize;
-    using Time      = usize;
-    using Instant   = Time;
+using Ticks = usize;
+using Time = usize;
+using Instant = Time;
 
-    using TicksSteady = Ticks;
-    using InstantSteady = Instant;
-    using DurationTicksSteady = usize;
+using TicksSteady = Ticks;
+using InstantSteady = Instant;
+using DurationTicksSteady = usize;
 
-    using TicksSystem = Ticks;
-    using InstantSystem = Instant;
-    using DurationTicksSystem = usize;
+using TicksSystem = Ticks;
+using InstantSystem = Instant;
+using DurationTicksSystem = usize;
 
-    using KoId    = u32;
-    using Handle  = u32;
+using KoId = u32;
+using Handle = u32;
 
-    enum class Status: u32;
-    enum class Signals: u32;
-    enum class Rights: u32;
+enum class Status : u32;
+enum class Signals : u32;
+enum class Rights : u32;
 
-    enum class Clock: u32 {
-        System,
-        Steady,
-    };
+enum class Clock : u32 {
+    System,
+    Steady,
+};
 
 } // namespace ours
 

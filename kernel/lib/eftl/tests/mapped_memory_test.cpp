@@ -25,15 +25,14 @@ auto test_translates_only_within_explicit_load_regions() -> int {
     eftl::elf::MappedMemory<Traits> memory(image.data(), image.size(),
                                            ustl::views::Span<eftl::elf::LoadRegion const>(regions));
 
-    constexpr Addr K_FIRST_VALUE = 0x1122334455667788;
-    constexpr Addr K_SECOND_VALUE = 0x8877665544332211;
-    if (!memory.write<Addr>(0x1008, K_FIRST_VALUE) || !memory.write<Addr>(0x2008, K_SECOND_VALUE)) {
+    constexpr Addr FIRST_VALUE = 0x1122334455667788;
+    constexpr Addr SECOND_VALUE = 0x8877665544332211;
+    if (!memory.write<Addr>(0x1008, FIRST_VALUE) || !memory.write<Addr>(0x2008, SECOND_VALUE)) {
         return 1;
     }
     auto const *const first = memory.read_at<Addr>(0x1008);
     auto const *const second = memory.read_at<Addr>(0x2008);
-    if (first == nullptr || second == nullptr || *first != K_FIRST_VALUE ||
-        *second != K_SECOND_VALUE) {
+    if (first == nullptr || second == nullptr || *first != FIRST_VALUE || *second != SECOND_VALUE) {
         return 2;
     }
     auto const second_bytes = memory.read_at_n<u8>(0x2008, sizeof(Addr));
@@ -43,10 +42,10 @@ auto test_translates_only_within_explicit_load_regions() -> int {
 
     Addr stored_second{};
     std::memcpy(&stored_second, image.data() + 0x108, sizeof(stored_second));
-    if (stored_second != K_SECOND_VALUE) {
+    if (stored_second != SECOND_VALUE) {
         return 4;
     }
-    if (memory.read_at<Addr>(0x1800) != nullptr || memory.write<Addr>(0x1800, K_FIRST_VALUE)) {
+    if (memory.read_at<Addr>(0x1800) != nullptr || memory.write<Addr>(0x1800, FIRST_VALUE)) {
         return 5;
     }
     if (!memory.read_at_n<u16>(0x10fe, 2).empty()) {
@@ -127,8 +126,8 @@ auto test_rejects_null_backing_with_nonzero_size() -> int {
     eftl::elf::MappedMemory<Traits> memory(nullptr, 1,
                                            ustl::views::Span<eftl::elf::LoadRegion const>(regions));
 
-    if (!memory.read_at_n<u8>(0x8000, 1).empty() ||
-        memory.read_at<u8>(0x8000) != nullptr || memory.write<u8>(0x8000, 0x5a)) {
+    if (!memory.read_at_n<u8>(0x8000, 1).empty() || memory.read_at<u8>(0x8000) != nullptr ||
+        memory.write<u8>(0x8000, 0x5a)) {
         return 1;
     }
     return 0;
@@ -189,8 +188,7 @@ auto test_rejects_writes_to_readonly_regions() -> int {
     eftl::elf::MappedMemory<Traits> memory(image.data(), image.size(),
                                            ustl::views::Span<eftl::elf::LoadRegion const>(regions));
 
-    if (memory.read_at<u8>(0x9000) != nullptr && !memory.write<u8>(0x9000, 0x5a) &&
-        image[0] == 0) {
+    if (memory.read_at<u8>(0x9000) != nullptr && !memory.write<u8>(0x9000, 0x5a) && image[0] == 0) {
         return 0;
     }
     return 1;

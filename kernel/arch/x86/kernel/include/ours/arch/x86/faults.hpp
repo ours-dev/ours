@@ -4,19 +4,19 @@
 #ifndef OURS_ARCH_X86_FAULTS_HPP
 #define OURS_ARCH_X86_FAULTS_HPP 1
 
-#include <ours/status.hpp>
 #include <arch/x86/interrupt.hpp>
+#include <ours/status.hpp>
 
 namespace ours {
-    auto x86_handle_page_fault(arch::IrqFrame *frame) -> Status;
+auto x86_handle_page_fault(arch::IrqFrame *frame) -> Status;
 
-    auto x86_handle_ipi_generic() -> void;
+auto x86_handle_ipi_generic() -> void;
 
-    auto x86_handle_ipi_interrupt() -> void;
+auto x86_handle_ipi_interrupt() -> void;
 
-    auto x86_handle_ipi_resched() -> void;
+auto x86_handle_ipi_resched() -> void;
 
-    auto x86_handle_ipi_suspend() -> void;
+auto x86_handle_ipi_suspend() -> void;
 
 } // namespace ours
 

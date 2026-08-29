@@ -29,11 +29,9 @@ namespace {
 
     MemCache *g_node_cache;
 
-    INIT_DATA
-    ustl::LazyInit<MemCache> g_bootstrap_self_cache;
+    INIT_DATA ustl::LazyInit<MemCache> g_bootstrap_self_cache;
 
-    INIT_DATA
-    ustl::LazyInit<MemCache> g_bootstrap_node_cache;
+    INIT_DATA ustl::LazyInit<MemCache> g_bootstrap_node_cache;
 
     u32 g_slab_min_order;
     u32 g_slab_max_order;
@@ -44,8 +42,7 @@ namespace {
     /// The block is BIT(order) pages, not |order| pages -- the two differ for
     /// every order but one, and at order 0 the wrong form yields zero objects,
     /// which would make every slab look full the moment it was created.
-    FORCE_INLINE
-    auto calculate_order_objects(u32 order, u32 size) -> u32 {
+    FORCE_INLINE auto calculate_order_objects(u32 order, u32 size) -> u32 {
         return static_cast<u32>((BIT(order) << PAGE_SHIFT) / size);
     }
 
@@ -55,8 +52,7 @@ namespace {
     /// has to happen here. Feeding it a byte count directly overstates the
     /// order by PAGE_SHIFT and asks the buddy allocator for thousands of pages
     /// to hold a handful of small objects.
-    FORCE_INLINE
-    auto order_for_bytes(u32 nr_bytes) -> u32 {
+    FORCE_INLINE auto order_for_bytes(u32 nr_bytes) -> u32 {
         auto const nr_frames = ustl::mm::align_up(usize(nr_bytes), usize(PAGE_SIZE)) >> PAGE_SHIFT;
         return static_cast<u32>(get_order(nr_frames));
     }
@@ -85,125 +81,124 @@ namespace {
 
 namespace slab {
 
-/// Records, on each tail descriptor of a multi-frame slab, how far it sits
-/// from the head, so that frame_to_folio can walk back from an interior
-/// object address to the descriptor holding the metadata.
-///
-/// |stamp| false clears them again. Clearing is not optional: the buddy may
-/// hand these frames out separately next time, and a stale offset would send
-/// frame_to_folio walking backwards out of the block it was given.
-///
-/// A buddy block never straddles a section, so the tails are always the
-/// neighbouring entries of one memmap array and plain indexing reaches them.
-static auto stamp_compound_offsets(Slab *head, usize order, bool stamp) -> void {
-    auto const nr_frames = BIT(order);
-    for (usize i = 1; i < nr_frames; ++i) {
-        head[i].set_compound_offset(stamp ? static_cast<u32>(i) : 0U);
-    }
-}
-
-auto destroy(Slab *slab) -> void {
-    DEBUG_ASSERT(slab->as<Body>().num_inuse == 0);
-
-    slab->put();
-    slab->unlink();
-    auto const order = slab->order();
-    stamp_compound_offsets(slab, order, false);
-    // Hand the frame back to the buddy: an explicit role change, which is the
-    // only thing that rewrites the role tag.
-    slab->become<page::PmmBody>();
-    mm::free_frames(slab, order);
-}
-
-/// Where a free object stores the pointer to the next one.
-///
-/// Not necessarily offset zero: compute_layout() places it around the middle
-/// of the object, which is what catches an overflow of the preceding object
-/// rather than letting it quietly rewrite a list pointer.
-FORCE_INLINE auto free_slot(void *object, usize next_offset) -> void ** {
-    return reinterpret_cast<void **>(static_cast<u8 *>(object) + next_offset);
-}
-
-auto get_object(Slab *slab) -> void * {
-    auto &body = slab->as<Body>();
-    auto *const object = body.free_head;
-    if (!object) {
-        return nullptr;
+    /// Records, on each tail descriptor of a multi-frame slab, how far it sits
+    /// from the head, so that frame_to_folio can walk back from an interior
+    /// object address to the descriptor holding the metadata.
+    ///
+    /// |stamp| false clears them again. Clearing is not optional: the buddy may
+    /// hand these frames out separately next time, and a stale offset would send
+    /// frame_to_folio walking backwards out of the block it was given.
+    ///
+    /// A buddy block never straddles a section, so the tails are always the
+    /// neighbouring entries of one memmap array and plain indexing reaches them.
+    static auto stamp_compound_offsets(Slab *head, usize order, bool stamp) -> void {
+        auto const nr_frames = BIT(order);
+        for (usize i = 1; i < nr_frames; ++i) {
+            head[i].set_compound_offset(stamp ? static_cast<u32>(i) : 0U);
+        }
     }
 
-    // The free list threads through the objects themselves, null at the end.
-    body.free_head = *free_slot(object, body.next_offset);
-    body.num_inuse += 1;
-    return object;
-}
+    auto destroy(Slab *slab) -> void {
+        DEBUG_ASSERT(slab->as<Body>().num_inuse == 0);
 
-auto put_object(Slab *slab, void *object) -> void {
-    auto &body = slab->as<Body>();
-    *free_slot(object, body.next_offset) = body.free_head;
-    body.free_head = object;
-    body.num_inuse -= 1;
-}
-
-auto init(Slab *slab, MemCache *owner, void *node_cache, usize size, usize next_offset)
-    -> Status {
-    // Free objects carry the list pointer inside themselves, so the slot has
-    // to fit within the stride. compute_layout() keeps next_offset near the
-    // middle of the user size, and rounds the stride up to a word.
-    DEBUG_ASSERT(next_offset + sizeof(void *) <= size,
-                 "the free-list pointer does not fit inside an object");
-
-    auto &body = slab->as<Body>();
-    body.owner = owner;
-    body.node_cache = node_cache;
-    body.next_offset = static_cast<u16>(next_offset);
-
-    auto const capacity = slab->phys_size() / size;
-    if (!capacity) {
-        return Status::InvalidArguments;
+        slab->put();
+        slab->unlink();
+        auto const order = slab->order();
+        stamp_compound_offsets(slab, order, false);
+        // Hand the frame back to the buddy: an explicit role change, which is the
+        // only thing that rewrites the role tag.
+        slab->become<page::PmmBody>();
+        mm::free_frames(slab, order);
     }
 
-    // Thread the free list through the objects themselves, walking back to
-    // front so the head ends up being the lowest address.
-    auto *const base = reinterpret_cast<u8 *>(frame_to_virt(slab));
-    void *head = nullptr;
-    for (auto i = capacity; i-- > 0;) {
-        auto *const object = base + (i * size);
-        *free_slot(object, next_offset) = head;
-        head = object;
+    /// Where a free object stores the pointer to the next one.
+    ///
+    /// Not necessarily offset zero: compute_layout() places it around the middle
+    /// of the object, which is what catches an overflow of the preceding object
+    /// rather than letting it quietly rewrite a list pointer.
+    FORCE_INLINE auto free_slot(void *object, usize next_offset) -> void ** {
+        return reinterpret_cast<void **>(static_cast<u8 *>(object) + next_offset);
     }
 
-    body.free_head = head;
-    body.num_objects = static_cast<u16>(capacity);
-    body.num_inuse = 0;
-    return Status::Ok;
-}
+    auto get_object(Slab *slab) -> void * {
+        auto &body = slab->as<Body>();
+        auto *const object = body.free_head;
+        if (!object) {
+            return nullptr;
+        }
 
-auto allocate(Slab *slab, Gaf gaf) -> void * {
-    return get_object(slab);
-}
-
-auto create(MemCache *owner, void *node_cache, Gaf gaf, usize order, usize size,
-            usize next_offset, NnId nid) -> Slab * {
-    auto frame = mm::alloc_frames(nid, gaf, order);
-    if (!frame) {
-        return nullptr;
+        // The free list threads through the objects themselves, null at the end.
+        body.free_head = *free_slot(object, body.next_offset);
+        body.num_inuse += 1;
+        return object;
     }
 
-    // Claim the fresh frame for the slab role: clears the payload and stamps
-    // the tag in one step.
-    frame->become<Body>();
-    stamp_compound_offsets(frame, order, true);
-    if (auto status = init(frame, owner, node_cache, size, next_offset);
-        Status::Ok != status) {
-        stamp_compound_offsets(frame, order, false);
-        frame->become<page::PmmBody>();
-        mm::free_frames(frame, order);
-        return nullptr;
+    auto put_object(Slab *slab, void *object) -> void {
+        auto &body = slab->as<Body>();
+        *free_slot(object, body.next_offset) = body.free_head;
+        body.free_head = object;
+        body.num_inuse -= 1;
     }
 
-    frame->get();
-    return frame;
-}
+    auto init(Slab *slab, MemCache *owner, void *node_cache, usize size, usize next_offset)
+        -> Status {
+        // Free objects carry the list pointer inside themselves, so the slot has
+        // to fit within the stride. compute_layout() keeps next_offset near the
+        // middle of the user size, and rounds the stride up to a word.
+        DEBUG_ASSERT(next_offset + sizeof(void *) <= size,
+                     "the free-list pointer does not fit inside an object");
+
+        auto &body = slab->as<Body>();
+        body.owner = owner;
+        body.node_cache = node_cache;
+        body.next_offset = static_cast<u16>(next_offset);
+
+        auto const capacity = slab->phys_size() / size;
+        if (!capacity) {
+            return Status::InvalidArguments;
+        }
+
+        // Thread the free list through the objects themselves, walking back to
+        // front so the head ends up being the lowest address.
+        auto *const base = reinterpret_cast<u8 *>(frame_to_virt(slab));
+        void *head = nullptr;
+        for (auto i = capacity; i-- > 0;) {
+            auto *const object = base + (i * size);
+            *free_slot(object, next_offset) = head;
+            head = object;
+        }
+
+        body.free_head = head;
+        body.num_objects = static_cast<u16>(capacity);
+        body.num_inuse = 0;
+        return Status::Ok;
+    }
+
+    auto allocate(Slab *slab, Gaf gaf) -> void * {
+        return get_object(slab);
+    }
+
+    auto create(MemCache *owner, void *node_cache, Gaf gaf, usize order, usize size,
+                usize next_offset, NnId nid) -> Slab * {
+        auto frame = mm::alloc_frames(nid, gaf, order);
+        if (!frame) {
+            return nullptr;
+        }
+
+        // Claim the fresh frame for the slab role: clears the payload and stamps
+        // the tag in one step.
+        frame->become<Body>();
+        stamp_compound_offsets(frame, order, true);
+        if (auto status = init(frame, owner, node_cache, size, next_offset); Status::Ok != status) {
+            stamp_compound_offsets(frame, order, false);
+            frame->become<page::PmmBody>();
+            mm::free_frames(frame, order);
+            return nullptr;
+        }
+
+        frame->get();
+        return frame;
+    }
 
 } // namespace slab
 
@@ -221,7 +216,8 @@ struct MemCache::CpuCache {
     /// Takes |slab| as the active one and returns whichever slab it displaced,
     /// for the caller to park. Returning it instead of parking it here keeps
     /// the cpu lock from ever nesting inside the node lock.
-    [[nodiscard]] auto install_active(Slab *slab) -> Slab *;
+    [[nodiscard]]
+    auto install_active(Slab *slab) -> Slab *;
 
     /// Cursor into the active slab's null-terminated free list.
     void *m_objects;
@@ -424,24 +420,24 @@ auto MemCache::NodeCache::on_mem_cache_free(MemCache &cache) -> void {
     }
 }
 
-constexpr static auto const kMaxPartialSlabs = 8U;
+constexpr static auto const MAX_PARTIAL_SLABS = 8U;
 
-constexpr static auto const kMinPartialSlabs = 4U;
-
-[[maybe_unused]]
-constexpr static auto const kRedInactive = 0xccU;
+constexpr static auto const MIN_PARTIAL_SLABS = 4U;
 
 [[maybe_unused]]
-constexpr static auto const kRedActive = 0xddU;
+constexpr static auto const RED_INACTIVE = 0xccU;
 
 [[maybe_unused]]
-constexpr static auto const kPoisonInuse = 0x5aU;
+constexpr static auto const RED_ACTIVE = 0xddU;
 
 [[maybe_unused]]
-constexpr static auto const kPoisonFree = 0x6bU;
+constexpr static auto const POISON_INUSE = 0x5aU;
 
 [[maybe_unused]]
-constexpr static auto const kPoisonEnd = 0xa5U;
+constexpr static auto const POISON_FREE = 0x6bU;
+
+[[maybe_unused]]
+constexpr static auto const POISON_END = 0xa5U;
 
 // Out-of-line definitions for MemCache's static data members. The header only
 // declares them, so without these every use -- and there are many, this file
@@ -467,7 +463,7 @@ MemCache::MemCache(char const *name, usize size, usize align, Option option)
     , m_user_align(static_cast<u32>(align ? align : alignof(usize)))
     , m_inuse(0)
     , m_red_left_pad(0)
-    , m_min_partial(kMinPartialSlabs)
+    , m_min_partial(MIN_PARTIAL_SLABS)
     , m_num_objects(0)
     , m_order(0)
     , m_min_num_objects(0)
@@ -502,21 +498,20 @@ auto MemCache::init() -> Status {
         Status::Ok != status) {
         return status;
     }
-    return Self::create_boot(*g_self_cache, "cache:self", sizeof(MemCache), 0,
-                             Option::CacheAlign);
+    return Self::create_boot(*g_self_cache, "cache:self", sizeof(MemCache), 0, Option::CacheAlign);
 }
 
 auto MemCache::compute_layout(usize size, Option option) -> Status {
-    constexpr auto kWordSize = sizeof(void *);
+    constexpr auto WORD_SIZE = sizeof(void *);
 
     // At least keep a size of FP.
-    usize phys_size = ustl::mm::align_up(size, kWordSize);
+    usize phys_size = ustl::mm::align_up(size, WORD_SIZE);
 
     if constexpr (CONFIG_MEM_CACHE_DEBUG) {
         // Check if there is left spaces for readzone between the end of object and
         // word boundaries. May it be the readzone rather than additional spaces.
         if (!!(option & Option::RedZone) && phys_size == m_user_size) {
-            phys_size += kWordSize + size;
+            phys_size += WORD_SIZE + size;
         }
     }
 
@@ -528,18 +523,18 @@ auto MemCache::compute_layout(usize size, Option option) -> Status {
         if (!!(option & Option::Poison) ||
             (!!(option & Option::RedZone) && m_user_size < phys_size)) {
             m_next_offset = static_cast<u32>(phys_size);
-            phys_size += kWordSize; // Put the FP
+            phys_size += WORD_SIZE; // Put the FP
         } else {
-            m_next_offset = ustl::mm::align_down(m_user_size / 2, kWordSize);
+            m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
         }
     } else {
         // Default case, we store freelist pointer near middle of object.
-        m_next_offset = ustl::mm::align_down(m_user_size / 2, kWordSize);
+        m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
     }
 
     if constexpr (CONFIG_MEM_CACHE_DEBUG) {
         if (!!(option & Option::RedZone)) {
-            m_red_left_pad = static_cast<u32>(ustl::mm::align_up(kWordSize, m_user_align));
+            m_red_left_pad = static_cast<u32>(ustl::mm::align_up(WORD_SIZE, m_user_align));
             phys_size += m_red_left_pad;
         }
     }
@@ -575,7 +570,8 @@ auto MemCache::init(char const *name, usize size, usize align, Option option) ->
     if (!!(option & Option::Reclaim)) {
         m_gaf |= Gaf::Reclaim;
     }
-    m_min_partial = std::clamp(ustl::bit_ceil(m_phys_size) / 2, kMinPartialSlabs, kMaxPartialSlabs);
+    m_min_partial =
+        std::clamp(ustl::bit_ceil(m_phys_size) / 2, MIN_PARTIAL_SLABS, MAX_PARTIAL_SLABS);
 
     // CpuCache first, and the order matters. NodeCache::on_mem_cache_init()
     // allocates its NodeCaches out of g_node_cache -- and when the cache being
@@ -617,7 +613,7 @@ auto MemCache::create(char const *name, usize size, usize align, Option option,
     // stores the owning thread, so taking it here deadlocked the moment the
     // first cache was ever created. Allocating the storage needs no such
     // protection: MemCache::allocate does its own locking.
-    auto raw_self = g_self_cache->allocate(kGafKernel);
+    auto raw_self = g_self_cache->allocate(GAF_KERNEL);
     if (!raw_self) {
         return Status::NoMemory;
     }
@@ -678,8 +674,8 @@ auto MemCache::allocate(Gaf gaf, NnId nid, CpuCache *cache) -> void * {
     // 2. The node's shared pool, and failing that the buddy allocator.
     auto *slab = node_cache->take_partial();
     if (!slab) {
-        slab = slab::create(this, node_cache, m_gaf | gaf, m_order, m_phys_size, m_next_offset,
-                            nid);
+        slab =
+            slab::create(this, node_cache, m_gaf | gaf, m_order, m_phys_size, m_next_offset, nid);
         if (!slab) {
             return nullptr;
         }

@@ -8,7 +8,6 @@
 #define OURS_PHYS_PHYSBOOT_HPP 1
 
 #include "physload.hpp"
-
 #include <ours/compiler.hpp>
 
 namespace ours::phys {
@@ -18,8 +17,7 @@ namespace ours::phys {
 /// through the module descriptor, never by symbol -- and this declaration
 /// exists only so the definition and the PHYS_MODULE() reference to it can
 /// sit in the same translation unit.
-NO_RETURN
-auto physboot_init(PhysLoadHandoff const &handoff) -> void;
+NO_RETURN auto physboot_init(PhysLoadHandoff const &handoff) -> void;
 
 } // namespace ours::phys
 

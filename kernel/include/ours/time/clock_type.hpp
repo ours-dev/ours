@@ -4,10 +4,10 @@
 #define OURS_TIME_CLOCK_TYPE_HPP 1
 
 namespace ours::time {
-    enum class ClockType {
-        Steady,
-        System,
-    };
+enum class ClockType {
+    Steady,
+    System,
+};
 
 } // namespace ours::time
 

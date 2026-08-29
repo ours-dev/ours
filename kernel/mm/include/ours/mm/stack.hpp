@@ -12,18 +12,17 @@ class Stack {
     using Self = Stack;
 
   public:
-    constexpr static auto const kDefaultStackSize = KB(16); // Four pages.
+    constexpr static auto const DEFAULT_STACK_SIZE = KB(16); // Four pages.
 
     Stack();
 
     ~Stack() = default;
 
-    auto init(usize size = kDefaultStackSize) -> Status;
+    auto init(usize size = DEFAULT_STACK_SIZE) -> Status;
 
     auto init_first() -> void;
 
-    FORCE_INLINE
-    auto top() const -> VirtAddr {
+    FORCE_INLINE auto top() const -> VirtAddr {
         return m_base + m_size;
     }
 

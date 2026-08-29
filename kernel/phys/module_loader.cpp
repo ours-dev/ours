@@ -1,25 +1,25 @@
-#include <ours/phys/module_loader.hpp>
-
-#include "physload.hpp"
-
-#include <bootfs/view.hpp>
 #include "build_id_note.hpp"
+#include "physload.hpp"
 #include <ours/phys/exports.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/kernel_package.hpp>
+#include <ours/phys/module_loader.hpp>
 #include <ours/phys/print.hpp>
 #include <ustl/mem/align.hpp>
 
-#include <cstring>
 #include <span>
 #include <string_view>
+
+#include <cstring>
+
+#include <bootfs/view.hpp>
 
 namespace ours::phys {
 namespace {
     /// The module loaded when `kernel.phys.next` is absent or names a file
     /// the kernel package does not carry.
-    constexpr std::string_view kDefaultModule{"physboot"};
+    constexpr std::string_view DEFAULT_MODULE{"physboot"};
 
     extern "C" char const __build_id_note_start[];
     extern "C" char const __build_id_note_end[];
@@ -49,8 +49,9 @@ namespace {
         // reached from.
         static char buffer[41]{}; // sha1 = 20 bytes = 40 hex chars + NUL
 
-        auto const notes = std::span(reinterpret_cast<u8 const *>(__build_id_note_start),
-                                     static_cast<usize>(__build_id_note_end - __build_id_note_start));
+        auto const notes =
+            std::span(reinterpret_cast<u8 const *>(__build_id_note_start),
+                      static_cast<usize>(__build_id_note_end - __build_id_note_start));
         auto const length = hex_encode_build_id(notes, buffer);
         return {buffer, length};
     }
@@ -63,7 +64,7 @@ namespace {
             .alignment = alignment,
             .lower = mem->min_address(),
             .upper = mem->max_address(),
-            .node = bootmem::kAnyNode,
+            .node = bootmem::ANY_NODE,
             .direction = bootmem::AllocationDirection::TopDown,
         });
         if (allocation.is_err()) {
@@ -84,8 +85,7 @@ auto ModuleLoader::init(BootObi const &boot) -> Status {
     // Decompress into bootmem-owned scratch.  Ownership of the buffer
     // moves to the module via PhysLoadHandoff; it is never released.
     auto const scratch = bootmem_allocate(item.unwrap().memory_size(), PAGE_SIZE);
-    auto const storage = ustl::views::Span<u8>(
-        reinterpret_cast<u8 *>(scratch.base), scratch.size);
+    auto const storage = ustl::views::Span<u8>(reinterpret_cast<u8 *>(scratch.base), scratch.size);
     auto const materialized = boot.kernel_package(storage);
     if (materialized.is_err()) {
         return materialized.unwrap_err();
@@ -97,8 +97,8 @@ auto ModuleLoader::init(BootObi const &boot) -> Status {
 }
 
 auto ModuleLoader::load(BootOptions const &options) -> Status {
-    auto const storage = bootfs::View::Bytes(reinterpret_cast<u8 const *>(m_storage_base),
-                                             m_storage_size);
+    auto const storage =
+        bootfs::View::Bytes(reinterpret_cast<u8 const *>(m_storage_base), m_storage_size);
     auto const bootfs = bootfs::View::from(storage);
     if (bootfs.is_err()) {
         return bootfs.unwrap_err();
@@ -113,12 +113,11 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     if (found.unwrap().is_none()) {
         // A miss on the default module is fatal; a miss on an explicitly
         // requested one warns and falls back (the fallback is not silent).
-        if (name == kDefaultModule) {
+        if (name == DEFAULT_MODULE) {
             panic("phys module '{}' missing from kernel package", options.next_module);
         }
-        println("phys module '{}' not found, falling back to '{}'",
-                options.next_module);
-        name = kDefaultModule;
+        println("phys module '{}' not found, falling back to '{}'", options.next_module);
+        name = DEFAULT_MODULE;
         found = files.find(name);
         if (found.is_err()) {
             return found.unwrap_err();
@@ -152,8 +151,7 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     // own_build_id() above reads this physload's own copy back out of its
     // own image right now, so the two can be compared.
     auto const interp = m_image.section(".interp");
-    auto pt_interp =
-        std::string_view(reinterpret_cast<char const *>(interp.data()), interp.size());
+    auto pt_interp = std::string_view(reinterpret_cast<char const *>(interp.data()), interp.size());
     if (!pt_interp.empty() && pt_interp.back() == '\0') {
         pt_interp.remove_suffix(1); // elf-interp.S null-terminates the string.
     }
@@ -181,15 +179,15 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     // What to run is the module's own declaration, not an address in the
     // ELF header: PHYS_MODULE() put a descriptor in .phys.module and the
     // pass above fixed up the pointers inside it.
-    auto const record = m_image.section(PhysModule::kSection);
+    auto const record = m_image.section(PhysModule::SECTION);
     if (record.size() < sizeof(PhysModule)) {
-        println("phys module '{}' declares no {} descriptor", name, PhysModule::kSection);
+        println("phys module '{}' declares no {} descriptor", name, PhysModule::SECTION);
         return Status::NotFound;
     }
     auto const *descriptor = reinterpret_cast<PhysModule const *>(record.data());
-    if (descriptor->abi_version != PhysModule::kAbiVersion) {
+    if (descriptor->abi_version != PhysModule::ABI_VERSION) {
         println("phys module '{}' speaks module ABI {}, physload speaks {}", name,
-                descriptor->abi_version, PhysModule::kAbiVersion);
+                descriptor->abi_version, PhysModule::ABI_VERSION);
         return Status::Unsupported;
     }
     if (descriptor->init == nullptr) {
@@ -226,7 +224,7 @@ auto ModuleLoader::start(PhysLoadHandoff const &handoff) -> void {
 }
 
 auto ModuleLoader::run_initializers() -> void {
-    using Initializer = auto (*)() -> void;
+    using Initializer = auto (*)()->void;
 
     auto const array = m_image.section(".init_array");
     auto const *entries = reinterpret_cast<Initializer const *>(array.data());

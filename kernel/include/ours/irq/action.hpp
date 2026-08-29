@@ -8,9 +8,7 @@
 #define OURS_IRQ_ACTION_HPP
 
 namespace ours::irq {
-    class Action {
-
-    };
+class Action {};
 
 } // namespace ours::irq
 

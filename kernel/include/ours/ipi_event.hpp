@@ -6,11 +6,11 @@
 #include <ours/types.hpp>
 
 namespace ours {
-    enum class IpiEvent : u8 {
-        Resched,
-        Interrupt,
-        Suspend,
-    };
+enum class IpiEvent : u8 {
+    Resched,
+    Interrupt,
+    Suspend,
+};
 } // namespace ours
 
 #endif // OURS_IPI_EVENT_HPP

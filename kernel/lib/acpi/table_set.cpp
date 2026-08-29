@@ -74,7 +74,7 @@ namespace {
         }
 
         RootTables roots{.rsdt_addr = rsdp->rsdt_addr, .xsdt_addr = 0};
-        if (rsdp->revision >= sdt::Rsdp::kRevisionV2) {
+        if (rsdp->revision >= sdt::Rsdp::REVISION_V2) {
             auto maybe_xsdp = map_structure<sdt::RsdpV2>(mapper, rsdp_pa);
             if (!maybe_xsdp) {
                 // An RSDP that claims revision 2 but whose extended part cannot
@@ -95,7 +95,7 @@ namespace {
     /// and a payload that divides evenly into pointers.
     template <typename Root>
     auto count_root_entries(Root const *root, usize pointer_size) -> usize {
-        if (root->header.sign != Root::kSignature) {
+        if (root->header.sign != Root::SIGNATURE) {
             return 0;
         }
         if (root->header.length < sizeof(Root)) {
@@ -224,7 +224,7 @@ auto TableSet::cached(Signature sign) const -> CacheSlot const * {
 }
 
 auto TableSet::remember(Signature sign, TableHeader const *header) -> void {
-    if (m_cache_len < kCacheSlots) {
+    if (m_cache_len < CACHE_SLOTS) {
         m_cache[m_cache_len] = CacheSlot{.sign = sign, .header = header};
         ++m_cache_len;
     }

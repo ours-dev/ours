@@ -4,11 +4,11 @@
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_ASSERT_HPP 1
 
 namespace ustl::collections::intrusive::detail {
-    constexpr auto require(bool condition) noexcept -> void {
-        if (!condition) {
-            __builtin_trap();
-        }
+constexpr auto require(bool condition) noexcept -> void {
+    if (!condition) {
+        __builtin_trap();
     }
+}
 } // namespace ustl::collections::intrusive::detail
 
 #endif // USTL_COLLECTIONS_INTRUSIVE_DETAIL_ASSERT_HPP

@@ -9,9 +9,9 @@ typedef __WCHAR_TYPE__ wchar_t;
 
 typedef unsigned int wint_t;
 typedef struct {
-  unsigned int __ours_state;
+    unsigned int __ours_state;
 } mbstate_t;
 
-#define WEOF ((wint_t)-1)
+#define WEOF ((wint_t) - 1)
 
 #endif // OURS_SYSTEM_LIB_LIBC_INCLUDE_WCHAR_H_

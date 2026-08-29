@@ -4,22 +4,21 @@
 #define LOGZ4_RECORD_HPP 1
 
 namespace logz4 {
-    enum class Level {
-        Status,
-        Warn,
-        Info,
-        Debug,
-        Trace,
-        Error,
-    };
+enum class Level {
+    Status,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+    Error,
+};
 
-    struct Metadata {
-    };
+struct Metadata {};
 
-    struct Record {
-        Metadata *metadata;
-        Level level;
-    };
+struct Record {
+    Metadata *metadata;
+    Level level;
+};
 } // namespace logz4
 
 #endif // #ifndef LOGZ4_RECORD_HPP

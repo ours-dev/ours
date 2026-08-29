@@ -10,12 +10,11 @@
 #include <cstring>
 
 namespace {
-constexpr usize K_SECTION_TABLE_OFFSET = 0x80;
-constexpr usize K_SECTION_DATA_OFFSET = 0x200;
+constexpr usize SECTION_TABLE_OFFSET = 0x80;
+constexpr usize SECTION_DATA_OFFSET = 0x200;
 
 template <typename Value, usize Size>
-auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian)
-    -> void {
+auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian) -> void {
     static_assert(std::is_unsigned_v<Value>);
     if (!big_endian) {
         std::memcpy(image.data() + offset, &value, sizeof(value));
@@ -46,8 +45,8 @@ auto put_header(std::array<u8, Size> &image, Header const &header, bool big_endi
 }
 
 template <typename Section, usize Size>
-auto put_section(std::array<u8, Size> &image, usize offset, Section const &section,
-                 bool big_endian) -> void {
+auto put_section(std::array<u8, Size> &image, usize offset, Section const &section, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Section, sh_name), section.sh_name, big_endian);
     put_scalar(image, offset + offsetof(Section, sh_type), section.sh_type, big_endian);
     put_scalar(image, offset + offsetof(Section, sh_flags), section.sh_flags, big_endian);
@@ -61,8 +60,8 @@ auto put_section(std::array<u8, Size> &image, usize offset, Section const &secti
 }
 
 template <typename Compression, usize Size>
-auto put_compression_header(std::array<u8, Size> &image, usize offset,
-                            Compression const &header, bool big_endian) -> void {
+auto put_compression_header(std::array<u8, Size> &image, usize offset, Compression const &header,
+                            bool big_endian) -> void {
     put_scalar(image, offset + offsetof(Compression, ch_type), header.ch_type, big_endian);
     if constexpr (requires { header.ch_reserved; }) {
         put_scalar(image, offset + offsetof(Compression, ch_reserved), header.ch_reserved,
@@ -81,8 +80,8 @@ auto make_compressed_section_image(bool big_endian = false) -> std::array<u8, 10
 
     std::array<u8, 1024> image{};
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     if (big_endian) {
         header.e_ident[5] = 2;
     } else {
@@ -92,7 +91,7 @@ auto make_compressed_section_image(bool big_endian = false) -> std::array<u8, 10
     header.e_type = 1;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header);
-    header.e_shoff = K_SECTION_TABLE_OFFSET;
+    header.e_shoff = SECTION_TABLE_OFFSET;
     header.e_shentsize = sizeof(Section);
     header.e_shnum = 2;
     put_header(image, header, big_endian);
@@ -101,19 +100,19 @@ auto make_compressed_section_image(bool big_endian = false) -> std::array<u8, 10
     section.sh_type = static_cast<u32>(eftl::elf::SectionType::Progbits);
     section.sh_flags = static_cast<decltype(section.sh_flags)>(
         static_cast<u64>(eftl::elf::SectionFlags::Compressed));
-    section.sh_offset = K_SECTION_DATA_OFFSET;
+    section.sh_offset = SECTION_DATA_OFFSET;
     section.sh_size = sizeof(Compression) + 3;
     section.sh_addralign = 1;
-    put_section(image, K_SECTION_TABLE_OFFSET + sizeof(Section), section, big_endian);
+    put_section(image, SECTION_TABLE_OFFSET + sizeof(Section), section, big_endian);
 
     Compression compression{};
     compression.ch_type = 1;
     compression.ch_size = 0x12345;
     compression.ch_addralign = 16;
-    put_compression_header(image, K_SECTION_DATA_OFFSET, compression, big_endian);
-    image[K_SECTION_DATA_OFFSET + sizeof(Compression)] = 0x78;
-    image[K_SECTION_DATA_OFFSET + sizeof(Compression) + 1] = 0x9c;
-    image[K_SECTION_DATA_OFFSET + sizeof(Compression) + 2] = 0;
+    put_compression_header(image, SECTION_DATA_OFFSET, compression, big_endian);
+    image[SECTION_DATA_OFFSET + sizeof(Compression)] = 0x78;
+    image[SECTION_DATA_OFFSET + sizeof(Compression) + 1] = 0x9c;
+    image[SECTION_DATA_OFFSET + sizeof(Compression) + 2] = 0;
     return image;
 }
 
@@ -150,14 +149,14 @@ auto test_rejects_invalid_compression() -> int {
     using Section = typename Traits::Section;
 
     auto zero_type = make_compressed_section_image<Traits>();
-    put_scalar(zero_type, K_SECTION_DATA_OFFSET + offsetof(Compression, ch_type),
-               static_cast<u32>(0), false);
+    put_scalar(zero_type, SECTION_DATA_OFFSET + offsetof(Compression, ch_type), static_cast<u32>(0),
+               false);
     if (File::from_raw(zero_type.data(), zero_type.size()).is_ok()) {
         return 1;
     }
 
     auto invalid_alignment = make_compressed_section_image<Traits>();
-    put_scalar(invalid_alignment, K_SECTION_DATA_OFFSET + offsetof(Compression, ch_addralign),
+    put_scalar(invalid_alignment, SECTION_DATA_OFFSET + offsetof(Compression, ch_addralign),
                static_cast<decltype(Compression{}.ch_addralign)>(3), false);
     if (File::from_raw(invalid_alignment.data(), invalid_alignment.size()).is_ok()) {
         return 2;
@@ -165,14 +164,14 @@ auto test_rejects_invalid_compression() -> int {
 
     auto truncated_header = make_compressed_section_image<Traits>();
     put_scalar(truncated_header,
-               K_SECTION_TABLE_OFFSET + sizeof(Section) + offsetof(Section, sh_size),
+               SECTION_TABLE_OFFSET + sizeof(Section) + offsetof(Section, sh_size),
                static_cast<decltype(Section{}.sh_size)>(sizeof(Compression) - 1), false);
     if (File::from_raw(truncated_header.data(), truncated_header.size()).is_ok()) {
         return 3;
     }
 
     auto allocatable = make_compressed_section_image<Traits>();
-    put_scalar(allocatable, K_SECTION_TABLE_OFFSET + sizeof(Section) + offsetof(Section, sh_flags),
+    put_scalar(allocatable, SECTION_TABLE_OFFSET + sizeof(Section) + offsetof(Section, sh_flags),
                static_cast<decltype(Section{}.sh_flags)>(
                    static_cast<u64>(eftl::elf::SectionFlags::Compressed) |
                    static_cast<u64>(eftl::elf::SectionFlags::Alloc)),
@@ -183,7 +182,7 @@ auto test_rejects_invalid_compression() -> int {
 
     if constexpr (requires { Compression{}.ch_reserved; }) {
         auto reserved = make_compressed_section_image<Traits>();
-        put_scalar(reserved, K_SECTION_DATA_OFFSET + offsetof(Compression, ch_reserved),
+        put_scalar(reserved, SECTION_DATA_OFFSET + offsetof(Compression, ch_reserved),
                    static_cast<decltype(Compression{}.ch_reserved)>(1), false);
         if (File::from_raw(reserved.data(), reserved.size()).is_ok()) {
             return 5;
@@ -191,7 +190,7 @@ auto test_rejects_invalid_compression() -> int {
     }
 
     auto nobits = make_compressed_section_image<Traits>();
-    put_scalar(nobits, K_SECTION_TABLE_OFFSET + sizeof(Section) + offsetof(Section, sh_type),
+    put_scalar(nobits, SECTION_TABLE_OFFSET + sizeof(Section) + offsetof(Section, sh_type),
                static_cast<u32>(eftl::elf::SectionType::Nobits), false);
     if (File::from_raw(nobits.data(), nobits.size()).is_err()) {
         return 0;
@@ -203,10 +202,10 @@ template <typename Traits>
 auto test_preserves_extension_compression_type() -> int {
     using Compression = typename Traits::Compression;
     using File = eftl::elf::FileImpl<Traits>;
-    constexpr u32 K_OS_SPECIFIC_TYPE = 0x60000000;
+    constexpr u32 OS_SPECIFIC_TYPE = 0x60000000;
 
     auto bytes = make_compressed_section_image<Traits>();
-    put_scalar(bytes, K_SECTION_DATA_OFFSET + offsetof(Compression, ch_type), K_OS_SPECIFIC_TYPE,
+    put_scalar(bytes, SECTION_DATA_OFFSET + offsetof(Compression, ch_type), OS_SPECIFIC_TYPE,
                false);
     auto const parsed = File::from_raw(bytes.data(), bytes.size());
     auto const compression = [&]() -> ustl::Option<eftl::elf::SectionCompressionView<Traits>> {
@@ -215,8 +214,7 @@ auto test_preserves_extension_compression_type() -> int {
         }
         return ustl::NONE;
     }();
-    if (compression.is_some() &&
-        static_cast<u32>(compression->type()) == K_OS_SPECIFIC_TYPE) {
+    if (compression.is_some() && static_cast<u32>(compression->type()) == OS_SPECIFIC_TYPE) {
         return 0;
     }
     return 1;

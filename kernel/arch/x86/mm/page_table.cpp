@@ -1,10 +1,8 @@
+#include <arch/x86/tlb.hpp>
 #include <ours/arch/x86/page_table.hpp>
-
 #include <ours/lockdep.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
-
-#include <arch/x86/tlb.hpp>
 
 namespace ours::mm {
 namespace {
@@ -14,11 +12,11 @@ namespace {
 
     /// A fresh, zeroed page for one level of the table (`align` is unused:
     /// every level's table is exactly one page, which is naturally aligned
-    /// to what `Traits::kTableAlignment` asks for).
+    /// to what `Traits::TABLE_ALIGNMENT` asks for).
     auto alloc_table(usize size, usize align) -> PhysAddr {
         (void)align;
         PhysAddr phys;
-        auto *frame = alloc_frames(kGafKernel | Gaf::Zero, &phys, get_order(size / PAGE_SIZE));
+        auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, get_order(size / PAGE_SIZE));
         return frame ? phys : PhysAddr{0};
     }
 
@@ -36,11 +34,11 @@ namespace {
 } // namespace
 
 auto PageTable::init_mmu() -> Status {
-    constexpr auto kTopLevel = ArchPaging::kPagingLevel;
-    constexpr auto kOrder = get_order(Engine::Traits::kSizeOfTable<kTopLevel> / PAGE_SIZE);
+    constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
+    constexpr auto ORDER = get_order(Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL> / PAGE_SIZE);
 
     PhysAddr phys;
-    auto *frame = alloc_frames(kGafKernel | Gaf::Zero, &phys, kOrder);
+    auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, ORDER);
     if (!frame) {
         return Status::NoMemory;
     }
@@ -63,14 +61,14 @@ auto PageTable::init_ept() -> Status {
 }
 
 auto PageTable::alias_to(Self &other, VirtAddr base, usize n) -> Status {
-    constexpr auto kTopLevel = ArchPaging::kPagingLevel;
-    using TopTable = Engine::Table<kTopLevel>;
+    constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
+    using TopTable = Engine::Table<TOP_LEVEL>;
 
     auto &src = *reinterpret_cast<TopTable *>(phys_to_virt(other.m_pgd_phys));
     auto &dst = *reinterpret_cast<TopTable *>(phys_to_virt(m_pgd_phys));
 
-    auto const start_idx = Engine::Traits::virt_to_index(kTopLevel, base);
-    auto const end_idx = Engine::Traits::virt_to_index(kTopLevel, base + (n - 1) * PAGE_SIZE);
+    auto const start_idx = Engine::Traits::virt_to_index(TOP_LEVEL, base);
+    auto const end_idx = Engine::Traits::virt_to_index(TOP_LEVEL, base + (n - 1) * PAGE_SIZE);
 
     // A shallow copy of the top-level entries that cover [base, base + n):
     // this address space and `other` end up sharing the same lower-level

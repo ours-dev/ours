@@ -5,18 +5,17 @@
 
 #include <ours/arch/cpu_local.hpp>
 #include <ours/assert.hpp>
-#include <ours/cpu_mask.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/mm/cpu_local_defs.hpp>
-
-#include <new>
-
-#include <array>
 #include <ustl/function/invoke.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/util/move.hpp>
 #include <ustl/util/nonconstructible.hpp>
 #include <ustl/util/noncopyable.hpp>
+
+#include <array>
+#include <new>
 
 namespace ours::mm {
 /// Per-CPU storage.
@@ -62,7 +61,7 @@ class CpuLocal {
 
     /// Offset value that names nothing. Zero is a real offset -- the first
     /// byte of the static block -- so emptiness needs its own value.
-    constexpr static auto const kNowhere = ~usize(0);
+    constexpr static auto const NOWHERE = ~usize(0);
 
     /// Where CPU `cpu`'s storage begins.
     static auto base(CpuNum cpu) -> VirtAddr;
@@ -83,15 +82,13 @@ class CpuLocal {
     static auto holds(usize offset) -> bool;
 
     /// `offset` on the calling CPU. Uses the base register rather than a lookup.
-    FORCE_INLINE
-    static auto resolve(usize offset) -> VirtAddr {
+    FORCE_INLINE static auto resolve(usize offset) -> VirtAddr {
         DEBUG_ASSERT(Self::holds(offset), "Resolving an offset that names nothing");
         return Self::origin() + offset + Self::read(g_current_cpu_offset);
     }
 
     /// `offset` on `cpu`.
-    FORCE_INLINE
-    static auto resolve(usize offset, CpuNum cpu) -> VirtAddr {
+    FORCE_INLINE static auto resolve(usize offset, CpuNum cpu) -> VirtAddr {
         DEBUG_ASSERT(Self::holds(offset), "Resolving an offset that names nothing");
         return Self::base(cpu) + offset;
     }
@@ -134,8 +131,7 @@ class CpuLocal {
     }
 
     /// The CPU number the caller is running on, read out of its own unit.
-    FORCE_INLINE
-    static auto current_cpu() -> CpuNum {
+    FORCE_INLINE static auto current_cpu() -> CpuNum {
         return Self::read(g_current_cpunum);
     }
 
@@ -206,7 +202,7 @@ class CpuLocal {
     static auto attach_to_unit(CpuNum cpunum, isize offset) -> void;
 
     /// Reserves `size` bytes on every CPU. Returns the offset naming them, or
-    /// `kNowhere` when the dynamic area is exhausted.
+    /// `NOWHERE` when the dynamic area is exhausted.
     static auto allocate_raw(usize size, usize align) -> usize;
 
     static auto free_raw(usize offset, usize size) -> void;
@@ -230,12 +226,12 @@ class CpuLocal::PerCpu {
     using Self = PerCpu;
 
   public:
-    PerCpu() : m_offset(kNowhere), m_count(0) {}
+    PerCpu() : m_offset(NOWHERE), m_count(0) {}
 
     PerCpu(usize offset, usize count) : m_offset(offset), m_count(count) {}
 
     PerCpu(Self &&other) : m_offset(other.m_offset), m_count(other.m_count) {
-        other.m_offset = kNowhere;
+        other.m_offset = NOWHERE;
         other.m_count = 0;
     }
 
@@ -248,7 +244,7 @@ class CpuLocal::PerCpu {
             reset();
             m_offset = other.m_offset;
             m_count = other.m_count;
-            other.m_offset = kNowhere;
+            other.m_offset = NOWHERE;
             other.m_count = 0;
         }
         return *this;
@@ -261,22 +257,18 @@ class CpuLocal::PerCpu {
     }
 
     /// The calling CPU's copy.
-    FORCE_INLINE
-    auto ptr_mut() -> T * {
-        return m_offset == kNowhere ? nullptr
-                                    : reinterpret_cast<T *>(CpuLocal::resolve(m_offset));
+    FORCE_INLINE auto ptr_mut() -> T * {
+        return m_offset == NOWHERE ? nullptr : reinterpret_cast<T *>(CpuLocal::resolve(m_offset));
     }
 
-    FORCE_INLINE
-    auto ref_mut() -> T & {
-        DEBUG_ASSERT(m_offset != kNowhere, "Dereferencing an empty PerCpu");
+    FORCE_INLINE auto ref_mut() -> T & {
+        DEBUG_ASSERT(m_offset != NOWHERE, "Dereferencing an empty PerCpu");
         return *reinterpret_cast<T *>(CpuLocal::resolve(m_offset));
     }
 
     /// `cpunum`'s copy.
-    FORCE_INLINE
-    auto ref_mut(CpuNum cpunum) -> T & {
-        DEBUG_ASSERT(m_offset != kNowhere, "Dereferencing an empty PerCpu");
+    FORCE_INLINE auto ref_mut(CpuNum cpunum) -> T & {
+        DEBUG_ASSERT(m_offset != NOWHERE, "Dereferencing an empty PerCpu");
         return *reinterpret_cast<T *>(CpuLocal::resolve(m_offset, cpunum));
     }
 
@@ -290,17 +282,16 @@ class CpuLocal::PerCpu {
 
     template <typename F>
     FORCE_INLINE auto for_each(F &&f) -> void {
-        if (m_offset == kNowhere) {
+        if (m_offset == NOWHERE) {
             return;
         }
-        Cpu::online_mask().for_each([this, &f](CpuNum cpunum) {
-            ustl::function::invoke(f, cpunum, ref_mut(cpunum));
-        });
+        Cpu::online_mask().for_each(
+            [this, &f](CpuNum cpunum) { ustl::function::invoke(f, cpunum, ref_mut(cpunum)); });
     }
 
     /// Destroys every CPU's copy and releases the reservation.
     auto reset() -> void {
-        if (m_offset == kNowhere) {
+        if (m_offset == NOWHERE) {
             return;
         }
 
@@ -314,7 +305,7 @@ class CpuLocal::PerCpu {
         }
 
         CpuLocal::free_raw(m_offset, m_count * sizeof(T));
-        m_offset = kNowhere;
+        m_offset = NOWHERE;
         m_count = 0;
     }
 
@@ -324,7 +315,7 @@ class CpuLocal::PerCpu {
     }
 
     explicit operator bool() const {
-        return m_offset != kNowhere;
+        return m_offset != NOWHERE;
     }
 
   private:
@@ -336,7 +327,7 @@ class CpuLocal::PerCpu {
 template <typename T>
 auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
     auto const offset = Self::allocate_raw(n * sizeof(T), align);
-    if (Self::kNowhere == offset) {
+    if (Self::NOWHERE == offset) {
         return PerCpu<T>();
     }
 
@@ -353,18 +344,15 @@ auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
 template <typename T, typename... Options>
 class CpuLocal::Current {
   public:
-    FORCE_INLINE
-    static auto get() -> T & {
+    FORCE_INLINE static auto get() -> T & {
         return CpuLocal::access(g_current_instance);
     }
 
-    FORCE_INLINE
-    static auto get(CpuNum cpunum) -> T & {
+    FORCE_INLINE static auto get(CpuNum cpunum) -> T & {
         return CpuLocal::access(g_current_instance, cpunum);
     }
 
-    FORCE_INLINE
-    static auto set(T const &t) -> void {
+    FORCE_INLINE static auto set(T const &t) -> void {
         if constexpr (sizeof(t) <= sizeof(usize)) {
             CpuLocal::write(g_current_instance, t);
         } else {
@@ -372,8 +360,7 @@ class CpuLocal::Current {
         }
     }
 
-    FORCE_INLINE
-    static auto set(T const &t, CpuNum cpunum) -> void {
+    FORCE_INLINE static auto set(T const &t, CpuNum cpunum) -> void {
         CpuLocal::access(g_current_instance, cpunum) = t;
     }
 

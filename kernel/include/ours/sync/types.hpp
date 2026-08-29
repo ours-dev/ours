@@ -5,10 +5,10 @@
 #define OURS_SYNC_TYPES_HPP 1
 
 namespace ours::sync {
-    class Mutex;
+class Mutex;
 
-    class Event;
-    class Semaphore;
+class Event;
+class Semaphore;
 } // namespace ours::sync
 
 #endif // #ifndef OURS_SYNC_TYPES_HPP

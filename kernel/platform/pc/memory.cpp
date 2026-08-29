@@ -6,12 +6,12 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/platform/init.hpp>
-#include <array>
 #include <ustl/util/type_list.hpp>
 #include <ustl/util/type_map.hpp>
 
-#include <type_traits>
 #include <algorithm>
+#include <array>
+#include <type_traits>
 
 namespace ours {
 template <typename>
@@ -38,14 +38,12 @@ INIT_CODE auto platform_init_pmm_with_config(ustl::TypeList<LinearZoneMaxPfns...
     mm::init_pmm(linear_zone_pfns);
 }
 
-INIT_CODE
-auto platform_init_pmm() -> void {
+INIT_CODE auto platform_init_pmm() -> void {
     using Config = ustl::TypeAlgos::Filter<ArchPmmZoneConfig, DisabledZoneFilter>;
     platform_init_pmm_with_config(Config());
 }
 
-INIT_CODE
-static auto platform_init_resource() -> void {}
+INIT_CODE static auto platform_init_resource() -> void {}
 GKTL_INIT_HOOK(ResourceInit, platform_init_resource, gktl::InitLevel::Vmm);
 
 } // namespace ours

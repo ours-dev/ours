@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 
 #include <ours/cpu.hpp>
-
 #include <ours/mm/cpu_local.hpp>
+
 #include <array>
 
 namespace ours {
@@ -17,4 +17,4 @@ auto Cpu::id() -> CpuNum {
     return mm::CpuLocal::current_cpu();
 }
 
-}  // namespace ours
+} // namespace ours

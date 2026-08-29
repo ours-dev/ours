@@ -15,7 +15,7 @@ using ours::NnId;
 using ours::PhysAddr;
 using ours::Status;
 
-inline constexpr auto kAnyNode = std::numeric_limits<NnId>::max();
+inline constexpr auto ANY_NODE = std::numeric_limits<NnId>::max();
 
 struct Range final {
     PhysAddr base{};
@@ -63,7 +63,7 @@ struct AllocationRequest final {
     usize alignment{};
     PhysAddr lower{};
     PhysAddr upper{};
-    NnId node{kAnyNode};
+    NnId node{ANY_NODE};
     AllocationDirection direction{AllocationDirection::BottomUp};
 };
 
@@ -75,7 +75,7 @@ enum class MemoryView : u8 {
 struct MemoryQuery final {
     PhysAddr lower{};
     PhysAddr upper{};
-    NnId node{kAnyNode};
+    NnId node{ANY_NODE};
     MemoryView view{MemoryView::Usable};
 };
 

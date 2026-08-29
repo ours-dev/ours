@@ -163,7 +163,7 @@ class KernelElfLoadPolicy final {
     [[nodiscard]]
     static auto make_plan(File const &binary) -> ustl::Result<Plan, LoadError> {
         auto const &header = binary.elf_header();
-        if (header.e_type != K_EXECUTABLE && header.e_type != K_SHARED_OBJECT) {
+        if (header.e_type != EXECUTABLE && header.e_type != SHARED_OBJECT) {
             return ustl::err(LoadError::UnsupportedType);
         }
         if (static_cast<Arch>(header.e_machine) != ExpectedMachine) {
@@ -249,8 +249,8 @@ class KernelElfLoadPolicy final {
         return ustl::ok(std::move(plan));
     }
 
-    static constexpr u16 K_EXECUTABLE = 2;
-    static constexpr u16 K_SHARED_OBJECT = 3;
+    static constexpr u16 EXECUTABLE = 2;
+    static constexpr u16 SHARED_OBJECT = 3;
 
     struct MappingPageRange final {
         usize m_first_page{0};

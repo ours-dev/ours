@@ -6,7 +6,7 @@
 #include <arch/paging/mod.hpp>
 
 namespace arch {
-    using paging::Paging;
+using paging::Paging;
 } // namespace arch
 
 #endif // #ifndef ARCH_PAGING_HPP

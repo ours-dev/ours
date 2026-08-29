@@ -13,7 +13,8 @@ namespace arch {
 struct Tick final {
     usize tsc;
 
-    [[nodiscard]] static auto get() -> Tick;
+    [[nodiscard]]
+    static auto get() -> Tick;
 };
 
 } // namespace arch

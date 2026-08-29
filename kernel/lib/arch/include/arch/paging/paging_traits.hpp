@@ -8,7 +8,7 @@
 namespace arch::paging {
 
 // A read-only view over an architecture's paging policy (e.g. X86Paging):
-// derived/computed constants (kTableAlignment, kNumPtes<Level>, ...) plus
+// derived/computed constants (TABLE_ALIGNMENT, NUM_PTES<Level>, ...) plus
 // forwarding accessors, all expressed in terms of `ArchPaging`. Deliberately
 // composition rather than inheritance — a traits type describes ArchPaging,
 // it isn't one, so it references it through the `T` alias instead of
@@ -26,17 +26,17 @@ class PagingTraits final {
     // stays free of any architecture-specific include.
     using ArchMmuFlags = typename T::ArchMmuFlags;
 
-    static constexpr auto kMaxPhysAddrSize = T::kMaxPhysAddrSize;
-    static constexpr auto kPagingLevel = T::kPagingLevel;
-    static constexpr auto kTableAlignmentLog2 = T::kTableAlignmentLog2;
-    static constexpr auto kVirtAddrExt = T::kVirtAddrExt;
-    static constexpr auto kTableAlignment = BIT(kTableAlignmentLog2);
+    static constexpr auto MAX_PHYS_ADDR_SIZE = T::MAX_PHYS_ADDR_SIZE;
+    static constexpr auto PAGING_LEVEL = T::PAGING_LEVEL;
+    static constexpr auto TABLE_ALIGNMENT_LOG2 = T::TABLE_ALIGNMENT_LOG2;
+    static constexpr auto VIRT_ADDR_EXT = T::VIRT_ADDR_EXT;
+    static constexpr auto TABLE_ALIGNMENT = BIT(TABLE_ALIGNMENT_LOG2);
 
     template <Level Level>
-    static constexpr auto kNumPtesLog2 = T::template kNumPtesLog2<Level>;
+    static constexpr auto NUM_PTES_LOG2 = T::template NUM_PTES_LOG2<Level>;
 
     template <Level Level>
-    static constexpr auto kNumPtes = BIT(kNumPtesLog2<Level>);
+    static constexpr auto NUM_PTES = BIT(NUM_PTES_LOG2<Level>);
 
     template <Level Level>
     using Pte = typename T::template Pte<Level>;
@@ -45,26 +45,26 @@ class PagingTraits final {
     // that representation explicit avoids imposing a container ABI on code
     // running before the kernel allocator exists.
     template <Level Level>
-    using Table = Pte<Level>[kNumPtes<Level>];
+    using Table = Pte<Level>[NUM_PTES<Level>];
 
     template <Level Level>
     using PteVal = typename Pte<Level>::ValueType;
 
     template <Level Level>
-    static constexpr auto kSizeOfPte = sizeof(PteVal<Level>);
+    static constexpr auto SIZE_OF_PTE = sizeof(PteVal<Level>);
 
     template <Level Level>
-    static constexpr auto kSizeOfTable = kNumPtes<Level> * kSizeOfPte<Level>;
+    static constexpr auto SIZE_OF_TABLE = NUM_PTES<Level> * SIZE_OF_PTE<Level>;
 
-    static constexpr auto kFinalLevel = T::kAllLevels[0];
+    static constexpr auto FINAL_LEVEL = T::ALL_LEVELS[0];
 
     template <Level Level>
-    static constexpr auto kNextLevel = T::kAllLevels[usize(Level) - 1];
+    static constexpr auto NEXT_LEVEL = T::ALL_LEVELS[usize(Level) - 1];
 
     /// The methods below provide the capability to dynamically dispatch
     /// handling logic across different levels of the page table.
     static constexpr auto next_level(Level level) -> Level {
-        return T::kAllLevels[usize(level) - 1];
+        return T::ALL_LEVELS[usize(level) - 1];
     }
 
     static constexpr auto virt_to_index(Level level, VirtAddr addr) -> usize {
@@ -72,19 +72,19 @@ class PagingTraits final {
     }
 
     static constexpr auto page_size(Level level) -> usize {
-        return T::kPageSizeMap[usize(level)];
+        return T::PAGE_SIZE_MAP[usize(level)];
     }
 
     static constexpr auto max_entries(Level level) -> usize {
         return T::max_entries(level);
     }
 
-    static constexpr auto arch_mmu_flags_from_pte(Level level, PteVal<kFinalLevel> pte)
+    static constexpr auto arch_mmu_flags_from_pte(Level level, PteVal<FINAL_LEVEL> pte)
         -> ArchMmuFlags {
         return T::arch_mmu_flags_from_pte(level, pte);
     }
 
-    static constexpr auto phys_addr_from_pte(Level level, PteVal<kFinalLevel> pte) -> PhysAddr {
+    static constexpr auto phys_addr_from_pte(Level level, PteVal<FINAL_LEVEL> pte) -> PhysAddr {
         return T::phys_addr_from_pte(level, pte);
     }
 

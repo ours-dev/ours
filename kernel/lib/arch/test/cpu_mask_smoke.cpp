@@ -3,12 +3,12 @@
 #include <cstdlib>
 
 namespace {
-    auto require(bool condition) -> void {
-        if (!condition) {
-            std::abort();
-        }
+auto require(bool condition) -> void {
+    if (!condition) {
+        std::abort();
     }
 }
+} // namespace
 
 auto main() -> int {
     auto mask = ours::CpuMask::of(0);
@@ -22,7 +22,7 @@ auto main() -> int {
     require(intersection.count() == 1 && intersection.test(7));
     require(!intersection.test(0));
 
-    auto visited = usize {0};
+    auto visited = usize{0};
     mask.for_each([&visited](ours::CpuNum) { ++visited; });
     require(visited == mask.count());
     mask.set(7, false);

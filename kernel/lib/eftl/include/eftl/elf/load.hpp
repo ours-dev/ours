@@ -27,17 +27,17 @@ struct VirtAddrRegionObserver
     ~VirtAddrRegionObserver() = default;
 
     template <typename Memory>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto observe(Memory &&memory, Segment const &segment,
-                                        SegTypeMatcher<SegType::Load>) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto observe(Memory &&memory, Segment const &segment, SegTypeMatcher<SegType::Load>)
+        -> bool {
         (void)memory;
         *m_va_minimal = std::min(*m_va_minimal, static_cast<Addr>(segment.va_begin()));
         *m_va_maximal = std::max(*m_va_maximal, static_cast<Addr>(segment.va_limit()));
         return true;
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto finish() -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto finish() -> bool {
         return true;
     }
 
@@ -120,9 +120,9 @@ struct LoadInfoObserver
     ~LoadInfoObserver() = default;
 
     template <typename Memory>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto observe(Memory &&memory, Segment const &segment,
-                                        SegTypeMatcher<SegType::Load>) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto observe(Memory &&memory, Segment const &segment, SegTypeMatcher<SegType::Load>)
+        -> bool {
         (void)memory;
         if (segment.va_size() == 0) {
             return true;
@@ -159,8 +159,8 @@ struct LoadInfoObserver
         return m_loadinfo->m_segments.size() == old_size + 1;
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto finish() -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto finish() -> bool {
         return true;
     }
 

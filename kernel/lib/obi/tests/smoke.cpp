@@ -93,7 +93,7 @@ auto builds_and_reads_a_multi_item_container() -> void {
     auto const aslr_value = cmdline.unwrap().value("aslr.disabled");
     require(aslr_value.is_some() && aslr_value.value() == std::string_view("0"));
 
-    require(view.unwrap().setup_item_index() != ContainerHeader::kNoSetupItem);
+    require(view.unwrap().setup_item_index() != ContainerHeader::NO_SETUP_ITEM);
 }
 
 // ---- Compression round-trip ---------------------------------------

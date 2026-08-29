@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <concepts>
-
 #include <ustl/collections/intrusive/detail/tree_node.hpp>
+
+#include <concepts>
 
 using namespace ustl::collections::intrusive;
 

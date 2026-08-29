@@ -9,12 +9,14 @@
 #include <type_traits>
 
 namespace ustl {
-template <typename Key, typename Value> struct TypeMapEntry {
+template <typename Key, typename Value>
+struct TypeMapEntry {
     using key_type = Key;
     using value_type = Value;
 };
 
-template <typename... Entries> struct TypeMap {};
+template <typename... Entries>
+struct TypeMap {};
 
 struct TypeAlgos {
     struct NotFound {};
@@ -34,21 +36,23 @@ struct TypeAlgos {
         // Predicate selects what to *drop*, so a matching Head is left out of
         // the accumulator; see Filter below.
         using type = typename std::conditional_t<
-            Predicate<Head>::value,
-            FilterImpl<TypeList<Kept...>, Predicate, Tail...>,
+            Predicate<Head>::value, FilterImpl<TypeList<Kept...>, Predicate, Tail...>,
             FilterImpl<TypeList<Kept..., Head>, Predicate, Tail...>>::type;
     };
 
-    template <typename List, template <typename> class Predicate> struct FilterList;
+    template <typename List, template <typename> class Predicate>
+    struct FilterList;
 
     template <typename... Types, template <typename> class Predicate>
     struct FilterList<TypeList<Types...>, Predicate> {
         using type = typename FilterImpl<TypeList<>, Predicate, Types...>::type;
     };
 
-    template <typename Map, typename Key> struct FindImpl;
+    template <typename Map, typename Key>
+    struct FindImpl;
 
-    template <typename Key> struct FindImpl<TypeMap<>, Key> {
+    template <typename Key>
+    struct FindImpl<TypeMap<>, Key> {
         using type = NotFound;
     };
 
@@ -62,7 +66,8 @@ struct TypeAlgos {
         : FindImpl<TypeMap<Rest...>, Key> {};
 
   public:
-    template <typename Map, typename Key> using Find = typename FindImpl<Map, Key>::type;
+    template <typename Map, typename Key>
+    using Find = typename FindImpl<Map, Key>::type;
 
     /// Removes from |List| every type for which `Predicate<T>::value` is true,
     /// keeping the rest in order.

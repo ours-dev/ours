@@ -9,8 +9,7 @@
 
 namespace ours {
 namespace {
-    FORCE_INLINE
-    auto irqvec_to_irqnum(arch::IrqVec vector) -> HIrqNum {
+    FORCE_INLINE auto irqvec_to_irqnum(arch::IrqVec vector) -> HIrqNum {
         DEBUG_ASSERT(static_cast<HIrqNum>(vector) >=
                      static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin));
         return static_cast<HIrqNum>(vector) - static_cast<HIrqNum>(arch::IrqVec::PlatformIrqMin);
@@ -150,8 +149,7 @@ namespace {
         }
     }
 
-    FORCE_INLINE
-    auto is_from_uspace(arch::IrqFrame *frame) -> bool {
+    FORCE_INLINE auto is_from_uspace(arch::IrqFrame *frame) -> bool {
         return (frame->cs & 0x3) != 0;
     }
 } // namespace

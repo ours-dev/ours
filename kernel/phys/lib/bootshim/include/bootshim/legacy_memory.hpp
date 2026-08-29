@@ -3,7 +3,6 @@
 #ifndef BOOTSHIM_LEGACY_MEMORY_HPP
 #define BOOTSHIM_LEGACY_MEMORY_HPP 1
 
-#include <multiboot/view.hpp>
 #include <obi/package_format.hpp>
 #include <ours/types.hpp>
 #include <ustl/mem/align.hpp>
@@ -12,6 +11,8 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+
+#include <multiboot/view.hpp>
 
 /// What a boot-shim does with a legacy platform's memory map, separated from
 /// the shim that does it.
@@ -39,9 +40,9 @@ using MemoryMap = multiboot::View::MemoryMap;
 /// (missing ranges silently become "not usable") than to allocate for an
 /// unbounded count this early -- there is no allocator yet at the point a
 /// shim reads this map.
-inline constexpr auto kMaxLegacyMemoryRanges = usize{64};
+inline constexpr auto MAX_LEGACY_MEMORY_RANGES = usize{64};
 
-using LegacyMemoryRanges = std::array<obi::MemoryRange, kMaxLegacyMemoryRanges>;
+using LegacyMemoryRanges = std::array<obi::MemoryRange, MAX_LEGACY_MEMORY_RANGES>;
 
 /// Multiboot2 distinguishes several flavours of unusable (reserved, ACPI
 /// reclaimable, NVS, bad RAM); OBI's early memory vocabulary does not, and
@@ -58,7 +59,7 @@ constexpr auto to_obi_memory_type(u32 const multiboot_type) noexcept -> obi::Mem
 /// What convert_memory_map() managed to do.
 ///
 /// `dropped` is non-zero only when the platform reported more ranges than
-/// kMaxLegacyMemoryRanges.  It is separated from `converted` rather than
+/// MAX_LEGACY_MEMORY_RANGES.  It is separated from `converted` rather than
 /// folded into a bool because it is the number the shim should name when it
 /// warns: "converted 64 of 71" tells an operator how much of their machine's
 /// memory map went missing, "truncated" does not.
@@ -79,7 +80,7 @@ struct MemoryMapConversion final {
 inline auto convert_memory_map(MemoryMap const &map, LegacyMemoryRanges &out)
     -> MemoryMapConversion {
     auto const total = map.count();
-    auto const converted = std::min(total, kMaxLegacyMemoryRanges);
+    auto const converted = std::min(total, MAX_LEGACY_MEMORY_RANGES);
     for (usize index = 0; index < converted; ++index) {
         auto const entry = map.range(index);
         out[index] = obi::MemoryRange{
@@ -128,8 +129,8 @@ inline auto find_scratch(MemoryMap const &map, PhysAddr const floor, usize const
                       // principle, but this function does not get to assume that.
         }
         auto const region_end = region.addr + region.len;
-        auto const candidate = ustl::mm::align_up(
-            std::max(region.addr, static_cast<u64>(floor)), static_cast<u64>(alignment));
+        auto const candidate = ustl::mm::align_up(std::max(region.addr, static_cast<u64>(floor)),
+                                                  static_cast<u64>(alignment));
         if (candidate < region.addr || candidate >= region_end || region_end - candidate < size) {
             continue;
         }

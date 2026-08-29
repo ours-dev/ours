@@ -35,12 +35,7 @@ auto VmAspace::kernel_aspace() -> ustl::Arc<VmAspace> {
 // m_refcnt is owned by the ustl::RefCounted base (initialized by Base()), and
 // m_num_users belongs to VmPage, not here -- both were leftovers.
 VmAspace::VmAspace(VirtAddr base, usize size, VmasFlags flags, char const *name)
-    : Base()
-    , m_flags(flags)
-    , m_base(base)
-    , m_size(size)
-    , m_arch(base, size, flags)
-    , m_root_vma() {}
+    : Base(), m_flags(flags), m_base(base), m_size(size), m_arch(base, size, flags), m_root_vma() {}
 
 VmAspace::~VmAspace() {}
 
@@ -60,7 +55,7 @@ auto VmAspace::create(VmasFlags flags, char const *name, ustl::Arc<VmAspace> *ou
 
 auto VmAspace::create(VirtAddr base, usize size, VmasFlags flags, char const *name,
                       ustl::Arc<VmAspace> *out) -> Status {
-    auto const aspace = AspaceCache::get(kGafKernel, base, size, flags, name);
+    auto const aspace = AspaceCache::get(GAF_KERNEL, base, size, flags, name);
     if (!aspace) {
         return Status::OutOfMem;
     }
@@ -75,8 +70,7 @@ auto VmAspace::create(VirtAddr base, usize size, VmasFlags flags, char const *na
     return Status::Ok;
 }
 
-INIT_CODE
-auto VmAspace::init_kernel_aspace() -> void {
+INIT_CODE auto VmAspace::init_kernel_aspace() -> void {
     constexpr auto const flags = VmasFlags::Kernel;
 
     auto status = AspaceCache::init("aspace-cache", ObjectCache::Flags::Folio);
@@ -125,8 +119,8 @@ auto VmAspace::root_vma() -> ustl::Arc<VmArea> {
     return m_root_vma;
 }
 
-auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause,
-                                   [[maybe_unused]] usize extra_pages) -> Status {
+auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, [[maybe_unused]] usize extra_pages)
+    -> Status {
     m_canary.verify<Self>();
 
     auto status = Status::Ok;

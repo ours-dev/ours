@@ -14,7 +14,7 @@ namespace bootfs {
 ///
 /// Layout: Header | Entry[*] | NameTable | FileData (aligned).
 struct Header final {
-    static constexpr auto kMagic = u32{0x42545346}; // "BTSF", LE
+    static constexpr auto MAGIC = u32{0x42545346}; // "BTSF", LE
 
     u32 magic;
     u32 file_count;

@@ -4,12 +4,12 @@
 #define OURS_OBJECT_TYPES_HPP 1
 
 namespace ours::object {
-    class JobDispatcher;
-    class ProcessDispatcher;
-    class ThreadDispatcher;
-    class VmAreaDispatcher;
-    class ChannelDispatcher;
-    class ResourceDispatcher;
+class JobDispatcher;
+class ProcessDispatcher;
+class ThreadDispatcher;
+class VmAreaDispatcher;
+class ChannelDispatcher;
+class ResourceDispatcher;
 
 } // namespace ours::object
 

@@ -8,7 +8,7 @@
 #include <ustl/util/pack_options.hpp>
 
 namespace arch {
-    USTL_TYPE_OPTION(MutexT, Mutex);
+USTL_TYPE_OPTION(MutexT, Mutex);
 
 } // namespace arch
 

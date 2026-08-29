@@ -6,8 +6,8 @@
 #include <limits>
 
 namespace ours::phys {
-extern char const kPhysLoadStart[] LINK_NAME("__executable_start");
-extern char const kPhysLoadEnd[] LINK_NAME("__executable_end");
+extern char const PHYS_LOAD_START[] LINK_NAME("__executable_start");
+extern char const PHYS_LOAD_END[] LINK_NAME("__executable_end");
 
 Aspace *g_aspace;
 
@@ -89,8 +89,7 @@ auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationR
     return ustl::ok(true);
 }
 
-WEAK_LINK
-auto arch_detect_memory(std::span<obi::MemoryRange const> const ranges) -> void {
+WEAK_LINK auto arch_detect_memory(std::span<obi::MemoryRange const> const ranges) -> void {
     for (auto const &value: ranges) {
         auto const status = apply_memory_range(value);
         if (status != ours::Status::Ok) {
@@ -112,8 +111,8 @@ auto init_memory(obi::ContainerView const &package, BootPackageInput const &inpu
         arch_detect_memory(legacy_memory_ranges);
     }
 
-    auto const phys_start = PhysAddr(kPhysLoadStart);
-    auto const phys_end = PhysAddr(kPhysLoadEnd);
+    auto const phys_start = PhysAddr(PHYS_LOAD_START);
+    auto const phys_end = PhysAddr(PHYS_LOAD_END);
     auto const image = bootmem::Range::from(phys_start, phys_end - phys_start);
     if (image.is_err() || mem->reserve(image.unwrap()) != Status::Ok) {
         panic("Failed to reserve phys image");

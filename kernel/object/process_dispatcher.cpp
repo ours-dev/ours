@@ -8,15 +8,15 @@ GKTL_COUNTER(dispatcher_process_create_count, "dispatcher.process.create");
 GKTL_COUNTER(dispatcher_process_destroy_count, "dispatcher.process.destroy");
 
 namespace {
-constexpr auto const kPrivateAspaceBase = USER_ASPACE_BASE;
+constexpr auto const PRIVATE_ASPACE_BASE = USER_ASPACE_BASE;
 
-constexpr auto const kPrivateAspaceSize = USER_ASPACE_RESTRICTED_SIZE;
-
-[[maybe_unused]]
-constexpr auto const kSharedAspaceBase = kPrivateAspaceBase + kPrivateAspaceSize + PAGE_SIZE;
+constexpr auto const PRIVATE_ASPACE_SIZE = USER_ASPACE_RESTRICTED_SIZE;
 
 [[maybe_unused]]
-constexpr auto const kSharedAspaceSize = USER_ASPACE_SIZE - USER_ASPACE_RESTRICTED_SIZE;
+constexpr auto const SHARED_ASPACE_BASE = PRIVATE_ASPACE_BASE + PRIVATE_ASPACE_SIZE + PAGE_SIZE;
+
+[[maybe_unused]]
+constexpr auto const SHARED_ASPACE_SIZE = USER_ASPACE_SIZE - USER_ASPACE_RESTRICTED_SIZE;
 
 } // namespace
 

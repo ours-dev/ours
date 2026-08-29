@@ -35,10 +35,10 @@ class Parser final {
             return ustl::err(ParseError::InvalidHeader);
         }
         auto const *ident = ident_result->data();
-        if (std::memcmp(ident, K_ELF_MAGIC, sizeof(K_ELF_MAGIC)) != 0) {
+        if (std::memcmp(ident, ELF_MAGIC, sizeof(ELF_MAGIC)) != 0) {
             return ustl::err(ParseError::InvalidHeader);
         }
-        if (ident[4] != Traits32::K_ELF_CLASS && ident[4] != Traits64::K_ELF_CLASS) {
+        if (ident[4] != Traits32::ELF_CLASS && ident[4] != Traits64::ELF_CLASS) {
             return ustl::err(ParseError::InvalidHeader);
         }
         if (ident[6] != 1) {
@@ -48,7 +48,7 @@ class Parser final {
             return ustl::err(ParseError::InvalidHeader);
         }
 
-        if (ident[4] == Traits32::K_ELF_CLASS) {
+        if (ident[4] == Traits32::ELF_CLASS) {
             return parse_variant<Traits32>(raw, size);
         }
         return parse_variant<Traits64>(raw, size);
@@ -57,8 +57,7 @@ class Parser final {
   private:
     template <typename Traits>
     [[nodiscard]]
-    static auto parse_variant(void const *raw, usize size)
-        -> ustl::Result<Binary, ParseError> {
+    static auto parse_variant(void const *raw, usize size) -> ustl::Result<Binary, ParseError> {
         auto file_result = parse_as<Traits>(raw, size);
         if (file_result.is_err()) {
             return ustl::err(std::move(file_result).unwrap_err());

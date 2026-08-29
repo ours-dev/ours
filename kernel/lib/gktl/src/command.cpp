@@ -18,9 +18,9 @@ namespace {
     };
 
     struct CommandKeyEncoder {
-        static constexpr auto kNumChildren = 66_usize;
-        static constexpr auto kBitsPerCode = 7_usize;
-        static constexpr auto kCodesPerKey = 8_usize;
+        static constexpr auto NUM_CHILDREN = 66_usize;
+        static constexpr auto BITS_PER_CODE = 7_usize;
+        static constexpr auto CODES_PER_KEY = 8_usize;
 
         constexpr auto operator()(u64 byte) const -> u64 {
             if (byte >= 0x61 && byte <= 0x7a) {
@@ -45,10 +45,11 @@ namespace {
         }
     };
 
-    using CommandTree = RadixTree<Command, std::allocator<Command>, CommandKeyOfValue, CommandKeyEncoder>;
+    using CommandTree =
+        RadixTree<Command, std::allocator<Command>, CommandKeyOfValue, CommandKeyEncoder>;
 
-    CommandTree g_tree {};
-    bool g_tree_built {};
+    CommandTree g_tree{};
+    bool g_tree_built{};
 
     auto build_radix_tree() -> void {
         if (g_tree_built) {

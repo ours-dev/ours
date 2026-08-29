@@ -11,13 +11,13 @@ namespace {
     };
     static_assert(sizeof(NoteHeader) == 12);
 
-    constexpr u32 kGnuBuildId = 3; // NT_GNU_BUILD_ID
+    constexpr u32 GNU_BUILD_ID = 3; // NT_GNU_BUILD_ID
 
     // The universal GNU/Linux note convention.  The strict ELF64 gABI calls
     // for 8-byte ("native word") alignment, but GNU ld's --build-id and
     // every consumer of it (readelf, gdb, the kernel) use 4 regardless of
     // ELF class; a real build-id note is laid out accordingly.
-    constexpr usize kNoteAlign = 4;
+    constexpr usize NOTE_ALIGN = 4;
 
     constexpr auto align_up(usize const value, usize const alignment) -> usize {
         return (value + alignment - 1) & ~(alignment - 1);
@@ -40,7 +40,7 @@ auto hex_encode_build_id(std::span<u8 const> const note_section, std::span<char>
         return 0;
     }
 
-    auto const desc_offset = align_up(name_end, kNoteAlign);
+    auto const desc_offset = align_up(name_end, NOTE_ALIGN);
     auto const desc_end = desc_offset + header.desc_size;
     if (desc_offset < name_end || desc_end < desc_offset || desc_end > note_section.size()) {
         return 0;
@@ -49,10 +49,10 @@ auto hex_encode_build_id(std::span<u8 const> const note_section, std::span<char>
     // alignment padding, matching what a single `ld --build-id` note
     // actually produces.  A section with a second note (or trailing junk)
     // is rejected rather than silently reading only the first.
-    if (align_up(desc_end, kNoteAlign) != align_up(note_section.size(), kNoteAlign)) {
+    if (align_up(desc_end, NOTE_ALIGN) != align_up(note_section.size(), NOTE_ALIGN)) {
         return 0;
     }
-    if (header.type != kGnuBuildId) {
+    if (header.type != GNU_BUILD_ID) {
         return 0;
     }
 
@@ -60,11 +60,11 @@ auto hex_encode_build_id(std::span<u8 const> const note_section, std::span<char>
     if (length == 0 || length >= out.size()) {
         return 0;
     }
-    constexpr char kHexDigits[] = "0123456789abcdef";
+    constexpr char HEX_DIGITS[] = "0123456789abcdef";
     for (usize index = 0; index < header.desc_size; ++index) {
         auto const value = note_section[desc_offset + index];
-        out[index * 2] = kHexDigits[value >> 4];
-        out[index * 2 + 1] = kHexDigits[value & 0xF];
+        out[index * 2] = HEX_DIGITS[value >> 4];
+        out[index * 2 + 1] = HEX_DIGITS[value & 0xF];
     }
     out[length] = '\0';
     return length;

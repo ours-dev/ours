@@ -133,8 +133,7 @@ class CheckedReader final {
     CheckedReader() noexcept = default;
 
     [[nodiscard]]
-    static auto from(void const *data, usize size)
-        -> ustl::Result<CheckedReader, ReaderError> {
+    static auto from(void const *data, usize size) -> ustl::Result<CheckedReader, ReaderError> {
         auto const stream = BinaryStream::from(data, size);
         if (stream.is_err()) {
             return ustl::err(reader_error(stream.unwrap_err()));
@@ -172,8 +171,7 @@ class CheckedReader final {
 
     template <typename T>
     [[nodiscard]]
-    auto array(usize offset, usize count) const
-        -> ustl::Result<ByteRange, ReaderError> {
+    auto array(usize offset, usize count) const -> ustl::Result<ByteRange, ReaderError> {
         static_assert(std::is_trivially_copyable_v<T>, "ELF objects must be trivially copyable");
         if (count > std::numeric_limits<usize>::max() / sizeof(T)) {
             return ustl::err(ReaderError::OutOfRange);

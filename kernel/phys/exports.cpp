@@ -12,8 +12,7 @@ namespace {
 } // namespace
 
 auto exports() -> std::span<PhysExport const> {
-    return {__phys_exports_start,
-            static_cast<usize>(__phys_exports_end - __phys_exports_start)};
+    return {__phys_exports_start, static_cast<usize>(__phys_exports_end - __phys_exports_start)};
 }
 
 auto resolve_export(std::string_view const name) -> void const * {

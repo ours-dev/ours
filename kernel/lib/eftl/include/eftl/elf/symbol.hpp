@@ -95,7 +95,7 @@ class SymbolTableView final {
         if (symbol.is_none()) {
             return ustl::NONE;
         }
-        if (symbol->st_shndx != K_SECTION_INDEX_ESCAPE) {
+        if (symbol->st_shndx != SECTION_INDEX_ESCAPE) {
             return ustl::some(static_cast<usize>(symbol->st_shndx));
         }
         if (m_extended_indices.is_none()) {
@@ -124,7 +124,7 @@ class SymbolTableView final {
     }
 
   private:
-    static constexpr auto K_SECTION_INDEX_ESCAPE = static_cast<typename Traits::Half>(0xffffU);
+    static constexpr auto SECTION_INDEX_ESCAPE = static_cast<typename Traits::Half>(0xffffU);
 
     constexpr SymbolTableView(Symbols const symbols, StringTableView const names,
                               ustl::Option<ExtendedSectionIndices> const extended_indices) noexcept

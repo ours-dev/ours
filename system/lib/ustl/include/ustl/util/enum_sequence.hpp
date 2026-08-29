@@ -13,22 +13,20 @@
 #define USTL_UTIL_ENUMSEQUENCE_HPP 1
 
 namespace ustl {
-    template <typename Enum, Enum ...>
-    struct EnumSequence
-    {};
+template <typename Enum, Enum...>
+struct EnumSequence {};
 
-    template <typename Enum, int Min, int Max, int... Next>
-    struct MakeEnumSequence 
-        : public MakeEnumSequence<Enum, Min, Max - 1, Max - 1, Next...>
-    {};
+template <typename Enum, int Min, int Max, int... Next>
+struct MakeEnumSequence: public MakeEnumSequence<Enum, Min, Max - 1, Max - 1, Next...> {};
 
-    template <typename Enum, int Min, int ... Next>
-    struct MakeEnumSequence<Enum, Min, Min, Next ... >
-    { using Type = EnumSequence<Enum, static_cast<Enum>(Next) ... >; };
+template <typename Enum, int Min, int... Next>
+struct MakeEnumSequence<Enum, Min, Min, Next...> {
+    using Type = EnumSequence<Enum, static_cast<Enum>(Next)...>;
+};
 
-    template <typename Enum, int Min, int Max>
-    using MakeEnumSequenceT = typename MakeEnumSequence<Enum, Min, Max>::Type;
+template <typename Enum, int Min, int Max>
+using MakeEnumSequenceT = typename MakeEnumSequence<Enum, Min, Max>::Type;
 
-} // namespace ustl::util
+} // namespace ustl
 
 #endif // #ifndef USTL_UTIL_ENUMSEQUENCE_HPP

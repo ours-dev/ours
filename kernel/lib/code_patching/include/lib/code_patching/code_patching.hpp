@@ -3,10 +3,8 @@
 #ifndef LIB_CODE_PATCHING_CODE_PATCHING_HPP
 #define LIB_CODE_PATCHING_CODE_PATCHING_HPP 1
 
-#include <ours/prelude.hpp>
-
 #include <arch/types.hpp>
-
+#include <ours/prelude.hpp>
 #include <ustl/views/span.hpp>
 
 #include <cstddef>
@@ -81,8 +79,8 @@ struct ArchCodePatchHooks {
     /// Returns nullptr if the alternative should NOT be applied
     /// (e.g. the CPU lacks the relevant erratum).  Otherwise returns
     /// the selected alternative blob.
-    const CodePatchBlob *(*select_alternative)(
-        CaseId case_id, ustl::views::Span<const CodePatchBlob> blobs);
+    const CodePatchBlob *(*select_alternative)(CaseId case_id,
+                                               ustl::views::Span<const CodePatchBlob> blobs);
 };
 
 /// Apply all code patches before any patchable code executes.
@@ -92,11 +90,11 @@ struct ArchCodePatchHooks {
 /// kernel proper.
 ///
 /// Returns the number of patches successfully applied.
-[[nodiscard]] auto apply_code_patches(
-    ustl::views::Span<const CodePatchEntry> entries,
-    ustl::views::Span<const CodePatchBlob> blobs,
-    const ArchCodePatchHooks &hooks) -> size_t;
+[[nodiscard]]
+auto apply_code_patches(ustl::views::Span<const CodePatchEntry> entries,
+                        ustl::views::Span<const CodePatchBlob> blobs,
+                        const ArchCodePatchHooks &hooks) -> size_t;
 
-}  // namespace code_patching
+} // namespace code_patching
 
-#endif  // #ifndef LIB_CODE_PATCHING_CODE_PATCHING_HPP
+#endif // #ifndef LIB_CODE_PATCHING_CODE_PATCHING_HPP

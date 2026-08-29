@@ -18,7 +18,7 @@ auto add_madt(Machine &machine) -> void {
     auto const length = sizeof(acpi::madt::Table) + sizeof(acpi::madt::IoApicEntry) +
                         2 * sizeof(acpi::madt::LocalApicEntry) +
                         sizeof(acpi::madt::InterruptSourceOverrideEntry);
-    auto *madt = machine.add_table<acpi::madt::Table>(acpi::madt::Table::kSignature, length);
+    auto *madt = machine.add_table<acpi::madt::Table>(acpi::madt::Table::SIGNATURE, length);
     madt->lapic_addr = 0xfee0'0000;
     madt->flags = 1;
 
@@ -164,12 +164,12 @@ auto test_rsdp_signature_must_match_both_halves() -> void {
     machine.seal_rsdp();
     require(!acpi::TableSet::from_rsdp(mapper, machine.rsdp_phys()));
 
-    machine.rsdp()->v1.sig_high = acpi::sdt::Rsdp::kSignatureHigh;
+    machine.rsdp()->v1.sig_high = acpi::sdt::Rsdp::SIGNATURE_HIGH;
     machine.rsdp()->v1.sig_low = acpi::Signature::from_chars("XXXX");
     machine.seal_rsdp();
     require(!acpi::TableSet::from_rsdp(mapper, machine.rsdp_phys()));
 
-    machine.rsdp()->v1.sig_low = acpi::sdt::Rsdp::kSignatureLow;
+    machine.rsdp()->v1.sig_low = acpi::sdt::Rsdp::SIGNATURE_LOW;
     machine.seal_rsdp();
     require(bool(acpi::TableSet::from_rsdp(mapper, machine.rsdp_phys())));
 }
@@ -225,7 +225,7 @@ auto test_table_shorter_than_struct_is_rejected() -> void {
     // refuse it: reading locality_count out of this table would run past the
     // 40 bytes that were mapped.
     auto const short_len = sizeof(acpi::slit::Table) - 4;
-    machine.add_table<acpi::slit::Table>(acpi::slit::Table::kSignature, short_len);
+    machine.add_table<acpi::slit::Table>(acpi::slit::Table::SIGNATURE, short_len);
     machine.finish();
 
     auto &mapper = machine.mapper();

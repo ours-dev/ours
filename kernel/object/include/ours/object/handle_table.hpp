@@ -34,14 +34,14 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
         auto allocate() -> Handle *;
     };
 
-    constexpr static auto const kNumHandlesPerBlock = 8;
+    constexpr static auto const NUM_HANDLES_PER_BLOCK = 8;
 
     // TODO(SmallHuaZi): the handle storage is still to be designed. It used to
     // be declared as
     //
     //     using HandleList = ustl::collections::Deque<
     //         Handle, Allocator<Handle>,
-    //         DequeOptions<BlockSize<kNumHandlesPerBlock>>>;
+    //         DequeOptions<BlockSize<NUM_HANDLES_PER_BLOCK>>>;
     //     HandleList m_handles;
     //
     // over Boost.Container, which this project does not depend on. That
@@ -50,7 +50,7 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     // allocator contract. Nothing reads m_handles yet -- HandleTable has no
     // implementation file and no callers -- so the member is parked here
     // rather than guessed at, together with the block-allocated intent that
-    // kNumHandlesPerBlock records.
+    // NUM_HANDLES_PER_BLOCK records.
 
     KoId m_koid;
 };

@@ -6,11 +6,11 @@
 #include <arch/x86/processor/feature.hpp>
 
 namespace ours {
-    using arch::CpuFeatureType;
+using arch::CpuFeatureType;
 
-    auto x86_has_feature(CpuFeatureType type) -> bool;
+auto x86_has_feature(CpuFeatureType type) -> bool;
 
-    extern bool g_feature_has_fsgsbase;
+extern bool g_feature_has_fsgsbase;
 
 } // namespace ours
 

@@ -6,8 +6,8 @@
 #include <type_traits>
 
 namespace ustl::traits {
-    template <typename T>
-    using UnderlyingTypeT = std::underlying_type_t<T>;
+template <typename T>
+using UnderlyingTypeT = std::underlying_type_t<T>;
 } // namespace ustl::traits
 
 #endif // USTL_TRAITS_UNDERLYING_HPP

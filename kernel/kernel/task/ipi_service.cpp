@@ -1,34 +1,32 @@
-#include <ours/ipi_service.hpp>
-
 #include <ours/arch/mp.hpp>
+#include <ours/ipi_service.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/task/scheduler.hpp>
 
-#include <ours/mm/cpu_local.hpp>
-
 namespace ours {
-    auto IpiService::init() -> void {}
+auto IpiService::init() -> void {}
 
-    auto IpiService::send_resched(CpuNum cpu) -> void {
-        if (!task::Scheduler::peek_active_mask().test(cpu)) {
-            return;
-        }
-
-        arch_mp_reschedule(cpu);
+auto IpiService::send_resched(CpuNum cpu) -> void {
+    if (!task::Scheduler::peek_active_mask().test(cpu)) {
+        return;
     }
 
-    auto IpiService::send_resched(CpuMask const &mask) -> void {
-        auto const local_cpu = Cpu::id();
+    arch_mp_reschedule(cpu);
+}
 
-        auto targets= mask;
-        // Clear local CPU and inactive CPUs.
-        targets.set(local_cpu, 0);
-        targets &= task::Scheduler::peek_active_mask();
+auto IpiService::send_resched(CpuMask const &mask) -> void {
+    auto const local_cpu = Cpu::id();
 
-        if (!mask.count()) {
-            return;
-        }
+    auto targets = mask;
+    // Clear local CPU and inactive CPUs.
+    targets.set(local_cpu, 0);
+    targets &= task::Scheduler::peek_active_mask();
 
-        arch_mp_reschedule_mask(mask);
+    if (!mask.count()) {
+        return;
     }
+
+    arch_mp_reschedule_mask(mask);
+}
 
 } // namespace ours

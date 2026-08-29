@@ -59,7 +59,7 @@ class SectionGroupView final {
 
     [[nodiscard]]
     constexpr auto is_comdat() const noexcept -> bool {
-        return (flags() & K_COMDAT) != 0;
+        return (flags() & COMDAT) != 0;
     }
 
     [[nodiscard]]
@@ -85,7 +85,7 @@ class SectionGroupView final {
     }
 
   private:
-    static constexpr Word K_COMDAT = 1;
+    static constexpr Word COMDAT = 1;
 
     constexpr SectionGroupView(Words const words, usize const signature_symbol_index) noexcept
         : m_words(words), m_signature_symbol_index(signature_symbol_index) {}

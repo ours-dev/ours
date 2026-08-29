@@ -14,8 +14,8 @@ template <typename String, typename FormatArgs>
 [[noreturn]]
 auto vpanic(String fmt, FormatArgs const &args) -> void;
 
-[[noreturn]]
-PHYS_EXPORT auto vpanic(std::string_view fmt) -> void;
+PHYS_EXPORT [[noreturn]]
+auto vpanic(std::string_view fmt) -> void;
 
 /// Bounds-checked stack sink for panic formatting: never allocates, so
 /// panic() works in heap-less environments (phys).  Truncation is
@@ -59,14 +59,14 @@ struct PanicSink {
 // services exist, so the arguments are dropped rather than dragging
 // std::format's allocating machinery into the bootloader.
 template <typename... Args>
-[[noreturn]]
-FORCE_INLINE auto panic(std::string_view fmt, Args &&...) -> void {
+FORCE_INLINE [[noreturn]]
+auto panic(std::string_view fmt, Args &&...) -> void {
     vpanic(fmt);
 }
 #else
 template <typename... Args>
-[[noreturn]]
-FORCE_INLINE auto panic(std::string_view fmt, Args &&...args) -> void {
+FORCE_INLINE [[noreturn]]
+auto panic(std::string_view fmt, Args &&...args) -> void {
     if constexpr (sizeof...(args) == 0) {
         vpanic(fmt);
     } else {
@@ -79,13 +79,13 @@ FORCE_INLINE auto panic(std::string_view fmt, Args &&...args) -> void {
 }
 #endif
 
-[[noreturn]]
-FORCE_INLINE auto unreachable() -> void {
+FORCE_INLINE [[noreturn]]
+inline auto unreachable() -> void {
     panic("Unreachable");
 }
 
-[[noreturn]]
-FORCE_INLINE auto unimplement() -> void {
+FORCE_INLINE [[noreturn]]
+inline auto unimplement() -> void {
     panic("Unimplement");
 }
 } // namespace ours

@@ -5,8 +5,8 @@
 
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
-#include <ours/cpu_mask.hpp>
 #include <ours/cpu.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/types.hpp>
 #include <ustl/bitfields.hpp>
@@ -27,13 +27,11 @@ class PreemptionState {
 
     ~PreemptionState() = default;
 
-    FORCE_INLINE
-    auto is_preemption_enabled() const -> bool {
+    FORCE_INLINE auto is_preemption_enabled() const -> bool {
         return !raw_value();
     }
 
-    FORCE_INLINE
-    auto enable_eager_reschedule() -> void {
+    FORCE_INLINE auto enable_eager_reschedule() -> void {
         auto const old_state = m_counter.sub<Tag::EagerReschedDisabledCounter>(1);
         if (old_state > 1) {
             return;
@@ -45,33 +43,28 @@ class PreemptionState {
         flush_pending_remote();
     }
 
-    FORCE_INLINE
-    auto disable_eager_reschedule() -> void {
+    FORCE_INLINE auto disable_eager_reschedule() -> void {
         m_counter.add<Tag::EagerReschedDisabledCounter>(1);
     }
 
-    FORCE_INLINE
-    auto enable_preemption() -> void {
+    FORCE_INLINE auto enable_preemption() -> void {
         m_counter.sub<Tag::PreemptionDisabledCounter>(1);
         if (is_preemption_enabled()) {
             flush_pending_local();
         }
     }
 
-    FORCE_INLINE
-    auto enable_preemption_delay_resched() -> void {
+    FORCE_INLINE auto enable_preemption_delay_resched() -> void {
         DEBUG_ASSERT(preemption_disabled_count() > 0);
         m_counter.sub<Tag::PreemptionDisabledCounter>(1);
     }
 
-    FORCE_INLINE
-    auto disable_preemption() -> void {
-        DEBUG_ASSERT(preemption_disabled_count() < kMaxCountValue);
+    FORCE_INLINE auto disable_preemption() -> void {
+        DEBUG_ASSERT(preemption_disabled_count() < MAX_COUNT_VALUE);
         m_counter.add<Tag::PreemptionDisabledCounter>(1);
     }
 
-    FORCE_INLINE
-    auto add_pending(CpuMask mask = CpuMask::of(Cpu::id())) -> void {
+    FORCE_INLINE auto add_pending(CpuMask mask = CpuMask::of(Cpu::id())) -> void {
         if (mask.test(Cpu::id())) {
             m_counter.set<Tag::NoReschedPreempt>(false);
         }
@@ -79,48 +72,41 @@ class PreemptionState {
         m_pendings.store(m_pendings.load() | mask);
     }
 
-    FORCE_INLINE
-    auto clear_pending() -> void {
+    FORCE_INLINE auto clear_pending() -> void {
         m_counter.set<Tag::NoReschedPreempt>(1);
         m_counter.set<Tag::NoReschedEager>(1);
         m_pendings.store(CpuMask());
     }
 
-    FORCE_INLINE
-    auto in_interrupt() const -> bool {
+    FORCE_INLINE auto in_interrupt() const -> bool {
         return m_counter.get<Tag::IrqNestedCounter>();
     }
 
-    FORCE_INLINE
-    auto preemption_disabled_count() const -> u8 {
+    FORCE_INLINE auto preemption_disabled_count() const -> u8 {
         return m_counter.get<Tag::PreemptionDisabledCounter>();
     }
 
-    FORCE_INLINE
-    auto eager_resched_disabled_count() const -> u8 {
+    FORCE_INLINE auto eager_resched_disabled_count() const -> u8 {
         return m_counter.get<Tag::EagerReschedDisabledCounter>();
     }
 
-    FORCE_INLINE
-    auto has_preempt_request() const -> bool {
+    FORCE_INLINE auto has_preempt_request() const -> bool {
         return !m_counter.get<Tag::NoReschedPreempt>();
     }
 
     auto set_timeslice_extension(Duration duration) -> bool;
     auto cancel_timeslice_extension() -> void;
 
-    FORCE_INLINE
-    auto ignore_local_pending() -> void {}
+    FORCE_INLINE auto ignore_local_pending() -> void {}
 
     auto flush_pending_remote() -> void;
 
-    constexpr static auto const kMaxCountValue = ustl::NumericLimits<u8>::max();
+    constexpr static auto const MAX_COUNT_VALUE = ustl::NumericLimits<u8>::max();
 
   private:
     USTL_NO_MOVEABLE_AND_COPYABLE(PreemptionState);
 
-    FORCE_INLINE
-    auto raw_value() const -> u32 {
+    FORCE_INLINE auto raw_value() const -> u32 {
         return m_counter.into<u32>();
     }
 

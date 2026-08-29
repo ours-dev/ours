@@ -13,8 +13,8 @@
 
 namespace ours {
 namespace {
-    INIT_CODE
-    auto parse_io_apic_isa_overrides(acpi::madt::InterruptSourceOverrideEntry const &entry)
+    INIT_CODE auto
+    parse_io_apic_isa_overrides(acpi::madt::InterruptSourceOverrideEntry const &entry)
         -> arch::IoApicIsaOverride {
         arch::IoApicIsaOverride object;
         // Polarity and trigger mode are two-bit fields inside the MPS INTI
@@ -50,8 +50,7 @@ namespace {
         return object;
     }
 
-    INIT_CODE
-    auto platform_init_apic() -> void {
+    INIT_CODE auto platform_init_apic() -> void {
         // Before enable the APIC, we should shutdown the PIC.
         arch::Pic::disable();
 
@@ -65,8 +64,8 @@ namespace {
             auto slot = io_apics.emplace_back();
             ASSERT(slot, "Out of memory while collecting IO-APICs from the MADT");
             slot.unwrap()->init(entry.io_apic_address,
-                               mm::phys_to_pfn(PhysAddr(entry.io_apic_address)),
-                               entry.global_irq_base);
+                                mm::phys_to_pfn(PhysAddr(entry.io_apic_address)),
+                                entry.global_irq_base);
         }
 
         ktl::Vec<arch::IoApicIsaOverride> io_apic_isa_overrides;
@@ -93,18 +92,17 @@ namespace {
         // Manually configing the ISA IRQs
         for (auto i = 0; i < 8; ++i) {
             // Regardless of IRQ 2
-            constexpr static auto const kPicCascadeIrqNum = 2;
-            if (i != kPicCascadeIrqNum) {
+            constexpr static auto const PIC_CASCADE_IRQ_NUM = 2;
+            if (i != PIC_CASCADE_IRQ_NUM) {
                 auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i);
                 apic_configure_isa_irq(static_cast<u8>(i), ApicDeliveryMode::Fixed, true,
-                                       ApicDestinationMode::Physical,
-                                       static_cast<u8>(bspid), irqnum);
+                                       ApicDestinationMode::Physical, static_cast<u8>(bspid),
+                                       irqnum);
             }
 
             auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i + 8);
             apic_configure_isa_irq(static_cast<u8>(i + 8), ApicDeliveryMode::Fixed, true,
-                                   ApicDestinationMode::Physical,
-                                   static_cast<u8>(bspid), irqnum);
+                                   ApicDestinationMode::Physical, static_cast<u8>(bspid), irqnum);
         }
 
         arch::local_irq_enable();

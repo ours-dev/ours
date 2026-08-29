@@ -7,7 +7,6 @@
 #include <ours/phys/aspace.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-
 #include <ustl/collections/static_vec.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
@@ -43,16 +42,16 @@ struct SymbolBinder {
 // module actually calls (to load its own kernel payload) are marked.
 class ElfImage final {
   public:
-    static constexpr auto K_MAX_LOAD_SEGMENTS = usize{6};
+    static constexpr auto MAX_LOAD_SEGMENTS = usize{6};
 
     /// Parse `file` and plan its load.  An ELF image describes its own
     /// in-memory size (the load plan's image_size()), so there is no
     /// caller-supplied size to validate against: size() below reports what
     /// the plan says, and load_at() needs exactly that much room.
-    [[nodiscard]]
-    PHYS_EXPORT auto init(std::span<u8 const> file) -> Status;
-    [[nodiscard]]
-    PHYS_EXPORT auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
+    PHYS_EXPORT [[nodiscard]]
+    auto init(std::span<u8 const> file) -> Status;
+    PHYS_EXPORT [[nodiscard]]
+    auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
     PHYS_EXPORT auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
 
     [[nodiscard]]
@@ -60,8 +59,8 @@ class ElfImage final {
         return m_load_plan.image_size();
     }
 
-    [[nodiscard]]
-    PHYS_EXPORT auto relocate(usize load_address) -> Status;
+    PHYS_EXPORT [[nodiscard]]
+    auto relocate(usize load_address) -> Status;
 
     /// Relocate, then bind the image's undefined symbols.
     ///
@@ -99,22 +98,22 @@ class ElfImage final {
     using Traits = eftl::elf::TraitsNative;
 
 #if defined(__x86_64__)
-    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::X86_64;
+    static constexpr eftl::elf::Arch TARGET_ELF_MACHINE = eftl::elf::Arch::X86_64;
 #elif defined(__i386__)
-    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::I386;
+    static constexpr eftl::elf::Arch TARGET_ELF_MACHINE = eftl::elf::Arch::I386;
 #elif defined(__aarch64__) || defined(__arm64__)
-    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::AARCH64;
+    static constexpr eftl::elf::Arch TARGET_ELF_MACHINE = eftl::elf::Arch::AARCH64;
 #elif defined(__riscv)
-    static constexpr eftl::elf::Arch K_TARGET_ELF_MACHINE = eftl::elf::Arch::RISCV;
+    static constexpr eftl::elf::Arch TARGET_ELF_MACHINE = eftl::elf::Arch::RISCV;
 #else
 #error "The phys ELF loader has no machine mapping for this compilation target"
 #endif
 
     template <typename T>
-    using LoadPlanCollection = ustl::collections::StaticVec<T, K_MAX_LOAD_SEGMENTS>;
+    using LoadPlanCollection = ustl::collections::StaticVec<T, MAX_LOAD_SEGMENTS>;
     using LoadPlan = eftl::elf::LoadPlan<Traits, LoadPlanCollection>;
     using LoadPolicy =
-        eftl::elf::KernelElfLoadPolicy<Traits, LoadPlanCollection, K_TARGET_ELF_MACHINE, PAGE_SIZE>;
+        eftl::elf::KernelElfLoadPolicy<Traits, LoadPlanCollection, TARGET_ELF_MACHINE, PAGE_SIZE>;
 
     VirtAddr m_va_load{};
     PhysAddr m_pa_load{};

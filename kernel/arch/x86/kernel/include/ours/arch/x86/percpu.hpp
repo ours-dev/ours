@@ -24,36 +24,33 @@
 
 namespace ours {
 struct InterruptStatck {
-    constexpr static auto const kIntrStackSize = KB(16);
+    constexpr static auto const INTR_STACK_SIZE = KB(16);
 
-    FORCE_INLINE
-    auto top() -> void * {
+    FORCE_INLINE auto top() -> void * {
         return stack;
     }
 
-    FORCE_INLINE
-    auto bottom() -> void * {
-        return stack + kIntrStackSize;
+    FORCE_INLINE auto bottom() -> void * {
+        return stack + INTR_STACK_SIZE;
     }
 
-    u8 stack[kIntrStackSize];
+    u8 stack[INTR_STACK_SIZE];
 };
 
 enum IntrStackOrdering {
-    kDoubleFaultStack,
-    kNmiStack,
-    kDebugBreakStack,
-    kMachineCheckStack,
-    kMaxNumStacks,
+    DOUBLE_FAULT_STACK,
+    NMI_STACK,
+    DEBUG_BREAK_STACK,
+    MACHINE_CHECK_STACK,
+    MAX_NUM_STACKS,
 };
 
 struct PACKED X86Tss {
     typedef X86Tss Self;
 
-    FORCE_INLINE
-    auto init() -> void {
+    FORCE_INLINE auto init() -> void {
         io_port_bitmap_base = static_cast<u16>(ustl::mem::offset_of(&Self::io_bitmap));
-        io_bitmap[arch::kMaxIoBitmapBytes] = 0xff;
+        io_bitmap[arch::MAX_IO_BITMAP_BYTES] = 0xff;
     }
 
     // We hope to use two views to access the bitmap.
@@ -72,7 +69,7 @@ struct PACKED X86Tss {
     u64 reserved2{};
     u16 reserved3{};
     u16 io_port_bitmap_base{};
-    u8 io_bitmap[arch::kMaxIoBitmapBytes + 1]{};
+    u8 io_bitmap[arch::MAX_IO_BITMAP_BYTES + 1]{};
 };
 static_assert(offsetof(X86Tss, sp0) == 4);
 static_assert(offsetof(X86Tss, sp2) == 20);
@@ -84,7 +81,7 @@ struct alignas(16) X86PerCpu {
     u32 apic_id;
     u32 padding_;
     CpuNum cpunum;
-    InterruptStatck intr_stack[kMaxNumStacks];
+    InterruptStatck intr_stack[MAX_NUM_STACKS];
 };
 
 static_assert(offsetof(X86PerCpu, tss.sp0) == X86_PERCPU_SAVED_KERNEL_SP_OFFSET);

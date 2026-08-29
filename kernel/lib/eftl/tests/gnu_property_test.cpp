@@ -10,15 +10,14 @@
 #include <cstring>
 
 namespace {
-constexpr usize K_SECTION_TABLE_OFFSET = 0x80;
-constexpr usize K_NOTE_OFFSET = 0x200;
-constexpr usize K_PROGRAM_HEADER_OFFSET = 0x40;
-constexpr u32 K_PROPERTY_TYPE_ONE = 0xc0000000;
-constexpr u32 K_PROPERTY_TYPE_TWO = 0xc0000001;
+constexpr usize SECTION_TABLE_OFFSET = 0x80;
+constexpr usize NOTE_OFFSET = 0x200;
+constexpr usize PROGRAM_HEADER_OFFSET = 0x40;
+constexpr u32 PROPERTY_TYPE_ONE = 0xc0000000;
+constexpr u32 PROPERTY_TYPE_TWO = 0xc0000001;
 
 template <typename Value, usize Size>
-auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian)
-    -> void {
+auto put_scalar(std::array<u8, Size> &image, usize offset, Value value, bool big_endian) -> void {
     static_assert(std::is_unsigned_v<Value>);
     if (!big_endian) {
         std::memcpy(image.data() + offset, &value, sizeof(value));
@@ -49,8 +48,8 @@ auto put_header(std::array<u8, Size> &image, Header const &header, bool big_endi
 }
 
 template <typename Section, usize Size>
-auto put_section(std::array<u8, Size> &image, usize offset, Section const &section,
-                 bool big_endian) -> void {
+auto put_section(std::array<u8, Size> &image, usize offset, Section const &section, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Section, sh_name), section.sh_name, big_endian);
     put_scalar(image, offset + offsetof(Section, sh_type), section.sh_type, big_endian);
     put_scalar(image, offset + offsetof(Section, sh_flags), section.sh_flags, big_endian);
@@ -64,8 +63,8 @@ auto put_section(std::array<u8, Size> &image, usize offset, Section const &secti
 }
 
 template <typename Segment, usize Size>
-auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segment,
-                 bool big_endian) -> void {
+auto put_segment(std::array<u8, Size> &image, usize offset, Segment const &segment, bool big_endian)
+    -> void {
     put_scalar(image, offset + offsetof(Segment, p_type), segment.p_type, big_endian);
     put_scalar(image, offset + offsetof(Segment, p_flags), segment.p_flags, big_endian);
     put_scalar(image, offset + offsetof(Segment, p_offset), segment.p_offset, big_endian);
@@ -85,20 +84,18 @@ auto make_gnu_property_image(bool big_endian = false) -> std::array<u8, 1024> {
     using Header = typename Traits::Header;
     using Segment = typename Traits::Segment;
     using Section = typename Traits::Section;
-    constexpr usize K_ALIGNMENT = sizeof(typename Traits::Addr);
-    constexpr usize K_PROPERTY_ONE_SIZE = 4;
-    constexpr usize K_PROPERTY_TWO_SIZE = 1;
-    constexpr usize K_PROPERTY_ONE_TOTAL =
-        align_up(2 * sizeof(u32) + K_PROPERTY_ONE_SIZE, K_ALIGNMENT);
-    constexpr usize K_PROPERTY_TWO_TOTAL =
-        align_up(2 * sizeof(u32) + K_PROPERTY_TWO_SIZE, K_ALIGNMENT);
-    constexpr usize K_DESCRIPTOR_SIZE = K_PROPERTY_ONE_TOTAL + K_PROPERTY_TWO_TOTAL;
-    constexpr usize K_DESCRIPTOR_OFFSET = K_NOTE_OFFSET + 2 * sizeof(u32) + 4;
+    constexpr usize ALIGNMENT = sizeof(typename Traits::Addr);
+    constexpr usize PROPERTY_ONE_SIZE = 4;
+    constexpr usize PROPERTY_TWO_SIZE = 1;
+    constexpr usize PROPERTY_ONE_TOTAL = align_up(2 * sizeof(u32) + PROPERTY_ONE_SIZE, ALIGNMENT);
+    constexpr usize PROPERTY_TWO_TOTAL = align_up(2 * sizeof(u32) + PROPERTY_TWO_SIZE, ALIGNMENT);
+    constexpr usize DESCRIPTOR_SIZE = PROPERTY_ONE_TOTAL + PROPERTY_TWO_TOTAL;
+    constexpr usize DESCRIPTOR_OFFSET = NOTE_OFFSET + 2 * sizeof(u32) + 4;
 
     std::array<u8, 1024> image{};
     Header header{};
-    std::memcpy(header.e_ident, eftl::elf::K_ELF_MAGIC, sizeof(eftl::elf::K_ELF_MAGIC));
-    header.e_ident[4] = Traits::K_ELF_CLASS;
+    std::memcpy(header.e_ident, eftl::elf::ELF_MAGIC, sizeof(eftl::elf::ELF_MAGIC));
+    header.e_ident[4] = Traits::ELF_CLASS;
     if (big_endian) {
         header.e_ident[5] = 2;
     } else {
@@ -108,44 +105,42 @@ auto make_gnu_property_image(bool big_endian = false) -> std::array<u8, 1024> {
     header.e_type = 3;
     header.e_version = 1;
     header.e_ehsize = sizeof(Header);
-    header.e_phoff = K_PROGRAM_HEADER_OFFSET;
+    header.e_phoff = PROGRAM_HEADER_OFFSET;
     header.e_phentsize = sizeof(Segment);
     header.e_phnum = 1;
-    header.e_shoff = K_SECTION_TABLE_OFFSET;
+    header.e_shoff = SECTION_TABLE_OFFSET;
     header.e_shentsize = sizeof(Section);
     header.e_shnum = 2;
     put_header(image, header, big_endian);
 
     Section note{};
     note.sh_type = static_cast<u32>(eftl::elf::SectionType::Note);
-    note.sh_offset = K_NOTE_OFFSET;
-    note.sh_size = 2 * sizeof(u32) + 4 + K_DESCRIPTOR_SIZE;
-    note.sh_addralign = K_ALIGNMENT;
-    put_section(image, K_SECTION_TABLE_OFFSET + sizeof(Section), note, big_endian);
+    note.sh_offset = NOTE_OFFSET;
+    note.sh_size = 2 * sizeof(u32) + 4 + DESCRIPTOR_SIZE;
+    note.sh_addralign = ALIGNMENT;
+    put_section(image, SECTION_TABLE_OFFSET + sizeof(Section), note, big_endian);
 
     Segment property{};
     property.p_type = static_cast<u32>(eftl::elf::SegType::GnuProperty);
-    property.p_offset = K_NOTE_OFFSET;
+    property.p_offset = NOTE_OFFSET;
     property.p_filesz = note.sh_size;
     property.p_memsz = note.sh_size;
-    property.p_align = K_ALIGNMENT;
-    put_segment(image, K_PROGRAM_HEADER_OFFSET, property, big_endian);
+    property.p_align = ALIGNMENT;
+    put_segment(image, PROGRAM_HEADER_OFFSET, property, big_endian);
 
-    put_scalar(image, K_NOTE_OFFSET, static_cast<u32>(4), big_endian);
-    put_scalar(image, K_NOTE_OFFSET + sizeof(u32), static_cast<u32>(K_DESCRIPTOR_SIZE),
-               big_endian);
-    put_scalar(image, K_NOTE_OFFSET + 2 * sizeof(u32), static_cast<u32>(5), big_endian);
-    image[K_NOTE_OFFSET + 3 * sizeof(u32)] = 'G';
-    image[K_NOTE_OFFSET + 3 * sizeof(u32) + 1] = 'N';
-    image[K_NOTE_OFFSET + 3 * sizeof(u32) + 2] = 'U';
+    put_scalar(image, NOTE_OFFSET, static_cast<u32>(4), big_endian);
+    put_scalar(image, NOTE_OFFSET + sizeof(u32), static_cast<u32>(DESCRIPTOR_SIZE), big_endian);
+    put_scalar(image, NOTE_OFFSET + 2 * sizeof(u32), static_cast<u32>(5), big_endian);
+    image[NOTE_OFFSET + 3 * sizeof(u32)] = 'G';
+    image[NOTE_OFFSET + 3 * sizeof(u32) + 1] = 'N';
+    image[NOTE_OFFSET + 3 * sizeof(u32) + 2] = 'U';
 
-    put_scalar(image, K_DESCRIPTOR_OFFSET, K_PROPERTY_TYPE_ONE, big_endian);
-    put_scalar(image, K_DESCRIPTOR_OFFSET + sizeof(u32), K_PROPERTY_ONE_SIZE, big_endian);
-    put_scalar(image, K_DESCRIPTOR_OFFSET + 2 * sizeof(u32), static_cast<u32>(5),
-               big_endian);
-    auto const second_property = K_DESCRIPTOR_OFFSET + K_PROPERTY_ONE_TOTAL;
-    put_scalar(image, second_property, K_PROPERTY_TYPE_TWO, big_endian);
-    put_scalar(image, second_property + sizeof(u32), K_PROPERTY_TWO_SIZE, big_endian);
+    put_scalar(image, DESCRIPTOR_OFFSET, PROPERTY_TYPE_ONE, big_endian);
+    put_scalar(image, DESCRIPTOR_OFFSET + sizeof(u32), PROPERTY_ONE_SIZE, big_endian);
+    put_scalar(image, DESCRIPTOR_OFFSET + 2 * sizeof(u32), static_cast<u32>(5), big_endian);
+    auto const second_property = DESCRIPTOR_OFFSET + PROPERTY_ONE_TOTAL;
+    put_scalar(image, second_property, PROPERTY_TYPE_TWO, big_endian);
+    put_scalar(image, second_property + sizeof(u32), PROPERTY_TWO_SIZE, big_endian);
     image[second_property + 2 * sizeof(u32)] = 0xaa;
     return image;
 }
@@ -180,9 +175,9 @@ auto test_observes_gnu_properties(bool big_endian = false) -> int {
         return ustl::NONE;
     }();
     if (properties.is_some() && segment_properties.is_some() && segment_properties->size() == 2 &&
-        properties->size() == 2 && first.is_some() && first->m_type == K_PROPERTY_TYPE_ONE &&
+        properties->size() == 2 && first.is_some() && first->m_type == PROPERTY_TYPE_ONE &&
         first->m_data.size() == 4 && first->m_data.data()[0] == 5 && second.is_some() &&
-        second->m_type == K_PROPERTY_TYPE_TWO && second->m_data.size() == 1 &&
+        second->m_type == PROPERTY_TYPE_TWO && second->m_data.size() == 1 &&
         second->m_data.data()[0] == 0xaa && properties->property_at(2).is_none()) {
         return 0;
     }
@@ -193,24 +188,23 @@ template <typename Traits>
 auto test_rejects_malformed_gnu_properties() -> int {
     using File = eftl::elf::FileImpl<Traits>;
     using Segment = typename Traits::Segment;
-    constexpr usize K_ALIGNMENT = sizeof(typename Traits::Addr);
-    constexpr usize K_PROPERTY_ONE_TOTAL = align_up(3 * sizeof(u32), K_ALIGNMENT);
-    constexpr usize K_DESCRIPTOR_OFFSET = K_NOTE_OFFSET + 2 * sizeof(u32) + 4;
+    constexpr usize ALIGNMENT = sizeof(typename Traits::Addr);
+    constexpr usize PROPERTY_ONE_TOTAL = align_up(3 * sizeof(u32), ALIGNMENT);
+    constexpr usize DESCRIPTOR_OFFSET = NOTE_OFFSET + 2 * sizeof(u32) + 4;
     auto unsorted = make_gnu_property_image<Traits>();
-    put_scalar(unsorted, K_DESCRIPTOR_OFFSET + K_PROPERTY_ONE_TOTAL, K_PROPERTY_TYPE_ONE, false);
+    put_scalar(unsorted, DESCRIPTOR_OFFSET + PROPERTY_ONE_TOTAL, PROPERTY_TYPE_ONE, false);
     if (File::from_raw(unsorted.data(), unsorted.size()).is_ok()) {
         return 1;
     }
 
     auto truncated = make_gnu_property_image<Traits>();
-    put_scalar(truncated, K_DESCRIPTOR_OFFSET + sizeof(u32), static_cast<u32>(0x100),
-               false);
+    put_scalar(truncated, DESCRIPTOR_OFFSET + sizeof(u32), static_cast<u32>(0x100), false);
     if (File::from_raw(truncated.data(), truncated.size()).is_ok()) {
         return 2;
     }
 
     auto empty_property_segment = make_gnu_property_image<Traits>();
-    put_scalar(empty_property_segment, K_PROGRAM_HEADER_OFFSET + offsetof(Segment, p_filesz),
+    put_scalar(empty_property_segment, PROGRAM_HEADER_OFFSET + offsetof(Segment, p_filesz),
                static_cast<decltype(Segment{}.p_filesz)>(0), false);
     if (File::from_raw(empty_property_segment.data(), empty_property_segment.size()).is_err()) {
         return 0;

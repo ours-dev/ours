@@ -22,9 +22,9 @@ template <typename Derived, SegType... Type>
 struct SegmentObserver {};
 
 template <typename Memory, typename Segment, typename Observer, SegType... Types>
-[[nodiscard]]
-FORCE_INLINE constexpr auto decode_segment(Memory &&memory, Segment const &segment,
-                                           SegmentObserver<Observer, Types...> &observer) -> bool {
+FORCE_INLINE [[nodiscard]]
+constexpr auto decode_segment(Memory &&memory, Segment const &segment,
+                              SegmentObserver<Observer, Types...> &observer) -> bool {
     auto is_ok = true;
     auto const invoke_observe = [&](auto const &tag) -> bool {
         is_ok = static_cast<Observer &>(observer).observe(memory, segment, tag);
@@ -56,9 +56,8 @@ struct SegmentSingletonObserver final
     SegmentSingletonObserver(Segment &segment) : m_segment(std::addressof(segment)) {}
 
     template <typename Memory>
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto observe(Memory &&memory, Segment const &segment,
-                                        SegTypeMatcher<Type>) -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto observe(Memory &&memory, Segment const &segment, SegTypeMatcher<Type>) -> bool {
         (void)memory;
         if (!m_segment) {
             return false;
@@ -68,8 +67,8 @@ struct SegmentSingletonObserver final
         return true;
     }
 
-    [[nodiscard]]
-    FORCE_INLINE constexpr auto finish() -> bool {
+    FORCE_INLINE [[nodiscard]]
+    constexpr auto finish() -> bool {
         return true;
     }
 

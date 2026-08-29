@@ -7,6 +7,7 @@
 #include <acpi/structures/root.hpp>
 #include <acpi/types.hpp>
 #include <ktl/result.hpp>
+
 #include <array>
 
 namespace acpi {
@@ -70,7 +71,7 @@ class TableSet final {
     template <typename T>
     [[nodiscard]]
     auto find() -> T const * {
-        return reinterpret_cast<T const *>(find_checked(T::kSignature, sizeof(T)));
+        return reinterpret_cast<T const *>(find_checked(T::SIGNATURE, sizeof(T)));
     }
 
     /// Indexed access to the raw headers, for diagnostics that want to list
@@ -108,7 +109,7 @@ class TableSet final {
     /// Sized for the handful of signatures the kernel actually asks for (APIC,
     /// SRAT, SLIT, HPET, DBG2, ...).  Overflowing the cache costs a rescan, not
     /// a wrong answer, so there is no eviction policy to get wrong.
-    constexpr static usize kCacheSlots = 8;
+    constexpr static usize CACHE_SLOTS = 8;
 
     [[nodiscard]]
     auto cached(Signature sign) const -> CacheSlot const *;
@@ -119,7 +120,7 @@ class TableSet final {
     sdt::Rsdt const *m_rsdt{nullptr};
     sdt::Xsdt const *m_xsdt{nullptr};
     usize m_num_tables{0};
-    std::array<CacheSlot, kCacheSlots> m_cache{};
+    std::array<CacheSlot, CACHE_SLOTS> m_cache{};
     usize m_cache_len{0};
 };
 
@@ -181,7 +182,7 @@ class EntryRange {
                 if (length < sizeof(EntryHeader) || length > usize(m_end - m_current)) {
                     break;
                 }
-                if (header->type == static_cast<u8>(Entry::kType)) {
+                if (header->type == static_cast<u8>(Entry::TYPE)) {
                     // A well formed entry of the right type must still be long
                     // enough to hold the fields we are about to read.
                     if (length < sizeof(Entry)) {

@@ -3,7 +3,28 @@ Language: Cpp
 BasedOnStyle: LLVM
 
 # The kernel uses four-space indentation and keeps namespace contents unindented
-AttributeMacros: [FORCE_INLINE]
+
+# Macros that stand in for an attribute. Listing them here is what stops
+# clang-format from reading them as a return type or a declaration of their own,
+# so `[[nodiscard]] FORCE_INLINE` stays one attribute group on one line.
+#
+# Only parameterless spellings belong here. NO_MANGLE is deliberately absent --
+# it expands to `extern "C"`, a linkage-specification rather than an attribute.
+AttributeMacros:
+  - FORCE_INLINE
+  - FORCE_INLINE_ATTR
+  - INIT_CODE
+  - INIT_DATA
+  - KERNEL_API
+  - NAKED
+  - NO_INLINE
+  - NO_RETURN
+  - NO_UNIQUE_ADDRESS
+  - OM_API
+  - PACKED
+  - PHYS_EXPORT
+  - USED
+  - WEAK_LINK
 
 AlignAfterOpenBracket: Align
 BinPackArguments: true

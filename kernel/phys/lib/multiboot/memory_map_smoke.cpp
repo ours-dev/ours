@@ -1,9 +1,9 @@
-#include <multiboot/memory_map.hpp>
-
 #include <array>
 
 #include <cstdlib>
 #include <cstring>
+
+#include <multiboot/memory_map.hpp>
 
 namespace {
 using bootmem::MemoryQuery;
@@ -128,7 +128,7 @@ auto reserved_overlap_is_never_allocatable() -> void {
         {
             .lower = 0x1000,
             .upper = 0x9000,
-            .node = bootmem::kAnyNode,
+            .node = bootmem::ANY_NODE,
             .view = MemoryView::Free,
         },
         [&available_size](MemoryRegion const range) {

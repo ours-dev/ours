@@ -3,197 +3,196 @@
 #ifndef OURS_TASK_SCHED_SCHEDULE_HPP
 #define OURS_TASK_SCHED_SCHEDULE_HPP 1
 
-#include <ours/task/sched/types.hpp>
-#include <ours/task/sched/profiles.hpp>
-#include <ours/task/sched/config.hpp>
-#include <ours/task/sched/runtime.hpp>
-
-#include <ours/status.hpp>
-#include <ours/compiler.hpp>
-#include <ours/cpu_mask.hpp>
-
-#include <ustl/util/enum_bits.hpp>
-
 #include <gktl/canary.hpp>
 #include <gktl/types.hpp>
+#include <ours/compiler.hpp>
+#include <ours/cpu_mask.hpp>
+#include <ours/status.hpp>
+#include <ours/task/sched/config.hpp>
+#include <ours/task/sched/profiles.hpp>
+#include <ours/task/sched/runtime.hpp>
+#include <ours/task/sched/types.hpp>
+#include <ustl/util/enum_bits.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::task::sched {
-    /// [[=bits::Enumask]]
-    enum class EnqueueControl {
-        /// Semantics.
-        None,
+/// [[=bits::Enumask]]
+enum class EnqueueControl {
+    /// Semantics.
+    None,
 
-        /// Skip the update to clock.
-        SkipClock = 0_bit,
+    /// Skip the update to clock.
+    SkipClock = 0_bit,
 
-        /// Paired with DequeueControl::Sleep. Make thread runnable.
-        WakeUp = 1_bit,
+    /// Paired with DequeueControl::Sleep. Make thread runnable.
+    WakeUp = 1_bit,
 
-        /// Paired with DequeueControl::Migrating.
-        Migrated = 2_bit,
+    /// Paired with DequeueControl::Migrating.
+    Migrated = 2_bit,
 
-        /// Paired with DequeueControl::Save
-        Restore = 3_bit,
+    /// Paired with DequeueControl::Save
+    Restore = 3_bit,
 
-        /// Paired with DequeueControl::Simulate. Simulate a time of enqueue action
-        /// without really insertion action. 
-        Simulate = 4_bit,
+    /// Paired with DequeueControl::Simulate. Simulate a time of enqueue action
+    /// without really insertion action.
+    Simulate = 4_bit,
 
-        /// Requires that the given thread is placed at front of runqueue.
-        Front = 10_bit,
+    /// Requires that the given thread is placed at front of runqueue.
+    Front = 10_bit,
 
-        Initial = 11_bit,
+    Initial = 11_bit,
 
-        /// Forcelly require the given thread to run on current CPU.
-        ThisCpu = 12_bit,
-    };
-    USTL_ENABLE_ENUM_BITMASK(EnqueueControl);
+    /// Forcelly require the given thread to run on current CPU.
+    ThisCpu = 12_bit,
+};
+USTL_ENABLE_ENUM_BITMASK(EnqueueControl);
 
-    /// [[=bits::Enumask]]
-    enum class DequeueControl {
-        /// Semantics.
-        None,
+/// [[=bits::Enumask]]
+enum class DequeueControl {
+    /// Semantics.
+    None,
 
-        /// Dequeue without updating scheduling clock.
-        SkipClock = 0_bit,
+    /// Dequeue without updating scheduling clock.
+    SkipClock = 0_bit,
 
-        /// Paired with EnqueueControl::WakeUp. Make thread no longer runnable.
-        Sleep = 1_bit,
+    /// Paired with EnqueueControl::WakeUp. Make thread no longer runnable.
+    Sleep = 1_bit,
 
-        /// Paired with EnqueueControl::Migrated
-        Migrating = 2_bit,
+    /// Paired with EnqueueControl::Migrated
+    Migrating = 2_bit,
 
-        /// Paired with EnqueueControl::Restore
-        Save = 3_bit,
+    /// Paired with EnqueueControl::Restore
+    Save = 3_bit,
 
-        /// Paired with EnqueueControl::Simulate. Simulate a time of dequeue action
-        /// without really erasing action. 
-        Simulate = 4_bit,
+    /// Paired with EnqueueControl::Simulate. Simulate a time of dequeue action
+    /// without really erasing action.
+    Simulate = 4_bit,
 
-        /// 
-        Delayed = 10_bit,
-    };
-    USTL_ENABLE_ENUM_BITMASK(DequeueControl);
+    ///
+    Delayed = 10_bit,
+};
+USTL_ENABLE_ENUM_BITMASK(DequeueControl);
 
-    /// Schedule operation should be exclusively implemented for per discipline.
-    class ISchedule {
-        using Self = ISchedule;
-      public:
-        /// [Required] Insert |thread| to runqueue.
-        ///
-        /// Requires the runqueue lock of runtime is been holding by caller.
-        ///
-        /// Return Status::Ok if enqueue action really happened.
-        TA_REQUIRES(runtime.rqlock)
-        virtual auto enqueue_thread(Runtime &runtime, Thread *, EnqueueControl) -> Status = 0;
+/// Schedule operation should be exclusively implemented for per discipline.
+class ISchedule {
+    using Self = ISchedule;
 
-        /// [Required] Remove |thread| from runqueue.
-        ///
-        /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
-        /// to dequeue.
-        TA_REQUIRES(runtime.rqlock)
-        virtual auto dequeue_thread(Runtime &runtime, Thread *, DequeueControl) -> Status = 0;
+  public:
+    /// [Required] Insert |thread| to runqueue.
+    ///
+    /// Requires the runqueue lock of runtime is been holding by caller.
+    ///
+    /// Return Status::Ok if enqueue action really happened.
+    TA_REQUIRES(runtime.rqlock)
+    virtual auto enqueue_thread(Runtime &runtime, Thread *, EnqueueControl) -> Status = 0;
 
-        virtual auto yield_thread(Runtime &, Thread *curr) -> void {}
-        virtual auto yield_to_thread(Runtime &, Thread *curr, Thread *next) -> Status {
-            return Status::NotSupported;
-        }
+    /// [Required] Remove |thread| from runqueue.
+    ///
+    /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
+    /// to dequeue.
+    TA_REQUIRES(runtime.rqlock)
+    virtual auto dequeue_thread(Runtime &runtime, Thread *, DequeueControl) -> Status = 0;
 
-        /// Evaluate whether preempt the thread |curr| with given |thread| if needed.
-        ///
-        /// Return Status::Ok if able to preempt.
-        virtual auto unpark_preempt(Runtime &, Thread *curr, Thread *thread, UnparkControl) -> Status {
-            return Status::Unimplemented;
-        }
+    virtual auto yield_thread(Runtime &, Thread *curr) -> void {}
+    virtual auto yield_to_thread(Runtime &, Thread *curr, Thread *next) -> Status {
+        return Status::NotSupported;
+    }
 
-        virtual auto evaluate_next_thread(Runtime &, Thread *curr) -> Thread * = 0;
-        virtual auto put_prev_thread(Runtime &, Thread *prev) -> void {}
-        virtual auto set_next_thread(Runtime &, Thread *next) -> void {}
+    /// Evaluate whether preempt the thread |curr| with given |thread| if needed.
+    ///
+    /// Return Status::Ok if able to preempt.
+    virtual auto unpark_preempt(Runtime &, Thread *curr, Thread *thread, UnparkControl) -> Status {
+        return Status::Unimplemented;
+    }
 
-        /// [Optional] Update the scheduluing data of thread |curr|.
-        virtual auto update_thread(Runtime &, Thread *curr) -> void {}
+    virtual auto evaluate_next_thread(Runtime &, Thread *curr) -> Thread * = 0;
+    virtual auto put_prev_thread(Runtime &, Thread *prev) -> void {}
+    virtual auto set_next_thread(Runtime &, Thread *next) -> void {}
 
-        virtual auto override_thread_base_profile(Runtime &, Thread *, BaseProfile const &) -> Status {
-            return Status::Unimplemented;
-        }
+    /// [Optional] Update the scheduluing data of thread |curr|.
+    virtual auto update_thread(Runtime &, Thread *curr) -> void {}
 
-        virtual auto on_thread_init(Runtime &, Thread *) -> void {}
-        virtual auto on_thread_dead(Runtime &, Thread *) -> void {}
-        virtual auto on_thread_unpark(Runtime &, Thread *) -> void {}
+    virtual auto override_thread_base_profile(Runtime &, Thread *, BaseProfile const &) -> Status {
+        return Status::Unimplemented;
+    }
 
-        virtual auto on_thread_tick(Runtime &, Thread *, bool queued) -> void = 0;
+    virtual auto on_thread_init(Runtime &, Thread *) -> void {}
+    virtual auto on_thread_dead(Runtime &, Thread *) -> void {}
+    virtual auto on_thread_unpark(Runtime &, Thread *) -> void {}
 
-        /// Number of threads currently queued on this schedule.
-        [[nodiscard]]
-        virtual auto num_queued() const -> usize = 0;
+    virtual auto on_thread_tick(Runtime &, Thread *, bool queued) -> void = 0;
 
-        /// [Optional] Attempts to assign a target CPU on which |thread| will run.
-        ///
-        /// Return `INVALID_CPU_NUM` if failed to assign.
-        virtual auto select_target_cpu(Thread *, CpuMask const &) -> CpuNum {
-            return INVALID_CPU_NUM;
-        }
+    /// Number of threads currently queued on this schedule.
+    [[nodiscard]]
+    virtual auto num_queued() const -> usize = 0;
 
-        /// [Optional] Migrates |thread| onto new CPU specified by |cpunum|.
-        ///
-        /// Return `Status::Ok` if the migration was performed.
-        virtual auto migrate_thread(Thread *, CpuNum) -> Status {
-            return Status::Unsupported;
-        }
+    /// [Optional] Attempts to assign a target CPU on which |thread| will run.
+    ///
+    /// Return `INVALID_CPU_NUM` if failed to assign.
+    virtual auto select_target_cpu(Thread *, CpuMask const &) -> CpuNum {
+        return INVALID_CPU_NUM;
+    }
 
-        /// Which discipline this schedule implements. Implemented once, by
-        /// `Schedule<Derived, Discipline>` below, from its own template
-        /// argument -- every concrete discipline gets it for free.
-        [[nodiscard]]
-        virtual auto discipline() const -> sched::Discipline = 0;
-      protected:
-        USTL_NO_MOVEABLE_AND_COPYABLE(ISchedule);
+    /// [Optional] Migrates |thread| onto new CPU specified by |cpunum|.
+    ///
+    /// Return `Status::Ok` if the migration was performed.
+    virtual auto migrate_thread(Thread *, CpuNum) -> Status {
+        return Status::Unsupported;
+    }
 
-        /// Declaring the deleted copy/move members above suppresses the
-        /// implicit default constructor; disciplines are default-constructed
-        /// (see Schedule<>::g_instance), so bring it back explicitly.
-        ISchedule() = default;
+    /// Which discipline this schedule implements. Implemented once, by
+    /// `Schedule<Derived, Discipline>` below, from its own template
+    /// argument -- every concrete discipline gets it for free.
+    [[nodiscard]]
+    virtual auto discipline() const -> sched::Discipline = 0;
 
-        virtual ~ISchedule() = default;
-    };
+  protected:
+    USTL_NO_MOVEABLE_AND_COPYABLE(ISchedule);
 
-    /// One entry per registered discipline, collected by the linker into a
-    /// single section (see `Schedule::REGISTRATION` below and
-    /// //kernel/kernel/task/task.ld). `instance` is the discipline's one
-    /// shared, stateless ISchedule object -- there's no "current CPU" to
-    /// resolve, so this is a plain link-time-constant pointer, not a
-    /// function. Scheduler::init() reads it once per CPU, at boot, on that
-    /// CPU -- so collection order never matters: every entry carries its own
-    /// `discipline`, and Scheduler::init() sorts them into an array indexed
-    /// by discipline itself.
-    struct ScheduleEntry {
-        sched::Discipline discipline;
-        ISchedule *instance;
-    };
+    /// Declaring the deleted copy/move members above suppresses the
+    /// implicit default constructor; disciplines are default-constructed
+    /// (see Schedule<>::g_instance), so bring it back explicitly.
+    ISchedule() = default;
 
-    /// CRTP base every concrete discipline (Fair, ...) derives from instead
-    /// of ISchedule directly. `ISchedule` is stateless by design -- all
-    /// per-CPU scheduling state belongs to the discipline's own per-CPU data
-    /// (e.g. Fair's RunQueue, held by Scheduler and reached via
-    /// `Scheduler::fair_run_queue()`), never to the schedule object itself.
-    /// Because of that, `Derived` needs no per-CPU instance: one shared,
-    /// stateless instance implements the algorithm for every CPU.
-    template <typename Derived, sched::Discipline Discipline>
-    class Schedule: public ISchedule {
-      public:
-        [[nodiscard]]
-        auto discipline() const -> sched::Discipline override final {
-            return Discipline;
-        }
+    virtual ~ISchedule() = default;
+};
 
-      private:
-        static inline Derived g_instance;
+/// One entry per registered discipline, collected by the linker into a
+/// single section (see `Schedule::REGISTRATION` below and
+/// //kernel/kernel/task/task.ld). `instance` is the discipline's one
+/// shared, stateless ISchedule object -- there's no "current CPU" to
+/// resolve, so this is a plain link-time-constant pointer, not a
+/// function. Scheduler::init() reads it once per CPU, at boot, on that
+/// CPU -- so collection order never matters: every entry carries its own
+/// `discipline`, and Scheduler::init() sorts them into an array indexed
+/// by discipline itself.
+struct ScheduleEntry {
+    sched::Discipline discipline;
+    ISchedule *instance;
+};
 
-        LINK_SECTION(".init.rodata.schedules")
-        FORCE_USED
-        static inline ScheduleEntry const REGISTRATION = {Discipline, &g_instance};
-    };
+/// CRTP base every concrete discipline (Fair, ...) derives from instead
+/// of ISchedule directly. `ISchedule` is stateless by design -- all
+/// per-CPU scheduling state belongs to the discipline's own per-CPU data
+/// (e.g. Fair's RunQueue, held by Scheduler and reached via
+/// `Scheduler::fair_run_queue()`), never to the schedule object itself.
+/// Because of that, `Derived` needs no per-CPU instance: one shared,
+/// stateless instance implements the algorithm for every CPU.
+template <typename Derived, sched::Discipline Discipline>
+class Schedule: public ISchedule {
+  public:
+    [[nodiscard]]
+    auto discipline() const -> sched::Discipline override final {
+        return Discipline;
+    }
+
+  private:
+    static inline Derived g_instance;
+
+    LINK_SECTION(".init.rodata.schedules")
+    FORCE_USED
+    static inline ScheduleEntry const REGISTRATION = {Discipline, &g_instance};
+};
 
 } // namespace ours::task::sched
 

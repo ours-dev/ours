@@ -24,15 +24,15 @@
 
 #define BIT(pos) (ULL(1) << (pos))
 
-#define BIT_RANGE(start_bit, end_bit) \
-  (((ULL(1) << ((end_bit) - (start_bit) + ULL(1))) - ULL(1)) << (start_bit))
+#define BIT_RANGE(start_bit, end_bit)                                                              \
+    (((ULL(1) << ((end_bit) - (start_bit) + ULL(1))) - ULL(1)) << (start_bit))
 
 // This must remain a macro because callers use it in template arguments and
 // preprocessor-expanded configuration expressions.  The GNU conditional
 // operator is supported by the kernel's Clang and its assembler preprocessor.
 #define __OURS_BIT_WIDTH_STEP(x, n) ((x) >= (ULL(1) << (n)) ? (n) + 1 : 0)
-#define BIT_WIDTH(x)                                                             \
-  (__OURS_BIT_WIDTH_STEP((x), 63) ?: __OURS_BIT_WIDTH_STEP((x), 62) ?:          \
+#define BIT_WIDTH(x)                                                                               \
+    (__OURS_BIT_WIDTH_STEP((x), 63) ?: __OURS_BIT_WIDTH_STEP((x), 62) ?:          \
    __OURS_BIT_WIDTH_STEP((x), 61) ?: __OURS_BIT_WIDTH_STEP((x), 60) ?:          \
    __OURS_BIT_WIDTH_STEP((x), 59) ?: __OURS_BIT_WIDTH_STEP((x), 58) ?:          \
    __OURS_BIT_WIDTH_STEP((x), 57) ?: __OURS_BIT_WIDTH_STEP((x), 56) ?:          \
@@ -65,4 +65,4 @@
    __OURS_BIT_WIDTH_STEP((x), 3) ?: __OURS_BIT_WIDTH_STEP((x), 2) ?:            \
    __OURS_BIT_WIDTH_STEP((x), 1) ?: __OURS_BIT_WIDTH_STEP((x), 0))
 
-#endif  // OURS_MACRO_ABI_HPP
+#endif // OURS_MACRO_ABI_HPP

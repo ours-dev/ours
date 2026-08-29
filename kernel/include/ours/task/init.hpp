@@ -4,9 +4,9 @@
 #define OURS_TASK_INIT_HPP 1
 
 namespace ours::task {
-    auto init_early() -> void;
+auto init_early() -> void;
 
-    auto init() -> void;
+auto init() -> void;
 
 } // namespace ours::task
 

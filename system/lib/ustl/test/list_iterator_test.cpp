@@ -5,26 +5,27 @@
 #include <ustl/collections/intrusive/detail/list_node.hpp>
 
 namespace {
-    struct Item final : ustl::collections::intrusive::ListNode<void *> {
-        int m_value {};
-    };
+struct Item final: ustl::collections::intrusive::ListNode<void *> {
+    int m_value{};
+};
 
-    struct StaticValueTraits final {
-        using NodeTraits = ustl::collections::intrusive::ListNodeTraits<void *>;
-        using NodePtr = typename NodeTraits::NodePtr;
-        using Element = Item;
-        using PtrMut = Item *;
-        using Ptr = Item const *;
+struct StaticValueTraits final {
+    using NodeTraits = ustl::collections::intrusive::ListNodeTraits<void *>;
+    using NodePtr = typename NodeTraits::NodePtr;
+    using Element = Item;
+    using PtrMut = Item *;
+    using Ptr = Item const *;
 
-        static constexpr bool IS_STATEFUL_VALUE_TRAITS = false;
+    static constexpr bool IS_STATEFUL_VALUE_TRAITS = false;
 
-        [[nodiscard]] static constexpr auto to_value_ptr(NodePtr const node) noexcept -> PtrMut {
-            return static_cast<PtrMut>(node);
-        }
-    };
+    [[nodiscard]]
+    static constexpr auto to_value_ptr(NodePtr const node) noexcept -> PtrMut {
+        return static_cast<PtrMut>(node);
+    }
+};
 
-    using IterMut = ustl::collections::intrusive::detail::ListIter<StaticValueTraits, false>;
-    using Iter = ustl::collections::intrusive::detail::ListIter<StaticValueTraits, true>;
+using IterMut = ustl::collections::intrusive::detail::ListIter<StaticValueTraits, false>;
+using Iter = ustl::collections::intrusive::detail::ListIter<StaticValueTraits, true>;
 } // namespace
 
 auto main() -> int {
@@ -46,7 +47,8 @@ auto main() -> int {
         return 1;
     }
     const auto previous = iterator--;
-    if (previous.pointed_node() != &second || iterator.pointed_node() != &first || (*iterator).m_value != 1) {
+    if (previous.pointed_node() != &second || iterator.pointed_node() != &first ||
+        (*iterator).m_value != 1) {
         return 2;
     }
     if ((--iterator).pointed_node() != &header || (++iterator).pointed_node() != &first) {

@@ -19,7 +19,7 @@ auto Aspace::map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags)
         return alloc_page_table(size, alignment);
     };
 
-    if constexpr (kDualAspace) {
+    if constexpr (DUAL_ASPACE) {
         auto upper_result =
             UpperPaging::map(m_upper_pgd, PhysToTable(), allocator, va, pa, n, flags);
         if (!upper_result) {
@@ -53,7 +53,7 @@ auto Aspace::alloc_page_table(usize size, usize alignment) const -> PhysAddr {
         .alignment = alignment,
         .lower = lower,
         .upper = upper,
-        .node = bootmem::kAnyNode,
+        .node = bootmem::ANY_NODE,
         .direction = bootmem::AllocationDirection::TopDown,
     });
     auto const phys = allocated.is_ok() ? allocated.unwrap().base : PhysAddr{};
@@ -87,7 +87,7 @@ auto create_identity_map_for_ram(Aspace &aspace, PhysAddr max_limit) -> void {
         {
             .lower = 0,
             .upper = max_limit,
-            .node = bootmem::kAnyNode,
+            .node = bootmem::ANY_NODE,
             .view = bootmem::MemoryView::Usable,
         },
         [&](bootmem::MemoryRegion const region) {

@@ -1,24 +1,24 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cassert>
-#include <cstddef>
-
 #include <ustl/collections/allocator.hpp>
 #include <ustl/collections/error.hpp>
 #include <ustl/collections/memory_resource.hpp>
 #include <ustl/option.hpp>
 
-namespace {
-    class FailingResource final : public ustl::collections::MemoryResource {
-      private:
-        auto do_try_allocate(std::size_t, std::size_t) noexcept
-            -> ustl::Result<void *, ustl::collections::Error> override {
-            return ustl::err(ustl::collections::Error::OutOfMemory);
-        }
+#include <cassert>
+#include <cstddef>
 
-        auto do_deallocate(void *, std::size_t, std::size_t) noexcept -> void override {}
-    };
+namespace {
+class FailingResource final: public ustl::collections::MemoryResource {
+  private:
+    auto do_try_allocate(std::size_t, std::size_t) noexcept
+        -> ustl::Result<void *, ustl::collections::Error> override {
+        return ustl::err(ustl::collections::Error::OutOfMemory);
+    }
+
+    auto do_deallocate(void *, std::size_t, std::size_t) noexcept -> void override {}
+};
 } // namespace
 
 auto main() -> int {

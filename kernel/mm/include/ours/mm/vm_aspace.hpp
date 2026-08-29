@@ -63,18 +63,15 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto accessed_fault(VirtAddr va) -> Status;
 
-    FORCE_INLINE
-    auto get_lock() -> sync::SpinLock & {
+    FORCE_INLINE auto get_lock() -> sync::SpinLock & {
         return m_lock;
     }
 
-    FORCE_INLINE
-    auto is_user() const -> bool {
+    FORCE_INLINE auto is_user() const -> bool {
         return !!(m_flags & Flags::User);
     }
 
-    FORCE_INLINE
-    auto arch_aspace() -> ArchVmAspace & {
+    FORCE_INLINE auto arch_aspace() -> ArchVmAspace & {
         return m_arch;
     }
 

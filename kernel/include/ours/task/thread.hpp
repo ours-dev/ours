@@ -4,43 +4,34 @@
 #define OURS_TASK_THREAD_HPP 1
 
 #if !__has_include(<ours/arch/thread.hpp>)
-#   error "The header <ours/arch/thread.hpp> is required by [protocol.module.task]"
+#error "The header <ours/arch/thread.hpp> is required by [protocol.module.task]"
 #endif
+#include <gktl/canary.hpp>
+#include <ktl/name.hpp>
+#include <ktl/rwonce.hpp>
+#include <lockdep/lock_context.hpp>
 #include <ours/arch/thread.hpp>
-
-#include <ours/signals.hpp>
-#include <ours/cpu_mask.hpp>
 #include <ours/compiler.hpp>
-
-#include <ours/task/types.hpp>
-#include <ours/task/config.hpp>
-#include <ours/task/sched/context.hpp>
-#include <ours/task/preemption_state.hpp>
-
-#include <ours/task/wait_queue.hpp>
-#include <ours/task/owned_wait_queue.hpp>
-#include <ours/sync/spin_lock.hpp>
-
-#include <ours/mm/types.hpp>
-#include <ours/mm/stack.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/memory_allocation_state.hpp>
 #include <ours/mm/object_cache.hpp>
-
+#include <ours/mm/stack.hpp>
+#include <ours/mm/types.hpp>
+#include <ours/signals.hpp>
+#include <ours/sync/spin_lock.hpp>
 #include <ours/syscall/time.hpp>
-
-#include <ustl/util/enum_bits.hpp>
-
-#include <ustl/rc.hpp>
-#include <ustl/mem/container_of.hpp>
-#include <ustl/function/bind.hpp>
+#include <ours/task/config.hpp>
+#include <ours/task/owned_wait_queue.hpp>
+#include <ours/task/preemption_state.hpp>
+#include <ours/task/sched/context.hpp>
+#include <ours/task/types.hpp>
+#include <ours/task/wait_queue.hpp>
 #include <ustl/collections/intrusive/list.hpp>
-
-#include <ktl/name.hpp>
-#include <ktl/rwonce.hpp>
-#include <gktl/canary.hpp>
-
-#include <lockdep/lock_context.hpp>
+#include <ustl/function/bind.hpp>
+#include <ustl/mem/container_of.hpp>
+#include <ustl/rc.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours {
 namespace object {
@@ -49,40 +40,38 @@ namespace object {
 } // namespace object
 
 namespace task {
-    using sched::LOWEST_PRIORITY;
-    using sched::HIGHEST_PRIORITY;
     using sched::DEFAULT_PRIORITY;
+    using sched::HIGHEST_PRIORITY;
+    using sched::LOWEST_PRIORITY;
 
     class TaskState {
         using Self = TaskState;
+
       public:
-        FORCE_INLINE
-        auto init(ThreadStartRoutine entry) -> void {
-            m_entry_point = entry; 
+        FORCE_INLINE auto init(ThreadStartRoutine entry) -> void {
+            m_entry_point = entry;
             m_retcode = 0;
         }
 
-        FORCE_INLINE
-        auto invoke() -> i32 {
+        FORCE_INLINE auto invoke() -> i32 {
             DEBUG_ASSERT(m_entry_point);
             m_retcode = m_entry_point();
             m_result_wait_queue.notify_all(Status::Ok);
             return m_retcode;
         }
 
-        FORCE_INLINE
-        auto retcode() const -> i32 {
+        FORCE_INLINE auto retcode() const -> i32 {
             return m_retcode;
         }
 
-        FORCE_INLINE
-        auto set_retcode(i32 retcode) -> void {
+        FORCE_INLINE auto set_retcode(i32 retcode) -> void {
             m_retcode = retcode;
         }
 
         auto join(Thread *thread, time::Deadline) -> Status;
 
         auto try_wake_joiners(Status status) -> bool;
+
       private:
         i32 m_retcode;
         ThreadStartRoutine m_entry_point;
@@ -91,21 +80,22 @@ namespace task {
 
     class Thread {
         using Self = Thread;
+
       public:
-        enum class State: u16 {
-           /// The unique states
-           Running = 0_bit,
-           Ready   = 1_bit,
-           Dead    = 2_bit,
+        enum class State : u16 {
+            /// The unique states
+            Running = 0_bit,
+            Ready = 1_bit,
+            Dead = 2_bit,
 
-           Suspend = 3_bit,
-           Initial = 4_bit,
+            Suspend = 3_bit,
+            Initial = 4_bit,
 
-           Parked  = 5_bit,
-           Waking  = 6_bit,
-           Sleeping = 7_bit,
+            Parked = 5_bit,
+            Waking = 6_bit,
+            Sleeping = 7_bit,
 
-           Special = Parked | Sleeping | Suspend,
+            Special = Parked | Sleeping | Suspend,
         };
         USTL_ENABLE_INNER_ENUM_BITMASK(State);
 
@@ -113,7 +103,7 @@ namespace task {
 
         using Name = ktl::Name<32>;
         using TrampolineRoutine = auto (*)() -> void;
-        using StartRoutine = ustl::function::Fn<auto () -> i32>;
+        using StartRoutine = ustl::function::Fn<auto()->i32>;
 
         class Current;
 
@@ -129,12 +119,12 @@ namespace task {
         static auto spawn(char const *, StartRoutine, usize priority) -> Self *;
 
         template <typename F, typename... Args>
-        static auto spawn(char const *, sched::BaseProfile const &, F entry, Args&&...) -> Self *;
+        static auto spawn(char const *, sched::BaseProfile const &, F entry, Args &&...) -> Self *;
 
         template <typename F, typename... Args>
-        static auto spawn(char const *, usize priority, F entry, Args&&...) -> Self *;
+        static auto spawn(char const *, usize priority, F entry, Args &&...) -> Self *;
 
-        static auto spawn_etc(KoId, char const *, StartRoutine, sched::BaseProfile const &, 
+        static auto spawn_etc(KoId, char const *, StartRoutine, sched::BaseProfile const &,
                               TrampolineRoutine, Self *) -> Status;
 
         /// Core method family.
@@ -143,16 +133,20 @@ namespace task {
 
         auto detach() -> Status;
 
-        /// Make the thread transition to runnable or running state. 
+        /// Make the thread transition to runnable or running state.
         ///
         /// Paired with Thread::suspend.
         auto resume() -> Status;
 
         auto detach_and_resume() -> Status;
 
-        auto suspend() -> Status { return suspend_or_kill(SuspendOrKillOp::Suspend); }
+        auto suspend() -> Status {
+            return suspend_or_kill(SuspendOrKillOp::Suspend);
+        }
 
-        auto kill() -> Status { return suspend_or_kill(SuspendOrKillOp::Kill); }
+        auto kill() -> Status {
+            return suspend_or_kill(SuspendOrKillOp::Kill);
+        }
 
         auto set_cpu_affinity_hard(CpuMask const &) -> void;
 
@@ -163,77 +157,99 @@ namespace task {
         auto bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -> void;
 
         /// The followings is a group of accessor.
-        FORCE_INLINE
-        auto tid() -> KoId { return m_tid; }
+        FORCE_INLINE auto tid() -> KoId {
+            return m_tid;
+        }
 
-        FORCE_INLINE
-        auto state() -> State { return m_state; }
+        FORCE_INLINE auto state() -> State {
+            return m_state;
+        }
 
-        FORCE_INLINE
-        auto signals() -> Signals { return m_signals; }
+        FORCE_INLINE auto signals() -> Signals {
+            return m_signals;
+        }
 
-        FORCE_INLINE
-        auto aspace() -> mm::VmAspace * { return m_aspace; }
+        FORCE_INLINE auto aspace() -> mm::VmAspace * {
+            return m_aspace;
+        }
 
-        FORCE_INLINE
-        auto kernel_stack() -> mm::Stack & { return m_stack; }
+        FORCE_INLINE auto kernel_stack() -> mm::Stack & {
+            return m_stack;
+        }
 
-        FORCE_INLINE
-        auto last_cpu() const -> CpuNum { return m_scheduling_context.last_cpu(); }
+        FORCE_INLINE auto last_cpu() const -> CpuNum {
+            return m_scheduling_context.last_cpu();
+        }
 
-        FORCE_INLINE
-        auto curr_cpu() const -> CpuNum { return m_scheduling_context.curr_cpu(); }
+        FORCE_INLINE auto curr_cpu() const -> CpuNum {
+            return m_scheduling_context.curr_cpu();
+        }
 
-        FORCE_INLINE
-        auto is_state_dead() const -> bool { return m_state == State::Dead; }
+        FORCE_INLINE auto is_state_dead() const -> bool {
+            return m_state == State::Dead;
+        }
 
-        FORCE_INLINE
-        auto is_state_initial() const -> bool { return m_state == State::Initial; }
+        FORCE_INLINE auto is_state_initial() const -> bool {
+            return m_state == State::Initial;
+        }
 
-        FORCE_INLINE
-        auto is_state_ready() const -> bool { return m_state == State::Ready; }
+        FORCE_INLINE auto is_state_ready() const -> bool {
+            return m_state == State::Ready;
+        }
 
-        FORCE_INLINE
-        auto is_state_sleeping() const -> bool { return m_state == State::Sleeping; }
+        FORCE_INLINE auto is_state_sleeping() const -> bool {
+            return m_state == State::Sleeping;
+        }
 
-        FORCE_INLINE
-        auto is_state_parked() const -> bool { return m_state == State::Parked; }
+        FORCE_INLINE auto is_state_parked() const -> bool {
+            return m_state == State::Parked;
+        }
 
-        FORCE_INLINE
-        auto is_state_running() const -> bool { return m_state == State::Running; }
+        FORCE_INLINE auto is_state_running() const -> bool {
+            return m_state == State::Running;
+        }
 
-        FORCE_INLINE
-        auto is_state_suspend() const -> bool { return m_state == State::Suspend; }
+        FORCE_INLINE auto is_state_suspend() const -> bool {
+            return m_state == State::Suspend;
+        }
 
-        FORCE_INLINE
-        auto is_state_special() const -> bool { return m_state == State::Special; }
+        FORCE_INLINE auto is_state_special() const -> bool {
+            return m_state == State::Special;
+        }
 
-        FORCE_INLINE
-        auto is_idle_thread() const -> bool { return !!(m_flags & Flags::Idle); }
+        FORCE_INLINE auto is_idle_thread() const -> bool {
+            return !!(m_flags & Flags::Idle);
+        }
 
-        FORCE_INLINE
-        auto name() const -> char const * { return m_name.data(); }
+        FORCE_INLINE auto name() const -> char const * {
+            return m_name.data();
+        }
 
-        FORCE_INLINE
-        auto get_resource_lock() -> sync::SpinLock & { return m_resource_lock; }
+        FORCE_INLINE auto get_resource_lock() -> sync::SpinLock & {
+            return m_resource_lock;
+        }
 
-        FORCE_INLINE
-        auto get_pi_lock() -> sync::SpinLock & { return m_pi_lock; }
+        FORCE_INLINE auto get_pi_lock() -> sync::SpinLock & {
+            return m_pi_lock;
+        }
 
-        FORCE_INLINE
-        auto waiter_state() -> WaiterState & { return m_waiter_state; }
+        FORCE_INLINE auto waiter_state() -> WaiterState & {
+            return m_waiter_state;
+        }
 
-        FORCE_INLINE
-        auto preemption_state() -> PreemptionState & { return m_preemption_state; }
+        FORCE_INLINE auto preemption_state() -> PreemptionState & {
+            return m_preemption_state;
+        }
 
-        FORCE_INLINE
-        auto memory_allocation_state() -> mm::MemoryAllocationState & { return m_memory_allocation_state; }
+        FORCE_INLINE auto memory_allocation_state() -> mm::MemoryAllocationState & {
+            return m_memory_allocation_state;
+        }
 
-        FORCE_INLINE
-        auto check_kill_signal() const -> bool { return !!(m_signals & Signals::Kill); }
+        FORCE_INLINE auto check_kill_signal() const -> bool {
+            return !!(m_signals & Signals::Kill);
+        }
 
-        FORCE_INLINE
-        auto check_kill_or_suspend_signal() const -> Status { 
+        FORCE_INLINE auto check_kill_or_suspend_signal() const -> Status {
             if (!!(m_signals & Signals::Kill)) {
                 return Status::InternalIrqKilled;
             } else if (!!(m_signals & Signals::Suspend)) {
@@ -242,8 +258,9 @@ namespace task {
 
             return Status::Ok;
         }
+
       private:
-        enum class Flags: u32 {
+        enum class Flags : u32 {
             Interruptible = 0_bit,
             SignalPending = 1_bit,
             Detached = 2_bit,
@@ -259,18 +276,15 @@ namespace task {
 
         static auto switch_thread(Self *curr, Self *next) -> void;
 
-        FORCE_INLINE
-        static auto of(sched::Context *se) -> Self * {
+        FORCE_INLINE static auto of(sched::Context *se) -> Self * {
             return ustl::mem::container_of(se, &Self::m_scheduling_context);
         }
 
-        FORCE_INLINE
-        static auto of(ArchThread *arch) -> Self * {
+        FORCE_INLINE static auto of(ArchThread *arch) -> Self * {
             return ustl::mem::container_of(arch, &Self::m_arch_thread);
         }
 
-        FORCE_INLINE
-        static auto of(WaiterState *waiter) -> Self * {
+        FORCE_INLINE static auto of(WaiterState *waiter) -> Self * {
             return ustl::mem::container_of(waiter, &Self::m_waiter_state);
         }
 
@@ -278,48 +292,39 @@ namespace task {
 
         ~Thread() = default;
 
-        FORCE_INLINE
-        auto scheduling_context() -> sched::Context & { 
+        FORCE_INLINE auto scheduling_context() -> sched::Context & {
             return m_scheduling_context;
         }
 
-        FORCE_INLINE
-        auto set_state_ready() -> void {
+        FORCE_INLINE auto set_state_ready() -> void {
             ktl::write_once(m_state, State::Ready);
         }
 
-        FORCE_INLINE
-        auto set_state_running() -> void {
+        FORCE_INLINE auto set_state_running() -> void {
             ktl::write_once(m_state, State::Running);
         }
 
-        FORCE_INLINE
-        auto set_state_parked() -> void {
+        FORCE_INLINE auto set_state_parked() -> void {
             ktl::write_once(m_state, State::Parked);
         }
 
-        FORCE_INLINE
-        auto set_state_dead() -> void {
+        FORCE_INLINE auto set_state_dead() -> void {
             ktl::write_once(m_state, State::Dead);
         }
 
-        FORCE_INLINE
-        auto set_state_sleeping() -> void {
+        FORCE_INLINE auto set_state_sleeping() -> void {
             ktl::write_once(m_state, State::Sleeping);
         }
 
-        FORCE_INLINE
-        auto set_state_suspend() -> void {
+        FORCE_INLINE auto set_state_suspend() -> void {
             ktl::write_once(m_state, State::Suspend);
         }
 
-        FORCE_INLINE
-        auto set_flag_idle() -> void {
+        FORCE_INLINE auto set_flag_idle() -> void {
             m_flags |= Flags::Idle;
         }
 
-        FORCE_INLINE
-        auto set_flag_nofree() -> void {
+        FORCE_INLINE auto set_flag_nofree() -> void {
             m_flags |= Flags::NoFree;
         }
 
@@ -380,7 +385,7 @@ namespace task {
         OwnedWaitQueue::List m_owned_wait_queues;
 
         /// [Optional] Available on LockDep enabled.
-        [[no_unique_address]] 
+        [[no_unique_address]]
         lockdep::LockContext m_lock_context;
 
         ustl::collections::intrusive::ListMemberHook<> m_spawned_hook;
@@ -395,21 +400,22 @@ namespace task {
 
         static SpawnedList g_spawned_threads;
         static sync::SpinLock g_spawned_threads_lock;
+
       public:
         USTL_DECLARE_LIST(Thread, MigratingList, Thread::MigratingListOption);
         USTL_DECLARE_LIST(Thread, UnparkList, Thread::UnparkListOption);
     };
 
     template <typename F, typename... Args>
-    FORCE_INLINE
-    auto Thread::spawn(const char *name, usize priority, F entry, Args&&... args) -> Self * {
+    FORCE_INLINE auto Thread::spawn(const char *name, usize priority, F entry, Args &&...args)
+        -> Self * {
         StartRoutine entry_point = ustl::function::bind(entry, ustl::forward<Args>(args)...);
         return Self::spawn(name, priority, entry_point);
     }
 
     template <typename F, typename... Args>
-    FORCE_INLINE
-    auto Thread::spawn(const char *name, sched::BaseProfile const &profile, F entry, Args&&... args) -> Self * {
+    FORCE_INLINE auto Thread::spawn(const char *name, sched::BaseProfile const &profile, F entry,
+                                    Args &&...args) -> Self * {
         StartRoutine entry_point = ustl::function::bind(entry, ustl::forward<Args>(args)...);
         return Self::spawn(name, profile, entry_point);
     }
@@ -417,8 +423,8 @@ namespace task {
     class Thread::Current: public mm::CpuLocal::Current<Thread *> {
       public:
         template <typename DurationT>
-        FORCE_INLINE
-        static auto sleep_for(DurationT duration, Interruptible interruptible) -> Status {
+        FORCE_INLINE static auto sleep_for(DurationT duration, Interruptible interruptible)
+            -> Status {
             return sleep_for(duration_cast<Duration>(duration), interruptible);
         }
 
@@ -428,7 +434,7 @@ namespace task {
 
         static auto sleep_until(time::Deadline const &, Interruptible) -> Status;
 
-        [[noreturn]] INIT_CODE
+        INIT_CODE [[noreturn]]
         static auto become_idle() -> void;
 
         static auto do_suspend() -> void;
@@ -464,41 +470,36 @@ namespace task {
 
         static auto soft_fault(VirtAddr va, mm::VmfCause cause) -> Status;
 
-        FORCE_INLINE
-        static auto tid() -> KoId {
+        FORCE_INLINE static auto tid() -> KoId {
             return mm::CpuLocal::read(g_current_instance->m_tid);
         }
 
-        FORCE_INLINE
-        static auto memory_allocation_state() -> mm::MemoryAllocationState & {
+        FORCE_INLINE static auto memory_allocation_state() -> mm::MemoryAllocationState & {
             return Thread::Current::get()->memory_allocation_state();
         }
 
-        FORCE_INLINE
-        static auto waiter_state() -> WaiterState & {
+        FORCE_INLINE static auto waiter_state() -> WaiterState & {
             return Thread::Current::get()->waiter_state();
         }
 
-        FORCE_INLINE
-        static auto scheduling_context() -> sched::Context & {
+        FORCE_INLINE static auto scheduling_context() -> sched::Context & {
             return Thread::Current::get()->scheduling_context();
         }
 
-        FORCE_INLINE
-        static auto preemption_state() -> PreemptionState & {
+        FORCE_INLINE static auto preemption_state() -> PreemptionState & {
             return Thread::Current::get()->preemption_state();
         }
 
-        FORCE_INLINE
-        static auto aspace() -> mm::VmAspace * {
+        FORCE_INLINE static auto aspace() -> mm::VmAspace * {
             return Thread::Current::get()->aspace();
         }
+
       private:
         template <typename F>
         static auto fault(VirtAddr va, F &&f) -> Status;
     };
 
-} // namespace ours::task
+} // namespace task
 } // namespace ours
 
 #endif // #ifndef OURS_TASK_THREAD_HPP

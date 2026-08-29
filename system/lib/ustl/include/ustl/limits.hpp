@@ -8,12 +8,12 @@
 namespace ustl {
 
 template <typename T>
-struct NumericLimits : std::numeric_limits<T> {
+struct NumericLimits: std::numeric_limits<T> {
     using Base = std::numeric_limits<T>;
     static constexpr auto DIGITS = Base::digits;
     static constexpr auto DIGITS10 = Base::digits10;
 };
 
-}  // namespace ustl
+} // namespace ustl
 
-#endif  // USTL_LIMITS_HPP
+#endif // USTL_LIMITS_HPP

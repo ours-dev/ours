@@ -1,6 +1,5 @@
-#include <ours/phys/kernel_package_loader.hpp>
-
 #include <ours/phys/kernel_package.hpp>
+#include <ours/phys/kernel_package_loader.hpp>
 
 #include <cstring>
 
@@ -10,8 +9,7 @@ namespace {
     /// buffer in BootOptions bounds the input, so 160 bytes cover it.
     auto join_path(char *const buffer, usize const capacity, std::string_view const directory,
                    std::string_view const name) -> Status {
-        if (directory.empty() || name.empty() ||
-            directory.size() + 1 + name.size() >= capacity) {
+        if (directory.empty() || name.empty() || directory.size() + 1 + name.size() >= capacity) {
             return Status::InvalidArgument;
         }
         auto *cursor = buffer;
@@ -28,7 +26,7 @@ namespace {
 } // namespace
 
 auto KernelPackageLoader::init(Bytes const storage, PhysAddr const package_base,
-                                usize const package_size, std::string_view const kernel_dir)
+                               usize const package_size, std::string_view const kernel_dir)
     -> Status {
     // 1. View the BootFS physload materialized (no decompression here).
     auto const bootfs = bootfs::View::from(storage);
@@ -39,7 +37,7 @@ auto KernelPackageLoader::init(Bytes const storage, PhysAddr const package_base,
 
     // 2. Locate the kernel ELF inside the kernel-name directory.
     char path[160];
-    auto const joined = join_path(path, sizeof(path), kernel_dir, KernelPackage::kImageElf);
+    auto const joined = join_path(path, sizeof(path), kernel_dir, KernelPackage::IMAGE_ELF);
     if (joined != Status::Ok) {
         return joined;
     }

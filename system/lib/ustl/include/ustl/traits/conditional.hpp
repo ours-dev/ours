@@ -6,8 +6,8 @@
 #include <type_traits>
 
 namespace ustl::traits {
-    template <bool Condition, typename Then, typename Else>
-    using ConditionalT = std::conditional_t<Condition, Then, Else>;
+template <bool Condition, typename Then, typename Else>
+using ConditionalT = std::conditional_t<Condition, Then, Else>;
 } // namespace ustl::traits
 
 #endif // USTL_TRAITS_CONDITIONAL_HPP

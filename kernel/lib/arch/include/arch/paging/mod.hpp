@@ -37,7 +37,7 @@ class Paging final {
     static auto query(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va)
         -> ustl::Option<QueryResult> {
         QueryVisitor visitor(va);
-        return walk_levels<Traits::kPagingLevel>(table, phys_to_table, va, visitor);
+        return walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, va, visitor);
     }
 
     template <typename PhysToVirt, typename Allocator>
@@ -56,8 +56,8 @@ class Paging final {
         if (size - 1 > (~VirtAddr{0}) - va) {
             return ustl::err(MapError::InvalidArgument);
         }
-        if constexpr (Traits::kMaxPhysAddrSize < sizeof(PhysAddr) * 8) {
-            constexpr auto max_phys_addr = (PhysAddr{1} << Traits::kMaxPhysAddrSize) - 1;
+        if constexpr (Traits::MAX_PHYS_ADDR_SIZE < sizeof(PhysAddr) * 8) {
+            constexpr auto max_phys_addr = (PhysAddr{1} << Traits::MAX_PHYS_ADDR_SIZE) - 1;
             if (pa > max_phys_addr || size - 1 > max_phys_addr - pa) {
                 return ustl::err(MapError::InvalidArgument);
             }
@@ -66,7 +66,7 @@ class Paging final {
         MapContext context(va, &pa, 1, size, flags);
         while (context.has_more()) {
             auto result =
-                map_one_from<Traits::kPagingLevel>(table, phys_to_table, allocator, context);
+                map_one_from<Traits::PAGING_LEVEL>(table, phys_to_table, allocator, context);
             if (result.is_err()) {
                 return result;
             }
@@ -95,7 +95,7 @@ class Paging final {
         auto address = va;
         while (remaining != 0) {
             UnmapVisitor visitor(address, remaining);
-            auto result = walk_levels<Traits::kPagingLevel>(table, phys_to_table, address, visitor);
+            auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
             if (result.is_err()) {
                 return ustl::err(result.error());
             }
@@ -130,7 +130,7 @@ class Paging final {
         auto address = va;
         while (remaining != 0) {
             ProtectVisitor visitor(address, remaining, flags);
-            auto result = walk_levels<Traits::kPagingLevel>(table, phys_to_table, address, visitor);
+            auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
             if (result.is_err()) {
                 return ustl::err(result.error());
             }
@@ -176,7 +176,7 @@ class Paging final {
         if (entry.is_terminal()) {
             return visitor.template on_terminal<Level>(entry);
         }
-        if constexpr (Level == Traits::kFinalLevel) {
+        if constexpr (Level == Traits::FINAL_LEVEL) {
             return visitor.template on_final_non_terminal<Level>();
         } else {
             return walk_levels<Traits::next_level(Level)>(entry.address(), phys_to_table, addr,
@@ -301,7 +301,7 @@ class Paging final {
                 entry_address = physical_address;
             } else {
                 entry_address =
-                    allocator(Traits::template kSizeOfTable<Level>, Traits::kTableAlignment);
+                    allocator(Traits::template SIZE_OF_TABLE<Level>, Traits::TABLE_ALIGNMENT);
             }
             if (!is_terminal && !entry_address) {
                 return ustl::err(MapError::NoMem);
@@ -313,7 +313,7 @@ class Paging final {
             }
         }
 
-        if constexpr (Level == Traits::kFinalLevel) {
+        if constexpr (Level == Traits::FINAL_LEVEL) {
             return ustl::err(MapError::Existent);
         } else {
             return map_one_from<Traits::next_level(Level)>(entry.address(), phys_to_table,

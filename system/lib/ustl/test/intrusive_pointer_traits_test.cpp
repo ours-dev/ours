@@ -1,72 +1,77 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <concepts>
-
 #include <ustl/collections/intrusive/pointer_rebind.hpp>
 #include <ustl/collections/intrusive/pointer_traits.hpp>
 
+#include <concepts>
+
 namespace {
+template <typename T>
+class FancyPointer final {
+  public:
+    using ElementType = T;
+    using DifferenceType = long;
+
+    template <typename U>
+    using Rebind = FancyPointer<U>;
+
+    constexpr FancyPointer() noexcept = default;
+
+    constexpr explicit FancyPointer(T *const ptr) noexcept : m_pointer(ptr) {}
+
+    [[nodiscard]]
+    static constexpr auto pointer_to(T &value) noexcept -> FancyPointer {
+        return FancyPointer(&value);
+    }
+
+    [[nodiscard]]
+    constexpr auto operator->() const noexcept -> T * {
+        return m_pointer;
+    }
+
+    [[nodiscard]]
+    constexpr explicit operator bool() const noexcept {
+        return m_pointer != nullptr;
+    }
+
+  private:
+    T *m_pointer = nullptr;
+};
+
+class CustomPointer final {
+  public:
+    using ElementType = int;
+    using DifferenceType = short;
+    using Size = unsigned short;
+    using RefMut = int &;
+
     template <typename T>
-    class FancyPointer final {
-    public:
-        using ElementType = T;
-        using DifferenceType = long;
+    using Rebind = FancyPointer<T>;
 
-        template <typename U>
-        using Rebind = FancyPointer<U>;
+    constexpr CustomPointer() noexcept = default;
 
-        constexpr FancyPointer() noexcept = default;
+    constexpr explicit CustomPointer(int *const ptr) noexcept : m_pointer(ptr) {}
 
-        constexpr explicit FancyPointer(T *const ptr) noexcept : m_pointer(ptr) {}
+    [[nodiscard]]
+    static constexpr auto pointer_to(int &value) noexcept -> CustomPointer {
+        return CustomPointer(&value);
+    }
 
-        [[nodiscard]] static constexpr auto pointer_to(T &value) noexcept -> FancyPointer {
-            return FancyPointer(&value);
-        }
+    [[nodiscard]]
+    constexpr auto operator->() const noexcept -> int * {
+        return m_pointer;
+    }
 
-        [[nodiscard]] constexpr auto operator->() const noexcept -> T * {
-            return m_pointer;
-        }
+  private:
+    int *m_pointer = nullptr;
+};
 
-        [[nodiscard]] constexpr explicit operator bool() const noexcept {
-            return m_pointer != nullptr;
-        }
+struct Base {
+    virtual ~Base() = default;
+};
 
-    private:
-        T *m_pointer = nullptr;
-    };
-
-    class CustomPointer final {
-    public:
-        using ElementType = int;
-        using DifferenceType = short;
-        using Size = unsigned short;
-        using RefMut = int &;
-
-        template <typename T>
-        using Rebind = FancyPointer<T>;
-
-        constexpr CustomPointer() noexcept = default;
-
-        constexpr explicit CustomPointer(int *const ptr) noexcept : m_pointer(ptr) {}
-
-        [[nodiscard]] static constexpr auto pointer_to(int &value) noexcept -> CustomPointer {
-            return CustomPointer(&value);
-        }
-
-        [[nodiscard]] constexpr auto operator->() const noexcept -> int * {
-            return m_pointer;
-        }
-
-    private:
-        int *m_pointer = nullptr;
-    };
-
-    struct Base {
-        virtual ~Base() = default;
-    };
-
-    struct Derived final : Base {};
+struct Derived final: Base {};
 } // namespace
 
 using namespace ustl::collections::intrusive;

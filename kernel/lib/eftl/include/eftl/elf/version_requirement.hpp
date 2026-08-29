@@ -109,17 +109,17 @@ class VersionRequirementTableView final {
 
     [[nodiscard]]
     static constexpr auto version_index(Version version) noexcept -> Version {
-        return static_cast<Version>(version & K_VERSION_INDEX_MASK);
+        return static_cast<Version>(version & VERSION_INDEX_MASK);
     }
 
     [[nodiscard]]
     static constexpr auto is_hidden(Version version) noexcept -> bool {
-        return (version & K_HIDDEN_MASK) != 0;
+        return (version & HIDDEN_MASK) != 0;
     }
 
   private:
-    static constexpr Version K_VERSION_INDEX_MASK = static_cast<Version>(0x7fffU);
-    static constexpr Version K_HIDDEN_MASK = static_cast<Version>(0x8000U);
+    static constexpr Version VERSION_INDEX_MASK = static_cast<Version>(0x7fffU);
+    static constexpr Version HIDDEN_MASK = static_cast<Version>(0x8000U);
 
     explicit constexpr VersionRequirementTableView(ByteRange entries, StringTableView names,
                                                    usize count, ByteOrder byte_order) noexcept

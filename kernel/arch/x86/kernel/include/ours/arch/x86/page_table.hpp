@@ -3,15 +3,13 @@
 #ifndef OURS_ARCH_X86_PAGE_TABLE_HPP
 #define OURS_ARCH_X86_PAGE_TABLE_HPP 1
 
-#include <ours/status.hpp>
-#include <ours/types.hpp>
-#include <ours/mm/types.hpp>
-
-#include <ours/sync/spin_lock.hpp>
-
 #include <arch/paging.hpp>
 #include <arch/paging/arch_mmu_flags.hpp>
 #include <arch/paging/x86_pagings.hpp>
+#include <ours/mm/types.hpp>
+#include <ours/status.hpp>
+#include <ours/sync/spin_lock.hpp>
+#include <ours/types.hpp>
 
 namespace ours::mm {
 
@@ -29,7 +27,8 @@ namespace ours::mm {
 /// currently defines).
 class PageTable {
     using Self = PageTable;
-    using ArchPaging = ::arch::paging::PagingDispatcher<::arch::paging::X86PagingLevel::PageMapLevel4>::Type;
+    using ArchPaging =
+        ::arch::paging::PagingDispatcher<::arch::paging::X86PagingLevel::PageMapLevel4>::Type;
     using Engine = ::arch::paging::Paging<ArchPaging>;
 
   public:
@@ -55,8 +54,7 @@ class PageTable {
     /// every kernel/user transition.
     auto alias_to(Self &other, VirtAddr base, usize n) -> Status;
 
-    FORCE_INLINE
-    auto pgd_phys() const -> PhysAddr {
+    FORCE_INLINE auto pgd_phys() const -> PhysAddr {
         return m_pgd_phys;
     }
 

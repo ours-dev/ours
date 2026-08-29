@@ -274,7 +274,7 @@ class PageFrame {
     FORCE_INLINE auto become() -> Body & {
         static_assert(sizeof(Body) <= sizeof(m_body), "role payload is too large");
 
-        for (auto &byte : m_body) {
+        for (auto &byte: m_body) {
             byte = std::byte{};
         }
         m_status.set<Index::Role>(Body::ROLE);

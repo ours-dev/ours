@@ -12,9 +12,9 @@
 
 namespace ours {
 struct ArchCpuLocal {
-    constexpr static usize const kDynFirstChunkSize = KB(16);
+    constexpr static usize const DYN_FIRST_CHUNK_SIZE = KB(16);
 
-    constexpr static usize const kUnitAlign = PAGE_SIZE;
+    constexpr static usize const UNIT_ALIGN = PAGE_SIZE;
 
     /// Whether this architecture can spare a contiguous virtual window for the
     /// per-CPU units (see ARCH_CPU_LOCAL_VIRT_BASE).
@@ -22,8 +22,8 @@ struct ArchCpuLocal {
     /// True here because a 64-bit kernel address space has room to burn. An
     /// architecture that says false gets the embedded layout instead: units come
     /// straight out of the physmap at unrelated addresses, which costs no address
-    /// space but fixes the dynamic area at kDynFirstChunkSize forever.
-    constexpr static bool const kHasReservedWindow = true;
+    /// space but fixes the dynamic area at DYN_FIRST_CHUNK_SIZE forever.
+    constexpr static bool const HAS_RESERVED_WINDOW = true;
 
     template <typename T>
     FORCE_INLINE static auto install(T base) -> void {

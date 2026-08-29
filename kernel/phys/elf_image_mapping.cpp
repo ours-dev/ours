@@ -9,9 +9,8 @@
 /// translation unit means boot-shim's build never has to satisfy those
 /// symbols just because they live in the same file.
 
-#include <ours/phys/elf_image.hpp>
-
 #include <ours/phys/aspace.hpp>
+#include <ours/phys/elf_image.hpp>
 
 #include <limits>
 #include <type_traits>
@@ -50,9 +49,11 @@ namespace {
         if (byte_count == 0) {
             return ustl::NONE;
         }
-        constexpr auto K_PAGE_SIZE = static_cast<usize>(PAGE_SIZE);
-        auto const whole_pages = byte_count / K_PAGE_SIZE;
-        if (byte_count % K_PAGE_SIZE == 0) {
+        // Named PAGE_BYTES, not PAGE_SIZE: the latter is an object-like macro,
+        // so the definition would expand into itself.
+        constexpr auto PAGE_BYTES = static_cast<usize>(PAGE_SIZE);
+        auto const whole_pages = byte_count / PAGE_BYTES;
+        if (byte_count % PAGE_BYTES == 0) {
             return ustl::some(static_cast<usize>(whole_pages));
         }
         if (whole_pages == std::numeric_limits<usize>::max()) {
@@ -82,9 +83,11 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
         }
         auto const virtual_address = target_base + region.image_offset;
         auto const physical_address = m_pa_load + region.image_offset;
-        constexpr auto K_PAGE_SIZE = static_cast<usize>(PAGE_SIZE);
-        auto const page_offset = virtual_address % K_PAGE_SIZE;
-        if (page_offset != physical_address % K_PAGE_SIZE ||
+        // Named PAGE_BYTES, not PAGE_SIZE: the latter is an object-like macro,
+        // so the definition would expand into itself.
+        constexpr auto PAGE_BYTES = static_cast<usize>(PAGE_SIZE);
+        auto const page_offset = virtual_address % PAGE_BYTES;
+        if (page_offset != physical_address % PAGE_BYTES ||
             native_size.value() > std::numeric_limits<usize>::max() - page_offset) {
             return Status::InvalidArgument;
         }
@@ -96,9 +99,9 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
         auto const virtual_page = virtual_address - page_offset;
         auto const physical_page = physical_address - page_offset;
         if (pages.value() - 1 >
-                (std::numeric_limits<VirtAddr>::max() - virtual_page) / K_PAGE_SIZE ||
+                (std::numeric_limits<VirtAddr>::max() - virtual_page) / PAGE_BYTES ||
             pages.value() - 1 >
-                (std::numeric_limits<PhysAddr>::max() - physical_page) / K_PAGE_SIZE) {
+                (std::numeric_limits<PhysAddr>::max() - physical_page) / PAGE_BYTES) {
             return Status::InvalidArgument;
         }
         auto const mapped = aspace.map(virtual_page, pages.value(), physical_page,

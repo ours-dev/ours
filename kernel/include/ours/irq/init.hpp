@@ -4,7 +4,7 @@
 #define OURS_IRQ_INIT_HPP 1
 
 namespace ours::irq {
-    auto init() -> void;
+auto init() -> void;
 }
 
 #endif // OURS_IRQ_INIT_HPP

@@ -5,15 +5,15 @@
 #define LOGZ4_LEVEL_HPP 1
 
 namespace logz4 {
-    enum class Level {
-        Status,
-        Warn,
-        Info,
-        Debug,
-        Trace,
-        Error,
-    };
+enum class Level {
+    Status,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+    Error,
+};
 
-} // namespace log4
+} // namespace logz4
 
 #endif // #ifndef LOGZ4_LEVEL_HPP

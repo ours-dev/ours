@@ -8,26 +8,26 @@
 
 namespace ours::mm {
 /// Do not use the following symbols directly.
-extern char const kImageStart[] LINK_NAME("__executable_start");
-extern char const kImageEnd[] LINK_NAME("__executable_end");
+extern char const IMAGE_START[] LINK_NAME("__executable_start");
+extern char const IMAGE_END[] LINK_NAME("__executable_end");
 
-extern char const kKernelCodeStart[] LINK_NAME("__code_start");
-extern char const kKernelCodeEnd[] LINK_NAME("__code_end");
+extern char const KERNEL_CODE_START[] LINK_NAME("__code_start");
+extern char const KERNEL_CODE_END[] LINK_NAME("__code_end");
 
-extern char const kKernelDataStart[] LINK_NAME("__data_start");
-extern char const kKernelDataEnd[] LINK_NAME("__data_end");
+extern char const KERNEL_DATA_START[] LINK_NAME("__data_start");
+extern char const KERNEL_DATA_END[] LINK_NAME("__data_end");
 
-extern char const kKernelRodataStart[] LINK_NAME("__rodata_start");
-extern char const kKernelRodataEnd[] LINK_NAME("__rodata_end");
+extern char const KERNEL_RODATA_START[] LINK_NAME("__rodata_start");
+extern char const KERNEL_RODATA_END[] LINK_NAME("__rodata_end");
 
-extern char const kKernelInitStart[] LINK_NAME("__init_start");
-extern char const kKernelInitEnd[] LINK_NAME("__init_end");
+extern char const KERNEL_INIT_START[] LINK_NAME("__init_start");
+extern char const KERNEL_INIT_END[] LINK_NAME("__init_end");
 
-extern char const kKernelBssStart[] LINK_NAME("__bss_start");
-extern char const kKernelBssEnd[] LINK_NAME("__bss_end");
+extern char const KERNEL_BSS_START[] LINK_NAME("__bss_start");
+extern char const KERNEL_BSS_END[] LINK_NAME("__bss_end");
 
 FORCE_INLINE constexpr auto get_kernel_size() -> usize {
-    return kImageEnd - kImageStart;
+    return IMAGE_END - IMAGE_START;
 }
 
 NO_MANGLE VmPage *g_zero_page;
@@ -42,8 +42,8 @@ FORCE_INLINE constexpr auto get_kernel_phys_base() -> PhysAddr {
     return g_kernel_phys_base;
 }
 
-[[nodiscard]]
-FORCE_INLINE constexpr auto get_kernel_virt_base() -> VirtAddr {
+FORCE_INLINE [[nodiscard]]
+constexpr auto get_kernel_virt_base() -> VirtAddr {
     return g_kernel_virt_base;
 }
 

@@ -24,7 +24,7 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
         return status;
     }
 
-    auto vmo = VmoPagedCache::get(kGafKernel, vmof, ustl::move(cow_pages));
+    auto vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages));
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -43,9 +43,8 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     return Status::Ok;
 }
 
-FORCE_INLINE
-auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOptions option)
-    -> Status {
+FORCE_INLINE auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size,
+                                                       CommitOptions option) -> Status {
     if (!!(option & CommitOptions::Pin)) {
         if (!size) {
             return Status::InvalidArguments;
@@ -111,8 +110,7 @@ auto VmObjectPaged::write(void *in, VirtAddr offset, usize size) -> Status {
     return Status::Unimplemented;
 }
 
-INIT_CODE
-static auto init_vmo_paged_cache() -> void {
+INIT_CODE static auto init_vmo_paged_cache() -> void {
     auto const status = VmoPagedCache::init("vmo-paged-cache", ObjectCache::Flags::Folio);
     if (Status::Ok != status) {
         panic("Failed to create object cache for VmArea");
