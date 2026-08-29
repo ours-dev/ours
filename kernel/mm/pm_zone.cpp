@@ -36,7 +36,14 @@ auto PmZone::ensure_fset_attached() -> void {
 
 auto PmZone::alloc_frames(Gaf gaf, usize order, AllocationControl control,
                           MemoryAllocationContext const &context) -> PmFrame * {
-    return nullptr;
+    // A zone below its high watermark is running short. A caller that is able
+    // to wait should move on to the next zone and let reclaim catch up here;
+    // one that cannot block has nowhere else to go, so it is allowed to dip.
+    if (is_below_high_wmark() && !(control & AllocationControl::NoBlock)) {
+        return nullptr;
+    }
+
+    return alloc_frame(gaf, order);
 }
 
 auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {

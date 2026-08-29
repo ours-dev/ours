@@ -72,12 +72,45 @@ auto ZoneQueues::connect(NodeMask const &nodemask) -> void {
     }
 }
 
+/// Visits the zones in allocation order.
+///
+/// SharedAffinity is the queue to walk: insert_local_zone() puts this node's
+/// own zones on it, and connect() appends the remote ones in the affinity
+/// order it computed, so it already *is* the fallback order.
+///
+/// A callback returning void visits every zone. One returning a value stops at
+/// the first result that tests true and yields it -- which is what makes this
+/// usable as "take a frame from the first zone that can spare one" rather than
+/// only as a traversal.
 template <typename F>
-auto ZoneQueues::for_each_zone(F &&f) -> ustl::traits::InvokeResultT<F, PmZone &> {}
+auto ZoneQueues::for_each_zone(F &&f) -> ustl::traits::InvokeResultT<F, PmZone &> {
+    using Result = ustl::traits::InvokeResultT<F, PmZone &>;
+    auto const queue = get_queue(QueueType::SharedAffinity);
+
+    if constexpr (std::is_void_v<Result>) {
+        for (auto *zone: queue) {
+            if (zone) {
+                f(*zone);
+            }
+        }
+    } else {
+        for (auto *zone: queue) {
+            if (!zone) {
+                continue;
+            }
+            if (auto result = f(*zone)) {
+                return result;
+            }
+        }
+        return Result{};
+    }
+}
 
 template <typename F, typename Predicate>
 auto ZoneQueues::for_each_zone_if(F &&f, Predicate &&p)
-    -> ustl::traits::InvokeResultT<F, PmZone &> {}
+    -> ustl::traits::InvokeResultT<F, PmZone &> {
+    return for_each_zone([&](PmZone &zone) { return p(zone) ? f(zone) : decltype(f(zone)){}; });
+}
 
 static auto to_string(ZoneQueues::QueueType type) -> char const * {
     switch (type) {
@@ -343,16 +376,15 @@ struct AllocationContext {
 
 auto PmNode::get_frame_from_zone_queues(Gaf gaf, usize order, AllocationControl control,
                                         MemoryAllocationContext const &context) -> PmFrame * {
-    [[maybe_unused]]
-    auto const no_fallback = !!(control & AllocationControl::NoFragment);
-    m_zone_queues.for_each_zone([](PmZone &zone) {
-        if (zone.is_below_high_wmark()) {
+    // TODO(SmallHuaZi): AllocationControl::NoFragment is not honoured yet. It
+    // should stop the walk before the remote zones rather than being ignored,
+    // but what exactly it forbids has not been settled.
+    return m_zone_queues.for_each_zone([&](PmZone &zone) -> PmFrame * {
+        if (!context.allowed_nodes.test(zone.which_node())) {
+            return nullptr;
         }
+        return zone.alloc_frames(gaf, order, control, context);
     });
-
-    // TODO(SmallHuaZi): the scan above is still a stub -- it inspects the
-    // watermark but never takes a frame, so this always reports failure.
-    return nullptr;
 }
 
 auto PmNode::alloc_frames_direct_reclaim(Gaf gaf, usize order, AllocationControl control,
