@@ -17,7 +17,7 @@
 #include <arch/x86/descriptor.hpp>
 #include <ours/compiler.hpp>
 #include <ours/macro_abi.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/types.hpp>
 #include <ustl/bitset.hpp>
 #include <ustl/mem/container_of.hpp>

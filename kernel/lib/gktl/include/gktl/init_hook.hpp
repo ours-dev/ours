@@ -75,7 +75,7 @@ struct InitHook {
 auto set_init_level(InitLevel level, i32 delta = LEVEL_DELTA) -> void;
 
 FORCE_INLINE
-inline auto get_init_level() -> InitLevel {
+auto get_init_level() -> InitLevel {
     extern InitLevel g_init_level;
     return g_init_level;
 }

@@ -96,13 +96,13 @@ auto make_hash_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 9;
     strings.sh_addralign = 1;
 
     Section dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET;
     dynamic_symbols.sh_size = 3 * sizeof(Symbol);
     dynamic_symbols.sh_link = 1;
@@ -111,11 +111,11 @@ auto make_hash_image() -> std::array<u8, 1024> {
     dynamic_symbols.sh_entsize = sizeof(Symbol);
 
     Section hash{};
-    hash.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Hash);
+    hash.sh_type = static_cast<u32>(eftl::elf::SectionType::Hash);
     hash.sh_offset = K_HASH_OFFSET;
-    hash.sh_size = 6 * sizeof(ours::u32);
+    hash.sh_size = 6 * sizeof(u32);
     hash.sh_link = 2;
-    hash.sh_addralign = alignof(ours::u32);
+    hash.sh_addralign = alignof(u32);
 
     put(image, K_SECTION_TABLE_OFFSET + sizeof(Section), strings);
     put(image, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamic_symbols);
@@ -130,7 +130,7 @@ auto make_hash_image() -> std::array<u8, 1024> {
     bar.st_name = 5;
     put(image, K_DYNSYM_OFFSET + 2 * sizeof(Symbol), bar);
 
-    std::array<ours::u32, 6> const words{1, 3, 1, 0, 2, 0};
+    std::array<u32, 6> const words{1, 3, 1, 0, 2, 0};
     std::memcpy(image.data() + K_HASH_OFFSET, words.data(), sizeof(words));
     return image;
 }
@@ -151,12 +151,12 @@ auto make_big_endian_hash_image() -> std::array<u8, 1024> {
     put_big_header(image, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 9;
     strings.sh_addralign = 1;
     Section dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET;
     dynamic_symbols.sh_size = 3 * sizeof(Symbol);
     dynamic_symbols.sh_link = 1;
@@ -164,11 +164,11 @@ auto make_big_endian_hash_image() -> std::array<u8, 1024> {
     dynamic_symbols.sh_addralign = alignof(Symbol);
     dynamic_symbols.sh_entsize = sizeof(Symbol);
     Section hash{};
-    hash.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Hash);
+    hash.sh_type = static_cast<u32>(eftl::elf::SectionType::Hash);
     hash.sh_offset = K_HASH_OFFSET;
-    hash.sh_size = 6 * sizeof(ours::u32);
+    hash.sh_size = 6 * sizeof(u32);
     hash.sh_link = 2;
-    hash.sh_addralign = alignof(ours::u32);
+    hash.sh_addralign = alignof(u32);
     put_big_section(image, K_SECTION_TABLE_OFFSET + sizeof(Section), strings);
     put_big_section(image, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), dynamic_symbols);
     put_big_section(image, K_SECTION_TABLE_OFFSET + 3 * sizeof(Section), hash);
@@ -181,9 +181,9 @@ auto make_big_endian_hash_image() -> std::array<u8, 1024> {
     Symbol bar{};
     bar.st_name = 5;
     put_big_symbol(image, K_DYNSYM_OFFSET + 2 * sizeof(Symbol), bar);
-    std::array<ours::u32, 6> const words{1, 3, 1, 0, 2, 0};
+    std::array<u32, 6> const words{1, 3, 1, 0, 2, 0};
     for (usize index = 0; index < words.size(); ++index) {
-        put_big(image, K_HASH_OFFSET + index * sizeof(ours::u32), words[index]);
+        put_big(image, K_HASH_OFFSET + index * sizeof(u32), words[index]);
     }
     return image;
 }
@@ -264,8 +264,8 @@ auto test_rejects_invalid_hash_tables() -> int {
     }
 
     auto mismatched_count = make_hash_image();
-    const ours::u32 wrong_nchain = 2;
-    put(mismatched_count, K_HASH_OFFSET + sizeof(ours::u32), wrong_nchain);
+    const u32 wrong_nchain = 2;
+    put(mismatched_count, K_HASH_OFFSET + sizeof(u32), wrong_nchain);
     auto const mismatched_count_result =
         Binary::from_raw(mismatched_count.data(), mismatched_count.size());
     if (mismatched_count_result.is_ok() ||
@@ -274,8 +274,8 @@ auto test_rejects_invalid_hash_tables() -> int {
     }
 
     auto out_of_range_bucket = make_hash_image();
-    const ours::u32 invalid_index = 3;
-    put(out_of_range_bucket, K_HASH_OFFSET + 2 * sizeof(ours::u32), invalid_index);
+    const u32 invalid_index = 3;
+    put(out_of_range_bucket, K_HASH_OFFSET + 2 * sizeof(u32), invalid_index);
     auto const out_of_range_bucket_result =
         Binary::from_raw(out_of_range_bucket.data(), out_of_range_bucket.size());
     if (out_of_range_bucket_result.is_ok() ||
@@ -284,8 +284,8 @@ auto test_rejects_invalid_hash_tables() -> int {
     }
 
     auto cyclic_chain = make_hash_image();
-    const ours::u32 self = 1;
-    put(cyclic_chain, K_HASH_OFFSET + 4 * sizeof(ours::u32), self);
+    const u32 self = 1;
+    put(cyclic_chain, K_HASH_OFFSET + 4 * sizeof(u32), self);
     auto const cyclic_chain_result = Binary::from_raw(cyclic_chain.data(), cyclic_chain.size());
     if (cyclic_chain_result.is_ok() ||
         cyclic_chain_result.unwrap_err() != eftl::elf::ParseError::InvalidHash) {
@@ -296,9 +296,9 @@ auto test_rejects_invalid_hash_tables() -> int {
     std::memcpy(&hash,
                 overlapping_bucket_chains.data() + K_SECTION_TABLE_OFFSET + 3 * sizeof(Section),
                 sizeof(hash));
-    hash.sh_size = 7 * sizeof(ours::u32);
+    hash.sh_size = 7 * sizeof(u32);
     put(overlapping_bucket_chains, K_SECTION_TABLE_OFFSET + 3 * sizeof(Section), hash);
-    std::array<ours::u32, 7> const overlapping_words{2, 3, 1, 1, 0, 2, 0};
+    std::array<u32, 7> const overlapping_words{2, 3, 1, 1, 0, 2, 0};
     std::memcpy(overlapping_bucket_chains.data() + K_HASH_OFFSET, overlapping_words.data(),
                 sizeof(overlapping_words));
     auto const overlapping_bucket_chains_result =
@@ -311,9 +311,9 @@ auto test_rejects_invalid_hash_tables() -> int {
     auto misbucketed_symbols = make_hash_image();
     std::memcpy(&hash, misbucketed_symbols.data() + K_SECTION_TABLE_OFFSET + 3 * sizeof(Section),
                 sizeof(hash));
-    hash.sh_size = 7 * sizeof(ours::u32);
+    hash.sh_size = 7 * sizeof(u32);
     put(misbucketed_symbols, K_SECTION_TABLE_OFFSET + 3 * sizeof(Section), hash);
-    std::array<ours::u32, 7> const misbucketed_words{2, 3, 1, 2, 0, 0, 0};
+    std::array<u32, 7> const misbucketed_words{2, 3, 1, 2, 0, 0, 0};
     std::memcpy(misbucketed_symbols.data() + K_HASH_OFFSET, misbucketed_words.data(),
                 sizeof(misbucketed_words));
     auto const misbucketed_symbols_result =
@@ -364,12 +364,12 @@ auto test_elf32_observes_sysv_hashes() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     Section32 dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET_32;
     dynamic_symbols.sh_size = 2 * sizeof(Symbol32);
     dynamic_symbols.sh_link = 1;
@@ -377,11 +377,11 @@ auto test_elf32_observes_sysv_hashes() -> int {
     dynamic_symbols.sh_addralign = alignof(Symbol32);
     dynamic_symbols.sh_entsize = sizeof(Symbol32);
     Section32 hash{};
-    hash.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Hash);
+    hash.sh_type = static_cast<u32>(eftl::elf::SectionType::Hash);
     hash.sh_offset = K_HASH_OFFSET_32;
-    hash.sh_size = 5 * sizeof(ours::u32);
+    hash.sh_size = 5 * sizeof(u32);
     hash.sh_link = 2;
-    hash.sh_addralign = alignof(ours::u32);
+    hash.sh_addralign = alignof(u32);
     put(image, K_SECTION_OFFSET + sizeof(Section32), strings);
     put(image, K_SECTION_OFFSET + 2 * sizeof(Section32), dynamic_symbols);
     put(image, K_SECTION_OFFSET + 3 * sizeof(Section32), hash);
@@ -391,7 +391,7 @@ auto test_elf32_observes_sysv_hashes() -> int {
     Symbol32 foo{};
     foo.st_name = 1;
     put(image, K_DYNSYM_OFFSET_32 + sizeof(Symbol32), foo);
-    std::array<ours::u32, 5> const words{1, 2, 1, 0, 0};
+    std::array<u32, 5> const words{1, 2, 1, 0, 0};
     std::memcpy(image.data() + K_HASH_OFFSET_32, words.data(), sizeof(words));
 
     std::array<u8, 3> const foo_name{'f', 'o', 'o'};

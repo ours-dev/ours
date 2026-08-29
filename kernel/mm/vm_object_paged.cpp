@@ -2,7 +2,7 @@
 #include <ktl/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/object-cache.hpp>
+#include <ours/mm/object_cache.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ustl/mem/align.hpp>
 
@@ -61,7 +61,7 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
         return Status::OutOfRange;
     }
 
-    for (auto i = 0; i < size; i += PAGE_SIZE) {
+    for (usize i = 0; i < size; i += PAGE_SIZE) {
         usize nr_commited = 0;
         auto status = m_cow_pages->commit_range_locked(offset, size, &nr_commited);
 
@@ -74,39 +74,39 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
 }
 
 auto VmObjectPaged::commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status {
-    m_canary.verify(kPagedMagic);
+    m_canary.verify<Self>();
 
     log::trace("VMO Commit Action: [ofs: {:X}, size: {:X}]", offset, size);
     return commit_range_internal(offset, size, option);
 }
 
 auto VmObjectPaged::decommit(VirtAddr offset, usize size) -> Status {
-    m_canary.verify(kPagedMagic);
+    m_canary.verify<Self>();
 
     return Status::Unimplemented;
 }
 
 auto VmObjectPaged::take_pages(VirtAddr offset, usize size, VmPage::List *pages) -> Status {
-    m_canary.verify(kPagedMagic);
+    m_canary.verify<Self>();
 
     return Status::Unimplemented;
 }
 
 auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *pages,
                                  SupplyOption options) -> Status {
-    m_canary.verify(kPagedMagic);
+    m_canary.verify<Self>();
 
     return Status::Unimplemented;
 }
 
-auto VmObjectPaged::read(void *out, PgOff pgoff, usize size) -> Status {
-    m_canary.verify(kPagedMagic);
+auto VmObjectPaged::read(void *out, VirtAddr offset, usize size) -> Status {
+    m_canary.verify<Self>();
 
     return Status::Unimplemented;
 }
 
-auto VmObjectPaged::write(void *in, PgOff pgoff, usize size) -> Status {
-    m_canary.verify(kPagedMagic);
+auto VmObjectPaged::write(void *in, VirtAddr offset, usize size) -> Status {
+    m_canary.verify<Self>();
 
     return Status::Unimplemented;
 }

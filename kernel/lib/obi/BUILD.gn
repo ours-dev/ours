@@ -13,13 +13,13 @@ group("obit") {
 cpp_interface("headers") {
   public = [
     "include/obi/checksum.hpp",
-    "include/obi/command-line-view.hpp",
+    "include/obi/command_line_view.hpp",
     "include/obi/compression.hpp",
-    "include/obi/container-view.hpp",
-    "include/obi/item-view.hpp",
-    "include/obi/memory-config-view.hpp",
-    "include/obi/package-builder.hpp",
-    "include/obi/package-format.hpp",
+    "include/obi/container_view.hpp",
+    "include/obi/item_view.hpp",
+    "include/obi/memory_config_view.hpp",
+    "include/obi/package_builder.hpp",
+    "include/obi/package_format.hpp",
   ]
   public_deps = [
     "//kernel/lib/bootfs:headers",

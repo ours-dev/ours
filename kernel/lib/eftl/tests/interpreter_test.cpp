@@ -41,7 +41,7 @@ auto make_header(u16 segment_count) -> Header {
 
 auto interpreter_segment() -> Segment {
     Segment segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Interp);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::Interp);
     segment.p_offset = K_INTERPRETER_OFFSET;
     segment.p_filesz = K_INTERPRETER_PATH.size();
     return segment;
@@ -49,7 +49,7 @@ auto interpreter_segment() -> Segment {
 
 auto load_segment() -> Segment {
     Segment segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     segment.p_offset = K_LOAD_OFFSET;
     segment.p_vaddr = 0x400000;
     segment.p_filesz = 16;
@@ -166,7 +166,7 @@ auto test_elf32_observes_interpreter_path() -> int {
     header.e_phnum = 1;
     put(image, 0, header);
     Segment32 interpreter{};
-    interpreter.p_type = static_cast<ours::u32>(eftl::elf::SegType::Interp);
+    interpreter.p_type = static_cast<u32>(eftl::elf::SegType::Interp);
     interpreter.p_offset = K_PATH_OFFSET;
     interpreter.p_filesz = 9;
     put(image, sizeof(Header32), interpreter);

@@ -14,7 +14,11 @@ source_set("top") {
     "//kernel/phys:handoff",
     "//kernel/mm:mm",
 
+    "//kernel/lib/acpi:header",
     "//kernel/lib/ccrt",
+    "//kernel/driver",
     "//kernel/lib/gktl",
+    "//kernel/lib/syscall",
+    "//kernel/lib/logz4",
   ]
 }

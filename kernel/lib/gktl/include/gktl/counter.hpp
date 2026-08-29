@@ -11,9 +11,10 @@
 #define GKTL_COUNTER_HPP 1
 
 #include <gktl/types.hpp>
-#include <ours/mm/cpu-local.hpp>
-#include <ustl/algorithms/minmax.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ustl/sync/atomic.hpp>
+
+#include <limits>
 
 namespace gktl {
 class Counter {
@@ -43,13 +44,13 @@ class Counter {
     }
 
     auto max_across_all_cpus() -> isize {
-        return operate_across_all_cpus(ustl::NumericLimits<isize>::min(),
-                                       ustl::algorithms::greater<isize>());
+        return operate_across_all_cpus(std::numeric_limits<isize>::min(),
+                                       std::greater<isize>());
     }
 
     auto min_across_all_cpus() -> isize {
-        return operate_across_all_cpus(ustl::NumericLimits<isize>::max(),
-                                       ustl::algorithms::less<isize>());
+        return operate_across_all_cpus(std::numeric_limits<isize>::max(),
+                                       std::less<isize>());
     }
 
     auto set(isize value) const -> void {
@@ -133,11 +134,13 @@ class Counter {
         .name = NAME, .type = gktl::Counter::Type::TYPE};                                          \
                                                                                                    \
     CPU_LOCAL_SPECIAL(".gktl.counter.storage")                                                     \
-    constinit static gktl::isize s_counter_storage_##VAR;                                          \
+    constinit static isize s_counter_storage_##VAR;                                                \
                                                                                                    \
     [[maybe_unused]]                                                                               \
     static gktl::Counter VAR{&s_counter_descriptor_##VAR};
 
 #define GKTL_COUNTER(VAR, NAME) GKTL_COUNTER_DEFINE(VAR, NAME, Sum)
+#include <algorithm>
+#include <functional>
 
 #endif // #ifndef GKTL_COUNTER_HPP

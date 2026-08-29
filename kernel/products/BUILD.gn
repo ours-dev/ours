@@ -2,6 +2,8 @@
 # packages, validation, and product images) stays in the dedicated templates
 # and product targets rather than being exposed through these configs.
 
+import("//build/config/compiler/clang.gni")
+import("//build/config/current_target_tuple.gni")
 import("//build/ours/cpu.gni")
 import("//kernel/kernel_params.gni")
 
@@ -41,16 +43,28 @@ config("standalone") {
 
 config("static-pic-link") {
   configs = [ "//build/config:static-link" ]
-  inputs = [ "//kernel/include/ours/hidden.hpp" ]
+  # The compiler runtime is a link input, not a driver option. clang emits
+  # calls into it -- __udivti3 and friends, from the 128-bit fixed-point math
+  # in //kernel/lib/clock -- with no call site in the source to show for it,
+  # and -nostdlib below drops it along with libc. Naming the archive is what
+  # brings it back: this links with ld.lld directly, so -rtlib=compiler-rt
+  # would never be seen by the driver that understands it.
+  inputs = [
+    "//kernel/include/ours/hidden.hpp",
+    "$clang_runtime_lib_dir/$current_target_tuple/libclang_rt.builtins.a",
+  ]
   cflags = [
     "-include",
     rebase_path(inputs[0], root_build_dir),
   ]
-  ldflags = [ "-nostdlib" ]
+  ldflags = [
+    "-nostdlib",
+    rebase_path(inputs[1], root_build_dir),
+  ]
 }
 
 config("debug-only-unwind-tables") {
-  inputs = [ "//kernel/debug-frame.S" ]
+  inputs = [ "//kernel/debug_frame.S" ]
   cflags = [ "-fno-unwind-tables" ]
   asmflags = [
     "-include",
@@ -113,6 +127,8 @@ config("scheduler") {
     "SCHED_HPTICK=$sched_hptick",
     "SCHED_DELAY_DEQUEUE=$sched_delay_dequeue",
     "SCHED_EXTRA_INVARIANT_VALIDATION=$sched_extra_invariant_validation",
+    "SCHED_UNPARK_PREEMPT=$sched_unpark_preempt",
+    "SCHED_NOHZ=$sched_nohz",
   ]
 }
 
@@ -135,9 +151,18 @@ config("kernel.config") {
 }
 
 config("kernel.link") {
-  inputs = [ "//kernel/kernel.ld" ]
+  # kernel.ld is the layout; task.ld is an `INSERT AFTER` fragment that adds
+  # the .init.rodata.schedules section and the __schedules_start/__schedules_end
+  # bounds the scheduler's discipline registry is collected between. It was
+  # never passed to the linker, so those two symbols did not exist and
+  # Scheduler::init() had no section to read.
+  inputs = [
+    "//kernel/kernel.ld",
+    "//kernel/kernel/task/task.ld",
+  ]
   ldflags = [
     "-Wl,-T," + rebase_path(inputs[0], root_build_dir),
+    "-Wl,-T," + rebase_path(inputs[1], root_build_dir),
     "-Wl,-defsym,KERNEL_GOT_TOLERANCE=0",
     "-Wl,-defsym,KERNEL_BASE_ADDRESS=0",
   ]

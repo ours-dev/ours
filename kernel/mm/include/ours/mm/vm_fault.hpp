@@ -3,7 +3,7 @@
 #ifndef OURS_MM_VM_FAULT_HPP
 #define OURS_MM_VM_FAULT_HPP 1
 
-#include <ours/mm/page-request.hpp>
+#include <ours/mm/page_request.hpp>
 
 #include <ours/types.hpp>
 #include <ours/macro_abi.hpp>

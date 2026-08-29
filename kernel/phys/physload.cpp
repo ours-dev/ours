@@ -15,14 +15,15 @@
 #include "physload.hpp"
 
 #include <ccrt/runtime.hpp>
-#include <obi/container-view.hpp>
+#include <obi/command_line_view.hpp>
+#include <obi/container_view.hpp>
 #include <ours/phys/aspace.hpp>
-#include <ours/phys/boot-obi.hpp>
-#include <ours/phys/boot-options.hpp>
-#include <ours/phys/boot-package-input.hpp>
+#include <ours/phys/boot_obi.hpp>
+#include <ours/phys/boot_options.hpp>
+#include <ours/phys/boot_package_input.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
-#include <ours/phys/module-loader.hpp>
+#include <ours/phys/module_loader.hpp>
 #include <ours/phys/print.hpp>
 
 #include <span>
@@ -49,6 +50,9 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
 
     if (legacy != nullptr) {
         g_handoff.acpi_rsdp = legacy->acpi_rsdp;
+        if (!legacy->bootloader_name.empty()) {
+            println("physload: loaded by '{}'", legacy->bootloader_name);
+        }
     }
 
     // ---- Stage 1: Validate the OBI boot package ----
@@ -69,10 +73,28 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
     auto const boot = boot_package_result.unwrap();
 
     // ---- Stage 2: Apply early boot options ----
+    //
+    // Two sources, applied in precedence order.  The container's own Config
+    // item is what the build baked in; the legacy command line is what the
+    // user typed in the boot menu this boot, so it goes second and wins on
+    // any option both spell.  apply_boot_options() only overwrites the
+    // options a command line actually names, which is what makes layering
+    // them work.
     if (auto const command_line = boot.command_line(); command_line.is_some()) {
         auto const options_status = apply_boot_options(g_boot_options, command_line.value());
         if (options_status != Status::Ok) {
             panic("Invalid OBI boot options: {}", static_cast<u32>(options_status));
+        }
+    }
+    if (legacy != nullptr && !legacy->cmdline.empty()) {
+        auto const command_line = obi::CommandLineView::from_text(legacy->cmdline);
+        if (command_line.is_err()) {
+            panic("Malformed bootloader command line: {}",
+                  static_cast<u32>(command_line.unwrap_err()));
+        }
+        auto const options_status = apply_boot_options(g_boot_options, command_line.unwrap());
+        if (options_status != Status::Ok) {
+            panic("Invalid bootloader boot options: {}", static_cast<u32>(options_status));
         }
     }
 

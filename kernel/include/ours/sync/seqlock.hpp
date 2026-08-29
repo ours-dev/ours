@@ -37,9 +37,9 @@
 #define OURS_SYNC_SEQLOCK_HPP 1
 
 #include <arch/interrupt.hpp>
-#include <arch/spin-hint.hpp>
+#include <arch/spin_hint.hpp>
 #include <ours/assert.hpp>
-#include <ours/sync/spin-lock.hpp>
+#include <ours/sync/spin_lock.hpp>
 #include <ours/types.hpp>
 
 #include <ustl/function/invoke.hpp>

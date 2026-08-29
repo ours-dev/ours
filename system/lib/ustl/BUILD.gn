@@ -5,20 +5,19 @@ cpp_interface("headers") {
     "include/ustl/option.hpp",
     "include/ustl/result.hpp",
     "include/ustl/rc.hpp",
-    "include/ustl/array.hpp",
     "include/ustl/bitfields.hpp",
     "include/ustl/bit.hpp",
     "include/ustl/bitset.hpp",
-    "include/ustl/algorithms/minmax.hpp",
-    "include/ustl/algorithms/copy.hpp",
-    "include/ustl/algorithms/generation.hpp",
+    "include/ustl/box.hpp",
     "include/ustl/chrono/duration.hpp",
     "include/ustl/io/direct_memory.hpp",
     "include/ustl/io/binary_reader.hpp",
+    "include/ustl/io/circular_buffer.hpp",
     "include/ustl/lazy_init.hpp",
     "include/ustl/mem/align.hpp",
     "include/ustl/mem/address_of.hpp",
     "include/ustl/mem/container_of.hpp",
+    "include/ustl/mem/lifetime.hpp",
     "include/ustl/mem/object.hpp",
     "include/ustl/traits/integral_constant.hpp",
     "include/ustl/traits/conditional.hpp",
@@ -31,11 +30,12 @@ cpp_interface("headers") {
     "include/ustl/traits/ptr.hpp",
     "include/ustl/traits/underlying.hpp",
     "include/ustl/util/enum_bits.hpp",
+    "include/ustl/util/enum_sequence.hpp",
     "include/ustl/util/move.hpp",
     "include/ustl/util/pair.hpp",
     "include/ustl/util/tuple.hpp",
-    "include/ustl/util/type-map.hpp",
-    "include/ustl/util/type-list.hpp",
+    "include/ustl/util/type_map.hpp",
+    "include/ustl/util/type_list.hpp",
     "include/ustl/util/nonconstructible.hpp",
     "include/ustl/util/noncopyable.hpp",
     "include/ustl/variant.hpp",
@@ -56,7 +56,6 @@ cpp_interface("headers") {
     "include/ustl/views/string_view.hpp",
     "include/ustl/collections/allocator.hpp",
     "include/ustl/collections/btree.hpp",
-    "include/ustl/collections/deque.hpp",
     "include/ustl/collections/detail/btree.hpp",
     "include/ustl/collections/detail/btree_node_algorithms.hpp",
     "include/ustl/collections/error.hpp",
@@ -127,13 +126,9 @@ cpp_interface("headers") {
     "include/ustl/collections/memory_resource.hpp",
     "include/ustl/collections/pmr/btree_map.hpp",
     "include/ustl/collections/pmr/btree_set.hpp",
-    "include/ustl/collections/pmr/deque.hpp",
-    "include/ustl/collections/pmr/map.hpp",
-    "include/ustl/collections/pmr/memory_resource.hpp",
-    "include/ustl/collections/pmr/monotonic_buffer_resource.hpp",
-    "include/ustl/collections/pmr/vec.hpp",
-    "include/ustl/collections/static-vec.hpp",
+    "include/ustl/collections/static_vec.hpp",
     "include/ustl/collections/vec.hpp",
+    "include/ustl/detail/deallocate.hpp",
   ]
 }
 
@@ -144,12 +139,6 @@ group("ustl") {
 executable("enum-bits-test") {
   testonly = true
   sources = [ "test/enum_bits_test.cpp" ]
-  deps = [ ":headers" ]
-}
-
-executable("minmax-test") {
-  testonly = true
-  sources = [ "test/minmax_test.cpp" ]
   deps = [ ":headers" ]
 }
 
@@ -208,15 +197,28 @@ executable("rc-doc-examples-test") {
   deps = [ ":headers" ]
 }
 
+executable("box-test") {
+  testonly = true
+  sources = [ "test/box_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("box-doc-examples-test") {
+  testonly = true
+  sources = [ "test/box_doc_examples_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
 group("tests") {
   testonly = true
   deps = [
     ":bitfields-test",
     ":atomic-test",
     ":binary-reader-test",
+    ":box-doc-examples-test",
+    ":box-test",
     ":enum-bits-test",
     ":lazy-init-test",
-    ":minmax-test",
     ":option-test",
     ":rc-test",
     ":rc-race-test",

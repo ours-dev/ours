@@ -3,7 +3,6 @@
 #ifndef OURS_MM_VM_PAGE_MAP_HPP
 #define OURS_MM_VM_PAGE_MAP_HPP 1
 
-#include <ours/const.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/vm_page.hpp>
 
@@ -32,10 +31,10 @@ namespace ours::mm {
 
         FORCE_INLINE
         auto insert_page(PgOff index, VmPage *page, Tag tag) -> void {
-            pages_.store(index, pages_.make_entry(page));
+            (void)pages_.store(index, pages_.make_entry(page));
         }
       private:
-        ktl::XArray<ktl::Allocator<char>> pages_;
+        ktl::xarray::XArray<ktl::Allocator<char>> pages_;
     };
 
 } // namespace ours::mm

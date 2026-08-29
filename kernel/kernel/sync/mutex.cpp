@@ -1,13 +1,13 @@
 #include <ours/sync/mutex.hpp>
 
 #include <ours/task/thread.hpp>
-#include <ours/task/auto-preempt-disabler.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 
 #include <ours/time/clock.hpp>
 
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 
-#include <arch/spin-hint.hpp>
+#include <arch/spin_hint.hpp>
 
 using ustl::sync::MemoryOrder;
 using ours::task::Thread;
@@ -21,7 +21,7 @@ namespace ours::sync {
 
     FORCE_INLINE
     auto Mutex::reset_initial_assigned_cpu() -> void {
-        m_cpunum.store(kInvalidCpuNum, MemoryOrder::Relaxed);
+        m_cpunum.store(INVALID_CPU_NUM, MemoryOrder::Relaxed);
     }
 
     template <bool TimesliceExtensionEnabled>
@@ -32,7 +32,6 @@ namespace ours::sync {
         auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
 
         {
-            auto set_timeslice_extension = false;            
             if constexpr (TimesliceExtensionEnabled) {
                 current_thread->preemption_state().set_timeslice_extension(timeslice_extension.value);
             }
@@ -43,7 +42,7 @@ namespace ours::sync {
                                               MemoryOrder::Acquire, MemoryOrder::Relaxed)) {
                 record_initial_assigned_cpu();
 
-                return set_timeslice_extension;
+                return false;
             } 
 
             if constexpr (TimesliceExtensionEnabled) {
@@ -101,6 +100,11 @@ namespace ours::sync {
             arch::spin_hint();
             now_ticks = time::SteadyClock::ticks();
         } while (now_ticks < deadline_ticks);
+
+        // Every exit above either returns false on a successful CAS or breaks
+        // here: contended by another thread, self-owned, or the spin deadline
+        // passed. None of those acquired the mutex.
+        return true;
     }
 
     auto Mutex::try_release(Thread *current_thread) -> State {

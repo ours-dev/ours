@@ -3,6 +3,7 @@
 #ifndef OURS_TASK_SCHED_DRIVER_HPP
 #define OURS_TASK_SCHED_DRIVER_HPP 1
 
+#include <ours/compiler.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/syscall/time.hpp>
 

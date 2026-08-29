@@ -10,11 +10,12 @@
 
 #include <ours/status.hpp>
 #include <ours/compiler.hpp>
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 
 #include <ustl/util/enum_bits.hpp>
 
 #include <gktl/canary.hpp>
+#include <gktl/types.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::task::sched {
@@ -123,30 +124,75 @@ namespace ours::task::sched {
 
         virtual auto on_thread_tick(Runtime &, Thread *, bool queued) -> void = 0;
 
+        /// Number of threads currently queued on this schedule.
+        [[nodiscard]]
+        virtual auto num_queued() const -> usize = 0;
+
         /// [Optional] Attempts to assign a target CPU on which |thread| will run.
         ///
-        /// Return `kInvalidCpuNum` if failed to assign.
+        /// Return `INVALID_CPU_NUM` if failed to assign.
         virtual auto select_target_cpu(Thread *, CpuMask const &) -> CpuNum {
             return INVALID_CPU_NUM;
         }
 
         /// [Optional] Migrates |thread| onto new CPU specified by |cpunum|.
         ///
-        /// Return `kInvalidCpuNum` if successfull.
+        /// Return `Status::Ok` if the migration was performed.
         virtual auto migrate_thread(Thread *, CpuNum) -> Status {
             return Status::Unsupported;
         }
+
+        /// Which discipline this schedule implements. Implemented once, by
+        /// `Schedule<Derived, Discipline>` below, from its own template
+        /// argument -- every concrete discipline gets it for free.
+        [[nodiscard]]
+        virtual auto discipline() const -> sched::Discipline = 0;
       protected:
         USTL_NO_MOVEABLE_AND_COPYABLE(ISchedule);
+
+        /// Declaring the deleted copy/move members above suppresses the
+        /// implicit default constructor; disciplines are default-constructed
+        /// (see Schedule<>::g_instance), so bring it back explicitly.
+        ISchedule() = default;
 
         virtual ~ISchedule() = default;
     };
 
-    template <typename Derived, Discipline Discipline>
+    /// One entry per registered discipline, collected by the linker into a
+    /// single section (see `Schedule::REGISTRATION` below and
+    /// //kernel/kernel/task/task.ld). `instance` is the discipline's one
+    /// shared, stateless ISchedule object -- there's no "current CPU" to
+    /// resolve, so this is a plain link-time-constant pointer, not a
+    /// function. Scheduler::init() reads it once per CPU, at boot, on that
+    /// CPU -- so collection order never matters: every entry carries its own
+    /// `discipline`, and Scheduler::init() sorts them into an array indexed
+    /// by discipline itself.
+    struct ScheduleEntry {
+        sched::Discipline discipline;
+        ISchedule *instance;
+    };
+
+    /// CRTP base every concrete discipline (Fair, ...) derives from instead
+    /// of ISchedule directly. `ISchedule` is stateless by design -- all
+    /// per-CPU scheduling state belongs to the discipline's own per-CPU data
+    /// (e.g. Fair's RunQueue, held by Scheduler and reached via
+    /// `Scheduler::fair_run_queue()`), never to the schedule object itself.
+    /// Because of that, `Derived` needs no per-CPU instance: one shared,
+    /// stateless instance implements the algorithm for every CPU.
+    template <typename Derived, sched::Discipline Discipline>
     class Schedule: public ISchedule {
-       
+      public:
+        [[nodiscard]]
+        auto discipline() const -> sched::Discipline override final {
+            return Discipline;
+        }
+
       private:
-        static Derived X; 
+        static inline Derived g_instance;
+
+        LINK_SECTION(".init.rodata.schedules")
+        FORCE_USED
+        static inline ScheduleEntry const REGISTRATION = {Discipline, &g_instance};
     };
 
 } // namespace ours::task::sched

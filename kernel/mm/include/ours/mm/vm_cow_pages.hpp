@@ -4,7 +4,8 @@
 #define OURS_MM_VM_COW_PAGES_HPP 1
 
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/page-request.hpp>
+#include <ours/mm/object_cache.hpp>
+#include <ours/mm/page_request.hpp>
 #include <ours/mm/vm_page_map.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ustl/rc.hpp>
@@ -32,6 +33,15 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
   private:
+    /// RefCounted::destroy() calls ~T() when the last reference goes; the
+    /// destructor stays private otherwise, as MemCache and Dispatcher do.
+    friend class ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePolicy>;
+
+    /// ObjectCache::Instance placement-news and destroys T, so it needs the
+    /// constructor that stays private to everyone else.
+    template <typename, typename...>
+    friend class ObjectCache::Instance;
+
     VmCowPages(Gaf gaf, usize num_pages);
 
     ~VmCowPages();

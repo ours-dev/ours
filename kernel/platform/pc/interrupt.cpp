@@ -62,24 +62,29 @@ namespace {
 
         ktl::Vec<arch::IoApic> io_apics;
         for (auto const &entry: acpi::entries<acpi::madt::IoApicEntry>(*madt)) {
-            io_apics.emplace_back().init(entry.io_apic_address,
-                                         mm::phys_to_pfn(PhysAddr(entry.io_apic_address)),
-                                         entry.global_irq_base);
+            auto slot = io_apics.emplace_back();
+            ASSERT(slot, "Out of memory while collecting IO-APICs from the MADT");
+            slot.unwrap()->init(entry.io_apic_address,
+                               mm::phys_to_pfn(PhysAddr(entry.io_apic_address)),
+                               entry.global_irq_base);
         }
 
         ktl::Vec<arch::IoApicIsaOverride> io_apic_isa_overrides;
         for (auto const &entry: acpi::entries<acpi::madt::InterruptSourceOverrideEntry>(*madt)) {
-            io_apic_isa_overrides.emplace_back(parse_io_apic_isa_overrides(entry));
+            auto slot = io_apic_isa_overrides.emplace_back(parse_io_apic_isa_overrides(entry));
+            ASSERT(slot, "Out of memory while collecting IO-APIC ISA overrides from the MADT");
         }
 
         init_local_apic();
         init_io_apic(ustl::views::Span(io_apics), ustl::views::Span(io_apic_isa_overrides));
 
         // Build the map between CpuNum and APIC
+        [[maybe_unused]]
         u32 num_local_apics = 0;
         for (auto const &entry: acpi::entries<acpi::madt::LocalApicEntry>(*madt)) {
+            [[maybe_unused]]
             auto const cpunum = assign_cpunum_for_apic(entry.apic_id);
-            DEBUG_ASSERT(num_local_apics <= MAX_CPU && kInvalidCpuNum != cpunum);
+            DEBUG_ASSERT(num_local_apics <= MAX_CPU && INVALID_CPU_NUM != cpunum);
             ++num_local_apics;
         }
 
@@ -91,13 +96,15 @@ namespace {
             constexpr static auto const kPicCascadeIrqNum = 2;
             if (i != kPicCascadeIrqNum) {
                 auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i);
-                apic_configure_isa_irq(i, ApicDeliveryMode::Fixed, true,
-                                       ApicDestinationMode::Physical, bspid, irqnum);
+                apic_configure_isa_irq(static_cast<u8>(i), ApicDeliveryMode::Fixed, true,
+                                       ApicDestinationMode::Physical,
+                                       static_cast<u8>(bspid), irqnum);
             }
 
             auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i + 8);
-            apic_configure_isa_irq(i + 8, ApicDeliveryMode::Fixed, true,
-                                   ApicDestinationMode::Physical, bspid, irqnum);
+            apic_configure_isa_irq(static_cast<u8>(i + 8), ApicDeliveryMode::Fixed, true,
+                                   ApicDestinationMode::Physical,
+                                   static_cast<u8>(bspid), irqnum);
         }
 
         arch::local_irq_enable();
@@ -110,11 +117,11 @@ auto platform_handle_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
     irq::handle_irq_generic(irqnum);
 }
 
-auto platform_handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
+auto platform_start_handling_irq(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
     irq::handle_irq_preamble(irqnum, frame);
 }
 
-auto platform_handle_irq_postamble(HIrqNum irqnum, arch::IrqFrame *) -> bool {
+auto platform_finish_handling_irq(HIrqNum irqnum, arch::IrqFrame *) -> bool {
     return irq::handle_irq_postamble();
 }
 } // namespace ours

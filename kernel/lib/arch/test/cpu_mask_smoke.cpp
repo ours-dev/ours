@@ -1,4 +1,4 @@
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 
 #include <cstdlib>
 

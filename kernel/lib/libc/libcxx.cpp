@@ -61,7 +61,12 @@ namespace std {
     { ours::panic(fmt);  }
 
 #ifdef _LIBCPP_STD_VER
-inline namespace __1 {
+// _LIBCPP_ABI_NAMESPACE, not a hardcoded __1: this is the same macro libc++'s
+// own _LIBCPP_BEGIN_NAMESPACE_STD opens, so the definitions below land in
+// whatever inline namespace this build of libc++ actually uses. Spelled __1,
+// they opened a namespace that does not enclose std::__libcpp_refstring and
+// left std::__ph unfindable.
+inline namespace _LIBCPP_ABI_NAMESPACE {
 #define TO_CHARS_ATTRS \
     _LIBCPP_AVAILABILITY_TO_CHARS_FLOATING_POINT _LIBCPP_EXPORTED_FROM_ABI 
 
@@ -119,7 +124,8 @@ inline namespace __1 {
 #endif
 
     [[noreturn]]
-    void __libcpp_verbose_abort(char const* format, ...) //noexcept
+    // noexcept is part of the declaration in this libc++, not optional.
+    void __libcpp_verbose_abort(char const* format, ...) noexcept
     { 
         ours::panic(format); 
     }

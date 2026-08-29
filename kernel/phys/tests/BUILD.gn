@@ -1,0 +1,32 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+executable("build-id-note-smoke") {
+  testonly = true
+  sources = [
+    "build_id_note_smoke.cpp",
+    "//kernel/phys/build_id_note.cpp",
+  ]
+  deps = [
+    "//kernel/phys:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# BootObi's boot-contract behavior (moved from kernel/lib/obi/tests --
+# obi's own PackageBuilder/ContainerView round-trip tests stay there;
+# these specifically exercise phys's reading of that format).
+executable("boot-obi-test") {
+  testonly = true
+  sources = [ "boot_obi_test.cpp" ]
+  deps = [
+    "//kernel/phys:boot-obi",
+    "//kernel/lib/obi",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

@@ -9,8 +9,8 @@
 #include <ours/arch/x86/idt.hpp>
 #include <ours/arch/x86/init.hpp>
 #include <ours/cpu.hpp>
-#include <ours/ipi-event.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/ipi_event.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/start.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
@@ -130,6 +130,13 @@ auto x86_bring_aps(CpuMask targets) -> void {
 
         bootstrap_data->cpunum = cpu;
         bootstrap_data->stack_top = initial_stack;
+
+        // What bootstrap16.S actually reads. It indexes by cpunum - 1, since
+        // the boot CPU never goes through the trampoline.
+        DEBUG_ASSERT(cpu > 0 && cpu < MP_MAX_CPUS);
+        auto const slot = usize(cpu - 1) * 2;
+        bootstrap_data->percpu[slot] = initial_stack;
+        bootstrap_data->percpu[slot + 1] = reinterpret_cast<VirtAddr>(current_thread);
 
         apic_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
 

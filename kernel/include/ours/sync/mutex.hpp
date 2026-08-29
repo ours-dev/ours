@@ -4,8 +4,8 @@
 #define OURS_SYNC_MUTEX_HPP 1
 
 #include <ours/sync/config.hpp>
-#include <ours/sync/priv/lock-name-storage.hpp>
-#include <ours/task/owned-wait-queue.hpp>
+#include <ours/sync/priv/lock_name_storage.hpp>
+#include <ours/task/owned_wait_queue.hpp>
 
 #include <ours/time/types.hpp>
 
@@ -19,15 +19,15 @@ namespace ours::sync {
       public:
         enum class State: usize {
             Available = 0,
-            Contended = BIT(0),
-            HandOff = BIT(1),
+            Contended = 0_bit,
+            Handoff = 1_bit,
 
-            Mask = Contended | HandOff,
+            Mask = Contended | Handoff,
         };
         USTL_ENABLE_INNER_ENUM_BITMASK(State);
 
         FORCE_INLINE
-        auto acquire(Duration spining_duration) -> void;
+        auto acquire(Duration spining_duration = Duration{}) -> void;
 
         auto release() -> void;
 

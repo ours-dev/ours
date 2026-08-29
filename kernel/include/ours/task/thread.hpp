@@ -9,22 +9,23 @@
 #include <ours/arch/thread.hpp>
 
 #include <ours/signals.hpp>
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/compiler.hpp>
 
 #include <ours/task/types.hpp>
 #include <ours/task/config.hpp>
 #include <ours/task/sched/context.hpp>
-#include <ours/task/preemption-state.hpp>
+#include <ours/task/preemption_state.hpp>
 
-#include <ours/task/wait-queue.hpp>
-#include <ours/task/owned-wait-queue.hpp>
-#include <ours/sync/spin-lock.hpp>
+#include <ours/task/wait_queue.hpp>
+#include <ours/task/owned_wait_queue.hpp>
+#include <ours/sync/spin_lock.hpp>
 
 #include <ours/mm/types.hpp>
 #include <ours/mm/stack.hpp>
-#include <ours/mm/cpu-local.hpp>
-#include <ours/mm/memory-allocation-state.hpp>
+#include <ours/mm/cpu_local.hpp>
+#include <ours/mm/memory_allocation_state.hpp>
+#include <ours/mm/object_cache.hpp>
 
 #include <ours/syscall/time.hpp>
 
@@ -39,7 +40,7 @@
 #include <ktl/rwonce.hpp>
 #include <gktl/canary.hpp>
 
-#include <lockdep/lock-context.hpp>
+#include <lockdep/lock_context.hpp>
 
 namespace ours {
 namespace object {
@@ -321,6 +322,11 @@ namespace task {
         auto set_flag_nofree() -> void {
             m_flags |= Flags::NoFree;
         }
+
+        // ObjectCache::Instance placement-news and destroys T; Thread's
+        // constructor and destructor stay private otherwise.
+        template <typename, typename...>
+        friend class mm::ObjectCache::Instance;
 
         friend ArchThread;
         friend IdleThread;

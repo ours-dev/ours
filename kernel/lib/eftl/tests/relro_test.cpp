@@ -36,7 +36,7 @@ auto make_header(u16 segment_count) -> Header {
 
 auto relro_segment(u64 virtual_start, u64 memory_size) -> Segment {
     Segment segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::GnuRelro);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::GnuRelro);
     segment.p_vaddr = virtual_start;
     segment.p_memsz = memory_size;
     return segment;
@@ -116,7 +116,7 @@ auto test_elf32_relro_end_is_widened() -> int {
     put(image, 0, header);
 
     Segment32 segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::GnuRelro);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::GnuRelro);
     segment.p_vaddr = 0xfffffff0U;
     segment.p_memsz = 16;
     put(image, sizeof(Header32), segment);

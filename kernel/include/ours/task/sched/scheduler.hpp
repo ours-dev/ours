@@ -5,25 +5,23 @@
 
 #include <ours/task/sched/types.hpp>
 #include <ours/task/sched/config.hpp>
+#include <ours/task/sched/fair.hpp>
 #include <ours/task/sched/runtime.hpp>
 
 #include <ours/task/thread.hpp>
 
 #include <ours/time/timer.hpp>
 
-#include <ours/sync/spin-lock.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/sync/spin_lock.hpp>
+#include <ours/mm/cpu_local.hpp>
 
 #include <ours/lockdep.hpp>
 
 #include <ours/platform/timer.hpp>
 
-#include <span>
-
 #include <gktl/canary.hpp>
 
-#include <ustl/array.hpp>
-#include <ustl/views/span.hpp>
+#include <array>
 #include <ustl/chrono/duration.hpp>
 #include <ustl/sync/atomic.hpp>
 
@@ -48,6 +46,7 @@ namespace ours::task::sched {
             Count,
         };
 
+        class Pi;
         class Current;
 
         /// First thing a freshly spawned thread must do.
@@ -107,8 +106,14 @@ namespace ours::task::sched {
             return m_runtime.rqlock;
         }
 
-        template <typename Op, typename Target>
-        class PiOperation;
+        /// The Fair discipline's run queue for this CPU. Held directly here
+        /// (rather than through its own CpuLocal instance) since Scheduler
+        /// is already a per-CPU singleton -- see RunQueue's doc comment in
+        /// fair.hpp for why this deliberately couples Scheduler to Fair.
+        FORCE_INLINE
+        auto fair_run_queue() -> RunQueue & {
+            return m_fair_runqueue;
+        }
       private:
         class Migrator;
 
@@ -186,9 +191,9 @@ namespace ours::task::sched {
         /// it will attempts to steal a task on other remote CPUs.
         auto evaluate_next_thread(Thread *curr) -> Thread *;
 
-        auto set_schedule(Thread *thread) -> Schedule *;
+        auto set_schedule(Thread *thread) -> ISchedule *;
 
-        auto get_schedule(Thread *thread) -> Schedule *;
+        auto get_schedule(Thread *thread) -> ISchedule *;
 
         /// [MP] Attempts to steal work from other busy CPUs spcified by |mask| and move it 
         /// to the local run queues. Returns a pointer to the stolen thread that is now 
@@ -212,12 +217,18 @@ namespace ours::task::sched {
         gktl::Canary m_canary;
         Runtime m_runtime;
         usize m_num_switches;
-        std::span<Schedule *> m_schedules;
+
+        /// Indexed directly by `Discipline` -- entry `i` is the schedule
+        /// implementing `Discipline(i)`, or null if none is registered.
+        static constexpr auto NUM_DISCIPLINE = static_cast<usize>(Discipline::Count);
+        std::array<ISchedule *, NUM_DISCIPLINE> m_schedules {};
+
+        RunQueue m_fair_runqueue;
 
         Thread *m_idle_thread;
 
         static constexpr auto NUM_STATE = static_cast<usize>(State::Count);
-        static inline ustl::Array<ustl::sync::Atomic<CpuMask>, NUM_STATE> g_states {};
+        static inline std::array<ustl::sync::Atomic<CpuMask>, NUM_STATE> g_states {};
     };
 
     /// This helper class was designed for conviencies and securities.

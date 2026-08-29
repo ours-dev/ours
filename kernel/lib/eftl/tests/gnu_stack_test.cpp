@@ -37,9 +37,9 @@ auto make_header(u16 segment_count) -> Header {
 
 auto gnu_stack_segment() -> Segment {
     Segment segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::GnuStack);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::GnuStack);
     segment.p_flags =
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
     segment.p_memsz = K_STACK_SIZE;
     return segment;
 }
@@ -112,8 +112,8 @@ auto test_elf32_observes_gnu_stack() -> int {
     put(image, 0, header);
 
     Segment32 segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::GnuStack);
-    segment.p_flags = static_cast<ours::u32>(eftl::elf::SegPerms::Readable);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::GnuStack);
+    segment.p_flags = static_cast<u32>(eftl::elf::SegPerms::Readable);
     segment.p_memsz = 0x10000;
     put(image, sizeof(Header32), segment);
 

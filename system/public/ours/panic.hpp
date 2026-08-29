@@ -80,12 +80,12 @@ FORCE_INLINE auto panic(std::string_view fmt, Args &&...args) -> void {
 #endif
 
 [[noreturn]]
-FORCE_INLINE inline auto unreachable() -> void {
+FORCE_INLINE auto unreachable() -> void {
     panic("Unreachable");
 }
 
 [[noreturn]]
-FORCE_INLINE inline auto unimplement() -> void {
+FORCE_INLINE auto unimplement() -> void {
     panic("Unimplement");
 }
 } // namespace ours

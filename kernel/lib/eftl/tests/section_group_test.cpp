@@ -105,14 +105,14 @@ auto make_group_image(bool big_endian = false) -> std::array<u8, 1024> {
     put_header(image, make_header(big_endian), big_endian);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     put_section(image, K_SECTION_TABLE_OFFSET + sizeof(Section), strings, big_endian);
 
     Section symbols{};
-    symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Symtab);
+    symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Symtab);
     symbols.sh_offset = K_SYMBOL_TABLE_OFFSET;
     symbols.sh_size = 2 * sizeof(Symbol);
     symbols.sh_link = 1;
@@ -122,17 +122,17 @@ auto make_group_image(bool big_endian = false) -> std::array<u8, 1024> {
     put_section(image, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), symbols, big_endian);
 
     Section group{};
-    group.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Group);
+    group.sh_type = static_cast<u32>(eftl::elf::SectionType::Group);
     group.sh_offset = K_GROUP_OFFSET;
-    group.sh_size = 2 * sizeof(ours::u32);
+    group.sh_size = 2 * sizeof(u32);
     group.sh_link = 2;
     group.sh_info = 1;
-    group.sh_addralign = alignof(ours::u32);
-    group.sh_entsize = sizeof(ours::u32);
+    group.sh_addralign = alignof(u32);
+    group.sh_entsize = sizeof(u32);
     put_section(image, K_SECTION_TABLE_OFFSET + 3 * sizeof(Section), group, big_endian);
 
     Section member{};
-    member.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Progbits);
+    member.sh_type = static_cast<u32>(eftl::elf::SectionType::Progbits);
     member.sh_flags = static_cast<u64>(eftl::elf::SectionFlags::Group);
     member.sh_offset = K_MEMBER_OFFSET;
     member.sh_size = 1;
@@ -144,8 +144,8 @@ auto make_group_image(bool big_endian = false) -> std::array<u8, 1024> {
     Symbol signature{};
     signature.st_name = 1;
     put_symbol(image, K_SYMBOL_TABLE_OFFSET + sizeof(Symbol), signature, big_endian);
-    put_scalar(image, K_GROUP_OFFSET, static_cast<ours::u32>(1), big_endian);
-    put_scalar(image, K_GROUP_OFFSET + sizeof(ours::u32), static_cast<ours::u32>(4), big_endian);
+    put_scalar(image, K_GROUP_OFFSET, static_cast<u32>(1), big_endian);
+    put_scalar(image, K_GROUP_OFFSET + sizeof(u32), static_cast<u32>(4), big_endian);
     image[K_MEMBER_OFFSET] = 0xcc;
     return image;
 }
@@ -177,7 +177,7 @@ auto test_rejects_invalid_group_relationships() -> int {
     auto invalid_signature = make_group_image();
     put_scalar(invalid_signature,
                K_SECTION_TABLE_OFFSET + 3 * sizeof(Section) + offsetof(Section, sh_link),
-               static_cast<ours::u32>(1), false);
+               static_cast<u32>(1), false);
     if (File::from_raw(invalid_signature.data(), invalid_signature.size()).is_ok()) {
         return 1;
     }
@@ -191,7 +191,7 @@ auto test_rejects_invalid_group_relationships() -> int {
     }
 
     auto self_member = make_group_image();
-    put_scalar(self_member, K_GROUP_OFFSET + sizeof(ours::u32), static_cast<ours::u32>(3), false);
+    put_scalar(self_member, K_GROUP_OFFSET + sizeof(u32), static_cast<u32>(3), false);
     if (File::from_raw(self_member.data(), self_member.size()).is_ok()) {
         return 3;
     }
@@ -201,18 +201,18 @@ auto test_rejects_invalid_group_relationships() -> int {
     header.e_shnum = 6;
     put_header(duplicate_member, header, false);
     Section second_group{};
-    second_group.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Group);
+    second_group.sh_type = static_cast<u32>(eftl::elf::SectionType::Group);
     second_group.sh_offset = K_SECOND_GROUP_OFFSET;
-    second_group.sh_size = 2 * sizeof(ours::u32);
+    second_group.sh_size = 2 * sizeof(u32);
     second_group.sh_link = 2;
     second_group.sh_info = 1;
-    second_group.sh_addralign = alignof(ours::u32);
-    second_group.sh_entsize = sizeof(ours::u32);
+    second_group.sh_addralign = alignof(u32);
+    second_group.sh_entsize = sizeof(u32);
     put_section(duplicate_member, K_SECTION_TABLE_OFFSET + 5 * sizeof(Section), second_group,
                 false);
-    put_scalar(duplicate_member, K_SECOND_GROUP_OFFSET, static_cast<ours::u32>(0), false);
-    put_scalar(duplicate_member, K_SECOND_GROUP_OFFSET + sizeof(ours::u32),
-               static_cast<ours::u32>(4), false);
+    put_scalar(duplicate_member, K_SECOND_GROUP_OFFSET, static_cast<u32>(0), false);
+    put_scalar(duplicate_member, K_SECOND_GROUP_OFFSET + sizeof(u32),
+               static_cast<u32>(4), false);
     if (File::from_raw(duplicate_member.data(), duplicate_member.size()).is_ok()) {
         return 4;
     }
@@ -226,7 +226,7 @@ auto test_rejects_invalid_group_relationships() -> int {
     auto orphan_member = make_group_image();
     put_scalar(orphan_member,
                K_SECTION_TABLE_OFFSET + 3 * sizeof(Section) + offsetof(Section, sh_size),
-               static_cast<u64>(sizeof(ours::u32)), false);
+               static_cast<u64>(sizeof(u32)), false);
     if (File::from_raw(orphan_member.data(), orphan_member.size()).is_err()) {
         return 0;
     }

@@ -3,10 +3,10 @@
 #ifndef OURS_CPU_HPP
 #define OURS_CPU_HPP 1
 
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/types.hpp>
 
-#include <ustl/array.hpp>
+#include <array>
 
 namespace ours {
 
@@ -68,7 +68,7 @@ class Cpu {
         return g_states[static_cast<usize>(state)];
     }
 
-    static ustl::Array<CpuMask, kNumStates> g_states;
+    static std::array<CpuMask, kNumStates> g_states;
 };
 
 inline auto cpu_possible_mask() -> CpuMask & {

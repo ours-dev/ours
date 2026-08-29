@@ -1,8 +1,8 @@
 #include <arch/x86/io.hpp>
 #include <ours/driver/i8253.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/sync/spin-lock.hpp>
-#include <ours/time/clock-event-device.hpp>
+#include <ours/sync/spin_lock.hpp>
+#include <ours/time/clock_event_device.hpp>
 #include <ustl/lazy_init.hpp>
 
 namespace ours {

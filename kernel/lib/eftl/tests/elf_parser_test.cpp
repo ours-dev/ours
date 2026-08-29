@@ -55,7 +55,7 @@ auto put_big_endian_u16(std::array<u8, Size> &image, usize offset, u16 value)
 }
 
 template <usize Size>
-auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, ours::u32 value)
+auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, u32 value)
     -> void {
     image[offset] = static_cast<u8>(value >> 24);
     image[offset + 1] = static_cast<u8>(value >> 16);
@@ -105,10 +105,10 @@ auto make_big_endian_image_with_load() -> std::array<u8, 512> {
 
     constexpr usize K_SEGMENT_OFFSET = sizeof(Header);
     put_big_endian_u32(image, K_SEGMENT_OFFSET + offsetof(Segment, p_type),
-                       static_cast<ours::u32>(eftl::elf::SegType::Load));
+                       static_cast<u32>(eftl::elf::SegType::Load));
     put_big_endian_u32(
         image, K_SEGMENT_OFFSET + offsetof(Segment, p_flags),
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable));
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable));
     put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_offset), 0x180);
     put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_vaddr), 0x400180);
     put_big_endian_u64(image, K_SEGMENT_OFFSET + offsetof(Segment, p_filesz), 8);
@@ -134,7 +134,7 @@ auto make_big_endian_image_with_section() -> std::array<u8, 512> {
     constexpr usize K_DATA_OFFSET = 0x180;
     constexpr usize K_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
     put_big_endian_u32(image, K_SECTION_OFFSET + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Strtab));
+                       static_cast<u32>(eftl::elf::SectionType::Strtab));
     put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_offset), K_DATA_OFFSET);
     put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_size), 1);
     put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_addralign), 1);
@@ -147,7 +147,7 @@ auto make_big_endian_image_with_note_section() -> std::array<u8, 512> {
     constexpr usize K_NOTE_SIZE = 24;
     constexpr usize K_SECTION_OFFSET = sizeof(Header) + sizeof(Section);
     put_big_endian_u32(image, K_SECTION_OFFSET + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Note));
+                       static_cast<u32>(eftl::elf::SectionType::Note));
     put_big_endian_u64(image, K_SECTION_OFFSET + offsetof(Section, sh_size), K_NOTE_SIZE);
     put_big_endian_u32(image, K_NOTE_OFFSET, 0);
     put_big_endian_u32(image, K_NOTE_OFFSET + 4, 1);
@@ -168,7 +168,7 @@ auto make_big_endian_image_with_dynamic_section() -> std::array<u8, 512> {
     std::memcpy(image.data() + K_STRING_TABLE_OFFSET, strings.data(), strings.size());
 
     put_big_endian_u32(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Dynamic));
+                       static_cast<u32>(eftl::elf::SectionType::Dynamic));
     put_big_endian_u64(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_offset),
                        K_DYNAMIC_TABLE_OFFSET);
     put_big_endian_u64(image, K_DYNAMIC_SECTION_OFFSET + offsetof(Section, sh_size),
@@ -199,7 +199,7 @@ auto make_big_endian_image_with_symbol_section() -> std::array<u8, 512> {
     std::memcpy(image.data() + K_STRING_TABLE_OFFSET, strings.data(), strings.size());
 
     put_big_endian_u32(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Dynsym));
+                       static_cast<u32>(eftl::elf::SectionType::Dynsym));
     put_big_endian_u64(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_offset),
                        K_SYMBOL_TABLE_OFFSET);
     put_big_endian_u64(image, K_SYMBOL_SECTION_OFFSET + offsetof(Section, sh_size),
@@ -211,7 +211,7 @@ auto make_big_endian_image_with_symbol_section() -> std::array<u8, 512> {
                        sizeof(Traits::Symbol));
 
     put_big_endian_u32(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::SymtabShndx));
+                       static_cast<u32>(eftl::elf::SectionType::SymtabShndx));
     put_big_endian_u64(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_offset),
                        K_SECTION_INDEX_OFFSET);
     put_big_endian_u64(image, K_SECTION_INDEX_SECTION_OFFSET + offsetof(Section, sh_size), 8);
@@ -274,14 +274,14 @@ auto make_extended_numbering_image() -> ExtendedImage & {
     section_zero.sh_info = K_EXTENDED_PROGRAM_COUNT;
 
     Section names{};
-    names.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    names.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     names.sh_offset = K_NAME_TABLE_OFFSET;
     names.sh_size = 17;
     names.sh_addralign = 1;
 
     Section text{};
     text.sh_name = 11;
-    text.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Progbits);
+    text.sh_type = static_cast<u32>(eftl::elf::SectionType::Progbits);
     text.sh_offset = K_TEXT_OFFSET;
     text.sh_size = 4;
     text.sh_addralign = 4;
@@ -324,7 +324,7 @@ auto test_rel_without_program_table() -> int {
 
 auto test_core_note_without_load() -> int {
     Segment note{};
-    note.p_type = static_cast<ours::u32>(eftl::elf::SegType::Note);
+    note.p_type = static_cast<u32>(eftl::elf::SegType::Note);
     auto const image = make_image_with_segment(K_ET_CORE, note);
     auto const parsed = Binary::from_raw(image.data(), image.size());
     if (parsed.is_err()) {
@@ -503,9 +503,9 @@ auto test_observes_big_endian_symbol_and_section_index() -> int {
 
 auto test_load_mapping_excludes_zero_fill() -> int {
     Segment load{};
-    load.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     load.p_flags =
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     load.p_offset = 0x100;
     load.p_vaddr = 0x400100;
     load.p_filesz = 0x10;
@@ -546,9 +546,9 @@ auto test_load_mapping_preserves_separate_file_backed_intervals() -> int {
     put(image, 0, header);
 
     Segment first{};
-    first.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    first.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     first.p_flags =
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     first.p_offset = 0x100;
     first.p_vaddr = 0x400100;
     first.p_filesz = 0x10;
@@ -556,7 +556,7 @@ auto test_load_mapping_preserves_separate_file_backed_intervals() -> int {
     first.p_align = 0x100;
 
     Segment second{};
-    second.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    second.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     second.p_offset = 0x180;
     second.p_vaddr = 0x402000;
     second.p_filesz = 0x10;
@@ -633,7 +633,7 @@ auto test_elf64_rejects_invalid_extended_header_numbering() -> int {
     auto &invalid_name_index = make_extended_numbering_image();
     std::memcpy(&section_zero, invalid_name_index.data() + K_SECTION_TABLE_OFFSET,
                 sizeof(section_zero));
-    section_zero.sh_link = static_cast<ours::u32>(K_EXTENDED_SECTION_COUNT);
+    section_zero.sh_link = static_cast<u32>(K_EXTENDED_SECTION_COUNT);
     put(invalid_name_index, K_SECTION_TABLE_OFFSET, section_zero);
     auto const invalid_name_index_result =
         Binary::from_raw(invalid_name_index.data(), invalid_name_index.size());
@@ -688,7 +688,7 @@ auto test_elf64_rejects_noncanonical_extended_header_numbering() -> int {
     section_zero.sh_link = 1;
     put(image, header.e_shoff, section_zero);
     Section names{};
-    names.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    names.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     names.sh_offset = sizeof(Header) + 2 * sizeof(Section);
     names.sh_size = 1;
     put(image, header.e_shoff + sizeof(Section), names);

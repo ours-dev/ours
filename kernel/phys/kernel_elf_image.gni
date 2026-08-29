@@ -3,7 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/config/compiler/clang.gni")
-import("//kernel/lib/code-patching/code-patching.gni")
+import("//kernel/lib/code_patching/code_patching.gni")
 
 # Produces a fully stripped ELF image and represents it in kernel-package
 # metadata, optionally alongside code-patching payloads.

@@ -3,7 +3,7 @@
 #ifndef CLOCK_CALIBRATION_HPP
 #define CLOCK_CALIBRATION_HPP 1
 
-#include <clock/fixed-point-ratio.hpp>
+#include <clock/fixed_point_ratio.hpp>
 
 namespace ours::clock {
     struct CalibrationWindow {

@@ -13,9 +13,9 @@ namespace ours::mm {
 /// how much to map but it's usually a fairly large chunk at the base of the kernel
 /// address space.
 struct PhysMap {
-    constexpr static PhysAddr const kPhysBase = ARCH_PHYSMAP_PHYS_BASE;
+    constexpr static PhysAddr kPhysBase = ARCH_PHYSMAP_PHYS_BASE;
 
-    constexpr static VirtAddr const kVirtBase = ARCH_PHYSMAP_VIRT_BASE;
+    constexpr static VirtAddr kVirtBase = ARCH_PHYSMAP_VIRT_BASE;
     static_assert(!(kVirtBase & ((MAX_PAGE_SIZE)-1)), "");
 
     constexpr static usize const kSize = ARCH_PHYSMAP_SIZE;

@@ -96,7 +96,7 @@ auto make_dynamic_image(bool big_endian = false) -> std::array<u8, 2048> {
     put_header(image, header, big_endian);
 
     Segment load{};
-    load.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     load.p_offset = K_PRIMARY_LOAD_OFFSET;
     load.p_vaddr = K_PRIMARY_LOAD_ADDRESS;
     load.p_filesz = 0x100;
@@ -104,7 +104,7 @@ auto make_dynamic_image(bool big_endian = false) -> std::array<u8, 2048> {
     load.p_align = 0x10;
 
     Segment dynamic{};
-    dynamic.p_type = static_cast<ours::u32>(eftl::elf::SegType::Dynamic);
+    dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Dynamic);
     dynamic.p_offset = K_DYNAMIC_OFFSET;
     dynamic.p_vaddr = K_DYNAMIC_ADDRESS;
     dynamic.p_filesz = 2 * sizeof(Dynamic);
@@ -112,7 +112,7 @@ auto make_dynamic_image(bool big_endian = false) -> std::array<u8, 2048> {
     dynamic.p_align = alignof(Dynamic);
 
     Segment second_load{};
-    second_load.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    second_load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     second_load.p_offset = 0x500;
     second_load.p_vaddr = 0x402000;
     second_load.p_filesz = 0x20;
@@ -204,7 +204,7 @@ auto test_observes_elf32_sectionless_dynamic_image() -> int {
     std::memcpy(bytes.data(), &header, sizeof(header));
 
     Segment32 load{};
-    load.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     load.p_offset = 0x100;
     load.p_vaddr = 0x4000;
     load.p_filesz = 0x30;
@@ -212,7 +212,7 @@ auto test_observes_elf32_sectionless_dynamic_image() -> int {
     load.p_align = 4;
     std::memcpy(bytes.data() + sizeof(Header32), &load, sizeof(load));
     Segment32 dynamic{};
-    dynamic.p_type = static_cast<ours::u32>(eftl::elf::SegType::Dynamic);
+    dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Dynamic);
     dynamic.p_offset = 0x110;
     dynamic.p_vaddr = 0x4010;
     dynamic.p_filesz = 2 * sizeof(Dynamic32);
@@ -287,7 +287,7 @@ auto test_rejects_malformed_dynamic_images() -> int {
     auto no_dynamic = make_dynamic_image();
     std::memcpy(&dynamic, no_dynamic.data() + K_PROGRAM_HEADERS_OFFSET + sizeof(Segment),
                 sizeof(dynamic));
-    dynamic.p_type = static_cast<ours::u32>(eftl::elf::SegType::Note);
+    dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Note);
     std::memcpy(no_dynamic.data() + K_PROGRAM_HEADERS_OFFSET + sizeof(Segment), &dynamic,
                 sizeof(dynamic));
     auto const no_dynamic_parsed = Binary::from_raw(no_dynamic.data(), no_dynamic.size());

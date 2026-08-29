@@ -32,7 +32,7 @@
 #include <ours/mm/cfg.hpp>
 
 #include <arch/x86/descriptor.hpp>
-#include <ustl/array.hpp>
+#include <array>
 
 namespace ours {
     auto x86_get_gdt() -> void *;

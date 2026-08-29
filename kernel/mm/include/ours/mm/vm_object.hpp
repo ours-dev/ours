@@ -135,6 +135,11 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
   protected:
     friend class VmMapping;
 
+    // RefCounted<VmObject,...>::destroy() calls ~VmObject() through the base
+    // class on the final release(); without this friend, that call is
+    // ill-formed since the destructor below is protected.
+    friend class ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy>;
+
     template <typename Derived>
     constexpr friend auto as(Self *self) -> Derived *;
 
@@ -150,7 +155,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
 
     FORCE_INLINE
     auto remove_mapping(VmMapping &mapping) -> void {
-        m_mappings.erase(m_mappings.iterator_to(mapping));
+        (void)m_mappings.erase(m_mappings.iterator_to(mapping));
     }
 
     gktl::Canary m_canary;

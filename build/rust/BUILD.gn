@@ -8,12 +8,12 @@
 # by tools/set.py) writes rust-project.json into the output directory;
 # point rust-analyzer's linkedProjects at it.
 
-import("rustc_binary.gni")
-import("rustc_library.gni")
-import("rustc_test.gni")
+import("rust_executable.gni")
+import("rust_library.gni")
+import("rust_test.gni")
 
 # Library half: exercises the rust_rlib tool.
-rustc_library("rust-smoke-lib") {
+rust_library("rust-smoke-lib") {
   visibility = [ ":*" ]
   crate_root = "rust-smoke-lib.rs"
 }
@@ -21,15 +21,15 @@ rustc_library("rust-smoke-lib") {
 # Binary half: exercises the rust_bin tool and the --extern wiring from
 # the rlib above.  Built on demand; also part of the default build's
 # smoke set (see //BUILD.gn).
-rustc_binary("rust-toolchain-smoke-test") {
+rust_executable("rust-toolchain-smoke-test") {
   testonly = true
   visibility = [ "//:*" ]
   crate_root = "rust-smoke-test.rs"
   deps = [ ":rust-smoke-lib" ]
 }
 
-# Unit-test half: exercises rustc_test()'s --test harness wiring.
-rustc_test("rust-smoke-unit") {
+# Unit-test half: exercises rust_test()'s --test harness wiring.
+rust_test("rust-smoke-unit") {
   testonly = true
   visibility = [ "//:*" ]
   crate_root = "rust-smoke-unit.rs"

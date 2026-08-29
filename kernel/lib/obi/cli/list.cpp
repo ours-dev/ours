@@ -36,7 +36,7 @@ class ListCommand final: public AutoCommand<ListCommand> {
             std::println(std::cerr, "obit: {}: {}", message(container.error()), input);
             return (container.error() == Error::Io) ? 2 : 1;
         }
-        auto const &c = *container;
+        auto const &c = container->view();
         for (usize i = 0; i < c.item_count(); ++i) {
             auto item = c.item(i);
             if (item.is_err()) {

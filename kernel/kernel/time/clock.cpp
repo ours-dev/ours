@@ -1,5 +1,5 @@
 #include <ours/time/clock.hpp>
-#include <ours/time/clock-source.hpp>
+#include <ours/time/clock_source.hpp>
 
 namespace ours::time {
     Clock::Clock() {
@@ -44,6 +44,14 @@ namespace ours::time {
         auto const delta_time = cycles_delta * numerator_ / denominator_;
         m_time_shift += Duration(delta_time);
         m_cycle_last = cycles_now;
+    }
+
+    auto Clock::ticks() -> Ticks {
+        return m_clocksource ? m_clocksource->read() : Ticks(0);
+    }
+
+    auto SteadyClock::ticks() -> Ticks {
+        return s_clock.ticks();
     }
 
     auto SteadyClock::now() -> TimePoint {

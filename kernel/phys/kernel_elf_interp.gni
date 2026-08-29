@@ -56,7 +56,7 @@ template("kernel_elf_interp") {
                              "testonly",
                              "visibility",
                            ])
-    sources = [ "//kernel/phys/elf-interp.S" ]
+    sources = [ "//kernel/phys/elf_interp.S" ]
     defines = [ "ELF_INTERP_INC=\"$target_name.elf-interp.inc\"" ]
     include_dirs = [ target_gen_dir ]
     inputs = [ _include_file ]

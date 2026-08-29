@@ -53,9 +53,9 @@ rust_linker_*/rust_target_features），去掉内核 Rust 自定义 target JSON 
   -ftemplate-backtrace-limit/-Wno-thread-safety-attributes）
 
 ### Phase 4 — Rust GN 模板（build/rust/）
-- `rustc_artifact.gni`：中央模板（crate_name/crate_root/edition/features → rustflags）
-- 薄封装：rustc_binary / rustc_library / rustc_test / rustc_macro /
-  rustc_staticlib / rustc_cdylib
+- `rust_artifact.gni`：中央模板（crate_name/crate_root/edition/features → rustflags）
+- 薄封装：rust_executable / rust_library / rust_test / rust_macro /
+  rust_staticlib / rust_cdylib
 - rust-analyzer：`gn gen --export-rust-project` → out/<dir>/rust-project.json
   （tools/set.py 已默认带上）。VSCode 里把 rust-analyzer.linkedProjects 指向它。
 - 冒烟：rust-smoke-lib（rlib）+ rust-toolchain-smoke-test（bin+extern）+

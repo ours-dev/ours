@@ -13,6 +13,10 @@ namespace ours::mm {
     NO_MANGLE INIT_DATA 
     usize g_kernel_stack_size = 0;
 
+    Stack::Stack()
+        : m_stack(), m_base(0), m_size(0)
+    {}
+
     auto Stack::init_first() -> void {
         m_base = g_kernel_stack_bottom;
         m_size = g_kernel_stack_size;

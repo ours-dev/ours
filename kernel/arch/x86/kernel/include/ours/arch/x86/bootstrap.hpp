@@ -10,6 +10,13 @@
 #define X86_BOOTSTRAP_OFFSET_STACK_TOP 32
 #define X86_BOOTSTRAP_OFFSET_CPUNUM 40
 
+// Start of the per-CPU pair array the 16-bit trampoline indexes. It reads
+// entry 2(n-1) as CPU n's stack top and entry 2(n-1)+1 as its Thread pointer
+// -- n-1 because the boot CPU never takes this path. The macro was missing
+// entirely, so the assembler treated it as an external symbol and the kernel
+// failed to link on it.
+#define X86_BOOTSTRAP_OFFSET_PERCPU 48
+
 #if !defined(__ASSEMBLY__) && !defined(__ASSEMBLER__)
 
 #include <arch/x86/descriptor.hpp>
@@ -39,6 +46,10 @@ struct BootstrapData {
     VirtAddr stack_top;
     CpuNum cpunum;
     u32 padding3_;
+
+    /// Stack top and Thread pointer for each application CPU, in the order
+    /// bootstrap16.S expects. Two entries per CPU, indexed by cpunum - 1.
+    VirtAddr percpu[2 * MP_MAX_CPUS];
 };
 static_assert(offsetof(BootstrapData, pgd) == X86_BOOTSTRAP_OFFSET_PGD);
 static_assert(offsetof(BootstrapData, gdtr_limit) == X86_BOOTSTRAP_OFFSET_GDTR);
@@ -48,6 +59,7 @@ static_assert(offsetof(BootstrapData, long_mode_virt_entry) ==
               X86_BOOTSTRAP_OFFSET_LONGMODE_VIRT_ENTRY);
 static_assert(offsetof(BootstrapData, stack_top) == X86_BOOTSTRAP_OFFSET_STACK_TOP);
 static_assert(offsetof(BootstrapData, cpunum) == X86_BOOTSTRAP_OFFSET_CPUNUM);
+static_assert(offsetof(BootstrapData, percpu) == X86_BOOTSTRAP_OFFSET_PERCPU);
 
 constexpr static auto const kMinBootstrap16BufferSize = PAGE_SIZE * 3;
 

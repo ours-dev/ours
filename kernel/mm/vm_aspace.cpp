@@ -4,12 +4,11 @@
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/object-cache.hpp>
+#include <ours/mm/object_cache.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ustl/lazy_init.hpp>
-#include <ustl/sync/lockguard.hpp>
 
 namespace {
 GKTL_COUNTER(vm_aspace_high_priority, "vm.aspace.high_priority")
@@ -28,14 +27,19 @@ decltype(VmAspace::g_all_aspace_list_lock) VmAspace::g_all_aspace_list_lock;
 decltype(VmAspace::g_kernel_aspace) VmAspace::g_kernel_aspace;
 decltype(VmAspace::g_kernel_aspace_lock) VmAspace::g_kernel_aspace_lock;
 
+auto VmAspace::kernel_aspace() -> ustl::Arc<VmAspace> {
+    return ustl::Arc<VmAspace>::adopt(g_kernel_aspace);
+}
+
+// Initializer order follows the member declaration order in vm_aspace.hpp.
+// m_refcnt is owned by the ustl::RefCounted base (initialized by Base()), and
+// m_num_users belongs to VmPage, not here -- both were leftovers.
 VmAspace::VmAspace(VirtAddr base, usize size, VmasFlags flags, char const *name)
     : Base()
+    , m_flags(flags)
     , m_base(base)
     , m_size(size)
-    , m_flags(flags)
     , m_arch(base, size, flags)
-    , m_num_users()
-    , m_refcnt(1)
     , m_root_vma() {}
 
 VmAspace::~VmAspace() {}
@@ -46,6 +50,9 @@ auto VmAspace::create(VmasFlags flags, char const *name, ustl::Arc<VmAspace> *ou
     if (bool(flags & VmasFlags::User)) {
         base = USER_ASPACE_BASE;
         size = USER_ASPACE_SIZE;
+    } else {
+        base = KERNEL_ASPACE_BASE;
+        size = KERNEL_ASPACE_SIZE;
     }
 
     return Self::create(base, size, flags, name, out);
@@ -118,7 +125,8 @@ auto VmAspace::root_vma() -> ustl::Arc<VmArea> {
     return m_root_vma;
 }
 
-auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
+auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause,
+                                   [[maybe_unused]] usize extra_pages) -> Status {
     m_canary.verify<Self>();
 
     auto status = Status::Ok;
@@ -133,7 +141,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
                 vm_aspace_last_fault_hit.add(1);
             } else {
                 vm_aspace_last_fault_miss.add(1);
-                m_last_fault = m_root_vma->find_mapping_locked(va);
+                m_last_fault = ustl::Arc<VmMapping>::adopt(m_root_vma->find_mapping_locked(va));
                 if (!m_last_fault) {
                     return Status::NotFound;
                 }
@@ -141,7 +149,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
 
             auto const [final_status, mapped] = m_last_fault->fault(0);
             status = final_status;
-            num_mapped = mapped;
+            num_mapped = static_cast<u32>(mapped);
         }
 
         // There is no sufficient pages to map, so we need to wait for the page

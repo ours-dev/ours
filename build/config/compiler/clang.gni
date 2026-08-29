@@ -26,7 +26,28 @@ declare_args() {
 
 # The prebuilt location is fixed so its version stamp can always be read,
 # even when clang_tool_dir is overridden to a custom installation.
-_prebuilt_clang_root = "//prebuilt/clang/llvm-22"
+#
+# llvm-22's bin/ is a set of symlinks into the dev container's own
+# /usr/lib/llvm-22 install (see docker/dev.dockerfile) and only resolves
+# there; llvm-23 is a real, vendored macOS-arm64 build (LLVM 23.1.0-rc3)
+# used when generating directly on a macOS host, where llvm-22 is broken
+# symlinks. Same clang_tool_dir mechanism handles the container's actual
+# Linux build the same as any other override.
+if (host_os == "mac") {
+  _prebuilt_clang_root = "//prebuilt/clang/llvm-23"
+  _prebuilt_clang_major = "23"
+} else {
+  _prebuilt_clang_root = "//prebuilt/clang/llvm-22"
+  _prebuilt_clang_major = "22"
+}
+
+# Where the compiler runtime archives live, one directory per target triple.
+#
+# The kernel links with ld.lld directly rather than through the clang driver,
+# so -rtlib=compiler-rt never gets a chance to resolve; the archive has to be
+# named as an ordinary linker input instead. See //kernel/products:static-pic-link.
+clang_runtime_lib_dir =
+    "$_prebuilt_clang_root/lib/clang/$_prebuilt_clang_major/lib"
 _prebuilt_clang_version =
     read_file("$_prebuilt_clang_root/.versions/clang.cipd_version", "json")
 
@@ -37,4 +58,18 @@ if (clang_tool_dir == "") {
   # An overridden toolchain has no version stamp; its directory path is
   # unique enough to key toolchain-version rebuild triggers on.
   clang_version_string = clang_tool_dir
+}
+
+# The macOS SDK path for host-toolchain compiles (see the host branch in
+# ours_toolchain.gni). llvm-22's Linux symlinks never need this: apt's
+# clang has the container's system root baked in. The vendored llvm-23
+# release doesn't know where any SDK is, so host compiles need an explicit
+# -isysroot or libc++ headers like <cstdio> can't find the platform's
+# <wchar.h> (mbstate_t and friends resolve through clang's
+# using_if_exists, which silently drops symbols it can't find).
+if (host_os == "mac") {
+  mac_sdk_path =
+      exec_script("//build/toolchain/get_macos_sdk_path.py", [], "trim string")
+} else {
+  mac_sdk_path = ""
 }

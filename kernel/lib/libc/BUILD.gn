@@ -20,7 +20,6 @@ source_set("string") {
 
 source_set("libc") {
   sources = [
-    "boost.cpp",
     "cpp_dependencies.cpp",
     "libcxx.cpp",
   ]

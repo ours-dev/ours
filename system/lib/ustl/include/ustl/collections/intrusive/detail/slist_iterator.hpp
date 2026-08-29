@@ -38,6 +38,12 @@ namespace ustl::collections::intrusive::detail {
         using ElementRef = typename Types::ElementRef;
         using IterCategory = typename Types::IterCategory;
         using difference_type = DifferenceType;
+        /// std::iterator_traits only takes effect when all five names are
+        /// present; missing one silently makes the whole trait empty, which is
+        /// how std::advance ends up unable to find iterator_category.
+        using value_type = Element;
+        using pointer = PtrMut;
+        using reference = RefMut;
         using iterator_concept = std::forward_iterator_tag;
         using iterator_category = IterCategory;
 

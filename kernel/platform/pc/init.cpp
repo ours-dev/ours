@@ -1,8 +1,8 @@
 #include <ours/platform/init.hpp>
 #include <ours/platform/acpi.hpp>
-#include <ours/mem/init.hpp>
+#include <ours/mm/init.hpp>
 #include <ours/irq/init.hpp>
-#include <ours/cpu-states.hpp>
+#include <ours/cpu.hpp>
 #include <ours/arch/mp.hpp>
 
 #include <arch/x86/pic.hpp>
@@ -20,7 +20,7 @@ namespace ours {
 
     FORCE_INLINE
     static auto platform_init_mp() -> void {
-        x86_bring_aps(global_cpu_states().possible_cpus);
+        x86_bring_aps(Cpu::possible_mask());
     }
 
     NO_MANGLE INIT_CODE

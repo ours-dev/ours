@@ -2,9 +2,9 @@
 if (toolchain_environment == "kernel") {
   source_set("apic") {
     sources = [
-      "io-apic.cpp",
+      "io_apic.cpp",
       "ipi.cpp",
-      "local-apic.cpp",
+      "local_apic.cpp",
     ]
     deps = [
       "//kernel/lib/mtl:headers",

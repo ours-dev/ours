@@ -8,7 +8,7 @@
 
 #include <cstring>
 
-#include <ustl/collections/static-vec.hpp>
+#include <ustl/collections/static_vec.hpp>
 
 namespace {
 using Traits = eftl::elf::Traits64;
@@ -66,8 +66,8 @@ auto load_segment(u64 file_offset, u64 virtual_start, u64 file_size,
                   u64 memory_size, u64 alignment, eftl::elf::SegPerms permissions)
     -> Segment {
     Segment segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
-    segment.p_flags = static_cast<ours::u32>(permissions);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::Load);
+    segment.p_flags = static_cast<u32>(permissions);
     segment.p_offset = file_offset;
     segment.p_vaddr = virtual_start;
     segment.p_filesz = file_size;
@@ -269,9 +269,9 @@ auto test_elf32_top_address_uses_u64_interval_endpoints() -> int {
     put(image, 0, header);
 
     Segment32 segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     segment.p_flags =
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     segment.p_offset = 0x100;
     segment.p_vaddr = 0xfffffff0U;
     segment.p_filesz = 1;

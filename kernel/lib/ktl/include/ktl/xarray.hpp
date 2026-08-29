@@ -5,10 +5,12 @@
 
 #include <ktl/result.hpp>
 #include <ours/types.hpp>
-#include <ustl/array.hpp>
+#include <array>
 #include <ustl/bitfields.hpp>
 #include <ustl/bitset.hpp>
 #include <ustl/option.hpp>
+
+#include <limits>
 
 namespace ktl {
 namespace xarray {
@@ -50,7 +52,7 @@ namespace xarray {
 
             constexpr static auto kTypeBits = ustl::bit_width(usize(Type::MaxNumType));
 
-            constexpr static auto kValueBits = ustl::NumericLimits<usize>::DIGITS - kTypeBits;
+            constexpr static auto kValueBits = std::numeric_limits<usize>::digits - kTypeBits;
 
             using Inner = ustl::BitFields<Field<0, Type, kTypeBits>, Field<1, usize, kValueBits>>;
 
@@ -101,18 +103,18 @@ namespace xarray {
                 return value<Node>();
             }
 
-            FORCE_INLINE constexpr auto value() const -> Value {
+            FORCE_INLINE constexpr auto value() const -> usize {
                 return inner.template get<1>();
             }
 
-            FORCE_INLINE constexpr auto set_value(Value value) -> Self & {
+            FORCE_INLINE constexpr auto set_value(usize value) -> Self & {
                 inner.template set<1>(value);
                 return *this;
             }
 
             template <typename T>
             FORCE_INLINE static auto make(Type type, T *object) -> Entry {
-                return Entry().set_type(type).set_value(object);
+                return Entry().set_type(type).set_value(reinterpret_cast<usize>(object));
             }
 
             template <typename T>
@@ -122,7 +124,7 @@ namespace xarray {
 
             Inner inner;
         };
-        using Slots = ustl::Array<Entry, kMaxSlots>;
+        using Slots = std::array<Entry, kMaxSlots>;
 
         struct Node {
             auto get_offset(usize index) const -> usize {

@@ -51,7 +51,7 @@ auto make_note_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section notes{};
-    notes.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Note);
+    notes.sh_type = static_cast<u32>(eftl::elf::SectionType::Note);
     notes.sh_offset = K_NOTE_OFFSET;
     notes.sh_size = K_NOTE_SIZE;
     notes.sh_addralign = 4;
@@ -165,7 +165,7 @@ auto test_elf32_observes_note_record() -> int {
     put(image, 0, header);
 
     Section32 notes{};
-    notes.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Note);
+    notes.sh_type = static_cast<u32>(eftl::elf::SectionType::Note);
     notes.sh_offset = K_NOTE_SECTION_OFFSET;
     notes.sh_size = 20;
     notes.sh_addralign = 4;
@@ -215,7 +215,7 @@ auto test_core_file_observes_program_note() -> int {
     put(image, 0, header);
 
     Segment note_segment{};
-    note_segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Note);
+    note_segment.p_type = static_cast<u32>(eftl::elf::SegType::Note);
     note_segment.p_offset = K_PROGRAM_NOTE_OFFSET;
     note_segment.p_filesz = 20;
     note_segment.p_memsz = 20;

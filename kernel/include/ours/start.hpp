@@ -10,6 +10,10 @@ namespace ours {
     NO_MANGLE auto start_kernel(PhysAddr handoff) -> void;
 
     NO_MANGLE [[noreturn]] auto start_nonboot_cpu() -> void;
+
+    /// Defined by arch-specific code (e.g. kernel/arch/x86/kernel/init.cpp).
+    NO_MANGLE auto init_arch_early() -> void;
+    NO_MANGLE auto init_arch() -> void;
 } // namespace ours
 
 #endif // OURS_START_HPP

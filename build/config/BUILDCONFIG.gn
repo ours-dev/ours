@@ -209,6 +209,11 @@ default_common_binary_configs += toolchain_variant.configs
 # applies inside the host toolchain (cflags_cc, so C compiles untouched).
 if (is_host_toolchain) {
   default_common_binary_configs += [ "//kernel/products:host-prelude" ]
+
+  # See //build/config:mac_host_sysroot: a no-op everywhere except a macOS
+  # host, where the vendored Clang has no sysroot of its own to fall back
+  # on.
+  default_common_binary_configs += [ "//build/config:mac_host_sysroot" ]
 }
 
 # Warnings-as-errors: applied after variant configs so variants can

@@ -146,7 +146,7 @@ auto make_dynamic_relocation_image(bool big_endian = false, bool plt_rel = false
     put_header(image, header, big_endian);
 
     Segment load{};
-    load.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     load.p_offset = K_LOAD_OFFSET;
     load.p_vaddr = K_LOAD_ADDRESS;
     load.p_filesz = 0x500;
@@ -155,7 +155,7 @@ auto make_dynamic_relocation_image(bool big_endian = false, bool plt_rel = false
     put_segment(image, K_PROGRAM_HEADERS_OFFSET, load, big_endian);
 
     Segment dynamic{};
-    dynamic.p_type = static_cast<ours::u32>(eftl::elf::SegType::Dynamic);
+    dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Dynamic);
     dynamic.p_offset = K_DYNAMIC_OFFSET;
     dynamic.p_vaddr = K_DYNAMIC_ADDRESS;
     dynamic.p_filesz = K_DYNAMIC_COUNT * sizeof(Dynamic);
@@ -216,9 +216,9 @@ auto make_dynamic_relocation_image(bool big_endian = false, bool plt_rel = false
     bar.st_name = 5;
     put_symbol(image, K_SYMBOL_OFFSET + 2 * sizeof(Symbol), bar, big_endian);
 
-    std::array<ours::u32, 6> const hash_words{1, 3, 1, 0, 2, 0};
+    std::array<u32, 6> const hash_words{1, 3, 1, 0, 2, 0};
     for (usize index = 0; index < hash_words.size(); ++index) {
-        put_scalar(image, K_HASH_OFFSET + index * sizeof(ours::u32), hash_words[index], big_endian);
+        put_scalar(image, K_HASH_OFFSET + index * sizeof(u32), hash_words[index], big_endian);
     }
     Rel relative{};
     relative.r_offset = 0x400100;

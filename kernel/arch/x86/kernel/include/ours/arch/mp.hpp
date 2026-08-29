@@ -3,8 +3,8 @@
 #ifndef OURS_ARCH_MP_HPP
 #define OURS_ARCH_MP_HPP 1
 
-#include <ours/ipi-event.hpp>
-#include <ours/cpu-mask.hpp>
+#include <ours/ipi_event.hpp>
+#include <ours/cpu_mask.hpp>
 
 #include <ours/init.hpp>
 

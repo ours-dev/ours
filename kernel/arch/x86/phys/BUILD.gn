@@ -8,7 +8,7 @@ import("//build/cpp/cpp_interface.gni")
 # boot-shim links none of this either, and for the mirror-image reason:
 # physload does not exist yet when the shim runs, so the shim cannot bind
 # against it -- it carries its own copy of whatever it needs (console,
-# ElfImage) in its own image, per :boot-shim below.
+# ElfImage) in its own image, per :bootshim below.
 #
 # This file only exists in the kernel.phys toolchain family (see
 # //build/switch/phys_switchset.gni) -- it declares what's here, not which
@@ -23,7 +23,7 @@ source_set("x86") {
     "vga_console.cpp",
   ]
   # These sources end up in physload's ET_DYN link; phys-module's cflags
-  # (-fPIC -fno-plt) are what make that legal.  :boot-shim below stays
+  # (-fPIC -fno-plt) are what make that legal.  :bootshim below stays
   # off this config on purpose -- boot-shim keeps the fixed-address EXEC
   # model, since it is what GRUB loads directly.
   configs += [ "//kernel/phys:phys-module" ]
@@ -44,12 +44,12 @@ source_set("x86") {
 # of 2 MiB pages, GDT/paging/long-mode setup), and Multiboot2 info
 # parsing.  Its own console -- physload has not been loaded yet at any
 # point this runs.
-source_set("boot-shim") {
+source_set("bootshim") {
   sources = [
-    "boot-shim/shim.cpp",
+    "bootshim/shim.cpp",
     "gdt.S",
-    "legacy-multiboot-start.S",
-    "legacy-multiboot.cpp",
+    "legacy_multiboot_start.S",
+    "legacy_multiboot.cpp",
     "serial_console.cpp",
     "start64.S",
     "vga_console.cpp",
@@ -57,6 +57,9 @@ source_set("boot-shim") {
   deps = [
     ":headers",
     "//kernel/lib/ccrt",
+    # The machine-independent half of this shim: memory-map conversion and
+    # image placement, kept where a host test can reach them.
+    "//kernel/phys/lib/bootshim",
     "//kernel/phys/lib/multiboot",
   ]
   public_deps = [
@@ -69,14 +72,17 @@ source_set("boot-shim") {
 
 cpp_interface("headers") {
   public = [
-    "include/ours/phys/arch-bootmem.hpp",
-    "include/ours/phys/arch-handoff.hpp",
-    "include/ours/phys/arch-paging.hpp",
+    "include/ours/phys/arch_bootmem.hpp",
+    "include/ours/phys/arch_handoff.hpp",
+    "include/ours/phys/arch_paging.hpp",
   ]
   public_deps = [ "//kernel/phys/lib/bootmem:headers" ]
 }
 
 group("tests") {
   testonly = true
-  deps = [ "//kernel/phys/lib/multiboot:tests" ]
+  deps = [
+    "//kernel/phys/lib/bootshim:tests",
+    "//kernel/phys/lib/multiboot:tests",
+  ]
 }

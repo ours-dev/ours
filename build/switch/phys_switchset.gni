@@ -70,8 +70,8 @@ template("phys_switchset") {
         configs += [ "//build/config:linker_gc" ]
       }
       toolchain_args = {
-        debug_level = _debug_level
-        unit_tests_enabled = invoker.unit_tests_enabled
+        kernel_debug_level = _debug_level
+        kernel_unit_tests_enabled = invoker.unit_tests_enabled
       }
     }
   }

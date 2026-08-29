@@ -45,6 +45,10 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     virtual auto on_zero_handles() -> void {}
 
   protected:
+    /// RefCounted::destroy() calls ~T() when the last reference goes; the
+    /// destructor stays protected otherwise, as MemCache and VmAspace do.
+    friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
+
     auto notify_observers_locked(Signals signals) -> void;
 
     Dispatcher(u32 magic);
@@ -69,12 +73,12 @@ class SoloDispatcher: public Dispatcher {
         return DefaultRights;
     }
 
-    SoloDispatcher() : Base(kMagic<Derived>) {}
+    SoloDispatcher() : Base(Derived::MAGIC) {}
 
     ~SoloDispatcher() = default;
 
     auto verify_canary() const -> void {
-        m_canary.verify(kMagic<Derived>);
+        m_canary.verify(Derived::MAGIC);
     }
 };
 
@@ -89,7 +93,7 @@ class PeeredDispatcher: public Dispatcher {
     }
 
     auto verify_canary() const -> void {
-        m_canary.verify(kMagic<Derived>);
+        m_canary.verify(Derived::MAGIC);
     }
 
     auto on_zero_handles() -> void final {}

@@ -2,9 +2,16 @@ source_set("sched") {
     sources = [
         "driver.cpp",
         "fair.cpp",
+        "features.cpp",
         "scheduler.cpp",
-        "scheduler-pi.cpp",
-        "scheduler-migrator.cpp",
+        "scheduler_pi.cpp",
+        "scheduler_migrator.cpp",
+    ]
+    deps = [
+        "//kernel/lib/gktl:headers",
+        "//kernel/lib/ktl:headers",
+        "//kernel/mm:headers",
+        "//system/lib/lockdep",
     ]
     visibility = ["*"]
 }

@@ -1,3 +1,4 @@
+#include <ours/assert.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/irq/mod.hpp>
@@ -662,7 +663,10 @@ namespace ours {
     static auto platform_init_keyboard() -> void {
         uint8_t ctr;
 
-        key_buf.resize(KB(1));
+        if (key_buf.resize(KB(1)).is_err()) {
+            log::debug("Failed to allocate the keyboard input ring\n");
+            return;
+        }
 
         i8042_flush();
 
@@ -690,6 +694,7 @@ namespace ours {
         keyboard_command(&ctr, 0x1f4);
 
         auto const irqnum = apic_io_isa_to_global(ISA_IRQ_KEYBOARD);
+        [[maybe_unused]]
         auto status = irq::request_irq(irqnum, i8042_interrupt, irq::IrqFlags::None, "Keyboard");
         DEBUG_ASSERT(status == Status::Ok);
         apic_unmask_irq(irqnum);

@@ -11,7 +11,7 @@
 
 namespace {
 struct NarrowRecordingMemory final {
-    using Addr = ours::u32;
+    using Addr = u32;
 
     template <typename T>
     auto read_at_n(Addr, usize) noexcept -> ustl::views::Span<T> {
@@ -53,7 +53,7 @@ auto test_rejects_unrepresentable_dynamic_table_address() -> int {
 }
 
 auto test_relocation_info_decoding() -> int {
-    constexpr ours::u32 K_ELF32_INFO = (ours::u32(7) << 8) | ours::u32(8);
+    constexpr u32 K_ELF32_INFO = (u32(7) << 8) | u32(8);
     if (eftl::elf::Traits32::relocation_type(K_ELF32_INFO) != 8 ||
         eftl::elf::Traits32::relocation_symbol(K_ELF32_INFO) != 7) {
         return 1;
@@ -100,7 +100,7 @@ auto test_rejects_symbolic_relative_relocation() -> int {
     relocations.set_rela(ustl::views::make_span(&rela, 1), 1);
 
     bool visited = false;
-    if (relocations.visit_relative([](ours::u32 type) { return type == 8; },
+    if (relocations.visit_relative([](u32 type) { return type == 8; },
                                    [&visited](auto) {
                                        visited = true;
                                        return true;
@@ -114,7 +114,7 @@ auto test_rejects_symbolic_relative_relocation() -> int {
     alignas(Addr) std::array<u8, sizeof(Addr)> image{};
     ustl::io::DirectMemory memory(image.data(), image.size());
     if (eftl::elf::relocate_relative(memory, relocations, Addr(0x100),
-                                     [](ours::u32 type) { return type == 8; })) {
+                                     [](u32 type) { return type == 8; })) {
         return 3;
     }
 
@@ -127,13 +127,13 @@ auto test_rejects_elf32_symbolic_relative_relocation() -> int {
 
     Traits::Rel rel{};
     rel.r_offset = 0;
-    rel.r_info = (ours::u32(7) << 8) | ours::u32(8);
+    rel.r_info = (u32(7) << 8) | u32(8);
 
     eftl::elf::Relocations<Traits> relocations{};
     relocations.set_rel(ustl::views::make_span(&rel, 1), 1);
 
     bool visited = false;
-    if (relocations.visit_relative([](ours::u32 type) { return type == 8; },
+    if (relocations.visit_relative([](u32 type) { return type == 8; },
                                    [&visited](auto) {
                                        visited = true;
                                        return true;
@@ -147,7 +147,7 @@ auto test_rejects_elf32_symbolic_relative_relocation() -> int {
     alignas(Addr) std::array<u8, sizeof(Addr)> image{};
     ustl::io::DirectMemory memory(image.data(), image.size());
     if (eftl::elf::relocate_relative(memory, relocations, Addr(0x100),
-                                     [](ours::u32 type) { return type == 8; })) {
+                                     [](u32 type) { return type == 8; })) {
         return 3;
     }
 
@@ -227,7 +227,7 @@ int main() {
     alignas(Addr) std::array<u8, 0x100> image{};
     ustl::io::DirectMemory memory(image.data(), image.size());
     if (!eftl::elf::relocate_relative(memory, rela_relocations, Addr(0x100),
-                                      [](ours::u32 type) { return type == 8; })) {
+                                      [](u32 type) { return type == 8; })) {
         return 3;
     }
     auto const *const relocated_rela = memory.read_at<Addr>(0);
@@ -236,7 +236,7 @@ int main() {
     }
 
     if (eftl::elf::relocate_relative(memory, rela_relocations, Addr(0x100),
-                                     [](ours::u32) { return false; })) {
+                                     [](u32) { return false; })) {
         return 5;
     }
 
@@ -251,7 +251,7 @@ int main() {
     eftl::elf::Relocations<Traits> rel_relocations{};
     rel_relocations.set_rel(ustl::views::make_span(&rel, 1), 1);
     if (!eftl::elf::relocate_relative(memory, rel_relocations, Addr(0x100),
-                                      [](ours::u32 type) { return type == 8; })) {
+                                      [](u32 type) { return type == 8; })) {
         return 7;
     }
     auto const *const relocated_rel = memory.read_at<Addr>(0);
@@ -286,7 +286,7 @@ int main() {
     }
     *dynamic_target = 0x20;
     if (!eftl::elf::relocate_relative(memory, decoded_relocations, Addr(0x100),
-                                      [](ours::u32 type) { return type == 8; })) {
+                                      [](u32 type) { return type == 8; })) {
         return 12;
     }
     auto const *const relocated_dynamic = memory.read_at<Addr>(0);

@@ -93,6 +93,45 @@ namespace ours {
         /// The maximum number of status values.
         MaxCount,
     };
+
+    inline auto to_string(Status status) -> char const * {
+        switch (status) {
+            case Status::Ok: return "Ok";
+            case Status::Delayed: return "Delayed";
+            case Status::NotReachable: return "NotReachable";
+            case Status::NotSupported: return "NotSupported";
+            case Status::NotFound: return "NotFound";
+            case Status::NoMemory: return "NoMemory";
+            case Status::NoSpace: return "NoSpace";
+            case Status::NoResource: return "NoResource";
+            case Status::AlreadyExists: return "AlreadyExists";
+            case Status::AlreadyBound: return "AlreadyBound";
+            case Status::InvalidArgument: return "InvalidArgument";
+            case Status::OutOfRange: return "OutOfRange";
+            case Status::TimeOut: return "TimeOut";
+            case Status::ShouldWait: return "ShouldWait";
+            case Status::ShouldRetry: return "ShouldRetry";
+            case Status::Cancelled: return "Cancelled";
+            case Status::BadState: return "BadState";
+            case Status::BadHandle: return "BadHandle";
+            case Status::BadType: return "BadType";
+            case Status::BadSyscall: return "BadSyscall";
+            case Status::AccessDenied: return "AccessDenied";
+            case Status::BadPath: return "BadPath";
+            case Status::NotDir: return "NotDir";
+            case Status::NotFile: return "NotFile";
+            case Status::NotEmpty: return "NotEmpty";
+            case Status::NotConnected: return "NotConnected";
+            case Status::ConnectionRefused: return "ConnectionRefused";
+            case Status::ConnectionAborted: return "ConnectionAborted";
+            case Status::ConnectionReset: return "ConnectionReset";
+            case Status::InternalError: return "InternalError";
+            case Status::InternalIrqKilled: return "InternalIrqKilled";
+            case Status::InternalIrqRetry: return "InternalIrqRetry";
+            case Status::MaxCount: return "MaxCount";
+        }
+        return "Unknown";
+    }
 } // namespace ours
 
 #endif // #ifndef OURS_STATUS_HPP

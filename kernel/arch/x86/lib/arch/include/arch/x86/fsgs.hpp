@@ -18,7 +18,10 @@ inline auto read_gs_offset(usize offset) -> Integer {
 template <typename Integer>
 inline auto write_gs_offset(usize offset, Integer value) -> void {
     auto *address = reinterpret_cast<Integer *>(offset);
-    asm volatile("mov %0, %%gs:%1" : : "ir"(value), "m"(*address) : "memory");
+    // Register-only ("r", not "ir"): with an immediate the destination is a
+    // plain memory operand and `mov` has no way to infer its width. A register
+    // operand prints as %al/%ax/%eax/%rax and carries the size itself.
+    asm volatile("mov %0, %%gs:%1" : : "r"(value), "m"(*address) : "memory");
 }
 
 template <typename Integer>

@@ -37,7 +37,7 @@ auto put_big_endian_u16(std::array<u8, Size> &image, usize offset, u16 value)
 }
 
 template <usize Size>
-auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, ours::u32 value)
+auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, u32 value)
     -> void {
     for (usize index = 0; index < sizeof(value); ++index) {
         image[offset + index] = static_cast<u8>(
@@ -75,13 +75,13 @@ auto make_relocation_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 8;
     strings.sh_addralign = 1;
 
     Section symbols{};
-    symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Symtab);
+    symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Symtab);
     symbols.sh_offset = K_SYMBOL_TABLE_OFFSET;
     symbols.sh_size = 2 * sizeof(Symbol);
     symbols.sh_link = 1;
@@ -90,7 +90,7 @@ auto make_relocation_image() -> std::array<u8, 1024> {
     symbols.sh_entsize = sizeof(Symbol);
 
     Section rel{};
-    rel.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Rel);
+    rel.sh_type = static_cast<u32>(eftl::elf::SectionType::Rel);
     rel.sh_offset = K_REL_TABLE_OFFSET;
     rel.sh_size = sizeof(Rel);
     rel.sh_link = 2;
@@ -98,7 +98,7 @@ auto make_relocation_image() -> std::array<u8, 1024> {
     rel.sh_entsize = sizeof(Rel);
 
     Section rela{};
-    rela.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Rela);
+    rela.sh_type = static_cast<u32>(eftl::elf::SectionType::Rela);
     rela.sh_offset = K_RELA_TABLE_OFFSET;
     rela.sh_size = sizeof(Rela);
     rela.sh_link = 2;
@@ -150,14 +150,14 @@ auto make_big_endian_relocation_image() -> std::array<u8, 1024> {
     constexpr usize K_REL_SECTION = K_SECTION_TABLE_OFFSET + 3 * sizeof(Section);
     constexpr usize K_RELA_SECTION = K_SECTION_TABLE_OFFSET + 4 * sizeof(Section);
     put_big_endian_u32(image, K_STRING_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Strtab));
+                       static_cast<u32>(eftl::elf::SectionType::Strtab));
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_offset),
                        K_STRING_TABLE_OFFSET);
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_size), 8);
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_addralign), 1);
 
     put_big_endian_u32(image, K_SYMBOL_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Symtab));
+                       static_cast<u32>(eftl::elf::SectionType::Symtab));
     put_big_endian_u64(image, K_SYMBOL_SECTION + offsetof(Section, sh_offset),
                        K_SYMBOL_TABLE_OFFSET);
     put_big_endian_u64(image, K_SYMBOL_SECTION + offsetof(Section, sh_size), 2 * sizeof(Symbol));
@@ -167,7 +167,7 @@ auto make_big_endian_relocation_image() -> std::array<u8, 1024> {
     put_big_endian_u64(image, K_SYMBOL_SECTION + offsetof(Section, sh_entsize), sizeof(Symbol));
 
     put_big_endian_u32(image, K_REL_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Rel));
+                       static_cast<u32>(eftl::elf::SectionType::Rel));
     put_big_endian_u64(image, K_REL_SECTION + offsetof(Section, sh_offset), K_REL_TABLE_OFFSET);
     put_big_endian_u64(image, K_REL_SECTION + offsetof(Section, sh_size), sizeof(Rel));
     put_big_endian_u32(image, K_REL_SECTION + offsetof(Section, sh_link), 2);
@@ -175,7 +175,7 @@ auto make_big_endian_relocation_image() -> std::array<u8, 1024> {
     put_big_endian_u64(image, K_REL_SECTION + offsetof(Section, sh_entsize), sizeof(Rel));
 
     put_big_endian_u32(image, K_RELA_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Rela));
+                       static_cast<u32>(eftl::elf::SectionType::Rela));
     put_big_endian_u64(image, K_RELA_SECTION + offsetof(Section, sh_offset), K_RELA_TABLE_OFFSET);
     put_big_endian_u64(image, K_RELA_SECTION + offsetof(Section, sh_size), sizeof(Rela));
     put_big_endian_u32(image, K_RELA_SECTION + offsetof(Section, sh_link), 2);
@@ -323,12 +323,12 @@ auto test_elf32_observes_rel_record() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     Section32 symbols{};
-    symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Symtab);
+    symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Symtab);
     symbols.sh_offset = K_SYMBOL_OFFSET;
     symbols.sh_size = 2 * sizeof(Symbol32);
     symbols.sh_link = 1;
@@ -336,7 +336,7 @@ auto test_elf32_observes_rel_record() -> int {
     symbols.sh_addralign = alignof(Symbol32);
     symbols.sh_entsize = sizeof(Symbol32);
     Section32 rel{};
-    rel.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Rel);
+    rel.sh_type = static_cast<u32>(eftl::elf::SectionType::Rel);
     rel.sh_offset = K_REL_OFFSET;
     rel.sh_size = sizeof(Rel32);
     rel.sh_link = 2;

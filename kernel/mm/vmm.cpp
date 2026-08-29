@@ -1,3 +1,4 @@
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/vm_aspace.hpp>
@@ -8,6 +9,12 @@ namespace ours::mm {
         VmPage *g_zero_page;
         PhysAddr g_kernel_phys_base;
         VirtAddr g_kernel_virt_base;
+    }
+
+    auto is_kernel_address(VirtAddr va) -> bool {
+        // The kernel half is one contiguous span, so the subtraction form
+        // answers both ends at once and cannot wrap.
+        return va >= KERNEL_ASPACE_BASE && (va - KERNEL_ASPACE_BASE) < KERNEL_ASPACE_SIZE;
     }
 
     auto switch_context(VmAspace *from, VmAspace *to) -> void {

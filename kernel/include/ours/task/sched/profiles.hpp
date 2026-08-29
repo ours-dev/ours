@@ -3,12 +3,14 @@
 #ifndef OURS_TASK_SCHED_PROFILES_HPP
 #define OURS_TASK_SCHED_PROFILES_HPP 1
 
+#include <ours/compiler.hpp>
 #include <ours/task/sched/types.hpp>
 
 namespace ours::task::sched {
     enum class Discipline {
         Normal,
         Deadline,
+        Count,
     };
 
     struct BaseProfile {

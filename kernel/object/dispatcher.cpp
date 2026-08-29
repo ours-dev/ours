@@ -34,7 +34,7 @@ namespace ours::object {
         }
 
         if (observer->m_managed_hook.is_linked()) {
-            m_observers.erase(m_observers.iterator_to(*observer));
+            (void)m_observers.erase(m_observers.iterator_to(*observer));
         }
 
         return Status::Ok;

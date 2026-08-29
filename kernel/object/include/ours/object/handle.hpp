@@ -7,10 +7,11 @@
 #include <ours/object/dispatcher.hpp>
 
 #include <ustl/rc.hpp>
-#include <ustl/mem/box.hpp>
+#include <ustl/box.hpp>
 #include <ustl/sync/atomic.hpp>
 
-#include <ustl/collections/deque.hpp>
+#include <concepts>
+
 
 namespace ours::object {
     template <typename KernelObject>
@@ -19,11 +20,11 @@ namespace ours::object {
     class Handle final {
         using Self = Handle;
       public:
-        static auto make(KernelHandle<Dispatcher> kernel_handle, Rights rights) -> ustl::mm::Box<Self>;
+        static auto make(KernelHandle<Dispatcher> kernel_handle, Rights rights) -> ustl::Box<Self>;
 
-        static auto make(ustl::Arc<Dispatcher> kernel_handle, Rights rights) -> ustl::mm::Box<Self>;
+        static auto make(ustl::Arc<Dispatcher> kernel_handle, Rights rights) -> ustl::Box<Self>;
 
-        static auto clone(Self *kernel_handle, Rights rights) -> ustl::mm::Box<Self>;
+        static auto clone(Self *kernel_handle, Rights rights) -> ustl::Box<Self>;
       private:
         ustl::sync::Atomic<KoId> m_table_koid;
         ustl::Arc<Dispatcher> m_dispatcher;
@@ -64,10 +65,9 @@ namespace ours::object {
             return m_dispatcher;
         }
 
-        template <typename U>
+        template <std::derived_from<Dispatcher> U>
         FORCE_INLINE
         auto reset(ustl::Arc<U> dispatcher) -> void {
-            static_assert(ustl::traits::IsBaseOfV<Dispatcher, U>);
             if (m_dispatcher) {
                 m_dispatcher->on_zero();
             }

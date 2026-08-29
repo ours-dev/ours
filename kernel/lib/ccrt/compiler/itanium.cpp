@@ -52,12 +52,28 @@ auto atexit(ccrt::ExitFunction function) noexcept -> int {
 #if defined(PHYS_ENVIRONMENT)
 // The physical image has no exception runtime or heap.  libc++ still emits
 // cold failure paths for bounds-checked helpers, so route them to phys panic.
+// __verbose_abort declares this function with the library's "explicit ABI
+// annotation" attributes (default visibility, no ODR abi_tag) rather than
+// the hidden+abi-tagged default every other std:: symbol gets, so matching
+// its declaration means toggling the same attribute scope around it. The
+// scope is a `#pragma clang attribute push`/`pop` pair on each side; Clang
+// warns when a push/pop pair brackets no declaration to carry the
+// attribute, which happens on both sides here since this is the only
+// declaration in this reopening of std:: -- libc++'s own header dodges it
+// only because it always declares a second, unrelated fallback (__use())
+// in the same span. Both empty brackets are intentional, not missed
+// declarations, so silence the warning around the whole reopening.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpragma-clang-attribute"
 _LIBCPP_BEGIN_NAMESPACE_STD
-[[noreturn]]
+_LIBCPP_BEGIN_EXPLICIT_ABI_ANNOTATIONS
+[[noreturn]] _LIBCPP_OVERRIDABLE_FUNC_VIS _LIBCPP_ATTRIBUTE_FORMAT(__printf__, 1, 2)
 auto __libcpp_verbose_abort(char const *, ...) noexcept -> void {
     ours::panic("libc++ invariant failed in physical boot");
 }
+_LIBCPP_END_EXPLICIT_ABI_ANNOTATIONS
 _LIBCPP_END_NAMESPACE_STD
+#pragma clang diagnostic pop
 
 // Formatting cold paths and other libc++ corners reference operator new;
 // physical boot never allocates, so an attempted allocation is a bug.

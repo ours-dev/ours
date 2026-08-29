@@ -1,0 +1,21 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# rust_staticlib() -- a Rust static library (crate-type staticlib) meant
+# for linking into C/C++ programs.  Unlike rlibs, staticlibs bundle the
+# Rust standard library bits they depend on.
+#
+# See rust_artifact() for the shared parameters.
+#
+# PROVENANCE: adapted from Fuchsia //build/rust/rust_staticlib.gni
+# (Copyright 2021 The Fuchsia Authors, BSD-style license).
+
+import("rust_artifact.gni")
+
+template("rust_staticlib") {
+  rust_artifact(target_name) {
+    output_type = "static_library"
+    forward_variables_from(invoker, "*", [ "output_type" ])
+  }
+}

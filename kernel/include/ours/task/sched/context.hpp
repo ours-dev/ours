@@ -4,11 +4,12 @@
 #define OURS_TASK_SCHED_CONTEXT_HPP 1
 
 #include <gktl/mixin/comparable.hpp>
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/sync/types.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/task/sched/common.hpp>
 #include <ours/task/sched/profiles.hpp>
+#include <ours/task/sched/types.hpp>
 #include <ustl/chrono/duration.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>
 #include <ustl/sync/atomic.hpp>
@@ -53,14 +54,25 @@ class RunQueueState {
     using Self = RunQueueState;
 
   public:
+    /// TODO(SmallHuaZi): two gaps in this state machine, see the header comment
+    /// of scheduler.cpp for the surrounding semantics.
+    ///   1. DequeueDelayed has neither a setter nor a predicate below, so the
+    ///      Status::Delayed path of Scheduler::reschedule_common cannot record
+    ///      itself and leaves the object stuck in Rescheduling.
+    ///   2. Rescheduling has no clearing point: a thread that is merely
+    ///      preempted and re-queued (Scheduler::put_prev_thread) keeps it
+    ///      forever, since only activate_thread sets Queueing back.
     enum class TransientState : u8 {
         /// The object is not on runqueue.
         None,
         /// The object is on runqueue.
         Queueing,
-        ///
+        /// The object was left on the runqueue by a deliberately delayed
+        /// dequeue (see Fair::try_to_delay_dequeue, SCHED_DELAY_DEQUEUE).
         DequeueDelayed,
-        /// The object is been migrating onto another processor.
+        /// The object is been migrating onto another processor. Means
+        /// "runnable, in flight between runqueues" -- never merely "off the
+        /// runqueue", which is None.
         Migrating,
         /// The object is been rescheduling by current scheduler.
         Rescheduling,
@@ -223,7 +235,7 @@ class Context: public gktl::mixin::Comparable<Context> {
     }
 
     FORCE_INLINE
-    auto schedule() -> Schedule * {
+    auto schedule() -> ISchedule * {
         return m_schedule;
     }
 
@@ -243,7 +255,7 @@ class Context: public gktl::mixin::Comparable<Context> {
   private:
     friend class Scheduler;
     friend class Fair;
-    friend class OwnedWaitQueue;
+    friend class task::OwnedWaitQueue;
 
     CpuAffinity m_affinity;
     RunQueueState m_runqueue_state;
@@ -255,7 +267,7 @@ class Context: public gktl::mixin::Comparable<Context> {
     CpuNum m_last_cpu;
     CpuNum m_curr_cpu;
     CpuNum m_wake_cpu;
-    Schedule *m_schedule;
+    ISchedule *m_schedule;
     SchedParams m_params;
     Timeslice m_timeslice;
 

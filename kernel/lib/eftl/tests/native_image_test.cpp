@@ -43,8 +43,8 @@ auto make_image(u16 type, eftl::elf::SegPerms permissions, bool has_load = true)
         return bytes;
     }
     Segment load{};
-    load.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
-    load.p_flags = static_cast<ours::u32>(permissions);
+    load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
+    load.p_flags = static_cast<u32>(permissions);
     load.p_offset = 0x100;
     load.p_vaddr = 0x400100;
     load.p_filesz = 0x10;

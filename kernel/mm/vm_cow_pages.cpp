@@ -1,12 +1,12 @@
 #include <ours/mm/vm_cow_pages.hpp>
-#include <ours/mm/object-cache.hpp>
+#include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
 
 #include <gktl/init_hook.hpp>
 #include <ktl/new.hpp>
 
 namespace ours::mm {
-    static ObjectCache *s_vm_cow_pages_cache;
+    using VmCowPagesCache = ObjectCache::Instance<VmCowPages>;
 
     VmCowPages::VmCowPages(Gaf gaf, usize nr_pages)
         : m_gaf(gaf),
@@ -16,11 +16,11 @@ namespace ours::mm {
     VmCowPages::~VmCowPages() = default;
 
     auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status {
-        auto cow_pages = new (*s_vm_cow_pages_cache, kGafKernel) Self(gaf, size);
+        auto cow_pages = VmCowPagesCache::get(kGafKernel, gaf, size);
         if (!cow_pages) {
             return Status::OutOfMem;
         }
-        *out = cow_pages;
+        *out = ustl::Arc<Self>::adopt(cow_pages);
 
         return Status::Ok;
     }
@@ -30,15 +30,18 @@ namespace ours::mm {
     }
 
     auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status {
-        auto frame = alloc_frame(m_gaf, order);
+        auto frame = alloc_frames(m_gaf, order);
         if (!frame) {
             return Status::OutOfMem;
         }
-        *page = role_cast<PageFrame::Role::Vmm>(frame);
+
+        // Fresh from the buddy allocator: declare the role, do not query it.
+        frame->become<page::VmmBody>();
+        *page = frame;
         return Status::Ok;
     }
 
-    auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, ai_out usize *nr_commited) -> Status {
+    auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status {
         if (!size) {
             return Status::InvalidArguments;
         }
@@ -53,9 +56,9 @@ namespace ours::mm {
         }
 
         auto status = Status::Ok;
-        auto commited = 0;
-        PageRequest page_request;
-        for (auto i = 0; i < size; i += PAGE_SIZE) {
+        usize commited = 0;
+        MultiPageRequest page_request;
+        for (usize i = 0; i < size; i += PAGE_SIZE) {
             auto result = cursor->require_owned_page(1, &page_request);
             if (!result) {
                 status = result.unwrap_err();
@@ -90,13 +93,28 @@ namespace ours::mm {
         }
 
         VmPage *page = nullptr;
-        auto status = m_target->alloc_pages(0, &page, 0);
+        auto status = m_target->alloc_pages(0, &page, nullptr);
         if (Status::Ok == status) {
             return ustl::ok(page);
         }
 
         // No any available pages for current request, try to create asynchronous page request.
-        return ustl::err(create_read_request(nr_pages, page_request));
+        return ustl::err(create_read_request(nr_pages, request->get_read()));
+    }
+
+    /// What the cursor is currently sitting on.
+    ///
+    /// TODO(SmallHuaZi): VmPageMap does not distinguish content kinds yet, so
+    /// there are no reference or zero entries to report -- every populated slot
+    /// is a plain page. These answer accordingly rather than guessing, which
+    /// keeps require_owned_page() on its one working path.
+    auto VmCowPages::Cursor::is_type_reference() const -> bool {
+        return false;
+    }
+
+    auto VmCowPages::Cursor::convert_reference_to_page(AnonymousPageRequest *request) -> Status {
+        // Unreachable while is_type_reference() is always false.
+        return Status::Unimplemented;
     }
 
     auto VmCowPages::Cursor::create_read_request(usize nr_pages, PageRequest *page_request) -> Status {
@@ -109,9 +127,9 @@ namespace ours::mm {
 
     INIT_CODE
     static auto init_vm_cow_pages_cache() -> void {
-        s_vm_cow_pages_cache = ObjectCache::create<VmCowPages>("vmo-paged-cache", OcFlags::Folio);
-        if (!s_vm_cow_pages_cache) {
-            panic("Failed to create object cache for VmArea");
+        auto const status = VmCowPagesCache::init("vm-cow-pages-cache", ObjectCache::Flags::Folio);
+        if (Status::Ok != status) {
+            panic("Failed to create object cache for VmCowPages");
         }
         log::trace("VmCowPagesCache has been created");
     }

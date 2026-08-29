@@ -1,7 +1,27 @@
+import("//build/cpp/cpp_interface.gni")
+
 # Kernel driver subsystem.
 group("init") {
 }
 
-source_set("headers") {
-  public = []
+# This was a bare source_set with an empty `public` list, which published no
+# include directory at all -- so every dependent got the target but not
+# kernel/driver/include, and <ours/driver/i8253.hpp> did not resolve.
+cpp_interface("headers") {
+  public = [ "include/ours/driver/i8253.hpp" ]
+  public_deps = [
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+  ]
+}
+
+source_set("driver") {
+  sources = [ "clock/i8253.cpp" ]
+  public_deps = [ ":headers" ]
+  deps = [
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/logz4:headers",
+    "//system/lib/lockdep",
+  ]
+  visibility = [ "*" ]
 }

@@ -5,7 +5,7 @@
 
 #include <gktl/canary.hpp>
 #include <ours/mm/fault.hpp>
-#include <ours/mm/priv/memory-allocation-policy.hpp>
+#include <ours/mm/priv/memory_allocation_policy.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_area_or_mapping.hpp>
 #include <ours/status.hpp>
@@ -16,6 +16,7 @@
 #include <ustl/rc.hpp>
 #include <ustl/result.hpp>
 #include <ustl/util/pair.hpp>
+#include <algorithm>
 
 namespace ours::mm {
 /// Helper class to trace the mapping status in region. Its internal implementation
@@ -119,10 +120,10 @@ class MappingProtectionRanges::Enumerator {
         if (iter_ == end_ || base_ >= upper_bound_) {
             return ustl::none();
         }
-        auto obase = ustl::algorithms::max(base_, lower_bound_);
+        auto obase = std::max(base_, lower_bound_);
         auto mmuf = iter_->mmuf;
 
-        base_ = ustl::algorithms::min(iter_->end, upper_bound_);
+        base_ = std::min(iter_->end, upper_bound_);
         ++iter_;
         return ustl::some(NextResult{obase, base_ - obase, mmuf});
     }

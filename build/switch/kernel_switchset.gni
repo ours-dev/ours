@@ -75,6 +75,23 @@ template("kernel_switchset") {
         "//kernel/platform:headers.config",
 
         "//system/lib/ustl:headers.config",
+
+        # ours/sync/spin_lock.hpp includes <lockdep/state_saver.hpp> directly,
+        # and spin-lock.hpp is itself reached from mutex.hpp/wait_queue.hpp --
+        # broadly-included kernel headers, not just the few source_sets that
+        # declare an explicit lockdep dependency.
+        "//system/lib/lockdep:lockdep.config",
+
+        # <logz4/log.hpp> is reached from unrelated corners of kernel-proper
+        # (kernel/lib/ktl, kernel/kernel/task, ...) that don't otherwise
+        # depend on each other, the same shape as gktl/lockdep above.
+        "//kernel/lib/logz4:headers.config",
+
+        # ktl (Result, XArray, kmalloc, ...) and mtl (Ratio, Scale) are both
+        # reached the same broad, unrelated way -- kernel/kernel/task/sched,
+        # kernel/kernel/time, kernel/arch/x86/apic, ...
+        "//kernel/lib/ktl:headers.config",
+        "//kernel/lib/mtl:headers.config",
       ]
       configs = [
         "//build/config:frame_pointers",

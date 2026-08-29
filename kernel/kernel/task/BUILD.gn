@@ -1,13 +1,13 @@
 source_set("task") {
   sources = [
     "dpc.cpp",
-    "idle-thread.cpp",
+    "idle_thread.cpp",
     "init.cpp",
-    "ipi-service.cpp",
-    "owned-wait-queue.cpp",
-    "preemption-state.cpp",
+    "ipi_service.cpp",
+    "owned_wait_queue.cpp",
+    "preemption_state.cpp",
     "thread.cpp",
-    "wait-queue.cpp",
+    "wait_queue.cpp",
   ]
   deps = [
     "//kernel/kernel/task/sched",
@@ -17,6 +17,7 @@ source_set("task") {
     "//kernel/lib/gktl:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",
+    "//kernel/object:headers",
     "//system/lib/lockdep",
   ]
   visibility = [ "*" ]

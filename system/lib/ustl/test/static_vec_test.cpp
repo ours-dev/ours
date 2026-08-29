@@ -4,7 +4,7 @@
 #include <cassert>
 
 #include <ustl/collections/error.hpp>
-#include <ustl/collections/static-vec.hpp>
+#include <ustl/collections/static_vec.hpp>
 
 auto main() -> int {
     ustl::collections::StaticVec<int, 2> values {};

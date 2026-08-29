@@ -5,9 +5,9 @@
 
 #include <ours/assert.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/phys/arch-bootmem.hpp>
-#include <ours/phys/arch-handoff.hpp>
-#include <ours/phys/kernel-package-handoff.hpp>
+#include <ours/phys/arch_bootmem.hpp>
+#include <ours/phys/arch_handoff.hpp>
+#include <ours/phys/kernel_package_handoff.hpp>
 #include <ours/types.hpp>
 #include <ustl/option.hpp>
 #include <ustl/views/span.hpp>
@@ -77,7 +77,7 @@ struct Handoff {
 
     /// Physical address of the EFI system table, if boot-shim came up
     /// through UEFI.  Always None today: the only boot-shim that exists
-    /// (kernel/arch/x86/phys/boot-shim) is Multiboot2/BIOS-only.
+    /// (kernel/arch/x86/phys/bootshim) is Multiboot2/BIOS-only.
     ustl::Option<PhysAddr> efi_system_table;
 
     MemoryHandoff mem;

@@ -3,17 +3,17 @@
 #ifndef OURS_MM_VM_ASPACE_HPP
 #define OURS_MM_VM_ASPACE_HPP 1
 
-#if !__has_include(<ours/mm/arch-vm-aspace.hpp>)
-#error "The header <ours/mm/arch-vm-aspace.hpp> is required by [protocol.module.mem]"
+#if !__has_include(<ours/mm/arch_vm_aspace.hpp>)
+#error "The header <ours/mm/arch_vm_aspace.hpp> is required by [protocol.module.mem]"
 #endif
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ktl/result.hpp>
 #include <ours/init.hpp>
-#include <ours/mm/arch-vm-aspace.hpp>
+#include <ours/mm/arch_vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
-#include <ours/mm/vmas-flags.hpp>
-#include <ours/sync/spin-lock.hpp>
+#include <ours/mm/vmas_flags.hpp>
+#include <ours/sync/spin_lock.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/sync/atomic.hpp>
@@ -48,9 +48,12 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     static auto switch_aspace(Self *, Self *) -> void;
 
-    static auto kernel_aspace() -> ustl::Arc<VmAspace> {
-        return ustl::Arc<VmAspace>::adopt(g_kernel_aspace);
-    }
+    // Defined out-of-line in vm_aspace.cpp: instantiating Arc<VmAspace> here,
+    // inside VmAspace's own class body, hits VmAspace's inheritance from
+    // RefCounted<VmAspace, ...> before the compiler treats VmAspace as
+    // complete, and Arc<VmAspace>::~Arc's call to the base's release()
+    // fails to typecheck as a result.
+    static auto kernel_aspace() -> ustl::Arc<VmAspace>;
 
     auto get_memory_usage() -> ktl::Result<Usage>;
 
@@ -103,10 +106,6 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     /// Architecture specific context.
     ArchVmAspace m_arch;
-
-    /// How many users hold this.
-    ustl::sync::AtomicU32 m_refcnt;
-    ustl::sync::AtomicU32 m_num_users;
 
     /// The only root region.
     ustl::Arc<VmArea> m_root_vma;

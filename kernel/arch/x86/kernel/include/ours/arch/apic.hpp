@@ -4,7 +4,7 @@
 #define OURS_ARCH_APIC_HPP 1
 
 #include <ours/init.hpp>
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/irq/irq_chip.hpp>
 
 #include <arch/x86/interrupt.hpp>

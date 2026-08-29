@@ -2,7 +2,7 @@
 
 #include <array>
 
-#include <ustl/collections/static-vec.hpp>
+#include <ustl/collections/static_vec.hpp>
 #include <ustl/io/direct_memory.hpp>
 
 namespace {

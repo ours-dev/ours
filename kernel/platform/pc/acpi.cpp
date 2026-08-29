@@ -5,6 +5,7 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/platform/acpi.hpp>
 #include <ours/platform/init.hpp>
+#include <logz4/log.hpp>
 #include <ustl/lazy_init.hpp>
 #include <ustl/util/move.hpp>
 
@@ -42,7 +43,17 @@ namespace {
     FORCE_USED INIT_CODE auto platform_init_acpi() -> void {
         // global_handoff() lives in //kernel/phys and is not reachable from the
         // kernel proper; ours::handoff() is the accessor on this side.
-        platform_init_acpi(boot::handoff().acpi_rsdp);
+        //
+        // acpi_rsdp is an Option: phys only fills it in when it actually found
+        // an RSDP, so absence is a legitimate state (no ACPI on this machine),
+        // not an error. Leave g_acpi_tables null and let consumers see that.
+        auto const &rsdp = boot::handoff().acpi_rsdp;
+        if (!rsdp.is_some()) {
+            log::warn("No ACPI RSDP was handed off; skipping ACPI table setup");
+            return;
+        }
+
+        platform_init_acpi(rsdp.value());
     }
     GKTL_INIT_HOOK(AcpiInit, platform_init_acpi, PlatformInitLevel::StartUp);
 } // namespace

@@ -3,7 +3,7 @@
 #ifndef OURS_BOOT_HANDOFF_HPP
 #define OURS_BOOT_HANDOFF_HPP 1
 
-#include <ours/phys/boot-obi.hpp>
+#include <ours/phys/boot_obi.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/types.hpp>
 

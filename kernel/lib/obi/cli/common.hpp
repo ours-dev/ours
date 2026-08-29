@@ -2,7 +2,7 @@
 #ifndef OBI_CLI_COMMON_HPP
 #define OBI_CLI_COMMON_HPP
 
-#include <obi/container-view.hpp>
+#include <obi/container_view.hpp>
 
 #include <expected>
 #include <filesystem>
@@ -81,8 +81,44 @@ inline auto write_file(fs::path const &path, Bytes const bytes) -> std::expected
     return {};
 }
 
-inline auto open_container(fs::path const &path) -> std::expected<ContainerView, Error> {
-    auto const data = read_file(path);
+/// A parsed container together with the bytes it was parsed out of.
+///
+/// ContainerView is a non-owning view: every name and payload it hands back
+/// is a pointer into the buffer it was built from, so that buffer has to
+/// outlive it.  Returning the view on its own left every obit command
+/// reading freed heap -- which looked like it worked, because a container
+/// big enough for malloc to serve by mmap stays readable after the free,
+/// while a small one gets its block recycled and every descriptor reads
+/// back as zeroes (empty names, zero payload sizes).
+class OpenedContainer final {
+  public:
+    OpenedContainer(std::vector<u8> bytes, ContainerView view)
+        : m_bytes(std::move(bytes)), m_view(view) {}
+
+    // Move keeps the view valid -- moving a vector hands over the same heap
+    // buffer.  Copy would not: it would duplicate the bytes and leave the
+    // view pointing into the original, which is the very bug this type
+    // exists to prevent.
+    OpenedContainer(OpenedContainer &&) = default;
+    auto operator=(OpenedContainer &&) -> OpenedContainer & = default;
+    OpenedContainer(OpenedContainer const &) = delete;
+    auto operator=(OpenedContainer const &) -> OpenedContainer & = delete;
+
+    [[nodiscard]] auto view() const -> ContainerView const & {
+        return m_view;
+    }
+
+    [[nodiscard]] auto bytes() const -> Bytes {
+        return {m_bytes.data(), m_bytes.size()};
+    }
+
+  private:
+    std::vector<u8> m_bytes;
+    ContainerView m_view;
+};
+
+inline auto open_container(fs::path const &path) -> std::expected<OpenedContainer, Error> {
+    auto data = read_file(path);
     if (!data) {
         return std::unexpected(data.error());
     }
@@ -90,7 +126,7 @@ inline auto open_container(fs::path const &path) -> std::expected<ContainerView,
     if (container.is_err()) {
         return std::unexpected(Error::BadContainer);
     }
-    return container.unwrap();
+    return OpenedContainer(std::move(data).value(), container.unwrap());
 }
 
 inline auto find_item(ContainerView const container, std::string_view const name)

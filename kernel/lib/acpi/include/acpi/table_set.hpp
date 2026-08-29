@@ -7,7 +7,7 @@
 #include <acpi/structures/root.hpp>
 #include <acpi/types.hpp>
 #include <ktl/result.hpp>
-#include <ustl/array.hpp>
+#include <array>
 
 namespace acpi {
 /// Turns a physical address into something the caller can read.
@@ -119,7 +119,7 @@ class TableSet final {
     sdt::Rsdt const *m_rsdt{nullptr};
     sdt::Xsdt const *m_xsdt{nullptr};
     usize m_num_tables{0};
-    ustl::Array<CacheSlot, kCacheSlots> m_cache{};
+    std::array<CacheSlot, kCacheSlots> m_cache{};
     usize m_cache_len{0};
 };
 

@@ -10,12 +10,12 @@
 #include "physboot.hpp"
 
 #include <ours/phys/aspace.hpp>
-#include <ours/phys/boot-options.hpp>
+#include <ours/phys/boot_options.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
-#include <ours/phys/kernel-boot.hpp>
-#include <ours/phys/kernel-image.hpp>
-#include <ours/phys/kernel-package-loader.hpp>
+#include <ours/phys/kernel_boot.hpp>
+#include <ours/phys/elf_image.hpp>
+#include <ours/phys/kernel_package_loader.hpp>
 #include <ours/phys/module.hpp>
 #include <ours/phys/print.hpp>
 
@@ -25,12 +25,12 @@ namespace ours::phys {
 namespace {
     using std::operator""sv;
 
-    FORCE_INLINE auto patch_kernel(KernelImage &image) -> void {
+    FORCE_INLINE auto patch_kernel(ElfImage &image) -> void {
         // TODO: Apply code-patching metadata (<kernel_name>/code-patches)
         // to the loaded kernel image.
     }
 
-    FORCE_INLINE auto relocate_kernel(KernelImage &image, usize const load_address) -> void {
+    FORCE_INLINE auto relocate_kernel(ElfImage &image, usize const load_address) -> void {
         if (auto const status = image.relocate(load_address); status != Status::Ok) {
             panic("Failed to relocate kernel image: {}", static_cast<u32>(status));
         }

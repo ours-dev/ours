@@ -1,24 +1,23 @@
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/halt.hpp>
+#include <gktl/counter.hpp>
+#include <gktl/defer.hpp>
+#include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 #include <ours/dpc.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/mod.hpp>
-#include <ours/mm/object-cache.hpp>
-#include <ours/object/process-dispatcher.hpp>
-#include <ours/object/thread-dispatcher.hpp>
-#include <ours/task/auto-preempt-disabler.hpp>
-#include <ours/task/idle-thread.hpp>
+#include <ours/mm/object_cache.hpp>
+#include <ours/object/process_dispatcher.hpp>
+#include <ours/object/thread_dispatcher.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
 #include <ustl/fmt/format_to.hpp>
-
-#include <arch/auto-interrupt-disabler.hpp>
-#include <arch/halt.hpp>
-#include <gktl/counter.hpp>
-#include <gktl/defer.hpp>
-#include <gktl/init_hook.hpp>
 
 namespace {
 GKTL_COUNTER(thread_spawn_count, "thread.spawn");
@@ -63,8 +62,7 @@ auto to_string(Thread::State state) -> char const * {
     }
 }
 
-FORCE_INLINE
-auto TaskState::join(Thread *thread, time::Deadline deadline) -> Status {
+FORCE_INLINE auto TaskState::join(Thread *thread, time::Deadline deadline) -> Status {
     return m_result_wait_queue.park_thread(thread, deadline);
 }
 
@@ -74,6 +72,7 @@ auto TaskState::try_wake_joiners(Status status) -> bool {
 }
 
 Thread::Thread(KoId tid, char const *name, sched::BaseProfile const &profile)
+    // Initializer order follows the member declaration order in thread.hpp.
     : m_arch_thread()
     , m_name(name)
     , m_aspace()
@@ -81,14 +80,14 @@ Thread::Thread(KoId tid, char const *name, sched::BaseProfile const &profile)
     , m_stack()
     , m_tid(tid)
     , m_resource_lock()
-    , m_signals()
     , m_flags()
     , m_state(State::Initial)
-    , m_task_state()
+    , m_signals()
     , m_pi_lock()
     , m_scheduling_context(profile)
-    , m_waiter_state()
     , m_preemption_state()
+    , m_task_state()
+    , m_waiter_state()
     , m_memory_allocation_state()
     , m_owned_wait_queues()
     , m_spawned_hook()
@@ -130,18 +129,19 @@ auto Thread::spawn(char const *name, StartRoutine entry, sched::BaseProfile cons
     -> Self * {
     // FIXME(SmallHuaZi)
     auto const tid = KoIdGenerator::generate();
-    if (KoId::Invalid == tid) {
+    if (KOID_INVALID == tid) {
         return 0;
     }
 
-    auto self = ThreadCache::get(mm::kGafKernel);
+    // spawn_etc placement-news into this, so take raw storage.
+    auto self = ThreadCache::allocate(mm::kGafKernel);
     if (!self) {
         return 0;
     }
 
     auto const status = Self::spawn_etc(tid, name, entry, profile, 0, self);
     if (Status::Ok != status) {
-        ThreadCache::put(self);
+        ThreadCache::deallocate(self);
         return 0;
     }
 
@@ -149,7 +149,7 @@ auto Thread::spawn(char const *name, StartRoutine entry, sched::BaseProfile cons
 }
 
 auto Thread::spawn(char const *name, StartRoutine entry, usize priority) -> Self * {
-    return Self::spawn(name, entry, sched::BaseProfile(priority));
+    return Self::spawn(name, entry, sched::BaseProfile(static_cast<i32>(priority)));
 }
 
 auto Thread::switch_thread(Self *curr, Self *next) -> void {
@@ -160,7 +160,7 @@ auto Thread::switch_thread(Self *curr, Self *next) -> void {
 auto Thread::resume() -> Status {
     m_canary.verify<Self>();
 
-    Guard<SpinLock, IrqSaveAndPreemptDisable> guard{get_pi_lock()};
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{get_pi_lock()};
     auto const state = this->state();
 
     // Do nothing to a dead thread.
@@ -337,16 +337,14 @@ auto Thread::trampoline() -> void {
     Thread::Current::exit(retcode);
 }
 
-FORCE_INLINE
-auto Thread::erase_from_global_list() -> void {
+FORCE_INLINE auto Thread::erase_from_global_list() -> void {
     Guard guard{g_spawned_threads_lock};
     return erase_from_global_list_locked();
 }
 
-FORCE_INLINE
-auto Thread::erase_from_global_list_locked() -> void {
+FORCE_INLINE auto Thread::erase_from_global_list_locked() -> void {
     m_canary.verify<Self>();
-    g_spawned_threads.erase(g_spawned_threads.iterator_to(*this));
+    (void)g_spawned_threads.erase(g_spawned_threads.iterator_to(*this));
 }
 
 auto Thread::Current::preempt() -> void {
@@ -411,6 +409,7 @@ auto Thread::Current::become_idle() -> void {
     current_thread->preemption_state().enable_preemption();
 
     IdleThread::Current::run();
+    unreachable();
 }
 
 auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible interruptible,
@@ -487,7 +486,7 @@ auto Thread::Current::do_suspend() -> void {
             // onto runqueue again.
             current_thread->set_state_suspend();
 
-            Scheduler::Current::schedule(current_thread);
+            Scheduler::Current::reschedule(current_thread);
 
             if (current_thread->check_kill_signal()) {
                 need_exit = true;
@@ -573,17 +572,18 @@ auto Thread::Current::exit(i32 retcode) -> void {
         }
 
         if (thread_desc_recyclable) {
-            Scheduler::Current::schedule(current_thread);
+            Scheduler::Current::reschedule(current_thread);
             unreachable();
         }
     }
 
     Dpc dpc{&Self::destroy, current_thread};
-    auto const status = DpcRunner::Current::enqueue(dpc, Dpc::Level::NumLevels);
+    [[maybe_unused]]
+    auto const status = DpcRunner::enqueue(dpc, DpcRunner::Level::Normal);
     DEBUG_ASSERT(Status::Ok == status);
 
     // Here we don't hold |current_thread|'s lock, so use Thread::Current::schedule()
-    Thread::Current::schedule();
+    Thread::Current::reschedule();
     unreachable();
 }
 

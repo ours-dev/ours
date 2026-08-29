@@ -13,21 +13,21 @@ executable("obi-smoke") {
 
 executable("memory-config-smoke") {
   testonly = true
-  sources = [ "memory-config-smoke.cpp" ]
+  sources = [ "memory_config_smoke.cpp" ]
   deps = [ "//kernel/lib/obi:obi" ]
   visibility = [ "*" ]
 }
 
 executable("parser-fuzz-smoke") {
   testonly = true
-  sources = [ "parser-fuzz-smoke.cpp" ]
+  sources = [ "parser_fuzz_smoke.cpp" ]
   deps = [ "//kernel/lib/obi:obi" ]
   visibility = [ "*" ]
 }
 
 executable("lz4-wrapper-smoke") {
   testonly = true
-  sources = [ "lz4-wrapper-smoke.cpp" ]
+  sources = [ "lz4_wrapper_smoke.cpp" ]
   deps = [ "//kernel/lib/lz4:lz4" ]
   visibility = [ "*" ]
 }
@@ -35,8 +35,8 @@ executable("lz4-wrapper-smoke") {
 executable("boot-options-smoke") {
   testonly = true
   sources = [
-    "//kernel/phys/boot-options.cpp",
-    "boot-options-smoke.cpp",
+    "//kernel/phys/boot_options.cpp",
+    "boot_options_smoke.cpp",
   ]
   include_dirs = [ "//kernel/phys/include" ]
   deps = [ "//kernel/lib/obi:obi" ]
@@ -45,7 +45,7 @@ executable("boot-options-smoke") {
 
 executable("cli-smoke") {
   testonly = true
-  sources = [ "cli-smoke.cpp" ]
+  sources = [ "cli_smoke.cpp" ]
   deps = [ "//kernel/lib/obi:obi" ]
   visibility = [ "*" ]
 
@@ -58,7 +58,7 @@ executable("cli-smoke") {
 
 executable("container-view-test") {
   testonly = true
-  sources = [ "container-view-test.cpp" ]
+  sources = [ "container_view_test.cpp" ]
   deps = [
     "//kernel/lib/obi:obi",
     "//vendor/googletest:gtest",
@@ -69,7 +69,7 @@ executable("container-view-test") {
 
 executable("package-builder-test") {
   testonly = true
-  sources = [ "package-builder-test.cpp" ]
+  sources = [ "package_builder_test.cpp" ]
   deps = [
     "//kernel/lib/obi:obi",
     "//vendor/googletest:gtest",

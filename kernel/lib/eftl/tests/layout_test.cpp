@@ -8,8 +8,8 @@
 
 #include <cstddef>
 
-static_assert(sizeof(eftl::elf::Elf64Half) == sizeof(eftl::elf::u16));
-static_assert(sizeof(eftl::elf::Elf64Word) == sizeof(eftl::elf::u32));
+static_assert(sizeof(eftl::elf::Elf64Half) == sizeof(u16));
+static_assert(sizeof(eftl::elf::Elf64Word) == sizeof(u32));
 static_assert(sizeof(eftl::elf::Elf64Ehdr) == 64);
 static_assert(sizeof(eftl::elf::Elf64Phdr) == 56);
 static_assert(offsetof(eftl::elf::Elf64Ehdr, e_entry) == 24);

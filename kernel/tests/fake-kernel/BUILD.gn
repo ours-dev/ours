@@ -28,8 +28,8 @@ if (toolchain_environment == "kernel") {
     has_patches = true
 
     sources = [
-      "entry-$ours_cpu.S",
-      "fake-kernel.cpp",
+      "entry_$ours_cpu.S",
+      "fake_kernel.cpp",
     ]
     configs += [ "//kernel/products:kernel.link" ]
     deps = [ "//kernel/phys:handoff" ]

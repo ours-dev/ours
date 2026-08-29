@@ -1,0 +1,54 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/cpp/cpp_interface.gni")
+
+# The parts of a boot-shim that do not need a machine: turning a legacy
+# platform's memory map into OBI's vocabulary, and finding room in it for
+# the next image.
+#
+# Deliberately depends on no phys target.  //kernel/phys:headers would drag
+# in //kernel/phys/BUILD.gn, whose phys_executable("physload") cannot be
+# evaluated under the host toolchain (it reads ours_toolchain, which host
+# toolchains leave unset) -- and a host toolchain is exactly where these
+# tests have to run.  That is also why nothing here calls println(): the
+# shim decides how loud to be, so this stays reachable from a program with
+# no console at all.
+cpp_interface("headers") {
+  public = [ "include/bootshim/legacy_memory.hpp" ]
+  public_deps = [
+    "//kernel/lib/obi",
+    "//kernel/phys/lib/multiboot:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
+
+# Header-only today, same seam multiboot and bootmem keep for the same
+# reason: sources can be added later without changing callers.
+group("bootshim") {
+  public_deps = [ ":headers" ]
+}
+
+group("tests") {
+  testonly = true
+  # Plain hosted programs: they must build in the host toolchain (see
+  # kernel/lib/obi:tests for the same fix) -- the default toolchain is a
+  # bare switchset mount point with no hosted-libc/prelude wiring of its
+  # own.
+  deps = [ ":legacy-memory-smoke($host_toolchain)" ]
+}
+
+executable("legacy-memory-smoke") {
+  testonly = true
+  sources = [ "legacy_memory_smoke.cpp" ]
+  deps = [
+    ":headers",
+    "//kernel/lib/obi",
+    "//kernel/phys/lib/multiboot:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

@@ -2,7 +2,7 @@
 #include <ours/arch/apic.hpp>
 
 #include <ours/irq/mod.hpp>
-#include <ours/time/clock-event-device.hpp>
+#include <ours/time/clock_event_device.hpp>
 #include <ours/assert.hpp>
 
 #include <ours/platform/isa.hpp>

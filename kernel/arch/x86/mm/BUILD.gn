@@ -4,10 +4,10 @@ import("//kernel/kernel_params.gni")
 if (toolchain_environment == "kernel") {
   source_set("mm") {
     sources = [
-      "arch-vm-aspace.cpp",
+      "arch_vm_aspace.cpp",
       "fault.cpp",
       "mmu.cpp",
-      "page-table.cpp",
+      "page_table.cpp",
     ]
 
     if (mm_numa || mm_numa_emulation) {
@@ -32,5 +32,5 @@ if (toolchain_environment == "kernel") {
 }
 
 cpp_interface("headers") {
-  public = [ "include/ours/mm/arch-vm-aspace.hpp" ]
+  public = [ "include/ours/mm/arch_vm_aspace.hpp" ]
 }

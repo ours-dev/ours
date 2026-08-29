@@ -1,5 +1,18 @@
 import("//build/cpp/cpp_interface.gni")
 
+# The implementation. Only ":headers" existed before, so every user got the
+# declarations and nothing ever compiled init.cpp/log.cpp/filter.cpp -- which
+# is why get_global_logger() and logz4::vlog<> had no definition anywhere in
+# the build.
+source_set("logz4") {
+  sources = [
+    "filter.cpp",
+    "init.cpp",
+    "log.cpp",
+  ]
+  public_deps = [ ":headers" ]
+}
+
 cpp_interface("headers") {
   public_deps = [ "//system/lib/ustl:headers" ]
   public = [
@@ -7,7 +20,7 @@ cpp_interface("headers") {
     "include/logz4/log.hpp",
     "include/logz4/logger.hpp",
     "include/logz4/record.hpp",
-    "include/logz4/ring-buffer.hpp",
+    "include/logz4/ring_buffer.hpp",
     "include/logz4/types.hpp",
   ]
 }

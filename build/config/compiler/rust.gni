@@ -31,7 +31,7 @@ declare_args() {
   # host toolchains override this to "unwind".
   rust_panic = "abort"
 
-  # Rust edition used by the rustc_* target templates' default.
+  # Rust edition used by the rust_* target templates' default.
   rust_edition = "2021"
 }
 

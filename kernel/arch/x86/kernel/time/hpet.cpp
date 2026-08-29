@@ -2,19 +2,19 @@
 #include <ktl/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
-#include <ours/arch/hpet-regs.hpp>
+#include <ours/arch/hpet_regs.hpp>
 #include <ours/arch/hpet.hpp>
 #include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
-#include <ours/sync/spin-lock.hpp>
+#include <ours/sync/spin_lock.hpp>
 #include <ours/time/cfg.hpp>
-#include <ours/time/clock-event-device.hpp>
-#include <ours/time/clock-source.hpp>
+#include <ours/time/clock_event_device.hpp>
+#include <ours/time/clock_source.hpp>
 #include <ustl/chrono/duration.hpp>
 #include <ustl/traits/cv.hpp>
 #include <ustl/views/span.hpp>
@@ -32,6 +32,7 @@ class HpetChannel;
 static arch::HpetRegs *s_hpet_mmio;
 static usize s_hpet_frequency;
 static ustl::views::Span<HpetChannel> s_hpet_channels;
+[[maybe_unused]]
 static bool s_hpet_legacy_irq_enabled;
 
 class HpetClockSource {
@@ -44,7 +45,7 @@ class HpetClockSource {
         m_canary.verify<Self>();
 
         u64 const oldvalue = m_cache;
-        if (arch::AutoInterruptDisabler guard; m_spinlock.try_acquire()) {
+        if (::arch::AutoInterruptDisabler guard; m_spinlock.try_acquire()) {
             auto const value = s_hpet_mmio->main_counter_value;
             m_cache = value;
             m_spinlock.release();

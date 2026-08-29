@@ -111,6 +111,10 @@ template("ours_toolchain") {
   _use_gcc = is_gcc && !_is_host
 
   if (_is_host) {
+    # -isysroot isn't target-identity like the ELF --target triple below;
+    # it's a search-path concern, so it's a config
+    # (//build/config:mac_host_sysroot, added in BUILDCONFIG.gn next to
+    # host-prelude) rather than something baked into this template.
     target_flag = ""
   } else {
     # LLVM target triple: architecture-vendor-operating-system-ABI.

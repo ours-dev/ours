@@ -46,21 +46,21 @@ auto make_sectioned_image() -> std::array<u8, 1024> {
 
     Section string_table{};
     string_table.sh_name = 1;
-    string_table.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    string_table.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     string_table.sh_offset = K_STRING_TABLE_OFFSET;
     string_table.sh_size = 22;
     string_table.sh_addralign = 1;
 
     Section text{};
     text.sh_name = 11;
-    text.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Progbits);
+    text.sh_type = static_cast<u32>(eftl::elf::SectionType::Progbits);
     text.sh_offset = K_TEXT_OFFSET;
     text.sh_size = 4;
     text.sh_addralign = 16;
 
     Section bss{};
     bss.sh_name = 17;
-    bss.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Nobits);
+    bss.sh_type = static_cast<u32>(eftl::elf::SectionType::Nobits);
     bss.sh_size = 0x20;
     bss.sh_addralign = 16;
 
@@ -157,7 +157,7 @@ auto test_binary_rejects_invalid_section_relationships() -> int {
     Section string_table{};
     std::memcpy(&string_table, invalid_name_table.data() + K_SECTION_TABLE_OFFSET + sizeof(Section),
                 sizeof(string_table));
-    string_table.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Progbits);
+    string_table.sh_type = static_cast<u32>(eftl::elf::SectionType::Progbits);
     put(invalid_name_table, K_SECTION_TABLE_OFFSET + sizeof(Section), string_table);
     if (Binary::from_raw(invalid_name_table.data(), invalid_name_table.size()).is_ok()) {
         return 3;

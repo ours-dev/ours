@@ -1,6 +1,7 @@
 #include <ours/mm/init.hpp>
 
 #include <ours/mm/vmm.hpp>
+#include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_page.hpp>
@@ -16,11 +17,10 @@
 #include <ustl/lazy_init.hpp>
 #include <ustl/views/span.hpp>
 #include <ustl/traits/is_invocable.hpp>
-#include <ustl/algorithms/minmax.hpp>
-
 #include <logz4/log.hpp>
 
 #include <arch/x86/cache.hpp>
+#include <algorithm>
 
 namespace ours::mm {
 namespace {
@@ -31,6 +31,7 @@ namespace {
         VmaFlags vmaf;
     };
 
+    [[maybe_unused]]
     constexpr auto kPresetVmaMmuFlags = MmuFlags::PermMask;
 
     /// Used in init_vmm_postheap.
@@ -92,7 +93,8 @@ namespace {
         auto kaspace = VmAspace::kernel_aspace();
         auto root_vma = kaspace->root_vma();
         ustl::Arc<VmArea> vma;
-        auto status = root_vma->create_subvma(phys_vma.base - root_vma->base(), phys_vma.size, phys_vma.vmaf, 
+        [[maybe_unused]]
+        auto status = root_vma->create_subvma(phys_vma.base - root_vma->base(), phys_vma.size, phys_vma.vmaf,
             phys_vma.name, VmMapOption::Fixed, &vma);
         DEBUG_ASSERT(Status::Ok == status);
 
@@ -104,7 +106,7 @@ namespace {
     auto init_vmm_preheap() -> void {
         VmAspace::init_kernel_aspace();
 
-        for (auto i = 0; i < std::size(s_phys_vmos); ++i) {
+        for (usize i = 0; i < std::size(s_phys_vmos); ++i) {
             entrol_preset_vma(s_phys_vmos[i]);
         }
 
@@ -112,7 +114,10 @@ namespace {
         if (!frame) {
             panic("Failed to allocate the zero page");
         }
-        g_zero_page = role_cast<PageFrame::Role::Vmm>(frame);
+        // Claim it for the VMM: the frame comes straight from the buddy
+        // allocator, so this is a role *declaration*, not a query.
+        frame->become<page::VmmBody>();
+        g_zero_page = frame;
         g_zero_page->mark_pinned();
 
         VmAspace::kernel_aspace()->root_vma()->dump();

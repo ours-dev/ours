@@ -4,7 +4,7 @@ _libraries = [
   "acpi",
   "ccrt",
   "clock",
-  "code-patching",
+  "code_patching",
   "eftl",
   "gktl",
   "ktl",

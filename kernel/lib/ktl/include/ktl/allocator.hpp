@@ -24,7 +24,7 @@ namespace ktl {
         using RebindT = Allocator<U>;
 
         static auto allocate(usize n) -> PtrMut {
-            return new (ours::mem::kGafKernel) Element[n]();
+            return new (ours::mm::kGafKernel) Element[n]();
         }
 
         static auto deallocate(Ptr ptr, usize n) -> void {

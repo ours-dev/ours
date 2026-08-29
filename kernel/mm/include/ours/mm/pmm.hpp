@@ -4,12 +4,12 @@
 #define OURS_MM_PMM_HPP 1
 
 #include <ktl/result.hpp>
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/memory-model.hpp>
-#include <ours/mm/node-mask.hpp>
+#include <ours/mm/memory_model.hpp>
+#include <ours/mm/node_mask.hpp>
 #include <ours/mm/physmap.hpp>
-#include <ours/mm/pm-frame.hpp>
+#include <ours/mm/pm_frame.hpp>
 #include <ours/status.hpp>
 #include <ustl/bit.hpp>
 
@@ -35,8 +35,14 @@ FORCE_INLINE constexpr auto min_pfn() -> Pfn {
     return phys_to_pfn(min_phys_addr());
 }
 
+/// Set once the real page allocator has taken over from EarlyMem.
+///
+/// Declared here rather than inside pmm_enabled() below: a block-scope extern
+/// is invisible to everyone else, so the code that has to *set* the flag could
+/// not name it.
+extern bool g_pmm_enabled;
+
 FORCE_INLINE constexpr static auto pmm_enabled() -> bool {
-    extern bool g_pmm_enabled;
     return g_pmm_enabled;
 }
 
@@ -54,12 +60,12 @@ auto node_possible_mask() -> NodeMask const &;
 auto num_nodes() -> usize;
 
 FORCE_INLINE
-inline auto num_online_nodes() -> usize {
+auto num_online_nodes() -> usize {
     return node_online_mask().count();
 }
 
 FORCE_INLINE
-inline auto num_possible_nodes() -> usize {
+auto num_possible_nodes() -> usize {
     return node_possible_mask().count();
 }
 
@@ -81,7 +87,7 @@ auto alloc_frames_fragment(Gaf, usize, NodeMask const & = node_online_mask())
     -> ktl::Result<PmFrame::List>;
 
 [[nodiscard]]
-FORCE_INLINE inline auto alloc_frame_n(Gaf gaf, usize nr_frames,
+FORCE_INLINE auto alloc_frame_n(Gaf gaf, usize nr_frames,
                                        NodeMask const &nodes = node_online_mask()) -> PmFrame * {
     return alloc_frames(gaf, get_order(nr_frames), nodes);
 }
@@ -95,7 +101,7 @@ auto alloc_frames(NnId, Gaf, PmFrame::List *, usize, NodeMask const & = node_onl
 auto alloc_frames(NnId, Gaf, usize, NodeMask const & = node_online_mask()) -> PmFrame *;
 
 [[nodiscard]]
-FORCE_INLINE inline auto alloc_frame_n(NnId nid, Gaf gaf, usize nr_frames,
+FORCE_INLINE auto alloc_frame_n(NnId nid, Gaf gaf, usize nr_frames,
                                        NodeMask const &nodes = node_online_mask()) -> PmFrame * {
     return alloc_frames(nid, gaf, get_order(nr_frames), nodes);
 }
@@ -135,7 +141,7 @@ OM_API FORCE_INLINE auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame,
 auto free_frames(PmFrame *frame, usize order = 0) -> void;
 
 FORCE_INLINE
-inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
+auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
     return free_frames(virt_to_frame(virt_addr), order);
 }
 

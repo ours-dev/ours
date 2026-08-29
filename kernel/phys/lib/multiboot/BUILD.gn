@@ -2,7 +2,7 @@ import("//build/cpp/cpp_interface.gni")
 
 cpp_interface("headers") {
   public = [
-    "include/multiboot/memory-map.hpp",
+    "include/multiboot/memory_map.hpp",
     "include/multiboot/multiboot2.hpp",
     "include/multiboot/view.hpp",
   ]
@@ -33,7 +33,7 @@ group("tests") {
 
 executable("view-smoke") {
   testonly = true
-  sources = [ "view-smoke.cpp" ]
+  sources = [ "view_smoke.cpp" ]
   deps = [
     ":headers",
     "//system/lib/ustl:headers",
@@ -44,7 +44,7 @@ executable("view-smoke") {
 
 executable("memory-map-smoke") {
   testonly = true
-  sources = [ "memory-map-smoke.cpp" ]
+  sources = [ "memory_map_smoke.cpp" ]
   deps = [
     ":headers",
     "//kernel/phys/lib/bootmem:headers",

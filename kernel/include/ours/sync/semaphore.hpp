@@ -4,7 +4,7 @@
 #define OURS_SYNC_SEMAPHORE_HPP 1
 
 #include <ours/status.hpp>
-#include <ours/task/wait-queue.hpp>
+#include <ours/task/wait_queue.hpp>
 
 namespace ours::sync {
     class Semaphore {

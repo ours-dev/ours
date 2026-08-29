@@ -44,9 +44,9 @@ auto make_header(u16 type, u16 program_count) -> Header {
 
 auto make_load_segment() -> Segment {
     Segment segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     segment.p_flags =
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Executable);
     segment.p_vaddr = 0x1000;
     segment.p_memsz = 0x1000;
     segment.p_align = 0x1000;
@@ -189,7 +189,7 @@ auto test_legacy_policy_requires_dynamic_null() -> int {
     put(image, 0, header);
 
     Segment dynamic{};
-    dynamic.p_type = static_cast<ours::u32>(eftl::elf::SegType::Dynamic);
+    dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Dynamic);
     dynamic.p_offset = sizeof(Header) + 2 * sizeof(Segment);
     dynamic.p_filesz = sizeof(Dyn);
     put(image, sizeof(Header) + sizeof(Segment), dynamic);

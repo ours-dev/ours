@@ -4,6 +4,7 @@
 #define OURS_ARCH_ENTRY_HPP 1
 
 #include <ours/arch/x86/entry.hpp>
+#include <ours/arch/x86/descriptor.hpp>
 #include <arch/x86/macro/system.hpp>
 
 namespace ours {

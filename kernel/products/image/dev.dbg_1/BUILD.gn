@@ -28,9 +28,16 @@ kernel_cmdline("cmdline") {
 
 kernel_image("dev.dbg_1") {
   visibility = [ "//products/*" ]
+
+  # See //kernel/products/image/dev: the documented name is kernel.dev.dbg_1.obi.
+  output_name = "kernel.dev.dbg_1"
+
+  # Same topology fix as //kernel/products/image/dev: physload has to be item
+  # 0 for obit's --bootable check, and physboot has to name the phys toolchain.
   deps = [
-    ":ours",
+    "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     ":cmdline",
-    "//kernel/phys/image/physboot",
+    ":ours",
+    "//kernel/phys/image/physboot(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
   ]
 }

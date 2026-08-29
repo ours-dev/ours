@@ -8,7 +8,7 @@ cpp_interface("headers") {
     "include/ktl/new.hpp",
     "include/ktl/result.hpp",
     "include/ktl/rwonce.hpp",
-    "include/ktl/timed-loop.hpp",
+    "include/ktl/timed_loop.hpp",
     "include/ktl/types.hpp",
     "include/ktl/vec.hpp",
     "include/ktl/xarray.hpp",

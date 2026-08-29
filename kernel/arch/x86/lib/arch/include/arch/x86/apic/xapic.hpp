@@ -3,7 +3,7 @@
 #ifndef ARCH_X86_APIC_XAPIC_HPP
 #define ARCH_X86_APIC_XAPIC_HPP 1
 
-#include <arch/auto-interrupt-disabler.hpp>
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/types.hpp>
 #include <arch/x86/apic/common.hpp>
 #include <arch/x86/msr.hpp>

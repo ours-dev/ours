@@ -1,7 +1,7 @@
 #include <ours/object/handle.hpp>
-#include <ours/object/job-dispatcher.hpp>
-#include <ours/object/process-dispatcher.hpp>
-#include <ours/object/vm-area-dispatcher.hpp>
+#include <ours/object/job_dispatcher.hpp>
+#include <ours/object/process_dispatcher.hpp>
+#include <ours/object/vm_area_dispatcher.hpp>
 
 namespace {
     auto userboot_init() -> void {

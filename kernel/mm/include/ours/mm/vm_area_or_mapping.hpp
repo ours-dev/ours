@@ -33,10 +33,10 @@ enum class VmaFlags : u32 {
     None,
 
     // Only serve for VmMapping
-    Write = BIT(1),
-    Read = BIT(2),
-    Exec = BIT(3),
-    Share = BIT(4),
+    Write = 0_bit,
+    Read = 1_bit,
+    Exec = 2_bit,
+    Share = 3_bit,
     PermMask = Write | Read | Exec | Share,
 
     // States
@@ -71,6 +71,11 @@ FORCE_INLINE constexpr auto extract_permissions(VmaFlags vmaflags) -> MmuFlags {
 class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::ThreadSafePolicy> {
     using Self = VmAreaOrMapping;
     using Base = ustl::RefCounted<Self, ustl::sync::ThreadSafePolicy>;
+
+    // Base::destroy() calls ~VmAreaOrMapping() through the base class on the
+    // final release(); without this friend, that call is ill-formed since
+    // the destructor below is protected.
+    friend Base;
 
   public:
     class Builder;
@@ -274,26 +279,26 @@ class VmaSet: public VmaSetBase {
 
     FORCE_INLINE
     auto insert(Iter hint, RefMut value) -> IterMut {
-        value.inc_strong_ref();
+        value.retain();
         return Base::insert(hint, value);
     }
 
     FORCE_INLINE
     auto insert(RefMut value) -> IterMut {
-        value.inc_strong_ref();
+        value.retain();
         return Base::insert(value);
     }
 
     FORCE_INLINE
     auto erase(Iter pos) -> IterMut {
-        pos.unconst()->dec_strong_ref();
+        pos.unconst()->release();
         return Base::erase(pos);
     }
 
     FORCE_INLINE
     auto erase(Iter first, Iter last) -> IterMut {
         return Base::erase_and_dispose(first, last,
-                                       [](PtrMut value) noexcept { value->dec_strong_ref(); });
+                                       [](PtrMut value) noexcept { value->release(); });
     }
 
     /// Find the first existent VMA whose'end < addr.

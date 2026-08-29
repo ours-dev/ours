@@ -19,8 +19,43 @@ namespace {
 
     template <int N>
     auto write(char const (&s)[N]) -> void {
-        return write(s, N);
+        // N counts the terminating NUL; sending it to the serial port would
+        // emit a stray zero byte.
+        return write(s, N - 1);
     }
+
+    /// A bounded output iterator for std::vformat_to.
+    ///
+    /// vformat_to writes as much as the format string demands, and a bare
+    /// `char *` tells it nothing about where the buffer ends -- one long log
+    /// line would run straight off the end of s_format_buffer below. Anything
+    /// past the limit is dropped instead.
+    class BoundedOutput {
+      public:
+        using difference_type = std::ptrdiff_t;
+
+        BoundedOutput() = default;
+
+        BoundedOutput(char *first, char *last)
+            : cursor_(first), last_(last) {}
+
+        auto operator*() -> BoundedOutput & { return *this; }
+        auto operator++() -> BoundedOutput & { return *this; }
+        auto operator++(int) -> BoundedOutput { return *this; }
+
+        auto operator=(char c) -> BoundedOutput & {
+            if (cursor_ < last_) {
+                *cursor_++ = c;
+            }
+            return *this;
+        }
+
+        [[nodiscard]] auto cursor() const -> char * { return cursor_; }
+
+      private:
+        char *cursor_ = nullptr;
+        char *last_ = nullptr;
+    };
 } // namespace anonymous
 
     template <typename FormatString>
@@ -54,9 +89,14 @@ namespace {
 
         static char s_format_buffer[512];
 
-        auto end = ustl::fmt::vformat_to(s_format_buffer, fmt, args);
+        // One byte held back so the newline below always has somewhere to go.
+        auto const out = ustl::fmt::vformat_to(
+            BoundedOutput{s_format_buffer, s_format_buffer + sizeof(s_format_buffer) - 1}, fmt,
+            args);
+
+        auto *const end = out.cursor();
         *end = '\n';
-        write(s_format_buffer, end - s_format_buffer + 1);
+        write(s_format_buffer, static_cast<int>(end - s_format_buffer + 1));
     }
 
     template auto vlog(Logger &, Level, ustl::views::StringView, ustl::fmt::FormatArgs const &args) -> void;

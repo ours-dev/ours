@@ -45,13 +45,13 @@ auto make_dynamic_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 24;
     strings.sh_addralign = 1;
 
     Section dynamics{};
-    dynamics.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynamic);
+    dynamics.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynamic);
     dynamics.sh_offset = K_DYNAMIC_TABLE_OFFSET;
     dynamics.sh_size = 3 * sizeof(Dynamic);
     dynamics.sh_link = 1;
@@ -256,12 +256,12 @@ auto test_elf32_observes_dynamic_entries() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     Section32 dynamics{};
-    dynamics.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynamic);
+    dynamics.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynamic);
     dynamics.sh_offset = K_DYNAMIC_OFFSET;
     dynamics.sh_size = 3 * sizeof(Dynamic32);
     dynamics.sh_link = 1;

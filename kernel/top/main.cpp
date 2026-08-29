@@ -1,12 +1,14 @@
 #include <ours/boot/handoff.hpp>
-#include <ours/cpu-mask.hpp>
+#include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/start.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
 
 /// Init calls
 #include <ours/irq/init.hpp>
+#include <ours/mm/early_mem.hpp>
 #include <ours/mm/init.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/platform/acpi.hpp>
@@ -32,7 +34,7 @@ namespace {
         set_init_level(InitLevel::Platform);
 
         // Ok, now there is no any routine to access the `init` area.
-        mm::reclaim_init_area();
+        mm::EarlyMem::reclaim_init_area();
 
         // The 2nd stage has finished, and next is to load userboot.
 
@@ -45,11 +47,11 @@ namespace {
             return 0;
         };
 
-        auto t1 = Thread::spawn("Sample1", task::kDefaultPriority, gibberish, "Thread 1");
+        auto t1 = Thread::spawn("Sample1", task::DEFAULT_PRIORITY, gibberish, "Thread 1");
         t1->detach();
         t1->resume();
 
-        auto t2 = Thread::spawn("Sample2", task::kDefaultPriority, gibberish, "Thread 2");
+        auto t2 = Thread::spawn("Sample2", task::DEFAULT_PRIORITY, gibberish, "Thread 2");
         t2->detach();
         t2->resume();
 
@@ -99,7 +101,7 @@ auto start_kernel(PhysAddr handoff) -> void {
     task::init();
     set_init_level(InitLevel::Threading);
 
-    auto const laborer = Thread::spawn("laborer", task::kDefaultPriority, labour_routine);
+    auto const laborer = Thread::spawn("laborer", task::DEFAULT_PRIORITY, labour_routine);
     laborer->set_cpu_affinity_hard(CpuMask::of(0));
     laborer->detach();
     laborer->resume();

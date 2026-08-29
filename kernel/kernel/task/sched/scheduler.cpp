@@ -1,30 +1,89 @@
-#include <arch/auto-interrupt-disabler.hpp>
+/// Placing a thread on a scheduler goes through two layers, both of which
+/// require this scheduler's runqueue lock (`get_lock()`) to be held:
+///
+///     activate_thread / deactivate_thread  -- residency: which CPU owns it
+///     enqueue_thread  / dequeue_thread     -- queueing:  where it sits there
+///
+/// [enqueue_thread / dequeue_thread]
+///
+/// The queueing layer. It updates the scheduling clock (unless SkipClock),
+/// delegates the actual insertion/removal to the thread's own discipline via
+/// `ISchedule::enqueue_thread`/`dequeue_thread`, and -- only once the
+/// discipline reports Status::Ok -- maintains this scheduler's aggregate
+/// accounting, `m_runtime.num_queued_threads` and `m_runtime.total_weight`.
+///
+/// The discipline's Status is returned verbatim, and any non-Ok result means
+/// nothing was accounted for. In particular Status::Delayed (see
+/// Fair::try_to_delay_dequeue, gated on SCHED_DELAY_DEQUEUE) reports that an
+/// ineligible sleeper was deliberately left in place: it is still queued, and
+/// the counters intentionally stay put.
+///
+/// This layer touches neither half of RunQueueState. TransientState belongs to
+/// the residency layer below, and Disposition belongs to the discipline, which
+/// calls `RunQueueState::on_enqueue()`/`on_dequeue()` itself.
+///
+/// Call this layer directly only to re-place a thread on the CPU it already
+/// lives on, with no change of residency: Scheduler::Pi re-sorts a thread whose
+/// effective profile changed by pairing `Save | SkipClock` with
+/// `Restore | SkipClock` (see scheduler-pi.cpp).
+///
+/// [activate_thread / deactivate_thread]
+///
+/// The residency layer: the above, plus the TransientState machine that tracks
+/// a thread while it is between runqueues.
+///
+///     deactivate_thread  marks the thread Migrating, then dequeues it. Once it
+///                        returns, the thread is on no runqueue and this
+///                        scheduler's lock may be dropped.
+///     activate_thread    sees a thread that arrives still marked Migrating and
+///                        adds EnqueueControl::Migrated, so the discipline can
+///                        distinguish a completed migration from a fresh
+///                        wakeup; then enqueues it and marks it Queueing.
+///
+/// The two are designed to be used as a pair spanning two schedulers -- see
+/// Scheduler::Migrator::move_queued_thread (scheduler-migrator.cpp), which
+/// deactivates under the old CPU's lock, hands the thread across, and activates
+/// under the new CPU's. Migrating is exactly that window. activate_thread is
+/// also used alone, by do_unpark_thread, to admit a waking thread.
+///
+/// Migrating therefore means "runnable, in flight between runqueues", never
+/// merely "off the runqueue" -- a blocking thread leaves via the plain
+/// dequeue_thread path in reschedule_common and becomes None, not Migrating.
+/// Marking a sleeper Migrating would both promise observers an arrival that
+/// never comes, and make the later activate_thread tag a plain wakeup with
+/// EnqueueControl::Migrated. deactivate_thread asserts this distinction with
+/// `DEBUG_ASSERT(thread->is_state_sleeping() == false)`.
+///
+/// TODO(SmallHuaZi): both return void and discard the Status underneath them,
+/// so a Status::Delayed dequeue leaves a thread marked Migrating while it is in
+/// fact still queued.
+
+#include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/counter.hpp>
 #include <gktl/defer.hpp>
+#include <ktl/new.hpp>
 #include <ktl/rwonce.hpp>
 #include <ours/cpu.hpp>
-#include <ours/ipi-service.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/task/auto-preempt-disabler.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/sched/context.hpp>
 #include <ours/task/sched/features.hpp>
 #include <ours/task/sched/schedule.hpp>
 #include <ours/task/sched/scheduler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
-#include <ours/time/timer-queue.hpp>
-#include <ustl/util/swap.hpp>
+#include <ours/time/timer_queue.hpp>
+#include <utility>
 
 using ustl::sync::MemoryOrder;
-using ustl::traits::ConditionalT;
 
-using ours::mm::CpuLocal;
 using ours::sync::SpinLock;
 
 namespace ours::task::sched {
 namespace {
-    extern "C" Schedule *const kSchedulesStart[] LINK_NAME("__schedules_start");
-    extern "C" Schedule *const kSchedulesEnd[] LINK_NAME("__schedules_end");
+    extern "C" ScheduleEntry const kSchedulesStart[] LINK_NAME("__schedules_start");
+    extern "C" ScheduleEntry const kSchedulesEnd[] LINK_NAME("__schedules_end");
 
     GKTL_COUNTER(schedule_idle_past, "schedule.idle_past");
     GKTL_COUNTER(schedule_preempt_past, "schedule.preempt_past");
@@ -35,16 +94,6 @@ namespace {
         return preemption_state.is_preemption_enabled() && !arch::irqs_disabled();
     }
 
-    auto is_special_state(Thread *curr) -> bool {
-        constexpr auto const kThreadStateSpecial = Thread::State::Dead | Thread::State::Sleeping;
-
-        auto const state = curr->state();
-        return !!(state & kThreadStateSpecial);
-    }
-
-    auto get_schedule(CpuNum cpu, Context &ctx) -> void {}
-
-    auto set_schedule(CpuNum cpu, Context &ctx) -> void {}
 } // namespace
 
 auto Scheduler::trampoline_handoff() -> void {
@@ -72,6 +121,7 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile) -> vo
 }
 
 auto Scheduler::on_thread_dead(Thread *thread) -> void {
+    [[maybe_unused]]
     auto &ctx = thread->scheduling_context();
     // se.schedule()->on_thread_dead(m_runtime, thread);
 }
@@ -105,7 +155,7 @@ auto Scheduler::unpark_thread(Thread *thread, UnparkControl control) -> void {
 auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkControl control) -> void {
     CpuMask to_resched;
     while (!threads.empty()) {
-        auto *const thread = &threads.front();
+        auto *const thread = &threads.front().value();
         threads.pop_front();
 
         thread->m_canary.verify<Self>();
@@ -166,18 +216,16 @@ auto Scheduler::init() -> void {
     auto const num_schedule = kSchedulesEnd - kSchedulesStart;
     DEBUG_ASSERT(num_schedule > 0);
 
-    auto raw_schedules = new (mm::kGafKernel) Schedule *[num_schedule]();
-    DEBUG_ASSERT(raw_schedules, "Failed to allocate memory to place schedules");
-
-    m_schedules = ustl::views::make_span(raw_schedules, num_schedule);
     for (auto i = 0; i < num_schedule; ++i) {
-        m_schedules[i] = CpuLocal::access(kSchedulesStart[i]);
+        auto const &entry = kSchedulesStart[i];
+        m_schedules[static_cast<usize>(entry.discipline)] = entry.instance;
     }
 
     m_runtime.which_cpu = Cpu::id();
 }
 
 auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
+    [[maybe_unused]]
     auto &ctx = thread->scheduling_context();
 
     DEBUG_ASSERT(ctx.curr_cpu() == m_runtime.which_cpu);
@@ -190,24 +238,18 @@ auto Scheduler::set_state(State state, bool on) -> void {
     g_states[usize(state)].store(active_mask, MemoryOrder::Relaxed);
 }
 
-auto Scheduler::set_schedule(Thread *thread) -> Schedule * {
+auto Scheduler::set_schedule(Thread *thread) -> ISchedule * {
     auto &so = thread->scheduling_context();
     so.m_schedule = get_schedule(thread);
     return so.m_schedule;
 }
 
-auto Scheduler::get_schedule(Thread *thread) -> Schedule * {
+auto Scheduler::get_schedule(Thread *thread) -> ISchedule * {
     auto &ctx = thread->scheduling_context();
 
-    Schedule *schedule = 0;
-    switch (ctx.discipline()) {
-        case Discipline::Deadline:
-            schedule = CpuLocal::access(g_fair, m_runtime.which_cpu);
-            break;
-        default:
-            schedule = CpuLocal::access(g_fair, m_runtime.which_cpu);
-            break;
-    }
+    auto *const schedule = m_schedules[static_cast<usize>(ctx.discipline())];
+    DEBUG_ASSERT(schedule, "No schedule registered for discipline[{}]",
+                 static_cast<usize>(ctx.discipline()));
 
     return schedule;
 }
@@ -220,19 +262,19 @@ auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const *affinity, CpuAff
         auto &cpu_affinity = thread->scheduling_context().cpu_affinity();
         switch (kind) {
             case CpuAffinity::Kind::Hard:
-                ustl::swap(cpu_affinity.m_hard_affinity, affinity);
+                std::swap(cpu_affinity.m_hard_affinity, affinity);
                 break;
             case CpuAffinity::Kind::Soft:
-                ustl::swap(cpu_affinity.m_soft_affinity, affinity);
+                std::swap(cpu_affinity.m_soft_affinity, affinity);
                 break;
         }
     };
 
     auto &so = thread->scheduling_context();
 
-    // Details...
+    do_set_affinity();
 
-    if (auto const cpu_thread_on = so.curr_cpu(); cpu_thread_on != kInvalidCpuNum) {
+    if (auto const cpu_thread_on = so.curr_cpu(); cpu_thread_on != INVALID_CPU_NUM) {
         if (so.m_affinity.get_available_mask(CpuMask::of(cpu_thread_on)).none()) {
             Scheduler::migrate_thread(thread);
         }
@@ -253,6 +295,7 @@ auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
 }
 
 auto Scheduler::migrate_thread(Thread *thread) -> void {
+    [[maybe_unused]]
     auto &ctx = thread->scheduling_context();
 
     if (thread->is_state_ready()) {
@@ -277,7 +320,7 @@ auto Scheduler::process_migrating_threads(SchedTime now) -> void {
 
     CpuMask to_resched;
     while (!migrating_threads.empty()) {
-        auto const to_migrate = &migrating_threads.front();
+        auto const to_migrate = &migrating_threads.front().value();
         migrating_threads.pop_front();
 
         // To insert
@@ -297,6 +340,31 @@ auto Scheduler::finish_transition(Thread *thread) -> void {
     using TransientState = RunQueueState::TransientState;
     if (rqs.m_transient_state == TransientState::Migrating) {
     }
+}
+
+/// Hands |thread| back to its discipline as the outgoing thread.
+///
+/// The Scheduler-level pair is only the dispatch: which discipline a thread
+/// belongs to is recorded in its own context, so the work itself lives in
+/// ISchedule (Fair::put_prev_thread / Fair::set_next_thread).
+auto Scheduler::put_prev_thread(Thread *thread) -> void {
+    if (!thread) {
+        return;
+    }
+
+    auto *const schedule = thread->scheduling_context().schedule();
+    DEBUG_ASSERT(schedule, "thread has no schedule assigned");
+    schedule->put_prev_thread(m_runtime, thread);
+}
+
+auto Scheduler::set_next_thread(Thread *thread) -> void {
+    if (!thread) {
+        return;
+    }
+
+    auto *const schedule = thread->scheduling_context().schedule();
+    DEBUG_ASSERT(schedule, "thread has no schedule assigned");
+    schedule->set_next_thread(m_runtime, thread);
 }
 
 auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
@@ -421,10 +489,19 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
             return;
         }
     } else if (!is_involuntary) {
-        // The |curr| is sleeping.
+        // The |curr| is sleeping. Off the runqueue entirely -- not `Migrating`,
+        // which promises an imminent landing on another CPU's runqueue and
+        // would make `activate_thread` mistake the eventual wakeup for a
+        // completed migration (see this file's header comment).
+        // TODO(SmallHuaZi): dequeue_thread may also return Status::Delayed, in
+        // which case |curr| is still on the runqueue and neither None nor
+        // Queueing describes it -- it falls through here and keeps the
+        // Rescheduling state set above. RunQueueState::TransientState declares
+        // a DequeueDelayed for exactly this, but has no setter or predicate for
+        // it yet (see context.hpp).
         constexpr auto control = DequeueControl::SkipClock | DequeueControl::Sleep;
         if (Status::Ok == dequeue_thread(curr, control)) {
-            rqs.set_transient_state_migrating();
+            rqs.set_transient_state_none();
         }
     }
 
@@ -521,7 +598,7 @@ auto Scheduler::Current::park_thread(Thread *curr) -> void {
     DEBUG_ASSERT(curr == self.m_runtime.curr_thread);
     DEBUG_ASSERT(curr->state() & (Thread::State::Parked | Thread::State::Sleeping));
 
-    self.schedule_common(curr, Mode::Regular);
+    self.reschedule_common(curr, Mode::Regular);
 }
 
 auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void {
@@ -574,27 +651,28 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
 
     auto &se = thread->scheduling_context();
     auto target_cpu = se.schedule()->select_target_cpu(thread, Cpu::online_mask());
-    if (target_cpu != kInvalidCpuNum) {
+    if (target_cpu != INVALID_CPU_NUM) {
         return target_cpu;
     }
 
     // The following is a fallback strategy: pick the scheduler with the minimal runtime.
     auto last_cpu = se.last_cpu();
     auto curr_cpu = Cpu::id();
-    auto starting_cpu = last_cpu == kInvalidCpuNum ? curr_cpu : last_cpu;
+    [[maybe_unused]]
+    auto starting_cpu = last_cpu == INVALID_CPU_NUM ? curr_cpu : last_cpu;
 
     auto const active_mask = peek_active_mask();
     auto const available_mask = se.cpu_affinity().get_available_mask(active_mask);
     available_mask.for_each([&target_cpu](CpuNum cpunum) {
         // Find the mininal expected runtime CPU
-        if (target_cpu == kInvalidCpuNum ||
+        if (target_cpu == INVALID_CPU_NUM ||
             Scheduler::Current::get(target_cpu).m_runtime.total_expected_runtime >
                 Scheduler::Current::get(cpunum).m_runtime.total_expected_runtime) {
             target_cpu = cpunum;
         }
     });
 
-    DEBUG_ASSERT(target_cpu != kInvalidCpuNum, "At least one CPU was assigned to us");
+    DEBUG_ASSERT(target_cpu != INVALID_CPU_NUM, "At least one CPU was assigned to us");
     return target_cpu;
 }
 
@@ -617,7 +695,7 @@ auto Scheduler::Current::preempt(Thread *curr) -> void {
     self.m_canary.verify<Self>();
     DEBUG_ASSERT(curr == self.m_runtime.curr_thread);
 
-    return self.schedule_common(curr, Mode::Preempt);
+    return self.reschedule_common(curr, Mode::Preempt);
 }
 
 auto Scheduler::Current::reschedule(Thread *curr) -> void {
@@ -671,7 +749,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
         ScopedGuard guard{self.get_lock()};
 
         if (curr_so.schedule() != next_so.schedule()) {
-            return Status::Fail;
+            return Status::BadState;
         }
 
         yielded = curr_so.schedule()->yield_to_thread(self.m_runtime, curr, thread);

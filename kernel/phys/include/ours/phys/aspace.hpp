@@ -6,7 +6,7 @@
 #include <arch/paging.hpp>
 #include <ktl/result.hpp>
 #include <ours/assert.hpp>
-#include <ours/phys/arch-paging.hpp>
+#include <ours/phys/arch_paging.hpp>
 #include <ours/types.hpp>
 #include <ustl/option.hpp>
 

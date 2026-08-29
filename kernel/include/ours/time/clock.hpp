@@ -4,7 +4,7 @@
 #define OURS_TIME_CLOCK_HPP 1
 
 #include <ours/time/types.hpp>
-#include <ours/time/clock-type.hpp>
+#include <ours/time/clock_type.hpp>
 
 #include <ours/syscall/time.hpp>
 
@@ -25,6 +25,11 @@ namespace ours::time {
             update_time();
             return m_time_base + m_time_shift;
         }
+
+        /// The clock source's raw counter, with none of the scaling now()
+        /// applies. Zero before a source has been registered, which is the
+        /// only sensible answer when there is nothing to read.
+        auto ticks() -> Ticks;
 
         auto change_source(ClockSource *source) -> Status;
 

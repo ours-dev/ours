@@ -48,13 +48,13 @@ auto make_symbol_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 18;
     strings.sh_addralign = 1;
 
     Section symtab{};
-    symtab.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Symtab);
+    symtab.sh_type = static_cast<u32>(eftl::elf::SectionType::Symtab);
     symtab.sh_offset = K_SYMTAB_OFFSET;
     symtab.sh_size = 2 * sizeof(Symbol);
     symtab.sh_link = 1;
@@ -63,16 +63,16 @@ auto make_symbol_image() -> std::array<u8, 1024> {
     symtab.sh_entsize = sizeof(Symbol);
 
     Section dynsym = symtab;
-    dynsym.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynsym.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynsym.sh_offset = K_DYNSYM_OFFSET;
 
     Section symtab_shndx{};
-    symtab_shndx.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::SymtabShndx);
+    symtab_shndx.sh_type = static_cast<u32>(eftl::elf::SectionType::SymtabShndx);
     symtab_shndx.sh_offset = K_SYMTAB_SHNDX_OFFSET;
-    symtab_shndx.sh_size = 2 * sizeof(ours::u32);
+    symtab_shndx.sh_size = 2 * sizeof(u32);
     symtab_shndx.sh_link = 2;
-    symtab_shndx.sh_addralign = alignof(ours::u32);
-    symtab_shndx.sh_entsize = sizeof(ours::u32);
+    symtab_shndx.sh_addralign = alignof(u32);
+    symtab_shndx.sh_entsize = sizeof(u32);
 
     put(image, K_SECTION_TABLE_OFFSET + sizeof(Section), strings);
     put(image, K_SECTION_TABLE_OFFSET + 2 * sizeof(Section), symtab);
@@ -97,7 +97,7 @@ auto make_symbol_image() -> std::array<u8, 1024> {
     named.st_shndx = 1;
     put(image, K_DYNSYM_OFFSET + sizeof(Symbol), named);
 
-    std::array<ours::u32, 2> const section_indices{0, 1};
+    std::array<u32, 2> const section_indices{0, 1};
     std::memcpy(image.data() + K_SYMTAB_SHNDX_OFFSET, section_indices.data(),
                 sizeof(section_indices));
     return image;
@@ -166,7 +166,7 @@ auto test_symbol_view_rejects_mismatched_section_index_table() -> int {
     auto const image = make_symbol_image();
     auto const symbols = eftl::ByteRange(image.data() + K_SYMTAB_OFFSET, 2 * sizeof(Symbol));
     auto const strings = eftl::ByteRange(image.data() + K_STRING_TABLE_OFFSET, 18);
-    auto const indices = eftl::ByteRange(image.data() + K_SYMTAB_SHNDX_OFFSET, sizeof(ours::u32));
+    auto const indices = eftl::ByteRange(image.data() + K_SYMTAB_SHNDX_OFFSET, sizeof(u32));
     if (eftl::elf::SymbolTableView<Traits>::from(symbols, strings, indices).is_none()) {
         return 0;
     }
@@ -263,7 +263,7 @@ auto test_rejects_invalid_symbol_section_relationships() -> int {
     }
 
     auto ordinary_symbol_shndx = make_symbol_image();
-    const ours::u32 nonzero_index = 1;
+    const u32 nonzero_index = 1;
     put(ordinary_symbol_shndx, K_SYMTAB_SHNDX_OFFSET, nonzero_index);
     auto const ordinary_symbol_shndx_result =
         Binary::from_raw(ordinary_symbol_shndx.data(), ordinary_symbol_shndx.size());
@@ -273,8 +273,8 @@ auto test_rejects_invalid_symbol_section_relationships() -> int {
     }
 
     auto out_of_range_shndx = make_symbol_image();
-    const ours::u32 out_of_range_index = 5;
-    put(out_of_range_shndx, K_SYMTAB_SHNDX_OFFSET + sizeof(ours::u32), out_of_range_index);
+    const u32 out_of_range_index = 5;
+    put(out_of_range_shndx, K_SYMTAB_SHNDX_OFFSET + sizeof(u32), out_of_range_index);
     auto const out_of_range_shndx_result =
         Binary::from_raw(out_of_range_shndx.data(), out_of_range_shndx.size());
     if (out_of_range_shndx_result.is_ok() ||
@@ -285,7 +285,7 @@ auto test_rejects_invalid_symbol_section_relationships() -> int {
     auto missing_shndx = make_symbol_image();
     std::memcpy(&section, missing_shndx.data() + K_SECTION_TABLE_OFFSET + 4 * sizeof(Section),
                 sizeof(section));
-    section.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Null);
+    section.sh_type = static_cast<u32>(eftl::elf::SectionType::Null);
     put(missing_shndx, K_SECTION_TABLE_OFFSET + 4 * sizeof(Section), section);
     auto const missing_shndx_result = Binary::from_raw(missing_shndx.data(), missing_shndx.size());
     if (missing_shndx_result.is_err() &&
@@ -321,12 +321,12 @@ auto test_elf32_observes_symbol_table() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     Section32 symbols{};
-    symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Symtab);
+    symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Symtab);
     symbols.sh_offset = K_SYMBOL_OFFSET;
     symbols.sh_size = 2 * sizeof(Symbol32);
     symbols.sh_link = 1;
@@ -334,12 +334,12 @@ auto test_elf32_observes_symbol_table() -> int {
     symbols.sh_addralign = alignof(Symbol32);
     symbols.sh_entsize = sizeof(Symbol32);
     Section32 symbol_indices{};
-    symbol_indices.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::SymtabShndx);
+    symbol_indices.sh_type = static_cast<u32>(eftl::elf::SectionType::SymtabShndx);
     symbol_indices.sh_offset = K_SHNDX_OFFSET;
-    symbol_indices.sh_size = 2 * sizeof(ours::u32);
+    symbol_indices.sh_size = 2 * sizeof(u32);
     symbol_indices.sh_link = 2;
-    symbol_indices.sh_addralign = alignof(ours::u32);
-    symbol_indices.sh_entsize = sizeof(ours::u32);
+    symbol_indices.sh_addralign = alignof(u32);
+    symbol_indices.sh_entsize = sizeof(u32);
     put(image, K_SECTION_OFFSET + sizeof(Section32), strings);
     put(image, K_SECTION_OFFSET + 2 * sizeof(Section32), symbols);
     put(image, K_SECTION_OFFSET + 3 * sizeof(Section32), symbol_indices);
@@ -351,7 +351,7 @@ auto test_elf32_observes_symbol_table() -> int {
     symbol.st_other = 2;
     symbol.st_shndx = eftl::elf::K_SHN_XINDEX;
     put(image, K_SYMBOL_OFFSET + sizeof(Symbol32), symbol);
-    std::array<ours::u32, 2> const section_indices{0, 1};
+    std::array<u32, 2> const section_indices{0, 1};
     std::memcpy(image.data() + K_SHNDX_OFFSET, section_indices.data(), sizeof(section_indices));
 
     auto const parsed = Binary32::from_raw(image.data(), image.size());

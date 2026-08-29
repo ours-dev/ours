@@ -1,38 +1,41 @@
 #include <ktl/new.hpp>
-#include <ours/arch/mem-cfg.hpp>
+#include <ours/arch/mem_cfg.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
-#include <ours/mem/early-mem.hpp>
-#include <ours/mem/init.hpp>
-#include <ours/mem/pmm.hpp>
-#include <ours/object/resource-dispatcher.hpp>
+#include <ours/mm/early_mem.hpp>
+#include <ours/mm/init.hpp>
+#include <ours/mm/pmm.hpp>
+#include <ours/object/resource_dispatcher.hpp>
 #include <ours/platform/init.hpp>
-#include <ustl/algorithms/minmax.hpp>
-#include <ustl/array.hpp>
-#include <ustl/util/type-list.hpp>
+#include <array>
+#include <ustl/util/type_list.hpp>
+#include <ustl/util/type_map.hpp>
+
+#include <type_traits>
+#include <algorithm>
 
 namespace ours {
 template <typename>
 struct DisabledZoneFilter;
 
-template <mem::ZoneType Type, usize Pfn, bool Enable>
-struct DisabledZoneFilter<MaxZonePfn<Type, Pfn, Enable>>: ustl::traits::BoolConstant<!Enable> {};
+template <mm::ZoneType Type, usize Pfn, bool Enable>
+struct DisabledZoneFilter<MaxZonePfn<Type, Pfn, Enable>>: std::bool_constant<!Enable> {};
 
 /// This template design ensures that changes to the number of zone types do not affect existing implementations.
 template <typename... LinearZoneMaxPfns>
 INIT_CODE auto platform_init_pmm_with_config(ustl::TypeList<LinearZoneMaxPfns...>) -> void {
-    static_assert(sizeof...(LinearZoneMaxPfns) <= mem::NR_ZONES_PER_NODE, "To many zones per node");
+    static_assert(sizeof...(LinearZoneMaxPfns) <= mm::NR_ZONES_PER_NODE, "To many zones per node");
 
-    ustl::Array<mem::Pfn, sizeof...(LinearZoneMaxPfns)> linear_zone_pfns;
+    std::array<mm::Pfn, sizeof...(LinearZoneMaxPfns)> linear_zone_pfns;
     auto index = 0;
     auto handle_item =
-        [&]<mem::ZoneType Type, usize Pfn, bool Enable>(MaxZonePfn<Type, Pfn, Enable>) {
+        [&]<mm::ZoneType Type, usize Pfn, bool Enable>(MaxZonePfn<Type, Pfn, Enable>) {
             static_assert(Enable, "There is a disabled zone type");
-            linear_zone_pfns[index++] = ustl::algorithms::min(Pfn, mem::max_pfn());
+            linear_zone_pfns[index++] = std::min(Pfn, mm::max_pfn());
         };
 
     (handle_item(LinearZoneMaxPfns()), ...);
 
-    mem::init_pmm(linear_zone_pfns);
+    mm::init_pmm(linear_zone_pfns);
 }
 
 INIT_CODE

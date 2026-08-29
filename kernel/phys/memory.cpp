@@ -1,4 +1,4 @@
-#include <obi/memory-config-view.hpp>
+#include <obi/memory_config_view.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/print.hpp>

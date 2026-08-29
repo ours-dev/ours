@@ -67,6 +67,6 @@ kernel_image("fake") {
     "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     ":cmdline",
     ":fake-kernel",
-    "//kernel/phys:physboot(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
+    "//kernel/phys/image/physboot(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
   ]
 }

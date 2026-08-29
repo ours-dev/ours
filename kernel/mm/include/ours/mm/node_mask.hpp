@@ -1,0 +1,68 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#ifndef OURS_MM_NODE_MASK_HPP
+#define OURS_MM_NODE_MASK_HPP 1
+
+#include <ours/status.hpp>
+#include <ours/mm/types.hpp>
+
+#include <ustl/bitset.hpp>
+#include <ustl/function/invoke.hpp>
+#include <ustl/traits/is_invocable.hpp>
+
+namespace ours::mm {
+    class NodeMask: public ustl::BitSet<NUMA_MAX_NODE> {
+        using Self = NodeMask;
+        using Base = ustl::BitSet<NUMA_MAX_NODE>;
+      public:
+        using Base::Base;
+
+        /// Hides Base::for_each, which hands the callback a std::size_t and so
+        /// narrows at every call site that takes an NnId. Node ids are NnId
+        /// here, the same way CpuMask::for_each yields a CpuNum.
+        template <typename F>
+            requires ustl::traits::Invocable<F, NnId>
+        auto for_each(F &&functor) const -> void {
+            auto const n = this->size();
+            for (NnId nid = 0; nid < n; ++nid) {
+                if (this->test(nid)) {
+                    ustl::function::invoke(functor, nid);
+                }
+            }
+        }
+
+        template <typename F>
+            requires ustl::traits::Invocable<F, NnId>
+        auto for_each_if_noerr(F &&functor) const -> Status {
+            auto const n = this->size();
+            for (NnId nid = 0; nid < n; ++nid) {
+                if (this->test(nid)) {
+                    auto status = ustl::function::invoke(functor, nid);
+                    if (Status::Ok != status) {
+                        return status;
+                    }
+                }
+            }
+
+            return Status::Ok;
+        }
+
+        template <typename F>
+            requires ustl::traits::Invocable<F, NnId>
+        auto find(F &&matcher) const -> NnId {
+            auto const n = this->size();
+            for (NnId nid = 0; nid < n; ++nid) {
+                if (this->test(nid)) {
+                    continue;
+                }
+
+                if (matcher(nid)) {
+                    return nid;
+                }
+            }
+        }
+    };
+
+} // namespace ours::mm
+
+#endif // #ifndef OURS_MM_NODE_MASK_HPP

@@ -1,5 +1,5 @@
 #include <ours/task/init.hpp>
-#include <ours/task/idle-thread.hpp>
+#include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
 
 #include <ours/mm/stack.hpp>
@@ -38,6 +38,7 @@ namespace {
     auto init_early() -> void {
         init_idle_task_current_cpu();
 
+        [[maybe_unused]]
         auto thread = Thread::Current::get();
         DEBUG_ASSERT(thread);
     }

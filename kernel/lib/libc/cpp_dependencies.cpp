@@ -4,7 +4,6 @@
 #include <stdexcept>
 #include <exception>
 #include <functional>
-#include <boost/assert/source_location.hpp>
 
 extern "C" {
     auto __cdecl _purecall() -> void {}

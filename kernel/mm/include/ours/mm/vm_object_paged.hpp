@@ -46,10 +46,10 @@ namespace ours::mm {
         VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages>);
         virtual ~VmObjectPaged() = default;
       private:
-        auto commit_range_internal(PgOff offset, usize n, CommitOptions option) -> Status;
+        auto commit_range_internal(VirtAddr offset, usize size, CommitOptions option) -> Status;
 
         ustl::Arc<VmCowPages> m_cow_pages;
-        Mutex m_mutex;
+        sync::Mutex m_mutex;
     };
 
 } // namespace ours::mm

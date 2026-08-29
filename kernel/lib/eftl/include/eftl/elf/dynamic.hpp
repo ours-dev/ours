@@ -12,7 +12,7 @@
 
 #include <ustl/option.hpp>
 #include <ustl/traits/integral_constant.hpp>
-#include <ustl/util/type-map.hpp>
+#include <ustl/util/type_map.hpp>
 #include <ustl/views/span.hpp>
 
 namespace eftl::elf {

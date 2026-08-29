@@ -13,6 +13,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 /// Builds ACPI table images in host memory and serves them through a synthetic

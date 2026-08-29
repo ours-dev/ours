@@ -66,9 +66,14 @@ enum class VmasFlags : usize;
 
 /// Forward declarations.
 /// Main classes for physical memory management.
-class PmFrame;
+///
+/// PmFrame/VmPage/PmFolio are aliases of PageFrame (pm_frame.hpp), so they are
+/// forward-declared through it rather than as classes of their own.
+class PageFrame;
+using PmFrame = PageFrame;
+using PmFolio = PageFrame;
+using Slab = PageFrame;
 class MemSection;
-struct PmFolio;
 class PmZone;
 class PmNode;
 class MemCache;
@@ -81,7 +86,7 @@ class ArchVmAspace;
 class VmAspace;
 class VmArea;
 class VmMapping;
-class VmPage;
+using VmPage = PageFrame;
 class VmObject;
 class VmObjectPaged;
 class VmObjectPhysical;

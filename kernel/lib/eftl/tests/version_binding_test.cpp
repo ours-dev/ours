@@ -52,13 +52,13 @@ auto make_version_binding_image() -> std::array<u8, 2048> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 39;
     strings.sh_addralign = 1;
 
     Section dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET;
     dynamic_symbols.sh_size = 4 * sizeof(Symbol);
     dynamic_symbols.sh_link = 1;
@@ -67,7 +67,7 @@ auto make_version_binding_image() -> std::array<u8, 2048> {
     dynamic_symbols.sh_entsize = sizeof(Symbol);
 
     Section version_symbols{};
-    version_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVersym);
+    version_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVersym);
     version_symbols.sh_offset = K_VERSYM_OFFSET;
     version_symbols.sh_size = 4 * sizeof(Version);
     version_symbols.sh_link = 2;
@@ -75,14 +75,14 @@ auto make_version_binding_image() -> std::array<u8, 2048> {
     version_symbols.sh_entsize = sizeof(Version);
 
     Section definitions{};
-    definitions.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVerdef);
+    definitions.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVerdef);
     definitions.sh_offset = K_VERDEF_OFFSET;
     definitions.sh_size = sizeof(Definition) + sizeof(DefinitionAuxiliary);
     definitions.sh_link = 1;
     definitions.sh_addralign = alignof(Definition);
 
     Section requirements{};
-    requirements.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVerneed);
+    requirements.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVerneed);
     requirements.sh_offset = K_VERNEED_OFFSET;
     requirements.sh_size = sizeof(Requirement) + sizeof(RequirementAuxiliary);
     requirements.sh_link = 1;
@@ -289,12 +289,12 @@ auto test_elf32_resolves_version_sources() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 35;
     strings.sh_addralign = 1;
     Section32 dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET_32;
     dynamic_symbols.sh_size = 3 * sizeof(Symbol32);
     dynamic_symbols.sh_link = 1;
@@ -302,20 +302,20 @@ auto test_elf32_resolves_version_sources() -> int {
     dynamic_symbols.sh_addralign = alignof(Symbol32);
     dynamic_symbols.sh_entsize = sizeof(Symbol32);
     Section32 version_symbols{};
-    version_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVersym);
+    version_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVersym);
     version_symbols.sh_offset = K_VERSYM_OFFSET_32;
     version_symbols.sh_size = 3 * sizeof(Version32);
     version_symbols.sh_link = 2;
     version_symbols.sh_addralign = alignof(Version32);
     version_symbols.sh_entsize = sizeof(Version32);
     Section32 definitions{};
-    definitions.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVerdef);
+    definitions.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVerdef);
     definitions.sh_offset = K_VERDEF_OFFSET_32;
     definitions.sh_size = sizeof(Definition32) + sizeof(DefinitionAuxiliary32);
     definitions.sh_link = 1;
     definitions.sh_addralign = alignof(Definition32);
     Section32 requirements{};
-    requirements.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVerneed);
+    requirements.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVerneed);
     requirements.sh_offset = K_VERNEED_OFFSET_32;
     requirements.sh_size = sizeof(Requirement32) + sizeof(RequirementAuxiliary32);
     requirements.sh_link = 1;

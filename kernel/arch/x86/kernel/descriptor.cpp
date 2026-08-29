@@ -1,7 +1,7 @@
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/percpu.hpp>
 
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
@@ -11,6 +11,7 @@
 #include <ustl/mem/container_of.hpp>
 
 #include <logz4/log.hpp>
+#include <array>
 
 namespace ours {
     struct alignas(PAGE_SIZE) PACKED Gdt {
@@ -33,8 +34,8 @@ namespace ours {
             return tss[cpunum];
         }
 
-        ustl::Array<arch::GdtDesc32, X86_GDT_MAX_SELECTORS> descs;
-        ustl::Array<arch::GdtDesc64, MAX_CPU> tss;
+        std::array<arch::GdtDesc32, X86_GDT_MAX_SELECTORS> descs;
+        std::array<arch::GdtDesc64, MAX_CPU> tss;
     };
     static_assert(X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE == offsetof(Gdt, tss));
 

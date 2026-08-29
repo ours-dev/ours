@@ -2,27 +2,27 @@
 #include <logz4/log.hpp>
 #include <ours/task/sched/config.hpp>
 #include <ours/task/sched/context.hpp>
+#include <ours/task/sched/fair.hpp>
 #include <ours/task/sched/features.hpp>
 #include <ours/task/sched/runtime.hpp>
 #include <ours/task/sched/schedule.hpp>
+#include <ours/task/sched/scheduler.hpp>
 #include <ours/task/thread.hpp>
-#include <ours/time/tick-device.hpp>
-#include <ours/time/timer-queue.hpp>
+#include <ours/time/tick_device.hpp>
+#include <ours/time/timer_queue.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/mem/address_of.hpp>
-#include <ustl/ratio.hpp>
-
-using namespace ustl::collections::intrusive;
+#include <mtl/ratio.hpp>
 
 namespace ours::task::sched {
 namespace {
     FORCE_INLINE
     auto calc_weighted_time(SchedDuration duration, Weight weight) -> SchedDuration {
-        if (weight == kMidWeight) {
+        if (weight == MID_WEIGHT) {
             return duration;
         }
 
-        auto const rate = weight / kMidWeight;
+        auto const rate = weight / MID_WEIGHT;
         return duration * rate;
     }
 
@@ -43,88 +43,22 @@ class Observer {
     static auto copy(Context &from, Context &to) -> void;
 };
 
-class RunQueue {
-    using Self = RunQueue;
+/// RunQueue itself -- all of Fair's per-CPU state -- is declared in
+/// fair.hpp and held directly by Scheduler (Scheduler::fair_run_queue()).
 
-  public:
-    auto enqueue_object(Context &object) -> void;
-
-    auto dequeue_object(Context &object) -> void;
-
-    auto update_min_vruntime(Context &object) -> void;
-
-    /// Returns the lag of |object| relative to this runqueue.
-    FORCE_INLINE
-    auto lag_of(Context &object) -> SchedDuration {
-        return avg_vruntime() - object.runtime();
-    }
-
-    FORCE_INLINE
-    auto total_weight() const -> Weight {
-        if (current_ && current_->runqueue_state().is_active()) {
-            return weight_sum_ + current_->weight();
-        }
-        return weight_sum_;
-    }
-
-    FORCE_INLINE
-    auto total_vruntime() const -> SchedDuration {
-        return total_vruntime_;
-    }
-
-    FORCE_INLINE
-    auto min_vruntime() const -> SchedDuration {
-        return min_vruntime_;
-    }
-
-    FORCE_INLINE
-    auto avg_vruntime() const -> SchedDuration {
-        auto total_vruntime = total_vruntime_;
-        auto weight_sum = weight_sum_;
-
-        if (current_ && current_->runqueue_state().is_active()) {
-            weight_sum += current_->weight();
-            total_vruntime += calc_weighted_time(*current_);
-        }
-
-        return min_vruntime_ + total_vruntime / weight_sum;
-    }
-
-    FORCE_INLINE
-    auto begin() {
-        return queue_.begin();
-    }
-
-    FORCE_INLINE
-    auto end() {
-        return queue_.end();
-    }
-
-  private:
-    FORCE_INLINE
-    auto calc_weighted_time(Context &object) const -> SchedDuration {
-        return sched::calc_weighted_time(object.runtime() - min_vruntime_, object.weight());
-    }
-
-    using Lesser =
-        decltype([](Context const &x, Context const &y) { return x.deadline() < y.deadline(); });
-    using Queue = MultiSet<Context, ValueTraits<Context::RunQueueTraits<>>, Compare<Lesser>>;
-    Queue queue_;
-    Context *current_;
-    Weight weight_sum_;
-    SchedDuration total_vruntime_;
-    SchedDuration min_vruntime_;
-};
+auto RunQueue::calc_weighted_time(Context &object) const -> SchedDuration {
+    return sched::calc_weighted_time(object.runtime() - min_vruntime_, object.weight());
+}
 
 auto RunQueue::dequeue_object(Context &object) -> void {
-    queue_.erase(queue_.iterator_to(object));
+    (void)queue_.erase(queue_.iterator_to(object));
 
     weight_sum_ -= object.weight();
     total_vruntime_ -= calc_weighted_time(object);
 }
 
 auto RunQueue::enqueue_object(Context &object) -> void {
-    queue_.insert(object);
+    (void)queue_.insert(object);
 
     weight_sum_ += object.weight();
     total_vruntime_ += calc_weighted_time(object);
@@ -155,6 +89,10 @@ auto RunQueue::update_min_vruntime(Context &current) -> void {
     }
 }
 
+/// Stateless: implements the EEVDF algorithm only. All per-CPU state lives
+/// in RunQueue (fair.hpp), held by Scheduler -- one shared Fair instance
+/// (see Schedule<Fair, ...>::REGISTRATION) serves every CPU, fetching the
+/// calling CPU's RunQueue via Scheduler::Current::get().fair_run_queue().
 class Fair final: public Schedule<Fair, Discipline::Normal> {
     using Self = Fair;
 
@@ -178,10 +116,23 @@ class Fair final: public Schedule<Fair, Discipline::Normal> {
     auto unpark_preempt(Runtime &runtime, Thread *thread, Thread *curr, UnparkControl)
         -> Status override;
 
+    /// Not overrides of ISchedule::migrate_thread/select_target_cpu -- Fair's
+    /// versions need the per-CPU Runtime that only this discipline's callers
+    /// have on hand. Brought into Fair's overload set via the `using`
+    /// declarations below so the differing signatures don't hide the base
+    /// virtuals (-Woverloaded-virtual); the two APIs are deliberately left
+    /// unreconciled for now.
+    using ISchedule::migrate_thread;
+    using ISchedule::select_target_cpu;
     auto migrate_thread(Runtime &, Thread *, CpuNum) -> Status;
     auto select_target_cpu(Runtime &, Thread *) -> CpuNum;
 
     auto override_thread_base_profile(Runtime &, Thread *, BaseProfile const &) -> Status override;
+
+    [[nodiscard]]
+    auto num_queued() const -> usize override {
+        return Scheduler::Current::get().fair_run_queue().num_queued();
+    }
 
   private:
     auto try_to_delay_dequeue(Runtime &, Context &, DequeueControl) -> bool;
@@ -193,8 +144,6 @@ class Fair final: public Schedule<Fair, Discipline::Normal> {
     auto update_vlag(Context &) -> void;
 
     auto set_next_object(Context &object) -> void;
-
-    RunQueue m_runqueue;
 };
 
 /// First, `IdealServiceVirtualTime` is same to all task.
@@ -214,19 +163,20 @@ class Fair final: public Schedule<Fair, Discipline::Normal> {
 /// otherwise ineligible.
 FORCE_INLINE
 auto Fair::is_object_eligible(Context const &object) const -> bool {
-    auto const total_vruntime = m_runqueue.total_vruntime();
-    auto const weight_sum = m_runqueue.total_weight();
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    auto const total_vruntime = rq.total_vruntime();
+    auto const weight_sum = rq.total_weight();
 
-    return total_vruntime >= ((object.runtime() - m_runqueue.min_vruntime()) * weight_sum);
+    return total_vruntime >= ((object.runtime() - rq.min_vruntime()) * weight_sum);
 }
 
 auto Fair::adjust_vlag(Runtime &runtime, Context &ctx) -> void {
-    auto ideal_vruntime = m_runqueue.avg_vruntime();
+    auto ideal_vruntime = Scheduler::Current::get().fair_run_queue().avg_vruntime();
     auto vlag = ctx.m_params.vlag;
 
     auto &timeslice = ctx.m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
-        timeslice.m_base = runtime.scheduling_period().count();
+        timeslice.m_base = static_cast<u32>(runtime.scheduling_period().count());
     }
 
     auto &params = ctx.m_params;
@@ -241,11 +191,11 @@ auto Fair::adjust_vlag(Runtime &runtime, Context &ctx) -> void {
 
 FORCE_INLINE
 auto Fair::update_vlag(Context &object) -> void {
-    object.m_params.vlag = m_runqueue.lag_of(object);
+    object.m_params.vlag = Scheduler::Current::get().fair_run_queue().lag_of(object);
 }
 
 auto Fair::update_thread(Runtime &runtime, Thread *curr) -> void {
-    m_canary.verify<Self>();
+    Scheduler::Current::get().fair_run_queue().verify();
 
     auto const now = runtime.clock();
     auto const elapsed = now - runtime.curr_started_time;
@@ -284,7 +234,8 @@ auto Fair::try_to_delay_dequeue(Runtime &runtime, Context &ctx, DequeueControl c
 }
 
 auto Fair::dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl control) -> Status {
-    m_canary.verify<Self>();
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    rq.verify();
 
     auto const current_thread = runtime.curr_thread;
     auto const is_current_thread = thread == current_thread;
@@ -299,8 +250,8 @@ auto Fair::dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl contr
 
     update_vlag(ctx);
     if (!is_current_thread) {
-        m_runqueue.dequeue_object(ctx);
-        m_num_queued -= 1;
+        rq.dequeue_object(ctx);
+        rq.dec_queued();
     }
     ctx.runqueue_state().on_dequeue();
 
@@ -308,7 +259,8 @@ auto Fair::dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl contr
 }
 
 auto Fair::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl control) -> Status {
-    m_canary.verify<Self>();
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    rq.verify();
 
     auto const current_thread = runtime.curr_thread;
     auto const is_current_thread = thread == current_thread;
@@ -329,8 +281,8 @@ auto Fair::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl contr
     }
 
     if (!is_current_thread) {
-        m_runqueue.enqueue_object(ctx);
-        m_num_queued += 1;
+        rq.enqueue_object(ctx);
+        rq.inc_queued();
     }
     ctx.runqueue_state().on_enqueue();
 
@@ -338,7 +290,7 @@ auto Fair::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl contr
 }
 
 auto Fair::on_thread_tick(Runtime &runtime, Thread *curr, bool queued) -> void {
-    m_canary.verify<Self>();
+    Scheduler::Current::get().fair_run_queue().verify();
     update_thread(runtime, curr);
 
     if (queued) {
@@ -347,13 +299,28 @@ auto Fair::on_thread_tick(Runtime &runtime, Thread *curr, bool queued) -> void {
 }
 
 auto Fair::on_thread_init(Runtime &, Thread *thread) -> void {
-    m_canary.verify<Self>();
+    Scheduler::Current::get().fair_run_queue().verify();
+    [[maybe_unused]]
     auto &ctx = thread->scheduling_context();
 }
 
 auto Fair::on_thread_dead(Runtime &, Thread *thread) -> void {
-    m_canary.verify<Self>();
+    Scheduler::Current::get().fair_run_queue().verify();
+    [[maybe_unused]]
     auto &ctx = thread->scheduling_context();
+}
+
+/// The thread has just been made runnable again. By the time this runs
+/// Scheduler::unpark() has already enqueued it, so placement -- the vlag
+/// compensation in adjust_vlag() -- is done; what is left is the bookkeeping
+/// that only the wakeup path knows.
+auto Fair::on_thread_unpark(Runtime &runtime, Thread *thread) -> void {
+    Scheduler::Current::get().fair_run_queue().verify();
+
+    // Where the wakeup landed. Nothing else records this, and it is what a
+    // future select_target_cpu() needs to keep a woken thread near the cpu
+    // that woke it rather than scattering it across the machine.
+    thread->scheduling_context().m_wake_cpu = runtime.which_cpu;
 }
 
 /// In order to provide latency guarantees for different request sizes
@@ -363,15 +330,16 @@ auto Fair::on_thread_dead(Runtime &, Thread *thread) -> void {
 ///  (2) from those tasks that meet (1), we select the one
 ///      with the earliest virtual deadline.
 auto Fair::evaluate_next_thread(Runtime &runtime, Thread *curr) -> Thread * {
-    m_canary.verify<Self>();
-    auto iter = m_runqueue.begin();
-    for (auto const last = m_runqueue.end(); iter != last; ++iter) {
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    rq.verify();
+    auto iter = rq.begin();
+    for (auto const last = rq.end(); iter != last; ++iter) {
         if (is_object_eligible(*iter)) {
             break;
         }
     }
 
-    if (iter == m_runqueue.end()) {
+    if (iter == rq.end()) {
         return 0;
     }
 
@@ -379,7 +347,8 @@ auto Fair::evaluate_next_thread(Runtime &runtime, Thread *curr) -> Thread * {
 }
 
 auto Fair::put_prev_thread(Runtime &runtime, Thread *prev) -> void {
-    m_canary.verify<Self>();
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    rq.verify();
 
     auto &ctx = prev->scheduling_context();
 
@@ -387,17 +356,18 @@ auto Fair::put_prev_thread(Runtime &runtime, Thread *prev) -> void {
     // Therefore now it is still on our runqueue.
     if (ctx.runqueue_state().is_active()) {
         update_thread(runtime, prev);
-        m_runqueue.enqueue_object(ctx);
+        rq.enqueue_object(ctx);
     }
 }
 
 auto Fair::set_next_object(Context &ctx) -> void {
-    m_canary.verify<Self>();
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    rq.verify();
 
     // The next object may not be on queue, ctx it demands us to check as the following to
     // prevent double dequeue operations.
     if (ctx.runqueue_state().is_active()) {
-        m_runqueue.dequeue_object(ctx);
+        rq.dequeue_object(ctx);
     }
 
     ctx.m_params.prev_runtime = ctx.m_params.runtime;
@@ -406,12 +376,12 @@ auto Fair::set_next_object(Context &ctx) -> void {
 }
 
 auto Fair::set_next_thread(Runtime &runtime, Thread *next) -> void {
-    m_canary.verify<Self>();
+    Scheduler::Current::get().fair_run_queue().verify();
 
     auto &ctx = next->scheduling_context();
     set_next_object(ctx);
 
-    if constexpr (OURS_CONFIG_NOHZ) {
+    if constexpr (SCHED_NOHZ) {
         // When configured NOHZ, need we to manuaully reset the preemption time point.
         // It is possiablely that the next thread has been woken just now, ctx recalculate
         //
@@ -425,8 +395,35 @@ auto Fair::set_next_thread(Runtime &runtime, Thread *next) -> void {
     }
 }
 
+/// |curr| voluntarily gives up the cpu.
+///
+/// Under EEVDF the pick is "the eligible object with the earliest virtual
+/// deadline", so yielding is not a requeue -- it is giving up that earliest
+/// deadline. Pushing the deadline out by one whole request is what lets some
+/// other runnable thread win the next pick, while leaving eligibility (and
+/// therefore long-run fairness) untouched.
+auto Fair::yield_thread(Runtime &runtime, Thread *curr) -> void {
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    rq.verify();
+
+    // Nothing else to yield to; charging time and moving the deadline would
+    // only penalise |curr| for no one's benefit.
+    if (!rq.num_queued()) {
+        return;
+    }
+
+    // Charge what it has used so far, so the deadline is pushed out from an
+    // up-to-date vruntime rather than a stale one.
+    update_thread(runtime, curr);
+
+    auto &ctx = curr->scheduling_context();
+    ctx.m_params.vdeadline += calc_weighted_time(ctx.m_timeslice.length(), ctx.weight());
+
+    runtime.mark_preempt_pending();
+}
+
 auto Fair::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
-    m_canary.verify<Self>();
+    Scheduler::Current::get().fair_run_queue().verify();
 
     if (!next->scheduling_context().runqueue_state().is_active()) {
         // Received a inactive thread.
@@ -441,4 +438,61 @@ auto Fair::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Stat
 auto Fair::unpark_preempt(Runtime &runtime, Thread *thread, Thread *curr, UnparkControl) -> Status {
     return Status::Unimplemented;
 }
+
+/// Changes |thread|'s base profile.
+///
+/// A queued thread's position depends on its weight, so the weight cannot be
+/// changed in place: the thread comes off the runqueue, the profile changes,
+/// and it goes back on. That is the same dance Scheduler::Pi::common() does
+/// around a priority-inheritance change, for the same reason.
+///
+/// TODO(SmallHuaZi): folding the new base into the effective profile is left
+/// to EffectiveProfile::notify_base_profile_overrided(), which is still empty
+/// -- so today this reorders the thread without actually changing its weight.
+/// Deliberately not calling Profile::recompute_effective_profile() instead:
+/// that one is declared but has no definition anywhere in the tree, so calling
+/// it would trade a working build for a link error.
+auto Fair::override_thread_base_profile(Runtime &runtime, Thread *thread,
+                                        BaseProfile const &profile) -> Status {
+    if (profile.discipline != Discipline::Normal) {
+        // A different discipline is a different schedule's thread; moving it
+        // is the Scheduler's job, not ours.
+        return Status::Unsupported;
+    }
+
+    auto &rq = Scheduler::Current::get().fair_run_queue();
+    rq.verify();
+
+    auto &ctx = thread->scheduling_context();
+    auto const queued = ctx.runqueue_state().is_active();
+    if (queued) {
+        update_thread(runtime, thread);
+        update_vlag(ctx);
+        rq.dequeue_object(ctx);
+        rq.dec_queued();
+    }
+
+    ctx.m_profile.base = profile;
+    ctx.m_profile.effective.notify_base_profile_overrided();
+
+    if (queued) {
+        // Re-place it: adjust_vlag() recomputes vruntime and vdeadline from the
+        // weight it now has, which is the whole point of the round trip.
+        adjust_vlag(runtime, ctx);
+        rq.enqueue_object(ctx);
+        rq.inc_queued();
+    }
+
+    return Status::Ok;
+}
+
+/// Required, not decorative: deriving Fair from Schedule<Fair, ...> only
+/// instantiates the base's member *declarations*. A static data member of a
+/// class template is instantiated only when odr-used or explicitly
+/// instantiated -- so without this, `REGISTRATION` is never emitted, the
+/// linker collects nothing, and Scheduler::init() finds an empty section.
+/// `[[gnu::used]]` cannot substitute: it keeps an emitted symbol alive, but
+/// cannot cause one to be instantiated.
+template class Schedule<Fair, Discipline::Normal>;
+
 } // namespace ours::task::sched

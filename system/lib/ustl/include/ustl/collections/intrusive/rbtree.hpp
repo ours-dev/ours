@@ -25,7 +25,12 @@ namespace ustl::collections::intrusive {
     class RBTree final {
         struct Defaults : HookDefaults {
             using ProtoValueTraits = SetBaseHook<>;
-            using Compare = std::less<T>;
+            // The transparent std::less<> (not std::less<T>) so that
+            // noexcept-ness propagates from T's own operator< -- libc++'s
+            // std::less<T>::operator() carries no noexcept specifier at all,
+            // which would fail the is_nothrow_invocable_r_v check below
+            // unconditionally, for every T, regardless of T's own operator<.
+            using Compare = std::less<>;
         };
 
         using PackedOptions = typename PackOptions<Defaults, Options...>::Type;

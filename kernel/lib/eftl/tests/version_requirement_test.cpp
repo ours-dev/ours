@@ -34,7 +34,7 @@ auto put_big_endian_u16(std::array<u8, Size> &image, usize offset, u16 value)
 }
 
 template <usize Size>
-auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, ours::u32 value)
+auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, u32 value)
     -> void {
     image[offset] = static_cast<u8>(value >> 24U);
     image[offset + 1] = static_cast<u8>(value >> 16U);
@@ -66,13 +66,13 @@ auto make_version_requirement_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 27;
     strings.sh_addralign = 1;
 
     Section requirements{};
-    requirements.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVerneed);
+    requirements.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVerneed);
     requirements.sh_offset = K_VERSION_REQUIREMENT_OFFSET;
     requirements.sh_size = sizeof(Requirement) + 2 * sizeof(Auxiliary);
     requirements.sh_link = 1;
@@ -122,14 +122,14 @@ auto make_big_endian_version_requirement_image() -> std::array<u8, 1024> {
     constexpr usize K_STRING_SECTION = K_SECTION_TABLE_OFFSET + sizeof(Section);
     constexpr usize K_REQUIREMENT_SECTION = K_SECTION_TABLE_OFFSET + 2 * sizeof(Section);
     put_big_endian_u32(image, K_STRING_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Strtab));
+                       static_cast<u32>(eftl::elf::SectionType::Strtab));
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_offset),
                        K_STRING_TABLE_OFFSET);
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_size), 27);
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_addralign), 1);
 
     put_big_endian_u32(image, K_REQUIREMENT_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::GnuVerneed));
+                       static_cast<u32>(eftl::elf::SectionType::GnuVerneed));
     put_big_endian_u64(image, K_REQUIREMENT_SECTION + offsetof(Section, sh_offset),
                        K_VERSION_REQUIREMENT_OFFSET);
     put_big_endian_u64(image, K_REQUIREMENT_SECTION + offsetof(Section, sh_size),
@@ -402,12 +402,12 @@ auto test_elf32_observes_version_requirement() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 15;
     strings.sh_addralign = 1;
     Section32 requirements{};
-    requirements.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVerneed);
+    requirements.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVerneed);
     requirements.sh_offset = K_VERSION_OFFSET;
     requirements.sh_size = sizeof(Requirement32) + sizeof(Auxiliary32);
     requirements.sh_link = 1;

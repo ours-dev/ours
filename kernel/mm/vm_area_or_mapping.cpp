@@ -14,12 +14,12 @@ auto VmAreaOrMapping::Builder::set_vmo(ustl::Arc<VmObject> vmo) -> Self & {
 VmAreaOrMapping::VmAreaOrMapping(u32 magic, VirtAddr base, usize size, VmaFlags vmaf,
                                  VmArea *parent, VmAspace *aspace, char const *name)
     : m_canary(magic)
+    , m_name(name)
     , m_base(base)
     , m_size(size)
     , m_vmaf(vmaf)
     , m_parent(parent)
     , m_aspace(aspace)
-    , m_name(name)
     , m_children_hook() {}
 
 auto VmAreaOrMapping::validate_mmuflags(MmuFlags mmuf) const -> bool {
@@ -110,7 +110,7 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
 }
 
 VmAreaOrMapping::Builder::Builder(ustl::Arc<VmAspace> *aspace, VmaFlags vmaf, usize size)
-    : m_aspace(aspace), m_vmaf(vmaf), m_size(size) {}
+    : m_size(size), m_vmaf(vmaf), m_aspace(aspace) {}
 
 auto VmAreaOrMapping::Builder::build(ustl::Arc<VmAreaOrMapping> *out) -> Status {
     if (!out) {

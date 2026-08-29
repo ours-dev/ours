@@ -13,6 +13,7 @@
 # their own.  Compiler-specific flags are guarded by is_clang/is_gcc (see
 # //build/config/compiler/compiler.gni).
 
+import("//build/config/compiler/clang.gni")
 import("//build/config/cxx_version.gni")
 import("//build/toolchain/toolchain_environment.gni")
 
@@ -68,6 +69,25 @@ config("kernel_libcxx_include") {
         rebase_path(ours_clang_cxx_include_dir, root_build_dir),
       ]
     }
+  }
+}
+
+# The host toolchain's sysroot, applied only inside the host toolchain
+# context (see is_host_toolchain in BUILDCONFIG.gn, next to host-prelude).
+#
+# The vendored llvm-23 release used on a macOS host (see clang.gni) carries
+# no default sysroot the way the dev container's apt-installed llvm-22
+# does, so without this, host tools like obit fail to compile: libc++'s
+# <cstdio> can't find the platform's own <wchar.h>, and symbols like
+# mbstate_t silently drop through using_if_exists instead of erroring
+# where the actual problem is.
+config("mac_host_sysroot") {
+  if (mac_sdk_path != "") {
+    cflags = [
+      "-isysroot",
+      mac_sdk_path,
+    ]
+    ldflags = cflags
   }
 }
 

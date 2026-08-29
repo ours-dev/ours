@@ -1,6 +1,9 @@
 source_set("syscall") {
-  sources = [
-    "vmo.cpp",
-    "task.cpp",
-  ]
+  # table.cpp only. vmo.cpp and task.cpp do not compile: they name ours::Handle
+  # without including <ours/object/handle.hpp>, and their signatures take it by
+  # value, which its Box-based factory does not support. They have never been
+  # built -- nothing depended on this target at all until now -- so bringing
+  # them in is its own job, not a prerequisite for the kernel linking.
+  sources = [ "table.cpp" ]
+  visibility = [ "*" ]
 }

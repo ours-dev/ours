@@ -8,6 +8,7 @@ source_set("pc") {
     "hpet.cpp",
     "interrupt.cpp",
     "keyboard.cpp",
+    "pic.cpp",
   ]
   public_deps = [ "//kernel/platform:headers" ]
 
@@ -20,6 +21,7 @@ source_set("pc") {
     "//kernel/lib/ktl:headers",
     "//kernel/lib/logz4:headers",
     "//kernel/mm:headers",
+    "//kernel/object:headers",
   ]
 }
 

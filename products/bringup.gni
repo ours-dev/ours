@@ -21,7 +21,7 @@ product = {
   kernel_images = [
     {
       # dev：带单测的内核。镜像本体（kernel_package + cmdline + kernel_image +
-      # physboot 依赖）定义在 //kernel/products/image/kernel.dev/（对标 Fuchsia
+      # physboot 依赖）定义在 //kernel/products/image/dev/（对标 Fuchsia
       # zircon/kernel/image/$name），这里只按 label 选择。
       image = "//kernel/products/image/dev"
     },

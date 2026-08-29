@@ -9,7 +9,7 @@
 
 #include <ours/task/thread.hpp>
 
-#include <ours/sync/spin-lock.hpp>
+#include <ours/sync/spin_lock.hpp>
 
 #include <gktl/canary.hpp>
 #include <ustl/mem/container_of.hpp>

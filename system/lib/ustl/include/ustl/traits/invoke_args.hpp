@@ -3,7 +3,7 @@
 #ifndef USTL_TRAITS_INVOKE_ARGS_HPP
 #define USTL_TRAITS_INVOKE_ARGS_HPP 1
 
-#include <ustl/util/type-list.hpp>
+#include <ustl/util/type_list.hpp>
 
 namespace ustl::traits {
 

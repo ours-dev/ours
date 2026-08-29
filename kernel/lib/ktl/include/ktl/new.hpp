@@ -5,13 +5,13 @@
 
 #include <ktl/kmalloc.hpp>
 
-auto operator new(ktl::usize size, ktl::Gaf gaf) -> void *;
+auto operator new(usize size, ktl::Gaf gaf) -> void *;
 
-auto operator new[](ktl::usize size, ktl::Gaf gaf) -> void *;
+auto operator new[](usize size, ktl::Gaf gaf) -> void *;
 
-auto operator new(ktl::usize size, ktl::Gaf gaf, ktl::NnId nid) -> void *;
+auto operator new(usize size, ktl::Gaf gaf, ktl::NnId nid) -> void *;
 
-auto operator new[](ktl::usize size, ktl::Gaf gaf, ktl::NnId nid) -> void *;
+auto operator new[](usize size, ktl::Gaf gaf, ktl::NnId nid) -> void *;
 
 auto operator delete(void *ptr) -> void;
 

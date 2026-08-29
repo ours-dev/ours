@@ -8,8 +8,8 @@
 executable("frame-buddy-smoke") {
   testonly = true
   sources = [
-    "frame-buddy-smoke.cpp",
-    "//kernel/mm/core/frame-buddy.cpp",
+    "frame_buddy_smoke.cpp",
+    "//kernel/mm/core/frame_buddy.cpp",
   ]
   deps = [
     "//kernel/mm:headers",

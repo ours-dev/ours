@@ -4,9 +4,9 @@ if (toolchain_environment == "kernel") {
   source_set("object") {
     sources = [
       "dispatcher.cpp",
-      "process-dispatcher.cpp",
-      "resource-dispatcher.cpp",
-      "thread-dispatcher.cpp",
+      "process_dispatcher.cpp",
+      "resource_dispatcher.cpp",
+      "thread_dispatcher.cpp",
     ]
     public_deps = [ ":headers" ]
   }
@@ -14,18 +14,18 @@ if (toolchain_environment == "kernel") {
 
 cpp_interface("headers") {
   public = [
-    "include/ours/object/channel-dispatcher.hpp",
+    "include/ours/object/channel_dispatcher.hpp",
     "include/ours/object/dispatcher.hpp",
-    "include/ours/object/handle-table.hpp",
+    "include/ours/object/handle_table.hpp",
     "include/ours/object/handle.hpp",
-    "include/ours/object/job-dispatcher.hpp",
+    "include/ours/object/job_dispatcher.hpp",
     "include/ours/object/observer.hpp",
-    "include/ours/object/pager-dispatcher.hpp",
-    "include/ours/object/process-dispatcher.hpp",
-    "include/ours/object/resource-dispatcher.hpp",
-    "include/ours/object/thread-dispatcher.hpp",
+    "include/ours/object/pager_dispatcher.hpp",
+    "include/ours/object/process_dispatcher.hpp",
+    "include/ours/object/resource_dispatcher.hpp",
+    "include/ours/object/thread_dispatcher.hpp",
     "include/ours/object/types.hpp",
-    "include/ours/object/vm-area-dispatcher.hpp",
+    "include/ours/object/vm_area_dispatcher.hpp",
   ]
   public_deps = [
     "//kernel/lib/gktl:headers",

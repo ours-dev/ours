@@ -42,9 +42,23 @@ kernel_cmdline("cmdline") {
 kernel_image("dev") {
   visibility = [ "//products/*" ]
   testonly = true
+
+  # The artifact everything else already calls it: //BUILD.gn, products/README.md,
+  # products/bringup/BUILD.gn and the comment above all say kernel.dev.obi, but
+  # without this the image took its basename from the target name and landed at
+  # dev.obi.
+  output_name = "kernel.dev"
+
+  # Order is the OBI topology, and physload was missing from it entirely --
+  # the comment above already described the intended shape, but item 0 came
+  # out as the kernel-storage block and obit's --bootable check rejected it.
+  # physboot also needs the phys toolchain spelled out, or it resolves in the
+  # kernel toolchain and lands at a different path than the packer expects.
+  # This mirrors //kernel/products/image/fake, which builds.
   deps = [
-    ":ours",
+    "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     ":cmdline",
-    "//kernel/phys/image/physboot",
+    ":ours",
+    "//kernel/phys/image/physboot(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
   ]
 }

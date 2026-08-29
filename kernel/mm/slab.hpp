@@ -1,59 +1,64 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_MM_SLAB_HPP 
+#ifndef OURS_MM_SLAB_HPP
 #define OURS_MM_SLAB_HPP 1
 
-#include <ours/mm/pm-frame.hpp>
 #include <ours/mm/gaf.hpp>
+#include <ours/mm/pm_frame.hpp>
 
 namespace ours::mm {
-    /// When a frame is being used in `MemCache`, it's descriptor shows the following layout.
-    class Slab: public PageFrame {
-        using Self = Slab;
-        using Base = PageFrame;
-      public:
-        class Object: public ustl::collections::intrusive::SlistBaseHook<
-                             ustl::collections::intrusive::LinkMode<
-                             ustl::collections::intrusive::LinkModeType::AutoUnlink>> {
-            using Self = Object;
-          public:
-            USTL_DECLARE_SLIST(Object, List, ustl::collections::intrusive::ConstantTimeSize<false>);
-        };
-        static_assert(sizeof(Object) == sizeof(usize));
-        static_assert(sizeof(Object::List) == sizeof(usize));
+class MemCache;
 
-        static constexpr auto ROLE = Role::Slab;
+/// Operations on a frame that is currently backing a slab.
+///
+/// `Slab` is an alias of PageFrame (see pm_frame.hpp); the slab-specific state
+/// lives in page::SlabBody and is reached through the frame's role-checked
+/// accessors. These are free functions rather than members because the frame
+/// type is shared by every role -- putting each role's methods on PageFrame
+/// would grow one class without bound.
+namespace slab {
+    using Body = page::SlabBody;
 
-        static auto create(MemCache *owner, Gaf gaf, usize order, usize size, NnId nid) -> Self *;
+    /// Claims a fresh frame for |owner| and returns it, or null on failure.
+    ///
+    /// |size| is the object stride and |next_offset| where inside an object
+    /// the free-list pointer lives; both come from the owner's layout.
+    auto create(MemCache *owner, void *node_cache, Gaf gaf, usize order, usize size,
+                usize next_offset, NnId nid) -> Slab *;
 
-        auto allocate(Gaf gaf) -> void *;
-      private:
-        friend class MemCache;
+    /// Hands the frame back to the buddy allocator.
+    auto destroy(Slab *slab) -> void;
 
-        auto init(MemCache *owner, usize size) -> Status;
+    auto init(Slab *slab, MemCache *owner, void *node_cache, usize size, usize next_offset)
+        -> Status;
 
-        auto destroy() -> void;
+    auto allocate(Slab *slab, Gaf gaf) -> void *;
 
-        auto get_object() -> void *;
+    /// Pops one object off the free list, or null if the slab is full.
+    auto get_object(Slab *slab) -> void *;
 
-        auto put_object(void *object) -> void;
+    auto put_object(Slab *slab, void *object) -> void;
 
-        auto has_object() const -> bool;
+    FORCE_INLINE auto has_object(Slab const *slab) -> bool {
+        return slab->as<Body>().free_head != nullptr;
+    }
 
-        Object::List m_object;
-        u16 m_num_inuse;
-        u16 m_num_objects;
+    FORCE_INLINE auto owner(Slab const *slab) -> MemCache * {
+        return static_cast<MemCache *>(slab->as<Body>().owner);
+    }
 
-        MemCache *m_owner;
+    /// True once every object has been handed back.
+    FORCE_INLINE auto is_empty(Slab const *slab) -> bool {
+        return slab->as<Body>().num_inuse == 0;
+    }
 
-        using AutoUnlinkMode = ustl::collections::intrusive::LinkMode<
-            ustl::collections::intrusive::LinkModeType::AutoUnlink>;
+    /// The NodeCache whose lock protects this slab. Opaque: slab.hpp cannot
+    /// name MemCache's private nested type.
+    FORCE_INLINE auto node_cache(Slab const *slab) -> void * {
+        return slab->as<Body>().node_cache;
+    }
+} // namespace slab
 
-        ustl::collections::intrusive::ListMemberHook<AutoUnlinkMode> m_hook;
-        USTL_DECLARE_HOOK_OPTION(Self, m_hook, ManagedOption);
-      public:
-        USTL_DECLARE_LIST(Slab, List, ManagedOption, ustl::collections::intrusive::ConstantTimeSize<false>);
-    };
 } // namespace ours::mm
 
 #endif // #ifndef OURS_MM_SLAB_HPP

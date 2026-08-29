@@ -1,7 +1,7 @@
 #include <acpi/numa.hpp>
 #include <logz4/log.hpp>
-#include <ours/mm/early-mem.hpp>
-#include <ours/mm/pm-node.hpp>
+#include <ours/mm/early_mem.hpp>
+#include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/platform/acpi.hpp>
 #include <ustl/mem/object.hpp>

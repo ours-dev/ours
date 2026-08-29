@@ -3,6 +3,8 @@
 #ifndef USTL_RC_HPP
 #define USTL_RC_HPP 1
 
+#include <ustl/detail/deallocate.hpp>
+
 #include <atomic>
 #include <type_traits>
 #include <utility>
@@ -30,14 +32,6 @@ namespace detail {
     template <typename Policy>
     struct IsThreadSafe: std::bool_constant<std::is_same_v<Policy, sync::ThreadSafePolicy>> {};
 
-    /// Detects a nested `Disposer` customization point on T. When present, it is
-    /// used as the storage-reclaim strategy for `RefCounted<T>`; otherwise the
-    /// plain `delete` operator is used.
-    template <typename T, typename = void>
-    struct HasDisposer: std::false_type {};
-    template <typename T>
-    struct HasDisposer<T, std::void_t<typename T::Disposer>>: std::true_type {};
-
     /// Per-type runtime tag used by the checked `downcast`. A class opts in by
     /// defining `static constexpr std::uintptr_t TYPE_TAG` and overriding
     /// `RefCounted::rc_type_tag()` to return it.
@@ -62,17 +56,6 @@ namespace detail {
     struct ThreadPolicyOf<T, std::void_t<typename T::ThreadPolicy>> {
         using Type = typename T::ThreadPolicy;
     };
-
-    /// Default storage reclaim: a nested `T::Disposer` if present, otherwise
-    /// plain `operator delete` (in the kernel this is `ktl::kfree`).
-    template <typename T>
-    auto default_deallocate(void *pointer) noexcept -> void {
-        if constexpr (HasDisposer<T>::value) {
-            typename T::Disposer{}(static_cast<T *>(pointer));
-        } else {
-            ::operator delete(pointer);
-        }
-    }
 } // namespace detail
 
 template <typename T, typename Policy>
@@ -665,6 +648,9 @@ class Weak final {
 /// safe to share across CPUs. The default `Rc<T>` is the single-threaded
 /// counterpart (Rust's `Rc`); pick `Arc` explicitly when the object is shared
 /// between threads.
+template <typename T>
+using Arc = Rc<T, sync::ThreadSafePolicy>;
+
 template <typename T>
 using Arc = Rc<T, sync::ThreadSafePolicy>;
 

@@ -1,13 +1,14 @@
 #include <gktl/init_hook.hpp>
 #include <ktl/new.hpp>
 #include <logz4/log.hpp>
-#include <ours/mm/object-cache.hpp>
+#include <ours/mm/object_cache.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_object.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_object_physical.hpp>
-#include <ustl/algorithms/minmax.hpp>
+#include <ustl/mem/align.hpp>
+#include <algorithm>
 
 namespace ours::mm {
 using VmaCache =
@@ -277,7 +278,7 @@ auto VmArea::destroy() -> Status {
             ustl::Arc<Base> aom(&*curr->m_subvmas.begin());
             if (!aom->is_mapping()) {
                 // If not a mapping, recursive to keep destroying.
-                curr = ustl::move(aom);
+                curr = ustl::adopt<Self, ustl::sync::ThreadSafePolicy>(aom.as_ptr_mut());
                 continue;
             }
 
@@ -288,21 +289,56 @@ auto VmArea::destroy() -> Status {
         }
 
         // Destroy current node.
-        auto parent = m_parent;
+        auto *const parent = m_parent;
         curr->Base::destroy();
-        if (curr == this) {
+        if (curr.as_ptr() == this) {
             break;
         }
 
         // Traverse up.
-        curr = parent;
+        curr = parent ? ustl::adopt<Self, ustl::sync::ThreadSafePolicy>(parent)
+                      : ustl::Arc<Self>();
     }
 
     m_num_mappings = 0;
     return Status::Ok;
 }
 
-auto VmArea::dump() const -> void {
+auto VmArea::contains(VirtAddr addr) const -> bool {
+    // One subtraction rather than two comparisons: unsigned wrap turns an
+    // address below the base into a huge offset, which fails the same test.
+    return addr - m_base < m_size;
+}
+
+/// Finds the mapping that |va| falls in, descending through sub-areas.
+///
+/// Children are ordered by base address, so the scan can stop at the first one
+/// starting past |va| instead of walking the whole set.
+auto VmArea::find_mapping_locked(VirtAddr va) -> VmMapping * {
+    m_canary.verify(kAreaMagic);
+
+    if (!contains(va)) {
+        return nullptr;
+    }
+
+    for (auto &child: m_subvmas) {
+        if (child.base() > va) {
+            break;
+        }
+        if (va - child.base() >= child.size()) {
+            continue;
+        }
+
+        if (child.is_mapping()) {
+            return static_cast<VmMapping *>(&child);
+        }
+        return static_cast<VmArea &>(child).find_mapping_locked(va);
+    }
+
+    return nullptr;
+}
+
+auto VmArea::dump_locked() const -> void {
     m_canary.verify(kAreaMagic);
 
     log::trace("VMA {}: [0x{:X}, 0x{:X}]", m_name, m_base, m_size);
@@ -313,6 +349,13 @@ auto VmArea::dump() const -> void {
             log::trace("  A {:<10}: [0x{:X}, 0x{:X}]", child.m_name, child.base(), child.size());
         }
     }
+}
+
+/// TODO(SmallHuaZi): should take the aspace lock and then defer, but the lock
+/// is not reachable from here yet, and its current callers (init_vmm) do not
+/// hold it. Left as a plain forward so the two spellings cannot drift apart.
+auto VmArea::dump() const -> void {
+    dump_locked();
 }
 
 } // namespace ours::mm

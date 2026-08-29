@@ -15,7 +15,7 @@ namespace ours::mm {
 
         /// 
         virtual auto commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status override {
-            m_canary.verify(kPhysicalMagic);
+            m_canary.verify(static_cast<u32>(Type::Physical));
 
             if (offset > size_ || size > size_ || offset > size_ - size) {
                 return Status::OutOfRange;
@@ -24,7 +24,7 @@ namespace ours::mm {
         }
 
         auto lookup_range(usize offset, usize size, PhysAddr *pa) -> Status {
-            m_canary.verify(kPhysicalMagic);
+            m_canary.verify(static_cast<u32>(Type::Physical));
 
             if (offset > size_ || size > size_ || offset > size_ - size) {
                 return Status::OutOfRange;

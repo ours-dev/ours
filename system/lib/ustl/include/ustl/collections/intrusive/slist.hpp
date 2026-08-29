@@ -269,7 +269,9 @@ namespace ustl::collections::intrusive {
 
         constexpr auto swap(Slist &other) noexcept -> void {
             Algorithms::swap_nodes(header(), other.header());
-            std::swap(m_size, other.m_size);
+            if constexpr (PackedOptions::CONSTANT_TIME_SIZE) {
+                std::swap(m_size, other.m_size);
+            }
             refresh_last();
             other.refresh_last();
         }
@@ -539,8 +541,12 @@ namespace ustl::collections::intrusive {
     private:
         constexpr auto reset() noexcept -> void {
             Algorithms::init_header(header());
-            m_size = 0U;
-            m_last = header();
+            if constexpr (PackedOptions::CONSTANT_TIME_SIZE) {
+                m_size = 0U;
+            }
+            if constexpr (PackedOptions::CACHE_LAST) {
+                m_last = header();
+            }
         }
 
         constexpr auto increment_size() noexcept -> void {
@@ -598,9 +604,24 @@ namespace ustl::collections::intrusive {
                 const_cast<Node &>(*PointerTraits<typename NodeTraits::ConstNodePtr>::to_raw_pointer(node)));
         }
 
+        /// Placeholders for the two optional members below. Every read and
+        /// write of m_size/m_last already goes through an `if constexpr`
+        /// guarded helper, so when an option is off the member only has to
+        /// stop occupying space -- which [[no_unique_address]] does for an
+        /// empty type.
+        ///
+        /// This matters to more than footprint: Slab embeds an
+        /// Slist<Object, ConstantTimeSize<false>> in a page-frame descriptor
+        /// and static_asserts that it is one pointer wide (see
+        /// kernel/mm/slab.hpp).
+        struct NoSize {};
+        struct NoLast {};
+
         Node m_header {};
-        Size m_size {};
-        NodePtr m_last {};
+        [[no_unique_address]]
+        std::conditional_t<PackedOptions::CONSTANT_TIME_SIZE, Size, NoSize> m_size {};
+        [[no_unique_address]]
+        std::conditional_t<PackedOptions::CACHE_LAST, NodePtr, NoLast> m_last {};
     };
 } // namespace ustl::collections::intrusive
 

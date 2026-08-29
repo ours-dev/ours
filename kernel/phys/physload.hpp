@@ -8,7 +8,7 @@
 #define OURS_PHYS_PHYSLOAD_HPP 1
 
 #include <ours/compiler.hpp>
-#include <ours/phys/boot-options.hpp>
+#include <ours/phys/boot_options.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/types.hpp>
 

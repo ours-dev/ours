@@ -12,7 +12,7 @@ auto main() -> int {
     if (stream.is_err()) {
         return 1;
     }
-    auto const little_endian = stream->read_le<ours::u32>(0);
+    auto const little_endian = stream->read_le<u32>(0);
     if (little_endian.is_err() || little_endian.value() != 0x12345678U) {
         return 2;
     }

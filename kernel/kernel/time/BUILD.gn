@@ -1,15 +1,22 @@
 source_set("time") {
     sources = [
-        "clock-event-device.cpp",
-        "clock-source.cpp",
-        "tick-device.cpp",
-        "tick-sched.cpp",
+        "clock_event_device.cpp",
+        "clock_source.cpp",
+        "tick_device.cpp",
+        "tick_sched.cpp",
         "timer.cpp",
-        "timer-queue.cpp",
-        "timer-scheduler.cpp",
+        "timer_queue.cpp",
+        "timer_scheduler.cpp",
         "clock.cpp",
         "init.cpp",
         "mod.cpp",
+    ]
+    deps = [
+        "//kernel/lib/gktl:headers",
+        "//kernel/lib/ktl:headers",
+        "//kernel/lib/mtl:headers",
+        "//kernel/mm:headers",
+        "//system/lib/lockdep",
     ]
     visibility = ["*"]
 }

@@ -1,10 +1,11 @@
 source_set("sync") {
     sources = [
         "event.cpp",
+        "local_lock.cpp",
         "mutex.cpp",
         "rwlock.cpp",
         "semaphore.cpp",
-        "spin-lock.cpp",
+        "spin_lock.cpp",
     ]
     deps = [
         "//kernel/lib/gktl:headers",

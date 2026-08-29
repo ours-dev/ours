@@ -5,6 +5,11 @@
 
 #include <ours/macro_abi.hpp>
 
+// USTL_ENABLE_ENUM_BITMASK below comes from here. The header used to rely on
+// some earlier include dragging it in, so it only compiled when included after
+// one -- including it first, as features.cpp does, failed.
+#include <ustl/util/enum_bits.hpp>
+
 namespace ours::task::sched {
     // [[=bits::bitmask]]
     enum class Feature {

@@ -98,7 +98,7 @@ auto make_compressed_section_image(bool big_endian = false) -> std::array<u8, 10
     put_header(image, header, big_endian);
 
     Section section{};
-    section.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Progbits);
+    section.sh_type = static_cast<u32>(eftl::elf::SectionType::Progbits);
     section.sh_flags = static_cast<decltype(section.sh_flags)>(
         static_cast<u64>(eftl::elf::SectionFlags::Compressed));
     section.sh_offset = K_SECTION_DATA_OFFSET;
@@ -151,7 +151,7 @@ auto test_rejects_invalid_compression() -> int {
 
     auto zero_type = make_compressed_section_image<Traits>();
     put_scalar(zero_type, K_SECTION_DATA_OFFSET + offsetof(Compression, ch_type),
-               static_cast<ours::u32>(0), false);
+               static_cast<u32>(0), false);
     if (File::from_raw(zero_type.data(), zero_type.size()).is_ok()) {
         return 1;
     }
@@ -192,7 +192,7 @@ auto test_rejects_invalid_compression() -> int {
 
     auto nobits = make_compressed_section_image<Traits>();
     put_scalar(nobits, K_SECTION_TABLE_OFFSET + sizeof(Section) + offsetof(Section, sh_type),
-               static_cast<ours::u32>(eftl::elf::SectionType::Nobits), false);
+               static_cast<u32>(eftl::elf::SectionType::Nobits), false);
     if (File::from_raw(nobits.data(), nobits.size()).is_err()) {
         return 0;
     }
@@ -203,7 +203,7 @@ template <typename Traits>
 auto test_preserves_extension_compression_type() -> int {
     using Compression = typename Traits::Compression;
     using File = eftl::elf::FileImpl<Traits>;
-    constexpr ours::u32 K_OS_SPECIFIC_TYPE = 0x60000000;
+    constexpr u32 K_OS_SPECIFIC_TYPE = 0x60000000;
 
     auto bytes = make_compressed_section_image<Traits>();
     put_scalar(bytes, K_SECTION_DATA_OFFSET + offsetof(Compression, ch_type), K_OS_SPECIFIC_TYPE,
@@ -216,7 +216,7 @@ auto test_preserves_extension_compression_type() -> int {
         return ustl::NONE;
     }();
     if (compression.is_some() &&
-        static_cast<ours::u32>(compression->type()) == K_OS_SPECIFIC_TYPE) {
+        static_cast<u32>(compression->type()) == K_OS_SPECIFIC_TYPE) {
         return 0;
     }
     return 1;

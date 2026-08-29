@@ -22,7 +22,7 @@ group("tests") {
 
 executable("physical-memory-smoke") {
   testonly = true
-  sources = [ "physical-memory-smoke.cpp" ]
+  sources = [ "physical_memory_smoke.cpp" ]
   deps = [
     ":headers",
     "//system/lib/ustl:headers",

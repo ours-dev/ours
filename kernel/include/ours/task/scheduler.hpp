@@ -8,10 +8,10 @@
 namespace ours::task {
     using sched::UnparkControl;
 
-    using sched::kLowestPriority;
-    using sched::kHighestPriority;
-    using sched::kDefaultPriority;
-    using sched::kIdlePriority;
+    using sched::LOWEST_PRIORITY;
+    using sched::HIGHEST_PRIORITY;
+    using sched::DEFAULT_PRIORITY;
+    using sched::IDLE_PRIORITY;
 
     using sched::CpuAffinity;
     using sched::Scheduler;

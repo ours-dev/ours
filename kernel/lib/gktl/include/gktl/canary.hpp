@@ -4,7 +4,7 @@
 
 #include <ours/assert.hpp>
 
-#include <gktl/type-info.hpp>
+#include <gktl/type_info.hpp>
 
 #ifdef GKTL_CONFIG_CANARY
 #   define ENABLE_CANARY GKTL_CONFIG_CANARY

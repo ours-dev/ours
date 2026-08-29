@@ -11,7 +11,7 @@
 #include <ours/cpu.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/start.hpp>
 
 namespace ours {

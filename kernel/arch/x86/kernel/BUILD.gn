@@ -16,7 +16,7 @@ source_set("kernel") {
     "mp.cpp",
     "start.S",
     "syscall.S",
-    "task/idle-thread.cpp",
+    "task/idle_thread.cpp",
     "task/thread.cpp",
     "time/hpet.cpp",
     "time/time.cpp",
@@ -38,5 +38,5 @@ source_set("kernel") {
 }
 
 cpp_interface("headers") {
-  public = [ "include/ours/arch/hpet-regs.hpp" ]
+  public = [ "include/ours/arch/hpet_regs.hpp" ]
 }

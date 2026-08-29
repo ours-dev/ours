@@ -3,9 +3,9 @@
 #ifndef GKTL_RANGE_HPP
 #define GKTL_RANGE_HPP 1
 
+#include <ours/compiler.hpp>
 #include <ours/types.hpp>
-#include <ustl/algorithms/minmax.hpp>
-
+#include <algorithm>
 namespace gktl {
 /// A range is a half-open interval [start, end).
 template <typename T>
@@ -46,8 +46,8 @@ struct Range {
 
     FORCE_INLINE constexpr auto intersection_with(Range<T> const &other) const -> Range<T> {
         if (overlaps(other)) {
-            return Range<T>{ustl::algorithms::max(start, other.start),
-                            ustl::algorithms::min(end, other.end)};
+            return Range<T>{std::max(start, other.start),
+                            std::min(end, other.end)};
         }
 
         // If no valid intersection, return an invalid range (or handle as needed)
@@ -56,8 +56,8 @@ struct Range {
 
     FORCE_INLINE constexpr auto union_with(Range<T> const &other) const -> Range<T> {
         if (overlaps(other)) {
-            return Range<T>{ustl::algorithms::min(start, other.start),
-                            ustl::algorithms::max(end, other.end)};
+            return Range<T>{std::min(start, other.start),
+                            std::max(end, other.end)};
         }
 
         // If no overlap, return an invalid range (or handle as needed)

@@ -35,7 +35,7 @@ auto put_big_endian_u16(std::array<u8, Size> &image, usize offset, u16 value)
 }
 
 template <usize Size>
-auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, ours::u32 value)
+auto put_big_endian_u32(std::array<u8, Size> &image, usize offset, u32 value)
     -> void {
     image[offset] = static_cast<u8>(value >> 24U);
     image[offset + 1] = static_cast<u8>(value >> 16U);
@@ -67,13 +67,13 @@ auto make_version_symbol_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
 
     Section dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET;
     dynamic_symbols.sh_size = 2 * sizeof(Symbol);
     dynamic_symbols.sh_link = 1;
@@ -82,7 +82,7 @@ auto make_version_symbol_image() -> std::array<u8, 1024> {
     dynamic_symbols.sh_entsize = sizeof(Symbol);
 
     Section versions{};
-    versions.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVersym);
+    versions.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVersym);
     versions.sh_offset = K_VERSYM_OFFSET;
     versions.sh_size = 2 * sizeof(Version);
     versions.sh_link = 2;
@@ -120,14 +120,14 @@ auto make_big_endian_version_symbol_image() -> std::array<u8, 1024> {
     constexpr usize K_SYMBOL_SECTION = K_SECTION_TABLE_OFFSET + 2 * sizeof(Section);
     constexpr usize K_VERSION_SECTION = K_SECTION_TABLE_OFFSET + 3 * sizeof(Section);
     put_big_endian_u32(image, K_STRING_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Strtab));
+                       static_cast<u32>(eftl::elf::SectionType::Strtab));
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_offset),
                        K_STRING_TABLE_OFFSET);
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_size), 5);
     put_big_endian_u64(image, K_STRING_SECTION + offsetof(Section, sh_addralign), 1);
 
     put_big_endian_u32(image, K_SYMBOL_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::Dynsym));
+                       static_cast<u32>(eftl::elf::SectionType::Dynsym));
     put_big_endian_u64(image, K_SYMBOL_SECTION + offsetof(Section, sh_offset), K_DYNSYM_OFFSET);
     put_big_endian_u64(image, K_SYMBOL_SECTION + offsetof(Section, sh_size), 2 * sizeof(Symbol));
     put_big_endian_u32(image, K_SYMBOL_SECTION + offsetof(Section, sh_link), 1);
@@ -136,7 +136,7 @@ auto make_big_endian_version_symbol_image() -> std::array<u8, 1024> {
     put_big_endian_u64(image, K_SYMBOL_SECTION + offsetof(Section, sh_entsize), sizeof(Symbol));
 
     put_big_endian_u32(image, K_VERSION_SECTION + offsetof(Section, sh_type),
-                       static_cast<ours::u32>(eftl::elf::SectionType::GnuVersym));
+                       static_cast<u32>(eftl::elf::SectionType::GnuVersym));
     put_big_endian_u64(image, K_VERSION_SECTION + offsetof(Section, sh_offset), K_VERSYM_OFFSET);
     put_big_endian_u64(image, K_VERSION_SECTION + offsetof(Section, sh_size), 2 * sizeof(Version));
     put_big_endian_u32(image, K_VERSION_SECTION + offsetof(Section, sh_link), 2);
@@ -220,7 +220,7 @@ auto test_rejects_invalid_version_symbol_relationships() -> int {
     Section versions{};
     std::memcpy(&versions, wrong_entry_size.data() + K_SECTION_TABLE_OFFSET + 3 * sizeof(Section),
                 sizeof(versions));
-    versions.sh_entsize = sizeof(ours::u32);
+    versions.sh_entsize = sizeof(u32);
     put(wrong_entry_size, K_SECTION_TABLE_OFFSET + 3 * sizeof(Section), versions);
     auto const wrong_entry_size_result =
         Binary::from_raw(wrong_entry_size.data(), wrong_entry_size.size());
@@ -297,12 +297,12 @@ auto test_elf32_observes_version_symbols() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     Section32 dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET_32;
     dynamic_symbols.sh_size = 2 * sizeof(Symbol32);
     dynamic_symbols.sh_link = 1;
@@ -310,7 +310,7 @@ auto test_elf32_observes_version_symbols() -> int {
     dynamic_symbols.sh_addralign = alignof(Symbol32);
     dynamic_symbols.sh_entsize = sizeof(Symbol32);
     Section32 versions{};
-    versions.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuVersym);
+    versions.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuVersym);
     versions.sh_offset = K_VERSYM_OFFSET_32;
     versions.sh_size = 2 * sizeof(Version32);
     versions.sh_link = 2;

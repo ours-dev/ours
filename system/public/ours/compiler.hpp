@@ -10,12 +10,23 @@
 
 #define NO_INLINE	                  [[gnu::noinline]]
 #define NO_RETURN                   [[noreturn]]
+// The bare attribute. This is the form to use where a declaration specifier
+// cannot go -- on a lambda, for instance: `[] FORCE_INLINE_ATTR(int x) {...}`.
 #if defined(_MSC_VER)
-#  define FORCE_INLINE              [[msvc::force_inline]]
+#  define FORCE_INLINE_ATTR         [[msvc::force_inline]]
 #else
-#  define FORCE_INLINE              [[gnu::always_inline]]
+#  define FORCE_INLINE_ATTR         [[gnu::always_inline]]
 #endif
-#define FORCE_INLINE_ATTR FORCE_INLINE
+
+// The attribute *plus* `inline`, which is what a function definition wants.
+//
+// always_inline only tells the optimiser what to do; it does not give the
+// function inline linkage. A free function defined in a header and marked with
+// the bare attribute alone therefore keeps external linkage and is emitted by
+// every translation unit that includes it, which the linker reports as a
+// duplicate symbol -- and only at link time, so it stays invisible for as long
+// as the kernel does not link.
+#define FORCE_INLINE                FORCE_INLINE_ATTR inline
 
 #define WEAK_LINK                   [[gnu::weak]]
 #define LINK_SECTION(name)          [[gnu::section(name)]]

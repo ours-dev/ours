@@ -1,7 +1,7 @@
 #include <ours/irq/irq_dispatcher.hpp>
 #include <ours/irq/irq_object.hpp>
 
-#include <ours/mm/object-cache.hpp>
+#include <ours/mm/object_cache.hpp>
 
 #include <ktl/new.hpp>
 

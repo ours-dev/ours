@@ -3,12 +3,16 @@
 #ifndef OURS_TIME_TIMER_HPP
 #define OURS_TIME_TIMER_HPP 1
 
-#include <gktl/canary.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/platform/timer.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/mod.hpp>
 #include <ours/time/types.hpp>
+
+#include <atomic>
+
+#include <gktl/canary.hpp>
+
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/function/fn.hpp>
@@ -145,7 +149,7 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     }
 
     FORCE_INLINE
-    friend auto operator<(Self const &x, Self const &y) -> bool {
+    friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
         return x.m_deadline.latest() < y.m_deadline.latest();
     }
 
@@ -157,8 +161,8 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     TimerQueue *m_queue;
     Deadline m_deadline;
     Handler m_on_expired;
-    ustl::sync::Atomic<CpuNum> m_active_cpu;
-    ustl::sync::Atomic<bool> m_cancalled;
+    std::atomic<CpuNum> m_active_cpu;
+    std::atomic<bool> m_cancalled;
 };
 
 } // namespace ours::time

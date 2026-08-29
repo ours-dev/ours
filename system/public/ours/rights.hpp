@@ -23,10 +23,12 @@ namespace ours {
     };
     USTL_ENABLE_ENUM_BITMASK(Rights);
 
-    constexpr auto RIGHTS_DEFAULT_THREAD = Rights::Signal | Rights::Io;
-    constexpr auto RIGHTS_DEFAULT_PROCESS = Rights::Signal | Rights::Io;
-    constexpr auto RIGHTS_DEFAULT_VMO = Rights::Signal | Rights::Io;
-    constexpr auto RIGHTS_DEFAULT_VMAR = Rights::Signal | Rights::Io;
+    // Per-object default rights are kernel policy rather than part of this
+    // public ABI header, so each one lives beside the dispatcher it belongs to
+    // (RIGHTS_DEFAULT_THREAD in thread-dispatcher.hpp, and so on).
+    //
+    // TODO(SmallHuaZi): RIGHTS_DEFAULT_VMO has no home yet -- there is no VM
+    // object dispatcher header to move it next to. It was `Signal | Io`.
 } // namespace ours
 
 #endif // #ifndef OURS_RIGHTS_HPP

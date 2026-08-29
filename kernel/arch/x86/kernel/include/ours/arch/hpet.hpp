@@ -6,7 +6,7 @@
 #include <ours/compiler.hpp>
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 
 #include <ours/time/types.hpp>
 

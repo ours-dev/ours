@@ -18,6 +18,14 @@ namespace ours::sync {
         return Status::Ok;
     }
 
+    /// Puts the event back into the unsignalled state, so a later wait()
+    /// blocks again. Takes the wait queue lock because signal() decides what
+    /// to do by reading m_result under it.
+    auto Event::unsignal() -> void {
+        Guard guard{m_wq.get_lock()};
+        m_result.reset();
+    }
+
     auto Event::signal(Status status) -> void {
         Guard guard{m_wq.get_lock()};
 

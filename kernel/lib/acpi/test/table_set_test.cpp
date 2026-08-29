@@ -99,8 +99,7 @@ auto test_lookup_and_entries() -> void {
 
 /// The shape //kernel/platform/pc/interrupt.cpp consumes.  That file cannot be
 /// compiled in this tree for reasons unrelated to ACPI (it includes a
-/// nonexistent arch/x86/pic.hpp, and ktl/new.hpp refers to a ktl::usize that
-/// does not exist), so its decoding path is pinned here instead.
+/// nonexistent arch/x86/pic.hpp), so its decoding path is pinned here instead.
 auto test_interrupt_source_override_decoding() -> void {
     Machine machine;
     add_madt(machine);

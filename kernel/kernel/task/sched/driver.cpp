@@ -1,7 +1,7 @@
 #include <ours/task/sched/driver.hpp>
 
 #include <ours/time/clock.hpp>
-#include <ours/time/tick-device.hpp>
+#include <ours/time/tick_device.hpp>
 
 namespace ours::task::sched {
     using time::SteadyClock;

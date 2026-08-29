@@ -39,9 +39,9 @@ auto make_header(u16 segment_count) -> Header {
 
 auto tls_segment() -> Segment {
     Segment segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Tls);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::Tls);
     segment.p_flags =
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
     segment.p_offset = K_TLS_OFFSET;
     segment.p_vaddr = 0x600000;
     segment.p_filesz = K_TLS_BYTES.size();
@@ -193,13 +193,13 @@ auto test_elf32_observes_tls_template() -> int {
     put(image, 0, header);
 
     Segment32 segment{};
-    segment.p_type = static_cast<ours::u32>(eftl::elf::SegType::Tls);
+    segment.p_type = static_cast<u32>(eftl::elf::SegType::Tls);
     segment.p_offset = K_TLS32_OFFSET;
     segment.p_vaddr = 0x8048000;
     segment.p_filesz = 4;
     segment.p_memsz = 8;
     segment.p_flags =
-        static_cast<ours::u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
+        static_cast<u32>(eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable);
     segment.p_align = 4;
     put(image, sizeof(Header32), segment);
     std::memcpy(image.data() + K_TLS32_OFFSET, K_TLS_BYTES.data(), K_TLS_BYTES.size());

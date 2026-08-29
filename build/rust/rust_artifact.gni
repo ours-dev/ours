@@ -1,0 +1,85 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# rust_artifact() -- central template every rust_* target delegates to.
+#
+# Wraps a GN built-in target type, attaching the Rust crate identity
+# (crate_name, crate_root), the edition switch, and feature cfg switches
+# to rustflags.  Keeping the flag computation in one place means every
+# crate type gets identical treatment; the rust_* wrappers only choose
+# the GN target type and crate-type-specific defaults.
+#
+# Parameters:
+#   output_type (required)
+#     GN target type: "executable", "rust_library", "rust_proc_macro",
+#     "shared_library", or "static_library".
+#   crate_name (optional) -- Rust crate name; defaults to the target name
+#     with '-' rewritten to '_'.
+#   crate_root (optional) -- entry-point source file; defaults to
+#     <target_name>.rs next to the BUILD.gn.
+#   edition (optional) -- Rust edition; defaults to rust_edition
+#     (see //build/config/compiler/rust.gni).
+#   features (optional) -- list of crate features, passed as
+#     --cfg feature="..." switches.
+#   rustflags (optional) -- extra rustc switches.
+#   Other parameters are forwarded to the chosen target type.
+#
+# PROVENANCE: adapted from Fuchsia //build/rust/rust_artifact.gni
+# (Copyright 2021 The Fuchsia Authors, BSD-style license), reduced to the
+# single-machine no-RBE core: no group/aux split, no clippy metadata, no
+# codegen-metadata hashing, no RBE.
+
+import("//build/config/compiler/rust.gni")
+
+template("rust_artifact") {
+  assert(defined(invoker.output_type),
+         "rust_artifact($target_name) requires output_type")
+
+  _crate_name = string_replace(target_name, "-", "_")
+  if (defined(invoker.crate_name)) {
+    _crate_name = invoker.crate_name
+  }
+
+  _crate_root = "$target_name.rs"
+  if (defined(invoker.crate_root)) {
+    _crate_root = invoker.crate_root
+  }
+
+  _edition = rust_edition
+  if (defined(invoker.edition)) {
+    _edition = invoker.edition
+  }
+
+  target(invoker.output_type, target_name) {
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "crate_name",
+                             "crate_root",
+                             "edition",
+                             "features",
+                             "output_type",
+                             "rustflags",
+                             "testonly",
+                             "visibility",
+                           ])
+
+    crate_name = _crate_name
+    crate_root = _crate_root
+
+    _rustflags = []
+    if (defined(invoker.rustflags)) {
+      _rustflags += invoker.rustflags
+    }
+    _rustflags += [ "--edition=$_edition" ]
+
+    if (defined(invoker.features)) {
+      foreach(f, invoker.features) {
+        _rustflags += [ "--cfg=feature=\"$f\"" ]
+      }
+    }
+
+    rustflags = _rustflags
+  }
+}

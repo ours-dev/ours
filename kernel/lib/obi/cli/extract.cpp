@@ -43,7 +43,7 @@ class ExtractCommand final: public AutoCommand<ExtractCommand> {
         }
 
         auto const name = parsed["name"].as<std::string>();
-        auto const item = find_item(*container, name);
+        auto const item = find_item(container->view(), name);
         if (!item) {
             if (item.error() == Error::NotFound) {
                 std::println(std::cerr, "obit: item not found: {}", name);

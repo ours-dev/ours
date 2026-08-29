@@ -107,18 +107,16 @@ source_set("physload.core") {
   sources = [
     "acpi.cpp",
     "aspace.cpp",
-    "boot-options.cpp",
-    "build-id-note.cpp",
-    "build-id.cpp",
+    "boot_options.cpp",
+    "build_id_note.cpp",
     "console.cpp",
-    "elf-image-mapping.cpp",
-    "elf-image.cpp",
+    "elf_image_mapping.cpp",
+    "elf_image.cpp",
     "exports.cpp",
     "memory.cpp",
-    "module-loader.cpp",
+    "module_loader.cpp",
     "panic.cpp",
     "physload.cpp",
-    "raw-image.cpp",
   ]
   # phys-module's cflags (-fPIC -fno-plt), not just its ldflags: this is
   # the source_set whose *compiled objects* end up in physload's final
@@ -151,10 +149,10 @@ source_set("physload.core") {
 # physload exists to report it through.  Everything else physload.core
 # has -- BootMem, module loading, the export table -- is physload's own
 # job, not boot-shim's.
-source_set("boot-shim.core") {
+source_set("bootshim.core") {
   sources = [
     "console.cpp",
-    "elf-image.cpp",
+    "elf_image.cpp",
     "panic.cpp",
   ]
   deps = [
@@ -165,8 +163,8 @@ source_set("boot-shim.core") {
   ]
   public_deps = [
     ":headers",
-    # elf-image.cpp's declarations reach Aspace (kernel-image.hpp's
-    # fix_mapping() signature, even though boot-shim.core never compiles
+    # elf-image.cpp's declarations reach Aspace (elf-image.hpp's
+    # fix_mapping() signature, even though bootshim.core never compiles
     # that body -- elf-image-mapping.cpp stays out of these sources), and
     # Aspace pulls in the architecture's paging types straight out of
     # these headers, same as physload.core does via its own arch dep.
@@ -179,8 +177,8 @@ source_set("boot-shim.core") {
 
 # physload's own build ID, embedded into every physload_module()'s
 # PT_INTERP so ModuleLoader can refuse to load one built against a
-# different physload (ours/phys/build-id.hpp reads the runtime half of
-# this pairing).  Not a module's own deps entry: physload_module() below
+# different physload (module-loader.cpp's own_build_id() reads the runtime
+# half of this pairing).  Not a module's own deps entry: physload_module() below
 # links it into every module automatically.
 kernel_elf_interp("physload.interp") {
   deps = [ ":physload" ]
@@ -197,8 +195,8 @@ physload_module("physboot") {
   visibility = [ "image/*" ]
   install_name = "physboot"
   sources = [
-    "kernel-boot.cpp",
-    "kernel-package-loader.cpp",
+    "kernel_boot.cpp",
+    "kernel_package_loader.cpp",
     "physboot.cpp",
   ]
   deps = [
@@ -249,8 +247,8 @@ cpp_interface("headers") {
 # or needs to know about.
 cpp_interface("boot-obi") {
   public = [
-    "include/ours/phys/boot-obi.hpp",
-    "include/ours/phys/kernel-package.hpp",
+    "include/ours/phys/boot_obi.hpp",
+    "include/ours/phys/kernel_package.hpp",
   ]
   public_deps = [
     "//kernel/lib/bootfs:headers",
@@ -276,7 +274,7 @@ cpp_interface("handoff") {
 
 # physload — the first-stage loader, and everything downstream of GRUB's
 # Multiboot2 handoff understands from here on: boot-shim (the arch-specific
-# GRUB entry point, //kernel/arch/x86/phys/boot-shim) loads this out of the
+# GRUB entry point, //kernel/arch/x86/phys/bootshim) loads this out of the
 # OBI container's item 0 (obi_executable_item below) as a separate,
 # position-independent image, the same way physload itself loads physboot.
 # physload.link (base 0, ET_DYN, no fixed load address) replaces the
@@ -299,36 +297,7 @@ group("tests") {
   # .agents/tasks/phys-module-and-obi-tree/DESIGN.md §8.1) -- a plain
   # dependency compiles under it and fails on the missing host prelude.
   deps = [
-    ":boot-obi-test($host_toolchain)",
-    ":build-id-note-smoke($host_toolchain)",
+    "tests:boot-obi-test($host_toolchain)",
+    "tests:build-id-note-smoke($host_toolchain)",
   ]
-}
-
-executable("build-id-note-smoke") {
-  testonly = true
-  sources = [
-    "build-id-note-smoke.cpp",
-    "build-id-note.cpp",
-  ]
-  deps = [
-    ":headers",
-    "//system/lib/ustl:headers",
-    "//system/public",
-  ]
-  visibility = [ "*" ]
-}
-
-# BootObi's boot-contract behavior (moved from kernel/lib/obi/tests --
-# obi's own PackageBuilder/ContainerView round-trip tests stay there;
-# these specifically exercise phys's reading of that format).
-executable("boot-obi-test") {
-  testonly = true
-  sources = [ "boot-obi-test.cpp" ]
-  deps = [
-    ":boot-obi",
-    "//kernel/lib/obi",
-    "//vendor/googletest:gtest",
-    "//vendor/googletest:gtest_main",
-  ]
-  visibility = [ "*" ]
 }

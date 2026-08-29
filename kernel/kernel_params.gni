@@ -11,7 +11,9 @@ declare_args() {
 
   sched_hptick = false
   sched_delay_dequeue = false
-  sched_extra_invariant_validation = false 
+  sched_extra_invariant_validation = false
+  sched_unpark_preempt = true
+  sched_nohz = false
 
   mm_numa = false
   mm_numa_emulation = false

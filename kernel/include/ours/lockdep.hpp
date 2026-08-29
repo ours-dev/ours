@@ -5,7 +5,7 @@
 #define OURS_LOCKDEP_HPP 1
 
 #include <lockdep/guard.hpp>
-#include <lockdep/state-saver.hpp>
+#include <lockdep/state_saver.hpp>
 
 namespace ours {
     struct IrqSave {};

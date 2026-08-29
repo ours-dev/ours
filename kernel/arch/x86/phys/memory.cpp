@@ -10,7 +10,7 @@
 
 // No arch_detect_memory() override here: boot-shim converts Multiboot2's
 // memory map into the same obi::MemoryRange vocabulary a real OBI memory
-// item uses (kernel/arch/x86/phys/boot-shim/shim.cpp) before ever calling
+// item uses (kernel/arch/x86/phys/bootshim/shim.cpp) before ever calling
 // into physload, so the arch-neutral default in kernel/phys/memory.cpp
 // already does the right thing with what it is handed.
 

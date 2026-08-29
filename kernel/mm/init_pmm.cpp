@@ -1,10 +1,10 @@
 #include <ours/mm/init.hpp>
 
-#include <ours/mm/early-mem.hpp>
-#include <ours/mm/pm-zone.hpp>
-#include <ours/mm/pm-node.hpp>
-#include <ours/mm/object-cache.hpp>
-#include <ours/mm/memory-model.hpp>
+#include <ours/mm/early_mem.hpp>
+#include <ours/mm/pm_zone.hpp>
+#include <ours/mm/pm_node.hpp>
+#include <ours/mm/object_cache.hpp>
+#include <ours/mm/memory_model.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vmm.hpp>
@@ -13,27 +13,25 @@
 #include <ours/init.hpp>
 #include <ours/panic.hpp>
 #include <ours/status.hpp>
-#include <ours/mm/cpu-local.hpp>
+#include <ours/mm/cpu_local.hpp>
 
 #include <ustl/bit.hpp>
 #include <ustl/lazy_init.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/views/span.hpp>
 #include <ustl/traits/is_invocable.hpp>
-#include <ustl/algorithms/minmax.hpp>
-#include <ustl/algorithms/generation.hpp>
-
 #include <ktl/kmalloc.hpp>
 
 #include <logz4/log.hpp>
 
 #include <arch/x86/cache.hpp>
-
-using ustl::algorithms::min;
-using ustl::algorithms::max;
-using ustl::algorithms::clamp;
-
+#include <algorithm>
 namespace ours::mm {
+    /// Declared `extern` in init.hpp and moved forward by set_init_stage();
+    /// this is the one definition of it. Starts at BootStrap, which is where
+    /// the kernel is before init_pmm() runs.
+    InitStage g_init_stage = InitStage::BootStrap;
+
     namespace {
         /// vmours never shares physload's live BootMem: it reads the flat
         /// memory map physload hands off once and rebuilds its own
@@ -81,6 +79,11 @@ namespace ours::mm {
 
         // Ok, PMM is available now.
         set_init_stage(InitStage::Pmm);
+
+        // And say so. MemoryModel::Impl::allocate() reads this to choose
+        // between the real allocator and EarlyMem; nothing had ever set it,
+        // so that choice always fell to EarlyMem.
+        g_pmm_enabled = true;
     }
 
     INIT_CODE
@@ -111,16 +114,15 @@ namespace ours::mm {
         EarlyMem::s_bootmem = bootmem;
         mm::g_kernel_phys_base = mh.kernel_load_addr;
 
-        mm::priv::g_max_phys_addr = bootmem->max_address();
-        mm::priv::g_min_phys_addr = bootmem->min_address();
+        mm::priv::MAX_PHYS_ADDR = bootmem->max_address();
+        mm::priv::MIN_PHYS_ADDR = bootmem->min_address();
 
         return Status::Ok;
     }
 
     INIT_CODE
-    auto reclaim_init_area(RemTag) -> Status {
+    auto free_init_area(InitArea) -> void {
         EarlyMem::reclaim_init_area();
-        return Status::Ok;
     }
 
 } // namespace ours::mm

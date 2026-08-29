@@ -6,6 +6,7 @@
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ktl/result.hpp>
+#include <ours/mm/object_cache.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_area_or_mapping.hpp>
 #include <ours/mm/vm_fault.hpp>
@@ -104,6 +105,11 @@ class VmArea final: public VmAreaOrMapping {
     virtual auto destroy() -> Status override;
 
   private:
+    // ObjectCache::Instance placement-news T; VmArea's constructor stays
+    // protected otherwise.
+    template <typename, typename...>
+    friend class ObjectCache::Instance;
+
     friend class VmObject;
     friend class VmAspace;
     friend class VmMapping;

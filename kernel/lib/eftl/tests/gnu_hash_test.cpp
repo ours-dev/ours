@@ -96,13 +96,13 @@ auto make_gnu_hash_image() -> std::array<u8, 1024> {
     put(image, 0, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 13;
     strings.sh_addralign = 1;
 
     Section dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET;
     dynamic_symbols.sh_size = 3 * sizeof(Symbol);
     dynamic_symbols.sh_link = 1;
@@ -111,9 +111,9 @@ auto make_gnu_hash_image() -> std::array<u8, 1024> {
     dynamic_symbols.sh_entsize = sizeof(Symbol);
 
     Section hash{};
-    hash.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuHash);
+    hash.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuHash);
     hash.sh_offset = K_GNU_HASH_OFFSET;
-    hash.sh_size = 4 * sizeof(ours::u32) + sizeof(Traits::Addr) + 3 * sizeof(ours::u32);
+    hash.sh_size = 4 * sizeof(u32) + sizeof(Traits::Addr) + 3 * sizeof(u32);
     hash.sh_link = 2;
     hash.sh_addralign = alignof(Traits::Addr);
 
@@ -130,16 +130,16 @@ auto make_gnu_hash_image() -> std::array<u8, 1024> {
     bar.st_name = 5;
     put(image, K_DYNSYM_OFFSET + 2 * sizeof(Symbol), bar);
 
-    std::array<ours::u32, 4> const header_words{1, 1, 1, 5};
+    std::array<u32, 4> const header_words{1, 1, 1, 5};
     std::memcpy(image.data() + K_GNU_HASH_OFFSET, header_words.data(), sizeof(header_words));
     constexpr u64 K_BLOOM = 0x0400000010000220ULL;
-    put(image, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32), K_BLOOM);
-    constexpr ours::u32 K_BUCKET = 1;
-    put(image, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32) + sizeof(Traits::Addr), K_BUCKET);
-    constexpr ours::u32 K_FOO_CHAIN = 0x0b887388U;
-    constexpr ours::u32 K_BAR_CHAIN = 0x0b8860bbU;
-    put(image, K_GNU_HASH_OFFSET + 5 * sizeof(ours::u32) + sizeof(Traits::Addr), K_FOO_CHAIN);
-    put(image, K_GNU_HASH_OFFSET + 6 * sizeof(ours::u32) + sizeof(Traits::Addr), K_BAR_CHAIN);
+    put(image, K_GNU_HASH_OFFSET + 4 * sizeof(u32), K_BLOOM);
+    constexpr u32 K_BUCKET = 1;
+    put(image, K_GNU_HASH_OFFSET + 4 * sizeof(u32) + sizeof(Traits::Addr), K_BUCKET);
+    constexpr u32 K_FOO_CHAIN = 0x0b887388U;
+    constexpr u32 K_BAR_CHAIN = 0x0b8860bbU;
+    put(image, K_GNU_HASH_OFFSET + 5 * sizeof(u32) + sizeof(Traits::Addr), K_FOO_CHAIN);
+    put(image, K_GNU_HASH_OFFSET + 6 * sizeof(u32) + sizeof(Traits::Addr), K_BAR_CHAIN);
     return image;
 }
 
@@ -159,12 +159,12 @@ auto make_big_endian_gnu_hash_image() -> std::array<u8, 1024> {
     put_big_header(image, header);
 
     Section strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_TABLE_OFFSET;
     strings.sh_size = 13;
     strings.sh_addralign = 1;
     Section dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET;
     dynamic_symbols.sh_size = 3 * sizeof(Symbol);
     dynamic_symbols.sh_link = 1;
@@ -172,9 +172,9 @@ auto make_big_endian_gnu_hash_image() -> std::array<u8, 1024> {
     dynamic_symbols.sh_addralign = alignof(Symbol);
     dynamic_symbols.sh_entsize = sizeof(Symbol);
     Section hash{};
-    hash.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuHash);
+    hash.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuHash);
     hash.sh_offset = K_GNU_HASH_OFFSET;
-    hash.sh_size = 4 * sizeof(ours::u32) + sizeof(Traits::Addr) + 3 * sizeof(ours::u32);
+    hash.sh_size = 4 * sizeof(u32) + sizeof(Traits::Addr) + 3 * sizeof(u32);
     hash.sh_link = 2;
     hash.sh_addralign = alignof(Traits::Addr);
     put_big_section(image, K_SECTION_TABLE_OFFSET + sizeof(Section), strings);
@@ -190,18 +190,18 @@ auto make_big_endian_gnu_hash_image() -> std::array<u8, 1024> {
     bar.st_name = 5;
     put_big_symbol(image, K_DYNSYM_OFFSET + 2 * sizeof(Symbol), bar);
 
-    std::array<ours::u32, 4> const header_words{1, 1, 1, 5};
+    std::array<u32, 4> const header_words{1, 1, 1, 5};
     for (usize index = 0; index < header_words.size(); ++index) {
-        put_big(image, K_GNU_HASH_OFFSET + index * sizeof(ours::u32), header_words[index]);
+        put_big(image, K_GNU_HASH_OFFSET + index * sizeof(u32), header_words[index]);
     }
     constexpr u64 K_BLOOM = 0x0400000010000220ULL;
-    put_big(image, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32), K_BLOOM);
-    constexpr ours::u32 K_BUCKET = 1;
-    put_big(image, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32) + sizeof(Traits::Addr), K_BUCKET);
-    constexpr ours::u32 K_FOO_CHAIN = 0x0b887388U;
-    constexpr ours::u32 K_BAR_CHAIN = 0x0b8860bbU;
-    put_big(image, K_GNU_HASH_OFFSET + 5 * sizeof(ours::u32) + sizeof(Traits::Addr), K_FOO_CHAIN);
-    put_big(image, K_GNU_HASH_OFFSET + 6 * sizeof(ours::u32) + sizeof(Traits::Addr), K_BAR_CHAIN);
+    put_big(image, K_GNU_HASH_OFFSET + 4 * sizeof(u32), K_BLOOM);
+    constexpr u32 K_BUCKET = 1;
+    put_big(image, K_GNU_HASH_OFFSET + 4 * sizeof(u32) + sizeof(Traits::Addr), K_BUCKET);
+    constexpr u32 K_FOO_CHAIN = 0x0b887388U;
+    constexpr u32 K_BAR_CHAIN = 0x0b8860bbU;
+    put_big(image, K_GNU_HASH_OFFSET + 5 * sizeof(u32) + sizeof(Traits::Addr), K_FOO_CHAIN);
+    put_big(image, K_GNU_HASH_OFFSET + 6 * sizeof(u32) + sizeof(Traits::Addr), K_BAR_CHAIN);
     return image;
 }
 
@@ -289,8 +289,8 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
     }
 
     auto invalid_bloom_count = make_gnu_hash_image();
-    constexpr ours::u32 K_NOT_POWER_OF_TWO = 3;
-    put(invalid_bloom_count, K_GNU_HASH_OFFSET + 2 * sizeof(ours::u32), K_NOT_POWER_OF_TWO);
+    constexpr u32 K_NOT_POWER_OF_TWO = 3;
+    put(invalid_bloom_count, K_GNU_HASH_OFFSET + 2 * sizeof(u32), K_NOT_POWER_OF_TWO);
     auto const invalid_bloom_count_result =
         Binary::from_raw(invalid_bloom_count.data(), invalid_bloom_count.size());
     if (invalid_bloom_count_result.is_ok() ||
@@ -299,8 +299,8 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
     }
 
     auto invalid_bloom_shift = make_gnu_hash_image();
-    constexpr ours::u32 K_INVALID_SHIFT = 32;
-    put(invalid_bloom_shift, K_GNU_HASH_OFFSET + 3 * sizeof(ours::u32), K_INVALID_SHIFT);
+    constexpr u32 K_INVALID_SHIFT = 32;
+    put(invalid_bloom_shift, K_GNU_HASH_OFFSET + 3 * sizeof(u32), K_INVALID_SHIFT);
     auto const invalid_bloom_shift_result =
         Binary::from_raw(invalid_bloom_shift.data(), invalid_bloom_shift.size());
     if (invalid_bloom_shift_result.is_ok() ||
@@ -309,8 +309,8 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
     }
 
     auto out_of_range_bucket = make_gnu_hash_image();
-    constexpr ours::u32 K_INVALID_BUCKET = 3;
-    put(out_of_range_bucket, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    constexpr u32 K_INVALID_BUCKET = 3;
+    put(out_of_range_bucket, K_GNU_HASH_OFFSET + 4 * sizeof(u32) + sizeof(Traits::Addr),
         K_INVALID_BUCKET);
     auto const out_of_range_bucket_result =
         Binary::from_raw(out_of_range_bucket.data(), out_of_range_bucket.size());
@@ -320,8 +320,8 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
     }
 
     auto unterminated_chain = make_gnu_hash_image();
-    constexpr ours::u32 K_UNTERMINATED_CHAIN = 0x0b8860baU;
-    put(unterminated_chain, K_GNU_HASH_OFFSET + 6 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    constexpr u32 K_UNTERMINATED_CHAIN = 0x0b8860baU;
+    put(unterminated_chain, K_GNU_HASH_OFFSET + 6 * sizeof(u32) + sizeof(Traits::Addr),
         K_UNTERMINATED_CHAIN);
     auto const unterminated_chain_result =
         Binary::from_raw(unterminated_chain.data(), unterminated_chain.size());
@@ -331,8 +331,8 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
     }
 
     auto wrong_chain_hash = make_gnu_hash_image();
-    constexpr ours::u32 K_WRONG_FOO_CHAIN = 0x0b88738aU;
-    put(wrong_chain_hash, K_GNU_HASH_OFFSET + 5 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    constexpr u32 K_WRONG_FOO_CHAIN = 0x0b88738aU;
+    put(wrong_chain_hash, K_GNU_HASH_OFFSET + 5 * sizeof(u32) + sizeof(Traits::Addr),
         K_WRONG_FOO_CHAIN);
     auto const wrong_chain_hash_result =
         Binary::from_raw(wrong_chain_hash.data(), wrong_chain_hash.size());
@@ -343,7 +343,7 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
 
     auto bloom_false_negative = make_gnu_hash_image();
     constexpr u64 K_EMPTY_BLOOM = 0;
-    put(bloom_false_negative, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32), K_EMPTY_BLOOM);
+    put(bloom_false_negative, K_GNU_HASH_OFFSET + 4 * sizeof(u32), K_EMPTY_BLOOM);
     auto const bloom_false_negative_result =
         Binary::from_raw(bloom_false_negative.data(), bloom_false_negative.size());
     if (bloom_false_negative_result.is_ok() ||
@@ -354,9 +354,9 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
     auto shared_bucket_chain = make_gnu_hash_image();
     std::memcpy(&hash, shared_bucket_chain.data() + K_SECTION_TABLE_OFFSET + 3 * sizeof(Section),
                 sizeof(hash));
-    hash.sh_size += sizeof(ours::u32);
+    hash.sh_size += sizeof(u32);
     put(shared_bucket_chain, K_SECTION_TABLE_OFFSET + 3 * sizeof(Section), hash);
-    constexpr ours::u32 K_TWO_BUCKETS = 2;
+    constexpr u32 K_TWO_BUCKETS = 2;
     put(shared_bucket_chain, K_GNU_HASH_OFFSET, K_TWO_BUCKETS);
     shared_bucket_chain[K_STRING_TABLE_OFFSET + 9] = 'q';
     shared_bucket_chain[K_STRING_TABLE_OFFSET + 10] = 'u';
@@ -365,17 +365,17 @@ auto test_rejects_invalid_gnu_hash_tables() -> int {
     qux.st_name = 9;
     put(shared_bucket_chain, K_DYNSYM_OFFSET + 2 * sizeof(Symbol), qux);
     constexpr u64 K_SHARED_CHAIN_BLOOM = 0x0000000812000200ULL;
-    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32), K_SHARED_CHAIN_BLOOM);
-    constexpr ours::u32 K_SHARED_BUCKET = 1;
-    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 4 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 4 * sizeof(u32), K_SHARED_CHAIN_BLOOM);
+    constexpr u32 K_SHARED_BUCKET = 1;
+    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 4 * sizeof(u32) + sizeof(Traits::Addr),
         K_SHARED_BUCKET);
-    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 5 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 5 * sizeof(u32) + sizeof(Traits::Addr),
         K_SHARED_BUCKET);
-    constexpr ours::u32 K_FOO_CHAIN = 0x0b887388U;
-    constexpr ours::u32 K_QUX_CHAIN = 0x0b88a323U;
-    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 6 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    constexpr u32 K_FOO_CHAIN = 0x0b887388U;
+    constexpr u32 K_QUX_CHAIN = 0x0b88a323U;
+    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 6 * sizeof(u32) + sizeof(Traits::Addr),
         K_FOO_CHAIN);
-    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 7 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    put(shared_bucket_chain, K_GNU_HASH_OFFSET + 7 * sizeof(u32) + sizeof(Traits::Addr),
         K_QUX_CHAIN);
     auto const shared_bucket_chain_result =
         Binary::from_raw(shared_bucket_chain.data(), shared_bucket_chain.size());
@@ -425,12 +425,12 @@ auto test_elf32_observes_gnu_hashes() -> int {
     put(image, 0, header);
 
     Section32 strings{};
-    strings.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Strtab);
+    strings.sh_type = static_cast<u32>(eftl::elf::SectionType::Strtab);
     strings.sh_offset = K_STRING_OFFSET;
     strings.sh_size = 5;
     strings.sh_addralign = 1;
     Section32 dynamic_symbols{};
-    dynamic_symbols.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::Dynsym);
+    dynamic_symbols.sh_type = static_cast<u32>(eftl::elf::SectionType::Dynsym);
     dynamic_symbols.sh_offset = K_DYNSYM_OFFSET_32;
     dynamic_symbols.sh_size = 2 * sizeof(Symbol32);
     dynamic_symbols.sh_link = 1;
@@ -438,9 +438,9 @@ auto test_elf32_observes_gnu_hashes() -> int {
     dynamic_symbols.sh_addralign = alignof(Symbol32);
     dynamic_symbols.sh_entsize = sizeof(Symbol32);
     Section32 hash{};
-    hash.sh_type = static_cast<ours::u32>(eftl::elf::SectionType::GnuHash);
+    hash.sh_type = static_cast<u32>(eftl::elf::SectionType::GnuHash);
     hash.sh_offset = K_GNU_HASH_OFFSET_32;
-    hash.sh_size = 7 * sizeof(ours::u32);
+    hash.sh_size = 7 * sizeof(u32);
     hash.sh_link = 2;
     hash.sh_addralign = alignof(Traits32::Addr);
     put(image, K_SECTION_OFFSET + sizeof(Section32), strings);
@@ -453,14 +453,14 @@ auto test_elf32_observes_gnu_hashes() -> int {
     foo.st_name = 1;
     put(image, K_DYNSYM_OFFSET_32 + sizeof(Symbol32), foo);
 
-    std::array<ours::u32, 4> const header_words{1, 1, 1, 5};
+    std::array<u32, 4> const header_words{1, 1, 1, 5};
     std::memcpy(image.data() + K_GNU_HASH_OFFSET_32, header_words.data(), sizeof(header_words));
-    constexpr ours::u32 K_BLOOM = 0x10000200U;
-    put(image, K_GNU_HASH_OFFSET_32 + 4 * sizeof(ours::u32), K_BLOOM);
-    constexpr ours::u32 K_BUCKET = 1;
-    put(image, K_GNU_HASH_OFFSET_32 + 5 * sizeof(ours::u32), K_BUCKET);
-    constexpr ours::u32 K_CHAIN = 0x0b887389U;
-    put(image, K_GNU_HASH_OFFSET_32 + 6 * sizeof(ours::u32), K_CHAIN);
+    constexpr u32 K_BLOOM = 0x10000200U;
+    put(image, K_GNU_HASH_OFFSET_32 + 4 * sizeof(u32), K_BLOOM);
+    constexpr u32 K_BUCKET = 1;
+    put(image, K_GNU_HASH_OFFSET_32 + 5 * sizeof(u32), K_BUCKET);
+    constexpr u32 K_CHAIN = 0x0b887389U;
+    put(image, K_GNU_HASH_OFFSET_32 + 6 * sizeof(u32), K_CHAIN);
 
     std::array<u8, 3> const foo_name{'f', 'o', 'o'};
     auto const parsed = Binary32::from_raw(image.data(), image.size());

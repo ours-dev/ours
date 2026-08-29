@@ -3,6 +3,8 @@
 #ifndef OURS_SYSCALL_TIME_HPP
 #define OURS_SYSCALL_TIME_HPP 1
 
+#include <ours/types.hpp>
+
 #include <ustl/chrono/duration.hpp>
 #include <ustl/limits.hpp>
 

@@ -3,13 +3,13 @@
 #ifndef OURS_PHYS_INIT_HPP
 #define OURS_PHYS_INIT_HPP 1
 
-#include <obi/container-view.hpp>
+#include <obi/container_view.hpp>
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
-#include <ours/phys/arch-bootmem.hpp>
-#include <ours/phys/boot-package-input.hpp>
+#include <ours/phys/arch_bootmem.hpp>
+#include <ours/phys/boot_package_input.hpp>
 #include <ours/phys/handoff.hpp>
-#include <ours/phys/legacy-platform-info.hpp>
+#include <ours/phys/legacy_platform_info.hpp>
 #include <ours/types.hpp>
 
 #include <span>

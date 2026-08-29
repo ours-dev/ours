@@ -15,7 +15,7 @@
 
 #include "command.hpp"
 #include "common.hpp"
-#include <obi/package-builder.hpp>
+#include <obi/package_builder.hpp>
 
 #include <algorithm>
 #include <array>

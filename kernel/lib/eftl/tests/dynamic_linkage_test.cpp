@@ -196,7 +196,7 @@ auto make_linkage_image(bool big_endian = false, bool gnu_hash = false, bool ver
     put_header(image, header, big_endian);
 
     Segment load{};
-    load.p_type = static_cast<ours::u32>(eftl::elf::SegType::Load);
+    load.p_type = static_cast<u32>(eftl::elf::SegType::Load);
     load.p_offset = K_LOAD_OFFSET;
     load.p_vaddr = K_LOAD_ADDRESS;
     load.p_filesz = 0x300;
@@ -205,7 +205,7 @@ auto make_linkage_image(bool big_endian = false, bool gnu_hash = false, bool ver
     put_segment(image, K_PROGRAM_HEADERS_OFFSET, load, big_endian);
 
     Segment dynamic{};
-    dynamic.p_type = static_cast<ours::u32>(eftl::elf::SegType::Dynamic);
+    dynamic.p_type = static_cast<u32>(eftl::elf::SegType::Dynamic);
     dynamic.p_offset = K_DYNAMIC_OFFSET;
     dynamic.p_vaddr = K_DYNAMIC_ADDRESS;
     dynamic.p_filesz = K_DYNAMIC_COUNT * sizeof(Dynamic);
@@ -290,27 +290,27 @@ auto make_linkage_image(bool big_endian = false, bool gnu_hash = false, bool ver
     put_symbol(image, K_SYMBOL_OFFSET + 2 * sizeof(Symbol), bar, big_endian);
 
     if (!gnu_hash) {
-        std::array<ours::u32, 6> const hash_words{1, 3, 1, 0, 2, 0};
+        std::array<u32, 6> const hash_words{1, 3, 1, 0, 2, 0};
         for (usize index = 0; index < hash_words.size(); ++index) {
-            put_scalar(image, K_HASH_OFFSET + index * sizeof(ours::u32), hash_words[index],
+            put_scalar(image, K_HASH_OFFSET + index * sizeof(u32), hash_words[index],
                        big_endian);
         }
     } else {
-        std::array<ours::u32, 4> const gnu_header{1, 1, 1, 5};
+        std::array<u32, 4> const gnu_header{1, 1, 1, 5};
         for (usize index = 0; index < gnu_header.size(); ++index) {
-            put_scalar(image, K_HASH_OFFSET + index * sizeof(ours::u32), gnu_header[index],
+            put_scalar(image, K_HASH_OFFSET + index * sizeof(u32), gnu_header[index],
                        big_endian);
         }
         constexpr u64 K_BLOOM = 0x0400000010000220ULL;
-        put_scalar(image, K_HASH_OFFSET + 4 * sizeof(ours::u32), K_BLOOM, big_endian);
-        constexpr ours::u32 K_BUCKET = 1;
-        put_scalar(image, K_HASH_OFFSET + 4 * sizeof(ours::u32) + sizeof(Traits::Addr), K_BUCKET,
+        put_scalar(image, K_HASH_OFFSET + 4 * sizeof(u32), K_BLOOM, big_endian);
+        constexpr u32 K_BUCKET = 1;
+        put_scalar(image, K_HASH_OFFSET + 4 * sizeof(u32) + sizeof(Traits::Addr), K_BUCKET,
                    big_endian);
-        constexpr ours::u32 K_FOO_CHAIN = 0x0b887388U;
-        constexpr ours::u32 K_BAR_CHAIN = 0x0b8860bbU;
-        put_scalar(image, K_HASH_OFFSET + 5 * sizeof(ours::u32) + sizeof(Traits::Addr), K_FOO_CHAIN,
+        constexpr u32 K_FOO_CHAIN = 0x0b887388U;
+        constexpr u32 K_BAR_CHAIN = 0x0b8860bbU;
+        put_scalar(image, K_HASH_OFFSET + 5 * sizeof(u32) + sizeof(Traits::Addr), K_FOO_CHAIN,
                    big_endian);
-        put_scalar(image, K_HASH_OFFSET + 6 * sizeof(ours::u32) + sizeof(Traits::Addr), K_BAR_CHAIN,
+        put_scalar(image, K_HASH_OFFSET + 6 * sizeof(u32) + sizeof(Traits::Addr), K_BAR_CHAIN,
                    big_endian);
     }
     if (versions) {
@@ -1023,8 +1023,8 @@ auto test_rejects_malformed_dynamic_linkage_tags() -> int {
     }
 
     auto truncated_hash = make_linkage_image();
-    constexpr ours::u32 K_IMPOSSIBLE_CHAIN_COUNT = 0x100;
-    put(truncated_hash, K_HASH_OFFSET + sizeof(ours::u32), K_IMPOSSIBLE_CHAIN_COUNT);
+    constexpr u32 K_IMPOSSIBLE_CHAIN_COUNT = 0x100;
+    put(truncated_hash, K_HASH_OFFSET + sizeof(u32), K_IMPOSSIBLE_CHAIN_COUNT);
     auto const truncated_parsed = File::from_raw(truncated_hash.data(), truncated_hash.size());
     ustl::Option<DynamicImage> truncated_image;
     if (truncated_parsed.is_ok()) {
@@ -1037,8 +1037,8 @@ auto test_rejects_malformed_dynamic_linkage_tags() -> int {
     }
 
     auto unterminated_gnu_chain = make_linkage_image(false, true);
-    constexpr ours::u32 K_UNTERMINATED_CHAIN = 0x0b8860baU;
-    put(unterminated_gnu_chain, K_HASH_OFFSET + 6 * sizeof(ours::u32) + sizeof(Traits::Addr),
+    constexpr u32 K_UNTERMINATED_CHAIN = 0x0b8860baU;
+    put(unterminated_gnu_chain, K_HASH_OFFSET + 6 * sizeof(u32) + sizeof(Traits::Addr),
         K_UNTERMINATED_CHAIN);
     auto const unterminated_parsed =
         File::from_raw(unterminated_gnu_chain.data(), unterminated_gnu_chain.size());
