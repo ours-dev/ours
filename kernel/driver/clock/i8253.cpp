@@ -83,14 +83,14 @@ class I8253ClockDevice {
     };
 };
 
-static ustl::LazyInit<I8253ClockDevice> s_i8253_clkevt;
-ClockEventDevice *g_i8253_clkevt;
+static ustl::LazyInit<I8253ClockDevice> I8253_CLKEVT_STORAGE;
+ClockEventDevice *I8253_CLKEVT;
 
 INIT_CODE auto i8253_init(bool oneshot) -> void {
-    s_i8253_clkevt.init();
-    g_i8253_clkevt = s_i8253_clkevt->device();
+    I8253_CLKEVT_STORAGE.init();
+    I8253_CLKEVT = I8253_CLKEVT_STORAGE->device();
 
-    ClockEventDevice::entroll(*g_i8253_clkevt, PIT_FREQUENCY, 0xF, 0x7FFF);
+    ClockEventDevice::entroll(*I8253_CLKEVT, PIT_FREQUENCY, 0xF, 0x7FFF);
 }
 
 } // namespace ours

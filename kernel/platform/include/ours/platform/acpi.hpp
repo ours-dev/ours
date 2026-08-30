@@ -11,8 +11,8 @@ namespace ours {
 /// Non-const because acpi::TableSet memoises its signature lookups.  Every
 /// caller runs during single threaded init, which is what that cache assumes.
 FORCE_INLINE inline auto get_acpi_tables() -> acpi::TableSet * {
-    extern acpi::TableSet *g_acpi_tables;
-    return g_acpi_tables;
+    extern acpi::TableSet *ACPI_TABLES;
+    return ACPI_TABLES;
 }
 
 auto acpi_init_numa() -> Status;

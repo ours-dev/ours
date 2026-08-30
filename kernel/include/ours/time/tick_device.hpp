@@ -46,7 +46,7 @@ class TickDevice {
     /// by the clock event device when it handles a tick event.
     ///
     /// Requires:
-    ///   1). The current CPU is s_jiffies_cpu.
+    ///   1). The current CPU is ClockSource::Default::CPUNUM.
     static auto update_jiffies_tick(Ticks num_ticks) -> void;
 
     static auto update_jiffies_time(Time now) -> void;
@@ -69,12 +69,12 @@ class TickDevice::Current: public mm::CpuLocal::Current<TickDevice> {
     /// Override methods faster than the way through Current::get().*();
     FORCE_INLINE static auto is_mode_oneshot() -> bool {
         arch::AutoInterruptDisabler guard;
-        return mm::CpuLocal::read(g_current_instance.m_mode) == Mode::Oneshot;
+        return mm::CpuLocal::read(CURRENT_INSTANCE.m_mode) == Mode::Oneshot;
     }
 
     FORCE_INLINE static auto is_mode_periodic() -> bool {
         arch::AutoInterruptDisabler guard;
-        return mm::CpuLocal::read(g_current_instance.m_mode) == Mode::Periodic;
+        return mm::CpuLocal::read(CURRENT_INSTANCE.m_mode) == Mode::Periodic;
     }
 };
 

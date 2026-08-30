@@ -9,20 +9,20 @@
 #include <ours/time/clock_event_device.hpp>
 
 namespace ours::time {
-ClockEventDevice *g_clock_event;
+ClockEventDevice *CLOCK_EVENT;
 
 auto timer_interrupt(VIrqNum irqnum, void *) -> irq::IrqReturn {
-    DEBUG_ASSERT(g_clock_event);
+    DEBUG_ASSERT(CLOCK_EVENT);
 
-    g_clock_event->handle_event();
+    CLOCK_EVENT->handle_event();
     return irq::IrqReturn::Handled;
 }
 
 auto setup_pit() -> void {
     // By default we make PIT working on the periodic mode.
     i8253_init(false);
-    if (!g_clock_event) {
-        g_clock_event = g_i8253_clkevt;
+    if (!CLOCK_EVENT) {
+        CLOCK_EVENT = I8253_CLKEVT;
     }
 }
 

@@ -21,12 +21,12 @@
 
 namespace ours {
 namespace {
-    bool s_x2apic_enabled = false;
+    bool X2APIC_ENABLED = false;
 
     CPU_LOCAL
-    u32 s_apic_id;
+    u32 APIC_ID;
 
-    constinit auto s_cpu_to_apicid = []() constexpr -> std::array<u32, MAX_CPU> {
+    constinit auto CPU_TO_APICID = []() constexpr -> std::array<u32, MAX_CPU> {
         std::array<u32, MAX_CPU> apicids{};
         for (auto &apicid: apicids) {
             apicid = arch::INVALID_APIC_ID;
@@ -34,7 +34,7 @@ namespace {
         return apicids;
     }();
 
-    constinit auto s_apicid_to_cpu = []() constexpr -> std::array<CpuNum, MAX_CPU> {
+    constinit auto APICID_TO_CPU = []() constexpr -> std::array<CpuNum, MAX_CPU> {
         std::array<CpuNum, MAX_CPU> cpunums{};
         for (auto &cpunum: cpunums) {
             cpunum = INVALID_CPU_NUM;
@@ -44,7 +44,7 @@ namespace {
 } // namespace
 
 auto current_apic_id() -> u32 {
-    return mm::CpuLocal::read(s_apic_id);
+    return mm::CpuLocal::read(APIC_ID);
 }
 
 using namespace irq;
@@ -58,8 +58,8 @@ INIT_CODE auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
         return INVALID_CPU_NUM;
     }
 
-    if (s_apicid_to_cpu[apicid] != INVALID_CPU_NUM) {
-        return s_apicid_to_cpu[apicid];
+    if (APICID_TO_CPU[apicid] != INVALID_CPU_NUM) {
+        return APICID_TO_CPU[apicid];
     }
 
     auto const assigned_count = assigned.count();
@@ -70,8 +70,8 @@ INIT_CODE auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
     auto const cpunum = static_cast<CpuNum>(assigned_count);
     assigned.set(cpunum, true);
     Cpu::set_state(cpunum, Cpu::State::Possible);
-    s_apicid_to_cpu[apicid] = cpunum;
-    s_cpu_to_apicid[cpunum] = apicid;
+    APICID_TO_CPU[apicid] = cpunum;
+    CPU_TO_APICID[cpunum] = apicid;
     return cpunum;
 }
 
@@ -80,7 +80,7 @@ auto cpunum_to_apic_id(CpuNum cpunum) -> u32 {
         return arch::INVALID_APIC_ID;
     }
 
-    auto const apicid = s_cpu_to_apicid[cpunum];
+    auto const apicid = CPU_TO_APICID[cpunum];
     DEBUG_ASSERT(apicid != arch::INVALID_APIC_ID);
     return apicid;
 }
@@ -90,23 +90,23 @@ auto apic_id_to_cpunum(u32 apicid) -> CpuNum {
         return INVALID_CPU_NUM;
     }
 
-    auto const cpunum = s_apicid_to_cpu[apicid];
+    auto const cpunum = APICID_TO_CPU[apicid];
     DEBUG_ASSERT(cpunum != INVALID_CPU_NUM);
     return cpunum;
 }
 
-static arch::XApic s_xapic;
-arch::XApic *g_xapic;
+static arch::XApic XAPIC_STORAGE;
+arch::XApic *XAPIC;
 
 auto apic_issue_eoi() -> void {
-    s_xapic.issue_eoi();
+    XAPIC_STORAGE.issue_eoi();
 }
 
 [[maybe_unused]]
-IrqChip s_xapic_chip{
-    .mask = [](IrqData &data) -> void { s_xapic.mask(arch::XApicRegType::LvtLogicalInt0); },
-    .unmask = [](IrqData &data) -> void { s_xapic.unmask(arch::XApicRegType::LvtLogicalInt0); },
-    .issue_ack = [](IrqData &data) -> void { s_xapic.issue_eoi(); },
+IrqChip XAPIC_CHIP{
+    .mask = [](IrqData &data) -> void { XAPIC_STORAGE.mask(arch::XApicRegType::LvtLogicalInt0); },
+    .unmask = [](IrqData &data) -> void { XAPIC_STORAGE.unmask(arch::XApicRegType::LvtLogicalInt0); },
+    .issue_ack = [](IrqData &data) -> void { XAPIC_STORAGE.issue_eoi(); },
     .name = "XApic",
 };
 
@@ -116,18 +116,18 @@ class ApicTimerEvent {
 
   public:
     ApicTimerEvent()
-        : m_canary(this), m_clkevt("LVT", &Self::s_vtable, ClockEventDevice::Feature::Oneshot, 0) {}
+        : m_canary(this), m_clkevt("LVT", &Self::VTABLE, ClockEventDevice::Feature::Oneshot, 0) {}
 
     ~ApicTimerEvent() = default;
 
     auto set_mode_oneshot() -> Status {
         m_canary.verify<Self>();
-        return setup_timer(s_apic_period, true, false);
+        return setup_timer(APIC_PERIOD, true, false);
     }
 
     auto set_mode_periodic() -> Status {
         m_canary.verify<Self>();
-        return setup_timer(s_apic_period, false, false);
+        return setup_timer(APIC_PERIOD, false, false);
     }
 
     auto broadcast(CpuMask const &mask) -> void {
@@ -137,8 +137,8 @@ class ApicTimerEvent {
 
     auto shutdown() -> void {
         m_canary.verify<Self>();
-        s_xapic.disable_tsc(arch::IrqVec::ApicTimer);
-        s_xapic.write_reg(arch::XApicRegType::TimerInitCount, 0);
+        XAPIC_STORAGE.disable_tsc(arch::IrqVec::ApicTimer);
+        XAPIC_STORAGE.write_reg(arch::XApicRegType::TimerInitCount, 0);
     }
 
     auto set_next_event_tick(Ticks delta) -> Status;
@@ -153,11 +153,11 @@ class ApicTimerEvent {
     ClockEventDevice m_clkevt;
 
     /// How many cycles in 1/HZ second.
-    inline static u32 s_apic_period;
-    inline static u8 s_divisor;
+    inline static u32 APIC_PERIOD;
+    inline static u8 DIVISOR;
 
     using Packer = ClockEventDevice::Vtable::Packer<&ApicTimerEvent::m_clkevt>;
-    inline static ClockEventDevice::Vtable s_vtable{
+    inline static ClockEventDevice::Vtable VTABLE{
         .set_next_event_tick = Packer::pack<&ApicTimerEvent::set_next_event_tick>(),
         .set_next_event_time = nullptr,
         .set_mode_periodic = Packer::pack<&ApicTimerEvent::set_mode_periodic>(),
@@ -174,7 +174,7 @@ auto ApicTimerEvent::set_next_event_tick(Ticks delta) -> Status {
     m_canary.verify<Self>();
 
     auto const highest_set_bit = delta < 2 ? 0 : ustl::bit_width(delta) - 1;
-    auto divisor = static_cast<usize>(s_divisor);
+    auto divisor = static_cast<usize>(DIVISOR);
     usize count = delta;
     if (highest_set_bit > 31) {
         // The current resolution is not statisfied, we need to adjust the divisor.
@@ -190,17 +190,17 @@ auto ApicTimerEvent::set_next_event_tick(Ticks delta) -> Status {
             }
         }
 
-        constexpr static u32 const DIVISOR[] = {0xb, 0, 1, 2, 3, 8, 9, 10};
+        constexpr static u32 const DIVISOR_ENCODING[] = {0xb, 0, 1, 2, 3, 8, 9, 10};
 
-        if (divisor == 0 || divisor > (sizeof(DIVISOR) / sizeof(DIVISOR[0]))) {
+        if (divisor == 0 || divisor > (sizeof(DIVISOR_ENCODING) / sizeof(DIVISOR_ENCODING[0]))) {
             return Status::InvalidArguments;
         }
 
-        divisor = DIVISOR[divisor - 1];
+        divisor = DIVISOR_ENCODING[divisor - 1];
     }
 
-    s_xapic.write_reg(arch::XApicRegType::TimerInitCount, count);
-    s_xapic.write_reg(arch::XApicRegType::TimerDivConf, divisor);
+    XAPIC_STORAGE.write_reg(arch::XApicRegType::TimerInitCount, count);
+    XAPIC_STORAGE.write_reg(arch::XApicRegType::TimerDivConf, divisor);
     return Status::Ok;
 }
 
@@ -213,15 +213,15 @@ auto ApicTimerEvent::set_next_event_tick_deadline(Ticks delta) -> Status {
 
     auto const now = arch::Tick::get();
     // Deadline timer is set by TSC, so we can just set it directly.
-    s_xapic.set_tsc_deadline(now.tsc + delta);
+    XAPIC_STORAGE.set_tsc_deadline(now.tsc + delta);
     return Status::Ok;
 }
 
 auto ApicTimerEvent::shutdown_deadline() -> void {
     m_canary.verify<Self>();
     // Disable the TSC deadline timer.
-    s_xapic.disable_tsc(arch::IrqVec::ApicTimer);
-    s_xapic.write_reg(arch::XApicRegType::TimerInitCount, 0);
+    XAPIC_STORAGE.disable_tsc(arch::IrqVec::ApicTimer);
+    XAPIC_STORAGE.write_reg(arch::XApicRegType::TimerInitCount, 0);
 }
 
 auto ApicTimerEvent::setup_timer(u32 clocks, bool oneshot, bool masked) -> Status {
@@ -230,40 +230,40 @@ auto ApicTimerEvent::setup_timer(u32 clocks, bool oneshot, bool masked) -> Statu
 
     // When TSC deadline timer is supported by system, we need to update our Vtable.
     if (support_tsc_deadline) {
-        s_vtable.set_next_event_tick = Packer::pack<&Self::set_next_event_tick_deadline>();
-        s_vtable.shutdown = Packer::pack<&Self::shutdown_deadline>();
+        VTABLE.set_next_event_tick = Packer::pack<&Self::set_next_event_tick_deadline>();
+        VTABLE.shutdown = Packer::pack<&Self::shutdown_deadline>();
     }
 
     if (!oneshot) {
-        s_xapic.enable_tsc(IrqVec::ApicTimer, XApic::TscMode::Periodic);
+        XAPIC_STORAGE.enable_tsc(IrqVec::ApicTimer, XApic::TscMode::Periodic);
     } else if (support_tsc_deadline) {
-        s_xapic.enable_tsc(IrqVec::ApicTimer, XApic::TscMode::Deadline);
+        XAPIC_STORAGE.enable_tsc(IrqVec::ApicTimer, XApic::TscMode::Deadline);
     }
 
     if (masked) {
-        s_xapic.mask(arch::XApicRegType::LvtTimer);
+        XAPIC_STORAGE.mask(arch::XApicRegType::LvtTimer);
     } else {
-        s_xapic.unmask(arch::XApicRegType::LvtTimer);
+        XAPIC_STORAGE.unmask(arch::XApicRegType::LvtTimer);
     }
 
-    s_xapic.write_reg(arch::XApicRegType::TimerInitCount, clocks);
+    XAPIC_STORAGE.write_reg(arch::XApicRegType::TimerInitCount, clocks);
     return Status::Ok;
 }
 
 CPU_LOCAL
-static ApicTimerEvent s_clkdev_storage;
+static ApicTimerEvent CLKDEV_STORAGE;
 
-static ClockEventDevice *s_lapic_timer_event;
+static ClockEventDevice *LAPIC_TIMER_EVENT;
 
 auto apic_handle_timer_irq() -> void {
-    DEBUG_ASSERT(s_lapic_timer_event);
+    DEBUG_ASSERT(LAPIC_TIMER_EVENT);
 
     apic_issue_eoi();
-    s_lapic_timer_event->handle_event();
+    LAPIC_TIMER_EVENT->handle_event();
 }
 
 FORCE_INLINE static auto apic_timer_current_count() -> u64 {
-    return s_xapic.read_reg(arch::XApicRegType::TimerCurrentCount);
+    return XAPIC_STORAGE.read_reg(arch::XApicRegType::TimerCurrentCount);
 }
 
 struct Calibration {
@@ -331,37 +331,37 @@ INIT_CODE auto apic_calibrate_clock() -> bool {
     }
 
     auto const apic_period = (best_time[1] - best_time[0]) / (periods[1] - periods[0]);
-    ApicTimerEvent::s_apic_period = apic_period * apic_advisor;
-    ApicTimerEvent::s_divisor = static_cast<u8>(apic_advisor);
+    ApicTimerEvent::APIC_PERIOD = apic_period * apic_advisor;
+    ApicTimerEvent::DIVISOR = static_cast<u8>(apic_advisor);
     return true;
 }
 
 INIT_CODE auto current_apic_id_early() -> u32 {
-    return s_xapic.id();
+    return XAPIC_STORAGE.id();
 }
 
 INIT_CODE static auto init_apic_timer() -> void {
     using namespace arch;
 
     // By default to let timer work on periodic mode.
-    s_xapic.enable_tsc(IrqVec::ApicTimer, XApic::TscMode::Periodic);
-    s_xapic.mask(XApicRegType::LvtTimer);
+    XAPIC_STORAGE.enable_tsc(IrqVec::ApicTimer, XApic::TscMode::Periodic);
+    XAPIC_STORAGE.mask(XApicRegType::LvtTimer);
 
-    s_lapic_timer_event = &CpuLocal::access(s_clkdev_storage).m_clkevt;
-    ClockEventDevice::entroll(*s_lapic_timer_event);
+    LAPIC_TIMER_EVENT = &CpuLocal::access(CLKDEV_STORAGE).m_clkevt;
+    ClockEventDevice::entroll(*LAPIC_TIMER_EVENT);
 }
 
 /// Initialize APIC performance monitoring interrupt.
 INIT_CODE static auto init_apic_pmi() -> void {
     using namespace arch;
-    s_xapic.write_reg(XApicRegType::LvtPmi, IrqVec::ApicPmi);
-    s_xapic.mask(arch::XApicRegType::LvtPmi);
+    XAPIC_STORAGE.write_reg(XApicRegType::LvtPmi, IrqVec::ApicPmi);
+    XAPIC_STORAGE.mask(arch::XApicRegType::LvtPmi);
 }
 
 INIT_CODE static auto init_apic_error() -> void {
     using namespace arch;
-    s_xapic.write_reg(XApicRegType::LvtError, IrqVec::ApicError);
-    s_xapic.write_reg(XApicRegType::Esr, 0);
+    XAPIC_STORAGE.write_reg(XApicRegType::LvtError, IrqVec::ApicError);
+    XAPIC_STORAGE.write_reg(XApicRegType::Esr, 0);
 }
 
 INIT_CODE auto init_local_apic_percpu() -> void {
@@ -374,7 +374,7 @@ INIT_CODE auto init_local_apic_percpu() -> void {
     }
 
     apic_base |= arch::IA32_APIC_BASE_XAPIC_ENABLE;
-    if (s_x2apic_enabled) {
+    if (X2APIC_ENABLED) {
         apic_base |= arch::IA32_APIC_BASE_X2_APIC_ENABLE;
     }
 
@@ -382,7 +382,7 @@ INIT_CODE auto init_local_apic_percpu() -> void {
     MsrIo::write<usize>(MsrRegAddr::IA32ApicBase, apic_base);
 
     // Save ID of this local APIC
-    CpuLocal::write(s_apic_id, s_xapic.id());
+    CpuLocal::write(APIC_ID, XAPIC_STORAGE.id());
 
     if (!(apic_base & arch::IA32_APIC_BASE_BSP)) {
         init_apic_timer();
@@ -409,10 +409,10 @@ INIT_CODE auto init_local_apic() -> void {
 
     auto mmio_base(reinterpret_cast<volatile u32 *>((*result)->base()));
 
-    s_xapic.init(mmio_base);
+    XAPIC_STORAGE.init(mmio_base);
 
     init_local_apic_percpu();
-    g_xapic = &s_xapic;
+    XAPIC = &XAPIC_STORAGE;
 }
 
 static auto init_bsp_apic_timer() -> void {

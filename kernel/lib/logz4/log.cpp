@@ -26,7 +26,7 @@ namespace {
     ///
     /// vformat_to writes as much as the format string demands, and a bare
     /// `char *` tells it nothing about where the buffer ends -- one long log
-    /// line would run straight off the end of s_format_buffer below. Anything
+    /// line would run straight off the end of FORMAT_BUFFER below. Anything
     /// past the limit is dropped instead.
     class BoundedOutput {
       public:
@@ -94,15 +94,15 @@ auto vlog(Logger &logger, Level level, FormatString fmt, ustl::fmt::FormatArgs c
             break;
     }
 
-    static char s_format_buffer[512];
+    static char FORMAT_BUFFER[512];
 
     // One byte held back so the newline below always has somewhere to go.
     auto const out = ustl::fmt::vformat_to(
-        BoundedOutput{s_format_buffer, s_format_buffer + sizeof(s_format_buffer) - 1}, fmt, args);
+        BoundedOutput{FORMAT_BUFFER, FORMAT_BUFFER + sizeof(FORMAT_BUFFER) - 1}, fmt, args);
 
     auto *const end = out.cursor();
     *end = '\n';
-    write(s_format_buffer, static_cast<int>(end - s_format_buffer + 1));
+    write(FORMAT_BUFFER, static_cast<int>(end - FORMAT_BUFFER + 1));
 }
 
 template auto vlog(Logger &, Level, ustl::views::StringView, ustl::fmt::FormatArgs const &args)

@@ -6,7 +6,7 @@
 #include <ours/types.hpp>
 
 namespace ours {
-extern time::ClockEventDevice *g_i8253_clkevt;
+extern time::ClockEventDevice *I8253_CLKEVT;
 
 INIT_CODE auto i8253_init(bool oneshot) -> void;
 

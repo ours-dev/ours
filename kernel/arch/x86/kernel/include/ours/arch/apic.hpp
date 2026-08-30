@@ -16,8 +16,8 @@ using arch::ApicDeliveryMode;
 using arch::ApicDestinationMode;
 using arch::ApicTriggerMode;
 
-extern arch::IoApic *g_ioapic;
-extern arch::XApic *g_xapic;
+extern arch::IoApic *IOAPIC;
+extern arch::XApic *XAPIC;
 
 INIT_CODE auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
                             ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void;

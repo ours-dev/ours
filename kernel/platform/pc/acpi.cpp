@@ -11,11 +11,11 @@
 
 namespace ours {
 FORCE_USED
-acpi::TableSet *g_acpi_tables = nullptr;
+acpi::TableSet *ACPI_TABLES = nullptr;
 
 namespace {
     FORCE_USED
-    ustl::LazyInit<acpi::TableSet> s_acpi_tables;
+    ustl::LazyInit<acpi::TableSet> ACPI_TABLES_STORAGE;
 
     /// The physmap covers all of usable physical memory with a permanent linear
     /// mapping, so a successful translation is readable for its whole length
@@ -30,13 +30,13 @@ namespace {
         }
     };
 
-    PhysMapMapper s_mapper;
+    PhysMapMapper MAPPER;
 
     FORCE_USED INIT_CODE auto platform_init_acpi(PhysAddr rsdp) -> void {
-        DEBUG_ASSERT(!g_acpi_tables, "Duplicated calls");
-        if (auto tables = acpi::TableSet::from_rsdp(s_mapper, rsdp)) {
-            s_acpi_tables.init(ustl::move(tables.unwrap()));
-            g_acpi_tables = s_acpi_tables.data();
+        DEBUG_ASSERT(!ACPI_TABLES, "Duplicated calls");
+        if (auto tables = acpi::TableSet::from_rsdp(MAPPER, rsdp)) {
+            ACPI_TABLES_STORAGE.init(ustl::move(tables.unwrap()));
+            ACPI_TABLES = ACPI_TABLES_STORAGE.data();
         }
     }
 
@@ -46,7 +46,7 @@ namespace {
         //
         // acpi_rsdp is an Option: phys only fills it in when it actually found
         // an RSDP, so absence is a legitimate state (no ACPI on this machine),
-        // not an error. Leave g_acpi_tables null and let consumers see that.
+        // not an error. Leave ACPI_TABLES null and let consumers see that.
         auto const &rsdp = boot::handoff().acpi_rsdp;
         if (!rsdp.is_some()) {
             log::warn("No ACPI RSDP was handed off; skipping ACPI table setup");

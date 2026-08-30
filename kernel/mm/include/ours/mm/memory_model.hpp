@@ -245,8 +245,8 @@ class MemoryModel {
         (ustl::NumericLimits<usize>::DIGITS - SECTION_SIZE_BITS + MAPPING_LEVEL) / MAPPING_LEVEL};
 
     FORCE_INLINE static auto get() -> Self & {
-        static Self g_memory_model;
-        return g_memory_model;
+        static Self MEMORY_MODEL;
+        return MEMORY_MODEL;
     }
 
     INIT_CODE auto init(bool map_init) -> Status;
