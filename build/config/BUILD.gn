@@ -380,7 +380,20 @@ config("no_stack_protector") {
 
 config("thread_safety_annotations") {
   if (is_clang) {
-    cflags_cc = [ "-Wno-thread-safety-attributes" ]
+    cflags_cc = [
+      "-Wno-thread-safety-attributes",
+
+      # Turn the analysis on. The TA_* annotations were documentation until
+      # now: they were spelled everywhere Scheduler and WaitQueue declare a
+      # locking contract, but nothing checked a single one of them.
+      "-Wthread-safety",
+
+      # Not an error yet -- see docs/repairs-20260830.md. Enabling the
+      # analysis on a tree that has never been checked surfaces a backlog,
+      # and turning that into a build failure all at once would only force
+      # the annotations back off.
+      "-Wno-error=thread-safety",
+    ]
   }
 }
 
