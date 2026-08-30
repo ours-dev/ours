@@ -127,19 +127,24 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
         }
     };
 
-    // The waiters are the return value, so reaching them requires having
-    // established that there are any. What this replaced could not say that:
-    // lock_for_notify_operation wrote through an out-parameter and returned a
-    // bool nobody acted on, so the successor and the state that publishes it
-    // had to be default-initialised above an if/else and a separate `do_wake`
-    // carried the same answer to the end of the function.
-    if (auto to_wake = m_waiters.lock_for_notify_operation<Thread::UnparkList>(1, default_hook)) {
-        auto *const new_owner = &*(*to_wake).front();
+    // P0963R3: decomposing in the condition binds `to_wake` straight to the
+    // returned aggregate's member, so the accesses below reach the list itself
+    // rather than going through an accessor that re-checks what the condition
+    // just established.
+    //
+    // What this replaced could not say any of it: lock_for_notify_operation
+    // wrote through an out-parameter and returned a bool nobody acted on, so
+    // the successor and the state that publishes it had to be
+    // default-initialised above an if/else, and a separate `do_wake` carried
+    // the same answer to the end of the function.
+    if (auto [locked, to_wake] =
+            m_waiters.lock_for_notify_operation<Thread::UnparkList>(1, default_hook)) {
+        auto *const new_owner = &*to_wake.front();
 
         // The owner pointer *is* the state: a non-null owner with Contended
         // set is what tells the next releaser there is a queue to consult.
         publish(static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended);
-        m_waiters.notify_threads_locked(ustl::move(*to_wake), default_hook,
+        m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook,
                                         task::OwnedWaitQueue::NotifyControl::None);
     } else {
         publish(State::Available);

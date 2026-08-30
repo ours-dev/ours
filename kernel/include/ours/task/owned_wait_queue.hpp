@@ -71,14 +71,31 @@ class OwnedWaitQueue: protected WaitQueue {
     auto park_and_assign_owner_preamble(Thread *const curr, Thread *new_owner) -> void;
     auto park_and_assign_owner_postamble(Thread *const curr, Thread *new_owner) -> void;
 
-    /// Locks the queue for a notify operation and collects up to |max_notify|
-    /// waiters, or nothing if it could not be locked.
+    /// What lock_for_notify_operation() hands back: whether the queue could be
+    /// locked, and the waiters it collected.
     ///
-    /// The threads are the return value rather than an out-parameter, so the
-    /// caller cannot reach them without having established that there are any.
+    /// A plain aggregate, not an Option, because the caller decomposes it in
+    /// the condition of an `if` (P0963R3) and then touches `threads` directly.
+    /// An Option would put value() -- and its require_some() -- in front of
+    /// every one of those accesses, re-asking a question the condition has
+    /// already answered.
+    ///
+    /// Contextually true only when there is somebody to hand off to: locking
+    /// an empty queue succeeds and still leaves nothing to wake, and the two
+    /// callers care about the same thing.
+    template <typename UnparkThreads> // Thread::UnparkList
+    struct NotifyBatch {
+        bool locked;
+        UnparkThreads threads;
+
+        explicit operator bool() const {
+            return locked && !threads.empty();
+        }
+    };
+
     template <typename UnparkThreads> // Thread::UnparkList
     auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
-        -> ustl::Option<UnparkThreads>;
+        -> NotifyBatch<UnparkThreads>;
 
     template <typename UnparkThreads> // Thread::UnparkList
     auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyControl) -> void;
