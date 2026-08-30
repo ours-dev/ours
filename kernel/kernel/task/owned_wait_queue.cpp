@@ -95,8 +95,8 @@ auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> sched:
 /// interacts with the priority-inheritance propagation in begin_propagate().
 template <typename UnparkThreads>
 auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
-    -> NotifyBatch<UnparkThreads> {
-    return {};
+    -> ustl::Option<UnparkThreads> {
+    return ustl::none();
 }
 
 template <typename UnparkThreads>
@@ -104,7 +104,7 @@ auto OwnedWaitQueue::notify_threads_locked(UnparkThreads, INotifyRequeueHook &, 
     -> void {}
 
 template auto OwnedWaitQueue::lock_for_notify_operation(usize, INotifyRequeueHook &)
-    -> OwnedWaitQueue::NotifyBatch<Thread::UnparkList>;
+    -> ustl::Option<Thread::UnparkList>;
 template auto OwnedWaitQueue::notify_threads_locked(Thread::UnparkList, INotifyRequeueHook &,
                                                     NotifyControl) -> void;
 
