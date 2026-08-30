@@ -168,7 +168,7 @@ TEST(IdentifyEntry, ClassifiesCieFdeAndTerminator) {
     EXPECT_EQ(kind, unwind::EntryKind::Fde);
     EXPECT_EQ(length, out.size() - fde_offset - 4);
 
-    std::uint64_t const terminator_offset = out.size();
+    std::uint64_t const terminator_offset = out.size() - 4;
     ASSERT_TRUE(unwind::identify_entry(section, terminator_offset, &kind, &length));
     EXPECT_EQ(kind, unwind::EntryKind::Terminator);
     EXPECT_EQ(length, 4u);
@@ -339,7 +339,9 @@ TEST(FdeIndex, DebugFrameUsesAbsoluteEncodings) {
     SectionBuilder out;
     // .debug_frame CIE: id is all-ones, augmentation absent, encoding absptr.
     std::size_t const cie_start = out.size();
-    out.u32(0).u32(0xFFFF'FFFF).u8(4).u8(8).u8(0).uleb(1).sleb(-8).uleb(16);
+    // .debug_frame v4: address/segment sizes precede an empty augmentation
+    // string.
+    out.u32(0).u32(0xFFFF'FFFF).u8(4).u8(8).u8(0).u8(0).uleb(1).sleb(-8).uleb(16);
     out.patch_u32(cie_start, static_cast<std::uint32_t>(out.size() - cie_start - 4));
 
     std::size_t const fde_start = out.size();

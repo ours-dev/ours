@@ -116,6 +116,25 @@ namespace {
                 continue;
             }
 
+            // Compact single-register forms: DW_CFA_offset (0x80|reg) and
+            // DW_CFA_restore (0xC0|reg) — by far the most emitted opcodes.
+            if ((opcode & 0xC0) == 0x80) {
+                std::uint64_t const reg = opcode & 0x3F;
+                std::int64_t const factored = static_cast<std::int64_t>(cursor.uleb());
+                if (!cursor.ok()) {
+                    return false;
+                }
+                set_rule(*state, reg, Rule{RuleKind::Offset, 0, factored});
+                continue;
+            }
+            if ((opcode & 0xC0) == 0xC0) {
+                std::uint64_t const reg = opcode & 0x3F;
+                if (reg < RULE_COUNT) {
+                    state->rules[reg] = initial_snapshot.rules[reg];
+                }
+                continue;
+            }
+
             switch (opcode) {
                 case DW_CFA_NOP:
                     break;

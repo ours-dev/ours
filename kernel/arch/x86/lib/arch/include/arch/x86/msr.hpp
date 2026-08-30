@@ -12,6 +12,9 @@
 namespace arch {
 enum class MsrRegAddr : u32 {
     IA32ApicBase = 0x1B,
+    IA32Pmc0 = 0xC1,
+    IA32PerfEvtSel0 = 0x186,
+    IA32PerfCapabilities = 0x341,
     IA32Efer = 0xC000'0080,
     IA32Star = 0xC000'0081,
     IA32Lstar = 0xC000'0082,
@@ -20,6 +23,9 @@ enum class MsrRegAddr : u32 {
     IA32GsBase = 0xC000'0101,
     IA32KernelGsBase = 0xC000'0102,
     IA32TscDeadline = 0x6E0,
+    IA32PerfGlobalStatus = 0x38E,
+    IA32PerfGlobalCtrl = 0x38F,
+    IA32PerfGlobalOvfCtrl = 0x390,
 };
 
 class MsrIo final {

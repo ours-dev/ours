@@ -155,6 +155,10 @@ auto Cursor::encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexc
             value = static_cast<std::uint64_t>(static_cast<std::int16_t>(u16()));
             break;
         case DW_EH_PE_SDATA4:
+        case 0x0B:
+            // 0x0B is the sdata4 variant the x86-64 psABI actually emits
+            // (CIE "R" = 0x1B = pcrel|sdata4); both read 4 signed bytes and
+            // agree modulo 2^64 once the application is applied.
             value = static_cast<std::uint64_t>(static_cast<std::int32_t>(u32()));
             break;
         case DW_EH_PE_SDATA8:

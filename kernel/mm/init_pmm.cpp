@@ -73,13 +73,10 @@ INIT_CODE auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
 
     ktl::init_kmalloc();
 
-    // Ok, PMM is available now.
+    // Ok, PMM is available now. This is also what makes pmm_enabled() true,
+    // which is how MemoryModel::Impl::allocate() stops falling back to
+    // EarlyMem -- the stage is the single place that says so.
     set_init_stage(InitStage::Pmm);
-
-    // And say so. MemoryModel::Impl::allocate() reads this to choose
-    // between the real allocator and EarlyMem; nothing had ever set it,
-    // so that choice always fell to EarlyMem.
-    g_pmm_enabled = true;
 }
 
 INIT_CODE auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {

@@ -42,6 +42,13 @@ class SectionBuilder final {
         return *this;
     }
 
+    auto u64(std::uint64_t value) -> SectionBuilder & {
+        for (std::size_t i = 0; i < 8; ++i) {
+            m_bytes.push_back(static_cast<std::uint8_t>((value >> (8 * i)) & 0xFF));
+        }
+        return *this;
+    }
+
     auto uleb(std::uint64_t value) -> SectionBuilder & {
         while (true) {
             std::uint8_t const byte = value & 0x7F;
@@ -331,7 +338,7 @@ TEST(Unwinder, RejectsCfaBelowStackPointer) {
 
     std::size_t const fde_start = out.size();
     out.u32(0).u32(static_cast<std::uint32_t>(fde_start + 4 - cie_start));
-    out.sdata4(0x1000).sdata4(0x100);
+    out.u64(0x1000).u64(0x100); // absptr: no 'z' augmentation in the CIE
     out.patch_u32(fde_start, static_cast<std::uint32_t>(out.size() - fde_start - 4));
     unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
 
@@ -359,7 +366,7 @@ TEST(Unwinder, RejectsUnalignedCallerStackPointer) {
 
     std::size_t const fde_start = out.size();
     out.u32(0).u32(static_cast<std::uint32_t>(fde_start + 4 - cie_start));
-    out.sdata4(0x1000).sdata4(0x100);
+    out.u64(0x1000).u64(0x100); // absptr: no 'z' augmentation in the CIE
     out.patch_u32(fde_start, static_cast<std::uint32_t>(out.size() - fde_start - 4));
     unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
 
@@ -387,7 +394,7 @@ TEST(Unwinder, RememberAndRestoreStateRoundTrip) {
 
     std::size_t const fde_start = out.size();
     out.u32(0).u32(static_cast<std::uint32_t>(fde_start + 4 - cie_start));
-    out.sdata4(0x1000).sdata4(0x100);
+    out.u64(0x1000).u64(0x100); // absptr: no 'z' augmentation in the CIE
     // Body: advance 1; def_cfa_offset 16; offset(rbp, 2).
     out.u8(CFA_ADVANCE | 1).u8(CFA_DEF_CFA_OFFSET).uleb(16).u8(CFA_OFFSET | 6).uleb(2);
     // Epilogue: remember; advance 1; def_cfa_offset 8; restore(rbp);

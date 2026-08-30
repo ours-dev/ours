@@ -7,6 +7,7 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/memory_model.hpp>
+#include <ours/mm/init.hpp>
 #include <ours/mm/node_mask.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
@@ -35,15 +36,14 @@ FORCE_INLINE constexpr auto min_pfn() -> Pfn {
     return phys_to_pfn(min_phys_addr());
 }
 
-/// Set once the real page allocator has taken over from EarlyMem.
+/// Whether the real page allocator has taken over from EarlyMem.
 ///
-/// Declared here rather than inside pmm_enabled() below: a block-scope extern
-/// is invisible to everyone else, so the code that has to *set* the flag could
-/// not name it.
-extern bool g_pmm_enabled;
-
-FORCE_INLINE constexpr static auto pmm_enabled() -> bool {
-    return g_pmm_enabled;
+/// Derived from the init stage rather than tracked by a flag of its own: the
+/// two would say the same thing, and two things saying the same thing can
+/// disagree. set_init_stage(InitStage::Pmm) is the single point that makes
+/// this true.
+FORCE_INLINE inline auto pmm_enabled() -> bool {
+    return get_init_stage() >= InitStage::Pmm;
 }
 
 auto cpu_to_node(CpuNum cpunum) -> NnId;

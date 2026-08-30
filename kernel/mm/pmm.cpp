@@ -19,13 +19,6 @@ namespace priv {
     }
 } // namespace priv
 
-/// Whether the real page allocator has taken over from EarlyMem.
-///
-/// Declared inside pmm_enabled() in the header and read by
-/// MemoryModel::Impl::allocate to choose between the two; nothing defined
-/// it, and nothing set it either -- see init_pmm().
-bool g_pmm_enabled = false;
-
 auto num_nodes() -> usize {
     return PmNode::num_nodes();
 }
