@@ -165,6 +165,11 @@ class WaitQueue {
     /// Second half of a wake: propagates the lost PI edge and resumes the
     /// thread. Must be called with the queue lock dropped, and only for a
     /// thread this queue actually dequeued.
+    /// Removes the head waiter and returns its thread, with the queue lock
+    /// already held. notify_one/notify_all and the two-phase lock_for_notify_*
+    /// pair differ only in what they do after this.
+    auto dequeue_front_locked(Status status) -> Thread *;
+
     auto wake_dequeued_thread(Thread *thread, Status status) -> void;
 
     /// Handler for time counted tasks.
