@@ -5,29 +5,13 @@
 
 #include <gktl/range.hpp>
 #include <ours/init.hpp>
+#include <ours/mm/init_stage.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/status.hpp>
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {
-enum class InitStage {
-    BootStrap,
-    Pmm,
-    Vmm,
-    All,
-};
-
-extern InitStage g_init_stage;
-
-FORCE_INLINE inline auto get_init_stage() -> InitStage {
-    return g_init_stage;
-}
-
-FORCE_INLINE inline auto set_init_stage(InitStage stage) -> void {
-    g_init_stage = stage;
-}
-
 enum class InitContext {
     Early,
     Hotplug,
