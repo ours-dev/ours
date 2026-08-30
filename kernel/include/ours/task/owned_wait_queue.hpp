@@ -71,8 +71,27 @@ class OwnedWaitQueue: protected WaitQueue {
     auto park_and_assign_owner_preamble(Thread *const curr, Thread *new_owner) -> void;
     auto park_and_assign_owner_postamble(Thread *const curr, Thread *new_owner) -> void;
 
+    /// What lock_for_notify_operation() hands back: whether the queue could be
+    /// locked for the operation, and the threads it collected.
+    ///
+    /// One value rather than a bool plus an out-parameter, so that a caller can
+    /// decompose it in the condition of an `if` (P0963R3) and have both parts
+    /// in scope for either outcome. Contextually true only when there is
+    /// actually someone to hand off to -- locking an empty queue is a success
+    /// that still leaves nothing to wake.
     template <typename UnparkThreads> // Thread::UnparkList
-    auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &, UnparkThreads &) -> bool;
+    struct NotifyBatch {
+        bool locked;
+        UnparkThreads threads;
+
+        explicit operator bool() const {
+            return locked && !threads.empty();
+        }
+    };
+
+    template <typename UnparkThreads> // Thread::UnparkList
+    auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
+        -> NotifyBatch<UnparkThreads>;
 
     template <typename UnparkThreads> // Thread::UnparkList
     auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyControl) -> void;

@@ -92,7 +92,10 @@ static_assert(acpi::Signature::from_chars("APIC").value == 0x43495041);
 static_assert(acpi::Signature::from_chars("RSD ").value == 0x20445352);
 static_assert(acpi::Signature::from_chars("XSDT") == acpi::Signature::from_raw(0x54445358));
 static_assert(acpi::Signature::from_chars("APIC") != acpi::Signature::from_chars("SRAT"));
-static_assert(std::is_trivial_v<acpi::Signature>);
+// Not is_trivial_v: deprecated in C++26, and it always meant exactly this
+// conjunction anyway.
+static_assert(std::is_trivially_copyable_v<acpi::Signature> &&
+              std::is_trivially_default_constructible_v<acpi::Signature>);
 static_assert(std::is_standard_layout_v<acpi::Signature>);
 
 } // namespace

@@ -94,17 +94,17 @@ auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> sched:
 /// acquired and released across this pair of calls, and how INotifyRequeueHook
 /// interacts with the priority-inheritance propagation in begin_propagate().
 template <typename UnparkThreads>
-auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &,
-                                               UnparkThreads &) -> bool {
-    return false;
+auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
+    -> NotifyBatch<UnparkThreads> {
+    return {};
 }
 
 template <typename UnparkThreads>
 auto OwnedWaitQueue::notify_threads_locked(UnparkThreads, INotifyRequeueHook &, NotifyControl)
     -> void {}
 
-template auto OwnedWaitQueue::lock_for_notify_operation(usize, INotifyRequeueHook &,
-                                                        Thread::UnparkList &) -> bool;
+template auto OwnedWaitQueue::lock_for_notify_operation(usize, INotifyRequeueHook &)
+    -> OwnedWaitQueue::NotifyBatch<Thread::UnparkList>;
 template auto OwnedWaitQueue::notify_threads_locked(Thread::UnparkList, INotifyRequeueHook &,
                                                     NotifyControl) -> void;
 

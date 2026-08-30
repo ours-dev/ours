@@ -4,6 +4,6 @@
 
 declare_args() {
     # The C++ standard version used across the project.
-    ours_cxx_version = "23"
+    ours_cxx_version = "2c"
 }
 
