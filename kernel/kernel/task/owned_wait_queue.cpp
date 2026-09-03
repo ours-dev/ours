@@ -112,33 +112,61 @@ template auto OwnedWaitQueue::lock_for_notify_operation<Thread::UnparkList>(usiz
 template auto OwnedWaitQueue::notify_threads_locked(Thread::UnparkList, INotifyRequeueHook &,
                                                     NotifyControl) -> void;
 
+/// Both halves of an ownership edge run under the owner thread's PI lock:
+/// the list they splice into is that thread's outgoing edge set in the
+/// profile inheritance graph, and a PI chain walk reaches a thread holding
+/// nothing but its PI lock. See the note on Thread::m_owned_wait_queues for
+/// why the resource lock was the wrong place for it.
+///
+/// The precondition cannot be spelled as TA_REQUIRES. The lock is reached
+/// through a pointer whose value the analysis cannot follow -- and for
+/// reset_owner() the pointer is a member, so there is no expression at the
+/// call site to name -- which is why the check is a run-time assert_held()
+/// and the function opts out of the static analysis instead.
+TA_NO_THREAD_SAFETY_ANALYSIS
 auto OwnedWaitQueue::set_owner(Thread *new_owner) -> void {
     DEBUG_ASSERT(m_owner == nullptr);
+    new_owner->get_pi_lock().assert_held();
+
     new_owner->m_owned_wait_queues.push_back(*this);
     m_owner = new_owner;
 }
 
+TA_NO_THREAD_SAFETY_ANALYSIS
 auto OwnedWaitQueue::reset_owner() -> void {
-    DEBUG_ASSERT(m_owner->get_resource_lock().is_locked());
+    DEBUG_ASSERT(m_owner != nullptr);
+    m_owner->get_pi_lock().assert_held();
+
     static_cast<void>(
         m_owner->m_owned_wait_queues.erase(m_owner->m_owned_wait_queues.iterator_to(*this)));
     m_owner = nullptr;
 }
 
+/// Drops every ownership edge leaving |thread|. A thread on its way out has to
+/// do this before its storage can go back: an OwnedWaitQueue still pointing at
+/// it would hand that dead pointer to the next propagation that walks through
+/// the queue.
+///
+/// The PI lock is held across the whole drain rather than swapping the list
+/// out first. The swap was not just a lock-scope shortcut, it was wrong:
+/// reset_owner() unlinks the queue from `m_owner->m_owned_wait_queues`, but
+/// after a swap the queue is no longer on that list -- it is on the local one,
+/// and pop_front() had already unlinked it from there. The erase then ran
+/// against a list the node was not a member of. Holding the lock instead lets
+/// reset_owner() stay the single place that unlinks a queue, and the loop just
+/// re-reads the head until the list runs dry.
+///
+/// Lock order is the thread's PI lock first and the queue's lock underneath,
+/// the same direction WaitQueue::enqueue_waiter takes them; see the note
+/// there.
+TA_NO_THREAD_SAFETY_ANALYSIS
 auto OwnedWaitQueue::disown_all_queues(Thread *thread) -> void {
-    Self::List owqs;
-    {
-        Guard guard{thread->get_resource_lock()};
-        owqs.swap(thread->m_owned_wait_queues);
-    }
+    Guard guard{thread->get_pi_lock()};
 
-    while (!owqs.empty()) {
-        auto &owq = *owqs.front();
-        owqs.pop_front();
-        {
-            Guard guard{owq.get_lock()};
-            owq.reset_owner();
-        }
+    while (!thread->m_owned_wait_queues.empty()) {
+        auto &owq = *thread->m_owned_wait_queues.front();
+        Guard queue_guard{owq.get_lock()};
+        owq.reset_owner();
     }
 }
 

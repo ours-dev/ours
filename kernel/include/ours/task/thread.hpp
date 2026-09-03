@@ -416,7 +416,29 @@ namespace task {
         TaskState m_task_state TA_GUARDED(get_resource_lock());
         WaiterState m_waiter_state;
         mm::MemoryAllocationState m_memory_allocation_state;
-        OwnedWaitQueue::List m_owned_wait_queues;
+
+        /// The wait queues this thread owns: the outgoing edges of its node in
+        /// the profile inheritance graph.
+        ///
+        /// This belongs under the PI lock and not the resource lock, and the
+        /// distinction is not cosmetic. Every walk of a PI chain -- thread ->
+        /// owned queue -> that queue's owner -> ... -- arrives at a thread
+        /// holding only its PI lock, which is the contract
+        /// OwnedWaitQueue::assign_owner already asserts before it touches an
+        /// owner. If the edge set hung off a second, unrelated lock, each hop
+        /// would have to take two locks of different classes, and the
+        /// back-off protocol that is meant to make such a walk deadlock-free
+        /// orders a single lock class only. Guarding it with the resource lock
+        /// also put the two directions of one edge under different locks:
+        /// set_owner() ran under the PI lock while reset_owner() asserted the
+        /// resource lock, so the list could be spliced and unspliced
+        /// concurrently.
+        ///
+        /// Linux draws the line in the same place. p->pi_waiters and
+        /// p->pi_blocked_on live under p->pi_lock, while alloc_lock -- what
+        /// task_lock() takes -- covers what the task *holds* (->mm, ->files,
+        /// ->fs) and never appears on a scheduler path.
+        OwnedWaitQueue::List m_owned_wait_queues TA_GUARDED(get_pi_lock());
 
         /// [Optional] Available on LockDep enabled.
         [[no_unique_address]]
