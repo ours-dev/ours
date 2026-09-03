@@ -4,16 +4,19 @@
 
 ---
 
-## 1. 启动的下一个停点：`reclaim_init_area()` 在 init 代码里释放 init 段（mm / top 的 lane，交叉索引）
+## 1. 启动的下一个停点：`prof_init()` 的 `build_fde_index()` 死循环（kernel/lib/prof 的 lane，交叉索引）
 
-`kernel/top/main.cpp` 的 `labour_routine()` 是 `INIT_CODE`，它调用 `mm::EarlyMem::reclaim_init_area()`
-（也是 `INIT_CODE`）把 `.init*` 段的物理页交还 buddy 分配器——而调用者本身就在 `.init*` 里执行。
-页表映射还在，所以不会当场缺页；紧接着的两次 `Thread::spawn()` 一旦从这些页分配到内核栈或对象，
-正在执行的代码就被覆盖，CPU 静默死亡。dbg 镜像现在正好停在这里：`sleep_etc` 返回后进入
-`reclaim_init_area()`，打印一串 `Free frame(...)` 之后再无输出，也没有 "I'm Thread 1/2"。
+**不是** `reclaim_init_area()`——它从未被到达（gdbstub 断点 0 命中；mm 会话在 reclaim 前后加的
+trace 也一行都没印）。真实顺序：`init_platform()` 返回 → `set_init_level(InitLevel::Platform)` →
+hook `FreeBootstrap16Buffer`（日志最后三行 `Free frame(D000/E000/F000)` 就是它，跑完了）→
+hook `ProfInit`（`kernel/commands/prof.cpp:198`）→ `build_fde_index()` 走 `.eh_frame`
+（0x28600 字节）**不返回**——mm 会话的标记 "prof_init entered, eh size=28600" 印了，
+"build_fde_index done" 从未印；把 `free_bootstrap16_buffer()` 换成空函数停点也不动。
+怀疑 `unwind::FdeIndex::build()` 遇到长度为 0 或未处理形状的 CFI 记录而不前进。
+`kernel/lib/prof` 在树里有另一个会话的大段未提交重构；已交接（spawn_task）。
 
-Linux 的 `free_initmem()` 由 `kernel_init()` 在**所有** `__init` 代码返回之后调用，且它自身不是
-`__init`。改法在 `main.cpp`（调用顺序）或 mm，不在 task。
+reclaim 的顺序问题本身是真的（`labour_routine()` 与 `reclaim_init_area()` 都曾是 `INIT_CODE`），
+mm 会话已在 `29368e3` 修掉；但那条路要等 prof 解开之后才跑得到。
 
 ## 2. 没有中断出口的抢占兑现，也没有中断嵌套计数（arch/x86 的 lane，交叉索引）
 
