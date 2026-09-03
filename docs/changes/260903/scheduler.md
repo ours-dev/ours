@@ -591,3 +591,53 @@ Assertion failed on curr == self.m_runtime.curr_thread
   先够用；改成推导是后续清理。
 - 没有给 BSP 的 boot 上下文（`create_first()`）播种——它在 `task::init()` 里被 idler 顶替，
   之后不再是任何调度器的 current。
+
+---
+
+## 9. `reschedule_mask()` 本地抢占不持 pi 锁，切换对面释放了一把没人拿的锁（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `reschedule_mask()` 末尾改走 `Thread::Current::preempt()`。
+
+**症状**
+
+dev 镜像（断言关闭，走得最远）在 laborer 第一次被切到时停：
+
+```
+Assertion failed on m_lockval.load(MemoryOrder::Relaxed) == holder_state(...)
+```
+
+lldb 栈：`SpinLock::release` ← `assert_held` ← `finish_switch_context` ← `trampoline_handoff`
+← `Thread::trampoline`。dbg 镜像则停在 `reschedule_common()` 的 `irqs_disabled()` 断言。
+
+**原因**
+
+切换协议把当前线程的 pi 锁**跨上下文切换传递**：出去的一侧拿着它进 `reschedule_common()`，
+进来的一侧在 `finish_switch_context()` 里释放。`Thread::Current::preempt()` 和
+`PreemptionState::flush_pending_local()` 都遵守——前者用 `Guard<SpinLock, IrqSave>` 取锁再进
+调度器。`reschedule_mask()` 是唯一直接调 `Scheduler::Current::preempt(current_thread)` 的地方，
+不取锁就进去了，于是对面释放的是一把没人持有的锁。
+
+**改法**
+
+`Thread::Current::preempt()`，和 `flush_pending_local()` 一致。
+
+**参照**
+
+`Zircon Scheduler::RescheduleMask()` → `Preempt()`，在 thread lock 持有下进行。
+
+**验证**
+
+- 构建、`clang-format`、`clang-tidy` 无新告警。
+- dev：`assert_held` 断言消失，之后**静默挂住**——日志停在切换前最后一行。最像
+  `IdleThread::run()`：`m_states` 永远 `current != target`，每圈在关中断、关抢占下
+  `Thread::Current::reschedule()`，而 `Scheduler::Current::reschedule()` 见 `!is_preemptible`
+  就 `add_pending(); return;`，死循环无输出。已记待修，是下一条。
+- dbg：仍停在 `irqs_disabled()`。这条不归本改动：`lockdep::Guard<Lock, Options...>` 把
+  `IrqSave`/`PreemptDisable` 存进 `std::tuple` 从不使用（`guard()` 只 `m_lock.acquire()`），
+  所以 `Thread::Current::preempt()` 虽然拿了锁，中断并没有关。全树没有任何 `Guard` 路径构造
+  `AutoInterruptDisabler`。已转 lib/concurrent 会话。
+
+**故意没做**
+
+- 没有在这里给 `Guard` 补 state saver——那是 lockdep 的接口，不是 task 的。

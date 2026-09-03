@@ -296,8 +296,17 @@ auto Scheduler::reschedule_mask(CpuMask const &mask) -> void {
         return;
     }
 
-    // Local preempt is pending.
-    Scheduler::Current::preempt(current_thread);
+    // Through Thread::Current::preempt(), never Scheduler::Current::preempt()
+    // directly: the difference is the current thread's PI lock. The switch
+    // protocol hands that lock across the context switch -- the outgoing side
+    // takes it, finish_switch_context() on the incoming side releases it --
+    // so entering reschedule_common() without holding it makes the far side
+    // release a lock nobody holds (assert_held() in SpinLock::release()). It
+    // is also what reschedule_common()'s own preconditions ask for.
+    // PreemptionState::flush_pending_local() already goes this way; this was
+    // the one caller that did not. Zircon's RescheduleMask() likewise runs
+    // Preempt() with the thread lock held.
+    Thread::Current::preempt();
 }
 
 INIT_CODE auto Scheduler::init() -> void {
