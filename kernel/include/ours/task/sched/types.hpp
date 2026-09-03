@@ -10,7 +10,6 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::task::sched {
-using SchedWeight = i32;
 using Weight = usize;
 using SchedDuration = Duration;
 using SchedTime = TimePoint<>;

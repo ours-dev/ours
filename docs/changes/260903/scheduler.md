@@ -339,3 +339,66 @@ DEBUG_ASSERT(thread->state() & (Thread::State::Parked | Thread::State::Sleeping)
 - 没有在这里动那个 #DE。它有两个独立的根：每个线程的权重都是 0（`BaseProfile(priority)`
   把 `priority` 扔了，`priority_to_weight()` 从没被调用），以及 `avg_vruntime()` 没有
   Linux `avg_vruntime()` 那句 `if (load)` 守卫。各自一条改动，下面接着写。
+
+---
+
+## 5. `BaseProfile(priority)` 把优先级扔了，所有线程的权重都是 0（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/profiles.hpp` — `BaseProfile` 构造函数用 `priority_to_weight()`；
+  三个权重字段改成表的类型 `Weight`。
+- `kernel/include/ours/task/sched/common.hpp` — `priority_to_weight()` 的范围断言改成闭区间。
+- `kernel/include/ours/task/sched/types.hpp` — 删掉再没有使用者的 `SchedWeight`（`i32`）别名。
+
+**症状**
+
+第 4 条修完之后两个镜像停在同一个 #DE：`Fair::enqueue_thread()` 内联的
+`RunQueue::avg_vruntime()` 里 `total_vruntime / weight_sum`，`weight_sum == 0`。
+
+**原因**
+
+```cpp
+constexpr explicit BaseProfile(i32 priority, bool inheritible = true)
+    : weight(), discipline() {}
+```
+
+`priority` 形参没被用到；`weight()` 值初始化成 0。`common.hpp` 里 `priority_to_weight()`
+连同 32 项的 `PRIORITY_TO_WEIGHT_MAP` 早就写好，但全树没有一个调用者。于是不管
+`DEFAULT_PRIORITY`、`IDLE_PRIORITY` 还是别的，每个线程的权重都是 0——**0 不是"低权重"，
+是"没有权重"**：线程对运行队列的 `weight_sum_` 贡献为零，`calc_weighted_time()` 里
+`weight / MID_WEIGHT` 也恒为 0，虚拟时间根本不前进。
+
+三个权重字段的类型是 `SchedWeight = i32`，而权重表是 `Weight = usize`，
+`Context::weight()` 也返回 `Weight`——这个 i32/usize 的不一致本身就是"这条路从没接通"的
+痕迹：接通了立刻会撞窄化告警。
+
+`priority_to_weight()` 自己的范围断言是 `priority < HIGHEST_PRIORITY`，开区间，把名字
+承诺合法的那个最高优先级（31，表的最后一项）拒之门外——没人撞到只是因为没人调它。
+
+**改法**
+
+- `BaseProfile(priority)` → `weight(priority_to_weight(static_cast<usize>(priority)))`。
+  转换放在"从优先级造出 profile"的唯一入口，后面所有人拿到的都是权重。
+- 三个权重字段 `SchedWeight` → `Weight`，和表、和 `Context::weight()` 一致；
+  `SchedWeight` 别名随之没有使用者，删掉。
+- `priority_to_weight()` 断言改成 `<= HIGHEST_PRIORITY`。
+
+**参照**
+
+`Zircon SchedulerState::BaseProfile(int priority, bool inheritable)`：
+`fair{.weight{SchedulerState::ConvertPriorityToWeight(priority)}}`——同一个位置做同一个转换。
+
+**验证**
+
+- 构建通过；`clang-format` 已跑；`clang-tidy`（经 `thread.cpp` 这个 TU）对三个头无告警。
+- QEMU 两个镜像：停点**不变**，仍是 `enqueue_thread` 里同一个 #DE。这是预期的：
+  `enqueue_thread()` 先 `adjust_vlag()` 再 `rq.enqueue_object()`，所以第一个线程入队时
+  `weight_sum_` 还是 0、`current_` 还是空——权重非零也救不了一个空队列上的除法。
+  下一条加 Linux `avg_vruntime()` 那句 `if (load)` 守卫。
+  本条改动的正确性是静态的（映射存在且被调用），停点不动不代表没起作用。
+
+**故意没做**
+
+- 没动 `calc_weighted_time()` 里 `weight / MID_WEIGHT` 的整数截断：对低于中权重的线程
+  （`IDLE_PRIORITY` = 7 → 503/10550 = 0）结果仍是 0。这是另一个 bug，已记进待修。
+- 没动 `inheritible`（拼写也不对）这个未使用的形参。
