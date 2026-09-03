@@ -14,6 +14,8 @@
 #include <ustl/util/enum_bits.hpp>
 #include <ustl/util/noncopyable.hpp>
 
+#include <tuple>
+
 namespace ours::sync {
 namespace spinlock {
     /// Two of these are placeholders for machinery this kernel does not have
@@ -134,14 +136,50 @@ namespace spinlock {
         ustl::sync::AtomicUsize m_lockval;
     };
 
+    /// The state savers a `Guard<SpinLock, ...>` holds for each option tag,
+    /// resolved through lockdep::StateSaver.
+    ///
+    /// They live inside `spinlock`, next to the class template, and not
+    /// beside the SpinLock alias in the enclosing ours::sync. StateSaver
+    /// finds them by argument-dependent lookup, and the namespace ADL
+    /// associates with `SpinLock<Options>` is the one the class template
+    /// itself was declared in; ADL does not walk outwards. Declaring them one
+    /// level up compiles fine on its own and then fails at every use with
+    /// "use of undeclared identifier 'lockdep_get_state_saver'".
+    ///
+    /// Written by hand rather than through LOCKDEP_STATE_SAVER because
+    /// SpinLock is a template: one declaration each covers SpinLock,
+    /// MonitoredSpinLock and NoTraceSpinLock. They are declarations only --
+    /// StateSaver names the return type through decltype and never calls
+    /// them -- which is also what lets them mention task::AutoPreemptDisabler
+    /// while it is still incomplete here. Completing it would need
+    /// <ours/task/auto_preempt_disabler.hpp>, which includes thread.hpp,
+    /// which includes this header.
+    template <Option Options>
+    auto lockdep_get_state_saver(SpinLock<Options> *, lockdep::IrqSave *)
+        -> ::arch::AutoInterruptDisabler;
+
+    template <Option Options>
+    auto lockdep_get_state_saver(SpinLock<Options> *, lockdep::PreemptDisable *)
+        -> task::AutoPreemptDisabler;
+
+    /// No single RAII type does both, and none should: holding off interrupts
+    /// and holding off preemption are independent concerns that happen to be
+    /// wanted together. std::tuple composes them without inventing a class,
+    /// and its destruction order -- reverse of declaration -- is the one this
+    /// needs: preemption is re-enabled first, so a reschedule the flush
+    /// delivers still runs with interrupts disabled, which is the state
+    /// Scheduler::reschedule_common asserts on entry; interrupts come back
+    /// last.
+    template <Option Options>
+    auto lockdep_get_state_saver(SpinLock<Options> *, lockdep::IrqSaveAndPreemptDisable *)
+        -> std::tuple<::arch::AutoInterruptDisabler, task::AutoPreemptDisabler>;
+
 } // namespace spinlock
 
 using SpinLock = spinlock::SpinLock<spinlock::DEFAULT_OPTIONS>;
 using MonitoredSpinLock = spinlock::SpinLock<spinlock::MONITORED_OPTIONS>;
 using NoTraceSpinLock = spinlock::SpinLock<spinlock::NO_TRACE_OPTIONS>;
-
-LOCKDEP_STATE_SAVER(SpinLock, lockdep::SavedStateOption::IrqSave, ::arch::AutoInterruptDisabler);
-LOCKDEP_STATE_SAVER(SpinLock, lockdep::SavedStateOption::PreemptDisable, task::AutoPreemptDisabler);
 
 } // namespace ours::sync
 

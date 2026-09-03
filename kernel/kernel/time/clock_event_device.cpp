@@ -83,7 +83,13 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
 
     self.configure(freq, min_delta, max_delta);
     {
-        Guard<sync::Mutex, IrqSave> guard{GCED_MUTEX};
+        // No IrqSave here, deliberately. GCED_MUTEX is a sync::Mutex, which
+        // parks the caller on an OwnedWaitQueue when contended; disabling
+        // interrupts around a lock that can block is how a CPU stops coming
+        // back. The tag used to be written here and did nothing -- Guard
+        // ignored its options -- so removing it changes no behaviour today
+        // and keeps it that way now that the options are live.
+        Guard<sync::Mutex> guard{GCED_MUTEX};
         GCED.push_back(self);
     }
 
