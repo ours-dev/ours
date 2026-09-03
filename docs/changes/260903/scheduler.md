@@ -285,3 +285,57 @@ CpuMask const *m_soft_affinity, *m_hard_affinity;   // 平时指向上面，shar
 - 没有把 `on_thread_init()` 的默认亲和性从跟踪 `online_mask()` 改成 Linux 的
   `cpu_possible_mask` 快照。那是语义改动，先保持原样。
 - 没有给 `Scheduler::set_cpu_affinity()` 加 shared 变体，理由见改法。
+
+---
+
+## 4. `do_unpark_thread()` 只认 Parked/Sleeping，`resume()` 一到就断言（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `do_unpark_thread()` 的来源状态断言。
+
+**症状**
+
+`start_kernel()` 里 `laborer->resume()` 一调就停（dbg 镜像）：
+
+```
+Assertion failed on thread->state() & (Thread::State::Parked | Thread::State::Sleeping)
+```
+
+**原因**
+
+`Thread::resume()` 对 `State::Initial`（从没跑过）和 `State::Suspend` 两种线程都走
+`Scheduler::unpark_thread()`；`Thread::suspend_or_kill()` 对 `Suspend` 态执行 Kill 也走它。
+而 `do_unpark_thread()` 的断言只写了等待队列会产生的两种：`Parked | Sleeping`。
+
+```cpp
+DEBUG_ASSERT(thread->state() & (Thread::State::Parked | Thread::State::Sleeping));
+```
+
+`UnparkControl::Initial` 这个枚举值就是为"第一次 resume"设的，说明设计时知道这条路，
+断言却没跟上。每一个 spawn 出来的线程第一次 `resume()` 都会撞它，
+`laborer` 只是启动路径上第一个。从 `Suspend` 恢复也一样撞。
+
+**改法**
+
+断言改成"能被唤醒的状态集合"：`Initial | Suspend | Parked | Sleeping`。这四个正好
+是 `unpark_thread()` 全部调用方各自的来源态。
+
+**参照**
+
+`Zircon Thread::Resume()`：`state() == THREAD_INITIAL || state() == THREAD_SUSPENDED`
+都进 `Scheduler::Unblock()`；`Scheduler::UnblockCommon()` 对来源态只断言 `!thread->IsIdle()`，
+然后 `thread->set_ready()`——被唤醒这件事本身就把线程置成 READY，不管它从哪个非运行态来。
+
+**验证**
+
+- 构建通过，`clang-format` 无改动，`clang-tidy` 无新告警。
+- QEMU 两个镜像：断言消失，都多走一步，停在同一个 #DE——`Fair::enqueue_thread()` 内联的
+  `RunQueue::avg_vruntime()` 里 `total_vruntime / weight_sum`，`weight_sum == 0`
+  （dbg `+0x214db` = `enqueue_thread+0x16b`，dev `+0x1cef3` = `enqueue_thread+0x153`）。
+  两个镜像停在同一处，说明不再有被断言掩盖的差异。
+
+**故意没做**
+
+- 没有在这里动那个 #DE。它有两个独立的根：每个线程的权重都是 0（`BaseProfile(priority)`
+  把 `priority` 扔了，`priority_to_weight()` 从没被调用），以及 `avg_vruntime()` 没有
+  Linux `avg_vruntime()` 那句 `if (load)` 守卫。各自一条改动，下面接着写。

@@ -636,7 +636,21 @@ auto Scheduler::Current::park_thread(Thread *curr) -> void {
 auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void {
     DEBUG_ASSERT(m_runtime.which_cpu == Cpu::id());
     DEBUG_ASSERT(thread != m_runtime.curr_thread);
-    DEBUG_ASSERT(thread->state() & (Thread::State::Parked | Thread::State::Sleeping));
+
+    // Every state a thread can be woken out of, not only the two a wait queue
+    // produces. Thread::resume() unparks from Initial (a thread that has never
+    // run -- this is how start_kernel()'s "laborer" and every other spawned
+    // thread first reach a run queue) and from Suspend; the wait queues unpark
+    // from Parked and Sleeping. The assertion used to name only the latter
+    // pair, so the first resume() of the boot tripped it, and a resume() from
+    // Suspend would have too.
+    //
+    // Zircon's Thread::Resume() routes THREAD_INITIAL and THREAD_SUSPENDED
+    // into Scheduler::Unblock() as well, and UnblockCommon() asserts nothing
+    // about the source state beyond !IsIdle(): being woken is what moves a
+    // thread to READY, whichever non-running state it came from.
+    using enum Thread::State;
+    DEBUG_ASSERT(thread->state() & (Initial | Suspend | Parked | Sleeping));
 
     m_canary.verify<Self>();
 
