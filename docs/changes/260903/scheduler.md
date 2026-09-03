@@ -858,3 +858,26 @@ idler 沿着自己的栈往上返回时，`Thread::Current::preempt()` 的 guard
 
 **验证**
 构建通过；dbg：空闲循环切到 laborer，`become_idle()` 的 flush 生效，canary 断言消失。
+
+
+---
+
+## 17. `evaluate_next_thread()` 的"继续跑 curr"分支没写 `next`，`set_next_thread(nullptr)`（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — 该分支改为 `next = curr; return next;`。
+
+**症状**
+idler 恢复后 flush 一个 pending 抢占，无其它可运行线程，探针显示 `set_next null` 后静默。
+
+**原因**
+`evaluate_next_thread()` 用 `gktl::defer` 在作用域退出时 `put_prev_thread(curr); set_next_thread(next);`，
+`next` 按引用捕获。其它分支都先写 `next` 再返回，唯独 `return curr;` 没写，`next` 仍是空，
+`set_next_thread(nullptr)` 对空线程 `set_state_running()`。
+
+**改法**
+统一经 `next` 返回。
+
+**验证**
+构建通过；dbg：定时器到期 → `unsleep` → 切回 laborer → `sleep_etc` 返回，laborer 走进
+`reclaim_init_area()`。

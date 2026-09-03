@@ -508,7 +508,14 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
         // There are no other runnable threads and |curr| is not parked
         // (|curr| from timeslice expired or an yield). so give it a chance
         // to run again.
-        return curr;
+        //
+        // Through |next|, not a bare `return curr`: the deferred block above
+        // captures |next| by reference and hands it to set_next_thread() on
+        // the way out, so a path that returns without writing it hands over
+        // whatever |next| held -- null, here -- and set_next_thread() then
+        // marks a null thread Running. This was the one path that skipped it.
+        next = curr;
+        return next;
     }
 
     // No any thread active, so return the idle thread.
