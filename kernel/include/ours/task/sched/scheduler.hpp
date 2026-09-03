@@ -55,7 +55,14 @@ class Scheduler {
 
     static auto on_thread_dead(Thread *) -> void;
 
-    TA_ACQUIRE(thread->get_pi_lock())
+    /// The caller holds |thread|'s PI lock and keeps it: this neither takes
+    /// nor drops it, it only puts the thread on a runqueue (Zircon's
+    /// Scheduler::Unblock has the same TA_REQ(thread_lock) shape). It used
+    /// to be declared TA_ACQUIRE(thread->get_pi_lock()), and two callers in
+    /// Thread::suspend_or_kill() took that literally -- they unguard()ed
+    /// their Guard first, on the theory that this call would release the
+    /// lock for them, and so leaked it.
+    TA_REQUIRES(thread->get_pi_lock())
     static auto unpark_thread(Thread *thread, UnparkControl = UnparkControl::None) -> void;
 
     static auto unpark_thread(Thread::UnparkList, UnparkControl = UnparkControl::None) -> void;

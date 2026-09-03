@@ -272,3 +272,54 @@ Zircon 只有一套 `__TA_*`（`zircon/compiler.h`），没有别名。
 
 **故意没做**
 没有给这个空壳类补实现——它是 timeslice extension 的占位，另有安排。
+
+---
+
+## `Scheduler::unpark_thread` 的契约：调用方持 PI 锁并自己放，修掉 `suspend_or_kill` 的两处锁泄漏（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — `unpark_thread(Thread *)` 的
+  `TA_ACQUIRE(thread->get_pi_lock())` 改为 `TA_REQUIRES(thread->get_pi_lock())`
+- `kernel/kernel/task/thread.cpp` — `suspend_or_kill()` 的 Suspend+Kill 分支和 Sleeping 分支删掉
+  调 unpark 前的 `thread_guard.unguard()`
+
+**症状**
+潜伏，当前启动流程还没 kill 过挂起/睡眠的线程。一旦发生：该线程的 PI 锁被本 CPU 永久持有，
+之后任何一次对它的 `acquire()`（哪怕来自同一 CPU）会撞 `DEBUG_ASSERT(!is_held())`，非调试
+镜像则直接自旋到死。
+
+**原因**
+`unpark_thread(Thread *)` 的实现（`scheduler.cpp:187-204`）对 PI 锁一个字都没碰，只是选 CPU、
+调 `do_unpark_thread`。但声明写的是 `TA_ACQUIRE(thread->get_pi_lock())`——「调完这个函数你就
+持有了 PI 锁」，哪个方向都不对。六个调用方对它的理解分成两派：
+
+- `Thread::resume()`、`WaiterState::unsleep()`、`WaitQueue::handle_timeout()`：调用前持锁，调用后
+  自己放（handle_timeout 是手动 `pi_lock.release()`）。这派是对的。
+- `Thread::suspend_or_kill()` 的两个分支：先 `thread_guard.unguard()` 告诉 Guard「不用你放了」，
+  再调 unpark——以为 unpark 会替它们放。没人放，锁就漏了。
+
+原注释「Invoke it before to handle the following cases since in the code bottom thread switching
+may happens」透露了误解的来源：作者以为 unpark 会切换上下文并在切换路径上放锁。那是
+`reschedule_common` 的行为，不是 unpark 的——unpark 只入队，抢占请求走 `unpark_preempt`。
+
+**改法**
+注解改成 `TA_REQUIRES(thread->get_pi_lock())`：「进来时持有、出去时仍持有」，与实现和多数派
+调用方一致。删掉两处 `unguard()`，Guard 在作用域尾正常放锁。`UnparkList` 重载自己对每个线程
+`Guard` 一遍，不需要注解。
+
+**参照**
+Zircon `Scheduler::Unblock(Thread *) TA_REQ(thread_lock)`；`Thread::Resume()` 和 `Thread::Kill()`
+都在持 `thread_lock` 的 Guard 作用域里调它，作用域结束放锁。
+
+**验证**
+- 全量构建通过；clang-format 已跑；clang-tidy 对 `thread.cpp` 改动行无新告警；`scheduler.hpp`
+  只暂存了本条的 hunk。
+- 15 个 TU：178 → **174**。消失的是 `thread.cpp:201/203` 的「acquiring m_pi_lock already held」、
+  `thread.cpp:272` 的「not held on every path」（就是那两处 unguard）、`scheduler.cpp:205` 的
+  「expecting thread->m_pi_lock held at end」。`wait_queue.cpp:19` 的「still held at end」变成
+  `:18` 的「calling unpark_thread requires holding」——`WaiterState::unsleep` 自己还没标
+  `TA_REQUIRES`，是待修 4.4。
+- QEMU：两个镜像停的位置与上一条相同。kill 路径未被走到，**泄漏修复未实测**。
+
+**故意没做**
+- `WaiterState::sleep/unsleep`、`park_thread_common` 的 `TA_REQUIRES` 传播（4.4）下一条。

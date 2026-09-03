@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -29,19 +29,9 @@
 
 见 changes。187 → 180。
 
-### 3.2 `Scheduler::unpark_thread(Thread *)` — `TA_ACQUIRE(thread->get_pi_lock())`，实现既不拿也不放
+### 3.2 `Scheduler::unpark_thread(Thread *)` 契约 / `suspend_or_kill` 锁泄漏 — 已修
 
-`scheduler.cpp:187-203` 里没有任何对 pi 锁的操作，只调 `do_unpark_thread`。调用方现状：
-
-- `thread.cpp:201/203`（`resume`）在 `Guard{get_pi_lock()}` 作用域内调 → 分析器报「重复获取」；
-- `thread.cpp:245`（`suspend_or_kill`，Suspend + Kill 分支）先 `thread_guard.unguard()` 再调，
-  即认为 unpark 会替它放锁——**而它不放**，这条路径上 pi 锁永远不会释放；
-- `wait_queue.cpp:19`（`WaiterState::unsleep`）、`wait_queue.cpp:281`（`handle_timeout`，
-  之后手动 `pi_lock.release()`）都按「调用方持有、调用方放」用。
-
-三种用法里两种半是「调用方持锁并自己放」。定为 `TA_REQUIRES(thread->get_pi_lock())`
-（Zircon `Scheduler::Unblock` 也是要求 thread_lock 已持有），并删掉 `thread.cpp:245` 的
-`unguard()`。列表重载 `unpark_thread(UnparkList)` 自己 `Guard` 每个线程的 pi 锁，不需要注解。
+178 → 174，见 changes。
 
 ### 3.3 `do_unpark_thread` / `process_migrating_threads` — 标 `TA_ACQUIRE`，函数体内是完整的 Guard 作用域
 

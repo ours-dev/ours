@@ -240,8 +240,12 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             break;
         }
         case State::Suspend: {
+            // |thread_guard| stays armed: unpark_thread() requires the PI lock
+            // and does not release it (see its declaration). The unguard()
+            // that used to precede this call left the lock held forever on
+            // this path -- the next acquire of it from this CPU would trip
+            // SpinLock::acquire()'s !is_held() assertion, from anywhere.
             if (op == SuspendOrKillOp::Kill) {
-                thread_guard.unguard();
                 Scheduler::unpark_thread(this);
             }
             break;
@@ -260,7 +264,8 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             break;
         }
         case State::Sleeping: {
-            thread_guard.unguard();
+            // Same as the Suspend case: unsleep() ends in unpark_thread(),
+            // which leaves the PI lock to us.
             m_waiter_state.unsleep(this, Status());
             break;
         }
