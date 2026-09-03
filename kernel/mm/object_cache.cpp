@@ -556,8 +556,7 @@ auto MemCache::compute_layout(usize size, Option option) -> Status {
 }
 
 auto MemCache::init(char const *name, usize size, usize align, Option option) -> Status {
-    auto status = compute_layout(size, option);
-    if (Status::Ok != status) {
+    if (auto const status = compute_layout(size, option); Status::Ok != status) {
         return status;
     }
 
@@ -582,13 +581,11 @@ auto MemCache::init(char const *name, usize size, usize align, Option option) ->
     //
     // CpuCache has no matching dependency: CpuLocal keeps its own arena
     // precisely so that the slab can be built on top of it.
-    status = CpuCache::on_mem_cache_init(*this);
-    if (Status::Ok != status) {
+    if (auto const status = CpuCache::on_mem_cache_init(*this); Status::Ok != status) {
         return status;
     }
 
-    status = NodeCache::on_mem_cache_init(*this);
-    if (Status::Ok != status) {
+    if (auto const status = NodeCache::on_mem_cache_init(*this); Status::Ok != status) {
         return status;
     }
 
