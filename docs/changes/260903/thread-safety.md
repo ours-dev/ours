@@ -176,3 +176,40 @@ Zircon `Scheduler::RescheduleCommon()`：`__TA_REQUIRES(thread_lock)`，内部�
 - `reschedule_common` 尾部 `guard.unguard()` + `switch_context()` 仍报一次「releasing rqlock not
   held」：`unguard()` 对分析器是释放，`switch_context` 又标 `TA_RELEASE(get_lock())`，二者重复。
   这是上下文切换交接（待修清单 3.4）的一部分，下一条处理。
+
+---
+
+## `Timer::trylock_or_cancel` 标 `TA_TRY_ACQUIRE(false, lock)`（2026-09-03）
+
+**文件**
+- `kernel/include/ours/time/timer.hpp` — 声明加 `TA_TRY_ACQUIRE(false, lock)`
+
+**症状**
+潜伏。`WaitQueue::handle_timeout`（`wait_queue.cpp:271-282`）
+`if (timer->trylock_or_cancel(pi_lock)) return;` 之后的 `pi_lock.release()` 被报「releasing lock
+that was not held」，`timer.cpp:102` 被报「lock is not held on every path」。
+
+**原因**
+`try_acquire_capability` 的第一个参数是「表示拿到了锁的返回值」，默认习惯是 `true`。这个函数
+是 Zircon `Timer::TrylockOrCancel` 的形状：返回 **false** 表示锁已到手、**true** 表示 timer 正在
+被 cancel、放弃。分析器不知道这个反转，把 `if (...) return;` 当成成功分支，于是 fall-through 路径
+上的 `release()` 变成释放没拿到的锁。它自己的函数体也一样：`return false` 那条路径持锁、
+`return true` 不持，不标就是「不是每条路径都持锁」。
+
+**改法**
+一行注解 `TA_TRY_ACQUIRE(false, lock)`，成功值写 `false`。注释里把「为什么是 false」写明，因为它
+和所有 `try_*` 的直觉相反，下一个读的人一定会想把它改成 `true`。
+
+**参照**
+Zircon `Timer::TrylockOrCancel(MonitoredSpinLock *lock) TA_TRY_ACQ(false, lock)`。
+
+**验证**
+- 全量构建通过（中途一次失败是另一个会话新加的 `rr.cpp` 访问私有成员，他们随即修了）；
+  clang-format 已跑；clang-tidy 对 `timer.cpp` 在改动行无新告警。
+- 15 个 TU：180 → **178**，消失的正是上面两条。
+- QEMU：这次两个镜像停的位置都变了——`kernel.dev.dbg_1.obi` 走到 562 行停在 canary magic 断言，
+  `kernel.dev.obi` 停在 `SpinLock::assert_held` 断言——因为调度器那边同一时段合入了新的
+  discipline（`rr.cpp`）。两处都不在本改动可能影响的范围内：注解不改代码生成。
+
+**故意没做**
+无。

@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -77,11 +77,9 @@
 应该是无锁的原子 `fetch_or`/`fetch_and`（Zircon `mp.idle_cpus` 就是这么改的），注解删掉。
 `CpuMask` 目前是否提供原子位操作要看 `ustl`，没有就补一个。
 
-### 3.6 `Timer::trylock_or_cancel` 缺 `TA_TRY_ACQUIRE(false, lock)`
+### 3.6 `Timer::trylock_or_cancel` — 已修
 
-`timer.cpp:94-102`：返回 `false` 表示锁**已拿到**，`true` 表示放弃。分析器不知道，所以
-`wait_queue.cpp:281` 的 `pi_lock.release()` 报「释放未持有」，`timer.cpp:102` 报「不是每条
-路径都持锁」。标 `TA_TRY_ACQUIRE(false, lock)`（成功值是 false，和常规相反，注释要写明）。
+180 → 178，见 changes。
 
 ### 3.7 遗留拼法 `TA_REQUIRE` / `TA_GUARD`
 

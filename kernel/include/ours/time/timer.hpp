@@ -216,7 +216,13 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     /// it is taken (returns false, lock held) or until cancel() has marked
     /// this timer (returns true, lock not held -- the handler should return
     /// at once, because the thread that owns |lock| is waiting for it to).
-    auto trylock_or_cancel(sync::SpinLock &lock) -> bool;
+    ///
+    /// TA_TRY_ACQUIRE's first argument is the return value that means
+    /// "acquired". Here that is false -- the inverse of a try_acquire() -- so
+    /// the annotation has to say so, or the analysis reads the caller's
+    /// `if (trylock_or_cancel(lock)) return;` as the success branch and
+    /// reports the release that follows as releasing a lock never taken.
+    TA_TRY_ACQUIRE(false, lock) auto trylock_or_cancel(sync::SpinLock &lock) -> bool;
 
     FORCE_INLINE auto on_expired() -> HandlerResult {
         DEBUG_ASSERT(m_on_expired);
