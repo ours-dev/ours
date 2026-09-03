@@ -99,13 +99,20 @@ namespace {
 } // namespace
 
 auto Scheduler::trampoline_handoff() -> void {
-    arch::local_irq_enable();
-
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
-    self.finish_switch_context();
 
+    // Release the two locks handed across the switch -- the previous thread's
+    // PI lock (finish_switch_context) and this thread's own, taken by whoever
+    // unparked it -- *before* interrupts come back on. With interrupts enabled
+    // first, a tick arriving in the gap runs Scheduler::tick_thread() against
+    // this thread, which takes its PI lock, finds it already held by this CPU
+    // and dies on `!is_held()`. That was the first tick of the boot. Zircon's
+    // thread trampoline does the same: LockHandoff, then arch_enable_ints().
+    self.finish_switch_context();
     self.m_runtime.curr_thread->get_pi_lock().release();
+
+    arch::local_irq_enable();
 }
 
 auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNum target_cpu)

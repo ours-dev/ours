@@ -724,3 +724,42 @@ guard 改成 `lockdep::IrqSaveAndPreemptDisable`。Zircon `Thread::Current::Slee
   它们进 `reschedule_common()` 时会撞同一条断言。`reschedule()` 还有一层
   `is_preemptible()` 门（要求中断开着），在 guard 关中断之后永远进不去——那是同一族问题，
   等启动走到那里逐条处理，先不批量改。
+
+---
+
+## 13. `trampoline_handoff()` 先开中断、后放锁，第一个 tick 撞上还没放的 pi 锁（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `trampoline_handoff()` 里 `local_irq_enable()` 挪到两把锁释放之后。
+
+**症状**
+
+第 12 条之后 dbg 静默；gdbstub 追到的是：
+
+```
+Assertion failed on !is_held()
+SpinLock::acquire ← ScopedGuard{pi, rq} ← Scheduler::tick_thread ← TickSched::on_tick
+← TickDevice::handle_periodic_event
+```
+
+`tick_thread()` 去拿当前线程（刚被切上来的 laborer）的 pi 锁，而这把锁本 CPU 已经持有。
+
+**原因**
+
+切换协议把两把 pi 锁跨切换传给新线程：前一个线程的（`finish_switch_context()` 释放）和
+新线程自己的（唤醒它的人拿的，`trampoline_handoff()` 释放）。旧代码的顺序是
+`local_irq_enable()` → `finish_switch_context()` → `release()`：中断一开，tick 就可能在
+两次释放之前进来，`tick_thread()` 对同一个线程再取 pi 锁，`!is_held()` 断言。
+在 lockdep `Guard` 不关中断的年代这里的中断本来就是开的，问题被别的东西盖住了。
+
+**改法**
+
+先放两把锁，再 `local_irq_enable()`。Zircon `thread_trampoline`/`Scheduler::TrampolineHandoff`
+同样是 LockHandoff 在前、`arch_enable_ints()` 在后。
+
+**验证**
+
+- 构建通过，`clang-tidy` 无新告警。
+- dbg：`!is_held()` 断言消失；启动仍在 `x86_bring_aps()` 的 10 ms `sleep_for()` 之后静默——
+  `bring_aps` 只睡一次就该继续，所以是唤醒链（tick → 定时器回调 → `unsleep` → `unpark` →
+  切回 laborer）里还有问题，gdbstub 正在追（下一条）。
