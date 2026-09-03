@@ -5,12 +5,27 @@
 
 #include <gktl/canary.hpp>
 #include <ours/status.hpp>
+#include <ours/sync/seqlock.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/clock_type.hpp>
 #include <ours/time/types.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours::time {
+/// A clock is an affine map from a ClockSource's counter to nanoseconds,
+/// pinned at one point -- the anchor -- so that switching sources does not
+/// make time jump.
+///
+/// now() is a pure function of the counter: it reads the anchor, reads the
+/// counter, scales the difference, and writes nothing. That is Zircon's
+/// `current_mono_time()` shape rather than Linux's timekeeper. Linux
+/// accumulates `cycle_last`/`xtime_nsec` on every tick, which keeps the
+/// cycle delta small enough for a 32-bit `mult` and a 64-bit product; the
+/// price is that reading the clock is coupled to a periodic writer, and the
+/// first draft of this class had exactly that coupling in the worst form --
+/// now() itself did the accumulation, so two concurrent readers tore the
+/// state. Reading through a pure map instead means the only writer is a
+/// source switch, and the delta can grow without bound because
+/// ClockSource::ticks_to_time() scales through a 96-bit intermediate.
 class Clock {
     using Self = Clock;
 
@@ -19,33 +34,53 @@ class Clock {
 
     Clock();
 
-    auto now() -> TimePoint {
-        update_time();
-        return m_time_base + m_time_shift;
-    }
+    /// Zero until a source has been installed: nothing has started counting,
+    /// so nothing has elapsed. Early boot reads the clock before time::init()
+    /// (page ageing, the scheduler clock) and a zero there is a delta of zero,
+    /// which every such caller already copes with.
+    [[nodiscard]]
+    auto now() const -> TimePoint;
 
     /// The clock source's raw counter, with none of the scaling now()
     /// applies. Zero before a source has been registered, which is the
     /// only sensible answer when there is nothing to read.
-    auto ticks() -> Ticks;
+    [[nodiscard]]
+    auto ticks() const -> Ticks;
 
+    /// Installs |source|, keeping now() continuous across the switch: the
+    /// time under the old source at the moment of the switch becomes the
+    /// anchor time under the new one.
     auto change_source(ClockSource *source) -> Status;
 
-    /// Forcely override the original clock source, recommended to
-    /// use change_source() instead of it;
+    /// Same as change_source() but skips the "already installed" shortcut;
+    /// the anchor is re-pinned even when |source| is the current one.
     auto override_source(ClockSource *source) -> Status;
 
+    [[nodiscard]]
+    auto source() const -> ClockSource *;
+
   private:
-    auto update_time() -> void;
+    /// The point the affine map is pinned at: reading |ticks| on |source|
+    /// meant |time| had elapsed since the epoch.
+    ///
+    /// Three words, so it is snapshotted as a unit under the seqlock rather
+    /// than read field by field; a reader that saw a new |source| with the
+    /// old |ticks| would compute nonsense.
+    struct Anchor {
+        ClockSource *source;
+        Ticks ticks;
+        Duration time;
+    };
+
+    static auto time_of(Anchor const &anchor) -> Duration;
 
     gktl::Canary m_canary;
-    u32 numerator_;
-    u32 denominator_;
-    usize m_cycle_last;
-    Duration m_time_shift;
-    TimePoint m_time_base;
-    ClockSource *m_clocksource;
-    ustl::sync::AtomicU8 m_seq;
+
+    /// A source switch is the only writer. Readers never block on it, which
+    /// matters because now() is called from interrupt handlers and from
+    /// under the scheduler's locks.
+    sync::SeqLock m_seqlock;
+    Anchor m_anchor;
 };
 
 class SystemClock {
@@ -75,6 +110,11 @@ class SteadyClock {
     static auto now() -> TimePoint;
 
     static auto ticks() -> Ticks;
+
+    /// Called by ClockSource::enroll() when the best available source
+    /// changes. This is the clock everything in the kernel reads, so it is
+    /// the one that must never be left without a source.
+    static auto notify(ClockSource *source) -> Status;
 
   private:
     static inline Clock CLOCK;

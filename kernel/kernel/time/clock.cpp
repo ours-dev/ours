@@ -4,82 +4,77 @@
 namespace ours::time {
 /// A Clock is born without a source, and says so.
 ///
-/// This used to install `ClockSource::Default::get()` here, which dereferences
-/// `ClockSource::Default::CLKEVT` -- a `static inline ClockSource *` that only
-/// `ClockSource::Default::init()` ever fills, and that runs from `time::init()`.
-/// Both Clocks in <ours/time/clock.hpp> are `static inline`, so their
-/// constructors run inside `ccrt::init_global_static_objects()`, the very first
-/// thing `start_kernel()` does and many init levels ahead of `time::init()`:
-/// the source was always null there, and `m_cycle_last = source->read()` was a
-/// call through a null vtable. It went unnoticed because low addresses stay
-/// mapped -- `x86_init_mmu_early()` aliases them onto the physmap -- so the
-/// read returned garbage instead of faulting.
+/// Both Clocks in <ours/time/clock.hpp> are `static inline`, so this runs
+/// inside `ccrt::init_global_static_objects()`, the very first thing
+/// `start_kernel()` does and many init levels ahead of `time::init()` -- no
+/// source can exist yet, and an earlier draft that installed
+/// `ClockSource::Default::get()` here was dereferencing a null pointer that
+/// the identity map turned into garbage instead of a fault. Starting empty
+/// costs nothing: now() and ticks() both answer zero until change_source()
+/// pins the first anchor.
+Clock::Clock() : m_canary(this), m_seqlock(), m_anchor{nullptr, 0, Duration::zero()} {}
+
+/// The affine map itself. Reading the counter outside the seqlock is fine:
+/// the snapshot is internally consistent, sources are never destroyed, and a
+/// counter read that lands after a concurrent switch only makes the delta
+/// under the *old* source a little larger, which is still the right answer
+/// for the snapshot that was taken.
 ///
-/// Nothing is lost by starting empty: `ticks()` already answers zero without a
-/// source, and `change_source()` routes the first real one through
-/// `override_source()`.
-Clock::Clock()
-    : m_canary(this)
-    ,
-    // Left at zero deliberately rather than at an identity 1/1 scaling: the
-    // tick-to-nanosecond ratio belongs to the clock source, and pretending
-    // ticks are nanoseconds until one arrives would be a wrong answer where
-    // update_time()'s assertion is a diagnosable one.
-    numerator_(0)
-    , denominator_(0)
-    , m_cycle_last(0)
-    , m_time_shift{}
-    , m_time_base{}
-    , m_clocksource(nullptr)
-    , m_seq(0) {}
+/// The unsigned subtraction is what makes a 64-bit counter that has wrapped
+/// still read correctly; a narrower counter would need a mask here and a
+/// periodic re-anchoring, which is why enroll() only takes 64-bit sources.
+auto Clock::time_of(Anchor const &anchor) -> Duration {
+    if (!anchor.source) {
+        return Duration::zero();
+    }
+
+    auto const delta_ticks = anchor.source->read() - anchor.ticks;
+    return anchor.time + anchor.source->ticks_to_time(delta_ticks);
+}
+
+auto Clock::now() const -> TimePoint {
+    m_canary.verify<Self>();
+
+    auto const anchor = m_seqlock.read([this] { return m_anchor; });
+    return TimePoint(time_of(anchor));
+}
+
+auto Clock::ticks() const -> Ticks {
+    m_canary.verify<Self>();
+
+    auto const source = m_seqlock.read([this] { return m_anchor.source; });
+    if (!source) {
+        return Ticks(0);
+    }
+    return source->read();
+}
+
+auto Clock::source() const -> ClockSource * {
+    return m_seqlock.read([this] { return m_anchor.source; });
+}
 
 auto Clock::change_source(ClockSource *source) -> Status {
     m_canary.verify<Self>();
 
-    if (!m_clocksource) {
-        return override_source(source);
-    } else if (source == m_clocksource) {
+    if (source == this->source()) {
         return Status::Ok;
     }
-    update_time();
-
     return override_source(source);
 }
 
 auto Clock::override_source(ClockSource *source) -> Status {
     DEBUG_ASSERT(source);
-
     m_canary.verify<Self>();
-    if (source == m_clocksource) {
-        return Status::Ok;
-    }
 
-    m_clocksource = source;
-    m_cycle_last = source->read();
+    // Both reads happen inside the write so no second switch can slip in
+    // between "what time is it under the old source" and "pin that time to
+    // the new source's counter". Readers that arrive meanwhile spin on the
+    // odd sequence for the few instructions this takes.
+    m_seqlock.write([&] {
+        auto const time_now = time_of(m_anchor);
+        m_anchor = Anchor{source, source->read(), time_now};
+    });
     return Status::Ok;
-}
-
-auto Clock::update_time() -> void {
-    m_canary.verify<Self>();
-
-    // Both preconditions belong to whoever installed the source, and both are
-    // silent-wrong rather than loud when they do not hold: no source is a call
-    // through a null vtable, and a zero denominator is a #DE several frames
-    // away from whatever forgot to set it.
-    DEBUG_ASSERT(m_clocksource, "Reading a clock that has no source yet");
-    DEBUG_ASSERT(denominator_ != 0, "Clock has no tick-to-nanosecond scaling");
-
-    auto const cycles_now = m_clocksource->read();
-    auto const cycles_delta = cycles_now - m_cycle_last;
-
-    // Converts ticks to a time duration.
-    auto const delta_time = cycles_delta * numerator_ / denominator_;
-    m_time_shift += Duration(delta_time);
-    m_cycle_last = cycles_now;
-}
-
-auto Clock::ticks() -> Ticks {
-    return m_clocksource ? m_clocksource->read() : Ticks(0);
 }
 
 auto SteadyClock::ticks() -> Ticks {
@@ -89,6 +84,25 @@ auto SteadyClock::ticks() -> Ticks {
 auto SteadyClock::now() -> TimePoint {
     auto const base_now = CLOCK.now();
     return TimePoint(base_now.time_since_epoch());
+}
+
+auto SteadyClock::notify(ClockSource *source) -> Status {
+    return CLOCK.change_source(source);
+}
+
+/// The wall clock: the same counter as the steady clock, shifted by whatever
+/// REAL_BASE says the epoch was.
+///
+/// REAL_BASE is zero and nothing sets it, because nothing reads an RTC yet,
+/// so today this answers exactly what SteadyClock does. That is the right
+/// degenerate answer -- "the system booted at the epoch" -- rather than a
+/// declaration with no definition, which is what these two were.
+auto SystemClock::now() -> TimePoint {
+    return TimePoint(REAL_BASE.time_since_epoch() + CLOCK.now().time_since_epoch());
+}
+
+auto SystemClock::ticks() -> Ticks {
+    return CLOCK.ticks();
 }
 
 auto SystemClock::notify(ClockSource *source) -> Status {

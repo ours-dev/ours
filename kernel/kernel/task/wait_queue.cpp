@@ -71,7 +71,7 @@ auto WaitQueue::park_thread_postamble(Thread *thread, time::Deadline deadline) -
     Timer timer;
     if (use_timer) {
         timer.activate(deadline, [thread](Timer *timer) {
-            Self::handle_timeout(thread);
+            Self::handle_timeout(timer, thread);
             return Timer::HandlerResult::Handled;
         });
     }
@@ -254,12 +254,30 @@ auto WaitQueue::lock_for_notify_all(Status status) -> ustl::Option<UnparkThreads
 template auto WaitQueue::lock_for_notify_one(Status) -> ustl::Option<Thread::UnparkList>;
 template auto WaitQueue::lock_for_notify_all(Status) -> ustl::Option<Thread::UnparkList>;
 
-auto WaitQueue::handle_timeout(Thread *thread) -> void {
-    Guard thread_guard{thread->get_pi_lock()};
+/// Zircon's WaitQueue::TimeoutHandler().
+///
+/// The thread that armed this timer parks with its PI lock held
+/// (Event::wait_etc() takes it around park_thread()) and, once woken for
+/// any other reason, calls Timer::cancel() still holding it. cancel() then
+/// spins until this handler has returned. If this handler simply took the
+/// PI lock it would spin on the parked thread, which spins on us: deadlock.
+/// So the lock is taken with trylock_or_cancel(), which gives up the moment
+/// cancel() has marked the timer -- there is nothing left to time out, the
+/// thread is already awake.
+///
+/// The lock is released by hand because lockdep::Guard cannot adopt a lock
+/// that was acquired by a try. Interrupts are off already (timer handlers
+/// run from the tick), which is the state Guard without IrqSave assumes.
+auto WaitQueue::handle_timeout(time::Timer *timer, Thread *thread) -> void {
+    auto &pi_lock = thread->get_pi_lock();
+    if (timer->trylock_or_cancel(pi_lock)) {
+        return;
+    }
 
     auto const wq = thread->waiter_state().wait_queue();
     DEBUG_ASSERT(wq);
 
     wq->unpark_thread(thread, Status::TimeOut);
+    pi_lock.release();
 }
 } // namespace ours::task

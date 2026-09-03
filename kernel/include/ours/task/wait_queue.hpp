@@ -131,12 +131,10 @@ class WaitQueue {
     /// Nothing is returned for an empty queue, so a caller can tell "nobody
     /// was waiting" from "somebody was" without inspecting the list.
     template <typename UnparkThreads> // Thread::UnparkList
-    TA_REQUIRES(get_lock())
-    auto lock_for_notify_one(Status) -> ustl::Option<UnparkThreads>;
+    TA_REQUIRES(get_lock()) auto lock_for_notify_one(Status) -> ustl::Option<UnparkThreads>;
 
     template <typename UnparkThreads> // Thread::UnparkList
-    TA_REQUIRES(get_lock())
-    auto lock_for_notify_all(Status) -> ustl::Option<UnparkThreads>;
+    TA_REQUIRES(get_lock()) auto lock_for_notify_all(Status) -> ustl::Option<UnparkThreads>;
 
     auto notify_one(Status) -> void;
 
@@ -205,7 +203,7 @@ class WaitQueue {
     auto wake_dequeued_thread(Thread *thread, Status status) -> void;
 
     /// Handler for time counted tasks.
-    static auto handle_timeout(Thread *thread) -> void;
+    static auto handle_timeout(time::Timer *timer, Thread *thread) -> void;
 
     gktl::Canary m_canary;
     Type const m_type;

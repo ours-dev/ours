@@ -20,6 +20,8 @@
 #include <ustl/util/enum_bits.hpp>
 #include <ustl/util/type_list.hpp>
 
+#include <concepts>
+
 namespace ours::time {
 class ClockEventDevice {
     using Self = ClockEventDevice;
@@ -45,11 +47,31 @@ class ClockEventDevice {
 
     struct Vtable;
 
-    static auto entroll(Self &self) -> Status;
+    /// How good a tick source this device is, relative to the others on the
+    /// same CPU; TickDevice::check_new_device() picks the highest. The scale
+    /// is Linux's clock_event_device::rating, and so are the values the
+    /// drivers use (PIT 110, local APIC 100, HPET 50 there). Only the order
+    /// matters, and only among devices that may compete for the same CPU:
+    /// a per-CPU device wins over a global one regardless of rating, see
+    /// TickDevice::check_preferred().
+    using Rating = u32;
 
-    static auto entroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> Status;
+    /// Registers |self| as a device whose counter ticks at |freq| Hz and can
+    /// be programmed between |min_delta| and |max_delta| ticks ahead, then
+    /// offers it to this CPU's TickDevice.
+    ///
+    /// There is no defaulted form. An earlier one filled in (HZ, 128, HZ),
+    /// which failed its own min < max assertion and, worse, told the device
+    /// that one tick was 10 ms -- every delta it was ever asked for came out
+    /// a hundred thousand times too long. Linux's
+    /// clockevents_config_and_register() makes all three mandatory too.
+    static auto enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> Status;
 
-    ClockEventDevice(char const *name, Vtable const *, Feature, CpuMask const *);
+    /// |cpumask| is the set of CPUs this device can interrupt; a null mask
+    /// means "any" and is replaced with cpu_possible_mask() at enrollment.
+    /// A per-CPU device (the local APIC timer) must pass a mask holding
+    /// exactly its own CPU -- that is what marks it per-CPU to TickDevice.
+    ClockEventDevice(char const *name, Vtable const *, Feature, Rating, CpuMask const *);
 
     ~ClockEventDevice() = default;
 
@@ -82,6 +104,31 @@ class ClockEventDevice {
         return *m_cpumask;
     }
 
+    /// For devices whose mask is only known once they are on their CPU.
+    FORCE_INLINE auto set_cpumask(CpuMask const *cpumask) -> void {
+        m_cpumask = cpumask;
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE auto rating() const -> Rating {
+        return m_rating;
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE auto name() const -> char const * {
+        return m_name;
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE auto has_feature(Feature feature) const -> bool {
+        return !!(m_feature & feature);
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE auto is_mode_detached() const -> bool {
+        return m_mode == Mode::Detached;
+    }
+
     FORCE_INLINE auto is_mode_oneshot() const -> bool {
         return m_mode == Mode::Oneshot;
     }
@@ -106,6 +153,10 @@ class ClockEventDevice {
 
   protected:
     friend class TickDevice;
+
+    /// Re-arms the device as soon as it is willing to be armed, after
+    /// program_event() was refused. See the definition for why.
+    auto program_min_delta() -> Status;
 
     /// Wrappers to methods required in Vtable.
     auto set_next_event_tick(Ticks ticks) -> Status;
@@ -134,6 +185,7 @@ class ClockEventDevice {
     char const *m_name;
     Mode m_mode;
     Feature m_feature;
+    Rating m_rating;
     VIrqNum m_irqnum;
     TimePoint<> m_next_event;
 
@@ -192,6 +244,149 @@ struct ClockEventDevice::Vtable {
     auto (*shutdown)(ClockEventDevice *) -> void;
     auto (*broadcast)(ClockEventDevice *, CpuMask const &) -> void;
 };
+
+namespace priv {
+    /// Assembles a Vtable for |Driver| by asking, slot by slot, whether the
+    /// driver defines the matching method.
+    ///
+    /// This replaces a table written out by hand in every driver. That was
+    /// wrong in three ways beyond being tedious. Every driver had to list all
+    /// nine slots including the `nullptr`s, so the file said "this device
+    /// does not support suspend" nine times over instead of just not
+    /// mentioning it. Adding a slot to Vtable did not break any driver --
+    /// designated initialisers value-initialise what is not listed -- it
+    /// silently left the new slot null in all of them, which is worse than a
+    /// compile error. And the pairing of slot name to method name was written
+    /// out by hand while several slots share the signature
+    /// `(ClockEventDevice *) -> Status`, so putting resume() in the suspend
+    /// slot type-checked.
+    ///
+    /// The detection is in two steps on purpose. First, does a member of that
+    /// name exist at all; then, a static_assert that it has the right
+    /// signature. Testing callability alone would silently drop a method
+    /// whose return type had drifted, which is the same silent-null failure
+    /// this is meant to remove.
+    ///
+    /// Two things a driver has to respect: the methods must be public, since
+    /// this is not a friend of the driver, and none of these names may be
+    /// overloaded, since `&Driver::name` has to name exactly one function.
+    template <typename Driver, auto Member>
+    consteval auto clkevt_vtable() -> ClockEventDevice::Vtable {
+        using Vtable = ClockEventDevice::Vtable;
+        using Packer = typename Vtable::template Packer<Member>;
+        using Device = ClockEventDevice;
+
+        static_assert(
+            requires { &Driver::set_next_event_tick; } ||
+                requires { &Driver::set_next_event_time; },
+            "a clock event device must define set_next_event_tick or "
+            "set_next_event_time; without one it can never be armed");
+
+        Vtable vtable{};
+
+        if constexpr (requires { &Driver::set_next_event_tick; }) {
+            static_assert(
+                requires(Driver *driver, Ticks ticks) {
+                    { driver->set_next_event_tick(ticks) } -> std::same_as<Status>;
+                }, "set_next_event_tick must be `auto set_next_event_tick(Ticks) -> Status`");
+            vtable.set_next_event_tick = Packer::template pack<&Driver::set_next_event_tick>();
+        }
+
+        if constexpr (requires { &Driver::set_next_event_time; }) {
+            static_assert(
+                requires(Driver *driver, TimePoint<> deadline) {
+                    { driver->set_next_event_time(deadline) } -> std::same_as<Status>;
+                }, "set_next_event_time must be `auto set_next_event_time(TimePoint<>) -> Status`");
+            vtable.set_next_event_time = Packer::template pack<&Driver::set_next_event_time>();
+        }
+
+        if constexpr (requires { &Driver::set_mode_periodic; }) {
+            static_assert(
+                requires(Driver *driver) {
+                    { driver->set_mode_periodic() } -> std::same_as<Status>;
+                }, "set_mode_periodic must be `auto set_mode_periodic() -> Status`");
+            vtable.set_mode_periodic = Packer::template pack<&Driver::set_mode_periodic>();
+        }
+
+        if constexpr (requires { &Driver::set_mode_oneshot; }) {
+            static_assert(
+                requires(Driver *driver) {
+                    { driver->set_mode_oneshot() } -> std::same_as<Status>;
+                }, "set_mode_oneshot must be `auto set_mode_oneshot() -> Status`");
+            vtable.set_mode_oneshot = Packer::template pack<&Driver::set_mode_oneshot>();
+        }
+
+        if constexpr (requires { &Driver::stop_oneshot; }) {
+            static_assert(
+                requires(Driver *driver) {
+                    { driver->stop_oneshot() } -> std::same_as<Status>;
+                }, "stop_oneshot must be `auto stop_oneshot() -> Status`");
+            vtable.stop_oneshot = Packer::template pack<&Driver::stop_oneshot>();
+        }
+
+        if constexpr (requires { &Driver::resume; }) {
+            static_assert(
+                requires(Driver *driver) {
+                    { driver->resume() } -> std::same_as<Status>;
+                }, "resume must be `auto resume() -> Status`");
+            vtable.resume = Packer::template pack<&Driver::resume>();
+        }
+
+        if constexpr (requires { &Driver::suspend; }) {
+            static_assert(
+                requires(Driver *driver) {
+                    { driver->suspend() } -> std::same_as<Status>;
+                }, "suspend must be `auto suspend() -> Status`");
+            vtable.suspend = Packer::template pack<&Driver::suspend>();
+        }
+
+        if constexpr (requires { &Driver::shutdown; }) {
+            static_assert(
+                requires(Driver *driver) {
+                    { driver->shutdown() } -> std::same_as<void>;
+                }, "shutdown must be `auto shutdown() -> void`");
+            vtable.shutdown = Packer::template pack<&Driver::shutdown>();
+        }
+
+        if constexpr (requires { &Driver::broadcast; }) {
+            static_assert(
+                requires(Driver *driver, CpuMask const &targets) {
+                    { driver->broadcast(targets) } -> std::same_as<void>;
+                }, "broadcast must be `auto broadcast(CpuMask const &) -> void`");
+            vtable.broadcast = Packer::template pack<&Driver::broadcast>();
+        }
+
+        static_cast<void>(sizeof(Device));
+        return vtable;
+    }
+} // namespace priv
+
+/// The operations table for |Driver|, assembled from whichever of the
+/// operations that driver actually defines.
+///
+/// |Member| is the pointer to Driver's ClockEventDevice member, which is how
+/// a call gets from the device back to its driver. A driver names itself and
+/// that member once, and writes no table:
+///
+///     class HpetChannel {
+///         ClockEventDevice m_clkevt;
+///       public:
+///         HpetChannel()
+///             : m_clkevt("HPET", &CLKEVT_VTABLE_OF<Self, &Self::m_clkevt>, ...) {}
+///
+///         auto set_next_event_tick(Ticks) -> Status;
+///         auto set_mode_periodic() -> Status;
+///         auto shutdown() -> void;
+///         // Nothing else: an operation the driver does not define is an
+///         // operation it does not support.
+///     };
+///
+/// It lives out here rather than as a member of ClockEventDevice because a
+/// static member could not be declared `constexpr` in-class -- Vtable is
+/// still incomplete there -- and without that the table would be correct at
+/// run time but not inspectable at compile time.
+template <typename Driver, auto Member>
+inline constexpr ClockEventDevice::Vtable CLKEVT_VTABLE_OF = priv::clkevt_vtable<Driver, Member>();
 
 } // namespace ours::time
 

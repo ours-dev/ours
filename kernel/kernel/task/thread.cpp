@@ -306,9 +306,12 @@ auto Thread::detach() -> Status {
         return Status::Ok;
     }
 
-    // The thread has already dead.
+    // The thread has already dead. join() reaps it without ever parking --
+    // it only waits when the state is not Dead -- so the deadline below is
+    // never consulted; infinite is simply the honest value for "no wait was
+    // asked for".
     m_flags &= ~Flags::Detached;
-    return join(nullptr, time::Deadline());
+    return join(nullptr, time::Deadline::infinite());
 }
 
 auto Thread::set_cpu_affinity_hard(CpuMask const &affinity_mask) -> void {
@@ -480,7 +483,7 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
 
 auto Thread::Current::sleep_for(Duration delta, Interruptible interruptible) -> Status {
     auto const now = time::SteadyClock::now();
-    auto const deadline = time::Deadline(now.time_since_epoch() + delta);
+    auto const deadline = time::Deadline::at(now + delta);
     return Thread::Current::sleep_etc(deadline, interruptible, now);
 }
 

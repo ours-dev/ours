@@ -28,12 +28,13 @@ auto to_string(ClockEventDevice::Mode state) -> char const * {
 }
 
 ClockEventDevice::ClockEventDevice(char const *name, Vtable const *vtable, Feature feature,
-                                   CpuMask const *cpumask)
+                                   Rating rating, CpuMask const *cpumask)
     : m_canary(this)
     , m_vtable(vtable)
     , m_name(name)
     , m_mode(Mode::Detached)
     , m_feature(feature)
+    , m_rating(rating)
     , m_irqnum(irq::INVALID_V_IRQ_NUM)
     , m_next_event()
     , m_scaler()
@@ -45,12 +46,35 @@ ClockEventDevice::ClockEventDevice(char const *name, Vtable const *vtable, Featu
     , m_event_handler()
     , m_enrolled_hook() {}
 
-auto ClockEventDevice::entroll(Self &self) -> Status {
-    return entroll(self, HZ, 128, HZ);
-}
-
-auto ClockEventDevice::entroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> Status {
+auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> Status {
     self.m_canary.verify<Self>();
+
+    // A device must be able to do what it advertises.
+    //
+    // This is also the one guard the generated vtable needs. VTABLE_OF binds
+    // slots by *name*, so a driver whose method is misspelled, private, or
+    // returning the wrong type does not fail to compile -- it gets a null
+    // slot, and the device then reports Unsupported at the first mode switch,
+    // several layers away from the mistake. Checking the features against the
+    // table at enrollment turns that back into one message naming the device.
+    if (!!(self.m_feature & Feature::Periodic) && !self.m_vtable->set_mode_periodic) {
+        log::error("ClockEventDevice {} claims Periodic but has no set_mode_periodic", self.m_name);
+        return Status::InvalidArguments;
+    }
+    if (!!(self.m_feature & Feature::Oneshot) && !self.m_vtable->set_mode_oneshot) {
+        log::error("ClockEventDevice {} claims Oneshot but has no set_mode_oneshot", self.m_name);
+        return Status::InvalidArguments;
+    }
+    if (!!(self.m_feature & Feature::TimePoint)) {
+        if (!self.m_vtable->set_next_event_time) {
+            log::error("ClockEventDevice {} claims TimePoint but has no set_next_event_time",
+                       self.m_name);
+            return Status::InvalidArguments;
+        }
+    } else if (!self.m_vtable->set_next_event_tick) {
+        log::error("ClockEventDevice {} can be armed by neither ticks nor time", self.m_name);
+        return Status::InvalidArguments;
+    }
 
     if (self.m_cpumask == nullptr || self.m_cpumask->none() ||
         self.m_cpumask->count() == CpuMask::BIT_COUNT) {
@@ -97,16 +121,63 @@ auto ClockEventDevice::program_event(TimePoint<> expiry) -> Status {
         return set_next_event_time(expiry);
     }
 
-    auto const now = TimePoint<>();
-    auto delta = expiry - now;
-    if (delta < Duration::zero()) {
-        return Status::InvalidArguments;
-    }
-    delta = std::clamp(delta, m_min_delta, m_max_delta);
-    auto const delta_ticks = time_to_ticks(delta);
+    // The device counts down from now, so the delta must be measured from
+    // now -- the real now, off the steady clock, not a default-constructed
+    // TimePoint (which is the epoch, and turned every delta into an absolute
+    // time that the clamp below then pinned at m_max_delta).
+    //
+    // A deadline already in the past is programmed at m_min_delta rather
+    // than rejected: the caller is the timer queue, which has no retry loop,
+    // and what it wants from a late deadline is an interrupt as soon as the
+    // hardware can deliver one. This is the `force` path of Linux's
+    // clockevents_program_event(); the clamp handles it because a negative
+    // delta is below m_min_delta.
+    auto const now = SteadyClock::now();
+    auto const delta = std::clamp(expiry - now, m_min_delta, m_max_delta);
 
-    // Delegate to the derived class to set the next event.
-    return set_next_event_tick(delta_ticks);
+    auto status = set_next_event_tick(time_to_ticks(delta));
+    if (Status::Ok == status) {
+        return status;
+    }
+
+    return program_min_delta();
+}
+
+/// Linux's clockevents_program_min_delta(): a device that refused a deadline
+/// because it was too close is asked again, a little further out each time.
+///
+/// A driver returns TimeOut when it cannot promise the interrupt it was just
+/// asked for -- the HPET does, because its comparator fires on equality and a
+/// comparator written late is missed rather than late. There is nobody above
+/// to retry: the timer queue programs and moves on, and the periodic tick
+/// asserts. So the retry lives here, and only failing every attempt is an
+/// error the caller sees.
+///
+/// The delta grows by one m_min_delta per attempt rather than doubling. What
+/// pushes an attempt over the edge is an interrupt or an SMI landing in the
+/// window, which is a fixed cost, not one that scales with the delta; adding
+/// a minimum is enough to clear it and keeps the tick as close to on time as
+/// the hardware allows.
+auto ClockEventDevice::program_min_delta() -> Status {
+    constexpr auto MAX_ATTEMPTS = 10;
+
+    auto delta = Duration::zero();
+    for (auto attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
+        delta += m_min_delta;
+        if (delta > m_max_delta) {
+            break;
+        }
+
+        // Re-read the clock every attempt: the previous one failed because
+        // time moved, so measuring from a stale now would fail the same way.
+        m_next_event = SteadyClock::now() + delta;
+        if (Status::Ok == set_next_event_tick(time_to_ticks(delta))) {
+            return Status::Ok;
+        }
+    }
+
+    log::error("ClockEventDevice {}: no deadline could be programmed", m_name);
+    return Status::TimeOut;
 }
 
 auto ClockEventDevice::switch_mode(Mode target_mode) -> Status {
@@ -118,8 +189,15 @@ auto ClockEventDevice::switch_mode(Mode target_mode) -> Status {
     switch (target_mode) {
         case Mode::Detached:
         case Mode::Shutdown: {
+            // A device without a shutdown slot is one with nothing to turn
+            // off -- Linux treats set_state_shutdown as optional for the same
+            // reason -- so the transition itself still succeeds. Failing it
+            // here would leave TickDevice unable to detach such a device.
             status = shutdown();
-            m_next_event = TimePoint<>::max();
+            if (status == Status::Unsupported) {
+                status = Status::Ok;
+            }
+            m_next_event = INFINITE_TIME;
             break;
         }
         case Mode::Periodic: {
