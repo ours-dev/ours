@@ -30,7 +30,13 @@ class MappingCoalescer {
         DEBUG_ASSERT(nr_pages_ == 0);
     }
 
+    /// Both are [[nodiscard]]: a dropped status here is invisible at run time
+    /// -- the batch is silently not mapped, and the mapping object is handed
+    /// back looking successful. That is exactly how it used to fail.
+    [[nodiscard]]
     auto append(PhysAddr phys) -> Status;
+
+    [[nodiscard]]
     auto commit() -> Status;
 
   private:
@@ -59,16 +65,26 @@ FORCE_INLINE auto MappingCoalescer<MaxNumPages>::commit() -> Status {
     }
 
     usize nr_mapped = 0;
-    auto status = mapping_->aspace()->arch_aspace().map_bulk(va_, pa_, nr_pages_, mmuf_,
-                                                             MapControl::TryLargePage, &nr_mapped);
+    auto const status = mapping_->aspace()->arch_aspace().map_bulk(
+        va_, pa_, nr_pages_, mmuf_, MapControl::TryLargePage, &nr_mapped);
     if (Status::Ok != status) {
         log::error("Failed to map {} pages at {}", nr_pages_, va_);
     }
 
+    // Drained either way, and before the early return: the destructor asserts
+    // the batch is empty, so a caller propagating the failure still has to be
+    // able to let this object go. `total_mapped_` takes whatever the arch
+    // layer managed, which on a partial failure is less than the batch.
     va_ += nr_pages_ * PAGE_SIZE;
     nr_pages_ = 0;
     total_mapped_ += nr_mapped;
-    return Status::Ok;
+
+    // The status the caller acts on. Returning Ok here regardless -- which is
+    // what this did -- left map_paged()/map_physical() reporting success for a
+    // mapping that was never installed, so the VMM handed out a VmMapping with
+    // no page tables behind it and the failure only ever showed up as a log
+    // line.
+    return status;
 }
 
 VmMapping::VmMapping(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
@@ -173,10 +189,15 @@ FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize 
                 return result.unwrap_err();
             }
 
-            coalescer.append(frame_to_phys(*result));
+            if (auto const status = coalescer.append(frame_to_phys(*result));
+                Status::Ok != status) {
+                return status;
+            }
         }
         // Commit those uncovered units in for loop above.
-        coalescer.commit();
+        if (auto const status = coalescer.commit(); Status::Ok != status) {
+            return status;
+        }
     }
 
     return Status::Ok;
@@ -199,10 +220,15 @@ FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, 
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
         MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, control);
         for (usize offset = 0; offset < region_size; offset += PAGE_SIZE) {
-            coalescer.append(phys_base + offset);
+            if (auto const appended = coalescer.append(phys_base + offset);
+                Status::Ok != appended) {
+                return appended;
+            }
         }
 
-        coalescer.commit();
+        if (auto const committed = coalescer.commit(); Status::Ok != committed) {
+            return committed;
+        }
     }
 
     return Status::Ok;
