@@ -83,6 +83,24 @@ inline auto cpu_possible_mask() -> CpuMask & {
     return Cpu::possible_mask();
 }
 
+/// The two constant masks, Linux's cpu_none_mask and cpu_all_mask.
+///
+/// They are returned by reference to a single static object because the
+/// callers that want them keep a pointer -- a ClockEventDevice records
+/// `CpuMask const *` -- and a per-call temporary would dangle. cpu_all_mask()
+/// is "every CPU the kernel was built for", the bitset's full capacity, and
+/// is deliberately wider than cpu_possible_mask(), which is what the
+/// firmware said is present on this machine.
+inline auto cpu_none_mask() -> CpuMask const & {
+    static constexpr CpuMask NONE{};
+    return NONE;
+}
+
+inline auto cpu_all_mask() -> CpuMask const & {
+    static constexpr CpuMask ALL = CpuMask{}.set();
+    return ALL;
+}
+
 } // namespace ours
 
 #endif // OURS_CPU_HPP
