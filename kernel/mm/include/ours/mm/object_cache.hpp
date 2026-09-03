@@ -122,8 +122,8 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     USTL_DECLARE_LIST_MEMBER(Self, List, m_managed_hook);
 
     static sync::Mutex CACHE_LOCK;
-    static List GLOBAL_CACHES TA_GUARD(CACHE_LOCK);
-    static NodeMask SLAB_NODES TA_GUARD(CACHE_LOCK);
+    static List GLOBAL_CACHES TA_GUARDED(CACHE_LOCK);
+    static NodeMask SLAB_NODES TA_GUARDED(CACHE_LOCK);
 };
 
 /// The typed shell over MemCache.

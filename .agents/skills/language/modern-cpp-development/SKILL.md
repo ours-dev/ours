@@ -113,7 +113,7 @@ This repo has three library tiers, not one flat "the STL":
 
 1. Guarded members are annotated `TA_GUARDED(lock)` at the point of declaration, never left implicit — e.g. `List g_global_caches TA_GUARDED(g_cache_lock);` (`kernel/mm/include/ours/mm/object-cache.hpp:119`). Functions that require a lock held on entry declare `TA_REQUIRES(lock())` (`kernel/include/ours/task/sched/scheduler.hpp`).
 
-1. Prefer the canonical spellings `TA_CAPABILITY`/`TA_GUARDED`/`TA_REQUIRES` (`system/public/ours/compiler.hpp:66-93`) for new code. `TA_CAP`/`TA_GUARD`/`TA_REQUIRE` are explicitly documented in that same file as "compatibility spellings used by the pre-refactor kernel headers" — both currently work, but don't propagate the short forms into new code.
+1. The only spellings are `TA_CAPABILITY`/`TA_GUARDED`/`TA_REQUIRES` (`system/public/ours/compiler.hpp`). The short forms `TA_CAP`/`TA_GUARD`/`TA_REQUIRE` were compatibility macros for pre-refactor headers; their last uses were converted and the macros deleted, so they no longer compile.
 
 1. Take locks through `lockdep::Guard`/`lockdep::ScopedGuard` (re-exported at `kernel/include/ours/lockdep.hpp:8-14`), not by calling `lock()`/`unlock()` directly. That's what feeds `system/lib/lockdep`'s cycle detection — a lock taken outside a Guard is invisible to lockdep.
 

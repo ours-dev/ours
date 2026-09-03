@@ -213,3 +213,35 @@ Zircon `Timer::TrylockOrCancel(MonitoredSpinLock *lock) TA_TRY_ACQ(false, lock)`
 
 **故意没做**
 无。
+
+---
+
+## 删掉 `TA_GUARD`/`TA_REQUIRE`/`TA_CAP` 三个兼容拼法（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/object_cache.hpp` — 两处 `TA_GUARD` → `TA_GUARDED`
+- `kernel/mm/include/ours/mm/pm_node.hpp` — 三处 `TA_GUARD` → `TA_GUARDED`（加一处注释）
+- `system/public/ours/compiler.hpp` — 删掉三个兼容宏
+- `.agents/skills/language/modern-cpp-development/SKILL.md` — 「两种拼法都能编」改为「短拼法已删」
+
+**症状**
+无。同一个属性两种名字并存，读的人要多记一层映射，新代码会照着最近看到的那个抄。
+
+**原因**
+`compiler.hpp` 里注明这三个是「pre-refactor kernel headers 的兼容拼法」，即计划中就是要退役的。
+`TA_REQUIRE` 唯一的使用点已在 3.1 里随 `reschedule_common` 的注解一起改掉，`TA_CAP` 无人用，
+剩五处 `TA_GUARD`。留着兼容宏没有任何收益，删掉之后再写短拼法直接编不过，比靠文档约束可靠。
+
+**改法**
+纯替换加删宏。`.agents` 下的风格文档同步改，否则它还在说「both currently work」。
+
+**参照**
+Zircon 只有一套 `__TA_*`（`zircon/compiler.h`），没有别名。
+
+**验证**
+- 全量构建通过（删宏触发全树重编）；clang-format 已跑。
+- 15 个 TU 告警 178 不变——纯改名，预期如此。
+- QEMU：两个镜像停的位置与上一条相同。
+
+**故意没做**
+`mutex.hpp` 的 `CirticalMutex` 拼错单独一条改。

@@ -313,7 +313,7 @@ class PmNode {
     }
 
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
-    /// thread-safety analysis, so `TA_GUARD(get_lock())` on the masks below and
+    /// thread-safety analysis, so `TA_GUARDED(get_lock())` on the masks below and
     /// a `Guard guard{node->get_lock()}` at a call site name the same lock.
     TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE constexpr auto get_lock() -> sync::SpinLock & {
         return m_lock;
@@ -367,11 +367,11 @@ class PmNode {
 
     /// The affinity based on hardware/software.
     /// Using rules:  (m_hard_affinity & m_soft_affinity)
-    CpuMask m_hard_affinity TA_GUARD(get_lock());
-    CpuMask m_soft_affinity TA_GUARD(get_lock());
+    CpuMask m_hard_affinity TA_GUARDED(get_lock());
+    CpuMask m_soft_affinity TA_GUARDED(get_lock());
 
     /// Which CPUs work on this node.
-    CpuMask m_work_cpus TA_GUARD(get_lock());
+    CpuMask m_work_cpus TA_GUARDED(get_lock());
 
     Pfn m_start_pfn;
 

@@ -81,14 +81,7 @@
 
 180 → 178，见 changes。
 
-### 3.7 遗留拼法 `TA_REQUIRE` / `TA_GUARD`
-
-`scheduler.hpp:139`（1 处 `TA_REQUIRE`）、`object_cache.hpp:125-126`、`pm_node.hpp:367-371`
-（5 处 `TA_GUARD`）。`compiler.hpp:97-99` 的兼容宏是为它们留的；改成 `TA_REQUIRES`/
-`TA_GUARDED` 后把三个兼容宏一起删掉，免得两套拼法并存。`TA_CAP` 无人用，一并删。
-
-顺带：`mutex.hpp:80` `class TA_CAPABILITY("Cirtical-Mutex") CirticalMutex` 拼错，应为
-`Critical`。
+### 3.7 遗留拼法 — 已修（`CirticalMutex` 拼错还没改）
 
 ## 4. `TA_GUARDED` 标了，但访问器没有 `TA_REQUIRES`（数量最多，需先做决定再补）
 

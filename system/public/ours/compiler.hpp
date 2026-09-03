@@ -93,9 +93,4 @@
 #define TA_SCOPED_CAPABILITY THREAD_ANNOTATE(__scoped_lockable__)
 #define TA_NO_THREAD_SAFETY_ANALYSIS THREAD_ANNOTATE(__no_thread_safety_analysis__)
 
-// Compatibility spellings used by the pre-refactor kernel headers.
-#define TA_CAP(x) TA_CAPABILITY(x)
-#define TA_GUARD(x) TA_GUARDED(x)
-#define TA_REQUIRE(...) TA_REQUIRES(__VA_ARGS__)
-
 #endif // #ifndef OURS_COMPILER_HPP
