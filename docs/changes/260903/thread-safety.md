@@ -450,3 +450,53 @@ queue_guard{&queue_lock_}` 拿放 queue_lock，对外不暴露；`TA_EXCL` 在 Z
 
 **故意没做**
 无。
+
+---
+
+## 上下文切换的锁交接：三个函数退出分析，而不是错标 `TA_RELEASE`（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — `switch_context`、`finish_switch_context` 的
+  `TA_RELEASE(get_lock())` 换成 `TA_NO_THREAD_SAFETY_ANALYSIS`；`trampoline_handoff` 加
+  `TA_NO_THREAD_SAFETY_ANALYSIS`；协议写在 `switch_context` 的注释里
+
+**症状**
+潜伏。六条告警：`switch_context` 里放 rq 锁被报「not held」（因为 `reschedule_common` 的
+`unguard()` 已经算释放过一次），`finish_switch_context` 放 prev 的 PI 锁被报「not held」、出口
+被报「rq 锁 still held」，`trampoline_handoff` 两处 release 被报「not held」，
+`reschedule_common` 调 `switch_context` 被报「releasing not held」。
+
+**原因**
+两件事分析器都表达不了：
+
+1. **Guard 交接**。`reschedule_common` 用 `Guard` 拿 rq 锁，切换前 `guard.unguard()` 告诉 Guard
+   「别放了」，由 `switch_context` 在记录 prev/curr 之后、换栈之前手动放。对分析器 `unguard()`
+   就是一次释放（3.1 之前的第 1 条改动里定的），`switch_context` 再标 `TA_RELEASE` 就是第二次。
+   把 `unguard()` 改成不算释放也不行：那 Guard 析构又会被算成释放。
+2. **跨激活释放**。`finish_switch_context` 放的是 `m_runtime.prev_thread` 的 PI 锁——由**上一个**
+   线程在**它的**栈上拿的，在**下一个**线程的栈上放。分析器的模型是「一个函数激活内拿放配平」，
+   对这种「A 拿、B 放」它连表达都做不到，标什么都是错的。`trampoline_handoff` 是新线程第一次
+   跑到的那一端，同理。
+
+之前的 `TA_RELEASE(get_lock())` 对 `switch_context` 半对（它确实放 rq 锁），对
+`finish_switch_context` 全错（它放的是 PI 锁不是 rq 锁）。
+
+**改法**
+三个函数 `TA_NO_THREAD_SAFETY_ANALYSIS`，交接协议写在 `switch_context` 的声明注释里：谁拿、
+在哪放、为什么分析器跟不上。可检查的那半——「调用方持 curr 的 PI 锁」——已经在
+`reschedule_common` 的 `TA_REQUIRES` 上（3.1）。
+
+**参照**
+Zircon `Scheduler::FinalContextSwitch()` 和 `Thread::Current::Reschedule()` 围着 `thread_lock`
+交接的部分同样是 `__TA_NO_THREAD_SAFETY_ANALYSIS`；Linux `finish_lock_switch()` 放的是
+`rq->lock`，同样靠注释而不是注解（Linux 用 sparse 的 `__releases`，也只是文档）。
+
+**验证**
+- 全量构建通过；clang-format 已跑；`scheduler.hpp` 只暂存了本条的两个 hunk。
+- 15 个 TU：123 → **117**。scheduler 目录还剩 8 条：`set_state`（3.5）4 条、migrator（4.5）2 条、
+  `activate/deactivate_thread` 缺 `TA_REQUIRES` 2 条、`finish_transition`/`reschedule_mask` 各 1。
+- QEMU：两个镜像停的位置与上一条相同。
+
+**故意没做**
+没有把 `guard.unguard()` + 手动 release 改成 `guard.unlock()`：release 必须发生在
+`switch_context` 记完 prev/curr、切完 aspace 之后，挪出去就得把这些写操作也挪出去。

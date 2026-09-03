@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -37,18 +37,9 @@
 
 127 → 123。
 
-### 3.4 `switch_context` / `finish_switch_context` / `trampoline_handoff` — 上下文切换的锁交接
+### 3.4 上下文切换的锁交接 — 已修
 
-`switch_context` 标 `TA_RELEASE(get_lock())` 是对的（`scheduler.cpp:465`）；但它末尾调的
-`finish_switch_context` **也**标了 `TA_RELEASE(get_lock())`，而后者放的是
-`prev_thread->get_pi_lock()`（`scheduler.cpp:446`），不是 rq 锁——两次「释放 rq 锁」。
-`trampoline_handoff`（`:106/108`）是同一交接的另一端。
-
-这是分析器表达不了的模式（锁由切过去的线程放）。Zircon 的做法是把这段用
-`__TA_NO_THREAD_SAFETY_ANALYSIS` 圈起来并在注释里写清交接协议。本树对应：
-`finish_switch_context` 去掉错误的 `TA_RELEASE(get_lock())`，加
-`TA_NO_THREAD_SAFETY_ANALYSIS`，注释写明它放的是 `m_runtime.prev_thread` 的 pi 锁、
-为什么必须由 next 放。`trampoline_handoff` 同理。
+123 → 117。
 
 ### 3.5 `Scheduler::set_state` — `TA_REQUIRES(get_lock())` 保护不了它保护的东西
 

@@ -45,7 +45,11 @@ class Scheduler {
     class Pi;
     class Current;
 
-    /// First thing a freshly spawned thread must do.
+    /// First thing a freshly spawned thread must do. It is the far end of
+    /// the hand-off described at switch_context(): it releases the PI lock
+    /// and the runqueue state that reschedule_common() left for it on some
+    /// other stack, so nothing it releases was acquired in this function.
+    TA_NO_THREAD_SAFETY_ANALYSIS
     static auto trampoline_handoff() -> void;
 
     /// |target_cpu| pins the thread instead of selecting for it; see the note
@@ -182,10 +186,33 @@ class Scheduler {
     auto update_runtime() -> void;
 
     /// Drop the current scheduler's lock, and then switch context from |curr|'s to |next|'s.
-    TA_RELEASE(get_lock())
+    ///
+    /// Lock hand-off, which the analysis cannot express, so both of these
+    /// are opted out of it rather than annotated wrongly:
+    ///
+    ///  * The runqueue lock is held on entry -- reschedule_common() took it
+    ///    with a Guard and unguard()ed that Guard so it will not release --
+    ///    and is released here, after prev/curr are recorded, before the
+    ///    stack switch. That is a plain release the analysis could follow, but
+    ///    unguard() already counts as one, so TA_RELEASE here reported a
+    ///    double release at every call site.
+    ///
+    ///  * |curr|'s PI lock is held on entry and *not* released by this
+    ///    activation. finish_switch_context() releases the PI lock of
+    ///    whichever thread ran before -- the one recorded in
+    ///    m_runtime.prev_thread -- on the far side of the switch, on the
+    ///    next thread's stack. A lock released by a different activation than
+    ///    the one that acquired it is outside the analysis's model entirely.
+    ///
+    /// Zircon opts its equivalents out the same way (Scheduler::
+    /// FinalContextSwitch and Thread::Current::Reschedule are
+    /// __TA_NO_THREAD_SAFETY_ANALYSIS around the thread_lock hand-off).
+    /// The contract that is checkable -- callers hold |curr|'s PI lock -- is
+    /// on reschedule_common().
+    TA_NO_THREAD_SAFETY_ANALYSIS
     auto switch_context(Thread *curr, Thread *next) -> void;
 
-    TA_RELEASE(get_lock())
+    TA_NO_THREAD_SAFETY_ANALYSIS
     auto finish_switch_context() -> void;
 
     TA_REQUIRES(get_lock())
