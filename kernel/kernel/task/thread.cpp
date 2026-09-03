@@ -316,12 +316,12 @@ auto Thread::detach() -> Status {
 
 auto Thread::set_cpu_affinity_hard(CpuMask const &affinity_mask) -> void {
     m_canary.verify<Self>();
-    Scheduler::set_cpu_affinity(this, &affinity_mask, CpuAffinity::Kind::Hard);
+    Scheduler::set_cpu_affinity(this, affinity_mask, CpuAffinity::Kind::Hard);
 }
 
 auto Thread::set_cpu_affinity_soft(CpuMask const &affinity_mask) -> void {
     m_canary.verify<Self>();
-    Scheduler::set_cpu_affinity(this, &affinity_mask, CpuAffinity::Kind::Soft);
+    Scheduler::set_cpu_affinity(this, affinity_mask, CpuAffinity::Kind::Soft);
 }
 
 auto Thread::override_base_profile(sched::BaseProfile const &profile) -> void {

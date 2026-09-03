@@ -189,3 +189,99 @@ firmware 报的数量定尺寸——超出 possible 的下标没人会问，而�
 - **没有把 `Fair::on_thread_init()` 里的 `Scheduler::Current::get()` 改成用 `runtime`**。
   它取的是**正在运行的**那颗 CPU 的调度器，而不是线程被放上去的那颗——参数 `Runtime &`
   就在手边却没用。目前只影响一次 `verify()`，但方向是错的。已记进待修。
+
+---
+
+## 3. `CpuAffinity` 自己持有掩码；`set_cpu_affinity_hard(CpuMask::of(n))` 不再悬垂（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/context.hpp` — `CpuAffinity` 内嵌两份 owned 掩码，
+  复制型 setter 与 `_shared` 跟踪型 setter 分开；拷贝／移动 delete。
+- `kernel/include/ours/task/sched/scheduler.hpp` / `sched/scheduler.cpp` —
+  `Scheduler::set_cpu_affinity()` 改收 `CpuMask const &`、返回 `void`；
+  `on_thread_init()` 两个分支分别用 `_shared` 和复制。
+- `kernel/include/ours/task/thread.hpp` / `kernel/kernel/task/thread.cpp` —
+  `Thread::set_cpu_affinity_{hard,soft}()` 改为传引用；文档说明会复制。
+- `kernel/include/ours/cpu.hpp` — 删掉第 2 条加的 `cpu_mask_of()`。
+
+**症状**
+
+潜伏，随时会炸。三个调用点都把临时量的地址存进了线程：
+
+```cpp
+laborer->set_cpu_affinity_hard(CpuMask::of(0));                 // kernel/top/main.cpp:132
+m_thread->set_cpu_affinity_hard(CpuMask::of(cpu));              // kernel/kernel/task/dpc.cpp:24
+Thread::Current::get()->set_cpu_affinity_hard(CpuMask::of(dest)); // thread.cpp migrate_to()
+```
+
+`CpuMask::of()` 按值返回；绑定到 `CpuMask const &` 形参只把临时量的寿命延到这条语句结束。
+`Scheduler::set_cpu_affinity()` 拿 `&affinity_mask` 换进 `m_hard_affinity`，语句一结束，
+线程里就是一个指向已经死掉的栈对象的指针。之后每一次 `get_available_mask()` 都在读那块
+栈上现在放着的随便什么东西。
+
+`main.cpp:132` 就在第 1 条修好的 spawn 之后一行，是启动路径下一个必到之处。
+
+**原因**
+
+`set_cpu_affinity_hard(CpuMask const &)` 这个签名什么都没说。它看起来像所有收 `const &`
+的函数一样「用完即弃」，实际却把地址留了下来，要求实参活得比线程还久。三个调用点、
+三个不同的人写的、全错——这不是三次巧合，是接口在撒谎。
+
+前一版的注释（第 2 条里的 `cpu_mask_of()`）就是在这个约束下打的补丁：既然指针非拥有，
+那就提供一张静态表让人取地址。这是在替接口的缺陷找活路，不是修它。
+
+但**只**改成持有也不对。`on_thread_init()` 给普通线程装的是 `Cpu::online_mask()`——
+一个还在变的活掩码：启动时只有 BSP online，次级 CPU 陆续上来。复制它等于把线程冻结在
+「创建那一刻已 online 的 CPU」上；启动路径上创建的每个线程都会被永远钉在 BSP。
+指针存在的合法理由就是这个：**跟踪**。所以两种语义都得有，而默认名字必须给安全的那种。
+
+**改法**
+
+照 Linux `task_struct` 的形状：`cpumask_t cpus_mask` 内嵌，`cpumask_t *cpus_ptr` 平时指向它。
+
+```cpp
+CpuMask m_owned_soft, m_owned_hard;        // 复制型 setter 的落脚点
+CpuMask const *m_soft_affinity, *m_hard_affinity;   // 平时指向上面，shared 时指向外面
+```
+
+- `set_affinity_hard(mask)`：复制进 `m_owned_hard`，指针指回自己。**任何**掩码都安全，
+  临时量也安全。这是「什么都不想」的默认。
+- `set_affinity_hard_shared(mask)`：只存指针。名字里带 `shared` 就是要让写的人停一下：
+  `mask` 必须活得比线程久。目前唯一合法用户是 `on_thread_init()` 装 `Cpu::online_mask()`。
+- 拷贝／移动构造与赋值 delete：指针指向自身，拷贝会让副本指着原件的掩码。现在没人拷贝
+  （它随 `Thread` 原地构造），delete 是把将来可能出现的静默 aliasing 变成编译错误。
+- `Scheduler::set_cpu_affinity()`：原来收 `CpuMask const *`、swap 进去、把换下来的旧指针
+  **返回**。两件事都要随所有权一起走——存调用方地址就是三处悬垂的来源；返回旧指针现在会
+  返回线程内部 `m_owned_hard` 的地址，让调用方在线程改了之后还攥着它。没有任何调用方读过
+  返回值。改成收引用、返回 `void`、内部走复制型 setter。它不提供 shared 变体：
+  有资格 shared 的只有内核自己的掩码，装它们的只有 `on_thread_init()`，那里直接碰 `m_affinity`。
+- `on_thread_init()`：普通线程 `set_affinity_hard_shared(Cpu::online_mask())`（要跟踪）；
+  钉死的线程 `set_affinity_hard(CpuMask::of(target_cpu))`（一颗 CPU 没什么可跟踪的，复制
+  正好让一个在调用点现造的掩码可以安全装入）。
+- 删掉 `cpu_mask_of()`：它存在的唯一理由「非拥有指针要求实参有静态存储期」已经不成立。
+  留着一个理由已死的函数，比删掉更糟——它的注释会继续对读者撒谎。
+- 三个悬垂点**一行未改**，自动变对。这正是修接口而不是修调用点的意义。
+
+否掉的方案：只把三处改成 `cpu_mask_of(n)`。能止血，但下一个写 `set_cpu_affinity_hard(...)`
+的人还是会踩，因为签名还是那副样子。
+
+**参照**
+
+`Linux task_struct`：`cpumask_t *cpus_ptr` 旁边放一份 owned `cpumask_t cpus_mask`，
+`cpus_ptr` 平时 `== &cpus_mask`，只在 `migrate_disable()` 之类临时覆盖时指向别处。
+`set_cpus_allowed_common()` 是 `cpumask_copy(&p->cpus_mask, ...)`——复制，不存调用方的指针。
+
+**验证**
+
+- 构建通过；`clang-format` 已跑；`clang-tidy` 对 `scheduler.cpp` 与 `thread.cpp` 跑过，
+  唯一新告警是 `get_available_mask` 改 const 后要 `[[nodiscard]]`，已加，其余都是既有条目。
+- 每线程多 2 × `sizeof(CpuMask)` = 16 字节（`MP_MAX_CPUS=16`，一个字一个掩码）。
+- **QEMU 未实测**，原因同 `task.md` 第 1 条：mm 在途的 `verify<Self>()` 改动让启动停在
+  `init_vmm()`。这条改动的正确性论证是静态的（所有权语义 + 编译期 delete），
+  等 mm 修好要回来实测 `main.cpp:132` 之后的路径。
+
+**故意没做**
+
+- 没有把 `on_thread_init()` 的默认亲和性从跟踪 `online_mask()` 改成 Linux 的
+  `cpu_possible_mask` 快照。那是语义改动，先保持原样。
+- 没有给 `Scheduler::set_cpu_affinity()` 加 shared 变体，理由见改法。

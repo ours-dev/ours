@@ -179,6 +179,9 @@ namespace task {
             return suspend_or_kill(SuspendOrKillOp::Kill);
         }
 
+        /// Both take a copy of the mask, so a temporary built at the call
+        /// site -- `CpuMask::of(n)` -- is fine. It was not always: the mask
+        /// used to be stored by address.
         auto set_cpu_affinity_hard(CpuMask const &) -> void;
 
         auto set_cpu_affinity_soft(CpuMask const &) -> void;

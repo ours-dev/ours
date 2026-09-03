@@ -24,32 +24,78 @@ class CpuAffinity {
   public:
     enum class Kind { Hard, Soft };
 
-    /// Both masks start out unrestricted rather than null.
+    /// Each affinity is a mask this object owns plus a pointer that usually
+    /// aims at it, which is the shape Linux gives task_struct with its
+    /// `cpumask_t *cpus_ptr` beside an owned `cpumask_t cpus_mask`.
     ///
-    /// get_available_mask() dereferences both pointers unconditionally, and a
-    /// value-initialized CpuAffinity left them null: every caller that ran
-    /// before the owning Scheduler had installed a real affinity -- which is
-    /// every caller on the thread-creation path -- read a CpuMask out of
-    /// address 0. That is only survivable because the low page happens to be
-    /// mapped and zero, and the all-zero mask it yields is the one answer that
-    /// makes the caller conclude "no CPU is available for this thread".
+    /// The pointer alone was not enough. It is non-owning, and nothing in
+    /// `set_affinity_hard(CpuMask const &)` told a caller that the argument
+    /// had to outlive the thread, so all three callers passed a temporary
+    /// `CpuMask::of(n)` and left the thread holding a dangling pointer the
+    /// moment the statement ended. An interface that every one of its callers
+    /// used incorrectly is the thing at fault, not the callers.
     ///
-    /// cpu_all_mask() is the correct default for the same reason it is in
-    /// Linux: "not yet narrowed" is a wider set than any real machine, so a
-    /// later set_affinity_hard() can only ever restrict it. Both masks have
-    /// static storage duration, which is what this class's non-owning
-    /// `CpuMask const *` requires of anything stored in it.
-    CpuAffinity() : m_soft_affinity(&cpu_all_mask()), m_hard_affinity(&cpu_all_mask()) {}
+    /// Owning the mask is not enough either, because one of the masks stored
+    /// here must NOT be copied: a thread whose affinity is "wherever is
+    /// online" has to keep tracking Cpu::online_mask() as the secondaries come
+    /// up, and a copy would freeze it at whatever was online when the thread
+    /// was created -- on the boot path, the boot CPU alone, forever. So both
+    /// forms exist and the safe one is the one with the plain name.
+    ///
+    /// Both masks start out unrestricted rather than null. get_available_mask()
+    /// dereferences both pointers unconditionally, and a value-initialized
+    /// CpuAffinity left them null: every caller that ran before a Scheduler had
+    /// installed a real affinity -- which is every caller on the thread-creation
+    /// path -- read a CpuMask out of address 0. cpu_all_mask() is the right
+    /// default for the reason Linux uses it too: "not yet narrowed" should be a
+    /// wider set than any real machine, so a later set only ever restricts it.
+    CpuAffinity()
+        : m_owned_soft(cpu_all_mask())
+        , m_owned_hard(cpu_all_mask())
+        , m_soft_affinity(&m_owned_soft)
+        , m_hard_affinity(&m_owned_hard) {}
 
+    /// The pointers aim into this object, so neither copying nor moving one
+    /// would leave the copy pointing at its own masks. Nothing needs to: a
+    /// CpuAffinity lives inside a Thread's scheduling context and is built in
+    /// place with it. Deleting these turns a silent aliasing bug into a
+    /// compile error if that ever changes.
+    CpuAffinity(Self const &) = delete;
+    CpuAffinity(Self &&) = delete;
+    auto operator=(Self const &) -> Self & = delete;
+    auto operator=(Self &&) -> Self & = delete;
+
+    /// Take a copy of |affinity_mask|. Safe for any mask, a temporary
+    /// included, and the right choice unless the caller specifically needs
+    /// later changes to |affinity_mask| to be followed.
     FORCE_INLINE auto set_affinity_soft(CpuMask const &affinity_mask) -> void {
-        m_soft_affinity = &affinity_mask;
+        m_owned_soft = affinity_mask;
+        m_soft_affinity = &m_owned_soft;
     }
 
     FORCE_INLINE auto set_affinity_hard(CpuMask const &affinity_mask) -> void {
+        m_owned_hard = affinity_mask;
+        m_hard_affinity = &m_owned_hard;
+    }
+
+    /// Track |affinity_mask| in place instead of copying it, so that later
+    /// changes to it are changes to this thread's affinity.
+    ///
+    /// |affinity_mask| MUST outlive the thread -- these are for the masks that
+    /// live as long as the kernel does, Cpu::online_mask() above all, whose
+    /// whole point here is that it is still growing while early threads exist.
+    /// Anything else, including anything built at the call site, wants the
+    /// copying form above.
+    FORCE_INLINE auto set_affinity_soft_shared(CpuMask const &affinity_mask) -> void {
+        m_soft_affinity = &affinity_mask;
+    }
+
+    FORCE_INLINE auto set_affinity_hard_shared(CpuMask const &affinity_mask) -> void {
         m_hard_affinity = &affinity_mask;
     }
 
-    auto get_available_mask(CpuMask const &mask) -> CpuMask {
+    [[nodiscard]]
+    auto get_available_mask(CpuMask const &mask) const -> CpuMask {
         auto const available_mask = mask & *m_hard_affinity;
         if (auto const available_mask_relaxed = available_mask & *m_soft_affinity;
             available_mask_relaxed.any()) {
@@ -61,6 +107,11 @@ class CpuAffinity {
 
   private:
     friend class Scheduler;
+
+    /// Storage for the copying setters. Read through the pointers below, never
+    /// directly, because the sharing setters leave these stale on purpose.
+    CpuMask m_owned_soft;
+    CpuMask m_owned_hard;
 
     CpuMask const *m_soft_affinity;
     CpuMask const *m_hard_affinity;

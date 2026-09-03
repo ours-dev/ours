@@ -63,7 +63,7 @@ class Scheduler {
     static auto migrate_thread(Thread *) -> void;
 
     // TODO(SmallHuaZi)
-    static auto set_cpu_affinity(Thread *, CpuMask const *, CpuAffinity::Kind) -> CpuMask const *;
+    static auto set_cpu_affinity(Thread *, CpuMask const &, CpuAffinity::Kind) -> void;
 
     // TODO(SmallHuaZi)
     static auto on_thread_base_profile_overrided(Thread &thread) -> void;

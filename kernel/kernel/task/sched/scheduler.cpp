@@ -127,7 +127,11 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNu
         // discipline's select_target_cpu is a pure query over per-CPU
         // runtimes), so this introduces no ordering against get_lock().
         if (INVALID_CPU_NUM == target_cpu) {
-            context.m_affinity.set_affinity_hard(Cpu::online_mask());
+            // Shared, not copied: a thread that may run "wherever is online"
+            // has to keep following the online mask as the secondaries come
+            // up. A copy would freeze it at the CPUs online when the thread
+            // was created, which on the boot path is the boot CPU alone.
+            context.m_affinity.set_affinity_hard_shared(Cpu::online_mask());
             target_cpu = select_target_cpu(thread);
         } else {
             // A caller-pinned thread. The pin is recorded as the affinity and
@@ -143,7 +147,10 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNu
             // secondary CPU is online. Intersecting {cpunum} with an online
             // mask that does not yet contain it is empty, and empty is the
             // one answer select_target_cpu() must not give.
-            context.m_affinity.set_affinity_hard(cpu_mask_of(target_cpu));
+            // Copied rather than shared: a one-CPU mask has nothing to
+            // follow, and the copy is what makes a mask built right here at
+            // the call site safe to install.
+            context.m_affinity.set_affinity_hard(CpuMask::of(target_cpu));
         }
 
         auto &self = Scheduler::Current::get(target_cpu);
@@ -297,33 +304,40 @@ auto Scheduler::get_schedule(Thread *thread) -> ISchedule * {
     return schedule;
 }
 
-auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const *affinity, CpuAffinity::Kind kind)
-    -> CpuMask const * {
+// Takes the mask by reference and copies it, and hands nothing back.
+//
+// It used to take `CpuMask const *`, swap that pointer into the affinity and
+// return the displaced one. Both halves of that had to go with the pointer's
+// ownership: storing the caller's address is what let three callers install a
+// temporary, and returning the old pointer would now hand back the address of
+// a mask living inside the thread, for the caller to hold after the thread has
+// moved on. No caller ever read the return value.
+//
+// Sharing a long-lived mask is deliberately not offered here. The only masks
+// that qualify are the kernel's own, and the only code that installs them is
+// on_thread_init(), which reaches the affinity directly.
+auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAffinity::Kind kind)
+    -> void {
     DEBUG_ASSERT(CpuAffinity::Kind::Soft == kind || CpuAffinity::Kind::Hard == kind);
 
-    auto do_set_affinity = [=, &affinity] FORCE_INLINE_ATTR() mutable {
-        auto &cpu_affinity = thread->scheduling_context().cpu_affinity();
-        switch (kind) {
-            case CpuAffinity::Kind::Hard:
-                std::swap(cpu_affinity.m_hard_affinity, affinity);
-                break;
-            case CpuAffinity::Kind::Soft:
-                std::swap(cpu_affinity.m_soft_affinity, affinity);
-                break;
-        }
-    };
-
     auto &so = thread->scheduling_context();
+    switch (kind) {
+        case CpuAffinity::Kind::Hard:
+            so.m_affinity.set_affinity_hard(affinity);
+            break;
+        case CpuAffinity::Kind::Soft:
+            so.m_affinity.set_affinity_soft(affinity);
+            break;
+    }
 
-    do_set_affinity();
-
+    // The thread may be sitting on a CPU its new affinity forbids, in which
+    // case it has to be moved before it runs again. Checked after the install,
+    // because it is the new affinity that decides.
     if (auto const cpu_thread_on = so.curr_cpu(); cpu_thread_on != INVALID_CPU_NUM) {
         if (so.m_affinity.get_available_mask(CpuMask::of(cpu_thread_on)).none()) {
             Scheduler::migrate_thread(thread);
         }
     }
-
-    return affinity;
 }
 
 auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {

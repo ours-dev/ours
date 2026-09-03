@@ -101,30 +101,6 @@ inline auto cpu_all_mask() -> CpuMask const & {
     return ALL;
 }
 
-/// The mask holding |cpunum| and nothing else, Linux's cpumask_of().
-///
-/// A table rather than a constructed temporary for the same reason the two
-/// constants above are: the affinity a thread carries is a non-owning
-/// `CpuMask const *`, so anything installed as one has to outlive the
-/// installer. Pinning a thread to a single CPU -- which is what an idle
-/// thread is -- has no other way to be expressed.
-///
-/// The table is one CpuMask per CPU the kernel was built for, so it is sized
-/// by MAX_CPU rather than by what the firmware reported; the indexes past
-/// cpu_possible_mask() are never asked for, and making it dynamic would cost
-/// an allocation to save a few words.
-inline auto cpu_mask_of(CpuNum cpunum) -> CpuMask const & {
-    static constexpr auto SINGLETONS = [] {
-        std::array<CpuMask, MAX_CPU> masks{};
-        for (auto i = usize(0); i < MAX_CPU; ++i) {
-            masks[i].set(i);
-        }
-        return masks;
-    }();
-
-    return SINGLETONS[cpunum];
-}
-
 } // namespace ours
 
 #endif // OURS_CPU_HPP
