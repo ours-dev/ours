@@ -943,3 +943,24 @@ idler 恢复后 flush 一个 pending 抢占，无其它可运行线程，探针�
 - 没有处理"判断无活之后、halt 之前抢占请求已挂起"的情况（Zircon 检查 `preempts_pending()`）：
   当前所有唤醒都经 IPI/tick 中断到达，`sti; hlt` 的原子性已经覆盖；等有非中断路径的
   挂起抢占再补。
+
+---
+
+## 19. `IpiService::send_resched(CpuMask)` 算好了 `targets` 却发了原始 `mask`（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/ipi_service.cpp` — 计数判断和发送都改用 `targets`。
+
+**症状**
+每次在 BSP 上唤醒线程，启动日志都多一行 `IPI-Resched on CPU[0]`：本 CPU 给自己发了重调度 IPI。
+
+**原因**
+函数先把本 CPU 和非 active 的 CPU 从 `targets` 里去掉，然后 `if (!mask.count())` 和
+`arch_mp_reschedule_mask(mask)` 用的却是过滤前的 `mask`。本 CPU 的重调度请求应当是一个 pending
+位（调用者来这里之前已经记好了），不是一个发给自己的中断；非 active 的 CPU 也收不了。
+
+**改法**
+两处改用 `targets`。
+
+**验证**
+构建、`clang-tidy` 通过；dbg：`IPI-Resched on CPU[0]` 不再出现，启动仍走到 `reclaim_init_area()`。

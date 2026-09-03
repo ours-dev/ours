@@ -1,6 +1,6 @@
 # 调度器 — 待修
 
-按严重程度排。已修的从这里删掉，改动记录在 `docs/changes/260903/scheduler.md`（第 1–18 条）。
+按严重程度排。已修的从这里删掉，改动记录在 `docs/changes/260903/scheduler.md`（第 1–19 条）。
 
 ---
 
@@ -24,25 +24,20 @@ pending 抢占。后果：changes 第 15 条把 `reschedule_mask()` 的本地抢
 一个忙循环线程会一直占着 CPU。Zircon：`x86_exception_handler` 出口对 `preempts_pending` 调
 `Thread::Current::Preempt()`，进入中断时 `arch_set_blocking_disallowed(true)`。
 
-## 3. `IpiService::send_resched(CpuMask)` 发的是原始 mask
 
-`kernel/kernel/task/ipi_service.cpp`：算好了 `targets`（去掉本 CPU、与 active 求交），
-`if (!mask.count())` 和 `arch_mp_reschedule_mask(mask)` 用的却是 `mask`。启动日志里的
-`IPI-Resched on CPU[0]` 就是它给自己发的。
-
-## 4. `Scheduler::init()` 把每个调度器都记成 BSP
+## 3. `Scheduler::init()` 把每个调度器都记成 BSP
 
 `m_runtime.which_cpu = Cpu::id()`，而 `task::init()` 在 BSP 上替每颗 CPU 调它。应接收 cpunum。
 
-## 5. `Driver::update_clock()` 的基准写错了
+## 4. `Driver::update_clock()` 的基准写错了
 
 `m_prev_real_clock = m_sched_clock;` 应为 `= now;`。
 
-## 6. `find_active_scheduler_for()` 无出口自旋
+## 5. `find_active_scheduler_for()` 无出口自旋
 
 没有任何调度器 active 时永远转。
 
-## 7. `Thread::Current::reschedule()` 的门与 `reschedule_mask()` 的 pending 之间没有兑现点
+## 6. `Thread::Current::reschedule()` 的门与 `reschedule_mask()` 的 pending 之间没有兑现点
 
 changes 第 16 条把"不可抢占就 `add_pending()`"放进了 `reschedule()`；pending 的兑现点只有
 `enable_preemption()` 和空闲循环。等第 2 条落地后要一并核对。
