@@ -303,17 +303,16 @@ auto Scheduler::reschedule_mask(CpuMask const &mask) -> void {
         return;
     }
 
-    // Through Thread::Current::preempt(), never Scheduler::Current::preempt()
-    // directly: the difference is the current thread's PI lock. The switch
-    // protocol hands that lock across the context switch -- the outgoing side
-    // takes it, finish_switch_context() on the incoming side releases it --
-    // so entering reschedule_common() without holding it makes the far side
-    // release a lock nobody holds (assert_held() in SpinLock::release()). It
-    // is also what reschedule_common()'s own preconditions ask for.
-    // PreemptionState::flush_pending_local() already goes this way; this was
-    // the one caller that did not. Zircon's RescheduleMask() likewise runs
-    // Preempt() with the thread lock held.
-    Thread::Current::preempt();
+    // The local CPU's preemption is only ever *requested* here, never
+    // performed. Every caller reaches this with a lock held that a switch
+    // would trip over -- Thread::resume() holds the woken thread's PI lock,
+    // which switch_context() is about to take for itself -- and the tick's
+    // timer callbacks reach it from interrupt context, where a switch would
+    // leave the interrupt half-handled. Zircon's PreemptLocked() defers for
+    // the first reason (spinlocks held) and RescheduleMask() for the second.
+    // The request is paid at the next preemption point: enable_preemption()
+    // flushes it, and the idle loop re-evaluates the run queue on its own.
+    preemption_state.add_pending();
 }
 
 INIT_CODE auto Scheduler::init() -> void {
@@ -540,6 +539,16 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     if (curr->aspace() != next->aspace()) {
         mm::VmAspace::switch_aspace(curr->aspace(), next->aspace());
     }
+
+    // The incoming thread's PI lock is taken here, by the outgoing side, and
+    // travels across the switch: the thread that resumes on the other end
+    // finds its own lock held -- the state its caller's guard (or
+    // trampoline_handoff(), for a first run) expects to release -- while
+    // finish_switch_context() there drops ours. Zircon holds next_thread's
+    // lock through the switch the same way and drops the previous thread's
+    // in LockHandoffInternal(). Without this, a thread resumed by a switch
+    // released a lock nobody held and died on assert_held().
+    next->get_pi_lock().acquire();
 
     // Before to switch context, drop current scheduler's lock
     get_lock().release();

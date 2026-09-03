@@ -790,3 +790,33 @@ laborer 第一次 `sleep_for()` 进入 `reschedule_common()` 后静默挂住：�
 
 **验证**
 构建通过；dbg：随后出现 `switch laborer -> Idle/0`，切回 idler 成功（探针，已剥除）。
+
+
+---
+
+## 15. 切换前没有替 `next` 取 pi 锁；`reschedule_mask()` 的本地抢占改为只记 pending（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `switch_context()` 在切换前 `next->get_pi_lock().acquire()`；
+  `reschedule_mask()` 本地 CPU 只 `add_pending()`。
+
+**症状**
+切回 idler 之后：`Assertion failed on m_lockval.load(...) == holder_state(...)`——
+idler 沿着自己的栈往上返回时，`Thread::Current::preempt()` 的 guard 释放 idler 的 pi 锁，
+而这把锁已经被 laborer 那边的 `trampoline_handoff()`（作为 `prev`）释放过了。
+
+**原因**
+切换协议是"进来的一侧释放 `prev` 的锁，继续持有自己的锁往上返回"（Zircon `RescheduleCommon`
+的 `next_thread->get_lock().AssertHeld()` 与 `LockHandoffInternal()`）。这要求**出去的一侧在切换前
+先持有 `next` 的锁**——ours 没有这一步，于是每个被切换回来的线程都在释放一把没人持有的锁。
+配套地，`Thread::resume()` 持着被唤醒线程的 pi 锁调 `unpark_thread()` → `reschedule_mask()`，
+若在那里同步抢占，`switch_context()` 会对同一把锁再取一次；而 tick 的定时器回调也会从中断
+上下文到这里，同步切换会把中断处理到一半的帧留在栈上。Zircon `PreemptLocked()` 持自旋锁时、
+`RescheduleMask()` 在中断里都只记 pending。
+
+**改法**
+`switch_context()` 切换前取 `next` 的 pi 锁；`reschedule_mask()` 对本地 CPU 只 `add_pending()`，
+由 `enable_preemption()` 的 flush 和空闲循环兑现。
+
+**验证**
+构建通过；dbg：该断言消失，idler 恢复后正常返回到 `become_idle()`。
