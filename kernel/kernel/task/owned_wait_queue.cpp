@@ -54,7 +54,7 @@ namespace {
 
 } // namespace
 
-OwnedWaitQueue::OwnedWaitQueue() : Base(OWNED_MAGIC), m_owner(), m_managed_hook() {}
+OwnedWaitQueue::OwnedWaitQueue() : Base(Type::Owned), m_owner(), m_managed_hook() {}
 
 OwnedWaitQueue::~OwnedWaitQueue() {
     DEBUG_ASSERT(m_owner == nullptr);
@@ -152,7 +152,7 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
 
     InheritedProfile oldip;
     if (owq) {
-        owq->m_canary.verify(OWNED_MAGIC);
+        owq->verify_owned();
         oldip = Self::snapshot_thread_inherited_profile(thread);
     }
 
@@ -170,7 +170,7 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
 }
 
 auto OwnedWaitQueue::assign_owner(Thread *new_owner) -> Status {
-    m_canary.verify<Self>();
+    verify_owned();
 
     if (m_owner == new_owner) {
         return Status::Ok;
@@ -202,7 +202,7 @@ auto OwnedWaitQueue::lock_for_park_and_assign_owner_or_backoff(Thread *const cur
 
 auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline const &,
                                            Interruptible interruptible) -> Status {
-    m_canary.verify<Self>();
+    verify_owned();
     return Status::Ok;
 }
 

@@ -18,7 +18,10 @@ auto WaiterState::unsleep(Thread *thread, Status status) -> void {
     Scheduler::unpark_thread(thread);
 }
 
-WaitQueue::WaitQueue(u32 magic) : m_canary(magic), m_waiters(), m_lock(), m_next_seq(0) {}
+WaitQueue::WaitQueue(Type type)
+    // `this` is a WaitQueue*, so the canary takes gktl::magic<WaitQueue>() for
+    // every instance, derived ones included. That is deliberate; see Type.
+    : m_canary(this), m_type(type), m_waiters(), m_lock(), m_next_seq(0) {}
 
 auto WaitQueue::park_thread(Thread *thread, time::Deadline deadline, Signals sigmask,
                             Interruptible interruptible) -> Status {

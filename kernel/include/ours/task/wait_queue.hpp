@@ -105,7 +105,7 @@ class WaitQueue {
     template <typename Derived>
     static auto as(Self *self) -> Derived *;
 
-    WaitQueue() = default;
+    WaitQueue() : WaitQueue(Type::Plain) {}
 
     ~WaitQueue() = default;
 
@@ -159,7 +159,26 @@ class WaitQueue {
     }
 
   protected:
-    WaitQueue(u32 magic);
+    /// Which concrete queue this is, for the downcast in `as<Derived>()`.
+    ///
+    /// Separate from the canary, and it has to be. The canary used to carry
+    /// this: an instance was seeded with gktl::magic("WaitQueue") or
+    /// gktl::magic("OwnedWaitQueue"), and `as<OwnedWaitQueue>()` compared
+    /// against the latter to decide the dynamic type. One word cannot do both
+    /// jobs here, because WaitQueue's own methods verify the canary and they
+    /// run on OwnedWaitQueue instances too: a canary holding the derived magic
+    /// fails every one of those checks, and a canary holding the base magic
+    /// tells the downcast nothing.
+    ///
+    /// So the canary holds gktl::magic<WaitQueue>() on every instance and
+    /// answers only "is this storage still a live WaitQueue". Which kind it
+    /// is, is this member's job.
+    enum class Type {
+        Plain,
+        Owned,
+    };
+
+    explicit WaitQueue(Type type);
 
     auto park_thread_preamble(Thread *, time::Deadline, Signals, Interruptible) -> Status;
 
@@ -188,9 +207,8 @@ class WaitQueue {
     /// Handler for time counted tasks.
     static auto handle_timeout(Thread *thread) -> void;
 
-    static constexpr auto MAGIC = gktl::magic("WaitQueue");
-
     gktl::Canary m_canary;
+    Type const m_type;
     USTL_DECLARE_MULTISET(WaiterState, Queue, ustl::collections::intrusive::Compare<WaiterOrder>,
                           WaiterState::ManagedOption);
     Queue m_waiters;

@@ -14,7 +14,7 @@ namespace ours::task {
 template <typename Upstream, typename Downstream>
 concept PropagatingStream = requires {
     (std::is_same_v<Upstream, Thread> && std::is_same_v<Downstream, OwnedWaitQueue>) ||
-    (std::is_same_v<Upstream, OwnedWaitQueue> && std::is_same_v<Downstream, Thread>);
+        (std::is_same_v<Upstream, OwnedWaitQueue> && std::is_same_v<Downstream, Thread>);
 };
 
 class OwnedWaitQueue: protected WaitQueue {
@@ -67,7 +67,8 @@ class OwnedWaitQueue: protected WaitQueue {
     struct ParkAndAssignOwner {
         Thread *new_owner;
     };
-    auto lock_for_park_and_assign_owner_or_backoff(Thread *const, Thread *new_owner) -> ustl::Option<ParkAndAssignOwner>;
+    auto lock_for_park_and_assign_owner_or_backoff(Thread *const, Thread *new_owner)
+        -> ustl::Option<ParkAndAssignOwner>;
 
     template <typename UnparkThreads> // Thread::UnparkList
     auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
@@ -108,7 +109,14 @@ class OwnedWaitQueue: protected WaitQueue {
 
     friend class WaitQueue;
 
-    constexpr static auto OWNED_MAGIC = gktl::magic("OwnedWaitQueue");
+    /// "Is this really a live OwnedWaitQueue?" is two questions here, not one.
+    /// The canary holds WaitQueue's magic on every instance -- see the note on
+    /// WaitQueue::Type for why it must -- so on its own it says only that the
+    /// storage is still a WaitQueue. Which kind it is, m_type answers.
+    FORCE_INLINE auto verify_owned() const -> void {
+        m_canary.verify<Base>();
+        DEBUG_ASSERT(Type::Owned == m_type, "an OwnedWaitQueue method on a plain WaitQueue");
+    }
 
     Thread *m_owner;
     sched::InheritedProfile m_ipv;
@@ -123,8 +131,8 @@ class OwnedWaitQueue: protected WaitQueue {
 template <>
 FORCE_INLINE inline auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
     DEBUG_ASSERT(self);
-    if (self->m_canary.magic() == OwnedWaitQueue::OWNED_MAGIC) {
-        // The canary establishes the dynamic type and WaitQueue is the sole base.
+    if (Type::Owned == self->m_type) {
+        // m_type establishes the dynamic type and WaitQueue is the sole base.
         return reinterpret_cast<OwnedWaitQueue *>(self);
     }
 
