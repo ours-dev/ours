@@ -57,6 +57,17 @@ class Scheduler {
     static auto on_thread_init(Thread *, BaseProfile const &, CpuNum target_cpu = INVALID_CPU_NUM)
         -> void;
 
+    /// Adopts |thread| as the one already running on |cpunum|'s scheduler.
+    ///
+    /// A scheduler's notion of "the current thread" is only ever written by a
+    /// context switch, so the thread a CPU is executing *before* its first
+    /// switch -- the boot context on the BSP, each CPU's idler once
+    /// task::init() has built it -- has to be installed by hand, or
+    /// m_runtime.curr_thread stays null until something dereferences it.
+    /// Zircon does the same in Scheduler::InitializeFirstThread(): mark the
+    /// thread running, pin it to its CPU, make it active_thread_.
+    static auto init_first_thread(Thread *thread, CpuNum cpunum) -> void;
+
     static auto on_thread_dead(Thread *) -> void;
 
     /// The caller holds |thread|'s PI lock and keeps it: this neither takes

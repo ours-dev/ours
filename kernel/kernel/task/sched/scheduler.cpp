@@ -171,6 +171,41 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNu
     }
 }
 
+auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
+    DEBUG_ASSERT(thread);
+
+    auto &self = Scheduler::Current::get(cpunum);
+    self.m_canary.verify<Self>();
+
+    auto &context = thread->scheduling_context();
+    Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
+
+    // The thread is where it is and stays there: hard-pinned to |cpunum| the
+    // way on_thread_init() pins an idler, and recorded as having last run
+    // there so that every later "where was it" question answers this CPU.
+    context.m_affinity.set_affinity_hard(CpuMask::of(cpunum));
+    context.m_curr_cpu = cpunum;
+    context.m_last_cpu = cpunum;
+
+    // Bind it to its discipline exactly as on_thread_init() would; a thread
+    // that is already running is still a thread the discipline must know.
+    auto *const schedule = self.set_schedule(thread);
+    schedule->on_thread_init(self.m_runtime, thread);
+
+    // Now the part no other path provides. The switch that would normally
+    // install a current thread has not happened and never will for this one:
+    // it is the thread the CPU booted on, or was handed by task::init(). So it
+    // is installed directly, with its slice clock started now, and named as
+    // the idler this scheduler falls back to when it runs out of work -- the
+    // seat evaluate_next_thread() and put_prev_thread()/set_next_thread()
+    // consult through m_idle_thread, which nothing else ever wrote.
+    self.m_runtime.curr_thread = thread;
+    self.m_runtime.curr_started_time = self.m_runtime.driver.update_clock();
+    if (thread->is_idle_thread()) {
+        self.m_idle_thread = thread;
+    }
+}
+
 auto Scheduler::on_thread_dead(Thread *thread) -> void {
     [[maybe_unused]]
     auto &ctx = thread->scheduling_context();

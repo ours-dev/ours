@@ -23,6 +23,14 @@ namespace {
         idler.init(cpunum);
 
         Thread::Current::set(&idler.thread(), cpunum);
+
+        // Thread::Current now says the idler is what this CPU is running, and
+        // the scheduler has to say the same or the two disagree at the first
+        // reschedule: reschedule_common() asserts curr == m_runtime.curr_thread,
+        // and curr_thread is written by nothing but a context switch. The
+        // idler is also the thread this scheduler idles *to*, which is the
+        // other field only this call fills in.
+        Scheduler::init_first_thread(&idler.thread(), cpunum);
     }
 } // namespace
 

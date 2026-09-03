@@ -525,3 +525,69 @@ lldb 栈：`Canary::verify<ours::task::sched::Scheduler>` ← `reschedule_mask` 
 **故意没做**
 
 - 没有改成 Zircon 那种非类型模板参数的 canary。那是 gktl 的接口改动，不在这里做。
+
+---
+
+## 8. 调度器从没被告知"现在跑的是谁"：播种 `curr_thread` 与空闲线程（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` / `sched/scheduler.cpp` — 新增
+  `Scheduler::init_first_thread(Thread *, CpuNum)`。
+- `kernel/kernel/task/init.cpp` — `init_idle_task_percpu()` 建完 idler 后调用它。
+
+**症状**
+
+canary 修完后 dbg 停在：
+
+```
+Assertion failed on curr == self.m_runtime.curr_thread
+```
+
+（`Scheduler::Current::preempt()`；同一个断言在 `reschedule_common` 等六处。）
+
+**原因**
+
+`m_runtime.curr_thread` 全代码只有一处写入——`switch_context()`。`m_idle_thread` 一处都没有。
+也就是说，一颗 CPU 在**第一次切换之前**正在执行的那个线程（BSP 上的 boot 上下文、`task::init()`
+之后每颗 CPU 的 idler），调度器根本不知道它存在：`curr_thread` 一直是空，直到有人解引用它——
+`unpark_preempt` 会、`Fair::enqueue_thread` 会（第 5 条里穿过零页读写的就是它）。
+`m_idle_thread` 也一直是空，`evaluate_next_thread()` 无事可做时返回它，`put_prev_thread()` /
+`set_next_thread()` 拿它判断 Idling 状态。
+
+`Thread::Current::set(&idler.thread(), cpunum)` 告诉了 CpuLocal，却没告诉调度器；两边一不一致，
+第一次重调度就在 `curr == curr_thread` 上撞。
+
+**改法**
+
+`Scheduler::init_first_thread(thread, cpunum)`，照 Zircon `InitializeFirstThread()` 的形状：
+钉到本 CPU、记 `curr_cpu`/`last_cpu`、绑定纪律并让纪律 `on_thread_init`（正在运行的线程也是
+纪律必须知道的线程）、然后做没有别的路径会做的那一步——直接写 `curr_thread`、启动它的片时钟
+`curr_started_time`、若是 idler 则记为 `m_idle_thread`。`task::init()` 在每颗 CPU 的
+`Thread::Current::set()` 之后立刻调用。
+
+**参照**
+
+`Zircon Scheduler::InitializeFirstThread(Thread*)`：`state_ = THREAD_RUNNING`、
+`curr_cpu_ = last_cpu_ = current_cpu`、`hard_affinity_ = cpu_num_to_mask(current_cpu)`、
+`scheduler->active_thread_ = thread`、`weight_total_ = ...`。Zircon 的 idle 线程不存指针，
+从 `percpu::Get(cpu).idle_power_thread.thread()` 推导（`Scheduler::DequeueThread()` 末尾）。
+
+**验证**
+
+- 构建通过，`clang-format` 已跑，`clang-tidy` 无新告警（`init.cpp` 只剩既有的 `BOOT_THREAD` 命名条目）。
+- dbg：`curr == curr_thread` 断言消失，前进到 `reschedule_common()` 的
+  `DEBUG_ASSERT(arch::irqs_disabled(), "Enter {} with IRQ enabled")`（这条断言的消息在格式化时
+  又抛了 libc++ `format_error`，日志里只看得到 `format_error ... "%s"`，靠 lldb 才读到正文）。
+- dev：停点不变（`finish_switch_context()` 释放未持有的 pi 锁）。
+- 两条新停点同根：`reschedule_mask()` 直接调 `Scheduler::Current::preempt()`，而**更深一层**，
+  `lockdep::Guard<Lock, Options...>` 把 `IrqSave`/`PreemptDisable` 选项只存进 `std::tuple`
+  从不使用——`guard()` 只做 `m_lock.acquire()`。所以内核里所有 `Guard<SpinLock, IrqSave>` 都只是
+  裸自旋锁，`Thread::resume()` 的 `IrqSaveAndPreemptDisable` 也一样。那是 lockdep 的事，
+  已转给 lib/concurrent 会话，并记进待修。
+
+**故意没做**
+
+- 没有把 `m_idle_thread` 改成像 Zircon 那样从 percpu 推导。现在它有了唯一的写入点，
+  先够用；改成推导是后续清理。
+- 没有给 BSP 的 boot 上下文（`create_first()`）播种——它在 `task::init()` 里被 idler 顶替，
+  之后不再是任何调度器的 current。
