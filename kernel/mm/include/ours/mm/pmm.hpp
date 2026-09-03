@@ -54,7 +54,10 @@ auto cpu_to_node(CpuNum cpunum) -> NnId;
 auto current_node() -> NnId;
 
 [[nodiscard]]
-auto node_work_cpus(NnId nid) -> CpuMask const *;
+/// By value: the node's mask is rewritten when a CPU is re-homed, so there
+/// is no reference to it that stays valid outside the node lock. An empty
+/// mask for a node that does not exist.
+auto node_work_cpus(NnId nid) -> CpuMask;
 
 [[nodiscard]]
 auto node_soft_affinity(NnId nid) -> CpuMask const *;

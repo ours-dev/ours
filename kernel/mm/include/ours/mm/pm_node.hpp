@@ -8,6 +8,7 @@
 #include <ours/assert.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/macro_abi.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
@@ -296,7 +297,12 @@ class PmNode {
         return m_id;
     }
 
-    FORCE_INLINE constexpr auto work_cpus() const -> CpuMask const & {
+    /// A copy, taken under the node lock. The mask changes whenever a CPU is
+    /// re-homed (`update_cpu_to_node`), so a reference into it would be a
+    /// reference into a value the next re-homing rewrites under the caller;
+    /// a copy is the only thing that can be handed out without the lock.
+    auto work_cpus() -> CpuMask {
+        Guard guard{get_lock()};
         return m_work_cpus;
     }
 
@@ -367,10 +373,19 @@ class PmNode {
 
     /// The affinity based on hardware/software.
     /// Using rules:  (m_hard_affinity & m_soft_affinity)
-    CpuMask m_hard_affinity TA_GUARDED(get_lock());
-    CpuMask m_soft_affinity TA_GUARDED(get_lock());
+    ///
+    /// Not under m_lock: both are written once, in init() before the node is
+    /// marked Online, and only read after that. The accessors hand out
+    /// references and the per-CPU allocator caches a pointer to the hard
+    /// mask for the life of the system, neither of which a lock could cover.
+    /// They used to be TA_GUARDED(get_lock()), which no reader honoured and
+    /// no reader could.
+    CpuMask m_hard_affinity;
+    CpuMask m_soft_affinity;
 
-    /// Which CPUs work on this node.
+    /// Which CPUs work on this node. Unlike the two above this one does
+    /// change after bring-up -- update_cpu_to_node() moves a CPU between
+    /// nodes -- so it stays under the lock, and work_cpus() copies it out.
     CpuMask m_work_cpus TA_GUARDED(get_lock());
 
     Pfn m_start_pfn;

@@ -26,12 +26,12 @@ auto num_nodes() -> usize {
     return PmNode::num_nodes();
 }
 
-auto node_work_cpus(NnId nid) -> CpuMask const * {
+auto node_work_cpus(NnId nid) -> CpuMask {
     DEBUG_ASSERT(nid < NUMA_MAX_NODE);
     if (auto node = PmNode::node(nid)) {
-        return &node->work_cpus();
+        return node->work_cpus();
     }
-    return nullptr;
+    return CpuMask{};
 }
 
 auto node_hard_affinity(NnId nid) -> CpuMask const * {

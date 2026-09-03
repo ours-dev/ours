@@ -359,3 +359,52 @@ Linux `slab_nodes`：`slab_node_online()/offline()` 在 `slab_mutex` 下写（�
 没有把 `SLAB_NODES` 做成 `const`：node 热插拔来了它就要可写，届时应照 Linux 在 `CACHE_LOCK`
 下写、无锁读，再把 `TA_GUARDED` 加回来就是错的——那时需要的是 RCU 式的「写者互斥、读者无锁」，
 分析器表达不了。
+
+---
+
+## `PmNode` 的三个 CpuMask：两个不再声称有锁，一个改为持锁拷出（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `m_hard_affinity`/`m_soft_affinity` 去掉
+  `TA_GUARDED(get_lock())`；`work_cpus()` 改为持锁返回副本；加 `#include <ours/lockdep.hpp>`
+- `kernel/mm/include/ours/mm/pmm.hpp`、`kernel/mm/pmm.cpp` — `node_work_cpus()` 随之改为按值返回，
+  节点不存在时返回空 mask
+
+**症状**
+潜伏。`hard_affinity()`/`soft_affinity()`/`work_cpus()` 三个访问器把受保护成员按 `const &` 返回，
+静态 `hard_affinity()` 把它按引用传给 `CpuLocal::access`，`init()` 裸写 `m_hard_affinity`——
+每个 TU 各报一遍，共 45 条，占当时剩余告警的四分之一。
+
+**原因**
+三个 mask 的生命周期不一样，原来却贴了同一个注解。
+
+- `m_hard_affinity`/`m_soft_affinity`：`PmNode::init()` 在把节点标为 Online 之前写一次，之后
+  只读。而且 `cpu_local.cpp:314` 把 `node_hard_affinity()` 返回的**指针**存起来长期用——一个被
+  锁保护的对象是不可能把裸引用交出去的，这种用法本身就说明它不在锁下。注解描述的保护关系不
+  存在，读者一个都没拿过锁，也拿不了。
+- `m_work_cpus`：`update_cpu_to_node()` 在 CPU 换节点时在锁下改它（`pm_node.cpp:762-813`，
+  那三处 `Guard` 是对的）。它确实需要锁。但 `work_cpus()` 按引用返回，等于把锁下的值交给一个
+  不持锁的调用方——下一次换节点就在调用方脚下改它。
+
+**改法**
+前两个删注解，注释写清「init 写一次、Online 后只读、有人存指针」。`m_work_cpus` 保留注解，
+`work_cpus()` 改成 `Guard guard{get_lock()}; return m_work_cpus;`——按值拷出是不持锁情况下唯一
+能交出去的东西；`CpuMask` 是 `MAX_CPU` 位的位图，拷贝不贵。`node_work_cpus()` 目前没有调用方，
+一起改成按值，「不存在的节点」和「没有 CPU 的节点」都返回空 mask，注释里说明了这个合并。
+
+否掉的方案：给三个访问器都加 `TA_REQUIRES(get_lock())`。对前两个是把一个假保护关系推给所有
+调用方去演；对 `work_cpus()` 则逼 `pmm.cpp` 那层指针 API 在锁下返回指针，同样是把引用带出锁。
+
+**参照**
+Linux `node_to_cpumask_map[]`：bring-up 写，之后无锁读，返回 `const struct cpumask *`；
+`cpumask_of_node()` 没有锁。`m_work_cpus` 对应 Linux 里没有直接物——Linux 用 `cpu_to_node_map`
+单向映射，不维护反向集合。
+
+**验证**
+- 全量构建通过；clang-format 已跑；clang-tidy 对 `pmm.cpp` 改动行无新告警。
+- 15 个 TU：172 → **127**。`pm_node.hpp`/`pm_node.cpp` 相关告警全部清零。
+- QEMU：两个镜像停的位置与上一条相同。
+- `pmm.cpp` 带着另一个会话的一个 hunk（`alloc_frames`），只暂存了本条的。
+
+**故意没做**
+没有把 `m_hard_affinity` 的写入挪到锁下——它在 Online 之前，没有并发读者。

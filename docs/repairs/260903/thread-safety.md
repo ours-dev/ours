@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -98,15 +98,9 @@
 `spawn_etc()`/`init_first()`（`thread.cpp:118-140`）在对象发布前裸写 `m_stack`/`m_task_state`/
 `m_arch_thread`，这是构造期的正常做法，标 `TA_NO_THREAD_SAFETY_ANALYSIS` 并注明「未发布」。
 
-### 4.2 `PmNode` 三个 CpuMask
+### 4.2 `PmNode` 三个 CpuMask — 已修
 
-`pm_node.hpp:300-308` 三个访问器把 `TA_GUARD(get_lock())` 的成员按 `const &` 返回，
-`:421` 静态 `hard_affinity()` 也是；`pm_node.cpp:352` 在 bring-up 里裸写 `m_hard_affinity`。
-它们是启动期写一次、之后只读的 mask，`m_work_cpus` 才真的在 `cpu_to_node` 变化时改
-（`pm_node.cpp:762-813`，那三处是在 Guard 下的，正确）。
-
-建议：`m_hard_affinity`/`m_soft_affinity` 去掉 `TA_GUARD`，注释写「只在 online 前写」；
-`m_work_cpus` 保留，访问器改为持锁按值返回。
+172 → 127。
 
 ### 4.3 `MemCache::SLAB_NODES` — 已修
 
