@@ -138,3 +138,42 @@ nullptr 快速返回也就重新只剩下第 1 种含义，注释才名副其实
 一并可做（不值得单独一次构建—启动循环）：`MemCache::create()`（约 626 行）里还留着一处
 `auto status = ...; if (Status::Ok != status)`，本文件其余地方已统一成单行
 if-with-initializer，顺手扫掉。
+
+## 11. 启动当前卡死在 `prof_init()` 的 `build_fde_index()`（交叉引用，不属 mm）
+
+**这条不是 mm 的，记在这里是因为它挡住了 mm 剩余路径的运行时验证。**
+
+实测定位（`kernel.dev.dbg_1.obi`，临时 `log::trace` 打点，打点未提交）：
+
+1. `labour_routine()` 里 `init_platform()` 正常返回；
+2. `set_init_level(gktl::InitLevel::Platform)` 开始跑该级别的 init hook，
+   `free_bootstrap16_buffer()`（`kernel/arch/x86/kernel/bootstrap.cpp:130`）释放
+   D000/E000/F000 三页后正常返回；
+3. `prof_init()`（`kernel/commands/prof.cpp:88`）进入，打印 `eh size=28600`，
+   随后**卡在 `build_fde_index()` 里不再返回**，没有断言、没有异常、QEMU 存活。
+
+把 `free_bootstrap16_buffer()` 临时改成空操作，卡死点不变——所以与那三次释放无关。
+嫌疑集中在 `unwind::FdeIndex::build()` 对 `.eh_frame` 的遍历：CFI 记录走不动
+（长度字段为零、或某种记录形态没被处理）就是一个不推进的循环。`kernel/lib/prof` 树上
+有另一会话的大量未提交改动，应由该会话认领。
+
+**对 mm 的影响**：`EarlyMem::reclaim_init_area()` 这条路径当前不可达，
+2026-09-03「`reclaim_init_area()` 和它的调用者搬出 `.init` 段」那条改动只有静态证据
+（`llvm-nm` 的符号地址），没有运行时证据。这个卡死解掉之后应当补一次实测。
+
+## 12. `free_bootstrap16_buffer()` 释放了页却没有解除映射
+
+`kernel/arch/x86/kernel/bootstrap.cpp`：`create_bootstrap16()` 为 AP 启动建了两处恒等映射
+（`BOOTSTRAP16_BUFFER_BASE` 起 `MIN_BOOTSTRAP16_BUFFER_SIZE`，以及必要时另拷贝的 GDT 页），
+而 `free_bootstrap16_buffer()` 只把三页交还给伙伴分配器，没有 unmap。
+
+页被重新分配出去之后，这两处恒等映射仍然可写地指着它们——一个跨所有者的可写别名，
+而且带 `Discache`。当前不暴露（没人再走那些地址），但它和第 10 条是同一种病：
+释放本身无声，代价由下一个使用者付。
+
+同一处还有一点值得核对：缓冲区是 `mm::EarlyMem::allocate()`（bootmem）拿的，
+却用 `mm::free_frames()` 还给伙伴分配器。如果这几页在 handoff 时是作为 reserved
+而从未进入伙伴分配器，这就是在释放一个它从未拥有的页。已确认它不是当前的卡死点
+（见第 11 条），但没有确认它是对的。
+
+非 mm 所有，同样列在这里备查。
