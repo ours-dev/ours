@@ -6,10 +6,10 @@
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/core/frame_buddy.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/pm_frame.hpp>
+#include <ours/mm/priv/frame_buddy.hpp>
 #include <ours/mm/priv/memory_allocation_context.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ustl/collections/intrusive/slist.hpp>
@@ -25,8 +25,8 @@ class FramePcpuCache {
     std::array<PmFrame::List, MaxOrder> lists_;
 };
 
-/// Locked wrapper around the pure core::FrameBuddy. The buddy algorithm
-/// itself lives in kernel/mm/core so the exact same code runs in host unit
+/// Locked wrapper around the pure FrameBuddy. The buddy algorithm
+/// itself is kept free of kernel globals so the exact same code runs in host unit
 /// tests without booting a kernel.
 class FrameSet {
     using Self = FrameSet;
@@ -57,7 +57,7 @@ class FrameSet {
     }
 
   private:
-    core::FrameBuddy m_buddy;
+    FrameBuddy m_buddy;
 };
 
 /// `PmZone` describes a memory zone with a specific responsibility and

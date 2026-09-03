@@ -164,8 +164,16 @@ struct ObjectCache::Option {
 
 template <ustl::util::FixedString Name, ObjectCache::Flags Flags, gktl::InitLevel InitLevel>
 struct ObjectCache::Option::AddInitHook {
-    static_assert(InitLevel > gktl::InitLevel::Platform,
-                  "Requires at least the platform initialized.");
+    /// Heap is where the object caches themselves come up (mm::init_cache()),
+    /// so it is the earliest level at which MemCache::create() can succeed.
+    ///
+    /// This used to read `InitLevel > gktl::InitLevel::Platform`, which is the
+    /// *last* level of all -- it would have rejected every usable value. It
+    /// never fired because nothing instantiated this template: the option was
+    /// only ever named as a template argument, and its members went unused
+    /// while the hooks that should have read them were missing.
+    static_assert(InitLevel >= gktl::InitLevel::Heap,
+                  "An object cache cannot be created before the heap exists");
 
     constexpr static auto NAME = Name;
     constexpr static auto FLAGS = Flags;
@@ -247,7 +255,11 @@ class ObjectCache::Instance {
   private:
     template <typename Option>
     static auto init_one() -> Status {
-        return init(Option::NAME.data(), Option::FLAGS);
+        // `.value`, not `.data()`: ustl::util::FixedString is an aggregate over
+        // a public `char value[N]` and has no data(). This never failed to
+        // compile before because nothing instantiated this path -- the hooks
+        // that would have called it were missing.
+        return init(Option::NAME.value, Option::FLAGS);
     }
 
     static inline ustl::Arc<MemCache> CACHE;

@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/mm/core/frame_buddy.hpp>
+#include <ours/mm/priv/frame_buddy.hpp>
 
 #include <algorithm>
 
-namespace ours::mm::core {
+namespace ours::mm {
 FrameBuddy::FrameBuddy(PmFrame *frames, usize count, Pfn base_pfn)
     : m_frames(frames), m_count(count), m_base_pfn(base_pfn), m_lists() {}
 
@@ -91,4 +91,4 @@ auto FrameBuddy::contains(PmFrame const *frame) const -> bool {
     return frame >= m_frames && frame < m_frames + m_count;
 }
 
-} // namespace ours::mm::core
+} // namespace ours::mm

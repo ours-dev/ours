@@ -6,7 +6,7 @@ import("//build/toolchain/toolchain_environment.gni")
 if (toolchain_environment == "kernel") {
   source_set("mm") {
     sources = [
-      "core/frame_buddy.cpp",
+      "frame_buddy.cpp",
       "cpu_local.cpp",
       "early_mem.cpp",
       "init_pmm.cpp",

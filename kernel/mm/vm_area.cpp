@@ -13,10 +13,24 @@
 #include <algorithm>
 
 namespace ours::mm {
-using VmaCache =
-    ObjectCache::Instance<VmArea,
-                          ObjectCache::Option::AddInitHook<"VmaCache", ObjectCache::Flags::Folio,
-                                                           gktl::InitLevel::PlatformEarly>>;
+using VmaCache = ObjectCache::Instance<
+    VmArea,
+    ObjectCache::Option::AddInitHook<"VmaCache", ObjectCache::Flags::Folio, gktl::InitLevel::Heap>>;
+
+/// AddInitHook only *records* the name, flags and level -- it cannot emit the
+/// hook itself, because a hook declared inside a class template is a static
+/// data member and would never be instantiated. The namespace-scope hook is
+/// the caller's to write, and this one was missing: VmaCache::CACHE stayed
+/// null, and the first VmArea::create_common() -- from
+/// VmAspace::init_kernel_aspace(), the first thing init_vmm() does -- tripped
+/// "ObjectCache for this type is not initialized".
+INIT_CODE static auto init_vma_cache() -> void {
+    if (Status::Ok != VmaCache::init_from_option()) {
+        panic("Failed to create the object cache for VmArea");
+    }
+    log::trace("VmaCache has been created");
+}
+GKTL_INIT_HOOK(VmaCacheInit, init_vma_cache, gktl::InitLevel::Heap);
 
 VmArea::VmArea(VirtAddr base, usize size, VmaFlags vmaf, Self *parent, VmAspace *aspace,
                char const *name)

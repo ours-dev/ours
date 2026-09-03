@@ -1,15 +1,16 @@
 # Host unit tests for the memory-management subsystem.
 #
 # These targets build with the default (host) toolchain and run on the build
-# machine — no kernel boot required. They compile the pure mm core
-# (kernel/mm/core) plus a host-friendly arch include set, mirroring the
-# kernel/lib/arch smoke-test convention.
+# machine — no kernel boot required. They compile the parts of mm that touch
+# no kernel globals (the buddy allocator, protection ranges) plus a
+# host-friendly arch include set, mirroring the kernel/lib/arch smoke-test
+# convention.
 
 executable("frame-buddy-smoke") {
   testonly = true
   sources = [
     "frame_buddy_smoke.cpp",
-    "//kernel/mm/core/frame_buddy.cpp",
+    "//kernel/mm/frame_buddy.cpp",
   ]
   # The mm headers ride in via the generated include-path config rather than
   # //kernel/mm:headers, whose //kernel/phys:handoff dep does not evaluate

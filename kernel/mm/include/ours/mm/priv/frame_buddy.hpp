@@ -1,13 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_MM_CORE_FRAME_BUDDY_HPP
-#define OURS_MM_CORE_FRAME_BUDDY_HPP 1
+#ifndef OURS_MM_PRIV_FRAME_BUDDY_HPP
+#define OURS_MM_PRIV_FRAME_BUDDY_HPP 1
 
 #include <ours/mm/pm_frame.hpp>
 
 #include <array>
 
-namespace ours::mm::core {
+namespace ours::mm {
 /// Pure binary buddy allocator over a caller-provided array of PmFrame.
 /// This is the seam that makes the physical-memory allocator host-testable:
 /// the same algorithm runs in the kernel and in a host unit test, because
@@ -89,6 +89,6 @@ class FrameBuddy {
     std::array<PmFrame::List, NR_FRAME_ORDERS> m_lists;
 };
 
-} // namespace ours::mm::core
+} // namespace ours::mm
 
-#endif // #ifndef OURS_MM_CORE_FRAME_BUDDY_HPP
+#endif // #ifndef OURS_MM_PRIV_FRAME_BUDDY_HPP

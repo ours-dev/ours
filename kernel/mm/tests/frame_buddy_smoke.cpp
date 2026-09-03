@@ -5,7 +5,7 @@
 /// smoke-test convention: a plain main() that returns a non-zero exit code on
 /// the first failing check. No kernel is booted; PmFrame storage lives on the
 /// host heap and the global MemMap is never touched.
-#include <ours/mm/core/frame_buddy.hpp>
+#include <ours/mm/priv/frame_buddy.hpp>
 
 #include <memory>
 #include <vector>
@@ -25,9 +25,9 @@ auto vpanic(String, FormatArgs const &) -> void {
 } // namespace ours
 
 namespace {
+using ours::mm::FrameBuddy;
 using ours::mm::PmFrame;
 using ours::mm::ZoneType;
-using ours::mm::core::FrameBuddy;
 
 auto make_frames(usize n) -> std::unique_ptr<PmFrame[]> {
     auto frames = std::make_unique<PmFrame[]>(n);

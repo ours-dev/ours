@@ -35,7 +35,18 @@ using mm::ObjectCache;
 using ThreadCache =
     ObjectCache::Instance<Thread,
                           ObjectCache::Option::AddInitHook<"ThreadCache", ObjectCache::Flags::Folio,
-                                                           gktl::InitLevel::PlatformEarly>>;
+                                                           gktl::InitLevel::Heap>>;
+
+/// See the note beside VmaCache in kernel/mm/vm_area.cpp: the option records
+/// the level, the namespace-scope hook is the caller's to write, and this one
+/// was missing too.
+INIT_CODE static auto init_thread_cache() -> void {
+    if (Status::Ok != ThreadCache::init_from_option()) {
+        panic("Failed to create the object cache for Thread");
+    }
+    log::trace("ThreadCache has been created");
+}
+GKTL_INIT_HOOK(ThreadCacheInit, init_thread_cache, gktl::InitLevel::Heap);
 
 /// Related with global thread list
 decltype(Thread::SPAWNED_THREADS_LOCK) Thread::SPAWNED_THREADS_LOCK;
