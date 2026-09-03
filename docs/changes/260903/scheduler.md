@@ -402,3 +402,73 @@ constexpr explicit BaseProfile(i32 priority, bool inheritible = true)
 - 没动 `calc_weighted_time()` 里 `weight / MID_WEIGHT` 的整数截断：对低于中权重的线程
   （`IDLE_PRIORITY` = 7 → 503/10550 = 0）结果仍是 0。这是另一个 bug，已记进待修。
 - 没动 `inheritible`（拼写也不对）这个未使用的形参。
+
+---
+
+## 6. 启动阶段换用轮转（RR）纪律，Fair 暂时退出构建（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/rr.hpp` / `kernel/kernel/task/sched/rr.cpp` — 新增 `RrRunQueue` 与
+  `RoundRobin` 纪律，注册为 `Discipline::Normal`。
+- `kernel/kernel/task/sched/BUILD.gn` — `fair.cpp` 换成 `rr.cpp`；`fair.cpp`/`fair.hpp` 一行未动。
+- `kernel/include/ours/task/sched/context.hpp` — `Context` 加 `m_rr_hook`（list 钩子）与 `RrQueueOption`；
+  `Context`/`Timeslice` 各加 `friend class RoundRobin`。
+- `kernel/include/ours/task/sched/scheduler.hpp` — `Scheduler` 里在 `m_fair_runqueue` 旁加 `m_rr_runqueue`
+  与 `rr_run_queue()`。
+- `kernel/include/ours/task/sched/types.hpp` / `kernel/include/ours/task/thread.hpp` — 前向声明与
+  `friend sched::RoundRobin`，和 Fair 同样的写法。
+
+**症状**
+
+Fair 的 `RunQueue::avg_vruntime()` 在第一个线程入队时除零（第 5 条的停点）。修它要动 Fair 的算术，
+而 Fair 是作者自己的设计，明确不由助手改动。
+
+**原因**
+
+不是 bug 的原因，是决策的原因：启动路径后面还有一串通用 `Scheduler` 层的问题要走，每一步都需要
+一个"不会算错"的纪律来推进。RR 没有权重、没有 lag、没有 deadline——只有一条 FIFO 和一个固定
+时间片，出问题时能确定是通用层的，不是纪律的。
+
+**改法**
+
+- `RrRunQueue`：侵入式 FIFO（`Context::m_rr_hook`，和 Fair 的 set 钩子不同形，一个 Context 同一时间
+  只在一个纪律的队列上）。放在 `Scheduler` 里，理由与 Fair 的队列相同——`Scheduler` 已经是 per-CPU 单例。
+- `RoundRobin`：只实现通用 `Scheduler` 真正驱动的那些入口。
+  - `enqueue/dequeue`：正在运行的线程不在 FIFO 上（`set_next_thread` 把它摘下来），所以对它的
+    enqueue 是 no-op、dequeue 只记账。
+  - `put_prev_thread`：还可运行就先记账、再排到队尾——这就是"轮转"。
+  - `set_next_thread`：摘出队列，`prev_runtime` 作为本片基线，`curr_started_time` 作为计时起点。
+  - `update_thread`：每次时钟更新给当前线程记账；片用完且队里还有人就 `mark_preempt_pending()`。
+    只有自己一个可运行线程时不抢占——没有人可轮换。
+  - `on_thread_init`：把 `m_timeslice.m_base` 设成 `runtime.scheduling_period()`，否则
+    `Timeslice::length()` 是 0，第一拍就"用完"。
+  - `curr_started_time` 由纪律维护——通用层从不写它，Fair 之前也是自己维护。
+- 记账辅助函数做成 `RoundRobin` 的私有静态成员，而不是文件级函数：`Context`/`Thread` 给
+  `RoundRobin` 的 friend 罩不到自由函数。
+- 末尾显式实例化 `template class Schedule<RoundRobin, Discipline::Normal>;`——和 fair.cpp 末尾
+  那段一样，不写的话 `REGISTRATION` 不会被实例化，链接器收不到，`Scheduler::init()` 找不到纪律。
+- 换回 Fair 的方法：`BUILD.gn` 里 `rr.cpp` → `fair.cpp`。两个队列槽同时存在，切换只是注册谁的问题。
+
+**参照**
+
+无，本项目自有设计（Zircon 只有一个调度器；Linux 的 `SCHED_RR` 在 `kernel/sched/rt.c`，
+思路相同：`requeue_task_rt()` 在 `task_tick_rt()` 片用完时把任务移到队尾）。
+
+**验证**
+
+- 构建通过；`clang-format` 已跑；`clang-tidy` 对 `rr.hpp`/`rr.cpp` 无告警。
+- QEMU 两个镜像都越过了 Fair 的 #DE，进到了新的地方——而且是**通用层**：
+  - dbg：`reschedule_mask()` 里 `current_thread->m_canary.verify<Self>()`，`Self` 是 `Scheduler`
+    而 `current_thread` 是 `Thread*`——拿错类型的魔数校验 canary，必炸。
+  - dev（断言关闭，走得更远）：`Thread::trampoline()` → `trampoline_handoff()` →
+    `finish_switch_context()` 释放 `prev_thread` 的 pi 锁时 `assert_held()` 失败。
+    这意味着 **RR 上的第一次真实上下文切换已经发生**：laborer 被 `evaluate_next_thread` 选中并切了过去。
+    锁没被持有，是因为 `reschedule_mask()` 直接调 `Scheduler::Current::preempt()`，
+    而不像 `flush_pending_local()` 那样走取 pi 锁的 `Thread::Current::preempt()`。
+  两条都是通用 `Scheduler` 的笔误，各自一条改动。
+
+**故意没做**
+
+- 没有实现 `unpark_preempt`（唤醒不抢占，纯 FIFO）、`select_target_cpu`/`migrate_thread`
+  （用 ISchedule 默认）、`override_thread_base_profile`（RR 没有权重可改）。
+- 没有删 Fair 的任何东西，包括 `Scheduler::m_fair_runqueue` 和 `scheduler.hpp` 对 `fair.hpp` 的包含。

@@ -12,6 +12,7 @@
 #include <ours/task/sched/profiles.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ustl/chrono/duration.hpp>
+#include <ustl/collections/intrusive/list_hook.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>
 #include <ustl/sync/atomic.hpp>
 
@@ -247,6 +248,7 @@ class Timeslice {
   private:
     friend class Scheduler;
     friend class Fair;
+    friend class RoundRobin;
 
     u32 m_base;
     u32 m_extension;
@@ -276,6 +278,7 @@ class Context: public gktl::mixin::Comparable<Context> {
         : m_affinity()
         , m_runqueue_state()
         , m_runqueue_hook()
+        , m_rr_hook()
         , m_metric()
         , m_profile(profile)
         , m_last_cpu()
@@ -331,11 +334,19 @@ class Context: public gktl::mixin::Comparable<Context> {
   private:
     friend class Scheduler;
     friend class Fair;
+    friend class RoundRobin;
     friend class task::OwnedWaitQueue;
 
     CpuAffinity m_affinity;
     RunQueueState m_runqueue_state;
     ustl::collections::intrusive::SetMemberHook<> m_runqueue_hook;
+
+    /// The round-robin discipline's FIFO membership. A second hook rather
+    /// than a reuse of m_runqueue_hook: that one is a set node for Fair's
+    /// ordered RunQueue, and a list and a set do not share a node shape. A
+    /// context is on at most one discipline's queue at a time, so the two are
+    /// never both linked.
+    ustl::collections::intrusive::ListMemberHook<> m_rr_hook;
 
     Metric m_metric;
 
@@ -349,6 +360,7 @@ class Context: public gktl::mixin::Comparable<Context> {
 
   public:
     USTL_DECLARE_HOOK_OPTION(Self, m_runqueue_hook, RunQueueOption);
+    USTL_DECLARE_HOOK_OPTION(Self, m_rr_hook, RrQueueOption);
 
     template <typename = void>
     using RunQueueTraits =

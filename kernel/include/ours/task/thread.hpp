@@ -376,6 +376,7 @@ namespace task {
 
         friend sched::Scheduler;
         friend sched::Fair;
+        friend sched::RoundRobin;
         friend class object::ProcessDispatcher;
 
         friend WaitQueue;

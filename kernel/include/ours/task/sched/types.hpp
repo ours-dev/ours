@@ -29,6 +29,7 @@ struct Runtime;
 class Scheduler;
 class ISchedule;
 class Fair;
+class RoundRobin;
 
 struct BaseProfile;
 

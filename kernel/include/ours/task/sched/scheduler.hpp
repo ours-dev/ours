@@ -10,6 +10,7 @@
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/sched/config.hpp>
 #include <ours/task/sched/fair.hpp>
+#include <ours/task/sched/rr.hpp>
 #include <ours/task/sched/runtime.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
@@ -113,6 +114,14 @@ class Scheduler {
     /// fair.hpp for why this deliberately couples Scheduler to Fair.
     FORCE_INLINE auto fair_run_queue() -> RunQueue & {
         return m_fair_runqueue;
+    }
+
+    /// The round-robin discipline's FIFO for this CPU, held here for the same
+    /// reason as the Fair queue above. Both slots exist at once so that
+    /// switching disciplines is a matter of which one is registered, not of
+    /// which one Scheduler was compiled to carry.
+    FORCE_INLINE auto rr_run_queue() -> RrRunQueue & {
+        return m_rr_runqueue;
     }
 
   private:
@@ -236,6 +245,7 @@ class Scheduler {
     std::array<ISchedule *, NUM_DISCIPLINE> m_schedules{};
 
     RunQueue m_fair_runqueue;
+    RrRunQueue m_rr_runqueue;
 
     Thread *m_idle_thread;
 
