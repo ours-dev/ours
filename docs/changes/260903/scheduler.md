@@ -679,3 +679,48 @@ Assertion failed on 0 == m_runtime.curr_thread
 - 构建通过。dbg：断言消失，laborer 被切上 CPU 并跑进 `init_arch()`（日志出现 Bootstrap
   PGD/GDT 等 arch 初始化 trace），随后在 `init_platform()` → `x86_bring_aps()` →
   `sleep_for()` 处撞下一条（第 12 条）。
+
+---
+
+## 12. `sleep_etc()` 进 `reschedule_common()` 时没有关抢占（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/thread.cpp` — `Thread::Current::sleep_etc()` 的 pi 锁 guard 改用
+  `lockdep::IrqSaveAndPreemptDisable`。
+
+**症状**
+
+第 11 条之后 dbg 停在 `x86_bring_aps()` 的第一次 `sleep_for(10ms)`：
+
+```
+Assertion failed on curr->preemption_state().preemption_disabled_count() != 0
+with message: Enter reschedule_common() with preempt enabled
+```
+
+（消息在格式化时又抛 `format_error`，正文靠 lldb。）栈：`reschedule_common` ← `sleep_etc`
+← `sleep_for` ← `x86_bring_aps` ← `platform_init_mp` ← `labour_routine`。
+
+**原因**
+
+`sleep_etc()` 用 `Guard<SpinLock, IrqSave>` 拿 pi 锁，然后经 `WaiterState::sleep()` 一路带着
+这把锁进 `reschedule_common()`；后者要求并断言"抢占已关、中断已关、持 pi 锁"。在 lockdep 的
+`Guard` 修好之前这些选项什么都不做，`IrqSave` 和 `IrqSaveAndPreemptDisable` 没有区别；
+修好之后区别就是这条断言。`Thread::resume()` 用的本来就是组合选项。
+
+**改法**
+
+guard 改成 `lockdep::IrqSaveAndPreemptDisable`。Zircon `Thread::Current::SleepEtc()` 用
+`PreemptDisableAndIrqSaveOption` 进 park。
+
+**验证**
+
+- 构建通过。dbg：断言消失，laborer 进入 sleep 后日志静默（idler 应当接手并 `hlt`，10 ms 后
+  定时器唤醒 laborer）。静默的原因正在用 gdbstub 追（idle 循环 / 定时器回调 / `reschedule_mask`
+  断点），见下一条。
+
+**故意没做**
+
+- `Thread::Current::preempt()/reschedule()/yield()/yield_to()` 仍是 `IrqSave`；
+  它们进 `reschedule_common()` 时会撞同一条断言。`reschedule()` 还有一层
+  `is_preemptible()` 门（要求中断开着），在 guard 关中断之后永远进不去——那是同一族问题，
+  等启动走到那里逐条处理，先不批量改。

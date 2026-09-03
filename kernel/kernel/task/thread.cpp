@@ -461,7 +461,14 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
     Timer timer;
     Status woken_status;
     {
-        Guard<SpinLock, IrqSave> guard{current_thread->get_pi_lock()};
+        // Preemption off as well as interrupts: this guard is held into
+        // reschedule_common() through WaiterState::sleep(), and that is the
+        // state reschedule_common() requires and asserts. Zircon's SleepEtc()
+        // parks under PreemptDisableAndIrqSaveOption for the same reason.
+        // With interrupts alone, the first sleep_for() of the boot -- inside
+        // x86_bring_aps() -- died on "Enter reschedule_common() with preempt
+        // enabled" the moment Guard began honouring its options.
+        Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
         DEBUG_ASSERT(current_thread->state() == Thread::State::Running);
 
         if (Interruptible::Yes == interruptible && current_thread->signals() != Signals::None) {
