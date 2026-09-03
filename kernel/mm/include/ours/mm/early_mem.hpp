@@ -32,7 +32,7 @@ struct EarlyMem {
         if (range.is_err()) {
             return range.unwrap_err();
         }
-        return s_bootmem == nullptr ? Status::BadState : s_bootmem->reserve(range.unwrap());
+        return BOOTMEM == nullptr ? Status::BadState : BOOTMEM->reserve(range.unwrap());
     }
 
     [[nodiscard]]
@@ -41,8 +41,7 @@ struct EarlyMem {
         if (range.is_err()) {
             return range.unwrap_err();
         }
-        return s_bootmem == nullptr ? Status::BadState
-                                    : s_bootmem->assign_node(range.unwrap(), node);
+        return BOOTMEM == nullptr ? Status::BadState : BOOTMEM->assign_node(range.unwrap(), node);
     }
 
     template <typename T = u8>
@@ -58,10 +57,10 @@ struct EarlyMem {
     template <typename T = u8>
     static auto allocate(usize const count, usize const alignment, PhysAddr const lower,
                          PhysAddr const upper, NnId const node) -> T * {
-        if (s_bootmem == nullptr || count > std::numeric_limits<usize>::max() / sizeof(T)) {
+        if (BOOTMEM == nullptr || count > std::numeric_limits<usize>::max() / sizeof(T)) {
             return nullptr;
         }
-        auto const allocation = s_bootmem->allocate({
+        auto const allocation = BOOTMEM->allocate({
             .size = sizeof(T) * count,
             .alignment = alignment,
             .lower = lower,
@@ -75,23 +74,23 @@ struct EarlyMem {
     template <typename T>
     [[nodiscard]]
     static auto deallocate(T *const pointer, usize const count) -> Status {
-        if (s_bootmem == nullptr || count > std::numeric_limits<usize>::max() / sizeof(T)) {
+        if (BOOTMEM == nullptr || count > std::numeric_limits<usize>::max() / sizeof(T)) {
             return Status::BadState;
         }
         auto const range = bootmem::Range::from(PhysMap::virt_to_phys(pointer), sizeof(T) * count);
         if (range.is_err()) {
             return range.unwrap_err();
         }
-        return s_bootmem->release(range.unwrap());
+        return BOOTMEM->release(range.unwrap());
     }
 
     template <typename Visitor>
     [[nodiscard]]
     static auto visit(bootmem::MemoryQuery const query, Visitor &&visitor) -> Status {
-        if (s_bootmem == nullptr) {
+        if (BOOTMEM == nullptr) {
             return Status::BadState;
         }
-        return s_bootmem->visit(query, visitor);
+        return BOOTMEM->visit(query, visitor);
     }
 
     template <typename Visitor>
@@ -132,15 +131,15 @@ struct EarlyMem {
 
     [[nodiscard]]
     static auto min_address() -> PhysAddr {
-        return s_bootmem == nullptr ? PhysAddr{} : s_bootmem->min_address();
+        return BOOTMEM == nullptr ? PhysAddr{} : BOOTMEM->min_address();
     }
 
     [[nodiscard]]
     static auto max_address() -> PhysAddr {
-        return s_bootmem == nullptr ? PhysAddr{} : s_bootmem->max_address();
+        return BOOTMEM == nullptr ? PhysAddr{} : BOOTMEM->max_address();
     }
 
-    INIT_DATA static inline phys::BootMem *s_bootmem;
+    INIT_DATA static inline phys::BootMem *BOOTMEM;
 };
 
 } // namespace ours::mm

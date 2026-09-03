@@ -4,6 +4,7 @@ cpp_interface("headers") {
   public = [
     "include/ktl/allocator.hpp",
     "include/ktl/kmalloc.hpp",
+    "include/ktl/memory_resource.hpp",
     "include/ktl/name.hpp",
     "include/ktl/new.hpp",
     "include/ktl/result.hpp",
@@ -22,6 +23,7 @@ cpp_interface("headers") {
 source_set("ktl") {
   sources = [
     "kmalloc.cpp",
+    "memory_resource.cpp",
     "new.cpp",
   ]
   deps = [ "//kernel/mm:headers" ]

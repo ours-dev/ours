@@ -1,0 +1,26 @@
+import("//build/cpp/cpp_interface.gni")
+
+source_set("kshell") {
+  sources = [ "kshell/shell.cpp" ]
+  # Mirrors //kernel/kernel/task's include surface: Thread::spawn's header
+  # chain reaches ours/mm/init.hpp -> ours/phys/handoff.hpp, whose include
+  # dirs ride in on the mm/object headers targets.
+  public_deps = [
+    "//kernel/lib/gktl:headers",
+    "//kernel/mm:headers",
+    "//kernel/object:headers",
+    "//system/lib/lockdep",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+}
+group("kernel-tests") {
+}
+group("phys-tests") {
+}
+group("boot_tests") {
+}

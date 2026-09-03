@@ -151,7 +151,7 @@ class ISchedule {
 
     /// Declaring the deleted copy/move members above suppresses the
     /// implicit default constructor; disciplines are default-constructed
-    /// (see Schedule<>::g_instance), so bring it back explicitly.
+    /// (see Schedule<>::INSTANCE), so bring it back explicitly.
     ISchedule() = default;
 
     virtual ~ISchedule() = default;
@@ -187,11 +187,11 @@ class Schedule: public ISchedule {
     }
 
   private:
-    static inline Derived g_instance;
+    static inline Derived INSTANCE;
 
     LINK_SECTION(".init.rodata.schedules")
     FORCE_USED
-    static inline ScheduleEntry const REGISTRATION = {Discipline, &g_instance};
+    static inline ScheduleEntry const REGISTRATION = {Discipline, &INSTANCE};
 };
 
 } // namespace ours::task::sched

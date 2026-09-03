@@ -1,7 +1,7 @@
+#include <logz4/log.hpp>
 #include <obi/memory_config_view.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/phys/init.hpp>
-#include <ours/phys/print.hpp>
 
 #include <limits>
 
@@ -9,7 +9,7 @@ namespace ours::phys {
 extern char const PHYS_LOAD_START[] LINK_NAME("__executable_start");
 extern char const PHYS_LOAD_END[] LINK_NAME("__executable_end");
 
-Aspace *g_aspace;
+Aspace *ASPACE;
 
 using MemoryInitializationResult = ustl::Result<bool, ours::Status>;
 
@@ -57,7 +57,7 @@ namespace {
 auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationResult {
     auto const memory = package.find("memory");
     if (memory.is_err()) {
-        dprintln("OBI memory item is ambiguous ({})", static_cast<u32>(memory.unwrap_err()));
+        log::debug("OBI memory item is ambiguous ({})", static_cast<u32>(memory.unwrap_err()));
         return ustl::err(memory.unwrap_err());
     }
     if (memory.unwrap().is_none()) {
@@ -66,7 +66,7 @@ auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationR
 
     auto const ranges = obi::MemoryConfigView::from(memory.unwrap().value());
     if (ranges.is_err()) {
-        dprintln("OBI memory item is invalid ({})", static_cast<u32>(ranges.unwrap_err()));
+        log::debug("OBI memory item is invalid ({})", static_cast<u32>(ranges.unwrap_err()));
         return ustl::err(ranges.unwrap_err());
     }
 
@@ -74,12 +74,12 @@ auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationR
     for (usize index = 0; index < ranges.unwrap().count(); ++index) {
         auto range = ranges.unwrap().range(index);
         if (range.is_err()) {
-            dprintln("OBI memory range {} is invalid", index);
+            log::debug("OBI memory range {} is invalid", index);
             return ustl::err(range.unwrap_err());
         }
         auto const status = apply_memory_range(range.unwrap(), &added_usable);
         if (status != ours::Status::Ok) {
-            dprintln("OBI memory range {} could not be registered", index);
+            log::debug("OBI memory range {} could not be registered", index);
             return ustl::err(status);
         }
     }
@@ -123,7 +123,7 @@ auto init_memory(obi::ContainerView const &package, BootPackageInput const &inpu
     }
 
     if (aspace != nullptr) {
-        g_aspace = aspace;
+        ASPACE = aspace;
     }
 
     arch_init_memory(aspace);

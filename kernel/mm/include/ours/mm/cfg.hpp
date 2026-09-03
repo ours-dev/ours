@@ -5,12 +5,27 @@
 
 #include <ours/macro_abi.hpp>
 
+/// The build spells these switches MM_NUMA / MM_NUMA_EMULATION (GN booleans,
+/// so they reach source as the keywords `true`/`false` -- see
+/// //kernel/products:memory), while everything below is written in terms of the
+/// OURS_CONFIG_* names. Derive one from the other here rather than leaving two
+/// spellings of one switch to drift: they had drifted, and a build with
+/// `mm_numa = true` still got NUMA_MAX_NODE == 1 and a PmFrame with its node
+/// field compiled out -- NUMA was selectable but never actually on.
 #ifndef OURS_CONFIG_NUMA
+#if defined(MM_NUMA) && MM_NUMA
+#define OURS_CONFIG_NUMA 1
+#else
 #define OURS_CONFIG_NUMA 0
+#endif
 #endif
 
 #ifndef OURS_CONFIG_NUMA_EMULATION
+#if defined(MM_NUMA_EMULATION) && MM_NUMA_EMULATION
+#define OURS_CONFIG_NUMA_EMULATION 1
+#else
 #define OURS_CONFIG_NUMA_EMULATION 0
+#endif
 #endif
 
 #ifndef OURS_CONFIG_MAX_PHYSADDR_BITS
@@ -92,7 +107,5 @@
 
 #define FRAME_DESC_SIZE OURS_TARGET_BITS
 #define FRAME_DESC_SHIFT (OURS_TARGET_BITS == 64 ? 6 : 5)
-
-#define OM_API [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
 
 #endif // #ifndef OURS_MM_CFG_HPP

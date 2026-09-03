@@ -1,7 +1,7 @@
+#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/init.hpp>
-#include <ours/phys/print.hpp>
 
 #include <cstring>
 
@@ -62,14 +62,14 @@ auto Aspace::alloc_page_table(usize size, usize alignment) const -> PhysAddr {
         std::memset(reinterpret_cast<void *>(phys), 0, size);
     }
 
-    dprintln("Allocate page table (p:0x{:X}, s:0x{:X})", phys, size);
+    log::debug("Allocate page table (p:0x{:X}, s:0x{:X})", phys, size);
     return phys;
 }
 
 auto create_identity_map_for_ram(Aspace &aspace, PhysAddr max_limit) -> void {
     auto const map = [&](PhysAddr base, PhysAddr end) {
         auto const size = end - base;
-        dprintln("Map identically (0x{:X}, 0x{:X})", base, size);
+        log::debug("Map identically (0x{:X}, 0x{:X})", base, size);
 
         constexpr auto const mmuf = MmuFlags::PermMask | MmuFlags::Present;
         auto result = aspace.map_identically(base, size / PAGE_SIZE, mmuf);

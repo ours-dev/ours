@@ -5,7 +5,7 @@
 
 namespace ours::boot {
 namespace {
-    phys::Handoff const *g_handoff;
+    phys::Handoff const *HANDOFF;
 
     auto handoff_fits_physmap(PhysAddr const base) -> bool {
         if (base < mm::PhysMap::PHYS_BASE) {
@@ -54,14 +54,14 @@ auto setup_handoff(PhysAddr const handoff_phys) -> void {
     if (status != Status::Ok) {
         panic("Failed to accept kernel handoff");
     }
-    g_handoff = value;
+    HANDOFF = value;
 }
 
 auto handoff() -> phys::Handoff const & {
-    if (g_handoff == nullptr) {
+    if (HANDOFF == nullptr) {
         panic("Kernel handoff has not been installed");
     }
-    return *g_handoff;
+    return *HANDOFF;
 }
 
 auto boot_package() -> phys::BootObi::Result {

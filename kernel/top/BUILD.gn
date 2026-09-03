@@ -18,7 +18,13 @@ source_set("top") {
     "//kernel/lib/ccrt",
     "//kernel/driver",
     "//kernel/lib/gktl",
+    "//kernel/lib/kshell",
+    "//kernel/lib/prof",
     "//kernel/lib/syscall",
+    "//kernel/lib/userabi",
     "//kernel/lib/logz4",
+    "//system/lib/logz4",
+    "//kernel/lib/unwind",
+    "//kernel/arch/x86/kernel:headers",
   ]
 }

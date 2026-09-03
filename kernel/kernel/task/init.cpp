@@ -1,24 +1,20 @@
+#include <ours/koid.hpp>
 #include <ours/mm/stack.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/init.hpp>
 #include <ours/task/scheduler.hpp>
+#include <ustl/lazy_init.hpp>
 #include <ustl/mem/object.hpp>
 
 namespace ours::task {
 namespace {
-    /// Brings up the idler of the CPU this code is running on.
+    /// The boot CPU's thread until the idlers exist.
     ///
-    /// This is the form the *_early path has to use. Those interfaces exist to
-    /// light a facility up on the boot CPU alone, before the machinery that
-    /// serves every CPU is there -- at that point CpuLocal has only installed
-    /// the current-CPU offset, so a CPU-indexed lookup has nothing to resolve
-    /// against yet.
-    INIT_CODE auto init_idle_task_current_cpu() -> void {
-        auto &idler = IdleThread::Current::get();
-        idler.init(Cpu::id());
-
-        Thread::Current::set(&idler.thread());
-    }
+    /// Static storage on purpose: it is constructed before the slab, so there is
+    /// nothing to allocate it from. It is not an IdleThread -- the boot context
+    /// and the idle loop are separate roles, and IdleThread::init() cannot run
+    /// this early anyway because it spawns, and spawning allocates a stack.
+    ustl::LazyInit<Thread> BOOT_THREAD;
 
     /// Brings up the idler of |cpunum|, which need not be the running CPU.
     /// Requires CpuLocal::init() to have filled in the per-CPU offsets.
@@ -30,8 +26,15 @@ namespace {
     }
 } // namespace
 
+/// Gives the boot CPU a Thread so that Thread::Current works, and nothing more.
+///
+/// Runs before init_pmm() and init_vmm(), so it must not allocate: create_first()
+/// wraps the context already executing here instead of spawning a new one. The
+/// idlers, including this CPU's, are built later by init().
 INIT_CODE auto init_early() -> void {
-    init_idle_task_current_cpu();
+    Thread::create_first(KoIdGenerator::generate(), "boot",
+                         sched::BaseProfile(sched::DEFAULT_PRIORITY), BOOT_THREAD.data());
+    Thread::Current::set(&*BOOT_THREAD);
 
     [[maybe_unused]]
     auto thread = Thread::Current::get();

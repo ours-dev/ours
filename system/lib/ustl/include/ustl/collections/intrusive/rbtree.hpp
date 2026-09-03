@@ -4,6 +4,7 @@
 #define USTL_COLLECTIONS_INTRUSIVE_RBTREE_HPP 1
 
 #include <ustl/collections/intrusive/detail/assert.hpp>
+#include <ustl/collections/intrusive/detail/extension.hpp>
 #include <ustl/collections/intrusive/detail/key_node_ptr_compare.hpp>
 #include <ustl/collections/intrusive/detail/reverse_iter.hpp>
 #include <ustl/collections/intrusive/detail/tree_iterator.hpp>
@@ -25,6 +26,8 @@ namespace ustl::collections::intrusive {
 template <typename T, typename... Options>
 class RBTree final {
     struct Defaults: HookDefaults {
+        // No extensions unless a `Extensions<Policy>` option says so.
+        using ExtensionPolicy = void;
         using ProtoValueTraits = SetBaseHook<>;
         // The transparent std::less<> (not std::less<T>) so that
         // noexcept-ness propagates from T's own operator< -- libc++'s
@@ -43,6 +46,28 @@ class RBTree final {
     using NodePtr = typename NodeTraits::NodePtr;
     using Algorithms = RBTreeAlgorithms<NodeTraits>;
     using NodeCompare = detail::KeyNodePtrCompare<typename PackedOptions::Compare, ValueAccess>;
+
+    using Policy = typename PackedOptions::ExtensionPolicy;
+    using Extension = detail::Extension;
+
+    /// Which extensions this tree activates. Every hook site inside the
+    /// algorithms is gated on this at compile time, so anything the policy
+    /// did not ask for leaves no trace in the generated code.
+    static constexpr Extension EXTS = detail::EXTENSIONS_OF<Policy>;
+    static constexpr bool HAS_EXTS = EXTS != Extension::None;
+    static constexpr bool IS_AUGMENTED = detail::has_extension(EXTS, Extension::Augment);
+    static constexpr bool IS_INSTRUMENTED = detail::has_extension(EXTS, Extension::Instrument);
+
+    /// The policy's callback table, a link-time constant: attaching a policy
+    /// costs the container no per-instance space beyond the context pointer
+    /// an instrumented tree needs.
+    [[nodiscard]]
+    constexpr auto hooks() const noexcept -> typename Algorithms::Hooks {
+        return typename Algorithms::Hooks{
+            .callbacks = &detail::CALLBACKS_OF<Policy, ValueTraits>,
+            .context = m_context.get(),
+        };
+    }
 
   public:
     using Element = T;
@@ -163,7 +188,11 @@ class RBTree final {
         if (!inserted) {
             return {IterMut(existing), false};
         }
-        Algorithms::insert_unique_commit(header(), node, commit_data);
+        if constexpr (HAS_EXTS) {
+            Algorithms::template insert_unique_commit<EXTS>(header(), node, commit_data, hooks());
+        } else {
+            Algorithms::insert_unique_commit(header(), node, commit_data);
+        }
         ++m_size;
         return {IterMut(node), true};
     }
@@ -180,7 +209,12 @@ class RBTree final {
     constexpr auto insert_equal(T &value) noexcept -> IterMut {
         const auto node = ValueTraits::to_node_ptr(value);
         detail::require(Algorithms::unique(node));
-        Algorithms::insert_equal_upper_bound(header(), node, NodeCompare{&m_compare});
+        if constexpr (HAS_EXTS) {
+            Algorithms::template insert_equal_upper_bound<EXTS>(
+                header(), node, NodeCompare{&m_compare}, nullptr, hooks());
+        } else {
+            Algorithms::insert_equal_upper_bound(header(), node, NodeCompare{&m_compare});
+        }
         ++m_size;
         return IterMut(node);
     }
@@ -197,7 +231,12 @@ class RBTree final {
     constexpr auto insert_before(Iter position, T &value) noexcept -> IterMut {
         const auto node = ValueTraits::to_node_ptr(value);
         detail::require(Algorithms::unique(node));
-        Algorithms::insert_before(header(), position.pointed_node(), node);
+        if constexpr (HAS_EXTS) {
+            Algorithms::template insert_before<EXTS>(header(), position.pointed_node(), node,
+                                                     nullptr, hooks());
+        } else {
+            Algorithms::insert_before(header(), position.pointed_node(), node);
+        }
         ++m_size;
         return IterMut(node);
     }
@@ -234,7 +273,11 @@ class RBTree final {
         const auto node = position.pointed_node();
         detail::require(node != header());
         const auto next = Algorithms::next_node(node);
-        static_cast<void>(Algorithms::erase(header(), node));
+        if constexpr (HAS_EXTS) {
+            static_cast<void>(Algorithms::template erase<EXTS>(header(), node, hooks()));
+        } else {
+            static_cast<void>(Algorithms::erase(header(), node));
+        }
         Algorithms::init(node);
         --m_size;
         std::invoke(disposer, ValueTraits::to_value_ptr(node));
@@ -254,6 +297,61 @@ class RBTree final {
 
     constexpr auto clear() noexcept -> void {
         static_cast<void>(erase(begin(), end()));
+    }
+
+    /// Recomputes the aggregates along `position`'s root path after the
+    /// element's own augmented inputs changed in place. Only the value
+    /// changes here — the key must still order the same, or the element has
+    /// to be erased and reinserted instead.
+    constexpr auto refresh_augment(Iter position) noexcept -> void
+        requires(IS_AUGMENTED)
+    {
+        const auto node = position.pointed_node();
+        detail::require(node != header());
+        hooks().callbacks->propagate(node, header());
+    }
+
+    /// Points this tree's instrumentation at `context`, which is handed back
+    /// to every hook. Per-tree rather than global, so two trees can be
+    /// measured independently.
+    constexpr auto set_instrument_context(void *context) noexcept -> void
+        requires(IS_INSTRUMENTED)
+    {
+        m_context.set(context);
+    }
+
+    /// Structural navigation. An augmented query descends by consulting each
+    /// node's aggregate instead of comparing keys, which needs the shape of
+    /// the tree rather than its order; `end()` stands for both an empty tree
+    /// and an absent child.
+    [[nodiscard]]
+    constexpr auto root() noexcept -> IterMut {
+        return as_iter(Algorithms::root_node(header()));
+    }
+
+    [[nodiscard]]
+    constexpr auto root() const noexcept -> Iter {
+        return as_iter_const(Algorithms::root_node(header()));
+    }
+
+    [[nodiscard]]
+    constexpr auto left(Iter position) noexcept -> IterMut {
+        return as_iter(NodeTraits::get_left(position.pointed_node()));
+    }
+
+    [[nodiscard]]
+    constexpr auto left(Iter position) const noexcept -> Iter {
+        return as_iter_const(NodeTraits::get_left(position.pointed_node()));
+    }
+
+    [[nodiscard]]
+    constexpr auto right(Iter position) noexcept -> IterMut {
+        return as_iter(NodeTraits::get_right(position.pointed_node()));
+    }
+
+    [[nodiscard]]
+    constexpr auto right(Iter position) const noexcept -> Iter {
+        return as_iter_const(NodeTraits::get_right(position.pointed_node()));
     }
 
     template <typename Disposer>
@@ -284,7 +382,7 @@ class RBTree final {
     [[nodiscard]]
     constexpr auto find(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::find(header(), value, NodeCompare{&m_compare});
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
@@ -292,13 +390,13 @@ class RBTree final {
         const auto node = Algorithms::find(header(), value, NodeCompare{&m_compare});
         return node == header()
                    ? ustl::NONE
-                   : ustl::some(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
     }
 
     [[nodiscard]]
     constexpr auto lower_bound(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::lower_bound(header(), value, NodeCompare{&m_compare});
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
@@ -306,7 +404,7 @@ class RBTree final {
         const auto node = Algorithms::lower_bound(header(), value, NodeCompare{&m_compare});
         return node == header()
                    ? ustl::NONE
-                   : ustl::some(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
     }
 
     template <typename Key, typename Compare>
@@ -330,7 +428,7 @@ class RBTree final {
     [[nodiscard]]
     constexpr auto upper_bound(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::upper_bound(header(), value, NodeCompare{&m_compare});
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
@@ -338,7 +436,7 @@ class RBTree final {
         const auto node = Algorithms::upper_bound(header(), value, NodeCompare{&m_compare});
         return node == header()
                    ? ustl::NONE
-                   : ustl::some(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
     }
 
     template <typename Key, typename Compare>
@@ -397,6 +495,26 @@ class RBTree final {
     [[nodiscard]]
     constexpr auto header() const noexcept -> NodePtr {
         return PointerTraits<NodePtr>::pointer_to(const_cast<Node &>(m_header));
+    }
+
+    [[no_unique_address]] detail::PolicyContext<IS_INSTRUMENTED> m_context{};
+
+    /// Wraps a possibly-absent node for the navigation API above: an empty
+    /// slot (and the header itself) surfaces as `end()`.
+    [[nodiscard]]
+    constexpr auto as_iter(NodePtr const node) noexcept -> IterMut {
+        if (node == NodePtr{} || node == header()) {
+            return end();
+        }
+        return IterMut(node);
+    }
+
+    [[nodiscard]]
+    constexpr auto as_iter_const(NodePtr const node) const noexcept -> Iter {
+        if (node == NodePtr{} || node == header()) {
+            return end();
+        }
+        return Iter(node);
     }
 
     [[nodiscard]]

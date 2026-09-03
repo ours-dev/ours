@@ -56,7 +56,7 @@ struct PhysModule {
 #define PHYS_MODULE(module_name, init_function)                                                    \
     namespace {                                                                                    \
         [[gnu::used, gnu::retain, gnu::section(".phys.module")]]                                   \
-        ::ours::phys::PhysModule const g_phys_module{                                              \
+        ::ours::phys::PhysModule const PHYS_MODULE{                                                \
             .abi_version = ::ours::phys::PhysModule::ABI_VERSION,                                  \
             .reserved = 0,                                                                         \
             .name = (module_name),                                                                 \

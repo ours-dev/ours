@@ -22,33 +22,40 @@ namespace ours::mm {
 ///
 /// The whole interface is one equation:
 ///
-///     address = base(cpu) + offset
+///     address = handle + offset(cpu)
 ///
-/// `offset` names an object. It is the same number on every CPU, it is what
-/// callers hold, and it is never a pointer -- dereferencing one is meaningless.
-/// `base(cpu)` is where that CPU's storage begins. The sum always lands inside
-/// live storage: the static block, or one of the dynamic chunks. `holds()`
-/// states that, and debug builds check it on every resolve.
+/// A *handle* names an object. It is the same number on every CPU, it is what
+/// callers hold, and it is deliberately not a usable pointer: it points into
+/// the linker template, which must never be read or written. `offset(cpu)` --
+/// `CPU_OFFSETS[cpu]`, which is Linux's `__per_cpu_offset[]` -- is how far that
+/// CPU's storage sits from the template. The sum always lands
+/// inside live storage -- the static block, or one of the dynamic chunks.
+/// `holds()` states that, and debug builds check it on every resolve.
 ///
-/// A `CPU_LOCAL` variable is emitted once, by the linker. That definition is
-/// never read or written -- it is a template to copy from, and `offset_of()`
-/// measures against it. Each CPU owns a *unit*: its own copy of that block,
-/// followed by room the dynamic allocator hands out.
+/// A `CPU_LOCAL` variable is emitted once, by the linker, and its address *is*
+/// its handle: nothing needs to be computed for the static case. The dynamic
+/// allocator hands out handles in the same range so that static and dynamic
+/// objects are addressed by the same single addition. This is the scheme Linux
+/// uses -- see `__addr_to_pcpu_ptr()` in its `mm/percpu.c`, which converts a
+/// real address into exactly this kind of handle.
 ///
-/// Units are grouped by NUMA node, so their addresses are unrelated to each
-/// other and `base()` is a lookup, not arithmetic on a stride. Dynamic chunks
-/// are separate allocations that reproduce the same unit layout, which is what
-/// lets one offset name an object in any of them:
+/// Each CPU owns a *unit*: its own copy of the template block, followed by
+/// room the dynamic allocator hands out. Units are grouped by NUMA node, so
+/// their addresses are unrelated to each other and `offset()` is a lookup, not
+/// arithmetic on a stride. Dynamic chunks are separate allocations that
+/// reproduce the same unit layout, which is what lets one handle name an
+/// object in any of them:
 ///
 ///     base(cpu) ---> +-----------------+-------------------+
 ///                    | copy of the     | dynamic area      |
 ///                    | linker template |                   |
 ///                    +-----------------+-------------------+
-///                     \__ offset 0 .. static_span __/
+///                     \__ origin() .. origin() + static_span __/
 ///
 /// On architectures with a base register (%gs on x86) the register holds
-/// `base(cpu) - origin()`, so a static object resolves in a single instruction:
-/// the linker already baked `origin() + offset` into the instruction stream.
+/// `offset(cpu)` itself, so a static object resolves in a single instruction:
+/// the handle is the variable's own address, which the linker already baked
+/// into the instruction stream.
 class CpuLocal {
     using Self = CpuLocal;
 
@@ -59,38 +66,34 @@ class CpuLocal {
     template <typename T, typename... Options>
     class Current;
 
-    /// Offset value that names nothing. Zero is a real offset -- the first
-    /// byte of the static block -- so emptiness needs its own value.
-    constexpr static auto const NOWHERE = ~usize(0);
+    /// Handle value that names nothing. Handles live in the template's address
+    /// range, which is never near zero, so null is free to mean empty -- the
+    /// same convention Linux gives its `void __percpu *`.
+    constexpr static auto const NOWHERE = VirtAddr(0);
 
     /// Where CPU `cpu`'s storage begins.
     static auto base(CpuNum cpu) -> VirtAddr;
 
-    /// Start of the address range offsets are measured from -- the linker
-    /// template. Nothing is read or written through it.
+    /// Start of the address range handles live in -- the linker template.
+    /// Nothing is read or written through it.
     static auto origin() -> VirtAddr;
 
-    /// The offset naming a statically declared `CPU_LOCAL` object.
-    template <typename T>
-    FORCE_INLINE static auto offset_of(T &object) -> usize {
-        return reinterpret_cast<VirtAddr>(&object) - Self::origin();
-    }
-
-    /// Whether `offset` names storage that exists: inside the static block, or
+    /// Whether `handle` names storage that exists: inside the static block, or
     /// inside a live dynamic chunk. The contract every resolve relies on.
     [[nodiscard]]
-    static auto holds(usize offset) -> bool;
+    static auto holds(VirtAddr handle) -> bool;
 
-    /// `offset` on the calling CPU. Uses the base register rather than a lookup.
-    FORCE_INLINE static auto resolve(usize offset) -> VirtAddr {
-        DEBUG_ASSERT(Self::holds(offset), "Resolving an offset that names nothing");
-        return Self::origin() + offset + Self::read(g_current_cpu_offset);
+    /// `handle` on the calling CPU. Uses the base register rather than a lookup.
+    FORCE_INLINE static auto resolve(VirtAddr handle) -> VirtAddr {
+        DEBUG_ASSERT(Self::holds(handle), "Resolving a handle that names nothing");
+        return handle + Self::read(CURRENT_CPU_OFFSET);
     }
 
-    /// `offset` on `cpu`.
-    FORCE_INLINE static auto resolve(usize offset, CpuNum cpu) -> VirtAddr {
-        DEBUG_ASSERT(Self::holds(offset), "Resolving an offset that names nothing");
-        return Self::base(cpu) + offset;
+    /// `handle` on `cpu`.
+    FORCE_INLINE static auto resolve(VirtAddr handle, CpuNum cpu) -> VirtAddr {
+        DEBUG_ASSERT(Self::holds(handle), "Resolving a handle that names nothing");
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
+        return handle + VirtAddr(Self::CPU_OFFSETS[cpu]);
     }
 
     /// Points the boot CPU at the linker-provided section so that `CPU_LOCAL`
@@ -106,33 +109,69 @@ class CpuLocal {
     /// this once, on itself, during bring-up.
     static auto init_percpu(CpuNum cpu) -> void;
 
+    /// The two below take a CPU_LOCAL variable and reach *this CPU's copy*.
+    /// The x86 contract is that %gs holds `offset(cpu)`, so the displacement is
+    /// the variable's own address -- its handle -- and nothing has to be
+    /// subtracted first.
     template <typename T>
     FORCE_INLINE static auto read(T &t) -> T {
         static_assert(sizeof(t) <= sizeof(usize));
-        return ArchCpuLocal::read<T>(reinterpret_cast<isize>(&t));
+        return ArchCpuLocal::read<T>(reinterpret_cast<VirtAddr>(&t));
     }
 
     template <typename T>
     FORCE_INLINE static auto write(T &t, T value) -> void {
         static_assert(sizeof(t) <= sizeof(usize));
-        return ArchCpuLocal::write<T>(reinterpret_cast<isize>(&t), value);
+        return ArchCpuLocal::write<T>(reinterpret_cast<VirtAddr>(&t), value);
+    }
+
+    /// Takes the address of a CPU_LOCAL variable's *template* copy and returns
+    /// the address of a unit's copy, with the compiler unable to tell they are
+    /// related.
+    ///
+    /// The barrier is the whole point, and it is not optional. `&t + offset`
+    /// walks out of `t`, and the optimiser is entitled to assume a pointer
+    /// derived from an object still designates that object -- so it folds the
+    /// arithmetic away and reads the template copy, which is a zeroed image
+    /// that nothing ever writes. It really does: before this, `Thread::Current`
+    /// wrote through the %gs path (inline asm, opaque) and read back through
+    /// here, and clang proved the result null at compile time -- it emitted the
+    /// panic branch of `DEBUG_ASSERT(thread)` with no test at all.
+    ///
+    /// An empty asm with the pointer in and out launders it: the compiler must
+    /// then treat the result as unrelated to `t`. This is exactly Linux's
+    /// RELOC_HIDE(), used for the same reason in the same place.
+    [[nodiscard]]
+    FORCE_INLINE static auto relocate(void *base, isize offset) -> void * {
+        auto *address = static_cast<u8 *>(base) + offset;
+        asm("" : "+r"(address));
+        return address;
     }
 
     template <typename T>
     FORCE_INLINE static auto access(T &t) -> T & {
-        return *reinterpret_cast<T *>(reinterpret_cast<u8 *>(&t) +
-                                      Self::read(g_current_cpu_offset));
+        return *static_cast<T *>(Self::relocate(&t, Self::read(CURRENT_CPU_OFFSET)));
     }
 
     template <typename T>
     FORCE_INLINE static auto access(T &t, CpuNum cpunum) -> T & {
         DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU Number");
-        return *reinterpret_cast<T *>(reinterpret_cast<u8 *>(&t) + Self::g_cpu_offsets[cpunum]);
+        return *static_cast<T *>(Self::relocate(&t, Self::CPU_OFFSETS[cpunum]));
     }
 
     /// The CPU number the caller is running on, read out of its own unit.
     FORCE_INLINE static auto current_cpu() -> CpuNum {
-        return Self::read(g_current_cpunum);
+        return Self::read(CURRENT_CPUNUM);
+    }
+
+    /// Whether `cpu` has a per-CPU unit installed -- that is, whether
+    /// `CPU_OFFSETS[cpu]` means anything yet. This is CpuLocal's own
+    /// bookkeeping, set for the boot CPU by init_early() and for each secondary
+    /// as it comes up, and it is a different question from ours::Cpu's online
+    /// mask, which says the CPU has finished its architectural bring-up.
+    [[nodiscard]]
+    FORCE_INLINE static auto has_unit(CpuNum cpu) -> bool {
+        return STATES[usize(State::Online)].test(cpu);
     }
 
     template <typename T, typename F>
@@ -141,7 +180,13 @@ class CpuLocal {
         // current_cpu() rather than Cpu::id(): identical value, but Cpu::id()
         // is now a forwarder to it, and this is the hot path.
         auto const cpu = Self::current_cpu();
-        DEBUG_ASSERT(Cpu::online_mask().test(cpu), "Invalid CPU Number");
+        // has_unit(), not Cpu::online_mask(): what this needs is a valid offset
+        // for the calling CPU, which is exactly what CpuLocal tracks. The
+        // global online mask answers a later question -- the boot CPU is not in
+        // it until the end of init_arch_early() -- so asserting on it fired on
+        // every per-CPU access made before then, including the first spin lock
+        // task::init_early() takes.
+        DEBUG_ASSERT(Self::has_unit(cpu), "The calling CPU has no per-CPU unit");
         return ustl::function::invoke(f, cpu, Self::access(t, cpu));
     }
 
@@ -182,7 +227,7 @@ class CpuLocal {
         percpu.reset();
     }
 
-    /// Opaque here on purpose: both are defined in cpu-local.cpp, so an
+    /// Opaque here on purpose: both are defined in cpu_local.cpp, so an
     /// outside translation unit can never do anything with the names. They are
     /// public only because that file instantiates their storage at namespace
     /// scope ("static, because the slab cannot be used to build what the slab
@@ -198,40 +243,43 @@ class CpuLocal {
         NumStates,
     };
 
-    /// Binds the calling CPU to `cpunum`'s unit.
+    /// Binds the calling CPU to `cpunum`'s unit. `offset` is what the base
+    /// register is loaded with.
     static auto attach_to_unit(CpuNum cpunum, isize offset) -> void;
 
-    /// Reserves `size` bytes on every CPU. Returns the offset naming them, or
+    /// Reserves `size` bytes on every CPU. Returns the handle naming them, or
     /// `NOWHERE` when the dynamic area is exhausted.
-    static auto allocate_raw(usize size, usize align) -> usize;
+    static auto allocate_raw(usize size, usize align) -> VirtAddr;
 
-    static auto free_raw(usize offset, usize size) -> void;
+    static auto free_raw(VirtAddr handle, usize size) -> void;
 
-    static Mapper *g_mapper;
-    static Dyn *g_dyn;
+    static Mapper *MAPPER;
+    static Dyn *DYN;
 
-    static std::array<isize, MAX_CPU> g_cpu_offsets;
-    static std::array<CpuMask, usize(State::NumStates)> g_states;
-    static isize g_current_cpu_offset;
-    static CpuNum g_current_cpunum;
+    static std::array<isize, MAX_CPU> CPU_OFFSETS;
+    static std::array<CpuMask, usize(State::NumStates)> STATES;
+    static isize CURRENT_CPU_OFFSET;
+    static CpuNum CURRENT_CPUNUM;
 };
 
 /// Owning handle to a per-CPU allocation.
 ///
-/// Holds an offset, never a pointer -- the same offset names the objects on
-/// every CPU, and there is no single address that would be right for more than
-/// one of them.
+/// Holds a handle, never a usable pointer -- the same handle names the objects
+/// on every CPU, and there is no single address that would be right for more
+/// than one of them. Linux relies on sparse and a `__percpu` annotation to stop
+/// callers dereferencing the equivalent value; here the type simply never
+/// offers a way to.
 template <typename T>
 class CpuLocal::PerCpu {
     using Self = PerCpu;
 
   public:
-    PerCpu() : m_offset(NOWHERE), m_count(0) {}
+    PerCpu() : m_handle(NOWHERE), m_count(0) {}
 
-    PerCpu(usize offset, usize count) : m_offset(offset), m_count(count) {}
+    PerCpu(VirtAddr handle, usize count) : m_handle(handle), m_count(count) {}
 
-    PerCpu(Self &&other) : m_offset(other.m_offset), m_count(other.m_count) {
-        other.m_offset = NOWHERE;
+    PerCpu(Self &&other) : m_handle(other.m_handle), m_count(other.m_count) {
+        other.m_handle = NOWHERE;
         other.m_count = 0;
     }
 
@@ -242,34 +290,34 @@ class CpuLocal::PerCpu {
     auto operator=(Self &&other) -> Self & {
         if (this != &other) {
             reset();
-            m_offset = other.m_offset;
+            m_handle = other.m_handle;
             m_count = other.m_count;
-            other.m_offset = NOWHERE;
+            other.m_handle = NOWHERE;
             other.m_count = 0;
         }
         return *this;
     }
 
-    /// The offset these objects are named by.
+    /// The handle these objects are named by.
     [[nodiscard]]
-    auto offset() const -> usize {
-        return m_offset;
+    auto handle() const -> VirtAddr {
+        return m_handle;
     }
 
     /// The calling CPU's copy.
     FORCE_INLINE auto ptr_mut() -> T * {
-        return m_offset == NOWHERE ? nullptr : reinterpret_cast<T *>(CpuLocal::resolve(m_offset));
+        return m_handle == NOWHERE ? nullptr : reinterpret_cast<T *>(CpuLocal::resolve(m_handle));
     }
 
     FORCE_INLINE auto ref_mut() -> T & {
-        DEBUG_ASSERT(m_offset != NOWHERE, "Dereferencing an empty PerCpu");
-        return *reinterpret_cast<T *>(CpuLocal::resolve(m_offset));
+        DEBUG_ASSERT(m_handle != NOWHERE, "Dereferencing an empty PerCpu");
+        return *reinterpret_cast<T *>(CpuLocal::resolve(m_handle));
     }
 
     /// `cpunum`'s copy.
     FORCE_INLINE auto ref_mut(CpuNum cpunum) -> T & {
-        DEBUG_ASSERT(m_offset != NOWHERE, "Dereferencing an empty PerCpu");
-        return *reinterpret_cast<T *>(CpuLocal::resolve(m_offset, cpunum));
+        DEBUG_ASSERT(m_handle != NOWHERE, "Dereferencing an empty PerCpu");
+        return *reinterpret_cast<T *>(CpuLocal::resolve(m_handle, cpunum));
     }
 
     /// Unlike the static `CpuLocal::with_current`, the callback takes only the
@@ -282,7 +330,7 @@ class CpuLocal::PerCpu {
 
     template <typename F>
     FORCE_INLINE auto for_each(F &&f) -> void {
-        if (m_offset == NOWHERE) {
+        if (m_handle == NOWHERE) {
             return;
         }
         Cpu::online_mask().for_each(
@@ -291,21 +339,21 @@ class CpuLocal::PerCpu {
 
     /// Destroys every CPU's copy and releases the reservation.
     auto reset() -> void {
-        if (m_offset == NOWHERE) {
+        if (m_handle == NOWHERE) {
             return;
         }
 
         // Mirrors allocate(): every slot was constructed, so every slot is
         // destroyed, independent of which CPUs happen to be possible now.
         for (auto cpunum = CpuNum(0); cpunum < MAX_CPU; ++cpunum) {
-            auto *base = reinterpret_cast<T *>(CpuLocal::resolve(m_offset, cpunum));
+            auto *base = reinterpret_cast<T *>(CpuLocal::resolve(m_handle, cpunum));
             for (auto i = m_count; i-- > 0;) {
                 base[i].~T();
             }
         }
 
-        CpuLocal::free_raw(m_offset, m_count * sizeof(T));
-        m_offset = NOWHERE;
+        CpuLocal::free_raw(m_handle, m_count * sizeof(T));
+        m_handle = NOWHERE;
         m_count = 0;
     }
 
@@ -315,61 +363,61 @@ class CpuLocal::PerCpu {
     }
 
     explicit operator bool() const {
-        return m_offset != NOWHERE;
+        return m_handle != NOWHERE;
     }
 
   private:
     USTL_NOCOPYABLE(PerCpu);
-    usize m_offset;
+    VirtAddr m_handle;
     usize m_count;
 };
 
 template <typename T>
 auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
-    auto const offset = Self::allocate_raw(n * sizeof(T), align);
-    if (Self::NOWHERE == offset) {
+    auto const handle = Self::allocate_raw(n * sizeof(T), align);
+    if (Self::NOWHERE == handle) {
         return PerCpu<T>();
     }
 
     for (auto cpunum = CpuNum(0); cpunum < MAX_CPU; ++cpunum) {
-        auto *base = reinterpret_cast<T *>(Self::resolve(offset, cpunum));
+        auto *base = reinterpret_cast<T *>(Self::resolve(handle, cpunum));
         for (auto i = usize(0); i < n; ++i) {
             new (static_cast<void *>(base + i)) T();
         }
     }
 
-    return PerCpu<T>(offset, n);
+    return PerCpu<T>(handle, n);
 }
 
 template <typename T, typename... Options>
 class CpuLocal::Current {
   public:
     FORCE_INLINE static auto get() -> T & {
-        return CpuLocal::access(g_current_instance);
+        return CpuLocal::access(CURRENT_INSTANCE);
     }
 
     FORCE_INLINE static auto get(CpuNum cpunum) -> T & {
-        return CpuLocal::access(g_current_instance, cpunum);
+        return CpuLocal::access(CURRENT_INSTANCE, cpunum);
     }
 
     FORCE_INLINE static auto set(T const &t) -> void {
         if constexpr (sizeof(t) <= sizeof(usize)) {
-            CpuLocal::write(g_current_instance, t);
+            CpuLocal::write(CURRENT_INSTANCE, t);
         } else {
-            CpuLocal::access(g_current_instance) = t;
+            CpuLocal::access(CURRENT_INSTANCE) = t;
         }
     }
 
     FORCE_INLINE static auto set(T const &t, CpuNum cpunum) -> void {
-        CpuLocal::access(g_current_instance, cpunum) = t;
+        CpuLocal::access(CURRENT_INSTANCE, cpunum) = t;
     }
 
   protected:
-    static T g_current_instance;
+    static T CURRENT_INSTANCE;
 };
 
 template <typename T, typename... Options>
-CPU_LOCAL inline T CpuLocal::Current<T, Options...>::g_current_instance;
+CPU_LOCAL inline T CpuLocal::Current<T, Options...>::CURRENT_INSTANCE;
 
 } // namespace ours::mm
 

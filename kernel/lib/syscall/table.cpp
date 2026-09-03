@@ -9,7 +9,7 @@
 namespace ours {
 namespace {
     /// x86_syscall (arch/x86/kernel/syscall.S) pushes the user registers and
-    /// then does `call *syscall_table(, %rax, 8)` with %rdi holding a pointer
+    /// then does `call *SYSCALL_TABLE(, %rax, 8)` with %rdi holding a pointer
     /// to that frame. It restores %rax from the frame afterwards, so a handler
     /// answers by writing into the frame rather than by returning a value.
     ///
@@ -41,6 +41,6 @@ namespace {
     }
 } // namespace
 
-NO_MANGLE constinit auto syscall_table = make_syscall_table();
+NO_MANGLE constinit auto SYSCALL_TABLE = make_syscall_table();
 
 } // namespace ours

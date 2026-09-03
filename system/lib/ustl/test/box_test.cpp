@@ -18,14 +18,14 @@
 
 namespace {
 
-int g_destroyed = 0;
+int DESTROYED = 0;
 
 struct Item {
     int value;
 
     explicit Item(int v) : value(v) {}
     ~Item() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
@@ -39,7 +39,7 @@ static_assert(std::is_constructible_v<ustl::Box<Item>, Item *>); // explicit ado
 static_assert(!std::is_convertible_v<Item *, ustl::Box<Item>>);  // ...but never implicit
 
 auto test_basic() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     {
         auto a = ustl::Box<Item>::make(1);
         assert(a->value == 1);         // operator->
@@ -53,29 +53,29 @@ auto test_basic() -> void {
 
         auto c = ustl::Box<Item>::make(2);
         c = std::move(b); // move assignment: old payload (2) destroyed now
-        assert(g_destroyed == 1);
+        assert(DESTROYED == 1);
         assert(!b && c->value == 1); // NOLINT(bugprone-use-after-move) same contract
 
         c.reset(); // explicit release
         assert(!c);
-        assert(g_destroyed == 2);
+        assert(DESTROYED == 2);
     } // ~Box on empty boxes destroys nothing
-    assert(g_destroyed == 2);
+    assert(DESTROYED == 2);
 }
 
 auto test_reset_replaces() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto b = ustl::Box<Item>::make(7);
     b.reset(new Item(8)); // adopt a fresh one, old destroyed
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
     assert(b->value == 8);
     b.reset(b.as_ptr_mut()); // self-adopt is a no-op
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
     assert(b && b->value == 8);
 }
 
 auto test_nullable() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     ustl::Box<Item> empty;
     assert(!empty);
     assert(empty == nullptr);
@@ -86,7 +86,7 @@ auto test_nullable() -> void {
     assert(b != empty);
 
     b = nullptr; // releases ownership
-    assert(!b && g_destroyed == 1);
+    assert(!b && DESTROYED == 1);
 
     auto from_null = ustl::Box<Item>::from_raw(nullptr);
     assert(!from_null);
@@ -98,57 +98,57 @@ struct Animal {
 };
 struct Dog: Animal {
     ~Dog() override {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
 auto test_polymorphic() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     {
         ustl::Box<Animal> a = ustl::Box<Dog>::make(); // converting move (upcast)
         assert(a);
         ustl::Box<Animal> b = ustl::Box<Animal>::from_raw(new Dog());
         b = std::move(a); // converting move assignment: old payload released now
-        assert(g_destroyed == 1);
+        assert(DESTROYED == 1);
     }
-    assert(g_destroyed == 2); // both ~Dog ran through Animal*
+    assert(DESTROYED == 2); // both ~Dog ran through Animal*
 }
 
 auto test_raw_handoff() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto b = ustl::Box<Item>::make(3);
     auto *raw = b.into_raw();
     assert(!b);
     assert(raw->value == 3);
-    assert(g_destroyed == 0); // transferred ownership keeps the object alive
+    assert(DESTROYED == 0); // transferred ownership keeps the object alive
 
     auto adopted = ustl::Box<Item>::from_raw(raw); // re-wrap, sole owner again
     assert(adopted->value == 3);
-    assert(g_destroyed == 0);
+    assert(DESTROYED == 0);
 } // adopted dies here
 
 auto test_adopt() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     {
         auto b = ustl::Box<Item>::adopt(new Item(11)); // Rc::adopt's counterpart, count-free
         assert(b && b->value == 11);
     }
-    assert(g_destroyed == 1); // the box owned and reclaimed the adopted storage
+    assert(DESTROYED == 1); // the box owned and reclaimed the adopted storage
 }
 
 auto test_leak() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     {
         auto b = ustl::Box<Item>::make(9);
         Item &immortal = b.leak();
         assert(!b);
         assert(immortal.value == 9);
     }
-    assert(g_destroyed == 0); // leaked on purpose: leak() relinquishes destruction
+    assert(DESTROYED == 0); // leaked on purpose: leak() relinquishes destruction
 }
 
 auto test_clone() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto b = ustl::Box<Item>::make(5);
     auto copy = b.clone(); // deep copy
     assert(b && copy && copy->value == 5);
@@ -172,49 +172,49 @@ auto test_swap() -> void {
 // Disposer customization: storage reclaim (object-cache pattern). Destruction
 // order must be payload destructor first, Disposer second.
 struct Cached {
-    static int g_freed;
-    static int g_seq;
-    static int g_destroyed_at;
-    static int g_freed_at;
+    static int FREED;
+    static int SEQ;
+    static int DESTROYED_AT;
+    static int FREED_AT;
 
     struct Disposer {
         auto operator()(Cached *) const noexcept -> void {
-            ++Cached::g_freed;
-            Cached::g_freed_at = ++Cached::g_seq;
+            ++Cached::FREED;
+            Cached::FREED_AT = ++Cached::SEQ;
         }
     };
 
     ~Cached() {
-        ++g_destroyed;
-        Cached::g_destroyed_at = ++Cached::g_seq;
+        ++DESTROYED;
+        Cached::DESTROYED_AT = ++Cached::SEQ;
     }
 };
-int Cached::g_freed = 0;
-int Cached::g_seq = 0;
-int Cached::g_destroyed_at = 0;
-int Cached::g_freed_at = 0;
+int Cached::FREED = 0;
+int Cached::SEQ = 0;
+int Cached::DESTROYED_AT = 0;
+int Cached::FREED_AT = 0;
 
 auto test_disposer() -> void {
-    g_destroyed = 0;
-    Cached::g_freed = 0;
-    Cached::g_seq = 0;
+    DESTROYED = 0;
+    Cached::FREED = 0;
+    Cached::SEQ = 0;
     {
         auto c = ustl::Box<Cached>::from_raw(new Cached());
         assert(c);
     }
-    assert(g_destroyed == 1);     // payload destroyed first...
-    assert(Cached::g_freed == 1); // ...then storage reclaimed by Disposer
-    assert(Cached::g_destroyed_at == 1);
-    assert(Cached::g_freed_at == 2);
+    assert(DESTROYED == 1);     // payload destroyed first...
+    assert(Cached::FREED == 1); // ...then storage reclaimed by Disposer
+    assert(Cached::DESTROYED_AT == 1);
+    assert(Cached::FREED_AT == 2);
 }
 
 auto test_self_move() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto b = ustl::Box<Item>::make(4);
     auto &alias = b;
     b = std::move(alias); // self-move must be safe (guarded); alias hides it from -Wself-move
     assert(b && b->value == 4);
-    assert(g_destroyed == 0);
+    assert(DESTROYED == 0);
 }
 
 auto test_const_access() -> void {

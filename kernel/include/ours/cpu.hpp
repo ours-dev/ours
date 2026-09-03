@@ -73,10 +73,10 @@ class Cpu {
 
     [[nodiscard]]
     static auto state_mask(State state) -> CpuMask & {
-        return g_states[static_cast<usize>(state)];
+        return STATES[static_cast<usize>(state)];
     }
 
-    static std::array<CpuMask, NUM_STATES> g_states;
+    static std::array<CpuMask, NUM_STATES> STATES;
 };
 
 inline auto cpu_possible_mask() -> CpuMask & {

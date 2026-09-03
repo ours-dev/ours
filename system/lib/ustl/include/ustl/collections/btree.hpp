@@ -17,21 +17,21 @@ using BTreeDefaultOptions = detail::BTreeDefaultOptions;
 
 template <typename Key, typename Value, typename KeyOfValue,
           typename Compare = detail::DefaultCompare<Key>, typename AllocatorType = Allocator<Value>,
-          typename Observer = NullBTreeObserver, typename Options = BTreeDefaultOptions>
-using BTree = detail::BTree<Key, Value, KeyOfValue, Compare, AllocatorType, Observer, Options>;
+          typename Policy = void, typename Options = BTreeDefaultOptions>
+using BTree = detail::BTree<Key, Value, KeyOfValue, Compare, AllocatorType, Policy, Options>;
 
 template <typename Key, typename T, typename Compare = detail::DefaultCompare<Key>,
           typename AllocatorType = Allocator<std::pair<Key const, T>>,
-          typename Observer = NullBTreeObserver, typename Options = BTreeDefaultOptions>
+          typename Policy = void, typename Options = BTreeDefaultOptions>
 using BTreeMap =
     BTree<Key, std::pair<Key const, T>, detail::SelectFirstKeyOfValue<std::pair<Key const, T>>,
-          Compare, AllocatorType, Observer, Options>;
+          Compare, AllocatorType, Policy, Options>;
 
 template <typename Key, typename Compare = detail::DefaultCompare<Key>,
-          typename AllocatorType = Allocator<Key>, typename Observer = NullBTreeObserver,
+          typename AllocatorType = Allocator<Key>, typename Policy = void,
           typename Options = BTreeDefaultOptions>
 using BTreeSet =
-    BTree<Key, Key, detail::IdentityKeyOfValue<Key>, Compare, AllocatorType, Observer, Options>;
+    BTree<Key, Key, detail::IdentityKeyOfValue<Key>, Compare, AllocatorType, Policy, Options>;
 } // namespace ustl::collections
 
 #endif // USTL_COLLECTIONS_BTREE_HPP

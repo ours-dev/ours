@@ -8,8 +8,8 @@
 
 namespace gktl {
 namespace {
-    extern "C" Command const g_commands_start[] LINK_NAME("__commands_start");
-    extern "C" Command const g_commands_end[] LINK_NAME("__commands_end");
+    extern "C" Command const COMMANDS_START[] LINK_NAME("__commands_start");
+    extern "C" Command const COMMANDS_END[] LINK_NAME("__commands_end");
 
     struct CommandKeyOfValue {
         auto operator()(Command const &command) const -> char const * {
@@ -48,31 +48,31 @@ namespace {
     using CommandTree =
         RadixTree<Command, std::allocator<Command>, CommandKeyOfValue, CommandKeyEncoder>;
 
-    CommandTree g_tree{};
-    bool g_tree_built{};
+    CommandTree TREE{};
+    bool TREE_BUILT{};
 
     auto build_radix_tree() -> void {
-        if (g_tree_built) {
+        if (TREE_BUILT) {
             return;
         }
 
         usize capacity = 1;
-        for (auto const *command = g_commands_start; command != g_commands_end; ++command) {
+        for (auto const *command = COMMANDS_START; command != COMMANDS_END; ++command) {
             if (command->cmd != nullptr && command->callback != nullptr) {
-                capacity += g_tree.max_required_nodes(*command);
+                capacity += TREE.max_required_nodes(*command);
             }
         }
 
-        if (!g_tree.reserve(capacity)) {
-            g_tree_built = true;
+        if (!TREE.reserve(capacity)) {
+            TREE_BUILT = true;
             return;
         }
 
-        for (auto const *command = g_commands_start; command != g_commands_end; ++command) {
-            static_cast<void>(g_tree.insert(*command));
+        for (auto const *command = COMMANDS_START; command != COMMANDS_END; ++command) {
+            static_cast<void>(TREE.insert(*command));
         }
 
-        g_tree_built = true;
+        TREE_BUILT = true;
     }
 } // namespace
 
@@ -83,7 +83,7 @@ auto run_command(int argc, char **argv) -> void {
 
     build_radix_tree();
 
-    auto const *command = g_tree.find(argv[0]);
+    auto const *command = TREE.find(argv[0]);
     if (command == nullptr || command->callback == nullptr) {
         return;
     }

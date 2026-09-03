@@ -1,19 +1,31 @@
-#include <builtin/instruction-pointer.hpp>
+#include <ktl/new.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/gaf.hpp>
+#include <ours/status.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/cpu_stopper.hpp>
 #include <ours/task/thread.hpp>
 
 namespace ours {
+namespace {
+    /// This port used to reach for <builtin/instruction-pointer.hpp>, which
+    /// does not exist in this tree. Level 0 is exact for a direct call site.
+    auto caller_pc() -> usize {
+        return reinterpret_cast<usize>(__builtin_return_address(0));
+    }
+} // namespace
+
 using Current = mm::CpuLocal::Current<CpuStopper>;
+
+sync::Mutex CpuStopper::STOP_CPUS_MUTEX;
 
 auto CpuStopper::stop_cpu(CpuNum cpu, Fn fn) -> Status {
     Done done{.retval = 0, .num_todo = 1, .completion{}};
-    Work work{.fn = fn, .caller = builtin::return_address(), .done = &done};
+    Work work{.fn = fn, .caller = caller_pc(), .done = &done, .queue_hook = {}};
 
     if (!queue_work_cpu(cpu, work)) {
-        return Status::NoEntry;
+        return Status::NotFound;
     }
 
     task::Thread::Current::reschedule();
@@ -25,9 +37,9 @@ auto CpuStopper::stop_cpus(CpuMask const &cpus, Fn fn) -> Status {
     Done done{.retval = 0, .num_todo = static_cast<u32>(cpus.count()), .completion{}};
 
     {
-        Guard guard{g_stop_cpus_mutex};
+        Guard guard{STOP_CPUS_MUTEX};
         if (!queue_work_cpus(cpus, fn, &done)) {
-            return Status::NoEntry;
+            return Status::NotFound;
         }
         done.completion.wait();
     }
@@ -37,14 +49,20 @@ auto CpuStopper::stop_cpus(CpuMask const &cpus, Fn fn) -> Status {
 
 auto CpuStopper::stop_cpu_nowait(CpuNum cpu, Fn fn, Work *work) -> bool {
     if (!work) {
-        work = new Work();
+        // Intentionally not tracked for release: the work is intrusive-listed
+        // until its worker runs it, and a nowait caller has no handle to free
+        // it through.
+        work = new (mm::GAF_KERNEL) Work();
+        work->fn = fn;
+        work->caller = caller_pc();
+        work->done = nullptr;
     }
     return queue_work_cpu(cpu, *work);
 }
 
 auto CpuStopper::stop_cpus_nowait(CpuMask const &cpus, Fn fn, Work *works) -> bool {
     if (!works) {
-        works = new Work[cpus.count()];
+        works = new (mm::GAF_KERNEL) Work[cpus.count()];
     }
     return queue_work_cpus(cpus, fn, nullptr);
 }
@@ -84,7 +102,7 @@ auto CpuStopper::queue_work_cpus(CpuMask const &cpus, Fn fn, Done *done) -> bool
         auto &stopper = Current::get(cpu);
         stopper.m_canary.verify<Self>();
 
-        std::construct_at(&stopper.m_stop_work, fn, builtin::return_address(), done);
+        std::construct_at(&stopper.m_stop_work, fn, caller_pc(), done);
         if (stopper.queue_work(stopper.m_stop_work)) {
             is_queued = true;
         }
@@ -99,7 +117,7 @@ auto CpuStopper::worker_thread() -> void {
         {
             Guard guard{m_lock};
             if (!m_works.empty()) {
-                work = &m_works.front();
+                work = &*m_works.front();
                 m_works.pop_front();
             }
         }

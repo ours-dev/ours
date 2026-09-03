@@ -1,6 +1,6 @@
 #include "legacy_boot.hpp"
+#include <logz4/log.hpp>
 #include <ours/phys/init.hpp>
-#include <ours/phys/print.hpp>
 
 #include <cstring>
 namespace ours::phys {
@@ -27,7 +27,7 @@ namespace {
         }
         acpi_version = version;
         acpi_rsdp = reinterpret_cast<usize>(tag.bytes().data() + sizeof(multiboot::MultibootTag));
-        dprintln("ACPI-V{}, RSDP={}", version, acpi_rsdp);
+        log::debug("ACPI-V{}, RSDP={}", version, acpi_rsdp);
         return Status::Ok;
     }
 } // namespace
@@ -66,8 +66,7 @@ auto LegacyBoot::parse_params(usize const param) -> Status {
         reinterpret_cast<u8 *>(static_cast<usize>(module.unwrap().start)),
         static_cast<usize>(module.unwrap().end - module.unwrap().start),
     };
-    println("[info]: `ours.obi` is at 0x{:X}, size {} bytes", module.unwrap().start,
-            ramdisk.size());
+    log::info("`ours.obi` is at 0x{:X}, size {} bytes", module.unwrap().start, ramdisk.size());
 
     auto tags = view.unwrap().iterator();
     while (auto const tag = tags.next()) {

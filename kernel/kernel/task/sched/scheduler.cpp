@@ -87,9 +87,9 @@ namespace {
     extern "C" ScheduleEntry const SCHEDULES_START[] LINK_NAME("__schedules_start");
     extern "C" ScheduleEntry const SCHEDULES_END[] LINK_NAME("__schedules_end");
 
-    GKTL_COUNTER(schedule_idle_past, "schedule.idle_past");
-    GKTL_COUNTER(schedule_preempt_past, "schedule.preempt_past");
-    GKTL_COUNTER(schedule_yield_past, "schedule.yield_past");
+    GKTL_COUNTER(SCHEDULE_IDLE_PAST, "schedule.idle_past");
+    GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
+    GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
 
     auto is_preemptible(Thread *curr) -> bool {
         auto &preemption_state = curr->preemption_state();
@@ -234,9 +234,9 @@ auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
 }
 
 auto Scheduler::set_state(State state, bool on) -> void {
-    auto active_mask = g_states[usize(state)].load(MemoryOrder::Relaxed);
+    auto active_mask = STATES[usize(state)].load(MemoryOrder::Relaxed);
     active_mask.set(m_runtime.which_cpu, on);
-    g_states[usize(state)].store(active_mask, MemoryOrder::Relaxed);
+    STATES[usize(state)].store(active_mask, MemoryOrder::Relaxed);
 }
 
 auto Scheduler::set_schedule(Thread *thread) -> ISchedule * {
@@ -475,8 +475,8 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
         // Rescheduling state set above. RunQueueState::TransientState declares
         // a DequeueDelayed for exactly this, but has no setter or predicate for
         // it yet (see context.hpp).
-        constexpr auto control = DequeueControl::SkipClock | DequeueControl::Sleep;
-        if (Status::Ok == dequeue_thread(curr, control)) {
+        using enum DequeueControl;
+        if (Status::Ok == dequeue_thread(curr, SkipClock | Sleep)) {
             rqs.set_transient_state_none();
         }
     }
@@ -730,7 +730,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
 
         yielded = curr_so.schedule()->yield_to_thread(self.m_runtime, curr, thread);
         if (Status::Ok == yielded) {
-            schedule_yield_past.add(1);
+            SCHEDULE_YIELD_PAST.add(1);
         }
     }
 

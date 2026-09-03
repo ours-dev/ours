@@ -7,6 +7,7 @@
 #ifndef OURS_TASK_CPU_STOPPER_HPP
 #define OURS_TASK_CPU_STOPPER_HPP 1
 
+#include <gktl/canary.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -75,7 +76,7 @@ class CpuStopper {
     Fn m_fn;
 
     /// Forbids times of stop request on CPUs in same duration.
-    static sync::Mutex g_stop_cpus_mutex;
+    static sync::Mutex STOP_CPUS_MUTEX;
 };
 
 } // namespace ours

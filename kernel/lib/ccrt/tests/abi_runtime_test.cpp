@@ -22,11 +22,11 @@ auto atexit(AtexitFunction) noexcept -> int;
 // NOLINTEND(readability-identifier-naming)
 
 namespace {
-int sequence;
+int SEQUENCE;
 
 struct StaticObject {
     ~StaticObject() {
-        sequence = sequence * 10 + 4;
+        SEQUENCE = SEQUENCE * 10 + 4;
     }
 };
 
@@ -36,15 +36,15 @@ auto static_object() -> StaticObject & {
 }
 
 auto first(void *) -> void {
-    sequence = sequence * 10 + 1;
+    SEQUENCE = SEQUENCE * 10 + 1;
 }
 
 auto second(void *) -> void {
-    sequence = sequence * 10 + 2;
+    SEQUENCE = SEQUENCE * 10 + 2;
 }
 
 auto third() -> void {
-    sequence = sequence * 10 + 3;
+    SEQUENCE = SEQUENCE * 10 + 3;
 }
 } // namespace
 
@@ -69,7 +69,7 @@ auto main() -> int {
     __cxa_guard_release(&aborted);
 
     void *dso = &__dso_handle;
-    sequence = 0;
+    SEQUENCE = 0;
     if (__cxa_atexit(first, nullptr, dso) != 0) {
         return 5;
     }
@@ -82,17 +82,17 @@ auto main() -> int {
     static_object();
 
     __cxa_finalize(dso);
-    if (sequence != 421) {
+    if (SEQUENCE != 421) {
         return 8;
     }
 
     __cxa_finalize(nullptr);
-    if (sequence != 4213) {
+    if (SEQUENCE != 4213) {
         return 9;
     }
 
     __cxa_finalize(nullptr);
-    if (sequence != 4213) {
+    if (SEQUENCE != 4213) {
         return 10;
     }
     return 0;

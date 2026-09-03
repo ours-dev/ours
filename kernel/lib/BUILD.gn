@@ -7,11 +7,14 @@ _libraries = [
   "code_patching",
   "eftl",
   "gktl",
+  "kshell",
   "ktl",
   "lz4",
   "obi",
+  "prof",
   "syscall",
   "unwind",
+  "userabi",
 ]
 
 group("standalone-libs") {
@@ -28,6 +31,7 @@ group("tests") {
   deps = [
     "eftl:tests",
     "obi:tests",
+    "prof:tests",
     "unwind:tests",
   ]
 }

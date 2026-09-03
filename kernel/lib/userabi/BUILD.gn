@@ -1,0 +1,19 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The user-space ABI bring-up library: constructs the first user process
+# (userboot) from the kernel side. Everything past ProcessDispatcher::create
+# is forward development -- see userboot.cpp.
+cpp_interface("headers") {
+  public = [ "include/userabi/userboot.hpp" ]
+  public_deps = [ "//kernel/object:headers" ]
+  visibility = [ "*" ]
+}
+
+source_set("userabi") {
+  sources = [
+    "resource.cpp",
+    "userboot.cpp",
+  ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}

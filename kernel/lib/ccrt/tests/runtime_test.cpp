@@ -5,22 +5,22 @@ extern "C" ccrt::Initializer const INITIALIZERS_START[] LINK_NAME("__ccrt_init_s
 extern "C" ccrt::Initializer const INITIALIZERS_END[] LINK_NAME("__ccrt_init_end") = {nullptr};
 
 namespace {
-int sequence;
+int SEQUENCE;
 
 auto first(void *) -> void {
-    sequence = sequence * 10 + 1;
+    SEQUENCE = SEQUENCE * 10 + 1;
 }
 
 auto second(void *) -> void {
-    sequence = sequence * 10 + 2;
+    SEQUENCE = SEQUENCE * 10 + 2;
 }
 
 auto third() -> void {
-    sequence = sequence * 10 + 3;
+    SEQUENCE = SEQUENCE * 10 + 3;
 }
 
 auto fourth(void *) -> void {
-    sequence = sequence * 10 + 4;
+    SEQUENCE = SEQUENCE * 10 + 4;
 }
 } // namespace
 
@@ -47,7 +47,7 @@ auto main() -> int {
     int scope_token;
     auto const scope = ccrt::Scope{&scope_token};
     auto &registry = ccrt::Registry::instance();
-    sequence = 0;
+    SEQUENCE = 0;
     if (!registry.register_destructor(first, nullptr, scope)) {
         return 5;
     }
@@ -59,15 +59,15 @@ auto main() -> int {
     }
 
     registry.finalize(scope);
-    if (sequence != 21) {
+    if (SEQUENCE != 21) {
         return 8;
     }
     registry.finalize();
-    if (sequence != 213) {
+    if (SEQUENCE != 213) {
         return 9;
     }
     registry.finalize();
-    if (sequence != 213) {
+    if (SEQUENCE != 213) {
         return 10;
     }
 
@@ -75,7 +75,7 @@ auto main() -> int {
         return 11;
     }
     registry.finalize(scope);
-    if (sequence != 2134) {
+    if (SEQUENCE != 2134) {
         return 12;
     }
     return 0;

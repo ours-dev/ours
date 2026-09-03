@@ -28,36 +28,39 @@ bottom). In practice those two steps were the ones getting silently skipped
 — C++ files got written and edited across a whole OBI build-system session
 without either tool ever being invoked. This skill is the concrete,
 repo-specific "how" so that doesn't happen again: exact binaries, exact
-flags, exact place they live (only inside the `dev-common` container, same
-as `gn`/`ninja` — see below).
+flags, exact place they live (the repo's own `prebuilt/` LLVM tree — see
+below).
 
 ## Where the tools live
 
-`clang-format` and `clang-tidy` are **not** on `PATH` in a fresh shell inside
-the container — use the full path, same as this repo's `clang++`:
+`clang-format` and `clang-tidy` live in the repo's prebuilt LLVM tree and run
+natively on the host — no container, no install, use the full path:
 
 ```
-/usr/lib/llvm-22/bin/clang-format
-/usr/lib/llvm-22/bin/clang-tidy
+prebuilt/clang/llvm-23/bin/clang-format
+prebuilt/clang/llvm-23/bin/clang-tidy
 ```
 
-Run them via `docker exec dev-common bash -lc '...'` (or `export PATH=` first
-if running several commands in one session) — there is no host-side install
-these should be assumed to use; this project's whole toolchain lives in the
-`dev-common` container.
+Find them with `ls prebuilt/clang/*/bin` if the tree moves: prefer the LLVM
+that both ships these two tools and whose `clang++` the current build
+compiles with, so clang-tidy checks exactly what the build compiles. Today
+that's llvm-23 only (llvm-22 carries the compiler but not these tools), and
+`out/<dir>/compile_commands.json` invokes
+`../../prebuilt/clang/llvm-23/bin/clang++` — same tree.
+
+Fallback, only if the prebuilt tree is absent: the `dev-common` container has
+an LLVM at `/usr/lib/llvm-22/bin/` — run it via
+`docker exec dev-common bash -lc '...'`.
 
 ## Step 1 — clang-format
 
 ```bash
-docker exec dev-common bash -lc \
-  '/usr/lib/llvm-22/bin/clang-format -i <repo-path-to-file>'
+prebuilt/clang/llvm-23/bin/clang-format -i <path-to-file>
 ```
 
-Run from the repo root inside the container (paths are relative to wherever
-the repo is mounted, `/home/developer/workspaces/projects/.../ours.refactor.reasonix`
-in this setup). `-i` formats in place. Uses `.clang-format` at the repo root
-automatically — no need to pass `-style=file` explicitly, clang-format finds
-it by walking up from the file.
+Run from the repo root. `-i` formats in place. Uses `.clang-format` at the
+repo root automatically — no need to pass `-style=file` explicitly,
+clang-format finds it by walking up from the file.
 
 Do this for every file you wrote or edited, not just ones you're unsure
 about — formatting drift is easy to introduce by hand and cheap to fix here.
@@ -71,12 +74,13 @@ given target (`-std=c++23`, the target's actual `-I`s, `-D`s) are already
 there and don't need to be guessed:
 
 ```bash
-docker exec dev-common bash -lc \
-  '/usr/lib/llvm-22/bin/clang-tidy -p out/obi-check <repo-path-to-file>'
+prebuilt/clang/llvm-23/bin/clang-tidy -p out/<gn-output-dir> <path-to-file>
 ```
 
-(Substitute whatever GN output directory is live — `out/obi-check` is this
-session's, not a fixed name. If the file isn't part of that build's target
+(Substitute whatever GN output directory is live — `out/bringup.x86` is the
+current one, not a fixed name. The compile database records host-relative
+paths into this same prebuilt clang++, so `-p` resolves exactly from the
+repo root. If the file isn't part of that build's target
 graph, `-p` won't find flags for it; gen a build that reaches it first, or
 fall back to passing flags by hand after `--` as the generic skill
 describes.)

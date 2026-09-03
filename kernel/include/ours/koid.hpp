@@ -17,11 +17,11 @@ class KoIdGenerator {
 
   public:
     static auto generate(KoId count = 1) -> KoId {
-        return g_tracker.fetch_add(count, ustl::sync::MemoryOrder::Relaxed);
+        return TRACKER.fetch_add(count, ustl::sync::MemoryOrder::Relaxed);
     }
 
   private:
-    static inline ustl::sync::Atomic<KoId> g_tracker{KOID_INVALID + 1};
+    static inline ustl::sync::Atomic<KoId> TRACKER{KOID_INVALID + 1};
 };
 } // namespace ours
 

@@ -20,22 +20,22 @@
 
 namespace ours::mm {
 namespace {
-    GKTL_COUNTER(object_cache_free_slow_path, "mem.object_cache.free.slow_path");
-    GKTL_COUNTER(object_cache_free_fast_path, "mem.object_cache.free.fast_path");
-    GKTL_COUNTER(object_cache_allocate_slow_path, "mem.object_cache.allocate.slow_path");
-    GKTL_COUNTER(object_cache_allocate_fast_path, "mem.object_cache.allocate.fast_path");
+    GKTL_COUNTER(OBJECT_CACHE_FREE_SLOW_PATH, "mem.object_cache.free.slow_path");
+    GKTL_COUNTER(OBJECT_CACHE_FREE_FAST_PATH, "mem.object_cache.free.fast_path");
+    GKTL_COUNTER(OBJECT_CACHE_ALLOCATE_SLOW_PATH, "mem.object_cache.allocate.slow_path");
+    GKTL_COUNTER(OBJECT_CACHE_ALLOCATE_FAST_PATH, "mem.object_cache.allocate.fast_path");
 
-    MemCache *g_self_cache;
+    MemCache *SELF_CACHE;
 
-    MemCache *g_node_cache;
+    MemCache *NODE_CACHE;
 
-    INIT_DATA ustl::LazyInit<MemCache> g_bootstrap_self_cache;
+    INIT_DATA ustl::LazyInit<MemCache> BOOTSTRAP_SELF_CACHE;
 
-    INIT_DATA ustl::LazyInit<MemCache> g_bootstrap_node_cache;
+    INIT_DATA ustl::LazyInit<MemCache> BOOTSTRAP_NODE_CACHE;
 
-    u32 g_slab_min_order;
-    u32 g_slab_max_order;
-    u32 g_slab_min_objects;
+    u32 SLAB_MIN_ORDER;
+    u32 SLAB_MAX_ORDER;
+    u32 SLAB_MIN_OBJECTS;
 
     /// How many objects of |size| bytes fit in a block of 2^|order| pages.
     ///
@@ -58,24 +58,24 @@ namespace {
     }
 
     auto calculate_order(u32 size) -> u32 {
-        auto min_objects = g_slab_min_objects;
+        auto min_objects = SLAB_MIN_OBJECTS;
         if (!min_objects) {
             auto const nr_cpus = Cpu::num_present_cpus();
             min_objects = static_cast<u32>(sizeof(usize) * ustl::bit_ceil(nr_cpus));
         }
-        auto max_objects = std::max<u32>(calculate_order_objects(g_slab_max_order, size), 1);
+        auto max_objects = std::max<u32>(calculate_order_objects(SLAB_MAX_ORDER, size), 1);
         min_objects = std::min(min_objects, max_objects);
 
         // TODO(SmallHuaZi): incomplete -- Linux's slub picks the best order by
-        // trying candidates between min_order and g_slab_max_order. This
+        // trying candidates between min_order and SLAB_MAX_ORDER. This
         // returns the lower bound it just computed.
         //
-        // Note that g_slab_min_order/g_slab_max_order/g_slab_min_objects are
+        // Note that SLAB_MIN_ORDER/SLAB_MAX_ORDER/SLAB_MIN_OBJECTS are
         // never assigned anywhere yet, so they are all zero: max_objects caps
         // at one page's worth and every slab comes out order 0. That is a safe
-        // place to sit, and raising g_slab_max_order later is what the tail
+        // place to sit, and raising SLAB_MAX_ORDER later is what the tail
         // stamping in slab::create exists to make survivable.
-        return std::max<u32>(g_slab_min_order, order_for_bytes(min_objects * size));
+        return std::max<u32>(SLAB_MIN_ORDER, order_for_bytes(min_objects * size));
     }
 } // namespace
 
@@ -321,18 +321,18 @@ struct MemCache::NodeCache {
     usize num_partials;
 
     /// NodeCaches for the node cache itself, which cannot allocate its own:
-    /// allocating a NodeCache goes through g_node_cache, and during its
+    /// allocating a NodeCache goes through NODE_CACHE, and during its
     /// bootstrap that *is* the cache being built. Static for the same reason
     /// CpuLocal keeps its bootstrap areas static -- the slab cannot be used to
     /// build what the slab depends on.
-    static NodeCache g_bootstrap[NUMA_MAX_NODE];
+    static NodeCache BOOTSTRAP[NUMA_MAX_NODE];
 
     static auto is_bootstrap(NodeCache const *cache) -> bool {
-        return cache >= &g_bootstrap[0] && cache < &g_bootstrap[NUMA_MAX_NODE];
+        return cache >= &BOOTSTRAP[0] && cache < &BOOTSTRAP[NUMA_MAX_NODE];
     }
 };
 
-MemCache::NodeCache MemCache::NodeCache::g_bootstrap[NUMA_MAX_NODE];
+MemCache::NodeCache MemCache::NodeCache::BOOTSTRAP[NUMA_MAX_NODE];
 
 auto MemCache::NodeCache::take_object(Slab *slab, bool *exhausted) -> void * {
     Guard<sync::SpinLock> guard{lock};
@@ -369,20 +369,20 @@ auto MemCache::NodeCache::park(Slab *slab) -> void {
 auto MemCache::NodeCache::on_mem_cache_init(MemCache &cache) -> Status {
     // The node cache is brought up on static storage; everything afterwards,
     // the self-cache included, allocates through it normally.
-    auto const bootstrapping = &cache == g_node_cache;
+    auto const bootstrapping = &cache == NODE_CACHE;
 
-    auto const &node = g_slab_nodes;
+    auto const &node = SLAB_NODES;
     for (usize nid = 0; nid < node.size(); ++nid) {
         if (!node.test(nid)) {
             continue;
         }
 
         if (bootstrapping) {
-            cache.m_node_caches[nid] = &g_bootstrap[nid];
+            cache.m_node_caches[nid] = &BOOTSTRAP[nid];
             continue;
         }
 
-        auto *const storage = g_node_cache->allocate(cache.m_gaf, static_cast<NnId>(nid));
+        auto *const storage = NODE_CACHE->allocate(cache.m_gaf, static_cast<NnId>(nid));
         if (!storage) {
             // Release all holding and report error.
             on_mem_cache_free(cache);
@@ -414,7 +414,7 @@ auto MemCache::NodeCache::on_mem_cache_free(MemCache &cache) -> void {
         // allocated and must not be handed to the allocator.
         if (!is_bootstrap(node_cache)) {
             node_cache->~NodeCache();
-            g_node_cache->free(node_cache);
+            NODE_CACHE->free(node_cache);
         }
         node_cache = nullptr;
     }
@@ -441,11 +441,11 @@ constexpr static auto const POISON_END = 0xa5U;
 
 // Out-of-line definitions for MemCache's static data members. The header only
 // declares them, so without these every use -- and there are many, this file
-// locks g_cache_lock and reads g_slab_nodes throughout -- is an undefined
+// locks CACHE_LOCK and reads SLAB_NODES throughout -- is an undefined
 // symbol that only the link would ever complain about.
-sync::Mutex MemCache::g_cache_lock;
-MemCache::List MemCache::g_global_caches;
-NodeMask MemCache::g_slab_nodes;
+sync::Mutex MemCache::CACHE_LOCK;
+MemCache::List MemCache::GLOBAL_CACHES;
+NodeMask MemCache::SLAB_NODES;
 
 MemCache::MemCache(char const *name, usize size, usize align, Option option)
     // Initializer order follows the member declaration order in the header.
@@ -478,7 +478,7 @@ MemCache::MemCache(char const *name, usize size, usize align, Option option)
 }
 
 auto MemCache::reclaim_storage(void *pointer) noexcept -> void {
-    g_self_cache->free(pointer);
+    SELF_CACHE->free(pointer);
 }
 
 MemCache::~MemCache() noexcept {
@@ -487,18 +487,18 @@ MemCache::~MemCache() noexcept {
 }
 
 auto MemCache::init() -> Status {
-    g_self_cache = g_bootstrap_self_cache.data();
-    g_node_cache = g_bootstrap_node_cache.data();
+    SELF_CACHE = BOOTSTRAP_SELF_CACHE.data();
+    NODE_CACHE = BOOTSTRAP_NODE_CACHE.data();
 
     // Initialize the nodemask to nodes which has normal memories.
-    PmNode::for_each_nid(PmNode::State::Memory, [](NnId nid) { g_slab_nodes.set(nid); });
+    PmNode::for_each_nid(PmNode::State::Memory, [](NnId nid) { SLAB_NODES.set(nid); });
 
-    if (auto const status = Self::create_boot(*g_node_cache, "cache:node", sizeof(NodeCache), 0,
-                                              Option::CacheAlign);
+    if (auto const status =
+            Self::create_boot(*NODE_CACHE, "cache:node", sizeof(NodeCache), 0, Option::CacheAlign);
         Status::Ok != status) {
         return status;
     }
-    return Self::create_boot(*g_self_cache, "cache:self", sizeof(MemCache), 0, Option::CacheAlign);
+    return Self::create_boot(*SELF_CACHE, "cache:self", sizeof(MemCache), 0, Option::CacheAlign);
 }
 
 auto MemCache::compute_layout(usize size, Option option) -> Status {
@@ -574,8 +574,8 @@ auto MemCache::init(char const *name, usize size, usize align, Option option) ->
         std::clamp(ustl::bit_ceil(m_phys_size) / 2, MIN_PARTIAL_SLABS, MAX_PARTIAL_SLABS);
 
     // CpuCache first, and the order matters. NodeCache::on_mem_cache_init()
-    // allocates its NodeCaches out of g_node_cache -- and when the cache being
-    // brought up *is* g_node_cache, that is a call into this very object's
+    // allocates its NodeCaches out of NODE_CACHE -- and when the cache being
+    // brought up *is* NODE_CACHE, that is a call into this very object's
     // allocate(), which reads m_cpu_caches. Setting the cpu caches up first is
     // what lets the node cache carve its own NodeCaches out of a fresh slab
     // instead of chasing an uninitialised member.
@@ -593,8 +593,8 @@ auto MemCache::init(char const *name, usize size, usize align, Option option) ->
     }
 
     {
-        Guard guard{g_cache_lock};
-        g_global_caches.push_back(*this);
+        Guard guard{CACHE_LOCK};
+        GLOBAL_CACHES.push_back(*this);
     }
     return Status::Ok;
 }
@@ -608,17 +608,17 @@ auto MemCache::alias(const char *name, usize size, usize align, Option, ustl::Ar
 
 auto MemCache::create(char const *name, usize size, usize align, Option option,
                       ustl::Arc<Self> *out) -> Status {
-    // No g_cache_lock here. It guards g_global_caches, which init() below
+    // No CACHE_LOCK here. It guards GLOBAL_CACHES, which init() below
     // appends to under that same lock -- and Mutex is a plain CAS lock that
     // stores the owning thread, so taking it here deadlocked the moment the
     // first cache was ever created. Allocating the storage needs no such
     // protection: MemCache::allocate does its own locking.
-    auto raw_self = g_self_cache->allocate(GAF_KERNEL);
+    auto raw_self = SELF_CACHE->allocate(GAF_KERNEL);
     if (!raw_self) {
         return Status::NoMemory;
     }
 
-    auto cleanup = gktl::defer([raw_self]() { g_self_cache->free(raw_self); });
+    auto cleanup = gktl::defer([raw_self]() { SELF_CACHE->free(raw_self); });
 
     auto self = new (raw_self) Self(name, size, align, option);
 
@@ -638,7 +638,7 @@ auto MemCache::create_boot(Self &self, char const *name, usize size, usize align
     // that were deliberately never constructed, because constructing one the
     // ordinary way would allocate from the very allocator this is bringing up.
     //
-    // No g_cache_lock here: init() takes it for the one line that needs it,
+    // No CACHE_LOCK here: init() takes it for the one line that needs it,
     // and Mutex is not recursive.
     auto *const cache = new (&self) Self(name, size, align, options);
     return cache->init(name, size, align, options);

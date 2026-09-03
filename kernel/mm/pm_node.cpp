@@ -2,8 +2,10 @@
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
 #include <ours/assert.hpp>
+#include <ours/cpu.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
-#include <ours/mm/memory_model.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -16,16 +18,16 @@
 #include <algorithm>
 namespace ours::mm {
 namespace {
-    GKTL_COUNTER(pm_node_local_hit, "pm.node.local.hit");
-    GKTL_COUNTER(pm_node_local_miss, "pm.node.local.miss");
+    GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
+    GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
-    INIT_DATA Pfn g_zone_lower_pfn[NR_ZONES_PER_NODE];
+    INIT_DATA Pfn ZONE_LOWER_PFN[NR_ZONES_PER_NODE];
 
-    INIT_DATA Pfn g_zone_upper_pfn[NR_ZONES_PER_NODE];
+    INIT_DATA Pfn ZONE_UPPER_PFN[NR_ZONES_PER_NODE];
 
     FORCE_INLINE auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
-        return std::clamp(pfn, g_zone_lower_pfn[static_cast<usize>(ztype)],
-                          g_zone_upper_pfn[static_cast<usize>(ztype)]);
+        return std::clamp(pfn, ZONE_LOWER_PFN[static_cast<usize>(ztype)],
+                          ZONE_UPPER_PFN[static_cast<usize>(ztype)]);
     }
 
     FORCE_INLINE auto gaf_to_allocation_control(Gaf gaf) -> AllocationControl {
@@ -192,12 +194,12 @@ auto ZoneIterator::move_next() -> ZoneRef {
     return ZoneRef();
 }
 
-decltype(PmNode::g_states) PmNode::g_states;
-decltype(PmNode::g_nodes) PmNode::g_nodes;
-decltype(PmNode::g_num_nodes) PmNode::g_num_nodes;
-decltype(PmNode::g_num_online_nodes) PmNode::g_num_online_nodes;
-decltype(PmNode::g_node_distance) PmNode::g_node_distance;
-decltype(PmNode::g_allowed_gaf) PmNode::g_allowed_gaf = GAF_BOOT;
+decltype(PmNode::STATES) PmNode::STATES;
+decltype(PmNode::NODES) PmNode::NODES;
+decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
+decltype(PmNode::NUM_ONLINE_NODES) PmNode::NUM_ONLINE_NODES;
+decltype(PmNode::NODE_DISTANCE) PmNode::NODE_DISTANCE;
+decltype(PmNode::ALLOWED_GAF) PmNode::ALLOWED_GAF = GAF_BOOT;
 
 PmNode::PmNode(NnId nid)
     : m_canary()
@@ -224,17 +226,89 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     }
 
     auto start_pfn = phys_to_pfn(EarlyMem::min_address());
-    for (usize i = 0; i < std::size(g_zone_lower_pfn); i++) {
+    for (usize i = 0; i < std::size(ZONE_LOWER_PFN); i++) {
         auto end_pfn = std::max(max_zone_pfn[i], start_pfn);
-        g_zone_lower_pfn[i] = start_pfn;
-        g_zone_upper_pfn[i] = end_pfn;
+        ZONE_LOWER_PFN[i] = start_pfn;
+        ZONE_UPPER_PFN[i] = end_pfn;
         start_pfn = end_pfn;
     }
 
     auto const &nodes = node_possible_mask();
 
+    // Give every CPU that no topology source claimed the first node that owns
+    // memory.
+    //
+    // STATIC_CPU_TO_NODE and DYNAMIC_CPU_TO_NODE start out filled with
+    // NUMA_MAX_NODE -- the "no node known yet" sentinel -- and the only thing
+    // that ever overwrites it is a topology source: on x86 the SRAT parse,
+    // which a kernel built without NUMA never compiles in and a machine
+    // without an SRAT never feeds. Left on the sentinel, that is what
+    // current_node() returns, and its callers index NUMA_MAX_NODE-long arrays
+    // with it -- MemCache::allocate() reads m_node_caches[NUMA_MAX_NODE], one
+    // past the end, takes the ListMemberHook that follows the array for a
+    // NodeCache, and spins forever on a list pointer it has mistaken for that
+    // NodeCache's lock.
+    //
+    // It has to happen here, not in PmNode::Current::init(): that hook runs at
+    // InitLevel::CpuLocal + 1, while the slab allocator starts asking which
+    // node it is on inside init_pmm(), several init levels earlier. Linux
+    // closes the same gap in the same place, with dummy_numa_init() and
+    // init_cpu_to_node().
+    //
+    // The `init()` pass below reads STATIC_CPU_TO_NODE to build each node's
+    // hard affinity, so this has to come before it, not after.
+    auto fallback_nid = NnId(NUMA_MAX_NODE);
+    nodes.for_each([&fallback_nid](NnId const nid) {
+        if (fallback_nid == NUMA_MAX_NODE) {
+            fallback_nid = nid;
+        }
+    });
+    if (fallback_nid == NUMA_MAX_NODE) {
+        // No node owns usable memory; the passes below would build nothing and
+        // every allocation would fail somewhere less obvious than here.
+        return Status::BadState;
+    }
+
+    auto const claim_cpu = [fallback_nid](CpuNum const cpunum) {
+        if (Current::nid(cpunum) == NUMA_MAX_NODE) {
+            Current::set_nid_early(cpunum, fallback_nid);
+        }
+    };
+    // The possible mask is already populated -- the MADT parse runs from the
+    // ACPI hook at PlatformInitLevel::StartUp, ahead of platform_init_pmm().
+    // The running CPU is claimed explicitly all the same: a machine that
+    // handed us no MADT still has the CPU this code is executing on, and
+    // leaving that one on the sentinel is the exact failure above.
+    Cpu::possible_mask().for_each(claim_cpu);
+    claim_cpu(CpuLocal::current_cpu());
+
     // Create all nodes.
-    nodes.for_each([](NnId nid) {});
+    //
+    // A pass of its own, ahead of init(), because the passes below reach across
+    // nodes: connect() walks every node's ZoneQueues, so the whole NODES table
+    // has to be populated before any of it runs. Registration lives here rather
+    // than at the end of init() for the same reason -- a node published only
+    // once it has finished initialising is invisible to the node that
+    // initialises before it, which is exactly the order these loops run in.
+    //
+    // EarlyMem is the only allocator up at this point, and asking it for node
+    // `nid`'s memory keeps the structure on the node it describes. Nothing ever
+    // frees these: a PmNode lives as long as the kernel does.
+    auto create_status = Status::Ok;
+    nodes.for_each([&create_status](NnId nid) {
+        auto node = EarlyMem::allocate<PmNode>(1, nid);
+        if (!node) {
+            create_status = Status::OutOfMem;
+            return;
+        }
+
+        new (node) PmNode(nid);
+        NODES[nid] = node;
+        NUM_NODES += 1;
+    });
+    if (create_status != Status::Ok) {
+        return create_status;
+    }
 
     // Initialize all nodes.
     nodes.for_each([](NnId nid) {
@@ -269,7 +343,7 @@ auto PmNode::init() -> Status {
     }
     set_state(m_id, State::Online);
 
-    auto const &cpu_to_node = Current::g_static_cpu_to_node;
+    auto const &cpu_to_node = Current::STATIC_CPU_TO_NODE;
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
         if (cpu_to_node[cpu] == m_id) {
             m_hard_affinity.set(cpu);
@@ -306,9 +380,9 @@ auto PmNode::init() -> Status {
 
     m_present_frames = total_present_frames;
 
-    DEBUG_ASSERT(!g_nodes[m_id]);
-    g_nodes[m_id] = this;
-    g_num_nodes += 1;
+    // NODES[m_id] and NUM_NODES are not touched here: bootstrap() publishes a
+    // node when it creates it, before this runs. See the comment there.
+    DEBUG_ASSERT(NODES[m_id] == this);
     return Status::Ok;
 }
 
@@ -442,18 +516,43 @@ auto PmNode::alloc_frames_slowpath(Gaf gaf, usize order, MemoryAllocationContext
     return frame;
 }
 
-auto PmNode::alloc_frames_preamble(Gaf, usize, MemoryAllocationContext *) -> Status {
-    // TODO(SmallHuaZi): unimplemented -- should prepare the allocation context
-    // (watermarks, fallback nodemask) before the zone walk.
+auto PmNode::alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallback,
+                                   MemoryAllocationContext *context) -> Status {
+    DEBUG_ASSERT(context, "");
+
+    // The nodes this allocation may draw from. Without this the zone walk in
+    // get_frame_from_zone_queues() rejects everything, since an unset NodeMask
+    // answers false for every node.
+    //
+    // Gaf::ThisNode narrows it to the local node; it is a preference rather than
+    // a restriction, so an empty intersection falls back to the caller's mask
+    // rather than failing -- a node with no memory of its own must still be able
+    // to allocate.
+    context->allowed_nodes = fallback;
+    if (!!(gaf & Gaf::ThisNode)) {
+        auto local = fallback;
+        local &= NodeMask::of(m_id);
+        if (local.any()) {
+            context->allowed_nodes = local;
+        }
+    }
+
+    context->home_node = m_id;
+    context->initiator = Cpu::id();
+
+    // TODO(SmallHuaZi): watermarks. The zone walk consults is_below_high_wmark(),
+    // and nothing sets that flag yet, so every zone currently reads as being
+    // above its watermark.
+    static_cast<void>(order);
     return Status::Ok;
 }
 
 auto PmNode::alloc_frames_postamble(PmFrame *frame, Gaf gaf, usize order,
                                     MemoryAllocationContext const &context) -> void {
     if (PmNode::Current::nid() == m_id) {
-        pm_node_local_hit.add(1);
+        PM_NODE_LOCAL_HIT.add(1);
     } else {
-        pm_node_local_miss.add(1);
+        PM_NODE_LOCAL_MISS.add(1);
     }
 }
 
@@ -464,10 +563,11 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     if (order > MAX_FRAME_ORDER) {
         return ustl::err(Status::InvalidArguments);
     }
-    gaf &= g_allowed_gaf;
+    gaf &= ALLOWED_GAF;
 
     MemoryAllocationContext context;
-    if (auto const status = alloc_frames_preamble(gaf, order, &context); Status::Ok != status) {
+    if (auto const status = alloc_frames_preamble(gaf, order, fallback, &context);
+        Status::Ok != status) {
         return ustl::err(status);
     }
     auto const control = gaf_to_allocation_control(gaf);
@@ -556,19 +656,17 @@ auto PmNode::dump() const -> void {
     }
 }
 
-constinit decltype(PmNode::Current::g_static_cpu_to_node) PmNode::Current::g_static_cpu_to_node =
-    [] {
-        decltype(PmNode::Current::g_static_cpu_to_node) value;
-        std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
-        return value;
-    }();
+constinit decltype(PmNode::Current::STATIC_CPU_TO_NODE) PmNode::Current::STATIC_CPU_TO_NODE = [] {
+    decltype(PmNode::Current::STATIC_CPU_TO_NODE) value;
+    std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
+    return value;
+}();
 
-constinit decltype(PmNode::Current::g_dynamic_cpu_to_node) PmNode::Current::g_dynamic_cpu_to_node =
-    [] {
-        decltype(PmNode::Current::g_dynamic_cpu_to_node) value;
-        std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
-        return value;
-    }();
+constinit decltype(PmNode::Current::DYNAMIC_CPU_TO_NODE) PmNode::Current::DYNAMIC_CPU_TO_NODE = [] {
+    decltype(PmNode::Current::DYNAMIC_CPU_TO_NODE) value;
+    std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
+    return value;
+}();
 
 auto PmNode::Current::inherit_thread_context(Gaf &gaf) -> Status {
     auto &mem_state = task::Thread::Current::memory_allocation_state();
@@ -647,7 +745,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU);
     DEBUG_ASSERT(new_nid < NUMA_MAX_NODE);
 
-    auto const old_nid = g_dynamic_cpu_to_node[cpunum];
+    auto const old_nid = DYNAMIC_CPU_TO_NODE[cpunum];
     if (old_nid == new_nid) {
         return;
     }
@@ -662,7 +760,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
         }
     }
 
-    g_dynamic_cpu_to_node[cpunum] = new_nid;
+    DYNAMIC_CPU_TO_NODE[cpunum] = new_nid;
     if (auto node = PmNode::node(new_nid)) {
         node->m_canary.verify<Self>();
         Guard guard{node->get_lock()};
@@ -678,7 +776,7 @@ auto PmNode::Current::set_nid(NnId nid) -> void {
 
 auto PmNode::Current::init() -> void {
     Cpu::possible_mask().for_each(
-        [](CpuNum cpu) { PmNode::Current::set_nid(cpu, g_static_cpu_to_node[cpu]); });
+        [](CpuNum cpu) { PmNode::Current::set_nid(cpu, STATIC_CPU_TO_NODE[cpu]); });
 }
 
 // When cpu local area has been setup, we should install local node id to enable the version of

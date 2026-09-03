@@ -8,7 +8,7 @@ if (toolchain_environment == "kernel") {
     ]
     deps = [
       "//kernel/lib/mtl:headers",
-      "//kernel/lib/logz4:headers",
+      "//system/lib/logz4:headers",
       "//kernel/mm:headers",
       "//system/lib/lockdep",
     ]

@@ -21,7 +21,7 @@ auto run_command(int argc, char **argv) -> void;
 #define GKTL_COMMAND(NAME, CMD, HANDLER, HELP)                                                     \
     namespace commands::NAME {                                                                     \
         LINK_SECTION(".gktl.commands")                                                             \
-        FORCE_USED static ::gktl::Command const s_command_##NAME{                                  \
+        FORCE_USED static ::gktl::Command const COMMAND_##NAME{                                    \
             .cmd = CMD, .help = HELP, .callback = HANDLER};                                        \
     }
 

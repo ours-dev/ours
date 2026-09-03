@@ -11,24 +11,24 @@
 #include <ustl/lazy_init.hpp>
 
 namespace {
-GKTL_COUNTER(vm_aspace_high_priority, "vm.aspace.high_priority")
-GKTL_COUNTER(vm_aspace_accessed_harvests_performed, "vm.aspace.accessed_harvest.performed")
-GKTL_COUNTER(vm_aspace_accessed_harvests_skipped, "vm.aspace.accessed_harvest.skipped")
-GKTL_COUNTER(vm_aspace_last_fault_hit, "vm.aspace.last_fault.hit");
-GKTL_COUNTER(vm_aspace_last_fault_miss, "vm.aspace.last_fault.miss");
+GKTL_COUNTER(VM_ASPACE_HIGH_PRIORITY, "vm.aspace.high_priority")
+GKTL_COUNTER(VM_ASPACE_ACCESSED_HARVESTS_PERFORMED, "vm.aspace.accessed_harvest.performed")
+GKTL_COUNTER(VM_ASPACE_ACCESSED_HARVESTS_SKIPPED, "vm.aspace.accessed_harvest.skipped")
+GKTL_COUNTER(VM_ASPACE_LAST_FAULT_HIT, "vm.aspace.last_fault.hit");
+GKTL_COUNTER(VM_ASPACE_LAST_FAULT_MISS, "vm.aspace.last_fault.miss");
 } // namespace
 
 namespace ours::mm {
 using AspaceCache = mm::ObjectCache::Instance<VmAspace>;
 
-decltype(VmAspace::g_all_aspace_list) VmAspace::g_all_aspace_list;
-decltype(VmAspace::g_all_aspace_list_lock) VmAspace::g_all_aspace_list_lock;
+decltype(VmAspace::ALL_ASPACE_LIST) VmAspace::ALL_ASPACE_LIST;
+decltype(VmAspace::ALL_ASPACE_LIST_LOCK) VmAspace::ALL_ASPACE_LIST_LOCK;
 
-decltype(VmAspace::g_kernel_aspace) VmAspace::g_kernel_aspace;
-decltype(VmAspace::g_kernel_aspace_lock) VmAspace::g_kernel_aspace_lock;
+decltype(VmAspace::KERNEL_ASPACE) VmAspace::KERNEL_ASPACE;
+decltype(VmAspace::KERNEL_ASPACE_LOCK) VmAspace::KERNEL_ASPACE_LOCK;
 
 auto VmAspace::kernel_aspace() -> ustl::Arc<VmAspace> {
-    return ustl::Arc<VmAspace>::adopt(g_kernel_aspace);
+    return ustl::Arc<VmAspace>::adopt(KERNEL_ASPACE);
 }
 
 // Initializer order follows the member declaration order in vm_aspace.hpp.
@@ -63,8 +63,8 @@ auto VmAspace::create(VirtAddr base, usize size, VmasFlags flags, char const *na
     aspace->init();
     {
         // Entrollment into the global list.
-        Guard guard{g_all_aspace_list_lock};
-        g_all_aspace_list.push_back(*aspace);
+        Guard guard{ALL_ASPACE_LIST_LOCK};
+        ALL_ASPACE_LIST.push_back(*aspace);
     }
     *out = ustl::Arc<VmAspace>::adopt(aspace);
     return Status::Ok;
@@ -82,7 +82,7 @@ INIT_CODE auto VmAspace::init_kernel_aspace() -> void {
     status = Self::create(KERNEL_ASPACE_BASE, KERNEL_ASPACE_SIZE, flags, "K:Aspace", &aspace);
     ASSERT(Status::Ok == status, "Failed to create kernel VmAspace");
 
-    Self::g_kernel_aspace = aspace.into_raw();
+    Self::KERNEL_ASPACE = aspace.into_raw();
 }
 
 auto VmAspace::sync_kernel_aspace() -> void {}
@@ -132,9 +132,9 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, [[maybe_unused]]
             Guard guard{get_lock()};
 
             if (m_last_fault->check_range(va, 1)) [[likely]] {
-                vm_aspace_last_fault_hit.add(1);
+                VM_ASPACE_LAST_FAULT_HIT.add(1);
             } else {
-                vm_aspace_last_fault_miss.add(1);
+                VM_ASPACE_LAST_FAULT_MISS.add(1);
                 m_last_fault = ustl::Arc<VmMapping>::adopt(m_root_vma->find_mapping_locked(va));
                 if (!m_last_fault) {
                     return Status::NotFound;

@@ -33,6 +33,17 @@ auto arch_setup_aspace(Aspace &aspace) -> void {
     aspace.set_allocation_bounds(0, 0);
     create_identity_map_for_ram(aspace, ARCH_PHYSMAP_SIZE);
 
+    // The legacy VGA/BIOS hole sits outside usable RAM, so the RAM walk
+    // above skips it — but the phys console still writes the text buffer at
+    // 0xB8000 after install(), and a write into an unmapped page triple
+    // faults (the early IDT is empty). Map the whole hole 1:1: [0xA0000,
+    // 0xC0000) covers the text buffer and the planar video memory.
+    if (auto const mapped = aspace.map_identically(0xA'0000, 0x2'0000 / PAGE_SIZE,
+                                                   MmuFlags::PermMask | MmuFlags::Present);
+        mapped.is_err()) {
+        panic("Failed to map VGA memory: {}", to_string(mapped.unwrap_err()));
+    }
+
     aspace.install();
 }
 

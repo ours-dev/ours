@@ -10,14 +10,14 @@ namespace {
         return PhysMap::phys_to_virt(pa);
     }
 
-    /// A fresh, zeroed page for one level of the table (`align` is unused:
-    /// every level's table is exactly one page, which is naturally aligned
-    /// to what `Traits::TABLE_ALIGNMENT` asks for).
+    /// A fresh, zeroed page for one level of the table.
+    ///
+    /// Deliberately not alloc_frames() any more. Taking table pages straight
+    /// from the buddy tied every page-table edit to a point in boot after the
+    /// buddy exists -- and worse, made an edit made *while* allocating from the
+    /// buddy re-enter it. alloc_page_table() picks the allocator that is up.
     auto alloc_table(usize size, usize align) -> PhysAddr {
-        (void)align;
-        PhysAddr phys;
-        auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, get_order(size / PAGE_SIZE));
-        return frame ? phys : PhysAddr{0};
+        return alloc_page_table(size, align);
     }
 
     constexpr auto to_status(arch::paging::MapError error) -> Status {

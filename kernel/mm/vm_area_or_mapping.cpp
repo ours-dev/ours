@@ -1,9 +1,12 @@
 #include <logz4/log.hpp>
+#include <ours/assert.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_area_or_mapping.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object.hpp>
 #include <ustl/mem/align.hpp>
+
+#include <algorithm>
 
 namespace ours::mm {
 auto VmAreaOrMapping::Builder::set_vmo(ustl::Arc<VmObject> vmo) -> Self & {
@@ -19,8 +22,7 @@ VmAreaOrMapping::VmAreaOrMapping(u32 magic, VirtAddr base, usize size, VmaFlags 
     , m_size(size)
     , m_vmaf(vmaf)
     , m_parent(parent)
-    , m_aspace(aspace)
-    , m_children_hook() {}
+    , m_aspace(aspace) {}
 
 auto VmAreaOrMapping::validate_mmuflags(MmuFlags mmuf) const -> bool {
     VmaFlags vmaf{};
@@ -46,35 +48,72 @@ auto VmAreaOrMapping::validate_mmuflags(MmuFlags mmuf) const -> bool {
 
 auto VmAreaOrMapping::activate() -> Status {
     mark_active();
-    m_parent->m_subvmas.insert(*this);
-    return Status::Ok;
+    return m_parent->m_subvmas.insert(*this);
 }
 
 auto VmAreaOrMapping::destroy() -> Status {
     m_vmaf &= ~VmaFlags::Active;
     if (m_parent) {
-        auto to_erase = m_parent->m_subvmas.iterator_to(*this);
-        m_parent->m_subvmas.erase(to_erase);
+        m_parent->m_subvmas.erase(*this);
         m_parent = nullptr;
     }
     return Status::Ok;
 }
 
+VmaSet::~VmaSet() {
+    // Reaching here with areas still present means someone tore down the
+    // owning VmArea without unmapping its children first; draining keeps
+    // that from silently leaking the references the set took, and the
+    // assertion says so in a debug build rather than hiding it.
+    DEBUG_ASSERT(m_tree.empty(), "destroying a VmaSet that still holds areas");
+    clear();
+}
+
+auto VmaSet::clear() -> void {
+    // Drop the set's reference on each area before the pointers go away --
+    // this is the only place the "leaves the tree before it is destroyed"
+    // invariant could otherwise be broken.
+    for (auto *area: m_tree) {
+        area->release();
+    }
+    m_tree.clear();
+}
+
+auto VmaSet::insert(VmAreaOrMapping &value) -> Status {
+    auto result = m_tree.insert(&value);
+    if (result.is_err()) {
+        return Status::OutOfMem;
+    }
+    if (!result.unwrap().second) {
+        // An area with this base is already here; nothing was inserted, so
+        // no reference is taken.
+        return Status::AlreadyExists;
+    }
+    value.retain();
+    return Status::Ok;
+}
+
+auto VmaSet::erase(VmAreaOrMapping &value) -> void {
+    if (m_tree.erase(value.base()) != 0) {
+        value.release();
+    }
+}
+
 auto VmaSet::has_range(VirtAddr base, usize size) const -> bool {
-    auto iter = upper_bound(base + size);
-    if (iter != end()) {
-        if (iter->m_base <= base + size - 1) {
+    // Any area overlapping [base, base + size) either starts inside it, or
+    // starts before it and reaches in.
+    auto const at_or_after = m_tree.lower_bound(base);
+    auto iter = at_or_after.is_some() ? at_or_after.value() : m_tree.end();
+    if (iter != m_tree.end() && (*iter)->base() < base + size) {
+        return true;
+    }
+    if (iter != m_tree.begin()) {
+        auto previous = iter;
+        --previous;
+        if ((*previous)->end() > base) {
             return true;
         }
     }
-
-    --iter;
-    if (iter != end()) {
-        if (iter->m_base + iter->m_size - 1 >= base) {
-            return true;
-        }
-    }
-
     return false;
 }
 
@@ -87,24 +126,92 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
         align = PAGE_SIZE;
     }
 
-    // The core logic is to find a gap between two existing areas, if the gap has enough size
-    // then we return the base address of it. Range [low_limit, high_limit) must be a available
-    // address interval to avoid doing additional bound check.
-    auto requested_size = ustl::mm::align_up(size, align);
-    VirtAddr addr = ustl::mm::align_up(low_limit, PAGE_SIZE);
-    for (auto i = upper_bound(addr), last = end(); i != last; ++i) {
-        if (addr > high_limit) {
-            return ustl::err(Status::NotFound);
-        }
-        if (i->m_base >= addr + requested_size) {
-            return ustl::ok(addr);
+    // Walk the candidate gaps in address order and take the first that
+    // holds the request, which keeps the lowest-address behaviour the
+    // previous implementation had.
+    //
+    // The walk is pruned rather than exhaustive: a subtree whose largest
+    // internal gap cannot hold the request is skipped whole, and only the
+    // seam between it and what came before is examined. `prev_end` carries
+    // the end of the last area seen across the whole traversal, so the gaps
+    // before the first area and after the last one fall out of the same
+    // bookkeeping instead of needing separate cases.
+    struct GapSeeker final {
+        /// Candidate placement at the head of the current gap, checked
+        /// against the alignment, the window, and the gap itself.
+        auto fits(VirtAddr gap_start, VirtAddr gap_end) -> bool {
+            auto const start = ustl::mm::align_up(std::max(gap_start, m_floor), m_align);
+            if (start < gap_start) {
+                return false; // alignment overflowed
+            }
+            if (start > m_high_limit || m_high_limit - start < m_requested_size) {
+                return false;
+            }
+            if (gap_end < start || gap_end - start < m_requested_size) {
+                return false;
+            }
+            m_found = start;
+            return true;
         }
 
-        addr = ustl::mm::align_up(i->m_base + i->m_size, align);
+        auto on_subtree(VmAreaOrMapping::GapAugment::Aggregate const &aggregate)
+            -> Tree::VisitStep {
+            if (aggregate.m_empty) {
+                return Tree::VisitStep::Skip;
+            }
+            if (aggregate.m_max_gap >= m_requested_size) {
+                // Something inside might fit; the descent also covers the
+                // seam leading into it.
+                return Tree::VisitStep::Descend;
+            }
+            // Nothing inside is large enough, so only the seam before this
+            // subtree can still work.
+            if (fits(m_prev_end, aggregate.m_min_start)) {
+                return Tree::VisitStep::Stop;
+            }
+            if (aggregate.m_max_end > m_prev_end) {
+                m_prev_end = aggregate.m_max_end;
+            }
+            return Tree::VisitStep::Skip;
+        }
+
+        auto on_value(VmAreaOrMapping *area) -> bool {
+            if (fits(m_prev_end, area->base())) {
+                return false;
+            }
+            if (area->end() > m_prev_end) {
+                m_prev_end = area->end();
+            }
+            return true;
+        }
+
+        usize m_requested_size;
+        usize m_align;
+        VirtAddr m_floor;
+        VirtAddr m_high_limit;
+        VirtAddr m_found{};
+        /// End of the last area seen so far, carried across subtree
+        /// boundaries so the gaps before the first area and after the last
+        /// one fall out of the same bookkeeping.
+        VirtAddr m_prev_end;
+    };
+
+    VirtAddr const floor = ustl::mm::align_up(low_limit, PAGE_SIZE);
+    auto seeker = GapSeeker{
+        .m_requested_size = ustl::mm::align_up(size, align),
+        .m_align = align,
+        .m_floor = floor,
+        .m_high_limit = high_limit,
+        .m_prev_end = floor,
+    };
+
+    if (!m_tree.visit_ordered(seeker)) {
+        // Only a found spot stops the seeker mid-walk.
+        return ustl::ok(seeker.m_found);
     }
-
-    if (addr + requested_size <= high_limit) {
-        return ustl::ok(addr);
+    // Whatever is left between the last area and the top of the window.
+    if (seeker.fits(seeker.m_prev_end, high_limit)) {
+        return ustl::ok(seeker.m_found);
     }
     return ustl::err(Status::NotFound);
 }

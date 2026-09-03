@@ -6,10 +6,9 @@
 #include <ours/time/tick_device.hpp>
 
 namespace ours::time {
-INIT_DATA static ClockEventDevice s_noop_device{"Noop Device", 0, ClockEventDevice::Feature::None,
-                                                0};
+INIT_DATA static ClockEventDevice NOOP_DEVICE{"Noop Device", 0, ClockEventDevice::Feature::None, 0};
 
-TickDevice::TickDevice() : m_canary(), m_clkdev(&s_noop_device), m_mode(Mode::Periodic) {}
+TickDevice::TickDevice() : m_canary(), m_clkdev(&NOOP_DEVICE), m_mode(Mode::Periodic) {}
 
 auto TickDevice::program_event(TimePoint<> expired) -> Status {
     m_canary.verify<Self>();

@@ -2,7 +2,7 @@
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/memory_model.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
 
@@ -13,6 +13,10 @@ PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize presen
     // Initializer order follows the member declaration order in pm-zone.hpp.
     : m_canary(this)
     , m_name(to_string(type))
+    // m_node is filled in by PmNode once it adopts this zone; a zone is built
+    // before the node's queues are wired, so there is nothing to point at yet.
+    , m_node(nullptr)
+    , m_nid(nid)
     , m_flags(Flags::Initialized)
     , m_type(type)
     , m_start_pfn(start_pfn)
@@ -28,7 +32,7 @@ auto PmZone::finish_allocation(PmFrame *frame, Gaf gaf, usize order) -> void {
 
 auto PmZone::ensure_fset_attached() -> void {
     if (!m_fset_attached) {
-        m_fset.attach(MemoryModel::get().pfn_to_frame(m_start_pfn),
+        m_fset.attach(MemMap::get().pfn_to_frame(m_start_pfn),
                       static_cast<usize>(m_spanned_frames.load()), m_start_pfn);
         m_fset_attached = true;
     }
@@ -55,6 +59,10 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
     }
 
     if (!frame) {
+        // The zone's lock covers the frame set; the set has none of its own.
+        // Held only across the buddy call, so the zeroing below -- which can be
+        // a whole max-order block -- happens outside it.
+        Guard guard{m_lock};
         frame = m_fset.acquire_frame(order);
     }
 
@@ -78,6 +86,7 @@ auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
             // Here no pcpu cache.
         });
     } else {
+        Guard guard{m_lock};
         m_fset.release_frame(frame, order);
     }
     m_managed_frames += BIT(order);

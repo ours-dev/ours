@@ -4,11 +4,11 @@
 
 namespace {
 
-bool second_ran = false;
-std::size_t report_count = 0;
+bool SECOND_RAN = false;
+std::size_t REPORT_COUNT = 0;
 
 auto report(hsien::Failure const &) -> void {
-    ++report_count;
+    ++REPORT_COUNT;
 }
 
 auto first_test(hsien::Context &context) -> void {
@@ -17,7 +17,7 @@ auto first_test(hsien::Context &context) -> void {
 }
 
 auto second_test(hsien::Context &) -> void {
-    second_ran = true;
+    SECOND_RAN = true;
 }
 
 auto expect(bool condition) -> bool {
@@ -35,7 +35,7 @@ auto main() -> int {
     auto const summary = hsien::run(records, records + 2, reporter);
 
     return expect(summary.executed == 2) && expect(summary.failed == 1) &&
-                   expect(report_count == 1) && expect(second_ran)
+                   expect(REPORT_COUNT == 1) && expect(SECOND_RAN)
                ? 0
                : 1;
 }

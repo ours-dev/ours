@@ -32,11 +32,13 @@ import("//kernel/kernel_package.gni")
 #         指向 //kernel/products/image/$name 的 kernel_image() 目标；镜像的
 #         cmdline/switchset/physboot 在其定义处决定，产品只按 label 选择。
 #       * { output_name (required), package (required), extra_deps (optional),
-#           cmdline (optional) }  内联镜像：字段在此展开（product-smoke 用）；
-#         产品级 kernel_cmdline/bootfs 注入仅作用于这类条目。
+#           cmdline (optional), bootable (optional) }  内联镜像：字段在此展开
+#         （product-smoke 用）；产品级 kernel_cmdline/bootfs 注入仅作用于这类条目。
 #         package — 内核可执行文件 label（如 "//kernel/products/bin:vmours"），
 #         extra_deps — 附加到该镜像的 deps（如 "//kernel/phys:physboot"，仅保证
-#         一起构建，不嵌入 .obi）。
+#         一起构建，不嵌入 .obi），
+#         bootable — 默认 true；false 表示产物是纯容器（"内核"是存储载荷而非
+#         ELF，不做启动拓扑校验，见 kernel_image() 的同名参数）。
 #   kernel_cmdline (optional, default [])
 #     产品级内核 cmdline，注入到每个镜像（对标 Fuchsia product config 的
 #     kernel_cmdline；bringup 为空，维持 phys 侧默认启动行为）。
@@ -147,6 +149,10 @@ template("product") {
     if (defined(_entry.cmdline)) {
       _entry_cmdline = _entry.cmdline
     }
+    _entry_bootable = true
+    if (defined(_entry.bootable)) {
+      _entry_bootable = _entry.bootable
+    }
 
     _pkg_target = "_product.$target_name.pkg.$_image_name"
     _cmdline_target = "_product.$target_name.cmdline.$_image_name"
@@ -204,6 +210,7 @@ template("product") {
       output_name = _image_name
       product_dir = _product_dir
       compressed = _image_compressed
+      bootable = _entry_bootable
       deps = _image_deps
     }
 

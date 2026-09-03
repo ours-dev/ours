@@ -88,7 +88,7 @@
 using ustl::sync::MemoryOrder;
 
 namespace {
-GKTL_COUNTER(sp_spinlock_num_held, "sync.spinlock.num_held");
+GKTL_COUNTER(SP_SPINLOCK_NUM_HELD, "sync.spinlock.num_held");
 } // namespace
 
 namespace ours::sync {
@@ -125,7 +125,7 @@ namespace spinlock {
             return false;
         }
 
-        sp_spinlock_num_held.add(1);
+        SP_SPINLOCK_NUM_HELD.add(1);
         return true;
     }
 
@@ -162,7 +162,7 @@ namespace spinlock {
     auto SpinLock<Options>::release() -> void {
         assert_held();
 
-        sp_spinlock_num_held.add(-1);
+        SP_SPINLOCK_NUM_HELD.add(-1);
 
         m_lockval.store(UNLOCKED_STATE, MemoryOrder::Release);
     }
@@ -186,12 +186,12 @@ namespace spinlock {
 
     template <Option Options>
     auto SpinLock<Options>::num_held() -> usize {
-        return sp_spinlock_num_held.sum_across_all_cpus();
+        return SP_SPINLOCK_NUM_HELD.sum_across_all_cpus();
     }
 
     template <Option Options>
     auto SpinLock<Options>::num_held_cpu() -> usize {
-        return sp_spinlock_num_held.get();
+        return SP_SPINLOCK_NUM_HELD.get();
     }
 
     template class SpinLock<DEFAULT_OPTIONS>;

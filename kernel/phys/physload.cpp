@@ -15,6 +15,7 @@
 #include "physload.hpp"
 
 #include <ccrt/runtime.hpp>
+#include <logz4/log.hpp>
 #include <obi/command_line_view.hpp>
 #include <obi/container_view.hpp>
 #include <ours/phys/aspace.hpp>
@@ -24,13 +25,12 @@
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/module_loader.hpp>
-#include <ours/phys/print.hpp>
 
 #include <span>
 
 namespace ours::phys {
-Handoff g_handoff;
-BootOptions g_boot_options;
+Handoff HANDOFF;
+BootOptions BOOT_OPTIONS;
 
 /// Default: nothing to do between loading a module and entering it.  An
 /// architecture overrides this to install a page-table root or reserve
@@ -44,12 +44,12 @@ NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatfor
     // before this point goes nowhere.
     ccrt::init_global_static_objects();
     init_early_console();
-    g_handoff.uart = arch_uart_handoff();
+    HANDOFF.uart = arch_uart_handoff();
 
     if (legacy != nullptr) {
-        g_handoff.acpi_rsdp = legacy->acpi_rsdp;
+        HANDOFF.acpi_rsdp = legacy->acpi_rsdp;
         if (!legacy->bootloader_name.empty()) {
-            println("physload: loaded by '{}'", legacy->bootloader_name);
+            log::info("physload: loaded by '{}'", legacy->bootloader_name);
         }
     }
 
@@ -79,7 +79,7 @@ NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatfor
     // options a command line actually names, which is what makes layering
     // them work.
     if (auto const command_line = boot.command_line(); command_line.is_some()) {
-        auto const options_status = apply_boot_options(g_boot_options, command_line.value());
+        auto const options_status = apply_boot_options(BOOT_OPTIONS, command_line.value());
         if (options_status != Status::Ok) {
             panic("Invalid OBI boot options: {}", static_cast<u32>(options_status));
         }
@@ -90,7 +90,7 @@ NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatfor
             panic("Malformed bootloader command line: {}",
                   static_cast<u32>(command_line.unwrap_err()));
         }
-        auto const options_status = apply_boot_options(g_boot_options, command_line.unwrap());
+        auto const options_status = apply_boot_options(BOOT_OPTIONS, command_line.unwrap());
         if (options_status != Status::Ok) {
             panic("Invalid bootloader boot options: {}", static_cast<u32>(options_status));
         }
@@ -107,7 +107,7 @@ NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatfor
     //
     // a) materialize the kernel package (the single StorageKernel item)
     //    into bootmem-owned scratch
-    // b) find the module named by g_boot_options.next_module
+    // b) find the module named by BOOT_OPTIONS.next_module
     //    (`kernel.phys.next`, "physboot" by default) in the BootFS
     // c) load it as an ET_DYN image and apply its relative relocations
     ModuleLoader loader;
@@ -115,7 +115,7 @@ NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatfor
     if (storage_status != Status::Ok) {
         panic("Failed to materialize kernel package: {}", static_cast<u32>(storage_status));
     }
-    auto const load_status = loader.load(g_boot_options);
+    auto const load_status = loader.load(BOOT_OPTIONS);
     if (load_status != Status::Ok) {
         panic("Failed to load phys module: {}", static_cast<u32>(load_status));
     }
@@ -127,8 +127,8 @@ NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatfor
     phys_handoff.kernel_storage_size = loader.storage_size();
     phys_handoff.obi_package_base = package_base;
     phys_handoff.obi_package_size = package_size;
-    phys_handoff.boot_options = &g_boot_options;
-    phys_handoff.acpi_rsdp = g_handoff.acpi_rsdp;
+    phys_handoff.boot_options = &BOOT_OPTIONS;
+    phys_handoff.acpi_rsdp = HANDOFF.acpi_rsdp;
 
     // ---- Stage 5: Hand off to the next phys module ----
     //

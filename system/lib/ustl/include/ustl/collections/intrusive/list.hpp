@@ -153,25 +153,25 @@ class List final {
     [[nodiscard]]
     constexpr auto front() noexcept -> ustl::Option<T &> {
         const auto node = NodeTraits::get_next(header());
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
     constexpr auto front() const noexcept -> ustl::Option<T const &> {
         const auto node = NodeTraits::get_next(header());
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
     constexpr auto back() noexcept -> ustl::Option<T &> {
         const auto node = NodeTraits::get_previous(header());
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
     constexpr auto back() const noexcept -> ustl::Option<T const &> {
         const auto node = NodeTraits::get_previous(header());
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     constexpr auto push_front(T &value) noexcept -> void {

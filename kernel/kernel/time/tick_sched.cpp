@@ -1,6 +1,7 @@
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_device.hpp>
+#include <prof/sampler.hpp>
 #include <ours/time/tick_sched.hpp>
 #include <ours/time/timer_scheduler.hpp>
 
@@ -29,6 +30,10 @@ auto TickSched::emulate(WorkMode workmode) -> void {
 auto TickSched::handle_event(Timer *timer) -> Timer::HandlerResult {
     auto const now = SteadyClock::now();
     task::Scheduler::Current::tick(now);
+
+    // The sampling profiler's timer-fallback source samples the interrupted
+    // context here; a no-op unless 'prof.start tick' is running.
+    prof::Sampler::get().on_scheduler_tick();
 
     // First we execute those expired local timers.
     TimerScheduler::Current::run_local_queues();

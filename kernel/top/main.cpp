@@ -63,29 +63,59 @@ namespace {
 ///
 /// Assumptions:
 ///     1). The early memory allocator has been initialized.
+namespace {
+    /// Raw COM1 write for boot-step markers; see the x86 arch handoff.
+    auto com1_put(char const c) -> void {
+        asm volatile("out %0, %1" : : "a"(c), "d"(u16{0x3F8}));
+    }
+} // namespace
+
 NO_MANGLE INIT_CODE auto start_kernel(PhysAddr handoff) -> void {
+    com1_put('C');
     ccrt::init_global_static_objects();
+    com1_put('B');
+
+    // Everything below logs through logz4; install the serial logger first
+    // so early failures are visible.
+    init_bootstrap_logging();
+    com1_put('L');
 
     boot::setup_handoff(handoff);
+    com1_put('H');
 
     // The dynamic CPU-Local allocator for BP will be installed.
     mm::CpuLocal::init_early();
+    com1_put('U');
 
     // Make Thread::Current work.
     task::init_early();
+    com1_put('T');
 
     init_arch_early();
+    com1_put('X');
     set_init_level(InitLevel::ArchEarly);
 
+    // Brings the page allocator up on its way through (platform_init_pmm).
     init_platform_early();
     set_init_level(InitLevel::PlatformEarly);
 
+    // The three steps below used to happen inside init_pmm(), with their levels
+    // published afterwards and in a different order -- so a hook registered on
+    // one of them ran nowhere near the thing it named. They are driven here, in
+    // dependency order, and each level is announced where it becomes true.
+
+    // Per-CPU areas: allocated out of the page allocator, so no earlier; and
+    // the slab below wants a per-CPU cache per MemCache, so no later.
+    mm::CpuLocal::init();
+    set_init_level(InitLevel::CpuLocal);
+
+    // The kernel object heap: the object caches, and kmalloc on top of them.
+    // (The VMM's own vmalloc heap is a later step, inside init_vmm().)
+    mm::init_cache();
+    set_init_level(InitLevel::Heap);
+
     mm::init_vmm();
     set_init_level(InitLevel::Vmm);
-
-    // CpuLocal::init() itself now runs inside init_pmm(), ahead of the slab that
-    // depends on it; this only publishes the level for hooks ordered after it.
-    set_init_level(InitLevel::CpuLocal);
 
     // TODO(SmallHuaZi): It seems like doing nothing. Consider to remove
     // it or give it more thing to do.

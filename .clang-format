@@ -20,7 +20,6 @@ AttributeMacros:
   - NO_INLINE
   - NO_RETURN
   - NO_UNIQUE_ADDRESS
-  - OM_API
   - PACKED
   - PHYS_EXPORT
   - USED

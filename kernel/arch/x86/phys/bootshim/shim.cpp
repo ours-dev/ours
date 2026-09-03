@@ -25,6 +25,7 @@
 
 #include "../legacy_boot.hpp"
 #include <ccrt/runtime.hpp>
+#include <logz4/log.hpp>
 #include <obi/container_view.hpp>
 #include <ours/panic.hpp>
 #include <ours/phys/boot_obi.hpp>
@@ -32,7 +33,6 @@
 #include <ours/phys/elf_image.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/legacy_platform_info.hpp>
-#include <ours/phys/print.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/option.hpp>
 
@@ -107,7 +107,7 @@ namespace {
             panic("Failed to relocate physload: {}", static_cast<u32>(status));
         }
 
-        println("boot-shim: physload at 0x{:X}, entry 0x{:X}", target.value(), entry.unwrap());
+        log::info("boot-shim: physload at 0x{:X}, entry 0x{:X}", target.value(), entry.unwrap());
 
         // Stack-local, not scratch-allocated: physload and everything it
         // loads in turn (physboot, the kernel) run as plain nested calls on
@@ -120,8 +120,8 @@ namespace {
             // Loud on purpose: a range that never reaches physload silently
             // becomes "not usable", so an operator wondering where their RAM
             // went has to be able to see this happen.
-            println("boot-shim: memory map has {} ranges, only converting the first {}",
-                    converted.converted + converted.dropped, MAX_LEGACY_MEMORY_RANGES);
+            log::info("boot-shim: memory map has {} ranges, only converting the first {}",
+                      converted.converted + converted.dropped, MAX_LEGACY_MEMORY_RANGES);
         }
         // cmdline/name point into the Multiboot info block, which the floor
         // above already keeps physload off of, so they stay readable for as
@@ -146,7 +146,7 @@ namespace {
 NO_MANGLE NO_RETURN auto phys_main(PhysAddr loader_param) -> void {
     ccrt::init_global_static_objects();
     init_early_console();
-    println("boot-shim: loader params at 0x{:X}", loader_param);
+    log::info("boot-shim: loader params at 0x{:X}", loader_param);
 
     auto &legacy = LegacyBoot::get();
     auto const handoff_status = legacy.parse_params(loader_param);

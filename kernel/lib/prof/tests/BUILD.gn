@@ -1,0 +1,28 @@
+executable("format") {
+  testonly = true
+  sources = [ "format_test.cpp" ]
+  deps = [
+    "//kernel/lib/prof:headers",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# Exercises prof::Sampler's own logic (state machine, buffer selection,
+# dump encoding) against a fake prof::arch seam (fake_arch.cpp) instead of
+# a real kernel. Depends on the full //kernel/lib/prof target, not just
+# :headers, since it links Sampler's actual method bodies.
+executable("sampler") {
+  testonly = true
+  sources = [
+    "fake_arch.cpp",
+    "sampler_test.cpp",
+  ]
+  deps = [
+    "//kernel/lib/prof",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

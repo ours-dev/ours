@@ -1,9 +1,10 @@
 #include <logz4/log.hpp>
 #include <ours/mm/early_mem.hpp>
-#include <ours/mm/memory_model.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/phys/handoff.hpp>
+#include <ustl/bit.hpp>
 #include <ustl/mem/align.hpp>
 
 #include <algorithm>
@@ -62,7 +63,20 @@ INIT_CODE auto EarlyMem::count_present_frames(Pfn start, Pfn end) -> usize {
 
 INIT_CODE static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
     while (start < end) {
-        usize order = MAX_FRAME_ORDER;
+        // Two separate limits, and the alignment one is not optional. A buddy
+        // block of order N is identified by its lowest pfn and finds its partner
+        // at `pfn ^ BIT(N)`; that identity only holds if the block is aligned to
+        // 2^N pages. Hand the allocator a misaligned block and the merge walk
+        // reaches for a "buddy" that belongs to some other block entirely --
+        // which removes a live frame from its list and loses it. A range that
+        // starts anywhere but on a MAX_FRAME_ORDER boundary is the normal case,
+        // so this is not a corner.
+        //
+        // ustl::countr_zero(start) is the largest power of two `start` is
+        // aligned to; the second limit then shrinks that to what is left in the
+        // range. Linux writes the same two lines in __free_pages_memory():
+        // `order = min(MAX_PAGE_ORDER, __ffs(start))`, then the same loop.
+        auto order = std::min(usize(MAX_FRAME_ORDER), usize(ustl::countr_zero(start)));
         while (start + BIT(order) > end) {
             order -= 1;
         }
@@ -81,14 +95,27 @@ INIT_CODE FORCE_INLINE static auto free_frames_phys_range(PhysAddr start, PhysAd
 }
 
 INIT_CODE static auto free_unused_memory() -> void {
+    usize nr_regions = 0;
+    usize nr_frames = 0;
+
     [[maybe_unused]]
     auto const status =
         EarlyMem::visit_free(EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
-                             [](bootmem::MemoryRegion const region) {
+                             [&](bootmem::MemoryRegion const region) {
+                                 nr_regions += 1;
+                                 nr_frames += (region.range.end() - region.range.base) / PAGE_SIZE;
                                  free_frames_phys_range(region.range.base, region.range.end());
                                  return true;
                              });
     DEBUG_ASSERT(status == Status::Ok, "Failed to release early memory");
+
+    // The one line that says the buddy actually got something. Everything after
+    // this point allocates from it, so a zero here turns into a hang somewhere
+    // far away -- the first caller simply retries forever waiting for a reclaim
+    // that cannot happen this early. Linux prints the same fact from
+    // mem_init_print_info() for the same reason.
+    log::info("Released {} regions, {} frames ({} MiB) to the buddy allocator", nr_regions,
+              nr_frames, (nr_frames * PAGE_SIZE) >> 20);
 }
 
 INIT_CODE auto EarlyMem::do_handoff() -> void {
@@ -96,8 +123,13 @@ INIT_CODE auto EarlyMem::do_handoff() -> void {
 }
 
 INIT_CODE auto EarlyMem::reclaim_init_area() -> void {
-    auto start = PhysMap::virt_to_phys(KERNEL_INIT_START);
-    auto end = PhysMap::virt_to_phys(KERNEL_INIT_END);
+    // The `.init*` sections are the tail of the kernel image (kernel.ld), so
+    // handing them back leaves physboot's single image allocation contiguous
+    // rather than punching a hole in it.  Their addresses are image addresses:
+    // PhysMap::virt_to_phys() does not translate those at all, it answers
+    // zero, which is what made this a silent no-op.
+    auto const start = kernel_image_virt_to_phys(VirtAddr(KERNEL_INIT_START));
+    auto const end = kernel_image_virt_to_phys(VirtAddr(KERNEL_INIT_END));
 
     if (end < start || end - start < PAGE_SIZE) {
         return;

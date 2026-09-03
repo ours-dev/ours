@@ -115,11 +115,11 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     USTL_DECLARE_LIST(Self, List, ManagedOptions);
 
     /// The list which strungs all existing VmAspace.
-    static Self::List g_all_aspace_list;
-    static sync::SpinLock g_all_aspace_list_lock;
+    static Self::List ALL_ASPACE_LIST;
+    static sync::SpinLock ALL_ASPACE_LIST_LOCK;
 
-    static VmAspace *g_kernel_aspace;
-    static sync::SpinLock g_kernel_aspace_lock;
+    static VmAspace *KERNEL_ASPACE;
+    static sync::SpinLock KERNEL_ASPACE_LOCK;
 };
 
 } // namespace ours::mm

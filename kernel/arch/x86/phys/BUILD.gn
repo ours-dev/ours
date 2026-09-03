@@ -30,6 +30,7 @@ source_set("x86") {
   deps = [
     ":headers",
     "//kernel/lib/ccrt",
+    "//system/lib/logz4:headers",
   ]
   public_deps = [
     "//kernel/arch/x86:headers",
@@ -61,6 +62,7 @@ source_set("bootshim") {
     # image placement, kept where a host test can reach them.
     "//kernel/phys/lib/bootshim",
     "//kernel/phys/lib/multiboot",
+    "//system/lib/logz4:headers",
   ]
   public_deps = [
     "//kernel/arch/x86:headers",

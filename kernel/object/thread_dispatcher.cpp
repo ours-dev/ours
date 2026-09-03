@@ -6,8 +6,8 @@
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/thread.hpp>
 
-GKTL_COUNTER(dispatcher_thread_spawn_count, "dispatcher.thread.spawn");
-GKTL_COUNTER(dispatcher_thread_destroy_count, "dispatcher.thread.destroy");
+GKTL_COUNTER(DISPATCHER_THREAD_SPAWN_COUNT, "dispatcher.thread.spawn");
+GKTL_COUNTER(DISPATCHER_THREAD_DESTROY_COUNT, "dispatcher.thread.destroy");
 
 namespace ours::object {
 ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name)
@@ -28,7 +28,7 @@ auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *n
 
     self->m_kernel_thread = core_thread;
 
-    dispatcher_thread_spawn_count.add(1);
+    DISPATCHER_THREAD_SPAWN_COUNT.add(1);
     return Status::Ok;
 }
 

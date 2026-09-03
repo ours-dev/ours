@@ -78,7 +78,7 @@ class Scheduler {
     static auto split_node_from_pi_graph(Upstream &, Target &) -> void;
 
     FORCE_INLINE static auto peek_active_mask() -> CpuMask {
-        return g_states[usize(State::Active)].load(ustl::sync::MemoryOrder::Relaxed);
+        return STATES[usize(State::Active)].load(ustl::sync::MemoryOrder::Relaxed);
     }
 
     auto init() -> void;
@@ -90,7 +90,7 @@ class Scheduler {
     }
 
     FORCE_INLINE auto is_state_active() const -> bool {
-        return g_states[usize(State::Active)].load().test(m_runtime.which_cpu);
+        return STATES[usize(State::Active)].load().test(m_runtime.which_cpu);
     }
 
     FORCE_INLINE auto get_lock() -> sync::SpinLock & {
@@ -133,7 +133,7 @@ class Scheduler {
     ///     1) |curr|'s lock was held.
     ///     2) Local interrupts was disabled.
     ///     3) Preemption was disabled.
-    TA_ACQUIRE(get_lock())
+    TA_REQUIRE(get_lock())
     auto reschedule_common(Thread *curr, Mode mode) -> void;
 
     TA_ACQUIRE(get_lock())
@@ -146,6 +146,7 @@ class Scheduler {
     TA_RELEASE(get_lock())
     auto switch_context(Thread *curr, Thread *next) -> void;
 
+    TA_RELEASE(get_lock())
     auto finish_switch_context() -> void;
 
     TA_REQUIRES(get_lock())
@@ -219,7 +220,7 @@ class Scheduler {
     Thread *m_idle_thread;
 
     static constexpr auto NUM_STATE = static_cast<usize>(State::Count);
-    static inline std::array<ustl::sync::Atomic<CpuMask>, NUM_STATE> g_states{};
+    static inline std::array<ustl::sync::Atomic<CpuMask>, NUM_STATE> STATES{};
 };
 
 /// This helper class was designed for conviencies and securities.

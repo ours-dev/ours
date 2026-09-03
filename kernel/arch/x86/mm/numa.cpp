@@ -3,7 +3,12 @@
 #include <ours/start.hpp>
 
 namespace ours {
-static bool s_numa_enabled = true;
+// This translation unit only participates in the build when a NUMA mode is
+// selected (kernel/arch/x86/mm/BUILD.gn gates it on mm_numa ||
+// mm_numa_emulation), so the macros from //kernel/products:memory are always
+// defined here; the copy keeps the gate readable and honest about which mode
+// pulled the file in.
+static bool const NUMA_ENABLED = MM_NUMA || MM_NUMA_EMULATION;
 
 WEAK_LINK auto pci_init_numa() -> Status {
     return Status::Unsupported;
@@ -14,7 +19,7 @@ WEAK_LINK auto acpi_init_numa() -> Status {
 }
 
 INIT_CODE static auto x86_init_numa() -> void {
-    if (!s_numa_enabled) {
+    if (!NUMA_ENABLED) {
         return;
     }
     if (Status::Ok == acpi_init_numa()) {

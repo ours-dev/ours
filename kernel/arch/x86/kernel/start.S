@@ -7,10 +7,9 @@
 
 /// The symbols below should be defined in *.cpp files. It is because of
 /// controlling the size of them for difference in 32-bits and 64-bits platform.
-.extern g_kernel_virt_base
-.extern g_kernel_phys_base
-.extern g_kernel_stack_bottom
-.extern __cpu_local_start
+.extern KERNEL_VIRT_BASE
+.extern KERNEL_PHYS_BASE
+.extern KERNEL_STACK_BOTTOM
 
 // Kernel entry point
 .extern start_kernel
@@ -23,18 +22,29 @@
     // Disable interrupts
     cli
 
+    // Raw boot marker: one byte straight to COM1 before anything else, so a
+    // boot that dies before the first kernel log line is still datable from
+    // the serial output alone. THR accepts the byte unconditionally under
+    // QEMU; losing it on real hardware costs nothing.
+    mov $0x3F8, %dx
+    mov $'K', %al
+    out %al, %dx
+
     // Save handoff
     mov %rdi, %r15
 
     // Reload kernel stack and clear %rbp
-    lea g_kernel_stack_end(%rip), %rsp
+    lea KERNEL_STACK_END(%rip), %rsp
     xor %rbp, %rbp
 
-    mov %rsp, g_kernel_stack_bottom(%rip)
+    mov %rsp, KERNEL_STACK_BOTTOM(%rip)
     mov %cr3, %rax
-    mov %rax, g_kernel_pgd(%rip)
+    mov %rax, KERNEL_PGD(%rip)
 
-    lgdt g_temp_gdtr(%rip)
+    mov $'S', %al
+    out %al, %dx
+
+    lgdt TEMP_GDTR(%rip)
 
     // Zero our kernel segment data registers
     xor %eax, %eax
@@ -43,6 +53,9 @@
     mov %eax, %fs
     mov %eax, %gs
     mov %eax, %ss
+
+    mov $'G', %al
+    out %al, %dx
 
     // Call our main module
     mov %r15, %rdi  // Pass handoff
@@ -54,9 +67,9 @@ idle:
     jmp idle
 .end_function
 
-.object g_kernel_stack, type=bss, scope=global, align=8
+.object KERNEL_STACK, type=bss, scope=global, align=8
     .skip (PAGE_SIZE << 2) // 16K
-.label g_kernel_stack_end, global
+.label KERNEL_STACK_END, global
 .end_object
 
 /// Export for main.ld

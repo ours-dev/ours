@@ -1,10 +1,10 @@
 #include <acpi/numa.hpp>
+#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/panic.hpp>
 #include <ours/phys/acpi.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/init.hpp>
-#include <ours/phys/print.hpp>
 
 // No arch_detect_memory() override here: boot-shim converts Multiboot2's
 // memory map into the same obi::MemoryRange vocabulary a real OBI memory
@@ -13,11 +13,10 @@
 // already does the right thing with what it is handed.
 
 namespace ours::phys {
-static bootmem::MemoryRegion s_bootstrap_memory_regions[100];
-static bootmem::Range s_bootstrap_reserved_regions[100];
+static bootmem::MemoryRegion BOOTSTRAP_MEMORY_REGIONS[100];
+static bootmem::Range BOOTSTRAP_RESERVED_REGIONS[100];
 
-BootMem g_bootmem{
-    {.usable = s_bootstrap_memory_regions, .reservations = s_bootstrap_reserved_regions}};
+BootMem BOOTMEM{{.usable = BOOTSTRAP_MEMORY_REGIONS, .reservations = BOOTSTRAP_RESERVED_REGIONS}};
 
 auto arch_init_memory(Aspace *aspace) -> void {
     auto mem = global_bootmem();

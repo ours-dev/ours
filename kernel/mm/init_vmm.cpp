@@ -34,19 +34,35 @@ namespace {
     /// Used in init_vmm_postheap.
     /// TODO(SmallHuaZi) These be provided by PhysBoot through HandOff rather than
     /// direct to use linking symbols.
+    /// In image order, and gapless: every page between IMAGE_START and
+    /// IMAGE_END has to be claimed here, or the VMM is free to hand that
+    /// address out again to something else while the loaded image still
+    /// occupies it.
     INIT_CONST
-    PhysVma s_phys_vmos[] = {
+    PhysVma PHYS_VMOS[] = {
+        // The ELF head: .dynamic, plus the tables physboot read the image
+        // through (.dynsym, .rela.dyn, the build-ID note).
+        {.name = "k:head",
+         .base = VirtAddr(IMAGE_START),
+         .size = usize(KERNEL_CODE_START - IMAGE_START),
+         .vmaf = VmaFlags::Read | VmaFlags::Write},
         {.name = "k:code",
          .base = VirtAddr(KERNEL_CODE_START),
          .size = usize(KERNEL_CODE_END - KERNEL_CODE_START),
          .vmaf = VmaFlags::Exec | VmaFlags::Read},
+        {.name = "k:rodata",
+         .base = VirtAddr(KERNEL_RODATA_START),
+         .size = usize(KERNEL_RODATA_END - KERNEL_RODATA_START),
+         .vmaf = VmaFlags::Read},
         {.name = "k:data",
          .base = VirtAddr(KERNEL_DATA_START),
          .size = usize(KERNEL_DATA_END - KERNEL_DATA_START),
          .vmaf = VmaFlags::Write | VmaFlags::Read},
-        {.name = "k:rodata",
-         .base = VirtAddr(KERNEL_RODATA_START),
-         .size = usize(KERNEL_RODATA_END - KERNEL_RODATA_START),
+        // Writable only until physboot finished relocating, and mapped
+        // read-only ever since.
+        {.name = "k:relro",
+         .base = VirtAddr(KERNEL_RELRO_START),
+         .size = usize(KERNEL_RELRO_END - KERNEL_RELRO_START),
          .vmaf = VmaFlags::Read},
         {.name = "k:bss",
          .base = VirtAddr(KERNEL_BSS_START),
@@ -88,8 +104,8 @@ namespace {
     INIT_CODE auto init_vmm_preheap() -> void {
         VmAspace::init_kernel_aspace();
 
-        for (usize i = 0; i < std::size(s_phys_vmos); ++i) {
-            entrol_preset_vma(s_phys_vmos[i]);
+        for (usize i = 0; i < std::size(PHYS_VMOS); ++i) {
+            entrol_preset_vma(PHYS_VMOS[i]);
         }
 
         auto frame = alloc_frames(GAF_KERNEL, usize(0));
@@ -99,12 +115,20 @@ namespace {
         // Claim it for the VMM: the frame comes straight from the buddy
         // allocator, so this is a role *declaration*, not a query.
         frame->become<page::VmmBody>();
-        g_zero_page = frame;
-        g_zero_page->mark_pinned();
+        ZERO_PAGE = frame;
+        ZERO_PAGE->mark_pinned();
 
         VmAspace::kernel_aspace()->root_vma()->dump();
     }
 
+    /// Placeholder for vmalloc.
+    ///
+    /// Empty on purpose, and not the kernel object heap -- that is
+    /// mm::init_cache(), which runs several init levels earlier, before the VMM
+    /// exists at all. This one is the VMM's own allocator: virtually
+    /// contiguous, physically scattered, and therefore impossible to build
+    /// before the address space it carves from. init_vmm_preheap() above is
+    /// named for being the part that runs before *this*.
     INIT_CODE auto init_heap() -> void {}
 } // namespace
 
@@ -114,7 +138,5 @@ INIT_CODE auto init_vmm() -> void {
     init_vmm_preheap();
 
     init_heap();
-
-    set_init_stage(InitStage::Pmm);
 }
 } // namespace ours::mm

@@ -14,6 +14,7 @@ source_set("kernel") {
     "init.cpp",
     "irq/init.cpp",
     "mp.cpp",
+    "prof_pmu.cpp",
     "start.S",
     "syscall.S",
     "task/idle_thread.cpp",
@@ -30,8 +31,10 @@ source_set("kernel") {
     "//kernel/driver:headers",
     "//kernel/lib/acpi",
     "//kernel/lib/gktl",
-    "//kernel/lib/logz4:headers",
+    "//system/lib/logz4:headers",
     "//kernel/lib/mtl:headers",
+    "//kernel/lib/prof",
+    "//kernel/lib/unwind:headers",
     "//kernel/mm:headers",
   ]
   visibility = [ "*" ]

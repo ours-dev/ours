@@ -3,11 +3,17 @@
 #ifndef OURS_ARCH_X86_PERCPU_HPP
 #define OURS_ARCH_X86_PERCPU_HPP 1
 
-#ifdef OURS_CONFIG_KASLR
+// Per-CPU addressing: %gs holds `CPU_OFFSETS[cpu]`, i.e. how far the running
+// CPU's unit sits from the linker template, so the displacement is the
+// variable's own address -- nothing has to be subtracted first. C++ reaches
+// the same spots through CpuLocal::read/write/access.
+//
+// The (%rip) is not optional. The kernel is a static PIE linked at 0 and
+// relocated by ElfImage::relocate(), so an absolute displacement would encode
+// the link-time address and read the wrong memory once the image moves.
+// Linux carries the same suffix for the same reason; see __percpu_rel in its
+// arch/x86/include/asm/percpu.h.
 #define CPU_LOCAL_ACCESS(VAR) % gs: (VAR)(% rip)
-#else
-#define CPU_LOCAL_ACCESS(VAR) % gs: VAR
-#endif
 
 #define X86_PERCPU_SAVED_KERNEL_SP_OFFSET 4
 #define X86_PERCPU_SAVED_USER_SP_OFFSET 20
@@ -87,14 +93,14 @@ struct alignas(16) X86PerCpu {
 static_assert(offsetof(X86PerCpu, tss.sp0) == X86_PERCPU_SAVED_KERNEL_SP_OFFSET);
 static_assert(offsetof(X86PerCpu, tss.sp2) == X86_PERCPU_SAVED_USER_SP_OFFSET);
 
-/// Using CpuLocal::access<X86PerCpu>() or CpuLocal::access(&g_x86_pcpu)
+/// Using CpuLocal::access<X86PerCpu>() or CpuLocal::access(&X86_PCPU)
 /// to access the x86 per CPU area.
 ///
 /// Note the marker `NO_MANGLE` is necessary because the symbol is beeing used
 /// in `ours/arch/x86/main/syscall.S`
 NO_MANGLE {
     CPU_LOCAL
-    inline X86PerCpu g_x86_pcpu;
+    inline X86PerCpu X86_PCPU;
 }
 
 } // namespace ours

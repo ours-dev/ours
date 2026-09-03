@@ -20,6 +20,11 @@ extern char const KERNEL_DATA_END[] LINK_NAME("__data_end");
 extern char const KERNEL_RODATA_START[] LINK_NAME("__rodata_start");
 extern char const KERNEL_RODATA_END[] LINK_NAME("__rodata_end");
 
+/// PT_GNU_RELRO: `.got` and `.data.rel.ro`, writable while physboot relocates
+/// the image and read-only from the moment it maps it.
+extern char const KERNEL_RELRO_START[] LINK_NAME("__relro_start");
+extern char const KERNEL_RELRO_END[] LINK_NAME("__relro_end");
+
 extern char const KERNEL_INIT_START[] LINK_NAME("__init_start");
 extern char const KERNEL_INIT_END[] LINK_NAME("__init_end");
 
@@ -30,33 +35,44 @@ FORCE_INLINE constexpr auto get_kernel_size() -> usize {
     return IMAGE_END - IMAGE_START;
 }
 
-NO_MANGLE VmPage *g_zero_page;
-NO_MANGLE PhysAddr g_kernel_phys_base;
-NO_MANGLE VirtAddr g_kernel_virt_base;
+NO_MANGLE VmPage *ZERO_PAGE;
+NO_MANGLE PhysAddr KERNEL_PHYS_BASE;
+NO_MANGLE VirtAddr KERNEL_VIRT_BASE;
 
 FORCE_INLINE constexpr auto get_zero_page() -> VmPage * {
-    return g_zero_page;
+    return ZERO_PAGE;
 }
 
 FORCE_INLINE constexpr auto get_kernel_phys_base() -> PhysAddr {
-    return g_kernel_phys_base;
+    return KERNEL_PHYS_BASE;
+}
+
+/// Translates a kernel-image virtual address to the physical address behind it.
+///
+/// PhysMap's translation does not cover these: the image is mapped at the
+/// kernel's load base, outside the physmap window, so PhysMap::virt_to_phys()
+/// rejects such an address and answers zero.  What does hold is that physboot
+/// placed the whole image in one contiguous physical allocation and handed its
+/// base over as KERNEL_PHYS_BASE, so the image offset carries straight across.
+FORCE_INLINE inline auto kernel_image_virt_to_phys(VirtAddr virt_addr) -> PhysAddr {
+    return KERNEL_PHYS_BASE + (virt_addr - VirtAddr(IMAGE_START));
 }
 
 FORCE_INLINE [[nodiscard]]
 constexpr auto get_kernel_virt_base() -> VirtAddr {
-    return g_kernel_virt_base;
+    return KERNEL_VIRT_BASE;
 }
 
 /// Defined by arch-specific code. Must be initialized in `init_arch_early`.
-NO_MANGLE u8 g_arch_phys_addr_bits;
-NO_MANGLE u8 g_arch_virt_addr_bits;
+NO_MANGLE u8 ARCH_PHYS_ADDR_BITS;
+NO_MANGLE u8 ARCH_VIRT_ADDR_BITS;
 
 FORCE_INLINE constexpr auto get_phys_addr_bits() -> PhysAddr {
-    return g_arch_phys_addr_bits;
+    return ARCH_PHYS_ADDR_BITS;
 }
 
 FORCE_INLINE constexpr auto get_virt_addr_bits() -> VirtAddr {
-    return g_arch_virt_addr_bits;
+    return ARCH_VIRT_ADDR_BITS;
 }
 
 auto is_kernel_address(VirtAddr va) -> bool;

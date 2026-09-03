@@ -17,6 +17,25 @@ set -eu
 # qemu64 model is roughly v1 -- it does not advertise POPCNT, so the first
 # popcntq the compiler emits raises #UD. Nehalem is the canonical v2 baseline.
 
+# NUMA=1 swaps the flat machine for a four-node topology, so the kernel's NUMA
+# paths (SRAT parsing, per-node zone queues, node-affine allocation) see
+# something to work with. It needs a kernel actually built for it -- the switch
+# is a build argument, not a runtime one:
+#
+#     gn gen out/numa-on --args='mm_numa = true'
+#     ninja -C out/numa-on default
+#     OUT=$PWD/out/numa-on IMAGE=$PWD/out/numa-on/kernel.dev.dbg_1.obi \
+#         NUMA=1 ./scripts/qemu-boot.sh
+#
+# The layout is the one //.legacy/ours-dev/scripts/shell/runvm.sh described,
+# kept because its distance matrix is deliberately not uniform -- a kernel that
+# only ever sees 10/20 distances never exercises the fallback ordering:
+#
+#   node 0 (cpu 0-1) --10-- node 1 (cpu 2-3)
+#      |  \                     |
+#      20    \30            20  |
+#      |        \  30           |
+#   node 2 (cpu 4-6) --10-- node 3 (cpu 7)
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-$ROOT/out/bringup.x86}
 IMAGE=${IMAGE:-$OUT/kernel.dev.obi}
@@ -64,8 +83,42 @@ FW=$ROOT/prebuilt/qemu/share/qemu
 cp "$FW/edk2-x86_64-code.fd" "$WORK/code.fd"
 cp "$FW/edk2-i386-vars.fd" "$WORK/vars.fd"
 
+NUMA_ARGS=""
+if [ "${NUMA:-0}" != "0" ]; then
+    # Defaults that make the topology above come out whole: 8 CPUs to split
+    # 2/2/3/1, and memory that divides by four.
+    MEM=${MEM:-1024}
+    SMP=${SMP:-8}
+    NODE_MEM=$((MEM / 4))
+    [ $((NODE_MEM * 4)) -eq "$MEM" ] || {
+        echo "MEM=$MEM does not divide into 4 NUMA nodes" >&2; exit 1; }
+
+    # Every node needs its own backend object: with -numa node,mem=... QEMU only
+    # splits the -m total, and it has been deprecated for exactly the reason it
+    # matters here -- a backend is what gives the guest a real ACPI SRAT entry.
+    for id in 0 1 2 3; do
+        NUMA_ARGS="$NUMA_ARGS -object memory-backend-ram,size=${NODE_MEM}M,id=m$id"
+    done
+    NUMA_ARGS="$NUMA_ARGS -numa node,nodeid=0,cpus=0-1,memdev=m0"
+    NUMA_ARGS="$NUMA_ARGS -numa node,nodeid=1,cpus=2-3,memdev=m1"
+    NUMA_ARGS="$NUMA_ARGS -numa node,nodeid=2,cpus=4-6,memdev=m2"
+    NUMA_ARGS="$NUMA_ARGS -numa node,nodeid=3,cpus=7,memdev=m3"
+    # Both directions spelled out, as the legacy script did: QEMU mirrors a
+    # single direction on its own, but saying it twice keeps the matrix
+    # readable next to the diagram at the top. Written out rather than looped
+    # because the loop would have to go through `set --`, and that would eat
+    # the caller's own arguments -- they are forwarded to QEMU at the bottom.
+    for d in "0,dst=1,val=10" "1,dst=0,val=10" "2,dst=3,val=10" "3,dst=2,val=10" \
+             "0,dst=2,val=20" "2,dst=0,val=20" "1,dst=3,val=20" "3,dst=1,val=20" \
+             "0,dst=3,val=30" "3,dst=0,val=30" "1,dst=2,val=30" "2,dst=1,val=30"; do
+        NUMA_ARGS="$NUMA_ARGS -numa dist,src=$d"
+    done
+fi
+
+# shellcheck disable=SC2086
 exec "$ROOT/prebuilt/qemu/bin/qemu-system-x86_64" \
     -M q35 -cpu "${CPU:-Nehalem}" -m "${MEM:-512}" -smp "${SMP:-1}" \
+    $NUMA_ARGS \
     -no-reboot -nographic \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="$WORK/code.fd" \
     -drive if=pflash,format=raw,unit=1,file="$WORK/vars.fd" \

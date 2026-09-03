@@ -7,6 +7,7 @@ group("tests") {
     "concurrent:tests",
     "derive:tests",
     "hsien:tests",
+    "logz4:tests",
     "ustl:tests",
   ]
 }

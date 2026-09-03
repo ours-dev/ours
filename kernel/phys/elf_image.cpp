@@ -1,5 +1,5 @@
+#include <logz4/log.hpp>
 #include <ours/phys/elf_image.hpp>
-#include <ours/phys/print.hpp>
 
 #include <limits>
 #include <type_traits>
@@ -34,19 +34,23 @@ namespace {
     [[nodiscard]]
     auto apply_kernel_relative_relocations(eftl::elf::FileImpl<Traits> const &binary,
                                            eftl::elf::MappedMemory<Traits> &memory,
-                                           typename Traits::Addr bias, IsRelative &&is_relative)
-        -> bool {
+                                           typename Traits::Addr bias, IsRelative &&is_relative,
+                                           bool allow_symbolic_tables) -> bool {
         auto const dynamics = dynamic_entries(binary);
         if (dynamics.is_none()) {
-            return false;
+            // A static image carries no PT_DYNAMIC and therefore no dynamic
+            // relocations at all — the relative pass is a no-op, not an
+            // error (the kernel itself is linked this way).
+            return true;
         }
         if (dynamics->empty()) {
             return true;
         }
 
         eftl::elf::Relocations<Traits> relocations;
-        if (!eftl::elf::decode_dynamic(memory, dynamics.value(),
-                                       eftl::elf::RelocationObserver<Traits>(relocations))) {
+        if (!eftl::elf::decode_dynamic(
+                memory, dynamics.value(),
+                eftl::elf::RelocationObserver<Traits>(relocations, allow_symbolic_tables))) {
             return false;
         }
         return eftl::elf::relocate_relative(memory, relocations, bias,
@@ -95,6 +99,7 @@ namespace {
 auto ElfImage::init(ustl::views::Span<u8 const> file) -> Status {
     m_binary = ustl::NONE;
     m_load_plan = LoadPlan{};
+    m_allow_symbolic_tables = false;
     auto parsed = eftl::elf::Parser::parse_as<Traits>(file.data(), file.size());
     if (parsed.is_err()) {
         return Status::InvalidArgument;
@@ -111,6 +116,10 @@ auto ElfImage::init(ustl::views::Span<u8 const> file) -> Status {
 
     m_binary = ustl::some(std::move(parsed).unwrap());
     m_load_plan = std::move(planned).unwrap();
+    // ET_DYN images are loadable modules: their PLT/symbolic tables are
+    // bound by the caller's symbol-binding pass (relocate_and_bind), so the
+    // relative pass must tolerate their presence.
+    m_allow_symbolic_tables = m_binary.value().elf_header().e_type == 3 /* ET_DYN */;
     return Status::Ok;
 }
 
@@ -177,9 +186,10 @@ auto ElfImage::relocate(usize load_address) -> Status {
     auto const load_bias =
         static_cast<typename Traits::Addr>(load_address - m_load_plan.image_base());
     auto const machine = static_cast<eftl::elf::Arch>(m_binary.value().elf_header().e_machine);
-    if (!apply_kernel_relative_relocations(m_binary.value(), image, load_bias, [machine](u32 type) {
-            return relative_relocation_type(machine, type);
-        })) {
+    if (!apply_kernel_relative_relocations(
+            m_binary.value(), image, load_bias,
+            [machine](u32 type) { return relative_relocation_type(machine, type); },
+            m_allow_symbolic_tables)) {
         return Status::InvalidArgument;
     }
 
@@ -209,7 +219,7 @@ namespace {
 
             auto const type = Relas::type(rela);
             if (!symbolic_relocation_type(machine, type)) {
-                dprintln("Module carries unsupported relocation type {}", type);
+                log::debug("Module carries unsupported relocation type {}", type);
                 return Status::Unsupported;
             }
 
@@ -241,7 +251,7 @@ namespace {
                 if (definition == nullptr) {
                     // Loud on purpose: the alternative is binding to zero and
                     // faulting somewhere unrelated once the module runs.
-                    println("Module needs symbol '{}', which physload does not export", spelling);
+                    log::info("Module needs symbol '{}', which physload does not export", spelling);
                     return Status::NotFound;
                 }
                 address = reinterpret_cast<usize>(definition);
@@ -253,8 +263,13 @@ namespace {
 
             auto const value = static_cast<typename Traits::Addr>(
                 address + static_cast<usize>(static_cast<isize>(rela.r_addend)));
+            // `memory` addresses are module virtual addresses: MappedMemory
+            // translates them through the plan's regions itself (the same
+            // convention relocate()'s relative pass uses). Adding `bias`
+            // here double-counts the load address and pushes the write
+            // outside every region.
             if (!memory.template write<typename Traits::Addr>(
-                    static_cast<typename Traits::Addr>(rela.r_offset) + bias, value)) {
+                    static_cast<typename Traits::Addr>(rela.r_offset), value)) {
                 return Status::OutOfRange;
             }
         }

@@ -57,8 +57,8 @@ namespace {
         return INITIAL_CPU_LOCAL_END - INITIAL_CPU_LOCAL_START;
     }
 
-    /// Origin offsets are measured from: the address the linker gave the
-    /// template.
+    /// The address the linker gave the template, and so the base of the range
+    /// every handle lives in.
     ///
     /// Nothing is ever read or written through it after init_early(). It is the
     /// zero point that `access()` measures from, no more -- which matters,
@@ -68,8 +68,7 @@ namespace {
         return VirtAddr(INITIAL_CPU_LOCAL_START);
     }
 
-    FORCE_INLINE [[maybe_unused]]
-    auto is_in_initial_area(VirtAddr va) -> bool {
+    FORCE_INLINE auto is_in_initial_area(VirtAddr va) -> bool {
         return va >= VirtAddr(INITIAL_CPU_LOCAL_START) && va < VirtAddr(INITIAL_CPU_LOCAL_END);
     }
 
@@ -81,8 +80,8 @@ namespace {
 } // namespace
 
 struct DynChunk: ustl::collections::intrusive::ListBaseHook<> {
-    /// Offset of the first byte this chunk manages.
-    usize base;
+    /// Handle naming the first byte this chunk manages.
+    VirtAddr base;
     usize size;
 
     /// One bit per `DYN_CELL_SIZE` bytes; set means taken.
@@ -105,10 +104,10 @@ struct DynChunk: ustl::collections::intrusive::ListBaseHook<> {
 ///      \_unit_size_/
 ///
 /// Every chunk repeats that spacing, which is the whole trick: an object at
-/// `B + n * unit_size + d` is named by `offset = B - m_base + d`, with the
-/// per-CPU term cancelled. `base(cpu) + offset` is then correct on every CPU,
-/// in any chunk, without the caller or the allocator knowing which chunk it
-/// fell in.
+/// `B + n * unit_size + d` is named by `handle = origin + (B - m_base) + d`,
+/// with the per-CPU term cancelled. `handle + offset(cpu)` is then correct on
+/// every CPU, in any chunk, without the caller or the allocator knowing which
+/// chunk it fell in.
 ///
 /// Reproducing the spacing requires being able to *choose* where a chunk's
 /// units land, so the units are packed densely in **address space** while
@@ -198,14 +197,14 @@ class CpuLocal::Mapper {
         return m_base + usize(m_unit_offset[unit]);
     }
 
-    /// `g_cpu_offsets[cpu]` for a unit -- what `access()` adds.
+    /// `CPU_OFFSETS[cpu]` for a unit -- what `access()` adds.
     auto offset_of_unit(u32 unit) const -> isize {
         return isize(unit_base(unit) - canonical_base());
     }
 
-    /// The offset naming an address in CPU 0's slice of some chunk.
-    auto offset_of_address(VirtAddr real) const -> usize {
-        return real - m_base;
+    /// The handle naming an address in CPU 0's slice of some chunk.
+    auto handle_of_address(VirtAddr real) const -> VirtAddr {
+        return canonical_base() + (real - m_base);
     }
 
     /// Offset at which every unit's dynamic area begins.
@@ -468,7 +467,7 @@ auto CpuLocal::Mapper::alloc_chunk(Gaf gaf) -> VirtAddr {
 
 /// Runtime cpu local allocator.
 ///
-/// Hands out offsets, not pointers. One reservation covers all CPUs at once
+/// Hands out handles, not pointers. One reservation covers all CPUs at once
 /// -- it is the same slice of every unit -- so a single bitmap describes
 /// them all and the allocator never needs to know how many CPUs there are.
 class CpuLocal::Dyn {
@@ -477,16 +476,16 @@ class CpuLocal::Dyn {
   public:
     auto init(Mapper &mapper) -> void;
 
-    auto allocate(usize size, usize align) -> usize;
+    auto allocate(usize size, usize align) -> VirtAddr;
 
-    auto deallocate(usize offset, usize size) -> void;
+    auto deallocate(VirtAddr handle, usize size) -> void;
 
-    auto owns(usize offset) const -> bool;
+    auto owns(VirtAddr handle) const -> bool;
 
   private:
     auto grow() -> bool;
 
-    auto allocate_locked(usize cells, usize align_bytes) -> usize;
+    auto allocate_locked(usize cells, usize align_bytes) -> VirtAddr;
 
     static auto test(DynChunk const &chunk, usize cell) -> bool {
         return (chunk.bitmap[cell / WORD_BITS] & (usize(1) << (cell % WORD_BITS))) != 0;
@@ -518,7 +517,7 @@ auto CpuLocal::Dyn::init(Mapper &mapper) -> void {
     // Chunk 0 is the one whose unit carries the static copy, so its dynamic
     // part is what is left over -- exactly DYN_FIRST_CHUNK_SIZE, since
     // static_span() is already a multiple of UNIT_ALIGN.
-    m_first_chunk.base = Mapper::dyn_offset();
+    m_first_chunk.base = canonical_base() + Mapper::dyn_offset();
     m_first_chunk.size = ArchCpuLocal::DYN_FIRST_CHUNK_SIZE;
     m_first_chunk.bitmap = ustl::views::make_span(m_first_bitmap.data(), DYN_WORDS);
     m_first_chunk.num_cells = DYN_CELLS;
@@ -555,7 +554,7 @@ auto CpuLocal::Dyn::grow() -> bool {
     auto *chunk = new (static_cast<void *>(page)) DynChunk();
     auto *bits = reinterpret_cast<usize *>(page + header);
 
-    chunk->base = m_mapper->offset_of_address(base);
+    chunk->base = m_mapper->handle_of_address(base);
     chunk->size = Mapper::unit_size();
     chunk->num_cells = chunk->size / DYN_CELL_SIZE;
     chunk->num_cells_used = 0;
@@ -569,18 +568,18 @@ auto CpuLocal::Dyn::grow() -> bool {
     return true;
 }
 
-auto CpuLocal::Dyn::owns(usize offset) const -> bool {
+auto CpuLocal::Dyn::owns(VirtAddr handle) const -> bool {
     Guard guard{m_lock};
 
     for (auto const &chunk: m_dynchunks) {
-        if (offset >= chunk.base && offset < chunk.base + chunk.size) {
+        if (handle >= chunk.base && handle < chunk.base + chunk.size) {
             return true;
         }
     }
     return false;
 }
 
-auto CpuLocal::Dyn::allocate_locked(usize cells, usize align_bytes) -> usize {
+auto CpuLocal::Dyn::allocate_locked(usize cells, usize align_bytes) -> VirtAddr {
     auto const step = align_bytes / DYN_CELL_SIZE;
 
     for (auto &chunk: m_dynchunks) {
@@ -619,7 +618,7 @@ auto CpuLocal::Dyn::allocate_locked(usize cells, usize align_bytes) -> usize {
     return NOWHERE;
 }
 
-auto CpuLocal::Dyn::allocate(usize size, usize align) -> usize {
+auto CpuLocal::Dyn::allocate(usize size, usize align) -> VirtAddr {
     if (!size) {
         return NOWHERE;
     }
@@ -639,8 +638,8 @@ auto CpuLocal::Dyn::allocate(usize size, usize align) -> usize {
     return found;
 }
 
-auto CpuLocal::Dyn::deallocate(usize offset, usize size) -> void {
-    if (offset == NOWHERE || !size) {
+auto CpuLocal::Dyn::deallocate(VirtAddr handle, usize size) -> void {
+    if (handle == NOWHERE || !size) {
         return;
     }
 
@@ -649,11 +648,11 @@ auto CpuLocal::Dyn::deallocate(usize offset, usize size) -> void {
     Guard guard{m_lock};
 
     for (auto &chunk: m_dynchunks) {
-        if (offset < chunk.base || offset >= chunk.base + chunk.size) {
+        if (handle < chunk.base || handle >= chunk.base + chunk.size) {
             continue;
         }
 
-        auto const start = (offset - chunk.base) / DYN_CELL_SIZE;
+        auto const start = (handle - chunk.base) / DYN_CELL_SIZE;
         DEBUG_ASSERT(start + cells <= chunk.num_cells, "Freeing past the end of a chunk");
         for (auto i = usize(0); i < cells; ++i) {
             DEBUG_ASSERT(test(chunk, start + i), "Double free of cpu local storage");
@@ -666,39 +665,43 @@ auto CpuLocal::Dyn::deallocate(usize offset, usize size) -> void {
     DEBUG_ASSERT(false, "Freeing an address that is not cpu local storage");
 }
 
-decltype(CpuLocal::g_states) CpuLocal::g_states;
-decltype(CpuLocal::g_cpu_offsets) CpuLocal::g_cpu_offsets;
+decltype(CpuLocal::STATES) CpuLocal::STATES;
+decltype(CpuLocal::CPU_OFFSETS) CpuLocal::CPU_OFFSETS;
 
 /// Zero rather than INVALID_CPU_NUM: the template is what CPU 0 reads until
 /// init_early() moves it onto a real unit, and the boot CPU is CPU 0.
 CPU_LOCAL
-decltype(CpuLocal::g_current_cpunum) CpuLocal::g_current_cpunum = 0;
+decltype(CpuLocal::CURRENT_CPUNUM) CpuLocal::CURRENT_CPUNUM = 0;
 
 CPU_LOCAL
-decltype(CpuLocal::g_current_cpu_offset) CpuLocal::g_current_cpu_offset = 0;
+decltype(CpuLocal::CURRENT_CPU_OFFSET) CpuLocal::CURRENT_CPU_OFFSET = 0;
 
 /// Static, because the slab cannot be used to build what the slab depends on.
 namespace {
-    CpuLocal::Mapper g_mapper_storage;
-    CpuLocal::Dyn g_dyn_storage;
+    CpuLocal::Mapper MAPPER_STORAGE;
+    CpuLocal::Dyn DYN_STORAGE;
 } // namespace
 
-CpuLocal::Mapper *CpuLocal::g_mapper;
-CpuLocal::Dyn *CpuLocal::g_dyn;
+CpuLocal::Mapper *CpuLocal::MAPPER;
+CpuLocal::Dyn *CpuLocal::DYN;
 
 /// Order matters: the base register has to be live before any `read`/`write`
 /// can reach the unit, so it is installed first and the bookkeeping written
 /// through it afterwards. Writing first would land in the template, which is
 /// exactly what must not be written.
 auto CpuLocal::attach_to_unit(CpuNum cpunum, isize offset) -> void {
+    // %gs holds `base(cpu) - origin()`, so every %gs displacement -- in C++
+    // and in assembly -- is the object's own address, and the segment base
+    // supplies the rest. This is what Linux loads into MSR_GS_BASE; see
+    // cpu_kernelmode_gs_base() in its arch/x86/include/asm/processor.h.
     ArchCpuLocal::install(offset);
-    Self::write(g_current_cpu_offset, offset);
-    Self::write(g_current_cpunum, cpunum);
+    Self::write(CURRENT_CPU_OFFSET, offset);
+    Self::write(CURRENT_CPUNUM, cpunum);
 }
 
 /// Gets the boot CPU onto a unit of its own, as early as possible.
 ///
-/// It cannot simply run on the template at offset zero. That memory belongs
+/// It cannot simply run on the template itself. That memory belongs
 /// to the `.init` area and is handed back to the allocator by
 /// reclaim_init_area(); it is a read-only image of the defaults, not
 /// storage. So chunk 0 is claimed from the boot allocator here and CPU 0 is
@@ -717,10 +720,10 @@ auto CpuLocal::attach_to_unit(CpuNum cpunum, isize offset) -> void {
 ///
 /// Only CPU 0; no other CPU is even enumerated yet.
 auto CpuLocal::init_early() -> void {
-    g_mapper = &g_mapper_storage;
-    ASSERT(Status::Ok == g_mapper->init_early(), "Failed to claim the boot cpu local unit");
+    MAPPER = &MAPPER_STORAGE;
+    ASSERT(Status::Ok == MAPPER->init_early(), "Failed to claim the boot cpu local unit");
 
-    for (auto &offset: g_cpu_offsets) {
+    for (auto &offset: CPU_OFFSETS) {
         offset = 0;
     }
 
@@ -728,22 +731,22 @@ auto CpuLocal::init_early() -> void {
     // -- which also avoids asking Cpu::id(), whose answer lives in the very
     // storage being set up here.
     auto const boot = CpuNum(0);
-    auto const replica = g_mapper->replica();
+    auto const replica = MAPPER->replica();
     auto const offset = isize(replica - canonical_base());
 
     std::copy_n(INITIAL_CPU_LOCAL_START, initial_area_size(), reinterpret_cast<char *>(replica));
 
-    g_cpu_offsets[boot] = offset;
+    CPU_OFFSETS[boot] = offset;
     attach_to_unit(boot, offset);
 
     // The first dynamic chunk lives in the tail of this unit. It is recorded
-    // as an offset, so it survives the migration in init() untouched --
-    // the same offset simply resolves against a different unit base.
-    g_dyn = &g_dyn_storage;
-    g_dyn->init(*g_mapper);
+    // as a handle, so it survives the migration in init() untouched -- the
+    // same handle simply resolves against a different unit base.
+    DYN = &DYN_STORAGE;
+    DYN->init(*MAPPER);
 
-    g_states[usize(State::Online)].reset().set(boot);
-    g_states[usize(State::Offline)].reset();
+    STATES[usize(State::Online)].reset().set(boot);
+    STATES[usize(State::Offline)].reset();
 }
 
 /// Builds the real per-CPU areas, once the PMM exists.
@@ -753,17 +756,17 @@ auto CpuLocal::init_early() -> void {
 /// CpuCache::on_mem_cache_init() -> CpuLocal::allocate<CpuCache>(). Taking
 /// even one kmalloc() here would close the loop.
 auto CpuLocal::init() -> void {
-    DEBUG_ASSERT(g_mapper && g_mapper->replica(), "CpuLocal::init_early() has not run");
+    DEBUG_ASSERT(MAPPER && MAPPER->replica(), "CpuLocal::init_early() has not run");
 
-    ASSERT(Status::Ok == g_mapper->init(), "Failed to lay out cpu local units");
+    ASSERT(Status::Ok == MAPPER->init(), "Failed to lay out cpu local units");
 
-    auto const replica = g_mapper->replica();
-    auto const nr_units = g_mapper->num_units();
+    auto const replica = MAPPER->replica();
+    auto const nr_units = MAPPER->num_units();
 
     for (auto unit = u32(0); unit < nr_units; ++unit) {
-        auto const cpu = g_mapper->unit_to_cpu(unit);
-        auto const offset = g_mapper->offset_of_unit(unit);
-        auto *base = reinterpret_cast<u8 *>(g_mapper->unit_base(unit));
+        auto const cpu = MAPPER->unit_to_cpu(unit);
+        auto const offset = MAPPER->offset_of_unit(unit);
+        auto *base = reinterpret_cast<u8 *>(MAPPER->unit_base(unit));
 
         if (cpu == 0) {
             // CPU 0 has been running on the provisional unit since
@@ -778,22 +781,22 @@ auto CpuLocal::init() -> void {
                         reinterpret_cast<char *>(base));
         }
 
-        g_cpu_offsets[cpu] = offset;
+        CPU_OFFSETS[cpu] = offset;
     }
 
     // Only now that every offset is published can access() reach a unit from
     // the outside; fix each one's own bookkeeping so it is self-describing
     // before its CPU attaches.
     for (auto unit = u32(0); unit < nr_units; ++unit) {
-        auto const cpu = g_mapper->unit_to_cpu(unit);
-        Self::access(g_current_cpu_offset, cpu) = g_cpu_offsets[cpu];
-        Self::access(g_current_cpunum, cpu) = cpu;
+        auto const cpu = MAPPER->unit_to_cpu(unit);
+        Self::access(CURRENT_CPU_OFFSET, cpu) = CPU_OFFSETS[cpu];
+        Self::access(CURRENT_CPUNUM, cpu) = cpu;
     }
 
     // Move CPU 0 onto its real unit and release the provisional one. Only
     // that allocation was rounded to a whole buddy order, so this hands back
     // exactly what was taken without inflating unit_size() everywhere.
-    attach_to_unit(0, g_cpu_offsets[0]);
+    attach_to_unit(0, CPU_OFFSETS[0]);
     free_frames(replica, mm::get_order(Mapper::replica_span() / PAGE_SIZE));
 
     bootstrap(CpuMask::of(0));
@@ -801,18 +804,18 @@ auto CpuLocal::init() -> void {
 
 auto CpuLocal::init_percpu(CpuNum cpu) -> void {
     DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-    DEBUG_ASSERT(g_dyn, "Bringing up a CPU before CpuLocal::init()");
+    DEBUG_ASSERT(DYN, "Bringing up a CPU before CpuLocal::init()");
 
-    attach_to_unit(cpu, g_cpu_offsets[cpu]);
+    attach_to_unit(cpu, CPU_OFFSETS[cpu]);
 
-    g_states[usize(State::Online)].set(cpu);
-    g_states[usize(State::Offline)].set(cpu, false);
+    STATES[usize(State::Online)].set(cpu);
+    STATES[usize(State::Offline)].set(cpu, false);
 }
 
 auto CpuLocal::bootstrap(CpuMask const &cpus) -> void {
     cpus.for_each([](CpuNum cpu) {
-        g_states[usize(State::Online)].set(cpu);
-        g_states[usize(State::Offline)].set(cpu, false);
+        STATES[usize(State::Online)].set(cpu);
+        STATES[usize(State::Offline)].set(cpu, false);
     });
 }
 
@@ -822,30 +825,30 @@ auto CpuLocal::origin() -> VirtAddr {
 
 auto CpuLocal::base(CpuNum cpu) -> VirtAddr {
     DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-    return canonical_base() + usize(g_cpu_offsets[cpu]);
+    return canonical_base() + usize(CPU_OFFSETS[cpu]);
 }
 
-/// The contract `resolve()` rests on: an offset names either a byte of the
+/// The contract `resolve()` rests on: a handle names either a byte of the
 /// static block or a byte of some live dynamic chunk, and nothing else.
-auto CpuLocal::holds(usize offset) -> bool {
-    if (offset < initial_area_size()) {
+auto CpuLocal::holds(VirtAddr handle) -> bool {
+    if (is_in_initial_area(handle)) {
         return true;
     }
-    return g_dyn && g_dyn->owns(offset);
+    return DYN && DYN->owns(handle);
 }
 
-auto CpuLocal::allocate_raw(usize size, usize align) -> usize {
-    if (!g_dyn) {
+auto CpuLocal::allocate_raw(usize size, usize align) -> VirtAddr {
+    if (!DYN) {
         return NOWHERE;
     }
-    return g_dyn->allocate(size, align);
+    return DYN->allocate(size, align);
 }
 
-auto CpuLocal::free_raw(usize offset, usize size) -> void {
-    if (!g_dyn) {
+auto CpuLocal::free_raw(VirtAddr handle, usize size) -> void {
+    if (!DYN) {
         return;
     }
-    return g_dyn->deallocate(offset, size);
+    return DYN->deallocate(handle, size);
 }
 
 } // namespace ours::mm

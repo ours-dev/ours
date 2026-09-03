@@ -7,6 +7,7 @@
 #include <ustl/collections/allocator.hpp>
 #include <ustl/collections/detail/btree_node_algorithms.hpp>
 #include <ustl/collections/error.hpp>
+#include <ustl/collections/intrusive/detail/extension.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 
@@ -25,6 +26,27 @@ struct BTreeNodeView {
     std::size_t m_level{};
     std::size_t m_size{};
     bool m_leaf{};
+};
+
+/// Structural events a B-tree reports under `Extension::Instrument`. The
+/// node-level hooks carry no node view: which internal node split is not the
+/// policy's business, the same layering rule the intrusive trees follow --
+/// counting the splits is what these were ever usable for.
+///
+/// Kept as the default policy so an unadorned BTree declares no extensions
+/// and every hook site below folds away.
+/// Placeholder aggregate for a tree with no `Extension::Augment`; empty so
+/// `[[no_unique_address]]` keeps it out of the node entirely.
+struct NoBTreeAggregate final {};
+
+template <typename Policy, bool Augmented>
+struct BTreeAggregateOf final {
+    using Type = NoBTreeAggregate;
+};
+
+template <typename Policy>
+struct BTreeAggregateOf<Policy, true> final {
+    using Type = typename Policy::Aggregate;
 };
 
 struct NullBTreeObserver {
@@ -76,8 +98,7 @@ struct DefaultCompare final {
 };
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer = NullBTreeObserver, typename Options = BTreeDefaultOptions,
-          std::size_t Order = 8>
+          typename Policy = void, typename Options = BTreeDefaultOptions, std::size_t Order = 8>
 class BTree {
     using Self = BTree;
     struct Node;
@@ -90,17 +111,18 @@ class BTree {
                   "BTree comparators must be noexcept.");
     static_assert(std::is_nothrow_invocable_v<KeyOfValue const &, Value const &>,
                   "BTree key extractors must be noexcept.");
-    static_assert(
-        requires(BTree const &tree, Observer &observer, Key const &key, Value const &value,
-                 BTreeNodeView const &view) {
-            { observer.on_search(tree, key) } noexcept;
-            { observer.on_insert(tree, value) } noexcept;
-            { observer.on_erase(tree, key) } noexcept;
-            { observer.on_node_split(tree, view) } noexcept;
-            { observer.on_node_merge(tree, view) } noexcept;
-            { observer.on_node_rebalance(tree, view) } noexcept;
-        },
-        "BTree observers must be noexcept.");
+    using Extension = intrusive::detail::Extension;
+    using AggregateType =
+        typename BTreeAggregateOf<Policy, intrusive::detail::has_extension(
+                                              intrusive::detail::EXTENSIONS_OF<Policy>,
+                                              intrusive::detail::Extension::Augment)>::Type;
+
+    /// Which extensions the policy activates. Gated with `if constexpr`
+    /// throughout, so a extension nobody asked for leaves no trace.
+    static constexpr Extension EXTS = intrusive::detail::EXTENSIONS_OF<Policy>;
+    static constexpr bool IS_INSTRUMENTED =
+        intrusive::detail::has_extension(EXTS, Extension::Instrument);
+    static constexpr bool IS_AUGMENTED = intrusive::detail::has_extension(EXTS, Extension::Augment);
 
   public:
     using key_type = Key;
@@ -108,7 +130,6 @@ class BTree {
     using key_of_value = KeyOfValue;
     using key_compare = Compare;
     using allocator_type = Allocator;
-    using observer_type = Observer;
     using options_type = Options;
 
     using size_type = std::size_t;
@@ -210,12 +231,33 @@ class BTree {
         return m_impl.m_compare;
     }
 
-    auto observer() -> observer_type & {
-        return m_impl.m_observer;
+    /// Points this tree's instrumentation at `context`, handed back to
+    /// every hook. Per-tree rather than global, so two trees can be measured
+    /// independently.
+    auto set_instrument_context(void *context) -> void
+        requires(IS_INSTRUMENTED)
+    {
+        m_impl.m_context.set(context);
     }
 
-    auto observer() const -> observer_type const & {
-        return m_impl.m_observer;
+    /// What an ordered visit should do with the subtree it was just
+    /// offered.
+    enum class VisitStep { Descend, Skip, Stop };
+
+    /// Walks the tree in key order, offering each subtree's aggregate before
+    /// its contents so an augmented query can skip whole subtrees instead of
+    /// visiting every element. Either callback can end the walk early:
+    /// `on_subtree` through `VisitStep::Stop`, `on_value` by returning
+    /// false. Returns false when the walk was stopped that way.
+    template <typename Visitor>
+    auto visit_ordered(Visitor &visitor) const -> bool
+        requires(IS_AUGMENTED &&
+                 requires(Visitor &v, AggregateType const &aggregate, value_type const &value) {
+                     { v.on_subtree(aggregate) } -> std::convertible_to<VisitStep>;
+                     { v.on_value(value) } -> std::convertible_to<bool>;
+                 })
+    {
+        return visit_ordered_from(visitor, m_impl.m_root);
     }
 
     auto begin() -> iterator;
@@ -312,6 +354,10 @@ class BTree {
         size_type m_count{};
         std::optional<value_type> m_values[MAX_VALUES]{};
         Node *m_children[MAX_CHILDREN]{};
+        /// Aggregate over everything this node roots, under
+        /// `Extension::Augment`. Costs nothing when unused.
+        [[no_unique_address]]
+        AggregateType m_aggregate{};
     };
 
     struct NodeTraits {
@@ -372,8 +418,10 @@ class BTree {
         NodeAllocator m_node_allocator{*m_allocator.resource()};
         [[no_unique_address]]
         key_of_value m_key_of{};
+        /// Per-tree state handed back to the instrumentation hooks; empty
+        /// (and free) unless the policy asked for `Extension::Instrument`.
         [[no_unique_address]]
-        mutable observer_type m_observer{};
+        mutable intrusive::detail::PolicyContext<IS_INSTRUMENTED> m_context{};
         Node *m_root{};
         size_type m_size{};
     };
@@ -408,6 +456,45 @@ class BTree {
     auto upper_bound_node(key_type const &key) -> iterator;
     auto upper_bound_node(key_type const &key) const -> const_iterator;
 
+    /// Depth-first engine behind `visit_ordered`, in key order: child,
+    /// value, child, ..., value, child. An absent child is not offered to
+    /// the visitor at all.
+    template <typename Visitor>
+    static auto visit_ordered_from(Visitor &visitor, Node const *node) -> bool {
+        if (!node) {
+            return true;
+        }
+        auto const count = node->m_count;
+        auto const leaf = node->m_leaf;
+        for (size_type slot = 0; slot <= count; ++slot) {
+            if (!leaf) {
+                auto const child = node->m_children[slot];
+                if (child) {
+                    switch (visitor.on_subtree(child->m_aggregate)) {
+                        case VisitStep::Descend: {
+                            if (!visit_ordered_from(visitor, child)) {
+                                return false;
+                            }
+                            break;
+                        }
+                        case VisitStep::Skip: {
+                            break;
+                        }
+                        case VisitStep::Stop: {
+                            return false;
+                        }
+                    }
+                }
+            }
+            if (slot < count) {
+                if (!visitor.on_value(*node->m_values[slot])) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     static auto move_value(std::optional<value_type> &dst, std::optional<value_type> &src) -> void;
 
     template <typename U>
@@ -415,6 +502,56 @@ class BTree {
 
     template <typename U>
     auto insert_nonfull(Node *root, U &&value) noexcept -> Result<iterator, Error>;
+
+    /// Folds a node's aggregate from its values and its children's
+    /// aggregates, in key order so an order-sensitive `combine` is well
+    /// defined. Returns true when the value did not change.
+    ///
+    /// `of_element` is handed an lvalue, so a policy is free to take its
+    /// element by value or by const reference -- whichever suits the element
+    /// type. A pointer element wants by value; wrapping it in a reference
+    /// only buys an extra load.
+    static auto recompute_node(Node *node) noexcept -> bool {
+        if constexpr (!IS_AUGMENTED) {
+            static_cast<void>(node);
+            return true;
+        } else {
+            auto aggregate = Policy::identity();
+            for (size_type i = 0; i < node->m_count; ++i) {
+                if (!node->m_leaf && node->m_children[i] != nullptr) {
+                    aggregate = Policy::combine(aggregate, node->m_children[i]->m_aggregate);
+                }
+                aggregate = Policy::combine(aggregate, Policy::of_element(*node->m_values[i]));
+            }
+            if (!node->m_leaf && node->m_children[node->m_count] != nullptr) {
+                aggregate =
+                    Policy::combine(aggregate, node->m_children[node->m_count]->m_aggregate);
+            }
+            auto const unchanged = aggregate == node->m_aggregate;
+            node->m_aggregate = aggregate;
+            return unchanged;
+        }
+    }
+
+    /// Refreshes `node` and its ancestors after `node`'s contents changed.
+    /// The starting node is always recomputed -- it is named precisely
+    /// because it just changed -- and only from its parent upwards may an
+    /// unchanged value stop the walk.
+    static auto refresh_augment(Node *node) noexcept -> void {
+        if constexpr (IS_AUGMENTED) {
+            if (node == nullptr) {
+                return;
+            }
+            static_cast<void>(recompute_node(node));
+            for (node = node->m_parent; node != nullptr; node = node->m_parent) {
+                if (recompute_node(node)) {
+                    break;
+                }
+            }
+        } else {
+            static_cast<void>(node);
+        }
+    }
 
     auto split_child(Node *parent, size_type slot, Node *right) noexcept -> void;
 
@@ -429,25 +566,25 @@ class BTree {
 };
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <bool Const>
-constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options,
+constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options,
                      Order>::Iterator<Const>::operator*() const -> reference {
     return *m_node->m_values[m_slot];
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <bool Const>
-constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options,
+constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options,
                      Order>::Iterator<Const>::operator->() const -> pointer {
     return std::to_address(&*m_node->m_values[m_slot]);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <bool Const>
-constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options,
+constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options,
                      Order>::Iterator<Const>::operator++() -> Self & {
     auto const pos = NodeAlgorithms::next_position(m_node, m_slot);
     m_node = pos.m_node;
@@ -456,9 +593,9 @@ constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Optio
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <bool Const>
-constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options,
+constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options,
                      Order>::Iterator<Const>::operator++(int) -> Self {
     auto old = *this;
     ++*this;
@@ -466,9 +603,9 @@ constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Optio
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <bool Const>
-constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options,
+constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options,
                      Order>::Iterator<Const>::operator--() -> Self & {
     auto const pos = NodeAlgorithms::prev_position(m_tree->m_impl.m_root, m_node, m_slot);
     m_node = pos.m_node;
@@ -477,9 +614,9 @@ constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Optio
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <bool Const>
-constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options,
+constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options,
                      Order>::Iterator<Const>::operator--(int) -> Self {
     auto old = *this;
     --*this;
@@ -487,16 +624,16 @@ constexpr auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Optio
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::leftmost(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::leftmost(
     BTree *tree, Node *node) -> iterator {
     return mutable_iterator(
         tree, leftmost(static_cast<BTree const *>(tree), static_cast<Node const *>(node)));
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::leftmost(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::leftmost(
     BTree const *tree, Node const *node) -> const_iterator {
     if (node == nullptr) {
         return tree->end();
@@ -506,16 +643,16 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::rightmost(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::rightmost(
     BTree *tree, Node *node) -> iterator {
     return mutable_iterator(
         tree, rightmost(static_cast<BTree const *>(tree), static_cast<Node const *>(node)));
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::rightmost(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::rightmost(
     BTree const *tree, Node const *node) -> const_iterator {
     if (node == nullptr) {
         return tree->end();
@@ -525,15 +662,15 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::mutable_iterator(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::mutable_iterator(
     BTree *tree, const_iterator iter) -> iterator {
     return iterator(tree, const_cast<Node *>(iter.m_node), iter.m_slot);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::create_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::create_node(
     bool leaf, Node *parent) noexcept -> Result<Node *, Error> {
     auto allocation = m_impl.m_node_allocator.try_allocate(1);
     if (allocation.is_err()) {
@@ -546,16 +683,16 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::destroy_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::destroy_node(
     Node *node) noexcept -> void {
     std::destroy_at(node);
     m_impl.m_node_allocator.deallocate(node, 1);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::destroy_subtree(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::destroy_subtree(
     Node *node) noexcept -> void {
     auto *current = node;
     while (current != nullptr) {
@@ -571,29 +708,29 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::key_of(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::key_of(
     value_type const &value) const -> decltype(auto) {
     return m_impl.m_key_of(value);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::less(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::less(
     key_type const &lhs, key_type const &rhs) const -> bool {
     return m_impl.m_compare(lhs, rhs);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::equal(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::equal(
     key_type const &lhs, key_type const &rhs) const -> bool {
     return !less(lhs, rhs) && !less(rhs, lhs);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::find_slot(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::find_slot(
     Node const *node, key_type const &key) const -> size_type {
     size_type slot = 0;
     while (slot < node->m_count && less(key_of(*node->m_values[slot]), key)) {
@@ -603,107 +740,106 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::begin()
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::begin()
     -> iterator {
     return mutable_iterator(this, static_cast<Self const *>(this)->begin());
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::begin() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::begin() const
     -> const_iterator {
     return leftmost(this, m_impl.m_root);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::cbegin() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::cbegin() const
     -> const_iterator {
     return begin();
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::end()
-    -> iterator {
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::end() -> iterator {
     return mutable_iterator(this, static_cast<Self const *>(this)->end());
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::end() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::end() const
     -> const_iterator {
     return const_iterator(this, nullptr, 0);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::cend() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::cend() const
     -> const_iterator {
     return end();
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::rbegin()
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::rbegin()
     -> reverse_iterator {
     return reverse_iterator(end());
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::rbegin() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::rbegin() const
     -> const_reverse_iterator {
     return const_reverse_iterator(end());
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::crbegin() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::crbegin() const
     -> const_reverse_iterator {
     return rbegin();
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::rend()
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::rend()
     -> reverse_iterator {
     return reverse_iterator(begin());
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::rend() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::rend() const
     -> const_reverse_iterator {
     return const_reverse_iterator(begin());
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::crend() const
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::crend() const
     -> const_reverse_iterator {
     return rend();
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::clear() -> void {
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::clear() -> void {
     destroy_subtree(m_impl.m_root);
     m_impl.m_root = nullptr;
     m_impl.m_size = 0;
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::find_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::find_node(
     key_type const &key) -> iterator {
     return mutable_iterator(this, static_cast<Self const *>(this)->find_node(key));
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::find_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::find_node(
     key_type const &key) const -> const_iterator {
     auto const *node = m_impl.m_root;
     while (node != nullptr) {
@@ -717,33 +853,37 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::find(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::find(
     key_type const &key) noexcept -> Option<iterator> {
-    m_impl.m_observer.on_search(*this, key);
+    if constexpr (IS_INSTRUMENTED) {
+        Policy::on_search(m_impl.m_context.get(), key);
+    }
     auto const result = find_node(key);
     return result == end() ? NONE : Option<iterator>(result);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::find(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::find(
     key_type const &key) const noexcept -> Option<const_iterator> {
-    m_impl.m_observer.on_search(*this, key);
+    if constexpr (IS_INSTRUMENTED) {
+        Policy::on_search(m_impl.m_context.get(), key);
+    }
     auto const result = find_node(key);
     return result == end() ? NONE : Option<const_iterator>(result);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::lower_bound_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::lower_bound_node(
     key_type const &key) -> iterator {
     return mutable_iterator(this, static_cast<Self const *>(this)->lower_bound_node(key));
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::lower_bound_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::lower_bound_node(
     key_type const &key) const -> const_iterator {
     auto const *node = m_impl.m_root;
     auto result = end();
@@ -758,31 +898,31 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::lower_bound(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::lower_bound(
     key_type const &key) noexcept -> Option<iterator> {
     auto const result = lower_bound_node(key);
     return result == end() ? NONE : Option<iterator>(result);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::lower_bound(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::lower_bound(
     key_type const &key) const noexcept -> Option<const_iterator> {
     auto const result = lower_bound_node(key);
     return result == end() ? NONE : Option<const_iterator>(result);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::upper_bound_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::upper_bound_node(
     key_type const &key) -> iterator {
     return mutable_iterator(this, static_cast<Self const *>(this)->upper_bound_node(key));
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::upper_bound_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::upper_bound_node(
     key_type const &key) const -> const_iterator {
     auto iter = lower_bound_node(key);
     if (iter != end() && equal(key, key_of(*iter))) {
@@ -792,24 +932,24 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::upper_bound(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::upper_bound(
     key_type const &key) noexcept -> Option<iterator> {
     auto const result = upper_bound_node(key);
     return result == end() ? NONE : Option<iterator>(result);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::upper_bound(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::upper_bound(
     key_type const &key) const noexcept -> Option<const_iterator> {
     auto const result = upper_bound_node(key);
     return result == end() ? NONE : Option<const_iterator>(result);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::equal_range(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::equal_range(
     key_type const &key) -> std::pair<iterator, iterator> {
     auto const range = static_cast<Self const *>(this)->equal_range(key);
     return {
@@ -819,8 +959,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::equal_range(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::equal_range(
     key_type const &key) const -> std::pair<const_iterator, const_iterator> {
     auto first = lower_bound_node(key);
     auto last = first;
@@ -831,22 +971,22 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::contains(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::contains(
     key_type const &key) const -> bool {
     return find_node(key) != end();
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::count(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::count(
     key_type const &key) const -> size_type {
     return contains(key) ? 1 : 0;
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::move_value(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::move_value(
     std::optional<value_type> &dst, std::optional<value_type> &src) -> void {
     dst.reset();
     dst.emplace(std::move(*src));
@@ -854,8 +994,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::split_child(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::split_child(
     Node *parent, size_type slot, Node *right) noexcept -> void {
     auto *full = NodeAlgorithms::child(parent, slot);
     right->m_count = MIN_DEGREE - 1;
@@ -876,13 +1016,18 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
     move_value(parent->m_values[slot], full->m_values[MIN_DEGREE - 1]);
     ++parent->m_count;
 
-    m_impl.m_observer.on_node_split(*this, node_view(full));
+    static_cast<void>(recompute_node(full));
+    static_cast<void>(recompute_node(right));
+    refresh_augment(parent);
+    if constexpr (IS_INSTRUMENTED) {
+        Policy::on_node_split(m_impl.m_context.get());
+    }
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <typename U>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::insert_nonfull(
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::insert_nonfull(
     Node *root, U &&value) noexcept -> Result<iterator, Error> {
     auto const &key = key_of(value);
     auto *node = root;
@@ -896,6 +1041,7 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
             node->m_values[slot].emplace(std::forward<U>(value));
             ++node->m_count;
             ++m_impl.m_size;
+            refresh_augment(node);
             return ok(iterator(this, node, slot));
         }
 
@@ -915,9 +1061,9 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <typename U>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::insert_value(
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::insert_value(
     U &&value, bool notify) noexcept -> Result<InsertResult, Error> {
     auto const &key = key_of(value);
     if constexpr (!Options::ALLOW_DUPLICATES) {
@@ -936,7 +1082,9 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
         m_impl.m_root->m_count = 1;
         m_impl.m_size = 1;
         if (notify) {
-            m_impl.m_observer.on_insert(*this, *m_impl.m_root->m_values[0]);
+            if constexpr (IS_INSTRUMENTED) {
+                Policy::on_insert(m_impl.m_context.get(), *m_impl.m_root->m_values[0]);
+            }
         }
         return ok(InsertResult{iterator(this, m_impl.m_root, 0), true});
     }
@@ -963,43 +1111,45 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
     }
     auto iter = inserted.value();
     if (notify) {
-        m_impl.m_observer.on_insert(*this, *iter);
+        if constexpr (IS_INSTRUMENTED) {
+            Policy::on_insert(m_impl.m_context.get(), *iter);
+        }
     }
     return ok(InsertResult{iter, true});
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::insert(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::insert(
     value_type const &value) noexcept -> Result<InsertResult, Error> {
     return insert_value(value, true);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::insert(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::insert(
     value_type &&value) noexcept -> Result<InsertResult, Error> {
     return insert_value(std::move(value), true);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <typename... Args>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::emplace(
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::emplace(
     Args &&...args) noexcept -> Result<InsertResult, Error> {
     value_type value(std::forward<Args>(args)...);
     return insert_value(std::move(value), true);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <typename... Args>
     requires requires {
-        typename BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options,
+        typename BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options,
                        Order>::value_type::second_type;
     } && std::is_nothrow_constructible_v<Value, std::piecewise_construct_t, std::tuple<Key const &>,
                                          std::tuple<Args &&...>>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::try_emplace(
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::try_emplace(
     key_type const &key, Args &&...args) noexcept -> Result<InsertResult, Error> {
     auto const existing = find_node(key);
     if (existing != end()) {
@@ -1012,13 +1162,13 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
+          typename Policy, typename Options, std::size_t Order>
 template <typename Mapped>
     requires requires(Value &stored, Mapped &&mapped) {
         typename Value::second_type;
         { stored.second = std::forward<Mapped>(mapped) } noexcept;
     }
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::insert_or_assign(
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::insert_or_assign(
     key_type const &key, Mapped &&mapped) noexcept -> Result<InsertResult, Error> {
     auto const existing = find_node(key);
     if (existing != end()) {
@@ -1029,8 +1179,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::erase_from_leaf(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::erase_from_leaf(
     Node *node, size_type slot) -> void {
     node->m_values[slot].reset();
     for (size_type i = slot; i + 1 < node->m_count; ++i) {
@@ -1038,11 +1188,12 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
     }
     --node->m_count;
     --m_impl.m_size;
+    refresh_augment(node);
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::merge_children(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::merge_children(
     Node *node, size_type slot) -> void {
     auto *left = NodeAlgorithms::child(node, slot);
     auto *right = NodeAlgorithms::child(node, slot + 1);
@@ -1063,12 +1214,16 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
     --node->m_count;
 
     destroy_node(right);
-    m_impl.m_observer.on_node_merge(*this, node_view(left));
+    static_cast<void>(recompute_node(left));
+    refresh_augment(node);
+    if constexpr (IS_INSTRUMENTED) {
+        Policy::on_node_merge(m_impl.m_context.get());
+    }
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::borrow_from_prev(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::borrow_from_prev(
     Node *node, size_type slot) -> void {
     auto *child = NodeAlgorithms::child(node, slot);
     auto *sibling = NodeAlgorithms::child(node, slot - 1);
@@ -1082,12 +1237,17 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
     move_value(node->m_values[slot - 1], sibling->m_values[sibling->m_count - 1]);
     ++child->m_count;
     --sibling->m_count;
-    m_impl.m_observer.on_node_rebalance(*this, node_view(child));
+    static_cast<void>(recompute_node(sibling));
+    static_cast<void>(recompute_node(child));
+    refresh_augment(node);
+    if constexpr (IS_INSTRUMENTED) {
+        Policy::on_node_rebalance(m_impl.m_context.get());
+    }
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::borrow_from_next(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::borrow_from_next(
     Node *node, size_type slot) -> void {
     auto *child = NodeAlgorithms::child(node, slot);
     auto *sibling = NodeAlgorithms::child(node, slot + 1);
@@ -1102,12 +1262,17 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 
     ++child->m_count;
     --sibling->m_count;
-    m_impl.m_observer.on_node_rebalance(*this, node_view(child));
+    static_cast<void>(recompute_node(sibling));
+    static_cast<void>(recompute_node(child));
+    refresh_augment(node);
+    if constexpr (IS_INSTRUMENTED) {
+        Policy::on_node_rebalance(m_impl.m_context.get());
+    }
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::fill_child(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::fill_child(
     Node *node, size_type slot) -> void {
     switch (NodeAlgorithms::select_rebalance_plan(node, slot)) {
         case NodeAlgorithms::RebalancePlan::BorrowFromPrev:
@@ -1126,8 +1291,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::erase_from_node(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::erase_from_node(
     Node *node, key_type const &key) -> bool {
     auto current_key = key;
     auto *current = node;
@@ -1183,14 +1348,16 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::erase(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::erase(
     key_type const &key) -> size_type {
     if (m_impl.m_root == nullptr) {
         return 0;
     }
 
-    m_impl.m_observer.on_erase(*this, key);
+    if constexpr (IS_INSTRUMENTED) {
+        Policy::on_erase(m_impl.m_context.get(), key);
+    }
     auto const erased = erase_from_node(m_impl.m_root, key);
     if (!erased) {
         return 0;
@@ -1205,9 +1372,9 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::erase(
-    iterator pos) -> iterator {
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::erase(iterator pos)
+    -> iterator {
     if (pos == end()) {
         return end();
     }
@@ -1223,8 +1390,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::erase(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::erase(
     iterator first, iterator last) -> iterator {
     if (last == end()) {
         while (first != end()) {
@@ -1241,8 +1408,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>
 }
 
 template <typename Key, typename Value, typename KeyOfValue, typename Compare, typename Allocator,
-          typename Observer, typename Options, std::size_t Order>
-auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Observer, Options, Order>::swap(
+          typename Policy, typename Options, std::size_t Order>
+auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::swap(
     Self &other) noexcept -> void {
     using std::swap;
     swap(m_impl, other.m_impl);

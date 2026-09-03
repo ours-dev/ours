@@ -101,6 +101,10 @@ class VmArea final: public VmAreaOrMapping {
 
     auto dump_locked() const -> void;
 
+    /// Unmap everything inside [base, base + size), assuming the aspace lock is
+    /// already held and the range was validated against this area.
+    auto unmap_locked(VirtAddr base, usize size) -> Status;
+
     virtual auto destroy() -> Status override;
 
   private:

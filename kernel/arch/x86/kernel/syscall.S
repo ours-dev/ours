@@ -127,8 +127,8 @@
     swapgs
 
     // Swap stack
-    mov %rsp, CPU_LOCAL_ACCESS(g_x86_pcpu + X86_PERCPU_SAVED_USER_SP_OFFSET)
-    mov CPU_LOCAL_ACCESS(g_x86_pcpu + X86_PERCPU_SAVED_KERNEL_SP_OFFSET), %rsp
+    mov %rsp, CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_USER_SP_OFFSET)
+    mov CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_KERNEL_SP_OFFSET), %rsp
 
     push_val %r11  // RFLAGS
     push_val %rcx  // RIP
@@ -149,7 +149,12 @@
     push_val %rax
 
     mov %rbp, %rdi  // Pass pointer pointed to SyscallFrame.
-    call *syscall_table(, %rax, 8)
+    // %r11 is scratch here -- the syscall instruction itself trashes rcx and
+    // r11, so it holds no live register state -- and the table has to be
+    // reached %rip-relative: the kernel is a static PIE, an absolute
+    // displacement would emit R_X86_64_32S and break the link.
+    lea SYSCALL_TABLE(%rip), %r11
+    call *(%r11, %rax, 8)
 
     pop_reg %rax
     pop_reg %rbx
@@ -170,7 +175,7 @@
     pop_reg %r11  // RFLAGS
 
     // Restore user stack.
-    mov CPU_LOCAL_ACCESS(g_x86_pcpu + X86_PERCPU_SAVED_USER_SP_OFFSET), %rsp
+    mov CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_USER_SP_OFFSET), %rsp
 
     // Swap GS
     swapgs

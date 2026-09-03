@@ -59,8 +59,8 @@ auto ClockEventDevice::entroll(Self &self, usize freq, Ticks min_delta, Ticks ma
 
     self.configure(freq, min_delta, max_delta);
     {
-        Guard<sync::Mutex, IrqSave> guard{s_gced_mutex};
-        s_gced.push_back(self);
+        Guard<sync::Mutex, IrqSave> guard{GCED_MUTEX};
+        GCED.push_back(self);
     }
 
     return TickDevice::Current::get().check_new_device(&self);

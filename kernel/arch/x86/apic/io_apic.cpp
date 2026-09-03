@@ -16,14 +16,14 @@ namespace ours {
 namespace {
     using namespace irq;
 
-    ustl::views::Span<arch::IoApic> s_ioapics;
+    ustl::views::Span<arch::IoApic> IOAPICS;
 
     auto resolve_ioapic(usize num) -> arch::IoApic * {
-        if (num >= s_ioapics.size()) {
+        if (num >= IOAPICS.size()) {
             log::error("IO-APIC: Invalid IO-APIC number: {}", num);
             return nullptr;
         }
-        return &s_ioapics[num];
+        return &IOAPICS[num];
     }
 
     struct IoApicChipData {
@@ -74,7 +74,7 @@ namespace {
     }
 
     auto ioapic_dump() -> void {
-        for (auto &ioapic: s_ioapics) {
+        for (auto &ioapic: IOAPICS) {
             log::info("IoApic[{}]:", ioapic.id());
             log::info("  version: {}", ioapic.version());
             log::info("  Addr: 0x{:X}", ioapic.phys_base());
@@ -85,7 +85,7 @@ namespace {
     }
 
     [[maybe_unused]]
-    IrqChip s_ioapic_chip = {
+    IrqChip IOAPIC_CHIP = {
         .startup = ioapic_startup_irq,
         .mask = ioapic_mask_irq,
         .unmask = ioapic_unmask_irq,
@@ -95,12 +95,12 @@ namespace {
         .dump = ioapic_dump,
         .name = "IO-APIC",
     };
-    std::array<arch::IoApicIsaOverride, arch::NUM_ISA_IRQS> s_ioapic_isa_overrides;
+    std::array<arch::IoApicIsaOverride, arch::NUM_ISA_IRQS> IOAPIC_ISA_OVERRIDES;
 
     auto resolve_irqnum_to_ioapic(HIrqNum irqnum) -> arch::IoApic * {
-        for (auto i = usize{0}; i < s_ioapics.size(); ++i) {
-            if (s_ioapics[i].gsi_base() <= irqnum && irqnum < s_ioapics[i].max_local_irqnum()) {
-                return &s_ioapics[i];
+        for (auto i = usize{0}; i < IOAPICS.size(); ++i) {
+            if (IOAPICS[i].gsi_base() <= irqnum && irqnum < IOAPICS[i].max_local_irqnum()) {
+                return &IOAPICS[i];
             }
         }
 
@@ -140,17 +140,17 @@ auto apic_configure_isa_irq(u8 isa_irq, arch::ApicDeliveryMode del_mode, bool ma
     HIrqNum irq = isa_irq;
     auto trigger_mode = arch::ApicTriggerMode::Edge;
     auto polarity = arch::ApicInterruptPolarity::ActiveHigh;
-    if (s_ioapic_isa_overrides[isa_irq].remapped) {
-        irq = s_ioapic_isa_overrides[isa_irq].global_irq;
-        trigger_mode = s_ioapic_isa_overrides[isa_irq].tri_mode;
-        polarity = s_ioapic_isa_overrides[isa_irq].polarity;
+    if (IOAPIC_ISA_OVERRIDES[isa_irq].remapped) {
+        irq = IOAPIC_ISA_OVERRIDES[isa_irq].global_irq;
+        trigger_mode = IOAPIC_ISA_OVERRIDES[isa_irq].tri_mode;
+        polarity = IOAPIC_ISA_OVERRIDES[isa_irq].polarity;
     }
 
     apic_configure_irq(irq, trigger_mode, polarity, del_mode, mask, dst_mode, dst, vector);
 }
 
 auto apic_io_isa_to_global(u8 isa_irq) -> HIrqNum {
-    for (auto &override: s_ioapic_isa_overrides) {
+    for (auto &override: IOAPIC_ISA_OVERRIDES) {
         if (override.isa_irq == isa_irq && override.remapped) {
             return override.global_irq;
         }
@@ -166,24 +166,24 @@ INIT_CODE auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
     {
         auto raw_ioapics = new (mm::GAF_KERNEL) arch::IoApic[nr_ioapics]();
         ASSERT(raw_ioapics, "Failed to allocate IO-APIC");
-        s_ioapics = ustl::views::make_span(raw_ioapics, nr_ioapics);
+        IOAPICS = ustl::views::make_span(raw_ioapics, nr_ioapics);
     }
 
     for (auto i = usize{0}; i < nr_ioapics; ++i) {
         // Inplacement new to re-construct IO-APIC descriptor.
-        s_ioapics[i] = ioapics[i];
+        IOAPICS[i] = ioapics[i];
 
         // Then need we create MMIO for per IoApic
         VirtAddr mmio_virt = 0;
         for (auto j = usize{0}; j < i; ++j) {
-            if (s_ioapics[i].phys_base() == s_ioapics[j].phys_base()) {
-                mmio_virt = s_ioapics[j].virt_base();
+            if (IOAPICS[i].phys_base() == IOAPICS[j].phys_base()) {
+                mmio_virt = IOAPICS[j].virt_base();
             }
         }
 
         // If no other shared IO-APICs, we have to create a new mapping for it.
         if (!mmio_virt) {
-            auto const phys = s_ioapics[i].phys_base();
+            auto const phys = IOAPICS[i].phys_base();
             auto const phys_aligned = ustl::mm::align_down(phys, PAGE_SIZE);
 
             auto rvma = mm::VmAspace::kernel_aspace()->root_vma();
@@ -197,18 +197,17 @@ INIT_CODE auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
             mmio_virt = (*result)->base() + (phys - phys_aligned);
         }
 
-        s_ioapics[i].reset_mmio(mmio_virt);
+        IOAPICS[i].reset_mmio(mmio_virt);
     }
 
     log::info("ISA Irq | Remapped | Trigger mode | Polarity | Global IRQ");
     for (auto i = usize{0}; i < nr_overrides; ++i) {
         /// Make a linear mapping
-        s_ioapic_isa_overrides[overrides[i].isa_irq] = overrides[i];
+        IOAPIC_ISA_OVERRIDES[overrides[i].isa_irq] = overrides[i];
 
-        log::trace(
-            "{: <6} | {} | {} | {} | {}", s_ioapic_isa_overrides[i].isa_irq,
-            s_ioapic_isa_overrides[i].remapped, to_string(s_ioapic_isa_overrides[i].tri_mode),
-            to_string(s_ioapic_isa_overrides[i].polarity), s_ioapic_isa_overrides[i].global_irq);
+        log::trace("{: <6} | {} | {} | {} | {}", IOAPIC_ISA_OVERRIDES[i].isa_irq,
+                   IOAPIC_ISA_OVERRIDES[i].remapped, to_string(IOAPIC_ISA_OVERRIDES[i].tri_mode),
+                   to_string(IOAPIC_ISA_OVERRIDES[i].polarity), IOAPIC_ISA_OVERRIDES[i].global_irq);
     }
 }
 

@@ -10,7 +10,7 @@ using arch::CpuFeatureType;
 
 auto x86_has_feature(CpuFeatureType type) -> bool;
 
-extern bool g_feature_has_fsgsbase;
+extern bool FEATURE_HAS_FSGSBASE;
 
 } // namespace ours
 

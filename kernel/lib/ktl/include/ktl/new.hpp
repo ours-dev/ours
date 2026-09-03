@@ -13,8 +13,11 @@ auto operator new(usize size, ktl::Gaf gaf, ktl::NnId nid) -> void *;
 
 auto operator new[](usize size, ktl::Gaf gaf, ktl::NnId nid) -> void *;
 
-auto operator delete(void *ptr) -> void;
+// The deallocation functions carry noexcept because the standard gives them
+// that specification; libc++'s <new> insists on it when a kernel header lands
+// in a hosted build (the unit tests).
+auto operator delete(void *ptr) noexcept -> void;
 
-auto operator delete[](void *ptr) -> void;
+auto operator delete[](void *ptr) noexcept -> void;
 
 #endif // #ifndef KTL_NEW_HPP

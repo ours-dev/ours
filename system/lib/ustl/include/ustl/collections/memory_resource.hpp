@@ -58,6 +58,15 @@ class NullMemoryResource final: public MemoryResource {
     auto do_deallocate(void *, std::size_t, std::size_t) noexcept -> void override {}
 };
 
+/// Freestanding targets (the kernel and phys images compile with
+/// -ffreestanding, i.e. `__STDC_HOSTED__ == 0`) have no hosted
+/// `::operator new`/`::operator delete` to back this class, so it exists
+/// only in hosted builds. A freestanding environment installs its own
+/// resource instead (the kernel does so in `ktl::init_memory_resource()`);
+/// until then the default is the null resource below, so an allocation
+/// attempted too early fails cleanly with OutOfMemory rather than reaching
+/// for a global new/delete that does not exist.
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
 class NewDeleteResource final: public MemoryResource {
   protected:
     [[nodiscard]]
@@ -82,6 +91,7 @@ class NewDeleteResource final: public MemoryResource {
         }
     }
 };
+#endif // hosted
 
 [[nodiscard]]
 inline auto null_memory_resource() noexcept -> MemoryResource * {
@@ -89,15 +99,21 @@ inline auto null_memory_resource() noexcept -> MemoryResource * {
     return std::addressof(resource);
 }
 
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
 [[nodiscard]]
 inline auto new_delete_resource() noexcept -> MemoryResource * {
     static NewDeleteResource resource;
     return std::addressof(resource);
 }
+#endif
 
 namespace detail {
     inline auto default_resource() noexcept -> std::atomic<MemoryResource *> & {
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
         static std::atomic<MemoryResource *> resource{new_delete_resource()};
+#else
+        static std::atomic<MemoryResource *> resource{null_memory_resource()};
+#endif
         return resource;
     }
 } // namespace detail
@@ -109,7 +125,11 @@ inline auto get_default_resource() noexcept -> MemoryResource * {
 
 inline auto set_default_resource(MemoryResource *resource) noexcept -> MemoryResource * {
     if (resource == nullptr) {
+#if defined(__STDC_HOSTED__) && __STDC_HOSTED__
         resource = new_delete_resource();
+#else
+        resource = null_memory_resource();
+#endif
     }
     return detail::default_resource().exchange(resource);
 }

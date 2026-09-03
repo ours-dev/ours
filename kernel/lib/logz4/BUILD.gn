@@ -1,26 +1,26 @@
 import("//build/cpp/cpp_interface.gni")
+import("//build/ours/cpu.gni")
 
-# The implementation. Only ":headers" existed before, so every user got the
-# declarations and nothing ever compiled init.cpp/log.cpp/filter.cpp -- which
-# is why get_global_logger() and logz4::vlog<> had no definition anywhere in
-# the build.
-source_set("logz4") {
-  sources = [
-    "filter.cpp",
-    "init.cpp",
-    "log.cpp",
-  ]
-  public_deps = [ ":headers" ]
+# Compatibility alias: existing :headers deps pick up the system core
+# include path instead of the deleted kernel-side copies.
+group("headers") {
+  public_deps = [ "//system/lib/logz4:headers" ]
 }
 
-cpp_interface("headers") {
-  public_deps = [ "//system/lib/ustl:headers" ]
-  public = [
-    "include/logz4/level.hpp",
-    "include/logz4/log.hpp",
-    "include/logz4/logger.hpp",
-    "include/logz4/record.hpp",
-    "include/logz4/ring_buffer.hpp",
-    "include/logz4/types.hpp",
+# Kernel-only glue: serial sink, emergency_write, clock/cpu, and
+# the kshell `log` command. phys images link //system/lib/logz4 directly
+# and must not pull this target in — it needs CpuLocal and gktl.
+source_set("logz4") {
+  sources = [
+    "command.cpp",
+    "kernel.cpp",
   ]
+  public_deps = [ "//system/lib/logz4" ]
+  deps = [
+    "//kernel/arch/$ours_cpu:headers",
+    "//kernel/lib/arch:headers",
+    "//kernel/lib/gktl:headers",
+    "//kernel/mm:headers",
+  ]
+  visibility = [ "*" ]
 }

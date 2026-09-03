@@ -1,15 +1,15 @@
 #include <ccrt/runtime.hpp>
 
 namespace {
-int sequence;
+int SEQUENCE;
 }
 
 extern "C" auto ccrt_test_first() -> void {
-    sequence = sequence * 10 + 1;
+    SEQUENCE = SEQUENCE * 10 + 1;
 }
 
 extern "C" auto ccrt_test_second() -> void {
-    sequence = sequence * 10 + 2;
+    SEQUENCE = SEQUENCE * 10 + 2;
 }
 
 asm(".section __DATA,__const\n"
@@ -22,15 +22,15 @@ asm(".section __DATA,__const\n"
     "__ccrt_init_end:\n");
 
 auto main() -> int {
-    if (sequence != 0) {
+    if (SEQUENCE != 0) {
         return 1;
     }
     ccrt::init_global_static_objects();
-    if (sequence != 12) {
+    if (SEQUENCE != 12) {
         return 2;
     }
     ccrt::init_global_static_objects();
-    if (sequence != 12) {
+    if (SEQUENCE != 12) {
         return 3;
     }
     return 0;

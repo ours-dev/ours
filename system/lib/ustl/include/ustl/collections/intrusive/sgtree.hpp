@@ -191,13 +191,13 @@ class Sgtree final {
     [[nodiscard]]
     constexpr auto find(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::find(&m_header, value, NodeCompare{&m_compare});
-        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some(*to_value(node));
+        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some_ref(*to_value(node));
     }
 
     [[nodiscard]]
     constexpr auto find(T const &value) const noexcept -> ustl::Option<T const &> {
         const auto node = Algorithms::find(&m_header, value, NodeCompare{&m_compare});
-        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some(*to_value(node));
+        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some_ref(*to_value(node));
     }
 
     [[nodiscard]]

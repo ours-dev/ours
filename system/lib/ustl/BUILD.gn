@@ -148,6 +148,12 @@ executable("bitfields-test") {
   deps = [ ":headers" ]
 }
 
+executable("bitset-test") {
+  testonly = true
+  sources = [ "test/bitset_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
 executable("binary-reader-test") {
   testonly = true
   sources = [ "test/binary_reader_test.cpp" ]
@@ -209,10 +215,29 @@ executable("box-doc-examples-test") {
   deps = [ ":headers" ]
 }
 
+executable("rbtree-augment-test") {
+  testonly = true
+  sources = [ "test/rbtree_augment_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("rbtree-instrument-test") {
+  testonly = true
+  sources = [ "test/rbtree_instrument_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+executable("btree-extension-test") {
+  testonly = true
+  sources = [ "test/btree_extension_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
 group("tests") {
   testonly = true
   deps = [
     ":bitfields-test",
+    ":bitset-test",
     ":atomic-test",
     ":binary-reader-test",
     ":box-doc-examples-test",
@@ -222,6 +247,9 @@ group("tests") {
     ":option-test",
     ":rc-test",
     ":rc-race-test",
+    ":rbtree-augment-test",
+    ":rbtree-instrument-test",
+    ":btree-extension-test",
     ":rc-doc-examples-test",
     ":set-test",
   ]

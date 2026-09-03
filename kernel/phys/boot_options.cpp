@@ -1,3 +1,5 @@
+#include <logz4/filter.hpp>
+#include <logz4/level.hpp>
 #include <ours/phys/boot_options.hpp>
 
 #include <string_view>
@@ -50,6 +52,13 @@ auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdlin
         if (!parse_name(value.value(), options.kernel_name, sizeof(options.kernel_name))) {
             return Status::InvalidArgument;
         }
+    }
+    if (auto const value = cmdline.value("log.level"); value.is_some()) {
+        auto level = logz4::Level::Info;
+        if (!logz4::parse_level(value.value(), level)) {
+            return Status::InvalidArgument;
+        }
+        logz4::set_min_level(level);
     }
     return Status::Ok;
 }

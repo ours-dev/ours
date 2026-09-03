@@ -33,7 +33,7 @@ namespace {
                     assignment_status =
                         mm::EarlyMem::set_node(region.base, region.size, NnId{region.domain});
                     if (assignment_status == Status::Ok) {
-                        mm::set_node_state(region.domain, mm::NodeStates::Possible, true);
+                        mm::PmNode::set_state(NnId{region.domain}, mm::PmNode::State::Possible);
                     }
                 }
             });
@@ -88,7 +88,6 @@ namespace {
 
         usize count = 0;
         return acpi::numa::for_each_cpu_binding(srat, [&](acpi::numa::CpuBinding const &binding) {
-            using namespace mem;
             if (count >= MAX_CPU) {
                 return;
             }
@@ -96,44 +95,47 @@ namespace {
             cpus[count] = count;
             cpu_possible_mask().set(count);
             // HINT(SmallHuaZi)
-            PmNode::Current::set_nid(count++, binding.domain);
+            mm::PmNode::Current::set_nid(static_cast<CpuNum>(count), NnId{binding.domain});
+            count += 1;
         });
     }
+} // namespace
 
-    auto acpi_init_numa() -> Status {
-        auto tables = get_acpi_tables();
-        DEBUG_ASSERT(tables, "");
-        if (!tables) {
-            return Status::NotFound;
-        }
-
-        auto const *srat = tables->find<acpi::srat::Table>();
-        if (!srat) {
-            return Status::NotFound;
-        }
-
-        Status status = register_meminfo(*srat);
-        if (status != Status::Ok) {
-            return status;
-        }
-
-        // For debug
-        print_numa_info(*srat);
-
-        mm::EarlyMem::dump();
-
-        status = register_nodedis(*tables);
-        if (status != Status::Ok) {
-            return status;
-        }
-
-        status = bind_node_to_cpu(*srat);
-        if (status != Status::Ok) {
-            return status;
-        }
-
-        return Status::Ok;
+// The strong override of numa.cpp's WEAK_LINK stub: ACPI-SRAT discovery is
+// the x86 way to learn the NUMA topology, tried before the PCI fallback.
+auto acpi_init_numa() -> Status {
+    auto tables = get_acpi_tables();
+    DEBUG_ASSERT(tables, "");
+    if (!tables) {
+        return Status::NotFound;
     }
 
-} // namespace
+    auto const *srat = tables->find<acpi::srat::Table>();
+    if (!srat) {
+        return Status::NotFound;
+    }
+
+    Status status = register_meminfo(*srat);
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    // For debug
+    print_numa_info(*srat);
+
+    mm::EarlyMem::dump();
+
+    status = register_nodedis(*tables);
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    status = bind_node_to_cpu(*srat);
+    if (status != Status::Ok) {
+        return status;
+    }
+
+    return Status::Ok;
+}
+
 } // namespace ours

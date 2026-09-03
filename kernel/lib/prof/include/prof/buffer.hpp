@@ -4,10 +4,8 @@
 #define PROF_BUFFER_HPP 1
 
 #include <prof/format.hpp>
-#include <ustl/sync/atomic.hpp>
 
-#include <cstddef>
-#include <cstdint>
+#include <atomic>
 
 namespace prof {
 
@@ -17,20 +15,20 @@ namespace prof {
 /// quiesced, which rules out torn records by protocol rather than locking.
 class SampleBuffer final {
   public:
-    static constexpr std::size_t CAPACITY = 128;
+    static constexpr usize CAPACITY = 128;
 
     auto reset() -> void {
-        m_write_index.store(0, ustl::sync::MemoryOrder::Relaxed);
-        m_dropped.store(0, ustl::sync::MemoryOrder::Relaxed);
-        m_total.store(0, ustl::sync::MemoryOrder::Relaxed);
+        m_write_index.store(0, std::memory_order_relaxed);
+        m_dropped.store(0, std::memory_order_relaxed);
+        m_total.store(0, std::memory_order_relaxed);
     }
 
     /// Record one sample; returns false (and counts a drop) when full.
     auto try_produce(SampleRecord const &record) -> bool {
-        m_total.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
-        std::size_t const slot = m_write_index.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
+        m_total.fetch_add(1, std::memory_order_relaxed);
+        usize const slot = m_write_index.fetch_add(1, std::memory_order_relaxed);
         if (slot >= CAPACITY) {
-            m_dropped.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
+            m_dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         m_slots[slot] = record;
@@ -39,8 +37,8 @@ class SampleBuffer final {
 
     /// Number of retained records; stable once sampling has stopped.
     [[nodiscard]]
-    auto size() const -> std::size_t {
-        auto const written = m_write_index.load(ustl::sync::MemoryOrder::Relaxed);
+    auto size() const -> usize {
+        auto const written = m_write_index.load(std::memory_order_relaxed);
         if (written < CAPACITY) {
             return written;
         }
@@ -48,24 +46,24 @@ class SampleBuffer final {
     }
 
     [[nodiscard]]
-    auto dropped() const -> std::uint64_t {
-        return m_dropped.load(ustl::sync::MemoryOrder::Relaxed);
+    auto dropped() const -> u64 {
+        return m_dropped.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]]
-    auto total() const -> std::uint64_t {
-        return m_total.load(ustl::sync::MemoryOrder::Relaxed);
+    auto total() const -> u64 {
+        return m_total.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]]
-    auto slot(std::size_t index) const -> SampleRecord const & {
+    auto slot(usize index) const -> SampleRecord const & {
         return m_slots[index];
     }
 
   private:
-    ustl::sync::Atomic<std::size_t> m_write_index{0};
-    ustl::sync::Atomic<std::uint64_t> m_dropped{0};
-    ustl::sync::Atomic<std::uint64_t> m_total{0};
+    std::atomic<usize> m_write_index{0};
+    std::atomic<u64> m_dropped{0};
+    std::atomic<u64> m_total{0};
     SampleRecord m_slots[CAPACITY] = {};
 };
 

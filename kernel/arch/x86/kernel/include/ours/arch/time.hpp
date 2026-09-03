@@ -7,10 +7,10 @@
 #include <ours/time/types.hpp>
 
 namespace ours::time {
-extern ClockEventDevice *g_clock_event;
+extern ClockEventDevice *CLOCK_EVENT;
 
 inline auto global_clock_event() -> ClockEventDevice * {
-    return g_clock_event;
+    return CLOCK_EVENT;
 }
 
 auto hpet_init() -> Status;

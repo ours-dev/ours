@@ -127,7 +127,8 @@ source_set("physload.core") {
     "//kernel/lib/ccrt",
     "//kernel/lib/eftl",
     "//kernel/lib/ktl:headers",
-    "//kernel/lib/libc:string",
+    "//kernel/lib/libc:format-glue",
+    "//system/lib/logz4",
     "//kernel/lib/obi",
   ]
   public_deps = [
@@ -159,7 +160,8 @@ source_set("bootshim.core") {
     "//kernel/lib/ccrt",
     "//kernel/lib/eftl",
     "//kernel/lib/ktl:headers",
-    "//kernel/lib/libc:string",
+    "//kernel/lib/libc:format-glue",
+    "//system/lib/logz4",
   ]
   public_deps = [
     ":headers",
@@ -195,10 +197,14 @@ physload_module("physboot") {
   visibility = [ "image/*" ]
   install_name = "physboot"
   sources = [
-    "kernel_boot.cpp",
     "kernel_package_loader.cpp",
     "physboot.cpp",
   ]
+  if (ours_cpu == "x86") {
+    # The arch handoff (CR3 switch + jump) has to link into the same ELF as
+    # its caller in physboot.cpp.
+    sources += [ "//kernel/arch/x86/phys/handoff.cpp" ]
+  }
   deps = [
     ":headers",
     "//kernel/arch/$ours_cpu:headers",

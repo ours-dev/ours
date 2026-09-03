@@ -127,6 +127,8 @@ INIT_CODE static auto init_vm_cow_pages_cache() -> void {
     }
     log::trace("VmCowPagesCache has been created");
 }
-GKTL_INIT_HOOK(VmCowPagesCacheInit, init_vm_cow_pages_cache, gktl::InitLevel::PlatformEarly);
+// Heap, not PlatformEarly: this creates a MemCache, so it needs the object
+// caches to be up.
+GKTL_INIT_HOOK(VmCowPagesCacheInit, init_vm_cow_pages_cache, gktl::InitLevel::Heap);
 
 } // namespace ours::mm

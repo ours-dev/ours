@@ -10,9 +10,9 @@
 namespace ours {
 namespace mem {
     NO_MANGLE {
-        PhysAddr g_kernel_pgd = 0;
-        u8 g_arch_phys_addr_bits = 32;
-        u8 g_arch_virt_addr_bits = 48;
+        PhysAddr KERNEL_PGD = 0;
+        u8 ARCH_PHYS_ADDR_BITS = 32;
+        u8 ARCH_VIRT_ADDR_BITS = 48;
     }
 } // namespace mem
 using arch::Cr0;
@@ -49,28 +49,27 @@ auto x86_init_mmu_percpu() -> void {
 }
 
 auto x86_init_mmu_early() -> void {
-    mem::g_kernel_pgd = Cr3::read().get<Cr3::PageTableAddress>();
+    mem::KERNEL_PGD = Cr3::read().get<Cr3::PageTableAddress>();
 
     // Tear down the transient 1:1 identity mappings established by `PhysBoot`
     // during early boot process, and permit low-memory regions to temporarily
     // utilize the PhysMap virtual addressing scheme until full memory management
     // infrastructure is operational.
-    auto pgd = reinterpret_cast<arch::PteVal *>(mem::g_kernel_pgd);
+    auto pgd = reinterpret_cast<arch::PteVal *>(mem::KERNEL_PGD);
     pgd[0] = pgd[511];
     x86_tlb_global_invalidate();
 
     x86_init_mmu_percpu();
 
-    dispatch_cpuid(
-        arch::AddrSizeCpuIdObserver(mem::g_arch_phys_addr_bits, mem::g_arch_virt_addr_bits));
+    dispatch_cpuid(arch::AddrSizeCpuIdObserver(mem::ARCH_PHYS_ADDR_BITS, mem::ARCH_VIRT_ADDR_BITS));
 #if PAGING_LEVEL == 5
-    mem::g_arch_virt_addr_bits = 57;
+    mem::ARCH_VIRT_ADDR_BITS = 57;
 #endif
 }
 
 auto x86_setup_mmu() -> void {
     // Unmap low address.
-    reinterpret_cast<arch::PteVal volatile *>(mem::g_kernel_pgd)[0] = 0;
+    reinterpret_cast<arch::PteVal volatile *>(mem::KERNEL_PGD)[0] = 0;
     x86_tlb_global_invalidate();
 }
 

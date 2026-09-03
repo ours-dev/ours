@@ -90,7 +90,7 @@ auto X86VgaConsole::activate() -> void {
 namespace {
     // Auto-registers into Console's global list when
     // ccrt::init_global_static_objects() runs (see ours/phys/console.hpp).
-    X86VgaConsole g_vga_console{reinterpret_cast<u8 *>(0xB8000)};
+    X86VgaConsole VGA_CONSOLE{reinterpret_cast<u8 *>(0xB8000)};
 } // namespace
 
 } // namespace ours::phys

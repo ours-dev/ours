@@ -1,9 +1,12 @@
 source_set("syscall") {
-  # table.cpp only. vmo.cpp and task.cpp do not compile: they name ours::Handle
-  # without including <ours/object/handle.hpp>, and their signatures take it by
-  # value, which its Box-based factory does not support. They have never been
-  # built -- nothing depended on this target at all until now -- so bringing
-  # them in is its own job, not a prerequisite for the kernel linking.
-  sources = [ "table.cpp" ]
+  # table.cpp owns the dispatch table syscall.S indexes; task.cpp / vmo.cpp
+  # are the typed syscall layer's stubs, all Unimplemented until the layer
+  # that unpacks the register frame into typed arguments exists.
+  sources = [
+    "table.cpp",
+    "task.cpp",
+    "vmo.cpp",
+  ]
+  public_deps = [ "//kernel/object:headers" ]
   visibility = [ "*" ]
 }

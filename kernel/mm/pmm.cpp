@@ -1,11 +1,14 @@
 #include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <ours/mm/memory_model.hpp>
+#include <ours/mm/early_mem.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
+#include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>
 
+#include <algorithm>
 #include <array>
 
 namespace ours::mm {
@@ -49,6 +52,35 @@ auto node_soft_affinity(NnId nid) -> CpuMask const * {
 
 /// Declared in pmm.hpp and called from kmalloc and MemCache::allocate to
 /// resolve "no preference" into a real node, but never defined until now.
+auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
+    if (pmm_enabled()) {
+        PhysAddr phys;
+        auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, get_order(size / PAGE_SIZE));
+        return frame ? phys : PhysAddr{0};
+    }
+
+    // Zeroed by hand: the boot allocator has no notion of Gaf, and a page table
+    // whose unused entries are leftover bytes is a set of mappings nobody made.
+    auto *table = EarlyMem::allocate<u8>(size, alignment, node);
+    if (!table) {
+        return PhysAddr{0};
+    }
+    std::fill_n(table, size, u8(0));
+
+    // EarlyMem hands back a physmap address, which is what virt_to_phys inverts.
+    return PhysMap::virt_to_phys(VirtAddr(table));
+}
+
+auto free_page_table(PhysAddr base, usize size) -> void {
+    // Nothing to do before the buddy: see the header. Freeing an EarlyMem
+    // allocation would hand the boot allocator a range it never considered
+    // free, and after do_handoff() there is no boot allocator left to tell.
+    if (!pmm_enabled()) {
+        return;
+    }
+    free_frames(phys_to_frame(base), get_order(size / PAGE_SIZE));
+}
+
 auto current_node() -> NnId {
     return PmNode::Current::nid();
 }

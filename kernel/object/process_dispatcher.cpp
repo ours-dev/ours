@@ -4,8 +4,8 @@
 #include <ours/mm/cfg.hpp>
 #include <ours/object/process_dispatcher.hpp>
 
-GKTL_COUNTER(dispatcher_process_create_count, "dispatcher.process.create");
-GKTL_COUNTER(dispatcher_process_destroy_count, "dispatcher.process.destroy");
+GKTL_COUNTER(DISPATCHER_PROCESS_CREATE_COUNT, "dispatcher.process.create");
+GKTL_COUNTER(DISPATCHER_PROCESS_DESTROY_COUNT, "dispatcher.process.destroy");
 
 namespace {
 constexpr auto const PRIVATE_ASPACE_BASE = USER_ASPACE_BASE;

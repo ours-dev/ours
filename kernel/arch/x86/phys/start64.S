@@ -9,8 +9,8 @@
 // Supposing _start64 is the head of phys, nameyly the first symbol.
 #define rva(symbol) (symbol - _start64)
 
-.extern g_temp_gdtr
-.extern g_early_stack_end
+.extern TEMP_GDTR
+.extern EARLY_STACK_END
 
 .section ".boot.text", "a", @progbits
 
@@ -40,13 +40,13 @@
     rep stosl // Repeat eax -> ds:edi
 
     // Load ealry stack
-    lea rva(g_early_stack_end)(%ebx), %esp
+    lea rva(EARLY_STACK_END)(%ebx), %esp
 
     // Scratch argument constructed to dummy 8 bytes
     push $0
     push %esi
 
-    lgdtl rva(g_temp_gdtr)(%ebx)
+    lgdtl rva(TEMP_GDTR)(%ebx)
 
     mov $X86_GDT_KERNEL_DATA, %eax
     mov %eax, %ds
@@ -67,17 +67,23 @@
     mov $0x80000000, %eax   // Set the A-register to 0x80000000.
     cpuid                   // CPU identification.
     cmp $0x80000001, %eax   // Compare the A-register with 0x80000001.
-    jb .Lno_long_mode      // It is less, there is no long mode.
+    jb .Lunsupported_cpu    // It is less, there is no long mode.
 
     mov $0x80000001, %eax   // Set the A-register to 0x80000001.
     cpuid                   // CPU identification.
-    test $(1 << 29), %edx   // Test if the LM-bit, which is bit 29, is set in the D-register.
-    jnz 0f                  // They are, there is long mode.
+    // Long mode (EDX[29]) and NX (EDX[20]) are both hard requirements. NX is
+    // one because physboot marks every non-executable kernel mapping with the
+    // NX bit: without EFER.NXE that bit is reserved, so each such page would
+    // fault on its first touch rather than merely lose its protection.
+    mov $((1 << 29) | (1 << 20)), %eax
+    and %eax, %edx
+    cmp %eax, %edx
+    je 0f
 
-.Lno_long_mode:
+.Lunsupported_cpu:
     hlt
     pause
-    loop .Lno_long_mode
+    loop .Lunsupported_cpu
 
     // We support long mode.
 0:
@@ -93,7 +99,7 @@
     // %ecx: Number of page to map; 
     // %edx: Temporary variable for constructing PTE
     // %edi: Pointer pointed to PTE 
-    lea rva(g_pd)(%ebx), %edi
+    lea rva(PD)(%ebx), %edi
     movl $(X86_MAX_PTES << 2),  %ecx
     // here %eax is the PFN part of a large page frame.
     xor  %eax, %eax
@@ -112,15 +118,15 @@
     inc  %eax
     loop 1b
 
-    // g_pdp[0] = g_pd | X86_KERNEL_PD_FLAGS
-    lea rva(g_pd)(%ebx), %eax
+    // PDP[0] = PD | X86_KERNEL_PD_FLAGS
+    lea rva(PD)(%ebx), %eax
     or $X86_KERNEL_PD_FLAGS, %eax
-    mov %eax, rva(g_pdp)(%ebx)
+    mov %eax, rva(PDP)(%ebx)
 
-    // g_pml4[0] = g_pdp | X86_KERNEL_PD_FLAGS
-    lea rva(g_pdp)(%ebx), %eax
+    // PML4[0] = PDP | X86_KERNEL_PD_FLAGS
+    lea rva(PDP)(%ebx), %eax
     or $X86_KERNEL_PD_FLAGS, %eax
-    mov %eax, rva(g_pml4)(%ebx)
+    mov %eax, rva(PML4)(%ebx)
 
     // Start installation.
 
@@ -130,7 +136,7 @@
     mov   %eax, %cr4
 
     // Load the physical pointer to the root page table.
-    lea  rva(g_pml4)(%ebx), %eax
+    lea  rva(PML4)(%ebx), %eax
     mov  %eax, %cr3
 
     // Now the new root has been installed, re-enable global pages and set PAE.
@@ -138,23 +144,27 @@
     or   $(X86_CR4_PGE | X86_CR4_PAE), %eax
     mov  %eax, %cr4
 
-    // Enable long mode
+    // Enable long mode, and NX along with it -- the kernel page tables
+    // physboot builds set the NX bit, which is reserved while NXE is clear.
     mov $X86_MSR_IA32_EFER, %ecx
     rdmsr
-    or  $X86_EFER_LME, %eax
+    or  $(X86_EFER_LME | X86_EFER_NXE), %eax
     wrmsr
 
     // We are still in 32bit compability mode, but just through loading 64-bit CS
     // we can enter the real 64-bit mode.
-    lgdtl rva(g_temp_gdtr)(%ebx)
+    lgdtl rva(TEMP_GDTR)(%ebx)
     lea rva(startup64)(%ebx), %eax
 
     pushl $X86_GDT_KERNEL_CODE64
     push %eax
 
-    // Enable paging
+    // Enable paging, with supervisor write protection on from the start:
+    // without CR0.WP a read-only mapping stops nothing in ring 0, so the
+    // kernel's own read-only segments would only become enforced once
+    // x86_init_mmu_percpu() runs, long after it has started executing.
     mov %cr0, %eax
-    or  $X86_CR0_PG, %eax
+    or  $(X86_CR0_PG | X86_CR0_WP), %eax
     mov %eax, %cr0
 
     lretl
@@ -193,16 +203,16 @@ startup64:
     loop 0b
 
 // Page Table
-.object g_pml4, type=bss, align=PAGE_SIZE
-.label g_pgd, global
+.object PML4, type=bss, align=PAGE_SIZE
+.label PGD, global
     .skip PAGE_SIZE
 .end_object
 
-.object g_pdp, type=bss, align=PAGE_SIZE
+.object PDP, type=bss, align=PAGE_SIZE
     .skip PAGE_SIZE
 .end_object
 
-.object g_pd, type=bss, align=PAGE_SIZE
+.object PD, type=bss, align=PAGE_SIZE
     .skip (PAGE_SIZE << 2)
 .end_object
 

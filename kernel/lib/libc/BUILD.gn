@@ -26,3 +26,11 @@ source_set("libc") {
   deps = [ ":string" ]
   visibility = [ "*" ]
 }
+
+# The <format> string-instantiation glue alone, for images that already get
+# their __cxa_* / verbose-abort hooks from kernel/lib/ccrt (the phys images).
+source_set("format-glue") {
+  sources = [ "libcxx_format_glue.cpp" ]
+  deps = [ ":string" ]
+  visibility = [ "*" ]
+}

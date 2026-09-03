@@ -1,6 +1,7 @@
 #include <gktl/init_hook.hpp>
 #include <ktl/new.hpp>
 #include <logz4/log.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
@@ -232,8 +233,76 @@ auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<V
 auto VmArea::unmap(usize offset, usize size) -> Status {
     m_canary.verify(AREA_MAGIC);
 
-    m_subvmas.upper_bound(m_base + offset);
-    return Status::Unimplemented;
+    if (!is_active()) {
+        return Status::BadState;
+    }
+
+    // Reject offsets that would wrap |m_base + offset| below.
+    if (offset > m_size) {
+        return Status::InvalidArguments;
+    }
+
+    auto [base, aligned_size] = resolve_page_range(m_base + offset, size);
+    if (!aligned_size) {
+        return Status::InvalidArguments;
+    }
+
+    if (!check_range(base, aligned_size)) {
+        return Status::InvalidArguments;
+    }
+
+    Guard guard{get_lock()};
+    return unmap_locked(base, aligned_size);
+}
+
+auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
+    VirtAddr const end = base + size;
+
+    for (auto iter = m_subvmas.begin(); iter != m_subvmas.end();) {
+        auto *const child = *iter;
+        if (child->base() >= end) {
+            // Children are ordered by base, so nothing further can overlap.
+            break;
+        }
+        // Advance before disposal below invalidates the iterator.
+        ++iter;
+
+        if (child->end() <= base) {
+            continue;
+        }
+
+        VirtAddr const overlap_base = std::max(child->base(), base);
+        VirtAddr const overlap_end = std::min(child->end(), end);
+
+        if (!child->is_mapping()) {
+            // Unmap never destroys areas, it just descends into them.
+            auto status = static_cast<VmArea *>(child)->unmap_locked(overlap_base,
+                                                                     overlap_end - overlap_base);
+            if (Status::Ok != status) {
+                return status;
+            }
+            continue;
+        }
+
+        auto *mapping = static_cast<VmMapping *>(child);
+        if (base <= child->base() && child->end() <= end) {
+            // Fully covered, so the mapping has no role left to play: tear it
+            // down for good instead of leaving an object whose every region is
+            // unmapped.
+            auto status = mapping->destroy();
+            if (Status::Ok != status) {
+                return status;
+            }
+        } else {
+            auto status = mapping->unmap_locked(overlap_base - child->base(),
+                                                overlap_end - overlap_base, UnmapControl::None);
+            if (Status::Ok != status) {
+                return status;
+            }
+        }
+    }
+
+    return Status::Ok;
 }
 
 auto VmArea::protect(usize offset, usize size, MmuFlags flags) -> Status {
@@ -276,7 +345,7 @@ auto VmArea::destroy() -> Status {
     ustl::Arc<Self> curr(this);
     while (curr) {
         while (!curr->m_subvmas.empty()) {
-            ustl::Arc<Base> aom(&*curr->m_subvmas.begin());
+            ustl::Arc<Base> aom(*curr->m_subvmas.begin());
             if (!aom->is_mapping()) {
                 // If not a mapping, recursive to keep destroying.
                 curr = ustl::adopt<Self, ustl::sync::ThreadSafePolicy>(aom.as_ptr_mut());
@@ -321,18 +390,18 @@ auto VmArea::find_mapping_locked(VirtAddr va) -> VmMapping * {
         return nullptr;
     }
 
-    for (auto &child: m_subvmas) {
-        if (child.base() > va) {
+    for (auto *child: m_subvmas) {
+        if (child->base() > va) {
             break;
         }
-        if (va - child.base() >= child.size()) {
+        if (va - child->base() >= child->size()) {
             continue;
         }
 
-        if (child.is_mapping()) {
-            return static_cast<VmMapping *>(&child);
+        if (child->is_mapping()) {
+            return static_cast<VmMapping *>(child);
         }
-        return static_cast<VmArea &>(child).find_mapping_locked(va);
+        return static_cast<VmArea *>(child)->find_mapping_locked(va);
     }
 
     return nullptr;
@@ -342,11 +411,11 @@ auto VmArea::dump_locked() const -> void {
     m_canary.verify(AREA_MAGIC);
 
     log::trace("VMA {}: [0x{:X}, 0x{:X}]", m_name, m_base, m_size);
-    for (auto &child: m_subvmas) {
-        if (child.is_mapping()) {
-            log::trace("  M {:<10}: [0x{:X}, 0x{:X}]", child.m_name, child.base(), child.size());
+    for (auto const *child: m_subvmas) {
+        if (child->is_mapping()) {
+            log::trace("  M {:<10}: [0x{:X}, 0x{:X}]", child->m_name, child->base(), child->size());
         } else {
-            log::trace("  A {:<10}: [0x{:X}, 0x{:X}]", child.m_name, child.base(), child.size());
+            log::trace("  A {:<10}: [0x{:X}, 0x{:X}]", child->m_name, child->base(), child->size());
         }
     }
 }

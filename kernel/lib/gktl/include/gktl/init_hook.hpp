@@ -24,16 +24,28 @@ enum class InitLevel {
     PlatformEarlyInternal = ArchEarly + LEVEL_DELTA,
     PlatformEarly = PlatformEarlyInternal + LEVEL_DELTA,
 
-    HeapInternal = PlatformEarly + LEVEL_DELTA,
+    /// Per-CPU areas. Ahead of Heap because every MemCache brought up there
+    /// allocates a per-CPU cache of its own, and behind PlatformEarly because
+    /// the areas themselves come out of the page allocator the platform brings
+    /// up.
+    ///
+    /// This level used to sit after Vmm, which put every hook registered on it
+    /// three levels later than the thing it names: CpuLocal::init() runs inside
+    /// init_pmm(), so `CpuLocal + 1` read like "once per-CPU storage exists"
+    /// but meant "after init_vmm()". PmNode::Current::init() was registered
+    /// there, which left the per-CPU `PmNode *` null across the first
+    /// allocation and hung the boot inside it.
+    CpuLocalInternal = PlatformEarly + LEVEL_DELTA,
+    CpuLocal = CpuLocalInternal + LEVEL_DELTA,
+
+    /// The object caches and kmalloc.
+    HeapInternal = CpuLocal + LEVEL_DELTA,
     Heap = HeapInternal + LEVEL_DELTA,
 
     VmmInternal = Heap + LEVEL_DELTA,
     Vmm = VmmInternal + LEVEL_DELTA,
 
-    CpuLocalInternal = Vmm + LEVEL_DELTA,
-    CpuLocal = CpuLocalInternal + LEVEL_DELTA,
-
-    IrqInternal = CpuLocal + LEVEL_DELTA,
+    IrqInternal = Vmm + LEVEL_DELTA,
     Irq = IrqInternal + LEVEL_DELTA,
 
     TimeInternal = Irq + LEVEL_DELTA,
@@ -73,8 +85,8 @@ struct InitHook {
 auto set_init_level(InitLevel level, i32 delta = LEVEL_DELTA) -> void;
 
 FORCE_INLINE inline auto get_init_level() -> InitLevel {
-    extern InitLevel g_init_level;
-    return g_init_level;
+    extern InitLevel INIT_LEVEL;
+    return INIT_LEVEL;
 }
 
 } // namespace gktl

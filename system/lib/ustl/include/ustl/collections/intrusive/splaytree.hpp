@@ -279,7 +279,7 @@ class Splaytree final {
     [[nodiscard]]
     constexpr auto find(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::find(header(), value, NodeCompare{&m_compare});
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
@@ -287,13 +287,13 @@ class Splaytree final {
         const auto node = Algorithms::find(header(), value, NodeCompare{&m_compare});
         return node == header()
                    ? ustl::NONE
-                   : ustl::some(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
     }
 
     [[nodiscard]]
     constexpr auto lower_bound(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::lower_bound(header(), value, NodeCompare{&m_compare});
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
@@ -301,13 +301,13 @@ class Splaytree final {
         const auto node = Algorithms::lower_bound(header(), value, NodeCompare{&m_compare});
         return node == header()
                    ? ustl::NONE
-                   : ustl::some(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
     }
 
     [[nodiscard]]
     constexpr auto upper_bound(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::upper_bound(header(), value, NodeCompare{&m_compare});
-        return node == header() ? ustl::NONE : ustl::some(*ValueTraits::to_value_ptr(node));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
@@ -315,7 +315,7 @@ class Splaytree final {
         const auto node = Algorithms::upper_bound(header(), value, NodeCompare{&m_compare});
         return node == header()
                    ? ustl::NONE
-                   : ustl::some(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
     }
 
     [[nodiscard]]

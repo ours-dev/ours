@@ -93,12 +93,12 @@ class AutoCommand: public Command {
   protected:
     AutoCommand(std::string name, std::string description, std::string usage_args)
         : Command(std::move(name), std::move(description), std::move(usage_args)) {
-        // Touch registrar_ to ensure the static is instantiated.
-        (void)&registrar_;
+        // Touch REGISTRAR to ensure the static is instantiated.
+        (void)&REGISTRAR;
     }
 
   private:
-    inline static CommandRegistrar registrar_{std::make_unique<Derived>()};
+    inline static CommandRegistrar REGISTRAR{std::make_unique<Derived>()};
 };
 
 /// Builds a synthetic argv (program name + args) for cxxopts::Options::parse,

@@ -13,8 +13,9 @@ import("//build/toolchain/ours/ours_toolchain_suite.gni")
 #
 #   debug_level (required)
 #     Integer debug policy in the Zircon-compatible range 0..2.  It maps to
-#     Ours' local kernel_debug_level toolchain argument; it does not define the
-#     still-unresolved OURS_DEBUG source contract.
+#     Ours' local kernel_debug_level toolchain argument, which reaches source as
+#     KERNEL_DEBUG_LEVEL -- the switch DEBUG_ASSERT and logz4's verbose levels
+#     both follow.
 #
 #   unit_tests_enabled (required)
 #     Whether UNITTESTS_ENABLED is defined for targets in this switchset.

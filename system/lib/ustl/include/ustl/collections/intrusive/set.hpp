@@ -300,6 +300,39 @@ class Multiset {
         return m_tree.iterator_to(value);
     }
 
+    /// Structural navigation, for augmented queries that descend on per-node
+    /// aggregates rather than on key order. `end()` means "no such child".
+    [[nodiscard]]
+    constexpr auto root() noexcept -> IterMut {
+        return m_tree.root();
+    }
+    [[nodiscard]]
+    constexpr auto root() const noexcept -> Iter {
+        return m_tree.root();
+    }
+    [[nodiscard]]
+    constexpr auto left(Iter position) noexcept -> IterMut {
+        return m_tree.left(position);
+    }
+    [[nodiscard]]
+    constexpr auto left(Iter position) const noexcept -> Iter {
+        return m_tree.left(position);
+    }
+    [[nodiscard]]
+    constexpr auto right(Iter position) noexcept -> IterMut {
+        return m_tree.right(position);
+    }
+    [[nodiscard]]
+    constexpr auto right(Iter position) const noexcept -> Iter {
+        return m_tree.right(position);
+    }
+
+    /// Re-derives the aggregates on `position`'s root path after the
+    /// element's augmented inputs changed in place.
+    constexpr auto refresh_augment(Iter position) noexcept -> void {
+        m_tree.refresh_augment(position);
+    }
+
   private:
     Tree m_tree{};
 };

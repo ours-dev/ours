@@ -17,7 +17,11 @@ kernel_package("ours") {
   prefix = ""
   deps = [
     "..:common_package_items",
-    "//kernel/products/bin:vmours(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
+    # dbg.1, not dbg.0 -- the whole point of this image is the diagnostics
+    # kernel_debug_level 1 turns on (KERNEL_DEBUG_LEVEL=1, and with it
+    # DEBUG_ASSERT and logz4's Debug/Trace levels).
+    # Built against dbg.0 it was a byte-for-byte policy twin of kernel.dev.
+    "//kernel/products/bin:vmours(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1)",
   ]
 }
 

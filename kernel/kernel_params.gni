@@ -18,4 +18,10 @@ declare_args() {
   mm_numa = false
   mm_numa_emulation = false
   mm_allocation_policy = false
+
+  # Selects the memory model. The two are mutually exclusive: exactly one is
+  # compiled, and `MemMap` names whichever it is. False keeps the sparse
+  # section-table model, which is the default; true builds the virtually-flat
+  # one instead.
+  mm_vflat_memmap = false
 }

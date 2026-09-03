@@ -3,11 +3,12 @@
 #ifndef OURS_MM_PMM_HPP
 #define OURS_MM_PMM_HPP 1
 
+#include <bootmem/types.hpp>
 #include <ktl/result.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/gaf.hpp>
-#include <ours/mm/memory_model.hpp>
 #include <ours/mm/init_stage.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/node_mask.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
@@ -46,15 +47,25 @@ FORCE_INLINE inline auto pmm_enabled() -> bool {
     return get_init_stage() >= InitStage::Pmm;
 }
 
+[[nodiscard]]
 auto cpu_to_node(CpuNum cpunum) -> NnId;
 
+[[nodiscard]]
 auto current_node() -> NnId;
 
+[[nodiscard]]
 auto node_work_cpus(NnId nid) -> CpuMask const *;
+
+[[nodiscard]]
 auto node_soft_affinity(NnId nid) -> CpuMask const *;
+
+[[nodiscard]]
 auto node_hard_affinity(NnId nid) -> CpuMask const *;
 
+[[nodiscard]]
 auto node_online_mask() -> NodeMask const &;
+
+[[nodiscard]]
 auto node_possible_mask() -> NodeMask const &;
 
 auto num_nodes() -> usize;
@@ -105,8 +116,9 @@ inline auto alloc_frame_n(NnId nid, Gaf gaf, usize nr_frames,
 }
 
 template <typename T = u8>
-OM_API FORCE_INLINE auto get_frames(Gaf gaf, usize order = 0,
-                                    NodeMask const &nodes = node_online_mask()) -> T * {
+[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
+FORCE_INLINE auto get_frames(Gaf gaf, usize order = 0, NodeMask const &nodes = node_online_mask())
+    -> T * {
     if (auto frame = alloc_frames(gaf, order, nodes)) {
         return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
     }
@@ -115,14 +127,16 @@ OM_API FORCE_INLINE auto get_frames(Gaf gaf, usize order = 0,
 }
 
 template <typename T = u8>
-OM_API FORCE_INLINE auto get_frames_n(Gaf gaf, usize nr_frame,
-                                      NodeMask const &nodes = node_online_mask()) -> T * {
+[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
+FORCE_INLINE auto get_frames_n(Gaf gaf, usize nr_frame, NodeMask const &nodes = node_online_mask())
+    -> T * {
     return get_frames<T>(gaf, get_order(nr_frame), nodes);
 }
 
 template <typename T = u8>
-OM_API FORCE_INLINE auto get_frames(NnId nid, Gaf gaf, usize order = 0,
-                                    NodeMask const &nodes = node_online_mask()) -> T * {
+[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
+FORCE_INLINE auto get_frames(NnId nid, Gaf gaf, usize order = 0,
+                             NodeMask const &nodes = node_online_mask()) -> T * {
     if (auto frame = alloc_frames(nid, gaf, order, nodes)) {
         return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
     }
@@ -131,10 +145,34 @@ OM_API FORCE_INLINE auto get_frames(NnId nid, Gaf gaf, usize order = 0,
 }
 
 template <typename T = u8>
-OM_API FORCE_INLINE auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame,
-                                     NodeMask const &nodes = node_online_mask()) -> T * {
+[[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
+FORCE_INLINE auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame,
+                              NodeMask const &nodes = node_online_mask()) -> T * {
     return get_frame<T>(nid, gaf, get_order(nr_frame), nodes);
 }
+
+/// A fresh, zeroed page-table page, from whichever allocator is up.
+///
+/// This is what lets the page-table walker run before the buddy exists.
+/// Everything else it needs -- the root table, the phys-to-virt view -- is
+/// there the moment KERNEL_PGD is, so the page source was the only thing
+/// tying page-table edits to a particular point in boot. Hard-coding
+/// alloc_frames() here meant CpuLocal::Mapper worked only because it happened
+/// to run after the buddy, and left VflatMemMap unable to run at all.
+///
+/// Before the buddy this comes from EarlyMem, which never gives it back:
+/// do_handoff() releases what bootmem still calls free, and an allocation is
+/// not free. A page table taken this early therefore stays reserved for the
+/// life of the kernel, which is what we want -- kernel page tables are not
+/// freed anyway.
+///
+/// Linux's counterpart is alloc_low_pages() (arch/x86/mm/init.c), branching on
+/// `after_bootmem` exactly as this branches on pmm_enabled().
+[[nodiscard]]
+auto alloc_page_table(usize size, usize alignment, NnId node = bootmem::ANY_NODE) -> PhysAddr;
+
+/// Only the buddy path returns anything; an early table page is not reclaimable.
+auto free_page_table(PhysAddr base, usize size) -> void;
 
 auto free_frames(PmFrame *frame, usize order = 0) -> void;
 

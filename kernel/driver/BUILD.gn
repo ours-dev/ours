@@ -20,7 +20,7 @@ source_set("driver") {
   public_deps = [ ":headers" ]
   deps = [
     "//kernel/lib/gktl:headers",
-    "//kernel/lib/logz4:headers",
+    "//system/lib/logz4:headers",
     "//system/lib/lockdep",
   ]
   visibility = [ "*" ]

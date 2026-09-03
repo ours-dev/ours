@@ -9,10 +9,10 @@
 
 namespace ustl::collections::pmr {
 template <typename Key, typename Compare = ustl::collections::detail::DefaultCompare<Key>,
-          typename Observer = ustl::collections::NullBTreeObserver,
+          typename Policy = void,
           typename Options = ustl::collections::BTreeDefaultOptions>
 using BTreeSet =
-    ustl::collections::BTreeSet<Key, Compare, PolymorphicAllocator<Key>, Observer, Options>;
+    ustl::collections::BTreeSet<Key, Compare, PolymorphicAllocator<Key>, Policy, Options>;
 } // namespace ustl::collections::pmr
 
 #endif // USTL_COLLECTIONS_PMR_BTREE_SET_HPP

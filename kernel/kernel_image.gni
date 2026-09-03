@@ -10,6 +10,12 @@ import("//build/obi/obi.gni")
 #   deps (required)     — obi_input / kernel_package / kernel_cmdline targets.
 #   output_name          — basename of the output .obi (default: target_name).
 #   product_dir          — optional product subdirectory under root_out_dir.
+#   bootable (optional)  — whether obit enforces the boot topology on the
+#                          image (item 0 = kernel Executable, exactly one
+#                          StorageKernel package).  Default: true.  Set to
+#                          false for container-only images whose "kernel" is
+#                          a storage payload rather than an ELF (e.g. the
+#                          product() assembly smoke test).
 #   compressed           — global compression ("lz4"/"zstd"/""; default "lz4").
 #   testonly, visibility
 template("kernel_image") {
@@ -27,6 +33,11 @@ template("kernel_image") {
     _output_dir = root_out_dir
   }
 
+  _bootable = target_cpu
+  if (defined(invoker.bootable) && !invoker.bootable) {
+    _bootable = ""
+  }
+
   obi(target_name) {
     forward_variables_from(invoker,
                            [
@@ -40,6 +51,6 @@ template("kernel_image") {
     if (defined(invoker.compressed)) {
       compressed = invoker.compressed
     }
-    bootable = target_cpu
+    bootable = _bootable
   }
 }

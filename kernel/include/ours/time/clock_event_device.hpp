@@ -157,8 +157,8 @@ class ClockEventDevice {
     USTL_DECLARE_HOOK_OPTION(Self, m_enrolled_hook, EnrolledListOption);
 
     USTL_DECLARE_LIST(Self, EnrolledList, EnrolledListOption);
-    static inline EnrolledList s_gced;
-    static inline sync::Mutex s_gced_mutex;
+    static inline EnrolledList GCED;
+    static inline sync::Mutex GCED_MUTEX;
 };
 
 struct ClockEventDevice::Vtable {
@@ -172,7 +172,7 @@ struct ClockEventDevice::Vtable {
     ///         ClockEventDevice m_clkevt;
     ///         ...
     ///         using Packer = ClockEventDevice::Vtable::Packer<&YourDevice::m_clkevt>;
-    ///         static ClockEventDevice::Vtable const s_vtable {
+    ///         static ClockEventDevice::Vtable const VTABLE {
     ///             .set_next_event_tick = Packer::pack<&YourDevice::set_next_event_tick>();
     ///             .set_next_event_time = Packer::pack<&YourDevice::set_next_event_time>();
     ///             ...

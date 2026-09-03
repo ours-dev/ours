@@ -5,6 +5,7 @@ executable("obit") {
     "main.cpp",
     "modify.cpp",
     "pack.cpp",
+    "tree.cpp",
     "validate.cpp",
   ]
   deps = [

@@ -2,12 +2,12 @@
 
 namespace {
 
-int observed_sum = 0;
+int OBSERVED_SUM = 0;
 
 auto report(hsien::Failure const &) -> void {}
 
 auto parameterized_test(hsien::Context &, int value) -> void {
-    observed_sum += value;
+    OBSERVED_SUM += value;
 }
 
 auto invoke_zero(hsien::Context &context) -> void {
@@ -32,5 +32,5 @@ auto main() -> int {
     };
     hsien::Reporter reporter{&report};
     auto const summary = hsien::run(records, records + 3, reporter);
-    return summary.executed == 3 && summary.failed == 0 && observed_sum == 6 ? 0 : 1;
+    return summary.executed == 3 && summary.failed == 0 && OBSERVED_SUM == 6 ? 0 : 1;
 }

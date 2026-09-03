@@ -32,7 +32,7 @@ auto main() -> int {
     assert(value.is_none());
 
     int number = 9;
-    auto reference = ustl::some(number);
+    auto reference = ustl::some_ref(number);
     reference.value() = 11;
     assert(number == 11);
 

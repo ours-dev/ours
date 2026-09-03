@@ -11,12 +11,34 @@ executable("frame-buddy-smoke") {
     "frame_buddy_smoke.cpp",
     "//kernel/mm/core/frame_buddy.cpp",
   ]
+  # The mm headers ride in via the generated include-path config rather than
+  # //kernel/mm:headers, whose //kernel/phys:handoff dep does not evaluate
+  # under the host toolchain these tests build in.
+  configs += [ "//kernel/mm:headers.config" ]
   deps = [
-    "//kernel/mm:headers",
     "//kernel/lib/arch:headers",
     "//kernel/arch/x86:headers",
     "//system/lib/ustl:headers",
     "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+executable("protection-ranges-smoke") {
+  testonly = true
+  sources = [
+    "protection_ranges_smoke.cpp",
+    "//kernel/mm/protection_ranges.cpp",
+  ]
+  configs += [ "//kernel/mm:headers.config" ]
+  deps = [
+    "//kernel/lib/arch:headers",
+    "//kernel/arch/x86:headers",
+    "//system/lib/ustl:headers",
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
     "//system/public",
   ]
   visibility = [ "*" ]
@@ -24,5 +46,8 @@ executable("frame-buddy-smoke") {
 
 group("tests") {
   testonly = true
-  public_deps = [ ":frame-buddy-smoke" ]
+  public_deps = [
+    ":frame-buddy-smoke",
+    ":protection-ranges-smoke",
+  ]
 }

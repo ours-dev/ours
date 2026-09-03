@@ -21,19 +21,19 @@ NO_MANGLE u8 const DEBUG_SYMBOL2[] LINK_NAME("__debug_symbol2");
 NO_MANGLE u8 const DEBUG_SYMBOL3[] LINK_NAME("__debug_symbol3");
 NO_MANGLE u8 const DEBUG_SYMBOL4[] LINK_NAME("__debug_symbol4");
 
-static PhysAddr s_bootstrap16_buffer_base = 0;
+static PhysAddr BOOTSTRAP16_BUFFER_BASE = 0;
 
 INIT_CODE auto set_bootstrap16_buffer(PhysAddr base) -> void {
     using ustl::mm::is_aligned;
     ASSERT(is_aligned(base, PAGE_SIZE));
     ASSERT(base <= KB(64) - MIN_BOOTSTRAP16_BUFFER_SIZE);
 
-    s_bootstrap16_buffer_base = base;
+    BOOTSTRAP16_BUFFER_BASE = base;
 }
 
 INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     DEBUG_ASSERT(data);
-    DEBUG_ASSERT(s_bootstrap16_buffer_base, "There is no a given bootstrap area");
+    DEBUG_ASSERT(BOOTSTRAP16_BUFFER_BASE, "There is no a given bootstrap area");
 
     constexpr static auto const GDT_SIZE = usize{X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE};
     static auto const MAX_BOOTSTRAP_PHYSICAL_ADDRESS =
@@ -42,7 +42,7 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     auto const area_size = BOOTSTRAP_AREA_END - BOOTSTRAP_AREA_START;
     ASSERT(area_size >= 0 && static_cast<usize>(area_size) <= PAGE_SIZE);
 
-    auto bootstrap_area_start = mm::PhysMap::phys_to_virt<u8>(s_bootstrap16_buffer_base);
+    auto bootstrap_area_start = mm::PhysMap::phys_to_virt<u8>(BOOTSTRAP16_BUFFER_BASE);
     memcpy(bootstrap_area_start, BOOTSTRAP_AREA_START, static_cast<usize>(area_size));
 
     // At here, the trampoline code has been copied fully.
@@ -53,7 +53,7 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
 
     bootstrap_data->lond_mode_cs = X86_GDT_KERNEL_CODE64;
     auto const long_mode_phys_entry =
-        s_bootstrap16_buffer_base +
+        BOOTSTRAP16_BUFFER_BASE +
         static_cast<PhysAddr>(X86_AP_ENTER_LONG_MODE - BOOTSTRAP_AREA_START);
     ASSERT(long_mode_phys_entry <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS);
     bootstrap_data->long_mode_phys_entry = static_cast<u32>(long_mode_phys_entry);
@@ -69,14 +69,14 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
         ASSERT(gdt_start + GDT_SIZE <= bootstrap_area_start + PAGE_SIZE * 2);
         memcpy(gdt_start, x86_get_gdt(), GDT_SIZE);
         gdt_base =
-            s_bootstrap16_buffer_base + static_cast<PhysAddr>(gdt_start - bootstrap_area_start);
+            BOOTSTRAP16_BUFFER_BASE + static_cast<PhysAddr>(gdt_start - bootstrap_area_start);
     }
     ASSERT(gdt_base <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (GDT_SIZE - 1));
     bootstrap_data->gdtr_limit = static_cast<u16>(GDT_SIZE - 1);
     bootstrap_data->gdtr_base = static_cast<u32>(gdt_base);
     log::trace("Bootstrap GDT at 0x{:X}", gdt_base);
 
-    if constexpr (OURS_DEBUG) {
+    if constexpr (KERNEL_DEBUG_LEVEL) {
         log::trace("Debug symbol[0] offset={:X}", DEBUG_SYMBOL0 - BOOTSTRAP_AREA_START);
         log::trace("Debug symbol[1] offset={:X}", DEBUG_SYMBOL1 - BOOTSTRAP_AREA_START);
         log::trace("Debug symbol[2] offset={:X}", DEBUG_SYMBOL2 - BOOTSTRAP_AREA_START);
@@ -89,7 +89,7 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
         // The third page leaves the trampoline data and any copied GDT intact.
         auto temporary_pgd = bootstrap_area_start + PAGE_SIZE * 2;
         memcpy(temporary_pgd, mm::PhysMap::phys_to_virt<u8>(pgd), PAGE_SIZE);
-        pgd = s_bootstrap16_buffer_base + PAGE_SIZE * 2;
+        pgd = BOOTSTRAP16_BUFFER_BASE + PAGE_SIZE * 2;
     }
     ASSERT(pgd <= MAX_BOOTSTRAP_PHYSICAL_ADDRESS - (PAGE_SIZE - 1));
     bootstrap_data->pgd = static_cast<u32>(pgd);
@@ -100,9 +100,8 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
                mm::PhysMap::virt_to_phys(bootstrap_data));
 
     auto status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
-        s_bootstrap16_buffer_base, s_bootstrap16_buffer_base,
-        MIN_BOOTSTRAP16_BUFFER_SIZE >> PAGE_SHIFT, mm::MmuFlags::PermMask | mm::MmuFlags::Discache,
-        mm::MapControl::ErrorIfExisting, 0);
+        BOOTSTRAP16_BUFFER_BASE, BOOTSTRAP16_BUFFER_BASE, MIN_BOOTSTRAP16_BUFFER_SIZE >> PAGE_SHIFT,
+        mm::MmuFlags::PermMask | mm::MmuFlags::Discache, mm::MapControl::ErrorIfExisting, 0);
     ASSERT(Status::Ok == status);
 
     status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
@@ -110,11 +109,11 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
         mm::MapControl::ErrorIfExisting, 0);
     ASSERT(Status::Ok == status);
 
-    return s_bootstrap16_buffer_base;
+    return BOOTSTRAP16_BUFFER_BASE;
 }
 
 INIT_CODE static auto init_bootstrap16_buffer() -> void {
-    if (s_bootstrap16_buffer_base) {
+    if (BOOTSTRAP16_BUFFER_BASE) {
         // Avoid confliction.
         return;
     }
@@ -129,7 +128,7 @@ GKTL_INIT_HOOK(InitBootstrap16Buffer, init_bootstrap16_buffer, PlatformInitLevel
 
 INIT_CODE static auto free_bootstrap16_buffer() -> void {
     for (auto offset = usize{0}; offset < MIN_BOOTSTRAP16_BUFFER_SIZE; offset += PAGE_SIZE) {
-        auto const frame = mm::phys_to_frame(s_bootstrap16_buffer_base + offset);
+        auto const frame = mm::phys_to_frame(BOOTSTRAP16_BUFFER_BASE + offset);
         mm::free_frames(frame, 0);
     }
 }

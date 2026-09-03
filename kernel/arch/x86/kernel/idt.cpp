@@ -2,6 +2,7 @@
 #include <logz4/log.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/faults.hpp>
+#include <ours/arch/x86/feature.hpp>
 #include <ours/arch/x86/idt.hpp>
 #include <ours/arch/x86/percpu.hpp>
 #include <ours/init.hpp>
@@ -52,31 +53,64 @@ struct Idt {
     IdtEntry entries_[256];
 };
 
-FORCE_INLINE static auto rectify_idt(IdtEntry &entry) -> void {
-    entry.set(*reinterpret_cast<usize *>(&entry));
+/// Encoded length of `clac` (0f 01 ca), the instruction every ISR stub opens
+/// with. See the shift computed in x86_init_idt_early().
+constexpr auto const CLAC_SIZE = usize(3);
+
+/// Turns a raw table slot into a real gate descriptor.
+///
+/// idt.S lays the table out as 256 pairs of `.quad <stub address>; .quad 0`,
+/// so before this runs the first eight bytes of a slot are the handler and
+/// the rest is zero. Reading the address back out of the slot it is about to
+/// overwrite is why this takes the entry rather than an address.
+///
+/// `clac_shift` moves the gate past the stub's opening instruction; it is
+/// zero whenever that instruction has to run.
+FORCE_INLINE static auto rectify_idt(IdtEntry &entry, usize clac_shift) -> void {
+    entry.set(*reinterpret_cast<usize *>(&entry) + clac_shift);
 }
 
 /// Defined in arch/x86/main/idt.S, default value per entry is
 /// the hanler.
-NO_MANGLE Idt g_idt;
-static Idt *s_pidt = &g_idt;
+NO_MANGLE Idt IDT;
+static Idt *PIDT = &IDT;
 
 auto x86_load_idt() -> void {
-    s_pidt->load();
+    PIDT->load();
 }
 
 INIT_CODE static auto x86_set_vector_ist(arch::IrqVec vec, u8 ist) -> void {
     auto const index = usize(vec);
-    DEBUG_ASSERT(index < std::size(g_idt.entries_), "Invalid vector: {}", index);
-    auto &entry = g_idt.entries_[index];
+    DEBUG_ASSERT(index < std::size(IDT.entries_), "Invalid vector: {}", index);
+    auto &entry = IDT.entries_[index];
     entry.ist = ist;
 
     log::info("Vector[{}] was bind to IST[{}]", index, ist);
 }
 
 INIT_CODE auto x86_init_idt_early() -> void {
-    for (auto &entry: g_idt) {
-        rectify_idt(entry);
+    // Every stub in idt.S opens with `clac`, unconditionally, and the comment
+    // there says it must stay the first instruction. This is why: `clac` is an
+    // SMAP instruction, so on a CPU without SMAP it raises #UD -- and since the
+    // #UD stub opens with `clac` as well, the very first exception of any kind
+    // would become an endless #UD, then #DF, then a triple fault, taking the
+    // real fault down with it and leaving nothing to diagnose from.
+    //
+    // The fix is not to rewrite the text but to point every gate three bytes
+    // past it. A stub is only ever entered through the IDT, so no other path
+    // can reach the instruction being skipped, and no page has to be made
+    // writable to do it. Skipping is also correct rather than merely expedient:
+    // AC is what SMAP acts on, so with no SMAP there is nothing to clear.
+    //
+    // Zircon's idt_setup() does exactly this; ours cannot instead rely on
+    // `.code-patches`, which this kernel does not build with
+    // (ours_kernel_has_code_patches is false).
+    //
+    // x86_has_feature() runs its own CPUID, so this works at this point in
+    // boot without depending on any feature cache being populated yet.
+    auto const clac_shift = x86_has_feature(CpuFeatureType::Smap) ? usize(0) : CLAC_SIZE;
+    for (auto &entry: IDT) {
+        rectify_idt(entry, clac_shift);
     }
 
     x86_set_vector_ist(arch::IrqVec::DoubleFault, DOUBLE_FAULT_STACK);
@@ -94,18 +128,18 @@ INIT_CODE auto x86_setup_idt() -> void {
     auto rvma = VmAspace::kernel_aspace()->root_vma();
     DEBUG_ASSERT(rvma);
     auto result =
-        rvma->map_at(mm::virt_to_phys(VirtAddr(s_pidt)), &virt_addr, PAGE_SIZE, MmuFlags::Readable,
+        rvma->map_at(mm::virt_to_phys(VirtAddr(PIDT)), &virt_addr, PAGE_SIZE, MmuFlags::Readable,
                      VmMapOption::Commit | VmMapOption::Pinned, "k:IDT");
     ASSERT(result, "Failed to set readonly GDT");
 
-    s_pidt = reinterpret_cast<decltype(s_pidt)>(virt_addr);
+    PIDT = reinterpret_cast<decltype(PIDT)>(virt_addr);
     x86_load_idt();
 }
 
 auto x86_dump_idt() -> void {
     log::info("IDT Dumpping Infomation");
-    for (usize i = 0; i < std::size(g_idt.entries_); ++i) {
-        auto &entry = g_idt.entries_[i];
+    for (usize i = 0; i < std::size(IDT.entries_); ++i) {
+        auto &entry = IDT.entries_[i];
         log::info("  [0]=(handler=0x{:X}, DPL={}, TYPE={})",
                   entry.offset_low | (entry.offset_mid << 16) | (u64(entry.offset_high) << 32),
                   (entry.type_attr >> 5) & 0x3, (entry.type_attr & 0xF) == 0xE ? "INTR" : "TRAP");

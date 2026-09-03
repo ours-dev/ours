@@ -6,9 +6,9 @@
 
 namespace ours::mm {
 NO_MANGLE {
-    VmPage *g_zero_page;
-    PhysAddr g_kernel_phys_base;
-    VirtAddr g_kernel_virt_base;
+    VmPage *ZERO_PAGE;
+    PhysAddr KERNEL_PHYS_BASE;
+    VirtAddr KERNEL_VIRT_BASE;
 }
 
 auto is_kernel_address(VirtAddr va) -> bool {

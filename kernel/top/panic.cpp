@@ -9,6 +9,7 @@ template <typename String, typename FormatArgs>
 auto vpanic(String fmt, FormatArgs const &args) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
 
+    logz4::dump_recent();
     log::vlog(logz4::get_global_logger(), logz4::Level::Error, fmt, args);
     while (1) {
         arch::halt();
@@ -21,6 +22,7 @@ template auto vpanic(std::string_view, std::format_args const &) -> void;
 auto vpanic(std::string_view fmt) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
 
+    logz4::dump_recent();
     log::vlog(logz4::get_global_logger(), logz4::Level::Error, fmt, std::make_format_args());
     while (1) {
         arch::halt();

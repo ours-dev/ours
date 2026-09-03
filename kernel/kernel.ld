@@ -8,6 +8,13 @@ SECTIONS {
     /* Build ID */
     .interp : { *(.interp) }
     .dynamic : { *(.dynamic) }
+
+    /*
+     * Page boundary inside the image head: .dynamic is writable, everything
+     * after it here is read-only, and ElfImage's load policy demands that
+     * neighbouring PT_LOADs with different permissions own disjoint pages.
+     */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
     .hash : { *(.hash) }
     .gnu.hash : { *(.gnu.hash) }
     .dynsym : { *(.dynsym) }
@@ -15,6 +22,10 @@ SECTIONS {
     .relr.auth.dyn : { *(.relr.auth.dyn) }
     ASSERT(SIZEOF(.relr.auth.dyn) == 0, ".relr.auth.dyn is not supported")
     .relr.dyn : { *(.relr.dyn) }
+    ASSERT(SIZEOF(.relr.dyn) == 0, ".relr.dyn is not supported")
+    /* The static-PIE relocation table: ElfImage::relocate() walks it at load
+     * time to apply every R_X86_64_RELATIVE entry. */
+    .rela.dyn : { *(.rela.dyn) *(.rela.*) }
 
     .note.gnu.build-id : {
         PROVIDE_HIDDEN(__build_id_note_start = .);
@@ -27,6 +38,13 @@ SECTIONS {
         HIDDEN(__build_id_size = ABSOLUTE(__build_id_note_end - __build_id_note_start) - 16);
     }
 
+    /*
+     * Each PT_LOAD must own whole pages: ElfImage's load policy (shared with
+     * physload's module loader) maps segments independently and requires
+     * page-disjoint mappings, since neighbours with different permissions
+     * cannot share one. Page-align every permission boundary, not just 8.
+     */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
     PROVIDE_HIDDEN(__code_start = .);
     .text : {
         *(SORT_BY_ALIGNMENT(.text*))
@@ -38,6 +56,21 @@ SECTIONS {
     .rodata : {
         *(SORT_BY_ALIGNMENT(.rodata*))
     }
+
+    /*
+     * The sampling profiler unwinds kernel C++ frames from CFI emitted into
+     * .eh_frame (PC-relative, so no runtime relocations are needed). The
+     * section must be part of the loaded image; it is read-only and never
+     * written, so it lives in the rodata segment.
+     */
+    . = ALIGN(8);
+    .eh_frame : {
+        PROVIDE_HIDDEN(__eh_frame_start = .);
+        KEEP(*(.eh_frame))
+        KEEP(*(.eh_frame.*))
+        PROVIDE_HIDDEN(__eh_frame_end = .);
+    }
+
     . = ALIGN(CONSTANT(MAXPAGESIZE));
     PROVIDE_HIDDEN(__rodata_end = .);
 
@@ -73,9 +106,25 @@ SECTIONS {
     . = ALIGN(CONSTANT(MAXPAGESIZE));
     PROVIDE_HIDDEN(__relro_end = .);
 
-    /* Will be reclaimed after kernel initialization. */
+    PROVIDE_HIDDEN(__bss_start = .);
+    .bss : ALIGN(16) {
+        *(SORT_BY_ALIGNMENT(.bss*))
+
+        . = ALIGN(16);
+    }
+    /* Aligned to Page Size */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
+    PROVIDE_HIDDEN(__bss_end = .);
+
+    /*
+     * Reclaimed once initialization is over -- and therefore the tail of the
+     * image, not a slice out of its middle.  physboot places the whole image
+     * in one contiguous physical allocation, so the only parts the kernel can
+     * hand back to the page allocator without punching a hole in that
+     * allocation are its two ends; the tail is the one that merges with
+     * whatever free memory follows.
+     */
     PROVIDE_HIDDEN(__init_start = .);
-    /* ASSERT(__executable_start  == __init_start, "`init` segment should be put on the front of kernel image") */
 
     PROVIDE_HIDDEN(__init_code_start = .);
     .init.text : AT(ADDR(.init.text)) {
@@ -83,7 +132,30 @@ SECTIONS {
         *(SORT_BY_ALIGNMENT(.init.boot*))
         *(SORT_BY_ALIGNMENT(.init.text*))
     }
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
     PROVIDE_HIDDEN(__init_code_end = .);
+
+    PROVIDE_HIDDEN(__init_rodata_start = .);
+    .init.rodata : AT(ADDR(.init.rodata)) {
+        /* hsien test records */
+        PROVIDE_HIDDEN(__hsien_tests_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.hsien.tests)))
+        PROVIDE_HIDDEN(__hsien_tests_end = .);
+
+        /* gktl::InitHook */
+        PROVIDE_HIDDEN(__init_hook_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.gktl.init_hook*)))
+        PROVIDE_HIDDEN(__init_hook_end = .);
+
+        /* gktl::Counter descriptors */
+        PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.gktl.counter.descs)))
+        PROVIDE_HIDDEN(__gktl_counter_desc_end = .);
+
+        *(SORT_BY_ALIGNMENT(.init.rodata*))
+    }
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
+    PROVIDE_HIDDEN(__init_rodata_end = .);
 
     PROVIDE_HIDDEN(__init_data_start = .);
     .init.data : AT(ADDR(.init.data)) {
@@ -105,28 +177,18 @@ SECTIONS {
         . = ALIGN(CONSTANT(MAXPAGESIZE));
         *(SORT_BY_ALIGNMENT(.init.data*))
     }
-    PROVIDE_HIDDEN(__init_data_end = .);
 
-    PROVIDE_HIDDEN(__init_rodata_start = .);
-    .init.rodata : AT(ADDR(.init.rodata)) {
-        /* hsien test records */
-        PROVIDE_HIDDEN(__hsien_tests_start = .);
-        KEEP(*(SORT_BY_ALIGNMENT(.hsien.tests)))
-        PROVIDE_HIDDEN(__hsien_tests_end = .);
-
-        /* gktl::InitHook */
-        PROVIDE_HIDDEN(__init_hook_start = .);
-        KEEP(*(SORT_BY_ALIGNMENT(.gktl.init_hook*)))
-        PROVIDE_HIDDEN(__init_hook_end = .);
-
-        /* gktl::Counter descriptors */
-        PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
-        KEEP(*(SORT_BY_ALIGNMENT(.gktl.counter.descs)))
-        PROVIDE_HIDDEN(__gktl_counter_desc_end = .);
-
-        *(SORT_BY_ALIGNMENT(.init.rodata*))
-    }
-
+    /*
+     * .init_array is writable, so .ccrt_init belongs beside .init.data
+     * rather than after .init.rodata: two PT_LOADs with different
+     * permissions may not share a page (see the note above .text).
+     *
+     * It still gets a page of its own, because it is also the RELRO that
+     * physboot maps read-only once it has relocated the image -- and it can
+     * only do that for whole pages it does not have to share with the
+     * writable data ahead of it.
+     */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
     .ccrt_init : {
         PROVIDE_HIDDEN(__ccrt_init_start = .);
         KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)
@@ -138,22 +200,13 @@ SECTIONS {
                ".ccrt_init overalignment -> maybe padding gaps");
     }
     . = ALIGN(CONSTANT(MAXPAGESIZE));
-    PROVIDE_HIDDEN(__init_rodata_end = .);
+    PROVIDE_HIDDEN(__init_data_end = .);
+
     PROVIDE_HIDDEN(__init_end  = .);
-
-    PROVIDE_HIDDEN(__bss_start = .);
-    .bss : ALIGN(16) {
-        *(SORT_BY_ALIGNMENT(.bss*))
-
-        . = ALIGN(16);
-    }
-    /* Aligned to Page Size */
-    . = ALIGN(CONSTANT(MAXPAGESIZE));
-    PROVIDE_HIDDEN(__bss_end = .);
 
     PROVIDE_HIDDEN(__executable_end = .);
 
-    ASSERT(__bss_end == __executable_end, "`.bss*` sections should be put on the tail of kernel image")
+    ASSERT(__init_end == __executable_end, "the `.init*` sections must be the tail of the kernel image")
 
     /* Non-allocated section needs to be protected from GC with BFD ld. */
     .code-patches 0 : {

@@ -13,11 +13,11 @@ namespace {
         }
     };
 
-    IdentityMapper s_mapper;
+    IdentityMapper MAPPER;
 } // namespace
 
 auto make_acpi_table_set(PhysAddr rsdp) -> ktl::Result<acpi::TableSet> {
-    return acpi::TableSet::from_rsdp(s_mapper, rsdp);
+    return acpi::TableSet::from_rsdp(MAPPER, rsdp);
 }
 
 } // namespace ours::phys

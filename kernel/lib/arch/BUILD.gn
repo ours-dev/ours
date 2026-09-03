@@ -59,7 +59,10 @@ executable("cpu-mask-smoke") {
   sources = [ "test/cpu_mask_smoke.cpp" ]
   include_dirs = [ "//kernel/include" ]
   defines = [ "MP_MAX_CPUS=16" ]
-  deps = [ "//system/public" ]
+  deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
 }
 
 executable("x86-feature-smoke") {

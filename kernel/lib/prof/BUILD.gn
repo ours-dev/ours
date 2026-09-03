@@ -1,0 +1,45 @@
+import("//build/cpp/cpp_interface.gni")
+
+cpp_interface("headers") {
+  public = [
+    "include/prof/arch.hpp",
+    "include/prof/buffer.hpp",
+    "include/prof/format.hpp",
+    "include/prof/sampler.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/unwind:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+source_set("prof") {
+  sources = [
+    "prof/dump.cpp",
+    "prof/sampler.cpp",
+  ]
+  # sampler.cpp calls into the unwinder, not just its headers, so consumers
+  # linking this source_set need //kernel/lib/unwind's objects on their link
+  # line too.
+  public_deps = [
+    ":headers",
+    "//kernel/lib/unwind",
+  ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [
+    "tests:format($host_toolchain)",
+    "tests:sampler($host_toolchain)",
+  ]
+}
+
+group("kernel-tests") {
+}
+group("phys-tests") {
+}
+group("boot_tests") {
+}

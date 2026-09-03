@@ -8,6 +8,7 @@
 #include <eftl/elf/binary.hpp>
 #include <eftl/elf/details/segment.hpp>
 #include <eftl/elf/enums.hpp>
+#include <eftl/elf/relro.hpp>
 
 #include <limits>
 #include <type_traits>
@@ -26,6 +27,15 @@ struct LoadRegion final {
     u64 virtual_end{0};
     usize image_offset{0};
     SegPerms permissions{SegPerms::None};
+};
+
+// One PT_GNU_RELRO range: the part of a load segment that stops being
+// writable once the loader is done relocating.  Reported exactly as the
+// program header spells it -- rounding it to whole pages needs the enclosing
+// segment's bounds, which only the code doing the mapping has.
+struct RelroInterval final {
+    u64 virtual_start{0};
+    u64 virtual_end{0};
 };
 // NOLINTEND(readability-identifier-naming)
 
@@ -116,6 +126,16 @@ class LoadPlan final {
         return m_entrypoint;
     }
 
+    /// Every PT_GNU_RELRO range the image carries, in its own link-time
+    /// addresses.  There can legitimately be more than one: a linker script
+    /// that scatters the RELRO sections -- as this repo's kernel.ld does,
+    /// with `.dynamic` at the image head and `.init_array` at its tail --
+    /// makes LLD emit one program header per contiguous run.
+    [[nodiscard]]
+    auto relro_intervals() const noexcept -> ustl::views::Span<RelroInterval const> {
+        return {m_relro.data(), m_relro.size()};
+    }
+
     [[nodiscard]]
     auto entry_offset() const noexcept -> ustl::Option<usize> {
         if (m_entrypoint < m_image_base) {
@@ -134,6 +154,7 @@ class LoadPlan final {
 
     Collection<LoadSegment> m_segments;
     Collection<LoadRegion> m_regions;
+    Collection<RelroInterval> m_relro;
     u64 m_image_base{0};
     usize m_image_size{0};
     u64 m_entrypoint{0};
@@ -219,6 +240,11 @@ class KernelElfLoadPolicy final {
         auto const image_size = to_usize(image_end - image_base);
         if (image_size.is_none()) {
             return ustl::err(LoadError::ImageTooLarge);
+        }
+
+        auto const relro_error = collect_relro(binary, plan, image_base, image_end);
+        if (relro_error.is_some()) {
+            return ustl::err(relro_error.value());
         }
 
         plan.m_image_base = image_base;
@@ -317,6 +343,39 @@ class KernelElfLoadPolicy final {
             }
         }
         return true;
+    }
+
+    /// Copies every PT_GNU_RELRO range into the plan, validated against the
+    /// image bounds.  Empty ranges are dropped rather than stored, so a
+    /// stored interval always describes real bytes.
+    [[nodiscard]]
+    static auto collect_relro(File const &binary, Plan &plan, u64 image_base, u64 image_end)
+        -> ustl::Option<LoadError> {
+        auto const regions = binary.relro_regions();
+        for (usize index = 0; index < regions.size(); ++index) {
+            auto const region = regions.region_at(index);
+            if (region.is_none()) {
+                return ustl::some(LoadError::InvalidSegment);
+            }
+
+            auto const start = region->virtual_start();
+            auto const end = region->virtual_end();
+            if (start < image_base || end > image_end) {
+                return ustl::some(LoadError::InvalidSegment);
+            }
+            if (start >= end) {
+                continue;
+            }
+
+            auto const appended = plan.m_relro.emplace_back(RelroInterval{
+                .virtual_start = start,
+                .virtual_end = end,
+            });
+            if (appended.is_err()) {
+                return ustl::some(LoadError::CapacityExceeded);
+            }
+        }
+        return ustl::NONE;
     }
 
     [[nodiscard]]

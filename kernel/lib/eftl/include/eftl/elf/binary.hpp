@@ -1709,7 +1709,11 @@ class BasicImage final: public eftl::Binary {
                 executable_entry = true;
             }
         }
-        if (has_load && executable_entry) {
+        // A position-independent shared object (a loadable module) has no
+        // entry point at all — its entry lives in its own module
+        // descriptor — so the executable-entry requirement only applies to
+        // ET_EXEC images.
+        if (has_load && (executable_entry || header.e_type == SHARED_OBJECT)) {
             return ustl::some(BasicImage(file, image_base));
         }
         return ustl::NONE;

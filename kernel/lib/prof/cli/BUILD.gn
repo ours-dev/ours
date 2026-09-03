@@ -1,0 +1,8 @@
+executable("prof-fold") {
+  sources = [ "main.cpp" ]
+  deps = [
+    "//kernel/lib/prof:headers",
+    "//vendor/cxxopt",
+  ]
+  visibility = [ "*" ]
+}

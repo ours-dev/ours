@@ -81,7 +81,7 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     ustl::collections::intrusive::ListMemberHook<> m_created_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_created_hook, CreatedListOption);
     USTL_DECLARE_LIST(Self, Createdlist, CreatedListOption);
-    static Createdlist s_created_process_list;
+    static Createdlist CREATED_PROCESS_LIST;
 };
 
 } // namespace ours::object

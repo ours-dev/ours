@@ -8,6 +8,8 @@
 
 #include <format>      // std::format_args, std::make_format_args, std::make_wformat_args
 #include <string_view> // std::string_view, std::wstring_view
+#include <tuple>
+#include <type_traits>
 
 namespace ours {
 template <typename String, typename FormatArgs>
@@ -53,17 +55,33 @@ struct PanicSink {
     };
 };
 
-#if defined(PHYS_ENVIRONMENT)
-// The phys image has no formatting runtime (see ours/phys/print.hpp):
-// the unformatted text is the best available diagnostic before memory
-// services exist, so the arguments are dropped rather than dragging
-// std::format's allocating machinery into the bootloader.
-template <typename... Args>
-FORCE_INLINE [[noreturn]]
-auto panic(std::string_view fmt, Args &&...) -> void {
-    vpanic(fmt);
-}
-#else
+namespace detail {
+    /// Hands one panic argument to std::make_format_args in a shape this
+    /// build's libc++ actually formats.
+    ///
+    /// A character *array* -- which is what every string literal is, and what
+    /// ASSERT's stringified condition is -- reaches the argument store as an
+    /// array type rather than as `const char*`, and comes out of the formatter
+    /// as nothing at all: an assertion printed "Assertion failed on " and
+    /// stopped, with the condition it had just failed on missing. A pointer or
+    /// a string_view formats correctly, so decay the array to a string_view on
+    /// the way in. Everything else is forwarded untouched.
+    template <typename T>
+    FORCE_INLINE constexpr auto as_format_arg(T &&value) -> decltype(auto) {
+        using Bare = std::remove_cvref_t<T>;
+        if constexpr (std::is_array_v<Bare> && std::is_same_v<std::remove_extent_t<Bare>, char>) {
+            return std::string_view(value);
+        } else {
+            return static_cast<T &&>(value);
+        }
+    }
+} // namespace detail
+
+// Panic formats into a bounded, never-allocating stack buffer (PanicSink)
+// in every environment — the phys bootloader included. libc++'s
+// std::vformat_to machinery is header-only and freestanding-safe (the
+// kernel's logz4 runs the very same code), so there is no reason for a
+// boot-time panic to drop its arguments and print bare "{}"s.
 template <typename... Args>
 FORCE_INLINE [[noreturn]]
 auto panic(std::string_view fmt, Args &&...args) -> void {
@@ -72,12 +90,17 @@ auto panic(std::string_view fmt, Args &&...args) -> void {
     } else {
         char buffer[512];
         auto sink = PanicSink{buffer, buffer + sizeof(buffer) - 1};
-        std::vformat_to(PanicSink::Iterator{&sink}, fmt, std::make_format_args(args...));
+        // The inner lambda is what gives make_format_args() the lvalues it
+        // requires: as_format_arg() may hand back a prvalue string_view, and
+        // binding that to the lambda's own parameter keeps it alive for the
+        // whole formatting call.
+        [&](auto &&...prepared) {
+            std::vformat_to(PanicSink::Iterator{&sink}, fmt, std::make_format_args(prepared...));
+        }(detail::as_format_arg(static_cast<Args &&>(args))...);
         *sink.m_out = '\0';
         vpanic(std::string_view(buffer, static_cast<std::size_t>(sink.m_out - buffer)));
     }
 }
-#endif
 
 FORCE_INLINE [[noreturn]]
 inline auto unreachable() -> void {

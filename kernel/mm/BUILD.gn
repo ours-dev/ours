@@ -1,5 +1,6 @@
 import("//build/cpp/cpp_interface.gni")
 import("//build/ours/cpu.gni")
+import("//kernel/kernel_params.gni")
 import("//build/toolchain/toolchain_environment.gni")
 
 if (toolchain_environment == "kernel") {
@@ -10,7 +11,7 @@ if (toolchain_environment == "kernel") {
       "early_mem.cpp",
       "init_pmm.cpp",
       "init_vmm.cpp",
-      "memory_model.cpp",
+      "memmap_init.cpp",
       "object_cache.cpp",
       "page_queues.cpp",
         "page_request.cpp",
@@ -18,9 +19,9 @@ if (toolchain_environment == "kernel") {
       "pm_node.cpp",
       "pm_zone.cpp",
       "pmm.cpp",
+      "protection_ranges.cpp",
       "slab.hpp",
       "stack.cpp",
-      "vflat_model.cpp",
       "vm_area.cpp",
       "vm_area_or_mapping.cpp",
       "vm_aspace.cpp",
@@ -31,9 +32,19 @@ if (toolchain_environment == "kernel") {
       "vm_object_physical.cpp",
       "vmm.cpp",
     ]
+    # The two memory models are mutually exclusive: exactly one is compiled, and
+    # `MemMap` names whichever it is. Selecting here rather than with an
+    # #if inside the sources keeps the unselected one from having to compile at
+    # all. See mm_vflat_memmap in //kernel/kernel_params.gni.
+    if (mm_vflat_memmap) {
+      sources += [ "vflat_memmap.cpp" ]
+    } else {
+      sources += [ "sparse_memmap.cpp" ]
+    }
+
     deps = [
       "//kernel/arch/$ours_cpu/mm",
-      "//kernel/lib/logz4:headers",
+      "//system/lib/logz4:headers",
     ]
     public_deps = [ ":headers" ]
     visibility = [ "*" ]

@@ -33,6 +33,13 @@ INIT_CODE auto handoff_early_pmm(phys::MemoryHandoff const &) -> Status;
 ///
 INIT_CODE auto init_pmm(ustl::views::Span<Pfn> pfn = {}) -> void;
 
+/// Perform the initialization of the object caches and kmalloc -- the kernel
+/// object heap. Requires init_pmm() and CpuLocal::init(), in that order.
+///
+/// Not to be confused with the VMM's own heap (vmalloc), which is a separate
+/// step much later in init_vmm().
+INIT_CODE auto init_cache() -> void;
+
 /// Perform the initialization of virtual memory manager.
 INIT_CODE auto init_vmm() -> void;
 

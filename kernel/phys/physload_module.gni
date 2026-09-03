@@ -91,7 +91,17 @@ template("physload_module") {
     if (!defined(deps)) {
       deps = []
     }
-    deps += [ ":physload.interp" ]
+    # <format> (reached through ours/phys/print.hpp) needs the out-of-line
+    # libc++ string members that only the explicit instantiation in the glue
+    # provides; a module defines its own copy instead of importing one
+    # physload does not export.
+    # logz4: headers only — the module's log calls bind to physload's
+    # exported global-logger symbols at load time.
+    deps += [
+      ":physload.interp",
+      "//kernel/lib/libc:format-glue",
+      "//system/lib/logz4:headers",
+    ]
 
     output_name = _main_target
     output_extension = "module"

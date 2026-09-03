@@ -117,6 +117,8 @@ INIT_CODE static auto init_vmo_paged_cache() -> void {
     }
     log::trace("VmoPagedCache has been created");
 }
-GKTL_INIT_HOOK(VmoPagedCacheInit, init_vmo_paged_cache, gktl::InitLevel::PlatformEarly);
+// Heap, not PlatformEarly: this creates a MemCache, so it needs the object
+// caches to be up.
+GKTL_INIT_HOOK(VmoPagedCacheInit, init_vmo_paged_cache, gktl::InitLevel::Heap);
 
 } // namespace ours::mm

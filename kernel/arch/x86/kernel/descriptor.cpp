@@ -32,15 +32,15 @@ struct alignas(PAGE_SIZE) PACKED Gdt {
 };
 static_assert(X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE == offsetof(Gdt, tss));
 
-NO_MANGLE Gdt g_gdt;
-static Gdt *s_pgdt = &g_gdt;
+NO_MANGLE Gdt GDT;
+static Gdt *PGDT = &GDT;
 
 auto x86_get_gdt() -> void * {
-    return s_pgdt;
+    return PGDT;
 }
 
 auto x86_load_gdt() -> void {
-    s_pgdt->load();
+    PGDT->load();
 }
 
 template <typename Descriptor>
@@ -50,27 +50,27 @@ auto dump_desc(Descriptor const &desc) -> void {
 }
 
 auto x86_dump_gdt() -> void {
-    auto &desc = s_pgdt->descs;
+    auto &desc = PGDT->descs;
     log::info("{: <10} | {: <16} | {: <16} | DPL", "Type", "Base", "Limit");
     for (auto i = usize{0}; i < desc.size(); ++i) {
         dump_desc(desc[i]);
     }
 
-    auto &tss = s_pgdt->tss;
+    auto &tss = PGDT->tss;
     for (auto i = usize{0}; i < tss.size(); ++i) {
         dump_desc(tss[i]);
     }
 }
 
 auto x86_set_tss_sp(VirtAddr sp) -> void {
-    auto tss = &mm::CpuLocal::access(g_x86_pcpu).tss;
+    auto tss = &mm::CpuLocal::access(X86_PCPU).tss;
     tss->sp0 = sp;
 }
 
 INIT_CODE auto x86_setup_gdt() -> void {
     VirtAddr virt_addr = 0;
     auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_at(
-        mm::virt_to_phys(VirtAddr(s_pgdt)),
+        mm::virt_to_phys(VirtAddr(PGDT)),
         &virt_addr, // Request the virtual address
         PAGE_SIZE,
         mm::MmuFlags::Readable,                            // Read only
@@ -78,18 +78,18 @@ INIT_CODE auto x86_setup_gdt() -> void {
         "k:GDT");
     ASSERT(result, "Failed to create readonly GDT");
 
-    s_pgdt = reinterpret_cast<decltype(s_pgdt)>(virt_addr);
+    PGDT = reinterpret_cast<decltype(PGDT)>(virt_addr);
     x86_load_gdt();
 }
 
 /// Code bottom is about TSS
 INIT_CODE auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU number: {}", cpunum);
-    auto tss = &mm::CpuLocal::access(g_x86_pcpu, cpunum).tss;
+    auto tss = &mm::CpuLocal::access(X86_PCPU, cpunum).tss;
     tss->init();
 
-    // Do not use s_pdgt, because it is readonly.
-    g_gdt.get_tss_desc(cpunum)
+    // Do not use PGDT, because it is readonly.
+    GDT.get_tss_desc(cpunum)
         .set_base(usize(tss))
         .set_limit(sizeof(X86Tss) - 1)
         .set_type(arch::SegType::Tss64Available)
@@ -98,7 +98,7 @@ INIT_CODE auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
         .set_granularity(arch::SegGran::Byte)
         .set_longmode(true);
 
-    arch::ltr(g_gdt.tss_selector(cpunum));
+    arch::ltr(GDT.tss_selector(cpunum));
 }
 
 } // namespace ours

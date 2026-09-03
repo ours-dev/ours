@@ -4,7 +4,7 @@
 /// Host unit test for the pure buddy allocator. Mirrors the kernel/lib/arch
 /// smoke-test convention: a plain main() that returns a non-zero exit code on
 /// the first failing check. No kernel is booted; PmFrame storage lives on the
-/// host heap and the global MemoryModel is never touched.
+/// host heap and the global MemMap is never touched.
 #include <ours/mm/core/frame_buddy.hpp>
 
 #include <memory>

@@ -9,12 +9,5 @@ assert(is_kernel,
 foreach(level, ours_debug_levels) {
   config("debug_level_${level}") {
     defines = [ "KERNEL_DEBUG_LEVEL=$level" ]
-
-    # Kept in step with the level, for the same reason kernel_debug does it.
-    if (level > 0) {
-      defines += [ "OURS_DEBUG=1" ]
-    } else {
-      defines += [ "OURS_DEBUG=0" ]
-    }
   }
 }

@@ -1,7 +1,23 @@
 #include <arch/x86/io.hpp>
+#include <logz4/log.hpp>
 #include <ours/phys/console.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ustl/mem/object.hpp>
+
+// Pre-logger panic path: logz4's emergency hook, overridden with strong
+// linkage to poll COM1 directly — the console list may not exist yet (or
+// the logger may not be installed) when an early panic fires, but the port
+// GRUB/QEMU left behind still works.
+auto logz4::emergency_write(char const *s, usize n) -> void {
+    constexpr u16 COM1 = 0x3F8;
+    auto const is_transmit_empty = [&]() { return arch::inb(COM1 + 5) & 0x20; };
+
+    for (usize i = 0; i < n; ++i) {
+        while (!is_transmit_empty()) {
+        }
+        arch::outb(COM1, static_cast<u8>(s[i]));
+    }
+}
 
 namespace ours::phys {
 
@@ -64,13 +80,13 @@ auto SerialConsole::activate() -> void {
 namespace {
     // Auto-registers into Console's global list when
     // ccrt::init_global_static_objects() runs (see ours/phys/console.hpp).
-    SerialConsole g_serial_console;
+    SerialConsole SERIAL_CONSOLE;
 } // namespace
 
-// Reads g_serial_console's own port rather than re-asserting COM1
+// Reads SERIAL_CONSOLE's own port rather than re-asserting COM1
 // independently, so there is one source of truth for which port is live.
 auto arch_uart_handoff() -> UartHandoff {
-    return {.kind = UartKind::X86Pio16550, .base = g_serial_console.port_};
+    return {.kind = UartKind::X86Pio16550, .base = SERIAL_CONSOLE.port_};
 }
 
 } // namespace ours::phys

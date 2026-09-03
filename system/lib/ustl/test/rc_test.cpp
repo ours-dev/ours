@@ -16,13 +16,13 @@
 
 namespace {
 
-int g_destroyed = 0;
+int DESTROYED = 0;
 
 struct Item: ustl::RefCounted<Item> {
     int value;
     explicit Item(int v) : value(v) {}
     ~Item() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
@@ -32,23 +32,23 @@ struct Animal: ustl::RefCounted<Animal> {
 };
 struct Dog: Animal {
     ~Dog() override {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
 // Disposer customization: nested Disposer takes priority over operator delete.
 struct Cached: ustl::RefCounted<Cached> {
-    static int g_freed;
+    static int FREED;
     struct Disposer {
         auto operator()(Cached *) const noexcept -> void {
-            ++Cached::g_freed;
+            ++Cached::FREED;
         }
     };
     ~Cached() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
-int Cached::g_freed = 0;
+int Cached::FREED = 0;
 
 // Checked downcast opt-in: static tag + virtual override.
 struct Vehicle: ustl::RefCounted<Vehicle> {
@@ -66,21 +66,21 @@ struct Car: Vehicle {
         return TYPE_TAG;
     }
     ~Car() override {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
 // Single-threaded (non-atomic) policy: the default `Rc<T>` (Rust's `Rc`).
 struct St: ustl::RefCounted<St> {
     ~St() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
 // Thread-safe (atomic) policy: used with `Arc<T>` (Rust's `Arc`).
 struct Shared: ustl::RefCounted<Shared, ustl::sync::ThreadSafePolicy> {
     ~Shared() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
@@ -89,12 +89,12 @@ struct Shared: ustl::RefCounted<Shared, ustl::sync::ThreadSafePolicy> {
 struct Cacheable: ustl::RefCounted<Cacheable> {
     using ustl::RefCounted<Cacheable>::set_deallocate;
     ~Cacheable() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
 auto test_basic() {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto a = ustl::Rc<Item>::adopt(new Item(1));
     assert(a->value == 1);
     assert(a.use_count() == 1);
@@ -112,11 +112,11 @@ auto test_basic() {
     assert(a.use_count() == 1);
     a = nullptr;
     assert(!a);
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
 }
 
 auto test_weak() {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto a = ustl::Rc<Item>::adopt(new Item(7));
     auto w = a.downgrade();
     assert(!w.expired());
@@ -128,7 +128,7 @@ auto test_weak() {
     }
     assert(a.use_count() == 1);
     a = nullptr;
-    assert(g_destroyed == 1); // payload gone
+    assert(DESTROYED == 1); // payload gone
     assert(w.expired());
     assert(!w.lock()); // cannot resurrect a destroyed object
     auto w2 = w;       // copy of expired weak
@@ -138,26 +138,26 @@ auto test_weak() {
 }
 
 auto test_polymorphic() {
-    g_destroyed = 0;
+    DESTROYED = 0;
     ustl::Rc<Animal> a = ustl::Rc<Dog>::adopt(new Dog());
     assert(a.use_count() == 1);
     a = nullptr;
-    assert(g_destroyed == 1); // ~Dog ran through Animal*
+    assert(DESTROYED == 1); // ~Dog ran through Animal*
 }
 
 auto test_disposer() {
-    g_destroyed = 0;
-    Cached::g_freed = 0;
+    DESTROYED = 0;
+    Cached::FREED = 0;
     {
         auto c = ustl::Rc<Cached>::adopt(new Cached());
         assert(c.use_count() == 1);
     }
-    assert(g_destroyed == 1);     // payload destroyed first
-    assert(Cached::g_freed == 1); // then storage reclaimed by Disposer
+    assert(DESTROYED == 1);     // payload destroyed first
+    assert(Cached::FREED == 1); // then storage reclaimed by Disposer
 }
 
 auto test_arc() {
-    g_destroyed = 0;
+    DESTROYED = 0;
     ustl::Arc<Shared> s = ustl::Arc<Shared>::adopt(new Shared());
     auto copy = s; // Arc copies share ownership
     assert(s.use_count() == 2);
@@ -165,12 +165,12 @@ auto test_arc() {
     assert(w.lock());
     s = nullptr;
     copy = nullptr;
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
     assert(!w.lock());
 }
 
 auto test_single_threaded() {
-    g_destroyed = 0;
+    DESTROYED = 0;
     {
         ustl::Rc<St, ustl::sync::SingleThreadedPolicy> s =
             ustl::Rc<St, ustl::sync::SingleThreadedPolicy>::adopt(new St());
@@ -178,11 +178,11 @@ auto test_single_threaded() {
         assert(!w.expired());
         assert(w.lock());
     }
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
 }
 
 auto test_downcast() {
-    g_destroyed = 0;
+    DESTROYED = 0;
     ustl::Rc<Vehicle> v = ustl::Rc<Car>::adopt(new Car());
     auto car = v.downcast<Car>();
     assert(car);
@@ -204,31 +204,31 @@ auto test_downcast() {
 }
 
 auto test_into_raw() {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto a = ustl::Rc<Item>::adopt(new Item(3));
     auto *raw = a.into_raw();
     assert(!a);
     assert(raw->value == 3);
-    assert(g_destroyed == 0);            // transferred ref keeps the object alive
+    assert(DESTROYED == 0);              // transferred ref keeps the object alive
     auto b = ustl::Rc<Item>::adopt(raw); // incrementing re-wrap
     assert(b.use_count() == 2);
     b = nullptr;
-    assert(g_destroyed == 0); // still held by the raw (leaked) ref
+    assert(DESTROYED == 0); // still held by the raw (leaked) ref
     // The remaining strong reference is intentionally leaked: into_raw()
     // transfers ownership out of the counting machinery.
 }
 
 auto test_custom_deallocate() {
-    g_destroyed = 0;
-    Cached::g_freed = 0;
+    DESTROYED = 0;
+    Cached::FREED = 0;
     auto *raw = new Cacheable();
     // Simulate an object-cache-like instance: replace the reclaim strategy.
-    raw->set_deallocate([](void *) noexcept { ++Cached::g_freed; });
+    raw->set_deallocate([](void *) noexcept { ++Cached::FREED; });
     {
         auto c = ustl::Rc<Cacheable>::adopt(raw);
     }
-    assert(g_destroyed == 1);
-    assert(Cached::g_freed == 1);
+    assert(DESTROYED == 1);
+    assert(Cached::FREED == 1);
 }
 
 } // namespace

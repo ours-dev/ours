@@ -3,12 +3,12 @@
 
 .object _temp_gdtr_words, scope=local, type=relro, align=8
 .skip 6
-.label g_temp_gdtr, global
-    .short g_gdt_end - g_gdt - 1
-    .quad  g_gdt 
+.label TEMP_GDTR, global
+    .short GDT_END - GDT - 1
+    .quad  GDT 
 .end_object
 
-.object g_gdt, scope=global, type=data, align=PAGE_SIZE
+.object GDT, scope=global, type=data, align=PAGE_SIZE
     /* null entry */
     .quad 0
 
@@ -67,5 +67,5 @@
     .int   0x00000000       /* base 63:32 */
     .int   0x00000000       /* reserved/sbz */
 .endr
-.label g_gdt_end, global
+.label GDT_END, global
 .end_object

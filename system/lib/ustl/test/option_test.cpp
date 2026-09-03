@@ -9,8 +9,15 @@
 
 #include <cassert>
 
-static_assert(std::same_as<decltype(ustl::some(std::declval<int &>())), ustl::Option<int &>>);
+// `some` is owning regardless of the argument's value category; only
+// `some_ref` aliases. Passing a named variable must not silently hand back
+// a reference into it — that turned a natural `return some(local);` into a
+// dangling Option whenever the return type was deduced.
+static_assert(std::same_as<decltype(ustl::some(std::declval<int &>())), ustl::Option<int>>);
 static_assert(std::same_as<decltype(ustl::some(1)), ustl::Option<int>>);
+static_assert(std::same_as<decltype(ustl::some_ref(std::declval<int &>())), ustl::Option<int &>>);
+static_assert(
+    std::same_as<decltype(ustl::some_ref(std::declval<int const &>())), ustl::Option<int const &>>);
 static_assert(std::is_nothrow_destructible_v<ustl::Option<int>>);
 static_assert(std::is_nothrow_destructible_v<ustl::Option<int &>>);
 
@@ -35,8 +42,15 @@ auto main() -> int {
                .map([](int input) noexcept -> int { return input * 2; })
                .is_none());
 
+    // Owning: writing through the option must NOT reach back into `number`.
     int number = 9;
-    auto reference = ustl::some(number);
+    auto copied = ustl::some(number);
+    copied.value() = 11;
+    assert(number == 9);
+    assert(*copied == 11);
+
+    // Aliasing is opt-in, and does write through.
+    auto reference = ustl::some_ref(number);
     reference.value() = 11;
     assert(number == 11);
     assert(*reference == 11);

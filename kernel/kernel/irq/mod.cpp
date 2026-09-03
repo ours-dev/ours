@@ -2,12 +2,24 @@
 #include <ours/irq/irq_dispatcher.hpp>
 #include <ours/irq/irq_observer.hpp>
 #include <ours/irq/mod.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/task/thread.hpp>
 
 namespace ours::irq {
+namespace {
+    // Trap frame of the interrupt currently being handled on this CPU, or
+    // nullptr outside interrupt context. Instrumentation (e.g. the sampling
+    // profiler's tick hook) reads it to reach the interrupted context.
+    CPU_LOCAL
+    arch::IrqFrame *CURRENT_FRAME;
+} // namespace
+
+auto current_frame() -> arch::IrqFrame * {
+    return mm::CpuLocal::read(CURRENT_FRAME);
+}
 FORCE_INLINE static auto get_irq_dispatcher() -> IrqDispatcher * {
-    static IrqDispatcher g_irq_dispatcher;
-    return &g_irq_dispatcher;
+    static IrqDispatcher IRQ_DISPATCHER;
+    return &IRQ_DISPATCHER;
 }
 
 auto init_early(usize num_irqs) -> void {
@@ -35,12 +47,16 @@ auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn {
 }
 
 auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
+    mm::CpuLocal::write(CURRENT_FRAME, frame);
+
     auto &preemption_state = task::Thread::Current::preemption_state();
     preemption_state.disable_eager_reschedule();
     preemption_state.disable_preemption();
 }
 
 auto handle_irq_postamble() -> bool {
+    mm::CpuLocal::write(CURRENT_FRAME, static_cast<arch::IrqFrame *>(nullptr));
+
     auto &preemption_state = task::Thread::Current::preemption_state();
     preemption_state.enable_preemption();
     preemption_state.enable_eager_reschedule();

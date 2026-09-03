@@ -71,6 +71,15 @@ group("default") {
     "//kernel/lib/arch:x86-paging-smoke($host_toolchain)",
     "//kernel/lib/arch:cpu-mask-smoke($host_toolchain)",
     "//system/lib/ustl:bitfields-test($host_toolchain)",
+    "//system/lib/ustl:bitset-test($host_toolchain)",
+    "//system/lib/logz4:logz4-test($host_toolchain)",
+
+    # //kernel/mm's pure-bookkeeping smoke tests: plain hosted main()s over
+    # the mm sources they exercise (the buddy allocator, the protection-range
+    # tracker). The group sat unwired for a while -- frame-buddy-smoke was
+    # never built by anything -- so both are named here explicitly.
+    "//kernel/mm/tests:frame-buddy-smoke($host_toolchain)",
+    "//kernel/mm/tests:protection-ranges-smoke($host_toolchain)",
 
     # //kernel/lib/acpi is pure table decoding behind a single mapper seam, so
     # the whole library runs on the host against synthesised table images.
@@ -91,6 +100,14 @@ group("default") {
     # The DWARF CFI unwinder core: pure, allocation-free parsing/evaluation
     # over synthesised .eh_frame byte streams on the host.
     "//kernel/lib/unwind:tests",
+
+    # The sampling profiler's wire format: sizes, offsets and magics the
+    # host-side prof-fold tool parses the serial dump against.
+    "//kernel/lib/prof:tests",
+
+    # prof-fold turns a serial prof.dump capture into flamegraph.pl folded
+    # stacks; it is the host half of the sampling-profiler pipeline.
+    "//kernel/lib/prof/cli:prof-fold($host_toolchain)",
 
     # The bootshim's machine-independent half (memory-map conversion and
     # image placement) and the Multiboot2 parse it reads.  Neither needs a

@@ -38,7 +38,16 @@ struct X86Pte {
             terminal ? (Level == X86PagingLevel::PageTable ? X86_KERNEL_PAGE_FLAGS
                                                            : X86_KERNEL_HUGE_PAGE_FLAGS)
                      : X86_KERNEL_PD_FLAGS;
-        return {static_cast<PteVal>((addr & X86_PG_FRAME) | PteVal(flags) | default_flags)};
+        // NX ANDs down the hierarchy: an upper-level entry carrying it marks
+        // every page beneath non-executable. Only the leaf may decide, so a
+        // non-terminal entry never carries the bit — otherwise mapping a
+        // read-only segment first would poison the whole upper region and
+        // later executable segments would fault on instruction fetch.
+        auto const resolved =
+            terminal ? flags
+                     : static_cast<X86MmuFlags>(static_cast<PteVal>(flags) &
+                                                static_cast<PteVal>(~X86_MMUF_NOEXECUTABLE));
+        return {static_cast<PteVal>((addr & X86_PG_FRAME) | PteVal(resolved) | default_flags)};
     }
 
     constexpr auto address() const -> PhysAddr {

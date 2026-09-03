@@ -426,6 +426,14 @@ config("no-pie-link") {
   ldflags = [ "-Wl,--no-pie" ]
 }
 
+# Relocatable image: lld emits an ET_DYN with R_*_RELATIVE relocations for
+# every absolute pointer, which is what a loader that places the image at a
+# runtime-chosen address (the kernel's KASLR load, physload's module loader)
+# applies. Pair with :static-link for the freestanding static-PIE shape.
+config("pie-link") {
+  ldflags = [ "-Wl,--pie" ]
+}
+
 config("pic-link") {
   ldflags = [ "-Wl,--pic" ]
 }

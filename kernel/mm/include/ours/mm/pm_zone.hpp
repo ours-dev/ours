@@ -17,6 +17,7 @@
 #include <ustl/sync/atomic.hpp>
 
 #include <array>
+#include <atomic>
 
 namespace ours::mm {
 template <usize MaxOrder>
@@ -39,18 +40,23 @@ class FrameSet {
         m_buddy.attach(frames, count, base_pfn);
     }
 
+    /// Unlocked, both of them. The zone is the only thing that reaches a
+    /// FrameSet, and it has a lock of its own; a second one here would serialise
+    /// the same accesses twice and -- worse -- give the allocator two places to
+    /// take a lock from, which is how a path that allocates and frees under one
+    /// call ends up deadlocking against itself.
+    ///
+    /// So the rule is: PmZone serialises, FrameSet does not. Anything calling
+    /// these holds the zone's lock.
     auto acquire_frame(usize order) -> PmFrame * {
-        Guard guard{m_lock};
         return m_buddy.allocate(order);
     }
 
     auto release_frame(PmFrame *frame, usize order) -> void {
-        Guard guard{m_lock};
         m_buddy.release(frame, order);
     }
 
   private:
-    sync::SpinLock m_lock;
     core::FrameBuddy m_buddy;
 };
 
@@ -164,17 +170,17 @@ class PmZone {
     //! `present_pages` is physical pages existing within the zone,
     //! which is calculated as:
     //!	    present_frames_ = spanned_frames_ - absent_frames_(pages in holes).
-    ustl::sync::AtomicUsize m_present_frames;
+    std::atomic<usize> m_present_frames;
 
     //! @brief present pages managed by the buddy system, which
     //! is calculated as (reserved_pages includes pages
     //! allocated by the booting time allocator):
     //!     managed_frames_ = present_frames_ - reserved_frames_.
-    ustl::sync::AtomicUsize m_managed_frames;
+    std::atomic<usize> m_managed_frames;
 
-    ustl::sync::AtomicUsize m_spanned_frames;
+    std::atomic<usize> m_spanned_frames;
 
-    ustl::sync::AtomicUsize m_reserved_frames;
+    std::atomic<usize> m_reserved_frames;
 
     std::array<usize, static_cast<usize>(WaterMark::Count)> m_watermarks;
 

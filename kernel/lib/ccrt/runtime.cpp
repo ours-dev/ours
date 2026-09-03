@@ -27,26 +27,39 @@ namespace {
         return __atomic_exchange_n(value, desired, __ATOMIC_ACQUIRE);
     }
 
-    constinit Guard initializers_guard{};
+    constinit Guard INITIALIZERS_GUARD{};
 
-    constinit Registry registry{};
+    constinit Registry REGISTRY{};
 
     extern "C" Initializer const INITIALIZERS_START[] LINK_NAME("__ccrt_init_start");
     extern "C" Initializer const INITIALIZERS_END[] LINK_NAME("__ccrt_init_end");
 } // namespace
 
 auto Registry::instance() noexcept -> Registry & {
-    return registry;
+    return REGISTRY;
 }
 
+namespace {
+    /// Raw COM1 write for boot-step markers; see the x86 arch handoff. Used
+    /// to stamp each global initializer's index so a ctor that faults before
+    /// the console exists is still identifiable from the serial stream.
+    auto com1_put(Byte const c) noexcept -> void {
+        unsigned short const port = 0x3F8;
+        asm volatile("out %0, %1" : : "a"(c), "d"(port));
+    }
+} // namespace
+
 auto init_global_static_objects() -> void {
-    if (!initializers_guard.acquire()) {
+    if (!INITIALIZERS_GUARD.acquire()) {
         return;
     }
+    Byte index = 0;
     for (auto initializer = INITIALIZERS_START; initializer != INITIALIZERS_END; ++initializer) {
+        com1_put(index);
         (*initializer)();
+        ++index;
     }
-    initializers_guard.release();
+    INITIALIZERS_GUARD.release();
 }
 
 auto Guard::acquire() noexcept -> bool {

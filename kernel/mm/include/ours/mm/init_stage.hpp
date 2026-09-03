@@ -19,14 +19,14 @@ enum class InitStage {
     All,
 };
 
-extern InitStage g_init_stage;
+extern InitStage INIT_STAGE;
 
 FORCE_INLINE inline auto get_init_stage() -> InitStage {
-    return g_init_stage;
+    return INIT_STAGE;
 }
 
 FORCE_INLINE inline auto set_init_stage(InitStage stage) -> void {
-    g_init_stage = stage;
+    INIT_STAGE = stage;
 }
 
 } // namespace ours::mm

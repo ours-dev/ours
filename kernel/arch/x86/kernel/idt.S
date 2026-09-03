@@ -64,9 +64,9 @@
 
 .section .data.rel.ro.idt, "aw", %progbits
 .balign PAGE_SIZE
-.label g_idt, global, object
+.label IDT, global, object
     isr.current = 0
     .rept 256
         isr.dispatch.define.next
     .endr
-.size g_idt, . - g_idt
+.size IDT, . - IDT

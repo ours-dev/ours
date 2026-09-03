@@ -10,142 +10,8 @@
 #include <ustl/iterator/function.hpp>
 #include <ustl/mem/align.hpp>
 
-#include <algorithm>
-
 namespace ours::mm {
 using VmMappingCache = ObjectCache::Instance<VmMapping>;
-using ProtectionRegionCache = ObjectCache::Instance<MappingProtectionRanges::Region>;
-
-template <typename... Args>
-FORCE_INLINE auto MappingProtectionRanges::alloc_region(Args &&...args) -> Region * {
-    return ProtectionRegionCache::get(GAF_KERNEL, args...);
-}
-
-FORCE_INLINE auto MappingProtectionRanges::free_region(Region *region) -> void {
-    ProtectionRegionCache::put(region);
-}
-
-FORCE_INLINE auto MappingProtectionRanges::init(VirtAddr end, MmuFlags mmuf) -> Status {
-    auto first_region = alloc_region(end, mmuf);
-    if (!first_region) {
-        return Status::OutOfMem;
-    }
-
-    (void)regions_.insert(*first_region);
-    return Status::Ok;
-}
-
-auto MappingProtectionRanges::make_enumerator(VirtAddr base, usize size) -> Enumerator {
-    auto first = std::lower_bound(regions_.begin(), regions_.end(), base,
-                                  [](auto const &x, auto y) { return x.end <= y; });
-
-    auto last = std::upper_bound(first, regions_.end(), base + size,
-                                 [](auto x, auto const &y) { return x <= y.end; });
-
-    if (last != regions_.end()) {
-        ++last;
-    }
-
-    return Enumerator(base, first, last, base, base + size);
-}
-
-auto MappingProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf, VirtAddr lower_limit,
-                                     VirtAddr upper_limit) -> Status {
-    VirtAddr end = base + size;
-    if (base >= end || base < lower_limit || end > upper_limit) {
-        return Status::InvalidArguments;
-    }
-
-    // LM is the region containing base, while RM is the region containing
-    // the last byte of the half-open range [base, end).
-    auto lm = std::lower_bound(regions_.begin(), regions_.end(), base,
-                               [](auto const &x, auto y) { return x.end <= y; });
-    auto rm =
-        std::lower_bound(lm, regions_.end(), end, [](auto const &x, auto y) { return x.end < y; });
-
-    if (lm == regions_.end() || rm == regions_.end()) {
-        return Status::InvalidArguments;
-    }
-    if (lm == rm && lm->mmuf == mmuf) {
-        return Status::Ok;
-    }
-
-    // A boundary at base belongs to the region on its left. If base is
-    // inside LM, create that boundary before changing any existing node.
-    auto base_boundary = regions_.end();
-    if (lm != regions_.begin()) {
-        auto previous = lm;
-        --previous;
-        if (previous->end == base) {
-            base_boundary = previous;
-        }
-    }
-
-    Region *base_split = nullptr;
-    if (base_boundary == regions_.end() && base != lower_limit && lm->mmuf != mmuf) {
-        base_split = alloc_region(base, lm->mmuf);
-        if (!base_split) {
-            return Status::OutOfMem;
-        }
-    }
-
-    // A separate boundary at end is needed only when RM cannot absorb
-    // the updated range. Otherwise RM already has the desired flags.
-    Region *end_split = nullptr;
-    if (rm->end != end && rm->mmuf != mmuf) {
-        end_split = alloc_region(end, rm->mmuf);
-        if (!end_split) {
-            if (base_split) {
-                free_region(base_split);
-            }
-            return Status::OutOfMem;
-        }
-    }
-
-    if (base_split) {
-        base_boundary = regions_.insert(lm, *base_split);
-    }
-
-    auto end_boundary = rm;
-    if (end_split) {
-        end_boundary = regions_.insert(rm, *end_split);
-    }
-
-    auto target_first = lm;
-    if (base_boundary != regions_.end()) {
-        target_first = base_boundary;
-        ++target_first;
-    }
-
-    // Keep the left boundary when it already has the new flags. Otherwise
-    // target_first is the boundary that represents the updated range.
-    auto keep_boundary = target_first;
-    auto delete_first = target_first;
-    if (base_boundary != regions_.end() && base_boundary->mmuf == mmuf) {
-        keep_boundary = base_boundary;
-    } else {
-        ++delete_first;
-    }
-
-    VirtAddr final_end = end_boundary->end;
-    auto delete_last = end_boundary;
-    ++delete_last;
-    if (delete_last != regions_.end() && delete_last->mmuf == mmuf) {
-        final_end = delete_last->end;
-        ++delete_last;
-    }
-
-    // All obsolete nodes are contiguous after keep_boundary. Delete them
-    // together before changing keep_boundary->end, which is the tree key.
-    if (delete_first != delete_last) {
-        (void)regions_.erase_and_dispose(
-            delete_first, delete_last, [](Region *region) noexcept { Self::free_region(region); });
-    }
-    keep_boundary->end = final_end;
-    keep_boundary->mmuf = mmuf;
-
-    return Status::Ok;
-}
 
 /// This helper class was used to batch mapping requests.
 template <usize MaxNumPages>
@@ -226,7 +92,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     if (!mapping) {
         return Status::OutOfMem;
     }
-    auto status = mapping->m_protection_ranges.init(base + size, mmuf);
+    auto status = mapping->m_protection_ranges.init(base, size, mmuf);
     if (Status::Ok != status) {
         VmMappingCache::put(mapping);
         return status;
@@ -263,6 +129,9 @@ auto VmMapping::destroy() -> Status {
     if (m_vmo) {
         m_vmo->remove_mapping(*this);
     }
+    if (m_parent) {
+        m_parent->m_num_mappings -= 1;
+    }
     Base::destroy();
     return Status::Ok;
 }
@@ -287,8 +156,10 @@ FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize 
     }
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto region = enumerator.next()) {
-        auto [region_base, region_size, mmuf] = *region;
+    // P0963R3: decomposing in the condition binds the region's fields straight
+    // through, so the loop no longer opens by dereferencing an Option just to
+    // give them names.
+    while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
         MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, control);
 
         // TODO: Request pages in larger batches (e.g. folios) instead of
@@ -325,8 +196,7 @@ FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, 
     constexpr static auto const MAX_BATCH_PAGES = 32;
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto region = enumerator.next()) {
-        auto [region_base, region_size, mmuf] = *region;
+    while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
         MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, control);
         for (usize offset = 0; offset < region_size; offset += PAGE_SIZE) {
             coalescer.append(phys_base + offset);
@@ -390,27 +260,24 @@ auto VmMapping::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
     }
 
     auto &arch_aspace = m_aspace->arch_aspace();
-    auto status = m_protection_ranges.update(base, size, mmuf, m_base, m_base + m_size);
+    auto status = m_protection_ranges.update(base, size, mmuf);
     if (Status::Ok != status) {
         return status;
     }
 
-    // TODO: update() already traverses the affected tree nodes internally.
-    // The subsequent make_enumerator() repeats the same lower_bound/upper_bound
-    // O(log n) lookup and re-iterates over the same range.  Consider having
-    // update() return an Enumerator directly so the caller can consume the
-    // modified regions without a second traversal.
+    // update() and make_enumerator() both touch the same regions, but region
+    // counts per mapping are single digits, so re-walking costs nothing worth
+    // entangling the API for. Recorded as won't-do in
+    // .agents/tasks/protection-ranges-redesign/DESIGN.md.
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto region = enumerator.next()) {
-        auto &[region_base, region_size, region_mmuf] = *region;
-
+    while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
         if (!(region_mmuf & MmuFlags::PermMask)) {
             // Unmap those regions which has no any permission.
             (void)arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, UnmapControl::None, 0);
             continue;
         }
 
-        arch_aspace.protect(base, size >> PAGE_SHIFT, mmuf);
+        arch_aspace.protect(region_base, region_size >> PAGE_SHIFT, region_mmuf);
     }
 
     return Status::Ok;
@@ -434,21 +301,27 @@ auto VmMapping::unmap(usize offset, usize size, UnmapControl control) -> Status 
         return Status::InvalidArguments;
     }
 
-    // FIXME: After unmapping page-table entries below, m_protection_ranges
-    // is NOT updated to reflect the unmapped state.  A subsequent protect()
-    // on the unmapped range would try to modify page-table entries that no
-    // longer exist.  Consider calling m_protection_ranges.update() here to
-    // mark the range with empty permissions (or track the unmapped state
-    // explicitly).
+    return unmap_locked(base, size, control);
+}
+
+auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapControl control) -> Status {
     auto &arch_aspace = m_aspace->arch_aspace();
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
-    while (auto region = enumerator.next()) {
-        auto [region_base, region_size, mmuf] = *region;
+    while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
         auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, control, 0);
         if (Status::Ok != status) {
             log::error("Failed to unmap range[{:X}, {:X})", region_base, region_size);
             return status;
         }
+    }
+
+    // Mark the range as permission-less, the same representation of "unmapped"
+    // that protect() relies on when it skips zero-permission regions; without
+    // this, a later protect() would try to modify page-table entries that no
+    // longer exist.
+    auto status = m_protection_ranges.update(base, size, MmuFlags{});
+    if (Status::Ok != status) {
+        return status;
     }
 
     return Status::Ok;
@@ -470,13 +343,9 @@ INIT_CODE auto init_vm_mapping_cache() -> void {
         panic("Failed to create object cache for VmMapping");
     }
     log::trace("VmMappingCache has been created");
-
-    if (Status::Ok !=
-        ProtectionRegionCache::init("vm-mapping-region-cache", ObjectCache::Flags::Folio)) {
-        panic("Failed to create object cache for MappingProtectionRanges::Region");
-    }
-    log::trace("MappingRegionCache has been created");
 }
-GKTL_INIT_HOOK(VmMappingCacheInit, init_vm_mapping_cache, gktl::InitLevel::PlatformEarly);
+// Heap, not PlatformEarly: this creates a MemCache, so it needs the object
+// caches to be up.
+GKTL_INIT_HOOK(VmMappingCacheInit, init_vm_mapping_cache, gktl::InitLevel::Heap);
 
 } // namespace ours::mm

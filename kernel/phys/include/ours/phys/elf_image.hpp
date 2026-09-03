@@ -42,7 +42,9 @@ struct SymbolBinder {
 // module actually calls (to load its own kernel payload) are marked.
 class ElfImage final {
   public:
-    static constexpr auto MAX_LOAD_SEGMENTS = usize{6};
+    // The kernel image page-separates every permission boundary (kernel.ld),
+    // which currently yields 9 PT_LOADs; keep real headroom.
+    static constexpr auto MAX_LOAD_SEGMENTS = usize{12};
 
     /// Parse `file` and plan its load.  An ELF image describes its own
     /// in-memory size (the load plan's image_size()), so there is no
@@ -117,6 +119,10 @@ class ElfImage final {
 
     VirtAddr m_va_load{};
     PhysAddr m_pa_load{};
+    /// Set when the image is an ET_DYN shared object (a loadable module):
+    /// its PLT/symbolic relocation tables are bound by the caller's
+    /// symbol-binding pass rather than rejected by the relative pass.
+    bool m_allow_symbolic_tables{false};
     ustl::Option<eftl::elf::FileImpl<Traits>> m_binary;
     LoadPlan m_load_plan;
 };

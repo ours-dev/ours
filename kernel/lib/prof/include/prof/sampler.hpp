@@ -3,21 +3,21 @@
 #ifndef PROF_SAMPLER_HPP
 #define PROF_SAMPLER_HPP 1
 
+#include <atomic>
+
 #include <prof/buffer.hpp>
 #include <prof/format.hpp>
-#include <ustl/sync/atomic.hpp>
-
-#include <cstddef>
-#include <cstdint>
+#include <unwind/cfi.hpp>
+#include <unwind/fde_index.hpp>
 
 namespace ours {
-enum class Status : std::uint32_t;
+enum class Status : u32;
 }
 
 namespace prof {
 
 /// Where sampling interrupts come from.
-enum class Source : std::uint8_t {
+enum class Source : u8 {
     /// PMU counter overflow (unhalted core cycles); fails when the machine
     /// has no architectural PMU (e.g. QEMU TCG).
     Pmu,
@@ -30,49 +30,160 @@ struct Config final {
     Source source;
     /// For `Pmu`: counter counts between interrupts. For `TimerTick`: take
     /// a sample every N-th scheduler tick.
-    std::uint64_t period;
+    u64 period;
 };
-
-/// Boot-time bring-up: builds the FDE index over the kernel's `.eh_frame`
-/// and allocates the per-CPU sample buffers. Safe to call at `Platform`
-/// init level; failures are logged, not fatal (profiling stays disabled).
-auto init() -> void;
-
-[[nodiscard]]
-auto start(Config const &config) -> ours::Status;
-
-/// Disable sampling and quiesce every CPU's sampler so buffers can be read.
-auto stop() -> void;
-
-[[nodiscard]]
-auto is_running() -> bool;
-
-[[nodiscard]]
-auto active_source() -> Source;
 
 /// Captured by the sampling interrupt. `arch::` fills this in from the
 /// interrupted CPU's trap frame, keeping this library arch-neutral.
 struct SampleContext final {
-    std::uint64_t pc;
-    std::uint64_t sp;
-    std::uint64_t bp;
-    std::uint32_t tid;
+    u64 pc;
+    u64 sp;
+    u64 bp;
+    u32 tid;
     bool from_uspace;
 };
 
-/// Take one sample now. Runs in interrupt context: no allocation, bounded
-/// work, and it unwinds at most MAX_STACK_DEPTH frames.
-auto record_sample(SampleContext const &context) -> void;
+/// The kernel's sole sampling profiler. `Sampler` owns no dynamic storage
+/// and makes no calls into `ours::`/`gktl::`/`logz4::` — every kernel-side
+/// resource (per-CPU buffers, the unwind tables, the current CPU/timestamp/
+/// diagnostic output) is either injected through `Resources` or read
+/// through the `prof::arch` seam. Booting the profiler, wiring it to a
+/// console, and picking where its buffers live is the caller's job (see
+/// `kernel/kernel/prof`).
+class Sampler final {
+  public:
+    /// Looks up the per-CPU sample arena for `cpu`; returns nullptr when
+    /// none exists (e.g. `cpu` is out of range). The caller keeps owning
+    /// the buffers' actual storage — mirrors `unwind::MemoryReader`'s
+    /// context-callback shape.
+    using BufferLookup = SampleBuffer *(*)(void *context, u32 cpu);
 
-/// Timer-fallback hook, called from the scheduler tick. No-op unless the
-/// TimerTick source is running; samples on every `period`-th tick.
-auto on_scheduler_tick() -> void;
+    /// Everything `init()` needs, all owned and kept alive by the caller.
+    /// `Sampler` allocates nothing itself.
+    struct Resources final {
+        BufferLookup buffer_lookup = nullptr;
+        void *buffer_lookup_context = nullptr;
+        u32 num_cpus = 0;
 
-/// Log per-CPU buffer statistics over the console log.
-auto log_summary() -> void;
+        /// The kernel's `.eh_frame`; an empty section (size 0) degrades
+        /// unwinding to depth-1 records rather than failing.
+        unwind::Section eh_section{};
+        /// Ascending-`pc_begin`-sorted FDE entries built by the caller
+        /// (mirrors `unwind::FdeIndex::init`'s own storage contract); must
+        /// outlive the `Sampler`.
+        unwind::FdeIndex::Entry const *fde_entries = nullptr;
+        usize fde_entry_count = 0;
 
-/// Write the dump container (header line + `SAMP` hex lines) to COM1.
-auto dump_serial() -> void;
+        /// Runtime load address of the kernel image, stamped into
+        /// `DumpHeader::load_base` for the host tool to subtract.
+        u64 image_base = 0;
+    };
+
+    enum class InitFlags : u32 {
+        None = 0,
+        BuffersReady = 1u << 0,
+        UnwindReady = 1u << 1,
+    };
+
+    struct BufferStats final {
+        usize retained = 0;
+        u64 dropped = 0;
+        u64 total = 0;
+    };
+
+    static auto get() -> Sampler &;
+
+    /// Boot-time bring-up: wires up `resources` and resets every buffer
+    /// they reach. Safe to call before any CPU has taken an interrupt;
+    /// failures are reported through the returned flags, never fatal.
+    auto init(Resources const &resources) -> InitFlags;
+
+    [[nodiscard]]
+    auto start(Config const &config) -> ours::Status;
+
+    /// Disable sampling and quiesce every CPU's sampler so buffers can be
+    /// read.
+    auto stop() -> void;
+
+    [[nodiscard]]
+    auto is_running() const -> bool;
+
+    [[nodiscard]]
+    auto active_source() const -> Source;
+
+    /// Current sampling period (events per interrupt, or ticks-divisor).
+    [[nodiscard]]
+    auto active_period() const -> u64;
+
+    /// Take one sample now. Runs in interrupt context: no allocation,
+    /// bounded work, unwinds at most `MAX_STACK_DEPTH` frames.
+    auto record_sample(SampleContext const &context) -> void;
+
+    /// Timer-fallback hook, called from the scheduler tick. No-op unless
+    /// the `TimerTick` source is running; samples on every `period`-th
+    /// tick.
+    auto on_scheduler_tick() -> void;
+
+    [[nodiscard]]
+    auto num_cpus() const -> u32;
+
+    /// Per-CPU buffer statistics; stable once sampling has stopped.
+    [[nodiscard]]
+    auto buffer_stats(u32 cpu) const -> BufferStats;
+
+    /// Encodes the dump header and every retained record as hex text (the
+    /// `PROF1`/`SAMP` line framing documented in `prof/format.hpp`) and
+    /// hands each line to `arch::debug_write`. Carries no I/O policy of
+    /// its own — the seam owns that.
+    auto export_dump() const -> void;
+
+  private:
+    Sampler() = default;
+    Sampler(Sampler const &) = delete;
+    auto operator=(Sampler const &) -> Sampler & = delete;
+
+    enum class State : u32 {
+        Stopped,
+        Running,
+        /// Set while stopping; interrupt handlers may still see it mid-flight.
+        Stopping,
+    };
+
+    [[nodiscard]]
+    auto buffer_for(u32 cpu) const -> SampleBuffer *;
+
+    auto reset_all_buffers() -> void;
+
+    auto unwind_context(SampleContext const &context, SampleRecord *record) const -> void;
+
+    std::atomic<State> m_state{State::Stopped};
+    std::atomic<Source> m_source{Source::Pmu};
+    std::atomic<u64> m_period{0};
+    std::atomic<u64> m_tick_counter{0};
+
+    BufferLookup m_buffer_lookup = nullptr;
+    void *m_buffer_lookup_context = nullptr;
+    u32 m_num_cpus = 0;
+
+    unwind::Section m_eh_section{};
+    unwind::FdeIndex m_fde_index;
+    u64 m_image_base = 0;
+};
+
+[[nodiscard]]
+constexpr auto operator|(Sampler::InitFlags lhs, Sampler::InitFlags rhs) -> Sampler::InitFlags {
+    return static_cast<Sampler::InitFlags>(static_cast<u32>(lhs) | static_cast<u32>(rhs));
+}
+
+[[nodiscard]]
+constexpr auto operator&(Sampler::InitFlags lhs, Sampler::InitFlags rhs) -> Sampler::InitFlags {
+    return static_cast<Sampler::InitFlags>(static_cast<u32>(lhs) & static_cast<u32>(rhs));
+}
+
+[[nodiscard]]
+constexpr auto has_flag(Sampler::InitFlags flags, Sampler::InitFlags bit) -> bool {
+    return (flags & bit) != Sampler::InitFlags::None;
+}
 
 } // namespace prof
 

@@ -66,9 +66,18 @@ struct Relocations final: Observable<Traits, Relocations<Traits>> {
     template <typename IsRelative, typename Visitor>
     [[nodiscard]]
     auto visit_relative(IsRelative &&is_relative, Visitor &&visitor) -> bool {
+        //
+        // A symbol-bearing relocation (GLOB_DAT and friends) is not this
+        // pass's business: it belongs to the symbol-binding pass that runs
+        // after the relative fixups. Skip it — failing here would make every
+        // loadable module (whose .rela.dyn legitimately carries GLOB_DAT
+        // entries for its imports) fail its own relative-relocation pass.
+        //
         for (auto const &rel: relative_reltable()) {
-            if (Traits::relocation_symbol(rel.r_info) != 0 ||
-                !is_relative(Traits::relocation_type(rel.r_info)) ||
+            if (Traits::relocation_symbol(rel.r_info) != 0) {
+                continue;
+            }
+            if (!is_relative(Traits::relocation_type(rel.r_info)) ||
                 !visitor(RelativeRelocation{
                     .offset = static_cast<Addr>(rel.r_offset),
                     .addend = 0,
@@ -78,8 +87,10 @@ struct Relocations final: Observable<Traits, Relocations<Traits>> {
             }
         }
         for (auto const &rela: relative_relatable()) {
-            if (Traits::relocation_symbol(rela.r_info) != 0 ||
-                !is_relative(Traits::relocation_type(rela.r_info)) ||
+            if (Traits::relocation_symbol(rela.r_info) != 0) {
+                continue;
+            }
+            if (!is_relative(Traits::relocation_type(rela.r_info)) ||
                 !visitor(RelativeRelocation{
                     .offset = static_cast<Addr>(rela.r_offset),
                     .addend = static_cast<SAddr>(rela.r_addend),
@@ -207,9 +218,17 @@ struct RelocationObserver final: public RelocationObserverBase<Traits> {
     using Rela = typename Traits::Rela;
     using Relr = Addr;
 
-    using Base::Base;
+    /// A pure-relative loader (the kernel image) must reject PLT tables: it
+    /// can never bind them. A loadable module may carry them — its JUMP_SLOT
+    /// entries are bound right after the relative pass by the caller's
+    /// symbol-binding step — so the rejection is conditional.
+    explicit RelocationObserver(InfoType &info, bool allow_symbolic_tables = false)
+        : Base(info), m_allow_symbolic_tables(allow_symbolic_tables) {}
+
     using Base::observe;
     using Base::write_back;
+
+    bool m_allow_symbolic_tables;
 
     template <typename Memory, DynTag Tag>
     FORCE_INLINE [[nodiscard]]
@@ -228,10 +247,13 @@ struct RelocationObserver final: public RelocationObserverBase<Traits> {
     template <typename Memory>
     FORCE_INLINE [[nodiscard]]
     constexpr auto finish(Memory &&memory) -> bool {
-        // PLT/symbolic relocations need a symbol and string-table resolver. Reject them instead
-        // of silently ignoring a table that the relative-only loader cannot apply.
-        if (Base::template has<DynTag::JmpRel>() || Base::template has<DynTag::PltRelSz>() ||
-            Base::template has<DynTag::PltRel>()) {
+        // PLT/symbolic relocations need a symbol and string-table resolver.
+        // Reject them instead of silently ignoring a table that the
+        // relative-only loader cannot apply — unless the caller binds
+        // symbolic entries itself (loadable modules do).
+        if (!m_allow_symbolic_tables &&
+            (Base::template has<DynTag::JmpRel>() || Base::template has<DynTag::PltRelSz>() ||
+             Base::template has<DynTag::PltRel>())) {
             return false;
         }
 

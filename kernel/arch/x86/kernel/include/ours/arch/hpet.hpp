@@ -12,7 +12,7 @@
 
 namespace ours {
 /// Available after hpet_init() called.
-inline ustl::views::Span<time::ClockEventDevice *> g_hpet_clkevt;
+inline ustl::views::Span<time::ClockEventDevice *> HPET_CLKEVT;
 
 INIT_CODE auto hpet_init(PhysAddr mmio) -> Status;
 

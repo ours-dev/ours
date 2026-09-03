@@ -13,8 +13,9 @@ import("//build/toolchain/ours/ours_toolchain_suite.gni")
 #
 #   lk_debug_level (required)
 #     Integer debug policy in the Zircon-compatible range 0..2.  It maps to
-#     Ours' local kernel_debug_level toolchain argument; it does not define the
-#     still-unresolved OURS_DEBUG source contract.
+#     Ours' local kernel_debug_level toolchain argument, which reaches source as
+#     KERNEL_DEBUG_LEVEL -- the switch DEBUG_ASSERT and logz4's verbose levels
+#     both follow.
 #
 #   unit_tests_enabled (required)
 #     Whether UNITTESTS_ENABLED is defined for targets in this switchset.
@@ -85,7 +86,7 @@ template("kernel_switchset") {
         # <logz4/log.hpp> is reached from unrelated corners of kernel-proper
         # (kernel/lib/ktl, kernel/kernel/task, ...) that don't otherwise
         # depend on each other, the same shape as gktl/lockdep above.
-        "//kernel/lib/logz4:headers.config",
+        "//system/lib/logz4:headers.config",
 
         # ktl (Result, XArray, kmalloc, ...) and mtl (Ratio, Scale) are both
         # reached the same broad, unrelated way -- kernel/kernel/task/sched,
@@ -96,6 +97,7 @@ template("kernel_switchset") {
       configs = [
         "//build/config:frame_pointers",
         "//kernel/products:kernel.config",
+        "//kernel/products:unwind-tables",
       ]
       if (cpu == "x86") {
         # Keep section GC explicit for the x86 kernel even when a variant

@@ -181,14 +181,14 @@ class Hashtable final {
     constexpr auto find(T const &value) noexcept -> ustl::Option<T &> {
         const auto hash = m_hasher(value);
         const auto node = find_node(value, hash, bucket_for_hash(hash));
-        return node == NodePtr{} ? ustl::NONE : ustl::some(*to_value(node));
+        return node == NodePtr{} ? ustl::NONE : ustl::some_ref(*to_value(node));
     }
 
     [[nodiscard]]
     constexpr auto find(T const &value) const noexcept -> ustl::Option<T const &> {
         const auto hash = m_hasher(value);
         const auto node = find_node(value, hash, bucket_for_hash(hash));
-        return node == NodePtr{} ? ustl::NONE : ustl::some(*to_value(node));
+        return node == NodePtr{} ? ustl::NONE : ustl::some_ref(*to_value(node));
     }
 
     [[nodiscard]]

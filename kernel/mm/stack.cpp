@@ -6,15 +6,15 @@
 
 namespace ours::mm {
 // This is relative with the boot stack, so marked INIT_DATA
-NO_MANGLE INIT_DATA VirtAddr g_kernel_stack_bottom = 0;
+NO_MANGLE INIT_DATA VirtAddr KERNEL_STACK_BOTTOM = 0;
 
-NO_MANGLE INIT_DATA usize g_kernel_stack_size = 0;
+NO_MANGLE INIT_DATA usize KERNEL_STACK_SIZE = 0;
 
 Stack::Stack() : m_stack(), m_base(0), m_size(0) {}
 
 auto Stack::init_first() -> void {
-    m_base = g_kernel_stack_bottom;
-    m_size = g_kernel_stack_size;
+    m_base = KERNEL_STACK_BOTTOM;
+    m_size = KERNEL_STACK_SIZE;
 }
 
 auto Stack::init(usize size) -> Status {

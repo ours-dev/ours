@@ -22,20 +22,20 @@ class PHYS_EXPORT Aspace;
 /// same way and binds to physload's objects at load time, so there is one
 /// BootMem, one Handoff and one Aspace in the system rather than a copy per
 /// image (ours/phys/exports.hpp).
-PHYS_EXPORT extern BootMem g_bootmem;
-PHYS_EXPORT extern Handoff g_handoff;
-PHYS_EXPORT extern Aspace *g_aspace;
+PHYS_EXPORT extern BootMem BOOTMEM;
+PHYS_EXPORT extern Handoff HANDOFF;
+PHYS_EXPORT extern Aspace *ASPACE;
 
 inline auto global_bootmem() -> BootMem * {
-    return &g_bootmem;
+    return &BOOTMEM;
 }
 
 inline auto global_handoff() -> Handoff * {
-    return &g_handoff;
+    return &HANDOFF;
 }
 
 inline auto global_aspace() -> Aspace * {
-    return g_aspace;
+    return ASPACE;
 }
 
 PHYS_EXPORT auto init_early_console() -> void;

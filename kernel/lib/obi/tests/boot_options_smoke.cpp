@@ -1,3 +1,5 @@
+#include <logz4/filter.hpp>
+#include <logz4/level.hpp>
 #include <obi/command_line_view.hpp>
 #include <obi/container_view.hpp>
 #include <obi/package_builder.hpp>
@@ -134,5 +136,12 @@ auto main() -> int {
             ours::Status::Ok);
     require(std::string_view(layered.kernel_name) == "vmours.debug");
     require(!layered.aslr_disabled);
+
+    auto log_options = ours::phys::BootOptions{};
+    require(ours::phys::apply_boot_options(
+                log_options, options_from_literal("log.level=error\n")) == ours::Status::Ok);
+    require(logz4::min_level() == logz4::Level::Error);
+    require(ours::phys::apply_boot_options(log_options, options_from_literal("log.level=nope\n")) ==
+            ours::Status::InvalidArgument);
     return 0;
 }

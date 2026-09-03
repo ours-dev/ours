@@ -62,8 +62,8 @@ class SystemClock {
     static auto notify(ClockSource *source) -> Status;
 
   private:
-    static inline Clock s_clock;
-    static inline TimePoint s_real_base;
+    static inline Clock CLOCK;
+    static inline TimePoint REAL_BASE;
 };
 
 class SteadyClock {
@@ -77,7 +77,7 @@ class SteadyClock {
     static auto ticks() -> Ticks;
 
   private:
-    static inline Clock s_clock;
+    static inline Clock CLOCK;
 };
 
 } // namespace ours::time

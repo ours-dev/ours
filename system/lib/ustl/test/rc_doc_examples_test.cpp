@@ -11,7 +11,7 @@
 
 namespace {
 
-int g_destroyed = 0;
+int DESTROYED = 0;
 
 // ==== 快速开始（§2）====
 class Session: public ustl::RefCounted<Session> {
@@ -22,7 +22,7 @@ class Session: public ustl::RefCounted<Session> {
         return m_id;
     }
     ~Session() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 
   private:
@@ -30,7 +30,7 @@ class Session: public ustl::RefCounted<Session> {
 };
 
 auto quickstart() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto session = ustl::Rc<Session>::adopt(new Session(42));
     auto copy = session;
     auto weak = session.downgrade();
@@ -39,7 +39,7 @@ auto quickstart() -> void {
     copy = nullptr;
     assert(weak.lock());
     session = nullptr;
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
     assert(!weak.lock());
 }
 
@@ -47,42 +47,42 @@ auto quickstart() -> void {
 class CpuLocalObj: public ustl::RefCounted<CpuLocalObj, ustl::sync::SingleThreadedPolicy> {
   public:
     ~CpuLocalObj() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
 auto policies() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     ustl::Rc<CpuLocalObj, ustl::sync::SingleThreadedPolicy> o =
         ustl::Rc<CpuLocalObj, ustl::sync::SingleThreadedPolicy>::adopt(new CpuLocalObj());
     assert(o);
     o = nullptr;
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
 }
 
 // ==== 模式 B：单例保活（§6）====
-static Session *g_singleton;
+static Session *SINGLETON;
 
 auto singleton() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     auto rc = ustl::Rc<Session>::adopt(new Session(1));
-    g_singleton = rc.into_raw();                     // 让渡，计数 1 永久保活
-    auto handle = ustl::adopt<Session>(g_singleton); // 递增回包
+    SINGLETON = rc.into_raw();                     // 让渡，计数 1 永久保活
+    auto handle = ustl::adopt<Session>(SINGLETON); // 递增回包
     assert(handle.use_count() == 2);
     handle = nullptr; // 回 1
     // 单例永不回收（有意的）；测试收尾时手动回收
-    auto fin = ustl::Rc<Session>::adopt(g_singleton);
+    auto fin = ustl::Rc<Session>::adopt(SINGLETON);
     fin = nullptr;
-    g_singleton = nullptr;
+    SINGLETON = nullptr;
 }
 
 // ==== 模式 C：缓存 / 观察者（§6）====
 auto weak_cache() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     class CacheEntry: public ustl::RefCounted<CacheEntry> {
       public:
         ~CacheEntry() {
-            ++g_destroyed;
+            ++DESTROYED;
         }
     };
     ustl::Rc<CacheEntry> entry = ustl::Rc<CacheEntry>::adopt(new CacheEntry());
@@ -91,54 +91,54 @@ auto weak_cache() -> void {
         (void)hit;
     }
     entry = nullptr;
-    assert(g_destroyed == 1);
+    assert(DESTROYED == 1);
     assert(!slot.lock()); // 命中失败，不悬垂
 }
 
 // ==== 模式 D1：嵌套 Disposer（§6）====
 struct SelfCache;
 struct MemCache: ustl::RefCounted<MemCache> {
-    static int g_freed;
+    static int FREED;
     struct Disposer {
         auto operator()(MemCache *) const noexcept -> void {
-            ++MemCache::g_freed;
+            ++MemCache::FREED;
         }
     };
     ~MemCache() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
-int MemCache::g_freed = 0;
+int MemCache::FREED = 0;
 
 auto disposer_class() -> void {
-    g_destroyed = 0;
-    MemCache::g_freed = 0;
+    DESTROYED = 0;
+    MemCache::FREED = 0;
     {
         auto m = ustl::Rc<MemCache>::adopt(new MemCache());
     }
-    assert(g_destroyed == 1);
-    assert(MemCache::g_freed == 1); // 自定义回收优先于 delete
+    assert(DESTROYED == 1);
+    assert(MemCache::FREED == 1); // 自定义回收优先于 delete
 }
 
 // ==== 模式 D2：set_deallocate（§6）====
 struct Cacheable: ustl::RefCounted<Cacheable> {
     using ustl::RefCounted<Cacheable>::set_deallocate;
     ~Cacheable() {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
-int g_reclaimed = 0;
+int RECLAIMED = 0;
 
 auto disposer_instance() -> void {
-    g_destroyed = 0;
-    g_reclaimed = 0;
+    DESTROYED = 0;
+    RECLAIMED = 0;
     auto *raw = new Cacheable();
-    raw->set_deallocate([](void *) noexcept { ++g_reclaimed; });
+    raw->set_deallocate([](void *) noexcept { ++RECLAIMED; });
     {
         auto c = ustl::Rc<Cacheable>::adopt(raw);
     }
-    assert(g_destroyed == 1);
-    assert(g_reclaimed == 1);
+    assert(DESTROYED == 1);
+    assert(RECLAIMED == 1);
 }
 
 // ==== 模式 E：checked downcast（§6）====
@@ -159,12 +159,12 @@ class VmArea final: public VmAreaOrMapping {
         return TYPE_TAG;
     }
     ~VmArea() override {
-        ++g_destroyed;
+        ++DESTROYED;
     }
 };
 
 auto downcast_checked() -> void {
-    g_destroyed = 0;
+    DESTROYED = 0;
     ustl::Rc<VmAreaOrMapping> aom = ustl::Rc<VmArea>::adopt(new VmArea());
     if (auto area = ustl::downcast<VmArea>(aom)) {
         assert(area);

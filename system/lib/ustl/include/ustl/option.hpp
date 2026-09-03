@@ -320,17 +320,27 @@ Option<T &>
     T *m_value{nullptr};
 };
 
+/// Wraps a value into an owning `Option`, copying from an lvalue and moving
+/// from an rvalue — the argument's value category never changes what you
+/// get back, matching `std::make_optional` and Rust's `Some`.
+///
+/// Aliasing is deliberately not reachable from here: an `Option<T &>` must
+/// be spelled `some_ref`, so a non-owning result is always visible at the
+/// call site rather than being implied by passing a named variable.
 template <typename T>
-[[nodiscard]]
-constexpr auto some(T &value) noexcept -> Option<T &> {
-    return Option<T &>(value);
-}
-
-template <typename T>
-    requires(!std::is_lvalue_reference_v<T>)
 [[nodiscard]]
 constexpr auto some(T &&value) noexcept -> Option<std::remove_cvref_t<T>> {
     return Option<std::remove_cvref_t<T>>(std::forward<T>(value));
+}
+
+/// Wraps a reference into a non-owning `Option<T &>` that aliases `value`.
+/// The referent must outlive the returned option, so reach for this only
+/// when the storage is known to outlive it (a container's own nodes, a
+/// long-lived global) — never for a local.
+template <typename T>
+[[nodiscard]]
+constexpr auto some_ref(T &value) noexcept -> Option<T &> {
+    return Option<T &>(value);
 }
 } // namespace ustl
 

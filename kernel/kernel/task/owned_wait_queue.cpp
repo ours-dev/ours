@@ -5,6 +5,9 @@
 #include <ours/task/thread.hpp>
 #include <ustl/util/tuple.hpp>
 
+#include <type_traits>
+#include <utility>
+
 using ours::task::sched::BaseProfile;
 using ours::task::sched::InheritedProfile;
 
@@ -12,9 +15,9 @@ using ustl::traits::IsSameV;
 
 namespace ours::task {
 namespace {
-    GKTL_COUNTER(pi_promotions, "kernel.pi.adjustment.promotions");
-    GKTL_COUNTER(pi_demotions, "kernel.pi.adjustment.demotions");
-    GKTL_COUNTER(pi_base_profile_overrided, "kernel.pi.adjustment.base_profile_overrided");
+    GKTL_COUNTER(PI_PROMOTIONS, "kernel.pi.adjustment.promotions");
+    GKTL_COUNTER(PI_DEMOTIONS, "kernel.pi.adjustment.demotions");
+    GKTL_COUNTER(PI_BASE_PROFILE_OVERRIDED, "kernel.pi.adjustment.base_profile_overrided");
 
     template <OwnedWaitQueue::PropagateOp Op, typename Upstream, typename Downstream>
         requires PropagatingStream<Upstream, Downstream>
@@ -23,7 +26,7 @@ namespace {
                    decltype(OwnedWaitQueue::REMOVE_SINGLE_EDGE_OP)) -> void {
         Scheduler::split_node_from_pi_graph(upstream, downstream);
         if constexpr (IsSameV<Downstream, Thread>) {
-            pi_demotions.add(1);
+            PI_DEMOTIONS.add(1);
         }
     }
 
@@ -34,7 +37,7 @@ namespace {
                    decltype(OwnedWaitQueue::ADD_SINGLE_EDGE_OP)) -> void {
         Scheduler::join_node_to_pi_graph(upstream, downstream);
         if constexpr (IsSameV<Downstream, Thread>) {
-            pi_promotions.add(1);
+            PI_PROMOTIONS.add(1);
         }
     }
 
@@ -45,7 +48,7 @@ namespace {
                    decltype(OwnedWaitQueue::BASE_PROFILE_OVERRIDED_OP)) -> void {
         Scheduler::on_upstream_thread_base_profile_overrided(upstream, downstream);
         if constexpr (IsSameV<Downstream, Thread>) {
-            pi_base_profile_overrided.add(1);
+            PI_BASE_PROFILE_OVERRIDED.add(1);
         }
     }
 
@@ -64,7 +67,7 @@ OwnedWaitQueue::~OwnedWaitQueue() {
 /// -- a local one would need a guard variable and run its constructor on first
 /// use, which is not something to do underneath a lock.
 namespace {
-    OwnedWaitQueue::INotifyRequeueHook g_default_wake_hook{
+    OwnedWaitQueue::INotifyRequeueHook DEFAULT_WAKE_HOOK{
         .allow = [] { return true; },
         .on_notify = [] { return true; },
         .on_requeue = [] { return false; },
@@ -72,7 +75,7 @@ namespace {
 } // namespace
 
 auto OwnedWaitQueue::default_wake_hook() -> INotifyRequeueHook & {
-    return g_default_wake_hook;
+    return DEFAULT_WAKE_HOOK;
 }
 
 /// Copies out a thread's inherited profile so a propagation can compare the
@@ -95,16 +98,17 @@ auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> sched:
 /// interacts with the priority-inheritance propagation in begin_propagate().
 template <typename UnparkThreads>
 auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
-    -> NotifyBatch<UnparkThreads> {
-    return {};
+    -> ustl::Option<UnparkThreads> {
+    return ustl::NONE;
 }
 
 template <typename UnparkThreads>
 auto OwnedWaitQueue::notify_threads_locked(UnparkThreads, INotifyRequeueHook &, NotifyControl)
     -> void {}
 
-template auto OwnedWaitQueue::lock_for_notify_operation(usize, INotifyRequeueHook &)
-    -> OwnedWaitQueue::NotifyBatch<Thread::UnparkList>;
+template auto OwnedWaitQueue::lock_for_notify_operation<Thread::UnparkList>(usize,
+                                                                            INotifyRequeueHook &)
+    -> ustl::Option<Thread::UnparkList>;
 template auto OwnedWaitQueue::notify_threads_locked(Thread::UnparkList, INotifyRequeueHook &,
                                                     NotifyControl) -> void;
 
@@ -162,7 +166,7 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
         Self::complete_propagate(*thread, *owq, &newip, &oldip, BASE_PROFILE_OVERRIDED_OP);
     }
 
-    pi_base_profile_overrided.add(1);
+    PI_BASE_PROFILE_OVERRIDED.add(1);
 }
 
 auto OwnedWaitQueue::assign_owner(Thread *new_owner) -> Status {
@@ -188,17 +192,23 @@ auto OwnedWaitQueue::assign_owner(Thread *new_owner) -> Status {
     return Status::Ok;
 }
 
-auto OwnedWaitQueue::lock_for_owner_replacement(Thread *new_owner, Thread *) -> void {}
+auto OwnedWaitQueue::lock_for_owner_replacement(Thread *const new_owner, Thread *) -> void {}
+
+auto OwnedWaitQueue::lock_for_park_and_assign_owner_or_backoff(Thread *const curr,
+                                                               Thread *const new_owner)
+    -> ustl::Option<ParkAndAssignOwner> {
+    return ParkAndAssignOwner{new_owner};
+}
 
 auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline const &,
                                            Interruptible interruptible) -> Status {
-    m_canary.verify(OWNED_MAGIC);
+    m_canary.verify<Self>();
     return Status::Ok;
 }
 
 template <typename Upstream, typename Downstream>
 constexpr static auto const FromThreadToOwq =
-    IsSameV<Upstream, Thread> && IsSameV<Downstream, OwnedWaitQueue>;
+    std::is_same_v<Upstream, Thread> && std::is_same_v<Downstream, OwnedWaitQueue>;
 
 template <OwnedWaitQueue::PropagateOp Op, typename Upstream, typename Downstream>
     requires PropagatingStream<Upstream, Downstream>
@@ -257,7 +267,7 @@ auto OwnedWaitQueue::complete_propagate(Upstream &upstream, Downstream &downstre
 }
 
 template <typename Applicant>
-auto OwnedWaitQueue::lock_pi_chain_common(Applicant *start, Thread *blocking_thread) -> void {
+auto OwnedWaitQueue::lock_pi_chain_common(Applicant *start) -> void {
     auto [thread, owq] = ustl::make_tuple<Thread *, Self *>(0, 0);
     if constexpr (IsSameV<Applicant, Thread>) {
         thread = start;
@@ -267,18 +277,12 @@ auto OwnedWaitQueue::lock_pi_chain_common(Applicant *start, Thread *blocking_thr
     }
 
     while (true) {
-        if (thread == nullptr) {
-            return;
-        }
-
         if (!thread->get_pi_lock().try_acquire()) {
         }
 
         thread = owq->m_owner;
+
     [[maybe_unused]] start_from_owq:
-        if (owq == nullptr) {
-            return;
-        }
     }
 }
 

@@ -99,15 +99,15 @@ class ClockSource {
     usize m_max_cycle;
     usize m_last_cycle;
 
-    static Self *g_current_clksrc;
+    static Self *CURRENT_CLKSRC;
 
   private:
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOption);
     USTL_DECLARE_LIST(Self, List, ManagedOption);
 
-    static List g_registered_sources;
-    static sync::Mutex g_registered_sources_mutex;
+    static List REGISTERED_SOURCES;
+    static sync::Mutex REGISTERED_SOURCES_MUTEX;
 };
 
 /// Default clock source which advance by frequency OURS_CONFIG_HZ.
@@ -120,7 +120,7 @@ class ClockSource::Default {
     static auto read() -> usize;
 
     static auto get() -> ClockSource & {
-        return *s_clkevt;
+        return *CLKEVT;
     }
 
   private:
@@ -131,16 +131,16 @@ class ClockSource::Default {
 
     static auto advance_time(Duration delta) -> void;
 
-    static inline ClockSource *s_clkevt;
+    static inline ClockSource *CLKEVT;
 
     /// The CPU which is responsible to update jiffies.
-    static inline CpuNum s_cpunum;
-    static inline sync::SpinLock s_spinlock;
+    static inline CpuNum CPUNUM;
+    static inline sync::SpinLock SPINLOCK;
 
     /// One unit is equal to 1/HZ second.
-    static inline Ticks s_ticks TA_GUARDED(s_spinlock);
-    static inline Ticks s_last_ticks;
-    static inline TimePoint<> s_next_period;
+    static inline Ticks TICKS TA_GUARDED(SPINLOCK);
+    static inline Ticks LAST_TICKS;
+    static inline TimePoint<> NEXT_PERIOD;
 };
 
 } // namespace ours::time

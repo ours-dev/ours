@@ -72,7 +72,7 @@ files (ET_REL, ET_CORE) fail with `ParseError::NotLoadable`.
 | `group.hpp` | `SectionGroupView` | SHT_GROUP (COMDAT) validation |
 | `compression.hpp` | `SectionCompressionView<Traits>` | ZLIB / ZSTD compressed section metadata |
 | `load.hpp` | `SegmentLoader<Traits>` | Loads segments into a provided memory region with validation |
-| `load_policy.hpp` | `LoadPolicy<Traits>` | Computes load-address layout from segments (page-aligned, RELRO-split) |
+| `load_policy.hpp` | `LoadPolicy<Traits>` | Computes load-address layout from segments, and reports the PT_GNU_RELRO ranges alongside it |
 | `mapped_memory.hpp` | `MappedMemory` | Address-space abstraction for loaders |
 | `link.hpp` | (free functions) | Base-address biasing and relative-relocation helpers |
 | `parser.hpp` | `ElfParser<Traits>` | Entry-point: construct an `ElfFile` from raw bytes |

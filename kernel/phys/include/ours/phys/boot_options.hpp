@@ -33,10 +33,10 @@ PHYS_EXPORT auto apply_boot_options(BootOptions &options, obi::CommandLineView c
     -> Status;
 
 /// physload owns the parsed options; modules bind to this object.
-PHYS_EXPORT extern BootOptions g_boot_options;
+PHYS_EXPORT extern BootOptions BOOT_OPTIONS;
 
 inline auto global_boot_options() -> BootOptions * {
-    return &g_boot_options;
+    return &BOOT_OPTIONS;
 }
 
 } // namespace ours::phys

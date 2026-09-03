@@ -29,11 +29,11 @@ constexpr static auto HPET_MIN_CYCLES = 128;
 
 class HpetChannel;
 
-static arch::HpetRegs *s_hpet_mmio;
-static usize s_hpet_frequency;
-static ustl::views::Span<HpetChannel> s_hpet_channels;
+static arch::HpetRegs *HPET_MMIO;
+static usize HPET_FREQUENCY;
+static ustl::views::Span<HpetChannel> HPET_CHANNELS;
 [[maybe_unused]]
-static bool s_hpet_legacy_irq_enabled;
+static bool HPET_LEGACY_IRQ_ENABLED;
 
 class HpetClockSource {
     using Self = HpetClockSource;
@@ -46,7 +46,7 @@ class HpetClockSource {
 
         u64 const oldvalue = m_cache;
         if (::arch::AutoInterruptDisabler guard; m_spinlock.try_acquire()) {
-            auto const value = s_hpet_mmio->main_counter_value;
+            auto const value = HPET_MMIO->main_counter_value;
             m_cache = value;
             m_spinlock.release();
             return value;
@@ -64,13 +64,13 @@ class HpetClockSource {
 
     auto suspend() -> Status {
         m_canary.verify<Self>();
-        s_hpet_mmio->general_config.disable_cnf();
+        HPET_MMIO->general_config.disable_cnf();
         return Status::Ok;
     }
 
     auto resume() -> Status {
         m_canary.verify<Self>();
-        s_hpet_mmio->general_config.enable_cnf();
+        HPET_MMIO->general_config.enable_cnf();
         return Status::Ok;
     }
 
@@ -93,7 +93,7 @@ class HpetClockSource {
         .resume = Packer::pack<&Self::resume>(),
     };
 };
-static HpetClockSource s_hpet_clock_source;
+static HpetClockSource HPET_CLOCK_SOURCE;
 
 class HpetChannel {
     using Self = HpetChannel;
@@ -122,7 +122,7 @@ class HpetChannel {
 
     auto set_next_event_tick(Ticks delta) -> Status {
         m_canary.verify<Self>();
-        auto const now = s_hpet_mmio->main_counter_value;
+        auto const now = HPET_MMIO->main_counter_value;
         regs_mmio_->comparator_value = now + delta;
         return Status::Ok;
     }
@@ -173,8 +173,8 @@ class HpetChannel {
 };
 
 INIT_CODE static auto hpet_init_internal() -> Status {
-    DEBUG_ASSERT(s_hpet_mmio);
-    auto const mmio = s_hpet_mmio;
+    DEBUG_ASSERT(HPET_MMIO);
+    auto const mmio = HPET_MMIO;
 
     if (!mmio->general_caps.support_64bit()) {
         log::info("HPET: Unsupport 64-bit.");
@@ -192,9 +192,9 @@ INIT_CODE static auto hpet_init_internal() -> Status {
         return Status::OutOfMem;
     }
 
-    s_hpet_channels = ustl::views::make_span(channels, num_channels);
+    HPET_CHANNELS = ustl::views::make_span(channels, num_channels);
     for (auto i = 0; i < num_channels; ++i) {
-        s_hpet_channels[i].init(i, &mmio->timers[i]);
+        HPET_CHANNELS[i].init(i, &mmio->timers[i]);
     }
 
     constexpr auto const FEMTOSECONDS_PER_SECOND = duration_cast<Femtoseconds>(Seconds(1)).count();
@@ -205,8 +205,8 @@ INIT_CODE static auto hpet_init_internal() -> Status {
     }
 
     // HZ: How many ticks in one second.
-    s_hpet_frequency = (FEMTOSECONDS_PER_SECOND + period - 1) / period;
-    log::info("HPET Frequency = {}", s_hpet_frequency);
+    HPET_FREQUENCY = (FEMTOSECONDS_PER_SECOND + period - 1) / period;
+    log::info("HPET Frequency = {}", HPET_FREQUENCY);
 
     if (mmio->general_caps.support_legacy()) {
         apic_mask_irq(apic_io_isa_to_global(0));
@@ -215,10 +215,10 @@ INIT_CODE static auto hpet_init_internal() -> Status {
         mmio->main_counter_value = 0;
         mmio->general_config.enable_legacy_route(true);
         mmio->timers[0].conf_caps.set_mode_periodic().mask(false);
-        mmio->timers[0].comparator_value = s_hpet_frequency / HZ; // MS
+        mmio->timers[0].comparator_value = HPET_FREQUENCY / HZ; // MS
         mmio->general_config.enable_cnf();
 
-        s_hpet_legacy_irq_enabled = true;
+        HPET_LEGACY_IRQ_ENABLED = true;
         apic_unmask_irq(apic_io_isa_to_global(0));
     }
 
@@ -237,7 +237,7 @@ INIT_CODE static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
         return result.unwrap_err();
     }
 
-    s_hpet_mmio = reinterpret_cast<decltype(s_hpet_mmio)>(hpet_mmio);
+    HPET_MMIO = reinterpret_cast<decltype(HPET_MMIO)>(hpet_mmio);
     return Status::Ok;
 }
 
@@ -262,12 +262,12 @@ INIT_CODE auto hpet_init(PhysAddr mmio) -> Status {
         return status;
     }
 
-    ClockSource::enroll(&s_hpet_clock_source.high_level_source(), s_hpet_frequency);
+    ClockSource::enroll(&HPET_CLOCK_SOURCE.high_level_source(), HPET_FREQUENCY);
 
-    auto &device = s_hpet_channels[0].device();
-    ClockEventDevice::entroll(device, s_hpet_frequency, HPET_MIN_CYCLES, 0x7FFFFFFF);
+    auto &device = HPET_CHANNELS[0].device();
+    ClockEventDevice::entroll(device, HPET_FREQUENCY, HPET_MIN_CYCLES, 0x7FFFFFFF);
 
-    time::g_clock_event = &device;
+    time::CLOCK_EVENT = &device;
     return Status::Ok;
 }
 

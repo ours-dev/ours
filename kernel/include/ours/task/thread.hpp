@@ -127,6 +127,23 @@ namespace task {
         static auto spawn_etc(KoId, char const *, StartRoutine, sched::BaseProfile const &,
                               TrampolineRoutine, Self *) -> Status;
 
+        /// Builds a thread around the execution context that is already running.
+        ///
+        /// The boot-path counterpart of spawn_etc(): no stack is allocated and no
+        /// entry point is installed, because the caller is already executing on the
+        /// stack the linker script provided and its context lives in the live
+        /// registers. `Stack::init_first()` is what adopts that stack.
+        ///
+        /// This exists because spawn_etc() cannot run this early. It reaches
+        /// Stack::init(), which needs both the slab (VmObjectPaged::create) and
+        /// VmAspace::kernel_aspace(); neither is up until init_pmm() and init_vmm(),
+        /// four steps after task::init_early(). Scheduler::on_thread_init() is
+        /// likewise skipped: it does a CPU-indexed Scheduler::Current lookup, and
+        /// CpuLocal has only installed the running CPU's offset at this point.
+        ///
+        /// The counterpart in Zircon is ConstructFirstThread().
+        static auto create_first(KoId, char const *, sched::BaseProfile const &, Self *) -> void;
+
         /// Core method family.
 
         auto join(i32 *retcode, time::Deadline deadline) -> Status;
@@ -398,8 +415,8 @@ namespace task {
         ustl::collections::intrusive::ListMemberHook<> m_unpark_hook;
         USTL_DECLARE_HOOK_OPTION(Self, m_unpark_hook, UnparkListOption);
 
-        static SpawnedList g_spawned_threads;
-        static sync::SpinLock g_spawned_threads_lock;
+        static SpawnedList SPAWNED_THREADS;
+        static sync::SpinLock SPAWNED_THREADS_LOCK;
 
       public:
         USTL_DECLARE_LIST(Thread, MigratingList, Thread::MigratingListOption);
@@ -471,7 +488,7 @@ namespace task {
         static auto soft_fault(VirtAddr va, mm::VmfCause cause) -> Status;
 
         FORCE_INLINE static auto tid() -> KoId {
-            return mm::CpuLocal::read(g_current_instance->m_tid);
+            return mm::CpuLocal::read(CURRENT_INSTANCE->m_tid);
         }
 
         FORCE_INLINE static auto memory_allocation_state() -> mm::MemoryAllocationState & {

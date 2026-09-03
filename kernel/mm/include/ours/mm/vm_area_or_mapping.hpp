@@ -11,6 +11,9 @@
 #include <ours/status.hpp>
 #include <ustl/collections/intrusive/any_hook.hpp>
 #include <ustl/collections/intrusive/list.hpp>
+#include <functional>
+
+#include <ustl/collections/btree.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
@@ -127,6 +130,76 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         }
     };
 
+    FORCE_INLINE auto end() const -> VirtAddr {
+        return m_base + m_size;
+    }
+
+    /// Augmentation that lets `VmaSet::find_spot` locate a free gap by
+    /// descending the tree instead of walking every area in order.
+    ///
+    /// The aggregate lives in the B-tree's nodes, not in the areas, so an
+    /// area carries no per-node bookkeeping at all. A node folds its
+    /// children and values strictly in key order, which is what makes the
+    /// seam term below well defined: `combine(left, right)` really does mean
+    /// "left is entirely below right in address order".
+    struct GapAugment final {
+        using Element = Self *;
+        static constexpr auto EXTENSIONS = ustl::collections::intrusive::Extension::Augment;
+
+        struct Aggregate {
+            /// No areas underneath: the span terms are meaningless and the
+            /// seam with a neighbour must not be computed.
+            bool m_empty{true};
+            VirtAddr m_min_start{};
+            VirtAddr m_max_end{};
+            VirtAddr m_max_gap{};
+
+            friend auto operator==(Aggregate const &, Aggregate const &) -> bool = default;
+        };
+
+        static auto identity() noexcept -> Aggregate {
+            return Aggregate{};
+        }
+
+        static auto of_element(Element area) noexcept -> Aggregate {
+            return Aggregate{
+                .m_empty = false,
+                .m_min_start = area->base(),
+                .m_max_end = area->end(),
+                .m_max_gap = 0,
+            };
+        }
+
+        static auto combine(Aggregate const &left, Aggregate const &right) noexcept -> Aggregate {
+            if (left.m_empty) {
+                return right;
+            }
+            if (right.m_empty) {
+                return left;
+            }
+
+            auto max_gap = left.m_max_gap;
+            if (right.m_max_gap > max_gap) {
+                max_gap = right.m_max_gap;
+            }
+            // The seam the fold just closed: everything on the left ends by
+            // `left.m_max_end`, everything on the right starts at
+            // `right.m_min_start`.
+            if (right.m_min_start > left.m_max_end) {
+                auto const seam = right.m_min_start - left.m_max_end;
+                if (seam > max_gap) {
+                    max_gap = seam;
+                }
+            }
+            return Aggregate{
+                .m_empty = false,
+                .m_min_start = left.m_min_start,
+                .m_max_end = left.m_max_end > right.m_max_end ? left.m_max_end : right.m_max_end,
+                .m_max_gap = max_gap,
+            };
+        }
+    };
+
   protected:
     constexpr static auto const AREA_MAGIC = gktl::magic("VmArea");
 
@@ -170,14 +243,18 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     VmaFlags m_vmaf;
     VmArea *m_parent;
     ustl::Arc<VmAspace> m_aspace;
-    ustl::collections::intrusive::SetMemberHook<> m_children_hook;
-
-  public:
-    USTL_DECLARE_HOOK_OPTION(Self, m_children_hook, ManagedOptions);
 };
-USTL_DECLARE_MULTISET(VmAreaOrMapping, VmaSetBase,
-                      ustl::collections::intrusive::Compare<VmAreaOrMapping::BaseOrder>,
-                      VmAreaOrMapping::ManagedOptions);
+
+/// Areas are held by pointer: the tree allocates only its own node storage,
+/// never the areas, which keep coming from the object cache as before. The
+/// subtree aggregates live in the tree's nodes rather than in the areas.
+struct VmaBaseOfPointer final {
+    FORCE_INLINE auto operator()(VmAreaOrMapping *area) const noexcept -> VirtAddr {
+        return area->base();
+    }
+};
+
+
 
 class VmAreaOrMapping::Builder {
     using Self = VmAreaOrMapping::Builder;
@@ -238,22 +315,70 @@ class VmAreaOrMapping::Builder {
     ustl::Arc<VmObject> m_vmo;
 };
 
-class VmaSet: public VmaSetBase {
+/// The set of areas a `VmArea` owns, keyed by base address.
+///
+/// The B-tree is a *member*, not a base, and that is load-bearing rather
+/// than stylistic: the set holds a strong reference on every area it points
+/// at, and inheriting would re-expose the tree's own `insert`/`erase`, which
+/// take and drop pointers with no reference counting at all. A caller
+/// reaching one of those would leave the tree pointing at an area that can
+/// then be destroyed. Composition makes the retain/release pairing the only
+/// way in or out.
+class VmaSet {
     using Self = VmaSet;
-    using Base = VmaSetBase;
-
-    using Base::erase;
-    using Base::insert;
+    using Tree =
+        ustl::collections::BTree<VirtAddr, VmAreaOrMapping *, VmaBaseOfPointer, std::less<>,
+                                 ustl::collections::Allocator<VmAreaOrMapping *>,
+                                 VmAreaOrMapping::GapAugment>;
 
   public:
     class Enumerator;
-    typedef Base::Element Element;
-    typedef Base::PtrMut PtrMut;
-    typedef Base::Ptr Ptr;
-    typedef Base::RefMut RefMut;
-    typedef Base::Ref Ref;
-    typedef Base::IterMut IterMut;
-    typedef Base::Iter Iter;
+    using Element = VmAreaOrMapping *;
+    using IterMut = Tree::iterator;
+    using Iter = Tree::const_iterator;
+
+    VmaSet() = default;
+    VmaSet(VmaSet const &) = delete;
+    auto operator=(VmaSet const &) -> VmaSet & = delete;
+
+    /// Drops the reference the set holds on anything still present, so no
+    /// area outlives the set only to be leaked, and none is left pointed at
+    /// by a tree that is going away.
+    ~VmaSet();
+
+    [[nodiscard]] FORCE_INLINE auto empty() const -> bool {
+        return m_tree.empty();
+    }
+
+    [[nodiscard]] FORCE_INLINE auto size() const -> usize {
+        return m_tree.size();
+    }
+
+    FORCE_INLINE auto begin() -> IterMut {
+        return m_tree.begin();
+    }
+    FORCE_INLINE auto begin() const -> Iter {
+        return m_tree.begin();
+    }
+    FORCE_INLINE auto end() -> IterMut {
+        return m_tree.end();
+    }
+    FORCE_INLINE auto end() const -> Iter {
+        return m_tree.end();
+    }
+
+    /// Takes a reference once the area is actually in the tree. Insertion
+    /// allocates node storage, so unlike the intrusive set this replaced it
+    /// can fail; no reference is taken when it does, nor when an area with
+    /// the same base is already present.
+    auto insert(VmAreaOrMapping &value) -> Status;
+
+    /// Removes `value` and drops the set's reference. The area may be
+    /// destroyed by the time this returns, if nothing else holds it.
+    auto erase(VmAreaOrMapping &value) -> void;
+
+    /// Releases every area and empties the set.
+    auto clear() -> void;
 
     /// Determine that in this set if a region contains the range [base, base + size).
     ///
@@ -263,46 +388,24 @@ class VmaSet: public VmaSetBase {
     auto find_spot(usize size, usize align, VirtAddr lower_bound, VirtAddr upper_bound) const
         -> ustl::Result<VirtAddr, Status>;
 
-    // Now there are so many restrictions that we must manually manage those reference counters
-    // from instances of VmAom.
-
-    FORCE_INLINE auto insert(Iter hint, RefMut value) -> IterMut {
-        value.retain();
-        return Base::insert(hint, value);
+    /// Find the first existent VMA whose end < addr.
+    FORCE_INLINE auto lower_bound(VirtAddr addr) -> ustl::Option<IterMut> {
+        return m_tree.lower_bound(addr);
+    }
+    FORCE_INLINE auto lower_bound(VirtAddr addr) const -> ustl::Option<Iter> {
+        return m_tree.lower_bound(addr);
     }
 
-    FORCE_INLINE auto insert(RefMut value) -> IterMut {
-        value.retain();
-        return Base::insert(value);
+    /// Find the first existent VMA whose base > addr.
+    FORCE_INLINE auto upper_bound(VirtAddr addr) -> ustl::Option<IterMut> {
+        return m_tree.upper_bound(addr);
+    }
+    FORCE_INLINE auto upper_bound(VirtAddr addr) const -> ustl::Option<Iter> {
+        return m_tree.upper_bound(addr);
     }
 
-    FORCE_INLINE auto erase(Iter pos) -> IterMut {
-        pos.unconst()->release();
-        return Base::erase(pos);
-    }
-
-    FORCE_INLINE auto erase(Iter first, Iter last) -> IterMut {
-        return Base::erase_and_dispose(first, last,
-                                       [](PtrMut value) noexcept { value->release(); });
-    }
-
-    /// Find the first existent VMA whose'end < addr.
-    FORCE_INLINE auto lower_bound(VirtAddr addr) -> IterMut {
-        return Base::lower_bound(addr, [](Ref x, VirtAddr y) noexcept { return x.m_base < y; });
-    }
-
-    FORCE_INLINE auto lower_bound(VirtAddr addr) const -> Iter {
-        return Base::lower_bound(addr, [](Ref x, VirtAddr y) noexcept { return x.m_base < y; });
-    }
-
-    /// Find the first existent VMA whose'base > addr.
-    FORCE_INLINE auto upper_bound(VirtAddr addr) -> IterMut {
-        return Base::upper_bound(addr, [](VirtAddr y, Ref x) noexcept { return y <= x.m_base; });
-    }
-
-    FORCE_INLINE constexpr auto upper_bound(VirtAddr addr) const -> Iter {
-        return Base::upper_bound(addr, [](VirtAddr y, Ref x) noexcept { return y <= x.m_base; });
-    }
+  private:
+    Tree m_tree;
 };
 
 class VmaSet::Enumerator {

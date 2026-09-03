@@ -24,19 +24,19 @@ namespace {
 ///
 /// The layout above is kernel address space by default.
 ///
-///      (32GB) [0]--g_pdp[0]--g_physmap_pd[0..511]
+///      (32GB) [0]--PDP[0]--PHYSMAP_PD[0..511]
 ///              |
 ///              |
-/// g_kernel_pgd--[..]-(NULL)
-///              |                [0]---g_physmap_pd[0][0..511]
+/// KERNEL_PGD--[..]-(NULL)
+///              |                [0]---PHYSMAP_PD[0][0..511]
 ///              |                 |
-///    (512GB) [511]-g_pdp---g_physmap_pd[..][0..511]
+///    (512GB) [511]-PDP---PHYSMAP_PD[..][0..511]
 ///                                |
-///                               [31]---g_physmap_pd[31][0..511]
+///                               [31]---PHYSMAP_PD[31][0..511]
 ///
 
 /// In this file scope, it should be readonly.
-NO_MANGLE PhysAddr const g_kernel_pgd;
+NO_MANGLE PhysAddr const KERNEL_PGD;
 
 ArchVmAspace::ArchVmAspace(VirtAddr base, usize size, VmasFlags flags)
     : m_canary(this)
@@ -50,7 +50,7 @@ auto ArchVmAspace::init() -> Status {
     m_canary.verify<Self>();
     if (!!(VmasFlags::Kernel & m_flags)) [[unlikely]] {
         // Kernel page table was provided by kernel.phys, so do not need to allocate memory.
-        auto const phys_pgd = g_kernel_pgd;
+        auto const phys_pgd = KERNEL_PGD;
         auto const virt_pgd = PhysMap::phys_to_virt(phys_pgd);
         auto status = m_page_table.init_mmu(phys_pgd, virt_pgd);
         if (status != Status::Ok) {
@@ -92,7 +92,7 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
         }
     } else {
         // Default to kernel aspace
-        Cr3::write(g_kernel_pgd);
+        Cr3::write(KERNEL_PGD);
     }
 
     // Finally, exchange the IO-Bitmap in TSS

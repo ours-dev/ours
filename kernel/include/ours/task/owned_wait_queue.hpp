@@ -1,5 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include "ustl/option.hpp"
 #ifndef OURS_TASK_OWNED_WAIT_QUEUE_HPP
 #define OURS_TASK_OWNED_WAIT_QUEUE_HPP 1
 
@@ -12,13 +13,8 @@
 namespace ours::task {
 template <typename Upstream, typename Downstream>
 concept PropagatingStream = requires {
-    // From thread to OWQ.
-    (ustl::traits::IsSameV<Upstream, Thread> &&
-     ustl::traits::IsSameV<Downstream, OwnedWaitQueue>) ||
-
-        // From OWQ to thread.
-        (ustl::traits::IsSameV<Upstream, OwnedWaitQueue> &&
-         ustl::traits::IsSameV<Downstream, Thread>);
+    (std::is_same_v<Upstream, Thread> && std::is_same_v<Downstream, OwnedWaitQueue>) ||
+    (std::is_same_v<Upstream, OwnedWaitQueue> && std::is_same_v<Downstream, Thread>);
 };
 
 class OwnedWaitQueue: protected WaitQueue {
@@ -66,36 +62,16 @@ class OwnedWaitQueue: protected WaitQueue {
 
     auto assign_owner(Thread *new_owner) -> Status;
 
-    auto park_and_assign_owner(Thread *const curr, time::Deadline const &, Interruptible) -> Status;
+    auto park_and_assign_owner(Thread *const, time::Deadline const &, Interruptible) -> Status;
 
-    auto park_and_assign_owner_preamble(Thread *const curr, Thread *new_owner) -> void;
-    auto park_and_assign_owner_postamble(Thread *const curr, Thread *new_owner) -> void;
-
-    /// What lock_for_notify_operation() hands back: whether the queue could be
-    /// locked, and the waiters it collected.
-    ///
-    /// A plain aggregate, not an Option, because the caller decomposes it in
-    /// the condition of an `if` (P0963R3) and then touches `threads` directly.
-    /// An Option would put value() -- and its require_some() -- in front of
-    /// every one of those accesses, re-asking a question the condition has
-    /// already answered.
-    ///
-    /// Contextually true only when there is somebody to hand off to: locking
-    /// an empty queue succeeds and still leaves nothing to wake, and the two
-    /// callers care about the same thing.
-    template <typename UnparkThreads> // Thread::UnparkList
-    struct NotifyBatch {
-        bool locked;
-        UnparkThreads threads;
-
-        explicit operator bool() const {
-            return locked && !threads.empty();
-        }
+    struct ParkAndAssignOwner {
+        Thread *new_owner;
     };
+    auto lock_for_park_and_assign_owner_or_backoff(Thread *const, Thread *new_owner) -> ustl::Option<ParkAndAssignOwner>;
 
     template <typename UnparkThreads> // Thread::UnparkList
     auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
-        -> NotifyBatch<UnparkThreads>;
+        -> ustl::Option<UnparkThreads>;
 
     template <typename UnparkThreads> // Thread::UnparkList
     auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyControl) -> void;
@@ -116,7 +92,7 @@ class OwnedWaitQueue: protected WaitQueue {
     static auto lock_for_owner_replacement(Thread *new_owner, Thread *blocking_thread) -> void;
 
     template <typename Applicant>
-    static auto lock_pi_chain_common(Applicant *start, Thread *blocking_thread) -> void;
+    static auto lock_pi_chain_common(Applicant *start) -> void;
 
     template <typename Applicant>
     static auto unlock_pi_chain_common(Applicant *start, void *stop_point) -> void;

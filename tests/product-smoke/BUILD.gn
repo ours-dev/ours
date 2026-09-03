@@ -44,11 +44,15 @@ resource("bootfs_data") {
 }
 
 # ---- 冒烟产品：单镜像 + 产品级 cmdline + 产品级 bootfs ----
+# bootable=false：假"内核"是存储载荷而非 ELF，产物是纯容器（只有
+# CONF/KSTR/BTSF 三项），不满足 obit --bootable 的启动拓扑（item 0 必须
+# 是 Executable 入口），所以跳过该校验。
 product("product_smoke") {
   kernel_images = [
     {
       output_name = "smoke"
       package = "//tests/product-smoke:fake_pkg"
+      bootable = false
     },
   ]
   kernel_cmdline = [

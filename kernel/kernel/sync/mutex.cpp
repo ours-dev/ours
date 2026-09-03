@@ -70,7 +70,7 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
             record_initial_assigned_cpu();
 
             if constexpr (TimesliceExtensionEnabled) {
-                current_thread->preemption_state().set_timeslice_extension(
+                return current_thread->preemption_state().set_timeslice_extension(
                     timeslice_extension.value);
             }
             return false;
@@ -97,6 +97,8 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
         arch::spin_hint();
         now_ticks = time::SteadyClock::ticks();
     } while (now_ticks < deadline_ticks);
+
+    // Failed to wait a lock release. Make current thread sleep
 
     // Every exit above either returns false on a successful CAS or breaks
     // here: contended by another thread, self-owned, or the spin deadline
@@ -127,24 +129,24 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
         }
     };
 
-    // P0963R3: decomposing in the condition binds `to_wake` straight to the
-    // returned aggregate's member, so the accesses below reach the list itself
-    // rather than going through an accessor that re-checks what the condition
-    // just established.
+    // The option is engaged only when there is somebody to hand off to:
+    // locking an empty queue succeeds and still leaves nothing to wake. The
+    // condition answers that once, and the body then moves the waiters
+    // straight out of the option and on into notify_threads_locked(), so the
+    // list itself is never copied.
     //
     // What this replaced could not say any of it: lock_for_notify_operation
     // wrote through an out-parameter and returned a bool nobody acted on, so
     // the successor and the state that publishes it had to be
     // default-initialised above an if/else, and a separate `do_wake` carried
     // the same answer to the end of the function.
-    if (auto [locked, to_wake] =
-            m_waiters.lock_for_notify_operation<Thread::UnparkList>(1, default_hook)) {
-        auto *const new_owner = &*to_wake.front();
+    if (auto batch = m_waiters.lock_for_notify_operation<Thread::UnparkList>(1, default_hook)) {
+        auto *const new_owner = &*batch->front();
 
         // The owner pointer *is* the state: a non-null owner with Contended
         // set is what tells the next releaser there is a queue to consult.
         publish(static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended);
-        m_waiters.notify_threads_locked(ustl::move(to_wake), default_hook,
+        m_waiters.notify_threads_locked(ustl::move(*batch), default_hook,
                                         task::OwnedWaitQueue::NotifyControl::None);
     } else {
         publish(State::Available);

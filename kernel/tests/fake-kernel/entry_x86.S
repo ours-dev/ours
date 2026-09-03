@@ -19,7 +19,7 @@ _start:
 
     // physboot hands over on its own stack, mapped in the address space it
     // built.  Switch to this image's stack before touching anything.
-    lea g_fake_kernel_stack_end(%rip), %rsp
+    lea FAKE_KERNEL_STACK_END(%rip), %rsp
     xor %ebp, %ebp
 
     // %rdi already holds the handoff; the ABI needs no shuffling.
@@ -34,10 +34,10 @@ _start:
 
 .section .bss.boot, "aw", @nobits
 .align 16
-g_fake_kernel_stack:
+FAKE_KERNEL_STACK:
     .skip 4096 * 4
-.globl g_fake_kernel_stack_end
-g_fake_kernel_stack_end:
+.globl FAKE_KERNEL_STACK_END
+FAKE_KERNEL_STACK_END:
 
 // //kernel/kernel.ld spells its ENTRY() as MAIN_ENTRY; every kernel image
 // has to publish that alias.

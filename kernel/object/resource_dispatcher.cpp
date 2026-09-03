@@ -14,7 +14,7 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
     }
 
     if (!storage) {
-        storage = &g_system_resources;
+        storage = &SYSTEM_RESOURCES;
     }
 
     if (kind == Kind::Root) {

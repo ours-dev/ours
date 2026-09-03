@@ -1,5 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <atomic>
+#include <utility>
 #ifndef OURS_MM_PAGE_QUEUES_HPP
 #define OURS_MM_PAGE_QUEUES_HPP 1
 
@@ -63,13 +65,13 @@ class PageQueues {
         return m_lock;
     }
 
-    auto mrugen_to_queue_type() -> QueueType {
-        return QueueType(usize(QueueType::ReclaimableStart) +
+    auto mrugen_to_queue_type() const noexcept -> QueueType {
+        return QueueType(std::to_underlying(QueueType::ReclaimableStart) +
                          m_lrugen.load(ustl::sync::MemoryOrder::Acquire));
     }
 
-    auto lrugen_to_queue_type() -> QueueType {
-        return QueueType(usize(QueueType::ReclaimableStart) +
+    auto lrugen_to_queue_type() const noexcept -> QueueType {
+        return QueueType(std::to_underlying(QueueType::ReclaimableStart) +
                          m_lrugen.load(ustl::sync::MemoryOrder::Acquire));
     }
 

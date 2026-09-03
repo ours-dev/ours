@@ -34,7 +34,6 @@ config("host-prelude") {
 config("standalone") {
   configs = [
     "//build/config:freestanding",
-    "//build/config:no-pie-link",
     ":debug-only-unwind-tables",
     ":kernel-heap-alignment",
     ":static-pic-link",
@@ -72,6 +71,20 @@ config("debug-only-unwind-tables") {
   ]
 }
 
+# The sampling profiler unwinds kernel frames from .eh_frame, which clang
+# does not emit for the freestanding x86_64-unknown-none target unless asked
+# to. Switching this off shrinks the image but leaves the profiler with
+# depth-1 records.
+declare_args() {
+  kernel_unwind_tables_enabled = true
+}
+
+config("unwind-tables") {
+  if (kernel_unwind_tables_enabled) {
+    cflags = [ "-fasynchronous-unwind-tables" ]
+  }
+}
+
 config("kernel-heap-alignment") {
   cflags_cc = [ "-faligned-new=8" ]
 }
@@ -87,18 +100,10 @@ config("warnings") {
 }
 
 config("kernel_debug") {
+  # The one debug switch. <ours/assert.hpp> turns DEBUG_ASSERT on for any level
+  # above 0, and logz4 turns Debug/Trace logging on with it; neither has a
+  # define of its own to keep in step.
   defines = [ "KERNEL_DEBUG_LEVEL=$kernel_debug_level" ]
-
-  # <ours/assert.hpp> tests OURS_DEBUG to decide whether DEBUG_ASSERT expands
-  # to anything, so it has to be defined wherever KERNEL_DEBUG_LEVEL is --
-  # an undefined macro inside `if constexpr` is a compile error, not a
-  # silently-off feature. It follows the debug level rather than being a
-  # switch of its own.
-  if (kernel_debug_level > 0) {
-    defines += [ "OURS_DEBUG=1" ]
-  } else {
-    defines += [ "OURS_DEBUG=0" ]
-  }
 }
 
 config("unit-tests-enabled") {
@@ -132,6 +137,15 @@ config("scheduler") {
   ]
 }
 
+config("memory") {
+  defines = [
+    "MM_NUMA=$mm_numa",
+    "MM_NUMA_EMULATION=$mm_numa_emulation",
+    "MM_ALLOCATION_POLICY=$mm_allocation_policy",
+    "MM_VFLAT_MEMMAP=$mm_vflat_memmap",
+  ]
+}
+
 config("kernel.config") {
   configs = [
     ":headers",
@@ -139,6 +153,7 @@ config("kernel.config") {
     ":kernel_debug",
     ":lockdep",
     ":scheduler",
+    ":memory",
     ":unit-tests-enabled",
     ":warnings",
     "//kernel/arch/$ours_cpu:abi",
@@ -156,6 +171,13 @@ config("kernel.link") {
   # bounds the scheduler's discipline registry is collected between. It was
   # never passed to the linker, so those two symbols did not exist and
   # Scheduler::init() had no section to read.
+  #
+  # A kernel image links as a static PIE: physboot loads it at
+  # KERNEL_LOAD_BASE + KASLR, so every absolute pointer (the .ccrt_init
+  # table, vtables, string tables) needs an R_X86_64_RELATIVE relocation for
+  # ElfImage::relocate() to apply. ET_EXEC would bake link-time addresses,
+  # which is exactly how the first global constructor jumped to address 0x3020.
+  configs = [ "//build/config:pie-link" ]
   inputs = [
     "//kernel/kernel.ld",
     "//kernel/kernel/task/task.ld",

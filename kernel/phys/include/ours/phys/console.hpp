@@ -15,7 +15,7 @@ namespace ours::phys {
 /// static instance in its own translation unit:
 ///
 ///     namespace {
-///     SerialConsole g_serial_console;   // constructor runs via .ccrt_init
+///     SerialConsole SERIAL_CONSOLE;   // constructor runs via .ccrt_init
 ///     }
 ///
 /// There is no central list and no registration macro.  The instance's

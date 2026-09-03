@@ -128,14 +128,14 @@ class Counter {
 /// @param TYPE Sum, Min or Max.
 #define GKTL_COUNTER_DEFINE(VAR, NAME, TYPE)                                                       \
     LINK_SECTION(".gktl.counter.descs")                                                            \
-    USED constinit static gktl::Counter::Descriptor const s_counter_descriptor_##VAR = {           \
+    USED constinit static gktl::Counter::Descriptor const COUNTER_DESCRIPTOR_##VAR = {             \
         .name = NAME, .type = gktl::Counter::Type::TYPE};                                          \
                                                                                                    \
     CPU_LOCAL_SPECIAL(".gktl.counter.storage")                                                     \
-    constinit static isize s_counter_storage_##VAR;                                                \
+    constinit static isize COUNTER_STORAGE_##VAR;                                                  \
                                                                                                    \
     [[maybe_unused]]                                                                               \
-    static gktl::Counter VAR{&s_counter_descriptor_##VAR};
+    static gktl::Counter VAR{&COUNTER_DESCRIPTOR_##VAR};
 
 #define GKTL_COUNTER(VAR, NAME) GKTL_COUNTER_DEFINE(VAR, NAME, Sum)
 #include <algorithm>

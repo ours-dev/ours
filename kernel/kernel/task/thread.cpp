@@ -20,11 +20,11 @@
 #include <ustl/fmt/format_to.hpp>
 
 namespace {
-GKTL_COUNTER(thread_spawn_count, "thread.spawn");
-GKTL_COUNTER(thread_join_count, "thread.join");
-GKTL_COUNTER(thread_resume_count, "thread.resume");
-GKTL_COUNTER(thread_suspend_count, "thread.suspend");
-GKTL_COUNTER(thread_destroy_count, "thread.destroy");
+GKTL_COUNTER(THREAD_SPAWN_COUNT, "thread.spawn");
+GKTL_COUNTER(THREAD_JOIN_COUNT, "thread.join");
+GKTL_COUNTER(THREAD_RESUME_COUNT, "thread.resume");
+GKTL_COUNTER(THREAD_SUSPEND_COUNT, "thread.suspend");
+GKTL_COUNTER(THREAD_DESTROY_COUNT, "thread.destroy");
 } // namespace
 
 namespace ours::task {
@@ -38,8 +38,8 @@ using ThreadCache =
                                                            gktl::InitLevel::PlatformEarly>>;
 
 /// Related with global thread list
-decltype(Thread::g_spawned_threads_lock) Thread::g_spawned_threads_lock;
-decltype(Thread::g_spawned_threads) Thread::g_spawned_threads;
+decltype(Thread::SPAWNED_THREADS_LOCK) Thread::SPAWNED_THREADS_LOCK;
+decltype(Thread::SPAWNED_THREADS) Thread::SPAWNED_THREADS;
 
 auto to_string(Thread::State state) -> char const * {
     switch (state) {
@@ -94,6 +94,22 @@ Thread::Thread(KoId tid, char const *name, sched::BaseProfile const &profile)
     , m_migrating_hook()
     , m_unpark_hook() {}
 
+auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &profile, Self *self)
+    -> void {
+    DEBUG_ASSERT(self);
+
+    new (self) Self(tid, name, profile);
+
+    // Adopts the stack this code is already running on rather than allocating
+    // one. Everything spawn_etc() does past this point -- the task state, the
+    // arch context, the scheduler hook -- describes a thread that has yet to
+    // start, and none of it applies to one that is already mid-execution.
+    self->m_stack.init_first();
+
+    Guard guard{SPAWNED_THREADS_LOCK};
+    SPAWNED_THREADS.push_back(*self);
+}
+
 auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry,
                        sched::BaseProfile const &profile, TrampolineRoutine trampoline_routine,
                        Self *self) -> Status {
@@ -113,15 +129,15 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry,
     self->m_arch_thread.init(VirtAddr(trampoline_routine));
 
     {
-        Guard guard{g_spawned_threads_lock};
-        g_spawned_threads.push_back(*self);
+        Guard guard{SPAWNED_THREADS_LOCK};
+        SPAWNED_THREADS.push_back(*self);
     }
 
     // DRANGER!
     // Don't move it. It's inside implementation may be associated with a thread waking event.
     Scheduler::on_thread_init(self, profile);
 
-    thread_spawn_count.add(1);
+    THREAD_SPAWN_COUNT.add(1);
     return Status::Ok;
 }
 
@@ -176,7 +192,7 @@ auto Thread::resume() -> Status {
         Scheduler::unpark_thread(this, UnparkControl::Initial);
     }
 
-    thread_resume_count.add(1);
+    THREAD_RESUME_COUNT.add(1);
     return Status::Ok;
 }
 
@@ -265,7 +281,7 @@ auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
     }
 
     destroy();
-    thread_join_count.add(1);
+    THREAD_JOIN_COUNT.add(1);
     return Status::Ok;
 }
 
@@ -323,7 +339,7 @@ auto Thread::destroy() -> void {
         ThreadCache::put(this);
     }
 
-    thread_destroy_count.add(1);
+    THREAD_DESTROY_COUNT.add(1);
 }
 
 auto Thread::trampoline() -> void {
@@ -338,13 +354,13 @@ auto Thread::trampoline() -> void {
 }
 
 FORCE_INLINE auto Thread::erase_from_global_list() -> void {
-    Guard guard{g_spawned_threads_lock};
+    Guard guard{SPAWNED_THREADS_LOCK};
     return erase_from_global_list_locked();
 }
 
 FORCE_INLINE auto Thread::erase_from_global_list_locked() -> void {
     m_canary.verify<Self>();
-    (void)g_spawned_threads.erase(g_spawned_threads.iterator_to(*this));
+    (void)SPAWNED_THREADS.erase(SPAWNED_THREADS.iterator_to(*this));
 }
 
 auto Thread::Current::preempt() -> void {

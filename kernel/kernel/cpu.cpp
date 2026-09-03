@@ -7,7 +7,7 @@
 
 namespace ours {
 
-std::array<CpuMask, static_cast<usize>(Cpu::State::Count)> Cpu::g_states;
+std::array<CpuMask, static_cast<usize>(Cpu::State::Count)> Cpu::STATES;
 
 /// The CPU number lives in the per-CPU area, written when a CPU attaches to its
 /// unit. It used to be kept here in a function-local `CPU_LOCAL static`, which

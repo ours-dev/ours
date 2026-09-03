@@ -185,46 +185,53 @@ class PmNode {
     template <typename F>
         requires ustl::traits::Invocable<F, NnId>
     static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NnId> {
-        return g_states[static_cast<usize>(state)].for_each(ustl::forward<F>(f));
+        return STATES[static_cast<usize>(state)].for_each(ustl::forward<F>(f));
     }
 
     template <typename F>
         requires ustl::traits::Invocable<F, Self &>
     static auto for_each_node(State state, F &&f) -> ustl::traits::InvokeResultT<F, Self &> {
-        return g_states[static_cast<usize>(state)].for_each([&f](NnId nid) {
+        return STATES[static_cast<usize>(state)].for_each([&f](NnId nid) {
             DEBUG_ASSERT(Self::node(nid), "Touched an absent node in {}", __func__);
             return f(*Self::node(nid));
         });
     }
 
     FORCE_INLINE static auto node_online_mask() -> NodeMask const & {
-        return g_states[static_cast<usize>(State::Online)];
+        return STATES[static_cast<usize>(State::Online)];
     }
 
     FORCE_INLINE static auto node_possible_mask() -> NodeMask const & {
-        return g_states[static_cast<usize>(State::Possible)];
+        return STATES[static_cast<usize>(State::Possible)];
+    }
+
+    /// Marks `nid` present in one of the state masks. The NUMA bring-up
+    /// path (SRAT discovery) uses this to declare a domain Possible before
+    /// the PMM builds its nodes.
+    static auto set_state(NnId nid, State state, bool on = true) -> void {
+        STATES[static_cast<usize>(state)].set(nid, on);
     }
 
     FORCE_INLINE constexpr static auto node(NnId nid) -> PmNode * {
-        return g_nodes[nid];
+        return NODES[nid];
     }
 
     FORCE_INLINE constexpr static auto num_nodes() -> usize {
-        return g_num_nodes;
+        return NUM_NODES;
     }
 
     FORCE_INLINE constexpr static auto num_online_nodes() -> usize {
-        return g_num_online_nodes;
+        return NUM_ONLINE_NODES;
     }
 
     FORCE_INLINE constexpr static auto distance(NnId x, NnId y) -> usize {
         DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE, "");
-        return g_node_distance[x][y];
+        return NODE_DISTANCE[x][y];
     }
 
     FORCE_INLINE constexpr static auto set_distance(NnId x, NnId y, usize dis) -> void {
         DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE, "");
-        g_node_distance[x][y] = dis;
+        NODE_DISTANCE[x][y] = dis;
     }
 
     static auto build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &filter)
@@ -312,10 +319,6 @@ class PmNode {
   private:
     friend class ZoneQueues;
 
-    static auto set_state(NnId nid, State state, bool on = true) -> void {
-        g_states[static_cast<usize>(state)].set(nid, on);
-    }
-
     PmNode(NnId nid);
 
     ~PmNode() = default;
@@ -340,7 +343,15 @@ class PmNode {
     auto get_frame_from_zone_queues(Gaf, usize, AllocationControl, MemoryAllocationContext const &)
         -> PmFrame *;
 
-    auto alloc_frames_preamble(Gaf, usize, MemoryAllocationContext *) -> Status;
+    /// Fills in the context the zone walk filters on.
+    ///
+    /// `fallback` is the caller's nodemask and has to reach the context, because
+    /// get_frame_from_zone_queues() skips any zone whose node is not in
+    /// `allowed_nodes` -- a context left default-constructed rejects every zone,
+    /// and the slowpath then spins waiting for a reclaim that will never make
+    /// the walk succeed.
+    auto alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallback,
+                               MemoryAllocationContext *context) -> Status;
 
     auto alloc_frames_postamble(PmFrame *, Gaf, usize, MemoryAllocationContext const &) -> void;
 
@@ -377,19 +388,19 @@ class PmNode {
     MemoryAllocationPolicy m_node_policy;
 
     constexpr static usize NUM_STATES = static_cast<usize>(State::NumStates);
-    static std::array<NodeMask, NUM_STATES> g_states;
+    static std::array<NodeMask, NUM_STATES> STATES;
 
-    static std::array<PmNode *, NUMA_MAX_NODE> g_nodes;
-
-    // Th fields bottom is readonly after initializing logically.
-    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> g_node_distance;
+    static std::array<PmNode *, NUMA_MAX_NODE> NODES;
 
     // Th fields bottom is readonly after initializing logically.
-    static usize g_num_nodes;
+    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> NODE_DISTANCE;
 
-    static usize g_num_online_nodes;
+    // Th fields bottom is readonly after initializing logically.
+    static usize NUM_NODES;
 
-    static Gaf g_allowed_gaf;
+    static usize NUM_ONLINE_NODES;
+
+    static Gaf ALLOWED_GAF;
 };
 
 /// The helper class be used to describe PmNode associated with current cpu context.
@@ -407,21 +418,36 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
         -> ktl::Result<PmFrame::List>;
 
     FORCE_INLINE static auto hard_affinity() -> CpuMask const & {
-        return CpuLocal::access(g_current_instance->m_hard_affinity);
+        return CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity);
     }
 
+    /// The node the calling CPU belongs to.
+    ///
+    /// Read out of DYNAMIC_CPU_TO_NODE rather than through CURRENT_INSTANCE,
+    /// and not as an optimisation. CURRENT_INSTANCE is a per-CPU `PmNode *`, so
+    /// `CURRENT_INSTANCE->m_id` dereferences the *template* copy of that pointer
+    /// at compile time -- it folds to `&(nullptr->m_id)`, i.e. the constant 4,
+    /// which then gets handed to %gs as if it were a per-CPU handle. That is a
+    /// wild access whichever model is in effect, and it stays wrong after the
+    /// pointer is set, because the fold already happened.
+    ///
+    /// The array is also the only answer that works this early: nothing fills
+    /// CURRENT_INSTANCE until PmNode::Current::init() runs from an init hook,
+    /// while allocation starts asking for a node long before that. This is the
+    /// same role Linux gives early_per_cpu(x86_cpu_to_node_map).
     FORCE_INLINE static auto nid() -> NnId {
-        return CpuLocal::read(g_current_instance->m_id);
+        return nid(CpuLocal::current_cpu());
     }
 
     FORCE_INLINE static auto nid(CpuNum cpunum) -> NnId {
-        return CpuLocal::access(g_current_instance->m_id, cpunum);
+        DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU Number");
+        return DYNAMIC_CPU_TO_NODE[cpunum];
     }
 
     /// Used only on the early stage.
     FORCE_INLINE static auto set_nid_early(CpuNum cpunum, NnId nid) -> void {
-        g_static_cpu_to_node[cpunum] = nid;
-        g_dynamic_cpu_to_node[cpunum] = nid;
+        STATIC_CPU_TO_NODE[cpunum] = nid;
+        DYNAMIC_CPU_TO_NODE[cpunum] = nid;
     }
 
     static auto set_nid(NnId nid) -> void;
@@ -439,8 +465,8 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     NodeMask m_hard_affinity;
     NodeMask m_soft_affinity;
 
-    static std::array<NnId, MAX_CPU> g_static_cpu_to_node;
-    static std::array<NnId, MAX_CPU> g_dynamic_cpu_to_node;
+    static std::array<NnId, MAX_CPU> STATIC_CPU_TO_NODE;
+    static std::array<NnId, MAX_CPU> DYNAMIC_CPU_TO_NODE;
 };
 
 template <typename F, typename... Args>

@@ -79,7 +79,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     ~MemCache();
 
     /// Storage reclaim for MemCache instances: return the storage to the
-    /// self-cache (`g_self_cache->free`). Set by the constructor.
+    /// self-cache (`SELF_CACHE->free`). Set by the constructor.
     static auto reclaim_storage(void *pointer) noexcept -> void;
 
     auto init(char const *name, usize size, usize align, Option) -> Status;
@@ -121,9 +121,9 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     ustl::collections::intrusive::ListMemberHook<> m_managed_hook;
     USTL_DECLARE_LIST_MEMBER(Self, List, m_managed_hook);
 
-    static sync::Mutex g_cache_lock;
-    static List g_global_caches TA_GUARD(g_cache_lock);
-    static NodeMask g_slab_nodes TA_GUARD(g_cache_lock);
+    static sync::Mutex CACHE_LOCK;
+    static List GLOBAL_CACHES TA_GUARD(CACHE_LOCK);
+    static NodeMask SLAB_NODES TA_GUARD(CACHE_LOCK);
 };
 
 /// The typed shell over MemCache.
@@ -179,7 +179,7 @@ class ObjectCache::Instance {
 
   public:
     static auto init(char const *name, Flags flags) -> Status {
-        return MemCache::create(name, sizeof(T), alignof(T), flags, &g_cache);
+        return MemCache::create(name, sizeof(T), alignof(T), flags, &CACHE);
     }
 
     /// Initializes from an AddInitHook option's recorded name and flags.
@@ -197,29 +197,29 @@ class ObjectCache::Instance {
 
     [[nodiscard]]
     static auto is_ready() -> bool {
-        return bool(g_cache);
+        return bool(CACHE);
     }
 
     /// Hands back uninitialized storage for one T, for the two-phase callers
     /// that construct it themselves later (Thread::spawn_etc placement-news
     /// into what Thread::spawn allocated here). Prefer get() otherwise.
     static auto allocate(Gaf gaf, NnId nid = NUMA_MAX_NODE) -> T * {
-        DEBUG_ASSERT(g_cache, "ObjectCache for this type is not initialized");
-        return static_cast<T *>(g_cache->allocate(gaf, nid));
+        DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
+        return static_cast<T *>(CACHE->allocate(gaf, nid));
     }
 
     /// Releases storage from allocate() without running the destructor.
     static auto deallocate(T *storage) -> void {
         if (storage) {
-            g_cache->free(storage);
+            CACHE->free(storage);
         }
     }
 
     template <typename... Args>
     static auto get(Gaf gaf, Args &&...args) -> T * {
-        DEBUG_ASSERT(g_cache, "ObjectCache for this type is not initialized");
+        DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
 
-        auto *const storage = g_cache->allocate(gaf, NUMA_MAX_NODE);
+        auto *const storage = CACHE->allocate(gaf, NUMA_MAX_NODE);
         if (!storage) {
             return nullptr;
         }
@@ -228,9 +228,9 @@ class ObjectCache::Instance {
 
     template <typename... Args>
     static auto get(Gaf gaf, NnId nid, Args &&...args) -> T * {
-        DEBUG_ASSERT(g_cache, "ObjectCache for this type is not initialized");
+        DEBUG_ASSERT(CACHE, "ObjectCache for this type is not initialized");
 
-        auto *const storage = g_cache->allocate(gaf, nid);
+        auto *const storage = CACHE->allocate(gaf, nid);
         if (!storage) {
             return nullptr;
         }
@@ -240,7 +240,7 @@ class ObjectCache::Instance {
     static auto put(T *object) -> void {
         if (object) {
             object->~T();
-            g_cache->free(object);
+            CACHE->free(object);
         }
     }
 
@@ -250,7 +250,7 @@ class ObjectCache::Instance {
         return init(Option::NAME.data(), Option::FLAGS);
     }
 
-    static inline ustl::Arc<MemCache> g_cache;
+    static inline ustl::Arc<MemCache> CACHE;
 };
 
 } // namespace ours::mm

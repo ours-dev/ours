@@ -3,55 +3,69 @@
 #ifndef PROF_FORMAT_HPP
 #define PROF_FORMAT_HPP 1
 
-#include <cstddef>
-#include <cstdint>
-
 namespace prof {
 
 /// Fixed-size sample record shared verbatim between the kernel export path
 /// and the host `prof-fold` tool. Addresses stay un-symbolized: the host
 /// resolves them against the kernel ELF.
-inline constexpr std::uint32_t SAMPLE_MAGIC = 0x504D'4153; // "SAMP"
-inline constexpr std::size_t MAX_STACK_DEPTH = 16;
+inline constexpr u32 SAMPLE_MAGIC = 0x504D'4153; // "SAMP"
+inline constexpr usize MAX_STACK_DEPTH = 16;
 
-enum RecordFlags : std::uint8_t {
-    RECORD_NONE = 0,
+enum class RecordFlags : u8 {
+    RecordNone = 0,
     /// The sample interrupted user code; only `ips[0]` (the user PC) is
     /// meaningful and no kernel unwind was attempted.
-    RECORD_FROM_USPACE = 1,
+    RecordFromUspace = 1,
     /// The unwind hit its depth cap or aborted early; the stack is a prefix.
-    RECORD_TRUNCATED = 2,
+    RecordTruncated = 2,
 };
 
+[[nodiscard]]
+constexpr auto operator|(RecordFlags lhs, RecordFlags rhs) -> RecordFlags {
+    return static_cast<RecordFlags>(static_cast<u8>(lhs) | static_cast<u8>(rhs));
+}
+
+constexpr auto operator|=(RecordFlags &lhs, RecordFlags rhs) -> RecordFlags & {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+[[nodiscard]]
+constexpr auto operator&(RecordFlags lhs, RecordFlags rhs) -> RecordFlags {
+    return static_cast<RecordFlags>(static_cast<u8>(lhs) & static_cast<u8>(rhs));
+}
+
 struct SampleRecord final {
-    std::uint32_t magic;
-    std::uint8_t depth;
-    std::uint8_t flags;
-    std::uint16_t cpu;
-    std::uint32_t tid;
-    std::uint32_t reserved;
-    std::uint64_t tsc;
-    std::uint64_t ips[MAX_STACK_DEPTH];
+    u32 magic;
+    u8 depth;
+    RecordFlags flags;
+    u16 cpu;
+    u32 tid;
+    u32 reserved;
+    u64 tsc;
+    u64 ips[MAX_STACK_DEPTH];
 };
 static_assert(sizeof(SampleRecord) == 4 + 1 + 1 + 2 + 4 + 4 + 8 + 8 * MAX_STACK_DEPTH);
 static_assert(sizeof(SampleRecord) == 152);
 
 /// Dump container header, written once per `prof.dump` before the records.
-inline constexpr std::uint32_t DUMP_MAGIC = 0x4652'504F; // "OPRF"
-inline constexpr std::uint16_t DUMP_VERSION = 1;
+inline constexpr u32 DUMP_MAGIC = 0x4652'504F; // "OPRF"
+inline constexpr u16 DUMP_VERSION = 1;
 
 struct DumpHeader final {
-    std::uint32_t magic;
-    std::uint16_t version;
-    std::uint16_t header_size;
-    std::uint32_t record_size;
-    std::uint32_t num_records;
-    std::uint32_t num_dropped;
-    std::uint64_t tsc_hz;
-    std::uint32_t num_cpus;
-    std::uint32_t reserved;
+    u32 magic;
+    u16 version;
+    u16 header_size;
+    u32 record_size;
+    u32 num_records;
+    u32 num_dropped;
+    u32 num_cpus;
+    /// Runtime address the kernel image was loaded at (the CLI subtracts it
+    /// from record IPs before resolving ELF symbols).
+    u64 load_base;
 };
 static_assert(sizeof(DumpHeader) == 32);
+static_assert(alignof(DumpHeader) == 8);
 
 /// Serial export framing: the header goes out as one `PROF1 <hex>` line and
 /// every record as one `SAMP <hex>` line. Line framing survives the texty

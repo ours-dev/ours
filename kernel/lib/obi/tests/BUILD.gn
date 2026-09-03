@@ -39,7 +39,10 @@ executable("boot-options-smoke") {
     "boot_options_smoke.cpp",
   ]
   include_dirs = [ "//kernel/phys/include" ]
-  deps = [ "//kernel/lib/obi:obi" ]
+  deps = [
+    "//kernel/lib/obi:obi",
+    "//system/lib/logz4:headers",
+  ]
   visibility = [ "*" ]
 }
 

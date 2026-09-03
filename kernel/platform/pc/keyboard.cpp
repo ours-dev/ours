@@ -436,9 +436,9 @@ const uint8_t PC_KEY_MAP_SET1_E0[128] = {/* 0x00 */ 0,
 /// State key flags
 static bool key_lshift;
 static bool key_rshift;
-static int last_code;
+static int LAST_CODE;
 
-static ustl::io::CircularBuffer<u8, ktl::Allocator<u8>> key_buf;
+static ustl::io::CircularBuffer<u8, ktl::Allocator<u8>> KEY_BUF;
 
 FORCE_INLINE static auto isprint(u8 c) -> bool {
     return 0x20 <= c && c <= 0x7E;
@@ -446,10 +446,10 @@ FORCE_INLINE static auto isprint(u8 c) -> bool {
 
 static auto i8042_process_scode(u8 scode, i32 flags) -> void {
     // is this a multi code sequence?
-    bool multi = (last_code == 0xe0);
+    bool multi = (LAST_CODE == 0xe0);
 
     // update the last received code
-    last_code = scode;
+    LAST_CODE = scode;
 
     // save the key up event bit
     bool key_up = !!(scode & 0x80);
@@ -525,7 +525,7 @@ static auto i8042_process_scode(u8 scode, i32 flags) -> void {
     if (!key_up) {
         for (u32 i = 0; str[i] != '\0'; ++i) {
             log::trace("char 0x{:X} ({})\n", str[i], isprint(str[i]) ? (str[i]) : ' ');
-            key_buf.push_back(str[i]);
+            KEY_BUF.push_back(str[i]);
         }
     }
 }
@@ -662,7 +662,7 @@ static auto i8042_interrupt(VIrqNum, void *) -> irq::IrqReturn {
 static auto platform_init_keyboard() -> void {
     uint8_t ctr;
 
-    if (key_buf.resize(KB(1)).is_err()) {
+    if (KEY_BUF.resize(KB(1)).is_err()) {
         log::debug("Failed to allocate the keyboard input ring\n");
         return;
     }

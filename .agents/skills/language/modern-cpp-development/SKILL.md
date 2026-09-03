@@ -152,7 +152,7 @@ This repo has three library tiers, not one flat "the STL":
 
 ### Tooling
 
-1. Every C++ change must be run through `clang-format` and `clang-tidy` before it's considered done — see `.agents/skills/cpp-write-and-verify` for the exact binaries, paths, and container invocation in this environment. Don't restate or improvise those commands here; that skill is the single source of truth for them and drifts if duplicated.
+1. Every C++ change must be run through `clang-format` and `clang-tidy` before it's considered done — see `.agents/skills/cpp-write-and-verify` for the exact binaries and paths (the `prebuilt/` LLVM tree) in this environment. Don't restate or improvise those commands here; that skill is the single source of truth for them and drifts if duplicated.
 
 ## Workflow
 

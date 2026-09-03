@@ -5,6 +5,7 @@
 
 #include <ustl/collections/intrusive/intrusive_fwd.hpp>
 #include <ustl/collections/intrusive/link_mode.hpp>
+#include <ustl/collections/intrusive/detail/extension.hpp>
 #include <ustl/collections/intrusive/pack_options.hpp>
 
 namespace ustl::collections::intrusive {
@@ -67,6 +68,27 @@ struct PriorityOfValue final {
     template <typename Base>
     struct Pack: Base {
         using PriorityOfValue = T;
+    };
+};
+
+/// Attaches a extension policy to the container. `T` declares which
+/// extensions it provides through `static constexpr Extension
+/// EXTENSIONS` and supplies the matching hooks (see
+/// `detail/extension.hpp`); the container activates exactly those and
+/// compiles the rest away. The policy is written against the element type
+/// and never sees a tree node.
+///
+///     struct GapAugment {
+///         using Element = VmAreaOrMapping;
+///         static constexpr auto EXTENSIONS = Extension::Augment;
+///         static auto recompute(Element &, Element const *, Element const *) noexcept -> bool;
+///         static auto copy(Element const &, Element &) noexcept -> void;
+///     };
+template <typename T>
+struct Extensions final {
+    template <typename Base>
+    struct Pack: Base {
+        using ExtensionPolicy = T;
     };
 };
 

@@ -39,7 +39,13 @@ SECTIONS {
     .plt : { *(.plt) }
     .plt.got : { *(.plt.got) }
 
-    . = ALIGN(8);
+    /*
+     * The segments must not share a page: ElfImage's load policy maps each
+     * PT_LOAD separately and requires page-disjoint mappings, since R|X and
+     * R contents cannot share one page under distinct permissions. This is
+     * the same convention kernel.ld follows between its regions.
+     */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
     .rodata : {
         *(.rodata*)
     } :rodata
@@ -71,7 +77,8 @@ SECTIONS {
     .hash : { *(.hash) } :rodata
     .rela.dyn : { *(.rela.dyn) } :rodata
 
-    . = ALIGN(8);
+    /* rodata -> data is the second permission boundary. */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
     .dynamic : { *(.dynamic) } :data :dynamic
 
     .got : { *(.got) } :data

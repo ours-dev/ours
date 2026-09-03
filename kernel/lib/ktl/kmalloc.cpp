@@ -52,7 +52,7 @@ static auto get_allocation_index(usize size) -> usize {
 // ObjectCache. LazyInit gives static storage without running MemCache's
 // private constructor; create_boot() initializes in place, the same pattern
 // MemCache::init() uses for its own bootstrap caches.
-static std::array<ustl::LazyInit<MemCache>, NUM_MALLOC_CACHES> s_kmalloc_cache;
+static std::array<ustl::LazyInit<MemCache>, NUM_MALLOC_CACHES> KMALLOC_CACHE;
 
 auto kmalloc(usize size, Gaf gaf, NnId nid) -> void * {
     if (size > MAX_MALLOC_SIZE) {
@@ -64,7 +64,7 @@ auto kmalloc(usize size, Gaf gaf, NnId nid) -> void * {
     }
 
     auto const index = get_allocation_index(size);
-    return s_kmalloc_cache[index]->allocate(gaf, nid);
+    return KMALLOC_CACHE[index]->allocate(gaf, nid);
 }
 
 auto kmalloc(usize size, Gaf gaf) -> void * {
@@ -74,7 +74,7 @@ auto kmalloc(usize size, Gaf gaf) -> void * {
     }
 
     auto const index = get_allocation_index(size);
-    return s_kmalloc_cache[index]->allocate(gaf, current_node());
+    return KMALLOC_CACHE[index]->allocate(gaf, current_node());
 }
 
 auto kfree(void *object) -> void {
@@ -95,13 +95,13 @@ auto kfree(void *object) -> void {
 }
 
 INIT_CODE auto init_kmalloc() -> void {
-    for (usize i = 0; i < s_kmalloc_cache.size(); ++i) {
+    for (usize i = 0; i < KMALLOC_CACHE.size(); ++i) {
         // data(), not init(): create_boot() initializes the cache in place,
         // exactly as MemCache::init() does for its own bootstrap caches.
         // Calling init() would need a default constructor MemCache does not
         // have -- its constructors are private and take the layout up front.
         [[maybe_unused]]
-        auto const status = MemCache::create_boot(*s_kmalloc_cache[i].data(), MALLOC_CACHE_NAMES[i],
+        auto const status = MemCache::create_boot(*KMALLOC_CACHE[i].data(), MALLOC_CACHE_NAMES[i],
                                                   BIT(i + MALLOC_MIN_ORDER), alignof(usize),
                                                   MemCache::Option::CacheAlign);
         DEBUG_ASSERT(Status::Ok == status);

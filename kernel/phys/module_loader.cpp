@@ -1,11 +1,11 @@
 #include "build_id_note.hpp"
 #include "physload.hpp"
+#include <logz4/log.hpp>
 #include <ours/phys/exports.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/kernel_package.hpp>
 #include <ours/phys/module_loader.hpp>
-#include <ours/phys/print.hpp>
 #include <ustl/mem/align.hpp>
 
 #include <span>
@@ -116,7 +116,7 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
         if (name == DEFAULT_MODULE) {
             panic("phys module '{}' missing from kernel package", options.next_module);
         }
-        println("phys module '{}' not found, falling back to '{}'", options.next_module);
+        log::info("phys module '{}' not found, falling back to '{}'", options.next_module);
         name = DEFAULT_MODULE;
         found = files.find(name);
         if (found.is_err()) {
@@ -157,8 +157,8 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     }
     auto const expected_build_id = own_build_id();
     if (expected_build_id.empty() || pt_interp.empty() || pt_interp != expected_build_id) {
-        println("phys module '{}' PT_INTERP '{}' does not match this physload's build ID '{}'",
-                name, pt_interp, expected_build_id);
+        log::info("phys module '{}' PT_INTERP '{}' does not match this physload's build ID '{}'",
+                  name, pt_interp, expected_build_id);
         return Status::Unsupported;
     }
 
@@ -181,23 +181,23 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     // pass above fixed up the pointers inside it.
     auto const record = m_image.section(PhysModule::SECTION);
     if (record.size() < sizeof(PhysModule)) {
-        println("phys module '{}' declares no {} descriptor", name, PhysModule::SECTION);
+        log::info("phys module '{}' declares no {} descriptor", name, PhysModule::SECTION);
         return Status::NotFound;
     }
     auto const *descriptor = reinterpret_cast<PhysModule const *>(record.data());
     if (descriptor->abi_version != PhysModule::ABI_VERSION) {
-        println("phys module '{}' speaks module ABI {}, physload speaks {}", name,
-                descriptor->abi_version, PhysModule::ABI_VERSION);
+        log::info("phys module '{}' speaks module ABI {}, physload speaks {}", name,
+                  descriptor->abi_version, PhysModule::ABI_VERSION);
         return Status::Unsupported;
     }
     if (descriptor->init == nullptr) {
-        println("phys module '{}' declares a null entry", name);
+        log::info("phys module '{}' declares a null entry", name);
         return Status::InvalidArgument;
     }
 
     m_descriptor = descriptor;
-    dprintln("Loaded phys module '{}' at 0x{:X}, entry 0x{:X}", descriptor->name, target,
-             reinterpret_cast<usize>(descriptor->init));
+    log::debug("Loaded phys module '{}' at 0x{:X}, entry 0x{:X}", descriptor->name, target,
+               reinterpret_cast<usize>(descriptor->init));
     return Status::Ok;
 }
 

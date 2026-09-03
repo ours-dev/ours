@@ -58,7 +58,7 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     PhysAddr m_size;
     Self::List *m_rsrclist;
 
-    static inline Storage g_system_resources;
+    static inline Storage SYSTEM_RESOURCES;
 };
 } // namespace ours::object
 
