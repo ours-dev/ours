@@ -103,3 +103,89 @@ Scheduler::Current::set_active(true);     // 循环之后才置位
   就已知，它根本不该进选择路径。这是下一条的内容。
 - **没有碰 `find_active_scheduler_for()` 的自旋**。它在「所有调度器都不 active」时会
   空转，这在本次改动前后都成立（改动前是断言，也不算能返回），不是回归。
+
+---
+
+## 2. 空闲线程钉在自己那颗 CPU 上，不进通用选择（2026-09-03）
+
+**文件**
+- `kernel/include/ours/cpu.hpp` — 新增 `cpu_mask_of()`，Linux 的 `cpumask_of()`。
+- `kernel/include/ours/task/thread.hpp` / `kernel/kernel/task/thread.cpp` —
+  `spawn_etc()` 增加尾部默认参数 `CpuNum target_cpu`。
+- `kernel/include/ours/task/sched/scheduler.hpp` / `sched/scheduler.cpp` —
+  `on_thread_init()` 同样增加该参数，有值时跳过选择。
+- `kernel/kernel/task/idle_thread.cpp` — `IdleThread::init()` 把 `m_cpu` 传下去。
+
+**症状**
+
+潜伏，当前配置下触发不到：QEMU 只起了一颗 CPU，所以「选出来的 CPU」和「本该属于的 CPU」
+恰好都是 0。多核下必现——`task::init()` 是**在 BSP 上**替每颗 possible CPU 建空闲线程的，
+第 1 条的兜底会给出 `starting_cpu = Cpu::id()`，也就是 BSP：
+
+> 每一颗 CPU 的空闲线程都被登记到 0 号调度器上，而它们各自的调度器没有空闲线程。
+
+一个没有空闲线程的调度器在无事可做时无处可切，`m_runtime.curr_thread` 会停在一个不属于
+它的线程上。
+
+**原因**
+
+空闲线程的 CPU **不是一个待决策的放置问题**，它是这个对象的定义：一颗 CPU 一个 idler，
+`IdleThread::init(cpunum)` 一进来就知道答案。把它送进通用选择，是拿一个已知量去问一个
+猜测器。
+
+而且这个问题**通用选择根本答不出来**，不只是答错：`select_target_cpu()` 的两级候选集
+（active 掩码、online 掩码）都是 online 掩码的子集，而 `task::init()` 遍历的是
+`cpu_possible_mask()`，此时次级 CPU 一颗都还没 online。对一颗尚未 online 的 CPU，
+选择逻辑没有任何可读的状态能得出正确答案——只有调用方知道。
+
+`Thread::spawn_etc()` 此前没有任何办法表达「这个线程属于 CPU N」。
+
+**改法**
+
+`spawn_etc()` 和 `on_thread_init()` 各加一个尾部默认参数 `CpuNum target_cpu`，
+默认 `INVALID_CPU_NUM` 表示「没有意见」，普通线程走原路。有值时：
+
+```cpp
+context.m_affinity.set_affinity_hard(cpu_mask_of(target_cpu));
+```
+
+两点是刻意的：
+
+- **钉住这件事记进亲和性，而不只是在这里被遵守一次。** 这样下游——
+  `do_unpark_thread()` 的重新选择、将来的迁移——是从线程自己的状态得出同一个结论，
+  而不是依赖一个只有本函数见过的决定。
+- **选择被跳过，而不是「喂一个单 CPU 亲和性然后相信它会同意」。** 它不会同意，理由同上：
+  `{cpunum}` 和一个还不含 cpunum 的 online 掩码求交是空，而空正是选择逻辑唯一不能给的答案。
+
+`cpu_mask_of()` 必须是一张静态表，不能是临时对象：`CpuAffinity` 存的是非拥有的
+`CpuMask const *`，装进去的东西必须活得比装它的人久。这和 `cpu_all_mask()` /
+`cpu_none_mask()` 用静态对象是同一个理由。表按 `MAX_CPU`（内核编译进去的上限）而不是
+firmware 报的数量定尺寸——超出 possible 的下标没人会问，而做成动态的要为省几个字换一次分配。
+
+**参照**
+
+`Linux cpumask_of()`（底层是静态的 `cpu_bit_bitmap[]`），出于完全相同的「调用方要拿指针」
+的理由。空闲线程钉死在本 CPU 也是 Linux 的做法：`init_idle()` 里
+`set_cpus_allowed_common(idle, cpumask_of(cpu))`，同样不经过 `select_task_rq()`。
+
+**验证**
+
+- `prebuilt/ninja/ninja -C out/bringup.x86` 通过，无新增编译告警。
+- `clang-format` 已跑；`clang-tidy -p out/bringup.x86` 对三个 `.cpp` 全跑过，
+  改动区和新增的 `cpu_mask_of()` 没有产生任何新告警（其余都是既有的命名 / nullptr 条目）。
+- QEMU 实测两个 image，停点与第 1 条完全一致（`start_kernel()` 里 spawn "laborer" 时的
+  `operator new` panic），无回归：
+  - `kernel.dev.dbg_1.obi`（开断言）
+  - `kernel.dev.obi`（关断言）—— 两者停在同一处，说明不是被断言掩盖的差异。
+- **多核路径未实测**：当前 QEMU 只有一颗 CPU，`m_cpu == Cpu::id() == 0`，所以这条改动
+  在实测里是恒等变换。它的正确性论证是静态的，等 SMP 起来才能实证。
+
+**故意没做**
+
+- **没有修 `Scheduler::init()` 里的 `m_runtime.which_cpu = Cpu::id()`**。它同样在 BSP 上
+  被逐 CPU 调用，于是每个调度器都记下 BSP 的号；`init()` 应当像 `TimerQueue::init(cpunum)`
+  一样接收 cpunum。这条在 `docs/repairs/260903/scheduler.md` 里已经独立列着，
+  留给它自己的一次改动。
+- **没有把 `Fair::on_thread_init()` 里的 `Scheduler::Current::get()` 改成用 `runtime`**。
+  它取的是**正在运行的**那颗 CPU 的调度器，而不是线程被放上去的那颗——参数 `Runtime &`
+  就在手边却没用。目前只影响一次 `verify()`，但方向是错的。已记进待修。

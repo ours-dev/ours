@@ -108,26 +108,44 @@ auto Scheduler::trampoline_handoff() -> void {
     self.m_runtime.curr_thread->get_pi_lock().release();
 }
 
-auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile) -> void {
+auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNum target_cpu)
+    -> void {
     auto &context = thread->scheduling_context();
 
     {
         Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
 
-        // Where the thread is allowed to run has to be settled before anything
-        // picks one of those CPUs. select_target_cpu() filters its candidates
-        // through CpuAffinity::get_available_mask(), so with this line in its
-        // old position -- below the selection -- the selection intersected
-        // against an affinity that had never been installed.
+        // Affinity first, CPU second, in both arms. select_target_cpu()
+        // filters its candidates through CpuAffinity::get_available_mask(),
+        // so the affinity has to be installed before it runs -- when these
+        // two steps were the other way round the selection intersected
+        // against an affinity that did not exist yet.
         //
-        // The lock now spans the selection for the same reason: the affinity
-        // that decides the answer must not change while the answer is being
-        // computed. Nothing inside takes a further lock (the discipline's
-        // select_target_cpu is a pure query over per-CPU runtimes), so this
-        // introduces no ordering against get_lock().
-        context.m_affinity.set_affinity_hard(Cpu::online_mask());
+        // The lock spans both steps for the same reason they are ordered: the
+        // affinity that decides the answer must not change while the answer is
+        // being computed. Nothing inside takes a further lock (the
+        // discipline's select_target_cpu is a pure query over per-CPU
+        // runtimes), so this introduces no ordering against get_lock().
+        if (INVALID_CPU_NUM == target_cpu) {
+            context.m_affinity.set_affinity_hard(Cpu::online_mask());
+            target_cpu = select_target_cpu(thread);
+        } else {
+            // A caller-pinned thread. The pin is recorded as the affinity and
+            // not merely honoured here, so that everything downstream -- the
+            // re-selection do_unpark_thread() performs, a future migration --
+            // reaches the same conclusion from the thread's own state instead
+            // of from a decision only this function saw.
+            //
+            // Selection is skipped rather than being fed a one-CPU affinity
+            // and trusted to agree, because it cannot: both of its candidate
+            // sets are subsets of the online mask, and task::init() pins each
+            // idler to its CPU while walking cpu_possible_mask(), before any
+            // secondary CPU is online. Intersecting {cpunum} with an online
+            // mask that does not yet contain it is empty, and empty is the
+            // one answer select_target_cpu() must not give.
+            context.m_affinity.set_affinity_hard(cpu_mask_of(target_cpu));
+        }
 
-        auto const target_cpu = select_target_cpu(thread);
         auto &self = Scheduler::Current::get(target_cpu);
         self.m_canary.verify<Self>();
 

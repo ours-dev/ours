@@ -47,7 +47,10 @@ class Scheduler {
     /// First thing a freshly spawned thread must do.
     static auto trampoline_handoff() -> void;
 
-    static auto on_thread_init(Thread *, BaseProfile const &) -> void;
+    /// |target_cpu| pins the thread instead of selecting for it; see the note
+    /// on Thread::spawn_etc(), which is where it comes from.
+    static auto on_thread_init(Thread *, BaseProfile const &, CpuNum target_cpu = INVALID_CPU_NUM)
+        -> void;
 
     static auto on_thread_dead(Thread *) -> void;
 

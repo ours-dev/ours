@@ -123,7 +123,7 @@ auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &
 
 auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry,
                        sched::BaseProfile const &profile, TrampolineRoutine trampoline_routine,
-                       Self *self) -> Status {
+                       Self *self, CpuNum target_cpu) -> Status {
     DEBUG_ASSERT(self);
 
     new (self) Self(tid, name, profile);
@@ -146,7 +146,7 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry,
 
     // DRANGER!
     // Don't move it. It's inside implementation may be associated with a thread waking event.
-    Scheduler::on_thread_init(self, profile);
+    Scheduler::on_thread_init(self, profile, target_cpu);
 
     THREAD_SPAWN_COUNT.add(1);
     return Status::Ok;

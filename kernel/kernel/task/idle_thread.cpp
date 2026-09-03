@@ -39,10 +39,18 @@ auto IdleThread::init(CpuNum cpunum) -> void {
     ustl::fmt::format_to(name, "Idle/{}\0", m_cpu);
 
     // TODO(SmallHuaZi) Assign the idle thread an unique Tid.
+    //
+    // |m_cpu| is handed over as the target CPU because an idler's CPU is not a
+    // placement decision to be made for it: there is one per CPU and this is
+    // that CPU's. Letting the scheduler choose was both wrong and unanswerable
+    // -- wrong because the running CPU is the boot CPU for every iteration of
+    // task::init()'s loop, so all of them landed on the BSP, and unanswerable
+    // because selection only ever names an online CPU while this loop runs
+    // over cpu_possible_mask() before the secondaries are up.
     [[maybe_unused]]
     auto const status = Thread::spawn_etc(KoIdGenerator::generate(), name, dummy_start_routine,
                                           sched::BaseProfile(sched::IDLE_PRIORITY),
-                                          dummy_trampoline_routine, m_thread.data());
+                                          dummy_trampoline_routine, m_thread.data(), m_cpu);
     DEBUG_ASSERT(Status::Ok == status, "Failed to initialize idler[{}]", m_cpu);
 
     m_thread->set_state_running();

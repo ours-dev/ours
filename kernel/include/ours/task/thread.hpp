@@ -124,8 +124,22 @@ namespace task {
         template <typename F, typename... Args>
         static auto spawn(char const *, usize priority, F entry, Args &&...) -> Self *;
 
+        /// |target_cpu| pins the new thread to one CPU instead of letting the
+        /// scheduler choose. INVALID_CPU_NUM, the default, means "no opinion"
+        /// and is what an ordinary thread passes.
+        ///
+        /// It exists for threads whose CPU is a property of what they are
+        /// rather than a placement decision -- the idlers, one per CPU, whose
+        /// number IdleThread::init() already knows. Sending those through
+        /// generic selection is not merely redundant: selection can only
+        /// answer with a CPU that is online, and task::init() builds every
+        /// idler while walking cpu_possible_mask(), long before the secondary
+        /// CPUs come up. The answer for a CPU that is not online yet has to
+        /// come from the caller, because there is nothing for selection to
+        /// read.
         static auto spawn_etc(KoId, char const *, StartRoutine, sched::BaseProfile const &,
-                              TrampolineRoutine, Self *) -> Status;
+                              TrampolineRoutine, Self *, CpuNum target_cpu = INVALID_CPU_NUM)
+            -> Status;
 
         /// Builds a thread around the execution context that is already running.
         ///
