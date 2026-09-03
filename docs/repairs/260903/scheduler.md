@@ -27,33 +27,28 @@ Zircon `IdlePowerThread::Run()`：状态机初始就是 `kActive`，只在 targe
 
 这是 dev 镜像当前的停点（changes 第 9 条）。
 
-## 3. `set_next_thread()` 断言 `curr_thread == 0`，但没人清它
 
-`kernel/include/ours/task/sched/scheduler_inline.hpp`：`set_next_thread` 断言
-`0 == m_runtime.curr_thread`，而 `put_prev_thread` 不清、`switch_context` 在其后才写。
-第 8 条播种之后，dbg 镜像的第一次真实重调度会撞它。
-
-## 4. `IpiService::send_resched(CpuMask)` 发的是原始 mask
+## 3. `IpiService::send_resched(CpuMask)` 发的是原始 mask
 
 `kernel/kernel/task/ipi_service.cpp`：算好了 `targets`（去掉本 CPU、与 active 求交），
 `if (!mask.count())` 和 `arch_mp_reschedule_mask(mask)` 用的却是 `mask`。启动日志里
 `IPI-Resched on CPU[0]` 就是它给自己发的。
 
-## 5. `Scheduler::init()` 把每个调度器都记成 BSP
+## 4. `Scheduler::init()` 把每个调度器都记成 BSP
 
 `m_runtime.which_cpu = Cpu::id()`，而 `task::init()` 在 BSP 上替每颗 CPU 调它。
 应接收 cpunum，如 `TimerQueue::init(cpunum)`。单核下恒等。
 
-## 6. `Driver::update_clock()` 的基准写错了
+## 5. `Driver::update_clock()` 的基准写错了
 
 `kernel/kernel/task/sched/driver.cpp`：`m_prev_real_clock = m_sched_clock;` 应为 `= now;`。
 现在 `delta = now - prev_real` 里 prev 是调度时钟而非真实时钟，两者一旦分叉 delta 就失真。
 
-## 7. `Fair::on_thread_init()` / `on_thread_dead()` 取的是运行 CPU 的调度器
+## 6. `Fair::on_thread_init()` / `on_thread_dead()` 取的是运行 CPU 的调度器
 
 `fair.cpp`：`Runtime &` 形参被丢弃，`Scheduler::Current::get()` 取当前 CPU。Fair 当前不在构建里。
 
-## 8. `find_active_scheduler_for()` 无出口自旋
+## 7. `find_active_scheduler_for()` 无出口自旋
 
 `scheduler.cpp`：没有任何调度器 active 时永远转。
 

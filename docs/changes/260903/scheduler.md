@@ -641,3 +641,41 @@ lldb 栈：`SpinLock::release` ← `assert_held` ← `finish_switch_context` ←
 **故意没做**
 
 - 没有在这里给 `Guard` 补 state saver——那是 lockdep 的接口，不是 task 的。
+
+---
+
+## 11. `set_next_thread()` 断言 `curr_thread == 0`，描述的是一个不存在的协议（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler_inline.hpp` — 删掉 `set_next_thread()` 开头的
+  `DEBUG_ASSERT(0 == m_runtime.curr_thread)`。
+
+**症状**
+
+lockdep 的 `Guard` 修好之后，dbg 镜像走到第一次真实切换：
+
+```
+Assertion failed on 0 == m_runtime.curr_thread
+```
+
+**原因**
+
+这条断言描述的握手是：`put_prev_thread()` 把 `curr_thread` 清空，`set_next_thread()` 看到它是空的。
+但 `curr_thread` 全代码只有 `switch_context()` 一个写入点，而且在 `set_next_thread()` **之后**
+才跑；`put_prev_thread()` 根本不碰它。之前没炸只是因为 `curr_thread` 从来没被播种（第 8 条），
+一直是 0——断言恰好成立。播种之后它必炸。Zircon 也是在切换处写 `active_thread_`
+（`scheduler.cc:2113`），不在挑选处。
+
+**改法**
+
+删掉断言，注释说明为什么这里对 `curr_thread` 没有前置条件。
+
+**参照**
+
+`Zircon Scheduler::RescheduleCommon()`：`active_thread_ = next_thread` 在切换处。
+
+**验证**
+
+- 构建通过。dbg：断言消失，laborer 被切上 CPU 并跑进 `init_arch()`（日志出现 Bootstrap
+  PGD/GDT 等 arch 初始化 trace），随后在 `init_platform()` → `x86_bring_aps()` →
+  `sleep_for()` 处撞下一条（第 12 条）。
