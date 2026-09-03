@@ -46,7 +46,9 @@ INIT_CODE auto init_vmm() -> void;
 enum class InitArea {
     All,
 };
-INIT_CODE auto free_init_area(InitArea = InitArea::All) -> void;
+/// Deliberately not INIT_CODE: it reclaims the `.init*` sections, so it must
+/// not live in them. See EarlyMem::reclaim_init_area().
+auto free_init_area(InitArea = InitArea::All) -> void;
 
 } // namespace ours::mm
 

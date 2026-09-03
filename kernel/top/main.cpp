@@ -24,14 +24,37 @@ using ours::task::Thread;
 
 namespace ours {
 namespace {
-    INIT_CODE auto labour_routine() -> i32 {
+    /// Not INIT_CODE, and it is the one function on the boot path that must
+    /// not be. It reclaims the `.init*` sections partway through and then
+    /// keeps running -- spawning threads, returning -- so its own instructions
+    /// have to sit outside the range it hands back. Marked INIT_CODE, as it
+    /// was, this function was freeing the code it was executing from. Nothing
+    /// faults at the free itself -- the mappings survive it -- so the window
+    /// stays open until the first allocation hands one of those frames back
+    /// out and writes over instructions still to be returned through; the
+    /// Thread::spawn() below, whose kernel stack is the next allocation, is
+    /// the obvious candidate. The boot has never got this far (it stops
+    /// earlier, in the profiler's .eh_frame indexing), so that is the shape of
+    /// the hazard, not an observed failure.
+    ///
+    /// Same split as Linux: the `__init` work is reached through calls
+    /// (init_arch/init_platform, as `kernel_init_freeable()`), while the
+    /// function that outlives the reclaim is not `__init` itself
+    /// (`kernel_init()`, marked `__ref`).
+    auto labour_routine() -> i32 {
         init_arch();
         set_init_level(InitLevel::Arch);
 
         init_platform();
         set_init_level(InitLevel::Platform);
 
-        // Ok, now there is no any routine to access the `init` area.
+        // Both init_arch() and init_platform() have returned, so every
+        // INIT_CODE frame this thread ever entered is gone and nothing below
+        // reaches into the `.init*` sections: the CpuLocal template there is
+        // only ever a source to copy from (see cpu_local.cpp's canonical_base),
+        // and the gibberish lambda spawned below is emitted into plain .text.
+        // This function itself is not INIT_CODE, which is the other half of
+        // the condition -- see the note on its definition.
         mm::EarlyMem::reclaim_init_area();
 
         // The 2nd stage has finished, and next is to load userboot.

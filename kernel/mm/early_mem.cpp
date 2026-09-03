@@ -122,7 +122,21 @@ INIT_CODE auto EarlyMem::do_handoff() -> void {
     free_unused_memory();
 }
 
-INIT_CODE auto EarlyMem::reclaim_init_area() -> void {
+/// Deliberately NOT INIT_CODE, and neither is any frame still on the stack
+/// when this runs. It hands the `.init*` sections to the buddy allocator, so
+/// anything living there is dead the moment the first later allocation reuses
+/// those frames -- and code is not exempt. Marked INIT_CODE, this function
+/// would be freeing the instructions it is about to return through, and its
+/// caller's too; nothing faults at the free itself, because the mappings stay,
+/// so the damage only lands later, silently, wherever the reused frames are
+/// written. That is exactly why `labour_routine()` in kernel/top/main.cpp is
+/// plain text as well: it calls this and then keeps running.
+///
+/// Linux draws the same line -- `free_initmem()` is not `__init`, and
+/// `kernel_init()`, which calls it, is `__ref` rather than `__init` precisely
+/// so that every `__init` frame has unwound (into `kernel_init_freeable()`)
+/// before the reclaim happens.
+auto EarlyMem::reclaim_init_area() -> void {
     // The `.init*` sections are the tail of the kernel image (kernel.ld), so
     // handing them back leaves physboot's single image allocation contiguous
     // rather than punching a hole in it.  Their addresses are image addresses:

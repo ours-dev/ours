@@ -139,7 +139,8 @@ INIT_CODE auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {
     return Status::Ok;
 }
 
-INIT_CODE auto free_init_area(InitArea) -> void {
+/// Not INIT_CODE, for the reason spelt out over EarlyMem::reclaim_init_area().
+auto free_init_area(InitArea) -> void {
     EarlyMem::reclaim_init_area();
 }
 

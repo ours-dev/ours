@@ -319,3 +319,103 @@ Linux 无对应物：`struct vm_area_struct` 没有 canary，同类校验靠 `CO
   它们本来就自洽。
 - 没有改成 Zircon 那样把 magic 做成模板参数，理由见「参照」。
 - 没有排查后面 kernel/task 的两个停点。
+
+## `reclaim_init_area()` 和它的调用者搬出 `.init` 段（2026-09-03）
+
+**文件**
+- `kernel/mm/early_mem.cpp` — `EarlyMem::reclaim_init_area()` 去掉 `INIT_CODE`。
+- `kernel/mm/init_pmm.cpp`、`kernel/mm/include/ours/mm/init.hpp` — 未被调用的包装
+  `free_init_area()` 同样去掉。
+- `kernel/top/main.cpp` — `labour_routine()` 去掉 `INIT_CODE`，并改写那句说反了的注释。
+
+**症状**
+
+**潜伏，当前触发不到。** 启动停在更早的地方（见下文「验证」），根本走不到这里。
+这一条是静态发现的，不是从崩溃回溯出来的。
+
+触发条件：只要执行流真的走到 `labour_routine()` 里的 `reclaim_init_area()`，
+它就会把自己正在执行的那段代码交还给伙伴分配器。
+
+**原因**
+
+`reclaim_init_area()` 把 `.init*` 整段（镜像内 `[__init_start, __init_end)`）还给伙伴分配器。
+问题是**做这件事的代码自己就住在这段里**：
+
+```
+__init_start        = 0x7e000
+__init_end          = 0x9d000
+labour_routine()    = 0x7e220   <- 段内
+reclaim_init_area() = 0x84140   <- 段内
+```
+
+（改动前 `llvm-nm` 的实测值。）
+
+释放的那一刻**不会出任何事**——`free_frames()` 只改伙伴分配器的记账，页表映射原封不动，
+CPU 继续从同样的虚拟地址取指，取到的还是原来的字节。窗口一直开着，直到**第一次把这些
+页重新分配出去并写入的操作**，才把仍然要返回穿过的指令覆盖掉。`labour_routine()` 在
+`reclaim_init_area()` 之后还要执行两次 `Thread::spawn()`，而线程内核栈就是紧接着的下一次
+分配——最可能的覆盖者。写坏之后既不缺页也不 `#GP`，只是执行流走进被改写的字节，
+表现为"没有断言、没有异常、QEMU 还活着、输出停了"。
+
+这也是"释放正在使用的内存"这类错误的共性：**释放本身是无声的，代价由下一个使用者付。**
+把它当成"释放时会崩"来找，永远找不到。
+
+原来那句注释写反了：
+
+```cpp
+// Ok, now there is no any routine to access the `init` area.
+```
+
+写这句话的那一行本身就在 `init` 区里。注释说的是"没有别的例程还要用它"，漏掉了
+"正在跑的这个例程"。
+
+**改法**
+
+把两端都搬出去：`reclaim_init_area()` 不再是 `INIT_CODE`，`labour_routine()` 也不再是。
+后者是关键——即使 `reclaim_init_area()` 搬走了，返回地址仍然指回 `labour_routine()` 段内的
+指令，问题原样存在。`init_arch()` / `init_platform()` 保持 `INIT_CODE` 不变：它们是被调用的，
+在释放发生之前就已经返回，栈上不再有它们的帧。
+
+顺带确认了释放之后仍被引用的 `.init` 内容是安全的：`CpuLocal` 的链接期模板确实在
+`.init` 里，但按 `cpu_local.cpp` 里 `canonical_base()` 的注释，它只作为拷贝源和地址原点，
+`init_early()` 之后不再被读写；`labour_routine()` 里 spawn 出去的 `gibberish` lambda 的
+thunk 经 `llvm-nm` 确认落在普通 `.text`（`0x7e40`），不在 `[0x7e000, 0x9d000)` 内。
+
+**否掉的方案**：把 `reclaim_init_area()` 的调用挪到某个非 init 的辅助函数里。没用——
+调用者 `labour_routine()` 还是要被返回到。真正的条件是「释放发生时，栈上不能有任何
+`.init` 帧」，这只能由调用链本身满足。
+
+**参照**
+
+`Linux free_initmem()`（`init/main.c`、各架构的 `arch/*/mm/init.c`）。它**不是** `__init`，
+调用它的 `kernel_init()` 也不是 `__init` 而是 `__ref`——所有 `__init` 的活都塞在
+`kernel_init_freeable()` 里，先返回，再释放。分界和这次完全一致，值得对照着看一遍。
+
+Zircon 无对应物：它不回收 init 代码段。
+
+**验证**
+
+- 构建通过；`clang-format`、`clang-tidy -p out/bringup.x86` 对四个文件跑过，无 error。
+- **静态验证**（这是本条的主要证据）：改后 `llvm-nm` 显示
+  `labour_routine() = 0x7e30`、`reclaim_init_area() = 0x2be20`，都落在 `.text`
+  （`0x6000`–`0x3f3bb`）内，已在 `[__init_start=0x7e000, __init_end=0x9d000)` 之外。
+- **运行时未实测**，因为走不到：启动停在更早的地方。用临时 `log::trace` 打点定位到
+  确切位置（打点已全部还原，未提交）：
+  1. `init_platform()` 正常返回；
+  2. `set_init_level(InitLevel::Platform)` 跑该级别的 init hook，
+     `free_bootstrap16_buffer()` 释放 D000/E000/F000 三页后返回；
+  3. `prof_init()`（`kernel/commands/prof.cpp:88`）进入，打印
+     `eh size=28600`，随后**卡死在 `build_fde_index()` 里**，不再有任何输出。
+  把 `free_bootstrap16_buffer()` 临时改成空操作，卡死点不变，确认与那三次释放无关。
+  所以 `reclaim_init_area()` 这条路径当前不可达，本条改动只有静态证据。
+
+**故意没做**
+
+- 没有碰 `prof_init()` / `unwind::FdeIndex::build()` 的死循环。那是 `kernel/lib/prof` 与
+  unwind 库的事，且该模块树上有另一会话的大量未提交改动。已单独记入
+  `docs/repairs/260903/mm.md` 作为交叉引用（它挡住了 mm 这条路径的运行时验证）。
+- 没有动 `free_bootstrap16_buffer()`。它用 `EarlyMem::allocate()` 拿的页、用
+  `mm::free_frames()` 还给伙伴分配器，而且还完之后 `create_bootstrap16()` 建的那两处
+  恒等映射并没有解除——这两点都值得看，但都不是当前的卡死点，一并记入 repairs。
+- `start_kernel()` 仍是 `INIT_CODE`。它不返回（末尾 `become_idle()`），idle 线程栈上那个
+  指回 `.init` 的返回地址永远不会被用到。
