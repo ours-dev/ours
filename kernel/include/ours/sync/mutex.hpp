@@ -78,9 +78,9 @@ template <>
 struct Mutex::TimesliceExtension<false> {};
 
 /// Using a timeslice extension to avoid being preempted for time-sensitive tasks.
-class TA_CAPABILITY("Cirtical-Mutex") CirticalMutex: protected Mutex {
+class TA_CAPABILITY("CriticalMutex") CriticalMutex: protected Mutex {
     using Base = Mutex;
-    using Self = CirticalMutex;
+    using Self = CriticalMutex;
 
   public:
   private:

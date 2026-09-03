@@ -245,3 +245,30 @@ Zircon 只有一套 `__TA_*`（`zircon/compiler.h`），没有别名。
 
 **故意没做**
 `mutex.hpp` 的 `CirticalMutex` 拼错单独一条改。
+
+---
+
+## `CirticalMutex` → `CriticalMutex`（2026-09-03）
+
+**文件**
+- `kernel/include/ours/sync/mutex.hpp` — 类名、`Self` 别名、`TA_CAPABILITY` 里的名字
+
+**症状**
+无。拼错的名字，无调用方。
+
+**原因**
+名字错了就是缺陷，不是外观问题：它出现在 `TA_CAPABILITY("...")` 里，分析器的每条相关告警都会
+把这个错拼法打出来。趁没有调用方改掉，成本最低。
+
+**改法**
+三处替换。capability 名从 `"Cirtical-Mutex"` 改为 `"CriticalMutex"`，与同文件 `"Mutex"`、
+`"SpinLock"` 的风格一致（不带连字符）。
+
+**参照**
+无。
+
+**验证**
+全量构建通过；两个镜像停的位置与上一条相同。
+
+**故意没做**
+没有给这个空壳类补实现——它是 timeslice extension 的占位，另有安排。
