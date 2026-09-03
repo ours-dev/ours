@@ -9,22 +9,22 @@ source_set("top") {
   ]
   deps = [
     "//kernel/arch/$ours_cpu/kernel",
+    "//kernel/arch/x86/kernel:headers",
+    "//kernel/commands",
+    "//kernel/driver",
     "//kernel/kernel",
-    "//kernel/object",
-    "//kernel/phys:handoff",
-    "//kernel/mm:mm",
-
     "//kernel/lib/acpi:header",
     "//kernel/lib/ccrt",
-    "//kernel/driver",
     "//kernel/lib/gktl",
     "//kernel/lib/kshell",
+    "//kernel/lib/logz4",
     "//kernel/lib/prof",
     "//kernel/lib/syscall",
-    "//kernel/lib/userabi",
-    "//kernel/lib/logz4",
-    "//system/lib/logz4",
     "//kernel/lib/unwind",
-    "//kernel/arch/x86/kernel:headers",
+    "//kernel/lib/userabi",
+    "//kernel/mm",
+    "//kernel/object",
+    "//kernel/phys:handoff",
+    "//system/lib/logz4",
   ]
 }

@@ -7,14 +7,12 @@ group("headers") {
   public_deps = [ "//system/lib/logz4:headers" ]
 }
 
-# Kernel-only glue: serial sink, emergency_write, clock/cpu, and
-# the kshell `log` command. phys images link //system/lib/logz4 directly
-# and must not pull this target in — it needs CpuLocal and gktl.
+# Kernel-only glue: serial sink, emergency_write, clock/cpu. phys images
+# link //system/lib/logz4 directly and must not pull this target in — it
+# needs CpuLocal and gktl. The `log` console command that used to live here
+# moved to //kernel/commands with the rest of the kshell front end.
 source_set("logz4") {
-  sources = [
-    "command.cpp",
-    "kernel.cpp",
-  ]
+  sources = [ "kernel.cpp" ]
   public_deps = [ "//system/lib/logz4" ]
   deps = [
     "//kernel/arch/$ours_cpu:headers",

@@ -1,11 +1,15 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// Kernel-side integration for the standalone `kernel/lib/prof` sampling
-// profiler: owns the per-CPU sample buffers, builds the unwind FDE index
-// from the kernel's own `.eh_frame`, and exposes `prof.start`/`stop`/`dump`
-// as console commands. None of this lives inside `kernel/lib/prof` itself,
-// so that library stays a true standalone lib — see its README.
+// `prof.start` / `prof.stop` / `prof.dump`, and the kernel-side state the
+// standalone `kernel/lib/prof` sampler needs to answer them: the per-CPU
+// sample buffers and an unwind FDE index built from the kernel's own
+// `.eh_frame`.
+//
+// None of it lives inside `kernel/lib/prof`, so that library stays a true
+// standalone lib — see its README. It does not live under `kernel/kernel`
+// either: nothing but these three commands ever touches the buffers or the
+// index, so a kernel built without a console has no reason to carry them.
 #include <gktl/command.hpp>
 #include <gktl/init_hook.hpp>
 #include <ktl/vec.hpp>

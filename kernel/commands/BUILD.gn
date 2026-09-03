@@ -1,0 +1,27 @@
+# Console commands.
+#
+# A file belongs here when it exists only to put something on the kshell
+# prompt: the command callbacks, plus whatever state those callbacks need and
+# nobody else does. Keeping them out of the subsystems they inspect stops the
+# subsystem from depending on gktl's command registry, and stops a kernel
+# built without a console from carrying the callbacks and their help strings.
+#
+# Commands that are a natural part of a subsystem's own file -- mm's
+# `dump-frame`, say -- stay where they are; this directory is for the ones
+# that would otherwise need a file of their own.
+
+source_set("commands") {
+  sources = [
+    "log.cpp",
+    "prof.cpp",
+  ]
+  deps = [
+    "//kernel/lib/gktl",
+    "//kernel/lib/ktl",
+    "//kernel/lib/prof",
+    "//kernel/lib/unwind:headers",
+    "//kernel/mm:headers",
+    "//system/lib/logz4:headers",
+  ]
+  visibility = [ "*" ]
+}

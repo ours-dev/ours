@@ -1,5 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+//
+// `log`: dump logz4's record ring, or move its runtime level floor. The
+// logging library itself stays free of any dependency on gktl's command
+// registry — phys links //system/lib/logz4 and has no console at all.
 #include <gktl/command.hpp>
 #include <logz4/filter.hpp>
 #include <logz4/level.hpp>
