@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -33,16 +33,9 @@
 
 178 → 174，见 changes。
 
-### 3.3 `do_unpark_thread` / `process_migrating_threads` — 标 `TA_ACQUIRE`，函数体内是完整的 Guard 作用域
+### 3.3 `do_unpark_thread` / `process_migrating_threads` / `unpark_common` — 已修
 
-`scheduler.hpp:178` `TA_ACQUIRE(get_lock())`、`scheduler.hpp:199`
-`TA_ACQUIRE(m_runtime.migrating_threads_lock)`。两处函数体都是 `Guard guard{...}` 拿了又放，
-调用方出来时并不持锁（`scheduler.cpp:657/391` 报「期望出口持锁」）。`TA_ACQUIRE` 是给
-「拿了不放、留给调用方」的函数用的（如 Linux `spin_lock` 本身）。这两处去掉注解，或改
-`TA_EXCLUDES(...)` 声明「进来时别持有」。
-
-`unpark_common`（`scheduler.hpp:142`，同样 `TA_ACQUIRE(get_lock())`）只有声明没有定义，
-注解跟着一起改就行。
+127 → 123。
 
 ### 3.4 `switch_context` / `finish_switch_context` / `trampoline_handoff` — 上下文切换的锁交接
 

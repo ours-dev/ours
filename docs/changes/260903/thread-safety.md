@@ -408,3 +408,45 @@ Linux `node_to_cpumask_map[]`：bring-up 写，之后无锁读，返回 `const s
 
 **故意没做**
 没有把 `m_hard_affinity` 的写入挪到锁下——它在 Online 之前，没有并发读者。
+
+---
+
+## 三个「函数体内拿了又放」的函数错标了 `TA_ACQUIRE`（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — `do_unpark_thread`：`TA_ACQUIRE(get_lock())` →
+  `TA_REQUIRES(thread->get_pi_lock()) TA_EXCLUDES(get_lock())`；`process_migrating_threads`：
+  `TA_ACQUIRE(m_runtime.migrating_threads_lock)` → `TA_EXCLUDES(...)`；`unpark_common`（只有声明）
+  去掉 `TA_ACQUIRE(get_lock())`。顺带改掉 `do_unpark_thread` 上「会放掉 |thread| 的锁」的错注释。
+
+**症状**
+潜伏。`scheduler.cpp` 的 `do_unpark_thread` 和 `process_migrating_threads` 出口各报一条
+「expecting lock to be held at the end of function」，`unpark_thread(UnparkList)` 的循环报
+「still held at end」和「expecting held at start of each loop」。
+
+**原因**
+`TA_ACQUIRE(L)` 的意思是「返回时调用方持有 L」——这是 `lock()` 一类函数的契约，函数把锁拿了
+**不放**，留给调用方。这三个函数的函数体都是 `Guard guard{...}` 拿了就放，出口不持锁。注解和
+实现方向相反，所以分析器在每个出口都问「你答应留给我的锁在哪」。
+
+`do_unpark_thread` 的注释还写着「This method will drop the |thread|'s lock」，和 3.2 里
+`unpark_thread` 的错误是同源的：作者以为 unpark 会顺着切换路径把 PI 锁放掉。它不切换，也不放。
+
+**改法**
+「进来不能持有、出去也不持有、中间自己拿放」的正确拼法是 `TA_EXCLUDES(L)`。
+`do_unpark_thread` 另加 `TA_REQUIRES(thread->get_pi_lock())`，因为它改线程状态、入队，调用方
+（`unpark_thread` 两个重载）都持着。`unpark_common` 没有函数体，锁契约无从谈起，先不标。
+
+**参照**
+Zircon `Scheduler::Unblock(Thread *) TA_REQ(thread_lock)`——内部 `Guard<MonitoredSpinLock>
+queue_guard{&queue_lock_}` 拿放 queue_lock，对外不暴露；`TA_EXCL` 在 Zircon 里用于同类场合
+（如 `Thread::Kill() TA_EXCL(thread_lock)`）。
+
+**验证**
+- 全量构建通过；clang-format 已跑；`scheduler.hpp` 只暂存了本条的三个 hunk。
+- 15 个 TU：127 → **123**。
+- QEMU：`kernel.dev.dbg_1.obi` 这次跑到 819 行、停在一个 `format_error`（调度器那边的新改动），
+  `kernel.dev.obi` 仍是 `assert_held` 断言。本改动只改注解和注释。
+
+**故意没做**
+无。

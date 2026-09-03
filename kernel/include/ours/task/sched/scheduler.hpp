@@ -172,7 +172,10 @@ class Scheduler {
     TA_EXCLUDES(get_lock())
     auto reschedule_common(Thread *curr, Mode mode) -> void;
 
-    TA_ACQUIRE(get_lock())
+    /// Declared, not yet defined. Whatever it ends up doing, the runqueue
+    /// lock is this class's to take internally, never the caller's to hand in
+    /// or receive back -- so no lock annotation until there is a body to
+    /// describe.
     auto unpark_common(Thread *curr, Mode mode) -> void;
 
     TA_REQUIRES(get_lock())
@@ -203,12 +206,16 @@ class Scheduler {
     auto deactivate_thread(Thread *, DequeueControl) -> void;
 
     /// Unpark the given |thread| with specified flags |control| on this scheduler.
-    /// This method will drop the |thread|'s lock.
     ///
-    /// Assumptions:
-    ///     1) |thread|'s lock has been held.
-    ///     2)
-    TA_ACQUIRE(get_lock())
+    /// The caller holds |thread|'s PI lock and keeps it -- this does not drop
+    /// it, whatever the previous comment said. The runqueue lock is taken and
+    /// released inside, in one Guard scope, which is why it is TA_EXCLUDES
+    /// and not TA_ACQUIRE: the caller must come in without it and leaves
+    /// without it. (TA_ACQUIRE would mean "held on return", the contract of
+    /// a lock() function, and the analysis duly reported the Guard's release
+    /// as "expecting lock to be held at the end of function".)
+    TA_REQUIRES(thread->get_pi_lock())
+    TA_EXCLUDES(get_lock())
     auto do_unpark_thread(Thread *thread, UnparkControl) -> void;
 
     /// Evaulates the given |thread| whether be able to preempt current thread.
@@ -228,8 +235,10 @@ class Scheduler {
     /// associated with the local Scheduler instance, or nullptr is no work was stolen.
     auto steal_work_from(CpuMask const &mask) -> Thread *;
 
-    /// [MP]
-    TA_ACQUIRE(m_runtime.migrating_threads_lock)
+    /// [MP] Takes migrating_threads_lock only long enough to swap the list
+    /// out, then works on the private copy unlocked. Same TA_EXCLUDES logic as
+    /// do_unpark_thread(): the lock is acquired and released within.
+    TA_EXCLUDES(m_runtime.migrating_threads_lock)
     auto process_migrating_threads(SchedTime now) -> void;
 
     TA_REQUIRES(thread->get_pi_lock())
