@@ -274,11 +274,14 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
             Current::set_nid_early(cpunum, fallback_nid);
         }
     };
-    // The possible mask is already populated -- the MADT parse runs from the
-    // ACPI hook at PlatformInitLevel::StartUp, ahead of platform_init_pmm().
-    // The running CPU is claimed explicitly all the same: a machine that
-    // handed us no MADT still has the CPU this code is executing on, and
-    // leaving that one on the sentinel is the exact failure above.
+    // The possible mask is empty here: the MADT parse that fills it
+    // (assign_cpunum_for_apic(), from platform_init_apic()) runs at
+    // InitLevel::Irq, long after platform_init_pmm(). The walk is kept for
+    // the day the parse moves ahead of the PMM, but today it is the explicit
+    // claim of the running CPU that does the work -- and it would be needed
+    // regardless: a machine that handed us no MADT still has the CPU this
+    // code is executing on, and leaving that one on the sentinel is the
+    // exact failure above.
     Cpu::possible_mask().for_each(claim_cpu);
     claim_cpu(CpuLocal::current_cpu());
 
@@ -774,13 +777,52 @@ auto PmNode::Current::set_nid(NnId nid) -> void {
     PmNode::Current::set_nid(Cpu::id(), nid);
 }
 
+/// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
+///
+/// Not through set_nid(). bootstrap() has already claimed every CPU with
+/// set_nid_early(), which fills both tables, so set_nid() finds the old and
+/// new ids equal and returns before it reaches the per-CPU pointer. That is
+/// what left CURRENT_INSTANCE null across the zero-page allocation in
+/// init_vmm_preheap(): Current::alloc_frames() went on through a null
+/// PmNode, and get_frame_from_zone_queues() spun on the ZoneQueues it read
+/// out of address 0x48. The early return is right for what set_nid() is
+/// for -- a CPU moving between nodes at run time, where nothing changing
+/// means nothing to do -- but the first publish is this function's job, and
+/// it has to be unconditional.
+///
+/// The running CPU is covered by name, the way bootstrap() covers it. The
+/// possible mask is filled by the MADT parse, which runs from
+/// platform_init_apic() at InitLevel::Irq -- three levels after this hook --
+/// so at this point it is empty, and a walk of it alone publishes nothing.
+/// That was the other way this used to fail on the same boot.
 auto PmNode::Current::init() -> void {
-    Cpu::possible_mask().for_each(
-        [](CpuNum cpu) { PmNode::Current::set_nid(cpu, STATIC_CPU_TO_NODE[cpu]); });
+    auto const publish = [](CpuNum const cpu) {
+        auto const nid = DYNAMIC_CPU_TO_NODE[cpu];
+        if (nid == NUMA_MAX_NODE) {
+            // bootstrap() claims every CPU it can see, so a CPU still on the
+            // sentinel appeared after it. It gets its node when it is brought
+            // up, through set_nid().
+            return;
+        }
+
+        auto *const node = PmNode::node(nid);
+        DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
+        node->m_canary.verify<Self>();
+
+        Guard guard{node->get_lock()};
+        node->m_work_cpus.set(cpu);
+        PmNode::Current::set(node, cpu);
+    };
+
+    Cpu::possible_mask().for_each(publish);
+    publish(CpuLocal::current_cpu());
 }
 
-// When cpu local area has been setup, we should install local node id to enable the version of
-// `alloc_frames` without specifing explicitly `nid`.
+/// Once per-CPU storage exists, so that alloc_frames() can be called without
+/// naming a node. CpuLocal + 1 rather than CpuLocal itself: the hooks at a
+/// level run when that level is announced, and CpuLocal is announced right
+/// after CpuLocal::init() returns -- a hook at exactly that level would run
+/// with the units laid out but before main.cpp had said so.
 GKTL_INIT_HOOK(RegisterNode, PmNode::Current::init, gktl::InitLevel::CpuLocal + 1);
 
 } // namespace ours::mm

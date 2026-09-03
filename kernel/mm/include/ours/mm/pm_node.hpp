@@ -453,7 +453,9 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     static auto set_nid(NnId nid) -> void;
     static auto set_nid(CpuNum cpunum, NnId nid) -> void;
 
-    /// Used once by gktl::InitHook
+    /// Publishes every claimed CPU's node into its per-CPU slot. Run once,
+    /// from an init hook, as soon as per-CPU storage exists; see the
+    /// definition for why it does not go through set_nid().
     static auto init() -> void;
 
   private:
