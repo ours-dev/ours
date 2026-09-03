@@ -143,7 +143,17 @@ class Scheduler {
     ///     1) |curr|'s lock was held.
     ///     2) Local interrupts was disabled.
     ///     3) Preemption was disabled.
-    TA_REQUIRE(get_lock())
+    ///
+    /// The annotations say the same as the list above: the caller holds
+    /// |curr|'s PI lock and must *not* hold this scheduler's runqueue lock,
+    /// because step 1 takes it here and step 3 hands it to switch_context().
+    /// This used to read TA_REQUIRE(get_lock()), the exact opposite of step 1,
+    /// and that inverted contract is what let Current::yield_thread() call in
+    /// with the runqueue lock already held -- a self-deadlock on a
+    /// non-reentrant SpinLock that the analysis could not report while it
+    /// was being told the lock was supposed to be held.
+    TA_REQUIRES(curr->get_pi_lock())
+    TA_EXCLUDES(get_lock())
     auto reschedule_common(Thread *curr, Mode mode) -> void;
 
     TA_ACQUIRE(get_lock())

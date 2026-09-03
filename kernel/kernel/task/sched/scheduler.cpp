@@ -821,11 +821,20 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
     DEBUG_ASSERT(current == self.m_runtime.curr_thread);
 
     auto &so = current->scheduling_context();
-    Guard guard{self.get_lock()};
+    {
+        // The runqueue lock has to be dropped before reschedule_common(): that
+        // routine takes get_lock() itself and hands it on to switch_context().
+        // SpinLock is not reentrant, so holding it across the call spins this
+        // CPU on its own lock forever. yield_to_thread() below has always
+        // scoped its guard this way; this one did not, and the inverted
+        // TA_REQUIRE(get_lock()) on reschedule_common() kept the analysis
+        // from noticing.
+        Guard guard{self.get_lock()};
 
-    self.m_runtime.driver.update_clock();
-    so.schedule()->yield_thread(self.m_runtime, current);
-    self.m_runtime.driver.request_skip_next_clock_update();
+        self.m_runtime.driver.update_clock();
+        so.schedule()->yield_thread(self.m_runtime, current);
+        self.m_runtime.driver.request_skip_next_clock_update();
+    }
 
     self.reschedule_common(current, Mode::Regular);
 }

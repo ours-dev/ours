@@ -126,3 +126,53 @@ clang 文档：`RETURN_CAPABILITY` / `lock_returned`。
 - 没把 `TA_REQUIRES(get_lock())` 改写成 `TA_REQUIRES(m_lock)`：有了 `lock_returned`，两种拼法
   等价，逐条改写只是噪音。
 - 没碰 `Scheduler::Current::set_state` 里为满足错误注解而多拿的一次锁（待修清单 3.5）。
+
+---
+
+## `reschedule_common` 的锁契约写反了，盖住了 `yield_thread` 的自死锁（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — `reschedule_common` 的 `TA_REQUIRE(get_lock())`
+  改为 `TA_REQUIRES(curr->get_pi_lock()) TA_EXCLUDES(get_lock())`
+- `kernel/kernel/task/sched/scheduler.cpp` — `Scheduler::Current::yield_thread` 的 `Guard` 收进
+  内层块，在调 `reschedule_common` 之前出作用域
+
+**症状**
+`Thread::Current::yield()` 第一次被调用时该 CPU 在自己的 runqueue 锁上永久自旋。当前启动流程
+还没走到 yield，所以是潜伏的；一旦有第二个线程主动让出就触发。
+
+**原因**
+`reschedule_common` 自己的文档注释写得很清楚：「1) 拿 runqueue 锁；……3) 放掉自己拿的锁；
+4) 切换」，前置条件是「|curr| 的锁已持有」。但注解写的是 `TA_REQUIRE(get_lock())`——要求调用方
+持 runqueue 锁，和第 1 步正好相反。六个调用方（`Current::preempt/reschedule/idle/park_thread/
+yield_thread/yield_to_thread`）里五个按文档办事，不持 rq 锁调它；只有 `yield_thread` 按注解办事，
+`Guard guard{self.get_lock()}` 还在作用域里就调了进去。`reschedule_common` 里第一行
+`Guard guard{get_lock()}` 再拿一次，`SpinLock::do_lock` 是从 `UNLOCKED_STATE` 起的 CAS，不可重入，
+于是死锁。
+
+分析器本来能报「acquiring lock that is already held」，但注解说 rq 锁「应该」被持有，它就把
+`yield_thread` 的持锁当成满足前置条件，把 `reschedule_common` 内部的再次获取当成……前面第 1、2
+条没修时它连 Guard 都看不见，所有告警都是噪音。这一条是那 219 条里唯一一处直接对应真死锁的。
+
+**改法**
+注解改成和文档一致：`TA_REQUIRES(curr->get_pi_lock())`（所有调用方都持有，它们自己也是这么
+标的）加 `TA_EXCLUDES(get_lock())`（进来时不能持有，因为第 1 步要拿）。`yield_thread` 照旁边
+`yield_to_thread` 的写法，把 guard 收进内层块——它对 `request_skip_next_clock_update` 的调用
+只需要在 rq 锁下完成，`reschedule_common` 开头的 `accept_skip_next_clock_update` 会在自己的
+锁下接住。
+
+**参照**
+Zircon `Scheduler::RescheduleCommon()`：`__TA_REQUIRES(thread_lock)`，内部自己拿 queue_lock；
+`Scheduler::Yield()` 也是在调 `RescheduleCommon` 前不持 queue_lock。
+
+**验证**
+- 全量构建通过；clang-format 已跑；两个文件都带着另一个会话的在途 hunk，只暂存了本条的。
+- 15 个 TU：187 → **180**。消失的正是六个调用方的「calling reschedule_common requires holding
+  rqlock」和 `scheduler.cpp:508` 的「acquiring rqlock that is already held」。
+- QEMU：两个镜像仍停在 `Fair::enqueue_thread` 的 `#DE`，与改前一致；yield 路径在此之前没有
+  被走到，**死锁修复未实测**。
+
+**故意没做**
+- `reschedule_common` 尾部 `guard.unguard()` + `switch_context()` 仍报一次「releasing rqlock not
+  held」：`unguard()` 对分析器是释放，`switch_context` 又标 `TA_RELEASE(get_lock())`，二者重复。
+  这是上下文切换交接（待修清单 3.4）的一部分，下一条处理。

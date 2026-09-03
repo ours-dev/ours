@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -25,22 +25,9 @@
 
 ## 3. 注解方向写反或语义错（这些不是「漏」，是「错」）
 
-### 3.1 `Scheduler::reschedule_common` — `TA_REQUIRE(get_lock())`，其实是它自己拿锁
+### 3.1 `reschedule_common` 的锁契约 / `yield_thread` 死锁 — 已修
 
-`scheduler.hpp:139` 说调用前必须持有 rq 锁；`scheduler.cpp:507` 函数体第一件事就是
-`Guard guard{get_lock()}`，然后 `guard.unguard()` + `switch_context()` 把锁交给切换路径放。
-它真正的前置条件是 `curr->get_pi_lock()` 已持有——`Current::preempt/reschedule/idle/park_thread`
-六个调用方全标 `TA_REQUIRES(curr->get_pi_lock())` 且都**不持** rq 锁。
-
-正确写法：`TA_REQUIRES(curr->get_pi_lock()) TA_EXCLUDES(get_lock())`。pi 锁在切换后由
-另一个线程放（`finish_switch_context`），分析器表达不了，切换尾部单独处理（见 3.4）。
-
-**这条注解顺带盖住了一个真死锁**：`Scheduler::Current::yield_thread`（`scheduler.cpp:810-816`）
-先 `Guard guard{self.get_lock()}`，然后在 guard 作用域内调 `reschedule_common`，后者再
-`Guard guard{get_lock()}`。`SpinLock::do_lock` 是从 `UNLOCKED_STATE` 起的 CAS，不可重入，
-所以第一次 `Thread::Current::yield()`（`thread.cpp:403`）就会在本 CPU 上自旋到死。旁边的
-`yield_to_thread` 是对的：它让 `ScopedGuard` 先出作用域再调 `reschedule_common`。
-修法照 `yield_to_thread`，把 `yield_thread` 的 guard 收进一个内层块。
+见 changes。187 → 180。
 
 ### 3.2 `Scheduler::unpark_thread(Thread *)` — `TA_ACQUIRE(thread->get_pi_lock())`，实现既不拿也不放
 
