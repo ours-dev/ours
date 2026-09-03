@@ -152,7 +152,11 @@ class WaitQueue {
         return 0;
     }
 
-    FORCE_INLINE auto get_lock() -> sync::SpinLock & {
+    /// TA_RETURN_CAPABILITY is what lets `TA_REQUIRES(get_lock())` on a method
+    /// be satisfied by a `Guard guard{m_lock}` in its caller: the analysis
+    /// matches capabilities by expression, and without this a call to
+    /// get_lock() is an opaque value unrelated to m_lock.
+    TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
         return m_lock;
     }
 

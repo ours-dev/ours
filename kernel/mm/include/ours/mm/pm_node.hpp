@@ -152,7 +152,7 @@ class ZoneQueues {
     constexpr static usize NUM_LOCAL_QUEUES = SharedAffinity;
 
     constexpr static usize MAX_ZONE_REF = {NUMA_MAX_NODE * (MaxNumQueues - NUM_LOCAL_QUEUES) +
-                                                 (NR_ZONES_PER_NODE * NUM_LOCAL_QUEUES)};
+                                           (NR_ZONES_PER_NODE * NUM_LOCAL_QUEUES)};
 
     std::array<PmZone *, MAX_ZONE_REF> queue_storage_;
     usize queue_sizes_[MaxNumQueues];
@@ -312,7 +312,10 @@ class PmNode {
         return &m_zone_queues;
     }
 
-    FORCE_INLINE constexpr auto get_lock() -> sync::SpinLock & {
+    /// TA_RETURN_CAPABILITY ties the accessor to the member for the
+    /// thread-safety analysis, so `TA_GUARD(get_lock())` on the masks below and
+    /// a `Guard guard{node->get_lock()}` at a call site name the same lock.
+    TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE constexpr auto get_lock() -> sync::SpinLock & {
         return m_lock;
     }
 

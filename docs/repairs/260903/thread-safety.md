@@ -5,10 +5,10 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完后 **194 条**——只掉了 25 条，说明第 1 条不是唯一根因，第 2 条同样是。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
-第 1 条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
+前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
 
 ---
 
@@ -18,23 +18,10 @@
 参数包），它的三个调用点（`scheduler.cpp:346/830`、`scheduler.hpp` `Current::set_state`）要换成
 嵌套 `Guard`，归到下面 3.x 一起做。修完后 15 个 TU 的告警 219 → 194。
 
-## 2. 根因二：`TA_REQUIRES(get_lock())` 和 `Guard guard{m_lock}` 对不上
+## 2. 根因二：`TA_REQUIRES(get_lock())` 和 `Guard guard{m_lock}` 对不上 — 已修
 
-clang 的分析按**表达式**匹配 capability：`get_lock()` 是个函数调用，除非这个访问器标了
-`TA_RETURN_CAPABILITY(m_lock)`（本树宏名，展开为 `lock_returned`），它就是一个和 `m_lock` 毫无
-关系的不透明值。所以哪怕 Guard 修好了，`WaitQueue::notify_one` 里 `Guard guard(m_lock)` 之后
-调 `dequeue_front_locked()`（要求 `get_lock()`）照样报（实验里 `wait_queue.cpp:180/199` 没掉）。
-
-受影响的访问器，每个都要加 `TA_RETURN_CAPABILITY(<成员>)`：
-
-| 访问器 | 应返回的 capability | 调用方两种拼法混用的证据 |
-|---|---|---|
-| `WaitQueue::get_lock()` | `m_lock` | `wait_queue.cpp:175/194` 用 `m_lock`，`TA_REQUIRES` 用 `get_lock()` |
-| `Thread::get_pi_lock()` / `get_resource_lock()` | `m_pi_lock` / `m_resource_lock` | `thread.hpp` 的 `TA_GUARDED` 全用访问器拼法 |
-| `Scheduler::get_lock()` | `m_runtime.rqlock` | `ISchedule` 用 `TA_REQUIRES(runtime.rqlock)`，`Scheduler` 自己用 `get_lock()`，`scheduler.cpp:566/590` 因此报 |
-| `PmNode::get_lock()` | `m_lock` | `pm_node.hpp:367-371` |
-
-Zircon 对应：`Thread::get_lock() __TA_RETURN_CAPABILITY(lock_)`。
+四个访问器加了 `TA_RETURN_CAPABILITY`，见 `docs/changes/260903/thread-safety.md`。194 → 187。
+从这里起剩下的告警里锁名都是成员表达式，每一条都是注解或代码本身的问题。
 
 ## 3. 注解方向写反或语义错（这些不是「漏」，是「错」）
 

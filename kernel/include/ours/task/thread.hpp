@@ -259,11 +259,15 @@ namespace task {
             return m_name.data();
         }
 
+        /// Both accessors carry TA_RETURN_CAPABILITY so that the TA_GUARDED
+        /// members below, which name the lock through the accessor, are seen
+        /// as protected by the same capability a caller's Guard takes.
+        TA_RETURN_CAPABILITY(m_resource_lock)
         FORCE_INLINE auto get_resource_lock() -> sync::SpinLock & {
             return m_resource_lock;
         }
 
-        FORCE_INLINE auto get_pi_lock() -> sync::SpinLock & {
+        TA_RETURN_CAPABILITY(m_pi_lock) FORCE_INLINE auto get_pi_lock() -> sync::SpinLock & {
             return m_pi_lock;
         }
 

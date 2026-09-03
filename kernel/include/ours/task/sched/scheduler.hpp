@@ -93,10 +93,17 @@ class Scheduler {
     }
 
     FORCE_INLINE auto is_state_active() const -> bool {
-        return STATES[usize(State::Active)].load().test(m_runtime.which_cpu);
+        return STATES[usize(State::Active)]
+            .load(std::memory_order_relaxed)
+            .test(m_runtime.which_cpu);
     }
 
-    FORCE_INLINE auto get_lock() -> sync::SpinLock & {
+    /// TA_RETURN_CAPABILITY makes `get_lock()` and `m_runtime.rqlock` one
+    /// capability to the analysis. Both spellings are in use: Scheduler's own
+    /// methods say `TA_REQUIRES(get_lock())`, ISchedule's virtuals say
+    /// `TA_REQUIRES(runtime.rqlock)`, and enqueue_thread() calls the latter
+    /// while holding the former.
+    TA_RETURN_CAPABILITY(m_runtime.rqlock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
         return m_runtime.rqlock;
     }
 

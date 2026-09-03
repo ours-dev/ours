@@ -74,3 +74,55 @@ Zircon `lockdep::Guard`（`__TA_SCOPED_CAPABILITY`，构造 `__TA_ACQUIRE(lock)`
 - 没改 `ScopedGuard` 的三个调用点，也没修 `sync.md` 第 1 条（`IrqSave` 不关中断，同一个文件）：
   一次一件事。
 - 没把 `-Wno-error=thread-safety` 拿掉：还有 194 条。
+
+---
+
+## 四个 `get_lock()` 类访问器加 `TA_RETURN_CAPABILITY`（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/wait_queue.hpp` — `WaitQueue::get_lock()` → `m_lock`
+- `kernel/include/ours/task/thread.hpp` — `Thread::get_pi_lock()` → `m_pi_lock`，
+  `get_resource_lock()` → `m_resource_lock`
+- `kernel/include/ours/task/sched/scheduler.hpp` — `Scheduler::get_lock()` → `m_runtime.rqlock`
+- `kernel/mm/include/ours/mm/pm_node.hpp` — `PmNode::get_lock()` → `m_lock`
+
+**症状**
+潜伏。上一条修完后 `WaitQueue::notify_one` 这种写法仍然报警：`Guard guard(m_lock)` 之后调
+`dequeue_front_locked()`（声明 `TA_REQUIRES(get_lock())`），分析器说 `get_lock()` 没持有。
+`Scheduler::enqueue_thread` 持 `get_lock()` 调 `ISchedule::enqueue_thread`
+（`TA_REQUIRES(runtime.rqlock)`）同样报。
+
+**原因**
+clang 的分析按**表达式**匹配 capability，不做别名推断。`get_lock()` 是个函数调用表达式，
+`m_lock` 是个成员访问表达式，二者对分析器是两个无关的值——即便函数体就一行 `return m_lock;`
+它也不去看。`lock_returned` 属性（本树宏名 `TA_RETURN_CAPABILITY`）就是给这种情况用的：它告诉
+分析器「这个函数的返回值就是那个 capability」，之后所有 `get_lock()`、`thread->get_pi_lock()`
+在注解里都会被替换成 `m_lock`、`thread->m_pi_lock` 再比较。
+
+本树在 `TA_GUARDED`/`TA_REQUIRES` 里几乎全用访问器拼法（成员是私有的，外部只能这么写），
+而 `Guard` 的构造实参在类内部又常写成员名，两种拼法并存，没有这个属性就永远对不上。
+
+**改法**
+四个访问器各加一个 `TA_RETURN_CAPABILITY(<成员>)`。注解放声明前缀位置，和本树其他 `TA_*`
+一致。没有改任何注解的拼法：修过访问器后两种拼法自动等价，不必统一。
+
+`scheduler.hpp` 同时带着另一个会话的在途改动（`STATES` 换 `std::atomic`），只暂存了本条的
+hunk，用 `git apply --cached` 从过滤后的 patch 进去，其余两个 hunk 留在工作区。
+
+**参照**
+Zircon `Thread::get_lock() __TA_RETURN_CAPABILITY(lock_)`；`fbl::Mutex` 的 `lock()` 也同样标。
+clang 文档：`RETURN_CAPABILITY` / `lock_returned`。
+
+**验证**
+- 全量构建通过；clang-format 已跑。
+- 15 个 TU：194 → **187**。掉的是 `WaitQueue::notify_one/notify_all` 对 `dequeue_front_locked`
+  的两处、`MemCache` 的三处、`Dpc` 一处等。更重要的是**剩下的 187 条里的锁名现在全是成员**
+  （`m_pi_lock`、`m_runtime.rqlock`），不再有 `get_lock()` 字样——从这里起每一条都是注解或
+  代码本身的问题，不再有分析器看不见的成分。
+- QEMU：两个镜像都停在 `Fair::enqueue_thread` 的 `#DE`（`+0x2159b` / `+0x1cf23`），与改前
+  完全一致；那是调度器那边另一个会话正在处理的权重问题。
+
+**故意没做**
+- 没把 `TA_REQUIRES(get_lock())` 改写成 `TA_REQUIRES(m_lock)`：有了 `lock_returned`，两种拼法
+  等价，逐条改写只是噪音。
+- 没碰 `Scheduler::Current::set_state` 里为满足错误注解而多拿的一次锁（待修清单 3.5）。
