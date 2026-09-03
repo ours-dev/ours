@@ -51,7 +51,7 @@ class ChainBuffer {
     class Writer;
     class Reader;
 
-    constexpr static auto const DEFAULT_SINGLE_BUFFER_CAPACITY = 4096;
+    constexpr static auto DEFAULT_SINGLE_BUFFER_CAPACITY = 4096;
 
     static auto create(usize initial_nodes, usize capacity) -> ustl::Pair<Writer &, Reader &>;
 

@@ -71,7 +71,7 @@ auto VmAspace::create(VirtAddr base, usize size, VmasFlags flags, char const *na
 }
 
 INIT_CODE auto VmAspace::init_kernel_aspace() -> void {
-    constexpr auto const flags = VmasFlags::Kernel;
+    constexpr auto flags = VmasFlags::Kernel;
 
     auto status = AspaceCache::init("aspace-cache", ObjectCache::Flags::Folio);
     if (Status::Ok != status) {

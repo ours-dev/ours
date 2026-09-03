@@ -207,7 +207,7 @@ auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline co
 }
 
 template <typename Upstream, typename Downstream>
-constexpr static auto const FromThreadToOwq =
+constexpr static auto FromThreadToOwq =
     std::is_same_v<Upstream, Thread> && std::is_same_v<Downstream, OwnedWaitQueue>;
 
 template <OwnedWaitQueue::PropagateOp Op, typename Upstream, typename Downstream>

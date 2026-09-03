@@ -69,7 +69,7 @@ class CpuLocal {
     /// Handle value that names nothing. Handles live in the template's address
     /// range, which is never near zero, so null is free to mean empty -- the
     /// same convention Linux gives its `void __percpu *`.
-    constexpr static auto const NOWHERE = VirtAddr(0);
+    constexpr static auto NOWHERE = VirtAddr(0);
 
     /// Where CPU `cpu`'s storage begins.
     static auto base(CpuNum cpu) -> VirtAddr;

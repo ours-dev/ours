@@ -29,7 +29,16 @@ Activate (satisfy any of the following criteria):
 
 ### General style
 
-1. Const-first principle: In all contexts, every definition of a variable, function, function parameter, or template parameter should be qualified with one of __const__, __constexpr__, __constinit__, or __consteval__, unless the object needs to be mutable.
+1. Naming first. When a change could improve naming, types, or interfaces, do the naming. A wrong name misleads every future reader and costs nothing to correct, whereas an awkward interface at least describes itself honestly. Treat a stale or inaccurate name as a defect rather than a cosmetic issue: a `ClockSource *` called `CLKEVT`, an `m_priority` that is really a rating, a misspelled `entroll`. Naming corrections belong early in a multi-step repair, not in a tidy-up pass at the end that gets dropped for being cosmetic.
+
+1. Const-first principle: In all contexts, every definition of a variable, function, function parameter, or template parameter should be qualified with one of __const__, __constexpr__, __constinit__, or __consteval__, unless the object needs to be mutable. Each of the three has one job and they are not interchangeable — see "Constants and configuration" below for which to reach for.
+
+1. Constants and configuration — `constexpr` defines constants, a macro only carries a build-time value inward, and `const` merely marks something read-only:
+
+    - **`constexpr` defines every named constant.** Never a `#define`. A macro constant has no type, no scope and no namespace: it takes part in whatever arithmetic it lands in without a word of complaint, and it claims its name in every translation unit that transitively includes the header. `HZ` was the cautionary case — a bare two-letter `#define` written *above* the includes in `kernel/include/ours/time/cfg.hpp`, so every header pulled in afterwards saw it occupying the global namespace. Typed as `constexpr auto HZ = static_cast<Duration::rep>(OURS_CONFIG_HZ)` in `ours::time`, it also stopped being able to change the deduced type of the duration computed from it (`Nanoseconds / u64` deduces the common type of `int64_t` and `uint64_t`, which is `uint64_t`).
+    - **Macros carry build configuration in, and nothing else.** A value the build system must set from the command line — `OURS_CONFIG_HZ`, `MP_MAX_CPUS`, `KERNEL_DEBUG_LEVEL` — has to be a macro, because there is no other channel into the translation unit. Consume it exactly once, at the point of definition, into a `constexpr` of the right type; the rest of the code sees only that.
+    - **`const` expresses read-only, not compile-time.** It promises this object will not be written through here. Reach for `constexpr` when the value is known at compile time and `const` when it is not.
+    - **Never spell `constexpr` and `const` on the same declaration.** `constexpr static auto const PIT_MODE = 0x43;` is legal — the `const` is merely redundant there — but the two keywords carry different meanings in this codebase, and putting both on one object says the author could not decide which one they meant. `constexpr` already implies const, so write `constexpr static auto PIT_MODE = 0x43;`. This is about the declared object only: a `const` that belongs to a pointee (`static constexpr char const *SECTION`), to a parameter (`constexpr auto align_up(usize const value)`), or to a member function's implicit object (`constexpr auto when() const -> TimePoint<>`) qualifies a different entity and stays.
 
 1. Encapsulate implementation details in a private nested type rather than leaking storage/bookkeeping into the public interface. Prefer a private nested `struct`/`class` (or a `detail`/`priv` sub-namespace for free functions — see Namespacing below) over exposing raw fields or helper functions that only the class itself should call.
 
@@ -139,6 +148,8 @@ This repo has three library tiers, not one flat "the STL":
 ### Macros
 
 1. Decline macros for anything expressing *logic* — prefer inline functions, `constexpr` functions, or templates instead. Macros are a powerful but dangerous feature: they're hard to read, hard to debug, and easy to misuse.
+
+1. Decline macros for *constants* too. `constexpr` defines constants; a macro's only sanctioned role as a value is carrying a build-time setting inward, and that setting should be consumed into a typed `constexpr` at its point of definition. See "Constants and configuration" under General style for the full rule and the `HZ` example.
 
 1. Macros remain the sanctioned tool for cross-cutting declarative annotations C++ has no other syntax for: invariants (`ASSERT`/`DEBUG_ASSERT`), thread-safety capabilities (`TA_*`), and intrusive-container hook boilerplate (`USTL_DECLARE_LIST`/`USTL_DECLARE_HOOK_OPTION`). Reuse the existing ones — don't write a parallel macro that does the same job under a different name.
 

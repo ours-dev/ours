@@ -19,9 +19,9 @@ namespace xarray {
                                          ustl::bitfields::Bits<Bits>>;
 
     struct XArryDefaultConfig {
-        constexpr static auto const SLOTS_BITS = 6;
+        constexpr static auto SLOTS_BITS = 6;
 
-        constexpr static auto const NUM_BIT_TAGS = 4;
+        constexpr static auto NUM_BIT_TAGS = 4;
     };
 
     template <typename A, typename C = XArryDefaultConfig>
@@ -29,13 +29,13 @@ namespace xarray {
         using Self = XArray;
 
       public:
-        constexpr static auto const NUM_BIT_TAGS = C::NUM_BIT_TAGS;
+        constexpr static auto NUM_BIT_TAGS = C::NUM_BIT_TAGS;
 
-        constexpr static auto const SLOTS_BITS = C::SLOTS_BITS;
+        constexpr static auto SLOTS_BITS = C::SLOTS_BITS;
 
-        constexpr static auto const SLOTS_MASK = (1 << SLOTS_BITS) - 1;
+        constexpr static auto SLOTS_MASK = (1 << SLOTS_BITS) - 1;
 
-        constexpr static auto const MAX_SLOTS = (1 << SLOTS_BITS);
+        constexpr static auto MAX_SLOTS = (1 << SLOTS_BITS);
 
         class Cursor;
 

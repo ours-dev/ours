@@ -41,12 +41,12 @@ class OwnedWaitQueue: protected WaitQueue {
     template <PropagateOp>
     struct PropagateTag {};
 
-    constexpr static auto const ADD_SINGLE_EDGE_OP = PropagateTag<PropagateOp::AddSingleEdge>{};
+    constexpr static auto ADD_SINGLE_EDGE_OP = PropagateTag<PropagateOp::AddSingleEdge>{};
 
-    constexpr static auto const REMOVE_SINGLE_EDGE_OP =
+    constexpr static auto REMOVE_SINGLE_EDGE_OP =
         PropagateTag<PropagateOp::RemoveSingleEdge>{};
 
-    constexpr static auto const BASE_PROFILE_OVERRIDED_OP =
+    constexpr static auto BASE_PROFILE_OVERRIDED_OP =
         PropagateTag<PropagateOp::BaseProfileOverrided>{};
 
     static auto default_wake_hook() -> INotifyRequeueHook &;

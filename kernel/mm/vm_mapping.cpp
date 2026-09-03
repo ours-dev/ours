@@ -173,7 +173,7 @@ FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize 
     // immediately via the coalescer.
     (void)commit;
 
-    constexpr static auto const MAX_BATCH_PAGES = 32;
+    constexpr static auto MAX_BATCH_PAGES = 32;
 
     auto cursor = vmo->make_cursor(base, size);
     if (!cursor) {
@@ -223,7 +223,7 @@ FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, 
         return status;
     }
 
-    constexpr static auto const MAX_BATCH_PAGES = 32;
+    constexpr static auto MAX_BATCH_PAGES = 32;
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {

@@ -201,9 +201,9 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     };
 
   protected:
-    constexpr static auto const AREA_MAGIC = gktl::magic("VmArea");
+    constexpr static auto AREA_MAGIC = gktl::magic("VmArea");
 
-    constexpr static auto const MAPPING_MAGIC = gktl::magic("VmMapping");
+    constexpr static auto MAPPING_MAGIC = gktl::magic("VmMapping");
 
     VmAreaOrMapping(u32 magic, VirtAddr base, usize size, VmaFlags vmaf, VmArea *, VmAspace *,
                     char const *);

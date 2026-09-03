@@ -149,9 +149,9 @@ class ZoneQueues {
         queue_sizes_[type] += 1;
     }
 
-    constexpr static usize const NUM_LOCAL_QUEUES = SharedAffinity;
+    constexpr static usize NUM_LOCAL_QUEUES = SharedAffinity;
 
-    constexpr static usize const MAX_ZONE_REF = {NUMA_MAX_NODE * (MaxNumQueues - NUM_LOCAL_QUEUES) +
+    constexpr static usize MAX_ZONE_REF = {NUMA_MAX_NODE * (MaxNumQueues - NUM_LOCAL_QUEUES) +
                                                  (NR_ZONES_PER_NODE * NUM_LOCAL_QUEUES)};
 
     std::array<PmZone *, MAX_ZONE_REF> queue_storage_;

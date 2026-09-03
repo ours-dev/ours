@@ -38,8 +38,8 @@ using ours::VirtAddr;
 using ours::mm::MmuFlags;
 using ours::mm::ProtectionRanges;
 
-constexpr auto const WINDOW_BASE = VirtAddr{0x0040'0000};
-constexpr auto const PAGE = usize{0x1000};
+constexpr auto WINDOW_BASE = VirtAddr{0x0040'0000};
+constexpr auto PAGE = usize{0x1000};
 
 constexpr auto RW = MmuFlags::Readable | MmuFlags::Writable;
 constexpr auto R = MmuFlags::Readable;

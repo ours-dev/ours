@@ -35,23 +35,23 @@ namespace ours::mm {
 namespace {
     /// Allocation granularity of the dynamic area. Every reservation is a whole
     /// number of cells so the bitmap has one bit per cell.
-    constexpr auto const DYN_CELL_SIZE = usize(sizeof(usize));
+    constexpr auto DYN_CELL_SIZE = usize(sizeof(usize));
 
-    constexpr auto const WORD_BITS = usize(sizeof(usize) * 8);
+    constexpr auto WORD_BITS = usize(sizeof(usize) * 8);
 
     /// Chunk 0's dynamic area is exactly `DYN_FIRST_CHUNK_SIZE` per CPU (see
     /// Mapper::unit_size), so its bitmap is a compile-time size and needs no
     /// allocator at all.
-    constexpr auto const DYN_CELLS = ArchCpuLocal::DYN_FIRST_CHUNK_SIZE / DYN_CELL_SIZE;
-    constexpr auto const DYN_WORDS = (DYN_CELLS + WORD_BITS - 1) / WORD_BITS;
+    constexpr auto DYN_CELLS = ArchCpuLocal::DYN_FIRST_CHUNK_SIZE / DYN_CELL_SIZE;
+    constexpr auto DYN_WORDS = (DYN_CELLS + WORD_BITS - 1) / WORD_BITS;
 
-    constexpr auto const MAP_FLAGS = MmuFlags::Present | MmuFlags::Readable | MmuFlags::Writable;
+    constexpr auto MAP_FLAGS = MmuFlags::Present | MmuFlags::Readable | MmuFlags::Writable;
 
     /// Growth runs under Dyn's spin lock, i.e. with preemption off, so it must
     /// not take a path that can reclaim or wait. GAF_BOOT and GAF_KERNEL both
     /// carry DirectReclaim; this one refuses instead, and a refusal only means
     /// the allocation fails.
-    constexpr auto const GAF_GROW = Gaf::ThisNode | Gaf::Zero | Gaf::NoRetry;
+    constexpr auto GAF_GROW = Gaf::ThisNode | Gaf::Zero | Gaf::NoRetry;
 
     FORCE_INLINE auto initial_area_size() -> usize {
         return INITIAL_CPU_LOCAL_END - INITIAL_CPU_LOCAL_START;
@@ -220,7 +220,7 @@ class CpuLocal::Mapper {
     }
 
   private:
-    constexpr static auto const NUM_SLOTS =
+    constexpr static auto NUM_SLOTS =
         usize(ARCH_CPU_LOCAL_SIZE) / usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
 
     auto build_map_info() -> void;

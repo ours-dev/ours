@@ -11,7 +11,7 @@
 #include <ustl/traits/underlying.hpp>
 
 namespace ours {
-constexpr static auto const DELTA_BETWEEN_PLATFORM_INIT_LEVELS = 0x100;
+constexpr static auto DELTA_BETWEEN_PLATFORM_INIT_LEVELS = 0x100;
 
 enum class PlatformInitLevel {
     /// Represents the entry point for platform-specific early initialization.

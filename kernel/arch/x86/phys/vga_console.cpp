@@ -49,8 +49,8 @@ struct X86VgaConsole: public Console {
     volatile u32 ypos_;
     volatile u8 *video_;
 
-    constexpr static auto const LINES = 25;
-    constexpr static auto const COLUMNS = 80;
+    constexpr static auto LINES = 25;
+    constexpr static auto COLUMNS = 80;
 };
 
 auto X86VgaConsole::write(char const *s, u32 n) -> void {

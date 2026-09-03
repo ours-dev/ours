@@ -13,9 +13,9 @@
 
 namespace ours {
 struct ArchCpuLocal {
-    constexpr static usize const DYN_FIRST_CHUNK_SIZE = KB(16);
+    constexpr static usize DYN_FIRST_CHUNK_SIZE = KB(16);
 
-    constexpr static usize const UNIT_ALIGN = PAGE_SIZE;
+    constexpr static usize UNIT_ALIGN = PAGE_SIZE;
 
     /// Whether this architecture can spare a contiguous virtual window for the
     /// per-CPU units (see ARCH_CPU_LOCAL_VIRT_BASE).
@@ -24,7 +24,7 @@ struct ArchCpuLocal {
     /// architecture that says false gets the embedded layout instead: units come
     /// straight out of the physmap at unrelated addresses, which costs no address
     /// space but fixes the dynamic area at DYN_FIRST_CHUNK_SIZE forever.
-    constexpr static bool const HAS_RESERVED_WINDOW = true;
+    constexpr static bool HAS_RESERVED_WINDOW = true;
 
     /// `offset` is `CpuLocal::base(cpu) - CpuLocal::origin()`, not the unit
     /// base itself: %gs supplies only the distance, and the displacement of

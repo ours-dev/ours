@@ -35,7 +35,7 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     DEBUG_ASSERT(data);
     DEBUG_ASSERT(BOOTSTRAP16_BUFFER_BASE, "There is no a given bootstrap area");
 
-    constexpr static auto const GDT_SIZE = usize{X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE};
+    constexpr static auto GDT_SIZE = usize{X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE};
     static auto const MAX_BOOTSTRAP_PHYSICAL_ADDRESS =
         static_cast<PhysAddr>(std::numeric_limits<u32>::max());
 

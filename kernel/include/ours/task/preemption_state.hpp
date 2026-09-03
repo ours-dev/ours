@@ -101,7 +101,7 @@ class PreemptionState {
 
     auto flush_pending_remote() -> void;
 
-    constexpr static auto const MAX_COUNT_VALUE = ustl::NumericLimits<u8>::max();
+    constexpr static auto MAX_COUNT_VALUE = ustl::NumericLimits<u8>::max();
 
   private:
     USTL_NO_MOVEABLE_AND_COPYABLE(PreemptionState);

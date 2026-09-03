@@ -92,7 +92,7 @@ namespace {
         // Manually configing the ISA IRQs
         for (auto i = 0; i < 8; ++i) {
             // Regardless of IRQ 2
-            constexpr static auto const PIC_CASCADE_IRQ_NUM = 2;
+            constexpr static auto PIC_CASCADE_IRQ_NUM = 2;
             if (i != PIC_CASCADE_IRQ_NUM) {
                 auto const irqnum = IrqVec(usize(IrqVec::PlatformIrqMin) + i);
                 apic_configure_isa_irq(static_cast<u8>(i), ApicDeliveryMode::Fixed, true,

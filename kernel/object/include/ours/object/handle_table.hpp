@@ -34,7 +34,7 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
         auto allocate() -> Handle *;
     };
 
-    constexpr static auto const NUM_HANDLES_PER_BLOCK = 8;
+    constexpr static auto NUM_HANDLES_PER_BLOCK = 8;
 
     // TODO(SmallHuaZi): the handle storage is still to be designed. It used to
     // be declared as

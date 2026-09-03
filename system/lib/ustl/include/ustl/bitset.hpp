@@ -253,7 +253,7 @@ class BitSet final {
         if constexpr (BitCount == 0) {
             return Word{0};
         }
-        constexpr auto const REMAINDER = BitCount % BITS_PER_WORD;
+        constexpr auto REMAINDER = BitCount % BITS_PER_WORD;
         if constexpr (REMAINDER == 0) {
             return ~Word{0};
         }

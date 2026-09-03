@@ -70,7 +70,7 @@ class PmZone {
 
   public:
     /// FIXME(SmallHuaZi) The cache per cpu has not been finished
-    constexpr static usize const MAX_PCPU_CACHE_ORDER = 0;
+    constexpr static usize MAX_PCPU_CACHE_ORDER = 0;
 
     enum class WaterMark {
         Critical,   // 0 - %10

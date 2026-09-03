@@ -18,7 +18,7 @@ struct PhysMap {
     constexpr static VirtAddr VIRT_BASE = ARCH_PHYSMAP_VIRT_BASE;
     static_assert(!(VIRT_BASE & ((MAX_PAGE_SIZE)-1)), "");
 
-    constexpr static usize const SIZE = ARCH_PHYSMAP_SIZE;
+    constexpr static usize SIZE = ARCH_PHYSMAP_SIZE;
 
     template <typename T>
     FORCE_INLINE constexpr static auto is_valid_phys_addr(T phys_addr) -> bool {

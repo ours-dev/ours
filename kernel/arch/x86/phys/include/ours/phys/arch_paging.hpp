@@ -11,13 +11,13 @@ using ArchLowerPaging =
 using ArchUpperPaging =
     arch::paging::PagingDispatcher<arch::paging::X86PagingLevel::PageMapLevel4>::Type;
 
-constexpr PhysAddr const LOWER_MAPPING_BASE = 0;
+constexpr PhysAddr LOWER_MAPPING_BASE = 0;
 
-constexpr PhysAddr const LOWER_MAPPING_SIZE = GB(1);
+constexpr PhysAddr LOWER_MAPPING_SIZE = GB(1);
 
-constexpr PhysAddr const UPPER_MAPPING_BASE = 0;
+constexpr PhysAddr UPPER_MAPPING_BASE = 0;
 
-constexpr PhysAddr const UPPER_MAPPING_SIZE = GB(32);
+constexpr PhysAddr UPPER_MAPPING_SIZE = GB(32);
 
 } // namespace ours::phys
 

@@ -30,7 +30,7 @@
 
 namespace ours {
 struct InterruptStatck {
-    constexpr static auto const INTR_STACK_SIZE = KB(16);
+    constexpr static auto INTR_STACK_SIZE = KB(16);
 
     FORCE_INLINE auto top() -> void * {
         return stack;

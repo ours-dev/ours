@@ -22,7 +22,7 @@ auto logz4::emergency_write(char const *s, usize n) -> void {
 namespace ours::phys {
 
 struct SerialConsole: public Console {
-    static constexpr u16 const COM1 = 0x3F8;
+    static constexpr u16 COM1 = 0x3F8;
 
     SerialConsole() : Console("Serial"), port_(COM1) {}
 

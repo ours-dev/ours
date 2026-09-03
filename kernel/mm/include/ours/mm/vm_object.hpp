@@ -174,7 +174,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     Flags m_flags;
     VmMapping::List m_mappings;
 
-    constexpr static auto const MAX_NAME_SIZE = 32;
+    constexpr static auto MAX_NAME_SIZE = 32;
     ktl::Name<MAX_NAME_SIZE> m_name;
 
     ustl::collections::intrusive::ListMemberHook<> m_children_hook;

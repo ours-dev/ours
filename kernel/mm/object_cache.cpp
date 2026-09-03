@@ -420,24 +420,24 @@ auto MemCache::NodeCache::on_mem_cache_free(MemCache &cache) -> void {
     }
 }
 
-constexpr static auto const MAX_PARTIAL_SLABS = 8U;
+constexpr static auto MAX_PARTIAL_SLABS = 8U;
 
-constexpr static auto const MIN_PARTIAL_SLABS = 4U;
-
-[[maybe_unused]]
-constexpr static auto const RED_INACTIVE = 0xccU;
+constexpr static auto MIN_PARTIAL_SLABS = 4U;
 
 [[maybe_unused]]
-constexpr static auto const RED_ACTIVE = 0xddU;
+constexpr static auto RED_INACTIVE = 0xccU;
 
 [[maybe_unused]]
-constexpr static auto const POISON_INUSE = 0x5aU;
+constexpr static auto RED_ACTIVE = 0xddU;
 
 [[maybe_unused]]
-constexpr static auto const POISON_FREE = 0x6bU;
+constexpr static auto POISON_INUSE = 0x5aU;
 
 [[maybe_unused]]
-constexpr static auto const POISON_END = 0xa5U;
+constexpr static auto POISON_FREE = 0x6bU;
+
+[[maybe_unused]]
+constexpr static auto POISON_END = 0xa5U;
 
 // Out-of-line definitions for MemCache's static data members. The header only
 // declares them, so without these every use -- and there are many, this file

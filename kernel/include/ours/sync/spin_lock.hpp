@@ -55,11 +55,11 @@ namespace spinlock {
     /// concern. Monitored, NoTrace and DisablePreempt only select how much
     /// bookkeeping the lock will eventually do. Note that until the Guard
     /// learns to save that state, holding this lock disables nothing at all.
-    constexpr static auto const DEFAULT_OPTIONS = Option::DisablePreempt;
+    constexpr static auto DEFAULT_OPTIONS = Option::DisablePreempt;
 
-    constexpr static auto const MONITORED_OPTIONS = Option::Monitored | Option::DisablePreempt;
+    constexpr static auto MONITORED_OPTIONS = Option::Monitored | Option::DisablePreempt;
 
-    constexpr static auto const NO_TRACE_OPTIONS = Option::NoTrace | Option::DisablePreempt;
+    constexpr static auto NO_TRACE_OPTIONS = Option::NoTrace | Option::DisablePreempt;
 
     template <Option Options>
     class TA_CAPABILITY("SpinLock") SpinLock
@@ -69,9 +69,9 @@ namespace spinlock {
       public:
         /// Both are unused: they are here ready for the lockup detector and
         /// lockdep to be wired in, and are what those call sites will test.
-        constexpr static auto const IS_MONITORED = !!(Options & Option::Monitored);
+        constexpr static auto IS_MONITORED = !!(Options & Option::Monitored);
 
-        constexpr static auto const IS_NO_TRACE = !!(Options & Option::NoTrace);
+        constexpr static auto IS_NO_TRACE = !!(Options & Option::NoTrace);
 
         static auto num_held() -> usize;
 

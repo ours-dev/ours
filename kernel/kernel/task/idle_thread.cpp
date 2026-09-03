@@ -25,12 +25,12 @@ IdleThread::IdleThread(CpuNum cpunum)
 auto IdleThread::init(CpuNum cpunum) -> void {
     new (this) IdleThread(cpunum);
 
-    constexpr auto const dummy_start_routine = [] NO_RETURN() -> i32 {
+    constexpr auto dummy_start_routine = [] NO_RETURN() -> i32 {
         auto const cpunum = Cpu::id();
         panic("Idler[{}] enter the dummy start routine", cpunum);
     };
 
-    constexpr auto const dummy_trampoline_routine = [] NO_RETURN() -> void {
+    constexpr auto dummy_trampoline_routine = [] NO_RETURN() -> void {
         auto const cpunum = Cpu::id();
         panic("Idler[{}] enter the dummy trampoline routine", cpunum);
     };

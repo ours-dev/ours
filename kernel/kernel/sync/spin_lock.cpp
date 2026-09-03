@@ -93,7 +93,7 @@ GKTL_COUNTER(SP_SPINLOCK_NUM_HELD, "sync.spinlock.num_held");
 
 namespace ours::sync {
 namespace spinlock {
-    constexpr static auto const UNLOCKED_STATE = 0u;
+    constexpr static auto UNLOCKED_STATE = 0u;
 
     /// The state the word takes when `cpu` holds the lock: one plus the CPU
     /// number, so that zero stays free to name "unlocked" -- CPU 0 legitimately

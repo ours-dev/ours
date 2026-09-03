@@ -55,7 +55,7 @@ struct Idt {
 
 /// Encoded length of `clac` (0f 01 ca), the instruction every ISR stub opens
 /// with. See the shift computed in x86_init_idt_early().
-constexpr auto const CLAC_SIZE = usize(3);
+constexpr auto CLAC_SIZE = usize(3);
 
 /// Turns a raw table slot into a real gate descriptor.
 ///

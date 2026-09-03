@@ -32,7 +32,7 @@ class VflatMemMap {
 
     /// How far init_memmap() rounds the tail of the last range up: one page of
     /// descriptors, the unit this model backs the window in.
-    constexpr static usize const FRAMES_PER_MEMMAP_CHUNK = PAGE_SIZE / sizeof(PmFrame);
+    constexpr static usize FRAMES_PER_MEMMAP_CHUNK = PAGE_SIZE / sizeof(PmFrame);
 
     /// Reserves the window. No table to build -- the translation is arithmetic.
     INIT_CODE auto init() -> Status;

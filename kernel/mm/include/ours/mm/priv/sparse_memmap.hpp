@@ -83,7 +83,7 @@ class MemSection {
         Count,
     };
 
-    constexpr static auto const MAX_LEVEL = 3;
+    constexpr static auto MAX_LEVEL = 3;
 
     FORCE_INLINE constexpr auto state() const -> State {
         return m_value.get<Index::State>();
@@ -203,15 +203,15 @@ class SparseMemMap {
         return MODEL;
     }
 
-    constexpr static usize const MAPPING_LEVEL = MemSection::MAX_LEVEL;
+    constexpr static usize MAPPING_LEVEL = MemSection::MAX_LEVEL;
 
-    constexpr static usize const TOP_LEVEL = MAPPING_LEVEL - 1;
+    constexpr static usize TOP_LEVEL = MAPPING_LEVEL - 1;
 
-    constexpr static usize const ENTRIES_PER_SECTION = PAGE_SIZE / sizeof(MemSection);
+    constexpr static usize ENTRIES_PER_SECTION = PAGE_SIZE / sizeof(MemSection);
 
-    constexpr static usize const FRAMES_PER_SECTION = BIT(SECTION_SHIFT - PAGE_SHIFT);
+    constexpr static usize FRAMES_PER_SECTION = BIT(SECTION_SHIFT - PAGE_SHIFT);
 
-    constexpr static auto const LEAVES_PER_LEVEL =
+    constexpr static auto LEAVES_PER_LEVEL =
         []<usize... Levels>(ustl::IndexSequence<Levels...>) {
             static_assert(sizeof...(Levels) == MAPPING_LEVEL);
             std::array<usize, sizeof...(Levels)> array;
@@ -223,7 +223,7 @@ class SparseMemMap {
             return array;
         }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
 
-    constexpr static auto const FRAMES_PER_LEVEL =
+    constexpr static auto FRAMES_PER_LEVEL =
         []<usize... Levels>(ustl::IndexSequence<Levels...>) {
             static_assert(sizeof...(Levels) == MAPPING_LEVEL);
             std::array<usize, sizeof...(Levels)> array;
@@ -234,12 +234,12 @@ class SparseMemMap {
             return array;
         }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
 
-    constexpr static usize const INDEX_BITS = {
+    constexpr static usize INDEX_BITS = {
         (ustl::NumericLimits<usize>::DIGITS - SECTION_SIZE_BITS + MAPPING_LEVEL) / MAPPING_LEVEL};
 
     /// How far init_memmap() rounds the tail of the last range up: one section,
     /// the unit this model allocates descriptors in.
-    constexpr static usize const FRAMES_PER_MEMMAP_CHUNK = FRAMES_PER_SECTION;
+    constexpr static usize FRAMES_PER_MEMMAP_CHUNK = FRAMES_PER_SECTION;
 
     /// Estimate whether the frame descriptor of given pfn exist. It is do not means that
     /// the memory that descriptor represents is available (may hole).

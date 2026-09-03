@@ -159,13 +159,13 @@ class PageFrame {
     /// tests) can be allocated before init() fills each descriptor.
     PageFrame() = default;
 
-    constexpr static auto const SIZE_LIMIT = sizeof(usize) * 8;
+    constexpr static auto SIZE_LIMIT = sizeof(usize) * 8;
 
     /// What is left for the role payload once the fields every role shares
     /// have taken their share. Named so the payload budget is stated once.
-    constexpr static auto const BODY_SIZE = SIZE_LIMIT - 32;
+    constexpr static auto BODY_SIZE = SIZE_LIMIT - 32;
 
-    constexpr static auto const ALIGNMENT = sizeof(usize) * 8;
+    constexpr static auto ALIGNMENT = sizeof(usize) * 8;
 
     auto init(ZoneType ztype, SecNum secnum, NnId nid) -> void {
         DEBUG_ASSERT(!(flags() & Flags::Initialized), "Duplicated to initialize a frame");

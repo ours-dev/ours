@@ -157,9 +157,9 @@ struct Metric {
 
 class Timeslice {
   public:
-    constexpr static auto const TIMESLICE_EXTENSION_BIT = BIT(31);
+    constexpr static auto TIMESLICE_EXTENSION_BIT = BIT(31);
 
-    constexpr static auto const TIMESLICE_CUSTOM_BIT = BIT(30);
+    constexpr static auto TIMESLICE_CUSTOM_BIT = BIT(30);
 
     auto evaluate() -> bool;
 

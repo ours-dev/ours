@@ -71,7 +71,7 @@ auto create_identity_map_for_ram(Aspace &aspace, PhysAddr max_limit) -> void {
         auto const size = end - base;
         log::debug("Map identically (0x{:X}, 0x{:X})", base, size);
 
-        constexpr auto const mmuf = MmuFlags::PermMask | MmuFlags::Present;
+        constexpr auto mmuf = MmuFlags::PermMask | MmuFlags::Present;
         auto result = aspace.map_identically(base, size / PAGE_SIZE, mmuf);
         if (result.is_err()) {
             panic("Identically map {} pages", to_string(result.unwrap_err()));

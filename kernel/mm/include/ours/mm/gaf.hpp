@@ -56,13 +56,13 @@ FORCE_INLINE constexpr auto gaf_zone_type(Gaf gaf) -> ZoneType {
     using Underlying = ustl::traits::UnderlyingTypeT<Gaf>;
 
     // ZONE_SHIFT
-    constexpr auto const zone_mask = Gaf::Dma | Gaf::Dma32 | Gaf::Movable;
+    constexpr auto zone_mask = Gaf::Dma | Gaf::Dma32 | Gaf::Movable;
 
-    constexpr auto const make_entry = [](ZoneType type, Gaf group) {
+    constexpr auto make_entry = [](ZoneType type, Gaf group) {
         return static_cast<Underlying>(type) << static_cast<Underlying>(group) * ZONES_SHIFT;
     };
 
-    constexpr auto const zone_map =
+    constexpr auto zone_map =
         // By default, use ZoneType::Normal
         make_entry(ZoneType::Normal, Gaf(0)) | make_entry(ZoneType::Dma, Gaf::Dma) |
         make_entry(ZoneType::Dma32, Gaf::Dma32) | make_entry(ZoneType::Normal, Gaf::Movable) |
