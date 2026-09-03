@@ -100,3 +100,41 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 - `VmMapping::m_policy`（`MemoryAllocationPolicy`）存了但没有任何代码读，文件里已有 TODO。
 - `VmArea::reserve()` 的文档注释是 `protect()` 的复制品（"Update rights of the subset of the
   area"），但它做的是别的事。
+
+## 10. 对象缓存：`m_node_caches` 为空是个二义状态，缺失的初始化不会被发现
+
+严重度低（不影响当前功能），但它是一类缺陷的放大器，值得单独一条。
+
+`MemCache::allocate(Gaf, NnId, CpuCache *)` 开头是：
+
+```cpp
+auto *const node_cache = m_node_caches[nid];
+if (!node_cache) [[unlikely]] {
+    // This cache keeps no slabs on that node.
+    return nullptr;
+}
+```
+
+这个 nullptr 同时表示两件完全不同的事：
+
+1. **合法**：这个缓存按 `SLAB_NODES` 只在部分节点上放 slab，问到别的节点上就该说没有。
+2. **缺陷**：`NodeCache::on_mem_cache_init()` 根本没跑，整个 `m_node_caches` 还是构造函数
+   留下的一排零，这个缓存彻底不可用。
+
+两者在这一行上完全同形，于是第二种情况既不断言也不报错，只是让该缓存的每一次分配都返回
+nullptr，把错误推迟到第一个真正检查分配结果的调用方——中间隔了几个初始化阶段，现场离成因
+很远。2026-09-03 那次 `NodeCache::on_mem_cache_init()` 被复制粘贴吃掉的缺陷正是这样表现的：
+`MemCache::init()` 返回 `Ok`，`init_kmalloc()` 把八个 size class 全部"建成功"且
+`DEBUG_ASSERT` 一声不吭，内核堆整个是死的，而第一条错误日志说的是 ThreadCache 建不出来。
+详见 `docs/changes/260903/mm.md`。
+
+修法：在 `MemCache::init()` 末尾（登记进 `GLOBAL_CACHES` 之前）加一条 `DEBUG_ASSERT`，
+逐位比对 `SLAB_NODES` 与 `m_node_caches`——`SLAB_NODES` 里置位的每个 nid 都必须拿到一个
+非空 NodeCache，没置位的必须是空。这样"初始化步骤漏掉"当场就响，而 `allocate()` 里那条
+nullptr 快速返回也就重新只剩下第 1 种含义，注释才名副其实。
+
+`create_boot()` 走的是同一个 `init()`，所以 kmalloc 的 size class 一并被覆盖。
+
+一并可做（不值得单独一次构建—启动循环）：`MemCache::create()`（约 626 行）里还留着一处
+`auto status = ...; if (Status::Ok != status)`，本文件其余地方已统一成单行
+if-with-initializer，顺手扫掉。
