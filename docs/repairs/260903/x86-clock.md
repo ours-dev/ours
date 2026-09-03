@@ -54,13 +54,26 @@ Linux 支持 32 位 HPET，用回绕处理。在这类芯片组上目前的结�
 另外，六个原始采样和两个窗口各自的差值目前只在**失败路径**打印，成功时看不到，所以还没法审查
 短窗口的固定开销占比是否合理。加三行日志的事。
 
-## 5. LAPIC 作为 tick 设备没有被实测验证
+## 5. `HpetClockSource::m_cache` 不是原子的
+
+`hpet.cpp` 的 `HpetClockSource::read()` 用一把自旋锁把并发读者分成两路：拿到锁的去读 MMIO
+并把值写进 `m_cache`，没拿到的在 `m_cache` 上自旋等它变化。
+
+问题是 `m_cache` 是个普通的 `usize`：持锁方裸写、竞争方在**别的 CPU 上**裸读，
+还靠 `while (oldvalue == newvalue && m_spinlock.is_locked())` 这个循环观察它——
+编译器完全可以把这个读提到循环外。改成 `std::atomic<u64>`，
+读写用 relaxed 就够（它不携带别的数据）。
+
+Linux 的 `read_hpet()` 用 `union hpet_lock` 的 cmpxchg 做同一件事。
+（审查编号 C12，八步计划里漏了。）
+
+## 6. LAPIC 作为 tick 设备没有被实测验证
 
 双核 QEMU 下 `check_new_device()` 确实接受了 LAPIC（单核下按 rating 保留 HPET，符合设计），
 但启动随后崩在调度器里（见 `scheduler.md`），没跑到能观察 LAPIC 产生 tick 的地方。
 解掉那个阻塞之后应当复跑 `SMP=2` 确认。
 
-## 6. 杂项
+## 7. 杂项
 
 - `HPET_LEGACY_IRQ_ENABLED`（`hpet.cpp`）只写不读，挂着 `[[maybe_unused]]`。
 - `kernel/arch/x86/kernel/include/ours/arch/hpet.hpp` 的 `HPET_CLKEVT` 是个
