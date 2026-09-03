@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**，4.5 修完 **108**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -90,12 +90,30 @@
 调 `Scheduler::Current::park_thread`/`unpark_thread`（要求 pi 锁）但自己没标。`enqueue_waiter`
 的注释已经写了「调用方持 waiter 的 pi 锁」，把它变成 `TA_REQUIRES(thread->get_pi_lock())`。
 
-### 4.5 `Scheduler::Migrator::move_queued_thread`
+### 4.5 `Scheduler::Migrator::move_queued_thread` — 已修
 
-`scheduler_migrator.cpp:10-24` 裸 `release()` 本 CPU rq 锁、`acquire()` 目标 CPU rq 锁，
-没有任何注解（`:16/24` 报）。前置条件是 `self->get_lock()` 已持有、出口持有的是**另一个**
-scheduler 的锁——分析器表达不了，标 `TA_REQUIRES(self->get_lock())` +
-`TA_NO_THREAD_SAFETY_ANALYSIS` 并写注释。
+113 → 108。
+
+### 4.6 `finish_transition` 从不持 PI 锁的 lambda 里被调
+
+`scheduler.cpp` `process_migrating_threads()` 通过 `find_active_scheduler_for(to_migrate, [](Thread
+*thread, Scheduler *self) { self->finish_transition(thread); })` 调它，lambda 里只持目标调度器的
+rq 锁，不持 `thread->get_pi_lock()`，而 `finish_transition` 标了 `TA_REQUIRES(thread->get_pi_lock())`。
+函数体目前是只有断言的桩，契约该是什么等实现定；归调度器迁移工作。
+
+### 4.7 唤醒路径不持被唤醒线程的 PI 锁（4.4 的注解本来会揪出来的）
+
+给 `WaiterState::unsleep` 标 `TA_REQUIRES(thread->get_pi_lock())` 编不过（`Thread` 在
+`wait_queue.hpp` 里不完整，见 4.4），但按 3.2 定下的契约人工核对，有两处调用方不持锁：
+
+- `WaitQueue::wake_dequeued_thread()`（`wait_queue.cpp:162-168`）：`notify_one/notify_all` 在放掉
+  队列锁之后调它，它直接 `thread->waiter_state().unsleep(thread, status)` → `Scheduler::unpark_thread`
+  → `do_unpark_thread` 改线程状态、入队——全程没有该线程的 PI 锁。与同时持 PI 锁读 `state()` 的
+  `suspend_or_kill` 竞争。修法：在 `wake_dequeued_thread` 里 `Guard guard{thread->get_pi_lock()}`
+  包住 `begin_propagate` + `unsleep`（队列锁已放，锁序「PI 在外、队列在内」不被违反）。
+- `Thread::Current::sleep()` 的 timer 回调（`thread.cpp:471`）：`unsleep(current_thread, ...)` 直接
+  从 timer handler 调，不拿 PI 锁。对照 `WaitQueue::handle_timeout` 的写法：先
+  `timer->trylock_or_cancel(pi_lock)`，拿到再 unsleep，最后 `release()`。
 
 ## 5. 已确认正确、不用动的
 

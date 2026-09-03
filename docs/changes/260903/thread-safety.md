@@ -544,3 +544,48 @@ Zircon `mp.idle_cpus.fetch_or(cpu_num_to_mask(cpu))` / `fetch_and(~...)`
 
 **故意没做**
 无。
+
+---
+
+## `activate/deactivate_thread` 补 `TA_REQUIRES(get_lock())`；`Migrator::move_queued_thread` 的换锁退出分析（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — `activate_thread`/`deactivate_thread` 加
+  `TA_REQUIRES(get_lock())`
+- `kernel/kernel/task/sched/scheduler_migrator.cpp` — `move_queued_thread` 加
+  `TA_REQUIRES(self->get_lock())` + `TA_NO_THREAD_SAFETY_ANALYSIS`，注释写明它「进来持 A 的锁、
+  出去持 B 的锁」
+
+**症状**
+潜伏。`scheduler.cpp` 里 `activate_thread`/`deactivate_thread` 调 `enqueue_thread`/`dequeue_thread`
+各报一条「requires holding rqlock」；`scheduler_migrator.cpp:16/24` 报「releasing not held」和
+「still held at end」。
+
+**原因**
+`activate/deactivate_thread` 是 `enqueue/dequeue_thread` 的薄封装，后者标了 `TA_REQUIRES(get_lock())`，
+前者没标——注解链在这一层断了，于是分析器在封装内部报、对封装的调用方却什么都不查。唯一的
+调用方 `do_unpark_thread` 和 `Migrator` 都持着锁，是纯漏标。
+
+`Migrator::move_queued_thread` 是另一回事：它持着源 CPU 的 rq 锁进来，中途 `release()` 掉、
+`acquire()` 目标 CPU 的 rq 锁，持着**另一把**锁返回。分析器能说「需要 L」「获得 L」，说不出
+「把 L 换成 M」。它用裸 `acquire()/release()` 而不是 Guard 也是这个原因——Guard 同样表达不了换锁。
+
+**改法**
+前者补 `TA_REQUIRES(get_lock())`。后者标可检查的那半（进入时持 `self->get_lock()`），函数体
+`TA_NO_THREAD_SAFETY_ANALYSIS`，注释说清换锁协议和为什么用裸锁。
+
+**参照**
+Linux `move_queued_task()`：`lockdep_assert_rq_held(rq)` 进入，`rq_unlock(rq)` →
+`rq_lock(new_rq)`，返回 `new_rq`——同样的换锁形状，同样只靠断言检查进入条件。
+
+**验证**
+- 全量构建通过；clang-format 已跑；`scheduler.hpp` 只暂存了本条的 hunk。
+- 15 个 TU：113 → **108**。调度器目录只剩 `finish_transition`（`scheduler.cpp:449`，从
+  `process_migrating_threads` 的 lambda 里不持 PI 锁调它）一条，它是个只有断言的桩，归调度器
+  那边的迁移工作，记在待修清单。
+- QEMU：`kernel.dev.dbg_1.obi` 仍停在 `format_error`；`kernel.dev.obi` 这次在「keeps tick device
+  HPET over LVT」之后静默挂住（46 行，没有断言）——中间合入了调度器那边的 `456e176`，本改动
+  只加注解和注释。
+
+**故意没做**
+`finish_transition` 的锁契约：函数体是桩，等它有实现再定。

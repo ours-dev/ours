@@ -4,6 +4,15 @@
 namespace ours::task::sched {
 class Scheduler::Migrator {
   public:
+    /// Enters holding |self|'s runqueue lock and returns holding the *target*
+    /// CPU's runqueue lock instead -- the caller's lock is dropped in the
+    /// middle and a different scheduler's taken. The analysis can state
+    /// "requires L" and "acquires L" but not "swaps L for M", so the body is
+    /// opted out; the entry condition is the half that can be checked. The
+    /// bare acquire()/release() are deliberate here for the same reason a
+    /// Guard cannot express the swap.
+    TA_REQUIRES(self->get_lock())
+    TA_NO_THREAD_SAFETY_ANALYSIS
     static auto move_queued_thread(Scheduler *self, Thread *thread, CpuNum newcpu) -> void;
 };
 

@@ -237,10 +237,16 @@ class Scheduler {
 
     /// Activate the given |thread|. That means to add it onto runqueue and
     /// mark the thread ready to be scheduled.
+    ///
+    /// Both are runqueue mutations -- they wrap enqueue_thread()/
+    /// dequeue_thread(), which carry the same requirement -- so the caller
+    /// holds this scheduler's runqueue lock.
+    TA_REQUIRES(get_lock())
     auto activate_thread(Thread *, EnqueueControl) -> void;
 
     /// Deactivate the given |thread|. That means to remove it from runqueue and
     /// disallow it to be added onto runqueue.
+    TA_REQUIRES(get_lock())
     auto deactivate_thread(Thread *, DequeueControl) -> void;
 
     /// Unpark the given |thread| with specified flags |control| on this scheduler.
