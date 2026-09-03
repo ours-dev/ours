@@ -13,16 +13,16 @@ group("default") {
   testonly = true
   deps = [
     # The selected product (ours_product build arg, default "bringup").
-    "//products/$ours_product:$ours_product",
+    "//products/$ours_product",
 
     # C++-free smoke of the three-layer distribution pipeline; keeps the
     # fini_manifest() path exercised on every default build.  The
     # intentionally-failing :collision target stays out of this graph.
     "//tests/dist-smoke:good",
-    "//tests/dist-smoke:with_rename",
     "//tests/dist-smoke:obi_smoke",
-    "//tests/hermetic-smoke:hermetic",
+    "//tests/dist-smoke:with_rename",
     "//tests/hermetic-smoke:extract_ifs",
+    "//tests/hermetic-smoke:hermetic",
 
     # C++-free smoke of the product() assembly engine; exercises the
     # product-level cmdline/bootfs injection + product_info.json that the
@@ -33,7 +33,7 @@ group("default") {
     # not build yet, so this is what keeps physload, the physboot module and
     # the packaging path exercised end to end on every default build; see
     # //kernel/tests/fake-kernel/README.md.
-    "//kernel/products/image/fake:fake",
+    "//kernel/products/image/fake",
 
     # The x86 GRUB-facing artifact: parses Multiboot2, loads physload out of
     # the OBI container above as a separate image, and jumps to it.  Not
@@ -66,13 +66,19 @@ group("default") {
     # is a bare switchset mount point with no prelude/libc++ wiring of its
     # own (see //kernel/products:headers vs. the per-toolchain overrides in
     # //build/toolchain/ours/BUILD.gn).
-    "//kernel/lib/arch:x86-system-smoke($host_toolchain)",
+    "//kernel/lib/arch:cpu-mask-smoke($host_toolchain)",
     "//kernel/lib/arch:x86-feature-smoke($host_toolchain)",
     "//kernel/lib/arch:x86-paging-smoke($host_toolchain)",
-    "//kernel/lib/arch:cpu-mask-smoke($host_toolchain)",
+    "//kernel/lib/arch:x86-system-smoke($host_toolchain)",
+    "//system/lib/logz4:logz4-test($host_toolchain)",
     "//system/lib/ustl:bitfields-test($host_toolchain)",
     "//system/lib/ustl:bitset-test($host_toolchain)",
-    "//system/lib/logz4:logz4-test($host_toolchain)",
+
+    # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
+    # decision over two token values and its state is one std::atomic, so the
+    # whole protocol runs on the host; the concurrent half it cannot reach is
+    # covered by the TLA+ model named in the header.
+    "//system/lib/concurrent:chain-lock-test($host_toolchain)",
 
     # //kernel/mm's pure-bookkeeping smoke tests: plain hosted main()s over
     # the mm sources they exercise (the buddy allocator, the protection-range
