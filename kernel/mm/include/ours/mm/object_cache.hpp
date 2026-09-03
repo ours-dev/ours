@@ -123,7 +123,16 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
 
     static sync::Mutex CACHE_LOCK;
     static List GLOBAL_CACHES TA_GUARDED(CACHE_LOCK);
-    static NodeMask SLAB_NODES TA_GUARDED(CACHE_LOCK);
+
+    /// Not guarded by CACHE_LOCK, deliberately. init() fills it in, once,
+    /// before the first cache exists, and nothing writes it afterwards; the
+    /// allocation path reads it on every slab refill. Putting a sleeping
+    /// Mutex on that read would be wrong twice over -- the hot path cannot
+    /// take it, and a lock protects against writers, of which there are none
+    /// after bring-up. Linux's slab_nodes is the same shape: written by
+    /// slab_node_online()/offline() under slab_mutex on the hotplug path,
+    /// read lock-free by the allocator.
+    static NodeMask SLAB_NODES;
 };
 
 /// The typed shell over MemCache.

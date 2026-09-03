@@ -323,3 +323,39 @@ Zircon `Scheduler::Unblock(Thread *) TA_REQ(thread_lock)`；`Thread::Resume()` �
 
 **故意没做**
 - `WaiterState::sleep/unsleep`、`park_thread_common` 的 `TA_REQUIRES` 传播（4.4）下一条。
+
+---
+
+## `MemCache::SLAB_NODES` 去掉 `TA_GUARDED(CACHE_LOCK)`（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/object_cache.hpp` — 删注解，加注释说明为什么不需要锁
+
+**症状**
+潜伏。`object_cache.cpp:374`（slab 补充路径读 `SLAB_NODES`）和 `:494`（`init()` 写）报「requires
+holding Mutex CACHE_LOCK」。
+
+**原因**
+注解说它归 `CACHE_LOCK`，但没有一个调用方在拿它，也不该拿：`CACHE_LOCK` 是睡眠 `Mutex`，
+`SLAB_NODES` 的读者是分配热路径。而它只在 `MemCache::init()` 里被写一次，那时候第一个 cache 还
+不存在，之后再没有写者——没有写者就没有东西要互斥。这条注解描述的是一个不存在的保护关系。
+
+**改法**
+删掉 `TA_GUARDED`，注释写清「init 写一次、之后只读、热路径读」这三点，以及为什么不能是
+`CACHE_LOCK`。`GLOBAL_CACHES` 的注解保留：它在 `init()`（每个 cache 的）里被 `push_back`，
+确实在 `CACHE_LOCK` 下。
+
+**参照**
+Linux `slab_nodes`：`slab_node_online()/offline()` 在 `slab_mutex` 下写（热插拔路径），分配器
+无锁读。本树还没有 node 热插拔，写者只有 bring-up。
+
+**验证**
+- 全量构建通过；clang-format 已跑。
+- 15 个 TU：174 → **172**。
+- QEMU：`kernel.dev.dbg_1.obi` 这次停在 `curr == self.m_runtime.curr_thread` 断言（调度器那边又
+  合入了改动），`kernel.dev.obi` 仍是 `assert_held` 断言。本改动只删了一个属性。
+
+**故意没做**
+没有把 `SLAB_NODES` 做成 `const`：node 热插拔来了它就要可写，届时应照 Linux 在 `CACHE_LOCK`
+下写、无锁读，再把 `TA_GUARDED` 加回来就是错的——那时需要的是 RCU 式的「写者互斥、读者无锁」，
+分析器表达不了。
