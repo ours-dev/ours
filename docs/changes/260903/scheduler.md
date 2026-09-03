@@ -472,3 +472,56 @@ Fair 的 `RunQueue::avg_vruntime()` 在第一个线程入队时除零（第 5 �
 - 没有实现 `unpark_preempt`（唤醒不抢占，纯 FIFO）、`select_target_cpu`/`migrate_thread`
   （用 ISchedule 默认）、`override_thread_base_profile`（RR 没有权重可改）。
 - 没有删 Fair 的任何东西，包括 `Scheduler::m_fair_runqueue` 和 `scheduler.hpp` 对 `fair.hpp` 的包含。
+
+---
+
+## 7. 三处拿 `Scheduler` 的魔数去校验 `Thread` 的 canary（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `unpark_thread(UnparkList)`、`reschedule_mask()`、
+  `Scheduler::Current::tick()` 三处 `verify<Self>()` → `verify<Thread>()`。
+
+**症状**
+
+RR 换上后 dbg 镜像在 `laborer->resume()` 一进 `reschedule_mask()` 就停：
+
+```
+Assertion failed on m_magic == gktl::magic<T>() with message: Error type magic
+```
+
+lldb 栈：`Canary::verify<ours::task::sched::Scheduler>` ← `reschedule_mask` ← `unpark_thread`
+← `Thread::resume` ← `start_kernel`。
+
+**原因**
+
+`Scheduler` 的成员函数里 `Self` 是 `Scheduler`。三处对一个 `Thread *` 写了
+`->m_canary.verify<Self>()`，等于拿 `magic<Scheduler>()` 去比 `Thread` 构造时种下的
+`magic<Thread>()`，永远不等。它们之前没炸只是因为启动从没走到这里。
+
+这和 mm 那边 `VmMapping` canary 的教训是同一类：canary 的种子和校验各自拼一次类型名，
+拼错一次就是必炸的断言，而且断言文本只说"type magic 错了"，不说是哪个类型。
+
+**改法**
+
+三处改成 `verify<Thread>()`。`self.m_canary.verify<Self>()`（校验 Scheduler 自己）的那些不动，
+它们是对的。
+
+**参照**
+
+无，本项目自有设计。Zircon 的 `fbl::Canary<magic>` 把魔数做成模板非类型参数，
+校验时不需要再写一遍类型名，结构上避免了这一类错误——mm 的 `docs/changes/260903/mm.md`
+对此有更完整的讨论。
+
+**验证**
+
+- 构建通过，`clang-format` 无改动，`clang-tidy` 无新告警。
+- dbg 镜像：canary 断言消失，前进到 `Scheduler::Current::preempt()` 的
+  `DEBUG_ASSERT(curr == self.m_runtime.curr_thread)`——`curr_thread` 从没人播种（下一条）。
+  日志里同时出现 `IPI-Resched on CPU[0]`：`IpiService::send_resched(CpuMask)` 算好了
+  `targets` 却发了原始 `mask`，给自己发了 IPI（待修里已有，单独一条）。
+- dev 镜像：停点不变（`finish_switch_context()` 释放未持有的 pi 锁），预期如此——
+  dev 没有 DEBUG_ASSERT，本来就没在 canary 处停。
+
+**故意没做**
+
+- 没有改成 Zircon 那种非类型模板参数的 canary。那是 gktl 的接口改动，不在这里做。

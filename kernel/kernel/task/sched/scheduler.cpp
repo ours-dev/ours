@@ -209,7 +209,12 @@ auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkControl control)
         auto *const thread = &threads.front().value();
         threads.pop_front();
 
-        thread->m_canary.verify<Self>();
+        // <Thread>, not <Self>: inside Scheduler, Self is Scheduler, and a
+        // canary seeded with magic<Thread>() never equals magic<Scheduler>().
+        // Three call sites in this file verified a Thread with Scheduler's
+        // magic (here, reschedule_mask(), Current::tick()), so the first
+        // unpark of the boot died in the check rather than in anything real.
+        thread->m_canary.verify<Thread>();
         Guard thread_guard{thread->get_pi_lock()};
 
         CpuNum target_cpu;
@@ -240,7 +245,7 @@ auto Scheduler::reschedule_mask(CpuMask const &mask) -> void {
     auto const need_preempt = mask.test(cpu);
 
     auto const current_thread = Thread::Current::get();
-    current_thread->m_canary.verify<Self>();
+    current_thread->m_canary.verify<Thread>();
 
     auto &preemption_state = current_thread->preemption_state();
     if (preemption_state.eager_resched_disabled_count() == 0) {
@@ -871,7 +876,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
 
 auto Scheduler::Current::tick(SchedTime now) -> void {
     auto const current_thread = Thread::Current::get();
-    current_thread->m_canary.verify<Self>();
+    current_thread->m_canary.verify<Thread>();
 
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
