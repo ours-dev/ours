@@ -763,3 +763,30 @@ SpinLock::acquire ← ScopedGuard{pi, rq} ← Scheduler::tick_thread ← TickSch
 - dbg：`!is_held()` 断言消失；启动仍在 `x86_bring_aps()` 的 10 ms `sleep_for()` 之后静默——
   `bring_aps` 只睡一次就该继续，所以是唤醒链（tick → 定时器回调 → `unsleep` → `unpark` →
   切回 laborer）里还有问题，gdbstub 正在追（下一条）。
+
+
+---
+
+## 14. `evaluate_next_thread()` 对未注册纪律的空槽做虚调用，CPU 静默消失（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `evaluate_next_thread()` 跳过 `m_schedules` 里的空槽。
+
+**症状**
+laborer 第一次 `sleep_for()` 进入 `reschedule_common()` 后静默挂住：探针显示走到了
+`evaluate_next_thread()` 入口，之后什么都没有；没有断言、没有故障。
+
+**原因**
+`m_schedules` 按 `Discipline` 索引，没注册的纪律（今天的 Deadline）槽是空指针。循环对每个槽
+无条件 `schedule->evaluate_next_thread()`：空指针的 vtable 从地址 0 读出来（启动阶段零页是映射的），
+跳进零页——不缺页、不报错。之前活着只是因为第一个槽（RR）总能挑出线程提前返回；
+第一次"没活可干"就走到了空槽。
+
+**改法**
+`if (!schedule) continue;`。
+
+**参照**
+无，本项目自有设计（Zircon 只有一个调度器，没有按纪律索引的表）。
+
+**验证**
+构建通过；dbg：随后出现 `switch laborer -> Idle/0`，切回 idler 成功（探针，已剥除）。

@@ -489,7 +489,17 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
         }
     }
 
-    for (auto &schedule: m_schedules) {
+    // m_schedules is indexed by Discipline and a slot is null when no
+    // discipline of that kind is registered -- Deadline has none today. The
+    // loop used to call through every slot regardless; that survived for as
+    // long as the first slot always had something to run, and died the first
+    // time a CPU ran out of work: a virtual call through a null ISchedule*
+    // reads its vtable from address 0, which the boot has left mapped, and
+    // jumps into the zero page. No fault, no message, just a CPU gone.
+    for (auto *const schedule: m_schedules) {
+        if (!schedule) {
+            continue;
+        }
         if (next = schedule->evaluate_next_thread(m_runtime, curr); next) {
             return next;
         }
