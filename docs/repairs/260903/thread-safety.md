@@ -5,41 +5,18 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；把 Guard 和锁类临时补上注解（下面第 1 条）再编一次，剩 **197 条**——只掉了
-22 条，说明第 1 条不是唯一根因，第 2 条同样是。两轮实验的改动已还原，没进树。
+基线 **219 条**；第 1 条修完后 **194 条**——只掉了 25 条，说明第 1 条不是唯一根因，第 2 条同样是。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
+第 1 条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
 
 ---
 
-## 1. 根因一：Guard 和锁类对分析器完全不可见
+## 1. 根因一：Guard 和锁类对分析器不可见 — 已修
 
-`lockdep::Guard`（`system/lib/lockdep/include/lockdep/guard.hpp`）没有 `TA_SCOPED_CAPABILITY`，
-构造/析构/`unlock()`/`unguard()` 都没有 `TA_ACQUIRE`/`TA_RELEASE`。`SpinLock`、`Mutex`、
-`LocalLock` 三个类标了 `TA_CAPABILITY`，但 `acquire()`/`release()`/`try_acquire()`/
-`assert_held()` 一个都没标。于是分析器眼里全树没有任何一次加锁，所有 `TA_REQUIRES` 都是
-「没持有」，所有 `TA_RELEASE` 都是「释放没拿到的锁」。
-
-照 Zircon 改：`lockdep::Guard` 是 `__TA_SCOPED_CAPABILITY`，构造函数 `__TA_ACQUIRE(lock)`，
-`Release()` 和析构 `__TA_RELEASE()`；`fbl::Mutex::Acquire() __TA_ACQUIRE()`、
-`Release() __TA_RELEASE()`、`TryAcquire() __TA_TRY_ACQUIRE(true)`、`AssertHeld() __TA_ASSERT()`。
-本树对应写法（实验里验证过能编）：
-
-- `class TA_SCOPED_CAPABILITY Guard`；`Guard(Lock &lock) TA_ACQUIRE(lock)`；
-  `~Guard() TA_RELEASE()`；`unlock()` 和 `unguard()` 都是 `TA_RELEASE()`——`unguard()` 的
-  语义正是「分析器请别再跟踪它，别人会放」，和 `TA_RELEASE` 完全吻合。
-- 内部真正调 `m_lock.acquire()`/`release()` 的私有 helper 标 `TA_NO_THREAD_SAFETY_ANALYSIS`，
-  否则 scoped capability 和底层锁会被重复计数。
-- `ScopedGuard`（可变参）没法把参数包展开进属性；它只有 3 个调用点
-  （`scheduler.cpp:346/830`，`tick_thread`/`yield_to_thread`），换成嵌套 `Guard` 更省事。
-- 锁类：`TA_ACQUIRE() auto acquire()`、`TA_TRY_ACQUIRE(true) auto try_acquire()`、
-  `TA_RELEASE() auto release()`、`TA_ASSERT() auto assert_held()`；`acquire_irq_save`/
-  `release_irq_restore` 同理。`Mutex::acquire()` 标了以后，它调的 `acquire_common()` 也要标
-  `TA_ACQUIRE()`，否则分析器在 `acquire()` 出口报「期望持锁」。
-
-注意 Guard 在 `system/lib/lockdep`，是子模块里的未版本化工作，从这个 worktree 提交不进主仓。
-第十三节那次已经补过一遍、又丢了，这次要和 `sync.md` 第 1 条（`IrqSave` 不关中断）一起修，
-两条都在同一个文件。
+见 `docs/changes/260903/thread-safety.md`。`ScopedGuard` 仍对分析器不可见（属性参数不能展开
+参数包），它的三个调用点（`scheduler.cpp:346/830`、`scheduler.hpp` `Current::set_state`）要换成
+嵌套 `Guard`，归到下面 3.x 一起做。修完后 15 个 TU 的告警 219 → 194。
 
 ## 2. 根因二：`TA_REQUIRES(get_lock())` 和 `Guard guard{m_lock}` 对不上
 

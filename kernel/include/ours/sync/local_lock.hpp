@@ -10,8 +10,8 @@ class TA_CAPABILITY("LocalLock") LocalLock {
     using Self = LocalLock;
 
   public:
-    auto acquire() -> void;
-    auto release() -> void;
+    TA_ACQUIRE() auto acquire() -> void;
+    TA_RELEASE() auto release() -> void;
 
   private:
 };

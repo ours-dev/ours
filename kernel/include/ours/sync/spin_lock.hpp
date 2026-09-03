@@ -82,15 +82,15 @@ namespace spinlock {
         ~SpinLock();
 
         /// Acquire the lock.
-        auto acquire() -> void;
+        TA_ACQUIRE() auto acquire() -> void;
 
         /// Try to acquire the lock, return true if success.
-        auto try_acquire() -> bool;
+        TA_TRY_ACQUIRE(true) auto try_acquire() -> bool;
 
         /// Release the lock.
-        auto release() -> void;
+        TA_RELEASE() auto release() -> void;
 
-        auto acquire_irq_save(::arch::IrqSavedState &state) -> void {
+        TA_ACQUIRE() auto acquire_irq_save(::arch::IrqSavedState &state) -> void {
             state = ::arch::local_irq_save_state();
             acquire();
         }
@@ -98,7 +98,7 @@ namespace spinlock {
         /// Order matters: the lock has to be dropped before interrupts come
         /// back. Restoring first leaves a window in which an interrupt taken
         /// on this CPU can reach for this same lock and self-deadlock.
-        auto release_irq_restore(::arch::IrqSavedState state) -> void {
+        TA_RELEASE() auto release_irq_restore(::arch::IrqSavedState state) -> void {
             release();
             ::arch::local_irq_restore_state(state);
         }
@@ -108,7 +108,9 @@ namespace spinlock {
         /// Return whether this lock is being held on the current CPU.
         auto is_held() const -> bool;
 
-        auto assert_held() const -> void;
+        /// TA_ASSERT: tells the analysis the lock is held from here on,
+        /// for code that inherits a lock it cannot prove it holds.
+        TA_ASSERT() auto assert_held() const -> void;
 
         USTL_NO_MOVEABLE_AND_COPYABLE(SpinLock);
 
