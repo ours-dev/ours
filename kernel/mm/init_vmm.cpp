@@ -1,5 +1,6 @@
 #include <arch/x86/cache.hpp>
 #include <logz4/log.hpp>
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/init.hpp>
@@ -22,10 +23,29 @@
 namespace ours::mm {
 namespace {
     struct PhysVma {
+        /// What already stands behind the range when the VMM comes up. It
+        /// decides how far entrol_preset_vma() goes: every entry claims its
+        /// range, but only a Mapped one has page tables to stamp.
+        enum class Backing {
+            /// Mapped before the VMM existed -- by physboot, or by the PMM --
+            /// and mapped for good. The VMA claims the range and rewrites the
+            /// permissions of the mappings already there, which is how the
+            /// image's text ends up read-only and its data non-executable.
+            Mapped,
+
+            /// Address space only. Another subsystem maps into the range on
+            /// its own, one piece at a time, and stays the owner of those
+            /// pages. The VMA exists so the VMM never hands the range out to
+            /// anyone else; it has no business in the page tables behind it,
+            /// and cannot even assume they are populated.
+            AddressSpace,
+        };
+
         char const *name;
         VirtAddr base;
         usize size;
         VmaFlags vmaf;
+        Backing backing;
     };
 
     [[maybe_unused]]
@@ -45,43 +65,65 @@ namespace {
         {.name = "k:head",
          .base = VirtAddr(IMAGE_START),
          .size = usize(KERNEL_CODE_START - IMAGE_START),
-         .vmaf = VmaFlags::Read | VmaFlags::Write},
+         .vmaf = VmaFlags::Read | VmaFlags::Write,
+         .backing = PhysVma::Backing::Mapped},
         {.name = "k:code",
          .base = VirtAddr(KERNEL_CODE_START),
          .size = usize(KERNEL_CODE_END - KERNEL_CODE_START),
-         .vmaf = VmaFlags::Exec | VmaFlags::Read},
+         .vmaf = VmaFlags::Exec | VmaFlags::Read,
+         .backing = PhysVma::Backing::Mapped},
         {.name = "k:rodata",
          .base = VirtAddr(KERNEL_RODATA_START),
          .size = usize(KERNEL_RODATA_END - KERNEL_RODATA_START),
-         .vmaf = VmaFlags::Read},
+         .vmaf = VmaFlags::Read,
+         .backing = PhysVma::Backing::Mapped},
         {.name = "k:data",
          .base = VirtAddr(KERNEL_DATA_START),
          .size = usize(KERNEL_DATA_END - KERNEL_DATA_START),
-         .vmaf = VmaFlags::Write | VmaFlags::Read},
+         .vmaf = VmaFlags::Write | VmaFlags::Read,
+         .backing = PhysVma::Backing::Mapped},
         // Writable only until physboot finished relocating, and mapped
         // read-only ever since.
         {.name = "k:relro",
          .base = VirtAddr(KERNEL_RELRO_START),
          .size = usize(KERNEL_RELRO_END - KERNEL_RELRO_START),
-         .vmaf = VmaFlags::Read},
+         .vmaf = VmaFlags::Read,
+         .backing = PhysVma::Backing::Mapped},
         {.name = "k:bss",
          .base = VirtAddr(KERNEL_BSS_START),
          .size = usize(KERNEL_BSS_END - KERNEL_BSS_START),
-         .vmaf = VmaFlags::Read | VmaFlags::Write},
+         .vmaf = VmaFlags::Read | VmaFlags::Write,
+         .backing = PhysVma::Backing::Mapped},
         {.name = "k:init",
          .base = VirtAddr(KERNEL_INIT_START),
          .size = usize(KERNEL_INIT_END - KERNEL_INIT_START),
-         .vmaf = VmaFlags::Read | VmaFlags::Write | VmaFlags::Exec},
+         .vmaf = VmaFlags::Read | VmaFlags::Write | VmaFlags::Exec,
+         .backing = PhysVma::Backing::Mapped},
         {.name = "k:physmap",
          // If ASLR(Address space layout randomilization) enabled, this needs to fix up with get_kernel_virt_base().
          .base = PhysMap::VIRT_BASE,
          .size = PhysMap::SIZE,
-         .vmaf = VmaFlags::Read | VmaFlags::Write},
-        {.name = "k:padding",
-         .base = PhysMap::VIRT_BASE + PhysMap::SIZE,
-         // Reserve a max page to prevent over prevent overwring.
-         .size = MAX_PAGE_SIZE,
-         .vmaf = VmaFlags::Read},
+         .vmaf = VmaFlags::Read | VmaFlags::Write,
+         .backing = PhysVma::Backing::Mapped},
+        // The per-CPU window (ARCH_CPU_LOCAL_VIRT_BASE in aspace_layout.hpp).
+        // CpuLocal::Mapper populates it itself, a chunk slot at a time and
+        // only as far as the CPUs need, so most of it is never mapped and
+        // none of it is the VMM's to protect -- hence AddressSpace, and the
+        // full window rather than the part in use today, so a later chunk
+        // does not land on something the VMM has since given out.
+        //
+        // The window begins exactly where the physmap ends. A one-page
+        // read-only "k:padding" used to stand there as a guard against
+        // running off the physmap; once the window moved in, that guard sat
+        // on chunk 0, and reserve() write-protected the page holding CPU 0's
+        // per-CPU counters. The next spin lock acquire faulted on its
+        // counter update. There is no room for such a guard in this layout,
+        // and the physmap is bounded by its own VMA in any case.
+        {.name = "k:cpulocal",
+         .base = VirtAddr(ARCH_CPU_LOCAL_VIRT_BASE),
+         .size = usize(ARCH_CPU_LOCAL_SIZE),
+         .vmaf = VmaFlags::Read | VmaFlags::Write,
+         .backing = PhysVma::Backing::AddressSpace},
     };
 
     INIT_CODE auto entrol_preset_vma(PhysVma const &phys_vma) -> void {
@@ -96,6 +138,12 @@ namespace {
             root_vma->create_subvma(phys_vma.base - root_vma->base(), phys_vma.size, phys_vma.vmaf,
                                     phys_vma.name, VmMapOption::Fixed, &vma);
         DEBUG_ASSERT(Status::Ok == status);
+
+        if (PhysVma::Backing::AddressSpace == phys_vma.backing) {
+            // Claimed, and that is all: nothing below this VMA is ours to map
+            // or protect. See PhysVma::Backing.
+            return;
+        }
 
         status = vma->reserve(0, phys_vma.size, extract_permissions(phys_vma.vmaf), phys_vma.name);
         DEBUG_ASSERT(Status::Ok == status);
