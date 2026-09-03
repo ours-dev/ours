@@ -375,7 +375,7 @@ namespace task {
 
         auto erase_from_global_list_locked() -> void;
 
-        gktl::Canary m_canary;
+        gktl::Canary m_canary{this};
         ArchThread m_arch_thread TA_GUARDED(get_resource_lock());
         Name m_name;
 

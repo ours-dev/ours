@@ -95,7 +95,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status;
 
-    gktl::Canary m_canary;
+    gktl::Canary m_canary{this};
     Flags m_flags;
     VirtAddr m_base;
     VirtAddr m_size;

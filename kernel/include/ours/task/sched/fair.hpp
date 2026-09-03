@@ -104,7 +104,7 @@ class RunQueue {
         Context, ustl::collections::intrusive::ValueTraits<Context::RunQueueTraits<>>,
         ustl::collections::intrusive::Compare<Lesser>>;
 
-    gktl::Canary m_canary;
+    gktl::Canary m_canary{this};
     Queue queue_;
     Context *current_;
     Weight weight_sum_;

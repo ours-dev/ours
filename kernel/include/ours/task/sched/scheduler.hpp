@@ -206,7 +206,7 @@ class Scheduler {
 
     auto set_next_thread(Thread *thread) -> void;
 
-    gktl::Canary m_canary;
+    gktl::Canary m_canary{this};
     Runtime m_runtime;
     usize m_num_switches;
 

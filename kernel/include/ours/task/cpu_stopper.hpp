@@ -62,7 +62,7 @@ class CpuStopper {
 
     auto worker_thread() -> void;
 
-    gktl::Canary m_canary;
+    gktl::Canary m_canary{this};
     State m_state;
     sync::SpinLock m_lock;
     task::Thread *m_worker;

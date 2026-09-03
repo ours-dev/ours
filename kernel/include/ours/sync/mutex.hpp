@@ -56,7 +56,7 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
 
     auto release_slowpath(task::Thread *, State) -> void;
 
-    gktl::Canary m_canary;
+    gktl::Canary m_canary{this};
 
   private:
     auto record_initial_assigned_cpu() -> void;

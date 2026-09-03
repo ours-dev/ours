@@ -39,7 +39,8 @@ class HpetClockSource {
     using Self = HpetClockSource;
 
   public:
-    HpetClockSource() : m_canary(), m_spinlock(), m_clksrc("HPET-CLKSRC", &VTABLE), m_cache(0) {}
+    HpetClockSource()
+        : m_canary(this), m_spinlock(), m_clksrc("HPET-CLKSRC", &VTABLE), m_cache(0) {}
 
     auto read() -> u64 {
         m_canary.verify<Self>();
@@ -100,7 +101,7 @@ class HpetChannel {
 
   public:
     HpetChannel()
-        : m_canary()
+        : m_canary(this)
         , id_(0)
         , regs_mmio_(0)
         , m_clkevt("HPET", &Self::VTABLE,

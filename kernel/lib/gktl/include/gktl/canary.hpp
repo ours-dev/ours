@@ -47,6 +47,13 @@ class Canary {
     // Some static and aggregate kernel objects cannot name their enclosing
     // type during member initialization. A zero canary keeps construction
     // valid; typed constructors remain the checked path for guarded objects.
+    //
+    // A class that calls verify<T>() is not one of those, and must seed its
+    // canary -- `gktl::Canary m_canary{this};` on the declaration, so that
+    // defaulted constructors are covered too. Leaving it zero there is a
+    // guaranteed assertion, and used to be invisible only because
+    // gktl::magic<T>() was itself zero for every T and the check compared
+    // zero against zero.
     FORCE_INLINE constexpr Canary() : m_magic(0) {}
 
     template <typename T>

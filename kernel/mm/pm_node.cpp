@@ -202,7 +202,7 @@ decltype(PmNode::NODE_DISTANCE) PmNode::NODE_DISTANCE;
 decltype(PmNode::ALLOWED_GAF) PmNode::ALLOWED_GAF = GAF_BOOT;
 
 PmNode::PmNode(NnId nid)
-    : m_canary()
+    : m_canary(this)
     , m_id(nid)
     , m_lock()
     , m_hard_affinity()
