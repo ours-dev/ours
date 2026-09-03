@@ -666,22 +666,61 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     }
 
     // The following is a fallback strategy: pick the scheduler with the minimal runtime.
-    auto last_cpu = se.last_cpu();
-    auto curr_cpu = Cpu::id();
-    [[maybe_unused]]
-    auto starting_cpu = last_cpu == INVALID_CPU_NUM ? curr_cpu : last_cpu;
+    auto const pick_least_loaded = [](CpuMask const &candidates) -> CpuNum {
+        auto best_cpu = INVALID_CPU_NUM;
+        candidates.for_each([&best_cpu](CpuNum cpunum) {
+            // Find the mininal expected runtime CPU
+            if (best_cpu == INVALID_CPU_NUM ||
+                Scheduler::Current::get(best_cpu).m_runtime.total_expected_runtime >
+                    Scheduler::Current::get(cpunum).m_runtime.total_expected_runtime) {
+                best_cpu = cpunum;
+            }
+        });
+        return best_cpu;
+    };
 
-    auto const active_mask = peek_active_mask();
-    auto const available_mask = se.cpu_affinity().get_available_mask(active_mask);
-    available_mask.for_each([&target_cpu](CpuNum cpunum) {
-        // Find the mininal expected runtime CPU
-        if (target_cpu == INVALID_CPU_NUM ||
-            Scheduler::Current::get(target_cpu).m_runtime.total_expected_runtime >
-                Scheduler::Current::get(cpunum).m_runtime.total_expected_runtime) {
-            target_cpu = cpunum;
-        }
-    });
+    auto &affinity = se.cpu_affinity();
 
+    // The Active mask is tried first, and not merely because an inactive
+    // scheduler is one that has not declared itself ready for threads:
+    // find_active_scheduler_for() spins until the CPU it is handed reports
+    // Active, so answering with an inactive CPU that never activates would
+    // livelock it rather than misplace a thread.
+    target_cpu = pick_least_loaded(affinity.get_available_mask(peek_active_mask()));
+    if (target_cpu != INVALID_CPU_NUM) {
+        return target_cpu;
+    }
+
+    // Nothing is Active anywhere. On the boot path that is the ordinary state
+    // and not an error: task::init() walks cpu_possible_mask() building every
+    // CPU's idle thread, and Scheduler::Current::set_active(true) only runs
+    // once that loop has finished, so the whole of early thread creation
+    // happens against an empty Active mask. The intersection above came back
+    // empty because the mask it intersected with was empty, not because the
+    // thread is unrunnable somewhere.
+    //
+    // So widen to the online mask and prefer the CPU the thread starts from --
+    // where it last ran, or, for one that has never run, the CPU creating it.
+    // That is the answer `starting_cpu` was computed for before this fallback
+    // was left half-written, and leaving a thread where it already is, is what
+    // Linux's select_task_rq() does when it has no better idea. Nothing is
+    // decided for good here either way: do_unpark_thread() re-selects through
+    // find_active_scheduler_for() when the thread actually becomes runnable.
+    auto const last_cpu = se.last_cpu();
+    auto const starting_cpu = last_cpu == INVALID_CPU_NUM ? Cpu::id() : last_cpu;
+
+    // Widening the candidates must not widen the affinity: `starting_cpu` is a
+    // preference, never a licence to ignore a hard pin, so it is only taken
+    // when the thread is actually permitted there.
+    auto const permitted_mask = affinity.get_available_mask(Cpu::online_mask());
+    if (permitted_mask.test(starting_cpu)) {
+        return starting_cpu;
+    }
+
+    target_cpu = pick_least_loaded(permitted_mask);
+
+    // Now a genuine error rather than a bring-up artifact: the thread's hard
+    // affinity excludes every online CPU, so there is nowhere it may run.
     DEBUG_ASSERT(target_cpu != INVALID_CPU_NUM, "At least one CPU was assigned to us");
     return target_cpu;
 }
