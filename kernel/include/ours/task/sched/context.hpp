@@ -194,8 +194,27 @@ class Context: public gktl::mixin::Comparable<Context> {
     using Self = Context;
 
   public:
+    /// Every member, in declaration order. The six after m_profile used to be
+    /// left out, so a fresh context carried indeterminate values for them --
+    /// `m_schedule` among them, and that one is dereferenced. It read as null
+    /// in practice only because a Thread comes out of a zeroing allocator;
+    /// that is luck, not a guarantee, and it is not something to rely on.
+    ///
+    /// `m_schedule` stays null until a Scheduler binds the thread to its
+    /// discipline in Scheduler::set_schedule(). Nothing may call through it
+    /// before that.
     Context(BaseProfile profile)
-        : m_affinity(), m_runqueue_state(), m_runqueue_hook(), m_metric(), m_profile(profile) {}
+        : m_affinity()
+        , m_runqueue_state()
+        , m_runqueue_hook()
+        , m_metric()
+        , m_profile(profile)
+        , m_last_cpu()
+        , m_curr_cpu()
+        , m_wake_cpu()
+        , m_schedule(nullptr)
+        , m_params()
+        , m_timeslice() {}
 
     FORCE_INLINE auto discipline() const -> Discipline {
         return m_profile.effective.discipline;

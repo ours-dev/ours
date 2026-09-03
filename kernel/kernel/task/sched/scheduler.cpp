@@ -117,7 +117,18 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile) -> vo
         auto &context = thread->scheduling_context();
         Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
 
-        context.schedule()->on_thread_init(self.m_runtime, thread);
+        // Bind the thread to its discipline first. This is the moment that
+        // binding belongs to -- the thread has just been created and has never
+        // been near a scheduler -- and until it happens the context's
+        // m_schedule is null. Reading it straight out, which is what this did,
+        // called through that null pointer: the CPU branched to address 0 and
+        // took an instruction-fetch fault there.
+        //
+        // set_schedule() also puts the lookup behind get_schedule()'s
+        // assertion, so a discipline with no registered ISchedule now says so
+        // by name instead of producing a wild call.
+        auto *const schedule = self.set_schedule(thread);
+        schedule->on_thread_init(self.m_runtime, thread);
         context.m_affinity.set_affinity_hard(Cpu::online_mask());
     }
 }
@@ -626,7 +637,17 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     DEBUG_ASSERT(thread);
 
     auto &se = thread->scheduling_context();
-    auto target_cpu = se.schedule()->select_target_cpu(thread, Cpu::online_mask());
+
+    // Only ask the discipline if the thread has one. A thread reaches here
+    // once before it is bound to any -- on_thread_init() calls this on a
+    // context whose m_schedule is still null -- and reading through that
+    // pointer branched to address 0 and faulted on the instruction fetch.
+    // "No discipline yet" and "the discipline has no preference" want the
+    // same answer, and the fallback below already is that answer.
+    auto target_cpu = INVALID_CPU_NUM;
+    if (auto *const schedule = se.schedule()) {
+        target_cpu = schedule->select_target_cpu(thread, Cpu::online_mask());
+    }
     if (target_cpu != INVALID_CPU_NUM) {
         return target_cpu;
     }
