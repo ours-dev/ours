@@ -62,6 +62,15 @@ class VmMapping final: public VmAreaOrMapping {
     /// already held.
     auto unmap_locked(VirtAddr base, usize size, UnmapControl control) -> Status;
 
+    /// Rewrite the flags of [base, base + size), assuming the aspace lock is
+    /// already held and the range was validated against this mapping.
+    ///
+    /// Split out for the same reason unmap_locked() is: get_lock() is the
+    /// address space's single lock and it is not recursive, so a VmArea that
+    /// already holds it while descending its children cannot call the public
+    /// protect(), which takes it.
+    auto protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status;
+
     virtual auto activate() -> Status override;
     virtual auto destroy() -> Status override;
 

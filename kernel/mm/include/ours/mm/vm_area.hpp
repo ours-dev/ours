@@ -105,6 +105,14 @@ class VmArea final: public VmAreaOrMapping {
     /// already held and the range was validated against this area.
     auto unmap_locked(VirtAddr base, usize size) -> Status;
 
+    /// Fan a protect() down to the children overlapping [base, base + size),
+    /// assuming the aspace lock is already held.
+    auto protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status;
+
+    /// Whether every child overlapping [base, base + size) would accept
+    /// |mmuf|. Run before protect_locked() applies anything; see there.
+    auto can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) const -> bool;
+
     virtual auto destroy() -> Status override;
 
   private:

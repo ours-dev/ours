@@ -346,9 +346,118 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
     return Status::Ok;
 }
 
-auto VmArea::protect(usize offset, usize size, MmuFlags flags) -> Status {
+/// Rewrite the protection of [offset, offset + size) throughout this area.
+///
+/// The range is the area's to describe but not to enforce: an area owns no
+/// page tables of its own, only children. So this walks the children the range
+/// covers and hands each the part that falls inside it, exactly as unmap()
+/// does, and a nested area recurses.
+auto VmArea::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
     m_canary.verify(AREA_MAGIC);
-    return Status::Unimplemented;
+
+    if (!is_active()) {
+        return Status::BadState;
+    }
+
+    // Reject offsets that would wrap |m_base + offset| below.
+    if (offset > m_size) {
+        return Status::InvalidArguments;
+    }
+
+    auto [base, aligned_size] = resolve_page_range(m_base + offset, size);
+    if (!aligned_size) {
+        return Status::InvalidArguments;
+    }
+
+    if (!check_range(base, aligned_size)) {
+        return Status::InvalidArguments;
+    }
+
+    // What this area itself permits. A child may permit less, which the pass
+    // below is what actually checks; this only rejects a request the area
+    // could never satisfy anywhere.
+    if (!validate_mmuflags(mmuf)) {
+        return Status::InvalidArguments;
+    }
+
+    Guard guard{get_lock()};
+
+    // Ask before doing. A protect that fails halfway would leave the first
+    // children rewritten and the rest untouched, with nothing in the return
+    // value saying where the boundary fell -- and no way for the caller to put
+    // it back, since the previous flags are gone. Every child that could
+    // refuse is asked first, and only then is anything written. This is the
+    // one place in the area interface where a partial result is unrecoverable,
+    // which is why unmap() does not need the same treatment: a range that is
+    // half unmapped can simply be unmapped again.
+    if (!can_protect_locked(base, aligned_size, mmuf)) {
+        return Status::InvalidArguments;
+    }
+
+    return protect_locked(base, aligned_size, mmuf);
+}
+
+auto VmArea::can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) const -> bool {
+    VirtAddr const end = base + size;
+
+    for (auto const *child: m_subvmas) {
+        if (child->base() >= end) {
+            // Children are ordered by base, so nothing further can overlap.
+            break;
+        }
+        if (child->end() <= base) {
+            continue;
+        }
+
+        if (!child->is_mapping()) {
+            auto const *area = static_cast<VmArea const *>(child);
+            auto const overlap_base = std::max(child->base(), base);
+            auto const overlap_end = std::min(child->end(), end);
+            if (!area->can_protect_locked(overlap_base, overlap_end - overlap_base, mmuf)) {
+                return false;
+            }
+            continue;
+        }
+
+        if (!child->validate_mmuflags(mmuf)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+auto VmArea::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
+    VirtAddr const end = base + size;
+
+    // No pre-advance of the iterator here, unlike unmap_locked(): protect
+    // never destroys a child, so the set is not modified underneath the walk.
+    for (auto *const child: m_subvmas) {
+        if (child->base() >= end) {
+            break;
+        }
+        if (child->end() <= base) {
+            continue;
+        }
+
+        VirtAddr const overlap_base = std::max(child->base(), base);
+        VirtAddr const overlap_end = std::min(child->end(), end);
+        auto const overlap_size = overlap_end - overlap_base;
+
+        auto status = Status::Ok;
+        if (child->is_mapping()) {
+            status =
+                static_cast<VmMapping *>(child)->protect_locked(overlap_base, overlap_size, mmuf);
+        } else {
+            status = static_cast<VmArea *>(child)->protect_locked(overlap_base, overlap_size, mmuf);
+        }
+
+        if (Status::Ok != status) {
+            return status;
+        }
+    }
+
+    return Status::Ok;
 }
 
 auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const *name) -> Status {
@@ -375,9 +484,15 @@ auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const 
         return status;
     }
 
-    // The mappings are existing, just update the permission of them.
-    status = m_aspace->arch_aspace().protect(base, size >> PAGE_SHIFT, mmuf);
-    return status;
+    // Through the mapping, not around it. The pages are already mapped -- this
+    // only has to stamp the permissions on them -- but the mapping is what owns
+    // that decision: VmMapping::create() above has already recorded |mmuf| for
+    // the whole range in the mapping's ProtectionRanges, and reaching past it
+    // to the arch aspace would write page tables the mapping believes it
+    // governs. It also picks up the one case the direct call gets wrong, where
+    // a range carrying no permission at all is meant to be unmapped rather
+    // than protected.
+    return mapping->protect(0, size, mmuf);
 }
 
 auto VmArea::destroy() -> Status {

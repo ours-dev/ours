@@ -294,6 +294,10 @@ auto VmMapping::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
         return Status::InvalidArguments;
     }
 
+    return protect_locked(base, size, mmuf);
+}
+
+auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     auto &arch_aspace = m_aspace->arch_aspace();
     auto status = m_protection_ranges.update(base, size, mmuf);
     if (Status::Ok != status) {
