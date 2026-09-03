@@ -3,15 +3,33 @@
 #ifndef OURS_PLATFORM_ISA_HPP
 #define OURS_PLATFORM_ISA_HPP 1
 
-#define ISA_IRQ_PIT 0
-#define ISA_IRQ_KEYBOARD 1
-#define ISA_IRQ_PIC2 2
-#define ISA_IRQ_SERIAL2 3
-#define ISA_IRQ_SERIAL1 4
-#define ISA_IRQ_PRINTER1 7
-#define ISA_IRQ_CMOSRTC 8
-#define ISA_IRQ_PS2MOUSE 12
-#define ISA_IRQ_IDE0 14
-#define ISA_IRQ_IDE1 15
+#include <ours/types.hpp>
+
+namespace ours {
+/// The fixed IRQ line assignments of the legacy PC/AT interrupt controllers.
+///
+/// These are *ISA* numbers, the ones the ACPI interrupt source overrides are
+/// written in terms of; apic_io_isa_to_global() maps one to the global system
+/// interrupt that indexes the IO-APIC's redirection table, and the two are
+/// frequently different (IRQ 0 is commonly delivered on GSI 2).
+///
+/// Constants rather than the `#define`s these used to be: a macro has no type
+/// and no namespace, so it took part in whatever arithmetic it landed in and
+/// claimed its name in every translation unit that included this header.
+/// Typed as IsaIrqNum, they only convert where a conversion makes sense.
+using IsaIrqNum = u8;
+
+constexpr auto ISA_IRQ_PIT = IsaIrqNum(0);
+constexpr auto ISA_IRQ_KEYBOARD = IsaIrqNum(1);
+constexpr auto ISA_IRQ_PIC2 = IsaIrqNum(2);
+constexpr auto ISA_IRQ_SERIAL2 = IsaIrqNum(3);
+constexpr auto ISA_IRQ_SERIAL1 = IsaIrqNum(4);
+constexpr auto ISA_IRQ_PRINTER1 = IsaIrqNum(7);
+constexpr auto ISA_IRQ_CMOSRTC = IsaIrqNum(8);
+constexpr auto ISA_IRQ_PS2MOUSE = IsaIrqNum(12);
+constexpr auto ISA_IRQ_IDE0 = IsaIrqNum(14);
+constexpr auto ISA_IRQ_IDE1 = IsaIrqNum(15);
+
+} // namespace ours
 
 #endif // #ifndef OURS_PLATFORM_ISA_HPP
