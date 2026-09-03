@@ -437,18 +437,28 @@ namespace task {
         USTL_DECLARE_LIST(Thread, UnparkList, Thread::UnparkListOption);
     };
 
+    /// The routine comes second and the priority last, which is the order the
+    /// non-template overload above declares and the reverse of this one's own.
+    /// Passing them through in this template's order made the call select
+    /// *this template* again with F deduced as StartRoutine, binding a
+    /// std::function inside a std::bind inside another std::function, forever.
+    ///
+    /// It never got to recurse: std::bind's result outgrows std::function's
+    /// small-buffer optimization, so the second wrap reached the global
+    /// operator new -- which in this kernel is a panic stub -- and the boot
+    /// died there with "operator new" and no other explanation.
     template <typename F, typename... Args>
     FORCE_INLINE auto Thread::spawn(const char *name, usize priority, F entry, Args &&...args)
         -> Self * {
         StartRoutine entry_point = ustl::function::bind(entry, ustl::forward<Args>(args)...);
-        return Self::spawn(name, priority, entry_point);
+        return Self::spawn(name, entry_point, priority);
     }
 
     template <typename F, typename... Args>
     FORCE_INLINE auto Thread::spawn(const char *name, sched::BaseProfile const &profile, F entry,
                                     Args &&...args) -> Self * {
         StartRoutine entry_point = ustl::function::bind(entry, ustl::forward<Args>(args)...);
-        return Self::spawn(name, profile, entry_point);
+        return Self::spawn(name, entry_point, profile);
     }
 
     class Thread::Current: public mm::CpuLocal::Current<Thread *> {
