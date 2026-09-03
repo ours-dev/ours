@@ -13,7 +13,7 @@ namespace ours::mm {
 using VmoPagedCache = ObjectCache::Instance<VmObjectPaged>;
 
 VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages)
-    : Base(Type::Paged, vmof), m_cow_pages(ustl::move(cowpages)) {}
+    : Base(gktl::magic<Self>(), Type::Paged, vmof), m_cow_pages(ustl::move(cowpages)) {}
 
 auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)
     -> Status {

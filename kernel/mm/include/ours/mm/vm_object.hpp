@@ -20,9 +20,21 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
   public:
     class Builder;
 
+    /// Which concrete VmObject this is, for the downcast in `as<Derived>()`.
+    ///
+    /// Plain values on purpose. These used to be `gktl::magic("VmObjectPaged")`
+    /// and friends, because the type tag and the canary were the same field:
+    /// the constructor seeded `m_canary` from this enum, and `type()` read the
+    /// tag back out of the canary. That made one word do two jobs and neither
+    /// could be checked -- a canary is only worth having if it is compared
+    /// against something the object could not have produced by accident, and a
+    /// type tag has no business being a corruption sentinel. It also broke
+    /// outright: `VmObjectPaged` verified with `verify<Self>()`, which hashes
+    /// the *type name*, against a canary holding the hash of a *string
+    /// literal*. See the constructor.
     enum class Type {
-        Paged = gktl::magic("VmObjectPaged"),
-        Physical = gktl::magic("VmObjectPhysical"),
+        Paged,
+        Physical,
     };
 
     enum class Flags : u8 {
@@ -126,7 +138,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     }
 
     FORCE_INLINE auto type() const -> Type {
-        return static_cast<Type>(m_canary.magic());
+        return m_type;
     }
 
   protected:
@@ -140,7 +152,11 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     template <typename Derived>
     constexpr friend auto as(Self *self) -> Derived *;
 
-    VmObject(Type type, Flags vmof);
+    /// `magic` is the derived class's own `gktl::magic<Derived>()`, passed in
+    /// because only the derived constructor knows what it is being built as,
+    /// and the canary has to hold that from the start. This is the shape
+    /// `VmAreaOrMapping` already uses, for the same reason.
+    VmObject(u32 magic, Type type, Flags vmof);
 
     virtual ~VmObject() = default;
     USTL_NO_MOVEABLE_AND_COPYABLE(VmObject);
@@ -172,7 +188,7 @@ template <typename Derived>
 FORCE_INLINE constexpr auto as(VmObject *vmo) -> Derived * {
     using ustl::traits::IsSameV;
 
-    auto const type = static_cast<VmObject::Type>(vmo->m_canary.magic());
+    auto const type = vmo->m_type;
     if constexpr (IsSameV<Derived, VmObjectPaged>) {
         if (type == VmObject::Type::Paged) {
             return static_cast<Derived *>(vmo);

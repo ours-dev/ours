@@ -3,7 +3,9 @@
 
 namespace ours::mm {
 VmObjectPhysical::VmObjectPhysical(PhysAddr base, usize size, VmoFlags VmoFlags)
-    : Base(VmObject::Type::Physical, VmoFlags), phys_base_(base), size_(size) {}
+    : Base(gktl::magic<Self>(), VmObject::Type::Physical, VmoFlags)
+    , phys_base_(base)
+    , size_(size) {}
 
 auto VmObjectPhysical::create(PhysAddr base, usize size, Flags vmof, ustl::Arc<Self> *out)
     -> Status {

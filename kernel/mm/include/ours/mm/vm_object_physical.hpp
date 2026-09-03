@@ -17,7 +17,7 @@ class VmObjectPhysical: public VmObject {
     ///
     virtual auto commit_range(VirtAddr offset, usize size, CommitOptions option)
         -> Status override {
-        m_canary.verify(static_cast<u32>(Type::Physical));
+        m_canary.verify<Self>();
 
         if (offset > size_ || size > size_ || offset > size_ - size) {
             return Status::OutOfRange;
@@ -26,7 +26,7 @@ class VmObjectPhysical: public VmObject {
     }
 
     auto lookup_range(usize offset, usize size, PhysAddr *pa) -> Status {
-        m_canary.verify(static_cast<u32>(Type::Physical));
+        m_canary.verify<Self>();
 
         if (offset > size_ || size > size_ || offset > size_ - size) {
             return Status::OutOfRange;
