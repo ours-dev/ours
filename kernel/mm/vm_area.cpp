@@ -227,12 +227,27 @@ auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<V
     // Do we immediately commit current mapping request?
     if (!!(VmMapOption::Commit & option)) {
         status = vmo->commit_range(0, size);
-        if (Status::Ok != status) {
-            return ustl::err(status);
+        if (Status::Ok == status) {
+            status = mapping->map(0, size, true, MapControl::ErrorIfExisting);
         }
 
-        status = mapping->map(0, size, true, MapControl::ErrorIfExisting);
         if (Status::Ok != status) {
+            // The mapping is already live by this point: create_mapping() ends
+            // in VmMapping::activate(), which links it into its VMO's mapping
+            // list and its parent's subvma set. Simply propagating the error
+            // would drop the last Arc here and run ~VmMapping on a node that is
+            // still on both -- ustl's intrusive hook traps on exactly that, so
+            // the failure came out as a #UD in the destructor rather than as
+            // the status it started life as.
+            //
+            // VmMapping::destroy() is the counterpart activate() asks for in
+            // its own comment: it unmaps whatever did get installed, takes the
+            // mapping off the VMO list and the parent, and clears Active.
+            auto const teardown = mapping->destroy();
+            if (Status::Ok != teardown) {
+                log::error("Failed to tear down the mapping at {} after a failed map: {}",
+                           mapping->base(), to_string(teardown));
+            }
             return ustl::err(status);
         }
     }

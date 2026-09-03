@@ -135,11 +135,17 @@ auto VmMapping::activate() -> Status {
 auto VmMapping::destroy() -> Status {
     m_canary.verify(MAPPING_MAGIC);
 
-    auto status = m_aspace->arch_aspace().unmap(m_base, m_size >> PAGE_SHIFT, {}, 0);
+    // Take the mapping out of the page tables first, but do not let a failure
+    // here abandon the bookkeeping below. This used to return early, which left
+    // the mapping linked into its VMO's mapping list and its parent's subvma
+    // set; the last Arc then dropped, ~VmMapping ran on a still-linked node,
+    // and ustl's intrusive hook trapped on it. A failed unmap is worth
+    // reporting, but a destroyed object left on two live lists is a corrupt
+    // list, which is strictly worse.
+    auto const status = m_aspace->arch_aspace().unmap(m_base, m_size >> PAGE_SHIFT, {}, 0);
     if (Status::Ok != status) {
         log::trace("Failed to destroy Mapping with unmapping {} pages at {}", m_size >> PAGE_SHIFT,
                    m_base);
-        return status;
     }
 
     if (m_vmo) {
@@ -149,7 +155,10 @@ auto VmMapping::destroy() -> Status {
         m_parent->m_num_mappings -= 1;
     }
     Base::destroy();
-    return Status::Ok;
+
+    // Reported rather than swallowed: the caller learns the page tables may
+    // still hold something, while the object itself is safely unregistered.
+    return status;
 }
 
 FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
