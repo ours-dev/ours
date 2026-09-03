@@ -34,7 +34,9 @@ GKTL_INIT_HOOK(VmaCacheInit, init_vma_cache, gktl::InitLevel::Heap);
 
 VmArea::VmArea(VirtAddr base, usize size, VmaFlags vmaf, Self *parent, VmAspace *aspace,
                char const *name)
-    : Base(AREA_MAGIC, base, size, vmaf, parent, aspace, name), m_num_mappings(), m_subvmas() {}
+    : Base(gktl::magic<Self>(), base, size, vmaf, parent, aspace, name)
+    , m_num_mappings()
+    , m_subvmas() {}
 
 auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *parent,
                            VmAspace *aspace, char const *name, ustl::Arc<Self> *out) -> Status {
@@ -58,7 +60,7 @@ auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *par
 
 auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr upper_limit)
     -> ktl::Result<VirtAddr> {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
     if (align < PAGE_SIZE) {
         align = PAGE_SIZE;
     }
@@ -67,7 +69,7 @@ auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr 
 
 auto VmArea::create_subvma(usize vma_ofs, usize vma_size, VmaFlags vmaf, char const *name,
                            VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     auto const result = create_subaom_preamble(vma_ofs, vma_size, m_vmaf, option);
     if (result.is_err()) {
@@ -96,7 +98,7 @@ auto VmArea::create_subvma(usize vma_ofs, usize vma_size, VmaFlags vmaf, char co
 auto VmArea::create_mapping(usize vma_ofs, usize vma_size, usize vmo_ofs, MmuFlags mmuf,
                             ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
                             ustl::Arc<VmMapping> *out) -> Status {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     auto const result = create_subaom_preamble(vma_ofs, vma_size, m_vmaf, option);
     if (result.is_err()) {
@@ -178,7 +180,7 @@ auto VmArea::create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmM
 
 auto VmArea::map_at(PhysAddr phys_base, VirtAddr *virt_base, usize size, MmuFlags mmuf,
                     VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     DEBUG_ASSERT(ustl::mm::is_aligned(phys_base, PAGE_SIZE));
     size = ustl::mm::align_up(size, PAGE_SIZE);
@@ -200,7 +202,7 @@ auto VmArea::map_at(PhysAddr phys_base, VirtAddr *virt_base, usize size, MmuFlag
 
 auto VmArea::map(VirtAddr *base, usize size, MmuFlags mmuf, VmMapOption options, char const *name)
     -> ktl::Result<ustl::Arc<VmMapping>> {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     DEBUG_ASSERT(!(options & VmMapOption::Fixed), "Now we don't support the overwritting option");
     size = ustl::mm::align_up(size, PAGE_SIZE);
@@ -223,7 +225,7 @@ auto VmArea::map(VirtAddr *base, usize size, MmuFlags mmuf, VmMapOption options,
 auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<VmObject> vmo,
                           VmMapOption option, char const *name)
     -> ktl::Result<ustl::Arc<VmMapping>> {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     VirtAddr vma_ofs = 0;
     if (base && *base >= m_base) {
@@ -272,7 +274,7 @@ auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<V
 }
 
 auto VmArea::unmap(usize offset, usize size) -> Status {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     if (!is_active()) {
         return Status::BadState;
@@ -353,7 +355,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
 /// covers and hands each the part that falls inside it, exactly as unmap()
 /// does, and a nested area recurses.
 auto VmArea::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     if (!is_active()) {
         return Status::BadState;
@@ -461,7 +463,7 @@ auto VmArea::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status 
 }
 
 auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const *name) -> Status {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
     auto [base, size] = resolve_page_range(m_base + vma_off, size_bytes);
     if (!size) {
         return Status::InvalidArguments;
@@ -496,7 +498,7 @@ auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const 
 }
 
 auto VmArea::destroy() -> Status {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     ustl::Arc<Self> curr(this);
     while (curr) {
@@ -540,7 +542,7 @@ auto VmArea::contains(VirtAddr addr) const -> bool {
 /// Children are ordered by base address, so the scan can stop at the first one
 /// starting past |va| instead of walking the whole set.
 auto VmArea::find_mapping_locked(VirtAddr va) -> VmMapping * {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     if (!contains(va)) {
         return nullptr;
@@ -564,7 +566,7 @@ auto VmArea::find_mapping_locked(VirtAddr va) -> VmMapping * {
 }
 
 auto VmArea::dump_locked() const -> void {
-    m_canary.verify(AREA_MAGIC);
+    m_canary.verify<Self>();
 
     log::trace("VMA {}: [0x{:X}, 0x{:X}]", m_name, m_base, m_size);
     for (auto const *child: m_subvmas) {

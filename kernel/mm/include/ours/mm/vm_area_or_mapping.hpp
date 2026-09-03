@@ -201,10 +201,26 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     };
 
   protected:
-    constexpr static auto AREA_MAGIC = gktl::magic("VmArea");
-
-    constexpr static auto MAPPING_MAGIC = gktl::magic("VmMapping");
-
+    /// `magic` is the derived class's own `gktl::magic<Derived>()`, passed in
+    /// because only the derived constructor knows what it is being built as,
+    /// and the canary has to hold that from the start. Same shape, and for the
+    /// same reason, as `VmObject`'s constructor.
+    ///
+    /// It used to be a pair of `gktl::magic("VmArea")`-style constants declared
+    /// here, which gave each type two identities that disagreed in silence: the
+    /// object carried the hash of the bare literal `"VmMapping"`, while every
+    /// `Canary::verify<VmMapping>()` demanded the hash of the *qualified*
+    /// `"ours::mm::VmMapping"` that `gktl::TypeName` recovers from
+    /// `__PRETTY_FUNCTION__`. Both are `u32`, so no call site could show the
+    /// difference; the mismatch surfaced only once the checks began to be
+    /// spelt `verify<Self>()`, and then only at whichever of them the boot
+    /// reached first. `VmObject` was cut over for exactly this and left a
+    /// comment saying this class already had the right shape -- it did not.
+    ///
+    /// Seeding from the type rather than from a spelling of its name is what
+    /// removes the failure mode, not merely this instance of it: there is one
+    /// identity per type, and the constant that could drift out of step no
+    /// longer exists to be written.
     VmAreaOrMapping(u32 magic, VirtAddr base, usize size, VmaFlags vmaf, VmArea *, VmAspace *,
                     char const *);
     ~VmAreaOrMapping() = default;

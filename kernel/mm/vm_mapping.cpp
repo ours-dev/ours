@@ -89,7 +89,7 @@ FORCE_INLINE auto MappingCoalescer<MaxNumPages>::commit() -> Status {
 
 VmMapping::VmMapping(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
                      ustl::Arc<VmObject> vmo, usize vmo_off, const char *name)
-    : Base(MAPPING_MAGIC, base, size, vmaf | VmaFlags::Mapping, parent,
+    : Base(gktl::magic<Self>(), base, size, vmaf | VmaFlags::Mapping, parent,
            parent->aspace().as_ptr_mut(), name)
     // Initializer order follows the member declaration order in the header.
     , m_vmo(ustl::move(vmo))
@@ -120,7 +120,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
 }
 
 auto VmMapping::activate() -> Status {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
 
     Base::activate();
 
@@ -133,7 +133,7 @@ auto VmMapping::activate() -> Status {
 }
 
 auto VmMapping::destroy() -> Status {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
 
     // Take the mapping out of the page tables first, but do not let a failure
     // here abandon the bookkeeping below. This used to return early, which left
@@ -163,7 +163,7 @@ auto VmMapping::destroy() -> Status {
 
 FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
                                        MapControl control) -> Status {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
 
     DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
     DEBUG_ASSERT(ustl::mm::is_aligned(size, PAGE_SIZE));
@@ -214,7 +214,7 @@ FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize 
 
 FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size,
                                           MapControl control) -> Status {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
 
     DEBUG_ASSERT(vmo);
     PhysAddr phys_base;
@@ -245,7 +245,7 @@ FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, 
 
 /// Do check arguments and dispatch the request to correct sub-routine for different VmObjects.
 auto VmMapping::map(VirtAddr offset, usize size, bool commit, MapControl control) -> Status {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
 
     // FIXME: map() does not acquire m_aspace->get_lock(), unlike protect()
     // and unmap() which both take the lock via Guard{get_lock()}.  This is
@@ -273,7 +273,7 @@ auto VmMapping::map(VirtAddr offset, usize size, bool commit, MapControl control
 }
 
 auto VmMapping::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
 
     if (!is_active()) {
         return Status::BadState;
@@ -323,7 +323,7 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
 }
 
 auto VmMapping::unmap(usize offset, usize size, UnmapControl control) -> Status {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
 
     if (!is_active()) {
         return Status::BadState;
@@ -373,7 +373,7 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapControl control) ->
 // implement its own fault logic (e.g. CoW resolution) or delegate entirely
 // to the VMO.
 auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
-    m_canary.verify(MAPPING_MAGIC);
+    m_canary.verify<Self>();
     return {Status::NotSupported, 0};
 }
 

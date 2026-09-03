@@ -196,3 +196,126 @@ Zircon 无对应物：它没有 slab/object-cache 这一层，堆是 Scudo。
   只是这次 if-initializer 转换没扫到；不属于本次修复，也不值得单独一次构建—启动循环。
 - 没有排查 `kernel.dev.dbg_1.obi` 停下来的那条 magic 断言和 `kernel.dev.obi` 的 `#DE`。
   两者都在 kernel/task，由对应会话负责。
+
+## canary 的种子改由类型给出，`VmArea`/`VmMapping` 统一成 `verify<Self>()`（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — 删掉 `AREA_MAGIC`／`MAPPING_MAGIC`
+  两个字符串常量，改由派生构造函数传 `gktl::magic<Self>()`。
+- `kernel/mm/vm_area.cpp` — 构造函数改传 `gktl::magic<Self>()`，十二处 `verify(AREA_MAGIC)`
+  改 `verify<Self>()`。
+- `kernel/mm/vm_mapping.cpp` — 同上，构造函数与八处 `verify(MAPPING_MAGIC)`。
+
+**症状**
+
+启动死在 `init_vmm()` 里：
+
+```
+[... cpu0 trace] Reserve area k:head: [FFFFFF8840000000, FFFFFF8840006000)
+[... cpu0 error] Assertion failed on m_magic == gktl::magic<T>() with message: Error type magic
+```
+
+lldb 经 gdbstub 取到的栈：`start_kernel` → `init_vmm` → `init_vmm_preheap` →
+`entrol_preset_vma` → `VmArea::reserve()` → `VmMapping::protect()` →
+`gktl::Canary::verify<VmMapping>()`。
+
+看上去像是 `reserve()` 拿到了一个没构造过的、或者根本不是 `VmMapping` 的指针。**不是。**
+对象是好的，是这句检查本身要错了数。
+
+**原因**
+
+同一个类型在这套代码里有**两种身份拼法**，而且它们的值不相等。
+
+`VmAreaOrMapping` 的构造函数收一个 `u32 magic` 去播种 canary——基类必须在派生对象还不存在
+的时候就把 canary 填好，这是这个参数存在的理由。原来传进去的是本类里声明的两个常量：
+
+```cpp
+constexpr static auto MAPPING_MAGIC = gktl::magic("VmMapping");
+```
+
+也就是**裸字符串字面量**的哈希。而 `Canary::verify<T>()` 算的是
+`gktl::magic<T>() = magic(TypeName<T>::value())`，`TypeName` 是从 `__PRETTY_FUNCTION__` 里
+把类型名抠出来的，给的是**带命名空间限定的** `ours::mm::VmMapping`。`magic()` 是 base-63
+哈希，`:` 编码成 63，两者必然不同：
+
+| 表达式 | 值 |
+| --- | --- |
+| `gktl::magic("VmMapping")`（对象实际携带的） | `0xe7c3c57c` |
+| `gktl::magic<VmMapping>()`（`verify<Self>()` 要求的） | `0x5ebda4f5` |
+
+两边都是 `u32`，调用点看不出任何区别——这是它能潜伏的全部原因。只要全树一直只写
+`verify(MAPPING_MAGIC)`，播种和检查用的是同一个常量，自洽，永远不响；一旦有人开始把检查
+改写成 `verify<Self>()`，被改到的那几处就变成必然失败。树上正好有这么一次未提交的统一，
+改了 `vm_mapping.cpp` 的三处（217／248／276），同文件另外五处和 `vm_area.cpp` 的十二处没动。
+
+`VmArea::reserve()` 之所以成为现场，只是因为 276 行的 `protect()` 是启动路径上第一个被走到的
+坏检查点。`a47527c`（`reserve()` 改为经由 `mapping->protect()` 下发权限）没有错，它只是第一段
+执行到这个点的代码。
+
+**这一族坑在本仓库已经咬过两次，这是第三次**，很值得记住：
+
+1. `gktl/type_info.hpp` 的注释记着，`TypeName` 曾经有一条把名字返回成空串的分支，于是
+   `gktl::magic<T>()` 对所有 `T` 都是 `magic("")`，全内核每一次 `verify<T>()` 都是 0 和 0 相比——
+   机制看着在跑，其实什么都没检查。
+2. `VmObject` 曾经把类型标签和 canary 合成同一个字，`VmObjectPaged` 用 `verify<Self>()`
+   去比一个装着字符串字面量哈希的 canary，即本次同样的错。它已经修好了，修法是让派生
+   构造函数传 `gktl::magic<Derived>()`（见 `vm_object.hpp` 中 `enum class Type` 上方的注释，
+   以及 `vm_object_paged.cpp:16`、`vm_object_physical.cpp:6`）。
+3. 就是本次。讽刺的是 `VmObject` 那次留下的注释写着"这是 `VmAreaOrMapping` 已经在用的形状"
+   ——而 `VmAreaOrMapping` 恰恰是没有改过来的那个。注释写的是意图，不是事实。
+
+共同的形状是：**canary 的种子和 canary 的校验各自独立地去拼同一个类型的名字。**
+只要这两条路径分开，它们就会在某次重构里错开，而错开时两边都是 `u32`，编译器不会说话。
+
+**改法**
+
+按用户的选择统一到 typed 写法，并且照抄 `VmObject` 已经验证过的那个形状：**删掉常量**，
+让派生构造函数传 `Base(gktl::magic<Self>(), ...)`，二十处 `verify(XXX_MAGIC)` 全改
+`verify<Self>()`。
+
+**否掉的方案**：把那三行改回 `verify(MAPPING_MAGIC)`。它能让这次的启动过去，改动也最小，
+但它把分歧原样留着，下一个写 `verify<Self>()` 的人会再踩一次——这已经是第三次了。
+
+**也没有选**只把常量改成 `gktl::magic<VmArea>()` / `gktl::magic<VmMapping>()`（第一版就是这么
+写的）。它同样能让两种拼法相等，但常量还在，还是两条通往同一个身份的路，仍然可以被人再写歪。
+删掉之后"一个类型一个身份"是构造上成立的，不是靠约定成立的。
+
+**参照**
+
+本仓库内部前例：`VmObject`／`VmObjectPaged`／`VmObjectPhysical`，见上文。这比外部参照更有用，
+因为它连修法带注释都已经在树里了，本次只是把漏掉的那个类补齐。
+
+Zircon `fbl::Canary<fbl::magic("VMAR")>`：magic 是**模板非类型参数**，只有一种拼法，
+不存在种子与校验各自求值的问题。它是从结构上消灭这个错，比我们靠"两处都调 `magic<T>()`"
+更强一档；不过那需要 canary 的类型随宿主类型参数化，会牵动 `VmAreaOrMapping` 的布局，
+这次没做。
+
+Linux 无对应物：`struct vm_area_struct` 没有 canary，同类校验靠 `CONFIG_DEBUG_VM` 的
+`VM_BUG_ON_VMA()`。
+
+**验证**
+
+- 构建：`prebuilt/ninja/ninja -C out/bringup.x86` 全绿。
+- `clang-format -i`、`clang-tidy -p out/bringup.x86` 对两个 `.cpp` 跑过，无 error；
+  `vm_area_or_mapping.hpp:226` 的 `modernize-use-override` 是析构函数上的既有告警，
+  只是因为我加的注释而行号平移。
+  注意 `clang-format` 作用于该头文件时会顺带重排 include 块并改写另外两处与本次无关的
+  `[[nodiscard]]` 换行，已还原，只保留本节的改动。
+- QEMU 实测，两个镜像都**不再出现任何 `Error type magic`**（`grep -c` 为 0），
+  且都完整穿过 `init_vmm()`：
+  - `kernel.dev.dbg_1.obi`：越过 VMA 预置、irq、HPET 时钟源、APIC timer 标定，进入
+    `task::init()`，两条 `Allcoated Kernel stack` 之后停在
+    `thread->state() & (Parked | Sleeping)` 断言上。
+  - `kernel.dev.obi`：同样越过 `init_vmm()`，停在调度器一侧的 `#DE`。
+  两处都在 kernel/task，由该会话负责（对方的 `3892d65` / `4fe4b82` 此前从未实测过）。
+
+**故意没做**
+
+- 没有认领 `vm_area.cpp` / `vm_mapping.cpp` 里另一会话的 `Status::InvalidArguments` →
+  `Status::InvArgs` 改名。暂存时用 `git hash-object` + `git update-index --cacheinfo`
+  只把 canary 相关的改动放进索引。
+- 没有动其他用 canary 的类。`PmNode`／`PmZone` 用 `m_canary(this)`（`Canary(T *)` 推导出
+  同一个 `magic<T>()`），`VmAspace` 用 `gktl::Canary m_canary{this}`，`VmObject` 一族已经修过，
+  它们本来就自洽。
+- 没有改成 Zircon 那样把 magic 做成模板参数，理由见「参照」。
+- 没有排查后面 kernel/task 的两个停点。
