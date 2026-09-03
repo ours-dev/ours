@@ -166,11 +166,13 @@ config("kernel.config") {
 }
 
 config("kernel.link") {
-  # kernel.ld is the layout; task.ld is an `INSERT AFTER` fragment that adds
-  # the .init.rodata.schedules section and the __schedules_start/__schedules_end
-  # bounds the scheduler's discipline registry is collected between. It was
-  # never passed to the linker, so those two symbols did not exist and
-  # Scheduler::init() had no section to read.
+  # The scheduler's discipline registry used to be collected by a separate
+  # `INSERT AFTER` fragment, //kernel/kernel/task/task.ld. That could not work:
+  # its section was named .init.rodata.schedules, and kernel.ld's own
+  # `.init.rodata` output section ends in a `*(.init.rodata*)` catch-all that
+  # matched it first, so the entries landed in .init.rodata and the fragment's
+  # bounds delimited nothing. The registry is collected in kernel.ld now, with
+  # the other three, and the fragment is gone.
   #
   # A kernel image links as a static PIE: physboot loads it at
   # KERNEL_LOAD_BASE + KASLR, so every absolute pointer (the .ccrt_init
@@ -178,13 +180,9 @@ config("kernel.link") {
   # ElfImage::relocate() to apply. ET_EXEC would bake link-time addresses,
   # which is exactly how the first global constructor jumped to address 0x3020.
   configs = [ "//build/config:pie-link" ]
-  inputs = [
-    "//kernel/kernel.ld",
-    "//kernel/kernel/task/task.ld",
-  ]
+  inputs = [ "//kernel/kernel.ld" ]
   ldflags = [
     "-Wl,-T," + rebase_path(inputs[0], root_build_dir),
-    "-Wl,-T," + rebase_path(inputs[1], root_build_dir),
     "-Wl,-defsym,KERNEL_GOT_TOLERANCE=0",
     "-Wl,-defsym,KERNEL_BASE_ADDRESS=0",
   ]

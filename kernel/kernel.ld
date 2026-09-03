@@ -152,6 +152,17 @@ SECTIONS {
         KEEP(*(SORT_BY_ALIGNMENT(.gktl.counter.descs)))
         PROVIDE_HIDDEN(__gktl_counter_desc_end = .);
 
+        /* task::sched discipline registry. Collected here, before the
+         * catch-all below, and *not* named .init.rodata.something: this used
+         * to live in its own INSERT AFTER fragment as .init.rodata.schedules,
+         * where the wildcard on the next line matched it first and swallowed
+         * every entry into the body of this section. The bounds then sat past
+         * the end of what they were supposed to delimit, and Scheduler::init()
+         * read an empty registry. */
+        PROVIDE_HIDDEN(__schedules_start = .);
+        KEEP(*(SORT_BY_ALIGNMENT(.task.schedules)))
+        PROVIDE_HIDDEN(__schedules_end = .);
+
         *(SORT_BY_ALIGNMENT(.init.rodata*))
     }
     . = ALIGN(CONSTANT(MAXPAGESIZE));

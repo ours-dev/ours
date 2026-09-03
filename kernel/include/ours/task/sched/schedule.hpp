@@ -158,8 +158,9 @@ class ISchedule {
 };
 
 /// One entry per registered discipline, collected by the linker into a
-/// single section (see `Schedule::REGISTRATION` below and
-/// //kernel/kernel/task/task.ld). `instance` is the discipline's one
+/// single section (see `Schedule::REGISTRATION` below and the
+/// __schedules_start/__schedules_end block in //kernel/kernel.ld).
+/// `instance` is the discipline's one
 /// shared, stateless ISchedule object -- there's no "current CPU" to
 /// resolve, so this is a plain link-time-constant pointer, not a
 /// function. Scheduler::init() reads it once per CPU, at boot, on that
@@ -189,7 +190,23 @@ class Schedule: public ISchedule {
   private:
     static inline Derived INSTANCE;
 
-    LINK_SECTION(".init.rodata.schedules")
+    /// The registry entry. Two things about it are easy to get wrong, and
+    /// both were:
+    ///
+    /// The section is `.task.schedules`, not `.init.rodata.schedules`. It is
+    /// collected inside kernel.ld's `.init.rodata` output section, which also
+    /// ends in a `*(.init.rodata*)` catch-all -- a name under that prefix is
+    /// matched by the catch-all first and lands outside its own bounds.
+    ///
+    /// FORCE_USED is necessary but not sufficient: it keeps the compiler from
+    /// eliding the symbol, and says nothing to the linker. The kernel links
+    /// with --gc-sections and nothing names this object -- Scheduler::init()
+    /// only walks the section bounds -- so kernel.ld has to KEEP it too.
+    ///
+    /// A third trap lives in fair.cpp: a static data member of a class
+    /// template is instantiated only when odr-used, so each discipline needs
+    /// an explicit instantiation of its Schedule<> base.
+    LINK_SECTION(".task.schedules")
     FORCE_USED
     static inline ScheduleEntry const REGISTRATION = {Discipline, &INSTANCE};
 };
