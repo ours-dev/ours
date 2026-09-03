@@ -153,12 +153,24 @@ auto VmArea::create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmM
             DEBUG_ASSERT(false, "Now we don't support to overwrite a group of existent pages");
         }
     } else {
-        // If no given **Fixed** options, the specific address would be overwritten.
+        // Without a Fixed option the caller is asking the VMM to place this,
+        // so the address derived from `offset` above is only a starting point
+        // and the spot the search returns replaces it.
+        //
+        // That assignment is what was missing: the result of alloc_spot() was
+        // computed and thrown away, and the address actually used stayed at
+        // `m_base + offset`. Callers that pass no address at all come through
+        // here with offset 0, so every one of them was placed at the very
+        // start of this VMA -- and on the kernel root VMA that is the physmap
+        // base, which is how the local APIC's MMIO ended up mapped on top of
+        // the physmap.
+        //
         // FIXME(SmallHuaZi) (base_ + size_) may causes an overflow error.
-        auto result = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
+        auto const result = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
         if (!result) {
-            return ktl::err(Status::InvalidArguments);
+            return ktl::err(result.unwrap_err());
         }
+        base_aligned = *result;
     }
 
     return ktl::ok(ustl::make_pair(base_aligned, size_aligned));
