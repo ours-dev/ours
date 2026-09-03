@@ -820,3 +820,41 @@ idler 沿着自己的栈往上返回时，`Thread::Current::preempt()` 的 guard
 
 **验证**
 构建通过；dbg：该断言消失，idler 恢复后正常返回到 `become_idle()`。
+
+
+---
+
+## 16. "可抢占"从来不成立：标志位混进了判定，boot 线程也没关抢占（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/preemption_state.hpp` — `is_preemption_enabled()` 只看四个计数和时间片延长标志。
+- `kernel/kernel/task/thread.cpp` — `preempt/reschedule/yield/yield_to` 的 guard 改 `IrqSaveAndPreemptDisable`；
+  `reschedule()` 的可抢占判定挪到 guard 之前；`create_first()` 给 boot 线程关抢占。
+- `kernel/kernel/task/sched/scheduler.cpp` — `Scheduler::Current::reschedule()` 去掉 guard 之后的判定，
+  删掉 `is_preemptible()`。
+
+**症状**
+三步递进：(1) 空闲循环无限打印"runnable=1 -> reschedule"却从不切换；(2) `become_idle()` 的
+`enable_preemption()` 从不 flush pending；(3) 修完 (1)(2) 后 `time::init()` 里一次 flush 抢占进了
+还不存在的调度器，撞 canary。
+
+**原因**
+(1) `Thread::Current::reschedule()` 的 guard 先关中断，`Scheduler::Current::reschedule()` 再用
+`is_preemptible()`（要求中断开着）做门——门永远关着。
+(2) `is_preemption_enabled()` 是 `!raw_value()`，照抄 Zircon `PreemptIsEnabled()` 的 `state_ == 0`，
+但 ours 的字里还塞了 `NoReschedPreempt`/`NoReschedEager` 两个**构造时为 true** 的标志——
+每个线程从出生起就"抢占未开"。这两个标志记录的是"有没有请求挂起"，不是"允不允许抢占"。
+(3) Zircon `thread_construct_first()` 对 boot 线程 `PreemptDisable()`，直到本 CPU 的 idle 线程就绪
+才 `PreemptReenable()`（thread.cc:175 / 2028）；ours 的 `create_first()` 没做，(2) 修好后 flush 立刻发生。
+
+**改法**
+判定放在 guard 之前（不可抢占的上下文只记 pending）；guard 用 `IrqSaveAndPreemptDisable`
+（`reschedule_common()` 断言的正是这个状态）；`is_preemption_enabled()` 只看计数；
+`create_first()` 关抢占，`task::init()` 装上的 idler 自带一份计数由 `become_idle()` 释放。
+
+**参照**
+`Zircon Thread::Current::Reschedule()`/`Preempt()`、`PreemptionState::PreemptIsEnabled()`、
+`thread_construct_first()`。
+
+**验证**
+构建通过；dbg：空闲循环切到 laborer，`become_idle()` 的 flush 生效，canary 断言消失。

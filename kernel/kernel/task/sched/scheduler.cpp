@@ -91,10 +91,6 @@ namespace {
     GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
     GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
 
-    auto is_preemptible(Thread *curr) -> bool {
-        auto &preemption_state = curr->preemption_state();
-        return preemption_state.is_preemption_enabled() && !arch::irqs_disabled();
-    }
 
 } // namespace
 
@@ -887,11 +883,9 @@ auto Scheduler::Current::reschedule(Thread *curr) -> void {
     self.m_canary.verify<Self>();
     DEBUG_ASSERT(curr == self.m_runtime.curr_thread);
 
-    if (!is_preemptible(curr)) {
-        curr->preemption_state().add_pending();
-        return;
-    }
-
+    // No preemptibility check here any more: the caller's guard has already
+    // disabled interrupts and preemption by the time this runs, so the check
+    // could only ever fail. Thread::Current::reschedule() makes it first.
     return self.reschedule_common(curr, Mode::Regular);
 }
 

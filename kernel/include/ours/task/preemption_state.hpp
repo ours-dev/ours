@@ -27,8 +27,19 @@ class PreemptionState {
 
     ~PreemptionState() = default;
 
+    /// Enabled iff no disable count is outstanding and no timeslice extension
+    /// is in force. That is Zircon's PreemptIsEnabled() -- `state_ == 0` --
+    /// but Zircon's word holds only those things. Ours also packs the two
+    /// NoResched flags into it, and the constructor sets both to true, so the
+    /// old `!raw_value()` was false for every thread from birth: no
+    /// enable_preemption() ever flushed a pending request and every voluntary
+    /// reschedule was refused. Those flags record whether a *request* is
+    /// pending; they say nothing about whether preemption is *allowed*, and
+    /// are left out here on purpose.
     FORCE_INLINE auto is_preemption_enabled() const -> bool {
-        return !raw_value();
+        return preemption_disabled_count() == 0 && eager_resched_disabled_count() == 0 &&
+               !in_interrupt() && !m_counter.get<Tag::NmiNestedCounter>() &&
+               !m_counter.get<Tag::TimesliceExtension>();
     }
 
     FORCE_INLINE auto enable_eager_reschedule() -> void {

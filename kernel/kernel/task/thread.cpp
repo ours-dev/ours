@@ -117,6 +117,17 @@ auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &
     // start, and none of it applies to one that is already mid-execution.
     self->m_stack.init_first();
 
+    // Preemption stays off for the whole of the boot thread's life. Anything
+    // that flushes a pending preemption before task::init() has built this
+    // CPU's scheduler -- and enable_preemption() flushes -- would preempt
+    // into a Scheduler that does not exist yet; the first such flush came out
+    // of time::init() and died on the scheduler's canary. Zircon's
+    // thread_construct_first() does the same PreemptDisable(), and only the
+    // idle thread, once it is ready, turns preemption back on for the CPU.
+    // Here that is task::init(): the idler it installs as Thread::Current
+    // carries its own count, which become_idle() releases.
+    self->m_preemption_state.disable_preemption();
+
     Guard guard{SPAWNED_THREADS_LOCK};
     SPAWNED_THREADS.push_back(*self);
 }
@@ -386,9 +397,11 @@ auto Thread::Current::preempt() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Thread>();
 
-    // The |IrqSave| option will save current enable/disable state of interrupt,
-    // whether it is enabled or disabled now.
-    Guard<SpinLock, IrqSave> guard{current_thread->get_pi_lock()};
+    // Interrupts and preemption both off across reschedule_common(): that is
+    // the state it requires, and the PI lock it takes here is the one the
+    // switch hands to the incoming thread. Zircon's Preempt() likewise runs
+    // under PreemptDisableAndIrqSave.
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
     Scheduler::Current::preempt(current_thread);
 }
 
@@ -396,7 +409,20 @@ auto Thread::Current::reschedule() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Thread>();
 
-    Guard<SpinLock, IrqSave> guard{current_thread->get_pi_lock()};
+    // Whether this context may give up the CPU is decided *before* the guard
+    // below changes it: the guard disables interrupts and preemption, so a
+    // check made after it would always say "no". It used to live inside
+    // Scheduler::Current::reschedule(), behind the guard, and once the guard
+    // really disabled interrupts the idle loop asked to reschedule forever
+    // and was refused forever. A caller that is not preemptible gets the
+    // request recorded instead, to be paid when it enables preemption.
+    auto &preemption_state = current_thread->preemption_state();
+    if (!preemption_state.is_preemption_enabled() || arch::irqs_disabled()) {
+        preemption_state.add_pending();
+        return;
+    }
+
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
     Scheduler::Current::reschedule(current_thread);
 }
 
@@ -404,7 +430,7 @@ auto Thread::Current::yield() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Thread>();
 
-    Guard<SpinLock, IrqSave> guard{current_thread->get_pi_lock()};
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
     Scheduler::Current::yield_thread(current_thread);
 }
 
@@ -412,7 +438,7 @@ auto Thread::Current::yield_to(Self *next) -> Status {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Thread>();
 
-    Guard<SpinLock, IrqSave> guard{current_thread->get_pi_lock()};
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
     return Scheduler::Current::yield_to_thread(current_thread, next);
 }
 
