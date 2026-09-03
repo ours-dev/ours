@@ -43,18 +43,27 @@ namespace {
     /// that is really there. Returns the first pfn it did not initialise.
     INIT_CODE auto init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
                                     Pfn hole_start, NnId nid) -> Pfn {
-        start = std::clamp(start, zone_start, zone_end);
-        end = std::clamp(end, zone_start, zone_end);
+        auto const first = std::clamp(start, zone_start, zone_end);
+        auto const last = std::clamp(end, zone_start, zone_end);
 
-        if (start >= end) {
+        if (first >= last) {
+            // This zone does not reach the part of the region that is left, so
+            // nothing was initialised and the caller's cursor has not moved.
+            //
+            // `start`, not `first`: the clamped value is a *zone* boundary and
+            // says nothing about the region. Returning it walked the cursor
+            // backwards for every region that lies above the zone -- the DMA
+            // pass over a region at 0x1EF02 handed back 0x1000, and the DMA32
+            // pass that followed then re-initialised everything from 0x1000 up,
+            // which is what tripped "Duplicated to initialize a frame".
             return start;
         }
-        init_memmap_range(start, end, zone, nid);
+        init_memmap_range(first, last, zone, nid);
 
-        if (hole_start < start) {
-            init_memmap_reserved(hole_start, start, zone, nid);
+        if (hole_start < first) {
+            init_memmap_reserved(hole_start, first, zone, nid);
         }
-        return end;
+        return last;
     }
 } // namespace
 
@@ -75,13 +84,12 @@ INIT_CODE auto build_memmap() -> Status {
     // a pg_data_t, which is why free_area_init() can call it ahead of the
     // per-node loop.
     auto status = Status::Ok;
-    auto const visit_status =
-        EarlyMem::visit_usable(EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
-                               [&](bootmem::MemoryRegion const region) {
-                                   status = model.add_range(region.range.base, region.range.end(),
-                                                            region.node);
-                                   return status == Status::Ok;
-                               });
+    auto const visit_status = EarlyMem::visit_usable(
+        EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
+        [&](bootmem::MemoryRegion const region) {
+            status = model.add_range(region.range.base, region.range.end(), region.node);
+            return status == Status::Ok;
+        });
     if (visit_status != Status::Ok && status == Status::Ok) {
         status = visit_status;
     }
