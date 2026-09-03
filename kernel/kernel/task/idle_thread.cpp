@@ -59,37 +59,37 @@ auto IdleThread::init(CpuNum cpunum) -> void {
 }
 
 auto IdleThread::run() -> void {
-    for ([[maybe_unused]]
-         auto &preemption_state = Thread::Current::get()->preemption_state();
-         ;) {
-        arch::AutoInterruptDisabler irq_disabler;
-        AutoPreemptDisabler preempt_disaber;
+    // The idler is Running from the moment it runs. The state machine was
+    // constructed {Booting, Running} and nothing ever advanced it, so
+    // `current != target` held forever and the old loop rescheduled on every
+    // iteration -- with interrupts and preemption both disabled, which is
+    // exactly the state in which Scheduler::Current::reschedule() refuses
+    // (add_pending() and return), so the CPU spun here silently with
+    // interrupts off and no tick could ever arrive. Zircon's IdlePowerThread
+    // starts at kActive for the same reason.
+    m_states.store({.current = State::Running, .target = State::Running}, MemoryOrder::Release);
 
-        auto const states = m_states.load(MemoryOrder::Acquire);
-        if (states.current != states.target) [[likely]] {
-            switch (states.target) {
-                case State::Offline: {
-                    break;
-                }
-
-                default: {
-                    break;
-                }
+    auto &scheduler = Scheduler::Current::get();
+    for (;;) {
+        // Whether there is work is decided with interrupts off, so a wakeup
+        // cannot land between the check and the halt and be slept through:
+        // idle() re-enables interrupts only as part of the halt itself
+        // (`sti; hlt`), which is atomic against a pending interrupt.
+        {
+            arch::AutoInterruptDisabler irq_disabler;
+            if (!scheduler.num_runnable()) {
+                auto const start_time = time::SteadyClock::now();
+                m_arch.idle();
+                m_cumulative_idle_time += time::SteadyClock::now() - start_time;
+                continue;
             }
-
-            // We are hope to transition to running state. So swap out idle thread.
-            if (State::Running == states.target) {
-                Thread::Current::reschedule();
-            }
-        } else {
-            auto const start_time = time::SteadyClock::now();
-
-            m_arch.idle();
-
-            auto const finish_time = time::SteadyClock::now();
-
-            m_cumulative_idle_time += finish_time - start_time;
         }
+
+        // Something is runnable. Reschedule with interrupts and preemption
+        // enabled -- Scheduler::Current::reschedule() will not switch from a
+        // non-preemptible context, it only records a pending request -- and
+        // let the next thread run; we are back here when it is our turn again.
+        Thread::Current::reschedule();
     }
 }
 

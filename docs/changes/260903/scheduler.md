@@ -881,3 +881,65 @@ idler 恢复后 flush 一个 pending 抢占，无其它可运行线程，探针�
 **验证**
 构建通过；dbg：定时器到期 → `unsleep` → 切回 laborer → `sleep_etc` 返回，laborer 走进
 `reclaim_init_area()`。
+
+---
+
+## 10. 空闲循环是一个关中断的静默死循环（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/idle_thread.cpp` — `IdleThread::run()` 重写。
+- `kernel/arch/x86/kernel/task/idle_thread.cpp` — `ArchIdleThread::idle()` 从空函数改成 `sti; hlt`。
+
+**症状**
+
+第 9 条之后 dev 镜像在第一次上下文切换后静默挂住：没有断言、没有故障，日志停在切换前
+最后一行，QEMU 一直跑到被杀。
+
+**原因**
+
+三件事叠在一起：
+
+1. `m_states` 构造成 `{current = Booting, target = Running}`，之后**没有任何写入**，
+   于是 `current != target` 永远为真，旧循环每一圈都走"要重调度"的分支。
+2. 那一圈是在 `AutoInterruptDisabler` + `AutoPreemptDisabler` 之下调 `Thread::Current::reschedule()`
+   的，而 `Scheduler::Current::reschedule()` 对 `!is_preemptible(curr)`（抢占关**或**中断关）
+   的回答是 `add_pending(); return;`——什么都不做。
+3. `ArchIdleThread::idle()` 是空函数，没有 `hlt`；就算走到 idle 分支也是空转。
+
+结果：idler 一旦运行，就在关中断下无限循环。中断关着，tick 进不来，谁也抢占不了它。
+这正是切换回 idler 之后的"什么都没发生"。
+
+**改法**
+
+照 Zircon `IdlePowerThread::Run()` 的形状：
+
+- 一进 `run()` 就把状态机置成 `{Running, Running}`——Zircon 的 `state_` 初值就是 `kActive`。
+- 每圈先在**关中断**下判断有没有活（`Scheduler::num_runnable()`）：没有就 `m_arch.idle()`。
+  关中断下判断是为了让"判断"和"halt"之间不会漏掉一个唤醒——`idle()` 用 `sti; hlt`
+  把开中断和 halt 做成原子（`sti` 在下一条指令之后才生效，所以中断要么在 halt 中被响应，
+  要么根本进不到判断和 halt 之间）。Zircon 的 `x86_enable_ints_and_hlt()` 是同一对指令，
+  `ArchIdlePowerThread::EnterIdleState()` 的注释把这个竞争讲得很清楚。
+- 有活就在**开中断、开抢占**下 `Thread::Current::reschedule()`，让它真的切出去。
+
+**参照**
+
+`Zircon IdlePowerThread::Run()`（`kernel/kernel/idle_power_thread.cc`）与
+`ArchIdlePowerThread::EnterIdleState()` / `x86_enable_ints_and_hlt()`（`arch/x86/mp.cc`）。
+
+**验证**
+
+- 构建通过，`clang-format` 已跑，`clang-tidy` 无新告警。
+- dev 镜像：日志与改动前一样停在"keeps tick device"——但这是**预期**的：laborer 后面只有
+  `log::debug`（两个 gibberish 线程），而 dev 镜像 `KERNEL_DEBUG_LEVEL=0`，`logz4::debug()`
+  被 `if constexpr` 编掉了。所以 dev 上"成功"和"挂住"看起来一样，只能靠 gdbstub 区分：
+  在 dbg 镜像上用临时探针（已剥除）观察到：`idle: hlt` 两次、`timer expired`、`unsleep`、
+  `switch Idle/0 -> laborer`、`sleep_etc: woke`——即 idler 真的 halt 了，tick 唤醒了 laborer。
+- dbg 镜像：仍被 lockdep `Guard` 不关中断的缺口挡在 `reschedule_common()` 的
+  `irqs_disabled()` 断言（待修第 1 条），本条改动在 dbg 上不可观测。
+
+**故意没做**
+
+- 没有实现 Offline/Suspend 状态的转移，`m_states` 里那两个值目前没有使用者。
+- 没有处理"判断无活之后、halt 之前抢占请求已挂起"的情况（Zircon 检查 `preempts_pending()`）：
+  当前所有唤醒都经 IPI/tick 中断到达，`sti; hlt` 的原子性已经覆盖；等有非中断路径的
+  挂起抢占再补。
