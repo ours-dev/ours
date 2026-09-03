@@ -4,6 +4,7 @@
 #define OURS_TASK_SCHED_CONTEXT_HPP 1
 
 #include <gktl/mixin/comparable.hpp>
+#include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/sync/types.hpp>
 #include <ours/syscall/time.hpp>
@@ -22,6 +23,23 @@ class CpuAffinity {
 
   public:
     enum class Kind { Hard, Soft };
+
+    /// Both masks start out unrestricted rather than null.
+    ///
+    /// get_available_mask() dereferences both pointers unconditionally, and a
+    /// value-initialized CpuAffinity left them null: every caller that ran
+    /// before the owning Scheduler had installed a real affinity -- which is
+    /// every caller on the thread-creation path -- read a CpuMask out of
+    /// address 0. That is only survivable because the low page happens to be
+    /// mapped and zero, and the all-zero mask it yields is the one answer that
+    /// makes the caller conclude "no CPU is available for this thread".
+    ///
+    /// cpu_all_mask() is the correct default for the same reason it is in
+    /// Linux: "not yet narrowed" is a wider set than any real machine, so a
+    /// later set_affinity_hard() can only ever restrict it. Both masks have
+    /// static storage duration, which is what this class's non-owning
+    /// `CpuMask const *` requires of anything stored in it.
+    CpuAffinity() : m_soft_affinity(&cpu_all_mask()), m_hard_affinity(&cpu_all_mask()) {}
 
     FORCE_INLINE auto set_affinity_soft(CpuMask const &affinity_mask) -> void {
         m_soft_affinity = &affinity_mask;

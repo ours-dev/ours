@@ -109,13 +109,27 @@ auto Scheduler::trampoline_handoff() -> void {
 }
 
 auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile) -> void {
-    auto const target_cpu = select_target_cpu(thread);
-    auto &self = Scheduler::Current::get(target_cpu);
-    self.m_canary.verify<Self>();
+    auto &context = thread->scheduling_context();
 
     {
-        auto &context = thread->scheduling_context();
         Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
+
+        // Where the thread is allowed to run has to be settled before anything
+        // picks one of those CPUs. select_target_cpu() filters its candidates
+        // through CpuAffinity::get_available_mask(), so with this line in its
+        // old position -- below the selection -- the selection intersected
+        // against an affinity that had never been installed.
+        //
+        // The lock now spans the selection for the same reason: the affinity
+        // that decides the answer must not change while the answer is being
+        // computed. Nothing inside takes a further lock (the discipline's
+        // select_target_cpu is a pure query over per-CPU runtimes), so this
+        // introduces no ordering against get_lock().
+        context.m_affinity.set_affinity_hard(Cpu::online_mask());
+
+        auto const target_cpu = select_target_cpu(thread);
+        auto &self = Scheduler::Current::get(target_cpu);
+        self.m_canary.verify<Self>();
 
         // Bind the thread to its discipline first. This is the moment that
         // binding belongs to -- the thread has just been created and has never
@@ -129,7 +143,6 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile) -> vo
         // by name instead of producing a wild call.
         auto *const schedule = self.set_schedule(thread);
         schedule->on_thread_init(self.m_runtime, thread);
-        context.m_affinity.set_affinity_hard(Cpu::online_mask());
     }
 }
 
