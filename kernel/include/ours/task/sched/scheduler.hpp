@@ -282,7 +282,11 @@ class Scheduler {
     TA_REQUIRES(thread->get_pi_lock())
     auto finish_transition(Thread *thread) -> void;
 
-    TA_REQUIRES(get_lock())
+    /// Flips this CPU's bit in STATES[state]. Lock-free: STATES is global
+    /// and every CPU updates its own bit in the same word, so this CPU's
+    /// runqueue lock could never have protected it -- the TA_REQUIRES(get_lock())
+    /// it used to carry promised an exclusion that did not exist, and made
+    /// Current::set_state() take the lock for nothing.
     auto set_state(State state, bool on) -> void;
 
     auto put_prev_thread(Thread *thread) -> void;
@@ -351,8 +355,6 @@ class Scheduler::Current: public mm::CpuLocal::Current<Scheduler> {
     static auto set_state(State state, bool on) -> void {
         auto &self = Scheduler::Current::get();
         self.m_canary.verify<Self>();
-
-        Guard guard{self.get_lock()};
         self.set_state(state, on);
     }
 };

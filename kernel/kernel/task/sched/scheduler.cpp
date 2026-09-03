@@ -323,9 +323,23 @@ auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
 }
 
 auto Scheduler::set_state(State state, bool on) -> void {
-    auto active_mask = STATES[usize(state)].load(MemoryOrder::Relaxed);
-    active_mask.set(m_runtime.which_cpu, on);
-    STATES[usize(state)].store(active_mask, MemoryOrder::Relaxed);
+    // A read-modify-write on a word shared by every CPU, so it has to be a
+    // CAS loop and not load/set/store: two CPUs going idle together would
+    // otherwise each store a mask missing the other's bit. std::atomic of a
+    // BitSet has no fetch_or, hence the loop rather than one call; the same
+    // update in Zircon is `mp.idle_cpus.fetch_or(cpu_num_to_mask(cpu))`.
+    // Relaxed is enough: the mask is a hint for IPI targeting, and no other
+    // data is published through it.
+    auto &word = STATES[usize(state)];
+    auto expected = word.load(std::memory_order_relaxed);
+    for (;;) {
+        auto desired = expected;
+        desired.set(m_runtime.which_cpu, on);
+        if (word.compare_exchange_weak(expected, desired, std::memory_order_relaxed,
+                                       std::memory_order_relaxed)) {
+            return;
+        }
+    }
 }
 
 auto Scheduler::set_schedule(Thread *thread) -> ISchedule * {

@@ -500,3 +500,47 @@ Zircon `Scheduler::FinalContextSwitch()` 和 `Thread::Current::Reschedule()` 围
 **故意没做**
 没有把 `guard.unguard()` + 手动 release 改成 `guard.unlock()`：release 必须发生在
 `switch_context` 记完 prev/curr、切完 aspace 之后，挪出去就得把这些写操作也挪出去。
+
+---
+
+## `Scheduler::set_state` 改为无锁 CAS，去掉保护不了它的 `TA_REQUIRES(get_lock())`（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `set_state` 由 load/set/store 改为
+  `compare_exchange_weak` 循环
+- `kernel/include/ours/task/sched/scheduler.hpp` — 删 `TA_REQUIRES(get_lock())`；
+  `Current::set_state` 删掉只为满足它而拿的 `Guard`
+
+**症状**
+潜伏，SMP 才触发：两个 CPU 同时进/出 idle，各自 load 旧 mask、改自己的位、store 回去，后写的
+把先写的那一位冲掉，`STATES[Idling]` 少一个 CPU。后果是 `peek_active_mask()`/IPI 目标选择看到
+错误的 CPU 集合。单核启动看不见。
+
+分析器侧：`scheduler_inline.hpp:14/28`（`put_prev_thread`/`set_next_thread`）各报 2 条
+「calling set_state requires holding rqlock」。
+
+**原因**
+`STATES` 是全局数组，每个元素一个 `std::atomic<CpuMask>`，**所有 CPU** 改同一个字里各自的位。
+本 CPU 的 runqueue 锁只互斥本 CPU 上的调度器操作，对另一个 CPU 的 RMW 毫无约束。所以
+`TA_REQUIRES(get_lock())` 承诺的互斥根本不存在——注解在这里制造了「有锁保护」的错觉，还让
+`Current::set_state` 专门拿一次 rq 锁去满足它，白白多一次自旋锁。正确的原语是原子 RMW。
+
+**改法**
+CAS 循环。`std::atomic<BitSet>` 没有 `fetch_or`（非整型），所以是
+`load → 拷贝改位 → compare_exchange_weak` 直到成功；`memory_order_relaxed` 足够，这个 mask 只是
+IPI 目标的提示，不发布其他数据。注解删掉，`Current::set_state` 的 Guard 删掉。
+
+否掉的方案：给 `CpuMask` 加原子 `fetch_or`。`BitSet` 是多字位图，原子只能按字做，等于重写一个
+`AtomicBitSet`；`STATES` 是它唯一的原子用途，不值。
+
+**参照**
+Zircon `mp.idle_cpus.fetch_or(cpu_num_to_mask(cpu))` / `fetch_and(~...)`
+（`kernel/kernel/mp.cc`，`mp_set_curr_cpu_active` 等）。
+
+**验证**
+- 全量构建通过；clang-format 已跑；clang-tidy 对改动行无新告警；两个文件都只暂存了本条 hunk。
+- 15 个 TU：117 → **113**。
+- QEMU：两个镜像停的位置与上一条相同（单核，竞争路径不会触发，**竞态修复未实测**）。
+
+**故意没做**
+无。
