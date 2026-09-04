@@ -54,14 +54,32 @@ auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
     preemption_state.disable_preemption();
 }
 
+/// Zircon's int_handler_finish(). The interrupt is over; what is decided here
+/// is whether the CPU should switch threads before returning to the
+/// interrupted context, and the deciding is all this does -- the switch is
+/// the caller's (arch_handle_exception), after the interrupt frame is put
+/// away.
+///
+/// Two things this used to get wrong. It called enable_preemption(), which
+/// *flushes*: a pending local preemption was performed right here, inside
+/// the interrupt glue, and then reported back so the caller preempted a
+/// second time. And it reported is_preemption_enabled() alone, so with
+/// preemption enabled every interrupt exit asked for a reschedule whether or
+/// not anything was pending -- a full pass through reschedule_common() per
+/// tick. Neither showed while is_preemption_enabled() was always false.
+///
+/// The order matters: eager reschedules come back first, which flushes only
+/// the remote requests because the preempt count is still up; then the
+/// preempt count drops without a flush (enable_preemption_delay_resched),
+/// and the local request, if any, is taken and handed to the caller.
 auto handle_irq_postamble() -> bool {
     mm::CpuLocal::write(CURRENT_FRAME, static_cast<arch::IrqFrame *>(nullptr));
 
     auto &preemption_state = task::Thread::Current::preemption_state();
-    preemption_state.enable_preemption();
     preemption_state.enable_eager_reschedule();
+    preemption_state.enable_preemption_delay_resched();
 
-    return preemption_state.is_preemption_enabled();
+    return preemption_state.is_preemption_enabled() && preemption_state.take_pending_local();
 }
 
 } // namespace ours::irq

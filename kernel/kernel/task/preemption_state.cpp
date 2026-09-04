@@ -27,9 +27,7 @@ auto PreemptionState::cancel_timeslice_extension() -> void {
 }
 
 auto PreemptionState::flush_pending_local() -> void {
-    auto const this_cpu = Cpu::id();
-    if (auto target = m_pendings.load(); target.test(this_cpu)) {
-        m_pendings.store(target.set(this_cpu, 0));
+    if (take_pending_local()) {
         Thread::Current::preempt();
     }
 }

@@ -964,3 +964,117 @@ idler 恢复后 flush 一个 pending 抢占，无其它可运行线程，探针�
 
 **验证**
 构建、`clang-tidy` 通过；dbg：`IPI-Resched on CPU[0]` 不再出现，启动仍走到 `reclaim_init_area()`。
+
+---
+
+## 20. 中断出口不兑现挂起的抢占，时间片"只记不做"（2026-09-03）
+
+**文件**
+- `kernel/kernel/irq/mod.cpp` — `handle_irq_postamble()` 重写。
+- `kernel/include/ours/task/preemption_state.hpp` — 新增 `take_pending_local()`。
+- `kernel/kernel/task/preemption_state.cpp` — `flush_pending_local()` 改用它。
+
+**症状**
+
+两个 gibberish 线程（`main.cpp` 里 `Sample1`/`Sample2`，各自 `while(1) log::debug`）
+启动后只有第一个在跑，永远不轮换——`I'm Thread 1` 刷屏，`I'm Thread 2` 一次都不出现。
+时间片到期时 `RoundRobin::update_thread()` 确实 `mark_preempt_pending()` 了，但没人兑现。
+
+**原因**
+
+`handle_irq_postamble()` 是中断处理的收尾（`arch_handle_exception()` → `platform_finish_handling_irq()`
+→ 它），返回值告诉调用方"要不要在返回被中断的上下文之前换线程"。改之前：
+
+```cpp
+auto handle_irq_postamble() -> bool {
+    mm::CpuLocal::write(CURRENT_FRAME, static_cast<arch::IrqFrame *>(nullptr));
+
+    auto &preemption_state = task::Thread::Current::preemption_state();
+    preemption_state.enable_preemption();          // (1)
+    preemption_state.enable_eager_reschedule();    // (2)
+
+    return preemption_state.is_preemption_enabled();  // (3)
+}
+```
+
+三处都错：
+
+1. `enable_preemption()` 是**会 flush 的**——它在计数归零时直接调
+   `flush_pending_local()` → `Thread::Current::preempt()`。也就是说抢占在这里、在中断胶水
+   内部就发生了，中断帧还没收好（`CURRENT_FRAME` 刚被清空，但栈上还是中断上下文）。
+2. 顺序反了：应当先放 eager（此时抢占计数还在，只会 flush 远端请求），再放抢占计数。
+   反过来的话第 (1) 步就把本地请求打掉了。
+3. 返回的是 `is_preemption_enabled()`——"允不允许抢占"，不是"有没有人请求抢占"。
+   于是只要抢占是开的，**每一次中断返回都要求重调度一次**，不管有没有挂起请求：
+   每个 tick 白跑一趟 `reschedule_common()`。
+
+这三条以前都看不出来，因为 `is_preemption_enabled()` 在第 16 条之前恒为 false——(1) 不 flush、
+(3) 恒返回 false，中断出口从不抢占，于是时间片彻底不生效。第 16 条把它修对之后，
+(1) 和 (3) 才开始起反作用。
+
+配套的一个坑：挂起状态分两处存——`m_pendings` 掩码和 `NoReschedPreempt` 标志，
+`add_pending()` 两个都设，而在此之前只有 `clear_pending()` 会清标志（还是一把清所有）。
+所以"消费掉本地挂起"必须两个一起清，否则 `has_preempt_request()` 永远为真，
+之后每次中断出口都会再抢占一次。
+
+**改法**
+
+新增一个只负责"取走本地挂起"的原语，掩码位和标志一起清，并把结果交给调用方：
+
+```cpp
+[[nodiscard]]
+FORCE_INLINE auto take_pending_local() -> bool {
+    auto const this_cpu = Cpu::id();
+    auto const pending = m_pendings.load();
+    if (!pending.test(this_cpu)) {
+        return false;
+    }
+    m_pendings.store(pending & ~CpuMask::of(this_cpu));
+    m_counter.set<Tag::NoReschedPreempt>(true);
+    return true;
+}
+```
+
+`flush_pending_local()` 改成 `if (take_pending_local()) Thread::Current::preempt();`，
+和它原来手写的一段等价，只是多清了标志。中断出口本身：
+
+```cpp
+auto handle_irq_postamble() -> bool {
+    mm::CpuLocal::write(CURRENT_FRAME, static_cast<arch::IrqFrame *>(nullptr));
+
+    auto &preemption_state = task::Thread::Current::preemption_state();
+    preemption_state.enable_eager_reschedule();          // 远端先放
+    preemption_state.enable_preemption_delay_resched();  // 本地计数归零，但不 flush
+
+    return preemption_state.is_preemption_enabled() && preemption_state.take_pending_local();
+}
+```
+
+`enable_preemption_delay_resched()` 树里早就有，正是"减计数但不 flush"，之前没有调用者。
+真正的切换留给 `arch_handle_exception()` 在收好中断帧之后做——那一行原本就写好了。
+
+**参照**
+
+`Zircon int_handler_finish()`（`kernel/include/kernel/interrupt.h`）：
+`EagerReschedReenable()` → `PreemptReenableDelayFlush()` → 返回 `do_preempt`，
+由 `x86_exception_handler()` 在 `int_handler_finish()` 之后 `Thread::Current::Preempt()`。
+`take_pending_local()` 对应 `PreemptReenableDelayFlush()` 里那句
+`preempts_pending_.fetch_and(~local_mask)` 并返回是否命中——同样是"取走并把责任交给调用方"。
+
+**验证**
+
+- 构建通过；`clang-format` 已跑；`clang-tidy` 无新告警（`preemption_state.hpp` 上那几条
+  `modernize-use-nodiscard` 都是既有函数，新增的 `take_pending_local()` 自带 `[[nodiscard]]`）。
+- QEMU dbg 实测，这是**第一次**看到抢占式轮转：日志里出现 9340 行 `I'm Thread 1/2`，
+  且完成了一整轮 laborer → Sample1 → Sample2 → laborer 的切换（改动前只有 `I'm Thread 1`）。
+  无断言、无故障。
+- 两个线程的打印次数悬殊（7637 : 1703）：时间片按调度周期算，两次日志之间的忙循环圈数
+  也不等长，不是缺陷；但"一整轮之后 laborer 就退出了"这点还没有多轮数据，等下面那条修完再看。
+
+**故意没做**
+
+- 没有加中断嵌套计数（`PreemptionState::IrqNestedCounter` 全树仍无人增减），也没有
+  Zircon 的 `arch_blocking_disallowed()`。`is_preemption_enabled()` 已经把 `in_interrupt()`
+  算进去了，但那个计数没人维护，所以这一层保护目前是空的。已记进待修。
+- 没有动 `arch_handle_exception()`：它的 `if (need_preempt) Thread::Current::preempt();`
+  本来就在正确的位置，缺的只是 `need_preempt` 的正确来源。

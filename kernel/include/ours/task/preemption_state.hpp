@@ -105,6 +105,26 @@ class PreemptionState {
         return !m_counter.get<Tag::NoReschedPreempt>();
     }
 
+    /// Consumes the local CPU's pending preemption: clears its bit in the mask
+    /// and the request flag, and says whether there was one. The two live
+    /// apart -- add_pending() sets both, and until now only clear_pending()
+    /// cleared the flag, wholesale -- so a consumer that cleared the mask bit
+    /// alone left has_preempt_request() true forever, and every later
+    /// interrupt exit would have preempted again for nothing. Zircon's
+    /// PreemptReenableDelayFlush() does the same fetch_and on its pending
+    /// mask and hands the result to the caller, who owns the preemption.
+    [[nodiscard]]
+    FORCE_INLINE auto take_pending_local() -> bool {
+        auto const this_cpu = Cpu::id();
+        auto const pending = m_pendings.load();
+        if (!pending.test(this_cpu)) {
+            return false;
+        }
+        m_pendings.store(pending & ~CpuMask::of(this_cpu));
+        m_counter.set<Tag::NoReschedPreempt>(true);
+        return true;
+    }
+
     auto set_timeslice_extension(Duration duration) -> bool;
     auto cancel_timeslice_extension() -> void;
 
