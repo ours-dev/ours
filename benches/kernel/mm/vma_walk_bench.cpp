@@ -3,6 +3,10 @@
 ///
 /// Host benchmark for the tree access patterns VmaSet's walks rest on.
 ///
+/// Lives under //benches rather than //kernel/mm/tests because it reports
+/// timings instead of passing or failing; the tree here mirrors the source
+/// tree, so it sits at the path of the code it measures.
+///
 /// It exists because the traversal changes in docs/changes/260903/mm.md
 /// sections 2 and 3 were argued from complexity alone, which is not evidence.
 /// What it measures:

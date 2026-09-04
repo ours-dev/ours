@@ -653,3 +653,35 @@ PROBE enumerator: walked=9 tree=9
 - 没有测 `VmaSet` 本身（含 `GapAugment`）。要测得把 `VmAreaOrMapping` 拆得能在宿主机上构造，
   那是另一件事。
 - 没有在内核里测。宿主比值足以支撑"曲线怎么走"，而这正是这几条改动的论点。
+
+---
+
+## 5. 基准移到 `benches/`（2026-09-03）
+
+**文件**
+- `benches/kernel/mm/vma_walk_bench.cpp` — 由 `kernel/mm/tests/` 迁入
+- `benches/BUILD.gn`、`benches/kernel/mm/BUILD.gn` — 新增
+- `kernel/mm/tests/BUILD.gn`、`BUILD.gn` — 撤掉旧目标，根改指 `//benches:benches`
+
+**原因**
+
+第 4 条把基准放进了 `kernel/mm/tests/`，跟着那里已有的宿主测试约定走。放错了：
+仓库顶层的 `benches/` 就是给基准准备的。它当时只有一个空 `.gitignore`（Bazel 迁 GN 时留下的），
+看着像没人用，但空目录在这个仓库里不代表没用途——和那些空类、桩声明一样，是留好的位置。
+
+区分标准是**程序输出什么**，不是它测的代码在哪：`tests/` 下的目标非通过即失败，
+基准打印的是时间，所以即使测的是 mm 的代码，也该待在 `benches/`。
+
+**改法**
+
+`benches/` 下按源码树镜像，`benches/kernel/mm/vma_walk_bench.cpp` 与它测的代码同路径，
+以后加别的模块不必再定规矩。`benches/BUILD.gn` 提供一个 `benches` group，
+根 `BUILD.gn` 只引这一个标签，不再逐个点名。
+
+group 存在的意义是让基准保持可编译——烂掉的基准应该由构建发现，
+而不是由下一个需要这组数字的人发现。
+
+**验证**
+
+`gn gen` 通过，`ninja host/obj/benches/kernel/mm/vma-walk-bench` 构建并运行，
+输出与第 4 条同量级（n=8 点查找 0.98×、每步 2.25×，run-to-run 抖动之内）。全量构建无错。

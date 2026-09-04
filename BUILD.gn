@@ -87,15 +87,12 @@ group("default") {
     "//kernel/mm/tests:frame-buddy-smoke($host_toolchain)",
     "//kernel/mm/tests:protection-ranges-smoke($host_toolchain)",
 
-    # Not a smoke test -- it prints timings rather than passing or failing.
-    # Named here for the same reason the two above are: so that it keeps
-    # compiling. The numbers it reports back the traversal changes recorded in
-    # docs/changes/260903/mm.md, which were otherwise argued from complexity
-    # alone.
-    "//kernel/mm/tests:vma-walk-bench($host_toolchain)",
-
     # //kernel/lib/acpi is pure table decoding behind a single mapper seam, so
     # the whole library runs on the host against synthesised table images.
+    # Benchmarks, which report timings rather than passing or failing. Here so
+    # that they keep compiling; the numbers are quoted in docs/changes.
+    "//benches:benches",
+
     "//kernel/lib/acpi:tests($host_toolchain)",
 
     # The OBI container format: the parser, the builder, the CLI and the

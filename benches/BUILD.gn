@@ -1,0 +1,13 @@
+# Benchmarks.
+#
+# Separate from the various tests/ directories because these report timings
+# rather than passing or failing: nothing here is a pass/fail gate. The group
+# exists so that they keep compiling, and so a benchmark that has rotted is
+# noticed by the build rather than by whoever next needs its numbers.
+#
+# The tree under here mirrors the source tree, so a benchmark sits at the same
+# path as the code it measures.
+group("benches") {
+  testonly = true
+  public_deps = [ "kernel/mm:vma-walk-bench($host_toolchain)" ]
+}

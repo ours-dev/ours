@@ -45,25 +45,10 @@ executable("protection-ranges-smoke") {
   visibility = [ "*" ]
 }
 
-# Not a smoke test -- it reports timings rather than passing or failing. It is
-# in the group so that it keeps compiling; the numbers it prints are quoted in
-# docs/changes/260903/mm.md and are meant to be re-runnable.
-executable("vma-walk-bench") {
-  testonly = true
-  sources = [ "vma_walk_bench.cpp" ]
-  configs += [ "//kernel/mm:headers.config" ]
-  deps = [
-    "//system/lib/ustl:headers",
-    "//system/public",
-  ]
-  visibility = [ "*" ]
-}
-
 group("tests") {
   testonly = true
   public_deps = [
     ":frame-buddy-smoke",
     ":protection-ranges-smoke",
-    ":vma-walk-bench",
   ]
 }

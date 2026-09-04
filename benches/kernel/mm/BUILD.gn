@@ -1,0 +1,13 @@
+# Host benchmark for //kernel/mm's VMA tree walks. Builds with the host
+# toolchain and runs on the build machine, the same way //kernel/mm/tests'
+# smoke tests do; it needs no mm sources, only the ustl container it measures.
+executable("vma-walk-bench") {
+  testonly = true
+  sources = [ "vma_walk_bench.cpp" ]
+  configs += [ "//kernel/mm:headers.config" ]
+  deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
