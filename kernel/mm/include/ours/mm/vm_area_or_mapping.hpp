@@ -344,15 +344,20 @@ class VmAreaOrMapping::Builder {
     }
 
   private:
-    VirtAddr m_base;
-    usize m_size;
-    VmaFlags m_vmaf;
-    MmuFlags m_mmuf;
-    VmMapOption m_option;
-    VmArea *m_parent;
-    ustl::Arc<VmAspace> *m_aspace;
-    char const *m_name;
-    usize m_vmo_ofs;
+    // Default-initialised because not every path sets every field: a sub-area
+    // has no VMO and therefore no VMO offset and no MMU flags, and build()
+    // never reads those in that branch. Leaving them indeterminate meant the
+    // only thing keeping the sub-area path honest was that it happened to set
+    // the VMO offset to something -- the VMA offset, as it turned out.
+    VirtAddr m_base{};
+    usize m_size{};
+    VmaFlags m_vmaf{};
+    MmuFlags m_mmuf{};
+    VmMapOption m_option{};
+    VmArea *m_parent{};
+    ustl::Arc<VmAspace> *m_aspace{};
+    char const *m_name{};
+    usize m_vmo_ofs{};
     ustl::Arc<VmObject> m_vmo;
 };
 

@@ -36,11 +36,18 @@ class VmMapping final: public VmAreaOrMapping {
     static auto create(VmArea *, VirtAddr, usize, VmaFlags, ustl::Arc<VmObject>, usize, MmuFlags,
                        char const *, ustl::Arc<Self> *) -> Status;
 
-    auto map(VirtAddr offset, usize size, bool commit, MapControl) -> Status;
+    /// [base, base + size) is an absolute address range, as it is throughout
+    /// VmArea and as it already was in the unmap_locked()/protect_locked()
+    /// halves below. These three took an offset from |m_base| instead, so
+    /// every call across the VmArea/VmMapping seam converted -- and
+    /// VmArea::unmap_locked() converted the wrong way, subtracting the base
+    /// before calling the absolute unmap_locked() and silently naming a range
+    /// at the bottom of the address space.
+    auto map(VirtAddr base, usize size, bool commit, MapControl) -> Status;
 
-    auto protect(VirtAddr offset, usize size, MmuFlags) -> Status;
+    auto protect(VirtAddr base, usize size, MmuFlags) -> Status;
 
-    auto unmap(VirtAddr offset, usize, UnmapControl) -> Status;
+    auto unmap(VirtAddr base, usize, UnmapControl) -> Status;
 
     /// Return the final mapping status and how many pages mapped.
     auto fault(VmFault *vmf) -> ustl::Pair<Status, usize>;

@@ -42,13 +42,33 @@ class VmArea final: public VmAreaOrMapping {
         return create_common(va, size, vmaf, nullptr, aspace, name, out);
     }
 
-    /// Create a mapping unit in page range [vma_off, vma_off + size).
-    auto create_mapping(usize vma_ofs, usize size, usize vmo_ofs, MmuFlags mmuf,
+    /// Every range this class takes is an absolute virtual address, never an
+    /// offset from |m_base|.
+    ///
+    /// It used to be split: unmap/protect/reserve/create_subvma took offsets
+    /// while map/map_at handed absolute addresses back and
+    /// contains/find_mapping_locked took them, so callers converted in both
+    /// directions -- init_vmm.cpp literally wrote
+    /// `phys_vma.base - root_vma->base()`. Two of those conversions were
+    /// wrong: VmArea::unmap_locked() handed VmMapping::unmap_locked() an
+    /// offset where it wanted an address, and create_mapping() passed its VMA
+    /// offset as the VMO offset. Neither could be seen at the call site,
+    /// because both spellings are a bare u64.
+    ///
+    /// The one offset that stays an offset is |vmo_ofs|: it indexes into the
+    /// object, which has no address of its own. Keeping exactly one offset in
+    /// the interface is what makes it hard to mistake for the other.
+    ///
+    /// Internally the *_locked helpers were already absolute, so the
+    /// conversions did not buy anything even inside the class.
+
+    /// Create a mapping over [base, base + size).
+    auto create_mapping(VirtAddr base, usize size, usize vmo_ofs, MmuFlags mmuf,
                         ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
                         ustl::Arc<VmMapping> *out) -> Status;
 
-    /// Create a sub-VMA in page range [vma_off, vma_off + nr_pages).
-    auto create_subvma(usize offset, usize size, VmaFlags vmaf, char const *name,
+    /// Create a sub-VMA over [base, base + size).
+    auto create_subvma(VirtAddr base, usize size, VmaFlags vmaf, char const *name,
                        VmMapOption option, ustl::Arc<Self> *out) -> Status;
 
     /// Following map* interfaces are the a group of coarse-grained method to provide a convenient way for
@@ -70,13 +90,15 @@ class VmArea final: public VmAreaOrMapping {
     auto map(VirtAddr *base, usize size, MmuFlags, VmMapOption, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
-    auto unmap(usize offset, usize size) -> Status;
+    /// Tear down everything mapped in [base, base + size).
+    auto unmap(VirtAddr base, usize size) -> Status;
 
-    /// Update rights of the subset of the area.
-    auto protect(usize offset, usize size, MmuFlags flags) -> Status;
+    /// Update rights of the subset of the area covering [base, base + size).
+    auto protect(VirtAddr base, usize size, MmuFlags flags) -> Status;
 
-    /// Update rights of the subset of the area.
-    auto reserve(usize offset, usize size, MmuFlags flags, char const *name) -> Status;
+    /// Claim [base, base + size) for an already-mapped range, so the VMM
+    /// accounts for memory the boot path installed behind its back.
+    auto reserve(VirtAddr base, usize size, MmuFlags flags, char const *name) -> Status;
 
     auto contains(VirtAddr addr) const -> bool;
 
@@ -90,7 +112,7 @@ class VmArea final: public VmAreaOrMapping {
 
     VmArea(VirtAddr, usize, VmaFlags, VmArea *, VmAspace *, char const *);
 
-    auto create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmMapOption option)
+    auto create_subaom_preamble(VirtAddr base, usize size, VmaFlags vmaf, VmMapOption option)
         -> ktl::Result<ustl::Pair<VirtAddr, usize>>;
 
     auto alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr upper_limit)

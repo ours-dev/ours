@@ -134,9 +134,8 @@ namespace {
         auto root_vma = kaspace->root_vma();
         ustl::Arc<VmArea> vma;
         [[maybe_unused]]
-        auto status =
-            root_vma->create_subvma(phys_vma.base - root_vma->base(), phys_vma.size, phys_vma.vmaf,
-                                    phys_vma.name, VmMapOption::Fixed, &vma);
+        auto status = root_vma->create_subvma(phys_vma.base, phys_vma.size, phys_vma.vmaf,
+                                              phys_vma.name, VmMapOption::Fixed, &vma);
         DEBUG_ASSERT(Status::Ok == status);
 
         if (PhysVma::Backing::AddressSpace == phys_vma.backing) {
@@ -145,7 +144,8 @@ namespace {
             return;
         }
 
-        status = vma->reserve(0, phys_vma.size, extract_permissions(phys_vma.vmaf), phys_vma.name);
+        status = vma->reserve(vma->base(), phys_vma.size, extract_permissions(phys_vma.vmaf),
+                              phys_vma.name);
         DEBUG_ASSERT(Status::Ok == status);
     }
 

@@ -253,7 +253,7 @@ FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, 
 }
 
 /// Do check arguments and dispatch the request to correct sub-routine for different VmObjects.
-auto VmMapping::map(VirtAddr offset, usize size, bool commit, MapControl control) -> Status {
+auto VmMapping::map(VirtAddr base, usize size, bool commit, MapControl control) -> Status {
     m_canary.verify<Self>();
 
     // FIXME: map() does not acquire m_aspace->get_lock(), unlike protect()
@@ -267,7 +267,7 @@ auto VmMapping::map(VirtAddr offset, usize size, bool commit, MapControl control
         return Status::InvalidArguments;
     }
 
-    VirtAddr base = ustl::mm::align_down(m_base + offset, PAGE_SIZE);
+    base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvalidArguments;
     }
@@ -281,7 +281,7 @@ auto VmMapping::map(VirtAddr offset, usize size, bool commit, MapControl control
     return Status::Ok;
 }
 
-auto VmMapping::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
+auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
 
     if (!is_active()) {
@@ -294,7 +294,7 @@ auto VmMapping::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
     }
 
     Guard guard{get_lock()};
-    VirtAddr base = ustl::mm::align_down(m_base + offset, PAGE_SIZE);
+    base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvalidArguments;
     }
@@ -331,7 +331,7 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     return Status::Ok;
 }
 
-auto VmMapping::unmap(usize offset, usize size, UnmapControl control) -> Status {
+auto VmMapping::unmap(VirtAddr base, usize size, UnmapControl control) -> Status {
     m_canary.verify<Self>();
 
     if (!is_active()) {
@@ -344,7 +344,7 @@ auto VmMapping::unmap(usize offset, usize size, UnmapControl control) -> Status 
     }
 
     Guard guard{get_lock()};
-    VirtAddr base = ustl::mm::align_down(m_base + offset, PAGE_SIZE);
+    base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvalidArguments;
     }

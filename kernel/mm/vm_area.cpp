@@ -67,22 +67,25 @@ auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr 
     return m_subvmas.find_spot(size, align, lower_limit, upper_limit);
 }
 
-auto VmArea::create_subvma(usize vma_ofs, usize vma_size, VmaFlags vmaf, char const *name,
-                           VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
+auto VmArea::create_subvma(VirtAddr requested_base, usize requested_size, VmaFlags vmaf,
+                           char const *name, VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
     m_canary.verify<Self>();
 
-    auto const result = create_subaom_preamble(vma_ofs, vma_size, m_vmaf, option);
+    auto const result = create_subaom_preamble(requested_base, requested_size, m_vmaf, option);
     if (result.is_err()) {
         return result.unwrap_err();
     }
 
     auto const [base, size] = *result;
 
+    // No VMO offset here: a sub-area is not backed by an object at all, and
+    // Builder ignores the field unless a VMO was set. It used to be handed the
+    // *VMA* offset, which is the mix-up the absolute-address convention exists
+    // to stop -- harmless here only by accident.
     ustl::Arc<VmAreaOrMapping> aom;
     auto const status = Builder(&m_aspace, m_vmaf, size)
                             .set_parent(this)
                             .set_base(base)
-                            .set_vmo_offset(vma_ofs)
                             .set_option(option)
                             .set_name(name)
                             .build(&aom);
@@ -95,12 +98,12 @@ auto VmArea::create_subvma(usize vma_ofs, usize vma_size, VmaFlags vmaf, char co
     return Status::Ok;
 }
 
-auto VmArea::create_mapping(usize vma_ofs, usize vma_size, usize vmo_ofs, MmuFlags mmuf,
-                            ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
-                            ustl::Arc<VmMapping> *out) -> Status {
+auto VmArea::create_mapping(VirtAddr requested_base, usize requested_size, usize vmo_ofs,
+                            MmuFlags mmuf, ustl::Arc<VmObject> vmo, char const *name,
+                            VmMapOption option, ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
 
-    auto const result = create_subaom_preamble(vma_ofs, vma_size, m_vmaf, option);
+    auto const result = create_subaom_preamble(requested_base, requested_size, m_vmaf, option);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -112,7 +115,13 @@ auto VmArea::create_mapping(usize vma_ofs, usize vma_size, usize vmo_ofs, MmuFla
                             .set_parent(this)
                             .set_base(base)
                             .set_vmo(ustl::move(vmo))
-                            .set_vmo_offset(vma_ofs)
+                            // |vmo_ofs|, not the address: this indexes into the
+                            // object. The VMA offset used to be passed here,
+                            // and |vmo_ofs| was accepted and dropped -- the two
+                            // were both bare u64 and nothing at the call site
+                            // could tell them apart. Latent only because every
+                            // caller so far asks for offset 0 of a fresh VMO.
+                            .set_vmo_offset(vmo_ofs)
                             .set_name(name)
                             .set_mmuf(mmuf)
                             .set_option(option)
@@ -127,7 +136,7 @@ auto VmArea::create_mapping(usize vma_ofs, usize vma_size, usize vmo_ofs, MmuFla
     return Status::Ok;
 }
 
-auto VmArea::create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmMapOption option)
+auto VmArea::create_subaom_preamble(VirtAddr base, usize size, VmaFlags vmaf, VmMapOption option)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
         // Operate an illegal VMA.
@@ -141,11 +150,25 @@ auto VmArea::create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmM
         return ktl::err(Status::InvArgs);
     }
 
-    auto [base_aligned, size_aligned] = resolve_page_range(m_base + offset, size);
+    auto [base_aligned, size_aligned] = resolve_page_range(base, size);
+    if (!size_aligned) {
+        return ktl::err(Status::InvArgs);
+    }
 
     auto const is_fixed_noreplace = (!!(option & VmMapOption::FixedNoReplace));
     auto const is_fixed = (!!(option & VmMapOption::Fixed)) || is_fixed_noreplace;
     if (is_fixed) {
+        // Only the fixed path reads |base|, so only it can be asked whether the
+        // address is ours to give -- a question that could not even be spelt
+        // while the parameter was an offset, since every offset looks in-range
+        // until it is added to m_base. The other branch throws |base| away and
+        // takes whatever alloc_spot() finds, which is the remaining ambiguity
+        // in this interface: a caller with no address in mind still has to
+        // invent one. See docs/repairs/260903/mm.md.
+        if (!check_range(base_aligned, size_aligned)) {
+            return ktl::err(Status::InvArgs);
+        }
+
         if (m_subvmas.has_range(base_aligned, size_aligned)) {
             if (is_fixed_noreplace) {
                 return ktl::err(Status::AlreadyExists);
@@ -156,16 +179,16 @@ auto VmArea::create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmM
         }
     } else {
         // Without a Fixed option the caller is asking the VMM to place this,
-        // so the address derived from `offset` above is only a starting point
-        // and the spot the search returns replaces it.
+        // so |base| is only a starting point and the spot the search returns
+        // replaces it.
         //
         // That assignment is what was missing: the result of alloc_spot() was
         // computed and thrown away, and the address actually used stayed at
-        // `m_base + offset`. Callers that pass no address at all come through
-        // here with offset 0, so every one of them was placed at the very
-        // start of this VMA -- and on the kernel root VMA that is the physmap
-        // base, which is how the local APIC's MMIO ended up mapped on top of
-        // the physmap.
+        // the one derived from the caller's request. Callers that pass no
+        // address at all arrive here naming the start of this VMA, so every
+        // one of them was placed there -- and on the kernel root VMA that is
+        // the physmap base, which is how the local APIC's MMIO ended up mapped
+        // on top of the physmap.
         //
         // FIXME(SmallHuaZi) (base_ + size_) may causes an overflow error.
         auto const result = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
@@ -227,13 +250,13 @@ auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<V
     -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
-    VirtAddr vma_ofs = 0;
-    if (base && *base >= m_base) {
-        vma_ofs = *base - m_base;
-    }
+    // A null |base|, or one below this area, is today's spelling of "you
+    // choose"; it reaches create_subaom_preamble() as this area's own start
+    // and is then discarded, because none of these callers passes Fixed.
+    VirtAddr const requested_base = (base && *base >= m_base) ? *base : m_base;
 
     ustl::Arc<VmMapping> mapping;
-    auto status = create_mapping(vma_ofs, size, 0, mmuf, vmo, name, option, &mapping);
+    auto status = create_mapping(requested_base, size, 0, mmuf, vmo, name, option, &mapping);
     if (Status::Ok != status) {
         return ustl::err(status);
     }
@@ -242,7 +265,7 @@ auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<V
     if (!!(VmMapOption::Commit & option)) {
         status = vmo->commit_range(0, size);
         if (Status::Ok == status) {
-            status = mapping->map(0, size, true, MapControl::ErrorIfExisting);
+            status = mapping->map(mapping->base(), size, true, MapControl::ErrorIfExisting);
         }
 
         if (Status::Ok != status) {
@@ -273,29 +296,28 @@ auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<V
     return ustl::ok(ustl::move(mapping));
 }
 
-auto VmArea::unmap(usize offset, usize size) -> Status {
+auto VmArea::unmap(VirtAddr base, usize size) -> Status {
     m_canary.verify<Self>();
 
     if (!is_active()) {
         return Status::BadState;
     }
 
-    // Reject offsets that would wrap |m_base + offset| below.
-    if (offset > m_size) {
-        return Status::InvArgs;
-    }
-
-    auto [base, aligned_size] = resolve_page_range(m_base + offset, size);
+    // The offset form needed a `offset > m_size` guard ahead of this, purely to
+    // keep `m_base + offset` from wrapping below its own base. check_range() is
+    // wrap-safe on its own -- it subtracts rather than adds -- so an absolute
+    // address needs no such preamble.
+    auto [aligned_base, aligned_size] = resolve_page_range(base, size);
     if (!aligned_size) {
         return Status::InvArgs;
     }
 
-    if (!check_range(base, aligned_size)) {
+    if (!check_range(aligned_base, aligned_size)) {
         return Status::InvArgs;
     }
 
     Guard guard{get_lock()};
-    return unmap_locked(base, aligned_size);
+    return unmap_locked(aligned_base, aligned_size);
 }
 
 auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
@@ -363,8 +385,16 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
             continue;
         }
 
-        auto const status = mapping->unmap_locked(
-            overlap_base - mapping->base(), overlap_last - overlap_base + 1, UnmapControl::None);
+        // |overlap_base| straight through: VmMapping::unmap_locked() takes an
+        // absolute address, the same as its protect_locked() sibling and the
+        // same as what VmMapping::unmap() computes before calling it. This used
+        // to subtract mapping->base() first and hand it an offset, which the
+        // mapping then measured against its ProtectionRanges -- absolute
+        // ranges -- and so trimmed a window in the bottom of the address space
+        // instead of the one asked for. Nothing caught it because both readings
+        // are a u64; nothing hit it because the boot never unmaps.
+        auto const status = mapping->unmap_locked(overlap_base, overlap_last - overlap_base + 1,
+                                                  UnmapControl::None);
         if (Status::Ok != status) {
             return status;
         }
@@ -374,30 +404,25 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
     return Status::Ok;
 }
 
-/// Rewrite the protection of [offset, offset + size) throughout this area.
+/// Rewrite the protection of [base, base + size) throughout this area.
 ///
 /// The range is the area's to describe but not to enforce: an area owns no
 /// page tables of its own, only children. So this walks the children the range
 /// covers and hands each the part that falls inside it, exactly as unmap()
 /// does, and a nested area recurses.
-auto VmArea::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
+auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
 
     if (!is_active()) {
         return Status::BadState;
     }
 
-    // Reject offsets that would wrap |m_base + offset| below.
-    if (offset > m_size) {
-        return Status::InvArgs;
-    }
-
-    auto [base, aligned_size] = resolve_page_range(m_base + offset, size);
+    auto [aligned_base, aligned_size] = resolve_page_range(base, size);
     if (!aligned_size) {
         return Status::InvArgs;
     }
 
-    if (!check_range(base, aligned_size)) {
+    if (!check_range(aligned_base, aligned_size)) {
         return Status::InvArgs;
     }
 
@@ -418,11 +443,11 @@ auto VmArea::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
     // one place in the area interface where a partial result is unrecoverable,
     // which is why unmap() does not need the same treatment: a range that is
     // half unmapped can simply be unmapped again.
-    if (!can_protect_locked(base, aligned_size, mmuf)) {
+    if (!can_protect_locked(aligned_base, aligned_size, mmuf)) {
         return Status::InvArgs;
     }
 
-    return protect_locked(base, aligned_size, mmuf);
+    return protect_locked(aligned_base, aligned_size, mmuf);
 }
 
 /// Not const, though it changes nothing: VmaSet::Enumerator only walks a
@@ -481,10 +506,16 @@ auto VmArea::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status 
     return Status::Ok;
 }
 
-auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const *name) -> Status {
+auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const *name) -> Status {
     m_canary.verify<Self>();
-    auto [base, size] = resolve_page_range(m_base + vma_off, size_bytes);
+    auto [aligned_base, size] = resolve_page_range(base, size_bytes);
     if (!size) {
+        return Status::InvArgs;
+    }
+
+    // The offset form could not ask this: `m_base + vma_off` names an address
+    // inside some area, just not necessarily this one, and nothing here noticed.
+    if (!check_range(aligned_base, size)) {
         return Status::InvArgs;
     }
 
@@ -500,7 +531,8 @@ auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const 
     }
 
     ustl::Arc<VmMapping> mapping;
-    status = VmMapping::create(this, base, size, m_vmaf, ustl::move(vmo), 0, mmuf, name, &mapping);
+    status = VmMapping::create(this, aligned_base, size, m_vmaf, ustl::move(vmo), 0, mmuf, name,
+                               &mapping);
     if (Status::Ok != status) {
         return status;
     }
@@ -513,7 +545,7 @@ auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const 
     // governs. It also picks up the one case the direct call gets wrong, where
     // a range carrying no permission at all is meant to be unmapped rather
     // than protected.
-    return mapping->protect(0, size, mmuf);
+    return mapping->protect(aligned_base, size, mmuf);
 }
 
 auto VmArea::destroy() -> Status {

@@ -1269,3 +1269,154 @@ probe removed all : lru=gen2 mru=gen9 slots(list)=[0,0,0,0,0,0,0,0] slots(size)=
 - **没有引入"最低 LRU 代"的请求机制。** Zircon 的 `LruRunner` 是被
   `RequireLruGen()` 之类的请求驱动的（回收方说"我要看到比第 N 代更老的页"），那套背压只有在
   真的有回收方时才有意义。
+
+---
+
+## 7. VMA 接口统一收绝对地址，不再收相对 `m_base` 的偏移（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area.hpp` — `create_mapping`/`create_subvma`/`unmap`/`protect`/
+  `reserve`/`create_subaom_preamble` 六个签名的首参改成 `VirtAddr base`
+- `kernel/mm/vm_area.cpp` — 六处实现随之改写；修掉 `unmap_locked()` 传偏移给
+  `VmMapping::unmap_locked()`、`create_mapping()` 把 VMA 偏移当 VMO 偏移传两处缺陷
+- `kernel/mm/include/ours/mm/vm_mapping.hpp`、`kernel/mm/vm_mapping.cpp` — `map`/`protect`/
+  `unmap` 三个公开入口同样改收绝对地址
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — `Builder` 的标量成员补默认初始化
+- `kernel/mm/init_vmm.cpp`、`kernel/mm/stack.cpp` — 调用方去掉换算
+
+**症状**
+
+一半是可读性，一半是两处真缺陷。
+
+同一层里两套坐标：`unmap`/`protect`/`reserve`/`create_subvma`/`create_mapping` 收相对
+`m_base` 的偏移，而 `map_at`/`map` 交回绝对地址、`contains`/`find_mapping_locked` 以及全部
+`*_locked` 内部实现收绝对地址。于是每次跨越都要换算，`init_vmm.cpp` 里就写着
+`phys_vma.base - root_vma->base()`。
+
+两处换算是错的，而且都不可能在调用点看出来——两种读法都是一个裸 `u64`：
+
+1. `VmArea::unmap_locked()` 把 `overlap_base - mapping->base()` 传给
+   `VmMapping::unmap_locked()`，后者收的是绝对地址。
+2. `VmArea::create_mapping(vma_ofs, size, vmo_ofs, ...)` 把 `vma_ofs` 传进
+   `.set_vmo_offset()`，而 `vmo_ofs` 收下之后一次也没用。
+
+第 2 条当前潜伏（所有调用方都拿一个新建 VMO 的偏移 0）。第 1 条不是潜伏，是只差一个调用方：
+本次用临时探针把这条路走通了，`kernel.dev.obi` 实测，**修之前**：
+
+```
+PROBE   VmMapping::unmap_locked got base=0x2000 size=0x1000, mapping is [0xFFFFFF8804000000, 0xFFFFFF8804004000)
+PROBE unmap(trim page 2) -> InvArgs
+```
+
+`0x2000` 是偏移量被当成地址。`VmMapping::unmap_locked()` 拿它去问自己的
+`ProtectionRanges`——那里存的是绝对区间——窗口整个落在映射之外，
+`m_protection_ranges.update()` 拒绝，部分解除映射**静默失败并把 InvArgs 一路交回**。
+
+**原因**
+
+偏移这套坐标在这一层是没有立足之地的。理由不是"绝对地址更好看"，是三件具体的事：
+
+一、**内部实现本来就是绝对的**。`unmap_locked`、`protect_locked`、`can_protect_locked`、
+`find_mapping_locked`、`VmaSet::seek`、`Enumerator` 无一例外收绝对地址，而且必须如此：
+它们要拿子节点的 `base()`／`last()` 和窗口比大小，子节点的基址是绝对的，改成偏移就得先把
+两边归一到同一个原点。所以偏移只存在于最外面一层公开签名上，每次进出都换算一次，
+而换算本身不产生任何信息。
+
+二、**偏移 0 是个陷阱**。它同时是"这个区域的开头"和"我没意见"。把 LAPIC 的 MMIO 放到
+physmap 起点那个 bug（存档第 36 节）的第一推动力就是这个二义：调用方本意是"随便挑"，
+写出来是 `0`，而 `0` 在偏移坐标下是个完全合法的具体地址。换成绝对地址至少让"这个区域的
+开头"必须显式写出来（`vma->base()`），二义暴露在字面上——真正拆掉它是下一条的事。
+
+三、**两种偏移长得一模一样**。`create_mapping` 同时收 VMA 偏移和 VMO 偏移，都是 `usize`，
+编译器帮不上忙。改成 `VirtAddr base` 之后，剩下的唯一偏移是 `vmo_ofs`——它确实只能是偏移，
+因为 VMO 没有地址——一个接口里只留一种偏移，才谈得上认错了会硌手。
+
+顺带说明为什么 `unmap()`/`protect()` 里那句 `if (offset > m_size) return InvArgs;` 可以直接
+删掉：它存在的唯一目的是防止 `m_base + offset` 加法回绕到 `m_base` 以下，而
+`check_range()` 用的是减法（`base - m_base <= m_size - size`），本身就防回绕，
+绝对地址不需要这道前置。这是同一件事的第二面：换算是错误的来源，去掉换算连带去掉了
+为换算准备的防御。
+
+**改法**
+
+六个 `VmArea` 入口 + 三个 `VmMapping` 入口的首参统一成 `VirtAddr base`。调用方：
+
+```cpp
+// 之前
+root_vma->create_subvma(phys_vma.base - root_vma->base(), phys_vma.size, ...);
+vma->reserve(0, phys_vma.size, ...);
+mapping->protect(0, size, mmuf);
+mapping->unmap_locked(overlap_base - mapping->base(), ...);
+
+// 之后
+root_vma->create_subvma(phys_vma.base, phys_vma.size, ...);
+vma->reserve(vma->base(), phys_vma.size, ...);
+mapping->protect(aligned_base, size, mmuf);
+mapping->unmap_locked(overlap_base, ...);
+```
+
+绝对地址让两处从前问不出口的检查成为可能，都补上了：
+
+- `reserve()` 原来**完全没有范围检查**。偏移形式下也问不了——`m_base + vma_off` 总能算出
+  一个地址，只是不一定在这个区域里，而没有任何地方会发现。现在加 `check_range()`。
+- `create_subaom_preamble()` 的 Fixed 分支加 `check_range()`。非 Fixed 分支不加，
+  因为那条分支根本不读 `base`，检查一个马上要被丢掉的值只会误伤。
+
+`Builder` 的标量成员补上默认初始化。`create_subvma()` 原来给 `set_vmo_offset()` 传
+`vma_ofs`（子区域根本没有 VMO），现在那一行删掉了——删掉之后 `m_vmo_ofs` 就成了未初始化
+读，虽然 `build()` 在无 VMO 分支里不看它。与其留一个"靠没人读所以没事"的成员，不如
+让所有成员都有确定值。
+
+**参照**
+
+`Linux` 全线是绝对地址：`do_munmap(struct mm_struct *mm, unsigned long start, size_t len)`、
+`mprotect_fixup(..., unsigned long start, unsigned long end, ...)`、
+`vm_area_struct::vm_start`/`vm_end`，从不出现"相对 VMA 起点的偏移"。
+`Zircon` 是对照组，它**保留**偏移：`VmAddressRegion::CreateVmMapping(size_t mapping_offset, ...)`
+的偏移是相对 VMAR 起点的，因为 VMAR 属于某个进程、起点可以被 ASLR 随机化，用户态拿不到也
+不该依赖绝对地址。我们这一层是内核地址空间，起点是编译期常量（`KERNEL_ASPACE_BASE`），
+调用方手里本来就全是绝对地址（`PhysMap::VIRT_BASE`、`ARCH_CPU_LOCAL_VIRT_BASE`、
+`mapping->base()`），偏移只是把它们减一遍再加回去。所以这里跟 Linux 而不跟 Zircon。
+需要注意 Zircon 的下半层同样是绝对的：`VmAddressRegion::UnmapInternalLocked(vaddr_t base, ...)`
+收的是 `vaddr_t`——它的分界线和我们改之后一致，只是公开层的那一侧不同。
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 对七个文件跑过，
+新增行无新告警（`vm_mapping.cpp` 里剩下的 `readability-identifier-naming` 与
+`modernize-use-nullptr` 都在 `MappingCoalescer` 和 arch unmap 调用上，不是本次改的行）。
+
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全，一路到线程调度；
+`kernel.dev.obi` 到 `prof: no architectural PMU`。这次启动本身就是正向证据，
+`create_subvma`(Fixed 绝对基址)、`reserve`、`create_mapping` + `map` 都在启动路径上。
+
+`unmap`/`protect` 启动不走，用临时探针实测后撤掉：在根 VMA 空闲处（per-CPU 窗口正上方）
+建一个 4 页的 `k:probe` 子区域，`reserve()` 出一个覆盖全区的映射，然后逐条走。
+**修之后**（`kernel.dev.obi`）：
+
+```
+PROBE create_subvma(0xFFFFFF8804000000) -> Ok base=0xFFFFFF8804000000 size=0x4000
+PROBE reserve -> Ok
+PROBE unmap(outside) -> InvArgs
+PROBE   VmMapping::unmap_locked got base=0xFFFFFF8804002000 size=0x1000, mapping is [0xFFFFFF8804000000, 0xFFFFFF8804004000)
+PROBE unmap(trim page 2) -> Ok
+PROBE protect(page 0, R) -> Ok
+PROBE unmap(all) -> Ok children_left=0
+```
+
+逐条对上：Fixed 请求落在**要求的绝对地址**上；`unmap` 一个区域外的绝对地址被
+新加的 `check_range()` 挡下（偏移形式下这个请求根本无法表达）；`VmMapping::unmap_locked()`
+收到的是 `0xFFFFFF8804002000` 而不是修前的 `0x2000`，部分裁剪从 `InvArgs` 变成 `Ok`；
+`VmArea::protect()` 的递归下降**首次实测通过**；全覆盖的 `unmap` 把映射销毁并从集合里摘掉
+（`children_left=0`），即第 3 条那个 `erase(IterMut)` 走查循环也一并验到了。
+
+未实测：嵌套子区域的递归（探针只有一层）、`FixedNoReplace` 的 `AlreadyExists` 分支。
+
+**故意没做**
+
+- 没有拆 `map_at()`/`map()` 那个既当输入提示又当输出结果的 `VirtAddr *`。本条只统一坐标系，
+  "此处"与"随便挑"的二义是另一条。`stack.cpp` 里 `rvma->create_mapping(rvma->base(), ...)`
+  那句注释就是这个二义的现场——写着一个地址，实际不落在那里。
+- 没有动 `VmMapping::map()` 缺锁那条既有 FIXME。
+- 没有把 `VmObject` 一侧的偏移改成什么别的。VMO 的偏移本来就该是偏移，
+  见 `docs` 里「VmObject 的 offset 是字节偏移」那条约定。
