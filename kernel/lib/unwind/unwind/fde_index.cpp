@@ -7,13 +7,8 @@ namespace {
     constexpr std::uint64_t NO_CIE_CACHE = ~std::uint64_t{0};
 } // namespace
 
-auto FdeIndex::build(
-    Section const &section,
-    std::uint32_t section_id,
-    void *context,
-    Sink sink,
-    std::size_t *count
-) -> bool {
+auto FdeIndex::build(Section const &section, std::uint32_t section_id, void *context, Sink sink,
+                     std::size_t *count) -> bool {
     Cie cached_cie = {};
     std::uint64_t cached_cie_offset = NO_CIE_CACHE;
     std::size_t produced = 0;
@@ -27,6 +22,16 @@ auto FdeIndex::build(
         }
         if (kind == EntryKind::Terminator) {
             break;
+        }
+        // A record's declared length is the only thing that tells the parsers
+        // where its instruction stream ends (`offset + length` becomes
+        // `instructions_end`), and the unwinder later evaluates up to that
+        // end. Every Cursor read is bounded by the section, so a length that
+        // runs past it cannot make the walk itself read out of bounds -- but
+        // it would index an FDE whose program is truncated. Reject the
+        // section instead; `offset < size` holds here, so no underflow.
+        if (length > section.size - offset) {
+            return false;
         }
 
         if (kind == EntryKind::Cie) {
@@ -45,9 +50,9 @@ auto FdeIndex::build(
             if (!probe.ok()) {
                 return false;
             }
-            std::uint64_t const cie_offset =
-                (section.kind == Section::Kind::EhFrame) ? offset + 4 - cie_reference
-                                                          : cie_reference;
+            std::uint64_t const cie_offset = (section.kind == Section::Kind::EhFrame)
+                                                 ? offset + 4 - cie_reference
+                                                 : cie_reference;
             if (cie_offset != cached_cie_offset) {
                 if (!parse_cie(section, cie_offset, &cached_cie)) {
                     return false;

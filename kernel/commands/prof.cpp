@@ -12,10 +12,10 @@
 // index, so a kernel built without a console has no reason to carry them.
 #include <gktl/command.hpp>
 #include <gktl/init_hook.hpp>
-#include <ktl/vec.hpp>
 #include <logz4/log.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/mm/pmm.hpp>
 #include <ours/status.hpp>
 
 #include <prof/arch.hpp>
@@ -25,7 +25,23 @@
 namespace ours {
 namespace {
     mm::CpuLocal::PerCpu<prof::SampleBuffer> g_buffer;
-    ktl::Vec<unwind::FdeIndex::Entry> g_fde_entries;
+
+    // The FDE index array. It is sized by the kernel's own `.eh_frame`
+    // (32 bytes per FDE, ~800 FDEs in the dbg image, so ~25 KiB) which is
+    // past the largest kmalloc size class (4 KiB), and `ktl::kmalloc()`
+    // answers an oversized request with nullptr rather than falling back to
+    // pages. That rules out `ktl::Vec` here: its allocator constructs the
+    // elements at whatever `operator new[]` returned, so a nullptr becomes a
+    // page fault in `reserve()`, which is exactly how this hook used to hang
+    // every boot. The array therefore comes straight from the frame
+    // allocator, read through the physmap, and is never freed -- it lives as
+    // long as the text it describes.
+    struct FdeTable final {
+        unwind::FdeIndex::Entry *entries = nullptr;
+        usize capacity = 0;
+        usize count = 0;
+    };
+    FdeTable g_fde_table;
 
     auto lookup_buffer(void *, u32 cpu) -> prof::SampleBuffer * {
         if (!g_buffer) {
@@ -47,38 +63,67 @@ namespace {
     extern "C" const u8 __executable_start[];
 
     auto build_fde_index(unwind::Section const &section) -> void {
-        auto const counting_sink = [](void *context, unwind::FdeIndex::Entry const &) -> bool {
+        using Entry = unwind::FdeIndex::Entry;
+
+        // Two passes: the first only counts, so the table is allocated at
+        // its exact final size and the second pass can never outgrow it.
+        // The section is read-only text, so both passes see the same bytes.
+        auto const counting_sink = [](void *context, Entry const &) -> bool {
             ++*static_cast<usize *>(context);
             return true;
         };
         usize count = 0;
-        unwind::FdeIndex::build(section, 0, &count, counting_sink, &count);
+        if (!unwind::FdeIndex::build(section, 0, &count, counting_sink, &count)) {
+            log::warn("prof: malformed .eh_frame; unwinding disabled");
+            return;
+        }
         if (count == 0) {
             return;
         }
-        if (!g_fde_entries.reserve(count).is_ok()) {
+
+        // Whole pages, rounded up: the frame allocator only deals in
+        // power-of-two orders, so the slack past `count` is at most one
+        // order's worth and is simply left unused.
+        usize const bytes = count * sizeof(Entry);
+        usize const nr_frames = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+        auto *entries = mm::get_frames_n<Entry>(mm::GAF_KERNEL, nr_frames);
+        if (entries == nullptr) {
             log::warn("prof: FDE index allocation failed; unwinding disabled");
             return;
         }
+        g_fde_table = FdeTable{entries, count, 0};
 
-        auto const filling_sink = [](void *context, unwind::FdeIndex::Entry const &entry) -> bool {
-            auto *entries = static_cast<ktl::Vec<unwind::FdeIndex::Entry> *>(context);
-            return entries->push_back(entry).is_ok();
+        // The capacity check is what keeps the sink honest if the two passes
+        // ever disagree; the build reports the failure and the partial table
+        // is discarded rather than trusted.
+        auto const filling_sink = [](void *context, Entry const &entry) -> bool {
+            auto *table = static_cast<FdeTable *>(context);
+            if (table->count == table->capacity) {
+                return false;
+            }
+            table->entries[table->count] = entry;
+            ++table->count;
+            return true;
         };
         usize filled = 0;
-        unwind::FdeIndex::build(section, 0, &g_fde_entries, filling_sink, &filled);
+        if (!unwind::FdeIndex::build(section, 0, &g_fde_table, filling_sink, &filled)) {
+            log::warn("prof: .eh_frame changed shape between passes; unwinding disabled");
+            g_fde_table = FdeTable{};
+            return;
+        }
 
-        // The scan emits FDEs in link order, which is nearly — but not
-        // exactly — PC order; an insertion sort finishes in ~O(n) on the
+        // The scan emits FDEs in link order, which is nearly -- but not
+        // exactly -- PC order; an insertion sort finishes in ~O(n) on the
         // near-sorted result.
-        for (usize i = 1; i < g_fde_entries.size(); ++i) {
-            auto key = g_fde_entries[i];
+        Entry *const sorted = g_fde_table.entries;
+        for (usize i = 1; i < g_fde_table.count; ++i) {
+            auto key = sorted[i];
             usize j = i;
-            while (j > 0 && (g_fde_entries[j - 1].pc_begin > key.pc_begin)) {
-                g_fde_entries[j] = g_fde_entries[j - 1];
+            while (j > 0 && (sorted[j - 1].pc_begin > key.pc_begin)) {
+                sorted[j] = sorted[j - 1];
                 --j;
             }
-            g_fde_entries[j] = key;
+            sorted[j] = key;
         }
         log::info("prof: indexed {} unwind frames ({} bytes of .eh_frame)", filled, section.size);
     }
@@ -103,8 +148,8 @@ namespace {
             .buffer_lookup_context = nullptr,
             .num_cpus = static_cast<u32>(MAX_CPU),
             .eh_section = eh_section,
-            .fde_entries = g_fde_entries.data(),
-            .fde_entry_count = g_fde_entries.size(),
+            .fde_entries = g_fde_table.entries,
+            .fde_entry_count = g_fde_table.count,
             .image_base = reinterpret_cast<u64>(__executable_start),
         });
 
