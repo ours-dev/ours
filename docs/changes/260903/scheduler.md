@@ -1401,3 +1401,52 @@ new (&runner) Self();
 
 构建通过。启动**无变化**：此刻 `DpcRunner::init()` 还没有任何调用者（第 27 条才接上），
 这段代码是死的。它必须先落地，否则第 27 条一接通就是这个页故障。
+
+---
+
+## 25. DPC 队列锁不关中断，持锁者会被抢占（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/dpc.cpp` — 四处 `Guard guard{m_lock}` → `Guard<sync::SpinLock, IrqSave>`。
+
+**症状**
+
+```
+Assertion failed on !is_held()
+SpinLock::acquire ← Guard ← DpcRunner::Queue::enqueue ← DpcRunner::enqueue
+← Thread::Current::exit
+```
+
+**原因**
+
+`Queue::enqueue`/`cancel`/`do_work` 用的是**不关中断**的普通 `Guard`：
+
+```cpp
+Guard guard{m_lock};
+```
+
+第 20 条让中断出口真的会抢占之后，tick 就能落进这段临界区，把持锁者换下去。自旋锁不会被
+上下文切换释放，而本 CPU 是唯一能再调度它的 CPU——于是下一个到达队列的线程
+（`Thread::Current::exit()` 挂它的销毁 Dpc）发现锁被一个已经不在运行的线程持着，
+撞 `SpinLock::acquire()` 的 `!is_held()`。
+
+树里别的队列本来就是对的：`TimerQueue` 的四处锁全是 `Guard<sync::SpinLock, IrqSave>`，
+只有 DPC 队列是例外。
+
+**改法**
+
+四处都改成 `Guard<sync::SpinLock, IrqSave> guard{m_lock};`。
+
+**参照**
+
+`Zircon DpcRunner::Queue::DoWork()`：`Guard<SpinLock, IrqSave> guard{Dpc::Lock::Get()};`。
+更一般的规则在 `Zircon Scheduler::PreemptLocked()`：`arch_num_spinlocks_held() > 0` 时不切换，
+只记 pending。ours 也有这个计数，但当时 `SpinLock::num_held_cpu()` 返回的是垃圾
+（实测 `288423890198200320/1/2`，只有低位是计数），所以那条更一般的路走不通——
+根因后来由 lib/concurrent 查明并修掉（`06176e9`：`kernel.ld` 缺 `KEEP`，所有 counter 的
+存储段被 `--gc-sections` 回收，counter 一直在改写别人的 per-CPU 内存）。
+
+**验证**
+
+构建通过。启动无变化（队列此刻仍是死代码，第 27 条才接通）；这条是在接通之后实测撞到、
+再回填进来的。

@@ -34,8 +34,18 @@ auto DpcRunner::Queue::start(char const *name, CpuNum cpu) -> Status {
     return Status::Ok;
 }
 
+/// Interrupts stay off for the whole critical section, which is what every
+/// other queue in the tree does (TimerQueue takes its own lock exactly this
+/// way) and what this one needs now that the interrupt exit really preempts.
+///
+/// With a plain Guard the tick could land inside the section and switch the
+/// holder away; a spinlock is not released by a context switch, so the next
+/// thread on this CPU to reach the queue -- Thread::Current::exit() queueing
+/// its teardown Dpc -- found the lock held by a thread that was no longer
+/// running and died on SpinLock::acquire()'s !is_held(). Nothing else can
+/// release it, since the holder is only rescheduled by this same CPU.
 auto DpcRunner::Queue::enqueue(Dpc &dpc, CpuNum cpu, Level level) -> void {
-    Guard guard{m_lock};
+    Guard<sync::SpinLock, IrqSave> guard{m_lock};
 
     DEBUG_ASSERT(Dpc::State::Idle == DpcRunner::state_of(dpc), "Dpc is already queued or running");
 
@@ -45,7 +55,7 @@ auto DpcRunner::Queue::enqueue(Dpc &dpc, CpuNum cpu, Level level) -> void {
 }
 
 auto DpcRunner::Queue::cancel(Dpc &dpc) -> Status {
-    Guard guard{m_lock};
+    Guard<sync::SpinLock, IrqSave> guard{m_lock};
 
     auto const state = DpcRunner::state_of(dpc);
     if (Dpc::State::Running == state) {
@@ -68,7 +78,7 @@ auto DpcRunner::Queue::do_work() -> i32 {
 
         Dpc *next = nullptr;
         {
-            Guard guard{m_lock};
+            Guard<sync::SpinLock, IrqSave> guard{m_lock};
 
             auto front = m_list.front();
             if (front.is_none()) {
@@ -84,7 +94,7 @@ auto DpcRunner::Queue::do_work() -> i32 {
         next->invoke();
 
         {
-            Guard guard{m_lock};
+            Guard<sync::SpinLock, IrqSave> guard{m_lock};
             DpcRunner::mark_idle(*next);
         }
     }
