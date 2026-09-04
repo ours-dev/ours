@@ -7,7 +7,7 @@
 namespace ours::mm {
 using VmCowPagesCache = ObjectCache::Instance<VmCowPages>;
 
-VmCowPages::VmCowPages(Gaf gaf, usize nr_pages) : m_gaf(gaf), m_size(nr_pages) {}
+VmCowPages::VmCowPages(Gaf gaf, usize size) : m_gaf(gaf), m_size(size) {}
 
 VmCowPages::~VmCowPages() = default;
 
@@ -26,7 +26,16 @@ auto VmCowPages::make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor
 }
 
 auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status {
-    auto frame = alloc_frames(m_gaf, order);
+    // Gaf::Zero unconditionally, on top of whatever the object was created
+    // with. Every byte of a VMO that nobody has supplied reads as zero by
+    // definition, and the buddy allocator hands back whatever the previous
+    // owner left in the frame -- so without this the first read of a
+    // freshly-faulted page returns another owner's data. None of the VMOs
+    // built today ask for Gaf::Zero themselves (they all pass GAF_KERNEL,
+    // which does not imply it), so the guarantee has to live here rather than
+    // rest on callers remembering. A page source, once one exists, overwrites
+    // the whole page anyway and should be allowed to skip the fill.
+    auto frame = alloc_frames(m_gaf | Gaf::Zero, order);
     if (!frame) {
         return Status::OutOfMem;
     }
@@ -73,11 +82,19 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_comm
 
 /// The followings are in class VmCowPages::Cursor.
 
-VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize sizer_pages)
-    : m_target(target) {}
+VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize size)
+    // Initializer order follows the member declaration order in the header.
+    : m_target(target), m_offset(offset), m_end(offset + size) {}
+
+auto VmCowPages::Cursor::require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
+    -> ktl::Result<VmPage *> {
+    return will_write ? require_owned_page(nr_pages, request)
+                      : require_read_page(nr_pages, request);
+}
 
 auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *request)
     -> ktl::Result<VmPage *> {
+    DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
     // Replace page refernece with a real page.
     if (is_type_reference()) {
@@ -87,22 +104,85 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         }
     }
 
-    VmPage *page = nullptr;
-    auto status = m_target->alloc_pages(0, &page, nullptr);
-    if (Status::Ok == status) {
-        return ustl::ok(page);
+    // The slot first, before any thought of allocating. This ordering is the
+    // whole point of the class: a fault on an offset this VMO has already
+    // populated must resolve to the page that is already there, or two
+    // mappings of the same VMO see different memory and a re-fault silently
+    // discards what the first fault wrote.
+    if (auto *page = m_target->m_pages.get_page(index())) {
+        advance();
+        return ktl::ok(page);
     }
 
-    // No any available pages for current request, try to create asynchronous page request.
-    return ustl::err(create_read_request(nr_pages, request->get_read()));
+    // Nothing here. Who answers that depends on whether anyone can:
+    //
+    //   - With a page source, the content lives somewhere this kernel cannot
+    //     reach synchronously, so the only honest answer is to raise a request
+    //     and tell the caller to wait. That path is not built (see repair item
+    //     3) and no VMO carries a source yet, so it reports Unimplemented
+    //     rather than pretending.
+    //   - Anonymous -- every VMO today -- has no one to ask. "Nothing here"
+    //     means zero, and zero is something this kernel can produce on the
+    //     spot. So the answer is an allocation, synchronous, never ShouldWait.
+    if (m_target->m_page_source) {
+        return ktl::err(create_read_request(nr_pages, request->get_read()));
+    }
+
+    VmPage *page = nullptr;
+    if (auto const status = m_target->alloc_pages(0, &page, nullptr); Status::Ok != status) {
+        return ktl::err(status);
+    }
+
+    // Recorded before it is handed out, and the page given back if recording
+    // fails. An unrecorded page is worse than no page: the caller maps it, the
+    // VMO does not know it exists, and the next fault on this same offset
+    // allocates a second one over the top of it.
+    if (auto const status = m_target->m_pages.insert_page(index(), page, VmPageMap::Tag::Owned);
+        Status::Ok != status) {
+        free_frames(page, 0);
+        return ktl::err(status);
+    }
+
+    advance();
+    return ktl::ok(page);
+}
+
+auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *request)
+    -> ktl::Result<VmPage *> {
+    DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
+
+    if (auto *page = m_target->m_pages.get_page(index())) {
+        advance();
+        return ktl::ok(page);
+    }
+
+    // A read of an offset nobody has populated reads zero. Zircon answers it
+    // with a marker (VmPageOrMarker::Zero) in RequireReadPage, so a read-only
+    // walk over a sparse VMO costs no memory at all and only a later write
+    // turns the marker into a page. We have neither markers nor a shared zero
+    // page, so the nearest true answer is to commit a real zeroed page and
+    // hand that back: identical in what the reader observes, more expensive in
+    // footprint. Deliberately not faked with a shared page -- one would be
+    // writable through this path and every reader would see every writer.
+    return require_owned_page(nr_pages, request);
 }
 
 /// What the cursor is currently sitting on.
 ///
-/// TODO(SmallHuaZi): VmPageMap does not distinguish content kinds yet, so
-/// there are no reference or zero entries to report -- every populated slot
-/// is a plain page. These answer accordingly rather than guessing, which
-/// keeps require_owned_page() on its one working path.
+/// VmPageMap stores pages and nothing else: it has no marker for a zero slot
+/// and no reference entry for a page owned by a parent VMO, because there is
+/// no parent chain to own one -- VmCowPages has no parent member. So a slot is
+/// either populated with a plain page or empty, and these answer accordingly
+/// rather than guessing. When CoW hierarchies and zero markers arrive, these
+/// three are where the slot's kind gets decoded.
+auto VmCowPages::Cursor::is_type_page() const -> bool {
+    return m_target->m_pages.get_page(index()) != nullptr;
+}
+
+auto VmCowPages::Cursor::is_type_zero() const -> bool {
+    return false;
+}
+
 auto VmCowPages::Cursor::is_type_reference() const -> bool {
     return false;
 }

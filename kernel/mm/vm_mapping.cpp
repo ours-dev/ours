@@ -175,7 +175,16 @@ FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize 
 
     constexpr static auto MAX_BATCH_PAGES = 32;
 
-    auto cursor = vmo->make_cursor(base, size);
+    // The cursor is positioned in the VMO's own byte space, not in the address
+    // space: |base| is an absolute virtual address, and the offset of that
+    // address inside the object is m_vmo_ofs plus its distance from the
+    // mapping's own base. Handing |base| straight through -- which is what
+    // this did -- worked only because the cursor threw its offset away; now
+    // that it keeps one, an absolute kernel address would key the page store
+    // at something like index 0xFFFFFF88_00000 and no two mappings of one VMO
+    // would ever agree on a slot. map_physical() already converts the same way
+    // (`base - m_base`) before calling lookup_range().
+    auto cursor = vmo->make_cursor(m_vmo_ofs + (base - m_base), size);
     if (!cursor) {
         return cursor.unwrap_err();
     }

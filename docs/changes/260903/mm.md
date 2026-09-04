@@ -966,3 +966,172 @@ PROBE has_range(whole root)=true
   `VmMapping::protect_locked()` 的也是绝对地址），这里却减掉了 `mapping->base()`，
   传进去一个偏移量。这正是「偏移与绝对地址混用」那条待修项的实际代价，留给它一起修，
   因为让参数不可能被误解才是修法，改一行减法只是补救。
+
+---
+
+## 7. `VmCowPages` 成为真正的页面仓库：游标带位置，`require_*_page` 先查再分配（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` — 整体重写，底层从 `ktl::xarray::XArray` 换成
+  ustl 的 B 树，`insert_page()` 改为返回 `Status`
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — `Cursor` 增加 `m_offset`/`m_end` 与
+  `index()`/`advance()`，`require_page()` 补上 `will_write` 参数；构造函数参数名
+  `num_pages` 改回 `size`
+- `kernel/mm/vm_cow_pages.cpp` — `Cursor` 构造函数初始化位置；`require_owned_page()` /
+  `require_read_page()` 先查 `m_pages`；补上 `is_type_page()` / `is_type_zero()` 的定义；
+  `alloc_pages()` 加 `Gaf::Zero`
+- `kernel/mm/vm_mapping.cpp` — `map_paged()` 传给 `make_cursor()` 的改成 VMO 内偏移
+
+**症状**
+
+潜伏，当前启动触发不到，但按需分页做不下去。同一个偏移问两次会拿到两页，而且两页都不属于
+这个 VMO。临时探针实测（`kernel.dev.dbg_1.obi`，探针未提交），对同一个 4 页匿名 VMO
+用两个游标各走一遍，打印每个偏移解析出的物理地址：
+
+```
+改前  probe[walk 1]: 24A000 24B000 24C000 24D000
+      probe[walk 2]: 24E000 24F000 250000 251000
+      probe: same offset twice -> same page = 0, four offsets distinct = 1
+
+改后  probe[walk 1]: 24C000 24D000 24E000 24F000
+      probe[walk 2]: 24C000 24D000 24E000 24F000
+      probe: same offset twice -> same page = 1, four offsets distinct = 1
+```
+
+改前第二遍走出来的是四页全新的页，第一遍那四页没有任何东西记着，就此泄漏。
+
+**原因**
+
+这条缺陷是三处独立的空缺叠在一起，缺任何一处都足以让"第二次拿到同一页"不成立：
+
+1. **`VmPageMap` 根本不能用**。它是 `ktl::xarray::XArray` 的一层薄壳，而 XArray 的
+   `load()` / `store()` / `erase()` / `make_entry()` **只有声明，从来没有定义**——
+   本该定义它们的 `kernel/lib/ktl/include/ktl/xarray.tcc` 没有被任何文件 include，
+   而且里面写的是 `Xarray`（小写 a）、`kMaxSlots`、`index_`、`owner_` 这些当前
+   `xarray.hpp` 里不存在的名字，`Cursor` 也没声明过 `expand`/`create_slots`/`load`
+   任何一个，就算 include 进来也编不过。实测把 `get_page()` 调起来，链接器给的是：
+
+   ```
+   ld.lld: error: undefined hidden symbol:
+     ktl::xarray::XArray<ktl::Allocator<char>, ...>::load(unsigned long)
+   >>> referenced by vm_page_map.hpp:24
+   ```
+
+   所以 `VmPageMap` 全树没有一处读写，不是"忘了用"，而是**用了就链接不过**。这也解释了
+   为什么问题一直没被发现：编译期没有任何信号，只有真的去调它才会暴露。
+
+2. **游标没有位置**。构造函数是 `Cursor(VmCowPages *target, VirtAddr offset, usize sizer_pages)
+   : m_target(target) {}`，两个参数收下就扔了，`m_offset` 从不初始化也从不前进。而它的两个
+   调用方——`map_paged()` 和 `commit_range_locked()`——都是 `for` 循环里每页调一次
+   `require_owned_page(1, ...)`，从不说自己要的是哪一页。也就是说**位置只能由游标来记**，
+   调用方的写法已经假定它会自己前进了。
+
+3. **`require_owned_page()` 从不查**。它直接 `alloc_pages()`，成功就返回，谁也不记。
+
+三者合起来，VmCowPages 不是仓库而是分配器的一层壳。这在"所有映射都一次性 Commit、此后
+再不缺页"的世界里看不出来，因为每个偏移只被问一次。按需分页把这个前提取消了：解析一次缺页
+就**是**第二次问同一个偏移。如果第二次拿到的是新页，那么第一次缺页写进去的数据就没了，
+同一个 VMO 的两个映射也会看到两块不同的内存。
+
+顺带暴露出来的第四处：`map_paged()` 把 `base` 直接交给 `make_cursor()`，而 `base` 是**绝对
+虚拟地址**（`m_base + offset` 对齐后的结果），不是 VMO 内偏移。旁边的 `map_physical()` 传的
+是 `base - m_base`，是对的。游标丢掉偏移的时候这个错没有后果；一旦游标开始用它，页面仓库
+就会被 `0xFFFFFF88...` 这种键值索引，同一个 VMO 的两个映射永远对不上同一个槽。
+
+**改法**
+
+`VmPageMap` 底下换成 `ustl::collections::BTreeMap<PgOff, Slot>`——VmaSet 和
+`ProtectionRanges` 已经在用的同一棵树，可靠且有基准数据。槽是一个字：页描述符指针，
+Tag 折进低位（`PageFrame::ALIGNMENT` 是 64，低 6 位恒为零；`Tag::Borrowed = BIT(0)` 这个
+写法本来就是冲着位打包去的）。
+
+没有选"把 XArray 补完"：那是 `kernel/lib/ktl` 里的共享容器，写一棵完整的基数树是另一条线的
+工作量，而 `.tcc` 里那份半成品与现在的 `xarray.hpp` 已经对不上，不是可以接着写的底子。
+也没有选 Zircon 那种 16 槽分块（见"故意没做"）。
+
+`require_owned_page()` 的顺序改成"先查槽 → 再看有没有页源 → 最后才分配"：
+
+```cpp
+// 改前
+VmPage *page = nullptr;
+auto status = m_target->alloc_pages(0, &page, nullptr);
+if (Status::Ok == status) {
+    return ustl::ok(page);
+}
+return ustl::err(create_read_request(nr_pages, request->get_read()));
+
+// 改后
+if (auto *page = m_target->m_pages.get_page(index())) {
+    advance();
+    return ktl::ok(page);
+}
+if (m_target->m_page_source) {
+    return ktl::err(create_read_request(nr_pages, request->get_read()));
+}
+VmPage *page = nullptr;
+if (auto const status = m_target->alloc_pages(0, &page, nullptr); Status::Ok != status) {
+    return ktl::err(status);
+}
+if (auto const status = m_target->m_pages.insert_page(index(), page, VmPageMap::Tag::Owned);
+    Status::Ok != status) {
+    free_frames(page, 0);
+    return ktl::err(status);
+}
+advance();
+return ktl::ok(page);
+```
+
+三处值得说明的取舍：
+
+- **分配失败不再变成"发个读请求"**。改前 `alloc_pages()` 一失败就掉进
+  `create_read_request()`，于是内存不足被报告成 `Unimplemented`。匿名 VMO 没有页源，
+  没有任何人可问，`OutOfMem` 就是 `OutOfMem`。有页源那条分支保留原样（仍是
+  `Unimplemented`），形状留着，将来填进去即可。
+- **先记账再交出去**。`insert_page()` 失败就把页还回去。一页分配出去却没记进仓库，比
+  没分配更糟：调用方把它映射上了，VMO 不知道它存在，下一次同偏移缺页会再分配一页盖上去。
+- **`insert_page()` 拒绝覆盖已占用的槽**（返回 `AlreadyExists`），而不是替换。槽里那页
+  正被这个 VMO 的每一个映射指着，直接丢掉既泄漏它又让映射指向孤儿页。
+
+`alloc_pages()` 加上 `Gaf::Zero`。VMO 里没人供过的字节按定义读出来是零，而伙伴分配器交回来的
+帧里是上一个所有者留下的内容。当前所有 VMO 都用 `GAF_KERNEL` 建（`GAF_USER` 才隐含
+`Gaf::Zero`），所以这个保证只能落在这里，不能指望调用方记得。
+
+`is_type_page()` 现在真的去查槽；`is_type_zero()` / `is_type_reference()` 仍返回 false，
+因为 `VmPageMap` 只存页——没有零页标记，也没有父 VMO 引用项（`VmCowPages` 连 parent 成员
+都还没有）。注释写明了这三个函数将来是解码槽类型的地方。
+
+**参照**
+
+- `Zircon VmCowPages::LookupCursor`（`vm_cow_pages.cc`）——同样带 `offset_` / `end_offset_`，
+  `RequireOwnedPage()` / `RequireReadPage()` 结束时前进游标；`RequirePage(bool write, ...)`
+  就是我们补上 `will_write` 的那个参数。
+- `Zircon VmPageList` / `VmPageListNode`（`vm_page_list.h`）——页面仓库的对应物，
+  以 16 槽为一块建 WAVL 树。
+- `Zircon VmPageOrMarker`——把类型打包进同一个字的低位，本次 `Tag` 的做法同源。
+
+**验证**
+
+- `prebuilt/ninja/ninja -C out/bringup.x86` 全绿。
+- `clang-format` / `clang-tidy -p out/bringup.x86`：改动文件本身无新增告警
+  （`vm_mapping.cpp` 里 `MappingCoalescer` 的命名告警与三处 `use nullptr` 是既有的）。
+- QEMU 实测两个镜像。`kernel.dev.dbg_1.obi`（DEBUG_ASSERT 打开）与 `kernel.dev.obi` 均无
+  断言、无异常，跑到线程调度正常运转（`I'm Thread 2` 循环、`laborer` 正常退出）。
+- 上面那张探针对比表就是本条改动的直接证据；探针在提交前已删除。
+
+**故意没做**
+
+- **没做 `PageSource` / `PageRequest` 协议**。理由见 `docs/repairs/260903/mm.md` 第 3 条：
+  那套复杂度是"供页者在另一个进程里"的造价，我们没有这条边界。匿名缺页永不产生
+  `ShouldWait`，`PageRequest::wait()` 保持 `Unimplemented` 也没人会走到。
+  `PageRequest` 仍由调用方在栈上分配、`MultiPageRequest *` 仍一路穿下来，
+  `AnonymousPageRequest` 空类保留——都是脚手架，不是死代码。
+- **没做 Zircon 那种 16 槽分块**。当前一页一个 B 树条目，1 GiB 的 VMO 就是 26 万个条目，
+  顺序遍历每页一次 O(log n) 查找。Zircon 的 `VmPageListNode` 把 16 页并成一个树节点正是
+  为了摊掉这个。做法清楚但属于另一次改动，已记进 `docs/repairs/260903/mm.md`。
+- **没补 `~VmCowPages()` 释放自己拥有的页**。改前页根本没被记下来，谈不上释放；改后仓库
+  知道自己有哪些页，才第一次有条件释放。这是一次独立的改动（还要连带 `decommit`），
+  已记进待修。
+- **没动 `VmObjectPaged::commit_range_internal()` 里那个 O(n²) 的外层循环**
+  （它按页数循环，每次都提交整个 `size`）。改前它让一个 4 页 VMO 分配 16 页，改后第二遍
+  起全部命中，只剩多余的查找。是另一条独立缺陷，已记进待修。
+- **没改 `ktl::xarray::XArray`**，也没有删它。它属于 `kernel/lib/ktl` 那条线。

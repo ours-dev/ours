@@ -11,19 +11,43 @@
 
 ---
 
-## 1. `VmCowPages` 还不是页面仓库（按需分页的前提）
+## 1. 页面仓库做完之后新暴露的三件（原第 1 条已修，见 `docs/changes/260903/mm.md` 第 7 节）
 
-- `VmPageMap m_pages` 声明了，全树没有一处读或写。
-- `VmCowPages::Cursor` 的构造函数把 `offset` 和 `size` 两个参数直接丢掉，`m_offset`
-  从不初始化，也从不前进——它是个没有位置的游标。
-- `is_type_page()` / `is_type_zero()` 只有声明没有定义（没人调用，所以还不是链接错误）。
-- `require_owned_page()` 从不查"这个偏移已经有页了吗"，每次调用都新分配一页，然后谁也不记下来。
+`VmCowPages` 现在真的记页了，随之而来三件独立的小账，按严重程度排：
 
-后果是同一个偏移要两次会得到两页，而且都不属于这个 VMO。现在不暴露，只因为所有映射都是
-一次性 Commit 之后再不缺页。按需分页要求"第二次访问同一页拿到同一页"，这条现在不成立。
+- **`~VmCowPages()` 不释放自己拥有的页。** 改前页从没被记下来，谈不上释放；现在仓库知道
+  自己有哪些页了，才第一次有条件在析构时还给伙伴分配器。要连带把 `VmObjectPaged::decommit()`
+  一起想清楚（对应 `Zircon VmCowPages::DecommitRangeLocked()`）。不修就是每个 VMO 死掉时
+  泄漏它的全部页。
+- **`VmObjectPaged::commit_range_internal()` 的外层循环是 O(n²)。** 它按
+  `for (i = 0; i < size; i += PAGE_SIZE)` 循环，而循环体每次都调
+  `commit_range_locked(offset, size, ...)` 提交**整个** size。改前这让一个 4 页 VMO 分配
+  16 页并泄漏 12 页；现在第二遍起全部命中仓库，只剩多余的查找，但循环本身仍然是错的。
+  循环体里那个 `nr_commited` 也从来没被读过。
+- **`VmPageMap` 一页一个 B 树条目。** 1 GiB 的 VMO 就是 26 万个条目，顺序遍历每页一次
+  O(log n) 查找。`Zircon VmPageListNode` 把 16 页并成一个树节点正是为了摊掉这个，
+  键改成 `index >> 4`、值改成 16 槽数组即可，接口不用动。
 
-修法：游标带上偏移并能前进；`require_*_page` 先查 `m_pages`，命中即返回，未命中才分配并
-`insert_page`；补上两个只有声明的判定函数。
+## 1b. `ktl::xarray::XArray` 是一个编不出来的空壳（属 ktl，不属 mm）
+
+`load()` / `store()` / `erase()` / `make_entry()` 四个方法**只有声明，从来没有定义**，
+调用任何一个都是链接错误：
+
+```
+ld.lld: error: undefined hidden symbol:
+  ktl::xarray::XArray<ktl::Allocator<char>, ...>::load(unsigned long)
+```
+
+本该定义它们的 `kernel/lib/ktl/include/ktl/xarray.tcc` 没有被任何文件 include，而且里面写的是
+`Xarray`（小写 a）、`kMaxSlots`、`kSlotsBits`、`index_`、`owner_`、`node_` 这些当前
+`xarray.hpp` 里不存在的名字，`Cursor` 也没声明过 `expand` / `create_slots` / `load` /
+`descend` / `at_root` 中的任何一个——就算 include 进来也编不过。此外 `Entry::is_null()` 对
+`BitFields` 做 `reinterpret_cast<usize>`，`cast_to<T>()` 把值当指针再解引用，`Node::set_entry()`
+标着 `const` 却写 `slots`，`alloc_node()` 的形参个数两处不一致。
+
+`VmPageMap` 已经改用 ustl 的 B 树，所以 mm 不再依赖它。剩下的选择是补完还是删掉，
+属于 `kernel/lib/ktl` 那条线。**在补完之前，不要有新的调用方**——编译期没有任何信号，
+只有链接时才会发现。
 
 ## 2. `VmMapping::fault()` 是桩，按需分页整个不工作
 
