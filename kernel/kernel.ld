@@ -175,8 +175,27 @@ SECTIONS {
         PROVIDE_HIDDEN(__cpu_local_start = .);
 
         /* gktl::Counter begin */
+        /*
+         * KEEP, and not decoration. Nothing references a counter's storage by
+         * name: GKTL_COUNTER_DEFINE emits COUNTER_STORAGE_##VAR into this
+         * section and the Counter object only ever holds &COUNTER_DESCRIPTOR,
+         * reaching the slot as COUNTERS_START[descriptor index]. With
+         * --gc-sections on and no referrer, every one of these input sections
+         * was collected -- __attribute__((used)) stops the *compiler* from
+         * dropping it, not the linker. The descriptors survive because they
+         * do have a referrer, and because their own placement below is
+         * already KEEP()ed.
+         *
+         * The consequence was not merely that counters read zero. The section
+         * came out empty, so __gktl_counter_start coincided with
+         * __cpu_local_start and COUNTERS_START[i] indexed into whatever the
+         * catch-all glob below had placed at the front of the per-CPU area:
+         * every read returned an unrelated per-CPU word, and every add()
+         * corrupted one. SpinLock::num_held_cpu() reporting 0x0400b000_00000000
+         * plus a working low-half count is what that looks like from outside.
+         */
         PROVIDE_HIDDEN(__gktl_counter_start = .);
-        *(.init.data.cpu_local.gktl.counter.storage)
+        KEEP(*(.init.data.cpu_local.gktl.counter.storage))
         PROVIDE_HIDDEN(__gktl_counter_end = .);
         /* gktl::Counter end */
 
