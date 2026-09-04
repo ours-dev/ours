@@ -784,3 +784,39 @@ Zircon `Thread::AssertHeld()`/`thread_lock.AssertHeld()` 在 `__TA_ASSERT` 下�
 
 **故意没做**
 没拆头文件（见上）。
+
+---
+
+## `-Wthread-safety` 升级为错误（2026-09-03）
+
+**文件**
+- `build/config/BUILD.gn` — 删掉 `-Wno-error=thread-safety`，注释改写成「为什么现在是错误」
+
+**症状**
+无。这是收尾。
+
+**原因**
+`61af5d0` 打开分析时留了 `-Wno-error`，理由是一棵从没被检查过的树必然有积压，一次性变成构建失败
+只会逼人把开关关回去。积压现在清零了（219 → 0，两个根因 + 十几处方向写反或漏标，记录在本文件
+前面各节）。没人被要求修的告警会重新变回文档——这正是打开分析之前的状态。只有变成错误，注解
+才会一直是真的。
+
+**改法**
+一行删除。注释里把来龙去脉、两个根因、以及「分析器跟不上时怎么写」（`TA_NO_THREAD_SAFETY_ANALYSIS`
+加理由，或 `assert_held()` 作 `TA_ASSERT`）写清，让下一个撞上错误的人知道该做什么而不是关开关。
+
+**参照**
+Zircon 的 `-Wthread-safety` 一直是 `-Werror` 的一部分（`build/config/BUILD.gn` 的默认警告集）。
+
+**验证**
+- 全量重编（354 步，两个工具链）通过，thread-safety 诊断 0 条。
+- QEMU：两个镜像都比之前走得远得多（调度器那边同一时段合入了多个修复），现在都停在
+  `Thread::spawn` 绑定参数过多撞到的 `operator new` panic 桩——`docs/repairs/260903/task.md` 第 1 条，
+  归 task 那边。
+
+**故意没做**
+- 没动 `-Wno-thread-safety-attributes`：它压的是「属性放错位置」这一类抱怨，和分析结果无关；
+  是否该打开另议。
+- `system/lib/lockdep/include/lockdep/guard.hpp` 的注解（第 1 条）仍然只在工作区——它在子模块
+  路径下，从这个 worktree 提交不进去。**它一丢，全树会立刻以几百个错误编不过**，这是故意的：
+  比静默退化成文档好。

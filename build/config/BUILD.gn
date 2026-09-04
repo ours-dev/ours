@@ -384,15 +384,21 @@ config("thread_safety_annotations") {
       "-Wno-thread-safety-attributes",
 
       # Turn the analysis on. The TA_* annotations were documentation until
-      # now: they were spelled everywhere Scheduler and WaitQueue declare a
-      # locking contract, but nothing checked a single one of them.
+      # 2026-08-30: they were spelled everywhere Scheduler and WaitQueue
+      # declare a locking contract, but nothing checked a single one of them.
+      #
+      # And it is an error, since 2026-09-03. The backlog the switch-on
+      # surfaced (219 warnings, mostly two root causes: Guard and the lock
+      # classes carried no annotations at all, and TA_REQUIRES(get_lock())
+      # never matched a Guard{m_lock}) was worked down to zero -- the record
+      # is docs/changes/260903/thread-safety.md. From here a wrong or missing
+      # annotation fails the build, which is the only state in which the
+      # annotations stay true: a warning nobody is required to fix is
+      # documentation again. Where the analysis genuinely cannot follow a
+      # lock (context-switch hand-off, a lock reached through a pointer the
+      # header cannot name) the code says so with TA_NO_THREAD_SAFETY_ANALYSIS
+      # or a TA_ASSERT assert_held(), and the reason is written next to it.
       "-Wthread-safety",
-
-      # Not an error yet -- see docs/repairs-20260830.md. Enabling the
-      # analysis on a tree that has never been checked surfaces a backlog,
-      # and turning that into a build failure all at once would only force
-      # the annotations back off.
-      "-Wno-error=thread-safety",
     ]
   }
 }
