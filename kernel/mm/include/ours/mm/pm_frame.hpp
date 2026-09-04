@@ -106,6 +106,22 @@ namespace page {
         ustl::sync::AtomicU16 num_mappings; // 65536 mappings
         ustl::sync::AtomicU16 num_users;    // 65536 users
         ustl::sync::AtomicU8 pinned_count;
+
+        /// Which of PageQueues' lists currently holds this frame, as a
+        /// PageQueues::QueueType. Zero is that enum's `None`, so a frame that
+        /// has just become() a VMM page reads as unqueued without anyone
+        /// having to say so.
+        ///
+        /// It has to live here rather than be derived: the descriptor carries
+        /// one list hook for every role (see the comment above), so re-queuing
+        /// a page means detaching it from the list it is on -- and an
+        /// intrusive node cannot name its own container. Zircon keeps the same
+        /// byte for the same reason, as `vm_page_t::object.page_queue`.
+        ///
+        /// Plain rather than atomic: every read and write of it happens under
+        /// the owning PageQueues' spin lock, and making it atomic would only
+        /// advertise a lock-free protocol that does not exist here.
+        u8 queue;
     };
 
     struct SlabBody {
@@ -331,6 +347,17 @@ class PageFrame {
 
     auto num_mappings() const -> usize {
         return as<page::VmmBody>().num_mappings.load();
+    }
+
+    /// The PageQueues list this frame is filed on, as the raw enumerator
+    /// value -- PageQueues::QueueType is private to that class, so the
+    /// descriptor carries the byte and leaves its meaning there.
+    auto page_queue() const -> u8 {
+        return as<page::VmmBody>().queue;
+    }
+
+    auto set_page_queue(u8 queue) -> void {
+        as<page::VmmBody>().queue = queue;
     }
 
     // ---- Slab role ------------------------------------------------------

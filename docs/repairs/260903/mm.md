@@ -88,11 +88,28 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 
 ## 8. 回收只是骨架
 
-`PageQueues::set_pinned` / `set_anonymous` / `set_reclaimable` 都是拿了锁然后什么也不做，
-`rotate_reclaimable_queues()` 只递增一个代数计数器。另外 `LruRunner::run()` 写的是
-`while (State::Shutdown == m_state.load(...)) {}`——条件像是反的，它在"已关闭"时空转。
+入队/出队已经做了（见 `docs/changes/260903/mm.md` 第 6 节），还剩两件：
+
+- `rotate_reclaimable_queues()` 只递增 `m_mrugen`，`m_lrugen` 从不前进，环填满之后没有任何
+  处理，代际方案等于只有一代。
+- `LruRunner::run()` 写的是 `while (State::Shutdown == m_state.load(...)) {}`——条件像是反的，
+  它在"已关闭"时空转；`m_thread` 标着 `[[maybe_unused]]`，没有任何东西启动它。
+  `start_runners()` 只有声明没有定义。
 
 没有回收意味着内存紧张时缺页只能直接失败，在 1、2 条做完之后这会是第一个暴露的短板。
+
+## 8b. `PageQueues` 上不了 host 单元测试
+
+`PageQueues` 的每个入口都取 `sync::SpinLock`，而这把锁的 `acquire()/release()` 是 out-of-line
+定义在 `kernel/kernel/sync/spin_lock.cpp` 里的，依赖 `mm::CpuLocal::current_cpu()` 和
+`GKTL_COUNTER`；`Guard<SpinLock, IrqSave>` 还要求 `arch::AutoInterruptDisabler` 是完整类型。
+开发机是 arm64：带 `-DARCH_X86` 时 x86 的 `cli/pushfq` 内联汇编汇编不过，不带时
+`arch/interrupt.hpp` 的兜底分支里 `ArchCpuState` 只有声明，`AutoInterruptDisabler` 的成员
+定义不出来。
+
+于是这个类目前只能靠临时的内核内探针验证，探针提交前就删掉，回归就无从谈起。真要修，
+方向是把队列的簿记与锁解耦（让 `*_locked` 那一层不引用锁类型），或者给 host 工具链补一组
+`arch` 的空实现，两者都不属于回收这条线。
 
 ## 9. 根 VMA 的 `end()` 回绕成 0
 

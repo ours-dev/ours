@@ -685,3 +685,134 @@ group 存在的意义是让基准保持可编译——烂掉的基准应该由�
 
 `gn gen` 通过，`ninja host/obj/benches/kernel/mm/vma-walk-bench` 构建并运行，
 输出与第 4 条同量级（n=8 点查找 0.98×、每步 2.25×，run-to-run 抖动之内）。全量构建无错。
+
+## 6. `PageQueues` 真正持有页：入队是"移动"而不是"插入"，并补上出队（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `page::VmmBody` 增加 `u8 queue`，
+  以及 `PageFrame::page_queue()` / `set_page_queue()`
+- `kernel/mm/include/ours/mm/page_queues.hpp` — `QueueType` 定宽到 `u8`；
+  `mrugen_to_queue_type()` / `lrugen_to_queue_type()` 换成
+  `reclaimable_queue(gen)` + `mru_queue()` / `lru_queue()`；新增公开的 `remove()`
+  与私有的 `dequeue_locked()`
+- `kernel/mm/page_queues.cpp` — `set_queue_backlink_locked()` 先出队再入队；
+  实现 `remove()` 与 `dequeue_locked()`
+
+**症状**
+
+潜伏，当前启动触发不到——没有任何调用方驱动这三个 setter。用临时探针驱动之后立刻暴露：
+把一个已经在 Anonymous 队列上的页改填到 Pinned 队列，第二次调用当场 `#UD`。
+
+```
+[info ] probe[filed 4 anon / 2 pinned / 2 reclaimable]: anon list/size=4/4 pinned=2/2 mru(gen 0)=2/2
+[info ] probe: backlink of page 3 = 0x1003 pgoff 3
+[error] #UD Invalid opcode: vector=6, error_code=0x0
+[error]   rip=0xffffff8840030485 (+0x30485)  cs=0x10  rsp=0xffffff884007e210
+```
+
+另有一处更晚才会发作：`ReclaimableStart + m_mrugen` 没有取模，`m_mrugen` 是自由递增的
+`u32`，而环只有 8 个槽，所以第 8 次轮转之后下标就走出了 `m_queues` 的末尾。
+
+**原因**
+
+三件事，一件比一件深。
+
+**其一，帧描述符只有一个链表钩子。** `PageFrame::m_hook` 是所有角色共用的一个
+`ListMemberHook`——pm_frame.hpp 里已经写明了理由：一个帧同一时刻要么在伙伴分配器的空闲
+链表上，要么在页队列上，要么在 slab 的 partial 链表上，三者互斥，所以一个钩子够了，而且
+指向联合体成员的成员指针在语言上不成立，钩子也放不进 `VmmBody`。
+
+一个钩子的直接后果是：**"把页放到队列 X 上"永远是一次移动，不可能是一次插入**。原来的
+`set_queue_backlink_locked()` 无条件 `push_back`：对一个钩子还挂在别的链表上的节点做插入，
+新链表的 `prev/next` 被写进这个节点，而旧链表的前后邻居仍然指着它——两条环形链表就此穿到
+一起，谁遍历谁走丢。上面那个 `#UD` 就是侵入式链表的自检断言编译成 `ud2` 后被撞上的。
+
+**其二，"页当前在哪条队列上"没有地方记。** 侵入式链表的节点无法反查自己的容器，所以既然
+入队要先出队，就必须在描述符里记下这一位。这也是 `m_sizes` 能维护的前提：钩子是
+`AutoUnlink` 模式，`unlink()` 不经过链表头，减不了任何计数器；而 `m_queues` 声明成
+`ConstantTimeSize<false>`（伙伴分配器要 O(1) 的 splice），Boost 系的侵入式容器本来就禁止
+auto-unlink 与缓存长度并存，正是因为 unlink 够不到头。计数只能由这里手工维护，而手工维护
+需要知道要减哪一个。
+
+Zircon 的 `vm_page_t::object.page_queue` 就是同一个字节，理由完全相同。
+
+**其三，只有入口没有出口。** 三个 setter 会把一个裸 `VmCowPages *` 写进描述符，而没有任何
+接口能把页摘下来。页一旦被还回伙伴分配器，描述符里既留着一个可能已经析构的所有者指针，
+链表里也还留着一个节点，指向一段马上会被别的角色 `become()` 掉的存储。所以 `remove()`
+不是"顺手加的功能"，它是入队的另一半；缺了它，入队本身就是错的。
+
+**改法**
+
+`VmmBody` 加一个字节 `queue`，取值就是 `QueueType` 的枚举值。`QueueType::None` 是 0，
+而 `become<VmmBody>()` 会把整个 payload 清零，所以"刚变成 VMM 页的帧未入队"这件事不需要
+任何人显式写一次。`VmmBody` 原本 17 字节（对齐后 24），加一字节仍在 `BODY_SIZE = 32` 之内，
+现有的 `static_assert` 覆盖了这一点。
+
+字段用普通 `u8` 而不是 `AtomicU8`：它的每一次读写都在 `PageQueues::m_lock` 之下，做成原子
+只会对外宣告一个并不存在的无锁协议。`VmmBody` 必须是平凡可复制、平凡可析构的，普通 `u8`
+和原子都满足，所以这里是纯粹的语义选择。
+
+`set_queue_backlink_locked()` 开头无条件调 `dequeue_locked()`。无条件而不是断言，是因为
+"重填一个已经在队列上的页"是正常路径而不是异常路径——老化和 `mark_accessed()` 做的就是这件事。
+
+`dequeue_locked()` 在 `queue == None` 时直接返回。这条早退不是省事，而是安全边界：帧可能正
+挂在伙伴分配器的空闲链表上（同一个钩子），此时把它 `unlink()` 走就是从别人的链表里偷节点。
+
+`remove()` 额外把 backlink 清空（`vmo = nullptr`、`pgoff = 0`），对齐 Zircon
+`PageQueues::Remove()` 的做法。`dequeue_locked()` 不清，因为 setter 紧接着就要覆盖它。
+
+`ReclaimableStart + gen` 改成 `ReclaimableStart + gen % NUM_RECLAIMABLE`，收进
+`reclaimable_queue(u32)` 一个函数里。顺带修掉 `mrugen_to_queue_type()` 读 `m_lrugen` 的
+复制粘贴错误——两个访问器读的是同一个计数器，MRU 与 LRU 因此永远指向同一条队列，代际方案
+从一开始就不可能成立。名字也一并换掉：它们返回队列而不是"把代数转成类型"。
+
+**被否掉的方案**：给 `m_queues` 换一套 `ConstantTimeSize<true>` 的链表类型，用链表自己的
+长度代替 `m_sizes`，这样就不需要在描述符里记队列。否掉的原因是它和 `AutoUnlink` 互斥，而
+`AutoUnlink` 是 `Slab::destroy()` 依赖的性质（它在不知道页挂在哪条链表上的情况下摘页），
+改不动。
+
+**参照**
+
+- `Zircon PageQueues::SetQueueBacklinkLocked()` 与 `PageQueues::MoveToQueueLocked()`
+  （`zircon/kernel/vm/page_queues.cc`）：同样是"先从旧队列摘下、再挂到新队列"，同样把队列
+  编号存在页描述符里（`vm_page_t::object.page_queue`）。
+- `Zircon PageQueues::Remove()`：清 backlink 的那两行就是照它写的。
+- Linux 侧对应的是 `mm/swap.c` 的 `lruvec_add_folio()` / `lruvec_del_folio()`，但 Linux 的
+  `folio->lru` 是专属钩子而不是与伙伴分配器共用的那一个，所以它没有"入队必须先出队"这条约束，
+  参照价值不如 Zircon。
+
+**验证**
+
+构建通过（`kernel.dev.obi` 与 `kernel.dev.dbg_1.obi`），两个镜像 QEMU 实测启动到与改动前
+相同的位置，无回归。`clang-format` 与 `clang-tidy -p out/bringup.x86` 对三个文件跑过，
+新增行无告警。
+
+没有调用方驱动这些队列，所以启动本身证明不了任何事。证据来自一个临时的内核内探针
+（`GKTL_INIT_HOOK` 挂在 `InitLevel::Heap`，8 个静态 `VmPage`，一个独立的 `PageQueues`，
+提交前已删除）：
+
+```
+[info] probe[filed 4 anon / 2 pinned / 2 reclaimable]: anon list/size=4/4 pinned=2/2 mru(gen 0)=2/2
+[info] probe: backlink of page 3 = 0x1003 pgoff 3
+[info] probe[moved page 0 anon -> pinned]: anon list/size=3/3 pinned=3/3 mru(gen 0)=2/2
+[info] probe[removed all]: anon list/size=0/0 pinned=0/0 mru(gen 0)=0/0
+[info] probe: backlink of page 3 after remove = 0x0 pgoff 0
+[info] probe: page 3 still linked = false
+```
+
+`list/size` 两个数是分别得来的：`list` 是把那条侵入式链表从头走一遍数出来的，`size` 是
+`m_sizes` 里的计数器。两者一致才说明链表本身没有被穿坏——只看计数器是看不出链表已经错乱的。
+把 `dequeue_locked()` 那一行注释掉（即 HEAD 的行为）重新构建，第二次 `set_pinned` 就是上面
+「症状」里那个 `#UD`，探针的第三行永远打不出来。
+
+**故意没做**
+
+- **没有做 host 单元测试。** `PageQueues` 直接坐在 `sync::SpinLock` 上，而这把锁的四个方法
+  都是 out-of-line 定义在 `spin_lock.cpp` 里、依赖 `mm::CpuLocal::current_cpu()` 与
+  `GKTL_COUNTER`，`Guard<SpinLock, IrqSave>` 又要求 `arch::AutoInterruptDisabler` 是完整类型。
+  本机是 arm64，`-DARCH_X86` 下 `arch/x86/interrupt.hpp` 的 `cli/pushfq` 内联汇编汇编不过，
+  不带 `-DARCH_X86` 时 `arch/interrupt.hpp` 的兜底分支只声明了不完整的 `ArchCpuState`，
+  `AutoInterruptDisabler` 的成员就没法定义。要让它上 host，得先把 `PageQueues` 与这把锁解耦，
+  那是另一件事。已记进 `docs/repairs/260903/mm.md`。
+- **没有让任何生产代码调用这三个 setter。** VMO 侧的页仓库（待修第 1 条）还没建起来，
+  现在接上去只会往队列里塞一批没人认领的页。
