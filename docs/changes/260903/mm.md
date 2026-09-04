@@ -2059,3 +2059,155 @@ QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推
 - 没有让 `destroy()` 在中途失败时回滚。它现在遇到子节点销毁失败就直接返回，
   留下一棵拆了一半的树。这与 `unmap()` 的取舍一致（重复销毁是幂等的），
   但和 `protect()` 的"先问后写"不同，值得在有真实调用方时再定。
+
+---
+
+## `protect` 的两趟改走深度优先枚举器，不再按嵌套深度递归（2026-09-04）
+
+> 无序号，理由同前。
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area.hpp` — 新增 `VmArea::MappingEnumerator`
+- `kernel/mm/vm_area.cpp` — 实现它；`can_protect_locked()` 与 `protect_locked()` 改成平循环
+
+**症状**
+
+潜伏。`can_protect_locked()` 与 `protect_locked()` 遇到子区域就对它再调一次自己，
+栈帧数等于 VMA 的嵌套深度，而嵌套深度没有上限——`create_subvma()` 会在子区域里再建子区域，
+要多深有多深。与 `find_mapping_locked()` 那条同源，只是这两处不在缺页路径上，
+所以排在它后面。
+
+**原因**
+
+这两处和 `find_mapping_locked()` 不一样：那一条的下降**只跟着一个子节点**，
+所以根本没有分叉要记，改成 `while` 循环就完了。范围操作要走窗口内的**全部**子节点，
+是真的有分叉——一个区域有多个子节点，每个子节点又可能有自己的子节点，
+走完一棵子树之后必须回到兄弟节点上。这才是需要"栈"的那种遍历。
+
+但栈不必是调用栈，也不必是数组：**`m_parent` 就是那个栈**。每个节点都知道回去的路，
+所以"走完一层就爬一格，然后接着往下找兄弟"这件事，一个游标就够了。
+爬回去之后怎么知道刚才走到哪儿了？不记，重新找——树是以 `base` 为键的，
+`seek(finished->base())` 必然精确落在刚走出来的那个子节点上
+（`lower_bound()` 命中它的键，而回退那一步不会触发，因为它前面的兄弟结束于该基址之下），
+然后 `++` 就是下一个兄弟。这样每一层的位置都是 O(log n) 重新算出来的，
+而不是 O(depth) 存下来的——用一点时间换掉全部空间，正是"没有上限的深度"要的那种取舍。
+
+另一半同样重要：**范围操作真正动手的只有叶子**。子区域自己不持有页表，
+`protect()` 下降到它只是为了够到它下面的映射。所以树的形状对调用方来说是纯粹的记账，
+把它在枚举器里摊平之后，两个函数各自塌成一个平循环——
+`can_protect_locked()` 甚至不再需要裁剪窗口，因为它只问权限、不问范围。
+
+**改法**
+
+新增 `VmArea::MappingEnumerator`：给定一个区域和一个闭区间窗口，
+按地址序交出窗口内的全部**叶子映射**，中间的子区域对调用方不可见。
+
+```cpp
+auto VmArea::MappingEnumerator::next() -> VmMapping * {
+    while (true) {
+        if (m_iter == m_area->m_subvmas.end() || (*m_iter)->base() > m_last) {
+            if (m_area == m_root) {
+                return nullptr;
+            }
+            auto *const finished = m_area;
+            m_area = finished->m_parent;                          // 爬升
+            m_iter = m_area->m_subvmas.seek(finished->base());     // 重新找，不记
+            ++m_iter;
+            continue;
+        }
+        auto *const child = *m_iter;
+        if (child->is_mapping()) {
+            ++m_iter;
+            return static_cast<VmMapping *>(child);
+        }
+        m_area = static_cast<VmArea *>(child);                     // 下降
+        m_iter = m_area->m_subvmas.seek(m_first);
+    }
+}
+```
+
+下降时**不**推进父层的迭代器，因为爬升那一步会靠 `seek(finished->base())` 重新定位并
+`++` 越过它；两边都推进就会漏掉一个兄弟。终止性：每次下降严格变深，每次爬升严格变浅
+且把父层的迭代器往前推一格，所以不会原地打转。
+
+下降后从 `m_first` 而不是从子区域自己的基址开始 seek，两个方向都对：窗口开在子区域内部时
+能接住跨界的那个子节点；窗口开在子区域之下时，所有子节点的基址都高于 `m_first`，
+`seek()` 落在 `begin()` 上而回退不会触发。
+
+`can_protect_locked()`：
+
+```cpp
+MappingEnumerator enumerator{*this, base, base + size - 1};
+while (auto *const mapping = enumerator.next()) {
+    if (!mapping->validate_mmuflags(mmuf)) {
+        return false;
+    }
+}
+return true;
+```
+
+`protect_locked()` 同样，只多一步把窗口和映射求交后交给 `VmMapping::protect_locked()`。
+
+**故意只交叶子**：也交子区域的模式是地址空间转储、拆除记账想要的
+（`docs/repairs/260903/mm.md` 第 5 条），等它有调用方时再加，就像 Zircon 用
+`VmAddressRegionEnumeratorType` 区分 `VmarsAndMappings` 与 `MappingsOnly` 那样。
+
+**参照**
+
+`Zircon VmAddressRegionEnumerator`（`zircon/kernel/vm/include/vm/vm_address_region_enumerator.h`）
+是同一件东西：迭代式，靠 `up = up->parent_` 爬回去（`next()` 里那段
+`do { ... up = up->parent_; } while (depth_-- != kStartDepth);`），另带一个 `depth_` 计数。
+`Zircon VmAddressRegion::Protect()`（`vm_address_region.cc:1135`）用它跑
+`MappingsOnly` 的两趟——先一趟检查每个映射能否接受新权限，再一趟应用——
+和我们这里的 `can_protect_locked()` / `protect_locked()` 结构完全一致。
+Zircon 的 VMAR 四个范围操作一个都不递归，三种手法：`FindMappingLocked()` 是单路循环、
+`Protect()` 是这个枚举器、`DestroyLocked()` 是下降—爬升循环。
+Linux 没有对应物，它的 VMA 不嵌套。
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 跑过，
+无新告警（`vm_area.hpp:170` 那条 `modernize-use-override` 是既有的析构声明）。
+
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推进到线程调度，
+`kernel.dev.obi` 到 `prof: no architectural PMU`。
+
+启动路径不 protect 也不嵌套，用临时探针在根 VMA 空闲处搭了一棵**深度参差**的树后实测撤掉
+（`kernel.dev.obi`）：
+
+```
+a -> b -> m0        （第 0 页，深度 3）
+a -> m1             （第 1 页，深度 2）
+a -> c -> d -> m2   （第 2 页，深度 4）
+a -> m3             （第 3 页，深度 2）
+```
+
+```
+PROBE   walk[0] m0 base=0xFFFFFF8804000000
+PROBE   walk[1] m1 base=0xFFFFFF8804001000
+PROBE   walk[2] m2 base=0xFFFFFF8804002000
+PROBE   walk[3] m3 base=0xFFFFFF8804003000
+PROBE walk total=4
+PROBE   walk[0] m1 base=0xFFFFFF8804001000   ← 窗口只盖中间两页
+PROBE   walk[1] m2 base=0xFFFFFF8804002000
+PROBE walk total=2
+PROBE protect(whole, R) -> Ok
+```
+
+四个叶子按地址序全部走到，深度在 2/3/4 之间来回，说明下降、爬升、找兄弟三步都对；
+第二组是窗口裁剪，只交出该交的两个。
+
+**未实测**：`can_protect_locked()` 返回 false 那条分支。构造不出来——
+所有区域和映射的 `VmaFlags` 现在都等于根 VMA 的 `PermMask`，没有一个叶子能拒绝任何权限。
+原因是 `create_subvma()`／`create_mapping()` 把自己的 `vmaf` 参数丢掉、一律用 `m_vmaf`，
+已记入 `docs/repairs/260903/mm.md`。
+
+**故意没做**
+
+- 没有给 `MappingEnumerator` 加 const 形式，`can_protect_locked()` 因此仍然不是 const。
+  与 `VmaSet::Enumerator` 保持一致，等第二个只读遍历出现时一起做。
+- 没有加 `depth` 计数。Zircon 需要它是因为 `VmEnumerator` 的回调要报深度，
+  我们这里没有调用方关心。
+- 没有动 `unmap_locked()`。它边走边销毁子节点，B 树的 erase 会让迭代器失效，
+  而这个枚举器的爬升还依赖"刚走出来的子节点仍能按 base 找回来"——两条都不成立，
+  要另一套办法，单独一条。

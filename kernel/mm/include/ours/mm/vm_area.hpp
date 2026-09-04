@@ -104,6 +104,33 @@ class VmArea final: public VmAreaOrMapping {
     /// accounts for memory the boot path installed behind its back.
     auto reserve(VirtAddr base, usize size, MmuFlags flags, char const *name) -> Status;
 
+    /// Walks every mapping overlapping [first, last] under this area, in
+    /// address order, flattening nested sub-areas away.
+    ///
+    /// This is the shape that lets a range operation stop recursing. The
+    /// operations themselves only ever act on leaves -- a sub-area owns no page
+    /// tables, so protect() and unmap() reach it only to reach its children --
+    /// which means the tree structure is bookkeeping the caller does not want
+    /// to see. Flattening it here leaves protect_locked() and
+    /// can_protect_locked() as plain loops.
+    ///
+    /// What replaces the call stack is |m_parent|: the walk descends into a
+    /// sub-area and, when that sub-area is exhausted, climbs one link and
+    /// re-finds where it was by the child's base, which is the tree's key.
+    /// Nothing is remembered per level, so nesting costs no memory at all --
+    /// and nothing bounds that nesting, since create_subvma() will build a
+    /// sub-area inside a sub-area as deep as it is asked to.
+    ///
+    /// Like VmaSet::Enumerator, this must not be used by a walk that erases:
+    /// a B-tree erase can rebalance and unseat the iterator, and the climb
+    /// relies on the child it came out of still being findable by its base.
+    ///
+    /// Mappings only, deliberately. An enumeration that also yields sub-areas
+    /// is what an address-space dump or a teardown accounting would want; it
+    /// gets a mode of its own when it gets a caller, as it has in Zircon
+    /// (VmAddressRegionEnumeratorType::VmarsAndMappings versus MappingsOnly).
+    class MappingEnumerator;
+
     auto contains(VirtAddr addr) const -> bool;
 
     auto find_mapping_locked(VirtAddr va) -> VmMapping *;
@@ -157,6 +184,31 @@ class VmArea final: public VmAreaOrMapping {
 
     usize m_num_mappings;
     VmaSet m_subvmas;
+};
+
+class VmArea::MappingEnumerator {
+  public:
+    /// [first, last] is inclusive at both ends, for the reason spelt out in
+    /// VmAreaOrMapping::last(): an exclusive end cannot name a window that runs
+    /// to the top of the address space, which is exactly what the whole of the
+    /// kernel root VMA is.
+    MappingEnumerator(VmArea &root, VirtAddr first, VirtAddr last);
+    ~MappingEnumerator() = default;
+
+    /// The next mapping overlapping the window, or nullptr once the walk is
+    /// past it. Every mapping handed out genuinely overlaps; the caller clips
+    /// the range itself, since only it knows what to do with the overlap.
+    auto next() -> VmMapping *;
+
+  private:
+    /// Where the walk stops climbing. Not necessarily the root of the address
+    /// space -- an operation on a sub-area enumerates only that sub-area.
+    VmArea *m_root;
+    /// The area whose children |m_iter| is positioned in.
+    VmArea *m_area;
+    VmaSet::IterMut m_iter;
+    VirtAddr m_first;
+    VirtAddr m_last;
 };
 } // namespace ours::mm
 

@@ -435,26 +435,72 @@ auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     return protect_locked(aligned_base, aligned_size, mmuf);
 }
 
-/// Not const, though it changes nothing: VmaSet::Enumerator only walks a
-/// mutable set. Giving it a const form is worth doing once a second read-only
-/// range walk needs one.
-auto VmArea::can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> bool {
-    DEBUG_ASSERT(size, "an empty range has nothing to protect");
-    VirtAddr const last = base + size - 1;
-    VmaSet::Enumerator enumerator{m_subvmas, base, last};
+VmArea::MappingEnumerator::MappingEnumerator(VmArea &root, VirtAddr first, VirtAddr last)
+    : m_root(&root)
+    , m_area(&root)
+    , m_iter(root.m_subvmas.seek(first))
+    , m_first(first)
+    , m_last(last) {}
 
-    while (auto *const child = enumerator.next()) {
-        if (child->is_mapping()) {
-            if (!child->validate_mmuflags(mmuf)) {
-                return false;
+auto VmArea::MappingEnumerator::next() -> VmMapping * {
+    while (true) {
+        if (m_iter == m_area->m_subvmas.end() || (*m_iter)->base() > m_last) {
+            // This level is spent -- either out of children, or into ones that
+            // start past the window, which the base ordering says nothing after
+            // can undo.
+            if (m_area == m_root) {
+                return nullptr;
             }
+
+            auto *const finished = m_area;
+            m_area = finished->m_parent;
+
+            // Re-found, not remembered. Remembering a position per level is
+            // precisely the stack this class exists not to have, and the tree
+            // is keyed by base, so seek() lands exactly on the child we came
+            // out of: lower_bound() matches its key, and the step-back cannot
+            // fire because the sibling before it ends below that base.
+            m_iter = m_area->m_subvmas.seek(finished->base());
+            DEBUG_ASSERT(m_iter != m_area->m_subvmas.end() && *m_iter == finished,
+                         "the area the walk descended into is no longer in its parent");
+            ++m_iter;
             continue;
         }
 
-        auto const overlap_base = std::max(child->base(), base);
-        auto const overlap_last = std::min(child->last(), last);
-        auto *const area = static_cast<VmArea *>(child);
-        if (!area->can_protect_locked(overlap_base, overlap_last - overlap_base + 1, mmuf)) {
+        auto *const child = *m_iter;
+        if (child->is_mapping()) {
+            // Past it before handing it over, so a caller may drop its own
+            // reference to what it receives -- the same contract
+            // VmaSet::Enumerator offers.
+            ++m_iter;
+            return static_cast<VmMapping *>(child);
+        }
+
+        // Descend, leaving |m_iter| where it is: the climb above steps past
+        // this child by re-finding it, so advancing here would skip a sibling.
+        m_area = static_cast<VmArea *>(child);
+
+        // Seeking from |m_first| rather than from the sub-area's own base is
+        // right in both directions: a window opening inside the sub-area picks
+        // up the straddler, and one opening below it lands on the first child,
+        // because every child's base is then above |m_first| and seek()'s
+        // step-back cannot fire at begin().
+        m_iter = m_area->m_subvmas.seek(m_first);
+    }
+}
+
+/// Not const, though it changes nothing: MappingEnumerator only walks a mutable
+/// tree. Giving it a const form is worth doing once a second read-only range
+/// walk needs one.
+auto VmArea::can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> bool {
+    DEBUG_ASSERT(size, "an empty range has nothing to protect");
+
+    // Only mappings can refuse: a sub-area holds no page tables, so the old
+    // recursion descended into one purely to reach the leaves under it. The
+    // enumerator does that descent, so what is left is one flat pass.
+    MappingEnumerator enumerator{*this, base, base + size - 1};
+    while (auto *const mapping = enumerator.next()) {
+        if (!mapping->validate_mmuflags(mmuf)) {
             return false;
         }
     }
@@ -466,23 +512,18 @@ auto VmArea::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status 
     DEBUG_ASSERT(size, "an empty range has nothing to protect");
     VirtAddr const last = base + size - 1;
 
-    // A single enumerator carries the whole walk, unlike unmap_locked(): protect
-    // never destroys a child, so nothing is erased from the set underneath it.
-    VmaSet::Enumerator enumerator{m_subvmas, base, last};
+    // A single enumerator carries the whole walk, however deeply the areas
+    // nest: protect never destroys a child, so nothing is erased from under the
+    // iterator, and the descent needs no stack because m_parent is the way
+    // back. See VmArea::MappingEnumerator.
+    MappingEnumerator enumerator{*this, base, last};
 
-    while (auto *const child = enumerator.next()) {
-        VirtAddr const overlap_base = std::max(child->base(), base);
-        VirtAddr const overlap_last = std::min(child->last(), last);
-        auto const overlap_size = overlap_last - overlap_base + 1;
+    while (auto *const mapping = enumerator.next()) {
+        VirtAddr const overlap_base = std::max(mapping->base(), base);
+        VirtAddr const overlap_last = std::min(mapping->last(), last);
 
-        auto status = Status::Ok;
-        if (child->is_mapping()) {
-            status =
-                static_cast<VmMapping *>(child)->protect_locked(overlap_base, overlap_size, mmuf);
-        } else {
-            status = static_cast<VmArea *>(child)->protect_locked(overlap_base, overlap_size, mmuf);
-        }
-
+        auto const status =
+            mapping->protect_locked(overlap_base, overlap_last - overlap_base + 1, mmuf);
         if (Status::Ok != status) {
             return status;
         }
