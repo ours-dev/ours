@@ -187,8 +187,8 @@ INIT_CODE auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
             auto const phys_aligned = ustl::mm::align_down(phys, PAGE_SIZE);
 
             auto rvma = mm::VmAspace::kernel_aspace()->root_vma();
-            auto result = rvma->map_at(
-                phys_aligned, 0, PAGE_SIZE,
+            auto result = rvma->map_phys(
+                phys_aligned, mm::VmPlacement::anywhere(), PAGE_SIZE,
                 // `Discache` is required to prevent
                 mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
                 mm::VmMapOption::Commit | mm::VmMapOption::Pinned, "IO-APIC");

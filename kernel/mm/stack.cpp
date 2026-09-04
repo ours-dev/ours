@@ -30,12 +30,9 @@ auto Stack::init(usize size) -> Status {
     DEBUG_ASSERT(rvma);
 
     ustl::Arc<VmMapping> mapping;
-    // rvma->base() is not where this lands: no Fixed option, so the VMM places
-    // it and this only names the area to carve from. That the two are spelt the
-    // same way is the remaining wart in this interface, tracked separately.
-    status = rvma->create_mapping(rvma->base(), size, 0, MmuFlags::Readable | MmuFlags::Writable,
-                                  vmo, "k-stack-mapping", VmMapOption::Pinned | VmMapOption::Commit,
-                                  &mapping);
+    status = rvma->create_mapping(VmPlacement::anywhere(), size, 0,
+                                  MmuFlags::Readable | MmuFlags::Writable, vmo, "k-stack-mapping",
+                                  VmMapOption::Pinned | VmMapOption::Commit, &mapping);
     if (Status::Ok != status) {
         log::trace("Failed to allocate a VmMapping, size={}, reason={}", size, to_string(status));
         return status;

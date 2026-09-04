@@ -67,11 +67,11 @@ auto VmArea::alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr 
     return m_subvmas.find_spot(size, align, lower_limit, upper_limit);
 }
 
-auto VmArea::create_subvma(VirtAddr requested_base, usize requested_size, VmaFlags vmaf,
-                           char const *name, VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
+auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vmaf, char const *name,
+                           VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
     m_canary.verify<Self>();
 
-    auto const result = create_subaom_preamble(requested_base, requested_size, m_vmaf, option);
+    auto const result = create_subaom_preamble(where, requested_size, m_vmaf);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -98,12 +98,12 @@ auto VmArea::create_subvma(VirtAddr requested_base, usize requested_size, VmaFla
     return Status::Ok;
 }
 
-auto VmArea::create_mapping(VirtAddr requested_base, usize requested_size, usize vmo_ofs,
-                            MmuFlags mmuf, ustl::Arc<VmObject> vmo, char const *name,
-                            VmMapOption option, ustl::Arc<VmMapping> *out) -> Status {
+auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_ofs, MmuFlags mmuf,
+                            ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
+                            ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
 
-    auto const result = create_subaom_preamble(requested_base, requested_size, m_vmaf, option);
+    auto const result = create_subaom_preamble(where, requested_size, m_vmaf);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -136,7 +136,7 @@ auto VmArea::create_mapping(VirtAddr requested_base, usize requested_size, usize
     return Status::Ok;
 }
 
-auto VmArea::create_subaom_preamble(VirtAddr base, usize size, VmaFlags vmaf, VmMapOption option)
+auto VmArea::create_subaom_preamble(VmPlacement where, usize size, VmaFlags vmaf)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
         // Operate an illegal VMA.
@@ -150,68 +150,63 @@ auto VmArea::create_subaom_preamble(VirtAddr base, usize size, VmaFlags vmaf, Vm
         return ktl::err(Status::InvArgs);
     }
 
-    auto [base_aligned, size_aligned] = resolve_page_range(base, size);
+    // Round the size on its own first: the two branches below disagree about
+    // where the range starts but not about how long it is, and the search
+    // needs the rounded length before there is an address to round with it.
+    auto const size_aligned = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size_aligned) {
         return ktl::err(Status::InvArgs);
     }
 
-    auto const is_fixed_noreplace = (!!(option & VmMapOption::FixedNoReplace));
-    auto const is_fixed = (!!(option & VmMapOption::Fixed)) || is_fixed_noreplace;
-    if (is_fixed) {
-        // Only the fixed path reads |base|, so only it can be asked whether the
-        // address is ours to give -- a question that could not even be spelt
-        // while the parameter was an offset, since every offset looks in-range
-        // until it is added to m_base. The other branch throws |base| away and
-        // takes whatever alloc_spot() finds, which is the remaining ambiguity
-        // in this interface: a caller with no address in mind still has to
-        // invent one. See docs/repairs/260903/mm.md.
-        if (!check_range(base_aligned, size_aligned)) {
-            return ktl::err(Status::InvArgs);
-        }
-
-        if (m_subvmas.has_range(base_aligned, size_aligned)) {
-            if (is_fixed_noreplace) {
-                return ktl::err(Status::AlreadyExists);
-            }
-
-            // Overwrite the primitive regions.
-            DEBUG_ASSERT(false, "Now we don't support to overwrite a group of existent pages");
-        }
-    } else {
-        // Without a Fixed option the caller is asking the VMM to place this,
-        // so |base| is only a starting point and the spot the search returns
-        // replaces it.
-        //
-        // That assignment is what was missing: the result of alloc_spot() was
-        // computed and thrown away, and the address actually used stayed at
-        // the one derived from the caller's request. Callers that pass no
-        // address at all arrive here naming the start of this VMA, so every
-        // one of them was placed there -- and on the kernel root VMA that is
-        // the physmap base, which is how the local APIC's MMIO ended up mapped
-        // on top of the physmap.
+    if (!where.is_fixed()) {
+        // The VMM places it. Nothing of the caller's is consulted, and there
+        // is nothing to consult: anywhere() carries no address. This is what
+        // the old shape could not say -- a caller with no opinion had to write
+        // one down anyway, as a null pointer or a literal 0, and 0 is also a
+        // legitimate offset naming the start of this area. On the kernel root
+        // VMA that start is the physmap base, which is how the local APIC's
+        // MMIO came to be mapped on top of the physmap.
         //
         // FIXME(SmallHuaZi) (base_ + size_) may causes an overflow error.
-        auto const result = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
-        if (!result) {
-            return ktl::err(result.unwrap_err());
+        auto const spot = alloc_spot(size_aligned, PAGE_SIZE, m_base, m_base + m_size - 1);
+        if (!spot) {
+            return ktl::err(spot.unwrap_err());
         }
-        base_aligned = *result;
+        return ktl::ok(ustl::make_pair(*spot, size_aligned));
     }
 
-    return ktl::ok(ustl::make_pair(base_aligned, size_aligned));
+    auto const [base_aligned, aligned] = resolve_page_range(where.base(), size);
+    if (!aligned) {
+        return ktl::err(Status::InvArgs);
+    }
+
+    if (!check_range(base_aligned, aligned)) {
+        return ktl::err(Status::InvArgs);
+    }
+
+    // Occupied means refused, full stop. The flag pair this replaces had two
+    // spellings of "here": FixedNoReplace returned AlreadyExists, while plain
+    // Fixed tripped a DEBUG_ASSERT(false) and then, in a build with assertions
+    // compiled out, *fell through* and created a second area overlapping the
+    // first -- VmaSet::insert() only notices a collision when the bases match
+    // exactly, so a partial overlap went in silently. Refusing is the only
+    // answer the VMM can currently back up; replacement gets its own named
+    // constructor on VmPlacement when someone implements it.
+    if (m_subvmas.has_range(base_aligned, aligned)) {
+        return ktl::err(Status::AlreadyExists);
+    }
+
+    return ktl::ok(ustl::make_pair(base_aligned, aligned));
 }
 
-auto VmArea::map_at(PhysAddr phys_base, VirtAddr *virt_base, usize size, MmuFlags mmuf,
-                    VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
+auto VmArea::map_phys(PhysAddr phys_base, VmPlacement where, usize size, MmuFlags mmuf,
+                      VmMapOption options, char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(ustl::mm::is_aligned(phys_base, PAGE_SIZE));
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {
         return ustl::err(Status::InvArgs);
-    }
-    if (virt_base) {
-        *virt_base = ustl::mm::align_down(*virt_base, PAGE_SIZE);
     }
 
     ustl::Arc<VmObjectPhysical> vmo;
@@ -220,20 +215,16 @@ auto VmArea::map_at(PhysAddr phys_base, VirtAddr *virt_base, usize size, MmuFlag
         return ustl::err(status);
     }
 
-    return map_with_vmo(virt_base, size, mmuf, ustl::move(vmo), options, name);
+    return map_with_vmo(where, size, mmuf, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map(VirtAddr *base, usize size, MmuFlags mmuf, VmMapOption options, char const *name)
-    -> ktl::Result<ustl::Arc<VmMapping>> {
+auto VmArea::map_anon(VmPlacement where, usize size, MmuFlags mmuf, VmMapOption options,
+                      char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
-    DEBUG_ASSERT(!(options & VmMapOption::Fixed), "Now we don't support the overwritting option");
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {
         return ustl::err(Status::InvArgs);
-    }
-    if (base) {
-        *base = ustl::mm::align_down(*base, PAGE_SIZE);
     }
 
     ustl::Arc<VmObjectPaged> vmo;
@@ -242,21 +233,16 @@ auto VmArea::map(VirtAddr *base, usize size, MmuFlags mmuf, VmMapOption options,
         return ustl::err(status);
     }
 
-    return map_with_vmo(base, size, mmuf, ustl::move(vmo), options, name);
+    return map_with_vmo(where, size, mmuf, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<VmObject> vmo,
+auto VmArea::map_with_vmo(VmPlacement where, usize size, MmuFlags mmuf, ustl::Arc<VmObject> vmo,
                           VmMapOption option, char const *name)
     -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
-    // A null |base|, or one below this area, is today's spelling of "you
-    // choose"; it reaches create_subaom_preamble() as this area's own start
-    // and is then discarded, because none of these callers passes Fixed.
-    VirtAddr const requested_base = (base && *base >= m_base) ? *base : m_base;
-
     ustl::Arc<VmMapping> mapping;
-    auto status = create_mapping(requested_base, size, 0, mmuf, vmo, name, option, &mapping);
+    auto status = create_mapping(where, size, 0, mmuf, vmo, name, option, &mapping);
     if (Status::Ok != status) {
         return ustl::err(status);
     }
@@ -289,10 +275,9 @@ auto VmArea::map_with_vmo(VirtAddr *base, usize size, MmuFlags mmuf, ustl::Arc<V
         }
     }
 
-    if (base) {
-        *base = mapping->base();
-    }
-
+    // No out-parameter to fill: the mapping carries its own address, and
+    // mapping->base() is the one answer rather than a copy of it that a caller
+    // could go on using after the mapping is gone.
     return ustl::ok(ustl::move(mapping));
 }
 

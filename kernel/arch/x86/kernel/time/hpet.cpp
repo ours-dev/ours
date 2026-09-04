@@ -336,16 +336,16 @@ INIT_CODE static auto hpet_init_internal() -> Status {
 INIT_CODE static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
     using namespace mm;
 
-    VirtAddr hpet_mmio = 0;
-    auto result = VmAspace::kernel_aspace()->root_vma()->map_at(
-        mmio, &hpet_mmio, PAGE_SIZE, MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Discache,
+    auto result = VmAspace::kernel_aspace()->root_vma()->map_phys(
+        mmio, VmPlacement::anywhere(), PAGE_SIZE,
+        MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Discache,
         VmMapOption::Commit | VmMapOption::Pinned, "HPET");
 
     if (!result) {
         return result.unwrap_err();
     }
 
-    HPET_MMIO = reinterpret_cast<decltype(HPET_MMIO)>(hpet_mmio);
+    HPET_MMIO = reinterpret_cast<decltype(HPET_MMIO)>((*result)->base());
     return Status::Ok;
 }
 

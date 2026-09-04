@@ -724,8 +724,8 @@ INIT_CODE auto init_local_apic() -> void {
     // 4-KByte region.
     //
     // We map it to the same 4K region for all the local APICs.
-    auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_at(
-        arch::APIC_PHYS_BASE, 0, PAGE_SIZE,
+    auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_phys(
+        arch::APIC_PHYS_BASE, mm::VmPlacement::anywhere(), PAGE_SIZE,
         // `Discache` is required to prevent
         mm::MmuFlags::Discache | mm::MmuFlags::Readable | mm::MmuFlags::Writable,
         mm::VmMapOption::Commit | mm::VmMapOption::Pinned, "Local-APIC");

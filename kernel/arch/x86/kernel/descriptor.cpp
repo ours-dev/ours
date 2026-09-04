@@ -68,17 +68,16 @@ auto x86_set_tss_sp(VirtAddr sp) -> void {
 }
 
 INIT_CODE auto x86_setup_gdt() -> void {
-    VirtAddr virt_addr = 0;
-    auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_at(
+    auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_phys(
         mm::virt_to_phys(VirtAddr(PGDT)),
-        &virt_addr, // Request the virtual address
+        mm::VmPlacement::anywhere(), // Wherever the VMM has room
         PAGE_SIZE,
         mm::MmuFlags::Readable,                            // Read only
         mm::VmMapOption::Commit | mm::VmMapOption::Pinned, // Disable swapping out.
         "k:GDT");
     ASSERT(result, "Failed to create readonly GDT");
 
-    PGDT = reinterpret_cast<decltype(PGDT)>(virt_addr);
+    PGDT = reinterpret_cast<decltype(PGDT)>((*result)->base());
     x86_load_gdt();
 }
 

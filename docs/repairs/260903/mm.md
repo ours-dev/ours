@@ -99,17 +99,6 @@ ld.lld: error: undefined hidden symbol:
 `AnonymousPageRequest` 现在是空类，看着像可以删，但它在 Zircon 里正是"匿名页分配需要等回收
 或压缩"的等待凭证。我们的 `PageQueues` 还是骨架，所以它现在确实无事可做——那是脚手架，不是死代码。
 
-## 4. `map_at()` 的地址参数身兼输入提示与输出结果
-
-`map_at()`／`map()` 的 `VirtAddr *virt_base` 同时是输入提示和输出结果，空指针表示"你挑地址"。
-这是把 LAPIC 的 MMIO 放到 physmap 起点那个 bug 的温床（见存档第 36 节）。
-
-坐标系已经统一成绝对地址（见 `docs/changes/260903/mm.md` 第 7 条），所以二义现在裸露在
-调用点上：`stack.cpp` 写着 `rvma->create_mapping(rvma->base(), ...)`，而那个地址不是落点——
-没有 `Fixed` 选项，`create_subaom_preamble()` 会把它丢掉换成 `alloc_spot()` 找到的空位。
-剩下的事是让"此处"和"随便挑"在签名上就不可能混写，并且一路贯到
-`create_mapping`／`create_subvma`／`create_subaom_preamble`。
-
 ## 5. VMA 没有遍历能力
 
 只有 `find_mapping_locked()` 能找叶子，没有找子区域的，也没有对外枚举。地址空间转储、

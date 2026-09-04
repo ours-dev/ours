@@ -26,10 +26,68 @@ enum class VmMapOption {
     None,
     Commit = BIT(0),
     Pinned = BIT(1),
-    Fixed = BIT(2),
-    FixedNoReplace = BIT(3),
 };
 USTL_ENABLE_ENUM_BITMASK(VmMapOption);
+
+/// Where a new area or mapping is to go.
+///
+/// Two states and no way to write a third, which is the whole point. The
+/// address used to be a `VirtAddr *` that meant three things at once -- an
+/// input hint, the output result, and, when null, "you choose" -- with a
+/// separate VmMapOption::Fixed deciding whether the input half counted at all.
+/// A caller who meant "anywhere" wrote a literal 0, and 0 is also a perfectly
+/// good address, so the request that put the local APIC's MMIO on top of the
+/// physmap was indistinguishable from a deliberate one (see section 36 of
+/// docs/repairs-20260830.md). Naming the intent instead of encoding it in a
+/// pointer's nullness makes that request unwritable.
+///
+/// The output half is gone rather than moved: the mapping this produces
+/// already knows where it is, and `(*result)->base()` is the answer. Two of
+/// the five call sites read it that way already and ignored the out-parameter
+/// they had passed.
+///
+/// Zircon's counterpart is the VMAR_FLAG_SPECIFIC bit on
+/// VmAddressRegion::CreateVmMapping(), which is the shape this replaces: a
+/// flag beside an offset, where the offset is meaningless without the flag.
+/// Linux's is MAP_FIXED beside mmap()'s addr, and has the same property --
+/// glibc's mmap(NULL, ...) is the "anywhere" spelling, and NULL is only
+/// available as a sentinel because the user address space never maps page 0.
+class VmPlacement {
+    using Self = VmPlacement;
+
+  public:
+    /// Any free spot inside the parent will do; the VMM picks.
+    FORCE_INLINE static constexpr auto anywhere() -> Self {
+        return Self{};
+    }
+
+    /// This address or nothing. A range already spoken for is refused with
+    /// Status::AlreadyExists rather than replaced: replacement is not
+    /// implemented, and when it is, it gets its own named constructor rather
+    /// than a second meaning for this one.
+    FORCE_INLINE static constexpr auto at(VirtAddr base) -> Self {
+        return Self{base, true};
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE constexpr auto is_fixed() const -> bool {
+        return m_fixed;
+    }
+
+    /// Only meaningful when is_fixed(); anywhere() has no address to give.
+    [[nodiscard]]
+    FORCE_INLINE constexpr auto base() const -> VirtAddr {
+        DEBUG_ASSERT(m_fixed, "VmPlacement::anywhere() has no base to read");
+        return m_base;
+    }
+
+  private:
+    constexpr VmPlacement() = default;
+    constexpr VmPlacement(VirtAddr base, bool fixed) : m_base(base), m_fixed(fixed) {}
+
+    VirtAddr m_base{};
+    bool m_fixed{};
+};
 
 enum class VmaFlags : u32 {
     // For semantics, no any actual effects.

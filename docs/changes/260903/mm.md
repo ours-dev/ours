@@ -1679,3 +1679,164 @@ VMM，而当前还没有用户地址空间。这不是本次改动引入的，�
 - **没实现 `PageSource` / `PageRequest` 协议**（第 3 条）。匿名缺页永不返回 `ShouldWait`，
   所以 `page_fault_internal()` 里那圈 do-while 至今一次都没转过第二遍——形状保留，将来是
   往里填而不是重写。
+
+---
+
+## `map_at()` 的地址参数拆成 `VmPlacement`，`VmMapOption::Fixed` 随之消失（2026-09-03）
+
+> 这一节不带序号：`docs/changes/260903/mm.md` 有多个会话并发追加，序号 6/7/8 都已经被
+> 撞了不止一次。本文件是只增不改的，别人的节次不能动，所以这里改用模板本来的无序号标题
+> （文件中间那几节也是这么写的）。
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — 新增 `VmPlacement`；
+  `VmMapOption` 去掉 `Fixed` 与 `FixedNoReplace`
+- `kernel/mm/include/ours/mm/vm_area.hpp` — `map_at`/`map` 改名并改签名成
+  `map_phys`/`map_anon`；`create_mapping`/`create_subvma`/`create_subaom_preamble`/
+  `map_with_vmo` 首参改成 `VmPlacement`
+- `kernel/mm/vm_area.cpp` — 上述实现；`create_subaom_preamble()` 重写成两条互斥分支
+- `kernel/mm/init_vmm.cpp`、`kernel/mm/stack.cpp`、`kernel/arch/x86/apic/local_apic.cpp`、
+  `kernel/arch/x86/apic/io_apic.cpp`、`kernel/arch/x86/kernel/descriptor.cpp`、
+  `kernel/arch/x86/kernel/idt.cpp`、`kernel/arch/x86/kernel/time/hpet.cpp` — 七个调用方
+
+**症状**
+
+`map_at()` 的第二个参数是 `VirtAddr *virt_base`，一个参数身兼三职：
+
+1. 输入提示——调用方想要的地址；
+2. 输出结果——实际落点写回这里；
+3. 空指针表示"你挑地址"。
+
+而"提示到底算不算数"由**另一个参数** `VmMapOption::Fixed` 决定。于是"想要某个地址"和
+"随便挑"这两件事，在签名上没有区别，只在两个参数的组合里。
+
+代价已经付过一次：`init_local_apic()` 写的是 `map_at(APIC_PHYS_BASE, 0, PAGE_SIZE, ...)`，
+第二个参数那个 `0` 意思是"随便挑"，但 `0` 同时也是一个合法的地址值。加上当时
+`create_subaom_preamble()` 把 `alloc_spot()` 的结果算完就扔（存档第 36 节），LAPIC 的 MMIO
+就落到了这个 VMA 的起点，也就是 physmap 的起点。那个 bug 的直接原因是丢了一次赋值，
+**但让它写得出来的是这个签名**。
+
+还有一处更隐蔽的，Fixed 分支：
+
+```cpp
+if (m_subvmas.has_range(base_aligned, size_aligned)) {
+    if (is_fixed_noreplace) {
+        return ktl::err(Status::AlreadyExists);
+    }
+    // Overwrite the primitive regions.
+    DEBUG_ASSERT(false, "Now we don't support to overwrite a group of existent pages");
+}
+```
+
+`DEBUG_ASSERT` 在 `KERNEL_DEBUG_LEVEL=0` 下展开成空（`system/public/ours/assert.hpp:51`），
+所以 release 构建里这个分支**什么都不做然后往下走**，用请求的地址建区域。
+`VmaSet::insert()` 只在基址完全相同时报 `AlreadyExists`，部分重叠它看不见——
+于是 `Fixed` 打到一段部分被占的地址上，会静默建出一个重叠的 VMA。
+
+**原因**
+
+一个参数只该有一个意思，这是表层。往下一层是：**"随便挑"这件事根本没有地址可以填**，
+而旧签名逼着调用方填一个。填什么都不对——`nullptr` 和 `0` 都是"没有意见"的编码，
+而 `0` 又是个合法地址，两种读法在类型上完全同形。凡是"用某个取值当哨兵"的设计，
+只要那个取值本身也在值域里，就迟早会被当成真值用一次。Linux 的 `mmap(NULL, ...)` 能用
+同样的手法，只是因为用户地址空间永远不映射第 0 页——我们这里没有这条豁免，内核根 VMA 的
+起点是 physmap 的起点，是个天天有人用的地址。
+
+输出那一半则是多余的。映射建出来之后，它自己知道自己在哪，`(*result)->base()` 就是答案，
+而且是唯一的一份。五个调用方里已经有两个（`local_apic.cpp`、`io_apic.cpp`）就是这么读的，
+它们传进去的那个出参从头到尾没被看过。剩下三个（`descriptor.cpp`、`idt.cpp`、`hpet.cpp`）
+先声明一个 `VirtAddr virt_addr = 0`、把地址取回来、再用——多出来的那个局部变量是一份
+可以和映射脱节的拷贝。
+
+名字也一起改了。`map_at` 与 `map` 读起来像是"指定地址"与"不指定地址"的区别，
+实际区别是**背后是什么**：前者包一个 `VmObjectPhysical`（已经存在的物理内存），
+后者包一个 `VmObjectPaged`（匿名页）。两个正交的维度被写成了一个，而且写的是错的那个。
+
+**改法**
+
+新增 `VmPlacement`，两个具名构造函数，没有第三种状态可写：
+
+```cpp
+VmPlacement::anywhere()      // VMM 挑，本身不携带任何地址
+VmPlacement::at(VirtAddr)    // 就这个地址，否则失败
+```
+
+`base()` 上带 `DEBUG_ASSERT(m_fixed)`：`anywhere()` 没有地址可读，读它是个错误，
+而不是"读出个 0 然后当地址用"。
+
+`VmMapOption::Fixed` 与 `FixedNoReplace` 从枚举里删掉。留着就是留下第二种说法，
+而两种说法迟早会打架——`VmPlacement::at()` 已经把"就这个地址"说清楚了。
+`at()` 撞上已占用的范围一律返回 `AlreadyExists`：覆盖式映射没有实现，
+拒绝是 VMM 现在唯一兑现得了的答案；等有人实现覆盖，它该拿一个自己的具名构造函数
+（`VmPlacement::replacing(base)`），而不是给 `at()` 加第二种含义。
+
+`create_subaom_preamble()` 因此塌成两条互斥分支，非 Fixed 那条提前 return，
+不再有"先按请求算一个 base，再看要不要覆盖掉"的中间态——那个中间态正是丢掉
+`alloc_spot()` 结果的地方。尺寸对齐提到分支之前单独做，因为两条分支对起点有分歧、
+对长度没有。
+
+`map_at`/`map` 改名成 `map_phys`/`map_anon`，出参删掉：
+
+```cpp
+// 之前
+VirtAddr virt_addr = 0;
+auto result = rvma->map_at(mm::virt_to_phys(VirtAddr(PIDT)), &virt_addr, PAGE_SIZE,
+                           MmuFlags::Readable, VmMapOption::Commit | VmMapOption::Pinned, "k:IDT");
+PIDT = reinterpret_cast<decltype(PIDT)>(virt_addr);
+
+// 之后
+auto result = rvma->map_phys(mm::virt_to_phys(VirtAddr(PIDT)), VmPlacement::anywhere(),
+                             PAGE_SIZE, MmuFlags::Readable,
+                             VmMapOption::Commit | VmMapOption::Pinned, "k:IDT");
+PIDT = reinterpret_cast<decltype(PIDT)>((*result)->base());
+```
+
+七个调用方全部改完，其中六个是 `anywhere()`，只有 `init_vmm.cpp` 的九个预置 VMA 是
+`at(phys_vma.base)`——那正是唯一真正要求固定地址的地方，现在它在字面上就与别人不同。
+
+**参照**
+
+`Zircon VmAddressRegion::CreateVmMapping()` 的 `ZX_VM_SPECIFIC` 标志位就是被替换掉的那个
+形状：一个偏移参数加一个决定它算不算数的标志位，二者分离。Linux 的 `mmap()` 是
+`MAP_FIXED` 加 `addr`，同构。两者都受制于系统调用 ABI——标志位是位掩码，参数是整数，
+表达不了"这个参数不存在"。我们这一层是内核内部的 C++ 接口，没有这个约束，
+所以可以直接把"不存在"编码进类型。这是本条与两个参照物**有意不同**的地方，
+不是疏漏。`Zircon VmAddressRegion::CreateSubVmarInternal()` 里
+`if (!(vmar_flags & VMAR_FLAG_SPECIFIC)) { ... AllocSpotLocked ... }` 的分支结构则是照搬的。
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 对十个文件跑过，
+新增行无新告警（剩余的 `readability-identifier-naming` 全在既有的 `GDT`/`PIDT`/`IOAPICS`
+等旧式命名上，不是本次改的行）。
+
+QEMU 实测无回归，而且这次启动路径本身覆盖了两种落法：`kernel.dev.dbg_1.obi` 九条
+`Reserve area` 齐全且地址与改动前逐条相同（`at()` 路径），LAPIC / IO-APIC 24 条中断线 /
+GDT / IDT / HPET 全部映射成功并推进到线程调度（`anywhere()` 路径）；
+`kernel.dev.obi` 到 `prof: no architectural PMU`。
+
+新增的拒绝语义启动不走，用临时探针实测后撤掉（`kernel.dev.obi`，即 `DEBUG_ASSERT` 编译掉
+的那个构建，正是旧代码会静默重叠的配置）：
+
+```
+PROBE at(free) -> Ok base=0xFFFFFF8804000000
+PROBE at(occupied, same base) -> AlreadyExists
+PROBE at(occupied, partial overlap) -> AlreadyExists
+PROBE at(outside root) -> InvArgs
+PROBE map_phys(anywhere) -> Ok base=0xFFFFFF8804002000
+PROBE root children now = 11
+```
+
+第三行是关键：部分重叠正是 `VmaSet::insert()` 看不见、旧 `Fixed` 分支会放过去的那一种。
+最后一行的 `anywhere()` 落在 `0xFFFFFF8804002000`，即刚建的探针区域之后的第一个空位，
+说明它确实走了 `alloc_spot()` 而不是拿了什么默认地址。
+
+未实测：`anywhere()` 在地址空间碰满时返回 `NotFound` 的分支。
+
+**故意没做**
+
+- 没有实现覆盖式映射。`at()` 现在一律拒绝，`VmPlacement::replacing()` 留给真的需要它的人。
+- 没有给 `VmPlacement` 加对齐或范围约束（Zircon 的 `align_pow2`、上下界）。
+  现在只有 `alloc_spot(size, PAGE_SIZE, m_base, m_base + m_size - 1)` 一种走法，
+  参数化一个没有第二个调用方的维度只会先猜错。
+- 没有动 `VmMapping::map()` 缺锁那条既有 FIXME，也没有动 `VmObjectPhysical` 一侧。
