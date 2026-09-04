@@ -130,8 +130,30 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         }
     };
 
-    FORCE_INLINE auto end() const -> VirtAddr {
-        return m_base + m_size;
+    /// The last address inside the area, rather than the first one past it.
+    ///
+    /// There is no exclusive end to be had here. The kernel root VMA is
+    /// [0xFFFFFF8000000000, 0x8000000000) and that sum is exactly 2^64, so
+    /// `m_base + m_size` wraps to 0: every "starts below the end" test against
+    /// the root answered no, and a walk over the whole root came back with no
+    /// children at all. An inclusive last address cannot wrap while the area is
+    /// non-empty, and every area is -- create_subaom_preamble() rejects a
+    /// zero-length request before there is an area to ask.
+    ///
+    /// Containment is deliberately not written in these terms: contains() and
+    /// check_range() stay in offset form, which is wrap-free for the same
+    /// reason and reads better for "is this address mine". This is the other
+    /// half of the job -- comparing one area's extent against another's, where
+    /// an offset would first have to be rebased onto a common origin and would
+    /// stop reading like an address.
+    ///
+    /// Zircon draws the line in the same place: VmAddressRegion::is_in_range()
+    /// is the offset form, while VmAddressRegion::UnmapInternalLocked()
+    /// computes `end_addr_byte = base + size - 1` and walks its children
+    /// against that, asserting the add cannot overflow.
+    FORCE_INLINE auto last() const -> VirtAddr {
+        DEBUG_ASSERT(m_size, "an empty area has no last address");
+        return m_base + m_size - 1;
     }
 
     /// Augmentation that lets `VmaSet::find_spot` locate a free gap by
@@ -151,7 +173,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
             /// seam with a neighbour must not be computed.
             bool m_empty{true};
             VirtAddr m_min_start{};
-            VirtAddr m_max_end{};
+            VirtAddr m_max_last{};
             VirtAddr m_max_gap{};
 
             friend auto operator==(Aggregate const &, Aggregate const &) -> bool = default;
@@ -165,7 +187,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
             return Aggregate{
                 .m_empty = false,
                 .m_min_start = area->base(),
-                .m_max_end = area->end(),
+                .m_max_last = area->last(),
                 .m_max_gap = 0,
             };
         }
@@ -182,11 +204,15 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
             if (right.m_max_gap > max_gap) {
                 max_gap = right.m_max_gap;
             }
-            // The seam the fold just closed: everything on the left ends by
-            // `left.m_max_end`, everything on the right starts at
-            // `right.m_min_start`.
-            if (right.m_min_start > left.m_max_end) {
-                auto const seam = right.m_min_start - left.m_max_end;
+            // The seam the fold just closed: everything on the left ends at
+            // `left.m_max_last`, everything on the right starts at
+            // `right.m_min_start`. Spelt as a subtraction rather than as
+            // `left.m_max_last + 1 < right.m_min_start`, because that increment
+            // is precisely the wrap the inclusive form exists to avoid. Two
+            // adjacent extents give a seam of zero, which no request can want,
+            // so they need no case of their own.
+            if (right.m_min_start > left.m_max_last) {
+                auto const seam = right.m_min_start - left.m_max_last - 1;
                 if (seam > max_gap) {
                     max_gap = seam;
                 }
@@ -194,7 +220,8 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
             return Aggregate{
                 .m_empty = false,
                 .m_min_start = left.m_min_start,
-                .m_max_end = left.m_max_end > right.m_max_end ? left.m_max_end : right.m_max_end,
+                .m_max_last =
+                    left.m_max_last > right.m_max_last ? left.m_max_last : right.m_max_last,
                 .m_max_gap = max_gap,
             };
         }
@@ -410,7 +437,7 @@ class VmaSet {
     ///
     /// Two candidates and only one of them is the lower bound: the first area
     /// whose base is at or after |addr|, and the one before it, which starts
-    /// lower and may still reach past |addr|. Anything before *that* ends at or
+    /// lower and may still reach as far as |addr|. Anything before *that* ends
     /// below |addr|, because the areas are disjoint and ordered.
     ///
     /// Every range walk begins here -- Enumerator, has_range() and the erasing
@@ -471,8 +498,12 @@ class VmaSet {
 /// child silently rather than failing.
 class VmaSet::Enumerator {
   public:
-    Enumerator(VmaSet &, VirtAddr min, VirtAddr max);
-    Enumerator(VmArea &, VirtAddr min, VirtAddr max);
+    /// The window is [first, last], both ends inclusive, because an exclusive
+    /// one cannot name a window that runs to the top of the address space --
+    /// see VmAreaOrMapping::last(). Dumping or tearing down a whole VmArea is
+    /// exactly that window on the kernel root VMA.
+    Enumerator(VmaSet &, VirtAddr first, VirtAddr last);
+    Enumerator(VmArea &, VirtAddr first, VirtAddr last);
     ~Enumerator() = default;
 
     /// The next area overlapping the window, or nullptr once the walk is past
@@ -489,7 +520,7 @@ class VmaSet::Enumerator {
   private:
     VmaSet *m_set;
     IterMut m_iter;
-    VirtAddr m_max;
+    VirtAddr m_last;
 };
 
 } // namespace ours::mm

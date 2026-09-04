@@ -816,3 +816,153 @@ Zircon 的 `vm_page_t::object.page_queue` 就是同一个字节，理由完全�
   那是另一件事。已记进 `docs/repairs/260903/mm.md`。
 - **没有让任何生产代码调用这三个 setter。** VMO 侧的页仓库（待修第 1 条）还没建起来，
   现在接上去只会往队列里塞一批没人认领的页。
+
+---
+
+## 6. 区间比较改用闭区间末地址，`end()` 换成 `last()`（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — `end()` 换成 `last()`；`GapAugment`
+  的 `m_max_end` 换成 `m_max_last`，接缝计算随之改写；`Enumerator` 的窗口改成闭区间
+- `kernel/mm/vm_area_or_mapping.cpp` — `seek()`、`has_range()`、`Enumerator::next()`、
+  `find_spot()` 的空隙记账全部改成闭区间形式
+- `kernel/mm/vm_area.cpp` — `unmap_locked`、`protect_locked`、`can_protect_locked`、
+  `find_mapping_locked` 四处窗口算术改成闭区间
+
+**症状**
+
+`VmAreaOrMapping::end()` 是 `m_base + m_size`。内核根 VMA 是
+`[0xFFFFFF8000000000, 0x8000000000)`，两者相加**正好**是 2^64，无符号回绕成 0，
+所以 `root_vma->end()` 恒为 0。
+
+后果不是算错一位，是整个窗口消失。`Enumerator::next()` 的停止条件是
+`area->base() >= m_max`，而任何"整个根区域"的窗口传进来的 `m_max` 就是这个 0，
+于是第一个子节点就满足停止条件——**枚举返回零个子节点，不报错**。
+本次实测（`kernel.dev.obi`，临时探针，已撤掉）在同一棵树上把新旧两种写法并排跑：
+
+```
+PROBE base=0xFFFFFF8000000000 size=0x8000000000 last=0xFFFFFFFFFFFFFFFF
+PROBE full-window: enumerator=9 tree=9
+PROBE old exclusive-end form: end=0x0 walked=0
+```
+
+`walked=0` 而树里有 9 个，就是这条缺陷的全部形状。
+
+当前没有真实调用方拿整个根区域当窗口，所以它还是潜伏的；但地址空间转储、拆除记账、
+范围 commit/decommit 都天然要这么写，第一个这么写的人会拿到一个"这个地址空间是空的"
+的答案，而且一路无声。
+
+**原因**
+
+问题不在 `end()` 这一个函数，在"用开区间末地址描述一个能顶到地址空间顶端的区间"这件事本身。
+地址空间的顶端没有"再往后一个地址"可言：`base + size` 要么溢出，要么需要一个比 `VirtAddr`
+更宽的类型来存。而 `end()` 只是这种算术里最显眼的一处——`unmap_locked()`、`protect_locked()`
+里各自写着的 `VirtAddr const end = base + size;` 是同一个表达式，只是没写成成员函数；
+`VmArea::protect(0, m_size)` 打到根 VMA 上，回绕的是那一句，不是 `end()`。所以把 `end()`
+改成饱和到 `VirtAddr(-1)` 治不了本：调用点自己算的窗口末地址照样回绕，而且饱和还会悄悄
+丢掉最后一个字节——地址空间最顶上那一页从此不可寻址，没有任何地方会说一声。
+
+闭区间的末地址 `base + size - 1` 则对任何非空区间都不溢出，因为它至多等于 2^64 - 1，
+恰好是 `VirtAddr` 能表示的最大值。而"非空"是这一层本来就有的不变量：
+`create_subaom_preamble()` 在区域存在之前就把零长度请求挡掉了，所以 `last()` 可以直接
+`DEBUG_ASSERT(m_size)`，把这个前提写死在代码里而不是留在注释里。
+
+**改法**
+
+`end()` 删掉，换成 `last()`（区间内最后一个地址）。所有跨对象的区间比较改写：
+
+| 旧（开区间） | 新（闭区间） |
+| --- | --- |
+| `child->base() >= end` | `child->base() > last` |
+| `min(child->end(), end)` | `min(child->last(), last)` |
+| `overlap_end - overlap_base` | `overlap_last - overlap_base + 1` |
+| `mapping->end() <= end` | `mapping->last() <= last` |
+| `(*previous)->end() > addr` | `(*previous)->last() >= addr` |
+| `Enumerator{set, va, va + 1}` | `Enumerator{set, va, va}` |
+
+**包含性判断没有跟着改**：`contains()`（`addr - m_base < m_size`）和 `check_range()`
+本来就是偏移量形式，同样不回绕，而且"这个地址是不是我的"用偏移写更直白。这两半的分工
+是有意的：偏移形式回答"属于谁"，闭区间末地址回答"两段区间怎么交叠"——后者要拿两个不同
+基址的对象比大小，改成偏移就得先归一到同一个原点，读起来不再像地址。
+
+`GapAugment` 的聚合值 `m_max_end` 一并改成 `m_max_last`。接缝长度原来是
+`right.m_min_start - left.m_max_end`，现在写成
+`right.m_min_start - left.m_max_last - 1`，条件仍是 `right.m_min_start > left.m_max_last`。
+**没有**写成更直观的 `left.m_max_last + 1 < right.m_min_start`——那个 `+1` 正是要躲的回绕。
+相邻两段算出接缝 0，而请求长度恒大于 0，所以不需要为相邻单开一个分支。
+
+`find_spot()` 的 `m_prev_end` 语义保持"已看过的部分之后第一个空闲地址"（空隙的头必须是
+开区间形式，它本来就是个可用地址而不是已占用地址），但推进改走新的 `advance_past(last)`：
+
+```cpp
+auto advance_past(VirtAddr last) -> void {
+    auto const first_free = last < m_high_limit ? last + 1 : m_high_limit;
+    if (first_free > m_prev_end) {
+        m_prev_end = first_free;
+    }
+}
+```
+
+这里顺手补掉了一个同源的潜伏缺陷：原来是 `m_prev_end = area->end()`，如果某个区域
+一直占到地址空间顶端，`end()` 回绕成 0，之后每一次空隙判断都是**从地址空间底部量起**的，
+`fits()` 会愉快地返回一个早就被占着的地址。现在顶到 `m_high_limit` 上，`fits()` 自己
+会以"起点不低于上限就放不下任何非空请求"把后续全部否掉。
+
+**参照**
+
+`Zircon VmAddressRegion::UnmapInternalLocked()`（`zircon/kernel/vm/vm_address_region.cc:873`）
+——它的 Zircon 内核地址空间是同一组数字（`KERNEL_ASPACE_BASE 0xffffff8000000000`、
+`KERNEL_ASPACE_SIZE 0x0000008000000000`），处理方式就是本条采用的这一种：
+
+```cpp
+vaddr_t end_addr_byte = 0;
+DEBUG_ASSERT(size > 0);
+bool overflowed = add_overflow(base, size - 1, &end_addr_byte);
+ASSERT(!overflowed);
+for (auto itr = subregions_.IncludeOrHigher(base);
+     itr.IsValid() && (*itr).second->base() <= end_addr_byte; ++itr) {
+```
+
+连"非空所以加法不会溢出"这条断言都对得上。分工也一样：
+`Zircon VmAddressRegion::is_in_range()`（`vm_address_region.h:142`）是偏移形式
+`base >= base_ && offset < size_ && size_ - offset >= size`，和我们的 `check_range()`
+逐字同构，负责包含性；闭区间末地址只用在子区域遍历上。Linux 那边没有对应物——
+`vm_area_struct` 是 `vm_start`/`vm_end` 开区间，但 Linux 的 VMA 只在用户地址空间里，
+`TASK_SIZE` 远低于 2^64，顶不到会回绕的位置。
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 对三个文件跑过，
+无新告警（`vm_area_or_mapping.hpp:253` 那条 `modernize-use-override` 是既有的析构函数，
+不在本次改动里）。
+
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全，一路推进到线程调度
+（`Thread |laborer| is preparing exiting` 后持续打印 `I'm Thread 2`）；`kernel.dev.obi`
+跑到 `prof: no architectural PMU`。两者都与改动前的基线逐行一致。
+
+回绕本身启动路径走不到，用临时探针在 `dump_locked()` 里实测后撤掉，见上面「症状」一节的
+三行输出。`straddler` 和 `has_range` 两条也在同一次实测里：
+
+```
+PROBE straddler: got=k:init want=k:init
+PROBE has_range(whole root)=true
+```
+
+`straddler` 是把窗口开在最后一个子节点的最后一个字节上（`[last, last]`，闭区间下这是个
+合法的单字节窗口；开区间下要写成 `[last, last + 1)`，而 `last + 1` 正是可能回绕的那个加法）。
+
+`unmap_locked()`、`protect_locked()`、`find_spot()` 里被顶到地址空间顶端的那条分支
+**未实测**——现在没有任何区域占到顶端，构造一个需要另建一个地址空间。
+
+**故意没做**
+
+- 没有选"让 `end()` 饱和到 `VirtAddr(-1)`"。理由在「原因」里：它治不了调用点自己算的
+  窗口末地址，还会无声吃掉最顶上那一页。
+- 没有把区间判断全改成偏移量形式。偏移适合包含性，不适合两个不同基址的对象互相比较，
+  Zircon 的分工也是这样。
+- 没有动 `VmArea::unmap_locked()` 里 `mapping->unmap_locked(overlap_base - mapping->base(), ...)`
+  这处**已确认的缺陷**：`VmMapping::unmap_locked()` 收的是绝对地址（`VmMapping::unmap()`
+  传的是 `m_base + offset`，`VmArea::protect_locked()` 传给
+  `VmMapping::protect_locked()` 的也是绝对地址），这里却减掉了 `mapping->base()`，
+  传进去一个偏移量。这正是「偏移与绝对地址混用」那条待修项的实际代价，留给它一起修，
+  因为让参数不可能被误解才是修法，改一行减法只是补救。

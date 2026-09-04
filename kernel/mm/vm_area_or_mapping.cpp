@@ -117,7 +117,7 @@ auto VmaSet::seek(VirtAddr addr) -> IterMut {
     if (iter != m_tree.begin()) {
         auto previous = iter;
         --previous;
-        if ((*previous)->end() > addr) {
+        if ((*previous)->last() >= addr) {
             return previous;
         }
     }
@@ -132,7 +132,7 @@ auto VmaSet::seek(VirtAddr addr) const -> Iter {
     if (iter != m_tree.begin()) {
         auto previous = iter;
         --previous;
-        if ((*previous)->end() > addr) {
+        if ((*previous)->last() >= addr) {
             return previous;
         }
     }
@@ -140,11 +140,11 @@ auto VmaSet::seek(VirtAddr addr) const -> Iter {
     return iter;
 }
 
-VmaSet::Enumerator::Enumerator(VmaSet &set, VirtAddr min, VirtAddr max)
-    : m_set(&set), m_iter(set.seek(min)), m_max(max) {}
+VmaSet::Enumerator::Enumerator(VmaSet &set, VirtAddr first, VirtAddr last)
+    : m_set(&set), m_iter(set.seek(first)), m_last(last) {}
 
-VmaSet::Enumerator::Enumerator(VmArea &area, VirtAddr min, VirtAddr max)
-    : Enumerator(area.m_subvmas, min, max) {}
+VmaSet::Enumerator::Enumerator(VmArea &area, VirtAddr first, VirtAddr last)
+    : Enumerator(area.m_subvmas, first, last) {}
 
 auto VmaSet::Enumerator::next() -> VmAreaOrMapping * {
     if (m_iter == m_set->end()) {
@@ -152,7 +152,7 @@ auto VmaSet::Enumerator::next() -> VmAreaOrMapping * {
     }
 
     auto *const area = *m_iter;
-    if (area->base() >= m_max) {
+    if (area->base() > m_last) {
         // Ordered by base, so nothing further can overlap either. Park on end()
         // so a caller that keeps asking keeps getting nullptr.
         m_iter = m_set->end();
@@ -166,14 +166,15 @@ auto VmaSet::Enumerator::next() -> VmAreaOrMapping * {
 }
 
 auto VmaSet::has_range(VirtAddr base, usize size) const -> bool {
+    DEBUG_ASSERT(size, "an empty range can overlap nothing");
+
     // seek() already answers "the first area that can reach into base", the
-    // straddler included, so all that is left is whether it starts before the
-    // window ends.
+    // straddler included, so all that is left is whether it starts within the
+    // window. Against the window's last address rather than one past it: the
+    // caller may hand us the whole of a VmArea, and `base + size` is 2^64 for
+    // the kernel root VMA.
     auto const iter = seek(base);
-    if (iter != m_tree.end() && (*iter)->base() < base + size) {
-        return true;
-    }
-    return false;
+    return iter != m_tree.end() && (*iter)->base() <= base + size - 1;
 }
 
 auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr high_limit) const
@@ -191,10 +192,10 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
     //
     // The walk is pruned rather than exhaustive: a subtree whose largest
     // internal gap cannot hold the request is skipped whole, and only the
-    // seam between it and what came before is examined. `prev_end` carries
-    // the end of the last area seen across the whole traversal, so the gaps
-    // before the first area and after the last one fall out of the same
-    // bookkeeping instead of needing separate cases.
+    // seam between it and what came before is examined. `m_prev_end` carries
+    // the first free address after everything seen so far, so the gaps before
+    // the first area and after the last one fall out of the same bookkeeping
+    // instead of needing separate cases.
     struct GapSeeker final {
         /// Candidate placement at the head of the current gap, checked
         /// against the alignment, the window, and the gap itself.
@@ -228,9 +229,7 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
             if (fits(m_prev_end, aggregate.m_min_start)) {
                 return Tree::VisitStep::Stop;
             }
-            if (aggregate.m_max_end > m_prev_end) {
-                m_prev_end = aggregate.m_max_end;
-            }
+            advance_past(aggregate.m_max_last);
             return Tree::VisitStep::Skip;
         }
 
@@ -238,10 +237,24 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
             if (fits(m_prev_end, area->base())) {
                 return false;
             }
-            if (area->end() > m_prev_end) {
-                m_prev_end = area->end();
-            }
+            advance_past(area->last());
             return true;
+        }
+
+        /// Move the head of the next candidate gap past an extent ending at
+        /// |last|.
+        ///
+        /// `last + 1` is the first free address after it -- everywhere except
+        /// at the very top of the address space, where the increment wraps to
+        /// 0 and every later gap test would then be measured from the *bottom*
+        /// of the space and hand out an address that is already taken. Parking
+        /// on the high limit instead lets fits() end the walk on its own terms:
+        /// no start at or above the limit leaves room for a non-empty request.
+        auto advance_past(VirtAddr last) -> void {
+            auto const first_free = last < m_high_limit ? last + 1 : m_high_limit;
+            if (first_free > m_prev_end) {
+                m_prev_end = first_free;
+            }
         }
 
         usize m_requested_size;
@@ -249,9 +262,9 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
         VirtAddr m_floor;
         VirtAddr m_high_limit;
         VirtAddr m_found{};
-        /// End of the last area seen so far, carried across subtree
-        /// boundaries so the gaps before the first area and after the last
-        /// one fall out of the same bookkeeping.
+        /// First free address after everything seen so far, carried across
+        /// subtree boundaries so the gaps before the first area and after the
+        /// last one fall out of the same bookkeeping.
         VirtAddr m_prev_end;
     };
 
