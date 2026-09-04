@@ -1,39 +1,60 @@
 # 调度器 — 待修
 
-按严重程度排。已修的从这里删掉，改动记录在 `docs/changes/260903/scheduler.md`（第 1–19 条）。
+按严重程度排。已修的从这里删掉，改动记录在 `docs/changes/260903/scheduler.md`（第 1–27 条）。
 
 ---
 
-## 1. 没有中断出口的抢占兑现，也没有中断嵌套计数（arch/x86 的 lane，交叉索引）
+## 1. 次级 CPU 没有自己的 `DpcRunner::init()`
 
-`PreemptionState::IrqNestedCounter` 全树无人增减；`x86_dispatch_exception()` 出口不检查
-pending 抢占。后果：changes 第 15 条把 `reschedule_mask()` 的本地抢占改成只记 pending 之后，
-一个正在运行的线程只会在自己 `enable_preemption()` 或空闲循环时被换下——tick 里
-`RoundRobin::update_thread()` 标的 pending 不会在中断返回时兑现，**时间片轮转事实上不生效**，
-一个忙循环线程会一直占着 CPU。Zircon：`x86_exception_handler` 出口对 `preempts_pending` 调
-`Thread::Current::Preempt()`，进入中断时 `arch_set_blocking_disallowed(true)`。
+`DpcRunner::init()` 按设计是「对当前 CPU」的（`Current::get()` / `mm::CpuLocal::current_cpu()`），
+而 changes 第 27 条加的 `GKTL_INIT_HOOK` 只在发布该层的那颗 CPU（BSP）上跑。AP 起来之后
+欠自己一次 `DpcRunner::init()`；不补的话它的 DPC 队列仍是 CpuLocal 的零填充存储，
+第一次 enqueue 就是 changes 第 24 条那个空指针页故障。等 SMP 真正起来时必须处理。
 
+同一形状的还有 `Scheduler::init()`（第 2 条）和 `TickSched::emulate()`——凡是「每 CPU 一次」
+的初始化，目前都只覆盖了 BSP。
 
 ## 2. `Scheduler::init()` 把每个调度器都记成 BSP
 
-`m_runtime.which_cpu = Cpu::id()`，而 `task::init()` 在 BSP 上替每颗 CPU 调它。应接收 cpunum。
+`m_runtime.which_cpu = Cpu::id()`，而 `task::init()` 是在 BSP 上替每颗 possible CPU 调它的。
+应当接收 cpunum，如 `TimerQueue::init(cpunum)`。单核下恒等，多核下
+`unpark_preempt()` 的 `DEBUG_ASSERT(Cpu::id() == m_runtime.which_cpu)` 和
+`Fair::on_thread_unpark()` 记的 `m_wake_cpu` 都会错。
 
-## 3. `Driver::update_clock()` 的基准写错了
+## 3. 抢占延后的一般规则没有接上（现在可以接了）
 
-`m_prev_real_clock = m_sched_clock;` 应为 `= now;`。
+`Zircon Scheduler::PreemptLocked()` 在 `arch_num_spinlocks_held() > 0` 时只记 pending 不切换。
+ours 有这个计数，但我试的时候 `SpinLock::num_held_cpu()` 读出来是垃圾
+（`288423890198200320/1/2`，只有低位是计数），只好退而求其次，把 DPC 队列锁单独改成
+`IrqSave`（changes 第 25 条）。根因后来由 lib/concurrent 在 `06176e9` 修掉
+（`kernel.ld` 缺 `KEEP`，所有 counter 的存储段被 `--gc-sections` 回收，counter 一直在改写
+别人的 per-CPU 内存），我已验证（`COUNTER_STORAGE_` 符号 0 → 27）。
 
-## 4. `find_active_scheduler_for()` 无出口自旋
+所以这条现在走得通了，而且比逐个给队列锁打 `IrqSave` 更普适：任何用普通 `Guard` 持自旋锁
+的地方仍然会被抢占，并留下一把没人能释放的锁。
 
-没有任何调度器 active 时永远转。
+## 4. `PreemptionState::IrqNestedCounter` 全树无人增减
 
-## 5. `Thread::Current::reschedule()` 的门与 `reschedule_mask()` 的 pending 之间没有兑现点
+`is_preemption_enabled()` 把 `in_interrupt()` 算进去了，但那个计数没有任何写入点，
+所以这一层保护目前是空的。Zircon 进中断时 `arch_set_blocking_disallowed(true)`，
+`int_handler_start()` 里 `PreemptDisable()` + `EagerReschedDisable()`。
+changes 第 20 条只补了出口那一半。
 
-changes 第 16 条把"不可抢占就 `add_pending()`"放进了 `reschedule()`；pending 的兑现点只有
-`enable_preemption()` 和空闲循环。等第 1 条落地后要一并核对。
+## 5. `Driver::update_clock()` 的基准写错了
+
+`kernel/kernel/task/sched/driver.cpp`：`m_prev_real_clock = m_sched_clock;` 应为 `= now;`。
+现在 `delta = now - m_prev_real_clock` 里 prev 是调度时钟而不是真实时钟，两者一旦分叉
+delta 就失真。
+
+## 6. `find_active_scheduler_for()` 无出口自旋
+
+`kernel/kernel/task/sched/scheduler.cpp`：没有任何调度器 active 时永远转，也不 relax。
 
 ## Fair 自身的问题（作者自留，不由助手改）
 
-- `RunQueue::avg_vruntime()` 对空队列除零；Linux `avg_vruntime()` 有 `if (load)`。
+- `RunQueue::avg_vruntime()` 对空队列除零（`weight_sum_ == 0`）；Linux `avg_vruntime()`
+  有 `if (load)` 守卫。
 - `RunQueue::current_` 全代码没有写入点。
-- `calc_weighted_time()` 的 `weight / MID_WEIGHT` 是整数除法，低于中权重的线程结果恒为 0。
-- `Fair::on_thread_init()` / `on_thread_dead()` 丢弃 `Runtime &`，取的是运行 CPU 的调度器。
+- `calc_weighted_time()` 的 `weight / MID_WEIGHT` 是整数除法，低于中权重的线程（含
+  `IDLE_PRIORITY`）结果恒为 0。Linux 用 `calc_delta_fair()` 的定点逆权重。
+- `Fair::on_thread_init()` / `on_thread_dead()` 丢弃 `Runtime &`，取的是**运行** CPU 的调度器。
