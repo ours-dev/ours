@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**，4.5 修完 **108**，4.1 修完 **24**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**，4.5 修完 **108**，4.1 修完 **24**，4.1b 修完 **4**。剩下的 4 条：4.4 三条（头文件包含方向）、4.6 一条（桩）。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -58,16 +58,7 @@
 决定：`m_flags` 归 PI 锁；`m_scheduling_context` 归所在 runqueue 的锁（Linux 模型），因为写不出
 capability 表达式而不标注解。见 changes。
 
-### 4.1b `Thread::m_stack` / `m_arch_thread` / `m_task_state` 仍标 `TA_GUARDED(get_resource_lock())`
-
-剩余 24 条里的 18 条。`kernel_stack()` 按引用返回 `m_stack`（11 TU 各一条）；`spawn_etc`/
-`init_first` 构造期裸写三者（`thread.cpp:118-151`）；`join()`/`exit()`/`trampoline()` 不持锁读写
-`m_task_state`（`:303/310/396/653/663`）。要先定：
-
-- `m_stack`、`m_arch_thread`：构造期写一次，之后只有上下文切换（`ArchThread::switch_thread`）
-  和 `mp.cpp`/`x86 thread.cpp` 读栈顶。建议去掉 `TA_GUARDED`，注释「发布前写、之后只读」。
-- `m_task_state`：join 与 exit 之间的握手，内部自带 wait queue。要么它自己就是同步点、去掉
-  注解；要么 join/exit 真的在 resource 锁下访问它。看 `TaskState` 的实现再定。
+### 4.1b `m_stack` / `m_arch_thread` / `m_task_state` — 已修（24 → 4）
 
 ### 4.2 `PmNode` 三个 CpuMask — 已修
 

@@ -407,13 +407,24 @@ namespace task {
         auto erase_from_global_list_locked() -> void;
 
         gktl::Canary m_canary{this};
-        ArchThread m_arch_thread TA_GUARDED(get_resource_lock());
+
+        /// Written once by spawn_etc()/init_first() before the thread is
+        /// published, then touched only by the context switch, which runs on
+        /// the CPU that owns the thread and is serialised by the runqueue
+        /// lock hand-off (switch_context). No lock is taken by any reader,
+        /// and none is needed; the TA_GUARDED(get_resource_lock()) it carried
+        /// described a lock nobody held.
+        ArchThread m_arch_thread;
         Name m_name;
 
         /// Null if kernel thread.
         mm::VmAspace *m_aspace;
         ustl::Arc<object::ThreadDispatcher> m_user_thread;
-        mm::Stack m_stack TA_GUARDED(get_resource_lock());
+
+        /// Same story as m_arch_thread: set up before publication, afterwards
+        /// only its top is read (TSS.sp0 on the switch, the AP bring-up
+        /// stack). kernel_stack() hands out a reference for that.
+        mm::Stack m_stack;
 
         /// Using a KoId if kernel thread, otherwise an user-space thread id
         /// copied from object::ThreadDispatcher.
@@ -451,7 +462,15 @@ namespace task {
         /// closes it at run time with lockdep_assert_rq_held().
         sched::Context m_scheduling_context;
         PreemptionState m_preemption_state;
-        TaskState m_task_state TA_GUARDED(get_resource_lock());
+
+        /// Self-synchronising: the exit side writes the retcode and then
+        /// wakes m_result_wait_queue, the join side parks on that queue and
+        /// reads the retcode after being woken, so the queue's own lock is
+        /// what orders the two. Nothing takes the resource lock around it and
+        /// the old annotation said it did. Zircon's task_state_ sits under the
+        /// global thread_lock instead; this tree has no such lock, and the
+        /// wait queue is the handshake.
+        TaskState m_task_state;
         WaiterState m_waiter_state;
         mm::MemoryAllocationState m_memory_allocation_state;
 

@@ -699,3 +699,41 @@ Zircon `Thread::flags_ TA_GUARDED(get_lock())`；Linux `struct sched_entity` /
 **故意没做**
 `m_stack`/`m_arch_thread`/`m_task_state` 的归属：`m_stack`/`m_arch_thread` 是构造期写、上下文切换
 读，`m_task_state` 是 join/exit 之间的握手，各有各的答案，不在这次决定的范围内。
+
+---
+
+## `Thread::m_stack` / `m_arch_thread` / `m_task_state` 去掉 resource 锁注解（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/thread.hpp` — 三个成员的 `TA_GUARDED(get_resource_lock())` 删掉，各自
+  注释写清为什么不需要锁
+
+**症状**
+潜伏。剩余 24 条里的 20 条：`kernel_stack()` 按引用返回（11 TU）、构造期裸写三者、
+`join()`/`exit()`/`trampoline()` 不持锁读写 `m_task_state`。
+
+**原因**
+三者没有一个读者或写者拿过 resource 锁，也没有一个需要：
+
+- `m_arch_thread`、`m_stack`：`spawn_etc()`/`init_first()` 在发布前写一次，之后只有上下文切换
+  （在拥有该线程的 CPU 上、由 rq 锁交接串行化）和读栈顶的两处（TSS.sp0、AP 启动栈）碰它们。
+- `m_task_state`：exit 侧写 retcode 再 `notify_all`，join 侧 `park` 在同一个 wait queue 上、被唤醒
+  后读 retcode——队列自己的锁就是这两步之间的 happens-before，它是个自同步的握手。
+
+Zircon 把 `task_state_` 放在全局 `thread_lock` 下，因为它有那把锁；这里没有，wait queue 就是同步点。
+
+**改法**
+删注解、写注释。`m_resource_lock` 本身保留：`destroy()` 还在它下面调 `on_thread_dead`，而且
+它是为未来受保护资源留的位置。
+
+**参照**
+Zircon `Thread::stack_`（无注解）、`task_state_ TA_GUARDED(get_lock())`。
+
+**验证**
+- 全量构建通过；clang-format 已跑。
+- 15 个 TU：24 → **4**。剩下 `WaiterState::sleep/unsleep`、`park_thread_postamble`（4.4，头文件
+  包含方向）和 `finish_transition`（4.6，桩）。
+- QEMU：两个镜像都比上一条多走两行（调度器那边加了 TMPMARK 打印），停在 prof 计数之后。
+
+**故意没做**
+没删 `m_resource_lock`。
