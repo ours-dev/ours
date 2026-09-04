@@ -18,3 +18,48 @@ group("availability_test") {
     unavailable_components_barrier = []
   }
 }
+
+# ---- Userspace compile/link policy ----
+#
+# The user-mode mirror of //kernel/products:kernel.config.  The `user`
+# toolchains in //build/toolchain/ours apply this through toolchain_args,
+# so every target built in one of them gets the policy without naming it.
+#
+# It is a separate config, and not a reuse of the kernel's, because the two
+# environments disagree on exactly the flags that matter: the kernel is
+# compiled -mcmodel=kernel -mno-red-zone -mno-sse (//kernel/arch/x86:abi),
+# all three of which are wrong for a program that runs at a low address in
+# ring 3 on its own stack.  //build/config/x86 was already split with this
+# in mind -- cpu_baseline gives every toolchain the ISA baseline and leaves
+# the kernel-mode ABI constraints to the kernel toolchains.
+config("user.config") {
+  configs = [
+    ":user.standalone",
+    "//build/config:no_exceptions",
+    "//build/config:no_rtti",
+    "//build/config:no_stack_protector",
+
+    # kernel_elf_binary() extracts a GNU build ID from every image it
+    # packages (build/elf/extract-build-id.py errors out when it finds none),
+    # and BUILDCONFIG.gn only puts //build/config:build_id in
+    # default_executable_configs for is_kernel toolchains.
+    "//build/config:build_id",
+  ]
+
+  # Same reason as the kernel's (//kernel/products:kernel.config): the image
+  # is linked as a PIE below, so the code has to be compiled to match.
+  cflags = [ "-fpie" ]
+}
+
+# A user binary is loaded by the kernel, not by a dynamic linker, and there
+# is no libc for it to call into: it is a static PIE with the same shape as
+# the kernel image itself.  ET_DYN with R_X86_64_RELATIVE relocations is
+# what lets the loader place it at an address it chooses; -static is what
+# keeps a PT_INTERP out of it, since nothing exists that could honour one.
+config("user.standalone") {
+  configs = [
+    "//build/config:freestanding",
+    "//build/config:static-link",
+    "//build/config:pie-link",
+  ]
+}

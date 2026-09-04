@@ -10,8 +10,8 @@
 # 选择镜像，不在这里实例化。
 #
 # 本文件只放所有镜像共用的组装零件：
-#   common_package_items —— 供所有产品的 kernel_package 引用（当前为空，作为
-#   未来共享 bootfs/支持文件的挂载点）。
+#   common_package_items —— 供所有产品的 kernel_package 引用，放所有镜像共享的
+#   bootfs 载荷（当前是 userboot）。
 
 group("common_package_items") {
   visibility = [
@@ -19,4 +19,13 @@ group("common_package_items") {
     "//products/*",
     "//tests/*",
   ]
+
+  # userboot 是每个镜像都要带的用户态载荷，所以挂在共享零件上而不是逐个镜像
+  # 重复声明 —— 这个 group 存在的理由就是这个。
+  #
+  # 它必须显式指名 user 工具链：deps 是在内核工具链上下文里求值的，不写工具链
+  # 后缀就会用 kernel-x86 编译出一个 -mcmodel=kernel 的“用户程序”。对标
+  # Fuchsia 的 kernel_package("zircon")，userboot 同样是内核包 BootFS 里的一个
+  # 文件，而不是独立的 OBI item。
+  deps = [ "//kernel/lib/userabi/userboot(//build/toolchain/ours:user-${target_cpu})" ]
 }
