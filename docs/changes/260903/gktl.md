@@ -75,3 +75,26 @@ Zircon 的 `kcounter` 用同一套「描述符 + 按下标寻址的 per-CPU 槽�
   但两处 `PROVIDE_HIDDEN` 同名符号是个独立的隐患。
 - 没有查 `__gktl_counter_end` / `__gktl_counter_desc_end` 在符号表里不存在这件事。
   `PROVIDE` 只在符号被引用时才定义，而 `Counter::COUNTERS_END` 没有用户，所以是正常的。
+
+### 验证补记（2026-09-03，树恢复可编之后）
+
+在本机独立跑了一遍，不是转述别人的结果：
+
+```
+COUNTER_STORAGE_    = 27
+COUNTER_DESCRIPTOR_ = 27
+```
+
+改动前是 0 对 27。存储 section 现在扛过了 `--gc-sections`，27 个槽真实存在。
+
+**上面写的第二条检查是错的，在此更正**：`__gktl_counter_start` 现在仍然等于
+`__cpu_local_start`（都是 `0x75000`）。这不是缺陷，是链接脚本的结构使然——
+`__cpu_local_start` 之后紧接着就是 `__gktl_counter_start`，中间没有任何东西，
+两者本来就必定重合。真正有意义的差别在后面：以前这个 section 是空的，
+catch-all glob 摆的 per-CPU 变量就从 `0x75000` 开始，和计数器槽重叠；
+现在 27 个槽先占掉 216 字节，那些变量被推到后面去了。
+
+所以能用来判断这个缺陷的检查只有一条：`COUNTER_STORAGE_` 的符号数，
+而不是两个 start 符号是否相等。
+
+debug 镜像可以启动，没有断言失败。
