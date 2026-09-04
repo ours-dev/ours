@@ -1450,3 +1450,58 @@ Guard guard{m_lock};
 
 构建通过。启动无变化（队列此刻仍是死代码，第 27 条才接通）；这条是在接通之后实测撞到、
 再回填进来的。
+
+---
+
+## 26. `Dpc` 在回调释放掉自己之后还被回写（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/dpc.cpp` — `do_work()` 里 `mark_idle` 从 invoke 之后挪到出队时、锁内。
+
+**症状**
+
+潜伏。`Thread::Current::exit()` 把 `Dpc` 放在**正在退出的线程自己的内核栈**上，
+而回调 `destroy()` 释放的正是那个栈。
+
+**原因**
+
+```cpp
+next = &front.value();
+m_list.pop_front();
+DpcRunner::mark_running(*next);
+}
+
+next->invoke();          // 回调在这里释放了 *next 所在的栈
+
+{
+    Guard<sync::SpinLock, IrqSave> guard{m_lock};
+    DpcRunner::mark_idle(*next);   // 写一个已经被释放的对象
+}
+```
+
+**改法**
+
+队列对这个 `Dpc` 的关系在**出队时**就结束——在同一把锁里标 Idle，`invoke()` 之后一概不碰：
+
+```cpp
+next = &front.value();
+m_list.pop_front();
+DpcRunner::mark_idle(*next);
+}
+
+next->invoke();
+```
+
+可见的后果：`State::Running` 不再可观察，对一个已出队的 `Dpc` 调 `cancel()` 返回 `NotFound`
+而不是 `BadState`——这也正是 Zircon 的行为：离开链表之后就取消不了了。
+
+**参照**
+
+`Zircon DpcRunner::Queue::DoWork()` 从另一侧到达同一处：它在锁内把 `Dpc` **复制到 worker
+自己的栈上**（`dpc_local.emplace(*dpc)`）再 `dpc_local->Invoke()`，原对象出队后一概不碰。
+ours 不需要那次复制，因为调用之后不再读它。
+
+**验证**
+
+构建通过；启动无变化（队列此刻仍未接通）。接通之后（第 27 条）实测：`destroy()` 跑完、
+worker 回到 `m_event.wait()`，无故障。

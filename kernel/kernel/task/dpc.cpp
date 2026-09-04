@@ -88,15 +88,32 @@ auto DpcRunner::Queue::do_work() -> i32 {
 
             next = &front.value();
             m_list.pop_front();
-            DpcRunner::mark_running(*next);
+
+            // The queue is done with this Dpc *here*, while the lock is still
+            // held -- not after the callback returns.
+            //
+            // A Dpc may be destroyed by its own callback: the one on this
+            // path lives on the exiting thread's kernel stack and the callback
+            // frees that stack (Thread::Current::exit()). Marking it idle
+            // afterwards, as this used to, wrote through a dangling pointer
+            // and hung the boot at the first thread exit. Nothing below
+            // touches |next| except the invoke() itself, which the object is
+            // still alive for.
+            //
+            // Zircon reaches the same place from the other side: its worker
+            // copies the Dpc onto its own stack under the lock and invokes the
+            // copy (DpcRunner::Queue::DoWork), so the original is likewise
+            // never touched once it leaves the list. Ours needs no copy
+            // because it reads nothing after the call.
+            //
+            // The visible consequence is that State::Running is no longer
+            // observable and cancel() of an already-popped Dpc reports
+            // NotFound rather than BadState -- which is Zircon's behaviour
+            // too: once a Dpc has left the list it cannot be cancelled.
+            DpcRunner::mark_idle(*next);
         }
 
         next->invoke();
-
-        {
-            Guard<sync::SpinLock, IrqSave> guard{m_lock};
-            DpcRunner::mark_idle(*next);
-        }
     }
     return 0;
 }
