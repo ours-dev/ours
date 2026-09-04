@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <ours/status.hpp>
+
 #include <prof/arch.hpp>
 #include <prof/format.hpp>
 #include <prof/sampler.hpp>
 #include <unwind/unwinder.hpp>
-
-#include <ours/status.hpp>
 
 namespace prof {
 namespace {
@@ -32,22 +32,6 @@ namespace {
 auto Sampler::get() -> Sampler & {
     static Sampler instance;
     return instance;
-}
-
-auto Sampler::buffer_for(u32 cpu) const -> SampleBuffer * {
-    if (m_buffer_lookup == nullptr) {
-        return nullptr;
-    }
-    return m_buffer_lookup(m_buffer_lookup_context, cpu);
-}
-
-auto Sampler::reset_all_buffers() -> void {
-    for (u32 cpu = 0; cpu < m_num_cpus; ++cpu) {
-        auto *buffer = buffer_for(cpu);
-        if (buffer != nullptr) {
-            buffer->reset();
-        }
-    }
 }
 
 auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record) const -> void {
@@ -81,22 +65,21 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
 }
 
 auto Sampler::init(Resources const &resources) -> InitFlags {
-    m_buffer_lookup = resources.buffer_lookup;
-    m_buffer_lookup_context = resources.buffer_lookup_context;
-    m_num_cpus = resources.num_cpus;
+    auto const buffers_ready = m_sink.init(Sink::Resources{
+        .buffer_lookup = resources.buffer_lookup,
+        .buffer_lookup_context = resources.buffer_lookup_context,
+        .num_cpus = resources.num_cpus,
+    });
 
     m_eh_section = resources.eh_section;
     m_fde_index.init(resources.fde_entries, resources.fde_entry_count);
     m_image_base = resources.image_base;
 
-    reset_all_buffers();
-
-    // A non-null lookup only proves the caller wired one in, not that it
-    // actually resolves — probe CPU 0 so `BuffersReady` reflects reality
-    // even when the callback itself degrades to "no storage" internally
-    // (e.g. the kernel's own CpuLocal allocation having failed).
+    // `Sink::init` reports whether a buffer actually resolves, not merely
+    // whether a lookup was wired in: the kernel's own CpuLocal allocation
+    // can have failed, leaving a valid callback that yields nothing.
     auto flags = InitFlags::None;
-    if (m_num_cpus != 0 && buffer_for(0) != nullptr) {
+    if (buffers_ready) {
         flags = flags | InitFlags::BuffersReady;
     }
     if (resources.fde_entry_count != 0) {
@@ -106,43 +89,61 @@ auto Sampler::init(Resources const &resources) -> InitFlags {
 }
 
 auto Sampler::is_running() const -> bool {
-    return m_state.load(std::memory_order_relaxed) == State::Running;
+    return m_state.load(std::memory_order_acquire) == State::Running;
 }
 
+// The acquire load in the two accessors below is for ordering, not for its
+// value: it pairs with the release that published Running after the field
+// was written, which is what makes the plain read after it well-defined.
 auto Sampler::active_source() const -> Source {
-    return m_source.load(std::memory_order_relaxed);
+    static_cast<void>(m_state.load(std::memory_order_acquire));
+    return m_source;
 }
 
 auto Sampler::active_period() const -> u64 {
-    return m_period.load(std::memory_order_relaxed);
+    static_cast<void>(m_state.load(std::memory_order_acquire));
+    return m_period;
 }
 
 auto Sampler::start(Config const &config) -> ours::Status {
+    // Claim the sampler first, in a state no reader acts on. That is what
+    // makes the rest of this function safe to do in the open: the plain
+    // configuration fields can be written without anyone observing them
+    // half-set, because `Starting` is not `Running`.
     auto expected = State::Stopped;
-    if (!m_state.compare_exchange_strong(expected, State::Running, std::memory_order_acq_rel)) {
+    if (!m_state.compare_exchange_strong(expected, State::Starting, std::memory_order_acq_rel)) {
         return ours::Status::BadState;
     }
 
-    reset_all_buffers();
-    m_period.store(config.period, std::memory_order_relaxed);
+    m_source = config.source;
+    m_period = config.period;
+    m_sink.reset();
+    // Relaxed on purpose. This reset is not a publication point; it is one
+    // more write that the release store of Running below publishes, exactly
+    // like the two plain assignments above it (a release orders *every*
+    // preceding write, atomic or not, before the acquire that reads it). A
+    // release here would claim an ordering role this store does not have.
     m_tick_counter.store(0, std::memory_order_relaxed);
-    m_source.store(config.source, std::memory_order_relaxed);
 
-    if (config.source == Source::TimerTick) {
-        // Nothing to program: the scheduler tick drives sampling.
-        return ours::Status::Ok;
-    }
-
-    if (!arch::pmu_present()) {
+    auto const stop_again = [&]() -> void {
         m_state.store(State::Stopped, std::memory_order_release);
-        return ours::Status::NotSupported;
+    };
+
+    if (config.source == Source::Pmu) {
+        if (!arch::pmu_present()) {
+            stop_again();
+            return ours::Status::NotSupported;
+        }
+        auto const status = arch::start_pmu_sampling(config.period);
+        if (status != ours::Status::Ok) {
+            stop_again();
+            return status;
+        }
     }
 
-    auto const status = arch::start_pmu_sampling(config.period);
-    if (status != ours::Status::Ok) {
-        m_state.store(State::Stopped, std::memory_order_release);
-        return status;
-    }
+    // The release is the publication point: source, period and the reset
+    // buffers all happen-before any reader that acquires Running.
+    m_state.store(State::Running, std::memory_order_release);
     return ours::Status::Ok;
 }
 
@@ -152,22 +153,18 @@ auto Sampler::stop() -> void {
         return;
     }
 
-    if (active_source() == Source::Pmu) {
+    if (m_source == Source::Pmu) {
         arch::stop_pmu_sampling();
     }
     m_state.store(State::Stopped, std::memory_order_release);
 }
 
 auto Sampler::record_sample(SampleContext const &context) -> void {
-    if (m_state.load(std::memory_order_relaxed) != State::Running) {
+    if (m_state.load(std::memory_order_acquire) != State::Running) {
         return;
     }
 
     auto const cpu = arch::current_cpu();
-    auto *buffer = buffer_for(cpu);
-    if (buffer == nullptr) {
-        return;
-    }
 
     SampleRecord record = {};
     record.magic = SAMPLE_MAGIC;
@@ -181,23 +178,25 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
         // User stacks need the user address space + user unwind info;
         // out of scope for now.
         record.flags = RecordFlags::RecordFromUspace;
-        buffer->try_produce(record);
+        static_cast<void>(m_sink.produce(cpu, record));
         return;
     }
 
     unwind_context(context, &record);
-    buffer->try_produce(record);
+    static_cast<void>(m_sink.produce(cpu, record));
 }
 
 auto Sampler::on_scheduler_tick() -> void {
-    if (m_state.load(std::memory_order_relaxed) != State::Running) {
+    // Acquire first, fields after: see the note on `m_state` in the header
+    // for why the two plain reads below are ordered by this load.
+    if (m_state.load(std::memory_order_acquire) != State::Running) {
         return;
     }
-    if (active_source() != Source::TimerTick) {
+    if (m_source != Source::TimerTick) {
         return;
     }
 
-    u64 const period = m_period.load(std::memory_order_relaxed);
+    u64 const period = m_period;
     if (period == 0) {
         return;
     }

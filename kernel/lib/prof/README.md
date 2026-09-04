@@ -12,19 +12,22 @@ This library is standalone: it makes no calls into `ours::`, `gktl::`, or
 control, the current CPU, a timestamp, a place to write diagnostic bytes)
 is read through the `prof::arch` seam, and every kernel-owned resource
 (per-CPU buffers, the unwind FDE index) is handed in by the caller through
-`Sampler::init`. `kernel/kernel/prof` is that caller today — it owns the
-`CpuLocal` buffers, builds the FDE index from the kernel's own `.eh_frame`,
-and exposes `prof.start`/`stop`/`dump` as console commands. A future
-`ThreadSampler` in the `object` module can be a second such caller without
-this library changing at all.
+`Sampler::init`. `kernel/commands/prof.cpp` is that caller today — it owns
+the `CpuLocal` buffers, builds the FDE index from the kernel's own
+`.eh_frame`, and exposes `prof.start`/`stop`/`dump` as console commands. A
+future `ThreadSampler` in the `object` module can be a second such caller
+without this library changing at all.
 
 ## Scope
 
 | Header | Contents |
 |---|---|
 | `prof/format.hpp` | The wire format shared with the host tool: `SampleRecord` (152 B) + `DumpHeader` (32 B) |
-| `prof/buffer.hpp` | `SampleBuffer`: per-CPU fixed arena, atomic write cursor, drop counting |
+| `prof/record_buffer.hpp` | `RecordBuffer<Record, N>`: per-CPU fixed arena of any fixed-size record, one atomic write cursor |
+| `prof/buffer.hpp` | `SampleBuffer = RecordBuffer<SampleRecord, 128>` |
+| `prof/sink.hpp` | `RecordSink<Record, N>`: the storage half shared by a sampler and a tracer — injected per-CPU buffers, stats, hex-line export |
 | `prof/sampler.hpp` | `Sampler`: the profiler itself — state, control, recording, export |
+| `prof/trace.hpp` | `Tracepoint` / `TraceScope` / `TraceRecord`: static trace sites (the `Tracer` that drives them is not written yet; `examples/trace_examples.cpp` stands in) |
 | `prof/arch.hpp` | The arch seam (implemented once per architecture) |
 
 ## Shape
@@ -44,23 +47,26 @@ this library changing at all.
   to the interrupted SP's 64 KiB stack window. Samples from user space are
   recorded depth-1 with `RecordFromUspace` — no user unwind yet. The
   section bytes and the sorted FDE-entry array are supplied to
-  `Sampler::init` by the caller (`kernel/kernel/prof` scans `.eh_frame` and
-  owns the `ktl::Vec` backing them) — `Sampler` itself never allocates to
-  build the index, mirroring `unwind::FdeIndex`'s own allocation-free
-  contract.
+  `Sampler::init` by the caller (`kernel/commands/prof.cpp` scans
+  `.eh_frame` and owns the page-backed array behind them) — `Sampler`
+  itself never allocates to build the index, mirroring
+  `unwind::FdeIndex`'s own allocation-free contract.
 - **Buffers.** `Sampler::init`'s `Resources::buffer_lookup` is a callback
   the caller supplies (`SampleBuffer *(*)(void *context, u32 cpu)`),
   mirroring `unwind::MemoryReader`'s context-callback shape. `Sampler`
-  never allocates a buffer itself; `kernel/kernel/prof` backs the callback
+  never allocates a buffer itself; `kernel/commands/prof.cpp` backs the callback
   with `ours::mm::CpuLocal::allocate<SampleBuffer>`, giving every CPU a
   128-record arena. The producer is the sampling interrupt alone (wait-free
   cursor); the consumer only runs after `Sampler::stop()` has quiesced
   every CPU (each acknowledges by bumping a counter in its stop IPI), so
   records are never read torn.
 - **Control.** `prof.start [pmu|tick] [period]`, `prof.stop`, `prof.dump`
-  are gktl commands defined in `kernel/kernel/prof` — drive them
+  are gktl commands defined in `kernel/commands/prof.cpp` — drive them
   interactively over the serial console (libkshell) or from a script. They
-  are thin wrappers over `prof::Sampler::get()`.
+  are thin wrappers over `prof::Sampler::get()`. Inside `Sampler` the only
+  atomic is the state; source and period are plain fields that `start()`
+  writes while the state is `Starting` (which no reader acts on) and
+  publishes with the release store of `Running`.
 
 ## The arch seam
 

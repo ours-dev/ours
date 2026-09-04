@@ -118,3 +118,53 @@ GCC `include/dwarf2.h` 的 `DW_EH_PE_sdata4 = 0x0b` 等；LLVM `llvm/BinaryForma
 **故意没做**
 没给 `encoded_pointer()` 补 `TEXTREL`/`DATAREL`/`FUNCREL`/`ALIGNED` 的解析——内核
 `.eh_frame` 用不到，unwinder 的设计是"不支持就拒绝而不是猜"。
+
+## 3. `Sampler` 只保留一个原子：state；source/period 回到普通字段（2026-09-03）
+
+**文件**
+- `kernel/lib/prof/include/prof/sampler.hpp` — 删掉打包的 `Control` 结构体和 `std::atomic<Control>`，
+  恢复 `std::atomic<State> m_state` + 普通 `m_source`、`m_period`；`Config::period` 回到 u64
+- `kernel/lib/prof/prof/sampler.cpp` — `start()`/`stop()`/读方按发布协议改写
+- `kernel/lib/prof/README.md` — 补 `record_buffer.hpp`/`sink.hpp`/`trace.hpp`，把 `kernel/kernel/prof`
+  和 `ktl::Vec` 的过时说法改掉
+- 同一提交把 `kernel/lib/prof` 里上一个会话留下的整段重构（`RecordBuffer`/`RecordSink` 拆分、
+  `trace.hpp` 脚手架、`arch::current_tid()`）一起落下
+
+**症状**
+不是运行期缺陷，是设计走偏：上一版把 state、source、period 塞进一个 8 字节的 `Control`
+用 `std::atomic<Control>` 整体读写，理由是"三个值必须一次读到"。代价是 period 被压到 32 位、
+多了 `m_reserved` 和 `static_assert(sizeof == 8)`，每个读方都要从原子里拷一个结构体出来。
+
+**原因**
+"三个值必须一次读到"要解决的撕裂问题，claim-then-publish 协议本来就解决了，根本不需要打包：
+1. `start()` 用 CAS 把 Stopped→Starting。Starting 是没有任何读方会动作的状态，所以之后写
+   `m_source`/`m_period` 时不可能被人看到半成品。
+2. `m_state.store(Running, release)`：release 让它之前的**所有**写入——普通字段、sink 的重置、
+   relaxed 的 `m_tick_counter` 清零——对 acquire 到 Running 的读方可见。
+3. 读方 `m_state.load(acquire)`，看到 Running 之后再读字段。
+
+所以只需要 state 一个原子做发布点，其余字段是被它"携带"出去的。把它们也做成原子、
+或者打包成一个原子，都是在为已经不存在的问题付费。
+
+`m_tick_counter.store(0, relaxed)` 保持 relaxed 是有意的：它不是发布点，
+和上面的两个普通赋值一样由 Running 的 release 发布；这里写 release 会让读代码的人以为
+这里有一个发布点。注释里写明了。
+
+**改法**
+见文件列表。协议本身没变，只是把"用什么保证可见"从"一个原子整体读"改成"一个原子 release/acquire
+携带其余字段"。
+
+**参照**
+Linux 的发布模式：初始化完成后 `smp_store_release()`，读方 `smp_load_acquire()`
+（`Documentation/memory-barriers.txt` "RELEASE/ACQUIRE" 一节）。
+
+**验证**
+构建通过；clang-format/clang-tidy 在触到的文件上无新告警；宿主 gtest `sampler` 6 例、
+`format` 4 例全过；`examples/trace_examples.cpp` 按文件头的命令在宿主 `-fsyntax-only` 通过；
+QEMU dbg 镜像 `indexed 797 unwind frames`，两个 gibberish 线程照常运行。
+
+**故意没做**
+- 协议不覆盖"另一颗 CPU 上的采样中断看到 Running 后被压住整整一轮 stop/start 才去读字段"：
+  那是控制台级别的往返对上纳秒级的 handler，两个字段都是自然对齐的机器字，最坏结果是一个
+  样本用了邻近那轮的 period。注释里写明了。
+- `Tracer`（驱动 `trace.hpp` 里 tracepoint 的那半）仍未写，`trace.hpp` 只是脚手架加可运行的例子。

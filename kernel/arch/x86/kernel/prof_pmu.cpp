@@ -41,7 +41,7 @@ auto program_this_cpu(std::uint64_t period) -> void {
     // LVT PMI entry: vector + unmasked (the mask bit reads as 0 after a
     // plain vector write).
     ours::XAPIC->write_reg(::arch::XApicRegType::LvtPmi,
-                             static_cast<std::uint32_t>(::arch::IrqVec::ApicPmi));
+                           static_cast<std::uint32_t>(::arch::IrqVec::ApicPmi));
 }
 
 auto teardown_this_cpu() -> void {
@@ -114,6 +114,10 @@ auto prof::arch::stop_pmu_sampling() -> void {
 
 auto prof::arch::current_cpu() -> u32 {
     return static_cast<u32>(ours::Cpu::id());
+}
+
+auto prof::arch::current_tid() -> u32 {
+    return static_cast<u32>(ours::task::Thread::Current::tid());
 }
 
 auto prof::arch::timestamp() -> u64 {

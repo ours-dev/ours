@@ -7,6 +7,7 @@
 
 #include <prof/buffer.hpp>
 #include <prof/format.hpp>
+#include <prof/sink.hpp>
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
 
@@ -52,11 +53,13 @@ struct SampleContext final {
 /// `kernel/kernel/prof`).
 class Sampler final {
   public:
+    using Sink = RecordSink<SampleRecord, SampleBuffer::CAPACITY>;
+
     /// Looks up the per-CPU sample arena for `cpu`; returns nullptr when
     /// none exists (e.g. `cpu` is out of range). The caller keeps owning
     /// the buffers' actual storage — mirrors `unwind::MemoryReader`'s
     /// context-callback shape.
-    using BufferLookup = SampleBuffer *(*)(void *context, u32 cpu);
+    using BufferLookup = Sink::BufferLookup;
 
     /// Everything `init()` needs, all owned and kept alive by the caller.
     /// `Sampler` allocates nothing itself.
@@ -83,12 +86,6 @@ class Sampler final {
         None = 0,
         BuffersReady = 1u << 0,
         UnwindReady = 1u << 1,
-    };
-
-    struct BufferStats final {
-        usize retained = 0;
-        u64 dropped = 0;
-        u64 total = 0;
     };
 
     static auto get() -> Sampler &;
@@ -142,28 +139,51 @@ class Sampler final {
     Sampler(Sampler const &) = delete;
     auto operator=(Sampler const &) -> Sampler & = delete;
 
-    enum class State : u32 {
+    enum class State : u8 {
         Stopped,
+        /// Claimed by a starter that has not published its config yet. No
+        /// reader acts on it, which is what lets the config be filled in
+        /// before it becomes visible as `Running`.
+        Starting,
         Running,
         /// Set while stopping; interrupt handlers may still see it mid-flight.
         Stopping,
     };
 
-    [[nodiscard]]
-    auto buffer_for(u32 cpu) const -> SampleBuffer *;
-
-    auto reset_all_buffers() -> void;
-
     auto unwind_context(SampleContext const &context, SampleRecord *record) const -> void;
 
+    /// The one atomic. `m_source` and `m_period` are plain fields published
+    /// through it, so they never need to be atomic themselves and the three
+    /// never need to be packed into one word to stay coherent:
+    ///
+    ///   - `start()` claims the sampler with a Stopped -> Starting CAS.
+    ///     Starting is a state no reader acts on, so the two fields can be
+    ///     written in the open with nothing able to observe them half-set.
+    ///   - The Running store is a release; it publishes both fields.
+    ///   - Every reader loads the state with acquire and touches the fields
+    ///     only after seeing Running, so it sees the values written before
+    ///     that release -- the same publish protocol as Linux pairing
+    ///     `smp_store_release()` after initialisation with
+    ///     `smp_load_acquire()` on the reader side
+    ///     (Documentation/memory-barriers.txt, "RELEASE/ACQUIRE").
+    ///
+    /// What the protocol does not cover, on purpose: a sampling interrupt on
+    /// another CPU that saw Running and was then held off across a whole
+    /// stop()/start() cycle before reading the fields. That is a console
+    /// round trip against a handler that runs for nanoseconds, and both
+    /// fields are naturally aligned words on every supported target, so the
+    /// worst case is one sample taken with the neighbouring run's period.
     std::atomic<State> m_state{State::Stopped};
-    std::atomic<Source> m_source{Source::Pmu};
-    std::atomic<u64> m_period{0};
+    Source m_source{Source::Pmu};
+    u64 m_period{0};
+    /// Not part of the configuration: a free-running counter the tick source
+    /// advances, read only while `Running`.
     std::atomic<u64> m_tick_counter{0};
 
-    BufferLookup m_buffer_lookup = nullptr;
-    void *m_buffer_lookup_context = nullptr;
-    u32 m_num_cpus = 0;
+    /// Where records land. Everything about *storing* a record lives here
+    /// and is shared with any other producer; `Sampler` only decides when a
+    /// record happens and what goes in it.
+    Sink m_sink;
 
     unwind::Section m_eh_section{};
     unwind::FdeIndex m_fde_index;

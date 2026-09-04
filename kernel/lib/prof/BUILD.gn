@@ -5,7 +5,10 @@ cpp_interface("headers") {
     "include/prof/arch.hpp",
     "include/prof/buffer.hpp",
     "include/prof/format.hpp",
+    "include/prof/record_buffer.hpp",
     "include/prof/sampler.hpp",
+    "include/prof/sink.hpp",
+    "include/prof/trace.hpp",
   ]
   public_deps = [
     "//kernel/lib/unwind:headers",

@@ -17,38 +17,44 @@ struct SampleContext;
 /// this seam; nothing under `prof/` reaches for `ours::`/`arch::` directly.
 namespace arch {
 
-/// True when the machine exposes a usable architectural PMU.
-[[nodiscard]]
-auto pmu_present() -> bool;
+    /// True when the machine exposes a usable architectural PMU.
+    [[nodiscard]]
+    auto pmu_present() -> bool;
 
-/// Program the sampling counter on every online CPU and unmask its
-/// interrupt. Must fail gracefully (leaving the sampler off) when the PMU
-/// is absent.
-auto start_pmu_sampling(u64 period) -> ours::Status;
+    /// Program the sampling counter on every online CPU and unmask its
+    /// interrupt. Must fail gracefully (leaving the sampler off) when the PMU
+    /// is absent.
+    auto start_pmu_sampling(u64 period) -> ours::Status;
 
-/// Disable the sampling counter on every online CPU; each CPU acknowledges
-/// by incrementing the quiesce counter once its own counter is off.
-auto stop_pmu_sampling() -> void;
+    /// Disable the sampling counter on every online CPU; each CPU acknowledges
+    /// by incrementing the quiesce counter once its own counter is off.
+    auto stop_pmu_sampling() -> void;
 
-/// Capture the interrupted context on this CPU (tick-fallback source).
-/// Returns nullopt when no trap frame is active.
-[[nodiscard]]
-auto capture_sample_context() -> std::optional<SampleContext>;
+    /// Capture the interrupted context on this CPU (tick-fallback source).
+    /// Returns nullopt when no trap frame is active.
+    [[nodiscard]]
+    auto capture_sample_context() -> std::optional<SampleContext>;
 
-/// The CPU executing on entry, used to pick this CPU's sample buffer and to
-/// tag records. Cheap; callable from interrupt context.
-[[nodiscard]]
-auto current_cpu() -> u32;
+    /// The CPU executing on entry, used to pick this CPU's sample buffer and to
+    /// tag records. Cheap; callable from interrupt context.
+    [[nodiscard]]
+    auto current_cpu() -> u32;
 
-/// A monotonic per-record timestamp (TSC on x86). No defined unit across
-/// architectures; used only to order samples for display.
-[[nodiscard]]
-auto timestamp() -> u64;
+    /// The thread running on entry. The sampler reads its tid out of the
+    /// interrupted trap frame, but a tracepoint fires on the normal execution
+    /// path where there is no frame to read, so it has to ask directly.
+    [[nodiscard]]
+    auto current_tid() -> u32;
 
-/// Writes `len` raw bytes to this machine's diagnostic output (COM1 on
-/// x86). Used only by `Sampler::export_dump`: blocking, not interrupt-safe,
-/// and called only after sampling has stopped.
-auto debug_write(char const *bytes, usize len) -> void;
+    /// A monotonic per-record timestamp (TSC on x86). No defined unit across
+    /// architectures; used only to order samples for display.
+    [[nodiscard]]
+    auto timestamp() -> u64;
+
+    /// Writes `len` raw bytes to this machine's diagnostic output (COM1 on
+    /// x86). Used only by `Sampler::export_dump`: blocking, not interrupt-safe,
+    /// and called only after sampling has stopped.
+    auto debug_write(char const *bytes, usize len) -> void;
 
 } // namespace arch
 
