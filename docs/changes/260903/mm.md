@@ -1840,3 +1840,110 @@ PROBE root children now = 11
   现在只有 `alloc_spot(size, PAGE_SIZE, m_base, m_base + m_size - 1)` 一种走法，
   参数化一个没有第二个调用方的维度只会先猜错。
 - 没有动 `VmMapping::map()` 缺锁那条既有 FIXME，也没有动 `VmObjectPhysical` 一侧。
+
+---
+
+## `find_mapping_locked()` 改成游标下降，不再按嵌套深度递归（2026-09-04）
+
+> 无序号：本文件多会话并发追加，6/7/8 已经各撞过两三次，见上一节的说明。
+
+**文件**
+- `kernel/mm/vm_area.cpp` — `find_mapping_locked()` 由自递归改为 `while` 循环
+
+**症状**
+
+潜伏，当前触发不到。`find_mapping_locked()` 找到的子节点若是子区域，就对它再调一次自己：
+
+```cpp
+if (child->is_mapping()) {
+    return static_cast<VmMapping *>(child);
+}
+return static_cast<VmArea *>(child)->find_mapping_locked(va);
+```
+
+栈帧数等于 VMA 的嵌套深度。内核地址空间现在只有两层（root → 九个预置区域 → 映射），
+所以看不出问题。但**没有任何东西给嵌套深度设上限**——`create_subvma()` 会在子区域里
+再建子区域，要多深有多深——而这个函数是 `VmAspace::page_fault_internal()` 上的那个查找，
+栈帧落在谁触发缺页谁的栈上。用户地址空间一旦能用，深度就是用户态说了算的，
+这条路径直通内核栈溢出。
+
+**原因**
+
+递归在这里从头到尾没有换来任何东西，这是关键：**下降只会跟着一个子节点走**。
+子节点互不相交，而一个地址是个单字节窗口，所以每一层至多有一个子节点能回答。
+没有分叉要记，也就没有栈要留——递归调用保存的返回地址和栈帧全是纯开销。
+
+这与真正需要栈的树遍历不同（那种要在一个子树走完之后回到兄弟节点上），
+所以这一条能用最便宜的手法解决，也因此值得先做：改动最小，而收益最直接
+（它在缺页热路径上）。`protect`/`unmap` 那两处要遍历一个范围内的**全部**子节点，
+是真的有分叉，去递归要另一套手法，分开做。
+
+**改法**
+
+游标换成局部变量，递归调用变成给游标赋值：
+
+```cpp
+auto *area = this;
+while (true) {
+    VmaSet::Enumerator enumerator{area->m_subvmas, va, va};
+    auto *const child = enumerator.next();
+    if (!child) {
+        return nullptr;
+    }
+    if (child->is_mapping()) {
+        return static_cast<VmMapping *>(child);
+    }
+    area = static_cast<VmArea *>(child);
+}
+```
+
+`contains(va)` 仍然只在入口查一次：`Enumerator` 交出来的子节点保证与 `[va, va]` 相交，
+也就一定含有 `va`，逐层再查是多余的。
+
+**参照**
+
+`Zircon VmAddressRegion::FindMappingLocked()`（`zircon/kernel/vm/vm_address_region.cc:508`）
+是同一个循环，理由也一样：
+
+```cpp
+const VmAddressRegion* vmar = this;
+while (const VmAddressRegionOrMapping* next = vmar->subregions_locked().FindRegion(va)) {
+    if (auto mapping = next->as_vm_mapping_ptr()) {
+        return const_cast<VmMapping*>(mapping);
+    }
+    vmar = next->as_vm_address_region_ptr();
+}
+return nullptr;
+```
+
+Zircon 的 VMAR 四个范围操作（`FindMappingLocked`、`Protect`、`UnmapInternalLocked`、
+`DestroyLocked`）**一个都不递归**，三种不同手法，这是最简单的那种。
+Linux 没有对应物：它的 VMA 不嵌套，每个 `mm` 一棵平的 maple tree，从源头没有这个问题。
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 跑过，无新告警。
+
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推进到线程调度，
+`kernel.dev.obi` 到 `prof: no architectural PMU`。
+
+启动路径的嵌套只有两层，探不出"多走一步"，所以用临时探针在根 VMA 空闲处搭了一棵
+root → a → b → mapping 的三层树，实测后撤掉（`kernel.dev.obi`）：
+
+```
+PROBE build depth-3 -> Ok
+PROBE find(depth 3) -> k:probe-m base=0xFFFFFF8804000000
+PROBE find(hole) -> <none>
+PROBE find(outside) -> <none>
+```
+
+第二行是正向证据：循环连下三层拿到了叶子映射。后两行是两个否定面——
+落在 `a` 里但 `b` 没覆盖的那一页（真空洞），以及根区域之外的地址。
+
+**故意没做**
+
+- 没有给 `create_subvma()` 加嵌套深度上限。去掉递归之后深度不再是栈的问题；
+  真要限制也该是策略层的事，且现在没有第二个理由。
+- 没有动 `unmap_locked`/`protect_locked`/`can_protect_locked` 三处递归，它们要遍历
+  范围内的全部子节点，需要一个深度优先的 `Enumerator`（靠 `m_parent` 爬回去），
+  另起一条。

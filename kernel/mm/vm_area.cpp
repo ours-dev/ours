@@ -584,20 +584,36 @@ auto VmArea::find_mapping_locked(VirtAddr va) -> VmMapping * {
         return nullptr;
     }
 
-    // The one lookup on the page-fault path, so it is the one that most wants
-    // the tree used as a tree. A single address is a one-byte window -- first
-    // and last are the same address -- and the children are disjoint, so at
-    // most one of them can answer.
-    VmaSet::Enumerator enumerator{m_subvmas, va, va};
-    auto *const child = enumerator.next();
-    if (!child) {
-        return nullptr;
-    }
+    // A cursor, not a call. This used to recurse into the sub-area it found,
+    // one frame per level of nesting, and nothing bounds that nesting:
+    // create_subvma() will build a sub-area inside a sub-area as deep as it is
+    // asked to. The kernel aspace happens to be two levels deep, but a user
+    // aspace's shape is the user's to choose, and this is the lookup on the
+    // page-fault path -- the frames would land on whichever stack took the
+    // fault, at a depth chosen by the faulting program.
+    //
+    // Nothing is lost by flattening it: the descent only ever follows one
+    // child, because the children are disjoint and an address is a one-byte
+    // window, so at most one of them can answer. There is no branching to
+    // remember and therefore no stack to keep.
+    //
+    // Zircon's VmAddressRegion::FindMappingLocked() is this same loop, and for
+    // this same reason.
+    auto *area = this;
+    while (true) {
+        // First and last are the same address; see the window's shape in
+        // VmAreaOrMapping::last().
+        VmaSet::Enumerator enumerator{area->m_subvmas, va, va};
+        auto *const child = enumerator.next();
+        if (!child) {
+            return nullptr;
+        }
 
-    if (child->is_mapping()) {
-        return static_cast<VmMapping *>(child);
+        if (child->is_mapping()) {
+            return static_cast<VmMapping *>(child);
+        }
+        area = static_cast<VmArea *>(child);
     }
-    return static_cast<VmArea *>(child)->find_mapping_locked(va);
 }
 
 auto VmArea::dump_locked() const -> void {
