@@ -6,6 +6,8 @@
 #include <ustl/fmt/format_to.hpp>
 #include <ustl/option.hpp>
 
+#include <new>
+
 namespace ours {
 namespace {
     constexpr char const *LEVEL_NAMES[static_cast<usize>(DpcPriority::Count)] = {
@@ -91,6 +93,21 @@ auto DpcRunner::Queue::do_work() -> i32 {
 
 auto DpcRunner::init() -> void {
     auto &runner = Current::get();
+
+    // Construct this CPU's runner before touching it. CpuLocal hands out
+    // zero-filled storage, and a zeroed Queue is not an empty Queue: its
+    // intrusive list header is {null, null} rather than self-pointing, and
+    // its Event's canary is 0. Nothing noticed until the first enqueue --
+    // do_work() parks on the event without ever inspecting the list, and
+    // List::insert() does not consult empty(), it links against the header
+    // directly, so link_before() wrote through the header's null prev and
+    // took a page fault at the first Dpc ever queued.
+    //
+    // Every other per-CPU object in this tree is built the same way:
+    // Scheduler::init() opens with `new (this) Self()`, IdleThread::init()
+    // with `new (this) IdleThread(cpunum)`. This one simply never did.
+    new (&runner) Self();
+
     auto const cpu = mm::CpuLocal::current_cpu();
 
     for (auto i = usize(0); i < static_cast<usize>(Level::Count); ++i) {

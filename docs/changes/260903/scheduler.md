@@ -1352,3 +1352,52 @@ ours 的 `Scheduler::Current::reschedule(Thread*)` 就是 `RescheduleInternal` �
 
 构建通过；`clang-tidy` 无新告警。dbg：不再掉出 `exit()`；启动前进到 DPC 队列
 （第 24–27 条是那条链上的四个缺陷）。
+
+---
+
+## 24. per-CPU 的 `DpcRunner` 从来没有被构造过（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/dpc.cpp` — `DpcRunner::init()` 开头 placement-new。
+
+**症状**
+
+第一次有人 `enqueue()` 一个 `Dpc` 就 **#PF**（页故障，向量 PageFault，出错 rip 落在
+`DpcRunner::Queue::enqueue +0x160`，正是 `m_list.push_back(dpc)`），随后异常处理里再故障，
+三重故障，一个字都没打出来。发现顺序上这是最后一条，但它是这条链的根。
+
+**原因**
+
+```cpp
+auto DpcRunner::init() -> void {
+    auto &runner = Current::get();
+    auto const cpu = mm::CpuLocal::current_cpu();
+    // 直接开始用 runner.m_dpc_queues[i]
+```
+
+`Current::get()` 给回的是 CpuLocal 的**零填充**存储，而**零填充的 `Queue` 不是空的 `Queue`**：
+它的侵入式链表表头是 `{null, null}`，而不是自指；它的 `Event` canary 也是 0。
+
+这一直没被发现，因为两条路都绕开了它：`do_work()` 一进来就 park 在 event 上，从不看链表；
+而 `List::insert()` **不查 `empty()`**，直接对表头 `link_before()`——于是
+`set_next(get_previous(header), node)` 就是往空指针里写。第一个入队的 `Dpc` 必然页故障。
+
+树里每一个 per-CPU 对象都是另一种写法：`Scheduler::init()` 第一行是 `new (this) Self();`，
+`IdleThread::init()` 是 `new (this) IdleThread(cpunum);`。只有这个没写。
+
+**改法**
+
+```cpp
+auto &runner = Current::get();
+new (&runner) Self();
+```
+
+**参照**
+
+无，本项目自有约定——但这个约定在同目录的 `Scheduler::init()` / `IdleThread::init()` 里
+各有一份现成的先例。
+
+**验证**
+
+构建通过。启动**无变化**：此刻 `DpcRunner::init()` 还没有任何调用者（第 27 条才接上），
+这段代码是死的。它必须先落地，否则第 27 条一接通就是这个页故障。
