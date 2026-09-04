@@ -292,8 +292,11 @@ auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
     m_canary.verify<Self>();
     DEBUG_ASSERT(this == Current::get());
 
-    if (!!(m_flags & Flags::Detached)) {
-        return Status::BadState;
+    {
+        Guard guard{get_pi_lock()};
+        if (!!(m_flags & Flags::Detached)) {
+            return Status::BadState;
+        }
     }
 
     if (state() != State::Dead) {
@@ -349,7 +352,9 @@ auto Thread::bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -
     m_canary.verify<Self>();
     DEBUG_ASSERT(state() == State::Initial);
 
-    Guard guard{get_resource_lock()};
+    // The PI lock, because that is what guards m_flags; m_user_thread has
+    // no readers that race this (the thread is still Initial).
+    Guard guard{get_pi_lock()};
     m_user_thread = user_thread;
 
     m_flags |= Flags::Detached;
@@ -358,6 +363,16 @@ auto Thread::bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -
 auto Thread::destroy() -> void {
     m_canary.verify<Self>();
 
+    // Read before the destructor runs -- m_flags is a member of the object
+    // being torn down, and the old code read it after ~Self(). NoFree never
+    // changes after publication, but the lock is what the annotation asks
+    // for and it costs nothing here.
+    auto nofree = false;
+    {
+        Guard guard{get_pi_lock()};
+        nofree = !!(m_flags & Flags::NoFree);
+    }
+
     {
         Guard guard{get_resource_lock()};
         Scheduler::on_thread_dead(this);
@@ -365,7 +380,7 @@ auto Thread::destroy() -> void {
     }
 
     this->~Self();
-    if (!(m_flags & Flags::NoFree)) {
+    if (!nofree) {
         ThreadCache::put(this);
     }
 

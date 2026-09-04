@@ -251,6 +251,13 @@ namespace task {
             return m_state == State::Special;
         }
 
+        /// Reads m_flags without its lock, on purpose: Idle is set once,
+        /// before the thread is published (IdleThread::init), and never
+        /// changes, so there is nothing for the lock to order against. The
+        /// callers are scheduler paths that hold the runqueue lock, not the
+        /// PI lock, and asking them to take it for an immutable bit would be
+        /// ceremony. Detached is the only bit of m_flags that moves.
+        TA_NO_THREAD_SAFETY_ANALYSIS
         FORCE_INLINE auto is_idle_thread() const -> bool {
             return !!(m_flags & Flags::Idle);
         }
@@ -358,10 +365,12 @@ namespace task {
             ktl::write_once(m_state, State::Suspend);
         }
 
+        TA_REQUIRES(get_pi_lock())
         FORCE_INLINE auto set_flag_idle() -> void {
             m_flags |= Flags::Idle;
         }
 
+        TA_REQUIRES(get_pi_lock())
         FORCE_INLINE auto set_flag_nofree() -> void {
             m_flags |= Flags::NoFree;
         }
@@ -411,12 +420,36 @@ namespace task {
         KoId m_tid;
 
         sync::SpinLock m_resource_lock;
-        Flags m_flags TA_GUARDED(get_resource_lock());
+
+        /// Under the PI lock. That is the lock every path that changes the
+        /// thread's fate already holds -- detach(), Current::exit(),
+        /// suspend_or_kill(), resume() -- and Detached is the only bit that
+        /// changes after the thread is published (Idle and NoFree are set
+        /// before it is). It used to say resource lock, which none of those
+        /// paths took; Zircon keeps flags_ under the one thread_lock for the
+        /// same reason.
+        Flags m_flags TA_GUARDED(get_pi_lock());
         State m_state;
         Signals m_signals;
 
         sync::SpinLock m_pi_lock;
-        sched::Context m_scheduling_context TA_GUARDED(get_pi_lock());
+
+        /// Owned by the runqueue: the lock of the scheduler this thread is
+        /// on (`Scheduler::get_lock()` on `Current::get(curr_cpu())`)
+        /// protects it, the way Linux's sched_entity belongs to rq->lock.
+        /// The scheduler reads and writes it under that lock throughout
+        /// (enqueue/dequeue, evaluate_next_thread, put_prev/set_next); the
+        /// PI paths that touch the profile do so while the thread is off a
+        /// runqueue or with the runqueue lock also held.
+        ///
+        /// Not TA_GUARDED, because the analysis needs a capability
+        /// *expression*, and "whichever runqueue this thread is on" is a
+        /// value read out of the context itself -- there is no expression
+        /// naming it from here. It said TA_GUARDED(get_pi_lock()) before,
+        /// which no scheduler path satisfied, so it produced 33 warnings per
+        /// translation unit and protected nothing. Linux has the same gap and
+        /// closes it at run time with lockdep_assert_rq_held().
+        sched::Context m_scheduling_context;
         PreemptionState m_preemption_state;
         TaskState m_task_state TA_GUARDED(get_resource_lock());
         WaiterState m_waiter_state;

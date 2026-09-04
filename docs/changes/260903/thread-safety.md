@@ -644,3 +644,58 @@ Zircon `WaitQueue::WakeOne()`/`WakeAll()`：整个唤醒在 `thread_lock` 下；
 
 **故意没做**
 `WaiterState::sleep/unsleep` 的 `TA_REQUIRES`（4.4）：头文件包含方向的问题，另立一条。
+
+---
+
+## `Thread::m_flags` 归 PI 锁，`m_scheduling_context` 改为 runqueue 锁模型（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/thread.hpp` — `m_flags` 的 `TA_GUARDED(get_resource_lock())` 改为
+  `TA_GUARDED(get_pi_lock())`；`set_flag_idle/nofree` 加 `TA_REQUIRES(get_pi_lock())`；
+  `is_idle_thread()` 标 `TA_NO_THREAD_SAFETY_ANALYSIS`（读的是发布前定下、不再变的位）；
+  `m_scheduling_context` 去掉 `TA_GUARDED(get_pi_lock())`，注释写明 rq 锁模型和为什么标不了
+- `kernel/kernel/task/thread.cpp` — `join()` 在 PI 锁下读 Detached；`bind_user_thread()` 的
+  Guard 从 resource 锁换成 PI 锁；`destroy()` 把 NoFree 在 `~Self()` **之前**、PI 锁下读到局部变量
+- `kernel/kernel/task/idle_thread.cpp` — 两个 `set_flag_*` 放进 `Guard{pi_lock}`；补 include
+
+**症状**
+潜伏。`m_flags`：注解说 resource 锁，`detach()`/`Current::exit()`/`suspend_or_kill()` 在 PI 锁下
+读写，`bind_user_thread()` 在 resource 锁下写，`join()`/`destroy()` 不拿锁——四种做法，没有一种
+和注解一致。`destroy()` 还在 `this->~Self()` **之后**读 `m_flags`。`m_scheduling_context`：注解说
+PI 锁，调度器 23 处在 rq 锁下读写它。两项合计 84 条告警。
+
+**原因**
+两把锁的分工从来没定过，注解是随手写的，代码各行其是。这次定下来：
+
+- **`m_flags` 归 PI 锁。** 改线程命运的路径（detach/exit/suspend_or_kill/resume）本来就持 PI 锁，
+  Detached 是唯一会在发布后变化的位；Idle/NoFree 在发布前设好就不动。对应 Zircon 单一
+  `thread_lock` 下的 `flags_`。resource 锁在这些路径上一个都没出现，选它只会多一把锁。
+- **`m_scheduling_context` 归所在 runqueue 的锁。** 这是 Linux `sched_entity` 归 `rq->lock` 的
+  模型，也是代码实际的样子：enqueue/dequeue/evaluate_next/put_prev/set_next 全在 rq 锁下。
+  Zircon 模型（归 thread_lock）会要求调度器每次碰它都持 PI 锁，改动面太大。
+
+**改法**
+`m_flags` 按决定改注解、补访问器要求、修三处调用方。`is_idle_thread()` 不要求锁：调用方是
+持 rq 锁的调度器路径，为一个不变的位去拿 PI 锁是走形式；注释里把这个理由写了。`idle_thread.cpp`
+里设标志时明明还没发布也拿了锁——「还没发布所以不用锁」正是分析器要替代的那种口头推理。
+
+`m_scheduling_context` **不标注解**：分析器要的是一个 capability **表达式**，「这个线程所在的
+runqueue 的锁」是从 context 里读出来的值（`Current::get(curr_cpu()).get_lock()`），从 `Thread`
+这里写不出这个表达式。Linux 同样标不了，用 `lockdep_assert_rq_held()` 在运行时断言。注释里把
+模型、为什么标不了、以前那个错注解的代价（每 TU 33 条）都写了。
+
+**参照**
+Zircon `Thread::flags_ TA_GUARDED(get_lock())`；Linux `struct sched_entity` /
+`lockdep_assert_rq_held(rq)`；`Thread::destroy` 顺序对应 Zircon `Thread::Free()` 先读
+`flags_ & THREAD_FLAG_FREE_STRUCT` 再析构。
+
+**验证**
+- 全量构建通过；clang-format 已跑；clang-tidy 对改动行无新告警；三个文件的 hunk 全是本条的。
+- 15 个 TU：108 → **24**。剩下：`m_stack`/`m_arch_thread`/`m_task_state` 的 resource 锁注解
+  （4.1b，另立），`WaiterState`（4.4），`finish_transition`（4.6）。
+- QEMU：两个镜像停的位置与上一条相同（`Free frame(F000, 0)` 后静默 / tick 设备后静默），
+  都在 prof/调度器那边正在处理的位置。
+
+**故意没做**
+`m_stack`/`m_arch_thread`/`m_task_state` 的归属：`m_stack`/`m_arch_thread` 是构造期写、上下文切换
+读，`m_task_state` 是 join/exit 之间的握手，各有各的答案，不在这次决定的范围内。

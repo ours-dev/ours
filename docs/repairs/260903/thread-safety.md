@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**，4.5 修完 **108**。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**，4.5 修完 **108**，4.1 修完 **24**。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -53,28 +53,21 @@
 
 ## 4. `TA_GUARDED` 标了，但访问器没有 `TA_REQUIRES`（数量最多，需先做决定再补）
 
-### 4.1 `Thread` 五个成员
+### 4.1 `Thread::m_flags` / `m_scheduling_context` — 已修（108 → 24）
 
-`thread.hpp:396-416` 把 `m_arch_thread`、`m_stack`、`m_flags`、`m_task_state` 标 `resource_lock`，
-`m_scheduling_context` 标 `pi_lock`，但读写它们的访问器全部裸着：`kernel_stack()`(:211)、
-`last_cpu()`/`curr_cpu()`(:215/219)、`is_idle_thread()`(:255)、`scheduling_context()`(:330，
-返回可写引用)、`set_flag_idle()`/`set_flag_nofree()`(:358/362)。这 7 个访问器在 11 个 TU 里
-各报一次，合计 **121 条**，占剩余告警一半以上。
+决定：`m_flags` 归 PI 锁；`m_scheduling_context` 归所在 runqueue 的锁（Linux 模型），因为写不出
+capability 表达式而不标注解。见 changes。
 
-补之前要先回答两个问题，否则补出来的 `TA_REQUIRES` 是错的：
+### 4.1b `Thread::m_stack` / `m_arch_thread` / `m_task_state` 仍标 `TA_GUARDED(get_resource_lock())`
 
-- **`m_flags` 到底归哪把锁？** `detach()`（`thread.cpp:300-315`）和 `Current::exit()`
-  （`:586-590`）在 `pi_lock` 下读写它，`set_user_thread()`（`:336-339`）在 `resource_lock` 下写它，
-  `join()`（`:279`）和 `destroy()`（`:352`，且在 `~Self()` 之后读）不拿任何锁。注解说
-  `resource_lock`，代码多数用 `pi_lock`。Zircon 只有一把 `thread_lock`，所以没有这个问题；
-  这里得先定下来。
-- **`m_scheduling_context` 由 pi 锁保护，还是由所在 rq 锁保护？** 调度器代码
-  （`set_schedule`/`get_schedule`/`evaluate_next_thread`/`enqueue_thread`……）在持 rq 锁不持
-  pi 锁时大量读写它。Linux 的 `sched_entity` 归 `rq->lock`；Zircon 归 `thread_lock`。按现在的
-  代码看更像 Linux 模型，那 `TA_GUARDED(get_pi_lock())` 就是错的。
+剩余 24 条里的 18 条。`kernel_stack()` 按引用返回 `m_stack`（11 TU 各一条）；`spawn_etc`/
+`init_first` 构造期裸写三者（`thread.cpp:118-151`）；`join()`/`exit()`/`trampoline()` 不持锁读写
+`m_task_state`（`:303/310/396/653/663`）。要先定：
 
-`spawn_etc()`/`init_first()`（`thread.cpp:118-140`）在对象发布前裸写 `m_stack`/`m_task_state`/
-`m_arch_thread`，这是构造期的正常做法，标 `TA_NO_THREAD_SAFETY_ANALYSIS` 并注明「未发布」。
+- `m_stack`、`m_arch_thread`：构造期写一次，之后只有上下文切换（`ArchThread::switch_thread`）
+  和 `mp.cpp`/`x86 thread.cpp` 读栈顶。建议去掉 `TA_GUARDED`，注释「发布前写、之后只读」。
+- `m_task_state`：join 与 exit 之间的握手，内部自带 wait queue。要么它自己就是同步点、去掉
+  注解；要么 join/exit 真的在 resource 锁下访问它。看 `TaskState` 的实现再定。
 
 ### 4.2 `PmNode` 三个 CpuMask — 已修
 

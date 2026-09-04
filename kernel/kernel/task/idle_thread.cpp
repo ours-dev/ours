@@ -1,5 +1,6 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <ours/koid.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
@@ -54,8 +55,16 @@ auto IdleThread::init(CpuNum cpunum) -> void {
     DEBUG_ASSERT(Status::Ok == status, "Failed to initialize idler[{}]", m_cpu);
 
     m_thread->set_state_running();
-    m_thread->set_flag_idle();
-    m_thread->set_flag_nofree();
+
+    // Nobody else can see the thread yet, so the lock orders nothing; it is
+    // taken because the flag setters require it and an exemption for "not
+    // published yet" is exactly the kind of reasoning the analysis exists to
+    // replace.
+    {
+        Guard guard{m_thread->get_pi_lock()};
+        m_thread->set_flag_idle();
+        m_thread->set_flag_nofree();
+    }
 }
 
 auto IdleThread::run() -> void {
