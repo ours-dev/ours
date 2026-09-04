@@ -41,7 +41,7 @@ namespace {
     /// (init_arch/init_platform, as `kernel_init_freeable()`), while the
     /// function that outlives the reclaim is not `__init` itself
     /// (`kernel_init()`, marked `__ref`).
-    auto labour_routine() -> i32 {
+    auto labour_routine(void *) -> i32 {
         init_arch();
         set_init_level(InitLevel::Arch);
 
@@ -59,7 +59,8 @@ namespace {
 
         // The 2nd stage has finished, and next is to load userboot.
 
-        auto const gibberish = [](char const *msg) {
+        auto const gibberish = [](void *arg) -> i32 {
+            auto const msg = static_cast<char const *>(arg);
             while (1) {
                 log::debug("I'm {}", msg);
                 for (int i = 0; i < 10000; ++i)
@@ -68,11 +69,13 @@ namespace {
             return 0;
         };
 
-        auto t1 = Thread::spawn("Sample1", task::DEFAULT_PRIORITY, gibberish, "Thread 1");
+        auto t1 = Thread::spawn("Sample1", gibberish, const_cast<char *>("Thread 1"),
+                                task::DEFAULT_PRIORITY);
         t1->detach();
         t1->resume();
 
-        auto t2 = Thread::spawn("Sample2", task::DEFAULT_PRIORITY, gibberish, "Thread 2");
+        auto t2 = Thread::spawn("Sample2", gibberish, const_cast<char *>("Thread 2"),
+                                task::DEFAULT_PRIORITY);
         t2->detach();
         t2->resume();
 
@@ -151,7 +154,7 @@ NO_MANGLE INIT_CODE auto start_kernel(PhysAddr handoff) -> void {
     task::init();
     set_init_level(InitLevel::Threading);
 
-    auto const laborer = Thread::spawn("laborer", task::DEFAULT_PRIORITY, labour_routine);
+    auto const laborer = Thread::spawn("laborer", labour_routine, nullptr, task::DEFAULT_PRIORITY);
     laborer->set_cpu_affinity_hard(CpuMask::of(0));
     laborer->detach();
     laborer->resume();

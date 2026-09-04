@@ -48,14 +48,15 @@ namespace task {
         using Self = TaskState;
 
       public:
-        FORCE_INLINE auto init(ThreadStartRoutine entry) -> void {
+        FORCE_INLINE auto init(ThreadStartRoutine entry, void *arg) -> void {
             m_entry_point = entry;
+            m_arg = arg;
             m_retcode = 0;
         }
 
         FORCE_INLINE auto invoke() -> i32 {
             DEBUG_ASSERT(m_entry_point);
-            m_retcode = m_entry_point();
+            m_retcode = m_entry_point(m_arg);
             m_result_wait_queue.notify_all(Status::Ok);
             return m_retcode;
         }
@@ -75,6 +76,7 @@ namespace task {
       private:
         i32 m_retcode;
         ThreadStartRoutine m_entry_point;
+        void *m_arg;
         WaitQueue m_result_wait_queue;
     };
 
@@ -103,7 +105,7 @@ namespace task {
 
         using Name = ktl::Name<32>;
         using TrampolineRoutine = auto (*)() -> void;
-        using StartRoutine = ustl::function::Fn<auto()->i32>;
+        using StartRoutine = ThreadStartRoutine;
 
         class Current;
 
@@ -114,15 +116,16 @@ namespace task {
         /// This call allocates a thread and places it in the global thread list. This
         /// memory will be freed by either Join() or Detach(), one of these must be called.
         /// The thread will not be scheduled until resume() is called.
-        static auto spawn(char const *, StartRoutine, sched::BaseProfile const &) -> Self *;
+        /// |arg| is handed to |entry| when the thread runs, and is the only
+        /// context it gets. The variadic overloads that used to sit here bound
+        /// their arguments into a std::function; see ThreadStartRoutine for
+        /// why that could not stay. A caller with a non-static member function
+        /// or an extra argument wraps it in a captureless lambda, which
+        /// converts to a plain function pointer and allocates nothing.
+        static auto spawn(char const *, StartRoutine, void *arg, sched::BaseProfile const &)
+            -> Self *;
 
-        static auto spawn(char const *, StartRoutine, usize priority) -> Self *;
-
-        template <typename F, typename... Args>
-        static auto spawn(char const *, sched::BaseProfile const &, F entry, Args &&...) -> Self *;
-
-        template <typename F, typename... Args>
-        static auto spawn(char const *, usize priority, F entry, Args &&...) -> Self *;
+        static auto spawn(char const *, StartRoutine, void *arg, usize priority) -> Self *;
 
         /// |target_cpu| pins the new thread to one CPU instead of letting the
         /// scheduler choose. INVALID_CPU_NUM, the default, means "no opinion"
@@ -137,9 +140,9 @@ namespace task {
         /// CPUs come up. The answer for a CPU that is not online yet has to
         /// come from the caller, because there is nothing for selection to
         /// read.
-        static auto spawn_etc(KoId, char const *, StartRoutine, sched::BaseProfile const &,
-                              TrampolineRoutine, Self *, CpuNum target_cpu = INVALID_CPU_NUM)
-            -> Status;
+        static auto spawn_etc(KoId, char const *, StartRoutine, void *arg,
+                              sched::BaseProfile const &, TrampolineRoutine, Self *,
+                              CpuNum target_cpu = INVALID_CPU_NUM) -> Status;
 
         /// Builds a thread around the execution context that is already running.
         ///
@@ -518,30 +521,6 @@ namespace task {
         USTL_DECLARE_LIST(Thread, MigratingList, Thread::MigratingListOption);
         USTL_DECLARE_LIST(Thread, UnparkList, Thread::UnparkListOption);
     };
-
-    /// The routine comes second and the priority last, which is the order the
-    /// non-template overload above declares and the reverse of this one's own.
-    /// Passing them through in this template's order made the call select
-    /// *this template* again with F deduced as StartRoutine, binding a
-    /// std::function inside a std::bind inside another std::function, forever.
-    ///
-    /// It never got to recurse: std::bind's result outgrows std::function's
-    /// small-buffer optimization, so the second wrap reached the global
-    /// operator new -- which in this kernel is a panic stub -- and the boot
-    /// died there with "operator new" and no other explanation.
-    template <typename F, typename... Args>
-    FORCE_INLINE auto Thread::spawn(const char *name, usize priority, F entry, Args &&...args)
-        -> Self * {
-        StartRoutine entry_point = ustl::function::bind(entry, ustl::forward<Args>(args)...);
-        return Self::spawn(name, entry_point, priority);
-    }
-
-    template <typename F, typename... Args>
-    FORCE_INLINE auto Thread::spawn(const char *name, sched::BaseProfile const &profile, F entry,
-                                    Args &&...args) -> Self * {
-        StartRoutine entry_point = ustl::function::bind(entry, ustl::forward<Args>(args)...);
-        return Self::spawn(name, entry_point, profile);
-    }
 
     class Thread::Current: public mm::CpuLocal::Current<Thread *> {
       public:

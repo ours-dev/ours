@@ -132,7 +132,7 @@ auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &
     SPAWNED_THREADS.push_back(*self);
 }
 
-auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry,
+auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg,
                        sched::BaseProfile const &profile, TrampolineRoutine trampoline_routine,
                        Self *self, CpuNum target_cpu) -> Status {
     DEBUG_ASSERT(self);
@@ -143,7 +143,7 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry,
     if (Status::Ok != status) {
         return status;
     }
-    self->m_task_state.init(entry);
+    self->m_task_state.init(entry, arg);
 
     if (!trampoline_routine) {
         trampoline_routine = Thread::trampoline;
@@ -163,8 +163,8 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry,
     return Status::Ok;
 }
 
-auto Thread::spawn(char const *name, StartRoutine entry, sched::BaseProfile const &profile)
-    -> Self * {
+auto Thread::spawn(char const *name, StartRoutine entry, void *arg,
+                   sched::BaseProfile const &profile) -> Self * {
     // FIXME(SmallHuaZi)
     auto const tid = KoIdGenerator::generate();
     if (KOID_INVALID == tid) {
@@ -177,7 +177,7 @@ auto Thread::spawn(char const *name, StartRoutine entry, sched::BaseProfile cons
         return 0;
     }
 
-    auto const status = Self::spawn_etc(tid, name, entry, profile, 0, self);
+    auto const status = Self::spawn_etc(tid, name, entry, arg, profile, 0, self);
     if (Status::Ok != status) {
         ThreadCache::deallocate(self);
         return 0;
@@ -186,8 +186,8 @@ auto Thread::spawn(char const *name, StartRoutine entry, sched::BaseProfile cons
     return self;
 }
 
-auto Thread::spawn(char const *name, StartRoutine entry, usize priority) -> Self * {
-    return Self::spawn(name, entry, sched::BaseProfile(static_cast<i32>(priority)));
+auto Thread::spawn(char const *name, StartRoutine entry, void *arg, usize priority) -> Self * {
+    return Self::spawn(name, entry, arg, sched::BaseProfile(static_cast<i32>(priority)));
 }
 
 auto Thread::switch_thread(Self *curr, Self *next) -> void {
@@ -679,9 +679,27 @@ auto Thread::Current::exit(i32 retcode) -> void {
     auto const status = DpcRunner::enqueue(dpc, DpcRunner::Level::Normal);
     DEBUG_ASSERT(Status::Ok == status);
 
-    // Here we don't hold |current_thread|'s lock, so use Thread::Current::schedule()
-    Thread::Current::reschedule();
-    unreachable();
+    // Straight to the scheduler, not through Thread::Current::reschedule().
+    //
+    // That wrapper is the *voluntary* entry point: it asks whether this
+    // context may give up the CPU and, if not, records a pending request and
+    // returns. Here it always answered no -- the guards above have interrupts
+    // and preemption disabled -- so a dying thread returned from it and ran
+    // straight into the unreachable() below. Nothing may follow this call:
+    // the thread is already Dead, its Dpc is queued, and there is no state
+    // left for it to run on. Scheduler::Current::reschedule() is the
+    // unconditional counterpart, and reschedule_common()'s preconditions
+    // (interrupts off, preemption off, PI lock held, curr == curr_thread) are
+    // exactly what this scope has -- the lock is taken here because the block
+    // above dropped it. Zircon ends Thread::Current::Exit() the same way:
+    // enqueue the free Dpc, take the thread's lock, RescheduleInternal().
+    //
+    // panic() rather than unreachable() for what follows: falling through is
+    // precisely the defect this replaces, and it cost a silent triple fault
+    // to find. Zircon spells it "somehow fell through thread_exit()".
+    Guard guard{current_thread->get_pi_lock()};
+    Scheduler::Current::reschedule(current_thread);
+    panic("Thread |{}| fell through exit()", current_thread->name());
 }
 
 auto Thread::Current::set_name(const char *name) -> void {

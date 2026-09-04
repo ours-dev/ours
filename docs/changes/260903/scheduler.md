@@ -1179,3 +1179,117 @@ Dpc dpc{[](Dpc *dpc) -> void { dpc->arg<Thread>()->destroy(); }, current_thread}
 - 没有动 `Dpc` 的生命周期问题：唯一的调用点把 `Dpc` 放在**正在退出的线程自己的内核栈上**，
   而回调 `destroy()` 释放的正是那个栈，`DpcRunner::Queue::do_work()` 在 `invoke()` 之后
   还要回头 `mark_idle(*next)`。这是一个 use-after-free，独立一条，已记进待修。
+
+---
+
+## 22. 线程入口点也不能是 `std::function`（2026-09-03）
+
+**文件**
+- `kernel/include/ours/task/types.hpp` — `ThreadStartRoutine` 改成函数指针。
+- `kernel/include/ours/task/thread.hpp` / `kernel/kernel/task/thread.cpp` — `TaskState` 多存一个
+  `void *arg`；`spawn()` / `spawn_etc()` 多收一个 `arg`；删掉两个变参模板重载。
+- 六个调用点：`idle_thread.cpp`、`dpc.cpp`、`kshell/shell.cpp`、`object/thread_dispatcher.cpp`、
+  `top/main.cpp`（两处 gibberish + laborer）。
+
+**症状**
+
+第 23 条（下一条）刚把 `DpcRunner::init()` 接上，启动就在**更早**的地方 panic：
+
+```
+[... cpu0 error] operator new
+```
+
+——`DpcRunner::Queue::start()` 里 `Thread::spawn(name, DEFAULT_PRIORITY, &Queue::do_work, this)`。
+
+**原因**
+
+和第 21 条的 `Dpc` 是同一个病，只是换了一个类：
+
+```cpp
+// types.hpp
+using ThreadStartRoutine = ustl::function::Fn<auto()->i32>;   // = std::function<int()>
+
+// thread.hpp
+template <typename F, typename... Args>
+FORCE_INLINE auto Thread::spawn(const char *name, usize priority, F entry, Args &&...args)
+    -> Self * {
+    StartRoutine entry_point = ustl::function::bind(entry, ustl::forward<Args>(args)...);
+    return Self::spawn(name, entry_point, priority);
+}
+```
+
+绑一个成员函数指针（Itanium ABI 下 16 字节）加一个 `this`，24 字节，超出
+`std::function` 的小缓冲，于是去堆上要空间，撞 panic 桩。之前一直没事，只是因为
+现有调用点绑的都恰好塞得下——这在 `docs/repairs/260903/task.md` 第 1 条里已经记着
+「离炸只差一个参数」，DPC 的 worker 就是那个参数。
+
+**改法**
+
+照 Zircon 的 `thread_start_routine`（`int (*)(void* arg)`）：入口点是一个函数指针，
+上下文是一个 `void *`，两者都不可能长大。
+
+```cpp
+// types.hpp
+using ThreadStartRoutine = auto (*)(void *arg) -> i32;
+
+// thread.hpp — TaskState 存下 arg，调用时交回去
+FORCE_INLINE auto init(ThreadStartRoutine entry, void *arg) -> void {
+    m_entry_point = entry;
+    m_arg = arg;
+    m_retcode = 0;
+}
+FORCE_INLINE auto invoke() -> i32 {
+    m_retcode = m_entry_point(m_arg);
+    ...
+}
+
+// thread.hpp — arg 排在例程之后、优先级之前，和 Zircon 的 Thread::Create 一致
+static auto spawn(char const *, StartRoutine, void *arg, sched::BaseProfile const &) -> Self *;
+static auto spawn(char const *, StartRoutine, void *arg, usize priority) -> Self *;
+```
+
+两个变参模板重载连同 `ustl::function::bind` 一起删掉——它们正是把任意大小的东西塞进
+`std::function` 的入口。需要绑成员函数或额外参数的调用点改用**无捕获 lambda**，
+它能隐式转成函数指针，不分配：
+
+```cpp
+// dpc.cpp
+m_thread = task::Thread::spawn(
+    name, [](void *arg) -> i32 { return static_cast<Queue *>(arg)->do_work(); }, this,
+    task::DEFAULT_PRIORITY);
+
+// object/thread_dispatcher.cpp
+auto core_thread = task::Thread::spawn(
+    name, [](void *arg) -> i32 { return Self::trampoline(static_cast<Self *>(arg)); },
+    self.as_ptr_mut(), task::DEFAULT_PRIORITY);
+
+// top/main.cpp
+auto const gibberish = [](void *arg) -> i32 {
+    auto const msg = static_cast<char const *>(arg);
+    ...
+};
+auto t1 = Thread::spawn("Sample1", gibberish, const_cast<char *>("Thread 1"),
+                        task::DEFAULT_PRIORITY);
+```
+
+顺带一个小坑：`dummy_start_routine` 原来写成 `[] NO_RETURN() -> i32`，加上形参之后
+`[](void *) NO_RETURN() -> i32` 编不过——`noreturn` 属性在 lambda 上要放在别处。
+这个 lambda 本来就只是 panic，属性去掉不影响语义。
+
+**参照**
+
+`Zircon thread_start_routine`（`kernel/include/kernel/thread.h`）：`int (*)(void* arg)`，
+与 `Thread::Create(const char* name, thread_start_routine entry, void* arg, int priority)`。
+Zircon 从来没有把线程入口做成 `std::function`——内核里没有可用的 `operator new`，
+这是同一个理由。
+
+**验证**
+
+- 构建通过；`clang-format` 已跑；`clang-tidy` 对 `thread.cpp`、`dpc.cpp` 无新告警。
+- QEMU dbg：无断言、无 `operator new`，8566 行 `I'm Thread 1/2`，抢占轮转照常，
+  启动仍到达线程退出——即这条改动本身**无回归**，它是下一条的前提。
+
+**故意没做**
+
+- 没有给 `spawn()` 保留一个"绑任意参数"的便利重载。那正是缺陷的入口；需要更多上下文的
+  调用方应当自己准备一个结构体并传它的地址，这也是 Zircon 的做法。

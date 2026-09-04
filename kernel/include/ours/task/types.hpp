@@ -7,7 +7,20 @@
 #include <ustl/function/fn.hpp>
 
 namespace ours::task {
-using ThreadStartRoutine = ustl::function::Fn<auto()->i32>;
+/// A thread's entry point: a plain function plus one pointer of context.
+///
+/// Deliberately not a `std::function`. This kernel has no global
+/// `operator new` -- only a panic stub -- so a `std::function` works exactly
+/// as long as whatever is stored in it fits the small-buffer optimisation,
+/// and silently panics when it does not. `Thread::spawn()` used to bind its
+/// arguments into one, and binding a member function pointer (16 bytes on
+/// the Itanium ABI) plus a `this` overflows it; that is what killed the DPC
+/// workers the moment anything tried to start them. A function pointer and a
+/// `void *` cannot outgrow anything.
+///
+/// The counterpart is Zircon's `thread_start_routine`, `int (*)(void* arg)`,
+/// with the argument handed to `Thread::Create()` beside the routine.
+using ThreadStartRoutine = auto (*)(void *arg) -> i32;
 using ThreadTrampolineRoutine = auto() -> void;
 
 class Thread;

@@ -105,8 +105,9 @@ namespace {
     }
 
     auto spawn() -> void {
-        auto *thread =
-            ours::task::Thread::spawn("kshell", ours::task::DEFAULT_PRIORITY, &shell_main);
+        auto *thread = ours::task::Thread::spawn(
+            "kshell", [](void *) -> i32 { return shell_main(); }, nullptr,
+            ours::task::DEFAULT_PRIORITY);
         if (thread == nullptr) {
             log::warn("kshell: failed to spawn console thread");
         }

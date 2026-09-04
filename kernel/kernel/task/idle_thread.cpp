@@ -26,7 +26,7 @@ IdleThread::IdleThread(CpuNum cpunum)
 auto IdleThread::init(CpuNum cpunum) -> void {
     new (this) IdleThread(cpunum);
 
-    constexpr auto dummy_start_routine = [] NO_RETURN() -> i32 {
+    constexpr auto dummy_start_routine = [](void *) -> i32 {
         auto const cpunum = Cpu::id();
         panic("Idler[{}] enter the dummy start routine", cpunum);
     };
@@ -50,7 +50,7 @@ auto IdleThread::init(CpuNum cpunum) -> void {
     // over cpu_possible_mask() before the secondaries are up.
     [[maybe_unused]]
     auto const status = Thread::spawn_etc(KoIdGenerator::generate(), name, dummy_start_routine,
-                                          sched::BaseProfile(sched::IDLE_PRIORITY),
+                                          nullptr, sched::BaseProfile(sched::IDLE_PRIORITY),
                                           dummy_trampoline_routine, m_thread.data(), m_cpu);
     DEBUG_ASSERT(Status::Ok == status, "Failed to initialize idler[{}]", m_cpu);
 

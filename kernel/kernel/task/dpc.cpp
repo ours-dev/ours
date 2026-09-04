@@ -16,7 +16,12 @@ namespace {
 } // namespace
 
 auto DpcRunner::Queue::start(char const *name, CpuNum cpu) -> Status {
-    m_thread = task::Thread::spawn(name, task::DEFAULT_PRIORITY, &Queue::do_work, this);
+    // A captureless lambda so this converts to a plain function pointer: the
+    // queue travels as the thread's argument rather than being bound into the
+    // entry point, which is what used to allocate.
+    m_thread = task::Thread::spawn(
+        name, [](void *arg) -> i32 { return static_cast<Queue *>(arg)->do_work(); }, this,
+        task::DEFAULT_PRIORITY);
     if (!m_thread) {
         return Status::NoResource;
     }

@@ -20,8 +20,9 @@ auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *n
         return Status::OutOfMem;
     }
 
-    auto core_thread =
-        task::Thread::spawn(name, task::DEFAULT_PRIORITY, Self::trampoline, self.as_ptr_mut());
+    auto core_thread = task::Thread::spawn(
+        name, [](void *arg) -> i32 { return Self::trampoline(static_cast<Self *>(arg)); },
+        self.as_ptr_mut(), task::DEFAULT_PRIORITY);
     if (!core_thread) {
         return Status::OutOfMem;
     }
