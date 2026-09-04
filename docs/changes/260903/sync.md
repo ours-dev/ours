@@ -111,3 +111,74 @@ CPU 就再也回不来了。这个 tag 以前不起作用，所以去掉它**今
 - 没有给 `Mutex` 补 saver，理由见上。
 - `system/lib/lockdep` 的两个文件**提交不进去**：它是未初始化的子模块，
   和 `system/lib/concurrent` 一样。本次提交只含内核侧的四个文件。
+
+---
+
+## 2. `Event`：无人等待时不再丢信号，`m_result` 归队列锁（2026-09-03）
+
+**文件**
+- `kernel/kernel/sync/event.cpp` — `wait_etc()` 的判断反了（另一个 agent 修的，见下）、
+  guard 换成组合 tag（同上）；`signal()` 补上落闩；`m_result` 的读改到队列锁下。
+
+**症状**
+
+三个，前两个由 kernel/task 那边的 agent 发现并已修，一并记在这里，因为它们在同一个函数里：
+
+1. `wait_etc()` 的条件整个反了：`m_result.is_some()` 意思是「已经被 signal 过」，
+   而那正是去 park 的分支；没被 signal 的反而立刻返回 `Status::Ok`。
+   每个等待者做的都和它请求的相反。`DpcRunner::Queue::do_work()` 在 `wait()` 上循环，
+   于是变成忙等——实测约 3 秒内心跳 18323 次唤醒，把同 CPU 上其他线程全饿死。
+2. 那里的 guard 是普通的 `Guard{pi_lock}`，而它会经由 `park_thread()` 被带进
+   `reschedule_common()`，后者要求中断和抢占都关掉并且断言了。第一次真正 park 就死在
+   "Enter reschedule_common() with IRQ enabled"。改成
+   `Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable>`。**这一条是在本文件第 1 条
+   （让 Guard 真正消费选项）落地之后才暴露出来的**——在那之前 tag 是死的，
+   所以问题藏着。凡是会被交给 park 或 reschedule 的 guard 都需要组合 tag，
+   不是单个 `IrqSave`。
+3. **本条修的**：`signal()` 在队列为空时提前返回，`m_result` 根本没被写过。
+   于是「信号先到、等待者后来」的顺序下信号被丢掉，那个等待者永远睡下去。
+   潜伏：DPC 那条路恰好不在意（它的 worker 很早就 park 住不动了）。
+
+**原因**
+
+判定落闩的规则其实已经写在函数里了：
+
+```cpp
+if (!(m_flags & Flags::AutoUnsignal) || !need_unpark) {
+    m_result = status;
+}
+```
+
+「手动复位的事件一律落闩；自动复位的只有在没人接手时才落闩」——这正是 Zircon
+`Event::SignalEtc()` 的规则。问题是它够不着：上面那句 `if (m_wq.size() == 0) return;`
+先走掉了。空队列根本不该是一个特例，`lock_for_notify_one/all` 对空队列返回的
+`none()` 表达的就是「没人接手」，和落闩规则问的是同一件事。
+
+另外 `m_result` 的保护锁前后不一致：`signal()` 和 `unsignal()` 都在**队列锁**下写它，
+`wait_etc()` 却在**线程 PI 锁**下读它。两把不同的锁护同一个字段，等于没护。
+
+**改法**
+
+- 去掉 `m_wq.size() == 0` 和 `!unpark_threads` 两处提前返回，把「有没有人被唤醒」统一成
+  `unpark_threads && !unpark_threads->empty()`，让既有的落闩规则真正执行到。
+- 已 signal 分支里的 `DEBUG_ASSERT(m_wq.size() == 0)` 去掉：它假定通知路径一定把队列排空了，
+  这个前提不该由 `signal()` 来断言。
+- `wait_etc()` 读/消费 `m_result` 时加一层队列锁，作用域在 `park_thread()` 之前结束——
+  `park_thread()` 自己会经 `enqueue_waiter()` 拿同一把锁，而 SpinLock 不可重入。
+  「PI 锁在外、队列锁在内」是 `enqueue_waiter` 注释里已经写死的方向。
+
+**参照**
+
+Zircon `Event::SignalEtc()` 与 `Event::WaitWorker()`。
+
+**验证**
+
+- `sync.event.cpp.o` 编译通过。
+- **全量构建当前起不来，和本条无关**：`kernel/mm/page_queues.cpp` 正被另一个会话改到一半
+  （引用了还不存在的 `Thread::sleep_until` 和 `DEFAULT_*_ROTATE_TIME`）。
+  因此**没有 QEMU 实测**。等 mm 那边落地要回来补一次。
+
+**故意没做**
+
+- 没有给 `m_result` 加 `TA_GUARDED`。`Event` 的字段目前一个注解都没有，
+  补注解要连着 `m_flags`、`m_wq` 一起定，属于 thread-safety 那条线。
