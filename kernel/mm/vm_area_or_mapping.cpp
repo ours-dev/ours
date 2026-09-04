@@ -99,6 +99,48 @@ auto VmaSet::erase(VmAreaOrMapping &value) -> void {
     }
 }
 
+VmaSet::Enumerator::Enumerator(VmaSet &set, VirtAddr min, VirtAddr max)
+    : m_set(&set), m_iter(set.m_tree.end()), m_max(max) {
+    // Two candidates can open the walk, and only one of them is the lower
+    // bound. lower_bound() lands on the first area whose base is at or after
+    // |min|; the area immediately before it starts lower, and if it reaches
+    // past |min| it overlaps the window too -- and it is the earlier of the
+    // two, so it has to come first. Anything before *that* ends at or below
+    // |min|, because the areas are disjoint and ordered.
+    auto const at_or_after = set.m_tree.lower_bound(min);
+    m_iter = at_or_after.is_some() ? at_or_after.value() : set.m_tree.end();
+
+    if (m_iter != set.m_tree.begin()) {
+        auto previous = m_iter;
+        --previous;
+        if ((*previous)->end() > min) {
+            m_iter = previous;
+        }
+    }
+}
+
+VmaSet::Enumerator::Enumerator(VmArea &area, VirtAddr min, VirtAddr max)
+    : Enumerator(area.m_subvmas, min, max) {}
+
+auto VmaSet::Enumerator::next() -> VmAreaOrMapping * {
+    if (m_iter == m_set->end()) {
+        return nullptr;
+    }
+
+    auto *const area = *m_iter;
+    if (area->base() >= m_max) {
+        // Ordered by base, so nothing further can overlap either. Park on end()
+        // so a caller that keeps asking keeps getting nullptr.
+        m_iter = m_set->end();
+        return nullptr;
+    }
+
+    // Past the area before handing it over: the caller is allowed to drop its
+    // reference to what it gets back.
+    ++m_iter;
+    return area;
+}
+
 auto VmaSet::has_range(VirtAddr base, usize size) const -> bool {
     // Any area overlapping [base, base + size) either starts inside it, or
     // starts before it and reaches in.
@@ -120,7 +162,7 @@ auto VmaSet::has_range(VirtAddr base, usize size) const -> bool {
 auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr high_limit) const
     -> ustl::Result<VirtAddr, Status> {
     if (!size) {
-        return ustl::err(Status::InvalidArguments);
+        return ustl::err(Status::InvArgs);
     }
     if (align < PAGE_SIZE) {
         align = PAGE_SIZE;
@@ -221,7 +263,7 @@ VmAreaOrMapping::Builder::Builder(ustl::Arc<VmAspace> *aspace, VmaFlags vmaf, us
 
 auto VmAreaOrMapping::Builder::build(ustl::Arc<VmAreaOrMapping> *out) -> Status {
     if (!out) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (m_vmo) {

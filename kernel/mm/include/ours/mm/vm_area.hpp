@@ -111,7 +111,7 @@ class VmArea final: public VmAreaOrMapping {
 
     /// Whether every child overlapping [base, base + size) would accept
     /// |mmuf|. Run before protect_locked() applies anything; see there.
-    auto can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) const -> bool;
+    auto can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> bool;
 
     virtual auto destroy() -> Status override;
 
@@ -125,6 +125,8 @@ class VmArea final: public VmAreaOrMapping {
     friend class VmAspace;
     friend class VmMapping;
     friend class VmAreaOrMapping;
+    // For Enumerator's VmArea overload, which reaches m_subvmas.
+    friend class VmaSet;
 
     usize m_num_mappings;
     VmaSet m_subvmas;

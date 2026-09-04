@@ -9,16 +9,16 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
 #include <ours/status.hpp>
+#include <ustl/collections/btree.hpp>
 #include <ustl/collections/intrusive/any_hook.hpp>
 #include <ustl/collections/intrusive/list.hpp>
-#include <functional>
-
-#include <ustl/collections/btree.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/result.hpp>
 #include <ustl/util/move.hpp>
+
+#include <functional>
 
 namespace ours::mm {
 enum class VmMapOption {
@@ -270,8 +270,6 @@ struct VmaBaseOfPointer final {
     }
 };
 
-
-
 class VmAreaOrMapping::Builder {
     using Self = VmAreaOrMapping::Builder;
 
@@ -362,11 +360,13 @@ class VmaSet {
     /// by a tree that is going away.
     ~VmaSet();
 
-    [[nodiscard]] FORCE_INLINE auto empty() const -> bool {
+    [[nodiscard]]
+    FORCE_INLINE auto empty() const -> bool {
         return m_tree.empty();
     }
 
-    [[nodiscard]] FORCE_INLINE auto size() const -> usize {
+    [[nodiscard]]
+    FORCE_INLINE auto size() const -> usize {
         return m_tree.size();
     }
 
@@ -404,7 +404,14 @@ class VmaSet {
     auto find_spot(usize size, usize align, VirtAddr lower_bound, VirtAddr upper_bound) const
         -> ustl::Result<VirtAddr, Status>;
 
-    /// Find the first existent VMA whose end < addr.
+    /// The first area whose base is at or after |addr|, or NONE when every
+    /// area starts below it.
+    ///
+    /// Keyed on base alone, which is the whole subtlety: an area starting
+    /// below |addr| may still reach past it, so this is never the complete
+    /// answer to "what covers |addr|". Every range walk has to look at the
+    /// area before this one too -- see Enumerator's constructor and
+    /// has_range(), which are the two places that reasoning is written out.
     FORCE_INLINE auto lower_bound(VirtAddr addr) -> ustl::Option<IterMut> {
         return m_tree.lower_bound(addr);
     }
@@ -424,15 +431,39 @@ class VmaSet {
     Tree m_tree;
 };
 
+/// Walks the areas overlapping [min, max), in address order.
+///
+/// The seek is the entire point. The set is a B-tree keyed by base, so the
+/// first area of a range is O(log n) away; every range operation on a VmArea
+/// used to scan from the front instead, which made unmap, protect and -- worst
+/// of all, since it runs on every page fault -- find_mapping_locked() linear in
+/// the number of children.
+///
+/// Collecting the walk here rather than repeating it at each call site is not
+/// only about not repeating code: the "area before the lower bound may reach
+/// into the window" case is easy to leave out, and leaving it out loses a
+/// child silently rather than failing.
 class VmaSet::Enumerator {
   public:
     Enumerator(VmaSet &, VirtAddr min, VirtAddr max);
     Enumerator(VmArea &, VirtAddr min, VirtAddr max);
     ~Enumerator() = default;
 
+    /// The next area overlapping the window, or nullptr once the walk is past
+    /// it. Every area handed out genuinely overlaps; the caller does not have
+    /// to re-check.
+    ///
+    /// The iterator advances before the area is returned, so a caller may drop
+    /// its own reference to what it receives. It may not erase from the set:
+    /// a B-tree erase can rebalance nodes and this iterator does not survive
+    /// that, wherever in the tree the erase happened. VmArea::unmap_locked()
+    /// shows how a walk that destroys its children is written instead.
+    auto next() -> VmAreaOrMapping *;
+
   private:
-    IterMut iter_;
-    VmaSet *vmaset_;
+    VmaSet *m_set;
+    IterMut m_iter;
+    VirtAddr m_max;
 };
 
 } // namespace ours::mm

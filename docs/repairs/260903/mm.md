@@ -94,7 +94,21 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 
 没有回收意味着内存紧张时缺页只能直接失败，在 1、2 条做完之后这会是第一个暴露的短板。
 
-## 9. 零散
+## 9. 根 VMA 的 `end()` 回绕成 0
+
+`VmAreaOrMapping::end()` 是 `m_base + m_size`。内核根 VMA 是
+`[0xFFFFFF8000000000, 0x8000000000)`，两者相加正好是 2^64，无符号回绕成 0，所以
+`root_vma->end()` 恒为 0。
+
+`contains()`（`addr - m_base < m_size`）和 `check_range()` 都是用偏移量写的，注释里也说明了
+是为了防回绕，所以这两个不受影响。子节点的 `end()` 也都正常。会出事的是任何拿整个根区域
+当窗口的代码——2026-09-03 那个临时探针就是这么撞上的，全窗口枚举返回 0 个子节点。
+
+目前没有真实调用方这么做，但地址空间转储、拆除记账、范围操作都天然想这么写。
+修法要么让 `end()` 饱和到 `VirtAddr(-1)`，要么干脆不提供它、把所有区间判断都改成偏移量形式
+（`contains()` 已经是后者的样板）。
+
+## 10. 零散
 
 - `VmAspace::clone()`、`MemCache::alias()` 是 `Unimplemented`，属于尚未需要的功能。
 - `VmMapping::m_policy`（`MemoryAllocationPolicy`）存了但没有任何代码读，文件里已有 TODO。

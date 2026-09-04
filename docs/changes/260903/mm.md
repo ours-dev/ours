@@ -419,3 +419,84 @@ Zircon 无对应物：它不回收 init 代码段。
   恒等映射并没有解除——这两点都值得看，但都不是当前的卡死点，一并记入 repairs。
 - `start_kernel()` 仍是 `INIT_CODE`。它不返回（末尾 `become_idle()`），idle 线程栈上那个
   指回 `.init` 的返回地址永远不会被用到。
+
+---
+
+## 2. VMA 的范围遍历改用 B 树查找，并实现 `VmaSet::Enumerator`（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — 给 `Enumerator` 补上接口；改正 `lower_bound` 的错误注释
+- `kernel/mm/vm_area_or_mapping.cpp` — 实现 `Enumerator` 的两个构造函数与 `next()`
+- `kernel/mm/include/ours/mm/vm_area.hpp` — `can_protect_locked` 去掉 `const`；加 `friend class VmaSet`
+- `kernel/mm/vm_area.cpp` — `find_mapping_locked`、`unmap_locked`、`protect_locked`、`can_protect_locked` 四处改走 `Enumerator`
+
+**症状**
+
+潜伏，当前规模下量不出来。`VmaSet` 是一棵以 `base` 为键、带 `GapAugment` 增广的 B 树，
+但四个范围操作全都从 `begin()` 线性扫到底。根 VMA 现在只有 9 个子节点，所以看不出问题；
+`find_mapping_locked()` 在缺页热路径上，复杂度要按真实地址空间算。
+
+另有一处不是性能而是正确性：`unmap_locked()` 一边遍历一边销毁完全覆盖的映射，靠"先前进
+再销毁"来保护迭代器。
+
+**原因**
+
+B 树把两件事都给了：`lower_bound()` 是 O(log n) 的定位，而且同一个文件里的 `has_range()`
+已经写出了正确的区间查找写法——先 `lower_bound(base)` 拿到第一个 `base >= 目标` 的，再回退
+一个看它是否 `end() > base`（跨界进来的）。四处调用点各自手写扫描，等于把这棵树当链表用。
+
+`lower_bound()` 的文档注释写的是"Find the first existent VMA whose end < addr"，而
+`lower_bound_node()` 的实现是标准语义"第一个 base >= addr 的"。注释描述的是另一个函数。
+这多半就是没人用它的原因——照着这句注释根本推不出该怎么用。
+
+"先前进再销毁"这条对 B 树不成立。`VmAreaOrMapping::destroy()` 会 `m_parent->m_subvmas.erase(*this)`，
+而 `VmaSet::erase()` 调 `m_tree.erase(base)`。B 树的删除会重平衡节点，**树里任何位置的迭代器
+都可能失效**，不只是指向被删元素的那个。侵入式链表里"提前前进一格"是充分的，树里不是。
+
+**改法**
+
+把遍历收进 `VmaSet::Enumerator`——这个类之前只有声明，两个构造函数和成员都在，就是没有实现，
+连 `next()` 都没声明。构造函数用 `has_range()` 那套定位，`next()` 在交出元素之前先前进迭代器，
+并保证交出的每个元素都真正与窗口相交，调用方不必再判一次。
+
+两种走法分开：
+
+- `protect_locked` / `can_protect_locked` / `find_mapping_locked` 只读，一个 enumerator 走到底，
+  O(log n + k)。
+- `unmap_locked` 会销毁子节点，所以每一步重新定位一次，O(k log n)。销毁前先把 `cursor` 推到
+  `child->end()`——子节点与 `[cursor, end)` 相交意味着它的 end 严格大于 cursor，循环一定推进。
+  这是"边走边删"的代价，不是可以省的。
+
+`can_protect_locked` 从 `const` 改成非 `const`：`Enumerator` 只接受可变的 `VmaSet`。它其实什么
+都不改，等到第二个只读区间遍历出现时再给 `Enumerator` 补 const 形式。
+
+**参照**
+
+`Linux find_vma()`（`mm/mmap.c`）——同样是先在 maple tree / rbtree 里定位再走，而不是从头扫。
+`Zircon VmAddressRegion` 的 `subregions_` 是 `WAVLTree`，`FindRegionLocked()` 用 `upper_bound`
+再回退一格，回退的理由和这里完全一样。
+
+**验证**
+
+构建通过；`clang-format` 与 `clang-tidy -p out/bringup.x86` 对四个文件跑过，无新告警。
+QEMU 实测无回归，九个预置 VMA 照常建立。
+
+遍历本身启动路径走不到，所以用一个临时探针在 `dump_locked()` 里实测后撤掉，`kernel.dev.dbg_1.obi`：
+
+```
+PROBE full-window: enumerator=9 tree=9      全窗口枚举出全部子节点
+PROBE straddler:   got=k:init want=k:init   窗口开在最后一个子节点内部一字节，仍能接住它
+PROBE first-byte:  got=k:physmap            单字节窗口精确命中
+```
+
+第二条是关键——只用 `lower_bound` 不回退的写法会在这里悄悄漏掉一个子节点。
+
+`unmap_locked()` 的重新定位循环**未实测**，启动路径不解除任何映射。
+
+**故意没做**
+
+- 没给 `Enumerator` 补 const 形式，见上。
+- 没有动 `dump_locked()`，它本来就要走全部子节点，线性是对的。
+- 探针顺带发现根 VMA 的 `end()` 会溢出（`0xFFFFFF8000000000 + 0x8000000000` 正好是 2^64，
+  回绕成 0）。`contains()` 和 `check_range()` 都是用偏移量算的、不受影响，但 `end()` 本身是
+  `m_base + m_size`。没有在这一条里改，记在 `docs/repairs/260903/mm.md`。

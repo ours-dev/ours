@@ -138,7 +138,7 @@ auto VmArea::create_subaom_preamble(usize offset, usize size, VmaFlags vmaf, VmM
     // those allowed by this VMA.
     if (!validate_vmaflags(vmaf)) {
         // Unallowed permissions.
-        return ktl::err(Status::InvalidArguments);
+        return ktl::err(Status::InvArgs);
     }
 
     auto [base_aligned, size_aligned] = resolve_page_range(m_base + offset, size);
@@ -185,7 +185,7 @@ auto VmArea::map_at(PhysAddr phys_base, VirtAddr *virt_base, usize size, MmuFlag
     DEBUG_ASSERT(ustl::mm::is_aligned(phys_base, PAGE_SIZE));
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {
-        return ustl::err(Status::InvalidArguments);
+        return ustl::err(Status::InvArgs);
     }
     if (virt_base) {
         *virt_base = ustl::mm::align_down(*virt_base, PAGE_SIZE);
@@ -207,7 +207,7 @@ auto VmArea::map(VirtAddr *base, usize size, MmuFlags mmuf, VmMapOption options,
     DEBUG_ASSERT(!(options & VmMapOption::Fixed), "Now we don't support the overwritting option");
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {
-        return ustl::err(Status::InvalidArguments);
+        return ustl::err(Status::InvArgs);
     }
     if (base) {
         *base = ustl::mm::align_down(*base, PAGE_SIZE);
@@ -282,16 +282,16 @@ auto VmArea::unmap(usize offset, usize size) -> Status {
 
     // Reject offsets that would wrap |m_base + offset| below.
     if (offset > m_size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     auto [base, aligned_size] = resolve_page_range(m_base + offset, size);
     if (!aligned_size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (!check_range(base, aligned_size)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     Guard guard{get_lock()};
@@ -301,21 +301,31 @@ auto VmArea::unmap(usize offset, usize size) -> Status {
 auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
     VirtAddr const end = base + size;
 
-    for (auto iter = m_subvmas.begin(); iter != m_subvmas.end();) {
-        auto *const child = *iter;
-        if (child->base() >= end) {
-            // Children are ordered by base, so nothing further can overlap.
+    // Re-seek per child rather than carry one walk across the loop. A fully
+    // covered mapping is destroyed here, and VmAreaOrMapping::destroy() erases
+    // it from this very set -- and a B-tree erase can rebalance nodes, which
+    // unseats iterators anywhere in the tree, not only the one that pointed at
+    // what was erased. Advancing before disposal, which is what this loop used
+    // to do, is the correct move for an intrusive list and not enough here.
+    //
+    // So each step pays another O(log n) seek. That is the price of destroying
+    // as you go; the walks that only read (protect_locked, find_mapping_locked)
+    // hold a single enumerator and pay it once.
+    VirtAddr cursor = base;
+    while (cursor < end) {
+        VmaSet::Enumerator enumerator{m_subvmas, cursor, end};
+        auto *const child = enumerator.next();
+        if (!child) {
             break;
         }
-        // Advance before disposal below invalidates the iterator.
-        ++iter;
 
-        if (child->end() <= base) {
-            continue;
-        }
-
-        VirtAddr const overlap_base = std::max(child->base(), base);
+        VirtAddr const overlap_base = std::max(child->base(), cursor);
         VirtAddr const overlap_end = std::min(child->end(), end);
+
+        // Read what the next seek needs before touching the child: it may not
+        // exist by the time we come back around. The child overlaps [cursor,
+        // end), so its end is strictly above cursor and the loop advances.
+        cursor = child->end();
 
         if (!child->is_mapping()) {
             // Unmap never destroys areas, it just descends into them.
@@ -328,7 +338,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
         }
 
         auto *mapping = static_cast<VmMapping *>(child);
-        if (base <= child->base() && child->end() <= end) {
+        if (base <= mapping->base() && mapping->end() <= end) {
             // Fully covered, so the mapping has no role left to play: tear it
             // down for good instead of leaving an object whose every region is
             // unmapped.
@@ -337,7 +347,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
                 return status;
             }
         } else {
-            auto status = mapping->unmap_locked(overlap_base - child->base(),
+            auto status = mapping->unmap_locked(overlap_base - mapping->base(),
                                                 overlap_end - overlap_base, UnmapControl::None);
             if (Status::Ok != status) {
                 return status;
@@ -363,23 +373,23 @@ auto VmArea::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
 
     // Reject offsets that would wrap |m_base + offset| below.
     if (offset > m_size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     auto [base, aligned_size] = resolve_page_range(m_base + offset, size);
     if (!aligned_size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (!check_range(base, aligned_size)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     // What this area itself permits. A child may permit less, which the pass
     // below is what actually checks; this only rejects a request the area
     // could never satisfy anywhere.
     if (!validate_mmuflags(mmuf)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     Guard guard{get_lock()};
@@ -393,35 +403,30 @@ auto VmArea::protect(usize offset, usize size, MmuFlags mmuf) -> Status {
     // which is why unmap() does not need the same treatment: a range that is
     // half unmapped can simply be unmapped again.
     if (!can_protect_locked(base, aligned_size, mmuf)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     return protect_locked(base, aligned_size, mmuf);
 }
 
-auto VmArea::can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) const -> bool {
-    VirtAddr const end = base + size;
+/// Not const, though it changes nothing: VmaSet::Enumerator only walks a
+/// mutable set. Giving it a const form is worth doing once a second read-only
+/// range walk needs one.
+auto VmArea::can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> bool {
+    VmaSet::Enumerator enumerator{m_subvmas, base, base + size};
 
-    for (auto const *child: m_subvmas) {
-        if (child->base() >= end) {
-            // Children are ordered by base, so nothing further can overlap.
-            break;
-        }
-        if (child->end() <= base) {
-            continue;
-        }
-
-        if (!child->is_mapping()) {
-            auto const *area = static_cast<VmArea const *>(child);
-            auto const overlap_base = std::max(child->base(), base);
-            auto const overlap_end = std::min(child->end(), end);
-            if (!area->can_protect_locked(overlap_base, overlap_end - overlap_base, mmuf)) {
+    while (auto *const child = enumerator.next()) {
+        if (child->is_mapping()) {
+            if (!child->validate_mmuflags(mmuf)) {
                 return false;
             }
             continue;
         }
 
-        if (!child->validate_mmuflags(mmuf)) {
+        auto const overlap_base = std::max(child->base(), base);
+        auto const overlap_end = std::min(child->end(), base + size);
+        auto *const area = static_cast<VmArea *>(child);
+        if (!area->can_protect_locked(overlap_base, overlap_end - overlap_base, mmuf)) {
             return false;
         }
     }
@@ -432,16 +437,11 @@ auto VmArea::can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) const 
 auto VmArea::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     VirtAddr const end = base + size;
 
-    // No pre-advance of the iterator here, unlike unmap_locked(): protect
-    // never destroys a child, so the set is not modified underneath the walk.
-    for (auto *const child: m_subvmas) {
-        if (child->base() >= end) {
-            break;
-        }
-        if (child->end() <= base) {
-            continue;
-        }
+    // A single enumerator carries the whole walk, unlike unmap_locked(): protect
+    // never destroys a child, so nothing is erased from the set underneath it.
+    VmaSet::Enumerator enumerator{m_subvmas, base, end};
 
+    while (auto *const child = enumerator.next()) {
         VirtAddr const overlap_base = std::max(child->base(), base);
         VirtAddr const overlap_end = std::min(child->end(), end);
         auto const overlap_size = overlap_end - overlap_base;
@@ -466,11 +466,11 @@ auto VmArea::reserve(usize vma_off, usize size_bytes, MmuFlags mmuf, char const 
     m_canary.verify<Self>();
     auto [base, size] = resolve_page_range(m_base + vma_off, size_bytes);
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (!validate_mmuflags(mmuf)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     // TODO(SmallHuaZi) Should we provide a specific way to make these kind of zero length VMO.
@@ -548,21 +548,19 @@ auto VmArea::find_mapping_locked(VirtAddr va) -> VmMapping * {
         return nullptr;
     }
 
-    for (auto *child: m_subvmas) {
-        if (child->base() > va) {
-            break;
-        }
-        if (va - child->base() >= child->size()) {
-            continue;
-        }
-
-        if (child->is_mapping()) {
-            return static_cast<VmMapping *>(child);
-        }
-        return static_cast<VmArea *>(child)->find_mapping_locked(va);
+    // The one lookup on the page-fault path, so it is the one that most wants
+    // the tree used as a tree. A single address is a one-byte window, and the
+    // children are disjoint, so at most one of them can answer.
+    VmaSet::Enumerator enumerator{m_subvmas, va, va + 1};
+    auto *const child = enumerator.next();
+    if (!child) {
+        return nullptr;
     }
 
-    return nullptr;
+    if (child->is_mapping()) {
+        return static_cast<VmMapping *>(child);
+    }
+    return static_cast<VmArea *>(child)->find_mapping_locked(va);
 }
 
 auto VmArea::dump_locked() const -> void {
