@@ -2,6 +2,7 @@
 #include <ours/mm/page_queues.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+#include <ours/time/timer.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/sync/atomic.hpp>
 
@@ -11,7 +12,29 @@ using ustl::sync::Atomic;
 using ustl::sync::MemoryOrder;
 
 namespace ours::mm {
+namespace {
+    /// How often aging runs, when something runs it.
+    ///
+    /// Placeholders, and knowingly so: the right numbers come from watching a
+    /// reclaimer decide badly because the generations were too coarse or too
+    /// fine, and there is no reclaimer to watch. These are Zircon's defaults
+    /// (kDefaultMinMruRotateTime / kDefaultMaxMruRotateTime), which is the
+    /// only evidence available. The pair exists because aging wants a floor
+    /// and a ceiling rather than a period: rotate no more often than the floor
+    /// however much pressure there is, and no less often than the ceiling
+    /// however little.
+    constexpr auto DEFAULT_MIN_ROTATE_TIME = 10_s;
+    constexpr auto DEFAULT_MAX_ROTATE_TIME = 60_s;
+} // namespace
+
 /// Held through Arc<> by PageQueues, so it has to be reference counted.
+///
+/// Empty on purpose. Zircon splits this work across two threads: an MRU thread
+/// that ages on a clock, and an LRU thread that retires the oldest generation
+/// when a reclaimer asks to see pages older than it currently can. Only the
+/// first half exists here, and the skeleton put run() on LruRunner, so that is
+/// where the aging loop is for now. When a reclaimer arrives it takes the
+/// second half and the loop below moves here, where it belongs by that split.
 class PageQueues::MruRunner: public ustl::RefCounted<MruRunner, ustl::sync::ThreadSafePolicy> {
     using Self = PageQueues::MruRunner;
 
@@ -26,22 +49,92 @@ class PageQueues::LruRunner: public ustl::RefCounted<LruRunner, ustl::sync::Thre
     using Self = PageQueues::LruRunner;
 
   public:
+    /// The three states a shutdown handshake needs, and no fewer.
+    ///
+    /// The pair this replaces was RequestShutdown and Shutdown, with nothing
+    /// that meant "running" -- so whichever way the loop condition was written,
+    /// one of the two states could never be the state the loop was actually in.
+    /// Telling "someone has asked us to stop" from "the loop has left and is
+    /// touching nothing" is the entire point of the handshake: only the second
+    /// is safe to tear the queues down after.
     enum class State {
-        RequestShutdown,
+        Running,
+        ShutdownRequested,
         Shutdown,
     };
 
+    explicit LruRunner(PageQueues *owner) : m_owner(owner), m_state(State::Running) {}
+
     auto run() -> void;
 
+    auto request_shutdown() -> void;
+
+    auto state() const -> State {
+        return m_state.load(MemoryOrder::Acquire);
+    }
+
   private:
+    PageQueues *m_owner;
     Atomic<State> m_state;
     [[maybe_unused]]
     task::Thread *m_thread;
 };
 
 auto PageQueues::LruRunner::run() -> void {
-    while (State::Shutdown == m_state.load(MemoryOrder::Relaxed)) {
+    // A worker loop runs *until* it is shut down. What stood here --
+    // `while (State::Shutdown == m_state.load(Relaxed)) {}` -- spun while the
+    // runner was already shut down and left the instant it was not, which is
+    // the condition inverted; and being an empty body it was not a loop that
+    // did anything either way, just a CPU held at 100%.
+    while (State::Running == m_state.load(MemoryOrder::Acquire)) {
+        // Sleep to an instant rather than for an interval. The next rotation
+        // is due one minimum period after the last one actually happened, so
+        // this cadence does not drift by however long a rotation took, and a
+        // manual rotation pushes the next automatic one out instead of the
+        // two landing on top of each other.
+        auto const next = m_owner->m_last_age_time + m_owner->m_min_rotate_time;
+        task::Thread::Current::sleep_until(time::Deadline::at(next), task::Interruptible::Yes);
+
+        // Re-read rather than falling through to the loop condition: an
+        // interruptible sleep is how a shutdown request cuts the wait short,
+        // and one more rotation on the way out would be work against queues
+        // the caller is already tearing down.
+        if (State::Running != m_state.load(MemoryOrder::Acquire)) {
+            break;
+        }
+
+        m_owner->rotate_reclaimable_queues(AgeReason::Timeout);
     }
+
+    // Release, paired with the Acquire in state(): everything this loop did to
+    // the queues happens-before an observer sees Shutdown, which is what makes
+    // that state mean "nothing is still touching them".
+    m_state.store(State::Shutdown, MemoryOrder::Release);
+}
+
+auto PageQueues::LruRunner::request_shutdown() -> void {
+    // Only Running may be asked out of. Storing unconditionally would let a
+    // second request overwrite the Shutdown the loop has already published,
+    // un-telling a waiter something it has already been told.
+    auto expected = State::Running;
+    m_state.compare_exchange_strong(expected, State::ShutdownRequested, MemoryOrder::AcqRel,
+                                    MemoryOrder::Acquire);
+}
+
+auto PageQueues::start_runners() -> void {
+    // Deliberately starts nothing, and the queues do not need it to: every
+    // operation here is synchronous, and rotate_reclaimable_queues() can be
+    // driven by whoever wants aging to happen.
+    //
+    // A thread would age a ring that is always empty. Nothing files a page on
+    // these queues yet -- that waits on VmCowPages becoming a real page store
+    // -- and nothing reads a generation back, because there is no reclaimer:
+    // no swap, no pager, no compression, so there is nowhere for a reclaimed
+    // page to go. Aging exists to rank pages for a reclaimer to choose from,
+    // and a ranking with no consumer is a periodic wakeup for nothing.
+    //
+    // What has to be true before this starts the loop above is written down in
+    // docs/repairs/260903/mm.md.
 }
 
 /// The two generation counters have to start equal: `mru - lru + 1` is the
@@ -49,7 +142,19 @@ auto PageQueues::LruRunner::run() -> void {
 /// it. ustl::sync::Atomic's default constructor is `= default`, which leaves
 /// its storage indeterminate, so a PageQueues that is not in .bss would start
 /// out claiming an arbitrary number of live generations.
-PageQueues::PageQueues() : m_lrugen(0), m_mrugen(0), m_last_age_reason(AgeReason::Manual) {}
+PageQueues::PageQueues()
+    : m_lrugen(0)
+    , m_mrugen(0)
+    ,
+    // Value-initialised, i.e. the clock's epoch, not "now": this runs from
+    // PmNode's constructor, which is far too early to read a clock that the
+    // platform has not brought up. The effect is that the first rotation
+    // deadline is already in the past, so a runner that does start rotates
+    // once straight away and settles into the cadence from there.
+    m_last_age_time()
+    , m_last_age_reason(AgeReason::Manual)
+    , m_min_rotate_time(duration_cast<Duration>(DEFAULT_MIN_ROTATE_TIME))
+    , m_max_rotate_time(duration_cast<Duration>(DEFAULT_MAX_ROTATE_TIME)) {}
 
 PageQueues::~PageQueues() = default;
 

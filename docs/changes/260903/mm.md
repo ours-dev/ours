@@ -1420,3 +1420,136 @@ PROBE unmap(all) -> Ok children_left=0
 - 没有动 `VmMapping::map()` 缺锁那条既有 FIXME。
 - 没有把 `VmObject` 一侧的偏移改成什么别的。VMO 的偏移本来就该是偏移，
   见 `docs` 里「VmObject 的 offset 是字节偏移」那条约定。
+
+## 8. `LruRunner` 的循环与关停握手：条件不再反着写，状态不再少一个；但仍然不启动线程（2026-09-03）
+
+**文件**
+- `kernel/mm/page_queues.cpp` — 重写 `LruRunner`（三态状态机、`run()`、`request_shutdown()`、
+  `state()`）；给 `MruRunner` 补上"它是干什么的"的注释；实现 `start_runners()`；
+  构造函数补上 `m_last_age_time` 与两个轮转周期
+
+**症状**
+
+潜伏且不可达——没有任何东西创建过 `LruRunner`，`m_thread` 上标着 `[[maybe_unused]]`，
+`start_runners()` 只有声明没有定义。
+
+```cpp
+enum class State {
+    RequestShutdown,
+    Shutdown,
+};
+
+auto PageQueues::LruRunner::run() -> void {
+    while (State::Shutdown == m_state.load(MemoryOrder::Relaxed)) {
+    }
+}
+```
+
+**原因**
+
+两层错，第二层比第一层要紧。
+
+**表层：条件反了。** 工作线程的循环跑到"被关停"为止，而不是"在被关停期间"跑。这里写的是
+后者：`m_state` 是 `Shutdown` 时空转，一旦不是就立刻退出——正好把两种情形都做反。而且循环
+体是空的，所以即使条件对了它也不是一个循环，只是一个占满 CPU 的忙等。
+
+**里层：状态少一个，两种情形没法都表示。** 枚举只有 `RequestShutdown` 和 `Shutdown`，**没有
+一个值表示"正在运行"**。于是不管比较写成 `==` 还是 `!=`，总有一个状态是循环永远不可能处在
+的状态——这不是笔误可以修好的，条件反不反都不对。
+
+关停握手需要区分的正是两件事：**"有人要求停下"** 和 **"循环真的已经离开、不再碰任何队列"**。
+只有后者之后，拆掉队列才是安全的。所以第三个枚举值不是补充，它是握手本身。
+
+**改法**
+
+`State { Running, ShutdownRequested, Shutdown }`，`m_state` 在构造函数里初始化成 `Running`。
+
+`run()`：
+
+```cpp
+while (State::Running == m_state.load(MemoryOrder::Acquire)) {
+    auto const next = m_owner->m_last_age_time + m_owner->m_min_rotate_time;
+    task::Thread::Current::sleep_until(time::Deadline::at(next), task::Interruptible::Yes);
+
+    if (State::Running != m_state.load(MemoryOrder::Acquire)) {
+        break;
+    }
+    m_owner->rotate_reclaimable_queues(AgeReason::Timeout);
+}
+m_state.store(State::Shutdown, MemoryOrder::Release);
+```
+
+三处值得说明：
+
+1. **睡到一个时刻，而不是睡一段时长。** 下一次老化的到期时刻是"上一次老化实际发生的时刻加
+   一个最小周期"，所以节拍不会被轮转自身的耗时推着漂移，而且一次手动轮转会把下一次自动轮转
+   往后推，而不是两次挤在一起。
+2. **醒来之后重新读一次状态，而不是直接落到循环条件上。** 可中断的睡眠正是关停请求打断等待
+   的方式；落到循环条件上会先多做一次轮转才退出，那是对着调用方正在拆的队列白干一次。
+3. **退出时的 `store` 用 Release，`state()` 用 Acquire。** 这一对是"看见 Shutdown 就等于
+   循环对队列做的一切都已经发生"的全部依据，也就是这个状态"意味着什么"的来源。
+
+`request_shutdown()` 用 `compare_exchange_strong` 只从 `Running` 转出，而不是无条件 store：
+重复请求会把循环已经发布的 `Shutdown` 覆盖回去，等于把已经告诉等待者的事情收回。
+
+**故意保留 `start_runners()` 不启动任何线程。** 它现在有定义（原来只有声明，是一个潜在的
+链接错误），函数体是一段注释：队列的每个操作都是同步的，不需要这个线程；而一个线程在今天
+只会去老化一个永远空着的环——没有任何东西往这些队列里填页（那要等 `VmCowPages` 变成真正的
+页仓库），也没有任何东西读回代数，因为没有回收方：没有交换分区、没有供页者、没有压缩，
+回收出来的页无处可去。老化的意义是给回收方排一个序，没有消费者的排序就是一次为了什么都不做
+的定时唤醒。
+
+顺带补上构造函数里两处未初始化：`m_last_age_time` 值初始化成时钟纪元（**不是** `now()`——
+它跑在 `PmNode` 的构造函数里，那时平台还没把时钟带起来），效果是第一次到期时刻已经过去，
+真启动的话会立刻轮转一次再进入节拍；`m_min_rotate_time` / `m_max_rotate_time` 取 Zircon 的
+默认值 10 秒 / 60 秒，并在常量旁写明这是占位值——真正的数字来自看着某个回收方因为代数太粗
+或太细而选错页，而现在没有回收方可看。
+
+**参照**
+
+- `Zircon PageQueues::MruThread()` / `LruThread()`（`zircon/kernel/vm/page_queues.cc`）：
+  同一个形状——循环、按时限等待、退出前发布状态。Zircon 等在一个 event 上，因此关停是立刻
+  生效的；这里等在可中断的 `sleep_until` 上，关停延迟最坏是一个轮转周期。没有引入 event，
+  是因为 `sync::Event` 默认构造出来的 canary 从来没有人初始化过，而这段代码目前不可达，
+  为一段不可达的代码去验证一个新对象的构造语义不划算。这一点记进了待修。
+- Zircon 的分工是：MRU 线程按时钟老化，LRU 线程在回收方要求看到更老的页时退休最老的一代。
+  这里只有前半件事存在，而骨架把 `run()` 放在了 `LruRunner` 上，所以老化循环暂时留在那里；
+  `MruRunner` 的类注释写明了这件事，等回收方出现时两者归位。
+- `Linux kswapd()`（`mm/vmscan.c`）是另一个参照，但 Linux 的老化不是由独立线程按时钟驱动的
+  （MGLRU 的 `inc_max_seq()` 由回收路径自己调），所以对"该不该有这个线程"这个问题，
+  Linux 的答案其实是"不该"，与这里最终不启动线程的结论一致。
+
+**验证**
+
+构建通过，两个镜像 QEMU 实测启动到与改动前相同的位置，无回归。`clang-format` 与
+`clang-tidy -p out/bringup.x86` 对两个文件跑过，新增行无告警。
+
+握手用临时探针实测（提交前已删除）。它在栈上造一个 `LruRunner`，不起线程，只走状态机：
+
+```
+probe runner: fresh                 -> Running
+probe runner: after request         -> ShutdownRequested
+probe runner: after run() returned  -> Shutdown
+probe runner: after second request  -> Shutdown
+probe runner: min rotate = 10000000000 ns, max = 60000000000 ns
+```
+
+第三行是关键：状态已经是 `ShutdownRequested` 时进入 `run()`，它一次都不进循环体就返回，
+并留下 `Shutdown`。改动前的代码在同样的位置会永远空转（`Shutdown != ShutdownRequested`，
+所以那个反着写的条件立刻退出——但它退出时什么也不发布，等待者永远等不到握手）。
+第四行是重复请求不会把 `Shutdown` 覆盖回去。
+
+**明说没验证到的**：`run()` 的循环体——`sleep_until` 加 `rotate_reclaimable_queues`——
+**一次都没有跑过**，因为没有线程，而 `sleep_until` 在非线程上下文里不能调。它是照着
+Zircon 的形状写的，静态可读，但没有运行时证据。这是不启动线程的代价，已记进
+`docs/repairs/260903/mm.md`。
+
+**故意没做**
+
+- **没有启动线程**，理由见上。
+- **没有引入 event 让关停立刻生效。** 现在关停最坏要等一个轮转周期。等真有线程时再补。
+- **没有把老化循环搬到 `MruRunner`**，虽然按 Zircon 的分工它属于那里。现在搬只是把不可达的
+  代码从一个类挪到另一个类，等回收方出现、`LruRunner` 拿到自己那一半工作时一起做。
+- **没有实现 `to_string(AgeReason)`**（它是个只有友元声明的函数）。没有调用方，而且
+  `AgeReason` 是私有嵌套类型，类外根本没法命名它——那是一个只能由成员通过 ADL 调用的函数，
+  等到真有日志要打的时候一并处理。
