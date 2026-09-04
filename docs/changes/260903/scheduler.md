@@ -1293,3 +1293,56 @@ Zircon 从来没有把线程入口做成 `std::function`——内核里没有可
 
 - 没有给 `spawn()` 保留一个"绑任意参数"的便利重载。那正是缺陷的入口；需要更多上下文的
   调用方应当自己准备一个结构体并传它的地址，这也是 Zircon 的做法。
+
+---
+
+## 23. 线程退出走的是「自愿」重调度入口，于是掉出 `unreachable()`（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/thread.cpp` — `Thread::Current::exit()` 末尾。
+
+**症状**
+
+laborer 打印 `Thread |laborer| is preparing exiting` 之后系统停住；gdbstub 下
+`Thread::destroy` 断点 0 命中、`vpanic` 也没到，QEMU 自行退出（三重故障）。
+
+**原因**
+
+```cpp
+arch::AutoInterruptDisabler irq_guard;
+AutoPreemptDisabler preempt_guard;
+...
+// Here we don't hold |current_thread|'s lock, so use Thread::Current::schedule()
+Thread::Current::reschedule();
+unreachable();
+```
+
+`Thread::Current::reschedule()` 是**自愿**入口：第 16 条给它加的门是「不可抢占就
+`add_pending(); return;`」。而这里正在 `AutoInterruptDisabler` + `AutoPreemptDisabler`
+之内，门永远关着——一个已经 Dead 的线程从 `reschedule()` **返回**了，径直落进
+`unreachable()`，未定义行为。
+
+**改法**
+
+进无条件入口，并自己取 pi 锁（上面那个块已经把锁放掉了）：
+
+```cpp
+Guard guard{current_thread->get_pi_lock()};
+Scheduler::Current::reschedule(current_thread);
+panic("Thread |{}| fell through exit()", current_thread->name());
+```
+
+`reschedule_common()` 的前置条件（关中断、关抢占、持 pi 锁、`curr == curr_thread`）正是这个
+作用域已有的状态。`unreachable()` 换成 `panic()`：掉出去正是这次要修的缺陷本身，
+而它上一次是靠一次静默的三重故障才被发现的。
+
+**参照**
+
+`Zircon Thread::Current::Exit()` 结尾：enqueue 释放用的 Dpc、取线程锁、
+`Scheduler::RescheduleInternal(current_thread)`、`panic("somehow fell through thread_exit()")`。
+ours 的 `Scheduler::Current::reschedule(Thread*)` 就是 `RescheduleInternal` 的对应物。
+
+**验证**
+
+构建通过；`clang-tidy` 无新告警。dbg：不再掉出 `exit()`；启动前进到 DPC 队列
+（第 24–27 条是那条链上的四个缺陷）。
