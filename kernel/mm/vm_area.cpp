@@ -533,6 +533,15 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
     return mapping->protect(aligned_base, size, mmuf);
 }
 
+/// Tears down this area and everything under it, deepest first.
+///
+/// A cursor walk rather than a recursion, and unlike find_mapping_locked()'s
+/// this one really does have branching to remember -- an area has many
+/// children and each may have its own. What stands in for the stack is
+/// |m_parent|: every node knows the way back, so the walk descends into the
+/// first surviving child and, when a node has none left, climbs one link and
+/// looks again. No frame, no array, and no depth for a caller to overrun.
+/// Zircon's VmAddressRegion::DestroyLocked() is the same shape.
 auto VmArea::destroy() -> Status {
     m_canary.verify<Self>();
 
@@ -541,7 +550,9 @@ auto VmArea::destroy() -> Status {
         while (!curr->m_subvmas.empty()) {
             ustl::Arc<Base> aom(*curr->m_subvmas.begin());
             if (!aom->is_mapping()) {
-                // If not a mapping, recursive to keep destroying.
+                // An area of its own, so go down instead of destroying it here:
+                // Base::destroy() would unlink it while its own children were
+                // still pointing at it.
                 curr = ustl::adopt<Self, ustl::sync::ThreadSafePolicy>(aom.as_ptr_mut());
                 continue;
             }
@@ -552,8 +563,15 @@ auto VmArea::destroy() -> Status {
             }
         }
 
-        // Destroy current node.
-        auto *const parent = m_parent;
+        // Read the way back before unlinking, because Base::destroy() clears
+        // m_parent -- and read it off |curr|, not off |this|. It used to be
+        // spelt `m_parent`, which is this area's parent no matter how far the
+        // cursor had descended: on the kernel root VMA that is null, so the
+        // walk destroyed the first leaf area it reached, climbed to nowhere,
+        // and returned Ok with the rest of the tree still alive. The two
+        // spellings compile the same and differ only when the walk is more than
+        // one level deep, which is why the shape of the loop hid it.
+        auto *const parent = curr->m_parent;
         curr->Base::destroy();
         if (curr.as_ptr() == this) {
             break;

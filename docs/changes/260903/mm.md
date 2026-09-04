@@ -1947,3 +1947,115 @@ PROBE find(outside) -> <none>
 - 没有动 `unmap_locked`/`protect_locked`/`can_protect_locked` 三处递归，它们要遍历
   范围内的全部子节点，需要一个深度优先的 `Enumerator`（靠 `m_parent` 爬回去），
   另起一条。
+
+---
+
+## `VmArea::destroy()` 向上爬的是 `this` 的父节点，不是游标的（2026-09-04）
+
+> 无序号，理由同前。
+
+**文件**
+- `kernel/mm/vm_area.cpp` — `destroy()` 的爬升改读 `curr->m_parent`；补上这段循环的注释
+
+**症状**
+
+不是潜伏，是"没人调用所以没暴露"。`destroy()` 是一个下降—爬升的迭代遍历，
+爬升那一步写的是：
+
+```cpp
+auto *const parent = m_parent;   // this 的父节点，不是 curr 的
+curr->Base::destroy();
+...
+curr = parent ? ustl::adopt<Self, ...>(parent) : ustl::Arc<Self>();
+```
+
+`m_parent` 是 `this->m_parent`——不管游标 `curr` 已经下降到多深的子孙，
+爬升永远回到**被调用者自己的父节点**。
+
+后果比"少拆几个节点"严重得多：对一个子区域调 `destroy()`，游标下到孙子、拆完、
+然后爬到**根 VMA**，于是循环接着把整个内核地址空间往下拆。本次用临时探针实测
+（`kernel.dev.obi`，根 VMA 空闲处搭 root → a → {b → 映射, c → 映射} 两条分支，
+对 a 调 `destroy()`），**修之前**：
+
+```
+PROBE built -> Ok root=10 a=2 b=1 c=1
+[cpu0 error] Unhandled page fault: vector=14, error_code=0x0
+  rip=0xffffff884002f52b  rsi=0x800000000  r8=0xffffff8800000000
+```
+
+第二条 PROBE 根本没打出来。`rsi` 是 `0x800000000`（physmap 的长度）、
+`r8` 是 `0xFFFFFF8800000000`（per-CPU 窗口的基址），也就是说它当时正在解除 physmap 的映射
+——把自己脚下的地址空间拆掉，然后踩空。
+
+**修之后**：
+
+```
+PROBE built -> Ok root=10 a=2 b=1 c=1
+PROBE destroy(a) -> Ok root=9 a=0 b=0 c=0
+PROBE find under a -> <none>
+```
+
+`root=10 → 9` 是 a 从根上摘掉，`a=b=c=0` 是两条分支都拆干净了，
+第三行确认叶子映射也不在了。
+
+**原因**
+
+值得说的是这个错为什么活了下来。`m_parent` 和 `curr->m_parent` 在**一层深**的树上
+是同一个东西：`curr` 从来没离开过 `this`，两种写法结果相同。内核地址空间正好只有两层，
+而且 `destroy()` 至今没有真实调用方，所以既没有人写出会分叉的树，也没有人跑过这条路径。
+
+这正是**用游标代替递归**这类改写要特别小心的地方：递归版本里"我的父节点"就是调用栈，
+语言帮你记着，不可能记错；改成显式游标之后，"当前节点"和"起点"变成两个必须由人分清的变量，
+而它们的成员访问写出来长得几乎一样（`m_parent` vs `curr->m_parent`），编译器不会有任何意见。
+这条与本轮另外几条去递归的改动是同一件事的两面：去掉递归是对的，但显式游标要求每一处
+成员访问都显式说明是"谁的"。
+
+**改法**
+
+一行：`auto *const parent = curr->m_parent;`。另外把那段循环的注释补厚——
+说清楚 `m_parent` 在这里就是栈的替代物（每个节点都知道回去的路，所以下降靠子节点、
+爬升靠父指针，既不需要栈帧也不需要数组），以及为什么读父指针必须在 `Base::destroy()`
+**之前**（`Base::destroy()` 会把 `m_parent` 清成 nullptr）。原来那句
+"If not a mapping, recursive to keep destroying" 也改掉了：这里没有递归，
+而且不能在这里直接销毁，因为 `Base::destroy()` 会在它自己的子节点还指着它的时候把它摘掉。
+
+**参照**
+
+`Zircon VmAddressRegion::DestroyLocked()`（`zircon/kernel/vm/vm_address_region.cc:409`）
+是同一个形状，而且它把这个区别写对了：
+
+```cpp
+fbl::RefPtr<VmAddressRegion> cur(this);
+while (cur) {
+    ...
+    if (child_region) {
+        cur = child_region;                 // 下降
+    } else {
+        if (cur->parent_) { cur->parent_->subregions_.RemoveRegion(cur.get()); }
+        VmAddressRegion* cur_parent = cur->parent_;   // ← cur 的，不是 this 的
+        cur->parent_ = nullptr;
+        cur.reset((cur.get() == this) ? nullptr : cur_parent);
+    }
+}
+```
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 跑过，
+无新告警（`vm_area.hpp:143` 那条 `modernize-use-override` 是既有的析构声明）。
+
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推进到线程调度，
+`kernel.dev.obi` 到 `prof: no architectural PMU`。前后对比见上面「症状」一节。
+
+`rip=0xffffff884002f52b` **没有符号化成功**——`llvm-nm` 在这个偏移附近只有 `__rodata_start`，
+多半是被内联掉的局部函数。没有继续追，因为寄存器已经把现场说清楚了，
+而且修完之后这条路径不再存在。
+
+**故意没做**
+
+- 没有动 `destroy()` 的引用计数。查过 `ustl::Rc(T*)` 是 **retain 一次**而不是接管一个既有的
+  强引用（`system/lib/ustl/include/ustl/rc.hpp:283`），所以 `Arc<Base> aom(...)` +1、
+  `adopt` 给 `curr` +1、`aom` 析构 -1，净额平衡，是对的。
+- 没有让 `destroy()` 在中途失败时回滚。它现在遇到子节点销毁失败就直接返回，
+  留下一棵拆了一半的树。这与 `unmap()` 的取舍一致（重复销毁是幂等的），
+  但和 `protect()` 的"先问后写"不同，值得在有真实调用方时再定。
