@@ -393,6 +393,32 @@ class VmaSet {
     /// destroyed by the time this returns, if nothing else holds it.
     auto erase(VmAreaOrMapping &value) -> void;
 
+    /// Removes what `pos` names and returns the position after it, so a walk
+    /// that erases as it goes keeps its place.
+    ///
+    /// The successor is not free: the underlying tree implements this by
+    /// remembering the next key, erasing, and looking that key up again, since
+    /// an erase can rebalance and no iterator survives that. So an erasing step
+    /// costs O(log n) where a plain ++ costs O(1) amortised -- which is the
+    /// reason to reach for this only on the steps that actually erase.
+    ///
+    /// Drops the set's reference, so the area may be gone when this returns
+    /// unless the caller holds one of its own.
+    auto erase(IterMut pos) -> IterMut;
+
+    /// The first area that can cover an address at or above |addr|, or end().
+    ///
+    /// Two candidates and only one of them is the lower bound: the first area
+    /// whose base is at or after |addr|, and the one before it, which starts
+    /// lower and may still reach past |addr|. Anything before *that* ends at or
+    /// below |addr|, because the areas are disjoint and ordered.
+    ///
+    /// Every range walk begins here -- Enumerator, has_range() and the erasing
+    /// walk in VmArea::unmap_locked() -- because the step-back is the half that
+    /// is easy to omit, and omitting it drops an area silently.
+    auto seek(VirtAddr addr) -> IterMut;
+    auto seek(VirtAddr addr) const -> Iter;
+
     /// Releases every area and empties the set.
     auto clear() -> void;
 

@@ -108,7 +108,27 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 修法要么让 `end()` 饱和到 `VirtAddr(-1)`，要么干脆不提供它、把所有区间判断都改成偏移量形式
 （`contains()` 已经是后者的样板）。
 
-## 10. 零散
+## 10. `ustl` 的 `BTree::erase(iterator)` 名不副实（属 ustl，不属 mm）
+
+签名是 `auto erase(iterator pos) -> iterator`，和 `std::map` 一样，读起来像是 O(1) 摊还的
+"删除并交回后继"。实现却是（`system/lib/ustl/include/ustl/collections/detail/btree.hpp:1376`）：
+
+```cpp
+auto next = pos; ++next;
+next_key.emplace(key_of(*next));
+erase(key);                                                        // O(log n)
+return next_key.has_value() ? lower_bound_node(*next_key) : end();  // O(log n)
+```
+
+即"记下后继的键 → 按键删 → 重新查回去"。功能正确，但**成本是 O(log n) 而不是摊还 O(1)**，
+所以任何边遍历边删的循环都是 O(k log n)，而标准库同样的写法是 O(k + log n)。
+
+`erase(iterator, iterator)` 同理，它就是循环调 `erase(first)`。
+
+要做成真的，需要节点算法在重平衡过程中维持一个有效的后继位置，而不是事后按键找回来。
+这是共享容器里的精细改动，应当由 ustl 那条线认领，不要在 mm 里顺手改。
+
+## 11. 零散
 
 - `VmAspace::clone()`、`MemCache::alias()` 是 `Unimplemented`，属于尚未需要的功能。
 - `VmMapping::m_policy`（`MemoryAllocationPolicy`）存了但没有任何代码读，文件里已有 TODO。

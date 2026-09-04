@@ -500,3 +500,85 @@ PROBE first-byte:  got=k:physmap            单字节窗口精确命中
 - 探针顺带发现根 VMA 的 `end()` 会溢出（`0xFFFFFF8000000000 + 0x8000000000` 正好是 2^64，
   回绕成 0）。`contains()` 和 `check_range()` 都是用偏移量算的、不受影响，但 `end()` 本身是
   `m_base + m_size`。没有在这一条里改，记在 `docs/repairs/260903/mm.md`。
+
+---
+
+## 3. 遍历只在真正删除时才重新定位；`seek()` 收拢三处重复（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — 新增 `VmaSet::seek()` 与 `erase(IterMut)`
+- `kernel/mm/vm_area_or_mapping.cpp` — 实现两者；`has_range()` 与 `Enumerator` 构造函数改用 `seek()`
+- `kernel/mm/vm_area.cpp` — `unmap_locked()` 改为携带单个迭代器
+
+**症状**
+
+第 2 条里的 `unmap_locked()` 是 O(k log n)：每处理一个子节点就构造一个 `Enumerator`，
+也就是重新 `lower_bound` 一次。但**只有真正销毁子节点的那一步需要重新定位**，
+下降到子区域、或者只裁剪部分覆盖的映射，都不会从集合里删任何东西。
+
+**原因**
+
+先说一个查证结果，因为它否定了本来打算做的优化。`ustl` 的 B 树确实有
+`erase(iterator) -> iterator`，签名和 `std::map` 一样，看着像是 O(1) 摊还的删除，
+实际实现是：
+
+```cpp
+auto next = pos; ++next;
+next_key.emplace(key_of(*next));
+erase(key);                          // 按键删，O(log n)
+return next_key.has_value() ? lower_bound_node(*next_key) : end();  // 再查回去
+```
+
+它就是把"记下后继的键 → 删 → 重新查找"包了一层。所以**删除那一步降不下来**，
+O(log n) 是这个容器的下限，除非改 `ustl` 本身。
+
+但这不妨碍另一半：不删除的步骤本来就不需要重新定位，`++` 在 B 树上是摊还 O(1)
+（叶子内部是 `slot + 1`，跨节点才向上爬，而一趟 k 步的中序遍历每条边最多走两次）。
+第 2 条那版对**每个**子节点都重新定位，等于为不删除的步骤白付 O(log n)。
+
+顺带发现"先 `lower_bound` 再回退一格接住跨界者"这段逻辑已经被抄了三份：
+`has_range()`、`Enumerator` 的构造函数、以及 `unmap_locked()` 里那个 `cursor`。
+回退那一格是最容易漏掉的半句，漏掉不会报错，只会静悄悄少走一个区域。
+
+**改法**
+
+`VmaSet::seek(addr)` 收拢那段定位逻辑，三处都改用它；`has_range()` 因此从两个分支
+塌成一个——`seek()` 返回的已经包含跨界者，剩下只需判断它是否在窗口结束之前开始。
+
+`VmaSet::erase(IterMut) -> IterMut` 删除并交回后继位置。`unmap_locked()` 于是只持有
+一个迭代器：不删除的步骤走 `++`，只有销毁完全覆盖的映射时才付那次 O(log n)。
+
+销毁顺序是先出集合再 `destroy()`：只有集合能说出walk该从哪儿继续，`destroy()` 报不了。
+出集合会掉一个引用、而那可能是最后一个，所以先 `retain()` 撑住，`destroy()` 完再
+`release()`。`destroy()` 内部还会再删一次，但 `m_tree.erase(key)` 返回 0，
+`VmaSet::erase()` 只在返回非 0 时才 `release()`，所以不会重复释放。
+
+**参照**
+
+`std::map::erase(iterator) -> iterator` 是这个接口的原型，区别在于标准库的实现是真的
+O(1) 摊还。`Linux vma_iter_*`（`mm/vma.c`）在 maple tree 上同样是"删除时重新定位、
+其余步骤沿游标走"。
+
+**验证**
+
+构建通过，`clang-tidy` 无新告警，QEMU 无回归。
+
+遍历启动路径走不到，仍用临时探针实测后撤掉。这次直接测新原语：把 9 个真实子节点插进一个
+临时 `VmaSet`（`insert()` 加引用、`erase()` 减引用，对真实对象净变化为零），
+然后沿 `erase(IterMut)` 返回的后继一路删下去。`kernel.dev.dbg_1.obi`：
+
+```
+PROBE seek/erase: inserted=9 first=k:physmap erased=9 left=0 ordered=1
+PROBE enumerator: walked=9 tree=9
+```
+
+`erased=9 left=0` 且 `ordered=1`（基址严格递增）说明后继在重平衡之后依然有效，
+既没有走丢也没有重复。
+
+`unmap_locked()` 的完整路径仍**未实测**——启动不解除任何映射。这次测的是它依赖的两个原语。
+
+**故意没做**
+
+- 没有去改 `ustl` 的 `erase(iterator)`。让它成为真正的 O(1) 摊还删除，需要节点算法在重平衡
+  过程中维持一个有效的后继位置，那是共享容器里一处精细改动，属于 ustl 的范围，
+  记在 `docs/repairs/260903/mm.md`。

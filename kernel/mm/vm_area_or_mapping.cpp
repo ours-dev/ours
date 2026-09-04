@@ -99,25 +99,49 @@ auto VmaSet::erase(VmAreaOrMapping &value) -> void {
     }
 }
 
-VmaSet::Enumerator::Enumerator(VmaSet &set, VirtAddr min, VirtAddr max)
-    : m_set(&set), m_iter(set.m_tree.end()), m_max(max) {
-    // Two candidates can open the walk, and only one of them is the lower
-    // bound. lower_bound() lands on the first area whose base is at or after
-    // |min|; the area immediately before it starts lower, and if it reaches
-    // past |min| it overlaps the window too -- and it is the earlier of the
-    // two, so it has to come first. Anything before *that* ends at or below
-    // |min|, because the areas are disjoint and ordered.
-    auto const at_or_after = set.m_tree.lower_bound(min);
-    m_iter = at_or_after.is_some() ? at_or_after.value() : set.m_tree.end();
+auto VmaSet::erase(IterMut pos) -> IterMut {
+    if (pos == m_tree.end()) {
+        return m_tree.end();
+    }
 
-    if (m_iter != set.m_tree.begin()) {
-        auto previous = m_iter;
+    auto *const value = *pos;
+    auto const next = m_tree.erase(pos);
+    value->release();
+    return next;
+}
+
+auto VmaSet::seek(VirtAddr addr) -> IterMut {
+    auto const at_or_after = m_tree.lower_bound(addr);
+    auto iter = at_or_after.is_some() ? at_or_after.value() : m_tree.end();
+
+    if (iter != m_tree.begin()) {
+        auto previous = iter;
         --previous;
-        if ((*previous)->end() > min) {
-            m_iter = previous;
+        if ((*previous)->end() > addr) {
+            return previous;
         }
     }
+
+    return iter;
 }
+
+auto VmaSet::seek(VirtAddr addr) const -> Iter {
+    auto const at_or_after = m_tree.lower_bound(addr);
+    auto iter = at_or_after.is_some() ? at_or_after.value() : m_tree.end();
+
+    if (iter != m_tree.begin()) {
+        auto previous = iter;
+        --previous;
+        if ((*previous)->end() > addr) {
+            return previous;
+        }
+    }
+
+    return iter;
+}
+
+VmaSet::Enumerator::Enumerator(VmaSet &set, VirtAddr min, VirtAddr max)
+    : m_set(&set), m_iter(set.seek(min)), m_max(max) {}
 
 VmaSet::Enumerator::Enumerator(VmArea &area, VirtAddr min, VirtAddr max)
     : Enumerator(area.m_subvmas, min, max) {}
@@ -142,19 +166,12 @@ auto VmaSet::Enumerator::next() -> VmAreaOrMapping * {
 }
 
 auto VmaSet::has_range(VirtAddr base, usize size) const -> bool {
-    // Any area overlapping [base, base + size) either starts inside it, or
-    // starts before it and reaches in.
-    auto const at_or_after = m_tree.lower_bound(base);
-    auto iter = at_or_after.is_some() ? at_or_after.value() : m_tree.end();
+    // seek() already answers "the first area that can reach into base", the
+    // straddler included, so all that is left is whether it starts before the
+    // window ends.
+    auto const iter = seek(base);
     if (iter != m_tree.end() && (*iter)->base() < base + size) {
         return true;
-    }
-    if (iter != m_tree.begin()) {
-        auto previous = iter;
-        --previous;
-        if ((*previous)->end() > base) {
-            return true;
-        }
     }
     return false;
 }

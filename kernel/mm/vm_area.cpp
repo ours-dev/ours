@@ -301,58 +301,68 @@ auto VmArea::unmap(usize offset, usize size) -> Status {
 auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
     VirtAddr const end = base + size;
 
-    // Re-seek per child rather than carry one walk across the loop. A fully
-    // covered mapping is destroyed here, and VmAreaOrMapping::destroy() erases
-    // it from this very set -- and a B-tree erase can rebalance nodes, which
-    // unseats iterators anywhere in the tree, not only the one that pointed at
-    // what was erased. Advancing before disposal, which is what this loop used
-    // to do, is the correct move for an intrusive list and not enough here.
+    // One iterator carries the whole walk, and only the steps that actually
+    // erase pay to re-establish it.
     //
-    // So each step pays another O(log n) seek. That is the price of destroying
-    // as you go; the walks that only read (protect_locked, find_mapping_locked)
-    // hold a single enumerator and pay it once.
-    VirtAddr cursor = base;
-    while (cursor < end) {
-        VmaSet::Enumerator enumerator{m_subvmas, cursor, end};
-        auto *const child = enumerator.next();
-        if (!child) {
+    // Erasing is what makes this different from the read-only walks. A fully
+    // covered mapping is destroyed here, and VmAreaOrMapping::destroy() erases
+    // it from this very set; a B-tree erase can rebalance, which unseats
+    // iterators anywhere in the tree, not merely the one that named what was
+    // erased. So the tree has to hand back the position after the hole, which
+    // is what VmaSet::erase(IterMut) is for.
+    //
+    // Every other step -- descending into a sub-area, trimming a mapping that
+    // is only partly covered -- erases nothing, so it is a plain ++ at O(1)
+    // amortised. That is the whole gain over re-seeking per child: an unmap
+    // that spans mostly-trimmed children now costs one seek, not one per child.
+    auto iter = m_subvmas.seek(base);
+    while (iter != m_subvmas.end()) {
+        auto *const child = *iter;
+        if (child->base() >= end) {
+            // Ordered by base, so nothing further can overlap.
             break;
         }
 
-        VirtAddr const overlap_base = std::max(child->base(), cursor);
+        VirtAddr const overlap_base = std::max(child->base(), base);
         VirtAddr const overlap_end = std::min(child->end(), end);
-
-        // Read what the next seek needs before touching the child: it may not
-        // exist by the time we come back around. The child overlaps [cursor,
-        // end), so its end is strictly above cursor and the loop advances.
-        cursor = child->end();
 
         if (!child->is_mapping()) {
             // Unmap never destroys areas, it just descends into them.
-            auto status = static_cast<VmArea *>(child)->unmap_locked(overlap_base,
-                                                                     overlap_end - overlap_base);
+            auto const status = static_cast<VmArea *>(child)->unmap_locked(
+                overlap_base, overlap_end - overlap_base);
+            if (Status::Ok != status) {
+                return status;
+            }
+            ++iter;
+            continue;
+        }
+
+        auto *const mapping = static_cast<VmMapping *>(child);
+        if (base <= mapping->base() && mapping->end() <= end) {
+            // Fully covered, so the mapping has no role left to play: tear it
+            // down for good instead of leaving an object whose every region is
+            // unmapped.
+            //
+            // Out of the set first, because that is the only way to learn where
+            // the walk resumes; destroy() cannot report it. The reference is
+            // ours for the duration because erasing drops the set's, and the
+            // set's may well have been the last one.
+            mapping->retain();
+            iter = m_subvmas.erase(iter);
+            auto const status = mapping->destroy();
+            mapping->release();
             if (Status::Ok != status) {
                 return status;
             }
             continue;
         }
 
-        auto *mapping = static_cast<VmMapping *>(child);
-        if (base <= mapping->base() && mapping->end() <= end) {
-            // Fully covered, so the mapping has no role left to play: tear it
-            // down for good instead of leaving an object whose every region is
-            // unmapped.
-            auto status = mapping->destroy();
-            if (Status::Ok != status) {
-                return status;
-            }
-        } else {
-            auto status = mapping->unmap_locked(overlap_base - mapping->base(),
-                                                overlap_end - overlap_base, UnmapControl::None);
-            if (Status::Ok != status) {
-                return status;
-            }
+        auto const status = mapping->unmap_locked(overlap_base - mapping->base(),
+                                                  overlap_end - overlap_base, UnmapControl::None);
+        if (Status::Ok != status) {
+            return status;
         }
+        ++iter;
     }
 
     return Status::Ok;
