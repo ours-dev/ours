@@ -5,7 +5,7 @@
 `docs/repairs-20260830.md` 第十三节（首轮 347 条那次）。
 
 判断依据是重编相关 15 个 TU 的实际告警（`-Wthread-safety` 已开、`-Wno-error`）：
-基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**，4.5 修完 **108**，4.1 修完 **24**，4.1b 修完 **4**。剩下的 4 条：4.4 三条（头文件包含方向）、4.6 一条（桩）。
+基线 **219 条**；第 1 条修完 **194**，第 2 条修完 **187**，3.1 修完 **180**，3.6 修完 **178**，3.2 修完 **174**，4.3 修完 **172**，4.2 修完 **127**，3.3 修完 **123**，3.4 修完 **117**，3.5 修完 **113**，4.5 修完 **108**，4.1 修完 **24**，4.1b 修完 **4**，4.4/4.6 修完 **0**——全树归零。
 
 按严重程度排。前两条是根因，不修它们，后面的每一条都分不清是注解错还是分析器看不见。
 前两条已修；`Guard` 的注解在子模块路径下提交不进来，只在工作区，重新 checkout 会丢。
@@ -68,22 +68,13 @@ capability 表达式而不标注解。见 changes。
 
 174 → 172。
 
-### 4.4 `WaitQueue` 三处调用方缺传播
-
-`WaiterState::sleep()`/`unsleep()`（`wait_queue.cpp:9-19`）和 `park_thread_common()`（`:79`）
-调 `Scheduler::Current::park_thread`/`unpark_thread`（要求 pi 锁）但自己没标。`enqueue_waiter`
-的注释已经写了「调用方持 waiter 的 pi 锁」，把它变成 `TA_REQUIRES(thread->get_pi_lock())`。
+### 4.4 `WaitQueue` 三处调用方缺传播 — 已修（用 `assert_held()`，见 changes）
 
 ### 4.5 `Scheduler::Migrator::move_queued_thread` — 已修
 
 113 → 108。
 
-### 4.6 `finish_transition` 从不持 PI 锁的 lambda 里被调
-
-`scheduler.cpp` `process_migrating_threads()` 通过 `find_active_scheduler_for(to_migrate, [](Thread
-*thread, Scheduler *self) { self->finish_transition(thread); })` 调它，lambda 里只持目标调度器的
-rq 锁，不持 `thread->get_pi_lock()`，而 `finish_transition` 标了 `TA_REQUIRES(thread->get_pi_lock())`。
-函数体目前是只有断言的桩，契约该是什么等实现定；归调度器迁移工作。
+### 4.6 `finish_transition` — 已处理（桩去掉注解，实现时再定契约）
 
 ### 4.7 唤醒路径不持被唤醒线程的 PI 锁 — 已修
 

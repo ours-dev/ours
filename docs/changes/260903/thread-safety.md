@@ -737,3 +737,50 @@ Zircon `Thread::stack_`（无注解）、`task_state_ TA_GUARDED(get_lock())`。
 
 **故意没做**
 没删 `m_resource_lock`。
+
+---
+
+## `WaiterState` 用 `assert_held()` 代替写不出的 `TA_REQUIRES`；`finish_transition` 桩去掉注解（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/wait_queue.cpp` — `WaiterState::sleep/unsleep`、`park_thread_postamble` 在调
+  park/unpark 前 `thread->get_pi_lock().assert_held()`
+- `kernel/include/ours/task/sched/scheduler.hpp` — `finish_transition` 去掉
+  `TA_REQUIRES(thread->get_pi_lock())`
+
+**症状**
+潜伏。最后 4 条：三处「calling park/unpark_thread requires holding m_pi_lock」，一处
+`process_migrating_threads` 的 lambda 不持 PI 锁调 `finish_transition`。
+
+**原因**
+`WaiterState::sleep/unsleep` 和 `park_thread_postamble` 确实要求调用方持 PI 锁（3.2 的契约），
+但声明在 `wait_queue.hpp` 里，那里 `Thread` 只有前置声明——`thread.hpp` 包含 `wait_queue.hpp`
+（`WaiterState` 是 `Thread` 的成员），反过来不行——而 capability 表达式 `thread->get_pi_lock()`
+需要完整类型，`TA_REQUIRES` 写上去直接编不过（4.4 第一次尝试就是这么失败的）。
+
+`finish_transition` 是只有断言的桩，唯一调用方在目标调度器的 rq 锁下、不持 PI 锁；注解只是
+一个猜测，和 3.3 里 `unpark_common` 同样处理。
+
+**改法**
+`SpinLock::assert_held()` 是 `TA_ASSERT()`（第 1 条改动加的）：在函数体第一行调它，分析器从
+那一行起把锁当作已持有、继续检查下面的调用；运行时它是同一个前置条件的真断言。
+`owned_wait_queue.cpp` 里 `set_owner/reset_owner` 已经是这个模式（那里是因为锁从指针成员
+到达、调用点没有表达式可写），注释里互相引用。
+
+否掉的方案：拆头文件让 `wait_queue.hpp` 能包含 `thread.hpp`。`Thread` 按值持有 `WaiterState` 和
+`OwnedWaitQueue::List`，拆开要动三个头文件的结构，为三行注解不值。
+
+**参照**
+Zircon `Thread::AssertHeld()`/`thread_lock.AssertHeld()` 在 `__TA_ASSERT` 下的同样用法，例如
+`WaitQueue::BlockEtc` 里对 `thread_lock` 的运行时断言。
+
+**验证**
+- 全量构建通过；clang-format 已跑；`scheduler.hpp` 只暂存了本条的 hunk。
+- **全树 `-Wthread-safety` 告警归零**（两个工具链的全量重编日志 0 条；15 个 TU 0 条）。
+  起点 219。
+- QEMU：两个镜像停的位置与上一条相同（prof 计数之后）。`assert_held` 是 `ASSERT`，两个镜像都编
+  进去了；`x86_bring_aps()` 里的 `sleep_for()` 经过 `WaiterState::sleep`，没有触发，说明那条路径
+  确实持锁。
+
+**故意没做**
+没拆头文件（见上）。

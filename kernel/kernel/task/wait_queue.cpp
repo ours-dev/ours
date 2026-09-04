@@ -7,13 +7,23 @@
 
 namespace ours::task {
 
+// Both of these require |thread|'s PI lock, and the requirement cannot be
+// written as TA_REQUIRES on their declarations: wait_queue.hpp only has
+// Thread forward-declared (thread.hpp includes it, not the other way round),
+// and a capability expression needs the complete type. assert_held() is the
+// substitute -- it is TA_ASSERT, so from that line on the analysis treats
+// the lock as held and checks the park/unpark calls beneath it, and at run
+// time it is a real check of the same precondition. owned_wait_queue.cpp
+// uses the same pattern for the same reason.
 auto WaiterState::sleep(Thread *thread, Interruptible interruptible, Status status) -> void {
+    thread->get_pi_lock().assert_held();
     m_blocked_status = status;
     m_interruptible = interruptible;
     Scheduler::Current::park_thread(thread);
 }
 
 auto WaiterState::unsleep(Thread *thread, Status status) -> void {
+    thread->get_pi_lock().assert_held();
     m_blocked_status = status;
     m_interruptible = Interruptible::No;
     Scheduler::unpark_thread(thread);
@@ -77,6 +87,8 @@ auto WaitQueue::park_thread_postamble(Thread *thread, time::Deadline deadline) -
         });
     }
 
+    // See WaiterState::sleep() for why this is an assert and not TA_REQUIRES.
+    thread->get_pi_lock().assert_held();
     Scheduler::Current::park_thread(thread);
 
     // If we reach at here before timeout, cancel the timer to prevent error.

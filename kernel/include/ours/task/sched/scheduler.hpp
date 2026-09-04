@@ -285,7 +285,11 @@ class Scheduler {
     TA_EXCLUDES(m_runtime.migrating_threads_lock)
     auto process_migrating_threads(SchedTime now) -> void;
 
-    TA_REQUIRES(thread->get_pi_lock())
+    /// A stub (asserts only) called from process_migrating_threads() under
+    /// the *target* scheduler's runqueue lock and no PI lock. It used to
+    /// claim TA_REQUIRES(thread->get_pi_lock()), which that caller does not
+    /// satisfy; as with unpark_common(), the lock contract waits for the
+    /// body -- annotating a stub only records a guess.
     auto finish_transition(Thread *thread) -> void;
 
     /// Flips this CPU's bit in STATES[state]. Lock-free: STATES is global
