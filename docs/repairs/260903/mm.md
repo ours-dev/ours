@@ -49,22 +49,34 @@ ld.lld: error: undefined hidden symbol:
 属于 `kernel/lib/ktl` 那条线。**在补完之前，不要有新的调用方**——编译期没有任何信号，
 只有链接时才会发现。
 
-## 2. `VmMapping::fault()` 是桩，按需分页整个不工作
+## 2. 缺页做通之后剩下的两道墙（原第 2 条已修，见 `docs/changes/260903/mm.md` 第 8 节）
 
-```cpp
-auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
-    m_canary.verify(MAPPING_MAGIC);
-    return {Status::NotSupported, 0};
-}
-```
+`VmMapping::fault()` 实现了，`page_fault_internal()` 那两处（空 `Arc` 解引用、字面量 `0`
+当 `VmFault *`）也修了。但**硬件缺页仍然到不了这里**，两处都不属于 mm：
 
-它上面那一整套——异常分发、`VmAspace::page_fault_internal()` 的重试循环、
-`PageRequest`/`ShouldWait` 机制——全都是围绕一个不存在的操作写的。
+- **`Thread::Current::fault()` 挡掉了所有内核地址**（`kernel/kernel/task/thread.cpp:712`）：
 
-同一条路径上另有两处会在第一次缺页就触发：
+  ```cpp
+  if (mm::is_kernel_address(va)) {
+      return Status::NotFound;
+  }
+  ```
 
-- `page_fault_internal()` 在 `m_last_fault` 还是空 `Arc` 时就调 `m_last_fault->check_range()`。
-- 它给 `fault()` 传的是字面量 `0` 当 `VmFault *`。
+  于是 `#PF` → `x86_handle_page_fault()` → `Thread::Current::page_fault()` 这条链，对内核
+  地址一律在第一行就返回，`VmAspace::page_fault()` 根本不会被调到。当前没有用户地址空间，
+  所以**没有任何一个真实缺页能走到 VMM**。第 8 节那次验证只能改用
+  `VmAspace::soft_fault()` 直接驱动。
+
+  这道挡板在"内核映射一律预先 Commit"的前提下是合理的（内核缺页即是 bug）；那个前提
+  现在不再成立了。修法要么按地址空间分派（内核地址走 `VmAspace::kernel_aspace()`），
+  要么保留挡板但明确写下"内核不做按需分页"这条约束——两者都要 task 那条线拍板。
+  **不定这件事，按需分页就只有内部接口能用。**
+
+- **`PageTable::map_pages()` 忽略 `MapControl`**（`kernel/arch/x86/mm/page_table.cpp:86`）：
+  `(void)control;`，注释写着 "engine always rejects a page that is already mapped"。
+  于是没有 overwrite / skip 语义，对一个已装好的表项再 `map()` 一次必得 `AlreadyExists`。
+  `VmMapping::fault()` 现在靠先 `query()` 绕开它（缺页可能落在别的 CPU 刚装好的页上，
+  或者本 CPU 的陈旧 TLB 上），但这属于替 arch 层打补丁。属 arch，不属 mm。
 
 ## 3. PageSource / PageRequest：建议**暂时不做**
 

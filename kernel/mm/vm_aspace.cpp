@@ -119,37 +119,54 @@ auto VmAspace::root_vma() -> ustl::Arc<VmArea> {
     return m_root_vma;
 }
 
-auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, [[maybe_unused]] usize extra_pages)
-    -> Status {
+auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
     m_canary.verify<Self>();
 
     auto status = Status::Ok;
-    MultiPageRequest page_request;
+    // The fault descriptor lives here, outside the loop, so that its
+    // MultiPageRequest survives every retry: a request raised on one pass has
+    // to be the same object waited on and completed on the next. It is on this
+    // thread's stack because the fault path must not allocate -- an allocation
+    // can recurse into reclaim and fault again.
+    VmFault vmf{.va = va, .num_pages = extra_pages + 1, .cause = cause, .page_request = {}};
     do {
         u32 num_mapped = 0;
         {
             // Grabs the aspace's lock to prevent another operation on it from users.
             Guard guard{get_lock()};
 
-            if (m_last_fault->check_range(va, 1)) [[likely]] {
+            // m_last_fault is an empty Arc until the first lookup succeeds, so
+            // the cache test has to ask whether there is a mapping at all
+            // before asking whether it covers |va|. Without the first half
+            // this read check_range()'s members off a null `this`, on the very
+            // first page fault the kernel ever took -- which is to say the
+            // cache was unusable exactly once, at the only moment it could not
+            // be recovered from.
+            if (m_last_fault && m_last_fault->check_range(vmf.va, 1)) [[likely]] {
                 VM_ASPACE_LAST_FAULT_HIT.add(1);
             } else {
                 VM_ASPACE_LAST_FAULT_MISS.add(1);
-                m_last_fault = ustl::Arc<VmMapping>::adopt(m_root_vma->find_mapping_locked(va));
+                m_last_fault = ustl::Arc<VmMapping>::adopt(m_root_vma->find_mapping_locked(vmf.va));
                 if (!m_last_fault) {
                     return Status::NotFound;
                 }
             }
 
-            auto const [final_status, mapped] = m_last_fault->fault(0);
+            auto const [final_status, mapped] = m_last_fault->fault(&vmf);
             status = final_status;
             num_mapped = static_cast<u32>(mapped);
         }
 
         // There is no sufficient pages to map, so we need to wait for the page
         // request to be fulfilled.
+        //
+        // Unreachable today and kept deliberately: no VMO carries a page
+        // source, so an anonymous miss is answered by allocating on the spot
+        // and never returns ShouldWait. The shape stays so that adding the
+        // request protocol later is filling this in rather than rewriting the
+        // entry point around it. See docs/repairs/260903/mm.md item 3.
         if (Status::ShouldWait == status) {
-            auto const waited_status = page_request.wait(!!(cause & VmfCause::User));
+            auto const waited_status = vmf.page_request.wait(!!(cause & VmfCause::User));
             if (Status::Ok != waited_status) {
                 if (Status::TimeOut == waited_status) {
                     m_root_vma->dump_locked();
@@ -158,10 +175,10 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, [[maybe_unused]]
             }
 
             if (num_mapped > 0) {
-                va += num_mapped * PAGE_SIZE;
+                vmf.va += num_mapped * PAGE_SIZE;
 
-                DEBUG_ASSERT(extra_pages >= num_mapped);
-                extra_pages -= num_mapped;
+                DEBUG_ASSERT(vmf.num_pages > num_mapped);
+                vmf.num_pages -= num_mapped;
             }
         }
     } while (Status::ShouldWait == status);

@@ -1553,3 +1553,129 @@ Zircon 的形状写的，静态可读，但没有运行时证据。这是不启�
 - **没有实现 `to_string(AgeReason)`**（它是个只有友元声明的函数）。没有调用方，而且
   `AgeReason` 是私有嵌套类型，类外根本没法命名它——那是一个只能由成员通过 ADL 调用的函数，
   等到真有日志要打的时候一并处理。
+
+---
+
+## 8. `VmMapping::fault()` 从桩到实现，缺页真的能解析了（2026-09-03）
+
+**文件**
+- `kernel/mm/vm_mapping.cpp` — 实现 `fault()`
+- `kernel/mm/vm_aspace.cpp` — `page_fault_internal()` 里 `m_last_fault` 的空 `Arc` 判空；
+  改为在栈上构造 `VmFault` 并把它的地址传下去
+- `kernel/mm/include/ours/mm/vm_fault.hpp` — `page_request` 由 `PageRequest` 改成
+  `MultiPageRequest`；`num_pages` 由 `VirtAddr` 改成 `usize`；补上字段注释
+
+**症状**
+
+按需分页整个不工作。`fault()` 是
+
+```cpp
+auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
+    m_canary.verify<Self>();
+    return {Status::NotSupported, 0};
+}
+```
+
+它上面那一整套——x86 的 `#PF` 分发、`Thread::Current::page_fault()`、
+`VmAspace::page_fault_internal()` 的重试循环、`ShouldWait` 机制——全都是围绕一个不存在的
+操作写的。同一条路径上另有两处会在**第一次**缺页就触发：
+
+- `m_last_fault->check_range(va, 1)`：`m_last_fault` 是空 `Arc`，直到第一次查找成功才有值。
+  空 `Arc` 的 `operator->` 交出的是 `nullptr`，而 `check_range()` 是非虚内联成员，于是它在
+  `this == nullptr` 上去读 `m_base`/`m_size`——内核跑出的第一次缺页就撞在这里，而且这一次
+  恰恰是这个缓存唯一不可能命中的一次。
+- `m_last_fault->fault(0)`：字面量 `0` 当 `VmFault *`。
+
+**原因**
+
+三处是同一个问题的三个面：**这条路径从来没有跑过**。`VmFault` 从未被构造过，所以它的
+`page_request` 是 `PageRequest` 还是 `MultiPageRequest`、`num_pages` 是什么类型，都没有
+被任何调用检验过；`m_last_fault` 的初始状态没有被想过，因为没有"第一次"；`fault(0)` 能编过，
+是因为 `0` 是合法的空指针常量。一条只写不跑的路径，编译器能查的只有类型，而这里连类型
+都没对上——`require_page()` 这一串收的是 `MultiPageRequest *`，`VmFault` 里放的却是
+`PageRequest`。
+
+**改法**
+
+`fault()` 的顺序是：校验 → 查权限 → 查页表 → 要页 → 装页表。
+
+权限从 `m_protection_ranges` 读，不从页表反查：它是权限的唯一写入者，而且区间铺满整个窗口，
+所以对一页做枚举必然只得到一个区间。零权限区间是 `unmap()`/`protect()` 表示"这里已经没有
+映射"的写法，所以它是拒绝（`AccessDenied`）而不是缺页。写缺页撞上不可写的区间同样拒绝。
+
+**查页表这一步是被 arch 层逼出来的**。缺页可能落在一个已经装好的页上——另一个 CPU 在本
+CPU 等地址空间锁的时候先解析了同一次缺页，或者本 CPU 还在用陈旧的 TLB 项。本该由
+`MapControl::OverwriteIfExisting` 表达，但 `PageTable::map_pages()`
+（`kernel/arch/x86/mm/page_table.cpp:86`）把 `control` 直接 `(void)` 掉了，注释里写明
+"engine always rejects a page that is already mapped"。所以无条件 `map()` 会把一次**已经
+解析完的**缺页报成 `AlreadyExists`——这正是本次探针第二发缺页抓到的：
+
+```
+改前  probe: fault#2 = AlreadyExists, pa = 24D000, same page = 1, data still D0DECAFE
+改后  probe: fault#2 = Ok,            pa = 24D000, same page = 1, data still D0DECAFE
+```
+
+于是先 `query()`：已有表项就地返回 `Ok` 与"新映射 0 页"，只在权限位与区间不符时调
+`arch_aspace.protect()` 补齐（`protect()` 是唯一能原地改权限的入口，`map()` 不能，
+而先 unmap 再 map 会开一个"页对所有人都不存在"的窗口）。
+
+`VmFault` 挪到 `page_fault_internal()` 的栈上，在 do-while **之外**构造：一次重试里发出的
+请求，必须和下一次等待、完成的是同一个对象。`page_request` 改成 `MultiPageRequest`，
+因为下面整条 `require_page()` 链收的就是它。这两点都是第 3 条待修里"必须保留"的形状——
+缺页路径不能分配内存，否则可能递归触发回收再触发缺页。
+
+`m_last_fault` 的判空写成 `m_last_fault && m_last_fault->check_range(...)`：先问有没有映射，
+再问覆不覆盖。
+
+**参照**
+
+- `Zircon VmMapping::PageFault()` / `PageFaultLockedObject()`（`vm_mapping.cc:1375` / `:1173`）
+  ——同样是取游标、`RequirePage`、再装页表，同样在持有对象锁的前提下运行。
+- `Zircon VmAspace::PageFault()` / `PageFaultInternal()`（`vm_aspace.cc:552` / `:569`）
+  ——`page_fault_internal()` 的形状来自这里，包括 `ShouldWait` 之后 `page_request.Wait()`
+  再重试那一段。
+
+**验证**
+
+- `prebuilt/ninja/ninja -C out/bringup.x86` 全绿；`clang-format` / `clang-tidy`
+  改动文件无新增告警。
+- QEMU 实测两个镜像（`kernel.dev.dbg_1.obi` / `kernel.dev.obi`），无断言、无异常，
+  跑到线程调度正常运转。
+- 临时探针（提交前已删除）：建一个 `VmoFlags::Lazy` 的 2 页 VMO，**不带
+  `VmMapOption::Commit`、也不调 `mapping->map()`** 地映射进内核地址空间，然后用
+  `VmAspace::soft_fault()` 逐条驱动：
+
+```
+probe: mapped [FFFFFF8804000000, FFFFFF8804002000) lazily, pa before any fault = 0
+probe: fault#1 = Ok, pa = 24D000
+probe: wrote D0DECAFE, read back D0DECAFE
+probe: fault#2 = Ok, pa = 24D000, same page = 1, data still D0DECAFE
+probe: page 1 fault = Ok, pa = 24F000, distinct from page 0 = 1
+probe: read-only mapping, write fault = AccessDenied, read fault = Ok, pa = 250000
+probe: fault on an unmapped address = NotFound
+```
+
+逐条对应：映射建好时页表里什么都没有；第一次缺页装上了一页；这一页是真的、可写的；
+第二次缺页拿到同一页且数据还在（第 7 条那个仓库在起作用）；同一映射的第二页是另一页；
+只读映射拒绝写缺页、接受读缺页；不存在的地址得到 `NotFound`。`fault#1` 是内核生命周期里的
+第一次缺页，所以它同时是 `m_last_fault` 空 `Arc` 那条判空的实测。
+
+**没验证到的**，说清楚：探针调的是 `VmAspace::soft_fault()`，**没有走硬件 `#PF`**。
+硬件那一段现在走不通——`Thread::Current::fault()`（`kernel/kernel/task/thread.cpp:712`）
+开头就是 `if (mm::is_kernel_address(va)) return Status::NotFound;`，内核地址的缺页根本到不了
+VMM，而当前还没有用户地址空间。这不是本次改动引入的，已记进待修。所以本条验证的是
+`page_fault_internal()` → `VmMapping::fault()` → 游标 → arch `map()` 这一段，
+`#PF` → `x86_handle_page_fault()` → `Thread::Current::page_fault()` 那一段未实测。
+
+**故意没做**
+
+- **一次缺页只装一页**。`vmf->num_pages` 说的是调用方愿意接受几页，提前多映射几页是值得做的，
+  但它要求游标能一次交出一段连续的页，而不是一页一页——就是 `map_paged()` 那条 TODO 要的
+  批量。在那之前多要几页只会变成同一把锁下更多次单页工作。
+- **没做 CoW**。写缺页落在一个已存在且区间允许写的页上，在有 CoW 的内核里是分裂私有副本的
+  地方；我们没有父子 VMO 链，所以那条分支现在就是"表项已经对了，直接返回"。
+- **没动 `Thread::Current::fault()` 的内核地址挡板**，也没动 `PageTable::map_pages()`
+  对 `MapControl` 的忽略。前者属 task，后者属 arch，都已记进待修。
+- **没实现 `PageSource` / `PageRequest` 协议**（第 3 条）。匿名缺页永不返回 `ShouldWait`，
+  所以 `page_fault_internal()` 里那圈 do-while 至今一次都没转过第二遍——形状保留，将来是
+  往里填而不是重写。

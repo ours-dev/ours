@@ -375,15 +375,122 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapControl control) ->
     return Status::Ok;
 }
 
-// FIXME: This is an incomplete stub — the function body has no return
-// statement, which is undefined behavior for a function returning
-// ustl::Pair<Status, usize>.  The fault path currently falls through to
-// VmObject/VmObjectPaged handling; decide whether VmMapping should
-// implement its own fault logic (e.g. CoW resolution) or delegate entirely
-// to the VMO.
+/// Resolve one page fault falling inside this mapping.
+///
+/// Runs with the address space lock already held: VmAspace::page_fault_internal()
+/// takes it around finding the mapping and this call, so that the mapping
+/// cannot be torn down between the two. Hence no Guard here -- the same
+/// division unmap_locked() and protect_locked() already sit on, except that
+/// there the public half exists to take the lock, and here the only caller is
+/// the fault path.
 auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     m_canary.verify<Self>();
-    return {Status::NotSupported, 0};
+
+    DEBUG_ASSERT(vmf, "the fault path used to pass a literal 0 in place of this");
+
+    if (!is_active()) {
+        return {Status::BadState, 0};
+    }
+
+    VirtAddr const va = ustl::mm::align_down(vmf->va, PAGE_SIZE);
+    if (!check_range(va, PAGE_SIZE)) {
+        return {Status::InvalidArguments, 0};
+    }
+
+    // What this page may do, taken from the mapping's own record rather than
+    // read back out of the page tables. m_protection_ranges is the single
+    // writer of the flags -- that is what VmArea::reserve() was changed to
+    // respect -- and its regions tile the whole window, so enumerating one
+    // page always yields exactly one region.
+    auto enumerator = m_protection_ranges.make_enumerator(va, PAGE_SIZE);
+    auto const region = enumerator.next();
+    DEBUG_ASSERT(region.valid, "the protection regions do not tile this mapping");
+    MmuFlags const mmuf = region.mmuf;
+
+    // A region with no permission at all is how unmap() and protect() spell
+    // "nothing is mapped here any more". Faulting a page back in would quietly
+    // undo them, so this is a refusal, not a miss.
+    if (!(mmuf & MmuFlags::PermMask)) {
+        return {Status::AccessDenied, 0};
+    }
+
+    bool const will_write = !!(vmf->cause & VmfCause::Write);
+    if (will_write && !(mmuf & MmuFlags::Writable)) {
+        return {Status::AccessDenied, 0};
+    }
+
+    auto &arch_aspace = m_aspace->arch_aspace();
+
+    // Ask the page tables before asking the VMO. A fault can arrive on a page
+    // that is already installed: another CPU resolved the same fault while
+    // this one waited for the address space lock, or this CPU is still running
+    // on a stale TLB entry. Then there is nothing to allocate and nothing to
+    // map, and the faulting instruction succeeds on retry.
+    //
+    // This has to be settled here rather than by handing map() a control that
+    // says "overwrite": PageTable::map_pages() ignores MapControl outright --
+    // it says so in a comment -- and the paging engine always rejects an entry
+    // that already exists. An unconditional map() therefore reported
+    // AlreadyExists for a fault that was in fact already resolved, which the
+    // probe written for this change caught on its second fault of one page.
+    PhysAddr existing = 0;
+    MmuFlags existing_mmuf{};
+    if (Status::Ok == arch_aspace.query(va, &existing, &existing_mmuf)) {
+        // An entry left behind by a protect() that widened the permissions
+        // without reaching it. protect() is the only entry point that can
+        // rewrite flags in place -- map() cannot, and unmapping first would
+        // open a window in which the page is missing for everyone else.
+        if ((existing_mmuf & MmuFlags::PermMask) != (mmuf & MmuFlags::PermMask)) {
+            if (auto const status = arch_aspace.protect(va, 1, mmuf); Status::Ok != status) {
+                return {status, 0};
+            }
+        }
+        return {Status::Ok, 0};
+    }
+
+    // Only a paged VMO has pages to demand. map_physical() installs a physical
+    // VMO's entire window when the mapping is created, because there is no
+    // later moment at which a physical page could arrive -- so a fault on one
+    // is not a missing page, it is an access that should not have happened.
+    auto *paged = as<VmObjectPaged>(m_vmo.as_ptr_mut());
+    if (!paged) {
+        return {Status::NotSupported, 0};
+    }
+
+    // The same conversion map_paged() does, for the same reason: the cursor is
+    // positioned in the VMO's byte space and |va| is an address.
+    auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+    if (!cursor) {
+        return {cursor.unwrap_err(), 0};
+    }
+
+    // One page per fault. vmf->num_pages says how many the caller would take,
+    // and mapping ahead is worth having, but it needs the cursor to hand back
+    // runs instead of single pages -- the batching map_paged()'s TODO asks
+    // for. Asking for more than one before that exists would only mean more
+    // single-page work under the same lock.
+    auto page = cursor->require_page(will_write, 1, &vmf->page_request);
+    if (!page) {
+        // For an anonymous VMO this is never ShouldWait: there is nobody to
+        // wait for, so "nothing here" is answered by allocating on the spot.
+        // page_fault_internal()'s retry loop is therefore never entered today.
+        return {page.unwrap_err(), 0};
+    }
+
+    // ErrorIfExisting states the expectation rather than papering over its
+    // failure: the query above established that the entry is absent, so
+    // anything present by now was installed while this ran, which the address
+    // space lock is supposed to prevent. The control is inert today
+    // (PageTable::map_pages() ignores it and errors regardless), so this only
+    // records the intent for when the arch layer starts reading it.
+    usize nr_mapped = 0;
+    if (auto const status = arch_aspace.map(va, frame_to_phys(*page), 1, mmuf,
+                                            MapControl::ErrorIfExisting, &nr_mapped);
+        Status::Ok != status) {
+        return {status, 0};
+    }
+
+    return {Status::Ok, nr_mapped};
 }
 
 INIT_CODE auto init_vm_mapping_cache() -> void {
