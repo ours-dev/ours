@@ -1,8 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <unwind/cursor.hpp>
-
 #include <unwind/cfi.hpp>
+#include <unwind/cursor.hpp>
 
 namespace unwind {
 namespace {
@@ -46,7 +45,8 @@ auto Cursor::u32() noexcept -> std::uint32_t {
         return 0;
     }
     return static_cast<std::uint32_t>(slice[0]) | (static_cast<std::uint32_t>(slice[1]) << 8) |
-           (static_cast<std::uint32_t>(slice[2]) << 16) | (static_cast<std::uint32_t>(slice[3]) << 24);
+           (static_cast<std::uint32_t>(slice[2]) << 16) |
+           (static_cast<std::uint32_t>(slice[3]) << 24);
 }
 
 auto Cursor::u64() noexcept -> std::uint64_t {
@@ -121,7 +121,8 @@ auto Cursor::read_bytes(std::uint8_t *destination, std::size_t count) noexcept -
     }
 }
 
-auto Cursor::encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexcept -> std::uint64_t {
+auto Cursor::encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexcept
+    -> std::uint64_t {
     if (encoding == DW_EH_PE_OMIT) {
         m_ok = false;
         return 0;
@@ -155,10 +156,6 @@ auto Cursor::encoded_pointer(std::uint8_t encoding, std::uint64_t pc_base) noexc
             value = static_cast<std::uint64_t>(static_cast<std::int16_t>(u16()));
             break;
         case DW_EH_PE_SDATA4:
-        case 0x0B:
-            // 0x0B is the sdata4 variant the x86-64 psABI actually emits
-            // (CIE "R" = 0x1B = pcrel|sdata4); both read 4 signed bytes and
-            // agree modulo 2^64 once the application is applied.
             value = static_cast<std::uint64_t>(static_cast<std::int32_t>(u32()));
             break;
         case DW_EH_PE_SDATA8:

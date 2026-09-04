@@ -79,5 +79,42 @@ Zircon 内核不做 `.eh_frame` 索引。分配器一侧可对照 Linux `kmalloc
 - 没动 `kernel/lib/prof` 里未提交的采样器重构。
 - `cfi.hpp` 里 `DW_EH_PE_SLEB128 = 0x05`…`SDATA8 = 0x08` 与规范（0x09…0x0C）不符，
   现在靠 `cursor.cpp` 里对 0x0B 的特判撑着，README 把它记成 psABI 的"怪癖"，其实是常量
-  错了。内核自己的 `.eh_frame` 只用 0x1B，所以此刻不触发；单独一条改动，见 ktl.md 下方的
-  unwind 待修项。
+  错了。内核自己的 `.eh_frame` 只用 0x1B，所以此刻不触发；单独一条改动，见下面第 2 条。
+
+## 2. `DW_EH_PE_*` 有符号格式常量改回规范值，删掉对 0x0B 的特判（2026-09-03）
+
+**文件**
+- `kernel/lib/unwind/include/unwind/cfi.hpp` — `SLEB128/SDATA2/SDATA4/SDATA8` 从 0x05–0x08 改为
+  `无符号 | DW_EH_PE_SIGNED(0x08)`，即 0x09–0x0C
+- `kernel/lib/unwind/unwind/cursor.cpp` — `encoded_pointer()` 里 `case 0x0B` 的特判删掉
+- `kernel/lib/unwind/README.md` — "psABI 怪癖"一段改成对格式位域的说明
+
+**症状**
+潜伏，当前触发不到。内核自己的 `.eh_frame` 只用 0x1B（pcrel|sdata4），而 0x0B 被特判成
+4 字节有符号读，所以碰巧能走通。任何 `sleb128`（0x09）、`sdata2`（0x0A）、`sdata8`（0x0C）
+编码的节都会落到 `default: m_ok = false`，被判成畸形而拒绝；反过来 0x05–0x08 这四个值在规范里
+根本不存在，却被当作合法格式接受。
+
+**原因**
+DW_EH_PE 的格式半字节不是顺序编号的枚举，是位域：bit 0–2 选宽度（uleb128、2、4、8 字节），
+bit 3（0x08）是"有符号"标志。所以有符号一组在 0x09–0x0C，和对应的无符号只差一位
+（LSB 4.1 "DWARF Extensions"、GCC `dwarf2.h`）。原来的常量把它当作 0x05 起顺延，于是
+0x1B 的低半字节 0x0B 在表里找不到，作者没有回头查常量，而是加了一个 `case 0x0B` 并在
+README 里记成 psABI 的怪癖。特判的存在本身就是常量错了的证据。
+
+**改法**
+常量按位域写成 `DW_EH_PE_UDATA4 | DW_EH_PE_SIGNED` 这种形式，让"差一位"的关系在代码里
+可见；特判随之没有存在的理由，删掉。
+
+**参照**
+GCC `include/dwarf2.h` 的 `DW_EH_PE_sdata4 = 0x0b` 等；LLVM `llvm/BinaryFormat/Dwarf.h`
+的 `DW_EH_PE_sdata4 = 0x0b`。
+
+**验证**
+构建通过；`clang-format`/`clang-tidy` 无新告警；宿主 gtest `cfi` 9 例、`unwind` 5 例全过
+（`unwind_test.cpp` 用的是字面量 0x1B，不随头文件变，所以是真实检验）；QEMU dbg 镜像
+仍然 `indexed 791 unwind frames`，两个 gibberish 线程照常运行。
+
+**故意没做**
+没给 `encoded_pointer()` 补 `TEXTREL`/`DATAREL`/`FUNCREL`/`ALIGNED` 的解析——内核
+`.eh_frame` 用不到，unwinder 的设计是"不支持就拒绝而不是猜"。

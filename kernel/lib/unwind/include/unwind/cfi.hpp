@@ -12,15 +12,22 @@ namespace unwind {
 
 // DW_EH_PE pointer-encoding classes (DW_EH_PE_*), lower nibble is the value
 // format, the second nibble the application, 0x80 an indirection flag.
+//
+// The format nibble is not a dense enumeration: bits 0-2 pick the width
+// (uleb128, 2, 4, 8 bytes) and bit 3 (0x08) marks the signed variant, so the
+// signed formats sit at 0x09-0x0C, one bit away from their unsigned
+// counterparts (LSB 4.1 "DWARF Extensions", GCC `dwarf2.h`). Hence the
+// x86-64 psABI's usual CIE "R" byte, 0x1B, decomposes as pcrel | sdata4.
 constexpr std::uint8_t DW_EH_PE_ABSPTR = 0x00;
 constexpr std::uint8_t DW_EH_PE_ULEB128 = 0x01;
 constexpr std::uint8_t DW_EH_PE_UDATA2 = 0x02;
 constexpr std::uint8_t DW_EH_PE_UDATA4 = 0x03;
 constexpr std::uint8_t DW_EH_PE_UDATA8 = 0x04;
-constexpr std::uint8_t DW_EH_PE_SLEB128 = 0x05;
-constexpr std::uint8_t DW_EH_PE_SDATA2 = 0x06;
-constexpr std::uint8_t DW_EH_PE_SDATA4 = 0x07;
-constexpr std::uint8_t DW_EH_PE_SDATA8 = 0x08;
+constexpr std::uint8_t DW_EH_PE_SIGNED = 0x08;
+constexpr std::uint8_t DW_EH_PE_SLEB128 = DW_EH_PE_ULEB128 | DW_EH_PE_SIGNED;
+constexpr std::uint8_t DW_EH_PE_SDATA2 = DW_EH_PE_UDATA2 | DW_EH_PE_SIGNED;
+constexpr std::uint8_t DW_EH_PE_SDATA4 = DW_EH_PE_UDATA4 | DW_EH_PE_SIGNED;
+constexpr std::uint8_t DW_EH_PE_SDATA8 = DW_EH_PE_UDATA8 | DW_EH_PE_SIGNED;
 
 constexpr std::uint8_t DW_EH_PE_PCREL = 0x10;
 constexpr std::uint8_t DW_EH_PE_TEXTREL = 0x20;
@@ -82,8 +89,8 @@ struct Fde final {
 
 /// Classify and size one CFI record starting at `offset`. On success `*length`
 /// holds the total record size in bytes (including the length field itself).
-auto identify_entry(Section const &section, std::uint64_t offset, EntryKind *kind, std::uint64_t *length)
-    -> bool;
+auto identify_entry(Section const &section, std::uint64_t offset, EntryKind *kind,
+                    std::uint64_t *length) -> bool;
 
 /// Parse the CIE at `offset`. Returns false on malformed input or on
 /// augmentation features this unwinder cannot evaluate.

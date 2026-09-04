@@ -25,9 +25,11 @@ programs to step one frame at a time.
   absolute encodings and is only parseable when addresses match the runtime
   layout. The parser handles both plus DWARF v1-v4 CIEs and the `z`/`L`/`P`/`R`
   augmentation family.
-- **One quirk worth knowing:** the x86-64 psABI writes the FDE encoding as
-  `0x1B` ("pcrel|sdata4"), i.e. format nibble `0x0B`; the cursor treats
-  `0x0B` as a 4-byte signed read alongside the spec's `0x07` (sdata4).
+- **Pointer-encoding formats are a bitfield, not a list.** Bits 0-2 of the
+  DW_EH_PE format nibble select the width and bit 3 (`0x08`) marks the signed
+  variant, so `sdata4` is `0x0B`, not `0x07`; the x86-64 psABI's usual CIE
+  "R" byte `0x1B` is simply `pcrel | sdata4`. `cfi.hpp` spells the signed
+  constants as `unsigned | DW_EH_PE_SIGNED` so the relationship is visible.
 - **Unsupported rules bail, not guess.** `def_cfa_expression` /
   `val_expression` / personality-relative and indirect encodings poison the
   step instead of producing a bogus frame; the caller keeps the frames
