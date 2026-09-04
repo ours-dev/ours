@@ -168,3 +168,39 @@ QEMU dbg 镜像 `indexed 797 unwind frames`，两个 gibberish 线程照常运�
   那是控制台级别的往返对上纳秒级的 handler，两个字段都是自然对齐的机器字，最坏结果是一个
   样本用了邻近那轮的 period。注释里写明了。
 - `Tracer`（驱动 `trace.hpp` 里 tracepoint 的那半）仍未写，`trace.hpp` 只是脚手架加可运行的例子。
+
+## 4. `RecordBuffer` 三个原子合成一个游标（2026-09-03）
+
+**文件**
+- `kernel/lib/prof/include/prof/record_buffer.hpp` — 删掉 `m_dropped`、`m_total`，统计量全部从
+  `m_write_index` 推导
+
+**症状**
+无缺陷；是第 3 条同一原则在库里的另一处应用。每次 `try_produce()` 在中断路径上做三次原子 RMW
+（total++、cursor++、满了再 dropped++），而三个数从来不可能不一致。
+
+**原因**
+游标每次 produce 恰好前进一次，不管记录有没有放下，所以：
+`total == cursor`，`retained == min(cursor, CAPACITY)`，`dropped == cursor - retained`。
+另外两个计数器只是游标的函数，多出的两个原子既是中断路径上白花的两次 `lock xadd`，
+也是"哪个字段才是发布点"这个问题上的噪音。单生产者（本 CPU、关中断）加"排空前先静默"的协议
+本来就只依赖这一个游标。
+
+**改法**
+`reset()` 只清游标；`try_produce()` 只推游标；`dropped()`/`total()` 从游标算。
+`RecordBuffer` 只剩一个原子成员。
+
+**参照**
+Linux `perf_output_begin()` 里 ring buffer 的 `head` 也是唯一的生产者游标，丢弃计数
+`lost` 是另一码事（那是消费者可见的事件流的一部分）；这里没有那个需求。
+
+**验证**
+构建通过；宿主 gtest `sampler` 6 例（含 `buffer_stats().total/retained` 断言）、`format` 4 例全过；
+clang-tidy 无新告警；QEMU dbg 镜像照常越过 prof_init 跑到两个线程。
+
+**故意没做**
+- `Tracepoint`（`trace.hpp`）已经是这个形状：唯一的原子是 `m_enabled`，`m_id` 是启动时走链接段
+  赋一次的普通字段，不用动。
+- `RecordSink` 没有原子，`Sampler::m_tick_counter` 是多 CPU 共享的自增计数，必须是原子 RMW，
+  和发布模型无关。
+- 游标不换成普通字段：它是排空侧跨 CPU 读的那一个字，也是"单原子"里的那一个。

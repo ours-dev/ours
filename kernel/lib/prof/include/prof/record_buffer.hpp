@@ -22,6 +22,13 @@ struct BufferStats final {
 /// production has been quiesced, which is what rules out torn records: it is
 /// a protocol, not a lock.
 ///
+/// The cursor is also the only atomic, and the only counter. Every produce
+/// advances it exactly once whether or not the record fit, so it *is* the
+/// total; what was retained is the part of it below `CAPACITY` and what was
+/// dropped is the part above. Separate `total`/`dropped` counters could
+/// only ever agree with it and would be two more words the interrupt path
+/// has to touch for nothing.
+///
 /// The record type is a parameter because the buffer is deliberately agnostic
 /// about what is being recorded. Statistical samples and traced events differ
 /// in how they are *triggered*, not in how they are stored, so they share
@@ -34,16 +41,13 @@ class RecordBuffer final {
 
     auto reset() -> void {
         m_write_index.store(0, std::memory_order_relaxed);
-        m_dropped.store(0, std::memory_order_relaxed);
-        m_total.store(0, std::memory_order_relaxed);
     }
 
-    /// Record one entry; returns false (and counts a drop) when full.
+    /// Record one entry; returns false when full. The cursor still advances
+    /// on a full buffer -- that is how the drop gets counted.
     auto try_produce(Record const &record) -> bool {
-        m_total.fetch_add(1, std::memory_order_relaxed);
         usize const slot = m_write_index.fetch_add(1, std::memory_order_relaxed);
         if (slot >= CAPACITY) {
-            m_dropped.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
         m_slots[slot] = record;
@@ -62,12 +66,16 @@ class RecordBuffer final {
 
     [[nodiscard]]
     auto dropped() const -> u64 {
-        return m_dropped.load(std::memory_order_relaxed);
+        auto const written = m_write_index.load(std::memory_order_relaxed);
+        if (written < CAPACITY) {
+            return 0;
+        }
+        return written - CAPACITY;
     }
 
     [[nodiscard]]
     auto total() const -> u64 {
-        return m_total.load(std::memory_order_relaxed);
+        return m_write_index.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]]
@@ -82,8 +90,6 @@ class RecordBuffer final {
 
   private:
     std::atomic<usize> m_write_index{0};
-    std::atomic<u64> m_dropped{0};
-    std::atomic<u64> m_total{0};
     Record m_slots[CAPACITY] = {};
 };
 
