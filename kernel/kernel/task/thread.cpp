@@ -505,8 +505,20 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
             return Status::InternalIrqRetry;
         }
 
+        // The timeout wakes the thread under its PI lock, exactly as
+        // WaitQueue::handle_timeout() does: unsleep() requires the lock, and
+        // trylock_or_cancel() is how a timer handler may take a lock that the
+        // thread cancelling the timer might be holding -- it gives up as soon
+        // as cancel() has marked the timer, instead of deadlocking against a
+        // canceller that is spinning on this handler to finish. Returns
+        // false when the lock was taken (the inverse of a try_acquire()).
         timer.activate(deadline, [current_thread](Timer *timer) {
+            auto &pi_lock = current_thread->get_pi_lock();
+            if (timer->trylock_or_cancel(pi_lock)) {
+                return Timer::HandlerResult::Handled;
+            }
             current_thread->m_waiter_state.unsleep(current_thread, Status::Ok);
+            pi_lock.release();
             return Timer::HandlerResult::Handled;
         });
 

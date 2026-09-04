@@ -203,7 +203,9 @@ class WaitQueue {
 
     /// Second half of a wake: propagates the lost PI edge and resumes the
     /// thread. Must be called with the queue lock dropped, and only for a
-    /// thread this queue actually dequeued.
+    /// thread this queue actually dequeued. Takes |thread|'s PI lock itself,
+    /// which is why the queue lock has to be gone first (PI lock is the outer
+    /// one).
     auto wake_dequeued_thread(Thread *thread, Status status) -> void;
 
     /// Handler for time counted tasks.

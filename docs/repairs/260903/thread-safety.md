@@ -101,19 +101,9 @@
 rq 锁，不持 `thread->get_pi_lock()`，而 `finish_transition` 标了 `TA_REQUIRES(thread->get_pi_lock())`。
 函数体目前是只有断言的桩，契约该是什么等实现定；归调度器迁移工作。
 
-### 4.7 唤醒路径不持被唤醒线程的 PI 锁（4.4 的注解本来会揪出来的）
+### 4.7 唤醒路径不持被唤醒线程的 PI 锁 — 已修
 
-给 `WaiterState::unsleep` 标 `TA_REQUIRES(thread->get_pi_lock())` 编不过（`Thread` 在
-`wait_queue.hpp` 里不完整，见 4.4），但按 3.2 定下的契约人工核对，有两处调用方不持锁：
-
-- `WaitQueue::wake_dequeued_thread()`（`wait_queue.cpp:162-168`）：`notify_one/notify_all` 在放掉
-  队列锁之后调它，它直接 `thread->waiter_state().unsleep(thread, status)` → `Scheduler::unpark_thread`
-  → `do_unpark_thread` 改线程状态、入队——全程没有该线程的 PI 锁。与同时持 PI 锁读 `state()` 的
-  `suspend_or_kill` 竞争。修法：在 `wake_dequeued_thread` 里 `Guard guard{thread->get_pi_lock()}`
-  包住 `begin_propagate` + `unsleep`（队列锁已放，锁序「PI 在外、队列在内」不被违反）。
-- `Thread::Current::sleep()` 的 timer 回调（`thread.cpp:471`）：`unsleep(current_thread, ...)` 直接
-  从 timer handler 调，不拿 PI 锁。对照 `WaitQueue::handle_timeout` 的写法：先
-  `timer->trylock_or_cancel(pi_lock)`，拿到再 unsleep，最后 `release()`。
+见 changes。**未实测**（启动走不到）。
 
 ## 5. 已确认正确、不用动的
 

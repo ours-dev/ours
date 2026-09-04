@@ -1,4 +1,5 @@
 #include <ours/lockdep.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/task/wait_queue.hpp>
@@ -160,6 +161,20 @@ auto WaitQueue::dequeue_front_locked(Status status) -> Thread * {
 }
 
 auto WaitQueue::wake_dequeued_thread(Thread *thread, Status status) -> void {
+    // The waker takes the woken thread's PI lock: unsleep() ends in
+    // Scheduler::unpark_thread(), which requires it (it changes the thread's
+    // state and queues it), and the PI propagation above it reads the
+    // thread's scheduling context, which that lock guards. Until this Guard
+    // existed the wake ran with no lock on |thread| at all, racing a
+    // suspend_or_kill() that reads state() under the same lock.
+    //
+    // Lock order: PI lock outside, queue lock inside -- the queue lock was
+    // dropped by the caller before it got here, so nothing is inverted.
+    // Preemption is disabled as well as interrupts, as every other holder of
+    // a PI lock around the unpark does (Thread::resume()): the thread being
+    // woken must not preempt us while we still hold its lock.
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> guard{thread->get_pi_lock()};
+
     if (auto owq = as<OwnedWaitQueue>(this)) {
         OwnedWaitQueue::begin_propagate(*thread, *owq, OwnedWaitQueue::REMOVE_SINGLE_EDGE_OP);
     }

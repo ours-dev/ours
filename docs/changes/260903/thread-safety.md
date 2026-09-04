@@ -589,3 +589,58 @@ Linux `move_queued_task()`：`lockdep_assert_rq_held(rq)` 进入，`rq_unlock(rq
 
 **故意没做**
 `finish_transition` 的锁契约：函数体是桩，等它有实现再定。
+
+---
+
+## 两条唤醒路径补上被唤醒线程的 PI 锁（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/wait_queue.cpp` — `WaitQueue::wake_dequeued_thread()` 用
+  `Guard<SpinLock, IrqSaveAndPreemptDisable>` 拿 `thread->get_pi_lock()`，包住 PI 传播和
+  `unsleep()`；补 `#include <ours/task/auto_preempt_disabler.hpp>`
+- `kernel/include/ours/task/wait_queue.hpp` — `wake_dequeued_thread` 的注释写明它自己拿 PI 锁
+- `kernel/kernel/task/thread.cpp` — `Thread::Current::sleep_etc()` 的 timer 回调改成
+  `trylock_or_cancel(pi_lock)` → `unsleep` → `release()`，与 `WaitQueue::handle_timeout` 同形
+
+**症状**
+潜伏，单核启动流程走不到。`notify_one/notify_all` 唤醒一个 waiter、或 `sleep_for` 超时唤醒时，
+`Scheduler::unpark_thread` → `do_unpark_thread` 改线程状态、入队，全程不持该线程的 PI 锁；与
+同一时刻持 PI 锁读 `state()` 的 `suspend_or_kill()`、`resume()` 竞争。
+
+**原因**
+3.2 定下的契约是 `unpark_thread` **要求**调用方持 PI 锁。六个调用链里四个满足：`resume()`、
+`suspend_or_kill()`（Guard）、`WaitQueue::handle_timeout()`（`trylock_or_cancel`）、
+`Event`/`Mutex` 走 `UnparkList` 重载（自己 Guard）。剩下两条不满足：
+
+- `wake_dequeued_thread()`：`notify_one/notify_all` 在放掉队列锁后调它，它直接 `unsleep`。
+- `sleep_etc()` 的 timer 回调：直接 `unsleep`，而同一文件里的 `handle_timeout` 早就用
+  `trylock_or_cancel` 先拿锁了——两个 timeout 路径一个对一个错。
+
+分析器没报这两处，是因为 `WaiterState::unsleep` 自己标不了 `TA_REQUIRES(thread->get_pi_lock())`
+（`Thread` 在 `wait_queue.hpp` 里不完整，见待修 4.4），注解链在它这里断了；按契约人工核对
+才找到（待修 4.7）。
+
+**改法**
+- `wake_dequeued_thread`：`Guard<SpinLock, IrqSaveAndPreemptDisable>`。锁序「PI 在外、队列在内」
+  没有被反转，因为调用方已经放了队列锁——这正是它注释里「Must be called with the queue lock
+  dropped」的原因，现在注释把「它自己拿 PI 锁」补上了。关抢占和 `Thread::resume()` 一致：被唤醒
+  的线程不能在我们还持它的锁时抢占我们。PI 传播也放进锁里：`begin_propagate` 读
+  `thread.scheduling_context()`，那是 PI 锁保护的。
+- timer 回调：照 `handle_timeout`。`trylock_or_cancel` 返回 **false** 表示拿到（3.6 的注解），
+  `cancel()` 那一侧在 `sleep_etc` 的 Guard 作用域之外，所以不会持着 PI 锁等一个在等 PI 锁的
+  handler。
+
+**参照**
+Zircon `WaitQueue::WakeOne()`/`WakeAll()`：整个唤醒在 `thread_lock` 下；`Thread::SleepEtc()` 的
+`SleepTimerCallback` 是 `TrylockOrCancel(thread_lock)` → `Unblock` → `Release`。Linux
+`try_to_wake_up()` 第一件事是 `raw_spin_lock_irqsave(&p->pi_lock)`。
+
+**验证**
+- 全量构建通过；clang-format 已跑；clang-tidy 对两个文件改动行无新告警。
+- 15 个 TU 告警 108 不变——预期如此，这两处本来就没被报（见原因）。
+- QEMU：**未实测**。两个镜像当前都停在调度器/prof 那边正在处理的位置（`kernel.dev.dbg_1.obi`
+  在 `Free frame(F000, 0)` 之后静默自旋，`kernel.dev.obi` 在 tick 设备选定后静默挂住），
+  单核启动也走不到 notify/timeout 唤醒。
+
+**故意没做**
+`WaiterState::sleep/unsleep` 的 `TA_REQUIRES`（4.4）：头文件包含方向的问题，另立一条。
