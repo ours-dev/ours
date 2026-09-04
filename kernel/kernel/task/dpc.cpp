@@ -1,3 +1,4 @@
+#include <gktl/init_hook.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
 #include <ours/lockdep.hpp>
@@ -160,5 +161,33 @@ auto DpcRunner::cancel(Dpc &dpc) -> Status {
     auto &queue = runner.m_dpc_queues[static_cast<usize>(Self::owner_level_of(dpc))];
     return queue.cancel(dpc);
 }
+
+namespace {
+    /// This CPU's Dpc workers go live as soon as there is a scheduler to run
+    /// them on.
+    ///
+    /// DpcRunner::init() documents that every CPU must call it on itself once
+    /// during its own bring-up -- and nothing ever did. Queue::start() is its
+    /// only caller and takes the only address of Queue::do_work(), so with no
+    /// caller the linker dropped both: neither symbol existed in the image.
+    /// The queues were therefore never started, and Thread::Current::exit()
+    /// enqueued the teardown Dpc onto one, which faulted.
+    ///
+    /// Threading is the first level at which this can run: init() spawns a
+    /// thread per Level, and task::init() -- which builds the schedulers and
+    /// each CPU's idler -- is what main.cpp finishes immediately before
+    /// publishing this level. Registered as a hook rather than called from
+    /// main.cpp so the dependency lives next to the code that has it; the
+    /// tick's start_legacy_tick() sits on the same level for the same reason.
+    ///
+    /// This covers the boot CPU only, which is what a hook can do -- hooks run
+    /// on whoever publishes the level, and init() resolves Current::get() and
+    /// current_cpu() against the running CPU by design. A secondary CPU still
+    /// owes itself this call from its own bring-up path.
+    INIT_CODE auto start_dpc_runner() -> void {
+        DpcRunner::init();
+    }
+    GKTL_INIT_HOOK(DpcRunnerInit, start_dpc_runner, gktl::InitLevel::Threading);
+} // namespace
 
 } // namespace ours

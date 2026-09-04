@@ -1505,3 +1505,57 @@ ours 不需要那次复制，因为调用之后不再读它。
 
 构建通过；启动无变化（队列此刻仍未接通）。接通之后（第 27 条）实测：`destroy()` 跑完、
 worker 回到 `m_event.wait()`，无故障。
+
+---
+
+## 27. DPC worker 从来没有被启动过（2026-09-03）
+
+**文件**
+- `kernel/kernel/task/dpc.cpp` — 新增 `InitLevel::Threading` 的 init hook。
+
+**症状**
+
+`Thread::Current::exit()` 把销毁用的 `Dpc` 入队之后故障；`Thread::destroy()` 一次都没跑过，
+线程的内核栈和 `Thread` 对象永远不回收。
+
+**原因**
+
+`DpcRunner::init()` 的头注释写着「每颗 CPU 必须在自己的 bring-up 里调一次」——而**全树没有
+任何调用者**。`Queue::start()` 是它唯一的调用者，也是唯一取 `&Queue::do_work` 地址的地方，
+所以链接器把两个函数都回收了：镜像里根本没有这两个符号（lldb 下
+`breakpoint set -r "DpcRunner::Queue::do_work"` 报 `no locations (pending)`）。
+
+**改法**
+
+```cpp
+namespace {
+    INIT_CODE auto start_dpc_runner() -> void {
+        DpcRunner::init();
+    }
+    GKTL_INIT_HOOK(DpcRunnerInit, start_dpc_runner, gktl::InitLevel::Threading);
+} // namespace
+```
+
+Threading 是最早可行的一层：`init()` 每个 Level 起一个线程，而 `task::init()`——建调度器和
+每颗 CPU 的 idler——正是 `main.cpp` 在发布这一层之前刚做完的事。写成 hook 而不是在 `main.cpp`
+里调，是让依赖和有依赖的代码待在一起；`tick_sched.cpp` 的 `start_legacy_tick()` 出于同样理由
+挂在同一层。只覆盖启动 CPU，次级 CPU 仍欠自己一次调用。
+
+**参照**
+
+`Zircon`：`static void dpc_init(unsigned int level) { percpu::GetCurrent().dpc_runner.InitForCurrentCpu(); }`
+配 `LK_INIT_HOOK(dpc, dpc_init, LK_INIT_LEVEL_THREADING)`——同一层、同一形状。
+
+**验证**
+
+- `llvm-nm` 确认 `do_work`/`start` 两个符号回到镜像里。
+- 构建通过；`clang-format` 已跑；`clang-tidy` 对 `dpc.cpp` 无新告警。
+- QEMU dbg 实测，退出路径**整条打通**：`enqueue` → `Event::signal` → worker 被唤醒 →
+  `Thread::destroy()` 跑完 → worker 回到 `m_event.wait()`。laborer 退出之后系统继续运行
+  **525902 行**日志、内核时间跑到约 30 秒，无断言、无故障、QEMU 存活。
+  （改动前：laborer 一退出，整个系统就停。）
+
+**故意没做**
+
+- 次级 CPU 的那次调用。hook 只在发布该层的 CPU 上跑，而 `init()` 按设计是对「当前 CPU」的；
+  AP 的 bring-up 路径还欠自己一次，已记进待修。
