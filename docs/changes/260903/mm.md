@@ -1135,3 +1135,137 @@ return ktl::ok(page);
   （它按页数循环，每次都提交整个 `size`）。改前它让一个 4 页 VMO 分配 16 页，改后第二遍
   起全部命中，只剩多余的查找。是另一条独立缺陷，已记进待修。
 - **没改 `ktl::xarray::XArray`**，也没有删它。它属于 `kernel/lib/ktl` 那条线。
+
+## 7. 代际老化真的会老化：`rotate_reclaimable_queues()` 前进 MRU，环满时把最老的一代折进下一代（2026-09-03）
+
+**文件**
+- `kernel/mm/include/ours/mm/page_queues.hpp` — 声明 `advance_lru_locked()`；
+  给 `rotate_reclaimable_queues()` 和 `mark_accessed()` 补文档注释
+- `kernel/mm/page_queues.cpp` — 实现 `advance_lru_locked()` 与 `mark_accessed()`；
+  重写 `rotate_reclaimable_queues()`；`PageQueues()` 不再是 `= default`
+
+**症状**
+
+潜伏，当前启动触发不到。`rotate_reclaimable_queues()` 原来只有三行有效动作：
+
+```cpp
+Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+m_mrugen.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
+m_last_age_time = time::SteadyClock::now();
+m_last_age_reason = reason;
+```
+
+`m_lrugen` 从头到尾没有任何代码写过。用探针驱动之后：环填满（8 代各 1 页）之后每一次轮转
+都在往一个仍然装着页的槽里塞新页，八代只剩一代。
+
+**原因**
+
+这里最容易写错的地方，恰恰是**这段代码本来对了一半**——值得说清楚它对在哪。
+
+代际 LRU 的核心是：**一页的"年龄"是它离最新一代的距离，而不是它自己身上记的某个时间戳。**
+所以"让所有页老一岁"这件事不需要碰任何一个页——把 MRU 代数往前推一格就够了，O(1)，
+一个原子加。这正是 Linux 的 `inc_max_seq()` 做的事，也正是原来那行 `m_mrugen.fetch_add(1)`
+做对了的事。会觉得"只递增一个计数器"是敷衍，是因为直觉以为老化必须搬页；它不必。
+
+真正缺的是环的另一端。槽只有 `NUM_RECLAIMABLE`（8）个，活着的代是闭区间 `[lru, mru]`，
+占用 `mru - lru + 1` 个槽。当它等于 8 时，再推进 MRU 就会撞上 LRU 所在的那个槽——新一代和
+最老一代共用一条链表，从此两者再也分不开，代际方案退化成"一条链表加一个没人看的计数器"。
+（配合第 6 节修掉的越界：在取模之前，撞上的还不是 LRU 槽，而是 `m_queues` 数组的外面。）
+
+所以老化的完整形状是两件事而不是一件：**推进 MRU（不搬页）**，以及**在环满时先退休最老的
+一代（要搬页）**。Linux 把这两件事分成 `inc_max_seq()` 和 `inc_min_seq()`，Zircon 分成
+`RotateReclaimQueues()` 和 `ProcessLruQueue()`，界线画在同一个地方。
+
+还有一处初始化问题：`PageQueues() = default` 让 `m_lrugen`/`m_mrugen` 处于未定义值——
+`ustl::sync::Atomic` 的默认构造函数是 `= default`，不清零。当前唯一的实例在 `PmNode` 里，
+落在 `.bss` 上碰巧是零，但整套环的判断全建立在 `mru - lru + 1` 上，靠链接段的性质来保证
+它一开始等于 1 是不能接受的。
+
+**改法**
+
+`rotate_reclaimable_queues()`：
+
+```cpp
+if (usize(mru - lru) + 1 == NUM_RECLAIMABLE) {
+    advance_lru_locked();
+}
+m_mrugen.store(mru + 1, MemoryOrder::Relaxed);
+```
+
+减法故意做在自由递增的计数器上而不是取模后的槽下标上：`u32` 的模运算让这个差值跨越计数器
+自身回绕时依然正确，而两个槽下标根本区分不出"环满"和"环空"。
+
+`advance_lru_locked()` 把最老一代整条链表交给下一代，然后 `++m_lrugen`。重接链表本身是一次
+O(1) 的 `splice`；**走一遍链表只是为了重打标签**——第 6 节引入的那个队列字节是
+`dequeue_locked()` 用来决定减哪个计数器的依据，只 splice 不改标签，下一次摘页就会把数减到
+错误的槽上。Zircon 在这里付得更多：`ProcessLruQueue()` 是一页一页重新入队的。
+
+我们没有交换分区、没有供页者、没有压缩，所以**没有一页能真的被回收**，最老的一代只能整体
+折进下一代。代价是环最远端的那两代分不出先后；除此之外没有别的损失。Linux 的
+`inc_min_seq()` 在能回收时先回收，回收不掉的同样往前折，形状是一样的。
+
+`mark_accessed()`（原本只有声明没有定义）：页在可回收队列上且不在 MRU 代时，把它重新填到
+MRU 代。这是代际方案唯一的输入信号——没有它，代数记录的是"第一次入队的时刻"而不是
+"最后一次被访问的时刻"，老化就退化成 FIFO。
+
+**被否掉的方案**：照 Zircon 的 `MarkAccessed()` 写成无锁的——用一次 compare-exchange 把新
+代数写进描述符，页却留在旧链表上，等 `ProcessLruQueue()` 事后调和。它买到的是一条不用取锁的
+快路径，代价是描述符里的队列字节故意与真正持有它的链表不符。我们这里每条路径本来就在
+`m_lock` 之下，无锁快路径无处可买，而"字节即链表"这条不变量是 `dequeue_locked()` 的全部依据，
+比那条快路径值钱。
+
+**参照**
+
+- `Linux inc_max_seq()` 与 `inc_min_seq()`（`mm/vmscan.c`，multi-gen LRU）——"推进 MRU 不搬页、
+  环满时折叠最老一代"这个分工直接照它。
+- `Linux folio_mark_accessed()` / `folio_update_gen()`——`mark_accessed()` 的语义对应物。
+- `Zircon PageQueues::RotateReclaimQueues()` 与 `PageQueues::ProcessLruQueue()`
+  （`zircon/kernel/vm/page_queues.cc`）——同样的两段划分，但它的 LRU 处理是逐页重新入队，
+  且 `MarkAccessed()` 走无锁路径，两处都没有照抄，理由见上。
+
+**验证**
+
+构建通过，两个镜像 QEMU 实测启动到与改动前相同的位置，无回归。`clang-format` 与
+`clang-tidy -p out/bringup.x86` 对两个文件跑过，新增行无告警。
+
+功能证据同样来自一个临时探针（16 个静态 `VmPage`，一个独立的 `PageQueues`，提交前已删除）。
+`slots(list)` 是把 8 条可回收链表逐条走一遍数出来的，`slots(size)` 是 `m_sizes` 里的计数器，
+`total` 是两者各自的合计：
+
+```
+probe 3 gens, before aging: lru=gen0 mru=gen2 slots(list)=[1,1,1,0,0,0,0,0] slots(size)=[1,1,1,0,0,0,0,0] total=3/3
+probe 3 gens, after aging : lru=gen0 mru=gen3 slots(list)=[1,1,1,0,0,0,0,0] slots(size)=[1,1,1,0,0,0,0,0] total=3/3
+probe ring full   : lru=gen0 mru=gen7 slots(list)=[1,1,1,1,1,1,1,1] slots(size)=[1,1,1,1,1,1,1,1] total=8/8
+probe after fold  : lru=gen1 mru=gen8 slots(list)=[0,2,1,1,1,1,1,1] slots(size)=[0,2,1,1,1,1,1,1] total=8/8
+probe filed gen 8 : lru=gen1 mru=gen8 slots(list)=[1,2,1,1,1,1,1,1] slots(size)=[1,2,1,1,1,1,1,1] total=9/9
+probe: page 3 queue byte before mark_accessed = 6
+probe: page 3 queue byte after  mark_accessed = 3
+probe marked p3   : lru=gen1 mru=gen8 slots(list)=[2,2,1,0,1,1,1,1] slots(size)=[2,2,1,0,1,1,1,1] total=9/9
+probe aged (ring full, so it folds again): lru=gen2 mru=gen9 slots(list)=[2,0,3,0,1,1,1,1] slots(size)=[2,0,3,0,1,1,1,1] total=9/9
+probe removed all : lru=gen2 mru=gen9 slots(list)=[0,0,0,0,0,0,0,0] slots(size)=[0,0,0,0,0,0,0,0] total=0/0
+```
+
+逐条读：
+
+1. 前两行是「老化不搬页」的直接证据：`mru` 从 gen2 走到 gen3，8 个槽的内容一个字节没动。
+2. `ring full` 之后那次轮转触发折叠：槽 0（gen0 那一页）并进槽 1，槽 1 变成 2，`lru` 走到
+   gen1，总数仍是 8——一页都没丢。腾出来的槽 0 随即被 gen8 用上（8 % 8 = 0），第三行填进去。
+3. `mark_accessed` 那两行是队列字节本身：6 是 `ReclaimableStart(3) + 3`，即 gen3 所在的槽；
+   改成 3 即槽 0，也就是当前的 MRU 代 gen8。对应的链表变化是槽 3 清空、槽 0 从 1 变 2。
+4. 最后一次轮转时环仍是满的（`mru - lru + 1 = 8 - 1 + 1 = 8`），所以它又折了一次：
+   槽 1 的 2 页并进槽 2，槽 2 从 1 变 3。这一行原本是想演示"不折叠的老化"，结果演示了
+   "环满就必折"，两件事第 1 条已经单独证过了。
+5. 每一行 `slots(list)` 与 `slots(size)` 逐位相同，`total` 两个数也一致——折叠用的是整条链表
+   的 `splice`，如果重打标签那一步漏了，最后 `removed all` 会把计数减到别的槽上，全零就不会
+   出现。
+
+**故意没做**
+
+- **没有回收。** `advance_lru_locked()` 里没有"挑一页扔掉"的分支，因为没有地方可扔：
+  没有交换分区、没有供页者、没有压缩。写一个当前只能返回失败的回收路径，等于把设计决定
+  伪装成代码。
+- **没有人调用 `mark_accessed()`。** 它的输入是页表的 accessed 位，需要缺页路径与页表遍历器
+  一起提供，那两样分别属于别的会话。
+- **没有引入"最低 LRU 代"的请求机制。** Zircon 的 `LruRunner` 是被
+  `RequireLruGen()` 之类的请求驱动的（回收方说"我要看到比第 N 代更老的页"），那套背压只有在
+  真的有回收方时才有意义。

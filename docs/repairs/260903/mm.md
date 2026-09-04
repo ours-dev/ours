@@ -112,10 +112,8 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 
 ## 8. 回收只是骨架
 
-入队/出队已经做了（见 `docs/changes/260903/mm.md` 第 6 节），还剩两件：
+入队/出队（第 6 节）与代际老化（第 7 节）已经做了，还剩一件：
 
-- `rotate_reclaimable_queues()` 只递增 `m_mrugen`，`m_lrugen` 从不前进，环填满之后没有任何
-  处理，代际方案等于只有一代。
 - `LruRunner::run()` 写的是 `while (State::Shutdown == m_state.load(...)) {}`——条件像是反的，
   它在"已关闭"时空转；`m_thread` 标着 `[[maybe_unused]]`，没有任何东西启动它。
   `start_runners()` 只有声明没有定义。

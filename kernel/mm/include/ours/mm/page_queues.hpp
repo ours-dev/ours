@@ -46,6 +46,10 @@ class PageQueues {
     /// that has since been reused for something else.
     auto remove(VmPage *page) -> void;
 
+    /// Re-files |page| into the youngest generation, if it is reclaimable and
+    /// not already there. This is the only input the generational scheme has:
+    /// without it the generations record when a page was first filed, not when
+    /// it was last touched, and aging degenerates into a FIFO.
     auto mark_accessed(VmPage *page) -> void;
 
     auto start_runners() -> void;
@@ -87,7 +91,22 @@ class PageQueues {
     };
     friend auto to_string(AgeReason) -> char const *;
 
+    /// Ages every reclaimable page by one generation.
+    ///
+    /// Nothing moves. A page's age is its distance from the most-recently-used
+    /// generation, so advancing that generation ages every page already filed,
+    /// in constant time and without touching a single descriptor. That is the
+    /// whole point of a generational LRU, and the counterpart of Linux's
+    /// inc_max_seq().
     auto rotate_reclaimable_queues(AgeReason reason) -> void;
+
+    /// Empties the oldest generation into the next one and retires its slot.
+    ///
+    /// Called only when the ring is full, because it is the one operation here
+    /// that is not O(1): every page it hands over has to be re-tagged. It is
+    /// also where reclaim would go if this kernel had anywhere to reclaim to
+    /// -- see the comment on the definition.
+    auto advance_lru_locked() -> void;
 
     auto get_lock() -> sync::SpinLock & {
         return m_lock;
