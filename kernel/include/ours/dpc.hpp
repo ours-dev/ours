@@ -13,9 +13,6 @@
 #include <ours/types.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
-#include <functional>
-#include <utility>
-
 namespace ours {
 /// The tier a `Dpc` is submitted at. `DpcRunner` runs one dedicated
 /// worker thread per tier per CPU, so a `Dpc` queued at a higher tier is
@@ -42,7 +39,19 @@ class Dpc final: public ustl::collections::intrusive::ListBaseHook<> {
     using Self = Dpc;
 
   public:
-    using Callback = ustl::function::Fn<auto()->void>;
+    /// A plain function pointer, handed the `Dpc` itself; whatever context
+    /// the callback needs travels in `arg()`.
+    ///
+    /// Deliberately not a `std::function`. A `Dpc` is submitted from the
+    /// places that must not allocate -- interrupt and scheduler context --
+    /// and this kernel has no global `operator new` at all, only a panic
+    /// stub. The old shape took `std::bind_front(f, args...)` into a
+    /// `std::function`, which is fine only while the bound object fits the
+    /// small-buffer optimisation; the tree's one call site binds a member
+    /// function pointer (16 bytes on the Itanium ABI) plus a `this`, which
+    /// does not, so every thread exit panicked in `operator new`. A
+    /// function pointer and a `void *` cannot outgrow anything.
+    using Func = auto (*)(Self *) -> void;
 
     enum class State {
         /// Not queued anywhere; safe to destroy, move out of, or
@@ -56,9 +65,19 @@ class Dpc final: public ustl::collections::intrusive::ListBaseHook<> {
         Running,
     };
 
-    template <typename F, typename... Args>
-    Dpc(F &&f, Args &&...args)
-        : m_callback(std::bind_front(std::forward<F>(f), std::forward<Args>(args)...)) {}
+    Dpc(Func func, void *arg = nullptr) : m_func(func), m_arg(arg) {
+        DEBUG_ASSERT(m_func, "Dpc constructed without a callback");
+    }
+
+    /// The context handed to the constructor. Named after Zircon's
+    /// `Dpc::arg<ArgType>()`, and typed at the use site rather than on the
+    /// class so that `Dpc` stays one type no matter what it carries -- which
+    /// is what lets `DpcRunner` keep a single intrusive list of them.
+    template <typename T>
+    [[nodiscard]]
+    auto arg() const -> T * {
+        return static_cast<T *>(m_arg);
+    }
 
     ~Dpc() {
         DEBUG_ASSERT(State::Idle == m_state, "Dpc destroyed while still queued or running");
@@ -83,12 +102,11 @@ class Dpc final: public ustl::collections::intrusive::ListBaseHook<> {
     CpuNum m_owner_cpu{};
     DpcPriority m_owner_priority{};
 
-    Callback m_callback;
+    Func m_func;
+    void *m_arg;
 
     FORCE_INLINE auto invoke() -> void {
-        if (m_callback) {
-            m_callback();
-        }
+        m_func(this);
     }
 };
 

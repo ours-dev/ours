@@ -1078,3 +1078,104 @@ auto handle_irq_postamble() -> bool {
   算进去了，但那个计数没人维护，所以这一层保护目前是空的。已记进待修。
 - 没有动 `arch_handle_exception()`：它的 `if (need_preempt) Thread::Current::preempt();`
   本来就在正确的位置，缺的只是 `need_preempt` 的正确来源。
+
+---
+
+## 21. `Dpc` 用 `std::function` 装 `bind_front`，线程退出必撞 `operator new`（2026-09-03）
+
+**文件**
+- `kernel/include/ours/dpc.hpp` — `Dpc` 的回调从 `std::function` 改成函数指针 + `void *`。
+- `kernel/kernel/task/thread.cpp` — 唯一的构造点改用无捕获 lambda。
+
+**症状**
+
+第 20 条让抢占轮转跑起来之后，laborer 干完活退出，立刻：
+
+```
+[... cpu0 trace] Thread |laborer| is preparing exiting
+[... cpu0 error] operator new
+```
+
+lldb 栈：`operator new(24)` ← `std::function<void()>::function<__bind_front_t<void (Thread::*)(), Thread*>>`
+← `Dpc::Dpc(...)` ← `Thread::Current::exit(retcode=0)` ← `Thread::trampoline()`。
+
+**原因**
+
+`Dpc` 的回调是 `std::function`，构造函数把实参 `bind_front` 进去：
+
+```cpp
+using Callback = ustl::function::Fn<auto()->void>;
+
+template <typename F, typename... Args>
+Dpc(F &&f, Args &&...args)
+    : m_callback(std::bind_front(std::forward<F>(f), std::forward<Args>(args)...)) {}
+```
+
+唯一的调用点绑的是一个**成员函数指针**加一个 `this`：
+
+```cpp
+Dpc dpc{&Self::destroy, current_thread};
+```
+
+Itanium ABI 下成员函数指针是 16 字节，加 `Thread *` 是 24 字节——超出 `std::function` 的
+小缓冲，于是去堆上要空间，而这个内核的全局 `operator new` 是
+`kernel/lib/libc/cpp_dependencies.cpp` 里的 panic 桩。
+
+这和 `Thread::spawn` 的那条（`docs/repairs/260903/task.md` 第 1 条）是同一族：
+`std::function` 在一个没有 `operator new` 的内核里，只在绑定的东西恰好塞得进 SBO 时才工作。
+而 `Dpc` 更糟——它被提交的场合正是**不允许分配**的场合：中断上下文、调度器上下文。
+
+**改法**
+
+照 Zircon 的 `Dpc`：一个裸函数指针加一个 `void *`，两者都不可能"长大"。
+
+```cpp
+using Func = auto (*)(Self *) -> void;
+
+Dpc(Func func, void *arg = nullptr) : m_func(func), m_arg(arg) {
+    DEBUG_ASSERT(m_func, "Dpc constructed without a callback");
+}
+
+template <typename T>
+[[nodiscard]]
+auto arg() const -> T * {
+    return static_cast<T *>(m_arg);
+}
+...
+Func m_func;
+void *m_arg;
+
+FORCE_INLINE auto invoke() -> void {
+    m_func(this);
+}
+```
+
+调用点改成无捕获 lambda——它能隐式转成函数指针，构造过程不分配：
+
+```cpp
+Dpc dpc{[](Dpc *dpc) -> void { dpc->arg<Thread>()->destroy(); }, current_thread};
+```
+
+回调收到的是 `Dpc` 自己，上下文从 `arg<T>()` 取，所以 `Dpc` 始终是**同一个类型**，
+`DpcRunner` 才能用一条侵入式链表串所有的 `Dpc`——这也是 Zircon 把参数做成 `void *`
+而不是把 `Dpc` 模板化的原因。`<functional>` / `<utility>` 随之没有使用者，一并删掉。
+
+**参照**
+
+`Zircon Dpc`（`kernel/include/kernel/dpc.h:22-48`）：
+`using Func = void(Dpc*); explicit Dpc(Func* func, void* arg = nullptr); template <class ArgType> ArgType* arg();`
+以及 `Func* const func_; void* const arg_;`。
+
+**验证**
+
+- 构建通过；`clang-format` 已跑；`clang-tidy` 对 `dpc.hpp` 与 `thread.cpp` 无新告警。
+- QEMU dbg：`operator new` panic 消失，30 秒窗口内无断言、无故障，抢占轮转照常
+  （9293 行 `I'm Thread 1/2`），启动推进到线程退出本身。
+
+**故意没做**
+
+- 没有动 `Thread::spawn` 那条同族问题（`StartRoutine` 也是 `std::function`）——
+  它现在恰好塞得下，是独立的一条，仍在 `docs/repairs/260903/task.md`。
+- 没有动 `Dpc` 的生命周期问题：唯一的调用点把 `Dpc` 放在**正在退出的线程自己的内核栈上**，
+  而回调 `destroy()` 释放的正是那个栈，`DpcRunner::Queue::do_work()` 在 `invoke()` 之后
+  还要回头 `mark_idle(*next)`。这是一个 use-after-free，独立一条，已记进待修。

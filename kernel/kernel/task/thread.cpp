@@ -671,7 +671,10 @@ auto Thread::Current::exit(i32 retcode) -> void {
         }
     }
 
-    Dpc dpc{&Self::destroy, current_thread};
+    // A captureless lambda, so it converts to a plain function pointer and
+    // nothing is allocated on the way into the Dpc -- see the note on
+    // Dpc::Func. The thread to tear down travels as the Dpc's arg.
+    Dpc dpc{[](Dpc *dpc) -> void { dpc->arg<Thread>()->destroy(); }, current_thread};
     [[maybe_unused]]
     auto const status = DpcRunner::enqueue(dpc, DpcRunner::Level::Normal);
     DEBUG_ASSERT(Status::Ok == status);
