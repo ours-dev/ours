@@ -305,6 +305,28 @@ auto VmArea::unmap(VirtAddr base, usize size) -> Status {
     return unmap_locked(aligned_base, aligned_size);
 }
 
+/// Tears down everything in [base, base + size), refusing a range that only
+/// partly covers a sub-area.
+///
+/// The refusal is what lets this stop recursing, and the two are not separable.
+/// This used to descend into a partly-covered sub-area to trim the mappings
+/// inside it, one stack frame per level of nesting, with nothing bounding that
+/// nesting. Once a sub-area can only be wholly covered, there is nothing left
+/// to descend for: a whole sub-area is destroyed outright, and destroy() is
+/// already a cursor walk rather than a recursion.
+///
+/// The narrowing is defensible on its own terms, which is the reason to take it
+/// rather than to build a resumable walk. A sub-area is a *reservation* of
+/// address space, not a container of pages; punching a hole through one from
+/// outside has no obvious answer -- does the reservation shrink, split, or stay
+/// with a gap? Zircon asks the same question and refuses to guess: its
+/// UnmapInternalLocked() rejects a range that partially spans a child VMAR, and
+/// a caller who means to dissolve one names it and unmaps inside it instead.
+///
+/// What Zircon has and this does not is the opt-out: its
+/// VmAddressRegionOpChildren tells it whether destroying whole child VMARs is
+/// allowed at all, so the syscall path can forbid what the kernel path permits.
+/// That distinction needs a syscall path to matter, and there is none yet.
 auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
     DEBUG_ASSERT(size, "an empty range has nothing to unmap");
 
@@ -314,20 +336,37 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
     // `end_addr_byte`.
     VirtAddr const last = base + size - 1;
 
+    // Ask before doing, for the reason protect() does: once the walk below has
+    // destroyed its first child there is no putting it back, and a range that
+    // clips a sub-area has to be refused as a whole rather than half applied.
+    // Read-only, so a single enumerator carries it.
+    {
+        VmaSet::Enumerator enumerator{m_subvmas, base, last};
+        while (auto *const child = enumerator.next()) {
+            if (child->is_mapping()) {
+                // A mapping is a run of pages and may be trimmed at either end.
+                continue;
+            }
+            if (child->base() < base || child->last() > last) {
+                return Status::InvArgs;
+            }
+        }
+    }
+
     // One iterator carries the whole walk, and only the steps that actually
     // erase pay to re-establish it.
     //
     // Erasing is what makes this different from the read-only walks. A fully
-    // covered mapping is destroyed here, and VmAreaOrMapping::destroy() erases
-    // it from this very set; a B-tree erase can rebalance, which unseats
-    // iterators anywhere in the tree, not merely the one that named what was
-    // erased. So the tree has to hand back the position after the hole, which
-    // is what VmaSet::erase(IterMut) is for.
+    // covered child is destroyed here, and VmAreaOrMapping::destroy() erases it
+    // from this very set; a B-tree erase can rebalance, which unseats iterators
+    // anywhere in the tree, not merely the one that named what was erased. So
+    // the tree has to hand back the position after the hole, which is what
+    // VmaSet::erase(IterMut) is for.
     //
-    // Every other step -- descending into a sub-area, trimming a mapping that
-    // is only partly covered -- erases nothing, so it is a plain ++ at O(1)
-    // amortised. That is the whole gain over re-seeking per child: an unmap
-    // that spans mostly-trimmed children now costs one seek, not one per child.
+    // Trimming a partly covered mapping erases nothing, so that step is a plain
+    // ++ at O(1) amortised. That is the gain over re-seeking per child: an
+    // unmap that spans mostly-trimmed mappings costs one seek, not one per
+    // child.
     auto iter = m_subvmas.seek(base);
     while (iter != m_subvmas.end()) {
         auto *const child = *iter;
@@ -336,48 +375,38 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
             break;
         }
 
-        VirtAddr const overlap_base = std::max(child->base(), base);
-        VirtAddr const overlap_last = std::min(child->last(), last);
-
-        if (!child->is_mapping()) {
-            // Unmap never destroys areas, it just descends into them.
-            auto const status = static_cast<VmArea *>(child)->unmap_locked(
-                overlap_base, overlap_last - overlap_base + 1);
-            if (Status::Ok != status) {
-                return status;
-            }
-            ++iter;
-            continue;
-        }
-
-        auto *const mapping = static_cast<VmMapping *>(child);
-        if (base <= mapping->base() && mapping->last() <= last) {
-            // Fully covered, so the mapping has no role left to play: tear it
-            // down for good instead of leaving an object whose every region is
-            // unmapped.
+        if (base <= child->base() && child->last() <= last) {
+            // Wholly covered, so it has no role left to play: tear it down for
+            // good instead of leaving an object whose every page is unmapped.
+            // Areas and mappings alike -- destroy() is virtual, and VmArea's
+            // override walks its own subtree down and back up through m_parent.
             //
             // Out of the set first, because that is the only way to learn where
             // the walk resumes; destroy() cannot report it. The reference is
             // ours for the duration because erasing drops the set's, and the
-            // set's may well have been the last one.
-            mapping->retain();
+            // set's may well have been the last one. destroy() erases again on
+            // its way out, but VmaSet::erase() only releases when the tree
+            // actually held the key, so nothing is released twice.
+            child->retain();
             iter = m_subvmas.erase(iter);
-            auto const status = mapping->destroy();
-            mapping->release();
+            auto const status = child->destroy();
+            child->release();
             if (Status::Ok != status) {
                 return status;
             }
             continue;
         }
 
+        // Only a mapping can still be here: the pass above refused every range
+        // that leaves a sub-area partly covered.
+        DEBUG_ASSERT(child->is_mapping(), "a partly covered sub-area survived the check pass");
+        auto *const mapping = static_cast<VmMapping *>(child);
+        VirtAddr const overlap_base = std::max(mapping->base(), base);
+        VirtAddr const overlap_last = std::min(mapping->last(), last);
+
         // |overlap_base| straight through: VmMapping::unmap_locked() takes an
         // absolute address, the same as its protect_locked() sibling and the
-        // same as what VmMapping::unmap() computes before calling it. This used
-        // to subtract mapping->base() first and hand it an offset, which the
-        // mapping then measured against its ProtectionRanges -- absolute
-        // ranges -- and so trimmed a window in the bottom of the address space
-        // instead of the one asked for. Nothing caught it because both readings
-        // are a u64; nothing hit it because the boot never unmaps.
+        // same as what VmMapping::unmap() computes before calling it.
         auto const status = mapping->unmap_locked(overlap_base, overlap_last - overlap_base + 1,
                                                   UnmapControl::None);
         if (Status::Ok != status) {

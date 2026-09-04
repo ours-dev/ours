@@ -2211,3 +2211,151 @@ PROBE protect(whole, R) -> Ok
 - 没有动 `unmap_locked()`。它边走边销毁子节点，B 树的 erase 会让迭代器失效，
   而这个枚举器的爬升还依赖"刚走出来的子节点仍能按 base 找回来"——两条都不成立，
   要另一套办法，单独一条。
+
+---
+
+## `unmap()` 拒绝部分跨越子区域，最后一处按深度递归的路径消失（2026-09-04）
+
+> 无序号，理由同前。
+
+**文件**
+- `kernel/mm/vm_area.cpp` — `unmap_locked()` 加一趟只读的可行性检查；主循环不再下降，
+  整体覆盖的子节点（区域与映射一视同仁）直接销毁
+
+**症状**
+
+潜伏。`unmap_locked()` 遇到部分覆盖的子区域就对它再调一次自己，栈帧数等于嵌套深度，
+而嵌套深度没有上限。这是 VMA 这一层最后一处按深度递归的路径。
+
+**原因**
+
+前两条能纯机械地去递归，这一条不能，值得说清楚为什么。
+
+`find_mapping_locked()` 的下降只跟着一个子节点，没有分叉；`protect` 有分叉，
+但它只读，可以用 `m_parent` 当栈爬回去。`unmap` 两条都不占：它**边走边销毁**，
+而 B 树的 erase 会重平衡，树里任何位置的迭代器都可能失效——`MappingEnumerator` 的爬升
+恰恰依赖"刚走出来的子节点还能按 base 找回来"，销毁之后这个前提就没了。
+所以照搬第二条的手法在这里是错的。
+
+剩下两条路：要么做一个可暂停/可恢复的遍历（每次销毁之后从一个记住的地址重新定位，
+Zircon 的 `pause()`/`resume()` 就是干这个的），要么**让"需要下降"这件事不再发生**。
+
+选了后者，而且理由不只是省事：**子区域是一段地址空间的预约，不是一袋页**。
+从外面往一个子区域中间捅一个洞，语义上没有明显答案——预约是缩小、分裂，还是原样留个空洞？
+Zircon 面对同一个问题的选择是不猜：`UnmapInternalLocked()` 直接拒绝部分跨越子 VMAR 的范围，
+真想拆掉它的调用方应当点名它、在它里面 unmap。一旦子区域只能被整体覆盖，
+就没有什么可下降的了——整体覆盖的子区域直接销毁，而 `destroy()` 本身已经是游标遍历而非递归。
+
+这是**语义收紧**，不是纯重构：改之前 `unmap` 部分覆盖一个子区域会下降进去把里面的映射解掉、
+留下一个空的子区域；改之后返回 `InvArgs`。当前没有任何调用方（`VmArea::unmap()` 是个
+公开接口但全树无人调用），所以这个窗口是免费的——趁没人依赖旧语义时定下更严的那一种。
+
+**改法**
+
+两趟，形状与 `protect()` 一致：
+
+```cpp
+// 一、只读，问"这个范围合法吗"
+{
+    VmaSet::Enumerator enumerator{m_subvmas, base, last};
+    while (auto *const child = enumerator.next()) {
+        if (child->is_mapping()) {
+            continue;                       // 映射是一串页，两端都可以裁
+        }
+        if (child->base() < base || child->last() > last) {
+            return Status::InvArgs;         // 子区域被切了一半
+        }
+    }
+}
+
+// 二、动手
+auto iter = m_subvmas.seek(base);
+while (iter != m_subvmas.end()) {
+    auto *const child = *iter;
+    if (child->base() > last) break;
+    if (base <= child->base() && child->last() <= last) {
+        child->retain();
+        iter = m_subvmas.erase(iter);       // 交回后继，因为 erase 会让迭代器失效
+        auto const status = child->destroy();
+        child->release();
+        ...
+        continue;
+    }
+    DEBUG_ASSERT(child->is_mapping(), "a partly covered sub-area survived the check pass");
+    ...                                     // 裁剪，不删除，走 ++
+}
+```
+
+先问后写的理由和 `protect()` 一样：主循环销毁掉第一个子节点之后就没法回滚了，
+所以"范围切了子区域一半"这种错必须在动手之前整体拒绝，而不是半途返回。
+整体覆盖的分支现在对区域和映射一视同仁——`destroy()` 是虚的，`VmArea` 的重写版本
+自己用 `m_parent` 把子树下降—爬升地拆完。
+
+**参照**
+
+`Zircon VmAddressRegion::UnmapInternalLocked()`（`zircon/kernel/vm/vm_address_region.cc:873`）
+就是这两趟：
+
+```cpp
+for (auto itr = subregions_.IncludeOrHigher(base);
+     itr.IsValid() && (*itr).second->base() <= end_addr_byte; ++itr) {
+  ...
+  if (!(*itr).second->is_mapping() &&
+      (!can_destroy_regions || (*itr).second->base() < base || itr_end_byte > end_addr_byte)) {
+    return ZX_ERR_INVALID_ARGS;
+  }
+}
+while (true) {
+  auto itr = subregions_.IncludeOrHigher(base);
+  ...
+  if (unmap_base == curr_region->base() && unmap_size == curr_region->size()) {
+    zx_status_t status = curr_region->DestroyLocked();
+  } else {
+    ... mapping->UnmapLocked(unmap_base, unmap_size);
+  }
+}
+```
+
+Zircon 比我们多一个 `can_destroy_regions`（来自 `VmAddressRegionOpChildren`）：
+系统调用路径传 `No`，于是范围只要碰到任何子 VMAR 就拒绝；内核内部路径传 `Yes`，
+允许整体销毁。这个区别要有系统调用路径才有意义，我们还没有，所以没有实现——
+相当于恒为 `Yes`。
+
+Linux 不需要这一层判断：VMA 不嵌套，`do_munmap()` 面对的永远是一串平的 VMA，
+部分覆盖就地拆分（`__split_vma()`）。
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 跑过，无新告警
+（`vm_area.hpp:170` 那条 `modernize-use-override` 是既有的析构声明）。
+
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推进到线程调度，
+`kernel.dev.obi` 到 `prof: no architectural PMU`。
+
+启动不 unmap，用临时探针在根 VMA 空闲处搭树后实测撤掉（`kernel.dev.obi`），
+`a` 是 8 页，下面混着两个子区域和两个直属映射：
+
+```
+PROBE built -> Ok
+PROBE   leaf[0] m0 ... leaf[3] m3      PROBE leaves=4 children=4
+PROBE unmap(half of sub-area b) -> InvArgs
+PROBE   leaf[0] m0 ... leaf[3] m3      PROBE leaves=4 children=4   ← 一个都没动
+PROBE unmap(trim m3 tail) -> Ok
+PROBE unmap(all of sub-area c) -> Ok
+PROBE   leaf[0] m0  leaf[1] m1  leaf[2] m3   PROBE leaves=3 children=3
+```
+
+三件事各自对上：切了子区域 `b` 一半的范围被拒，**而且树完全没动过**（拒绝是整体的，
+不是走到一半退出来）；裁剪直属映射 `m3` 的尾巴被允许，不删除任何节点；
+整体覆盖子区域 `c` 的范围把它连同里面的 `m2` 一起销毁，`a` 的子节点数 4 → 3。
+
+至此 `kernel/mm/vm_area.cpp` 里 `static_cast<VmArea *>(child)->...` 形式的自递归调用
+一处不剩（`grep` 为空）。
+
+**故意没做**
+
+- 没有实现 Zircon 的 `VmAddressRegionOpChildren::No`。见「参照」：要有系统调用路径才有意义。
+- 没有做可暂停/可恢复的遍历。见「原因」：拒绝部分跨越让它变得不必要，
+  真到了需要"从外面挖穿子区域"的那天，该先回答那个语义问题，而不是先写遍历。
+- 没有让 `unmap` 在中途失败时回滚。第一趟已经挡掉了唯一一种不可恢复的错法；
+  剩下的失败（映射自己解除失败）重来一次是幂等的。
