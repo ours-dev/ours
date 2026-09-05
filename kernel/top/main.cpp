@@ -5,6 +5,7 @@
 #include <ours/start.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
+#include <userabi/userboot.hpp>
 
 /// Init calls
 #include <ccrt/runtime.hpp>
@@ -57,7 +58,16 @@ namespace {
         // the condition -- see the note on its definition.
         mm::EarlyMem::reclaim_init_area();
 
-        // The 2nd stage has finished, and next is to load userboot.
+        // The 2nd stage has finished. Bring up userboot.
+        //
+        // Here and not earlier: it reads the kernel package out of the
+        // handoff and allocates whole frames for the decompressed copy, so
+        // it needs the frame allocator, and it will shortly need to create
+        // threads. It is also deliberately after reclaim_init_area(), so
+        // that the pages it takes come from the pool the reclaim has already
+        // returned rather than competing with it.
+        userabi::userboot_init();
+
 
         auto const gibberish = [](void *arg) -> i32 {
             auto const msg = static_cast<char const *>(arg);

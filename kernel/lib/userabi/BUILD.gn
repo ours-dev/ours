@@ -15,5 +15,16 @@ source_set("userabi") {
     "userboot.cpp",
   ]
   public_deps = [ ":headers" ]
+
+  # userboot.cpp reads the kernel package out of the handoff (//kernel/phys
+  # :handoff for ours/boot/handoff.hpp and the KernelPackage/BootFS views it
+  # returns) and allocates whole frames for the decompressed copy (//kernel/mm
+  # for get_frames_n).
+  deps = [
+    "//kernel/lib/logz4",
+    "//kernel/mm",
+    "//kernel/phys:handoff",
+  ]
+
   visibility = [ "*" ]
 }
