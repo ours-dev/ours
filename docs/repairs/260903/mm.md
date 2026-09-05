@@ -99,34 +99,6 @@ ld.lld: error: undefined hidden symbol:
 `AnonymousPageRequest` 现在是空类，看着像可以删，但它在 Zircon 里正是"匿名页分配需要等回收
 或压缩"的等待凭证。我们的 `PageQueues` 还是骨架，所以它现在确实无事可做——那是脚手架，不是死代码。
 
-## 4. `create_subvma()`／`create_mapping()` 把调用方给的 `VmaFlags` 丢掉
-
-两者的签名都收一个 `vmaf`／隐含的权限意图，实现却一律用 `m_vmaf`：
-
-```cpp
-auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vmaf, ...) -> Status {
-    auto const result = create_subaom_preamble(where, requested_size, m_vmaf);   // 不是 vmaf
-    ...
-    auto const status = Builder(&m_aspace, m_vmaf, size)                          // 不是 vmaf
-```
-
-两个后果：
-
-1. `create_subaom_preamble()` 里的 `validate_vmaflags(m_vmaf)` 是拿 `m_vmaf` 和 `m_vmaf` 比，
-   恒为真——那道权限校验实际上不存在。
-2. 子节点继承父节点的权限集而不是请求的权限集。根 VMA 是
-   `ROOT_VMAF = VmaFlags::PermMask | Share`（`vm_aspace.cpp:106`），于是**整棵树上每个区域和
-   每个映射的 `VmaFlags` 都是全权限**。`init_vmm.cpp` 给九个预置 VMA 传的
-   `phys_vma.vmaf`（k:code 要 Exec、k:rodata 只要 Read……）全部被丢掉。
-
-页表本身不受影响：`reserve()` 下发的是单独传进来的 `MmuFlags`，那一路是对的。
-坏的是记账——`validate_mmuflags()` 从此对谁都点头，所以
-`VmArea::protect()` 的"先问后写"里那一趟 `can_protect_locked()` 永远返回 true，
-没有任何叶子拒绝得了任何权限。2026-09-04 想给这条分支补实测时构造不出反例，才发现这个。
-
-修法是把 `vmaf` 真的用起来。要留意这会**收紧**九个预置 VMA 的权限集，
-`reserve()` 与后续 `protect()` 的校验都会开始真的起作用，需要一轮构建—启动验证。
-
 ## 5. VMA 没有遍历能力
 
 只有 `find_mapping_locked()` 能找叶子，没有找子区域的，也没有对外枚举。地址空间转储、

@@ -63,11 +63,20 @@ class VmArea final: public VmAreaOrMapping {
     /// conversions did not buy anything even inside the class.
 
     /// Create a mapping of |size| bytes where |where| says.
+    ///
+    /// |mmuf| is the protection the pages get now; the ceiling a later
+    /// protect() may raise them to is this area's own VmaFlags, which is why
+    /// there is no separate flags argument. A mapping is a leaf, so it has no
+    /// allowance to hand on to anyone.
     auto create_mapping(VmPlacement where, usize size, usize vmo_ofs, MmuFlags mmuf,
                         ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
                         ustl::Arc<VmMapping> *out) -> Status;
 
     /// Create a sub-VMA of |size| bytes where |where| says.
+    ///
+    /// |vmaf| is the new area's allowance, and it may narrow this area's but
+    /// never widen it. Narrowing is the point: it is the ceiling every
+    /// protect() under the new area is checked against.
     auto create_subvma(VmPlacement where, usize size, VmaFlags vmaf, char const *name,
                        VmMapOption option, ustl::Arc<Self> *out) -> Status;
 
@@ -144,7 +153,14 @@ class VmArea final: public VmAreaOrMapping {
     VmArea(VirtAddr, usize, VmaFlags, VmArea *, VmAspace *, char const *);
 
     /// Settle where a new child goes and how big it is, or say why it cannot.
-    auto create_subaom_preamble(VmPlacement where, usize size, VmaFlags vmaf)
+    ///
+    /// Placement only. Permissions used to be checked here too, through a
+    /// VmaFlags argument that both callers filled in with this area's own
+    /// m_vmaf -- so the check compared m_vmaf against m_vmaf and passed
+    /// unconditionally. The two callers do not even want the same check
+    /// (an area is bounded by a VmaFlags allowance, a mapping by the MmuFlags
+    /// it is being created with), which is why each now makes its own.
+    auto create_subaom_preamble(VmPlacement where, usize size)
         -> ktl::Result<ustl::Pair<VirtAddr, usize>>;
 
     auto alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr upper_limit)

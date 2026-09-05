@@ -2359,3 +2359,152 @@ PROBE   leaf[0] m0  leaf[1] m1  leaf[2] m3   PROBE leaves=3 children=3
   真到了需要"从外面挖穿子区域"的那天，该先回答那个语义问题，而不是先写遍历。
 - 没有让 `unmap` 在中途失败时回滚。第一趟已经挡掉了唯一一种不可恢复的错法；
   剩下的失败（映射自己解除失败）重来一次是幂等的。
+
+---
+
+## `create_subvma()` 真的用调用方给的 `VmaFlags`，`create_mapping()` 真的校验 `MmuFlags`（2026-09-04）
+
+> 无序号，理由同前。
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_area.hpp` — `create_subaom_preamble()` 去掉 `vmaf` 参数；
+  给两个 create 补上"哪个参数是权限上限"的说明
+- `kernel/mm/vm_area.cpp` — `create_subvma()` 自己校验并使用 `vmaf`；
+  `create_mapping()` 改为校验 `mmuf`
+
+**症状**
+
+潜伏，但影响面很大：**整棵 VMA 树上每个区域和每个映射的 `VmaFlags` 都是全权限**。
+
+`create_subvma()` 收一个 `vmaf` 参数，然后两处都用 `m_vmaf`：
+
+```cpp
+auto const result = create_subaom_preamble(where, requested_size, m_vmaf);  // 不是 vmaf
+...
+auto const status = Builder(&m_aspace, m_vmaf, size)                        // 不是 vmaf
+```
+
+于是 `init_vmm.cpp` 给九个预置 VMA 逐段声明的权限（k:code 是 `Exec | Read`、
+k:rodata 只有 `Read`、k:relro 只有 `Read`……）**全部被丢掉**，九个区域一律继承根 VMA 的
+`ROOT_VMAF = PermMask | Share`。
+
+页表不受影响——`reserve()` 下发的是单独传进来的 `MmuFlags`，那一路一直是对的。
+坏掉的是记账，而记账正是权限检查的依据：`validate_mmuflags()` 拿请求去比
+`m_vmaf & PermMask`，上限既然是全权限，**它对谁都点头**。
+`VmArea::protect()` 那道"先问后写"的 `can_protect_locked()` 因此永远返回 true，
+没有任何叶子拒绝得了任何权限。
+
+实测（`kernel.dev.obi`，临时探针，已撤掉）：从根 VMA 对每个预置段请求 RWX——
+根自己的上限是 `PermMask`，所以只有叶子能拒绝，这一趟问的就是 `can_protect_locked()`。
+**修之前**：
+
+```
+PROBE k:head     widen->Ok  same->Ok
+PROBE k:code     widen->Ok  same->Ok
+PROBE k:rodata   widen->Ok  same->Ok
+PROBE k:data     widen->Ok  same->Ok
+PROBE k:relro    widen->Ok  same->Ok
+PROBE k:bss      widen->Ok  same->Ok
+PROBE k:init     widen->Ok  same->Ok
+PROBE k:physmap  widen->Ok  same->Ok
+```
+
+**修之后**：
+
+```
+PROBE k:head     widen->InvArgs  same->Ok
+PROBE k:code     widen->InvArgs  same->Ok
+PROBE k:rodata   widen->InvArgs  same->Ok
+PROBE k:data     widen->InvArgs  same->Ok
+PROBE k:relro    widen->InvArgs  same->Ok
+PROBE k:bss      widen->InvArgs  same->Ok
+PROBE k:init     widen->Ok       same->Ok     ← 表里唯一声明 Read|Write|Exec 的一条
+PROBE k:physmap  widen->InvArgs  same->Ok
+```
+
+`k:init` 那一行是这次实测里最有价值的：它不是"改完之后什么都拒绝"，
+而是**恰好按表里声明的权限来**——`PHYS_VMOS` 里只有 k:init 写着
+`Read | Write | Exec`，所以只有它接受 RWX。`same` 一列全 `Ok`，说明各段自己的权限都还发得下去。
+（`k:cpulocal` 是 `Backing::AddressSpace`，底下没有映射，探针跳过。）
+
+**原因**
+
+值得说的是这个错为什么一直没人发现：`validate_vmaflags(m_vmaf)` 是**拿 `m_vmaf` 和 `m_vmaf` 比**，
+恒为真。一道恒真的校验和一道正确的校验，从代码形状上完全一样——都是
+"if (!validate...) return InvArgs"，读的时候会自动认为它在把关。只有把参数追到底，
+才会看出送进去的就是拿来比的那个东西。
+
+这类"自己和自己比"的检查比没有检查更糟：没有检查至少一眼看得出来，
+恒真的检查会让读代码的人相信这里有防线。它和存档第 36 节那条
+（`alloc_spot()` 的结果被算出来然后扔掉）是同一种形态——**参数或返回值算了，但没用上**，
+而 C++ 对"传了一个值进去然后不理它"没有任何意见。
+
+还有一层是这两个 create 想要的检查根本不是同一个，被硬塞进了同一个 preamble：
+- 建子区域，要问的是"这个 `VmaFlags` 上限能不能给"——它会被子区域继承下去，是**额度**；
+- 建映射，要问的是"这个 `MmuFlags` 能不能发"——映射是叶子，没有额度往下传，
+  它的 `VmaFlags` 上限直接就是所在区域的额度。
+
+参数只有一个 `VmaFlags` 的位置，`create_mapping()` 又拿不出一个来，只好填 `m_vmaf`，
+于是恒真。**共用的那道检查是这个错的成因，不只是它的藏身处**。
+
+**改法**
+
+`create_subaom_preamble()` 只管落位，`vmaf` 参数删掉；两个调用方各自做各自的检查。
+
+```cpp
+// create_subvma
+if (!validate_vmaflags(vmaf)) {          // 子区域的额度，可以收窄，不能放宽
+    return Status::InvArgs;
+}
+...
+Builder(&m_aspace, vmaf, size)           // 真的用它
+
+// create_mapping
+if (!validate_mmuflags(mmuf)) {          // 本区域允不允许发这组权限
+    return Status::InvArgs;
+}
+...
+Builder(&m_aspace, m_vmaf, size)         // 叶子的上限就是所在区域的额度
+```
+
+`create_mapping()` 那道 `validate_mmuflags(mmuf)` 是**新加的**：在此之前
+`mmuf` 一路进页表，没有任何地方问过这个区域允不允许。`reserve()` 一直有这道检查，
+现在两条建映射的路径口径一致了。
+
+`create_mapping()` 仍然把 `m_vmaf` 当映射的上限，这是有意的，不是偷懒：
+映射的 `VmaFlags` 的唯一作用是给后来的 `protect()` 当天花板，
+而"这个区域允许什么"恰恰就是那个天花板。`mmuf` 只是它的起点。
+这也是 Linux 与 Zircon 的共同做法——Linux 的 `vm_flags` 里
+`VM_MAYREAD/MAYWRITE/MAYEXEC` 与 `VM_READ/WRITE/EXEC` 分开正是这件事，
+`mprotect()` 校验的是 `MAY*` 那一组。
+
+**参照**
+
+`Zircon VmAddressRegion::CreateSubVmarInternal()`（`zircon/kernel/vm/vm_address_region.cc`）
+把子区域请求的 `vmar_flags` 与父区域的 `CAN_MAP_*` 位对照，通过之后**用请求的那一组**
+建子区域；`VmMapping::is_valid_mapping_flags()` 则拿映射自己的 `flags_` 当
+`Protect()` 的天花板。两层的分工与这里一致。
+`Linux mprotect_fixup()` 检查 `calc_vm_prot_bits() & ~vma->vm_flags & VM_MAY*`，
+`VM_MAY*` 就是这里的 `VmaFlags` 额度。
+
+**验证**
+
+构建通过（两个镜像）；`clang-format` 与 `clang-tidy -p out/bringup.x86` 跑过，无新告警
+（`vm_area.hpp:186` 那条 `modernize-use-override` 是既有的析构声明）。
+
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全（各段基址与长度和改动前
+逐行一致）并推进到线程调度，`kernel.dev.obi` 到 `prof: no architectural PMU`。
+权限收紧之后 `reserve()` 与 `create_mapping()` 的校验都开始真的起作用，
+而九个预置段、内核栈、LAPIC/IO-APIC/GDT/IDT/HPET 的 MMIO 映射全部照常建立——
+这正是要确认的：**收紧没有误伤任何一个现有调用方**。
+
+前后对比见「症状」一节的两组探针输出，探针已撤掉。
+
+**故意没做**
+
+- 没有给 `create_mapping()` 加一个独立的 `VmaFlags` 参数让调用方指定映射的天花板。
+  Zircon 有（`CreateVmMapping` 的 `vmar_flags`），但我们现在没有一个调用方想让映射的
+  上限窄于所在区域——真需要时，那是个加参数的改动，不该顺手塞进这一条。
+- 没有动 `VmaFlags::Share`。`ROOT_VMAF` 带着它而九个预置段都不带，所以子区域现在会丢掉
+  这一位；`Share` 全树只有 `vm_aspace.cpp:106` 一处写入、零处读取，属于脚手架，
+  等它有语义时再说。

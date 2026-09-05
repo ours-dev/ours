@@ -71,7 +71,21 @@ auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vma
                            VmMapOption option, ustl::Arc<VmArea> *out) -> Status {
     m_canary.verify<Self>();
 
-    auto const result = create_subaom_preamble(where, requested_size, m_vmaf);
+    // The new area's allowance, which may narrow this one's but never widen
+    // it. This used to be checked as validate_vmaflags(m_vmaf) -- m_vmaf
+    // against m_vmaf, true for every input -- and |vmaf| was then dropped on
+    // the floor and the child built with m_vmaf as well. Every area in the
+    // kernel address space therefore inherited the root VMA's
+    // ROOT_VMAF = PermMask, and the nine per-segment allowances init_vmm.cpp
+    // passes here (k:code exec, k:rodata read-only, and so on) never existed
+    // at run time. Page tables were unaffected -- reserve() sends its own
+    // MmuFlags down -- but validate_mmuflags() nodded at everything, so the
+    // check pass in VmArea::protect() could never refuse a request.
+    if (!validate_vmaflags(vmaf)) {
+        return Status::InvArgs;
+    }
+
+    auto const result = create_subaom_preamble(where, requested_size);
     if (result.is_err()) {
         return result.unwrap_err();
     }
@@ -83,7 +97,7 @@ auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vma
     // *VMA* offset, which is the mix-up the absolute-address convention exists
     // to stop -- harmless here only by accident.
     ustl::Arc<VmAreaOrMapping> aom;
-    auto const status = Builder(&m_aspace, m_vmaf, size)
+    auto const status = Builder(&m_aspace, vmaf, size)
                             .set_parent(this)
                             .set_base(base)
                             .set_option(option)
@@ -103,13 +117,26 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
                             ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
 
-    auto const result = create_subaom_preamble(where, requested_size, m_vmaf);
+    // What this area permits, asked of the protection the mapping is being
+    // created with. Nothing asked it before: the preamble's check was handed
+    // m_vmaf and so compared this area against itself, and |mmuf| went
+    // straight into the page tables unexamined. reserve() has always run this
+    // check; the two ways of creating a mapping now agree.
+    if (!validate_mmuflags(mmuf)) {
+        return Status::InvArgs;
+    }
+
+    auto const result = create_subaom_preamble(where, requested_size);
     if (result.is_err()) {
         return result.unwrap_err();
     }
 
     auto const [base, size] = *result;
 
+    // m_vmaf, deliberately: a mapping's VmaFlags are the ceiling a later
+    // protect() is checked against, and what this area permits is exactly that
+    // ceiling. |mmuf| is only where the mapping starts out, which is why the
+    // two are separate arguments and only one of them is an allowance.
     ustl::Arc<VmAreaOrMapping> out_aom;
     auto const status = Builder(&m_aspace, m_vmaf, size)
                             .set_parent(this)
@@ -136,18 +163,11 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
     return Status::Ok;
 }
 
-auto VmArea::create_subaom_preamble(VmPlacement where, usize size, VmaFlags vmaf)
+auto VmArea::create_subaom_preamble(VmPlacement where, usize size)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
         // Operate an illegal VMA.
         return ktl::err(Status::BadState);
-    }
-
-    // Check if the given MMU flags have the same or lower permissions than
-    // those allowed by this VMA.
-    if (!validate_vmaflags(vmaf)) {
-        // Unallowed permissions.
-        return ktl::err(Status::InvArgs);
     }
 
     // Round the size on its own first: the two branches below disagree about
