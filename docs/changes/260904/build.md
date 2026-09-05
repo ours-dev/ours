@@ -285,3 +285,85 @@ QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推
   但两支都是厂商属性，本来就该有宏。这次只是顺带确认了那处 `_MSC_VER` 是全树第一方代码里
   唯一一处。
 - 没有动 `NO_MANGLE`（`extern "C"`）。同一条规则，下一条。
+
+---
+
+## `NO_MANGLE` 删掉，直接写 `extern "C"`（2026-09-04）
+
+**文件**
+- `system/public/ours/compiler.hpp` — 删掉 `#define NO_MANGLE`
+- `.clang-format` — 改掉那段解释"为什么 NO_MANGLE 不在 AttributeMacros 里"的注释
+- 27 个 `.cpp`/`.hpp` — 57 处改写；另有三处注释里提到这个宏，一并改用新拼法
+
+**症状**
+
+同前两条的规则，且这一条最直白：`extern "C"` 不是属性，是**语言的链接规范**，
+C++ 从第一版就有，没有任何编译器分支。`NO_MANGLE` 展开就是它，一个字不多。
+
+包装的代价在这条上尤其明显，因为它不是属性：`.clang-format` 里为此专门留了一句
+"NO_MANGLE 故意不在 AttributeMacros 里，因为它展开成 `extern "C"`，是链接规范而不是属性"
+——一句只为解释某个宏为何不适用某条规则而存在的注释。宏没了，这句注释也不必存在了。
+
+**原因**
+
+除了"标准拼法不该藏在宏后面"，这次还有两个具体的收获，都是把真实语法交还给工具带来的：
+
+1. **块形式终于长得像块。** 有两处写的是 `NO_MANGLE { ... }`，
+   clang-format 只把它看成"一个不认识的标识符后面跟一个块"，于是按普通复合语句缩进；
+   换成 `extern "C" {` 之后它认出这是链接规范，按链接规范排版。结果与树里**本来就直接写
+   `extern "C" {` 的那几处**（`kernel/mm/vmm.cpp:7`、`kernel/lib/ccrt/compiler/itanium.cpp:23`、
+   `kernel/lib/libc/cpp_dependencies.cpp:8`）一致了——原先是同一件事有两种排版，
+   取决于作者当时用了宏还是没用。
+
+2. **多标注并列的顺序读得出对错了。** 像
+   `extern "C" [[noreturn]] INIT_CODE USED` 这种，`extern "C"` 打头是语法要求
+   （链接规范在前，被它修饰的声明——连同声明自己的属性——在后）。写成 `NO_MANGLE` 时
+   这一点被藏起来了，看上去像四个平级的标注可以随便排。
+
+**改法**
+
+57 处逐字替换，宏定义删除。三处注释里提到这个宏的地方也改用新拼法，
+其中 `arch/x86/percpu.hpp` 那句顺手写清楚了理由（`syscall.S` 只能引用未修饰的名字）。
+
+`kernel/mm/pmm.cpp` 正被另一个会话改着（同文件另一处 `InvalidArguments` → `InvArgs`）。
+按 `CLAUDE.md` 的规矩，工作区里照改，但提交时只提交自己那一处：
+以 HEAD 版本为底加上本条的改动，`git hash-object -w` 之后 `git update-index --cacheinfo`
+入库，没有 `git add` 整个文件。
+
+**参照**
+
+无，本项目自有规则。Linux 有对应的 `__BEGIN_DECLS`/`__END_DECLS`（`sys/cdefs.h`），
+但那是**给 C 头文件用**的——同一个头要能被 C 和 C++ 同时包含，而 C 里没有 `extern "C"`。
+本项目的头文件全是 C++ 专用的，没有这个约束。
+
+**验证**
+
+两个镜像构建通过。QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推进到
+线程调度，`kernel.dev.obi` 到 `prof: no architectural PMU`。
+
+这一条有比"能启动"更直接的证据——链接规范如果丢了，符号名会被修饰，
+而汇编和链接脚本按未修饰的名字找它们。`llvm-nm` 查符号表：
+
+```
+000000000007f468 b KERNEL_PGD
+000000000009d5a8 d KERNEL_STACK_BOTTOM
+000000000007f3d8 b MAX_PHYS_ADDR
+00000000000890e0 d X86_PCPU
+0000000000028fa0 t memcpy
+```
+
+五个分别覆盖了改动涉及的几种形态：块形式里的变量（`KERNEL_PGD`、`MAX_PHYS_ADDR`）、
+`extern "C" INIT_DATA` 形式（`KERNEL_STACK_BOTTOM`）、块形式里的 `inline` 变量
+（`X86_PCPU`，被 `syscall.S` 引用）、`extern "C" WEAK_LINK` 形式（`memcpy`）。
+名字全部未经修饰。
+
+**故意没做**
+
+- 没有动 `LINK_NAME(name)`（展开成 `asm(name)`）。它带参数，而且 asm label 是 GNU 扩展、
+  不是标准语法，属于规则里该保留宏的那一类。
+- 没有为 `extern "C" {` 块加 `IndentExternBlock: Indent`。查过树里原有的四处
+  `extern "C" {` 本来就是不缩进的，clang-format 现在的输出与它们一致——
+  不缩进不是这次改动带来的新样子，改配置反而会去动那四处。
+
+至此 `compiler.hpp` 里包装标准语法的宏清零；剩下的全部包着
+`[[gnu::]]`／`[[msvc::]]`／`__attribute__`，正是规则里该有宏的那一类。

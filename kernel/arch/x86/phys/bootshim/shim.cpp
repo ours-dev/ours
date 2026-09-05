@@ -143,7 +143,7 @@ namespace {
     }
 } // namespace
 
-NO_MANGLE [[noreturn]]
+extern "C" [[noreturn]]
 auto phys_main(PhysAddr loader_param) -> void {
     ccrt::init_global_static_objects();
     init_early_console();

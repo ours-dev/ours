@@ -3,7 +3,7 @@
 
 #include <cstring>
 
-NO_MANGLE WEAK_LINK
+extern "C" WEAK_LINK
 auto memcpy(void *d, void const *s, size_t n) -> void * {
     auto md = static_cast<char *>(d);
     auto ms = static_cast<char const *>(s);
@@ -14,7 +14,7 @@ auto memcpy(void *d, void const *s, size_t n) -> void * {
     return d;
 }
 
-NO_MANGLE WEAK_LINK
+extern "C" WEAK_LINK
 auto memmove(void *d, void const *s, size_t n) -> void * {
     auto md = static_cast<char *>(d);
     auto ms = static_cast<char const *>(s);
@@ -32,7 +32,7 @@ auto memmove(void *d, void const *s, size_t n) -> void * {
     return d;
 }
 
-NO_MANGLE WEAK_LINK
+extern "C" WEAK_LINK
 auto memset(void *s, int c, size_t n) -> void * {
     auto md = static_cast<u8 *>(s);
     for (size_t i = 0; i < n; ++i) {
@@ -42,7 +42,7 @@ auto memset(void *s, int c, size_t n) -> void * {
     return s;
 }
 
-NO_MANGLE WEAK_LINK
+extern "C" WEAK_LINK
 auto memcmp(void const *x, void const *y, size_t n) -> int {
     auto p1 = static_cast<char const *>(x);
     auto p2 = static_cast<char const *>(y);
@@ -69,7 +69,7 @@ auto memchr(void const *str, int c, size_t n) -> void const * {
     return NULL;
 }
 
-NO_MANGLE WEAK_LINK
+extern "C" WEAK_LINK
 auto strlen(char const *p) -> size_t {
     size_t n = 0;
     while (*p++ != 0) {

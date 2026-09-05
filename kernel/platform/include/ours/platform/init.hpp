@@ -64,10 +64,10 @@ auto platform_init_keyboard() -> void;
 
 /// The followings just be public to `start_kernel`
 
-NO_MANGLE INIT_CODE
+extern "C" INIT_CODE
 auto init_platform_early() -> void;
 
-NO_MANGLE INIT_CODE
+extern "C" INIT_CODE
 auto init_platform() -> void;
 
 } // namespace ours

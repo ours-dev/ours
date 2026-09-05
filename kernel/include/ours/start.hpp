@@ -7,9 +7,9 @@
 #include <ours/types.hpp>
 
 namespace ours {
-NO_MANGLE auto start_kernel(PhysAddr handoff) -> void;
+extern "C" auto start_kernel(PhysAddr handoff) -> void;
 
-NO_MANGLE [[noreturn]]
+extern "C" [[noreturn]]
 auto start_nonboot_cpu() -> void;
 
 /// Installs the bootstrap console logger; defined by kernel/lib/logz4,
@@ -18,8 +18,8 @@ auto start_nonboot_cpu() -> void;
 auto init_bootstrap_logging() -> void;
 
 /// Defined by arch-specific code (e.g. kernel/arch/x86/kernel/init.cpp).
-NO_MANGLE auto init_arch_early() -> void;
-NO_MANGLE auto init_arch() -> void;
+extern "C" auto init_arch_early() -> void;
+extern "C" auto init_arch() -> void;
 } // namespace ours
 
 #endif // OURS_START_HPP

@@ -11,15 +11,15 @@
 #include <limits>
 
 namespace ours {
-NO_MANGLE u8 const BOOTSTRAP_AREA_START[] LINK_NAME("__x86_bootstrap16_start");
-NO_MANGLE u8 const BOOTSTRAP_AREA_END[] LINK_NAME("__x86_bootstrap16_end");
-NO_MANGLE u8 const X86_AP_ENTER_LONG_MODE[] LINK_NAME("x86_ap_enter_long_mode");
+extern "C" u8 const BOOTSTRAP_AREA_START[] LINK_NAME("__x86_bootstrap16_start");
+extern "C" u8 const BOOTSTRAP_AREA_END[] LINK_NAME("__x86_bootstrap16_end");
+extern "C" u8 const X86_AP_ENTER_LONG_MODE[] LINK_NAME("x86_ap_enter_long_mode");
 
-NO_MANGLE u8 const DEBUG_SYMBOL0[] LINK_NAME("__debug_symbol0");
-NO_MANGLE u8 const DEBUG_SYMBOL1[] LINK_NAME("__debug_symbol1");
-NO_MANGLE u8 const DEBUG_SYMBOL2[] LINK_NAME("__debug_symbol2");
-NO_MANGLE u8 const DEBUG_SYMBOL3[] LINK_NAME("__debug_symbol3");
-NO_MANGLE u8 const DEBUG_SYMBOL4[] LINK_NAME("__debug_symbol4");
+extern "C" u8 const DEBUG_SYMBOL0[] LINK_NAME("__debug_symbol0");
+extern "C" u8 const DEBUG_SYMBOL1[] LINK_NAME("__debug_symbol1");
+extern "C" u8 const DEBUG_SYMBOL2[] LINK_NAME("__debug_symbol2");
+extern "C" u8 const DEBUG_SYMBOL3[] LINK_NAME("__debug_symbol3");
+extern "C" u8 const DEBUG_SYMBOL4[] LINK_NAME("__debug_symbol4");
 
 static PhysAddr BOOTSTRAP16_BUFFER_BASE = 0;
 

@@ -1,6 +1,6 @@
 #include <ours/arch/asm.hpp>
 
-/// NO_MANGLE auto x86_switch_context(VirtAddr *prev, VirtAddr next) -> void
+/// extern "C" auto x86_switch_context(VirtAddr *prev, VirtAddr next) -> void
 /// %rdi: prev
 /// %rsi: next
 .function x86_switch_context, global, align=64, cfi=custom

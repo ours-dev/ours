@@ -8,8 +8,9 @@ BasedOnStyle: LLVM
 # clang-format from reading them as a return type or a declaration of their own,
 # so `[[nodiscard]] FORCE_INLINE` stays one attribute group on one line.
 #
-# Only parameterless spellings belong here. NO_MANGLE is deliberately absent --
-# it expands to `extern "C"`, a linkage-specification rather than an attribute.
+# Only parameterless spellings belong here, and only macros that really stand in
+# for an attribute: a linkage-specification is not one, which is why `extern "C"`
+# is now written out rather than hidden behind a macro.
 AttributeMacros:
   - FORCE_INLINE
   - FORCE_INLINE_ATTR

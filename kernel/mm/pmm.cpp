@@ -16,9 +16,9 @@ namespace priv {
     // These carry the names pmm.hpp declares and init_pmm.cpp assigns. They
     // were left behind under their old g_-prefixed spelling when the header
     // was renamed, so the definitions the whole tree refers to did not exist.
-    NO_MANGLE {
-        PhysAddr MAX_PHYS_ADDR;
-        PhysAddr MIN_PHYS_ADDR;
+    extern "C" {
+    PhysAddr MAX_PHYS_ADDR;
+    PhysAddr MIN_PHYS_ADDR;
     }
 } // namespace priv
 

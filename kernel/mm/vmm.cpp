@@ -5,10 +5,10 @@
 #include <ours/mm/vmm.hpp>
 
 namespace ours::mm {
-NO_MANGLE {
-    VmPage *ZERO_PAGE;
-    PhysAddr KERNEL_PHYS_BASE;
-    VirtAddr KERNEL_VIRT_BASE;
+extern "C" {
+VmPage *ZERO_PAGE;
+PhysAddr KERNEL_PHYS_BASE;
+VirtAddr KERNEL_VIRT_BASE;
 }
 
 auto is_kernel_address(VirtAddr va) -> bool {

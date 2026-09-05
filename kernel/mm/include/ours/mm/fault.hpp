@@ -12,8 +12,7 @@ namespace ours::mm {
 ///
 /// @p addr is the virtual address that fault happened at.
 /// @p cause explanates what lead to this fault.
-NO_MANGLE
-auto handle_vm_fault(VirtAddr addr, VmfCause cause) -> Status;
+extern "C" auto handle_vm_fault(VirtAddr addr, VmfCause cause) -> Status;
 
 } // namespace ours::mm
 

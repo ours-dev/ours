@@ -17,8 +17,8 @@
 
 namespace ours::mm {
 namespace priv {
-    NO_MANGLE PhysAddr MAX_PHYS_ADDR;
-    NO_MANGLE PhysAddr MIN_PHYS_ADDR;
+    extern "C" PhysAddr MAX_PHYS_ADDR;
+    extern "C" PhysAddr MIN_PHYS_ADDR;
 } // namespace priv
 
 FORCE_INLINE

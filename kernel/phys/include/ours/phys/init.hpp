@@ -78,7 +78,7 @@ auto init_memory(obi::ContainerView const &package, BootPackageInput const &inpu
 /// The whole reason boot-shim finds this by e_entry rather than by name:
 /// physload is loaded and jumped to (never symbol-resolved) by an image
 /// that predates it and cannot bind against it the way a module binds
-/// against physload.  NO_MANGLE keeps ENTRY(obi_main) in phys.ld
+/// against physload.  extern "C" keeps ENTRY(obi_main) in phys.ld
 /// unambiguous; the shim itself never spells the name at all.
 ///
 /// `legacy` may be null: an architecture with no equivalent of Multiboot2
@@ -86,10 +86,10 @@ auto init_memory(obi::ContainerView const &package, BootPackageInput const &inpu
 /// call (obi_main never returns, so "the duration of this call" is
 /// forever in practice) -- boot-shim's own stack frame is fine, since nothing
 /// downstream of here switches stacks.
-NO_MANGLE [[noreturn]]
+extern "C" [[noreturn]]
 auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy) -> void;
 
-NO_MANGLE [[noreturn]]
+extern "C" [[noreturn]]
 auto phys_main(PhysAddr boot_params) -> void;
 
 } // namespace ours::phys

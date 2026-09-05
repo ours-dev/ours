@@ -78,7 +78,7 @@ auto x86_init_percpu(CpuNum cpunum) -> void {
     x86_init_mmu_percpu();
 }
 
-NO_MANGLE INIT_CODE
+extern "C" INIT_CODE
 auto init_arch_early() -> void {
     x86_init_idt_early();
 
@@ -89,7 +89,7 @@ auto init_arch_early() -> void {
     Cpu::set_state(Cpu::State::Online);
 }
 
-NO_MANGLE INIT_CODE
+extern "C" INIT_CODE
 auto init_arch() -> void {
     x86_setup_idt();
 

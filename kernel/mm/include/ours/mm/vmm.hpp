@@ -36,9 +36,9 @@ constexpr auto get_kernel_size() -> usize {
     return IMAGE_END - IMAGE_START;
 }
 
-NO_MANGLE VmPage *ZERO_PAGE;
-NO_MANGLE PhysAddr KERNEL_PHYS_BASE;
-NO_MANGLE VirtAddr KERNEL_VIRT_BASE;
+extern "C" VmPage *ZERO_PAGE;
+extern "C" PhysAddr KERNEL_PHYS_BASE;
+extern "C" VirtAddr KERNEL_VIRT_BASE;
 
 FORCE_INLINE
 constexpr auto get_zero_page() -> VmPage * {
@@ -68,8 +68,8 @@ constexpr auto get_kernel_virt_base() -> VirtAddr {
 }
 
 /// Defined by arch-specific code. Must be initialized in `init_arch_early`.
-NO_MANGLE u8 ARCH_PHYS_ADDR_BITS;
-NO_MANGLE u8 ARCH_VIRT_ADDR_BITS;
+extern "C" u8 ARCH_PHYS_ADDR_BITS;
+extern "C" u8 ARCH_VIRT_ADDR_BITS;
 
 FORCE_INLINE
 constexpr auto get_phys_addr_bits() -> PhysAddr {

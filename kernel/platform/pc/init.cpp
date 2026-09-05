@@ -7,7 +7,7 @@
 #include <ours/platform/init.hpp>
 
 namespace ours {
-NO_MANGLE INIT_CODE
+extern "C" INIT_CODE
 auto init_platform_early() -> void {
     set_platform_init_level(PlatformInitLevel::StartUp);
 
@@ -22,7 +22,7 @@ static auto platform_init_mp() -> void {
     x86_bring_aps(Cpu::possible_mask());
 }
 
-NO_MANGLE INIT_CODE
+extern "C" INIT_CODE
 auto init_platform() -> void {
     platform_init_mp();
 }

@@ -9,10 +9,10 @@
 
 namespace ours {
 namespace mem {
-    NO_MANGLE {
-        PhysAddr KERNEL_PGD = 0;
-        u8 ARCH_PHYS_ADDR_BITS = 32;
-        u8 ARCH_VIRT_ADDR_BITS = 48;
+    extern "C" {
+    PhysAddr KERNEL_PGD = 0;
+    u8 ARCH_PHYS_ADDR_BITS = 32;
+    u8 ARCH_VIRT_ADDR_BITS = 48;
     }
 } // namespace mem
 using arch::Cr0;

@@ -27,8 +27,6 @@
 #define LINK_SECTION(name) [[gnu::section(name)]]
 #define LINK_NAME(name) asm(name)
 
-#define NO_MANGLE extern "C"
-
 // Part of physload's module ABI.
 //
 // The build force-includes ours/hidden.hpp, so every symbol is hidden by

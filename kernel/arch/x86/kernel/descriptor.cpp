@@ -34,7 +34,7 @@ struct alignas(PAGE_SIZE) PACKED Gdt {
 };
 static_assert(X86_GDT_MAX_SELECTORS * X86_SEGMENT_SELECTOR_SIZE == offsetof(Gdt, tss));
 
-NO_MANGLE Gdt GDT;
+extern "C" Gdt GDT;
 static Gdt *PGDT = &GDT;
 
 auto x86_get_gdt() -> void * {

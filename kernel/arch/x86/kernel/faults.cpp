@@ -176,8 +176,7 @@ namespace {
     }
 } // namespace
 
-NO_MANGLE
-auto arch_handle_exception(arch::IrqFrame *frame) -> void {
+extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     auto const irqnum = HIrqNum(frame->vector);
     platform_start_handling_irq(irqnum, frame);
 

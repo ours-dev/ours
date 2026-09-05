@@ -96,7 +96,7 @@ namespace {
     }
 } // namespace
 
-NO_MANGLE INIT_CODE
+extern "C" INIT_CODE
 auto start_kernel(PhysAddr handoff) -> void {
     com1_put('C');
     ccrt::init_global_static_objects();
@@ -164,7 +164,7 @@ auto start_kernel(PhysAddr handoff) -> void {
     Thread::Current::become_idle();
 }
 
-NO_MANGLE [[noreturn]]
+extern "C" [[noreturn]]
 auto start_nonboot_cpu() -> void {
 
     Thread::Current::become_idle();

@@ -36,7 +36,7 @@ namespace {
 ///
 
 /// In this file scope, it should be readonly.
-NO_MANGLE PhysAddr const KERNEL_PGD;
+extern "C" PhysAddr const KERNEL_PGD;
 
 ArchVmAspace::ArchVmAspace(VirtAddr base, usize size, VmasFlags flags)
     : m_canary(this)

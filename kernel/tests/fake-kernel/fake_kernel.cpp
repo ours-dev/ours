@@ -81,7 +81,7 @@ auto halt() -> void {
 } // namespace
 
 /// Entered from entry-x86.S with the pointer physboot passed to the kernel.
-NO_MANGLE [[noreturn]]
+extern "C" [[noreturn]]
 auto fake_kernel_main(ours::phys::Handoff const *handoff) -> void {
     write("\n[fake-kernel] entered\n");
 

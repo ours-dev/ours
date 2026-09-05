@@ -99,11 +99,12 @@ static_assert(offsetof(X86PerCpu, tss.sp2) == X86_PERCPU_SAVED_USER_SP_OFFSET);
 /// Using CpuLocal::access<X86PerCpu>() or CpuLocal::access(&X86_PCPU)
 /// to access the x86 per CPU area.
 ///
-/// Note the marker `NO_MANGLE` is necessary because the symbol is beeing used
-/// in `ours/arch/x86/main/syscall.S`
-NO_MANGLE {
-    CPU_LOCAL
-    inline X86PerCpu X86_PCPU;
+/// Note the `extern "C"` linkage is necessary because the symbol is being
+/// referenced from `ours/arch/x86/main/syscall.S`, which can only name the
+/// unmangled spelling.
+extern "C" {
+CPU_LOCAL
+inline X86PerCpu X86_PCPU;
 }
 
 } // namespace ours

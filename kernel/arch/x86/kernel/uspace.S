@@ -1,7 +1,7 @@
 #include <ours/arch/asm.hpp>
 #include <arch/x86/macro/irqframe.hpp>
 
-/// NO_MANGLE auto x86_enter_uspace(arch::IrqFrame *t) -> void
+/// extern "C" auto x86_enter_uspace(arch::IrqFrame *t) -> void
 ///
 /// Restoring user's status and changing privileges.
 .function x86_enter_uspace, global, align=64, cfi=custom

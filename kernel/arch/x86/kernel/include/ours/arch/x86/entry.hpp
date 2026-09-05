@@ -7,14 +7,12 @@
 #include <ours/compiler.hpp>
 
 namespace ours {
-NO_MANGLE
-auto x86_syscall(arch::IrqFrame *) -> void;
+extern "C" auto x86_syscall(arch::IrqFrame *) -> void;
 
-NO_MANGLE [[noreturn]]
+extern "C" [[noreturn]]
 auto x86_enter_uspace(arch::IrqFrame *) -> void;
 
-NO_MANGLE
-auto x86_switch_context(VirtAddr *prev, VirtAddr next) -> void;
+extern "C" auto x86_switch_context(VirtAddr *prev, VirtAddr next) -> void;
 
 } // namespace ours
 

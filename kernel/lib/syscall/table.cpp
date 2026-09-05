@@ -41,6 +41,6 @@ namespace {
     }
 } // namespace
 
-NO_MANGLE constinit auto SYSCALL_TABLE = make_syscall_table();
+extern "C" constinit auto SYSCALL_TABLE = make_syscall_table();
 
 } // namespace ours

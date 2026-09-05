@@ -73,7 +73,7 @@ static auto rectify_idt(IdtEntry &entry, usize clac_shift) -> void {
 
 /// Defined in arch/x86/main/idt.S, default value per entry is
 /// the hanler.
-NO_MANGLE Idt IDT;
+extern "C" Idt IDT;
 static Idt *PIDT = &IDT;
 
 auto x86_load_idt() -> void {
