@@ -92,3 +92,63 @@ userboot: found 'userboot', 776 bytes of ELF
 
 - 没有建 VMO、进程、地址空间，没有映射，没有进 ring 3。这一步只证明「字节拿得到」。
 - 那块解压缓冲现在**永不释放**。等 ELF 装进 VMO 之后应当把它还回去，已记进待修。
+
+---
+
+## 2. 用户地址空间的基址落在内核半区（2026-09-05）
+
+**文件**
+- `kernel/arch/x86/kernel/include/ours/arch/aspace_layout.hpp` — `USER_ASPACE_BASE` /
+  `USER_ASPACE_SIZE` / `USER_ASPACE_RESTRICTED_SIZE`。
+
+**症状**
+
+潜伏，但**只要进 ring 3 就必炸**。当前触发不到，因为还没有任何东西进过用户态。
+
+**原因**
+
+```cpp
+#define KERNEL_ASPACE_BASE 0xffffff8000000000UL
+...
+#define USER_ASPACE_BASE 0xffffff8000000000UL   // ← 和上面一字不差
+#define USER_ASPACE_SIZE 0x0000008000000000UL
+#define USER_ASPACE_RESTRICTED_SIZE 0
+```
+
+x86-64 把 canonical 地址劈成两半：63..47 位必须全等于第 47 位，于是地址要么在
+`0x0000'0000'0000'0000`–`0x0000'7fff'ffff'ffff`（用户半区），要么在
+`0xffff'8000'0000'0000`–`0xffff'ffff'ffff'ffff`（内核半区）。用户映射**不可能**在分界之上：
+ring 3 访问那样的地址，**无论页表怎么写**都要出错。
+
+而这里的 `USER_ASPACE_BASE` 正是 `KERNEL_ASPACE_BASE`，也就是 physmap 的起点。
+
+`USER_ASPACE_RESTRICTED_SIZE` 是 0 也是错的：`process_dispatcher.cpp` 里
+`PRIVATE_ASPACE_SIZE = USER_ASPACE_RESTRICTED_SIZE`，于是「私有地址范围」是零字节。
+
+**改法**
+
+```cpp
+#define USER_ASPACE_BASE MB(2)
+#define USER_ASPACE_SIZE ((1UL << 47) - PAGE_SIZE - USER_ASPACE_BASE)
+#define USER_ASPACE_RESTRICTED_SIZE ((1UL << 46) - USER_ASPACE_BASE)
+```
+
+基址取 2 MiB 而不是 0：让空指针、以及从空指针加一个小偏移得到的地址，都落进一个
+**永远不会被映射的洞**里——和 Zircon 的 `USER_ASPACE_BASE` 同一个理由、同一个数字。
+大小停在 2^47 分界**下面一页**：最顶上的映射再往后一个地址就非 canonical 了，留一页出来，
+边界算术才不用到处特判。
+
+**参照**
+
+`Zircon arch/x86/include/arch/kernel_aspace.h`：
+
+```c
+#define USER_ASPACE_BASE 0x0000000000200000UL  // 2MB
+#define USER_ASPACE_SIZE ((1ULL << 47) - 4096 - USER_ASPACE_BASE)
+#define USER_RESTRICTED_ASPACE_SIZE ((1ULL << 46) - USER_ASPACE_BASE)
+```
+
+**验证**
+
+构建通过；QEMU dbg 启动无回归（无断言、52.9 万行日志、QEMU 存活）。**真正的验证要等到
+有东西进 ring 3**，那时这三个常量才第一次被用上——现在只能说它不再自相矛盾。
