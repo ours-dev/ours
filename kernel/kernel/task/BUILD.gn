@@ -16,6 +16,13 @@ source_set("task") {
     # Carried over with the wait queues, which reach for the kernel counters
     # and the lock annotations.
     "//kernel/lib/gktl:headers",
+
+    # The chain-lock transaction layer. Nothing here takes a chain lock yet;
+    # the dependency is what puts the library in the build graph at all --
+    # //kernel/lib:standalone-libs is discovery scaffolding that nothing
+    # reaches -- and kernel/task is where the first user will be, when
+    # Thread's PI lock and WaitQueue's lock become chain locks.
+    "//kernel/lib/kconcurrent",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",
     "//kernel/object:headers",
