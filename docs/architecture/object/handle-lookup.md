@@ -20,7 +20,8 @@
 
 ## 决定：`Handle` 住在一块 arena 里，查找是 O(1)
 
-arena = **启动时一次划出、按固定步长切成同尺寸槽位的连续内存**，只装 `Handle` 一种东西。
+arena = **一段地址连续、按固定步长切成同尺寸槽位的内存**，只装 `Handle` 一种东西。
+地址空间一次预留，物理页惰性提交。
 
 这不是随手选的分配器，而是**让 handle 值能成立的前提**：槽位等宽且连续，于是
 `地址 ↔ 下标` 是一次纯算术（`(addr - base) / sizeof(Handle)`），一个小整数就能指认一个
@@ -32,24 +33,62 @@ arena = **启动时一次划出、按固定步长切成同尺寸槽位的连续�
 
 ## 用户看到的值怎么算
 
-照 Zircon（`kernel/object/handle_table.cc:14-40`）：
+照 Zircon（`kernel/object/handle.cc`、`handle_table.cc`）。分两层，别合并着看：
+
+**第一层，`base_value`（32 位，仅内核可见）**：
+
+```
+ [31..30] 保留，必须为 0     kHandleReservedBits = 2
+ [29..18] generation         kHandleGenerationMask
+ [17..0]  arena 下标         kHandleIndexMask = kMaxHandleCount - 1
+```
+
+`kMaxHandleCount = 256 * 1024`，**必须是 2 的幂**（`static_assert`），下标才能用掩码取。
+`kHandleGenerationShift = log2(kMaxHandleCount) = 18`。Zircon 另有 `static_assert` 要求
+generation 至少能数到 255，否则位宽不够用。
+
+**第二层，用户看到的值**：
 
 ```
 handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
 ```
 
-解析时反着来，然后三道关，各防一件事——顺序和分工都要保住：
+左移 2 位正是保留位存在的理由：`base_value` 的高 2 位为零，移位才不丢信息。
 
-1. **最低两位必须是 1**：把 0 和随手编的小整数立刻挡掉（`ZX_HANDLE_INVALID` 是 0）。
-2. **XOR 每表随机数**：用户既猜不出别人的 handle 值，也看不出 arena 的布局。
-3. **`handle->handle_table_id() == 本表 koid`**：A 进程的合法值在 B 进程里解析不出来。
+## 槽位复用：generation 是必须的
 
-**只有第 3 条是隔离**，前两条是加固。把它们的分工记清楚，将来谁想省掉一步时才知道省的是什么。
+一个 arena 槽被释放后会再分配给别人。`GetNewBaseValue()` 读出**空闲槽里存着的旧
+`base_value`**，把 generation 加一再写回（`NewHandleValue()`），所以同一个下标每次复用都
+得到不同的 `base_value`。
 
-## 随之定下的：不给 handle 值加 generation 位
+解析时 `Handle::FromU32()` 由值算出下标、取到槽地址，**再比对
+`handle->base_value() == value`**——陈旧的值下标虽然对，generation 对不上，解析失败。
 
-槽位复用后的陈旧值，由第 2、3 条挡：随机数让陈旧值算出来的下标基本落不到有效槽，
-即使落到了，表 koid 也对不上。Zircon 同样不设 generation 位。
+（本文档早先的版本写着「不加 generation 位，靠随机数和表 koid 挡」。那是错的：
+随机数是每张表一个常量，同一张表里前后两次复用同一槽位算出的值会完全相同，
+表 koid 也一样对得上。没有 generation，`close` 之后的陈旧值会解析到新主人的对象上。）
+
+## 解析的五道关，各防一件事
+
+1. **低 2 位必须是 1** —— 挡掉 0（`ZX_HANDLE_INVALID`）和随手编的小整数。
+2. **XOR 回每表随机数** —— 用户猜不出别人的值，也看不出 arena 布局。
+3. **`arena_.Committed()`** —— 下标落在尚未提交的页上就直接失败（arena 是惰性提交的，
+   不是启动时一次性铺满）。
+4. **`base_value` 全等比较** —— generation 对不上就失败，见上一节。Zircon 用
+   `conditional_select_nospec_eq()` 做这个比较，是**常数时间**的，防的是用旁路探测
+   arena 布局；这一步不能图省事写成普通 `if`。
+5. **`handle->handle_table_id() == 本表 koid`** —— A 进程的合法值在 B 进程里解析不出来。
+
+分工：**第 5 条是进程间隔离，第 4 条是时间上的隔离（复用后的陈旧值）**，1、2、3 是加固。
+将来谁想省掉一步，先看清省的是哪一类。
+
+## 容量与耗尽
+
+- `kMaxHandleCount = 256 * 1024`（全系统，不是每进程），2 的幂。
+- `kHighHandleCount = kMaxHandleCount * 7 / 8`：越过这条线就打印一次告警，且**带节流**
+  （Zircon 用 `handle_count_high_log_.Ready()`），否则告警本身会淹掉串口。
+- 耗尽时 `Alloc()` **返回 nullptr，不 panic**：记一个计数器、打印一条告警，让调用方把
+  失败当作普通错误往上报。用户进程能耗尽的资源不该能把内核打死。
 
 ## 这条决定对 `mm` 提出的要求
 
@@ -64,5 +103,4 @@ handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
 
 ## 还没定的
 
-- `Rights` 的位定义。
-- arena 的容量上限，以及耗尽时的行为（Zircon 有 `kMaxHandleCount`，并在接近上限时告警）。
+（暂无。`Rights` 的位定义早已存在于 `system/public/ours/rights.hpp`；容量与耗尽行为见上。）
