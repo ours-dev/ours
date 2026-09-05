@@ -48,21 +48,6 @@
 #define KERNEL_API __attribute__((visibility("hidden")))
 #endif
 
-// The given C++ class or struct need not have a unique address when part of
-// a larger struct or class, but can be safely collapsed into a zero-byte
-// object by the compiler.
-#if defined(__ASSEMBLER__) || defined(__ASSEMBLY__)
-#define NO_UNIQUE_ADDRESS
-#elif __has_cpp_attribute(no_unique_address)
-#define NO_UNIQUE_ADDRESS [[no_unique_address]]
-#elif __has_cpp_attribute(msvc::no_unique_address)
-// msvc targets, as used by efi, have a different attribute name, even when
-// targeting C++20.
-#define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
-#else
-#define NO_UNIQUE_ADDRESS
-#endif
-
 #ifdef __clang__
 #define THREAD_ANNOTATE(x) __attribute__((x))
 #else

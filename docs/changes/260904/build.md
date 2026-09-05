@@ -206,3 +206,82 @@ auto x86_start_nonboot_cpu(CpuNum cpunum) -> void;
   `LINK_SECTION`、`INIT_*`、`FORCE_INLINE`、`KERNEL_API`、`TA_*`——它们包的都是
   `[[gnu::]]`／`[[msvc::]]`／`__attribute__` 这类厂商属性，正是规则里保留宏的那一类。
 - 没有改 `idle_thread.cpp` 那个 lambda。见上面。
+
+---
+
+## `NO_UNIQUE_ADDRESS` 删掉，直接写 `[[no_unique_address]]`（2026-09-04）
+
+**文件**
+- `system/public/ours/compiler.hpp` — 删掉 `NO_UNIQUE_ADDRESS` 那四个分支
+- `.clang-format` — `AttributeMacros` 与 `Macros:` 各去掉一行
+- `kernel/lib/gktl/include/gktl/radix_tree.hpp` — 3 处改写
+
+**症状**
+
+同上一条的规则：语言里已有的东西不再包宏。区别在于这个宏**看起来**有存在的理由——
+它不是无条件的，而是四个分支：
+
+```cpp
+#if defined(__ASSEMBLER__) || defined(__ASSEMBLY__)
+#define NO_UNIQUE_ADDRESS
+#elif __has_cpp_attribute(no_unique_address)
+#define NO_UNIQUE_ADDRESS [[no_unique_address]]
+#elif __has_cpp_attribute(msvc::no_unique_address)
+// msvc targets, as used by efi, have a different attribute name, even when
+// targeting C++20.
+#define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define NO_UNIQUE_ADDRESS
+#endif
+```
+
+"按编译器分支"正是规则里保留宏的那一类，所以这条要先查证再动，不能照上一条的样子直接删。
+
+**原因**
+
+查证结果是：**这四个分支在本项目里只有一个会走到**。
+
+- `msvc::` 那一支要有 MSVC 目标才有意义。全树第一方代码里 `_MSC_VER` 只出现一处
+  （`compiler.hpp` 里 `FORCE_INLINE` 的分支），构建配置（`build/`、各 `BUILD.gn`）
+  里没有任何 EFI 或 MSVC 工具链。注释里那句 "msvc targets, as used by efi" 是从
+  Zircon 的 `compiler.h` 带过来的——**Fuchsia 确实有 EFI 目标，我们没有**。
+- `__ASSEMBLER__` 那一支把它定义成空，是为了让汇编源码 include 这个头时不炸。
+  但它的全部三处使用都在 `radix_tree.hpp` 的 C++ 成员声明上，汇编永远看不到，
+  所以这一支不保护任何东西。
+- 最后那个 `#else` 是为不支持该属性的编译器兜底，clang 23 / `-std=c++2c` 下
+  `__has_cpp_attribute(no_unique_address)` 恒为真。
+
+也就是说这不是可移植性垫片，是一层**从上游抄来、在这里已经没有对象的条件编译**。
+留着它的代价不只是间接一层：那三个 `#elif` 会让读的人以为本项目在支持 MSVC，
+从而在别处也照着做无谓的分支——一个错误的前提比一层多余的宏更贵。
+
+（`empty-classes-may-be-planned-scaffolding` 那条经验在这里不适用：脚手架是"为将来要做的事
+预留"，而这几个分支是为**别人的**目标写的，不是为我们计划中的目标。）
+
+**改法**
+
+3 处替换成 `[[no_unique_address]]`，宏连同四个分支一起删，`.clang-format` 两处跟着去掉。
+
+**参照**
+
+`Zircon zircon/system/public/zircon/compiler.h` 是这段代码的出处，它的
+`ZX_NO_UNIQUE_ADDRESS` 保留 msvc 分支是对的——Fuchsia 的 `//zircon/kernel/phys/efi`
+就是 MSVC ABI 目标。差别在目标集，不在写法。
+
+**验证**
+
+两个镜像构建通过——`[[no_unique_address]]` 生效与否会改变 `RadixTree` 的对象布局，
+所以编译通过本身就说明属性确实贴上了（贴丢了也能编过，但布局会变；见下）。
+QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推进到线程调度，
+`kernel.dev.obi` 到 `prof: no architectural PMU`。
+
+**没有单独测量 `sizeof(RadixTree)`**。属性丢失会让三个空成员各占一字节，是可观测的，
+但替换是逐字面的、且 `radix_tree.hpp` 的三处都在同一屏内肉眼可核对，
+再加一次 `static_assert` 只为验证一次文本替换不值当。
+
+**故意没做**
+
+- 没有动 `FORCE_INLINE`。它同样是按编译器分支（`_MSC_VER` → `[[msvc::force_inline]]`），
+  但两支都是厂商属性，本来就该有宏。这次只是顺带确认了那处 `_MSC_VER` 是全树第一方代码里
+  唯一一处。
+- 没有动 `NO_MANGLE`（`extern "C"`）。同一条规则，下一条。

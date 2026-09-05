@@ -19,7 +19,6 @@ AttributeMacros:
   - KERNEL_API
   - NAKED
   - NO_INLINE
-  - NO_UNIQUE_ADDRESS
   - PACKED
   - PHYS_EXPORT
   - USED
@@ -58,7 +57,6 @@ Macros:
   - 'KERNEL_API=[[gnu::visibility("hidden")]]'
   - 'NAKED=[[gnu::naked]]'
   - 'NO_INLINE=[[gnu::noinline]]'
-  - 'NO_UNIQUE_ADDRESS=[[no_unique_address]]'
   - 'PHYS_EXPORT=[[gnu::visibility("default")]]'
   - 'USED=[[gnu::used]]'
   - 'WEAK_LINK=[[gnu::weak]]'

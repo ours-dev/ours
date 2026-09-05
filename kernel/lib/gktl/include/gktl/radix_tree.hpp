@@ -354,11 +354,11 @@ class RadixTree final {
         return append_suffix(split, key, suffix_offset, value);
     }
 
-    NO_UNIQUE_ADDRESS
+    [[no_unique_address]]
     NodeAllocator m_node_allocator{};
-    NO_UNIQUE_ADDRESS
+    [[no_unique_address]]
     KeyOfValue m_key_of{};
-    NO_UNIQUE_ADDRESS
+    [[no_unique_address]]
     Encoder m_encoder{};
     Node *m_nodes{};
     usize m_capacity{};
