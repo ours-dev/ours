@@ -214,6 +214,17 @@ namespace task {
         }
 
         FORCE_INLINE
+        /// The address space this thread runs in, or null for a kernel
+        /// thread -- Scheduler::switch_context() reads it on every switch and
+        /// VmAspace::switch_aspace() reads null as "the kernel's".
+        ///
+        /// Set before the thread is first resumed. Changing it under a
+        /// running thread would leave the CPU on a CR3 the scheduler no
+        /// longer believes is loaded.
+        auto set_aspace(mm::VmAspace *aspace) -> void {
+            m_aspace = aspace;
+        }
+
         auto aspace() -> mm::VmAspace * {
             return m_aspace;
         }

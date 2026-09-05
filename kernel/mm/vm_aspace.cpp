@@ -111,8 +111,17 @@ auto VmAspace::init_kernel_aspace() -> void {
 
 auto VmAspace::sync_kernel_aspace() -> void {}
 
+/// Either side may be null, and null means "the kernel address space".
+///
+/// A kernel thread carries no aspace of its own -- Thread::m_aspace stays
+/// null for one -- so the scheduler reaches here with a null `prev` the first
+/// time it switches to a user thread, and a null `next` when it switches back.
+/// Taking `&prev->m_arch` on a null pointer is undefined even though nothing
+/// dereferences it afterwards (ArchVmAspace::switch_context ignores `from`
+/// entirely), and it only happened to work because m_arch is not at offset 0.
 auto VmAspace::switch_aspace(Self *prev, Self *next) -> void {
-    ArchVmAspace::switch_context(&prev->m_arch, &next->m_arch);
+    ArchVmAspace::switch_context(prev ? &prev->m_arch : nullptr,
+                                 next ? &next->m_arch : nullptr);
 }
 
 auto VmAspace::clone(VmasFlags flags, ustl::Arc<VmAspace> *out) -> Status {
