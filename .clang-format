@@ -19,7 +19,6 @@ AttributeMacros:
   - KERNEL_API
   - NAKED
   - NO_INLINE
-  - NO_RETURN
   - NO_UNIQUE_ADDRESS
   - PACKED
   - PHYS_EXPORT
@@ -44,16 +43,13 @@ AttributeMacros:
 #   PACKED -- it reads as part of the type it decorates (`PACKED struct S`),
 #   and a line of its own separates it from what it applies to.
 #
-#   FORCE_INLINE_ATTR and NO_RETURN -- listing either hangs clang-format
-#   23.1.0-rc3 outright. The trigger is an attribute macro in lambda position:
-#   `[] NO_RETURN() -> void { ... }` loops forever, while the literal
-#   `[] [[noreturn]] () -> void` does not, so it is the macro expansion that
-#   the formatter cannot settle. FORCE_INLINE_ATTR exists only for that
-#   position (see the comment on its definition), so its absence costs
-#   nothing. NO_RETURN is used thirteen times and only once on a lambda --
-#   kernel/kernel/task/idle_thread.cpp:34 -- so it is one source line away
-#   from joining the list; it stays out rather than have a formatter defect
-#   dictate a change to the code it formats.
+#   FORCE_INLINE_ATTR -- listing it hangs clang-format 23.1.0-rc3 outright.
+#   The trigger is an attribute macro in lambda position:
+#   `[] FORCE_INLINE_ATTR(int x) { ... }` loops forever, while the literal
+#   `[] [[gnu::always_inline]] (int x)` does not, so it is the macro expansion
+#   the formatter cannot settle. That position is the only reason this
+#   spelling exists (see the comment on its definition), so its absence here
+#   costs nothing.
 Macros:
   - 'FORCE_INLINE=[[gnu::always_inline]]'
   - 'INIT_CODE=[[gnu::section(".init.text")]]'

@@ -9,7 +9,6 @@
 #define PACKED [[gnu::packed]]
 
 #define NO_INLINE [[gnu::noinline]]
-#define NO_RETURN [[noreturn]]
 // An attribute and nothing else. Note that it only tells the optimiser what to
 // do -- it confers no inline linkage, so a function *defined* in a header still
 // needs `inline` written out, or every translation unit including it emits its

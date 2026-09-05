@@ -17,7 +17,8 @@ namespace ours::phys {
 /// through the module descriptor, never by symbol -- and this declaration
 /// exists only so the definition and the PHYS_MODULE() reference to it can
 /// sit in the same translation unit.
-NO_RETURN auto physboot_init(PhysLoadHandoff const &handoff) -> void;
+[[noreturn]]
+auto physboot_init(PhysLoadHandoff const &handoff) -> void;
 
 } // namespace ours::phys
 

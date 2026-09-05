@@ -143,7 +143,8 @@ namespace {
     }
 } // namespace
 
-NO_MANGLE NO_RETURN auto phys_main(PhysAddr loader_param) -> void {
+NO_MANGLE [[noreturn]]
+auto phys_main(PhysAddr loader_param) -> void {
     ccrt::init_global_static_objects();
     init_early_console();
     log::info("boot-shim: loader params at 0x{:X}", loader_param);

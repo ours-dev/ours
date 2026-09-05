@@ -31,7 +31,8 @@ auto IdleThread::init(CpuNum cpunum) -> void {
         panic("Idler[{}] enter the dummy start routine", cpunum);
     };
 
-    constexpr auto dummy_trampoline_routine = [] NO_RETURN() -> void {
+    constexpr auto dummy_trampoline_routine = [] [[noreturn]]
+                                              () -> void {
         auto const cpunum = Cpu::id();
         panic("Idler[{}] enter the dummy trampoline routine", cpunum);
     };

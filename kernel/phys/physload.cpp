@@ -38,8 +38,8 @@ BootOptions BOOT_OPTIONS;
 WEAK_LINK
 auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
 
-NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy)
-    -> void {
+[[noreturn]]
+auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy) -> void {
     // Static console instances self-register during this pass (each
     // Console constructor links into the constinit global list); printing
     // before this point goes nowhere.

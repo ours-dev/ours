@@ -130,7 +130,8 @@ namespace {
     }
 } // namespace
 
-NO_RETURN auto physboot_init(PhysLoadHandoff const &handoff) -> void {
+[[noreturn]]
+auto physboot_init(PhysLoadHandoff const &handoff) -> void {
     // 1. View the kernel-package BootFS physload materialized — no outer
     //    OBI re-parsing, no decompression, no scratch ownership here.
     auto const storage = KernelPackageLoader::Bytes(

@@ -9,7 +9,7 @@
 
 namespace ours {
 namespace {
-    NO_RETURN FORCE_INLINE
+    [[noreturn]] FORCE_INLINE
     auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
         x86_enter_uspace(frame);
     }

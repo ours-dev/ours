@@ -72,7 +72,8 @@ auto write_line(char const *label, u64 const value) -> void {
     write("\n");
 }
 
-NO_RETURN auto halt() -> void {
+[[noreturn]]
+auto halt() -> void {
     for (;;) {
         __asm__ volatile("cli; hlt");
     }
@@ -80,7 +81,8 @@ NO_RETURN auto halt() -> void {
 } // namespace
 
 /// Entered from entry-x86.S with the pointer physboot passed to the kernel.
-NO_MANGLE NO_RETURN auto fake_kernel_main(ours::phys::Handoff const *handoff) -> void {
+NO_MANGLE [[noreturn]]
+auto fake_kernel_main(ours::phys::Handoff const *handoff) -> void {
     write("\n[fake-kernel] entered\n");
 
     if (handoff == nullptr) {

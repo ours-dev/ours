@@ -30,7 +30,8 @@ namespace {
     /// address, because the kernel is a static PIE relocated at load time: the
     /// absolute address differs from run to run, while the offset is what can be
     /// looked up directly in `llvm-objdump -d vmours`.
-    NO_RETURN static auto panic_exception(arch::IrqFrame *frame, char const *msg) -> void {
+    [[noreturn]]
+    static auto panic_exception(arch::IrqFrame *frame, char const *msg) -> void {
         log::error("{}: vector={}, error_code={:#x}", msg, u32(frame->vector), frame->error_code);
         log::error("  rip={:#x} (+{:#x})  cs={:#x}  rsp={:#x}", frame->rip,
                    frame->rip - VirtAddr(mm::IMAGE_START), frame->cs, frame->usp);

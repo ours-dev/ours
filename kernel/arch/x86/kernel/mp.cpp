@@ -83,7 +83,7 @@ auto arch_deactivate_cpu(CpuNum) -> Status {
 }
 
 /// Called once in kernel/arch/x86/entry/bootstrap16.S
-NO_MANGLE NO_RETURN INIT_CODE USED
+NO_MANGLE [[noreturn]] INIT_CODE USED
 auto x86_start_nonboot_cpu(CpuNum cpunum) -> void {
     DEBUG_ASSERT(cpunum != INVALID_CPU_NUM);
 

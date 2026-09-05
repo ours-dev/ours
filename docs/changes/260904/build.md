@@ -116,3 +116,93 @@ FORCE_INLINE auto d() -> void {}        ← 同上
   它们在 `CONFIG_MEM_HOTPLUG` 下展开成**空**，声称它们是属性在那个配置里是假话；
   眼下它们在源码里已经是手写单独一行的，不改也不难看。
 - 没有为了让 `NO_RETURN` 进清单而去改 `idle_thread.cpp` 那个 lambda。见上面第 3 条。
+
+---
+
+## `NO_RETURN` 删掉，直接写 `[[noreturn]]`（2026-09-04）
+
+**文件**
+- `system/public/ours/compiler.hpp` — 删掉 `#define NO_RETURN`
+- `.clang-format` — `AttributeMacros` 去掉 `NO_RETURN`；随之改写 `Macros:` 的排除说明
+- 11 个 `.cpp`/`.hpp` — 13 处 `NO_RETURN` 改写成 `[[noreturn]]`
+
+**症状**
+
+不是缺陷，是一条规则：**语言语法层面已经有的东西不该再用宏包一层**，
+只有 `[[gnu::]]`、`[[msvc::]]` 这类厂商定制属性才需要宏，因为它们要么不可移植、
+要么需要按编译器分支。
+
+`NO_RETURN` 展开就是 `[[noreturn]]`——一个 C++11 起就在标准里的属性，无条件、无分支、
+无可移植性问题。这一层包装什么也没换来：读代码的人多一次跳转才能确认它就是标准属性，
+而 grep `[[noreturn]]` 找不到这 13 处。
+
+全树扫下来，包装标准属性的宏只有两个：`NO_RETURN` 和 `NO_UNIQUE_ADDRESS`
+（另有 `NO_MANGLE` 包着 `extern "C"`，那是语言语法而非属性，同一条规则适用）。
+本条只处理 `NO_RETURN`，另外两条各自一条。
+
+**原因**
+
+除了"多一层无谓的间接"，宏包装标准属性还有两处实际代价，这次都碰上了：
+
+1. **工具链看不穿它。** 上一条改动（属性宏单独占一行）为此专门加了 `Macros:` 段，
+   把每个属性宏的展开式再告诉 clang-format 一遍——`NO_RETURN` 那一行现在不需要了，
+   因为 `[[noreturn]]` 本来就是 clang-format 认识的记号。同理，任何按属性做检索或
+   分析的工具（clang-tidy 的检查、IDE 的跳转）对标准拼法是开箱即用的，对宏则不是。
+
+2. **它把 clang-format 的一个死循环带了进来。** 上一条改动里 `NO_RETURN` 被迫排除在
+   `Macros:` 之外，因为属性宏出现在 lambda 位置会让 clang-format 23.1.0-rc3 挂死
+   （`[] NO_RETURN() -> void { ... }` 不返回，而字面 `[] [[noreturn]] ()` 正常）。
+   那条排除说明里写着"它离进清单只差改一行源码，但不该让排版工具的缺陷指挥源码"——
+   这条规则把那个两难直接取消了：不是为了迁就工具去改源码，而是源码本来就该这么写，
+   工具的问题顺带消失。
+
+**改法**
+
+13 处逐字替换，宏定义删除，`.clang-format` 两处跟着改。替换是纯文本的，
+因为 `NO_RETURN` 和 `[[noreturn]]` 在每一个出现位置都是同一个记号。
+
+多属性并列的写法照旧可读：
+
+```cpp
+NO_MANGLE [[noreturn]] INIT_CODE USED
+auto x86_start_nonboot_cpu(CpuNum cpunum) -> void;
+```
+
+**有一处变难看了**，如实记下来。`kernel/kernel/task/idle_thread.cpp:34` 是全树唯一
+把这个属性用在 lambda 上的地方，而 `BreakAfterAttributes: Always` 对 lambda 的属性
+无论放在参数表前还是后都会断出难看的行：
+
+```cpp
+    constexpr auto dummy_trampoline_routine = [] [[noreturn]]
+                                              () -> void {
+```
+
+没有为此改源码。顺带查证：这个属性在这里**只是文档**——lambda 是当函数指针交给
+`Thread::spawn_etc()` 的，而 `[[noreturn]]` 不属于函数类型，穿不过指针；
+函数体调的 `panic()` 本身就带 `[[noreturn]]`（`system/public/ours/panic.hpp:88`），
+编译器早就知道这条路不返回。它上面的兄弟 `dummy_start_routine` 是同类东西、
+同样 panic，也没带这个属性。所以这一处的属性去留是可讨论的，
+但那是另一个问题，不该混进本条。
+
+**参照**
+
+无，本项目自有规则。可以对照的是 Linux 的相反选择：它一直用 `__noreturn`
+（`include/linux/compiler_attributes.h`）而不是 `[[noreturn]]`，因为它长期要
+同时喂 GCC 和 sparse、且到 C23 之前 C 语言里没有标准属性拼法。C++ 这边没有这个约束。
+
+**验证**
+
+两个镜像构建通过。QEMU 实测无回归：`kernel.dev.dbg_1.obi` 九条 `Reserve area` 齐全并推进到
+线程调度，`kernel.dev.obi` 到 `prof: no architectural PMU`。
+
+`[[noreturn]]` 与 `NO_RETURN` 展开完全相同，所以生成的代码本应逐字节一致；
+仍然跑了启动，因为属性贴错声明是会改语义的，而这次动了 13 处声明。
+
+**故意没做**
+
+- 没有动 `NO_UNIQUE_ADDRESS`（包着标准的 `[[no_unique_address]]`，但带着 msvc 与
+  汇编两条分支）和 `NO_MANGLE`（包着 `extern "C"`）。同一条规则，各自一条改动。
+- 没有动 `USED`、`NAKED`、`PACKED`、`NO_INLINE`、`WEAK_LINK`、`PHYS_EXPORT`、
+  `LINK_SECTION`、`INIT_*`、`FORCE_INLINE`、`KERNEL_API`、`TA_*`——它们包的都是
+  `[[gnu::]]`／`[[msvc::]]`／`__attribute__` 这类厂商属性，正是规则里保留宏的那一类。
+- 没有改 `idle_thread.cpp` 那个 lambda。见上面。
