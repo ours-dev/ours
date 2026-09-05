@@ -14,28 +14,35 @@ struct MappingAddress {
 
 ///
 struct VirtAddrCursor {
-    FORCE_INLINE constexpr VirtAddrCursor() = default;
+    FORCE_INLINE
+    constexpr VirtAddrCursor() = default;
 
-    FORCE_INLINE constexpr VirtAddrCursor(VirtAddr virt, usize size)
+    FORCE_INLINE
+    constexpr VirtAddrCursor(VirtAddr virt, usize size)
         : size_(size), consumed_(0), addr_(virt) {}
 
-    FORCE_INLINE constexpr auto size() const -> usize {
+    FORCE_INLINE
+    constexpr auto size() const -> usize {
         return size_;
     }
 
-    FORCE_INLINE constexpr auto virt_addr() const -> VirtAddr {
+    FORCE_INLINE
+    constexpr auto virt_addr() const -> VirtAddr {
         return addr_ + consumed_;
     }
 
-    FORCE_INLINE constexpr auto consume(usize page_size) -> void {
+    FORCE_INLINE
+    constexpr auto consume(usize page_size) -> void {
         consumed_ += page_size;
     }
 
-    FORCE_INLINE constexpr auto remaining_size() const -> usize {
+    FORCE_INLINE
+    constexpr auto remaining_size() const -> usize {
         return size_ - consumed_;
     }
 
-    FORCE_INLINE constexpr auto consumed_range() const -> VirtAddrCursor {
+    FORCE_INLINE
+    constexpr auto consumed_range() const -> VirtAddrCursor {
         return VirtAddrCursor(addr_, consumed_);
     }
 
@@ -45,16 +52,20 @@ struct VirtAddrCursor {
 };
 
 struct PhysAddrCursor {
-    FORCE_INLINE constexpr PhysAddrCursor() = default;
+    FORCE_INLINE
+    constexpr PhysAddrCursor() = default;
 
-    FORCE_INLINE constexpr PhysAddrCursor(PhysAddr *phys, usize n, usize page_size)
+    FORCE_INLINE
+    constexpr PhysAddrCursor(PhysAddr *phys, usize n, usize page_size)
         : page_size_(page_size), consumed_(0), count_(n), addrs_(phys) {}
 
-    FORCE_INLINE constexpr auto phys_addr() const -> PhysAddr {
+    FORCE_INLINE
+    constexpr auto phys_addr() const -> PhysAddr {
         return (*addrs_) + consumed_;
     }
 
-    FORCE_INLINE constexpr auto consume(usize page_size) -> void {
+    FORCE_INLINE
+    constexpr auto consume(usize page_size) -> void {
         consumed_ += page_size;
         if (consumed_ == page_size_) {
             consumed_ = 0;
@@ -92,32 +103,39 @@ struct BasicTravelContext {
     BasicTravelContext(VirtAddr va, usize nr_pages, usize page_size, MmuFlags mmuf = {})
         : Self(VirtAddrCursor(va, nr_pages * page_size), mmuf) {}
 
-    FORCE_INLINE constexpr auto consume(usize page_size) -> void {
+    FORCE_INLINE
+    constexpr auto consume(usize page_size) -> void {
         virt_cursor_.consume(page_size);
         num_travelled_ += 1;
     }
 
-    FORCE_INLINE constexpr auto size() const -> usize {
+    FORCE_INLINE
+    constexpr auto size() const -> usize {
         return virt_cursor_.size();
     }
 
-    FORCE_INLINE constexpr auto mmuflags() const -> ArchFlags {
+    FORCE_INLINE
+    constexpr auto mmuflags() const -> ArchFlags {
         return flags_;
     }
 
-    FORCE_INLINE constexpr auto num_travelled() const -> usize {
+    FORCE_INLINE
+    constexpr auto num_travelled() const -> usize {
         return num_travelled_;
     }
 
-    FORCE_INLINE auto virt_cursor() -> VirtAddrCursor & {
+    FORCE_INLINE
+    auto virt_cursor() -> VirtAddrCursor & {
         return virt_cursor_;
     }
 
-    FORCE_INLINE constexpr auto virt_addr() const -> VirtAddr {
+    FORCE_INLINE
+    constexpr auto virt_addr() const -> VirtAddr {
         return virt_cursor_.virt_addr();
     }
 
-    FORCE_INLINE auto set_cursor(VirtAddrCursor cursor) -> Self & {
+    FORCE_INLINE
+    auto set_cursor(VirtAddrCursor cursor) -> Self & {
         virt_cursor_ = cursor;
         return *this;
     }
@@ -138,39 +156,46 @@ struct BasicMapContext: public BasicTravelContext<ArchFlags> {
 
     BasicMapContext() = default;
 
-    FORCE_INLINE constexpr BasicMapContext(VirtAddr va, PhysAddr *pa, usize n, usize page_size,
-                                           MmuFlags flags)
+    FORCE_INLINE
+    constexpr BasicMapContext(VirtAddr va, PhysAddr *pa, usize n, usize page_size, MmuFlags flags)
         : Base(va, n, page_size, flags), phys_cursor_(pa, n, page_size) {}
 
-    FORCE_INLINE constexpr auto phys_addr() const -> PhysAddr {
+    FORCE_INLINE
+    constexpr auto phys_addr() const -> PhysAddr {
         return phys_cursor_.phys_addr();
     }
 
-    FORCE_INLINE auto phys_cursor() -> PhysAddrCursor & {
+    FORCE_INLINE
+    auto phys_cursor() -> PhysAddrCursor & {
         return phys_cursor_;
     }
 
-    FORCE_INLINE constexpr auto num_mapped() const -> usize {
+    FORCE_INLINE
+    constexpr auto num_mapped() const -> usize {
         return num_travelled_;
     }
 
-    FORCE_INLINE auto consume(usize page_size) -> void {
+    FORCE_INLINE
+    auto consume(usize page_size) -> void {
         Base::consume(page_size);
         phys_cursor_.consume(page_size);
     }
 
-    FORCE_INLINE auto skip(usize page_size) -> void {
+    FORCE_INLINE
+    auto skip(usize page_size) -> void {
         virt_cursor_.consume(page_size);
     }
 
-    FORCE_INLINE auto take(usize page_size) -> MappingAddress {
+    FORCE_INLINE
+    auto take(usize page_size) -> MappingAddress {
         auto const phys = phys_cursor_.phys_addr();
         auto const virt = virt_cursor_.virt_addr();
         this->consume(page_size);
         return {phys, virt};
     }
 
-    FORCE_INLINE auto has_more() const -> bool {
+    FORCE_INLINE
+    auto has_more() const -> bool {
         return phys_cursor_.count_ > 0;
     }
 

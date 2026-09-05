@@ -54,7 +54,8 @@ class PageTable {
     /// every kernel/user transition.
     auto alias_to(Self &other, VirtAddr base, usize n) -> Status;
 
-    FORCE_INLINE auto pgd_phys() const -> PhysAddr {
+    FORCE_INLINE
+    auto pgd_phys() const -> PhysAddr {
         return m_pgd_phys;
     }
 

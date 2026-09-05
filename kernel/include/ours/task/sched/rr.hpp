@@ -21,7 +21,8 @@ class RrRunQueue {
     using Self = RrRunQueue;
 
   public:
-    FORCE_INLINE auto verify() const -> void {
+    FORCE_INLINE
+    auto verify() const -> void {
         m_canary.verify<Self>();
     }
 
@@ -34,7 +35,8 @@ class RrRunQueue {
     auto peek() -> Context *;
 
     [[nodiscard]]
-    FORCE_INLINE auto num_queued() const -> usize {
+    FORCE_INLINE
+    auto num_queued() const -> usize {
         return m_num_queued;
     }
 

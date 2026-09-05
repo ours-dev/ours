@@ -10,7 +10,8 @@
 #include <algorithm>
 
 namespace ours::mm {
-INIT_CODE auto EarlyMem::dump() -> void {
+INIT_CODE
+auto EarlyMem::dump() -> void {
     log::trace("Memory information from BootMem");
     log::trace("|Domain | {:18} | {:18}", "Base", "Size");
     [[maybe_unused]]
@@ -23,7 +24,8 @@ INIT_CODE auto EarlyMem::dump() -> void {
     DEBUG_ASSERT(status == Status::Ok, "Failed to enumerate boot memory");
 }
 
-INIT_CODE auto EarlyMem::get_pfn_range_node(NnId nid) -> gktl::Range<Pfn> {
+INIT_CODE
+auto EarlyMem::get_pfn_range_node(NnId nid) -> gktl::Range<Pfn> {
     auto start = ustl::NumericLimits<Pfn>::max();
     auto end = Pfn{0};
     auto const status = visit_usable(min_address(), max_address(), nid,
@@ -39,7 +41,8 @@ INIT_CODE auto EarlyMem::get_pfn_range_node(NnId nid) -> gktl::Range<Pfn> {
     return {start, end};
 }
 
-INIT_CODE auto EarlyMem::count_present_frames(Pfn start, Pfn end) -> usize {
+INIT_CODE
+auto EarlyMem::count_present_frames(Pfn start, Pfn end) -> usize {
     auto nr_presents = usize{0};
     [[maybe_unused]]
     auto const status =
@@ -61,7 +64,8 @@ INIT_CODE auto EarlyMem::count_present_frames(Pfn start, Pfn end) -> usize {
     return nr_presents;
 }
 
-INIT_CODE static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
+INIT_CODE
+static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
     while (start < end) {
         // Two separate limits, and the alignment one is not optional. A buddy
         // block of order N is identified by its lowest pfn and finds its partner
@@ -86,7 +90,8 @@ INIT_CODE static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
     }
 }
 
-INIT_CODE FORCE_INLINE static auto free_frames_phys_range(PhysAddr start, PhysAddr end) -> void {
+INIT_CODE FORCE_INLINE
+static auto free_frames_phys_range(PhysAddr start, PhysAddr end) -> void {
     auto const start_pfn = phys_to_pfn(start);
     auto const end_pfn = std::min(phys_to_pfn(end), max_pfn());
     if (start_pfn < end_pfn) {
@@ -94,7 +99,8 @@ INIT_CODE FORCE_INLINE static auto free_frames_phys_range(PhysAddr start, PhysAd
     }
 }
 
-INIT_CODE static auto free_unused_memory() -> void {
+INIT_CODE
+static auto free_unused_memory() -> void {
     usize nr_regions = 0;
     usize nr_frames = 0;
 
@@ -118,7 +124,8 @@ INIT_CODE static auto free_unused_memory() -> void {
               nr_frames, (nr_frames * PAGE_SIZE) >> 20);
 }
 
-INIT_CODE auto EarlyMem::do_handoff() -> void {
+INIT_CODE
+auto EarlyMem::do_handoff() -> void {
     free_unused_memory();
 }
 

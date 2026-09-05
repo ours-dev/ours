@@ -184,7 +184,8 @@ namespace {
     /// on whoever publishes the level, and init() resolves Current::get() and
     /// current_cpu() against the running CPU by design. A secondary CPU still
     /// owes itself this call from its own bring-up path.
-    INIT_CODE auto start_dpc_runner() -> void {
+    INIT_CODE
+    auto start_dpc_runner() -> void {
         DpcRunner::init();
     }
     GKTL_INIT_HOOK(DpcRunnerInit, start_dpc_runner, gktl::InitLevel::Threading);

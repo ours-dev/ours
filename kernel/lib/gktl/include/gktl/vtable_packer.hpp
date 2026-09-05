@@ -13,7 +13,8 @@ namespace gktl {
 template <typename T, auto Member>
 struct VtablePacker {
     template <auto Method>
-    FORCE_INLINE constexpr static auto pack() {
+    FORCE_INLINE
+    constexpr static auto pack() {
         return []<typename... Args>(ustl::TypeList<Args...>) {
             // Marked FORCE_INLINE_ATTR to reduce meaningless function calls.
             //

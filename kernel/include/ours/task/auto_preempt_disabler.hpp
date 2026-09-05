@@ -35,26 +35,33 @@ class AutoPreemptDisabler {
     /// to start true and call enable(), which did the exact opposite of
     /// what the class is named: constructing one *enabled* preemption, and
     /// left m_disabled false so the destructor did nothing at all.
-    FORCE_INLINE AutoPreemptDisabler() : m_disabled(false) {
+    FORCE_INLINE
+    AutoPreemptDisabler()
+        : m_disabled(false) {
         disable();
     }
 
-    FORCE_INLINE AutoPreemptDisabler(DeferType defer) : m_disabled(false) {}
+    FORCE_INLINE
+    AutoPreemptDisabler(DeferType defer)
+        : m_disabled(false) {}
 
     USTL_NO_MOVEABLE_AND_COPYABLE(AutoPreemptDisabler);
 
-    FORCE_INLINE ~AutoPreemptDisabler() {
+    FORCE_INLINE
+    ~AutoPreemptDisabler() {
         enable();
     }
 
-    FORCE_INLINE auto enable() -> void {
+    FORCE_INLINE
+    auto enable() -> void {
         if (m_disabled) {
             m_disabled = false;
             Thread::Current::preemption_state().enable_preemption();
         }
     }
 
-    FORCE_INLINE auto disable() -> void {
+    FORCE_INLINE
+    auto disable() -> void {
         if (!m_disabled) {
             m_disabled = true;
             Thread::Current::preemption_state().disable_preemption();
@@ -91,26 +98,33 @@ class AutoEagerReschedDisabler {
     /// disable()'s `if (!m_disabled)` guard fall through, so nothing was
     /// ever disabled -- while the destructor still called enable(),
     /// re-enabling eager rescheduling that this object never took away.
-    FORCE_INLINE AutoEagerReschedDisabler() : m_disabled(false) {
+    FORCE_INLINE
+    AutoEagerReschedDisabler()
+        : m_disabled(false) {
         disable();
     }
 
-    FORCE_INLINE AutoEagerReschedDisabler(DeferType) : m_disabled(false) {}
+    FORCE_INLINE
+    AutoEagerReschedDisabler(DeferType)
+        : m_disabled(false) {}
 
     USTL_NO_MOVEABLE_AND_COPYABLE(AutoEagerReschedDisabler);
 
-    FORCE_INLINE ~AutoEagerReschedDisabler() {
+    FORCE_INLINE
+    ~AutoEagerReschedDisabler() {
         enable();
     }
 
-    FORCE_INLINE auto enable() -> void {
+    FORCE_INLINE
+    auto enable() -> void {
         if (m_disabled) {
             m_disabled = false;
             Thread::Current::preemption_state().enable_eager_reschedule();
         }
     }
 
-    FORCE_INLINE auto disable() -> void {
+    FORCE_INLINE
+    auto disable() -> void {
         if (!m_disabled) {
             m_disabled = true;
             Thread::Current::preemption_state().disable_eager_reschedule();

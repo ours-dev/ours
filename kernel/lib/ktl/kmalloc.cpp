@@ -94,7 +94,8 @@ auto kfree(void *object) -> void {
     cache->free(object);
 }
 
-INIT_CODE auto init_kmalloc() -> void {
+INIT_CODE
+auto init_kmalloc() -> void {
     for (usize i = 0; i < KMALLOC_CACHE.size(); ++i) {
         // data(), not init(): create_boot() initializes the cache in place,
         // exactly as MemCache::init() does for its own bootstrap caches.

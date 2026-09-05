@@ -50,25 +50,30 @@ struct HpetTimerRegs {
             Level,
         };
 
-        FORCE_INLINE auto mask(bool mask = true) volatile -> Self volatile & {
+        FORCE_INLINE
+        auto mask(bool mask = true) volatile -> Self volatile & {
             inner.set<INTR_ENABLE_CONFIG>(!mask);
             return *this;
         }
 
-        FORCE_INLINE auto irq() const volatile -> usize {
+        FORCE_INLINE
+        auto irq() const volatile -> usize {
             return inner.get<INTR_ROUTE_CONFIG>();
         }
 
-        FORCE_INLINE auto configure_irq(usize irqnum) volatile -> Self volatile & {
+        FORCE_INLINE
+        auto configure_irq(usize irqnum) volatile -> Self volatile & {
             inner.set<INTR_ROUTE_CONFIG>(irqnum);
             return *this;
         }
 
-        FORCE_INLINE auto support_periodic() const volatile -> bool {
+        FORCE_INLINE
+        auto support_periodic() const volatile -> bool {
             return inner.get<PERIODIC_CAP>();
         }
 
-        FORCE_INLINE auto set_mode_periodic() volatile -> Self volatile & {
+        FORCE_INLINE
+        auto set_mode_periodic() volatile -> Self volatile & {
             DEBUG_ASSERT(support_periodic());
             inner.set<TIMER_TYPE_CONFIG>(1);
             inner.set<VAL_SET_CONFIG>(1);
@@ -78,13 +83,15 @@ struct HpetTimerRegs {
         /// One-shot is mandatory for every HPET timer, so unlike
         /// set_mode_periodic() this asserts nothing.  It used to assert
         /// support_periodic(), copied from the function above.
-        FORCE_INLINE auto set_mode_oneshot() volatile -> Self volatile & {
+        FORCE_INLINE
+        auto set_mode_oneshot() volatile -> Self volatile & {
             inner.set<TIMER_TYPE_CONFIG>(0);
             inner.set<VAL_SET_CONFIG>(1);
             return *this;
         }
 
-        FORCE_INLINE auto trigger_mode() volatile -> TriggerMode {
+        FORCE_INLINE
+        auto trigger_mode() volatile -> TriggerMode {
             return TriggerMode(inner.get<INTR_TYPE_CONFIG>());
         }
 

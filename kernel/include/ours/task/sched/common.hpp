@@ -30,7 +30,8 @@ constexpr usize IDLE_PRIORITY = DEFAULT_PRIORITY >> 1;
 /// both ends. The check used to be `priority < HIGHEST_PRIORITY`, which
 /// rejected the one priority the name promises is valid; nothing tripped it
 /// only because this function had no callers.
-FORCE_INLINE constexpr auto priority_to_weight(usize priority) -> Weight {
+FORCE_INLINE
+constexpr auto priority_to_weight(usize priority) -> Weight {
     DEBUG_ASSERT(LOWEST_PRIORITY <= priority && priority <= HIGHEST_PRIORITY);
     return PRIORITY_TO_WEIGHT_MAP[priority];
 }

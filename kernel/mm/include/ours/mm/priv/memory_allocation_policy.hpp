@@ -24,7 +24,8 @@ class MemoryAllocationPolicy
         NumPolicies,
     };
 
-    FORCE_INLINE auto kind() const -> Kind {
+    FORCE_INLINE
+    auto kind() const -> Kind {
         return m_kind;
     }
 

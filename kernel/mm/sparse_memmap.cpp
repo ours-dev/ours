@@ -15,16 +15,18 @@ class SparseMemMap::Impl {
 
   public:
     template <typename T, typename... Args>
-    FORCE_INLINE constexpr static auto allocate(usize n, usize a, Gaf gaf, NnId nid, Args &&...args)
-        -> T *;
+    FORCE_INLINE
+    constexpr static auto allocate(usize n, usize a, Gaf gaf, NnId nid, Args &&...args) -> T *;
 
     template <typename T>
-    FORCE_INLINE constexpr static auto dump(usize n, usize a, Gaf gaf, NnId nid) -> T *;
+    FORCE_INLINE
+    constexpr static auto dump(usize n, usize a, Gaf gaf, NnId nid) -> T *;
 };
 
 template <typename T, typename... Args>
-FORCE_INLINE constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NnId nid,
-                                                         Args &&...args) -> T * {
+FORCE_INLINE
+constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NnId nid, Args &&...args)
+    -> T * {
     T *object;
     if (pmm_enabled()) {
         object = new (gaf, nid) T[n](ustl::forward<Args>(args)...);
@@ -72,7 +74,8 @@ auto SparseMemMap::dump() -> void {
     dump_sections(m_root_section, TOP_LEVEL);
 }
 
-INIT_CODE auto SparseMemMap::init() -> Status {
+INIT_CODE
+auto SparseMemMap::init() -> Status {
     // Zeroed, not merely allocated. A section table encodes "no entry here" as an
     // all-zero entry -- init_index() decides whether to descend or to build a new
     // level purely from is_state_present() -- so uninitialised memory reads as a

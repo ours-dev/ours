@@ -35,7 +35,8 @@ BootOptions BOOT_OPTIONS;
 /// Default: nothing to do between loading a module and entering it.  An
 /// architecture overrides this to install a page-table root or reserve
 /// arch-specific memory (physload.hpp).
-WEAK_LINK auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
+WEAK_LINK
+auto arch_on_phys_load_handoff(PhysLoadHandoff const &handoff) -> void {}
 
 NO_RETURN auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo const *legacy)
     -> void {

@@ -125,7 +125,8 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return Status::Unimplemented;
     }
 
-    FORCE_INLINE auto commit_range_pinned(usize offset, usize len, bool write) -> Status {
+    FORCE_INLINE
+    auto commit_range_pinned(usize offset, usize len, bool write) -> Status {
         auto options = CommitOptions::Pin;
         if (write) {
             options |= CommitOptions::Write;
@@ -133,11 +134,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return commit_range(offset, len, options);
     }
 
-    FORCE_INLINE auto set_name(char const *name) -> void {
+    FORCE_INLINE
+    auto set_name(char const *name) -> void {
         m_name.set(name);
     }
 
-    FORCE_INLINE auto type() const -> Type {
+    FORCE_INLINE
+    auto type() const -> Type {
         return m_type;
     }
 
@@ -161,11 +164,13 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     virtual ~VmObject() = default;
     USTL_NO_MOVEABLE_AND_COPYABLE(VmObject);
 
-    FORCE_INLINE auto add_mapping(VmMapping &mapping) -> void {
+    FORCE_INLINE
+    auto add_mapping(VmMapping &mapping) -> void {
         m_mappings.push_back(mapping);
     }
 
-    FORCE_INLINE auto remove_mapping(VmMapping &mapping) -> void {
+    FORCE_INLINE
+    auto remove_mapping(VmMapping &mapping) -> void {
         (void)m_mappings.erase(m_mappings.iterator_to(mapping));
     }
 
@@ -185,7 +190,8 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
 using VmoFlags = VmObject::Flags;
 
 template <typename Derived>
-FORCE_INLINE constexpr auto as(VmObject *vmo) -> Derived * {
+FORCE_INLINE
+constexpr auto as(VmObject *vmo) -> Derived * {
     using ustl::traits::IsSameV;
 
     auto const type = vmo->m_type;
@@ -202,7 +208,8 @@ FORCE_INLINE constexpr auto as(VmObject *vmo) -> Derived * {
 }
 
 template <typename Derived>
-FORCE_INLINE constexpr auto as(ustl::Arc<VmObject> vmo) -> ustl::Arc<Derived> {
+FORCE_INLINE
+constexpr auto as(ustl::Arc<VmObject> vmo) -> ustl::Arc<Derived> {
     return ustl::Arc<Derived>::adopt(as<Derived>(vmo.as_ptr_mut()));
 }
 

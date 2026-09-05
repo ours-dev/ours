@@ -65,7 +65,8 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
 
     auto alias(char const *name, usize size, usize align, Option, ustl::Arc<Self> *) -> Status;
 
-    FORCE_INLINE auto name() const -> char const * {
+    FORCE_INLINE
+    auto name() const -> char const * {
         return m_name;
     }
 

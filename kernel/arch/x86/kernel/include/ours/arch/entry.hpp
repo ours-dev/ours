@@ -9,12 +9,14 @@
 
 namespace ours {
 namespace {
-    NO_RETURN FORCE_INLINE auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
+    NO_RETURN FORCE_INLINE
+    auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
         x86_enter_uspace(frame);
     }
 
-    FORCE_INLINE auto arch_build_uspace_irqframe(arch::IrqFrame *frame, usize ip, usize sp,
-                                                 usize arg1, usize arg2) -> void {
+    FORCE_INLINE
+    auto arch_build_uspace_irqframe(arch::IrqFrame *frame, usize ip, usize sp, usize arg1,
+                                    usize arg2) -> void {
         using arch::ArchCpuState;
 
         frame->ip = ip;

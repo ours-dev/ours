@@ -17,8 +17,8 @@ namespace {
     ///
     /// Unlike the range below, a hole may genuinely have no descriptor behind
     /// it, so this asks pfn_valid() first instead of asserting.
-    INIT_CODE auto init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid)
-        -> void {
+    INIT_CODE
+    auto init_memmap_reserved(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid) -> void {
         for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
             if (!pfn_valid(pfn)) {
                 continue;
@@ -30,7 +30,8 @@ namespace {
         }
     }
 
-    INIT_CODE auto init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid) -> void {
+    INIT_CODE
+    auto init_memmap_range(Pfn start_pfn, Pfn end_pfn, ZoneType ztype, NnId nid) -> void {
         for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
             auto frame = pfn_to_frame(pfn);
             DEBUG_ASSERT(frame, "A usable pfn with no descriptor behind it");
@@ -41,8 +42,9 @@ namespace {
 
     /// Descriptors for the overlap between [start, end) and the part of `zone`
     /// that is really there. Returns the first pfn it did not initialise.
-    INIT_CODE auto init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
-                                    Pfn hole_start, NnId nid) -> Pfn {
+    INIT_CODE
+    auto init_memmap_zone(ZoneType zone, Pfn zone_start, Pfn zone_end, Pfn start, Pfn end,
+                          Pfn hole_start, NnId nid) -> Pfn {
         auto const first = std::clamp(start, zone_start, zone_end);
         auto const last = std::clamp(end, zone_start, zone_end);
 
@@ -67,7 +69,8 @@ namespace {
     }
 } // namespace
 
-INIT_CODE auto build_memmap() -> Status {
+INIT_CODE
+auto build_memmap() -> Status {
     auto &model = MemMap::get();
     if (auto const status = model.init(); Status::Ok != status) {
         return status;
@@ -96,7 +99,8 @@ INIT_CODE auto build_memmap() -> Status {
     return status;
 }
 
-INIT_CODE auto init_memmap() -> void {
+INIT_CODE
+auto init_memmap() -> void {
     Pfn hole_start_pfn = 0, start_pfn = 0, end_pfn = 0;
     [[maybe_unused]]
     auto const status = EarlyMem::visit_usable(

@@ -11,23 +11,28 @@ namespace gktl {
 /// A range is a half-open interval [start, end).
 template <typename T>
 struct Range {
-    FORCE_INLINE constexpr auto length() const -> usize {
+    FORCE_INLINE
+    constexpr auto length() const -> usize {
         return end - start;
     }
 
-    FORCE_INLINE constexpr auto is_empty() const -> bool {
+    FORCE_INLINE
+    constexpr auto is_empty() const -> bool {
         return start == end;
     }
 
-    FORCE_INLINE constexpr auto contains(T t) const -> bool {
+    FORCE_INLINE
+    constexpr auto contains(T t) const -> bool {
         return t >= start && t < end;
     }
 
-    FORCE_INLINE constexpr auto overlaps(T other_start, T other_end) const -> bool {
+    FORCE_INLINE
+    constexpr auto overlaps(T other_start, T other_end) const -> bool {
         return (start < other_end) && (end > other_start);
     }
 
-    FORCE_INLINE constexpr auto left_difference_with(Range<T> const &other) const -> Range<T> {
+    FORCE_INLINE
+    constexpr auto left_difference_with(Range<T> const &other) const -> Range<T> {
         if (overlaps(other) && start < other.start) {
             return Range<T>{start, other.start};
         }
@@ -36,7 +41,8 @@ struct Range {
         return Range<T>{start, start};
     }
 
-    FORCE_INLINE constexpr auto right_difference_with(Range<T> const &other) const -> Range<T> {
+    FORCE_INLINE
+    constexpr auto right_difference_with(Range<T> const &other) const -> Range<T> {
         if (overlaps(other) && end > other.end) {
             return Range<T>{other.end, end};
         }
@@ -45,7 +51,8 @@ struct Range {
         return Range<T>{end, end};
     }
 
-    FORCE_INLINE constexpr auto intersection_with(Range<T> const &other) const -> Range<T> {
+    FORCE_INLINE
+    constexpr auto intersection_with(Range<T> const &other) const -> Range<T> {
         if (overlaps(other)) {
             return Range<T>{std::max(start, other.start), std::min(end, other.end)};
         }
@@ -54,7 +61,8 @@ struct Range {
         return Range<T>{end, end};
     }
 
-    FORCE_INLINE constexpr auto union_with(Range<T> const &other) const -> Range<T> {
+    FORCE_INLINE
+    constexpr auto union_with(Range<T> const &other) const -> Range<T> {
         if (overlaps(other)) {
             return Range<T>{std::min(start, other.start), std::max(end, other.end)};
         }
@@ -63,7 +71,8 @@ struct Range {
         return Range<T>{end, end};
     }
 
-    FORCE_INLINE constexpr auto roundup(T b) -> void {}
+    FORCE_INLINE
+    constexpr auto roundup(T b) -> void {}
 
     T start;
     T end;

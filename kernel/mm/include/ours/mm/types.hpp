@@ -45,18 +45,21 @@ using Pfn = usize;
 using Vpn = usize;
 using SecNum = usize;
 
-FORCE_INLINE constexpr auto pfn_to_phys(Pfn pfn) -> PhysAddr {
+FORCE_INLINE
+constexpr auto pfn_to_phys(Pfn pfn) -> PhysAddr {
     return PhysAddr(pfn << PAGE_SHIFT);
 }
 
 template <typename T>
-FORCE_INLINE constexpr auto phys_to_pfn(T phys_addr) -> Pfn {
+FORCE_INLINE
+constexpr auto phys_to_pfn(T phys_addr) -> Pfn {
     static_assert(sizeof(T) == sizeof(PhysAddr));
     return Pfn(phys_addr >> PAGE_SHIFT);
 }
 
 template <typename Addr>
-FORCE_INLINE auto resolve_page_range(Addr base, usize size) -> gktl::Range<VirtAddr> {
+FORCE_INLINE
+auto resolve_page_range(Addr base, usize size) -> gktl::Range<VirtAddr> {
     static_assert(sizeof(Addr) == sizeof(VirtAddr));
     return {(reinterpret_cast<VirtAddr>(base) >> PAGE_SHIFT) << PAGE_SHIFT,
             ((size + PAGE_SIZE - 1) >> PAGE_SHIFT) << PAGE_SHIFT};

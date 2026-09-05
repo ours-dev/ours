@@ -14,13 +14,15 @@ auto x86_has_feature(CpuFeatureType type) -> bool {
 
 bool FEATURE_HAS_FSGSBASE = false;
 
-INIT_CODE auto x86_init_feature_percpu(CpuNum cpunum) -> void {
+INIT_CODE
+auto x86_init_feature_percpu(CpuNum cpunum) -> void {
     if (cpunum == 0) {
         FEATURE_HAS_FSGSBASE = x86_has_feature(CpuFeatureType::FsGsBase);
     }
 }
 
-INIT_CODE auto x86_init_feature_early() -> void {
+INIT_CODE
+auto x86_init_feature_early() -> void {
     x86_init_feature_percpu(0);
 }
 

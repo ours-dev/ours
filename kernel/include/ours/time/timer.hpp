@@ -31,16 +31,19 @@ class TimeSlack {
     typedef TimeSlack Self;
 
   public:
-    FORCE_INLINE constexpr TimeSlack() = default;
+    FORCE_INLINE
+    constexpr TimeSlack() = default;
 
     /// Explicit: a bare duration is far more often a deadline than a slack,
     /// and the two used to be interconvertible.
     template <typename DurationT>
-    FORCE_INLINE constexpr explicit TimeSlack(DurationT duration)
+    FORCE_INLINE
+    constexpr explicit TimeSlack(DurationT duration)
         : m_slack(duration_cast<Duration>(duration)) {}
 
     [[nodiscard]]
-    FORCE_INLINE constexpr auto duration() const -> Duration {
+    FORCE_INLINE
+    constexpr auto duration() const -> Duration {
         return m_slack;
     }
 
@@ -69,47 +72,58 @@ class Deadline {
   public:
     /// No deadline at all -- the common case for a wait that is bounded by
     /// something other than time.
-    FORCE_INLINE constexpr Deadline() : m_time_point(INFINITE_TIME), m_time_slack() {}
+    FORCE_INLINE
+    constexpr Deadline()
+        : m_time_point(INFINITE_TIME), m_time_slack() {}
 
     /// Due at |when|, and no later than |when| plus the slack.
-    FORCE_INLINE constexpr static auto at(TimePoint<> when, TimeSlack slack = {}) -> Self {
+    FORCE_INLINE
+    constexpr static auto at(TimePoint<> when, TimeSlack slack = {}) -> Self {
         return Self(when, slack);
     }
 
-    FORCE_INLINE constexpr static auto infinite() -> Self {
+    FORCE_INLINE
+    constexpr static auto infinite() -> Self {
         return Self();
     }
 
     [[nodiscard]]
-    FORCE_INLINE constexpr auto when() const -> TimePoint<> {
+    FORCE_INLINE
+    constexpr auto when() const -> TimePoint<> {
         return m_time_point;
     }
 
     [[nodiscard]]
-    FORCE_INLINE constexpr auto earliest() const -> TimePoint<> {
+    FORCE_INLINE
+    constexpr auto earliest() const -> TimePoint<> {
         return m_time_point;
     }
 
     [[nodiscard]]
-    FORCE_INLINE constexpr auto latest() const -> TimePoint<> {
+    FORCE_INLINE
+    constexpr auto latest() const -> TimePoint<> {
         return m_time_point + m_time_slack.duration();
     }
 
     [[nodiscard]]
-    FORCE_INLINE constexpr auto slack() const -> TimeSlack {
+    FORCE_INLINE
+    constexpr auto slack() const -> TimeSlack {
         return m_time_slack;
     }
 
-    FORCE_INLINE constexpr friend auto operator==(Self const &x, Self const &y) -> bool {
+    FORCE_INLINE
+    constexpr friend auto operator==(Self const &x, Self const &y) -> bool {
         return x.m_time_point == y.m_time_point;
     }
 
-    FORCE_INLINE constexpr friend auto operator!=(Self const &x, Self const &y) -> bool {
+    FORCE_INLINE
+    constexpr friend auto operator!=(Self const &x, Self const &y) -> bool {
         return x.m_time_point != y.m_time_point;
     }
 
   private:
-    FORCE_INLINE constexpr Deadline(TimePoint<> when, TimeSlack slack)
+    FORCE_INLINE
+    constexpr Deadline(TimePoint<> when, TimeSlack slack)
         : m_time_point(when), m_time_slack(slack) {}
 
     TimePoint<> m_time_point;
@@ -179,7 +193,8 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     }
 
     template <typename F, typename... Args>
-    FORCE_INLINE auto activate(Deadline deadline, F &&f, Args &&...args) -> void {
+    FORCE_INLINE
+    auto activate(Deadline deadline, F &&f, Args &&...args) -> void {
         Handler on_expired =
             ustl::function::bind_front(ustl::forward<F>(f), ustl::forward<Args>(args)...);
         return activate(deadline, ustl::move(on_expired));
@@ -224,27 +239,32 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     /// reports the release that follows as releasing a lock never taken.
     TA_TRY_ACQUIRE(false, lock) auto trylock_or_cancel(sync::SpinLock &lock) -> bool;
 
-    FORCE_INLINE auto on_expired() -> HandlerResult {
+    FORCE_INLINE
+    auto on_expired() -> HandlerResult {
         DEBUG_ASSERT(m_on_expired);
         return m_on_expired(this);
     }
 
-    FORCE_INLINE auto timer_queue() -> TimerQueue * {
+    FORCE_INLINE
+    auto timer_queue() -> TimerQueue * {
         return m_queue.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto deadline() const -> Deadline {
+    FORCE_INLINE
+    auto deadline() const -> Deadline {
         return m_deadline;
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto clockid() const -> ClockId {
+    FORCE_INLINE
+    auto clockid() const -> ClockId {
         return m_clockid;
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto is_cancelled() const -> bool {
+    FORCE_INLINE
+    auto is_cancelled() const -> bool {
         return m_cancelled.load(std::memory_order_acquire);
     }
 
@@ -253,7 +273,8 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
     /// at the same instant are the common case (every sleep_for(10ms)
     /// issued in the same tick). Which of two equal timers runs first is
     /// immaterial.
-    FORCE_INLINE friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
+    FORCE_INLINE
+    friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
         if (x.m_deadline.latest() != y.m_deadline.latest()) {
             return x.m_deadline.latest() < y.m_deadline.latest();
         }

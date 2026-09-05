@@ -35,7 +35,8 @@ namespace {
 
 /// Default: drop. Architectures with a known-good boot port define this
 /// with strong linkage so pre-logger panics still reach the serial port.
-WEAK_LINK auto emergency_write(char const *, usize n) -> void {
+WEAK_LINK
+auto emergency_write(char const *, usize n) -> void {
     static_cast<void>(n);
 }
 

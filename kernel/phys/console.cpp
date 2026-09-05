@@ -37,7 +37,8 @@ auto init_early_console() -> void {
     logz4::set_global_logger(CONSOLE_LOGGER);
 }
 
-WEAK_LINK auto arch_uart_handoff() -> UartHandoff {
+WEAK_LINK
+auto arch_uart_handoff() -> UartHandoff {
     return {};
 }
 

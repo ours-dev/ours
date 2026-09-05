@@ -25,7 +25,8 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(State);
 
-    TA_ACQUIRE() FORCE_INLINE auto acquire(Duration spining_duration = Duration{}) -> void;
+    TA_ACQUIRE() FORCE_INLINE
+    auto acquire(Duration spining_duration = Duration{}) -> void;
 
     TA_RELEASE() auto release() -> void;
 
@@ -86,7 +87,8 @@ class TA_CAPABILITY("CriticalMutex") CriticalMutex: protected Mutex {
   private:
 };
 
-FORCE_INLINE inline auto Mutex::acquire(Duration spining_duration) -> void {
+FORCE_INLINE
+inline auto Mutex::acquire(Duration spining_duration) -> void {
     m_canary.verify<Self>();
     acquire_common(spining_duration, TimesliceExtension<false>{});
 }

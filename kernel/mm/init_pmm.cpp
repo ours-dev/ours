@@ -39,12 +39,16 @@ namespace {
     /// BootMem storage (see kernel/arch/x86/phys/memory.cpp).
     constexpr usize MAX_EARLY_MEMORY_REGIONS = 128;
 
-    INIT_DATA bootmem::MemoryRegion USABLE_STORAGE[MAX_EARLY_MEMORY_REGIONS];
-    INIT_DATA bootmem::Range RESERVATION_STORAGE[MAX_EARLY_MEMORY_REGIONS];
-    INIT_DATA ustl::LazyInit<bootmem::PhysicalMemory> KERNEL_BOOTMEM;
+    INIT_DATA
+    bootmem::MemoryRegion USABLE_STORAGE[MAX_EARLY_MEMORY_REGIONS];
+    INIT_DATA
+    bootmem::Range RESERVATION_STORAGE[MAX_EARLY_MEMORY_REGIONS];
+    INIT_DATA
+    ustl::LazyInit<bootmem::PhysicalMemory> KERNEL_BOOTMEM;
 } // namespace
 
-INIT_CODE auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
+INIT_CODE
+auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
     ASSERT(!max_zone_pfn.empty());
 
     log::debug("Available regions in BootMem");
@@ -86,7 +90,8 @@ INIT_CODE auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
 /// Named for the cache rather than for the heap because the VMM has a heap of
 /// its own -- vmalloc, init_vmm.cpp's init_heap() -- which comes much later,
 /// after there is an address space to carve from.
-INIT_CODE auto init_cache() -> void {
+INIT_CODE
+auto init_cache() -> void {
     MemCache::init();
 
     ktl::init_kmalloc();
@@ -103,7 +108,8 @@ INIT_CODE auto init_cache() -> void {
     set_init_stage(InitStage::Pmm);
 }
 
-INIT_CODE auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {
+INIT_CODE
+auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {
     // mh.ranges is split at every reservation boundary, so its own size
     // is not the right bound to check here -- add_usable()/reserve()
     // below coalesce adjacent same-node regions as they go, so what

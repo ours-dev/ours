@@ -18,7 +18,8 @@ namespace {
 
     /// Brings up the idler of |cpunum|, which need not be the running CPU.
     /// Requires CpuLocal::init() to have filled in the per-CPU offsets.
-    INIT_CODE auto init_idle_task_percpu(CpuNum cpunum) -> void {
+    INIT_CODE
+    auto init_idle_task_percpu(CpuNum cpunum) -> void {
         auto &idler = IdleThread::Current::get(cpunum);
         idler.init(cpunum);
 
@@ -39,7 +40,8 @@ namespace {
 /// Runs before init_pmm() and init_vmm(), so it must not allocate: create_first()
 /// wraps the context already executing here instead of spawning a new one. The
 /// idlers, including this CPU's, are built later by init().
-INIT_CODE auto init_early() -> void {
+INIT_CODE
+auto init_early() -> void {
     Thread::create_first(KoIdGenerator::generate(), "boot",
                          sched::BaseProfile(sched::DEFAULT_PRIORITY), BOOT_THREAD.data());
     Thread::Current::set(&*BOOT_THREAD);
@@ -49,7 +51,8 @@ INIT_CODE auto init_early() -> void {
     DEBUG_ASSERT(thread);
 }
 
-INIT_CODE auto init() -> void {
+INIT_CODE
+auto init() -> void {
     cpu_possible_mask().for_each([](CpuNum cpu) {
         auto &scheduler = Scheduler::Current::get(cpu);
         scheduler.init();

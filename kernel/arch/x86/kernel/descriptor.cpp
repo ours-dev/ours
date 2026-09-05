@@ -19,11 +19,13 @@ struct alignas(PAGE_SIZE) PACKED Gdt {
         arch::lgdt(desc);
     }
 
-    FORCE_INLINE auto tss_selector(CpuNum cpunum) const -> u16 {
+    FORCE_INLINE
+    auto tss_selector(CpuNum cpunum) const -> u16 {
         return static_cast<u16>(sizeof(descs) + cpunum * sizeof(tss[0]));
     }
 
-    FORCE_INLINE auto get_tss_desc(CpuNum cpunum) -> arch::GdtDesc64 & {
+    FORCE_INLINE
+    auto get_tss_desc(CpuNum cpunum) -> arch::GdtDesc64 & {
         return tss[cpunum];
     }
 
@@ -67,7 +69,8 @@ auto x86_set_tss_sp(VirtAddr sp) -> void {
     tss->sp0 = sp;
 }
 
-INIT_CODE auto x86_setup_gdt() -> void {
+INIT_CODE
+auto x86_setup_gdt() -> void {
     auto result = mm::VmAspace::kernel_aspace()->root_vma()->map_phys(
         mm::virt_to_phys(VirtAddr(PGDT)),
         mm::VmPlacement::anywhere(), // Wherever the VMM has room
@@ -82,7 +85,8 @@ INIT_CODE auto x86_setup_gdt() -> void {
 }
 
 /// Code bottom is about TSS
-INIT_CODE auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
+INIT_CODE
+auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU number: {}", cpunum);
     auto tss = &mm::CpuLocal::access(X86_PCPU, cpunum).tss;
     tss->init();

@@ -33,7 +33,8 @@ class IdleThread {
     /// Run loop executed by the CPU's idle/power thread.
     auto run() -> void;
 
-    FORCE_INLINE auto thread() -> Thread & {
+    FORCE_INLINE
+    auto thread() -> Thread & {
         return *m_thread;
     }
 
@@ -55,7 +56,8 @@ class IdleThread {
 
 class IdleThread::Current: public mm::CpuLocal::Current<IdleThread> {
   public:
-    FORCE_INLINE static auto run() -> void {
+    FORCE_INLINE
+    static auto run() -> void {
         return IdleThread::Current::get().run();
     }
 };

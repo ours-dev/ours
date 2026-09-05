@@ -25,7 +25,8 @@ class VflatMemMap {
 
   public:
     /// The one instance.
-    FORCE_INLINE static auto get() -> Self & {
+    FORCE_INLINE
+    static auto get() -> Self & {
         static Self MODEL;
         return MODEL;
     }
@@ -35,7 +36,8 @@ class VflatMemMap {
     constexpr static usize FRAMES_PER_MEMMAP_CHUNK = PAGE_SIZE / sizeof(PmFrame);
 
     /// Reserves the window. No table to build -- the translation is arithmetic.
-    INIT_CODE auto init() -> Status;
+    INIT_CODE
+    auto init() -> Status;
 
     auto add_range(PhysAddr start, PhysAddr end, NnId nid) -> Status;
 

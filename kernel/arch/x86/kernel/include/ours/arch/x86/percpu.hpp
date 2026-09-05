@@ -32,11 +32,13 @@ namespace ours {
 struct InterruptStatck {
     constexpr static auto INTR_STACK_SIZE = KB(16);
 
-    FORCE_INLINE auto top() -> void * {
+    FORCE_INLINE
+    auto top() -> void * {
         return stack;
     }
 
-    FORCE_INLINE auto bottom() -> void * {
+    FORCE_INLINE
+    auto bottom() -> void * {
         return stack + INTR_STACK_SIZE;
     }
 
@@ -54,7 +56,8 @@ enum IntrStackOrdering {
 struct PACKED X86Tss {
     typedef X86Tss Self;
 
-    FORCE_INLINE auto init() -> void {
+    FORCE_INLINE
+    auto init() -> void {
         io_port_bitmap_base = static_cast<u16>(ustl::mem::offset_of(&Self::io_bitmap));
         io_bitmap[arch::MAX_IO_BITMAP_BYTES] = 0xff;
     }

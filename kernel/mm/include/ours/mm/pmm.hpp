@@ -21,19 +21,23 @@ namespace priv {
     NO_MANGLE PhysAddr MIN_PHYS_ADDR;
 } // namespace priv
 
-FORCE_INLINE constexpr auto max_phys_addr() -> PhysAddr {
+FORCE_INLINE
+constexpr auto max_phys_addr() -> PhysAddr {
     return priv::MAX_PHYS_ADDR;
 }
 
-FORCE_INLINE constexpr auto min_phys_addr() -> PhysAddr {
+FORCE_INLINE
+constexpr auto min_phys_addr() -> PhysAddr {
     return priv::MIN_PHYS_ADDR;
 }
 
-FORCE_INLINE constexpr auto max_pfn() -> Pfn {
+FORCE_INLINE
+constexpr auto max_pfn() -> Pfn {
     return phys_to_pfn(max_phys_addr());
 }
 
-FORCE_INLINE constexpr auto min_pfn() -> Pfn {
+FORCE_INLINE
+constexpr auto min_pfn() -> Pfn {
     return phys_to_pfn(min_phys_addr());
 }
 
@@ -43,7 +47,8 @@ FORCE_INLINE constexpr auto min_pfn() -> Pfn {
 /// two would say the same thing, and two things saying the same thing can
 /// disagree. set_init_stage(InitStage::Pmm) is the single point that makes
 /// this true.
-FORCE_INLINE inline auto pmm_enabled() -> bool {
+FORCE_INLINE
+inline auto pmm_enabled() -> bool {
     return get_init_stage() >= InitStage::Pmm;
 }
 
@@ -73,17 +78,20 @@ auto node_possible_mask() -> NodeMask const &;
 
 auto num_nodes() -> usize;
 
-FORCE_INLINE inline auto num_online_nodes() -> usize {
+FORCE_INLINE
+inline auto num_online_nodes() -> usize {
     return node_online_mask().count();
 }
 
-FORCE_INLINE inline auto num_possible_nodes() -> usize {
+FORCE_INLINE
+inline auto num_possible_nodes() -> usize {
     return node_possible_mask().count();
 }
 
 /// Using constexpr to make those pre-culcalate requests able to
 /// convert the order of frames requested at compiling time.
-FORCE_INLINE constexpr auto get_order(usize n) -> usize {
+FORCE_INLINE
+constexpr auto get_order(usize n) -> usize {
     return ustl::countr_zero(ustl::bit_ceil(n));
 }
 
@@ -120,8 +128,8 @@ inline auto alloc_frame_n(NnId nid, Gaf gaf, usize nr_frames,
 
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE auto get_frames(Gaf gaf, usize order = 0, NodeMask const &nodes = node_online_mask())
-    -> T * {
+FORCE_INLINE
+auto get_frames(Gaf gaf, usize order = 0, NodeMask const &nodes = node_online_mask()) -> T * {
     if (auto frame = alloc_frames(gaf, order, nodes)) {
         return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
     }
@@ -131,15 +139,16 @@ FORCE_INLINE auto get_frames(Gaf gaf, usize order = 0, NodeMask const &nodes = n
 
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE auto get_frames_n(Gaf gaf, usize nr_frame, NodeMask const &nodes = node_online_mask())
-    -> T * {
+FORCE_INLINE
+auto get_frames_n(Gaf gaf, usize nr_frame, NodeMask const &nodes = node_online_mask()) -> T * {
     return get_frames<T>(gaf, get_order(nr_frame), nodes);
 }
 
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE auto get_frames(NnId nid, Gaf gaf, usize order = 0,
-                             NodeMask const &nodes = node_online_mask()) -> T * {
+FORCE_INLINE
+auto get_frames(NnId nid, Gaf gaf, usize order = 0, NodeMask const &nodes = node_online_mask())
+    -> T * {
     if (auto frame = alloc_frames(nid, gaf, order, nodes)) {
         return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
     }
@@ -149,8 +158,9 @@ FORCE_INLINE auto get_frames(NnId nid, Gaf gaf, usize order = 0,
 
 template <typename T = u8>
 [[nodiscard("OM-API: Ignoring the return value will lead to memory leaks.")]]
-FORCE_INLINE auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame,
-                              NodeMask const &nodes = node_online_mask()) -> T * {
+FORCE_INLINE
+auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame, NodeMask const &nodes = node_online_mask())
+    -> T * {
     return get_frame<T>(nid, gaf, get_order(nr_frame), nodes);
 }
 
@@ -179,7 +189,8 @@ auto free_page_table(PhysAddr base, usize size) -> void;
 
 auto free_frames(PmFrame *frame, usize order = 0) -> void;
 
-FORCE_INLINE inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
+FORCE_INLINE
+inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
     return free_frames(virt_to_frame(virt_addr), order);
 }
 

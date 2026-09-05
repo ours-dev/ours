@@ -13,8 +13,8 @@
 
 namespace ours {
 namespace {
-    INIT_CODE auto
-    parse_io_apic_isa_overrides(acpi::madt::InterruptSourceOverrideEntry const &entry)
+    INIT_CODE
+    auto parse_io_apic_isa_overrides(acpi::madt::InterruptSourceOverrideEntry const &entry)
         -> arch::IoApicIsaOverride {
         arch::IoApicIsaOverride object;
         // Polarity and trigger mode are two-bit fields inside the MPS INTI
@@ -50,7 +50,8 @@ namespace {
         return object;
     }
 
-    INIT_CODE auto platform_init_apic() -> void {
+    INIT_CODE
+    auto platform_init_apic() -> void {
         // Before enable the APIC, we should shutdown the PIC.
         arch::Pic::disable();
 

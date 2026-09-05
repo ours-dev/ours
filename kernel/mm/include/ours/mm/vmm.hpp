@@ -31,7 +31,8 @@ extern char const KERNEL_INIT_END[] LINK_NAME("__init_end");
 extern char const KERNEL_BSS_START[] LINK_NAME("__bss_start");
 extern char const KERNEL_BSS_END[] LINK_NAME("__bss_end");
 
-FORCE_INLINE constexpr auto get_kernel_size() -> usize {
+FORCE_INLINE
+constexpr auto get_kernel_size() -> usize {
     return IMAGE_END - IMAGE_START;
 }
 
@@ -39,11 +40,13 @@ NO_MANGLE VmPage *ZERO_PAGE;
 NO_MANGLE PhysAddr KERNEL_PHYS_BASE;
 NO_MANGLE VirtAddr KERNEL_VIRT_BASE;
 
-FORCE_INLINE constexpr auto get_zero_page() -> VmPage * {
+FORCE_INLINE
+constexpr auto get_zero_page() -> VmPage * {
     return ZERO_PAGE;
 }
 
-FORCE_INLINE constexpr auto get_kernel_phys_base() -> PhysAddr {
+FORCE_INLINE
+constexpr auto get_kernel_phys_base() -> PhysAddr {
     return KERNEL_PHYS_BASE;
 }
 
@@ -54,7 +57,8 @@ FORCE_INLINE constexpr auto get_kernel_phys_base() -> PhysAddr {
 /// rejects such an address and answers zero.  What does hold is that physboot
 /// placed the whole image in one contiguous physical allocation and handed its
 /// base over as KERNEL_PHYS_BASE, so the image offset carries straight across.
-FORCE_INLINE inline auto kernel_image_virt_to_phys(VirtAddr virt_addr) -> PhysAddr {
+FORCE_INLINE
+inline auto kernel_image_virt_to_phys(VirtAddr virt_addr) -> PhysAddr {
     return KERNEL_PHYS_BASE + (virt_addr - VirtAddr(IMAGE_START));
 }
 
@@ -67,11 +71,13 @@ constexpr auto get_kernel_virt_base() -> VirtAddr {
 NO_MANGLE u8 ARCH_PHYS_ADDR_BITS;
 NO_MANGLE u8 ARCH_VIRT_ADDR_BITS;
 
-FORCE_INLINE constexpr auto get_phys_addr_bits() -> PhysAddr {
+FORCE_INLINE
+constexpr auto get_phys_addr_bits() -> PhysAddr {
     return ARCH_PHYS_ADDR_BITS;
 }
 
-FORCE_INLINE constexpr auto get_virt_addr_bits() -> VirtAddr {
+FORCE_INLINE
+constexpr auto get_virt_addr_bits() -> VirtAddr {
     return ARCH_VIRT_ADDR_BITS;
 }
 

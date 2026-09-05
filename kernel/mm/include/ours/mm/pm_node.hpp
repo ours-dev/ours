@@ -46,7 +46,8 @@ struct NodeRoute {
     template <typename F, typename... Args>
     auto for_each_node(F &&f, Args &&...args) -> ustl::traits::InvokeResultT<F, PmNode &, Args...>;
 
-    FORCE_INLINE constexpr auto set_next(NnId to) -> void {
+    FORCE_INLINE
+    constexpr auto set_next(NnId to) -> void {
         // path_ has a fixed capacity, so the only failure is overflow -- which
         // would also desynchronise count_ from it.
         auto const result = path_.push_back(to);
@@ -54,15 +55,18 @@ struct NodeRoute {
         count_ += 1;
     }
 
-    FORCE_INLINE constexpr auto clear() -> void {
+    FORCE_INLINE
+    constexpr auto clear() -> void {
         path_.clear();
     }
 
-    FORCE_INLINE constexpr auto begin() {
+    FORCE_INLINE
+    constexpr auto begin() {
         return path_.begin();
     }
 
-    FORCE_INLINE constexpr auto end() {
+    FORCE_INLINE
+    constexpr auto end() {
         return begin() + count_;
     }
 
@@ -96,7 +100,8 @@ class ZoneQueues {
 
     ~ZoneQueues() = default;
 
-    FORCE_INLINE constexpr auto insert_local_zone(PmZone *zone, ZoneType ztype) -> void {
+    FORCE_INLINE
+    constexpr auto insert_local_zone(PmZone *zone, ZoneType ztype) -> void {
         DEBUG_ASSERT(static_cast<usize>(ztype) < NR_ZONES_PER_NODE);
         DEBUG_ASSERT(get_queue(QueueType::LocalSequential)[static_cast<usize>(ztype)] == 0);
         DEBUG_ASSERT(zone != 0);
@@ -117,20 +122,24 @@ class ZoneQueues {
 
     auto dump_queue(QueueType type) const -> void;
 
-    FORCE_INLINE constexpr auto get_local_zone(ZoneType ztype) -> ZoneRef {
+    FORCE_INLINE
+    constexpr auto get_local_zone(ZoneType ztype) -> ZoneRef {
         DEBUG_ASSERT(static_cast<usize>(ztype) < NR_ZONES_PER_NODE);
         return get_queue(QueueType::LocalSequential)[static_cast<usize>(ztype)];
     }
 
-    FORCE_INLINE constexpr auto get_queue(QueueType type) -> ZoneQueue {
+    FORCE_INLINE
+    constexpr auto get_queue(QueueType type) -> ZoneQueue {
         return queues_[type].subspan(0, get_queue_size(type));
     }
 
-    FORCE_INLINE constexpr auto get_queue(QueueType type) const -> ZoneQueue {
+    FORCE_INLINE
+    constexpr auto get_queue(QueueType type) const -> ZoneQueue {
         return queues_[type].subspan(0, get_queue_size(type));
     }
 
-    FORCE_INLINE constexpr auto get_queue_size(QueueType type) const -> usize {
+    FORCE_INLINE
+    constexpr auto get_queue_size(QueueType type) const -> usize {
         return queue_sizes_[type];
     }
 
@@ -145,7 +154,8 @@ class ZoneQueues {
     template <QueueType Type>
     auto priv_remove_zone(PmZone *zone) -> void;
 
-    FORCE_INLINE constexpr auto push_back(PmZone *zone, QueueType type) -> void {
+    FORCE_INLINE
+    constexpr auto push_back(PmZone *zone, QueueType type) -> void {
         queues_[type][queue_sizes_[type]] = zone;
         queue_sizes_[type] += 1;
     }
@@ -198,11 +208,13 @@ class PmNode {
         });
     }
 
-    FORCE_INLINE static auto node_online_mask() -> NodeMask const & {
+    FORCE_INLINE
+    static auto node_online_mask() -> NodeMask const & {
         return STATES[static_cast<usize>(State::Online)];
     }
 
-    FORCE_INLINE static auto node_possible_mask() -> NodeMask const & {
+    FORCE_INLINE
+    static auto node_possible_mask() -> NodeMask const & {
         return STATES[static_cast<usize>(State::Possible)];
     }
 
@@ -213,24 +225,29 @@ class PmNode {
         STATES[static_cast<usize>(state)].set(nid, on);
     }
 
-    FORCE_INLINE constexpr static auto node(NnId nid) -> PmNode * {
+    FORCE_INLINE
+    constexpr static auto node(NnId nid) -> PmNode * {
         return NODES[nid];
     }
 
-    FORCE_INLINE constexpr static auto num_nodes() -> usize {
+    FORCE_INLINE
+    constexpr static auto num_nodes() -> usize {
         return NUM_NODES;
     }
 
-    FORCE_INLINE constexpr static auto num_online_nodes() -> usize {
+    FORCE_INLINE
+    constexpr static auto num_online_nodes() -> usize {
         return NUM_ONLINE_NODES;
     }
 
-    FORCE_INLINE constexpr static auto distance(NnId x, NnId y) -> usize {
+    FORCE_INLINE
+    constexpr static auto distance(NnId x, NnId y) -> usize {
         DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE, "");
         return NODE_DISTANCE[x][y];
     }
 
-    FORCE_INLINE constexpr static auto set_distance(NnId x, NnId y, usize dis) -> void {
+    FORCE_INLINE
+    constexpr static auto set_distance(NnId x, NnId y, usize dis) -> void {
         DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE, "");
         NODE_DISTANCE[x][y] = dis;
     }
@@ -293,7 +310,8 @@ class PmNode {
 
     auto dump() const -> void;
 
-    FORCE_INLINE constexpr auto nid() const -> NnId {
+    FORCE_INLINE
+    constexpr auto nid() const -> NnId {
         return m_id;
     }
 
@@ -306,15 +324,18 @@ class PmNode {
         return m_work_cpus;
     }
 
-    FORCE_INLINE constexpr auto hard_affinity() const -> CpuMask const & {
+    FORCE_INLINE
+    constexpr auto hard_affinity() const -> CpuMask const & {
         return m_hard_affinity;
     }
 
-    FORCE_INLINE constexpr auto soft_affinity() const -> CpuMask const & {
+    FORCE_INLINE
+    constexpr auto soft_affinity() const -> CpuMask const & {
         return m_soft_affinity;
     }
 
-    FORCE_INLINE constexpr auto zone_queues() -> ZoneQueues * {
+    FORCE_INLINE
+    constexpr auto zone_queues() -> ZoneQueues * {
         return &m_zone_queues;
     }
 
@@ -435,7 +456,8 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     static auto alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback = node_online_mask())
         -> ktl::Result<PmFrame::List>;
 
-    FORCE_INLINE static auto hard_affinity() -> CpuMask const & {
+    FORCE_INLINE
+    static auto hard_affinity() -> CpuMask const & {
         return CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity);
     }
 
@@ -453,17 +475,20 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     /// CURRENT_INSTANCE until PmNode::Current::init() runs from an init hook,
     /// while allocation starts asking for a node long before that. This is the
     /// same role Linux gives early_per_cpu(x86_cpu_to_node_map).
-    FORCE_INLINE static auto nid() -> NnId {
+    FORCE_INLINE
+    static auto nid() -> NnId {
         return nid(CpuLocal::current_cpu());
     }
 
-    FORCE_INLINE static auto nid(CpuNum cpunum) -> NnId {
+    FORCE_INLINE
+    static auto nid(CpuNum cpunum) -> NnId {
         DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU Number");
         return DYNAMIC_CPU_TO_NODE[cpunum];
     }
 
     /// Used only on the early stage.
-    FORCE_INLINE static auto set_nid_early(CpuNum cpunum, NnId nid) -> void {
+    FORCE_INLINE
+    static auto set_nid_early(CpuNum cpunum, NnId nid) -> void {
         STATIC_CPU_TO_NODE[cpunum] = nid;
         DYNAMIC_CPU_TO_NODE[cpunum] = nid;
     }

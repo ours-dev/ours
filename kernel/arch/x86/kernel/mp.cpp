@@ -83,7 +83,8 @@ auto arch_deactivate_cpu(CpuNum) -> Status {
 }
 
 /// Called once in kernel/arch/x86/entry/bootstrap16.S
-NO_MANGLE NO_RETURN INIT_CODE USED auto x86_start_nonboot_cpu(CpuNum cpunum) -> void {
+NO_MANGLE NO_RETURN INIT_CODE USED
+auto x86_start_nonboot_cpu(CpuNum cpunum) -> void {
     DEBUG_ASSERT(cpunum != INVALID_CPU_NUM);
 
     mm::CpuLocal::init_percpu(cpunum);
@@ -97,7 +98,8 @@ NO_MANGLE NO_RETURN INIT_CODE USED auto x86_start_nonboot_cpu(CpuNum cpunum) -> 
     start_nonboot_cpu();
 }
 
-INIT_CODE auto x86_bring_aps(CpuMask targets) -> void {
+INIT_CODE
+auto x86_bring_aps(CpuMask targets) -> void {
     using task::Thread;
     // Prevent error operation.
     targets.set(0, false);

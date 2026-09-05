@@ -7,7 +7,8 @@
 #include <ours/task/sched/scheduler.hpp>
 
 namespace ours::task::sched {
-FORCE_INLINE inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
+FORCE_INLINE
+inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
     DEBUG_ASSERT(prev == m_runtime.curr_thread);
 
     if (prev == m_idle_thread) {
@@ -29,7 +30,8 @@ FORCE_INLINE inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
 /// while curr_thread was never seeded at all (see init_first_thread()); with
 /// a real current thread it failed on the boot's first switch. Zircon writes
 /// active_thread_ at the switch as well, not at the pick.
-FORCE_INLINE inline auto Scheduler::set_next_thread(Thread *next) -> void {
+FORCE_INLINE
+inline auto Scheduler::set_next_thread(Thread *next) -> void {
     if (next == m_idle_thread) {
         set_state(State::Idling, true);
     }

@@ -52,7 +52,8 @@ inline constexpr auto GAF_BOOT = Gaf::Boot;
 inline constexpr auto GAF_USER = Gaf::User;
 inline constexpr auto GAF_KERNEL = Gaf::Kernel;
 
-FORCE_INLINE constexpr auto gaf_zone_type(Gaf gaf) -> ZoneType {
+FORCE_INLINE
+constexpr auto gaf_zone_type(Gaf gaf) -> ZoneType {
     using Underlying = ustl::traits::UnderlyingTypeT<Gaf>;
 
     // ZONE_SHIFT

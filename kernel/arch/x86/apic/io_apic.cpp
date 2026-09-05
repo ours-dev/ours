@@ -159,8 +159,9 @@ auto apic_io_isa_to_global(u8 isa_irq) -> HIrqNum {
     return isa_irq;
 }
 
-INIT_CODE auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
-                            ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void {
+INIT_CODE
+auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
+                  ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void {
     auto const nr_ioapics = ioapics.size();
     auto const nr_overrides = overrides.size();
     {

@@ -54,8 +54,10 @@ using namespace irq;
 using namespace time;
 using mm::CpuLocal;
 
-INIT_CODE auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
-    INIT_DATA static CpuMask assigned;
+INIT_CODE
+auto assign_cpunum_for_apic(u32 apicid) -> CpuNum {
+    INIT_DATA
+    static CpuMask assigned;
 
     if (apicid >= MAX_CPU) {
         return INVALID_CPU_NUM;
@@ -132,12 +134,14 @@ namespace {
     constexpr auto MAX_DIVISOR_LOG2 = usize(7);
     static_assert(sizeof(DIVISOR_ENCODING) / sizeof(DIVISOR_ENCODING[0]) == MAX_DIVISOR_LOG2 + 1);
 
-    FORCE_INLINE auto apic_timer_set_divisor(usize divisor_log2) -> void {
+    FORCE_INLINE
+    auto apic_timer_set_divisor(usize divisor_log2) -> void {
         DEBUG_ASSERT(divisor_log2 <= MAX_DIVISOR_LOG2);
         XAPIC_STORAGE.write_reg(arch::XApicRegType::TimerDivConf, DIVISOR_ENCODING[divisor_log2]);
     }
 
-    FORCE_INLINE auto apic_timer_current_count() -> u32 {
+    FORCE_INLINE
+    auto apic_timer_current_count() -> u32 {
         return XAPIC_STORAGE.read_reg(arch::XApicRegType::TimerCurrentCount);
     }
 } // namespace
@@ -186,7 +190,8 @@ class ApicTimerEvent {
 
     auto shutdown_deadline() -> void;
 
-    INIT_CODE static auto select_timer_mode() -> void;
+    INIT_CODE
+    static auto select_timer_mode() -> void;
 
     static auto setup_timer(u32 clocks, bool oneshot, bool masked) -> Status;
 
@@ -319,7 +324,8 @@ auto ApicTimerEvent::shutdown_deadline() -> void {
 /// mode switch on every CPU calls at any time -- rewriting function pointers
 /// that other CPUs are dispatching through, with no synchronisation, and
 /// redoing a once-only decision on every call.
-INIT_CODE auto ApicTimerEvent::select_timer_mode() -> void {
+INIT_CODE
+auto ApicTimerEvent::select_timer_mode() -> void {
     USE_TSC_DEADLINE = x86_has_feature(arch::CpuFeatureType::TscDeadlineTimer);
     if (!USE_TSC_DEADLINE) {
         return;
@@ -460,7 +466,8 @@ namespace {
 
     /// Waits until jiffies has advanced |count| past |from|. False if it
     /// never did.
-    INIT_CODE auto wait_for_jiffies(Ticks from, Ticks count) -> bool {
+    INIT_CODE
+    auto wait_for_jiffies(Ticks from, Ticks count) -> bool {
         for (auto spins = usize(0); spins < MAX_TICK_WAIT_SPINS; ++spins) {
             if (ClockSource::Default::read() - from >= count) {
                 return true;
@@ -486,7 +493,8 @@ namespace {
     /// zero, and left APIC_PERIOD at zero. On every machine newer than Sandy
     /// Bridge that meant the local APIC timer was never enrolled at all, and
     /// every CPU but one was left without a tick.
-    INIT_CODE auto calibrate_once(Ticks jiffies, Calibration *out) -> bool {
+    INIT_CODE
+    auto calibrate_once(Ticks jiffies, Calibration *out) -> bool {
         constexpr auto APIC_INIT_COUNT = ustl::NumericLimits<u32>::max();
 
         XAPIC_STORAGE.enable_tsc(arch::IrqVec::ApicTimer, arch::XApic::TscMode::OneShot);
@@ -527,7 +535,8 @@ namespace {
 /// the accuracy of the difference is set by how far apart they are. The old
 /// code measured four windows, then computed its answer from windows 0 and 1
 /// and never read the other two.
-INIT_CODE auto apic_calibrate_clock() -> bool {
+INIT_CODE
+auto apic_calibrate_clock() -> bool {
     // Divisor 1: the finest resolution the timer offers. At 2^32 counts it
     // spans four seconds at a gigahertz, comfortably more than the window
     // below -- but not unboundedly, which is why the overflow check exists.
@@ -637,11 +646,13 @@ INIT_CODE auto apic_calibrate_clock() -> bool {
     return true;
 }
 
-INIT_CODE auto current_apic_id_early() -> u32 {
+INIT_CODE
+auto current_apic_id_early() -> u32 {
     return XAPIC_STORAGE.id();
 }
 
-INIT_CODE static auto init_apic_timer() -> void {
+INIT_CODE
+static auto init_apic_timer() -> void {
     using namespace arch;
 
     // By default to let timer work on periodic mode.
@@ -676,19 +687,22 @@ INIT_CODE static auto init_apic_timer() -> void {
 }
 
 /// Initialize APIC performance monitoring interrupt.
-INIT_CODE static auto init_apic_pmi() -> void {
+INIT_CODE
+static auto init_apic_pmi() -> void {
     using namespace arch;
     XAPIC_STORAGE.write_reg(XApicRegType::LvtPmi, IrqVec::ApicPmi);
     XAPIC_STORAGE.mask(arch::XApicRegType::LvtPmi);
 }
 
-INIT_CODE static auto init_apic_error() -> void {
+INIT_CODE
+static auto init_apic_error() -> void {
     using namespace arch;
     XAPIC_STORAGE.write_reg(XApicRegType::LvtError, IrqVec::ApicError);
     XAPIC_STORAGE.write_reg(XApicRegType::Esr, 0);
 }
 
-INIT_CODE auto init_local_apic_percpu() -> void {
+INIT_CODE
+auto init_local_apic_percpu() -> void {
     using namespace arch;
     auto apic_base = MsrIo::read<usize>(MsrRegAddr::IA32ApicBase);
     if (apic_base & arch::IA32_APIC_BASE_BSP) {
@@ -715,7 +729,8 @@ INIT_CODE auto init_local_apic_percpu() -> void {
     init_apic_pmi();
 }
 
-INIT_CODE auto init_local_apic() -> void {
+INIT_CODE
+auto init_local_apic() -> void {
     // Section 10.4.1 has the following:
     // In MP system configurations, the APIC registers for Intel 64 or IA-32 processors on
     // the system bus are initially mapped to the same 4-KByte region of the physical address

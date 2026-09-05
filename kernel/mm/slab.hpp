@@ -39,22 +39,26 @@ namespace slab {
 
     auto put_object(Slab *slab, void *object) -> void;
 
-    FORCE_INLINE auto has_object(Slab const *slab) -> bool {
+    FORCE_INLINE
+    auto has_object(Slab const *slab) -> bool {
         return slab->as<Body>().free_head != nullptr;
     }
 
-    FORCE_INLINE auto owner(Slab const *slab) -> MemCache * {
+    FORCE_INLINE
+    auto owner(Slab const *slab) -> MemCache * {
         return static_cast<MemCache *>(slab->as<Body>().owner);
     }
 
     /// True once every object has been handed back.
-    FORCE_INLINE auto is_empty(Slab const *slab) -> bool {
+    FORCE_INLINE
+    auto is_empty(Slab const *slab) -> bool {
         return slab->as<Body>().num_inuse == 0;
     }
 
     /// The NodeCache whose lock protects this slab. Opaque: slab.hpp cannot
     /// name MemCache's private nested type.
-    FORCE_INLINE auto node_cache(Slab const *slab) -> void * {
+    FORCE_INLINE
+    auto node_cache(Slab const *slab) -> void * {
         return slab->as<Body>().node_cache;
     }
 } // namespace slab

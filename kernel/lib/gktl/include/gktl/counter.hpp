@@ -100,8 +100,8 @@ class Counter {
 
   private:
     template <typename U, typename F>
-    FORCE_INLINE auto operate_across_all_cpus(U initial, F &&f)
-        -> ustl::traits::InvokeResultT<F, U, isize> {
+    FORCE_INLINE
+    auto operate_across_all_cpus(U initial, F &&f) -> ustl::traits::InvokeResultT<F, U, isize> {
         return ours::mm::CpuLocal::fold(slot(), initial, [&](ours::CpuNum, isize &counter, U acc) {
             ustl::sync::AtomicRef slot{counter};
             return ustl::function::invoke(ustl::move(f), acc,

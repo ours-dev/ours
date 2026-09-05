@@ -30,20 +30,24 @@ namespace ours::mm {
 /// arithmetic lives here rather than beside the section table.
 
 template <typename T>
-FORCE_INLINE constexpr auto phys_to_secnum(T phys_addr) -> SecNum {
+FORCE_INLINE
+constexpr auto phys_to_secnum(T phys_addr) -> SecNum {
     static_assert(sizeof(T) == sizeof(PhysAddr));
     return reinterpret_cast<PhysAddr>(phys_addr) >> SECTION_SHIFT;
 }
 
-FORCE_INLINE constexpr auto secnum_to_phys(SecNum secnum) -> PhysAddr {
+FORCE_INLINE
+constexpr auto secnum_to_phys(SecNum secnum) -> PhysAddr {
     return secnum << SECTION_SHIFT;
 }
 
-FORCE_INLINE constexpr auto pfn_to_secnum(Pfn pfn) -> SecNum {
+FORCE_INLINE
+constexpr auto pfn_to_secnum(Pfn pfn) -> SecNum {
     return pfn >> PFN_SECTION_SHIFT;
 }
 
-FORCE_INLINE constexpr auto secnum_to_pfn(SecNum secnum) -> Pfn {
+FORCE_INLINE
+constexpr auto secnum_to_pfn(SecNum secnum) -> Pfn {
     return secnum << PFN_SECTION_SHIFT;
 }
 } // namespace ours::mm

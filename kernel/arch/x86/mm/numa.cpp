@@ -10,15 +10,18 @@ namespace ours {
 // pulled the file in.
 static bool const NUMA_ENABLED = MM_NUMA || MM_NUMA_EMULATION;
 
-WEAK_LINK auto pci_init_numa() -> Status {
+WEAK_LINK
+auto pci_init_numa() -> Status {
     return Status::Unsupported;
 }
 
-WEAK_LINK auto acpi_init_numa() -> Status {
+WEAK_LINK
+auto acpi_init_numa() -> Status {
     return Status::Unsupported;
 }
 
-INIT_CODE static auto x86_init_numa() -> void {
+INIT_CODE
+static auto x86_init_numa() -> void {
     if (!NUMA_ENABLED) {
         return;
     }

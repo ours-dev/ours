@@ -10,11 +10,13 @@ using ours::task::Thread;
 using ustl::sync::MemoryOrder;
 
 namespace ours::sync {
-FORCE_INLINE auto Mutex::record_initial_assigned_cpu() -> void {
+FORCE_INLINE
+auto Mutex::record_initial_assigned_cpu() -> void {
     m_cpunum.store(Cpu::id(), MemoryOrder::Relaxed);
 }
 
-FORCE_INLINE auto Mutex::reset_initial_assigned_cpu() -> void {
+FORCE_INLINE
+auto Mutex::reset_initial_assigned_cpu() -> void {
     m_cpunum.store(INVALID_CPU_NUM, MemoryOrder::Relaxed);
 }
 

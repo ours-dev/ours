@@ -103,7 +103,8 @@ class ProtectionRanges::Enumerator {
         }
     };
 
-    FORCE_INLINE auto next() -> NextResult {
+    FORCE_INLINE
+    auto next() -> NextResult {
         if (m_cursor == m_last) {
             return {};
         }

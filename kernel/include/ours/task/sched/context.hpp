@@ -69,12 +69,14 @@ class CpuAffinity {
     /// Take a copy of |affinity_mask|. Safe for any mask, a temporary
     /// included, and the right choice unless the caller specifically needs
     /// later changes to |affinity_mask| to be followed.
-    FORCE_INLINE auto set_affinity_soft(CpuMask const &affinity_mask) -> void {
+    FORCE_INLINE
+    auto set_affinity_soft(CpuMask const &affinity_mask) -> void {
         m_owned_soft = affinity_mask;
         m_soft_affinity = &m_owned_soft;
     }
 
-    FORCE_INLINE auto set_affinity_hard(CpuMask const &affinity_mask) -> void {
+    FORCE_INLINE
+    auto set_affinity_hard(CpuMask const &affinity_mask) -> void {
         m_owned_hard = affinity_mask;
         m_hard_affinity = &m_owned_hard;
     }
@@ -87,11 +89,13 @@ class CpuAffinity {
     /// whole point here is that it is still growing while early threads exist.
     /// Anything else, including anything built at the call site, wants the
     /// copying form above.
-    FORCE_INLINE auto set_affinity_soft_shared(CpuMask const &affinity_mask) -> void {
+    FORCE_INLINE
+    auto set_affinity_soft_shared(CpuMask const &affinity_mask) -> void {
         m_soft_affinity = &affinity_mask;
     }
 
-    FORCE_INLINE auto set_affinity_hard_shared(CpuMask const &affinity_mask) -> void {
+    FORCE_INLINE
+    auto set_affinity_hard_shared(CpuMask const &affinity_mask) -> void {
         m_hard_affinity = &affinity_mask;
     }
 
@@ -288,43 +292,53 @@ class Context: public gktl::mixin::Comparable<Context> {
         , m_params()
         , m_timeslice() {}
 
-    FORCE_INLINE auto discipline() const -> Discipline {
+    FORCE_INLINE
+    auto discipline() const -> Discipline {
         return m_profile.effective.discipline;
     }
 
-    FORCE_INLINE auto deadline() const -> SchedTime {
+    FORCE_INLINE
+    auto deadline() const -> SchedTime {
         return m_params.deadline;
     }
 
-    FORCE_INLINE auto runtime() const -> SchedDuration {
+    FORCE_INLINE
+    auto runtime() const -> SchedDuration {
         return m_params.runtime;
     }
 
-    FORCE_INLINE auto weight() -> Weight {
+    FORCE_INLINE
+    auto weight() -> Weight {
         return m_profile.effective.weight;
     }
 
-    FORCE_INLINE auto metric() -> Metric & {
+    FORCE_INLINE
+    auto metric() -> Metric & {
         return m_metric;
     }
 
-    FORCE_INLINE auto last_cpu() const -> CpuNum {
+    FORCE_INLINE
+    auto last_cpu() const -> CpuNum {
         return m_last_cpu;
     }
 
-    FORCE_INLINE auto curr_cpu() const -> CpuNum {
+    FORCE_INLINE
+    auto curr_cpu() const -> CpuNum {
         return m_curr_cpu;
     }
 
-    FORCE_INLINE auto schedule() -> ISchedule * {
+    FORCE_INLINE
+    auto schedule() -> ISchedule * {
         return m_schedule;
     }
 
-    FORCE_INLINE auto runqueue_state() -> RunQueueState & {
+    FORCE_INLINE
+    auto runqueue_state() -> RunQueueState & {
         return m_runqueue_state;
     }
 
-    FORCE_INLINE auto cpu_affinity() -> CpuAffinity & {
+    FORCE_INLINE
+    auto cpu_affinity() -> CpuAffinity & {
         return m_affinity;
     }
 

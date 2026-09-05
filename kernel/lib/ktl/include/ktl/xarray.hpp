@@ -56,42 +56,50 @@ namespace xarray {
 
             using Inner = ustl::BitFields<Field<0, Type, TYPE_BITS>, Field<1, usize, VALUE_BITS>>;
 
-            FORCE_INLINE constexpr auto max_index() const -> usize {
+            FORCE_INLINE
+            constexpr auto max_index() const -> usize {
                 if (is_node()) {
                     return value<Node>().max_index();
                 }
                 return 0;
             }
 
-            FORCE_INLINE constexpr auto type() const -> Type {
+            FORCE_INLINE
+            constexpr auto type() const -> Type {
                 return inner.template get<0>();
             }
 
-            FORCE_INLINE constexpr auto set_type(Type type) -> Self & {
+            FORCE_INLINE
+            constexpr auto set_type(Type type) -> Self & {
                 inner.template set<0>(type);
                 return *this;
             }
 
-            FORCE_INLINE constexpr auto is_value() const -> bool {
+            FORCE_INLINE
+            constexpr auto is_value() const -> bool {
                 return type() == Type::ValueTagged;
             }
 
-            FORCE_INLINE constexpr auto is_node() const -> bool {
+            FORCE_INLINE
+            constexpr auto is_node() const -> bool {
                 return type() == Type::Internal;
             }
 
-            FORCE_INLINE constexpr auto is_null() const -> bool {
+            FORCE_INLINE
+            constexpr auto is_null() const -> bool {
                 return reinterpret_cast<usize>(inner) == 0;
             }
 
             template <typename T>
-            FORCE_INLINE constexpr auto value() -> T & {
+            FORCE_INLINE
+            constexpr auto value() -> T & {
                 static_assert(sizeof(T) == sizeof(usize), "");
                 return reinterpret_cast<T &>(inner.template get<1>());
             }
 
             template <typename T>
-            FORCE_INLINE constexpr auto cast_to() -> ustl::Option<T> {
+            FORCE_INLINE
+            constexpr auto cast_to() -> ustl::Option<T> {
                 static_assert(sizeof(T) == sizeof(usize), "");
                 if (!is_value()) {
                     return ustl::none();
@@ -99,26 +107,31 @@ namespace xarray {
                 return *reinterpret_cast<T *>(reinterpret_cast<usize>(inner.template get<1>()));
             }
 
-            FORCE_INLINE constexpr auto node() -> Node * {
+            FORCE_INLINE
+            constexpr auto node() -> Node * {
                 return value<Node>();
             }
 
-            FORCE_INLINE constexpr auto value() const -> usize {
+            FORCE_INLINE
+            constexpr auto value() const -> usize {
                 return inner.template get<1>();
             }
 
-            FORCE_INLINE constexpr auto set_value(usize value) -> Self & {
+            FORCE_INLINE
+            constexpr auto set_value(usize value) -> Self & {
                 inner.template set<1>(value);
                 return *this;
             }
 
             template <typename T>
-            FORCE_INLINE static auto make(Type type, T *object) -> Entry {
+            FORCE_INLINE
+            static auto make(Type type, T *object) -> Entry {
                 return Entry().set_type(type).set_value(reinterpret_cast<usize>(object));
             }
 
             template <typename T>
-            FORCE_INLINE static auto make_node(T *object) -> Entry {
+            FORCE_INLINE
+            static auto make_node(T *object) -> Entry {
                 return make(Type::Internal, object);
             }
 

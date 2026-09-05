@@ -24,7 +24,8 @@ using VmaCache = ObjectCache::Instance<
 /// null, and the first VmArea::create_common() -- from
 /// VmAspace::init_kernel_aspace(), the first thing init_vmm() does -- tripped
 /// "ObjectCache for this type is not initialized".
-INIT_CODE static auto init_vma_cache() -> void {
+INIT_CODE
+static auto init_vma_cache() -> void {
     if (Status::Ok != VmaCache::init_from_option()) {
         panic("Failed to create the object cache for VmArea");
     }

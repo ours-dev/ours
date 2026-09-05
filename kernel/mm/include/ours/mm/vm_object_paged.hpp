@@ -38,8 +38,8 @@ class VmObjectPaged: public VmObject {
     ///
     auto write(void *out, VirtAddr offset, usize size) -> Status override;
 
-    FORCE_INLINE auto make_cursor(VirtAddr offset, usize size)
-        -> ustl::Result<VmCowPages::Cursor, Status> {
+    FORCE_INLINE
+    auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
         return m_cow_pages->make_cursor(offset, size);
     }
 

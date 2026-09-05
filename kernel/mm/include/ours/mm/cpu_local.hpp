@@ -84,13 +84,15 @@ class CpuLocal {
     static auto holds(VirtAddr handle) -> bool;
 
     /// `handle` on the calling CPU. Uses the base register rather than a lookup.
-    FORCE_INLINE static auto resolve(VirtAddr handle) -> VirtAddr {
+    FORCE_INLINE
+    static auto resolve(VirtAddr handle) -> VirtAddr {
         DEBUG_ASSERT(Self::holds(handle), "Resolving a handle that names nothing");
         return handle + Self::read(CURRENT_CPU_OFFSET);
     }
 
     /// `handle` on `cpu`.
-    FORCE_INLINE static auto resolve(VirtAddr handle, CpuNum cpu) -> VirtAddr {
+    FORCE_INLINE
+    static auto resolve(VirtAddr handle, CpuNum cpu) -> VirtAddr {
         DEBUG_ASSERT(Self::holds(handle), "Resolving a handle that names nothing");
         DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
         return handle + VirtAddr(Self::CPU_OFFSETS[cpu]);
@@ -114,13 +116,15 @@ class CpuLocal {
     /// the variable's own address -- its handle -- and nothing has to be
     /// subtracted first.
     template <typename T>
-    FORCE_INLINE static auto read(T &t) -> T {
+    FORCE_INLINE
+    static auto read(T &t) -> T {
         static_assert(sizeof(t) <= sizeof(usize));
         return ArchCpuLocal::read<T>(reinterpret_cast<VirtAddr>(&t));
     }
 
     template <typename T>
-    FORCE_INLINE static auto write(T &t, T value) -> void {
+    FORCE_INLINE
+    static auto write(T &t, T value) -> void {
         static_assert(sizeof(t) <= sizeof(usize));
         return ArchCpuLocal::write<T>(reinterpret_cast<VirtAddr>(&t), value);
     }
@@ -142,25 +146,29 @@ class CpuLocal {
     /// then treat the result as unrelated to `t`. This is exactly Linux's
     /// RELOC_HIDE(), used for the same reason in the same place.
     [[nodiscard]]
-    FORCE_INLINE static auto relocate(void *base, isize offset) -> void * {
+    FORCE_INLINE
+    static auto relocate(void *base, isize offset) -> void * {
         auto *address = static_cast<u8 *>(base) + offset;
         asm("" : "+r"(address));
         return address;
     }
 
     template <typename T>
-    FORCE_INLINE static auto access(T &t) -> T & {
+    FORCE_INLINE
+    static auto access(T &t) -> T & {
         return *static_cast<T *>(Self::relocate(&t, Self::read(CURRENT_CPU_OFFSET)));
     }
 
     template <typename T>
-    FORCE_INLINE static auto access(T &t, CpuNum cpunum) -> T & {
+    FORCE_INLINE
+    static auto access(T &t, CpuNum cpunum) -> T & {
         DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU Number");
         return *static_cast<T *>(Self::relocate(&t, Self::CPU_OFFSETS[cpunum]));
     }
 
     /// The CPU number the caller is running on, read out of its own unit.
-    FORCE_INLINE static auto current_cpu() -> CpuNum {
+    FORCE_INLINE
+    static auto current_cpu() -> CpuNum {
         return Self::read(CURRENT_CPUNUM);
     }
 
@@ -170,13 +178,14 @@ class CpuLocal {
     /// as it comes up, and it is a different question from ours::Cpu's online
     /// mask, which says the CPU has finished its architectural bring-up.
     [[nodiscard]]
-    FORCE_INLINE static auto has_unit(CpuNum cpu) -> bool {
+    FORCE_INLINE
+    static auto has_unit(CpuNum cpu) -> bool {
         return STATES[usize(State::Online)].test(cpu);
     }
 
     template <typename T, typename F>
-    FORCE_INLINE static auto with_current(T &t, F &&f)
-        -> ustl::traits::InvokeResultT<F, CpuNum, T &> {
+    FORCE_INLINE
+    static auto with_current(T &t, F &&f) -> ustl::traits::InvokeResultT<F, CpuNum, T &> {
         // current_cpu() rather than Cpu::id(): identical value, but Cpu::id()
         // is now a forwarder to it, and this is the hot path.
         auto const cpu = Self::current_cpu();
@@ -192,7 +201,8 @@ class CpuLocal {
 
     /// For each instance on different CPU.
     template <typename T, typename F>
-    FORCE_INLINE static auto for_each(T &t, F &&f) -> void {
+    FORCE_INLINE
+    static auto for_each(T &t, F &&f) -> void {
         return Cpu::online_mask().for_each([&t, &f](CpuNum cpunum) {
             auto &current = Self::access(t, cpunum);
             ustl::function::invoke(f, cpunum, current);
@@ -200,7 +210,8 @@ class CpuLocal {
     }
 
     template <typename U, typename T, typename F>
-    FORCE_INLINE static auto fold(T &t, U acc, F &&f) -> U {
+    FORCE_INLINE
+    static auto fold(T &t, U acc, F &&f) -> U {
         Cpu::online_mask().for_each([&acc, &t, &f](CpuNum cpunum) {
             auto &current = Self::access(t, cpunum);
             acc = ustl::function::invoke(f, cpunum, current, acc);
@@ -305,17 +316,20 @@ class CpuLocal::PerCpu {
     }
 
     /// The calling CPU's copy.
-    FORCE_INLINE auto ptr_mut() -> T * {
+    FORCE_INLINE
+    auto ptr_mut() -> T * {
         return m_handle == NOWHERE ? nullptr : reinterpret_cast<T *>(CpuLocal::resolve(m_handle));
     }
 
-    FORCE_INLINE auto ref_mut() -> T & {
+    FORCE_INLINE
+    auto ref_mut() -> T & {
         DEBUG_ASSERT(m_handle != NOWHERE, "Dereferencing an empty PerCpu");
         return *reinterpret_cast<T *>(CpuLocal::resolve(m_handle));
     }
 
     /// `cpunum`'s copy.
-    FORCE_INLINE auto ref_mut(CpuNum cpunum) -> T & {
+    FORCE_INLINE
+    auto ref_mut(CpuNum cpunum) -> T & {
         DEBUG_ASSERT(m_handle != NOWHERE, "Dereferencing an empty PerCpu");
         return *reinterpret_cast<T *>(CpuLocal::resolve(m_handle, cpunum));
     }
@@ -324,12 +338,14 @@ class CpuLocal::PerCpu {
     /// object: a handle already names one thing, and the CPU number is a
     /// `current_cpu()` away. This is the shape PmZone::alloc_frame() uses.
     template <typename F>
-    FORCE_INLINE auto with_current(F &&f) -> ustl::traits::InvokeResultT<F, T &> {
+    FORCE_INLINE
+    auto with_current(F &&f) -> ustl::traits::InvokeResultT<F, T &> {
         return ustl::function::invoke(f, ref_mut());
     }
 
     template <typename F>
-    FORCE_INLINE auto for_each(F &&f) -> void {
+    FORCE_INLINE
+    auto for_each(F &&f) -> void {
         if (m_handle == NOWHERE) {
             return;
         }
@@ -392,15 +408,18 @@ auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
 template <typename T, typename... Options>
 class CpuLocal::Current {
   public:
-    FORCE_INLINE static auto get() -> T & {
+    FORCE_INLINE
+    static auto get() -> T & {
         return CpuLocal::access(CURRENT_INSTANCE);
     }
 
-    FORCE_INLINE static auto get(CpuNum cpunum) -> T & {
+    FORCE_INLINE
+    static auto get(CpuNum cpunum) -> T & {
         return CpuLocal::access(CURRENT_INSTANCE, cpunum);
     }
 
-    FORCE_INLINE static auto set(T const &t) -> void {
+    FORCE_INLINE
+    static auto set(T const &t) -> void {
         if constexpr (sizeof(t) <= sizeof(usize)) {
             CpuLocal::write(CURRENT_INSTANCE, t);
         } else {
@@ -408,7 +427,8 @@ class CpuLocal::Current {
         }
     }
 
-    FORCE_INLINE static auto set(T const &t, CpuNum cpunum) -> void {
+    FORCE_INLINE
+    static auto set(T const &t, CpuNum cpunum) -> void {
         CpuLocal::access(CURRENT_INSTANCE, cpunum) = t;
     }
 

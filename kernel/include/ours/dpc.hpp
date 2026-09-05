@@ -105,7 +105,8 @@ class Dpc final: public ustl::collections::intrusive::ListBaseHook<> {
     Func m_func;
     void *m_arg;
 
-    FORCE_INLINE auto invoke() -> void {
+    FORCE_INLINE
+    auto invoke() -> void {
         m_func(this);
     }
 };

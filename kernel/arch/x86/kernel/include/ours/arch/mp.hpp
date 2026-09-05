@@ -21,7 +21,8 @@ auto arch_mp_suspend(CpuMask) -> void;
 
 auto x86_bring_aps(CpuMask) -> void;
 
-NO_MANGLE NO_RETURN INIT_CODE USED auto x86_start_nonboot_cpu(CpuNum cpunum) -> void;
+NO_MANGLE NO_RETURN INIT_CODE USED
+auto x86_start_nonboot_cpu(CpuNum cpunum) -> void;
 
 } // namespace ours
 

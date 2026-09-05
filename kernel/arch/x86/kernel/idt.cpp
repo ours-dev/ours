@@ -66,7 +66,8 @@ constexpr auto CLAC_SIZE = usize(3);
 ///
 /// `clac_shift` moves the gate past the stub's opening instruction; it is
 /// zero whenever that instruction has to run.
-FORCE_INLINE static auto rectify_idt(IdtEntry &entry, usize clac_shift) -> void {
+FORCE_INLINE
+static auto rectify_idt(IdtEntry &entry, usize clac_shift) -> void {
     entry.set(*reinterpret_cast<usize *>(&entry) + clac_shift);
 }
 
@@ -79,7 +80,8 @@ auto x86_load_idt() -> void {
     PIDT->load();
 }
 
-INIT_CODE static auto x86_set_vector_ist(arch::IrqVec vec, u8 ist) -> void {
+INIT_CODE
+static auto x86_set_vector_ist(arch::IrqVec vec, u8 ist) -> void {
     auto const index = usize(vec);
     DEBUG_ASSERT(index < std::size(IDT.entries_), "Invalid vector: {}", index);
     auto &entry = IDT.entries_[index];
@@ -88,7 +90,8 @@ INIT_CODE static auto x86_set_vector_ist(arch::IrqVec vec, u8 ist) -> void {
     log::info("Vector[{}] was bind to IST[{}]", index, ist);
 }
 
-INIT_CODE auto x86_init_idt_early() -> void {
+INIT_CODE
+auto x86_init_idt_early() -> void {
     // Every stub in idt.S opens with `clac`, unconditionally, and the comment
     // there says it must stay the first instruction. This is why: `clac` is an
     // SMAP instruction, so on a CPU without SMAP it raises #UD -- and since the
@@ -120,7 +123,8 @@ INIT_CODE auto x86_init_idt_early() -> void {
     // x86_dump_idt();
 }
 
-INIT_CODE auto x86_setup_idt() -> void {
+INIT_CODE
+auto x86_setup_idt() -> void {
     using namespace mm;
 
     // Remap IDT to a readonly page

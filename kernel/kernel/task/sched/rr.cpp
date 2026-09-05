@@ -10,7 +10,8 @@ namespace {
     /// which CPU's it is: the running CPU's. Scheduler::Current::get() is
     /// per-CPU and every ISchedule entry point runs on the CPU whose Runtime
     /// it was handed.
-    FORCE_INLINE auto rq() -> RrRunQueue & {
+    FORCE_INLINE
+    auto rq() -> RrRunQueue & {
         return Scheduler::Current::get().rr_run_queue();
     }
 

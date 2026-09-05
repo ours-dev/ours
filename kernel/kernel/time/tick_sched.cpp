@@ -76,7 +76,8 @@ namespace {
     /// Doing this per CPU from the BSP, rather than when each AP comes up,
     /// mirrors task::init() itself: an AP's first tick after it is online
     /// should already reach its scheduler.
-    INIT_CODE auto start_legacy_tick() -> void {
+    INIT_CODE
+    auto start_legacy_tick() -> void {
         cpu_possible_mask().for_each(
             [](CpuNum cpu) { TickSched::get(cpu).emulate(TickSched::WorkMode::Legacy); });
     }

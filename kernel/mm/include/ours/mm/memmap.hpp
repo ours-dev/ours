@@ -38,24 +38,29 @@ using MemMap = priv::SparseMemMap;
 
 /// Whether `pfn` has a descriptor behind it at all. The counterpart of Linux's
 /// pfn_valid(); a pfn inside a zone's span need not be backed.
-FORCE_INLINE inline auto pfn_valid(Pfn pfn) -> bool {
+FORCE_INLINE
+inline auto pfn_valid(Pfn pfn) -> bool {
     return MemMap::get().exist(pfn);
 }
 
-FORCE_INLINE constexpr auto pfn_to_frame(Pfn pfn) -> PmFrame * {
+FORCE_INLINE
+constexpr auto pfn_to_frame(Pfn pfn) -> PmFrame * {
     return MemMap::get().pfn_to_frame(pfn);
 }
 
 template <typename T>
-FORCE_INLINE constexpr auto phys_to_frame(T phys_addr) -> PmFrame * {
+FORCE_INLINE
+constexpr auto phys_to_frame(T phys_addr) -> PmFrame * {
     return pfn_to_frame(phys_to_pfn(phys_addr));
 }
 
-FORCE_INLINE constexpr auto frame_to_pfn(PmFrame const *frame) -> Pfn {
+FORCE_INLINE
+constexpr auto frame_to_pfn(PmFrame const *frame) -> Pfn {
     return MemMap::get().frame_to_pfn(frame);
 }
 
-FORCE_INLINE constexpr auto frame_to_phys(PageFrame const *frame) -> PhysAddr {
+FORCE_INLINE
+constexpr auto frame_to_phys(PageFrame const *frame) -> PhysAddr {
     // Deliberately not `frame->as_ptr<PmFrame>()`. That stamps Role::Pmm as a
     // side effect of converting -- and the buddy allocator reads Role::Pmm as
     // "this frame is free" (see FrameBuddy::is_mergeable / insert_frame /
@@ -69,16 +74,19 @@ FORCE_INLINE constexpr auto frame_to_phys(PageFrame const *frame) -> PhysAddr {
 }
 
 template <typename T>
-FORCE_INLINE constexpr auto virt_to_frame(T virt_addr) -> PmFrame * {
+FORCE_INLINE
+constexpr auto virt_to_frame(T virt_addr) -> PmFrame * {
     return phys_to_frame(PhysMap::virt_to_phys(virt_addr));
 }
 
-FORCE_INLINE constexpr auto frame_to_virt(PmFrame *frame) -> VirtAddr {
+FORCE_INLINE
+constexpr auto frame_to_virt(PmFrame *frame) -> VirtAddr {
     return PhysMap::phys_to_virt(frame_to_phys(frame));
 }
 
 template <typename T>
-FORCE_INLINE constexpr auto frame_to_virt(PmFrame *frame) -> T * {
+FORCE_INLINE
+constexpr auto frame_to_virt(PmFrame *frame) -> T * {
     DEBUG_ASSERT(frame->phys_size() >= sizeof(T), "T is too large");
     return PhysMap::phys_to_virt<T>(frame_to_phys(frame));
 }
@@ -91,7 +99,8 @@ FORCE_INLINE constexpr auto frame_to_virt(PmFrame *frame) -> T * {
 /// its distance from the head (see PageFrame::compound_offset), and this is
 /// just that subtraction. A frame that is not part of a larger block reports a
 /// zero offset, so this is the identity for it.
-FORCE_INLINE inline auto frame_to_folio(PmFrame *frame) -> PmFolio * {
+FORCE_INLINE
+inline auto frame_to_folio(PmFrame *frame) -> PmFolio * {
     return frame ? frame - frame->compound_offset() : nullptr;
 }
 
@@ -99,7 +108,8 @@ FORCE_INLINE inline auto frame_to_folio(PmFrame *frame) -> PmFolio * {
 /// kfree relies on this: it is handed an interior object pointer and has to
 /// reach the slab metadata, which lives only on the head.
 template <typename T>
-FORCE_INLINE auto virt_to_folio(T virt_addr) -> PmFolio * {
+FORCE_INLINE
+auto virt_to_folio(T virt_addr) -> PmFolio * {
     return frame_to_folio(phys_to_frame(PhysMap::virt_to_phys(virt_addr)));
 }
 

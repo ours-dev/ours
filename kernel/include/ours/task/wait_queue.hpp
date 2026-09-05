@@ -33,7 +33,8 @@ class WaiterState {
         return m_interruptible == Interruptible::Yes;
     }
 
-    FORCE_INLINE auto status() const -> Status {
+    FORCE_INLINE
+    auto status() const -> Status {
         return m_blocked_status;
     }
 
@@ -62,7 +63,8 @@ class WaiterState {
         /// Equal deadlines fall back to arrival order, so waiters the
         /// scheduler considers interchangeable are still served FIFO
         /// rather than in whatever order the tree happens to hold them.
-        FORCE_INLINE auto operator<(QueueKey const &other) const noexcept -> bool {
+        FORCE_INLINE
+        auto operator<(QueueKey const &other) const noexcept -> bool {
             if (vdeadline != other.vdeadline) {
                 return vdeadline < other.vdeadline;
             }
@@ -73,7 +75,8 @@ class WaiterState {
         u64 seq;
     };
 
-    FORCE_INLINE auto queue_key() const noexcept -> QueueKey const & {
+    FORCE_INLINE
+    auto queue_key() const noexcept -> QueueKey const & {
         return m_queue_key;
     }
 
@@ -140,15 +143,18 @@ class WaitQueue {
 
     auto notify_all(Status) -> void;
 
-    FORCE_INLINE auto size() const -> usize {
+    FORCE_INLINE
+    auto size() const -> usize {
         return m_waiters.size();
     }
 
-    FORCE_INLINE auto is_empty() const -> bool {
+    FORCE_INLINE
+    auto is_empty() const -> bool {
         return m_waiters.empty();
     }
 
-    FORCE_INLINE auto peek() -> Thread * {
+    FORCE_INLINE
+    auto peek() -> Thread * {
         return 0;
     }
 

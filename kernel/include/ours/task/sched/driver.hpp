@@ -30,7 +30,8 @@ class Driver {
 
     auto reset_preempt(SchedDuration delta) -> void;
 
-    FORCE_INLINE auto clock() const -> SchedTime {
+    FORCE_INLINE
+    auto clock() const -> SchedTime {
         return m_sched_clock;
     }
 

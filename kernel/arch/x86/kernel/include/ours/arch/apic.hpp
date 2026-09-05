@@ -19,15 +19,19 @@ using arch::ApicTriggerMode;
 extern arch::IoApic *IOAPIC;
 extern arch::XApic *XAPIC;
 
-INIT_CODE auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
-                            ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void;
+INIT_CODE
+auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
+                  ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void;
 
 /// Called once after VMM initialized.
-INIT_CODE auto init_local_apic() -> void;
+INIT_CODE
+auto init_local_apic() -> void;
 
-INIT_CODE auto init_local_apic_percpu() -> void;
+INIT_CODE
+auto init_local_apic_percpu() -> void;
 
-INIT_CODE auto init_apic_deadline_tsc() -> void;
+INIT_CODE
+auto init_apic_deadline_tsc() -> void;
 
 auto apic_issue_eoi() -> void;
 
@@ -56,9 +60,11 @@ auto apic_configure_isa_irq(u8 isa_irq, arch::ApicDeliveryMode del_mode, bool ma
 
 auto apic_io_isa_to_global(u8 isa_irq) -> HIrqNum;
 
-INIT_CODE auto assign_cpunum_for_apic(u32 apicid) -> CpuNum;
+INIT_CODE
+auto assign_cpunum_for_apic(u32 apicid) -> CpuNum;
 
-INIT_CODE auto current_apic_id_early() -> u32;
+INIT_CODE
+auto current_apic_id_early() -> u32;
 
 auto current_apic_id() -> u32;
 

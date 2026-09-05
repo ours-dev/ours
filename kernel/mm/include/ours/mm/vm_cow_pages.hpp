@@ -27,7 +27,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;
 
-    FORCE_INLINE auto size_locked() const -> usize {
+    FORCE_INLINE
+    auto size_locked() const -> usize {
         return m_size;
     }
 
@@ -105,14 +106,16 @@ class VmCowPages::Cursor {
 
     /// The page index the cursor currently sits on.
     [[nodiscard]]
-    FORCE_INLINE auto index() const -> PgOff {
+    FORCE_INLINE
+    auto index() const -> PgOff {
         return PgOff(m_offset >> PAGE_SHIFT);
     }
 
     /// Step past the page just handed out. Separate from the lookups so all
     /// three exits -- hit, fresh allocation, borrowed page -- advance in one
     /// place and cannot disagree.
-    FORCE_INLINE auto advance() -> void {
+    FORCE_INLINE
+    auto advance() -> void {
         m_offset += PAGE_SIZE;
     }
 

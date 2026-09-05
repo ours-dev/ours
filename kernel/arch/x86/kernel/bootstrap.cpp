@@ -23,7 +23,8 @@ NO_MANGLE u8 const DEBUG_SYMBOL4[] LINK_NAME("__debug_symbol4");
 
 static PhysAddr BOOTSTRAP16_BUFFER_BASE = 0;
 
-INIT_CODE auto set_bootstrap16_buffer(PhysAddr base) -> void {
+INIT_CODE
+auto set_bootstrap16_buffer(PhysAddr base) -> void {
     using ustl::mm::is_aligned;
     ASSERT(is_aligned(base, PAGE_SIZE));
     ASSERT(base <= KB(64) - MIN_BOOTSTRAP16_BUFFER_SIZE);
@@ -31,7 +32,8 @@ INIT_CODE auto set_bootstrap16_buffer(PhysAddr base) -> void {
     BOOTSTRAP16_BUFFER_BASE = base;
 }
 
-INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
+INIT_CODE
+auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     DEBUG_ASSERT(data);
     DEBUG_ASSERT(BOOTSTRAP16_BUFFER_BASE, "There is no a given bootstrap area");
 
@@ -112,7 +114,8 @@ INIT_CODE auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
     return BOOTSTRAP16_BUFFER_BASE;
 }
 
-INIT_CODE static auto init_bootstrap16_buffer() -> void {
+INIT_CODE
+static auto init_bootstrap16_buffer() -> void {
     if (BOOTSTRAP16_BUFFER_BASE) {
         // Avoid confliction.
         return;
@@ -126,7 +129,8 @@ INIT_CODE static auto init_bootstrap16_buffer() -> void {
 }
 GKTL_INIT_HOOK(InitBootstrap16Buffer, init_bootstrap16_buffer, PlatformInitLevel::PrePmm);
 
-INIT_CODE static auto free_bootstrap16_buffer() -> void {
+INIT_CODE
+static auto free_bootstrap16_buffer() -> void {
     for (auto offset = usize{0}; offset < MIN_BOOTSTRAP16_BUFFER_SIZE; offset += PAGE_SIZE) {
         auto const frame = mm::phys_to_frame(BOOTSTRAP16_BUFFER_BASE + offset);
         mm::free_frames(frame, 0);

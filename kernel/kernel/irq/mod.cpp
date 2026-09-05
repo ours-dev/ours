@@ -17,7 +17,8 @@ namespace {
 auto current_frame() -> arch::IrqFrame * {
     return mm::CpuLocal::read(CURRENT_FRAME);
 }
-FORCE_INLINE static auto get_irq_dispatcher() -> IrqDispatcher * {
+FORCE_INLINE
+static auto get_irq_dispatcher() -> IrqDispatcher * {
     static IrqDispatcher IRQ_DISPATCHER;
     return &IRQ_DISPATCHER;
 }

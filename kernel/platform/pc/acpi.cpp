@@ -32,7 +32,8 @@ namespace {
 
     PhysMapMapper MAPPER;
 
-    FORCE_USED INIT_CODE auto platform_init_acpi(PhysAddr rsdp) -> void {
+    FORCE_USED INIT_CODE
+    auto platform_init_acpi(PhysAddr rsdp) -> void {
         DEBUG_ASSERT(!ACPI_TABLES, "Duplicated calls");
         if (auto tables = acpi::TableSet::from_rsdp(MAPPER, rsdp)) {
             ACPI_TABLES_STORAGE.init(ustl::move(tables.unwrap()));
@@ -40,7 +41,8 @@ namespace {
         }
     }
 
-    FORCE_USED INIT_CODE auto platform_init_acpi() -> void {
+    FORCE_USED INIT_CODE
+    auto platform_init_acpi() -> void {
         // global_handoff() lives in //kernel/phys and is not reachable from the
         // kernel proper; ours::handoff() is the accessor on this side.
         //

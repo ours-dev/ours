@@ -54,7 +54,8 @@ class ElfImage final {
     auto init(std::span<u8 const> file) -> Status;
     PHYS_EXPORT [[nodiscard]]
     auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
-    PHYS_EXPORT auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
+    PHYS_EXPORT
+    auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
 
     [[nodiscard]]
     auto size() const -> usize {

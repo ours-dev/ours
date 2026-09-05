@@ -10,7 +10,8 @@ namespace ours::time {
 /// timeouts started on the BSP may target another CPU's queue before that CPU
 /// has come up, and a queue that still says INVALID_CPU_NUM cannot tell whose
 /// tick device to program.
-INIT_CODE auto init() -> void {
+INIT_CODE
+auto init() -> void {
     cpu_possible_mask().for_each([](CpuNum cpu) { TimerQueue::get(cpu).init(cpu); });
 }
 

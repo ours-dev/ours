@@ -21,16 +21,20 @@ auto emergency_write(char const *s, usize n) -> void;
 /// Installs `logger` as the global logger. Safe to call again to replace
 /// the current one; a null pointer is ignored, leaving the current logger
 /// installed.
-PHYS_EXPORT auto init(Logger *logger) -> void;
+PHYS_EXPORT
+auto init(Logger *logger) -> void;
 
-PHYS_EXPORT auto get_global_logger() -> Logger &;
+PHYS_EXPORT
+auto get_global_logger() -> Logger &;
 
-PHYS_EXPORT auto set_global_logger(Logger &logger) -> void;
+PHYS_EXPORT
+auto set_global_logger(Logger &logger) -> void;
 
 /// Replay the record ring onto the current logger, or onto emergency_write
 /// when nothing is installed yet. Panic and the kshell `log` command both
 /// come through here so a dump always uses the same routing as a live line.
-PHYS_EXPORT auto dump_recent() -> void;
+PHYS_EXPORT
+auto dump_recent() -> void;
 
 // The one cross-module entry point: physload exports this plain function so
 // physload_module images bind their log calls to physload's single global
@@ -38,8 +42,9 @@ PHYS_EXPORT auto dump_recent() -> void;
 // this role: -fvisibility=hidden makes implicit-instantiation references
 // hidden, and a hidden undefined reference can never bind to the loader's
 // export table.)
-PHYS_EXPORT auto vlog_dispatch(Logger &logger, Level level, ustl::views::StringView fmt,
-                               ustl::fmt::FormatArgs const &args) -> void;
+PHYS_EXPORT
+auto vlog_dispatch(Logger &logger, Level level, ustl::views::StringView fmt,
+                   ustl::fmt::FormatArgs const &args) -> void;
 
 /// Formats `fmt`/`args` into one whole line (metadata prefix, body,
 /// newline), appends it to the record ring, and hands it to `logger` in a

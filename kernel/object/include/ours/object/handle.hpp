@@ -40,27 +40,34 @@ class KernelHandle {
   public:
     KernelHandle() = default;
 
-    FORCE_INLINE KernelHandle(T *object) : m_dispatcher(object) {
+    FORCE_INLINE
+    KernelHandle(T *object)
+        : m_dispatcher(object) {
         DEBUG_ASSERT(object);
     }
 
     template <typename U>
-    FORCE_INLINE KernelHandle(ustl::Arc<U> object) : m_dispatcher(ustl::move(object)) {
+    FORCE_INLINE
+    KernelHandle(ustl::Arc<U> object)
+        : m_dispatcher(ustl::move(object)) {
         DEBUG_ASSERT(object);
     }
 
     template <typename U>
-    FORCE_INLINE KernelHandle(KernelHandle<U> &&handle)
+    FORCE_INLINE
+    KernelHandle(KernelHandle<U> &&handle)
         : m_dispatcher(ustl::move(handle).m_dispatcher) {}
 
     ~KernelHandle() = default;
 
-    FORCE_INLINE auto dispatcher() const -> ustl::Arc<T> const & {
+    FORCE_INLINE
+    auto dispatcher() const -> ustl::Arc<T> const & {
         return m_dispatcher;
     }
 
     template <std::derived_from<Dispatcher> U>
-    FORCE_INLINE auto reset(ustl::Arc<U> dispatcher) -> void {
+    FORCE_INLINE
+    auto reset(ustl::Arc<U> dispatcher) -> void {
         if (m_dispatcher) {
             m_dispatcher->on_zero();
         }

@@ -7,7 +7,8 @@
 #include <ours/platform/init.hpp>
 
 namespace ours {
-NO_MANGLE INIT_CODE auto init_platform_early() -> void {
+NO_MANGLE INIT_CODE
+auto init_platform_early() -> void {
     set_platform_init_level(PlatformInitLevel::StartUp);
 
     set_platform_init_level(PlatformInitLevel::PrePmm);
@@ -16,11 +17,13 @@ NO_MANGLE INIT_CODE auto init_platform_early() -> void {
     set_platform_init_level(PlatformInitLevel::Pmm);
 }
 
-FORCE_INLINE static auto platform_init_mp() -> void {
+FORCE_INLINE
+static auto platform_init_mp() -> void {
     x86_bring_aps(Cpu::possible_mask());
 }
 
-NO_MANGLE INIT_CODE auto init_platform() -> void {
+NO_MANGLE INIT_CODE
+auto init_platform() -> void {
     platform_init_mp();
 }
 

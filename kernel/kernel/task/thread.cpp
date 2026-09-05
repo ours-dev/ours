@@ -40,7 +40,8 @@ using ThreadCache =
 /// See the note beside VmaCache in kernel/mm/vm_area.cpp: the option records
 /// the level, the namespace-scope hook is the caller's to write, and this one
 /// was missing too.
-INIT_CODE static auto init_thread_cache() -> void {
+INIT_CODE
+static auto init_thread_cache() -> void {
     if (Status::Ok != ThreadCache::init_from_option()) {
         panic("Failed to create the object cache for Thread");
     }
@@ -73,7 +74,8 @@ auto to_string(Thread::State state) -> char const * {
     }
 }
 
-FORCE_INLINE auto TaskState::join(Thread *thread, time::Deadline deadline) -> Status {
+FORCE_INLINE
+auto TaskState::join(Thread *thread, time::Deadline deadline) -> Status {
     return m_result_wait_queue.park_thread(thread, deadline);
 }
 
@@ -398,12 +400,14 @@ auto Thread::trampoline() -> void {
     Thread::Current::exit(retcode);
 }
 
-FORCE_INLINE auto Thread::erase_from_global_list() -> void {
+FORCE_INLINE
+auto Thread::erase_from_global_list() -> void {
     Guard guard{SPAWNED_THREADS_LOCK};
     return erase_from_global_list_locked();
 }
 
-FORCE_INLINE auto Thread::erase_from_global_list_locked() -> void {
+FORCE_INLINE
+auto Thread::erase_from_global_list_locked() -> void {
     m_canary.verify<Self>();
     (void)SPAWNED_THREADS.erase(SPAWNED_THREADS.iterator_to(*this));
 }
@@ -461,7 +465,8 @@ auto Thread::Current::migrate_to(CpuNum dest) -> void {
     Thread::Current::get()->set_cpu_affinity_hard(CpuMask::of(dest));
 }
 
-INIT_CODE auto Thread::Current::become_idle() -> void {
+INIT_CODE
+auto Thread::Current::become_idle() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
 

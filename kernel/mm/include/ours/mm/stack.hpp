@@ -22,7 +22,8 @@ class Stack {
 
     auto init_first() -> void;
 
-    FORCE_INLINE auto top() const -> VirtAddr {
+    FORCE_INLINE
+    auto top() const -> VirtAddr {
         return m_base + m_size;
     }
 

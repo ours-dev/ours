@@ -47,11 +47,13 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     auto activate(bool suspend) -> Status;
 
-    FORCE_INLINE auto process() -> ProcessDispatcher & {
+    FORCE_INLINE
+    auto process() -> ProcessDispatcher & {
         return m_process.as_ref_mut();
     }
 
-    FORCE_INLINE auto mark_active() -> void {
+    FORCE_INLINE
+    auto mark_active() -> void {
         m_flags |= Flags::Active;
     }
 

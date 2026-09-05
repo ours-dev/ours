@@ -57,7 +57,8 @@ class VmPlacement {
 
   public:
     /// Any free spot inside the parent will do; the VMM picks.
-    FORCE_INLINE static constexpr auto anywhere() -> Self {
+    FORCE_INLINE
+    static constexpr auto anywhere() -> Self {
         return Self{};
     }
 
@@ -65,18 +66,21 @@ class VmPlacement {
     /// Status::AlreadyExists rather than replaced: replacement is not
     /// implemented, and when it is, it gets its own named constructor rather
     /// than a second meaning for this one.
-    FORCE_INLINE static constexpr auto at(VirtAddr base) -> Self {
+    FORCE_INLINE
+    static constexpr auto at(VirtAddr base) -> Self {
         return Self{base, true};
     }
 
     [[nodiscard]]
-    FORCE_INLINE constexpr auto is_fixed() const -> bool {
+    FORCE_INLINE
+    constexpr auto is_fixed() const -> bool {
         return m_fixed;
     }
 
     /// Only meaningful when is_fixed(); anywhere() has no address to give.
     [[nodiscard]]
-    FORCE_INLINE constexpr auto base() const -> VirtAddr {
+    FORCE_INLINE
+    constexpr auto base() const -> VirtAddr {
         DEBUG_ASSERT(m_fixed, "VmPlacement::anywhere() has no base to read");
         return m_base;
     }
@@ -114,7 +118,8 @@ enum class VmaFlags : u32 {
 };
 USTL_ENABLE_ENUM_BITMASK(VmaFlags);
 
-FORCE_INLINE constexpr auto extract_permissions(VmaFlags vmaflags) -> MmuFlags {
+FORCE_INLINE
+constexpr auto extract_permissions(VmaFlags vmaflags) -> MmuFlags {
     MmuFlags mmuf{};
     if (!!(vmaflags & VmaFlags::Write)) {
         mmuf |= MmuFlags::Writable;
@@ -149,41 +154,50 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
 
     using Flags = VmaFlags;
 
-    FORCE_INLINE auto aspace() -> ustl::Arc<VmAspace> & {
+    FORCE_INLINE
+    auto aspace() -> ustl::Arc<VmAspace> & {
         return m_aspace;
     }
 
-    FORCE_INLINE auto base() const -> VirtAddr {
+    FORCE_INLINE
+    auto base() const -> VirtAddr {
         return m_base;
     }
 
-    FORCE_INLINE auto size() const -> VirtAddr {
+    FORCE_INLINE
+    auto size() const -> VirtAddr {
         return m_size;
     }
 
-    FORCE_INLINE auto is_active() const -> bool {
+    FORCE_INLINE
+    auto is_active() const -> bool {
         return !!(m_vmaf & VmaFlags::Active);
     }
 
-    FORCE_INLINE auto is_mapping() const -> bool {
+    FORCE_INLINE
+    auto is_mapping() const -> bool {
         return !!(m_vmaf & VmaFlags::Mapping);
     }
 
-    FORCE_INLINE auto get_lock() -> sync::SpinLock & {
+    FORCE_INLINE
+    auto get_lock() -> sync::SpinLock & {
         return m_aspace->get_lock();
     }
 
-    FORCE_INLINE auto check_range(VirtAddr base, usize size) const -> bool {
+    FORCE_INLINE
+    auto check_range(VirtAddr base, usize size) const -> bool {
         return base >= m_base && size <= m_size && (base - m_base) <= m_size - size;
     }
 
     /// This for the collections to compare two VMA.
-    FORCE_INLINE friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
+    FORCE_INLINE
+    friend auto operator<(Self const &x, Self const &y) noexcept -> bool {
         return x.m_base < y.m_base;
     }
 
     struct BaseOrder final {
-        FORCE_INLINE auto operator()(Self const &x, Self const &y) const noexcept -> bool {
+        FORCE_INLINE
+        auto operator()(Self const &x, Self const &y) const noexcept -> bool {
             return x.m_base < y.m_base;
         }
     };
@@ -209,7 +223,8 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     /// is the offset form, while VmAddressRegion::UnmapInternalLocked()
     /// computes `end_addr_byte = base + size - 1` and walks its children
     /// against that, asserting the add cannot overflow.
-    FORCE_INLINE auto last() const -> VirtAddr {
+    FORCE_INLINE
+    auto last() const -> VirtAddr {
         DEBUG_ASSERT(m_size, "an empty area has no last address");
         return m_base + m_size - 1;
     }
@@ -314,7 +329,8 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     auto validate_mmuflags(MmuFlags mmuf) const -> bool;
 
     /// Check whether a given `|vmaflags|` is valid. True if valid, otherwise invalid.
-    FORCE_INLINE auto validate_vmaflags(VmaFlags vmaf) const -> bool {
+    FORCE_INLINE
+    auto validate_vmaflags(VmaFlags vmaf) const -> bool {
         auto perm_allowed = (m_vmaf & VmaFlags::PermMask);
         if (((vmaf & VmaFlags::PermMask) | perm_allowed) != perm_allowed) {
             return false;
@@ -323,7 +339,8 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         return true;
     }
 
-    FORCE_INLINE auto mark_active() -> void {
+    FORCE_INLINE
+    auto mark_active() -> void {
         m_vmaf |= VmaFlags::Active;
     }
 
@@ -350,7 +367,8 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
 /// never the areas, which keep coming from the object cache as before. The
 /// subtree aggregates live in the tree's nodes rather than in the areas.
 struct VmaBaseOfPointer final {
-    FORCE_INLINE auto operator()(VmAreaOrMapping *area) const noexcept -> VirtAddr {
+    FORCE_INLINE
+    auto operator()(VmAreaOrMapping *area) const noexcept -> VirtAddr {
         return area->base();
     }
 };
@@ -451,25 +469,31 @@ class VmaSet {
     ~VmaSet();
 
     [[nodiscard]]
-    FORCE_INLINE auto empty() const -> bool {
+    FORCE_INLINE
+    auto empty() const -> bool {
         return m_tree.empty();
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto size() const -> usize {
+    FORCE_INLINE
+    auto size() const -> usize {
         return m_tree.size();
     }
 
-    FORCE_INLINE auto begin() -> IterMut {
+    FORCE_INLINE
+    auto begin() -> IterMut {
         return m_tree.begin();
     }
-    FORCE_INLINE auto begin() const -> Iter {
+    FORCE_INLINE
+    auto begin() const -> Iter {
         return m_tree.begin();
     }
-    FORCE_INLINE auto end() -> IterMut {
+    FORCE_INLINE
+    auto end() -> IterMut {
         return m_tree.end();
     }
-    FORCE_INLINE auto end() const -> Iter {
+    FORCE_INLINE
+    auto end() const -> Iter {
         return m_tree.end();
     }
 
@@ -528,18 +552,22 @@ class VmaSet {
     /// answer to "what covers |addr|". Every range walk has to look at the
     /// area before this one too -- see Enumerator's constructor and
     /// has_range(), which are the two places that reasoning is written out.
-    FORCE_INLINE auto lower_bound(VirtAddr addr) -> ustl::Option<IterMut> {
+    FORCE_INLINE
+    auto lower_bound(VirtAddr addr) -> ustl::Option<IterMut> {
         return m_tree.lower_bound(addr);
     }
-    FORCE_INLINE auto lower_bound(VirtAddr addr) const -> ustl::Option<Iter> {
+    FORCE_INLINE
+    auto lower_bound(VirtAddr addr) const -> ustl::Option<Iter> {
         return m_tree.lower_bound(addr);
     }
 
     /// Find the first existent VMA whose base > addr.
-    FORCE_INLINE auto upper_bound(VirtAddr addr) -> ustl::Option<IterMut> {
+    FORCE_INLINE
+    auto upper_bound(VirtAddr addr) -> ustl::Option<IterMut> {
         return m_tree.upper_bound(addr);
     }
-    FORCE_INLINE auto upper_bound(VirtAddr addr) const -> ustl::Option<Iter> {
+    FORCE_INLINE
+    auto upper_bound(VirtAddr addr) const -> ustl::Option<Iter> {
         return m_tree.upper_bound(addr);
     }
 

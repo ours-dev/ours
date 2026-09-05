@@ -51,7 +51,8 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     /// `task::init()` binding every `Scheduler` -- rather than waiting for the
     /// AP to come up, because a timer may be activated *for* a CPU before that
     /// CPU has run a single instruction.
-    INIT_CODE auto init(CpuNum cpunum) -> void;
+    INIT_CODE
+    auto init(CpuNum cpunum) -> void;
 
     /// Runs every timer on this CPU whose deadline has passed, across all
     /// clocks, then reprograms the tick device for the earliest one left.
@@ -61,7 +62,8 @@ class TimerQueue: public mm::CpuLocal::Current<TimerQueue> {
     auto run_expired_timers() -> usize;
 
     [[nodiscard]]
-    FORCE_INLINE auto cpunum() const -> CpuNum {
+    FORCE_INLINE
+    auto cpunum() const -> CpuNum {
         return m_cpunum;
     }
 

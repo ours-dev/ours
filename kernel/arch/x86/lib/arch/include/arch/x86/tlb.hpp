@@ -12,7 +12,8 @@
 
 namespace arch {
 
-FORCE_INLINE inline auto x86_invlpg(VirtAddr address) -> void {
+FORCE_INLINE
+inline auto x86_invlpg(VirtAddr address) -> void {
     asm volatile("invlpg (%0)" : : "r"(address) : "memory");
 }
 
@@ -22,7 +23,8 @@ inline auto tlb_invalidate_all() -> void {
     Cr3::write(Cr3::read());
 }
 
-FORCE_INLINE inline auto x86_invpcid_all() -> void {
+FORCE_INLINE
+inline auto x86_invpcid_all() -> void {
     struct alignas(16) InvpcidDescriptor {
         u64 pcid;
         u64 addr;

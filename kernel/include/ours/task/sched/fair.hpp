@@ -27,7 +27,8 @@ class RunQueue {
     using Self = RunQueue;
 
   public:
-    FORCE_INLINE auto verify() const -> void {
+    FORCE_INLINE
+    auto verify() const -> void {
         m_canary.verify<Self>();
     }
 
@@ -38,26 +39,31 @@ class RunQueue {
     auto update_min_vruntime(Context &object) -> void;
 
     /// Returns the lag of |object| relative to this runqueue.
-    FORCE_INLINE auto lag_of(Context &object) -> SchedDuration {
+    FORCE_INLINE
+    auto lag_of(Context &object) -> SchedDuration {
         return avg_vruntime() - object.runtime();
     }
 
-    FORCE_INLINE auto total_weight() const -> Weight {
+    FORCE_INLINE
+    auto total_weight() const -> Weight {
         if (current_ && current_->runqueue_state().is_active()) {
             return weight_sum_ + current_->weight();
         }
         return weight_sum_;
     }
 
-    FORCE_INLINE auto total_vruntime() const -> SchedDuration {
+    FORCE_INLINE
+    auto total_vruntime() const -> SchedDuration {
         return total_vruntime_;
     }
 
-    FORCE_INLINE auto min_vruntime() const -> SchedDuration {
+    FORCE_INLINE
+    auto min_vruntime() const -> SchedDuration {
         return min_vruntime_;
     }
 
-    FORCE_INLINE auto avg_vruntime() const -> SchedDuration {
+    FORCE_INLINE
+    auto avg_vruntime() const -> SchedDuration {
         auto total_vruntime = total_vruntime_;
         auto weight_sum = weight_sum_;
 
@@ -69,15 +75,18 @@ class RunQueue {
         return min_vruntime_ + total_vruntime / weight_sum;
     }
 
-    FORCE_INLINE auto begin() {
+    FORCE_INLINE
+    auto begin() {
         return queue_.begin();
     }
 
-    FORCE_INLINE auto end() {
+    FORCE_INLINE
+    auto end() {
         return queue_.end();
     }
 
-    FORCE_INLINE auto num_queued() const -> usize {
+    FORCE_INLINE
+    auto num_queued() const -> usize {
         return m_num_queued;
     }
 
@@ -86,11 +95,13 @@ class RunQueue {
     /// also run for a thread that's merely being repositioned around a
     /// run (see Fair::put_prev_thread/set_next_object), which must not
     /// move this count.
-    FORCE_INLINE auto inc_queued() -> void {
+    FORCE_INLINE
+    auto inc_queued() -> void {
         m_num_queued += 1;
     }
 
-    FORCE_INLINE auto dec_queued() -> void {
+    FORCE_INLINE
+    auto dec_queued() -> void {
         m_num_queued -= 1;
     }
 

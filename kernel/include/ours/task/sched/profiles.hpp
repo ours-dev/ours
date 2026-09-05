@@ -62,7 +62,8 @@ struct InheritedProfile {
 };
 
 struct Profile {
-    FORCE_INLINE constexpr Profile(BaseProfile const &profile)
+    FORCE_INLINE
+    constexpr Profile(BaseProfile const &profile)
         : base(profile), effective(profile), inherited() {}
 
     ~Profile() = default;

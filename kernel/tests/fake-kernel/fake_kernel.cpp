@@ -25,11 +25,13 @@ constexpr u16 COM_PORT = 0x3F8;
 constexpr u16 COM_LINE_STATUS = COM_PORT + 5;
 constexpr u8 TRANSMITTER_EMPTY = 1U << 5;
 
-FORCE_INLINE auto outb(u16 const port, u8 const value) -> void {
+FORCE_INLINE
+auto outb(u16 const port, u8 const value) -> void {
     __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
-FORCE_INLINE auto inb(u16 const port) -> u8 {
+FORCE_INLINE
+auto inb(u16 const port) -> u8 {
     u8 value;
     __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
     return value;

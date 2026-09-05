@@ -17,7 +17,8 @@ TimerQueue::TimerQueue()
     , m_next_deadline(INFINITE_TIME)
     , m_bases() {}
 
-INIT_CODE auto TimerQueue::init(CpuNum cpunum) -> void {
+INIT_CODE
+auto TimerQueue::init(CpuNum cpunum) -> void {
     m_canary.verify<Self>();
     DEBUG_ASSERT(cpunum != INVALID_CPU_NUM);
     DEBUG_ASSERT(m_cpunum == INVALID_CPU_NUM, "TimerQueue of CPU[{}] bound twice", m_cpunum);

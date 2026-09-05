@@ -3,7 +3,8 @@
 
 #include <cstring>
 
-NO_MANGLE WEAK_LINK auto memcpy(void *d, void const *s, size_t n) -> void * {
+NO_MANGLE WEAK_LINK
+auto memcpy(void *d, void const *s, size_t n) -> void * {
     auto md = static_cast<char *>(d);
     auto ms = static_cast<char const *>(s);
     for (size_t i = 0; i < n; ++i) {
@@ -13,7 +14,8 @@ NO_MANGLE WEAK_LINK auto memcpy(void *d, void const *s, size_t n) -> void * {
     return d;
 }
 
-NO_MANGLE WEAK_LINK auto memmove(void *d, void const *s, size_t n) -> void * {
+NO_MANGLE WEAK_LINK
+auto memmove(void *d, void const *s, size_t n) -> void * {
     auto md = static_cast<char *>(d);
     auto ms = static_cast<char const *>(s);
 
@@ -30,7 +32,8 @@ NO_MANGLE WEAK_LINK auto memmove(void *d, void const *s, size_t n) -> void * {
     return d;
 }
 
-NO_MANGLE WEAK_LINK auto memset(void *s, int c, size_t n) -> void * {
+NO_MANGLE WEAK_LINK
+auto memset(void *s, int c, size_t n) -> void * {
     auto md = static_cast<u8 *>(s);
     for (size_t i = 0; i < n; ++i) {
         md[i] = static_cast<u8>(c);
@@ -39,7 +42,8 @@ NO_MANGLE WEAK_LINK auto memset(void *s, int c, size_t n) -> void * {
     return s;
 }
 
-NO_MANGLE WEAK_LINK auto memcmp(void const *x, void const *y, size_t n) -> int {
+NO_MANGLE WEAK_LINK
+auto memcmp(void const *x, void const *y, size_t n) -> int {
     auto p1 = static_cast<char const *>(x);
     auto p2 = static_cast<char const *>(y);
 
@@ -52,7 +56,8 @@ NO_MANGLE WEAK_LINK auto memcmp(void const *x, void const *y, size_t n) -> int {
     return 0;
 }
 
-WEAK_LINK auto memchr(void const *str, int c, size_t n) -> void const * {
+WEAK_LINK
+auto memchr(void const *str, int c, size_t n) -> void const * {
     auto p = static_cast<char const *>(str);
 
     for (size_t i = 0; i < n; i++) {
@@ -64,7 +69,8 @@ WEAK_LINK auto memchr(void const *str, int c, size_t n) -> void const * {
     return NULL;
 }
 
-NO_MANGLE WEAK_LINK auto strlen(char const *p) -> size_t {
+NO_MANGLE WEAK_LINK
+auto strlen(char const *p) -> size_t {
     size_t n = 0;
     while (*p++ != 0) {
         n += 1;

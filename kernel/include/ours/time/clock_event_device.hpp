@@ -84,70 +84,85 @@ class ClockEventDevice {
     /// Switch the clock event device to a new state and modify its work mode.
     auto switch_mode(Mode target) -> Status;
 
-    FORCE_INLINE auto set_event_handler(Handler handler) -> void {
+    FORCE_INLINE
+    auto set_event_handler(Handler handler) -> void {
         m_event_handler = handler;
     }
 
-    FORCE_INLINE auto get_event_handler() -> Handler {
+    FORCE_INLINE
+    auto get_event_handler() -> Handler {
         return m_event_handler;
     }
 
-    FORCE_INLINE auto set_irqnum(VIrqNum irqnum) -> void {
+    FORCE_INLINE
+    auto set_irqnum(VIrqNum irqnum) -> void {
         m_irqnum = irqnum;
     }
 
-    FORCE_INLINE auto irqnum() const -> VIrqNum {
+    FORCE_INLINE
+    auto irqnum() const -> VIrqNum {
         return m_irqnum;
     }
 
-    FORCE_INLINE auto cpumask() const -> CpuMask const & {
+    FORCE_INLINE
+    auto cpumask() const -> CpuMask const & {
         return *m_cpumask;
     }
 
     /// For devices whose mask is only known once they are on their CPU.
-    FORCE_INLINE auto set_cpumask(CpuMask const *cpumask) -> void {
+    FORCE_INLINE
+    auto set_cpumask(CpuMask const *cpumask) -> void {
         m_cpumask = cpumask;
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto rating() const -> Rating {
+    FORCE_INLINE
+    auto rating() const -> Rating {
         return m_rating;
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto name() const -> char const * {
+    FORCE_INLINE
+    auto name() const -> char const * {
         return m_name;
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto has_feature(Feature feature) const -> bool {
+    FORCE_INLINE
+    auto has_feature(Feature feature) const -> bool {
         return !!(m_feature & feature);
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto is_mode_detached() const -> bool {
+    FORCE_INLINE
+    auto is_mode_detached() const -> bool {
         return m_mode == Mode::Detached;
     }
 
-    FORCE_INLINE auto is_mode_oneshot() const -> bool {
+    FORCE_INLINE
+    auto is_mode_oneshot() const -> bool {
         return m_mode == Mode::Oneshot;
     }
 
-    FORCE_INLINE auto is_mode_oneshot_stopped() const -> bool {
+    FORCE_INLINE
+    auto is_mode_oneshot_stopped() const -> bool {
         return m_mode == Mode::OneshotStopped;
     }
 
-    FORCE_INLINE auto is_mode_periodic() const -> bool {
+    FORCE_INLINE
+    auto is_mode_periodic() const -> bool {
         return m_mode == Mode::Periodic;
     }
 
-    FORCE_INLINE auto handle_event() -> void {
+    FORCE_INLINE
+    auto handle_event() -> void {
         if (m_event_handler) {
             m_event_handler(this);
         }
     }
 
-    FORCE_INLINE auto next_event() const -> TimePoint<> {
+    FORCE_INLINE
+    auto next_event() const -> TimePoint<> {
         return m_next_event;
     }
 
@@ -172,11 +187,13 @@ class ClockEventDevice {
 
     auto broadcast(CpuMask const &targets) -> Status;
 
-    FORCE_INLINE auto ticks_to_time(Ticks ticks) -> Duration {
+    FORCE_INLINE
+    auto ticks_to_time(Ticks ticks) -> Duration {
         return Duration(m_scaler.scale(ticks));
     }
 
-    FORCE_INLINE auto time_to_ticks(Duration duration) -> Ticks {
+    FORCE_INLINE
+    auto time_to_ticks(Duration duration) -> Ticks {
         return m_scaler.inverse().scale(duration.count());
     }
 

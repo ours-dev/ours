@@ -58,11 +58,13 @@ class TickSched: public mm::CpuLocal::Current<TickSched> {
     /// by the tick device's periodic handler or by the tick Timer.
     auto on_tick(TimePoint<> now) -> void;
 
-    FORCE_INLINE auto is_legacy() const -> bool {
+    FORCE_INLINE
+    auto is_legacy() const -> bool {
         return m_workmode == WorkMode::Legacy;
     }
 
-    FORCE_INLINE auto is_hptick() const -> bool {
+    FORCE_INLINE
+    auto is_hptick() const -> bool {
         return m_workmode == WorkMode::HpTick;
     }
 

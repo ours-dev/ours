@@ -15,7 +15,8 @@
 #include <ours/start.hpp>
 
 namespace ours {
-INIT_CODE static auto x86_enable_syscall() -> void {
+INIT_CODE
+static auto x86_enable_syscall() -> void {
     using namespace arch;
 
     // Enable system call. It is required by Intel.
@@ -52,7 +53,8 @@ INIT_CODE static auto x86_enable_syscall() -> void {
     MsrIo::write(MsrRegAddr::IA32Fmask, DISABLED_FLAG_BIT_MASK);
 }
 
-INIT_CODE auto x86_init_percpu(CpuNum cpunum) -> void {
+INIT_CODE
+auto x86_init_percpu(CpuNum cpunum) -> void {
     using arch::Cr4;
 
     x86_init_feature_percpu(cpunum);
@@ -76,7 +78,8 @@ INIT_CODE auto x86_init_percpu(CpuNum cpunum) -> void {
     x86_init_mmu_percpu();
 }
 
-NO_MANGLE INIT_CODE auto init_arch_early() -> void {
+NO_MANGLE INIT_CODE
+auto init_arch_early() -> void {
     x86_init_idt_early();
 
     x86_init_percpu(0);
@@ -86,7 +89,8 @@ NO_MANGLE INIT_CODE auto init_arch_early() -> void {
     Cpu::set_state(Cpu::State::Online);
 }
 
-NO_MANGLE INIT_CODE auto init_arch() -> void {
+NO_MANGLE INIT_CODE
+auto init_arch() -> void {
     x86_setup_idt();
 
     x86_setup_gdt();

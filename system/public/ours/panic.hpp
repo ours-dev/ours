@@ -67,7 +67,8 @@ namespace detail {
     /// a string_view formats correctly, so decay the array to a string_view on
     /// the way in. Everything else is forwarded untouched.
     template <typename T>
-    FORCE_INLINE constexpr auto as_format_arg(T &&value) -> decltype(auto) {
+    FORCE_INLINE
+    constexpr auto as_format_arg(T &&value) -> decltype(auto) {
         using Bare = std::remove_cvref_t<T>;
         if constexpr (std::is_array_v<Bare> && std::is_same_v<std::remove_extent_t<Bare>, char>) {
             return std::string_view(value);

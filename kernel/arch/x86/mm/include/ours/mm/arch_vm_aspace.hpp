@@ -43,7 +43,8 @@ class ArchVmAspace {
 
     auto active_cpus() const -> CpuMask;
 
-    FORCE_INLINE auto pgd_phys() const -> PhysAddr {
+    FORCE_INLINE
+    auto pgd_phys() const -> PhysAddr {
         return m_page_table.pgd_phys();
     }
 

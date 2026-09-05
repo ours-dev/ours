@@ -90,8 +90,9 @@ class TableSet final {
     /// with whatever was on the stack.
     TableSet() = default;
 
-    FORCE_INLINE constexpr TableSet(PhysMapper *mapper, sdt::Rsdt const *rsdt,
-                                    sdt::Xsdt const *xsdt, usize num_tables)
+    FORCE_INLINE
+    constexpr TableSet(PhysMapper *mapper, sdt::Rsdt const *rsdt, sdt::Xsdt const *xsdt,
+                       usize num_tables)
         : m_mapper(mapper), m_rsdt(rsdt), m_xsdt(xsdt), m_num_tables(num_tables) {}
 
     auto find_checked(Signature sign, usize min_size) -> TableHeader const *;

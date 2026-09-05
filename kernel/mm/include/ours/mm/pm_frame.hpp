@@ -193,55 +193,68 @@ class PageFrame {
         set_flags(Flags::Active | Flags::UpToDate | Flags::Initialized);
     }
 
-    FORCE_INLINE constexpr auto nid() const -> NnId {
+    FORCE_INLINE
+    constexpr auto nid() const -> NnId {
         return m_status.get<Index::Node>();
     }
 
-    FORCE_INLINE constexpr auto zone() const -> ZoneType {
+    FORCE_INLINE
+    constexpr auto zone() const -> ZoneType {
         return m_status.get<Index::ZoneType>();
     }
 
-    FORCE_INLINE constexpr auto secnum() const -> SecNum {
+    FORCE_INLINE
+    constexpr auto secnum() const -> SecNum {
         return m_status.get<Index::Section>();
     }
 
-    FORCE_INLINE constexpr auto order() const -> usize {
+    FORCE_INLINE
+    constexpr auto order() const -> usize {
         return m_status.get<Index::Order>();
     }
 
-    FORCE_INLINE constexpr auto set_order(usize order) -> void {
+    FORCE_INLINE
+    constexpr auto set_order(usize order) -> void {
         m_status.set<Index::Order>(order);
     }
 
-    FORCE_INLINE constexpr auto mark_pinned() -> void {
+    FORCE_INLINE
+    constexpr auto mark_pinned() -> void {
         set_flags(Flags::Pinned);
     }
 
-    FORCE_INLINE constexpr auto mark_reserved() -> void {
+    FORCE_INLINE
+    constexpr auto mark_reserved() -> void {
         set_flags(Flags::Reserved);
     }
 
-    FORCE_INLINE constexpr auto mark_active() -> void {
+    FORCE_INLINE
+    constexpr auto mark_active() -> void {
         set_flags(Flags::Active);
     }
 
-    FORCE_INLINE constexpr auto role() const -> Role {
+    FORCE_INLINE
+    constexpr auto role() const -> Role {
         return m_status.get<Index::Role>();
     }
 
-    FORCE_INLINE constexpr auto set_role(Role role) -> void {
+    FORCE_INLINE
+    constexpr auto set_role(Role role) -> void {
         m_status.set<Index::Role>(role);
     }
 
-    FORCE_INLINE constexpr auto is_role(Role role) const -> bool {
+    FORCE_INLINE
+    constexpr auto is_role(Role role) const -> bool {
         return this->role() == role;
     }
 
-    FORCE_INLINE constexpr auto phys_size() const -> usize {
+    FORCE_INLINE
+    constexpr auto phys_size() const -> usize {
         return BIT(order()) << PAGE_SHIFT;
     }
 
-    FORCE_INLINE constexpr auto flags() const -> Flags {
+    FORCE_INLINE
+    constexpr auto flags() const -> Flags {
         return m_status.get<Index::Flags>();
     }
 
@@ -267,11 +280,13 @@ class PageFrame {
     /// multi-frame block is responsible for stamping the tails and for
     /// clearing them again before handing the block back -- see slab::create
     /// and slab::destroy, the only pair doing so today.
-    FORCE_INLINE auto compound_offset() const -> u32 {
+    FORCE_INLINE
+    auto compound_offset() const -> u32 {
         return m_compound.load(ustl::sync::MemoryOrder::Relaxed);
     }
 
-    FORCE_INLINE auto set_compound_offset(u32 offset) -> void {
+    FORCE_INLINE
+    auto set_compound_offset(u32 offset) -> void {
         m_compound.store(offset, ustl::sync::MemoryOrder::Relaxed);
     }
 
@@ -287,7 +302,8 @@ class PageFrame {
     /// This is the only thing that writes the role. Reading a frame -- taking
     /// its address, dumping it, asking what it is -- must never change it.
     template <typename Body>
-    FORCE_INLINE auto become() -> Body & {
+    FORCE_INLINE
+    auto become() -> Body & {
         static_assert(sizeof(Body) <= sizeof(m_body), "role payload is too large");
 
         for (auto &byte: m_body) {
@@ -301,20 +317,23 @@ class PageFrame {
     /// different role. For callers that start from a pointer of unknown
     /// provenance -- kfree reaching a frame from an arbitrary object address.
     template <typename Body>
-    FORCE_INLINE auto try_as() -> Body * {
+    FORCE_INLINE
+    auto try_as() -> Body * {
         return role() == Body::ROLE ? std::launder(reinterpret_cast<Body *>(&m_body)) : nullptr;
     }
 
     /// Interprets this frame as |Body| where the role is already known from
     /// context. Checked in debug builds.
     template <typename Body>
-    FORCE_INLINE auto as() -> Body & {
+    FORCE_INLINE
+    auto as() -> Body & {
         DEBUG_ASSERT(role() == Body::ROLE, "frame plays another role");
         return *std::launder(reinterpret_cast<Body *>(&m_body));
     }
 
     template <typename Body>
-    FORCE_INLINE auto as() const -> Body const & {
+    FORCE_INLINE
+    auto as() const -> Body const & {
         DEBUG_ASSERT(role() == Body::ROLE, "frame plays another role");
         return *std::launder(reinterpret_cast<Body const *>(&m_body));
     }
@@ -375,7 +394,8 @@ class PageFrame {
 
     USTL_NO_MOVEABLE_AND_COPYABLE(PageFrame);
 
-    FORCE_INLINE constexpr auto set_flags(Flags flags) -> void {
+    FORCE_INLINE
+    constexpr auto set_flags(Flags flags) -> void {
         m_status.set<Index::Flags>(flags);
     }
 

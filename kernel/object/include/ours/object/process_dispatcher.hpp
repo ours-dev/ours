@@ -42,7 +42,8 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     auto detach_thread(ThreadDispatcher &thread) -> Status;
 
-    FORCE_INLINE auto aspace() -> mm::VmAspace * {
+    FORCE_INLINE
+    auto aspace() -> mm::VmAspace * {
         return m_aspace;
     }
 

@@ -22,9 +22,12 @@ class PHYS_EXPORT Aspace;
 /// same way and binds to physload's objects at load time, so there is one
 /// BootMem, one Handoff and one Aspace in the system rather than a copy per
 /// image (ours/phys/exports.hpp).
-PHYS_EXPORT extern BootMem BOOTMEM;
-PHYS_EXPORT extern Handoff HANDOFF;
-PHYS_EXPORT extern Aspace *ASPACE;
+PHYS_EXPORT
+extern BootMem BOOTMEM;
+PHYS_EXPORT
+extern Handoff HANDOFF;
+PHYS_EXPORT
+extern Aspace *ASPACE;
 
 inline auto global_bootmem() -> BootMem * {
     return &BOOTMEM;
@@ -38,7 +41,8 @@ inline auto global_aspace() -> Aspace * {
     return ASPACE;
 }
 
-PHYS_EXPORT auto init_early_console() -> void;
+PHYS_EXPORT
+auto init_early_console() -> void;
 
 /// Arch-implementation, WEAK_LINK default is UartKind::None.
 ///

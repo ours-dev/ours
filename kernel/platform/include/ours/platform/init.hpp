@@ -39,32 +39,36 @@ enum class PlatformInitLevel {
     Pmm = PrePmm + DELTA_BETWEEN_PLATFORM_INIT_LEVELS,
 };
 
-FORCE_INLINE constexpr static auto operator+(PlatformInitLevel level, i32 offset)
-    -> PlatformInitLevel {
+FORCE_INLINE
+constexpr static auto operator+(PlatformInitLevel level, i32 offset) -> PlatformInitLevel {
     return PlatformInitLevel(ustl::traits::UnderlyingTypeT<PlatformInitLevel>(level) + offset);
 }
 
-FORCE_INLINE constexpr static auto operator-(PlatformInitLevel level, i32 offset)
-    -> PlatformInitLevel {
+FORCE_INLINE
+constexpr static auto operator-(PlatformInitLevel level, i32 offset) -> PlatformInitLevel {
     return PlatformInitLevel(ustl::traits::UnderlyingTypeT<PlatformInitLevel>(level) - offset);
 }
 
-INIT_CODE FORCE_INLINE constexpr static auto set_platform_init_level(PlatformInitLevel level)
-    -> void {
+INIT_CODE FORCE_INLINE
+constexpr static auto set_platform_init_level(PlatformInitLevel level) -> void {
     gktl::set_init_level(gktl::InitLevel(level), DELTA_BETWEEN_PLATFORM_INIT_LEVELS);
 }
 
 /// The followings are private to platform code.
 
-INIT_CODE auto platform_init_pmm() -> void;
+INIT_CODE
+auto platform_init_pmm() -> void;
 
-INIT_CODE auto platform_init_keyboard() -> void;
+INIT_CODE
+auto platform_init_keyboard() -> void;
 
 /// The followings just be public to `start_kernel`
 
-NO_MANGLE INIT_CODE auto init_platform_early() -> void;
+NO_MANGLE INIT_CODE
+auto init_platform_early() -> void;
 
-NO_MANGLE INIT_CODE auto init_platform() -> void;
+NO_MANGLE INIT_CODE
+auto init_platform() -> void;
 
 } // namespace ours
 

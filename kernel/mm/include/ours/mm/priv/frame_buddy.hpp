@@ -31,11 +31,13 @@ class FrameBuddy {
     auto contains(PmFrame const *frame) const -> bool;
 
   private:
-    FORCE_INLINE auto pfn_of(PmFrame const *frame) const -> Pfn {
+    FORCE_INLINE
+    auto pfn_of(PmFrame const *frame) const -> Pfn {
         return m_base_pfn + static_cast<usize>(frame - m_frames);
     }
 
-    FORCE_INLINE auto frame_of(Pfn pfn) const -> PmFrame * {
+    FORCE_INLINE
+    auto frame_of(Pfn pfn) const -> PmFrame * {
         if (pfn < m_base_pfn) {
             return nullptr;
         }
@@ -43,8 +45,8 @@ class FrameBuddy {
         return index < m_count ? &m_frames[index] : nullptr;
     }
 
-    FORCE_INLINE auto is_mergeable(PmFrame const *self, PmFrame const *buddy, Order order) const
-        -> bool {
+    FORCE_INLINE
+    auto is_mergeable(PmFrame const *self, PmFrame const *buddy, Order order) const -> bool {
         if (buddy->role() != PageFrame::Role::Pmm) {
             return false;
         }
@@ -60,21 +62,25 @@ class FrameBuddy {
         return true;
     }
 
-    FORCE_INLINE auto has_frame(Order order) const -> bool {
+    FORCE_INLINE
+    auto has_frame(Order order) const -> bool {
         return !m_lists[order].empty();
     }
 
-    FORCE_INLINE auto get_frame(Order order) -> PmFrame * {
+    FORCE_INLINE
+    auto get_frame(Order order) -> PmFrame * {
         return &m_lists[order].front().value();
     }
 
-    FORCE_INLINE auto remove_frame(PmFrame *frame, Order order) -> void {
+    FORCE_INLINE
+    auto remove_frame(PmFrame *frame, Order order) -> void {
         auto const to_erase = m_lists[order].iterator_to(*frame);
         static_cast<void>(m_lists[order].erase(to_erase));
         frame->set_role(PageFrame::Role::None);
     }
 
-    FORCE_INLINE auto insert_frame(PmFrame *frame, Order order) -> void {
+    FORCE_INLINE
+    auto insert_frame(PmFrame *frame, Order order) -> void {
         m_lists[order].push_back(*frame);
         frame->set_role(PageFrame::Role::Pmm);
         frame->set_order(order);

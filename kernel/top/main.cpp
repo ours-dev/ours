@@ -96,7 +96,8 @@ namespace {
     }
 } // namespace
 
-NO_MANGLE INIT_CODE auto start_kernel(PhysAddr handoff) -> void {
+NO_MANGLE INIT_CODE
+auto start_kernel(PhysAddr handoff) -> void {
     com1_put('C');
     ccrt::init_global_static_objects();
     com1_put('B');

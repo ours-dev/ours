@@ -21,11 +21,13 @@ enum class InitStage {
 
 extern InitStage INIT_STAGE;
 
-FORCE_INLINE inline auto get_init_stage() -> InitStage {
+FORCE_INLINE
+inline auto get_init_stage() -> InitStage {
     return INIT_STAGE;
 }
 
-FORCE_INLINE inline auto set_init_stage(InitStage stage) -> void {
+FORCE_INLINE
+inline auto set_init_stage(InitStage stage) -> void {
     INIT_STAGE = stage;
 }
 

@@ -46,7 +46,8 @@ class PHYS_EXPORT Aspace {
 
     auto map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags) -> ustl::Result<void, MapError>;
 
-    FORCE_INLINE constexpr auto map_identically(VirtAddr va, usize n, MmuFlags flags)
+    FORCE_INLINE
+    constexpr auto map_identically(VirtAddr va, usize n, MmuFlags flags)
         -> ustl::Result<void, MapError> {
         return map(va, n, va, flags);
     }
@@ -55,35 +56,41 @@ class PHYS_EXPORT Aspace {
 
     auto query(VirtAddr va) -> ktl::Result<usize>;
 
-    FORCE_INLINE constexpr auto pgd() -> PhysAddr {
+    FORCE_INLINE
+    constexpr auto pgd() -> PhysAddr {
         return m_lower_pgd;
     }
 
-    FORCE_INLINE constexpr auto lower_pgd() -> PhysAddr {
+    FORCE_INLINE
+    constexpr auto lower_pgd() -> PhysAddr {
         return m_lower_pgd;
     }
 
-    FORCE_INLINE constexpr auto upper_pgd() -> PhysAddr {
+    FORCE_INLINE
+    constexpr auto upper_pgd() -> PhysAddr {
         return m_upper_pgd;
     }
 
-    FORCE_INLINE constexpr auto install() const -> void {
+    FORCE_INLINE
+    constexpr auto install() const -> void {
         arch_install();
     }
 
-    FORCE_INLINE constexpr auto install(PhysAddr new_pgd) -> void {
+    FORCE_INLINE
+    constexpr auto install(PhysAddr new_pgd) -> void {
         m_lower_pgd = new_pgd;
         arch_install();
     }
 
-    FORCE_INLINE constexpr auto install(PhysAddr lower_pgd, PhysAddr upper_pgd) -> void {
+    FORCE_INLINE
+    constexpr auto install(PhysAddr lower_pgd, PhysAddr upper_pgd) -> void {
         m_lower_pgd = lower_pgd;
         m_upper_pgd = upper_pgd;
         arch_install();
     }
 
-    FORCE_INLINE constexpr auto set_allocation_bounds(PhysAddr lower_bound, PhysAddr upper_bound)
-        -> void {
+    FORCE_INLINE
+    constexpr auto set_allocation_bounds(PhysAddr lower_bound, PhysAddr upper_bound) -> void {
         m_allocation_lower_bound = lower_bound;
         m_allocation_upper_bound = upper_bound;
     }

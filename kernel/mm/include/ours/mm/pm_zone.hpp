@@ -97,39 +97,48 @@ class PmZone {
 
     auto find_frame(usize order) -> PmFrame *;
 
-    FORCE_INLINE constexpr auto which_node() const -> NnId {
+    FORCE_INLINE
+    constexpr auto which_node() const -> NnId {
         return m_nid;
     }
 
-    FORCE_INLINE constexpr auto zone_type() const -> ZoneType {
+    FORCE_INLINE
+    constexpr auto zone_type() const -> ZoneType {
         return m_type;
     }
 
-    FORCE_INLINE constexpr auto present_frames() const -> usize {
+    FORCE_INLINE
+    constexpr auto present_frames() const -> usize {
         return m_present_frames;
     }
 
-    FORCE_INLINE constexpr auto managed_frames() const -> usize {
+    FORCE_INLINE
+    constexpr auto managed_frames() const -> usize {
         return m_managed_frames;
     }
 
-    FORCE_INLINE constexpr auto spanned_frames() const -> usize {
+    FORCE_INLINE
+    constexpr auto spanned_frames() const -> usize {
         return m_spanned_frames;
     }
 
-    FORCE_INLINE constexpr auto reserved_frames() const -> usize {
+    FORCE_INLINE
+    constexpr auto reserved_frames() const -> usize {
         return m_reserved_frames;
     }
 
-    FORCE_INLINE constexpr auto start_pfn() const -> usize {
+    FORCE_INLINE
+    constexpr auto start_pfn() const -> usize {
         return m_start_pfn;
     }
 
-    FORCE_INLINE constexpr auto end_pfn() const -> usize {
+    FORCE_INLINE
+    constexpr auto end_pfn() const -> usize {
         return m_start_pfn + m_spanned_frames;
     }
 
-    FORCE_INLINE constexpr auto is_below_high_wmark() const -> bool {
+    FORCE_INLINE
+    constexpr auto is_below_high_wmark() const -> bool {
         return !!(m_flags & Flags::BelowHighWmark);
     }
 
@@ -145,7 +154,8 @@ class PmZone {
 
     friend class PmNode;
 
-    FORCE_INLINE static auto is_order_within_pcpu_cache_limit(usize order) -> bool {
+    FORCE_INLINE
+    static auto is_order_within_pcpu_cache_limit(usize order) -> bool {
         return order < MAX_PCPU_CACHE_ORDER;
     }
 

@@ -22,7 +22,8 @@ struct DisabledZoneFilter<MaxZonePfn<Type, Pfn, Enable>>: std::bool_constant<!En
 
 /// This template design ensures that changes to the number of zone types do not affect existing implementations.
 template <typename... LinearZoneMaxPfns>
-INIT_CODE auto platform_init_pmm_with_config(ustl::TypeList<LinearZoneMaxPfns...>) -> void {
+INIT_CODE
+auto platform_init_pmm_with_config(ustl::TypeList<LinearZoneMaxPfns...>) -> void {
     static_assert(sizeof...(LinearZoneMaxPfns) <= mm::NR_ZONES_PER_NODE, "To many zones per node");
 
     std::array<mm::Pfn, sizeof...(LinearZoneMaxPfns)> linear_zone_pfns;
@@ -38,12 +39,14 @@ INIT_CODE auto platform_init_pmm_with_config(ustl::TypeList<LinearZoneMaxPfns...
     mm::init_pmm(linear_zone_pfns);
 }
 
-INIT_CODE auto platform_init_pmm() -> void {
+INIT_CODE
+auto platform_init_pmm() -> void {
     using Config = ustl::TypeAlgos::Filter<ArchPmmZoneConfig, DisabledZoneFilter>;
     platform_init_pmm_with_config(Config());
 }
 
-INIT_CODE static auto platform_init_resource() -> void {}
+INIT_CODE
+static auto platform_init_resource() -> void {}
 GKTL_INIT_HOOK(ResourceInit, platform_init_resource, gktl::InitLevel::Vmm);
 
 } // namespace ours

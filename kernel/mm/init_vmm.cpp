@@ -126,7 +126,8 @@ namespace {
          .backing = PhysVma::Backing::AddressSpace},
     };
 
-    INIT_CODE auto entrol_preset_vma(PhysVma const &phys_vma) -> void {
+    INIT_CODE
+    auto entrol_preset_vma(PhysVma const &phys_vma) -> void {
         auto [base, end] = resolve_page_range(phys_vma.base, phys_vma.base + phys_vma.size);
         log::trace("Reserve area {}: [{:X}, {:X})", phys_vma.name, base, end);
 
@@ -150,7 +151,8 @@ namespace {
         DEBUG_ASSERT(Status::Ok == status);
     }
 
-    INIT_CODE auto init_vmm_preheap() -> void {
+    INIT_CODE
+    auto init_vmm_preheap() -> void {
         VmAspace::init_kernel_aspace();
 
         for (usize i = 0; i < std::size(PHYS_VMOS); ++i) {
@@ -178,12 +180,14 @@ namespace {
     /// contiguous, physically scattered, and therefore impossible to build
     /// before the address space it carves from. init_vmm_preheap() above is
     /// named for being the part that runs before *this*.
-    INIT_CODE auto init_heap() -> void {}
+    INIT_CODE
+    auto init_heap() -> void {}
 } // namespace
 
 /// Requires:
 ///     1).
-INIT_CODE auto init_vmm() -> void {
+INIT_CODE
+auto init_vmm() -> void {
     init_vmm_preheap();
 
     init_heap();

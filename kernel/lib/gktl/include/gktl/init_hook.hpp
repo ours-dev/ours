@@ -64,11 +64,13 @@ enum class InitLevel {
     None,
 };
 
-FORCE_INLINE constexpr auto operator+(InitLevel level, i32 offset) -> InitLevel {
+FORCE_INLINE
+constexpr auto operator+(InitLevel level, i32 offset) -> InitLevel {
     return static_cast<InitLevel>((std::to_underlying(level) + offset));
 }
 
-FORCE_INLINE constexpr auto operator-(InitLevel level, i32 offset) -> InitLevel {
+FORCE_INLINE
+constexpr auto operator-(InitLevel level, i32 offset) -> InitLevel {
     return static_cast<InitLevel>((std::to_underlying(level) - offset));
 }
 
@@ -84,7 +86,8 @@ struct InitHook {
 /// newly set |level| (exclusive) to be executed.
 auto set_init_level(InitLevel level, i32 delta = LEVEL_DELTA) -> void;
 
-FORCE_INLINE inline auto get_init_level() -> InitLevel {
+FORCE_INLINE
+inline auto get_init_level() -> InitLevel {
     extern InitLevel INIT_LEVEL;
     return INIT_LEVEL;
 }

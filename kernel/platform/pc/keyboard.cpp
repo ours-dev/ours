@@ -440,7 +440,8 @@ static int LAST_CODE;
 
 static ustl::io::CircularBuffer<u8, ktl::Allocator<u8>> KEY_BUF;
 
-FORCE_INLINE static auto isprint(u8 c) -> bool {
+FORCE_INLINE
+static auto isprint(u8 c) -> bool {
     return 0x20 <= c && c <= 0x7E;
 }
 

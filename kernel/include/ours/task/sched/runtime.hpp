@@ -20,16 +20,19 @@ struct Runtime {
         curr_thread->preemption_state().add_pending();
     }
 
-    FORCE_INLINE auto clock() -> SchedTime {
+    FORCE_INLINE
+    auto clock() -> SchedTime {
         return driver.clock();
     }
 
     /// Calculate the scheduling period
-    FORCE_INLINE auto scheduling_period() const -> SchedDuration {
+    FORCE_INLINE
+    auto scheduling_period() const -> SchedDuration {
         return scheduling_period_grans * minimal_granularity;
     }
 
-    FORCE_INLINE auto min_scheduling_period() const -> SchedDuration {
+    FORCE_INLINE
+    auto min_scheduling_period() const -> SchedDuration {
         return minimal_period_grans * minimal_granularity;
     }
 

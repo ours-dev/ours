@@ -36,11 +36,13 @@ namespace priv {
 
     template <>
     struct DispatchLockState<EnablePi::No> {
-        FORCE_INLINE auto increase_reader_count(u32 count) -> void {
+        FORCE_INLINE
+        auto increase_reader_count(u32 count) -> void {
             m_num_reader.fetch_add(count, ustl::sync::MemoryOrder::Release);
         }
 
-        FORCE_INLINE auto decrease_reader_count(u32 count) -> void {
+        FORCE_INLINE
+        auto decrease_reader_count(u32 count) -> void {
             m_num_writer.fetch_sub(count, ustl::sync::MemoryOrder::Release);
         }
 
@@ -95,7 +97,9 @@ namespace priv {
         using Self = Guard;
 
       public:
-        FORCE_INLINE Guard(RwLock &lock) : m_lock(lock) {
+        FORCE_INLINE
+        Guard(RwLock &lock)
+            : m_lock(lock) {
             if constexpr (Owner == Owner::Reader) {
                 m_lock.read_acquire();
             } else {
@@ -104,7 +108,8 @@ namespace priv {
             m_guarded = 1;
         }
 
-        FORCE_INLINE auto unguard() -> void {
+        FORCE_INLINE
+        auto unguard() -> void {
             if (!m_guarded) {
                 return;
             }
@@ -118,7 +123,8 @@ namespace priv {
             m_guarded = 0;
         }
 
-        FORCE_INLINE ~Guard() {
+        FORCE_INLINE
+        ~Guard() {
             unguard();
         }
 

@@ -83,12 +83,14 @@ class TickDevice {
     auto has_device() const -> bool;
 
     [[nodiscard]]
-    FORCE_INLINE auto device() const -> ClockEventDevice * {
+    FORCE_INLINE
+    auto device() const -> ClockEventDevice * {
         return m_clkdev;
     }
 
     [[nodiscard]]
-    FORCE_INLINE auto mode() const -> Mode {
+    FORCE_INLINE
+    auto mode() const -> Mode {
         return m_mode;
     }
 
@@ -141,12 +143,14 @@ class TickDevice::Current: public mm::CpuLocal::Current<TickDevice> {
 
   public:
     /// Override methods faster than the way through Current::get().*();
-    FORCE_INLINE static auto is_mode_oneshot() -> bool {
+    FORCE_INLINE
+    static auto is_mode_oneshot() -> bool {
         arch::AutoInterruptDisabler guard;
         return mm::CpuLocal::read(CURRENT_INSTANCE.m_mode) == Mode::Oneshot;
     }
 
-    FORCE_INLINE static auto is_mode_periodic() -> bool {
+    FORCE_INLINE
+    static auto is_mode_periodic() -> bool {
         arch::AutoInterruptDisabler guard;
         return mm::CpuLocal::read(CURRENT_INSTANCE.m_mode) == Mode::Periodic;
     }

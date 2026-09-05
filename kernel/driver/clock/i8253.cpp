@@ -94,7 +94,8 @@ class I8253ClockDevice {
 static ustl::LazyInit<I8253ClockDevice> I8253_CLKEVT_STORAGE;
 ClockEventDevice *I8253_CLKEVT;
 
-INIT_CODE auto i8253_init() -> void {
+INIT_CODE
+auto i8253_init() -> void {
     I8253_CLKEVT_STORAGE.init();
     I8253_CLKEVT = I8253_CLKEVT_STORAGE->device();
 

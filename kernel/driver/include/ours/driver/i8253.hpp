@@ -12,7 +12,8 @@ extern time::ClockEventDevice *I8253_CLKEVT;
 /// device. It takes no mode: which mode the PIT runs in is TickDevice's
 /// decision, made through switch_mode(). The `bool oneshot` this used to take
 /// was never read.
-INIT_CODE auto i8253_init() -> void;
+INIT_CODE
+auto i8253_init() -> void;
 
 } // namespace ours
 

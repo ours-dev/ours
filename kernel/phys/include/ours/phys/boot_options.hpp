@@ -29,11 +29,12 @@ struct BootOptions {
 
 /// Apply the subset of OBI cmdline options consumed before the kernel is
 /// loaded. Unknown tokens are intentionally left for later boot stages.
-PHYS_EXPORT auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline)
-    -> Status;
+PHYS_EXPORT
+auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline) -> Status;
 
 /// physload owns the parsed options; modules bind to this object.
-PHYS_EXPORT extern BootOptions BOOT_OPTIONS;
+PHYS_EXPORT
+extern BootOptions BOOT_OPTIONS;
 
 inline auto global_boot_options() -> BootOptions * {
     return &BOOT_OPTIONS;

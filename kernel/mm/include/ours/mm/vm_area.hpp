@@ -30,15 +30,16 @@ class VmArea final: public VmAreaOrMapping {
         return TYPE_TAG;
     }
 
-    FORCE_INLINE static auto create(VirtAddr va, usize size, VmaFlags vmaf, VmArea *parent,
-                                    VmAspace *aspace, char const *name, ustl::Arc<Self> *out)
-        -> Status {
+    FORCE_INLINE
+    static auto create(VirtAddr va, usize size, VmaFlags vmaf, VmArea *parent, VmAspace *aspace,
+                       char const *name, ustl::Arc<Self> *out) -> Status {
         DEBUG_ASSERT(parent);
         return create_common(va, size, vmaf, parent, aspace, name, out);
     }
 
-    FORCE_INLINE static auto create_root(VirtAddr va, usize size, VmaFlags vmaf, VmAspace *aspace,
-                                         char const *name, ustl::Arc<Self> *out) -> Status {
+    FORCE_INLINE
+    static auto create_root(VirtAddr va, usize size, VmaFlags vmaf, VmAspace *aspace,
+                            char const *name, ustl::Arc<Self> *out) -> Status {
         return create_common(va, size, vmaf, nullptr, aspace, name, out);
     }
 

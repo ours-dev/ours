@@ -139,7 +139,8 @@ struct EarlyMem {
         return BOOTMEM == nullptr ? PhysAddr{} : BOOTMEM->max_address();
     }
 
-    INIT_DATA static inline phys::BootMem *BOOTMEM;
+    INIT_DATA
+    static inline phys::BootMem *BOOTMEM;
 };
 
 } // namespace ours::mm

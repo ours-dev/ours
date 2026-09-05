@@ -14,6 +14,7 @@ AttributeMacros:
   - FORCE_INLINE
   - FORCE_INLINE_ATTR
   - INIT_CODE
+  - INIT_CONST
   - INIT_DATA
   - KERNEL_API
   - NAKED
@@ -24,6 +25,47 @@ AttributeMacros:
   - PHYS_EXPORT
   - USED
   - WEAK_LINK
+
+# What actually puts an attribute macro on its own line. AttributeMacros above
+# only stops clang-format from misreading these names; BreakAfterAttributes
+# reaches real `[[...]]` spellings and nothing else, so with AttributeMacros
+# alone `INIT_CODE static auto f() -> void` stayed on one line while a literal
+# `[[gnu::section(...)]]` on the same declaration broke. Naming the expansion
+# here is what lets clang-format see an attribute and apply the break.
+#
+# The expansions are written for the formatter, not for the preprocessor: they
+# only have to have the shape of an attribute. INIT_CODE really reaches its
+# attribute through INIT_SECTION() and LINK_SECTION(), and KERNEL_API uses the
+# `__attribute__((...))` spelling -- neither matters here, but both mean this
+# list has to be revisited by hand if those macros stop being attributes.
+#
+# Two deliberate absences:
+#
+#   PACKED -- it reads as part of the type it decorates (`PACKED struct S`),
+#   and a line of its own separates it from what it applies to.
+#
+#   FORCE_INLINE_ATTR and NO_RETURN -- listing either hangs clang-format
+#   23.1.0-rc3 outright. The trigger is an attribute macro in lambda position:
+#   `[] NO_RETURN() -> void { ... }` loops forever, while the literal
+#   `[] [[noreturn]] () -> void` does not, so it is the macro expansion that
+#   the formatter cannot settle. FORCE_INLINE_ATTR exists only for that
+#   position (see the comment on its definition), so its absence costs
+#   nothing. NO_RETURN is used thirteen times and only once on a lambda --
+#   kernel/kernel/task/idle_thread.cpp:34 -- so it is one source line away
+#   from joining the list; it stays out rather than have a formatter defect
+#   dictate a change to the code it formats.
+Macros:
+  - 'FORCE_INLINE=[[gnu::always_inline]]'
+  - 'INIT_CODE=[[gnu::section(".init.text")]]'
+  - 'INIT_CONST=[[gnu::section(".init.rodata")]]'
+  - 'INIT_DATA=[[gnu::section(".init.data")]]'
+  - 'KERNEL_API=[[gnu::visibility("hidden")]]'
+  - 'NAKED=[[gnu::naked]]'
+  - 'NO_INLINE=[[gnu::noinline]]'
+  - 'NO_UNIQUE_ADDRESS=[[no_unique_address]]'
+  - 'PHYS_EXPORT=[[gnu::visibility("default")]]'
+  - 'USED=[[gnu::used]]'
+  - 'WEAK_LINK=[[gnu::weak]]'
 
 AlignAfterOpenBracket: Align
 BinPackArguments: true

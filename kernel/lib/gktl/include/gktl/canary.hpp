@@ -36,7 +36,8 @@ consteval auto magic(std::string_view literal) -> u32 {
 }
 
 template <typename T>
-FORCE_INLINE consteval auto magic() -> u32 {
+FORCE_INLINE
+consteval auto magic() -> u32 {
     return magic(TypeName<T>::value());
 }
 
@@ -54,23 +55,32 @@ class Canary {
     // guaranteed assertion, and used to be invisible only because
     // gktl::magic<T>() was itself zero for every T and the check compared
     // zero against zero.
-    FORCE_INLINE constexpr Canary() : m_magic(0) {}
+    FORCE_INLINE
+    constexpr Canary()
+        : m_magic(0) {}
 
     template <typename T>
-    FORCE_INLINE constexpr Canary(T *owner) : m_magic(gktl::magic<T>()) {}
+    FORCE_INLINE
+    constexpr Canary(T *owner)
+        : m_magic(gktl::magic<T>()) {}
 
-    FORCE_INLINE constexpr Canary(u32 magic) : m_magic(magic) {}
+    FORCE_INLINE
+    constexpr Canary(u32 magic)
+        : m_magic(magic) {}
 
     template <typename T>
-    FORCE_INLINE constexpr auto verify() const -> void {
+    FORCE_INLINE
+    constexpr auto verify() const -> void {
         DEBUG_ASSERT(m_magic == gktl::magic<T>(), "Error type magic");
     }
 
-    FORCE_INLINE constexpr auto verify(u32 magic) const -> void {
+    FORCE_INLINE
+    constexpr auto verify(u32 magic) const -> void {
         DEBUG_ASSERT(m_magic == magic, "Error type magic");
     }
 
-    FORCE_INLINE constexpr auto magic() const -> u32 {
+    FORCE_INLINE
+    constexpr auto magic() const -> u32 {
         return m_magic;
     }
 

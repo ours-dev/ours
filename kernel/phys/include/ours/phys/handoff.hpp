@@ -65,7 +65,8 @@ struct UartHandoff {
 struct Handoff {
     static constexpr auto MAGIC = 0xA1B2C3D4;
 
-    FORCE_INLINE auto verify() const -> bool {
+    FORCE_INLINE
+    auto verify() const -> bool {
         return magic == MAGIC && !mem.ranges.empty() && boot_package.valid();
     }
 

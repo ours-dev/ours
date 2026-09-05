@@ -94,11 +94,13 @@ class VmPageMap {
     static_assert(PageFrame::ALIGNMENT > TAG_MASK,
                   "the tag has to fit in bits the frame descriptor's alignment leaves clear");
 
-    FORCE_INLINE static auto make_slot(VmPage *page, Tag tag) -> Slot {
+    FORCE_INLINE
+    static auto make_slot(VmPage *page, Tag tag) -> Slot {
         return reinterpret_cast<Slot>(page) | static_cast<Slot>(tag);
     }
 
-    FORCE_INLINE static auto slot_page(Slot slot) -> VmPage * {
+    FORCE_INLINE
+    static auto slot_page(Slot slot) -> VmPage * {
         return reinterpret_cast<VmPage *>(slot & ~TAG_MASK);
     }
 
