@@ -7,9 +7,23 @@
 #define X86_GDT_KERNEL_CODE64 (2 << 3)
 #define X86_GDT_KERNEL_DATA (3 << 3)
 
-#define X86_GDT_USER_CODE32 (4 << 3)
-#define X86_GDT_USER_DATA (5 << 3)
-#define X86_GDT_USER_CODE64 (6 << 3)
+/// The user selectors carry RPL 3, the kernel ones RPL 0.
+///
+/// A selector is a GDT index *and* a requested privilege level, and the
+/// low two bits are that level. These three had the index only, so
+/// X86_GDT_USER_CODE64 was 0x30 -- index 6, RPL 0. An `iret` down to ring 3
+/// checks CS.RPL against the descriptor it names and refuses to lower the
+/// privilege level when the selector asks for ring 0, so the first attempt to
+/// enter user mode raised #GP inside the iret and triple-faulted from there.
+/// Nothing had entered ring 3 before, so nothing had needed the two bits.
+///
+/// Zircon writes the same thing the same way: USER_CODE_64_SELECTOR is
+/// (0x30 | 3) and USER_DATA_SELECTOR is (0x28 | 3), over the same GDT layout.
+/// The 32-bit user selector needs it too: it is what goes into the STAR MSR
+/// for sysret, which likewise returns to ring 3.
+#define X86_GDT_USER_CODE32 ((4 << 3) | 3)
+#define X86_GDT_USER_DATA ((5 << 3) | 3)
+#define X86_GDT_USER_CODE64 ((6 << 3) | 3)
 #define X86_GDT_MAX_SELECTORS (6 + 1) // Has also the first null descriptor
 #define X86_SEGMENT_SELECTOR_SIZE 8
 
