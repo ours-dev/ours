@@ -95,6 +95,28 @@ auto init_arch() -> void {
 
     x86_setup_gdt();
 
+    // The boot CPU's TSS descriptor has to be rebuilt now that CpuLocal has
+    // moved the per-CPU area.
+    //
+    // x86_init_percpu(0) already ran x86_setup_tss_percpu() from
+    // init_arch_early(), long before mm::CpuLocal::init(): the descriptor it
+    // wrote -- and the `ltr` that loaded it -- named the *template* copy of
+    // X86_PCPU, in the physmap. CpuLocal then gave CPU 0 a chunk of its own,
+    // so x86_set_tss_sp(), which resolves X86_PCPU through the running CPU,
+    // has been writing sp0 into an object the CPU never consults. The two
+    // addresses were visibly different: the GDT said 0xffffff801fd400e0 while
+    // the live one was 0xffffff8800000e0.
+    //
+    // It cost nothing while the kernel stayed in ring 0, because sp0 is only
+    // read on a privilege change. The first `iretq` into ring 3 made it
+    // fatal: the very next interrupt loaded RSP0 = 0 from the stale TSS,
+    // pushed the interrupt frame at address 0, and the #PF that raised needed
+    // RSP0 again -- a double fault, then a triple, before any handler ran.
+    //
+    // Only the boot CPU is affected. A secondary runs x86_init_percpu() from
+    // its own bring-up path, which happens well after CpuLocal::init().
+    x86_setup_tss_percpu(Cpu::id());
+
     x86_setup_mmu();
 }
 
