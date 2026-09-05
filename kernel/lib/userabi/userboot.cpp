@@ -9,6 +9,7 @@
 /// userboot's ELF inside the kernel package. Nothing is created yet.
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/arch/entry.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/handoff.hpp>
 #include <ours/mm/physmap.hpp>
@@ -17,6 +18,7 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/status.hpp>
+#include <ours/task/thread.hpp>
 #include <ustl/mem/align.hpp>
 
 #include <algorithm>
@@ -146,12 +148,29 @@ namespace {
     constexpr u32 PT_LOAD = 1;
 
     /// What loading produced: the address space holding userboot, how many
-    /// bytes of it are mapped, and where to start executing.
+    /// bytes of it are mapped, where to start executing, and the top of its
+    /// stack.
     struct LoadedImage {
         ustl::Arc<mm::VmAspace> aspace;
         usize span = 0;
         VirtAddr entry = 0;
+        VirtAddr stack_top = 0;
     };
+
+    /// Where userboot's stack goes, and how big.
+    ///
+    /// Placed a long way above the image rather than immediately after it, so
+    /// that a stack overflow runs into unmapped address space and faults
+    /// instead of quietly chewing through .bss. One page is plenty for a
+    /// program whose whole text is a spin loop; it is a fixed address only
+    /// because there is no ASLR and nothing else to collide with yet.
+    constexpr VirtAddr USER_STACK_TOP = USER_ASPACE_BASE + MB(16);
+    constexpr usize USER_STACK_SIZE = PAGE_SIZE;
+
+    /// The image, kept alive past userboot_init(): the thread that enters it
+    /// is only spawned there and runs later, so nothing on that stack frame
+    /// can be what it reads.
+    LoadedImage USERBOOT_IMAGE;
 
     /// Lays userboot's PT_LOAD segments out in fresh frames and maps them
     /// into a new user address space.
@@ -233,8 +252,8 @@ namespace {
         // A private address space, so that what gets mapped below is visible
         // only to userboot -- and, just as importantly, so that the kernel's
         // own mappings are not reachable from it.
-        auto status = mm::VmAspace::create(mm::VmAspaceKind::User, mm::VmasFlags::None,
-                                           "userboot", &out.aspace);
+        auto status = mm::VmAspace::create(mm::VmAspaceKind::User, mm::VmasFlags::None, "userboot",
+                                           &out.aspace);
         if (Status::Ok != status) {
             log::error("userboot: could not create an address space: {}", to_string(status));
             return status;
@@ -260,10 +279,51 @@ namespace {
             return mapping.unwrap_err();
         }
 
+        // A stack, mapped anonymous: unlike the image there is nothing to
+        // copy into it, and its pages want to be private to this address
+        // space. No Executable bit -- a stack that can be executed is the
+        // classic way a buffer overflow becomes code execution.
+        auto stack =
+            root->map_anon(mm::VmPlacement::at(USER_STACK_TOP - USER_STACK_SIZE), USER_STACK_SIZE,
+                           MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable,
+                           mm::VmMapOption::Commit, "userboot-stack");
+        if (stack.is_err()) {
+            log::error("userboot: could not map a stack: {}", to_string(stack.unwrap_err()));
+            return stack.unwrap_err();
+        }
+
+        // Grows down, so the thread starts at the top. Sixteen-byte aligned
+        // because the x86-64 ABI requires it at a function boundary, and the
+        // top of a page already is.
+        out.stack_top = USER_STACK_TOP;
+
         // The entry point is a file-relative address for a PIE, so it moves
         // with the load base like everything else.
         out.entry = USER_ASPACE_BASE + (VirtAddr(header.entry) - lowest);
         return Status::Ok;
+    }
+    /// Runs as an ordinary kernel thread, and stops being one.
+    ///
+    /// It never returns: x86_enter_uspace() ends in `iret` onto a fabricated
+    /// interrupt frame, which is how ring 3 is reached at all -- there is no
+    /// instruction that simply lowers the privilege level. From here on this
+    /// thread's kernel stack is only re-entered through an interrupt or a
+    /// syscall.
+    ///
+    /// The address space is not switched here. It was installed on the thread
+    /// before it was resumed, so Scheduler::switch_context() has already
+    /// loaded the right CR3 on the way in -- doing it again by hand would
+    /// leave the scheduler's idea of the current aspace disagreeing with the
+    /// hardware's.
+    [[noreturn]]
+    auto enter_userboot(void *) -> i32 {
+        auto const &image = USERBOOT_IMAGE;
+
+        arch::IrqFrame frame{};
+        arch_build_uspace_irqframe(&frame, image.entry, image.stack_top, 0, 0);
+
+        log::info("userboot: entering ring 3 at {:X}, stack {:X}", image.entry, image.stack_top);
+        arch_enter_uspace(&frame);
     }
 } // namespace
 
@@ -295,7 +355,7 @@ auto userboot_init() -> void {
 
     log::info("userboot: found '{}', {} bytes of ELF", USERBOOT_FILE, image.unwrap().size());
 
-    LoadedImage loaded;
+    auto &loaded = USERBOOT_IMAGE;
     if (Status::Ok != load_image(image.unwrap(), loaded)) {
         return;
     }
@@ -303,7 +363,19 @@ auto userboot_init() -> void {
     log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}", USER_ASPACE_BASE,
               USER_ASPACE_BASE + loaded.span, loaded.entry);
 
-    // Next: a thread whose arch context switches to `loaded.aspace` and
-    // enters ring 3 at `loaded.entry`. Until then nothing runs this mapping.
+    auto *const thread =
+        task::Thread::spawn("userboot", &enter_userboot, nullptr, task::DEFAULT_PRIORITY);
+    if (!thread) {
+        log::error("userboot: could not spawn the entry thread");
+        return;
+    }
+
+    // Before resume(), not after: the scheduler reads Thread::aspace() when
+    // it switches to a thread, so the CR3 change and the thread's first
+    // instruction have to be decided in that order. Setting it afterwards
+    // would race the thread's own first run.
+    thread->set_aspace(loaded.aspace.as_ptr_mut());
+    thread->detach();
+    thread->resume();
 }
 } // namespace userabi

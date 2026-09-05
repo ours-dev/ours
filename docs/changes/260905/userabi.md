@@ -375,3 +375,100 @@ userboot: mapped [200000, 203000) into its own aspace, entry at 201270
 
 - `Guest` 现在返回 `Unimplemented` 而不是继续借内核的范围。树里还没有 hypervisor，
   这条路本来就没人走；让它明确失败，好过继续给出一个错误答案。
+
+---
+
+## 6. 进 ring 3：四个各自潜伏的缺陷（2026-09-05）
+
+**文件**
+- `kernel/arch/x86/kernel/uspace.S` — `iret` → `iretq`。
+- `kernel/arch/x86/kernel/include/ours/arch/x86/descriptor.hpp` — 用户选择子补 RPL 3。
+- `kernel/arch/x86/kernel/init.cpp` — CpuLocal 之后重建 TSS 描述符。
+- `kernel/mm/vm_aspace.cpp` / `kernel/include/ours/task/thread.hpp` — 空 aspace 与 `set_aspace()`。
+- `kernel/lib/userabi/userboot.cpp` — 用户栈、入口线程、`arch_enter_uspace()`。
+
+**症状**
+
+`userboot: entering ring 3 at 201270` 之后 QEMU 自行退出（三重故障），**日志一个字都没有**，
+gdbstub 下 `arch_handle_exception` 的断点**一次都没命中**。
+
+「异常连投递都失败」这一点是整条线索的关键：它把嫌疑从「ring 3 里跑错了」缩到
+「特权级切换本身，或者切换所依赖的那张表」。
+
+**原因**
+
+四个，都只在「第一次进用户态」这一刻才生效，所以此前谁也碰不到：
+
+**其一，`iret` 是 32 位形式。** 反汇编说了实话：
+
+```
+71dc: cf                    iretl        ← x86_enter_uspace
+  72: 48 cf                 iretq        ← interrupt_common 的返回路径
+```
+
+64 位下裸写 `iret` 汇编成 `iretl`，按**四字节**弹 EIP/CS/EFLAGS/ESP/SS，而压进去的每项是
+八字节。返回地址、代码选择子、标志位全取自错误的半边。
+
+**其二，用户选择子没有 RPL。**
+
+```c
+#define X86_GDT_USER_CODE64 (6 << 3)   // 0x30，index 6，RPL 0
+```
+
+选择子 = GDT 下标 **+ 请求特权级**，低两位就是那个级别。`iretq` 往下降特权级时会检查
+CS.RPL，选择子写着 ring 0 就拒绝下降。
+
+**其三，也是最隐蔽的一个：TSS 描述符指向 CpuLocal 搬迁之前的那份。**
+
+`x86_init_percpu(0)` 在 `init_arch_early()` 里就跑了 `x86_setup_tss_percpu()`，那时
+`mm::CpuLocal::init()` 还没发生，于是描述符里写的、`ltr` 装载的，是 `X86_PCPU` 的**模板副本**
+（在 physmap 里）。CpuLocal 随后给 CPU 0 分了自己的 chunk，而 `x86_set_tss_sp()` 是通过
+**运行中的 CPU** 解析 `X86_PCPU` 的——它一直在往一个 CPU 根本不看的对象里写 `sp0`。
+把 GDT dump 出来和实时地址并排一看就清楚了：
+
+```
+PROBE tss(now)=FFFFFF88000000E0 sp0=FFFFFF8804021000     ← x86_set_tss_sp 写的
+TSS64 busy | 0xFFFFFF801FD400E0 | 0x2068 | ring 0        ← CPU 实际用的
+```
+
+内核一直待在 ring 0 时这毫无代价——`sp0` 只在**特权级切换**时才被读。第一次 `iretq` 进
+ring 3 把它变成致命的：下一个中断从这份陈旧 TSS 里取到 `RSP0 = 0`，把中断帧压到地址 0，
+而投递由此产生的 #PF 又要读 `RSP0`——double fault，接着 triple，**任何处理函数都还没来得及跑**。
+这正是「日志一个字都没有」的由来。
+
+**其四，`Thread::m_aspace` 有读无写。** 它在构造函数里被初始化成空，**全树没有任何赋值点**，
+所以从来没有线程跑在自己的地址空间里，调度器的 `curr->aspace() != next->aspace()` 恒为假。
+补了 `set_aspace()`；顺带 `VmAspace::switch_aspace()` 对空指针取 `&prev->m_arch` 是 UB
+（`switch_context()` 其实完全不看 `from`，且已把空 `to` 当作内核页表），一并改成空指针安全。
+
+**改法**
+
+前三条各自一行到一段，见上；第四条加一个 setter。userboot 这边：映射一页用户栈
+（**不带 Executable**——可执行的栈正是缓冲区溢出变成代码执行的经典路径），起一个内核线程，
+**在 `resume()` 之前**装上 aspace（调度器切换到它时才会加载正确的 CR3，顺序不能反），
+线程入口构造用户帧并 `arch_enter_uspace()`——它不返回：`iretq` 到一个伪造的中断帧，
+这是进 ring 3 的唯一办法，x86 没有「直接降特权级」的指令。
+
+**参照**
+
+`Zircon`：`USER_CODE_64_SELECTOR (0x30 | 3)`；`x86_uspace_entry` 同样以 `iretq` 收尾；
+TSS 的 `sp0` 同样在上下文切换时更新（`x86_set_tss_sp`）。
+
+**验证**
+
+QEMU dbg，**userboot 在 ring 3 里运行**：
+
+```
+userboot: mapped [200000, 203000) into its own aspace, entry at 201270
+userboot: entering ring 3 at 201270, stack 1200000
+Exception[interrupt] from user space      ← 897 次
+```
+
+897 次是时钟中断反复抢占 ring 3 里 `pause` 自旋的 userboot，内核每次都正确判定中断来自
+用户态并返回它。无断言，QEMU 存活。
+
+**故意没做**
+
+- 没有系统调用。userboot 目前只是自旋；证明「到了 ring 3」用不着系统调用，
+  用户态中断本身就是证据。
+- 三段仍共用一套 RWX 映射（待修第 1 条）。
