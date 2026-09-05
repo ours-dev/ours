@@ -233,7 +233,8 @@ namespace {
         // A private address space, so that what gets mapped below is visible
         // only to userboot -- and, just as importantly, so that the kernel's
         // own mappings are not reachable from it.
-        auto status = mm::VmAspace::create(mm::VmAspace::Flags::User, "userboot", &out.aspace);
+        auto status = mm::VmAspace::create(mm::VmAspaceKind::User, mm::VmasFlags::None,
+                                           "userboot", &out.aspace);
         if (Status::Ok != status) {
             log::error("userboot: could not create an address space: {}", to_string(status));
             return status;

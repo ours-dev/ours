@@ -35,9 +35,10 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     static auto clone(Flags, ustl::Arc<VmAspace> *) -> Status;
 
-    static auto create(Flags, char const *, ustl::Arc<VmAspace> *out) -> Status;
+    static auto create(VmAspaceKind, Flags, char const *, ustl::Arc<VmAspace> *out) -> Status;
 
-    static auto create(VirtAddr, usize, Flags, char const *, ustl::Arc<VmAspace> *) -> Status;
+    static auto create(VirtAddr, usize, VmAspaceKind, Flags, char const *,
+                       ustl::Arc<VmAspace> *) -> Status;
 
     /// Perform the initialization of kernel address space.
     /// Just once called at boot-time.
@@ -70,7 +71,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     FORCE_INLINE
     auto is_user() const -> bool {
-        return !!(m_flags & Flags::User);
+        return m_kind == VmAspaceKind::User;
     }
 
     FORCE_INLINE
@@ -80,7 +81,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto root_vma() -> ustl::Arc<VmArea>;
 
-    VmAspace(VirtAddr, usize, Flags, char const *);
+    VmAspace(VirtAddr, usize, VmAspaceKind, Flags, char const *);
     ~VmAspace();
 
   private:
@@ -99,6 +100,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     auto page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status;
 
     gktl::Canary m_canary{this};
+    VmAspaceKind m_kind;
     Flags m_flags;
     VirtAddr m_base;
     VirtAddr m_size;

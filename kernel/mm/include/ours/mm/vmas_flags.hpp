@@ -13,25 +13,40 @@ using ::arch::paging::HarvestControl;
 using ::arch::paging::MapControl;
 using ::arch::paging::UnmapControl;
 
-enum class VmasFlags : usize {
-    /// Which half of the address space this is. One bit each, and not the
-    /// bare 0/1/2 they used to be: every test in the tree asks with `&`
-    /// (`bool(flags & VmasFlags::User)`, `!!(VmasFlags::Kernel & m_flags)`),
-    /// and `x & 0` is 0 for every x -- so the User test was false for every
-    /// address space ever created. VmAspace::create() therefore took its
-    /// kernel branch each time and built user address spaces spanning
-    /// KERNEL_ASPACE_BASE, which nothing noticed until something tried to
-    /// enter ring 3 in one. Kernel and Guest happened to work at 1 and 2
-    /// because those are also single bits; the scheme was one enumerator
-    /// away from aliasing.
-    User = 0_bit,
-    Kernel = 1_bit,
-    Guest = 2_bit,
+/// Which address space this is.
+///
+/// An enum and not a bit in VmasFlags, because it is a choice of exactly one
+/// of three, and a flag word cannot say that: `User | Kernel` would be a
+/// representable value with no meaning, and every reader would have to invent
+/// its own rule for what to do with it.
+///
+/// It used to be three flag bits, and the damage was not theoretical. Every
+/// test asked with a bitwise and, `User` was the enumerator with no value and
+/// therefore 0, and `x & 0` is 0 -- so the User test was false for every
+/// address space ever created, and VmAspace::create() fell through to its
+/// kernel branch each time. Every "user" address space in this kernel spanned
+/// KERNEL_ASPACE_BASE for 512 GiB. Nothing noticed until something first
+/// tried to map into one.
+///
+/// Giving the three distinct bits would have fixed that one instance and left
+/// the shape that produced it. As an enum, each kind has one value, a switch
+/// over it is checked for exhaustiveness, and there is no catch-all branch
+/// for a fourth kind to fall into silently.
+enum class VmAspaceKind {
+    User,
+    Kernel,
+    Guest,
+};
 
-    OomIgnored = 3_bit,
-    AreaMergeable = 4_bit,
-    Shared = 5_bit,
-    Active = 6_bit,
+/// Properties an address space carries in any combination. Unlike the kind
+/// above, these really are independent bits.
+enum class VmasFlags : usize {
+    None = 0,
+
+    OomIgnored = 0_bit,
+    AreaMergeable = 1_bit,
+    Shared = 2_bit,
+    Active = 3_bit,
 
     /// Set if ASLR enabled.
     Aslr = 31_bit,

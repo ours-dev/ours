@@ -287,3 +287,91 @@ userboot: mapped [200000, 203000) into its own aspace, entry at 201270
 - **三段共用一套 RWX 权限**。R / RX / RW 三个段现在被当成一整段映射，所以这块内存**同时
   可写可执行**——正是 W^X 要禁止的。逐段映射是下一步该做的，已记进待修。
 - 没有建线程、没有进 ring 3。这块映射目前没有任何东西会去执行。
+
+---
+
+## 5. 地址空间的 kind 不再是标志位，而是真正的 kind（2026-09-05）
+
+**文件**
+- `kernel/mm/include/ours/mm/vmas_flags.hpp` — 拆出 `VmAspaceKind`。
+- `kernel/mm/include/ours/mm/vm_aspace.hpp` / `kernel/mm/vm_aspace.cpp` — `create()` 收 kind。
+- `kernel/arch/x86/mm/{include/ours/mm/arch_vm_aspace.hpp,arch_vm_aspace.cpp}` — 同上。
+- `kernel/mm/cpu_local.cpp`、`kernel/lib/userabi/userboot.cpp` — 调用点。
+
+**症状**
+
+第 3 条把 `User/Kernel/Guest` 从 0/1/2 改成三个独立位，症状消失了。但那只是**修好了一个
+实例，留下了产生它的形状**——这一节修的是形状。
+
+**原因**
+
+「是哪一个地址空间」是**三选一**，而标志字表达不了这件事：`User | Kernel` 是一个合法的
+`VmasFlags` 值，却没有意义，每个读它的地方都得自己发明一套规矩。而两处读它的地方，各自
+发明的规矩都是**用一个 catch-all 兜底**，且方向相反：
+
+```cpp
+// vm_aspace.cpp —— 不是 User 就当内核
+if (bool(flags & VmasFlags::User)) {
+    base = USER_ASPACE_BASE;   size = USER_ASPACE_SIZE;
+} else {
+    base = KERNEL_ASPACE_BASE; size = KERNEL_ASPACE_SIZE;
+}
+
+// arch_vm_aspace.cpp —— 不是 Kernel 也不是 Guest 就当用户
+if (!!(VmasFlags::Kernel & m_flags)) { ...沿用 phys 交接的内核页表... }
+else if (!!(VmasFlags::Guest & m_flags)) { ...init_ept()... }
+else [[likely]] { ...新建 MMU 页表并别名内核... }
+```
+
+于是一个 Guest 地址空间会**同时**拿到内核的 base/size 和一张 EPT。而 `User` 那一位为 0
+的缺陷之所以能藏这么久，正是因为有这个 `else` 替它把错误答案补齐了——**兜底掩盖了缺陷**。
+
+**改法**
+
+kind 独立成枚举，两处都改成穷尽的 `switch`：
+
+```cpp
+enum class VmAspaceKind { User, Kernel, Guest };
+
+enum class VmasFlags : usize {   // 只剩真正互相独立的位
+    None = 0,
+    OomIgnored = 0_bit,
+    AreaMergeable = 1_bit,
+    Shared = 2_bit,
+    Active = 3_bit,
+    Aslr = 31_bit,
+};
+```
+
+```cpp
+switch (kind) {
+    case VmAspaceKind::User:   base = USER_ASPACE_BASE;   size = USER_ASPACE_SIZE;   break;
+    case VmAspaceKind::Kernel: base = KERNEL_ASPACE_BASE; size = KERNEL_ASPACE_SIZE; break;
+    case VmAspaceKind::Guest:
+        // 客户机的范围是 hypervisor 的事，跟着它的 EPT 一起来，不该借用内核的数字。
+        return Status::Unimplemented;
+}
+```
+
+`is_user()` 也从 `!!(m_flags & Flags::User)` 变成 `m_kind == VmAspaceKind::User`。
+
+收益不是「这次对了」，而是**下一次也对**：每个 kind 都被点名，加第四种时编译器会在这两处
+报错，而不是让它悄悄变成内核地址空间。
+
+**参照**
+
+`Zircon` 拆得更开：`VmAspace::Type`（User/Kernel/GuestPhysical/Low）是枚举，
+`VmAspace::Create(Type, name)` 按它取范围，标志位是另一个参数。
+
+**验证**
+
+构建通过；QEMU dbg 启动无回归（无断言、QEMU 存活），userboot 仍然装载到位：
+
+```
+userboot: mapped [200000, 203000) into its own aspace, entry at 201270
+```
+
+**故意没做**
+
+- `Guest` 现在返回 `Unimplemented` 而不是继续借内核的范围。树里还没有 hypervisor，
+  这条路本来就没人走；让它明确失败，好过继续给出一个错误答案。

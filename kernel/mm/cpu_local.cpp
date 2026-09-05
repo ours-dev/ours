@@ -130,7 +130,7 @@ class CpuLocal::Mapper {
     };
 
     Mapper()
-        : m_aspace(ARCH_CPU_LOCAL_VIRT_BASE, ARCH_CPU_LOCAL_SIZE, VmasFlags::Kernel)
+        : m_aspace(ARCH_CPU_LOCAL_VIRT_BASE, ARCH_CPU_LOCAL_SIZE, VmAspaceKind::Kernel)
         , m_c2u()
         , m_u2c()
         , m_n2g()
