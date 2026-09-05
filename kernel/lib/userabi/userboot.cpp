@@ -8,10 +8,20 @@
 /// once it has been seen to work in QEMU. Right now it does step one: locate
 /// userboot's ELF inside the kernel package. Nothing is created yet.
 #include <logz4/log.hpp>
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/handoff.hpp>
+#include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/mm/vm_area.hpp>
+#include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_mapping.hpp>
 #include <ours/status.hpp>
+#include <ustl/mem/align.hpp>
+
+#include <algorithm>
+
+#include <cstring>
 
 #include <userabi/userboot.hpp>
 
@@ -94,6 +104,166 @@ namespace {
 
         return ustl::ok(result.unwrap());
     }
+
+    /// The 64-bit ELF header and program header, as far as loading needs
+    /// them.
+    ///
+    /// Declared here rather than reached for from //kernel/lib/eftl or
+    /// ours::phys::ElfImage. eftl is built for dynamic linking and reaches
+    /// segments through a variant of traits classes; ElfImage has exactly
+    /// the load plan wanted, but lives in phys's `physload.core` source_set
+    /// and is not linked into the kernel. Loading one static PIE is two
+    /// dozen lines of arithmetic, and having those lines visible is worth
+    /// more here than the reuse would be.
+    struct [[gnu::packed]] Elf64Header {
+        u8 ident[16];
+        u16 type;
+        u16 machine;
+        u32 version;
+        u64 entry;
+        u64 phoff;
+        u64 shoff;
+        u32 flags;
+        u16 ehsize;
+        u16 phentsize;
+        u16 phnum;
+        u16 shentsize;
+        u16 shnum;
+        u16 shstrndx;
+    };
+
+    struct [[gnu::packed]] Elf64ProgramHeader {
+        u32 type;
+        u32 flags;
+        u64 offset;
+        u64 vaddr;
+        u64 paddr;
+        u64 filesz;
+        u64 memsz;
+        u64 align;
+    };
+
+    constexpr u32 PT_LOAD = 1;
+
+    /// What loading produced: the address space holding userboot, how many
+    /// bytes of it are mapped, and where to start executing.
+    struct LoadedImage {
+        ustl::Arc<mm::VmAspace> aspace;
+        usize span = 0;
+        VirtAddr entry = 0;
+    };
+
+    /// Lays userboot's PT_LOAD segments out in fresh frames and maps them
+    /// into a new user address space.
+    ///
+    /// userboot is a PIE (ET_DYN) with no relocations at all -- checked with
+    /// llvm-readelf, and true because it references nothing outside itself
+    /// -- so it can be laid down at any page-aligned base and simply run.
+    /// That is what makes this short: no relocation pass, no dynamic
+    /// linking, no symbol resolution.
+    auto load_image(ustl::views::Span<u8 const> bytes, LoadedImage &out) -> Status {
+        if (bytes.size() < sizeof(Elf64Header)) {
+            log::error("userboot: image is too small to be an ELF");
+            return Status::InvArgs;
+        }
+
+        Elf64Header header{};
+        std::memcpy(&header, bytes.data(), sizeof(header));
+
+        // The segments' virtual addresses are relative to nothing in
+        // particular for a PIE, so the span is measured from the lowest to
+        // the highest address any PT_LOAD claims, and the whole thing is
+        // then placed at USER_ASPACE_BASE. `memsz` and not `filesz`: the
+        // difference between them is .bss, which occupies address space but
+        // occupies no bytes in the file.
+        auto lowest = ~VirtAddr(0);
+        auto highest = VirtAddr(0);
+        for (auto index = u16(0); index < header.phnum; ++index) {
+            Elf64ProgramHeader phdr{};
+            auto const at = header.phoff + usize(index) * header.phentsize;
+            if (at + sizeof(phdr) > bytes.size()) {
+                log::error("userboot: program header {} runs past the image", index);
+                return Status::InvArgs;
+            }
+            std::memcpy(&phdr, bytes.data() + at, sizeof(phdr));
+            if (phdr.type != PT_LOAD) {
+                continue;
+            }
+            lowest = std::min(lowest, VirtAddr(phdr.vaddr));
+            highest = std::max(highest, VirtAddr(phdr.vaddr + phdr.memsz));
+        }
+
+        if (lowest > highest) {
+            log::error("userboot: no PT_LOAD segments");
+            return Status::InvArgs;
+        }
+
+        // Whole pages: the frame allocator deals in nothing smaller, and a
+        // mapping cannot start or end mid-page either.
+        lowest = ustl::mm::align_down(lowest, PAGE_SIZE);
+        highest = ustl::mm::align_up(highest, PAGE_SIZE);
+        out.span = highest - lowest;
+
+        auto const nr_frames = out.span / PAGE_SIZE;
+        auto *const backing = mm::get_frames_n<u8>(mm::GAF_USER, nr_frames);
+        if (!backing) {
+            log::error("userboot: could not allocate {} frames for the image", nr_frames);
+            return Status::OutOfMem;
+        }
+
+        // Zero first, then copy each segment's file bytes over the top. That
+        // is what gives .bss its zeroes: the gap between filesz and memsz is
+        // never written again, so it keeps the zeroes from here.
+        std::memset(backing, 0, out.span);
+        for (auto index = u16(0); index < header.phnum; ++index) {
+            Elf64ProgramHeader phdr{};
+            std::memcpy(&phdr, bytes.data() + header.phoff + usize(index) * header.phentsize,
+                        sizeof(phdr));
+            if (phdr.type != PT_LOAD || phdr.filesz == 0) {
+                continue;
+            }
+            if (phdr.offset + phdr.filesz > bytes.size()) {
+                log::error("userboot: segment {} content runs past the image", index);
+                return Status::InvArgs;
+            }
+            std::memcpy(backing + (VirtAddr(phdr.vaddr) - lowest), bytes.data() + phdr.offset,
+                        phdr.filesz);
+        }
+
+        // A private address space, so that what gets mapped below is visible
+        // only to userboot -- and, just as importantly, so that the kernel's
+        // own mappings are not reachable from it.
+        auto status = mm::VmAspace::create(mm::VmAspace::Flags::User, "userboot", &out.aspace);
+        if (Status::Ok != status) {
+            log::error("userboot: could not create an address space: {}", to_string(status));
+            return status;
+        }
+
+        // MmuFlags::User is the whole point of this line: without it the
+        // pages are supervisor-only and ring 3 faults on the first
+        // instruction fetch. Writable as well as executable for now because
+        // the three segments (R, RX, RW) are being mapped as one range;
+        // giving each its own permissions is a later step, and one worth
+        // taking -- an image that is writable and executable at once is
+        // exactly what W^X exists to forbid.
+        using arch::paging::MmuFlags;
+        auto const flags =
+            MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Executable;
+
+        auto root = out.aspace->root_vma();
+        auto mapping = root->map_phys(mm::PhysMap::virt_to_phys(backing),
+                                      mm::VmPlacement::at(USER_ASPACE_BASE), out.span, flags,
+                                      mm::VmMapOption::Commit, "userboot");
+        if (mapping.is_err()) {
+            log::error("userboot: could not map the image: {}", to_string(mapping.unwrap_err()));
+            return mapping.unwrap_err();
+        }
+
+        // The entry point is a file-relative address for a PIE, so it moves
+        // with the load base like everything else.
+        out.entry = USER_ASPACE_BASE + (VirtAddr(header.entry) - lowest);
+        return Status::Ok;
+    }
 } // namespace
 
 auto userboot_init() -> void {
@@ -124,8 +294,15 @@ auto userboot_init() -> void {
 
     log::info("userboot: found '{}', {} bytes of ELF", USERBOOT_FILE, image.unwrap().size());
 
-    // Next: turn those bytes into a VMO, build a ProcessDispatcher with a
-    // user address space, map the ELF's segments into it, and start a thread
-    // at its entry point. None of that exists yet.
+    LoadedImage loaded;
+    if (Status::Ok != load_image(image.unwrap(), loaded)) {
+        return;
+    }
+
+    log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}", USER_ASPACE_BASE,
+              USER_ASPACE_BASE + loaded.span, loaded.entry);
+
+    // Next: a thread whose arch context switches to `loaded.aspace` and
+    // enters ring 3 at `loaded.entry`. Until then nothing runs this mapping.
 }
 } // namespace userabi
