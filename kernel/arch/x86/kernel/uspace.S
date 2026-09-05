@@ -31,5 +31,13 @@
     movq X86_IRQFRAME_OFFSET_DI(%rdi), %rdi
 
     swapgs
-    iret
+
+    // iretq, not iret. Bare `iret` assembles to the 32-bit form (opcode CF,
+    // `iretl`) even in 64-bit mode: it pops EIP, CS, EFLAGS, ESP and SS as
+    // *four*-byte values, while everything pushed above is eight bytes wide.
+    // The privilege change then took its return address, code selector and
+    // flags out of the wrong halves of the frame and #GP'd, which triple
+    // faulted because it happened before ring 3 was ever reached.
+    // interrupt_common's return path spells it `iretq` for the same reason.
+    iretq
 .end_function
