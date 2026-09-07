@@ -9,6 +9,7 @@
 
 #include "physboot.hpp"
 
+#include "detail/boot_alloc.hpp"
 #include <arch/random.hpp>
 #include <arch/tick.hpp>
 #include <logz4/log.hpp>
@@ -32,25 +33,6 @@ namespace ours::phys {
 namespace {
     using std::operator""sv;
 
-    /// Top-down allocate-or-panic through the live bootmem, spanning its
-    /// full range. `what` names the allocation in the panic message.
-    auto alloc_top_down(usize const size, usize const alignment, char const *const what)
-        -> PhysAddr {
-        auto const bootmem = global_bootmem();
-        auto const allocation = bootmem->allocate({
-            .size = size,
-            .alignment = alignment,
-            .lower = bootmem->min_address(),
-            .upper = bootmem->max_address(),
-            .node = bootmem::ANY_NODE,
-            .direction = bootmem::AllocationDirection::TopDown,
-        });
-        if (allocation.is_err()) {
-            panic("No memory to place {}", what);
-        }
-        return allocation.unwrap().base;
-    }
-
     /// A page-aligned KASLR bias of up to `limit`, from whatever entropy the
     /// architecture offers (the TSC as the fallback).
     auto gen_load_bias(usize const limit) -> usize {
@@ -73,7 +55,7 @@ namespace {
 
     auto load_kernel_image(ElfImage &image) -> KernelPlacement {
         auto const image_pages = ustl::mm::align_up(image.size(), PAGE_SIZE);
-        auto const target = alloc_top_down(image_pages, PAGE_SIZE, "kernel image");
+        auto const target = detail::allocate_top_down(image_pages, PAGE_SIZE, "kernel image").base;
         std::memset(reinterpret_cast<void *>(target), 0, image_pages);
 
         auto const entry = image.load_at(target);
@@ -119,9 +101,9 @@ namespace {
         auto const bootmem = global_bootmem();
         auto const max_entries = bootmem->max_snapshot_entries(/*extra_reservations=*/1);
         auto const buffer =
-            alloc_top_down(max_entries * sizeof(bootmem::MemRange), alignof(bootmem::MemRange),
-                           "the boot memory map snapshot");
-        auto *const entries = reinterpret_cast<bootmem::MemRange *>(buffer);
+            detail::allocate_top_down(max_entries * sizeof(bootmem::MemRange),
+                                      alignof(bootmem::MemRange), "the boot memory map snapshot");
+        auto *const entries = reinterpret_cast<bootmem::MemRange *>(buffer.base);
         auto const snapshot = bootmem->snapshot({entries, max_entries});
         if (snapshot.is_err()) {
             panic("Boot memory map snapshot overflowed its own capacity estimate");

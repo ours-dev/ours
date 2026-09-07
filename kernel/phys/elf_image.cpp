@@ -1,8 +1,9 @@
 #include <logz4/log.hpp>
 #include <ours/phys/elf_image.hpp>
 
+#include "detail/numeric.hpp"
+
 #include <limits>
-#include <type_traits>
 
 #include <cstring>
 
@@ -10,18 +11,6 @@
 
 namespace ours::phys {
 namespace {
-    template <typename Value>
-    [[nodiscard]]
-    constexpr auto to_usize(Value value) noexcept -> ustl::Option<usize> {
-        static_assert(std::is_integral_v<Value> && std::is_unsigned_v<Value>);
-        if constexpr (sizeof(Value) > sizeof(usize)) {
-            if (value > static_cast<Value>(std::numeric_limits<usize>::max())) {
-                return ustl::NONE;
-            }
-        }
-        return ustl::some(static_cast<usize>(value));
-    }
-
     template <typename Traits>
     [[nodiscard]]
     auto dynamic_entries(eftl::elf::FileImpl<Traits> const &binary)
@@ -142,7 +131,7 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
             return ustl::err(Status::OutOfRange);
         }
 
-        auto const alignment = to_usize(segment.alignment);
+        auto const alignment = detail::checked_to_usize(segment.alignment);
         if (alignment.is_none()) {
             return ustl::err(Status::InvArgs);
         }

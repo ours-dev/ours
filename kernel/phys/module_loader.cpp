@@ -1,5 +1,6 @@
 #include "build_id_note.hpp"
 #include "physload.hpp"
+#include "detail/boot_alloc.hpp"
 #include <logz4/log.hpp>
 #include <ours/phys/exports.hpp>
 #include <ours/phys/handoff.hpp>
@@ -55,23 +56,6 @@ namespace {
         auto const length = hex_encode_build_id(notes, buffer);
         return {buffer, length};
     }
-
-    [[nodiscard]]
-    auto bootmem_allocate(usize const size, PhysAddr const alignment) -> bootmem::Range {
-        auto const mem = global_bootmem();
-        auto const allocation = mem->allocate({
-            .size = size,
-            .alignment = alignment,
-            .lower = mem->min_address(),
-            .upper = mem->max_address(),
-            .node = bootmem::ANY_NODE,
-            .direction = bootmem::AllocationDirection::TopDown,
-        });
-        if (allocation.is_err()) {
-            panic("No enough memory to place phys module");
-        }
-        return allocation.unwrap();
-    }
 } // namespace
 
 auto ModuleLoader::init(BootObi const &boot) -> Status {
@@ -84,7 +68,8 @@ auto ModuleLoader::init(BootObi const &boot) -> Status {
 
     // Decompress into bootmem-owned scratch.  Ownership of the buffer
     // moves to the module via PhysLoadHandoff; it is never released.
-    auto const scratch = bootmem_allocate(item.unwrap().memory_size(), PAGE_SIZE);
+    auto const scratch =
+        detail::allocate_top_down(item.unwrap().memory_size(), PAGE_SIZE, "phys module");
     auto const storage = ustl::views::Span<u8>(reinterpret_cast<u8 *>(scratch.base), scratch.size);
     auto const materialized = boot.kernel_package(storage);
     if (materialized.is_err()) {
@@ -134,7 +119,7 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     }
 
     auto const total = ustl::mm::align_up(m_image.size(), PAGE_SIZE);
-    auto const placement = bootmem_allocate(total, PAGE_SIZE);
+    auto const placement = detail::allocate_top_down(total, PAGE_SIZE, "phys module");
     auto const target = placement.base;
 
     if (auto const placed = m_image.load_at(target); placed.is_err()) {

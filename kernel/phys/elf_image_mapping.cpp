@@ -13,27 +13,16 @@
 #include <ours/phys/elf_image.hpp>
 #include <ustl/mem/align.hpp>
 
+#include "detail/numeric.hpp"
+
 #include <algorithm>
 #include <limits>
-#include <type_traits>
 
 namespace ours::phys {
 namespace {
     // Named PAGE_BYTES, not PAGE_SIZE: the latter is an object-like macro,
     // so the definition would expand into itself.
     constexpr auto PAGE_BYTES = static_cast<usize>(PAGE_SIZE);
-
-    template <typename Value>
-    [[nodiscard]]
-    constexpr auto to_usize(Value value) noexcept -> ustl::Option<usize> {
-        static_assert(std::is_integral_v<Value> && std::is_unsigned_v<Value>);
-        if constexpr (sizeof(Value) > sizeof(usize)) {
-            if (value > static_cast<Value>(std::numeric_limits<usize>::max())) {
-                return ustl::NONE;
-            }
-        }
-        return ustl::some(static_cast<usize>(value));
-    }
 
     [[nodiscard]]
     constexpr auto map_permissions(eftl::elf::SegPerms permissions) noexcept -> MmuFlags {
@@ -48,21 +37,6 @@ namespace {
             flags |= MmuFlags::Executable;
         }
         return flags;
-    }
-
-    [[nodiscard]]
-    constexpr auto page_count(usize byte_count) noexcept -> ustl::Option<usize> {
-        if (byte_count == 0) {
-            return ustl::NONE;
-        }
-        auto const whole_pages = byte_count / PAGE_BYTES;
-        if (byte_count % PAGE_BYTES == 0) {
-            return ustl::some(static_cast<usize>(whole_pages));
-        }
-        if (whole_pages == std::numeric_limits<usize>::max()) {
-            return ustl::NONE;
-        }
-        return ustl::some(whole_pages + 1);
     }
 
     /// A half-open run of whole pages; empty when first == last.
@@ -124,7 +98,8 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
     // The plan reports RELRO in the image's own addresses; every range has to
     // survive the shift to `target_base` before the segment walk can use it.
     for (auto const &interval: m_load_plan.relro_intervals()) {
-        auto const end_offset = to_usize(interval.virtual_end - m_load_plan.image_base());
+        auto const end_offset =
+            detail::checked_to_usize(interval.virtual_end - m_load_plan.image_base());
         if (end_offset.is_none() || end_offset.value() > size() ||
             target_base > std::numeric_limits<VirtAddr>::max() - end_offset.value()) {
             return Status::InvArgs;
@@ -138,7 +113,7 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
             m_pa_load > std::numeric_limits<PhysAddr>::max() - region.image_offset) {
             return Status::InvArgs;
         }
-        auto const native_size = to_usize(segment.memory_size);
+        auto const native_size = detail::checked_to_usize(segment.memory_size);
         if (native_size.is_none()) {
             return Status::InvArgs;
         }
@@ -149,7 +124,7 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
             native_size.value() > std::numeric_limits<usize>::max() - page_offset) {
             return Status::InvArgs;
         }
-        auto const pages = page_count(native_size.value() + page_offset);
+        auto const pages = detail::page_count(native_size.value() + page_offset);
         if (pages.is_none()) {
             return Status::InvArgs;
         }
