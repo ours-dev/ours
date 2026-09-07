@@ -7,7 +7,7 @@ if (toolchain_environment == "kernel") {
       "process_dispatcher.cpp",
       "resource_dispatcher.cpp",
       "thread_dispatcher.cpp",
-      "vm_area_dispatcher.cpp",
+      "vma_dispatcher.cpp",
     ]
     public_deps = [ ":headers" ]
   }
@@ -26,7 +26,7 @@ cpp_interface("headers") {
     "include/ours/object/resource_dispatcher.hpp",
     "include/ours/object/thread_dispatcher.hpp",
     "include/ours/object/types.hpp",
-    "include/ours/object/vm_area_dispatcher.hpp",
+    "include/ours/object/vma_dispatcher.hpp",
   ]
   public_deps = [
     "//kernel/lib/gktl:headers",

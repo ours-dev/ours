@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_OBJECT_VM_AREA_DISPATCHER_HPP
-#define OURS_OBJECT_VM_AREA_DISPATCHER_HPP 1
+#ifndef OURS_OBJECT_VMA_DISPATCHER_HPP
+#define OURS_OBJECT_VMA_DISPATCHER_HPP 1
 
 #include <ktl/result.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -9,10 +9,10 @@
 #include <ours/object/handle.hpp>
 
 namespace ours::object {
-/// Rights a freshly created VMAR handle carries.
-constexpr auto RIGHTS_DEFAULT_VMAR = Rights::Signal | Rights::Io;
+/// Rights a freshly created VMA handle carries.
+constexpr auto RIGHTS_DEFAULT_VMA = Rights::Signal | Rights::Io;
 
-using VmAreaDispatcherBase = SoloDispatcher<VmAreaDispatcher, RIGHTS_DEFAULT_VMAR, Signals::None>;
+using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Signals::None>;
 
 /// The object-layer face of one mm::VmArea.
 ///
@@ -24,7 +24,7 @@ using VmAreaDispatcherBase = SoloDispatcher<VmAreaDispatcher, RIGHTS_DEFAULT_VMA
 /// different owners. A VmArea is owned by its address space and outlives every
 /// handle to it; the dispatcher is owned by whoever holds a handle and dies
 /// when the last one closes. Deriving would fuse those two lifetimes into one
-/// and make "the process closed its VMAR handle" mean "the address space lost
+/// and make "the process closed its VMA handle" mean "the address space lost
 /// a region", which is not what closing a handle means.
 ///
 /// The reason this type has to exist at all, rather than letting bring-up code
@@ -34,9 +34,9 @@ using VmAreaDispatcherBase = SoloDispatcher<VmAreaDispatcher, RIGHTS_DEFAULT_VMA
 /// caller map here", and the only object in the tree that can answer it is the
 /// handle that got the caller here -- which means the mapping entry point has
 /// to be on the dispatcher, not on the VmArea.
-class VmAreaDispatcher: public VmAreaDispatcherBase {
-    using Self = VmAreaDispatcher;
-    using Base = VmAreaDispatcherBase;
+class VmaDispatcher: public VmaDispatcherBase {
+    using Self = VmaDispatcher;
+    using Base = VmaDispatcherBase;
 
   public:
     /// Wraps |vma| in a new dispatcher and reports the rights its first handle
@@ -87,14 +87,14 @@ class VmAreaDispatcher: public VmAreaDispatcherBase {
     /// the destructor is reachable from the base rather than from callers.
     friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
 
-    static constexpr auto MAGIC = gktl::magic("VmAreaDispatcher");
+    static constexpr auto MAGIC = gktl::magic("VmaDispatcher");
 
-    explicit VmAreaDispatcher(ustl::Arc<mm::VmArea> vma);
-    ~VmAreaDispatcher();
+    explicit VmaDispatcher(ustl::Arc<mm::VmArea> vma);
+    ~VmaDispatcher();
 
     ustl::Arc<mm::VmArea> m_vma;
 };
 
 } // namespace ours::object
 
-#endif // #ifndef OURS_OBJECT_VM_AREA_DISPATCHER_HPP
+#endif // #ifndef OURS_OBJECT_VMA_DISPATCHER_HPP

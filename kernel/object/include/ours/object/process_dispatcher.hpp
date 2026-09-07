@@ -31,11 +31,11 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     static auto create(ustl::Arc<JobDispatcher> &job, char const *name,
                        KernelHandle<Self> &process_out, Rights &process_rights,
-                       KernelHandle<VmAreaDispatcher> &root_vma, Rights &root_vma_rights) -> Status;
+                       KernelHandle<VmaDispatcher> &root_vma, Rights &root_vma_rights) -> Status;
 
     static auto create_shared(ustl::Arc<JobDispatcher> &job, char const *name,
                               KernelHandle<Self> &process_out, Rights &process_rights,
-                              KernelHandle<VmAreaDispatcher> &root_vma, Rights &root_vma_rights)
+                              KernelHandle<VmaDispatcher> &root_vma, Rights &root_vma_rights)
         -> Status;
 
     auto attach_thread(ThreadDispatcher &thread) -> Status;

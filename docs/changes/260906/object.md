@@ -130,3 +130,53 @@ error: overload resolution selected deleted operator '='
 - **没有 `allocate()`（建子 VMA）、`protect()`、`unmap()`、`destroy()`**。这个 slice
   用不到；等到有 syscall 需要它们时再按需长出来，那时才知道签名该长什么样。
 - **没有顺手修 `KernelHandle::reset()`**。它是另一件事，进 repairs 单独认领。
+
+## VmAreaDispatcher 改名为 VmaDispatcher（2026-09-06）
+
+**文件**
+- `kernel/object/include/ours/object/vma_dispatcher.hpp` — 由 `vm_area_dispatcher.hpp` 改名
+- `kernel/object/vma_dispatcher.cpp` — 由 `vm_area_dispatcher.cpp` 改名
+- `kernel/object/include/ours/object/types.hpp`、`process_dispatcher.hpp`、`BUILD.gn` — 跟随改名
+
+**症状**
+无，纯命名。
+
+**原因**
+对象层这一族的名字要成对读得通：内存对象是 `VmoDispatcher`，地址区域是
+`VmaDispatcher`。`VmAreaDispatcher` 把底层 mm 类型的全称 `VmArea` 直接搬进了对象
+层的名字里，于是同一族里一个用缩写（VMO 将来必然缩写，没人会写
+`VmObjectDispatcher` 又同时写 `VmAreaDispatcher`）一个用全称。
+
+Zircon 那边这一族叫 `VmObjectDispatcher` / `VmAddressRegionDispatcher`，两个都是
+全称，自洽；ours 选缩写，那就两个都缩写。
+
+**改法**
+逐条对应改名，`git mv` 保留文件历史：
+
+| 改前 | 改后 |
+|---|---|
+| `class VmAreaDispatcher` | `class VmaDispatcher` |
+| `using VmAreaDispatcherBase` | `using VmaDispatcherBase` |
+| `RIGHTS_DEFAULT_VMAR` | `RIGHTS_DEFAULT_VMA` |
+| `gktl::magic("VmAreaDispatcher")` | `gktl::magic("VmaDispatcher")` |
+| `DISPATCHER_VMAR_CREATE_COUNT` / `"dispatcher.vmar.create"` | `DISPATCHER_VMA_CREATE_COUNT` / `"dispatcher.vma.create"` |
+| `OURS_OBJECT_VM_AREA_DISPATCHER_HPP` | `OURS_OBJECT_VMA_DISPATCHER_HPP` |
+| `vm_area_dispatcher.{hpp,cpp}` | `vma_dispatcher.{hpp,cpp}` |
+
+注释里的 "VMAR" 分两种，只改了其中一种：说的是 ours 自己的对象时改成 VMA
+（`/// Rights a freshly created VMA handle carries.`），说的是 Zircon 的
+`VmAddressRegionDispatcher` 及其 `CAN_MAP_*` 标志时保持 VMAR 不动——那是对照物的
+正确称呼，改了反而对不上。
+
+**参照**
+`Zircon VmAddressRegionDispatcher` / `VmObjectDispatcher`：同一族的两个名字，
+ours 取其缩写形式。
+
+**验证**
+`ninja` 通过；`clang-tidy` 对本文件只剩 `GKTL_COUNTER` 宏声明变量的命名告警，
+与 `process_dispatcher.cpp` / `thread_dispatcher.cpp` 现状一致。QEMU 实测
+`kernel.dev.dbg_1.obi` 启动无回归，仍反复出现 `Exception[interrupt] from user space`。
+
+**故意没做**
+`rights.hpp` 里那条 `TODO: RIGHTS_DEFAULT_VMO has no home yet` 没有动——它要等
+`VmoDispatcher` 建出来才有地方搬，那是下一步的事。

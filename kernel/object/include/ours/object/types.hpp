@@ -7,7 +7,7 @@ namespace ours::object {
 class JobDispatcher;
 class ProcessDispatcher;
 class ThreadDispatcher;
-class VmAreaDispatcher;
+class VmaDispatcher;
 class ChannelDispatcher;
 class ResourceDispatcher;
 

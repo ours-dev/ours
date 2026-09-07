@@ -6,22 +6,22 @@
 // Arc needs the pointee's definition, not just its declaration -- vm_area.hpp
 // only forward-declares VmMapping.
 #include <ours/mm/vm_mapping.hpp>
-#include <ours/object/vm_area_dispatcher.hpp>
+#include <ours/object/vma_dispatcher.hpp>
 
-GKTL_COUNTER(DISPATCHER_VMAR_CREATE_COUNT, "dispatcher.vmar.create");
-GKTL_COUNTER(DISPATCHER_VMAR_DESTROY_COUNT, "dispatcher.vmar.destroy");
+GKTL_COUNTER(DISPATCHER_VMA_CREATE_COUNT, "dispatcher.vma.create");
+GKTL_COUNTER(DISPATCHER_VMA_DESTROY_COUNT, "dispatcher.vma.destroy");
 
 namespace ours::object {
-VmAreaDispatcher::VmAreaDispatcher(ustl::Arc<mm::VmArea> vma) : Base(), m_vma(ustl::move(vma)) {
-    DISPATCHER_VMAR_CREATE_COUNT.add(1);
+VmaDispatcher::VmaDispatcher(ustl::Arc<mm::VmArea> vma) : Base(), m_vma(ustl::move(vma)) {
+    DISPATCHER_VMA_CREATE_COUNT.add(1);
 }
 
-VmAreaDispatcher::~VmAreaDispatcher() {
-    DISPATCHER_VMAR_DESTROY_COUNT.add(1);
+VmaDispatcher::~VmaDispatcher() {
+    DISPATCHER_VMA_DESTROY_COUNT.add(1);
 }
 
-auto VmAreaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
-                              Rights &rights_out) -> Status {
+auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
+                           Rights &rights_out) -> Status {
     if (!vma) {
         return Status::InvArgs;
     }
@@ -45,17 +45,17 @@ auto VmAreaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &han
     return Status::Ok;
 }
 
-auto VmAreaDispatcher::map_phys(PhysAddr const phys_base, mm::VmPlacement const where,
-                                usize const size, mm::MmuFlags const mmuf,
-                                mm::VmMapOption const option, char const *const name)
+auto VmaDispatcher::map_phys(PhysAddr const phys_base, mm::VmPlacement const where,
+                             usize const size, mm::MmuFlags const mmuf,
+                             mm::VmMapOption const option, char const *const name)
     -> ktl::Result<ustl::Arc<mm::VmMapping>> {
     verify_canary();
     return m_vma->map_phys(phys_base, where, size, mmuf, option, name);
 }
 
-auto VmAreaDispatcher::map_anon(mm::VmPlacement const where, usize const size,
-                                mm::MmuFlags const mmuf, mm::VmMapOption const option,
-                                char const *const name) -> ktl::Result<ustl::Arc<mm::VmMapping>> {
+auto VmaDispatcher::map_anon(mm::VmPlacement const where, usize const size, mm::MmuFlags const mmuf,
+                             mm::VmMapOption const option, char const *const name)
+    -> ktl::Result<ustl::Arc<mm::VmMapping>> {
     verify_canary();
     return m_vma->map_anon(where, size, mmuf, option, name);
 }
