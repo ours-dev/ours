@@ -9,23 +9,79 @@
 /// translation unit means boot-shim's build never has to satisfy those
 /// symbols just because they live in the same file.
 
+#include "detail/numeric.hpp"
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/elf_image.hpp>
 #include <ustl/mem/align.hpp>
-
-#include "detail/numeric.hpp"
 
 #include <algorithm>
 #include <limits>
 
 namespace ours::phys {
+// Named PAGE_BYTES, not PAGE_SIZE: the latter is an object-like macro,
+// so the definition would expand into itself.
 namespace {
-    // Named PAGE_BYTES, not PAGE_SIZE: the latter is an object-like macro,
-    // so the definition would expand into itself.
     constexpr auto PAGE_BYTES = static_cast<usize>(PAGE_SIZE);
+} // namespace
+
+/// The segment walker behind ElfImage::fix_mapping(): owns the RELRO-aware
+/// run walk and its running arithmetic.  Defined at namespace scope --
+/// ElfImage befriends it by name, and a friend declaration never matches an
+/// anonymous-namespace entity -- but only in this TU: boot-shim links
+/// elf-image.cpp without this file, so nothing else can ever name the class.
+class SegmentMapper final {
+  public:
+    SegmentMapper(Aspace &aspace, ElfImage::LoadPlan const &plan, VirtAddr target_base,
+                  PhysAddr pa_load)
+        : m_aspace(aspace), m_plan(plan), m_target_base(target_base), m_pa_load(pa_load) {}
+
+    auto map_all() -> Status {
+        // Map each ELF load interval independently.  Page-granularity
+        // mappings cover a segment's leading and trailing partial pages,
+        // while page-sized gaps remain unmapped.
+        //
+        // PT_GNU_RELRO is carved out of the segment that holds it and mapped
+        // without write permission.  Doing that here rather than
+        // re-protecting afterwards is what makes it reliable: an
+        // already-mapped range can have been backed by a large page that the
+        // RELRO interval only partly covers, and there is nothing left to
+        // split it with.
+        if (m_target_base % PAGE_SIZE != 0 || m_pa_load % PAGE_SIZE != 0) {
+            return Status::InvArgs;
+        }
+
+        // The plan reports RELRO in the image's own addresses; every range
+        // has to survive the shift to `target_base` before the segment walk
+        // can use it.
+        for (auto const &interval: m_plan.relro_intervals()) {
+            auto const end_offset =
+                detail::checked_to_usize(interval.virtual_end - m_plan.image_base());
+            if (end_offset.is_none() || end_offset.value() > m_plan.image_size() ||
+                m_target_base > std::numeric_limits<VirtAddr>::max() - end_offset.value()) {
+                return Status::InvArgs;
+            }
+        }
+
+        for (auto const &segment: m_plan.segments()) {
+            auto const status = map_segment(segment);
+            if (status != Status::Ok) {
+                return status;
+            }
+        }
+        return Status::Ok;
+    }
+
+  private:
+    using LoadSegment = ElfImage::LoadPlan::LoadSegment;
+
+    /// A half-open run of whole pages; empty when first == last.
+    struct PageRun final {
+        VirtAddr first{0};
+        VirtAddr last{0};
+    };
 
     [[nodiscard]]
-    constexpr auto map_permissions(eftl::elf::SegPerms permissions) noexcept -> MmuFlags {
+    static constexpr auto map_permissions(eftl::elf::SegPerms permissions) noexcept -> MmuFlags {
         auto flags = MmuFlags::Present;
         if (static_cast<unsigned>(permissions & eftl::elf::SegPerms::Readable) != 0U) {
             flags |= MmuFlags::Readable;
@@ -38,12 +94,6 @@ namespace {
         }
         return flags;
     }
-
-    /// A half-open run of whole pages; empty when first == last.
-    struct PageRun final {
-        VirtAddr first{0};
-        VirtAddr last{0};
-    };
 
     /// One RELRO range clipped to one load segment and rounded to whole
     /// pages, all in target addresses.
@@ -62,9 +112,9 @@ namespace {
     /// Either rounding can leave the run empty, which simply means this image
     /// cannot be protected at page granularity there.
     [[nodiscard]]
-    auto clip_relro(VirtAddr const relro_first, VirtAddr const relro_last,
-                    VirtAddr const segment_first, VirtAddr const segment_limit,
-                    VirtAddr const segment_last) noexcept -> PageRun {
+    static auto clip_relro(VirtAddr const relro_first, VirtAddr const relro_last,
+                           VirtAddr const segment_first, VirtAddr const segment_limit,
+                           VirtAddr const segment_last) noexcept -> PageRun {
         auto const first = ustl::mm::align_up(std::max(relro_first, segment_first), PAGE_BYTES);
         auto last = VirtAddr{0};
         if (std::min(relro_last, segment_limit) >= segment_limit) {
@@ -77,39 +127,12 @@ namespace {
         }
         return {.first = first, .last = last};
     }
-} // namespace
 
-// Map each ELF load interval independently.  Page-granularity mappings cover a
-// segment's leading and trailing partial pages, while page-sized gaps remain unmapped.
-//
-// PT_GNU_RELRO is carved out of the segment that holds it and mapped without
-// write permission.  Doing that here rather than re-protecting afterwards is
-// what makes it reliable: an already-mapped range can have been backed by a
-// large page that the RELRO interval only partly covers, and there is nothing
-// left to split it with.  It is also correct only because the caller has
-// already relocated the image -- physboot relocates, then maps -- and applied
-// those relocations through the identity mapping of the image's physical
-// pages, never through the mapping built here.
-auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
-    if (target_base % PAGE_SIZE != 0 || m_pa_load % PAGE_SIZE != 0) {
-        return Status::InvArgs;
-    }
-
-    // The plan reports RELRO in the image's own addresses; every range has to
-    // survive the shift to `target_base` before the segment walk can use it.
-    for (auto const &interval: m_load_plan.relro_intervals()) {
-        auto const end_offset =
-            detail::checked_to_usize(interval.virtual_end - m_load_plan.image_base());
-        if (end_offset.is_none() || end_offset.value() > size() ||
-            target_base > std::numeric_limits<VirtAddr>::max() - end_offset.value()) {
-            return Status::InvArgs;
-        }
-    }
-
-    for (auto const &segment: m_load_plan.segments()) {
+    auto map_segment(LoadSegment const &segment) -> Status {
         auto const &region = segment.region;
-        if (region.image_offset > size() || segment.memory_size > size() - region.image_offset ||
-            target_base > std::numeric_limits<VirtAddr>::max() - region.image_offset ||
+        if (region.image_offset > m_plan.image_size() ||
+            segment.memory_size > m_plan.image_size() - region.image_offset ||
+            m_target_base > std::numeric_limits<VirtAddr>::max() - region.image_offset ||
             m_pa_load > std::numeric_limits<PhysAddr>::max() - region.image_offset) {
             return Status::InvArgs;
         }
@@ -117,7 +140,7 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
         if (native_size.is_none()) {
             return Status::InvArgs;
         }
-        auto const virtual_address = target_base + region.image_offset;
+        auto const virtual_address = m_target_base + region.image_offset;
         auto const physical_address = m_pa_load + region.image_offset;
         auto const page_offset = virtual_address % PAGE_BYTES;
         if (page_offset != physical_address % PAGE_BYTES ||
@@ -152,11 +175,11 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
         while (run_first < segment_end) {
             auto run_last = segment_end;
             auto run_permissions = permissions;
-            for (auto const &interval: m_load_plan.relro_intervals()) {
+            for (auto const &interval: m_plan.relro_intervals()) {
                 auto const relro_first =
-                    target_base + (interval.virtual_start - m_load_plan.image_base());
+                    m_target_base + (interval.virtual_start - m_plan.image_base());
                 auto const relro_last =
-                    target_base + (interval.virtual_end - m_load_plan.image_base());
+                    m_target_base + (interval.virtual_end - m_plan.image_base());
                 auto const run =
                     clip_relro(relro_first, relro_last, virtual_page, segment_limit, segment_end);
                 if (run.first >= run.last) {
@@ -170,16 +193,32 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
                 }
             }
 
-            auto const mapped =
-                aspace.map(run_first, (run_last - run_first) / PAGE_BYTES,
-                           physical_page + (run_first - virtual_page), run_permissions);
-            if (mapped.is_err()) {
-                return Status::InvArgs;
+            auto const status = map_run(
+                run_first, run_last, physical_page + (run_first - virtual_page), run_permissions);
+            if (status != Status::Ok) {
+                return status;
             }
             run_first = run_last;
         }
+        return Status::Ok;
     }
-    return Status::Ok;
+
+    auto map_run(VirtAddr first, VirtAddr last, PhysAddr physical, MmuFlags permissions) -> Status {
+        auto const mapped = m_aspace.map(first, (last - first) / PAGE_BYTES, physical, permissions);
+        if (mapped.is_err()) {
+            return Status::InvArgs;
+        }
+        return Status::Ok;
+    }
+
+    Aspace &m_aspace;
+    ElfImage::LoadPlan const &m_plan;
+    VirtAddr m_target_base;
+    PhysAddr m_pa_load;
+};
+
+auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
+    return SegmentMapper(aspace, m_load_plan, target_base, m_pa_load).map_all();
 }
 
 } // namespace ours::phys

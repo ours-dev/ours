@@ -1,7 +1,6 @@
+#include "detail/numeric.hpp"
 #include <logz4/log.hpp>
 #include <ours/phys/elf_image.hpp>
-
-#include "detail/numeric.hpp"
 
 #include <limits>
 
@@ -52,23 +51,6 @@ namespace {
     /// GOT the same way an imported variable does (kernel/phys/BUILD.gn,
     /// config("phys-module.compile")), and nothing in a boot image could
     /// service a lazily-bound PLT stub anyway.
-    [[nodiscard]]
-    auto symbolic_relocation_type(eftl::elf::Arch machine, u32 type) -> bool {
-        switch (machine) {
-            case eftl::elf::Arch::X86_64:
-                // R_X86_64_64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT
-                return type == 1 || type == 6 || type == 7;
-            case eftl::elf::Arch::AARCH64:
-                // R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT
-                return type == 257 || type == 1025 || type == 1026;
-            case eftl::elf::Arch::RISCV:
-                // R_RISCV_64, R_RISCV_JUMP_SLOT
-                return type == 2 || type == 5;
-            default:
-                return false;
-        }
-    }
-
     [[nodiscard]]
     auto relative_relocation_type(eftl::elf::Arch machine, u32 type) -> bool {
         switch (machine) {
@@ -187,83 +169,132 @@ auto ElfImage::relocate(usize load_address) -> Status {
 }
 
 namespace {
-    /// Bind one .rela table against the loader's definitions.
-    template <typename Traits, typename Relas, typename Symbols>
-    [[nodiscard]]
-    auto bind_rela_table(eftl::elf::MappedMemory<Traits> &memory, Relas const &relocations,
-                         Symbols const &symbols, typename Traits::Addr bias,
-                         eftl::elf::Arch machine, SymbolBinder const &binder) -> Status {
-        for (usize index = 0; index < relocations.size(); ++index) {
-            auto const entry = relocations.relocation_at(index);
-            if (entry.is_none()) {
-                return Status::InvArgs;
-            }
-            auto const &rela = entry.value();
+    /// Bind one .rela table against the loader's definitions.  Exists
+    /// because relocate_and_bind() runs the same loop twice (.rela.dyn and
+    /// .rela.plt); the pass carries the parameters both calls used to
+    /// thread.  `Symbols` is fixed at construction, `Relas` per bind()
+    /// call -- the dynamic and PLT tables are distinct types.
+    template <typename Symbols>
+    class SymbolicRelocationPass final {
+      public:
+        using Traits = eftl::elf::TraitsNative;
 
-            auto const symbol_index = Relas::symbol_index(rela);
-            if (symbol_index == 0) {
-                // No symbol: a relative relocation, already applied.
-                continue;
-            }
+        SymbolicRelocationPass(eftl::elf::MappedMemory<Traits> memory,
+                               typename Traits::Addr const bias, eftl::elf::Arch const machine,
+                               Symbols const &symbols, SymbolBinder const &binder)
+            : m_memory(memory)
+            , m_bias(bias)
+            , m_machine(machine)
+            , m_symbols(symbols)
+            , m_binder(binder) {}
 
-            auto const type = Relas::type(rela);
-            if (!symbolic_relocation_type(machine, type)) {
-                log::debug("Module carries unsupported relocation type {}", type);
-                return Status::Unsupported;
-            }
-
-            auto const symbol = symbols.symbol_at(static_cast<usize>(symbol_index));
-            if (symbol.is_none()) {
-                return Status::InvArgs;
-            }
-
-            // SHN_UNDEF (0): unresolved, look up in physload.  SHN_ABS
-            // (0xfff1): an absolute symbol -- st_value already is the final
-            // address, not an offset into some section, so it must not take
-            // `bias`.  Anything else: defined in this image at a
-            // section-relative value, which does take the bias.  Binding it
-            // to the module's own definition (rather than shadowing it with
-            // physload's) matters because a same-named physload symbol may
-            // be a different function entirely.
-            constexpr auto SHN_ABS = decltype(symbol->st_shndx){0xfff1};
-
-            usize address = 0;
-            if (symbol->st_shndx == 0) {
-                auto const name = symbols.symbol_name(static_cast<usize>(symbol_index));
-                if (name.is_none()) {
+        template <typename Relas>
+        [[nodiscard]]
+        auto bind(Relas const &relocations) -> Status {
+            for (usize index = 0; index < relocations.size(); ++index) {
+                auto const entry = relocations.relocation_at(index);
+                if (entry.is_none()) {
                     return Status::InvArgs;
                 }
-                auto const spelling =
-                    std::string_view(reinterpret_cast<char const *>(name->data()), name->size());
+                auto const &rela = entry.value();
 
-                auto const *definition = binder.resolve(binder.context, spelling);
-                if (definition == nullptr) {
-                    // Loud on purpose: the alternative is binding to zero and
-                    // faulting somewhere unrelated once the module runs.
-                    log::info("Module needs symbol '{}', which physload does not export", spelling);
-                    return Status::NotFound;
+                auto const symbol_index = Relas::symbol_index(rela);
+                if (symbol_index == 0) {
+                    // No symbol: a relative relocation, already applied.
+                    continue;
                 }
-                address = reinterpret_cast<usize>(definition);
-            } else if (symbol->st_shndx == SHN_ABS) {
-                address = static_cast<usize>(symbol->st_value);
-            } else {
-                address = static_cast<usize>(symbol->st_value) + static_cast<usize>(bias);
-            }
 
-            auto const value = static_cast<typename Traits::Addr>(
-                address + static_cast<usize>(static_cast<isize>(rela.r_addend)));
-            // `memory` addresses are module virtual addresses: MappedMemory
-            // translates them through the plan's regions itself (the same
-            // convention relocate()'s relative pass uses). Adding `bias`
-            // here double-counts the load address and pushes the write
-            // outside every region.
-            if (!memory.template write<typename Traits::Addr>(
-                    static_cast<typename Traits::Addr>(rela.r_offset), value)) {
-                return Status::OutOfRange;
+                auto const type = Relas::type(rela);
+                if (!symbolic_relocation_type(m_machine, type)) {
+                    log::debug("Module carries unsupported relocation type {}", type);
+                    return Status::Unsupported;
+                }
+
+                auto const symbol = m_symbols.symbol_at(static_cast<usize>(symbol_index));
+                if (symbol.is_none()) {
+                    return Status::InvArgs;
+                }
+
+                // SHN_UNDEF (0): unresolved, look up in physload.  SHN_ABS
+                // (0xfff1): an absolute symbol -- st_value already is the
+                // final address, not an offset into some section, so it must
+                // not take `bias`.  Anything else: defined in this image at a
+                // section-relative value, which does take the bias.  Binding
+                // it to the module's own definition (rather than shadowing it
+                // with physload's) matters because a same-named physload
+                // symbol may be a different function entirely.
+                constexpr auto SHN_ABS = decltype(symbol->st_shndx){0xfff1};
+
+                usize address = 0;
+                if (symbol->st_shndx == 0) {
+                    auto const name = m_symbols.symbol_name(static_cast<usize>(symbol_index));
+                    if (name.is_none()) {
+                        return Status::InvArgs;
+                    }
+                    auto const spelling = std::string_view(
+                        reinterpret_cast<char const *>(name->data()), name->size());
+
+                    auto const *definition = m_binder.resolve(m_binder.context, spelling);
+                    if (definition == nullptr) {
+                        // Loud on purpose: the alternative is binding to zero
+                        // and faulting somewhere unrelated once the module
+                        // runs.
+                        log::info("Module needs symbol '{}', which physload does not export",
+                                  spelling);
+                        return Status::NotFound;
+                    }
+                    address = reinterpret_cast<usize>(definition);
+                } else if (symbol->st_shndx == SHN_ABS) {
+                    address = static_cast<usize>(symbol->st_value);
+                } else {
+                    address = static_cast<usize>(symbol->st_value) + static_cast<usize>(m_bias);
+                }
+
+                auto const value = static_cast<typename Traits::Addr>(
+                    address + static_cast<usize>(static_cast<isize>(rela.r_addend)));
+                // `memory` addresses are module virtual addresses: MappedMemory
+                // translates them through the plan's regions itself (the same
+                // convention relocate()'s relative pass uses). Adding `bias`
+                // here double-counts the load address and pushes the write
+                // outside every region.
+                if (!m_memory.template write<typename Traits::Addr>(
+                        static_cast<typename Traits::Addr>(rela.r_offset), value)) {
+                    return Status::OutOfRange;
+                }
+            }
+            return Status::Ok;
+        }
+
+      private:
+        /// Relocation types that take a symbol value plus an addend and store
+        /// the result as a full-width address.  These are all a phys module
+        /// can produce: it is compiled -fno-plt, so an imported function
+        /// reaches the GOT the same way an imported variable does
+        /// (kernel/phys/BUILD.gn, config("phys-module.compile")), and nothing
+        /// in a boot image could service a lazily-bound PLT stub anyway.
+        [[nodiscard]]
+        static auto symbolic_relocation_type(eftl::elf::Arch machine, u32 type) -> bool {
+            switch (machine) {
+                case eftl::elf::Arch::X86_64:
+                    // R_X86_64_64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT
+                    return type == 1 || type == 6 || type == 7;
+                case eftl::elf::Arch::AARCH64:
+                    // R_AARCH64_ABS64, R_AARCH64_GLOB_DAT, R_AARCH64_JUMP_SLOT
+                    return type == 257 || type == 1025 || type == 1026;
+                case eftl::elf::Arch::RISCV:
+                    // R_RISCV_64, R_RISCV_JUMP_SLOT
+                    return type == 2 || type == 5;
+                default:
+                    return false;
             }
         }
-        return Status::Ok;
-    }
+
+        eftl::elf::MappedMemory<Traits> m_memory;
+        typename Traits::Addr m_bias;
+        eftl::elf::Arch m_machine;
+        Symbols const &m_symbols;
+        SymbolBinder const &m_binder;
+    };
 } // namespace
 
 auto ElfImage::relocate_and_bind(usize const load_address, SymbolBinder const &binder) -> Status {
@@ -294,16 +325,15 @@ auto ElfImage::relocate_and_bind(usize const load_address, SymbolBinder const &b
     auto const bias = static_cast<typename Traits::Addr>(load_address - m_load_plan.image_base());
     auto const machine = static_cast<eftl::elf::Arch>(m_binary.value().elf_header().e_machine);
 
+    SymbolicRelocationPass pass{memory, bias, machine, symbols.value(), binder};
     if (relas.is_some()) {
-        auto const status =
-            bind_rela_table<Traits>(memory, relas.value(), symbols.value(), bias, machine, binder);
+        auto const status = pass.bind(relas.value());
         if (status != Status::Ok) {
             return status;
         }
     }
     if (plt_relas.is_some()) {
-        auto const status = bind_rela_table<Traits>(memory, plt_relas.value(), symbols.value(),
-                                                    bias, machine, binder);
+        auto const status = pass.bind(plt_relas.value());
         if (status != Status::Ok) {
             return status;
         }

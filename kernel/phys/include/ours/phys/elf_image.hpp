@@ -54,6 +54,12 @@ class ElfImage final {
     auto init(std::span<u8 const> file) -> Status;
     PHYS_EXPORT [[nodiscard]]
     auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
+    /// Map the image's load segments at `target_base` in `aspace`, carving
+    /// PT_GNU_RELRO out of its segments at map time rather than
+    /// re-protecting afterwards.  Must run after relocate(): the
+    /// relocations are applied through the identity mapping of the image's
+    /// physical pages, never through the mapping built here (physboot
+    /// relocates, then maps).
     PHYS_EXPORT
     auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
 
@@ -99,6 +105,13 @@ class ElfImage final {
 
   private:
     using Traits = eftl::elf::TraitsNative;
+
+    /// The segment walker behind fix_mapping(), defined only in
+    /// elf-image-mapping.cpp (the TU whose Aspace-using code boot-shim's
+    /// build must never pull in).  A friend so LoadPlan can stay private;
+    /// namespace scope there -- a friend declaration never matches an
+    /// anonymous-namespace entity.
+    friend class SegmentMapper;
 
 #if defined(__x86_64__)
     static constexpr eftl::elf::Arch TARGET_ELF_MACHINE = eftl::elf::Arch::X86_64;
