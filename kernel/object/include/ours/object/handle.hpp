@@ -84,8 +84,19 @@ class KernelHandle {
 
     ~KernelHandle() = default;
 
+    /// Two overloads, because ustl::Rc propagates constness through
+    /// `operator->` (`Rc<T> const` yields `T const *`), unlike fbl::RefPtr and
+    /// std::shared_ptr, whose constness is shallow. With only the const one, a
+    /// non-const KernelHandle still yielded a `T const *` and every dispatcher
+    /// method -- all of which are non-const, since they mutate the object they
+    /// stand for -- was unreachable through the handle that owns it.
     FORCE_INLINE
     auto dispatcher() const -> ustl::Arc<T> const & {
+        return m_dispatcher;
+    }
+
+    FORCE_INLINE
+    auto dispatcher() -> ustl::Arc<T> & {
         return m_dispatcher;
     }
 

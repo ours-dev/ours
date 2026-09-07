@@ -14,9 +14,9 @@
 #include <ours/boot/handoff.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
-#include <ours/mm/vm_area.hpp>
-#include <ours/mm/vm_aspace.hpp>
-#include <ours/mm/vm_mapping.hpp>
+#include <ours/object/job_dispatcher.hpp>
+#include <ours/object/process_dispatcher.hpp>
+#include <ours/object/vma_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/task/thread.hpp>
 #include <ustl/mem/align.hpp>
@@ -147,11 +147,20 @@ namespace {
 
     constexpr u32 PT_LOAD = 1;
 
-    /// What loading produced: the address space holding userboot, how many
+    /// What loading produced: the process userboot was built into, how many
     /// bytes of it are mapped, where to start executing, and the top of its
     /// stack.
+    ///
+    /// The process, and not the address space it runs in. Holding the aspace
+    /// directly is how this used to be written, and it is exactly the shortcut
+    /// this file is meant not to take: kernel/object is the layer of kernel
+    /// objects that serve users, and everything below it -- VmAspace, VmArea,
+    /// task::Thread -- serves the kernel itself. userboot is the first *user*
+    /// program, so the path that builds it has to be the path a system call
+    /// would take on userspace's behalf. The address space is still reachable,
+    /// through the process that owns it.
     struct LoadedImage {
-        ustl::Arc<mm::VmAspace> aspace;
+        object::KernelHandle<object::ProcessDispatcher> process;
         usize span = 0;
         VirtAddr entry = 0;
         VirtAddr stack_top = 0;
@@ -180,7 +189,8 @@ namespace {
     /// -- so it can be laid down at any page-aligned base and simply run.
     /// That is what makes this short: no relocation pass, no dynamic
     /// linking, no symbol resolution.
-    auto load_image(ustl::views::Span<u8 const> bytes, LoadedImage &out) -> Status {
+    auto load_image(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
+                    LoadedImage &out) -> Status {
         if (bytes.size() < sizeof(Elf64Header)) {
             log::error("userboot: image is too small to be an ELF");
             return Status::InvArgs;
@@ -249,16 +259,6 @@ namespace {
                         phdr.filesz);
         }
 
-        // A private address space, so that what gets mapped below is visible
-        // only to userboot -- and, just as importantly, so that the kernel's
-        // own mappings are not reachable from it.
-        auto status = mm::VmAspace::create(mm::VmAspaceKind::User, mm::VmasFlags::None, "userboot",
-                                           &out.aspace);
-        if (Status::Ok != status) {
-            log::error("userboot: could not create an address space: {}", to_string(status));
-            return status;
-        }
-
         // MmuFlags::User is the whole point of this line: without it the
         // pages are supervisor-only and ring 3 faults on the first
         // instruction fetch. Writable as well as executable for now because
@@ -270,10 +270,15 @@ namespace {
         auto const flags =
             MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Executable;
 
-        auto root = out.aspace->root_vma();
-        auto mapping = root->map_phys(mm::PhysMap::virt_to_phys(backing),
-                                      mm::VmPlacement::at(USER_ASPACE_BASE), out.span, flags,
-                                      mm::VmMapOption::Commit, "userboot");
+        // Through the dispatcher, not through the VmArea it stands for. The
+        // difference is invisible today -- map_phys() forwards straight on --
+        // and it is the whole point: a VmArea knows what a mapping is allowed
+        // to be, but cannot know who is asking, and every future sys_vmar_map
+        // has to answer that. Rights live on the handle, so the entry point
+        // has to be on the object that a handle names.
+        auto mapping = root_vma.map_phys(mm::PhysMap::virt_to_phys(backing),
+                                         mm::VmPlacement::at(USER_ASPACE_BASE), out.span, flags,
+                                         mm::VmMapOption::Commit, "userboot");
         if (mapping.is_err()) {
             log::error("userboot: could not map the image: {}", to_string(mapping.unwrap_err()));
             return mapping.unwrap_err();
@@ -283,10 +288,10 @@ namespace {
         // copy into it, and its pages want to be private to this address
         // space. No Executable bit -- a stack that can be executed is the
         // classic way a buffer overflow becomes code execution.
-        auto stack =
-            root->map_anon(mm::VmPlacement::at(USER_STACK_TOP - USER_STACK_SIZE), USER_STACK_SIZE,
-                           MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable,
-                           mm::VmMapOption::Commit, "userboot-stack");
+        auto stack = root_vma.map_anon(mm::VmPlacement::at(USER_STACK_TOP - USER_STACK_SIZE),
+                                       USER_STACK_SIZE,
+                                       MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable,
+                                       mm::VmMapOption::Commit, "userboot-stack");
         if (stack.is_err()) {
             log::error("userboot: could not map a stack: {}", to_string(stack.unwrap_err()));
             return stack.unwrap_err();
@@ -355,10 +360,33 @@ auto userboot_init() -> void {
 
     log::info("userboot: found '{}', {} bytes of ELF", USERBOOT_FILE, image.unwrap().size());
 
-    auto &loaded = USERBOOT_IMAGE;
-    if (Status::Ok != load_image(image.unwrap(), loaded)) {
+    // One call builds both the process and the only object that may map into
+    // it. They come back together because neither is useful alone: a process
+    // with no root VMA cannot be given any memory, and a VMA dispatcher with
+    // no process names a region nothing will ever run in.
+    //
+    // The rights come back as separate values because that is where rights
+    // live -- on the handle, not on the dispatcher. Nothing consumes them yet;
+    // they become the arguments to Handle::make() once the handle table
+    // exists, which is the step that lets userboot be handed its own objects
+    // rather than merely be built out of them.
+    object::KernelHandle<object::ProcessDispatcher> process;
+    object::KernelHandle<object::VmaDispatcher> root_vma;
+    Rights process_rights;
+    Rights root_vma_rights;
+    auto status =
+        object::ProcessDispatcher::create(object::JobDispatcher::root_job(), "userboot", process,
+                                          process_rights, root_vma, root_vma_rights);
+    if (Status::Ok != status) {
+        log::error("userboot: could not create the process: {}", to_string(status));
         return;
     }
+
+    auto &loaded = USERBOOT_IMAGE;
+    if (Status::Ok != load_image(image.unwrap(), *root_vma.dispatcher(), loaded)) {
+        return;
+    }
+    loaded.process = ustl::move(process);
 
     log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}", USER_ASPACE_BASE,
               USER_ASPACE_BASE + loaded.span, loaded.entry);
@@ -374,8 +402,21 @@ auto userboot_init() -> void {
     // it switches to a thread, so the CR3 change and the thread's first
     // instruction have to be decided in that order. Setting it afterwards
     // would race the thread's own first run.
-    thread->set_aspace(loaded.aspace.as_ptr_mut());
+    //
+    // Reached through the process rather than kept alongside it, because the
+    // process is what owns the address space now. This hand-wiring is itself
+    // the next thing to go: task::Thread already asks
+    // m_user_thread->process().aspace() for exactly this value when it has a
+    // ThreadDispatcher (thread.cpp, Thread::Current::fault), so once userboot
+    // starts its thread through ThreadDispatcher there is nothing left to set
+    // by hand here.
+    thread->set_aspace(loaded.process.dispatcher()->aspace());
     thread->detach();
     thread->resume();
+
+    // root_vma goes out of scope here, and with it the only reference to the
+    // VMA dispatcher. That is correct: the mappings it made live in the
+    // address space, which the process owns -- the dispatcher was the object
+    // that was allowed to make them, not the thing that holds them.
 }
 } // namespace userabi
