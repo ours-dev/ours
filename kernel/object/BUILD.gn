@@ -4,6 +4,7 @@ if (toolchain_environment == "kernel") {
   source_set("object") {
     sources = [
       "dispatcher.cpp",
+      "job_dispatcher.cpp",
       "process_dispatcher.cpp",
       "resource_dispatcher.cpp",
       "thread_dispatcher.cpp",

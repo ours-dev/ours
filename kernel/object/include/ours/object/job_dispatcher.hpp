@@ -3,6 +3,7 @@
 #ifndef OURS_OBJECT_JOB_DISPATCHER_HPP
 #define OURS_OBJECT_JOB_DISPATCHER_HPP 1
 
+#include <gktl/canary.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/types.hpp>
 #include <ustl/rc.hpp>
@@ -14,7 +15,21 @@ class JobDispatcher: public JobDispatcherBase {
     using Self = JobDispatcher;
 
   public:
+    /// The job every process created during bring-up belongs to.
+    ///
+    /// Built once from an init hook (job_dispatcher.cpp) rather than handed
+    /// out lazily, so the reference is either valid or the kernel has already
+    /// panicked -- there is no state in which a process gets built without a
+    /// job.
     static auto root_job() -> ustl::Arc<Self> &;
+
+  private:
+    // SoloDispatcher's constructor reads Derived::MAGIC to build the
+    // canary; MAGIC stays private otherwise, so it needs this base in.
+    template <typename, Rights, Signals>
+    friend class SoloDispatcher;
+
+    static constexpr auto MAGIC = gktl::magic("JobDispatcher");
 };
 } // namespace ours::object
 

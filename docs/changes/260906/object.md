@@ -180,3 +180,119 @@ ours 取其缩写形式。
 **故意没做**
 `rights.hpp` 里那条 `TODO: RIGHTS_DEFAULT_VMO has no home yet` 没有动——它要等
 `VmoDispatcher` 建出来才有地方搬，那是下一步的事。
+
+## ProcessDispatcher::create() 有了定义，root job 有了实体（2026-09-06）
+
+**文件**
+- `kernel/object/process_dispatcher.cpp` — `create()` 与私有构造函数的实现
+- `kernel/object/include/ours/object/process_dispatcher.hpp` — `m_aspace` 改为拥有式，新增 `m_job` / `m_name`
+- `kernel/object/job_dispatcher.cpp` — 新文件，root job 单例与它的 init hook
+- `kernel/object/include/ours/object/job_dispatcher.hpp` — 补上 `MAGIC`
+- `kernel/object/BUILD.gn` — 加入新源文件
+
+**症状**
+潜伏。`ProcessDispatcher::create()` 和 `create_shared()` 一直只有声明没有定义，
+`JobDispatcher::root_job()` 同样。它们没有被发现，是因为没有人调用——一旦有人调，
+拿到的是链接错误而不是编译错误，位置也不在出错的那一行。
+
+**原因**
+两处需要说清楚。
+
+**其一，为什么地址空间必须是拥有式的。** 改前的成员是裸指针：
+
+```cpp
+    /// Unique address space per each process.
+    mm::VmAspace *m_aspace;
+```
+
+而 `mm::VmAspace::create()` 交出来的是 `ustl::Arc<VmAspace>`——地址空间是引用计数
+对象，除了 `create()` 的返回值之外没有任何地方引用它。裸指针成员意味着唯一的那个
+Arc 停在 `create()` 的栈帧上，函数一返回引用计数归零，地址空间当场被释放，进程手里
+留下的是野指针。这不是风格问题，是这个成员一旦真的被写入就必然发生的事。Zircon 的
+`ProcessDispatcher` 用的是 `fbl::RefPtr<VmAspace> normal_aspace_`，同样的理由。
+
+`aspace()` 仍然返回裸指针，这是有意的：它的两个调用者是缺页路径
+（`Thread::Current::fault`）和上下文切换，两者都在这个进程的某个线程正在运行时执行
+——线程正在跑本身就是"进程还活着"的证明。给它们 Arc 只会让这两条热路径去动一个
+它们不需要的引用计数。
+
+**其二，为什么要先有 job。** `create()` 的第一个参数就是
+`ustl::Arc<JobDispatcher> &job`：进程属于某个 job，这是签名一开始就写死的事实。
+而 `root_job()` 没有定义，所以在补出它之前 `create()` 根本无法被调用。
+
+root job 用 init hook 建，而不是首次调用时懒创建。理由和
+`VmAspace::init_kernel_aspace()` 一样：只有启动序列知道堆什么时候起来；懒创建要么
+得做线程安全，要么得靠注释声明"只能在启动期调"——而 hook 把后者免费变成了强制。
+挂在 `Vmm + 1` 而不是 `Heap`：对象本身只是一次堆分配，但第一个会问它要东西的是进程
+创建，那需要 VMM 已经就绪；挂得更早只是白白拉长"半成品系统能够摸到它"的窗口。
+
+顺带补 `MAGIC`：`SoloDispatcher` 的构造函数要读 `Derived::MAGIC` 来建 canary，
+`JobDispatcher` 没有，所以它从来就实例化不出来。
+
+**改法**
+改前——`process_dispatcher.cpp` 里只有 `attach_thread` / `detach_thread` 两个函数，
+没有 `create`。
+
+改后（节选）：
+
+```cpp
+auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const name,
+                               KernelHandle<Self> &process_out, Rights &process_rights,
+                               KernelHandle<VmaDispatcher> &root_vma_out, Rights &root_vma_rights)
+    -> Status {
+    ustl::Arc<mm::VmAspace> aspace;
+    auto status = mm::VmAspace::create(PRIVATE_ASPACE_BASE, PRIVATE_ASPACE_SIZE,
+                                       mm::VmAspaceKind::User, mm::VmasFlags::None, name, &aspace);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    auto root_vma = aspace->root_vma();
+    if (!root_vma) {
+        return Status::InternalError;
+    }
+
+    status = VmaDispatcher::create(ustl::move(root_vma), root_vma_out, root_vma_rights);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(job, name, ustl::move(aspace)));
+    ...
+}
+```
+
+三步的顺序是有讲究的：进程对象放在最后建，因为它是接管 aspace 所有权的那一步。在它
+之前的每一处失败都只需要丢掉 Arc 就能干净退出；在它之后 aspace 有了活得比这个栈帧
+长的所有者。倒数第二步失败时 `root_vma_out` 已经握着一个 dispatcher，调用者的
+`KernelHandle` 析构会释放它——aspace 也随之而死，因为 root VMA 是最后一个引用它的
+东西。
+
+地址范围取 `PRIVATE_ASPACE_SIZE`（到 2^46）而不是 `USER_ASPACE_SIZE`（到 2^47 的
+canonical 分界）：用户半区的上半留给 `create_shared()` 将来发的共享地址空间，而这
+只有在一开始就按那个边界切分才成立，事后再缩是缩不动的。这两个常量本来就躺在这个
+文件的匿名 namespace 里，是当初留下的挂点。
+
+**参照**
+- `Zircon ProcessDispatcher::Create()`（`kernel/object/process_dispatcher.cc`）：同样
+  一次交出进程和它的 root VMAR 两个 KernelHandle 加两份 rights，同样把 VmAspace 用
+  RefPtr 持有。
+- `Zircon GetRootJobDispatcher()`：同样是启动期建好的单例。
+- `VmAspace::init_kernel_aspace()`（本树）：init hook 建单例的既有写法。
+
+**验证**
+- `ninja` 两个 switchset 均通过。
+- QEMU 实测两个镜像。新增的 init hook 在 `Vmm + 1` 真的跑了（跑不通会 panic 在
+  `Failed to create the root job`），两个镜像都照旧走到 userboot 进入 ring 3：
+  `dev.dbg_1` 停在反复的 `Exception[interrupt] from user space`，`dev` 停在
+  `entering ring 3 at 201270, stack 1200000`，都以 signal 15 结束。
+- `create()` 本次仍无调用者，行为验证在下一步 userboot 切过来时做。
+
+**故意没做**
+- **`create_shared()` 仍未实现**。它要的共享地址空间语义（两个进程共享上半区）没有
+  任何调用者，签名之外的部分现在写只能靠猜。
+- **job 不记录它的子进程**。反向的进程列表在 Zircon 里是为了让 job 能被整体 kill 和
+  枚举，这两个操作这里都还不存在；先加一个没人读的链表没有意义。
+- **没有 handle table，没有把这两个 KernelHandle 装进任何进程的句柄表**。那需要
+  `Handle::make()` 有定义和 arena 分配器，是独立的一块（设计已定，见
+  `docs/architecture/object/handle-lookup.md`）。
