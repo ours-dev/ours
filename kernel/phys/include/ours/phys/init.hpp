@@ -7,7 +7,6 @@
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
 #include <ours/phys/arch_bootmem.hpp>
-#include <ours/phys/boot_package_input.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/legacy_platform_info.hpp>
 #include <ours/types.hpp>
@@ -64,16 +63,10 @@ auto arch_init_memory(Aspace *aspace) -> void;
 ///
 /// Registers `ranges` (boot-shim's snapshot of whatever platform-specific
 /// memory map it had -- see LegacyPlatformInfo) into BootMem.  The default
-/// is a no-op; init_memory() only calls this when the OBI container carries
-/// no typed memory item at all, so an architecture with nothing to fall
-/// back on need not override it.
+/// is a no-op; MemoryProvisioner::detect() only calls this when the OBI
+/// container carries no typed memory item at all, so an architecture with
+/// nothing to fall back on need not override it.
 auto arch_detect_memory(std::span<obi::MemoryRange const> ranges) -> void;
-
-/// First, it attempts to parse the typed `memory` OBI item. If no such item is found,
-/// it invokes `arch_detect_memory` to register architecture-specific data into BootMem.
-/// The outer OBI input is then reserved before any architecture setup can allocate memory.
-auto init_memory(obi::ContainerView const &package, BootPackageInput const &input,
-                 std::span<obi::MemoryRange const> legacy_memory_ranges, Aspace *aspace) -> void;
 
 /// The whole reason boot-shim finds this by e_entry rather than by name:
 /// physload is loaded and jumped to (never symbol-resolved) by an image

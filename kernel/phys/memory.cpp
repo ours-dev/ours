@@ -2,6 +2,7 @@
 #include <obi/memory_config_view.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/phys/init.hpp>
+#include <ours/phys/memory_provisioner.hpp>
 
 #include <limits>
 
@@ -11,19 +12,19 @@ extern char const PHYS_LOAD_END[] LINK_NAME("__executable_end");
 
 Aspace *ASPACE;
 
-using MemoryInitializationResult = ustl::Result<bool, ours::Status>;
-
 namespace {
     /// Validate and register one range against BootMem.  Shared by
-    /// obi_init_memory() (decoding a real OBI memory item) and
-    /// arch_detect_memory()'s callers (boot-shim's platform snapshot) so
-    /// the two delivery mechanisms for the same obi::MemoryRange vocabulary
-    /// stay behaviorally identical.  `added_usable`, when given, is set on
-    /// a successfully-registered Ram range; only obi_init_memory() needs
-    /// to know that (to reject an item with no Ram range at all).
+    /// MemoryProvisioner::detect() (decoding a real OBI memory item) and
+    /// arch_detect_memory()'s default body (boot-shim's platform snapshot)
+    /// so the two delivery mechanisms for the same obi::MemoryRange
+    /// vocabulary stay behaviorally identical.  A TU-local free function,
+    /// not a member: the WEAK default body below needs it too.  `added_usable`,
+    /// when given, is set on a successfully-registered Ram range; only
+    /// detect() needs to know that (to reject an item with no Ram range at
+    /// all).
     [[nodiscard]]
-    auto apply_memory_range(obi::MemoryRange const &value, bool *const added_usable = nullptr)
-        -> Status {
+    auto register_range(BootMem &memory, obi::MemoryRange const &value,
+                        bool *const added_usable = nullptr) -> Status {
         if (value.length == 0 || value.base > std::numeric_limits<u64>::max() - value.length ||
             value.base > std::numeric_limits<usize>::max() ||
             value.length > std::numeric_limits<usize>::max() ||
@@ -37,10 +38,9 @@ namespace {
             return physical.unwrap_err();
         }
 
-        auto const mem = global_bootmem();
         switch (static_cast<obi::MemoryRangeType>(value.type)) {
             case obi::MemoryRangeType::Ram: {
-                auto const status = mem->add_usable(physical.unwrap(), 0);
+                auto const status = memory.add_usable(physical.unwrap(), 0);
                 if (status == ours::Status::Ok && added_usable != nullptr) {
                     *added_usable = true;
                 }
@@ -48,50 +48,17 @@ namespace {
             }
             case obi::MemoryRangeType::Peripheral:
             case obi::MemoryRangeType::Reserved:
-                return mem->reserve(physical.unwrap());
+                return memory.reserve(physical.unwrap());
         }
         return ours::Status::InvArgs;
     }
 } // namespace
 
-auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationResult {
-    auto const memory = package.find("memory");
-    if (memory.is_err()) {
-        log::debug("OBI memory item is ambiguous ({})", static_cast<u32>(memory.unwrap_err()));
-        return ustl::err(memory.unwrap_err());
-    }
-    if (memory.unwrap().is_none()) {
-        return ustl::ok(false);
-    }
-
-    auto const ranges = obi::MemoryConfigView::from(memory.unwrap().value());
-    if (ranges.is_err()) {
-        log::debug("OBI memory item is invalid ({})", static_cast<u32>(ranges.unwrap_err()));
-        return ustl::err(ranges.unwrap_err());
-    }
-
-    auto added_usable = false;
-    for (usize index = 0; index < ranges.unwrap().count(); ++index) {
-        auto range = ranges.unwrap().range(index);
-        if (range.is_err()) {
-            log::debug("OBI memory range {} is invalid", index);
-            return ustl::err(range.unwrap_err());
-        }
-        auto const status = apply_memory_range(range.unwrap(), &added_usable);
-        if (status != ours::Status::Ok) {
-            log::debug("OBI memory range {} could not be registered", index);
-            return ustl::err(status);
-        }
-    }
-    if (!added_usable) {
-        return ustl::err(ours::Status::InvArgs);
-    }
-    return ustl::ok(true);
-}
-
-WEAK_LINK auto arch_detect_memory(std::span<obi::MemoryRange const> const ranges) -> void {
+WEAK_LINK
+auto arch_detect_memory(std::span<obi::MemoryRange const> const ranges) -> void {
+    auto *const memory = global_bootmem();
     for (auto const &value: ranges) {
-        auto const status = apply_memory_range(value);
+        auto const status = register_range(*memory, value);
         if (status != ours::Status::Ok) {
             panic("Legacy platform memory range could not be registered: {}",
                   static_cast<u32>(status));
@@ -99,35 +66,71 @@ WEAK_LINK auto arch_detect_memory(std::span<obi::MemoryRange const> const ranges
     }
 }
 
-auto init_memory(obi::ContainerView const &package, BootPackageInput const &input,
-                 std::span<obi::MemoryRange const> const legacy_memory_ranges, Aspace *aspace)
-    -> void {
-    auto const mem = global_bootmem();
-    auto const initialized = obi_init_memory(package);
-    if (initialized.is_err()) {
-        panic("Invalid OBI memory configuration: {}", static_cast<u32>(initialized.unwrap_err()));
+auto MemoryProvisioner::detect(obi::ContainerView const &package,
+                               std::span<obi::MemoryRange const> const legacy_ranges) -> void {
+    auto const memory = package.find("memory");
+    if (memory.is_err()) {
+        log::debug("OBI memory item is ambiguous ({})", static_cast<u32>(memory.unwrap_err()));
+        panic("Invalid OBI memory configuration: {}", static_cast<u32>(memory.unwrap_err()));
     }
-    if (!initialized.unwrap()) {
-        arch_detect_memory(legacy_memory_ranges);
+    if (memory.unwrap().is_none()) {
+        // No typed memory item at all: the architecture's legacy fallback
+        // is the only source of a map.  (An item that is present but
+        // carries no Ram range is an error, handled below -- not this.)
+        arch_detect_memory(legacy_ranges);
+        return;
     }
 
+    auto const ranges = obi::MemoryConfigView::from(memory.unwrap().value());
+    if (ranges.is_err()) {
+        log::debug("OBI memory item is invalid ({})", static_cast<u32>(ranges.unwrap_err()));
+        panic("Invalid OBI memory configuration: {}", static_cast<u32>(ranges.unwrap_err()));
+    }
+
+    auto added_usable = false;
+    for (usize index = 0; index < ranges.unwrap().count(); ++index) {
+        auto range = ranges.unwrap().range(index);
+        if (range.is_err()) {
+            log::debug("OBI memory range {} is invalid", index);
+            panic("Invalid OBI memory configuration: {}", static_cast<u32>(range.unwrap_err()));
+        }
+        auto const status = register_range(m_memory, range.unwrap(), &added_usable);
+        if (status != ours::Status::Ok) {
+            log::debug("OBI memory range {} could not be registered", index);
+            panic("Invalid OBI memory configuration: {}", static_cast<u32>(status));
+        }
+    }
+    if (!added_usable) {
+        panic("Invalid OBI memory configuration: {}", static_cast<u32>(ours::Status::InvArgs));
+    }
+}
+
+auto MemoryProvisioner::reserve_boot_image() -> void {
     auto const phys_start = PhysAddr(PHYS_LOAD_START);
     auto const phys_end = PhysAddr(PHYS_LOAD_END);
     auto const image = bootmem::Range::from(phys_start, phys_end - phys_start);
-    if (image.is_err() || mem->reserve(image.unwrap()) != Status::Ok) {
+    if (image.is_err() || m_memory.reserve(image.unwrap()) != Status::Ok) {
         panic("Failed to reserve phys image");
     }
-    auto const input_status = input.reserve(*mem);
+}
+
+auto MemoryProvisioner::reserve_package(BootPackageInput const &input) -> void {
+    auto const input_status = input.reserve(m_memory);
     if (input_status != Status::Ok) {
         panic("Failed to reserve OBI package: {}", static_cast<u32>(input_status));
     }
+}
 
+auto MemoryProvisioner::install(Aspace *aspace) -> void {
+    // The null guard is load-bearing asymmetry: ASPACE has readers (physboot)
+    // that must not see a null, while arch_init_memory is always called and
+    // its implementations decide for themselves what a null aspace means.
     if (aspace != nullptr) {
         ASPACE = aspace;
     }
 
     arch_init_memory(aspace);
-    if (auto const status = mem->trim_usable(PAGE_SIZE); status != Status::Ok) {
+    if (auto const status = m_memory.trim_usable(PAGE_SIZE); status != Status::Ok) {
         panic("Failed to page-align boot memory: {}", static_cast<u32>(status));
     }
 }

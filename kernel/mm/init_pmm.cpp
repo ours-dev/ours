@@ -123,7 +123,7 @@ auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {
     // Every entry -- free or not -- is RAM physload knew about, so it
     // is all usable(); the entries flagged used are additionally
     // reserved(), same as physload's own construction from an OBI
-    // memory item (kernel/phys/memory.cpp's apply_memory_range).
+    // memory item (kernel/phys/memory.cpp's register_range).
     for (auto const &entry: mh.ranges) {
         if (bootmem->add_usable(entry.range, 0) != Status::Ok) {
             return Status::BadState;

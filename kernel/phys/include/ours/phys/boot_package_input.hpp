@@ -13,8 +13,9 @@
 
 namespace ours::phys {
 /// A validated physical OBI package range supplied by the boot loader.
-/// `init_memory` reserves it immediately after memory discovery and before
-/// any BootMem allocation can overwrite its nested payloads.
+/// `MemoryProvisioner::reserve_package` reserves it immediately after
+/// memory discovery and before any BootMem allocation can overwrite its
+/// nested payloads.
 class BootPackageInput final {
   public:
     using Result = ustl::Result<BootPackageInput, Status>;

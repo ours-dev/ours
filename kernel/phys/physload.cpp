@@ -24,6 +24,7 @@
 #include <ours/phys/boot_package_input.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
+#include <ours/phys/memory_provisioner.hpp>
 #include <ours/phys/module_loader.hpp>
 
 #include <span>
@@ -102,7 +103,11 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
     std::span<obi::MemoryRange const> const legacy_memory_ranges =
         legacy == nullptr ? std::span<obi::MemoryRange const>{}
                           : std::span(legacy->memory_ranges, legacy->memory_range_count);
-    init_memory(boot.package(), input.unwrap(), legacy_memory_ranges, &aspace);
+    MemoryProvisioner memory{*global_bootmem()};
+    memory.detect(boot.package(), legacy_memory_ranges);
+    memory.reserve_boot_image();
+    memory.reserve_package(input.unwrap());
+    memory.install(&aspace);
 
     // ---- Stage 4: Load the next phys module ----
     //
