@@ -58,6 +58,23 @@ class KernelHandle {
     KernelHandle(KernelHandle<U> &&handle)
         : m_dispatcher(ustl::move(handle).m_dispatcher) {}
 
+    /// Move-assignment, and no copy-assignment.
+    ///
+    /// USTL_NOCOPYABLE below deletes the copy operations, and deleting the
+    /// copy constructor suppresses the implicit move ones -- so without this
+    /// there was no way to *store* a KernelHandle into one that already
+    /// exists, only to construct a fresh one. Every factory in this layer
+    /// reports its object through a `KernelHandle<T> &` out-parameter the
+    /// caller declared (ProcessDispatcher::create takes two), which is
+    /// precisely that assignment, so the type could not be used the way its
+    /// own interfaces ask for it. Zircon's KernelHandle declares the same
+    /// operator for the same reason.
+    FORCE_INLINE
+    auto operator=(KernelHandle &&other) -> KernelHandle & {
+        m_dispatcher = ustl::move(other.m_dispatcher);
+        return *this;
+    }
+
     ~KernelHandle() = default;
 
     FORCE_INLINE
