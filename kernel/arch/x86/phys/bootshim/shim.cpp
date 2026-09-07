@@ -47,7 +47,7 @@ namespace {
     extern "C" char const __executable_start[];
     extern "C" char const __executable_end[];
 
-    using bootshim::LegacyMemoryRanges;
+    using bootshim::LegacyMemoryTranslator;
     using bootshim::MAX_LEGACY_MEMORY_RANGES;
 
     /// Load physload out of the OBI container's item 0 and jump to it.
@@ -93,8 +93,8 @@ namespace {
                                      PhysAddr(legacy.ramdisk.data()) + legacy.ramdisk.size(),
                                      mbi_base + legacy.mbi_size});
         auto const total = ustl::mm::align_up(image.size(), PAGE_SIZE);
-        auto const target =
-            bootshim::find_scratch(legacy.memory_map.value(), floor, total, PAGE_SIZE);
+        auto const target = bootshim::LegacyMemoryTranslator::find_scratch(
+            legacy.memory_map.value(), floor, total, PAGE_SIZE);
         if (target.is_none()) {
             panic("No memory to place physload ({} bytes wanted)", total);
         }
@@ -112,10 +112,11 @@ namespace {
         // Stack-local, not scratch-allocated: physload and everything it
         // loads in turn (physboot, the kernel) run as plain nested calls on
         // this same stack -- nothing downstream switches stacks before the
-        // kernel does -- so this array outlives every read obi_main() or
-        // arch_detect_memory() will ever make of it.
-        LegacyMemoryRanges ranges{};
-        auto const converted = bootshim::convert_memory_map(legacy.memory_map.value(), ranges);
+        // kernel does -- so the translator and the ranges it owns outlive
+        // every read obi_main() or arch_detect_memory() will ever make of
+        // them.
+        LegacyMemoryTranslator translator;
+        auto const converted = translator.convert(legacy.memory_map.value());
         if (converted.dropped != 0) {
             // Loud on purpose: a range that never reaches physload silently
             // becomes "not usable", so an operator wondering where their RAM
@@ -129,7 +130,7 @@ namespace {
         LegacyPlatformInfo const info{
             .acpi_rsdp =
                 legacy.acpi_rsdp != 0 ? ustl::some(PhysAddr(legacy.acpi_rsdp)) : ustl::NONE,
-            .memory_ranges = ranges.data(),
+            .memory_ranges = translator.ranges().data(),
             .memory_range_count = converted.converted,
             .cmdline = legacy.cmdline,
             .bootloader_name = legacy.name,
