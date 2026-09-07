@@ -34,7 +34,11 @@ using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Sign
 /// caller map here", and the only object in the tree that can answer it is the
 /// handle that got the caller here -- which means the mapping entry point has
 /// to be on the dispatcher, not on the VmArea.
-class VmaDispatcher: public VmaDispatcherBase {
+/// `final`: a dispatcher is a leaf. Nothing derives from one -- the type
+/// hierarchy stops at Dispatcher -> SoloDispatcher -> the concrete object --
+/// and saying so is what lets the destructor below be marked `final` too.
+/// Zircon spells VmAddressRegionDispatcher the same way.
+class VmaDispatcher final: public VmaDispatcherBase {
     using Self = VmaDispatcher;
     using Base = VmaDispatcherBase;
 
@@ -90,7 +94,11 @@ class VmaDispatcher: public VmaDispatcherBase {
     static constexpr auto MAGIC = gktl::magic("VmaDispatcher");
 
     explicit VmaDispatcher(ustl::Arc<mm::VmArea> vma);
-    ~VmaDispatcher();
+
+    /// `final`, because Dispatcher's destructor is virtual: without it this
+    /// silently overrides rather than saying so, and nothing would catch a
+    /// later signature change that stopped overriding.
+    ~VmaDispatcher() final;
 
     ustl::Arc<mm::VmArea> m_vma;
 };

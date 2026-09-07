@@ -50,7 +50,14 @@ class KernelHandle {
     FORCE_INLINE
     KernelHandle(ustl::Arc<U> object)
         : m_dispatcher(ustl::move(object)) {
-        DEBUG_ASSERT(object);
+        // The member initialiser above already moved out of `object`, and
+        // ustl::Rc's move constructor nulls the source (std::exchange on
+        // m_pointer), so asserting on the parameter here asserted on a
+        // guaranteed-null pointer: every well-formed construction of this
+        // overload fired it. It never showed because nothing had constructed a
+        // KernelHandle from an Arc yet. The state worth checking is the one
+        // that survives the constructor.
+        DEBUG_ASSERT(m_dispatcher);
     }
 
     template <typename U>

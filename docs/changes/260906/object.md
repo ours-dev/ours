@@ -296,3 +296,78 @@ canonical 分界）：用户半区的上半留给 `create_shared()` 将来发的
 - **没有 handle table，没有把这两个 KernelHandle 装进任何进程的句柄表**。那需要
   `Handle::make()` 有定义和 arena 分配器，是独立的一块（设计已定，见
   `docs/architecture/object/handle-lookup.md`）。
+
+## KernelHandle 的调试断言断在一个必然为空的指针上（2026-09-06）
+
+**文件**
+- `kernel/object/include/ours/object/handle.hpp` — 断言改为检查移动之后的成员
+- `kernel/object/include/ours/object/vma_dispatcher.hpp` — 类与析构函数标 `final`
+
+**症状**
+潜伏，但触发条件极窄且必然：任何一次用 `ustl::Arc` 构造 `KernelHandle`，在
+`KERNEL_DEBUG_LEVEL=1` 的镜像里都会当场断言失败。至今没有暴露，只是因为在
+`VmaDispatcher::create()` 出现之前，树里没有任何一处这样构造过。
+
+**原因**
+
+```cpp
+    template <typename U>
+    KernelHandle(ustl::Arc<U> object)
+        : m_dispatcher(ustl::move(object)) {
+        DEBUG_ASSERT(object);
+    }
+```
+
+成员初始化列表先于函数体执行，所以进到 `DEBUG_ASSERT` 时 `object` 已经被移走了。
+而 `ustl::Rc` 的移动构造是
+
+```cpp
+    Rc(Rc &&other) noexcept : m_pointer(std::exchange(other.m_pointer, nullptr)) {}
+```
+
+——它把源指针置空。也就是说这个断言检查的是一个**保证为空**的指针：不是"可能失败"，
+是构造成功时必然失败。值得检查的是活过构造函数的那个状态，也就是 `m_dispatcher`。
+
+上面那个 `KernelHandle(T *object)` 重载没有这个问题：它接的是裸指针，没有移动发生。
+
+`final` 是同一轮 clang-tidy 顺出来的第二条：`Dispatcher` 的析构是虚的，
+`VmaDispatcher` 的析构因此是在覆盖它，但没有写出来。把类和析构都标 `final` 之后，
+将来签名一旦改到不再覆盖，编译器会说话。注意两者是绑定的——只标析构会得到
+`class with destructor marked 'final' cannot be inherited from`，因为 `final` 析构
+要求类本身也是 `final`。
+
+**改法**
+
+改前
+```cpp
+        : m_dispatcher(ustl::move(object)) {
+        DEBUG_ASSERT(object);
+    }
+```
+改后
+```cpp
+        : m_dispatcher(ustl::move(object)) {
+        DEBUG_ASSERT(m_dispatcher);
+    }
+```
+
+以及
+```cpp
+class VmaDispatcher final: public VmaDispatcherBase {
+    ...
+    ~VmaDispatcher() final;
+```
+
+**参照**
+`Zircon VmAddressRegionDispatcher`：`class VmAddressRegionDispatcher final : public
+SoloDispatcher<...>` 加 `~VmAddressRegionDispatcher() final;`，同样的写法。
+断言那条无对应物，是本树自有的缺陷。
+
+**验证**
+`ninja` 通过（`final` 那条第一次改错时正是靠 `-Werror` 拦下的）；QEMU 实测
+`kernel.dev.dbg_1.obi` 无回归。断言本身要等下一步 userboot 真的去构造 KernelHandle
+才会被走到——那正是它原本会炸的地方。
+
+**故意没做**
+`KernelHandle::reset()` 里调用不存在的 `Dispatcher::on_zero()` 那条没有一起改，它是
+语义问题不是笔误，留在 `docs/repairs/260906/object.md` 第 1 条。
