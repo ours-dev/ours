@@ -10,7 +10,6 @@
 #include <ours/types.hpp>
 #include <ustl/option.hpp>
 
-#include <limits>
 #include <type_traits>
 
 namespace ours::phys {
@@ -55,6 +54,11 @@ class PHYS_EXPORT Aspace {
     auto unmap(VirtAddr va, usize n) -> Status;
 
     auto query(VirtAddr va) -> ktl::Result<usize>;
+
+    /// Identically map every usable RAM region below |max_limit| into this
+    /// address space, coalescing adjacent bootmem regions into single map
+    /// calls.  Must run after memory discovery has registered the RAM.
+    auto map_usable_ram(PhysAddr max_limit) -> void;
 
     FORCE_INLINE
     constexpr auto pgd() -> PhysAddr {
@@ -108,10 +112,6 @@ class PHYS_EXPORT Aspace {
 
 /// Provided by architecture-specific code.
 auto arch_setup_aspace(Aspace &aspace) -> void;
-
-/// Identically map the ram memory under |max_limit| to virtual address space.
-auto create_identity_map_for_ram(Aspace &aspace, PhysAddr = std::numeric_limits<PhysAddr>::max())
-    -> void;
 
 } // namespace ours::phys
 

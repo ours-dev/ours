@@ -31,7 +31,7 @@ auto arch_setup_aspace(Aspace &aspace) -> void {
 
     // Cancel the allocation bounds of page table and create identity map of RAM under ARCH_PHYSMAP_SIZE.
     aspace.set_allocation_bounds(0, 0);
-    create_identity_map_for_ram(aspace, ARCH_PHYSMAP_SIZE);
+    aspace.map_usable_ram(ARCH_PHYSMAP_SIZE);
 
     // The legacy VGA/BIOS hole sits outside usable RAM, so the RAM walk
     // above skips it — but the phys console still writes the text buffer at
