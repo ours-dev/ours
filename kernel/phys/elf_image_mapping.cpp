@@ -118,7 +118,7 @@ namespace {
 // pages, never through the mapping built here.
 auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
     if (target_base % PAGE_SIZE != 0 || m_pa_load % PAGE_SIZE != 0) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     // The plan reports RELRO in the image's own addresses; every range has to
@@ -127,7 +127,7 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
         auto const end_offset = to_usize(interval.virtual_end - m_load_plan.image_base());
         if (end_offset.is_none() || end_offset.value() > size() ||
             target_base > std::numeric_limits<VirtAddr>::max() - end_offset.value()) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
     }
 
@@ -136,22 +136,22 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
         if (region.image_offset > size() || segment.memory_size > size() - region.image_offset ||
             target_base > std::numeric_limits<VirtAddr>::max() - region.image_offset ||
             m_pa_load > std::numeric_limits<PhysAddr>::max() - region.image_offset) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         auto const native_size = to_usize(segment.memory_size);
         if (native_size.is_none()) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         auto const virtual_address = target_base + region.image_offset;
         auto const physical_address = m_pa_load + region.image_offset;
         auto const page_offset = virtual_address % PAGE_BYTES;
         if (page_offset != physical_address % PAGE_BYTES ||
             native_size.value() > std::numeric_limits<usize>::max() - page_offset) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         auto const pages = page_count(native_size.value() + page_offset);
         if (pages.is_none()) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
 
         auto const virtual_page = virtual_address - page_offset;
@@ -161,7 +161,7 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
         // representable too, not just its last page.
         if (pages.value() > (std::numeric_limits<VirtAddr>::max() - virtual_page) / PAGE_BYTES ||
             pages.value() > (std::numeric_limits<PhysAddr>::max() - physical_page) / PAGE_BYTES) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         auto const segment_end = virtual_page + (pages.value() * PAGE_BYTES);
         // Where the segment's content stops, before page rounding -- what
@@ -199,7 +199,7 @@ auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
                 aspace.map(run_first, (run_last - run_first) / PAGE_BYTES,
                            physical_page + (run_first - virtual_page), run_permissions);
             if (mapped.is_err()) {
-                return Status::InvalidArgument;
+                return Status::InvArgs;
             }
             run_first = run_last;
         }

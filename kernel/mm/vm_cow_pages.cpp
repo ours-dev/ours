@@ -48,11 +48,11 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_reque
 
 auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status {
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (offset + size > m_size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     auto cursor = make_cursor(offset, size);

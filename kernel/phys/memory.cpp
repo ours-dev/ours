@@ -50,7 +50,7 @@ namespace {
             case obi::MemoryRangeType::Reserved:
                 return mem->reserve(physical.unwrap());
         }
-        return ours::Status::InvalidArgument;
+        return ours::Status::InvArgs;
     }
 } // namespace
 
@@ -84,7 +84,7 @@ auto obi_init_memory(obi::ContainerView const &package) -> MemoryInitializationR
         }
     }
     if (!added_usable) {
-        return ustl::err(ours::Status::InvalidArgument);
+        return ustl::err(ours::Status::InvArgs);
     }
     return ustl::ok(true);
 }

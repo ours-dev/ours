@@ -104,7 +104,7 @@ class Scheduler {
     static auto split_node_from_pi_graph(Upstream &, Target &) -> void;
 
     FORCE_INLINE static auto peek_active_mask() -> CpuMask {
-        return STATES[usize(State::Active)].load(ustl::sync::MemoryOrder::Relaxed);
+        return STATES[usize(State::Active)].load(std::memory_order_relaxed);
     }
 
     auto init() -> void;
@@ -318,7 +318,7 @@ class Scheduler {
     Thread *m_idle_thread;
 
     static constexpr auto NUM_STATE = static_cast<usize>(State::Count);
-    static inline std::array<ustl::sync::Atomic<CpuMask>, NUM_STATE> STATES{};
+    static inline std::array<std::atomic<CpuMask>, NUM_STATE> STATES{};
 };
 
 /// This helper class was designed for conviencies and securities.

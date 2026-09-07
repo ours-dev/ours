@@ -59,21 +59,21 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
     // table at enrollment turns that back into one message naming the device.
     if (!!(self.m_feature & Feature::Periodic) && !self.m_vtable->set_mode_periodic) {
         log::error("ClockEventDevice {} claims Periodic but has no set_mode_periodic", self.m_name);
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
     if (!!(self.m_feature & Feature::Oneshot) && !self.m_vtable->set_mode_oneshot) {
         log::error("ClockEventDevice {} claims Oneshot but has no set_mode_oneshot", self.m_name);
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
     if (!!(self.m_feature & Feature::TimePoint)) {
         if (!self.m_vtable->set_next_event_time) {
             log::error("ClockEventDevice {} claims TimePoint but has no set_next_event_time",
                        self.m_name);
-            return Status::InvalidArguments;
+            return Status::InvArgs;
         }
     } else if (!self.m_vtable->set_next_event_tick) {
         log::error("ClockEventDevice {} can be armed by neither ticks nor time", self.m_name);
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (self.m_cpumask == nullptr || self.m_cpumask->none() ||

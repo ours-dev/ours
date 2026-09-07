@@ -10,7 +10,7 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
                                 PhysAddr size, Flag flags, Name const &name, Storage *storage)
     -> Status {
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (!storage) {
@@ -19,7 +19,7 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
 
     if (kind == Kind::Root) {
         if (base || size) {
-            return Status::InvalidArguments;
+            return Status::InvArgs;
         }
     }
 

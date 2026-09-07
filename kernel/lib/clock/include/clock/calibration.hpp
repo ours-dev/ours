@@ -70,7 +70,7 @@ class Calibration final {
     static auto run(Adapter &adapter, CalibrationConfig const config, Selector const selector = {})
         -> CalibrationResult {
         if (!valid_config(config)) {
-            return {.status = Status::InvalidArgument};
+            return {.status = Status::InvArgs};
         }
 
         auto const status = adapter.prepare();

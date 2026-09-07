@@ -296,7 +296,7 @@ INIT_CODE static auto hpet_init_internal() -> Status {
     auto const period = mmio->general_caps.period();
     if (period < MIN_PERIOD || period > MAX_PERIOD) {
         log::info("HPET: period {} fs is out of range.", period);
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     // HZ: How many ticks in one second.

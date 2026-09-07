@@ -90,7 +90,7 @@ auto main() -> int {
     require(ours::phys::apply_boot_options(
                 invalid_options, command_line_from(obi::ItemView::Bytes(invalid_bool.data(),
                                                                         invalid_bool.size()))) ==
-            ours::Status::InvalidArgument);
+            ours::Status::InvArgs);
 
     // The module/kernel lookups keep their defaults unless the command line
     // overrides them (kernel.phys.next=physboot is equivalent to omitting it).
@@ -108,7 +108,7 @@ auto main() -> int {
     auto const too_long = std::string("kernel.phys.next=") + std::string(64, 'x');
     auto long_options = ours::phys::BootOptions{};
     require(ours::phys::apply_boot_options(long_options, options_from_literal(too_long)) ==
-            ours::Status::InvalidArgument);
+            ours::Status::InvArgs);
 
     // from_text(): a command line that never came out of an OBI item, which
     // is how a boot-shim forwards the one its legacy protocol handed it.
@@ -142,6 +142,6 @@ auto main() -> int {
                 log_options, options_from_literal("log.level=error\n")) == ours::Status::Ok);
     require(logz4::min_level() == logz4::Level::Error);
     require(ours::phys::apply_boot_options(log_options, options_from_literal("log.level=nope\n")) ==
-            ours::Status::InvalidArgument);
+            ours::Status::InvArgs);
     return 0;
 }

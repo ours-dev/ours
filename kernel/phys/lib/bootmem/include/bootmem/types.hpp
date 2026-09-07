@@ -25,7 +25,7 @@ struct Range final {
     static constexpr auto from(PhysAddr const base, usize const size)
         -> ustl::Result<Range, Status> {
         if (size == 0) {
-            return ustl::err(Status::InvalidArgument);
+            return ustl::err(Status::InvArgs);
         }
         if (base > std::numeric_limits<PhysAddr>::max() - size) {
             return ustl::err(Status::OutOfRange);

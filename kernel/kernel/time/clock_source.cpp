@@ -27,7 +27,7 @@ auto ClockSource::enroll(Self *self, usize hz, Rating rating) -> Status {
 
     if (hz == 0) {
         log::error("ClockSource {} enrolled with a zero frequency.", self->m_name);
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     // ns/tick = 1e9 / hz, reduced so both halves fit the u32 ratio. The
@@ -40,7 +40,7 @@ auto ClockSource::enroll(Self *self, usize hz, Rating rating) -> Status {
     if (numerator > ustl::NumericLimits<u32>::max() ||
         denominator > ustl::NumericLimits<u32>::max()) {
         log::error("ClockSource {}: {} Hz does not fit the tick-to-ns ratio.", self->m_name, hz);
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
     self->m_rating = rating;
     self->m_freq_hz = hz;

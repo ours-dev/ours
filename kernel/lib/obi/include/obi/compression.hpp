@@ -35,7 +35,7 @@ inline auto compress_literals(Bytes input, MutableBytes output) -> Result {
         return ustl::err(required.unwrap_err());
     }
     if (output.data() == nullptr || output.size() < required.unwrap()) {
-        return ustl::err(output.data() == nullptr ? ours::Status::InvalidArgument
+        return ustl::err(output.data() == nullptr ? ours::Status::InvArgs
                                                   : ours::Status::NoSpace);
     }
 
@@ -63,7 +63,7 @@ inline auto compress_literals(Bytes input, MutableBytes output) -> Result {
 [[nodiscard]]
 inline auto decompressed_size(Bytes input) -> Result {
     if (input.data() == nullptr && input.size() != 0) {
-        return ustl::err(ours::Status::InvalidArgument);
+        return ustl::err(ours::Status::InvArgs);
     }
 
     usize input_offset = 0;
@@ -75,7 +75,7 @@ inline auto decompressed_size(Bytes input) -> Result {
         if (literal_length == 15) {
             for (;;) {
                 if (input_offset >= input.size()) {
-                    return ustl::err(ours::Status::InvalidArgument);
+                    return ustl::err(ours::Status::InvArgs);
                 }
                 auto const extension = input[input_offset++];
                 if (literal_length > std::numeric_limits<usize>::max() - extension) {
@@ -90,7 +90,7 @@ inline auto decompressed_size(Bytes input) -> Result {
         if (literal_length > input.size() - input_offset ||
             output_size > std::numeric_limits<usize>::max() - literal_length) {
             return ustl::err(literal_length > input.size() - input_offset
-                                 ? ours::Status::InvalidArgument
+                                 ? ours::Status::InvArgs
                                  : ours::Status::OutOfRange);
         }
         input_offset += literal_length;
@@ -100,20 +100,20 @@ inline auto decompressed_size(Bytes input) -> Result {
             break;
         }
         if (input.size() - input_offset < 2) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         auto const offset = static_cast<usize>(static_cast<u16>(input[input_offset]) |
                                                static_cast<u16>(input[input_offset + 1]) << 8);
         input_offset += 2;
         if (offset == 0 || offset > output_size) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
 
         auto match_length = static_cast<usize>(token & 0x0F) + 4;
         if ((token & 0x0F) == 0x0F) {
             for (;;) {
                 if (input_offset >= input.size()) {
-                    return ustl::err(ours::Status::InvalidArgument);
+                    return ustl::err(ours::Status::InvArgs);
                 }
                 auto const extension = input[input_offset++];
                 if (match_length > std::numeric_limits<usize>::max() - extension) {
@@ -136,10 +136,10 @@ inline auto decompressed_size(Bytes input) -> Result {
 [[nodiscard]]
 inline auto decompress(Bytes input, MutableBytes output) -> Result {
     if (input.data() == nullptr && input.size() != 0) {
-        return ustl::err(ours::Status::InvalidArgument);
+        return ustl::err(ours::Status::InvArgs);
     }
     if (output.data() == nullptr && output.size() != 0) {
-        return ustl::err(ours::Status::InvalidArgument);
+        return ustl::err(ours::Status::InvArgs);
     }
 
     usize input_offset = 0;
@@ -151,7 +151,7 @@ inline auto decompress(Bytes input, MutableBytes output) -> Result {
         if (literal_length == 15) {
             for (;;) {
                 if (input_offset >= input.size()) {
-                    return ustl::err(ours::Status::InvalidArgument);
+                    return ustl::err(ours::Status::InvArgs);
                 }
                 auto const extension = input[input_offset++];
                 if (literal_length > std::numeric_limits<usize>::max() - extension) {
@@ -166,7 +166,7 @@ inline auto decompress(Bytes input, MutableBytes output) -> Result {
         if (literal_length > input.size() - input_offset ||
             literal_length > output.size() - output_offset) {
             return ustl::err(literal_length > input.size() - input_offset
-                                 ? ours::Status::InvalidArgument
+                                 ? ours::Status::InvArgs
                                  : ours::Status::NoSpace);
         }
         for (usize index = 0; index < literal_length; ++index) {
@@ -179,20 +179,20 @@ inline auto decompress(Bytes input, MutableBytes output) -> Result {
             break;
         }
         if (input.size() - input_offset < 2) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         auto const offset = static_cast<usize>(static_cast<u16>(input[input_offset]) |
                                                static_cast<u16>(input[input_offset + 1]) << 8);
         input_offset += 2;
         if (offset == 0 || offset > output_offset) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
 
         auto match_length = static_cast<usize>(token & 0x0F) + 4;
         if ((token & 0x0F) == 0x0F) {
             for (;;) {
                 if (input_offset >= input.size()) {
-                    return ustl::err(ours::Status::InvalidArgument);
+                    return ustl::err(ours::Status::InvArgs);
                 }
                 auto const extension = input[input_offset++];
                 if (match_length > std::numeric_limits<usize>::max() - extension) {

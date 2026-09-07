@@ -47,7 +47,7 @@ FORCE_INLINE auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize si
                                                        CommitOptions option) -> Status {
     if (!!(option & CommitOptions::Pin)) {
         if (!size) {
-            return Status::InvalidArguments;
+            return Status::InvArgs;
         }
     }
 

@@ -68,7 +68,7 @@ class ItemView final {
     [[nodiscard]]
     auto materialize(MutableBytes output) const -> MaterializeResult {
         if (output.data() == nullptr && output.size() != 0) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         auto const size = static_cast<usize>(descriptor_.memory_size);
         if (output.size() < size) {
@@ -131,7 +131,7 @@ class ContainerView final {
     [[nodiscard]]
     static auto from(u8 const *data, usize size) -> Result {
         if (data == nullptr || size < sizeof(ContainerHeader)) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
 
         ContainerHeader header{};
@@ -144,7 +144,7 @@ class ContainerView final {
             header.container_size < header.header_size || header.container_size != size ||
             header.container_size % ContainerHeader::ALIGNMENT != 0 ||
             header.container_size > std::numeric_limits<usize>::max()) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         if (header.minor > ContainerHeader::MINOR) {
             return ustl::err(ours::Status::NotSupported);
@@ -187,15 +187,15 @@ class ContainerView final {
                 item.payload_offset % ContainerHeader::ALIGNMENT != 0 ||
                 !is_power_of_two(item.alignment) || item.payload_offset % item.alignment != 0 ||
                 item.memory_size > std::numeric_limits<usize>::max()) {
-                return ustl::err(ours::Status::InvalidArgument);
+                return ustl::err(ours::Status::InvArgs);
             }
             if (item.compression == static_cast<u32>(Compression::None) &&
                 item.memory_size < item.payload_size) {
-                return ustl::err(ours::Status::InvalidArgument);
+                return ustl::err(ours::Status::InvArgs);
             }
             if (std::memchr(data + string_table_offset + item.name_offset, 0, item.name_size) !=
                 nullptr) {
-                return ustl::err(ours::Status::InvalidArgument);
+                return ustl::err(ours::Status::InvArgs);
             }
 
             if (item.compression != static_cast<u32>(Compression::None) &&
@@ -215,7 +215,7 @@ class ContainerView final {
                     return ustl::err(decoded_size.unwrap_err());
                 }
                 if (decoded_size.unwrap() > item.memory_size) {
-                    return ustl::err(ours::Status::InvalidArgument);
+                    return ustl::err(ours::Status::InvArgs);
                 }
             }
 
@@ -223,10 +223,10 @@ class ContainerView final {
                 if (!digest_tail_is_zero(item.digest) ||
                     read_digest(item.digest) !=
                         crc32(data + item.payload_offset, static_cast<usize>(item.payload_size))) {
-                    return ustl::err(ours::Status::InvalidArgument);
+                    return ustl::err(ours::Status::InvArgs);
                 }
             } else if (!digest_is_zero(item.digest)) {
-                return ustl::err(ours::Status::InvalidArgument);
+                return ustl::err(ours::Status::InvArgs);
             }
             minimum_payload_offset = payload_end.value();
         }
@@ -236,10 +236,10 @@ class ContainerView final {
                 read_digest(header.container_digest) !=
                     crc32(data, container_size, offsetof(ContainerHeader, container_digest),
                           sizeof(header.container_digest))) {
-                return ustl::err(ours::Status::InvalidArgument);
+                return ustl::err(ours::Status::InvArgs);
             }
         } else if (!digest_is_zero(header.container_digest)) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
 
         return ustl::ok(ContainerView(data, header, data + static_cast<usize>(string_table_offset),

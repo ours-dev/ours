@@ -22,8 +22,8 @@ namespace {
 
     constexpr auto to_status(arch::paging::MapError error) -> Status {
         switch (error) {
-            case arch::paging::MapError::InvalidArgument:
-                return Status::InvalidArgument;
+            case arch::paging::MapError::InvArgs:
+                return Status::InvArgs;
             case arch::paging::MapError::Existent:
                 return Status::AlreadyExists;
             case arch::paging::MapError::NoMem:

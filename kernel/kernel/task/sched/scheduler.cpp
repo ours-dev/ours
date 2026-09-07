@@ -76,6 +76,7 @@
 #include <ours/time/clock.hpp>
 #include <ours/time/timer_queue.hpp>
 
+#include <atomic>
 #include <utility>
 
 using ustl::sync::MemoryOrder;
@@ -90,7 +91,6 @@ namespace {
     GKTL_COUNTER(SCHEDULE_IDLE_PAST, "schedule.idle_past");
     GKTL_COUNTER(SCHEDULE_PREEMPT_PAST, "schedule.preempt_past");
     GKTL_COUNTER(SCHEDULE_YIELD_PAST, "schedule.yield_past");
-
 
 } // namespace
 

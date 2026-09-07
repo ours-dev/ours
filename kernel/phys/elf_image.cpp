@@ -102,16 +102,16 @@ auto ElfImage::init(ustl::views::Span<u8 const> file) -> Status {
     m_allow_symbolic_tables = false;
     auto parsed = eftl::elf::Parser::parse_as<Traits>(file.data(), file.size());
     if (parsed.is_err()) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     auto const native_image = parsed->native_image();
     if (native_image.is_none()) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
     auto planned = LoadPolicy::make_plan(native_image.value());
     if (planned.is_err()) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     m_binary = ustl::some(std::move(parsed).unwrap());
@@ -136,7 +136,7 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
         if (region.image_offset > size() || segment.memory_size > size() - region.image_offset ||
             segment.file_size > segment.memory_size ||
             segment.content.size() != segment.file_size) {
-            return ustl::err(Status::InvalidArgument);
+            return ustl::err(Status::InvArgs);
         }
         if (phys_addr > std::numeric_limits<PhysAddr>::max() - region.image_offset) {
             return ustl::err(Status::OutOfRange);
@@ -144,12 +144,12 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
 
         auto const alignment = to_usize(segment.alignment);
         if (alignment.is_none()) {
-            return ustl::err(Status::InvalidArgument);
+            return ustl::err(Status::InvArgs);
         }
         auto const destination_address = phys_addr + region.image_offset;
         if (alignment.value() > 1 && (destination_address % alignment.value()) !=
                                          (region.virtual_start % alignment.value())) {
-            return ustl::err(Status::InvalidArgument);
+            return ustl::err(Status::InvArgs);
         }
 
         auto *const destination = reinterpret_cast<u8 *>(destination_address);
@@ -173,7 +173,7 @@ auto ElfImage::load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status> {
 
 auto ElfImage::relocate(usize load_address) -> Status {
     if (m_binary.is_none() || load_address < m_load_plan.image_base()) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
     if constexpr (sizeof(usize) > sizeof(Traits::Addr)) {
         if (load_address > std::numeric_limits<typename Traits::Addr>::max()) {
@@ -190,7 +190,7 @@ auto ElfImage::relocate(usize load_address) -> Status {
             m_binary.value(), image, load_bias,
             [machine](u32 type) { return relative_relocation_type(machine, type); },
             m_allow_symbolic_tables)) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     m_va_load = load_address;
@@ -207,7 +207,7 @@ namespace {
         for (usize index = 0; index < relocations.size(); ++index) {
             auto const entry = relocations.relocation_at(index);
             if (entry.is_none()) {
-                return Status::InvalidArgument;
+                return Status::InvArgs;
             }
             auto const &rela = entry.value();
 
@@ -225,7 +225,7 @@ namespace {
 
             auto const symbol = symbols.symbol_at(static_cast<usize>(symbol_index));
             if (symbol.is_none()) {
-                return Status::InvalidArgument;
+                return Status::InvArgs;
             }
 
             // SHN_UNDEF (0): unresolved, look up in physload.  SHN_ABS
@@ -242,7 +242,7 @@ namespace {
             if (symbol->st_shndx == 0) {
                 auto const name = symbols.symbol_name(static_cast<usize>(symbol_index));
                 if (name.is_none()) {
-                    return Status::InvalidArgument;
+                    return Status::InvArgs;
                 }
                 auto const spelling =
                     std::string_view(reinterpret_cast<char const *>(name->data()), name->size());
@@ -297,7 +297,7 @@ auto ElfImage::relocate_and_bind(usize const load_address, SymbolBinder const &b
     if (symbols.is_none()) {
         // There are symbolic relocations but no readable .dynsym to name
         // them; binding cannot proceed.
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     eftl::elf::MappedMemory<Traits> memory(reinterpret_cast<u8 *>(m_pa_load), size(),

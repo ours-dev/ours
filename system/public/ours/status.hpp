@@ -44,8 +44,7 @@ enum class Status : u32 {
     /// releases the entity.
     AlreadyBound,
 
-    InvalidArgument,
-    InvalidArguments = InvalidArgument,
+    InvArgs,
 
     /// An argument is outside the valid range for this operation.
     OutOfRange,
@@ -116,8 +115,8 @@ inline auto to_string(Status status) -> char const * {
             return "AlreadyExists";
         case Status::AlreadyBound:
             return "AlreadyBound";
-        case Status::InvalidArgument:
-            return "InvalidArgument";
+        case Status::InvArgs:
+            return "InvArgs";
         case Status::OutOfRange:
             return "OutOfRange";
         case Status::TimeOut:

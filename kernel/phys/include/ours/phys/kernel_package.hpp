@@ -47,7 +47,7 @@ class KernelPackage final {
             return ustl::err(ours::Status::BadType);
         }
         if (output.data() == nullptr && output.size() != 0) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         // materialize() decompresses (Lz4) or copies (None) the payload
         // into `output`, returning the declared memory_size.

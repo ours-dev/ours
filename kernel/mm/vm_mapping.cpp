@@ -100,7 +100,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
                        ustl::Arc<VmObject> vmo, usize vmo_off, MmuFlags mmuf, char const *name,
                        ustl::Arc<Self> *out) -> Status {
     if (!vmo) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     auto mapping =
@@ -264,12 +264,12 @@ auto VmMapping::map(VirtAddr base, usize size, bool commit, MapControl control) 
 
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (auto paged = as<VmObjectPaged>(m_vmo.as_ptr_mut())) {
@@ -290,17 +290,17 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
 
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     Guard guard{get_lock()};
     base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if (!validate_mmuflags(mmuf)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     return protect_locked(base, size, mmuf);
@@ -340,13 +340,13 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapControl control) -> Status
 
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     Guard guard{get_lock()};
     base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     return unmap_locked(base, size, control);
@@ -394,7 +394,7 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
 
     VirtAddr const va = ustl::mm::align_down(vmf->va, PAGE_SIZE);
     if (!check_range(va, PAGE_SIZE)) {
-        return {Status::InvalidArguments, 0};
+        return {Status::InvArgs, 0};
     }
 
     // What this page may do, taken from the mapping's own record rather than

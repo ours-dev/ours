@@ -134,7 +134,7 @@ auto alloc_frames(NnId nid, Gaf gaf, PmFrame::List *list, usize n, NodeMask cons
 
     auto const node = PmNode::node(nid);
     if (!node) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     auto result = node->alloc_frames_bulk(gaf, n, nodes);

@@ -38,10 +38,10 @@ auto IrqDispatcher::irqnum_to_object(VIrqNum virqnum) -> IrqObject * {
 auto IrqDispatcher::request_irq(VIrqNum irqnum, IrqHandler handler, IrqFlags flags,
                                 char const *name) -> Status {
     if (irqnum == INVALID_V_IRQ_NUM) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
     if (!handler) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     auto object = irqnum_to_object(irqnum);

@@ -564,7 +564,7 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     m_canary.verify<Self>();
 
     if (order > MAX_FRAME_ORDER) {
-        return ustl::err(Status::InvalidArguments);
+        return ustl::err(Status::InvArgs);
     }
     gaf &= ALLOWED_GAF;
 

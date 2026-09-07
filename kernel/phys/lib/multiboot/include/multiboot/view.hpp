@@ -67,14 +67,14 @@ class View final {
         static auto from(Tag const &tag) -> Result {
             auto const bytes = tag.bytes();
             if (tag.type() != MULTIBOOT_TAG_TYPE_MMAP || bytes.size() < sizeof(MultibootTagMmap)) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
 
             MultibootTagMmap header{};
             std::memcpy(&header, bytes.data(), sizeof(header));
             if (header.entry_size < sizeof(MultibootMemoryMap) ||
                 (bytes.size() - sizeof(header)) % header.entry_size != 0) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
             if (header.entry_version != 0) {
                 return ustl::err(Status::NotSupported);
@@ -86,7 +86,7 @@ class View final {
                 std::memcpy(&entry, bytes.data() + offset, sizeof(entry));
                 if (entry.zero != 0 ||
                     (entry.len != 0 && entry.addr > std::numeric_limits<u64>::max() - entry.len)) {
-                    return ustl::err(Status::InvalidArgument);
+                    return ustl::err(Status::InvArgs);
                 }
             }
             return ustl::ok(MemoryMap(bytes, header.entry_size));
@@ -156,29 +156,29 @@ class View final {
     static auto from(u8 const *data, usize const size) -> Result {
         if (data == nullptr || size < sizeof(InfoHeader) ||
             reinterpret_cast<std::uintptr_t>(data) % MULTIBOOT_INFO_ALIGN != 0) {
-            return ustl::err(Status::InvalidArgument);
+            return ustl::err(Status::InvArgs);
         }
 
         InfoHeader header{};
         std::memcpy(&header, data, sizeof(header));
         if (header.total_size != size || header.reserved != 0 || size % MULTIBOOT_INFO_ALIGN != 0) {
-            return ustl::err(Status::InvalidArgument);
+            return ustl::err(Status::InvArgs);
         }
 
         auto cursor = usize{sizeof(InfoHeader)};
         while (cursor < size) {
             if (size - cursor < sizeof(MultibootTag)) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
 
             MultibootTag tag{};
             std::memcpy(&tag, data + cursor, sizeof(tag));
             if (tag.size < sizeof(MultibootTag)) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
             auto const aligned_size = align_up(tag.size);
             if (aligned_size > size - cursor) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
 
             cursor += aligned_size;
@@ -186,11 +186,11 @@ class View final {
                 continue;
             }
             if (tag.size != sizeof(MultibootTag) || cursor != size) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
             return ustl::ok(View(data, size));
         }
-        return ustl::err(Status::InvalidArgument);
+        return ustl::err(Status::InvArgs);
     }
 
     [[nodiscard]]
@@ -207,13 +207,13 @@ class View final {
                 continue;
             }
             if (tag->bytes().size() < sizeof(MultibootTagModule)) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
 
             MultibootTagModule module{};
             std::memcpy(&module, tag->bytes().data(), sizeof(module));
             if (module.mod_start >= module.mod_end || module.mod_start % MULTIBOOT_MOD_ALIGN != 0) {
-                return ustl::err(Status::InvalidArgument);
+                return ustl::err(Status::InvArgs);
             }
             if (result.is_some()) {
                 return ustl::err(Status::AlreadyExists);

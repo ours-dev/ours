@@ -192,7 +192,7 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     }
     if (descriptor->init == nullptr) {
         log::info("phys module '{}' declares a null entry", name);
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     m_descriptor = descriptor;

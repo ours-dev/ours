@@ -20,12 +20,12 @@ class CommandLineView final {
             return ustl::err(ours::Status::BadType);
         }
         if (item.compression() != Compression::None || item.memory_size() != item.payload_size()) {
-            return ustl::err(item.compression() == Compression::None ? ours::Status::InvalidArgument
+            return ustl::err(item.compression() == Compression::None ? ours::Status::InvArgs
                                                                      : ours::Status::NotSupported);
         }
         auto const bytes = item.payload();
         if (bytes.data() == nullptr && bytes.size() != 0) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         return from_text({reinterpret_cast<char const *>(bytes.data()), bytes.size()});
     }
@@ -45,17 +45,17 @@ class CommandLineView final {
     [[nodiscard]]
     static auto from_text(std::string_view bytes) -> Result {
         if (bytes.data() == nullptr && !bytes.empty()) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         auto text = bytes;
         if (!text.empty() && text.back() == '\0') {
             text.remove_suffix(1);
         }
         if (text.find('\0') != std::string_view::npos) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         if (!valid_utf8(text)) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         if (text.empty()) {
             return ustl::ok(CommandLineView({}));

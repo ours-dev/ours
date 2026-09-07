@@ -15,7 +15,7 @@ auto main() -> int {
 
     auto invalid_alignment = null_resource->try_allocate(8, 3);
     assert(invalid_alignment.is_err());
-    assert(invalid_alignment.error() == ustl::collections::Error::InvalidArgument);
+    assert(invalid_alignment.error() == ustl::collections::Error::InvArgs);
 
     auto *new_delete = ustl::collections::new_delete_resource();
     auto allocation = new_delete->try_allocate(32, alignof(std::max_align_t));

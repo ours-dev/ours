@@ -96,7 +96,7 @@ auto test_init_and_full_window() -> int {
     }
     ranges.validate();
 
-    if (check(ranges.init(WINDOW_BASE, 0, RW) == Status::InvalidArguments,
+    if (check(ranges.init(WINDOW_BASE, 0, RW) == Status::InvArgs,
               "init rejects a zero-sized window")) {
         return 1;
     }
@@ -236,15 +236,15 @@ auto test_invalid_updates_are_rejected() -> int {
     ProtectionRanges ranges;
     (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
 
-    if (check(ranges.update(WINDOW_BASE, 0, RX) == Status::InvalidArguments,
+    if (check(ranges.update(WINDOW_BASE, 0, RX) == Status::InvArgs,
               "zero-sized update rejected")) {
         return 1;
     }
-    if (check(ranges.update(WINDOW_BASE - PAGE, PAGE, RX) == Status::InvalidArguments,
+    if (check(ranges.update(WINDOW_BASE - PAGE, PAGE, RX) == Status::InvArgs,
               "update below the window rejected")) {
         return 1;
     }
-    if (check(ranges.update(WINDOW_BASE + 15 * PAGE, 2 * PAGE, RX) == Status::InvalidArguments,
+    if (check(ranges.update(WINDOW_BASE + 15 * PAGE, 2 * PAGE, RX) == Status::InvArgs,
               "update past the window rejected")) {
         return 1;
     }

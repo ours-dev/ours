@@ -22,7 +22,7 @@ class BootPackageInput final {
     [[nodiscard]]
     static auto from(PhysAddr const base, usize const size) -> Result {
         if (base == 0 || size == 0) {
-            return ustl::err(Status::InvalidArgument);
+            return ustl::err(Status::InvArgs);
         }
         if (base > std::numeric_limits<PhysAddr>::max() - size) {
             return ustl::err(Status::OutOfRange);

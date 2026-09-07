@@ -6,7 +6,7 @@ namespace acpi::numa {
 auto DistanceMatrix::from_table(slit::Table const &table) -> ktl::Result<DistanceMatrix> {
     auto const total = usize(table.size());
     if (total < sizeof(slit::Table)) {
-        return ktl::err(Status::InvalidArgument);
+        return ktl::err(Status::InvArgs);
     }
 
     auto const declared = table.locality_count;

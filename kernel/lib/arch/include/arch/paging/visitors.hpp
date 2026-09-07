@@ -15,14 +15,14 @@ struct QueryResult {
 };
 
 enum class MapError {
-    InvalidArgument,
+    InvArgs,
     Existent,
     NoMem,
 };
 
 FORCE_INLINE constexpr auto to_string(MapError error) -> char const * {
     switch (error) {
-        case MapError::InvalidArgument:
+        case MapError::InvArgs:
             return "Invalid argument";
         case MapError::Existent:
             return "Existent";

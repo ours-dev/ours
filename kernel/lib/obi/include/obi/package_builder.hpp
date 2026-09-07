@@ -37,10 +37,10 @@ class PackageBuilder final {
 
     auto add_item(ItemSource const &source) -> Result {
         if (source.name.empty() || source.name.size() > 0xFFFF) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         if ((static_cast<u32>(source.flags) & ~SUPPORTED_ITEM_FLAGS) != 0) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         if (source.compression != Compression::None && source.compression != Compression::Lz4) {
             return ustl::err(ours::Status::NotSupported);
@@ -49,7 +49,7 @@ class PackageBuilder final {
             return ustl::err(ours::Status::NoSpace);
         }
         if (source.alignment == 0 || (source.alignment & (source.alignment - 1)) != 0) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         // Reject duplicate names.
         for (auto const &existing: sources_) {

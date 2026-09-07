@@ -155,7 +155,7 @@ namespace slab {
 
         auto const capacity = slab->phys_size() / size;
         if (!capacity) {
-            return Status::InvalidArguments;
+            return Status::InvArgs;
         }
 
         // Thread the free list through the objects themselves, walking back to

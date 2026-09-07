@@ -26,7 +26,7 @@ class MemoryConfigView final {
         }
         if (item.memory_size() != item.payload_size() ||
             item.payload_size() % sizeof(MemoryRange) != 0) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         return ustl::ok(MemoryConfigView(item));
     }
@@ -47,7 +47,7 @@ class MemoryConfigView final {
             result.base > std::numeric_limits<u64>::max() - result.length ||
             result.type < static_cast<u32>(MemoryRangeType::Ram) ||
             result.type > static_cast<u32>(MemoryRangeType::Reserved)) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
         return ustl::ok(result);
     }

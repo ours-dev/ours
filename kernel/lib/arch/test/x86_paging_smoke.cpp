@@ -67,7 +67,7 @@ auto verify_empty_and_invalid_ranges() -> bool {
     }
     auto unaligned = PageMap::map(reinterpret_cast<ours::PhysAddr>(root), IdentityPhysToVirt{},
                                   allocator, 1, 0, 1, flags);
-    return unaligned.is_err() && unaligned.error() == MapError::InvalidArgument;
+    return unaligned.is_err() && unaligned.error() == MapError::InvArgs;
 }
 
 auto verify_unmapping_removes_an_existing_mapping() -> bool {

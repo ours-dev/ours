@@ -10,7 +10,7 @@ namespace {
     auto join_path(char *const buffer, usize const capacity, std::string_view const directory,
                    std::string_view const name) -> Status {
         if (directory.empty() || name.empty() || directory.size() + 1 + name.size() >= capacity) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         auto *cursor = buffer;
         for (auto const character: directory) {

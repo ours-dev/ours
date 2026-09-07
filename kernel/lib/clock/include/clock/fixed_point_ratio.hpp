@@ -80,7 +80,7 @@ constexpr auto FixedPointRatio::from_ratio(u64 const numerator, u64 const denomi
     using ours::Status;
 
     if (numerator == 0 || denominator == 0 || constraints.max_shift > MAX_SHIFT) {
-        ustl::err(Status::InvalidArgument);
+        ustl::err(Status::InvArgs);
     }
 
     for (auto shift = constraints.max_shift + 1; shift > 0; --shift) {

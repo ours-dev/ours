@@ -50,16 +50,16 @@ class Paging final {
         }
         if (page_size != PAGE_SIZE || va % page_size != 0 || pa % page_size != 0 ||
             n > (~usize{0}) / page_size) {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
         auto const size = n * page_size;
         if (size - 1 > (~VirtAddr{0}) - va) {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
         if constexpr (Traits::MAX_PHYS_ADDR_SIZE < sizeof(PhysAddr) * 8) {
             constexpr auto max_phys_addr = (PhysAddr{1} << Traits::MAX_PHYS_ADDR_SIZE) - 1;
             if (pa > max_phys_addr || size - 1 > max_phys_addr - pa) {
-                return ustl::err(MapError::InvalidArgument);
+                return ustl::err(MapError::InvArgs);
             }
         }
 
@@ -83,11 +83,11 @@ class Paging final {
             return ustl::ok(0);
         }
         if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
         auto const size = n * PAGE_SIZE;
         if (size - 1 > (~VirtAddr{0}) - va) {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
 
         auto remaining = n;
@@ -118,11 +118,11 @@ class Paging final {
             return ustl::ok(0);
         }
         if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
         auto const size = n * PAGE_SIZE;
         if (size - 1 > (~VirtAddr{0}) - va) {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
 
         auto remaining = n;
@@ -233,7 +233,7 @@ class Paging final {
         auto on_terminal(Pte<Level> &entry) const -> ustl::Result<usize, MapError> {
             auto const page_size = Traits::page_size(Level);
             if (m_addr % page_size != 0 || m_remaining < page_size / PAGE_SIZE) {
-                return ustl::err(MapError::InvalidArgument);
+                return ustl::err(MapError::InvArgs);
             }
             entry = {};
             return ustl::ok(page_size);
@@ -242,7 +242,7 @@ class Paging final {
         template <Level Level>
         [[nodiscard]]
         auto on_final_non_terminal() const -> ustl::Result<usize, MapError> {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
     };
 
@@ -266,7 +266,7 @@ class Paging final {
         auto on_terminal(Pte<Level> &entry) const -> ustl::Result<usize, MapError> {
             auto const page_size = Traits::page_size(Level);
             if (m_addr % page_size != 0 || m_remaining < page_size / PAGE_SIZE) {
-                return ustl::err(MapError::InvalidArgument);
+                return ustl::err(MapError::InvArgs);
             }
             entry = entry.with_protection(MmuFlagsConv<ArchMmuFlags>::to_arch(m_flags));
             return ustl::ok(page_size);
@@ -275,7 +275,7 @@ class Paging final {
         template <Level Level>
         [[nodiscard]]
         auto on_final_non_terminal() const -> ustl::Result<usize, MapError> {
-            return ustl::err(MapError::InvalidArgument);
+            return ustl::err(MapError::InvArgs);
         }
     };
 

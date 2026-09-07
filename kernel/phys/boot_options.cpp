@@ -40,23 +40,23 @@ auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdlin
     }
     if (auto const value = cmdline.value("aslr.disabled"); value.is_some()) {
         if (!parse_bool(value.value(), options.aslr_disabled)) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
     }
     if (auto const value = cmdline.value("kernel.phys.next"); value.is_some()) {
         if (!parse_name(value.value(), options.next_module, sizeof(options.next_module))) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
     }
     if (auto const value = cmdline.value("kernel.name"); value.is_some()) {
         if (!parse_name(value.value(), options.kernel_name, sizeof(options.kernel_name))) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
     }
     if (auto const value = cmdline.value("log.level"); value.is_some()) {
         auto level = logz4::Level::Info;
         if (!logz4::parse_level(value.value(), level)) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         logz4::set_min_level(level);
     }

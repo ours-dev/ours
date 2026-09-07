@@ -58,7 +58,7 @@ class Name {
     auto set(Char const *name, usize len) -> Status {
         if (name == nullptr) {
             name_[0] = Char{};
-            return Status::InvalidArguments;
+            return Status::InvArgs;
         }
 
         if (len > N - 1) {

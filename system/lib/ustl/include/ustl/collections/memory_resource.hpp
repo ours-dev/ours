@@ -20,7 +20,7 @@ class MemoryResource {
     [[nodiscard]]
     auto try_allocate(std::size_t bytes, std::size_t alignment) noexcept -> Result<void *, Error> {
         if (!std::has_single_bit(alignment)) {
-            return err(Error::InvalidArgument);
+            return err(Error::InvArgs);
         }
         return do_try_allocate(bytes, alignment);
     }

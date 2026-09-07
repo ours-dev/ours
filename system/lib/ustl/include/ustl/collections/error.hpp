@@ -7,7 +7,7 @@ namespace ustl::collections {
 enum class Error {
     OutOfMemory,
     CapacityOverflow,
-    InvalidArgument,
+    InvArgs,
     AlreadyExists,
 };
 } // namespace ustl::collections

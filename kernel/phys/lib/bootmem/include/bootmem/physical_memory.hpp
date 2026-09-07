@@ -232,7 +232,7 @@ class PhysicalMemory final {
     [[nodiscard]]
     auto trim_usable(usize const alignment) -> Status {
         if (!is_power_of_two(alignment)) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
 
         for (auto index = usize{0}; index < usable_count_;) {
@@ -335,7 +335,7 @@ class PhysicalMemory final {
             return status;
         }
         if (visitor == nullptr) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
 
         for (auto usable_index = usize{0}; usable_index < usable_count_; ++usable_index) {
@@ -406,7 +406,7 @@ class PhysicalMemory final {
     [[nodiscard]]
     static constexpr auto range_status(Range const range) -> Status {
         if (range.size == 0) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         if (range.base > std::numeric_limits<PhysAddr>::max() - range.size) {
             return Status::OutOfRange;
@@ -459,7 +459,7 @@ class PhysicalMemory final {
     static constexpr auto request_status(AllocationRequest const request) -> Status {
         if (request.size == 0 || !is_power_of_two(request.alignment) ||
             request.lower >= request.upper) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         if (request.size > request.upper - request.lower) {
             return Status::NoMemory;
@@ -469,7 +469,7 @@ class PhysicalMemory final {
 
     [[nodiscard]]
     static constexpr auto query_status(MemoryQuery const query) -> Status {
-        return query.lower < query.upper ? Status::Ok : Status::InvalidArgument;
+        return query.lower < query.upper ? Status::Ok : Status::InvArgs;
     }
 
     auto replace_usable(usize const index, usize const erase_count, MemoryRegion const region)

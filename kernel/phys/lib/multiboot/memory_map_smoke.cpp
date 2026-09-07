@@ -147,7 +147,7 @@ auto no_available_memory_is_rejected() -> void {
     };
     auto fixture = BootMemFixture{};
     with_parsed_map(entries, 1, [&fixture](View::MemoryMap const &map) {
-        require(multiboot::apply_memory_map(map, fixture.memory()) == Status::InvalidArgument);
+        require(multiboot::apply_memory_map(map, fixture.memory()) == Status::InvArgs);
     });
 }
 } // namespace

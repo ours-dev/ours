@@ -5,7 +5,7 @@
 namespace ours::mm {
 auto ProtectionRanges::init(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
     DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
     DEBUG_ASSERT(ustl::mm::is_aligned(size, PAGE_SIZE));
@@ -27,7 +27,7 @@ auto ProtectionRanges::update(VirtAddr base, usize size, MmuFlags mmuf) -> Statu
 
     VirtAddr const end = base + size;
     if (!size || base < m_base || end > m_end) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     // Detach the partial overlaps at the boundaries of the range: a boundary

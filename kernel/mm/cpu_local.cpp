@@ -427,7 +427,7 @@ auto CpuLocal::Mapper::init() -> Status {
 
     build_map_info();
     if (!m_num_units) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     if constexpr (ArchCpuLocal::HAS_RESERVED_WINDOW) {

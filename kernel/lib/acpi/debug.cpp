@@ -38,7 +38,7 @@ namespace {
         auto const address_offset = usize(device.base_address_offset);
         if (address_offset > device_length ||
             device_length - address_offset < sizeof(GenericAddress)) {
-            return ktl::err(Status::InvalidArgument);
+            return ktl::err(Status::InvArgs);
         }
 
         auto const *bytes = reinterpret_cast<u8 const *>(&device);
@@ -73,7 +73,7 @@ namespace {
 auto parse_debug_port(dbg2::Table const &table) -> ktl::Result<DebugPort> {
     auto const total = usize(table.size());
     if (total < sizeof(dbg2::Table)) {
-        return ktl::err(Status::InvalidArgument);
+        return ktl::err(Status::InvArgs);
     }
 
     auto const *bytes = reinterpret_cast<u8 const *>(&table);
@@ -81,13 +81,13 @@ auto parse_debug_port(dbg2::Table const &table) -> ktl::Result<DebugPort> {
     for (auto i = u32(0); i < table.device_info_count; ++i) {
         if (offset < sizeof(dbg2::Table) || offset > total ||
             total - offset < sizeof(dbg2::Device)) {
-            return ktl::err(Status::InvalidArgument);
+            return ktl::err(Status::InvArgs);
         }
 
         auto const &device = *reinterpret_cast<dbg2::Device const *>(bytes + offset);
         auto const device_length = usize(device.size());
         if (device_length < sizeof(dbg2::Device) || device_length > total - offset) {
-            return ktl::err(Status::InvalidArgument);
+            return ktl::err(Status::InvArgs);
         }
 
         if (is_16550(device)) {

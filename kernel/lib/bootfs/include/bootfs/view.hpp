@@ -28,14 +28,14 @@ class View final {
     [[nodiscard]]
     static auto from(Bytes data) -> Result {
         if (data.data() == nullptr || data.size() < sizeof(Header)) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
 
         Header header{};
         std::memcpy(&header, data.data(), sizeof(header));
         if (header.magic != Header::MAGIC || header.reserved != 0 || header.reserved2 != 0 ||
             header.file_count == 0) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
 
         auto const entry_table_size = static_cast<u64>(header.file_count) * sizeof(Entry);
@@ -51,7 +51,7 @@ class View final {
         }
 
         if (header.total_size != data.size()) {
-            return ustl::err(ours::Status::InvalidArgument);
+            return ustl::err(ours::Status::InvArgs);
         }
 
         auto const *entries = reinterpret_cast<Entry const *>(data.data() + sizeof(Header));
@@ -66,7 +66,7 @@ class View final {
                 std::memchr(name_table + entry.name_offset, 0, entry.name_size) != nullptr ||
                 entry.data_offset < name_table_end.value() ||
                 entry.data_offset % entry.alignment != 0) {
-                return ustl::err(ours::Status::InvalidArgument);
+                return ustl::err(ours::Status::InvArgs);
             }
             auto const data_end = checked_add(entry.data_offset, entry.data_size);
             if (data_end.is_none() || data_end.value() > header.total_size) {

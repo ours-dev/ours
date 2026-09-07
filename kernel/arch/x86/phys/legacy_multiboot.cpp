@@ -8,13 +8,13 @@ namespace {
     auto parse_string(multiboot::View::Tag const &tag, ustl::views::StringView &output) -> Status {
         auto const bytes = tag.bytes();
         if (bytes.size() <= sizeof(multiboot::MultibootTag)) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         auto const *text =
             reinterpret_cast<char const *>(bytes.data() + sizeof(multiboot::MultibootTag));
         auto const text_size = bytes.size() - sizeof(multiboot::MultibootTag);
         if (std::memchr(text, 0, text_size) == nullptr) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         output = text;
         return Status::Ok;
@@ -23,7 +23,7 @@ namespace {
     auto parse_acpi(multiboot::View::Tag const &tag, usize const minimum_size, usize const version,
                     usize &acpi_version, usize &acpi_rsdp) -> Status {
         if (tag.bytes().size() < minimum_size) {
-            return Status::InvalidArgument;
+            return Status::InvArgs;
         }
         acpi_version = version;
         acpi_rsdp = reinterpret_cast<usize>(tag.bytes().data() + sizeof(multiboot::MultibootTag));
@@ -41,7 +41,7 @@ auto LegacyBoot::parse_params(usize const param) -> Status {
     acpi_version = 0;
     acpi_rsdp = 0;
     if (param == 0) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     auto const *data = reinterpret_cast<u8 const *>(param);

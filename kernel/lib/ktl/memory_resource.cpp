@@ -10,7 +10,7 @@ auto KernelMemoryResource::do_try_allocate(std::size_t bytes, std::size_t alignm
     if (alignment > MAX_ALIGNMENT) {
         // Refused rather than silently under-aligned: kmalloc takes no
         // alignment argument, so there is no way to honour this here.
-        return ustl::err(ustl::collections::Error::InvalidArgument);
+        return ustl::err(ustl::collections::Error::InvArgs);
     }
     if (bytes == 0) {
         bytes = 1;

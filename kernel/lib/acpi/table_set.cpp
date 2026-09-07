@@ -46,7 +46,7 @@ namespace {
 
         auto const *partial = static_cast<T const *>(result.unwrap());
         if (partial->size() < sizeof(T)) {
-            return ktl::err(Status::InvalidArgument);
+            return ktl::err(Status::InvArgs);
         }
 
         result = mapper.map(phys_addr, partial->size());

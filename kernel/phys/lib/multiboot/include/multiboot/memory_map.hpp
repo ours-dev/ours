@@ -47,7 +47,7 @@ inline auto apply_memory_map(View::MemoryMap const &map, bootmem::PhysicalMemory
         has_available_memory = has_available_memory || entry.type == MultibootMmapEntry::Available;
     }
     if (!has_available_memory) {
-        return Status::InvalidArgument;
+        return Status::InvArgs;
     }
 
     for (usize index = 0; index < map.count(); ++index) {

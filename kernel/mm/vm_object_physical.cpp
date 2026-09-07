@@ -10,10 +10,10 @@ VmObjectPhysical::VmObjectPhysical(PhysAddr base, usize size, VmoFlags VmoFlags)
 auto VmObjectPhysical::create(PhysAddr base, usize size, Flags vmof, ustl::Arc<Self> *out)
     -> Status {
     if (!size) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
     if (!base) {
-        return Status::InvalidArguments;
+        return Status::InvArgs;
     }
 
     auto self = new (GAF_KERNEL) VmObjectPhysical(base, size, vmof);
