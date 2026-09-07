@@ -124,7 +124,7 @@ auto physboot_init(PhysLoadHandoff const &handoff) -> void {
     KernelPackageLoader kpackage;
     auto const package_status =
         kpackage.init(storage, handoff.obi_package_base, handoff.obi_package_size,
-                      handoff.boot_options->kernel_name);
+                      handoff.boot_options->kernel_name());
     if (package_status != Status::Ok) {
         panic("Invalid kernel package: {}", static_cast<u32>(package_status));
     }
@@ -141,7 +141,7 @@ auto physboot_init(PhysLoadHandoff const &handoff) -> void {
     auto const placement = load_kernel_image(image);
 
     auto kaslr_offset = usize{0};
-    if (!handoff.boot_options->aslr_disabled) {
+    if (!handoff.boot_options->aslr_disabled()) {
         kaslr_offset = gen_load_bias(GB(1));
     }
     auto const load_base = VirtAddr(KERNEL_LOAD_BASE + kaslr_offset);

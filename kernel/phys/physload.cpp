@@ -76,11 +76,11 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
     // Two sources, applied in precedence order.  The container's own Config
     // item is what the build baked in; the legacy command line is what the
     // user typed in the boot menu this boot, so it goes second and wins on
-    // any option both spell.  apply_boot_options() only overwrites the
+    // any option both spell.  BootOptions::apply() only overwrites the
     // options a command line actually names, which is what makes layering
     // them work.
     if (auto const command_line = boot.command_line(); command_line.is_some()) {
-        auto const options_status = apply_boot_options(BOOT_OPTIONS, command_line.value());
+        auto const options_status = BOOT_OPTIONS.apply(command_line.value());
         if (options_status != Status::Ok) {
             panic("Invalid OBI boot options: {}", static_cast<u32>(options_status));
         }
@@ -91,7 +91,7 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
             panic("Malformed bootloader command line: {}",
                   static_cast<u32>(command_line.unwrap_err()));
         }
-        auto const options_status = apply_boot_options(BOOT_OPTIONS, command_line.unwrap());
+        auto const options_status = BOOT_OPTIONS.apply(command_line.unwrap());
         if (options_status != Status::Ok) {
             panic("Invalid bootloader boot options: {}", static_cast<u32>(options_status));
         }

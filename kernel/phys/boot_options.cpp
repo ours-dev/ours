@@ -34,22 +34,22 @@ namespace {
     }
 } // namespace
 
-auto apply_boot_options(BootOptions &options, obi::CommandLineView const &cmdline) -> Status {
+auto BootOptions::apply(obi::CommandLineView const &cmdline) -> Status {
     if (cmdline.contains("aslr.disabled")) {
-        options.aslr_disabled = true;
+        m_aslr_disabled = true;
     }
     if (auto const value = cmdline.value("aslr.disabled"); value.is_some()) {
-        if (!parse_bool(value.value(), options.aslr_disabled)) {
+        if (!parse_bool(value.value(), m_aslr_disabled)) {
             return Status::InvArgs;
         }
     }
     if (auto const value = cmdline.value("kernel.phys.next"); value.is_some()) {
-        if (!parse_name(value.value(), options.next_module, sizeof(options.next_module))) {
+        if (!parse_name(value.value(), m_next_module, sizeof(m_next_module))) {
             return Status::InvArgs;
         }
     }
     if (auto const value = cmdline.value("kernel.name"); value.is_some()) {
-        if (!parse_name(value.value(), options.kernel_name, sizeof(options.kernel_name))) {
+        if (!parse_name(value.value(), m_kernel_name, sizeof(m_kernel_name))) {
             return Status::InvArgs;
         }
     }

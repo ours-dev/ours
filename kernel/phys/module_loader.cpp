@@ -1,6 +1,6 @@
 #include "build_id_note.hpp"
-#include "physload.hpp"
 #include "detail/boot_alloc.hpp"
+#include "physload.hpp"
 #include <logz4/log.hpp>
 #include <ours/phys/exports.hpp>
 #include <ours/phys/handoff.hpp>
@@ -90,7 +90,7 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
     }
     auto const &files = bootfs.unwrap();
 
-    auto name = std::string_view(options.next_module);
+    auto name = options.next_module();
     auto found = files.find(name);
     if (found.is_err()) {
         return found.unwrap_err();
@@ -99,9 +99,9 @@ auto ModuleLoader::load(BootOptions const &options) -> Status {
         // A miss on the default module is fatal; a miss on an explicitly
         // requested one warns and falls back (the fallback is not silent).
         if (name == DEFAULT_MODULE) {
-            panic("phys module '{}' missing from kernel package", options.next_module);
+            panic("phys module '{}' missing from kernel package", name);
         }
-        log::info("phys module '{}' not found, falling back to '{}'", options.next_module);
+        log::info("phys module '{}' not found, falling back to '{}'", name, DEFAULT_MODULE);
         name = DEFAULT_MODULE;
         found = files.find(name);
         if (found.is_err()) {

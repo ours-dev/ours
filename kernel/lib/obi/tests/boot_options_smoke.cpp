@@ -69,46 +69,40 @@ auto main() -> int {
     auto const options =
         command_line_from(obi::ItemView::Bytes(options_text.data(), options_text.size()));
     auto boot_options = ours::phys::BootOptions{};
-    require(boot_options.aslr_disabled);
-    require(ours::phys::apply_boot_options(boot_options, options) == ours::Status::Ok);
-    require(!boot_options.aslr_disabled);
+    require(boot_options.aslr_disabled());
+    require(boot_options.apply(options) == ours::Status::Ok);
+    require(!boot_options.aslr_disabled());
 
     constexpr auto bare_flag = std::array<u8, 14>{
         'a', 's', 'l', 'r', '.', 'd', 'i', 's', 'a', 'b', 'l', 'e', 'd', '\n',
     };
     auto bare_options = ours::phys::BootOptions{};
-    require(ours::phys::apply_boot_options(
-                bare_options, command_line_from(obi::ItemView::Bytes(
-                                  bare_flag.data(), bare_flag.size()))) == ours::Status::Ok);
-    require(bare_options.aslr_disabled);
+    require(bare_options.apply(command_line_from(
+                obi::ItemView::Bytes(bare_flag.data(), bare_flag.size()))) == ours::Status::Ok);
+    require(bare_options.aslr_disabled());
 
     constexpr auto invalid_bool = std::array<u8, 19>{
         'a', 's', 'l', 'r', '.', 'd', 'i', 's', 'a', 'b',
         'l', 'e', 'd', '=', 'm', 'a', 'y', 'b', 'e',
     };
     auto invalid_options = ours::phys::BootOptions{};
-    require(ours::phys::apply_boot_options(
-                invalid_options, command_line_from(obi::ItemView::Bytes(invalid_bool.data(),
-                                                                        invalid_bool.size()))) ==
-            ours::Status::InvArgs);
+    require(invalid_options.apply(command_line_from(obi::ItemView::Bytes(
+                invalid_bool.data(), invalid_bool.size()))) == ours::Status::InvArgs);
 
     // The module/kernel lookups keep their defaults unless the command line
     // overrides them (kernel.phys.next=physboot is equivalent to omitting it).
     auto named_options = ours::phys::BootOptions{};
-    require(std::string_view(boot_options.next_module) == "physboot");
-    require(std::string_view(boot_options.kernel_name) == "vmours");
-    require(ours::phys::apply_boot_options(
-                named_options,
-                options_from_literal("kernel.phys.next=netboot\nkernel.name=vmours.debug\n")) ==
-            ours::Status::Ok);
-    require(std::string_view(named_options.next_module) == "netboot");
-    require(std::string_view(named_options.kernel_name) == "vmours.debug");
+    require(boot_options.next_module() == "physboot");
+    require(boot_options.kernel_name() == "vmours");
+    require(named_options.apply(options_from_literal(
+                "kernel.phys.next=netboot\nkernel.name=vmours.debug\n")) == ours::Status::Ok);
+    require(named_options.next_module() == "netboot");
+    require(named_options.kernel_name() == "vmours.debug");
 
     // A name that does not fit the BootOptions buffer is malformed input.
     auto const too_long = std::string("kernel.phys.next=") + std::string(64, 'x');
     auto long_options = ours::phys::BootOptions{};
-    require(ours::phys::apply_boot_options(long_options, options_from_literal(too_long)) ==
-            ours::Status::InvArgs);
+    require(long_options.apply(options_from_literal(too_long)) == ours::Status::InvArgs);
 
     // from_text(): a command line that never came out of an OBI item, which
     // is how a boot-shim forwards the one its legacy protocol handed it.
@@ -128,20 +122,16 @@ auto main() -> int {
     // typed this boot, so the second one applied wins on any option both
     // spell while leaving the ones only the first names alone.
     auto layered = ours::phys::BootOptions{};
-    require(ours::phys::apply_boot_options(
-                layered, options_from_literal("kernel.name=vmours.debug\naslr.disabled=1\n")) ==
+    require(layered.apply(options_from_literal("kernel.name=vmours.debug\naslr.disabled=1\n")) ==
             ours::Status::Ok);
-    require(ours::phys::apply_boot_options(
-                layered, obi::CommandLineView::from_text("aslr.disabled=0"sv).unwrap()) ==
+    require(layered.apply(obi::CommandLineView::from_text("aslr.disabled=0"sv).unwrap()) ==
             ours::Status::Ok);
-    require(std::string_view(layered.kernel_name) == "vmours.debug");
-    require(!layered.aslr_disabled);
+    require(layered.kernel_name() == "vmours.debug");
+    require(!layered.aslr_disabled());
 
     auto log_options = ours::phys::BootOptions{};
-    require(ours::phys::apply_boot_options(
-                log_options, options_from_literal("log.level=error\n")) == ours::Status::Ok);
+    require(log_options.apply(options_from_literal("log.level=error\n")) == ours::Status::Ok);
     require(logz4::min_level() == logz4::Level::Error);
-    require(ours::phys::apply_boot_options(log_options, options_from_literal("log.level=nope\n")) ==
-            ours::Status::InvArgs);
+    require(log_options.apply(options_from_literal("log.level=nope\n")) == ours::Status::InvArgs);
     return 0;
 }
