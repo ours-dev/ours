@@ -8,6 +8,7 @@ class JobDispatcher;
 class ProcessDispatcher;
 class ThreadDispatcher;
 class VmaDispatcher;
+class VmoDispatcher;
 class ChannelDispatcher;
 class ResourceDispatcher;
 

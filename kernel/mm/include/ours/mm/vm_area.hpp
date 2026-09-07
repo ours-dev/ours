@@ -104,6 +104,23 @@ class VmArea final: public VmAreaOrMapping {
     auto map_anon(VmPlacement where, usize size, MmuFlags, VmMapOption, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
+    /// Map |size| bytes of a VMO the caller already has.
+    ///
+    /// The general form the two above are special cases of -- they differ only
+    /// in which kind of VmObject they build before calling this. It was
+    /// protected, which made sense while it was only their shared helper, and
+    /// stopped making sense the moment anything wanted to map memory it had
+    /// obtained separately: that is the shape of every zx_vmar_map, and it is
+    /// what //kernel/object's VmaDispatcher::map() needs.
+    ///
+    /// Note what this does that create_mapping() does not: create_mapping()
+    /// accepts a VmMapOption and never acts on Commit, so a caller that used
+    /// it directly got a live mapping with no pages installed, and faulted on
+    /// first touch. Honouring Commit -- and unwinding correctly when it fails
+    /// -- lives here.
+    auto map_with_vmo(VmPlacement where, usize size, MmuFlags, ustl::Arc<VmObject>, VmMapOption,
+                      char const *name) -> ktl::Result<ustl::Arc<VmMapping>>;
+
     /// Tear down everything mapped in [base, base + size).
     auto unmap(VirtAddr base, usize size) -> Status;
 
@@ -166,9 +183,6 @@ class VmArea final: public VmAreaOrMapping {
 
     auto alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr upper_limit)
         -> ktl::Result<VirtAddr>;
-
-    auto map_with_vmo(VmPlacement, usize, MmuFlags, ustl::Arc<VmObject>, VmMapOption, char const *)
-        -> ktl::Result<ustl::Arc<VmMapping>>;
 
     auto dump_locked() const -> void;
 

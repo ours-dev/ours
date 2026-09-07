@@ -371,3 +371,96 @@ SoloDispatcher<...>` 加 `~VmAddressRegionDispatcher() final;`，同样的写法
 **故意没做**
 `KernelHandle::reset()` 里调用不存在的 `Dispatcher::on_zero()` 那条没有一起改，它是
 语义问题不是笔误，留在 `docs/repairs/260906/object.md` 第 1 条。
+
+## VmoDispatcher，以及映射改为接受 VMO（2026-09-06）
+
+**文件**
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp` / `vmo_dispatcher.cpp` — 新增
+- `kernel/object/include/ours/object/vma_dispatcher.hpp` / `vma_dispatcher.cpp` — `map_phys`/`map_anon` 换成单个 `map(VmoDispatcher &, ...)`
+- `kernel/object/include/ours/object/types.hpp`、`BUILD.gn` — 登记
+- `system/public/ours/rights.hpp` — 删掉「`RIGHTS_DEFAULT_VMO` 无处安放」的 TODO
+
+**症状**
+缺口，不是 bug。对象层没有内存对象：`VmaDispatcher` 只把 mm 的两个便利函数
+（`map_phys` / `map_anon`）原样抬了上来，而这两个的区别其实是**它们替调用者建了哪种
+VmObject**——一个建 `VmObjectPhysical`，一个建 `VmObjectPaged`，然后都走同一个
+`map_with_vmo()`。也就是说对象层把「内存是什么」和「内存放在哪」压成了一个操作。
+
+`system/public/ours/rights.hpp` 里那条 TODO 是同一件事的另一面：
+`RIGHTS_DEFAULT_VMO` 没有地方放，因为没有 VMO 的 dispatcher 头文件。
+
+**原因**
+VMO 和 VMA 的分家就是整个 VM ABI 的形状：**VMO 是内存*是什么*，VMA 是内存*出现在
+哪*。** 分开才可能把同一块内存映射两次、在不同地址上带不同权限；也才使得「把一块
+内存交给某个程序」（传一个 VMO 句柄）和「把它放进那个程序的地址空间」（映射到它的
+VMA）成为两件事。压成一件之后，userboot 只能说"给我映射一段匿名内存"，而没法说
+"这块内存归我了，我等下再决定放哪"——后者才是句柄的意义。
+
+`VmoDispatcher::create()` 接一个已经建好的 `mm::VmObject`，和 Zircon 的
+`VmObjectDispatcher::Create` 一样：建哪种 VmObject 是调用者的决定，不是这一层的。
+但另外提供了 `create_paged()` / `create_physical()` 两个工厂——这是**对 Zircon 的
+有意偏离**。Zircon 里 `sys_vmo_create` 自己建 `VmObjectPaged` 再包起来，因为那里的
+syscall 层本来就在 VM 子系统的头文件里面；这里的规矩是上层只用 `kernel/object`，
+所以对象层欠它一个「不点名 mm 的类型也能说清要什么」的接口。
+
+**改法**
+1. 新增 `VmoDispatcher`，持有 `ustl::Arc<mm::VmObject>`，`final`（dispatcher 是叶子）。
+
+2. `VmaDispatcher` 的两个入口合成一个：
+
+   改前
+   ```cpp
+   auto map_phys(PhysAddr phys_base, mm::VmPlacement where, usize size, mm::MmuFlags mmuf,
+                 mm::VmMapOption option, char const *name)
+       -> ktl::Result<ustl::Arc<mm::VmMapping>>;
+
+   auto map_anon(mm::VmPlacement where, usize size, mm::MmuFlags mmuf, mm::VmMapOption option,
+                 char const *name) -> ktl::Result<ustl::Arc<mm::VmMapping>>;
+   ```
+   改后
+   ```cpp
+   auto map(VmoDispatcher &vmo, mm::VmPlacement where, usize size, mm::MmuFlags mmuf,
+            mm::VmMapOption option, char const *name) -> ktl::Result<ustl::Arc<mm::VmMapping>>;
+   ```
+
+3. `RIGHTS_DEFAULT_VMO` 从 rights.hpp 的注释搬进 `vmo_dispatcher.hpp`，TODO 删除。
+
+**这一步撞上的坑（值得单独记）**
+
+`map()` 第一版写成调用公开的 `mm::VmArea::create_mapping()`，编译通过、映射"成功"、
+日志一切正常，然后 userboot 在**第一条指令上**就取指缺页：
+
+```
+[error] Unhandled page fault: vector=14, error_code=0x14
+[error]   rip=0x201270 (+0x77c0201270)  cs=0x33  rsp=0x1200000
+```
+
+`error_code=0x14` = bit4（取指）+ bit2（用户态）+ bit0 为 0（页不存在）。
+
+原因是 `create_mapping()` 只建映射对象就返回了：它**接受** `VmMapOption` 却从不理会
+`Commit`。真正去 `vmo->commit_range()` 再 `mapping->map()` 装页表的，是 protected 的
+`map_with_vmo()`——而它只有 `map_phys`/`map_anon` 能调，那两个又非要自己建 VMO 不可。
+于是"拿着自己的 VMO 去映射"这条路，公开 API 上根本走不通。
+
+改成调 `map_with_vmo()`（同时把它在 mm 侧改为 public，见
+`docs/changes/260906/mm.md`），不复制它那段容错逻辑——那段注释自己说明了为什么：
+提交失败时直接返回错误会在还挂在两个链表上的 `VmMapping` 上跑析构，撞进 ustl 侵入式
+钩子的陷阱，表现为析构函数里的 #UD。
+
+**参照**
+- `Zircon VmObjectDispatcher`：同样持有 `fbl::RefPtr<VmObject>`，同样 `Create` 接一个
+  建好的 VmObject。
+- `Zircon zx_vmo_create` / `zx_vmar_map`：本次要还原的正是这两者的分工。
+- `Zircon VmAddressRegionDispatcher::Map()`：同样只有一个接 VMO 的映射入口。
+
+**验证**
+`ninja` 通过；QEMU 实测 `kernel.dev.dbg_1.obi`，userboot 进入 ring 3 后 30 秒内记录到
+**908 次** `Exception[interrupt] from user space`，无缺页、无 panic。作为对照，用
+`create_mapping()` 的那一版是 0 次加一条 `Unhandled page fault`。
+
+**故意没做**
+- **`map()` 没有 VMO 偏移参数**，尽管 `zx_vmar_map` 有。`mm::VmArea::map_with_vmo()`
+  调 `create_mapping()` 时把偏移写死为 0，所以这里加一个参数只能是"收下然后忽略"
+  ——而这个文件刚刚才被"收下然后忽略的参数"坑过一次。等 mm 能兑现时再加。
+- **`create_paged()` 固定 `VmoFlags::Pinned`**，和 `mm::VmArea::map_anon()` 现在的行为
+  一致：还没有任何东西能为它服务缺页，userboot 的栈必须在 ring 3 碰它的那一刻就在。

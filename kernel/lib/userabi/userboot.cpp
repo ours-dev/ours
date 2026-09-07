@@ -17,6 +17,7 @@
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
+#include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/task/thread.hpp>
 #include <ustl/mem/align.hpp>
@@ -270,28 +271,56 @@ namespace {
         auto const flags =
             MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Executable;
 
-        // Through the dispatcher, not through the VmArea it stands for. The
-        // difference is invisible today -- map_phys() forwards straight on --
-        // and it is the whole point: a VmArea knows what a mapping is allowed
-        // to be, but cannot know who is asking, and every future sys_vmar_map
-        // has to answer that. Rights live on the handle, so the entry point
-        // has to be on the object that a handle names.
-        auto mapping = root_vma.map_phys(mm::PhysMap::virt_to_phys(backing),
-                                         mm::VmPlacement::at(USER_ASPACE_BASE), out.span, flags,
-                                         mm::VmMapOption::Commit, "userboot");
+        // Two steps, deliberately: first say what the memory *is*, then say
+        // where it appears. That split is the whole reason a VMO is a separate
+        // object from a mapping -- it is what lets the same memory be mapped
+        // twice, and what makes "hand a program some memory" a different
+        // operation from "put it in that program's address space".
+        //
+        // A physical VMO, because these frames already exist: get_frames_n()
+        // above allocated them and the segments have already been copied in.
+        // A paged VMO is the honest answer -- the image is ordinary anonymous
+        // memory, not MMIO -- and is what this becomes the moment
+        // mm::VmObjectPaged::write() stops returning Unimplemented. There is
+        // no other way to get bytes into a paged VMO today.
+        object::KernelHandle<object::VmoDispatcher> image_vmo;
+        Rights image_vmo_rights;
+        auto status = object::VmoDispatcher::create_physical(mm::PhysMap::virt_to_phys(backing),
+                                                             out.span, image_vmo, image_vmo_rights);
+        if (Status::Ok != status) {
+            log::error("userboot: could not create the image VMO: {}", to_string(status));
+            return status;
+        }
+
+        // Through the dispatcher, not through the VmArea it stands for: a
+        // VmArea knows what a mapping is allowed to be, but cannot know who is
+        // asking, and every future sys_vmar_map has to answer that. Rights
+        // live on the handle, so the entry point has to be on the object that
+        // a handle names.
+        auto mapping = root_vma.map(*image_vmo.dispatcher(), mm::VmPlacement::at(USER_ASPACE_BASE),
+                                    out.span, flags, mm::VmMapOption::Commit, "userboot");
         if (mapping.is_err()) {
             log::error("userboot: could not map the image: {}", to_string(mapping.unwrap_err()));
             return mapping.unwrap_err();
         }
 
-        // A stack, mapped anonymous: unlike the image there is nothing to
-        // copy into it, and its pages want to be private to this address
-        // space. No Executable bit -- a stack that can be executed is the
-        // classic way a buffer overflow becomes code execution.
-        auto stack = root_vma.map_anon(mm::VmPlacement::at(USER_STACK_TOP - USER_STACK_SIZE),
-                                       USER_STACK_SIZE,
-                                       MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable,
-                                       mm::VmMapOption::Commit, "userboot-stack");
+        // A stack, backed by a paged VMO: unlike the image there is nothing to
+        // copy into it, so zero-filled anonymous pages are exactly right and
+        // no write() is needed. No Executable bit -- a stack that can be
+        // executed is the classic way a buffer overflow becomes code
+        // execution.
+        object::KernelHandle<object::VmoDispatcher> stack_vmo;
+        Rights stack_vmo_rights;
+        status = object::VmoDispatcher::create_paged(USER_STACK_SIZE, stack_vmo, stack_vmo_rights);
+        if (Status::Ok != status) {
+            log::error("userboot: could not create the stack VMO: {}", to_string(status));
+            return status;
+        }
+
+        auto stack = root_vma.map(
+            *stack_vmo.dispatcher(), mm::VmPlacement::at(USER_STACK_TOP - USER_STACK_SIZE),
+            USER_STACK_SIZE, MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable,
+            mm::VmMapOption::Commit, "userboot-stack");
         if (stack.is_err()) {
             log::error("userboot: could not map a stack: {}", to_string(stack.unwrap_err()));
             return stack.unwrap_err();

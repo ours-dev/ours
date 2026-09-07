@@ -139,3 +139,63 @@ dispatcher，才会被真实调用者逼出确定的签名、确定的失败路�
   （`docs/architecture/object/handle-lookup.md`），是独立的一块。
 - **`map_phys` / `map_anon` 里仍然没有 rights 检查**。理由同上一条改动记录：现在没有
   持句柄的调用者可查，恒真的检查比没有更糟。
+
+## userboot 改用 VMO 表达它的内存（2026-09-06）
+
+**文件**
+- `kernel/lib/userabi/userboot.cpp` — 镜像与栈各建一个 VMO，再分别映射
+
+**症状**
+无，接续上一节。
+
+**原因**
+上一节把映射改走了 dispatcher，但表达能力还是 mm 那两个便利函数的形状：
+"映射一段物理"和"映射一段匿名"。userboot 说不出"这块内存归我了"——它只能说
+"把内存映射到这里"，而内存本身没有对应的对象，也就没有可以被交给它的句柄。
+
+**改法**
+每处映射拆成两步：先说内存*是什么*，再说它出现在*哪*。
+
+镜像，改前
+```cpp
+auto mapping = root_vma.map_phys(mm::PhysMap::virt_to_phys(backing),
+                                 mm::VmPlacement::at(USER_ASPACE_BASE), out.span, flags,
+                                 mm::VmMapOption::Commit, "userboot");
+```
+改后
+```cpp
+object::KernelHandle<object::VmoDispatcher> image_vmo;
+Rights image_vmo_rights;
+auto status = object::VmoDispatcher::create_physical(mm::PhysMap::virt_to_phys(backing),
+                                                     out.span, image_vmo, image_vmo_rights);
+if (Status::Ok != status) { ... }
+
+auto mapping = root_vma.map(*image_vmo.dispatcher(), mm::VmPlacement::at(USER_ASPACE_BASE),
+                            out.span, flags, mm::VmMapOption::Commit, "userboot");
+```
+
+栈，改前 `root_vma.map_anon(...)`；改后先
+`object::VmoDispatcher::create_paged(USER_STACK_SIZE, stack_vmo, stack_vmo_rights)` 再
+`root_vma.map(*stack_vmo.dispatcher(), ...)`。
+
+镜像用的是 **physical** VMO 而不是 paged，这一点在代码里写了注释：它其实是普通的匿名
+内存，不是 MMIO；之所以只能这么写，是因为 `mm::VmObjectPaged::write()` 目前返回
+`Unimplemented`，没有任何办法把 ELF 的字节送进一个分页 VMO。所以流程仍然是
+`get_frames_n()` 拿裸帧 → physmap memcpy → 包成 physical VMO。这也是
+`//kernel/mm` 依赖还没能去掉的唯一原因，已记入 `docs/repairs/260906/mm.md` 第 3 条。
+
+栈没有这个问题：它没有要拷进去的内容，零填充的匿名页正合适。
+
+**参照**
+`Zircon userboot` 的 bootstrap：同样是先有 VMO（`zx_vmo_create` 级别的对象），再
+`zx_vmar_map` 放进地址空间。
+
+**验证**
+QEMU 实测 `kernel.dev.dbg_1.obi`：进入 ring 3 后 30 秒内 908 次
+`Exception[interrupt] from user space`，无缺页、无 panic。
+
+**故意没做**
+- **三个 PT_LOAD 仍然合并成一段 RWX 映射**。按 segment 分别映射需要 VMO 偏移，而
+  `map_with_vmo()` 把偏移写死为 0（`docs/repairs/260906/mm.md` 第 2 条）。W^X 要等
+  那一条。
+- **两份 rights 仍然没有消费者**，因为还没有句柄表。

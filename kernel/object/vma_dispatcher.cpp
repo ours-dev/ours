@@ -7,6 +7,7 @@
 // only forward-declares VmMapping.
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/object/vma_dispatcher.hpp>
+#include <ours/object/vmo_dispatcher.hpp>
 
 GKTL_COUNTER(DISPATCHER_VMA_CREATE_COUNT, "dispatcher.vma.create");
 GKTL_COUNTER(DISPATCHER_VMA_DESTROY_COUNT, "dispatcher.vma.destroy");
@@ -45,19 +46,25 @@ auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle
     return Status::Ok;
 }
 
-auto VmaDispatcher::map_phys(PhysAddr const phys_base, mm::VmPlacement const where,
-                             usize const size, mm::MmuFlags const mmuf,
-                             mm::VmMapOption const option, char const *const name)
-    -> ktl::Result<ustl::Arc<mm::VmMapping>> {
+auto VmaDispatcher::map(VmoDispatcher &vmo, mm::VmPlacement const where, usize const size,
+                        mm::MmuFlags const mmuf, mm::VmMapOption const option,
+                        char const *const name) -> ktl::Result<ustl::Arc<mm::VmMapping>> {
     verify_canary();
-    return m_vma->map_phys(phys_base, where, size, mmuf, option, name);
-}
+    vmo.verify_canary();
 
-auto VmaDispatcher::map_anon(mm::VmPlacement const where, usize const size, mm::MmuFlags const mmuf,
-                             mm::VmMapOption const option, char const *const name)
-    -> ktl::Result<ustl::Arc<mm::VmMapping>> {
-    verify_canary();
-    return m_vma->map_anon(where, size, mmuf, option, name);
+    // map_with_vmo(), not create_mapping(). create_mapping() builds the
+    // mapping object and stops there: it accepts a VmMapOption and never acts
+    // on Commit, so the mapping comes back live with no page tables installed.
+    // Written against it, userboot's image mapped "successfully" and then took
+    // a not-present instruction fetch on its very first instruction
+    // (error_code=0x14, rip=0x201270, cs=0x33). Committing the range,
+    // installing the PTEs, and unwinding correctly when that fails is
+    // map_with_vmo's job, and none of it is worth reproducing here.
+    //
+    // The VMO Arc is copied rather than moved: mapping does not consume a VMO,
+    // which is the point of it being a separate object -- the handle the
+    // caller holds goes on naming the same memory afterwards.
+    return m_vma->map_with_vmo(where, size, mmuf, vmo.vmo(), option, name);
 }
 
 } // namespace ours::object

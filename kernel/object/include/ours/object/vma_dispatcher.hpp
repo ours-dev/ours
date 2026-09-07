@@ -55,26 +55,32 @@ class VmaDispatcher final: public VmaDispatcherBase {
     static auto create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
                        Rights &rights_out) -> Status;
 
-    /// The two ways to get memory mapped into this area.
+    /// Map |size| bytes of |vmo| where |where| says.
     ///
-    /// They mirror mm::VmArea's own pair exactly, and deliberately add nothing
-    /// on top of it yet -- there is no rights check here because there is no
-    /// caller yet that has a Handle to check against; userboot is built by the
-    /// kernel itself. The check belongs at the syscall entry, once a handle
-    /// resolution step exists to produce the Rights.
+    /// One entry point taking a VMO, where there used to be two -- map_phys()
+    /// for a physical range and map_anon() for fresh anonymous pages. Those
+    /// were mm::VmArea's convenience wrappers surfaced verbatim, and both end
+    /// in the same mapping call; what differed was only which kind of
+    /// VmObject they built on the caller's behalf. Building it is now the
+    /// caller's own step (VmoDispatcher::create_paged / create_physical),
+    /// which is what makes "get some memory" and "put it somewhere" two
+    /// operations rather than one -- the split Zircon has between
+    /// zx_vmo_create and zx_vmar_map, and the reason the same VMO can be
+    /// mapped twice at two addresses.
     ///
-    /// They will also collapse into a single map(VmObjectDispatcher, ...) once
-    /// a VMO dispatcher exists: Zircon has only Map(), taking a VmObject,
-    /// because in Zircon *everything* mappable is a VMO. Ours' VmArea still
-    /// offers the "map this physical range" shortcut that userboot's image
-    /// currently uses, so both are exposed rather than pretending the VMO
-    /// layer is already here.
-    auto map_phys(PhysAddr phys_base, mm::VmPlacement where, usize size, mm::MmuFlags mmuf,
-                  mm::VmMapOption option, char const *name)
-        -> ktl::Result<ustl::Arc<mm::VmMapping>>;
-
-    auto map_anon(mm::VmPlacement where, usize size, mm::MmuFlags mmuf, mm::VmMapOption option,
-                  char const *name) -> ktl::Result<ustl::Arc<mm::VmMapping>>;
+    /// No VMO offset, unlike zx_vmar_map: the whole VMO is mapped from its
+    /// start. mm::VmArea::map_with_vmo() hardcodes the offset to zero when it
+    /// calls create_mapping(), so an offset here could only be accepted and
+    /// ignored -- and this file has just been bitten once by an argument that
+    /// was accepted and ignored (see map_with_vmo's own note about Commit).
+    /// The parameter arrives when mm can honour it.
+    ///
+    /// Still no rights check: there is no handle-holding caller to check
+    /// against yet. It belongs at the syscall entry once handle resolution
+    /// exists -- and it belongs on this side of the call, which is why the
+    /// entry point is here rather than on mm::VmArea.
+    auto map(VmoDispatcher &vmo, mm::VmPlacement where, usize size, mm::MmuFlags mmuf,
+             mm::VmMapOption option, char const *name) -> ktl::Result<ustl::Arc<mm::VmMapping>>;
 
     FORCE_INLINE
     auto vma() const -> ustl::Arc<mm::VmArea> const & {
