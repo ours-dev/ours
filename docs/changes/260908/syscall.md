@@ -114,3 +114,73 @@ AT&T 语法是 `mov 源, 目的`，所以这一行把 `%rbp` 送进 `%rdi`。但
   `Unimplemented`。
 - **arm / riscv 的 `arch/<arch>/syscall.hpp` 没有建**。`arch/syscall.hpp` 里给它们留了
   分派分支，真有那两个架构的启动路径时再补；现在建只是两份没人编译的死代码。
+
+## 用户可控的 `%rax` 没有边界检查，越表间接调用（2026-09-08）
+
+**文件**
+- `system/public/ours/syscall.hpp` — 新文件，系统调用 ABI（本次只有编号总数）
+- `system/public/public_headers.gni` — 登记
+- `kernel/arch/x86/kernel/syscall.S` — 加入范围钳制
+- `kernel/lib/syscall/table.cpp` — 表尾多一个哨兵槽位
+
+**症状**
+潜伏，且是可从用户态直接利用的那一类。
+
+```
+    lea SYSCALL_TABLE(%rip), %r11
+    call *(%r11, %rax, 8)
+```
+
+`%rax` 完全由用户态提供，表只有 256 项，而这条 `call` 自己没有任何上限。也就是说
+`syscall` 带一个足够大的 `%rax`，就是一次通过 `SYSCALL_TABLE` 之后**任意 `.data`
+内容**的间接调用，偏移由调用者挑。
+
+**原因**
+表的注释里已经写明"每个槽位都必须是有效目标——空指针项会变成从用户态经零地址的间接
+调用"，也就是说"`%rax` 不可信"这件事是想到过的，但防的是**表内**的空洞，没有防
+**表外**。索引的上界和槽位的有效性是两个独立条件，只补了后者。
+
+**改法**
+钳制，不是跳过。表被做成比 `OURS_SYSCALL_COUNT` 多一项，多出来的那一项回答
+`Status::OutOfRange`；超范围的编号被改写到这个下标上，然后和别的编号一样被分发。
+
+```
+    mov $OURS_SYSCALL_COUNT, %r11
+    cmp %r11, %rax
+    cmovae %r11, %rax
+```
+
+编译出来的是：
+
+```
+    8131: 49 c7 c3 00 01 00 00   movq $0x100, %r11
+    8138: 4c 39 d8               cmpq %r11, %rax
+    813b: 49 0f 43 c3            cmovaeq %r11, %rax
+```
+
+为什么不用条件跳转绕开 `call`：那样返回值就得**在汇编里**写，也就是要在 `.S` 文件里
+手抄一个 `Status` 的数值，而没有任何东西会去和枚举核对——本文件上一节刚记过一次
+"两边约定却无人校验"的教训。哨兵槽位是个普通的 C++ 函数，`Status::OutOfRange` 由编译
+器填。顺带的好处是这条路径上没有分支可供用户态训练。
+
+钳制会破坏 `%rax`，这是安全的：它的用户值早已在帧里（它是最后一次 push），出口从帧
+里恢复。
+
+编号总数放在 `system/public/ours/syscall.hpp`，因为这是 ABI——两边都得同意。这个头
+写成汇编器读得懂的样子（数值是宏，C++ 那份是镜像），`syscall.S` 直接 include 它，
+省去了在汇编里再写一遍 256 的机会。
+
+**参照**
+`Zircon x86_syscall` 的 `cmp $ZX_SYS_COUNT, %rax; jae ...`：同样的检查，Zircon 用
+条件跳转到一个返回 `ZX_ERR_BAD_SYSCALL` 的桩；这里用哨兵槽位加 `cmov`，理由见上。
+
+**验证**
+`ninja` 通过；`llvm-objdump` 确认三条指令按预期发出（见上）；QEMU 实测
+`kernel.dev.dbg_1.obi` 无回归，910 次 `Exception[interrupt] from user space`。
+
+超范围这条路径**本次仍未被真正执行过**——userboot 还不发系统调用。下一步接上真实调用
+之后可以顺手发一次越界编号来实测。
+
+**故意没做**
+没有给"编号存在但未实现"和"编号不存在"之外的情况再分级。Zircon 还会区分
+`ZX_ERR_BAD_SYSCALL` 与权限不足等，那要等真的有编号和权限检查之后才有意义。

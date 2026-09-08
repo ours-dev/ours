@@ -1,5 +1,6 @@
 #include <arch/x86/macro/syscallframe.hpp>
 #include <ours/arch/asm.hpp>
+#include <ours/syscall.hpp>
 #include <ours/arch/x86/percpu.hpp>
 
 /// Intel® 64 and IA-32 Architectures Software Developer's Manual, Volume 2B:
@@ -163,6 +164,26 @@
     // handler answers by storing into frame->ax.  interrupt_common in
     // exception.S has always passed %rsp here, for the same reason.
     mov %rsp, %rdi
+
+    // %rax is whatever userspace put there, and the call below indexes the
+    // table with it unscaled by any ceiling of its own -- so without this,
+    // `syscall` with a large enough number in %rax was an indirect call
+    // through whatever happened to follow SYSCALL_TABLE in .data, with the
+    // offset chosen by the caller.
+    //
+    // Clamped, not branched around: SYSCALL_TABLE has one entry more than
+    // OURS_SYSCALL_COUNT and that last slot answers Status::OutOfRange, so an
+    // out-of-range number is rewritten onto it and dispatched like any other.
+    // A conditional jump would have to set the return value here, in
+    // assembly, which means writing a Status constant that nothing checks
+    // against the enum. It also leaves no branch for userspace to train.
+    //
+    // Clobbering %rax is safe: its user value is already in the frame (it was
+    // the last push above), and the epilogue restores it from there.
+    mov $OURS_SYSCALL_COUNT, %r11
+    cmp %r11, %rax
+    cmovae %r11, %rax
+
     // %r11 is scratch here -- the syscall instruction itself trashes rcx and
     // r11, so it holds no live register state -- and the table has to be
     // reached %rip-relative: the kernel is a static PIE, an absolute

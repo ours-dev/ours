@@ -3,6 +3,7 @@
 #include <arch/syscall.hpp>
 #include <ours/compiler.hpp>
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 #include <ours/types.hpp>
 
 #include <array>
@@ -26,23 +27,39 @@ namespace {
         frame->ax = static_cast<usize>(Status::Unimplemented);
     }
 
+    /// The answer to a system-call number that does not exist at all, as
+    /// against one that exists and has no handler yet.
+    ///
+    /// It is an ordinary table entry rather than a branch target in the stub,
+    /// which is what lets the range check be a `cmov` instead of a
+    /// conditional jump: the stub clamps an out-of-range number onto this
+    /// slot's index and calls through the table either way.
+    auto sys_bad_syscall_number(arch::SyscallFrame *const frame) -> void {
+        frame->ax = static_cast<usize>(Status::OutOfRange);
+    }
+
     /// The table x86_syscall indexes. %rax is user-controlled, so every slot
     /// has to be a valid target -- a null entry would be an indirect call
     /// through zero from user space.
     ///
-    /// TODO(SmallHuaZi): every slot answers the same way, because the dispatch
-    /// layer does not exist. lib/syscall's sys_* entry points take typed
-    /// arguments (Handle, VirtAddr, ...) and nothing unpacks the register
-    /// frame into them; a real table also needs the syscall numbering that
-    /// would give these slots their meaning. Until then this exists so the
-    /// kernel links and so a stray syscall returns instead of jumping to zero.
-    constexpr auto NUM_SYSCALLS = usize{256};
+    /// One entry longer than SYSCALL_COUNT. The extra slot at the end is the
+    /// out-of-range answer, and it exists so the stub's range check can clamp
+    /// rather than branch: a number at or above SYSCALL_COUNT is rewritten to
+    /// this index and dispatched like any other. Without it the stub would
+    /// have to jump around the call and set the return value in assembly,
+    /// which means spelling a Status constant there.
+    ///
+    /// TODO(SmallHuaZi): every in-range slot still answers Unimplemented,
+    /// because there is no syscall numbering yet to give the slots meaning and
+    /// nothing unpacks the frame into lib/syscall's typed sys_* entry points.
+    constexpr auto TABLE_SIZE = SYSCALL_COUNT + 1;
 
     constexpr auto make_syscall_table() {
-        std::array<SyscallHandler, NUM_SYSCALLS> table{};
+        std::array<SyscallHandler, TABLE_SIZE> table{};
         for (auto &entry: table) {
             entry = &sys_not_implemented;
         }
+        table[SYSCALL_COUNT] = &sys_bad_syscall_number;
         return table;
     }
 } // namespace
