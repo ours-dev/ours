@@ -9,17 +9,16 @@
 /// userboot's ELF inside the kernel package. Nothing is created yet.
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
-#include <ours/arch/entry.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/handoff.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/thread_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
-#include <ours/task/thread.hpp>
 #include <ustl/mem/align.hpp>
 
 #include <algorithm>
@@ -148,20 +147,16 @@ namespace {
 
     constexpr u32 PT_LOAD = 1;
 
-    /// What loading produced: the process userboot was built into, how many
-    /// bytes of it are mapped, where to start executing, and the top of its
-    /// stack.
+    /// What loading produced: how many bytes are mapped, where to start
+    /// executing, and the top of the stack.
     ///
-    /// The process, and not the address space it runs in. Holding the aspace
-    /// directly is how this used to be written, and it is exactly the shortcut
-    /// this file is meant not to take: kernel/object is the layer of kernel
-    /// objects that serve users, and everything below it -- VmAspace, VmArea,
-    /// task::Thread -- serves the kernel itself. userboot is the first *user*
-    /// program, so the path that builds it has to be the path a system call
-    /// would take on userspace's behalf. The address space is still reachable,
-    /// through the process that owns it.
+    /// An ordinary local now. It was a file-scope variable because the thread
+    /// that entered ring 3 was a bare kernel thread reading its entry point
+    /// out of a global -- nothing else could have carried the value from
+    /// userboot_init() to a routine that runs later. ThreadDispatcher::start()
+    /// takes the entry point as an argument and keeps it on the dispatcher, so
+    /// there is nothing left to leave lying around.
     struct LoadedImage {
-        object::KernelHandle<object::ProcessDispatcher> process;
         usize span = 0;
         VirtAddr entry = 0;
         VirtAddr stack_top = 0;
@@ -176,11 +171,6 @@ namespace {
     /// because there is no ASLR and nothing else to collide with yet.
     constexpr VirtAddr USER_STACK_TOP = USER_ASPACE_BASE + MB(16);
     constexpr usize USER_STACK_SIZE = PAGE_SIZE;
-
-    /// The image, kept alive past userboot_init(): the thread that enters it
-    /// is only spawned there and runs later, so nothing on that stack frame
-    /// can be what it reads.
-    LoadedImage USERBOOT_IMAGE;
 
     /// Lays userboot's PT_LOAD segments out in fresh frames and maps them
     /// into a new user address space.
@@ -336,29 +326,6 @@ namespace {
         out.entry = USER_ASPACE_BASE + (VirtAddr(header.entry) - lowest);
         return Status::Ok;
     }
-    /// Runs as an ordinary kernel thread, and stops being one.
-    ///
-    /// It never returns: x86_enter_uspace() ends in `iret` onto a fabricated
-    /// interrupt frame, which is how ring 3 is reached at all -- there is no
-    /// instruction that simply lowers the privilege level. From here on this
-    /// thread's kernel stack is only re-entered through an interrupt or a
-    /// syscall.
-    ///
-    /// The address space is not switched here. It was installed on the thread
-    /// before it was resumed, so Scheduler::switch_context() has already
-    /// loaded the right CR3 on the way in -- doing it again by hand would
-    /// leave the scheduler's idea of the current aspace disagreeing with the
-    /// hardware's.
-    [[noreturn]]
-    auto enter_userboot(void *) -> i32 {
-        auto const &image = USERBOOT_IMAGE;
-
-        arch::IrqFrame frame{};
-        arch_build_uspace_irqframe(&frame, image.entry, image.stack_top, 0, 0);
-
-        log::info("userboot: entering ring 3 at {:X}, stack {:X}", image.entry, image.stack_top);
-        arch_enter_uspace(&frame);
-    }
 } // namespace
 
 auto userboot_init() -> void {
@@ -411,41 +378,45 @@ auto userboot_init() -> void {
         return;
     }
 
-    auto &loaded = USERBOOT_IMAGE;
+    LoadedImage loaded;
     if (Status::Ok != load_image(image.unwrap(), *root_vma.dispatcher(), loaded)) {
         return;
     }
-    loaded.process = ustl::move(process);
 
-    log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}", USER_ASPACE_BASE,
-              USER_ASPACE_BASE + loaded.span, loaded.entry);
+    log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}, stack {:X}",
+              USER_ASPACE_BASE, USER_ASPACE_BASE + loaded.span, loaded.entry, loaded.stack_top);
 
-    auto *const thread =
-        task::Thread::spawn("userboot", &enter_userboot, nullptr, task::DEFAULT_PRIORITY);
-    if (!thread) {
-        log::error("userboot: could not spawn the entry thread");
+    // The thread comes from the object layer too, which is what retires the
+    // last three lines this function used to end with: task::Thread::spawn(),
+    // a hand-built interrupt frame in a routine of its own, and
+    // Thread::set_aspace(). ThreadDispatcher::spawn() does the aspace wiring
+    // (it knows the process), and its trampoline builds the frame that enters
+    // ring 3 -- the same code, reached through the object that owns it.
+    object::KernelHandle<object::ThreadDispatcher> thread;
+    status = object::ThreadDispatcher::spawn(process.dispatcher(), "userboot", &thread);
+    if (Status::Ok != status) {
+        log::error("userboot: could not create the entry thread: {}", to_string(status));
         return;
     }
 
-    // Before resume(), not after: the scheduler reads Thread::aspace() when
-    // it switches to a thread, so the CR3 change and the thread's first
-    // instruction have to be decided in that order. Setting it afterwards
-    // would race the thread's own first run.
-    //
-    // Reached through the process rather than kept alongside it, because the
-    // process is what owns the address space now. This hand-wiring is itself
-    // the next thing to go: task::Thread already asks
-    // m_user_thread->process().aspace() for exactly this value when it has a
-    // ThreadDispatcher (thread.cpp, Thread::Current::fault), so once userboot
-    // starts its thread through ThreadDispatcher there is nothing left to set
-    // by hand here.
-    thread->set_aspace(loaded.process.dispatcher()->aspace());
-    thread->detach();
-    thread->resume();
+    // start(), not resume(): where a kernel thread only needs to be made
+    // runnable, a user thread has to be told where in user space to begin.
+    // This is the same argument list a future sys_thread_start carries.
+    status = thread.dispatcher()->start({
+        .entry = loaded.entry,
+        .stack = loaded.stack_top,
+        .arg1 = 0,
+        .arg2 = 0,
+    });
+    if (Status::Ok != status) {
+        log::error("userboot: could not start the entry thread: {}", to_string(status));
+        return;
+    }
 
-    // root_vma goes out of scope here, and with it the only reference to the
-    // VMA dispatcher. That is correct: the mappings it made live in the
-    // address space, which the process owns -- the dispatcher was the object
-    // that was allowed to make them, not the thing that holds them.
+    // Every handle in this function goes out of scope here, and nothing leaks:
+    // the kernel thread holds the ThreadDispatcher, which holds the
+    // ProcessDispatcher, which owns the address space the mappings live in.
+    // The VMA and VMO dispatchers were the objects that were *allowed* to
+    // create those mappings, not the things that hold them.
 }
 } // namespace userabi

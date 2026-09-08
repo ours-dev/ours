@@ -10,24 +10,61 @@ GKTL_COUNTER(DISPATCHER_THREAD_SPAWN_COUNT, "dispatcher.thread.spawn");
 GKTL_COUNTER(DISPATCHER_THREAD_DESTROY_COUNT, "dispatcher.thread.destroy");
 
 namespace ours::object {
+/// Every member below the base used to be left uninitialised. m_flags matters
+/// most: mark_active() read-modify-writes it before anything ever assigns it,
+/// so the Active bit was being OR-ed into whatever the allocator's memory
+/// happened to hold.
 ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name)
-    : Base(), m_process(process) {}
+    : Base()
+    , m_flags()
+    , m_state(State::Running)
+    , m_parked_reason()
+    , m_kernel_thread(nullptr)
+    , m_process(ustl::move(process)) {}
 
 auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
                              KernelHandle<Self> *out) -> Status {
+    if (!process || !out) {
+        return Status::InvArgs;
+    }
+
+    // Held before the kernel thread exists, because the kernel thread is
+    // handed a raw pointer to it: whatever happens below, this object has to
+    // outlive the thread that will run inside it.
     auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(process, name));
     if (!self) {
         return Status::OutOfMem;
     }
 
+    // The address space the kernel thread will run in, decided here rather
+    // than by whoever called spawn(). It used to be set by hand at the call
+    // site (userabi/userboot.cpp did `thread->set_aspace(...)`), which put a
+    // kernel/kernel detail in the hands of a caller that is supposed to see
+    // only the object layer -- and which only worked because the caller
+    // happened to know it must come before the first resume().
+    //
+    // Here it is unconditionally before resume(): activate() is what resumes,
+    // and that cannot be reached until start() is called on the handle this
+    // function has not returned yet. That ordering matters -- the scheduler
+    // reloads CR3 from Thread::aspace() on the way in, so an aspace set on a
+    // thread that is already running would leave the record and the hardware
+    // disagreeing.
     auto core_thread = task::Thread::spawn(
         name, [](void *arg) -> i32 { return Self::trampoline(static_cast<Self *>(arg)); },
         self.as_ptr_mut(), task::DEFAULT_PRIORITY);
     if (!core_thread) {
         return Status::OutOfMem;
     }
+    core_thread->set_aspace(self->m_process->aspace());
 
     self->m_kernel_thread = core_thread;
+
+    // Without this the object died here. `self` is the only reference, `out`
+    // was never written, and the caller therefore got back Status::Ok and
+    // nothing else -- while task::Thread went on holding the raw pointer to
+    // the freed dispatcher that its trampoline runs on. Nothing caught it
+    // because no caller existed.
+    *out = KernelHandle<Self>(ustl::move(self));
 
     DISPATCHER_THREAD_SPAWN_COUNT.add(1);
     return Status::Ok;
@@ -67,6 +104,13 @@ auto ThreadDispatcher::start(TaskState const &state) -> Status {
 auto ThreadDispatcher::activate(bool suspend) -> Status {
     Guard guard{get_lock()};
 
+    // `adopt` reads as fbl::AdoptRef -- take over a reference that already
+    // exists -- and is not: ustl::Rc's adopting constructor calls retain(), so
+    // this is a *new* owning reference, the equivalent of Zircon's
+    // fbl::RefPtr<ThreadDispatcher>(this). That is what is wanted here (the
+    // caller's KernelHandle keeps its own), so this line is correct as
+    // written; the note is here because the name says the opposite of what it
+    // does and the read-through is otherwise a double-free.
     m_kernel_thread->bind_user_thread(ustl::Arc<Self>::adopt(this));
 
     if (suspend) {

@@ -19,25 +19,10 @@ auto reset(ustl::Arc<U> dispatcher) -> void {
 而 `reset()` 换掉的是一个**内核态**引用（KernelHandle 还没进任何句柄表），
 这两件事不是一回事。很可能正确的做法是这里根本不该通知 dispatcher。
 
-## 2. `ProcessDispatcher::create()` / `create_shared()` 只有声明没有定义
+## 2. `ProcessDispatcher::create_shared()` 只有声明没有定义
 
-`kernel/object/process_dispatcher.cpp` 里没有它们的实现，`userabi/userboot.cpp`
-里那处调用被注释掉的历史版本也印证了这一点。链接期才会发现。
-这是 userboot 走通对象层的下一步，已在认领中。
+`create()` 已经实现（见 `docs/changes/260906/object.md`），`create_shared()` 没有。
+它要的共享地址空间语义——两个进程共享用户半区的上半段，`SHARED_ASPACE_BASE` /
+`SHARED_ASPACE_SIZE` 那一对常量就是为它留的——目前没有任何调用者，签名之外的部分
+只能靠猜。等到有需求时再写。
 
-## 3. `ThreadDispatcher::spawn()` 丢掉了它创建的对象
-
-```cpp
-auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(process, name));
-...
-self->m_kernel_thread = core_thread;
-DISPATCHER_THREAD_SPAWN_COUNT.add(1);
-return Status::Ok;              // *out 从未被写入
-```
-
-`out` 参数从头到尾没有被赋值，而 `self` 在函数结束时析构——引用计数归零，对象被
-释放，可 `task::Thread` 那边还揣着它的裸指针（`trampoline` 的 `arg`）。
-另外 `activate()` 里又写了一次 `ustl::Arc<Self>::adopt(this)`，对同一个对象做了
-第二次 adopt，两份所有权。
-
-这两条要一起改，属于 userboot 接对象层的第 4 步。
