@@ -1,5 +1,5 @@
+#include <arch/x86/macro/syscallframe.hpp>
 #include <ours/arch/asm.hpp>
-#include <ours/arch/x86/percpu.hpp>
 #include <ours/arch/x86/percpu.hpp>
 
 /// Intel® 64 and IA-32 Architectures Software Developer's Manual, Volume 2B:
@@ -113,7 +113,9 @@
 //  rsi - arg 2
 //  rdi - arg 1
 //  rbp - saved
-//  rsp - saved
+//  rsp - the *user* stack; the stub parks it in this CPU's percpu block
+//        (X86_PERCPU_SAVED_USER_SP_OFFSET), not in the frame, because it has
+//        to swap stacks before it has anywhere to push to
 //  r8  - arg 5
 //  r9  - arg 6
 //  r10 - arg 4
@@ -130,8 +132,14 @@
     mov %rsp, CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_USER_SP_OFFSET)
     mov CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_KERNEL_SP_OFFSET), %rsp
 
-    push_val %r11  // RFLAGS
-    push_val %rcx  // RIP
+    // Everything below builds arch::SyscallFrame (arch/x86/syscall.hpp) on the
+    // kernel stack, from its last member downwards -- the stack grows down, so
+    // the first push lands at the highest offset.  The offsets both sides agree
+    // on are in arch/x86/macro/syscallframe.hpp, and the struct static_asserts
+    // itself against them; adding or reordering a push here without amending
+    // that header is a build failure rather than a wrong register read.
+    push_val %r11  // FLAGS: the user RFLAGS, which SYSCALL parked in %r11.
+    push_val %rcx  // IP: the user return address, which SYSCALL parked in %rcx.
     push_val %r15
     push_val %r14
     push_val %r13
@@ -148,7 +156,13 @@
     push_val %rbx
     push_val %rax
 
-    mov %rbp, %rdi  // Pass pointer pointed to SyscallFrame.
+    // The frame pointer is %rsp, which is where the last push left it -- not
+    // %rbp.  %rbp holds a user-controlled value that this stub only ever
+    // pushed; reading the frame through it handed every syscall handler a
+    // pointer userspace chose, which is a kernel write primitive as soon as a
+    // handler answers by storing into frame->ax.  interrupt_common in
+    // exception.S has always passed %rsp here, for the same reason.
+    mov %rsp, %rdi
     // %r11 is scratch here -- the syscall instruction itself trashes rcx and
     // r11, so it holds no live register state -- and the table has to be
     // reached %rip-relative: the kernel is a static PIE, an absolute

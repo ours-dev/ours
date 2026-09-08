@@ -1,5 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <arch/syscall.hpp>
 #include <ours/compiler.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
@@ -8,17 +9,22 @@
 
 namespace ours {
 namespace {
-    /// x86_syscall (arch/x86/kernel/syscall.S) pushes the user registers and
-    /// then does `call *SYSCALL_TABLE(, %rax, 8)` with %rdi holding a pointer
-    /// to that frame. It restores %rax from the frame afterwards, so a handler
-    /// answers by writing into the frame rather than by returning a value.
+    /// x86_syscall (arch/x86/kernel/syscall.S) saves the user registers into
+    /// an arch::SyscallFrame on the kernel stack and then does
+    /// `call *SYSCALL_TABLE(, %rax, 8)` with %rdi holding a pointer to it. It
+    /// pops the whole frame back into the registers afterwards, so a handler
+    /// answers by writing `frame->ax` rather than by returning a value -- a
+    /// C++ return value would be overwritten on the way out.
     ///
-    /// The frame is deliberately opaque here: no type describes that push
-    /// order anywhere in the tree yet, and guessing at one would be worse than
-    /// admitting it.
-    using SyscallHandler = auto (*)(void *frame) -> void;
+    /// The frame used to be spelled `void *` here, because nothing in the tree
+    /// described the stub's push order. arch::SyscallFrame does now
+    /// (arch/x86/syscall.hpp), and it is static_asserted against the same
+    /// offset macros the stub is written from.
+    using SyscallHandler = auto (*)(arch::SyscallFrame *frame) -> void;
 
-    auto sys_not_implemented(void *) -> void {}
+    auto sys_not_implemented(arch::SyscallFrame *const frame) -> void {
+        frame->ax = static_cast<usize>(Status::Unimplemented);
+    }
 
     /// The table x86_syscall indexes. %rax is user-controlled, so every slot
     /// has to be a valid target -- a null entry would be an indirect call
