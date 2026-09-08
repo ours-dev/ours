@@ -1,8 +1,23 @@
+#include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/dispatcher.hpp>
 
 namespace ours::object {
-Dispatcher::Dispatcher(u32 magic) : m_canary(magic), m_lock(), m_handle_count() {}
+/// m_koid and m_signals were missing from this list, so every dispatcher's
+/// koid was whatever the allocator's memory held. That mattered less while
+/// nothing read it; it matters as soon as a HandleTable exists, because the
+/// table's own koid is the fifth of the five checks a handle value has to
+/// pass (docs/architecture/object/handle-lookup.md) -- the one that keeps
+/// process A's handle values from resolving in process B. A koid that is
+/// garbage is a check that can be passed by accident. KoIdGenerator is the
+/// same allocator task::Thread already draws its tid from, so a thread and
+/// the dispatcher wrapping it never collide.
+Dispatcher::Dispatcher(u32 magic)
+    : m_canary(magic)
+    , m_koid(KoIdGenerator::generate())
+    , m_lock()
+    , m_handle_count()
+    , m_signals(Signals::None) {}
 
 auto Dispatcher::attach_observer(SignalObserver *observer, void const *handle, Signals signals)
     -> Status {
