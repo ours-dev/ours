@@ -46,7 +46,7 @@ config("compiler") {
     ":no_common",
   ]
   if (is_kernel) {
-    configs += [ ":kernel_libcxx_include" ]
+    configs += [ ":freestanding_libcxx_include" ]
   }
 }
 
@@ -56,10 +56,16 @@ config("no_common") {
   cflags = [ "-fno-common" ]
 }
 
-# Freestanding libc++ wiring for kernel C++: the Ours-site libc++ config
-# macros and, when a prebuilt Clang is active, its libc++ headers in place
-# of the host installation's.
-config("kernel_libcxx_include") {
+# Freestanding libc++ wiring: the Ours-site libc++ config macros and, when a
+# prebuilt Clang is active, its libc++ headers in place of the host
+# installation's.
+#
+# It was called kernel_libcxx_include while the kernel and phys environments
+# were the only freestanding ones. They are not any more -- //system:user.config
+# needs exactly this, because a user program has no host libc++ either, and the
+# host's headers answer `#error "No thread API"` the moment anything includes
+# <cstddef>. Nothing about the contents was ever kernel-specific.
+config("freestanding_libcxx_include") {
   if (is_clang) {
     include_dirs = [ "//build/config/clang/include" ]
     if (ours_clang_cxx_include_dir != "") {

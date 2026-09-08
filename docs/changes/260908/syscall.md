@@ -184,3 +184,129 @@ AT&T 语法是 `mov 源, 目的`，所以这一行把 `%rbp` 送进 `%rdi`。但
 **故意没做**
 没有给"编号存在但未实现"和"编号不存在"之外的情况再分级。Zircon 还会区分
 `ZX_ERR_BAD_SYSCALL` 与权限不足等，那要等真的有编号和权限检查之后才有意义。
+
+## 第一个真实的系统调用：编号、分发层，以及 `sysret` 一直是 32 位形式（2026-09-08）
+
+**文件**
+- `system/public/ours/syscall.hpp` — 加入 `OURS_SYS_DEBUG_WRITE`
+- `kernel/lib/syscall/include/syscall/handlers.hpp` — 新文件，带类型的入口点声明
+- `kernel/lib/syscall/debug.cpp` — 新文件，`sys_debug_write()` 的实现
+- `kernel/lib/syscall/table.cpp` — 分发层（拆帧的 shim），并把 0 号槽位填上
+- `kernel/lib/syscall/BUILD.gn` — 登记
+- `kernel/arch/x86/kernel/syscall.S` — `sysret` 改为 `sysretq`
+
+**症状**
+第一次真的执行 `syscall`，字符串**打出来了**，然后内核在回程上死掉：
+
+```
+[info] userboot: hello from ring 3
+[trace] Exception[interrupt] from user space
+（QEMU 自行退出，没有 "terminating on signal 15" —— 三重故障）
+```
+
+对照：这一步之前用户态自旋 30 秒能记到 900 多次 `Exception[interrupt] from user
+space`；这一次只有 1 次。
+
+**原因**
+
+```
+    // Let's go back to user space.
+    sysret
+```
+
+GAS 把不带后缀的 `sysret` 汇编成**32 位操作数**的那一种，反汇编确认：
+
+```
+    816f: 0f 07    sysretl
+```
+
+而操作数宽度正是选择"回到哪个世界"的那个开关。这个文件开头抄的 Intel 手册原文自己
+就写着两种情形：
+
+- Osize 64：`CS(SEL) ← IA32_STAR[63:48] + 16`，`RIP ← RCX`；
+- 否则：`CS(SEL) ← IA32_STAR[63:48]`，`EIP ← ECX`，回到**兼容模式**。
+
+`IA32_STAR[63:48]` 这里是 `X86_GDT_USER_CODE32`，+16 才是 `X86_GDT_USER_CODE64`。
+也就是说 `sysretl` 把 CPU 放回了 32 位兼容模式，让它按 32 位去执行 userboot 的 64 位
+代码；跑出来的是垃圾指令，直到下一次时钟中断进来，然后从一个已经坏掉的上下文返回时
+三重故障。
+
+手册抄在文件顶上，代码却从来没选过 Osize 64——因为在此之前没有任何东西执行过
+`syscall`，这条回程指令一次也没跑过。
+
+**改法**
+```
+    sysretq
+```
+反汇编确认变成 `48 0f 07 sysretq`。
+
+其余是这一步的正常内容：
+
+1. 编号进 `system/public/ours/syscall.hpp`（ABI，两边都得同意）：
+   ```c
+   #define OURS_SYS_DEBUG_WRITE 0
+   ```
+
+2. **分发层**——也就是 `table.cpp` 里那条 TODO 一直说缺的东西。它只做两件事：按
+   x86-64 SysV 的寄存器顺序把参数从帧里取出来，再把 `Status` 放回 `ax`（stub 出口会
+   把整个帧弹回寄存器，C++ 返回值会被丢掉）：
+
+   ```cpp
+   auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
+       auto const status = sys_debug_write(reinterpret_cast<char const *>(frame->di), frame->si);
+       frame->ax = static_cast<usize>(status);
+   }
+   ```
+
+   带类型的那一半在 `debug.cpp`，签名里没有任何 arch 的影子：
+
+   ```cpp
+   auto sys_debug_write(char const *buffer, usize length) -> Status;
+   ```
+
+   这条缝是有意的：处理函数因此可以当普通函数来读、来审、将来来测。Zircon 在它生成的
+   syscall wrapper 与 `sys_*` 函数之间划的是同一条缝。
+
+3. 用户指针的检查，检查的是**整个区间**而不只是首字节：
+
+   ```cpp
+   auto const start = reinterpret_cast<VirtAddr>(buffer);
+   if (mm::is_kernel_address(start) || length > std::numeric_limits<VirtAddr>::max() - start ||
+       mm::is_kernel_address(start + length - 1)) {
+       return Status::InvArgs;
+   }
+   ```
+
+   中间那一项不是多余的：`start + length` 会回绕，而回绕之后的指针恰好能骗过一个天真的
+   区间检查——它落回了分界线之下。长度另有上限（256 字节），免得用户程序靠要一 GB 输出
+   把 CPU 长时间扣在内核里。
+
+   用户的字节永远作为**参数**而不是格式串传给日志：`log::info("{}", ...)`。
+
+**参照**
+- `Zircon zx_debug_write`：同样是给早期用户程序证明"到得了、回得来"的调试设施。
+- `Zircon x86_syscall` 的出口：同样是 `sysretq`。
+- 分发层与 `sys_*` 的分工：对标 Zircon 生成的 syscall wrapper 与它调用的 `sys_*`。
+
+**验证**
+两个镜像实测，`kernel.dev.dbg_1.obi` 与 `kernel.dev.obi` 都打出：
+
+```
+[info] userboot: hello from ring 3
+```
+
+**恰好一次**，随后 30 秒内 912 次 `Exception[interrupt] from user space`——也就是
+`sysretq` 确实把 %rip/%rsp 还了回去、ring 3 继续在跑；两个镜像都以 signal 15 结束
+（是我们杀的，不是三重故障）。
+
+越界编号那条路径也补测了：临时让 userboot 先发一次 `syscall` 号 `0x1000`，再发调试
+写。结果字符串照常打出、910 次用户态中断、正常收尾——钳制生效。探针已删除。
+
+**故意没做**
+- **没有第二个系统调用**。userboot 发完这一次就回到 `pause` 自旋。线程退出需要
+  `sys_thread_exit`，而它的签名收 `object::Handle*`，那要等句柄表。
+- **`sys_debug_write` 直接读用户指针**，没有 `copy_from_user`。目前成立是因为它跑在
+  调用线程自己的地址空间上、且 CR4.SMAP 没开（`x86_init_percpu` 只设了 FsGsBase 和
+  Umip）。真正的 `copy_from_user` 要能扛住"检查之后、读取之前另一个线程把那页解映射"，
+  那需要一个本内核还没有的取消式缺页处理。代码里写明了这一点。
+- **调用点的 16 字节栈对齐没有修**，见 `docs/repairs/260908/x86.md`。

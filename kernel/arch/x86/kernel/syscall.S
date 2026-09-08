@@ -215,7 +215,16 @@
     // Swap GS
     swapgs
 
-    // Let's go back to user space.
-    sysret
+    // sysretQ.  Bare `sysret` assembles to the 32-bit form, and the operand
+    // size is what selects which world the CPU returns to: with Osize 32 it
+    // loads CS from IA32_STAR[63:48] itself -- X86_GDT_USER_CODE32 -- and only
+    // %ecx into %eip, dropping the caller into compatibility mode to execute
+    // its 64-bit code as 32-bit.  Osize 64 is the case the manual quoted at
+    // the top of this file describes: CS = IA32_STAR[63:48] + 16, which is
+    // X86_GDT_USER_CODE64, and the full %rcx into %rip.
+    //
+    // The first system call this kernel ever made printed its string and then
+    // died on the way home for exactly this reason.
+    sysretq
 
 .end_function

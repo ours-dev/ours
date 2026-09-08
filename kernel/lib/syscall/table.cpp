@@ -8,6 +8,8 @@
 
 #include <array>
 
+#include <syscall/handlers.hpp>
+
 namespace ours {
 namespace {
     /// x86_syscall (arch/x86/kernel/syscall.S) saves the user registers into
@@ -25,6 +27,23 @@ namespace {
 
     auto sys_not_implemented(arch::SyscallFrame *const frame) -> void {
         frame->ax = static_cast<usize>(Status::Unimplemented);
+    }
+
+    /// The dispatch layer, one shim per call.
+    ///
+    /// This is the piece table.cpp's own TODO used to say was missing. Its job
+    /// is exactly two conversions and nothing else: the arguments come out of
+    /// the frame in the order the x86-64 SysV registers put them, and the
+    /// Status goes back into `ax`, because the stub pops the frame into the
+    /// registers on the way out and a C++ return value would be discarded.
+    ///
+    /// %rcx and %r11 are not readable here and never will be: the SYSCALL
+    /// instruction overwrote both before the kernel got control, which is why
+    /// their slots in the frame are pushed as zero and why a fourth argument
+    /// would have to come from %r10.
+    auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_debug_write(reinterpret_cast<char const *>(frame->di), frame->si);
+        frame->ax = static_cast<usize>(status);
     }
 
     /// The answer to a system-call number that does not exist at all, as
@@ -49,9 +68,11 @@ namespace {
     /// have to jump around the call and set the return value in assembly,
     /// which means spelling a Status constant there.
     ///
-    /// TODO(SmallHuaZi): every in-range slot still answers Unimplemented,
-    /// because there is no syscall numbering yet to give the slots meaning and
-    /// nothing unpacks the frame into lib/syscall's typed sys_* entry points.
+    /// TODO(SmallHuaZi): only OURS_SYS_DEBUG_WRITE is filled in. The rest
+    /// answer Unimplemented, because lib/syscall's other typed entry points
+    /// (sys_thread_spawn and friends) take object::Handle*, and resolving a
+    /// user's handle number into one needs the handle table that does not
+    /// exist yet.
     constexpr auto TABLE_SIZE = SYSCALL_COUNT + 1;
 
     constexpr auto make_syscall_table() {
@@ -60,6 +81,9 @@ namespace {
             entry = &sys_not_implemented;
         }
         table[SYSCALL_COUNT] = &sys_bad_syscall_number;
+
+        table[OURS_SYS_DEBUG_WRITE] = &sys_debug_write_shim;
+
         return table;
     }
 } // namespace

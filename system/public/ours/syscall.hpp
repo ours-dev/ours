@@ -22,6 +22,21 @@
 /// around the call.  See SYSCALL_TABLE in //kernel/lib/syscall/table.cpp.
 #define OURS_SYSCALL_COUNT 256
 
+/// Write a string to the kernel's debug console.
+///
+/// Arguments follow the ordinary x86-64 SysV argument registers, which is
+/// what makes an inline `syscall` in a user program readable: %rdi is the
+/// buffer, %rsi its length in bytes.  %rax carries the number in and the
+/// ours::Status out.  Note %rcx and %r11 are NOT arguments and never can be:
+/// the SYSCALL instruction overwrites both before the kernel sees them, which
+/// is why the fourth SysV argument register is %r10 here and not %rcx.
+///
+/// This is a debug facility, not a console: it exists so that the first user
+/// program can prove it reached user mode and got back, and it has no
+/// counterpart in a finished system.  Zircon's zx_debug_write is the same
+/// thing for the same reason.
+#define OURS_SYS_DEBUG_WRITE 0
+
 #ifdef __cplusplus
 
 #include <ours/types.hpp>
@@ -29,6 +44,11 @@
 namespace ours {
 /// The C++ spelling of OURS_SYSCALL_COUNT above.
 inline constexpr auto SYSCALL_COUNT = usize{OURS_SYSCALL_COUNT};
+
+/// The C++ spelling of the numbers above.
+enum class SyscallNumber : usize {
+    DebugWrite = OURS_SYS_DEBUG_WRITE,
+};
 } // namespace ours
 
 #endif // __cplusplus

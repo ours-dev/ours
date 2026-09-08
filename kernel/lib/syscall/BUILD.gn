@@ -1,12 +1,31 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The typed system-call entry points. table.cpp's shims unpack the register
+# frame into these signatures, which is the seam that keeps the handlers
+# themselves free of any arch detail.
+cpp_interface("headers") {
+  public = [ "include/syscall/handlers.hpp" ]
+  visibility = [ "*" ]
+}
+
 source_set("syscall") {
-  # table.cpp owns the dispatch table syscall.S indexes; task.cpp / vmo.cpp
-  # are the typed syscall layer's stubs, all Unimplemented until the layer
-  # that unpacks the register frame into typed arguments exists.
+  # table.cpp owns the dispatch table syscall.S indexes and the shims that
+  # unpack its frame; debug.cpp is the first typed handler with a body.
+  # task.cpp / vmo.cpp are still Unimplemented stubs, waiting on the handle
+  # table their signatures are written against.
   sources = [
+    "debug.cpp",
     "table.cpp",
     "task.cpp",
     "vmo.cpp",
   ]
-  public_deps = [ "//kernel/object:headers" ]
+  public_deps = [
+    ":headers",
+    "//kernel/object:headers",
+  ]
+  deps = [
+    "//kernel/lib/logz4",
+    "//kernel/mm",
+  ]
   visibility = [ "*" ]
 }

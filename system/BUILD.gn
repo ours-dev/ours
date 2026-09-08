@@ -35,6 +35,7 @@ group("availability_test") {
 config("user.config") {
   configs = [
     ":user.standalone",
+    ":user.headers",
     "//build/config:no_exceptions",
     "//build/config:no_rtti",
     "//build/config:no_stack_protector",
@@ -49,6 +50,31 @@ config("user.config") {
   # Same reason as the kernel's (//kernel/products:kernel.config): the image
   # is linked as a PIE below, so the code has to be compiled to match.
   cflags = [ "-fpie" ]
+}
+
+# What a user program needs in order to say anything about the system it runs
+# on: the public headers (//system/public), and the prelude that defines the
+# global integer aliases they are written in.
+#
+# The prelude lives under //kernel/include, which reads oddly from here, and
+# is nonetheless the right file: system/public/ours/types.hpp spells `usize`
+# and `u32` unqualified, so *any* toolchain that includes a public header
+# needs those aliases in scope. //kernel/products:host-prelude force-includes
+# this very file into host builds for exactly the same reason.
+config("user.headers") {
+  configs = [
+    "//system/public:public.config",
+
+    # A user program is as freestanding as the kernel is: no host libc++, and
+    # the host's own headers stop with `#error "No thread API"` as soon as the
+    # prelude below includes <cstddef>.
+    "//build/config:freestanding_libcxx_include",
+  ]
+  inputs = [ "//kernel/include/ours/prelude.hpp" ]
+  cflags_cc = [
+    "-include",
+    rebase_path(inputs[0], root_build_dir),
+  ]
 }
 
 # A user binary is loaded by the kernel, not by a dynamic linker, and there
