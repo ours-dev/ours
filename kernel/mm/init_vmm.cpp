@@ -124,6 +124,24 @@ namespace {
          .size = usize(ARCH_CPU_LOCAL_SIZE),
          .vmaf = VmaFlags::Read | VmaFlags::Write,
          .backing = PhysVma::Backing::AddressSpace},
+        // The vmalloc window (ARCH_VMALLOC_VIRT_BASE in aspace_layout.hpp).
+        //
+        // AddressSpace for the same reason as k:cpulocal above: mm::vmalloc()
+        // maps into it itself, a range at a time, and owns those pages. Most
+        // of the window is unmapped at any moment, so there is nothing here
+        // for reserve() to stamp permissions onto -- it would fault walking
+        // page tables that do not exist.
+        //
+        // Claimed in full at boot rather than grown on demand, because the
+        // point of the VMA is to stop VmPlacement::anywhere() from handing
+        // this range to anyone else. is_vmalloc_addr() answers for the whole
+        // window, so anything else living inside it would be freed as though
+        // it were a vmalloc allocation.
+        {.name = "k:vmalloc",
+         .base = VirtAddr(ARCH_VMALLOC_VIRT_BASE),
+         .size = usize(ARCH_VMALLOC_SIZE),
+         .vmaf = VmaFlags::Read | VmaFlags::Write,
+         .backing = PhysVma::Backing::AddressSpace},
     };
 
     INIT_CODE

@@ -27,6 +27,28 @@
 
 #define KERNEL_LOAD_BASE (KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE + GB(1))
 
+/// The window mm::vmalloc() carves virtually-contiguous kernel allocations
+/// from.  Backed page by page from wherever the buddy allocator has room, so
+/// unlike the physmap there is no relationship at all between an address in
+/// here and a physical one -- PhysMap::virt_to_phys() answers zero for it.
+///
+/// Above the kernel image rather than in the gap below it, and that is a
+/// constraint rather than a preference: the gap between the per-CPU window
+/// and KERNEL_LOAD_BASE is under a gigabyte, and the image's own base moves
+/// with up to GB(1) of KASLR bias on top of KERNEL_LOAD_BASE. A window placed
+/// below would have to be both small and dependent on where the image landed.
+/// GB(64) clears the bias by a wide margin while leaving that gap to the
+/// lowest-address first-fit allocations that already live there (the local
+/// APIC, the HPET, the IDT and GDT, every kernel stack).
+///
+/// Being a *fixed* range is what makes mm::is_vmalloc_addr() a subtraction
+/// rather than a tree walk, and that in turn is what lets `operator delete`
+/// tell a vmalloc pointer from a kmalloc one -- ktl::kfree() resolves its
+/// pointer through the physmap and cannot be asked about an address outside
+/// it. Linux's VMALLOC_START/VMALLOC_END are the same idea.
+#define ARCH_VMALLOC_VIRT_BASE (KERNEL_ASPACE_BASE + GB(64))
+#define ARCH_VMALLOC_SIZE GB(4)
+
 /// The user half of the canonical address space.
 ///
 /// x86-64 splits the canonical range in two: bits 63..47 must all copy bit 47,
