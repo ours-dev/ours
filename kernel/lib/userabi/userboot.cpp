@@ -7,7 +7,6 @@
 /// This is being written a step at a time, and each step is committed only
 /// once it has been seen to work in QEMU. Right now it does step one: locate
 /// userboot's ELF inside the kernel package. Nothing is created yet.
-#include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
@@ -20,12 +19,14 @@
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
+#include <ours/vdso.hpp>
 #include <ustl/mem/align.hpp>
 
 #include <algorithm>
 
 #include <cstring>
 
+#include <heap/new.hpp>
 #include <userabi/userboot.hpp>
 
 namespace userabi {
@@ -42,6 +43,10 @@ namespace {
     /// BootFS with different shapes, so this cannot be derived from the
     /// kernel's own name; it has to be stated.
     constexpr std::string_view USERBOOT_FILE{"userboot"};
+
+    /// The vDSO's name in the same BootFS, installed by
+    /// //kernel/lib/userabi/vdso with the same has_patches = false convention.
+    constexpr std::string_view VDSO_FILE{"vdso"};
 
     /// Decompresses the kernel package into a fresh buffer.
     ///
@@ -169,10 +174,43 @@ namespace {
     /// -- so it can be laid down at any page-aligned base and simply run.
     /// That is what makes this short: no relocation pass, no dynamic
     /// linking, no symbol resolution.
-    auto load_image(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
-                    LoadedImage &out) -> Status {
+    /// Where the vDSO goes.
+    ///
+    /// Between the image and the stack, at a fixed address for the same reason
+    /// both of those are: there is no ASLR yet and nothing to collide with.
+    /// It is the mapping most worth randomising once there is -- it is the
+    /// only code in the address space that can enter the kernel -- so this
+    /// constant is a placeholder for a per-process placement, not a decision
+    /// that it should be fixed.
+    constexpr VirtAddr VDSO_BASE = USER_ASPACE_BASE + MB(8);
+
+    /// One mapped ELF image: where it landed, how much of the address space it
+    /// covers, and what its e_entry resolved to.
+    struct MappedImage {
+        VirtAddr base = 0;
+        usize span = 0;
+        VirtAddr entry = 0;
+    };
+
+    /// Lays an ELF's PT_LOAD segments out in fresh frames and maps them into a
+    /// user address space at |where|.
+    ///
+    /// Both images this kernel loads are PIEs (ET_DYN) with no relocations at
+    /// all -- checked with llvm-readelf, and true because neither references
+    /// anything outside itself -- so either can be laid down at any
+    /// page-aligned base and simply run. That is what makes this short: no
+    /// relocation pass, no dynamic linking, no symbol resolution.
+    ///
+    /// One routine for both, because they differ only in placement,
+    /// permissions and name. The vDSO in particular must NOT be writable: it
+    /// is the only code allowed to enter the kernel, so a program able to
+    /// rewrite it could put a trap anywhere it liked inside the one range the
+    /// kernel trusts.
+    auto map_elf_image(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
+                       mm::VmPlacement where, arch::paging::MmuFlags flags, char const *name,
+                       MappedImage &out) -> Status {
         if (bytes.size() < sizeof(Elf64Header)) {
-            log::error("userboot: image is too small to be an ELF");
+            log::error("userboot: {} is too small to be an ELF", name);
             return Status::InvArgs;
         }
 
@@ -180,9 +218,9 @@ namespace {
         std::memcpy(&header, bytes.data(), sizeof(header));
 
         // The segments' virtual addresses are relative to nothing in
-        // particular for a PIE, so the span is measured from the lowest to
-        // the highest address any PT_LOAD claims, and the whole thing is
-        // then placed at USER_ASPACE_BASE. `memsz` and not `filesz`: the
+        // particular for a PIE, so the span is measured from the lowest to the
+        // highest address any PT_LOAD claims, and the whole thing is then
+        // placed where the caller says. `memsz` and not `filesz`: the
         // difference between them is .bss, which occupies address space but
         // occupies no bytes in the file.
         auto lowest = ~VirtAddr(0);
@@ -191,7 +229,7 @@ namespace {
             Elf64ProgramHeader phdr{};
             auto const at = header.phoff + usize(index) * header.phentsize;
             if (at + sizeof(phdr) > bytes.size()) {
-                log::error("userboot: program header {} runs past the image", index);
+                log::error("userboot: {} program header {} runs past the image", name, index);
                 return Status::InvArgs;
             }
             std::memcpy(&phdr, bytes.data() + at, sizeof(phdr));
@@ -203,7 +241,7 @@ namespace {
         }
 
         if (lowest > highest) {
-            log::error("userboot: no PT_LOAD segments");
+            log::error("userboot: {} has no PT_LOAD segments", name);
             return Status::InvArgs;
         }
 
@@ -216,7 +254,7 @@ namespace {
         auto const nr_frames = out.span / PAGE_SIZE;
         auto *const backing = mm::get_frames_n<u8>(mm::GAF_USER, nr_frames);
         if (!backing) {
-            log::error("userboot: could not allocate {} frames for the image", nr_frames);
+            log::error("userboot: could not allocate {} frames for {}", nr_frames, name);
             return Status::OutOfMem;
         }
 
@@ -232,23 +270,12 @@ namespace {
                 continue;
             }
             if (phdr.offset + phdr.filesz > bytes.size()) {
-                log::error("userboot: segment {} content runs past the image", index);
+                log::error("userboot: {} segment {} content runs past the image", name, index);
                 return Status::InvArgs;
             }
             std::memcpy(backing + (VirtAddr(phdr.vaddr) - lowest), bytes.data() + phdr.offset,
                         phdr.filesz);
         }
-
-        // MmuFlags::User is the whole point of this line: without it the
-        // pages are supervisor-only and ring 3 faults on the first
-        // instruction fetch. Writable as well as executable for now because
-        // the three segments (R, RX, RW) are being mapped as one range;
-        // giving each its own permissions is a later step, and one worth
-        // taking -- an image that is writable and executable at once is
-        // exactly what W^X exists to forbid.
-        using arch::paging::MmuFlags;
-        auto const flags =
-            MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Executable;
 
         // Two steps, deliberately: first say what the memory *is*, then say
         // where it appears. That split is the whole reason a VMO is a separate
@@ -256,18 +283,16 @@ namespace {
         // twice, and what makes "hand a program some memory" a different
         // operation from "put it in that program's address space".
         //
-        // A physical VMO, because these frames already exist: get_frames_n()
-        // above allocated them and the segments have already been copied in.
-        // A paged VMO is the honest answer -- the image is ordinary anonymous
-        // memory, not MMIO -- and is what this becomes the moment
-        // mm::VmObjectPaged::write() stops returning Unimplemented. There is
-        // no other way to get bytes into a paged VMO today.
-        object::KernelHandle<object::VmoDispatcher> image_vmo;
-        Rights image_vmo_rights;
-        auto status = object::VmoDispatcher::create_physical(mm::PhysMap::virt_to_phys(backing),
-                                                             out.span, image_vmo, image_vmo_rights);
+        // A physical VMO, because these frames already exist and have already
+        // been filled in. A paged VMO is the honest answer -- these are
+        // ordinary anonymous pages, not MMIO -- and is what this becomes the
+        // moment mm::VmObjectPaged::write() stops returning Unimplemented.
+        object::KernelHandle<object::VmoDispatcher> vmo;
+        Rights vmo_rights;
+        auto const status = object::VmoDispatcher::create_physical(
+            mm::PhysMap::virt_to_phys(backing), out.span, vmo, vmo_rights);
         if (Status::Ok != status) {
-            log::error("userboot: could not create the image VMO: {}", to_string(status));
+            log::error("userboot: could not create the {} VMO: {}", name, to_string(status));
             return status;
         }
 
@@ -276,12 +301,49 @@ namespace {
         // asking, and every future sys_vmar_map has to answer that. Rights
         // live on the handle, so the entry point has to be on the object that
         // a handle names.
-        auto mapping = root_vma.map(*image_vmo.dispatcher(), mm::VmPlacement::at(USER_ASPACE_BASE),
-                                    out.span, flags, mm::VmMapOption::Commit, "userboot");
+        auto mapping =
+            root_vma.map(*vmo.dispatcher(), where, out.span, flags, mm::VmMapOption::Commit, name);
         if (mapping.is_err()) {
-            log::error("userboot: could not map the image: {}", to_string(mapping.unwrap_err()));
+            log::error("userboot: could not map {}: {}", name, to_string(mapping.unwrap_err()));
             return mapping.unwrap_err();
         }
+
+        out.base = mapping.unwrap()->base();
+        // e_entry is a file-relative address for a PIE, so it moves with the
+        // load base like everything else. For userboot it is the first
+        // instruction; for the vDSO it is the export table, which is the whole
+        // reason that image is linked with -Wl,-e,OURS_VDSO_TABLE.
+        out.entry = out.base + (VirtAddr(header.entry) - lowest);
+        return Status::Ok;
+    }
+
+    /// Maps userboot's image and gives it a stack.
+    auto load_userboot(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
+                       LoadedImage &out) -> Status {
+        using arch::paging::MmuFlags;
+
+        // MmuFlags::User is the whole point of this line: without it the pages
+        // are supervisor-only and ring 3 faults on the first instruction
+        // fetch. Writable as well as executable for now because the three
+        // segments (R, RX, RW) are being mapped as one range; giving each its
+        // own permissions is a later step, and one worth taking -- an image
+        // that is writable and executable at once is exactly what W^X exists
+        // to forbid.
+        //
+        // Note it does not defeat the vDSO rule: a program that writes a
+        // `syscall` into its own text still traps from an address outside the
+        // vDSO, which is exactly what the kernel refuses.
+        constexpr auto IMAGE_FLAGS =
+            MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Executable;
+
+        MappedImage image;
+        auto status = map_elf_image(bytes, root_vma, mm::VmPlacement::at(USER_ASPACE_BASE),
+                                    IMAGE_FLAGS, "userboot", image);
+        if (Status::Ok != status) {
+            return status;
+        }
+        out.span = image.span;
+        out.entry = image.entry;
 
         // A stack, backed by a paged VMO: unlike the image there is nothing to
         // copy into it, so zero-filled anonymous pages are exactly right and
@@ -309,10 +371,55 @@ namespace {
         // because the x86-64 ABI requires it at a function boundary, and the
         // top of a page already is.
         out.stack_top = USER_STACK_TOP;
+        return Status::Ok;
+    }
 
-        // The entry point is a file-relative address for a PIE, so it moves
-        // with the load base like everything else.
-        out.entry = USER_ASPACE_BASE + (VirtAddr(header.entry) - lowest);
+    /// Maps the vDSO and validates the export table it publishes.
+    ///
+    /// Read-only and executable, never writable: this is the only code in the
+    /// address space allowed to enter the kernel, so a program that could
+    /// rewrite it could place a trap anywhere inside the one range the kernel
+    /// trusts.
+    auto load_vdso(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
+                   MappedImage &out) -> Status {
+        using arch::paging::MmuFlags;
+        constexpr auto VDSO_FLAGS = MmuFlags::User | MmuFlags::Readable | MmuFlags::Executable;
+
+        auto const status =
+            map_elf_image(bytes, root_vma, mm::VmPlacement::at(VDSO_BASE), VDSO_FLAGS, "vdso", out);
+        if (Status::Ok != status) {
+            return status;
+        }
+
+        // The table is read through the kernel's own view of the frames rather
+        // than through the user mapping: the mapping is not this address
+        // space, and reading a user address from here would be reading
+        // whatever the *current* address space has there.
+        auto const table_offset = out.entry - out.base;
+        if (table_offset + sizeof(VdsoEntryTable) > out.span) {
+            log::error("userboot: the vDSO entry table runs past the image");
+            return Status::InvArgs;
+        }
+        VdsoEntryTable table{};
+        std::memcpy(&table, bytes.data() + table_offset, sizeof(table));
+
+        // Checked, because e_entry is only a promise. A vDSO built from a
+        // different tree, or one whose table moved, would otherwise be called
+        // into as an indirect jump to whatever happens to be there -- in ring
+        // 3, with no way to report what went wrong.
+        if (table.magic != OURS_VDSO_MAGIC) {
+            log::error("userboot: vDSO entry table magic is {:X}, expected {:X}", table.magic,
+                       u32{OURS_VDSO_MAGIC});
+            return Status::BadType;
+        }
+        if (table.version != OURS_VDSO_VERSION) {
+            log::error("userboot: vDSO ABI version {} does not match the kernel's {}",
+                       table.version, u16{OURS_VDSO_VERSION});
+            return Status::Unsupported;
+        }
+
+        log::info("userboot: vdso mapped [{:X}, {:X}), table at {:X}, {} entries", out.base,
+                  out.base + out.span, out.entry, table.nr_entries);
         return Status::Ok;
     }
 } // namespace
@@ -368,12 +475,34 @@ auto userboot_init() -> void {
     }
 
     LoadedImage loaded;
-    if (Status::Ok != load_image(image.unwrap(), *root_vma.dispatcher(), loaded)) {
+    if (Status::Ok != load_userboot(image.unwrap(), *root_vma.dispatcher(), loaded)) {
         return;
     }
 
     log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}, stack {:X}",
               USER_ASPACE_BASE, USER_ASPACE_BASE + loaded.span, loaded.entry, loaded.stack_top);
+
+    // The vDSO, mapped into the same address space. It is what the program
+    // enters the kernel through, and after the next commit it is the only
+    // thing that can: the syscall path refuses a trap whose return address
+    // lies outside the range recorded below.
+    auto const vdso_bytes = package.unwrap().file(VDSO_FILE);
+    if (vdso_bytes.is_err()) {
+        log::error("userboot: '{}' is not in the kernel package: {}", VDSO_FILE,
+                   to_string(vdso_bytes.unwrap_err()));
+        return;
+    }
+
+    MappedImage vdso;
+    if (Status::Ok != load_vdso(vdso_bytes.unwrap(), *root_vma.dispatcher(), vdso)) {
+        return;
+    }
+
+    // Recorded on the process, not in a global: the range is a property of one
+    // address space, and the syscall path reaches it through the thread that
+    // trapped. One process today, but a global would be a lie the moment there
+    // are two, and it would be found the hard way.
+    process.dispatcher()->set_vdso_code_range(vdso.base, vdso.span);
 
     // The thread comes from the object layer too, which is what retires the
     // last three lines this function used to end with: task::Thread::spawn(),
@@ -391,10 +520,15 @@ auto userboot_init() -> void {
     // start(), not resume(): where a kernel thread only needs to be made
     // runnable, a user thread has to be told where in user space to begin.
     // This is the same argument list a future sys_thread_start carries.
+    // arg1 is the vDSO's export table, which is the only thing the program is
+    // told about the world it wakes up in. It lands in %rdi
+    // (arch_build_uspace_irqframe), so `_start` simply takes it as its first
+    // parameter -- no dynamic linker, no symbol lookup, no fixed address baked
+    // into the binary.
     status = thread.dispatcher()->start({
         .entry = loaded.entry,
         .stack = loaded.stack_top,
-        .arg1 = 0,
+        .arg1 = vdso.entry,
         .arg2 = 0,
     });
     if (Status::Ok != status) {

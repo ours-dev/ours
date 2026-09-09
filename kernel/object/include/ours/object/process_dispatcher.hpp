@@ -47,6 +47,35 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     auto detach_thread(ThreadDispatcher &thread) -> Status;
 
+    /// Records where this process's vDSO landed.
+    ///
+    /// The syscall path refuses a trap whose return address is outside this
+    /// range, which is what makes "syscalls only through the vDSO" a property
+    /// the kernel enforces rather than a convention programs are asked to
+    /// follow. Set once, while the process is still being built and before any
+    /// thread of it has run.
+    ///
+    /// Zircon counterpart: VmAspace::vdso_code_mapping_, consulted by
+    /// VDso::ValidSyscallPC on the same path.
+    auto set_vdso_code_range(VirtAddr base, usize size) -> void {
+        DEBUG_ASSERT(m_state == State::Initial, "the vDSO range is fixed before the process runs");
+        m_vdso_code_base = base;
+        m_vdso_code_size = size;
+    }
+
+    /// Whether |pc| is an address inside this process's vDSO.
+    ///
+    /// A process with no vDSO answers false for every address, which is the
+    /// safe direction: it can make no system call at all rather than any.
+    ///
+    /// The subtraction form answers both ends at once and cannot wrap, the
+    /// same shape ours::mm::is_kernel_address() uses.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto vdso_contains(VirtAddr pc) const -> bool {
+        return pc - m_vdso_code_base < m_vdso_code_size;
+    }
+
     /// The address space every thread of this process runs in.
     ///
     /// A raw pointer out of an owning Arc, because the callers are the fault
@@ -91,6 +120,11 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// only Arc on create()'s stack and free the aspace on return. Zircon's
     /// ProcessDispatcher holds it the same way, as fbl::RefPtr<VmAspace>.
     ustl::Arc<mm::VmAspace> m_aspace;
+
+    /// Where this process's vDSO is mapped. Zero until set_vdso_code_range(),
+    /// and a zero size is what makes vdso_contains() refuse everything.
+    VirtAddr m_vdso_code_base;
+    usize m_vdso_code_size;
 
     /// All sub-process forked from this process.
     ustl::collections::intrusive::ListMemberHook<> m_sibling_hook;

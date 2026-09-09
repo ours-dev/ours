@@ -31,7 +31,9 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
     , m_state(State::Initial)
     , m_name(name)
     , m_job(ustl::move(job))
-    , m_aspace(ustl::move(aspace)) {}
+    , m_aspace(ustl::move(aspace))
+    , m_vdso_code_base(0)
+    , m_vdso_code_size(0) {}
 
 auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const name,
                                KernelHandle<Self> &process_out, Rights &process_rights,

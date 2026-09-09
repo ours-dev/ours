@@ -37,7 +37,6 @@ OURS_VDSO_TABLE:
     .short OURS_VDSO_VERSION
     .short OURS_VDSO_NR_ENTRIES
     .long ours_vdso_debug_write - OURS_VDSO_TABLE
-    .long 0  // padding to OURS_VDSO_TABLE_SIZE; the C++ struct is 16 bytes
 .size OURS_VDSO_TABLE, . - OURS_VDSO_TABLE
 
 // ---- The stubs -------------------------------------------------------------

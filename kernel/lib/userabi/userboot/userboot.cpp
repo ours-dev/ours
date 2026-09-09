@@ -14,7 +14,7 @@
 /// the kernel jumps straight to the ELF entry point with a stack and
 /// nothing else, so `_start` is the whole runtime.
 
-#include <ours/syscall.hpp>
+#include <ours/vdso.hpp>
 
 namespace {
 /// The one thing this program has to say.
@@ -27,39 +27,55 @@ namespace {
 /// would therefore be read as-is and point nowhere.
 constexpr char MESSAGE[] = "userboot: hello from ring 3";
 
-/// The system-call ABI, written out.
+/// The vDSO's export table, as this program sees it.
 ///
-/// %rax carries the number in and the ours::Status out; %rdi and %rsi are the
-/// first two arguments, exactly as the ordinary x86-64 SysV convention would
-/// pass them -- which is the point of choosing that register order for the
-/// ABI, since it makes this stub nothing more than a `syscall` instruction.
+/// There is no `syscall` instruction anywhere in this image, and that is the
+/// point rather than an accident of style: the kernel refuses a trap whose
+/// return address lies outside the vDSO, so one written here would not work
+/// even if it were written correctly. Entering the kernel is the vDSO's job.
+using DebugWriteFn = auto (*)(char const *buffer, usize length) -> usize;
+
+/// Resolves one entry of the table into something callable.
 ///
-/// The clobber list is not boilerplate. SYSCALL destroys %rcx (it puts the
-/// return address there) and %r11 (RFLAGS), so both have to be named or the
-/// compiler will keep live values in them across this. "memory" is here
-/// because the kernel reads the buffer: without it, a store into MESSAGE
-/// could legally be sunk past the call.
-[[nodiscard]]
-auto syscall2(usize const number, usize const arg0, usize const arg1) -> usize {
-    usize result;
-    __asm__ volatile("syscall"
-                     : "=a"(result)
-                     : "a"(number), "D"(arg0), "S"(arg1)
-                     : "rcx", "r11", "memory");
-    return result;
+/// Every entry is a byte offset from the table itself, because nothing
+/// relocates the vDSO -- see <ours/vdso.hpp>. Adding the base back here is the
+/// whole of the "dynamic linking" this program does.
+template <typename Fn>
+auto vdso_entry(ours::VdsoEntryTable const *const table, u32 const offset) -> Fn {
+    // The const is dropped on purpose: the table is read-only data, but what
+    // it points at is code, and a pointer-to-function cannot carry it.
+    auto const address = reinterpret_cast<usize>(table) + offset;
+    return reinterpret_cast<Fn>(address);
 }
 } // namespace
 
-/// `extern "C"`, because ld.lld resolves the default entry point by the
-/// symbol name `_start` and a mangled name would not answer to it. The
-/// image is linked -fvisibility=hidden all the same: the entry is reached
-/// through the ELF header's e_entry, never through a dynamic symbol.
+/// `extern "C"`, because ld.lld resolves the default entry point by the symbol
+/// name `_start` and a mangled name would not answer to it. The image is
+/// linked -fvisibility=hidden all the same: the entry is reached through the
+/// ELF header's e_entry, never through a dynamic symbol.
+///
+/// The parameter is not decoration. The kernel puts the vDSO's export table
+/// address in the first start argument, which arch_build_uspace_irqframe()
+/// places in %rdi -- exactly where the ordinary SysV convention says a first
+/// parameter lives, so declaring it is all it takes to receive it.
 extern "C" [[noreturn]]
-auto _start() -> void {
+auto _start(ours::VdsoEntryTable const *const vdso) -> void {
+    // Checked before it is called through. A table this program cannot
+    // recognise would otherwise be an indirect call to whatever happens to be
+    // at that address, in ring 3, with no way left to say so -- the only
+    // output this program has is the very entry it is trying to reach.
+    if (vdso == nullptr || vdso->magic != OURS_VDSO_MAGIC || vdso->version != OURS_VDSO_VERSION ||
+        vdso->nr_entries < OURS_VDSO_NR_ENTRIES) {
+        for (;;) {
+            __asm__ volatile("pause");
+        }
+    }
+
+    auto const debug_write = vdso_entry<DebugWriteFn>(vdso, vdso->debug_write);
+
     // sizeof - 1, because the kernel is given a length and does not look for a
     // terminator; sending the NUL would put a stray byte on the console.
-    static_cast<void>(
-        syscall2(OURS_SYS_DEBUG_WRITE, reinterpret_cast<usize>(MESSAGE), sizeof(MESSAGE) - 1));
+    static_cast<void>(debug_write(MESSAGE, sizeof(MESSAGE) - 1));
 
     // One call, and then nothing. Coming back here at all is the second half
     // of what this program tests: it means SYSRET restored the user %rip and
