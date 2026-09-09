@@ -719,6 +719,18 @@ auto init_local_apic_percpu() -> void {
     // Enable X[2]-APIC
     MsrIo::write<usize>(MsrRegAddr::IA32ApicBase, apic_base);
 
+    // Enabling the APIC through IA32_APIC_BASE above is only half of it: that
+    // bit is the *hardware* enable, and the local APIC still delivers nothing
+    // until SVR bit 8, the software enable, is set. A CPU leaves INIT/SIPI
+    // with SVR = 0xFF -- software-disabled -- so every AP came up deaf: the
+    // reschedule IPI that x86_bring_aps() and the scheduler send was accepted
+    // by nothing and the CPU stayed in `sti; hlt` forever with a runnable
+    // thread on its queue. The boot CPU only worked by luck, because the
+    // firmware had already enabled its APIC (SVR = 0x10F) before the kernel
+    // ran; this also replaces the spurious vector the firmware chose (0x0F)
+    // with the one this kernel actually has a handler for.
+    XAPIC_STORAGE.enable(IrqVec::ApicSpurious);
+
     // Save ID of this local APIC
     CpuLocal::write(APIC_ID, XAPIC_STORAGE.id());
 

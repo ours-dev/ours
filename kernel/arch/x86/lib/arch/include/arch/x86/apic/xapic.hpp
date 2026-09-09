@@ -83,6 +83,29 @@ class XApic final {
         return (read_reg(XApicRegType::LvtTimer) & TIMER_MODE_MASK) == (u32{2} << 17);
     }
 
+    /// Programs the spurious-interrupt vector register: the vector on which a
+    /// spurious interrupt is reported, and bit 8, which is the local APIC's
+    /// *software enable*.
+    ///
+    /// Bit 8 is not a detail. An x86 core comes out of reset -- and out of
+    /// INIT/SIPI -- with SVR = 0x0000'00FF, software-disabled, and a
+    /// software-disabled local APIC delivers nothing at all: no IPI, no LVT,
+    /// no timer. Only the boot CPU escapes this by accident, because the
+    /// firmware enables its APIC before handing over (QEMU's OVMF leaves
+    /// SVR = 0x10F on the BSP and 0xFF on every AP, which is exactly what the
+    /// boot log showed).
+    ///
+    /// Linux writes the same word in setup_local_APIC(),
+    /// `APIC_SPIV_APIC_ENABLED | SPURIOUS_APIC_VECTOR`, on every CPU
+    /// including the boot one.
+    auto enable(IrqVec spurious_vector) noexcept -> void {
+        auto value = read_reg(XApicRegType::SpuriousVector);
+        value &= ~VECTOR_MASK;
+        value |= static_cast<u32>(spurious_vector) & VECTOR_MASK;
+        value |= SOFTWARE_ENABLE;
+        write_reg(XApicRegType::SpuriousVector, value);
+    }
+
     auto issue_eoi() noexcept -> void {
         write_reg(XApicRegType::Eoi, 0);
     }
@@ -147,6 +170,9 @@ class XApic final {
     static constexpr auto VECTOR_MASK = u32{0xFF};
     static constexpr auto INTERRUPT_MASK = u32{1} << 16;
     static constexpr auto TIMER_MODE_MASK = u32{3} << 17;
+
+    /// SVR bit 8: the local APIC's software enable. Clear after reset.
+    static constexpr auto SOFTWARE_ENABLE = u32{1} << 8;
 
     volatile u32 *mmio_base_{};
 };
