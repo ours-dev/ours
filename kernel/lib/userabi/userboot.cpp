@@ -7,6 +7,7 @@
 /// This is being written a step at a time, and each step is committed only
 /// once it has been seen to work in QEMU. Right now it does step one: locate
 /// userboot's ELF inside the kernel package. Nothing is created yet.
+#include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
@@ -42,27 +43,20 @@ namespace {
     /// kernel's own name; it has to be stated.
     constexpr std::string_view USERBOOT_FILE{"userboot"};
 
-    /// The decompressed kernel package, and the pages holding it.
+    /// Decompresses the kernel package into a fresh buffer.
     ///
-    /// This is deliberately not a `ktl::Vec<u8>`. ktl's allocator is
-    /// kmalloc, whose largest size class is 4 KiB, and an oversized request
-    /// there answers nullptr rather than falling back to pages; Vec then
-    /// constructs elements at that nullptr and page-faults inside reserve().
-    /// The decompressed BootFS is megabytes -- it carries the whole kernel
-    /// ELF -- so it has to come from the frame allocator and be read through
-    /// the physmap. //kernel/commands/prof.cpp hit exactly this and its
-    /// FdeTable carries the same note.
-    struct Package {
-        u8 *base = nullptr;
-        usize nr_frames = 0;
-    };
-
-    /// Decompresses the kernel package into freshly allocated frames.
+    /// |out| receives that buffer and the caller owns it. It is deliberately
+    /// never freed: the bytes of every file in the package -- userboot's ELF
+    /// among them -- are views *into* it, so releasing it would dangle every
+    /// one of them, and it is wanted for as long as the kernel package is.
     ///
-    /// The caller owns the frames. They are not freed here because the
-    /// bytes of every file in the package -- userboot's ELF among them --
-    /// are views *into* this buffer: dropping it would dangle them.
-    auto materialize_kernel_package(Package &out) -> ustl::Result<phys::KernelPackage, Status> {
+    /// The buffer used to come straight from the frame allocator, because the
+    /// decompressed BootFS is megabytes and `operator new` answered nullptr
+    /// past the 4 KiB size class. It routes to vmalloc now
+    /// (docs/changes/260908/heap.md), so this is an ordinary allocation --
+    /// and one that asks for the exact byte count rather than a run of frames
+    /// rounded up to a power of two.
+    auto materialize_kernel_package(u8 *&out) -> ustl::Result<phys::KernelPackage, Status> {
         // The size has to be known before the buffer can exist, and only the
         // OBI item header knows it: `memory_size` is the *decompressed*
         // length, as against the compressed length stored in the container.
@@ -83,21 +77,16 @@ namespace {
 
         auto const bytes = static_cast<usize>(item.unwrap().memory_size());
 
-        // The frame allocator deals in whole pages and, through get_order(),
-        // in power-of-two runs of them, so round up rather than asking for a
-        // byte count it cannot express.
-        out.nr_frames = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-        out.base = mm::get_frames_n<u8>(mm::GAF_KERNEL, out.nr_frames);
-        if (!out.base) {
-            log::error("userboot: could not allocate {} frames for the kernel package",
-                       out.nr_frames);
+        out = new (mm::GAF_KERNEL) u8[bytes];
+        if (!out) {
+            log::error("userboot: could not allocate {} bytes for the kernel package", bytes);
             return ustl::err(Status::OutOfMem);
         }
 
         // Hands back a view over the decompressed BootFS. Everything the
         // package reports -- names, sizes, file bytes -- points into the
-        // frames just allocated.
-        auto result = boot::kernel_package({out.base, bytes});
+        // buffer just allocated.
+        auto result = boot::kernel_package({out, bytes});
         if (result.is_err()) {
             log::error("userboot: could not materialize the kernel package: {}",
                        to_string(result.unwrap_err()));
@@ -329,8 +318,8 @@ namespace {
 } // namespace
 
 auto userboot_init() -> void {
-    Package package_frames;
-    auto const package = materialize_kernel_package(package_frames);
+    u8 *package_buffer = nullptr;
+    auto const package = materialize_kernel_package(package_buffer);
     if (package.is_err()) {
         return;
     }
