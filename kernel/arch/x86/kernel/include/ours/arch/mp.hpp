@@ -9,6 +9,10 @@
 #include <ustl/views/span.hpp>
 
 namespace ours {
+namespace task {
+    class Thread;
+} // namespace task
+
 auto arch_mp_send_ipi(CpuNum cpu, IpiEvent event) -> void;
 
 auto arch_mp_send_ipi_mask(CpuMask const &target, IpiEvent event) -> void;
@@ -22,7 +26,7 @@ auto arch_mp_suspend(CpuMask) -> void;
 auto x86_bring_aps(CpuMask) -> void;
 
 extern "C" [[noreturn]] INIT_CODE USED
-auto x86_start_nonboot_cpu(CpuNum cpunum) -> void;
+auto x86_start_nonboot_cpu(CpuNum cpunum, task::Thread *thread) -> void;
 
 } // namespace ours
 

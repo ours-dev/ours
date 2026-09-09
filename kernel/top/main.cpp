@@ -1,4 +1,5 @@
 #include <ours/boot/handoff.hpp>
+#include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -174,8 +175,45 @@ auto start_kernel(PhysAddr handoff) -> void {
     Thread::Current::become_idle();
 }
 
+/// The tail of an application CPU's bring-up, reached from the arch entry --
+/// on x86, x86_start_nonboot_cpu() -- once that CPU is running on its own
+/// per-CPU area, GDT, IDT, TSS and local APIC. This is Linux's
+/// start_secondary(), and it ends the same way: publish the CPU, then fall
+/// into the idle loop the first reschedule preempts.
+///
+/// Everything that another CPU could have prepared already has been. The boot
+/// CPU built this CPU's Scheduler and idle thread in task::init(), and its
+/// TimerQueue in time::init(), both walking cpu_possible_mask() -- because a
+/// sleep or a wait-queue timeout started on the boot CPU may name a CPU that
+/// has not booted yet, and a queue that still says INVALID_CPU_NUM cannot
+/// tell whose tick device to program. What is left here is only what this CPU
+/// must do for itself.
 extern "C" [[noreturn]]
 auto start_nonboot_cpu() -> void {
+    // The two lines task::init() ends with, which it can only ever run for
+    // the boot CPU: both reach through Scheduler::Current and
+    // Thread::Current, so they land on whichever CPU executes them.
+    //
+    // Without set_active() this CPU stays out of the scheduler's Active mask,
+    // and select_target_cpu() consults that mask first -- so an AP that came
+    // up perfectly would still never be handed a thread, which is exactly how
+    // the kernel behaved: three CPUs online and every thread on CPU 0.
+    //
+    // The preemption disable is the matching half of the enable_preemption()
+    // at the end of become_idle(). enable_preemption() is an unconditional
+    // decrement, so an idler reaching it without a disable outstanding wraps
+    // the counter to its maximum and is never preemptible again -- the CPU
+    // would spin in its idle loop with runnable threads queued on it.
+    task::Scheduler::Current::set_active(true);
+    Thread::Current::preemption_state().disable_preemption();
+
+    // Published last, and deliberately: `Online` is what x86_bring_aps()
+    // spins on before it starts the next CPU and reuses the single trampoline
+    // data page, and what Scheduler::select_target_cpu() falls back to when
+    // no scheduler is Active anywhere. Setting it any earlier would advertise
+    // a CPU that cannot yet take a thread.
+    Cpu::set_state(Cpu::State::Online);
+    log::info("CPU[{}] is online", Cpu::id());
 
     Thread::Current::become_idle();
 }

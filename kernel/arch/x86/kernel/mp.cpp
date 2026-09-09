@@ -82,19 +82,30 @@ auto arch_deactivate_cpu(CpuNum) -> Status {
     return Status::Unimplemented;
 }
 
-/// Called once in kernel/arch/x86/entry/bootstrap16.S
+/// The far entry of the 16-bit trampoline; see kernel/arch/x86/kernel/bootstrap16.S,
+/// which is what fills in the two arguments.
+///
+/// |thread| is the idle thread task::init() built for this CPU. It is not
+/// needed to run -- init_percpu() below makes Thread::Current::get() answer
+/// with it -- but it is the one value the trampoline and the per-CPU area
+/// derive independently, so comparing them is a direct check that this CPU
+/// landed on the unit it was meant to.
 extern "C" [[noreturn]] INIT_CODE USED
-auto x86_start_nonboot_cpu(CpuNum cpunum) -> void {
+auto x86_start_nonboot_cpu(CpuNum cpunum, task::Thread *thread) -> void {
     DEBUG_ASSERT(cpunum != INVALID_CPU_NUM);
 
     mm::CpuLocal::init_percpu(cpunum);
-
-    Cpu::set_state(Cpu::State::Online);
+    DEBUG_ASSERT(task::Thread::Current::get() == thread,
+                 "CPU[{}] attached to the wrong per-CPU unit", cpunum);
 
     init_local_apic_percpu();
 
     x86_init_percpu(cpunum);
 
+    // Cpu::State::Online is published by start_nonboot_cpu(), not here: it is
+    // what x86_bring_aps() spins on before starting the next CPU, so it has
+    // to mean "ready for a thread", which is a fact about the generic half of
+    // the bring-up rather than the arch half.
     start_nonboot_cpu();
 }
 

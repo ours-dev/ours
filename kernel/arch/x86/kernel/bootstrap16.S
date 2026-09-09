@@ -86,30 +86,51 @@
     mov %eax, %gs
     mov %eax, %ss
 
-    // Let %rsi=cpunum
-    xor %rsi, %rsi
-    movl X86_BOOTSTRAP_OFFSET_CPUNUM(%rbx), %esi
+    // The far entry is x86_start_nonboot_cpu(CpuNum cpunum, Thread *thread),
+    // so the System V argument registers have to be filled in that order:
+    // %rdi is the CPU number and %rsi the thread. They were assigned the
+    // other way round -- %rsi the number, %rdi the thread -- which handed
+    // CpuLocal::init_percpu() the low 32 bits of a kernel pointer as a CPU
+    // number and stopped the first AP on its `cpu < MAX_CPU` assertion.
+    //
+    // `movl` into %edi is enough: a 32-bit destination is zero-extended to
+    // the full register in 64-bit mode, so no `xor` is needed first.
+    movl X86_BOOTSTRAP_OFFSET_CPUNUM(%rbx), %edi
 
-    // Stack top: %rsi + X86_BOOTSTRAP_OFFSET_PERCPU + 8*2n;
-    // Thread pointer: %rsi + X86_BOOTSTRAP_OFFSET_PERCPU + 8*(2n + 1);
-
-    // Rectifies the index.
-    mov %rsi, %rax
-    dec %rax
+    // percpu[] holds a (stack top, thread) pair per application CPU, indexed
+    // by cpunum - 1: the boot CPU never comes through the trampoline, so the
+    // first pair belongs to CPU 1.
+    lea -1(%rdi), %rax
     shl $1, %rax
 .label __debug_symbol0, global 
     // Let %rsp point to kernel stack of current thread.
     mov X86_BOOTSTRAP_OFFSET_PERCPU(%rbx, %rax, 8), %rsp
 
 .label __debug_symbol1, global 
-    add $1, %rax
 .label __debug_symbol2, global
-    // Let %rdi point to current thread
-    mov X86_BOOTSTRAP_OFFSET_PERCPU(%rbx, %rax, 8), %rdi
+    // Let %rsi point to current thread
+    mov X86_BOOTSTRAP_OFFSET_PERCPU + 8(%rbx, %rax, 8), %rsi
 
 .label __debug_symbol3, global
-.label __debug_symbol4, global
+    // Two things the callee is entitled to assume and that a bare `jmp` into
+    // it would not give:
     //
+    //   - A terminated frame-pointer chain. %rbp is whatever the firmware
+    //     left behind, so an unwinder walking out of the idle loop would
+    //     follow it into nothing.
+    //   - The stack alignment the SysV ABI states: %rsp is 16-byte aligned
+    //     at a `call`, hence %rsp % 16 == 8 once the return address is on
+    //     the stack, and that is the offset the callee's prologue is
+    //     compiled against. A stack top is page aligned, so jumping straight
+    //     in would leave %rsp % 16 == 0 and every 16-byte spill the compiler
+    //     emits (`movaps`) would #GP.
+    //
+    // Pushing a null return address fixes both at once and is what `call`
+    // would have done anyway; the callee is [[noreturn]], so it is never
+    // popped. Linux does the same in secondary_startup_64.
+    xor %ebp, %ebp
+    pushq $0
+.label __debug_symbol4, global
     jmp *X86_BOOTSTRAP_OFFSET_LONGMODE_VIRT_ENTRY(%rbx)
 0:
     hlt
