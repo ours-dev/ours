@@ -12,6 +12,7 @@
 #include <ours/mm/vm_page.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/panic.hpp>
+#include <heap/vmalloc.hpp>
 #include <ours/status.hpp>
 #include <ustl/lazy_init.hpp>
 #include <ustl/limits.hpp>
@@ -199,7 +200,9 @@ namespace {
     /// before the address space it carves from. init_vmm_preheap() above is
     /// named for being the part that runs before *this*.
     INIT_CODE
-    auto init_heap() -> void {}
+    auto init_heap() -> void {
+        heap::init_vmalloc();
+    }
 } // namespace
 
 /// Requires:

@@ -73,3 +73,91 @@ include 行**。
   nullptr。路由是 vmalloc 本体到位之后的事。
 - **`ktl::init_memory_resource()` 留在 ktl**。它是 ustl 容器的默认资源，属于 C++ 胶水，
   不是分配器；它调 `heap::kmalloc` 是正常的客户关系。
+
+## vmalloc 本体：地址簿记接上物理页与页表（2026-09-08）
+
+**文件**
+- `kernel/lib/heap/include/heap/vmalloc.hpp` / `vmalloc.cpp` — 新增
+- `kernel/lib/heap/BUILD.gn` — 登记
+- `kernel/mm/init_vmm.cpp` — 空了很久的 `init_heap()` 终于有了内容
+
+**症状**
+无，新增。`init_heap()` 的注释从一开始就写着它在等什么：
+"the VMM's own allocator: virtually contiguous, physically scattered"。
+
+**原因与几处取舍**
+
+**为什么不建在 VmObjectPaged 上。** 这是整个形状的决定性事实：`~VmCowPages` 是
+`= default`，`VmPageMap` 没有释放页的析构，`decommit()` 返回 `Unimplemented`
+（`vm_cow_pages.cpp:12`、`vm_object_paged.cpp:82`）。**VMO 死时它的页从不归还 PMM。**
+建在上面的 vmalloc，`vfree` 只能拆 PTE 而漏光所有页——一个"能分配不能释放"的分配器比
+没有更糟。所以它自持页：`alloc_frames` 拿散页，`ArchVmAspace::map` 装页表，
+`free_frames` 还回去。`CpuLocal::Mapper::build_dense`（`cpu_local.cpp:334`）是树里同款
+配方。
+
+**为什么不记录物理页。** 每个活区间只记 `{base, nr_pages}`。物理页已经写在页表里了，
+拆的时候用 `query()` 读回来，每页一次页表走查——换来的是不必为每个区间找地方存一份帧
+列表，也不必维护"第二份真相"。Linux 之所以要 `struct vm_struct::pages`，是因为它的
+unmap 是批量延迟的，页归还时页表早没了；这里的拆解是同步的，还读得到。
+
+**拆解的顺序是反着 Linux 的，而且必须反。**
+
+```cpp
+for (每一页) {
+    query(va, &pa);                  // 先读出帧
+    unmap(va, 1);                    // 再断开翻译（含 invlpg）
+    free_frames(phys_to_frame(pa));  // 最后才归还
+}
+```
+
+Linux 是先还页、TLB 刷新推迟到 `__purge_vmap_area_lazy()`；它敢这样是因为 lazy purge
+在刷新完成前一直扣着那段地址不放。这里没有这个兜底，所以一个在翻译失效之前就被归还的
+帧，可能在别人手里的同时还能被陈旧 TLB 表项摸到。逐页做，等于每个帧只在**它自己的**
+TLB 表项消失之后才被归还。
+
+**guard page。** 每次多要一页地址、不映射它，越界立刻 #PF 而不是走进邻居。Linux 默认
+如此（`VM_NO_GUARD` 是例外）。注意它**只计入地址预留**：映射和释放走的都是 `nr_pages`。
+这正是 Linux 区分 `vm_struct::size` 与 `get_vm_area_size()` 的那条缝，两边写反就会多映射
+或多释放一页。
+
+**锁用 Mutex 不用 SpinLock。** 锁内的每一件事都可能阻塞：`alloc_frames` 要取当前线程的
+resource lock 并可能走进 reclaim，页表走查要分配表页。用 Mutex 让"vmalloc 不可在中断
+上下文调用"成为**设计的性质**，而不是一句注释里的警告。
+
+**`READY` 标志不是防御性编程**：`operator new` 将来按大小路由到这里，而内核在
+`init_vmm()` 之前就在分配（`SparseMemMap` 在 `InitLevel::Pmm` 就 `new` 数组）。太早调用
+的人拿到的是和窗口耗尽一样的 nullptr——那条失败路径他本来就有。
+
+**失败路径**逐个回滚：VA 拿不到→无副作用；帧拿不到→退 VA；映射到一半失败→归还刚弹出
+的那个帧、归还链表里剩下的、把已装的页交给和 `vfree` 同一个拆解函数、再退 VA。
+`map()` 逐页做而不是 `map_bulk`，是因为帧是以链表形式来的，批量就得先有个物理地址数组
+放它们——而"不需要额外存储"正是这套设计的立足点。
+
+**一个容易踩的细节**：帧必须从链表里**弹出**再用，不能遍历完就丢掉链表头。
+`PmFrame` 的钩子是 auto-unlink 的，链表头析构时仍挂在上面的节点会指向一个已死的头。
+
+**参照**
+- `Linux __vmalloc_node_range()` / `vfree()` / `is_vmalloc_addr()` / `struct vm_struct`。
+- 本树 `CpuLocal::Mapper::build_dense()`：预留窗口 + 自持帧 + arch map 的既有配方。
+
+**验证**
+`ninja` 通过；`clang-tidy` 只剩文件作用域静态量的 SCREAMING 命名告警（与
+`KERNEL_ASPACE`、`SYSCALL_TABLE` 等既有写法一致）。QEMU 实测 `kernel.dev.dbg_1.obi`，
+`init_heap()` 现在打出：
+
+```
+vmalloc: window [FFFFFF9000000000, FFFFFF9100000000), 1048576 pages
+```
+
+userboot 照常 `hello from ring 3`，900 次用户态时钟中断，无回归。
+
+**这一步还没有真正分配过任何东西**——没有调用者。下一条改动加启动期自检，那才是第一次
+执行 `vmalloc()`/`vfree()`。
+
+**故意没做**
+- **`operator new` 的路由**。等自检证明 vmalloc 自己是对的之后再接。
+- **多核 TLB shootdown**。`unmap` 只做本地 `invlpg`，交回 arch（见
+  `docs/repairs/260908/x86.md` 之外另记）。
+- **`vzalloc`**。调用方传 `Gaf::Zero` 即可，不另开入口。
+- **`vmap()`（映射调用方给的页）**、大页、per-cpu 缓存、lazy purge：Linux 有，这里都不
+  需要，`.agents/tasks/vmalloc/DESIGN.md` 里逐条列了哪些是必需哪些是优化。

@@ -19,6 +19,7 @@ cpp_interface("headers") {
   public = [
     "include/heap/kmalloc.hpp",
     "include/heap/new.hpp",
+    "include/heap/vmalloc.hpp",
     "include/heap/vmalloc_arena.hpp",
   ]
   # The mm headers arrive as an include-path config, not as a target dep, and
@@ -38,6 +39,7 @@ source_set("heap") {
   sources = [
     "kmalloc.cpp",
     "new.cpp",
+    "vmalloc.cpp",
     "vmalloc_arena.cpp",
   ]
   public_deps = [ ":headers" ]
