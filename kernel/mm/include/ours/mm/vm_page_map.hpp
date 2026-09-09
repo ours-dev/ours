@@ -85,6 +85,30 @@ class VmPageMap {
         return Status::Ok;
     }
 
+    /// Hands every page this map *owns* to |visitor| and then empties the map.
+    ///
+    /// Owned only: a Borrowed slot is a page on loan from elsewhere, and its
+    /// lender is the one that frees it. Emptying regardless is deliberate --
+    /// after this the map describes nothing, which is the only honest state
+    /// for a store whose pages have been given away.
+    ///
+    /// The visitor takes the page rather than this class calling the allocator
+    /// itself, so that this header stays a container and does not have to
+    /// include the page allocator to describe how a map is torn down.
+    ///
+    /// Zircon counterpart: VmPageList::RemoveAllPages(), which likewise hands
+    /// each page to a callback and leaves the list empty.
+    template <typename Visitor>
+    auto drain_owned(Visitor &&visitor) -> void {
+        for (auto &entry: m_slots) {
+            auto const slot = entry.second;
+            if (slot_tag(slot) == Tag::Owned) {
+                visitor(slot_page(slot));
+            }
+        }
+        m_slots.clear();
+    }
+
   private:
     /// A slot is the page pointer with its Tag folded into the low bits.
     using Slot = usize;
@@ -102,6 +126,11 @@ class VmPageMap {
     FORCE_INLINE
     static auto slot_page(Slot slot) -> VmPage * {
         return reinterpret_cast<VmPage *>(slot & ~TAG_MASK);
+    }
+
+    FORCE_INLINE
+    static auto slot_tag(Slot slot) -> Tag {
+        return static_cast<Tag>(slot & TAG_MASK);
     }
 
     ustl::collections::BTreeMap<PgOff, Slot> m_slots;

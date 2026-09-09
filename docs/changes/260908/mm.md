@@ -172,3 +172,75 @@ auto VmallocArena::allocate(usize const nr_pages) -> VirtAddr {
   `allocate()` 加一个 align 形参，而不是换容器。
 - **`lower_bound` 是线性扫描**。256 项一趟顺序扫描比会误预测的二分快，代码里写了这条
   理由和"界若涨一个数量级就回来改这里"。
+
+## `~VmCowPages` 不再把自己的页丢掉（2026-09-08）
+
+**文件**
+- `kernel/mm/vm_cow_pages.cpp` — 析构函数从 `= default` 变成真的归还
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` — 新增 `drain_owned()`
+
+**症状**
+潜伏至今，因为没有 VMO 被销毁过。**每一个 VMO 死亡时，它拥有的所有物理页都不归还
+PMM。**
+
+```cpp
+VmCowPages::~VmCowPages() = default;
+```
+
+`VmPageMap` 只释放它自己的树节点，`decommit()` 是 `Unimplemented`，整条 VMO 路径上唯一
+的 `free_frames` 是插入失败时那一次（`vm_cow_pages.cpp:95`）。
+`docs/repairs/260903/mm.md:18` 记过这一条。
+
+**原因**
+内核栈和 userboot 的镜像都是"建了就不销毁"，所以这个洞一直没被走到。但它挡住了任何
+建在 VMO 之上的分配器——`heap::vfree()` 会拆掉映射、放掉 VMO，然后什么也没发生。
+
+`VmPageMap` 没有遍历或删除接口，只有 `get_page`/`insert_page`；底层的 `BTreeMap` 有
+`begin()`/`end()`/`clear()`，所以缺的只是一个把它们接起来的口子。
+
+**改法**
+
+```cpp
+template <typename Visitor>
+auto drain_owned(Visitor &&visitor) -> void {
+    for (auto &entry: m_slots) {
+        auto const slot = entry.second;
+        if (slot_tag(slot) == Tag::Owned) {
+            visitor(slot_page(slot));
+        }
+    }
+    m_slots.clear();
+}
+```
+
+```cpp
+VmCowPages::~VmCowPages() {
+    m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
+}
+```
+
+**只归还 `Owned` 的**：`Borrowed` 槽位是从别处借来的页，归还是出借方的事。无论如何都
+清空整张表——页已经交出去了，一张还描述着它们的表是唯一不诚实的状态。
+
+访问器接收页而不是让 `VmPageMap` 自己调分配器，是为了让这个头文件保持"容器"的身份，
+不必为了描述如何拆解而 include 页分配器。
+
+**参照**
+`Zircon VmCowPages::~VmCowPages()`：同样调 `page_list_.RemoveAllPages()` 并成批释放；
+`VmPageList::RemoveAllPages()` 同样是把每页交给回调后清空。
+
+**验证**
+`ninja` 通过；QEMU 实测两个镜像无回归。
+
+直接证据来自把它临时改回 `= default` 的对照实验：让 `heap::vmalloc` 的自检 churn 半个
+GiB（8192 轮 × 64 页），修好的内核跑完；恢复泄漏之后，同样的循环跑到约 1975 轮（约
+494 MiB 已泄漏、512 MiB 的客机见底）时仍在继续，直到 QEMU 被杀。
+
+那次对照实验还顺带查出**另一件更要紧的事**：内存耗尽时 `alloc_frames` 不返回空指针而是
+空转（`alloc_frames_slowpath` 对 `GAF_KERNEL` 无限重试，而 reclaim/compact 是桩）。
+也就是说真正的 OOM 表现为挂死，而不是任何一处 `if (!p)` 走得到。已记入
+`docs/repairs/260908/heap.md` 第 3 条。
+
+**故意没做**
+- **`decommit()` 仍是 `Unimplemented`**。析构时归还和按范围归还是两件事，后者没有调用者。
+- **没有成批释放**。Zircon 攒一批再还；这里逐页调 `free_frames`。VMO 还小，先要正确。

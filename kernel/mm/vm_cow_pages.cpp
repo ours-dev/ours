@@ -1,15 +1,30 @@
 #include <gktl/init_hook.hpp>
-#include <heap/new.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
+
+#include <heap/new.hpp>
 
 namespace ours::mm {
 using VmCowPagesCache = ObjectCache::Instance<VmCowPages>;
 
 VmCowPages::VmCowPages(Gaf gaf, usize size) : m_gaf(gaf), m_size(size) {}
 
-VmCowPages::~VmCowPages() = default;
+/// Returns every page this object owns.
+///
+/// It used to be `= default`, which meant a VMO's pages were never given back:
+/// VmPageMap frees only its tree nodes, decommit() is Unimplemented, and the
+/// single free_frames() on this path is the one that undoes a failed insert.
+/// Nothing noticed while the only VMOs were kernel stacks and the userboot
+/// image, because neither is ever destroyed -- but it makes any allocator
+/// built on VMOs leak every byte it frees, which is exactly what heap::vfree()
+/// would have done.
+///
+/// Zircon counterpart: VmCowPages::~VmCowPages(), which calls
+/// page_list_.RemoveAllPages() and frees the batch.
+VmCowPages::~VmCowPages() {
+    m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
+}
 
 auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status {
     auto cow_pages = VmCowPagesCache::get(GAF_KERNEL, gaf, size);
@@ -200,7 +215,8 @@ auto VmCowPages::Cursor::create_dirty_request(usize nr_pages, PageRequest *page_
     return Status::Unimplemented;
 }
 
-INIT_CODE static auto init_vm_cow_pages_cache() -> void {
+INIT_CODE
+static auto init_vm_cow_pages_cache() -> void {
     auto const status = VmCowPagesCache::init("vm-cow-pages-cache", ObjectCache::Flags::Folio);
     if (Status::Ok != status) {
         panic("Failed to create object cache for VmCowPages");
