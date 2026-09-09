@@ -55,7 +55,19 @@ auto vlog(Logger &logger, Level level, String fmt, ustl::fmt::FormatArgs const &
 
 template <typename... Args>
 inline auto log(Level level, ustl::views::StringView fmt, Args &&...args) -> void {
-    return vlog_dispatch(get_global_logger(), level, fmt, ustl::fmt::make_format_args(args...));
+    // Each argument goes through decay_format_arg() and the lambda binds the
+    // results as lvalues, which is what make_format_args() requires -- the
+    // decay may hand back a prvalue string_view, and it has to outlive the
+    // argument store.
+    //
+    // Without the decay, a `char buf[N]` argument reaches the store as an
+    // array type and this libc++ formats it as nothing at all: `log::info("|{}|",
+    // name)` printed "||" for a name that was perfectly well formed. It fails
+    // silently, which makes it a bad thing for a logger to do -- the one line
+    // you added to find a bug is the line that lies to you.
+    return [&](auto &&...prepared) {
+        vlog_dispatch(get_global_logger(), level, fmt, ustl::fmt::make_format_args(prepared...));
+    }(ustl::fmt::decay_format_arg(ustl::forward<Args>(args))...);
 }
 
 // The Debug/Trace levels are compiled out unless the image was built with

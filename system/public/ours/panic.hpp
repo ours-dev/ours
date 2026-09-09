@@ -66,9 +66,16 @@ namespace detail {
     /// stopped, with the condition it had just failed on missing. A pointer or
     /// a string_view formats correctly, so decay the array to a string_view on
     /// the way in. Everything else is forwarded untouched.
+    ///
+    /// ustl::fmt::decay_format_arg() is the same function, and logz4 uses it
+    /// for the same reason. It is not shared with this file: panic.hpp lives
+    /// in system/public and is included by translation units that have no ustl
+    /// on their include path at all -- kernel/lib/ccrt/compiler/itanium.cpp
+    /// and kernel/lib/libc/libcxx_format_glue.cpp among them -- so a
+    /// dependency here would not build.
     template <typename T>
     FORCE_INLINE
-    constexpr auto as_format_arg(T &&value) -> decltype(auto) {
+    constexpr auto decay_format_arg(T &&value) -> decltype(auto) {
         using Bare = std::remove_cvref_t<T>;
         if constexpr (std::is_array_v<Bare> && std::is_same_v<std::remove_extent_t<Bare>, char>) {
             return std::string_view(value);
@@ -82,7 +89,7 @@ namespace detail {
     /// Renders one format string and its arguments onto the end of `sink`.
     ///
     /// The inner lambda is what gives make_format_args() the lvalues it
-    /// requires: as_format_arg() may hand back a prvalue string_view, and
+    /// requires: decay_format_arg() may hand back a prvalue string_view, and
     /// binding that to the lambda's own parameter keeps it alive for the
     /// whole formatting call.
     template <typename... Args>
@@ -90,7 +97,7 @@ namespace detail {
     auto render(PanicSink &sink, std::string_view fmt, Args &&...args) -> void {
         [&](auto &&...prepared) {
             std::vformat_to(PanicSink::Iterator{&sink}, fmt, std::make_format_args(prepared...));
-        }(as_format_arg(static_cast<Args &&>(args))...);
+        }(decay_format_arg(static_cast<Args &&>(args))...);
     }
 } // namespace detail
 
