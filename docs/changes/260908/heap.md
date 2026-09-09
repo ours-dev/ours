@@ -210,3 +210,104 @@ userboot 照常进入 ring 3（dbg_1 920 次用户态时钟中断），均以 si
 - **没有测窗口耗尽后的行为**。要占掉 4 GiB 地址空间才能到那一步，启动期不值得；
   arena 那一侧的宿主单测已经覆盖了"耗尽返回 0"。
 - **没有做成可反复运行的 kshell 命令**。等真有人怀疑它的时候再加。
+
+## `new` 成为 vmalloc 的接口：按大小分流，按地址归位（2026-09-08）
+
+**文件**
+- `kernel/lib/heap/include/heap/kmalloc.hpp` — size class 阶梯与 `KMALLOC_MAX_SIZE` 提为公开
+- `kernel/lib/heap/kmalloc.cpp` — 改用公开常量，不再自持一份
+- `kernel/lib/heap/include/heap/new.hpp` / `new.cpp` — 路由、`noexcept`、sized 重载
+- `kernel/lib/heap/vmalloc.cpp` — 自检补上端到端的路由用例
+- `docs/repairs/260903/ktl.md` — 两条待修项都被这次改动修掉，清空
+
+**症状**
+这是 owner 要的那件事本身："让内核侧的 new 成为 vmalloc 的接口"。改之前
+`operator new(size, Gaf)` 在 size > 4 KiB 时**直接返回空指针**
+（`kmalloc.cpp` 的 `if (size > MAX_MALLOC_SIZE) return nullptr;`，注释还写着
+"Now we do not support to allocate frames from kmalloc"）。于是每一处需要大块内存的地方
+都手写 `get_frames_n` + 手工 `free_frames`。
+
+**原因**
+
+**为什么路由长在 `new` 里，而不是新开一个放置标签。** 4 KiB 这条线是 **size class 阶梯的
+性质**，不是被分配对象的性质：阶梯一变，线就变。调用方不该知道它在哪，更不该在源码里
+把它固化成 `new (mm::VMALLOC, gaf)` 这种写法。Linux 的 `kvmalloc()` 是同一个判断。
+
+**为什么按地址而不是按尺寸归位。** 两个分配器返回的地址来自**不相交的区域**——kmalloc 的
+在 physmap 里，vmalloc 的在自己的窗口里——所以一次范围比较就能回答，两条指令。而尺寸
+这条路走不通：`operator delete(void*)` 根本拿不到尺寸；就算拿到 sized 版本的那个，它
+描述的是**对象**而不是**这次分配**。
+
+顺序也是有讲究的：窗口判断必须在前。`heap::kfree()` 靠 `virt_to_folio()` 经 physmap
+回查所属 cache，而在 `KERNEL_DEBUG_LEVEL=0` 的镜像里，喂给它一个非 physmap 地址**不会**
+触发断言——`PhysMap::virt_to_phys()` 返回 0，`phys_to_frame(0)` 拿到 0 号帧，它的 body
+被当成 `MemCache*` 读出来。那是未定义行为，不是一次断言。
+
+**`noexcept` 不是装饰。** `[expr.new]` 只有在**分配函数带非抛出异常规范**时，才允许
+new 表达式在分配返回空时跳过构造函数并求值为空指针。没有它，编译器可以假定分配永不
+返回空，于是 `new (gaf) T(...)` 会在地址 0 上跑 T 的构造函数，调用方的 `if (!p)` 永远
+轮不到——`docs/repairs/260903/ktl.md` 第 1 条记的就是这个，prof 的 FDE 索引曾因此把整个
+启动挂死。接上 vmalloc 之后 `new` 会在**新的场合**失败（窗口耗尽、调用过早、映射失败），
+所以这条必须同一轮修掉。它在启动自检里观察不到（需要为一个带构造函数的类型制造分配
+失败），所以用 `static_assert(noexcept(...))` 钉在 `new.cpp` 里。
+
+**sized / 数组重载必须一并覆盖。** clang 23 在 `-std=c++2c` 下预定义
+`__cpp_sized_deallocation`，而本树没有传 `-fno-sized-deallocation`——镜像里 46 个目标
+文件引用 `operator delete(void*, size_t)`。改之前它们绑到
+`libc/cpp_dependencies.cpp:29` 的**弱符号空实现**，也就是说漏了也没人知道。今天还没有
+活路径走它（`ustl::RefCounted` 和 `ustl::Box` 都走无尺寸版本），但"目前还没有"不是一条
+有人维护的性质。现在四个重载都在 `heap/new.cpp` 里有强定义并转发到同一个路由函数；
+链接后 `llvm-nm` 确认 `operator delete(void*, unsigned long)` 是强符号 `T`，且与
+`operator delete(void*)` 被 ICF 折叠到同一地址。
+
+**改法（节选）**
+
+```cpp
+auto allocate(usize const size, ours::mm::Gaf const gaf) noexcept -> void * {
+    if (size > heap::KMALLOC_MAX_SIZE) {
+        return heap::vmalloc(size, gaf);
+    }
+    return heap::kmalloc(size, gaf);
+}
+
+auto deallocate(void *const pointer) noexcept -> void {
+    if (pointer == nullptr) { return; }
+    if (heap::is_vmalloc_addr(pointer)) { return heap::vfree(pointer); }
+    return heap::kfree(pointer);
+}
+```
+
+阈值从 `kmalloc.cpp` 的文件内私有常量提到 `heap/kmalloc.hpp`，因为它**不再是私有的**；
+在 `new.cpp` 里重写一遍 4096 就是第二处定义，可以和第一处走散。
+
+**启动顺序**：内核在 `init_vmm()` 之前就在分配（`SparseMemMap` 在 `InitLevel::Pmm` 就
+`new` 数组）。这时 vmalloc 的窗口还没建，`READY` 是 false，超阈值请求拿到 nullptr——
+和改动之前 kmalloc 在同样尺寸下返回的完全一样，所以不是回归。
+
+**参照**
+- `Linux kvmalloc()` / `kvfree()`（`mm/slub.c`、`mm/util.c`）：同样一个入口按大小分流，
+  同样靠 `is_vmalloc_addr()` 归位。
+- `Linux kmalloc()` 超过 `KMALLOC_MAX_CACHE_SIZE` 转 `kmalloc_large()`：本树选了 vmalloc
+  而不是整页 buddy，因为大块请求要的是虚拟连续，而 buddy 会把 9 KiB 取整到 16 KiB。
+
+**验证**
+- `ninja` 通过；`static_assert` 保证了 `noexcept`。
+- `llvm-nm --defined-only --demangle` 确认四个 delete 重载都是强符号且指向同一个路由。
+- QEMU 实测**两个镜像**，自检扩到端到端：
+
+  ```
+  vmalloc: window [FFFFFF9000000000, FFFFFF9100000000), 1048576 pages
+  vmalloc: self test passed
+  ```
+
+  新增的用例：`new (GAF_KERNEL) u8[2 * KMALLOC_MAX_SIZE]` 必须落在窗口内、首尾都可写；
+  `new (GAF_KERNEL) u8[64]` 必须**不**落在窗口内；一个大到不可能的 `new` 必须返回
+  nullptr 而不是缺页；两者都经同一个 `delete[]` 归还之后，空闲页数回到分配前。
+  userboot 照常 `hello from ring 3`，无回归。
+
+**故意没做**
+- **过对齐类型的 `align_val_t` 重载**。没有触发者，且 `kmalloc()` 本身还不接受对齐
+  参数。记入 `docs/repairs/260908/heap.md` 第 1 条。
+- **`libc/cpp_dependencies.cpp` 的弱桩没有删**。vmours 里它们已被强符号覆盖；留着是为了
+  不链接 heap 的镜像（phys 侧）仍有兜底。
+- **调用点还没迁**。`prof.cpp` 与 `userboot.cpp` 的 `get_frames_n` 是接下来两步。

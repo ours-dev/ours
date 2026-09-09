@@ -15,17 +15,16 @@ using ours::mm::MemCache;
 using namespace ours::mm;
 
 namespace heap {
-constexpr static auto NUM_MALLOC_CACHES = 10;
+// The ladder itself is declared in <heap/kmalloc.hpp>: `operator new` needs
+// the upper bound to know when to route to vmalloc instead, so it cannot stay
+// private to this file.
+constexpr static auto NUM_MALLOC_CACHES = KMALLOC_NUM_CACHES;
 
-constexpr static auto MALLOC_MIN_ORDER = 3;
+constexpr static auto MALLOC_MIN_ORDER = KMALLOC_MIN_ORDER;
 
-constexpr static auto MIN_MALLOC_SIZE = BIT(MALLOC_MIN_ORDER);
+constexpr static auto MIN_MALLOC_SIZE = KMALLOC_MIN_SIZE;
 
-/// Cache |i| serves objects of BIT(i + MALLOC_MIN_ORDER) bytes, so the last
-/// one covers BIT(NUM_MALLOC_CACHES - 1 + MALLOC_MIN_ORDER). Deriving the
-/// bound from the last cache rather than restating it keeps the two from
-/// drifting apart: an off-by-one here indexes past the end of the array.
-constexpr static auto MAX_MALLOC_SIZE = BIT(NUM_MALLOC_CACHES - 1 + MALLOC_MIN_ORDER);
+constexpr static auto MAX_MALLOC_SIZE = KMALLOC_MAX_SIZE;
 
 /// Names outlive the caches on purpose: MemCache stores the pointer it is
 /// given and never copies the string, so anything with automatic storage

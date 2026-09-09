@@ -8,6 +8,7 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/sync/mutex.hpp>
 
+#include <heap/new.hpp>
 #include <heap/vmalloc.hpp>
 #include <heap/vmalloc_arena.hpp>
 
@@ -297,6 +298,36 @@ auto vmalloc_self_test() -> void {
     check(vmalloc(0, ours::mm::GAF_KERNEL) == nullptr, "a zero-sized request is refused");
     check(vmalloc(VMALLOC_SIZE + PAGE_SIZE, ours::mm::GAF_KERNEL) == nullptr,
           "a request larger than the window is refused");
+
+    // The routing, end to end. This is the part that could not be checked
+    // before `operator new` learned to choose: a request past the size-class
+    // ladder has to come back with a window address, a small one has to stay
+    // in the physmap, and both have to survive the trip home through the same
+    // `delete`, which has only the address to go on.
+    auto *big = new (ours::mm::GAF_KERNEL) u8[2 * KMALLOC_MAX_SIZE];
+    check(big != nullptr, "new above the kmalloc ladder");
+    if (big) {
+        check(is_vmalloc_addr(big), "a large new is served by vmalloc");
+        big[0] = 0x5A;
+        big[2 * KMALLOC_MAX_SIZE - 1] = 0xA5;
+        check(big[0] == 0x5A && big[2 * KMALLOC_MAX_SIZE - 1] == 0xA5,
+              "a large new is writable end to end");
+    }
+
+    auto *small = new (ours::mm::GAF_KERNEL) u8[64];
+    check(small != nullptr, "new below the kmalloc ladder");
+    check(small == nullptr || !is_vmalloc_addr(small), "a small new is still served by kmalloc");
+
+    // Impossible, and it must come back as a null pointer rather than as a
+    // fault. That the constructor of a non-trivial type would also be skipped
+    // is the language rule the noexcept on these overloads buys; the
+    // static_assert in new.cpp is what holds that, since it cannot be observed
+    // from here without arranging a failure for a type that has one.
+    auto *impossible = new (ours::mm::GAF_KERNEL) u8[VMALLOC_SIZE];
+    check(impossible == nullptr, "an impossible new returns null");
+
+    delete[] small;
+    delete[] big;
 
     vfree(odd);
     vfree(one);
