@@ -52,6 +52,14 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         return m_process.as_ref_mut();
     }
 
+    /// The read-only form. The syscall path reaches the process through a
+    /// `const ThreadDispatcher &` -- it only asks where the vDSO is -- and
+    /// without this it would have to cast the constness away to ask.
+    FORCE_INLINE
+    auto process() const -> ProcessDispatcher const & {
+        return m_process.as_ref();
+    }
+
     FORCE_INLINE
     auto mark_active() -> void {
         m_flags |= Flags::Active;

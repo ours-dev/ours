@@ -107,7 +107,7 @@
 // SS loaded with kernel CS + 8 from IA32_STAR
 
 // Arguments passed:
-//  rax - syscall # and return
+//  rax - syscall # and return (bounds-checked in syscall_dispatch, not here)
 //  rbx - saved
 //  rcx - modified as part of syscall instruction
 //  rdx - arg 3
@@ -165,31 +165,20 @@
     // exception.S has always passed %rsp here, for the same reason.
     mov %rsp, %rdi
 
-    // %rax is whatever userspace put there, and the call below indexes the
-    // table with it unscaled by any ceiling of its own -- so without this,
-    // `syscall` with a large enough number in %rax was an indirect call
-    // through whatever happened to follow SYSCALL_TABLE in .data, with the
-    // offset chosen by the caller.
+    // One call, into ours::syscall_dispatch (kernel/lib/syscall/table.cpp),
+    // rather than indexing SYSCALL_TABLE from here.
     //
-    // Clamped, not branched around: SYSCALL_TABLE has one entry more than
-    // OURS_SYSCALL_COUNT and that last slot answers Status::OutOfRange, so an
-    // out-of-range number is rewritten onto it and dispatched like any other.
-    // A conditional jump would have to set the return value here, in
-    // assembly, which means writing a Status constant that nothing checks
-    // against the enum. It also leaves no branch for userspace to train.
+    // The bounds clamp on %rax used to live here as a `cmov`, and it moved
+    // there for a reason the assembly could not solve on its own: the kernel
+    // now also has to refuse a trap that did not come from the calling
+    // process's vDSO, and answering that means reaching the current thread --
+    // whose pointer lives behind a mangled C++ per-CPU template that assembly
+    // cannot name. Two checks in two languages guarding one door read worse
+    // than both in the one place a new syscall cannot avoid.
     //
-    // Clobbering %rax is safe: its user value is already in the frame (it was
-    // the last push above), and the epilogue restores it from there.
-    mov $OURS_SYSCALL_COUNT, %r11
-    cmp %r11, %rax
-    cmovae %r11, %rax
-
-    // %r11 is scratch here -- the syscall instruction itself trashes rcx and
-    // r11, so it holds no live register state -- and the table has to be
-    // reached %rip-relative: the kernel is a static PIE, an absolute
+    // Reached %rip-relative: the kernel is a static PIE, and an absolute
     // displacement would emit R_X86_64_32S and break the link.
-    lea SYSCALL_TABLE(%rip), %r11
-    call *(%r11, %rax, 8)
+    call syscall_dispatch
 
     pop_reg %rax
     pop_reg %rbx

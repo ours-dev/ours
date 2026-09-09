@@ -197,6 +197,20 @@ namespace task {
 
         auto bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -> void;
 
+        /// The user-mode thread this one is running on behalf of, or an empty
+        /// Arc for an ordinary kernel thread.
+        ///
+        /// Read-only, and the only way out of this class to the object layer.
+        /// Thread::Current::fault() has always made this walk, but from
+        /// *inside* Thread, where the member is reachable; the syscall path
+        /// needs the same answer from outside it -- it has to ask which
+        /// process trapped in order to check the trap came from that process's
+        /// vDSO.
+        FORCE_INLINE
+        auto user_thread() const -> ustl::Arc<object::ThreadDispatcher> const & {
+            return m_user_thread;
+        }
+
         /// The followings is a group of accessor.
         FORCE_INLINE
         auto tid() -> KoId {

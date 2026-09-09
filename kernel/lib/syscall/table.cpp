@@ -1,9 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <arch/syscall.hpp>
+#include <logz4/log.hpp>
 #include <ours/compiler.hpp>
+#include <ours/object/process_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/task/thread.hpp>
 #include <ours/types.hpp>
 
 #include <array>
@@ -27,6 +30,55 @@ namespace {
 
     auto sys_not_implemented(arch::SyscallFrame *const frame) -> void {
         frame->ax = static_cast<usize>(Status::Unimplemented);
+    }
+
+    /// Whether this trap came from the calling process's vDSO.
+    ///
+    /// The rule this enforces is that a user program may enter the kernel only
+    /// through the vDSO. `frame->ip` is the user return address -- the value
+    /// SYSCALL parked in %rcx -- so it is the address of the instruction
+    /// *after* the trap, and testing it says where the trap came from.
+    ///
+    /// It is the address after, not of, the `syscall` instruction, so the
+    /// range has to cover one byte past the last instruction of the vDSO.
+    /// It does: the mapping is page-granular and the image is padded to a page
+    /// boundary, so there is always something after the final instruction.
+    ///
+    /// A thread with no user thread is a kernel thread, and a kernel thread
+    /// does not execute `syscall` -- it calls the functions directly. Refusing
+    /// is the safe direction for a caller this cannot identify.
+    ///
+    /// Zircon counterpart: VDso::ValidSyscallPC, consulted on the same path in
+    /// do_syscall(). Zircon's is finer: it checks against the exact set of
+    /// approved return addresses (the CODE_SYSRET_* labels), so even a jump
+    /// into the middle of the vDSO cannot forge a call site. The vDSO here has
+    /// the same labels waiting (OURS_VDSO_SYSRET_*); what is missing is a way
+    /// to get their addresses to the kernel, which is a build-time question.
+    /// A range check is the honest subset: every trap from outside the vDSO is
+    /// refused, which is the property that was asked for.
+    [[nodiscard]]
+    auto trapped_from_vdso(arch::SyscallFrame const *const frame) -> bool {
+        auto const *const thread = task::Thread::Current::get();
+        if (thread == nullptr) {
+            return false;
+        }
+        auto const &user_thread = thread->user_thread();
+        if (!user_thread) {
+            return false;
+        }
+        return user_thread->process().vdso_contains(frame->ip);
+    }
+
+    /// The answer to a trap that did not come through the vDSO.
+    ///
+    /// Refused rather than killed, for now. Zircon raises a policy exception,
+    /// which is the right end state -- a program that forged a trap is not one
+    /// whose next instruction should be trusted -- but there is no exception
+    /// machinery here yet, and a status the caller cannot ignore is already
+    /// the difference between a rule and a wish.
+    auto sys_not_from_vdso(arch::SyscallFrame *const frame) -> void {
+        log::warn("syscall: refused a trap from {:X}, which is outside the vDSO", frame->ip);
+        frame->ax = static_cast<usize>(Status::AccessDenied);
     }
 
     /// The dispatch layer, one shim per call.
@@ -89,5 +141,30 @@ namespace {
 } // namespace
 
 extern "C" constinit auto SYSCALL_TABLE = make_syscall_table();
+
+/// The one door, and the only place the vDSO rule is checked.
+///
+/// x86_syscall calls this rather than indexing SYSCALL_TABLE itself. Putting
+/// the check here rather than in each shim is what makes it impossible to
+/// forget: a new syscall is a new table entry, and a table entry cannot be
+/// reached except through this function.
+///
+/// The number is clamped here too, which used to be a `cmov` in the stub. Two
+/// mechanisms for one property read worse than one, and the assembly could not
+/// have done the vDSO half anyway -- it cannot reach the current thread, whose
+/// pointer lives behind a mangled C++ per-CPU template.
+extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
+    if (!trapped_from_vdso(frame)) [[unlikely]] {
+        return sys_not_from_vdso(frame);
+    }
+
+    // Clamped, not branched around: SYSCALL_TABLE has one entry more than
+    // SYSCALL_COUNT and that last slot answers Status::OutOfRange, so a number
+    // at or above the count is rewritten onto it and dispatched like any
+    // other. %rax is entirely user-controlled, and without this the call below
+    // would index past the table by an offset the caller chose.
+    auto const number = frame->ax < SYSCALL_COUNT ? frame->ax : SYSCALL_COUNT;
+    SYSCALL_TABLE[number](frame);
+}
 
 } // namespace ours

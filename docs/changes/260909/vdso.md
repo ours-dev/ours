@@ -205,3 +205,81 @@ userboot: hello from ring 3
   变成内核执行的规则。
 - **vDSO 地址是固定的**（`USER_ASPACE_BASE + MB(8)`）。它是地址空间里最值得随机化的映射
   ——唯一能进内核的代码——所以这个常量是「等有 ASLR 时按进程放置」的占位，不是结论。
+
+## 强制：非 vDSO 发起的 syscall 一律拒绝（2026-09-09）
+
+**文件**
+- `kernel/lib/syscall/table.cpp` — 新增 `syscall_dispatch()`，唯一的门
+- `kernel/arch/x86/kernel/syscall.S` — 改为 `call syscall_dispatch`，汇编里的钳制退役
+- `kernel/include/ours/task/thread.hpp` — 新增只读 `user_thread()` 访问器
+- `kernel/object/include/ours/object/thread_dispatcher.hpp` — 新增 `process() const`
+
+**症状**
+这一条之前，「系统调用只能通过 vDSO」只是**约定**：userboot 里没有 `syscall` 指令，
+但没有任何东西阻止它有一条。现在是内核执行的规则。
+
+**原因与取舍**
+
+**「其它指令」这一半是天然成立的，而且是查证过的**，不是假设：
+
+- IDT 的每一项都是 `type_attr = 0x8E`，即 **DPL=0**（`kernel/arch/x86/kernel/idt.cpp:21`），
+  所以 ring 3 发 `int N` 只会得到 #GP，摸不到任何门；
+- SYSENTER 的 MSR **全树从未被写入**（`IA32Sysenter` 零引用），`IA32_SYSENTER_CS` 为 0 时
+  ring 3 执行 `sysenter` 同样 #GP。
+
+所以 `syscall` 是唯一的入口，强制只需覆盖 `x86_syscall` 一条路径。
+
+**检查放在哪。** 三个位置：
+
+| 位置 | 否掉的理由 |
+|---|---|
+| `syscall.S`，`call` 之前 | 汇编够不到当前线程——`Thread::Current` 是 `mm::CpuLocal::Current<task::Thread*>` 的模板静态量，名字被 mangle 过，汇编叫不出来；X86PerCpu 里也没有线程指针 |
+| 每个 shim 开头各查一次 | 加一个 syscall 就要记得加一次检查。会被忘记的规则不是规则 |
+| **一个 C++ 漏斗，表只能经它索引**（选中） | 新增一个 syscall 就是新增一个表项，而表项**除了经过这个函数无法抵达** |
+
+于是 `syscall.S` 从「自己索引 `SYSCALL_TABLE`」变成 `call syscall_dispatch`。汇编里那条
+钳制 `%rax` 的 `cmov` 也一并搬进去了——一扇门用两种语言各守一半，比两半都在同一处要难读，
+而且汇编那半本来就解决不了 vDSO 这一半。
+
+**`frame->ip` 是 `syscall` 指令之后的地址**（SYSCALL 把它停在 `%rcx` 里），所以接受范围
+必须覆盖到最后一条指令**之后一字节**。这一点成立：映射按页粒度，镜像补齐到页边界，最后
+一条指令之后总还有东西。
+
+**没有用户线程的线程一律拒绝。** 内核线程不执行 `syscall`——它直接调函数。对一个认不出
+调用者的情形，拒绝是安全的方向。
+
+**拒绝而不是杀掉。** Zircon 抛 policy exception，那才是终点——一个伪造 trap 的程序，它的
+下一条指令不该再被信任。但这里还没有异常机制，而一个调用方无法忽略的错误码，已经是
+「规则」和「愿望」的分界。
+
+**参照**
+`Zircon VDso::ValidSyscallPC`，在 `do_syscall()` 的同一位置被查。Zircon 的更细：它比对的是
+**被批准的返回地址集合**（那些 `CODE_SYSRET_*` 标号），所以连「跳进 vDSO 中段」都伪造不了
+调用点。本树的 vDSO 已经放好了同名标号（`OURS_VDSO_SYSRET_*`），缺的是把它们的地址送到
+内核的构建期通路。范围检查是诚实的子集：**任何来自 vDSO 之外的 trap 都被拒绝**，这正是
+被要求的性质。
+
+**验证——这一条是靠对照实验，不是靠阅读**
+
+临时给 userboot 加一条裸 `syscall`（探针）：同一个调用号、同样的参数、同样的字符串，
+唯一的差别是 trap 从它自己的正文发起而不是从 vDSO。
+
+```
+[info] userboot: hello from ring 3
+[warn] syscall: refused a trap from 201303, which is outside the vDSO
+```
+
+- 经 vDSO 的那次：字符串打出来了；
+- 直接发起的那次：**被拒绝**，`FORBIDDEN` 一个字都没出现。
+
+`0x201303` 在 userboot 镜像（映射于 `0x200000`）内、在 vDSO（`[A00000, A03000)`）之外，
+与设计一致。探针已删除，删除后 `llvm-objdump -d userboot | grep -c syscall` 回到 **0**，
+两个镜像各打出一次 `hello from ring 3`、零次拒绝。
+
+**故意没做**
+- **没有把这个负向用例做成常驻测试**。要常驻就得让 userboot 永远带着一条 `syscall`
+  指令，那与「userboot 里零条」自相矛盾。真要有常驻回归，需要一个专门的测试程序，
+  以及一条能把结果报出来的通路。
+- **没有收紧到逐点校验**（Zircon 的 `CODE_SYSRET_*` 集合）。标号已经在 vDSO 里了；
+  差的是构建期把地址交给内核的机制。
+- **没有 kill**。见上，等异常机制。
