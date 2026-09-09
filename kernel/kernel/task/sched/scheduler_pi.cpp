@@ -87,13 +87,9 @@ template auto Scheduler::on_upstream_thread_base_profile_overrided(Thread &, Thr
 template auto Scheduler::on_upstream_thread_base_profile_overrided(Thread &, OwnedWaitQueue &)
     -> void;
 
-template auto Scheduler::join_node_to_pi_graph(Thread &, Thread &) -> void;
 template auto Scheduler::join_node_to_pi_graph(Thread &, OwnedWaitQueue &) -> void;
 template auto Scheduler::join_node_to_pi_graph(OwnedWaitQueue &, Thread &) -> void;
-template auto Scheduler::join_node_to_pi_graph(OwnedWaitQueue &, OwnedWaitQueue &) -> void;
 
-template auto Scheduler::split_node_from_pi_graph(Thread &, Thread &) -> void;
 template auto Scheduler::split_node_from_pi_graph(Thread &, OwnedWaitQueue &) -> void;
 template auto Scheduler::split_node_from_pi_graph(OwnedWaitQueue &, Thread &) -> void;
-template auto Scheduler::split_node_from_pi_graph(OwnedWaitQueue &, OwnedWaitQueue &) -> void;
 } // namespace ours::task::sched

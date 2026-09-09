@@ -3,7 +3,7 @@
 #ifndef KTL_ALLOCATOR_HPP
 #define KTL_ALLOCATOR_HPP 1
 
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 
 namespace ktl {
 template <typename T>

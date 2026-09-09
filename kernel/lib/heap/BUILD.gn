@@ -1,0 +1,51 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The kernel heap: every general-purpose allocation the kernel makes, and the
+# `operator new` / `operator delete` pair that routes between them.
+#
+# Two allocators, because they answer different questions. kmalloc serves the
+# small objects the kernel is mostly made of, out of power-of-two size classes
+# backed by physically contiguous slabs in the physmap. vmalloc serves the few
+# large ones, out of a dedicated address window backed page by page from
+# wherever the buddy allocator has room -- virtually contiguous, physically
+# scattered. Linux draws the same line, between mm/slub.c and mm/vmalloc.c.
+#
+# They live in one library rather than two because `operator new` has to
+# choose between them by size and `operator delete` has to route back by
+# address; keeping the choice next to both implementations is what makes that
+# decision reviewable in one place. Linux's kvmalloc()/kvfree() are the
+# counterpart, and sit beside the slab allocator for the same reason.
+cpp_interface("headers") {
+  public = [
+    "include/heap/kmalloc.hpp",
+    "include/heap/new.hpp",
+    "include/heap/vmalloc_arena.hpp",
+  ]
+  # The mm headers arrive as an include-path config, not as a target dep, and
+  # that is load-bearing: //kernel/mm:headers has to depend on *this* target so
+  # that every mm translation unit can say `new (gaf)`, and a target dep in
+  # both directions is a cycle GN refuses. Only Gaf and PAGE_SIZE are needed
+  # here, so the path is enough.
+  public_configs = [ "//kernel/mm:headers.config" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+source_set("heap") {
+  sources = [
+    "kmalloc.cpp",
+    "new.cpp",
+    "vmalloc_arena.cpp",
+  ]
+  public_deps = [ ":headers" ]
+  deps = [ "//kernel/mm:headers" ]  # the real thing, for the implementation
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "tests:tests" ]
+}

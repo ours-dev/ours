@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <gktl/counter.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 // The mapping entry points hand back an Arc<VmMapping>, and destroying an
 // Arc needs the pointee's definition, not just its declaration -- vm_area.hpp
 // only forward-declares VmMapping.

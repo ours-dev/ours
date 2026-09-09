@@ -1,6 +1,6 @@
 #include <gktl/counter.hpp>
 #include <gktl/init_hook.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>

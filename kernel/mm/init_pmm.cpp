@@ -1,5 +1,5 @@
 #include <arch/x86/cache.hpp>
-#include <ktl/kmalloc.hpp>
+#include <heap/kmalloc.hpp>
 #include <ktl/memory_resource.hpp>
 #include <logz4/log.hpp>
 #include <ours/assert.hpp>
@@ -94,7 +94,7 @@ INIT_CODE
 auto init_cache() -> void {
     MemCache::init();
 
-    ktl::init_kmalloc();
+    heap::init_kmalloc();
     // The allocator-aware containers in `ustl::collections` default to a
     // hosted new/delete resource that does not exist here; point them at the
     // kernel heap now that it is up.

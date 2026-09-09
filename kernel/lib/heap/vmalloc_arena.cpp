@@ -2,11 +2,14 @@
 /// Copyright (c) 2026 ours Developers
 #include <ours/assert.hpp>
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/vmalloc_arena.hpp>
 
 #include <limits>
 
-namespace ours::mm {
+#include <heap/vmalloc_arena.hpp>
+
+namespace heap {
+using ours::Status;
+using ours::VirtAddr;
 namespace {
     /// The one piece of arithmetic this file does, named so the multiplication
     /// cannot be written the wrong way round at a call site.
@@ -195,4 +198,4 @@ auto VmallocArena::validate() const -> void {
     }
 }
 
-} // namespace ours::mm
+} // namespace heap

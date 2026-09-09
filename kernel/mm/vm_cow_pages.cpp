@@ -1,5 +1,5 @@
 #include <gktl/init_hook.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>

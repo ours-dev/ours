@@ -1,7 +1,7 @@
 #include "slab.hpp"
 #include <gktl/counter.hpp>
 #include <gktl/defer.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/early_mem.hpp>

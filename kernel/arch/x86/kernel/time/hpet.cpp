@@ -1,6 +1,6 @@
 #include <arch/spin_hint.hpp>
 #include <gktl/canary.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/hpet.hpp>

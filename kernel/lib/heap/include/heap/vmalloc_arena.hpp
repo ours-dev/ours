@@ -1,12 +1,14 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_MM_VMALLOC_ARENA_HPP
-#define OURS_MM_VMALLOC_ARENA_HPP 1
+#ifndef HEAP_VMALLOC_ARENA_HPP
+#define HEAP_VMALLOC_ARENA_HPP 1
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
-namespace ours::mm {
+namespace heap {
+using ours::Status;
+using ours::VirtAddr;
 /// The address half of vmalloc: which pages of the vmalloc window are free.
 ///
 /// Deliberately knows nothing about physical memory, page tables, locks or
@@ -120,6 +122,6 @@ class VmallocArena {
     usize m_nr_pages{};
 };
 
-} // namespace ours::mm
+} // namespace heap
 
-#endif // #ifndef OURS_MM_VMALLOC_ARENA_HPP
+#endif // #ifndef HEAP_VMALLOC_ARENA_HPP

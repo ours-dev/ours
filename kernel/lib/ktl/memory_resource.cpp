@@ -1,7 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ktl/kmalloc.hpp>
 #include <ktl/memory_resource.hpp>
+
+#include <heap/kmalloc.hpp>
 
 namespace ktl {
 
@@ -16,7 +17,7 @@ auto KernelMemoryResource::do_try_allocate(std::size_t bytes, std::size_t alignm
         bytes = 1;
     }
 
-    auto *pointer = kmalloc(bytes, m_gaf);
+    auto *pointer = heap::kmalloc(bytes, m_gaf);
     if (pointer == nullptr) {
         return ustl::err(ustl::collections::Error::OutOfMemory);
     }
@@ -24,7 +25,7 @@ auto KernelMemoryResource::do_try_allocate(std::size_t bytes, std::size_t alignm
 }
 
 auto KernelMemoryResource::do_deallocate(void *pointer, std::size_t, std::size_t) noexcept -> void {
-    kfree(pointer);
+    heap::kfree(pointer);
 }
 
 auto kernel_memory_resource() noexcept -> KernelMemoryResource & {

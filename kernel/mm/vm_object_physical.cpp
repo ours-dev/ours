@@ -1,4 +1,4 @@
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/mm/vm_object_physical.hpp>
 
 namespace ours::mm {

@@ -1,4 +1,4 @@
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/irq/irq_object.hpp>
 
 namespace ours::irq {

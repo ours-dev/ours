@@ -1,4 +1,4 @@
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/arch/mem_cfg.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
 #include <ours/mm/early_mem.hpp>

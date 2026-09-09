@@ -6,6 +6,7 @@ source_set("kernel") {
     "//kernel/kernel/sync",
     "//kernel/kernel/task",
     "//kernel/kernel/time",
+    "//kernel/lib/heap",
     "//kernel/lib/ktl",
     "//kernel/lib/libc",
   ]

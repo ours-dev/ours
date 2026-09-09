@@ -8,13 +8,14 @@
 /// every behaviour of interest is reachable from the host, which is the whole
 /// reason it is a separate class from mm::vmalloc().
 #include <ours/mm/cfg.hpp>
-#include <ours/mm/vmalloc_arena.hpp>
 
 #include <string_view>
 #include <vector>
 
 #include <cstdio>
 #include <cstdlib>
+
+#include <heap/vmalloc_arena.hpp>
 
 // Minimal host definitions of the panic hooks <ours/panic.hpp> declares, the
 // same pair protection_ranges_smoke.cpp provides and for the same reason:
@@ -36,9 +37,9 @@ auto vpanic(std::string_view) -> void {
 } // namespace ours
 
 namespace {
+using heap::VmallocArena;
 using ours::Status;
 using ours::VirtAddr;
-using ours::mm::VmallocArena;
 
 constexpr auto WINDOW_BASE = VirtAddr{0x1000'0000};
 constexpr auto WINDOW_PAGES = usize{64};

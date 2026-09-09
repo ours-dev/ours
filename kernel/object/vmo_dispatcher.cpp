@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <gktl/counter.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_object_physical.hpp>
 #include <ours/object/vmo_dispatcher.hpp>

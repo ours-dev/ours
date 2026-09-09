@@ -1,6 +1,6 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/x86/apic/ioapic.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/irq/irq_chip.hpp>

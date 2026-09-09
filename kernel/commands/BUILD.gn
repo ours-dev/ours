@@ -17,6 +17,7 @@ source_set("commands") {
   ]
   deps = [
     "//kernel/lib/gktl",
+    "//kernel/lib/heap",
     "//kernel/lib/ktl",
     "//kernel/lib/prof",
     "//kernel/lib/unwind:headers",

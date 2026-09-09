@@ -1,5 +1,5 @@
 #include <gktl/init_hook.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>

@@ -61,7 +61,7 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/counter.hpp>
 #include <gktl/defer.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ktl/rwonce.hpp>
 #include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>

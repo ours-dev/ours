@@ -1,4 +1,3 @@
-#include <ktl/kmalloc.hpp>
 #include <ours/assert.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
@@ -8,11 +7,14 @@
 
 #include <array>
 
+#include <heap/kmalloc.hpp>
+
+using ours::Status;
 using ours::mm::MemCache;
 
 using namespace ours::mm;
 
-namespace ktl {
+namespace heap {
 constexpr static auto NUM_MALLOC_CACHES = 10;
 
 constexpr static auto MALLOC_MIN_ORDER = 3;
@@ -109,4 +111,4 @@ auto init_kmalloc() -> void {
     }
 }
 
-} // namespace ktl
+} // namespace heap

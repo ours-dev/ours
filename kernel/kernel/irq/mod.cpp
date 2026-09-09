@@ -1,4 +1,4 @@
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/irq/irq_dispatcher.hpp>
 #include <ours/irq/irq_observer.hpp>
 #include <ours/irq/mod.hpp>

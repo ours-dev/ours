@@ -1,5 +1,5 @@
 #include <gktl/counter.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cfg.hpp>

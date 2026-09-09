@@ -30,7 +30,6 @@ if (toolchain_environment == "kernel") {
       "vm_object.cpp",
       "vm_object_paged.cpp",
       "vm_object_physical.cpp",
-      "vmalloc_arena.cpp",
       "vmm.cpp",
     ]
     # The two memory models are mutually exclusive: exactly one is compiled, and
@@ -58,6 +57,9 @@ cpp_interface("headers") {
   public_deps = [
     "//kernel/phys:handoff",
     "//kernel/lib/gktl:headers",
+    # Every mm source that says `new (gaf)` needs <heap/new.hpp>; heap takes
+    # only mm's include-path config back, so this stays a DAG.
+    "//kernel/lib/heap:headers",
     "//kernel/lib/ktl:headers",
     "//system/lib/derive:headers",
     "//system/lib/lockdep",

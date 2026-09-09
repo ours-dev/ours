@@ -1,5 +1,5 @@
 #include <gktl/counter.hpp>
-#include <ktl/new.hpp>
+#include <heap/new.hpp>
 #include <ours/arch/entry.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/process_dispatcher.hpp>
