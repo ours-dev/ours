@@ -311,3 +311,87 @@ auto deallocate(void *const pointer) noexcept -> void {
 - **`libc/cpp_dependencies.cpp` 的弱桩没有删**。vmours 里它们已被强符号覆盖；留着是为了
   不链接 heap 的镜像（phys 侧）仍有兜底。
 - **调用点还没迁**。`prof.cpp` 与 `userboot.cpp` 的 `get_frames_n` 是接下来两步。
+
+
+## 推倒重来：vmalloc 改为建在 mm 之上（2026-09-08）
+
+**文件**
+- `kernel/lib/heap/vmalloc.cpp` — 重写
+- `kernel/lib/heap/vmalloc_arena.{hpp,cpp}`、`tests/` — **删除**
+- `kernel/mm/init_vmm.cpp` — 窗口的 sub-VMA 改由 vmalloc 自己创建
+- `kernel/lib/heap/BUILD.gn`、`kernel/lib/BUILD.gn`、`BUILD.gn` — 跟随
+
+**症状**
+不是 bug，是层次错了——owner 的原话：「你应该在 mm 模块的基础之上实现 vmalloc 啊」。
+
+**原因**
+先前那版预留了地址范围，然后**直接驱动** `alloc_frames()` 和 `ArchVmAspace::map()`，
+外加一个自己的地址分配器 `VmallocArena`。它能跑，而且它是错的：那是把 `VmArea` 和
+`VmObject` 已经是的东西又长了一份平行实现——两个地址分配器、两种"映射"的概念。
+
+我当时的推理链值得记下来，因为它错得有代表性：我先在 mm 里查出了真缺陷
+（`~VmCowPages` 不归还页、`create_mapping()` 不理会 `Commit`），然后**用这些缺陷论证了
+绕开 mm**。这个推论是反的。下层的缺陷是"去修下层"的理由，不是"绕过去自己造一份"的
+许可。绕过去之后，那个缺陷还会留在原地，因为再没有东西依赖它了。
+
+**改法**
+现在整个 `vmalloc()` 是三步，每一步都是 mm 已有的接口：
+
+```cpp
+ustl::Arc<ours::mm::VmObjectPaged> vmo;
+ours::mm::VmObjectPaged::create(gaf, rounded, ours::mm::VmoFlags::Pinned, &vmo);
+
+auto mapping = WINDOW->map_with_vmo(ours::mm::VmPlacement::anywhere(), rounded, MMU_FLAGS,
+                                    vmo, ours::mm::VmMapOption::Commit, "vmalloc");
+```
+
+`vfree()` 则是 `WINDOW->unmap(base, size)` —— 它清页表项、把映射从 VMO 的链表和父区域
+的集合里摘掉、放掉集合持有的那个引用。映射死了，VMO 跟着死，页随
+`~VmCowPages` 归还（那正是同一轮修掉的 mm 缺陷）。
+
+窗口本身是内核 root VMA 下的一个 `create_subvma(at(VMALLOC_BASE), ...)`，由
+`init_vmalloc()` 创建，而不是留在 `init_vmm.cpp` 的 `PHYS_VMOS[]` 表里——那张表记的是
+"别人已经拥有、VMM 只是记账"的范围；vmalloc 窗口是 VMM 自己的，让 vmalloc 持有它映射
+进去的那个区域，比让两处各持一半清楚。
+
+**被删掉的东西，以及各自的替代**
+
+| 删除 | 替代 |
+|---|---|
+| `VmallocArena`（有序空洞数组 + first-fit + 合并） | `VmArea::alloc_spot()` → `VmaSet::find_spot()`，同样是最低地址 first-fit |
+| 逐页 `ArchVmAspace::map()` 与手写回滚 | `VmArea::map_with_vmo()`，它自己提交 VMO、装 PTE、失败时 `destroy()` |
+| 自持 `PmFrame::List` + `query()` 逐页拆解 | `VmObjectPaged` 持有页，`VmArea::unmap()` 拆解 |
+| `vmalloc_free_pages()` | `vmalloc_live_ranges()`（空闲地址现在是 VMM 的账） |
+| `vmalloc_arena_smoke` 宿主单测（8 组） | 无。地址分配现在是 mm 的，测它属于 mm |
+
+**丢掉的东西**：**guard page**。先前那版每次多要一页地址不映射；现在放置交给
+`alloc_spot()`，而它把相邻区间背靠背排（`vm_area_or_mapping.hpp:284` 的相邻间隙为零），
+整棵树都没有 guard page 设施。这是 mm 的能力缺口，记在
+`docs/repairs/260908/heap.md`，而不是在 vmalloc 里再造一个放置器绕开它。
+
+**参照**
+- `mm::Stack::init()`（`kernel/mm/stack.cpp`）：本树里"分配内核 VA + 用 VMO 背书"的既有
+  配方，本实现是它的泛化（外加 `map_with_vmo` 的正确回滚，那是 `Stack::init` 缺的）。
+- `Linux __vmalloc_node_range()`：同样是"先要地址，再要页，再装表"，只是 Linux 的地址
+  分配器和页数组都是 vmalloc 自己的；ours 的 VMM 已经提供了两者。
+
+**验证**
+两个镜像实测：
+
+```
+vmalloc: window [FFFFFF9000000000, FFFFFF9100000000), 1048576 pages
+vmalloc: self test passed
+```
+
+自检除原有用例外新增一轮 churn（64 页 × 128 轮），走一遍归还路径；userboot 照常
+`hello from ring 3`，无回归。
+
+**过程中发现的一件事**：自检里那个"不可能的请求"原本写的是
+`new (gaf) u8[VMALLOC_SIZE]`——正好等于窗口大小，于是它是**合法的**，内核真的去提交
+一百万页。`VmObjectPaged::commit_range()` 的外层循环是 O(n²)，启动因此从 3 秒变成 7 分
+多然后缺页。改成 `VMALLOC_SIZE + PAGE_SIZE`，那才是"按定义就该被拒"的那个请求。
+
+**故意没做**
+- **guard page**，见上。
+- **`create_subvma` 每次分配一个**（那样能自己留 guard）：每次分配多造一个 mm 对象，
+  为了一个 mm 本该提供的性质，不值。

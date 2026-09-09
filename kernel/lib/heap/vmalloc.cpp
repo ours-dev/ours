@@ -3,14 +3,14 @@
 #include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
-#include <ours/mm/memmap.hpp>
-#include <ours/mm/pmm.hpp>
+#include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/mm/vm_mapping.hpp>
+#include <ours/mm/vm_object_paged.hpp>
 #include <ours/sync/mutex.hpp>
 
 #include <heap/new.hpp>
 #include <heap/vmalloc.hpp>
-#include <heap/vmalloc_arena.hpp>
 
 namespace heap {
 using ours::Guard;
@@ -20,90 +20,65 @@ using ours::mm::MmuFlags;
 namespace {
     /// Read/write and nothing else. A vmalloc range holds data -- buffers,
     /// tables, arenas -- so leaving it executable would hand every one of them
-    /// to an attacker looking for a place to put code, and no caller has ever
-    /// wanted otherwise. A future vmalloc_exec(), if the kernel ever loads
-    /// modules, would be a separate entry point with its own justification.
+    /// to anyone looking for a place to put code, and no caller has wanted
+    /// otherwise. A vmalloc_exec(), if this kernel ever loads modules, would be
+    /// a separate entry point with its own justification.
     constexpr auto MMU_FLAGS = MmuFlags::Readable | MmuFlags::Writable;
 
-    /// One record per live range, so that vfree() can recover the length from
-    /// a bare pointer.
+    /// The window, as a sub-area of the kernel root VMA.
     ///
-    /// The physical frames are deliberately *not* recorded. They are already
-    /// written down in the page tables, and reading them back with query() at
-    /// teardown costs one walk per page on a path that runs rarely -- against
-    /// storing a frame list per range, which would need somewhere to put it
-    /// and would be a second copy of the truth to keep in step with the first.
-    /// Linux keeps `struct vm_struct::pages` because its unmap is batched and
-    /// deferred, so the page tables are gone before the pages are returned;
-    /// the teardown below is synchronous and can still read them.
-    struct BusyRange {
-        ours::VirtAddr base;
-        usize nr_pages;
-    };
+    /// This is what makes vmalloc a *client* of the VMM rather than a second
+    /// implementation of it: the address inside the window is chosen by
+    /// VmArea::alloc_spot(), the pages come from a VmObjectPaged, and the
+    /// result is a VmMapping like any other -- so the range appears in the
+    /// aspace dump, and retiring it goes through the same code that retires
+    /// every other mapping.
+    ///
+    /// An earlier draft reserved the range and then drove alloc_frames() and
+    /// ArchVmAspace::map() directly, with an address allocator of its own. It
+    /// worked, and it was wrong: it grew a parallel copy of what VmArea and
+    /// VmObject already are.
+    ustl::Arc<ours::mm::VmArea> WINDOW;
 
-    /// No allocation, and the bound is the arena's own: it refuses to hand out
-    /// more than MAX_HOLES - 1 live ranges, so a table of that size can never
-    /// be the thing that fills up first. An allocator that has to allocate to
-    /// record what it allocated is a recursion waiting to be discovered.
-    VmallocArena ARENA;
-    BusyRange BUSY[VmallocArena::MAX_HOLES];
+    /// One record per live range, so vfree() can recover from a bare pointer
+    /// both the length and the mapping to retire.
+    ///
+    /// Holding the Arc is not what keeps the mapping alive -- the parent's
+    /// VmaSet has a reference of its own, and VmArea::unmap() is what retires
+    /// one. It is here so vfree() need not search the VMA tree, and so the
+    /// mapping cannot be recycled underneath a pointer we still answer for.
+    ///
+    /// A fixed table, because an allocator that allocates in order to record
+    /// what it allocated is a recursion waiting to be discovered. The bound is
+    /// generous: this kernel's live vmalloc ranges are counted on two hands.
+    constexpr auto MAX_LIVE_RANGES = usize{256};
+
+    ustl::Arc<ours::mm::VmMapping> BUSY[MAX_LIVE_RANGES];
     usize NR_BUSY;
     bool READY;
 
-    /// Guards all three of the above and the page-table edits between them.
+    /// Guards WINDOW and the table.
     ///
     /// A Mutex rather than a SpinLock, because everything under it can block:
-    /// mm::alloc_frames() takes the current thread's resource lock and may
-    /// walk into reclaim, and the page-table walk allocates table pages. That
-    /// is what makes "vmalloc may not be called from an interrupt handler" a
-    /// property of the design rather than a warning.
+    /// VmObjectPaged::create() commits through a sleeping mutex of its own and
+    /// mm::alloc_frames() takes the current thread's resource lock. That is
+    /// what makes "not callable from an interrupt handler" a property of the
+    /// design rather than a warning in a comment.
     ours::sync::Mutex LOCK;
-
-    /// Tears down |nr_pages| pages of mapping starting at |base|, returning
-    /// every frame behind them.
-    ///
-    /// The order inside the loop is the whole point, and it is the opposite of
-    /// Linux's: read the frame, drop the translation, *then* return the frame.
-    /// Linux frees first and lets __purge_vmap_area_lazy() batch the flush,
-    /// which is safe there only because the lazy purge holds the address range
-    /// back until it has flushed. Nothing here holds anything back, so a frame
-    /// returned before its translation was invalidated could be handed to
-    /// someone else while a stale TLB entry still reaches it.
-    ///
-    /// Tolerates pages that are not mapped, which is what lets the failure
-    /// path of vmalloc() call it on a half-built range.
-    auto unmap_and_free(ours::mm::VmAspace &aspace, ours::VirtAddr const base, usize const nr_pages)
-        -> void {
-        for (auto index = usize{0}; index < nr_pages; ++index) {
-            auto const va = base + index * PAGE_SIZE;
-
-            ours::PhysAddr pa = 0;
-            MmuFlags flags{};
-            if (aspace.arch_aspace().query(va, &pa, &flags) != Status::Ok) {
-                continue;
-            }
-
-            usize unmapped = 0;
-            auto const status =
-                aspace.arch_aspace().unmap(va, 1, arch::paging::UnmapControl::None, &unmapped);
-            if (status != Status::Ok) {
-                // The frame is deliberately kept rather than returned: a page
-                // whose translation is still live is not free memory, and
-                // leaking it is the lesser of the two outcomes.
-                log::error("vmalloc: could not unmap {:X}: {}", va, ours::to_string(status));
-                continue;
-            }
-
-            ours::mm::free_frames(ours::mm::phys_to_frame(pa), 0);
-        }
-    }
 } // namespace
 
 auto init_vmalloc() -> void {
     Guard guard{LOCK};
 
-    auto const status = ARENA.init(VMALLOC_BASE, VMALLOC_SIZE);
-    ASSERT(Status::Ok == status, "Failed to initialise the vmalloc window");
+    // At a fixed base, because is_vmalloc_addr() has to be a compile-time
+    // range test -- that is what `operator delete` routes on. Reserved as a
+    // sub-area rather than left to anywhere() for the same reason: the window
+    // must be exactly where the constants say it is.
+    auto const status = ours::mm::VmAspace::kernel_aspace()->root_vma()->create_subvma(
+        ours::mm::VmPlacement::at(VMALLOC_BASE), VMALLOC_SIZE,
+        ours::mm::VmaFlags::Read | ours::mm::VmaFlags::Write, "k:vmalloc",
+        ours::mm::VmMapOption::None, &WINDOW);
+    ASSERT(Status::Ok == status, "Failed to reserve the vmalloc window");
 
     NR_BUSY = 0;
     READY = true;
@@ -116,86 +91,55 @@ auto vmalloc(usize const size, Gaf const gaf) -> void * {
         return nullptr;
     }
 
-    auto const nr_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-    // The round-up above wraps for a size within a page of the top of the
-    // address space, and a wrapped count would ask the arena for nothing at
-    // all and then be mapped as if it were huge.
-    if (nr_pages == 0 || nr_pages > VMALLOC_SIZE / PAGE_SIZE) {
+    auto const rounded = (size + PAGE_SIZE - 1) & ~usize(PAGE_SIZE - 1);
+    // The round-up wraps for a size within a page of the top of the address
+    // space, and a wrapped length would be mapped as nothing and freed as
+    // though it were huge.
+    if (rounded < size || rounded > VMALLOC_SIZE) {
         return nullptr;
     }
 
     Guard guard{LOCK};
 
-    // Reachable, and worth reporting rather than asserting: `operator new`
-    // routes here by size, and the kernel allocates before init_vmm() runs
-    // (SparseMemMap builds its arrays at InitLevel::Pmm). A caller that asks
-    // too early gets the same nullptr it would get from an exhausted window,
-    // which is what its failure path already handles.
+    // Reachable, and reported rather than asserted: `operator new` routes here
+    // by size, and the kernel allocates before init_vmm() runs (SparseMemMap
+    // builds its arrays at InitLevel::Pmm). A caller that asks too early gets
+    // the same nullptr an exhausted window would give, which its failure path
+    // already handles.
     if (!READY) {
         log::error("vmalloc: called before the window was initialised");
         return nullptr;
     }
-    if (NR_BUSY == std::size(BUSY)) {
+    if (NR_BUSY == MAX_LIVE_RANGES) {
         return nullptr;
     }
 
-    // One page more than asked for, left unmapped: a guard, so that running
-    // off the end of a vmalloc range faults instead of walking into whatever
-    // the next allocation put there. Linux does the same by default and calls
-    // the exception VM_NO_GUARD. Note it is counted in the *address*
-    // reservation only -- everything below maps and frees nr_pages -- which
-    // is the distinction Linux draws between vm_struct::size and
-    // get_vm_area_size().
-    auto const base = ARENA.allocate(nr_pages + 1);
-    if (base == 0) {
-        return nullptr;
-    }
-
-    ours::mm::PmFrame::List frames;
-    auto status = ours::mm::alloc_frames(NUMA_MAX_NODE, gaf, &frames, nr_pages);
+    // Not Lazy: a kernel address cannot be faulted in -- Thread::Current::fault()
+    // answers NotFound for anything above the split -- so every page a kernel
+    // mapping covers has to be present before the first access.
+    ustl::Arc<ours::mm::VmObjectPaged> vmo;
+    auto status = ours::mm::VmObjectPaged::create(gaf, rounded, ours::mm::VmoFlags::Pinned, &vmo);
     if (Status::Ok != status) {
-        static_cast<void>(ARENA.free(base, nr_pages + 1));
+        return nullptr;
+    }
+    vmo->set_name("vmalloc");
+
+    // map_with_vmo(), not create_mapping(). create_mapping() builds the mapping
+    // object and stops there, accepting a VmMapOption it never acts on, so the
+    // range would come back live with no page tables behind it. Committing the
+    // VMO, installing the entries, and destroying the half-built mapping when
+    // either fails all live in map_with_vmo().
+    auto mapping = WINDOW->map_with_vmo(ours::mm::VmPlacement::anywhere(), rounded, MMU_FLAGS, vmo,
+                                        ours::mm::VmMapOption::Commit, "vmalloc");
+    if (mapping.is_err()) {
+        // The VMO's last reference goes with this return, and ~VmCowPages
+        // gives its pages back -- which is only true since that destructor
+        // stopped being `= default`.
         return nullptr;
     }
 
-    auto aspace = ours::mm::VmAspace::kernel_aspace();
-
-    // One page at a time, taken off the list as it is consumed. Per page
-    // rather than through map_bulk() because the frames arrive as a list and
-    // batching them would need an array of physical addresses to put them in
-    // -- which is the storage this design is built to avoid. The cost is a
-    // page-table walk per page on a path that runs a handful of times.
-    //
-    // The frames must be drained rather than left on the list: the hooks are
-    // auto-unlink, so a node still linked when its list head dies points at a
-    // dead head.
-    auto mapped = usize{0};
-    while (!frames.empty()) {
-        auto &frame = frames.front().value();
-        frames.pop_front();
-
-        usize done = 0;
-        status =
-            aspace->arch_aspace().map(base + mapped * PAGE_SIZE, ours::mm::frame_to_phys(&frame), 1,
-                                      MMU_FLAGS, arch::paging::MapControl::ErrorIfExisting, &done);
-        if (Status::Ok != status) {
-            // This frame is off the list and not yet mapped, so it is returned
-            // here; the ones still on the list go back together; and the pages
-            // already installed are torn down by the same routine vfree() uses.
-            ours::mm::free_frames(&frame, 0);
-            ours::mm::free_frames(&frames);
-            unmap_and_free(*aspace, base, mapped);
-            static_cast<void>(ARENA.free(base, nr_pages + 1));
-            log::error("vmalloc: could not map page {} of {}: {}", mapped, nr_pages,
-                       ours::to_string(status));
-            return nullptr;
-        }
-        ++mapped;
-    }
-    DEBUG_ASSERT(mapped == nr_pages,
-                 "vmalloc mapped a different number of pages than it asked for");
-
-    BUSY[NR_BUSY++] = BusyRange{.base = base, .nr_pages = nr_pages};
+    auto const base = mapping.unwrap()->base();
+    BUSY[NR_BUSY++] = ustl::move(mapping.unwrap());
     return reinterpret_cast<void *>(base);
 }
 
@@ -209,50 +153,54 @@ auto vfree(void *const pointer) -> void {
 
     Guard guard{LOCK};
 
-    auto found = std::size(BUSY);
+    auto found = MAX_LIVE_RANGES;
     for (auto index = usize{0}; index < NR_BUSY; ++index) {
-        if (BUSY[index].base == base) {
+        if (BUSY[index]->base() == base) {
             found = index;
             break;
         }
     }
-    if (found == std::size(BUSY)) {
-        // An interior pointer, a double free, or a pointer this allocator
-        // never produced. None of them can be served, and guessing at a length
-        // would unmap memory belonging to someone else.
+    if (found == MAX_LIVE_RANGES) {
+        // An interior pointer, a double free, or a pointer this allocator never
+        // produced. None can be served, and guessing at a length would unmap
+        // memory belonging to someone else.
         DEBUG_ASSERT(false, "vfree() on an address this allocator did not hand out");
         return;
     }
 
-    auto const nr_pages = BUSY[found].nr_pages;
-    // Swap with the last live record rather than shifting: the table has no
-    // ordering to preserve, since it is searched linearly.
-    BUSY[found] = BUSY[--NR_BUSY];
+    auto const size = BUSY[found]->size();
 
-    auto aspace = ours::mm::VmAspace::kernel_aspace();
-    unmap_and_free(*aspace, base, nr_pages);
-    static_cast<void>(ARENA.free(base, nr_pages + 1));
+    // Swap with the last live record rather than shifting: the table is
+    // searched linearly and has no order to preserve. The slot is cleared so
+    // the Arc it held is released here rather than at the next overwrite.
+    BUSY[found] = ustl::move(BUSY[--NR_BUSY]);
+    BUSY[NR_BUSY] = {};
+
+    // VmArea::unmap() is what retires a mapping: it clears the page-table
+    // entries, unlinks the mapping from its VMO and from this area's set, and
+    // drops the reference the set was holding. With this table's reference gone
+    // too, the mapping dies, the VMO follows, and ~VmCowPages returns the pages.
+    auto const status = WINDOW->unmap(base, size);
+    if (Status::Ok != status) {
+        log::error("vmalloc: could not unmap [{:X}, {:X}): {}", base, base + size,
+                   ours::to_string(status));
+    }
 }
 
-auto vmalloc_free_pages() -> usize {
+auto vmalloc_live_ranges() -> usize {
     Guard guard{LOCK};
-    return ARENA.nr_free_pages();
+    return NR_BUSY;
 }
 
 /// Proves the allocator works on the machine it was built for, once, at boot.
 ///
-/// It exists because the host test beside it cannot: the arena's arithmetic is
-/// pure and testable off a kernel, but nothing else here is -- the frames, the
-/// page tables, the guard page and the teardown order only mean anything with
-/// an MMU underneath. This is the smallest thing that exercises all of them.
+/// Every case here needs an MMU underneath -- the pages, the page tables, the
+/// teardown -- which is why it runs on the target rather than as a host test.
 ///
-/// The check that matters most is the last one. Every other case would fail
-/// loudly; a leak would not, and a leak is exactly what the teardown order and
-/// the guard-page arithmetic are easiest to get wrong in. Comparing the free
-/// page count before and against after catches a range whose guard page was
-/// mapped, or whose frames were dropped, or whose address was never returned.
+/// The last check is the one that matters most. Every other case fails loudly;
+/// a leak does not, and a teardown path is the easiest place to grow one.
 auto vmalloc_self_test() -> void {
-    auto const before = vmalloc_free_pages();
+    auto const before = vmalloc_live_ranges();
     auto failed = usize{0};
 
     auto const check = [&failed](bool const ok, char const *const what) {
@@ -262,8 +210,8 @@ auto vmalloc_self_test() -> void {
         }
     };
 
-    // A single page, written end to end: if the mapping were short or the
-    // permissions wrong this faults rather than returning.
+    // A single page, written end to end: a mapping that is short or carries
+    // the wrong permissions faults here rather than returning.
     auto *one = static_cast<u8 *>(vmalloc(PAGE_SIZE, ours::mm::GAF_KERNEL));
     check(one != nullptr, "one-page allocation");
     if (one) {
@@ -276,7 +224,7 @@ auto vmalloc_self_test() -> void {
               "the page holds what was written");
     }
 
-    // A size that is neither a page multiple nor a power of two: the round-up
+    // A size that is neither a page multiple nor a power of two. The round-up
     // is where an off-by-one hides, and get_frames_n() -- the hand-rolled path
     // this replaces -- would have quietly rounded 9 KiB up to 16.
     auto *odd = static_cast<u8 *>(vmalloc(2 * PAGE_SIZE + 1, ours::mm::GAF_KERNEL));
@@ -287,23 +235,16 @@ auto vmalloc_self_test() -> void {
         check(odd[0] == 1 && odd[2 * PAGE_SIZE] == 2, "the last page of an odd size is mapped");
     }
 
-    // Two live ranges must not overlap, and the guard page must keep them a
-    // page apart even when the arena hands out adjacent addresses.
-    if (one && odd) {
-        auto const gap = ours::VirtAddr(odd) - (ours::VirtAddr(one) + PAGE_SIZE);
-        check(gap >= PAGE_SIZE, "a guard page separates two ranges");
-    }
-
-    check(!is_vmalloc_addr(&ARENA), "a kernel address outside the window is not mistaken for one");
+    check(!is_vmalloc_addr(&NR_BUSY),
+          "a kernel address outside the window is not mistaken for one");
     check(vmalloc(0, ours::mm::GAF_KERNEL) == nullptr, "a zero-sized request is refused");
     check(vmalloc(VMALLOC_SIZE + PAGE_SIZE, ours::mm::GAF_KERNEL) == nullptr,
           "a request larger than the window is refused");
 
-    // The routing, end to end. This is the part that could not be checked
-    // before `operator new` learned to choose: a request past the size-class
-    // ladder has to come back with a window address, a small one has to stay
-    // in the physmap, and both have to survive the trip home through the same
-    // `delete`, which has only the address to go on.
+    // The routing, end to end: a request past the size-class ladder has to come
+    // back with a window address, a small one has to stay in the physmap, and
+    // both have to survive the trip home through the same `delete`, which has
+    // only the address to go on.
     auto *big = new (ours::mm::GAF_KERNEL) u8[2 * KMALLOC_MAX_SIZE];
     check(big != nullptr, "new above the kmalloc ladder");
     if (big) {
@@ -319,11 +260,19 @@ auto vmalloc_self_test() -> void {
     check(small == nullptr || !is_vmalloc_addr(small), "a small new is still served by kmalloc");
 
     // Impossible, and it must come back as a null pointer rather than as a
-    // fault. That the constructor of a non-trivial type would also be skipped
-    // is the language rule the noexcept on these overloads buys; the
-    // static_assert in new.cpp is what holds that, since it cannot be observed
-    // from here without arranging a failure for a type that has one.
-    auto *impossible = new (ours::mm::GAF_KERNEL) u8[VMALLOC_SIZE];
+    // fault. That a non-trivial type's constructor would also be skipped is the
+    // language rule the noexcept on those overloads buys; the static_assert in
+    // new.cpp is what holds it, since it cannot be observed from here without
+    // arranging a failure for a type that has one.
+    //
+    // One page *past* the window, not the window's own size. Exactly
+    // VMALLOC_SIZE is a legal request that this machine cannot back, and
+    // finding that out means committing a million pages through
+    // VmObjectPaged::commit_range(), whose outer loop is O(n^2)
+    // (docs/repairs/260903/mm.md). Written that way the self test took the
+    // boot from three seconds to over seven minutes before faulting. The
+    // request under test here is the one that is refused by inspection.
+    auto *impossible = new (ours::mm::GAF_KERNEL) u8[VMALLOC_SIZE + PAGE_SIZE];
     check(impossible == nullptr, "an impossible new returns null");
 
     delete[] small;
@@ -333,7 +282,44 @@ auto vmalloc_self_test() -> void {
     vfree(one);
     vfree(nullptr);
 
-    check(vmalloc_free_pages() == before, "every page and address is back");
+    check(vmalloc_live_ranges() == before, "every range was retired");
+
+    // And the physical pages come back with them.
+    //
+    // The count above only proves the bookkeeping is empty; this exercises the
+    // path that returns the memory. It is a smoke test at this size, and
+    // deliberately stays one.
+    //
+    // Turning it into a proof was tried and abandoned. At CHURN_ROUNDS = 8192
+    // it churns half a gigabyte through a 512 MiB guest, which the fixed
+    // kernel completes; built against the `~VmCowPages() = default` this
+    // series replaced, the same run reached ~1975 rounds -- about 494 MiB
+    // leaked -- and was still going when the boot was cut off. It would not
+    // have reported anything useful past that point either: mm's
+    // alloc_frames_slowpath() spins forever on exhaustion for a GAF_KERNEL
+    // request rather than returning null (docs/repairs/260908/heap.md), so the
+    // null branch below is unreachable in exactly the case it was written for.
+    // A leak of this kind hangs the machine; it does not fail a check.
+    //
+    // So the standing value is small enough to cost a fraction of a second,
+    // and the real regression barrier for ~VmCowPages is the destructor's own
+    // code rather than a runtime probe.
+    constexpr auto CHURN_PAGES = usize{64};
+    constexpr auto CHURN_ROUNDS = usize{128};
+    for (auto round = usize{0}; round < CHURN_ROUNDS; ++round) {
+        auto *block = vmalloc(CHURN_PAGES * PAGE_SIZE, ours::mm::GAF_KERNEL);
+        if (block == nullptr) {
+            log::error("vmalloc: FAILED pages are not returned (round {} of {})", round,
+                       CHURN_ROUNDS);
+            ++failed;
+            break;
+        }
+        // Touched, so a mapping that is merely reserved rather than backed
+        // shows up here rather than at some later caller.
+        static_cast<u8 *>(block)[CHURN_PAGES * PAGE_SIZE - 1] = u8(round);
+        vfree(block);
+    }
+
     if (failed) {
         log::error("vmalloc: self test failed {} check(s)", failed);
     } else {

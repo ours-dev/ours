@@ -20,7 +20,6 @@ cpp_interface("headers") {
     "include/heap/kmalloc.hpp",
     "include/heap/new.hpp",
     "include/heap/vmalloc.hpp",
-    "include/heap/vmalloc_arena.hpp",
   ]
   # The mm headers arrive as an include-path config, not as a target dep, and
   # that is load-bearing: //kernel/mm:headers has to depend on *this* target so
@@ -40,14 +39,8 @@ source_set("heap") {
     "kmalloc.cpp",
     "new.cpp",
     "vmalloc.cpp",
-    "vmalloc_arena.cpp",
   ]
   public_deps = [ ":headers" ]
   deps = [ "//kernel/mm:headers" ]  # the real thing, for the implementation
   visibility = [ "*" ]
-}
-
-group("tests") {
-  testonly = true
-  public_deps = [ "tests:tests" ]
 }

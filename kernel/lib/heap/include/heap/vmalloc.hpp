@@ -73,11 +73,10 @@ auto vmalloc(usize size, Gaf gaf) -> void *;
 /// Linux counterpart: vfree().
 auto vfree(void *pointer) -> void;
 
-/// Pages of the window not currently handed out, guard pages counted as
-/// taken. The boot self-check compares this before and after a round of
-/// allocations to prove nothing leaked.
+/// How many ranges are currently handed out. The boot self-check compares it
+/// before and after a round of allocations to prove every mapping was retired.
 [[nodiscard]]
-auto vmalloc_free_pages() -> usize;
+auto vmalloc_live_ranges() -> usize;
 
 /// Runs a round of allocations and frees and reports the result to the log.
 /// Called once from init_heap(), immediately after init_vmalloc().

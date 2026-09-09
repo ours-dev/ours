@@ -33,3 +33,20 @@ kmalloc 的 `alignof(usize)` 对齐。
 `flush_tlb_kernel_range()`，Zircon 是 `ArchVmAspace::Unmap` 里的 `TlbInvalidation`。
 
 在它到位之前，vmalloc 只能算单核正确。
+
+## 3. 内存耗尽时 `alloc_frames` 不返回空指针，而是空转
+
+`PmNode::alloc_frames_slowpath`（`kernel/mm/pm_node.cpp:486`）对带 `DirectReclaim`
+（也就是 `GAF_KERNEL`）、不带 `NoRetry`（`NoRetry` 恰好被 `ALLOWED_GAF` 掩掉）、不带
+`NoFail` 的请求，在内存耗尽时**无限循环**，而 reclaim 与 compact 都是返回 0 的桩
+（`:467`）。
+
+实测：把 `~VmCowPages` 恢复成 `= default`（即本轮修掉的那个泄漏），再让 vmalloc 自检
+churn 半个 GiB。1975 轮之后约 494 MiB 已泄漏、512 MiB 的客机基本见底，而内核**没有**
+报错也没有返回空——它还在跑，直到 QEMU 被杀。
+
+后果不只是"慢"：它让**每一处 `if (!p)` 在内存真正耗尽时都不可达**。分配器的失败路径
+只在"这次请求本身不合法"（尺寸超限之类）时才走得到；真正的 OOM 表现为挂死。
+
+这是 `kernel/mm` 的 lane。修法要么让 slowpath 在 reclaim 无进展时放弃并返回空，要么
+让 `ALLOWED_GAF` 不再掩掉 `NoRetry`，两者都需要 mm 决定语义。

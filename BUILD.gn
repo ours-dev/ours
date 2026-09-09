@@ -86,7 +86,6 @@ group("default") {
     # never built by anything -- so both are named here explicitly.
     "//kernel/mm/tests:frame-buddy-smoke($host_toolchain)",
     "//kernel/mm/tests:protection-ranges-smoke($host_toolchain)",
-    "//kernel/lib/heap/tests:vmalloc-arena-smoke($host_toolchain)",
 
     # //kernel/lib/acpi is pure table decoding behind a single mapper seam, so
     # the whole library runs on the host against synthesised table images.

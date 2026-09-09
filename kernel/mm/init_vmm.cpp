@@ -125,24 +125,6 @@ namespace {
          .size = usize(ARCH_CPU_LOCAL_SIZE),
          .vmaf = VmaFlags::Read | VmaFlags::Write,
          .backing = PhysVma::Backing::AddressSpace},
-        // The vmalloc window (ARCH_VMALLOC_VIRT_BASE in aspace_layout.hpp).
-        //
-        // AddressSpace for the same reason as k:cpulocal above: mm::vmalloc()
-        // maps into it itself, a range at a time, and owns those pages. Most
-        // of the window is unmapped at any moment, so there is nothing here
-        // for reserve() to stamp permissions onto -- it would fault walking
-        // page tables that do not exist.
-        //
-        // Claimed in full at boot rather than grown on demand, because the
-        // point of the VMA is to stop VmPlacement::anywhere() from handing
-        // this range to anyone else. is_vmalloc_addr() answers for the whole
-        // window, so anything else living inside it would be freed as though
-        // it were a vmalloc allocation.
-        {.name = "k:vmalloc",
-         .base = VirtAddr(ARCH_VMALLOC_VIRT_BASE),
-         .size = usize(ARCH_VMALLOC_SIZE),
-         .vmaf = VmaFlags::Read | VmaFlags::Write,
-         .backing = PhysVma::Backing::AddressSpace},
     };
 
     INIT_CODE
@@ -201,6 +183,12 @@ namespace {
     /// named for being the part that runs before *this*.
     INIT_CODE
     auto init_heap() -> void {
+        // The window is not in PHYS_VMOS above, deliberately. Everything in
+        // that table is a range something else already owns and the VMM merely
+        // records; the vmalloc window is the VMM's own, and vmalloc creates the
+        // sub-VMA itself so that the area it maps into is the area it holds.
+        // It runs here, after init_vmm_preheap(), because there is no root VMA
+        // to carve from before that.
         heap::init_vmalloc();
 
         // Immediately, and in both images: the allocator has no other caller
