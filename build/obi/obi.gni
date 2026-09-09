@@ -92,12 +92,6 @@ template("obi") {
     data_keys = [ "obi_input_args" ]
     walk_keys = [ "obi_input_args_barrier" ]
     output_conversion = "list lines"
-
-    metadata = {
-      if (defined(invoker.metadata)) {
-        forward_variables_from(invoker.metadata, "*")
-      }
-    }
   }
 
   action(_pack_target) {
@@ -139,10 +133,6 @@ template("obi") {
         "--type=container",
         rebase_path(_obi, root_build_dir),
       ]
-
-      if (defined(invoker.metadata)) {
-        forward_variables_from(invoker.metadata, "*")
-      }
     }
   }
 
@@ -153,5 +143,21 @@ template("obi") {
                              "visibility",
                            ])
     public_deps = [ ":$_pack_target" ]
+
+    # The caller's metadata goes here, on the one public target, and nowhere
+    # else. It used to be forwarded into both the rsp generated_file and the
+    # pack action above, which meant every key a caller declared was collected
+    # TWICE by any walk that reached this image -- both of those targets are on
+    # the path from a dependent down to the deps. Nothing noticed while the
+    # only callers declared keys nobody walked; the first one that did got
+    # every row doubled.
+    #
+    # obi's own obi_input_args self-registration stays on the pack action,
+    # because that is the target whose output the entry names.
+    metadata = {
+      if (defined(invoker.metadata)) {
+        forward_variables_from(invoker.metadata, "*")
+      }
+    }
   }
 }
