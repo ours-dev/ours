@@ -115,9 +115,20 @@ if [ "${NUMA:-0}" != "0" ]; then
     done
 fi
 
+# Four CPUs by default, not one -- and settled after the NUMA block above, so
+# that a NUMA run still gets the eight its topology is written for.
+#
+# The kernel brings up every CPU the MADT reports and spreads threads over
+# them, and almost none of that code is exercised by a uniprocessor boot: the
+# 16-bit trampoline, the per-CPU areas, the reschedule IPIs, the remote
+# run-queue inserts, the local APIC's own software enable. Every one of those
+# held a bug that a single-CPU boot could not see. Pass SMP=1 to compare
+# against a uniprocessor run when a failure might be an SMP race.
+SMP=${SMP:-4}
+
 # shellcheck disable=SC2086
 exec "$ROOT/prebuilt/qemu/bin/qemu-system-x86_64" \
-    -M q35 -cpu "${CPU:-Nehalem}" -m "${MEM:-512}" -smp "${SMP:-1}" \
+    -M q35 -cpu "${CPU:-Nehalem}" -m "${MEM:-512}" -smp "$SMP" \
     $NUMA_ARGS \
     -no-reboot -nographic \
     -drive if=pflash,format=raw,unit=0,readonly=on,file="$WORK/code.fd" \
