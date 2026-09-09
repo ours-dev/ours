@@ -34,7 +34,7 @@
 #define OURS_VDSO_TABLE_OFF_VERSION 4
 #define OURS_VDSO_TABLE_OFF_NR_ENTRIES 6
 #define OURS_VDSO_TABLE_OFF_DEBUG_WRITE 8
-#define OURS_VDSO_TABLE_SIZE 16
+#define OURS_VDSO_TABLE_SIZE 12
 
 /// How many entries version 1 publishes.
 #define OURS_VDSO_NR_ENTRIES 1
