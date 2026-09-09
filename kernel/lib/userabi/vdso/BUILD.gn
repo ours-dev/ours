@@ -1,0 +1,43 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//kernel/phys/kernel_elf_binary.gni")
+
+assert(toolchain_environment == "user",
+       "the vDSO runs in ring 3 and must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The vDSO.
+#
+# An ordinary user-mode ELF, the same static-PIE shape as userboot beside it,
+# rather than the loadable_module Zircon uses for libzircon.so. That is a
+# deliberate difference and worth stating: a dynamic shared object earns its
+# dynamic section by being resolved at run time, and nothing here resolves
+# anything -- there is no dynamic linker, and userboot finds the exports
+# through the entry table at e_entry instead of through .dynsym. Building it
+# `-shared` today would mean fighting //system:user.config (which forces
+# -static and --pie; ld.lld refuses -shared with either) to produce a symbol
+# table with no reader.
+#
+# The day something links against the vDSO rather than being handed it, this
+# becomes a loadable_module and userboot grows a relocation pass. Zircon's
+# userboot does exactly that with elfldltl; //kernel/lib/eftl is the local
+# equivalent and already has the hash-table lookups it would need.
+kernel_elf_binary("vdso") {
+  visibility = [ "//kernel/products/image/*" ]
+
+  # No .code-patches section: that is a kernel-side facility, and asking for
+  # one would only add an empty file to the package. With patches off the ELF
+  # is installed as a bare `vdso` file rather than a `vdso/` subtree.
+  has_patches = false
+
+  sources = [ "vdso.S" ]
+
+  # The entry point is the export table, not a function -- nothing ever jumps
+  # to a vDSO. This is the whole mechanism by which a program with no dynamic
+  # linker finds the exports: the kernel already reads e_entry to load an
+  # image, so the table costs no new machinery on either side. Zircon points
+  # e_entry at _zx_process_exit for the same reason.
+  ldflags = [ "-Wl,-e,OURS_VDSO_TABLE" ]
+}

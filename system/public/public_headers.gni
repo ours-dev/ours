@@ -16,4 +16,5 @@ ours_public_headers = [
   "ours/status.hpp",
   "ours/syscall.hpp",
   "ours/types.hpp",
+  "ours/vdso.hpp",
 ]

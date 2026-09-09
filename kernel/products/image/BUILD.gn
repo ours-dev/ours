@@ -27,5 +27,8 @@ group("common_package_items") {
   # 后缀就会用 kernel-x86 编译出一个 -mcmodel=kernel 的“用户程序”。对标
   # Fuchsia 的 kernel_package("zircon")，userboot 同样是内核包 BootFS 里的一个
   # 文件，而不是独立的 OBI item。
-  deps = [ "//kernel/lib/userabi/userboot(//build/toolchain/ours:user-${target_cpu})" ]
+  deps = [
+    "//kernel/lib/userabi/userboot(//build/toolchain/ours:user-${target_cpu})",
+    "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
+  ]
 }
