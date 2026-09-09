@@ -9,15 +9,17 @@
 
 #include <ours/panic.hpp>
 
+/// The message, when there is one, is a format string of its own -- it is
+/// rendered with its own arguments and appended after the condition. Which of
+/// the two panic_assertion() overloads runs is settled by overload
+/// resolution on the argument count, not by an `if constexpr` on
+/// `__VA_OPT__`: with `if constexpr` in a non-template context both branches
+/// still have to compile, so the no-message expansion had to name a call it
+/// would never make, and that call quietly went stale.
 #define ASSERT(condition, ...)                                                                     \
     do {                                                                                           \
         if (!(condition)) {                                                                        \
-            if constexpr (__VA_OPT__(0 ==) 1) {                                                    \
-                ours::panic("Assertion failed on {}", #condition);                                 \
-            } else {                                                                               \
-                ours::panic("Assertion failed on {} with message: {}",                             \
-                            #condition __VA_OPT__(, ) __VA_ARGS__);                                \
-            }                                                                                      \
+            ours::panic_assertion(#condition __VA_OPT__(, ) __VA_ARGS__);                          \
         }                                                                                          \
     } while (0)
 

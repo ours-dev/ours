@@ -78,6 +78,22 @@ namespace detail {
     }
 } // namespace detail
 
+namespace detail {
+    /// Renders one format string and its arguments onto the end of `sink`.
+    ///
+    /// The inner lambda is what gives make_format_args() the lvalues it
+    /// requires: as_format_arg() may hand back a prvalue string_view, and
+    /// binding that to the lambda's own parameter keeps it alive for the
+    /// whole formatting call.
+    template <typename... Args>
+    FORCE_INLINE
+    auto render(PanicSink &sink, std::string_view fmt, Args &&...args) -> void {
+        [&](auto &&...prepared) {
+            std::vformat_to(PanicSink::Iterator{&sink}, fmt, std::make_format_args(prepared...));
+        }(as_format_arg(static_cast<Args &&>(args))...);
+    }
+} // namespace detail
+
 // Panic formats into a bounded, never-allocating stack buffer (PanicSink)
 // in every environment — the phys bootloader included. libc++'s
 // std::vformat_to machinery is header-only and freestanding-safe (the
@@ -91,16 +107,46 @@ auto panic(std::string_view fmt, Args &&...args) -> void {
     } else {
         char buffer[512];
         auto sink = PanicSink{buffer, buffer + sizeof(buffer) - 1};
-        // The inner lambda is what gives make_format_args() the lvalues it
-        // requires: as_format_arg() may hand back a prvalue string_view, and
-        // binding that to the lambda's own parameter keeps it alive for the
-        // whole formatting call.
-        [&](auto &&...prepared) {
-            std::vformat_to(PanicSink::Iterator{&sink}, fmt, std::make_format_args(prepared...));
-        }(detail::as_format_arg(static_cast<Args &&>(args))...);
+        detail::render(sink, fmt, static_cast<Args &&>(args)...);
         *sink.m_out = '\0';
         vpanic(std::string_view(buffer, static_cast<std::size_t>(sink.m_out - buffer)));
     }
+}
+
+/// What a bare ASSERT(condition) expands to.
+FORCE_INLINE [[noreturn]]
+inline auto panic_assertion(std::string_view condition) -> void {
+    panic("Assertion failed on {}", condition);
+}
+
+/// What ASSERT() expands to when the caller supplied a message.
+///
+/// The condition and the message have to be rendered as *two* format strings,
+/// one after the other, and that is the whole point of this function. ASSERT
+/// used to fold them into one call:
+///
+///     ours::panic("Assertion failed on {} with message: {}", #condition, __VA_ARGS__)
+///
+/// which has two placeholders and, for any assertion whose message takes
+/// arguments of its own, three or more arguments. std::format ignores the
+/// surplus, so the message's own `{}`s were never filled in and its arguments
+/// were silently dropped -- and the half-rendered text then went to
+/// vpanic(), which parsed it *again*. An assertion such as
+///
+///     DEBUG_ASSERT(a == b, "Invoke {}() on mismatched CPU[{}]", __func__, cpu)
+///
+/// therefore died inside the formatter with "argument index value is too
+/// large", and what reached the console was libc++'s abort message rather
+/// than a word about which CPU had gone wrong.
+template <typename... Args>
+FORCE_INLINE [[noreturn]]
+auto panic_assertion(std::string_view condition, std::string_view fmt, Args &&...args) -> void {
+    char buffer[512];
+    auto sink = PanicSink{buffer, buffer + sizeof(buffer) - 1};
+    detail::render(sink, "Assertion failed on {} with message: ", condition);
+    detail::render(sink, fmt, static_cast<Args &&>(args)...);
+    *sink.m_out = '\0';
+    vpanic(std::string_view(buffer, static_cast<std::size_t>(sink.m_out - buffer)));
 }
 
 FORCE_INLINE [[noreturn]]
