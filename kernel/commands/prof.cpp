@@ -15,6 +15,7 @@
 #include <logz4/log.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <heap/new.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/status.hpp>
 
@@ -27,15 +28,21 @@ namespace {
     mm::CpuLocal::PerCpu<prof::SampleBuffer> g_buffer;
 
     // The FDE index array. It is sized by the kernel's own `.eh_frame`
-    // (32 bytes per FDE, ~800 FDEs in the dbg image, so ~25 KiB) which is
-    // past the largest kmalloc size class (4 KiB), and `ktl::kmalloc()`
-    // answers an oversized request with nullptr rather than falling back to
-    // pages. That rules out `ktl::Vec` here: its allocator constructs the
-    // elements at whatever `operator new[]` returned, so a nullptr becomes a
-    // page fault in `reserve()`, which is exactly how this hook used to hang
-    // every boot. The array therefore comes straight from the frame
-    // allocator, read through the physmap, and is never freed -- it lives as
-    // long as the text it describes.
+    // (32 bytes per FDE, ~800 FDEs in the dbg image, so ~25 KiB), which is
+    // past the largest kmalloc size class.
+    //
+    // That used to mean it could not use `new` at all: an oversized request
+    // answered nullptr, and `ktl::Vec`'s allocator then constructed elements
+    // at that nullptr, which is how this hook once hung every boot. It came
+    // straight from the frame allocator instead. Both halves of that are
+    // fixed now -- `new` routes past the ladder to vmalloc, and the placement
+    // forms are noexcept so a failure is a null pointer rather than a
+    // constructor running on one -- so this is an ordinary array again.
+    //
+    // Still a plain array rather than a `ktl::Vec`: the index is built in two
+    // passes, the first of which counts, so it is allocated at its exact
+    // final size and never grows. It is never freed either; it lives as long
+    // as the text it describes.
     struct FdeTable final {
         unwind::FdeIndex::Entry *entries = nullptr;
         usize capacity = 0;
@@ -81,12 +88,10 @@ namespace {
             return;
         }
 
-        // Whole pages, rounded up: the frame allocator only deals in
-        // power-of-two orders, so the slack past `count` is at most one
-        // order's worth and is simply left unused.
-        usize const bytes = count * sizeof(Entry);
-        usize const nr_frames = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-        auto *entries = mm::get_frames_n<Entry>(mm::GAF_KERNEL, nr_frames);
+        // Exactly `count` entries. The frame allocator this used to call
+        // rounds a page count up to a power of two, so ~25 KiB became 32 KiB
+        // and the slack was simply lost; vmalloc rounds to a page and stops.
+        auto *entries = new (mm::GAF_KERNEL) Entry[count];
         if (entries == nullptr) {
             log::warn("prof: FDE index allocation failed; unwinding disabled");
             return;
