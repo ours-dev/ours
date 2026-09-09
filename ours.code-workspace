@@ -28,13 +28,15 @@
     // There is ONE configuration for every kernel rather than one per kernel,
     // and the difference is not tidiness. A per-kernel configuration has to
     // name an image and an ELF in two different places, and they drift: the
-    // entry that claimed to debug kernel.dev.obi pointed at `vmours`, while the
-    // packer's own manifest (gen/kernel/products/image/dev/ours.fini) says that
-    // image carries `vmours.with-tests`. start_kernel sits 0xE000 (56 KiB)
+    // entry that claimed to debug kernel.dev.obi pointed at `vmours`, while
+    // that image carries `vmours.with-tests`. start_kernel sits 0xE000 (56 KiB)
     // apart in the two, so every breakpoint landed in unrelated code -- and
     // dbg.0's `vmours` is not even a build target any more (ninja -t query says
     // unknown), so it was a week-old leftover that would never be rebuilt.
-    // Here the choice is made once, by
+    //
+    // Nothing here writes that pairing down any more. kernel_image() emits it
+    // into debug_images.json, and scripts/qemu-debug.sh reads it. The choice is
+    // made once, by
     // scripts/qemu-debug.sh, which boots an image and publishes the matching
     // ELF at out/bringup.x86/.debug/kernel.elf. The debugger always opens that
     // one path, so it cannot be looking at symbols for a kernel it did not boot.
@@ -154,9 +156,12 @@
         // configuration and its preLaunchTask is asked twice, once per pass;
         // routing the choice through the script is what keeps it to one prompt.
         //
-        // The values are scripts/qemu-debug.sh's variant names, and that script
-        // owns the image/ELF pairing for each -- this list is a menu, not a
-        // second copy of the mapping.
+        // The values are image names out of debug_images.json, which
+        // kernel_image() generates -- this list is a menu, not a second copy of
+        // anything. It does have to be typed out, because VS Code cannot
+        // compute a pickString's options; a name that is not in the manifest
+        // makes the script print the ones that are, so the two cannot silently
+        // disagree about what exists.
         //
         // Labels do not repeat the value: VS Code renders an option as
         // "<label>: <value>", so "dbg.1 -- ...": dbg.1 would say it twice.
@@ -167,20 +172,20 @@
                 "id": "kernel",
                 "type": "pickString",
                 "description": "Which kernel?",
-                "default": "dbg.1",
+                "default": "kernel.dev.dbg_1",
                 "options": [
                     {
                         "label": "asserts and trace on",
-                        "value": "dbg.1"
+                        "value": "kernel.dev.dbg_1"
                     },
                     {
                         // A bug that asserts in dbg.1 goes silent here, so both
                         // have to be debuggable, not just the noisy one.
                         "label": "asserts compiled out, unit tests linked in",
-                        "value": "dev"
+                        "value": "kernel.dev"
                     }
-                    // "fake" is deliberately absent even though
-                    // scripts/qemu-debug.sh knows how to pair it: fake.obi does
+                    // "fake" is deliberately absent even though the build
+                    // describes it and the script resolves it: fake.obi does
                     // not boot on this tree -- physboot rejects it with
                     // "Invalid kernel package: 4". Offering a one-click entry
                     // that hangs at a black screen is worse than not offering

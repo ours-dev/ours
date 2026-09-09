@@ -107,7 +107,13 @@ class Scheduler {
         return STATES[usize(State::Active)].load(std::memory_order_relaxed);
     }
 
-    auto init() -> void;
+    /// |cpunum| is the CPU this scheduler belongs to, which is not the CPU
+    /// running this: task::init() builds every possible CPU's scheduler from
+    /// the boot CPU, before any AP exists. It used to answer `Cpu::id()`
+    /// here, so every scheduler in the system recorded CPU 0 as its own --
+    /// see the note on the definition.
+    INIT_CODE
+    auto init(CpuNum cpunum) -> void;
 
     auto assert_thread_in_scheduler(Thread *thread) -> void;
 

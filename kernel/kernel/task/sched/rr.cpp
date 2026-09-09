@@ -6,13 +6,23 @@
 
 namespace ours::task::sched {
 namespace {
-    /// The one place the queue is looked up, so every override agrees on
-    /// which CPU's it is: the running CPU's. Scheduler::Current::get() is
-    /// per-CPU and every ISchedule entry point runs on the CPU whose Runtime
-    /// it was handed.
+    /// The one place the queue is looked up, so every override agrees on which
+    /// CPU's it is: the one that owns the Runtime the entry point was handed.
+    ///
+    /// It used to be `Scheduler::Current::get()`, the *running* CPU's, on the
+    /// stated assumption that "every ISchedule entry point runs on the CPU
+    /// whose Runtime it was handed". That is not true and cannot be made true:
+    /// Scheduler::do_unpark_thread() deliberately runs on the waking CPU and
+    /// inserts into the target CPU's run queue under the target's lock, which
+    /// is how a thread reaches a CPU that is halted in its idle loop. With the
+    /// running CPU's queue, a cross-CPU wakeup incremented the target's
+    /// num_queued_threads while putting the thread on the waker's own FIFO --
+    /// so the target saw work it did not have and the waker ran a thread it
+    /// had just given away. Every thread the kernel created still ended up on
+    /// CPU 0, only now with the bookkeeping disagreeing about it.
     FORCE_INLINE
-    auto rq() -> RrRunQueue & {
-        return Scheduler::Current::get().rr_run_queue();
+    auto rq(Runtime &runtime) -> RrRunQueue & {
+        return Scheduler::Current::get(runtime.which_cpu).rr_run_queue();
     }
 
 } // namespace
@@ -61,7 +71,7 @@ auto RrRunQueue::peek() -> Context * {
 }
 
 auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl) -> Status {
-    auto &queue = rq();
+    auto &queue = rq(runtime);
     queue.verify();
 
     auto &ctx = thread->scheduling_context();
@@ -79,7 +89,7 @@ auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl
 }
 
 auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl) -> Status {
-    auto &queue = rq();
+    auto &queue = rq(runtime);
     queue.verify();
 
     auto &ctx = thread->scheduling_context();
@@ -97,8 +107,8 @@ auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl
     return Status::Ok;
 }
 
-auto RoundRobin::evaluate_next_thread(Runtime &, Thread *) -> Thread * {
-    auto &queue = rq();
+auto RoundRobin::evaluate_next_thread(Runtime &runtime, Thread *) -> Thread * {
+    auto &queue = rq(runtime);
     queue.verify();
 
     auto *const head = queue.peek();
@@ -110,7 +120,7 @@ auto RoundRobin::evaluate_next_thread(Runtime &, Thread *) -> Thread * {
 /// slice is charged up to now first so the next set_next_thread() starts it
 /// from a clean baseline.
 auto RoundRobin::put_prev_thread(Runtime &runtime, Thread *prev) -> void {
-    auto &queue = rq();
+    auto &queue = rq(runtime);
     queue.verify();
 
     auto &ctx = prev->scheduling_context();
@@ -128,7 +138,7 @@ auto RoundRobin::put_prev_thread(Runtime &runtime, Thread *prev) -> void {
 /// the baseline slice_spent() measures from, and curr_started_time is where
 /// charge() measures elapsed time from.
 auto RoundRobin::set_next_thread(Runtime &runtime, Thread *next) -> void {
-    auto &queue = rq();
+    auto &queue = rq(runtime);
     queue.verify();
 
     auto &ctx = next->scheduling_context();
@@ -146,7 +156,7 @@ auto RoundRobin::set_next_thread(Runtime &runtime, Thread *next) -> void {
 /// rotate to, and asking for a reschedule would only pay for a switch back to
 /// itself.
 auto RoundRobin::update_thread(Runtime &runtime, Thread *curr) -> void {
-    auto &queue = rq();
+    auto &queue = rq(runtime);
     queue.verify();
 
     charge(runtime, curr);
@@ -159,7 +169,7 @@ auto RoundRobin::update_thread(Runtime &runtime, Thread *curr) -> void {
 /// Yielding under round-robin is giving up the rest of the slice: mark it
 /// spent and let put_prev_thread() rotate. Pointless with nobody else queued.
 auto RoundRobin::yield_thread(Runtime &runtime, Thread *curr) -> void {
-    auto &queue = rq();
+    auto &queue = rq(runtime);
     queue.verify();
 
     if (!queue.num_queued()) {
@@ -171,7 +181,7 @@ auto RoundRobin::yield_thread(Runtime &runtime, Thread *curr) -> void {
 }
 
 auto RoundRobin::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
-    rq().verify();
+    rq(runtime).verify();
 
     if (!next->scheduling_context().runqueue_state().is_active()) {
         return Status::BadState;
@@ -196,6 +206,11 @@ auto RoundRobin::on_thread_init(Runtime &runtime, Thread *thread) -> void {
 /// path goes through update_thread() instead and never calls this.
 auto RoundRobin::on_thread_tick(Runtime &, Thread *, bool) -> void {}
 
+/// The running CPU's, unlike every other lookup in this file, because
+/// ISchedule::num_queued() is handed no Runtime to ask about. Its one caller
+/// is Scheduler::pick_next_thread(), which asks about the scheduler it is
+/// itself running on, so the two agree; the day something wants a remote
+/// CPU's depth, the interface has to carry the Runtime like the rest.
 auto RoundRobin::num_queued() const -> usize {
     return Scheduler::Current::get().rr_run_queue().num_queued();
 }

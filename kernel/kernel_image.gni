@@ -38,6 +38,38 @@ template("kernel_image") {
     _bootable = ""
   }
 
+  # Everything a debugger needs about this image, written down by the build
+  # rather than by hand, and parked right next to the .obi it describes.
+  #
+  # An .obi and the unstripped ELF whose symbols match it are chosen in
+  # different templates, in different toolchains, and the pairing is not
+  # mechanical -- kernel.dev.obi packages vmours.with-tests, kernel.dev.dbg_1.obi
+  # packages vmours, and fake.obi packages neither. Anything that writes the
+  # pair down a second time drifts from this one, and it has: the debugger entry
+  # for kernel.dev.obi named a binary that had stopped being a build target at
+  # all (docs/changes/260909/tooling.md).
+  #
+  # "binaries" is the right key rather than "images": images names the STRIPPED
+  # .image.elf that actually gets packed, while the debug info lives in the
+  # unstripped sibling, which is what binaries' "debug" field carries. Each
+  # entry also carries "environment", which is what separates the kernel from
+  # the userboot/vDSO (user) and physload/physboot (kernel.phys) ELFs in the
+  # same image -- so the consumer filters instead of joining two walks.
+  #
+  # Written by `gn gen`, not by ninja: generated_file() resolves the walk and
+  # writes the file while the graph is generated, so nothing has to depend on
+  # this target for the manifest to be on disk. It sits beside the .obi so that
+  # finding it needs no index and no second hand-maintained list -- the set of
+  # debuggable images is `ls $root_out_dir/*.debug.json`.
+  generated_file("$target_name.debug") {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":*" ]
+    deps = invoker.deps
+    data_keys = [ "binaries" ]
+    outputs = [ "$_output_dir/$_output_name.debug.json" ]
+    output_conversion = "json"
+  }
+
   obi(target_name) {
     forward_variables_from(invoker,
                            [
@@ -52,5 +84,6 @@ template("kernel_image") {
       compressed = invoker.compressed
     }
     bootable = _bootable
+
   }
 }

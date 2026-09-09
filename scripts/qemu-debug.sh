@@ -9,11 +9,14 @@
 # attaching to a port nothing is listening on fails the whole launch.
 #
 # Usable on its own too:
-#     ./scripts/qemu-debug.sh              # dbg.1 (the default)
-#     ./scripts/qemu-debug.sh dev
+#     ./scripts/qemu-debug.sh                    # kernel.dev.dbg_1 (default)
+#     ./scripts/qemu-debug.sh kernel.dev
 #     ./scripts/qemu-debug.sh fake
-#     PORT=1235 ./scripts/qemu-debug.sh dbg.1
-#     IMAGE=/path/to.obi ELF=/path/to/elf ./scripts/qemu-debug.sh   # off-table
+#     PORT=1235 ./scripts/qemu-debug.sh
+#     IMAGE=/path/to.obi ELF=/path/to/elf ./scripts/qemu-debug.sh   # off-manifest
+#
+# The names are whatever kernel_image() produced; pass a wrong one and it
+# prints the list.
 # then in another terminal:
 #     lldb -o 'target create out/bringup.x86/.debug/kernel.elf' \
 #          -o 'target modules load --file kernel.elf --slide 0xffffff8840000000' \
@@ -23,7 +26,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-$ROOT/out/bringup.x86}
 PORT=${PORT:-1234}
-VARIANT=${1:-${VARIANT:-dbg.1}}
+VARIANT=${1:-${VARIANT:-kernel.dev.dbg_1}}
 
 # Captured before the table below assigns to IMAGE/ELF: the table has to run
 # first, since it is what defines the defaults, and would otherwise erase what
@@ -32,52 +35,60 @@ VARIANT=${1:-${VARIANT:-dbg.1}}
 ENV_IMAGE=${IMAGE:-}; ENV_IMAGE_SET=${IMAGE+x}
 ENV_ELF=${ELF:-};     ENV_ELF_SET=${ELF+x}
 
-# Which image, and which ELF carries its symbols.
+# Which image, and which ELF carries its symbols -- both read out of the build
+# rather than written down here.
 #
-# The pairing is the entire reason this table exists rather than living in the
-# debugger configuration: it is NOT mechanical. kernel.dev.obi packages
-# vmours.with-tests, not vmours -- two different binaries in the same switchset
-# directory, and the wrong one puts every breakpoint tens of kilobytes off (see
-# docs/changes/260909/tooling.md). fake.obi is not vmours at all. Anything that
-# has to name an image and an ELF separately can get them out of step; here
-# they are chosen together, once.
-case "$VARIANT" in
-    dbg.1)
-        IMAGE=$OUT/kernel.dev.dbg_1.obi
-        ELF=$OUT/kernel_x86.dbg.1/obj/kernel/products/bin/vmours
-        ;;
-    dev)
-        IMAGE=$OUT/kernel.dev.obi
-        ELF=$OUT/kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests
-        ;;
-    fake)
-        # Kept because the pairing is right and costs one line, but NOT offered
-        # in the editor's dropdown: fake.obi does not currently boot -- physboot
-        # answers "Invalid kernel package: 4" before the kernel is entered. See
-        # docs/repairs/260909/products.md.
-        IMAGE=$OUT/fake.obi
-        ELF=$OUT/kernel_x86.dbg.0/obj/kernel/tests/fake-kernel/fake-kernel
-        ;;
-    *)
-        echo "qemu-debug: unknown variant '$VARIANT' (want: dbg.1, dev, fake)" >&2
-        exit 2
-        ;;
-esac
-
-# The table stays overridable for anyone booting something it does not know
-# about. The names are IMAGE and ELF because qemu-boot.sh beside this script
-# already calls it IMAGE -- one variable meaning two things across two sibling
-# scripts costs more than the few characters a distinct name would save.
+# The pairing is not mechanical and cannot be guessed from the names:
+# kernel.dev.obi packages vmours.with-tests, kernel.dev.dbg_1.obi packages
+# vmours, and fake.obi packages neither. It also moves: the copy that used to
+# live in this script named a binary that had quietly stopped being a build
+# target (docs/changes/260909/tooling.md). So kernel_image() writes a
+# <image>.debug.json beside each .obi, and this reads that.
 #
-# They override together: naming a new image while keeping the table's symbols
-# is precisely the mistake the table exists to prevent.
+# The override is tested FIRST, before the manifest is even looked for: booting
+# something the build does not describe is exactly the case where there is no
+# manifest to consult, and requiring one would close the escape hatch at the
+# moment it is needed. The names match qemu-boot.sh beside this script, which
+# already calls it IMAGE. They override together -- naming a new image while
+# keeping the build's symbols is precisely the mistake all of this prevents.
 if [ -n "$ENV_IMAGE_SET$ENV_ELF_SET" ]; then
     if [ -z "$ENV_IMAGE_SET" ] || [ -z "$ENV_ELF_SET" ]; then
-        echo "qemu-debug: IMAGE and ELF override the table together, or neither" >&2
+        echo "qemu-debug: IMAGE and ELF override the build together, or neither" >&2
         exit 2
     fi
     IMAGE=$ENV_IMAGE
     ELF=$ENV_ELF
+else
+    IMAGE=$OUT/$VARIANT.obi
+    # python3 rather than a JSON parser in sh because the port poller below
+    # already depends on it, so this adds no new tool.
+    ELF=$(OUT="$OUT" VARIANT="$VARIANT" python3 <<'RESOLVE'
+import glob, json, os, sys
+
+out, want = os.environ["OUT"], os.environ["VARIANT"]
+manifests = sorted(glob.glob(os.path.join(out, "*.debug.json")))
+if not manifests:
+    sys.exit(f"qemu-debug: no *.debug.json in {out} -- run 'prebuilt/gn/gn gen {out}' first")
+
+path = os.path.join(out, want + ".debug.json")
+if not os.path.exists(path):
+    names = ", ".join(os.path.basename(m)[: -len(".debug.json")] for m in manifests)
+    sys.exit(f"qemu-debug: unknown image '{want}' (the build offers: {names})")
+
+# One image contains several ELFs -- physload and physboot from the kernel.phys
+# environment, userboot and the vDSO from user. The kernel is the one built in
+# the kernel environment, and "debug" is its unstripped path (the packed
+# .image.elf beside it has had its symbols removed).
+kernels = [e for e in json.load(open(path)) if e.get("environment") == "kernel"]
+if not kernels:
+    sys.exit(f"qemu-debug: '{want}' contains no kernel-environment ELF -- not a bootable image")
+if len(kernels) > 1:
+    sys.exit("qemu-debug: '%s' contains %d kernel ELFs: %s"
+             % (want, len(kernels), ", ".join(k["debug"] for k in kernels)))
+
+print(os.path.join(out, kernels[0]["debug"]))
+RESOLVE
+) || exit $?
 fi
 
 # Both checked before QEMU is touched. A missing ELF is the nastier of the two:

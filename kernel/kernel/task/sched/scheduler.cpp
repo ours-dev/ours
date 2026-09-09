@@ -311,7 +311,19 @@ auto Scheduler::reschedule_mask(CpuMask const &mask) -> void {
     preemption_state.add_pending();
 }
 
-INIT_CODE auto Scheduler::init() -> void {
+/// |cpunum| is handed in rather than read from Cpu::id(), for the same reason
+/// IdleThread::init() takes one: task::init() walks cpu_possible_mask() and
+/// builds every CPU's scheduler from the boot CPU, long before the secondaries
+/// exist. Asking the running CPU there answered 0 for all of them.
+///
+/// which_cpu is not bookkeeping. It is the bit set_state() flips, so every
+/// AP's Scheduler::Current::set_active(true) was setting CPU 0's bit in the
+/// Active mask and leaving its own clear -- select_target_cpu() consults that
+/// mask first, so no AP could ever be handed a thread. And it is what
+/// reschedule_common() checks itself against, which is where the boot
+/// eventually stopped: "Invoke reschedule_common() on mismatched CPU[1]".
+INIT_CODE
+auto Scheduler::init(CpuNum cpunum) -> void {
     new (this) Self();
 
     auto const num_schedule = SCHEDULES_END - SCHEDULES_START;
@@ -322,7 +334,7 @@ INIT_CODE auto Scheduler::init() -> void {
         m_schedules[static_cast<usize>(entry.discipline)] = entry.instance;
     }
 
-    m_runtime.which_cpu = Cpu::id();
+    m_runtime.which_cpu = cpunum;
 }
 
 auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
@@ -725,8 +737,18 @@ auto Scheduler::Current::park_thread(Thread *curr) -> void {
     self.reschedule_common(curr, Mode::Regular);
 }
 
+/// `this` is the *target* CPU's scheduler, which is usually not the running
+/// one: unpark_thread() selects a CPU for the thread and then reaches into
+/// that CPU's run queue from here. The queue is protected by its own lock,
+/// taken below, which is what makes the remote insert safe; there used to be a
+/// `which_cpu == Cpu::id()` assertion at the top instead, and it held only
+/// because select_target_cpu() could never answer anything but CPU 0 -- the
+/// first thread placed on a secondary killed the boot on it.
+///
+/// This is Zircon's Scheduler::Unblock() -> target->Insert(): the insert
+/// happens on the waker's CPU, and the target CPU is told about it afterwards
+/// through RescheduleMask(), never by running any of this on it.
 auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void {
-    DEBUG_ASSERT(m_runtime.which_cpu == Cpu::id());
     DEBUG_ASSERT(thread != m_runtime.curr_thread);
 
     // Every state a thread can be woken out of, not only the two a wait queue
@@ -762,8 +784,12 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void 
     schedule->on_thread_unpark(m_runtime, thread);
 }
 
+/// Asks whether the thread just inserted should preempt what the target CPU is
+/// running. Like do_unpark_thread(), which is its only caller, this runs on the
+/// waker's CPU and reads the *target* CPU's runtime under that CPU's run queue
+/// lock.
 auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
-    DEBUG_ASSERT(Cpu::id() == m_runtime.which_cpu);
+    auto const target_cpu = m_runtime.which_cpu;
 
     auto const current_thread = m_runtime.curr_thread;
     auto const x_schedule = thread->scheduling_context().schedule();
@@ -774,7 +800,12 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
         // To the same schedule, preemption depends on schedule's internal implementation.
         x_schedule->unpark_preempt(m_runtime, current_thread, thread, control);
     } else if (x_schedule > y_schedule) {
-        preemption_state.add_pending();
+        // |target_cpu|, not the default: add_pending() defaults to the mask of
+        // the CPU *executing* it, and the thread whose preemption is being
+        // requested here is the one running on the target CPU. Left at the
+        // default, a cross-CPU wakeup marked the waker's CPU as needing to
+        // preempt and told the target nothing.
+        preemption_state.add_pending(CpuMask::of(target_cpu));
     }
 
     // The queue event has occurred. Therefore there is none of need to process
@@ -803,14 +834,28 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
         return target_cpu;
     }
 
-    // The following is a fallback strategy: pick the scheduler with the minimal runtime.
+    // The following is a fallback strategy: pick the least loaded scheduler.
+    //
+    // Load is the run queue's depth, `num_queued_threads`, which enqueue and
+    // dequeue keep up to date. It used to be `total_expected_runtime`, a field
+    // of Runtime that nothing in the tree ever writes -- so every comparison
+    // was 0 > 0 and the answer was always the lowest-numbered candidate.
+    // Nothing showed until the secondaries came up: with one CPU online the
+    // degenerate answer is also the right one. With four, every thread the
+    // kernel ever created still went to CPU 0 while three CPUs idled.
+    //
+    // Another CPU's counter is read without its run queue lock. That is
+    // deliberate and is what Linux's find_idlest_cpu() does with
+    // `cpu_rq(cpu)->nr_running`: the number is a hint that a migration or a
+    // re-selection may invalidate a moment later anyway, and taking three
+    // remote run queue locks to place one thread would cost more than the
+    // occasional misplacement.
     auto const pick_least_loaded = [](CpuMask const &candidates) -> CpuNum {
         auto best_cpu = INVALID_CPU_NUM;
         candidates.for_each([&best_cpu](CpuNum cpunum) {
-            // Find the mininal expected runtime CPU
             if (best_cpu == INVALID_CPU_NUM ||
-                Scheduler::Current::get(best_cpu).m_runtime.total_expected_runtime >
-                    Scheduler::Current::get(cpunum).m_runtime.total_expected_runtime) {
+                Scheduler::Current::get(best_cpu).num_runnable() >
+                    Scheduler::Current::get(cpunum).num_runnable()) {
                 best_cpu = cpunum;
             }
         });

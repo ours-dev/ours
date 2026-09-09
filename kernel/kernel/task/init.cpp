@@ -55,7 +55,7 @@ INIT_CODE
 auto init() -> void {
     cpu_possible_mask().for_each([](CpuNum cpu) {
         auto &scheduler = Scheduler::Current::get(cpu);
-        scheduler.init();
+        scheduler.init(cpu);
 
         init_idle_task_percpu(cpu);
     });

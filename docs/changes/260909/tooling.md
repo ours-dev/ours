@@ -536,3 +536,156 @@ https://code.visualstudio.com/docs/reference/variables-reference#_input-variable
   `.debug/kernel.elf`。旧的三配置方案有完全相同的缺陷（三份都写死 `localhost:1234`），
   不是这次引入的回归。
 - **没有动 `.vscode/tasks.json` 里那些过期的 GN 任务**。第三次说同一句话：那是另一件事。
+
+## 调试名单改由 `kernel_image()` 生成，脚本不再自带映射表（2026-09-09）
+
+**文件**
+- `kernel/kernel_image.gni` —— 每个镜像旁边生成一份 `<镜像名>.debug.json`
+- `scripts/qemu-debug.sh` —— 删掉 `case` 表，改读那份清单；`IMAGE`/`ELF` 覆盖提到最前
+- `ours.code-workspace` —— 下拉框的值改成构建产出的镜像名
+- `docs/development/debugging.md` —— 新增「名单从哪来」
+
+**症状**
+上一节把镜像↔ELF 的配对从三份调试配置收进了脚本里的一张 `case` 表。表还是手写的，
+所以还是会漂——上一节记的那个错（`dev` 指向一个已经不是构建目标的 `vmours`）能再发生
+一次，只是换个文件。新增一个 `kernel_image()` 也要记得回来加一个 arm。
+
+**原因**
+这张表**本来就不该由人写**：它的两列都是构建自己算出来的。镜像名来自
+`kernel_image()` 的 `output_name`，内核 ELF 来自 `kernel_package` deps 里那个带
+switchset 工具链的 label——两者都在 GN 的图里，只是从来没人把它们写到一个地方。
+
+而且这份信息**已经以 metadata 的形式存在**了。`kernel/phys/kernel_elf_image.gni:126`
+的 `binaries` 键每个 ELF 一条：
+
+```gn
+binaries += [
+  {
+    cpu = current_cpu
+    debug = rebase_path(_debug_path, root_build_dir)   # 未 strip，带调试信息
+    environment = toolchain_environment                # kernel / kernel.phys / user
+    label = get_label_info(":$target_name", "label_with_toolchain")
+    type = _binary_type
+  },
+]
+```
+
+`gn meta` 实测，一个镜像走出来正好四条，`environment` 把它们分得干干净净：
+
+```
+debug = "kernel.phys_x86.phys.dbg_0/obj/kernel/phys/physload"          environment = "kernel.phys"
+debug = "user-x86/obj/kernel/lib/userabi/userboot/userboot"            environment = "user"
+debug = "user-x86/obj/kernel/lib/userabi/vdso/vdso"                    environment = "user"
+debug = "kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests"   environment = "kernel"
+```
+
+内核就是 `environment == "kernel"` 那条，一次筛选，不需要拼字符串也不需要 join。
+
+**改法**
+`kernel_image()` 里加一个 `generated_file`，把这次走图的结果落在 `.obi` 旁边：
+
+```gn
+  generated_file("$target_name.debug") {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":*" ]
+    deps = invoker.deps
+    data_keys = [ "binaries" ]
+    outputs = [ "$_output_dir/$_output_name.debug.json" ]
+    output_conversion = "json"
+  }
+```
+
+脚本那边，改前是一张手写表：
+
+```sh
+case "$VARIANT" in
+    dbg.1) IMAGE=$OUT/kernel.dev.dbg_1.obi
+           ELF=$OUT/kernel_x86.dbg.1/obj/kernel/products/bin/vmours ;;
+    dev)   IMAGE=$OUT/kernel.dev.obi
+           ELF=$OUT/kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests ;;
+    fake)  IMAGE=$OUT/fake.obi
+           ELF=$OUT/kernel_x86.dbg.0/obj/kernel/tests/fake-kernel/fake-kernel ;;
+    *)     echo "qemu-debug: unknown variant '$VARIANT' ..." >&2; exit 2 ;;
+esac
+```
+
+改后没有表，只有一次查询：
+
+```sh
+IMAGE=$OUT/$VARIANT.obi
+ELF=$(OUT="$OUT" VARIANT="$VARIANT" python3 <<'RESOLVE'
+...
+kernels = [e for e in json.load(open(path)) if e.get("environment") == "kernel"]
+print(os.path.join(out, kernels[0]["debug"]))
+RESOLVE
+) || exit $?
+```
+
+「构建提供哪些镜像」也不再有第二份名单，就是一次 glob：
+
+```
+$ ./scripts/qemu-debug.sh bogus
+qemu-debug: unknown image 'bogus' (the build offers: fake, kernel.dev.dbg_1, kernel.dev)
+```
+
+清单放在 `.obi` 旁边（`$_output_dir/$_output_name.debug.json`）而不是 `gen/` 深处，
+是为了这一条：**glob 就能枚举，不需要索引**。
+
+被否掉的方案 1：**`build_api_module("debug_images")` 汇总成一份顶层 `debug_images.json`**。
+写出来了、也跑通了，然后否掉，两个理由。一是它要在 `//BUILD.gn` 里维护一张新的 deps 表
+（"mirror group('default')'s image reach"）——一个既不在 `$ours_product` 下、也不是 `fake`
+的新镜像会**静默**缺席，和 `case` 表漏一个 arm 是同一种失效，只是离脚本更远、更难发现；
+真相来源从 1 个变成 2 个而不是 0 个。二是把 metadata 挂到 `obi()` 目标上会触发
+`obi.gni` 的双重转发（那是个真 bug，已单独修掉，见 `260909/obi.md`），而放在 `.obi`
+旁边根本不经过 `obi()`。
+
+被否掉的方案 2：**读现成的 `.fini`**。不成立。`.fini` 给的是 strip 过的
+`<x>.image.elf`，要砍后缀才拿到带符号的兄弟；而 `ours_strip_kernel_binaries` 一旦翻成
+true，`link_output_suffix` 变成 `.debug`，**strip 产物的文件名不变**——砍后缀会在那一刻
+静默指向一个没有符号的文件。再者 `.fini` 自己的路径也推不出来（`dev/ours.fini` vs
+`fake/fake-kernel.fini`，basename 来自 `kernel_package` 的目标名），要读它先得有一张
+variant→fini 的表，正是要删的那张。
+
+被否掉的方案 3：**同时走 `images` + `debug_symbol_files` 两个键，按 label join**。第一版
+就是这么写的，能用，但比需要的复杂：`images` 只是为了认出「哪个是内核」，而 `binaries`
+的 `environment` 字段本来就回答了这个问题。少一个键、少一次 join、少十行注释。
+
+**参照**
+Fuchsia `//BUILD.gn` 的 `build_api_module("binaries")` / `("images")` 收的就是这几个键；
+`environment` 字段对应 Fuchsia 的 `toolchain_environment`。本项目这次只做到「每个镜像
+一份、放在镜像旁边」，没有做顶层索引，理由见上。
+
+**验证**
+1. `gn gen` 通过，`ninja -C out/bringup.x86` 32/32 全绿。
+2. 三份清单生成在镜像旁边，筛 `environment == "kernel"` 各得一条，与之前手写表**逐字相同**：
+
+   ```
+   fake               kernel_x86.dbg.0/obj/kernel/tests/fake-kernel/fake-kernel
+   kernel.dev.dbg_1   kernel_x86.dbg.1/obj/kernel/products/bin/vmours
+   kernel.dev         kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests
+   ```
+3. 两个菜单项各完整启动 + attach 一次，断点落在各自 ELF 该在的地方：
+
+   ```
+   kernel.dev.dbg_1  Breakpoint 1: ... at main.cpp:106:9, address = 0xffffff88400890a9
+   kernel.dev        Breakpoint 1: ... at main.cpp:106:9, address = 0xffffff88400760a9
+   ```
+4. 未知名字：列出构建里真有的三个，退出码 1。
+5. 逃生口：`OUT=<空目录> IMAGE=... ELF=... ./scripts/qemu-debug.sh` 能跑——**覆盖分支
+   移到了查清单之前**。上一版把它放在后面，于是「启一个构建不认识的镜像」在没有清单时
+   反而走不通，正好堵死在最需要它的场合。半个覆盖仍然被拒。
+6. 菜单值 ⊆ 构建产出的名字（脚本化对比 `ours.code-workspace` 与 `*.debug.json`）。
+7. **下拉框仍然没在 VS Code 里点过**：窗口在另一个全屏 Space，后台控制送不进点击。
+
+**故意没做**
+- **没有让下拉框自动同步**。VS Code 生成不了 `pickString` 的选项（`"type":"command"`
+  只能返回字符串，且没有能跑 shell 的内建命令），不装第三方扩展做不到。所以菜单还是两行
+  手写的，但它**只写名字**，写错了脚本会把构建里真有的列出来——两边不会静悄悄地各说各话。
+- **没有给 `kernel_image()` 加 `debug_name` 参数**把 `kernel.dev.dbg_1` 缩成 `dbg.1`。
+  短名字好看，但那是又一个人写的名字，而菜单里显示的是**将要启动的那个 `.obi` 的真名**，
+  这件事本身有价值。
+- **没有收 `physload` / `physboot` / `userboot` / `vdso`**。清单里有它们（`environment`
+  分别是 `kernel.phys` 和 `user`），但它们各自需要不同的 `--slide`，而 phys 那两个的
+  加载地址是运行期由内存图选的、编译期不是常量（只能从串口日志的
+  `boot-shim: physload at 0x...` / `Loaded phys module ... at 0x...` 读）。等真要调它们时
+  再说。
