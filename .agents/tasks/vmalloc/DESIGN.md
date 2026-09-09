@@ -129,9 +129,20 @@ k:head..k:init [FFFFFF8840000000, FFFFFF88400A5000)  内核镜像
   `T::Disposer` 或 `operator delete`（`rc.hpp:76,121,245`）。`ustl::Box` 同理走
   `detail::default_deallocate<T>`（`box.hpp:127`）。**两者最终都落到
   `operator delete(void*)`**，所以改那一个点就覆盖了全部。
-- 只有 `-faligned-new=8`（`kernel/products/BUILD.gn:89`），没有 `-fsized-deallocation`。
-  **不能指望 sized delete**，路由只能靠地址。这一条把"用 `delete(void*, size_t)` 的 size
-  来判断"的方案直接否掉了。
+- **sized delete 是存在的，我先前写反了。** 本树没有传 `-fno-sized-deallocation`，
+  clang 23 在 `-std=c++2c` 下预定义 `__cpp_sized_deallocation`，链接后的镜像里有 46 个
+  目标文件引用 `_ZdlPvm`（deleting destructor 与 libc++ `<format>` 内部）。它们绑到的是
+  `libc/cpp_dependencies.cpp:29` 的**弱符号空实现**——也就是说今天没有任何一条活路径
+  走它（`RefCounted`/`Box` 都走无尺寸的那个），但**只要将来有人写 `delete p`，就是静默
+  泄漏**。
+
+  结论没变（按地址路由），但理由变了：不是"size 拿不到"，而是**尺寸信息不可靠且不覆盖
+  全部重载**。而且这意味着路由要同时覆盖 sized 与数组重载，否则管线只做了一半。
+
+- **`operator new(usize, Gaf)` 没有 `noexcept`**（`new.hpp:8`）。于是
+  `new (gaf) T(...)` 在分配失败时会**先在空指针上跑构造函数**，caller 的 `if (!self)`
+  永远等不到。这已是 `docs/repairs/260903/ktl.md:19` 的待修项；接上 vmalloc 之后 `new`
+  会在**新的场合**失败（窗口耗尽、调用过早、map 失败），所以这条要在同一串提交里一起修。
 - `-fno-exceptions`：`new` 失败返回 nullptr 是本树的约定。
 
 ---
@@ -189,13 +200,22 @@ auto init_heap() -> void {}
 
 ### 3.2 窗口与放置
 
-新增一条 preset VMA，紧跟 `k:cpulocal`：
+新增一条 preset VMA。**位置必须在内核镜像之上**：
 
 ```c
 // kernel/arch/x86/kernel/include/ours/arch/aspace_layout.hpp
-#define ARCH_VMALLOC_VIRT_BASE (ARCH_CPU_LOCAL_VIRT_BASE + ARCH_CPU_LOCAL_SIZE)
+#define ARCH_VMALLOC_VIRT_BASE (KERNEL_ASPACE_BASE + GB(64))
 #define ARCH_VMALLOC_SIZE GB(4)
 ```
+
+先前草稿写的是 `ARCH_CPU_LOCAL_VIRT_BASE + ARCH_CPU_LOCAL_SIZE`（= base+32GB+64MB），
+**那是错的**：从那里起 4 GiB 会盖住 `KERNEL_LOAD_BASE`（base+33GB，再加最多 1 GiB 的
+KASLR 偏移）上的镜像。cpulocal 之后到镜像之前只有约 960 MiB 的空隙，塞不下 4 GiB。
+
+选 base+64GB 的理由：它在 `KERNEL_LOAD_BASE + 1GB`（KASLR 偏移上限）之上，是个不依赖
+镜像实际落点的常数；`KERNEL_ASPACE_SIZE = GB(512)`，到 base+68GB 远未触顶。
+那 960 MiB 的空隙保持不动——`anywhere()` 是最低地址 first-fit，LAPIC / HPET / IDT /
+GDT / 内核栈现在都落在那里，不该被挪动。
 
 ```cpp
 // kernel/mm/init_vmm.cpp，PHYS_VMOS[] 末尾
@@ -307,6 +327,18 @@ auto operator delete(void *ptr) noexcept -> void {
 `KMALLOC_MAX_SIZE` 要从 `kmalloc.cpp` 的匿名 `MAX_MALLOC_SIZE`（`kmalloc.cpp:25`）
 提到 `ktl/kmalloc.hpp` 里公开，这样阈值只有一处定义。
 
+**要覆盖的重载不止一个**：`operator delete[]`（`ktl::Allocator::deallocate` 就走它，
+`allocator.hpp:31`）要和 `operator new[]` 同样路由；`libc/cpp_dependencies.cpp` 里那些
+sized / aligned 的弱空实现，要么一并转发到无尺寸版本，要么明确留着并在注释里说清为什么
+（见 §2.6 的更正）。只改 `operator delete(void*)` 是半套。
+
+**启动顺序是硬约束**：`SparseMemMap` 在 `pmm_enabled()` 一成立就
+`new (gaf, nid) T[n]`（`sparse_memmap.cpp:30`），那是 `InitLevel::Pmm/Heap`，而 vmalloc
+要到 `init_vmm() -> init_heap()` 才存在（`main.cpp:150`）。所以：
+- 小尺寸（kmalloc）那条路**必须和 VMM 无关**，不能让路由函数去碰 vmalloc 的状态；
+- 超阈值的 `new` 若发生在 `InitLevel::Vmm` 之前，要**明确失败并断言**，不能去解引用还没
+  初始化的 vmalloc 结构。用一个 `VMALLOC_READY` 标志把这条守住。
+
 ### 3.7 失败路径
 
 每一步都能失败，回滚必须完整：
@@ -323,10 +355,15 @@ auto operator delete(void *ptr) noexcept -> void {
 
 ### 3.8 TLB
 
-单 CPU 现状下 `arch unmap` 里的 `invlpg` 就够。**多核时需要 TLB shootdown IPI**，本树
-还没有——这条要明确记进 repairs，而不是假装不存在。Linux 的对应物是
-`flush_tlb_kernel_range()`；Zircon 是 `ArchVmAspace::Unmap` 里的
-`TlbInvalidation`。在 shootdown 到位之前，vfree 后其它 CPU 的 TLB 里可能还留着旧翻译。
+单 CPU 现状下 `arch unmap` 里的 `invlpg` 就够，而且**顺序必须是"先 unmap 再
+free_frames"**——Linux 反过来（`vmalloc.c:3488` 先还页，TLB 刷新批量推迟到
+`__purge_vmap_area_lazy`），它敢这么做是因为有 lazy purge 机制兜底。本设计不做 lazy
+purge，所以刷新必须同步，且必须在页归还之前完成，否则被复用的帧还能通过陈旧的内核 TLB
+表项摸到。
+
+**多核时需要 TLB shootdown IPI**，本树还没有——这条记进 repairs，不假装不存在。
+Linux 的对应物是 `flush_tlb_kernel_range()`；Zircon 是 `ArchVmAspace::Unmap` 里的
+`TlbInvalidation`。
 
 ---
 
@@ -419,6 +456,11 @@ auto operator delete(void *ptr) noexcept -> void {
 | mm | `ALLOWED_GAF = GAF_BOOT` 把 `Gaf::Dma/Write/NoFail` 全部掩掉；zone-type 过滤是死代码 | `pm_node.cpp:202,433` |
 | mm | `get_frame_n<T>(nid,...)` 调用不存在的 `get_frame<T>` | `pmm.hpp:159` |
 | arch | **多核 TLB shootdown 缺失**——vfree 之后其它 CPU 可能仍持旧翻译 | `page_table.cpp` 只有本地 `invlpg` |
+| mm | `create_subvma` / `create_mapping` / `map_with_vmo` / `VmMapping::map` **完全不加锁**，而 `unmap`/`protect`/`page_fault` 加 aspace 的 SpinLock；两个并发 `anywhere()` 可拿到同一段 VA，且 `VmaSet::insert` 只检测 base 完全相同，部分重叠会静默塞进去 | `vm_area.cpp:71,116`，`vm_area_or_mapping.cpp:82` |
+| mm | aspace 的 `Guard` 不存 IRQ/抢占状态，持锁者可被抢占/中断 | `spin_lock.hpp:55` |
+| mm | `alloc_frames_slowpath` 对带 `DirectReclaim`（即 `GAF_KERNEL`）且无 `NoRetry`（`NoRetry` 恰好被 `ALLOWED_GAF` 掩掉）的请求，在内存耗尽时**死循环**而不返回 nullptr，reclaim/compact 都是返回 0 的桩 | `pm_node.cpp:486,467` |
+| ktl | `operator new(usize, Gaf)` 缺 `noexcept`，失败时先在空指针上跑构造函数 | `new.hpp:8`，`docs/repairs/260903/ktl.md:19` |
+| ktl | sized / aligned 的 `operator delete` 是弱空实现，将来任何 `delete p` 都是静默泄漏 | `libc/cpp_dependencies.cpp:29` |
 
 ---
 
