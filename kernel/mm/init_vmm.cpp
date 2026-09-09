@@ -202,6 +202,13 @@ namespace {
     INIT_CODE
     auto init_heap() -> void {
         heap::init_vmalloc();
+
+        // Immediately, and in both images: the allocator has no other caller
+        // yet, and a boot that reaches userspace is not evidence that it
+        // works. It costs three allocations at boot and is the only thing
+        // standing between a broken vmalloc and the first subsystem to depend
+        // on it.
+        heap::vmalloc_self_test();
     }
 } // namespace
 

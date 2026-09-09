@@ -238,4 +238,76 @@ auto vmalloc_free_pages() -> usize {
     return ARENA.nr_free_pages();
 }
 
+/// Proves the allocator works on the machine it was built for, once, at boot.
+///
+/// It exists because the host test beside it cannot: the arena's arithmetic is
+/// pure and testable off a kernel, but nothing else here is -- the frames, the
+/// page tables, the guard page and the teardown order only mean anything with
+/// an MMU underneath. This is the smallest thing that exercises all of them.
+///
+/// The check that matters most is the last one. Every other case would fail
+/// loudly; a leak would not, and a leak is exactly what the teardown order and
+/// the guard-page arithmetic are easiest to get wrong in. Comparing the free
+/// page count before and against after catches a range whose guard page was
+/// mapped, or whose frames were dropped, or whose address was never returned.
+auto vmalloc_self_test() -> void {
+    auto const before = vmalloc_free_pages();
+    auto failed = usize{0};
+
+    auto const check = [&failed](bool const ok, char const *const what) {
+        if (!ok) {
+            log::error("vmalloc: FAILED {}", what);
+            ++failed;
+        }
+    };
+
+    // A single page, written end to end: if the mapping were short or the
+    // permissions wrong this faults rather than returning.
+    auto *one = static_cast<u8 *>(vmalloc(PAGE_SIZE, ours::mm::GAF_KERNEL));
+    check(one != nullptr, "one-page allocation");
+    if (one) {
+        check(is_vmalloc_addr(one), "the result is inside the window");
+        check(ours::VirtAddr(one) % PAGE_SIZE == 0, "the result is page aligned");
+        for (auto index = usize{0}; index < PAGE_SIZE; ++index) {
+            one[index] = u8(index);
+        }
+        check(one[0] == 0 && one[PAGE_SIZE - 1] == u8(PAGE_SIZE - 1),
+              "the page holds what was written");
+    }
+
+    // A size that is neither a page multiple nor a power of two: the round-up
+    // is where an off-by-one hides, and get_frames_n() -- the hand-rolled path
+    // this replaces -- would have quietly rounded 9 KiB up to 16.
+    auto *odd = static_cast<u8 *>(vmalloc(2 * PAGE_SIZE + 1, ours::mm::GAF_KERNEL));
+    check(odd != nullptr, "odd-sized allocation");
+    if (odd) {
+        odd[0] = 1;
+        odd[2 * PAGE_SIZE] = 2;
+        check(odd[0] == 1 && odd[2 * PAGE_SIZE] == 2, "the last page of an odd size is mapped");
+    }
+
+    // Two live ranges must not overlap, and the guard page must keep them a
+    // page apart even when the arena hands out adjacent addresses.
+    if (one && odd) {
+        auto const gap = ours::VirtAddr(odd) - (ours::VirtAddr(one) + PAGE_SIZE);
+        check(gap >= PAGE_SIZE, "a guard page separates two ranges");
+    }
+
+    check(!is_vmalloc_addr(&ARENA), "a kernel address outside the window is not mistaken for one");
+    check(vmalloc(0, ours::mm::GAF_KERNEL) == nullptr, "a zero-sized request is refused");
+    check(vmalloc(VMALLOC_SIZE + PAGE_SIZE, ours::mm::GAF_KERNEL) == nullptr,
+          "a request larger than the window is refused");
+
+    vfree(odd);
+    vfree(one);
+    vfree(nullptr);
+
+    check(vmalloc_free_pages() == before, "every page and address is back");
+    if (failed) {
+        log::error("vmalloc: self test failed {} check(s)", failed);
+    } else {
+        log::info("vmalloc: self test passed");
+    }
+}
+
 } // namespace heap

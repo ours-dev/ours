@@ -161,3 +161,52 @@ userboot 照常 `hello from ring 3`，900 次用户态时钟中断，无回归�
 - **`vzalloc`**。调用方传 `Gaf::Zero` 即可，不另开入口。
 - **`vmap()`（映射调用方给的页）**、大页、per-cpu 缓存、lazy purge：Linux 有，这里都不
   需要，`.agents/tasks/vmalloc/DESIGN.md` 里逐条列了哪些是必需哪些是优化。
+
+## vmalloc 的启动期自检（2026-09-08）
+
+**文件**
+- `kernel/lib/heap/vmalloc.cpp` / `include/heap/vmalloc.hpp` — 新增 `vmalloc_self_test()`
+- `kernel/mm/init_vmm.cpp` — `init_heap()` 里紧接着调它
+
+**症状**
+无，新增。这是 `vmalloc()` / `vfree()` **第一次被执行**。
+
+**原因**
+旁边的宿主单测覆盖不到这里。地址簿记（`VmallocArena`）是纯算术，脱离内核可测；而帧、
+页表、guard page 和拆解顺序，只有在有 MMU 的机器上才有意义。这段自检是能同时碰到这四样
+东西的最小程序。
+
+**最要紧的是最后一条检查**：其余每一条失败都会响——写不进去就是 #PF，越界请求返回非空
+就是断言。唯独**泄漏不会响**，而泄漏恰恰是拆解顺序和 guard page 算术最容易写错的方向：
+guard page 被误映射、帧被丢掉、地址没还回去，三者都表现为"启动照常、只是窗口少了几页"。
+所以自检比较分配前后的空闲页数——这一条捕获全部三种。
+
+**为什么在两个镜像里都跑，而不是只在 `KERNEL_DEBUG_LEVEL=1` 里**：dbg 镜像开着
+`DEBUG_ASSERT`，release 不开。一个只在断言里成立的不变量，在 release 镜像里就是静默
+损坏；而 vmalloc 将来要被 `operator new` 依赖，两个镜像都得证明。代价是启动期三次分配。
+
+**用例**
+- 一页，从头写到尾——映射短了或权限不对会直接 #PF；
+- `2 * PAGE_SIZE + 1` 字节：既不是页整数倍也不是 2 的幂。向上取整是 off-by-one 的藏身处，
+  而它替代的 `get_frames_n()` 会把这个尺寸**悄悄取整到 4 页**；
+- 两个活区间之间的间隔 ≥ 一页，证明 guard page 真的隔开了它们；
+- 一个窗口外的内核地址不会被 `is_vmalloc_addr()` 认成 vmalloc 的；
+- 零尺寸、超过窗口的尺寸都被拒；
+- `vfree(nullptr)` 无害；
+- **分配前后空闲页数相等**。
+
+**验证**
+两个镜像实测均打出：
+
+```
+vmalloc: window [FFFFFF9000000000, FFFFFF9100000000), 1048576 pages
+vmalloc: self test passed
+```
+
+userboot 照常进入 ring 3（dbg_1 920 次用户态时钟中断），均以 signal 15 结束。
+
+**故意没做**
+- **没有测多核**。TLB shootdown 缺失是已知的，单核测不出来。
+- **没有测窗口耗尽后的行为**。要占掉 4 GiB 地址空间才能到那一步，启动期不值得；
+  arena 那一侧的宿主单测已经覆盖了"耗尽返回 0"。
+- **没有做成可反复运行的 kshell 命令**。等真有人怀疑它的时候再加。

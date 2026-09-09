@@ -79,6 +79,10 @@ auto vfree(void *pointer) -> void;
 [[nodiscard]]
 auto vmalloc_free_pages() -> usize;
 
+/// Runs a round of allocations and frees and reports the result to the log.
+/// Called once from init_heap(), immediately after init_vmalloc().
+auto vmalloc_self_test() -> void;
+
 } // namespace heap
 
 #endif // #ifndef HEAP_VMALLOC_HPP
