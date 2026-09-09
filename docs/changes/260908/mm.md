@@ -76,3 +76,99 @@ Reserve area k:vmalloc:  [FFFFFF9000000000, FFFFFF9100000000)
 - **没有 guard page 机制**。整棵树都没有（`vm_area_or_mapping.hpp:284` 的相邻区间间隙为
   零），vmalloc 的 guard 由它自己在窗口内留页实现，不动 VMM。
 - **riscv / arm 没有对应宏**。等那两个架构真的有启动路径时再加。
+
+## vmalloc 的地址分配器（2026-09-08）
+
+**文件**
+- `kernel/mm/include/ours/mm/vmalloc_arena.hpp` / `vmalloc_arena.cpp` — 新增 `VmallocArena`
+- `kernel/mm/tests/vmalloc_arena_smoke.cpp` — 新增宿主单测
+- `kernel/mm/BUILD.gn`、`kernel/mm/tests/BUILD.gn`、`BUILD.gn` — 登记
+
+**症状**
+无，新增。上一条划出了 `k:vmalloc` 窗口，这一条管"窗口里哪些页还空着"。
+
+**原因**
+把地址簿记单独切出来，是为了**它能在宿主上测**。vmalloc 的另一半（分配物理页、装页表、
+加锁）没有一样能在宿主跑，而地址簿记是整件事里唯一"错了不崩、只是慢慢漏"的部分——
+合并少做一次不会立刻表现为故障，只会让窗口一点点碎掉，几百次分配之后才耗尽。这种缺陷
+只有单测抓得住，所以它必须是一个不依赖内核任何全局状态的类。
+
+**数据结构选型**。三个候选：
+
+| 方案 | 元数据 | 否掉的理由 |
+|---|---|---|
+| 位图（窗口每页一位） | 4 GiB 窗口 = 128 KiB `.bss` | 内核现在整个 `k:bss` 才 168 KiB，翻倍换一个查询频率极低的结构不值 |
+| 红黑树（Linux 的 `vmap_area` + 增强子树最大空隙） | 每个区间一个节点，要动态分配 | Linux 那棵树是为几十万个区间准备的；这里是个位数。而且节点要从 kmalloc 出，等于在分配器里嵌一次分配 |
+| **有序空洞数组**（选中） | `256 × 16 B` = 一页 | — |
+
+数组还有一个位图和红黑树都没有的好处：**分配器内部不分配**。没有嵌套分配，就没有
+"vmalloc 调 kmalloc 调 alloc_frames 又回到 vmalloc"这类递归的可能，也没有"分配元数据
+时 OOM"这条要回滚的失败路径。
+
+**为什么记录的是空洞而不是已分配区间**：两者并不对称。一个空洞就是一段地址，除此之外
+没有任何内容；而一个已分配区间还拥有背后的物理页，并且要能**从区间内部的指针**被找到。
+后者是 `mm::vmalloc()` 的事，不是这一层的。
+
+**`MAX_HOLES` 的界怎么来的**：空洞和已分配区间沿窗口交替排列——两个空洞之间必然隔着
+至少一个已分配区间，否则它们相邻、就该被合并掉。所以恒有 `holes <= live + 1`。于是把
+**live 卡在 `MAX_HOLES - 1`** 就够了，数组永远塞得下。这个界必须在**分配**这一侧执行，
+不能在释放侧：一次失败的释放会漏掉地址空间而且无处上报，比一次失败的分配严重得多。
+
+**改法（节选）**
+
+```cpp
+auto VmallocArena::allocate(usize const nr_pages) -> VirtAddr {
+    ...
+    if (m_nr_live + 1 >= MAX_HOLES) {
+        return 0;
+    }
+    for (auto index = usize{0}; index < m_nr_holes; ++index) {
+        auto &hole = m_holes[index];
+        if (hole.nr_pages < nr_pages) { continue; }
+        auto const base = hole.base;
+        if (hole.nr_pages == nr_pages) {
+            erase_hole_at(index);
+        } else {
+            // 从头部切，这样数组不用重排：空洞的 base 上升，而它本来就在前驱之上。
+            hole.base += pages_to_bytes(nr_pages);
+            hole.nr_pages -= nr_pages;
+        }
+        ++m_nr_live;
+        validate();
+        return base;
+    }
+    return 0;
+}
+```
+
+`allocate` 失败返回 **0 而不是 Status**：零在这里永远不是合法答案（窗口在内核半区），
+而每个调用方紧接着都要检查后续物理分配的结果，多一个 Status 只会被解包后丢掉。
+
+释放时的三种合并（左、右、两侧）都写开了，两侧合并要把三个空洞收成一个。越界、未对齐、
+与现有空洞重叠都在 `free()` 里挡掉——重叠意味着这段地址从未发出去过、或者被还了两次，
+两者这一层都分辨不了，但都是调用方的 bug，继续下去会把一个活着的区间并进空闲表再发给
+别人。
+
+**参照**
+`Linux mm/vmalloc.c` 的空闲侧：地址序红黑树 + 每子树最大空隙的增强、
+`alloc_vmap_area()` 取最低地址 first-fit（`find_vmap_lowest_match()`）、
+`merge_or_add_vmap_area()` 归还时左右合并。本实现保留 first-fit 与合并语义，换掉容器。
+选 first-fit 而不是 best-fit 的理由也和 Linux 一样：紧凑不是一个几乎全空的窗口的问题，
+而 first-fit 让释放的区间留在低地址，下一次分配正好与它合并。
+
+**验证**
+- 宿主单测 8 组全过（`out/bringup.x86/host/obj/kernel/mm/tests/vmalloc-arena-smoke`）：
+  窗口参数校验（含**会回绕的窗口**）、从头部切、拒绝放不下的请求、左合并 / 右合并 /
+  两侧合并、释放参数校验、**100 轮分配-释放循环后窗口必须完好如初**、以及把 live 顶到
+  上限后隔一个释放一个（空洞数最坏的模式）仍不溢出数组。
+- 写测试时我把两处期望写错了（以为孤立释放会并进尾部空洞；以为 live 上限是
+  `MAX_HOLES - 2`），是测试跑出来纠正的——这正是要它的原因。
+- `ninja` 通过，`clang-tidy` 对本文件无告警；QEMU 实测 `kernel.dev.dbg_1.obi` 无回归
+  （913 次用户态时钟中断）。
+
+**故意没做**
+- **还没有人调用它**。`init_heap()` 仍是空的，`mm::vmalloc()` 是下一步。
+- **没有对齐参数**。所有返回都是页对齐，vmalloc 的调用方没有更严的需求；真需要时是给
+  `allocate()` 加一个 align 形参，而不是换容器。
+- **`lower_bound` 是线性扫描**。256 项一趟顺序扫描比会误预测的二分快，代码里写了这条
+  理由和"界若涨一个数量级就回来改这里"。

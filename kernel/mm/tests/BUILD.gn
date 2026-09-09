@@ -45,10 +45,29 @@ executable("protection-ranges-smoke") {
   visibility = [ "*" ]
 }
 
+executable("vmalloc-arena-smoke") {
+  testonly = true
+  sources = [
+    "vmalloc_arena_smoke.cpp",
+    "//kernel/mm/vmalloc_arena.cpp",
+  ]
+  configs += [ "//kernel/mm:headers.config" ]
+  deps = [
+    "//kernel/lib/arch:headers",
+    "//kernel/arch/x86:headers",
+    "//system/lib/ustl:headers",
+    "//kernel/lib/gktl:headers",
+    "//kernel/lib/ktl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
 group("tests") {
   testonly = true
   public_deps = [
     ":frame-buddy-smoke",
     ":protection-ranges-smoke",
+    ":vmalloc-arena-smoke",
   ]
 }
