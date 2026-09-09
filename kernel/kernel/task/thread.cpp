@@ -475,8 +475,20 @@ auto Thread::Current::become_idle() -> void {
 
     auto const cpunum = Cpu::id();
     {
+        // format_to_n, and the terminator written by hand.
+        //
+        // std::format_to neither bounds its writes nor NUL-terminates, and the
+        // trailing "\0" these format strings used to carry did nothing: a
+        // format string is taken as a string_view built with strlen, so the
+        // extra NUL was cut off before the formatter ever saw it. The buffer
+        // was therefore handed to ktl::Name::set(char const *) unterminated,
+        // and that calls strlen on it -- an unbounded read off a 24-byte stack
+        // buffer, which is why the boot log showed thread names like
+        // "Dpc/0/Highal" -- the tail of the previous stack contents showing
+        // through -- rather than "Dpc/0/High".
         char name[24];
-        ustl::fmt::format_to(name, "Idle[{}]\0", cpunum);
+        auto const end = ustl::fmt::format_to_n(name, sizeof(name) - 1, "Idle[{}]", cpunum).out;
+        *end = '\0';
         Thread::Current::set_name(name);
 
         Scheduler::Current::set_idling(true);

@@ -37,8 +37,11 @@ auto IdleThread::init(CpuNum cpunum) -> void {
         panic("Idler[{}] enter the dummy trampoline routine", cpunum);
     };
 
+    // format_to_n and an explicit terminator; see the note in
+    // Thread::Current::become_idle() for what the plain format_to left behind.
     char name[24];
-    ustl::fmt::format_to(name, "Idle/{}\0", m_cpu);
+    auto const end = ustl::fmt::format_to_n(name, sizeof(name) - 1, "Idle/{}", m_cpu).out;
+    *end = '\0';
 
     // TODO(SmallHuaZi) Assign the idle thread an unique Tid.
     //

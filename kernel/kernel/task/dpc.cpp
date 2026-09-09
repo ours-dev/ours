@@ -139,8 +139,13 @@ auto DpcRunner::init() -> void {
     auto const cpu = mm::CpuLocal::current_cpu();
 
     for (auto i = usize(0); i < static_cast<usize>(Level::Count); ++i) {
+        // format_to_n and an explicit terminator; see the note in
+        // Thread::Current::become_idle() for what the plain format_to left
+        // behind.
         char name[24];
-        ustl::fmt::format_to(name, "Dpc/{}/{}\0", cpu, LEVEL_NAMES[i]);
+        auto const end =
+            ustl::fmt::format_to_n(name, sizeof(name) - 1, "Dpc/{}/{}", cpu, LEVEL_NAMES[i]).out;
+        *end = '\0';
 
         [[maybe_unused]]
         auto const status = runner.m_dpc_queues[i].start(name, cpu);
