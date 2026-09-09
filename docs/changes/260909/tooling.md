@@ -346,3 +346,193 @@ QEMU 带 `-S`，`gdb-remote` 连上时机器就停在复位向量 `0xfff0`，会
 - **没有把 `stopOnEntry` 换成 attach 侧的等价物**——没有等价物，`-S` 已经给了同样的效果。
 - **没有去掉 `program` 之外再加 `program` 字段**。target 由 `attachCommands` 第一条建，
   再给一个 `program` 就是同一件事的第二个真相来源。
+
+## 调试配置参数化：一个配置 + 内核下拉框，镜像与符号的配对收归脚本（2026-09-09）
+
+**文件**
+- `scripts/qemu-debug.sh` — 接受变体名，`case` 表同时给出镜像和 ELF，把 ELF 发布到
+  `out/bringup.x86/.debug/kernel.elf`
+- `ours.code-workspace` — 三个 launch 配置收成一个 + `${input:kernel}` 下拉框；
+  两个 qemu 任务收成一个
+- `docs/development/debugging.md` — 改用下拉框的说法，命令行小节改用 `.debug/kernel.elf`
+- `docs/repairs/260909/products.md` — 新建，记 `fake.obi` 起不来
+
+**症状**
+表面上是"每加一个内核就要手写一份配置"。底下是一个已经发生的错：**那份 `dev` 配置指着
+一个不存在于构建图里的陈旧二进制**。
+
+```
+$ ninja -C out/bringup.x86 -t query kernel_x86.dbg.0/obj/kernel/products/bin/vmours
+ninja: error: unknown target 'kernel_x86.dbg.0/obj/kernel/products/bin/vmours',
+       did you mean 'kernel_x86.dbg.1/obj/kernel/products/bin/vmours'?
+
+$ ls -la out/bringup.x86/kernel_x86.dbg.0/obj/kernel/products/bin/vmours*
+... Sep  2 20:28  vmours              <- 一周前的残留，不会再被重建
+... Sep  9 07:28  vmours.with-tests   <- 镜像里真正装的那个
+```
+
+打包器自己的清单说得很清楚：
+
+```
+$ grep image.elf out/bringup.x86/gen/kernel/products/image/dev/ours.fini
+vmours/image.elf=kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests.image.elf
+```
+
+后果可以量出来。同一个 `start_kernel`，两个二进制里差 `0xE000`（56 KiB），而且行号都对不上：
+
+```
+# 配置指向的 vmours（陈旧）
+Breakpoint 1: where = vmours`::start_kernel(...) + 12 ... at main.cpp:69:9,
+              address = 0xffffff88400680bc
+# 镜像实装的 vmours.with-tests
+Breakpoint 1: where = kernel.elf`::start_kernel(...) + 9 ... at main.cpp:105:9,
+              address = 0xffffff88400760b9
+```
+
+也就是说：用旧的 `dev` 配置调试，每一个断点都落在不相干的代码上，而且一切看起来都正常
+——lldb 不会抱怨，它只是在按一份错的地图工作。
+
+**原因**
+一份"每个内核一个配置"的方案，必须在**两个地方分别**写下镜像和 ELF。而这两者的对应
+**不是机械的**：
+
+| 镜像 | 内核 ELF |
+|---|---|
+| `kernel.dev.dbg_1.obi` | `kernel_x86.dbg.1/.../vmours` |
+| `kernel.dev.obi` | `kernel_x86.dbg.0/.../vmours.**with-tests**` |
+| `fake.obi` | `kernel_x86.dbg.0/obj/kernel/tests/fake-kernel/fake-kernel` |
+
+`dev` 那一行是从 `//kernel/products/image/dev/BUILD.gn` 的
+`vmours.with-tests(//build/switch/set/dbg.0:...)` 来的——换句话说，从目录名和镜像名都
+推不出来，只能去读 BUILD.gn 或者读 `.fini`。凡是要人把两件事分别写下来、而它们之间又
+没有机械关系的地方，早晚会脱节；这次只是脱节得比较早。
+
+**改法**
+把"选哪个内核"这件事收成一次决策，放在启动镜像的那个脚本里。
+
+`scripts/qemu-debug.sh` 改前只认一个 `IMAGE` 环境变量，符号是调用者的事：
+
+```sh
+OUT=${OUT:-$ROOT/out/bringup.x86}
+IMAGE=${IMAGE:-$OUT/kernel.dev.dbg_1.obi}
+PORT=${PORT:-1234}
+```
+
+改后，变体名同时决定镜像和 ELF，两者一起校验、一起生效：
+
+```sh
+VARIANT=${1:-${VARIANT:-dbg.1}}
+case "$VARIANT" in
+    dbg.1) IMAGE=$OUT/kernel.dev.dbg_1.obi
+           ELF=$OUT/kernel_x86.dbg.1/obj/kernel/products/bin/vmours ;;
+    dev)   IMAGE=$OUT/kernel.dev.obi
+           ELF=$OUT/kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests ;;
+    fake)  IMAGE=$OUT/fake.obi
+           ELF=$OUT/kernel_x86.dbg.0/obj/kernel/tests/fake-kernel/fake-kernel ;;
+    *)     echo "qemu-debug: unknown variant '$VARIANT' ..." >&2; exit 2 ;;
+esac
+[ -f "$IMAGE" ] || { echo "... build it first" >&2; exit 1; }
+[ -f "$ELF" ]   || { echo "... build it first" >&2; exit 1; }
+mkdir -p "$OUT/.debug"
+ln -sfn "$ELF" "$OUT/.debug/kernel.elf"
+```
+
+于是调试器那边不需要知道启的是哪个内核，永远开同一个路径：
+
+```jsonc
+// 改前——三份配置，每份自己写死一条路径
+"attachCommands": [
+    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours",
+    "target modules load --file vmours --slide 0xffffff8840000000",
+    "gdb-remote localhost:1234"
+]
+
+// 改后——一份配置
+"attachCommands": [
+    "target create ${workspaceFolder}/out/bringup.x86/.debug/kernel.elf",
+    "target modules load --file kernel.elf --slide 0xffffff8840000000",
+    "gdb-remote localhost:1234"
+]
+```
+
+任务那边同样从两个收成一个，变体由下拉框给：
+
+```jsonc
+{
+    "label": "kernel: qemu debug",
+    "command": "./scripts/qemu-debug.sh ${input:kernel}",
+    ...
+},
+// 与 "tasks" 顶层的：
+"inputs": [{ "id": "kernel", "type": "pickString", "description": "Which kernel?",
+             "default": "dbg.1",
+             "options": [ {"label": "asserts and trace on", "value": "dbg.1"},
+                          {"label": "asserts compiled out, unit tests linked in", "value": "dev"} ] }]
+```
+
+几处不明显但都是查过 VS Code 1.136.2 自身实现（`workbench.desktop.main.js`）后定的：
+
+- **`inputs` 放在 `tasks` 段里而不是 `launch` 段里**。`resolveInputs()` 按 section 取
+  `launch.inputs` / `tasks.inputs`，两份互不相通；写在工作区根一级会被静默忽略。这里
+  只有任务的 `command` 引用它，所以归 `tasks`。
+- **一次只弹一次**。`DebugService.createSession` 先解析 launch config 的变量、再跑
+  preLaunchTask，两次独立的 `resolveWithInteraction`，section 不同、答案不共享——**同一个
+  `${input:}` 被 launch 配置和它的 preLaunchTask 同时引用就会问两遍**。把选择收进脚本，
+  顺带也就只剩一次询问。
+- **选项标签不重复 value**。`showUserInput` 里 `label: v ? \`${v}: ${f}\` : f`，即渲染成
+  `"<label>: <value>"`；写成 `"dbg.1 -- asserts on"` 会显示成 `dbg.1 -- asserts on: dbg.1`。
+- **`default` 只是预选**，不跳过弹窗；三种 input 都没有非交互开关。
+- **选项列表没法动态生成**——`pickString.options` 是静态数组，`"type":"command"` 只能返回
+  字符串，不装第三方扩展做不到。所以这是一份手写菜单，而它只写变体名、不写路径，路径归表。
+
+symlink 的位置也是有讲究的：**发布在两个存在性检查之后、起 QEMU 之前**。缺 ELF 时如果放行，
+QEMU 会正常启动（镜像里装的是 strip 过的 `*.image.elf`，不需要这个未 strip 的兄弟），
+失败推迟到 attach，表现成"断点解析不了"——看起来像调试器坏了而不是像没构建，而且那时端口
+已占、QEMU 已起，收拾更贵。反过来，**失败时不删旧 link**：终端里可能正跑着上一次的 QEMU，
+那条 link 对它仍然是对的，`Kernel: attach to a QEMU I started myself` 靠的就是它。
+
+被否掉的方案：**两个 `${input:}`，一个给任务选镜像、一个给 launch 配置选 ELF**。否掉是因为
+它把出错的那一列（`dev → vmours.with-tests` 这个非机械映射）原样搬回 JSON 里，而且要在
+`launch.inputs` 和 `tasks.inputs` 里各写一遍选项、问两遍；还救不了那个没有 preLaunchTask
+的 attach 配置——它无从知道终端里跑的是哪个变体。symlink 让它自动正确。
+
+**参照**
+无，本项目自有设计。VS Code 侧依据是 1.136.2 的 `configurationResolverSchema` /
+`resolveInputs` / `showUserInput` 实现，以及
+https://code.visualstudio.com/docs/reference/variables-reference#_input-variables 。
+
+**验证**
+1. 两个菜单项各完整启动一次，符号链接指向和断点地址都对上：
+
+   ```
+   dbg.1  -> kernel_x86.dbg.1/obj/kernel/products/bin/vmours              address = 0xffffff884008a0a9
+   dev    -> kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests   address = 0xffffff88400760a9
+   ```
+2. `fake` 也跑通了脚本这一侧（link 指向 `fake-kernel`，`start_kernel` 正确地报
+   `no locations (pending)`——那个二进制里本来就没有这个符号，说明拿到的确实是它的符号
+   而不是 vmours 的）。但镜像本身起不来，见下。
+3. 未知变体：`./scripts/qemu-debug.sh bogus` → `unknown variant 'bogus'`，退出码 2。
+4. 半个覆盖：`IMAGE=... ./scripts/qemu-debug.sh dev` → `IMAGE and ELF override the table
+   together, or neither`，不启动。完整覆盖 `IMAGE=... ELF=... ` 正常生效。
+5. `sh -n scripts/qemu-debug.sh` 通过；工作区文件去注释后 `json.loads` 通过。
+6. **下拉框本身没有在 VS Code 里点过**：VS Code 窗口此刻在另一个全屏 Space 上，
+   background 控制送不进点击。上面第 1 条覆盖了它按下去之后会执行的全部命令，没覆盖的是
+   VS Code 弹出 quick pick 并把选中值代入 `${input:kernel}` 这一步。
+
+**故意没做**
+- **没有把 `fake` 放进下拉框**。`fake.obi` 现在根本起不来（physboot:
+  `Invalid kernel package: 4`），见 `docs/repairs/260909/products.md`。脚本里的映射留着——
+  它是对的，也只有一行；菜单里不放，是因为一个点下去黑屏的选项比没有这个选项更糟。
+- **没有加"拿 `.fini` 校验这张表"的断言**。形状是现成的：
+
+  ```sh
+  grep -qF "/image.elf=${ELF#$OUT/}.image.elf" "$FINI" || exit 1
+  ```
+
+  它恰好能检查引发这次改动的那一类 bug。没加是因为它把一处硬编码换成了另一处（`gen/`
+  下的清单路径同样可能被 GN 挪），而表现在只有三行。等表长到第四个变体、或者再被咬一次，
+  就该加了。
+- **没有按 `PORT` 区分 symlink**。`PORT=1235` 起第二个变体会覆盖同一个
+  `.debug/kernel.elf`。旧的三配置方案有完全相同的缺陷（三份都写死 `localhost:1234`），
+  不是这次引入的回归。
+- **没有动 `.vscode/tasks.json` 里那些过期的 GN 任务**。第三次说同一句话：那是另一件事。

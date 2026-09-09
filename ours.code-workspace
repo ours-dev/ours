@@ -7,12 +7,12 @@
 
     // ---- One-key kernel debugging -------------------------------------------
     //
-    // Press F5. It builds, boots the image under QEMU halted before the first
-    // instruction, attaches lldb, installs whatever breakpoints are set in the
-    // editor, and lets the machine go -- so execution stops at the first
-    // breakpoint that is hit, including ones in the earliest boot code. That is
-    // the reason QEMU is started with -S: by the time a *running* kernel could
-    // be attached to, start_kernel is long past.
+    // Press F5, pick which kernel to debug, and that is the whole procedure.
+    // It builds, boots the chosen image under QEMU halted before its first
+    // instruction, and attaches lldb. The session opens stopped at the reset
+    // vector: set breakpoints there and press continue, and even the earliest
+    // boot code stops. That is the reason QEMU is started with -S -- by the
+    // time a *running* kernel could be attached to, start_kernel is long past.
     //
     // Needs no setup. The debug adapter is the lldb-dap extension
     // (llvm-vs-code-extensions.lldb-dap), which finds the system lldb-dap
@@ -25,25 +25,34 @@
     // process ID", and are allowed to create the target themselves. That is the
     // hook the three commands below hang on.
     //
-    // These live here rather than in .vscode/ because that is where this
-    // project keeps its shared editor configuration -- with the consequence
-    // that they apply when VS Code is opened through this file, which is how
-    // the workspace is meant to be opened.
+    // There is ONE configuration for every kernel rather than one per kernel,
+    // and the difference is not tidiness. A per-kernel configuration has to
+    // name an image and an ELF in two different places, and they drift: the
+    // entry that claimed to debug kernel.dev.obi pointed at `vmours`, while the
+    // packer's own manifest (gen/kernel/products/image/dev/ours.fini) says that
+    // image carries `vmours.with-tests`. start_kernel sits 0xE000 (56 KiB)
+    // apart in the two, so every breakpoint landed in unrelated code -- and
+    // dbg.0's `vmours` is not even a build target any more (ninja -t query says
+    // unknown), so it was a week-old leftover that would never be rebuilt.
+    // Here the choice is made once, by
+    // scripts/qemu-debug.sh, which boots an image and publishes the matching
+    // ELF at out/bringup.x86/.debug/kernel.elf. The debugger always opens that
+    // one path, so it cannot be looking at symbols for a kernel it did not boot.
     "launch": {
         "version": "0.2.0",
         "configurations": [
             {
-                "name": "Kernel: debug (dbg.1, asserts on)",
+                "name": "Kernel: debug",
                 "type": "lldb-dap",
                 "request": "attach",
-                "preLaunchTask": "kernel: qemu debug (dbg.1)",
+                "preLaunchTask": "kernel: qemu debug",
                 "postDebugTask": "kernel: stop qemu",
-                // These three run instead of lldb-dap's own attach: create
-                // the target from the ELF, slide it, then connect. There is no
-                // process to find by pid or by name -- the "process" is a
-                // gdbstub on a TCP port.
+                // These three run instead of lldb-dap's own attach: create the
+                // target from whatever the boot published, slide it, connect.
+                // There is no process to find by pid or by name -- the
+                // "process" is a gdbstub on a TCP port.
                 "attachCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours",
+                    "target create ${workspaceFolder}/out/bringup.x86/.debug/kernel.elf",
                     // The kernel links at 0 and physboot loads it at
                     // KERNEL_LOAD_BASE, so the symbols have to be slid to where
                     // the image actually is or every address is off by 64 GiB.
@@ -51,23 +60,11 @@
                     // KERNEL_ASPACE_BASE; it moves if KASLR is ever switched
                     // on, and the boot log's "Reserve area k:head" line is
                     // where to read the real value.
-                    "target modules load --file vmours --slide 0xffffff8840000000",
-                    "gdb-remote localhost:1234"
-                ]
-            },
-            {
-                "name": "Kernel: debug (dev, asserts off)",
-                "type": "lldb-dap",
-                "request": "attach",
-                "preLaunchTask": "kernel: qemu debug (dev)",
-                "postDebugTask": "kernel: stop qemu",
-                // The same kernel with KERNEL_DEBUG_LEVEL=0: no DEBUG_ASSERT
-                // and no trace/debug logging. Worth its own entry because a bug
-                // that asserts in one image goes silent in the other, and the
-                // symbols live under a different switchset directory.
-                "attachCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.0/obj/kernel/products/bin/vmours",
-                    "target modules load --file vmours --slide 0xffffff8840000000",
+                    //
+                    // --file matches on the module's basename, and lldb keeps
+                    // the name it was given rather than resolving the symlink,
+                    // so this stays "kernel.elf" whichever kernel is behind it.
+                    "target modules load --file kernel.elf --slide 0xffffff8840000000",
                     "gdb-remote localhost:1234"
                 ]
             },
@@ -77,9 +74,11 @@
                 "request": "attach",
                 // No preLaunchTask: for when ./scripts/qemu-debug.sh is already
                 // running in a terminal and the session should not restart it.
+                // It published the symlink on its way up, so this needs to know
+                // nothing about which kernel that was.
                 "attachCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours",
-                    "target modules load --file vmours --slide 0xffffff8840000000",
+                    "target create ${workspaceFolder}/out/bringup.x86/.debug/kernel.elf",
+                    "target modules load --file kernel.elf --slide 0xffffff8840000000",
                     "gdb-remote localhost:1234"
                 ]
             }
@@ -107,33 +106,18 @@
                 }
             },
             {
-                // Boots the image halted with the gdbstub open, and does not
-                // report ready until the port actually accepts a connection --
-                // the debugger attaches the instant this task says it is up,
+                // Boots the chosen image halted with the gdbstub open, and does
+                // not report ready until the port actually accepts a connection
+                // -- the debugger attaches the instant this task says it is up,
                 // and attaching to a port nothing is listening on fails the
                 // launch.
-                "label": "kernel: qemu debug (dbg.1)",
+                //
+                // This is also the only place the kernel is named. The
+                // debugger's own configuration has no idea which one it is
+                // about to look at, which is the point.
+                "label": "kernel: qemu debug",
                 "type": "shell",
-                "command": "./scripts/qemu-debug.sh",
-                "options": { "cwd": "${workspaceFolder}" },
-                "dependsOn": "kernel: build",
-                "isBackground": true,
-                "problemMatcher": {
-                    "pattern": {
-                        "regexp": "^(__nomatch__)(__nomatch__)(__nomatch__)$",
-                        "file": 1, "line": 2, "message": 3
-                    },
-                    "background": {
-                        "activeOnStart": true,
-                        "beginsPattern": "^qemu-debug: booting",
-                        "endsPattern": "^qemu-debug: gdbstub ready"
-                    }
-                }
-            },
-            {
-                "label": "kernel: qemu debug (dev)",
-                "type": "shell",
-                "command": "IMAGE=$PWD/out/bringup.x86/kernel.dev.obi ./scripts/qemu-debug.sh",
+                "command": "./scripts/qemu-debug.sh ${input:kernel}",
                 "options": { "cwd": "${workspaceFolder}" },
                 "dependsOn": "kernel: build",
                 "isBackground": true,
@@ -158,6 +142,51 @@
                 "options": { "cwd": "${workspaceFolder}" },
                 "presentation": { "reveal": "never" },
                 "problemMatcher": []
+            }
+        ],
+
+        // The dropdown F5 puts up.
+        //
+        // It lives in "tasks" rather than "launch" because the task's command
+        // is the only thing that references it -- VS Code resolves ${input:} in
+        // each section against that section's own inputs, and the two passes do
+        // not share answers. An input referenced from BOTH the launch
+        // configuration and its preLaunchTask is asked twice, once per pass;
+        // routing the choice through the script is what keeps it to one prompt.
+        //
+        // The values are scripts/qemu-debug.sh's variant names, and that script
+        // owns the image/ELF pairing for each -- this list is a menu, not a
+        // second copy of the mapping.
+        //
+        // Labels do not repeat the value: VS Code renders an option as
+        // "<label>: <value>", so "dbg.1 -- ...": dbg.1 would say it twice.
+        // "default" only pre-selects and tags the row; nothing here can skip
+        // the prompt, and the last choice is remembered per section anyway.
+        "inputs": [
+            {
+                "id": "kernel",
+                "type": "pickString",
+                "description": "Which kernel?",
+                "default": "dbg.1",
+                "options": [
+                    {
+                        "label": "asserts and trace on",
+                        "value": "dbg.1"
+                    },
+                    {
+                        // A bug that asserts in dbg.1 goes silent here, so both
+                        // have to be debuggable, not just the noisy one.
+                        "label": "asserts compiled out, unit tests linked in",
+                        "value": "dev"
+                    }
+                    // "fake" is deliberately absent even though
+                    // scripts/qemu-debug.sh knows how to pair it: fake.obi does
+                    // not boot on this tree -- physboot rejects it with
+                    // "Invalid kernel package: 4". Offering a one-click entry
+                    // that hangs at a black screen is worse than not offering
+                    // it. See docs/repairs/260909/products.md; put it back once
+                    // that is fixed.
+                ]
             }
         ]
     },
