@@ -64,6 +64,23 @@ namespace {
     /// mm::alloc_frames() takes the current thread's resource lock. That is
     /// what makes "not callable from an interrupt handler" a property of the
     /// design rather than a warning in a comment.
+    ///
+    /// It does not currently deliver mutual exclusion, and this is the honest
+    /// place to say so rather than a comment claiming otherwise.
+    /// Mutex::acquire() calls acquire_common() and drops its bool
+    /// (ours/sync/mutex.hpp:91); that bool means "did not acquire", and
+    /// acquire_slowpath() returns it after breaking out of a spin that never
+    /// parks -- its "Make current thread sleep" comment has no code behind it
+    /// (kernel/kernel/sync/mutex.cpp:103). A contending caller therefore walks
+    /// straight into the critical section. Filed with the full sequence in
+    /// docs/repairs/260908/sync.md; it is a defect in the primitive, not here,
+    /// and fixing it needs a wait queue rather than a change at this call site.
+    ///
+    /// What holds today is that every caller is single-threaded: the boot self
+    /// check, prof's init hook, and userboot_init() all run before anything
+    /// else allocates this large. That is a property of the current callers,
+    /// not of this code, and it stops holding the first time a running thread
+    /// asks `new` for more than KMALLOC_MAX_SIZE.
     ours::sync::Mutex LOCK;
 } // namespace
 
@@ -171,8 +188,15 @@ auto vfree(void *const pointer) -> void {
     auto const size = BUSY[found]->size();
 
     // Swap with the last live record rather than shifting: the table is
-    // searched linearly and has no order to preserve. The slot is cleared so
-    // the Arc it held is released here rather than at the next overwrite.
+    // searched linearly and has no order to preserve.
+    //
+    // Both lines are needed, including when |found| *is* the last record and
+    // the first one becomes a self-move. ustl::Rc's move assignment guards
+    // that with `if (this != &other)`, so the self-move does nothing and it is
+    // the clear on the next line that releases the reference; in the ordinary
+    // case the move releases it and the clear is the no-op. Either way exactly
+    // one release happens, and it happens here rather than whenever the slot
+    // is next overwritten.
     BUSY[found] = ustl::move(BUSY[--NR_BUSY]);
     BUSY[NR_BUSY] = {};
 

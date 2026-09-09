@@ -50,3 +50,28 @@ churn 半个 GiB。1975 轮之后约 494 MiB 已泄漏、512 MiB 的客机基本
 
 这是 `kernel/mm` 的 lane。修法要么让 slowpath 在 reclaim 无进展时放弃并返回空，要么
 让 `ALLOWED_GAF` 不再掩掉 `NoRetry`，两者都需要 mm 决定语义。
+
+## 4. `VmMapping::activate()` 丢掉 `VmaSet::insert()` 的失败（mm）
+
+```cpp
+// kernel/mm/vm_mapping.cpp:122
+    Base::activate();          // 返回值被丢弃
+    return Status::Ok;         // 无条件
+```
+
+`VmaSet::insert()`（`vm_area_or_mapping.cpp:82`）可能返回 `OutOfMem` / `AlreadyExists`
+而**没有走到 `value.retain()`**。于是 `VmArea::map_with_vmo()` 交回一个"成功"的映射，
+它却不在父区域的集合里，引用计数只有一份——就是调用方手里那份。
+
+对 `heap::vfree()` 的后果：它先丢掉 `BUSY` 里那份 Arc 再调 `WINDOW->unmap()`，而
+`unmap_locked` 在树里找不到匹配时返回 `Ok`。于是 `~VmMapping` 在一个 `m_list_hook` 仍然
+挂在 VMO 映射链表上的对象上运行——那个 hook 是 SafeLink 模式，析构里
+`require(!is_linked())` 会**直接 `__builtin_trap()`**。也就是说症状是 vfree 里一次硬陷阱，
+不是静默损坏（成员按声明逆序析构，hook 在 `m_vmo` 之前，所以 `~VmCowPages` 根本不会跑）。
+
+**可达性**：BTree 节点是 256 B，kmalloc 不会因尺寸拒绝；`init_memory_resource()` 也在
+`init_vmm()` 之前跑完。唯一的触发条件是 kmalloc 真的耗尽——而那又被本文件第 3 条
+（耗尽时 `alloc_frames` 空转而不返回空）挡住了。所以是潜伏项，不是当前故障。
+
+三个反驳者里两个据此判为"当前不可达"；机制本身三个都确认。记在这里是因为一旦第 3 条
+修好，这一条就变成可达的。
