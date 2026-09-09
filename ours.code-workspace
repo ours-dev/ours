@@ -18,6 +18,13 @@
     // (llvm-vs-code-extensions.lldb-dap), which finds the system lldb-dap
     // through xcrun; QEMU, GRUB and clang all come from //prebuilt.
     //
+    // "request" is "attach", not "launch", and that is forced rather than
+    // stylistic: lldb-dap's launch schema *requires* "program" and runs it as a
+    // local process, which is not what a kernel inside QEMU is. Only "attach"
+    // offers attachCommands -- commands that run "instead of attaching to a
+    // process ID", and are allowed to create the target themselves. That is the
+    // hook the three commands below hang on.
+    //
     // These live here rather than in .vscode/ because that is where this
     // project keeps its shared editor configuration -- with the consequence
     // that they apply when VS Code is opened through this file, which is how
@@ -28,16 +35,15 @@
             {
                 "name": "Kernel: debug (dbg.1, asserts on)",
                 "type": "lldb-dap",
-                "request": "launch",
+                "request": "attach",
                 "preLaunchTask": "kernel: qemu debug (dbg.1)",
                 "postDebugTask": "kernel: stop qemu",
-                // A custom launch: there is no local process to start, so the
-                // target is created by hand and "running" it means connecting
-                // to QEMU's gdbstub.
-                "targetCreateCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours"
-                ],
-                "processCreateCommands": [
+                // These three run instead of lldb-dap's own attach: create
+                // the target from the ELF, slide it, then connect. There is no
+                // process to find by pid or by name -- the "process" is a
+                // gdbstub on a TCP port.
+                "attachCommands": [
+                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours",
                     // The kernel links at 0 and physboot loads it at
                     // KERNEL_LOAD_BASE, so the symbols have to be slid to where
                     // the image actually is or every address is off by 64 GiB.
@@ -47,46 +53,35 @@
                     // where to read the real value.
                     "target modules load --file vmours --slide 0xffffff8840000000",
                     "gdb-remote localhost:1234"
-                ],
-                // False on purpose: stopping here would stop in the UEFI
-                // firmware, several seconds of boot before any of this kernel's
-                // code runs. Letting it go means the session stops at the first
-                // breakpoint that is actually hit.
-                "stopOnEntry": false
+                ]
             },
             {
                 "name": "Kernel: debug (dev, asserts off)",
                 "type": "lldb-dap",
-                "request": "launch",
+                "request": "attach",
                 "preLaunchTask": "kernel: qemu debug (dev)",
                 "postDebugTask": "kernel: stop qemu",
                 // The same kernel with KERNEL_DEBUG_LEVEL=0: no DEBUG_ASSERT
                 // and no trace/debug logging. Worth its own entry because a bug
                 // that asserts in one image goes silent in the other, and the
                 // symbols live under a different switchset directory.
-                "targetCreateCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.0/obj/kernel/products/bin/vmours"
-                ],
-                "processCreateCommands": [
+                "attachCommands": [
+                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.0/obj/kernel/products/bin/vmours",
                     "target modules load --file vmours --slide 0xffffff8840000000",
                     "gdb-remote localhost:1234"
-                ],
-                "stopOnEntry": false
+                ]
             },
             {
                 "name": "Kernel: attach to a QEMU I started myself",
                 "type": "lldb-dap",
-                "request": "launch",
+                "request": "attach",
                 // No preLaunchTask: for when ./scripts/qemu-debug.sh is already
                 // running in a terminal and the session should not restart it.
-                "targetCreateCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours"
-                ],
-                "processCreateCommands": [
+                "attachCommands": [
+                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours",
                     "target modules load --file vmours --slide 0xffffff8840000000",
                     "gdb-remote localhost:1234"
-                ],
-                "stopOnEntry": false
+                ]
             }
         ]
     },

@@ -206,3 +206,143 @@
   代价是必须从工作区文件打开，这一条写进了 `docs/development/debugging.md`。
 - **没有顺手修 `.vscode/tasks.json` 里那些过期的 GN 任务**（指向 `target/default` 和裸
   `gn`）。理由和上一节一样：那是另一件事。
+
+## 调试配置从 launch 改成 attach：装着的 lldb-dap 根本没有那两个键（2026-09-09）
+
+**文件**
+- `ours.code-workspace` — 三个配置 `"request"` 由 `launch` 改为 `attach`，
+  `targetCreateCommands` + `processCreateCommands` 合并为 `attachCommands`，
+  去掉 `stopOnEntry`
+- `docs/development/debugging.md` — 更正"自动放行"的说法，新增「为什么是 attach」
+
+**症状**
+在真实 VS Code 里按下启动按钮，弹出模态框：
+
+```
+executable doesn't exist: '(empty)'
+[Open 'launch.json']  [Cancel]
+```
+
+调试会话根本起不来。`kernel: build` 和 `kernel: qemu debug (dbg.1)` 两个任务都正常跑完
+（QEMU 起来了、gdbstub 也在 1234 上听着），死在适配器这一步。
+
+**原因**
+`targetCreateCommands` / `processCreateCommands` 这两个键，**这台机器上装的 lldb-dap
+里不存在**。查扩展自己的 schema：
+
+```
+$ python3 -c '...package.json...'
+launch required: ['program']
+   props: [..., 'launchCommands', ..., 'program', ..., 'stopOnEntry', ...]
+attach required: None
+   props: ['attachCommands', ..., 'gdb-remote-port', 'program', 'postRunCommands', ...]
+```
+
+`launch` 的必填项只有一个 `program`，而且整份属性表里没有 `targetCreateCommands`。
+适配器读不到 `program`，于是拿空串去 `stat`，报 `'(empty)'`。扩展是
+`llvm-vs-code-extensions.lldb-dap-0.4.1`，底下是
+`/Library/Developer/CommandLineTools/usr/bin/lldb-dap`（LLVM 21）。
+
+这个错**上一次没被发现**，原因值得记下来：上一次的验证是
+
+```bash
+xcrun lldb --batch -o 'target create ...' -o 'target modules load --slide ...' \
+                   -o 'gdb-remote localhost:1234' -o 'breakpoint set --name start_kernel' ...
+```
+
+——它直接驱动 lldb，**把 DAP 适配器整个绕过去了**。那几条命令本身没问题（现在也还是
+这三条），有问题的是"VS Code 用什么键把它们交给适配器"。验证走的路径和用户走的路径
+不是同一条，于是验证通过而功能不通。上一节的改动记录里写了"没有在真实 VS Code 里按过
+F5"，这一条就正好落在没验的那块。
+
+**改法**
+改用 `attach`。扩展对 `attachCommands` 的原话是：
+
+> Custom commands that are executed instead of attaching to a process ID or to a
+> process by name. These commands **may optionally create a new target** and must
+> perform an attach.
+
+正好就是这里要的——没有 pid 也没有进程名，"进程"是一个 TCP 端口上的 gdbstub；建 target
+这件事也得自己干。三条命令原封不动搬进去：
+
+改前：
+
+```jsonc
+{
+    "name": "Kernel: debug (dbg.1, asserts on)",
+    "type": "lldb-dap",
+    "request": "launch",
+    "targetCreateCommands": [
+        "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours"
+    ],
+    "processCreateCommands": [
+        "target modules load --file vmours --slide 0xffffff8840000000",
+        "gdb-remote localhost:1234"
+    ],
+    "stopOnEntry": false
+}
+```
+
+改后：
+
+```jsonc
+{
+    "name": "Kernel: debug (dbg.1, asserts on)",
+    "type": "lldb-dap",
+    "request": "attach",
+    "attachCommands": [
+        "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours",
+        "target modules load --file vmours --slide 0xffffff8840000000",
+        "gdb-remote localhost:1234"
+    ]
+}
+```
+
+`stopOnEntry` 一并去掉——它只在 `launch` 的属性表里，`attach` 没有这个键。行为上也不需要：
+QEMU 带 `-S`，`gdb-remote` 连上时机器就停在复位向量 `0xfff0`，会话天然是"停着"开始的。
+
+被否掉的方案：`"postRunCommands": ["continue"]`，为了保持上一版文档里"自动放行到第一个
+断点"的手感。否掉的理由是时序——扩展对 `postRunCommands` 的定义是"attach 成功、尚未自动
+继续之前"执行，也就是**跑在 DAP 的 attach 请求里，早于编辑器把断点下发给适配器**。加了它，
+早期断点会被直接跑过去，而这套东西存在的全部理由就是能断在早期启动代码上。所以改的是
+文档而不是配置：会话停在 `0xfff0`，打断点，然后按继续。
+
+另一个可用但没选的形状是 `"gdb-remote-port": 1234` + `"initCommands"` 放 slide。没选是因为
+它把"连哪儿"和"怎么摆符号"拆成了两个机制，而 `attachCommands` 三条命令就是命令行里验证过
+的那三条，一一对应，出问题时好比对。
+
+**参照**
+无，本项目自有设计。依据是 `llvm-vs-code-extensions.lldb-dap` 扩展 `package.json` 里
+`configurationAttributes.attach` 的 schema 与 `attachCommands` 的描述文本。
+
+**验证**
+这次是**在真实 VS Code 里点的按钮**（computer-use 背景控制，VS Code 只给到 click 层级）：
+
+1. `code ours.code-workspace` 打开，标题栏 `ours.code-workspace — ours (Workspace)`，
+   状态栏显示 `Kernel: debug (dbg.1, asserts on) (workspace)`——**括号里的 `workspace`
+   是 VS Code 自己标的配置来源**，上一节"配置搬进工作区文件"到此才算真的验过。
+2. 点 Run and Debug 的启动按钮，改前：弹 `executable doesn't exist: '(empty)'`。
+3. 改后再点，Debug Console：
+
+   ```
+   (lldb) target create /Users/.../kernel_x86.dbg.1/obj/kernel/products/bin/vmours
+   (lldb) target modules load --file vmours --slide 0xffffff8840000000
+   (lldb) gdb-remote localhost:1234
+   Process 1 stopped
+   * thread #1, stop reason = signal SIGTRAP
+       frame #0: 0x000000000000fff0
+   Target 1: (vmours) stopped.
+   ```
+
+   调试工具条出现，状态栏转成调试配色，`kernel: build` 与 `kernel: qemu debug (dbg.1)`
+   两个任务都在终端面板里跑过。
+4. 断点命中本身仍然是上一节 `lldb --batch` 那次的证据（`start_kernel` 命中、
+   `c = 'C'` 可读）。**没能在 UI 里打上断点**：VS Code 只给到 click 层级，编辑器沟槽
+   的点击是 canvas 命中，背景 AXPress 打不进去；`Run > Toggle Breakpoint` 菜单同样被
+   click 层级挡掉。DAP 这一侧的 `setBreakpoints` 因此**没有实测**。
+
+**故意没做**
+- **没有加 `postRunCommands: ["continue"]`**，理由见上，改的是文档。
+- **没有把 `stopOnEntry` 换成 attach 侧的等价物**——没有等价物，`-S` 已经给了同样的效果。
+- **没有去掉 `program` 之外再加 `program` 字段**。target 由 `attachCommands` 第一条建，
+  再给一个 `program` 就是同一件事的第二个真相来源。
