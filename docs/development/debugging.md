@@ -2,7 +2,11 @@
 
 ## 一键
 
-在 VS Code 里按 **F5**。就这一步。
+用 `ours.code-workspace` 打开这个仓库（`File > Open Workspace from File...`，或者
+在 Finder 里双击它），然后按 **F5**。就这一步。
+
+> 必须从这个文件打开：调试配置和它依赖的那几个任务都写在 `ours.code-workspace`
+> 里，直接 `Open Folder` 打开目录的话 VS Code 读不到它们，调试面板会是空的。
 
 它会：编译 → 用 QEMU 启动镜像并**停在第一条指令之前** → 挂上 lldb → 装好你在编辑器里
 打的断点 → 放行。于是执行会停在第一个真正命中的断点上，**包括最早期的启动代码**。

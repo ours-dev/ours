@@ -69,3 +69,140 @@
   要调需要另一个 slide 和一次单独的 `target modules load`；等真要调它们时再加。
 - **没有把 lldb-dap 的路径写死进 settings.json**。`xcrun` 找得到，写死一台机器的路径进
   版本库是负债。
+
+## 调试配置搬进 `ours.code-workspace`（2026-09-09）
+
+**文件**
+- `ours.code-workspace` — 新增顶层 `launch` 和 `tasks` 两节，原来的 `folders` /
+  `settings` 原样保留
+- `.vscode/launch.json` — 删除
+- `.vscode/tasks.json` — 退回到上一节改动之前的样子，只剩既有的那几个 GN 任务
+- `docs/development/debugging.md` — 「一键」一节改成先从 `ours.code-workspace` 打开
+
+**症状**
+不是 bug，是位置不对。上一节把配置放进了 `.vscode/`，但这个仓库的编辑器配置一直归
+`ours.code-workspace` 管——字体、`files.exclude`、`clangd.path`、语义高亮全在那里。
+两处配置并存的后果是具体的：从 `ours.code-workspace` 打开时 VS Code **不会**再去读
+`.vscode/launch.json` 之外的工作区级设置合并逻辑之外的东西，而按这个项目的用法（工作
+区文件里已经列了 `folders`），大家打开的就是工作区，于是"编辑器设置在这边、调试配置
+在那边"是纯粹的分裂，找起来要猜。
+
+**原因**
+`.vscode/` 和 `.code-workspace` 是同一套配置的两种作用域，不是两类东西：
+`.code-workspace` 支持顶层 `launch` 和 `tasks` 两节，语义与 `.vscode/launch.json`、
+`.vscode/tasks.json` 完全相同，只是随工作区文件走。仓库里已经有一个被跟踪的
+`ours.code-workspace`，那就是这个项目认定的"共享编辑器配置"落点；再开一个
+`.vscode/launch.json` 等于凭空多一个真相来源。
+
+**改法**
+三个 `lldb-dap` 配置和四个任务整体搬到 `ours.code-workspace`，内容一字未改。
+
+搬之前（`.vscode/launch.json` 与 `.vscode/tasks.json` 两个文件）：
+
+```jsonc
+// .vscode/launch.json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Kernel: debug (dbg.1, asserts on)",
+            "type": "lldb-dap",
+            ...
+        },
+        ...
+    ]
+}
+```
+
+```jsonc
+// .vscode/tasks.json —— 四个新任务被塞在既有 GN 任务前面
+{
+    "version": "2.0.0",
+    "tasks": [
+        { "label": "kernel: build", ... },
+        { "label": "kernel: qemu debug (dbg.1)", ... },
+        { "label": "kernel: qemu debug (dev)", ... },
+        { "label": "kernel: stop qemu", ... },
+        { "label": "gn gen", ... },        // 既有
+        ...
+    ]
+}
+```
+
+搬之后（`ours.code-workspace` 一个文件）：
+
+```jsonc
+{
+    "folders": [ { "path": "." } ],
+
+    "launch": {
+        "version": "0.2.0",
+        "configurations": [
+            {
+                "name": "Kernel: debug (dbg.1, asserts on)",
+                "type": "lldb-dap",
+                "preLaunchTask": "kernel: qemu debug (dbg.1)",
+                "postDebugTask": "kernel: stop qemu",
+                "targetCreateCommands": [
+                    "target create ${workspaceFolder}/out/bringup.x86/kernel_x86.dbg.1/obj/kernel/products/bin/vmours"
+                ],
+                "processCreateCommands": [
+                    "target modules load --file vmours --slide 0xffffff8840000000",
+                    "gdb-remote localhost:1234"
+                ],
+                "stopOnEntry": false
+            },
+            ...
+        ]
+    },
+
+    "tasks": {
+        "version": "2.0.0",
+        "tasks": [
+            { "label": "kernel: build", ... },
+            { "label": "kernel: qemu debug (dbg.1)", ... },
+            { "label": "kernel: qemu debug (dev)", ... },
+            { "label": "kernel: stop qemu", ... }
+        ]
+    },
+
+    "settings": { ... 原样 ... }
+}
+```
+
+`${workspaceFolder}` 在工作区文件里是**有条件**可用的：多文件夹工作区里它有歧义，
+要写成 `${workspaceFolder:<name>}`。这里 `folders` 只有一项 `"."`，所以无歧义，
+路径原样搬过来即可；将来真加了第二个文件夹，这几处要一起改成带名字的形式。
+
+`.vscode/tasks.json` 是**退回**而不是重写：用 `git show <上一次提交>^:.vscode/tasks.json`
+取回原文覆盖，因此 diff 是纯删除的 64 行，一行既有的 GN 任务都没碰。这一步值得说，
+因为手工"把我加的删掉"很容易顺手改掉旁边的东西。
+
+**参照**
+无，本项目自有设计。VS Code 侧的依据是 workspace 文件的 `launch` / `tasks` 两节，
+与 `.vscode/` 下同名文件语义一致。
+
+**验证**
+1. 两个文件去掉注释和尾逗号后 `json.loads` 均可解析；`ours.code-workspace` 里
+   3 个 launch 配置、4 个任务、5 个 settings 键全在。
+2. `git diff HEAD -- .vscode/tasks.json`：删除 64 行、新增 0 行。
+3. 端到端跑了一遍搬家后的配置所执行的原始命令：`./scripts/qemu-debug.sh` 起来后
+   `lldb` 依次执行 launch 配置里的 `target create` / `target modules load --slide` /
+   `gdb-remote`，`start_kernel` 断点命中：
+
+   ```
+   Breakpoint 1: where = vmours`::start_kernel(ours::PhysAddr) + 9
+                 [inlined] ours::(anonymous namespace)::com1_put(char) at main.cpp:105:9
+   * thread #1, stop reason = breakpoint 1.1
+   (const char) c = 'C'
+   ```
+4. stop 任务那条命令跑完 `lsof -ti tcp:1234` 为空。
+5. **没有在真实 VS Code 里按过 F5**——这台机器上跑不了 GUI 验证。按下去会执行的每一条
+   命令都在上面单独验过了，没验的是 VS Code 自己读工作区文件那一步。
+
+**故意没做**
+- **没有保留 `.vscode/launch.json` 作为"直接 Open Folder 时的兜底"**。留着就是两份会
+  各自漂移的配置，而漂移的那天没人会发现——恰恰是调试器行为诡异、最不该怀疑配置的时候。
+  代价是必须从工作区文件打开，这一条写进了 `docs/development/debugging.md`。
+- **没有顺手修 `.vscode/tasks.json` 里那些过期的 GN 任务**（指向 `target/default` 和裸
+  `gn`）。理由和上一节一样：那是另一件事。

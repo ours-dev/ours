@@ -4,69 +4,6 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "kernel: build",
-            "type": "shell",
-            "command": "prebuilt/ninja/ninja -C out/bringup.x86",
-            "options": { "cwd": "${workspaceFolder}" },
-            "group": { "kind": "build", "isDefault": true },
-            // Clang's diagnostics, so a build error is a click in the Problems
-            // panel rather than a line to read in the terminal.
-            "problemMatcher": {
-                "owner": "cpp",
-                "fileLocation": [ "relative", "${workspaceFolder}/out/bringup.x86" ],
-                "pattern": {
-                    "regexp": "^(.*?):(\\d+):(\\d+):\\s+(warning|error|fatal error):\\s+(.*)$",
-                    "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
-                }
-            }
-        },
-        {
-            // Boots the image halted with the gdbstub open, and does not
-            // report ready until the port actually accepts a connection --
-            // the debugger attaches the instant this task says it is up, and
-            // attaching to a port nothing is listening on fails the launch.
-            "label": "kernel: qemu debug (dbg.1)",
-            "type": "shell",
-            "command": "./scripts/qemu-debug.sh",
-            "options": { "cwd": "${workspaceFolder}" },
-            "dependsOn": "kernel: build",
-            "isBackground": true,
-            "problemMatcher": {
-                "pattern": { "regexp": "^(__nomatch__)(__nomatch__)(__nomatch__)$", "file": 1, "line": 2, "message": 3 },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "^qemu-debug: booting",
-                    "endsPattern": "^qemu-debug: gdbstub ready"
-                }
-            }
-        },
-        {
-            "label": "kernel: qemu debug (dev)",
-            "type": "shell",
-            "command": "IMAGE=$PWD/out/bringup.x86/kernel.dev.obi ./scripts/qemu-debug.sh",
-            "options": { "cwd": "${workspaceFolder}" },
-            "dependsOn": "kernel: build",
-            "isBackground": true,
-            "problemMatcher": {
-                "pattern": { "regexp": "^(__nomatch__)(__nomatch__)(__nomatch__)$", "file": 1, "line": 2, "message": 3 },
-                "background": {
-                    "activeOnStart": true,
-                    "beginsPattern": "^qemu-debug: booting",
-                    "endsPattern": "^qemu-debug: gdbstub ready"
-                }
-            }
-        },
-        {
-            // Ending a debug session leaves QEMU behind otherwise, and the
-            // next session's stub cannot open a port the old one still holds.
-            "label": "kernel: stop qemu",
-            "type": "shell",
-            "command": "pids=$(lsof -ti tcp:1234 || true); [ -z \"$pids\" ] || kill $pids",
-            "options": { "cwd": "${workspaceFolder}" },
-            "presentation": { "reveal": "never" },
-            "problemMatcher": []
-        },
-        {
             "label": "Activate prebuilt artifacts",
             "type": "shell",
             "command": "python3 scripts/activate.py --config prebuilt.yml",
