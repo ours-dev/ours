@@ -88,4 +88,27 @@ config("user.standalone") {
     "//build/config:static-link",
     "//build/config:pie-link",
   ]
+
+  # No SSE, MMX or x87 in a user program either -- not because ring 3 may not
+  # use them, but because this kernel has not turned them on: nothing writes
+  # CR4.OSFXSR (arch/x86/system.hpp defines the bit and no code sets it), so
+  # the first SSE instruction raises #UD.
+  #
+  # It bites exactly when a program stops being trivial. userboot contains no
+  # SSE at all and ran for weeks; //examples/shell is only a little larger and
+  # the compiler vectorised a struct initialisation into `pxor`/`movdqu`, which
+  # died as "#UD Invalid opcode: vector=6" a few instructions into ring 3.
+  #
+  # The real fix is FPU/SSE state that survives a context switch, and then
+  # turning the bit on; until that exists, saying so here is better than every
+  # user program discovering it. See docs/repairs/260910/x86.md.
+  cflags = [
+    "-msoft-float",
+    "-mno-mmx",
+    "-mno-sse",
+    "-mno-sse2",
+    "-mno-3dnow",
+    "-mno-avx",
+    "-mno-avx2",
+  ]
 }
