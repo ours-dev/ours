@@ -25,6 +25,13 @@ include.  A missing clang tool dir is reported as a warning, not silently
 dropped.
 """
 
+# PEP 604 annotations (`str | None`) are evaluated at definition time without
+# this, and macOS still ships Python 3.9 as `python3` -- so `tools/set.py`, the
+# documented way to configure a build directory, raised TypeError on import
+# before running a single line of its own. The annotations stay as they are;
+# this makes them strings until something asks for them.
+from __future__ import annotations
+
 import argparse
 import os
 import shutil
