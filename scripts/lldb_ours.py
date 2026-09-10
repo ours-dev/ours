@@ -311,9 +311,9 @@ def cl(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionContext
 
 
 def __lldb_init_module(debugger: lldb.SBDebugger, _internal) -> None:
-    for name in ("cl", "cpus", "nodes"):
+    for name in ("cl", "cpus", "nodes", "kthread"):
         debugger.HandleCommand(f"command script add -o -f {__name__}.{name} {name}")
-    print("ours: cl <var> [cpu] | cpus | nodes")
+    print("ours: cl <var> [cpu] | cpus | nodes | kthread [cpu|0xaddr]")
 
 
 # --------------------------------------------------------------------------
@@ -425,7 +425,10 @@ def cpus(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionConte
         result.SetError(f"cpus: {why}")
         return
 
-    lines = [f"{'cpu':>3}  {'running':<44} {'queued':>6} {'weight':>7}  note"]
+    # rqweight is the run queue's total, not any one thread's -- `kthread`
+    # prints the per-thread weight, and two columns both called "weight" that
+    # disagree is a trap.
+    lines = [f"{'cpu':>3}  {'running':<44} {'queued':>6} {'rqweight':>9}  note"]
     seen = 0
     offline: list[int] = []
     for cpu in range(count):
@@ -483,7 +486,7 @@ def cpus(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionConte
             notes.append(f"sched says {via_sched:#x}")
 
         lines.append(f"{cpu:>3}  {_thread_summary(target, via_cpulocal):<44} "
-                     f"{queued:>6} {weight:>7}  {', '.join(notes)}")
+                     f"{queued:>6} {weight:>9}  {', '.join(notes)}")
 
     if seen == 0:
         result.SetError("cpus: no CPU has a per-CPU unit yet")
@@ -594,3 +597,167 @@ def nodes(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionCont
                          f"managed={atomic('m_managed_frames')}")
 
     result.AppendMessage("\n".join(lines))
+
+
+# --------------------------------------------------------------------------
+# One thread, in the detail that answers "why is this not running".
+# --------------------------------------------------------------------------
+
+
+def _child(value: lldb.SBValue, *path: str) -> lldb.SBValue:
+    """Walk a member path, tolerating a missing link rather than raising."""
+    for name in path:
+        if not value.IsValid():
+            return value
+        value = value.GetChildMemberWithName(name)
+    return value
+
+
+def _u(value: lldb.SBValue, default: int = 0) -> int:
+    return value.GetValueAsUnsigned() if value.IsValid() else default
+
+
+def _enum(value: lldb.SBValue) -> str:
+    return (value.GetValue() or "?") if value.IsValid() else "?"
+
+
+def _lock_holder(lock: lldb.SBValue) -> str:
+    """sync::SpinLock's word is 0 when free, else the holder's CPU number + 1.
+
+    That encoding (kernel/include/ours/sync/spin_lock.hpp) is the whole reason
+    this is worth printing: a chain of threads stuck behind each other names the
+    CPU to go and look at, which no other field does.
+    """
+    word = _child(lock, "m_lockval", "value_")
+    if not word.IsValid():
+        word = _child(lock, "m_lockval")
+    if not word.IsValid():
+        return "?"
+    raw = _u(word)
+    return "free" if raw == 0 else f"held by cpu{raw - 1}"
+
+
+def _thread_report(target: lldb.SBTarget, address: int, found_on: int | None) -> str:
+    thread = _at(target, address, "ours::task::Thread")
+    if thread is None:
+        return f"{address:#x}: no ours::task::Thread type in the image"
+    bad = _canary(thread, "ours::task::Thread")
+    if bad:
+        return f"{address:#x}: <{bad} -- not a Thread>"
+
+    name = _child(thread, "m_name", "name_")
+    label = (name.GetSummary() or "?").strip('"') if name.IsValid() else "?"
+    state = _enum(_child(thread, "m_state"))
+
+    context = _child(thread, "m_scheduling_context")
+    waiter = _child(thread, "m_waiter_state")
+    stack = _child(thread, "m_stack")
+
+    curr_cpu = _u(_child(context, "m_curr_cpu"))
+    weight = _u(_child(context, "m_profile", "effective", "weight"))
+    queue = _child(waiter, "m_waitqueue")
+    queue_at = _u(queue)
+
+    base, size = _u(_child(stack, "m_base")), _u(_child(stack, "m_size"))
+    sp = _u(_child(thread, "m_arch_thread", "m_sp"))
+
+    out = [
+        f"{label!r} tid={_u(_child(thread, 'm_tid'))} @ {address:#x}",
+        f"  state    {state}   signals {_enum(_child(thread, 'm_signals'))}"
+        f"   flags {_enum(_child(thread, 'm_flags'))}",
+        f"  cpu      curr={curr_cpu} last={_u(_child(context, 'm_last_cpu'))}"
+        f" wake={_u(_child(context, 'm_wake_cpu'))}",
+        f"  sched    weight={weight}"
+        f"  queue={_enum(_child(context, 'm_runqueue_state', 'm_queue_state'))}"
+        f"/{_enum(_child(context, 'm_runqueue_state', 'm_transient_state'))}"
+        f"  schedule={_u(_child(context, 'm_schedule')):#x}",
+        f"  blocked  waitqueue={queue_at:#x}"
+        f"  status={_enum(_child(waiter, 'm_blocked_status'))}"
+        f"  interruptible={_enum(_child(waiter, 'm_interruptible'))}",
+        f"  locks    resource={_lock_holder(_child(thread, 'm_resource_lock'))}"
+        f"  pi={_lock_holder(_child(thread, 'm_pi_lock'))}",
+        f"  stack    [{base:#x}, {base + size:#x}) {size} bytes  sp={sp:#x}",
+        f"  aspace   {_u(_child(thread, 'm_aspace')):#x}"
+        f"{'  (kernel thread)' if _u(_child(thread, 'm_aspace')) == 0 else ''}",
+    ]
+
+    # Only things that are actually wrong. The transient run-queue state is
+    # deliberately NOT checked: kernel/include/ours/task/sched/context.hpp
+    # records that Rescheduling is never cleared and DequeueDelayed is never
+    # written, so a thread sitting in either is the known defect, not news --
+    # and a command that cries wolf about it stops being read.
+    alarms = []
+    if state == "Parked" and queue_at == 0:
+        alarms.append("Parked with no wait queue -- nothing will wake this")
+    if weight == 0 and state in ("Running", "Ready"):
+        alarms.append("effective weight is 0 -- avg_vruntime() divides by this")
+    if found_on is not None and curr_cpu != found_on:
+        # Distinguish "this thread is confused" from "nobody maintains these".
+        # m_curr_cpu/m_last_cpu are written only by Scheduler::init_first_thread
+        # and m_wake_cpu only by the Fair discipline, so on a tree running RR
+        # they are all still zero -- that is a gap in the scheduler, not a fact
+        # about this thread, and reporting it per thread would make the alarm
+        # wallpaper. When it is fixed, the real check below starts working.
+        if (curr_cpu, _u(_child(context, "m_last_cpu")),
+                _u(_child(context, "m_wake_cpu"))) == (0, 0, 0):
+            alarms.append("curr/last/wake_cpu all 0 -- nothing maintains them; "
+                          "see docs/repairs/260910/task-sched.md")
+        else:
+            alarms.append(f"running on cpu{found_on} but curr_cpu says {curr_cpu}")
+    if sp and size and not base <= sp <= base + size and state != "Running":
+        alarms.append(f"sp {sp:#x} is outside its own kernel stack")
+    for alarm in alarms:
+        out.append(f"  !!       {alarm}")
+    return "\n".join(out)
+
+
+# Named kthread, not thread: lldb already has a `thread` command and will not
+# let a script shadow it.
+def kthread(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionContext,
+           result: lldb.SBCommandReturnObject, _internal) -> None:
+    """kthread            the thread on the selected CPU
+       kthread <cpu>      the thread running on that CPU
+       kthread 0x<addr>   that Thread, wherever it came from
+    """
+    target = exe_ctx.GetTarget()
+    if not target.IsValid():
+        result.SetError("kthread: no target")
+        return
+
+    argument = command.strip()
+
+    # 0x means an address, anything else a CPU number. Distinguishing by
+    # magnitude would be cleverer and would misread cpu 0x10 one day.
+    if argument.startswith("0x"):
+        try:
+            result.AppendMessage(_thread_report(target, int(argument, 16), None))
+        except ValueError:
+            result.SetError(f"kthread: {argument} is not an address")
+        return
+
+    if argument:
+        try:
+            cpu = int(argument)
+        except ValueError:
+            result.SetError("kthread: usage: kthread [cpu | 0xaddress]")
+            return
+        offset, why = _offset_for_cpu(target, cpu)
+        if offset is None:
+            result.SetError(f"kthread: {why}")
+            return
+    else:
+        frame = exe_ctx.GetFrame()
+        if not frame.IsValid():
+            result.SetError("kthread: no frame; name a CPU: kthread <cpu>")
+            return
+        offset, why = _offset_for_current(frame)
+        if offset is None:
+            result.SetError(f"kthread: {why}")
+            return
+        cpu = _u(_percpu(target, "ours::mm::CpuLocal::CURRENT_CPUNUM", offset))
+
+    pointer = _percpu(target, CURRENT_THREAD, offset)
+    if pointer is None or _u(pointer) == 0:
+        result.SetError(f"kthread: cpu{cpu} has no current thread")
+        return
+    result.AppendMessage(_thread_report(target, _u(pointer), cpu))

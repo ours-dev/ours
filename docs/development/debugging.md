@@ -235,6 +235,46 @@ cpu  running                                      queued  weight  note
 MAX_CPU 是 16，每个可能的 CPU 都有 unit，但只有上线过的才构造过 `Scheduler`。
 把那十二行都当错误列出来会把真正要看的四行埋掉，所以它们被折成一行。
 
+### `kthread` —— 一个线程为什么没在跑
+
+```
+(lldb) kthread 2                 # CPU 2 上正在跑的
+(lldb) kthread                   # 当前选中 CPU 上的
+(lldb) kthread 0xffffff8000a2c000
+
+'Sample1' tid=19 @ 0xffffff8000a2c000
+  state    Running   signals None   flags Detached
+  cpu      curr=0 last=0 wake=0
+  sched    weight=2549  queue=Enqueued/Queueing  schedule=0xffffff884005c428
+  blocked  waitqueue=0x0  status=Ok  interruptible=Yes
+  locks    resource=free  pi=free
+  stack    [0xffffff880402d000, 0xffffff8804031000) 16384 bytes  sp=0xffffff8804030fc0
+  aspace   0xffffff8000248000
+```
+
+（叫 `kthread` 不叫 `thread`，因为 lldb 已经有 `thread` 了，脚本不让覆盖。）
+
+**`blocked` 那一行是重点**：`m_waiter_state.m_waitqueue` 指向阻塞它的队列。
+**`state == Parked` 而 `waitqueue == 0x0` 就是丢了唤醒路径**——没有任何东西会再叫醒它。
+这比"队列里有几个"直接得多。
+
+**`locks` 那一行也是**：`sync::SpinLock` 的字有语义（`spin_lock.hpp:120-124`），
+**0 = 空闲，否则 = 持有者 CPU 号 + 1**，所以能直接打出 `pi=held by cpu2`。
+一串线程互相卡住的时候，这一行直接点名该去看哪个 CPU。
+
+`!!` 开头的是告警，只报**确实错了**的：
+
+| 告警 | 判据 |
+|---|---|
+| `Parked with no wait queue` | 没人会唤醒它 |
+| `effective weight is 0` | `avg_vruntime()` 会除以它（`profiles.hpp:20-27`） |
+| `sp is outside its own kernel stack` | 栈溢出/损坏（运行中的线程不查，真值在寄存器里） |
+| `curr/last/wake_cpu all 0` | 见 `docs/repairs/260910/task-sched.md` |
+
+**故意不报的**：`m_runqueue_state.m_transient_state` 长期是 `Rescheduling`。
+`context.hpp:129-136` 自己记着这是已知缺陷（`Rescheduling` 永远不会被清、`DequeueDelayed`
+从不被写入），报它等于每一行都报，告警就没人看了。
+
 ### `nodes` —— 物理内存节点
 
 ```

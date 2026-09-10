@@ -521,3 +521,73 @@ Linux 的 `nr_online_nodes` / `node_states[N_ONLINE]`；crash 工具的 `ps` / `
 - **没有列出全部线程**。需要一个全局线程链表；有没有、在哪，还没查。
 - **没有 buddy 分配器的按 order 空闲统计**。zone 上没有空闲计数器，要走 free list；
   和运行队列同一个问题，等真需要时再说。
+
+## `kthread`：一个线程为什么没在跑（2026-09-10）
+
+**文件**
+- `scripts/lldb_ours.py` —— 新增 `kthread`；`cpus` 的 weight 列改名 `rqweight`
+- `docs/development/debugging.md` —— 一节说明
+- `docs/repairs/260910/task-sched.md` —— 新建，记 `m_curr_cpu` 等三个字段没人维护
+
+**症状**
+`cpus` 回答了"每个 CPU 在跑什么"，但下一个问题——**为什么是它，别的为什么没跑**——
+仍然要手工 `p *(Thread *)0x...` 然后在四十多个成员里翻。
+
+**原因**
+翻的时候还容易翻错地方。真正的答案集中在三处，而它们都不在结构体的显眼位置：
+
+- `m_waiter_state.m_waitqueue`（`wait_queue.hpp:88`）——阻塞它的队列。
+  **`Parked` 而这里是 null，就是丢了唤醒路径**。
+- `m_resource_lock` / `m_pi_lock` 的 `m_lockval`——`spin_lock.hpp:120-124` 定义了语义：
+  **0 = 空闲，否则 = 持有者 CPU 号 + 1**。一串线程互卡时，这一个字直接点名该看哪个 CPU。
+- `m_profile.effective.weight` —— 为 0 是硬故障，`avg_vruntime()` 会除以它
+  （`profiles.hpp:20-27`）。
+
+**改法**
+一条命令把这些一次打出来，并且只对**确实错了**的加 `!!`：
+
+```
+(lldb) kthread 2
+'Sample1' tid=19 @ 0xffffff8000a2c000
+  state    Running   signals None   flags Detached
+  blocked  waitqueue=0x0  status=Ok  interruptible=Yes
+  locks    resource=free  pi=free
+  stack    [0xffffff880402d000, 0xffffff8804031000) 16384 bytes  sp=0xffffff8804030fc0
+```
+
+**故意不报 `Rescheduling`**。`context.hpp:129-136` 自己记着两个已知缺陷：
+`m_transient_state` 的 `Rescheduling` 永远不会被清、`DequeueDelayed` 从不被写入。
+报它等于每一行都报——一个每次都响的告警等于没有告警。同理，`"boot"` 线程一辈子禁抢占
+是故意的（`thread.cpp:121-130`），也不报。
+
+命令叫 `kthread` 不叫 `thread`：lldb 已经有 `thread`，脚本不让覆盖（实测报
+`"1" is not a valid subcommand of "thread"`）。
+
+`cpus` 的 `weight` 列同时改名 `rqweight`——它是运行队列的总权重，而 `kthread` 打的是
+线程自己的权重，两个都叫 weight 且数值不同（0 vs 503）是个陷阱。
+
+**顺带查实一个 task-sched 的缺陷**：`m_curr_cpu` / `m_last_cpu` / `m_wake_cpu`
+**从来不被维护**。四个线程跑在 CPU 0/1/2/3 上，三个字段全是 0；全仓只有三处赋值，
+前两处在 `Scheduler::init_first_thread()`（一次性引导路径，`scheduler.cpp:190-191`），
+第三处在 `fair.cpp:323`——而 bring-up 跑的是 RR。已记
+`docs/repairs/260910/task-sched.md`。`kthread` 对这种情况打的是"这三个字段没人维护"
+并指回文档，而不是每行都报一次"跑错核"；修好之后那处判断的另一条分支会自动开始工作。
+
+**参照**
+Linux 的 `task_struct::on_cpu` / `wake_cpu`；crash 工具的 `ps -l` / `foreach bt`。
+
+**验证**
+真实运行的四核内核上：
+
+1. `kthread 0..3` 四个线程全部打出，字段与 `p *(Thread *)` 逐项核对一致。
+2. `kthread 0x<addr>` 直接按地址取同一个线程，输出相同。
+3. `kthread 9`（没上线的 CPU）→ `cpu9 has no current thread`。
+4. canary 不匹配的地址 → `<not a Thread>`，不打印垃圾。
+5. `curr/last/wake_cpu all 0` 告警在四个线程上都出现，与 grep 出来的赋值点一致。
+6. `Idle/0` 的 `sp` 落在自己栈外但状态是 `Running`，告警**正确地没有触发**。
+7. `cl` / `cpus` / `nodes` 回归通过。
+
+**故意没做**
+- **没有走运行队列**、**没有全局线程列表**、**没有 buddy 按 order 统计**：前两个要处理
+  侵入式红黑树/链表的 offsetof 和半途停下的中间态，第三个要走 free list。`kthread` 覆盖了
+  "为什么没在跑"，这三个覆盖的是"还有谁"，等真需要时再说。
