@@ -176,7 +176,7 @@ class ApicTimerEvent {
 
     auto broadcast(CpuMask const &mask) -> void {
         m_canary.verify<Self>();
-        apic_send_ipi_mulitcast(mask, arch::IrqVec::ApicTimer, arch::ApicDeliveryMode::Fixed);
+        apic_send_ipi_multicast(mask, arch::IrqVec::ApicTimer, arch::ApicDeliveryMode::Fixed);
     }
 
     auto shutdown() -> void {

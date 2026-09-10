@@ -46,7 +46,7 @@ auto apic_send_ipi_self(arch::IrqVec vector, ApicDeliveryMode mode) -> void;
 
 auto apic_send_ipi_unicast(CpuNum target, arch::IrqVec vector, ApicDeliveryMode mode) -> void;
 
-auto apic_send_ipi_mulitcast(CpuMask const &targets, arch::IrqVec vector, ApicDeliveryMode mode)
+auto apic_send_ipi_multicast(CpuMask const &targets, arch::IrqVec vector, ApicDeliveryMode mode)
     -> void;
 
 auto apic_send_ipi_broadcast(arch::IrqVec vector, ApicDeliveryMode mode) -> void;

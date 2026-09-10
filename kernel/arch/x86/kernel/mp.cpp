@@ -46,7 +46,7 @@ auto arch_mp_send_ipi(CpuNum cpu, IpiEvent event) -> void {
 }
 
 auto arch_mp_send_ipi_mask(CpuMask const &cpus, IpiEvent event) -> void {
-    apic_send_ipi_mulitcast(cpus, ipi_event_to_irqvec(event), ApicDeliveryMode::Fixed);
+    apic_send_ipi_multicast(cpus, ipi_event_to_irqvec(event), ApicDeliveryMode::Fixed);
 }
 
 auto arch_mp_reschedule(CpuNum cpu) -> void {
@@ -54,7 +54,7 @@ auto arch_mp_reschedule(CpuNum cpu) -> void {
 }
 
 auto arch_mp_reschedule_mask(CpuMask const &cpus) -> void {
-    apic_send_ipi_mulitcast(cpus, arch::IrqVec::IpiResched, ApicDeliveryMode::Fixed);
+    apic_send_ipi_multicast(cpus, arch::IrqVec::IpiResched, ApicDeliveryMode::Fixed);
 }
 
 /// The arch half of IpiService::suspend_others(): tell |targets| to stop.

@@ -431,3 +431,80 @@ panic 那一行之后**总共只剩 1 行**（QEMU 的终止信息）。改动�
   Interrupt 两头都是空的，没有任何东西说明它本来打算表示什么。
   按本仓库的惯例，空的东西默认当脚手架，不删；但它需要的是**一个用途**，
   而不是我替它编一个。记在 `docs/repairs/260910/ipi.md`。
+
+## 多播只进出一次中断禁用窗口，请求只构造一次（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/xapic.hpp` — 新增 `send_ipi_multicast()`
+- `kernel/arch/x86/apic/ipi.cpp` — 请求构造抽出来；多播不再是 N 次单播
+- 全树：拼写 `mulitcast` → `multicast`
+
+**症状**
+不是 bug，是每个目标都白付一遍固定开销。这条路径在多核打通之后才真正跑起来
+（每一次跨 CPU 唤醒都走它）。
+
+**原因**
+```cpp
+auto apic_send_ipi_multicast(CpuMask const &targets, ...) -> void {
+    targets.for_each([...](CpuNum cpunum) { apic_send_ipi_unicast(cpunum, vector, mode); });
+}
+```
+
+而每一次 `apic_send_ipi_unicast()`：
+
+1. 从零构造一个 `IpiRequest`——六次 `set_field`，可是**只有目标那一个字段随目标变**。
+   物理投递模式下一次只能寻址一个 APIC，所以"多播确实是 N 次发送"，
+   但那不等于"N 次重建同一个请求"。
+2. `XApic::send_ipi()` 里各自一次 `AutoInterruptDisabler`——每个目标一对
+   `pushf/cli/popf`。两次 ICR 写之间必须关中断（否则中断处理里自己发一发 IPI
+   会覆盖 `IcrHigh`），但那个窗口可以**罩住整个多播**，而不是每个目标开关一次。
+
+**改法**
+```cpp
+// xapic.hpp
+template <typename Dests>
+auto send_ipi_multicast(IpiRequest request, Dests const &dests) noexcept -> void {
+    AutoInterruptDisabler guard;                 // 整批一次
+    for (auto const dest: dests) {
+        wait_icr_idle();
+        request.set_dest(dest);                  // 只改这一个字段
+        write_reg(XApicRegType::IcrHigh, request.icr_high());
+        write_reg(XApicRegType::IcrLow, request.icr_low());
+    }
+}
+```
+```cpp
+// ipi.cpp
+u32 dests[MAX_CPU];
+auto count = usize{0};
+targets.for_each([&](CpuNum cpunum) { dests[count++] = cpunum_to_apic_id(cpunum); });
+...
+XAPIC->send_ipi_multicast(make_ipi_request(vector, mode),
+                          ustl::views::Span<u32 const>(dests, count));
+```
+
+CPU 号到 APIC ID 的翻译**放在关中断之前**：一来那是这一层才知道的映射
+（`XApic` 不该认识 `CpuNum`），二来这样关中断的窗口里只剩寄存器写。
+
+**这是一次取舍，不是纯赚**：中断禁用窗口从"每个目标一小段"变成"整批一整段"。
+Linux 的 `default_send_IPI_mask_sequence_phys()` 是同一个选择——
+`local_irq_save()` 取一次，循环在里面。N 次进出窗口的代价比窗口本身长这件事更贵。
+
+顺带两处：
+
+- `XApic::send_ipi(u32, IpiRequest const &)` 这个重载**第一个参数从来没被用过**，
+  只是转调另一个。删掉，单播直接调 `send_ipi(request)`。
+- 全树的 `mulitcast` 拼写改成 `multicast`（6 处）。
+
+**参照**
+Linux `default_send_IPI_mask_sequence_phys()`（`arch/x86/kernel/apic/ipi.c`）：
+`local_irq_save()` 一次，然后循环里逐个 `__default_send_IPI_dest_field()`。
+
+**验证**
+四核引导零断言零故障：三颗 AP 正常上线（INIT/SIPI 走单播），
+12 次 IPI-Resched 正常投递（走多播），
+cpu0 8609 / cpu1 548 / cpu2 76894 / cpu3 76970。
+
+**故意没做**
+`wait_icr_idle()` 仍然在循环**里面**、每个目标一次——这是硬件要求的
+（下一次写 ICR 之前它必须空闲），不是可以提出去的东西。

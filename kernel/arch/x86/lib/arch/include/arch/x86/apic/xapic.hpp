@@ -136,8 +136,29 @@ class XApic final {
         write_reg(XApicRegType::IcrLow, request.icr_low());
     }
 
-    auto send_ipi(u32, IpiRequest const &request) noexcept -> void {
-        send_ipi(request);
+    /// Sends |request| to each APIC id in |dests|, one after another.
+    ///
+    /// Physical destination mode addresses exactly one APIC per write, so a
+    /// multicast really is N sends and the two register writes per target are
+    /// irreducible. What is not irreducible is everything around them, and
+    /// this used to pay all of it N times: a fresh IpiRequest built field by
+    /// field when only the destination differs, and its own pushf/cli/popf
+    /// around each one.
+    ///
+    /// One interrupt-disabled window for the whole set, as Linux's
+    /// default_send_IPI_mask_sequence_phys() does -- it takes local_irq_save()
+    /// once and loops inside. The window is longer, which is the trade being
+    /// made: N sends of a handful of MMIO writes, against N times the cost of
+    /// entering and leaving it.
+    template <typename Dests>
+    auto send_ipi_multicast(IpiRequest request, Dests const &dests) noexcept -> void {
+        AutoInterruptDisabler guard;
+        for (auto const dest: dests) {
+            wait_icr_idle();
+            request.set_dest(dest);
+            write_reg(XApicRegType::IcrHigh, request.icr_high());
+            write_reg(XApicRegType::IcrLow, request.icr_low());
+        }
     }
 
     auto send_ipi_self(IpiRequest request) noexcept -> void {
