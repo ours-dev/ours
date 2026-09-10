@@ -604,3 +604,70 @@ while (!Cpu::is_online(cpu)) {
 `x86_bring_aps()` 里那句 `arch::local_irq_disable()` 没有动。它之后没人重新打开中断，
 于是整个第二阶段（`reclaim_init_area()`、`userboot_init()`、spawn）都在关中断下跑，
 直到第一次上下文切换才恢复。那是另一件事，仍记在 `docs/repairs/260909/x86-mp.md` 第 2 条。
+
+## 第二阶段不再整段关着中断跑（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/kernel/mp.cpp` — 删掉 `x86_bring_aps()` 里那句 `arch::local_irq_disable()`
+
+**症状**
+`init_platform()` 返回时中断是**关着的**，而且此后再没人打开：
+
+```
+[3992891000 cpu0 info] after init_platform: irqs_disabled=true
+```
+
+于是整个第二阶段——`mm::EarlyMem::reclaim_init_area()`、`userabi::userboot_init()`、
+`labour_routine()` 里 spawn 的每一个线程——全都在关中断下跑，
+一直到第一次上下文切换才**顺带**恢复（切换会加载新线程保存的 RFLAGS）。
+
+这不是猜的：`IpiService::sync_exec()` 的前置断言
+（"必须开着中断调用，因为它自旋等目标从中断里应答"）第一次上线就把它逮住了。
+
+**原因**
+```cpp
+        apic_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
+
+        arch::local_irq_disable();          // <- 没有配对的 enable
+
+        Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes);
+        while (!Cpu::is_online(cpu))
+            ;
+```
+
+一句没有配对的 `local_irq_disable()`，写在一个 `for_each` 的 lambda 里，
+效果泄漏出整个函数、泄漏出 `init_platform()`。
+
+**它保护的东西不存在。** 从 SIPI 发出到 AP 置上 Online 位之间，
+引导 CPU 什么也不为它做——AP 的 bring-up 是自足的（跳板 → CpuLocal → local APIC →
+per-CPU → `start_nonboot_cpu()`）。而它下面那两件事都不需要关中断：
+
+- `sleep_for()` 自己用 `Guard<SpinLock, IrqSaveAndPreemptDisable>` 管中断状态
+  （所以关中断反而让它**返回时把"关着"这个状态恢复回来**，这正是泄漏的机制）；
+- `while (!Cpu::is_online(cpu))` 读的是原子量，中途被抢占无害；
+  超时用的 `time::SteadyClock::now()` 读的是计数器，不靠中断推进。
+
+代价倒是实打实的：等一颗 AP 最长要一秒，这一秒里这颗 CPU 连时钟中断都收不到，
+什么别的线程也跑不了。
+
+**改法**
+删掉那一行，把"为什么这里中断可以开着"写进注释。
+
+**参照**
+Linux `do_boot_cpu()` 等 AP 上线的整段（`while (!cpumask_test_cpu(...))` 加
+`schedule()`）是开着中断跑的，正因为等待方在这段时间里没有什么要保护的。
+
+**验证**
+`init_platform()` 返回时 `irqs_disabled=false`（同一个临时探针，改动前是 `true`）。
+四种配置全跑：
+
+| 配置 | 结果 |
+|------|------|
+| 四核 debug | 零断言零故障，cpu0 8609 / cpu1 602 / cpu2 88928 / cpu3 88808 |
+| 四核 release | 零故障，用户态 shell 进 ring 3 |
+| 单核 debug | 零故障 |
+| **八核 debug** | 七颗 AP 全部上线，零故障 |
+
+**故意没做**
+`sleep_for(Milliseconds(1))` 留着。有了带时限的上线等待之后它已经不是必需的，
+但它让常见情形（AP 一毫秒内就绪）根本不进自旋循环，删掉只会把功耗换成延迟。

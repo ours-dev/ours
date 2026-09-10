@@ -188,8 +188,17 @@ auto x86_bring_aps(CpuMask targets) -> void {
             return;
         }
 
-        arch::local_irq_disable();
-
+        // Give the CPU a moment to come up before starting to watch for it.
+        // Interrupts stay *on* through this and through the wait below: an
+        // AP's bring-up is self-contained -- the boot CPU does nothing for it
+        // between the SIPI and the Online bit -- so there is nothing here for
+        // masking them to protect. There used to be an arch::local_irq_disable()
+        // on this line with nothing to re-enable them, so the mask leaked out
+        // of this function and left the entire second stage running with
+        // interrupts off: reclaim_init_area(), userboot_init(), every thread
+        // spawned from labour_routine(), all the way to the first context
+        // switch, which restored them by accident. It also meant this CPU
+        // could not take a tick while waiting up to a second for an AP.
         Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes);
 
         // Wait for |cpu| to join, but do not wait for ever.

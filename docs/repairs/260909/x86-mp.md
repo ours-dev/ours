@@ -16,35 +16,11 @@ AP 已经能起来并接线程了（见 `docs/changes/260909/x86-mp.md`），下
 
 **参照**：Linux `wakeup_secondary_cpu_via_init()` / `wakeup_cpu_via_init_nmi()`。
 
-## 2. BSP 在关中断的情况下自旋等 AP 上线
-
-```cpp
-apic_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
-arch::local_irq_disable();
-Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes);
-while (!Cpu::is_online(cpu))
-    ;
-```
-
-**严重程度**：中。
-
-`sleep_for()` 内部的 Guard 会保存/恢复中断状态，所以它返回之后中断仍然是关的，
-那个 `while` 是**关中断自旋**。AP 起不来（第 1 条那种情况）就是死机，没有超时、
-没有诊断。而且 `Cpu::is_online()` 的读是非原子的（见
-`docs/repairs/260909/task-sched.md` 第 6 条）。
-
-**超时那一半已于 2026-09-10 修掉**（见 `docs/changes/260910/ipi.md`）：两处自旋都有了
-上界，起不来的 CPU 会报错并被跳过。**剩下的是 `local_irq_disable()` 那一行**——
-它之后没人重新打开中断，整个第二阶段都在关中断下跑。先确认它到底想保护什么：
-看起来是想让 `sleep_for` 之后不被抢占，但 `sleep_for` 自己已经处理了。
-
-**参照**：Linux `do_boot_cpu()` 的 `cpu_initialized_mask` 轮询有 5 秒超时。
-
-## 3. `arch_activate_cpu()` / `arch_deactivate_cpu()` 返回 `Unimplemented`
+## 2. `arch_activate_cpu()` / `arch_deactivate_cpu()` 返回 `Unimplemented`
 
 **严重程度**：低（没有调用者）。CPU 热插拔还不存在，留着是脚手架。
 
-## 4. 跳板里 `mov %ds, %ebx` 依赖 16 位下写 32 位寄存器会零扩展
+## 3. 跳板里 `mov %ds, %ebx` 依赖 16 位下写 32 位寄存器会零扩展
 
 `kernel/arch/x86/kernel/bootstrap16.S`：
 
@@ -57,7 +33,7 @@ while (!Cpu::is_online(cpu))
 而进入长模式时 `%rbx` 的高 32 位也不是架构保证为零的。QEMU 上没问题。
 稳妥写法是 `movzwl %ds, %ebx`，并在长模式段开头 `mov %ebx, %ebx` 把高位显式清掉。
 
-## 5. AP 仍然一颗一颗串行唤醒
+## 4. AP 仍然一颗一颗串行唤醒
 
 **严重程度**：低，冷路径。
 
@@ -71,7 +47,7 @@ while (!Cpu::is_online(cpu))
 （`kernel/arch/x86/apic/local_apic.cpp`）已经有了——然后填满所有槽、一次发完所有 SIPI、
 对整个掩码等一次。
 
-## 6. AP 与 BSP 的 arch／generic 边界是反的
+## 5. AP 与 BSP 的 arch／generic 边界是反的
 
 **严重程度**：低，结构问题。
 
