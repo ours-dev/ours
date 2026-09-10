@@ -162,3 +162,96 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
   节点的所有权模型（不能放调用者栈上），等有客户再说。
 - `IpiEvent::Interrupt` 仍然没有发送方，`x86_handle_ipi_interrupt()` 仍然是空的；
   `arch_mp_suspend()` 也仍然是空壳。收尾那一步再处理。
+
+## profiler 迁到 `sync_exec`，顺手修掉"只有一颗 CPU 真的动了"（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/kernel/prof_pmu.cpp` — 删掉自建的那一套，改调 `sync_exec()`
+- `kernel/arch/x86/kernel/faults.cpp` — 删掉硬编码的 `x86_handle_prof_ipi()`
+- `kernel/arch/x86/kernel/include/ours/arch/x86/faults.hpp` — 删掉它的声明
+
+**症状**
+四核下 **PMU 采样只在一颗 CPU 上生效**，而停止路径必定超时并打印
+"prof: N CPU(s) did not acknowledge the stop"。
+
+**原因**
+IPI 携带不了载荷，所以 profiler 用一个全局动作字来传：
+
+```cpp
+g_ipi_action.store(static_cast<std::uint32_t>(IpiAction::Start), MemoryOrder::Release);
+ours::apic_send_ipi_mulitcast(ours::Cpu::online_mask(), ::arch::IrqVec::IpiGeneric, ...);
+```
+
+接收端：
+
+```cpp
+auto const action = static_cast<IpiAction>(g_ipi_action.exchange(
+    static_cast<std::uint32_t>(IpiAction::None), MemoryOrder::Acquire));
+```
+
+`exchange`。**第一颗跑到这里的 CPU 把动作取走并写回 `None`**，其余每一颗读到的都是
+`None`，于是什么也不做。四核下"给所有 CPU 开计数器"实际只开了一个。
+
+停止路径因此必定失败：它等 `g_quiesce_count` 涨到 `num_online_cpus()`，
+而只有一颗 CPU 会去 `fetch_add`。于是空转一亿次然后告警。
+
+单核下 `exchange` 恰好是对的（只有一个消费者），所以这个错和这轮里其它几个一样，
+是"单核下碰巧成立"。
+
+这不是把 `exchange` 换成 `load` 就能了事的：那样又没人清理动作字，下一发无关的
+generic IPI 会把上次的动作再执行一遍。真正缺的是"这一发 IPI 是发给谁的、要做什么"
+这件事本身——也就是 `sync_exec()`。
+
+**改法**
+```cpp
+auto prof::arch::start_pmu_sampling(std::uint64_t period) -> ours::Status {
+    if (period == 0) {
+        return ours::Status::BadState;
+    }
+    ours::IpiService::sync_exec(
+        ours::Cpu::online_mask(),
+        [](void *context) { program_this_cpu(*static_cast<std::uint64_t *>(context)); }, &period);
+    return ours::Status::Ok;
+}
+
+auto prof::arch::stop_pmu_sampling() -> void {
+    ours::IpiService::sync_exec(
+        ours::Cpu::online_mask(), [](void *) { teardown_this_cpu(); }, nullptr);
+}
+```
+
+`&period` 是**栈上局部变量的地址**，而这正当——`sync_exec()` 在所有目标都跑完之前不返回，
+局部变量的生命期恰好覆盖整个调用。这也是这个 API 先做同步版的理由之一。
+
+一起删掉的：`IpiAction` 枚举、`g_ipi_action`、`g_ipi_period`、`g_quiesce_count`、
+`teardown_this_cpu()` 里那次 `fetch_add`、整个 `x86_handle_prof_ipi()`、
+它在 `faults.hpp` 的声明，以及 `faults.cpp` 里那行硬编码调用。
+`IrqVec::IpiGeneric` 的分发现在只有一行 `x86_handle_ipi_generic()`，
+第二个客户不需要再动 `faults.cpp` 一个字。
+
+**参照**
+Linux 的 perf 用 `smp_call_function()` 做同一件事（`perf_event_enable`／
+`perf_event_disable` 一路下到 `cpu_function_call`），不是全局动作字。
+
+**验证**
+四核引导零断言、零故障，用户态 shell 在 ring 3 打印。
+
+**未实测**：PMU 这条路径在 QEMU 上跑不到——引导日志明说
+`prof: no architectural PMU; use 'prof.start tick'`，TCG 不模拟架构 PMU，
+`prof.start pmu` 根本不会走到 `start_pmu_sampling()`。
+所以本节验证的是"迁移没有把引导弄坏"，加上**新增部分的单独实测**：用一个临时探针，
+按和 `start_pmu_sampling()` 一模一样的形状（栈上局部变量按地址传入）发起 `sync_exec`：
+
+```
+[4043173000 cpu2 info] cpu[2] got context DEADBEEF
+[4043191000 cpu3 info] cpu[3] got context DEADBEEF
+[4044498000 cpu0 info] cpu[0] got context DEADBEEF
+[4043731000 cpu1 info] cpu[1] got context DEADBEEF
+[4045239000 cpu2 info] sync_exec with context returned
+```
+
+四颗全部收到，等待正常收尾。
+
+**故意没做**
+`program_this_cpu()` / `teardown_this_cpu()` 的内容一个字没动——它们写的是 PMU MSR 和
+LVT PMI，和这次改的"怎么把它们送到每颗 CPU"是两件事。

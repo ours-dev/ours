@@ -147,7 +147,6 @@ namespace {
 
             case IrqVec::IpiGeneric:
                 x86_handle_ipi_generic();
-                x86_handle_prof_ipi();
                 apic_issue_eoi();
                 break;
 

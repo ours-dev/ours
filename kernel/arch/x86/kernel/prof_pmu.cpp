@@ -3,10 +3,11 @@
 //
 // x86 implementation of the prof::arch seam: programs the architectural PMU
 // for cycle-based sampling, routes the overflow through the APIC PMI entry
-// and fans start/stop control out to every CPU over the generic IPI.
+// and fans start/stop control out to every CPU with IpiService::sync_exec().
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/faults.hpp>
 #include <ours/cpu.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/task/thread.hpp>
 
@@ -24,16 +25,6 @@
 #include <ustl/sync/atomic.hpp>
 
 namespace {
-enum class IpiAction : std::uint32_t {
-    None,
-    Start,
-    Stop,
-};
-
-ustl::sync::Atomic<std::uint32_t> g_ipi_action{static_cast<std::uint32_t>(IpiAction::None)};
-ustl::sync::Atomic<std::uint64_t> g_ipi_period{0};
-ustl::sync::Atomic<std::uint32_t> g_quiesce_count{0};
-
 auto program_this_cpu(std::uint64_t period) -> void {
     ::arch::pmu_program_counter0(::arch::pmu::EVENT_UNHALTED_CORE_CYCLES,
                                  ::arch::pmu::UMASK_UNHALTED_CORE_CYCLES, period,
@@ -47,7 +38,6 @@ auto program_this_cpu(std::uint64_t period) -> void {
 auto teardown_this_cpu() -> void {
     ::arch::pmu_stop_counter0();
     ours::XAPIC->mask(::arch::XApicRegType::LvtPmi);
-    g_quiesce_count.fetch_add(1, ustl::sync::MemoryOrder::AcqRel);
 }
 
 constexpr u16 COM1_PORT = 0x3F8;
@@ -79,37 +69,26 @@ auto prof::arch::pmu_present() -> bool {
     return present;
 }
 
+/// |period| is passed by address into a call that does not return until every
+/// CPU has run it, so a local is exactly the right lifetime -- which is the
+/// whole reason sync_exec() is synchronous.
 auto prof::arch::start_pmu_sampling(std::uint64_t period) -> ours::Status {
     if (period == 0) {
         return ours::Status::BadState;
     }
 
-    g_quiesce_count.store(0, ustl::sync::MemoryOrder::Relaxed);
-    g_ipi_period.store(period, ustl::sync::MemoryOrder::Relaxed);
-    g_ipi_action.store(static_cast<std::uint32_t>(IpiAction::Start),
-                       ustl::sync::MemoryOrder::Release);
-    ours::apic_send_ipi_mulitcast(ours::Cpu::online_mask(), ::arch::IrqVec::IpiGeneric,
-                                  ::arch::ApicDeliveryMode::Fixed);
+    ours::IpiService::sync_exec(
+        ours::Cpu::online_mask(),
+        [](void *context) { program_this_cpu(*static_cast<std::uint64_t *>(context)); }, &period);
     return ours::Status::Ok;
 }
 
+/// Returns with every CPU's counter already off, which is what the drain that
+/// follows needs: sync_exec() waits for the acknowledgements, so there is
+/// nothing left here to count or to time out on.
 auto prof::arch::stop_pmu_sampling() -> void {
-    g_ipi_action.store(static_cast<std::uint32_t>(IpiAction::Stop),
-                       ustl::sync::MemoryOrder::Release);
-    ours::apic_send_ipi_mulitcast(ours::Cpu::online_mask(), ::arch::IrqVec::IpiGeneric,
-                                  ::arch::ApicDeliveryMode::Fixed);
-
-    // Wait until every CPU confirmed its counter is off, so the drain sees a
-    // quiesced buffer set. The multicast is per-CPU unicast, so the pending
-    // count must reach the online count.
-    auto const expected = ours::Cpu::num_online_cpus();
-    for (std::uint32_t spin = 0; spin < 100'000'000; ++spin) {
-        if (g_quiesce_count.load(ustl::sync::MemoryOrder::Acquire) >= expected) {
-            return;
-        }
-        ::arch::spin_hint();
-    }
-    log::warn("prof: {} CPU(s) did not acknowledge the stop", expected - g_quiesce_count.load());
+    ours::IpiService::sync_exec(
+        ours::Cpu::online_mask(), [](void *) { teardown_this_cpu(); }, nullptr);
 }
 
 auto prof::arch::current_cpu() -> u32 {
@@ -131,24 +110,6 @@ auto prof::arch::debug_write(char const *bytes, usize len) -> void {
 }
 
 namespace ours {
-
-auto x86_handle_prof_ipi() -> void {
-    auto const action = static_cast<IpiAction>(g_ipi_action.exchange(
-        static_cast<std::uint32_t>(IpiAction::None), ustl::sync::MemoryOrder::Acquire));
-    switch (action) {
-        case IpiAction::Start: {
-            auto const period = g_ipi_period.load(ustl::sync::MemoryOrder::Relaxed);
-            program_this_cpu(period);
-            break;
-        }
-        case IpiAction::Stop: {
-            teardown_this_cpu();
-            break;
-        }
-        case IpiAction::None:
-            break;
-    }
-}
 
 auto x86_handle_pmi(arch::IrqFrame *frame) -> void {
     // Halt counting while the handler runs so the sampler never samples

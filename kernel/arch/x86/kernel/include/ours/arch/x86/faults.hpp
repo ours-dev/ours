@@ -25,7 +25,6 @@ auto x86_handle_pmi(arch::IrqFrame *frame) -> void;
 
 /// Profiling control IPI (sent over `IrqVec::IpiGeneric`): programs or
 /// tears down this CPU's PMU sampling state.
-auto x86_handle_prof_ipi() -> void;
 
 } // namespace ours
 
