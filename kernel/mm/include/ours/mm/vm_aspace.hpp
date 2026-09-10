@@ -49,12 +49,26 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     static auto switch_aspace(Self *, Self *) -> void;
 
-    // Defined out-of-line in vm_aspace.cpp: instantiating Arc<VmAspace> here,
-    // inside VmAspace's own class body, hits VmAspace's inheritance from
-    // RefCounted<VmAspace, ...> before the compiler treats VmAspace as
-    // complete, and Arc<VmAspace>::~Arc's call to the base's release()
-    // fails to typecheck as a result.
-    static auto kernel_aspace() -> ustl::Arc<VmAspace>;
+    /// The kernel address space, which nobody owns.
+    ///
+    /// A bare pointer rather than an Arc, because there is no ownership here
+    /// to express: the kernel aspace is a singleton built once by
+    /// init_kernel_aspace() and never destroyed, and every caller in the tree
+    /// uses it as `kernel_aspace()->something` and drops it immediately.
+    ///
+    /// Returning `Arc<VmAspace>` was worse than merely redundant. It was
+    /// built with `Arc::adopt(KERNEL_ASPACE)`, and adopt *takes* ownership of
+    /// a raw pointer without retaining it -- so every call produced a
+    /// temporary that decremented, on destruction, a reference nobody had
+    /// ever incremented for it. What kept that from mattering is that the
+    /// kernel aspace is never released, which is a poor thing to depend on.
+    ///
+    /// Null until init_vmm() has run. Callers that run earlier -- the boot
+    /// thread is built in task::init_early(), before any address space exists
+    /// -- have to be attached later rather than ask now.
+    static auto kernel_aspace() -> VmAspace * {
+        return KERNEL_ASPACE;
+    }
 
     auto get_memory_usage() -> ktl::Result<Usage>;
 

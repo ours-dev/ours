@@ -146,6 +146,19 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg
     }
     self->m_task_state.init(entry, arg);
 
+    // Every thread spawned here is a kernel thread at birth, so it runs on
+    // the kernel address space. A user thread reaches ring 3 only after
+    // something attaches its process's aspace over this.
+    //
+    // Naming it explicitly, rather than leaving m_aspace null and letting the
+    // context switch fall back, is the point: null then means exactly one
+    // thing -- "nobody has attached an address space yet" -- which is a bug
+    // rather than a shorthand for the kernel's. spawn_etc() can do this
+    // because it already requires the VMM (m_stack.init() above allocates
+    // through it); task::init_early()'s create_first() cannot, and attaches
+    // later.
+    self->m_aspace = mm::VmAspace::kernel_aspace();
+
     if (!trampoline_routine) {
         trampoline_routine = Thread::trampoline;
     }

@@ -75,6 +75,20 @@ auto init_percpu() -> void {
 
 INIT_CODE
 auto init() -> void {
+    // The boot thread is the one thread that could not be given an address
+    // space when it was made: init_early() runs before init_vmm(), so at
+    // create_first() time there was no kernel address space to name. Every
+    // other thread gets one in spawn_etc(). Attach it now, before the first
+    // context switch can happen, so that from here on a null m_aspace means
+    // "not attached yet" and nothing else.
+    //
+    // Zircon leaves its kernel threads' aspace_ null for ever and has
+    // X86ArchVmAspace::ContextSwitch() write the kernel page table when it
+    // sees null. We deliberately do not: that makes null carry two meanings
+    // that are indistinguishable at the point of use -- "this is a kernel
+    // thread" and "nobody has set this yet".
+    Thread::Current::get()->set_aspace(mm::VmAspace::kernel_aspace());
+
     cpu_possible_mask().for_each([](CpuNum cpu) {
         auto &scheduler = Scheduler::Current::get(cpu);
         scheduler.init(cpu);

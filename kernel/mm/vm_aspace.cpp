@@ -27,10 +27,6 @@ decltype(VmAspace::ALL_ASPACE_LIST_LOCK) VmAspace::ALL_ASPACE_LIST_LOCK;
 decltype(VmAspace::KERNEL_ASPACE) VmAspace::KERNEL_ASPACE;
 decltype(VmAspace::KERNEL_ASPACE_LOCK) VmAspace::KERNEL_ASPACE_LOCK;
 
-auto VmAspace::kernel_aspace() -> ustl::Arc<VmAspace> {
-    return ustl::Arc<VmAspace>::adopt(KERNEL_ASPACE);
-}
-
 // Initializer order follows the member declaration order in vm_aspace.hpp.
 // m_refcnt is owned by the ustl::RefCounted base (initialized by Base()), and
 // m_num_users belongs to VmPage, not here -- both were leftovers.

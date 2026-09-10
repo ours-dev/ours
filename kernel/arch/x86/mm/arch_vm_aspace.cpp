@@ -103,8 +103,20 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
             Cr3::write(to_pgd);
         }
     } else {
-        // Default to kernel aspace
-        Cr3::write(KERNEL_PGD);
+        // Deliberately not "fall back to the kernel page table".
+        //
+        // Every thread carries a real address space: spawn_etc() names the
+        // kernel's, and task::init() attaches it to the boot thread, which
+        // predates the VMM. So a null here is not a kernel thread, it is a
+        // thread nobody attached an address space to -- and quietly loading
+        // the kernel page table for it would hide that, then hand ring 3 a
+        // CR3 the scheduler does not believe is loaded.
+        //
+        // Zircon does take the fallback (X86ArchVmAspace::ContextSwitch
+        // writes root_page_table_phys when aspace is null), because there
+        // null is how it spells "kernel thread". We spell that explicitly
+        // instead, which leaves this branch meaning only "bug".
+        panic("switching to a thread with no address space");
     }
 
     // Finally, exchange the IO-Bitmap in TSS
