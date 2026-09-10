@@ -309,3 +309,125 @@ auto IpiService::send_resched(CpuNum cpu) -> void {
 **故意没做**
 `arch_mp_reschedule(CpuNum)` 这条 arch 接缝现在也没有调用者了，没有删：
 它和 `arch_mp_reschedule_mask()` 是对称的一对，属于给 arch 层留的形状。
+
+## `Suspend` 补成真的，panic 先让机器安静下来（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/kernel/mp.cpp` — `arch_mp_suspend()` 不再是空函数；处理器清掉自己的 Online 位
+- `kernel/include/ours/ipi_service.hpp` / `kernel/kernel/task/ipi_service.cpp` — `suspend_others()`
+- `kernel/top/panic.cpp` — panic 开口之前先停下别的 CPU
+
+**症状**
+四核下**读不了 panic**。一颗 CPU 挂掉之后，另外三颗照常跑，日志是这样的：
+
+```
+[3856492000 cpu1 error] Assertion failed on ctx.curr_cpu() == m_runtime.which_cpu
+[3856501000 cpu2 debug] I'm Thread 1
+[3856503000 cpu3 debug] I'm Thread 2
+... 之后还有八万行 ...
+```
+
+而且 `vpanic()` 会 `dump_recent()` 把整个记录环重放一遍——那几百行是**逐行**和另外三颗
+CPU 的实时输出交错着出来的。今天为了找一条断言，我反复 `grep -a "Assertion" | sort -u`，
+就是因为这个。
+
+**原因**
+`vpanic()` 只做了 `arch::AutoInterruptDisabler`——那让**这一颗** CPU 闭嘴，
+对其余的 CPU 毫无作用。单核下"关掉本地中断"和"让机器停下来"是同一件事，
+多核下不是。
+
+停别的 CPU 的机制其实**已经写好一半了**：
+
+- `IrqVec::IpiSuspend` 的分发在 `faults.cpp` 里，
+- `x86_handle_ipi_suspend()` 也在，而且做的正是"永远停住"，
+- 只有发送端 `arch_mp_suspend(CpuMask targets)` 是个**空函数体**。
+
+一直没人发过这个事件，所以那个处理器从写好那天起就没有被执行过。
+
+**改法**
+
+发送端就是它看起来的那一行：
+
+```cpp
+auto arch_mp_suspend(CpuMask targets) -> void {
+    arch_mp_send_ipi_mask(targets, IpiEvent::Suspend);
+}
+```
+
+接收端多做一件事——**停之前先说一声**：
+
+```cpp
+auto x86_handle_ipi_suspend() -> void {
+    log::info("CPU[{}] suspended", this_cpu);
+    Cpu::set_state(this_cpu, Cpu::State::Online, false);
+    while (1) { arch::local_irq_disable(); arch::halt(); }
+}
+```
+
+这样"机器安静了"就是一件**可以观测**的事，而不是靠一个拍脑袋的延时等出来的：
+
+```cpp
+auto IpiService::suspend_others() -> void {
+    auto targets = Cpu::online_mask();
+    targets.set(Cpu::id(), false);
+    if (targets.none()) { return; }
+
+    arch_mp_suspend(targets);
+
+    constexpr auto MAX_SPINS = usize{10'000'000};
+    for (auto spin = usize{0}; spin < MAX_SPINS; ++spin) {
+        if (Cpu::num_online_cpus() <= 1) { return; }
+        arch::spin_hint();
+    }
+}
+```
+
+**有意做成尽力而为**：它被调用的时候，事情已经出错了。一颗卡死的 CPU、
+或者一颗中断关得比这个上界还久的 CPU，就是不应答——调用者不等它，
+也不为此再报一个错（正在 panic 的路径上，报错只会把真正的消息再往下推一行）。
+上界的存在就是为了不让一颗答不上来的 CPU 把 panic 一起拖死。
+
+`targets.none()` 那个提前返回不只是优化：引导早期 `XAPIC` 还没初始化，
+而那时在线的只有 BSP 自己，所以这条路径天然不会去碰一个空指针。
+
+panic 侧：
+
+```cpp
+auto vpanic(...) -> void {
+    arch::AutoInterruptDisabler local_irq_disabler{};
+    quiesce_machine();          // <- 新增
+    logz4::dump_recent();
+    ...
+}
+```
+
+**参照**
+Linux `panic()` → `smp_send_stop()`，同样在自己开始打印之前、同样是尽力而为
+（`smp_send_stop` 之后只等一小段固定时间）。这里等的是可观测的状态而不是时间，
+因为 `Cpu::online_mask()` 今天已经是原子的（见 `docs/changes/260910/cpu.md`）。
+
+**验证**
+临时探针：起一个线程，睡 200 ms 之后 `panic("XXX deliberate test panic on CPU[{}]")`。
+四核实测：
+
+```
+10655:[4410121000 cpu3 info] CPU[3] suspended
+10656:[4410076000 cpu1 info] CPU[1] suspended
+10657:[4410176000 cpu2 info] CPU[2] suspended
+...（记录环重放，独占输出，无交错）...
+10914:[4423053000 cpu0 error] XXX deliberate test panic on CPU[0]
+```
+
+panic 那一行之后**总共只剩 1 行**（QEMU 的终止信息）。改动前这里是几万行。
+
+撤掉探针后：四核 debug 零断言零故障、四核 release 起到 ring 3、单核零故障。
+
+**故意没做**
+- **没有加"恢复"**。被 suspend 的 CPU 是永久停住的，`IpiEvent::Suspend` 的语义
+  就是这个（处理器一直是这么写的）。真要做 CPU 热插拔或者挂起/恢复，
+  需要的是另一套东西，不是给这个加个反操作。
+- **`IpiEvent::Interrupt` 仍然没有发送方，`x86_handle_ipi_interrupt()` 仍然是空的。**
+  和 Suspend 不一样——Suspend 的处理器写明了它要做什么，只缺一个发送方；
+  Interrupt 两头都是空的，没有任何东西说明它本来打算表示什么。
+  按本仓库的惯例，空的东西默认当脚手架，不删；但它需要的是**一个用途**，
+  而不是我替它编一个。记在 `docs/repairs/260910/ipi.md`。

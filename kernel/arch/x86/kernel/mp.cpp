@@ -57,7 +57,15 @@ auto arch_mp_reschedule_mask(CpuMask const &cpus) -> void {
     apic_send_ipi_mulitcast(cpus, arch::IrqVec::IpiResched, ApicDeliveryMode::Fixed);
 }
 
-auto arch_mp_suspend(CpuMask targets) -> void {}
+/// The arch half of IpiService::suspend_others(): tell |targets| to stop.
+///
+/// Nothing more than sending the vector, because there is nothing more to it
+/// -- IrqVec::IpiSuspend is handled by x86_handle_ipi_suspend() below, which
+/// never returns. It stayed an empty function for as long as nothing sent the
+/// event; the handler has always been there waiting for it.
+auto arch_mp_suspend(CpuMask targets) -> void {
+    arch_mp_send_ipi_mask(targets, IpiEvent::Suspend);
+}
 
 /// The generic IPI says only "look at your mailbox"; IpiService owns what is
 /// in it. Nothing arch-specific belongs here, which is the point -- the
@@ -80,7 +88,13 @@ auto x86_handle_ipi_resched() -> void {
 
 auto x86_handle_ipi_suspend() -> void {
     auto const this_cpu = Cpu::id();
-    log::trace("IPI-Suspend on CPU[{}]", this_cpu);
+    log::info("CPU[{}] suspended", this_cpu);
+
+    // Say so before stopping, so that whoever asked can tell when the machine
+    // has actually gone quiet rather than guessing at a delay. This is the
+    // last thing this CPU ever does, so it is also the last time the bit could
+    // be honest.
+    Cpu::set_state(this_cpu, Cpu::State::Online, false);
 
     while (1) {
         arch::local_irq_disable();

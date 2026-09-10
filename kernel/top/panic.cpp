@@ -3,12 +3,32 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/halt.hpp>
 #include <logz4/log.hpp>
+#include <ours/ipi_service.hpp>
 
 namespace ours {
+namespace {
+    /// Stops the rest of the machine before this CPU says anything.
+    ///
+    /// Disabling interrupts silences this CPU; it does nothing about the
+    /// others, and on four CPUs that matters a great deal. A panic used to be
+    /// followed by tens of thousands of lines from the CPUs still running,
+    /// with the message and the ring dump somewhere in the middle of them --
+    /// the dump itself interleaved line by line with live output from three
+    /// other cores. Reading a panic became an exercise in grep.
+    ///
+    /// Linux's panic() calls smp_send_stop() before its own printing for
+    /// exactly this reason. Best effort, and deliberately so: see
+    /// IpiService::suspend_others().
+    auto quiesce_machine() -> void {
+        IpiService::suspend_others();
+    }
+} // namespace
+
 template <typename String, typename FormatArgs>
 [[noreturn]]
 auto vpanic(String fmt, FormatArgs const &args) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
+    quiesce_machine();
 
     logz4::dump_recent();
     log::vlog(logz4::get_global_logger(), logz4::Level::Error, fmt, args);
@@ -31,6 +51,7 @@ template auto vpanic(std::string_view, std::format_args const &) -> void;
 [[noreturn]]
 auto vpanic(std::string_view message) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
+    quiesce_machine();
 
     logz4::dump_recent();
     log::vlog(logz4::get_global_logger(), logz4::Level::Error, std::string_view("{}"),

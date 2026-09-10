@@ -116,6 +116,30 @@ auto IpiService::send_resched(CpuMask const &mask) -> void {
     arch_mp_reschedule_mask(targets);
 }
 
+auto IpiService::suspend_others() -> void {
+    auto targets = Cpu::online_mask();
+    targets.set(Cpu::id(), false);
+    if (targets.none()) {
+        return;
+    }
+
+    arch_mp_suspend(targets);
+
+    // Wait for the machine to go quiet, but do not insist. Each CPU clears its
+    // own Online bit as the last thing it does, so "quiet" is something that
+    // can be observed rather than waited out with a made-up delay -- and the
+    // bound is what keeps a CPU that cannot answer from taking the caller down
+    // with it. Linux's smp_send_stop() has the same shape and the same
+    // resignation about it.
+    constexpr auto MAX_SPINS = usize{10'000'000};
+    for (auto spin = usize{0}; spin < MAX_SPINS; ++spin) {
+        if (Cpu::num_online_cpus() <= 1) {
+            return;
+        }
+        arch::spin_hint();
+    }
+}
+
 auto IpiService::send_event(CpuNum dest, Event event) -> void {
     arch_mp_send_ipi(dest, event);
 }

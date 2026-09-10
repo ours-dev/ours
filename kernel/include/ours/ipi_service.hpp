@@ -59,6 +59,21 @@ class IpiService {
     /// the arch generic-IPI handler and has no other caller.
     static auto handle_generic() -> void;
 
+    /// Stops every other online CPU, and waits (briefly, and without
+    /// insisting) for them to say they have stopped.
+    ///
+    /// There is no resuming from this: a suspended CPU halts with interrupts
+    /// masked for good. It exists for the moment when the machine has to stop
+    /// being a moving target -- panic, above all, where three other CPUs
+    /// carrying on buries the message and the log dump underneath everything
+    /// they go on to print.
+    ///
+    /// Best effort by construction. It is called from contexts where things
+    /// are already wrong, so it neither asserts nor reports: a CPU that is
+    /// wedged, or that has interrupts masked for longer than the wait, simply
+    /// does not answer, and the caller carries on without it.
+    static auto suspend_others() -> void;
+
     static auto send_event(CpuNum dest, Event event) -> void;
 
     static auto send_event(CpuMask const &dests, Event event) -> void;
