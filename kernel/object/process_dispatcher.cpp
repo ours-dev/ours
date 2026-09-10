@@ -46,7 +46,7 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
     // carved to that boundary from the start rather than shrunk later.
     ustl::Arc<mm::VmAspace> aspace;
     auto status = mm::VmAspace::create(PRIVATE_ASPACE_BASE, PRIVATE_ASPACE_SIZE,
-                                       mm::VmAspaceKind::User, mm::VmasFlags::None, name, &aspace);
+                                       mm::VmasKind::User, mm::VmasFlags::None, name, &aspace);
     if (Status::Ok != status) {
         return status;
     }

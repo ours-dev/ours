@@ -32,7 +32,7 @@ using ::arch::paging::UnmapControl;
 /// the shape that produced it. As an enum, each kind has one value, a switch
 /// over it is checked for exhaustiveness, and there is no catch-all branch
 /// for a fourth kind to fall into silently.
-enum class VmAspaceKind {
+enum class VmasKind {
     User,
     Kernel,
     Guest,

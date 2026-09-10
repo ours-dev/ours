@@ -25,6 +25,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     using Base = ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy>;
 
   public:
+    using Kind = VmasKind;
     using Flags = VmasFlags;
 
     struct Usage {
@@ -35,10 +36,9 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     static auto clone(Flags, ustl::Arc<VmAspace> *) -> Status;
 
-    static auto create(VmAspaceKind, Flags, char const *, ustl::Arc<VmAspace> *out) -> Status;
+    static auto create(Kind, Flags, char const *, ustl::Arc<VmAspace> *out) -> Status;
 
-    static auto create(VirtAddr, usize, VmAspaceKind, Flags, char const *,
-                       ustl::Arc<VmAspace> *) -> Status;
+    static auto create(VirtAddr, usize, Kind, Flags, char const *, ustl::Arc<VmAspace> *) -> Status;
 
     /// Perform the initialization of kernel address space.
     /// Just once called at boot-time.
@@ -71,7 +71,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     FORCE_INLINE
     auto is_user() const -> bool {
-        return m_kind == VmAspaceKind::User;
+        return m_kind == Kind::User;
     }
 
     FORCE_INLINE
@@ -81,7 +81,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto root_vma() -> ustl::Arc<VmArea>;
 
-    VmAspace(VirtAddr, usize, VmAspaceKind, Flags, char const *);
+    VmAspace(VirtAddr, usize, Kind, Flags, char const *);
     ~VmAspace();
 
   private:
@@ -100,7 +100,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     auto page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status;
 
     gktl::Canary m_canary{this};
-    VmAspaceKind m_kind;
+    Kind m_kind;
     Flags m_flags;
     VirtAddr m_base;
     VirtAddr m_size;

@@ -15,7 +15,10 @@ class ArchVmAspace {
     using Self = ArchVmAspace;
 
   public:
-    ArchVmAspace(VirtAddr base, usize size, VmAspaceKind kind);
+    using Kind = VmasKind;
+    using Flags = VmasFlags;
+
+    ArchVmAspace(VirtAddr base, usize size, Kind kind);
 
     ~ArchVmAspace() = default;
 
@@ -54,7 +57,7 @@ class ArchVmAspace {
     gktl::Canary m_canary;
 
     u16 m_pcid;
-    VmAspaceKind m_kind;
+    Kind m_kind;
     /// CPUs that are currently executing in this virtual address space.
     CpuMask m_active_cpus;
     gktl::Range<VirtAddr> m_range;

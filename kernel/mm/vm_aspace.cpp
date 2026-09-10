@@ -34,7 +34,7 @@ auto VmAspace::kernel_aspace() -> ustl::Arc<VmAspace> {
 // Initializer order follows the member declaration order in vm_aspace.hpp.
 // m_refcnt is owned by the ustl::RefCounted base (initialized by Base()), and
 // m_num_users belongs to VmPage, not here -- both were leftovers.
-VmAspace::VmAspace(VirtAddr base, usize size, VmAspaceKind kind, VmasFlags flags, char const *name)
+VmAspace::VmAspace(VirtAddr base, usize size, Kind kind, VmasFlags flags, char const *name)
     : Base()
     , m_kind(kind)
     , m_flags(flags)
@@ -52,20 +52,20 @@ VmAspace::~VmAspace() {}
 /// user aspace too -- silently got the kernel's base and size. With every
 /// kind named, adding a fourth is a compile error here rather than a fourth
 /// thing that quietly becomes the kernel.
-auto VmAspace::create(VmAspaceKind kind, VmasFlags flags, char const *name,
+auto VmAspace::create(Kind kind, VmasFlags flags, char const *name,
                       ustl::Arc<VmAspace> *out) -> Status {
     VirtAddr base;
     usize size;
     switch (kind) {
-        case VmAspaceKind::User:
+        case Kind::User:
             base = USER_ASPACE_BASE;
             size = USER_ASPACE_SIZE;
             break;
-        case VmAspaceKind::Kernel:
+        case Kind::Kernel:
             base = KERNEL_ASPACE_BASE;
             size = KERNEL_ASPACE_SIZE;
             break;
-        case VmAspaceKind::Guest:
+        case Kind::Guest:
             // A guest's range is the guest's business, not this kernel's:
             // it comes from the hypervisor with the EPT it is paired with.
             // Refusing is better than lending it the kernel's numbers.
@@ -75,7 +75,7 @@ auto VmAspace::create(VmAspaceKind kind, VmasFlags flags, char const *name,
     return Self::create(base, size, kind, flags, name, out);
 }
 
-auto VmAspace::create(VirtAddr base, usize size, VmAspaceKind kind, VmasFlags flags,
+auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags,
                       char const *name, ustl::Arc<VmAspace> *out) -> Status {
     auto const aspace = AspaceCache::get(GAF_KERNEL, base, size, kind, flags, name);
     if (!aspace) {
@@ -94,7 +94,7 @@ auto VmAspace::create(VirtAddr base, usize size, VmAspaceKind kind, VmasFlags fl
 
 INIT_CODE
 auto VmAspace::init_kernel_aspace() -> void {
-    constexpr auto flags = VmasFlags::None;
+    constexpr auto FLAGS = VmasFlags::None;
 
     auto status = AspaceCache::init("aspace-cache", ObjectCache::Flags::Folio);
     if (Status::Ok != status) {
@@ -102,7 +102,7 @@ auto VmAspace::init_kernel_aspace() -> void {
     }
 
     ustl::Arc<Self> aspace;
-    status = Self::create(KERNEL_ASPACE_BASE, KERNEL_ASPACE_SIZE, VmAspaceKind::Kernel, flags,
+    status = Self::create(KERNEL_ASPACE_BASE, KERNEL_ASPACE_SIZE, Kind::Kernel, FLAGS,
                           "K:Aspace", &aspace);
     ASSERT(Status::Ok == status, "Failed to create kernel VmAspace");
 

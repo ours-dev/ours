@@ -38,7 +38,7 @@ namespace {
 /// In this file scope, it should be readonly.
 extern "C" PhysAddr const KERNEL_PGD;
 
-ArchVmAspace::ArchVmAspace(VirtAddr base, usize size, VmAspaceKind kind)
+ArchVmAspace::ArchVmAspace(VirtAddr base, usize size, Kind kind)
     : m_canary(this)
     , m_pcid(INVALID_PCID)
     , m_kind(kind)
@@ -54,7 +54,7 @@ auto ArchVmAspace::init() -> Status {
     // for a user aspace and wrong for anything else that ever lands here.
     // Naming every kind makes a new one a compile error instead.
     switch (m_kind) {
-    case VmAspaceKind::Kernel: {
+    case VmasKind::Kernel: {
         // Kernel page table was provided by kernel.phys, so do not need to allocate memory.
         auto const phys_pgd = KERNEL_PGD;
         auto const virt_pgd = PhysMap::phys_to_virt(phys_pgd);
@@ -64,14 +64,14 @@ auto ArchVmAspace::init() -> Status {
         }
         break;
     }
-    case VmAspaceKind::Guest: {
+    case VmasKind::Guest: {
         auto status = m_page_table.init_ept();
         if (status != Status::Ok) {
             return status;
         }
         break;
     }
-    case VmAspaceKind::User: {
+    case VmasKind::User: {
         auto status = m_page_table.init_mmu();
         if (status != Status::Ok) {
             return status;
