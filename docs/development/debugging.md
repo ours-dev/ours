@@ -351,9 +351,19 @@ QEMU 用 `-S` 启动。这不是保守，是必要的：等到一个**正在运�
 另开一个终端：
 
 ```bash
-lldb -o 'target create out/.debug/kernel.elf' \
+lldb -o 'command script import scripts/lldb_ours.py' \
+     -o 'target create out/.debug/kernel.elf' \
      -o 'target modules load --file kernel.elf --slide 0xffffff8840000000' \
      -o 'gdb-remote localhost:1234'
+```
+
+**第一行不能省**：`cl` / `cpus` / `nodes` / `kthread` 是脚本加的，F5 走的是 launch 配置里的
+`initCommands`，而终端里的 `lldb` 不会自己去找它。仓库根有一个 `.lldbinit` 替你写好了这一行，
+但 lldb 默认**不信任**当前目录的 `.lldbinit`（cd 进一个目录就执行任意代码，这个默认是对的）；
+想让它生效，一次性打开：
+
+```bash
+echo 'settings set target.load-cwd-lldbinit true' >> ~/.lldbinit
 ```
 
 这里不用管刚才启的是哪个产品/架构/内核——脚本已经把配套的 ELF 链到 `out/.debug/kernel.elf`

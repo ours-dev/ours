@@ -17,9 +17,14 @@ Usable on its own too:
 
 then in another terminal:
 
-    lldb -o 'target create out/.debug/kernel.elf' \\
+    lldb -o 'command script import scripts/lldb_ours.py' \\
+         -o 'target create out/.debug/kernel.elf' \\
          -o 'target modules load --file kernel.elf --slide 0xffffff8840000000' \\
          -o 'gdb-remote localhost:1234'
+
+The import is not optional: cl/cpus/nodes/kthread come from that script, F5 gets
+it from the launch configuration's initCommands, and a bare lldb does not look
+for it. This script prints the whole line when the stub comes up.
 
 Three levels, narrowing: the product says which images exist, the product and
 the architecture together say which build directory (out/<product>.<arch>, the
@@ -44,6 +49,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SWITCH_SET = "//build/switch/set/"
+
+# Where physboot loads the kernel: KERNEL_ASPACE_BASE + ARCH_PHYSMAP_SIZE +
+# GB(1). Printed rather than left for the reader to look up; it moves if KASLR
+# is ever switched on, and the boot log's "Reserve area k:head" line is the
+# authority then.
+SLIDE = "0xffffff8840000000"
 
 
 def die(*lines: str) -> "typing.NoReturn":  # noqa: F821
@@ -323,6 +334,13 @@ def main(argv: list[str] | None = None) -> int:
     # debugger attaches as soon as it appears -- so everything it depends on,
     # the symlink included, is already in place above.
     note(f"gdbstub ready on localhost:{port}")
+    # The whole attach line, so a terminal user does not have to reconstruct it
+    # -- including the script import, which F5 gets from initCommands but a
+    # bare lldb does not (see .lldbinit).
+    note(f"attach with:  lldb -o 'command script import scripts/lldb_ours.py' "
+         f"-o 'target create out/.debug/kernel.elf' "
+         f"-o 'target modules load --file kernel.elf --slide {SLIDE}' "
+         f"-o 'gdb-remote localhost:{port}'")
 
     return qemu.wait()
 

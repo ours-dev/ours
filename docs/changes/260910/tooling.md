@@ -591,3 +591,64 @@ Linux 的 `task_struct::on_cpu` / `wake_cpu`；crash 工具的 `ps -l` / `foreac
 - **没有走运行队列**、**没有全局线程列表**、**没有 buddy 按 order 统计**：前两个要处理
   侵入式红黑树/链表的 offsetof 和半途停下的中间态，第三个要走 free list。`kthread` 覆盖了
   "为什么没在跑"，这三个覆盖的是"还有谁"，等真需要时再说。
+
+## 终端里的 lldb 不会自动加载脚本（2026-09-10）
+
+**文件**
+- `.lldbinit` —— 新建
+- `scripts/qemu_debug.py` —— ready 之后打印完整的 attach 命令行
+- `docs/development/debugging.md` —— 命令行那节补上 import 与它的原因
+
+**症状**
+F5 会自动加载 `scripts/lldb_ours.py`（两个 launch 配置的 `initCommands`），
+**但终端里 `lldb` 不会**。而文档给的那条命令行恰好没带 import：
+
+```bash
+lldb -o 'target create out/.debug/kernel.elf' \
+     -o 'target modules load --file kernel.elf --slide 0xffffff8840000000' \
+     -o 'gdb-remote localhost:1234'
+```
+
+照着敲，attach 是成功的，`cl` / `cpus` / `nodes` / `kthread` 一个都没有——
+而且没有任何提示说少了什么。
+
+**原因**
+`initCommands` 是 launch 配置的字段，只对经它启动的会话生效。仓库里此前也没有
+`.lldbinit`，`~/.lldbinit` 同样没有，所以终端会话没有任何加载点。
+
+**改法**
+三处，各解决一部分：
+
+1. **`.lldbinit`**（仓库根）里放上那一行。但它**没法让自己被加载**——lldb 默认不信任当前
+   目录的 `.lldbinit`（cd 进一个目录就执行任意代码，这个默认是对的）。lldb 自己会说：
+
+   ```
+   error: There is a .lldbinit file in the current directory which is not being read.
+   ```
+
+   想要它生效是一次性的：`echo 'settings set target.load-cwd-lldbinit true' >> ~/.lldbinit`。
+2. **`qemu_debug.py` 在 ready 之后把完整命令行打出来**，包含 import 和 slide。
+   这条路零配置，而且顺带把 slide 从"读者自己去查"变成"就在屏幕上"。
+3. **文档那条命令行补上第一行**，并写清为什么不能省。
+
+**参照**
+无。lldb 的 `target.load-cwd-lldbinit` 默认值与那条 error 信息是上游行为。
+
+**验证**
+把脚本打印的那一行**原样 eval 执行**，命令确实在：
+
+```
+$ ./scripts/qemu_debug.py
+qemu-debug: attach with:  lldb -o 'command script import scripts/lldb_ours.py' -o ...
+$ eval "$LINE -o 'cl -l' -o quit"
+error: There is a .lldbinit file in the current directory which is not being read.
+ours: cl <var> [cpu] | cpus | nodes | kthread [cpu|0xaddr]
+46 CPU_LOCAL variables in [0xffffff8840092000, 0xffffff88400a49b0):
+```
+
+第一行正是 lldb 在确认 `.lldbinit` 的那条默认行为；第二三行说明 import 走的是命令行那条路，
+和 `.lldbinit` 无关。
+
+**故意没做**
+- **没有写 `~/.lldbinit`**。那是用户全局配置，不该由仓库里的东西替人改；`.lldbinit`
+  连同一行说明放在这里，开不开由人决定。

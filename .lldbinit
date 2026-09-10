@@ -1,0 +1,11 @@
+# Kernel-aware lldb commands (cl / cpus / nodes / kthread).
+#
+# lldb reads this file only when it is told to trust the working directory:
+#
+#     echo 'settings set target.load-cwd-lldbinit true' >> ~/.lldbinit
+#
+# That is off by default on purpose -- a .lldbinit in a directory you cd into
+# can run anything -- so this file cannot make itself load. Without that
+# setting, pass the import on the command line instead; scripts/qemu_debug.py
+# prints the whole line when it comes up.
+command script import scripts/lldb_ours.py
