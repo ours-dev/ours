@@ -22,7 +22,7 @@ namespace {
     /// CPU 0, only now with the bookkeeping disagreeing about it.
     FORCE_INLINE
     auto rq(Runtime &runtime) -> RrRunQueue & {
-        return Scheduler::Current::get(runtime.which_cpu).rr_run_queue();
+        return Scheduler::of(runtime).rr_run_queue();
     }
 
 } // namespace

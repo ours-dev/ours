@@ -170,3 +170,67 @@ auto rq(Runtime &runtime) -> RrRunQueue & {
   Linux 的 `load_balance()`／`nohz idle balance` 这一层还不存在。
 - `Scheduler::reschedule(CpuNum)` 仍然是个空函数体（`if (cpu == Cpu::id()) {}`），
   没有调用者，没动。
+
+## 纪律从 `Runtime` 反查 `Scheduler`，不再绕一次 per-CPU 表（2026-09-10）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — 新增 `Scheduler::of(Runtime &)`
+- `kernel/kernel/task/sched/rr.cpp` — `rq()` 改用它
+
+**症状**
+不是 bug。`rq()` 昨天刚从"当前 CPU"改成"Runtime 所属的 CPU"，但实现方式是绕回去：
+
+```cpp
+auto rq(Runtime &runtime) -> RrRunQueue & {
+    return Scheduler::Current::get(runtime.which_cpu).rr_run_queue();
+}
+```
+
+**原因**
+`Runtime` 是 `Scheduler` 的**成员**（`scheduler.hpp` 的 `Runtime m_runtime;`）。
+从成员回到宿主是一次编译期的常量减法，而上面这行做的是：读 `runtime.which_cpu`，
+拿它去索引全局的 `CPU_OFFSETS`，再加上 CpuLocal 的 handle。
+
+代价有两层：
+
+1. **性能**：`RoundRobin` 的八个入口全走这一步，其中 `put_prev_thread` /
+   `set_next_thread` 每次上下文切换都跑，`update_thread` 每个 tick 都跑。
+   每次都要碰一条和马上要访问的运行队列**毫不相干**的 cacheline（`CPU_OFFSETS`），
+   外加一条 `DEBUG_ASSERT(cpunum < MAX_CPU)`。
+2. **正确性的依赖面**：运行队列取哪一份，被绑在了 `which_cpu` 这个字段对不对上——
+   而 `which_cpu` 恰恰是昨天刚修好的那个字段（`Scheduler::init()` 以前给每颗 CPU
+   都写 0）。指针算术本来就知道答案，不需要再问一遍。
+
+而且这个 helper 是 rr.cpp 文件内的 `static`，`fair.cpp` 里同样的 20 处一点好处也拿不到。
+放到 `Scheduler` 上，将来 Fair 回到构建里时是一次机械替换。
+
+**改法**
+```cpp
+FORCE_INLINE
+static auto of(Runtime &runtime) -> Self & {
+    return *ustl::mem::container_of(&runtime, &Self::m_runtime);
+}
+```
+```cpp
+auto rq(Runtime &runtime) -> RrRunQueue & {
+    return Scheduler::of(runtime).rr_run_queue();
+}
+```
+
+`ustl::mem::container_of` 是本仓库既有的 idiom，`Thread::of(sched::Context *)`
+（`kernel/include/ours/task/thread.hpp:378`）就是这么写的；`runtime.hpp` 甚至早就
+`#include <ustl/mem/container_of.hpp>` 了，只是一直没人用。
+
+顺带把 `scheduler.hpp` 上 `init(CpuNum)` 的注释收短了——它和定义处那段一字不差，
+而且自己结尾还写着"see the note on the definition"。
+
+**参照**
+Linux 的 `struct rq` 和 `cfs_rq` 之间用的是 `container_of`（`task_of()`、`rq_of()`），
+不是每次去查 `cpu_rq(cpu)`。同一个理由。
+
+**验证**
+四核引导：cpu0 8589 行 / cpu1 599 / cpu2 89435 / cpu3 89399，无断言失败。
+
+**故意没做**
+`fair.cpp` 那 20 处没动——它不在构建里，而且 Fair 是 owner 自己的设计。
+`Scheduler::of()` 就位之后那是一次机械替换，仍记在 `docs/repairs/260909/task-sched.md`。

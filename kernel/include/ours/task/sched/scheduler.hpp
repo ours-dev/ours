@@ -108,14 +108,29 @@ class Scheduler {
     }
 
     /// |cpunum| is the CPU this scheduler belongs to, which is not the CPU
-    /// running this: task::init() builds every possible CPU's scheduler from
-    /// the boot CPU, before any AP exists. It used to answer `Cpu::id()`
-    /// here, so every scheduler in the system recorded CPU 0 as its own --
-    /// see the note on the definition.
+    /// running this; see the definition for why it cannot be Cpu::id().
     INIT_CODE
     auto init(CpuNum cpunum) -> void;
 
     auto assert_thread_in_scheduler(Thread *thread) -> void;
+
+    /// The Scheduler that owns |runtime|.
+    ///
+    /// A Runtime is a member of exactly one Scheduler, so this is the same
+    /// member-to-owner recovery Thread::of(Context *) performs, and it is here
+    /// for the same reason: an ISchedule entry point is handed the Runtime as
+    /// its capability token and has no other honest way back to the scheduler
+    /// around it.
+    ///
+    /// The disciplines used to spell it `Scheduler::Current::get(cpunum)`,
+    /// which walks CPU_OFFSETS with a remote CPU number -- a load off an
+    /// unrelated cacheline on every enqueue, tick and context switch, and a
+    /// dependency on `which_cpu` being right for something the pointer
+    /// arithmetic already knows. This is a compile-time constant subtraction.
+    FORCE_INLINE
+    static auto of(Runtime &runtime) -> Self & {
+        return *ustl::mem::container_of(&runtime, &Self::m_runtime);
+    }
 
     FORCE_INLINE auto num_runnable() const -> usize {
         return m_runtime.num_queued_threads;
