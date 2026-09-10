@@ -34,7 +34,7 @@ class IpiService {
     /// This is the piece that makes a "generic" IPI generic. An IPI carries a
     /// vector and nothing else, so a second client of IrqVec::IpiGeneric could
     /// not previously say what it wanted done -- the profiler had to reach past
-    /// this class into apic_send_ipi_mulitcast() and get its own handler
+    /// this class into apic_send_ipi_multicast() and get its own handler
     /// hardcoded into the x86 fault dispatcher. The payload lives in the
     /// target's mailbox now, and the vector only says "look at it".
     ///
