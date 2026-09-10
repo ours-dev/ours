@@ -102,38 +102,41 @@ AllowShortIfStatementsOnASingleLine: Never
 AllowShortCaseLabelsOnASingleLine: false
 ReflowComments: false
 
-# Include ordering: library-internal > C++ std > C std > third-party.
-# NOTE: "library-internal" via <> depends on the current file's library prefix and
-# cannot be expressed in a single repo-wide regex.  Quoted includes ("...") are
-# always treated as library-internal.  If you need per-library <> ordering, add a
-# .clang-format in the library's root directory.
-
+# Include ordering, four groups and no more:
+#   1. <ours/...>      -- this project's own headers
+#   2. C++ standard library
+#   3. C standard library
+#   4. everything else -- other libraries, and every quoted include
+#
+# Note that clang-format takes the FIRST matching category, so the groups have
+# to stay in this order: the catch-all at the end would otherwise swallow
+# everything above it.
+#
+# Quoted includes deliberately land in group 4 rather than getting a group of
+# their own. A quoted include says only "resolve this relative to me first",
+# which is a lookup rule, not a statement about which library the header
+# belongs to -- and grouping by library is the whole point here.
 IncludeBlocks: Regroup
 IncludeCategories:
-  # 1a. Quoted includes: definitely library-internal (same directory / nearby).
-  - Regex: '^"'
-    Priority: 1
-  # 1b. Project-wide framework / kernel headers (treated as library-internal).
-  - Regex: '^<(ours|ustl|ktl|gktl|ccrt|builtin|bootmem|arch|acpi|kmrd|mtl|lockdep|obi|clock|lz4|logz4|meta)/'
+  # 1. This project.
+  - Regex: '^<ours/.*\.(h|hpp)>$'
     Priority: 1
 
-  # 2. C++ standard library: no slashes, no .h, excluding C <c...> wrappers.
-  #    Most C++ headers do not start with 'c'.
+  # 2. C++ standard library: no slash, no .h, minus the <c...> C wrappers.
+  #    Split in two because most C++ headers do not begin with 'c', and the
+  #    handful that do cannot be told from <cstdio> and friends by shape.
   - Regex: '^<[a-bd-z][a-z_0-9]*>$'
     Priority: 2
-  #    C++ headers that DO start with 'c' (explicit list).
   - Regex: '^<(charconv|chrono|codecvt|compare|complex|concepts|condition_variable|coroutine)>$'
     Priority: 2
 
-  # 3. C standard library: <c...> wrappers and <*.h> (including POSIX).
+  # 3. C standard library: the <c...> wrappers and anything <*.h>.
   - Regex: '^<c[a-z_]+>$'
     Priority: 3
   - Regex: '^<[a-z_]+\.h>$'
     Priority: 3
 
-  # 4. Third-party / everything else in angle brackets.
-  - Regex: '^<'
-    Priority: 4
+  # 4. Everything else, angle-bracketed or quoted.
   - Regex: '.*'
-    Priority: 5
+    Priority: 4
 SortIncludes: true
