@@ -97,19 +97,14 @@
     // the full register in 64-bit mode, so no `xor` is needed first.
     movl X86_BOOTSTRAP_OFFSET_CPUNUM(%rbx), %edi
 
-    // percpu[] holds a (stack top, thread) pair per application CPU, indexed
-    // by cpunum - 1: the boot CPU never comes through the trampoline, so the
-    // first pair belongs to CPU 1.
-    lea -1(%rdi), %rax
-    shl $1, %rax
 .label __debug_symbol0, global 
     // Let %rsp point to kernel stack of current thread.
-    mov X86_BOOTSTRAP_OFFSET_PERCPU(%rbx, %rax, 8), %rsp
+    mov X86_BOOTSTRAP_OFFSET_STACK_TOP(%rbx), %rsp
 
 .label __debug_symbol1, global 
 .label __debug_symbol2, global
     // Let %rsi point to current thread
-    mov X86_BOOTSTRAP_OFFSET_PERCPU + 8(%rbx, %rax, 8), %rsi
+    mov X86_BOOTSTRAP_OFFSET_THREAD(%rbx), %rsi
 
 .label __debug_symbol3, global
     // Two things the callee is entitled to assume and that a bare `jmp` into

@@ -190,3 +190,76 @@ cpu0 8589 行、cpu1 644 行（userboot）、cpu2 100135 行、cpu3 100187 行�
 
 **故意没做**
 `NUMA=1` 那条路径没有实测（它要一个 `mm_numa = true` 的单独构建）。
+
+## 跳板的交接改回单槽，去掉 `percpu[2 * MP_MAX_CPUS]`（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/kernel/include/ours/arch/x86/bootstrap.hpp` — 数组换成一个 `thread` 标量
+- `kernel/arch/x86/kernel/bootstrap16.S` — 两条定偏移 load，不再算下标
+- `kernel/arch/x86/kernel/mp.cpp` — 只写一组值
+
+**症状**
+不是 bug。昨天修寄存器约定时保留了 `percpu[]` 这张表，同时留下一个**没有读者**的
+`stack_top`：`mp.cpp` 仍然在写它，`X86_BOOTSTRAP_OFFSET_STACK_TOP` 和它的
+`static_assert` 成了墓碑。
+
+**原因**
+这张表的前提是"可能有多颗 AP 同时在跳板里"。而 `x86_bring_aps()` 是**严格串行**的：
+
+```cpp
+apic_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
+...
+while (!Cpu::is_online(cpu))
+    ;
+```
+
+发一颗、等它上线、再发下一颗。任何时刻只有一组值是活的。
+
+多出来的这张表要的代价：
+
+- 一个 `cpunum - 1`、两项一组的下标约定，要**三个文件同时同意**
+  （bootstrap.hpp 的宏注释、mp.cpp 的写入、bootstrap16.S 的读取），
+  三处各写了一段注释解释它；
+- 在 16 位跳板搬进来的那一页里，一个大小随 `mp_max_cpus` 增长的数组——
+  而 `bootstrap.cpp` 还要从同一片 `MIN_BOOTSTRAP16_BUFFER_SIZE`（3 页）里
+  挤出 GDT 和临时 PGD；
+- 64 位段里 `lea -1(%rdi), %rax; shl $1, %rax` 加一个 scratch 寄存器，
+  在一段**没有符号、只能靠 `__debug_symbol*` 下断点**的代码里做指针算术。
+
+昨天那个把 cpunum 和线程指针放反的 bug，就出在这段下标代码旁边。
+
+**改法**
+```cpp
+    VirtAddr stack_top;
+    CpuNum cpunum;
+    u32 padding3_;
+    VirtAddr thread;       // 原 percpu[] 的位置
+```
+```asm
+    movl X86_BOOTSTRAP_OFFSET_CPUNUM(%rbx), %edi
+    mov X86_BOOTSTRAP_OFFSET_STACK_TOP(%rbx), %rsp
+    mov X86_BOOTSTRAP_OFFSET_THREAD(%rbx), %rsi
+```
+```cpp
+    bootstrap_data->cpunum = cpu;
+    bootstrap_data->stack_top = initial_stack;
+    bootstrap_data->thread = reinterpret_cast<VirtAddr>(current_thread);
+```
+
+三条定偏移访存，没有下标、没有 scratch 寄存器、没有 `MP_MAX_CPUS` 进跳板页。
+`DEBUG_ASSERT(MAX_CPU < 1000'000'000'000'000'000)` 也一并删了——它是给那个下标
+算法写的，本身也没有意义。
+
+**参照**
+Zircon `x86_bootstrap16_acquire()` / `x86_bootstrap16_data`：同样是单槽，
+同样靠"一次只起一颗"来保证安全。
+
+**验证**
+四核引导：三颗 AP 依次 online，userboot 在 CPU1 跑到 ring 3，Sample1/Sample2
+分别在 CPU2/CPU3，无断言失败。
+
+**故意没做**
+- 没有借机改成"一次全发"。并行唤醒要 AP 自己从 APIC ID 反推 cpunum
+  （`apic_id_to_cpunum()` 已经有了），是另一件事，记在
+  `docs/repairs/260909/x86-mp.md`。
+- `__debug_symbol0..4` 留着。它们是给这段无符号代码下断点用的，不是死代码。

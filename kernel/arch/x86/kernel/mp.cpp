@@ -130,7 +130,6 @@ auto x86_bring_aps(CpuMask targets) -> void {
     Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
     auto const vec = arch::IrqVec(trampoline >> PAGE_SHIFT);
 
-    DEBUG_ASSERT(MAX_CPU < 1000'000'000'000'000'000);
     targets.for_each([bootstrap_data, vec](CpuNum cpu) {
         log::trace("Attempt to wake up CPU[{}]", cpu);
 
@@ -140,15 +139,12 @@ auto x86_bring_aps(CpuMask targets) -> void {
         auto const initial_stack = current_thread->kernel_stack().top();
         log::trace("CPU[{}]=(s: {:X})", cpu, initial_stack);
 
+        // The one live slot in the trampoline page. Safe to overwrite per CPU
+        // because the loop below waits for this one to come online before it
+        // reaches this line again.
         bootstrap_data->cpunum = cpu;
         bootstrap_data->stack_top = initial_stack;
-
-        // What bootstrap16.S actually reads. It indexes by cpunum - 1, since
-        // the boot CPU never goes through the trampoline.
-        DEBUG_ASSERT(cpu > 0 && cpu < MP_MAX_CPUS);
-        auto const slot = usize(cpu - 1) * 2;
-        bootstrap_data->percpu[slot] = initial_stack;
-        bootstrap_data->percpu[slot + 1] = reinterpret_cast<VirtAddr>(current_thread);
+        bootstrap_data->thread = reinterpret_cast<VirtAddr>(current_thread);
 
         apic_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
 

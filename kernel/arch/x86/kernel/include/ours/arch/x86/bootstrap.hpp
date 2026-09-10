@@ -10,12 +10,7 @@
 #define X86_BOOTSTRAP_OFFSET_STACK_TOP 32
 #define X86_BOOTSTRAP_OFFSET_CPUNUM 40
 
-// Start of the per-CPU pair array the 16-bit trampoline indexes. It reads
-// entry 2(n-1) as CPU n's stack top and entry 2(n-1)+1 as its Thread pointer
-// -- n-1 because the boot CPU never takes this path. The macro was missing
-// entirely, so the assembler treated it as an external symbol and the kernel
-// failed to link on it.
-#define X86_BOOTSTRAP_OFFSET_PERCPU 48
+#define X86_BOOTSTRAP_OFFSET_THREAD 48
 
 #if !defined(__ASSEMBLY__) && !defined(__ASSEMBLER__)
 
@@ -43,13 +38,21 @@ struct BootstrapData {
 
     // High half address space.
     VirtAddr long_mode_virt_entry;
+
+    /// What the CPU being started needs before it can run C: the stack to run
+    /// on, its own number, and the Thread it is to adopt.
+    ///
+    /// One slot, not a table indexed by CPU. x86_bring_aps() starts one AP at
+    /// a time -- it sends the SIPI and then spins until that CPU reports
+    /// online before it touches this page again -- so only one CPU's values
+    /// are ever live. A `percpu[2 * MP_MAX_CPUS]` array of (stack, thread)
+    /// pairs indexed by `cpunum - 1` sat here instead, which bought nothing
+    /// and cost an index convention that three files had to agree on, plus
+    /// the arithmetic to apply it in 64-bit assembly with no symbols.
     VirtAddr stack_top;
     CpuNum cpunum;
     u32 padding3_;
-
-    /// Stack top and Thread pointer for each application CPU, in the order
-    /// bootstrap16.S expects. Two entries per CPU, indexed by cpunum - 1.
-    VirtAddr percpu[2 * MP_MAX_CPUS];
+    VirtAddr thread;
 };
 static_assert(offsetof(BootstrapData, pgd) == X86_BOOTSTRAP_OFFSET_PGD);
 static_assert(offsetof(BootstrapData, gdtr_limit) == X86_BOOTSTRAP_OFFSET_GDTR);
@@ -59,7 +62,7 @@ static_assert(offsetof(BootstrapData, long_mode_virt_entry) ==
               X86_BOOTSTRAP_OFFSET_LONGMODE_VIRT_ENTRY);
 static_assert(offsetof(BootstrapData, stack_top) == X86_BOOTSTRAP_OFFSET_STACK_TOP);
 static_assert(offsetof(BootstrapData, cpunum) == X86_BOOTSTRAP_OFFSET_CPUNUM);
-static_assert(offsetof(BootstrapData, percpu) == X86_BOOTSTRAP_OFFSET_PERCPU);
+static_assert(offsetof(BootstrapData, thread) == X86_BOOTSTRAP_OFFSET_THREAD);
 
 constexpr static auto MIN_BOOTSTRAP16_BUFFER_SIZE = PAGE_SIZE * 3;
 
