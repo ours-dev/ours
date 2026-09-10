@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <ustl/collections/intrusive/unordered_set.hpp>
-
 #include <array>
 #include <span>
+
+#include <ustl/collections/intrusive/unordered_set.hpp>
 
 namespace {
 struct Value final: ustl::collections::intrusive::UnorderedSetBaseHook<> {

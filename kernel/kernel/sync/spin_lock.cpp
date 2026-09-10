@@ -80,10 +80,11 @@
 /// It costs the holder identity currently kept in the lock word, so it is a
 /// design decision rather than a drop-in change.
 
-#include <arch/spin_hint.hpp>
-#include <gktl/counter.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/spin_lock.hpp>
+
+#include <arch/spin_hint.hpp>
+#include <gktl/counter.hpp>
 
 using ustl::sync::MemoryOrder;
 

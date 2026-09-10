@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <bootmem/physical_memory.hpp>
-
 #include <array>
 #include <limits>
 
 #include <cstdlib>
+
+#include <bootmem/physical_memory.hpp>
 
 namespace {
 using bootmem::AllocationDirection;

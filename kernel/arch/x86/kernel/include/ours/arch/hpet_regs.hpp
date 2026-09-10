@@ -5,6 +5,7 @@
 
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
+
 #include <ustl/bitfields.hpp>
 
 /// The HPET memory mapped register block.

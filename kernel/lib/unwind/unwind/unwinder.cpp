@@ -77,14 +77,8 @@ namespace {
     /// Apply the CFI program in [begin, end) to `*state` until the covered
     /// location would move past `target`. `target` may be `LOCATION_END` for
     /// CIE initial programs, which have no location of their own.
-    auto evaluate(
-        Section const &section,
-        std::uint64_t begin,
-        std::uint64_t end,
-        std::uint64_t target,
-        Cie const &cie,
-        EvalState *state
-    ) -> bool {
+    auto evaluate(Section const &section, std::uint64_t begin, std::uint64_t end,
+                  std::uint64_t target, Cie const &cie, EvalState *state) -> bool {
         if (end < begin || end > section.size) {
             return false;
         }
@@ -332,9 +326,8 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
     if (!probe.ok()) {
         return StepResult::BadCfi;
     }
-    std::uint64_t const cie_offset = (section.kind == Section::Kind::EhFrame)
-                                         ? fde_offset + 4 - cie_reference
-                                         : cie_reference;
+    std::uint64_t const cie_offset =
+        (section.kind == Section::Kind::EhFrame) ? fde_offset + 4 - cie_reference : cie_reference;
 
     Cie cie = {};
     if (!parse_cie(section, cie_offset, &cie)) {
@@ -346,7 +339,8 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
     }
 
     EvalState state = {};
-    if (!evaluate(section, cie.instructions_begin, cie.instructions_end, LOCATION_END, cie, &state)) {
+    if (!evaluate(section, cie.instructions_begin, cie.instructions_end, LOCATION_END, cie,
+                  &state)) {
         return StepResult::BadCfi;
     }
     if (!evaluate(section, fde.instructions_begin, fde.instructions_end, regs->pc, cie, &state)) {
@@ -414,8 +408,7 @@ auto Unwinder::step(Registers *regs, MemoryReader const &memory) const -> StepRe
         case RuleKind::Offset:
         case RuleKind::ValOffset:
             new_bp = slot_address(cie, bp_rule, cfa);
-            if (bp_rule.kind == RuleKind::Offset &&
-                !read_stack(memory, new_bp, &new_bp)) {
+            if (bp_rule.kind == RuleKind::Offset && !read_stack(memory, new_bp, &new_bp)) {
                 return StepResult::BadFrame;
             }
             break;

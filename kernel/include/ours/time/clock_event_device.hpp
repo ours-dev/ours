@@ -3,9 +3,6 @@
 #ifndef OURS_TIME_CLOCK_EVENT_DEVICE_HPP
 #define OURS_TIME_CLOCK_EVENT_DEVICE_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/vtable_packer.hpp>
-#include <mtl/ratio.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/macro_abi.hpp>
 #include <ours/status.hpp>
@@ -13,14 +10,18 @@
 #include <ours/syscall/time.hpp>
 #include <ours/time/types.hpp>
 #include <ours/types.hpp>
+
+#include <concepts>
+
+#include <gktl/canary.hpp>
+#include <gktl/vtable_packer.hpp>
+#include <mtl/ratio.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/fn.hpp>
 #include <ustl/mem/container_of.hpp>
 #include <ustl/traits/invoke_args.hpp>
 #include <ustl/util/enum_bits.hpp>
 #include <ustl/util/type_list.hpp>
-
-#include <concepts>
 
 namespace ours::time {
 class ClockEventDevice {

@@ -3,7 +3,6 @@
 #ifndef OURS_TASK_SCHED_SCHEDULER_HPP
 #define OURS_TASK_SCHED_SCHEDULER_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/platform/timer.hpp>
@@ -15,10 +14,12 @@
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/timer.hpp>
-#include <ustl/chrono/duration.hpp>
-#include <ustl/sync/atomic.hpp>
 
 #include <array>
+
+#include <gktl/canary.hpp>
+#include <ustl/chrono/duration.hpp>
+#include <ustl/sync/atomic.hpp>
 
 namespace ours::task::sched {
 /// The core scheduler per cpu.
@@ -103,7 +104,8 @@ class Scheduler {
     template <typename Upstream, typename Target>
     static auto split_node_from_pi_graph(Upstream &, Target &) -> void;
 
-    FORCE_INLINE static auto peek_active_mask() -> CpuMask {
+    FORCE_INLINE
+    static auto peek_active_mask() -> CpuMask {
         return STATES[usize(State::Active)].load(std::memory_order_relaxed);
     }
 
@@ -132,11 +134,13 @@ class Scheduler {
         return *ustl::mem::container_of(&runtime, &Self::m_runtime);
     }
 
-    FORCE_INLINE auto num_runnable() const -> usize {
+    FORCE_INLINE
+    auto num_runnable() const -> usize {
         return m_runtime.num_queued_threads;
     }
 
-    FORCE_INLINE auto is_state_active() const -> bool {
+    FORCE_INLINE
+    auto is_state_active() const -> bool {
         return STATES[usize(State::Active)]
             .load(std::memory_order_relaxed)
             .test(m_runtime.which_cpu);
@@ -155,7 +159,8 @@ class Scheduler {
     /// (rather than through its own CpuLocal instance) since Scheduler
     /// is already a per-CPU singleton -- see RunQueue's doc comment in
     /// fair.hpp for why this deliberately couples Scheduler to Fair.
-    FORCE_INLINE auto fair_run_queue() -> RunQueue & {
+    FORCE_INLINE
+    auto fair_run_queue() -> RunQueue & {
         return m_fair_runqueue;
     }
 
@@ -163,7 +168,8 @@ class Scheduler {
     /// reason as the Fair queue above. Both slots exist at once so that
     /// switching disciplines is a matter of which one is registered, not of
     /// which one Scheduler was compiled to carry.
-    FORCE_INLINE auto rr_run_queue() -> RrRunQueue & {
+    FORCE_INLINE
+    auto rr_run_queue() -> RrRunQueue & {
         return m_rr_runqueue;
     }
 

@@ -236,8 +236,7 @@ auto test_invalid_updates_are_rejected() -> int {
     ProtectionRanges ranges;
     (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
 
-    if (check(ranges.update(WINDOW_BASE, 0, RX) == Status::InvArgs,
-              "zero-sized update rejected")) {
+    if (check(ranges.update(WINDOW_BASE, 0, RX) == Status::InvArgs, "zero-sized update rejected")) {
         return 1;
     }
     if (check(ranges.update(WINDOW_BASE - PAGE, PAGE, RX) == Status::InvArgs,

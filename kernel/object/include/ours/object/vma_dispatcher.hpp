@@ -3,10 +3,11 @@
 #ifndef OURS_OBJECT_VMA_DISPATCHER_HPP
 #define OURS_OBJECT_VMA_DISPATCHER_HPP 1
 
-#include <ktl/result.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
+
+#include <ktl/result.hpp>
 
 namespace ours::object {
 /// Rights a freshly created VMA handle carries.

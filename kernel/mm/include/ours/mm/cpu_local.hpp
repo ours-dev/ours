@@ -8,14 +8,15 @@
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/cpu_local_defs.hpp>
+
+#include <array>
+#include <new>
+
 #include <ustl/function/invoke.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/util/move.hpp>
 #include <ustl/util/nonconstructible.hpp>
 #include <ustl/util/noncopyable.hpp>
-
-#include <array>
-#include <new>
 
 namespace ours::mm {
 /// Per-CPU storage.

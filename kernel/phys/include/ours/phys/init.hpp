@@ -3,7 +3,6 @@
 #ifndef OURS_PHYS_INIT_HPP
 #define OURS_PHYS_INIT_HPP 1
 
-#include <obi/container_view.hpp>
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
 #include <ours/phys/arch_bootmem.hpp>
@@ -12,6 +11,8 @@
 #include <ours/types.hpp>
 
 #include <span>
+
+#include <obi/container_view.hpp>
 
 namespace ours::phys {
 struct Handoff;

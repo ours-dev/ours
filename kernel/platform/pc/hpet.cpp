@@ -1,8 +1,9 @@
+#include <ours/arch/hpet.hpp>
+#include <ours/platform/acpi.hpp>
+
 #include <acpi/structures/hpet.hpp>
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
-#include <ours/arch/hpet.hpp>
-#include <ours/platform/acpi.hpp>
 
 namespace ours {
 static auto platform_hpet_init() -> void {

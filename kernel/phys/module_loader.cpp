@@ -1,20 +1,20 @@
-#include "build_id_note.hpp"
-#include "detail/boot_alloc.hpp"
-#include "physload.hpp"
-#include <logz4/log.hpp>
 #include <ours/phys/exports.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/kernel_package.hpp>
 #include <ours/phys/module_loader.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <span>
 #include <string_view>
 
 #include <cstring>
 
+#include "build_id_note.hpp"
+#include "detail/boot_alloc.hpp"
+#include "physload.hpp"
 #include <bootfs/view.hpp>
+#include <logz4/log.hpp>
+#include <ustl/mem/align.hpp>
 
 namespace ours::phys {
 namespace {

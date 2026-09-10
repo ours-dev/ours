@@ -3,6 +3,13 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_RBTREE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_RBTREE_HPP 1
 
+#include <functional>
+#include <iterator>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
+
 #include <ustl/collections/intrusive/detail/assert.hpp>
 #include <ustl/collections/intrusive/detail/extension.hpp>
 #include <ustl/collections/intrusive/detail/key_node_ptr_compare.hpp>
@@ -14,13 +21,6 @@
 #include <ustl/collections/intrusive/rbtree_algorithms.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>
 #include <ustl/option.hpp>
-
-#include <functional>
-#include <iterator>
-#include <type_traits>
-#include <utility>
-
-#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>
@@ -497,7 +497,8 @@ class RBTree final {
         return PointerTraits<NodePtr>::pointer_to(const_cast<Node &>(m_header));
     }
 
-    [[no_unique_address]] detail::PolicyContext<IS_INSTRUMENTED> m_context{};
+    [[no_unique_address]]
+    detail::PolicyContext<IS_INSTRUMENTED> m_context{};
 
     /// Wraps a possibly-absent node for the navigation API above: an empty
     /// slot (and the header itself) surfaces as `end()`.

@@ -6,12 +6,10 @@
 #include <ours/start.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
+
 #include <userabi/userboot.hpp>
 
 /// Init calls
-#include <ccrt/runtime.hpp>
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
 #include <ours/irq/init.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/init.hpp>
@@ -20,6 +18,10 @@
 #include <ours/platform/init.hpp>
 #include <ours/task/init.hpp>
 #include <ours/time/init.hpp>
+
+#include <ccrt/runtime.hpp>
+#include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
 
 using gktl::InitLevel;
 using ours::task::Thread;
@@ -68,7 +70,6 @@ namespace {
         // that the pages it takes come from the pool the reclaim has already
         // returned rather than competing with it.
         userabi::userboot_init();
-
 
         auto const gibberish = [](void *arg) -> i32 {
             auto const msg = static_cast<char const *>(arg);

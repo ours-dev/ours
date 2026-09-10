@@ -4,14 +4,14 @@
 #ifndef USTL_IO_CIRCULAR_BUFFER_HPP
 #define USTL_IO_CIRCULAR_BUFFER_HPP 1
 
-#include <ustl/collections/error.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
-
 #include <type_traits>
 #include <utility>
 
 #include <cstddef>
+
+#include <ustl/collections/error.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
 
 namespace ustl::io {
 /// A fixed-capacity FIFO ring: once full, pushing overwrites the oldest

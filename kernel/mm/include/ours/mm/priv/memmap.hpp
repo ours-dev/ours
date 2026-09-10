@@ -10,11 +10,12 @@
 #include <ours/mm/pm_zone.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/status.hpp>
+
+#include <algorithm>
+
 #include <ustl/mem/align.hpp>
 #include <ustl/result.hpp>
 #include <ustl/views/span.hpp>
-
-#include <algorithm>
 
 namespace ours::mm {
 /// A run of frame descriptors covering consecutive pfns.

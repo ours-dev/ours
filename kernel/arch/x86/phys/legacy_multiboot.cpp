@@ -1,8 +1,9 @@
-#include "legacy_boot.hpp"
-#include <logz4/log.hpp>
 #include <ours/phys/init.hpp>
 
 #include <cstring>
+
+#include "legacy_boot.hpp"
+#include <logz4/log.hpp>
 namespace ours::phys {
 namespace {
     auto parse_string(multiboot::View::Tag const &tag, ustl::views::StringView &output) -> Status {

@@ -3,10 +3,11 @@
 #ifndef LOGZ4_RING_HPP
 #define LOGZ4_RING_HPP 1
 
+#include <ours/types.hpp>
+
 #include <logz4/clock.hpp>
 #include <logz4/level.hpp>
 #include <logz4/logger.hpp>
-#include <ours/types.hpp>
 
 namespace logz4::ring {
 

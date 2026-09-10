@@ -3,12 +3,13 @@
 #ifndef OURS_PHYS_BOOT_OBI_HPP
 #define OURS_PHYS_BOOT_OBI_HPP 1
 
-#include <obi/command_line_view.hpp>
-#include <obi/container_view.hpp>
-#include <obi/memory_config_view.hpp>
 #include <ours/phys/kernel_package.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+
+#include <obi/command_line_view.hpp>
+#include <obi/container_view.hpp>
+#include <obi/memory_config_view.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <ustl/views/span.hpp>

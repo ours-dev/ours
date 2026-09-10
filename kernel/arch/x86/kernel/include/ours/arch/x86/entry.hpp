@@ -3,8 +3,9 @@
 #ifndef OURS_ARCH_X86_ENTRY_HPP
 #define OURS_ARCH_X86_ENTRY_HPP 1
 
-#include <arch/interrupt.hpp>
 #include <ours/compiler.hpp>
+
+#include <arch/interrupt.hpp>
 
 namespace ours {
 extern "C" auto x86_syscall(arch::IrqFrame *) -> void;

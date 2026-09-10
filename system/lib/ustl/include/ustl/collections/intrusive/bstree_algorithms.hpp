@@ -3,12 +3,12 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_BSTREE_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_BSTREE_ALGORITHMS_HPP 1
 
-#include <ustl/collections/intrusive/detail/bstree_algorithms_base.hpp>
-#include <ustl/collections/intrusive/pointer_traits.hpp>
-
 #include <utility>
 
 #include <cstddef>
+
+#include <ustl/collections/intrusive/detail/bstree_algorithms_base.hpp>
+#include <ustl/collections/intrusive/pointer_traits.hpp>
 
 namespace ustl::collections::intrusive {
 template <typename NodePointer>

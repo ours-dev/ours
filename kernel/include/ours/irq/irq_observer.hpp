@@ -4,6 +4,7 @@
 #define OURS_IRQ_IRQ_OBSERVER_HPP 1
 
 #include <ours/irq/types.hpp>
+
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::irq {

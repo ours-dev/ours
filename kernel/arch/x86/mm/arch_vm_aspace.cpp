@@ -1,8 +1,9 @@
-#include <arch/x86/system.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/arch_vm_aspace.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/vm_aspace.hpp>
+
+#include <arch/x86/system.hpp>
 
 namespace ours::mm {
 namespace {
@@ -54,38 +55,38 @@ auto ArchVmAspace::init() -> Status {
     // for a user aspace and wrong for anything else that ever lands here.
     // Naming every kind makes a new one a compile error instead.
     switch (m_kind) {
-    case VmasKind::Kernel: {
-        // Kernel page table was provided by kernel.phys, so do not need to allocate memory.
-        auto const phys_pgd = KERNEL_PGD;
-        auto const virt_pgd = PhysMap::phys_to_virt(phys_pgd);
-        auto status = m_page_table.init_mmu(phys_pgd, virt_pgd);
-        if (status != Status::Ok) {
-            return status;
+        case VmasKind::Kernel: {
+            // Kernel page table was provided by kernel.phys, so do not need to allocate memory.
+            auto const phys_pgd = KERNEL_PGD;
+            auto const virt_pgd = PhysMap::phys_to_virt(phys_pgd);
+            auto status = m_page_table.init_mmu(phys_pgd, virt_pgd);
+            if (status != Status::Ok) {
+                return status;
+            }
+            break;
         }
-        break;
-    }
-    case VmasKind::Guest: {
-        auto status = m_page_table.init_ept();
-        if (status != Status::Ok) {
-            return status;
+        case VmasKind::Guest: {
+            auto status = m_page_table.init_ept();
+            if (status != Status::Ok) {
+                return status;
+            }
+            break;
         }
-        break;
-    }
-    case VmasKind::User: {
-        auto status = m_page_table.init_mmu();
-        if (status != Status::Ok) {
-            return status;
+        case VmasKind::User: {
+            auto status = m_page_table.init_mmu();
+            if (status != Status::Ok) {
+                return status;
+            }
+            // We should create an alias of kernel address space to avoid unnecessary switches.
+            // And it could help us to call the routine passed by the driver of the user space correctly.
+            auto &kpt = VmAspace::kernel_aspace()->arch_aspace().m_page_table;
+            auto const alias_status =
+                m_page_table.alias_to(kpt, PhysMap::VIRT_BASE, PhysMap::SIZE / PAGE_SIZE);
+            if (alias_status != Status::Ok) {
+                return alias_status;
+            }
+            break;
         }
-        // We should create an alias of kernel address space to avoid unnecessary switches.
-        // And it could help us to call the routine passed by the driver of the user space correctly.
-        auto &kpt = VmAspace::kernel_aspace()->arch_aspace().m_page_table;
-        auto const alias_status =
-            m_page_table.alias_to(kpt, PhysMap::VIRT_BASE, PhysMap::SIZE / PAGE_SIZE);
-        if (alias_status != Status::Ok) {
-            return alias_status;
-        }
-        break;
-    }
     }
 
     return Status::Ok;

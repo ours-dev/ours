@@ -1,9 +1,10 @@
-#include <heap/new.hpp>
 #include <ours/irq/irq_dispatcher.hpp>
 #include <ours/irq/irq_observer.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/task/thread.hpp>
+
+#include <heap/new.hpp>
 
 namespace ours::irq {
 namespace {

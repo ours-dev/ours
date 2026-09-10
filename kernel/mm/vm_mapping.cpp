@@ -1,4 +1,3 @@
-#include <gktl/init_hook.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/page_request.hpp>
@@ -7,6 +6,8 @@
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_object_physical.hpp>
+
+#include <gktl/init_hook.hpp>
 #include <ustl/iterator/function.hpp>
 #include <ustl/mem/align.hpp>
 
@@ -50,7 +51,8 @@ class MappingCoalescer {
 };
 
 template <usize MaxNumPages>
-FORCE_INLINE auto MappingCoalescer<MaxNumPages>::append(PhysAddr phys) -> Status {
+FORCE_INLINE
+auto MappingCoalescer<MaxNumPages>::append(PhysAddr phys) -> Status {
     pa_[nr_pages_++] = phys;
     if (nr_pages_ == MaxNumPages) {
         return commit();
@@ -59,7 +61,8 @@ FORCE_INLINE auto MappingCoalescer<MaxNumPages>::append(PhysAddr phys) -> Status
 }
 
 template <usize MaxNumPages>
-FORCE_INLINE auto MappingCoalescer<MaxNumPages>::commit() -> Status {
+FORCE_INLINE
+auto MappingCoalescer<MaxNumPages>::commit() -> Status {
     if (!nr_pages_) {
         return Status::Ok;
     }
@@ -161,8 +164,9 @@ auto VmMapping::destroy() -> Status {
     return status;
 }
 
-FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
-                                       MapControl control) -> Status {
+FORCE_INLINE
+auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
+                          MapControl control) -> Status {
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
@@ -221,8 +225,9 @@ FORCE_INLINE auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize 
     return Status::Ok;
 }
 
-FORCE_INLINE auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size,
-                                          MapControl control) -> Status {
+FORCE_INLINE
+auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, MapControl control)
+    -> Status {
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(vmo);
@@ -493,7 +498,8 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     return {Status::Ok, nr_mapped};
 }
 
-INIT_CODE auto init_vm_mapping_cache() -> void {
+INIT_CODE
+auto init_vm_mapping_cache() -> void {
     if (Status::Ok != VmMappingCache::init("vm-mapping-cache", ObjectCache::Flags::Folio)) {
         panic("Failed to create object cache for VmMapping");
     }

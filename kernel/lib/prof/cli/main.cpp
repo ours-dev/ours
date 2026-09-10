@@ -65,9 +65,8 @@ class SymbolTable final {
     [[nodiscard]]
     auto lookup(u64 addr) const -> std::string {
         // Rightmost symbol at or below addr; inside its extent wins.
-        auto it =
-            std::upper_bound(m_symbols.begin(), m_symbols.end(), addr,
-                             [](u64 value, Symbol const &s) { return value < s.addr; });
+        auto it = std::upper_bound(m_symbols.begin(), m_symbols.end(), addr,
+                                   [](u64 value, Symbol const &s) { return value < s.addr; });
         if (it == m_symbols.begin()) {
             return "";
         }
@@ -276,8 +275,8 @@ auto parse_dump(std::vector<u8> const &bytes) -> std::optional<Dump> {
             have_header = true;
         } else if (text.starts_with("SAMP ")) {
             prof::SampleRecord record = {};
-            auto const n = hex_decode(text.substr(5), reinterpret_cast<u8 *>(&record),
-                                      sizeof(record));
+            auto const n =
+                hex_decode(text.substr(5), reinterpret_cast<u8 *>(&record), sizeof(record));
             if (n == sizeof(record) && record.magic == prof::SAMPLE_MAGIC &&
                 record.depth <= prof::MAX_STACK_DEPTH) {
                 dump.records.push_back(record);
@@ -318,8 +317,8 @@ auto fold(Dump const &dump, SymbolTable const &symbols, u64 extra_base) -> void 
                 std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(ip));
                 name = buf;
             }
-            if (i == 0 &&
-                (record.flags & prof::RecordFlags::RecordFromUspace) != prof::RecordFlags::RecordNone) {
+            if (i == 0 && (record.flags & prof::RecordFlags::RecordFromUspace) !=
+                              prof::RecordFlags::RecordNone) {
                 name += " [user]";
             }
             key += name;

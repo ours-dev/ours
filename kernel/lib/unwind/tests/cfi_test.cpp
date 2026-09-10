@@ -1,13 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <unwind/cfi.hpp>
-#include <unwind/fde_index.hpp>
-
-#include <cstdint>
 #include <vector>
 
+#include <cstdint>
+
 #include <gtest/gtest.h>
+#include <unwind/cfi.hpp>
+#include <unwind/fde_index.hpp>
 
 namespace {
 
@@ -51,7 +51,8 @@ class SectionBuilder final {
         while (true) {
             std::uint8_t const byte = static_cast<std::uint8_t>(value & 0x7F);
             value >>= 7;
-            bool const more = (value != 0 && value != -1) || ((value == -1) && ((byte & 0x40) == 0)) ||
+            bool const more = (value != 0 && value != -1) ||
+                              ((value == -1) && ((byte & 0x40) == 0)) ||
                               ((value == 0) && ((byte & 0x40) != 0));
             if (more) {
                 m_bytes.push_back(byte | 0x80);
@@ -107,23 +108,24 @@ class EhFrameBuilder final {
 
     auto emit_cie(std::uint8_t fde_encoding) -> void {
         std::size_t const start = m_out.size();
-        m_out.u32(0) // length, patched by seal
-            .u32(0)  // CIE id
-            .u8(1)   // version
+        m_out
+            .u32(0) // length, patched by seal
+            .u32(0) // CIE id
+            .u8(1)  // version
             .u8('z')
             .u8('R')
             .u8(0)
-            .uleb(1)   // code_align
-            .sleb(-8)  // data_align
-            .uleb(16)  // ra_column
-            .uleb(1)   // augmentation data length
+            .uleb(1)  // code_align
+            .sleb(-8) // data_align
+            .uleb(16) // ra_column
+            .uleb(1)  // augmentation data length
             .u8(fde_encoding);
         m_out.seal(start);
         m_cie_offset = start;
     }
 
-    auto emit_fde(std::uint64_t pc, std::uint64_t range, std::uint8_t const *ins, std::size_t ins_count)
-        -> void {
+    auto emit_fde(std::uint64_t pc, std::uint64_t range, std::uint8_t const *ins,
+                  std::size_t ins_count) -> void {
         std::size_t const start = m_out.size();
         m_out.u32(0); // length, patched by seal
         std::size_t const cie_ref_field = m_out.size();
@@ -207,16 +209,7 @@ TEST(ParseCie, RejectsUnknownAugmentation) {
     // An unknown letter inside a "z" augmentation is a hard error: the data
     // layout that follows cannot be trusted.
     SectionBuilder out;
-    out.u32(0)
-        .u32(0)
-        .u8(1)
-        .u8('z')
-        .u8('x')
-        .u8(0)
-        .uleb(1)
-        .sleb(-8)
-        .uleb(16)
-        .uleb(0);
+    out.u32(0).u32(0).u8(1).u8('z').u8('x').u8(0).uleb(1).sleb(-8).uleb(16).uleb(0);
     out.patch_u32(0, static_cast<std::uint32_t>(out.size() - 4));
     unwind::Section const section{out.data(), out.size(), unwind::Section::Kind::EhFrame};
 
@@ -268,23 +261,24 @@ TEST(ParseFde, RejectsCieMismatch) {
 }
 
 namespace {
-auto collecting_sink(void *context, unwind::FdeIndex::Entry const &entry) -> bool {
-    static_cast<std::vector<unwind::FdeIndex::Entry> *>(context)->push_back(entry);
-    return true;
-}
-
-auto sorted(std::vector<unwind::FdeIndex::Entry> entries) -> std::vector<unwind::FdeIndex::Entry> {
-    for (std::size_t i = 1; i < entries.size(); ++i) {
-        auto key = entries[i];
-        std::size_t j = i;
-        while (j > 0 && entries[j - 1].pc_begin > key.pc_begin) {
-            entries[j] = entries[j - 1];
-            --j;
-        }
-        entries[j] = key;
+    auto collecting_sink(void *context, unwind::FdeIndex::Entry const &entry) -> bool {
+        static_cast<std::vector<unwind::FdeIndex::Entry> *>(context)->push_back(entry);
+        return true;
     }
-    return entries;
-}
+
+    auto sorted(std::vector<unwind::FdeIndex::Entry> entries)
+        -> std::vector<unwind::FdeIndex::Entry> {
+        for (std::size_t i = 1; i < entries.size(); ++i) {
+            auto key = entries[i];
+            std::size_t j = i;
+            while (j > 0 && entries[j - 1].pc_begin > key.pc_begin) {
+                entries[j] = entries[j - 1];
+                --j;
+            }
+            entries[j] = key;
+        }
+        return entries;
+    }
 } // namespace
 
 TEST(FdeIndex, BuildsWithPcRangesAndFindsCoveredPcs) {

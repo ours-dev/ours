@@ -1,3 +1,9 @@
+#include <ours/arch/apic.hpp>
+#include <ours/irq/mod.hpp>
+#include <ours/mm/mod.hpp>
+#include <ours/platform/acpi.hpp>
+#include <ours/platform/isa.hpp>
+
 #include <acpi/structures/madt.hpp>
 #include <acpi/table_set.hpp>
 #include <arch/x86/apic/ioapic.hpp>
@@ -5,11 +11,6 @@
 #include <arch/x86/pic.hpp>
 #include <gktl/init_hook.hpp>
 #include <ktl/vec.hpp>
-#include <ours/arch/apic.hpp>
-#include <ours/irq/mod.hpp>
-#include <ours/mm/mod.hpp>
-#include <ours/platform/acpi.hpp>
-#include <ours/platform/isa.hpp>
 
 namespace ours {
 namespace {

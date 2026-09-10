@@ -3,19 +3,20 @@
 #ifndef OBI_CONTAINER_VIEW_HPP
 #define OBI_CONTAINER_VIEW_HPP 1
 
-#include <obi/checksum.hpp>
-#include <obi/compression.hpp>
-#include <obi/package_format.hpp>
 #include <ours/status.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
-#include <ustl/views/span.hpp>
 
 #include <limits>
 #include <span>
 #include <string_view>
 
 #include <cstring>
+
+#include <obi/checksum.hpp>
+#include <obi/compression.hpp>
+#include <obi/package_format.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
 namespace obi {
 class ContainerView;

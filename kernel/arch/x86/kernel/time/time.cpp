@@ -1,5 +1,3 @@
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/time.hpp>
 #include <ours/assert.hpp>
@@ -7,6 +5,9 @@
 #include <ours/irq/mod.hpp>
 #include <ours/platform/isa.hpp>
 #include <ours/time/clock_event_device.hpp>
+
+#include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
 
 namespace ours::time {
 ClockEventDevice *CLOCK_EVENT;

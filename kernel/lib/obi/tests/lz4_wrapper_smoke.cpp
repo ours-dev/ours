@@ -1,9 +1,9 @@
-#include <lz4/lz4.hpp>
-
 #include <array>
 
 #include <cstdlib>
 #include <cstring>
+
+#include <lz4/lz4.hpp>
 
 namespace {
 

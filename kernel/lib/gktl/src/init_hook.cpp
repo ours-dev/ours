@@ -1,7 +1,7 @@
-#include <gktl/init_hook.hpp>
-
 #include <algorithm>
 #include <span>
+
+#include <gktl/init_hook.hpp>
 
 namespace gktl {
 namespace {

@@ -3,10 +3,11 @@
 #ifndef OURS_MM_VM_OBJECT_PAGED_HPP
 #define OURS_MM_VM_OBJECT_PAGED_HPP 1
 
-#include <logz4/log.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vm_object.hpp>
 #include <ours/sync/mutex.hpp>
+
+#include <logz4/log.hpp>
 #include <ustl/result.hpp>
 
 namespace ours::mm {

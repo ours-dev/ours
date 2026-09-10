@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <kconcurrent/chain_lock_transaction.hpp>
-
 #include <ours/mm/cpu_local.hpp>
+
+#include <kconcurrent/chain_lock_transaction.hpp>
 
 namespace kconcurrent {
 namespace {
@@ -31,11 +31,11 @@ auto ChainLockTransaction::current() -> Self * {
 /// the state where a handler can walk into a chain lock this CPU holds and
 /// spin on a token that cannot be released until the handler returns.
 ChainLockTransaction::ChainLockTransaction()
-    : m_interrupt_disabler(),
-      m_token(ChainLockTokenGenerator::next()),
-      m_num_locks_held(0),
-      m_has_mutated(false),
-      m_previous(nullptr) {
+    : m_interrupt_disabler()
+    , m_token(ChainLockTokenGenerator::next())
+    , m_num_locks_held(0)
+    , m_has_mutated(false)
+    , m_previous(nullptr) {
     auto &slot = ours::mm::CpuLocal::access(CURRENT_TRANSACTION);
 
     // Nesting would mean two live tokens on one CPU, and the inner one is

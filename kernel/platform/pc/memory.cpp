@@ -1,4 +1,3 @@
-#include <heap/new.hpp>
 #include <ours/arch/mem_cfg.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
 #include <ours/mm/early_mem.hpp>
@@ -6,12 +5,14 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 #include <ours/platform/init.hpp>
-#include <ustl/util/type_list.hpp>
-#include <ustl/util/type_map.hpp>
 
 #include <algorithm>
 #include <array>
 #include <type_traits>
+
+#include <heap/new.hpp>
+#include <ustl/util/type_list.hpp>
+#include <ustl/util/type_map.hpp>
 
 namespace ours {
 template <typename>

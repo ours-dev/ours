@@ -9,6 +9,7 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vmas_flags.hpp>
 #include <ours/sync/spin_lock.hpp>
+
 #include <ustl/bit.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/mem/align.hpp>
@@ -53,7 +54,8 @@ namespace {
     /// the allocation fails.
     constexpr auto GAF_GROW = Gaf::ThisNode | Gaf::Zero | Gaf::NoRetry;
 
-    FORCE_INLINE auto initial_area_size() -> usize {
+    FORCE_INLINE
+    auto initial_area_size() -> usize {
         return INITIAL_CPU_LOCAL_END - INITIAL_CPU_LOCAL_START;
     }
 
@@ -64,17 +66,20 @@ namespace {
     /// zero point that `access()` measures from, no more -- which matters,
     /// because the template itself lives in the `.init` area and is handed back
     /// to the allocator by reclaim_init_area().
-    FORCE_INLINE auto canonical_base() -> VirtAddr {
+    FORCE_INLINE
+    auto canonical_base() -> VirtAddr {
         return VirtAddr(INITIAL_CPU_LOCAL_START);
     }
 
-    FORCE_INLINE auto is_in_initial_area(VirtAddr va) -> bool {
+    FORCE_INLINE
+    auto is_in_initial_area(VirtAddr va) -> bool {
         return va >= VirtAddr(INITIAL_CPU_LOCAL_START) && va < VirtAddr(INITIAL_CPU_LOCAL_END);
     }
 
     /// Bytes the static half of a unit occupies, rounded so the dynamic area
     /// behind it starts on a page boundary.
-    FORCE_INLINE auto static_span() -> usize {
+    FORCE_INLINE
+    auto static_span() -> usize {
         return align_up(initial_area_size(), ArchCpuLocal::UNIT_ALIGN);
     }
 } // namespace
@@ -220,8 +225,7 @@ class CpuLocal::Mapper {
     }
 
   private:
-    constexpr static auto NUM_SLOTS =
-        usize(ARCH_CPU_LOCAL_SIZE) / usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
+    constexpr static auto NUM_SLOTS = usize(ARCH_CPU_LOCAL_SIZE) / usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
 
     auto build_map_info() -> void;
 

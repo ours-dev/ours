@@ -3,12 +3,15 @@
 #ifndef OURS_MM_VM_AREA_OR_MAPPING_HPP
 #define OURS_MM_VM_AREA_OR_MAPPING_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/range.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
 #include <ours/status.hpp>
+
+#include <functional>
+
+#include <gktl/canary.hpp>
+#include <gktl/range.hpp>
 #include <ustl/collections/btree.hpp>
 #include <ustl/collections/intrusive/any_hook.hpp>
 #include <ustl/collections/intrusive/list.hpp>
@@ -17,8 +20,6 @@
 #include <ustl/rc.hpp>
 #include <ustl/result.hpp>
 #include <ustl/util/move.hpp>
-
-#include <functional>
 
 namespace ours::mm {
 enum class VmMapOption {

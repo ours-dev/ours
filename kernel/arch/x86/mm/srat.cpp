@@ -1,9 +1,10 @@
-#include <acpi/numa.hpp>
-#include <logz4/log.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/platform/acpi.hpp>
+
+#include <acpi/numa.hpp>
+#include <logz4/log.hpp>
 #include <ustl/mem/object.hpp>
 
 namespace ours {

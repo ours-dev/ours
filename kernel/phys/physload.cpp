@@ -14,10 +14,6 @@
 
 #include "physload.hpp"
 
-#include <ccrt/runtime.hpp>
-#include <logz4/log.hpp>
-#include <obi/command_line_view.hpp>
-#include <obi/container_view.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/boot_obi.hpp>
 #include <ours/phys/boot_options.hpp>
@@ -28,6 +24,11 @@
 #include <ours/phys/module_loader.hpp>
 
 #include <span>
+
+#include <ccrt/runtime.hpp>
+#include <logz4/log.hpp>
+#include <obi/command_line_view.hpp>
+#include <obi/container_view.hpp>
 
 namespace ours::phys {
 Handoff HANDOFF;

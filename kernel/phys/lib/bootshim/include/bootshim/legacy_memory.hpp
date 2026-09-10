@@ -3,10 +3,7 @@
 #ifndef BOOTSHIM_LEGACY_MEMORY_HPP
 #define BOOTSHIM_LEGACY_MEMORY_HPP 1
 
-#include <obi/package_format.hpp>
 #include <ours/types.hpp>
-#include <ustl/mem/align.hpp>
-#include <ustl/option.hpp>
 
 #include <algorithm>
 #include <array>
@@ -14,6 +11,9 @@
 #include <span>
 
 #include <multiboot/view.hpp>
+#include <obi/package_format.hpp>
+#include <ustl/mem/align.hpp>
+#include <ustl/option.hpp>
 
 /// What a boot-shim does with a legacy platform's memory map, separated from
 /// the shim that does it.

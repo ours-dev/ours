@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <ustl/collections/intrusive/sg_set.hpp>
-
 #include <array>
+
+#include <ustl/collections/intrusive/sg_set.hpp>
 
 namespace {
 using Hook = ustl::collections::intrusive::BsSetBaseHook<>;

@@ -3,11 +3,11 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_TREAP_SET_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_TREAP_SET_HPP 1
 
+#include <utility>
+
 #include <ustl/collections/intrusive/bs_set_hook.hpp>
 #include <ustl/collections/intrusive/treap.hpp>
 #include <ustl/option.hpp>
-
-#include <utility>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

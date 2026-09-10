@@ -3,6 +3,13 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_AVLTREE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_AVLTREE_HPP 1
 
+#include <functional>
+#include <iterator>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
+
 #include <ustl/collections/intrusive/avl_set_hook.hpp>
 #include <ustl/collections/intrusive/avltree_algorithms.hpp>
 #include <ustl/collections/intrusive/detail/assert.hpp>
@@ -13,13 +20,6 @@
 #include <ustl/collections/intrusive/member_value_traits.hpp>
 #include <ustl/collections/intrusive/options.hpp>
 #include <ustl/option.hpp>
-
-#include <functional>
-#include <iterator>
-#include <type_traits>
-#include <utility>
-
-#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

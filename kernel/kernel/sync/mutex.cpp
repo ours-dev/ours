@@ -1,9 +1,10 @@
-#include <arch/spin_hint.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+
+#include <arch/spin_hint.hpp>
 
 using ours::mm::CpuLocal;
 using ours::task::Thread;

@@ -3,12 +3,12 @@
 ///
 /// SRAT and SLIT decoding.
 
-#include "acpi_test_blob.hpp"
-#include <acpi/numa.hpp>
-
 #include <vector>
 
 #include <cstdlib>
+
+#include "acpi_test_blob.hpp"
+#include <acpi/numa.hpp>
 
 namespace {
 

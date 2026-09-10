@@ -3,11 +3,11 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DERIVATION_VALUE_TRAITS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DERIVATION_VALUE_TRAITS_HPP 1
 
+#include <utility>
+
 #include <ustl/collections/intrusive/intrusive_fwd.hpp>
 #include <ustl/collections/intrusive/link_mode.hpp>
 #include <ustl/collections/intrusive/pointer_traits.hpp>
-
-#include <utility>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename TNodeTraits, LinkModeType Mode>

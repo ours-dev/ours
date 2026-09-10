@@ -5,11 +5,12 @@
 
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/types.hpp>
+
+#include <concepts>
+
 #include <ustl/box.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/sync/atomic.hpp>
-
-#include <concepts>
 
 namespace ours::object {
 template <typename KernelObject>

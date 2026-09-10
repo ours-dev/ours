@@ -8,10 +8,11 @@
 #include <ours/sync/spin_lock.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/task/types.hpp>
-#include <ustl/rc.hpp>
 
 #include <array>
 #include <utility>
+
+#include <ustl/rc.hpp>
 
 namespace ours::mm {
 /// The set of lists a VMM page can sit on while it is owned by a VMO.

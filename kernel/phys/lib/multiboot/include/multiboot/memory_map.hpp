@@ -3,10 +3,9 @@
 #ifndef MULTIBOOT_MEMORY_MAP_HPP
 #define MULTIBOOT_MEMORY_MAP_HPP 1
 
-#include <bootmem/physical_memory.hpp>
-
 #include <limits>
 
+#include <bootmem/physical_memory.hpp>
 #include <multiboot/view.hpp>
 
 namespace multiboot {

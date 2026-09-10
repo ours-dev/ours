@@ -1,6 +1,5 @@
 #include "ours/time/clock_event_device.hpp"
 
-#include <logz4/log.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -9,6 +8,8 @@
 #include <ours/time/tick_device.hpp>
 
 #include <algorithm>
+
+#include <logz4/log.hpp>
 namespace ours::time {
 auto to_string(ClockEventDevice::Mode state) -> char const * {
     switch (state) {

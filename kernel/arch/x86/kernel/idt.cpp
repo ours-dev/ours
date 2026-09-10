@@ -1,5 +1,3 @@
-#include <arch/x86/descriptor.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/faults.hpp>
 #include <ours/arch/x86/feature.hpp>
@@ -10,6 +8,9 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vmm.hpp>
+
+#include <arch/x86/descriptor.hpp>
+#include <logz4/log.hpp>
 
 namespace ours {
 // We should migrate it to `lib/arch` in the future.

@@ -3,14 +3,14 @@
 #ifndef USTL_RC_HPP
 #define USTL_RC_HPP 1
 
-#include <ustl/detail/deallocate.hpp>
-
 #include <atomic>
 #include <type_traits>
 #include <utility>
 
 #include <cstddef>
 #include <cstdint>
+
+#include <ustl/detail/deallocate.hpp>
 
 namespace ustl {
 

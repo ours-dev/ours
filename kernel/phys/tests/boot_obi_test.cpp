@@ -8,14 +8,14 @@
 /// ContainerView round-trip is covered separately by
 /// //kernel/lib/obi/tests:package-builder-test.
 
-#include <obi/container_view.hpp>
-#include <obi/package_builder.hpp>
 #include <ours/phys/boot_obi.hpp>
 
 #include <array>
 #include <string_view>
 
 #include <gtest/gtest.h>
+#include <obi/container_view.hpp>
+#include <obi/package_builder.hpp>
 
 namespace {
 using obi::Compression;

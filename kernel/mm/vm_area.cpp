@@ -1,6 +1,3 @@
-#include <gktl/init_hook.hpp>
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -8,9 +5,13 @@
 #include <ours/mm/vm_object.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vm_object_physical.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <algorithm>
+
+#include <gktl/init_hook.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
+#include <ustl/mem/align.hpp>
 
 namespace ours::mm {
 using VmaCache = ObjectCache::Instance<

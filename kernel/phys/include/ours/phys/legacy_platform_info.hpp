@@ -3,11 +3,12 @@
 #ifndef OURS_PHYS_LEGACY_PLATFORM_INFO_HPP
 #define OURS_PHYS_LEGACY_PLATFORM_INFO_HPP 1
 
-#include <obi/package_format.hpp>
 #include <ours/types.hpp>
-#include <ustl/option.hpp>
 
 #include <string_view>
+
+#include <obi/package_format.hpp>
+#include <ustl/option.hpp>
 
 namespace ours::phys {
 

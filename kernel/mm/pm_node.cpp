@@ -1,6 +1,3 @@
-#include <gktl/counter.hpp>
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -11,26 +8,34 @@
 #include <ours/mm/pm_zone.hpp>
 #include <ours/panic.hpp>
 #include <ours/task/thread.hpp>
+
+#include <algorithm>
+
+#include <gktl/counter.hpp>
+#include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/mem/object.hpp>
 #include <ustl/util/enum_sequence.hpp>
-
-#include <algorithm>
 namespace ours::mm {
 namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
-    INIT_DATA Pfn ZONE_LOWER_PFN[NR_ZONES_PER_NODE];
+    INIT_DATA
+    Pfn ZONE_LOWER_PFN[NR_ZONES_PER_NODE];
 
-    INIT_DATA Pfn ZONE_UPPER_PFN[NR_ZONES_PER_NODE];
+    INIT_DATA
+    Pfn ZONE_UPPER_PFN[NR_ZONES_PER_NODE];
 
-    FORCE_INLINE auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
+    FORCE_INLINE
+    auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
         return std::clamp(pfn, ZONE_LOWER_PFN[static_cast<usize>(ztype)],
                           ZONE_UPPER_PFN[static_cast<usize>(ztype)]);
     }
 
-    FORCE_INLINE auto gaf_to_allocation_control(Gaf gaf) -> AllocationControl {
+    FORCE_INLINE
+    auto gaf_to_allocation_control(Gaf gaf) -> AllocationControl {
         return AllocationControl();
     }
 
@@ -45,7 +50,8 @@ auto ZoneQueues::init_queues() -> void {
 }
 
 template <>
-FORCE_INLINE auto ZoneQueues::insert_remote_queue<ZoneQueues::QueueType::SharedAffinity>(
+FORCE_INLINE
+auto ZoneQueues::insert_remote_queue<ZoneQueues::QueueType::SharedAffinity>(
     ZoneQueue const &remote_queue) -> void {
     for (auto &i: remote_queue) {
         push_back(i, QueueType::SharedAffinity);
@@ -53,12 +59,13 @@ FORCE_INLINE auto ZoneQueues::insert_remote_queue<ZoneQueues::QueueType::SharedA
 }
 
 template <>
-FORCE_INLINE auto
-ZoneQueues::insert_remote_queue<ZoneQueues::QueueType::SharedSequential>(ZoneQueue const &queue)
-    -> void {}
+FORCE_INLINE
+auto ZoneQueues::insert_remote_queue<ZoneQueues::QueueType::SharedSequential>(
+    ZoneQueue const &queue) -> void {}
 
 // Automatically dispatches insertion logic among different queues.
-FORCE_INLINE auto ZoneQueues::insert_remote_queue(ZoneQueue const &queue) -> void {
+FORCE_INLINE
+auto ZoneQueues::insert_remote_queue(ZoneQueue const &queue) -> void {
     [&]<QueueType... Types>(ustl::EnumSequence<QueueType, Types...>) {
         (insert_remote_queue<Types>(queue), ...);
     }(ustl::MakeEnumSequenceT<QueueType, LocalContiguous + 1, MaxNumQueues>());

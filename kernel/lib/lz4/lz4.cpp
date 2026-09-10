@@ -1,6 +1,6 @@
-#include <lz4/lz4.hpp>
-
 #include <limits>
+
+#include <lz4/lz4.hpp>
 
 namespace lz4 {
 namespace {

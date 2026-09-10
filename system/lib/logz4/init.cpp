@@ -1,10 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <logz4/clock.hpp>
-#include <logz4/log.hpp>
 #include <ours/compiler.hpp>
 
 #include <atomic>
+
+#include <logz4/clock.hpp>
+#include <logz4/log.hpp>
 
 namespace logz4 {
 namespace {

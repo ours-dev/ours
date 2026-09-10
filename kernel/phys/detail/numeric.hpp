@@ -5,10 +5,11 @@
 
 #include <ours/mm/cfg.hpp>
 #include <ours/types.hpp>
-#include <ustl/option.hpp>
 
 #include <limits>
 #include <type_traits>
+
+#include <ustl/option.hpp>
 
 /// Numeric helpers shared by the phys loader's translation units.  Private
 /// to kernel/phys (included by relative path, never published through

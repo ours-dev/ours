@@ -1,12 +1,13 @@
-#include <arch/halt.hpp>
-#include <arch/interrupt.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/faults.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/platform/init.hpp>
 #include <ours/platform/interrupt.hpp>
 #include <ours/task/thread.hpp>
+
+#include <arch/halt.hpp>
+#include <arch/interrupt.hpp>
+#include <logz4/log.hpp>
 
 namespace ours {
 namespace {

@@ -1,12 +1,12 @@
-#include "detail/numeric.hpp"
-#include <logz4/log.hpp>
 #include <ours/phys/elf_image.hpp>
 
 #include <limits>
 
 #include <cstring>
 
+#include "detail/numeric.hpp"
 #include <eftl/elf/mapped_memory.hpp>
+#include <logz4/log.hpp>
 
 namespace ours::phys {
 namespace {

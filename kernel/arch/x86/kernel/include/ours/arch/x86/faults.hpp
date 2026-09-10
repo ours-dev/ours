@@ -4,8 +4,9 @@
 #ifndef OURS_ARCH_X86_FAULTS_HPP
 #define OURS_ARCH_X86_FAULTS_HPP 1
 
-#include <arch/x86/interrupt.hpp>
 #include <ours/status.hpp>
+
+#include <arch/x86/interrupt.hpp>
 
 namespace ours {
 auto x86_handle_page_fault(arch::IrqFrame *frame) -> Status;

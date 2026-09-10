@@ -4,9 +4,6 @@
 #define MULTIBOOT_VIEW_HPP 1
 
 #include <ours/status.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
-#include <ustl/views/span.hpp>
 
 #include <limits>
 
@@ -14,6 +11,9 @@
 #include <cstring>
 
 #include <multiboot/multiboot2.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
 namespace multiboot {
 using ours::Status;

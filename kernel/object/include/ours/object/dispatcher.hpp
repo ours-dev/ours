@@ -3,8 +3,6 @@
 #ifndef OURS_OBJECT_DISPATCHER_HPP
 #define OURS_OBJECT_DISPATCHER_HPP 1
 
-#include <gktl/canary.hpp>
-#include <ktl/name.hpp>
 #include <ours/compiler.hpp>
 #include <ours/object/observer.hpp>
 #include <ours/object/types.hpp>
@@ -12,6 +10,9 @@
 #include <ours/signals.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/types.hpp>
+
+#include <gktl/canary.hpp>
+#include <ktl/name.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/sync/atomic.hpp>

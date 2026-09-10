@@ -1,5 +1,6 @@
-#include <heap/new.hpp>
 #include <ours/mm/vm_object_physical.hpp>
+
+#include <heap/new.hpp>
 
 namespace ours::mm {
 VmObjectPhysical::VmObjectPhysical(PhysAddr base, usize size, VmoFlags VmoFlags)

@@ -3,9 +3,9 @@
 #ifndef GKTL_HOOK_HPP
 #define GKTL_HOOK_HPP 1
 
-#include <gktl/types.hpp>
-
 #include <utility>
+
+#include <gktl/types.hpp>
 
 #define GKTL_INIT_HOOK(NAME, HOOK, LEVEL)                                                          \
     LINK_SECTION(".gktl.init_hook")                                                                \

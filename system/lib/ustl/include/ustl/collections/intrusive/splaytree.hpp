@@ -3,6 +3,13 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_SPLAYTREE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_SPLAYTREE_HPP 1
 
+#include <functional>
+#include <iterator>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
+
 #include <ustl/collections/intrusive/detail/assert.hpp>
 #include <ustl/collections/intrusive/detail/key_node_ptr_compare.hpp>
 #include <ustl/collections/intrusive/detail/reverse_iter.hpp>
@@ -13,13 +20,6 @@
 #include <ustl/collections/intrusive/splay_set_hook.hpp>
 #include <ustl/collections/intrusive/splaytree_algorithms.hpp>
 #include <ustl/option.hpp>
-
-#include <functional>
-#include <iterator>
-#include <type_traits>
-#include <utility>
-
-#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

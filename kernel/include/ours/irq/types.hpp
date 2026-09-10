@@ -4,6 +4,7 @@
 #define OURS_IRQ_TYPES_HPP 1
 
 #include <ours/types.hpp>
+
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::irq {

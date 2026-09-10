@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <ustl/collections/intrusive/detail/avltree_node.hpp>
-
 #include <concepts>
+
+#include <ustl/collections/intrusive/detail/avltree_node.hpp>
 
 using namespace ustl::collections::intrusive;
 

@@ -1,10 +1,11 @@
-#include <gktl/counter.hpp>
-#include <heap/new.hpp>
 #include <ours/arch/entry.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/thread.hpp>
+
+#include <gktl/counter.hpp>
+#include <heap/new.hpp>
 
 GKTL_COUNTER(DISPATCHER_THREAD_SPAWN_COUNT, "dispatcher.thread.spawn");
 GKTL_COUNTER(DISPATCHER_THREAD_DESTROY_COUNT, "dispatcher.thread.destroy");

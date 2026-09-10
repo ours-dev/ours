@@ -1,13 +1,14 @@
-#include <gktl/counter.hpp>
-#include <gktl/init_hook.hpp>
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
+
+#include <gktl/counter.hpp>
+#include <gktl/init_hook.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ustl/lazy_init.hpp>
 
 namespace {
@@ -48,8 +49,8 @@ VmAspace::~VmAspace() {}
 /// user aspace too -- silently got the kernel's base and size. With every
 /// kind named, adding a fourth is a compile error here rather than a fourth
 /// thing that quietly becomes the kernel.
-auto VmAspace::create(Kind kind, VmasFlags flags, char const *name,
-                      ustl::Arc<VmAspace> *out) -> Status {
+auto VmAspace::create(Kind kind, VmasFlags flags, char const *name, ustl::Arc<VmAspace> *out)
+    -> Status {
     VirtAddr base;
     usize size;
     switch (kind) {
@@ -71,8 +72,8 @@ auto VmAspace::create(Kind kind, VmasFlags flags, char const *name,
     return Self::create(base, size, kind, flags, name, out);
 }
 
-auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags,
-                      char const *name, ustl::Arc<VmAspace> *out) -> Status {
+auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags, char const *name,
+                      ustl::Arc<VmAspace> *out) -> Status {
     auto const aspace = AspaceCache::get(GAF_KERNEL, base, size, kind, flags, name);
     if (!aspace) {
         return Status::OutOfMem;
@@ -98,8 +99,8 @@ auto VmAspace::init_kernel_aspace() -> void {
     }
 
     ustl::Arc<Self> aspace;
-    status = Self::create(KERNEL_ASPACE_BASE, KERNEL_ASPACE_SIZE, Kind::Kernel, FLAGS,
-                          "K:Aspace", &aspace);
+    status = Self::create(KERNEL_ASPACE_BASE, KERNEL_ASPACE_SIZE, Kind::Kernel, FLAGS, "K:Aspace",
+                          &aspace);
     ASSERT(Status::Ok == status, "Failed to create kernel VmAspace");
 
     Self::KERNEL_ASPACE = aspace.into_raw();
@@ -116,8 +117,7 @@ auto VmAspace::sync_kernel_aspace() -> void {}
 /// dereferences it afterwards (ArchVmAspace::switch_context ignores `from`
 /// entirely), and it only happened to work because m_arch is not at offset 0.
 auto VmAspace::switch_aspace(Self *prev, Self *next) -> void {
-    ArchVmAspace::switch_context(prev ? &prev->m_arch : nullptr,
-                                 next ? &next->m_arch : nullptr);
+    ArchVmAspace::switch_context(prev ? &prev->m_arch : nullptr, next ? &next->m_arch : nullptr);
 }
 
 auto VmAspace::clone(VmasFlags flags, ustl::Arc<VmAspace> *out) -> Status {

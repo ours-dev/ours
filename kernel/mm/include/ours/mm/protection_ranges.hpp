@@ -5,11 +5,12 @@
 
 #include <ours/mm/types.hpp>
 #include <ours/status.hpp>
-#include <ustl/collections/allocator.hpp>
-#include <ustl/collections/btree.hpp>
 
 #include <algorithm>
 #include <functional>
+
+#include <ustl/collections/allocator.hpp>
+#include <ustl/collections/btree.hpp>
 
 namespace ours::mm {
 /// Tracks which MMU protection flags govern each sub-range of one VmMapping.

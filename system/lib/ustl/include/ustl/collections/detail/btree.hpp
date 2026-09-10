@@ -4,13 +4,6 @@
 #ifndef USTL_COLLECTIONS_DETAIL_BTREE_HPP
 #define USTL_COLLECTIONS_DETAIL_BTREE_HPP 1
 
-#include <ustl/collections/allocator.hpp>
-#include <ustl/collections/detail/btree_node_algorithms.hpp>
-#include <ustl/collections/error.hpp>
-#include <ustl/collections/intrusive/detail/extension.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
-
 #include <concepts>
 #include <iterator>
 #include <memory>
@@ -20,6 +13,13 @@
 #include <utility>
 
 #include <cstddef>
+
+#include <ustl/collections/allocator.hpp>
+#include <ustl/collections/detail/btree_node_algorithms.hpp>
+#include <ustl/collections/error.hpp>
+#include <ustl/collections/intrusive/detail/extension.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
 
 namespace ustl::collections::detail {
 struct BTreeNodeView {

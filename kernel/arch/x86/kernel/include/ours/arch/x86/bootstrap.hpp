@@ -14,10 +14,11 @@
 
 #if !defined(__ASSEMBLY__) && !defined(__ASSEMBLER__)
 
-#include <arch/x86/descriptor.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/types.hpp>
+
+#include <arch/x86/descriptor.hpp>
 #include <ustl/sync/atomic.hpp>
 
 namespace ours {

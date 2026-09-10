@@ -3,11 +3,11 @@
 #ifndef OBI_COMMAND_LINE_VIEW_HPP
 #define OBI_COMMAND_LINE_VIEW_HPP 1
 
+#include <string_view>
+
 #include <obi/container_view.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
-
-#include <string_view>
 
 namespace obi {
 class CommandLineView final {

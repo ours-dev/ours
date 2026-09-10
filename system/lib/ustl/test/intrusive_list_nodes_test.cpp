@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <concepts>
+
 #include <ustl/collections/intrusive/detail/list_node.hpp>
 #include <ustl/collections/intrusive/detail/slist_node.hpp>
-
-#include <concepts>
 
 using namespace ustl::collections::intrusive;
 

@@ -1,9 +1,10 @@
-#include <gktl/init_hook.hpp>
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+
+#include <gktl/init_hook.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ustl/mem/align.hpp>
 
 using ustl::mm::align_down;
@@ -43,8 +44,9 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     return Status::Ok;
 }
 
-FORCE_INLINE auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size,
-                                                       CommitOptions option) -> Status {
+FORCE_INLINE
+auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOptions option)
+    -> Status {
     if (!!(option & CommitOptions::Pin)) {
         if (!size) {
             return Status::InvArgs;
@@ -110,7 +112,8 @@ auto VmObjectPaged::write(void *in, VirtAddr offset, usize size) -> Status {
     return Status::Unimplemented;
 }
 
-INIT_CODE static auto init_vmo_paged_cache() -> void {
+INIT_CODE
+static auto init_vmo_paged_cache() -> void {
     auto const status = VmoPagedCache::init("vmo-paged-cache", ObjectCache::Flags::Folio);
     if (Status::Ok != status) {
         panic("Failed to create object cache for VmArea");

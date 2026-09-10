@@ -3,10 +3,11 @@
 #ifndef OURS_SYNC_RWLOCK_HPP
 #define OURS_SYNC_RWLOCK_HPP 1
 
-#include <gktl/canary.hpp>
-#include <ktl/result.hpp>
 #include <ours/sync/types.hpp>
 #include <ours/task/types.hpp>
+
+#include <gktl/canary.hpp>
+#include <ktl/result.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/sync/atomic.hpp>
 #include <ustl/util/noncopyable.hpp>

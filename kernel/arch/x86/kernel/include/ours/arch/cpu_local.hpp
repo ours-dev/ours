@@ -3,11 +3,12 @@
 #ifndef OURS_ARCH_CPU_LOCAL_HPP
 #define OURS_ARCH_CPU_LOCAL_HPP 1
 
-#include <arch/x86/fsgs.hpp>
-#include <arch/x86/msr.hpp>
 #include <ours/compiler.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/types.hpp>
+
+#include <arch/x86/fsgs.hpp>
+#include <arch/x86/msr.hpp>
 #include <ustl/traits/integral.hpp>
 #include <ustl/traits/ptr.hpp>
 

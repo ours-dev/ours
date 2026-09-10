@@ -3,8 +3,6 @@
 #ifndef OURS_MM_PMM_HPP
 #define OURS_MM_PMM_HPP 1
 
-#include <bootmem/types.hpp>
-#include <ktl/result.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/init_stage.hpp>
@@ -13,6 +11,9 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/status.hpp>
+
+#include <bootmem/types.hpp>
+#include <ktl/result.hpp>
 #include <ustl/bit.hpp>
 
 namespace ours::mm {

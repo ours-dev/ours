@@ -4,6 +4,14 @@
 // x86 implementation of the prof::arch seam: programs the architectural PMU
 // for cycle-based sampling, routes the overflow through the APIC PMI entry
 // and fans start/stop control out to every CPU over the generic IPI.
+#include <ours/arch/apic.hpp>
+#include <ours/arch/x86/faults.hpp>
+#include <ours/cpu.hpp>
+#include <ours/irq/mod.hpp>
+#include <ours/task/thread.hpp>
+
+#include <optional>
+
 #include <arch/spin_hint.hpp>
 #include <arch/tick.hpp>
 #include <arch/x86/apic/xapic.hpp>
@@ -11,17 +19,9 @@
 #include <arch/x86/msr.hpp>
 #include <arch/x86/pmu.hpp>
 #include <logz4/log.hpp>
-#include <ours/arch/apic.hpp>
-#include <ours/arch/x86/faults.hpp>
-#include <ours/cpu.hpp>
-#include <ours/irq/mod.hpp>
-#include <ours/task/thread.hpp>
-#include <ustl/sync/atomic.hpp>
-
-#include <optional>
-
 #include <prof/arch.hpp>
 #include <prof/sampler.hpp>
+#include <ustl/sync/atomic.hpp>
 
 namespace {
 enum class IpiAction : std::uint32_t {

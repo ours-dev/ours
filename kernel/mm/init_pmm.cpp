@@ -1,7 +1,3 @@
-#include <arch/x86/cache.hpp>
-#include <heap/kmalloc.hpp>
-#include <ktl/memory_resource.hpp>
-#include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -17,13 +13,18 @@
 #include <ours/mm/vmm.hpp>
 #include <ours/panic.hpp>
 #include <ours/status.hpp>
+
+#include <algorithm>
+
+#include <arch/x86/cache.hpp>
+#include <heap/kmalloc.hpp>
+#include <ktl/memory_resource.hpp>
+#include <logz4/log.hpp>
 #include <ustl/bit.hpp>
 #include <ustl/lazy_init.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/views/span.hpp>
-
-#include <algorithm>
 namespace ours::mm {
 /// Declared `extern` in init.hpp and moved forward by set_init_stage();
 /// this is the one definition of it. Starts at BootStrap, which is where

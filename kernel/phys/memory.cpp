@@ -1,10 +1,11 @@
-#include <logz4/log.hpp>
-#include <obi/memory_config_view.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/memory_provisioner.hpp>
 
 #include <limits>
+
+#include <logz4/log.hpp>
+#include <obi/memory_config_view.hpp>
 
 namespace ours::phys {
 extern char const PHYS_LOAD_START[] LINK_NAME("__executable_start");

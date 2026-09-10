@@ -1,10 +1,11 @@
-#include <arch/x86/pic.hpp>
 #include <ours/arch/mp.hpp>
 #include <ours/cpu.hpp>
 #include <ours/irq/init.hpp>
 #include <ours/mm/init.hpp>
 #include <ours/platform/acpi.hpp>
 #include <ours/platform/init.hpp>
+
+#include <arch/x86/pic.hpp>
 
 namespace ours {
 extern "C" INIT_CODE

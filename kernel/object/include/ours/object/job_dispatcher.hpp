@@ -3,9 +3,10 @@
 #ifndef OURS_OBJECT_JOB_DISPATCHER_HPP
 #define OURS_OBJECT_JOB_DISPATCHER_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/types.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours::object {

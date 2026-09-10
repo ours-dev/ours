@@ -1,5 +1,3 @@
-#include "command.hpp"
-
 #include <format>
 #include <iostream>
 #include <print>
@@ -7,6 +5,8 @@
 #include <vector>
 
 #include <cstdlib>
+
+#include "command.hpp"
 
 namespace obit {
 

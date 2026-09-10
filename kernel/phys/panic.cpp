@@ -1,7 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <logz4/log.hpp>
 #include <ours/panic.hpp>
+
+#include <logz4/log.hpp>
 #include <ustl/fmt/make_format_args.hpp>
 
 namespace ours {

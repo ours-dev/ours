@@ -1,7 +1,3 @@
-#include <arch/spin_hint.hpp>
-#include <gktl/canary.hpp>
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/hpet.hpp>
 #include <ours/arch/hpet_regs.hpp>
@@ -17,6 +13,11 @@
 #include <ours/time/cfg.hpp>
 #include <ours/time/clock_event_device.hpp>
 #include <ours/time/clock_source.hpp>
+
+#include <arch/spin_hint.hpp>
+#include <gktl/canary.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ustl/chrono/duration.hpp>
 #include <ustl/traits/cv.hpp>
 #include <ustl/views/span.hpp>
@@ -217,7 +218,8 @@ class HpetChannel {
         return Status::Ok;
     }
 
-    FORCE_INLINE auto device() -> ClockEventDevice & {
+    FORCE_INLINE
+    auto device() -> ClockEventDevice & {
         return m_clkevt;
     }
 
@@ -239,7 +241,8 @@ class HpetChannel {
 /// too, and then every timer deadline sits forever in the future and nothing
 /// ever expires. A million spins is orders of magnitude longer than the ~70 ns
 /// a 14 MHz counter needs to move.
-INIT_CODE static auto hpet_counter_is_running() -> bool {
+INIT_CODE
+static auto hpet_counter_is_running() -> bool {
     constexpr auto MAX_SPINS = usize(1000'000);
 
     auto const start = HPET_MMIO->main_counter_value;
@@ -253,7 +256,8 @@ INIT_CODE static auto hpet_counter_is_running() -> bool {
     return false;
 }
 
-INIT_CODE static auto hpet_init_internal() -> Status {
+INIT_CODE
+static auto hpet_init_internal() -> Status {
     DEBUG_ASSERT(HPET_MMIO);
     auto const mmio = HPET_MMIO;
 
@@ -333,7 +337,8 @@ INIT_CODE static auto hpet_init_internal() -> Status {
     return Status::Ok;
 }
 
-INIT_CODE static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
+INIT_CODE
+static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
     using namespace mm;
 
     auto result = VmAspace::kernel_aspace()->root_vma()->map_phys(
@@ -355,7 +360,8 @@ INIT_CODE static auto setup_hpet_mmio(PhysAddr mmio) -> Status {
 /// 3. Save minimal tick (either from ACPI table or configuration register).
 /// 4. Initialize comparators.
 /// 5. Set ENABLE_CNF bit.
-INIT_CODE auto hpet_init(PhysAddr mmio) -> Status {
+INIT_CODE
+auto hpet_init(PhysAddr mmio) -> Status {
     DEBUG_ASSERT(mmio);
 
     auto status = setup_hpet_mmio(mmio);

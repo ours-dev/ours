@@ -3,6 +3,8 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_SET_HOOK_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_SET_HOOK_HPP 1
 
+#include <type_traits>
+
 #include <ustl/collections/intrusive/detail/assert.hpp>
 #include <ustl/collections/intrusive/detail/rbtree_node.hpp>
 #include <ustl/collections/intrusive/link_mode.hpp>
@@ -10,8 +12,6 @@
 #include <ustl/collections/intrusive/pack_options.hpp>
 #include <ustl/collections/intrusive/pointer_traits.hpp>
 #include <ustl/collections/intrusive/rbtree_algorithms.hpp>
-
-#include <type_traits>
 
 namespace ustl::collections::intrusive {
 namespace detail {

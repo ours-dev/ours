@@ -1,9 +1,10 @@
-#include <arch/interrupt.hpp>
-#include <gktl/init_hook.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/irq/init.hpp>
 #include <ours/irq/irq_dispatcher.hpp>
 #include <ours/irq/mod.hpp>
+
+#include <arch/interrupt.hpp>
+#include <gktl/init_hook.hpp>
 
 namespace ours::irq {
 static auto initialize_early() -> void {

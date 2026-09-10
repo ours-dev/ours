@@ -1,10 +1,11 @@
-#include <acpi/numa.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/panic.hpp>
 #include <ours/phys/acpi.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/init.hpp>
+
+#include <acpi/numa.hpp>
+#include <logz4/log.hpp>
 
 // No arch_detect_memory() override here: boot-shim converts Multiboot2's
 // memory map into the same obi::MemoryRange vocabulary a real OBI memory

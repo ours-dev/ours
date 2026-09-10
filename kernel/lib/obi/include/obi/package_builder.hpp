@@ -3,18 +3,19 @@
 #ifndef OBI_PACKAGE_BUILDER_HPP
 #define OBI_PACKAGE_BUILDER_HPP 1
 
-#include <obi/checksum.hpp>
-#include <obi/compression.hpp>
-#include <obi/package_format.hpp>
 #include <ours/status.hpp>
-#include <ustl/result.hpp>
-#include <ustl/views/span.hpp>
 
 #include <algorithm>
 #include <string_view>
 #include <vector>
 
 #include <cstring>
+
+#include <obi/checksum.hpp>
+#include <obi/compression.hpp>
+#include <obi/package_format.hpp>
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
 namespace obi {
 

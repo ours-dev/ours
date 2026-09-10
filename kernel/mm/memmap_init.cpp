@@ -5,9 +5,10 @@
 #include <ours/mm/memmap_init.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <algorithm>
+
+#include <ustl/mem/align.hpp>
 
 namespace ours::mm {
 namespace {

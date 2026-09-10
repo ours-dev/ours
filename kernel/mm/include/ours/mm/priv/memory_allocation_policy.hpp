@@ -5,6 +5,7 @@
 
 #include <ours/mm/node_mask.hpp>
 #include <ours/mm/types.hpp>
+
 #include <ustl/rc.hpp>
 
 #define MEMORY_ALLOCATION_POLICY 1

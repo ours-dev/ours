@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <logz4/ring.hpp>
-
 #include <atomic>
 
 #include <cstring>
+
+#include <logz4/ring.hpp>
 
 namespace logz4::ring {
 namespace {

@@ -3,12 +3,13 @@
 #ifndef OURS_PHYS_BOOT_OPTIONS_HPP
 #define OURS_PHYS_BOOT_OPTIONS_HPP 1
 
-#include <obi/command_line_view.hpp>
 #include <ours/compiler.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
 #include <string_view>
+
+#include <obi/command_line_view.hpp>
 
 namespace ours::phys {
 /// The boot options consumed before the kernel is loaded, owned by physload

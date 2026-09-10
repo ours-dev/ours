@@ -5,12 +5,13 @@
 // registry (GKTL_COMMAND) declares commands; this is the missing front end:
 // a bring-up console that reads COM1 lines and dispatches them, which is
 // also how the sampling profiler gets driven in automated runs.
+#include <ours/task/thread.hpp>
+#include <ours/time/clock.hpp>
+
 #include <arch/x86/io.hpp>
 #include <gktl/command.hpp>
 #include <gktl/init_hook.hpp>
 #include <logz4/log.hpp>
-#include <ours/task/thread.hpp>
-#include <ours/time/clock.hpp>
 #include <ustl/fmt/format_to.hpp>
 
 namespace kshell {

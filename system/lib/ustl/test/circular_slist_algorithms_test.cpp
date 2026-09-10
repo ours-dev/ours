@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <cstddef>
+
 #include <ustl/collections/intrusive/circular_slist_algorithms.hpp>
 #include <ustl/collections/intrusive/detail/slist_node.hpp>
-
-#include <cstddef>
 
 namespace {
 using Node = ustl::collections::intrusive::SlistNode<void *>;

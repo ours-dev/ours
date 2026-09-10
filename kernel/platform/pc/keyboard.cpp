@@ -1,11 +1,12 @@
-#include <arch/x86/io.hpp>
-#include <gktl/init_hook.hpp>
-#include <ktl/allocator.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/assert.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/platform/isa.hpp>
+
+#include <arch/x86/io.hpp>
+#include <gktl/init_hook.hpp>
+#include <ktl/allocator.hpp>
+#include <logz4/log.hpp>
 #include <ustl/io/circular_buffer.hpp>
 
 /// i8042 keyboard controller registers

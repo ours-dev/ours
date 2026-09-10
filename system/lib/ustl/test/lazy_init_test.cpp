@@ -1,7 +1,7 @@
-#include <ustl/lazy_init.hpp>
-
 #include <cassert>
 #include <cstdint>
+
+#include <ustl/lazy_init.hpp>
 
 namespace {
 struct alignas(32) Value {

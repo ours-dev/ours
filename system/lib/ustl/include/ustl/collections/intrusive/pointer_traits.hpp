@@ -3,13 +3,13 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_POINTER_TRAITS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_POINTER_TRAITS_HPP 1
 
-#include <ustl/collections/intrusive/pointer_rebind.hpp>
-
 #include <concepts>
 #include <memory>
 #include <type_traits>
 
 #include <cstddef>
+
+#include <ustl/collections/intrusive/pointer_rebind.hpp>
 
 namespace ustl::collections::intrusive {
 namespace detail {

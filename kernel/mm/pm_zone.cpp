@@ -1,4 +1,3 @@
-#include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -7,6 +6,8 @@
 #include <ours/mm/pm_zone.hpp>
 
 #include <algorithm>
+
+#include <logz4/log.hpp>
 namespace ours::mm {
 
 PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize present_frames)

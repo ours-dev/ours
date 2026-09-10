@@ -3,8 +3,6 @@
 #ifndef OURS_MM_PM_NODE_HPP
 #define OURS_MM_PM_NODE_HPP 1
 
-#include <gktl/canary.hpp>
-#include <ktl/result.hpp>
 #include <ours/assert.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
@@ -17,6 +15,11 @@
 #include <ours/mm/priv/memory_allocation_context.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
 #include <ours/sync/spin_lock.hpp>
+
+#include <array>
+
+#include <gktl/canary.hpp>
+#include <ktl/result.hpp>
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
 #include <ustl/function/bind.hpp>
@@ -30,8 +33,6 @@
 #include <ustl/traits/is_same.hpp>
 #include <ustl/util/pair.hpp>
 #include <ustl/views/span.hpp>
-
-#include <array>
 
 namespace ours::mm {
 struct NodeRoute {

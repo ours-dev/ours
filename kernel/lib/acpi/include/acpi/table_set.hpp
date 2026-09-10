@@ -3,12 +3,12 @@
 #ifndef ACPI_TABLE_SET_HPP
 #define ACPI_TABLE_SET_HPP 1
 
+#include <array>
+
 #include <acpi/structures/header.hpp>
 #include <acpi/structures/root.hpp>
 #include <acpi/types.hpp>
 #include <ktl/result.hpp>
-
-#include <array>
 
 namespace acpi {
 /// Turns a physical address into something the caller can read.

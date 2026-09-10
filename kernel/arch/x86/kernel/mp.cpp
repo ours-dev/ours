@@ -1,5 +1,3 @@
-#include <arch/halt.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/mp.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
@@ -14,6 +12,9 @@
 #include <ours/start.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
+
+#include <arch/halt.hpp>
+#include <logz4/log.hpp>
 #include <ustl/fmt/format_to.hpp>
 
 using namespace arch;

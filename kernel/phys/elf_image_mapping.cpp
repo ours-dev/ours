@@ -9,13 +9,14 @@
 /// translation unit means boot-shim's build never has to satisfy those
 /// symbols just because they live in the same file.
 
-#include "detail/numeric.hpp"
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/elf_image.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <algorithm>
 #include <limits>
+
+#include "detail/numeric.hpp"
+#include <ustl/mem/align.hpp>
 
 namespace ours::phys {
 // Named PAGE_BYTES, not PAGE_SIZE: the latter is an object-like macro,

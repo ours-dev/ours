@@ -1,11 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <gktl/init_hook.hpp>
-#include <heap/new.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/panic.hpp>
+
+#include <gktl/init_hook.hpp>
+#include <heap/new.hpp>
 
 namespace ours::object {
 namespace {

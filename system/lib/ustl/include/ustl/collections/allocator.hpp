@@ -3,14 +3,14 @@
 #ifndef USTL_COLLECTIONS_ALLOCATOR_HPP
 #define USTL_COLLECTIONS_ALLOCATOR_HPP 1
 
-#include <ustl/collections/error.hpp>
-#include <ustl/collections/memory_resource.hpp>
-#include <ustl/result.hpp>
-
 #include <limits>
 #include <type_traits>
 
 #include <cstddef>
+
+#include <ustl/collections/error.hpp>
+#include <ustl/collections/memory_resource.hpp>
+#include <ustl/result.hpp>
 
 namespace ustl::collections {
 namespace detail {

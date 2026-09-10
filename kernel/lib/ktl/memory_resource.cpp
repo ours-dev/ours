@@ -1,8 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ktl/memory_resource.hpp>
-
 #include <heap/kmalloc.hpp>
+#include <ktl/memory_resource.hpp>
 
 namespace ktl {
 

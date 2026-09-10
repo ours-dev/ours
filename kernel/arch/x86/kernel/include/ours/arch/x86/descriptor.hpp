@@ -42,11 +42,12 @@
 
 #if !defined(__ASSEMBLY__) && !defined(__ASSEMBLER__)
 
-#include <arch/x86/descriptor.hpp>
 #include <ours/compiler.hpp>
 #include <ours/mm/cfg.hpp>
 
 #include <array>
+
+#include <arch/x86/descriptor.hpp>
 
 namespace ours {
 auto x86_get_gdt() -> void *;

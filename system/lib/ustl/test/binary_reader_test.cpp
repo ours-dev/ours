@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <ustl/io/binary_reader.hpp>
-
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+
+#include <ustl/io/binary_reader.hpp>
 
 namespace {
 

@@ -4,6 +4,7 @@
 #define OURS_CPU_MASK_HPP 1
 
 #include <ours/types.hpp>
+
 #include <ustl/bitset.hpp>
 
 namespace ours {

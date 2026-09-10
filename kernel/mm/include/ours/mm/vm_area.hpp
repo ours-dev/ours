@@ -3,14 +3,15 @@
 #ifndef OURS_MM_VM_AREA_HPP
 #define OURS_MM_VM_AREA_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/range.hpp>
-#include <ktl/result.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_area_or_mapping.hpp>
 #include <ours/mm/vm_fault.hpp>
 #include <ours/status.hpp>
+
+#include <gktl/canary.hpp>
+#include <gktl/range.hpp>
+#include <ktl/result.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>

@@ -6,6 +6,7 @@
 
 #include <ours/task/sched/profiles.hpp>
 #include <ours/task/wait_queue.hpp>
+
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/fn.hpp>
 #include <ustl/traits/is_same.hpp>
@@ -43,8 +44,7 @@ class OwnedWaitQueue: protected WaitQueue {
 
     constexpr static auto ADD_SINGLE_EDGE_OP = PropagateTag<PropagateOp::AddSingleEdge>{};
 
-    constexpr static auto REMOVE_SINGLE_EDGE_OP =
-        PropagateTag<PropagateOp::RemoveSingleEdge>{};
+    constexpr static auto REMOVE_SINGLE_EDGE_OP = PropagateTag<PropagateOp::RemoveSingleEdge>{};
 
     constexpr static auto BASE_PROFILE_OVERRIDED_OP =
         PropagateTag<PropagateOp::BaseProfileOverrided>{};
@@ -113,7 +113,8 @@ class OwnedWaitQueue: protected WaitQueue {
     /// The canary holds WaitQueue's magic on every instance -- see the note on
     /// WaitQueue::Type for why it must -- so on its own it says only that the
     /// storage is still a WaitQueue. Which kind it is, m_type answers.
-    FORCE_INLINE auto verify_owned() const -> void {
+    FORCE_INLINE
+    auto verify_owned() const -> void {
         m_canary.verify<Base>();
         DEBUG_ASSERT(Type::Owned == m_type, "an OwnedWaitQueue method on a plain WaitQueue");
     }
@@ -129,7 +130,8 @@ class OwnedWaitQueue: protected WaitQueue {
 };
 
 template <>
-FORCE_INLINE inline auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
+FORCE_INLINE
+inline auto WaitQueue::as<OwnedWaitQueue>(Self *self) -> OwnedWaitQueue * {
     DEBUG_ASSERT(self);
     if (Type::Owned == self->m_type) {
         // m_type establishes the dynamic type and WaitQueue is the sole base.

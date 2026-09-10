@@ -3,8 +3,6 @@
 #ifndef OURS_MM_PM_ZONE_HPP
 #define OURS_MM_PM_ZONE_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/range.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
@@ -12,12 +10,15 @@
 #include <ours/mm/priv/frame_buddy.hpp>
 #include <ours/mm/priv/memory_allocation_context.hpp>
 #include <ours/sync/spin_lock.hpp>
-#include <ustl/collections/intrusive/slist.hpp>
-#include <ustl/collections/static_vec.hpp>
-#include <ustl/sync/atomic.hpp>
 
 #include <array>
 #include <atomic>
+
+#include <gktl/canary.hpp>
+#include <gktl/range.hpp>
+#include <ustl/collections/intrusive/slist.hpp>
+#include <ustl/collections/static_vec.hpp>
+#include <ustl/sync/atomic.hpp>
 
 namespace ours::mm {
 template <usize MaxOrder>

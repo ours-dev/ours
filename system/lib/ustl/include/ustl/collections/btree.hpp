@@ -4,11 +4,11 @@
 #ifndef USTL_COLLECTIONS_BTREE_HPP
 #define USTL_COLLECTIONS_BTREE_HPP 1
 
-#include <ustl/collections/allocator.hpp>
-#include <ustl/collections/detail/btree.hpp>
-
 #include <functional>
 #include <utility>
+
+#include <ustl/collections/allocator.hpp>
+#include <ustl/collections/detail/btree.hpp>
 
 namespace ustl::collections {
 using BTreeNodeView = detail::BTreeNodeView;
@@ -21,8 +21,8 @@ template <typename Key, typename Value, typename KeyOfValue,
 using BTree = detail::BTree<Key, Value, KeyOfValue, Compare, AllocatorType, Policy, Options>;
 
 template <typename Key, typename T, typename Compare = detail::DefaultCompare<Key>,
-          typename AllocatorType = Allocator<std::pair<Key const, T>>,
-          typename Policy = void, typename Options = BTreeDefaultOptions>
+          typename AllocatorType = Allocator<std::pair<Key const, T>>, typename Policy = void,
+          typename Options = BTreeDefaultOptions>
 using BTreeMap =
     BTree<Key, std::pair<Key const, T>, detail::SelectFirstKeyOfValue<std::pair<Key const, T>>,
           Compare, AllocatorType, Policy, Options>;

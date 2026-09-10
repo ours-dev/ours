@@ -3,10 +3,10 @@
 #ifndef PROF_TESTS_FAKE_ARCH_HPP
 #define PROF_TESTS_FAKE_ARCH_HPP 1
 
-#include <prof/sampler.hpp>
-
 #include <optional>
 #include <string>
+
+#include <prof/sampler.hpp>
 
 /// Test-only stand-in for the per-arch `prof::arch` seam
 /// (`prof/include/prof/arch.hpp`), so `prof::Sampler`'s own logic can be

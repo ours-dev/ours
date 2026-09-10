@@ -3,8 +3,9 @@
 #ifndef OURS_PLATFORM_INIT_HPP
 #define OURS_PLATFORM_INIT_HPP 1
 
-#include <gktl/init_hook.hpp>
 #include <ours/init.hpp>
+
+#include <gktl/init_hook.hpp>
 
 // Used by the operator+/- below; this header relied on some other include
 // happening to drag it in.

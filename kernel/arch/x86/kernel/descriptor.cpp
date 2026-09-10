@@ -1,5 +1,3 @@
-#include <arch/x86/descriptor.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/percpu.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -7,9 +5,12 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vmm.hpp>
-#include <ustl/mem/container_of.hpp>
 
 #include <array>
+
+#include <arch/x86/descriptor.hpp>
+#include <logz4/log.hpp>
+#include <ustl/mem/container_of.hpp>
 
 namespace ours {
 struct alignas(PAGE_SIZE) PACKED Gdt {

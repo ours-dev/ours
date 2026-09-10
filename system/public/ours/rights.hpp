@@ -5,6 +5,7 @@
 #define OURS_RIGHTS_HPP 1
 
 #include <ours/types.hpp>
+
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours {

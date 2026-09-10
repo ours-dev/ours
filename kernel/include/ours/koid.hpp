@@ -5,6 +5,7 @@
 #define OURS_KOID_HPP 1
 
 #include <ours/types.hpp>
+
 #include <ustl/sync/atomic.hpp>
 
 namespace ours {

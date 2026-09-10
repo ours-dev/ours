@@ -29,9 +29,6 @@
 ///
 /// Host numbers, host compiler, host cache. They say how the curves behave as
 /// the child count grows, not how many nanoseconds the kernel will spend.
-#include <ustl/collections/allocator.hpp>
-#include <ustl/collections/detail/btree.hpp>
-
 #include <chrono>
 #include <functional>
 #include <random>
@@ -39,6 +36,9 @@
 
 #include <cstdint>
 #include <cstdio>
+
+#include <ustl/collections/allocator.hpp>
+#include <ustl/collections/detail/btree.hpp>
 
 namespace {
 using u64 = std::uint64_t;

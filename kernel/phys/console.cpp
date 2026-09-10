@@ -1,6 +1,7 @@
-#include <logz4/log.hpp>
 #include <ours/phys/console.hpp>
 #include <ours/phys/init.hpp>
+
+#include <logz4/log.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::phys {

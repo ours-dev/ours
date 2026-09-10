@@ -3,11 +3,12 @@
 #ifndef OURS_MM_ARCH_VM_ASPACE_HPP
 #define OURS_MM_ARCH_VM_ASPACE_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/range.hpp>
 #include <ours/arch/x86/page_table.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/vmas_flags.hpp>
+
+#include <gktl/canary.hpp>
+#include <gktl/range.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::mm {

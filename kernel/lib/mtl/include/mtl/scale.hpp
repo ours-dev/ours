@@ -4,9 +4,10 @@
 #define MTL_SCALE_HPP 1
 
 #include <ours/types.hpp>
-#include <ustl/limits.hpp>
 
 #include <utility>
+
+#include <ustl/limits.hpp>
 
 namespace mtl {
 template <typename Integer>

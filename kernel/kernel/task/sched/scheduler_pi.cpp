@@ -1,7 +1,8 @@
-#include "ours/task/sched/schedule.hpp"
-#include "ours/task/sched/scheduler.hpp"
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/sched/scheduler_inline.hpp>
+
+#include "ours/task/sched/schedule.hpp"
+#include "ours/task/sched/scheduler.hpp"
 
 namespace ours::task::sched {
 /// CRTP base class.

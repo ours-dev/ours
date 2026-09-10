@@ -9,10 +9,6 @@
 
 #include "physboot.hpp"
 
-#include "detail/boot_alloc.hpp"
-#include <arch/random.hpp>
-#include <arch/tick.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/panic.hpp>
 #include <ours/phys/arch_handoff.hpp>
@@ -23,11 +19,16 @@
 #include <ours/phys/init.hpp>
 #include <ours/phys/kernel_package_loader.hpp>
 #include <ours/phys/module.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <string_view>
 
 #include <cstring>
+
+#include "detail/boot_alloc.hpp"
+#include <arch/random.hpp>
+#include <arch/tick.hpp>
+#include <logz4/log.hpp>
+#include <ustl/mem/align.hpp>
 
 namespace ours::phys {
 namespace {

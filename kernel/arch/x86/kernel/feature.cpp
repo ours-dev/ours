@@ -1,6 +1,7 @@
-#include <arch/x86/processor/feature.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/init.hpp>
+
+#include <arch/x86/processor/feature.hpp>
 
 namespace ours {
 auto x86_has_feature(CpuFeatureType type) -> bool {

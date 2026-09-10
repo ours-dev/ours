@@ -3,11 +3,12 @@
 #ifndef OURS_OBJECT_THREAD_DISPATCHER_HPP
 #define OURS_OBJECT_THREAD_DISPATCHER_HPP 1
 
-#include <gktl/canary.hpp>
-#include <ktl/name.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/task/types.hpp>
+
+#include <gktl/canary.hpp>
+#include <ktl/name.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/option.hpp>
 

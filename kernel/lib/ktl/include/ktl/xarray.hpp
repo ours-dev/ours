@@ -3,14 +3,15 @@
 #ifndef KTL_XARRAY_HPP
 #define KTL_XARRAY_HPP 1
 
-#include <ktl/result.hpp>
 #include <ours/types.hpp>
-#include <ustl/bitfields.hpp>
-#include <ustl/bitset.hpp>
-#include <ustl/option.hpp>
 
 #include <array>
 #include <limits>
+
+#include <ktl/result.hpp>
+#include <ustl/bitfields.hpp>
+#include <ustl/bitset.hpp>
+#include <ustl/option.hpp>
 
 namespace ktl {
 namespace xarray {

@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <ustl/collections/intrusive/bstree_algorithms.hpp>
-
 #include <cstddef>
+
+#include <ustl/collections/intrusive/bstree_algorithms.hpp>
 
 namespace {
 struct Node final {

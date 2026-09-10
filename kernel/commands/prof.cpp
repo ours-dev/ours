@@ -10,15 +10,15 @@
 // standalone lib — see its README. It does not live under `kernel/kernel`
 // either: nothing but these three commands ever touches the buffers or the
 // index, so a kernel built without a console has no reason to carry them.
-#include <gktl/command.hpp>
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
-#include <heap/new.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/status.hpp>
 
+#include <gktl/command.hpp>
+#include <gktl/init_hook.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <prof/arch.hpp>
 #include <prof/sampler.hpp>
 #include <unwind/fde_index.hpp>

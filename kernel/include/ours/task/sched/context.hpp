@@ -3,7 +3,6 @@
 #ifndef OURS_TASK_SCHED_CONTEXT_HPP
 #define OURS_TASK_SCHED_CONTEXT_HPP 1
 
-#include <gktl/mixin/comparable.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/sync/types.hpp>
@@ -11,6 +10,8 @@
 #include <ours/task/sched/common.hpp>
 #include <ours/task/sched/profiles.hpp>
 #include <ours/task/sched/types.hpp>
+
+#include <gktl/mixin/comparable.hpp>
 #include <ustl/chrono/duration.hpp>
 #include <ustl/collections/intrusive/list_hook.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>

@@ -1,10 +1,3 @@
-#include <arch/interrupt.hpp>
-#include <arch/spin_hint.hpp>
-#include <arch/tick.hpp>
-#include <arch/x86/apic/xapic.hpp>
-#include <arch/x86/msr.hpp>
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/cpu.hpp>
@@ -16,11 +9,19 @@
 #include <ours/time/clock.hpp>
 #include <ours/time/clock_event_device.hpp>
 #include <ours/time/clock_source.hpp>
-#include <ustl/bit.hpp>
-#include <ustl/limits.hpp>
 
 #include <algorithm>
 #include <array>
+
+#include <arch/interrupt.hpp>
+#include <arch/spin_hint.hpp>
+#include <arch/tick.hpp>
+#include <arch/x86/apic/xapic.hpp>
+#include <arch/x86/msr.hpp>
+#include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
+#include <ustl/bit.hpp>
+#include <ustl/limits.hpp>
 
 namespace ours {
 namespace {

@@ -1,4 +1,3 @@
-#include <logz4/log.hpp>
 #include <ours/arch/mp.hpp>
 #include <ours/arch/x86/bootstrap.hpp>
 #include <ours/arch/x86/descriptor.hpp>
@@ -9,6 +8,8 @@
 #include <ours/platform/init.hpp>
 
 #include <limits>
+
+#include <logz4/log.hpp>
 
 namespace ours {
 extern "C" u8 const BOOTSTRAP_AREA_START[] LINK_NAME("__x86_bootstrap16_start");

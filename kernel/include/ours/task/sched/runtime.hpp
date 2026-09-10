@@ -3,12 +3,13 @@
 #ifndef OURS_TASK_SCHED_RUNTIME_HPP
 #define OURS_TASK_SCHED_RUNTIME_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/sched/context.hpp>
 #include <ours/task/sched/driver.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/mem/container_of.hpp>
 
 namespace ours::task::sched {

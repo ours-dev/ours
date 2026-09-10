@@ -1,9 +1,10 @@
-#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/init.hpp>
 
 #include <cstring>
+
+#include <logz4/log.hpp>
 
 namespace ours::phys {
 struct PhysToTable {

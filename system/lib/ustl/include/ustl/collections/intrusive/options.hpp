@@ -3,9 +3,9 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_OPTIONS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_OPTIONS_HPP 1
 
+#include <ustl/collections/intrusive/detail/extension.hpp>
 #include <ustl/collections/intrusive/intrusive_fwd.hpp>
 #include <ustl/collections/intrusive/link_mode.hpp>
-#include <ustl/collections/intrusive/detail/extension.hpp>
 #include <ustl/collections/intrusive/pack_options.hpp>
 
 namespace ustl::collections::intrusive {

@@ -1,10 +1,10 @@
-#include <source_location>
 #include <iostream>
-
-#include <cstdint>
+#include <source_location>
 #include <type_traits>
 
-template <typename Class, typename Lock, int Index= std::source_location::current().line()>
+#include <cstdint>
+
+template <typename Class, typename Lock, int Index = std::source_location::current().line()>
 class LockClass {};
 
 template <typename Class, typename Lock>
@@ -21,7 +21,7 @@ struct MakeLockDep {
 
     template <int N>
     static consteval auto next() {
-        if constexpr( requires { flag(reader<N>{}); } ) {
+        if constexpr (requires { flag(reader<N>{}); }) {
             return next<N + 1>();
         } else {
             setter<N> setter;
@@ -39,6 +39,7 @@ struct SpinLock;
 
 class Foo {
     using Self = Foo;
+
   public:
   private:
     LockDep<Self, SpinLock> x;

@@ -1,6 +1,3 @@
-#include "ours/task/sched/profiles.hpp"
-#include <logz4/log.hpp>
-#include <mtl/ratio.hpp>
 #include <ours/task/sched/config.hpp>
 #include <ours/task/sched/context.hpp>
 #include <ours/task/sched/fair.hpp>
@@ -11,6 +8,10 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/timer_queue.hpp>
+
+#include "ours/task/sched/profiles.hpp"
+#include <logz4/log.hpp>
+#include <mtl/ratio.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/mem/address_of.hpp>
 

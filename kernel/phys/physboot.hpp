@@ -7,8 +7,9 @@
 #ifndef OURS_PHYS_PHYSBOOT_HPP
 #define OURS_PHYS_PHYSBOOT_HPP 1
 
-#include "physload.hpp"
 #include <ours/compiler.hpp>
+
+#include "physload.hpp"
 
 namespace ours::phys {
 

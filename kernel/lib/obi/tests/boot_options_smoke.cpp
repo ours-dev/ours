@@ -1,8 +1,3 @@
-#include <logz4/filter.hpp>
-#include <logz4/level.hpp>
-#include <obi/command_line_view.hpp>
-#include <obi/container_view.hpp>
-#include <obi/package_builder.hpp>
 #include <ours/phys/boot_options.hpp>
 
 #include <array>
@@ -10,6 +5,12 @@
 #include <string_view>
 
 #include <cstdlib>
+
+#include <logz4/filter.hpp>
+#include <logz4/level.hpp>
+#include <obi/command_line_view.hpp>
+#include <obi/container_view.hpp>
+#include <obi/package_builder.hpp>
 
 namespace {
 using std::operator""sv;

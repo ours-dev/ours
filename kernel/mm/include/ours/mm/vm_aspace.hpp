@@ -6,14 +6,15 @@
 #if !__has_include(<ours/mm/arch_vm_aspace.hpp>)
 #error "The header <ours/mm/arch_vm_aspace.hpp> is required by [protocol.module.mem]"
 #endif
-#include <gktl/canary.hpp>
-#include <gktl/range.hpp>
-#include <ktl/result.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/arch_vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
 #include <ours/mm/vmas_flags.hpp>
 #include <ours/sync/spin_lock.hpp>
+
+#include <gktl/canary.hpp>
+#include <gktl/range.hpp>
+#include <ktl/result.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/sync/atomic.hpp>

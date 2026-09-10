@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <cstring>
+
 #include <logz4/clock.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
 #include <ustl/fmt/format_to.hpp>
-
-#include <cstring>
 
 namespace logz4 {
 namespace {

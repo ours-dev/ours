@@ -1,5 +1,6 @@
-#include <heap/new.hpp>
 #include <ours/irq/irq_object.hpp>
+
+#include <heap/new.hpp>
 
 namespace ours::irq {
 IrqObject::IrqObject(HIrqNum hirq, VIrqNum virq, IrqFlags flags, char const *name)

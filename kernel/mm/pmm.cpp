@@ -1,4 +1,3 @@
-#include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/early_mem.hpp>
@@ -10,6 +9,8 @@
 
 #include <algorithm>
 #include <array>
+
+#include <logz4/log.hpp>
 
 namespace ours::mm {
 namespace priv {

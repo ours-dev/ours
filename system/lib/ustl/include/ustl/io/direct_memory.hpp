@@ -5,12 +5,13 @@
 #define USTL_IO_DIRECT_MEMORY_HPP 1
 
 #include <ours/types.hpp>
-#include <ustl/views/span.hpp>
 
 #include <limits>
 #include <type_traits>
 
 #include <cstring>
+
+#include <ustl/views/span.hpp>
 
 namespace ustl::io {
 struct DirectMemory final {

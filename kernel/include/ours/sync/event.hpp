@@ -3,9 +3,10 @@
 #ifndef OURS_EVENT_HPP
 #define OURS_EVENT_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/status.hpp>
 #include <ours/task/wait_queue.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/option.hpp>
 #include <ustl/util/enum_bits.hpp>
 

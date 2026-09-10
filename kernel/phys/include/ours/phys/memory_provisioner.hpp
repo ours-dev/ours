@@ -3,13 +3,14 @@
 #ifndef OURS_PHYS_MEMORY_PROVISIONER_HPP
 #define OURS_PHYS_MEMORY_PROVISIONER_HPP 1
 
-#include <obi/container_view.hpp>
-#include <obi/memory_config_view.hpp>
 #include <ours/phys/arch_bootmem.hpp>
 #include <ours/phys/boot_package_input.hpp>
 #include <ours/types.hpp>
 
 #include <span>
+
+#include <obi/container_view.hpp>
+#include <obi/memory_config_view.hpp>
 
 namespace ours::phys {
 class Aspace;

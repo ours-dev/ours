@@ -3,12 +3,12 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_CIRCULAR_SLIST_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_CIRCULAR_SLIST_ALGORITHMS_HPP 1
 
-#include <ustl/collections/intrusive/detail/common_slist_algorithms.hpp>
-#include <ustl/collections/intrusive/pointer_traits.hpp>
-
 #include <type_traits>
 
 #include <cstddef>
+
+#include <ustl/collections/intrusive/detail/common_slist_algorithms.hpp>
+#include <ustl/collections/intrusive/pointer_traits.hpp>
 
 namespace ustl::collections::intrusive {
 template <typename TNodeTraits>

@@ -3,19 +3,26 @@
 #ifndef OURS_MM_TYPES_HPP
 #define OURS_MM_TYPES_HPP 1
 
-#include <arch/paging/controls.hpp>
-#include <arch/paging/mmu_flags.hpp>
-#include <gktl/range.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/panic.hpp>
 #include <ours/types.hpp>
+
+#include <arch/paging/controls.hpp>
+#include <arch/paging/mmu_flags.hpp>
+#include <gktl/range.hpp>
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {
-using arch::paging::HarvestControl;
-using arch::paging::MapControl;
-using arch::paging::MmuFlags;
-using arch::paging::UnmapControl;
+// Qualified from the global namespace on purpose. Inside `namespace ours::mm`
+// an unqualified `arch::` finds `ours::arch` first, and `ours::arch` really
+// does exist -- ours/mm/cfg.hpp declares it. This compiled before only
+// because <arch/paging/...> was included ahead of every ours/ header, so
+// `ours::arch` had not been declared yet at this point in the file. That is
+// not something an include order should be load-bearing for.
+using ::arch::paging::HarvestControl;
+using ::arch::paging::MapControl;
+using ::arch::paging::MmuFlags;
+using ::arch::paging::UnmapControl;
 
 enum class ZoneType {
     Dma,

@@ -1,5 +1,3 @@
-#include <arch/x86/cache.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
@@ -12,14 +10,17 @@
 #include <ours/mm/vm_page.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/panic.hpp>
-#include <heap/vmalloc.hpp>
 #include <ours/status.hpp>
+
+#include <algorithm>
+
+#include <arch/x86/cache.hpp>
+#include <heap/vmalloc.hpp>
+#include <logz4/log.hpp>
 #include <ustl/lazy_init.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/views/span.hpp>
-
-#include <algorithm>
 
 namespace ours::mm {
 namespace {

@@ -5,10 +5,11 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ustl/result.hpp>
-#include <ustl/views/span.hpp>
 
 #include <limits>
+
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
 namespace obi::compression {
 using Bytes = ustl::views::Span<u8 const>;
@@ -35,8 +36,7 @@ inline auto compress_literals(Bytes input, MutableBytes output) -> Result {
         return ustl::err(required.unwrap_err());
     }
     if (output.data() == nullptr || output.size() < required.unwrap()) {
-        return ustl::err(output.data() == nullptr ? ours::Status::InvArgs
-                                                  : ours::Status::NoSpace);
+        return ustl::err(output.data() == nullptr ? ours::Status::InvArgs : ours::Status::NoSpace);
     }
 
     auto const literal_length = input.size();
@@ -165,9 +165,8 @@ inline auto decompress(Bytes input, MutableBytes output) -> Result {
         }
         if (literal_length > input.size() - input_offset ||
             literal_length > output.size() - output_offset) {
-            return ustl::err(literal_length > input.size() - input_offset
-                                 ? ours::Status::InvArgs
-                                 : ours::Status::NoSpace);
+            return ustl::err(literal_length > input.size() - input_offset ? ours::Status::InvArgs
+                                                                          : ours::Status::NoSpace);
         }
         for (usize index = 0; index < literal_length; ++index) {
             output[output_offset++] = input[input_offset++];

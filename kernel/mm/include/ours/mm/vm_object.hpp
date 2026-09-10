@@ -3,13 +3,14 @@
 #ifndef OURS_MM_VM_OBJECT_HPP
 #define OURS_MM_VM_OBJECT_HPP
 
-#include <gktl/canary.hpp>
-#include <gktl/range.hpp>
-#include <ktl/name.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_page.hpp>
 #include <ours/status.hpp>
+
+#include <gktl/canary.hpp>
+#include <gktl/range.hpp>
+#include <ktl/name.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/option.hpp>
 

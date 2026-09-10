@@ -13,10 +13,6 @@
 /// trails the direct items; PackageBuilder::build() then stable-sorts the
 /// Executable item to index 0 (see package-builder.hpp).
 
-#include "command.hpp"
-#include "common.hpp"
-#include <obi/package_builder.hpp>
-
 #include <algorithm>
 #include <array>
 #include <deque>
@@ -25,8 +21,11 @@
 #include <print>
 #include <sstream>
 
+#include "command.hpp"
+#include "common.hpp"
 #include <bootfs/builder.hpp>
 #include <cxxopts.hpp>
+#include <obi/package_builder.hpp>
 
 namespace obit {
 namespace {

@@ -1,15 +1,15 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <ustl/collections/allocator.hpp>
-#include <ustl/collections/btree.hpp>
-#include <ustl/collections/error.hpp>
-#include <ustl/collections/memory_resource.hpp>
-
 #include <utility>
 
 #include <cassert>
 #include <cstddef>
+
+#include <ustl/collections/allocator.hpp>
+#include <ustl/collections/btree.hpp>
+#include <ustl/collections/error.hpp>
+#include <ustl/collections/memory_resource.hpp>
 
 namespace {
 class FailingResource final: public ustl::collections::MemoryResource {

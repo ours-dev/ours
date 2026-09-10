@@ -1,7 +1,8 @@
+#include <ours/panic.hpp>
+
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/halt.hpp>
 #include <logz4/log.hpp>
-#include <ours/panic.hpp>
 
 namespace ours {
 template <typename String, typename FormatArgs>

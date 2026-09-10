@@ -5,13 +5,13 @@
 // serial export against these exact sizes, offsets and magics, so the test
 // pins them.
 
-#include <prof/format.hpp>
+#include <string_view>
 
 #include <cstddef>
 #include <cstring>
-#include <string_view>
 
 #include <gtest/gtest.h>
+#include <prof/format.hpp>
 
 namespace {
 
@@ -103,9 +103,9 @@ TEST(FormatLayout, HexLineRoundTrip) {
 
 TEST(FormatLayout, HexDecodeRejectsGarbage) {
     char out[sizeof(prof::SampleRecord)];
-    EXPECT_FALSE(hex_decode("abc", out));           // odd length
-    EXPECT_FALSE(hex_decode("zz", out));            // non-hex
-    EXPECT_TRUE(hex_decode("deadbeef", out + 16));  // 4 bytes into scratch
+    EXPECT_FALSE(hex_decode("abc", out));          // odd length
+    EXPECT_FALSE(hex_decode("zz", out));           // non-hex
+    EXPECT_TRUE(hex_decode("deadbeef", out + 16)); // 4 bytes into scratch
 }
 
 } // namespace

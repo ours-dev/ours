@@ -3,9 +3,9 @@
 #ifndef LOGZ4_FILTER_HPP
 #define LOGZ4_FILTER_HPP 1
 
-#include <logz4/level.hpp>
-
 #include <atomic>
+
+#include <logz4/level.hpp>
 
 namespace logz4 {
 

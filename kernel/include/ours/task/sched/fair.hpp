@@ -3,10 +3,11 @@
 #ifndef OURS_TASK_SCHED_FAIR_HPP
 #define OURS_TASK_SCHED_FAIR_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/compiler.hpp>
 #include <ours/task/sched/context.hpp>
 #include <ours/task/sched/types.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 
 namespace ours::task::sched {

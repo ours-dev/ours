@@ -3,18 +3,19 @@
 #ifndef OURS_SYNC_SPIN_LOCK_HPP
 #define OURS_SYNC_SPIN_LOCK_HPP 1
 
-#include <arch/auto_interrupt_disabler.hpp>
-#include <arch/interrupt.hpp>
-#include <lockdep/state_saver.hpp>
 #include <ours/sync/config.hpp>
 #include <ours/sync/priv/lock_name_storage.hpp>
 #include <ours/task/types.hpp>
 #include <ours/types.hpp>
+
+#include <tuple>
+
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/interrupt.hpp>
+#include <lockdep/state_saver.hpp>
 #include <ustl/sync/atomic.hpp>
 #include <ustl/util/enum_bits.hpp>
 #include <ustl/util/noncopyable.hpp>
-
-#include <tuple>
 
 namespace ours::sync {
 namespace spinlock {

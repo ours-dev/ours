@@ -3,10 +3,11 @@
 #ifndef LOGZ4_LOG_HPP
 #define LOGZ4_LOG_HPP 1
 
+#include <ours/compiler.hpp>
+
 #include <logz4/filter.hpp>
 #include <logz4/level.hpp>
 #include <logz4/logger.hpp>
-#include <ours/compiler.hpp>
 #include <ustl/fmt/make_format_args.hpp>
 #include <ustl/util/move.hpp>
 #include <ustl/views/string_view.hpp>

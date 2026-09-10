@@ -1,15 +1,15 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <unwind/fde_index.hpp>
-#include <unwind/unwinder.hpp>
-
-#include <cstddef>
-#include <cstdint>
 #include <utility>
 #include <vector>
 
+#include <cstddef>
+#include <cstdint>
+
 #include <gtest/gtest.h>
+#include <unwind/fde_index.hpp>
+#include <unwind/unwinder.hpp>
 
 namespace {
 
@@ -21,9 +21,9 @@ constexpr std::uint8_t CFA_DEF_CFA = 0x0C;
 constexpr std::uint8_t CFA_DEF_CFA_REGISTER = 0x0D;
 constexpr std::uint8_t CFA_DEF_CFA_OFFSET = 0x0E;
 constexpr std::uint8_t CFA_DEF_CFA_SF = 0x12;
-constexpr std::uint8_t CFA_OFFSET = 0x80;   // + reg, uleb factored offset
-constexpr std::uint8_t CFA_RESTORE = 0xC0;  // + reg
-constexpr std::uint8_t CFA_ADVANCE = 0x40;  // + byte count
+constexpr std::uint8_t CFA_OFFSET = 0x80;  // + reg, uleb factored offset
+constexpr std::uint8_t CFA_RESTORE = 0xC0; // + reg
+constexpr std::uint8_t CFA_ADVANCE = 0x40; // + byte count
 constexpr std::uint8_t CFA_REMEMBER_STATE = 0x0A;
 constexpr std::uint8_t CFA_RESTORE_STATE = 0x0B;
 constexpr std::uint8_t ENC_PCREL_SDATA4 = 0x1B; // DW_EH_PE_pcrel | DW_EH_PE_sdata4
@@ -66,7 +66,8 @@ class SectionBuilder final {
         while (true) {
             std::uint8_t const byte = static_cast<std::uint8_t>(value & 0x7F);
             value >>= 7;
-            bool const more = (value != 0 && value != -1) || ((value == -1) && ((byte & 0x40) == 0)) ||
+            bool const more = (value != 0 && value != -1) ||
+                              ((value == -1) && ((byte & 0x40) == 0)) ||
                               ((value == 0) && ((byte & 0x40) != 0));
             if (more) {
                 m_bytes.push_back(byte | 0x80);
@@ -111,16 +112,17 @@ class FakeEhFrame final {
     // return-address rule offset(1).
     auto emit_cie() -> void {
         std::size_t const start = m_out.size();
-        m_out.u32(0)  // length
-            .u32(0)   // CIE id
-            .u8(1)    // version
+        m_out
+            .u32(0) // length
+            .u32(0) // CIE id
+            .u8(1)  // version
             .u8('z')
             .u8('R')
             .u8(0)
-            .uleb(1)   // code alignment
-            .sleb(-8)  // data alignment
-            .uleb(16)  // return address column
-            .uleb(1)   // augmentation data length
+            .uleb(1)  // code alignment
+            .sleb(-8) // data alignment
+            .uleb(16) // return address column
+            .uleb(1)  // augmentation data length
             .u8(ENC_PCREL_SDATA4)
             .u8(CFA_DEF_CFA)
             .uleb(7)
@@ -176,7 +178,8 @@ class FakeMemory final {
         }
         std::uint64_t value = 0;
         for (std::size_t i = 0; i < 8; ++i) {
-            value |= static_cast<std::uint64_t>(self->m_bytes[address - self->m_base + i]) << (8 * i);
+            value |= static_cast<std::uint64_t>(self->m_bytes[address - self->m_base + i])
+                     << (8 * i);
         }
         *out = value;
         return true;
@@ -215,14 +218,8 @@ class ChainHarness final {
         // A: advance 1 (push rbp); def_cfa_offset 16; offset(rbp=6, factored
         // 2); advance 3 (mov rbp, rsp); def_cfa_register(rbp=6).
         constexpr std::uint8_t A_INS[] = {
-            CFA_ADVANCE | 1,
-            CFA_DEF_CFA_OFFSET,
-            16,
-            CFA_OFFSET | 6,
-            2,
-            CFA_ADVANCE | 3,
-            CFA_DEF_CFA_REGISTER,
-            6,
+            CFA_ADVANCE | 1, CFA_DEF_CFA_OFFSET,   16, CFA_OFFSET | 6, 2,
+            CFA_ADVANCE | 3, CFA_DEF_CFA_REGISTER, 6,
         };
         m_eh.emit_fde(A_PC, 0x100, A_INS, sizeof(A_INS));
 

@@ -6,6 +6,9 @@
 #include <ours/assert.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/types.hpp>
+
+#include <type_traits>
+
 #include <ustl/bit.hpp>
 #include <ustl/bitfields.hpp>
 #include <ustl/collections/intrusive/list.hpp>
@@ -16,8 +19,6 @@
 #include <ustl/traits/is_base_of.hpp>
 #include <ustl/traits/is_same.hpp>
 #include <ustl/util/noncopyable.hpp>
-
-#include <type_traits>
 
 namespace ours::mm {
 namespace page {

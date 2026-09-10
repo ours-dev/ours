@@ -3,10 +3,11 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
-#include <ustl/rc.hpp>
-#include <ustl/sync/atomic.hpp>
 
 #include <utility>
+
+#include <ustl/rc.hpp>
+#include <ustl/sync/atomic.hpp>
 
 using ustl::sync::Atomic;
 using ustl::sync::MemoryOrder;

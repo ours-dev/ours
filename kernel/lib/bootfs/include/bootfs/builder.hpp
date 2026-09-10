@@ -4,7 +4,6 @@
 #define BOOTFS_BUILDER_HPP 1
 
 #include <ours/types.hpp>
-#include <ustl/views/span.hpp>
 
 #include <string>
 #include <vector>
@@ -12,6 +11,7 @@
 #include <cstring>
 
 #include <bootfs/format.hpp>
+#include <ustl/views/span.hpp>
 
 namespace bootfs {
 inline constexpr auto ALIGNMENT = u64{8};

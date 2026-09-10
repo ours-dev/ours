@@ -1,4 +1,3 @@
-#include <heap/new.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
@@ -6,6 +5,8 @@
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/cpu_stopper.hpp>
 #include <ours/task/thread.hpp>
+
+#include <heap/new.hpp>
 
 namespace ours {
 namespace {

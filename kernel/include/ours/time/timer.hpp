@@ -3,18 +3,19 @@
 #ifndef OURS_TIME_TIMER_HPP
 #define OURS_TIME_TIMER_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/platform/timer.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/mod.hpp>
 #include <ours/time/types.hpp>
+
+#include <atomic>
+
+#include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/function/fn.hpp>
-
-#include <atomic>
 
 namespace ours::time {
 /// How much later than its deadline a timer may run.

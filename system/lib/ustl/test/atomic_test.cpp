@@ -1,6 +1,6 @@
-#include <ustl/sync/atomic.hpp>
-
 #include <cassert>
+
+#include <ustl/sync/atomic.hpp>
 
 auto main() -> int {
     int storage = 3;

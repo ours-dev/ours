@@ -5,6 +5,7 @@
 
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
+
 #include <ustl/views/span.hpp>
 
 namespace ours::irq {

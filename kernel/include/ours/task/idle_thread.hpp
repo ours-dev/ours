@@ -6,6 +6,7 @@
 #include <ours/arch/idle_thread.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/task/thread.hpp>
+
 #include <ustl/lazy_init.hpp>
 #include <ustl/sync/atomic.hpp>
 

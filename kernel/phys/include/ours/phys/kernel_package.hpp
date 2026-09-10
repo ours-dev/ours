@@ -3,15 +3,15 @@
 #ifndef OURS_PHYS_KERNEL_PACKAGE_HPP
 #define OURS_PHYS_KERNEL_PACKAGE_HPP 1
 
-#include <obi/container_view.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ustl/result.hpp>
-#include <ustl/views/span.hpp>
 
 #include <string_view>
 
 #include <bootfs/view.hpp>
+#include <obi/container_view.hpp>
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
 namespace ours::phys {
 /// A view over the object a `kernel_package` GN template produces: a

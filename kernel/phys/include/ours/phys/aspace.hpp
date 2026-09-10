@@ -3,14 +3,15 @@
 #ifndef OURS_PHYS_ASPACE_HPP
 #define OURS_PHYS_ASPACE_HPP 1
 
-#include <arch/paging.hpp>
-#include <ktl/result.hpp>
 #include <ours/assert.hpp>
 #include <ours/phys/arch_paging.hpp>
 #include <ours/types.hpp>
-#include <ustl/option.hpp>
 
 #include <type_traits>
+
+#include <arch/paging.hpp>
+#include <ktl/result.hpp>
+#include <ustl/option.hpp>
 
 namespace ours::phys {
 using MmuFlags = arch::paging::MmuFlags;

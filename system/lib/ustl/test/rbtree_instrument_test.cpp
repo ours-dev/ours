@@ -14,10 +14,11 @@
 //    measured independently. That is the piece a static template observer
 //    cannot express.
 
-#include <ustl/collections/intrusive/rbtree.hpp>
+#include <vector>
 
 #include <cstdio>
-#include <vector>
+
+#include <ustl/collections/intrusive/rbtree.hpp>
 
 namespace {
 
@@ -203,8 +204,7 @@ struct ByAugmentedKey final {
 
 struct BothExtensions final {
     using Element = Augmented;
-    static constexpr auto EXTENSIONS =
-        ci::Extension::Augment | ci::Extension::Instrument;
+    static constexpr auto EXTENSIONS = ci::Extension::Augment | ci::Extension::Instrument;
 
     // Extension::Augment
     static auto recompute(Element &self, Element const *left, Element const *right) noexcept
@@ -240,8 +240,8 @@ struct BothExtensions final {
 };
 
 auto test_both_extensions_at_once() -> void {
-    using BothTree = ci::RBTree<Augmented, ci::Compare<ByAugmentedKey>,
-                                ci::Extensions<BothExtensions>>;
+    using BothTree =
+        ci::RBTree<Augmented, ci::Compare<ByAugmentedKey>, ci::Extensions<BothExtensions>>;
     constexpr int COUNT = 128;
     std::vector<Augmented> storage(COUNT);
     for (int i = 0; i < COUNT; ++i) {

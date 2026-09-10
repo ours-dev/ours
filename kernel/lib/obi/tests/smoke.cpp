@@ -6,19 +6,19 @@
 /// detection, and a battery of malformed-image rejections.  BootFS is
 /// exercised separately (obi doesn't depend on it — see kernel/lib/bootfs/).
 
-#include <obi/checksum.hpp>
-#include <obi/command_line_view.hpp>
-#include <obi/compression.hpp>
-#include <obi/container_view.hpp>
-#include <obi/package_builder.hpp>
-#include <obi/package_format.hpp>
-
 #include <array>
 #include <random>
 #include <vector>
 
 #include <cstdlib>
 #include <cstring>
+
+#include <obi/checksum.hpp>
+#include <obi/command_line_view.hpp>
+#include <obi/compression.hpp>
+#include <obi/container_view.hpp>
+#include <obi/package_builder.hpp>
+#include <obi/package_format.hpp>
 
 namespace {
 using obi::CommandLineView;

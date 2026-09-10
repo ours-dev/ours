@@ -2,14 +2,14 @@
 #ifndef OBI_CLI_COMMON_HPP
 #define OBI_CLI_COMMON_HPP
 
-#include <obi/container_view.hpp>
-
 #include <expected>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string_view>
 #include <vector>
+
+#include <obi/container_view.hpp>
 
 namespace obit {
 namespace fs = std::filesystem;

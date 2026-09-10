@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <concepts>
+
 #include <ustl/collections/error.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/result.hpp>
-
-#include <concepts>
 
 namespace {
 struct Value final: ustl::collections::intrusive::ListBaseHook<> {

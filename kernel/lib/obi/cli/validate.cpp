@@ -1,8 +1,7 @@
-#include "command.hpp"
-#include "common.hpp"
-
 #include <print>
 
+#include "command.hpp"
+#include "common.hpp"
 #include <cxxopts.hpp>
 
 namespace obit {

@@ -5,9 +5,6 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
-#include <ustl/views/span.hpp>
 
 #include <limits>
 #include <string_view>
@@ -15,6 +12,9 @@
 #include <cstring>
 
 #include <bootfs/format.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
 namespace bootfs {
 class View final {

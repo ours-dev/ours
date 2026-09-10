@@ -1,5 +1,6 @@
-#include <ccrt/runtime.hpp>
 #include <ours/compiler.hpp>
+
+#include <ccrt/runtime.hpp>
 
 namespace ccrt {
 namespace {

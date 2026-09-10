@@ -1,12 +1,13 @@
-#include <gktl/counter.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
-#include <ustl/util/tuple.hpp>
 
 #include <type_traits>
 #include <utility>
+
+#include <gktl/counter.hpp>
+#include <ustl/util/tuple.hpp>
 
 using ours::task::sched::BaseProfile;
 using ours::task::sched::InheritedProfile;

@@ -3,11 +3,12 @@
 #ifndef OURS_SYNC_MUTEX_HPP
 #define OURS_SYNC_MUTEX_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/sync/config.hpp>
 #include <ours/sync/priv/lock_name_storage.hpp>
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/time/types.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/sync/atomic.hpp>
 
 namespace ours::sync {

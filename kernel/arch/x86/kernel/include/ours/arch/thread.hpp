@@ -3,10 +3,11 @@
 #ifndef OURS_ARCH_THREAD_HPP
 #define OURS_ARCH_THREAD_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/compiler.hpp>
 #include <ours/task/types.hpp>
 #include <ours/types.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/mem/container_of.hpp>
 
 namespace ours::task {

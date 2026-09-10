@@ -1,4 +1,3 @@
-#include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
 #include <ours/init.hpp>
@@ -9,6 +8,8 @@
 #include <ours/time/clock_source.hpp>
 #include <ours/time/tick_device.hpp>
 #include <ours/time/tick_sched.hpp>
+
+#include <logz4/log.hpp>
 
 namespace ours::time {
 namespace {

@@ -7,9 +7,6 @@
 #include <ours/phys/aspace.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ustl/collections/static_vec.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
 
 #include <span>
 #include <string_view>
@@ -19,6 +16,9 @@
 #include <eftl/elf/load_policy.hpp>
 #include <eftl/elf/parser.hpp>
 #include <eftl/elf/relocations.hpp>
+#include <ustl/collections/static_vec.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
 
 namespace ours::phys {
 /// Resolves an undefined symbol of a loaded image to a definition the

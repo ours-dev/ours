@@ -59,10 +59,10 @@ namespace pmu {
 
     // IA32_PERFEVTSELx control bits.
     constexpr u64 EVTSEL_UMASK_SHIFT = 8;
-    constexpr u64 EVTSEL_INT_ENABLE = u64{1} << 20;  // PMI on overflow
-    constexpr u64 EVTSEL_ENABLE = u64{1} << 22;      // counting enabled
-    constexpr u64 EVTSEL_OS_MODE = u64{1} << 17;     // count at CPL == 0
-    constexpr u64 EVTSEL_USER_MODE = u64{1} << 16;   // count at CPL > 0
+    constexpr u64 EVTSEL_INT_ENABLE = u64{1} << 20; // PMI on overflow
+    constexpr u64 EVTSEL_ENABLE = u64{1} << 22;     // counting enabled
+    constexpr u64 EVTSEL_OS_MODE = u64{1} << 17;    // count at CPL == 0
+    constexpr u64 EVTSEL_USER_MODE = u64{1} << 16;  // count at CPL > 0
 
     // IA32_PERF_GLOBAL_CTRL / _STATUS / _OVF_CTRL bit for general-purpose
     // counter N is bit N (PMC0 = bit 0).
@@ -80,8 +80,7 @@ namespace pmu {
 inline auto pmu_program_counter0(u8 event, u8 umask, u64 period, bool kernel_mode, bool user_mode)
     -> void {
     u64 const evtsel = (static_cast<u64>(umask) << pmu::EVTSEL_UMASK_SHIFT) |
-                       static_cast<u64>(event) |
-                       (kernel_mode ? pmu::EVTSEL_OS_MODE : 0) |
+                       static_cast<u64>(event) | (kernel_mode ? pmu::EVTSEL_OS_MODE : 0) |
                        (user_mode ? pmu::EVTSEL_USER_MODE : 0) | pmu::EVTSEL_INT_ENABLE |
                        pmu::EVTSEL_ENABLE;
 

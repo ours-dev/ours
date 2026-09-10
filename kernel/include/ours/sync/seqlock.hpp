@@ -36,11 +36,12 @@
 #ifndef OURS_SYNC_SEQLOCK_HPP
 #define OURS_SYNC_SEQLOCK_HPP 1
 
-#include <arch/interrupt.hpp>
-#include <arch/spin_hint.hpp>
 #include <ours/assert.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/types.hpp>
+
+#include <arch/interrupt.hpp>
+#include <arch/spin_hint.hpp>
 #include <ustl/function/invoke.hpp>
 #include <ustl/sync/atomic.hpp>
 #include <ustl/traits/is_invocable.hpp>

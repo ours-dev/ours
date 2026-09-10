@@ -4,6 +4,7 @@
 #define OURS_RESULT_HPP 1
 
 #include <ours/status.hpp>
+
 #include <ustl/result.hpp>
 
 namespace ours {

@@ -5,10 +5,11 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ustl/result.hpp>
-#include <ustl/views/span.hpp>
 
 #include <limits>
+
+#include <ustl/result.hpp>
+#include <ustl/views/span.hpp>
 
 namespace bootmem {
 using ours::NnId;

@@ -3,12 +3,13 @@
 #ifndef OURS_IRQ_IRQ_OBJECT_HPP
 #define OURS_IRQ_IRQ_OBJECT_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/irq/irq_chip.hpp>
 #include <ours/irq/irq_observer.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
+
+#include <gktl/canary.hpp>
 
 namespace ours::irq {
 class IrqObject {

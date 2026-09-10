@@ -3,12 +3,12 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_UNORDERED_SET_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_UNORDERED_SET_HPP 1
 
+#include <span>
+#include <utility>
+
 #include <ustl/collections/intrusive/hashtable.hpp>
 #include <ustl/collections/intrusive/unordered_set_hook.hpp>
 #include <ustl/option.hpp>
-
-#include <span>
-#include <utility>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

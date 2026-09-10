@@ -3,16 +3,17 @@
 #ifndef OURS_TIME_CLOCK_SOURCE_HPP
 #define OURS_TIME_CLOCK_SOURCE_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/vtable_packer.hpp>
-#include <mtl/ratio.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/time/types.hpp>
 #include <ours/types.hpp>
-#include <ustl/collections/intrusive/list.hpp>
 
 #include <atomic>
+
+#include <gktl/canary.hpp>
+#include <gktl/vtable_packer.hpp>
+#include <mtl/ratio.hpp>
+#include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::time {
 class ClockSource {

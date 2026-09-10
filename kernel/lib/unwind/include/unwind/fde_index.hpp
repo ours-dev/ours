@@ -33,13 +33,8 @@ class FdeIndex final {
     /// Scan `section` and emit one `Entry` per FDE, tagging them with
     /// `section_id`. Returns false when the section is malformed. `*count`
     /// receives the number of emitted entries.
-    static auto build(
-        Section const &section,
-        std::uint32_t section_id,
-        void *context,
-        Sink sink,
-        std::size_t *count
-    ) -> bool;
+    static auto build(Section const &section, std::uint32_t section_id, void *context, Sink sink,
+                      std::size_t *count) -> bool;
 
     /// Take ownership of a caller-sorted entry array. The array must outlive
     /// the index and be sorted by ascending `pc_begin` (overlapping ranges

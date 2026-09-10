@@ -1,8 +1,9 @@
-#include <logz4/log.hpp>
 #include <ours/mm/stack.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+
+#include <logz4/log.hpp>
 
 namespace ours::mm {
 // This is relative with the boot stack, so marked INIT_DATA

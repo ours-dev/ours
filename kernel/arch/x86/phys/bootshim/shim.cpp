@@ -23,24 +23,24 @@
 /// items instead is deferred; see
 /// .agents/tasks/phys-module-and-obi-tree/DESIGN.md.
 
-#include "../legacy_boot.hpp"
-#include <ccrt/runtime.hpp>
-#include <logz4/log.hpp>
-#include <obi/container_view.hpp>
 #include <ours/panic.hpp>
 #include <ours/phys/boot_obi.hpp>
 #include <ours/phys/console.hpp>
 #include <ours/phys/elf_image.hpp>
 #include <ours/phys/init.hpp>
 #include <ours/phys/legacy_platform_info.hpp>
-#include <ustl/mem/align.hpp>
-#include <ustl/option.hpp>
 
 #include <algorithm>
 #include <array>
 
+#include "../legacy_boot.hpp"
 #include <bootshim/legacy_memory.hpp>
+#include <ccrt/runtime.hpp>
+#include <logz4/log.hpp>
 #include <multiboot/view.hpp>
+#include <obi/container_view.hpp>
+#include <ustl/mem/align.hpp>
+#include <ustl/option.hpp>
 
 namespace ours::phys {
 namespace {

@@ -2,12 +2,12 @@
 /// Copyright (c) 2026 ours Developers
 /// Compiles-and-runs the code examples from docs/rc.md to keep the tutorial honest.
 
-#include <ustl/rc.hpp>
-
 #include <utility>
 
 #include <cassert>
 #include <cstdint>
+
+#include <ustl/rc.hpp>
 
 namespace {
 

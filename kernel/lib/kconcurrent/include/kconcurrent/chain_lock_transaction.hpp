@@ -3,12 +3,13 @@
 #ifndef KCONCURRENT_CHAIN_LOCK_TRANSACTION_HPP
 #define KCONCURRENT_CHAIN_LOCK_TRANSACTION_HPP 1
 
-#include <arch/auto_interrupt_disabler.hpp>
-#include <arch/spin_hint.hpp>
-#include <concurrent/chain_lock.hpp>
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
 #include <ours/types.hpp>
+
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/spin_hint.hpp>
+#include <concurrent/chain_lock.hpp>
 
 namespace kconcurrent {
 using concurrent::ChainLock;
@@ -77,7 +78,8 @@ class ChainLockTransaction {
     /// the `pause` it stands for; `ChainLock` takes it as an ordinary
     /// parameter, so nothing about the lock's type changes with it.
     struct Relax {
-        FORCE_INLINE auto operator()() const -> void {
+        FORCE_INLINE
+        auto operator()() const -> void {
             arch::spin_hint();
         }
     };
@@ -98,7 +100,8 @@ class ChainLockTransaction {
     /// having this accessor do it for them.
     static auto current() -> Self *;
 
-    FORCE_INLINE auto token() const -> ChainLockToken {
+    FORCE_INLINE
+    auto token() const -> ChainLockToken {
         return m_token;
     }
 
@@ -128,8 +131,7 @@ class ChainLockTransaction {
     /// caller cannot ignore it -- there is no lock to release and no
     /// invariant to trust -- hence [[nodiscard]].
     [[nodiscard]]
-    TA_TRY_ACQUIRE(true, lock)
-    auto acquire(ChainLock &lock) -> bool {
+    TA_TRY_ACQUIRE(true, lock) auto acquire(ChainLock &lock) -> bool {
         DEBUG_ASSERT(!m_has_mutated,
                      "a chain lock acquired after the walk began mutating; the whole "
                      "set has to be held before anything is written");
@@ -159,22 +161,26 @@ class ChainLockTransaction {
     ///
     /// Debug-only bookkeeping, so it compiles to nothing in a release
     /// kernel and callers need not guard the call.
-    FORCE_INLINE auto begin_mutation() -> void {
+    FORCE_INLINE
+    auto begin_mutation() -> void {
 #if KERNEL_DEBUG_LEVEL
         m_has_mutated = true;
 #endif
     }
 
-    FORCE_INLINE auto num_locks_held() const -> usize {
+    FORCE_INLINE
+    auto num_locks_held() const -> usize {
         return m_num_locks_held;
     }
 
   private:
-    FORCE_INLINE auto note_acquired() -> void {
+    FORCE_INLINE
+    auto note_acquired() -> void {
         ++m_num_locks_held;
     }
 
-    FORCE_INLINE auto note_released() -> void {
+    FORCE_INLINE
+    auto note_released() -> void {
         --m_num_locks_held;
     }
 

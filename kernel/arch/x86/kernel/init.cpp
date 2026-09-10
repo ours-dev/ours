@@ -1,6 +1,3 @@
-#include <arch/halt.hpp>
-#include <arch/x86/msr.hpp>
-#include <arch/x86/system.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/arch/x86/descriptor.hpp>
@@ -13,6 +10,10 @@
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/start.hpp>
+
+#include <arch/halt.hpp>
+#include <arch/x86/msr.hpp>
+#include <arch/x86/system.hpp>
 
 namespace ours {
 INIT_CODE

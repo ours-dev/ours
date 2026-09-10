@@ -3,20 +3,21 @@
 #ifndef OURS_MM_OBJECT_CACHE_HPP
 #define OURS_MM_OBJECT_CACHE_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/pm_frame.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/sync/mutex.hpp>
+
+#include <array>
+
+#include <gktl/canary.hpp>
+#include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/mem/object.hpp>
 #include <ustl/rc.hpp>
-
-#include <array>
 
 namespace ours::mm {
 class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> {

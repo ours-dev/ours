@@ -11,6 +11,10 @@
 #include <ours/mm/priv/memmap.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/status.hpp>
+
+#include <array>
+#include <tuple>
+
 #include <ustl/bitfields.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/mem/address_of.hpp>
@@ -19,13 +23,11 @@
 #include <ustl/traits/ptr.hpp>
 #include <ustl/util/type_list.hpp>
 
-#include <array>
-#include <tuple>
-
 namespace ours::mm::priv {
 namespace {
     template <typename T>
-    FORCE_INLINE constexpr auto check_n_ptr(T p) -> bool {
+    FORCE_INLINE
+    constexpr auto check_n_ptr(T p) -> bool {
         constexpr static auto PTR_DEPTH = ustl::traits::PtrDepthV<T>;
 
         if constexpr (PTR_DEPTH != 0) {
@@ -36,8 +38,8 @@ namespace {
     }
 
     template <usize N, typename T>
-    FORCE_INLINE constexpr auto get_leaf_section(T *p)
-        -> ustl::traits::RemovePtrDepthT<MemSection, N> {
+    FORCE_INLINE
+    constexpr auto get_leaf_section(T *p) -> ustl::traits::RemovePtrDepthT<MemSection, N> {
         if constexpr (N != 0) {
             return get_leaf_section<N - 1>(*p);
         } else {
@@ -85,79 +87,97 @@ class MemSection {
 
     constexpr static auto MAX_LEVEL = 3;
 
-    FORCE_INLINE constexpr auto state() const -> State {
+    FORCE_INLINE
+    constexpr auto state() const -> State {
         return m_value.get<Index::State>();
     }
 
-    FORCE_INLINE constexpr auto set_state(State state) -> void {
+    FORCE_INLINE
+    constexpr auto set_state(State state) -> void {
         m_value.set<Index::State>(state);
     }
 
-    FORCE_INLINE constexpr auto type() const -> Type {
+    FORCE_INLINE
+    constexpr auto type() const -> Type {
         return m_value.get<Index::Type>();
     }
 
-    FORCE_INLINE constexpr auto set_type(Type type) -> void {
+    FORCE_INLINE
+    constexpr auto set_type(Type type) -> void {
         m_value.set<Index::Type>(type);
     }
 
-    FORCE_INLINE constexpr auto level() const -> usize {
+    FORCE_INLINE
+    constexpr auto level() const -> usize {
         return m_value.get<Index::Level>();
     }
 
-    FORCE_INLINE constexpr auto set_level(usize level) -> void {
+    FORCE_INLINE
+    constexpr auto set_level(usize level) -> void {
         m_value.set<Index::Level>(level);
     }
 
-    FORCE_INLINE constexpr auto set_state_present() -> void {
+    FORCE_INLINE
+    constexpr auto set_state_present() -> void {
         m_value.set<Index::State>(State::Present);
     }
 
-    FORCE_INLINE constexpr auto set_state_online() -> void {
+    FORCE_INLINE
+    constexpr auto set_state_online() -> void {
         m_value.set<Index::State>(State::Online);
     }
 
-    FORCE_INLINE constexpr auto mark_terminal() -> void {
+    FORCE_INLINE
+    constexpr auto mark_terminal() -> void {
         m_value.set<Index::Type>(Type::Terminal);
     }
 
-    FORCE_INLINE constexpr auto mark_interminal() -> void {
+    FORCE_INLINE
+    constexpr auto mark_interminal() -> void {
         m_value.set<Index::Type>(Type::Interminal);
     }
 
-    FORCE_INLINE constexpr auto memmap() const -> FrameSpan {
+    FORCE_INLINE
+    constexpr auto memmap() const -> FrameSpan {
         DEBUG_ASSERT(is_termianl());
         return {static_cast<PmFrame *>(m_value.get<Index::Map>()), PAGE_SIZE / sizeof(FrameSpan *)};
     }
 
-    FORCE_INLINE constexpr auto set_memmap(PmFrame *map) -> void {
+    FORCE_INLINE
+    constexpr auto set_memmap(PmFrame *map) -> void {
         DEBUG_ASSERT(is_termianl());
         m_value.set<Index::Map>(map);
     }
 
-    FORCE_INLINE constexpr auto secmap() const -> SecMap {
+    FORCE_INLINE
+    constexpr auto secmap() const -> SecMap {
         DEBUG_ASSERT(is_termianl() == false);
         return {static_cast<Self *>(m_value.get<Index::Map>()), PAGE_SIZE / sizeof(*this)};
     }
 
-    FORCE_INLINE constexpr auto set_secmap(Self *map) -> void {
+    FORCE_INLINE
+    constexpr auto set_secmap(Self *map) -> void {
         DEBUG_ASSERT(is_termianl() == false);
         m_value.set<Index::Map>(map);
     }
 
-    FORCE_INLINE constexpr auto has_map() const -> bool {
+    FORCE_INLINE
+    constexpr auto has_map() const -> bool {
         return m_value.get<Index::Map>() == nullptr;
     }
 
-    FORCE_INLINE constexpr auto is_state_present() const -> bool {
+    FORCE_INLINE
+    constexpr auto is_state_present() const -> bool {
         return state() == State::Present;
     }
 
-    FORCE_INLINE constexpr auto is_state_online() const -> bool {
+    FORCE_INLINE
+    constexpr auto is_state_online() const -> bool {
         return state() == State::Online;
     }
 
-    FORCE_INLINE constexpr auto is_termianl() const -> bool {
+    FORCE_INLINE
+    constexpr auto is_termianl() const -> bool {
         return type() == Type::Terminal;
     }
 
@@ -198,7 +218,8 @@ class SparseMemMap {
 
   public:
     /// The one instance.
-    FORCE_INLINE static auto get() -> Self & {
+    FORCE_INLINE
+    static auto get() -> Self & {
         static Self MODEL;
         return MODEL;
     }
@@ -211,28 +232,26 @@ class SparseMemMap {
 
     constexpr static usize FRAMES_PER_SECTION = BIT(SECTION_SHIFT - PAGE_SHIFT);
 
-    constexpr static auto LEAVES_PER_LEVEL =
-        []<usize... Levels>(ustl::IndexSequence<Levels...>) {
-            static_assert(sizeof...(Levels) == MAPPING_LEVEL);
-            std::array<usize, sizeof...(Levels)> array;
-            // L0 entry is a leaf itself.
-            array[0] = 1;
-            for (usize i = 1; i < array.size(); ++i) {
-                array[i] = array[i - 1] * ENTRIES_PER_SECTION;
-            }
-            return array;
-        }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
+    constexpr static auto LEAVES_PER_LEVEL = []<usize... Levels>(ustl::IndexSequence<Levels...>) {
+        static_assert(sizeof...(Levels) == MAPPING_LEVEL);
+        std::array<usize, sizeof...(Levels)> array;
+        // L0 entry is a leaf itself.
+        array[0] = 1;
+        for (usize i = 1; i < array.size(); ++i) {
+            array[i] = array[i - 1] * ENTRIES_PER_SECTION;
+        }
+        return array;
+    }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
 
-    constexpr static auto FRAMES_PER_LEVEL =
-        []<usize... Levels>(ustl::IndexSequence<Levels...>) {
-            static_assert(sizeof...(Levels) == MAPPING_LEVEL);
-            std::array<usize, sizeof...(Levels)> array;
-            array[0] = BIT(SECTION_SHIFT - PAGE_SHIFT);
-            for (usize i = 1; i < array.size(); ++i) {
-                array[i] = array[i - 1] * ENTRIES_PER_SECTION;
-            }
-            return array;
-        }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
+    constexpr static auto FRAMES_PER_LEVEL = []<usize... Levels>(ustl::IndexSequence<Levels...>) {
+        static_assert(sizeof...(Levels) == MAPPING_LEVEL);
+        std::array<usize, sizeof...(Levels)> array;
+        array[0] = BIT(SECTION_SHIFT - PAGE_SHIFT);
+        for (usize i = 1; i < array.size(); ++i) {
+            array[i] = array[i - 1] * ENTRIES_PER_SECTION;
+        }
+        return array;
+    }(ustl::MakeIndexSequenceT<MAPPING_LEVEL>());
 
     constexpr static usize INDEX_BITS = {
         (ustl::NumericLimits<usize>::DIGITS - SECTION_SIZE_BITS + MAPPING_LEVEL) / MAPPING_LEVEL};
@@ -254,15 +273,18 @@ class SparseMemMap {
 
     auto exist(Pfn start, Pfn end) const -> bool;
 
-    FORCE_INLINE constexpr auto pfn_to_section(Pfn pfn) const -> MemSection * {
+    FORCE_INLINE
+    constexpr auto pfn_to_section(Pfn pfn) const -> MemSection * {
         return secnum_to_section(pfn_to_secnum(pfn));
     }
 
-    FORCE_INLINE constexpr auto secnum_to_section(SecNum secnum) const -> MemSection * {
+    FORCE_INLINE
+    constexpr auto secnum_to_section(SecNum secnum) const -> MemSection * {
         return priv_secnum_to_section(secnum);
     }
 
-    FORCE_INLINE constexpr auto pfn_to_frame(Pfn pfn) -> PmFrame * {
+    FORCE_INLINE
+    constexpr auto pfn_to_frame(Pfn pfn) -> PmFrame * {
         if (auto const section = secnum_to_section(pfn_to_secnum(pfn))) {
             return ustl::mem::address_of(section->memmap()[pfn & PFN_SECTION_MASK]);
         }
@@ -270,7 +292,8 @@ class SparseMemMap {
         return nullptr;
     }
 
-    FORCE_INLINE constexpr auto frame_to_pfn(PmFrame const *frame) -> Pfn {
+    FORCE_INLINE
+    constexpr auto frame_to_pfn(PmFrame const *frame) -> Pfn {
         DEBUG_ASSERT(frame != nullptr);
         if (auto const section = frame_to_section(frame)) {
             return secnum_to_pfn(frame->secnum()) + (frame - section->memmap().data());
@@ -279,7 +302,8 @@ class SparseMemMap {
         return 0;
     }
 
-    FORCE_INLINE constexpr auto frame_to_section(PmFrame const *frame) -> MemSection * {
+    FORCE_INLINE
+    constexpr auto frame_to_section(PmFrame const *frame) -> MemSection * {
         DEBUG_ASSERT(frame != nullptr);
         return secnum_to_section(frame->secnum());
     }
@@ -290,7 +314,8 @@ class SparseMemMap {
 
     /// Builds the root of the section table. Everything else this model does
     /// descends from it, so it runs before any range is added.
-    INIT_CODE auto init() -> Status;
+    INIT_CODE
+    auto init() -> Status;
 
     auto dump() -> void;
 
@@ -307,7 +332,8 @@ class SparseMemMap {
 
     auto init_index(usize level, SecNum begin, NnId nid) -> ustl::Result<MemSection *, Status>;
 
-    FORCE_INLINE auto activate_section(SecNum secnum, NnId nid) -> ustl::Result<FrameSpan, Status> {
+    FORCE_INLINE
+    auto activate_section(SecNum secnum, NnId nid) -> ustl::Result<FrameSpan, Status> {
         auto section = secnum_to_section(secnum);
         if (!section) {
             return ustl::err(Status::OutOfMem);
@@ -326,7 +352,8 @@ class SparseMemMap {
 
     auto mark_section(SecNum begin, SecNum end, MemSection::State) -> void;
 
-    FORCE_INLINE constexpr static auto secnum_to_index(usize level, SecNum secnum) -> usize {
+    FORCE_INLINE
+    constexpr static auto secnum_to_index(usize level, SecNum secnum) -> usize {
         constinit static auto const SHIFT = []() {
             std::array<usize, MAPPING_LEVEL> array;
             array[0] = 0;
@@ -339,7 +366,8 @@ class SparseMemMap {
         return (secnum >> SHIFT[level]) & (BIT(INDEX_BITS) - 1);
     }
 
-    FORCE_INLINE constexpr auto priv_secnum_to_section(SecNum secnum) const -> MemSection * {
+    FORCE_INLINE
+    constexpr auto priv_secnum_to_section(SecNum secnum) const -> MemSection * {
         DEBUG_ASSERT(m_root_section);
 
         /// A short loop will be unfold.

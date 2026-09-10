@@ -2,12 +2,12 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/platform/init.hpp>
-#include <ustl/bit.hpp>
-#include <ustl/lazy_init.hpp>
 
 #include <array>
 
 #include <heap/kmalloc.hpp>
+#include <ustl/bit.hpp>
+#include <ustl/lazy_init.hpp>
 
 using ours::Status;
 using ours::mm::MemCache;

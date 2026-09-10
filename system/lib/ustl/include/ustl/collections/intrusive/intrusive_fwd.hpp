@@ -3,10 +3,10 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_INTRUSIVE_FWD_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_INTRUSIVE_FWD_HPP 1
 
-#include <ustl/collections/intrusive/link_mode.hpp>
-
 #include <cstddef>
 #include <cstdint>
+
+#include <ustl/collections/intrusive/link_mode.hpp>
 
 namespace ustl::collections::intrusive {
 using UintPtr = std::uintptr_t;

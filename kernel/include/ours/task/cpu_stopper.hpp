@@ -7,11 +7,12 @@
 #ifndef OURS_TASK_CPU_STOPPER_HPP
 #define OURS_TASK_CPU_STOPPER_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/sync/event.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/types.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/fn.hpp>
 

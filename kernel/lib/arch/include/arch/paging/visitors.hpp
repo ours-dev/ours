@@ -3,9 +3,10 @@
 #ifndef ARCH_PAGING_VISITORS_HPP
 #define ARCH_PAGING_VISITORS_HPP 1
 
+#include <ours/compiler.hpp>
+
 #include <arch/paging/mmu_flags.hpp>
 #include <arch/types.hpp>
-#include <ours/compiler.hpp>
 
 namespace arch::paging {
 struct QueryResult {
@@ -20,7 +21,8 @@ enum class MapError {
     NoMem,
 };
 
-FORCE_INLINE constexpr auto to_string(MapError error) -> char const * {
+FORCE_INLINE
+constexpr auto to_string(MapError error) -> char const * {
     switch (error) {
         case MapError::InvArgs:
             return "Invalid argument";

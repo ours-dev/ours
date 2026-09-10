@@ -1,9 +1,10 @@
-#include <arch/x86/system.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/phys/aspace.hpp>
 #include <ours/phys/init.hpp>
 
 #include <algorithm>
+
+#include <arch/x86/system.hpp>
 namespace ours::phys {
 auto Aspace::arch_install() const -> void {
     // Create a shadow of CR4

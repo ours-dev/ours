@@ -1,13 +1,14 @@
-#include <logz4/log.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/phys/handoff.hpp>
-#include <ustl/bit.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <algorithm>
+
+#include <logz4/log.hpp>
+#include <ustl/bit.hpp>
+#include <ustl/mem/align.hpp>
 
 namespace ours::mm {
 INIT_CODE

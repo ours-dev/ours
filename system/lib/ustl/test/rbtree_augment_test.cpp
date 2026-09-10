@@ -11,12 +11,13 @@
 // one rotation, or the successor transplant inside erase -- makes a cached
 // value go stale and this check catches it immediately.
 
-#include <ustl/collections/intrusive/rbtree.hpp>
-
 #include <algorithm>
-#include <cstdio>
 #include <random>
 #include <vector>
+
+#include <cstdio>
+
+#include <ustl/collections/intrusive/rbtree.hpp>
 
 namespace {
 
@@ -29,7 +30,7 @@ namespace {
 struct Interval final: ustl::collections::intrusive::SetBaseHook<> {
     int m_begin{};
     int m_end{};
-    int m_max_end{};   // the augmented value
+    int m_max_end{}; // the augmented value
 };
 
 struct ByBegin final {
@@ -232,7 +233,8 @@ struct CountingAugment final {
 };
 
 auto test_hooks_actually_fire() -> void {
-    using CountingTree = ci::RBTree<Interval, ci::Compare<ByBegin>, ci::Extensions<CountingAugment>>;
+    using CountingTree =
+        ci::RBTree<Interval, ci::Compare<ByBegin>, ci::Extensions<CountingAugment>>;
 
     constexpr int COUNT = 64;
     std::vector<Interval> storage(COUNT);

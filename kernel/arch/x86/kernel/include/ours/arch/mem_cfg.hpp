@@ -4,9 +4,10 @@
 #define OURS_ARCH_MEM_CFG_HPP 1
 
 #include <ours/mm/init.hpp>
-#include <ustl/util/type_list.hpp>
 
 #include <type_traits>
+
+#include <ustl/util/type_list.hpp>
 
 #define ARCH_MAX_DMA_PFN (MB(16) >> PAGE_SHIFT)
 #define ARCH_MAX_DMA32_PFN (MB(512) >> PAGE_SHIFT)

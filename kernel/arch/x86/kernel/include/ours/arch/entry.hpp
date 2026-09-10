@@ -3,9 +3,10 @@
 #ifndef OURS_ARCH_ENTRY_HPP
 #define OURS_ARCH_ENTRY_HPP 1
 
-#include <arch/x86/macro/system.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/entry.hpp>
+
+#include <arch/x86/macro/system.hpp>
 
 namespace ours {
 namespace {

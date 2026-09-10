@@ -1,11 +1,12 @@
-#include <arch/auto_interrupt_disabler.hpp>
-#include <ktl/name.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
+
+#include <arch/auto_interrupt_disabler.hpp>
+#include <ktl/name.hpp>
 
 using ustl::sync::MemoryOrder;
 

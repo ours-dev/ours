@@ -1,16 +1,15 @@
-#include "command.hpp"
-#include "common.hpp"
-#include <obi/command_line_view.hpp>
-#include <obi/package_format.hpp>
-
 #include <format>
 #include <print>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "command.hpp"
+#include "common.hpp"
 #include <bootfs/view.hpp>
 #include <cxxopts.hpp>
+#include <obi/command_line_view.hpp>
+#include <obi/package_format.hpp>
 
 namespace obit {
 namespace {

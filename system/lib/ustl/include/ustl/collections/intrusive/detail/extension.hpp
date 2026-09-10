@@ -3,10 +3,10 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_EXTENSION_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_EXTENSION_HPP 1
 
+#include <cstdint>
+
 #include <ustl/collections/intrusive/detail/augment.hpp>
 #include <ustl/collections/intrusive/detail/instrument.hpp>
-
-#include <cstdint>
 
 namespace ustl::collections::intrusive::detail {
 
@@ -29,13 +29,13 @@ enum class Extension : std::uint32_t {
 [[nodiscard]]
 constexpr auto operator|(Extension lhs, Extension rhs) noexcept -> Extension {
     return static_cast<Extension>(static_cast<std::uint32_t>(lhs) |
-                                   static_cast<std::uint32_t>(rhs));
+                                  static_cast<std::uint32_t>(rhs));
 }
 
 [[nodiscard]]
 constexpr auto operator&(Extension lhs, Extension rhs) noexcept -> Extension {
     return static_cast<Extension>(static_cast<std::uint32_t>(lhs) &
-                                   static_cast<std::uint32_t>(rhs));
+                                  static_cast<std::uint32_t>(rhs));
 }
 
 [[nodiscard]]

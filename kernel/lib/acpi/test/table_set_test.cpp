@@ -4,9 +4,9 @@
 /// TableSet: RSDP validation, root table selection, lookup, and the entry
 /// range's behaviour on malformed input.
 
-#include "acpi_test_blob.hpp"
-
 #include <cstdlib>
+
+#include "acpi_test_blob.hpp"
 
 namespace {
 

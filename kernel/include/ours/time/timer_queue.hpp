@@ -3,14 +3,15 @@
 #ifndef OURS_TIME_TIMER_QUEUE_HPP
 #define OURS_TIME_TIMER_QUEUE_HPP 1
 
-#include <arch/spin_hint.hpp>
-#include <gktl/canary.hpp>
 #include <ours/init.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/timer.hpp>
+
+#include <arch/spin_hint.hpp>
+#include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 
 namespace ours::time {

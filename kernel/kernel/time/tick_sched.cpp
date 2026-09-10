@@ -1,4 +1,3 @@
-#include <gktl/init_hook.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/task/scheduler.hpp>
@@ -8,6 +7,7 @@
 #include <ours/time/tick_sched.hpp>
 #include <ours/time/timer_queue.hpp>
 
+#include <gktl/init_hook.hpp>
 #include <prof/sampler.hpp>
 
 namespace ours::time {

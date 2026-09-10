@@ -6,13 +6,13 @@
 /// destruction, disposer priority, checked downcast, single-threaded policy
 /// and into_raw ownership transfer.
 
-#include <ustl/rc.hpp>
-
 #include <utility>
 
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+
+#include <ustl/rc.hpp>
 
 namespace {
 

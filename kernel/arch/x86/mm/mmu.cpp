@@ -1,11 +1,12 @@
-#include <arch/tlb.hpp>
-#include <arch/x86/cpuid_observer.hpp>
-#include <arch/x86/msr.hpp>
-#include <arch/x86/system.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/arch/x86/init.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/phys/arch_paging.hpp>
+
+#include <arch/tlb.hpp>
+#include <arch/x86/cpuid_observer.hpp>
+#include <arch/x86/msr.hpp>
+#include <arch/x86/system.hpp>
 
 namespace ours {
 namespace mem {

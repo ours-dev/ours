@@ -3,11 +3,11 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_AVL_SET_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_AVL_SET_HPP 1
 
+#include <utility>
+
 #include <ustl/collections/intrusive/avl_set_hook.hpp>
 #include <ustl/collections/intrusive/avltree.hpp>
 #include <ustl/option.hpp>
-
-#include <utility>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

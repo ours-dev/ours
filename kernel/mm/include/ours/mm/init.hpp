@@ -3,12 +3,13 @@
 #ifndef OURS_MM_INIT_HPP
 #define OURS_MM_INIT_HPP 1
 
-#include <gktl/range.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/init_stage.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/phys/handoff.hpp>
 #include <ours/status.hpp>
+
+#include <gktl/range.hpp>
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {

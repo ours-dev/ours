@@ -1,10 +1,11 @@
-#include <arch/x86/fsgs.hpp>
-#include <arch/x86/msr.hpp>
 #include <ours/arch/thread.hpp>
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/entry.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/task/thread.hpp>
+
+#include <arch/x86/fsgs.hpp>
+#include <arch/x86/msr.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/mem/container_of.hpp>
 

@@ -4,11 +4,11 @@
 
 #pragma once
 
-#include <ustl/fmt/format_args.hpp>
-
 #include <format>
 #include <string_view>
 #include <type_traits>
+
+#include <ustl/fmt/format_args.hpp>
 
 namespace ustl::fmt {
 

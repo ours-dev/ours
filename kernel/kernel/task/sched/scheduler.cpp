@@ -58,11 +58,6 @@
 /// so a Status::Delayed dequeue leaves a thread marked Migrating while it is in
 /// fact still queued.
 
-#include <arch/auto_interrupt_disabler.hpp>
-#include <gktl/counter.hpp>
-#include <gktl/defer.hpp>
-#include <heap/new.hpp>
-#include <ktl/rwonce.hpp>
 #include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
@@ -78,6 +73,12 @@
 
 #include <atomic>
 #include <utility>
+
+#include <arch/auto_interrupt_disabler.hpp>
+#include <gktl/counter.hpp>
+#include <gktl/defer.hpp>
+#include <heap/new.hpp>
+#include <ktl/rwonce.hpp>
 
 using ustl::sync::MemoryOrder;
 

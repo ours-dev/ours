@@ -3,12 +3,13 @@
 #ifndef OURS_TIME_CLOCK_HPP
 #define OURS_TIME_CLOCK_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/seqlock.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/time/clock_type.hpp>
 #include <ours/time/types.hpp>
+
+#include <gktl/canary.hpp>
 
 namespace ours::time {
 /// A clock is an affine map from a ClockSource's counter to nanoseconds,

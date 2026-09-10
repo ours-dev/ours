@@ -3,11 +3,11 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_SPLAY_SET_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_SPLAY_SET_HPP 1
 
+#include <utility>
+
 #include <ustl/collections/intrusive/splay_set_hook.hpp>
 #include <ustl/collections/intrusive/splaytree.hpp>
 #include <ustl/option.hpp>
-
-#include <utility>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

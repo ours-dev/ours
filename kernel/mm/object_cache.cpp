@@ -1,8 +1,3 @@
-#include "slab.hpp"
-#include <gktl/counter.hpp>
-#include <gktl/defer.hpp>
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/object_cache.hpp>
@@ -10,6 +5,12 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/sync/local_lock.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
+
+#include "slab.hpp"
+#include <gktl/counter.hpp>
+#include <gktl/defer.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ustl/lazy_init.hpp>
 
 #define CONFIG_MEM_CACHE_DEBUG 1
@@ -29,9 +30,11 @@ namespace {
 
     MemCache *NODE_CACHE;
 
-    INIT_DATA ustl::LazyInit<MemCache> BOOTSTRAP_SELF_CACHE;
+    INIT_DATA
+    ustl::LazyInit<MemCache> BOOTSTRAP_SELF_CACHE;
 
-    INIT_DATA ustl::LazyInit<MemCache> BOOTSTRAP_NODE_CACHE;
+    INIT_DATA
+    ustl::LazyInit<MemCache> BOOTSTRAP_NODE_CACHE;
 
     u32 SLAB_MIN_ORDER;
     u32 SLAB_MAX_ORDER;
@@ -42,7 +45,8 @@ namespace {
     /// The block is BIT(order) pages, not |order| pages -- the two differ for
     /// every order but one, and at order 0 the wrong form yields zero objects,
     /// which would make every slab look full the moment it was created.
-    FORCE_INLINE auto calculate_order_objects(u32 order, u32 size) -> u32 {
+    FORCE_INLINE
+    auto calculate_order_objects(u32 order, u32 size) -> u32 {
         return static_cast<u32>((BIT(order) << PAGE_SHIFT) / size);
     }
 
@@ -52,7 +56,8 @@ namespace {
     /// has to happen here. Feeding it a byte count directly overstates the
     /// order by PAGE_SHIFT and asks the buddy allocator for thousands of pages
     /// to hold a handful of small objects.
-    FORCE_INLINE auto order_for_bytes(u32 nr_bytes) -> u32 {
+    FORCE_INLINE
+    auto order_for_bytes(u32 nr_bytes) -> u32 {
         auto const nr_frames = ustl::mm::align_up(usize(nr_bytes), usize(PAGE_SIZE)) >> PAGE_SHIFT;
         return static_cast<u32>(get_order(nr_frames));
     }
@@ -116,7 +121,8 @@ namespace slab {
     /// Not necessarily offset zero: compute_layout() places it around the middle
     /// of the object, which is what catches an overflow of the preceding object
     /// rather than letting it quietly rewrite a list pointer.
-    FORCE_INLINE auto free_slot(void *object, usize next_offset) -> void ** {
+    FORCE_INLINE
+    auto free_slot(void *object, usize next_offset) -> void ** {
         return reinterpret_cast<void **>(static_cast<u8 *>(object) + next_offset);
     }
 

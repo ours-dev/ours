@@ -3,12 +3,13 @@
 #ifndef OURS_TIME_TICK_DEVICE_HPP
 #define OURS_TIME_TICK_DEVICE_HPP 1
 
-#include <arch/auto_interrupt_disabler.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/time/cfg.hpp>
 #include <ours/time/clock_event_device.hpp>
+
+#include <arch/auto_interrupt_disabler.hpp>
 
 namespace ours::time {
 /// Each CPU's view of "the device that interrupts me": a TickDevice is the

@@ -3,14 +3,14 @@
 #ifndef USTL_COLLECTIONS_MEMORY_RESOURCE_HPP
 #define USTL_COLLECTIONS_MEMORY_RESOURCE_HPP 1
 
-#include <ustl/collections/error.hpp>
-#include <ustl/result.hpp>
-
 #include <atomic>
 #include <bit>
 #include <new>
 
 #include <cstddef>
+
+#include <ustl/collections/error.hpp>
+#include <ustl/result.hpp>
 
 namespace ustl::collections {
 class MemoryResource {

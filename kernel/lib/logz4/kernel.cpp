@@ -1,17 +1,19 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <logz4/clock.hpp>
-#include <logz4/log.hpp>
 #include <ours/start.hpp>
 
+#include <logz4/clock.hpp>
+#include <logz4/log.hpp>
+
 #if defined(ARCH_X86)
+#include <ours/mm/cpu_local.hpp>
+
+#include <atomic>
+
 #include <arch/interrupt.hpp>
 #include <arch/tick.hpp>
 #include <arch/x86/io.hpp>
 #include <gktl/init_hook.hpp>
-#include <ours/mm/cpu_local.hpp>
-
-#include <atomic>
 
 namespace {
 constexpr u16 COM1 = 0x3F8;

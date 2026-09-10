@@ -1,8 +1,9 @@
-#include <logz4/filter.hpp>
-#include <logz4/level.hpp>
 #include <ours/phys/boot_options.hpp>
 
 #include <string_view>
+
+#include <logz4/filter.hpp>
+#include <logz4/level.hpp>
 
 namespace ours::phys {
 namespace {

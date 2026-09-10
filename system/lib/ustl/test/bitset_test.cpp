@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <ustl/bitset.hpp>
-
 #include <type_traits>
 
 #include <cassert>
 #include <cstdint>
+
+#include <ustl/bitset.hpp>
 
 namespace {
 

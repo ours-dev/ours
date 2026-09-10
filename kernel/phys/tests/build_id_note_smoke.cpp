@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include "../build_id_note.hpp"
-
 #include <array>
 #include <string_view>
 
 #include <cstdlib>
+
+#include "../build_id_note.hpp"
 
 namespace {
 using ours::phys::hex_encode_build_id;

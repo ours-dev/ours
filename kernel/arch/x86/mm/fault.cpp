@@ -1,10 +1,11 @@
+#include <ours/arch/x86/faults.hpp>
+#include <ours/mm/fault.hpp>
+#include <ours/task/thread.hpp>
+
 #include <arch/x86/interrupt.hpp>
 #include <arch/x86/macro/mmu.hpp>
 #include <arch/x86/system.hpp>
 #include <logz4/log.hpp>
-#include <ours/arch/x86/faults.hpp>
-#include <ours/mm/fault.hpp>
-#include <ours/task/thread.hpp>
 
 namespace ours {
 namespace {

@@ -1,9 +1,3 @@
-#include <arch/auto_interrupt_disabler.hpp>
-#include <arch/halt.hpp>
-#include <gktl/counter.hpp>
-#include <gktl/defer.hpp>
-#include <gktl/init_hook.hpp>
-#include <logz4/log.hpp>
 #include <ours/dpc.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
@@ -17,6 +11,13 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
+
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/halt.hpp>
+#include <gktl/counter.hpp>
+#include <gktl/defer.hpp>
+#include <gktl/init_hook.hpp>
+#include <logz4/log.hpp>
 
 namespace {
 GKTL_COUNTER(THREAD_SPAWN_COUNT, "thread.spawn");

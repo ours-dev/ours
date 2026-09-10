@@ -3,6 +3,13 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_SGTREE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_SGTREE_HPP 1
 
+#include <functional>
+#include <type_traits>
+#include <utility>
+
+#include <cmath>
+#include <cstddef>
+
 #include <ustl/collections/intrusive/bs_set_hook.hpp>
 #include <ustl/collections/intrusive/detail/key_node_ptr_compare.hpp>
 #include <ustl/collections/intrusive/detail/value_traits_access.hpp>
@@ -11,13 +18,6 @@
 #include <ustl/collections/intrusive/pointer_traits.hpp>
 #include <ustl/collections/intrusive/sgtree_algorithms.hpp>
 #include <ustl/option.hpp>
-
-#include <functional>
-#include <type_traits>
-#include <utility>
-
-#include <cmath>
-#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>
@@ -191,13 +191,15 @@ class Sgtree final {
     [[nodiscard]]
     constexpr auto find(T const &value) noexcept -> ustl::Option<T &> {
         const auto node = Algorithms::find(&m_header, value, NodeCompare{&m_compare});
-        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some_ref(*to_value(node));
+        return node == Algorithms::end_node(&m_header) ? ustl::NONE
+                                                       : ustl::some_ref(*to_value(node));
     }
 
     [[nodiscard]]
     constexpr auto find(T const &value) const noexcept -> ustl::Option<T const &> {
         const auto node = Algorithms::find(&m_header, value, NodeCompare{&m_compare});
-        return node == Algorithms::end_node(&m_header) ? ustl::NONE : ustl::some_ref(*to_value(node));
+        return node == Algorithms::end_node(&m_header) ? ustl::NONE
+                                                       : ustl::some_ref(*to_value(node));
     }
 
     [[nodiscard]]

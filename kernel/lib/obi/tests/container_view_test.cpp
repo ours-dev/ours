@@ -1,9 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <obi/container_view.hpp>
-#include <obi/package_format.hpp>
-
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -11,6 +8,8 @@
 #include <cstring>
 
 #include <gtest/gtest.h>
+#include <obi/container_view.hpp>
+#include <obi/package_format.hpp>
 
 namespace {
 using obi::Compression;

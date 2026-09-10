@@ -5,6 +5,7 @@
 
 #include <ours/signals.hpp>
 #include <ours/types.hpp>
+
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::object {

@@ -5,6 +5,7 @@
 
 #include <ours/compiler.hpp>
 #include <ours/types.hpp>
+
 #include <ustl/collections/intrusive/list_hook.hpp>
 
 namespace ours::phys {

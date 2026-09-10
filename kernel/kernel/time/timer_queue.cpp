@@ -1,5 +1,3 @@
-#include <arch/spin_hint.hpp>
-#include <logz4/log.hpp>
 #include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/time/clock.hpp>
@@ -7,6 +5,9 @@
 #include <ours/time/timer_queue.hpp>
 
 #include <algorithm>
+
+#include <arch/spin_hint.hpp>
+#include <logz4/log.hpp>
 
 namespace ours::time {
 TimerQueue::TimerQueue()

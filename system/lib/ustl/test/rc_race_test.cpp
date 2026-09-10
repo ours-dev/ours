@@ -3,14 +3,14 @@
 /// Race stress test: Weak::lock() vs the last strong reference being dropped.
 /// Run with -fsanitize=thread,address to validate the lock_strong() CAS logic.
 
-#include <ustl/rc.hpp>
-
 #include <atomic>
 #include <thread>
 #include <vector>
 
 #include <cassert>
 #include <cstdio>
+
+#include <ustl/rc.hpp>
 
 // The race test shares one object across threads: it must use the
 // thread-safe policy (Arc), not the default single-threaded Rc.

@@ -6,10 +6,6 @@
 #if !__has_include(<ours/arch/thread.hpp>)
 #error "The header <ours/arch/thread.hpp> is required by [protocol.module.task]"
 #endif
-#include <gktl/canary.hpp>
-#include <ktl/name.hpp>
-#include <ktl/rwonce.hpp>
-#include <lockdep/lock_context.hpp>
 #include <ours/arch/thread.hpp>
 #include <ours/compiler.hpp>
 #include <ours/cpu_mask.hpp>
@@ -27,6 +23,11 @@
 #include <ours/task/sched/context.hpp>
 #include <ours/task/types.hpp>
 #include <ours/task/wait_queue.hpp>
+
+#include <gktl/canary.hpp>
+#include <ktl/name.hpp>
+#include <ktl/rwonce.hpp>
+#include <lockdep/lock_context.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/function/bind.hpp>
 #include <ustl/mem/container_of.hpp>

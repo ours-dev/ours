@@ -3,15 +3,16 @@
 #ifndef OURS_MM_EARLY_HPP
 #define OURS_MM_EARLY_HPP 1
 
-#include <gktl/range.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/phys/handoff.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <limits>
+
+#include <gktl/range.hpp>
+#include <ustl/mem/align.hpp>
 
 #ifdef OURS_CONFIG_MEM_HOTPLUG
 #define MEM_INIT_CODE

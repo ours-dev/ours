@@ -3,10 +3,11 @@
 #ifndef ARCH_X86_APIC_IOAPIC_HPP
 #define ARCH_X86_APIC_IOAPIC_HPP 1
 
+#include <ours/status.hpp>
+
 #include <arch/types.hpp>
 #include <arch/x86/apic/common.hpp>
 #include <arch/x86/interrupt.hpp>
-#include <ours/status.hpp>
 
 namespace arch {
 class IoApicRouteEntry final {

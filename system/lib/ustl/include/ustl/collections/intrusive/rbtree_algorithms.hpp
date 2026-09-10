@@ -3,10 +3,10 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_RBTREE_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_RBTREE_ALGORITHMS_HPP 1
 
+#include <cstddef>
+
 #include <ustl/collections/intrusive/bstree_algorithms.hpp>
 #include <ustl/collections/intrusive/detail/extension.hpp>
-
-#include <cstddef>
 
 namespace ustl::collections::intrusive {
 /// Red-black tree algorithms.
@@ -163,8 +163,7 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                                         NodePtr const new_node, std::size_t *const depth,
                                         Hooks const &hooks) noexcept -> NodePtr {
         std::size_t measured = 0;
-        BstreeAlgo::insert_before(header, position, new_node,
-                                  depth != nullptr ? depth : &measured);
+        BstreeAlgo::insert_before(header, position, new_node, depth != nullptr ? depth : &measured);
         after_link<Caps>(header, new_node, hooks, depth != nullptr ? *depth : measured);
         return new_node;
     }
@@ -210,7 +209,8 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
 
     static constexpr auto unlink(NodePtr const node) noexcept -> void {
         if (!unique(node)) {
-            static_cast<void>(erase_impl<Extension::None>(BstreeAlgo::get_header(node), node, Hooks{}));
+            static_cast<void>(
+                erase_impl<Extension::None>(BstreeAlgo::get_header(node), node, Hooks{}));
         }
     }
 
@@ -282,8 +282,8 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
     /// invariants (whose rotations carry the aggregates along themselves).
     template <Extension Caps>
     static constexpr auto after_link(NodePtr const header, NodePtr const new_node,
-                                     Hooks const &hooks,
-                                     std::size_t const depth = 0) noexcept -> void {
+                                     Hooks const &hooks, std::size_t const depth = 0) noexcept
+        -> void {
         if constexpr (detail::has_extension(Caps, Extension::Augment)) {
             hooks.callbacks->propagate(new_node, header);
         }
@@ -330,13 +330,15 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
             NodeTraits::set_color(info.m_y, NodeTraits::get_color(erased));
         }
         if (removed_color != NodeTraits::red()) {
-            rebalance_after_erasure_restore_invariants<Caps>(header, info.m_x, info.m_x_parent, hooks);
+            rebalance_after_erasure_restore_invariants<Caps>(header, info.m_x, info.m_x_parent,
+                                                             hooks);
         }
     }
 
     template <Extension Caps>
-    static constexpr auto rebalance_after_erasure_restore_invariants(
-        NodePtr const header, NodePtr child, NodePtr parent, Hooks const &hooks) noexcept
+    static constexpr auto rebalance_after_erasure_restore_invariants(NodePtr const header,
+                                                                     NodePtr child, NodePtr parent,
+                                                                     Hooks const &hooks) noexcept
         -> void {
         while (parent != header &&
                (child == NodePtr{} || NodeTraits::get_color(child) == NodeTraits::black())) {
@@ -346,7 +348,7 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                     NodeTraits::set_color(sibling, NodeTraits::black());
                     NodeTraits::set_color(parent, NodeTraits::red());
                     rotate_left_aug<Caps>(parent, sibling, NodeTraits::get_parent(parent), header,
-                                    hooks);
+                                          hooks);
                     sibling = NodeTraits::get_right(parent);
                 }
                 const auto sibling_left = NodeTraits::get_left(sibling);
@@ -366,8 +368,8 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                         NodeTraits::get_color(sibling_right) == NodeTraits::black()) {
                         NodeTraits::set_color(sibling_left, NodeTraits::black());
                         NodeTraits::set_color(sibling, NodeTraits::red());
-                        rotate_right_aug<Caps>(sibling, sibling_left, NodeTraits::get_parent(sibling),
-                                         header, hooks);
+                        rotate_right_aug<Caps>(sibling, sibling_left,
+                                               NodeTraits::get_parent(sibling), header, hooks);
                         sibling = NodeTraits::get_right(parent);
                     }
                     NodeTraits::set_color(sibling, NodeTraits::get_color(parent));
@@ -377,7 +379,7 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                         NodeTraits::set_color(new_sibling_right, NodeTraits::black());
                     }
                     rotate_left_aug<Caps>(parent, sibling, NodeTraits::get_parent(parent), header,
-                                    hooks);
+                                          hooks);
                     child = NodeTraits::get_parent(header);
                     parent = header;
                 }
@@ -387,7 +389,7 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                     NodeTraits::set_color(sibling, NodeTraits::black());
                     NodeTraits::set_color(parent, NodeTraits::red());
                     rotate_right_aug<Caps>(parent, sibling, NodeTraits::get_parent(parent), header,
-                                     hooks);
+                                           hooks);
                     sibling = NodeTraits::get_left(parent);
                 }
                 const auto sibling_left = NodeTraits::get_left(sibling);
@@ -407,8 +409,8 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                         NodeTraits::get_color(sibling_left) == NodeTraits::black()) {
                         NodeTraits::set_color(sibling_right, NodeTraits::black());
                         NodeTraits::set_color(sibling, NodeTraits::red());
-                        rotate_left_aug<Caps>(sibling, sibling_right, NodeTraits::get_parent(sibling),
-                                        header, hooks);
+                        rotate_left_aug<Caps>(sibling, sibling_right,
+                                              NodeTraits::get_parent(sibling), header, hooks);
                         sibling = NodeTraits::get_left(parent);
                     }
                     NodeTraits::set_color(sibling, NodeTraits::get_color(parent));
@@ -418,7 +420,7 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                         NodeTraits::set_color(new_sibling_left, NodeTraits::black());
                     }
                     rotate_right_aug<Caps>(parent, sibling, NodeTraits::get_parent(parent), header,
-                                     hooks);
+                                           hooks);
                     child = NodeTraits::get_parent(header);
                     parent = header;
                 }
@@ -461,14 +463,14 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                     parent = node;
                 }
                 rotate_right_aug<Caps>(grandparent, parent, NodeTraits::get_parent(grandparent),
-                                 header, hooks);
+                                       header, hooks);
             } else {
                 if (node_is_left) {
                     rotate_right_no_parent_fix_aug<Caps>(parent, node, hooks);
                     parent = node;
                 }
-                rotate_left_aug<Caps>(grandparent, parent, NodeTraits::get_parent(grandparent), header,
-                                hooks);
+                rotate_left_aug<Caps>(grandparent, parent, NodeTraits::get_parent(grandparent),
+                                      header, hooks);
             }
             NodeTraits::set_color(parent, NodeTraits::black());
             break;

@@ -3,9 +3,10 @@
 #ifndef OURS_TASK_SCHED_RR_HPP
 #define OURS_TASK_SCHED_RR_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/task/sched/context.hpp>
 #include <ours/task/sched/schedule.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::task::sched {

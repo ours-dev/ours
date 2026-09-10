@@ -3,7 +3,6 @@
 #ifndef OURS_TASK_WAIT_QUEUE_HPP
 #define OURS_TASK_WAIT_QUEUE_HPP 1
 
-#include <gktl/canary.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/spin_lock.hpp>
@@ -12,6 +11,8 @@
 #include <ours/task/types.hpp>
 #include <ours/time/timer.hpp>
 #include <ours/types.hpp>
+
+#include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>
 #include <ustl/option.hpp>

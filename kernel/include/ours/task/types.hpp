@@ -4,6 +4,7 @@
 #define OURS_TASK_TYPES_HPP 1
 
 #include <ours/types.hpp>
+
 #include <ustl/function/fn.hpp>
 
 namespace ours::task {

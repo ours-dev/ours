@@ -3,9 +3,9 @@
 #ifndef GKTL_RADIX_TREE_HPP
 #define GKTL_RADIX_TREE_HPP 1
 
-#include <gktl/types.hpp>
-
 #include <memory>
+
+#include <gktl/types.hpp>
 
 namespace gktl {
 

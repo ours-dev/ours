@@ -16,8 +16,8 @@ namespace {
     }
 } // namespace
 
-auto identify_entry(Section const &section, std::uint64_t offset, EntryKind *kind, std::uint64_t *length)
-    -> bool {
+auto identify_entry(Section const &section, std::uint64_t offset, EntryKind *kind,
+                    std::uint64_t *length) -> bool {
     if (offset >= section.size) {
         return false;
     }

@@ -1,13 +1,12 @@
-#include <arch/paging.hpp>
-#include <arch/paging/x86_pagings.hpp>
-#include <ustl/util/enum_sequence.hpp>
-
 #include <array>
 #include <map>
 #include <memory>
 #include <random>
 
+#include <arch/paging.hpp>
+#include <arch/paging/x86_pagings.hpp>
 #include <gtest/gtest.h>
+#include <ustl/util/enum_sequence.hpp>
 
 using namespace arch;
 using namespace paging;

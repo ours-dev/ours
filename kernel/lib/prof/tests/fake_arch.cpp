@@ -5,13 +5,13 @@
 #include <prof/arch.hpp>
 
 namespace {
-    bool g_pmu_present = false;
-    u32 g_current_cpu = 0;
-    u64 g_timestamp = 0;
-    std::optional<prof::SampleContext> g_next_context;
-    int g_pmu_start_calls = 0;
-    int g_pmu_stop_calls = 0;
-    std::string g_debug_output;
+bool g_pmu_present = false;
+u32 g_current_cpu = 0;
+u64 g_timestamp = 0;
+std::optional<prof::SampleContext> g_next_context;
+int g_pmu_start_calls = 0;
+int g_pmu_stop_calls = 0;
+std::string g_debug_output;
 } // namespace
 
 namespace prof_test {

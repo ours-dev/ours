@@ -3,10 +3,10 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_RBTREE_NODE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_RBTREE_NODE_HPP 1
 
+#include <cstddef>
+
 #include <ustl/collections/intrusive/pointer_plus_bits.hpp>
 #include <ustl/collections/intrusive/pointer_rebind.hpp>
-
-#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename VoidPointer>

@@ -1,6 +1,5 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <logz4/log.hpp>
 #include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/vm_area.hpp>
@@ -11,6 +10,7 @@
 
 #include <heap/new.hpp>
 #include <heap/vmalloc.hpp>
+#include <logz4/log.hpp>
 
 namespace heap {
 using ours::Guard;

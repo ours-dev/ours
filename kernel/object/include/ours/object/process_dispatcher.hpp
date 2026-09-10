@@ -3,7 +3,6 @@
 #ifndef OURS_OBJECT_PROCESS_DISPATCHER_HPP
 #define OURS_OBJECT_PROCESS_DISPATCHER_HPP 1
 
-#include <ktl/name.hpp>
 #include <ours/mm/types.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/object/dispatcher.hpp>
@@ -11,6 +10,8 @@
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/thread.hpp>
+
+#include <ktl/name.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::object {

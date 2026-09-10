@@ -1,13 +1,14 @@
-#include <gktl/init_hook.hpp>
-#include <ktl/name.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
-#include <ustl/option.hpp>
 
 #include <new>
+
+#include <gktl/init_hook.hpp>
+#include <ktl/name.hpp>
+#include <ustl/option.hpp>
 
 namespace ours {
 namespace {

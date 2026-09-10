@@ -4,10 +4,10 @@
 #define LEGACY_BOOT_HPP
 
 #include <ours/phys/init.hpp>
-#include <ustl/views/span.hpp>
-#include <ustl/views/string_view.hpp>
 
 #include <multiboot/view.hpp>
+#include <ustl/views/span.hpp>
+#include <ustl/views/string_view.hpp>
 
 namespace ours::phys {
 class Aspace;

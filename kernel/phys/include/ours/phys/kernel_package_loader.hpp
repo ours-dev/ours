@@ -7,11 +7,11 @@
 #include <ours/phys/kernel_package_handoff.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
-#include <ustl/views/span.hpp>
 
 #include <string_view>
 
 #include <bootfs/view.hpp>
+#include <ustl/views/span.hpp>
 
 namespace ours::phys {
 /// Resolves the kernel ELF from the kernel-package BootFS that physload

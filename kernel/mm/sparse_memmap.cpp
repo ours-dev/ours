@@ -1,5 +1,3 @@
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
 #include <ours/mm/early_mem.hpp>
 #include <ours/mm/pm_node.hpp>
 #include <ours/mm/pm_zone.hpp>
@@ -9,6 +7,9 @@
 #include <ours/panic.hpp>
 
 #include <algorithm>
+
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 namespace ours::mm::priv {
 class SparseMemMap::Impl {
     using Self = Impl;

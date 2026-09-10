@@ -1,7 +1,8 @@
-#include <arch/x86/io.hpp>
-#include <logz4/log.hpp>
 #include <ours/phys/console.hpp>
 #include <ours/phys/handoff.hpp>
+
+#include <arch/x86/io.hpp>
+#include <logz4/log.hpp>
 #include <ustl/mem/object.hpp>
 
 // Pre-logger panic path: logz4's emergency hook, overridden with strong

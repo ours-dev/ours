@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <ustl/bitfields.hpp>
-
 #include <tuple>
 
 #include <cassert>
 #include <cstdint>
+
+#include <ustl/bitfields.hpp>
 
 namespace {
 

@@ -1,16 +1,17 @@
-#include <arch/auto_interrupt_disabler.hpp>
-#include <arch/x86/apic/ioapic.hpp>
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
 #include <ours/arch/apic.hpp>
 #include <ours/irq/irq_chip.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
-#include <ustl/collections/intrusive/list.hpp>
-#include <ustl/mem/align.hpp>
 
 #include <array>
+
+#include <arch/auto_interrupt_disabler.hpp>
+#include <arch/x86/apic/ioapic.hpp>
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
+#include <ustl/collections/intrusive/list.hpp>
+#include <ustl/mem/align.hpp>
 
 namespace ours {
 namespace {

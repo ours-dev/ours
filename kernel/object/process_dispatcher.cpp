@@ -1,11 +1,12 @@
-#include <gktl/counter.hpp>
-#include <heap/new.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cfg.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
+
+#include <gktl/counter.hpp>
+#include <heap/new.hpp>
 
 GKTL_COUNTER(DISPATCHER_PROCESS_CREATE_COUNT, "dispatcher.process.create");
 GKTL_COUNTER(DISPATCHER_PROCESS_DESTROY_COUNT, "dispatcher.process.destroy");
@@ -45,8 +46,8 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
     // create_shared() will hand out, which only works if the private one is
     // carved to that boundary from the start rather than shrunk later.
     ustl::Arc<mm::VmAspace> aspace;
-    auto status = mm::VmAspace::create(PRIVATE_ASPACE_BASE, PRIVATE_ASPACE_SIZE,
-                                       mm::VmasKind::User, mm::VmasFlags::None, name, &aspace);
+    auto status = mm::VmAspace::create(PRIVATE_ASPACE_BASE, PRIVATE_ASPACE_SIZE, mm::VmasKind::User,
+                                       mm::VmasFlags::None, name, &aspace);
     if (Status::Ok != status) {
         return status;
     }

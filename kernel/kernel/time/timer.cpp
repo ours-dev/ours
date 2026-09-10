@@ -1,8 +1,9 @@
-#include <arch/spin_hint.hpp>
 #include <ours/cpu.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
 #include <ours/time/timer_queue.hpp>
+
+#include <arch/spin_hint.hpp>
 
 namespace ours::time {
 auto Timer::activate(Deadline deadline, Handler on_expired) -> void {

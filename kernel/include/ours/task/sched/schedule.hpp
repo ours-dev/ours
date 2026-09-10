@@ -3,8 +3,6 @@
 #ifndef OURS_TASK_SCHED_SCHEDULE_HPP
 #define OURS_TASK_SCHED_SCHEDULE_HPP 1
 
-#include <gktl/canary.hpp>
-#include <gktl/types.hpp>
 #include <ours/compiler.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/status.hpp>
@@ -12,6 +10,9 @@
 #include <ours/task/sched/profiles.hpp>
 #include <ours/task/sched/runtime.hpp>
 #include <ours/task/sched/types.hpp>
+
+#include <gktl/canary.hpp>
+#include <gktl/types.hpp>
 #include <ustl/util/enum_bits.hpp>
 #include <ustl/util/noncopyable.hpp>
 

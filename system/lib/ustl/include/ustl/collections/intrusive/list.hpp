@@ -3,6 +3,15 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_LIST_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_LIST_HPP 1
 
+#include <array>
+#include <functional>
+#include <iterator>
+#include <limits>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
+
 #include <ustl/collections/error.hpp>
 #include <ustl/collections/intrusive/circular_list_algorithms.hpp>
 #include <ustl/collections/intrusive/detail/assert.hpp>
@@ -14,15 +23,6 @@
 #include <ustl/collections/intrusive/options.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
-
-#include <array>
-#include <functional>
-#include <iterator>
-#include <limits>
-#include <type_traits>
-#include <utility>
-
-#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>
