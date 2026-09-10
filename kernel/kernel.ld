@@ -90,7 +90,14 @@ SECTIONS {
     .got : { *(.got*) }
     .data.rel.ro : ALIGN(8) {
         PROVIDE_HIDDEN(__commands_start = .);
-        *(.gktl.commands*)
+        /* KEEP, like every other registry section in this file. A GKTL_COMMAND
+         * record is referenced by nothing -- being found by walking this range
+         * is the entire mechanism -- so without KEEP, --gc-sections collects
+         * every one of them and __commands_start == __commands_end. The
+         * registry was empty at run time for exactly that reason, which is
+         * invisible from the console: an unknown command and a command that
+         * was collected both do nothing. */
+        KEEP(*(SORT_BY_ALIGNMENT(.gktl.commands*)))
         PROVIDE_HIDDEN(__commands_end = .);
 
         PROVIDE_HIDDEN(__gktl_counter_desc_start = .);
