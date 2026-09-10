@@ -70,20 +70,7 @@ auto Scheduler::reschedule(CpuNum cpu) -> void {
 要么补成真的（本地就置 pending、远程就走 `IpiService::send_resched`，
 也就是 `reschedule_mask()` 的单 CPU 版），要么删掉。
 
-## 5. `Cpu::is_online()` 读的是普通变量，写在另一颗 CPU 上
-
-**严重程度**：中，竞态。
-
-`Cpu::STATES` 是 `std::array<CpuMask, N>`，`CpuMask` 是普通 `BitSet`，不是原子的。
-`start_nonboot_cpu()` 在 AP 上 `set()`，`x86_bring_aps()` 在 BSP 上
-`while (!Cpu::is_online(cpu));` 里读——没有任何 acquire/release，
-编译器完全可以把这个读提到循环外。今天能跑是因为循环体是空的、优化器留下了访存，
-不是因为它对。
-
-对照：`Scheduler::STATES` 是 `std::array<std::atomic<CpuMask>, N>`，同一件事那边做对了。
-`Cpu::STATES` 该照着改。
-
-## 6. 跨 CPU 唤醒总是发 IPI，丢掉了刚算出来的抢占结论
+## 5. 跨 CPU 唤醒总是发 IPI，丢掉了刚算出来的抢占结论
 
 **严重程度**：中，性能。
 
@@ -105,7 +92,7 @@ auto Scheduler::reschedule(CpuNum cpu) -> void {
 **没有顺手改的原因**：这是唤醒协议的行为改动（少发 IPI 意味着"谁负责最终把目标叫醒"
 的责任转移），错了会表现成偶发的唤醒丢失，不适合在一次以质量为目的的清理里做。
 
-## 7. `Runtime` 的可变字段没有锁注解
+## 6. `Runtime` 的可变字段没有锁注解
 
 **严重程度**：中。
 
@@ -115,7 +102,7 @@ auto Scheduler::reschedule(CpuNum cpu) -> void {
 `TA_REQUIRES(get_lock())`——它读的是**远程** CPU 的 `m_runtime.curr_thread`，
 安全性完全依赖唯一的调用者恰好持着那把锁。
 
-昨天删掉的那两条 `which_cpu == Cpu::id()` 断言，本来想表达的就是"这里有个不变量"，
+删掉的那两条 `which_cpu == Cpu::id()` 断言，本来想表达的就是"这里有个不变量"，
 只是表达错了对象。正确的不变量是"调用者持有**目标**的运行队列锁"，
 而这个不变量是可以被静态检查的。
 

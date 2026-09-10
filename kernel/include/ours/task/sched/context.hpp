@@ -71,13 +71,13 @@ class CpuAffinity {
     /// later changes to |affinity_mask| to be followed.
     FORCE_INLINE
     auto set_affinity_soft(CpuMask const &affinity_mask) -> void {
-        m_owned_soft = affinity_mask;
+        m_owned_soft.store(affinity_mask, std::memory_order_relaxed);
         m_soft_affinity = &m_owned_soft;
     }
 
     FORCE_INLINE
     auto set_affinity_hard(CpuMask const &affinity_mask) -> void {
-        m_owned_hard = affinity_mask;
+        m_owned_hard.store(affinity_mask, std::memory_order_relaxed);
         m_hard_affinity = &m_owned_hard;
     }
 
@@ -85,24 +85,34 @@ class CpuAffinity {
     /// changes to it are changes to this thread's affinity.
     ///
     /// |affinity_mask| MUST outlive the thread -- these are for the masks that
-    /// live as long as the kernel does, Cpu::online_mask() above all, whose
-    /// whole point here is that it is still growing while early threads exist.
-    /// Anything else, including anything built at the call site, wants the
-    /// copying form above.
+    /// live as long as the kernel does, Cpu::online_mask_live() above all,
+    /// whose whole point here is that it is still growing while early threads
+    /// exist. Anything else, including anything built at the call site, wants
+    /// the copying form above.
+    ///
+    /// It is an atomic cell, not a plain mask, because that is what a mask
+    /// still being written by other CPUs has to be: the secondaries publish
+    /// themselves into Cpu's Online mask from their own bring-up path, so a
+    /// thread reading it through a plain reference would be racing them.
     FORCE_INLINE
-    auto set_affinity_soft_shared(CpuMask const &affinity_mask) -> void {
+    auto set_affinity_soft_shared(std::atomic<CpuMask> const &affinity_mask) -> void {
         m_soft_affinity = &affinity_mask;
     }
 
     FORCE_INLINE
-    auto set_affinity_hard_shared(CpuMask const &affinity_mask) -> void {
+    auto set_affinity_hard_shared(std::atomic<CpuMask> const &affinity_mask) -> void {
         m_hard_affinity = &affinity_mask;
     }
 
     [[nodiscard]]
     auto get_available_mask(CpuMask const &mask) const -> CpuMask {
-        auto const available_mask = mask & *m_hard_affinity;
-        if (auto const available_mask_relaxed = available_mask & *m_soft_affinity;
+        // Relaxed: this only narrows a candidate set, and a CPU that joins
+        // between these two loads is one this thread simply was not offered
+        // this time round. Nothing is published through the affinity masks, so
+        // there is no ordering for an acquire to establish.
+        auto const available_mask = mask & m_hard_affinity->load(std::memory_order_relaxed);
+        if (auto const available_mask_relaxed =
+                available_mask & m_soft_affinity->load(std::memory_order_relaxed);
             available_mask_relaxed.any()) {
             return available_mask_relaxed;
         }
@@ -115,11 +125,17 @@ class CpuAffinity {
 
     /// Storage for the copying setters. Read through the pointers below, never
     /// directly, because the sharing setters leave these stale on purpose.
-    CpuMask m_owned_soft;
-    CpuMask m_owned_hard;
+    ///
+    /// Atomic so that the two pointers can have one type: they aim either here
+    /// or at a kernel-lifetime mask that other CPUs write, and the latter has
+    /// to be an atomic cell. The owned case never actually contends -- an
+    /// affinity is set under the thread's PI lock -- it just pays the same
+    /// spelling.
+    std::atomic<CpuMask> m_owned_soft;
+    std::atomic<CpuMask> m_owned_hard;
 
-    CpuMask const *m_soft_affinity;
-    CpuMask const *m_hard_affinity;
+    std::atomic<CpuMask> const *m_soft_affinity;
+    std::atomic<CpuMask> const *m_hard_affinity;
 };
 
 class RunQueueState {

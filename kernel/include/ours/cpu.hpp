@@ -7,6 +7,7 @@
 #include <ours/types.hpp>
 
 #include <array>
+#include <atomic>
 
 namespace ours {
 
@@ -25,32 +26,92 @@ class Cpu {
     /// used to duplicate it from a function-local `CPU_LOCAL static` that could
     /// never be written, so it always answered 0; it had no callers.
 
+    /// Acquire, and the counterpart of the release in set_state(): a CPU that
+    /// reads this bit set must also see everything the CPU that set it did
+    /// beforehand -- its per-CPU area, its idle thread, its scheduler being
+    /// marked active. x86_bring_aps() spins on exactly this before it starts
+    /// the next CPU.
+    ///
+    /// The atomic is not only about that ordering. It was a plain BitSet read
+    /// in a `while (!Cpu::is_online(cpu));` loop with an empty body, and
+    /// nothing in the language stopped the compiler hoisting that load out of
+    /// the loop and spinning forever on a stale word. The loop happened to
+    /// come out right; whether it did was up to the optimiser, not up to the
+    /// code. It is up to the code now -- x86_bring_aps() disassembles with the
+    /// load inside the loop:
+    ///
+    ///     movq  Cpu::ONLINE(%rip), %rcx
+    ///     testq %rax, %rcx
+    ///     je    .-8                     # back to the load, not past it
     [[nodiscard]]
     static auto is_online(CpuNum cpu) -> bool {
-        return state_mask(State::Online).test(cpu);
+        return ONLINE.load(std::memory_order_acquire).test(cpu);
     }
 
     static auto set_state(CpuNum cpu, State state, bool enabled = true) -> void {
-        state_mask(state).set(cpu, enabled);
+        if (state != State::Online) {
+            immutable_mask(state).set(cpu, enabled);
+            return;
+        }
+
+        // A CAS loop rather than load/set/store, for the reason
+        // Scheduler::set_state() spells out about its own mask: two CPUs
+        // flipping different bits at the same time would each store a word
+        // missing the other's. Nothing does that today -- x86_bring_aps()
+        // starts one CPU at a time -- but "safe because the caller happens to
+        // be serialised" is what the rest of this bring-up kept getting wrong,
+        // and a parallel bring-up is already on the repair list.
+        //
+        // Release: everything this CPU did before joining has to be visible to
+        // whoever observes the bit. See is_online().
+        auto expected = ONLINE.load(std::memory_order_relaxed);
+        for (;;) {
+            auto desired = expected;
+            desired.set(cpu, enabled);
+            if (ONLINE.compare_exchange_weak(expected, desired, std::memory_order_release,
+                                             std::memory_order_relaxed)) {
+                return;
+            }
+        }
     }
 
     static auto set_state(State state, bool enabled = true) -> void {
         set_state(id(), state, enabled);
     }
 
+    /// Possible and Present are written once, by the boot CPU, while it parses
+    /// the MADT, and never again -- so they are plain masks and are handed out
+    /// by reference, which is what lets srat.cpp still narrow the possible set
+    /// in place and what ClockEventDevice points at for "any CPU".
+    ///
+    /// Online is the only one of the three that changes after that, and the
+    /// only one another CPU ever writes; it is the atomic below and comes back
+    /// by value.
     [[nodiscard]]
     static auto possible_mask() -> CpuMask & {
-        return state_mask(State::Possible);
+        return immutable_mask(State::Possible);
     }
 
     [[nodiscard]]
     static auto present_mask() -> CpuMask & {
-        return state_mask(State::Present);
+        return immutable_mask(State::Present);
     }
 
+    /// A snapshot. The set may have grown by the time the caller looks at it,
+    /// which is true of anything read out of a mask other CPUs are joining.
     [[nodiscard]]
-    static auto online_mask() -> CpuMask & {
-        return state_mask(State::Online);
+    static auto online_mask() -> CpuMask {
+        return ONLINE.load(std::memory_order_acquire);
+    }
+
+    /// The Online mask itself, for the one caller that must keep following it
+    /// rather than take a copy: a thread whose hard affinity is "wherever is
+    /// online" has to widen as the secondaries come up, so
+    /// CpuAffinity::set_affinity_hard_shared() aims at this cell and loads it
+    /// on every query. Everyone else wants online_mask() above.
+    [[nodiscard]]
+    static auto online_mask_live() -> std::atomic<CpuMask> const & {
+        return ONLINE;
     }
 
     [[nodiscard]]
@@ -72,12 +133,25 @@ class Cpu {
     static constexpr auto NUM_STATES = static_cast<usize>(State::Count);
 
     [[nodiscard]]
-    static auto state_mask(State state) -> CpuMask & {
+    static auto immutable_mask(State state) -> CpuMask & {
         return STATES[static_cast<usize>(state)];
     }
 
+    /// Only Possible and Present live here; Online is ONLINE. The slot for
+    /// Online is left in place so the array stays indexable by State and a
+    /// mis-aimed read of it is a bug in this file rather than an out-of-bounds.
     static std::array<CpuMask, NUM_STATES> STATES;
+
+    static std::atomic<CpuMask> ONLINE;
 };
+
+/// A CpuMask that is not lock-free would make every set_state() call a
+/// libatomic function call, and there is no libatomic in this kernel -- it
+/// would fail to link rather than run slowly. That is a real limit on
+/// MP_MAX_CPUS (one 64-bit word today), so say it here instead of leaving it
+/// to be discovered.
+static_assert(std::atomic<CpuMask>::is_always_lock_free,
+              "MP_MAX_CPUS is too large for a lock-free CPU mask");
 
 inline auto cpu_possible_mask() -> CpuMask & {
     return Cpu::possible_mask();

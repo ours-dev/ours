@@ -134,7 +134,7 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNu
             // has to keep following the online mask as the secondaries come
             // up. A copy would freeze it at the CPUs online when the thread
             // was created, which on the boot path is the boot CPU alone.
-            context.m_affinity.set_affinity_hard_shared(Cpu::online_mask());
+            context.m_affinity.set_affinity_hard_shared(Cpu::online_mask_live());
             target_cpu = select_target_cpu(thread);
         } else {
             // A caller-pinned thread. The pin is recorded as the affinity and
