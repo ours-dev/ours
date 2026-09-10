@@ -202,3 +202,117 @@ switchset 是**筛**不是 glob：同目录下还有 `phys.dbg_0`，判据取"�
   out, unit tests linked in"），推不出来，只能人写。缺一条不报错，选项就只显示值本身——
   对一个还没人描述过的新名字，这是对的结果，不该卡住生成器。
 - **没有给仓库定最低 Python 版本**（见上一节）。
+
+## 启动/调试脚本从 sh 换成 Python（2026-09-10）
+
+**文件**
+- `scripts/qemu_boot.py` —— 新建，取代 `scripts/qemu-boot.sh`（删除）
+- `scripts/qemu_debug.py` —— 新建，取代 `scripts/qemu-debug.sh`（删除）
+- `ours.code-workspace`、`tools/gen_debug_menu.py`、`docs/development/debugging.md`、
+  `docs/repairs/260909/products.md` —— 引用改名
+
+**症状**
+不是 bug，是规矩：**这个仓库的工具脚本一律用 Python，不用 shell**。
+
+但这两个文件也确实到了 shell 的边界。`qemu-debug.sh` 里已经内嵌了两段 python heredoc
+（解析清单、轮询端口），也就是说它早就不是 shell 脚本，而是"一个 shell 壳子包着 Python"——
+再加一个分支就要再开一段 heredoc。`qemu-boot.sh` 的 NUMA 分支则在用字符串拼参数
+（`NUMA_ARGS="$NUMA_ARGS -object ..."`），配一句 `# shellcheck disable=SC2086` 才敢展开。
+
+**原因**
+shell 在两个地方按次数收费，而这两个脚本都已经付了很多次：
+
+1. **没有列表**。`NUMA_ARGS` 是一个字符串，靠不加引号展开成多个参数，于是任何一个含空格的
+   值都会静默变成两个参数。Python 里就是 `list[str]`，`subprocess` 直接收。
+2. **没有结构化数据**。读一份 JSON 清单要 heredoc 出一个 python，结果再用 `sed -n 1p`
+   一行行切回来——两次序列化，只为跨过语言边界。
+
+**改法**
+
+清单解析从"嵌在 shell 里的 python"变成普通函数。改前：
+
+```sh
+_resolved=$(ROOT="$ROOT" OUT="$OUT" ... python3 <<'RESOLVE'
+import glob, json, os, sys
+...
+print(os.path.join(out, identity["obi"]))
+print(os.path.join(out, kernel["debug"]))
+print(identity["image"])
+RESOLVE
+) || exit $?
+
+IMAGE=$(printf '%s\n' "$_resolved" | sed -n 1p)
+ELF=$(printf '%s\n' "$_resolved" | sed -n 2p)
+```
+
+改后就是一次调用：
+
+```python
+image, elf, name = resolve(out, args.product, args.arch, args.switchset)
+```
+
+NUMA 参数从字符串拼接变成列表：
+
+```sh
+# 改前
+NUMA_ARGS=""
+for id in 0 1 2 3; do
+    NUMA_ARGS="$NUMA_ARGS -object memory-backend-ram,size=${NODE_MEM}M,id=m$id"
+done
+...
+# shellcheck disable=SC2086
+exec "$ROOT/prebuilt/qemu/bin/qemu-system-x86_64" ... $NUMA_ARGS ...
+```
+
+```python
+# 改后
+for node, _ in NUMA_NODES:
+    args += ["-object", f"memory-backend-ram,size={node_mem}M,id=m{node}"]
+```
+
+距离矩阵也从"写死十二行 `-numa dist,src=...`（注释说因为循环会吃掉调用者的参数）"变成一张
+数据表 `NUMA_DISTANCES`，而调用者的参数就是 `argv`，不再有冲突。
+
+几处行为刻意保持一致：
+
+- **`qemu_boot.py` 结尾用 `os.execve`**，和 `exec` 一样把自己换成 QEMU。调用方
+  （`qemu_debug.py`、VS Code 的任务终端）是朝它启动的那个 pid 发信号的，中间多一层还活着
+  的进程会把信号吃掉。
+- **`qemu_debug.py` 的清理**从 `trap cleanup EXIT INT TERM` 变成 `atexit` + `signal`，
+  语义相同：VS Code 的 stop 任务发 SIGTERM，QEMU 必须跟着走。
+- **环境变量接口没变**：`OUT`、`IMAGE`、`ELF`、`WORK`、`PORT`、`SMP`、`MEM`、`CPU`、`NUMA`
+  都还在，命令行位置参数也还是 `<产品> <架构> <switchset>`。
+
+文件名用下划线（`qemu_debug.py` 而不是 `qemu-debug.py`）——仓库既有约定，而且带连字符的
+Python 文件没法被 import。
+
+**参照**
+无，本项目自有约定。
+
+**验证**
+1. `qemu_boot.py` 单独启动 dbg.1 镜像，跑到用户态、四个 CPU 都在跑线程，
+   `terminating on signal 15`（不是三重错）：
+
+   ```
+   [info] handoff: jumping to kernel at 0xFFFFFF88400485AD, cr3=0x1FEDB000
+   [... cpu0 info] userboot: kernel package holds 5 files
+   [... cpu2 debug] I'm Thread 1
+   [... cpu3 debug] I'm Thread 2
+   ```
+2. `qemu_debug.py` 两个 switchset 各启动 + attach 一次，断点地址与 sh 版**完全相同**
+   （`0xffffff88400890a9` / `0xffffff88400760a9`）。
+3. 七条错误路径逐条对照 sh 版输出，**逐字相同**：未知 switchset、未配置的架构、
+   半个 IMAGE/ELF 覆盖、以及三种"镜像长出来了"的情况（撞 switchset / 不属于产品 /
+   两个内核 ELF）。
+4. SIGTERM 清理：起来之后 `kill` 掉脚本，QEMU 进程和 1234 端口都干净。
+5. `tools/gen_debug_menu.py --check` 通过（工作区里的任务命令已指向 `.py`）。
+6. 全仓已无指向这两个脚本的活引用；`docs/changes/` 和 `.agents/tasks/` 里的旧引用**保持
+   原样**——那是历史记录，按约定只增不改。
+
+**故意没做**
+- **没有动其余四个 `.sh`**：`build/toolchain/copy_command.sh`（GN 的 copy 工具命令，每个
+  copy action 都走它）、`docker/entrypoint.sh`、`kernel/lib/code_patching/tests/run_tests.sh`、
+  `.agents/skills/vendor-import/scripts/vendor-clone.sh`。它们分属别的模块，而这个 worktree
+  同时有其它会话在写；一次扫掉四个跨模块文件、又没法像这两个一样用"真启动一次"验证，
+  风险不对等。`system/lib/boost.intrusive/.drone/drone.sh` 是 vendored 的第三方文件，
+  不在范围内。

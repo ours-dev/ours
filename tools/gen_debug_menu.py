@@ -22,7 +22,7 @@ Deliberately NOT consulted: any out/ directory.  The menu is a list of things
 that can be asked for, and a build directory only knows about the one product
 and architecture it was configured for -- generating from it would shrink the
 menu to whatever happened to be configured last.  Whether a particular
-combination actually exists is scripts/qemu-debug.sh's job, and it answers with
+combination actually exists is scripts/qemu_debug.py's job, and it answers with
 the real alternatives when one does not.
 
 Idempotent: it only writes when the result differs, so running it from

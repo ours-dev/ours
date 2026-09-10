@@ -40,7 +40,7 @@
 `Invalid kernel package: 4`，见 `docs/repairs/260909/products.md`。
 
 调试面板的下拉框里另有一个 `Kernel: attach to a QEMU I started myself`，用于终端里已经
-跑着 `./scripts/qemu-debug.sh` 的场合，它不重启 QEMU。
+跑着 `./scripts/qemu_debug.py` 的场合，它不重启 QEMU。
 
 ## 三层名单从哪来
 
@@ -85,7 +85,7 @@ switchset 也从这里读——内核那条 label 的 toolchain 部分就是
 放在 `.obi` 旁边而不是 `gen/` 深处，是为了"枚举镜像 = 一次 glob"，不需要任何索引，也就
 不需要再维护一张"有哪些镜像"的表。
 
-`scripts/qemu-debug.sh` 读它，启对应镜像，并把解析出来的 ELF 链到
+`scripts/qemu_debug.py` 读它，启对应镜像，并把解析出来的 ELF 链到
 `out/.debug/kernel.elf`；调试器永远只打开这一个路径。于是"符号和启动的内核
 对不上"这件事**没法表达**。
 
@@ -119,14 +119,14 @@ tools/gen_debug_menu.py --check    # 只检查，过期则退出码 1
 
 它**不看任何 `out/` 目录**：菜单是"可以问什么"的列表，而一个构建目录只知道自己被配置成
 的那一个产品和架构，拿它生成会把菜单缩成"上次配了什么"。某个具体组合到底存不存在是
-`scripts/qemu-debug.sh` 的事，它答不上来时会把真的有的列出来：
+`scripts/qemu_debug.py` 的事，它答不上来时会把真的有的列出来：
 
 ```
-$ ./scripts/qemu-debug.sh bringup x86 dbg.2
+$ ./scripts/qemu_debug.py bringup x86 dbg.2
 qemu-debug: product 'bringup' has no image built in switchset 'dbg.2'
 qemu-debug: it offers: dbg.0 (kernel.dev), dbg.1 (kernel.dev.dbg_1)
 
-$ ./scripts/qemu-debug.sh bringup arm dbg.1
+$ ./scripts/qemu_debug.py bringup arm dbg.1
 qemu-debug: no build directory at .../out/bringup.arm
 qemu-debug: configure it with:  tools/set.py bringup.arm
 qemu-debug: products the tree defines: bringup
@@ -188,8 +188,8 @@ QEMU 用 `-S` 启动。这不是保守，是必要的：等到一个**正在运�
 同一套东西不进 VS Code 也能用：
 
 ```bash
-./scripts/qemu-debug.sh                    # bringup x86 dbg.1
-./scripts/qemu-debug.sh bringup x86 dbg.0
+./scripts/qemu_debug.py                    # bringup x86 dbg.1
+./scripts/qemu_debug.py bringup x86 dbg.0
 ```
 
 它清掉上一次会话残留的 QEMU/lldb（**两个进程抢同一个端口会互相打死**，而活下来的不一定
@@ -208,7 +208,7 @@ lldb -o 'target create out/.debug/kernel.elf' \
 了，它也会把真实路径打在 `qemu-debug: symbols ...` 那一行上。**这个路径里没有产品和架构**，
 是固定的一处：一个 checkout、一个 gdbstub 端口、一个正在调的内核。
 
-换端口：`PORT=1235`。启一个构建没描述的镜像：`IMAGE=... ELF=... ./scripts/qemu-debug.sh`
+换端口：`PORT=1235`。启一个构建没描述的镜像：`IMAGE=... ELF=... ./scripts/qemu_debug.py`
 ——**两个必须一起给**，只给镜像不给符号正是这一整套要防的那个错。
 
 ## 那个 slide 是什么
@@ -232,7 +232,7 @@ Reserve area k:head: [FFFFFF8840000000, FFFFFF8840007000)
 内核不退出，所以看日志是：
 
 ```bash
-( IMAGE=$PWD/out/bringup.x86/kernel.dev.dbg_1.obi ./scripts/qemu-boot.sh > /tmp/boot.log 2>&1 & \
+( IMAGE=$PWD/out/bringup.x86/kernel.dev.dbg_1.obi ./scripts/qemu_boot.py > /tmp/boot.log 2>&1 & \
   pid=$!; sleep 30; kill $pid 2>/dev/null; wait $pid 2>/dev/null )
 grep -a "..." /tmp/boot.log
 ```

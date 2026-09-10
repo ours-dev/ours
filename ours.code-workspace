@@ -35,7 +35,7 @@
     // unknown), so it was a week-old leftover that would never be rebuilt.
     //
     // Nothing here writes that pairing down any more. kernel_image() emits an
-    // <image>.debug.json beside each .obi, and scripts/qemu-debug.sh resolves
+    // <image>.debug.json beside each .obi, and scripts/qemu_debug.py resolves
     // the three answers below against it, boots the image, and links the
     // matching unstripped ELF to out/.debug/kernel.elf.
     //
@@ -83,7 +83,7 @@
                 "name": "Kernel: attach to a QEMU I started myself",
                 "type": "lldb-dap",
                 "request": "attach",
-                // No preLaunchTask: for when ./scripts/qemu-debug.sh is already
+                // No preLaunchTask: for when ./scripts/qemu_debug.py is already
                 // running in a terminal and the session should not restart it.
                 // It published the symlink on its way up, so this needs to know
                 // nothing about which kernel that was.
@@ -141,7 +141,7 @@
                 // about to look at, which is the point.
                 "label": "kernel: qemu debug",
                 "type": "shell",
-                "command": "prebuilt/ninja/ninja -C out/${input:product}.${input:arch} && ./scripts/qemu-debug.sh ${input:product} ${input:arch} ${input:switchset}",
+                "command": "prebuilt/ninja/ninja -C out/${input:product}.${input:arch} && ./scripts/qemu_debug.py ${input:product} ${input:arch} ${input:switchset}",
                 "options": { "cwd": "${workspaceFolder}" },
                 "isBackground": true,
                 "problemMatcher": {
@@ -189,7 +189,7 @@
         // pickString's options -- there is no hook for it short of a
         // third-party extension. They are also the ONLY place any of this is
         // typed out, and they carry names, never paths or pairings: pass a name
-        // the build does not have and scripts/qemu-debug.sh answers with the
+        // the build does not have and scripts/qemu_debug.py answers with the
         // ones it does, so the menu and the build cannot quietly disagree.
         //
         // Labels do not repeat the value: VS Code renders an option as

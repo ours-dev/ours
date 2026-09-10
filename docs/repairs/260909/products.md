@@ -9,7 +9,7 @@
 
 ```bash
 prebuilt/ninja/ninja -C out/bringup.x86
-IMAGE=$PWD/out/bringup.x86/fake.obi ./scripts/qemu-boot.sh
+IMAGE=$PWD/out/bringup.x86/fake.obi ./scripts/qemu_boot.py
 ```
 
 日志尾部：
@@ -32,4 +32,4 @@ physload 把 physboot 载入并进入了，physboot 解析 OBI 里的内核存�
 
 **影响到的东西**
 `ours.code-workspace` 的调试下拉框里本来该有 `fake` 这一项，因为这个问题暂时没放进去；
-`scripts/qemu-debug.sh` 里 `fake` 的映射是对的、留着，修好之后把菜单项加回来即可。
+`scripts/qemu_debug.py` 里 `fake` 的映射是对的、留着，修好之后把菜单项加回来即可。
