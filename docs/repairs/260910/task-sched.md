@@ -1,53 +1,55 @@
 # task-sched —— 待修项（2026-09-10）
 
-## `Thread` 的 `m_curr_cpu` / `m_last_cpu` / `m_wake_cpu` 从来不被维护
+## 1. `Context` 的三个 CPU 字段初值是 0，而所有读者都拿它和 `INVALID_CPU_NUM` 比
 
-**严重程度**：中偏高。这三个字段是"这个线程在哪个 CPU 上"的公开答案
-（`Thread::curr_cpu()` / `last_cpu()`，`kernel/include/ours/task/thread.hpp:251-259`），
-查亲和性、迁移、跑错核这类问题的人第一个会去看它们，而它们**全是错的**。
+**严重程度**：中。它让"还没分配 CPU"和"在 CPU 0 上"变成同一个答案。
 
-**复现**
-四核启动，四个线程分别跑在 CPU 0/1/2/3 上，三个字段全是 0：
+`kernel/include/ours/task/sched/context.hpp` 的构造函数：
 
-```
-(lldb) kthread 0
-'Idle/0' tid=3 @ 0xffffff88000125c0
-  cpu      curr=0 last=0 wake=0
-(lldb) kthread 1
-'userboot' tid=18 @ 0xffffff8000105d48
-  cpu      curr=0 last=0 wake=0        ← 实际在 CPU 1 上跑
-(lldb) kthread 2      → 'Sample1'  curr=0 last=0 wake=0   ← 实际在 CPU 2
-(lldb) kthread 3      → 'Sample2'  curr=0 last=0 wake=0   ← 实际在 CPU 3
+```cpp
+, m_last_cpu()      // = 0
+, m_curr_cpu()      // = 0
+, m_wake_cpu()      // = 0
 ```
 
-"实际在哪个 CPU"是通过该 CPU 的 per-CPU `Current<Thread*>` 拿到的，两者本该一致。
+而三个读者都是这么写的：
 
-**证据**
-全仓只有三处赋值，而且都不在上下文切换路径上：
+- `Scheduler::set_cpu_affinity()`：`if (auto const cpu_thread_on = so.curr_cpu(); cpu_thread_on != INVALID_CPU_NUM)`
+- `Scheduler::Pi::common()`：`if (auto const which_cpu = context.curr_cpu(); which_cpu != INVALID_CPU_NUM)`
+- `Scheduler::select_target_cpu()`：`last_cpu == INVALID_CPU_NUM ? Cpu::id() : last_cpu`
 
+意图很清楚，初值写错了。
+
+**为什么没有顺手改**：实测过，改成 `INVALID_CPU_NUM` 会**同时打开三条在这棵树里
+从未执行过的分支**，而其中 `Pi::common()` 的 else 臂当场解空指针
+（`wq->get_lock().assert_held()` 一线，四核引导上 `rdi=0x88`）。也就是说这三条分支
+从来没有被验证过，改初值等于一次性把它们全部启用。这是一次独立的改动，
+要连着那三条分支一起做、一起验证。
+
+同一条里还有：`m_curr_cpu` 在线程**出队**（park/sleep/dead）时没有被清掉，
+所以一个阻塞在等待队列上的线程仍然记着最后拥有它的那颗 CPU。按
+"哪颗 CPU 的调度器拥有我"的语义那是错的，但清掉它会走进同样那几条分支。
+
+## 2. `Scheduler::migrate_thread()` 是个空函数，但现在真的会被调到
+
+`kernel/kernel/task/sched/scheduler.cpp`：
+
+```cpp
+auto Scheduler::migrate_thread(Thread *thread) -> void {
+    if (thread->is_state_ready()) {
+        // Dequeue from the scheduler which it is on and Enqueue
+        // onto the selected scheudler's runqueue.
+    } else if (thread->is_state_running()) {
+        // Trigger the IPI for rescheduling
+    } else {
+    }
+}
 ```
-$ grep -rn 'm_curr_cpu *=\|m_last_cpu *=\|m_wake_cpu *=' kernel/ --include='*.cpp'
-kernel/kernel/task/sched/scheduler.cpp:190:    context.m_curr_cpu = cpunum;
-kernel/kernel/task/sched/scheduler.cpp:191:    context.m_last_cpu = cpunum;
-kernel/kernel/task/sched/fair.cpp:323:        thread->scheduling_context().m_wake_cpu = runtime.which_cpu;
-```
 
-前两处在 `Scheduler::init_first_thread()` 里——那是**一次性的引导路径**，只处理"这个 CPU
-启动时就在跑的那个线程"。此后每一次换上/换下线程都没有人再写它们。第三处在 Fair 里，
-而 bring-up 期跑的是 RR，所以那一行也到不了。
+三个分支全空。以前 `curr_cpu` 恒为 0，`set_cpu_affinity()` 里那句
+"线程可能正待在新亲和性不允许的 CPU 上"只在亲和性排除 CPU 0 时才成立；
+`m_curr_cpu` 开始被维护之后（见 `docs/changes/260910/task-sched.md`），
+任何把线程钉到它当前 CPU 之外的 `set_cpu_affinity_hard()` 都会走到这里，
+然后**什么也不发生**——线程留在一个它的硬亲和性已经不允许的 CPU 上继续跑。
 
-于是：没经过 `init_first_thread()` 的线程，这三个字段一直是默认构造的 0。
-
-**该怎么修**
-在换上线程的地方写 `m_curr_cpu`，换下时写 `m_last_cpu`——也就是 `Scheduler` 里真正
-完成切换的那一处，和 `Runtime::curr_thread` 的更新放在一起最不容易再次走散。
-`m_wake_cpu` 应当在唤醒选核时写，而不是只在 Fair 里写。
-
-对标 Linux：`task_struct::on_cpu` / `wake_cpu` / `recent_used_cpu`，都在
-`__schedule()` / `try_to_wake_up()` 这些主路径上更新。
-
-**影响到的东西**
-- `Thread::curr_cpu()` / `last_cpu()` 的每一个调用者。
-- lldb 的 `kthread` 命令会打出 `curr/last/wake_cpu all 0 -- nothing maintains them`
-  并指回这份文档；修好之后它会自动变成真正的"跑错核"告警
-  （`scripts/lldb_ours.py` 里那处判断已经写好了两条分支）。
+`Thread::Current::migrate_to()` 是现成的入口。今天树里没有调用者，所以还没咬人。

@@ -302,6 +302,16 @@ class Context: public gktl::mixin::Comparable<Context> {
         , m_rr_hook()
         , m_metric()
         , m_profile(profile)
+        // Zero, which is a lie: every reader of these three tests them against
+        // INVALID_CPU_NUM to mean "not on a CPU yet", and 0 is a perfectly
+        // good CPU number, so "nowhere" and "on the boot CPU" are the same
+        // answer here. It is left alone deliberately -- see
+        // docs/repairs/260910/task-sched.md. Initialising them honestly turns
+        // on three branches that have never executed in this tree (the else
+        // arm of Scheduler::Pi::common(), the migration check in
+        // set_cpu_affinity(), the "never ran" arm of select_target_cpu()) and
+        // the first of them faults, so it is a change that has to be made with
+        // those branches, not before them.
         , m_last_cpu()
         , m_curr_cpu()
         , m_wake_cpu()
@@ -334,11 +344,17 @@ class Context: public gktl::mixin::Comparable<Context> {
         return m_metric;
     }
 
+    /// The CPU this thread last ran on, or INVALID_CPU_NUM if it never has.
+    /// Written when it leaves a CPU, in Scheduler::put_prev_thread().
     FORCE_INLINE
     auto last_cpu() const -> CpuNum {
         return m_last_cpu;
     }
 
+    /// The CPU whose scheduler owns this thread -- running on it or queued on
+    /// it -- or INVALID_CPU_NUM if no scheduler holds it. Written by
+    /// Scheduler::enqueue_thread() and Scheduler::set_next_thread(), the two
+    /// ways a thread comes to belong to a run queue.
     FORCE_INLINE
     auto curr_cpu() const -> CpuNum {
         return m_curr_cpu;

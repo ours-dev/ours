@@ -86,3 +86,98 @@ auto Scheduler::finish_switch_context() -> void {
 `switch_context()` 里切换**之前**用的 `this`（`m_runtime.prev_thread = curr`、
 `m_runtime.curr_thread = next`、`get_lock().release()`）没有动——那些都发生在切换发生
 之前，跑在正确的 CPU 上，`this` 是对的。只有那条线以下才是新世界。
+
+## 线程终于会记下自己在哪颗 CPU 上跑（2026-09-10）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler_inline.hpp` — `set_next_thread()` / `put_prev_thread()`
+- `kernel/kernel/task/sched/scheduler.cpp` — `enqueue_thread()`
+- `kernel/include/ours/task/sched/context.hpp` — 只加注释
+
+**症状**
+四核下 cpu1 必死：
+
+```
+[3890776000 cpu1 error] Assertion failed on ctx.curr_cpu() == m_runtime.which_cpu
+```
+
+出自 `Scheduler::reschedule_common()` 里的 `assert_thread_in_scheduler(curr)`：
+正在这颗 CPU 上跑的线程，自己记的 CPU 号却不是这颗。
+
+**原因**
+全树 grep `m_curr_cpu`，**只有一处写入**：
+
+```cpp
+// scheduler.cpp:191，Scheduler::init_first_thread()
+context.m_curr_cpu = cpunum;
+```
+
+而 `init_first_thread()` 只对两种线程调用——boot 线程，和每颗 CPU 的 idler。
+**其余每一个线程，`m_curr_cpu` 从构造之后就再没被写过**：
+
+```cpp
+Context(BaseProfile profile)
+    : ...
+    , m_last_cpu()
+    , m_curr_cpu()      // = 0
+```
+
+值初始化成 0。单核下 0 永远是对的，所以断言永远成立；四核下，第一个在非 0 号 CPU 上
+真正走一次 `reschedule_common()` 的普通线程就把它打爆。
+
+为什么以前没爆？因为在 kshell 的控制台线程和用户态 shell 进来之前，每颗 AP 上通常
+只有一个可运行线程，RR 的 `update_thread()` 里那句 `if (queue.num_queued() && ...)`
+就不会请求抢占，`reschedule_common()` 根本不会被调到。可运行线程一多，它立刻显形。
+
+`m_last_cpu` 是同一个病：`select_target_cpu()` 的兜底写着
+
+```cpp
+auto const last_cpu = se.last_cpu();
+auto const starting_cpu = last_cpu == INVALID_CPU_NUM ? Cpu::id() : last_cpu;
+```
+
+——"倾向于放回它上次跑过的 CPU"。而 `m_last_cpu` 同样只有 `init_first_thread()` 写，
+所以对每个普通线程它恒等于 0，这条启发式一直在说"它上次在 CPU 0"。
+
+**改法**
+在"线程与运行队列发生关系"的两个咽喉处写：
+
+```cpp
+// scheduler_inline.hpp，set_next_thread()：即将在这颗 CPU 上运行
+ctx.m_curr_cpu = m_runtime.which_cpu;
+
+// scheduler_inline.hpp，put_prev_thread()：刚在这颗 CPU 上跑过
+ctx.m_last_cpu = m_runtime.which_cpu;
+
+// scheduler.cpp，enqueue_thread()：进了这颗 CPU 的队列
+so.m_curr_cpu = m_runtime.which_cpu;
+```
+
+`enqueue_thread()` 和 `set_next_thread()` **两处都要**：纪律会把即将运行的线程从队列里
+摘掉（`RoundRobin::set_next_thread()` 就是），所以"正在这颗 CPU 上跑"是一个
+`enqueue_thread()` 永远看不到的状态。
+
+三处都取 `m_runtime.which_cpu` 而不是 `Cpu::id()`——`enqueue_thread()` 的 `this`
+未必是正在执行的那颗 CPU，`do_unpark_thread()` 就是从唤醒方伸进目标队列的。
+
+**参照**
+Linux 的 `task_struct::on_cpu` / `wake_cpu` 由 `__schedule()` 和 `ttwu` 路径维护；
+Zircon 的 `Thread::scheduler_state().curr_cpu_` 在 `Scheduler::Insert()` 和
+`RescheduleCommon()` 里写，同样是"入队"和"选中运行"两处。
+
+**验证**
+四核 `kernel.dev.dbg_1.obi`：**零断言、零故障**，
+cpu0 8591 / cpu1 603 / cpu2 86845 / cpu3 86851，用户态 shell 在 ring 3 打印。
+`kernel.dev.obi` 四核同样起到 ring 3；单核零故障、329510 行。
+（对比：改之前 cpu1 只有 5 行就死了。）
+
+**故意没做**
+- **没有把 `m_curr_cpu` / `m_last_cpu` / `m_wake_cpu` 的初值改成 `INVALID_CPU_NUM`**，
+  尽管每一个读者都拿它和 `INVALID_CPU_NUM` 比、显然那才是"还没分配"的本意。
+  试过：它会**打开三条从来没有执行过的分支**（`Scheduler::Pi::common()` 的 else 臂、
+  `set_cpu_affinity()` 的迁移检查、`select_target_cpu()` 的"从没跑过"臂），
+  其中第一条当场解空指针。那是一次独立的、需要连着那三条分支一起做的改动，
+  单独记在 `docs/repairs/260910/task-sched.md`。
+- **没有在出队时清掉 `m_curr_cpu`**。按现在的语义它是"哪颗 CPU 的调度器拥有我"，
+  一个阻塞在等待队列上的线程其实不属于任何队列，但清掉它同样会打开上面那些分支。
+  同一条待修项。

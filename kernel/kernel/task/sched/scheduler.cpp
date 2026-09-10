@@ -685,6 +685,11 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueControl control) -> Status
         return status;
     }
 
+    // The thread is on this CPU's queue now, so this is the CPU that owns it.
+    // |this| is not necessarily the running CPU -- do_unpark_thread() enqueues
+    // into the target's queue from the waker -- which is exactly why the value
+    // comes from m_runtime and not from Cpu::id().
+    so.m_curr_cpu = m_runtime.which_cpu;
 
     if (!!(control & EnqueueControl::Restore)) {
     }

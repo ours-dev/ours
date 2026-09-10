@@ -19,6 +19,13 @@ inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
     }
 
     auto &ctx = prev->scheduling_context();
+
+    // It ran here, so this is where it last ran. Nothing wrote m_last_cpu
+    // except init_first_thread(), which only ever runs for a CPU's idler and
+    // the boot thread -- so for every ordinary thread select_target_cpu()'s
+    // "prefer where it last ran" was reading a field frozen at construction.
+    ctx.m_last_cpu = m_runtime.which_cpu;
+
     ctx.schedule()->put_prev_thread(m_runtime, prev);
 }
 
@@ -38,6 +45,13 @@ inline auto Scheduler::set_next_thread(Thread *next) -> void {
     next->set_state_running();
 
     auto &ctx = next->scheduling_context();
+
+    // The running thread belongs to this CPU. It is not enough to record this
+    // at enqueue: a discipline takes the thread it is about to run *off* its
+    // queue (RoundRobin::set_next_thread does), so "running here" is a state
+    // enqueue_thread() never sees.
+    ctx.m_curr_cpu = m_runtime.which_cpu;
+
     ctx.schedule()->set_next_thread(m_runtime, next);
 }
 } // namespace ours::task::sched
