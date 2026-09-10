@@ -5,6 +5,7 @@
 
 #include <ktl/types.hpp>
 
+#include <format>
 #include <string_view>
 
 namespace ktl {
@@ -91,6 +92,29 @@ class Name {
     // This includes the trailing NULL.
     Char name_[N]{};
 };
+
+/// Formats a name into |buffer| and hands it back NUL-terminated.
+///
+/// The terminator is the whole point. std::format_to neither bounds its writes
+/// nor terminates, and a trailing "\0" written into the *format string* does
+/// nothing -- a format string is taken as a string_view built with strlen, so
+/// the extra NUL is cut off before the formatter ever sees it. A buffer filled
+/// that way and passed to Name::set(Char const *) is read by strlen off the end
+/// of a stack local; the boot log showed it as thread names like
+/// "Dpc/0/Highal", the tail of the previous iteration's "Dpc/0/Normal" showing
+/// through.
+///
+/// format_to_n bounds the write, and its `out` is exactly where the terminator
+/// belongs. Every caller that builds a name in a stack buffer should come
+/// through here rather than repeating those two facts.
+template <usize N, typename... Args>
+auto format_name(char (&buffer)[N], std::format_string<Args...> fmt, Args &&...args)
+    -> char const * {
+    static_assert(N > 1u, "A name buffer must hold at least one character and a NUL");
+    auto const end = std::format_to_n(buffer, N - 1, fmt, static_cast<Args &&>(args)...).out;
+    *end = '\0';
+    return buffer;
+}
 
 } // namespace ktl
 

@@ -17,7 +17,6 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
-#include <ustl/fmt/format_to.hpp>
 
 namespace {
 GKTL_COUNTER(THREAD_SPAWN_COUNT, "thread.spawn");
@@ -473,29 +472,16 @@ auto Thread::Current::become_idle() -> void {
     DEBUG_ASSERT(current_thread->is_idle_thread());
     DEBUG_ASSERT(&IdleThread::Current::get().thread() == current_thread);
 
-    auto const cpunum = Cpu::id();
-    {
-        // format_to_n, and the terminator written by hand.
-        //
-        // std::format_to neither bounds its writes nor NUL-terminates, and the
-        // trailing "\0" these format strings used to carry did nothing: a
-        // format string is taken as a string_view built with strlen, so the
-        // extra NUL was cut off before the formatter ever saw it. The buffer
-        // was therefore handed to ktl::Name::set(char const *) unterminated,
-        // and that calls strlen on it -- an unbounded read off a 24-byte stack
-        // buffer, which is why the boot log showed thread names like
-        // "Dpc/0/Highal" -- the tail of the previous stack contents showing
-        // through -- rather than "Dpc/0/High".
-        char name[24];
-        auto const end = ustl::fmt::format_to_n(name, sizeof(name) - 1, "Idle[{}]", cpunum).out;
-        *end = '\0';
-        Thread::Current::set_name(name);
+    // No renaming here. IdleThread::init() already named this thread after the
+    // CPU it belongs to, and it is the only place that can name the idlers of
+    // CPUs that are not running yet -- task::init() builds all of them from the
+    // boot CPU. Formatting a second, differently-spelled name ("Idle[{}]" over
+    // "Idle/{}") on the way into the idle loop overwrote a correct name with an
+    // equivalent one and gave the convention two spellings to keep in sync.
+    Scheduler::Current::set_idling(true);
 
-        Scheduler::Current::set_idling(true);
-
-        // Mark this thread preemptible and wait other one's preemption request.
-        current_thread->preemption_state().add_pending();
-    }
+    // Mark this thread preemptible and wait other one's preemption request.
+    current_thread->preemption_state().add_pending();
 
     arch::local_irq_enable();
     current_thread->preemption_state().enable_preemption();

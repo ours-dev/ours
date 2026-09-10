@@ -1,11 +1,11 @@
 #include <arch/auto_interrupt_disabler.hpp>
+#include <ktl/name.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/idle_thread.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
-#include <ustl/fmt/format_to.hpp>
 
 using ustl::sync::MemoryOrder;
 
@@ -37,11 +37,8 @@ auto IdleThread::init(CpuNum cpunum) -> void {
         panic("Idler[{}] enter the dummy trampoline routine", cpunum);
     };
 
-    // format_to_n and an explicit terminator; see the note in
-    // Thread::Current::become_idle() for what the plain format_to left behind.
-    char name[24];
-    auto const end = ustl::fmt::format_to_n(name, sizeof(name) - 1, "Idle/{}", m_cpu).out;
-    *end = '\0';
+    char buffer[24];
+    auto const name = ktl::format_name(buffer, "Idle/{}", m_cpu);
 
     // TODO(SmallHuaZi) Assign the idle thread an unique Tid.
     //

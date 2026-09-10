@@ -1,10 +1,10 @@
 #include <gktl/init_hook.hpp>
+#include <ktl/name.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
-#include <ustl/fmt/format_to.hpp>
 #include <ustl/option.hpp>
 
 #include <new>
@@ -139,13 +139,8 @@ auto DpcRunner::init() -> void {
     auto const cpu = mm::CpuLocal::current_cpu();
 
     for (auto i = usize(0); i < static_cast<usize>(Level::Count); ++i) {
-        // format_to_n and an explicit terminator; see the note in
-        // Thread::Current::become_idle() for what the plain format_to left
-        // behind.
-        char name[24];
-        auto const end =
-            ustl::fmt::format_to_n(name, sizeof(name) - 1, "Dpc/{}/{}", cpu, LEVEL_NAMES[i]).out;
-        *end = '\0';
+        char buffer[24];
+        auto const name = ktl::format_name(buffer, "Dpc/{}/{}", cpu, LEVEL_NAMES[i]);
 
         [[maybe_unused]]
         auto const status = runner.m_dpc_queues[i].start(name, cpu);
