@@ -14,14 +14,53 @@ namespace {
     /// frame pointer cannot turn into a wild kernel read.
     constexpr u64 STACK_WINDOW = 0x1'0000;
 
+    static_assert(STACK_WINDOW >= sizeof(u64),
+                  "the window must hold at least one slot, or hi - sizeof(u64) underflows");
+
     struct StackWindow final {
         u64 lo;
         u64 hi;
+
+        /// Builds the window above `sp`, saturating at the top of the address
+        /// space.
+        ///
+        /// `sp + STACK_WINDOW` is not safe to write plainly: a stack pointer
+        /// near the top would wrap the end to a low address, and every bounds
+        /// check against it afterwards would pass. `sp` comes out of an
+        /// interrupted CPU's trap frame, so it is exactly the kind of value
+        /// this window exists to distrust.
+        [[nodiscard]]
+        static auto above(u64 sp) -> StackWindow {
+            u64 const room = ~u64{0} - sp;
+            return StackWindow{
+                .lo = sp,
+                .hi = room < STACK_WINDOW ? ~u64{0} : sp + STACK_WINDOW,
+            };
+        }
     };
 
+    /// Reads one word of the interrupted thread's stack, refusing anything
+    /// outside the window.
+    ///
+    /// The comparison is deliberately written as `address > hi - sizeof(u64)`
+    /// rather than `hi < address + sizeof(u64)`. `address` is an unwound frame
+    /// pointer, i.e. the one input here that may be arbitrary: near the top of
+    /// the address space `address + 8` wraps to a small number, `hi` compares
+    /// greater, and the check the comment above this window promised -- that a
+    /// corrupt frame pointer cannot become a wild kernel read -- silently
+    /// stopped holding. `hi - sizeof(u64)` cannot underflow because the window
+    /// is at least that wide (static_assert above) and `above()` never wraps.
+    ///
+    /// Alignment is checked for the same reason. x86 tolerates an unaligned
+    /// load, but this library is built for arm and riscv too, where the same
+    /// corrupt pointer would fault inside an interrupt handler instead of
+    /// being rejected.
     auto kernel_stack_read(void *context, u64 address, u64 *out) -> bool {
         auto const *window = static_cast<StackWindow const *>(context);
-        if (address < window->lo || window->hi < address + 8) {
+        if (address < window->lo || address > window->hi - sizeof(u64)) {
+            return false;
+        }
+        if ((address % alignof(u64)) != 0) {
             return false;
         }
         *out = *reinterpret_cast<u64 const *>(address);
@@ -40,10 +79,7 @@ auto Sampler::unwind_context(SampleContext const &context, SampleRecord *record)
         .sp = context.sp,
         .bp = context.bp,
     };
-    StackWindow window{
-        .lo = context.sp,
-        .hi = context.sp + STACK_WINDOW,
-    };
+    auto window = StackWindow::above(context.sp);
     unwind::MemoryReader const reader{&window, &kernel_stack_read};
     unwind::Unwinder const unwinder(&m_eh_section, 1, &m_fde_index);
 
