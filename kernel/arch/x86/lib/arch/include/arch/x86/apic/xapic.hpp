@@ -61,17 +61,13 @@ class XApic final {
     }
 
     auto enable_tsc(IrqVec vector, TscMode mode = TscMode::OneShot) noexcept -> void {
-        auto value = read_reg(XApicRegType::LvtTimer);
-        value &= ~(VECTOR_MASK | TIMER_MODE_MASK | INTERRUPT_MASK);
-        value |= static_cast<u32>(vector) & VECTOR_MASK;
-        value |= static_cast<u32>(mode) << 17;
-        write_reg(XApicRegType::LvtTimer, value);
+        update_reg(XApicRegType::LvtTimer, VECTOR_MASK | TIMER_MODE_MASK | INTERRUPT_MASK,
+                   (static_cast<u32>(vector) & VECTOR_MASK) | (static_cast<u32>(mode) << 17));
     }
 
     auto disable_tsc(IrqVec vector) noexcept -> void {
-        auto value = read_reg(XApicRegType::LvtTimer);
-        value = (value & ~VECTOR_MASK) | (static_cast<u32>(vector) & VECTOR_MASK) | INTERRUPT_MASK;
-        write_reg(XApicRegType::LvtTimer, value);
+        update_reg(XApicRegType::LvtTimer, VECTOR_MASK,
+                   (static_cast<u32>(vector) & VECTOR_MASK) | INTERRUPT_MASK);
     }
 
     auto set_tsc_deadline(u64 deadline) noexcept -> void {
@@ -99,11 +95,8 @@ class XApic final {
     /// `APIC_SPIV_APIC_ENABLED | SPURIOUS_APIC_VECTOR`, on every CPU
     /// including the boot one.
     auto enable(IrqVec spurious_vector) noexcept -> void {
-        auto value = read_reg(XApicRegType::SpuriousVector);
-        value &= ~VECTOR_MASK;
-        value |= static_cast<u32>(spurious_vector) & VECTOR_MASK;
-        value |= SOFTWARE_ENABLE;
-        write_reg(XApicRegType::SpuriousVector, value);
+        update_reg(XApicRegType::SpuriousVector, VECTOR_MASK,
+                   (static_cast<u32>(spurious_vector) & VECTOR_MASK) | SOFTWARE_ENABLE);
     }
 
     auto issue_eoi() noexcept -> void {
@@ -137,11 +130,23 @@ class XApic final {
     }
 
     auto mask(XApicRegType type) noexcept -> void {
-        write_reg(type, read_reg(type) | INTERRUPT_MASK);
+        update_reg(type, 0, INTERRUPT_MASK);
     }
 
     auto unmask(XApicRegType type) noexcept -> void {
-        write_reg(type, read_reg(type) & ~INTERRUPT_MASK);
+        update_reg(type, INTERRUPT_MASK, 0);
+    }
+
+    /// Read-modify-write of one APIC register: clear the |clear| bits, then
+    /// set the |set| bits.
+    ///
+    /// Every write to an APIC register in this class is that shape -- an LVT
+    /// entry is a vector packed beside mode and mask bits that the write must
+    /// preserve -- and it had been spelled out longhand five times. Naming it
+    /// also names the ordering: clear first, then set, so a caller that lists
+    /// a bit in both means "set it".
+    auto update_reg(XApicRegType type, u32 clear, u32 set) noexcept -> void {
+        write_reg(type, (read_reg(type) & ~clear) | set);
     }
 
     [[nodiscard]]

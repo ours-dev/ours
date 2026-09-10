@@ -91,3 +91,51 @@ CPU 都写，不区分 BSP。
   QEMU 的 q35 + IOAPIC 下不构成问题，真机上要补。记在
   `docs/repairs/260909/x86-apic.md`。
 - 没有写 TPR。复位值是 0（接受全部优先级），够用。
+
+## APIC 寄存器的读-改-写收成一个 `update_reg()`（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/xapic.hpp`
+
+**症状**
+不是 bug。昨天新加的 `enable()` 是这个类里第**五**份同样的读-改-写：
+
+```cpp
+auto value = read_reg(XApicRegType::SpuriousVector);
+value &= ~VECTOR_MASK;
+value |= static_cast<u32>(spurious_vector) & VECTOR_MASK;
+value |= SOFTWARE_ENABLE;
+write_reg(XApicRegType::SpuriousVector, value);
+```
+
+`enable_tsc()`、`disable_tsc()`、`mask()`、`unmask()` 是同一个形状。
+
+**原因**
+APIC 寄存器本来就长这样：一条 LVT 表项里，向量号和模式位、屏蔽位挤在同一个 32 位字里，
+所以**任何**写入都必须先读回来、保住不该动的位。这是这个类的基本操作，
+不是某个方法的实现细节，把它写五遍等于把"先清后置"这个顺序也复述五遍——
+而顺序是有意义的：同一位既在 `clear` 又在 `set` 里，含义是"置上"。
+
+**改法**
+```cpp
+auto update_reg(XApicRegType type, u32 clear, u32 set) noexcept -> void {
+    write_reg(type, (read_reg(type) & ~clear) | set);
+}
+```
+五个调用点各缩成一句，语义逐位对照过，没有变化。例如：
+
+```cpp
+auto enable_tsc(IrqVec vector, TscMode mode = TscMode::OneShot) noexcept -> void {
+    update_reg(XApicRegType::LvtTimer, VECTOR_MASK | TIMER_MODE_MASK | INTERRUPT_MASK,
+               (static_cast<u32>(vector) & VECTOR_MASK) | (static_cast<u32>(mode) << 17));
+}
+```
+
+**参照**
+Linux 的 `apic_write(reg, (apic_read(reg) & ~mask) | bits)` 在
+`arch/x86/kernel/apic/apic.c` 里到处是同一个形状；这里只是给它一个名字。
+
+**验证**
+四核引导：APIC timer 正常标定（1000005061 Hz），三颗 AP 上线，
+cpu0 8589 / cpu1 597 / cpu2 85684 / cpu3 85631，无断言失败。
+`enable_tsc`／`disable_tsc` 走的是 LVT Timer，标定那行日志能出来就说明它们没坏。
