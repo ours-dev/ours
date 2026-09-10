@@ -1,6 +1,6 @@
 ---
 name: modern-cpp-development
-description: Style rules and this repo's actual C++20/23 kernel conventions — error handling (ustl::Result/ours::Status), ownership (Rc/Arc/Weak, no unique_ptr), locking annotations, namespacing, and build-time polymorphism
+description: Style rules and this repo's actual C++20/23 kernel conventions — object orientation (encapsulation, one owner per invariant, composition not inheritance), error handling (ustl::Result/ours::Status), ownership (Rc/Arc/Weak, no unique_ptr), locking annotations, namespacing, and build-time polymorphism
 ---
 
 # Modern C++ Development
@@ -136,6 +136,56 @@ This repo has three library tiers, not one flat "the STL":
 1. Library code (`ustl`, `ktl`, `gktl`, `lockdep`, `obi`) stays in its own flat namespace matching its directory. Don't nest a library's namespace under `ours::`.
 
 1. Wrap translation-unit-local helpers in an unnamed `namespace { ... }` block rather than marking them `static` — this is pervasive in the codebase (100+ occurrences under `kernel/`), e.g. `kernel/phys/module-loader.cpp:16-37`. Genuinely internal-but-cross-TU code goes in a nested `priv` or `detail` sub-namespace instead (e.g. `kernel/include/ours/sync/rwlock.hpp`, `kernel/mm/include/ours/mm/pmm.hpp`).
+
+### Object orientation
+
+Model with objects. This is the default for anything with state: a type owns
+its data *and* the invariants over that data, and its public interface says
+what callers may ask of it, not what it happens to hold. Reach for a free
+function only when there is no state to guard.
+
+1. **The object owns its invariant, and it is the only one who does.** If two
+   places can each answer "what is this thing's X", one of them will
+   eventually answer differently. `Thread::Current::fault()` reads
+   `m_user_thread->process().aspace()` while `Scheduler::switch_context()`
+   reads `Thread::m_aspace`, so a page fault resolves against one address
+   space while CR3 is loaded from another — the same question with two
+   owners (`docs/repairs/260910/mm-aspace.md`). The fix is not to keep them
+   in sync; it is to have one owner and let the other ask it.
+
+1. **State is private; the interface is verbs.** `PreemptionState`
+   (`kernel/include/ours/task/preemption_state.hpp`) keeps its packed counter
+   and pending mask private and exposes `disable_preemption()`,
+   `enable_preemption()`, `add_pending()` — callers say what they want to
+   happen, not which bit to flip. A `struct` whose fields are poked by
+   whoever holds it has moved its invariant into every call site, where no
+   one is responsible for it.
+
+1. **A constructor establishes the invariant; nothing else may skip it.**
+   `DpcRunner::init()` used CpuLocal's zero-filled storage directly, so its
+   intrusive list header was `{null, null}` rather than self-pointing, and
+   the first enqueue wrote through a null pointer. Zeroed memory is not a
+   constructed object. Per-CPU objects in this tree are placement-new'd for
+   exactly this reason — `Scheduler::init()` opens with `new (this) Self()`.
+
+1. **"OOP" here does not mean inheritance.** Inheritance is not a code-reuse
+   mechanism in this repo: reuse comes from composition (see "Composition
+   over inheritance" above), and a base class is justified only by a
+   genuinely open, runtime-selected hierarchy, or by CRTP injecting behaviour
+   with no vtable. `VmAspace` *composes* `ArchVmAspace m_arch` rather than
+   deriving from it; `ustl::RefCounted<Self, Policy>` is inherited because it
+   is CRTP and costs nothing at runtime. If a base class exists only so two
+   types can share a function body, make it a member instead.
+
+1. **Nor does it mean a class per concept.** A "manager" holding no state and
+   a class whose methods never touch `this` are namespaces wearing a
+   costume — write a namespace, or free functions in a `detail`/`priv`
+   sub-namespace. The test is whether there is an invariant to guard.
+
+1. **Prefer a named type over a bare primitive when the primitive has rules.**
+   A `CpuNum` that may be `INVALID_CPU_NUM`, an offset that must be page
+   aligned, a handle value that carries a generation — each is a place where
+   a type can enforce what a comment otherwise has to ask for.
 
 ### Build-time polymorphism over virtual dispatch
 
