@@ -1,3 +1,4 @@
+#include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/dpc.hpp>
 #include <ours/lockdep.hpp>
@@ -120,24 +121,25 @@ auto DpcRunner::Queue::do_work() -> i32 {
     return 0;
 }
 
-auto DpcRunner::init() -> void {
-    auto &runner = Current::get();
+/// Construct |cpu|'s runner before anything touches it. CpuLocal hands out
+/// zero-filled storage, and a zeroed Queue is not an empty Queue: its
+/// intrusive list header is {null, null} rather than self-pointing, and its
+/// Event's canary is 0. Nothing notices until the first enqueue -- do_work()
+/// parks on the event without ever inspecting the list, and List::insert()
+/// does not consult empty(), it links against the header directly, so
+/// link_before() writes through the header's null prev and takes a page
+/// fault at the first Dpc ever queued.
+///
+/// Every other per-CPU object in this tree is built the same way:
+/// Scheduler::init() opens with `new (this) Self()`, IdleThread::init() with
+/// `new (this) IdleThread(cpunum)`, IpiService::init() with a placement-new
+/// per possible CPU.
+auto DpcRunner::init(CpuNum cpu) -> void {
+    new (&Current::get(cpu)) Self();
+}
 
-    // Construct this CPU's runner before touching it. CpuLocal hands out
-    // zero-filled storage, and a zeroed Queue is not an empty Queue: its
-    // intrusive list header is {null, null} rather than self-pointing, and
-    // its Event's canary is 0. Nothing noticed until the first enqueue --
-    // do_work() parks on the event without ever inspecting the list, and
-    // List::insert() does not consult empty(), it links against the header
-    // directly, so link_before() wrote through the header's null prev and
-    // took a page fault at the first Dpc ever queued.
-    //
-    // Every other per-CPU object in this tree is built the same way:
-    // Scheduler::init() opens with `new (this) Self()`, IdleThread::init()
-    // with `new (this) IdleThread(cpunum)`. This one simply never did.
-    new (&runner) Self();
-
-    auto const cpu = mm::CpuLocal::current_cpu();
+auto DpcRunner::start_workers(CpuNum cpu) -> void {
+    auto &runner = Current::get(cpu);
 
     for (auto i = usize(0); i < static_cast<usize>(Level::Count); ++i) {
         char buffer[24];
@@ -164,32 +166,44 @@ auto DpcRunner::cancel(Dpc &dpc) -> Status {
 }
 
 namespace {
-    /// This CPU's Dpc workers go live as soon as there is a scheduler to run
-    /// them on.
+    /// Every possible CPU's runner, and the boot CPU's workers.
     ///
-    /// DpcRunner::init() documents that every CPU must call it on itself once
-    /// during its own bring-up -- and nothing ever did. Queue::start() is its
-    /// only caller and takes the only address of Queue::do_work(), so with no
-    /// caller the linker dropped both: neither symbol existed in the image.
-    /// The queues were therefore never started, and Thread::Current::exit()
-    /// enqueued the teardown Dpc onto one, which faulted.
+    /// Threading is the first level at which either can run: the workers are
+    /// threads, and task::init() -- which builds the schedulers and each CPU's
+    /// idler -- is what main.cpp finishes immediately before publishing this
+    /// level. Registered as a hook rather than called from main.cpp so the
+    /// dependency lives next to the code that has it; the tick's
+    /// start_legacy_tick() sits on the same level for the same reason.
     ///
-    /// Threading is the first level at which this can run: init() spawns a
-    /// thread per Level, and task::init() -- which builds the schedulers and
-    /// each CPU's idler -- is what main.cpp finishes immediately before
-    /// publishing this level. Registered as a hook rather than called from
-    /// main.cpp so the dependency lives next to the code that has it; the
-    /// tick's start_legacy_tick() sits on the same level for the same reason.
-    ///
-    /// This covers the boot CPU only, which is what a hook can do -- hooks run
-    /// on whoever publishes the level, and init() resolves Current::get() and
-    /// current_cpu() against the running CPU by design. A secondary CPU still
-    /// owes itself this call from its own bring-up path.
+    /// The *storage* is built for every possible CPU here, not just the boot
+    /// one, because a Dpc can be enqueued on a CPU long before that CPU has
+    /// anything to drain it -- and enqueueing onto zeroed storage faults. This
+    /// used to build only the running CPU's, with a comment saying a secondary
+    /// still owed itself the call from its own bring-up path; nothing ever
+    /// paid it, so the first thread to exit on an AP took a page fault in
+    /// DpcRunner::Queue::enqueue().
     INIT_CODE
-    auto start_dpc_runner() -> void {
-        DpcRunner::init();
+    auto init_dpc_runners() -> void {
+        cpu_possible_mask().for_each([](CpuNum cpu) { DpcRunner::init(cpu); });
+
+        // Only the boot CPU's workers, because it is the only CPU online at
+        // this level; the rest follow at Platform, below.
+        DpcRunner::start_workers(Cpu::id());
     }
-    GKTL_INIT_HOOK(DpcRunnerInit, start_dpc_runner, gktl::InitLevel::Threading);
+    GKTL_INIT_HOOK(DpcRunnerInit, init_dpc_runners, gktl::InitLevel::Threading);
+
+    /// The secondaries' workers, once x86_bring_aps() has actually started
+    /// them. A worker is pinned to its CPU with set_cpu_affinity_hard(), and
+    /// resume() places a thread through select_target_cpu(), whose candidate
+    /// sets are all subsets of the online mask -- so a worker pinned to a CPU
+    /// that is not online yet has nowhere to be put.
+    INIT_CODE
+    auto start_secondary_dpc_workers() -> void {
+        auto secondaries = Cpu::online_mask();
+        secondaries.set(Cpu::id(), false);
+        secondaries.for_each([](CpuNum cpu) { DpcRunner::start_workers(cpu); });
+    }
+    GKTL_INIT_HOOK(DpcSecondaryWorkers, start_secondary_dpc_workers, gktl::InitLevel::Platform);
 } // namespace
 
 } // namespace ours

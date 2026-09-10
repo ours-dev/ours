@@ -124,10 +124,19 @@ class DpcRunner {
     using Current = mm::CpuLocal::Current<DpcRunner>;
     using Level = DpcPriority;
 
-    /// Starts this CPU's worker threads, one per `Level`. Every CPU must
-    /// call this on itself once, during its own bring-up, after
-    /// threading is up.
-    static auto init() -> void;
+    /// Builds |cpu|'s runner. Storage only -- no threads are spawned, so this
+    /// is safe for a CPU that has not been started yet, and must run for every
+    /// possible CPU before anything can enqueue.
+    static auto init(CpuNum cpu) -> void;
+
+    /// Starts |cpu|'s worker threads, one per `Level`.
+    ///
+    /// Separate from init() because it spawns, and a spawned thread pinned to
+    /// a CPU cannot be placed until that CPU is online: resume() routes
+    /// through select_target_cpu(), which only ever answers with an online
+    /// CPU, so pinning a worker to a secondary before init_platform() has
+    /// started it leaves the selection with an empty candidate set.
+    static auto start_workers(CpuNum cpu) -> void;
 
     /// Queues `dpc` on the calling CPU's `level` worker.
     ///
