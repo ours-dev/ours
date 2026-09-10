@@ -70,18 +70,7 @@ auto Scheduler::reschedule(CpuNum cpu) -> void {
 要么补成真的（本地就置 pending、远程就走 `IpiService::send_resched`，
 也就是 `reschedule_mask()` 的单 CPU 版），要么删掉。
 
-## 5. `ISchedule::num_queued()` 拿不到 `Runtime`
-
-**严重程度**：低。
-
-`kernel/include/ours/task/sched/schedule.hpp:127` 是纯虚，签名里没有 `Runtime`，
-所以实现只能去问 `Scheduler::Current::get()`——当前 CPU。它唯一的调用者
-`Scheduler::pick_next_thread()` 问的确实是自己这颗，所以现在是对的，
-但这是这个文件里唯一一处"靠调用者恰好在对的 CPU 上"的地方，和第 1 条是同一个坑。
-
-哪天要问远程 CPU 的队列深度，先把 `Runtime &` 加进签名。
-
-## 6. `Cpu::is_online()` 读的是普通变量，写在另一颗 CPU 上
+## 5. `Cpu::is_online()` 读的是普通变量，写在另一颗 CPU 上
 
 **严重程度**：中，竞态。
 
@@ -93,3 +82,46 @@ auto Scheduler::reschedule(CpuNum cpu) -> void {
 
 对照：`Scheduler::STATES` 是 `std::array<std::atomic<CpuMask>, N>`，同一件事那边做对了。
 `Cpu::STATES` 该照着改。
+
+## 6. 跨 CPU 唤醒总是发 IPI，丢掉了刚算出来的抢占结论
+
+**严重程度**：中，性能。
+
+`Scheduler::do_unpark_thread()` 会调 `unpark_preempt()` 判断被唤醒的线程要不要抢占
+目标 CPU 正在跑的那个，然后 `unpark_preempt()` **返回 void**，
+`unpark_thread()` 无条件 `to_resched.set(target_cpu)`。
+
+于是每一次"不该抢占"的跨 CPU 唤醒都要付：唤醒方一次 ICR 写加 delivery-status 自旋，
+目标一次中断进入和 EOI，而且因为 `x86_handle_ipi_resched()`
+（`kernel/arch/x86/kernel/mp.cpp`）无条件调 `add_pending()`，
+目标还会跑一整趟 `reschedule_common()`，可能白白切一次上下文。
+
+**怎么修**：把结论从 `unpark_preempt()` / `do_unpark_thread()` 传出来，只有为真时
+才 `to_resched.set(target_cpu)`。`unpark_preempt()` 在目标当前线程上置的 pending 位
+仍然是对的机制，IPI 只是通知，应该跟同一个条件走。
+
+**参照**：Zircon `Scheduler::Unblock()` —— `if (target->IsPreemptRequired(...)) mp_reschedule(...)`。
+
+**没有顺手改的原因**：这是唤醒协议的行为改动（少发 IPI 意味着"谁负责最终把目标叫醒"
+的责任转移），错了会表现成偶发的唤醒丢失，不适合在一次以质量为目的的清理里做。
+
+## 7. `Runtime` 的可变字段没有锁注解
+
+**严重程度**：中。
+
+`kernel/include/ours/task/sched/runtime.hpp` 里的 `curr_thread`、`prev_thread`、
+`next_thread`、`num_queued_threads`、`total_weight`、`curr_started_time`、`driver`
+都由 `rqlock` 保护，但没有 `TA_GUARDED(rqlock)`；`Scheduler::unpark_preempt()` 也没有
+`TA_REQUIRES(get_lock())`——它读的是**远程** CPU 的 `m_runtime.curr_thread`，
+安全性完全依赖唯一的调用者恰好持着那把锁。
+
+昨天删掉的那两条 `which_cpu == Cpu::id()` 断言，本来想表达的就是"这里有个不变量"，
+只是表达错了对象。正确的不变量是"调用者持有**目标**的运行队列锁"，
+而这个不变量是可以被静态检查的。
+
+**怎么修**：给 `Runtime` 的可变字段加 `TA_GUARDED(rqlock)`，给 `unpark_preempt()` 加
+`TA_REQUIRES(get_lock())`。规则写在数据上一次，胜过在每个函数上写一遍。
+副作用是 `select_target_cpu()` 里那次**故意不加锁**的 `num_runnable()` 读会被标出来，
+需要显式写成一次带注解的豁免——那正是它应该有的样子，而不是靠一段注释。
+
+**没有顺手改的原因**：会连锁到 `Scheduler` 的一大片方法和两个纪律，超出这次清理的范围。
