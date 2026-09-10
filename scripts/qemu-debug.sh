@@ -116,34 +116,86 @@ def normalise(label):
 # unique key rather than an ambiguous one.
 owned = {normalise(k["package"]) for k in info["kernel_images"]}
 
-candidates = {}
+MARKER = "//build/switch/set/"
+
+
+def switchset_of(kernel):
+    """The directory under //build/switch/set that built this kernel."""
+    label = kernel["label"]
+    return label.split(MARKER, 1)[1].split(":", 1)[0] if MARKER in label else None
+
+
+# Everything the directory describes, then the product's share of it. Both are
+# kept: an image outside the product is not a candidate, but knowing it exists
+# is what lets a wrong answer below say something better than "no".
+candidates, foreign, broken = {}, {}, []
 for manifest in sorted(glob.glob(os.path.join(out, "*.debug.json"))):
     records = json.load(open(manifest))
     identity = next((r for r in records if "obi" in r), None)
+    if identity is None:
+        continue
     kernels = [r for r in records if r.get("environment") == "kernel"]
-    if identity is None or len(kernels) != 1:
+
+    # Not `continue`: an image whose kernel cannot be identified is a thing
+    # someone just changed, and silently dropping it out of the menu is the
+    # worst possible way to report that. Collected and named instead.
+    if len(kernels) != 1 or switchset_of(kernels[0]) is None:
+        broken.append((identity["image"], kernels))
         continue
-    if identity["label"] not in owned:
-        continue
-    # The switchset is the directory under //build/switch/set that built the
-    # kernel, read off the toolchain in its label -- not a name this script or
-    # the product keeps a copy of.
-    label = kernels[0]["label"]
-    marker = "//build/switch/set/"
-    if marker not in label:
-        continue
-    candidates[label.split(marker, 1)[1].split(":", 1)[0]] = (identity, kernels[0])
+
+    where = candidates if identity["label"] in owned else foreign
+    got = switchset_of(kernels[0])
+
+    # Two images of one product in one switchset make the switchset ambiguous,
+    # and picking either would be a coin toss the caller never sees. The third
+    # level stops being a key at that point, so say so rather than answer.
+    if got in where:
+        where[got] = ("AMBIGUOUS", where[got], (identity, kernels[0]))
+    else:
+        where[got] = (identity, kernels[0])
+
+if not candidates and not foreign:
+    if broken:
+        die(*[f"{out} describes no image this script can resolve; every one of them"
+              " has an ambiguous kernel:"]
+             + [f"  {n}: {len(k)} ELFs in the kernel environment"
+                + (" -- " + ", ".join(e["label"] for e in k) if k else "")
+                for n, k in broken]
+             + ["a bootable image is expected to carry exactly one kernel; a second"
+                " kernel_package would do this"])
+    die(f"{out} describes no images at all",
+        f"has 'prebuilt/ninja/ninja -C {out}' been run?")
 
 if not candidates:
     die(f"{out} describes no image belonging to product '{product}'",
-        f"has 'prebuilt/ninja/ninja -C {out}' been run?")
+        "it does describe: "
+        + ", ".join(f"{i['image']} ({s})" for s, (i, _) in sorted(foreign.items())),
+        f"add one to products/{product}.gni to reach it from here")
 
-if switchset not in candidates:
-    have = ", ".join(f"{s} ({i['image']})" for s, (i, _) in sorted(candidates.items()))
-    die(f"product '{product}' has no image built in switchset '{switchset}'",
-        f"it offers: {have}")
+chosen = candidates.get(switchset)
 
-identity, kernel = candidates[switchset]
+if isinstance(chosen, tuple) and chosen and chosen[0] == "AMBIGUOUS":
+    names = ", ".join(i["image"] for i, _ in chosen[1:])
+    die(f"product '{product}' has more than one image in switchset '{switchset}': {names}",
+        "the switchset stops identifying an image once two of them share it;",
+        "give one of them its own switchset, or select by image name instead")
+
+if chosen is None:
+    have = ", ".join(f"{s} ({i['image']})"
+                     for s, v in sorted(candidates.items()) if v[0] != "AMBIGUOUS"
+                     for i in (v[0],))
+    lines = [f"product '{product}' has no image built in switchset '{switchset}'",
+             f"it offers: {have}"]
+    if switchset in foreign:
+        other = foreign[switchset]
+        name = other[1][0]["image"] if other[0] == "AMBIGUOUS" else other[0]["image"]
+        lines.append(f"note: {name} is built in '{switchset}' but belongs to no product")
+    if broken:
+        lines.append("note: ignored " + ", ".join(
+            f"{n} ({len(k)} kernel ELFs)" for n, k in broken))
+    die(*lines)
+
+identity, kernel = chosen
 print(os.path.join(out, identity["obi"]))
 print(os.path.join(out, kernel["debug"]))
 print(identity["image"])

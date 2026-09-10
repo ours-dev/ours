@@ -152,8 +152,32 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(ROOT))
     if result.returncode == 0:
+        _refresh_debug_menu()
         print(f"Build:   ninja -C {out_dir} //products/{product}:{product}")
     return result.returncode
+
+
+def _refresh_debug_menu() -> None:
+    """Keep the editor's F5 menu in step with the tree.
+
+    VS Code cannot compute a pickString's options, so the three dropdowns in
+    ours.code-workspace are literal lists; this is where they get rewritten, so
+    that adding a product or a switchset shows up without anyone remembering.
+    Here rather than in a build rule because the lists come from the source
+    tree, not from a build directory -- and because this is the command people
+    already run after changing the shape of the build.
+
+    Never fatal: it is a convenience on top of a `gn gen` that has already
+    succeeded, and failing the configure step over a menu would be backwards.
+    """
+    script = ROOT / "tools" / "gen_debug_menu.py"
+    if not script.is_file():
+        return
+    try:
+        subprocess.run([sys.executable, str(script), "--quiet"], cwd=str(ROOT),
+                       check=False)
+    except OSError as exc:
+        print(f"note: could not refresh the debug menu: {exc}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:

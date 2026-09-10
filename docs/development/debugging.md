@@ -95,12 +95,35 @@ switchset 也从这里读——内核那条 label 的 toolchain 部分就是
 差 `0xE000`（56 KiB）——断点全落在不相干的代码上；更糟的是 dbg.0 的 `vmours` 已经不是
 构建目标了（`ninja -t query` 报 unknown），是个不会再被重建的陈旧文件。
 
-三个下拉框的选项还是手写的——VS Code 没法动态生成 `pickString` 的选项，不装第三方扩展
-做不到。但它们**只写名字，不写路径也不写配对**，而且写错了脚本会把构建里真有的列出来：
+三个下拉框的选项是**生成的**。VS Code 没法动态计算 `pickString` 的选项（不装第三方扩展
+做不到），所以它们必须是工作区文件里的字面列表——那就让 `tools/gen_debug_menu.py` 来写，
+而不是人来写：
+
+| 层 | 它从哪儿读 |
+|---|---|
+| 产品 | `products/*.gni` |
+| 架构 | `tools/set.py` 的 `VALID_CPUS` |
+| switchset | `build/switch/set/*/BUILD.gn` 里实例化了 `kernel_switchset` 的那些 |
+
+第三条是**筛**出来的不是 glob 出来的：`//build/switch/set` 下还有 phys 的 switchset
+（`phys.dbg_0`），而内核镜像的内核永远不在那里面编译。判据是这个目录实例化的是哪个模板，
+和 GN 自己的判据一样。
+
+`tools/set.py` 每次 `gn gen` 成功后会顺手跑一遍，所以**新增一个产品或 switchset，重新
+`tools/set.py` 一下菜单就有了**；没变化就不写文件，不制造 git 噪音。手动跑：
+
+```bash
+tools/gen_debug_menu.py            # 需要就改写
+tools/gen_debug_menu.py --check    # 只检查，过期则退出码 1
+```
+
+它**不看任何 `out/` 目录**：菜单是"可以问什么"的列表，而一个构建目录只知道自己被配置成
+的那一个产品和架构，拿它生成会把菜单缩成"上次配了什么"。某个具体组合到底存不存在是
+`scripts/qemu-debug.sh` 的事，它答不上来时会把真的有的列出来：
 
 ```
-$ ./scripts/qemu-debug.sh bringup x86 dbg.7
-qemu-debug: product 'bringup' has no image built in switchset 'dbg.7'
+$ ./scripts/qemu-debug.sh bringup x86 dbg.2
+qemu-debug: product 'bringup' has no image built in switchset 'dbg.2'
 qemu-debug: it offers: dbg.0 (kernel.dev), dbg.1 (kernel.dev.dbg_1)
 
 $ ./scripts/qemu-debug.sh bringup arm dbg.1
@@ -108,6 +131,38 @@ qemu-debug: no build directory at .../out/bringup.arm
 qemu-debug: configure it with:  tools/set.py bringup.arm
 qemu-debug: products the tree defines: bringup
 ```
+
+## 新增了一个 kernel_image / kernel_package 会怎样
+
+**镜像清单这一侧全自动**：`kernel_image()` 模板自己写 `<镜像名>.debug.json`，新镜像不需要
+碰任何脚本。菜单那一侧跑一次 `tools/set.py` 就跟上。剩下三种情况脚本会明确告诉你，而不是
+装作没看见：
+
+**新镜像加进了产品，但和已有镜像撞了 switchset**——第三层不再能唯一确定一个镜像：
+
+```
+qemu-debug: product 'bringup' has more than one image in switchset 'dbg.0': one, two
+qemu-debug: the switchset stops identifying an image once two of them share it;
+qemu-debug: give one of them its own switchset, or select by image name instead
+```
+
+**新镜像没加进任何产品**（像 `fake` 那样）——三层选择够不着它，但它会被点名：
+
+```
+qemu-debug: product 'bringup' has no image built in switchset 'dbg.1'
+qemu-debug: it offers: dbg.0 (one)
+qemu-debug: note: newbie is built in 'dbg.1' but belongs to no product
+```
+
+**一个镜像里塞进了第二个 kernel_package，于是有两个内核环境的 ELF**——分不出哪个是内核：
+
+```
+qemu-debug: .../B describes no image this script can resolve; every one of them has an ambiguous kernel:
+qemu-debug:   one: 2 ELFs in the kernel environment -- //k:a(...dbg.0), //k:b(...dbg.0)
+qemu-debug: a bootable image is expected to carry exactly one kernel; a second kernel_package would do this
+```
+
+这三条以前的行为分别是：**静默挑一个**、**静默看不见**、**整个镜像被跳过然后怪构建没跑**。
 
 不需要任何安装。调试适配器是 `llvm-vs-code-extensions.lldb-dap` 扩展（已装），它经
 `xcrun` 找到系统的 `lldb-dap`；QEMU、GRUB、clang 全部来自 `//prebuilt`。
