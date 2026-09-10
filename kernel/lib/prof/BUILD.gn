@@ -35,8 +35,8 @@ source_set("prof") {
 group("tests") {
   testonly = true
   public_deps = [
-    "tests:format($host_toolchain)",
-    "tests:sampler($host_toolchain)",
+    "test:format($host_toolchain)",
+    "test:sampler($host_toolchain)",
   ]
 }
 

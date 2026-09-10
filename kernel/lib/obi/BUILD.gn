@@ -35,16 +35,16 @@ group("tests") {
     # Plain hosted programs — they must build in the host toolchain; the
     # default toolchain carries target identity (freestanding kernel) and
     # has no hosted libc wiring for them.
-    "//kernel/lib/obi/tests:boot-options-smoke($host_toolchain)",
-    "//kernel/lib/obi/tests:cli-smoke($host_toolchain)",
-    "//kernel/lib/obi/tests:container-view-test($host_toolchain)",
-    "//kernel/lib/obi/tests:differential-smoke($host_toolchain)",
-    "//kernel/lib/obi/tests:lz4-wrapper-smoke($host_toolchain)",
-    "//kernel/lib/obi/tests:memory-config-smoke($host_toolchain)",
-    "//kernel/lib/obi/tests:obi-smoke($host_toolchain)",
-    "//kernel/lib/obi/tests:pack-smoke($host_toolchain)",
-    "//kernel/lib/obi/tests:package-builder-test($host_toolchain)",
-    "//kernel/lib/obi/tests:parser-fuzz-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:boot-options-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:cli-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:container-view-test($host_toolchain)",
+    "//kernel/lib/obi/test:differential-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:lz4-wrapper-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:memory-config-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:obi-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:pack-smoke($host_toolchain)",
+    "//kernel/lib/obi/test:package-builder-test($host_toolchain)",
+    "//kernel/lib/obi/test:parser-fuzz-smoke($host_toolchain)",
   ]
 
   # The nested-package smoke/view tests were removed with the reverted

@@ -24,7 +24,7 @@ source_set("self-test") {
 }
 
 # To run the assembly macro tests manually:
-#   kernel/lib/code_patching/tests/run_tests.sh
+#   kernel/lib/code_patching/test/run_tests.sh
 
 foreach(test_target,
         [

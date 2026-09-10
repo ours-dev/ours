@@ -16,7 +16,7 @@ executable("build-id-note-smoke") {
   visibility = [ "*" ]
 }
 
-# BootObi's boot-contract behavior (moved from kernel/lib/obi/tests --
+# BootObi's boot-contract behavior (moved from kernel/lib/obi/test --
 # obi's own PackageBuilder/ContainerView round-trip tests stay there;
 # these specifically exercise phys's reading of that format).
 executable("boot-obi-test") {

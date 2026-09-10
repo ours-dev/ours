@@ -27,8 +27,8 @@ group("tests") {
   # Hosted gtest programs — the default toolchain carries target identity
   # (freestanding kernel) and has no hosted libc wiring for them.
   public_deps = [
-    "tests:cfi($host_toolchain)",
-    "tests:unwind($host_toolchain)",
+    "test:cfi($host_toolchain)",
+    "test:unwind($host_toolchain)",
   ]
 }
 

@@ -20,9 +20,9 @@ python3 -m copier copy tools/templates/cpp_library kernel/lib/<name>
 include/<name>/   公开头文件，以 <name>/... 引用
 src/              源文件
 test/             宿主侧单测，用 googletest
+BUILD.gn          库根的构建声明（source_set + cpp_interface）
 .gitignore
 .clang-format
-BUILD.gn
 README.md
 ```
 
