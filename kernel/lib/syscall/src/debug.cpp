@@ -47,10 +47,27 @@ auto sys_debug_write(char const *const buffer, usize const length) -> Status {
     // kernel does not have yet. It is written up in the change record rather
     // than pretended away.
     //
-    // The user's bytes are an argument, never the format string: passing them
-    // as a format would let a user program direct the formatter with its own
-    // data.
-    log::info("{}", ustl::views::StringView{buffer, length});
+    // Straight to the sink, not through log::info().
+    //
+    // Passing the bytes as a *format argument* already stopped a user program
+    // directing the formatter with its own data -- but the formatter is still
+    // the wrong machine for this. std::format assembles into an output buffer
+    // that heap-allocates once the line outgrows its inline array, and this
+    // kernel has no global operator new, only a panic stub
+    // (kernel/lib/libc/cpp_dependencies.cpp:16). So a long enough write
+    // panicked the kernel from ring 3:
+    //
+    //     [cpu1 error] operator new
+    //
+    // userboot's thirty-byte message never came close; //examples/shell asked
+    // to print a 250-byte command list and took the kernel down with it.
+    //
+    // Logger::write() is the sink's own entry point -- logz4 hands it a fully
+    // assembled line and it does no formatting at all, which is exactly what
+    // bytes that are already bytes need. It also means the output is the user's
+    // and nothing else: no level prefix, no timestamp wrapped around a fragment
+    // of a line the program intends to continue.
+    log::get_global_logger().write(buffer, length);
     return Status::Ok;
 }
 } // namespace ours
