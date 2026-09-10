@@ -24,27 +24,5 @@ AP 上两条都设成 masked；不这么做的话，一颗 AP 可能会接到本
 任何 per-CPU 字段，否则四颗 CPU 会共享它。x2APIC 打开之后（`X2APIC_ENABLED`）
 访问方式变成 MSR，这个类还没有对应的分支。
 
-## 3. resched IPI 的多播仍是 N 次完整往返
-
-**严重程度**：低，性能。
-
-`apic_send_ipi_mulitcast()`（`kernel/arch/x86/apic/ipi.cpp`）对每个目标调一次
-`apic_send_ipi_unicast()`，于是每个目标都要重新构造一份 `IpiRequest`
-（其实只有 `IcrHigh` 随目标变）、各自进出一次 `AutoInterruptDisabler`
-（pushf/cli/popf），再各自等一次 ICR 空闲。
-
-**怎么修**：把中断关闭和 request 的构造提到多播函数里，循环内只重写 `IcrHigh`
-和 `IcrLow`。对照 Linux `default_send_IPI_mask_sequence_phys()`——
-`local_irq_save()` 一次，然后在循环里逐个 `__default_send_IPI_dest_field()`。
-
-（等待时机和 ESR 那两条已于 2026-09-10 修掉，见
-`docs/changes/260909/x86-apic.md`。）
-
-## 4. 没有带上界的 ICR 等待
-
-**严重程度**：低。
-
-`XApic::wait_icr_idle()` 是无上界自旋，对应 Linux 的 `__xapic_wait_icr_idle()`。
-Linux 另有 `safe_apic_wait_icr_idle()`（1000 次上限，返回剩余次数），
-用在 NMI 投递和 CPU 上线路径上——那两处如果 ICR 卡死，不该把发送方一起拖死。
-本仓库还没有这个变体，`x86_bring_aps()` 的 INIT/SIPI 用的是无上界那份。
+（第 3、4 条已于 2026-09-10 修掉：多播改成一次批量发送，
+以及带上界的 ICR 等待 —— 见 `docs/changes/260910/ipi.md`。）

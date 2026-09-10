@@ -33,10 +33,10 @@ while (!Cpu::is_online(cpu))
 没有诊断。而且 `Cpu::is_online()` 的读是非原子的（见
 `docs/repairs/260909/task-sched.md` 第 6 条）。
 
-**怎么修**：给自旋加一个基于 `time::SteadyClock` 的超时，超时就 `log::error` 并把这颗
-CPU 从 possible/present 掩码里去掉，然后继续下一颗；`local_irq_disable()` 那一行
-先确认它到底想保护什么——看起来是想让 `sleep_for` 之后不被抢占，但 `sleep_for` 自己
-已经处理了。
+**超时那一半已于 2026-09-10 修掉**（见 `docs/changes/260910/ipi.md`）：两处自旋都有了
+上界，起不来的 CPU 会报错并被跳过。**剩下的是 `local_irq_disable()` 那一行**——
+它之后没人重新打开中断，整个第二阶段都在关中断下跑。先确认它到底想保护什么：
+看起来是想让 `sleep_for` 之后不被抢占，但 `sleep_for` 自己已经处理了。
 
 **参照**：Linux `do_boot_cpu()` 的 `cpu_initialized_mask` 轮询有 5 秒超时。
 

@@ -100,6 +100,26 @@ class XApic final {
                    (static_cast<u32>(spurious_vector) & VECTOR_MASK) | SOFTWARE_ENABLE);
     }
 
+    /// send_ipi(), but it gives up rather than hanging on an ICR that never
+    /// goes idle. Returns false when it gave up, in which case nothing was
+    /// written and no IPI was sent.
+    ///
+    /// Linux keeps the same pair -- __xapic_wait_icr_idle() beside
+    /// safe_apic_wait_icr_idle() -- and reaches for the bounded one in exactly
+    /// the places where a wedged APIC must not take the sender with it: NMI
+    /// delivery, and starting a CPU. Those are the paths with nobody left to
+    /// report the hang.
+    [[nodiscard]]
+    auto try_send_ipi(IpiRequest const &request) noexcept -> bool {
+        AutoInterruptDisabler guard;
+        if (!try_wait_icr_idle()) {
+            return false;
+        }
+        write_reg(XApicRegType::IcrHigh, request.icr_high());
+        write_reg(XApicRegType::IcrLow, request.icr_low());
+        return true;
+    }
+
     auto issue_eoi() noexcept -> void {
         write_reg(XApicRegType::Eoi, 0);
     }
@@ -235,6 +255,18 @@ class XApic final {
         }
     }
 
+    /// The bounded form. See try_send_ipi(), its only caller.
+    [[nodiscard]]
+    auto try_wait_icr_idle() const noexcept -> bool {
+        for (auto spin = usize{0}; spin < MAX_ICR_SPINS; ++spin) {
+            if ((read_reg(XApicRegType::IcrLow) & ICR_DELIVERY_STATUS_PENDING) == 0) {
+                return true;
+            }
+            spin_hint();
+        }
+        return false;
+    }
+
     static constexpr auto VECTOR_MASK = u32{0xFF};
     static constexpr auto INTERRUPT_MASK = u32{1} << 16;
     static constexpr auto TIMER_MODE_MASK = u32{3} << 17;
@@ -245,6 +277,13 @@ class XApic final {
     /// ICR bit 12, Delivery Status (read only): set while an IPI this local
     /// APIC issued has not yet been accepted by its destination.
     static constexpr auto ICR_DELIVERY_STATUS_PENDING = u32{1} << 12;
+
+    /// How long try_wait_icr_idle() is willing to spin. A count of iterations
+    /// and not a duration, deliberately: its callers are the paths that run
+    /// before there is a clock to ask -- starting the very first AP among
+    /// them. Each iteration is an uncached MMIO read plus a PAUSE, so this is
+    /// a long time by any measure, which is what a give-up bound should be.
+    static constexpr auto MAX_ICR_SPINS = usize{1'000'000};
 
     volatile u32 *mmio_base_{};
 };

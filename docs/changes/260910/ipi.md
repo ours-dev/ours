@@ -508,3 +508,99 @@ cpu0 8609 / cpu1 548 / cpu2 76894 / cpu3 76970。
 **故意没做**
 `wait_icr_idle()` 仍然在循环**里面**、每个目标一次——这是硬件要求的
 （下一次写 ICR 之前它必须空闲），不是可以提出去的东西。
+
+## 带上界的 ICR 等待，AP 起不来时引导不再挂死（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/xapic.hpp` — `try_wait_icr_idle()` / `try_send_ipi()`
+- `kernel/arch/x86/apic/ipi.cpp` / `.../ours/arch/apic.hpp` — `apic_try_send_ipi_unicast()`
+- `kernel/arch/x86/kernel/mp.cpp` — `x86_bring_aps()` 的两处无界自旋都加了上界
+
+**症状**
+一颗起不来的 CPU 会让引导**永久挂死，而且一个字都不打印**。两处：
+
+```cpp
+apic_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);   // 里面 wait_icr_idle() 无上界
+...
+while (!Cpu::is_online(cpu))                                   // 无上界
+    ;
+```
+
+而且这段是关着中断跑的（`arch::local_irq_disable()` 就在上面两行），
+也就是说挂在这里连时钟中断都不会再来。这是引导里最没人能替它报信的位置。
+
+**原因**
+两个自旋都在等**别人**：ICR 等目标 APIC 接收，`is_online` 等目标 CPU 走完自己的 bring-up。
+两者都可能永远等不到——固件报了一颗机器上并不存在的 CPU、SIPI 没被接受、
+AP 在跳板里死掉。而"等不到"在这里的表现是静默挂死，不是错误。
+
+**改法**
+
+ICR 侧加一个有上界的兄弟，Linux 也是这么成对的
+（`__xapic_wait_icr_idle()` 旁边就是 `safe_apic_wait_icr_idle()`）：
+
+```cpp
+[[nodiscard]]
+auto try_wait_icr_idle() const noexcept -> bool {
+    for (auto spin = usize{0}; spin < MAX_ICR_SPINS; ++spin) {
+        if ((read_reg(XApicRegType::IcrLow) & ICR_DELIVERY_STATUS_PENDING) == 0) {
+            return true;
+        }
+        spin_hint();
+    }
+    return false;
+}
+
+[[nodiscard]]
+auto try_send_ipi(IpiRequest const &request) noexcept -> bool {
+    AutoInterruptDisabler guard;
+    if (!try_wait_icr_idle()) { return false; }    // 没发出去，什么也没写
+    ...
+}
+```
+
+上界是**迭代次数而不是时长**，有意的：它的调用者正是那些"还没有时钟可问"的路径——
+唤醒第一颗 AP 就在其中。
+
+上线等待侧则用**时限**，因为到那一步时钟已经有了（同一个函数上面几行就在读它）：
+
+```cpp
+auto const started = time::SteadyClock::now();
+while (!Cpu::is_online(cpu)) {
+    if (time::SteadyClock::now() - started > STARTUP_TIMEOUT) {
+        log::error("CPU[{}] did not come online within {}ms; carrying on without it", ...);
+        return;
+    }
+    arch::spin_hint();
+}
+```
+
+**放弃的代价是零**：下游的一切都以 `Cpu::online_mask()` 为准，
+所以一颗永远不来的 CPU 就是一颗这台机器没有的 CPU。
+
+**参照**
+- Linux `safe_apic_wait_icr_idle()`（`arch/x86/kernel/apic/apic.c`）——
+  和无界版成对存在，用在 NMI 投递和 CPU 上线这两条"挂了没人能报信"的路径上。
+- Linux `do_boot_cpu()`：等不到就 `pr_err("CPU%d: didn't respond")` 然后继续。
+
+**验证**
+正常路径：四核零故障、三颗 AP 正常上线；`SMP=8` 也实测过，七颗 AP 全部上线、零故障。
+
+**超时路径专门造了一次**——临时跳过发给 CPU[2] 的 SIPI：
+
+```
+[4116580000 cpu0 info] XXX deliberately not sending the SIPI to CPU[2]
+[5130239000 cpu0 error] CPU[2] did not come online within 1000ms; carrying on without it
+[5131282000 cpu3 info] CPU[3] is online
+```
+
+恰好 1013 ms 之后报错，然后**引导继续走完**（CPU[3] 照常上线，零故障）。
+改动前这里是永久挂死且不打印任何东西。
+
+（第一次尝试是把 `STARTUP_TIMEOUT` 临时设成 0，没触发——因为 AP 在那 1 ms 的
+`sleep_for` 之后**已经在线**了，循环体压根没进。所以才改用"造一颗真起不来的 CPU"。）
+
+**故意没做**
+`x86_bring_aps()` 里那句 `arch::local_irq_disable()` 没有动。它之后没人重新打开中断，
+于是整个第二阶段（`reclaim_init_area()`、`userboot_init()`、spawn）都在关中断下跑，
+直到第一次上下文切换才恢复。那是另一件事，仍记在 `docs/repairs/260909/x86-mp.md` 第 2 条。

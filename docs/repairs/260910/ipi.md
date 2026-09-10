@@ -23,6 +23,3 @@ Zircon 的 `MP_IPI_INTERRUPT` 是"目标自己去处理一个挂起的中断"，
 缺的是 Linux `smp_call_function_single_async()` 那种"发了就走"。它需要另一套
 所有权模型（请求不能放在调用者栈上），等有客户再说。
 
-## 3. resched IPI 的多播仍是 N 次完整往返
-
-见 `docs/repairs/260909/x86-apic.md` 第 3 条。

@@ -35,6 +35,13 @@ auto apic_send_ipi_unicast(CpuNum target, arch::IrqVec vector, ApicDeliveryMode 
     XAPIC->send_ipi(request);
 }
 
+auto apic_try_send_ipi_unicast(CpuNum target, arch::IrqVec vector, ApicDeliveryMode mode)
+    -> bool {
+    auto request = make_ipi_request(vector, mode);
+    request.set_dest(cpunum_to_apic_id(target));
+    return XAPIC->try_send_ipi(request);
+}
+
 auto apic_send_ipi_multicast(CpuMask const &targets, arch::IrqVec vector, ApicDeliveryMode mode)
     -> void {
     // The CPU-to-APIC translation happens here and not inside the send loop,

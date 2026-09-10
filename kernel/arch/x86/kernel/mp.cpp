@@ -15,6 +15,7 @@
 #include <ours/time/clock.hpp>
 
 #include <arch/halt.hpp>
+#include <arch/spin_hint.hpp>
 #include <logz4/log.hpp>
 #include <ustl/fmt/format_to.hpp>
 
@@ -137,6 +138,12 @@ auto x86_start_nonboot_cpu(CpuNum cpunum, task::Thread *thread) -> void {
     start_nonboot_cpu();
 }
 
+/// How long a CPU is given to come online after its startup IPI. A second is
+/// far longer than the tens of microseconds it actually takes -- this is the
+/// bound that keeps a CPU which will never start from hanging the boot, not a
+/// figure anything is expected to approach.
+constexpr auto STARTUP_TIMEOUT = Milliseconds(1000);
+
 INIT_CODE
 auto x86_bring_aps(CpuMask targets) -> void {
     using task::Thread;
@@ -145,7 +152,9 @@ auto x86_bring_aps(CpuMask targets) -> void {
 
     targets.for_each([](CpuNum cpu) {
         log::trace("Attemp to wake up CPU[{}]", cpu);
-        apic_send_ipi_unicast(cpu, arch::IrqVec(), ApicDeliveryMode::Init);
+        if (!apic_try_send_ipi_unicast(cpu, arch::IrqVec(), ApicDeliveryMode::Init)) {
+            log::error("CPU[{}] did not accept the INIT IPI", cpu);
+        }
     });
 
     BootstrapData *bootstrap_data;
@@ -174,15 +183,38 @@ auto x86_bring_aps(CpuMask targets) -> void {
         bootstrap_data->stack_top = initial_stack;
         bootstrap_data->thread = reinterpret_cast<VirtAddr>(current_thread);
 
-        apic_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup);
+        if (!apic_try_send_ipi_unicast(cpu, vec, ApicDeliveryMode::Startup)) {
+            log::error("CPU[{}] did not accept the startup IPI; carrying on without it", cpu);
+            return;
+        }
 
         arch::local_irq_disable();
 
         Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes);
 
-        // Waiting until |cpu| is online.
-        while (!Cpu::is_online(cpu))
-            ;
+        // Wait for |cpu| to join, but do not wait for ever.
+        //
+        // This spin used to have no way out. A CPU that never starts -- a
+        // firmware that reports one the machine does not have, a SIPI that was
+        // never accepted -- hung the boot right here, with interrupts disabled
+        // and nothing printed, at the one point in the boot where there is
+        // nobody left to say so. Giving up costs nothing: everything
+        // downstream keys off Cpu::online_mask(), so a CPU that never arrives
+        // is simply a CPU the kernel does not have.
+        //
+        // The bound is a deadline rather than a spin count because there is a
+        // clock by now -- the same one this function reads a few lines above.
+        // Linux allows itself a similar wait in do_boot_cpu() and reports
+        // "CPU%d: didn't respond".
+        auto const started = time::SteadyClock::now();
+        while (!Cpu::is_online(cpu)) {
+            if (time::SteadyClock::now() - started > STARTUP_TIMEOUT) {
+                log::error("CPU[{}] did not come online within {}ms; carrying on without it", cpu,
+                           Milliseconds(STARTUP_TIMEOUT).count());
+                return;
+            }
+            arch::spin_hint();
+        }
     });
 }
 

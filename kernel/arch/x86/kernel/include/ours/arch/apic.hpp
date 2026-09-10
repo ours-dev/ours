@@ -46,6 +46,12 @@ auto apic_send_ipi_self(arch::IrqVec vector, ApicDeliveryMode mode) -> void;
 
 auto apic_send_ipi_unicast(CpuNum target, arch::IrqVec vector, ApicDeliveryMode mode) -> void;
 
+/// apic_send_ipi_unicast(), for callers that must not hang if the local APIC
+/// never reports the previous IPI delivered. Returns false when it gave up
+/// without sending.
+[[nodiscard]]
+auto apic_try_send_ipi_unicast(CpuNum target, arch::IrqVec vector, ApicDeliveryMode mode) -> bool;
+
 auto apic_send_ipi_multicast(CpuMask const &targets, arch::IrqVec vector, ApicDeliveryMode mode)
     -> void;
 
