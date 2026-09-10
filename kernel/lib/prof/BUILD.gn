@@ -12,6 +12,7 @@ cpp_interface("headers") {
   ]
   public_deps = [
     "//kernel/lib/unwind:headers",
+    "//system/lib/ustl:headers",
     "//system/public",
   ]
   visibility = [ "*" ]

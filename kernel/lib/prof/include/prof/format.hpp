@@ -3,6 +3,8 @@
 #ifndef PROF_FORMAT_HPP
 #define PROF_FORMAT_HPP 1
 
+#include <ustl/util/enum_bits.hpp>
+
 namespace prof {
 
 /// Fixed-size sample record shared verbatim between the kernel export path
@@ -20,20 +22,7 @@ enum class RecordFlags : u8 {
     RecordTruncated = 2,
 };
 
-[[nodiscard]]
-constexpr auto operator|(RecordFlags lhs, RecordFlags rhs) -> RecordFlags {
-    return static_cast<RecordFlags>(static_cast<u8>(lhs) | static_cast<u8>(rhs));
-}
-
-constexpr auto operator|=(RecordFlags &lhs, RecordFlags rhs) -> RecordFlags & {
-    lhs = lhs | rhs;
-    return lhs;
-}
-
-[[nodiscard]]
-constexpr auto operator&(RecordFlags lhs, RecordFlags rhs) -> RecordFlags {
-    return static_cast<RecordFlags>(static_cast<u8>(lhs) & static_cast<u8>(rhs));
-}
+USTL_ENABLE_ENUM_BITMASK(RecordFlags);
 
 struct SampleRecord final {
     u32 magic;

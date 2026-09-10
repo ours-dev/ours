@@ -12,6 +12,7 @@
 #include <ours/status.hpp>
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace prof {
 
@@ -85,6 +86,7 @@ class Sampler final {
         BuffersReady = 1u << 0,
         UnwindReady = 1u << 1,
     };
+    USTL_ENABLE_INNER_ENUM_BITMASK(InitFlags);
 
     static auto get() -> Sampler &;
 
@@ -188,19 +190,12 @@ class Sampler final {
     u64 m_image_base = 0;
 };
 
-[[nodiscard]]
-constexpr auto operator|(Sampler::InitFlags lhs, Sampler::InitFlags rhs) -> Sampler::InitFlags {
-    return static_cast<Sampler::InitFlags>(static_cast<u32>(lhs) | static_cast<u32>(rhs));
-}
-
-[[nodiscard]]
-constexpr auto operator&(Sampler::InitFlags lhs, Sampler::InitFlags rhs) -> Sampler::InitFlags {
-    return static_cast<Sampler::InitFlags>(static_cast<u32>(lhs) & static_cast<u32>(rhs));
-}
-
+/// Reads as "this flag is set". ustl's bitmask operators give `&` and a
+/// `!` that answers "no bits at all", so the test is a double negation; the
+/// name exists to keep that out of call sites.
 [[nodiscard]]
 constexpr auto has_flag(Sampler::InitFlags flags, Sampler::InitFlags bit) -> bool {
-    return (flags & bit) != Sampler::InitFlags::None;
+    return !!(flags & bit);
 }
 
 } // namespace prof

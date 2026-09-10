@@ -133,3 +133,59 @@ enum class Status : u32;
 **`-include` 强制注入**每个编译单元的（见编译命令里的 `-include .../prelude.hpp`），
 整数别名全局可用；`ours/types.hpp` 自己也依赖它，没有 include 任何东西。
 prof 在这一点上没有问题，是我最初的独立编译检查没有注入 prelude，才把全部头文件都测成了失败。
+
+---
+
+## 3. 两套手写的枚举位运算符换成 ustl 的（2026-09-10）
+
+**文件**
+- `kernel/lib/prof/include/prof/format.hpp` — `RecordFlags`。
+- `kernel/lib/prof/include/prof/sampler.hpp` — `Sampler::InitFlags`。
+- `kernel/lib/prof/BUILD.gn` — 新增 `//system/lib/ustl:headers`。
+
+**症状**
+
+无。重复实现，且两套还不一致：`RecordFlags` 有 `|`、`|=`、`&`，`InitFlags` 有 `|`、`&`、
+`has_flag`，各缺各的。
+
+**原因**
+
+```cpp
+// format.hpp
+constexpr auto operator|(RecordFlags lhs, RecordFlags rhs) -> RecordFlags {
+    return static_cast<RecordFlags>(static_cast<u8>(lhs) | static_cast<u8>(rhs));
+}
+// ...再来一遍 |= 和 &
+
+// sampler.hpp
+constexpr auto operator|(Sampler::InitFlags lhs, Sampler::InitFlags rhs) -> Sampler::InitFlags {
+    return static_cast<Sampler::InitFlags>(static_cast<u32>(lhs) | static_cast<u32>(rhs));
+}
+// ...再来一遍 & 和 has_flag
+```
+
+仓库有现成的 `USTL_ENABLE_ENUM_BITMASK`（`system/lib/ustl/include/ustl/util/enum_bits.hpp`），
+`ours::Rights`、`ours::mm::VmasFlags` 都用它。
+
+**这条一度被判为「不确定」**，理由是 prof 的 `public_deps` 只有 `//system/public` 和
+`unwind`，加 ustl 等于新增依赖边。核实之后否掉了这个顾虑：prof 自己声明排斥的是
+`ours::`/`gktl::`/`logz4::`/`arch::`（见 `sampler.hpp` 与 `arch.hpp` 的注释），**不含 ustl**；
+而 ustl 按设计就是 freestanding、内核与宿主工具通用的那一层。宿主单测加了依赖之后照常构建通过。
+
+**改法**
+
+```cpp
+// 命名空间作用域
+USTL_ENABLE_ENUM_BITMASK(RecordFlags);
+
+// 类内嵌套的枚举用 friend 形式
+enum class InitFlags : u32 { None = 0, BuffersReady = 1u << 0, UnwindReady = 1u << 1 };
+USTL_ENABLE_INNER_ENUM_BITMASK(InitFlags);
+```
+
+`has_flag` 保留，但改成薄封装。ustl 给的是 `&` 和一个「一位都没有」的 `!`，
+所以判「含某位」是双重否定 `!!(flags & bit)`；留个名字是为了不让这个写法散到调用点上去。
+
+**验证**
+
+构建通过；prof 宿主单测全过（sampler 6、format 4）。
