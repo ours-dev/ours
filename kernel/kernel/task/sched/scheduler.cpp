@@ -577,7 +577,19 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     //  1. |next| after context switch is in unknown state, which inable to be used again.
     //  2. |curr| after context switch is the **real** current thread.
     //  3. |curr| before context switch was cached in |m_runtime.scheduling_context.prev_thread|.
-    finish_switch_context();
+    //
+    // Current::get(), not `this`. `this` is the scheduler of the CPU this
+    // thread was running on when it went into the switch; coming back out of
+    // one, it may be on a different CPU entirely -- a thread that sleeps here
+    // is placed again by select_target_cpu() when it is woken, and that is
+    // free to answer with another CPU. `this` is then a scheduler belonging to
+    // someone else, whose prev_thread the CPU that owns it consumed long ago,
+    // and finish_switch_context() released a null thread's PI lock.
+    //
+    // trampoline_handoff() -- the other way out of a switch, for a thread that
+    // has never run before -- has always asked Current::get(). The two exits
+    // from the same switch disagreed; this is the one that was wrong.
+    Scheduler::Current::get().finish_switch_context();
 }
 
 auto Scheduler::update_runtime() -> void {
@@ -672,6 +684,7 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueControl control) -> Status
     if (Status::Ok != status) {
         return status;
     }
+
 
     if (!!(control & EnqueueControl::Restore)) {
     }
