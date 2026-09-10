@@ -142,14 +142,12 @@ class RecordSink final {
             if (buffer == nullptr) {
                 continue;
             }
-            auto const count = buffer->size();
-            for (usize i = 0; i < count; ++i) {
-                auto const &record = buffer->slot(i);
+            buffer->for_each_retained([&](Record const &record) {
                 if (!accept(record)) {
-                    continue;
+                    return;
                 }
                 write_hex_line<sizeof(Record)>(tag, &record, sizeof(record));
-            }
+            });
         }
     }
 

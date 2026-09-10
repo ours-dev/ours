@@ -3,6 +3,7 @@
 #ifndef PROF_RECORD_BUFFER_HPP
 #define PROF_RECORD_BUFFER_HPP 1
 
+#include <array>
 #include <atomic>
 
 namespace prof {
@@ -78,9 +79,22 @@ class RecordBuffer final {
         return m_write_index.load(std::memory_order_relaxed);
     }
 
-    [[nodiscard]]
-    auto slot(usize index) const -> Record const & {
-        return m_slots[index];
+    /// Visits every retained record, oldest first.
+    ///
+    /// The buffer walks itself rather than handing out an indexable accessor.
+    /// The bound is the buffer's own business: a caller that asks for `size()`
+    /// and then indexes has to keep the two in step every time it is written,
+    /// and getting it wrong reads a slot that was never produced -- or, past
+    /// CAPACITY, whatever follows the buffer in memory. There is no assertion
+    /// here because there is no longer anything to assert.
+    ///
+    /// Valid once production has been quiesced; see the note on the class.
+    template <typename Visitor>
+    auto for_each_retained(Visitor &&visit) const -> void {
+        auto const count = size();
+        for (usize i = 0; i < count; ++i) {
+            visit(m_slots[i]);
+        }
     }
 
     [[nodiscard]]
@@ -90,7 +104,7 @@ class RecordBuffer final {
 
   private:
     std::atomic<usize> m_write_index{0};
-    Record m_slots[CAPACITY] = {};
+    std::array<Record, CAPACITY> m_slots{};
 };
 
 } // namespace prof

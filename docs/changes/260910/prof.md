@@ -189,3 +189,64 @@ USTL_ENABLE_INNER_ENUM_BITMASK(InitFlags);
 **验证**
 
 构建通过；prof 宿主单测全过（sampler 6、format 4）。
+
+---
+
+## 4. 缓冲区自己走自己的范围，不再交出可索引的访问器（2026-09-10）
+
+**文件**
+- `kernel/lib/prof/include/prof/record_buffer.hpp` — `slot()` 换成 `for_each_retained()`，
+  裸数组换 `std::array`。
+- `kernel/lib/prof/include/prof/sink.hpp`、`kernel/lib/prof/examples/trace_examples.cpp` —
+  两处 drain 循环跟着改。
+
+**症状**
+
+潜伏。两个调用方都写对了，但正确性靠的是它们自己守纪律。
+
+**原因**
+
+```cpp
+[[nodiscard]]
+auto slot(usize index) const -> Record const & {
+    return m_slots[index];   // 无任何检查
+}
+```
+
+两处调用都是同一个模式：
+
+```cpp
+auto const count = buffer->size();
+for (usize i = 0; i < count; ++i) {
+    auto const &record = buffer->slot(i);
+```
+
+边界写在调用方，而**不变量属于缓冲区**（见 skill 的 Object orientation 一节：
+「对象自己守住自己的不变量，而且只有它守」）。差一位就会读到从未被写入的槽；
+超过 `CAPACITY` 就是读缓冲区后面的内存。
+
+**改法**
+
+让缓冲区自己走：
+
+```cpp
+template <typename Visitor>
+auto for_each_retained(Visitor &&visit) const -> void {
+    auto const count = size();
+    for (usize i = 0; i < count; ++i) {
+        visit(m_slots[i]);
+    }
+}
+```
+
+`slot()` 直接删掉——**不是加断言**。加断言仍然把「别越界」当成一条要求，只是把违反从
+静默变成了崩溃；把遍历收进对象里，则是让越界无从发生。而且 prof 明确声明不调用
+`ours::`（`DEBUG_ASSERT` 会走 `ours::panic`），宿主单测也不链接内核，断言这条路本来就不通。
+
+顺带把 `Record m_slots[CAPACITY]` 换成 `std::array<Record, CAPACITY>`，与同目录
+`sink.hpp` 已经在用的 `std::array` 一致。
+
+**验证**
+
+构建通过；`clang-tidy` 无新告警；prof 宿主单测全过（sampler 6、format 4）；
+QEMU dbg 启动无回归（无断言、15.0 万行线程输出）。

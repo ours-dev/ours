@@ -201,16 +201,14 @@ auto kind_name(prof::EventKind kind) -> char const * {
 }
 
 auto drain() -> void {
-    auto const count = g_buffer.size();
-    for (usize i = 0; i < count; ++i) {
-        auto const &r = g_buffer.slot(i);
+    g_buffer.for_each_retained([](auto const &r) {
         std::printf("      t=%-5llu %s %-14s", static_cast<unsigned long long>(r.m_metric),
                     kind_name(r.m_kind), find_name(r.m_event_id));
         for (u8 a = 0; a < r.m_arg_count; ++a) {
             std::printf(" 0x%llx", static_cast<unsigned long long>(r.m_args[a]));
         }
         std::printf("\n");
-    }
+    });
     g_buffer.reset();
 }
 
