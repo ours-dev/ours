@@ -58,6 +58,13 @@
                 "request": "attach",
                 "preLaunchTask": "kernel: qemu debug",
                 "postDebugTask": "kernel: stop qemu",
+                // Kernel-aware commands, loaded before the target exists so
+                // they are there the moment it stops. `cl <var>` reads a
+                // CPU_LOCAL variable, which a plain `p` cannot: the symbol
+                // names the linker template, not this CPU's copy.
+                "initCommands": [
+                    "command script import ${workspaceFolder}/scripts/lldb_ours.py"
+                ],
                 // These three run instead of lldb-dap's own attach: create the
                 // target from whatever the boot published, slide it, connect.
                 // There is no process to find by pid or by name -- the
@@ -87,6 +94,9 @@
                 // running in a terminal and the session should not restart it.
                 // It published the symlink on its way up, so this needs to know
                 // nothing about which kernel that was.
+                "initCommands": [
+                    "command script import ${workspaceFolder}/scripts/lldb_ours.py"
+                ],
                 "attachCommands": [
                     "target create ${workspaceFolder}/out/.debug/kernel.elf",
                     "target modules load --file kernel.elf --slide 0xffffff8840000000",

@@ -167,6 +167,66 @@ qemu-debug: a bootable image is expected to carry exactly one kernel; a second k
 不需要任何安装。调试适配器是 `llvm-vs-code-extensions.lldb-dap` 扩展（已装），它经
 `xcrun` 找到系统的 `lldb-dap`；QEMU、GRUB、clang 全部来自 `//prebuilt`。
 
+## 读 CPU_LOCAL 变量：`cl`
+
+**`p X86_PCPU` 是错的**，而且错得不出声：CPU_LOCAL 变量的符号指向的是**链接期模板**
+（`.init.data` 里那一份），每个 CPU 真正读写的是 `模板 + 该 CPU 的 offset`
+（`kernel/mm/include/ours/mm/cpu_local.hpp`）。`p` 打出来的是模板，通常一片零，
+永远不是你正在看的那个 CPU。
+
+`scripts/lldb_ours.py` 提供 `cl`，F5 会自动加载（launch 配置的 `initCommands`）：
+
+```
+(lldb) cl CURRENT_CPUNUM
+current  (ours::CpuNum) ours::mm::CpuLocal::CURRENT_CPUNUM = 0
+        template 0xffffff88400a49a0  offset 0xffffffffbff6e000 -> 0xffffff88000129a0
+
+(lldb) cl CLKDEV_STORAGE 1          # 指定 CPU
+cpu1  (ours::ApicTimerEvent) ours::CLKDEV_STORAGE = {
+  m_clkevt = { m_name = 0xffffff884004dbbf "LVT"  m_mode = Oneshot ... }
+
+(lldb) cl -a CURRENT_CPUNUM         # 所有有 unit 的 CPU
+(lldb) cl -l                        # 列出镜像里全部 46 个 CPU_LOCAL 变量
+```
+
+三种用法对应三种取 offset 的方式：
+
+| 写法 | offset 从哪来 |
+|---|---|
+| `cl <var>` | 当前 CPU：`%gs`（见下） |
+| `cl <var> <cpu>` | `CpuLocal::CPU_OFFSETS[cpu]`，即 Linux 的 `__per_cpu_offset[]` |
+| `cl -a <var>` | 同上，遍历整张表 |
+
+**QEMU 的 gdbstub 把每个 vCPU 表示成一个 thread**，所以 `cl <var>` 跟着 `thread select` 走：
+
+```
+(lldb) thread select 3
+(lldb) cl CURRENT_CPUNUM
+current  (ours::CpuNum) ours::mm::CpuLocal::CURRENT_CPUNUM = 2
+```
+
+### 一个必须知道的坑：停在用户态时 `%gs` 不是内核的
+
+内核入口会 `swapgs`。**CPU 处在 ring 3 的时候**，per-CPU offset 被换到了
+`IA32_KERNEL_GS_BASE`（stub 里叫 `k_gs_base`），而 `%gs` 是用户态那份——本内核的 userboot
+里就是 0。这时候读 `gs_base` 会得到 0，于是每个 CPU_LOCAL 变量都"解析"回它的模板，
+**看起来像数据，其实是零**。
+
+`cl` 按 `cs & 3` 判断特权级，自己挑对寄存器，所以停在 userboot 的自旋循环里也照样是对的。
+自己手算的时候记得这条。
+
+### 不是 CPU_LOCAL 的变量会被拒绝
+
+判据是链接脚本自己的 `[__cpu_local_start, __cpu_local_end)`（`kernel/kernel.ld:175,204`），
+不是节名——`.init.data.cpu_local*` 会被并进 `.init.data`，而那里面大部分不是 per-CPU 的。
+
+```
+(lldb) cl LAPIC_TIMER_EVENT
+error: cl: 'ours::LAPIC_TIMER_EVENT' is not CPU_LOCAL (outside __cpu_local_start..__cpu_local_end) -- use `p`
+```
+
+对一个不是 per-CPU 的变量套 offset 只会打出一堆看着挺像回事的垃圾，所以宁可拒绝。
+
 ## 为什么是「停在第一条指令之前」
 
 QEMU 用 `-S` 启动。这不是保守，是必要的：等到一个**正在运行**的内核可以被挂上时，

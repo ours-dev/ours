@@ -316,3 +316,112 @@ Python 文件没法被 import。
   同时有其它会话在写；一次扫掉四个跨模块文件、又没法像这两个一样用"真启动一次"验证，
   风险不对等。`system/lib/boost.intrusive/.drone/drone.sh` 是 vendored 的第三方文件，
   不在范围内。
+
+## `cl`：在 lldb 里读 CPU_LOCAL 变量（2026-09-10）
+
+**文件**
+- `scripts/lldb_ours.py` —— 新建，提供 `cl` 命令
+- `ours.code-workspace` —— 两个 launch 配置加 `initCommands` 自动加载
+- `docs/development/debugging.md` —— 新增「读 CPU_LOCAL 变量：`cl`」
+
+**症状**
+在调试器里读 per-CPU 状态**没有一种正确的写法**，而错的那种不出声。
+
+```
+(lldb) p X86_PCPU
+(ours::X86PerCpu) { tss = { sp0 = 0 ... } }      ← 全零，看着像"还没初始化"
+```
+
+实际上这份不是任何 CPU 的数据，是**链接期模板**。真正的值在别处，而 `p` 不会有任何提示。
+
+**原因**
+CpuLocal 用的是 Linux 的 model B（`docs` 里另有记载）：符号 `&var` 指向模板，
+`%gs` 存 `base(cpu) - origin()`，每次访问是 `%gs:&var`。于是：
+
+```
+真实地址 = &var(模板，已 slide) + 该 CPU 的 offset
+```
+
+而调试器只知道 `&var`。offset 有两个来源，缺一不可：
+
+- **当前 CPU**：`%gs`。`ArchCpuLocal::install()` 把 offset 写进 `IA32_GS_BASE`
+  （`kernel/arch/x86/kernel/include/ours/arch/cpu_local.hpp`）。
+- **任意 CPU**：`CpuLocal::CPU_OFFSETS[cpu]`，即 Linux 的 `__per_cpu_offset[]`。
+
+加法是**回绕**的：offset 是 `isize`，physmap 布局下为负
+（`0xffffffffbff6e000` 就是 `-0x40092000`），所以按 2^64 取模，和硬件一致。
+
+**改法**
+`cl` 三种用法各对应一种取 offset 的方式，输出把中间量也打出来，便于核对：
+
+```
+(lldb) cl CURRENT_CPUNUM
+current  (ours::CpuNum) ours::mm::CpuLocal::CURRENT_CPUNUM = 0
+        template 0xffffff88400a49a0  offset 0xffffffffbff6e000 -> 0xffffff88000129a0
+```
+
+三个实现上不显然、但都是实测逼出来的决定：
+
+**1. 停在用户态时必须读 `k_gs_base` 而不是 `gs_base`。** 这是实测撞出来的——四个 vCPU 里
+有一个停在 userboot 的自旋循环：
+
+```
+thread #2: 0x00000000002012d2        ← ring 3
+    cs = 0x33   gs_base = 0x0   k_gs_base = 0xffffffffbff85000
+```
+
+内核入口 `swapgs`，所以 ring 3 时 per-CPU offset 在 `IA32_KERNEL_GS_BASE`，`%gs` 是用户态
+那份（本内核 userboot 里是 0）。照 `gs_base` 算，**每个变量都会"解析"回自己的模板**——
+一片零，看着像数据。`cl` 按 `cs & 3` 挑寄存器：
+
+```python
+user_mode = (cs.GetValueAsUnsigned() & 3) == 3
+name = "k_gs_base" if user_mode else "gs_base"
+```
+
+**2. "是不是 CPU_LOCAL"用链接脚本的边界判，不用节名。** `.init.data.cpu_local*` 会被并进
+`.init.data`（`kernel/kernel.ld:202`），而 `.init.data` 里绝大部分不是 per-CPU 的。
+真正的判据是 `[__cpu_local_start, __cpu_local_end)`（同文件 :175、:204），刚好圈出 46 个变量。
+第一版用节名，等于对半个 `.init.data` 都肯套 offset。
+
+**3. `CPU_OFFSETS` 按裸内存读，不走 children。** 它是 `std::array`，而 lldb 展开
+`std::array` 靠 formatter；freestanding 构建里没有那个 formatter，`GetChildAtIndex(2)`
+直接返回无效值：
+
+```
+error: cl: CPU 2 is outside ours::mm::CpuLocal::CPU_OFFSETS
+```
+改成按 `地址 + cpu*8` 读 8 字节，与 formatter 无关。
+
+还有一个小坑：`X86_PCPU` 是 `extern "C" inline`，`FindGlobalVariables` 返回**两条**
+（两个 TU 各描述一次）。第一版把"多于一条"当成有歧义直接拒绝。改成比较 load address——
+地址相同就是同一个对象。
+
+**参照**
+Linux 的 `__per_cpu_offset[]` 与 `per_cpu()`；crash/gdb 的 `per_cpu` 辅助命令是同类东西。
+
+**验证**
+全部在真实运行的四核内核上做的（`qemu_boot.py -gdb tcp::1234`，跑满 40 秒后 attach）：
+
+1. `cl CURRENT_CPUNUM` 在四个 vCPU 上分别得到 0/1/2/3，**跟着 `thread select` 走**——
+   其中 thread #2 停在用户态，正是靠 `k_gs_base` 才对：
+
+   ```
+   thread select 1 → 0    thread select 2 → 1
+   thread select 3 → 2    thread select 4 → 3
+   ```
+2. `cl -a CURRENT_CPUNUM` 打出 16 个 unit（MAX_CPU），每个都读回自己的编号 0..15。
+3. `cl X86_PCPU` 打出聚合体，`tss.sp0 = 18446743558380613632`（内核栈，非零）。
+4. `cl CLKDEV_STORAGE 1` 打出 CPU 1 的 APIC timer：`m_name = "LVT"`、`m_mode = Oneshot`。
+5. `cl LAPIC_TIMER_EVENT`（不是 per-CPU）被拒绝并给出该用 `p`。
+6. `cl NOSUCHVAR` 给出清楚的找不到。
+7. `cl -l` 列出 46 个，与 `llvm-nm` 按同一区间筛出来的 47 条**只差 `__gktl_counter_start`**
+   一条——那是计数器块自己的标记，不是变量，脚本按 `__` 前缀滤掉了。
+
+**故意没做**
+- **没有做动态 per-CPU 分配（`CpuLocal::allocate()`）的读取**。`cl` 接的是**变量名**，
+  而动态分配没有名字，只有 handle。要读那些得先有办法拿到 handle，是另一件事。
+- **没有按 online mask 过滤 `-a`**。现在列的是"有 unit 的 CPU"，MAX_CPU=16 全都有，
+  即使只启了 4 个 vCPU。加 online 过滤要再读 `Cpu::online_mask()`，而"有 unit"本身就是
+  这条命令能回答的问题，先不引入第二个概念。
+- **没有做 `cl -w` 之类的写入**。读已经解决了眼下的问题；写进 per-CPU 状态是另一种风险。
