@@ -689,3 +689,191 @@ Fuchsia `//BUILD.gn` 的 `build_api_module("binaries")` / `("images")` 收的就
   加载地址是运行期由内存图选的、编译期不是常量（只能从串口日志的
   `boot-shim: physload at 0x...` / `Loaded phys module ... at 0x...` 读）。等真要调它们时
   再说。
+
+## 调试改成三层选择：产品 → 架构 → switchset（2026-09-10）
+
+**文件**
+- `kernel/kernel_image.gni` —— 清单里加一条镜像自身的身份记录
+- `scripts/qemu-debug.sh` —— 接三个参数；`out/<产品>.<架构>` 由前两个算出；符号软链移到
+  `out/.debug/kernel.elf`
+- `ours.code-workspace` —— 一个下拉框拆成三个；调试配置改开固定路径；构建并进调试任务
+- `docs/development/debugging.md` —— 三层的说明；顺带修掉上一节留下的过期描述
+
+**症状**
+上一节做到"从构建里取镜像名"，但整条路径上仍有两处写死 `out/bringup.x86`
+（`qemu-debug.sh` 的 `OUT` 默认值、`kernel: build` 任务的 `-C`），而且下拉框直接列镜像名
+（`kernel.dev.dbg_1` / `kernel.dev`）——**镜像名并不说明这两个镜像的区别是什么**，要知道
+`kernel.dev` 是"断言编译掉+带单测"那个，只能去读 BUILD.gn。
+
+**原因**
+选择本来就是三层的，只是之前压成了一层：
+
+| 层 | 决定什么 | 构建里的出处 |
+|---|---|---|
+| 产品 | 有哪些镜像 | `products/*.gni`，以及构建目录里的 `product_info.json` |
+| 架构 | 和产品一起决定构建目录 | `out/<产品>.<架构>`，即 `tools/set.py` 写的那个 |
+| switchset | 从该产品的镜像里挑一个 | 镜像的内核 ELF 的 toolchain label |
+
+压成一层的代价有两个。一是**构建目录被写死**——`out/bringup.x86` 是"产品=bringup、
+架构=x86"的结果，不是常量。二是**第三层用错了名字**：区别 `kernel.dev` 和
+`kernel.dev.dbg_1` 的是 switchset（`//build/switch/set/dbg.0` vs `dbg.1`），镜像名只是
+switchset 的后果。用 switchset 当第三层，菜单直接就是"要哪种内核"。
+
+先按产品收窄、再按 switchset 取，这个顺序是必要的而不是好看：`out/bringup.x86` 里除了
+产品的两个镜像还躺着 `fake.obi`（`//:default` 的直接依赖，不属于任何产品），而
+**`fake` 和 `kernel.dev` 同属 `dbg.0`**——不先筛产品，`dbg.0` 就是二义的。
+
+**改法**
+
+镜像清单里加一条身份记录，让它能和产品的镜像清单对上。GN 里 `generated_file` 只能二选一
+（`contents` 或 `data_keys`），所以一条"不是从别处收来的"字面记录必须由走图路过的目标贡献：
+
+```gn
+  # 改前：清单只有 binaries，一份 ELF 列表，不说明自己属于哪个镜像
+  generated_file("$target_name.debug") {
+    deps = invoker.deps
+    data_keys = [ "binaries" ]
+    ...
+  }
+
+  # 改后
+  _debug_id_target = ":$target_name.debug_id"
+  _image_label = get_label_info(":$target_name", "label_no_toolchain")
+
+  group("$target_name.debug_id") {
+    metadata = {
+      obi_image = [
+        {
+          image = _output_name
+          obi = rebase_path("$_output_dir/$_output_name.obi", root_build_dir)
+          label = _image_label
+        },
+      ]
+    }
+  }
+
+  generated_file("$target_name.debug") {
+    deps = invoker.deps + [ _debug_id_target ]
+    data_keys = [ "obi_image", "binaries" ]
+    ...
+  }
+```
+
+`_debug_id_target` 和 `_image_label` **必须在模板作用域算好**，这是踩过的：目标块内部
+`target_name` 指的是那个目标自己，写在 `generated_file("$target_name.debug")` 里的
+`":$target_name.debug_id"` 会解析成 `dev.debug.debug_id`：
+
+```
+ERROR Unresolved dependencies.
+//kernel/products/image/dev:dev.debug(//build/toolchain/ours:kernel-x86)
+  needs //kernel/products/image/dev:dev.debug.debug_id(...)
+```
+
+同样的坑第二次出现在 `label` 上——不移到外面的话记录里写的是
+`//kernel/products/image/dev:dev.debug_id`（那个 metadata group），不是镜像。
+
+脚本从"一个镜像名"变成三层解析。改前：
+
+```sh
+OUT=${OUT:-$ROOT/out/bringup.x86}
+VARIANT=${1:-${VARIANT:-kernel.dev.dbg_1}}
+...
+IMAGE=$OUT/$VARIANT.obi
+```
+
+改后：
+
+```sh
+PRODUCT=${1:-${PRODUCT:-bringup}}
+ARCH=${2:-${ARCH:-x86}}
+SWITCHSET=${3:-${SWITCHSET:-dbg.1}}
+
+# 构建目录不是第四个选择，它就是前两个
+OUT=${OUT:-$ROOT/out/$PRODUCT.$ARCH}
+```
+
+然后：目录不存在 → 直接给出 `tools/set.py <产品>.<架构>`；`product_info.json` 里的
+`name` 与请求的产品不符 → 说清楚这个目录是给谁生成的；按产品的镜像 label 收窄，再按
+switchset 取。三条错误路径都把构建里真有的东西列出来：
+
+```
+$ ./scripts/qemu-debug.sh bringup x86 dbg.7
+qemu-debug: product 'bringup' has no image built in switchset 'dbg.7'
+qemu-debug: it offers: dbg.0 (kernel.dev), dbg.1 (kernel.dev.dbg_1)
+
+$ ./scripts/qemu-debug.sh bringup arm dbg.1
+qemu-debug: no build directory at .../out/bringup.arm
+qemu-debug: configure it with:  tools/set.py bringup.arm
+qemu-debug: products the tree defines: bringup
+
+$ OUT=/tmp/fakeout ./scripts/qemu-debug.sh bringup x86 dbg.1
+qemu-debug: /tmp/fakeout was generated for product 'other', not 'bringup'
+qemu-debug: re-run:  tools/set.py bringup.x86
+```
+
+**符号软链从 `$OUT/.debug/` 移到 `out/.debug/`**，这一条是被 VS Code 逼出来的而不是审美：
+`$OUT` 随产品和架构变，而调试配置里 `target create` 的路径必须是一个常量。要让它跟着变，
+就得在 launch 段里也引用 `${input:product}` / `${input:arch}`——而 VS Code 对 launch 和
+tasks 两段**各解析一次、答案不共享**，于是每个框都会问两遍。固定成一处也正好符合事实：
+一个 checkout、一个 gdbstub 端口、一个正在调的内核。
+
+同样的理由，**构建从 `dependsOn` 改成用 `&&` 拼进同一条命令**：
+
+```jsonc
+// 改前
+"command": "./scripts/qemu-debug.sh ${input:kernel}",
+"dependsOn": "kernel: build",
+
+// 改后
+"command": "prebuilt/ninja/ninja -C out/${input:product}.${input:arch} && ./scripts/qemu-debug.sh ${input:product} ${input:arch} ${input:switchset}",
+```
+
+`dependsOn` 的任务是**另一次执行、另一次变量解析**，会把产品和架构再问一遍（记住的答案
+会被预选，但弹窗照弹）；开一次调试要回答五个框就不叫一键了。同一条命令里同一个
+`${input:}` 出现多次只问一次——VS Code 在一次解析里按完整字面量去重。代价是编译错误落在
+任务终端而不是 Problems 面板；`kernel: build` 那个任务仍带 clang matcher，供 Cmd+Shift+B。
+
+**参照**
+无，本项目自有设计。`tools/set.py <product>.<arch>` 的分层对标 Fuchsia 的
+`fx set <product>.<board>`；switchset 作为第三层是本项目特有的（Fuchsia 那层是 board）。
+
+**验证**
+1. `gn gen` 通过（426 targets），`ninja` 全绿。
+2. 三份 `<镜像名>.debug.json` 里都有身份记录，label 是镜像而不是 metadata group：
+
+   ```
+   kernel.dev         //kernel/products/image/dev:dev            switchset=dbg.0  vmours.with-tests
+   kernel.dev.dbg_1   //kernel/products/image/dev.dbg_1:dev.dbg_1 switchset=dbg.1  vmours
+   fake               //kernel/products/image/fake:fake          switchset=dbg.0  fake-kernel
+   ```
+   而 `product_info.json` 说 bringup 只拥有前两个——所以 `dbg.0` 在产品内唯一。
+3. 两个 switchset 各完整启动 + attach 一次：
+
+   ```
+   qemu-debug: bringup.x86 dbg.1 -> kernel.dev.dbg_1
+      symbols kernel_x86.dbg.1/obj/kernel/products/bin/vmours
+      Breakpoint 1: ... at main.cpp:106:9, address = 0xffffff88400890a9
+   qemu-debug: bringup.x86 dbg.0 -> kernel.dev
+      symbols kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests
+      Breakpoint 1: ... at main.cpp:106:9, address = 0xffffff88400760a9
+   ```
+4. 四条错误路径（未知 switchset / 未配置的架构 / 未知产品 / 目录属于别的产品）见上，
+   全部给出可执行的下一步。
+5. 软链现在落在 `out/.debug/kernel.elf`，路径里没有产品和架构；工作区里
+   `out/bringup.x86/.debug` 的引用为 0。
+6. 工作区文件去注释后 `json.loads` 通过；三个 input 的 id 与命令里的引用对得上。
+7. **三个下拉框仍然没在 VS Code 里点过**：窗口在另一个全屏 Space，后台控制送不进点击。
+   按下去会执行的命令都在上面验过，没验的是 VS Code 弹三次 quick pick 并代入的那一步。
+
+**故意没做**
+- **没有让选项自动同步**。VS Code 生成不了 `pickString` 的选项（`"type":"command"` 只能
+  返回字符串，没有能跑 shell 的内建命令），不装第三方扩展做不到。所以三个列表是手写的，
+  但它们**只写名字**，写错了脚本会把构建里真有的列出来。
+- **`arm` 列进了菜单但没有 `out/bringup.arm`**。留着是因为工具链认识这个架构，而脚本
+  在目录不存在时给的是 `tools/set.py bringup.arm` 这条可执行的下一步——比菜单里没有它、
+  让人以为不支持要好。
+- **没有把 `kernel: build` 也参数化**。它是 Cmd+Shift+B 的默认构建任务，不在 F5 路径上；
+  参数化它就要再引用一次那两个 input，而任务之间不共享解析结果。
+- **没有收 physload / physboot / userboot / vDSO**。清单里有它们（`environment` 分别是
+  `kernel.phys` 和 `user`），但各自需要不同的 `--slide`，而 phys 那两个的加载地址是运行期
+  由内存图选的，编译期不是常量。

@@ -34,12 +34,21 @@
     // dbg.0's `vmours` is not even a build target any more (ninja -t query says
     // unknown), so it was a week-old leftover that would never be rebuilt.
     //
-    // Nothing here writes that pairing down any more. kernel_image() emits it
-    // into debug_images.json, and scripts/qemu-debug.sh reads it. The choice is
-    // made once, by
-    // scripts/qemu-debug.sh, which boots an image and publishes the matching
-    // ELF at out/bringup.x86/.debug/kernel.elf. The debugger always opens that
-    // one path, so it cannot be looking at symbols for a kernel it did not boot.
+    // Nothing here writes that pairing down any more. kernel_image() emits an
+    // <image>.debug.json beside each .obi, and scripts/qemu-debug.sh resolves
+    // the three answers below against it, boots the image, and links the
+    // matching unstripped ELF to out/.debug/kernel.elf.
+    //
+    // That path has no product or architecture in it on purpose. It varies --
+    // out/<product>.<arch> -- and spelling it here would mean reading the same
+    // ${input:} from the launch section as well as the tasks section, which
+    // VS Code resolves separately: every prompt would come up twice. One
+    // pointer per checkout also matches the situation, there being one gdbstub
+    // port and one debugger.
+    //
+    // The debugger therefore knows nothing about which kernel it is opening,
+    // which is the point: symbols that disagree with the running image are not
+    // representable.
     "launch": {
         "version": "0.2.0",
         "configurations": [
@@ -54,7 +63,7 @@
                 // There is no process to find by pid or by name -- the
                 // "process" is a gdbstub on a TCP port.
                 "attachCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/.debug/kernel.elf",
+                    "target create ${workspaceFolder}/out/.debug/kernel.elf",
                     // The kernel links at 0 and physboot loads it at
                     // KERNEL_LOAD_BASE, so the symbols have to be slid to where
                     // the image actually is or every address is off by 64 GiB.
@@ -79,7 +88,7 @@
                 // It published the symlink on its way up, so this needs to know
                 // nothing about which kernel that was.
                 "attachCommands": [
-                    "target create ${workspaceFolder}/out/bringup.x86/.debug/kernel.elf",
+                    "target create ${workspaceFolder}/out/.debug/kernel.elf",
                     "target modules load --file kernel.elf --slide 0xffffff8840000000",
                     "gdb-remote localhost:1234"
                 ]
@@ -91,6 +100,8 @@
         "version": "2.0.0",
         "tasks": [
             {
+                // Cmd+Shift+B, for the tree as configured. Not on the F5 path
+                // -- see the note on "kernel: qemu debug" above.
                 "label": "kernel: build",
                 "type": "shell",
                 "command": "prebuilt/ninja/ninja -C out/bringup.x86",
@@ -108,20 +119,30 @@
                 }
             },
             {
-                // Boots the chosen image halted with the gdbstub open, and does
-                // not report ready until the port actually accepts a connection
-                // -- the debugger attaches the instant this task says it is up,
-                // and attaching to a port nothing is listening on fails the
-                // launch.
+                // Builds and then boots the chosen image, halted, with the
+                // gdbstub open -- and does not report ready until the port
+                // actually accepts a connection, because the debugger attaches
+                // the instant this task says it is up and attaching to a port
+                // nothing is listening on fails the launch.
+                //
+                // The build is spliced in with && rather than expressed as
+                // dependsOn: "kernel: build". A dependsOn task is a separate
+                // execution with its own variable-resolution pass, so it would
+                // ask for the product and the architecture a second time (the
+                // remembered answer is pre-selected, but the prompt still
+                // appears), and asking four questions to start one debug
+                // session is not one-key. The cost is that a compile error
+                // shows up in this terminal instead of the Problems panel;
+                // "kernel: build" below still has the clang matcher for
+                // Cmd+Shift+B.
                 //
                 // This is also the only place the kernel is named. The
                 // debugger's own configuration has no idea which one it is
                 // about to look at, which is the point.
                 "label": "kernel: qemu debug",
                 "type": "shell",
-                "command": "./scripts/qemu-debug.sh ${input:kernel}",
+                "command": "prebuilt/ninja/ninja -C out/${input:product}.${input:arch} && ./scripts/qemu-debug.sh ${input:product} ${input:arch} ${input:switchset}",
                 "options": { "cwd": "${workspaceFolder}" },
-                "dependsOn": "kernel: build",
                 "isBackground": true,
                 "problemMatcher": {
                     "pattern": {
@@ -147,50 +168,86 @@
             }
         ],
 
-        // The dropdown F5 puts up.
+        // The three dropdowns F5 puts up, in this order: product, then
+        // architecture, then which kernel out of that product.
         //
-        // It lives in "tasks" rather than "launch" because the task's command
-        // is the only thing that references it -- VS Code resolves ${input:} in
-        // each section against that section's own inputs, and the two passes do
-        // not share answers. An input referenced from BOTH the launch
+        // They live in "tasks" rather than "launch" because the task's command
+        // is the only thing that references them -- VS Code resolves ${input:}
+        // in each section against that section's own inputs, and the two passes
+        // do not share answers. An input referenced from BOTH the launch
         // configuration and its preLaunchTask is asked twice, once per pass;
-        // routing the choice through the script is what keeps it to one prompt.
+        // routing the whole choice through the script is what keeps it to one
+        // prompt each.
         //
-        // The values are image names out of debug_images.json, which
-        // kernel_image() generates -- this list is a menu, not a second copy of
-        // anything. It does have to be typed out, because VS Code cannot
-        // compute a pickString's options; a name that is not in the manifest
-        // makes the script print the ones that are, so the two cannot silently
-        // disagree about what exists.
+        // The order is the order the inputs appear in the command string above,
+        // and it is also the order they narrow in: the product decides which
+        // images exist, product and architecture together decide which build
+        // directory (out/<product>.<arch>, the one tools/set.py writes), and
+        // the switchset picks one image out of that product's set.
+        //
+        // These lists are typed out because VS Code cannot compute a
+        // pickString's options -- there is no hook for it short of a
+        // third-party extension. They are also the ONLY place any of this is
+        // typed out, and they carry names, never paths or pairings: pass a name
+        // the build does not have and scripts/qemu-debug.sh answers with the
+        // ones it does, so the menu and the build cannot quietly disagree.
         //
         // Labels do not repeat the value: VS Code renders an option as
-        // "<label>: <value>", so "dbg.1 -- ...": dbg.1 would say it twice.
-        // "default" only pre-selects and tags the row; nothing here can skip
-        // the prompt, and the last choice is remembered per section anyway.
+        // "<label>: <value>". "default" only pre-selects and tags the row;
+        // nothing here can skip a prompt.
         "inputs": [
             {
-                "id": "kernel",
+                "id": "product",
+                "type": "pickString",
+                "description": "Product?",
+                "default": "bringup",
+                "options": [
+                    {
+                        "label": "minimal bootable image set",
+                        "value": "bringup"
+                    }
+                ]
+            },
+            {
+                "id": "arch",
+                "type": "pickString",
+                "description": "Architecture?",
+                "default": "x86",
+                "options": [
+                    {
+                        "label": "the one that boots today",
+                        "value": "x86"
+                    },
+                    {
+                        // Offered because the toolchain knows it. There is no
+                        // out/bringup.arm until someone runs tools/set.py, and
+                        // the script says exactly that rather than failing
+                        // somewhere further in.
+                        "label": "aarch64, not configured yet",
+                        "value": "arm"
+                    }
+                ]
+            },
+            {
+                "id": "switchset",
                 "type": "pickString",
                 "description": "Which kernel?",
-                "default": "kernel.dev.dbg_1",
+                "default": "dbg.1",
                 "options": [
                     {
                         "label": "asserts and trace on",
-                        "value": "kernel.dev.dbg_1"
+                        "value": "dbg.1"
                     },
                     {
                         // A bug that asserts in dbg.1 goes silent here, so both
                         // have to be debuggable, not just the noisy one.
                         "label": "asserts compiled out, unit tests linked in",
-                        "value": "kernel.dev"
+                        "value": "dbg.0"
                     }
-                    // "fake" is deliberately absent even though the build
-                    // describes it and the script resolves it: fake.obi does
-                    // not boot on this tree -- physboot rejects it with
-                    // "Invalid kernel package: 4". Offering a one-click entry
-                    // that hangs at a black screen is worse than not offering
-                    // it. See docs/repairs/260909/products.md; put it back once
-                    // that is fixed.
+                    // The spelling is the build's: //build/switch/set/<name>.
+                    // fake.obi is reachable from the script but not from here --
+                    // it belongs to no product, and it does not boot anyway
+                    // (docs/repairs/260909/products.md).
                 ]
             }
         ]

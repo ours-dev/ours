@@ -61,11 +61,50 @@ template("kernel_image") {
   # this target for the manifest to be on disk. It sits beside the .obi so that
   # finding it needs no index and no second hand-maintained list -- the set of
   # debuggable images is `ls $root_out_dir/*.debug.json`.
+  # The image's own identity, walked in alongside the ELFs so that one file
+  # answers every question about it. Without this the manifest is a list of
+  # binaries that does not say which image it belongs to, and a consumer
+  # matching it against something else -- a product's image list, say -- has
+  # only the filename to go on.
+  #
+  # A group carrying nothing but metadata is the standard way to inject a
+  # literal into a walk: generated_file() takes either `contents` or
+  # `data_keys`, never both, so a record that is not itself collected from
+  # somewhere has to be contributed by a target the walk passes through.
+  # Captured out here: inside a target block `target_name` is that target's own
+  # name, so ":$target_name.debug_id" written below would resolve against
+  # "<image>.debug" and name "<image>.debug.debug_id".
+  _debug_id_target = ":$target_name.debug_id"
+
+  # Same reason, and this one matters more: the record has to name the IMAGE,
+  # not the metadata group carrying it. Without a toolchain suffix, because the
+  # thing it gets matched against is a product's image list, which spells its
+  # entries the way a human wrote them in products/<name>.gni.
+  _image_label = get_label_info(":$target_name", "label_no_toolchain")
+
+  group("$target_name.debug_id") {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":*" ]
+
+    metadata = {
+      obi_image = [
+        {
+          image = _output_name
+          obi = rebase_path("$_output_dir/$_output_name.obi", root_build_dir)
+          label = _image_label
+        },
+      ]
+    }
+  }
+
   generated_file("$target_name.debug") {
     forward_variables_from(invoker, [ "testonly" ])
     visibility = [ ":*" ]
-    deps = invoker.deps
-    data_keys = [ "binaries" ]
+    deps = invoker.deps + [ _debug_id_target ]
+    data_keys = [
+      "obi_image",
+      "binaries",
+    ]
     outputs = [ "$_output_dir/$_output_name.debug.json" ]
     output_conversion = "json"
   }

@@ -9,24 +9,32 @@
 # attaching to a port nothing is listening on fails the whole launch.
 #
 # Usable on its own too:
-#     ./scripts/qemu-debug.sh                    # kernel.dev.dbg_1 (default)
-#     ./scripts/qemu-debug.sh kernel.dev
-#     ./scripts/qemu-debug.sh fake
+#     ./scripts/qemu-debug.sh                       # bringup x86 dbg.1
+#     ./scripts/qemu-debug.sh bringup x86 dbg.0
 #     PORT=1235 ./scripts/qemu-debug.sh
 #     IMAGE=/path/to.obi ELF=/path/to/elf ./scripts/qemu-debug.sh   # off-manifest
 #
-# The names are whatever kernel_image() produced; pass a wrong one and it
-# prints the list.
+# Three levels, narrowing: the product says which images exist, the product and
+# the architecture together say which build directory (out/<product>.<arch>,
+# the same one tools/set.py writes), and the switchset picks one image out of
+# that product's set. None of the three is a list kept in this file -- pass a
+# wrong one and it prints what the build actually has.
 # then in another terminal:
-#     lldb -o 'target create out/bringup.x86/.debug/kernel.elf' \
+#     lldb -o 'target create out/.debug/kernel.elf' \
 #          -o 'target modules load --file kernel.elf --slide 0xffffff8840000000' \
 #          -o 'gdb-remote localhost:1234'
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-OUT=${OUT:-$ROOT/out/bringup.x86}
 PORT=${PORT:-1234}
-VARIANT=${1:-${VARIANT:-kernel.dev.dbg_1}}
+
+PRODUCT=${1:-${PRODUCT:-bringup}}
+ARCH=${2:-${ARCH:-x86}}
+SWITCHSET=${3:-${SWITCHSET:-dbg.1}}
+
+# The build directory is not a fourth choice, it IS the first two: tools/set.py
+# <product>.<arch> writes args.gn and runs gn gen into exactly this path.
+OUT=${OUT:-$ROOT/out/$PRODUCT.$ARCH}
 
 # Captured before the table below assigns to IMAGE/ELF: the table has to run
 # first, since it is what defines the defaults, and would otherwise erase what
@@ -42,12 +50,12 @@ ENV_ELF=${ELF:-};     ENV_ELF_SET=${ELF+x}
 # kernel.dev.obi packages vmours.with-tests, kernel.dev.dbg_1.obi packages
 # vmours, and fake.obi packages neither. It also moves: the copy that used to
 # live in this script named a binary that had quietly stopped being a build
-# target (docs/changes/260909/tooling.md). So kernel_image() writes a
+# target (docs/changes/260909/tooling.md). So kernel_image() writes an
 # <image>.debug.json beside each .obi, and this reads that.
 #
-# The override is tested FIRST, before the manifest is even looked for: booting
-# something the build does not describe is exactly the case where there is no
-# manifest to consult, and requiring one would close the escape hatch at the
+# The override is tested FIRST, before the build directory is even looked at:
+# booting something the build does not describe is exactly the case where there
+# is nothing to read, and requiring it would close the escape hatch at the
 # moment it is needed. The names match qemu-boot.sh beside this script, which
 # already calls it IMAGE. They override together -- naming a new image while
 # keeping the build's symbols is precisely the mistake all of this prevents.
@@ -59,36 +67,92 @@ if [ -n "$ENV_IMAGE_SET$ENV_ELF_SET" ]; then
     IMAGE=$ENV_IMAGE
     ELF=$ENV_ELF
 else
-    IMAGE=$OUT/$VARIANT.obi
     # python3 rather than a JSON parser in sh because the port poller below
     # already depends on it, so this adds no new tool.
-    ELF=$(OUT="$OUT" VARIANT="$VARIANT" python3 <<'RESOLVE'
+    _resolved=$(ROOT="$ROOT" OUT="$OUT" PRODUCT="$PRODUCT" ARCH="$ARCH" \
+                SWITCHSET="$SWITCHSET" python3 <<'RESOLVE'
 import glob, json, os, sys
 
-out, want = os.environ["OUT"], os.environ["VARIANT"]
-manifests = sorted(glob.glob(os.path.join(out, "*.debug.json")))
-if not manifests:
-    sys.exit(f"qemu-debug: no *.debug.json in {out} -- run 'prebuilt/gn/gn gen {out}' first")
+root = os.environ["ROOT"]
+out = os.environ["OUT"]
+product, arch, switchset = (os.environ[k] for k in ("PRODUCT", "ARCH", "SWITCHSET"))
 
-path = os.path.join(out, want + ".debug.json")
-if not os.path.exists(path):
-    names = ", ".join(os.path.basename(m)[: -len(".debug.json")] for m in manifests)
-    sys.exit(f"qemu-debug: unknown image '{want}' (the build offers: {names})")
 
-# One image contains several ELFs -- physload and physboot from the kernel.phys
-# environment, userboot and the vDSO from user. The kernel is the one built in
-# the kernel environment, and "debug" is its unstripped path (the packed
-# .image.elf beside it has had its symbols removed).
-kernels = [e for e in json.load(open(path)) if e.get("environment") == "kernel"]
-if not kernels:
-    sys.exit(f"qemu-debug: '{want}' contains no kernel-environment ELF -- not a bootable image")
-if len(kernels) > 1:
-    sys.exit("qemu-debug: '%s' contains %d kernel ELFs: %s"
-             % (want, len(kernels), ", ".join(k["debug"] for k in kernels)))
+def die(*lines):
+    sys.exit("\n".join("qemu-debug: " + l for l in lines))
 
-print(os.path.join(out, kernels[0]["debug"]))
+
+# Level 1+2. A missing directory is far more often "never configured this
+# combination" than "typo", so lead with the command that creates it -- but
+# still say which products exist, because that list is the only one this script
+# cannot get from the build directory it is being told does not exist.
+if not os.path.isdir(out):
+    products = sorted(
+        os.path.basename(g)[: -len(".gni")]
+        for g in glob.glob(os.path.join(root, "products", "*.gni"))
+    )
+    die(f"no build directory at {out}",
+        f"configure it with:  tools/set.py {product}.{arch}",
+        f"products the tree defines: {', '.join(products)}")
+
+info_path = os.path.join(out, "product_info.json")
+if not os.path.exists(info_path):
+    die(f"no {info_path} -- run 'prebuilt/gn/gn gen {out}' first")
+
+info = json.load(open(info_path))[0]
+if info["name"] != product:
+    die(f"{out} was generated for product '{info['name']}', not '{product}'",
+        f"re-run:  tools/set.py {product}.{arch}")
+
+
+def normalise(label):
+    """//dir -> //dir:dir, so a product's shorthand matches an image's label."""
+    return label if ":" in label else f"{label}:{label.rsplit('/', 1)[-1]}"
+
+
+# Level 3. The directory holds more images than the product does -- fake.obi is
+# a dependency of //:default, not of any product -- and two images can share a
+# switchset, so narrowing by the product first is what makes the switchset a
+# unique key rather than an ambiguous one.
+owned = {normalise(k["package"]) for k in info["kernel_images"]}
+
+candidates = {}
+for manifest in sorted(glob.glob(os.path.join(out, "*.debug.json"))):
+    records = json.load(open(manifest))
+    identity = next((r for r in records if "obi" in r), None)
+    kernels = [r for r in records if r.get("environment") == "kernel"]
+    if identity is None or len(kernels) != 1:
+        continue
+    if identity["label"] not in owned:
+        continue
+    # The switchset is the directory under //build/switch/set that built the
+    # kernel, read off the toolchain in its label -- not a name this script or
+    # the product keeps a copy of.
+    label = kernels[0]["label"]
+    marker = "//build/switch/set/"
+    if marker not in label:
+        continue
+    candidates[label.split(marker, 1)[1].split(":", 1)[0]] = (identity, kernels[0])
+
+if not candidates:
+    die(f"{out} describes no image belonging to product '{product}'",
+        f"has 'prebuilt/ninja/ninja -C {out}' been run?")
+
+if switchset not in candidates:
+    have = ", ".join(f"{s} ({i['image']})" for s, (i, _) in sorted(candidates.items()))
+    die(f"product '{product}' has no image built in switchset '{switchset}'",
+        f"it offers: {have}")
+
+identity, kernel = candidates[switchset]
+print(os.path.join(out, identity["obi"]))
+print(os.path.join(out, kernel["debug"]))
+print(identity["image"])
 RESOLVE
-) || exit $?
+    ) || exit $?
+
+    IMAGE=$(printf '%s\n' "$_resolved" | sed -n 1p)
+    ELF=$(printf '%s\n' "$_resolved" | sed -n 2p)
+    echo "qemu-debug: $PRODUCT.$ARCH $SWITCHSET -> $(printf '%s\n' "$_resolved" | sed -n 3p)"
 fi
 
 # Both checked before QEMU is touched. A missing ELF is the nastier of the two:
@@ -115,13 +179,21 @@ fi
 # -n is not in POSIX ln (only -f -i -L -P -s are), but every ln this repo will
 # meet has it, and it is only insurance: the target is always a plain file, so
 # -f alone would do.
-mkdir -p "$OUT/.debug"
-ln -sfn "$ELF" "$OUT/.debug/kernel.elf"
+# Note the path: out/.debug, NOT $OUT/.debug. $OUT moves with the product and
+# the architecture, and the debugger configuration has to name one fixed path
+# -- naming a varying one would mean referencing the product and architecture
+# inputs from the launch configuration as well as from the task, and VS Code
+# asks for an input once per section, so every prompt would come up twice.
+#
+# One pointer per checkout is also what the situation actually is: one gdbstub
+# port, one debugger, one kernel under it.
+mkdir -p "$ROOT/out/.debug"
+ln -sfn "$ELF" "$ROOT/out/.debug/kernel.elf"
 
 # The first line the VS Code task keys on; the last one is the ready line at
 # the bottom of this script.
 echo "qemu-debug: booting $IMAGE"
-echo "qemu-debug: symbols $ELF -> $OUT/.debug/kernel.elf"
+echo "qemu-debug: symbols $ELF -> $ROOT/out/.debug/kernel.elf"
 echo "qemu-debug: gdbstub on localhost:$PORT"
 
 # Two debuggers on one port take each other down, and the survivor is not

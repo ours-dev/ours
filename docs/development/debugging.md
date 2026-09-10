@@ -3,7 +3,7 @@
 ## 一键
 
 用 `ours.code-workspace` 打开这个仓库（`File > Open Workspace from File...`，或者
-在 Finder 里双击它），按 **F5**，在弹出的下拉框里挑一个内核。就这两步。
+在 Finder 里双击它），按 **F5**，然后依次回答三个下拉框：**产品 → 架构 → 内核**。
 
 > 必须从这个文件打开：调试配置和它依赖的那几个任务都写在 `ours.code-workspace`
 > 里，直接 `Open Folder` 打开目录的话 VS Code 读不到它们，调试面板会是空的。
@@ -14,48 +14,79 @@
 
 结束调试会话时 QEMU 会被一并杀掉。
 
-按 F5 会先问一句 **Which kernel?**：
+按 F5 会依次问三句，一层比一层窄：
 
-| 选项 | 是什么 |
-|---|---|
-| `kernel.dev.dbg_1` | 默认。`KERNEL_DEBUG_LEVEL=1`，`DEBUG_ASSERT` 和 trace/debug 日志都在 |
-| `kernel.dev` | 断言和 trace 都被编译掉、并且**链进了单测**的那个镜像。一个 bug 在一个镜像里断言、在另一个里静默，所以两个都要能调 |
+| 顺序 | 问题 | 现在能选 | 决定了什么 |
+|---|---|---|---|
+| 1 | Product? | `bringup` | 这个产品包含哪些镜像 |
+| 2 | Architecture? | `x86`、`arm` | 和产品一起决定构建目录 `out/<产品>.<架构>` |
+| 3 | Which kernel? | `dbg.1`、`dbg.0` | 从该产品的镜像里挑一个 |
 
-名字就是 `kernel_image()` 产出的镜像名，不是另起的一套别名。
+第三层是 **switchset**（`//build/switch/set/<名字>`），不是镜像名——因为镜像名
+（`kernel.dev.dbg_1` / `kernel.dev`）并不说明它们的区别，而 switchset 正好就是区别本身：
 
-`fake`（`//kernel/tests/fake-kernel` 那条 phys 链）构建里有、脚本也认，但**暂时没放进下拉框**：
-`fake.obi` 现在起不来，physboot 报 `Invalid kernel package: 4`，见
-`docs/repairs/260909/products.md`。修好之后把菜单项加回去就行。
+| switchset | 是什么 | 实际是哪个镜像 |
+|---|---|---|
+| `dbg.1` | `KERNEL_DEBUG_LEVEL=1`，`DEBUG_ASSERT` 和 trace/debug 日志都在 | `kernel.dev.dbg_1.obi` |
+| `dbg.0` | 断言和 trace 都被编译掉、并且**链进了单测** | `kernel.dev.obi` |
+
+一个 bug 在一个镜像里断言、在另一个里静默，所以两个都要能调。
+
+`arm` 列在菜单里是因为工具链认识它；`out/bringup.arm` 要先跑 `tools/set.py bringup.arm`
+才存在，没跑的话脚本会直接把这条命令告诉你。
+
+`fake`（`//kernel/tests/fake-kernel` 那条 phys 链）**不属于任何产品**——它是 `//:default`
+的直接依赖——所以三层选择够不着它。何况它现在也起不来：physboot 报
+`Invalid kernel package: 4`，见 `docs/repairs/260909/products.md`。
 
 调试面板的下拉框里另有一个 `Kernel: attach to a QEMU I started myself`，用于终端里已经
 跑着 `./scripts/qemu-debug.sh` 的场合，它不重启 QEMU。
 
-## 名单从哪来
+## 三层名单从哪来
 
 **从构建里来，没人手写。**
 
-`kernel_image()` 每产出一个镜像，就往 `out/bringup.x86/debug_images.json` 里写一行：
+三层各有出处，都不是这份文档或脚本里的常量：
+
+| 层 | 出处 |
+|---|---|
+| 产品 | `products/*.gni` |
+| 构建目录 | `out/<产品>.<架构>`，就是 `tools/set.py <产品>.<架构>` 写的那个 |
+| 该产品有哪些镜像 | 该目录里的 `product_info.json` |
+| 镜像属于哪个 switchset | 镜像自己的 `<镜像名>.debug.json`，从内核 ELF 的 toolchain label 读出来 |
+
+先按产品收窄再按 switchset 取，顺序是必要的：`out/bringup.x86` 里除了产品的两个镜像还有
+`fake.obi`，而 `fake` 和 `kernel.dev` **同属 `dbg.0`**——不先筛产品，`dbg.0` 就是二义的。
+
+`kernel_image()` 每产出一个镜像，就在 `.obi` **旁边**写一份 `<镜像名>.debug.json`
+（`generated_file` + 一次 `binaries` 的 GN metadata walk，`gn gen` 期就落盘）。里面两类记录：
 
 ```json
-{
-  "name": "kernel.dev",
-  "obi": "kernel.dev.obi",
-  "symbols": "gen/kernel/products/image/dev/kernel.dev.debug.json",
-  "label": "//kernel/products/image/dev:dev(//build/toolchain/ours:kernel-x86)"
-}
+[
+  { "image": "kernel.dev", "obi": "kernel.dev.obi",
+    "label": "//kernel/products/image/dev:dev" },
+
+  { "debug": "kernel_x86.dbg.0/obj/kernel/products/bin/vmours.with-tests",
+    "environment": "kernel",
+    "label": "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_x86.dbg.0)" },
+  { "debug": "kernel.phys_x86.phys.dbg_0/obj/kernel/phys/physload", "environment": "kernel.phys", ... },
+  { "debug": "user-x86/obj/kernel/lib/userabi/userboot/userboot", "environment": "user", ... }
+]
 ```
 
-`symbols` 指向的那份是一次 GN metadata walk 的结果，同时收了两个 key，缺一不可：
+第一条是镜像自己的身份（用来和 `product_info.json` 的镜像清单对上）；其余是镜像里每个
+ELF。**内核就是 `environment == "kernel"` 那条**——一个镜像里还有 physload/physboot
+（`kernel.phys`）和 userboot/vDSO（`user`），`environment` 一次就分清了，不需要 join 第二个
+key，也不需要从 `.image.elf` 去后缀猜：`debug` 本来就是**未 strip**的那份，调试信息在它里面。
 
-- `images` —— 谁被打进了镜像、打在哪。内核是 `type="kernel-elf"` 且 `destination` 为
-  `"<名字>/image.elf"` 的那条；和它并列的顶层条目是 userboot 和 vDSO。
-- `debug_symbol_files` —— 未 strip 的路径。`images` 给的是真正打包进去的
-  `.image.elf`（已 strip），而调试信息在它那个没后缀的兄弟里。
+switchset 也从这里读——内核那条 label 的 toolchain 部分就是
+`//build/switch/set/dbg.0`，末段即 `dbg.0`。
 
-两者**按 GN label 精确 join**，不靠去后缀猜。
+放在 `.obi` 旁边而不是 `gen/` 深处，是为了"枚举镜像 = 一次 glob"，不需要任何索引，也就
+不需要再维护一张"有哪些镜像"的表。
 
-`scripts/qemu-debug.sh` 读这份清单，启对应镜像，并把解析出来的 ELF 链到
-`out/bringup.x86/.debug/kernel.elf`；调试器永远只打开这一个路径。于是"符号和启动的内核
+`scripts/qemu-debug.sh` 读它，启对应镜像，并把解析出来的 ELF 链到
+`out/.debug/kernel.elf`；调试器永远只打开这一个路径。于是"符号和启动的内核
 对不上"这件事**没法表达**。
 
 这么做的理由是它已经错过一次。之前每个内核一份配置，要在两处分别写下镜像和 ELF，而这
@@ -64,12 +95,18 @@
 差 `0xE000`（56 KiB）——断点全落在不相干的代码上；更糟的是 dbg.0 的 `vmours` 已经不是
 构建目标了（`ninja -t query` 报 unknown），是个不会再被重建的陈旧文件。
 
-下拉框那两行还是手写的——VS Code 没法动态生成 `pickString` 的选项。但它只写名字，
-**写错了脚本会把构建里真有的名字列出来**：
+三个下拉框的选项还是手写的——VS Code 没法动态生成 `pickString` 的选项，不装第三方扩展
+做不到。但它们**只写名字，不写路径也不写配对**，而且写错了脚本会把构建里真有的列出来：
 
 ```
-$ ./scripts/qemu-debug.sh bogus
-qemu-debug: unknown image 'bogus' (the build offers: fake, kernel.dev, kernel.dev.dbg_1)
+$ ./scripts/qemu-debug.sh bringup x86 dbg.7
+qemu-debug: product 'bringup' has no image built in switchset 'dbg.7'
+qemu-debug: it offers: dbg.0 (kernel.dev), dbg.1 (kernel.dev.dbg_1)
+
+$ ./scripts/qemu-debug.sh bringup arm dbg.1
+qemu-debug: no build directory at .../out/bringup.arm
+qemu-debug: configure it with:  tools/set.py bringup.arm
+qemu-debug: products the tree defines: bringup
 ```
 
 不需要任何安装。调试适配器是 `llvm-vs-code-extensions.lldb-dap` 扩展（已装），它经
@@ -96,8 +133,8 @@ QEMU 用 `-S` 启动。这不是保守，是必要的：等到一个**正在运�
 同一套东西不进 VS Code 也能用：
 
 ```bash
-./scripts/qemu-debug.sh                 # kernel.dev.dbg_1
-./scripts/qemu-debug.sh kernel.dev
+./scripts/qemu-debug.sh                    # bringup x86 dbg.1
+./scripts/qemu-debug.sh bringup x86 dbg.0
 ```
 
 它清掉上一次会话残留的 QEMU/lldb（**两个进程抢同一个端口会互相打死**，而活下来的不一定
@@ -107,13 +144,14 @@ QEMU 用 `-S` 启动。这不是保守，是必要的：等到一个**正在运�
 另开一个终端：
 
 ```bash
-lldb -o 'target create out/bringup.x86/.debug/kernel.elf' \
+lldb -o 'target create out/.debug/kernel.elf' \
      -o 'target modules load --file kernel.elf --slide 0xffffff8840000000' \
      -o 'gdb-remote localhost:1234'
 ```
 
-这里不用管刚才启的是哪个内核——脚本已经把配套的 ELF 链到 `.debug/kernel.elf` 了，它也
-会把真实路径打在 `qemu-debug: symbols ...` 那一行上。
+这里不用管刚才启的是哪个产品/架构/内核——脚本已经把配套的 ELF 链到 `out/.debug/kernel.elf`
+了，它也会把真实路径打在 `qemu-debug: symbols ...` 那一行上。**这个路径里没有产品和架构**，
+是固定的一处：一个 checkout、一个 gdbstub 端口、一个正在调的内核。
 
 换端口：`PORT=1235`。启一个构建没描述的镜像：`IMAGE=... ELF=... ./scripts/qemu-debug.sh`
 ——**两个必须一起给**，只给镜像不给符号正是这一整套要防的那个错。
