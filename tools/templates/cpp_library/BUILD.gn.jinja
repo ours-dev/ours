@@ -1,0 +1,13 @@
+import("//build/cpp/cpp_interface.gni")
+
+# {{ summary }}
+source_set("{{ name }}") {
+  sources = [ "src/{{ name }}.cpp" ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/{{ name }}/{{ name }}.hpp" ]
+}

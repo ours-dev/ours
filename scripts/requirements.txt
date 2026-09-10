@@ -1,1 +1,4 @@
 PyYAML>=6.0,<7
+
+# tools/templates/*: scaffolding a new library from a copier template.
+copier>=9,<10

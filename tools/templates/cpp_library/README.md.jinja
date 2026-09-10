@@ -1,0 +1,15 @@
+# {{ name }}
+
+{{ summary }}
+
+## Layout
+
+    include/{{ name }}/   public headers, reached as <{{ name }}/...>
+    src/                  sources
+    test/                 host-side tests, built with googletest
+
+## Building and testing
+
+The library is `//{{ gn_path }}`; its headers alone are
+`//{{ gn_path }}:headers`. Tests are executables under
+`//{{ gn_path }}/test` and run on the host, not in the kernel.

@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic rather than anything that needs a
+# booted kernel.
+executable("{{ name }}") {
+  testonly = true
+  sources = [ "{{ name }}_test.cpp" ]
+  deps = [
+    "//{{ gn_path }}",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

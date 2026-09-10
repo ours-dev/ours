@@ -1,0 +1,33 @@
+# copier template for a C++ library in this repository.
+#
+#   python3 -m copier copy tools/templates/cpp_library kernel/lib/<name>
+#
+# The generated library has the shape every library here is meant to have:
+# include/<name>/, src/, test/, .gitignore and .clang-format. The last of
+# those is the reason a template earns its keep rather than being copied by
+# hand -- it has to name the library's own include prefix, and getting it
+# wrong is invisible until someone notices the includes sorting oddly.
+
+_subdirectory: "."
+
+name:
+  type: str
+  help: "Library name, which is also its include prefix (e.g. gktl, ustl)"
+  validator: >-
+    {% if not (name | regex_search('^[a-z][a-z0-9_]*$')) %}
+    must be lower_snake_case and start with a letter
+    {% endif %}
+
+namespace:
+  type: str
+  help: "C++ namespace for the library's own symbols"
+  default: "{{ name }}"
+
+summary:
+  type: str
+  help: "One line describing what the library is for"
+
+gn_path:
+  type: str
+  help: "GN label path of this library, without the leading // (e.g. kernel/lib/gktl)"
+  default: "kernel/lib/{{ name }}"
