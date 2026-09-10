@@ -1,5 +1,6 @@
 #include <ours/boot/handoff.hpp>
 #include <ours/cpu.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -160,6 +161,13 @@ auto start_kernel(PhysAddr handoff) -> void {
     // it or give it more thing to do.
     irq::init();
     set_init_level(InitLevel::Irq);
+
+    // After the Irq level and not before: the MADT hook that fills
+    // cpu_possible_mask() runs on it, and this builds one mailbox per possible
+    // CPU. Before the secondaries, which is automatic -- they are started from
+    // init_platform(), two levels later -- because a CPU must have a mailbox
+    // before it can be sent a generic IPI.
+    IpiService::init();
 
     time::init();
     set_init_level(InitLevel::Time);

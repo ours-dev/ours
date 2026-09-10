@@ -13,11 +13,51 @@ class IpiService {
   public:
     using Event = IpiEvent;
 
+    /// A function to run on another CPU, with the argument it is given.
+    ///
+    /// A plain function pointer and a `void *`, not anything that captures:
+    /// the call runs in interrupt context on a CPU that has never seen the
+    /// caller's frame, so whatever it needs has to be reachable through one
+    /// word that outlives the call. Zircon's mp_sync_task_t is the same
+    /// signature for the same reason.
+    using SyncTask = auto (*)(void *context) -> void;
+
     static auto init() -> void;
 
     static auto send_resched(CpuNum dest) -> void;
 
     static auto send_resched(CpuMask const &dest) -> void;
+
+    /// Runs |task| on every online CPU in |targets| and returns only once all
+    /// of them have finished running it.
+    ///
+    /// This is the piece that makes a "generic" IPI generic. An IPI carries a
+    /// vector and nothing else, so a second client of IrqVec::IpiGeneric could
+    /// not previously say what it wanted done -- the profiler had to reach past
+    /// this class into apic_send_ipi_mulitcast() and get its own handler
+    /// hardcoded into the x86 fault dispatcher. The payload lives in the
+    /// target's mailbox now, and the vector only says "look at it".
+    ///
+    /// The calling CPU, if it is in |targets|, runs |task| itself rather than
+    /// interrupting itself with it.
+    ///
+    /// Requirements, both of which are asserted:
+    ///
+    ///   - Interrupts must be enabled. This spins until the targets answer,
+    ///     and they answer from their interrupt handlers; a caller that spun
+    ///     with interrupts masked could not service the sync_exec a target is
+    ///     itself waiting on, and the two would spin at each other for ever.
+    ///   - |task| runs in interrupt context, so it must not block, take a lock
+    ///     that is held outside interrupt context, or call sync_exec() again.
+    ///
+    /// Linux's smp_call_function_many() and Zircon's mp_sync_exec() are the
+    /// same operation; this follows Zircon's shape, where the request lives on
+    /// the caller's stack and the targets clear their bit in it.
+    static auto sync_exec(CpuMask targets, SyncTask task, void *context) -> void;
+
+    /// Runs whatever sync_exec() has queued for this CPU. This is the body of
+    /// the arch generic-IPI handler and has no other caller.
+    static auto handle_generic() -> void;
 
     static auto send_event(CpuNum dest, Event event) -> void;
 

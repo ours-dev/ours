@@ -7,6 +7,10 @@
 
 namespace ours {
 enum class IpiEvent : u8 {
+    /// "Run what I queued for you." The payload is not in the IPI -- an IPI
+    /// carries nothing but its vector -- it is in the target's mailbox, which
+    /// IpiService::sync_exec() filled in before sending this.
+    Generic,
     Resched,
     Interrupt,
     Suspend,

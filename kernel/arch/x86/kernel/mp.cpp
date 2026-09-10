@@ -8,6 +8,7 @@
 #include <ours/arch/x86/init.hpp>
 #include <ours/cpu.hpp>
 #include <ours/ipi_event.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/start.hpp>
 #include <ours/task/thread.hpp>
@@ -21,8 +22,15 @@ using namespace arch;
 
 namespace ours {
 namespace {
-    constexpr auto ipi_evnet_to_irqvec(IpiEvent event) -> IrqVec {
+    /// Total on purpose, with no fallthrough after the switch: a `return
+    /// IrqVec::IpiGeneric` sat there and made Generic the answer for any
+    /// event the switch forgot, which is a silent misdelivery rather than a
+    /// build error. With every enumerator named, adding one to IpiEvent now
+    /// fails to compile here, which is where it should fail.
+    constexpr auto ipi_event_to_irqvec(IpiEvent event) -> IrqVec {
         switch (event) {
+            case IpiEvent::Generic:
+                return IrqVec::IpiGeneric;
             case IpiEvent::Resched:
                 return IrqVec::IpiResched;
             case IpiEvent::Interrupt:
@@ -30,16 +38,15 @@ namespace {
             case IpiEvent::Suspend:
                 return IrqVec::IpiSuspend;
         }
-
-        return IrqVec::IpiGeneric;
+        panic("Unknown IpiEvent {}", usize(event));
     }
 } // namespace
 auto arch_mp_send_ipi(CpuNum cpu, IpiEvent event) -> void {
-    apic_send_ipi_unicast(cpu, ipi_evnet_to_irqvec(event), ApicDeliveryMode::Fixed);
+    apic_send_ipi_unicast(cpu, ipi_event_to_irqvec(event), ApicDeliveryMode::Fixed);
 }
 
 auto arch_mp_send_ipi_mask(CpuMask const &cpus, IpiEvent event) -> void {
-    apic_send_ipi_mulitcast(cpus, ipi_evnet_to_irqvec(event), ApicDeliveryMode::Fixed);
+    apic_send_ipi_mulitcast(cpus, ipi_event_to_irqvec(event), ApicDeliveryMode::Fixed);
 }
 
 auto arch_mp_reschedule(CpuNum cpu) -> void {
@@ -52,7 +59,13 @@ auto arch_mp_reschedule_mask(CpuMask const &cpus) -> void {
 
 auto arch_mp_suspend(CpuMask targets) -> void {}
 
-auto x86_handle_ipi_generic() -> void {}
+/// The generic IPI says only "look at your mailbox"; IpiService owns what is
+/// in it. Nothing arch-specific belongs here, which is the point -- the
+/// profiler used to be reached by a second, hardcoded call in the fault
+/// dispatcher because there was nowhere else to put it.
+auto x86_handle_ipi_generic() -> void {
+    IpiService::handle_generic();
+}
 
 auto x86_handle_ipi_interrupt() -> void {}
 

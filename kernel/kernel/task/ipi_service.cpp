@@ -1,10 +1,87 @@
+#include <arch/spin_hint.hpp>
 #include <ours/arch/mp.hpp>
+#include <ours/assert.hpp>
+#include <ours/cpu.hpp>
+#include <ours/init.hpp>
 #include <ours/ipi_service.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/sync/spin_lock.hpp>
 #include <ours/task/scheduler.hpp>
+#include <ustl/collections/intrusive/list.hpp>
+
+#include <atomic>
+#include <new>
 
 namespace ours {
-auto IpiService::init() -> void {}
+namespace {
+    /// One sync_exec() request, as the CPUs being asked see it.
+    ///
+    /// It lives on the *caller's stack*, and is linked into every target's
+    /// mailbox from there. That is safe because sync_exec() does not return
+    /// until |outstanding| is empty, and a target's last touch of this object
+    /// is the store that clears its own bit -- so the frame cannot go away
+    /// under a CPU that is still reading it. Zircon's mp_sync_context is the
+    /// same trick and is what makes this allocation-free, which matters
+    /// because the first caller may run long before there is a heap.
+    struct SyncCall {
+        IpiService::SyncTask task;
+        void *context;
+
+        /// The CPUs that have been asked and have not answered. Cleared a bit
+        /// at a time by the targets; the caller spins until it is empty.
+        std::atomic<CpuMask> outstanding;
+    };
+
+    /// One target CPU's place in that target's queue.
+    ///
+    /// Split from SyncCall because an intrusive hook may be on exactly one list
+    /// at a time, and one request goes into several CPUs' mailboxes at once.
+    /// Linking a single node into three lists is not a subtle mistake -- the
+    /// list caught it with a `ud2` on the second push -- but it is an easy one
+    /// to make, because the request really is one thing. Zircon splits it the
+    /// same way: one mp_sync_context, and an mp_ipi_task per CPU pointing at
+    /// it.
+    struct SyncSlot {
+        SyncCall *call;
+        ustl::collections::intrusive::ListMemberHook<> queue_hook;
+        USTL_DECLARE_HOOK_OPTION(SyncSlot, queue_hook, QueueListOption);
+    };
+    USTL_DECLARE_LIST(SyncSlot, SyncSlotList, SyncSlot::QueueListOption);
+
+    /// What a CPU has been asked to run.
+    ///
+    /// A queue rather than a single slot: two CPUs may each start a sync_exec()
+    /// naming this one, and neither may drop the other's request. The lock is
+    /// only ever taken by a *sender* for a CPU that is not itself, or by this
+    /// CPU's own handler -- never both from the same CPU -- so a handler
+    /// interrupting a sender on the same core cannot deadlock on it.
+    struct Mailbox {
+        sync::SpinLock lock;
+        SyncSlotList calls;
+    };
+
+    class CurrentMailbox: public mm::CpuLocal::Current<Mailbox> {};
+} // namespace
+
+/// Builds every CPU's mailbox.
+///
+/// A Mailbox holds a SpinLock and an intrusive list, and an intrusive list is
+/// not a valid empty list when it is merely zeroed -- its sentinel has to point
+/// at itself. The per-CPU template memory a CPU_LOCAL object starts life in is
+/// zeroed, so it cannot be used as one: the first push_back() wrote through a
+/// null next-pointer and took a page fault. Placement-new over each CPU's copy
+/// is how Scheduler::init(), IdleThread::init() and DpcRunner::init() each
+/// answer the same thing.
+///
+/// Every possible CPU, driven from the boot CPU, rather than each CPU building
+/// its own on the way up: an AP can take a generic IPI from the moment it
+/// enables interrupts, and the CPU that sends it fills the target's mailbox
+/// before that. time::init() builds every TimerQueue here for the same reason.
+INIT_CODE
+auto IpiService::init() -> void {
+    cpu_possible_mask().for_each([](CpuNum cpu) { new (&CurrentMailbox::get(cpu)) Mailbox(); });
+}
 
 auto IpiService::send_resched(CpuNum cpu) -> void {
     if (!task::Scheduler::peek_active_mask().test(cpu)) {
@@ -33,6 +110,105 @@ auto IpiService::send_resched(CpuMask const &mask) -> void {
     }
 
     arch_mp_reschedule_mask(targets);
+}
+
+auto IpiService::send_event(CpuNum dest, Event event) -> void {
+    arch_mp_send_ipi(dest, event);
+}
+
+auto IpiService::send_event(CpuMask const &dests, Event event) -> void {
+    arch_mp_send_ipi_mask(dests, event);
+}
+
+auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> void {
+    DEBUG_ASSERT(task);
+    DEBUG_ASSERT(!arch::irqs_disabled(), "sync_exec() spins on CPUs that answer from interrupts");
+
+    auto const self = Cpu::id();
+    auto const run_here = targets.test(self);
+
+    // Only CPUs that can actually take the interrupt. A CPU that is not online
+    // has no mailbox worth filling and would never clear its bit, which would
+    // turn the wait below into a hang.
+    targets &= Cpu::online_mask();
+    targets.set(self, false);
+
+    if (targets.none()) {
+        if (run_here) {
+            task(context);
+        }
+        return;
+    }
+
+    SyncCall call{.task = task, .context = context, .outstanding = targets};
+
+    // One slot per CPU, on this stack beside the request. MAX_CPU of them
+    // rather than one per target so that a slot can be indexed by CPU number;
+    // at sixteen CPUs that is 384 bytes of a 16 KiB kernel stack. Zircon sizes
+    // its equivalent array the same way.
+    SyncSlot slots[MAX_CPU]{};
+
+    // One mailbox lock at a time, never two at once, so two CPUs asking each
+    // other cannot build a cycle.
+    targets.for_each([&call, &slots](CpuNum cpu) {
+        slots[cpu].call = &call;
+
+        auto &mailbox = CurrentMailbox::get(cpu);
+        Guard guard{mailbox.lock};
+        mailbox.calls.push_back(slots[cpu]);
+    });
+
+    send_event(targets, Event::Generic);
+
+    // The caller's own share, run here rather than sent: a CPU cannot service
+    // its own IPI while it is standing in this function.
+    if (run_here) {
+        task(context);
+    }
+
+    while (call.outstanding.load(std::memory_order_acquire).any()) {
+        arch::spin_hint();
+    }
+}
+
+auto IpiService::handle_generic() -> void {
+    auto &mailbox = CurrentMailbox::get();
+    auto const self_mask = ~CpuMask::of(Cpu::id());
+
+    for (;;) {
+        SyncCall *call = nullptr;
+        {
+            Guard guard{mailbox.lock};
+            if (mailbox.calls.empty()) {
+                return;
+            }
+            // The slot is read out here and not held: it lives on the caller's
+            // stack next to the request, and both go away the moment the last
+            // bit clears below.
+            call = mailbox.calls.front().value().call;
+            mailbox.calls.pop_front();
+        }
+
+        call->task(call->context);
+
+        // Release, and a CAS loop because std::atomic<CpuMask> has no
+        // fetch_and: two CPUs answering the same request at once would
+        // otherwise each store a mask still carrying the other's bit, and the
+        // caller would wait for an answer that had already been given.
+        //
+        // This store is also the last time this CPU may touch |call|. The
+        // caller's frame -- which is where |call| lives -- is free to go the
+        // instant the final bit clears.
+        auto expected = call->outstanding.load(std::memory_order_relaxed);
+        for (;;) {
+            auto const desired = expected & self_mask;
+            if (call->outstanding.compare_exchange_weak(expected, desired,
+                                                        std::memory_order_release,
+                                                        std::memory_order_relaxed)) {
+                break;
+            }
+        }
+    }
 }
 
 } // namespace ours
