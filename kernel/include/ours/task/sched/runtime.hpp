@@ -16,8 +16,20 @@ namespace ours::task::sched {
 /// a function that will perform the scheduling work and acts as a capability
 /// token.
 struct Runtime {
+    /// Records that this Runtime's CPU should preempt what it is running.
+    ///
+    /// |which_cpu|, not add_pending()'s default. The default is the mask of
+    /// the CPU *executing* the call, and a Runtime is not always the running
+    /// CPU's: Scheduler::do_unpark_thread() reaches into the target CPU's
+    /// Runtime from the waker, and every ISchedule entry point is handed a
+    /// Runtime that may be remote for the same reason. Left at the default, a
+    /// cross-CPU wakeup marked the waker as needing to preempt and told the
+    /// target nothing.
+    ///
+    /// This is the one place that rule is written down; callers say
+    /// `mark_preempt_pending()` and the local case falls out of it.
     auto mark_preempt_pending() -> void {
-        curr_thread->preemption_state().add_pending();
+        curr_thread->preemption_state().add_pending(CpuMask::of(which_cpu));
     }
 
     FORCE_INLINE

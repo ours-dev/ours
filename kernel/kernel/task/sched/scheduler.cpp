@@ -789,8 +789,6 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void 
 /// waker's CPU and reads the *target* CPU's runtime under that CPU's run queue
 /// lock.
 auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
-    auto const target_cpu = m_runtime.which_cpu;
-
     auto const current_thread = m_runtime.curr_thread;
     auto const x_schedule = thread->scheduling_context().schedule();
     auto const y_schedule = current_thread->scheduling_context().schedule();
@@ -800,12 +798,7 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
         // To the same schedule, preemption depends on schedule's internal implementation.
         x_schedule->unpark_preempt(m_runtime, current_thread, thread, control);
     } else if (x_schedule > y_schedule) {
-        // |target_cpu|, not the default: add_pending() defaults to the mask of
-        // the CPU *executing* it, and the thread whose preemption is being
-        // requested here is the one running on the target CPU. Left at the
-        // default, a cross-CPU wakeup marked the waker's CPU as needing to
-        // preempt and told the target nothing.
-        preemption_state.add_pending(CpuMask::of(target_cpu));
+        m_runtime.mark_preempt_pending();
     }
 
     // The queue event has occurred. Therefore there is none of need to process

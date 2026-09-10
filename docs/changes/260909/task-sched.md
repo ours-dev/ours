@@ -352,3 +352,58 @@ Linux `find_idlest_group_cpu()` 同样把当前最优的负载放在局部变量
 **故意没做**
 `CpuMask::for_each` 本身没动——它是按字扫 + `countr_zero`，不是 `MAX_CPU` 次线性扫描，
 这一层没有问题。
+
+## "该抢占哪颗 CPU"的规则收进 `Runtime::mark_preempt_pending()`（2026-09-10）
+
+**文件**
+- `kernel/include/ours/task/sched/runtime.hpp` — `mark_preempt_pending()` 用 `which_cpu`
+- `kernel/kernel/task/sched/scheduler.cpp` — `unpark_preempt()` 改调它
+
+**症状**
+潜伏。`Scheduler::unpark_preempt()` 昨天已经修对了：
+
+```cpp
+preemption_state.add_pending(CpuMask::of(target_cpu));
+```
+
+但**同一件事的共享写法**没修：
+
+```cpp
+auto mark_preempt_pending() -> void {
+    curr_thread->preemption_state().add_pending();      // 默认 = CpuMask::of(Cpu::id())
+}
+```
+
+**原因**
+`add_pending()` 的默认掩码是**执行这行代码的 CPU**，而 `Runtime` 未必属于这颗 CPU——
+这正是昨天整轮修复确立的事实：`do_unpark_thread()` 从唤醒方伸进目标 CPU 的 Runtime，
+而每个 `ISchedule` 入口拿到的 `Runtime &` 也因此可能是远程的。
+
+`mark_preempt_pending()` 的调用者恰好就是这些入口：
+`RoundRobin::update_thread()`、`RoundRobin::yield_thread()`（rr.cpp）、
+以及 `fair.cpp`。今天它们碰巧都在本地 Runtime 上被调用，所以还没爆——
+但这是"恰好"，不是"因为"。而 `Runtime` 自己**持有** `which_cpu`，
+它是全树最没有理由去问 `Cpu::id()` 的类型。
+
+修在调用点而不修这里，等于同一条规则有两份实现，其中一份是错的。
+
+**改法**
+```cpp
+auto mark_preempt_pending() -> void {
+    curr_thread->preemption_state().add_pending(CpuMask::of(which_cpu));
+}
+```
+```cpp
+} else if (x_schedule > y_schedule) {
+    m_runtime.mark_preempt_pending();     // 不再自己拼掩码
+}
+```
+
+规则只有一处，本地是它的特例。
+
+**参照**
+无，本项目自有设计。对应 Linux 的 `resched_curr(rq)`——参数是 rq，不是"当前 CPU"，
+`set_tsk_need_resched(rq->curr)` 之后按 `cpu_of(rq)` 决定是本地置位还是发 IPI。
+
+**验证**
+四核引导：cpu0 8589 / cpu1 594 / cpu2 83945 / cpu3 83926，无断言失败。
