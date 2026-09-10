@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cassert>
-
 #include <ustl/collections/error.hpp>
 #include <ustl/collections/static_vec.hpp>
+
+#include <cassert>
 
 auto main() -> int {
     ustl::collections::StaticVec<int, 2> values{};

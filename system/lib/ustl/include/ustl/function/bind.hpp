@@ -3,9 +3,9 @@
 #ifndef USTL_FUNCTION_BIND_HPP
 #define USTL_FUNCTION_BIND_HPP 1
 
-#include <functional>
-
 #include <ustl/util/move.hpp>
+
+#include <functional>
 
 namespace ustl::function {
 using std::bind;

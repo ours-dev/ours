@@ -3,13 +3,13 @@
 #ifndef OBI_PACKAGE_FORMAT_HPP
 #define OBI_PACKAGE_FORMAT_HPP 1
 
-#include <ours/types.hpp>
-
 #include <array>
 #include <bit>
 #include <type_traits>
 
 #include <cstddef>
+
+#include <ours/types.hpp>
 
 namespace obi {
 static_assert(std::endian::native == std::endian::little, "OBI wire fields are little-endian");

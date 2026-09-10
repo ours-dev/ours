@@ -8,13 +8,13 @@
 /// destruction, Disposer-backed storage reclaim, nullability and const
 /// access.
 
+#include <ustl/box.hpp>
+
 #include <type_traits>
 #include <utility>
 
 #include <cassert>
 #include <cstdio>
-
-#include <ustl/box.hpp>
 
 namespace {
 

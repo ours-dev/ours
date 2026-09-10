@@ -1,14 +1,14 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <string>
-#include <string_view>
-
-#include <cassert>
-
 #include <logz4/clock.hpp>
 #include <logz4/filter.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
+
+#include <string>
+#include <string_view>
+
+#include <cassert>
 
 namespace {
 std::string g_emergency;

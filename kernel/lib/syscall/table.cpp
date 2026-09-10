@@ -1,17 +1,17 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <syscall/handlers.hpp>
+
+#include <array>
+
+#include <arch/syscall.hpp>
+#include <logz4/log.hpp>
 #include <ours/compiler.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/types.hpp>
-
-#include <array>
-
-#include <arch/syscall.hpp>
-#include <logz4/log.hpp>
-#include <syscall/handlers.hpp>
 
 namespace ours {
 namespace {

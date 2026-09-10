@@ -3,12 +3,11 @@
 #ifndef LIB_CODE_PATCHING_CODE_PATCHING_HPP
 #define LIB_CODE_PATCHING_CODE_PATCHING_HPP 1
 
-#include <ours/prelude.hpp>
-
 #include <cstddef>
 #include <cstdint>
 
 #include <arch/types.hpp>
+#include <ours/prelude.hpp>
 #include <ustl/views/span.hpp>
 
 namespace code_patching {

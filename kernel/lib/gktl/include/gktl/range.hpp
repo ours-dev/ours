@@ -3,10 +3,10 @@
 #ifndef GKTL_RANGE_HPP
 #define GKTL_RANGE_HPP 1
 
+#include <algorithm>
+
 #include <ours/compiler.hpp>
 #include <ours/types.hpp>
-
-#include <algorithm>
 namespace gktl {
 /// A range is a half-open interval [start, end).
 template <typename T>

@@ -6,15 +6,15 @@
 // fake prof::arch seam in fake_arch.cpp instead of a real kernel. Linking
 // this executable at all is itself part of the point: it proves Sampler
 // no longer needs ours::/gktl::/logz4::/CpuLocal to build and run.
-#include <ours/status.hpp>
+#include <prof/format.hpp>
+#include <prof/sampler.hpp>
 
 #include <array>
 #include <string>
 
 #include "fake_arch.hpp"
 #include <gtest/gtest.h>
-#include <prof/format.hpp>
-#include <prof/sampler.hpp>
+#include <ours/status.hpp>
 
 namespace {
 

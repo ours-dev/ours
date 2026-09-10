@@ -3,7 +3,7 @@
 #ifndef PROF_TRACE_HPP
 #define PROF_TRACE_HPP 1
 
-#include <ours/compiler.hpp>
+#include <prof/record_buffer.hpp>
 
 #include <atomic>
 #include <type_traits>
@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-#include <prof/record_buffer.hpp>
+#include <ours/compiler.hpp>
 
 /// Compile-time master switch. With it off every `emit` body below is empty,
 /// so a tracepoint call and its `Scope` object disappear entirely -- not a

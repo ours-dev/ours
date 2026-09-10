@@ -3,9 +3,9 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_LIST_ITERATOR_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_LIST_ITERATOR_HPP 1
 
-#include <iterator>
-
 #include <ustl/collections/intrusive/detail/iiterator.hpp>
+
+#include <iterator>
 
 namespace ustl::collections::intrusive::detail {
 template <typename TValueTraits, bool IsConst>

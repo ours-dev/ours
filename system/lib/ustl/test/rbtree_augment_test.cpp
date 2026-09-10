@@ -11,13 +11,13 @@
 // one rotation, or the successor transplant inside erase -- makes a cached
 // value go stale and this check catches it immediately.
 
+#include <ustl/collections/intrusive/rbtree.hpp>
+
 #include <algorithm>
 #include <random>
 #include <vector>
 
 #include <cstdio>
-
-#include <ustl/collections/intrusive/rbtree.hpp>
 
 namespace {
 

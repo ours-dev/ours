@@ -3,11 +3,10 @@
 #ifndef OBI_COMPRESSION_HPP
 #define OBI_COMPRESSION_HPP 1
 
-#include <ours/status.hpp>
-#include <ours/types.hpp>
-
 #include <limits>
 
+#include <ours/status.hpp>
+#include <ours/types.hpp>
 #include <ustl/result.hpp>
 #include <ustl/views/span.hpp>
 

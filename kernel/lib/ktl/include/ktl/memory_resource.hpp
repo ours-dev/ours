@@ -4,7 +4,6 @@
 #define KTL_MEMORY_RESOURCE_HPP 1
 
 #include <ours/mm/gaf.hpp>
-
 #include <ustl/collections/memory_resource.hpp>
 
 namespace ktl {

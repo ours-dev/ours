@@ -4,6 +4,7 @@
 #define ARCH_SYSREG_HPP 1
 
 #include <arch/io/register_base.hpp>
+
 #include <ustl/traits/is_same.hpp>
 
 namespace arch {

@@ -3,10 +3,10 @@
 #ifndef MTL_RATIO_HPP
 #define MTL_RATIO_HPP 1
 
+#include <mtl/scale.hpp>
+
 #include <ours/assert.hpp>
 #include <ours/types.hpp>
-
-#include <mtl/scale.hpp>
 #include <ustl/limits.hpp>
 
 namespace mtl {

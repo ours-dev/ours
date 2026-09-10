@@ -5,13 +5,14 @@
 // serial export against these exact sizes, offsets and magics, so the test
 // pins them.
 
+#include <prof/format.hpp>
+
 #include <string_view>
 
 #include <cstddef>
 #include <cstring>
 
 #include <gtest/gtest.h>
-#include <prof/format.hpp>
 
 namespace {
 

@@ -3,11 +3,11 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_LINEAR_SLIST_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_LINEAR_SLIST_ALGORITHMS_HPP 1
 
+#include <ustl/collections/intrusive/detail/common_slist_algorithms.hpp>
+
 #include <type_traits>
 
 #include <cstddef>
-
-#include <ustl/collections/intrusive/detail/common_slist_algorithms.hpp>
 
 namespace ustl::collections::intrusive {
 template <typename TNodeTraits>

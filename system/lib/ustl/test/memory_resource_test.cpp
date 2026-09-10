@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cassert>
-#include <cstddef>
-
 #include <ustl/collections/error.hpp>
 #include <ustl/collections/memory_resource.hpp>
+
+#include <cassert>
+#include <cstddef>
 
 auto main() -> int {
     auto *null_resource = ustl::collections::null_memory_resource();

@@ -11,12 +11,12 @@
 //           -include kernel/include/ours/prelude.hpp \
 //           kernel/lib/prof/examples/trace_examples.cpp
 
+#include <prof/trace.hpp>
+
 #include <iterator>
 #include <string_view>
 
 #include <cstdio>
-
-#include <prof/trace.hpp>
 
 // ===========================================================================
 // Example 1 -- an instant event

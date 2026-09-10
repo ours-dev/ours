@@ -7,8 +7,6 @@
 /// file adds is field *offsets* and the type numbering, which is where the
 /// previous definitions went wrong without changing any struct's size.
 
-#include <cstdlib>
-
 #include <acpi/signature.hpp>
 #include <acpi/structures/dbg2.hpp>
 #include <acpi/structures/hpet.hpp>
@@ -16,6 +14,8 @@
 #include <acpi/structures/root.hpp>
 #include <acpi/structures/slit.hpp>
 #include <acpi/structures/srat.hpp>
+
+#include <cstdlib>
 
 namespace {
 

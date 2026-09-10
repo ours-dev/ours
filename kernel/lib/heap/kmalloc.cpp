@@ -1,11 +1,11 @@
+#include <heap/kmalloc.hpp>
+
+#include <array>
+
 #include <ours/assert.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/platform/init.hpp>
-
-#include <array>
-
-#include <heap/kmalloc.hpp>
 #include <ustl/bit.hpp>
 #include <ustl/lazy_init.hpp>
 

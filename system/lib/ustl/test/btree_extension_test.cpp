@@ -12,14 +12,14 @@
 // split's new sibling or a borrow's donor, neither of which sits on the path
 // the walk back to the root takes -- shows up immediately.
 
+#include <ustl/collections/btree.hpp>
+#include <ustl/collections/intrusive/detail/extension.hpp>
+
 #include <algorithm>
 #include <random>
 #include <vector>
 
 #include <cstdio>
-
-#include <ustl/collections/btree.hpp>
-#include <ustl/collections/intrusive/detail/extension.hpp>
 
 namespace {
 

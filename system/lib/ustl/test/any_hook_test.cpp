@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <ustl/collections/intrusive/any_hook.hpp>
+#include <ustl/collections/intrusive/detail/any_node_and_algorithms.hpp>
+
 #include <concepts>
 
 #include <cstddef>
-
-#include <ustl/collections/intrusive/any_hook.hpp>
-#include <ustl/collections/intrusive/detail/any_node_and_algorithms.hpp>
 
 namespace {
 using Node = ustl::collections::intrusive::AnyNode<void *>;

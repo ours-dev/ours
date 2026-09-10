@@ -3,9 +3,9 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_HASHTABLE_NODE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_HASHTABLE_NODE_HPP 1
 
-#include <cstddef>
-
 #include <ustl/collections/intrusive/pointer_rebind.hpp>
+
+#include <cstddef>
 
 namespace ustl::collections::intrusive::detail {
 template <typename VoidPointer, bool StoreHash, bool OptimizeMultikey>

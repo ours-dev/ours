@@ -5,11 +5,12 @@
 /// zero byte file while debug.hpp declared two functions and BUILD.gn listed
 /// the file, so any caller got a link error.
 
+#include <acpi/debug.hpp>
+
 #include <cstdlib>
 #include <cstring>
 
 #include "acpi_test_blob.hpp"
-#include <acpi/debug.hpp>
 
 namespace {
 

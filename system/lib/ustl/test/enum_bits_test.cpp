@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <ustl/util/enum_bits.hpp>
+
 #include <cassert>
 #include <cstdint>
-
-#include <ustl/util/enum_bits.hpp>
 
 namespace enum_bits_test {
 enum class Flags : std::uint8_t {

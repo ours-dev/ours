@@ -3,13 +3,6 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_RBTREE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_RBTREE_HPP 1
 
-#include <functional>
-#include <iterator>
-#include <type_traits>
-#include <utility>
-
-#include <cstddef>
-
 #include <ustl/collections/intrusive/detail/assert.hpp>
 #include <ustl/collections/intrusive/detail/extension.hpp>
 #include <ustl/collections/intrusive/detail/key_node_ptr_compare.hpp>
@@ -21,6 +14,13 @@
 #include <ustl/collections/intrusive/rbtree_algorithms.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>
 #include <ustl/option.hpp>
+
+#include <functional>
+#include <iterator>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

@@ -3,7 +3,9 @@
 #ifndef OBI_PACKAGE_BUILDER_HPP
 #define OBI_PACKAGE_BUILDER_HPP 1
 
-#include <ours/status.hpp>
+#include <obi/checksum.hpp>
+#include <obi/compression.hpp>
+#include <obi/package_format.hpp>
 
 #include <algorithm>
 #include <string_view>
@@ -11,9 +13,7 @@
 
 #include <cstring>
 
-#include <obi/checksum.hpp>
-#include <obi/compression.hpp>
-#include <obi/package_format.hpp>
+#include <ours/status.hpp>
 #include <ustl/result.hpp>
 #include <ustl/views/span.hpp>
 

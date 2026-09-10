@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cassert>
-
 #include <arch/x86/msr.hpp>
 #include <arch/x86/system.hpp>
+
+#include <cassert>
 
 namespace {
 

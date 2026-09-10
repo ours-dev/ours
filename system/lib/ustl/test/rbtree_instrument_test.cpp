@@ -14,11 +14,11 @@
 //    measured independently. That is the piece a static template observer
 //    cannot express.
 
+#include <ustl/collections/intrusive/rbtree.hpp>
+
 #include <vector>
 
 #include <cstdio>
-
-#include <ustl/collections/intrusive/rbtree.hpp>
 
 namespace {
 

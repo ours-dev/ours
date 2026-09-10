@@ -3,12 +3,12 @@
 #ifndef USTL_BOX_HPP
 #define USTL_BOX_HPP 1
 
+#include <ustl/detail/deallocate.hpp>
+
 #include <type_traits>
 #include <utility>
 
 #include <cstddef>
-
-#include <ustl/detail/deallocate.hpp>
 
 namespace ustl {
 

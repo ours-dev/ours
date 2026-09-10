@@ -1,11 +1,12 @@
 /// obit modify — add or remove items from an existing OBI container.
+#include <obi/package_builder.hpp>
+
 #include <deque>
 #include <print>
 
 #include "command.hpp"
 #include "common.hpp"
 #include <cxxopts.hpp>
-#include <obi/package_builder.hpp>
 
 namespace obit {
 namespace {

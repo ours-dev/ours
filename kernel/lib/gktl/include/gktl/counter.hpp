@@ -10,11 +10,11 @@
 #ifndef GKTL_COUNTER_HPP
 #define GKTL_COUNTER_HPP 1
 
-#include <ours/mm/cpu_local.hpp>
+#include <gktl/types.hpp>
 
 #include <limits>
 
-#include <gktl/types.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ustl/sync/atomic.hpp>
 
 namespace gktl {

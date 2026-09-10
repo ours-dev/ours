@@ -4,15 +4,15 @@
 #ifndef USTL_COLLECTIONS_VEC_HPP
 #define USTL_COLLECTIONS_VEC_HPP 1
 
+#include <ustl/collections/error.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
+
 #include <iterator>
 #include <type_traits>
 #include <utility>
 
 #include <cstddef>
-
-#include <ustl/collections/error.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
 
 namespace ustl::collections {
 /// A growable array over an allocator, the heap-backed counterpart to

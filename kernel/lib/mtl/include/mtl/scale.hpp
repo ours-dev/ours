@@ -3,10 +3,9 @@
 #ifndef MTL_SCALE_HPP
 #define MTL_SCALE_HPP 1
 
-#include <ours/types.hpp>
-
 #include <utility>
 
+#include <ours/types.hpp>
 #include <ustl/limits.hpp>
 
 namespace mtl {

@@ -7,6 +7,14 @@
 /// This is being written a step at a time, and each step is committed only
 /// once it has been seen to work in QEMU. Right now it does step one: locate
 /// userboot's ELF inside the kernel package. Nothing is created yet.
+#include <userabi/userboot.hpp>
+
+#include <algorithm>
+
+#include <cstring>
+
+#include <heap/new.hpp>
+#include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/handoff.hpp>
@@ -19,14 +27,6 @@
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/vdso.hpp>
-
-#include <algorithm>
-
-#include <cstring>
-
-#include <heap/new.hpp>
-#include <logz4/log.hpp>
-#include <userabi/userboot.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace userabi {

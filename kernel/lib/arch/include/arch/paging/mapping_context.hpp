@@ -3,10 +3,10 @@
 #ifndef ARCH_PAGING_MAPPING_MAPPING_HPP
 #define ARCH_PAGING_MAPPING_MAPPING_HPP 1
 
-#include <ours/compiler.hpp>
-
 #include <arch/paging/mmu_flags.hpp>
 #include <arch/types.hpp>
+
+#include <ours/compiler.hpp>
 namespace arch::paging {
 struct MappingAddress {
     PhysAddr phys;

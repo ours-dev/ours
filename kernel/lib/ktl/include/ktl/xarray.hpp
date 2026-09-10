@@ -3,12 +3,12 @@
 #ifndef KTL_XARRAY_HPP
 #define KTL_XARRAY_HPP 1
 
-#include <ours/types.hpp>
+#include <ktl/result.hpp>
 
 #include <array>
 #include <limits>
 
-#include <ktl/result.hpp>
+#include <ours/types.hpp>
 #include <ustl/bitfields.hpp>
 #include <ustl/bitset.hpp>
 #include <ustl/option.hpp>

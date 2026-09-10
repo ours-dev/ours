@@ -57,3 +57,70 @@ using ::arch::paging::UnmapControl;
 **验证**
 
 构建通过；QEMU 两个镜像实测：dbg 无断言、16.9 万行线程输出；dev 正常存活。
+
+---
+
+## 2. `kernel/lib` / `system/lib` 下每个库先排自己的头（2026-09-10）
+
+**文件**
+- 24 个库根目录各新增一份 `.clang-format`（`kernel/lib/` 18 个，`system/lib/` 6 个）。
+- 这些库里的 199 个源文件按新配置重排。
+
+**症状**
+
+无。第 1 条把全树统一成「`ours/` 在前」，但对库自身而言那是错的读序：`gktl` 的文件里
+`ours/` 是**外部依赖**，`gktl/` 才是自己的头。
+
+**原因**
+
+分组按库归属，而「哪个前缀算自己」取决于**正在被格式化的文件属于哪个库**——一条全局正则
+表达不了。根配置原来的注释就写着这一点，并指出解法是在库根放一份 `.clang-format`；
+`kernel/lib/eftl` 一直是唯一照做的（但它还是旧的六组）。
+
+**改法**
+
+每个库根一份，用 `BasedOnStyle: InheritParentConfig` 继承根配置，只替换 `IncludeCategories`，
+把第 1 组从 `^<ours/` 换成该库自己的前缀。分组数仍是四组：
+
+```yaml
+---
+BasedOnStyle: InheritParentConfig
+IncludeCategories:
+  # 1. This library.
+  - Regex: '^<gktl/'
+    Priority: 1
+  # 2. C++ standard library.
+  - Regex: '^<[a-bd-z][a-z_0-9]*>$'
+    Priority: 2
+  ...
+  # 4. Everything else, angle-bracketed or quoted.
+  - Regex: '.*'
+    Priority: 4
+```
+
+效果（`kernel/lib/gktl/` 下的文件）：
+
+```cpp
+#include <gktl/canary.hpp>
+
+#include <atomic>
+
+#include <cstdio>
+
+#include "local.hpp"
+#include <ours/types.hpp>
+#include <ustl/rc.hpp>
+```
+
+注意 `IncludeCategories` 在 `InheritParentConfig` 下是**整体替换**而非追加，所以每份都要
+写全四组——这也是为什么用模板生成而不是手写。
+
+**故意没做**
+
+- `system/lib/boost.intrusive` 不给（vendored，且本项目不依赖 Boost）；
+  `system/lib/libc` 不给（它的 `include/` 直接放裸 C 头，没有属于自己的前缀）。
+- `kernel/lib/eftl` 原有的六组配置一并换成四组，与根配置保持同一套分组。
+
+**验证**
+
+构建通过；QEMU 两个镜像实测：dbg 无断言、16.7 万行线程输出；dev 无异常且存活。

@@ -3,9 +3,9 @@
 #ifndef PROF_ARCH_HPP
 #define PROF_ARCH_HPP 1
 
-#include <ours/status.hpp>
-
 #include <optional>
+
+#include <ours/status.hpp>
 
 namespace prof {
 struct SampleContext;

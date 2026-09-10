@@ -2,12 +2,12 @@
 /// Copyright (c) 2026 ours Developers
 /// Compiles-and-runs the code examples from docs/box.md to keep the tutorial honest.
 
+#include <ustl/box.hpp>
+
 #include <utility>
 
 #include <cassert>
 #include <cstdio>
-
-#include <ustl/box.hpp>
 
 namespace {
 

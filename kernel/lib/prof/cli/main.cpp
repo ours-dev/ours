@@ -11,6 +11,8 @@
 // unwound in-kernel via .eh_frame); this tool resolves them against the
 // kernel ELF symbol table.
 
+#include <prof/format.hpp>
+
 #include <algorithm>
 #include <map>
 #include <optional>
@@ -23,7 +25,6 @@
 #include <cxxabi.h>
 
 #include <cxxopts.hpp>
-#include <prof/format.hpp>
 
 #if defined(_WIN32)
 #include <fcntl.h>

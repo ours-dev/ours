@@ -4,11 +4,11 @@
 #ifndef USTL_COLLECTIONS_BTREE_HPP
 #define USTL_COLLECTIONS_BTREE_HPP 1
 
-#include <functional>
-#include <utility>
-
 #include <ustl/collections/allocator.hpp>
 #include <ustl/collections/detail/btree.hpp>
+
+#include <functional>
+#include <utility>
 
 namespace ustl::collections {
 using BTreeNodeView = detail::BTreeNodeView;

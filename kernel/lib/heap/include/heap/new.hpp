@@ -3,9 +3,9 @@
 #ifndef HEAP_NEW_HPP
 #define HEAP_NEW_HPP 1
 
-#include <new>
-
 #include <heap/kmalloc.hpp>
+
+#include <new>
 
 /// The kernel's `new`, and the one place the choice between the two
 /// allocators is made.

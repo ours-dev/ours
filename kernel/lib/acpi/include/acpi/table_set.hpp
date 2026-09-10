@@ -3,11 +3,12 @@
 #ifndef ACPI_TABLE_SET_HPP
 #define ACPI_TABLE_SET_HPP 1
 
-#include <array>
-
 #include <acpi/structures/header.hpp>
 #include <acpi/structures/root.hpp>
 #include <acpi/types.hpp>
+
+#include <array>
+
 #include <ktl/result.hpp>
 
 namespace acpi {

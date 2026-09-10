@@ -5,7 +5,6 @@
 #define ARCH_PAGING_MMU_FLAGS_HPP 1
 
 #include <ours/macro_abi.hpp>
-
 #include <ustl/util/enum_bits.hpp>
 
 namespace arch::paging {

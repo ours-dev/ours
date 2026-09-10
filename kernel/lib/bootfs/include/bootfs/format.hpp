@@ -3,11 +3,11 @@
 #ifndef BOOTFS_FORMAT_HPP
 #define BOOTFS_FORMAT_HPP 1
 
-#include <ours/types.hpp>
-
 #include <type_traits>
 
 #include <cstddef>
+
+#include <ours/types.hpp>
 
 namespace bootfs {
 /// Header at the start of a BootFS blob.

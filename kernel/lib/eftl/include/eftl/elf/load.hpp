@@ -114,7 +114,8 @@ struct LoadInfoObserver
     using Segment = typename Traits::Segment;
     using LoadInfo = LoadInfo<Traits, Collection>;
 
-    FORCE_INLINE constexpr LoadInfoObserver(LoadInfo &loadinfo)
+    FORCE_INLINE
+    constexpr LoadInfoObserver(LoadInfo &loadinfo)
         : m_loadinfo(std::addressof(loadinfo)) {}
 
     ~LoadInfoObserver() = default;

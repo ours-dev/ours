@@ -1,13 +1,12 @@
 #include <ccrt/runtime.hpp>
 
 #if defined(PHYS_ENVIRONMENT)
-#include <ours/panic.hpp>
-
 #include <new>
 
 #include <cstddef>
 
 #include <__verbose_abort>
+#include <ours/panic.hpp>
 #endif
 
 namespace {

@@ -3,9 +3,9 @@
 #ifndef OBI_CHECKSUM_HPP
 #define OBI_CHECKSUM_HPP 1
 
-#include <ours/types.hpp>
-
 #include <limits>
+
+#include <ours/types.hpp>
 
 namespace obi {
 // CRC-32/ISO-HDLC, matching the checksum used by ZBI-style images.

@@ -4,9 +4,9 @@
 #ifndef USTL_UTIL_TYPE_MAP_HPP
 #define USTL_UTIL_TYPE_MAP_HPP 1
 
-#include <type_traits>
-
 #include <ustl/util/type_list.hpp>
+
+#include <type_traits>
 
 namespace ustl {
 template <typename Key, typename Value>

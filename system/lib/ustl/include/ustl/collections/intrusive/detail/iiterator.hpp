@@ -3,11 +3,11 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_IITERATOR_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_IITERATOR_HPP 1
 
+#include <ustl/collections/intrusive/pointer_traits.hpp>
+
 #include <concepts>
 #include <type_traits>
 #include <utility>
-
-#include <ustl/collections/intrusive/pointer_traits.hpp>
 
 namespace ustl::collections::intrusive::detail {
 template <typename ValueTraits>

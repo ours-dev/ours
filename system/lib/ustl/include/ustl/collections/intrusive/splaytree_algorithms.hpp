@@ -3,9 +3,9 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_SPLAYTREE_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_SPLAYTREE_ALGORITHMS_HPP 1
 
-#include <cstddef>
-
 #include <ustl/collections/intrusive/bstree_algorithms.hpp>
+
+#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename TNodeTraits>

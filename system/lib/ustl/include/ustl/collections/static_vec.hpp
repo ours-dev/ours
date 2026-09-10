@@ -4,6 +4,10 @@
 #ifndef USTL_COLLECTIONS_STATIC_VEC_HPP
 #define USTL_COLLECTIONS_STATIC_VEC_HPP 1
 
+#include <ustl/collections/error.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
+
 #include <array>
 #include <iterator>
 #include <memory>
@@ -11,10 +15,6 @@
 #include <utility>
 
 #include <cstddef>
-
-#include <ustl/collections/error.hpp>
-#include <ustl/option.hpp>
-#include <ustl/result.hpp>
 
 namespace ustl::collections {
 template <typename T, std::size_t Capacity>

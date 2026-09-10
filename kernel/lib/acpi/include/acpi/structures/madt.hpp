@@ -4,6 +4,7 @@
 #define ACPI_STRUCTURES_MADT_HPP 1
 
 #include <acpi/structures/header.hpp>
+
 #include <ustl/util/enum_bits.hpp>
 
 namespace acpi::madt {

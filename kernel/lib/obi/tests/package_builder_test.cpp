@@ -1,12 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <obi/container_view.hpp>
+#include <obi/package_builder.hpp>
+
 #include <array>
 #include <string_view>
 
 #include <gtest/gtest.h>
-#include <obi/container_view.hpp>
-#include <obi/package_builder.hpp>
 
 namespace {
 using obi::Compression;

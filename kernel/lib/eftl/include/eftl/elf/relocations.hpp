@@ -108,19 +108,22 @@ struct Relocations final: Observable<Traits, Relocations<Traits>> {
         });
     }
 
-    FORCE_INLINE constexpr auto set_rel(RelTable rel, usize count) -> Self & {
+    FORCE_INLINE
+    constexpr auto set_rel(RelTable rel, usize count) -> Self & {
         m_rel_table = rel;
         m_rel_count = std::min(count, rel.size());
         return *this;
     }
 
-    FORCE_INLINE constexpr auto set_rela(RelaTable rela, usize count) -> Self & {
+    FORCE_INLINE
+    constexpr auto set_rela(RelaTable rela, usize count) -> Self & {
         m_rela_table = rela;
         m_rela_count = std::min(count, m_rela_table.size());
         return *this;
     }
 
-    FORCE_INLINE constexpr auto set_relr(RelrTable relr) -> Self & {
+    FORCE_INLINE
+    constexpr auto set_relr(RelrTable relr) -> Self & {
         m_relr_table = relr;
         return *this;
     }
@@ -272,12 +275,14 @@ struct InitFiniInfo final: Observable<Traits, InitFiniInfo<Traits>> {
     using Addr = typename Traits::Addr;
     using InitFiniArray = ustl::views::Span<Addr>;
 
-    FORCE_INLINE constexpr auto set_array(InitFiniArray array) -> Self & {
+    FORCE_INLINE
+    constexpr auto set_array(InitFiniArray array) -> Self & {
         array_ = array;
         return *this;
     }
 
-    FORCE_INLINE constexpr auto set_legacy(Addr val) -> Self & {
+    FORCE_INLINE
+    constexpr auto set_legacy(Addr val) -> Self & {
         legacy_ = val;
         return *this;
     }
@@ -353,7 +358,8 @@ struct StrTableInfo final: public Observable<Traits, StrTableInfo<Traits>> {
     using Self = StrTableInfo;
     using StrTable = ustl::views::Span<u8 const>;
 
-    FORCE_INLINE constexpr auto set_str_table(StrTable array) -> Self & {
+    FORCE_INLINE
+    constexpr auto set_str_table(StrTable array) -> Self & {
         strtable_ = array;
         return *this;
     }

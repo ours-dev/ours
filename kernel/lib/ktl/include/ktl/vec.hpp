@@ -4,6 +4,7 @@
 #define KTL_VEC_HPP 1
 
 #include <ktl/allocator.hpp>
+
 #include <ustl/collections/vec.hpp>
 
 namespace ktl {

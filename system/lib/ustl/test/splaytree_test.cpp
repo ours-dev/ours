@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <ustl/collections/intrusive/splay_set.hpp>
+
 #include <array>
 
 #include <cstddef>
-
-#include <ustl/collections/intrusive/splay_set.hpp>
 
 namespace {
 struct Value final: ustl::collections::intrusive::SplaySetBaseHook<> {

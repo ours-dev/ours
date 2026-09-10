@@ -3,10 +3,10 @@
 #ifndef UNWIND_CFI_HPP
 #define UNWIND_CFI_HPP 1
 
+#include <unwind/cursor.hpp>
+
 #include <cstddef>
 #include <cstdint>
-
-#include <unwind/cursor.hpp>
 
 namespace unwind {
 

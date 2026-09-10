@@ -3,10 +3,10 @@
 #ifndef UNWIND_FDE_INDEX_HPP
 #define UNWIND_FDE_INDEX_HPP 1
 
+#include <unwind/cfi.hpp>
+
 #include <cstddef>
 #include <cstdint>
-
-#include <unwind/cfi.hpp>
 
 namespace unwind {
 

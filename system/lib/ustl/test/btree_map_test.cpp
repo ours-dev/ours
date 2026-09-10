@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cassert>
-
 #include <ustl/collections/btree.hpp>
+
+#include <cassert>
 
 auto main() -> int {
     ustl::collections::BTreeMap<int, int> map{};

@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <cassert>
-
 #include <ustl/collections/pmr/btree_map.hpp>
 #include <ustl/collections/pmr/btree_set.hpp>
+
+#include <cassert>
 
 auto main() -> int {
     ustl::collections::pmr::BTreeSet<int> set{};

@@ -3,8 +3,6 @@
 #include "../cli/main.cpp"
 #undef main
 
-#include <ours/types.hpp>
-
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +11,8 @@
 
 #include <cstdlib>
 #include <unistd.h>
+
+#include <ours/types.hpp>
 
 namespace {
 auto require(bool const condition) -> void {

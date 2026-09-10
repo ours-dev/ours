@@ -3,14 +3,14 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_POINTER_PLUS_BITS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_POINTER_PLUS_BITS_HPP 1
 
+#include <ustl/collections/intrusive/detail/assert.hpp>
+#include <ustl/collections/intrusive/intrusive_fwd.hpp>
+
 #include <bit>
 #include <limits>
 
 #include <cstddef>
 #include <cstdint>
-
-#include <ustl/collections/intrusive/detail/assert.hpp>
-#include <ustl/collections/intrusive/intrusive_fwd.hpp>
 
 namespace ustl::collections::intrusive {
 namespace detail {

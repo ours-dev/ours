@@ -2,9 +2,9 @@
 /// Copyright (c) 2026 ours Developers
 #pragma once
 
-#include <ours/assert.hpp>
-
 #include <gktl/type_info.hpp>
+
+#include <ours/assert.hpp>
 
 #ifdef GKTL_CONFIG_CANARY
 #define ENABLE_CANARY GKTL_CONFIG_CANARY

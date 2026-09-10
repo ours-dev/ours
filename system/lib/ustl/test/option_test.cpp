@@ -1,13 +1,13 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <ustl/option.hpp>
+
 #include <concepts>
 #include <type_traits>
 #include <utility>
 
 #include <cassert>
-
-#include <ustl/option.hpp>
 
 // `some` is owning regardless of the argument's value category; only
 // `some_ref` aliases. Passing a named variable must not silently hand back

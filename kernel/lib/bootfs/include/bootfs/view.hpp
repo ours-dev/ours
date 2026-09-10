@@ -3,15 +3,15 @@
 #ifndef BOOTFS_VIEW_HPP
 #define BOOTFS_VIEW_HPP 1
 
-#include <ours/status.hpp>
-#include <ours/types.hpp>
+#include <bootfs/format.hpp>
 
 #include <limits>
 #include <string_view>
 
 #include <cstring>
 
-#include <bootfs/format.hpp>
+#include <ours/status.hpp>
+#include <ours/types.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 #include <ustl/views/span.hpp>

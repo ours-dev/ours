@@ -3,10 +3,10 @@
 #ifndef KTL_NAME_HPP
 #define KTL_NAME_HPP 1
 
+#include <ktl/types.hpp>
+
 #include <format>
 #include <string_view>
-
-#include <ktl/types.hpp>
 
 namespace ktl {
 // A class for managing names of kernel objects. Since we don't want

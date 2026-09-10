@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-#include <cstdlib>
-
 #include <arch/x86/processor.hpp>
+
+#include <cstdlib>
 
 auto main() -> int {
     arch::X86CpuInfo cpu;

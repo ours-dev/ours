@@ -4,6 +4,7 @@
 #define ACPI_STRUCTURES_SRAT_HPP 1
 
 #include <acpi/structures/header.hpp>
+
 #include <ustl/util/enum_bits.hpp>
 
 namespace acpi::srat {

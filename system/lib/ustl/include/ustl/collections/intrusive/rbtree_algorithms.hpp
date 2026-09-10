@@ -3,10 +3,10 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_RBTREE_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_RBTREE_ALGORITHMS_HPP 1
 
-#include <cstddef>
-
 #include <ustl/collections/intrusive/bstree_algorithms.hpp>
 #include <ustl/collections/intrusive/detail/extension.hpp>
+
+#include <cstddef>
 
 namespace ustl::collections::intrusive {
 /// Red-black tree algorithms.

@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <ustl/collections/intrusive/avl_set.hpp>
+
 #include <array>
 #include <utility>
 
 #include <cstddef>
-
-#include <ustl/collections/intrusive/avl_set.hpp>
 
 namespace {
 struct Value final: ustl::collections::intrusive::AvlSetBaseHook<> {

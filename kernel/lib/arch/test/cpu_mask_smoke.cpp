@@ -1,6 +1,6 @@
-#include <ours/cpu_mask.hpp>
-
 #include <cstdlib>
+
+#include <ours/cpu_mask.hpp>
 
 namespace {
 auto require(bool condition) -> void {

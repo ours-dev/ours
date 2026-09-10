@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/mm/cpu_local.hpp>
-
 #include <kconcurrent/chain_lock_transaction.hpp>
+
+#include <ours/mm/cpu_local.hpp>
 
 namespace kconcurrent {
 namespace {

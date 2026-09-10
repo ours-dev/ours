@@ -3,12 +3,12 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_SET_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_SET_HPP 1
 
+#include <ustl/collections/intrusive/rbtree.hpp>
+#include <ustl/option.hpp>
+
 #include <iterator>
 #include <type_traits>
 #include <utility>
-
-#include <ustl/collections/intrusive/rbtree.hpp>
-#include <ustl/option.hpp>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <concepts>
-
 #include <ustl/collections/intrusive/pointer_rebind.hpp>
 #include <ustl/collections/intrusive/pointer_traits.hpp>
+
+#include <concepts>
 
 namespace {
 template <typename T>

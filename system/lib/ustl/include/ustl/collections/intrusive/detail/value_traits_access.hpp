@@ -3,10 +3,10 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_VALUE_TRAITS_ACCESS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_VALUE_TRAITS_ACCESS_HPP 1
 
-#include <utility>
-
 #include <ustl/collections/intrusive/link_mode.hpp>
 #include <ustl/collections/intrusive/pointer_traits.hpp>
+
+#include <utility>
 
 namespace ustl::collections::intrusive::detail {
 template <typename T, typename Traits>

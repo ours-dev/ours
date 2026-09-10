@@ -3,10 +3,10 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_EXTENSION_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_EXTENSION_HPP 1
 
-#include <cstdint>
-
 #include <ustl/collections/intrusive/detail/augment.hpp>
 #include <ustl/collections/intrusive/detail/instrument.hpp>
+
+#include <cstdint>
 
 namespace ustl::collections::intrusive::detail {
 

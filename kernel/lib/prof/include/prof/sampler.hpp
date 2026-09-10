@@ -3,11 +3,12 @@
 #ifndef PROF_SAMPLER_HPP
 #define PROF_SAMPLER_HPP 1
 
-#include <atomic>
-
 #include <prof/buffer.hpp>
 #include <prof/format.hpp>
 #include <prof/sink.hpp>
+
+#include <atomic>
+
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
 

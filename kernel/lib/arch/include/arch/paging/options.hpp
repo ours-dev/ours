@@ -4,6 +4,7 @@
 #define ARCH_PAGING_OPTIONS_HPP 1
 
 #include <arch/types.hpp>
+
 #include <ustl/util/pack_options.hpp>
 
 namespace arch::paging {

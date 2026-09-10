@@ -3,14 +3,14 @@
 #ifndef USTL_BITSET_HPP
 #define USTL_BITSET_HPP 1
 
+#include <ustl/bit.hpp>
+
 #include <array>
 #include <limits>
 #include <type_traits>
 
 #include <cstddef>
 #include <cstdint>
-
-#include <ustl/bit.hpp>
 
 namespace ustl {
 template <std::size_t BitCount, typename Index = std::size_t>

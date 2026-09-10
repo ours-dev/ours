@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
-#include <concepts>
-#include <iterator>
-
 #include <ustl/collections/intrusive/detail/iiterator.hpp>
 #include <ustl/collections/intrusive/detail/slist_node.hpp>
+
+#include <concepts>
+#include <iterator>
 
 namespace {
 struct Item final: ustl::collections::intrusive::SlistNode<void *> {

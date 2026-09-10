@@ -1,11 +1,11 @@
+#include <obi/container_view.hpp>
+#include <obi/memory_config_view.hpp>
+#include <obi/package_builder.hpp>
+
 #include <array>
 #include <vector>
 
 #include <cstdlib>
-
-#include <obi/container_view.hpp>
-#include <obi/memory_config_view.hpp>
-#include <obi/package_builder.hpp>
 
 namespace {
 using obi::Compression;

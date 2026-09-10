@@ -4,6 +4,7 @@
 #define GKTL_CHAIN_BUFFER_HPP 1
 
 #include <gktl/types.hpp>
+
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/option.hpp>
 #include <ustl/util/pair.hpp>

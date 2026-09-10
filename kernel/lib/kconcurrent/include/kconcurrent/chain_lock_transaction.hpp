@@ -3,13 +3,12 @@
 #ifndef KCONCURRENT_CHAIN_LOCK_TRANSACTION_HPP
 #define KCONCURRENT_CHAIN_LOCK_TRANSACTION_HPP 1
 
-#include <ours/assert.hpp>
-#include <ours/compiler.hpp>
-#include <ours/types.hpp>
-
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
 #include <concurrent/chain_lock.hpp>
+#include <ours/assert.hpp>
+#include <ours/compiler.hpp>
+#include <ours/types.hpp>
 
 namespace kconcurrent {
 using concurrent::ChainLock;

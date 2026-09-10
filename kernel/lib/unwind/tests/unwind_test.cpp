@@ -1,6 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 
+#include <unwind/fde_index.hpp>
+#include <unwind/unwinder.hpp>
+
 #include <utility>
 #include <vector>
 
@@ -8,8 +11,6 @@
 #include <cstdint>
 
 #include <gtest/gtest.h>
-#include <unwind/fde_index.hpp>
-#include <unwind/unwinder.hpp>
 
 namespace {
 

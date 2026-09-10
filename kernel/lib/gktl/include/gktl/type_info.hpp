@@ -1,6 +1,7 @@
 #pragma once
 
 #include <gktl/types.hpp>
+
 #include <ustl/views/string_view.hpp>
 
 /// The compiler's own spelling of the enclosing function. Instantiated inside a

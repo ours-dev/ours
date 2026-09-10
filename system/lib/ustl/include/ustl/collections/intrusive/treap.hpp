@@ -3,12 +3,6 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_TREAP_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_TREAP_HPP 1
 
-#include <functional>
-#include <type_traits>
-#include <utility>
-
-#include <cstddef>
-
 #include <ustl/collections/intrusive/bs_set_hook.hpp>
 #include <ustl/collections/intrusive/detail/key_node_ptr_compare.hpp>
 #include <ustl/collections/intrusive/detail/value_traits_access.hpp>
@@ -18,6 +12,12 @@
 #include <ustl/collections/intrusive/priority_compare.hpp>
 #include <ustl/collections/intrusive/treap_algorithms.hpp>
 #include <ustl/option.hpp>
+
+#include <functional>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
 
 namespace ustl::collections::intrusive {
 namespace detail {

@@ -3,9 +3,10 @@
 #ifndef OBI_COMMAND_LINE_VIEW_HPP
 #define OBI_COMMAND_LINE_VIEW_HPP 1
 
+#include <obi/container_view.hpp>
+
 #include <string_view>
 
-#include <obi/container_view.hpp>
 #include <ustl/option.hpp>
 #include <ustl/result.hpp>
 

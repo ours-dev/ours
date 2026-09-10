@@ -3,11 +3,12 @@
 #ifndef OBI_MEMORY_CONFIG_VIEW_HPP
 #define OBI_MEMORY_CONFIG_VIEW_HPP 1
 
+#include <obi/container_view.hpp>
+
 #include <limits>
 
 #include <cstring>
 
-#include <obi/container_view.hpp>
 #include <ustl/result.hpp>
 
 namespace obi {

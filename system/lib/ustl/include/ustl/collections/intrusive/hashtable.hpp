@@ -3,13 +3,6 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_HASHTABLE_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_HASHTABLE_HPP 1
 
-#include <functional>
-#include <span>
-#include <type_traits>
-#include <utility>
-
-#include <cstddef>
-
 #include <ustl/collections/intrusive/detail/assert.hpp>
 #include <ustl/collections/intrusive/detail/hashtable_node.hpp>
 #include <ustl/collections/intrusive/member_value_traits.hpp>
@@ -17,6 +10,13 @@
 #include <ustl/collections/intrusive/pointer_traits.hpp>
 #include <ustl/collections/intrusive/unordered_set_hook.hpp>
 #include <ustl/option.hpp>
+
+#include <functional>
+#include <span>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
 
 namespace ustl::collections::intrusive {
 template <typename T, typename... Options>

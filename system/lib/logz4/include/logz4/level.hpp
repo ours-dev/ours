@@ -3,9 +3,9 @@
 #ifndef LOGZ4_LEVEL_HPP
 #define LOGZ4_LEVEL_HPP 1
 
-#include <ours/types.hpp>
-
 #include <string_view>
+
+#include <ours/types.hpp>
 
 namespace logz4 {
 

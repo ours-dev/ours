@@ -3,18 +3,18 @@
 #ifndef ACPI_TEST_ACPI_TEST_BLOB_HPP
 #define ACPI_TEST_ACPI_TEST_BLOB_HPP 1
 
+#include <acpi/structures/madt.hpp>
+#include <acpi/structures/root.hpp>
+#include <acpi/structures/slit.hpp>
+#include <acpi/structures/srat.hpp>
+#include <acpi/table_set.hpp>
+
 #include <vector>
 
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
-#include <acpi/structures/madt.hpp>
-#include <acpi/structures/root.hpp>
-#include <acpi/structures/slit.hpp>
-#include <acpi/structures/srat.hpp>
-#include <acpi/table_set.hpp>
 
 /// Builds ACPI table images in host memory and serves them through a synthetic
 /// physical address space.

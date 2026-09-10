@@ -3,12 +3,12 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_DETAIL_COMMON_SLIST_ALGORITHMS_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_DETAIL_COMMON_SLIST_ALGORITHMS_HPP 1
 
+#include <ustl/collections/intrusive/detail/assert.hpp>
+
 #include <functional>
 #include <type_traits>
 
 #include <cstddef>
-
-#include <ustl/collections/intrusive/detail/assert.hpp>
 
 namespace ustl::collections::intrusive::detail {
 template <typename TNodeTraits>

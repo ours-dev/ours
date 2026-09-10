@@ -3,14 +3,14 @@
 #ifndef BOOTFS_BUILDER_HPP
 #define BOOTFS_BUILDER_HPP 1
 
-#include <ours/types.hpp>
+#include <bootfs/format.hpp>
 
 #include <string>
 #include <vector>
 
 #include <cstring>
 
-#include <bootfs/format.hpp>
+#include <ours/types.hpp>
 #include <ustl/views/span.hpp>
 
 namespace bootfs {

@@ -3,14 +3,14 @@
 #ifndef USTL_COLLECTIONS_INTRUSIVE_UNORDERED_SET_HOOK_HPP
 #define USTL_COLLECTIONS_INTRUSIVE_UNORDERED_SET_HOOK_HPP 1
 
-#include <type_traits>
-
 #include <ustl/collections/intrusive/detail/assert.hpp>
 #include <ustl/collections/intrusive/detail/hashtable_node.hpp>
 #include <ustl/collections/intrusive/link_mode.hpp>
 #include <ustl/collections/intrusive/options.hpp>
 #include <ustl/collections/intrusive/pack_options.hpp>
 #include <ustl/collections/intrusive/pointer_traits.hpp>
+
+#include <type_traits>
 
 namespace ustl::collections::intrusive {
 namespace detail {

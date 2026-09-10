@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ours/status.hpp>
-
 #include <prof/arch.hpp>
 #include <prof/format.hpp>
 #include <prof/sampler.hpp>
+
+#include <ours/status.hpp>
 #include <unwind/unwinder.hpp>
 
 namespace prof {

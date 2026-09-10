@@ -3,10 +3,10 @@
 #ifndef PROF_SINK_HPP
 #define PROF_SINK_HPP 1
 
-#include <array>
-
 #include <prof/arch.hpp>
 #include <prof/record_buffer.hpp>
+
+#include <array>
 
 namespace prof {
 

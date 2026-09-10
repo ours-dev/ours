@@ -4,6 +4,7 @@
 #define ACPI_SIGNATURE_HPP 1
 
 #include <acpi/types.hpp>
+
 #include <ustl/views/string_view.hpp>
 
 namespace acpi {
