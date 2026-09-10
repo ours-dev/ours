@@ -111,7 +111,19 @@ namespace {
             ours::task::DEFAULT_PRIORITY);
         if (thread == nullptr) {
             log::warn("kshell: failed to spawn console thread");
+            return;
         }
+
+        // spawn() builds a thread; it does not start one. Without these the
+        // console thread sits parked forever -- no prompt, no input, and no
+        // complaint, because nothing failed. Every other caller in the tree
+        // pairs spawn() with both (kernel/top/main.cpp:86, kernel/kernel/task/
+        // dpc.cpp), and this one was the omission.
+        //
+        // detach() as well as resume(): nothing joins this thread and it never
+        // returns, so leaving it joinable only keeps a corpse nobody collects.
+        thread->detach();
+        thread->resume();
     }
 
     GKTL_INIT_HOOK(KShellInit, spawn, gktl::InitLevel::Platform)
