@@ -130,8 +130,8 @@ class Fair final: public Schedule<Fair, Discipline::Normal> {
     auto override_thread_base_profile(Runtime &, Thread *, BaseProfile const &) -> Status override;
 
     [[nodiscard]]
-    auto num_queued() const -> usize override {
-        return Scheduler::Current::get().fair_run_queue().num_queued();
+    auto num_queued(Runtime &runtime) const -> usize override {
+        return Scheduler::of(runtime).fair_run_queue().num_queued();
     }
 
   private:

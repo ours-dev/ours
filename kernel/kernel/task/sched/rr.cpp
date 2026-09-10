@@ -206,13 +206,8 @@ auto RoundRobin::on_thread_init(Runtime &runtime, Thread *thread) -> void {
 /// path goes through update_thread() instead and never calls this.
 auto RoundRobin::on_thread_tick(Runtime &, Thread *, bool) -> void {}
 
-/// The running CPU's, unlike every other lookup in this file, because
-/// ISchedule::num_queued() is handed no Runtime to ask about. Its one caller
-/// is Scheduler::pick_next_thread(), which asks about the scheduler it is
-/// itself running on, so the two agree; the day something wants a remote
-/// CPU's depth, the interface has to carry the Runtime like the rest.
-auto RoundRobin::num_queued() const -> usize {
-    return Scheduler::Current::get().rr_run_queue().num_queued();
+auto RoundRobin::num_queued(Runtime &runtime) const -> usize {
+    return rq(runtime).num_queued();
 }
 
 /// Required, not decorative -- see the identical block at the end of fair.cpp:

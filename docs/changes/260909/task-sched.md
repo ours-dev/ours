@@ -234,3 +234,71 @@ Linux 的 `struct rq` 和 `cfs_rq` 之间用的是 `container_of`（`task_of()`�
 **故意没做**
 `fair.cpp` 那 20 处没动——它不在构建里，而且 Fair 是 owner 自己的设计。
 `Scheduler::of()` 就位之后那是一次机械替换，仍记在 `docs/repairs/260909/task-sched.md`。
+
+## `ISchedule::num_queued()` 补上 `Runtime` 参数（2026-09-10）
+
+**文件**
+- `kernel/include/ours/task/sched/schedule.hpp` — 纯虚函数签名
+- `kernel/include/ours/task/sched/rr.hpp` / `kernel/kernel/task/sched/rr.cpp` — 实现
+- `kernel/kernel/task/sched/fair.cpp` — 同步签名（该文件不在构建里）
+- `kernel/kernel/task/sched/scheduler.cpp` — 唯一的调用点
+
+**症状**
+不是 bug，是接口上留下的一个洞。`ISchedule` 的每一个虚函数都收 `Runtime &`——
+它就是"问的是哪颗 CPU"的凭证——只有 `num_queued()` 不收：
+
+```cpp
+[[nodiscard]]
+virtual auto num_queued() const -> usize = 0;
+```
+
+**原因**
+签名里没有 `Runtime`，实现能写出来的就只有一种：**当前 CPU 的**。
+
+```cpp
+auto RoundRobin::num_queued() const -> usize {
+    return Scheduler::Current::get().rr_run_queue().num_queued();   // 当前 CPU
+}
+```
+
+而"当前 CPU 就是那个 CPU"正是昨天整个多核修复要拆掉的假设——
+`Scheduler::do_unpark_thread()` 明确地跑在唤醒方、操作目标 CPU 的队列。
+昨天在这里留了一段五行注释解释"为什么这一处例外"，而不是把洞堵上；
+注释本身还写错了调用者的名字（写的是 `Scheduler::pick_next_thread()`，
+全树没有这个函数，真正的调用者是 `Scheduler::evaluate_next_thread()`）。
+
+一个只能靠注释维持的例外，比它想避免的改动更贵：读的人得一直记着
+"这个文件里所有查询都按 Runtime 走，除了这一个"。
+
+**改法**
+```cpp
+virtual auto num_queued(Runtime &runtime) const -> usize = 0;
+```
+```cpp
+auto RoundRobin::num_queued(Runtime &runtime) const -> usize {
+    return rq(runtime).num_queued();
+}
+```
+
+`fair.cpp` 的那份也一并跟上（`Scheduler::of(runtime).fair_run_queue()`）——
+它不在构建里，但把一个 override 留在旧签名上等于埋一颗编译错误。
+这只是签名对齐，没有碰 Fair/EEVDF 的任何策略。
+
+**被否掉的方案**：把 `num_queued()` 从接口里删掉，理由是
+`Scheduler::enqueue_thread`/`dequeue_thread` 已经在维护 `num_queued_threads`。
+否掉是因为唯一的调用点用的是两者**相等**这个条件：
+
+```cpp
+if (ctx.discipline() == Discipline::Normal &&
+    ctx.schedule()->num_queued(m_runtime) == m_runtime.num_queued_threads)
+```
+
+意思是"队列里所有线程都属于这个纪律，那就直接问它要下一个，不用遍历所有纪律"。
+删掉其中一边，这条快路径就没了。
+
+**参照**
+无，本项目自有设计。形状上对应 Linux 的 `sched_class` 方法一律以 `struct rq *rq`
+开头——同一个理由：方法本身无状态，rq 才是"哪颗 CPU"。
+
+**验证**
+四核引导：cpu0 8589 / cpu1 601 / cpu2 90043 / cpu3 90062，无断言失败。

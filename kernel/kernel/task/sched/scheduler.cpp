@@ -490,7 +490,7 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
 
     if (auto &ctx = curr->scheduling_context();
         ctx.discipline() == Discipline::Normal &&
-        ctx.schedule()->num_queued() == m_runtime.num_queued_threads) {
+        ctx.schedule()->num_queued(m_runtime) == m_runtime.num_queued_threads) {
         if (next = ctx.schedule()->evaluate_next_thread(m_runtime, curr); next) {
             return next;
         }

@@ -82,7 +82,7 @@ class RoundRobin final: public Schedule<RoundRobin, Discipline::Normal> {
     auto on_thread_tick(Runtime &, Thread *, bool queued) -> void override;
 
     [[nodiscard]]
-    auto num_queued() const -> usize override;
+    auto num_queued(Runtime &) const -> usize override;
 
   private:
     /// Charge |curr| for the time since it was last charged.

@@ -122,9 +122,16 @@ class ISchedule {
 
     virtual auto on_thread_tick(Runtime &, Thread *, bool queued) -> void = 0;
 
-    /// Number of threads currently queued on this schedule.
+    /// Number of threads queued on |runtime|'s CPU for this schedule.
+    ///
+    /// The Runtime is the parameter every other entry point here takes, and it
+    /// is what says *which CPU* is being asked about. Without it the only
+    /// implementation an ISchedule can write is "the CPU I happen to be
+    /// running on" -- which is precisely the assumption that broke every
+    /// cross-CPU wakeup, since Scheduler::do_unpark_thread() runs on the waker
+    /// and manipulates the target's queues.
     [[nodiscard]]
-    virtual auto num_queued() const -> usize = 0;
+    virtual auto num_queued(Runtime &runtime) const -> usize = 0;
 
     /// [Optional] Attempts to assign a target CPU on which |thread| will run.
     ///
