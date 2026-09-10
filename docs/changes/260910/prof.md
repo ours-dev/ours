@@ -85,3 +85,51 @@ if ((address % alignof(u64)) != 0) {
   触发它需要真实的 FDE 索引让展开器走完一步。要可测就得把 `StackWindow` 提成一个有
   `contains()` 的具名类型放进 `prof/`——那是对的方向（守卫自己守住自己的不变量），
   但属于结构改动，单独记进待修。
+
+---
+
+## 2. `ours::Status` 的前向声明既多余又脆（2026-09-10）
+
+**文件**
+- `kernel/lib/prof/include/prof/sampler.hpp`
+
+**症状**
+
+潜伏，且只在 `ours::Status` 的底层类型被改动时才发作——那时是**静默的 ODR 破坏**，
+不是编译错误。
+
+**原因**
+
+```cpp
+namespace ours {
+enum class Status : u32;
+}
+```
+
+两个问题。其一，它是多余的：`sampler.hpp` → `sink.hpp` → `arch.hpp` 已经 include 了
+`ours/status.hpp`，所以完整定义本来就在。其二，它复述了一份别人的真相——`Status` 的底层
+类型只在 `system/public/ours/status.hpp` 里定义一次，这里又写了一遍 `: u32`。哪天那边改成
+`u16`，这份声明不会报错，只会让两个编译单元对同一个枚举有不同看法。
+
+**改法**
+
+删掉声明，把依赖写明白：
+
+```cpp
+#include <ours/status.hpp>
+```
+
+`sampler.hpp` 本来就要用 `ours::Status`（`start()` 的返回类型），直接 include 它比靠
+`sink.hpp` 顺带带进来更准确。
+
+**验证**
+
+构建通过；prof 宿主单测全过。
+
+**判错更正**
+
+这次 review 我还提过一条「prof 的头文件用了 `usize`/`u64` 却不 include `ours/types.hpp`，
+不自足」。**那是错的，已撤回**：`kernel/include/ours/prelude.hpp` 是由构建
+**`-include` 强制注入**每个编译单元的（见编译命令里的 `-include .../prelude.hpp`），
+整数别名全局可用；`ours/types.hpp` 自己也依赖它，没有 include 任何东西。
+prof 在这一点上没有问题，是我最初的独立编译检查没有注入 prelude，才把全部头文件都测成了失败。

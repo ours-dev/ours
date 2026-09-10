@@ -9,12 +9,9 @@
 
 #include <atomic>
 
+#include <ours/status.hpp>
 #include <unwind/cfi.hpp>
 #include <unwind/fde_index.hpp>
-
-namespace ours {
-enum class Status : u32;
-}
 
 namespace prof {
 
