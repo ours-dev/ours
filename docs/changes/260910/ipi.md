@@ -255,3 +255,57 @@ Linux 的 perf 用 `smp_call_function()` 做同一件事（`perf_event_enable`�
 **故意没做**
 `program_this_cpu()` / `teardown_this_cpu()` 的内容一个字没动——它们写的是 PMU MSR 和
 LVT PMI，和这次改的"怎么把它们送到每颗 CPU"是两件事。
+
+## `send_resched` 的两个重载不再各说各话（2026-09-10）
+
+**文件**
+- `kernel/kernel/task/ipi_service.cpp`
+
+**症状**
+潜伏，而且是"给下一个人挖的坑"——`send_resched(CpuNum)` **今天没有任何调用者**
+（`PreemptionState::flush_pending_remote()` 和 `Scheduler::reschedule_mask()`
+用的都是掩码版）。
+
+**原因**
+两个重载对"哪些目标该被排除"的答案不一样：
+
+```cpp
+auto IpiService::send_resched(CpuNum cpu) -> void {
+    if (!task::Scheduler::peek_active_mask().test(cpu)) {   // 只过滤 inactive
+        return;
+    }
+    arch_mp_reschedule(cpu);
+}
+```
+
+掩码版还多做一件事，而且注释写得很清楚为什么必须做：
+
+```cpp
+    auto targets = mask;
+    targets.set(local_cpu, 0);        // 本地 CPU 永远不是目标
+    targets &= task::Scheduler::peek_active_mask();
+```
+
+「给自己发重调度 IPI」在掩码版里被明确当成 bug 处理（注释里记着它曾经导致
+引导日志里满屏的 "IPI-Resched on CPU[0]"），在单 CPU 版里却是允许的。
+两者的差异没有任何理由，只是没人走过那条路所以没付出代价。
+
+**改法**
+```cpp
+auto IpiService::send_resched(CpuNum cpu) -> void {
+    send_resched(CpuMask::of(cpu));
+}
+```
+
+规则只有一处。
+
+**参照**
+无，本项目自有设计。
+
+**验证**
+四核引导零断言零故障。行为上是空操作——没有调用者——所以这一条修的是
+"第一个调用它的人会踩到什么"。
+
+**故意没做**
+`arch_mp_reschedule(CpuNum)` 这条 arch 接缝现在也没有调用者了，没有删：
+它和 `arch_mp_reschedule_mask()` 是对称的一对，属于给 arch 层留的形状。

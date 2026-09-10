@@ -83,12 +83,16 @@ auto IpiService::init() -> void {
     cpu_possible_mask().for_each([](CpuNum cpu) { new (&CurrentMailbox::get(cpu)) Mailbox(); });
 }
 
+/// Delegates rather than repeating the filter.
+///
+/// The two overloads disagreed: this one dropped an inactive CPU but would
+/// happily interrupt the calling CPU, which the mask form refuses on purpose
+/// and explains at length below. Nothing calls this one today, so the
+/// disagreement had never been paid for -- and an overload whose behaviour
+/// differs from its sibling's for no stated reason is a trap laid for whoever
+/// calls it first.
 auto IpiService::send_resched(CpuNum cpu) -> void {
-    if (!task::Scheduler::peek_active_mask().test(cpu)) {
-        return;
-    }
-
-    arch_mp_reschedule(cpu);
+    send_resched(CpuMask::of(cpu));
 }
 
 auto IpiService::send_resched(CpuMask const &mask) -> void {
