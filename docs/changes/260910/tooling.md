@@ -425,3 +425,99 @@ Linux 的 `__per_cpu_offset[]` 与 `per_cpu()`；crash/gdb 的 `per_cpu` 辅助�
   即使只启了 4 个 vCPU。加 online 过滤要再读 `Cpu::online_mask()`，而"有 unit"本身就是
   这条命令能回答的问题，先不引入第二个概念。
 - **没有做 `cl -w` 之类的写入**。读已经解决了眼下的问题；写进 per-CPU 状态是另一种风险。
+
+## `cpus` 和 `nodes`：调度器、运行线程、内存节点（2026-09-10）
+
+**文件**
+- `scripts/lldb_ours.py` —— 新增 `cpus`、`nodes`，以及共用的 canary 校验
+- `docs/development/debugging.md` —— 两节说明
+- `docs/repairs/260910/mm.md` —— 新建，记 `NUM_ONLINE_NODES` 的问题
+
+**症状**
+`cl` 解决了"读一个 per-CPU 变量"，但真正想问的三件事仍然要手工拼：
+**每个 CPU 在跑什么线程、调度器队列里有多少、内存还剩多少**。手工拼的路径是
+`cl` 出一个指针 → 抄地址 → `p *(T *)0x...`，一个 CPU 三步，四个 CPU 十二步。
+
+**原因**
+这三件事的数据都在，只是**入口名字长得没法用**：
+
+```
+ours::mm::CpuLocal::Current<ours::task::Thread*>::CURRENT_INSTANCE
+ours::mm::CpuLocal::Current<ours::task::sched::Scheduler>::CURRENT_INSTANCE
+```
+
+而且它们各自还要再解一层：Thread 要读名字/状态/flags，Scheduler 要读
+`m_runtime.num_queued_threads`，节点要走 `PmNode::NODES` 再走 zone 队列。
+
+**改法**
+
+```
+(lldb) cpus
+cpu  running                                      queued  weight  note
+  0  'Idle/0' tid=3 Running [Idle | NoFree]            0       0
+  1  'userboot' tid=18 Running [Detached]              1    2549
+  2  'Sample1' tid=19 Running [Detached]               1    2549
+  3  'Sample2' tid=20 Running [Detached]               1    2549
+     (12 more with a unit but no scheduler -- never onlined: 4, 5, ...)
+
+(lldb) nodes
+node 0 @ 0xffffff801febd978  start_pfn=0
+    spanned    130780 frames     510 MiB
+    present    129451 frames     505 MiB
+    zone Dma      @ ...  present=3752   managed=2507
+    zone Dma32    @ ...  present=125699 managed=123334
+```
+
+四个设计决定，都是实测逼出来的：
+
+**1. 指针用 canary 验真，而且区分"0"和"不对"。** 内核对象开头的 `gktl::Canary` 的 magic
+是类型全名的 consteval 哈希（`kernel/lib/gktl/include/gktl/canary.hpp:15`）。同一个算法
+用 Python 重算，三个类型全部对上：
+
+```
+ours::task::Thread            -> 485190896    观测 485190896   MATCH
+ours::mm::PmNode              -> 4078567354   观测 4078567354  MATCH
+ours::task::sched::Scheduler  -> 2869030934   观测 2869030934  MATCH
+```
+
+`Canary()` 默认构造把 magic 置 0，所以 **magic==0 是"从没构造过"，非 0 不匹配才是
+"这片内存是别人的"**。合成一句 "canary bad" 的话，十二个没上线的 CPU 会被报成十二个故障——
+第一版就是这样，四行有用的信息被埋掉了。现在它们折成一行。
+
+**2. 两个来源交叉核对。** `running` 来自 per-CPU `Current<Thread*>`，`queued`/`weight` 来自
+`Scheduler`；调度器自己还记着 `curr_thread` 和 `which_cpu`。这些是分别更新的，所以命令
+比对它们，不一致就写进 note 列——可能只是停在上下文切换中间，也可能是真 bug，但都是
+第一个该看的东西。
+
+**3. `nodes` 走全局 `PmNode::NODES`，不走 per-CPU 的 `Current<PmNode*>`。** 要看的是所有
+节点。zone 队列是 fallback 顺序表，同一个 zone 出现多次，按首次出现去重。
+
+**4. `std::atomic<usize>` 按第一个 child 读。** freestanding 构建里没有 libc++ 的
+formatter，`GetValue()` 对 atomic 返回 None；它的唯一 child 就是存储。同样的理由，
+`PmNode::NODES` 这种 `std::array` 也是按裸内存读的（`cl` 那一节已经踩过一次）。
+
+**顺带发现一个 mm 的问题**：`PmNode::NUM_ONLINE_NODES` **从来没有被赋过值**，
+一个节点的机器上读出来是 `1879048187`，而且这个符号在镜像里根本不存在（没人引用，
+存储被回收）。已记 `docs/repairs/260910/mm.md`；`nodes` 故意不打印它。
+
+**参照**
+Linux 的 `nr_online_nodes` / `node_states[N_ONLINE]`；crash 工具的 `ps` / `kmem -z`
+是同类命令。
+
+**验证**
+在真实运行的四核内核上（`qemu_boot.py -gdb tcp::1234`，跑满 40 秒后 attach）：
+
+1. `cpus` 四行分别是 `Idle/0`(tid 3)、`userboot`(tid 18)、`Sample1`(19)、`Sample2`(20)，
+   状态 `Running`、flags 正确；后十二个 CPU 折成一行。
+2. `nodes` 打出 510 MiB spanned / 505 MiB present，两个 zone（Dma、Dma32），
+   数值与 QEMU 的 `-m 512` 对得上。
+3. canary 三个类型全部匹配（见上表）。
+4. `cl` 原有的七条路径回归通过。
+
+**故意没做**
+- **没有走运行队列**。`Thread::m_scheduling_context.m_runqueue_hook` 是一棵侵入式红黑树的
+  节点，不是链表；走它要在调试器里手算 offsetof 并处理树结构，而且在半途停下来的内核里
+  可能读到正在改的中间态。`num_queued_threads` 已经回答了"有没有堆积"，先到这里。
+- **没有列出全部线程**。需要一个全局线程链表；有没有、在哪，还没查。
+- **没有 buddy 分配器的按 order 空闲统计**。zone 上没有空闲计数器，要走 free list；
+  和运行队列同一个问题，等真需要时再说。

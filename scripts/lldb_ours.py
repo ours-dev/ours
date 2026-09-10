@@ -311,6 +311,286 @@ def cl(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionContext
 
 
 def __lldb_init_module(debugger: lldb.SBDebugger, _internal) -> None:
-    debugger.HandleCommand(
-        f"command script add -o -f {__name__}.cl cl")
-    print("ours: `cl <var> [cpu]` reads CPU_LOCAL variables (cl -l lists them)")
+    for name in ("cl", "cpus", "nodes"):
+        debugger.HandleCommand(f"command script add -o -f {__name__}.{name} {name}")
+    print("ours: cl <var> [cpu] | cpus | nodes")
+
+
+# --------------------------------------------------------------------------
+# Guarded objects.
+#
+# Most long-lived kernel objects open with a gktl::Canary seeded from their own
+# type name (kernel/lib/gktl/include/gktl/canary.hpp).  The magic is a
+# consteval hash of the fully-qualified name, so it can be recomputed here and
+# used to answer "is this pointer really a Thread" -- which is the difference
+# between a command that says "not a Thread" and one that prints noise from a
+# stale pointer.
+# --------------------------------------------------------------------------
+
+
+def _magic(type_name: str) -> int:
+    """gktl::magic(), reproduced. Must stay in step with canary.hpp."""
+    def encode(c: str) -> int:
+        if "A" <= c <= "Z":
+            return ord(c) - ord("A")
+        if "a" <= c <= "z":
+            return ord(c) - ord("a") + 26
+        if "0" <= c <= "9":
+            return ord(c) - ord("0") + 52
+        if c == "_":
+            return 62
+        return 63
+
+    h = 0
+    for char in type_name:
+        h = (h * 63 + encode(char)) & 0xFFFFFFFF
+    return h
+
+
+def _canary(value: lldb.SBValue, type_name: str) -> str:
+    """"" if the canary agrees, else why it does not.
+
+    Zero and wrong are different answers and must not be merged. Canary's
+    default constructor seeds zero (canary.hpp), so a zero magic means the
+    object was never constructed -- a CPU that never came online, say -- while
+    a non-zero mismatch means the bytes are somebody else's.
+    """
+    canary = value.GetChildMemberWithName("m_canary")
+    if not canary.IsValid():
+        return ""              # not a guarded type; nothing to disagree with
+    magic = canary.GetChildMemberWithName("m_magic")
+    if not magic.IsValid():
+        return ""
+    got = magic.GetValueAsUnsigned()
+    if got == _magic(type_name):
+        return ""
+    return "unconstructed" if got == 0 else f"canary {got:#x}"
+
+
+def _at(target: lldb.SBTarget, address: int, type_name: str) -> lldb.SBValue | None:
+    kind = target.FindFirstType(type_name)
+    if not kind.IsValid():
+        return None
+    return target.CreateValueFromAddress(
+        type_name.rsplit("::", 1)[-1], lldb.SBAddress(address, target), kind)
+
+
+def _percpu(target: lldb.SBTarget, symbol: str, offset: int) -> lldb.SBValue | None:
+    """A CPU_LOCAL variable's copy for the CPU whose offset this is."""
+    template = _find_global(target, symbol)
+    if template is None:
+        return None
+    where = template.GetLoadAddress()
+    if where == lldb.LLDB_INVALID_ADDRESS:
+        return None
+    return target.CreateValueFromAddress(
+        template.GetName(), lldb.SBAddress((where + offset) & MASK64, target),
+        template.GetType())
+
+
+CURRENT_THREAD = "ours::mm::CpuLocal::Current<ours::task::Thread*>::CURRENT_INSTANCE"
+CURRENT_SCHED = ("ours::mm::CpuLocal::Current<ours::task::sched::Scheduler>::"
+                 "CURRENT_INSTANCE")
+
+
+def _thread_summary(target: lldb.SBTarget, address: int) -> str:
+    if address == 0:
+        return "(none)"
+    thread = _at(target, address, "ours::task::Thread")
+    if thread is None:
+        return f"{address:#x} (no ours::task::Thread type in the image)"
+    bad = _canary(thread, "ours::task::Thread")
+    if bad:
+        return f"{address:#x} <{bad} -- not a Thread>"
+
+    name = thread.GetChildMemberWithName("m_name").GetChildMemberWithName("name_")
+    label = (name.GetSummary() or "?").strip('"') if name.IsValid() else "?"
+    tid = thread.GetChildMemberWithName("m_tid")
+    state = thread.GetChildMemberWithName("m_state")
+    flags = thread.GetChildMemberWithName("m_flags")
+    return (f"{label!r} tid={tid.GetValueAsUnsigned() if tid.IsValid() else '?'} "
+            f"{state.GetValue() or '?'} [{flags.GetValue() or '?'}]")
+
+
+def cpus(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionContext,
+         result: lldb.SBCommandReturnObject, _internal) -> None:
+    """What each CPU is running, from two independent places."""
+    target = exe_ctx.GetTarget()
+    if not target.IsValid():
+        result.SetError("cpus: no target")
+        return
+
+    _, count, why = _offsets_table(target)
+    if why:
+        result.SetError(f"cpus: {why}")
+        return
+
+    lines = [f"{'cpu':>3}  {'running':<44} {'queued':>6} {'weight':>7}  note"]
+    seen = 0
+    offline: list[int] = []
+    for cpu in range(count):
+        offset, _ = _offset_for_cpu(target, cpu)
+        if offset is None:
+            continue
+        seen += 1
+
+        pointer = _percpu(target, CURRENT_THREAD, offset)
+        via_cpulocal = pointer.GetValueAsUnsigned() if pointer is not None else 0
+
+        sched = _percpu(target, CURRENT_SCHED, offset)
+        queued = weight = "?"
+        via_sched = 0
+        notes = []
+        if sched is None:
+            notes.append("no scheduler")
+        else:
+            bad = _canary(sched, "ours::task::sched::Scheduler")
+            # A unit exists for every possible CPU, but only the onlined ones
+            # ever construct a Scheduler in it. Listing the other twelve as
+            # errors buries the four lines that matter, so they are counted and
+            # summarised under the table instead.
+            if bad == "unconstructed" and via_cpulocal == 0:
+                offline.append(cpu)
+                continue
+            if bad:
+                notes.append(f"scheduler {bad}")
+            runtime = sched.GetChildMemberWithName("m_runtime")
+            if runtime.IsValid():
+                for field, into in (("num_queued_threads", "queued"),
+                                    ("total_weight", "weight")):
+                    child = runtime.GetChildMemberWithName(field)
+                    if child.IsValid():
+                        if into == "queued":
+                            queued = str(child.GetValueAsUnsigned())
+                        else:
+                            weight = str(child.GetValueAsUnsigned())
+                curr = runtime.GetChildMemberWithName("curr_thread")
+                if curr.IsValid():
+                    via_sched = curr.GetValueAsUnsigned()
+                which = runtime.GetChildMemberWithName("which_cpu")
+                # The scheduler records the CPU it belongs to. If that disagrees
+                # with the offset we used to reach it, the per-CPU offset table
+                # and the scheduler disagree about who this is -- worth more
+                # than anything else on the line.
+                if which.IsValid() and which.GetValueAsUnsigned() != cpu:
+                    notes.append(f"which_cpu={which.GetValueAsUnsigned()}")
+
+        # Two independent answers to "what is running": the per-CPU Thread*
+        # and the scheduler's own curr_thread. They are updated separately, so
+        # a mismatch is either a context switch caught in the middle or a bug,
+        # and either way it is the thing to look at.
+        if via_cpulocal and via_sched and via_cpulocal != via_sched:
+            notes.append(f"sched says {via_sched:#x}")
+
+        lines.append(f"{cpu:>3}  {_thread_summary(target, via_cpulocal):<44} "
+                     f"{queued:>6} {weight:>7}  {', '.join(notes)}")
+
+    if seen == 0:
+        result.SetError("cpus: no CPU has a per-CPU unit yet")
+        return
+    if offline:
+        lines.append(f"     ({len(offline)} more with a unit but no scheduler "
+                     f"-- never onlined: "
+                     f"{', '.join(str(c) for c in offline)})")
+    result.AppendMessage("\n".join(lines))
+
+
+def nodes(debugger: lldb.SBDebugger, command: str, exe_ctx: lldb.SBExecutionContext,
+          result: lldb.SBCommandReturnObject, _internal) -> None:
+    """Physical memory nodes and their zones."""
+    target = exe_ctx.GetTarget()
+    if not target.IsValid():
+        result.SetError("nodes: no target")
+        return
+
+    table = _find_global(target, "ours::mm::PmNode::NODES")
+    count_value = _find_global(target, "ours::mm::PmNode::NUM_NODES")
+    if table is None or count_value is None:
+        result.SetError("nodes: cannot find ours::mm::PmNode::NODES / NUM_NODES")
+        return
+
+    base = table.GetLoadAddress()
+    slots = table.GetType().GetByteSize() // 8
+    count = min(count_value.GetValueAsUnsigned(), slots)
+    if count == 0:
+        result.SetError("nodes: NUM_NODES is 0 -- mm has not come up yet")
+        return
+
+    process = target.GetProcess()
+    page_kib = 4  # PAGE_SIZE; frames are counted in pages everywhere below
+
+    lines = []
+    for nid in range(count):
+        error = lldb.SBError()
+        raw = process.ReadMemory(base + nid * 8, 8, error)
+        if error.Fail():
+            lines.append(f"node {nid}: unreadable ({error.GetCString()})")
+            continue
+        pointer = int.from_bytes(raw, "little")
+        if pointer == 0:
+            lines.append(f"node {nid}: null")
+            continue
+
+        node = _at(target, pointer, "ours::mm::PmNode")
+        if node is None:
+            lines.append(f"node {nid}: {pointer:#x} (no ours::mm::PmNode type)")
+            continue
+        bad = _canary(node, "ours::mm::PmNode")
+        if bad:
+            lines.append(f"node {nid}: {pointer:#x} <{bad} -- not a PmNode>")
+            continue
+
+        def frames(name: str) -> int:
+            child = node.GetChildMemberWithName(name)
+            if not child.IsValid():
+                return 0
+            inner = child.GetChildMemberWithName("value_")
+            return (inner if inner.IsValid() else child).GetValueAsUnsigned()
+
+        spanned, present = frames("m_spanned_frames"), frames("m_present_frames")
+        reserved = frames("m_reserved_frames")
+        start = node.GetChildMemberWithName("m_start_pfn")
+        lines.append(
+            f"node {nid} @ {pointer:#x}  start_pfn="
+            f"{start.GetValueAsUnsigned() if start.IsValid() else '?'}\n"
+            f"    spanned  {spanned:>8} frames  {spanned * page_kib // 1024:>6} MiB\n"
+            f"    present  {present:>8} frames  {present * page_kib // 1024:>6} MiB\n"
+            f"    reserved {reserved:>8} frames  {reserved * page_kib // 1024:>6} MiB")
+
+        # The zone queue is a fallback ordering, so the same zone appears more
+        # than once; list each zone once, in the order first seen.
+        queues = node.GetChildMemberWithName("m_zone_queues")
+        storage = queues.GetChildMemberWithName("queue_storage_") if queues.IsValid() else queues
+        if not storage.IsValid():
+            continue
+        zone_base = storage.GetLoadAddress()
+        zone_slots = storage.GetType().GetByteSize() // 8
+        shown = []
+        for slot in range(zone_slots):
+            raw = process.ReadMemory(zone_base + slot * 8, 8, error)
+            if error.Fail():
+                break
+            zone_pointer = int.from_bytes(raw, "little")
+            if zone_pointer == 0 or zone_pointer in shown:
+                continue
+            shown.append(zone_pointer)
+            zone = _at(target, zone_pointer, "ours::mm::PmZone")
+            if zone is None:
+                lines.append(f"    zone @ {zone_pointer:#x} (no ours::mm::PmZone type)")
+                continue
+
+            def atomic(name: str) -> str:
+                child = zone.GetChildMemberWithName(name)
+                if not child.IsValid():
+                    return "?"
+                # std::atomic<usize> has no formatter in a freestanding build;
+                # its single child is the stored value.
+                inner = child.GetChildAtIndex(0)
+                return str((inner if inner.IsValid() else child).GetValueAsUnsigned())
+
+            kind = zone.GetChildMemberWithName("m_type")
+            lines.append(f"    zone {kind.GetValue() or '?':<8} @ {zone_pointer:#x}  "
+                         f"present={atomic('m_present_frames')} "
+                         f"managed={atomic('m_managed_frames')}")
+
+    result.AppendMessage("\n".join(lines))

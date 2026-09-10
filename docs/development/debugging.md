@@ -215,6 +215,58 @@ current  (ours::CpuNum) ours::mm::CpuLocal::CURRENT_CPUNUM = 2
 `cl` 按 `cs & 3` 判断特权级，自己挑对寄存器，所以停在 userboot 的自旋循环里也照样是对的。
 自己手算的时候记得这条。
 
+### `cpus` —— 每个 CPU 在跑什么
+
+```
+(lldb) cpus
+cpu  running                                      queued  weight  note
+  0  'Idle/0' tid=3 Running [Idle | NoFree]            0       0
+  1  'userboot' tid=18 Running [Detached]              1    2549
+  2  'Sample1' tid=19 Running [Detached]               1    2549
+  3  'Sample2' tid=20 Running [Detached]               1    2549
+     (12 more with a unit but no scheduler -- never onlined: 4, 5, ...)
+```
+
+`running` 那一列来自 per-CPU 的 `Current<Thread*>`，`queued`/`weight` 来自该 CPU 的
+`Scheduler`。**这是两个独立更新的地方**，所以命令会交叉核对：调度器自己的 `curr_thread`
+和 per-CPU 指针不一致时，note 列会写出来（可能是正好停在上下文切换中间，也可能是 bug，
+两种都值得先看这一条）；调度器记录的 `which_cpu` 和我们用来找到它的 offset 对不上时同理。
+
+MAX_CPU 是 16，每个可能的 CPU 都有 unit，但只有上线过的才构造过 `Scheduler`。
+把那十二行都当错误列出来会把真正要看的四行埋掉，所以它们被折成一行。
+
+### `nodes` —— 物理内存节点
+
+```
+(lldb) nodes
+node 0 @ 0xffffff801febd978  start_pfn=0
+    spanned    130780 frames     510 MiB
+    present    129451 frames     505 MiB
+    reserved        0 frames       0 MiB
+    zone Dma      @ 0xffffff801febd6c8  present=3752   managed=2507
+    zone Dma32    @ 0xffffff801febd418  present=125699 managed=123334
+```
+
+走的是 `PmNode::NODES[0..NUM_NODES)`，不是 per-CPU 的 `Current<PmNode*>`——要看的是
+所有节点，不是当前这个 CPU 的那个。zone 队列是一张 fallback 顺序表，同一个 zone 会出现
+多次，命令按首次出现去重。
+
+**没有打印 `num_online_nodes()`**，因为它返回垃圾——见 `docs/repairs/260910/mm.md`。
+
+### 指针会被验真
+
+内核里长期存在的对象开头大多有一个 `gktl::Canary`，magic 是**类型全名的 consteval 哈希**
+（`kernel/lib/gktl/include/gktl/canary.hpp`）。脚本把同一个哈希用 Python 重算了一遍，
+于是可以回答"这个指针到底是不是一个 Thread"：
+
+```
+0xffffff8800012xxx <canary 0xdeadbeef -- not a Thread>
+```
+
+而且 **0 和"不对"是两回事**：`Canary` 的默认构造把 magic 置 0，所以 magic 为 0 表示
+**这个对象从来没被构造过**（比如没上线的 CPU），非 0 但不匹配才是"这片内存是别人的"。
+两者混成一句"canary bad"会把"正常没上线"报成故障。
+
 ### 不是 CPU_LOCAL 的变量会被拒绝
 
 判据是链接脚本自己的 `[__cpu_local_start, __cpu_local_end)`（`kernel/kernel.ld:175,204`），
