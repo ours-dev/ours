@@ -139,3 +139,119 @@ Linux 的 `apic_write(reg, (apic_read(reg) & ~mask) | bits)` 在
 四核引导：APIC timer 正常标定（1000005061 Hz），三颗 AP 上线，
 cpu0 8589 / cpu1 597 / cpu2 85684 / cpu3 85631，无断言失败。
 `enable_tsc`／`disable_tsc` 走的是 LVT Timer，标定那行日志能出来就说明它们没坏。
+
+## ICR 的空闲等待挪到写之前，并去掉自旋里那次 ESR 读（2026-09-10）
+
+**文件**
+- `kernel/arch/x86/lib/arch/include/arch/x86/apic/xapic.hpp` — `send_ipi()` 与 `wait_icr_idle()`
+
+**症状**
+不是 bug，是发送方白等。多核打通之后每一次跨 CPU 唤醒都要走这条路，
+所以它从"没人跑"变成了热路径。
+
+**背景：ICR 是什么**
+Interrupt Command Register，local APIC 用来**发 IPI** 的寄存器。xAPIC 下它是一对：
+
+| 偏移 | 内容 |
+|------|------|
+| 0x310 `IcrHigh` | 目标 APIC ID（物理寻址模式下） |
+| 0x300 `IcrLow`  | 向量号、投递模式（Fixed / INIT / Startup…）、目标简写 |
+
+**写 `IcrLow` 那一刻 IPI 才真正发出去**，所以顺序必须是先高后低；两次写之间也必须关中断，
+否则中断处理里如果自己也发一发 IPI，就会把 `IcrHigh` 覆盖掉，
+这一发就寄到别的 CPU 去了。
+
+`IcrLow` 的 bit 12 是 **Delivery Status**（只读）：0 = 空闲，
+1 = 本 APIC 上一发 IPI 还没被目标接受。
+
+**原因**
+硬件的规则是「**下一次写 ICR 之前**它必须是空闲的」——不是「发送方必须目睹自己这一发送达」。
+原来的代码等在写**之后**：
+
+```cpp
+auto send_ipi(IpiRequest const &request) noexcept -> void {
+    AutoInterruptDisabler guard;
+    write_reg(XApicRegType::IcrHigh, request.icr_high());
+    write_reg(XApicRegType::IcrLow, request.icr_low());
+    wait_for_ipi();                  // <- 在这儿自旋等它送达
+}
+```
+
+于是发送方替一件与自己无关的事付了延迟：这条消息是给**别的** CPU 的，
+本 CPU 却在这儿转圈。而这条路径现在是 `Scheduler::reschedule_mask()` →
+`IpiService::send_resched()` → 每一次跨 CPU unpark 都要走的。
+
+挪到写之前，两种情形都变好：
+
+- **单发**（常见情形，`reschedule_mask(CpuMask::of(target))`）：发完就走，
+  等下一次再来时 ICR 早就空了，那次检查是免费的；
+- **连发**：该等的时候照样等——而这正是规则真正针对的唯一情形。
+
+等待必须**放在关中断的作用域里面**，不能放到 `AutoInterruptDisabler` 之前：
+否则中断可以插在「等完」和「开始写」之间发它自己的 IPI，把 ICR 重新弄忙。
+
+**顺带：自旋循环里那次 ESR 读**
+
+```cpp
+while ((read_reg(IcrLow) & (1 << 12)) != 0 && read_reg(Esr) == 0) {}
+```
+
+这个「兼作错误逃生口」的写法两头不讨好：
+
+1. **它发现不了错误**。ESR（Error Status Register）只有在**写一次之后**才会把新的
+   错误锁存进去，裸读拿到的是上一次错误留下的陈旧值，跟这一发无关。
+2. **它会读到陈旧的非零值**，于是提前跳出循环——让下一次写去覆盖一个**还忙着**的 ICR，
+   而这恰恰是这段等待存在的唯一目的。
+
+再加上每轮多一次非缓存 MMIO 读，把自旋的总线流量翻倍。去掉之后循环只读
+delivery-status 一个位，并且加上 `arch::spin_hint()`（PAUSE）。
+
+**改法**
+```cpp
+auto send_ipi(IpiRequest const &request) noexcept -> void {
+    AutoInterruptDisabler guard;
+    wait_icr_idle();                                        // 先等
+    write_reg(XApicRegType::IcrHigh, request.icr_high());
+    write_reg(XApicRegType::IcrLow, request.icr_low());     // 再发
+}
+
+auto wait_icr_idle() const noexcept -> void {
+    while ((read_reg(XApicRegType::IcrLow) & ICR_DELIVERY_STATUS_PENDING) != 0) {
+        spin_hint();
+    }
+}
+```
+
+`wait_for_ipi` 改名成 `wait_icr_idle`——它等的是 ICR 空闲，不是「某一发 IPI」；
+`1 << 12` 给了名字 `ICR_DELIVERY_STATUS_PENDING`。
+
+**参照**
+- Linux `__default_send_IPI_dest_field()`（`arch/x86/kernel/apic/ipi.c`）：
+  注释就写着 `/* Wait for idle. */`，然后才写 ICR2、写 ICR。
+- Linux `__xapic_wait_icr_idle()`：`while (native_apic_mem_read(APIC_ICR) & APIC_ICR_BUSY) cpu_relax();`
+  ——同样只看 busy 位，同样带 PAUSE，同样不看 ESR。
+- Intel SDM Vol.3 §11.6.1，ICR 的 Delivery Status 位定义。
+
+**验证**
+三种配置都实测过：
+
+| 配置 | 结果 |
+|------|------|
+| `kernel.dev.dbg_1.obi` 四核 | cpu0 8589 / cpu1 601 / cpu2 85293 / cpu3 85290，零断言失败 |
+| `kernel.dev.obi` 四核 | 三颗 AP 上线，userboot 在 cpu1 进 ring 3 |
+| `kernel.dev.dbg_1.obi` 单核 | 260694 行，零断言失败 |
+
+AP 唤醒本身（INIT / Startup IPI）走的就是这个 `send_ipi()`，三颗 AP 照常上线，
+说明 INIT-SIPI 序列没有被影响。
+
+**故意没做**
+- **没有改 `x86_bring_aps()` 的时序**。Linux 在 AP 唤醒路径上是发完再等
+  （`safe_apic_wait_icr_idle()`），因为 INIT→10 ms→SIPI 的间隔是从**送达**开始算的。
+  这里不需要：`x86_bring_aps()` 自己用 `sleep_for(Milliseconds(10))` 和
+  `sleep_for(Milliseconds(1))` 显式定时，比 ICR 的忙时间长几个数量级。
+- **没有加带上界的等待**。Linux 有 `safe_apic_wait_icr_idle()`（1000 次上限），
+  给 NMI 和 CPU 上线路径用，免得一个卡死的 ICR 把发送方一起拖死。
+  这里还没有这个变体，记在 `docs/repairs/260909/x86-apic.md`。
+- **没有做多播的批处理**。`apic_send_ipi_mulitcast()` 仍然是逐个目标调
+  `apic_send_ipi_unicast()`，每次重建一份 `IpiRequest`、各自关一次中断，
+  而其实只有 `IcrHigh` 随目标变。那是 `ipi.cpp` 的事，单独一条留在待修里。

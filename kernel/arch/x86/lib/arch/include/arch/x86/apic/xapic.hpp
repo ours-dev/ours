@@ -4,6 +4,7 @@
 #define ARCH_X86_APIC_XAPIC_HPP 1
 
 #include <arch/auto_interrupt_disabler.hpp>
+#include <arch/spin_hint.hpp>
 #include <arch/types.hpp>
 #include <arch/x86/apic/common.hpp>
 #include <arch/x86/msr.hpp>
@@ -103,11 +104,36 @@ class XApic final {
         write_reg(XApicRegType::Eoi, 0);
     }
 
+    /// Issues one IPI.
+    ///
+    /// The ICR is two registers and the order matters: IcrHigh (0x310) only
+    /// parks the destination APIC ID, while the write to IcrLow (0x300) is
+    /// what actually sends. Both writes have to happen with interrupts off,
+    /// or a handler that sends an IPI of its own could land between them and
+    /// leave this one addressed to the wrong CPU.
+    ///
+    /// The idle wait is *before* the writes, not after. What the hardware
+    /// requires is that the ICR be idle when it is next written; it does not
+    /// require the sender to watch its own IPI land. Waiting afterwards --
+    /// which is what this used to do -- bought nothing and put the delivery
+    /// latency of a message meant for another CPU on this one's critical
+    /// path, on a wakeup path that every cross-CPU unpark now walks. Moved to
+    /// the front, the check is free in the common case (a single IPI with any
+    /// gap after it finds the ICR already idle) and only actually waits when
+    /// two sends really are back to back, which is the one case the rule is
+    /// about.
+    ///
+    /// It has to be inside the interrupt disabler, not before it: waiting
+    /// outside would let an interrupt issue its own IPI in the gap and make
+    /// the ICR busy again just as this one starts writing.
+    ///
+    /// Linux does the same, in __default_send_IPI_dest_field(): "Wait for
+    /// idle", then write ICR2, then ICR.
     auto send_ipi(IpiRequest const &request) noexcept -> void {
         AutoInterruptDisabler guard;
+        wait_icr_idle();
         write_reg(XApicRegType::IcrHigh, request.icr_high());
         write_reg(XApicRegType::IcrLow, request.icr_low());
-        wait_for_ipi();
     }
 
     auto send_ipi(u32, IpiRequest const &request) noexcept -> void {
@@ -166,9 +192,25 @@ class XApic final {
                                                 static_cast<u32>(type));
     }
 
-    auto wait_for_ipi() const noexcept -> void {
-        while ((read_reg(XApicRegType::IcrLow) & (u32{1} << 12)) != 0 &&
-               read_reg(XApicRegType::Esr) == 0) {
+    /// Spins until the ICR is idle, i.e. until any previously issued IPI has
+    /// been accepted by its destination.
+    ///
+    /// Only the delivery-status bit is read. The loop used to read the error
+    /// status register each time round as well, as an escape hatch, and that
+    /// was worth nothing twice over: ESR only latches a new value after a
+    /// write to it, so reading it bare returns whatever was left from some
+    /// earlier error and never reports this one -- while doubling the
+    /// uncached MMIO traffic of every iteration. A stale non-zero ESR would
+    /// have broken the loop early and let the next write clobber an ICR that
+    /// was still busy, which is the exact failure the wait exists to prevent.
+    ///
+    /// Unbounded, like Linux's __xapic_wait_icr_idle(). Linux keeps a bounded
+    /// safe_apic_wait_icr_idle() for the NMI and CPU-bring-up paths, where a
+    /// wedged ICR must not take the sender down with it; there is no such
+    /// variant here yet.
+    auto wait_icr_idle() const noexcept -> void {
+        while ((read_reg(XApicRegType::IcrLow) & ICR_DELIVERY_STATUS_PENDING) != 0) {
+            spin_hint();
         }
     }
 
@@ -178,6 +220,10 @@ class XApic final {
 
     /// SVR bit 8: the local APIC's software enable. Clear after reset.
     static constexpr auto SOFTWARE_ENABLE = u32{1} << 8;
+
+    /// ICR bit 12, Delivery Status (read only): set while an IPI this local
+    /// APIC issued has not yet been accepted by its destination.
+    static constexpr auto ICR_DELIVERY_STATUS_PENDING = u32{1} << 12;
 
     volatile u32 *mmio_base_{};
 };

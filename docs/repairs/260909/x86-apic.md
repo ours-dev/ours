@@ -24,22 +24,27 @@ AP 上两条都设成 masked；不这么做的话，一颗 AP 可能会接到本
 任何 per-CPU 字段，否则四颗 CPU 会共享它。x2APIC 打开之后（`X2APIC_ENABLED`）
 访问方式变成 MSR，这个类还没有对应的分支。
 
-## 3. resched IPI 的多播是 N 次完整往返，而且每次都带一段用不上的尾部自旋
+## 3. resched IPI 的多播仍是 N 次完整往返
 
-**严重程度**：中，性能——而且是这次多核打通之后才真正跑起来的路径
-（以前 `IpiService::send_resched()` 把所有目标都过滤掉了）。
+**严重程度**：低，性能。
 
 `apic_send_ipi_mulitcast()`（`kernel/arch/x86/apic/ipi.cpp`）对每个目标调一次
-`apic_send_ipi_unicast()`，于是每个目标都要：重新构造一个 `IpiRequest`
-（其实只有 IcrHigh 随目标变）、自己一次 `AutoInterruptDisabler`（pushf/cli/popf）、
-两次 MMIO 写，然后 `wait_for_ipi()` 自旋——而那个循环每轮读**两个**非缓存 MMIO
-寄存器（`IcrLow` 和 `Esr`）。
+`apic_send_ipi_unicast()`，于是每个目标都要重新构造一份 `IpiRequest`
+（其实只有 `IcrHigh` 随目标变）、各自进出一次 `AutoInterruptDisabler`
+（pushf/cli/popf），再各自等一次 ICR 空闲。
 
-三处可改：
-1. 把 disabler 和 request 的构造提到多播函数里，每个目标只重写 IcrHigh；
-2. 把等待挪到**写之前**而不是之后。xAPIC 要求的是"下一次写 ICR 之前它是空闲的"，
-   写完再等纯粹是给唤醒方加延迟——而 `reschedule_mask(CpuMask::of(target))`
-   这种单目标唤醒正是常见情形。Linux 的 `__xapic_wait_icr_idle` 就是这个顺序。
-3. 自旋循环里那次 `Esr` 读可以去掉，它让每轮的 MMIO 流量翻倍。
+**怎么修**：把中断关闭和 request 的构造提到多播函数里，循环内只重写 `IcrHigh`
+和 `IcrLow`。对照 Linux `default_send_IPI_mask_sequence_phys()`——
+`local_irq_save()` 一次，然后在循环里逐个 `__default_send_IPI_dest_field()`。
 
-**没有顺手改的原因**：第 2 条改的是 IPI 发送的时序协议，值得单独一轮，配合真机验证。
+（等待时机和 ESR 那两条已于 2026-09-10 修掉，见
+`docs/changes/260909/x86-apic.md`。）
+
+## 4. 没有带上界的 ICR 等待
+
+**严重程度**：低。
+
+`XApic::wait_icr_idle()` 是无上界自旋，对应 Linux 的 `__xapic_wait_icr_idle()`。
+Linux 另有 `safe_apic_wait_icr_idle()`（1000 次上限，返回剩余次数），
+用在 NMI 投递和 CPU 上线路径上——那两处如果 ICR 卡死，不该把发送方一起拖死。
+本仓库还没有这个变体，`x86_bring_aps()` 的 INIT/SIPI 用的是无上界那份。
