@@ -14,10 +14,10 @@ source_set("syscall") {
   # task.cpp / vmo.cpp are still Unimplemented stubs, waiting on the handle
   # table their signatures are written against.
   sources = [
-    "debug.cpp",
-    "table.cpp",
-    "task.cpp",
-    "vmo.cpp",
+    "src/debug.cpp",
+    "src/table.cpp",
+    "src/task.cpp",
+    "src/vmo.cpp",
   ]
   public_deps = [
     ":headers",

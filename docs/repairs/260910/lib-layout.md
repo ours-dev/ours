@@ -13,11 +13,8 @@
 `kernel/lib/code_patching/test/run_tests.sh`。本仓库规定工具脚本用 Python 而不是 shell
 （`scripts/` 下已全部是 `.py`）。应当改写成 Python，或并入 GN 的单测目标。
 
-## 3. 存量库仍未对齐结构
+## 3. `kernel/arch/*/lib/arch` 没有自己的 `BUILD.gn`
 
-`tests/` → `test/` 已完成。剩下的：
-
-- **`src/` 缺失**：只有 `kernel/lib/gktl` 和 `kernel/lib/kconcurrent` 有。
-  `kernel/lib/prof` 的源文件在 `prof/`，`kernel/lib/unwind` 的在 `unwind/`，
-  `kernel/lib/ccrt` 的在 `compiler/`。其余多数是纯头文件库，本来就不需要 `src/`。
-- **`.gitignore` 缺失**：28 个库无一有。
+`kernel/arch/{arm,riscv,x86}/lib/arch` 是纯头文件的架构接缝，目前由
+`kernel/lib/arch` 统一声明目标。要不要让每个架构各自成为一个可被依赖的目标，
+是个设计问题——现在的写法让「依赖 x86 的 arch 接缝」无法单独表达。

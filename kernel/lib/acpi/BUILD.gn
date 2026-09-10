@@ -2,9 +2,9 @@ import("//build/cpp/cpp_interface.gni")
 
 source_set("acpi") {
   sources = [
-    "debug.cpp",
-    "numa.cpp",
-    "table_set.cpp",
+    "src/debug.cpp",
+    "src/numa.cpp",
+    "src/table_set.cpp",
   ]
   public_deps = [ ":header" ]
   visibility = [ "*" ]
@@ -39,7 +39,7 @@ executable("table-set-test") {
   testonly = true
   sources = [
     "test/table_set_test.cpp",
-    "table_set.cpp",
+    "src/table_set.cpp",
   ]
   deps = [ ":header" ]
 }
@@ -53,8 +53,8 @@ executable("structures-test") {
 executable("numa-test") {
   testonly = true
   sources = [
-    "numa.cpp",
-    "table_set.cpp",
+    "src/numa.cpp",
+    "src/table_set.cpp",
     "test/numa_test.cpp",
   ]
   deps = [ ":header" ]
@@ -63,8 +63,8 @@ executable("numa-test") {
 executable("debug-test") {
   testonly = true
   sources = [
-    "debug.cpp",
-    "table_set.cpp",
+    "src/debug.cpp",
+    "src/table_set.cpp",
     "test/debug_test.cpp",
   ]
   deps = [ ":header" ]

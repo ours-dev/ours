@@ -1,0 +1,5 @@
+# The build is out-of-tree (out/<product>.<arch>), so there is normally
+# nothing here to ignore. These are the two things that do appear in a
+# library directory when a tool is pointed at it directly.
+compile_commands.json
+.cache/

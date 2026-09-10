@@ -60,3 +60,54 @@ QEMU dbg 启动无回归：无断言、13.5 万行线程输出。
   单独记进待修。
 - `kernel/lib/code_patching/test/run_tests.sh` 留着没动，同样记进待修——本仓库的脚本
   规定用 Python 而不是 shell。
+
+---
+
+## 2. 源文件进 `src/`、`.gitignore` 补齐（2026-09-10）
+
+**文件**
+- 三个库把自带名字的源目录改成 `src/`：`prof/prof/` → `prof/src/`、
+  `unwind/unwind/` → `unwind/src/`、`ccrt/compiler/` → `ccrt/src/`。
+- 八个库把散在根目录的源文件收进 `src/`：`acpi`(3)、`heap`(3)、`ktl`(1)、`lz4`(1)、
+  `syscall`(4)、`userabi`(2)、`hsien`(2)、`logz4`(3)。
+- 三个 phys 库把 `*_smoke.cpp` 归进 `test/`：`bootmem`、`bootshim`、`multiboot`。
+- 28 个库补上 `.gitignore`。
+
+**原因**
+
+同第 1 条：模板定了结构，存量要跟上，否则等于没定。
+
+**改法**
+
+`git mv` + 更新 `BUILD.gn` 的 `sources`。一个坑：**同一个源文件名会在多个目标里出现**。
+`kernel/lib/acpi` 的三个源文件被 `source_set` 和三个单测可执行文件各列一遍，
+`"table_set.cpp"` 在文件里出现 4 次：
+
+```gn
+executable("numa-test") {
+  sources = [
+    "numa.cpp",        # ← 单测直接编库的源文件，不是只依赖 :header
+    "table_set.cpp",
+    "test/numa_test.cpp",
+  ]
+}
+```
+
+所以替换必须是全量的，按「第一处」改会留下半数指向旧路径。
+
+**故意没做**
+
+- **没有给纯头文件库造空的 `src/`**。`bootfs`、`clock`、`mtl`、`derive`、`ustl`、
+  `eftl`、`arch` 等本来就没有 `.cpp`，造个空目录既没内容、git 也存不住空目录
+  （非要存就得塞占位文件）。同理没给无单测的库造空 `test/`。
+  **结论：结构标准是「有什么就放在对的地方」，不是「每个目录都必须存在」。**
+- **独立产物不算库源码，留在原处**：`obi/cli/`（obit 命令行工具）、`prof/cli/` 与
+  `prof/examples/`、`userabi/userboot/` 与 `userabi/vdso/`（跑在用户态的程序）、
+  `hsien/tools/tests/fixtures/`（工具自己的测试夹具）。它们各有各的构建目标，
+  塞进库的 `src/` 会把「库」和「用这个库构建出的程序」混为一谈。
+- `kernel/arch/{arm,riscv,x86}/lib/arch` 没有 `BUILD.gn`——它们是纯头文件的架构接缝，
+  由 `kernel/lib/arch` 统一声明。是否要各自独立成目标是另一个问题，记进待修。
+
+**验证**
+
+构建通过；QEMU dbg 启动无回归：无断言、15.7 万行线程输出。

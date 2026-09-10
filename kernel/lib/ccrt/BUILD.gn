@@ -7,8 +7,8 @@ cpp_interface("headers") {
 
 source_set("ccrt") {
   sources = [
-    "compiler/itanium.cpp",
-    "runtime.cpp",
+    "src/itanium.cpp",
+    "src/runtime.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]

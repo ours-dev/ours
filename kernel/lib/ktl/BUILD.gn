@@ -19,7 +19,7 @@ cpp_interface("headers") {
 }
 
 source_set("ktl") {
-  sources = [ "memory_resource.cpp" ]
+  sources = [ "src/memory_resource.cpp" ]
   deps = [
     "//kernel/lib/heap:headers",
     "//kernel/mm:headers",

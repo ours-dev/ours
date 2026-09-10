@@ -7,7 +7,7 @@ cpp_interface("headers") {
 }
 
 source_set("lz4") {
-  sources = [ "lz4.cpp" ]
+  sources = [ "src/lz4.cpp" ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]
 }

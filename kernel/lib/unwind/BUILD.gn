@@ -13,10 +13,10 @@ cpp_interface("headers") {
 
 source_set("unwind") {
   sources = [
-    "unwind/cfi.cpp",
-    "unwind/cursor.cpp",
-    "unwind/fde_index.cpp",
-    "unwind/unwinder.cpp",
+    "src/cfi.cpp",
+    "src/cursor.cpp",
+    "src/fde_index.cpp",
+    "src/unwinder.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]

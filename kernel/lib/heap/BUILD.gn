@@ -36,9 +36,9 @@ cpp_interface("headers") {
 
 source_set("heap") {
   sources = [
-    "kmalloc.cpp",
-    "new.cpp",
-    "vmalloc.cpp",
+    "src/kmalloc.cpp",
+    "src/new.cpp",
+    "src/vmalloc.cpp",
   ]
   public_deps = [ ":headers" ]
   deps = [ "//kernel/mm:headers" ]  # the real thing, for the implementation

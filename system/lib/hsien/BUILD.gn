@@ -17,9 +17,9 @@ cpp_interface("headers") {
 
 source_set("hsien") {
   testonly = true
-  sources = [ "runner.cpp" ]
+  sources = [ "src/runner.cpp" ]
   if (toolchain_environment == "kernel") {
-    sources += [ "section.cpp" ]
+    sources += [ "src/section.cpp" ]
   }
   public_deps = [ ":headers" ]
   visibility = [ "*" ]

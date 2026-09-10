@@ -17,9 +17,9 @@ cpp_interface("headers") {
 
 source_set("logz4") {
   sources = [
-    "init.cpp",
-    "log.cpp",
-    "ring.cpp",
+    "src/init.cpp",
+    "src/log.cpp",
+    "src/ring.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]

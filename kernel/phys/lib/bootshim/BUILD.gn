@@ -42,7 +42,7 @@ group("tests") {
 
 executable("legacy-memory-smoke") {
   testonly = true
-  sources = [ "legacy_memory_smoke.cpp" ]
+  sources = [ "test/legacy_memory_smoke.cpp" ]
   deps = [
     ":headers",
     "//kernel/lib/obi",

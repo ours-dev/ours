@@ -19,8 +19,8 @@ cpp_interface("headers") {
 
 source_set("prof") {
   sources = [
-    "prof/dump.cpp",
-    "prof/sampler.cpp",
+    "src/dump.cpp",
+    "src/sampler.cpp",
   ]
   # sampler.cpp calls into the unwinder, not just its headers, so consumers
   # linking this source_set need //kernel/lib/unwind's objects on their link
