@@ -30,5 +30,9 @@ group("common_package_items") {
   deps = [
     "//kernel/lib/userabi/userboot(//build/toolchain/ours:user-${target_cpu})",
     "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
+
+    # The example shell, which the loader starts instead of userboot. Same
+    # explicit user toolchain, same reason.
+    "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
   ]
 }

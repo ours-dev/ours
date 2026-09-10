@@ -37,6 +37,14 @@
 /// thing for the same reason.
 #define OURS_SYS_DEBUG_WRITE 0
 
+/// ours_command_list(char *buffer, usize length) -> Status
+///
+/// Writes the kshell command registry into |buffer| as text, one command per
+/// line, NUL terminated. It reads the registry and copies bytes out; it does
+/// not run anything, which is why it can exist before this kernel has a
+/// copy_to_user worth the name.
+#define OURS_SYS_COMMAND_LIST 1
+
 #ifdef __cplusplus
 
 #include <ours/types.hpp>
@@ -48,6 +56,7 @@ inline constexpr auto SYSCALL_COUNT = usize{OURS_SYSCALL_COUNT};
 /// The C++ spelling of the numbers above.
 enum class SyscallNumber : usize {
     DebugWrite = OURS_SYS_DEBUG_WRITE,
+    CommandList = OURS_SYS_COMMAND_LIST,
 };
 } // namespace ours
 

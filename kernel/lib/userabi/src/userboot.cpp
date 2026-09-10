@@ -44,6 +44,15 @@ namespace {
     /// kernel's own name; it has to be stated.
     constexpr std::string_view USERBOOT_FILE{"userboot"};
 
+    /// The program this loader would rather start: //examples/shell.
+    ///
+    /// userboot exists to prove the kernel can reach ring 3 and answer one
+    /// call; once something more useful is in the package there is no reason to
+    /// start the proof instead of the program. It stays a fallback rather than
+    /// a replacement so that the kernel does not depend on //examples existing
+    /// -- a tree built without it still boots to userboot.
+    constexpr std::string_view PROGRAM_FILE{"shell"};
+
     /// The vDSO's name in the same BootFS, installed by
     /// //kernel/lib/userabi/vdso with the same has_patches = false convention.
     constexpr std::string_view VDSO_FILE{"vdso"};
@@ -317,9 +326,14 @@ namespace {
         return Status::Ok;
     }
 
-    /// Maps userboot's image and gives it a stack.
-    auto load_userboot(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
-                       LoadedImage &out) -> Status {
+    /// Maps the first user program's image and gives it a stack.
+    /// |name| is a plain char const * rather than a string_view because both
+    /// the mapping and the process below want a C string, and both constants it
+    /// is ever called with are literals -- so there is exactly one place
+    /// (userboot_init) where .data() is taken, and it is provably terminated
+    /// there rather than at each use.
+    auto load_program(ustl::views::Span<u8 const> bytes, char const *name,
+                      object::VmaDispatcher &root_vma, LoadedImage &out) -> Status {
         using arch::paging::MmuFlags;
 
         // MmuFlags::User is the whole point of this line: without it the pages
@@ -338,7 +352,7 @@ namespace {
 
         MappedImage image;
         auto status = map_elf_image(bytes, root_vma, mm::VmPlacement::at(USER_ASPACE_BASE),
-                                    IMAGE_FLAGS, "userboot", image);
+                                    IMAGE_FLAGS, name, image);
         if (Status::Ok != status) {
             return status;
         }
@@ -443,14 +457,23 @@ auto userboot_init() -> void {
                   bootfs.file_data(index).size());
     }
 
-    auto const image = package.unwrap().file(USERBOOT_FILE);
+    auto program = PROGRAM_FILE;
+    auto image = package.unwrap().file(program);
     if (image.is_err()) {
-        log::error("userboot: '{}' is not in the kernel package: {}", USERBOOT_FILE,
+        // Not an error yet: a tree built without //examples has no shell, and
+        // the proof-of-life program is still there to start.
+        log::info("userboot: no '{}' in the kernel package, falling back to '{}'", program,
+                  USERBOOT_FILE);
+        program = USERBOOT_FILE;
+        image = package.unwrap().file(program);
+    }
+    if (image.is_err()) {
+        log::error("userboot: '{}' is not in the kernel package: {}", program,
                    to_string(image.unwrap_err()));
         return;
     }
 
-    log::info("userboot: found '{}', {} bytes of ELF", USERBOOT_FILE, image.unwrap().size());
+    log::info("userboot: found '{}', {} bytes of ELF", program, image.unwrap().size());
 
     // One call builds both the process and the only object that may map into
     // it. They come back together because neither is useful alone: a process
@@ -467,15 +490,17 @@ auto userboot_init() -> void {
     Rights process_rights;
     Rights root_vma_rights;
     auto status =
-        object::ProcessDispatcher::create(object::JobDispatcher::root_job(), "userboot", process,
-                                          process_rights, root_vma, root_vma_rights);
+        object::ProcessDispatcher::create(object::JobDispatcher::root_job(), program.data(),
+                                          process, process_rights, root_vma, root_vma_rights);
     if (Status::Ok != status) {
         log::error("userboot: could not create the process: {}", to_string(status));
         return;
     }
 
     LoadedImage loaded;
-    if (Status::Ok != load_userboot(image.unwrap(), *root_vma.dispatcher(), loaded)) {
+    // .data() is a C string here: both PROGRAM_FILE and USERBOOT_FILE are
+    // constexpr views over string literals, so the terminator is the literal's.
+    if (Status::Ok != load_program(image.unwrap(), program.data(), *root_vma.dispatcher(), loaded)) {
         return;
     }
 

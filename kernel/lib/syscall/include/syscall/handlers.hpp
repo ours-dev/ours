@@ -25,6 +25,13 @@ namespace ours {
 /// Write |length| bytes of |buffer| to the kernel's debug console.
 auto sys_debug_write(char const *buffer, usize length) -> Status;
 
+/// Writes the kshell command registry into |buffer| as text, one command per
+/// line ("name  help"), always NUL terminated.
+///
+/// Status::NoSpace when the registry did not fit; what did fit is still
+/// terminated, so a caller can show it and ask for more room.
+auto sys_command_list(char *buffer, usize length) -> Status;
+
 } // namespace ours
 
 #endif // SYSCALL_HANDLERS_HPP

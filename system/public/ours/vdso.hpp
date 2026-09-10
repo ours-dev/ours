@@ -25,7 +25,7 @@
 /// Bumped whenever the table's shape changes -- a field added, reordered, or
 /// given a new meaning. The kernel checks it, so an old vDSO packaged beside a
 /// new kernel fails at load rather than at the first call.
-#define OURS_VDSO_VERSION 1
+#define OURS_VDSO_VERSION 2
 
 /// Byte offsets into the entry table. The assembler needs them as constants and
 /// the C++ side gets the same layout from the struct below; the static_asserts
@@ -34,10 +34,15 @@
 #define OURS_VDSO_TABLE_OFF_VERSION 4
 #define OURS_VDSO_TABLE_OFF_NR_ENTRIES 6
 #define OURS_VDSO_TABLE_OFF_DEBUG_WRITE 8
-#define OURS_VDSO_TABLE_SIZE 12
+#define OURS_VDSO_TABLE_OFF_COMMAND_LIST 12
+#define OURS_VDSO_TABLE_SIZE 16
 
-/// How many entries version 1 publishes.
-#define OURS_VDSO_NR_ENTRIES 1
+/// How many entries version 2 publishes.
+///
+/// A program checks `nr_entries` rather than the version alone: the version
+/// says "the shape changed", this says "how much of it is here", and a program
+/// that only needs the first entry keeps working against a longer table.
+#define OURS_VDSO_NR_ENTRIES 2
 
 #ifdef __cplusplus
 
@@ -66,12 +71,16 @@ struct VdsoEntryTable {
 
     /// ours_debug_write(char const *buffer, usize length) -> Status
     u32 debug_write;
+
+    /// ours_command_list(char *buffer, usize length) -> Status
+    u32 command_list;
 };
 
 static_assert(offsetof(VdsoEntryTable, magic) == OURS_VDSO_TABLE_OFF_MAGIC);
 static_assert(offsetof(VdsoEntryTable, version) == OURS_VDSO_TABLE_OFF_VERSION);
 static_assert(offsetof(VdsoEntryTable, nr_entries) == OURS_VDSO_TABLE_OFF_NR_ENTRIES);
 static_assert(offsetof(VdsoEntryTable, debug_write) == OURS_VDSO_TABLE_OFF_DEBUG_WRITE);
+static_assert(offsetof(VdsoEntryTable, command_list) == OURS_VDSO_TABLE_OFF_COMMAND_LIST);
 static_assert(sizeof(VdsoEntryTable) == OURS_VDSO_TABLE_SIZE);
 
 } // namespace ours

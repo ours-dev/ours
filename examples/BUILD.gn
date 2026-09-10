@@ -1,0 +1,19 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Programs that run in ring 3 under vmours.
+#
+# Not //kernel/lib/userabi: what lives there is the kernel's own bring-up
+# payload -- userboot and the vDSO, which the kernel cannot boot without. What
+# lives here is ordinary user code, which the kernel neither needs nor knows
+# about beyond loading it. Keeping the two apart is what stops an example
+# quietly acquiring a dependency on kernel internals.
+#
+# Every target here must be built in a user toolchain; each one asserts so
+# rather than leaving a -mcmodel=kernel "user program" to be discovered as a
+# #GP at its first instruction.
+group("examples") {
+  visibility = [ "//*" ]
+  deps = [ "shell" ]
+}

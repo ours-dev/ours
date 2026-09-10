@@ -37,6 +37,7 @@ OURS_VDSO_TABLE:
     .short OURS_VDSO_VERSION
     .short OURS_VDSO_NR_ENTRIES
     .long ours_vdso_debug_write - OURS_VDSO_TABLE
+    .long ours_vdso_command_list - OURS_VDSO_TABLE
 .size OURS_VDSO_TABLE, . - OURS_VDSO_TABLE
 
 // ---- The stubs -------------------------------------------------------------
@@ -69,5 +70,23 @@ ours_vdso_debug_write:
 OURS_VDSO_SYSRET_DEBUG_WRITE:
     ret
 .size ours_vdso_debug_write, . - ours_vdso_debug_write
+
+// ours_command_list(char *buffer, usize length) -> Status
+//
+// Same shape as the stub above, and deliberately so: a stub that did anything
+// besides move the number into %eax and trap would be a place for the ABI to
+// drift between the two.
+.balign 16
+.globl ours_vdso_command_list
+.hidden ours_vdso_command_list
+.type ours_vdso_command_list, @function
+ours_vdso_command_list:
+    mov $OURS_SYS_COMMAND_LIST, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_COMMAND_LIST
+.hidden OURS_VDSO_SYSRET_COMMAND_LIST
+OURS_VDSO_SYSRET_COMMAND_LIST:
+    ret
+.size ours_vdso_command_list, . - ours_vdso_command_list
 
 .section .note.GNU-stack, "", @progbits

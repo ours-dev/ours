@@ -93,6 +93,11 @@ namespace {
     /// instruction overwrote both before the kernel got control, which is why
     /// their slots in the frame are pushed as zero and why a fourth argument
     /// would have to come from %r10.
+    auto sys_command_list_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_command_list(reinterpret_cast<char *>(frame->di), frame->si);
+        frame->ax = usize(status);
+    }
+
     auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
         auto const status = sys_debug_write(reinterpret_cast<char const *>(frame->di), frame->si);
         frame->ax = static_cast<usize>(status);
@@ -135,6 +140,7 @@ namespace {
         table[SYSCALL_COUNT] = &sys_bad_syscall_number;
 
         table[OURS_SYS_DEBUG_WRITE] = &sys_debug_write_shim;
+        table[OURS_SYS_COMMAND_LIST] = &sys_command_list_shim;
 
         return table;
     }

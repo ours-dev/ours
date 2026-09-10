@@ -1,0 +1,31 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//kernel/phys/kernel_elf_binary.gni")
+
+# The kernel toolchain would compile this happily and produce something that
+# cannot run in ring 3 (-mcmodel=kernel puts every symbol reference in the top
+# 2 GiB of the address space). Say so at gen time rather than leaving it to be
+# discovered as a #GP.
+assert(toolchain_environment == "user",
+       "examples/shell must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The same packaging template userboot and the vDSO use, so the shell lands in
+# the kernel package's BootFS beside them and the loader can find it there by
+# name through ours::boot::kernel_package().
+kernel_elf_binary("shell") {
+  visibility = [
+    "//examples/*",
+    "//kernel/products/image/*",
+  ]
+
+  # A user program has no kernel text to patch; asking for the section would
+  # only add an empty `shell/code-patches` file to the package. With patches
+  # off, kernel_elf_image() installs the ELF as a bare `shell` file rather than
+  # a `shell/` subtree, which is what the loader looks up.
+  has_patches = false
+
+  sources = [ "shell.cpp" ]
+}

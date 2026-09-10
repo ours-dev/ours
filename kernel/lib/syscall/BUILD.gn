@@ -14,6 +14,7 @@ source_set("syscall") {
   # task.cpp / vmo.cpp are still Unimplemented stubs, waiting on the handle
   # table their signatures are written against.
   sources = [
+    "src/command.cpp",
     "src/debug.cpp",
     "src/table.cpp",
     "src/task.cpp",
@@ -24,6 +25,11 @@ source_set("syscall") {
     "//kernel/object:headers",
   ]
   deps = [
+    # command.cpp walks the GKTL_COMMAND registry the linker collects; it reads
+    # the records and copies text out, and deliberately does not call
+    # gktl::run_command() -- running kernel code on argv that came from ring 3
+    # is a much larger question than listing names.
+    "//kernel/lib/gktl",
     "//kernel/lib/logz4",
     "//kernel/mm",
   ]
