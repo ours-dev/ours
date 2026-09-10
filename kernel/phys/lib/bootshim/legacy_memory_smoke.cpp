@@ -6,6 +6,8 @@
 /// tests synthesise one the same way //kernel/phys/lib/multiboot's own
 /// smoke test does.
 
+#include <bootshim/legacy_memory.hpp>
+
 #include <array>
 #include <vector>
 
@@ -13,7 +15,6 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <bootshim/legacy_memory.hpp>
 #include <multiboot/view.hpp>
 
 namespace {

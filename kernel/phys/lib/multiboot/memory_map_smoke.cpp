@@ -1,9 +1,9 @@
+#include <multiboot/memory_map.hpp>
+
 #include <array>
 
 #include <cstdlib>
 #include <cstring>
-
-#include <multiboot/memory_map.hpp>
 
 namespace {
 using bootmem::MemoryQuery;

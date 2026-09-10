@@ -4,10 +4,11 @@
 #ifndef ARCH_X86_SYSTEM_HPP
 #define ARCH_X86_SYSTEM_HPP 1
 
-#include <tuple>
-
 #include <arch/sysreg.hpp>
 #include <arch/types.hpp>
+
+#include <tuple>
+
 #include <ustl/bitfields.hpp>
 
 namespace arch {

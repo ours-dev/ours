@@ -6,11 +6,11 @@
 // Only ever reached via <arch/syscall.hpp>'s own #include — don't include
 // this file directly.
 
-#include <cstddef>
-
 #include <arch/interrupt.hpp>
 #include <arch/types.hpp>
 #include <arch/x86/macro/syscallframe.hpp>
+
+#include <cstddef>
 
 namespace arch {
 /// The user register state kernel/arch/x86/kernel/syscall.S saves before it

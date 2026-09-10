@@ -3,11 +3,10 @@
 #ifndef BOOTMEM_TYPES_HPP
 #define BOOTMEM_TYPES_HPP 1
 
-#include <ours/status.hpp>
-#include <ours/types.hpp>
-
 #include <limits>
 
+#include <ours/status.hpp>
+#include <ours/types.hpp>
 #include <ustl/result.hpp>
 #include <ustl/views/span.hpp>
 

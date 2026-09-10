@@ -3,9 +3,9 @@
 #ifndef BOOTMEM_PHYSICAL_MEMORY_HPP
 #define BOOTMEM_PHYSICAL_MEMORY_HPP 1
 
-#include <limits>
-
 #include <bootmem/types.hpp>
+
+#include <limits>
 
 namespace bootmem {
 class PhysicalMemory final {

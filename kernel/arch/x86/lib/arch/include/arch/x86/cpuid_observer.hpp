@@ -2,9 +2,9 @@
 /// Copyright (c) 2026 ours Developers
 #pragma once
 
-#include <ours/types.hpp>
-
 #include <type_traits>
+
+#include <ours/types.hpp>
 
 namespace arch {
 /// Runs the CPUID leaf an observer names and hands it the four registers.

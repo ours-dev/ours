@@ -6,10 +6,10 @@
 // Only ever reached via <arch/interrupt.hpp>'s own #include — don't include
 // this file directly.
 
-#include <cstddef>
-
 #include <arch/types.hpp>
 #include <arch/x86/macro/irqframe.hpp>
+
+#include <cstddef>
 
 namespace arch {
 enum class IrqVec : usize {

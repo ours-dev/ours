@@ -1,9 +1,9 @@
+#include <multiboot/view.hpp>
+
 #include <array>
 
 #include <cstdlib>
 #include <cstring>
-
-#include <multiboot/view.hpp>
 
 namespace {
 using multiboot::MultibootMemoryMap;

@@ -3,10 +3,11 @@
 #ifndef ARCH_X86_MSR_HPP
 #define ARCH_X86_MSR_HPP 1
 
-#include <tuple>
-
 #include <arch/io/register_addr.hpp>
 #include <arch/types.hpp>
+
+#include <tuple>
+
 #include <ustl/bitfields.hpp>
 
 namespace arch {

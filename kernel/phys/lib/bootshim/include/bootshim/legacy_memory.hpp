@@ -3,8 +3,6 @@
 #ifndef BOOTSHIM_LEGACY_MEMORY_HPP
 #define BOOTSHIM_LEGACY_MEMORY_HPP 1
 
-#include <ours/types.hpp>
-
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -12,6 +10,7 @@
 
 #include <multiboot/view.hpp>
 #include <obi/package_format.hpp>
+#include <ours/types.hpp>
 #include <ustl/mem/align.hpp>
 #include <ustl/option.hpp>
 

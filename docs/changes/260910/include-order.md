@@ -124,3 +124,27 @@ IncludeCategories:
 **验证**
 
 构建通过；QEMU 两个镜像实测：dbg 无断言、16.7 万行线程输出；dev 无异常且存活。
+
+---
+
+## 3. 补上 `kernel/lib` 之外的库（2026-09-10）
+
+**文件**
+- 6 个库根各新增一份 `.clang-format`：`kernel/arch/{arm,riscv,x86}/lib/arch`（前缀 `arch`）、
+  `kernel/phys/lib/{bootmem,bootshim,multiboot}`。
+- 这些库里的 18 个源文件重排。
+
+**原因**
+
+第 2 条只扫了 `kernel/lib/` 和 `system/lib/`，但「库」不只住在这两处：架构相关的 `arch` 库
+在 `kernel/arch/<cpu>/lib/`，phys 的三个库在 `kernel/phys/lib/`。判据不是路径，是
+**它有没有自己的 include 前缀**。
+
+按这个判据把全仓库过了一遍，结论是只剩这 6 个。其余带 `include/` 的目录
+（`kernel/`、`kernel/mm`、`kernel/object`、`kernel/phys`、`kernel/platform`、`kernel/driver`、
+`kernel/arch/x86/{kernel,mm,phys}`）前缀都是 `ours`，本来就归根配置的第 1 组管，不需要
+也不应该单独配。
+
+**验证**
+
+构建通过；QEMU 两个镜像：dbg 无断言、17.3 万行线程输出；dev 无异常且存活。

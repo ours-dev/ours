@@ -8,9 +8,9 @@
 // PACKED below comes from here. The header used to rely on some earlier
 // include pulling it in, so it only compiled when it happened to be included
 // after one -- which include sorting no longer guarantees.
-#include <ours/compiler.hpp>
-
 #include <cstddef>
+
+#include <ours/compiler.hpp>
 
 namespace arch {
 enum class SegType : u8 {

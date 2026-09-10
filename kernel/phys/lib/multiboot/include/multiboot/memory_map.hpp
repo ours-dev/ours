@@ -3,10 +3,11 @@
 #ifndef MULTIBOOT_MEMORY_MAP_HPP
 #define MULTIBOOT_MEMORY_MAP_HPP 1
 
+#include <multiboot/view.hpp>
+
 #include <limits>
 
 #include <bootmem/physical_memory.hpp>
-#include <multiboot/view.hpp>
 
 namespace multiboot {
 using ours::PhysAddr;

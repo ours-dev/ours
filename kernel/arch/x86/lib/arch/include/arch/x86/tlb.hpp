@@ -3,10 +3,10 @@
 #ifndef ARCH_X86_TLB_HPP
 #define ARCH_X86_TLB_HPP 1
 
-#include <ours/compiler.hpp>
-
 #include <arch/types.hpp>
 #include <arch/x86/system.hpp>
+
+#include <ours/compiler.hpp>
 
 // Only ever reached via <arch/tlb.hpp>'s own #include — don't include this
 // file directly.

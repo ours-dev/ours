@@ -5,6 +5,7 @@
 
 #include <arch/paging/mmu_flags.hpp>
 #include <arch/x86/macro/mmu.hpp>
+
 #include <ustl/util/enum_bits.hpp>
 
 namespace arch::paging {
