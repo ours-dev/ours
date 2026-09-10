@@ -302,3 +302,53 @@ if (ctx.discipline() == Discipline::Normal &&
 
 **验证**
 四核引导：cpu0 8589 / cpu1 601 / cpu2 90043 / cpu3 90062，无断言失败。
+
+## `pick_least_loaded()` 不再每轮重读在位者的负载（2026-09-10）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `select_target_cpu()` 里的 lambda
+
+**症状**
+不是 bug，是一半白跑的远程读。
+
+**原因**
+```cpp
+candidates.for_each([&best_cpu](CpuNum cpunum) {
+    if (best_cpu == INVALID_CPU_NUM ||
+        Scheduler::Current::get(best_cpu).num_runnable() >     // <- 每轮重读
+            Scheduler::Current::get(cpunum).num_runnable()) {
+        best_cpu = cpunum;
+    }
+});
+```
+
+k 个候选就是 2k−1 次 per-CPU 解析和 2k−1 次读，而信息量只有 k 次。
+多出来的那一半不是普通的冗余计算：`num_runnable()` 读的是**别的 CPU** 的
+`m_runtime.num_queued_threads`，而那条 cacheline 被它的属主每次 enqueue／dequeue
+都写脏。所以重复的那一半是纯粹的跨核一致性流量，而且就压在唤醒路径上——
+`select_target_cpu()` 每一次非 `ThisCpu` 的 unpark 都会走。
+
+**改法**
+```cpp
+auto best_load = usize{0};
+candidates.for_each([&best_cpu, &best_load](CpuNum cpunum) {
+    auto const load = Scheduler::Current::get(cpunum).num_runnable();
+    if (best_cpu == INVALID_CPU_NUM || load < best_load) {
+        best_cpu = cpunum;
+        best_load = load;
+    }
+});
+```
+
+答案一模一样（比较方向也一致：严格小于才换，所以并列时仍然留在编号小的那颗上）。
+
+**参照**
+Linux `find_idlest_group_cpu()` 同样把当前最优的负载放在局部变量里带着走。
+
+**验证**
+四核引导：cpu0 8589 / cpu1 598 / cpu2 86789 / cpu3 86741，无断言失败。
+线程分派结果不变（userboot→CPU1、Sample1→CPU2、Sample2→CPU3）。
+
+**故意没做**
+`CpuMask::for_each` 本身没动——它是按字扫 + `countr_zero`，不是 `MAX_CPU` 次线性扫描，
+这一层没有问题。

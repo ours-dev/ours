@@ -852,11 +852,17 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     // occasional misplacement.
     auto const pick_least_loaded = [](CpuMask const &candidates) -> CpuNum {
         auto best_cpu = INVALID_CPU_NUM;
-        candidates.for_each([&best_cpu](CpuNum cpunum) {
-            if (best_cpu == INVALID_CPU_NUM ||
-                Scheduler::Current::get(best_cpu).num_runnable() >
-                    Scheduler::Current::get(cpunum).num_runnable()) {
+        auto best_load = usize{0};
+        // The incumbent's load is carried, not re-read. Reading it again per
+        // candidate doubles the remote loads, and each one pulls in a
+        // scheduler cacheline that its owning CPU dirties on every enqueue and
+        // dequeue -- so the redundant half is pure coherence traffic on the
+        // wakeup path.
+        candidates.for_each([&best_cpu, &best_load](CpuNum cpunum) {
+            auto const load = Scheduler::Current::get(cpunum).num_runnable();
+            if (best_cpu == INVALID_CPU_NUM || load < best_load) {
                 best_cpu = cpunum;
+                best_load = load;
             }
         });
         return best_cpu;
