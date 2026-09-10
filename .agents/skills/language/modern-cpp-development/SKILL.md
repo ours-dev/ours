@@ -42,7 +42,7 @@ Activate (satisfy any of the following criteria):
 
 1. Encapsulate implementation details in a private nested type rather than leaking storage/bookkeeping into the public interface. Prefer a private nested `struct`/`class` (or a `detail`/`priv` sub-namespace for free functions — see Namespacing below) over exposing raw fields or helper functions that only the class itself should call.
 
-1. Composition over inheritance, and prefer it over templated indirection too when the concrete type is already fixed at build time. `VmAspace` composes a plain, non-templated `ArchVmAspace m_arch;` member (`kernel/mm/include/ours/mm/vm_aspace.hpp:105`) — see "Build-time polymorphism" below for why this isn't CRTP and doesn't need to be.
+1. Composition over inheritance, and prefer it over templated indirection too when the concrete type is already fixed at build time. `VmAspace` composes a plain, non-templated `ArchVmAspace m_arch;` member (`kernel/mm/include/ours/mm/vm_aspace.hpp:105`) — see "Build-time polymorphism" below for why this isn't CRTP and doesn't need to be. Composition is the default you may take without asking; **introducing a base class requires asking the developer first** — see "Object orientation" below.
 
 1. Use alias declarations (`using X = Y;`) over `typedef`. When the alias is part of a container/allocator-like type's public API, use ustl's own vocabulary — `Element`, `Size`, `Iter`/`IterMut`, `Ref`/`RefMut`, `Ptr`/`PtrMut` — not legacy STL names (`value_type`, `iterator`, `reference`, `pointer`). This is enforced by `.clang-tidy` itself (its naming-section header comment: "USTL collection API aliases ... Do not introduce legacy STL aliases"). The one sanctioned exception is an adapter that must literally satisfy the standard `Allocator` named requirement, which needs both vocabularies side by side — see `kernel/lib/ktl/include/ktl/allocator.hpp:10-21`.
 
@@ -168,14 +168,26 @@ function only when there is no state to guard.
    constructed object. Per-CPU objects in this tree are placement-new'd for
    exactly this reason — `Scheduler::init()` opens with `new (this) Self()`.
 
-1. **"OOP" here does not mean inheritance.** Inheritance is not a code-reuse
-   mechanism in this repo: reuse comes from composition (see "Composition
-   over inheritance" above), and a base class is justified only by a
-   genuinely open, runtime-selected hierarchy, or by CRTP injecting behaviour
-   with no vtable. `VmAspace` *composes* `ArchVmAspace m_arch` rather than
-   deriving from it; `ustl::RefCounted<Self, Policy>` is inherited because it
-   is CRTP and costs nothing at runtime. If a base class exists only so two
-   types can share a function body, make it a member instead.
+1. **"OOP" here does not mean inheritance, and inheritance is not yours to
+   choose.** Composition is the default and needs no discussion: reuse comes
+   from holding a member and forwarding through it (see "Composition over
+   inheritance" above). `VmAspace` *composes* `ArchVmAspace m_arch` rather
+   than deriving from it.
+
+   A base class *is* allowed — but **ask the developer before introducing
+   one**, every time, even where it looks obviously right. This is a standing
+   instruction, not a stylistic preference: put the question with the
+   composition alternative spelled out, and let them decide. Do not
+   quietly add a base class, and do not contort a design into an awkward
+   composition to avoid asking.
+
+   The two shapes that have already been decided, and so do not need asking
+   again: a genuinely open, runtime-selected hierarchy (the kernel-object
+   `Dispatcher` family, chosen by a syscall argument), and CRTP injecting
+   behaviour with no vtable (`ustl::RefCounted<Self, Policy>`). If a base
+   class would exist only so two types can share a function body, that is the
+   case where a member is the answer — but say so and confirm rather than
+   assuming.
 
 1. **Nor does it mean a class per concept.** A "manager" holding no state and
    a class whose methods never touch `this` are namespaces wearing a
