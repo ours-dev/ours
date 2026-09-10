@@ -407,3 +407,58 @@ auto mark_preempt_pending() -> void {
 
 **验证**
 四核引导：cpu0 8589 / cpu1 594 / cpu2 83945 / cpu3 83926，无断言失败。
+
+## "本 CPU 可以开始调度了"抽成 `task::init_percpu()`（2026-09-10）
+
+**文件**
+- `kernel/include/ours/task/init.hpp` / `kernel/kernel/task/init.cpp` — 新增 `init_percpu()`
+- `kernel/top/main.cpp` — `start_nonboot_cpu()` 改调它
+
+**症状**
+不是 bug。同一段两行序列在两个模块里各写了一份，AP 那一份还顶着一段十一行的注释
+说明"这是 `task::init()` 结尾那两行"：
+
+```cpp
+// kernel/top/main.cpp
+task::Scheduler::Current::set_active(true);
+Thread::Current::preemption_state().disable_preemption();
+```
+
+**原因**
+需要一个注释来说明"我是另一处代码的副本"，本身就是那处代码该被抽出来的证据。
+更糟的是这份副本落在 `top/`——`kernel/kernel/task/` 里的人改 `init()` 的收尾时，
+看不见它。
+
+而这两行是有内容的：`set_active()` 决定这颗 CPU 进不进
+`select_target_cpu()` 第一顺位查的 Active 掩码；`disable_preemption()` 是
+`become_idle()` 结尾那次**无条件**的 `enable_preemption()` 的配对（少了它计数会回绕，
+这颗 CPU 从此不可抢占）。两条都值得被写在一个有名字的地方。
+
+**改法**
+```cpp
+// kernel/kernel/task/init.cpp
+auto init_percpu() -> void {
+    Scheduler::Current::set_active(true);
+    Thread::Current::preemption_state().disable_preemption();
+}
+
+auto init() -> void {
+    cpu_possible_mask().for_each(...);
+    init_percpu();          // BSP 自己那一份
+}
+```
+```cpp
+// kernel/top/main.cpp
+task::init_percpu();
+```
+
+名字照着本仓库已有的同类拆分取：`mm::CpuLocal::init_percpu()`、
+`init_local_apic_percpu()`、`x86_init_percpu()`——"整体 init 里只有本 CPU 能做的那部分"。
+那十一行注释搬到了函数定义上，只留一份。
+
+**参照**
+无，本项目自有设计。Linux 里对应的分工是 `sched_init()`（一次）与
+`sched_cpu_activate()`（每颗 CPU 上线时）。
+
+**验证**
+四核引导：cpu0 8589 / cpu1 585 / cpu2 53391 / cpu3 53421，无断言失败。

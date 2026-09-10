@@ -51,6 +51,28 @@ auto init_early() -> void {
     DEBUG_ASSERT(thread);
 }
 
+/// Declares the running CPU ready to be scheduled on.
+///
+/// Both statements reach through Scheduler::Current and Thread::Current, so
+/// they land on whichever CPU executes them and no other -- which is why they
+/// cannot be part of init()'s loop over cpu_possible_mask() and why each
+/// secondary has to run them for itself on its way in.
+///
+/// Without set_active() the CPU stays out of the scheduler's Active mask, and
+/// select_target_cpu() consults that mask first: an AP that came up perfectly
+/// would still never be handed a thread.
+///
+/// The preemption disable is the matching half of the enable_preemption() at
+/// the end of Thread::Current::become_idle(). That one is an unconditional
+/// decrement, so an idler reaching it with no disable outstanding wraps the
+/// counter to its maximum and is never preemptible again -- the CPU would spin
+/// in its idle loop with runnable threads queued on it.
+INIT_CODE
+auto init_percpu() -> void {
+    Scheduler::Current::set_active(true);
+    Thread::Current::preemption_state().disable_preemption();
+}
+
 INIT_CODE
 auto init() -> void {
     cpu_possible_mask().for_each([](CpuNum cpu) {
@@ -60,8 +82,7 @@ auto init() -> void {
         init_idle_task_percpu(cpu);
     });
 
-    Scheduler::Current::set_active(true);
-    Thread::Current::preemption_state().disable_preemption();
+    init_percpu();
 }
 
 } // namespace ours::task

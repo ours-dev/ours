@@ -190,22 +190,9 @@ auto start_kernel(PhysAddr handoff) -> void {
 /// must do for itself.
 extern "C" [[noreturn]]
 auto start_nonboot_cpu() -> void {
-    // The two lines task::init() ends with, which it can only ever run for
-    // the boot CPU: both reach through Scheduler::Current and
-    // Thread::Current, so they land on whichever CPU executes them.
-    //
-    // Without set_active() this CPU stays out of the scheduler's Active mask,
-    // and select_target_cpu() consults that mask first -- so an AP that came
-    // up perfectly would still never be handed a thread, which is exactly how
-    // the kernel behaved: three CPUs online and every thread on CPU 0.
-    //
-    // The preemption disable is the matching half of the enable_preemption()
-    // at the end of become_idle(). enable_preemption() is an unconditional
-    // decrement, so an idler reaching it without a disable outstanding wraps
-    // the counter to its maximum and is never preemptible again -- the CPU
-    // would spin in its idle loop with runnable threads queued on it.
-    task::Scheduler::Current::set_active(true);
-    Thread::Current::preemption_state().disable_preemption();
+    // The half of task::init() that only the CPU it concerns can run; the boot
+    // CPU runs it from init() itself.
+    task::init_percpu();
 
     // Published last, and deliberately: `Online` is what x86_bring_aps()
     // spins on before it starts the next CPU and reuses the single trampoline
