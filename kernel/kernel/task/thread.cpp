@@ -207,7 +207,7 @@ auto Thread::spawn(char const *name, StartRoutine entry, void *arg, usize priori
 
 auto Thread::switch_thread(Self *curr, Self *next) -> void {
     Thread::Current::set(next);
-    ArchThread::switch_thread(&curr->m_arch_thread, &next->m_arch_thread);
+    ArchThread::switch_thread(curr, next);
 }
 
 auto Thread::resume() -> Status {

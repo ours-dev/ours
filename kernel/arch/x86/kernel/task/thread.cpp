@@ -33,13 +33,20 @@ namespace {
     }
 } // namespace
 
-auto X86Thread::switch_thread(Self *prev, Self *next) -> void {
+auto X86Thread::switch_thread(Thread *prev, Thread *next) -> void {
+    auto &prev_arch = prev->m_arch_thread;
+    auto &next_arch = next->m_arch_thread;
+
     // Set stack pointer which was used at privilege 0.
-    x86_set_tss_sp(Thread::of(next)->kernel_stack().top());
+    x86_set_tss_sp(next->kernel_stack().top());
 
-    swap_gsbase_and_fsbase(next->m_gs_base, next->m_fs_base, &prev->m_gs_base, &prev->m_fs_base);
+    swap_gsbase_and_fsbase(next_arch.m_gs_base, next_arch.m_fs_base, &prev_arch.m_gs_base,
+                           &prev_arch.m_fs_base);
 
-    x86_switch_context(&prev->m_sp, next->m_sp);
+    // The assembly is handed two stack slots and nothing else. Keeping it
+    // ignorant of Thread's layout is deliberate: context.S would otherwise
+    // need an offset constant kept in step with the C++ struct by hand.
+    x86_switch_context(&prev_arch.m_sp, next_arch.m_sp);
 }
 
 auto X86Thread::init(VirtAddr entry_point) -> void {

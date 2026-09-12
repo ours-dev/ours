@@ -11,11 +11,23 @@
 #include <ustl/mem/container_of.hpp>
 
 namespace ours::task {
+class Thread;
+
 class X86Thread {
     using Self = X86Thread;
 
   public:
-    static auto switch_thread(Self *prev, Self *next) -> void;
+    /// Switches the CPU from `prev` to `next`.
+    ///
+    /// Takes `Thread *`, not `Self *`, because that is the type it works in:
+    /// the very first thing it needs is `next`'s kernel stack top, which
+    /// lives on Thread, and it used to recover that with `Thread::of(next)`
+    /// -- a container_of back up from a parameter the caller had just
+    /// narrowed down. The narrowing bought nothing: Thread declares
+    /// `friend ArchThread`, so the arch half has always been able to reach
+    /// its enclosing Thread, and a signature that hides that only makes the
+    /// dependency harder to see.
+    static auto switch_thread(Thread *prev, Thread *next) -> void;
 
     auto init(VirtAddr entry_point) -> void;
 
