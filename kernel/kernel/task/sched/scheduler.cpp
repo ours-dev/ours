@@ -578,13 +578,20 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     //  2. |curr| after context switch is the **real** current thread.
     //  3. |curr| before context switch was cached in |m_runtime.scheduling_context.prev_thread|.
     //
-    // Current::get(), not `this`. `this` is the scheduler of the CPU this
-    // thread was running on when it went into the switch; coming back out of
-    // one, it may be on a different CPU entirely -- a thread that sleeps here
+    // Everything past the switch belongs to whichever CPU is running this
+    // thread *now*, which is why the completion step asks Current::get()
+    // rather than using `this`. `this` is the scheduler of the CPU this
+    // thread was on when it went into the switch; a thread that sleeps here
     // is placed again by select_target_cpu() when it is woken, and that is
-    // free to answer with another CPU. `this` is then a scheduler belonging to
-    // someone else, whose prev_thread the CPU that owns it consumed long ago,
-    // and finish_switch_context() released a null thread's PI lock.
+    // free to answer with another CPU, leaving `this` pointing at a scheduler
+    // belonging to someone else.
+    //
+    // Note that this is not only about prev_thread. The completion step also
+    // does set_state(State::Idling, curr == m_idle_thread), and both the state
+    // and m_idle_thread are the resuming CPU's. So handing the previous thread
+    // across in a register -- the way Linux's switch_to() rewrites its `last`
+    // argument -- would remove the field but not this lookup; see
+    // docs/changes/260912/task-arch-seam.md for why that trade was declined.
     //
     // trampoline_handoff() -- the other way out of a switch, for a thread that
     // has never run before -- has always asked Current::get(). The two exits
