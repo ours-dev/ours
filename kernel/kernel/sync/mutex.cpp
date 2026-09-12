@@ -4,21 +4,22 @@
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
+#include <atomic>
+
 #include <arch/spin_hint.hpp>
 
 using ours::mm::CpuLocal;
 using ours::task::Thread;
-using ustl::sync::MemoryOrder;
 
 namespace ours::sync {
 FORCE_INLINE
 auto Mutex::record_initial_assigned_cpu() -> void {
-    m_cpunum.store(Cpu::id(), MemoryOrder::Relaxed);
+    m_cpunum.store(Cpu::id(), std::memory_order_relaxed);
 }
 
 FORCE_INLINE
 auto Mutex::reset_initial_assigned_cpu() -> void {
-    m_cpunum.store(INVALID_CPU_NUM, MemoryOrder::Relaxed);
+    m_cpunum.store(INVALID_CPU_NUM, std::memory_order_relaxed);
 }
 
 template <bool TimesliceExtensionEnabled>
@@ -36,8 +37,8 @@ auto Mutex::acquire_common(Duration spining_duration,
 
         /// First attempt to acquire this mutex.
         auto old_mutex_state = State::Available;
-        if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, MemoryOrder::Acquire,
-                                          MemoryOrder::Relaxed)) {
+        if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
+                                          std::memory_order_acquire, std::memory_order_relaxed)) {
             record_initial_assigned_cpu();
 
             return false;
@@ -68,8 +69,8 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
 
     do {
         auto old_mutex_state = State::Available;
-        if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, MemoryOrder::Acquire,
-                                          MemoryOrder::Relaxed)) {
+        if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
+                                          std::memory_order_acquire, std::memory_order_relaxed)) {
             record_initial_assigned_cpu();
 
             if constexpr (TimesliceExtensionEnabled) {
@@ -85,7 +86,7 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
         }
 
         auto const curr_cpu = Cpu::id();
-        if (curr_cpu == m_cpunum.load(MemoryOrder::Relaxed)) {
+        if (curr_cpu == m_cpunum.load(std::memory_order_relaxed)) {
             break;
         }
 
@@ -111,8 +112,8 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
 
 auto Mutex::try_release(Thread *current_thread) -> State {
     auto old_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
-    if (m_state.compare_exchange_weak(old_mutex_state, State::Available, MemoryOrder::Acquire,
-                                      MemoryOrder::Relaxed)) {
+    if (m_state.compare_exchange_weak(old_mutex_state, State::Available, std::memory_order_acquire,
+                                      std::memory_order_relaxed)) {
         return State::Available;
     }
 
@@ -126,8 +127,9 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
     // Publishing the new state is the same step either way -- only the value
     // differs -- and it must not be reached twice, so it lives here.
     auto const publish = [&](State new_mutex_state) {
-        if (!m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, MemoryOrder::Acquire,
-                                           MemoryOrder::Relaxed)) [[unlikely]] {
+        if (!m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
+                                           std::memory_order_acquire, std::memory_order_relaxed))
+            [[unlikely]] {
             panic("Mutex handoff state changed");
         }
     };

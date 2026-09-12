@@ -22,7 +22,6 @@
 #include <logz4/log.hpp>
 #include <prof/arch.hpp>
 #include <prof/sampler.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace {
 auto program_this_cpu(std::uint64_t period) -> void {

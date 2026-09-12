@@ -11,11 +11,12 @@
 #include <ours/task/sched/profiles.hpp>
 #include <ours/task/sched/types.hpp>
 
+#include <atomic>
+
 #include <gktl/mixin/comparable.hpp>
 #include <ustl/chrono/duration.hpp>
 #include <ustl/collections/intrusive/list_hook.hpp>
 #include <ustl/collections/intrusive/set_hook.hpp>
-#include <ustl/sync/atomic.hpp>
 
 // #include <cnl/fraction.hpp>
 

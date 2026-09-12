@@ -40,10 +40,11 @@
 #include <ours/sync/spin_lock.hpp>
 #include <ours/types.hpp>
 
+#include <atomic>
+
 #include <arch/interrupt.hpp>
 #include <arch/spin_hint.hpp>
 #include <ustl/function/invoke.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/traits/is_same.hpp>
 #include <ustl/util/noncopyable.hpp>
@@ -100,7 +101,7 @@ class SeqCount {
 
     /// For assertions. True while a writer sits between begin and end.
     auto is_writing() const -> bool {
-        return (m_sequence.load(ustl::sync::MemoryOrder::Relaxed) & 1) != 0;
+        return (m_sequence.load(std::memory_order_relaxed) & 1) != 0;
     }
 
   private:
@@ -109,7 +110,7 @@ class SeqCount {
     auto read_begin() const -> Sequence {
         for (;;) {
             // Acquire: the read of the data must not be hoisted above this.
-            auto const seq = m_sequence.load(ustl::sync::MemoryOrder::Acquire);
+            auto const seq = m_sequence.load(std::memory_order_acquire);
             if ((seq & 1) == 0) {
                 return seq;
             }
@@ -124,30 +125,29 @@ class SeqCount {
         // The mirror of the acquire above: the read of the data must not
         // sink past this second look at the counter, or the comparison
         // would be covering nothing.
-        ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Acquire);
-        return m_sequence.load(ustl::sync::MemoryOrder::Relaxed) != start;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return m_sequence.load(std::memory_order_relaxed) != start;
     }
 
     auto write_begin() -> void {
-        auto const seq = m_sequence.load(ustl::sync::MemoryOrder::Relaxed);
+        auto const seq = m_sequence.load(std::memory_order_relaxed);
 
         // Catches the overlap rule 2 warns about, in the one case where it
         // is catchable: a second writer arriving while the first is inside.
         DEBUG_ASSERT((seq & 1) == 0, "SeqCount: overlapping writers");
 
-        m_sequence.store(seq + 1, ustl::sync::MemoryOrder::Relaxed);
-        ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Release);
+        m_sequence.store(seq + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
     }
 
     auto write_end() -> void {
         // Release before the counter goes even, so that a reader seeing
         // the even value sees every write that came before it.
-        ustl::sync::atomic_thread_fence(ustl::sync::MemoryOrder::Release);
-        m_sequence.store(m_sequence.load(ustl::sync::MemoryOrder::Relaxed) + 1,
-                         ustl::sync::MemoryOrder::Relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        m_sequence.store(m_sequence.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     }
 
-    ustl::sync::Atomic<Sequence> m_sequence;
+    std::atomic<Sequence> m_sequence;
 };
 
 /// The counter with the writer's lock attached, which is what most call

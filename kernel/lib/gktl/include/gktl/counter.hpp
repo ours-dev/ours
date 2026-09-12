@@ -12,10 +12,10 @@
 
 #include <gktl/types.hpp>
 
+#include <atomic>
 #include <limits>
 
 #include <ours/mm/cpu_local.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace gktl {
 class Counter {
@@ -54,31 +54,31 @@ class Counter {
 
     auto set(isize value) const -> void {
         ours::mm::CpuLocal::with_current(slot(), [value](ours::CpuNum, isize &slot) {
-            ustl::sync::AtomicRef slot_ref{slot};
-            slot_ref.store(value, ustl::sync::MemoryOrder::Relaxed);
+            std::atomic_ref slot_ref{slot};
+            slot_ref.store(value, std::memory_order_relaxed);
         });
     }
 
     auto get() const -> isize {
         return ours::mm::CpuLocal::with_current(slot(), [](ours::CpuNum, isize &slot) {
-            ustl::sync::AtomicRef slot_ref{slot};
-            return slot_ref.load(ustl::sync::MemoryOrder::Relaxed);
+            std::atomic_ref slot_ref{slot};
+            return slot_ref.load(std::memory_order_relaxed);
         });
     }
 
     auto add(isize delta) const -> void {
         ours::mm::CpuLocal::with_current(slot(), [delta](ours::CpuNum, isize &slot) {
-            ustl::sync::AtomicRef slot_ref{slot};
-            slot_ref.fetch_add(delta, ustl::sync::MemoryOrder::Relaxed);
+            std::atomic_ref slot_ref{slot};
+            slot_ref.fetch_add(delta, std::memory_order_relaxed);
         });
     }
 
     auto max(isize value) const -> isize {
         return ours::mm::CpuLocal::with_current(slot(), [value](ours::CpuNum, isize &slot) {
-            ustl::sync::AtomicRef slot_ref{slot};
-            auto const curr_value = slot_ref.load(ustl::sync::MemoryOrder::Relaxed);
+            std::atomic_ref slot_ref{slot};
+            auto const curr_value = slot_ref.load(std::memory_order_relaxed);
             if (value > curr_value) {
-                slot_ref.store(value, ustl::sync::MemoryOrder::Relaxed);
+                slot_ref.store(value, std::memory_order_relaxed);
                 return value;
             }
 
@@ -88,10 +88,10 @@ class Counter {
 
     auto min(isize value) const -> isize {
         return ours::mm::CpuLocal::with_current(slot(), [value](ours::CpuNum, isize &slot) {
-            ustl::sync::AtomicRef slot_ref{slot};
-            auto const curr_value = slot_ref.load(ustl::sync::MemoryOrder::Relaxed);
+            std::atomic_ref slot_ref{slot};
+            auto const curr_value = slot_ref.load(std::memory_order_relaxed);
             if (value < curr_value) {
-                slot_ref.store(value, ustl::sync::MemoryOrder::Relaxed);
+                slot_ref.store(value, std::memory_order_relaxed);
                 return value;
             }
 
@@ -104,9 +104,8 @@ class Counter {
     FORCE_INLINE
     auto operate_across_all_cpus(U initial, F &&f) -> ustl::traits::InvokeResultT<F, U, isize> {
         return ours::mm::CpuLocal::fold(slot(), initial, [&](ours::CpuNum, isize &counter, U acc) {
-            ustl::sync::AtomicRef slot{counter};
-            return ustl::function::invoke(ustl::move(f), acc,
-                                          slot.load(ustl::sync::MemoryOrder::Relaxed));
+            std::atomic_ref slot{counter};
+            return ustl::function::invoke(ustl::move(f), acc, slot.load(std::memory_order_relaxed));
         });
     }
 

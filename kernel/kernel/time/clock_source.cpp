@@ -4,6 +4,8 @@
 #include <ours/time/clock_source.hpp>
 #include <ours/time/tick_device.hpp>
 
+#include <atomic>
+
 #include <ktl/rwonce.hpp>
 #include <logz4/log.hpp>
 

@@ -4,6 +4,8 @@
 #include <prof/format.hpp>
 #include <prof/sampler.hpp>
 
+#include <atomic>
+
 #include <ours/status.hpp>
 #include <unwind/unwinder.hpp>
 

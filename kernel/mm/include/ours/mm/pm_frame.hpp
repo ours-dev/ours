@@ -7,6 +7,7 @@
 #include <ours/mm/cfg.hpp>
 #include <ours/mm/types.hpp>
 
+#include <atomic>
 #include <type_traits>
 
 #include <ustl/bit.hpp>
@@ -15,7 +16,6 @@
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/mem/lifetime.hpp>
 #include <ustl/option.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/traits/is_base_of.hpp>
 #include <ustl/traits/is_same.hpp>
 #include <ustl/util/noncopyable.hpp>
@@ -103,10 +103,10 @@ namespace page {
         /// VmCowPages for others, and the two are unrelated types. Callers know
         /// which one they put here and cast it back themselves.
         void *vmo;
-        ustl::sync::AtomicU32 vmo_index;    // Index in VMO's page map
-        ustl::sync::AtomicU16 num_mappings; // 65536 mappings
-        ustl::sync::AtomicU16 num_users;    // 65536 users
-        ustl::sync::AtomicU8 pinned_count;
+        std::atomic<u32> vmo_index;    // Index in VMO's page map
+        std::atomic<u16> num_mappings; // 65536 mappings
+        std::atomic<u16> num_users;    // 65536 users
+        std::atomic<u8> pinned_count;
 
         /// Which of PageQueues' lists currently holds this frame, as a
         /// PageQueues::QueueType. Zero is that enum's `None`, so a frame that
@@ -283,19 +283,19 @@ class PageFrame {
     /// and slab::destroy, the only pair doing so today.
     FORCE_INLINE
     auto compound_offset() const -> u32 {
-        return m_compound.load(ustl::sync::MemoryOrder::Relaxed);
+        return m_compound.load(std::memory_order_relaxed);
     }
 
     FORCE_INLINE
     auto set_compound_offset(u32 offset) -> void {
-        m_compound.store(offset, ustl::sync::MemoryOrder::Relaxed);
+        m_compound.store(offset, std::memory_order_relaxed);
     }
 
     auto get() const -> void {
-        m_references.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
+        m_references.fetch_add(1, std::memory_order_relaxed);
     }
     auto put() const -> void {
-        m_references.fetch_sub(1, ustl::sync::MemoryOrder::Relaxed);
+        m_references.fetch_sub(1, std::memory_order_relaxed);
     }
 
     /// Takes on |Body|'s role: clears the payload and stamps the tag.
@@ -404,10 +404,10 @@ class PageFrame {
     page::Status m_status;
 
     // The size of following fields type should be half of a word.
-    mutable ustl::sync::AtomicU32 m_references;
+    mutable std::atomic<u32> m_references;
 
     // Trace the position of current frame in a large frame.
-    mutable ustl::sync::AtomicU32 m_compound;
+    mutable std::atomic<u32> m_compound;
 
     /// AutoUnlink because Slab::destroy detaches a frame without knowing which
     /// list holds it. One hook serves every role -- see page::PmmBody above.

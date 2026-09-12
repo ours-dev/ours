@@ -3,6 +3,8 @@
 #include <ours/time/timer.hpp>
 #include <ours/time/timer_queue.hpp>
 
+#include <atomic>
+
 #include <arch/spin_hint.hpp>
 
 namespace ours::time {

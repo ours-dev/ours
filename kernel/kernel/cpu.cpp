@@ -4,6 +4,7 @@
 #include <ours/mm/cpu_local.hpp>
 
 #include <array>
+#include <atomic>
 
 namespace ours {
 

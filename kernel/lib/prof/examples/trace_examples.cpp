@@ -13,6 +13,7 @@
 
 #include <prof/trace.hpp>
 
+#include <atomic>
 #include <iterator>
 #include <string_view>
 

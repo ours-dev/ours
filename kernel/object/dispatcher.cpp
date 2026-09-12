@@ -2,6 +2,8 @@
 #include <ours/lockdep.hpp>
 #include <ours/object/dispatcher.hpp>
 
+#include <atomic>
+
 namespace ours::object {
 /// m_koid and m_signals were missing from this list, so every dispatcher's
 /// koid was whatever the allocator's memory held. That mattered less while
@@ -40,7 +42,7 @@ auto Dispatcher::detach_observer(SignalObserver *observer, Signals *signals) -> 
     Guard guard{get_lock()};
 
     if (signals) {
-        *signals = m_signals.load(ustl::sync::MemoryOrder::Acquire);
+        *signals = m_signals.load(std::memory_order_acquire);
     }
 
     if (observer->m_managed_hook.is_linked()) {

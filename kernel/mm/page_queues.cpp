@@ -4,13 +4,10 @@
 #include <ours/time/clock.hpp>
 #include <ours/time/timer.hpp>
 
+#include <atomic>
 #include <utility>
 
 #include <ustl/rc.hpp>
-#include <ustl/sync/atomic.hpp>
-
-using ustl::sync::Atomic;
-using ustl::sync::MemoryOrder;
 
 namespace ours::mm {
 namespace {
@@ -71,12 +68,12 @@ class PageQueues::LruRunner: public ustl::RefCounted<LruRunner, ustl::sync::Thre
     auto request_shutdown() -> void;
 
     auto state() const -> State {
-        return m_state.load(MemoryOrder::Acquire);
+        return m_state.load(std::memory_order_acquire);
     }
 
   private:
     PageQueues *m_owner;
-    Atomic<State> m_state;
+    std::atomic<State> m_state;
     [[maybe_unused]]
     task::Thread *m_thread;
 };
@@ -87,7 +84,7 @@ auto PageQueues::LruRunner::run() -> void {
     // runner was already shut down and left the instant it was not, which is
     // the condition inverted; and being an empty body it was not a loop that
     // did anything either way, just a CPU held at 100%.
-    while (State::Running == m_state.load(MemoryOrder::Acquire)) {
+    while (State::Running == m_state.load(std::memory_order_acquire)) {
         // Sleep to an instant rather than for an interval. The next rotation
         // is due one minimum period after the last one actually happened, so
         // this cadence does not drift by however long a rotation took, and a
@@ -100,7 +97,7 @@ auto PageQueues::LruRunner::run() -> void {
         // interruptible sleep is how a shutdown request cuts the wait short,
         // and one more rotation on the way out would be work against queues
         // the caller is already tearing down.
-        if (State::Running != m_state.load(MemoryOrder::Acquire)) {
+        if (State::Running != m_state.load(std::memory_order_acquire)) {
             break;
         }
 
@@ -110,7 +107,7 @@ auto PageQueues::LruRunner::run() -> void {
     // Release, paired with the Acquire in state(): everything this loop did to
     // the queues happens-before an observer sees Shutdown, which is what makes
     // that state mean "nothing is still touching them".
-    m_state.store(State::Shutdown, MemoryOrder::Release);
+    m_state.store(State::Shutdown, std::memory_order_release);
 }
 
 auto PageQueues::LruRunner::request_shutdown() -> void {
@@ -118,8 +115,8 @@ auto PageQueues::LruRunner::request_shutdown() -> void {
     // second request overwrite the Shutdown the loop has already published,
     // un-telling a waiter something it has already been told.
     auto expected = State::Running;
-    m_state.compare_exchange_strong(expected, State::ShutdownRequested, MemoryOrder::AcqRel,
-                                    MemoryOrder::Acquire);
+    m_state.compare_exchange_strong(expected, State::ShutdownRequested, std::memory_order_acq_rel,
+                                    std::memory_order_acquire);
 }
 
 auto PageQueues::start_runners() -> void {
@@ -140,9 +137,14 @@ auto PageQueues::start_runners() -> void {
 
 /// The two generation counters have to start equal: `mru - lru + 1` is the
 /// number of occupied slots, and every decision about the ring is made from
-/// it. ustl::sync::Atomic's default constructor is `= default`, which leaves
-/// its storage indeterminate, so a PageQueues that is not in .bss would start
-/// out claiming an arbitrary number of live generations.
+/// it, so they are spelled out here rather than left to the default.
+///
+/// This used to be load-bearing in a stronger sense: ustl::sync::Atomic's
+/// default constructor was `= default`, which left its storage indeterminate,
+/// and a PageQueues outside .bss would have started out claiming an arbitrary
+/// number of live generations. std::atomic value-initialises since C++20, so
+/// the explicit zeros now say what the code means rather than repairing the
+/// type.
 PageQueues::PageQueues()
     : m_lrugen(0)
     , m_mrugen(0)
@@ -213,7 +215,7 @@ auto PageQueues::set_queue_backlink_locked(VmPage *page, VmCowPages *object, PgO
 
     auto const index = queue_index(type);
     m_queues[index].push_back(*page);
-    m_sizes[index].fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
+    m_sizes[index].fetch_add(1, std::memory_order_relaxed);
 }
 
 auto PageQueues::dequeue_locked(VmPage *page) -> void {
@@ -234,7 +236,7 @@ auto PageQueues::dequeue_locked(VmPage *page) -> void {
     // reason: an unlink cannot reach the header to decrement it.
     page->unlink();
     page->set_page_queue(std::to_underlying(QueueType::None));
-    m_sizes[queue_index(type)].fetch_sub(1, ustl::sync::MemoryOrder::Relaxed);
+    m_sizes[queue_index(type)].fetch_sub(1, std::memory_order_relaxed);
 }
 
 auto PageQueues::mark_accessed(VmPage *page) -> void {
@@ -266,7 +268,7 @@ auto PageQueues::mark_accessed(VmPage *page) -> void {
 }
 
 auto PageQueues::advance_lru_locked() -> void {
-    auto const gen = m_lrugen.load(ustl::sync::MemoryOrder::Relaxed);
+    auto const gen = m_lrugen.load(std::memory_order_relaxed);
     auto const older = reclaimable_queue(gen);
     auto const newer = reclaimable_queue(gen + 1);
     auto const from = queue_index(older);
@@ -287,16 +289,16 @@ auto PageQueues::advance_lru_locked() -> void {
     }
     target.splice(target.end(), source);
 
-    m_sizes[to].fetch_add(moved, ustl::sync::MemoryOrder::Relaxed);
-    m_sizes[from].fetch_sub(moved, ustl::sync::MemoryOrder::Relaxed);
-    m_lrugen.store(gen + 1, ustl::sync::MemoryOrder::Relaxed);
+    m_sizes[to].fetch_add(moved, std::memory_order_relaxed);
+    m_sizes[from].fetch_sub(moved, std::memory_order_relaxed);
+    m_lrugen.store(gen + 1, std::memory_order_relaxed);
 }
 
 auto PageQueues::rotate_reclaimable_queues(AgeReason reason) -> void {
     Guard<sync::SpinLock, IrqSave> guard{get_lock()};
 
-    auto const mru = m_mrugen.load(ustl::sync::MemoryOrder::Relaxed);
-    auto const lru = m_lrugen.load(ustl::sync::MemoryOrder::Relaxed);
+    auto const mru = m_mrugen.load(std::memory_order_relaxed);
+    auto const lru = m_lrugen.load(std::memory_order_relaxed);
 
     // Generations [lru, mru] are live, so this is how many slots they occupy.
     // The subtraction is deliberately done on the free-running counters and
@@ -314,7 +316,7 @@ auto PageQueues::rotate_reclaimable_queues(AgeReason reason) -> void {
         advance_lru_locked();
     }
 
-    m_mrugen.store(mru + 1, ustl::sync::MemoryOrder::Relaxed);
+    m_mrugen.store(mru + 1, std::memory_order_relaxed);
 
     m_last_age_time = time::SteadyClock::now();
     m_last_age_reason = reason;

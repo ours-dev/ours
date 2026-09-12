@@ -11,11 +11,12 @@
 #include <ours/sync/mutex.hpp>
 #include <ours/types.hpp>
 
+#include <atomic>
+
 #include <gktl/canary.hpp>
 #include <ktl/name.hpp>
 #include <ustl/option.hpp>
 #include <ustl/rc.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours::object {
 class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy> {
@@ -32,11 +33,11 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     }
 
     auto increase_handle_count() -> void {
-        m_handle_count.fetch_add(1, ustl::sync::MemoryOrder::Relaxed);
+        m_handle_count.fetch_add(1, std::memory_order_relaxed);
     }
 
     auto decrease_handle_count() -> bool {
-        return m_handle_count.fetch_sub(1, ustl::sync::MemoryOrder::AcqRel) == 1;
+        return m_handle_count.fetch_sub(1, std::memory_order_acq_rel) == 1;
     }
 
     auto attach_observer(SignalObserver *, void const *handle, Signals) -> Status;
@@ -58,8 +59,8 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     gktl::Canary m_canary;
     KoId m_koid;
     sync::Mutex m_lock;
-    ustl::sync::AtomicU32 m_handle_count;
-    ustl::sync::Atomic<Signals> m_signals;
+    std::atomic<u32> m_handle_count;
+    std::atomic<Signals> m_signals;
 
     SignalObserver::List m_observers;
 };

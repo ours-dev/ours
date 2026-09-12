@@ -19,7 +19,6 @@
 #include <ours/types.hpp>
 
 #include <arch/x86/descriptor.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours {
 namespace task {

@@ -10,6 +10,7 @@
 #include <ours/task/types.hpp>
 
 #include <array>
+#include <atomic>
 #include <utility>
 
 #include <ustl/rc.hpp>
@@ -130,13 +131,13 @@ class PageQueues {
 
     /// The generation new and freshly-accessed pages are filed into.
     auto mru_queue() const -> QueueType {
-        return reclaimable_queue(m_mrugen.load(ustl::sync::MemoryOrder::Relaxed));
+        return reclaimable_queue(m_mrugen.load(std::memory_order_relaxed));
     }
 
     /// The oldest generation still held, i.e. the one reclaim would look at
     /// first.
     auto lru_queue() const -> QueueType {
-        return reclaimable_queue(m_lrugen.load(ustl::sync::MemoryOrder::Relaxed));
+        return reclaimable_queue(m_lrugen.load(std::memory_order_relaxed));
     }
 
     /// Spelled out rather than routed through queue_index(): an inline member
@@ -147,9 +148,9 @@ class PageQueues {
 
     mutable sync::SpinLock m_lock;
     std::array<VmPage::List, NUM_QUEUES> m_queues;
-    std::array<ustl::sync::AtomicUsize, NUM_QUEUES> m_sizes;
-    ustl::sync::AtomicU32 m_lrugen;
-    ustl::sync::AtomicU32 m_mrugen;
+    std::array<std::atomic<usize>, NUM_QUEUES> m_sizes;
+    std::atomic<u32> m_lrugen;
+    std::atomic<u32> m_mrugen;
 
     TimePoint<> m_last_age_time;
     AgeReason m_last_age_reason;

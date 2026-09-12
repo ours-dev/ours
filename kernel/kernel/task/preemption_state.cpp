@@ -3,6 +3,8 @@
 #include <ours/task/preemption_state.hpp>
 #include <ours/task/thread.hpp>
 
+#include <atomic>
+
 namespace ours::task {
 /// Asks the scheduler to let this thread run a little past the end of its
 /// slice. Mutex::acquire_common() sets one before spinning so that a
@@ -16,14 +18,14 @@ auto PreemptionState::set_timeslice_extension(Duration duration) -> bool {
         return false;
     }
 
-    m_timeslice_extension.store(duration, ustl::sync::MemoryOrder::Relaxed);
+    m_timeslice_extension.store(duration, std::memory_order_relaxed);
     m_counter.set<Tag::TimesliceExtension>(true);
     return true;
 }
 
 auto PreemptionState::cancel_timeslice_extension() -> void {
     m_counter.set<Tag::TimesliceExtension>(false);
-    m_timeslice_extension.store(Duration::zero(), ustl::sync::MemoryOrder::Relaxed);
+    m_timeslice_extension.store(Duration::zero(), std::memory_order_relaxed);
 }
 
 auto PreemptionState::flush_pending_local() -> void {

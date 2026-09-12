@@ -5,6 +5,7 @@
 #include <ours/time/timer_queue.hpp>
 
 #include <algorithm>
+#include <atomic>
 
 #include <arch/spin_hint.hpp>
 #include <logz4/log.hpp>

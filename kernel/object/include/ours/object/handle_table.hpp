@@ -8,7 +8,6 @@
 #include <ours/types.hpp>
 
 #include <ustl/rc.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::object {

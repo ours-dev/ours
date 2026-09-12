@@ -8,12 +8,12 @@
 #include <ours/task/types.hpp>
 #include <ours/types.hpp>
 
+#include <atomic>
 #include <tuple>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/interrupt.hpp>
 #include <lockdep/state_saver.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/util/enum_bits.hpp>
 #include <ustl/util/noncopyable.hpp>
 
@@ -134,7 +134,7 @@ namespace spinlock {
                       "Option::DisableIrq is not implemented; use "
                       "acquire_irq_save()/release_irq_restore() instead");
 
-        ustl::sync::AtomicUsize m_lockval;
+        std::atomic<usize> m_lockval;
     };
 
     /// The state savers a `Guard<SpinLock, ...>` holds for each option tag,

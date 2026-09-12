@@ -80,7 +80,6 @@
 #include <heap/new.hpp>
 #include <ktl/rwonce.hpp>
 
-using ustl::sync::MemoryOrder;
 
 using ours::sync::SpinLock;
 

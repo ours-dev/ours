@@ -10,6 +10,8 @@
 #include <ours/syscall/time.hpp>
 #include <ours/time/timer.hpp>
 
+#include <atomic>
+
 #include <arch/spin_hint.hpp>
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/set.hpp>

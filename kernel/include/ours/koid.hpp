@@ -6,7 +6,7 @@
 
 #include <ours/types.hpp>
 
-#include <ustl/sync/atomic.hpp>
+#include <atomic>
 
 namespace ours {
 /// Reserved: KoIdGenerator never hands this out, so callers can use it to
@@ -18,11 +18,11 @@ class KoIdGenerator {
 
   public:
     static auto generate(KoId count = 1) -> KoId {
-        return TRACKER.fetch_add(count, ustl::sync::MemoryOrder::Relaxed);
+        return TRACKER.fetch_add(count, std::memory_order_relaxed);
     }
 
   private:
-    static inline ustl::sync::Atomic<KoId> TRACKER{KOID_INVALID + 1};
+    static inline std::atomic<KoId> TRACKER{KOID_INVALID + 1};
 };
 } // namespace ours
 

@@ -8,8 +8,9 @@
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/time/types.hpp>
 
+#include <atomic>
+
 #include <gktl/canary.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours::sync {
 class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRACING_ENABLED> {
@@ -37,7 +38,7 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
     TA_ASSERT() auto assert_held() const -> bool;
 
     auto holder() const -> task::Thread * {
-        return get_holder_from(m_state.load(ustl::sync::MemoryOrder::Relaxed));
+        return get_holder_from(m_state.load(std::memory_order_relaxed));
     }
 
   protected:
@@ -66,8 +67,8 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
 
     auto reset_initial_assigned_cpu() -> void;
 
-    ustl::sync::Atomic<State> m_state;
-    ustl::sync::Atomic<CpuNum> m_cpunum;
+    std::atomic<State> m_state;
+    std::atomic<CpuNum> m_cpunum;
     task::OwnedWaitQueue m_waiters;
 };
 

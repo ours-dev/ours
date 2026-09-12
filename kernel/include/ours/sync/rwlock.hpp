@@ -6,10 +6,11 @@
 #include <ours/sync/types.hpp>
 #include <ours/task/types.hpp>
 
+#include <atomic>
+
 #include <gktl/canary.hpp>
 #include <ktl/result.hpp>
 #include <ustl/limits.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::sync {
@@ -39,16 +40,16 @@ namespace priv {
     struct DispatchLockState<EnablePi::No> {
         FORCE_INLINE
         auto increase_reader_count(u32 count) -> void {
-            m_num_reader.fetch_add(count, ustl::sync::MemoryOrder::Release);
+            m_num_reader.fetch_add(count, std::memory_order_release);
         }
 
         FORCE_INLINE
         auto decrease_reader_count(u32 count) -> void {
-            m_num_writer.fetch_sub(count, ustl::sync::MemoryOrder::Release);
+            m_num_writer.fetch_sub(count, std::memory_order_release);
         }
 
-        ustl::sync::AtomicU32 m_num_reader;
-        ustl::sync::AtomicU32 m_num_writer;
+        std::atomic<u32> m_num_reader;
+        std::atomic<u32> m_num_writer;
     };
 
     template <>

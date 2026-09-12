@@ -10,9 +10,10 @@
 #include <ours/syscall/time.hpp>
 #include <ours/types.hpp>
 
+#include <atomic>
+
 #include <ustl/bitfields.hpp>
 #include <ustl/limits.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/util/noncopyable.hpp>
 
 namespace ours::task {
@@ -186,10 +187,10 @@ class PreemptionState {
                                      >;
     BitField m_counter;
 
-    ustl::sync::Atomic<Duration> m_timeslice_extension;
+    std::atomic<Duration> m_timeslice_extension;
 
     /// CPUs whose current threads need a pending reschedule.
-    ustl::sync::Atomic<CpuMask> m_pendings;
+    std::atomic<CpuMask> m_pendings;
 };
 } // namespace ours::task
 

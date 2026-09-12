@@ -83,10 +83,10 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/spin_lock.hpp>
 
+#include <atomic>
+
 #include <arch/spin_hint.hpp>
 #include <gktl/counter.hpp>
-
-using ustl::sync::MemoryOrder;
 
 namespace {
 GKTL_COUNTER(SP_SPINLOCK_NUM_HELD, "sync.spinlock.num_held");
@@ -121,8 +121,8 @@ namespace spinlock {
         // into old_state, so reusing it would compare against the last
         // holder's state and fail again by construction.
         usize old_state = UNLOCKED_STATE;
-        if (!m_lockval.compare_exchange_strong(old_state, holder, MemoryOrder::Acquire,
-                                               MemoryOrder::Relaxed)) {
+        if (!m_lockval.compare_exchange_strong(old_state, holder, std::memory_order_acquire,
+                                               std::memory_order_relaxed)) {
             return false;
         }
 
@@ -153,7 +153,7 @@ namespace spinlock {
             // is nothing to re-read yet.
             do {
                 arch::spin_hint();
-            } while (m_lockval.load(MemoryOrder::Relaxed) != UNLOCKED_STATE);
+            } while (m_lockval.load(std::memory_order_relaxed) != UNLOCKED_STATE);
         }
 
         assert_held();
@@ -165,24 +165,26 @@ namespace spinlock {
 
         SP_SPINLOCK_NUM_HELD.add(-1);
 
-        m_lockval.store(UNLOCKED_STATE, MemoryOrder::Release);
+        m_lockval.store(UNLOCKED_STATE, std::memory_order_release);
     }
 
     template <Option Options>
     auto SpinLock<Options>::is_locked() const -> bool {
         // Just observes the state of this lock. It does not change the state
         // therefore using relaxed memory order.
-        return m_lockval.load(MemoryOrder::Relaxed) != UNLOCKED_STATE;
+        return m_lockval.load(std::memory_order_relaxed) != UNLOCKED_STATE;
     }
 
     template <Option Options>
     auto SpinLock<Options>::is_held() const -> bool {
-        return holder_state(mm::CpuLocal::current_cpu()) == m_lockval.load(MemoryOrder::Relaxed);
+        return holder_state(mm::CpuLocal::current_cpu()) ==
+               m_lockval.load(std::memory_order_relaxed);
     }
 
     template <Option Options>
     auto SpinLock<Options>::assert_held() const -> void {
-        ASSERT(m_lockval.load(MemoryOrder::Relaxed) == holder_state(mm::CpuLocal::current_cpu()));
+        ASSERT(m_lockval.load(std::memory_order_relaxed) ==
+               holder_state(mm::CpuLocal::current_cpu()));
     }
 
     template <Option Options>

@@ -6,11 +6,11 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/types.hpp>
 
+#include <atomic>
 #include <concepts>
 
 #include <ustl/box.hpp>
 #include <ustl/rc.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours::object {
 template <typename KernelObject>
@@ -27,7 +27,7 @@ class Handle final {
     static auto clone(Self *kernel_handle, Rights rights) -> ustl::Box<Self>;
 
   private:
-    ustl::sync::Atomic<KoId> m_table_koid;
+    std::atomic<KoId> m_table_koid;
     ustl::Arc<Dispatcher> m_dispatcher;
 
     Rights m_rights;

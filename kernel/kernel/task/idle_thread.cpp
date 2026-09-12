@@ -5,10 +5,10 @@
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
 
+#include <atomic>
+
 #include <arch/auto_interrupt_disabler.hpp>
 #include <ktl/name.hpp>
-
-using ustl::sync::MemoryOrder;
 
 namespace ours::task {
 using mm::CpuLocal;
@@ -78,7 +78,8 @@ auto IdleThread::run() -> void {
     // (add_pending() and return), so the CPU spun here silently with
     // interrupts off and no tick could ever arrive. Zircon's IdlePowerThread
     // starts at kActive for the same reason.
-    m_states.store({.current = State::Running, .target = State::Running}, MemoryOrder::Release);
+    m_states.store({.current = State::Running, .target = State::Running},
+                   std::memory_order_release);
 
     auto &scheduler = Scheduler::Current::get();
     for (;;) {

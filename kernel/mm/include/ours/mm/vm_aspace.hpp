@@ -17,7 +17,6 @@
 #include <ktl/result.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/rc.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::mm {

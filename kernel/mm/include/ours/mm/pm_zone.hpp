@@ -18,7 +18,6 @@
 #include <gktl/range.hpp>
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours::mm {
 template <usize MaxOrder>

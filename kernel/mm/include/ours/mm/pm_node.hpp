@@ -17,6 +17,7 @@
 #include <ours/sync/spin_lock.hpp>
 
 #include <array>
+#include <atomic>
 
 #include <gktl/canary.hpp>
 #include <ktl/result.hpp>
@@ -28,7 +29,6 @@
 #include <ustl/iterator/traits.hpp>
 #include <ustl/mem/address_of.hpp>
 #include <ustl/result.hpp>
-#include <ustl/sync/atomic.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/traits/is_same.hpp>
 #include <ustl/util/pair.hpp>
@@ -412,14 +412,14 @@ class PmNode {
 
     Pfn m_start_pfn;
 
-    ustl::sync::AtomicUsize m_spanned_frames;
+    std::atomic<usize> m_spanned_frames;
 
     //! @brief present_pages is physical pages existing within the zone,
     //! which is calculated as:
     //!	    present_frames_ = spanned_frames_ - absent_frames_(pages in holes).
-    ustl::sync::AtomicUsize m_present_frames;
+    std::atomic<usize> m_present_frames;
 
-    ustl::sync::AtomicUsize m_reserved_frames;
+    std::atomic<usize> m_reserved_frames;
 
     ZoneQueues m_zone_queues;
     PageQueues m_page_queues;

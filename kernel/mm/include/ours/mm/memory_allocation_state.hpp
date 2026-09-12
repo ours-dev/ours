@@ -7,8 +7,9 @@
 #include <ours/mm/node_mask.hpp>
 #include <ours/mm/priv/memory_allocation_policy.hpp>
 
+#include <atomic>
+
 #include <ustl/rc.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours::mm {
 class MemoryAllocationState {
@@ -16,20 +17,20 @@ class MemoryAllocationState {
 
   public:
     auto enable() -> void {
-        ustl::sync::atomic_signal_fence(ustl::sync::MemoryOrder::SeqCst);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
         DEBUG_ASSERT(m_disable_count);
         m_disable_count -= 1;
-        ustl::sync::atomic_signal_fence(ustl::sync::MemoryOrder::SeqCst);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
     }
 
     auto disable() -> void {
-        ustl::sync::atomic_signal_fence(ustl::sync::MemoryOrder::SeqCst);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
         m_disable_count += 1;
-        ustl::sync::atomic_signal_fence(ustl::sync::MemoryOrder::SeqCst);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
     }
 
     auto is_enabled() const -> bool {
-        ustl::sync::atomic_signal_fence(ustl::sync::MemoryOrder::SeqCst);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
         return !m_disable_count;
     }
 

@@ -7,8 +7,9 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/task/thread.hpp>
 
+#include <atomic>
+
 #include <ustl/lazy_init.hpp>
-#include <ustl/sync/atomic.hpp>
 
 namespace ours::task {
 class IdleThread {
@@ -47,7 +48,7 @@ class IdleThread {
 
     explicit IdleThread(CpuNum cpunum);
 
-    ustl::sync::Atomic<StateMachine> m_states;
+    std::atomic<StateMachine> m_states;
     CpuNum m_cpu;
     ArchIdleThread m_arch;
     ustl::LazyInit<Thread> m_thread;
