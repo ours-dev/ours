@@ -10,6 +10,8 @@
 #include <ours/mm/vmas_flags.hpp>
 #include <ours/sync/spin_lock.hpp>
 
+#include <atomic>
+
 #include <ustl/bit.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/mem/align.hpp>
@@ -224,9 +226,11 @@ class CpuLocal::Mapper {
         return Layout::Dense == m_layout && m_next_slot < NUM_SLOTS;
     }
 
-  private:
+    /// How many chunks the reserved window can ever hold. Public because Dyn
+    /// sizes its extent table by it.
     constexpr static auto NUM_SLOTS = usize(ARCH_CPU_LOCAL_SIZE) / usize(ARCH_CPU_LOCAL_CHUNK_SLOT);
 
+  private:
     auto build_map_info() -> void;
 
     auto build_dense(VirtAddr slot, Gaf gaf) -> Status;
@@ -504,11 +508,40 @@ class CpuLocal::Dyn {
         }
     }
 
+    /// One chunk's handle range, published for lock-free reads.
+    struct Extent {
+        VirtAddr base;
+        usize size;
+    };
+
+    /// Chunk 0 plus every slot the window can hold. The Scattered layout gets
+    /// chunk 0 and no growth, so this bound covers both layouts.
+    constexpr static usize MAX_EXTENTS = Mapper::NUM_SLOTS + 1;
+
+    /// Publishes `chunk`'s range so owns() can see it.
+    ///
+    /// Called with m_lock held, which is what lets the unlocked acquire load in
+    /// owns() pair with this store: there is exactly one writer.
+    auto publish(DynChunk const &chunk) -> void {
+        auto const index = m_num_extents.load(std::memory_order_relaxed);
+        DEBUG_ASSERT(index < MAX_EXTENTS, "More cpu local chunks than the window can hold");
+
+        m_extents[index] = Extent{chunk.base, chunk.size};
+
+        // Release, and stored after the entry: a reader that sees this count
+        // must also see the entry it counts.
+        m_num_extents.store(index + 1, std::memory_order_release);
+    }
+
     mutable sync::SpinLock m_lock;
     Mapper *m_mapper;
     ustl::collections::intrusive::List<DynChunk> m_dynchunks;
     DynChunk m_first_chunk;
     std::array<usize, DYN_WORDS> m_first_bitmap;
+
+    /// Read without m_lock; see owns().
+    std::array<Extent, MAX_EXTENTS> m_extents;
+    std::atomic<usize> m_num_extents;
 };
 
 auto CpuLocal::Dyn::init(Mapper &mapper) -> void {
@@ -528,6 +561,7 @@ auto CpuLocal::Dyn::init(Mapper &mapper) -> void {
     m_first_chunk.num_cells_used = 0;
 
     m_dynchunks.push_back(m_first_chunk);
+    publish(m_first_chunk);
 }
 
 /// Takes another chunk and puts a DynChunk over it.
@@ -569,14 +603,29 @@ auto CpuLocal::Dyn::grow() -> bool {
     chunk->bitmap = ustl::views::make_span(bits, words);
 
     m_dynchunks.push_back(*chunk);
+    publish(*chunk);
     return true;
 }
 
+/// Deliberately lock-free.
+///
+/// This answers resolve()'s debug assert, which sits under every per-CPU
+/// access, so taking m_lock here put one global lock on that path -- and closed
+/// a cycle with it: allocate() holds m_lock across grow(), grow() calls into the
+/// buddy allocator, and the buddy reaches a PerCpu whose resolve() lands back
+/// here asking for the same lock. In a KERNEL_DEBUG_LEVEL build that is a
+/// self-deadlock on the first dynamic per-CPU allocation that has to grow.
+///
+/// No lock is needed because a chunk is only ever appended -- grow() is the one
+/// writer, nothing removes a chunk -- and an entry's base and size never change
+/// once published. Reading the count with acquire is therefore enough: every
+/// entry below it is finished and immutable. Linux's pcpu_chunk_addr_search()
+/// reads its chunk list without pcpu_lock on the same grounds.
 auto CpuLocal::Dyn::owns(VirtAddr handle) const -> bool {
-    Guard guard{m_lock};
-
-    for (auto const &chunk: m_dynchunks) {
-        if (handle >= chunk.base && handle < chunk.base + chunk.size) {
+    auto const num_extents = m_num_extents.load(std::memory_order_acquire);
+    for (auto i = usize(0); i < num_extents; ++i) {
+        auto const &extent = m_extents[i];
+        if (handle >= extent.base && handle < extent.base + extent.size) {
             return true;
         }
     }
