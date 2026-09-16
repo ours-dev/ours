@@ -198,11 +198,47 @@ class CpuLocal {
         return ustl::function::invoke(f, cpu, Self::access(t, cpu));
     }
 
+    /// Every CPU slot that has storage, in order.
+    ///
+    /// Not Cpu::online_mask(), which is what this used to walk. Two reasons,
+    /// and either alone settles it:
+    ///
+    /// A CPU can have storage and not be in that mask. init() gives the boot
+    /// CPU its unit, but Cpu::set_state(Online) does not run until the end of
+    /// init_arch_early() -- so between those two points walking the online mask
+    /// visits *nothing* and returns quietly, and MemCache::init() runs inside
+    /// that window. A loop that silently does nothing is worse than one that
+    /// faults.
+    ///
+    /// And even once everything is up, the online mask is the wrong question.
+    /// These walks exist to reach every copy of an object -- summing a counter,
+    /// draining a cache -- and a CPU that went offline still has its copy, with
+    /// whatever it accumulated in it. Skipping it loses data. This is why Linux
+    /// sums per-CPU counters with for_each_possible_cpu() rather than
+    /// for_each_online_cpu().
+    ///
+    /// The predicate is "has storage" rather than possible_mask() because
+    /// possible_mask() is filled from the MADT, which is parsed after
+    /// init_pmm() -- it is not yet meaningful when the first per-CPU walks
+    /// happen. init() builds a unit for all MAX_CPU slots for the same reason,
+    /// and allocate()/reset() already construct and destroy across the same
+    /// range, so this matches what the rest of the class does.
+    template <typename F>
+    FORCE_INLINE
+    static auto for_each_unit(F &&f) -> void {
+        for (auto cpunum = CpuNum(0); cpunum < MAX_CPU; ++cpunum) {
+            if (Self::CPU_OFFSETS[cpunum] == 0) {
+                continue;
+            }
+            ustl::function::invoke(f, cpunum);
+        }
+    }
+
     /// For each instance on different CPU.
     template <typename T, typename F>
     FORCE_INLINE
     static auto for_each(T &t, F &&f) -> void {
-        return Cpu::online_mask().for_each([&t, &f](CpuNum cpunum) {
+        return Self::for_each_unit([&t, &f](CpuNum cpunum) {
             auto &current = Self::access(t, cpunum);
             ustl::function::invoke(f, cpunum, current);
         });
@@ -211,7 +247,7 @@ class CpuLocal {
     template <typename U, typename T, typename F>
     FORCE_INLINE
     static auto fold(T &t, U acc, F &&f) -> U {
-        Cpu::online_mask().for_each([&acc, &t, &f](CpuNum cpunum) {
+        Self::for_each_unit([&acc, &t, &f](CpuNum cpunum) {
             auto &current = Self::access(t, cpunum);
             acc = ustl::function::invoke(f, cpunum, current, acc);
         });
@@ -366,7 +402,7 @@ class CpuLocal::PerCpu {
         if (m_handle == NOWHERE) {
             return;
         }
-        Cpu::online_mask().for_each(
+        CpuLocal::for_each_unit(
             [this, &f](CpuNum cpunum) { ustl::function::invoke(f, cpunum, ref_mut(cpunum)); });
     }
 

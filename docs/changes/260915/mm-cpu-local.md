@@ -168,3 +168,64 @@ CPU 号合法**且 offset 非零**。offset 不可能合法地为零：unit 来�
 **故意没做**
 没有改成返回一个不可解引用的包装类型。那会是另一套设计（真正的 `PercpuPtr<T>`），
 而现在没有任何调用者需要把 handle 拿出去——不需要的东西不必先造出来再包好。
+
+---
+
+## `for_each` / `fold` 改成遍历「有存储的 CPU」，不再是 online mask（2026-09-15）
+
+**文件**
+- `kernel/mm/include/ours/mm/cpu_local.hpp` — 新增 `for_each_unit()`，
+  `CpuLocal::for_each`、`CpuLocal::fold`、`PerCpu::for_each` 三处都改走它。
+
+**症状**
+`CpuLocal::init()` 之后、`init_arch_early()` 结束之前调用这三个中的任何一个，
+会**一个 CPU 都不访问、静默返回**。`MemCache::init()` 正在这个窗口里。
+
+**原因**
+两条，各自都足以否掉 online mask。
+
+一、**有存储不等于在线**。`init()` 给 boot CPU 建好 unit 并 `bootstrap(CpuMask::of(0))`，
+而 `Cpu::set_state(Online)` 要到 `init_arch_early()` 末尾
+（`kernel/arch/x86/kernel/init.cpp:90`）才跑。这中间遍历 online mask 就是空转。
+`with_current()` 已经因为同一个理由从 online mask 换成了 `has_unit()`，头文件里也写了
+原因——但 `for_each` 没有跟过去。
+
+二、**就算全都起来了，online 也是错的问题**。这几个遍历存在的目的是"够到这个对象的
+每一份拷贝"：把计数器加起来、把缓存排空。一个下线了的 CPU，它那份拷贝还在，里面还存着
+它下线前累计的东西；跳过它就是丢数据。Linux 汇总 per-CPU 计数器用的是
+`for_each_possible_cpu()` 而不是 `for_each_online_cpu()`，正是这个道理。
+
+反方向的窗口不存在：AP 的 `x86_start_nonboot_cpu()` 第一件事就是
+`CpuLocal::init_percpu()`（`kernel/arch/x86/kernel/mp.cpp:126`），所以不会出现
+"在线但没有 unit"。两个谓词是单向包含，换过去只会多访问、不会少访问。
+
+**改法**
+新增私有的 `for_each_unit(F&&)`，从 0 扫到 `MAX_CPU`，跳过 offset 为 0 的 slot。
+
+谓词选的是"有存储"，不是 `Cpu::possible_mask()`。possible mask 是从 MADT 填的，
+而 MADT 在 `local_apic.cpp:78` 才解析，比 `init_pmm()` 还晚——最早那几次 per-CPU 遍历
+发生时它还没有意义，换成它只是把空转从一个窗口挪到另一个窗口。`init()` 给全部
+`MAX_CPU` 个 slot 都建 unit 也是同一个理由（头文件里原本就写了），而
+`allocate()` / `reset()` 早就在 `0..MAX_CPU` 上构造和析构——所以这个谓词是跟类里其余
+部分一致的那个，不是新发明的。
+
+顺带一个好处：跳过 offset 为 0 的 slot，正好满足上一条改动给 `access(t, cpunum)` 加的
+断言，两者不会打架。
+
+**参照**
+`Linux for_each_possible_cpu()`，以及它在 `mm/page_alloc.c` 里汇总 `vm_stat` 之类
+per-CPU 计数时的用法。ours 这边因为 possible mask 来得太晚，用的是等价物"有存储"。
+
+**验证**
+- `ninja -C out/bringup.x86`：通过。
+- `clang-tidy`：改动行上无新增诊断。
+- QEMU 两个镜像：`kernel.dev.dbg_1.obi` 正常启动跑到线程调度，`kernel.dev.obi`
+  启动到 ring 3 的 shell。
+- **没有构造出"空转"那个现象再验一遍**：现在没有调用者恰好落在那个窗口里踩到它，
+  这次改的是把窗口消掉。
+
+**故意没做**
+- 没有改 `with_current()`。它走的是 `has_unit()`，问的是"调用它的这颗 CPU 能不能用"，
+  和"有几份拷贝要遍历"是两个问题，各自的谓词都对。
+- 没有把 `Cpu::online_mask()` 的用法从别处也扫一遍。别的子系统用它多半是真的想问
+  "谁在跑"，那是对的；只有 per-CPU 存储的遍历不是。
