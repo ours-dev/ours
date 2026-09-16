@@ -102,12 +102,31 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
         now_ticks = time::SteadyClock::ticks();
     } while (now_ticks < deadline_ticks);
 
-    // Failed to wait a lock release. Make current thread sleep
+    // Every exit above either returned false on a successful CAS or broke out
+    // to here: contended by another thread, self-owned, or the spin deadline
+    // passed. None of those acquired the mutex, so block until a releaser
+    // hands it over.
+    //
+    // Until now this returned `true` and nothing else: the comment said "make
+    // current thread sleep" and no sleep followed. m_waiters was written only
+    // by release_slowpath(), which picks a successor out of a queue that
+    // nothing ever joined, so the wake half ran against a permanently empty
+    // queue -- and a caller that lost the race returned from acquire()
+    // believing it held a mutex whose m_state named another thread.
+    auto const status = m_waiters.park_and_assign_owner(current_thread, time::Deadline::infinite(),
+                                                        task::Interruptible::No);
+    if (Status::Ok != status) {
+        // Could not park -- the caller retries rather than proceeding
+        // unlocked, which is the whole point of reporting "not acquired".
+        return true;
+    }
 
-    // Every exit above either returns false on a successful CAS or breaks
-    // here: contended by another thread, self-owned, or the spin deadline
-    // passed. None of those acquired the mutex.
-    return true;
+    // Held on return, and not by racing for it again: release_slowpath()
+    // publishes the woken thread as the new owner *before* notifying it
+    // (see the publish() call there), so this is a hand-off. Re-testing
+    // m_state here would be a second acquisition attempt against a mutex
+    // this thread already owns.
+    return false;
 }
 
 auto Mutex::try_release(Thread *current_thread) -> State {

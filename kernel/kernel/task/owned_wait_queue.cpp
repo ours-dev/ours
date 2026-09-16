@@ -1,4 +1,5 @@
 #include <ours/lockdep.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/scheduler.hpp>
 #include <ours/task/thread.hpp>
@@ -229,10 +230,32 @@ auto OwnedWaitQueue::lock_for_park_and_assign_owner_or_backoff(Thread *const cur
     return ParkAndAssignOwner{new_owner};
 }
 
-auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline const &,
+/// Blocks `curr` on this queue until a waker hands it whatever the queue
+/// guards.
+///
+/// The name promises two things and currently delivers one. The parking is
+/// real: it goes through WaitQueue::park_thread(), so the thread leaves the
+/// run queue and the caller's activation does not come back until somebody
+/// notifies it. The owner assignment is not armed, and that is deliberate
+/// rather than forgotten -- see the note below.
+///
+/// The PI lock is taken here rather than asked of the caller, and it is taken
+/// with interrupts and preemption disabled, because the guard is carried into
+/// reschedule_common() through park_thread() and that is the state it
+/// requires. Event::wait_etc() takes it the same way for the same reason.
+auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline const &deadline,
                                            Interruptible interruptible) -> Status {
     verify_owned();
-    return Status::Ok;
+
+    // Not assign_owner(new_owner) yet. That path walks the PI chain --
+    // begin_propagate() asserts the owner's PI lock is already held -- and
+    // acquiring a chain of thread locks without a global thread_lock needs the
+    // ChainLock-style backoff that lock_for_park_and_assign_owner_or_backoff()
+    // is a placeholder for. Blocking without inheritance is a correct mutex
+    // that can invert priorities; blocking with a half-built chain walk is a
+    // deadlock. Recorded in docs/repairs.
+    Guard<sync::SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{curr->get_pi_lock()};
+    return park_thread(curr, deadline, Signals::None, interruptible);
 }
 
 template <typename Upstream, typename Downstream>

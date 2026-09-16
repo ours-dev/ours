@@ -92,7 +92,14 @@ class TA_CAPABILITY("CriticalMutex") CriticalMutex: protected Mutex {
 FORCE_INLINE
 inline auto Mutex::acquire(Duration spining_duration) -> void {
     m_canary.verify<Self>();
-    acquire_common(spining_duration, TimesliceExtension<false>{});
+
+    // acquire_common() answers "you still do not hold it" -- true after a park
+    // that could not happen, false once the mutex is this thread's. Dropping
+    // that answer, which is what this used to do, turned every contended
+    // acquire into a silent no-op: the caller walked into the critical section
+    // with m_state naming somebody else.
+    while (acquire_common(spining_duration, TimesliceExtension<false>{})) {
+    }
 }
 
 } // namespace ours::sync
