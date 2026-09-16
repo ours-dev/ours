@@ -43,18 +43,3 @@ unit」。也就是说两个谓词之间是单向包含，选 `has_unit()` 严�
 
 要决定的是语义：`for_each` 想遍历的是「所有跑着的 CPU」还是「所有有存储的 CPU」。
 Linux 的 `for_each_possible_cpu()` 遍历的是后者，理由正是 per-CPU 存储按 possible 分配。
-
----
-
-## 3. `PerCpu::handle()` 把裸 handle 漏了出去，而且没有使用者
-
-`PerCpu` 的类注释说：
-
-> Linux relies on sparse and a `__percpu` annotation to stop callers dereferencing the
-> equivalent value; here the type simply never offers a way to.
-
-但 `handle()`（`cpu_local.hpp:315`）返回 `VirtAddr`，拿到就能 `reinterpret_cast` 解引用，
-落点正是链接器那份模板。全树已经没有调用者（原先 `prof_console.cpp` 用它跟 `NOWHERE`
-比较，后来改成了 `operator bool`）。
-
-删掉它，注释所说的性质才真的成立。

@@ -128,3 +128,43 @@ CPU 号合法**且 offset 非零**。offset 不可能合法地为零：unit 来�
   `DEBUG_ASSERT` 是对的层级。
 - 没有动 `resolve(handle)`（无 CPU 号的那个重载）。它走 `%gs`，读的是当前 CPU 自己的
   offset，而一个正在执行的 CPU 必然已经 attach 过——`attach_to_unit()` 是它跑起来的前提。
+
+---
+
+## 删掉 `PerCpu::handle()`（2026-09-15）
+
+**文件**
+- `kernel/mm/include/ours/mm/cpu_local.hpp` — 移除 `PerCpu::handle()`。
+
+**症状**
+无。全树零调用者，纯粹是把一件类注释宣称做不到的事又开了个口子。
+
+**原因**
+`PerCpu` 的类注释写着：
+
+> Linux relies on sparse and a `__percpu` annotation to stop callers dereferencing the
+> equivalent value; here the type simply never offers a way to.
+
+这句话是这个类的全部价值主张——它不靠外部工具，靠自己的接口形状保证 handle 不会被
+当指针用。但 `handle()` 返回 `VirtAddr`，拿到手 `reinterpret_cast` 一下就解引用了，
+落点正是链接器那份模板，也就是上一条改动刚加断言去防的那块内存。
+
+一个"类型上不可能"的性质，只要有一个访问器把内部值原样交出去就不再成立。
+
+原先唯一的调用者是 `prof_console.cpp`，拿它跟 `NOWHERE` 比较判空；那处后来改用
+`operator bool` 了，这个函数就再没人用过。
+
+**改法**
+删掉。判空有 `operator bool`，要计数有 `count()`，没有第三种正当用途。
+
+**参照**
+`Linux` 的 `void __percpu *` 靠 sparse 的 `__percpu` 注解拦截解引用；ours 没有 sparse，
+所以只能靠类型本身不提供出口。这次是把出口关上。
+
+**验证**
+- `ninja -C out/bringup.x86`：通过（确认确实没有调用者）。
+- QEMU 实测 `kernel.dev.obi`：启动到 ring 3 的 shell。
+
+**故意没做**
+没有改成返回一个不可解引用的包装类型。那会是另一套设计（真正的 `PercpuPtr<T>`），
+而现在没有任何调用者需要把 handle 拿出去——不需要的东西不必先造出来再包好。

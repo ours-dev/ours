@@ -332,12 +332,6 @@ class CpuLocal::PerCpu {
         return *this;
     }
 
-    /// The handle these objects are named by.
-    [[nodiscard]]
-    auto handle() const -> VirtAddr {
-        return m_handle;
-    }
-
     /// The calling CPU's copy.
     FORCE_INLINE
     auto ptr_mut() -> T * {
