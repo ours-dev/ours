@@ -95,8 +95,7 @@ class CpuLocal {
     FORCE_INLINE
     static auto resolve(VirtAddr handle, CpuNum cpu) -> VirtAddr {
         DEBUG_ASSERT(Self::holds(handle), "Resolving a handle that names nothing");
-        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
-        return handle + VirtAddr(Self::CPU_OFFSETS[cpu]);
+        return handle + VirtAddr(Self::offset_of(cpu));
     }
 
     /// Points the boot CPU at the linker-provided section so that `CPU_LOCAL`
@@ -163,8 +162,7 @@ class CpuLocal {
     template <typename T>
     FORCE_INLINE
     static auto access(T &t, CpuNum cpunum) -> T & {
-        DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU Number");
-        return *static_cast<T *>(Self::relocate(&t, Self::CPU_OFFSETS[cpunum]));
+        return *static_cast<T *>(Self::relocate(&t, Self::offset_of(cpunum)));
     }
 
     /// The CPU number the caller is running on, read out of its own unit.
@@ -254,6 +252,30 @@ class CpuLocal {
         Online,
         NumStates,
     };
+
+    /// `cpunum`'s offset, checked.
+    ///
+    /// A CPU with no unit has offset zero -- init_early() clears the table and
+    /// only fills in the boot CPU -- and zero does not fail loudly: it resolves
+    /// to the linker template itself. That is the one region nothing may write.
+    /// It lives in `.init.data.cpu_local`, so after reclaim_init_area() hands
+    /// the `.init` area back it is not even stale defaults any more, it is
+    /// memory somebody else owns. And because both the handle and the resulting
+    /// address are perfectly legal, holds() cannot see it and nothing faults.
+    ///
+    /// Checked against the offset rather than has_unit(): has_unit() says a CPU
+    /// has *attached* to its unit, which is a later event than the unit
+    /// existing. init() fills every offset in one pass and then writes each
+    /// unit's own bookkeeping through access() in the next, long before any of
+    /// those CPUs attach -- asserting on has_unit() there would fire on the
+    /// boot path.
+    FORCE_INLINE
+    static auto offset_of(CpuNum cpunum) -> isize {
+        DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU Number");
+        DEBUG_ASSERT(Self::CPU_OFFSETS[cpunum] != 0,
+                     "CPU[{}] has no per-CPU unit; resolving would land in the template", cpunum);
+        return Self::CPU_OFFSETS[cpunum];
+    }
 
     /// Binds the calling CPU to `cpunum`'s unit. `offset` is what the base
     /// register is loaded with.

@@ -74,3 +74,57 @@ Dyn::allocate()                     取 m_lock
 - 没有把 `m_dynchunks` 换掉。分配和释放仍然走链表、仍然持锁，那条路不在热路径上。
 - 没有给「chunk 只增不减」加静态检查。它现在是注释里的不变量；如果将来真要支持收缩动态区，
   `owns()` 这套就得跟着改成带 generation 的方案。
+
+---
+
+## 按 CPU 号解析时检查该 CPU 真的有存储（2026-09-15）
+
+**文件**
+- `kernel/mm/include/ours/mm/cpu_local.hpp` — 新增私有的 `offset_of(CpuNum)`，
+  `resolve(handle, cpu)` 和 `access(t, cpunum)` 都改走它。
+
+**症状**
+潜伏，当前触发不到。触发条件是在 `CpuLocal::init()` 之前，用一个还没有 unit 的 CPU 号去
+`resolve()` 或 `access()`。现在的启动路径不会这么做，但这件事**不会以任何方式报错**——
+既不 fault、也不被 `holds()` 拦住，只是静静地读写错地方。
+
+**原因**
+`init_early()` 把 `CPU_OFFSETS` 整张表清成 0，只填 boot CPU 那一项；其余要等
+`init()` 才有值。而 offset 为 0 意味着 `handle + 0 == handle`，也就是解析回**模板自身**。
+
+模板是那份由链接器发射、谁都不许写的 `CPU_LOCAL` 镜像。它住在
+`.init.data.cpu_local` 里，`reclaim_init_area()` 启动后会把整个 `.init` 区还给分配器——
+所以往这里写，早期是污染"默认值"，晚期是往别人已经拿走的内存里写。
+
+之所以完全静默，是因为**每一步都是合法的**：CPU 号在范围内，handle 在静态区内，
+`holds()` 因此答"是"，相加得到的地址也确实映射着。没有任何一层能看出这是错的。
+唯一能看出来的信息是 offset 本身为零，而那正是之前没有人检查的那一项。
+
+**改法**
+把两处 `CPU_OFFSETS[cpunum]` 的直接下标换成 `offset_of(cpunum)`，它在 debug 下断言
+CPU 号合法**且 offset 非零**。offset 不可能合法地为零：unit 来自 EarlyMem 或 buddy，
+而 `origin()` 在内核镜像的 `.init.data` 里，两者不会重合。
+
+没有用已有的 `has_unit()` 做这个断言，尽管名字更贴切：`has_unit()` 说的是某个 CPU 已经
+**attach 到**它的 unit，这比 unit 存在要晚。`init()` 先用一趟循环填完所有 offset，再用
+下一趟通过 `access()` 写每个 unit 自己的记账字段（`CURRENT_CPU_OFFSET`、`CURRENT_CPUNUM`），
+那时候没有任何一个 CPU attach 过——拿 `has_unit()` 断言会在启动路径上直接打死。
+
+**参照**
+无直接对应物。Linux 的 `per_cpu_ptr()` 在 `CONFIG_DEBUG_PER_CPU_MAPS` 下会走
+`per_cpu_ptr_to_phys()` 之外的检查路径，但它查的是 cpu 是否 possible，而不是 offset
+是否已填——因为 Linux 的 `__per_cpu_offset[]` 在 `setup_per_cpu_areas()` 里一次填满，
+不存在 ours 这种"boot CPU 先有、其余后有"的中间态。这个中间态是 `init_early()` 带来的，
+断言也就只能按它来写。
+
+**验证**
+- `ninja -C out/bringup.x86`：通过。
+- `clang-tidy`：改动行上无新增诊断。
+- QEMU 两个镜像都实测：`kernel.dev.dbg_1.obi`（断言是活的）正常启动并跑到线程调度，
+  说明启动路径上没有一处踩到零 offset；`kernel.dev.obi` 启动到 ring 3 的 shell。
+
+**故意没做**
+- 没有在 release 下也检查。这是一条纯粹的编程错误断言，不是运行时可能发生的状况，
+  `DEBUG_ASSERT` 是对的层级。
+- 没有动 `resolve(handle)`（无 CPU 号的那个重载）。它走 `%gs`，读的是当前 CPU 自己的
+  offset，而一个正在执行的 CPU 必然已经 attach 过——`attach_to_unit()` 是它跑起来的前提。

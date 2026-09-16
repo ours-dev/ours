@@ -46,21 +46,7 @@ Linux 的 `for_each_possible_cpu()` 遍历的是后者，理由正是 per-CPU �
 
 ---
 
-## 3. 按 CPU 号解析时不检查该 CPU 有没有 unit
-
-`resolve(handle, cpu)`（`cpu_local.hpp:97`）只断言 `cpu < MAX_CPU`，
-`access(t, cpunum)`（`:291`）同样。没有 unit 的 CPU 其 `CPU_OFFSETS[cpu]` 是
-`init_early()` 清成的 0，于是 `handle + 0` 解析回模板自身。
-
-模板是 `.init.data.cpu_local`，`reclaim_init_area()` 启动后会把它还给分配器。也就是说这不是
-读到过期的默认值那么轻——是往一块已经交给别人的内存里写。而且因为 handle 合法、地址也合法，
-`holds()` 查不出来，不会有任何报错。
-
-`has_unit()` 已经存在且正是为此，这两个断言应该用它。
-
----
-
-## 4. `PerCpu::handle()` 把裸 handle 漏了出去，而且没有使用者
+## 3. `PerCpu::handle()` 把裸 handle 漏了出去，而且没有使用者
 
 `PerCpu` 的类注释说：
 
@@ -68,7 +54,7 @@ Linux 的 `for_each_possible_cpu()` 遍历的是后者，理由正是 per-CPU �
 > equivalent value; here the type simply never offers a way to.
 
 但 `handle()`（`cpu_local.hpp:315`）返回 `VirtAddr`，拿到就能 `reinterpret_cast` 解引用，
-落点正是第 3 条说的那块模板。全树已经没有调用者（原先 `prof_console.cpp` 用它跟 `NOWHERE`
+落点正是链接器那份模板。全树已经没有调用者（原先 `prof_console.cpp` 用它跟 `NOWHERE`
 比较，后来改成了 `operator bool`）。
 
 删掉它，注释所说的性质才真的成立。
