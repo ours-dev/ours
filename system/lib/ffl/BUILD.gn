@@ -1,0 +1,24 @@
+import("//build/cpp/cpp_interface.gni")
+
+# Fixed-point arithmetic for the scheduler: exact ratios, defined rounding,
+# no floating point. Header-only -- every operation is constexpr and there is
+# nothing to link, so there is no source_set here.
+cpp_interface("headers") {
+  public = [
+    "include/ffl/fixed.hpp",
+    "include/ffl/format.hpp",
+    "include/ffl/saturating.hpp",
+    "include/ffl/wider.hpp",
+  ]
+  visibility = [ "*" ]
+}
+
+group("ffl") {
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "test:fixed($host_toolchain)" ]
+}

@@ -6,6 +6,7 @@ group("tests") {
   deps = [
     "concurrent:tests",
     "derive:tests",
+    "ffl:tests",
     "hsien:tests",
     "logz4:tests",
     "ustl:tests",

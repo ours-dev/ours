@@ -125,5 +125,11 @@ group("default") {
     # anything at all.
     "//kernel/phys/lib/bootshim:tests",
     "//kernel/phys/lib/multiboot:tests",
+
+    # Fixed-point arithmetic, which the scheduler's weighting needs and which
+    # the kernel cannot get from floating point. Almost all of its checking is
+    # static_assert inside the test translation unit, so building this target
+    # is most of what running it proves.
+    "//system/lib/ffl:tests",
   ]
 }
