@@ -177,7 +177,7 @@ auto Fair::adjust_vlag(Runtime &runtime, Context &ctx) -> void {
 
     auto &timeslice = ctx.m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
-        timeslice.m_base = static_cast<u32>(runtime.scheduling_period().raw());
+        timeslice.m_base = static_cast<u32>(scheduling_period().raw());
     }
 
     auto &params = ctx.m_params;

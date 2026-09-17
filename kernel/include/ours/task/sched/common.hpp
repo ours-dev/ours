@@ -137,6 +137,51 @@ static_assert(
 /// it.
 static_assert(MIN_WEIGHT > Weight{0});
 
+/// The smallest slice a thread is meant to be given in a single round.
+///
+/// A constant, not a per-CPU field. It never varied per CPU -- every Runtime
+/// initialised it from the same expression -- and a value that is the same on
+/// every CPU costs a cache line in each run queue to say so. Linux draws the
+/// same line: sysctl_sched_base_slice is a global, not a member of struct rq.
+constexpr auto MIN_SCHED_GRANULARITY = Milliseconds(1);
+
+/// CFS's targeted latency: the window in which every runnable thread should
+/// get the CPU once.
+///
+/// Each thread then runs for a slice proportional to its weight over the total
+/// weight of everything runnable. A smaller target is better interactivity and
+/// a closer approximation of perfect multitasking, paid for in switching cost
+/// and so in throughput.
+constexpr auto TARGETED_LATENCY = Milliseconds(8);
+
+/// How many granularity units make up one scheduling period.
+constexpr usize SCHEDULING_PERIOD_GRANS = TARGETED_LATENCY / MIN_SCHED_GRANULARITY;
+
+/// The unit the scheduling period is actually built from.
+///
+/// **This is TARGETED_LATENCY, not MIN_SCHED_GRANULARITY, and that is wrong.**
+/// The field this replaces was named `minimal_granularity`, its comment said
+/// "the smallest timeslice a thread is allocated in a single round", and it
+/// was initialised from the 8 ms latency with the unused 1 ms constant sitting
+/// directly above it -- so scheduling_period() answers 64 ms, and 64 ms is
+/// every thread's slice base today.
+///
+/// It is preserved here deliberately. Correcting it multiplies the
+/// context-switch rate by eight, which is a behaviour change and belongs in
+/// its own commit with its own measurements, not smuggled in under a move of
+/// some constants. See docs/repairs/260917/kernel-task-sched.md.
+constexpr SchedDuration SCHED_GRANULARITY = to_sched_duration(TARGETED_LATENCY);
+
+/// The period in which every runnable thread executes once.
+///
+/// Free function rather than a Runtime member: it reads nothing per-CPU, and
+/// leaving it on Runtime meant a discipline had to be handed the whole run
+/// queue to ask a question with a compile-time answer.
+FORCE_INLINE
+constexpr auto scheduling_period() -> SchedDuration {
+    return SCHED_GRANULARITY * static_cast<i64>(SCHEDULING_PERIOD_GRANS);
+}
+
 /// HIGHEST_PRIORITY is the table's last index, so the range is closed at
 /// both ends. The check used to be `priority < HIGHEST_PRIORITY`, which
 /// rejected the one priority the name promises is valid; nothing tripped it

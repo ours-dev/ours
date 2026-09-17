@@ -420,3 +420,80 @@ prebuilt/ninja/ninja -C out/bringup.x86 -t commands \
 - 没有把 `fair.cpp` 放回构建。它还有别的问题（例如 `calc_weighted_time` 的整数除法），
   且 Fair 是作者自留的设计，回不回构建由作者决定。
 - 没有碰 Fair 的任何逻辑。
+
+## 调度周期常量从 Runtime 字段上移为 constexpr（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/common.hpp` — 新增 `MIN_SCHED_GRANULARITY`、
+  `TARGETED_LATENCY`、`SCHEDULING_PERIOD_GRANS`、`SCHED_GRANULARITY` 和自由函数
+  `scheduling_period()`
+- `kernel/include/ours/task/sched/runtime.hpp` — 删掉五个成员和两个方法
+- `kernel/kernel/task/sched/rr.cpp`、`fair.cpp` — 改调自由函数
+
+**症状**
+
+潜伏。`Runtime` 里有三个字段（`scheduling_period_grans`、`minimal_period_grans`、
+`minimal_granularity`）和两个静态常量，每个 CPU 一份，而每个 CPU 都用同一个表达式
+初始化它们——它们从来没有 per-CPU 过。副作用是：纪律想问一个编译期就有答案的问题
+（「一轮周期多长」），也必须先被递上整个运行队列。
+
+`min_scheduling_period()` 零调用者，而且和 `scheduling_period()` 恒等
+（两个 grans 字段的初始化表达式一模一样）。
+
+**原因**
+
+把全局常量伪装成 per-CPU 字段，有两重代价。每个运行队列为此多占一段缓存行，
+只为了在每个 CPU 上说同一句话；更要紧的是它扩大了纪律的接口需求——
+`ISchedule::on_thread_init()` 之所以要收一个 `Runtime &`，唯一的理由就是
+`RoundRobin` 要读 `runtime.scheduling_period()`。常量上移之后这个理由就没了。
+
+Linux 划的是同一条线：`sysctl_sched_base_slice` 是全局变量，不在 `struct rq` 里。
+
+**改法**
+
+```cpp
+// 改前（runtime.hpp，每 CPU 一份）
+usize scheduling_period_grans = DEFAULT_MIN_TARGETED_LATENCY / DEFAULT_MIN_SCHED_GRANULARITY;
+usize minimal_period_grans    = DEFAULT_MIN_TARGETED_LATENCY / DEFAULT_MIN_SCHED_GRANULARITY;
+SchedDuration minimal_granularity = to_sched_duration(DEFAULT_MIN_TARGETED_LATENCY);
+auto scheduling_period() const -> SchedDuration;
+auto min_scheduling_period() const -> SchedDuration;
+
+// 改后（common.hpp，编译期）
+constexpr usize SCHEDULING_PERIOD_GRANS = TARGETED_LATENCY / MIN_SCHED_GRANULARITY;
+constexpr SchedDuration SCHED_GRANULARITY = to_sched_duration(TARGETED_LATENCY);
+FORCE_INLINE
+constexpr auto scheduling_period() -> SchedDuration;
+```
+
+`min_scheduling_period()` 直接删掉：没有调用者，而且和上面那个恒等。
+
+**刻意保留了一个 bug。** `SCHED_GRANULARITY` 取的是 `TARGETED_LATENCY`（8ms）
+而不是 `MIN_SCHED_GRANULARITY`（1ms），于是周期是 64ms 而不是 8ms——这正是原来那个
+字段的值，原样搬了过来。改它会把上下文切换频率提高 8 倍，是行为变更，必须自己一个
+提交、自己一份实测数字。已记入 `docs/repairs/260917/kernel-task-sched.md`。
+注释里把这件事写在常量头上，而不是只记在待修文档里，因为读代码的人先遇到的是常量。
+
+**参照**
+
+`Linux sysctl_sched_base_slice`（全局，不在 `struct rq` 内）。
+
+**验证**
+
+行为中性是被证明的，不是声称的——用 `rr.cpp` 的真实编译命令编了一个只含断言的 TU：
+
+```cpp
+static_assert(SCHEDULING_PERIOD_GRANS == 8);
+static_assert(scheduling_period().raw() == 64'000'000);   // 与改前逐位相同
+```
+
+全量构建通过，`fair.cpp` 单独语法检查通过。QEMU 两个镜像各约 40 秒：
+`kernel.dev.dbg_1.obi` 两线程交替 119487 / 119427 次，断言/panic/异常计数 0；
+`kernel.dev.obi` userboot 正常，计数 0。
+
+**故意没做**
+
+- 没有改 `ISchedule::on_thread_init()` 的签名。上移常量是为它铺路（RR 读周期是它
+  需要 `Runtime &` 的唯一理由），但改签名要动 `scheduler.cpp`，而那个文件此刻有
+  别的会话未提交的改动。等它提交后再做。
+- 没有修 64ms 那个 bug，理由同上。
