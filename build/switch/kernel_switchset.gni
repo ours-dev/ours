@@ -77,6 +77,12 @@ template("kernel_switchset") {
 
         "//system/lib/ustl:headers.config",
 
+        # <ffl/*.hpp> holds the scheduler's fixed-point and reciprocal
+        # arithmetic, and it is reached from ours/task/sched/common.hpp --
+        # a header pulled in through Thread by most of kernel-proper, not
+        # just by the scheduler's own source_set.
+        "//system/lib/ffl:headers.config",
+
         # ours/sync/spin_lock.hpp includes <lockdep/state_saver.hpp> directly,
         # and spin-lock.hpp is itself reached from mutex.hpp/wait_queue.hpp --
         # broadly-included kernel headers, not just the few source_sets that
