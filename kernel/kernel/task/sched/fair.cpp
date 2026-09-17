@@ -84,7 +84,7 @@ auto RunQueue::update_min_vruntime(Context &current) -> void {
     // TODO(SmallHuaZi) To figure out the problem that need to search in runqueue
     // for a potential minimal vruntime.
 
-    if (auto delta = min_vruntime - min_vruntime_; delta > SchedDuration::zero()) {
+    if (auto delta = min_vruntime - min_vruntime_; delta > SchedDuration{0}) {
         min_vruntime_ = min_vruntime; // min_vruntime_ + delta
         total_vruntime_ -= delta * weight_sum_;
     }
@@ -177,11 +177,11 @@ auto Fair::adjust_vlag(Runtime &runtime, Context &ctx) -> void {
 
     auto &timeslice = ctx.m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
-        timeslice.m_base = static_cast<u32>(runtime.scheduling_period().count());
+        timeslice.m_base = static_cast<u32>(runtime.scheduling_period().raw());
     }
 
     auto &params = ctx.m_params;
-    if (vlag != SchedDuration::zero()) {
+    if (vlag != SchedDuration{0}) {
         // Adjust the vlag.
     }
 
@@ -201,7 +201,7 @@ auto Fair::update_thread(Runtime &runtime, Thread *curr) -> void {
     auto const now = runtime.clock();
     auto const elapsed = now - runtime.curr_started_time;
 
-    if (elapsed < SchedDuration::zero()) [[unlikely]] {
+    if (elapsed < SchedDuration{0}) [[unlikely]] {
         return;
     }
 
@@ -211,7 +211,7 @@ auto Fair::update_thread(Runtime &runtime, Thread *curr) -> void {
     ctx.m_params.runtime += elapsed;
     ctx.m_params.vruntime += calc_weighted_time(elapsed, ctx.weight());
 
-    if (ctx.deadline().time_since_epoch() <= ctx.runtime()) {
+    if (ctx.deadline() <= ctx.runtime()) {
         // Note it has completely consumed it's request, ctx there is an occassion to preempt.
         runtime.mark_preempt_pending();
 
@@ -388,7 +388,7 @@ auto Fair::set_next_thread(Runtime &runtime, Thread *next) -> void {
         //
         auto const consumed_timeslice = ctx.m_params.runtime - ctx.m_params.prev_runtime;
         auto const remaining_timeslice = ctx.m_timeslice.length() - consumed_timeslice;
-        if (remaining_timeslice < decltype(remaining_timeslice)::zero()) {
+        if (remaining_timeslice < SchedDuration{0}) {
             return;
         }
 

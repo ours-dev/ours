@@ -370,3 +370,53 @@ constexpr std::array<Weight, NUM_PRIORITIES> PRIORITY_TO_WEIGHT_MAP = [] {
 - 没有改比值和档数。这次只换表达方式，数值一个没动。
 - 没有把生成器放进 ffl。它是「按固定比值生成一张定点数表」，通用性存在但目前只有
   一个用户，等出现第二个再说。
+
+## 补上 fair.cpp 里被定点数改动落下的 6 处拼法（2026-09-17）
+
+**文件**
+- `kernel/kernel/task/sched/fair.cpp` — `SchedDuration::zero()` → `SchedDuration{0}`（4 处）、
+  `.count()` → `.raw()`、去掉一处 `.time_since_epoch()`
+
+**症状**
+
+`fair.cpp` 编译不过。它不在构建里（`kernel/kernel/task/sched/BUILD.gn` 用 `rr.cpp` 顶替），
+所以把 `SchedDuration` 从 `std::chrono::nanoseconds` 换成 `ffl::Fixed<i64, 0>` 那一轮，
+没有任何东西报错——错误一直躺到有人把 Fair 放回构建才会出现。
+
+**原因**
+
+我自己的改动留下的失配，不是 Fair 的设计问题。`Fixed` 没有 `zero()`（`Fixed{0}` 就是），
+没有 `count()`（叫 `raw()`），而 `SchedTime` 不再是 `TimePoint`，它本身就是纳秒计数，
+所以 `deadline().time_since_epoch()` 这一步没有了对应物——去掉它是恒等变换，
+不是语义改动。Fair 的逻辑一行没动。
+
+**改法**
+
+```cpp
+// 改前
+if (ctx.deadline().time_since_epoch() <= ctx.runtime()) {
+// 改后
+if (ctx.deadline() <= ctx.runtime()) {
+```
+
+**参照**
+
+无，是本项目自身改动的收尾。
+
+**验证**
+
+`fair.cpp` 不在构建里，所以要单独查。办法是把 `rr.cpp` 的真实编译命令抠出来换掉源文件：
+
+```
+prebuilt/ninja/ninja -C out/bringup.x86 -t commands \
+    kernel_x86.dbg.1/obj/kernel/kernel/task/sched/sched.rr.cpp.o | tail -1
+```
+
+把其中的 `rr.cpp` 换成 `fair.cpp`、`-o <obj>` 换成 `-fsyntax-only`、去掉 `-MD -MF`，
+在 `out/bringup.x86` 下执行。改前 6 个错误，改后 0 个。整体构建不受影响（它本就不参与链接）。
+
+**故意没做**
+
+- 没有把 `fair.cpp` 放回构建。它还有别的问题（例如 `calc_weighted_time` 的整数除法），
+  且 Fair 是作者自留的设计，回不回构建由作者决定。
+- 没有碰 Fair 的任何逻辑。
