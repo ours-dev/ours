@@ -277,3 +277,96 @@ using SchedTime = ffl::Fixed<i64, 0>;
 - 没有改 `scheduler.hpp` / `scheduler.cpp`：它们只是把 `SchedTime` 透传，不做算术；
   而且此刻有别的会话在改这两个文件。
 - 没有给 `Fixed` 加幽灵标签来重建时刻/时长的区分。真要做是 ffl 的事，不是调度器的事。
+
+## 权重表改为由比值算出，不再打表（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/common.hpp` — 删掉 32 个字面量，改为从
+  `WEIGHT_RATIO_NUMERATOR` / `WEIGHT_RATIO_DENOMINATOR` / `NUM_PRIORITIES` 生成
+
+**症状**
+
+表是 32 个手写的数。它们之间的关系——「每档比下一档重 22.5%」——只存在于注释里：
+没有任何东西检查第 17 项确实是第 16 项的 1.225 倍。想加几档优先级，就得手算 32 个数
+然后祈祷。
+
+**原因**
+
+搞反了输入和输出。真正说明「一档优先级意味着什么」的是那个比值，它才该是输入；
+32 个数是它的结果。而且一旦参数化，参数的选择本身也要想清楚：**参数必须是每档的比值，
+不能是整段的跨度**——否则加优先级档数会悄悄改变一档的含义，而一档的含义正是这张表
+唯一要表达的东西。
+
+**改法**
+
+先验证原表到底是不是几何级数。是的，而且分毫不差：
+
+```
+round(65536 × (40/49)^(31-p))   // 32 项，与原字面量逐项相同
+```
+
+于是改成：
+
+```cpp
+// 改前
+constexpr i64 WEIGHT_NUMERATORS[] = {121, 149, 182, ..., 53499, 65536};
+
+// 改后
+constexpr i64 WEIGHT_RATIO_NUMERATOR = 49;
+constexpr i64 WEIGHT_RATIO_DENOMINATOR = 40;
+constexpr usize NUM_PRIORITIES = 32;
+
+constexpr std::array<Weight, NUM_PRIORITIES> PRIORITY_TO_WEIGHT_MAP = [] {
+    using Accumulator = ffl::Wider<i64>;
+    constexpr usize GUARD_BITS = 48;
+    ...
+    auto accumulator = Accumulator{Weight::Format::ONE} << GUARD_BITS;
+    map[NUM_PRIORITIES - 1] = Weight::from_raw(Weight::Format::ONE);
+    for (usize i = NUM_PRIORITIES - 1; i > 0; --i) {
+        accumulator = (accumulator * WEIGHT_RATIO_DENOMINATOR + WEIGHT_RATIO_NUMERATOR / 2)
+                      / WEIGHT_RATIO_NUMERATOR;
+        map[i - 1] = Weight::from_raw(static_cast<i64>((accumulator + GUARD_HALF) >> GUARD_BITS));
+    }
+    return map;
+}();
+```
+
+两个决定值得说明。
+
+**向下生成，不向上生成**。表顶是其余每一项所占份额的基准，它必须精确；从最小权重往上
+累乘，会让它差一个舍入误差到不了 1.0，「最高优先级恰为 1.0」这条不变量就悄悄破了。
+
+**多带 48 位保护位**。每一步都除，如果每步都舍入到存储格式的 16 位小数，误差会累积，
+而且恰恰在最难受的地方累积最狠：表底一个 ulp 将近 1%，相邻低优先级之间的比值就不再是
+上面声明的那个比值了。48 位保护位把每步误差压到远低于最终舍入，最宽的中间量 70 位，
+在 128 位累加器里绰绰有余。
+
+用比值写而不是写小数，因为内核没有浮点（`-mno-sse`），而且精确有理数让生成结果可复现，
+不依赖某个常量怎么折叠。
+
+**断言也跟着换**，从「钉数值」换成「钉性质」，这样扩展表不会踩到自己的断言：
+表顶恰为 1.0；相邻项确实成声明的比值（偏差不超过分子，且这个界不随表长变化）；
+严格递增。最后一条同时是扩展的闸门，而且是最先触发的那条——每档除以 1.225，
+项在几何缩小而格式分辨率不变，16 位小数下大约 50 档之后相邻两项会舍入成同一个数。
+断言消息直接说了该怎么办：给 `Weight` 更多小数位，而不是把表改短。
+
+**参照**
+
+`Zircon kPriorityToWeightTable`（`Weight = 1.1^(Priority - 31)`，但表是手写的）、
+`Linux sched_prio_to_weight[]`（1.25 每档，也是手写的）。两边都把比值写在注释里、
+把结果写进代码；这里反过来。
+
+**验证**
+
+一次性迁移校验：把生成器与原来那 32 个字面量放进同一个翻译单元做 `static_assert`
+逐项比较，通过——所以这次改动可证明不改变任何数值。
+（校验用的临时文件没有留下，因为留着就等于把字面量表又请回来了。）
+
+全量构建通过。QEMU 实测两个镜像，各约 40 秒：`kernel.dev.dbg_1.obi` 两线程交替
+74294 / 73867 次，断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常，计数 0。
+
+**故意没做**
+
+- 没有改比值和档数。这次只换表达方式，数值一个没动。
+- 没有把生成器放进 ffl。它是「按固定比值生成一张定点数表」，通用性存在但目前只有
+  一个用户，等出现第二个再说。
