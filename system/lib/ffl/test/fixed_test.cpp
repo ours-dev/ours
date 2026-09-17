@@ -11,6 +11,8 @@
 #include <ffl/fixed.hpp>
 #include <ffl/mul_shr.hpp>
 
+#include <type_traits>
+
 #include <gtest/gtest.h>
 
 namespace {
@@ -107,6 +109,30 @@ static_assert((-Q{3}).absolute().raw() == Q{3}.raw());
 // The most negative value has no positive counterpart; saturating is the only
 // answer that is still non-negative.
 static_assert(Q::min().absolute().raw() == Q::max().raw());
+
+// --- Cross-format multiply and divide ------------------------------------
+//
+// The left operand's format wins. This is the rule the scheduler leans on:
+// a duration (no fractional bits) scaled by a weight (sixteen of them) has to
+// come back a duration.
+using Whole = ffl::Fixed<i64, 0>;
+using Frac = ffl::Fixed<i64, 16>;
+
+static_assert(std::is_same_v<decltype(Whole{1} * Frac{1}), Whole>);
+static_assert(std::is_same_v<decltype(Frac{1} * Whole{1}), Frac>);
+static_assert((Whole{1000} * Frac::from_ratio(1, 4)).raw() == 250);
+static_assert((Whole{1000} / Frac::from_ratio(1, 4)).raw() == 4000);
+
+// The rule exists because `a *= b` can only produce a's format; `a * b` has
+// to agree with it or the two spellings would mean different things.
+static_assert([] {
+    auto x = Whole{1000};
+    x *= Frac::from_ratio(1, 4);
+    return x.raw();
+}() == 250);
+
+// A whole number reads the same on either side.
+static_assert((i64{3} * Whole{4}).raw() == (Whole{4} * i64{3}).raw());
 
 // --- mul_shr --------------------------------------------------------------
 //

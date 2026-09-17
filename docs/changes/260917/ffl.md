@@ -158,3 +158,60 @@ bl  ___divti3
 - 没有改 `fair.cpp`。同上一节，接入由作者决定。
 - `reciprocal` 没有做成运行期可用的形态。除法正是要被挪走的东西，运行期算一个
   倒数等于把它放回去；需要的调用方应当建编译期表。
+
+## 乘除推广到跨格式，左操作数的格式取胜（2026-09-17）
+
+**文件**
+- `system/lib/ffl/include/ffl/fixed.hpp` — `operator*` / `operator/` / `operator*=`
+  / `operator/=` 改为接受任意小数位的 `Fixed`；新增自由函数 `operator*(Integer, Fixed)`
+- `system/lib/ffl/test/fixed_test.cpp` — 跨格式语义的 `static_assert`
+
+**症状**
+
+`Fixed<i64, 0>` 乘 `Fixed<i64, 16>` 编译不过。这不是个抽象的缺口：调度器里
+`duration * weight`（时长乘以权重比例）正是这个形状，而 Zircon 的
+`SchedDuration`/`SchedWeight` 就是这两个格式。
+
+**原因**
+
+原来的 `operator*(Self)` 只接受同格式。同格式是特例不是通例：两个分别按 2^f1、2^f2
+缩放的数，乘出来按 2^(f1+f2) 缩放，回到哪个格式是一个必须回答的问题，而原实现把它
+回避成了「只许 f1 == f2」。
+
+**改法**
+
+推广成模板，**结果取左操作数的格式**：
+
+```cpp
+template <usize OtherFractionalBits>
+constexpr auto operator*(Fixed<Integer, OtherFractionalBits> rhs) const -> Self {
+    return from_raw(mul_shr_round<Integer>(m_raw, rhs.raw(), OtherFractionalBits));
+}
+```
+
+这条规则不是随手定的，是被 `operator*=` 逼出来的：复合赋值只可能产出被赋值对象的
+格式，而 `a * b` 必须和 `a *= b` 意思一致，否则两种写法就成了两件事。它也正好是调用点
+想说的：`duration * weight` 是「把这段时长按这个比例缩放」，答案是一段时长。
+
+Zircon 的 ffl 对同一个问题给出的答案更好——它根本不急着回答：表达式模板把乘法推迟到
+赋值处，由目标类型挑中间精度。那正是本文件开头声明不移植的 492 行。所以这里在注释里
+写明了代价：链式表达式、或中间量需要比两个操作数都多的小数位时，要显式转换并说明理由。
+
+**加法和减法刻意没有推广**。跨格式相乘是*缩放*，在不同量纲之间有意义；跨格式相加意味着
+两者是同一种量、只是精度不同，那是一次转换，应该由调用者写出来。`duration + weight`
+在任何程序里都是 bug，隐式改比例只会让它编译通过。
+
+**参照**
+
+`Zircon ffl::Fixed` 的表达式模板与 `Precision`/`Resolution` 解析（被否掉的方案），
+`kernel/include/kernel/scheduler_state.h` 里 `SchedDuration`/`SchedWeight` 的实际用法。
+
+**验证**
+
+主机单测 7/7 通过，含新增的跨格式 `static_assert`：结果类型取左操作数、
+`Whole{1000} * Frac(1/4) == 250`、`a * b` 与 `a *= b` 一致、整数可写在任一侧。
+
+**故意没做**
+
+- 没有加跨格式的 `+` / `-`（理由同上）。
+- 没有加跨*整数类型*的运算（`Fixed<i32,…>` 乘 `Fixed<i64,…>`）。目前没有调用方。

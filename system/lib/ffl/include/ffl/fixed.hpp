@@ -4,6 +4,7 @@
 #define FFL_FIXED_HPP 1
 
 #include <ffl/format.hpp>
+#include <ffl/mul_shr.hpp>
 #include <ffl/saturating.hpp>
 #include <ffl/wider.hpp>
 
@@ -153,21 +154,44 @@ class Fixed {
         return from_raw(saturating_sub<Integer>(m_raw, rhs.m_raw));
     }
 
+    // Addition and subtraction are deliberately NOT generalised across
+    // formats the way multiplication and division are above. Multiplying by
+    // another format is *scaling*, and is meaningful between unlike
+    // quantities -- a duration by a weight. Adding them means the two are the
+    // same kind of quantity carried at different precision, which is a
+    // conversion, and one worth making the caller write out: `duration +
+    // weight` is a bug in every program that contains it, and an implicit
+    // rescale would compile it.
+
     constexpr auto operator-() const -> Self {
         return from_raw(saturating_sub<Integer>(Integer{0}, m_raw));
     }
 
-    /// Product, rescaled back to this format.
+    /// Product, rescaled back to *this* format.
     ///
-    /// Two values each scaled by 2^f multiply to something scaled by 2^2f, so
-    /// the result is shifted back down by f. Both steps happen in the wider
-    /// type: the unshifted product is what overflows, and shifting after the
-    /// narrowing would discard the very bits being shifted into place.
-    constexpr auto operator*(Self rhs) const -> Self {
-        auto const product =
-            static_cast<Wider<Integer>>(m_raw) * static_cast<Wider<Integer>>(rhs.m_raw);
-        return from_raw(
-            clamping_cast<Integer>(product >> static_cast<Wider<Integer>>(FractionalBits)));
+    /// Two values scaled by 2^f1 and 2^f2 multiply to something scaled by
+    /// 2^(f1+f2), so the result is shifted back down by the right operand's
+    /// f2 to land in the left operand's format.
+    ///
+    /// **The left operand's format wins.** That rule is not a coin toss: it is
+    /// forced by `operator*=`, which can only ever produce the format of the
+    /// object it assigns to, and `a * b` had better agree with `a *= b`. It
+    /// also reads the way the call sites mean it -- `duration * weight` is
+    /// "scale this duration by that fraction", and the answer is a duration.
+    ///
+    /// Zircon's ffl answers this differently, and better, by not answering it
+    /// eagerly at all: its expression templates defer the multiply and let the
+    /// assignment target pick the intermediate precision. That machinery is
+    /// the 492 lines declined at the top of this file. Where the eager rule
+    /// costs precision -- a long chain, or an intermediate that needs more
+    /// fractional bits than either operand -- convert explicitly and say why.
+    template <usize OtherFractionalBits>
+    constexpr auto operator*(Fixed<Integer, OtherFractionalBits> rhs) const -> Self {
+        // Rounds to nearest. Truncating here errs downward every time, and
+        // these products are accumulated (a virtual runtime is nothing but a
+        // sum of them), so the error would grow with the number of terms
+        // instead of cancelling.
+        return from_raw(mul_shr_round<Integer>(m_raw, rhs.raw(), OtherFractionalBits));
     }
 
     /// Scales by a whole number, with no rescaling: the scale factor of the
@@ -178,19 +202,21 @@ class Fixed {
         return from_raw(clamping_cast<Integer>(product));
     }
 
-    /// Quotient, rescaled back to this format.
+    /// Quotient, rescaled back to *this* format. The left operand's format
+    /// wins here too, for the same reason `operator/=` forces it.
     ///
     /// The two scale factors cancel, so the numerator has to be shifted up by
-    /// f first or the fraction is lost -- the mirror of from_ratio(), and the
-    /// same reason the shift happens in the wider type.
-    constexpr auto operator/(Self rhs) const -> Self {
-        if (rhs.m_raw == Integer{0}) [[unlikely]] {
+    /// the divisor's f2 first or the fraction is lost -- the mirror of
+    /// from_ratio(), and the same reason the shift happens in the wider type.
+    template <usize OtherFractionalBits>
+    constexpr auto operator/(Fixed<Integer, OtherFractionalBits> rhs) const -> Self {
+        if (rhs.raw() == Integer{0}) [[unlikely]] {
             return from_raw(m_raw < Integer{0} ? Format::MIN : Format::MAX);
         }
 
         auto const scaled = static_cast<Wider<Integer>>(m_raw)
-                            << static_cast<Wider<Integer>>(FractionalBits);
-        return from_raw(clamping_cast<Integer>(scaled / static_cast<Wider<Integer>>(rhs.m_raw)));
+                            << static_cast<Wider<Integer>>(OtherFractionalBits);
+        return from_raw(clamping_cast<Integer>(scaled / static_cast<Wider<Integer>>(rhs.raw())));
     }
 
     constexpr auto operator+=(Self rhs) -> Self & {
@@ -213,7 +239,8 @@ class Fixed {
         return from_raw(static_cast<Integer>(m_raw / scalar));
     }
 
-    constexpr auto operator*=(Self rhs) -> Self & {
+    template <usize OtherFractionalBits>
+    constexpr auto operator*=(Fixed<Integer, OtherFractionalBits> rhs) -> Self & {
         *this = *this * rhs;
         return *this;
     }
@@ -223,7 +250,8 @@ class Fixed {
         return *this;
     }
 
-    constexpr auto operator/=(Self rhs) -> Self & {
+    template <usize OtherFractionalBits>
+    constexpr auto operator/=(Fixed<Integer, OtherFractionalBits> rhs) -> Self & {
         *this = *this / rhs;
         return *this;
     }
@@ -257,6 +285,16 @@ class Fixed {
   private:
     Integer m_raw{};
 };
+
+/// `scalar * fixed`, so that a whole number may be written on either side.
+/// The member operator covers `fixed * scalar`; this is the mirror, and it
+/// multiplies rather than reimplementing anything.
+template <typename Integer, usize FractionalBits>
+[[nodiscard]]
+constexpr auto operator*(Integer lhs, Fixed<Integer, FractionalBits> rhs)
+    -> Fixed<Integer, FractionalBits> {
+    return rhs * lhs;
+}
 
 } // namespace ffl
 
