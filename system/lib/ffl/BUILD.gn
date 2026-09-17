@@ -7,6 +7,7 @@ cpp_interface("headers") {
   public = [
     "include/ffl/fixed.hpp",
     "include/ffl/format.hpp",
+    "include/ffl/mul_shr.hpp",
     "include/ffl/saturating.hpp",
     "include/ffl/wider.hpp",
   ]

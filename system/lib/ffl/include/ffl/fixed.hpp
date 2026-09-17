@@ -42,6 +42,32 @@ class Fixed {
     /// were already the stored representation, and it is not -- it is 3 << 8.
     explicit constexpr Fixed(Integer whole) : m_raw(saturating_mul<Integer>(whole, Format::ONE)) {}
 
+    /// From another format, rescaling rather than reinterpreting.
+    ///
+    /// Explicit, and deliberately so: Fixed<i64, 8> and Fixed<i64, 16> hold
+    /// different numbers in the same bits, and a conversion that happened
+    /// silently would let one be passed where the other is expected with no
+    /// diagnostic and no visible cast. Widening the fraction is exact;
+    /// narrowing it rounds, half to even, by the same argument as round().
+    template <typename OtherInteger, usize OtherFractionalBits>
+    explicit constexpr Fixed(Fixed<OtherInteger, OtherFractionalBits> other) {
+        using Intermediate = Wider<Integer>;
+        auto const raw = static_cast<Intermediate>(other.raw());
+
+        if constexpr (OtherFractionalBits <= FractionalBits) {
+            constexpr auto GAIN = FractionalBits - OtherFractionalBits;
+            m_raw = clamping_cast<Integer>(raw << static_cast<Intermediate>(GAIN));
+        } else {
+            // Rounding a right shift by hand: the shift alone would truncate,
+            // and truncation of a conversion is a bias every later use
+            // inherits.
+            constexpr auto LOSS = OtherFractionalBits - FractionalBits;
+            constexpr auto HALF = static_cast<Intermediate>(1)
+                                  << static_cast<Intermediate>(LOSS - 1);
+            m_raw = clamping_cast<Integer>((raw + HALF) >> static_cast<Intermediate>(LOSS));
+        }
+    }
+
     /// Wraps a value that is *already* in the stored representation.
     [[nodiscard]]
     static constexpr auto from_raw(Integer raw) -> Self {
@@ -175,6 +201,51 @@ class Fixed {
     constexpr auto operator-=(Self rhs) -> Self & {
         *this = *this - rhs;
         return *this;
+    }
+
+    /// Divides by a whole number. No rescaling: the divisor's scale factor is
+    /// 1, so the quotient is already in this format -- the mirror of
+    /// operator*(Integer).
+    constexpr auto operator/(Integer scalar) const -> Self {
+        if (scalar == Integer{0}) [[unlikely]] {
+            return from_raw(m_raw < Integer{0} ? Format::MIN : Format::MAX);
+        }
+        return from_raw(static_cast<Integer>(m_raw / scalar));
+    }
+
+    constexpr auto operator*=(Self rhs) -> Self & {
+        *this = *this * rhs;
+        return *this;
+    }
+
+    constexpr auto operator*=(Integer scalar) -> Self & {
+        *this = *this * scalar;
+        return *this;
+    }
+
+    constexpr auto operator/=(Self rhs) -> Self & {
+        *this = *this / rhs;
+        return *this;
+    }
+
+    constexpr auto operator/=(Integer scalar) -> Self & {
+        *this = *this / scalar;
+        return *this;
+    }
+
+    /// Magnitude. Saturates rather than wrapping: the most negative value of a
+    /// two's-complement type has no positive counterpart, and returning it
+    /// unchanged -- which is what negation does there -- would be a negative
+    /// "absolute value".
+    [[nodiscard]]
+    constexpr auto absolute() const -> Self {
+        if (m_raw >= Integer{0}) {
+            return *this;
+        }
+        if (m_raw == Format::MIN) {
+            return from_raw(Format::MAX);
+        }
+        return from_raw(static_cast<Integer>(-m_raw));
     }
 
     /// Ordering is the raw values' ordering, because the scale factor is a

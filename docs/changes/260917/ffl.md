@@ -81,3 +81,80 @@ auto const weighted = (rate * Weight{duration}).round();
 绝大部分语义是 `static_assert`，写在单测的翻译单元里——**构建通过即已验证**，
 不依赖有没有人去跑它。运行期 5 项覆盖编译器看不穿的值与循环：收敛舍入的方向、
 累加不漂移、饱和不回绕、加宽中间类型保精度、比值序与值序一致。全部通过。
+
+## 补齐 Fixed 的接口缺口，并加上 mul_shr 一族（2026-09-17）
+
+**文件**
+- `system/lib/ffl/include/ffl/fixed.hpp` — 加跨格式转换构造、`operator/(Integer)`、
+  四个复合赋值运算符、`absolute()`
+- `system/lib/ffl/include/ffl/mul_shr.hpp` — 新文件，`mul_shr` / `mul_shr_round` /
+  `reciprocal`
+- `system/lib/ffl/BUILD.gn`、`system/lib/ffl/test/fixed_test.cpp` — 接上
+
+**症状**
+
+两件事，都是潜伏的。
+
+其一，`Fixed<i64, 16>` 和 `Fixed<i64, 8>` 之间没有任何转换通道。调度器里
+虚拟时间要高精度、权重比值只需要低精度，两种格式必然共存；没有转换就只能
+`from_raw(other.raw())` —— 那是按位重解释，把 1.5 读成 384，编译器一声不吭。
+
+其二，也是更要紧的一件：把比值乘回时长这条路上有一次 128 位除法。
+
+```cpp
+// 反汇编 Q::from_ratio(w, MID_WEIGHT) * Q{d}，-O2
+bl  ___divti3
+```
+
+`__divti3` 是 libclang_rt.builtins 里的软件除法循环，几十到几百个周期。它坐在
+每个调度 tick 都要走的路上。
+
+**原因**
+
+`from_ratio` 内部是 `(numerator << FractionalBits) / denominator`。被除数被提到
+128 位以后，这个除法在 x86-64 上没有单条指令可用，只能落到编译器运行时。
+比值本身却是常量——权重表是编译期已知的 32 个值——除法完全可以在编译期做掉，
+运行期只留一次乘法和一次移位。Linux 的结论一样：`sched_prio_to_wmult[]` 存的是
+`2^32 / weight`，`__calc_delta()` 用 `mul_u64_u32_shr()` 缩放。
+
+**改法**
+
+跨格式转换写成 `explicit` 构造：加宽小数位是精确的左移，缩窄要舍入——直接右移
+是截断，而截断的偏差会被后面每一次使用继承下去，所以按 `round()` 同一套规则
+半入偶。`explicit` 是刻意的：两个格式在同样的位里装着不同的数，隐式转换会让
+一个被当成另一个传进去而没有任何诊断。
+
+`mul_shr` 和 `mul_shr_round` 分成两个名字，而不是让 `mul_shr` 悄悄舍入。
+写第一版时 `static_assert(mul_shr(1000 * 3122, reciprocal(3122, 32), 32) == 1000)`
+失败，实际是 999——最后那次移位截掉了尾巴。把 `mul_shr` 改成舍入能让断言过，
+但那样这个名字就在说谎；累加场景该用哪个，是调用点要自己决定的事。两个变体的
+语义各有一条 `static_assert` 钉住。
+
+`reciprocal` 舍入而不截断，理由不同：倒数一次算好、用一辈子，它的偏差是系统性的，
+不是随机的。
+
+`absolute()` 对最小值饱和而不是回绕：二补数的最小值没有对应的正数，取负会原样返回,
+一个负的"绝对值"比饱和糟得多。
+
+**参照**
+
+`Linux __calc_delta()` / `mul_u64_u32_shr()` / `sched_prio_to_wmult[]`。
+一处刻意的分歧：Linux 在这里截断并接受那点偏差，本库对 `Fixed` 的舍入已经选了
+另一边，一个库不该对同一个问题持两种意见——所以提供了舍入变体并推荐它。
+
+**验证**
+
+语义主体仍是 `static_assert`，构建通过即已验证。运行期新增 2 项：
+
+- `MatchesDivisionAcrossAWideRangeOfWeights` —— 512 个权重 × 6 个量级，乘倒数
+  与真除法的误差都在千分之一以内。
+- `TruncationBiasIsWhatRoundingRemoves` —— 同一个值累加一万次，截断变体的误差
+  单向累积，舍入变体的误差小于它。
+
+`out/bringup.x86/host/obj/system/lib/ffl/test/fixed`：7/7 通过。
+
+**故意没做**
+
+- 没有改 `fair.cpp`。同上一节，接入由作者决定。
+- `reciprocal` 没有做成运行期可用的形态。除法正是要被挪走的东西，运行期算一个
+  倒数等于把它放回去；需要的调用方应当建编译期表。
