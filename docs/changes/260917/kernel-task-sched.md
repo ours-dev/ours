@@ -93,3 +93,109 @@ return ffl::mul_shr_round<u64>(value, factor, WMULT_SHIFT);
 - `weight_to_wmult()` 保留了运行期除法，因为运行队列的总负载是权重之和，不在表里。
   它被设计成与权重一起缓存、只在权重变化时重算——和 Linux 的 `struct load_weight`
   把 `weight` 与 `inv_weight` 并排放在一起是同一个道理。
+
+## 撤回倒数权重表，改成 Zircon 的做法：权重本身就是定点数（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/types.hpp` — `Weight` 由 `usize` 改为
+  `ffl::Fixed<i64, 16>`
+- `kernel/include/ours/task/sched/common.hpp` — 表改为归一化到 1.0 的定点数；
+  删掉 `WMULT_SHIFT`、`Wmult`、`PRIORITY_TO_WMULT_MAP`、`MID_WMULT`、
+  `priority_to_wmult()`、`weight_to_wmult()`、`scale_by_wmult()`；新增
+  `SchedDuration` 与 `Weight` 之间的两个桥接运算符
+
+**症状**
+
+上一节做的东西方向是错的。作者的原话：「这太屎了，你看一下这块儿 Zircon 咋做的。」
+
+**原因**
+
+Zircon 根本没有倒数表。它的做法是让权重本身成为定点数：
+
+```cpp
+// zircon/kernel/include/kernel/scheduler_state.h
+using SchedWeight = ffl::Fixed<int64_t, 10>;
+
+struct WeightTableEntry {
+  constexpr WeightTableEntry(int64_t value)
+      : value{ffl::FromRatio<int64_t>(value, SchedWeight::Format::Power)} {}
+  ...
+};
+inline constexpr WeightTableEntry kPriorityToWeightTable[] = {
+    53, 58, 64, ... 930, 1024,
+};
+```
+
+表里存的是 1024 分之几，最高优先级正好是 1.0。于是权重之比就是定点数除以定点数，
+`scheduler.cc` 里直接写 `ep.weight() / weight_total_`——没有 wmult，没有
+`mul_shr`，没有任何额外机制。
+
+我做的是 Linux 的构造：整数权重 + 第二张 `sched_prio_to_wmult[]` 倒数表 +
+`__calc_delta()` 式的乘移位。它本身没算错，但**放在一个已经有 ffl 的项目里就是多余的
+第二套答案**。更难堪的是这个项目早就选了 Zircon 的模型——`profiles.hpp` 里
+`BaseProfile` 的注释自己就写着「Zircon's BaseProfile(int priority) does the same
+conversion in the same place, via `SchedulerState::ConvertPriorityToWeight()`」——
+我没去读就照 Linux 搬了。
+
+**改法**
+
+```cpp
+// 改前（types.hpp）
+using Weight = usize;
+
+// 改后
+using Weight = ffl::Fixed<i64, 16>;
+```
+
+十六位小数位不是挑的，是现有表本来就有的刻度：表的最大项是 65536 = 2^16，所以那 32 个
+数字原样就是这个格式的 raw 值，一个都不用重编。表改成按分数写：
+
+```cpp
+// 改前
+constexpr Weight PRIORITY_TO_WEIGHT_MAP[] = {121, 149, ..., 65536};
+
+// 改后
+constexpr std::array<Weight, NUM_PRIORITIES> PRIORITY_TO_WEIGHT_MAP = [] {
+    std::array<Weight, NUM_PRIORITIES> map{};
+    for (usize i = 0; i < NUM_PRIORITIES; ++i) {
+        map[i] = Weight::from_ratio(detail::WEIGHT_NUMERATORS[i], Weight::Format::ONE);
+    }
+    return map;
+}();
+```
+
+`Weight` 跟着 Zircon 用有符号，尽管权重不会为负：它要和有符号的时长、时刻一起参与
+运算，一个无符号操作数会把整个表达式提升为无符号，本该略微为负的减法于是变成巨大的
+正数。保留符号位比逐条审查每个表达式便宜。
+
+`static_assert` 换了三条，钉的是这个模型真正依赖的性质：最大权重恰为 1.0、表严格递增、
+最小权重不为零。
+
+**唯一的遗留缝隙**：Zircon 的 `SchedDuration` 也是 `ffl::Fixed<…, 0>`，所以时长与权重
+同处一套算术；本项目的 `SchedDuration` 还是 `std::chrono::nanoseconds`，于是
+`fair.hpp` 里的 `total_vruntime / weight_sum` 编译不过。补了两个自由运算符把这条缝
+显式写出来（128 位中间量，乘法就近舍入，除以零饱和），并在注释里写明**它们存在就是
+为了被删掉**——等 `SchedDuration` 也变成 `Fixed`，它们自然不可达。没有为此改
+`fair.hpp` 一行。
+
+**参照**
+
+`Zircon SchedWeight` / `kPriorityToWeightTable` / `WeightTableEntry` /
+`SchedulerState::ConvertPriorityToWeight()`（`kernel/include/kernel/scheduler_state.h`），
+以及 `scheduler.cc` 里 `ep.weight() / weight_total_` 的用法。
+被否掉的是 `Linux sched_prio_to_wmult[]` + `__calc_delta()`。
+
+**验证**
+
+全量构建通过。QEMU 实测两个镜像：`kernel.dev.dbg_1.obi` 四核抢占轮转，无断言无异常；
+`kernel.dev.obi` 启动到用户态 shell，命令表枚举正常。
+
+**故意没做**
+
+- **没有把 `SchedDuration`/`SchedTime` 也改成 `ffl::Fixed`**。那才是 Zircon 的完整形态，
+  但它牵动 44 处以及时钟、定时器的每一个边界，而且 `scheduler.cpp` 眼下有别的会话在改。
+  单独一件事做。
+- 没有改 `fair.cpp` / `fair.hpp`。
+- `ffl/mul_shr.hpp` 留着——上面的乘法桥接在用它。但它当初的动机（避开 tick 路径上的
+  除法）是我自己加的，不是这个项目的方向；如果 `SchedDuration` 将来也变成 `Fixed`，
+  它会一起失去用户。

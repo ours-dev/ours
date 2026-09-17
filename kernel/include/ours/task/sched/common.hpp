@@ -13,22 +13,42 @@
 #include <ffl/mul_shr.hpp>
 
 namespace ours::task::sched {
+namespace detail {
+    /// The numerators of the priority-to-weight table, over Weight::Format::ONE.
+    ///
+    /// The table is geometric: each step up multiplies the weight by roughly
+    /// 1.225, so the *ratio* between two priorities depends only on the distance
+    /// between them, not on where they sit. That is the property the fair
+    /// discipline needs -- one priority of separation should be worth a fixed
+    /// share whether both threads are near the bottom of the range or near the
+    /// top -- and it is why the table is written out rather than computed as
+    /// `priority * k`. The last entry is the scale itself, so the highest
+    /// priority weighs exactly 1.0 and every other entry reads as a fraction of
+    /// it.
+    ///
+    /// Zircon's kPriorityToWeightTable is the same construction at a ratio of 1.1
+    /// per priority with ten fractional bits, ending at 1024.
+    constexpr i64 WEIGHT_NUMERATORS[] = {121,   149,   182,   223,   273,   335,   410,   503,
+                                         616,   754,   924,   1132,  1386,  1698,  2080,  2549,
+                                         3122,  3825,  4685,  5739,  7030,  8612,  10550, 12924,
+                                         15832, 19394, 23757, 29103, 35651, 43672, 53499, 65536};
+} // namespace detail
+
+constexpr usize NUM_PRIORITIES = std::size(detail::WEIGHT_NUMERATORS);
+
 /// Priority to weight.
 ///
-/// The table is geometric: each step up multiplies the weight by roughly
-/// 1.225, so the *ratio* between two priorities depends only on the distance
-/// between them, not on where they sit. That is the property the fair
-/// discipline needs -- a thread one priority above another should get a fixed
-/// share more CPU whether both are near the bottom or near the top -- and it
-/// is why the table is written out rather than computed as `priority * k`.
-/// Linux's sched_prio_to_weight[] is the same construction with a ratio of
-/// 1.25 per nice level.
-constexpr Weight PRIORITY_TO_WEIGHT_MAP[] = {
-    121,   149,   182,   223,   273,   335,   410,   503,   616,   754,  924,
-    1132,  1386,  1698,  2080,  2549,  3122,  3825,  4685,  5739,  7030, 8612,
-    10550, 12924, 15832, 19394, 23757, 29103, 35651, 43672, 53499, 65536};
-
-constexpr usize NUM_PRIORITIES = std::size(PRIORITY_TO_WEIGHT_MAP);
+/// Built from the numerators rather than written out as `Weight` literals,
+/// which keeps the table above readable as plain integers -- the same reason
+/// Zircon wraps its entries in WeightTableEntry, whose converting constructor
+/// is `ffl::FromRatio<int64_t>(value, SchedWeight::Format::Power)`.
+constexpr std::array<Weight, NUM_PRIORITIES> PRIORITY_TO_WEIGHT_MAP = [] {
+    std::array<Weight, NUM_PRIORITIES> map{};
+    for (usize i = 0; i < NUM_PRIORITIES; ++i) {
+        map[i] = Weight::from_ratio(detail::WEIGHT_NUMERATORS[i], Weight::Format::ONE);
+    }
+    return map;
+}();
 
 constexpr Weight MIN_WEIGHT = PRIORITY_TO_WEIGHT_MAP[0];
 
@@ -43,48 +63,14 @@ constexpr usize HIGHEST_PRIORITY = NUM_PRIORITIES - 1;
 constexpr usize DEFAULT_PRIORITY = HIGHEST_PRIORITY >> 1;
 constexpr usize IDLE_PRIORITY = DEFAULT_PRIORITY >> 1;
 
-/// The scale of an inverse weight: an inverse weight is `2^WMULT_SHIFT / w`.
-///
-/// 32 is not arbitrary. It has to be large enough that the quantisation error
-/// of the reciprocal is negligible against the weights in use -- with the
-/// largest weight at 65536 the smallest reciprocal is 2^16, so the relative
-/// error is under 2^-16 -- and small enough that every reciprocal still fits
-/// in 32 bits, which is what keeps the scaling multiply a 64x32 one. Linux
-/// picked the same number for the same two reasons (WMULT_SHIFT in
-/// kernel/sched/fair.c).
-constexpr usize WMULT_SHIFT = 32;
+/// The top of the range is exactly 1.0. Everything that reads a weight as "a
+/// fraction of the heaviest thread" depends on it, and an edit that appended
+/// an entry or rescaled the table would otherwise break that silently.
+static_assert(MAX_WEIGHT == Weight{1});
 
-/// An inverse weight. Deliberately 32 bits wide rather than usize: it exists
-/// only to be the right-hand operand of a widening multiply, and a type that
-/// cannot hold a weight is a type that cannot be passed where a weight goes.
-using Wmult = u32;
-
-/// Priority to inverse weight, `2^WMULT_SHIFT / weight` rounded to nearest.
-///
-/// Dividing by a weight is how a share is turned into a time slice, and a
-/// 64-bit division is not a thing to do on every scheduler tick -- on x86-64
-/// a 128-bit one is worse still, since it becomes a call to __divti3, a
-/// software loop in the compiler runtime. Pre-computing the reciprocal turns
-/// each of those divisions into a multiply and a shift.
-///
-/// Generated from PRIORITY_TO_WEIGHT_MAP rather than written out. Linux ships
-/// sched_prio_to_wmult[] as a second literal table beside sched_prio_to_weight[],
-/// which means the two can disagree; here they cannot, because there is only
-/// one table and the other is a function of it.
-constexpr std::array<Wmult, NUM_PRIORITIES> PRIORITY_TO_WMULT_MAP = [] {
-    std::array<Wmult, NUM_PRIORITIES> map{};
-    for (usize i = 0; i < NUM_PRIORITIES; ++i) {
-        map[i] = static_cast<Wmult>(ffl::reciprocal<u64>(PRIORITY_TO_WEIGHT_MAP[i], WMULT_SHIFT));
-    }
-    return map;
-}();
-
-constexpr Wmult MID_WMULT = PRIORITY_TO_WMULT_MAP[NUM_PRIORITIES / 2];
-
-/// The table has to be strictly increasing for a higher priority to mean more
-/// CPU, and everything below assumes it. Checking it here costs nothing and
-/// catches an edit that transposes two entries -- which would otherwise show
-/// up only as a scheduling anomaly nobody would trace back to a table.
+/// A higher priority has to mean a larger weight, and every ratio computed
+/// from the table assumes it. A transposed pair would otherwise surface only
+/// as a scheduling anomaly nobody would trace back to a table.
 static_assert(
     [] {
         for (usize i = 1; i < NUM_PRIORITIES; ++i) {
@@ -96,37 +82,9 @@ static_assert(
     }(),
     "PRIORITY_TO_WEIGHT_MAP must be strictly increasing");
 
-/// The reciprocals must fit the narrow type they are stored in. They do for
-/// every weight above 1; the assertion is here so that lowering MIN_WEIGHT
-/// fails the build rather than silently truncating.
-static_assert(
-    [] {
-        for (usize i = 0; i < NUM_PRIORITIES; ++i) {
-            if (ffl::reciprocal<u64>(PRIORITY_TO_WEIGHT_MAP[i], WMULT_SHIFT) >
-                std::numeric_limits<Wmult>::max()) {
-                return false;
-            }
-        }
-        return true;
-    }(),
-    "an inverse weight does not fit in Wmult; WMULT_SHIFT is too large for MIN_WEIGHT");
-
-/// And the pair must actually round-trip: scaling a value by a weight and then
-/// by that weight's reciprocal has to give the value back. This is the
-/// property every user of the tables relies on, so it is worth stating as an
-/// assertion rather than inferring it from how the reciprocal was computed.
-static_assert(
-    [] {
-        for (usize i = 0; i < NUM_PRIORITIES; ++i) {
-            auto const weight = PRIORITY_TO_WEIGHT_MAP[i];
-            if (ffl::mul_shr_round<u64>(weight * 1000, PRIORITY_TO_WMULT_MAP[i], WMULT_SHIFT) !=
-                1000) {
-                return false;
-            }
-        }
-        return true;
-    }(),
-    "a weight and its inverse do not round-trip");
+/// No weight may be zero. A zero weight is not a small share, it is a thread
+/// that contributes nothing to the run queue's weight sum and divides by it.
+static_assert(MIN_WEIGHT > Weight{0});
 
 /// HIGHEST_PRIORITY is the table's last index, so the range is closed at
 /// both ends. The check used to be `priority < HIGHEST_PRIORITY`, which
@@ -138,60 +96,40 @@ constexpr auto priority_to_weight(usize priority) -> Weight {
     return PRIORITY_TO_WEIGHT_MAP[priority];
 }
 
+/// Scaling a duration by a weight, and the inverse.
+///
+/// Zircon needs neither: its SchedDuration is `ffl::Fixed<zx_duration_mono_t, 0>`,
+/// so a duration and a weight are both fixed-point values and the arithmetic
+/// is the library's own. Here SchedDuration is still a std::chrono duration,
+/// so the two live in different arithmetics and the bridge has to be written
+/// out. **These exist to be deleted**: when SchedDuration becomes a Fixed as
+/// well, they stop being reachable and should go with the change.
+///
+/// Both go through a widened intermediate. A weight is a fraction with
+/// sixteen bits below the point, so a duration in nanoseconds shifted up by
+/// sixteen leaves only 47 bits for the whole part -- about 1.6 days, which a
+/// virtual runtime sum will pass. The 128-bit intermediate removes the
+/// question rather than bounding it.
 FORCE_INLINE
-constexpr auto priority_to_wmult(usize priority) -> Wmult {
-    DEBUG_ASSERT(LOWEST_PRIORITY <= priority && priority <= HIGHEST_PRIORITY);
-    return PRIORITY_TO_WMULT_MAP[priority];
+constexpr auto operator*(SchedDuration lhs, Weight rhs) -> SchedDuration {
+    // Rounds to nearest. These products are accumulated across a thread's
+    // lifetime, and truncation errs downward every time, so its error grows
+    // with the number of ticks instead of cancelling out.
+    return SchedDuration(ffl::mul_shr_round<i64>(lhs.count(), rhs.raw(), Weight::FRACTIONAL_BITS));
 }
 
-/// The reciprocal of an arbitrary weight.
-///
-/// The table covers the weights a single thread can have; a run queue's total
-/// load is a sum of them and is not in the table, so it needs this. It does
-/// divide -- there is no avoiding one somewhere -- which is why the answer is
-/// meant to be cached alongside the weight it came from and recomputed only
-/// when that weight changes, never on the path that uses it. Linux keeps the
-/// pair together for exactly this reason: struct load_weight holds `weight`
-/// and `inv_weight` side by side, and update_load_add() invalidates the
-/// second whenever it touches the first.
 FORCE_INLINE
-constexpr auto weight_to_wmult(Weight weight) -> Wmult {
-    // A zero-weight queue is an empty one. Returning the largest reciprocal
-    // makes a subsequent scaling saturate rather than trap, which is the
-    // failure mode that leaves the scheduler running; the callers that care
-    // check for an empty queue before they get here.
-    if (weight == Weight{0}) [[unlikely]] {
-        return std::numeric_limits<Wmult>::max();
+constexpr auto operator/(SchedDuration lhs, Weight rhs) -> SchedDuration {
+    // A weight sum of zero is an empty run queue, and dividing a duration by
+    // it has no answer. Saturating keeps the scheduler running where a trap
+    // would not; the callers that can be empty are expected to check first.
+    if (rhs.raw() == 0) [[unlikely]] {
+        return SchedDuration(lhs.count() < 0 ? ffl::Format<i64, 0>::MIN : ffl::Format<i64, 0>::MAX);
     }
-    // A weight of 1 would give exactly 2^WMULT_SHIFT, one past what Wmult
-    // holds. Clamping is right rather than merely convenient: the reciprocal
-    // is already at its largest there, and one unit of it is below the
-    // precision anything downstream can see.
-    return ffl::clamping_cast<Wmult>(ffl::reciprocal<u64>(weight, WMULT_SHIFT));
-}
 
-/// `value * weight / divisor`, given the divisor's pre-computed reciprocal.
-///
-/// The product is formed at 128 bits before the shift narrows it, so a large
-/// duration times a large weight cannot wrap -- the intermediate that would
-/// overflow is never materialised in 64 bits. Linux, working without a
-/// 128-bit type, has to shift the operands down in a loop first
-/// (__calc_delta's `while (unlikely(w >= WMULT_CONST))`), losing low bits to
-/// get the same safety.
-///
-/// Rounds to nearest rather than truncating. These results are accumulated
-/// over a thread's lifetime, and truncation errs downward every time, so its
-/// error grows with the number of ticks instead of cancelling out.
-FORCE_INLINE
-constexpr auto scale_by_wmult(u64 value, Weight weight, Wmult wmult) -> u64 {
-    // The order of the two multiplies is not free. `weight * wmult` is at
-    // most about 2^WMULT_SHIFT times the ratio the two describe, so it fits
-    // 64 bits comfortably and leaves `value` a full 64 bits of room inside
-    // the 128-bit product. Multiplying `value * weight` first would overflow
-    // in 64 bits before the widening ever happened. Linux composes it the
-    // same way round in __calc_delta().
-    auto const factor = static_cast<u64>(weight) * static_cast<u64>(wmult);
-    return ffl::mul_shr_round<u64>(value, factor, WMULT_SHIFT);
+    auto const scaled = static_cast<ffl::Wider<i64>>(lhs.count())
+                        << static_cast<ffl::Wider<i64>>(Weight::FRACTIONAL_BITS);
+    return SchedDuration(ffl::clamping_cast<i64>(scaled / static_cast<ffl::Wider<i64>>(rhs.raw())));
 }
 } // namespace ours::task::sched
 
