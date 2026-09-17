@@ -38,6 +38,83 @@ struct Runtime {
         return driver.clock();
     }
 
+    /// How long the running thread has been running since it was last charged,
+    /// advancing the mark to now in the same step. Zero when the clock has not
+    /// moved, and the mark does not move either in that case.
+    ///
+    /// Read and write were always one operation, and both disciplines spelled
+    /// it out by hand -- the same three lines in RoundRobin::charge() and in
+    /// Fair::update_thread() -- so the two copies had already drifted apart:
+    /// RR returned early at `elapsed <= 0`, Fair at `elapsed < 0`, meaning Fair
+    /// charged a zero-length interval that RR did not. Linux factors exactly
+    /// these lines out of every class's update_curr() into update_curr_common()
+    /// in core.c and settles the boundary there, the way it is settled here:
+    /// `if (unlikely((s64)delta_exec <= 0)) return;`. The mark never moves
+    /// backwards, and a zero-length interval is not an event.
+    ///
+    /// What to do with the answer stays with the discipline -- RR adds it to
+    /// the thread's runtime, Fair also weights it into a virtual runtime --
+    /// which is why this returns the duration instead of applying it.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto charge_current() -> SchedDuration {
+        auto const now = clock();
+        auto const elapsed = now - curr_started_time;
+        if (elapsed <= SchedDuration{0}) [[unlikely]] {
+            return SchedDuration{0};
+        }
+
+        curr_started_time = now;
+        return elapsed;
+    }
+
+    /// Start the running thread's slice at now, charging nobody for what came
+    /// before.
+    ///
+    /// Distinct from charge_current() on purpose. It is called when a *new*
+    /// thread takes the CPU, where the interval since the mark belongs to the
+    /// thread being replaced and has already been charged to it; folding the
+    /// two together would charge that interval twice, once to each.
+    FORCE_INLINE
+    auto restart_current_slice() -> void {
+        curr_started_time = clock();
+    }
+
+    /// Ask that |next| be the thread chosen at the next reschedule.
+    ///
+    /// The directed-yield channel. It has to be a slot on the run queue rather
+    /// than a return value because the nomination and the choice happen in two
+    /// different critical sections -- Current::yield_to_thread() takes the
+    /// lock, records this and drops it; reschedule_common() takes it again and
+    /// reads it. Linux's counterpart is the `rq->...` hand-off inside
+    /// yield_to_task_fair().
+    ///
+    /// Named rather than assigned so that the one legitimate write is the only
+    /// write: evaluate_next_thread() already *returns* the next thread, and a
+    /// discipline storing into the slot as well gave the same answer two ways
+    /// out.
+    FORCE_INLINE
+    auto nominate_next_thread(Thread *next) -> void {
+        next_thread = next;
+    }
+
+    /// Reprogram the preemption timer to fire |delta| from now.
+    ///
+    /// Programs the timer of the CPU *executing* this call, not of
+    /// which_cpu(): Driver::reset_preempt() reaches TickDevice::Current::get(),
+    /// which has no CpuNum parameter to give it. Every caller today is on the
+    /// local reschedule path, so the two coincide -- but a Runtime handed to a
+    /// discipline is not always the running CPU's, and if this is ever reached
+    /// from a remote one the timer lands on the wrong CPU with no diagnostic.
+    /// The assertion below says so where it can; it is compiled out at
+    /// KERNEL_DEBUG_LEVEL=0, so it is a tripwire for the debug image, not a
+    /// guarantee.
+    FORCE_INLINE
+    auto arm_preempt_timer(SchedDuration delta) -> void {
+        DEBUG_ASSERT(which_cpu == CpuNum(Cpu::id()));
+        driver.reset_preempt(delta);
+    }
+
     CpuNum which_cpu;
     sync::SpinLock rqlock;
 

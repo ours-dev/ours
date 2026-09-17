@@ -40,15 +40,12 @@ namespace {
 /// accounting fields and Thread's private scheduling_context(); the friendship
 /// both classes extend to RoundRobin does not reach a free function.
 auto RoundRobin::charge(Runtime &runtime, Thread *curr) -> void {
-    auto const now = runtime.clock();
-    auto const elapsed = now - runtime.curr_started_time;
-    if (elapsed <= SchedDuration{0}) [[unlikely]] {
+    auto const elapsed = runtime.charge_current();
+    if (elapsed == SchedDuration{0}) [[unlikely]] {
         return;
     }
 
-    auto &ctx = curr->scheduling_context();
-    runtime.curr_started_time = now;
-    ctx.m_params.runtime += elapsed;
+    curr->scheduling_context().m_params.runtime += elapsed;
 }
 
 auto RoundRobin::slice_spent(Context &ctx) -> bool {
@@ -147,7 +144,7 @@ auto RoundRobin::set_next_thread(Runtime &runtime, Thread *next) -> void {
     }
 
     ctx.m_params.prev_runtime = ctx.m_params.runtime;
-    runtime.curr_started_time = runtime.clock();
+    runtime.restart_current_slice();
 }
 
 /// Called on every clock update for the running thread. Once its slice is
@@ -188,7 +185,7 @@ auto RoundRobin::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -
     }
 
     charge(runtime, curr);
-    runtime.next_thread = next;
+    runtime.nominate_next_thread(next);
     return Status::Ok;
 }
 

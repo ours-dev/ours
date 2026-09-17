@@ -198,16 +198,14 @@ auto Fair::update_vlag(Context &object) -> void {
 auto Fair::update_thread(Runtime &runtime, Thread *curr) -> void {
     Scheduler::Current::get().fair_run_queue().verify();
 
-    auto const now = runtime.clock();
-    auto const elapsed = now - runtime.curr_started_time;
-
-    if (elapsed < SchedDuration{0}) [[unlikely]] {
-        return;
-    }
+    // No early return on a zero interval: charge_current() already declines to
+    // move the mark then, adding zero is a no-op, and the deadline test below
+    // still has to run -- a thread whose request is already spent must be
+    // preempted on this tick whether or not the clock advanced since the last.
+    auto const elapsed = runtime.charge_current();
 
     auto &ctx = curr->scheduling_context();
 
-    runtime.curr_started_time = now;
     ctx.m_params.runtime += elapsed;
     ctx.m_params.vruntime += calc_weighted_time(elapsed, ctx.weight());
 
@@ -392,7 +390,7 @@ auto Fair::set_next_thread(Runtime &runtime, Thread *next) -> void {
             return;
         }
 
-        runtime.driver.reset_preempt(remaining_timeslice);
+        runtime.arm_preempt_timer(remaining_timeslice);
     }
 }
 
@@ -432,7 +430,7 @@ auto Fair::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Stat
     }
 
     update_thread(runtime, curr);
-    runtime.next_thread = next;
+    runtime.nominate_next_thread(next);
     return Status::Ok;
 }
 

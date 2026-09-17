@@ -497,3 +497,84 @@ static_assert(scheduling_period().raw() == 64'000'000);   // 与改前逐位相�
   需要 `Runtime &` 的唯一理由），但改签名要动 `scheduler.cpp`，而那个文件此刻有
   别的会话未提交的改动。等它提交后再做。
 - 没有修 64ms 那个 bug，理由同上。
+
+## Runtime 加四个具名操作，纪律不再直接写它的字段（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/runtime.hpp` — 新增 `charge_current()`、
+  `restart_current_slice()`、`nominate_next_thread()`、`arm_preempt_timer()`
+- `kernel/kernel/task/sched/rr.cpp`、`fair.cpp` — 改用这四个
+
+**症状**
+
+潜伏。`Runtime` 的字段全是公有，纪律就直接读写它们。两处后果已经发生了：
+
+其一，**同一段逻辑被抄了两份并且已经漂移**。「把运行线程从上次记账到现在的时间算出来，
+顺便把标记推到现在」这三行，`RoundRobin::charge()` 和 `Fair::update_thread()` 各写一份，
+而边界条件已经不一样了——RR 在 `elapsed <= 0` 提前返回，Fair 在 `elapsed < 0`，
+于是 Fair 会为一段零长度区间记账，RR 不会。
+
+其二，**同一个答案有两条返回通道**。`evaluate_next_thread()` 已经**返回**下一个线程，
+而 `yield_to_thread()` 里两个纪律又都写 `runtime.next_thread = next`。
+
+**原因**
+
+读和写从来就是一个操作，把它拆成两个公有字段访问，等于把「这两步必须一起做」这条约束
+交给每个调用点自己记住——于是它们记岔了。Linux 正是把这几行从每个 sched_class 的
+`update_curr()` 里提出来，放进 `core.c` 的 `update_curr_common()`，边界也在那里定死：
+`if (unlikely((s64)delta_exec <= 0)) return;`。
+
+**改法**
+
+```cpp
+// 改前（rr.cpp 与 fair.cpp 各一份）
+auto const now = runtime.clock();
+auto const elapsed = now - runtime.curr_started_time;
+if (elapsed <= SchedDuration{0}) { return; }     // Fair 这里写的是 < 0
+runtime.curr_started_time = now;
+ctx.m_params.runtime += elapsed;
+
+// 改后
+auto const elapsed = runtime.charge_current();   // 零表示时钟没走，标记也不动
+ctx.m_params.runtime += elapsed;
+```
+
+`charge_current()` 返回时长而不是自己记账，因为拿到之后要干什么是纪律的事——
+RR 只加到 runtime，Fair 还要加权进 vruntime。
+
+`restart_current_slice()` 和 `charge_current()` 刻意分开：前者用在**新**线程接管 CPU 时，
+此时从标记到现在的这段属于被换下的线程、且已经记给它了；合并两者会让这段被记两次。
+
+`nominate_next_thread()` 把定向让出那条通道收成一次具名写入。
+
+`arm_preempt_timer()` 包住 `driver.reset_preempt()`，并把一条此前没人写下来的约束
+写进注释：它编程的是**执行这次调用的那个 CPU** 的定时器，不是 `which_cpu` 的——
+`Driver::reset_preempt()` 走 `TickDevice::Current::get()`，根本没有 CpuNum 参数可传。
+今天所有调用点都在本地重调度路径上，两者重合；但递给纪律的 `Runtime` 并不总是本 CPU 的，
+一旦从远程 Runtime 上调到它，定时器会落到错误的 CPU 上而毫无提示。加了 `DEBUG_ASSERT`
+作绊线，并在注释里写明它在 `KERNEL_DEBUG_LEVEL=0` 下会被编掉，所以是绊线不是保证。
+
+**关于 Fair 的两点交代。** 这次动了 `fair.cpp`，但只动接口用法，不动它的设计：
+
+1. 边界从 `< 0` 变成 `<= 0`，这正是共用访问器要消除的那处漂移。差别只在时钟没推进时
+   是否为零长度区间记账——记零和不记零结果相同，唯一的实际差异是标记不再被无谓地重写。
+2. **刻意没有**在 Fair 里加提前返回。原来的代码在 `elapsed == 0` 时仍然会走到下面的
+   deadline 检查，加了提前返回就会跳过它——那是控制流改动，不是接口迁移。
+   现在的写法是「加零是空操作，直接落到 deadline 检查」，与原逻辑一致。
+
+**参照**
+
+`Linux update_curr_common()`（`kernel/sched/core.c`）、`update_curr()` 在各 sched_class
+里的调用点、`yield_to_task_fair()` 的定向让出通道。
+
+**验证**
+
+全量构建通过；`fair.cpp` 用 rr.cpp 的真实编译参数单独语法检查通过（无 error 无 warning）。
+QEMU 两个镜像各约 40 秒：`kernel.dev.dbg_1.obi` 两线程交替 122529 / 122530 次，
+断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常，计数 0。
+
+**故意没做**
+
+- 字段**还是公有的**。这一步只建立「有一条具名的路」，把字段私有化要改 `Runtime` 的
+  形状并连带改 `scheduler.cpp`，等那边的未提交改动落地后单独做。
+- 没有碰 `curr_thread`、`which_cpu` 的读取方式——它们是只读访问，私有化那一步再一起收。
