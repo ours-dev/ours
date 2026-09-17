@@ -42,7 +42,7 @@ namespace {
 auto RoundRobin::charge(Runtime &runtime, Thread *curr) -> void {
     auto const now = runtime.clock();
     auto const elapsed = now - runtime.curr_started_time;
-    if (elapsed <= SchedDuration::zero()) [[unlikely]] {
+    if (elapsed <= SchedDuration{0}) [[unlikely]] {
         return;
     }
 
@@ -198,7 +198,7 @@ auto RoundRobin::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -
 auto RoundRobin::on_thread_init(Runtime &runtime, Thread *thread) -> void {
     auto &timeslice = thread->scheduling_context().m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
-        timeslice.m_base = static_cast<u32>(runtime.scheduling_period().count());
+        timeslice.m_base = static_cast<u32>(runtime.scheduling_period().raw());
     }
 }
 

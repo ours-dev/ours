@@ -41,12 +41,12 @@ struct Runtime {
     /// Calculate the scheduling period
     FORCE_INLINE
     auto scheduling_period() const -> SchedDuration {
-        return scheduling_period_grans * minimal_granularity;
+        return minimal_granularity * static_cast<i64>(scheduling_period_grans);
     }
 
     FORCE_INLINE
     auto min_scheduling_period() const -> SchedDuration {
-        return minimal_period_grans * minimal_granularity;
+        return minimal_granularity * static_cast<i64>(minimal_period_grans);
     }
 
     constexpr static auto DEFAULT_MIN_SCHED_GRANULARITY = Milliseconds(1);
@@ -80,7 +80,7 @@ struct Runtime {
     usize minimal_period_grans = DEFAULT_MIN_TARGETED_LATENCY / DEFAULT_MIN_SCHED_GRANULARITY;
 
     /// The smallest timeslice a thread is allocated in a single round.
-    SchedDuration minimal_granularity = DEFAULT_MIN_TARGETED_LATENCY;
+    SchedDuration minimal_granularity = to_sched_duration(DEFAULT_MIN_TARGETED_LATENCY);
 
     sync::SpinLock migrating_threads_lock;
     Thread::MigratingList migrating_threads;

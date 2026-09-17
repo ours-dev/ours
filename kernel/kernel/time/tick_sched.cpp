@@ -51,7 +51,9 @@ auto TickSched::on_tick(TimePoint<> now) -> void {
         return;
     }
 
-    task::Scheduler::Current::tick(now);
+    // The scheduler works in bare nanoseconds (sched::SchedTime); the clock
+    // typing stops at its door.
+    task::Scheduler::Current::tick(task::sched::to_sched_time(now));
 
     // The sampling profiler's timer-fallback source samples the interrupted
     // context here; a no-op unless 'prof.start tick' is running.

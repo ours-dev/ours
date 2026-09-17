@@ -199,3 +199,81 @@ constexpr std::array<Weight, NUM_PRIORITIES> PRIORITY_TO_WEIGHT_MAP = [] {
 - `ffl/mul_shr.hpp` 留着——上面的乘法桥接在用它。但它当初的动机（避开 tick 路径上的
   除法）是我自己加的，不是这个项目的方向；如果 `SchedDuration` 将来也变成 `Fixed`，
   它会一起失去用户。
+
+## 时长与时刻也改成定点数，删掉桥接运算符（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/types.hpp` — `SchedDuration`/`SchedTime` 改为
+  `ffl::Fixed<i64, 0>`；新增 `to_sched_time()`、`to_sched_duration()`、`to_time_point()`
+- `kernel/include/ours/task/sched/common.hpp` — 删掉上一节那两个桥接运算符
+- `kernel/include/ours/task/sched/runtime.hpp` — 常量走 `to_sched_duration()`
+- `kernel/kernel/task/sched/driver.cpp` — 时钟边界显式化
+- `kernel/kernel/task/sched/rr.cpp` — `::zero()`/`.count()` 改 `Fixed` 的写法
+- `kernel/kernel/time/tick_sched.cpp` — tick 入口处转换一次
+
+**症状**
+
+上一节留的缝隙：权重成了定点数、时长还是 `std::chrono::nanoseconds`，两者不在同一套
+算术里，于是 `fair.hpp` 的 `total_vruntime / weight_sum` 要靠两个专门写的自由运算符
+才编得过。那两个运算符当时就是写来被删的。
+
+**原因**
+
+Zircon 不需要它们，因为它把三者放在同一套算术里：
+
+```cpp
+// zircon/kernel/include/kernel/scheduler_state.h
+using SchedWeight      = ffl::Fixed<int64_t, 10>;
+using SchedDuration    = ffl::Fixed<zx_duration_mono_t, 0>;
+using SchedTime        = ffl::Fixed<zx_instant_mono_t, 0>;
+```
+
+零位小数的定点数听起来是 `i64` 的啰嗦写法，其实不是。要点在于它和 `Weight` 共用一套
+运算：`duration * weight`、`vruntime / weight_sum` 于是是普通值上的普通运算符，
+加宽、舍入、饱和都已经在一个地方定好了，而不是每个调用点各想各的。
+
+**改法**
+
+```cpp
+// 改前
+using SchedDuration = Duration;      // std::chrono::nanoseconds
+using SchedTime = TimePoint<>;
+
+// 改后
+using SchedDuration = ffl::Fixed<i64, 0>;
+using SchedTime = ffl::Fixed<i64, 0>;
+```
+
+前置条件是 ffl 的乘除要支持跨格式（见 `docs/changes/260917/ffl.md` 同日一节）。
+做完之后 `fair.hpp` 一行没改就编过了——那正是判断这个方向对不对的检验。
+
+**代价，明说**：时刻和时长现在是同一个类型，`time + time` 能编过，而被它替换掉的
+那对 chrono 类型会拒绝。这是真的损失，是权衡后收下的：另一条路是给 `Fixed` 加一个
+幽灵标签参数，而 ffl 没有这个东西。Zircon 也付同样的代价。
+
+**时钟边界**收到三个具名函数里。内核时钟是带类型的（`TimePoint<SteadyClock>`），
+这份类型在调度器外面值得保留、在里面留不住，所以跨越它的地方必须写出来，一共三处：
+`Driver::update_clock()`、`Driver::reset_preempt()`、`TickSched::on_tick()`。
+
+**参照**
+
+`Zircon SchedDuration`/`SchedTime`（`kernel/include/kernel/scheduler_state.h`），
+以及 `scheduler.cc` 里时长与权重直接混算的写法。
+
+**验证**
+
+全量构建通过。QEMU 实测两个镜像，各约 50 秒：
+
+- `kernel.dev.dbg_1.obi`：四核，两个测试线程交替 141688 / 141749 次，抢占正常；
+  断言/panic/异常计数为 0。
+- `kernel.dev.obi`：userboot 装载 shell、映射 vDSO、命令表枚举正常；断言计数为 0。
+
+（一个自己踩的坑记在这里：串口日志里混有二进制字节，`grep` 会因此判定为 binary 而
+不输出，先前几次「没有断言」的检查其实是空的。要加 `-a`。）
+
+**故意没做**
+
+- 没有改 `fair.cpp` / `fair.hpp`（`fair.hpp` 本来就不需要改）。
+- 没有改 `scheduler.hpp` / `scheduler.cpp`：它们只是把 `SchedTime` 透传，不做算术；
+  而且此刻有别的会话在改这两个文件。
+- 没有给 `Fixed` 加幽灵标签来重建时刻/时长的区分。真要做是 ffl 的事，不是调度器的事。

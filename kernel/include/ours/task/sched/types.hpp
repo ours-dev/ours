@@ -3,6 +3,7 @@
 #ifndef OURS_TASK_SCHED_TYPES_HPP
 #define OURS_TASK_SCHED_TYPES_HPP 1
 
+#include <ours/compiler.hpp>
 #include <ours/macro_abi.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/task/types.hpp>
@@ -30,8 +31,49 @@ namespace ours::task::sched {
 /// scale: its largest entry is 65536, so the table's numbers are already
 /// raw values of this format and nothing has to be renumbered.
 using Weight = ffl::Fixed<i64, 16>;
-using SchedDuration = Duration;
-using SchedTime = TimePoint<>;
+/// The scheduler's time and duration, in nanoseconds.
+///
+/// Fixed-point with *zero* fractional bits, which sounds like a long way to
+/// spell i64 and is not. The point is that they share one arithmetic with
+/// Weight: `duration * weight` and `vruntime / weight_sum` are then ordinary
+/// operators on ordinary values, with the widening, the rounding and the
+/// saturation already decided in one place. Zircon defines them identically,
+/// as ffl::Fixed<zx_duration_mono_t, 0> and ffl::Fixed<zx_instant_mono_t, 0>.
+///
+/// The cost, which Zircon also pays, is that a time and a duration are now
+/// the same type, so `time + time` compiles where the std::chrono pair these
+/// replace would have rejected it. That is a real loss, taken deliberately:
+/// the alternative is a phantom tag parameter on Fixed that ffl does not have,
+/// and the scheduler's expressions are short enough to read.
+using SchedDuration = ffl::Fixed<i64, 0>;
+using SchedTime = ffl::Fixed<i64, 0>;
+
+/// The boundary between the kernel clock and the scheduler's arithmetic.
+///
+/// Zircon needs no such thing: its clock already returns a bare int64 of
+/// nanoseconds, so a SchedTime is what current_time() hands back. Here the
+/// clock is typed (`TimePoint<SteadyClock>`), and that typing is worth
+/// keeping outside the scheduler even though it cannot survive inside it.
+/// Crossing it is therefore explicit, and these three functions are the only
+/// places the conversion is spelled.
+FORCE_INLINE
+constexpr auto to_sched_time(TimePoint<> when) -> SchedTime {
+    return SchedTime(when.time_since_epoch().count());
+}
+
+/// Templated over the period so that the readable constants keep their units:
+/// `Milliseconds(8)` says what it is in a way `8'000'000` does not, and the
+/// cast to nanoseconds belongs here rather than at each of those sites.
+template <typename Rep, typename Period>
+FORCE_INLINE
+constexpr auto to_sched_duration(std::chrono::duration<Rep, Period> duration) -> SchedDuration {
+    return SchedDuration(duration_cast<Duration>(duration).count());
+}
+
+FORCE_INLINE
+constexpr auto to_time_point(SchedTime when) -> TimePoint<> {
+    return TimePoint<>(Duration(when.raw()));
+}
 
 enum class EnqueueControl;
 enum class DequeueControl;

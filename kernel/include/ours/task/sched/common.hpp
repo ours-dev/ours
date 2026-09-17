@@ -10,8 +10,6 @@
 #include <array>
 #include <iterator> // std::size
 
-#include <ffl/mul_shr.hpp>
-
 namespace ours::task::sched {
 namespace detail {
     /// The numerators of the priority-to-weight table, over Weight::Format::ONE.
@@ -96,41 +94,6 @@ constexpr auto priority_to_weight(usize priority) -> Weight {
     return PRIORITY_TO_WEIGHT_MAP[priority];
 }
 
-/// Scaling a duration by a weight, and the inverse.
-///
-/// Zircon needs neither: its SchedDuration is `ffl::Fixed<zx_duration_mono_t, 0>`,
-/// so a duration and a weight are both fixed-point values and the arithmetic
-/// is the library's own. Here SchedDuration is still a std::chrono duration,
-/// so the two live in different arithmetics and the bridge has to be written
-/// out. **These exist to be deleted**: when SchedDuration becomes a Fixed as
-/// well, they stop being reachable and should go with the change.
-///
-/// Both go through a widened intermediate. A weight is a fraction with
-/// sixteen bits below the point, so a duration in nanoseconds shifted up by
-/// sixteen leaves only 47 bits for the whole part -- about 1.6 days, which a
-/// virtual runtime sum will pass. The 128-bit intermediate removes the
-/// question rather than bounding it.
-FORCE_INLINE
-constexpr auto operator*(SchedDuration lhs, Weight rhs) -> SchedDuration {
-    // Rounds to nearest. These products are accumulated across a thread's
-    // lifetime, and truncation errs downward every time, so its error grows
-    // with the number of ticks instead of cancelling out.
-    return SchedDuration(ffl::mul_shr_round<i64>(lhs.count(), rhs.raw(), Weight::FRACTIONAL_BITS));
-}
-
-FORCE_INLINE
-constexpr auto operator/(SchedDuration lhs, Weight rhs) -> SchedDuration {
-    // A weight sum of zero is an empty run queue, and dividing a duration by
-    // it has no answer. Saturating keeps the scheduler running where a trap
-    // would not; the callers that can be empty are expected to check first.
-    if (rhs.raw() == 0) [[unlikely]] {
-        return SchedDuration(lhs.count() < 0 ? ffl::Format<i64, 0>::MIN : ffl::Format<i64, 0>::MAX);
-    }
-
-    auto const scaled = static_cast<ffl::Wider<i64>>(lhs.count())
-                        << static_cast<ffl::Wider<i64>>(Weight::FRACTIONAL_BITS);
-    return SchedDuration(ffl::clamping_cast<i64>(scaled / static_cast<ffl::Wider<i64>>(rhs.raw())));
-}
 } // namespace ours::task::sched
 
 #endif // #ifndef OURS_TASK_SCHED_COMMON_HPP

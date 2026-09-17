@@ -11,11 +11,15 @@ auto Driver::update_clock() -> SchedTime {
         return m_sched_clock;
     }
 
-    auto const now = SteadyClock::now();
+    // The kernel clock is typed; the scheduler's arithmetic is not. This is
+    // one of the three places the boundary is crossed (see to_sched_time in
+    // sched/types.hpp), and crossing it here rather than deeper keeps every
+    // expression below in a single arithmetic.
+    auto const now = to_sched_time(SteadyClock::now());
     auto const delta = now - m_prev_real_clock;
 
     m_prev_real_clock = m_sched_clock;
-    if (delta > decltype(delta)::zero()) {
+    if (delta > SchedDuration{0}) {
         m_sched_clock += delta;
     }
 
@@ -24,8 +28,10 @@ auto Driver::update_clock() -> SchedTime {
 }
 
 auto Driver::reset_preempt(SchedDuration delta) -> void {
-    auto const now = SteadyClock::now();
-    TickDevice::Current::get().program_event(now + delta);
+    // Back across the boundary: the tick device takes a TimePoint, so the
+    // deadline is assembled in the scheduler's arithmetic and converted once.
+    auto const deadline = to_sched_time(SteadyClock::now()) + delta;
+    TickDevice::Current::get().program_event(to_time_point(deadline));
 }
 
 } // namespace ours::task::sched
