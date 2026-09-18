@@ -17,6 +17,7 @@
 
 #include <array>
 #include <atomic>
+#include <utility> // std::to_underlying
 
 #include <gktl/canary.hpp>
 #include <ustl/chrono/duration.hpp>

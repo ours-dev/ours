@@ -763,3 +763,45 @@ userboot 正常。
 
 - 仍然没有加任何一条 `TA_REQUIRES`（前置未齐，理由见上一节）。
 - 没有碰那 739 行重排，也没有碰 `scheduler.cpp`。
+
+## scheduler.hpp 补上 `<utility>`（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — 加一行 include
+
+**症状**
+
+潜伏，而且有时限。scheduler.hpp:339 与 :347 用 `std::to_underlying`，而该头只 include 了
+`<array>` 与 `<atomic>`。现在能编过是靠传递包含——把编译命令加上 `-H` 打印包含树，
+`<utility>` 出现在第 7 层，是别的头顺带拖进来的。
+
+**原因**
+
+自包含是头文件的基本契约：一个头该 include 它自己用到的东西，而不是指望别人替它 include。
+靠传递包含活着的头，会在**与它无关的某次改动**中突然编不过，而那次改动的作者看不出因果。
+
+这条特别有时限：队列搬进 `Runtime` 那一步要删掉 scheduler.hpp 里的
+`#include <ours/task/sched/fair.hpp>`，而那很可能正是这条链的来源。先补上，
+省得那一步被一个毫不相干的错误打断。
+
+**改法**
+
+```cpp
+#include <array>
+#include <atomic>
+#include <utility> // std::to_underlying
+```
+
+按根 `.clang-format` 的第二组（C++ 标准库）字母序放。
+
+**参照**
+
+无，是本项目自身的自包含约定。
+
+**验证**
+
+全量构建通过；QEMU 两个镜像各 28 秒，断言/panic/异常计数均为 0，userboot 正常。
+
+**故意没做**
+
+- 没有顺手把这个头里别的传递包含依赖也一并补齐。这次只修被证实、且马上要被切断的那一条。
