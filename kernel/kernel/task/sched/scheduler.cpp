@@ -76,7 +76,6 @@
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <gktl/counter.hpp>
-#include <gktl/defer.hpp>
 #include <heap/new.hpp>
 #include <ktl/rwonce.hpp>
 
@@ -490,21 +489,31 @@ auto Scheduler::finish_transition(Thread *thread) -> void {
 }
 
 auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
-    Thread *next;
-    auto const deferred = gktl::defer([this, curr, &next] FORCE_INLINE_ATTR() {
-        put_prev_thread(curr);
-        set_next_thread(next);
-    });
+    auto *const next = pick_next_thread(curr);
 
-    if (next = m_runtime.next_thread; next != nullptr) {
-        m_runtime.next_thread = nullptr;
-        return next;
+    // The hand-over. It used to sit in a gktl::defer above the selection, so
+    // that it ran on each of the six `return`s the selection has. Straight-line
+    // code now: pick_next_thread() has one job and this has the other, and
+    // neither reads a variable the other may not have written yet.
+    put_prev_thread(curr);
+    set_next_thread(next);
+    return next;
+}
+
+auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
+    // A thread nominated by a directed yield wins outright. Taken and cleared
+    // in one step: the slot carries the nomination across two critical
+    // sections (Current::yield_to_thread records it and drops the lock;
+    // reschedule_common takes the lock again and reads it), so leaving a stale
+    // one behind would hand the same thread over twice.
+    if (auto *const nominated = std::exchange(m_runtime.next_thread, nullptr); nominated) {
+        return nominated;
     }
 
     if (auto &ctx = curr->scheduling_context();
         ctx.discipline() == Discipline::Normal &&
         ctx.schedule()->num_queued(m_runtime) == m_runtime.num_queued_threads) {
-        if (next = ctx.schedule()->evaluate_next_thread(m_runtime, curr); next) {
+        if (auto *const next = ctx.schedule()->evaluate_next_thread(m_runtime, curr); next) {
             return next;
         }
     }
@@ -520,12 +529,12 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
         if (!schedule) {
             continue;
         }
-        if (next = schedule->evaluate_next_thread(m_runtime, curr); next) {
+        if (auto *const next = schedule->evaluate_next_thread(m_runtime, curr); next) {
             return next;
         }
     }
 
-    if (next = steal_work_from(Cpu::online_mask()); next) {
+    if (auto *const next = steal_work_from(Cpu::online_mask()); next) {
         return next;
     }
 
@@ -533,19 +542,11 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
         // There are no other runnable threads and |curr| is not parked
         // (|curr| from timeslice expired or an yield). so give it a chance
         // to run again.
-        //
-        // Through |next|, not a bare `return curr`: the deferred block above
-        // captures |next| by reference and hands it to set_next_thread() on
-        // the way out, so a path that returns without writing it hands over
-        // whatever |next| held -- null, here -- and set_next_thread() then
-        // marks a null thread Running. This was the one path that skipped it.
-        next = curr;
-        return next;
+        return curr;
     }
 
     // No any thread active, so return the idle thread.
-    next = m_idle_thread;
-    return next;
+    return m_idle_thread;
 }
 
 auto Scheduler::complete_context_switch(Thread *curr) -> void {

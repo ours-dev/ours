@@ -311,8 +311,30 @@ class Scheduler {
     /// If it can does, send out preemption request to this scheduler.
     auto unpark_preempt(Thread *thread, UnparkControl control) -> void;
 
-    /// Pick next most eligible thread and return it. Under multi-processor environment,
-    /// it will attempts to steal a task on other remote CPUs.
+    /// Which thread should run next on this CPU. Pure selection: it reads the
+    /// run queues and answers, and changes nothing about who owns the CPU.
+    ///
+    /// Under multi-processor environment it will attempt to steal a task from
+    /// other remote CPUs. It never returns null -- the idle thread is the
+    /// answer when nothing else is runnable.
+    auto pick_next_thread(Thread *curr) -> Thread *;
+
+    /// Picks the next thread and hands the CPU over to it: |curr| is put back
+    /// and |next| is taken up.
+    ///
+    /// The two halves used to be one function, with the hand-over in a
+    /// gktl::defer at the top so that it ran on every `return` in the middle.
+    /// Splitting them is not cosmetic. The defer captured the result by
+    /// reference from a variable that started out uninitialised, so "did every
+    /// path write it before returning?" was a question a reader had to answer
+    /// by checking each `return` -- and one path had already got it wrong
+    /// once. It is also invisible to the thread-safety analysis, which treats
+    /// a lambda body as its own function with an empty lockset, so the two
+    /// most-run mutators of the run queue could never carry a lock contract
+    /// while they were reached from inside it.
+    ///
+    /// Linux splits the same seam the same way: pick_task() chooses, and
+    /// put_prev_set_next_task() performs the hand-over.
     auto evaluate_next_thread(Thread *curr) -> Thread *;
 
     auto set_schedule(Thread *thread) -> ISchedule *;

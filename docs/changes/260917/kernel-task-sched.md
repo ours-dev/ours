@@ -959,3 +959,77 @@ Guard rq_guard{get_lock()};
 - 没有实现 lockdep 的那两个钩子。那是独立的功能。
 - 没有给 `tick_thread` / `yield_to_thread` 加 `TA_REQUIRES`。这一步只是让锁可见，
   注解是下一步。
+
+## 把「选下一个线程」和「交接 CPU」拆开（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — 新增 `pick_next_thread()` 声明
+- `kernel/kernel/task/sched/scheduler.cpp` — 拆分函数体，去掉 `gktl/defer.hpp`
+
+**症状**
+
+`evaluate_next_thread()` 把两件事塞在一个函数里，靠一个 `gktl::defer` 让第二件事在中间
+那六个 `return` 的每一个上都发生：
+
+```cpp
+Thread *next;                                    // ← 未初始化
+auto const deferred = gktl::defer([this, curr, &next] FORCE_INLINE_ATTR() {
+    put_prev_thread(curr);
+    set_next_thread(next);                       // ← 按引用读它
+});
+if (next = m_runtime.next_thread; next != nullptr) { ... return next; }
+...
+```
+
+两个后果，都不是假设：
+
+1. **「每条路径都在返回前写了 `next` 吗」变成了读者必须逐个 `return` 去核对的问题**，
+   而且**已经错过一次**——原代码里那段 `next = curr; return next;` 的注释记着：曾经有一条
+   路径直接 `return curr` 而没写 `next`，于是 `set_next_thread()` 收到的是 null，
+   把一个空线程标记成了 Running。
+2. **运行队列最常被调用的两个 mutator 永远加不上锁契约**。clang 的线程安全分析把 lambda
+   体当作独立函数、锁集为空（`guard.hpp` 里那条注释就是记这件事的），所以只要
+   `put_prev_thread` / `set_next_thread` 是从 defer 里被调用的，给它们写
+   `TA_REQUIRES` 就没有意义。
+
+**原因**
+
+一个函数装了两件事：**选谁**和**把 CPU 交给谁**。`defer` 是用来让第二件事跟上第一件事的
+六个出口的——也就是说，那个未初始化变量加引用捕获的写法，是「两件事没分开」的直接产物。
+
+**改法**
+
+```cpp
+auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
+    auto *const next = pick_next_thread(curr);
+    put_prev_thread(curr);
+    set_next_thread(next);
+    return next;
+}
+```
+
+`pick_next_thread()` 是纯选择：六个 `return` 全部变成直接返回值，不再有共享变量，
+所以「有没有写」这个问题**在语法上不存在了**，那段警告注释也随之删掉。
+`Thread *next;` 连同 `gktl::defer` 和它的 include 一起消失。
+
+顺手把 `if (next = m_runtime.next_thread; ...) { m_runtime.next_thread = nullptr; ... }`
+收成 `std::exchange(m_runtime.next_thread, nullptr)`——取和清本来就是一个动作。
+
+**参照**
+
+`Linux` 拆的是同一条缝：`pick_task()` 负责选，`put_prev_set_next_task()` 负责交接
+（`kernel/sched/core.c`）。
+
+**验证**
+
+全量构建通过、无新增告警。QEMU 两个镜像：`kernel.dev.dbg_1.obi` 35 秒，线程交替
+214070 次，断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常，计数 0。
+
+**故意没做**
+
+- **没有加 `TA_REQUIRES`。** 这一步只是让它们可被注解；注解是下一步，单独一个提交。
+- 没有碰 `scheduler.cpp:491-497` 那个快路径判据（`num_queued(m_runtime) ==
+  m_runtime.num_queued_threads`）。它在 RR 下恒假——`RoundRobin::set_next_thread()`
+  把运行线程从 FIFO 上摘走，而 `num_queued_threads` 仍在数它，两个计数器数的是不同人群。
+  但守卫和它守着的循环**并不等价**（守卫问线程自己那个 discipline，循环按数组序遍历所有
+  已注册 discipline），所以这不是删一条死分支，是修一个用错计数器的判据。另立一条。
