@@ -805,3 +805,55 @@ userboot 正常。
 **故意没做**
 
 - 没有顺手把这个头里别的传递包含依赖也一并补齐。这次只修被证实、且马上要被切断的那一条。
+
+## `complete_context_switch` 的声明把参数叫错了（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — 形参 `next` 改为 `curr`，补文档注释
+
+**症状**
+
+声明和定义说的不是一回事：
+
+```cpp
+// scheduler.hpp
+static auto complete_context_switch(Thread *next) -> void;
+// scheduler.cpp:538
+auto Scheduler::complete_context_switch(Thread *curr) -> void {
+    ...
+    self.set_state(State::Idling, curr == self.m_idle_thread);
+}
+```
+
+两个调用点传的都是**正在运行的那个**线程：`switch_context()` 传它自己的 `curr`，
+`trampoline_handoff()` 传 `m_runtime.curr_thread`。
+
+**原因**
+
+这是改名之前留下的旧心智模型。它原来是成员函数 `finish_switch_context()`，由切换的
+**近侧**调用——在那一侧，被命名的线程确实是「即将要跑的那个」，叫 `next` 没错。
+改成静态、并把线程显式传进来之后，调用点移到了切换的**远侧**，同一个线程在那边已经是
+「正在跑的那个」。名字得跟着语义走。
+
+这类失配不会被编译器发现（形参名不参与任何检查），但读头文件的人会据此建立错误的模型——
+而这个函数正好坐在上下文切换交接这条最需要正确模型的路径上。
+
+**改法**
+
+`next` → `curr`，与定义和 `ISchedule` 里「运行中的线程叫 curr」的惯例一致。同时补上
+文档注释，把「为什么是 curr 而不是 next」和「为什么是静态」写下来——后者上面
+`switch_context()` 那段长注释已经解释过：完成切换的调度器属于**现在**运行该线程的那个
+CPU，所以不能用 `this`。
+
+**参照**
+
+`Zircon Scheduler::FinalContextSwitch()` 同样在切换远侧完成收尾并同样退出线程安全分析。
+
+**验证**
+
+纯命名 + 注释，零行为（形参名不参与重载决议，也不影响 ABI）。全量构建通过；
+QEMU 两个镜像各 28 秒，断言/panic/异常计数均为 0，userboot 正常。
+
+**故意没做**
+
+- 没有改 `switch_context(Thread *curr, Thread *next)`。那个在切换近侧，两个名字都是对的。

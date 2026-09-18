@@ -251,8 +251,24 @@ class Scheduler {
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto switch_context(Thread *curr, Thread *next) -> void;
 
+    /// The far side of switch_context(): releases the PI lock of whichever
+    /// thread ran before, and settles this CPU's idle state.
+    ///
+    /// |curr| is the thread running *now*, not the one being switched to --
+    /// both call sites pass the resuming thread (switch_context() passes its
+    /// own |curr|, trampoline_handoff() passes m_runtime.curr_thread), and
+    /// the definition has always named it so. The declaration said |next|,
+    /// which is the mental model from before this became a static: back then
+    /// the caller was on the near side of the switch and the thread it named
+    /// was indeed the one about to run. On this side of the switch that
+    /// thread is the one running, so the name has to move with it.
+    ///
+    /// Static, and deliberately so: it reaches Current::get() itself rather
+    /// than taking a `this`, because the scheduler that finishes a switch is
+    /// the one belonging to whichever CPU is running the thread now -- see
+    /// the paragraph on switch_context() above.
     TA_NO_THREAD_SAFETY_ANALYSIS
-    static auto complete_context_switch(Thread *next) -> void;
+    static auto complete_context_switch(Thread *curr) -> void;
 
     TA_REQUIRES(get_lock())
     auto enqueue_thread(Thread *thread, EnqueueControl control) -> Status;
