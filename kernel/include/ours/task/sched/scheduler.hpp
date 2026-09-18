@@ -55,7 +55,7 @@ public:
 
   /// |target_cpu| pins the thread instead of selecting for it; see the note
   /// on Thread::spawn_etc(), which is where it comes from.
-  static auto on_thread_init(Thread *, BaseProfile const &,
+  static auto on_thread_init(Thread *thread, BaseProfile const &profile,
                              CpuNum target_cpu = INVALID_CPU_NUM) -> void;
 
   /// Adopts |thread| as the one already running on |cpunum|'s scheduler.
@@ -69,7 +69,7 @@ public:
   /// thread running, pin it to its CPU, make it active_thread_.
   static auto init_first_thread(Thread *thread, CpuNum cpunum) -> void;
 
-  static auto on_thread_dead(Thread *) -> void;
+  static auto on_thread_dead(Thread *thread) -> void;
 
   /// The caller holds |thread|'s PI lock and keeps it: this neither takes
   /// nor drops it, it only puts the thread on a runqueue (Zircon's
@@ -86,10 +86,10 @@ public:
                             UnparkControl = UnparkControl::None) -> void;
 
   // TODO(SmallHuaZi)
-  static auto migrate_thread(Thread *) -> void;
+  static auto migrate_thread(Thread *thread) -> void;
 
   // TODO(SmallHuaZi)
-  static auto set_cpu_affinity(Thread *, CpuMask const &, CpuAffinity::Kind)
+  static auto set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAffinity::Kind kind)
       -> void;
 
   // TODO(SmallHuaZi)
@@ -177,7 +177,7 @@ private:
 
   /// [MP]
   template <typename F, typename... Args>
-  static auto find_active_scheduler_for(Thread *, F, Args &&...) -> CpuNum;
+  static auto find_active_scheduler_for(Thread *thread, F f, Args &&...args) -> CpuNum;
 
   static auto reschedule(CpuNum cpu) -> void;
 
@@ -261,7 +261,7 @@ private:
   auto dequeue_thread(Thread *thread, DequeueControl control) -> Status;
 
   /// The routine called in timer interrupt routine.
-  auto tick_thread(Thread *, SchedTime now) -> void;
+  auto tick_thread(Thread *current, SchedTime now) -> void;
 
   /// Activate the given |thread|. That means to add it onto runqueue and
   /// mark the thread ready to be scheduled.
@@ -270,12 +270,12 @@ private:
   /// dequeue_thread(), which carry the same requirement -- so the caller
   /// holds this scheduler's runqueue lock.
   TA_REQUIRES(get_lock())
-  auto activate_thread(Thread *, EnqueueControl) -> void;
+  auto activate_thread(Thread *thread, EnqueueControl control) -> void;
 
   /// Deactivate the given |thread|. That means to remove it from runqueue and
   /// disallow it to be added onto runqueue.
   TA_REQUIRES(get_lock())
-  auto deactivate_thread(Thread *, DequeueControl) -> void;
+  auto deactivate_thread(Thread *thread, DequeueControl control) -> void;
 
   /// Unpark the given |thread| with specified flags |control| on this
   /// scheduler.
@@ -289,7 +289,7 @@ private:
   /// as "expecting lock to be held at the end of function".)
   TA_REQUIRES(thread->get_pi_lock())
   TA_EXCLUDES(get_lock())
-  auto do_unpark_thread(Thread *thread, UnparkControl) -> void;
+  auto do_unpark_thread(Thread *thread, UnparkControl control) -> void;
 
   /// Evaulates the given |thread| whether be able to preempt current thread.
   /// If it can does, send out preemption request to this scheduler.

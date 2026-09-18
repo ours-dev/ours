@@ -706,3 +706,60 @@ virtual auto yield_thread(Runtime &, Thread *curr) -> void {}
   lockdep 可见，tick 路径的 pi_lock → rqlock 定序会第一次被真正校验）。
 - 没有改 `rr.hpp` / `fair.cpp` 里 override 的形参名。语言不要求一致，而那两个文件
   属于别的改动范围。
+
+## 给 Scheduler 自己的声明补上形参名（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — 9 处声明的匿名形参补名
+
+**症状**
+
+和上一节同因。`ISchedule` 补完名之后，`Scheduler` 这一侧还有 9 个声明留着匿名形参：
+
+```cpp
+static auto on_thread_init(Thread *, BaseProfile const &, CpuNum target_cpu = INVALID_CPU_NUM);
+static auto set_cpu_affinity(Thread *, CpuMask const &, CpuAffinity::Kind) -> void;
+auto tick_thread(Thread *, SchedTime now) -> void;
+auto activate_thread(Thread *, EnqueueControl) -> void;
+...
+```
+
+**原因**
+
+同上一节：`TA_REQUIRES` 接受的是表达式，匿名形参没有表达式，所以这些声明连想写锁契约
+都写不出来。而它们恰恰是要写的那一批——`tick_thread`、`activate_thread`、
+`deactivate_thread`、`do_unpark_thread` 全部在 rqlock 下运行，`do_unpark_thread` 还可能
+作用在**远程 CPU** 的运行队列上。
+
+另有一层：**定义里本来就有名字**，九个全部有（scheduler.cpp:113/211/395/420/431/731/
+745/778 与 :938）。所以这不是「起名字」，是让声明说出定义早就说了的话。读头文件的人
+今天要跳到 .cpp 才知道第一个 `Thread *` 是谁。
+
+**改法**
+
+九处照抄定义里的名字，一个不改：`thread` / `current` / `affinity` / `kind` / `control` /
+`profile` / `f` / `args`。零行为——形参名不参与重载决议，也不影响 ABI。
+
+**参照**
+
+同上一节：`Linux struct sched_class` 的钩子形参全部具名。
+
+**验证**
+
+工作树全量构建通过、无新增告警；QEMU 两个镜像各约 32 秒，断言/panic/异常计数均为 0，
+userboot 正常。
+
+**提交方式要说明一下**：`scheduler.hpp` 此刻同时带着另一个会话未提交的整文件重排
+（739 行）。按本仓规矩不能把别人的改动扫进我的提交，而 `git commit -- <path>` 提交的是
+工作树内容，做不到只取其中几行。所以这一条是用独立索引提交的：从 `HEAD` 版本取出该文件、
+只施加上述九处改名、`git hash-object -w` 得到 blob，在 `GIT_INDEX_FILE` 指向的私有索引里
+`read-tree HEAD` + `update-index --cacheinfo`，再 `write-tree` / `commit-tree` /
+`update-ref`。全程不触碰共享索引，也不触碰工作树里的重排。
+
+**要提交的那份 blob 是单独编译验证过的**，不是只验了工作树的叠加版：把 rr.cpp 的真实
+编译参数取出来，对那份 blob 跑 `-x c++-header -fsyntax-only`，无 error 无 warning。
+
+**故意没做**
+
+- 仍然没有加任何一条 `TA_REQUIRES`（前置未齐，理由见上一节）。
+- 没有碰那 739 行重排，也没有碰 `scheduler.cpp`。
