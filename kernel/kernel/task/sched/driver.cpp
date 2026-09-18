@@ -18,7 +18,21 @@ auto Driver::update_clock() -> SchedTime {
     auto const now = to_sched_time(SteadyClock::now());
     auto const delta = now - m_prev_real_clock;
 
-    m_prev_real_clock = m_sched_clock;
+    // |now|, not m_sched_clock. This field is the previous *real* reading, and
+    // it is the only thing that makes |delta| above mean "real time elapsed
+    // since the last update". Storing the scheduler clock into it crossed the
+    // two: the next delta was then measured from the virtual clock, which lags
+    // the real one, and the result was a six-update cycle in which the
+    // scheduler clock advanced 10, 20, 20, 10, 0, 0 for six equal real steps
+    // of 10. The long-run rate came out exactly right -- which is why nothing
+    // ever showed -- but two updates in six charged the running thread
+    // nothing at all and two charged it double.
+    //
+    // A skipped update (ActSkip, above) deliberately does not reach here, so
+    // the interval it covers is folded into the next delta rather than lost.
+    // That is the difference between deferring the clock and freezing it, and
+    // the request/accept handshake wants the former.
+    m_prev_real_clock = now;
     if (delta > SchedDuration{0}) {
         m_sched_clock += delta;
     }
