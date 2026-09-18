@@ -1259,3 +1259,83 @@ Linux 不需要这条检查，因为它没有这次坍缩：`DEFINE_SCHED_CLASS`
 
 - 没有顺手拆 `SchedParams`。那是下一步（F1），单独一个提交。
 - 没有碰 `RunQueueState`、`CpuAffinity`、`Metric`、`Timeslice` 这些嵌套类型的名字。
+
+## F1：`SchedParams` 按所有者拆开（2026-09-18）
+
+**文件**
+- `kernel/include/ours/task/sched/sched_entity.hpp` — `SchedParams` → `FairState`，
+  `runtime`/`prev_runtime` 上提为 `SchedEntity` 的直接成员
+- `kernel/kernel/task/sched/rr.cpp` — 4 处跟随
+
+**症状**
+
+一个扁平结构体装着两批互不相干的字段，七个字段全是同一个类型：
+
+```cpp
+struct SchedParams {
+    SchedTime     deadline;       // 零写入，三个读者
+    SchedDuration prev_runtime;   // 框架记账
+    SchedDuration runtime;        // 框架记账
+    SchedDuration vruntime;       // EEVDF
+    SchedDuration vdeadline;      // 四个写入，零读者
+    SchedDuration vlag;           // EEVDF
+    usize         generations;    // 零使用者
+};
+```
+
+`deadline` 和 `vdeadline` 就是这么并排坐着的：同型、同名族、同一层，写错哪个编译器
+都不吭声。这不是 Fair 的算法问题——**是一个结构体同时装着通用时间记账和 Fair 的虚拟
+时间代数**，两批字段的读者互不相干，却共享一个名字和一种类型。
+
+**原因**
+
+前提是「`Discipline` 会长大」。那么每加一个 discipline，它的字段就并进同一个扁平结构体，
+下一对 `x` / `vx` 迟早会发生。所有权必须变成类型，而不是命名约定。
+
+**改法**
+
+```cpp
+// 框架的，每个 discipline 都这样记账
+SchedDuration m_exec_runtime;
+SchedDuration m_prev_exec_runtime;
+
+// Fair 私有的
+struct FairState {
+    SchedTime deadline;
+    SchedDuration vruntime, vdeadline, vlag;
+    usize generations;
+};
+FairState m_fair;
+```
+
+字段叫 `m_exec_runtime` 而不是 `m_runtime`，因为 `m_runtime` 已经被 `Scheduler` 占了，
+指的是每 CPU 的运行队列对象——毫无关系的两样东西。访问器 `runtime()` 暂时保留旧名
+（改它要动 `fair.*`），已在设计文档里列为待你决定的一项。
+
+**RoundRobin 没有 `RrState`**，因为它确实没有私有的每线程字段——它唯一的每线程数据是
+队列钩子。**而钩子搬不进子结构**：侵入式容器要的是指向成员的指针，没有办法拼出一个
+穿进嵌套结构体的成员指针。真要搬，队列就得改成持有子结构、再从子结构反推实体
+（Linux 的 `task_of(se)`）——那是改每个 discipline 自己的运行队列，是它们各自的事。
+这一条写进了成员声明的注释里，免得下一个人以为是漏掉了。
+
+**参照**
+
+`Linux struct sched_entity` / `sched_rt_entity` / `sched_dl_entity`——`task_struct` 里
+一个 discipline 一个子结构，各自由读它的 discipline 拥有。
+
+**验证**
+
+构建成功（按退出码），无告警。`fair.hpp` 仍然编译通过——它只用访问器和钩子 traits。
+QEMU 两个镜像各 30 秒：`kernel.dev.dbg_1.obi` 线程交替 158767 次、断言/panic/异常
+计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+
+**`fair.cpp` 从这一步起语法检查不再通过，这是设计如此。** 那 11 处直接读写 `m_params`
+的地方正是所有权收归 Fair 的那条线。逐行清单写在
+`docs/design/260918/kernel-task-sched.md`，`git diff` 确认 `fair.hpp`/`fair.cpp` 未改动。
+代价要说明：从此我失去了对 `fair.cpp` 意外损坏的检测能力，直到作者适配为止。
+
+**故意没做**
+
+- 没有删 `generations`（零使用者，按存根规矩保留，随 Fair 的状态一起搬）。
+- 没有建空的 `RrState`。RR 今天确实没有私有每线程字段，造一个空结构体是发明结构。
+- 没有改访问器 `runtime()` 的名字。

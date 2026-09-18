@@ -122,4 +122,36 @@ EEVDF 语义的判断。框架侧改完后 `fair.cpp` 会编不过——它本�
 改完之后**删掉 `sched/context.hpp` 这个文件和 `Thread::scheduling_context()`**——
 届时不会再有任何东西引用它们。
 
-（F1 起的清单待各步完成后追加。）
+### F1 —— `SchedParams` 拆成框架记账 + `FairState`（已完成）
+
+`fair.hpp` 仍然编译通过（它只用访问器和钩子 traits），**`fair.cpp` 从这一步起语法检查
+不再通过**——这是设计如此，不是意外：那 11 处直接读写 `m_params` 的地方，正是所有权
+从共享扁平结构体收归 Fair 自己的那条线。
+
+`SchedEntity` 上的新形状：
+
+```cpp
+SchedDuration m_exec_runtime;       // 框架记账（原 m_params.runtime）
+SchedDuration m_prev_exec_runtime;  // 原 m_params.prev_runtime
+FairState     m_fair;               // deadline / vruntime / vdeadline / vlag / generations
+```
+
+你自己动 Fair 的时候要做的：
+
+| fair.cpp | 现在 | 改成 |
+|---|---|---|
+| 176, 195 | `m_params.vlag` | `m_fair.vlag` |
+| 209 | `m_params.runtime` | `m_exec_runtime` |
+| 210, 217, 374 | `m_params.vruntime` | `m_fair.vruntime` |
+| 216, 373, 419 | `m_params.vdeadline` | `m_fair.vdeadline` |
+| 372 | `m_params.runtime` | `m_exec_runtime` |
+| 387 | `m_params.runtime`、`m_params.prev_runtime` | `m_exec_runtime`、`m_prev_exec_runtime` |
+
+访问器 `deadline()` 和 `runtime()` **名字没变**，所以 `fair.hpp:45/113` 与
+`fair.cpp:51/78/79/171/212` 不用动。
+
+**顺带一件要你决定的事**：`runtime()` 这个访问器名和 `sched::Runtime`（每 CPU 运行队列
+对象）撞名，两者毫无关系。字段已经改叫 `m_exec_runtime` 了，访问器改不改叫
+`exec_runtime()` 由你定——改它要动 `fair.hpp` 和 `fair.cpp`，所以我没动。
+
+（F2 起的清单待各步完成后追加。）

@@ -28,7 +28,7 @@ namespace {
 } // namespace
 
 /// Charge |curr| for the time since it was last charged. This is the whole
-/// accounting model: elapsed time goes into m_params.runtime, and the slice is
+/// accounting model: elapsed time goes into m_exec_runtime, and the slice is
 /// spent when that passes m_timeslice.length().
 ///
 /// `curr_started_time` is the discipline's to maintain -- nothing in the
@@ -45,11 +45,11 @@ auto RoundRobin::charge(Runtime &runtime, Thread *curr) -> void {
         return;
     }
 
-    curr->scheduling_entity().m_params.runtime += elapsed;
+    curr->scheduling_entity().m_exec_runtime += elapsed;
 }
 
 auto RoundRobin::slice_spent(SchedEntity &ctx) -> bool {
-    return ctx.m_params.runtime - ctx.m_params.prev_runtime >= ctx.m_timeslice.length();
+    return ctx.m_exec_runtime - ctx.m_prev_exec_runtime >= ctx.m_timeslice.length();
 }
 
 auto RrRunQueue::enqueue(SchedEntity &ctx) -> void {
@@ -143,7 +143,7 @@ auto RoundRobin::set_next_thread(Runtime &runtime, Thread *next) -> void {
         queue.dequeue(ctx);
     }
 
-    ctx.m_params.prev_runtime = ctx.m_params.runtime;
+    ctx.m_prev_exec_runtime = ctx.m_exec_runtime;
     runtime.restart_current_slice();
 }
 

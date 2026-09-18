@@ -224,10 +224,25 @@ class RunQueueState {
     TransientState m_transient_state{TransientState::None};
 };
 
-struct SchedParams {
+/// The Fair discipline's private per-thread state.
+///
+/// Split out of a single flat `SchedParams` that held these beside the
+/// framework's own accounting, seven fields of one type in one struct. That
+/// shape is what let `deadline` and `vdeadline` sit next to each other with
+/// the compiler unable to say a word about which one a call site meant --
+/// `deadline` has no writer anywhere and three readers, `vdeadline` four
+/// writers and no reader, and both are `ffl::Fixed<i64, 0>`. Whatever the
+/// right answer is there, it is Fair's to give; what the framework can do is
+/// stop offering the two of them from the same bag.
+///
+/// Nothing outside `fair.*` reads these. `SchedEntity::deadline()` is the one
+/// exception and exists for Fair's own run-queue comparator.
+///
+/// Linux's counterpart is `struct sched_entity` inside `task_struct`, beside
+/// `sched_rt_entity` and `sched_dl_entity` -- one sub-struct per discipline,
+/// each owned by the discipline that reads it.
+struct FairState {
     SchedTime deadline;
-    SchedDuration prev_runtime;
-    SchedDuration runtime;
     SchedDuration vruntime;
     SchedDuration vdeadline;
     SchedDuration vlag;
@@ -317,7 +332,9 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         , m_curr_cpu()
         , m_wake_cpu()
         , m_schedule(nullptr)
-        , m_params()
+        , m_exec_runtime()
+        , m_prev_exec_runtime()
+        , m_fair()
         , m_timeslice() {}
 
     FORCE_INLINE
@@ -325,14 +342,23 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         return m_profile.effective.discipline;
     }
 
+    /// Fair's virtual deadline key. Reaches into FairState because Fair's run
+    /// queue is ordered on it and the comparator only has a SchedEntity.
     FORCE_INLINE
     auto deadline() const -> SchedTime {
-        return m_params.deadline;
+        return m_fair.deadline;
     }
 
+    /// Execution time charged to this thread so far.
+    ///
+    /// Named `m_exec_runtime` rather than `m_runtime` because `m_runtime` is
+    /// already taken, by `Scheduler`, for a completely unrelated thing -- the
+    /// per-CPU run-queue object. The accessor keeps its old name for now;
+    /// renaming it reaches into `fair.*`, so it is queued rather than done
+    /// here.
     FORCE_INLINE
     auto runtime() const -> SchedDuration {
-        return m_params.runtime;
+        return m_exec_runtime;
     }
 
     FORCE_INLINE
@@ -403,7 +429,25 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
     CpuNum m_curr_cpu;
     CpuNum m_wake_cpu;
     ISchedule *m_schedule;
-    SchedParams m_params;
+
+    /// The framework's own accounting: how long this thread has run, and where
+    /// the current slice started counting from. Every discipline charges time
+    /// the same way -- `Runtime::charge_current()` hands back the interval --
+    /// so these belong to the framework rather than to any one discipline.
+    SchedDuration m_exec_runtime;
+    SchedDuration m_prev_exec_runtime;
+
+    /// One sub-struct per discipline that has private per-thread state.
+    ///
+    /// RoundRobin has none: its only per-thread datum is its queue hook, and
+    /// that has to stay a direct member of this class because an intrusive
+    /// container needs a pointer-to-member and there is no way to spell one
+    /// that reaches into a nested struct. Moving the hooks in as well means
+    /// the queues would have to hold the sub-struct and recover the entity
+    /// from it, which is what Linux does (`task_of(se)`) -- and which is a
+    /// change to each discipline's own run queue, so it is theirs to make.
+    FairState m_fair;
+
     Timeslice m_timeslice;
 
   public:
