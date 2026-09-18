@@ -648,3 +648,61 @@ m_prev_real_clock = m_sched_clock;            // ← 却存进了虚拟时钟
   的产物；但拆类是重构，这次只修 bug。
 - 没有改 `ActSkip` 的语义。现有行为是「推迟」，看上去是有意的，没有证据说明应该是
   「冻结」，所以只把它写进注释而不去动它。
+
+## 给 ISchedule 的每个形参命名（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/schedule.hpp` — 16 个虚函数的匿名形参补上名字
+
+**症状**
+
+18 个入口点里只有 2 个说明了自己要在哪把锁下被调用（`enqueue_thread`、`dequeue_thread`，
+schedule.hpp:87/94 的 `TA_REQUIRES(runtime.rqlock)`）。其余在同一把锁下被调用的那些，
+一条注解都没有。
+
+**原因**
+
+**不是漏写，是写不出来。** clang 的 thread-safety 属性接受的是一个**表达式**，而匿名形参
+没有表达式可写——于是
+
+```cpp
+virtual auto yield_thread(Runtime &, Thread *curr) -> void {}
+```
+
+这个声明上根本无法写出 `TA_REQUIRES(runtime.rqlock)`。两个写了注解的入口点，恰恰就是
+仅有的两个给 `Runtime &` 起了名字的。因果关系是反过来的：不是它们特别重要所以被注解，
+而是别的没法被注解。
+
+于是「这个 hook 在哪把锁下运行」这个问题，今天只能靠 grep 调用链回答，而这正是这棵树
+栽过跟头的地方。
+
+**改法**
+
+16 个虚函数的匿名形参一律补名，`Runtime &` 统一叫 `runtime`。零行为——形参名不参与
+重载决议，也不要求 override 与基类一致；`-Wno-unused-parameter` 已在编译参数里，
+空实现体不会因此告警。
+
+顺带把语义也写进接口注释里：声明是契约被阅读的地方，所以 Linux 的 `sched_class`
+钩子也全部具名（`enqueue_task(struct rq *rq, struct task_struct *p, int flags)`）。
+
+**参照**
+
+`Linux struct sched_class`（`kernel/sched/sched.h`），每个钩子的形参都具名。
+
+**验证**
+
+全量构建通过，无新增告警；`fair.cpp` 单独语法检查通过（override 的形参名不必与基类
+一致，所以 fair.cpp 和 rr.hpp 一个字都不用改）。QEMU 两个镜像各约 32 秒：
+`kernel.dev.dbg_1.obi` 断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常，计数 0。
+
+**故意没做**
+
+- **没有加任何一条 `TA_REQUIRES`。** 这一步只是让它们变得可写。真加的时候还差一个前置：
+  `lockdep::ScopedGuard` 整个是 `TA_NO_THREAD_SAFETY_ANALYSIS`（guard.hpp 自己写着
+  「callers who need the analysis to see the locks should nest single Guards instead」），
+  而 `Scheduler::tick_thread` 和 `Current::yield_to_thread` 正是用它取的 rqlock，
+  `put_prev_thread`/`set_next_thread` 又埋在 `gktl::defer` 的 lambda 里——lambda 对
+  分析器是独立函数。那两处要先换成嵌套 `Guard`，而那**不是**零行为（嵌套 Guard 对
+  lockdep 可见，tick 路径的 pi_lock → rqlock 定序会第一次被真正校验）。
+- 没有改 `rr.hpp` / `fair.cpp` 里 override 的形参名。语言不要求一致，而那两个文件
+  属于别的改动范围。

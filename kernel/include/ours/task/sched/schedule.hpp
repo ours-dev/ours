@@ -75,6 +75,18 @@ enum class DequeueControl {
 USTL_ENABLE_ENUM_BITMASK(DequeueControl);
 
 /// Schedule operation should be exclusively implemented for per discipline.
+///
+/// Every parameter here is named, and on the |Runtime &| that is a
+/// requirement rather than a courtesy: a clang thread-safety attribute names
+/// an expression, and there is no expression for an unnamed parameter -- so
+/// `TA_REQUIRES(runtime.rqlock)` cannot even be written on a hook declared
+/// `(Runtime &, Thread *curr)`. Two of the eighteen entry points below say
+/// which lock they are called under; the rest are called under the same lock
+/// and said nothing, and the reason they said nothing is that they could not.
+///
+/// This is why Linux's sched_class hooks name theirs too
+/// (`enqueue_task(struct rq *rq, struct task_struct *p, int flags)`): the
+/// declaration is where the contract is read.
 class ISchedule {
     using Self = ISchedule;
 
@@ -85,43 +97,47 @@ class ISchedule {
     ///
     /// Return Status::Ok if enqueue action really happened.
     TA_REQUIRES(runtime.rqlock)
-    virtual auto enqueue_thread(Runtime &runtime, Thread *, EnqueueControl) -> Status = 0;
+    virtual auto enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl control)
+        -> Status = 0;
 
     /// [Required] Remove |thread| from runqueue.
     ///
     /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
     /// to dequeue.
     TA_REQUIRES(runtime.rqlock)
-    virtual auto dequeue_thread(Runtime &runtime, Thread *, DequeueControl) -> Status = 0;
+    virtual auto dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl control)
+        -> Status = 0;
 
-    virtual auto yield_thread(Runtime &, Thread *curr) -> void {}
-    virtual auto yield_to_thread(Runtime &, Thread *curr, Thread *next) -> Status {
+    virtual auto yield_thread(Runtime &runtime, Thread *curr) -> void {}
+    virtual auto yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
         return Status::NotSupported;
     }
 
     /// Evaluate whether preempt the thread |curr| with given |thread| if needed.
     ///
     /// Return Status::Ok if able to preempt.
-    virtual auto unpark_preempt(Runtime &, Thread *curr, Thread *thread, UnparkControl) -> Status {
+    virtual auto unpark_preempt(Runtime &runtime, Thread *curr, Thread *thread,
+                                UnparkControl control) -> Status {
         return Status::Unimplemented;
     }
 
-    virtual auto evaluate_next_thread(Runtime &, Thread *curr) -> Thread * = 0;
-    virtual auto put_prev_thread(Runtime &, Thread *prev) -> void {}
-    virtual auto set_next_thread(Runtime &, Thread *next) -> void {}
+    virtual auto evaluate_next_thread(Runtime &runtime, Thread *curr) -> Thread * = 0;
+    virtual auto put_prev_thread(Runtime &runtime, Thread *prev) -> void {}
+    virtual auto set_next_thread(Runtime &runtime, Thread *next) -> void {}
 
     /// [Optional] Update the scheduluing data of thread |curr|.
-    virtual auto update_thread(Runtime &, Thread *curr) -> void {}
+    virtual auto update_thread(Runtime &runtime, Thread *curr) -> void {}
 
-    virtual auto override_thread_base_profile(Runtime &, Thread *, BaseProfile const &) -> Status {
+    virtual auto override_thread_base_profile(Runtime &runtime, Thread *thread,
+                                              BaseProfile const &profile) -> Status {
         return Status::Unimplemented;
     }
 
-    virtual auto on_thread_init(Runtime &, Thread *) -> void {}
-    virtual auto on_thread_dead(Runtime &, Thread *) -> void {}
-    virtual auto on_thread_unpark(Runtime &, Thread *) -> void {}
+    virtual auto on_thread_init(Runtime &runtime, Thread *thread) -> void {}
+    virtual auto on_thread_dead(Runtime &runtime, Thread *thread) -> void {}
+    virtual auto on_thread_unpark(Runtime &runtime, Thread *thread) -> void {}
 
-    virtual auto on_thread_tick(Runtime &, Thread *, bool queued) -> void = 0;
+    virtual auto on_thread_tick(Runtime &runtime, Thread *curr, bool queued) -> void = 0;
 
     /// Number of threads queued on |runtime|'s CPU for this schedule.
     ///
@@ -137,14 +153,14 @@ class ISchedule {
     /// [Optional] Attempts to assign a target CPU on which |thread| will run.
     ///
     /// Return `INVALID_CPU_NUM` if failed to assign.
-    virtual auto select_target_cpu(Thread *, CpuMask const &) -> CpuNum {
+    virtual auto select_target_cpu(Thread *thread, CpuMask const &candidates) -> CpuNum {
         return INVALID_CPU_NUM;
     }
 
     /// [Optional] Migrates |thread| onto new CPU specified by |cpunum|.
     ///
     /// Return `Status::Ok` if the migration was performed.
-    virtual auto migrate_thread(Thread *, CpuNum) -> Status {
+    virtual auto migrate_thread(Thread *thread, CpuNum cpunum) -> Status {
         return Status::Unsupported;
     }
 
