@@ -62,7 +62,7 @@
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
-#include <ours/task/sched/context.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/features.hpp>
 #include <ours/task/sched/schedule.hpp>
 #include <ours/task/sched/scheduler.hpp>
@@ -111,7 +111,7 @@ auto Scheduler::trampoline_handoff() -> void {
 
 auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNum target_cpu)
     -> void {
-    auto &context = thread->scheduling_context();
+    auto &context = thread->scheduling_entity();
 
     {
         Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
@@ -178,7 +178,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
     auto &self = Scheduler::Current::get(cpunum);
     self.m_canary.verify<Self>();
 
-    auto &context = thread->scheduling_context();
+    auto &context = thread->scheduling_entity();
     Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
 
     // The thread is where it is and stays there: hard-pinned to |cpunum| the
@@ -209,7 +209,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
 
 auto Scheduler::on_thread_dead(Thread *thread) -> void {
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_context();
+    auto &ctx = thread->scheduling_entity();
     // se.schedule()->on_thread_dead(m_runtime, thread);
 }
 
@@ -355,7 +355,7 @@ auto Scheduler::init(CpuNum cpunum) -> void {
 
 auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_context();
+    auto &ctx = thread->scheduling_entity();
 
     DEBUG_ASSERT(ctx.curr_cpu() == m_runtime.which_cpu);
     DEBUG_ASSERT(ctx.schedule() == get_schedule(thread));
@@ -382,13 +382,13 @@ auto Scheduler::set_state(State state, bool on) -> void {
 }
 
 auto Scheduler::set_schedule(Thread *thread) -> ISchedule * {
-    auto &so = thread->scheduling_context();
+    auto &so = thread->scheduling_entity();
     so.m_schedule = get_schedule(thread);
     return so.m_schedule;
 }
 
 auto Scheduler::get_schedule(Thread *thread) -> ISchedule * {
-    auto &ctx = thread->scheduling_context();
+    auto &ctx = thread->scheduling_entity();
 
     auto *const schedule = m_schedules[static_cast<usize>(ctx.discipline())];
     DEBUG_ASSERT(schedule, "No schedule registered for discipline[{}]",
@@ -413,7 +413,7 @@ auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAff
     -> void {
     DEBUG_ASSERT(CpuAffinity::Kind::Soft == kind || CpuAffinity::Kind::Hard == kind);
 
-    auto &so = thread->scheduling_context();
+    auto &so = thread->scheduling_entity();
     switch (kind) {
         using enum CpuAffinity::Kind;
         case Hard:
@@ -454,13 +454,13 @@ auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
 
     m_runtime.clock_source.update_clock();
 
-    auto &ctx = current->scheduling_context();
+    auto &ctx = current->scheduling_entity();
     ctx.schedule()->update_thread(m_runtime, current);
 }
 
 auto Scheduler::migrate_thread(Thread *thread) -> void {
     [[maybe_unused]]
-    auto &ctx = thread->scheduling_context();
+    auto &ctx = thread->scheduling_entity();
 
     if (thread->is_state_ready()) {
         // Dequeue from the scheduler which it is on and Enqueue
@@ -498,7 +498,7 @@ auto Scheduler::process_migrating_threads(SchedTime now) -> void {
 }
 
 auto Scheduler::finish_transition(Thread *thread) -> void {
-    auto &rqs = thread->scheduling_context().runqueue_state();
+    auto &rqs = thread->scheduling_entity().runqueue_state();
     DEBUG_ASSERT(rqs.is_transient_state_migrating());
 
     using TransientState = RunQueueState::TransientState;
@@ -528,7 +528,7 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
         return nominated;
     }
 
-    if (auto &ctx = curr->scheduling_context();
+    if (auto &ctx = curr->scheduling_entity();
         ctx.discipline() == Discipline::Normal &&
         ctx.schedule()->num_queued(m_runtime) == m_runtime.num_queued_threads) {
         if (auto *const next = ctx.schedule()->evaluate_next_thread(m_runtime, curr); next) {
@@ -609,7 +609,7 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     // And there are following things about local variables to note:
     //  1. |next| after context switch is in unknown state, which inable to be used again.
     //  2. |curr| after context switch is the **real** current thread.
-    //  3. |curr| before context switch was cached in |m_runtime.scheduling_context.prev_thread|.
+    //  3. |curr| before context switch was cached in |m_runtime.scheduling_entity.prev_thread|.
     //
     // Everything past the switch belongs to whichever CPU is running this
     // thread *now*, which is why complete_context_switch() asks
@@ -655,7 +655,7 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     auto const is_mode_preempt = Mode::Preempt == mode;
     auto const is_involuntary = is_mode_preempt || curr->is_state_running();
 
-    auto &so = curr->scheduling_context();
+    auto &so = curr->scheduling_entity();
     auto &rqs = so.runqueue_state();
 
     rqs.set_transient_state_rescheduling();
@@ -700,7 +700,7 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
         return;
     }
 
-    curr->scheduling_context().metric().inc_context_switch_count(is_involuntary);
+    curr->scheduling_entity().metric().inc_context_switch_count(is_involuntary);
     m_num_switches += 1;
 
     // Note `m_spinlock` (namely lock of runqueue) will be droped in Self::switch_context.
@@ -719,7 +719,7 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueControl control) -> Status
         m_runtime.clock_source.update_clock();
     }
 
-    auto &so = thread->scheduling_context();
+    auto &so = thread->scheduling_entity();
     auto status = so.schedule()->enqueue_thread(m_runtime, thread, control);
     if (Status::Ok != status) {
         return status;
@@ -749,7 +749,7 @@ auto Scheduler::dequeue_thread(Thread *thread, DequeueControl control) -> Status
     if (!!(control & DequeueControl::Save)) {
     }
 
-    auto &so = thread->scheduling_context();
+    auto &so = thread->scheduling_entity();
     auto status = so.schedule()->dequeue_thread(m_runtime, thread, control);
     if (Status::Ok != status) {
         return status;
@@ -765,7 +765,7 @@ auto Scheduler::activate_thread(Thread *thread, EnqueueControl control) -> void 
 
     m_canary.verify<Self>();
 
-    auto &rqs = thread->scheduling_context().runqueue_state();
+    auto &rqs = thread->scheduling_entity().runqueue_state();
     if (rqs.is_transient_state_migrating()) {
         control |= EnqueueControl::Migrated;
     }
@@ -779,7 +779,7 @@ auto Scheduler::deactivate_thread(Thread *thread, DequeueControl control) -> voi
 
     m_canary.verify<Self>();
 
-    auto &rqs = thread->scheduling_context().runqueue_state();
+    auto &rqs = thread->scheduling_entity().runqueue_state();
     rqs.set_transient_state_migrating();
 
     dequeue_thread(thread, control);
@@ -849,8 +849,8 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void 
 /// lock.
 auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
     auto const current_thread = m_runtime.curr_thread;
-    auto const x_schedule = thread->scheduling_context().schedule();
-    auto const y_schedule = current_thread->scheduling_context().schedule();
+    auto const x_schedule = thread->scheduling_entity().schedule();
+    auto const y_schedule = current_thread->scheduling_entity().schedule();
 
     auto &preemption_state = current_thread->preemption_state();
     if (x_schedule == y_schedule) {
@@ -870,7 +870,7 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
 auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     DEBUG_ASSERT(thread);
 
-    auto &se = thread->scheduling_context();
+    auto &se = thread->scheduling_entity();
 
     // Only ask the discipline if the thread has one. A thread reaches here
     // once before it is bound to any -- on_thread_init() calls this on a
@@ -1013,7 +1013,7 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
 
     DEBUG_ASSERT(current == self.m_runtime.curr_thread);
 
-    auto &so = current->scheduling_context();
+    auto &so = current->scheduling_entity();
     {
         // The runqueue lock has to be dropped before reschedule_common(): that
         // routine takes get_lock() itself and hands it on to switch_context().
@@ -1038,8 +1038,8 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
 
     DEBUG_ASSERT(curr == self.m_runtime.curr_thread);
 
-    auto &curr_so = curr->scheduling_context();
-    auto &next_so = thread->scheduling_context();
+    auto &curr_so = curr->scheduling_entity();
+    auto &next_so = thread->scheduling_entity();
 
     Status yielded;
     {

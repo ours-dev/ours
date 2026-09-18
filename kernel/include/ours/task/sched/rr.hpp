@@ -3,7 +3,7 @@
 #ifndef OURS_TASK_SCHED_RR_HPP
 #define OURS_TASK_SCHED_RR_HPP 1
 
-#include <ours/task/sched/context.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
 
 #include <gktl/canary.hpp>
@@ -15,8 +15,8 @@ namespace ours::task::sched {
 /// Held by Scheduler beside Fair's RunQueue, for the reason given there --
 /// Scheduler is already the per-CPU singleton, so the queue rides in it
 /// rather than through a CpuLocal instance of its own. It is intrusive
-/// through Context::m_rr_hook, a list hook distinct from the set hook Fair's
-/// RunQueue uses: a Context is never on both queues, but the two containers
+/// through SchedEntity::m_rr_hook, a list hook distinct from the set hook Fair's
+/// RunQueue uses: a SchedEntity is never on both queues, but the two containers
 /// need different node shapes.
 class RrRunQueue {
     using Self = RrRunQueue;
@@ -28,12 +28,12 @@ class RrRunQueue {
     }
 
     /// Runnable contexts in arrival order; the head is the next to run.
-    auto enqueue(Context &ctx) -> void;
-    auto dequeue(Context &ctx) -> void;
+    auto enqueue(SchedEntity &ctx) -> void;
+    auto dequeue(SchedEntity &ctx) -> void;
 
     /// The context at the head of the FIFO, or null when it is empty.
     [[nodiscard]]
-    auto peek() -> Context *;
+    auto peek() -> SchedEntity *;
 
     [[nodiscard]]
     FORCE_INLINE
@@ -42,7 +42,7 @@ class RrRunQueue {
     }
 
   private:
-    using Queue = ustl::collections::intrusive::List<Context, Context::RrQueueOption>;
+    using Queue = ustl::collections::intrusive::List<SchedEntity, SchedEntity::RrQueueOption>;
 
     gktl::Canary m_canary{this};
     Queue m_queue;
@@ -97,7 +97,7 @@ class RoundRobin final: public Schedule<RoundRobin, Discipline::Normal> {
 
     /// Whether |ctx| has used up the slice it was given at set_next_thread().
     [[nodiscard]]
-    static auto slice_spent(Context &ctx) -> bool;
+    static auto slice_spent(SchedEntity &ctx) -> bool;
 };
 
 } // namespace ours::task::sched

@@ -103,4 +103,23 @@ Discipline>` CRTP 基类里做一次，每个 discipline 的实现里不再出�
 EEVDF 语义的判断。框架侧改完后 `fair.cpp` 会编不过——它本来就不在构建里，
 由作者在把 Fair 放回构建时一并处理。
 
-（待第一步完成后填入。）
+### R1 —— `Context` → `SchedEntity`（已完成）
+
+`fair.hpp` 与 `fair.cpp` **一个字没改**，靠两个具名迁移垫片继续编译：
+
+- `kernel/include/ours/task/sched/context.hpp` 现在是一个 6 行转发头，
+  内含 `using Context = SchedEntity;`
+- `Thread::scheduling_context()` 保留为转发到 `scheduling_entity()` 的内联
+
+你自己动 Fair 的时候要做的：
+
+| 位置 | 现在 | 改成 |
+|---|---|---|
+| `fair.hpp:7`、`fair.cpp:2` | `#include <ours/task/sched/context.hpp>` | `#include <ours/task/sched/sched_entity.hpp>` |
+| `fair.hpp` 8 处、`fair.cpp` 22 处 | `Context` | `SchedEntity` |
+| `fair.cpp` 11 处 | `->scheduling_context()` | `->scheduling_entity()` |
+
+改完之后**删掉 `sched/context.hpp` 这个文件和 `Thread::scheduling_context()`**——
+届时不会再有任何东西引用它们。
+
+（F1 起的清单待各步完成后追加。）

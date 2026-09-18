@@ -36,8 +36,8 @@ namespace {
 /// set_next_thread() so that a thread charged mid-slice is not charged for the
 /// same interval twice.
 ///
-/// A member rather than a file-local helper because it reads Context's private
-/// accounting fields and Thread's private scheduling_context(); the friendship
+/// A member rather than a file-local helper because it reads SchedEntity's private
+/// accounting fields and Thread's private scheduling_entity(); the friendship
 /// both classes extend to RoundRobin does not reach a free function.
 auto RoundRobin::charge(Runtime &runtime, Thread *curr) -> void {
     auto const elapsed = runtime.charge_current();
@@ -45,24 +45,24 @@ auto RoundRobin::charge(Runtime &runtime, Thread *curr) -> void {
         return;
     }
 
-    curr->scheduling_context().m_params.runtime += elapsed;
+    curr->scheduling_entity().m_params.runtime += elapsed;
 }
 
-auto RoundRobin::slice_spent(Context &ctx) -> bool {
+auto RoundRobin::slice_spent(SchedEntity &ctx) -> bool {
     return ctx.m_params.runtime - ctx.m_params.prev_runtime >= ctx.m_timeslice.length();
 }
 
-auto RrRunQueue::enqueue(Context &ctx) -> void {
+auto RrRunQueue::enqueue(SchedEntity &ctx) -> void {
     m_queue.push_back(ctx);
     m_num_queued += 1;
 }
 
-auto RrRunQueue::dequeue(Context &ctx) -> void {
+auto RrRunQueue::dequeue(SchedEntity &ctx) -> void {
     m_queue.erase(ctx);
     m_num_queued -= 1;
 }
 
-auto RrRunQueue::peek() -> Context * {
+auto RrRunQueue::peek() -> SchedEntity * {
     auto head = m_queue.front();
     return head ? &head.value() : nullptr;
 }
@@ -71,7 +71,7 @@ auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl
     auto &queue = rq(runtime);
     queue.verify();
 
-    auto &ctx = thread->scheduling_context();
+    auto &ctx = thread->scheduling_entity();
 
     // The running thread is not on the FIFO -- set_next_thread() took it off
     // -- so an enqueue of it is a request to re-queue, which put_prev_thread()
@@ -89,7 +89,7 @@ auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl
     auto &queue = rq(runtime);
     queue.verify();
 
-    auto &ctx = thread->scheduling_context();
+    auto &ctx = thread->scheduling_entity();
 
     // Same asymmetry as enqueue: the running thread already left the FIFO at
     // set_next_thread(), so the only thing to record is that it is no longer
@@ -120,7 +120,7 @@ auto RoundRobin::put_prev_thread(Runtime &runtime, Thread *prev) -> void {
     auto &queue = rq(runtime);
     queue.verify();
 
-    auto &ctx = prev->scheduling_context();
+    auto &ctx = prev->scheduling_entity();
     if (!ctx.runqueue_state().is_active()) {
         // Parked, sleeping, dead: dequeue_thread() already recorded it.
         return;
@@ -138,7 +138,7 @@ auto RoundRobin::set_next_thread(Runtime &runtime, Thread *next) -> void {
     auto &queue = rq(runtime);
     queue.verify();
 
-    auto &ctx = next->scheduling_context();
+    auto &ctx = next->scheduling_entity();
     if (ctx.runqueue_state().is_active()) {
         queue.dequeue(ctx);
     }
@@ -158,7 +158,7 @@ auto RoundRobin::update_thread(Runtime &runtime, Thread *curr) -> void {
 
     charge(runtime, curr);
 
-    if (queue.num_queued() && slice_spent(curr->scheduling_context())) {
+    if (queue.num_queued() && slice_spent(curr->scheduling_entity())) {
         runtime.mark_preempt_pending();
     }
 }
@@ -180,7 +180,7 @@ auto RoundRobin::yield_thread(Runtime &runtime, Thread *curr) -> void {
 auto RoundRobin::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
     rq(runtime).verify();
 
-    if (!next->scheduling_context().runqueue_state().is_active()) {
+    if (!next->scheduling_entity().runqueue_state().is_active()) {
         return Status::BadState;
     }
 
@@ -193,7 +193,7 @@ auto RoundRobin::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -
 /// in this discipline ever scales it. Timeslice::length() would otherwise read
 /// a zero base and slice_spent() would be true from the first tick.
 auto RoundRobin::on_thread_init(Runtime &runtime, Thread *thread) -> void {
-    auto &timeslice = thread->scheduling_context().m_timeslice;
+    auto &timeslice = thread->scheduling_entity().m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
         timeslice.m_base = static_cast<u32>(scheduling_period().raw());
     }

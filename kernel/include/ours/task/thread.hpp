@@ -20,7 +20,7 @@
 #include <ours/task/config.hpp>
 #include <ours/task/owned_wait_queue.hpp>
 #include <ours/task/preemption_state.hpp>
-#include <ours/task/sched/context.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/types.hpp>
 #include <ours/task/wait_queue.hpp>
 
@@ -251,12 +251,12 @@ namespace task {
 
         FORCE_INLINE
         auto last_cpu() const -> CpuNum {
-            return m_scheduling_context.last_cpu();
+            return m_scheduling_entity.last_cpu();
         }
 
         FORCE_INLINE
         auto curr_cpu() const -> CpuNum {
-            return m_scheduling_context.curr_cpu();
+            return m_scheduling_entity.curr_cpu();
         }
 
         FORCE_INLINE
@@ -377,8 +377,8 @@ namespace task {
         static auto switch_thread(Self *curr, Self *next) -> void;
 
         FORCE_INLINE
-        static auto of(sched::Context *se) -> Self * {
-            return ustl::mem::container_of(se, &Self::m_scheduling_context);
+        static auto of(sched::SchedEntity *se) -> Self * {
+            return ustl::mem::container_of(se, &Self::m_scheduling_entity);
         }
 
         FORCE_INLINE
@@ -396,8 +396,15 @@ namespace task {
         ~Thread() = default;
 
         FORCE_INLINE
-        auto scheduling_context() -> sched::Context & {
-            return m_scheduling_context;
+        auto scheduling_entity() -> sched::SchedEntity & {
+            return m_scheduling_entity;
+        }
+
+        /// Migration shim for `fair.*`; see sched/context.hpp for why it is
+        /// here and when to delete it. Nothing else calls this name.
+        FORCE_INLINE
+        auto scheduling_context() -> sched::SchedEntity & {
+            return scheduling_entity();
         }
 
         FORCE_INLINE
@@ -523,7 +530,7 @@ namespace task {
         /// which no scheduler path satisfied, so it produced 33 warnings per
         /// translation unit and protected nothing. Linux has the same gap and
         /// closes it at run time with lockdep_assert_rq_held().
-        sched::Context m_scheduling_context;
+        sched::SchedEntity m_scheduling_entity;
         PreemptionState m_preemption_state;
 
         /// Self-synchronising: the exit side writes the retcode and then
@@ -648,8 +655,8 @@ namespace task {
         }
 
         FORCE_INLINE
-        static auto scheduling_context() -> sched::Context & {
-            return Thread::Current::get()->scheduling_context();
+        static auto scheduling_entity() -> sched::SchedEntity & {
+            return Thread::Current::get()->scheduling_entity();
         }
 
         FORCE_INLINE

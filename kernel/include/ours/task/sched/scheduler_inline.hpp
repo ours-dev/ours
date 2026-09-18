@@ -18,7 +18,7 @@ inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
         prev->set_state_ready();
     }
 
-    auto &ctx = prev->scheduling_context();
+    auto &ctx = prev->scheduling_entity();
 
     // It ran here, so this is where it last ran. Nothing wrote m_last_cpu
     // except init_first_thread(), which only ever runs for a CPU's idler and
@@ -44,7 +44,7 @@ inline auto Scheduler::set_next_thread(Thread *next) -> void {
     }
     next->set_state_running();
 
-    auto &ctx = next->scheduling_context();
+    auto &ctx = next->scheduling_entity();
 
     // The running thread belongs to this CPU. It is not enough to record this
     // at enqueue: a discipline takes the thread it is about to run *off* its

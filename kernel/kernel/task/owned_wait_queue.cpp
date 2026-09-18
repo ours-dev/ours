@@ -83,7 +83,7 @@ auto OwnedWaitQueue::default_wake_hook() -> INotifyRequeueHook & {
 /// Copies out a thread's inherited profile so a propagation can compare the
 /// before and after states; see begin_propagate/complete_propagate.
 auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> sched::InheritedProfile {
-    return thread->scheduling_context().m_profile.inherited.snapshot();
+    return thread->scheduling_entity().m_profile.inherited.snapshot();
 }
 
 /// Collects up to |max_notify| waiters to wake, leaving the queue lock held
@@ -186,7 +186,7 @@ auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile co
         oldip = Self::snapshot_thread_inherited_profile(thread);
     }
 
-    auto &context = thread->scheduling_context();
+    auto &context = thread->scheduling_entity();
     context.m_profile.base = profile;
     context.m_profile.effective.notify_base_profile_overrided();
     Scheduler::on_thread_base_profile_overrided(*thread);
@@ -278,7 +278,7 @@ auto OwnedWaitQueue::begin_propagate(Upstream &upstream, Downstream &downstream,
                 return;
             }
         }
-        inherited_profile = thread.scheduling_context().m_profile.inherited.snapshot();
+        inherited_profile = thread.scheduling_entity().m_profile.inherited.snapshot();
     } else {                         // From OWQ to Thread.
         Self &owq = upstream;        // Type annotation.
         Thread &thread = downstream; // Type annotation.

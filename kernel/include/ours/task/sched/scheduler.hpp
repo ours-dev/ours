@@ -121,7 +121,7 @@ class Scheduler {
     /// The Scheduler that owns |runtime|.
     ///
     /// A Runtime is a member of exactly one Scheduler, so this is the same
-    /// member-to-owner recovery Thread::of(Context *) performs, and it is here
+    /// member-to-owner recovery Thread::of(SchedEntity *) performs, and it is here
     /// for the same reason: an ISchedule entry point is handed the Runtime as
     /// its capability token and has no other honest way back to the scheduler
     /// around it.

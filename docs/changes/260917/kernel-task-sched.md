@@ -1200,3 +1200,62 @@ Linux 不需要这条检查，因为它没有这次坍缩：`DEFINE_SCHED_CLASS`
 **故意没做**
 
 - 没有拆这个类。它确实装着两件事，但拆类是重构，而这次只是让名字说真话。
+
+## `Context` 改名为 `SchedEntity`（2026-09-18）
+
+**文件**
+- `sched/context.hpp` → `sched/sched_entity.hpp`（`git mv`），类 `Context` → `SchedEntity`
+- `Thread::scheduling_context()` → `scheduling_entity()`
+- `rr.*`、`scheduler.*`、`scheduler_inline.hpp`、`scheduler_pi.cpp`、`thread.*`、
+  `wait_queue.cpp`、`owned_wait_queue.cpp` 共 73 处跟随
+- 新的 `sched/context.hpp` —— 6 行迁移垫片
+
+**症状**
+
+`Context` 这个名字什么都没说。**什么的上下文？** 它是每线程的调度状态——亲和性、
+队列归属、profile、时间片、各 discipline 的私有字段——而「上下文」这个词在内核里
+还同时指上下文切换，于是 `switch_context`、`complete_context_switch` 和
+`scheduling_context` 三个名字里的 context 指的不是一回事。
+
+另有一层：下一步要把 `SchedParams` 按 discipline 拆成实体子结构，如果容器仍叫
+`Context`、里面再放一个 `SchedEntity`，就是同一个概念两个名字——多一层没有内容的包装。
+
+**原因**
+
+命名。参照物两边都不叫 context：Linux 的每 discipline 部分叫 `sched_entity`
+（`task_struct` 里并列放 `se`/`rt`/`dl`），Zircon 的整体叫 `SchedulerState`
+（`Thread::scheduler_state()`）。这个对象**就是**线程的调度实体。
+
+**改法**
+
+`Context` → `SchedEntity`，文件跟着改名（`git mv` 保留历史），73 处引用跟随。
+
+**`fair.hpp` 和 `fair.cpp` 一个字没改。** 它们是作者自留的，而 `fair.hpp` 又在构建里
+（`scheduler.hpp` 以值成员持有 `RunQueue`），所以不能既不改它又让它编不过。解法是两个
+**具名的**迁移垫片，而不是留个烂摊子：
+
+- `sched/context.hpp` 变成 6 行转发头，含 `using Context = SchedEntity;`
+- `Thread::scheduling_context()` 保留为转发到 `scheduling_entity()` 的内联
+
+两处注释都写明了它们为谁存在、以及**删除条件**：作者把 Fair 拿回去改完名，这两样一起删，
+届时不会再有任何引用。逐行适配清单写在 `docs/design/260918/kernel-task-sched.md`。
+
+**参照**
+
+`Linux sched_entity`（`include/linux/sched.h`）、`Zircon SchedulerState` 与
+`Thread::scheduler_state()`（`kernel/include/kernel/thread.h:1169`）。
+
+**验证**
+
+改名用的是词边界正则（`(?<![A-Za-z0-9_])Context(?![A-Za-z0-9_])`），所以
+`LockContext`、`switch_context`、`complete_context_switch` 都不会被误伤——改完专门查过。
+
+构建成功（按退出码判定，不是按 grep 输出）；`fair.cpp` 单独语法检查 **0 错误**，
+`git diff` 确认 `fair.hpp`/`fair.cpp` 未改动。QEMU 两个镜像各 30 秒：
+`kernel.dev.dbg_1.obi` 线程交替 172372 次、断言/panic/异常计数 0；
+`kernel.dev.obi` userboot 正常、计数 0。
+
+**故意没做**
+
+- 没有顺手拆 `SchedParams`。那是下一步（F1），单独一个提交。
+- 没有碰 `RunQueueState`、`CpuAffinity`、`Metric`、`Timeslice` 这些嵌套类型的名字。

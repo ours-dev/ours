@@ -140,7 +140,7 @@ auto WaitQueue::enqueue_waiter(WaiterState &waiter) -> void {
     // Snapshotted here rather than read on every comparison: the tree is
     // walked under m_lock, and the scheduling context is guarded by the
     // thread's PI lock, which the caller already holds.
-    waiter.m_queue_key.vdeadline = thread->scheduling_context().deadline();
+    waiter.m_queue_key.vdeadline = thread->scheduling_entity().deadline();
     waiter.m_queue_key.seq = m_next_seq++;
     waiter.m_waitqueue = this;
     static_cast<void>(m_waiters.insert(waiter));

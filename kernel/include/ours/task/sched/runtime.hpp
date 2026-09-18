@@ -4,7 +4,7 @@
 #define OURS_TASK_SCHED_RUNTIME_HPP 1
 
 #include <ours/sync/spin_lock.hpp>
-#include <ours/task/sched/context.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/sched_clock.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
