@@ -327,9 +327,27 @@ auto Scheduler::init(CpuNum cpunum) -> void {
     auto const num_schedule = SCHEDULES_END - SCHEDULES_START;
     DEBUG_ASSERT(num_schedule > 0);
 
+    // Two registrations claiming one policy slot is a silent overwrite: the
+    // array is indexed by Discipline, so the second entry replaces the first
+    // and the losing discipline simply never runs, with nothing said. Today
+    // both Fair and RoundRobin register Discipline::Normal and they are kept
+    // apart by a comment in BUILD.gn -- link them together and this is what
+    // happens.
+    //
+    // Linux does not need the check because it does not have the collapse:
+    // DEFINE_SCHED_CLASS gives every class its own slot in the linker script,
+    // so uniqueness is structural. Flattening that into an array indexed by an
+    // enum is what moves the obligation here.
+    //
+    // A plain assertion is enough despite init() running once per CPU from the
+    // BSP: the placement-new above value-initialises m_schedules, so every
+    // call starts from an empty array.
     for (auto i = 0; i < num_schedule; ++i) {
         auto const &entry = SCHEDULES_START[i];
-        m_schedules[static_cast<usize>(entry.discipline)] = entry.instance;
+        auto const slot = static_cast<usize>(entry.discipline);
+        DEBUG_ASSERT(slot < m_schedules.size(), "a registered discipline is out of range");
+        DEBUG_ASSERT(!m_schedules[slot], "two disciplines registered the same policy slot");
+        m_schedules[slot] = entry.instance;
     }
 
     m_runtime.which_cpu = cpunum;

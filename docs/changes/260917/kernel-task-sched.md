@@ -1097,3 +1097,57 @@ SpinLock 'm_runtime.rqlock' exclusively [-Werror,-Wthread-safety-analysis]
   失败的最大来源：`Scheduler::init_first_thread()` 由 BSP 为每个 CPU 写**远程** Runtime 的
   `curr_thread` 与 `curr_started_time`，只持线程 PI 锁。三条出路（启动期取远程 rqlock、
   整条豁免、`assert_held()` 伪造）各自都该有自己的决定和自己的提交。
+
+## 两个纪律抢同一个策略槽位会被静默覆盖（2026-09-17）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `Scheduler::init()` 的注册循环加两条断言
+
+**症状**
+
+潜伏。`m_schedules` 是按 `Discipline` 枚举索引的数组，注册循环直接赋值：
+
+```cpp
+m_schedules[static_cast<usize>(entry.discipline)] = entry.instance;
+```
+
+两条注册记录若带着同一个 `Discipline`，**第二条静默覆盖第一条**，输的那个纪律从此一次
+都不会被调用，而且什么提示都没有。
+
+今天 `Fair` 和 `RoundRobin` **都注册 `Discipline::Normal`**，它们互斥只靠
+`kernel/kernel/task/sched/BUILD.gn` 里的一行注释——把两个一起链进去就是这个后果。
+
+**原因**
+
+Linux 不需要这条检查，因为它没有这次坍缩：`DEFINE_SCHED_CLASS` 给每个 sched_class
+在链接脚本里各自一个槽，唯一性是**结构性**的。把它压平成一个按枚举索引的数组，
+唯一性的义务就转移到了运行期，而没人接。
+
+顺带一提：`Discipline::Deadline` 全树零引用，所以这个数组今天是两槽一活槽。
+
+**改法**
+
+循环里加两条 `DEBUG_ASSERT`：槽位号在范围内、槽位此前为空。
+
+**为什么普通断言就够**，不必写成幂等式：`init()` 由 BSP 对每个 possible CPU 各调一次，
+但它开头就是 `new (this) Self()`，而 `m_schedules` 带 `{}` 默认成员初始化——每次调用都
+从空数组开始，重复调用不会自己踩自己。
+
+**参照**
+
+`Linux DEFINE_SCHED_CLASS`（`kernel/sched/sched.h`）与 `kernel/sched/vmlinux.lds.h`
+里的 `SCHED_DATA` 段。
+
+**验证**
+
+全量构建通过。QEMU：`kernel.dev.dbg_1.obi`（`DEBUG_ASSERT` 开启）30 秒，线程交替
+172469 次，断言/panic/异常计数 0——也就是说当前单纪律构建下断言成立；
+`kernel.dev.obi` userboot 正常，计数 0。
+
+（`DEBUG_ASSERT` 在 `KERNEL_DEBUG_LEVEL=0` 下会被编掉，所以这是 debug 镜像的绊线，
+不是发布镜像的保证。）
+
+**故意没做**
+
+- 没有给 `Fair` 换一个 `Discipline` 值。它们本来就是一个槽的两种实现（RR 是 Fair 在
+  bring-up 期间的替身），而且那是作者的设计决定。
