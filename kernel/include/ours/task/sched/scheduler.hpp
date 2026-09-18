@@ -56,8 +56,8 @@ class Scheduler {
 
     /// |target_cpu| pins the thread instead of selecting for it; see the note
     /// on Thread::spawn_etc(), which is where it comes from.
-    static auto on_thread_init(Thread *thread, BaseProfile const &profile, CpuNum target_cpu = INVALID_CPU_NUM)
-        -> void;
+    static auto on_thread_init(Thread *thread, BaseProfile const &profile,
+                               CpuNum target_cpu = INVALID_CPU_NUM) -> void;
 
     /// Adopts |thread| as the one already running on |cpunum|'s scheduler.
     ///
@@ -88,7 +88,8 @@ class Scheduler {
     static auto migrate_thread(Thread *thread) -> void;
 
     // TODO(SmallHuaZi)
-    static auto set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAffinity::Kind kind) -> void;
+    static auto set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAffinity::Kind kind)
+        -> void;
 
     // TODO(SmallHuaZi)
     static auto on_thread_base_profile_overrided(Thread &thread) -> void;

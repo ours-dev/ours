@@ -857,3 +857,42 @@ QEMU 两个镜像各 28 秒，断言/panic/异常计数均为 0，userboot 正�
 **故意没做**
 
 - 没有改 `switch_context(Thread *curr, Thread *next)`。那个在切换近侧，两个名字都是对的。
+
+## scheduler.hpp 重排的收尾：两行超出列宽（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/scheduler.hpp` — 两个声明重新折行
+
+**症状**
+
+上一轮把这个头从 2 空格重排成 4 空格之后，`clang-format --dry-run -Werror` 仍报三处违规，
+集中在两行：`on_thread_init` 与 `set_cpu_affinity` 的声明各有 106 列左右，超过根
+`.clang-format` 的 `ColumnLimit: 100`。
+
+**原因**
+
+那次重排不是这套 `.clang-format` 产出的——把 HEAD 版本用仓库配置格式化一遍再和它对比，
+差异正落在这两行的折行方式上。也就是说重排是手工或用别的配置做的，把两个长声明拉成了单行。
+
+**改法**
+
+对该文件跑一次 `clang-format -i`，只动这两处，共 7 行。折行方式改回配置想要的形态：
+参数续行对齐到左括号，`-> void` 跟在末参数后。
+
+**参照**
+
+无，是仓库自身的格式约定。
+
+**验证**
+
+`clang-format --dry-run -Werror` 现在无输出。全量构建通过；QEMU 两个镜像各 28 秒，
+断言/panic/异常计数均为 0，userboot 正常。
+
+**故意没做**
+
+- **没有**顺手把 `TA_RETURN_CAPABILITY(m_runtime.rqlock)` 从 `get_lock()` 那一行拆下来。
+  按仓库「属性宏独占一行」的约定它该独占一行，但 `TA_*` 一族不在 `.clang-format` 的
+  `AttributeMacros` / `Macros` 里，clang-format 看不见它们，所以现在拆了下一次格式化又会
+  被合回去。要真正解决得先把这些宏加进 `.clang-format`——实测会波及 14 个文件、
+  横跨 mm/time/sync/lockdep/concurrent，是独立的一件事。
+- 没有格式化本目录下其它文件。
