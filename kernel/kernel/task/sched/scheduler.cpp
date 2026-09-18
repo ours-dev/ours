@@ -80,7 +80,6 @@
 #include <heap/new.hpp>
 #include <ktl/rwonce.hpp>
 
-
 using ours::sync::SpinLock;
 
 namespace ours::task::sched {
@@ -105,7 +104,7 @@ auto Scheduler::trampoline_handoff() -> void {
     // this thread, which takes its PI lock, finds it already held by this CPU
     // and dies on `!is_held()`. That was the first tick of the boot. Zircon's
     // thread trampoline does the same: LockHandoff, then arch_enable_ints().
-    self.finish_switch_context();
+    Self::complete_context_switch(self.m_runtime.curr_thread);
     self.m_runtime.curr_thread->get_pi_lock().release();
 
     arch::local_irq_enable();
@@ -399,10 +398,11 @@ auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAff
 
     auto &so = thread->scheduling_context();
     switch (kind) {
-        case CpuAffinity::Kind::Hard:
+        using enum CpuAffinity::Kind;
+        case Hard:
             so.m_affinity.set_affinity_hard(affinity);
             break;
-        case CpuAffinity::Kind::Soft:
+        case Soft:
             so.m_affinity.set_affinity_soft(affinity);
             break;
     }
@@ -535,11 +535,13 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
     return next;
 }
 
-auto Scheduler::finish_switch_context() -> void {
-    auto const prev_thread = std::exchange(m_runtime.prev_thread, nullptr);
+auto Scheduler::complete_context_switch(Thread *curr) -> void {
+    Self &self = Scheduler::Current::get();
+
+    auto const prev_thread = std::exchange(self.m_runtime.prev_thread, nullptr);
     prev_thread->get_pi_lock().release();
 
-    set_state(State::Idling, m_runtime.curr_thread == m_idle_thread);
+    self.set_state(State::Idling, curr == self.m_idle_thread);
 }
 
 auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
@@ -578,24 +580,24 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     //  3. |curr| before context switch was cached in |m_runtime.scheduling_context.prev_thread|.
     //
     // Everything past the switch belongs to whichever CPU is running this
-    // thread *now*, which is why the completion step asks Current::get()
-    // rather than using `this`. `this` is the scheduler of the CPU this
-    // thread was on when it went into the switch; a thread that sleeps here
-    // is placed again by select_target_cpu() when it is woken, and that is
-    // free to answer with another CPU, leaving `this` pointing at a scheduler
-    // belonging to someone else.
+    // thread *now*, which is why complete_context_switch() asks
+    // Current::get() rather than using `this`. `this` is the scheduler of the
+    // CPU this thread was on when it went into the switch; a thread that
+    // sleeps here is placed again by select_target_cpu() when it is woken,
+    // and that is free to answer with another CPU, leaving `this` pointing at
+    // a scheduler belonging to someone else.
     //
-    // Note that this is not only about prev_thread. The completion step also
-    // does set_state(State::Idling, curr == m_idle_thread), and both the state
-    // and m_idle_thread are the resuming CPU's. So handing the previous thread
-    // across in a register -- the way Linux's switch_to() rewrites its `last`
-    // argument -- would remove the field but not this lookup; see
+    // Note that this is not only about prev_thread. complete_context_switch()
+    // also does set_state(State::Idling, curr == m_idle_thread), and both the
+    // state and m_idle_thread are the resuming CPU's. So handing the previous
+    // thread across in a register -- the way Linux's switch_to() rewrites its
+    // `last` argument -- would remove the field but not this lookup; see
     // docs/changes/260912/task-arch-seam.md for why that trade was declined.
     //
     // trampoline_handoff() -- the other way out of a switch, for a thread that
     // has never run before -- has always asked Current::get(). The two exits
     // from the same switch disagreed; this is the one that was wrong.
-    Scheduler::Current::get().finish_switch_context();
+    Self::complete_context_switch(curr);
 }
 
 auto Scheduler::update_runtime() -> void {
