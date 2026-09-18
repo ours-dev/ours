@@ -101,3 +101,29 @@ Fair 的实现把 `curr` 和 `thread` 当成了对方。两个形参同类型，
 `has_timelice_extension()` 和 `is_custom_timeslice()` 永远返回 false，整套 extension
 机制目前是惰性的（按存根规矩保留）。同处还有一个拼写失配：`has_timelice_extension`
 少了一个 `s`。
+
+## 6. 内核开不了 lockdep：两个运行期钩子从未实现
+
+`lockdep_enable = true`（`kernel/kernel_params.gni:8` 的默认值是 `false`）配出来的树链接失败：
+
+```
+ld.lld: error: undefined hidden symbol: lockdep::current_lock_context()
+>>> referenced by guard.hpp:157 ... 71 more times
+ld.lld: error: undefined hidden symbol: lockdep::report_violation(lockdep::ViolationReport const&)
+>>> referenced by lock_context.hpp:128
+```
+
+两者都是 lockdep 明文交给使用方实现的——`report.hpp:47` 的注释写着
+「Supplied by the environment, like `current_lock_context()`」。全树只有
+`system/lib/lockdep/tests/threaded.cpp` 实现了它们，那是 lockdep 自己的主机测试。
+`system/lib/lockdep` 目录下没有 `src/`。
+
+**后果**：这棵树的锁定序**从未被任何东西校验过**，而且现在也验不了。所有关于
+「某某改动让 lockdep 看见了这把锁」的说法，在实现这两个钩子之前都只是潜在收益，
+不是已生效的检查。clang 的编译期 thread-safety 分析是另一回事，它一直开着，
+和 lockdep 无关。
+
+**要修的话**：`current_lock_context()` 应当返回当前线程的锁上下文——`Thread` 已经为此
+留了位置（见 `lockdep::config.hpp` 里那段「a build that asked for no lockdep still gave
+every Thread a lock context」的交代）；`report_violation()` 走内核的 panic/日志。
+这是一个独立的功能，不是修补。

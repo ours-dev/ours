@@ -896,3 +896,66 @@ QEMU 两个镜像各 28 秒，断言/panic/异常计数均为 0，userboot 正�
   被合回去。要真正解决得先把这些宏加进 `.clang-format`——实测会波及 14 个文件、
   横跨 mm/time/sync/lockdep/concurrent，是独立的一件事。
 - 没有格式化本目录下其它文件。
+
+## 两处 ScopedGuard 换成嵌套 Guard（2026-09-17）
+
+**文件**
+- `kernel/kernel/task/sched/scheduler.cpp` — `tick_thread`、`Current::yield_to_thread`
+
+**症状**
+
+`Scheduler::tick_thread()` 是每个 tick 都要走的函数，它用 `ScopedGuard` 同时取线程的
+PI 锁和运行队列锁。而 `ScopedGuard` 对**两种检查器都是隐形的**——guard.hpp 在类上就写着：
+
+> Invisible to the thread-safety analysis: a capability attribute cannot name a
+> parameter pack ... callers who need the analysis to see the locks should nest
+> single Guards instead.
+>
+> Invisible to lockdep's validation for the same practical reason, and on its way out.
+
+`Current::yield_to_thread()` 那处更直接：它用 `ScopedGuard` 只包了**一把**锁，而同一个
+文件的 943、993 行包一把锁用的都是 `Guard`。
+
+**原因**
+
+`ScopedGuard` 的构造函数收的是参数包，而能力属性写不出 `TA_ACQUIRE(locks...)`，所以它
+整个被排除在分析之外。代价是：用它取的锁，等于没有人知道被取过。这对每 tick 必经的那个
+函数来说尤其贵——后面要给 `ISchedule` 的 16 个入口点加 `TA_REQUIRES(runtime.lock())`，
+而调用它们的 `tick_thread` 如果自己都看不见持有了什么锁，那些注解就无从检查起。
+
+**改法**
+
+```cpp
+// 改前
+ScopedGuard lock_guard{current->get_pi_lock(), get_lock()};
+// 改后
+Guard pi_guard{current->get_pi_lock()};
+Guard rq_guard{get_lock()};
+```
+
+**不是换顺序**：`ScopedGuard` 本来就按参数从左到右获取、从右到左释放，嵌套写法与它
+逐字等价。换的是「谁能看见这个顺序」。
+
+**验证，以及一处必须说清楚的更正**
+
+我原本打算说「这不是零行为，因为 pi_lock → rqlock 的定序会第一次被 lockdep 校验」。
+**那是错的。** 查证结果：
+
+1. 本构建的编译命令里没有 `CONFIG_LOCK_DEP`——`lockdep_enable` 默认 `false`，
+   所以 lockdep 处于 `Disabled`，什么都不校验。
+2. 更进一步，把它打开也没用：`lockdep_enable = true` 配出来的树**链接失败**，
+   `lockdep::current_lock_context()` 与 `lockdep::report_violation()` 是 lockdep 交给
+   使用方实现的钩子，而内核从未实现它们（详见 `docs/repairs/260917/`）。
+
+所以这次改动今天**确实是零行为**，真实收益只有一条：clang 的编译期 thread-safety
+分析（它一直开着）现在能看见这两把锁了。lockdep 那份收益要等有人把钩子实现出来。
+
+全量构建通过、无新增告警；QEMU 两个镜像：`kernel.dev.dbg_1.obi` 40 秒，线程交替
+244599 次，断言/panic/异常计数 0，日志里无任何 lockdep/定序相关输出；
+`kernel.dev.obi` userboot 正常，计数 0。
+
+**故意没做**
+
+- 没有实现 lockdep 的那两个钩子。那是独立的功能。
+- 没有给 `tick_thread` / `yield_to_thread` 加 `TA_REQUIRES`。这一步只是让锁可见，
+  注解是下一步。

@@ -420,7 +420,20 @@ auto Scheduler::set_cpu_affinity(Thread *thread, CpuMask const &affinity, CpuAff
 auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
     m_canary.verify<Self>();
 
-    ScopedGuard lock_guard{current->get_pi_lock(), get_lock()};
+    // Nested single Guards rather than one ScopedGuard over both. ScopedGuard
+    // acquires the same two locks in the same order and releases them in
+    // reverse, so this is not a change of order -- it is a change of who can
+    // see the order. ScopedGuard is invisible to both the thread-safety
+    // analysis and to lockdep, because a capability attribute cannot name a
+    // parameter pack (guard.hpp says so on the class itself, and says nested
+    // Guards are what callers who need to be seen should write). So this path
+    // held the run-queue lock in a way no checker could observe, on the one
+    // function every tick goes through.
+    //
+    // The order is the tree's: a thread's PI lock outside, the run queue's
+    // lock inside. Zircon's tick path takes the same pair the same way round.
+    Guard pi_guard{current->get_pi_lock()};
+    Guard rq_guard{get_lock()};
 
     m_runtime.driver.update_clock();
 
@@ -1011,7 +1024,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
 
     Status yielded;
     {
-        ScopedGuard guard{self.get_lock()};
+        Guard guard{self.get_lock()};
 
         if (curr_so.schedule() != next_so.schedule()) {
             return Status::BadState;
