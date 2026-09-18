@@ -5,7 +5,7 @@
 
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/sched/context.hpp>
-#include <ours/task/sched/driver.hpp>
+#include <ours/task/sched/sched_clock.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
 
@@ -35,7 +35,7 @@ struct Runtime {
 
     FORCE_INLINE
     auto clock() -> SchedTime {
-        return driver.clock();
+        return clock_source.clock();
     }
 
     /// How long the running thread has been running since it was last charged,
@@ -112,13 +112,13 @@ struct Runtime {
     FORCE_INLINE
     auto arm_preempt_timer(SchedDuration delta) -> void {
         DEBUG_ASSERT(which_cpu == CpuNum(Cpu::id()));
-        driver.reset_preempt(delta);
+        clock_source.reset_preempt(delta);
     }
 
     CpuNum which_cpu;
     sync::SpinLock rqlock;
 
-    Driver driver;
+    SchedClock clock_source;
 
     Weight total_weight;
     usize num_queued_threads;

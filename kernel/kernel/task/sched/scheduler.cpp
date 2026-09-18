@@ -201,7 +201,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
     // seat evaluate_next_thread() and put_prev_thread()/set_next_thread()
     // consult through m_idle_thread, which nothing else ever wrote.
     self.m_runtime.curr_thread = thread;
-    self.m_runtime.curr_started_time = self.m_runtime.driver.update_clock();
+    self.m_runtime.curr_started_time = self.m_runtime.clock_source.update_clock();
     if (thread->is_idle_thread()) {
         self.m_idle_thread = thread;
     }
@@ -452,7 +452,7 @@ auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
     Guard pi_guard{current->get_pi_lock()};
     Guard rq_guard{get_lock()};
 
-    m_runtime.driver.update_clock();
+    m_runtime.clock_source.update_clock();
 
     auto &ctx = current->scheduling_context();
     ctx.schedule()->update_thread(m_runtime, current);
@@ -633,7 +633,7 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
 }
 
 auto Scheduler::update_runtime() -> void {
-    m_runtime.driver.update_clock();
+    m_runtime.clock_source.update_clock();
 }
 
 auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
@@ -666,9 +666,9 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     // When unparking a thread, in |Scheduler::enqueue_thread| the clock had been updated
     // and send to the clock driver a skip request. Therefore we firstly try to response the
     // possible request.
-    m_runtime.driver.accept_skip_next_clock_update();
-    m_runtime.driver.update_clock();
-    m_runtime.driver.note_clock_updated();
+    m_runtime.clock_source.accept_skip_next_clock_update();
+    m_runtime.clock_source.update_clock();
+    m_runtime.clock_source.note_clock_updated();
 
     curr->preemption_state().flush_pending_remote();
 
@@ -716,7 +716,7 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueControl control) -> Status
     m_canary.verify<Self>();
 
     if (!(control & EnqueueControl::SkipClock)) {
-        m_runtime.driver.update_clock();
+        m_runtime.clock_source.update_clock();
     }
 
     auto &so = thread->scheduling_context();
@@ -743,7 +743,7 @@ auto Scheduler::dequeue_thread(Thread *thread, DequeueControl control) -> Status
     m_canary.verify<Self>();
 
     if (!(control & DequeueControl::SkipClock)) {
-        m_runtime.driver.update_clock();
+        m_runtime.clock_source.update_clock();
     }
 
     if (!!(control & DequeueControl::Save)) {
@@ -863,7 +863,7 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
     // The queue event has occurred. Therefore there is none of need to process
     // meaningless clock update.
     if (preemption_state.has_preempt_request()) {
-        m_runtime.driver.request_skip_next_clock_update();
+        m_runtime.clock_source.request_skip_next_clock_update();
     }
 }
 
@@ -1024,9 +1024,9 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
         // from noticing.
         Guard guard{self.get_lock()};
 
-        self.m_runtime.driver.update_clock();
+        self.m_runtime.clock_source.update_clock();
         so.schedule()->yield_thread(self.m_runtime, current);
-        self.m_runtime.driver.request_skip_next_clock_update();
+        self.m_runtime.clock_source.request_skip_next_clock_update();
     }
 
     self.reschedule_common(current, Mode::Regular);

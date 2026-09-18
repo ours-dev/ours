@@ -1,6 +1,6 @@
 source_set("sched") {
     sources = [
-        "driver.cpp",
+        "sched_clock.cpp",
         # fair.cpp is out of the build while the boot is walked on the
         # round-robin discipline; it is not deleted. Put it back here and
         # remove rr.cpp to run on Fair again.

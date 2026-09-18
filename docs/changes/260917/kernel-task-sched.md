@@ -1151,3 +1151,52 @@ Linux 不需要这条检查，因为它没有这次坍缩：`DEFINE_SCHED_CLASS`
 
 - 没有给 `Fair` 换一个 `Discipline` 值。它们本来就是一个槽的两种实现（RR 是 Fair 在
   bring-up 期间的替身），而且那是作者的设计决定。
+
+## `Driver` 改名为 `SchedClock`（2026-09-17）
+
+**文件**
+- `driver.hpp` → `sched_clock.hpp`，`driver.cpp` → `sched_clock.cpp`（`git mv`）
+- `runtime.hpp` — 成员 `driver` → `clock_source`
+- `scheduler.cpp` — 11 处成员访问跟着改
+- `kernel/kernel/task/sched/BUILD.gn` — 源文件名
+
+**症状**
+
+在内核里 `Driver` 意味着**设备驱动**。这个类是「本 CPU 的调度时钟 + 抢占定时器」，
+名字既不指时钟也不指定时器，什么都没说。而且它埋在 `Scheduler::m_runtime.driver` 两层
+之下，想找「调度器的时钟在哪」的人，一个词都搜不到。
+
+**原因**
+
+这不只是整洁问题。同一天早些时候在这个类里发现的时钟交叉缺陷
+（`m_prev_real_clock = m_sched_clock`，见本文件相应一节）**正是这种名字帮忙藏住的东西**：
+类里两个时钟同类型、名字相近、在同一个三行块里读写，而类名对「这里有两个时钟、别搞混」
+一个字都不提。
+
+**改法**
+
+类改叫 `SchedClock`，成员改叫 `clock_source`，文件跟着改名（`git mv`，保留历史）。
+同时补上类文档注释，写清三件事：它是 steady clock 的一个**可冻结**视图（被跳过的那次
+更新所覆盖的区间折进下一次，而不是丢失）；对照物是 Linux 的 `rq->clock` /
+`update_rq_clock()` 和 Zircon 的 `Scheduler::UpdateTimeline()`；以及 `reset_preempt()`
+是唯一一个跟报时无关的成员——它留在这里是因为「下次什么时候被打断」和「现在几点」是同一口
+气里问答的（Linux 也把 `rq->clock` 和 `hrtick_start()` 放在一起），但**真要拆这个类，
+先看它**。
+
+**参照**
+
+`Linux rq->clock` / `update_rq_clock()` / `hrtick_start()`；
+`Zircon Scheduler::UpdateTimeline()`。
+
+**验证**
+
+一处自己踩的坑记下来：第一次替换只改了 `.driver`，漏掉 `runtime.hpp` 里两处**裸**
+`driver`（在 `Runtime` 自己的方法体内），**构建是失败的**，而我当时的检查脚本用
+`grep` 过滤输出、退出码没查，差点把失败当成功、还拿旧镜像跑出了「通过」的启动结果。
+改用显式的构建退出码判断之后：构建成功、无告警；`fair.cpp` 单独语法检查 0 错误
+（它不引用这个类型，未受影响）。QEMU 两个镜像各 30 秒：`kernel.dev.dbg_1.obi`
+线程交替 170560 次、断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+
+**故意没做**
+
+- 没有拆这个类。它确实装着两件事，但拆类是重构，而这次只是让名字说真话。

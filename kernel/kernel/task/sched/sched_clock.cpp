@@ -1,4 +1,4 @@
-#include <ours/task/sched/driver.hpp>
+#include <ours/task/sched/sched_clock.hpp>
 #include <ours/time/clock.hpp>
 #include <ours/time/tick_device.hpp>
 
@@ -6,7 +6,7 @@ namespace ours::task::sched {
 using time::SteadyClock;
 using time::TickDevice;
 
-auto Driver::update_clock() -> SchedTime {
+auto SchedClock::update_clock() -> SchedTime {
     if (!!(m_clock_flags & ClockFlags::ActSkip)) {
         return m_sched_clock;
     }
@@ -41,7 +41,7 @@ auto Driver::update_clock() -> SchedTime {
     return m_sched_clock;
 }
 
-auto Driver::reset_preempt(SchedDuration delta) -> void {
+auto SchedClock::reset_preempt(SchedDuration delta) -> void {
     // Back across the boundary: the tick device takes a TimePoint, so the
     // deadline is assembled in the scheduler's arithmetic and converted once.
     auto const deadline = to_sched_time(SteadyClock::now()) + delta;
