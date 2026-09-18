@@ -108,7 +108,9 @@ class ISchedule {
     virtual auto dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl control)
         -> Status = 0;
 
+    TA_REQUIRES(runtime.rqlock)
     virtual auto yield_thread(Runtime &runtime, Thread *curr) -> void {}
+    TA_REQUIRES(runtime.rqlock)
     virtual auto yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
         return Status::NotSupported;
     }
@@ -116,16 +118,21 @@ class ISchedule {
     /// Evaluate whether preempt the thread |curr| with given |thread| if needed.
     ///
     /// Return Status::Ok if able to preempt.
+    TA_REQUIRES(runtime.rqlock)
     virtual auto unpark_preempt(Runtime &runtime, Thread *curr, Thread *thread,
                                 UnparkControl control) -> Status {
         return Status::Unimplemented;
     }
 
+    TA_REQUIRES(runtime.rqlock)
     virtual auto evaluate_next_thread(Runtime &runtime, Thread *curr) -> Thread * = 0;
+    TA_REQUIRES(runtime.rqlock)
     virtual auto put_prev_thread(Runtime &runtime, Thread *prev) -> void {}
+    TA_REQUIRES(runtime.rqlock)
     virtual auto set_next_thread(Runtime &runtime, Thread *next) -> void {}
 
     /// [Optional] Update the scheduluing data of thread |curr|.
+    TA_REQUIRES(runtime.rqlock)
     virtual auto update_thread(Runtime &runtime, Thread *curr) -> void {}
 
     virtual auto override_thread_base_profile(Runtime &runtime, Thread *thread,
@@ -135,6 +142,7 @@ class ISchedule {
 
     virtual auto on_thread_init(Runtime &runtime, Thread *thread) -> void {}
     virtual auto on_thread_dead(Runtime &runtime, Thread *thread) -> void {}
+    TA_REQUIRES(runtime.rqlock)
     virtual auto on_thread_unpark(Runtime &runtime, Thread *thread) -> void {}
 
     virtual auto on_thread_tick(Runtime &runtime, Thread *curr, bool queued) -> void = 0;
@@ -148,7 +156,7 @@ class ISchedule {
     /// cross-CPU wakeup, since Scheduler::do_unpark_thread() runs on the waker
     /// and manipulates the target's queues.
     [[nodiscard]]
-    virtual auto num_queued(Runtime &runtime) const -> usize = 0;
+    TA_REQUIRES(runtime.rqlock) virtual auto num_queued(Runtime &runtime) const -> usize = 0;
 
     /// [Optional] Attempts to assign a target CPU on which |thread| will run.
     ///

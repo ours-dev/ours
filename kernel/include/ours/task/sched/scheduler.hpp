@@ -309,6 +309,7 @@ class Scheduler {
 
     /// Evaulates the given |thread| whether be able to preempt current thread.
     /// If it can does, send out preemption request to this scheduler.
+    TA_REQUIRES(get_lock())
     auto unpark_preempt(Thread *thread, UnparkControl control) -> void;
 
     /// Which thread should run next on this CPU. Pure selection: it reads the
@@ -317,6 +318,7 @@ class Scheduler {
     /// Under multi-processor environment it will attempt to steal a task from
     /// other remote CPUs. It never returns null -- the idle thread is the
     /// answer when nothing else is runnable.
+    TA_REQUIRES(get_lock())
     auto pick_next_thread(Thread *curr) -> Thread *;
 
     /// Picks the next thread and hands the CPU over to it: |curr| is put back
@@ -335,6 +337,7 @@ class Scheduler {
     ///
     /// Linux splits the same seam the same way: pick_task() chooses, and
     /// put_prev_set_next_task() performs the hand-over.
+    TA_REQUIRES(get_lock())
     auto evaluate_next_thread(Thread *curr) -> Thread *;
 
     auto set_schedule(Thread *thread) -> ISchedule *;
@@ -366,8 +369,10 @@ class Scheduler {
     /// Current::set_state() take the lock for nothing.
     auto set_state(State state, bool on) -> void;
 
+    TA_REQUIRES(get_lock())
     auto put_prev_thread(Thread *thread) -> void;
 
+    TA_REQUIRES(get_lock())
     auto set_next_thread(Thread *thread) -> void;
 
     gktl::Canary m_canary{this};

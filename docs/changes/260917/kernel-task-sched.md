@@ -1033,3 +1033,67 @@ auto Scheduler::evaluate_next_thread(Thread *curr) -> Thread * {
   把运行线程从 FIFO 上摘走，而 `num_queued_threads` 仍在数它，两个计数器数的是不同人群。
   但守卫和它守着的循环**并不等价**（守卫问线程自己那个 discipline，循环按数组序遍历所有
   已注册 discipline），所以这不是删一条死分支，是修一个用错计数器的判据。另立一条。
+
+## 给运行队列锁保护的入口点写上契约（2026-09-17）
+
+**文件**
+- `kernel/include/ours/task/sched/schedule.hpp` — 9 个 `ISchedule` 虚函数加
+  `TA_REQUIRES(runtime.rqlock)`（原有 2 条，合计 11 条 + `Schedule<>` 不涉及）
+- `kernel/include/ours/task/sched/rr.hpp` — `RoundRobin` 的 7 个覆写各自重复契约
+- `kernel/include/ours/task/sched/scheduler.hpp` — `pick_next_thread`、
+  `evaluate_next_thread`、`put_prev_thread`、`set_next_thread`、`unpark_preempt`
+  加 `TA_REQUIRES(get_lock())`
+
+**症状**
+
+18 个入口点里只有 2 个说了要在哪把锁下被调用。其余在同一把锁下运行的，读者只能靠 grep
+调用链才知道——而这棵树已经在「哪个 CPU、哪把锁」上栽过两次。
+
+**原因**
+
+前两个提交（形参具名、`ScopedGuard` 换嵌套 `Guard`）已经把「写不出来」和「看不见」这两个
+障碍拆掉了，这一条才做得成。
+
+**改法**
+
+按调用点逐个核对后加注解，而**不是**给所有虚函数一律加上。加的 9 个，它们的调用点都在
+`Guard{get_lock()}` 的作用域内（`enqueue_thread`/`dequeue_thread` 本来就有）：
+`yield_thread`、`yield_to_thread`、`unpark_preempt`、`evaluate_next_thread`、
+`put_prev_thread`、`set_next_thread`、`update_thread`、`on_thread_unpark`、`num_queued`。
+
+**刻意没加的**，每个都有理由：
+
+- `on_thread_init` —— scheduler.cpp:171/194 **不持锁**调它，而且 :157 拿到的 `self`
+  可能是远程 CPU 的。注解诚实之后这件事会自己显形，但那是另一件事。
+- `on_thread_dead` —— 唯一的调用点是注释掉的（scheduler.cpp:213）。
+- `on_thread_tick`、`override_thread_base_profile` —— 全树零调用点，按存根规矩原封不动。
+- `select_target_cpu`、`migrate_thread`、`discipline` —— 不收 `Runtime`。
+
+**覆写必须各写一遍**：C++ 的覆写不继承基类的线程安全注解，所以 `rr.hpp` 的 7 个覆写
+各自重复。`fair.cpp` 的覆写没加——它不在构建里，而且属于作者自留范围。
+
+**加注解之后编译器索要了上游契约**，逐层传播了两轮：先是 `pick_next_thread`、
+`unpark_preempt`、`put_prev_thread`、`set_next_thread` 被要求声明持锁，加上之后干净。
+**没有发现任何实际的违例**——这些路径的加锁本来就是对的，只是从来没被写下来过。
+
+**验证**
+
+关键在于区分「检查过且正确」和「根本没在检查」，两者在构建输出里长得一样。所以做了
+**反向验证**：故意把 `tick_thread` 里的 `Guard rq_guard{get_lock()}` 拿掉，构建立刻报
+
+```
+scheduler.cpp:439: error: calling function 'update_thread' requires holding
+SpinLock 'm_runtime.rqlock' exclusively [-Werror,-Wthread-safety-analysis]
+```
+
+还原后构建干净。注解确实带牙。
+
+全量构建通过、无告警。QEMU 两个镜像：`kernel.dev.dbg_1.obi` 35 秒，线程交替 205018 次，
+断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常，计数 0。
+
+**故意没做**
+
+- 没有加 `TA_GUARDED` 到 `Runtime` 的字段上。那会是自然的下一步，也是新增 `-Werror`
+  失败的最大来源：`Scheduler::init_first_thread()` 由 BSP 为每个 CPU 写**远程** Runtime 的
+  `curr_thread` 与 `curr_started_time`，只持线程 PI 锁。三条出路（启动期取远程 rqlock、
+  整条豁免、`assert_held()` 伪造）各自都该有自己的决定和自己的提交。

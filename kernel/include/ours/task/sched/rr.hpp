@@ -70,20 +70,26 @@ class RoundRobin final: public Schedule<RoundRobin, Discipline::Normal> {
     auto enqueue_thread(Runtime &, Thread *, EnqueueControl) -> Status override;
     auto dequeue_thread(Runtime &, Thread *, DequeueControl) -> Status override;
 
-    auto yield_thread(Runtime &, Thread *) -> void override;
-    auto yield_to_thread(Runtime &, Thread *, Thread *) -> Status override;
+    TA_REQUIRES(runtime.rqlock)
+    auto yield_thread(Runtime &runtime, Thread *) -> void override;
+    TA_REQUIRES(runtime.rqlock)
+    auto yield_to_thread(Runtime &runtime, Thread *, Thread *) -> Status override;
 
-    auto evaluate_next_thread(Runtime &, Thread *) -> Thread * override;
-    auto put_prev_thread(Runtime &, Thread *) -> void override;
-    auto set_next_thread(Runtime &, Thread *) -> void override;
+    TA_REQUIRES(runtime.rqlock)
+    auto evaluate_next_thread(Runtime &runtime, Thread *) -> Thread * override;
+    TA_REQUIRES(runtime.rqlock)
+    auto put_prev_thread(Runtime &runtime, Thread *) -> void override;
+    TA_REQUIRES(runtime.rqlock)
+    auto set_next_thread(Runtime &runtime, Thread *) -> void override;
 
-    auto update_thread(Runtime &, Thread *curr) -> void override;
+    TA_REQUIRES(runtime.rqlock)
+    auto update_thread(Runtime &runtime, Thread *curr) -> void override;
 
     auto on_thread_init(Runtime &, Thread *) -> void override;
     auto on_thread_tick(Runtime &, Thread *, bool queued) -> void override;
 
     [[nodiscard]]
-    auto num_queued(Runtime &) const -> usize override;
+    TA_REQUIRES(runtime.rqlock) auto num_queued(Runtime &runtime) const -> usize override;
 
   private:
     /// Charge |curr| for the time since it was last charged.
