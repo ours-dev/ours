@@ -154,4 +154,14 @@ FairState     m_fair;               // deadline / vruntime / vdeadline / vlag / 
 对象）撞名，两者毫无关系。字段已经改叫 `m_exec_runtime` 了，访问器改不改叫
 `exec_runtime()` 由你定——改它要动 `fair.hpp` 和 `fair.cpp`，所以我没动。
 
+### 改名：`EnqueueControl` / `DequeueControl` → `*Options`（已完成）
+
+`fair.hpp` 不引用这两个类型，所以不需要垫片。`fair.cpp` 有 8 处：
+
+| fair.cpp | 现在 | 改成 |
+|---|---|---|
+| 8 处 | `EnqueueControl` / `DequeueControl` | `EnqueueOptions` / `DequeueOptions` |
+
+若其中有形参名叫 `control` 的，一并改成 `options`——框架侧已经这么改了。
+
 （F2 起的清单待各步完成后追加。）

@@ -18,23 +18,23 @@
 
 namespace ours::task::sched {
 /// [[=bits::Enumask]]
-enum class EnqueueControl {
+enum class EnqueueOptions {
     /// Semantics.
     None,
 
     /// Skip the update to clock.
     SkipClock = 0_bit,
 
-    /// Paired with DequeueControl::Sleep. Make thread runnable.
+    /// Paired with DequeueOptions::Sleep. Make thread runnable.
     WakeUp = 1_bit,
 
-    /// Paired with DequeueControl::Migrating.
+    /// Paired with DequeueOptions::Migrating.
     Migrated = 2_bit,
 
-    /// Paired with DequeueControl::Save
+    /// Paired with DequeueOptions::Save
     Restore = 3_bit,
 
-    /// Paired with DequeueControl::Simulate. Simulate a time of enqueue action
+    /// Paired with DequeueOptions::Simulate. Simulate a time of enqueue action
     /// without really insertion action.
     Simulate = 4_bit,
 
@@ -46,33 +46,33 @@ enum class EnqueueControl {
     /// Forcelly require the given thread to run on current CPU.
     ThisCpu = 12_bit,
 };
-USTL_ENABLE_ENUM_BITMASK(EnqueueControl);
+USTL_ENABLE_ENUM_BITMASK(EnqueueOptions);
 
 /// [[=bits::Enumask]]
-enum class DequeueControl {
+enum class DequeueOptions {
     /// Semantics.
     None,
 
     /// Dequeue without updating scheduling clock.
     SkipClock = 0_bit,
 
-    /// Paired with EnqueueControl::WakeUp. Make thread no longer runnable.
+    /// Paired with EnqueueOptions::WakeUp. Make thread no longer runnable.
     Sleep = 1_bit,
 
-    /// Paired with EnqueueControl::Migrated
+    /// Paired with EnqueueOptions::Migrated
     Migrating = 2_bit,
 
-    /// Paired with EnqueueControl::Restore
+    /// Paired with EnqueueOptions::Restore
     Save = 3_bit,
 
-    /// Paired with EnqueueControl::Simulate. Simulate a time of dequeue action
+    /// Paired with EnqueueOptions::Simulate. Simulate a time of dequeue action
     /// without really erasing action.
     Simulate = 4_bit,
 
     ///
     Delayed = 10_bit,
 };
-USTL_ENABLE_ENUM_BITMASK(DequeueControl);
+USTL_ENABLE_ENUM_BITMASK(DequeueOptions);
 
 /// Schedule operation should be exclusively implemented for per discipline.
 ///
@@ -97,7 +97,7 @@ class ISchedule {
     ///
     /// Return Status::Ok if enqueue action really happened.
     TA_REQUIRES(runtime.rqlock)
-    virtual auto enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl control)
+    virtual auto enqueue_thread(Runtime &runtime, Thread *thread, EnqueueOptions options)
         -> Status = 0;
 
     /// [Required] Remove |thread| from runqueue.
@@ -105,7 +105,7 @@ class ISchedule {
     /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
     /// to dequeue.
     TA_REQUIRES(runtime.rqlock)
-    virtual auto dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl control)
+    virtual auto dequeue_thread(Runtime &runtime, Thread *thread, DequeueOptions options)
         -> Status = 0;
 
     TA_REQUIRES(runtime.rqlock)

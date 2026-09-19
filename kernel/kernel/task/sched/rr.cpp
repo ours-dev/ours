@@ -67,7 +67,7 @@ auto RrRunQueue::peek() -> SchedEntity * {
     return head ? &head.value() : nullptr;
 }
 
-auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl) -> Status {
+auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueOptions) -> Status {
     auto &queue = rq(runtime);
     queue.verify();
 
@@ -85,7 +85,7 @@ auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueControl
     return Status::Ok;
 }
 
-auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueControl) -> Status {
+auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueOptions) -> Status {
     auto &queue = rq(runtime);
     queue.verify();
 

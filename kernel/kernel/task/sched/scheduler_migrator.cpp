@@ -20,7 +20,7 @@ auto Scheduler::Migrator::move_queued_thread(Scheduler *self, Thread *thread, Cp
     -> void {
     self->m_canary.verify<Self>();
 
-    self->deactivate_thread(thread, DequeueControl::SkipClock);
+    self->deactivate_thread(thread, DequeueOptions::SkipClock);
 
     self->m_runtime.rqlock.release();
 
@@ -28,7 +28,7 @@ auto Scheduler::Migrator::move_queued_thread(Scheduler *self, Thread *thread, Cp
 
     self->m_runtime.rqlock.acquire();
 
-    self->activate_thread(thread, EnqueueControl::None);
+    self->activate_thread(thread, EnqueueOptions::None);
     self->unpark_preempt(thread, UnparkControl::None);
 }
 

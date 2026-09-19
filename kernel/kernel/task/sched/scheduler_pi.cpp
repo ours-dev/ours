@@ -34,7 +34,7 @@ auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
 
         auto const state = thread.state();
         if (state == Thread::State::Ready) {
-            using enum DequeueControl;
+            using enum DequeueOptions;
             // We are in queue. The change of it's priority must effects on where to place this thread.
             scheduler.dequeue_thread(&thread, Save | SkipClock);
         } else if (state == Thread::State::Running) {
@@ -48,7 +48,7 @@ auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
         update_dynamic_params(oldep, newep);
 
         if (state == Thread::State::Ready) {
-            using enum EnqueueControl;
+            using enum EnqueueOptions;
             scheduler.enqueue_thread(&thread, Restore | SkipClock);
         } else if (state == Thread::State::Running) {
             scheduler.set_next_thread(&thread);

@@ -272,10 +272,10 @@ class Scheduler {
     static auto complete_context_switch(Thread *curr) -> void;
 
     TA_REQUIRES(get_lock())
-    auto enqueue_thread(Thread *thread, EnqueueControl control) -> Status;
+    auto enqueue_thread(Thread *thread, EnqueueOptions options) -> Status;
 
     TA_REQUIRES(get_lock())
-    auto dequeue_thread(Thread *thread, DequeueControl control) -> Status;
+    auto dequeue_thread(Thread *thread, DequeueOptions options) -> Status;
 
     /// The routine called in timer interrupt routine.
     auto tick_thread(Thread *current, SchedTime now) -> void;
@@ -287,12 +287,12 @@ class Scheduler {
     /// dequeue_thread(), which carry the same requirement -- so the caller
     /// holds this scheduler's runqueue lock.
     TA_REQUIRES(get_lock())
-    auto activate_thread(Thread *thread, EnqueueControl control) -> void;
+    auto activate_thread(Thread *thread, EnqueueOptions options) -> void;
 
     /// Deactivate the given |thread|. That means to remove it from runqueue and
     /// disallow it to be added onto runqueue.
     TA_REQUIRES(get_lock())
-    auto deactivate_thread(Thread *thread, DequeueControl control) -> void;
+    auto deactivate_thread(Thread *thread, DequeueOptions options) -> void;
 
     /// Unpark the given |thread| with specified flags |control| on this scheduler.
     ///

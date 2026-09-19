@@ -67,8 +67,8 @@ class RoundRobin final: public Schedule<RoundRobin, Discipline::Normal> {
     using Self = RoundRobin;
 
   public:
-    auto enqueue_thread(Runtime &, Thread *, EnqueueControl) -> Status override;
-    auto dequeue_thread(Runtime &, Thread *, DequeueControl) -> Status override;
+    auto enqueue_thread(Runtime &, Thread *, EnqueueOptions) -> Status override;
+    auto dequeue_thread(Runtime &, Thread *, DequeueOptions) -> Status override;
 
     TA_REQUIRES(runtime.rqlock)
     auto yield_thread(Runtime &runtime, Thread *) -> void override;

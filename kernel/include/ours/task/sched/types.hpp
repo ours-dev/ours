@@ -75,8 +75,8 @@ constexpr auto to_time_point(SchedTime when) -> TimePoint<> {
     return TimePoint<>(Duration(when.raw()));
 }
 
-enum class EnqueueControl;
-enum class DequeueControl;
+enum class EnqueueOptions;
+enum class DequeueOptions;
 
 // [[=bits::bitmask]]
 enum class UnparkControl {

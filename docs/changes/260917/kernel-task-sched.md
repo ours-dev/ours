@@ -1339,3 +1339,50 @@ QEMU 两个镜像各 30 秒：`kernel.dev.dbg_1.obi` 线程交替 158767 次、�
 - 没有删 `generations`（零使用者，按存根规矩保留，随 Fair 的状态一起搬）。
 - 没有建空的 `RrState`。RR 今天确实没有私有每线程字段，造一个空结构体是发明结构。
 - 没有改访问器 `runtime()` 的名字。
+
+## `EnqueueControl` / `DequeueControl` 改名为 `*Options`（2026-09-18）
+
+**文件**
+- `schedule.hpp`、`scheduler.hpp`、`rr.hpp`、`types.hpp`、`scheduler.cpp`、`rr.cpp`、
+  `scheduler_migrator.cpp`、`scheduler_pi.cpp` — 类型名 41 处，形参与局部名 13 处
+
+**症状**
+
+命名。这两个是**位掩码**——`SkipClock | WakeUp | Front`，调用方用它们说「这次入队/出队
+要按哪些方式做」。「Control」听起来像一个控制器、一个句柄、或者某种会去施加影响的东西；
+它们不是，它们是一组选项。
+
+**改法**
+
+```cpp
+// 改前
+enum class EnqueueControl { None, SkipClock = 0_bit, WakeUp = 1_bit, ... };
+auto enqueue_thread(Thread *thread, EnqueueControl control) -> Status;
+
+// 改后
+enum class EnqueueOptions { None, SkipClock = 0_bit, WakeUp = 1_bit, ... };
+auto enqueue_thread(Thread *thread, EnqueueOptions options) -> Status;
+```
+
+形参名一并从 `control` 改成 `options`——一个 `Options` 类型的形参叫 `control` 读起来是
+拧的。只改了类型确实是这两个的那些函数：`enqueue_thread`、`dequeue_thread`、
+`activate_thread`、`deactivate_thread`。`UnparkControl control` 原样未动，它不在这次
+改名的范围里。
+
+**参照**
+
+无，是本项目自身的命名。（Linux 的对应物是 `enqueue_task(rq, p, int flags)` 的裸 int
+flags；这里是类型化的位掩码，比它强，只是名字选错了。）
+
+**验证**
+
+构建成功（按退出码），无告警。QEMU 两个镜像各 30 秒：`kernel.dev.dbg_1.obi` 线程交替
+170040 次、断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+`git diff` 确认 `fair.hpp`/`fair.cpp` 未改动——`fair.hpp` 根本不引用这两个类型，
+所以这次不需要任何垫片；`fair.cpp` 的 8 处已加进设计文档的适配清单。
+
+**故意没做**
+
+- 没有动 `UnparkControl`。它是同族里剩下的一个，但不在你点名的范围里；要不要一起改
+  由你定。（`NotifyControl`、`MapControl`、`UnmapControl`、`HarvestControl`、
+  `AllocationControl` 在别的子系统里，更不在范围内。）

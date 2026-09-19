@@ -36,7 +36,7 @@
 ///                        returns, the thread is on no runqueue and this
 ///                        scheduler's lock may be dropped.
 ///     activate_thread    sees a thread that arrives still marked Migrating and
-///                        adds EnqueueControl::Migrated, so the discipline can
+///                        adds EnqueueOptions::Migrated, so the discipline can
 ///                        distinguish a completed migration from a fresh
 ///                        wakeup; then enqueues it and marks it Queueing.
 ///
@@ -51,7 +51,7 @@
 /// dequeue_thread path in reschedule_common and becomes None, not Migrating.
 /// Marking a sleeper Migrating would both promise observers an arrival that
 /// never comes, and make the later activate_thread tag a plain wakeup with
-/// EnqueueControl::Migrated. deactivate_thread asserts this distinction with
+/// EnqueueOptions::Migrated. deactivate_thread asserts this distinction with
 /// `DEBUG_ASSERT(thread->is_state_sleeping() == false)`.
 ///
 /// TODO(SmallHuaZi): both return void and discard the Status underneath them,
@@ -62,8 +62,8 @@
 #include <ours/ipi_service.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
-#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/features.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
 #include <ours/task/sched/scheduler.hpp>
 #include <ours/task/sched/scheduler_inline.hpp>
@@ -688,7 +688,7 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
         // Rescheduling state set above. RunQueueState::TransientState declares
         // a DequeueDelayed for exactly this, but has no setter or predicate for
         // it yet (see context.hpp).
-        using enum DequeueControl;
+        using enum DequeueOptions;
         if (Status::Ok == dequeue_thread(curr, SkipClock | Sleep)) {
             rqs.set_transient_state_none();
         }
@@ -712,15 +712,15 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     switch_context(curr, next);
 }
 
-auto Scheduler::enqueue_thread(Thread *thread, EnqueueControl control) -> Status {
+auto Scheduler::enqueue_thread(Thread *thread, EnqueueOptions options) -> Status {
     m_canary.verify<Self>();
 
-    if (!(control & EnqueueControl::SkipClock)) {
+    if (!(options & EnqueueOptions::SkipClock)) {
         m_runtime.clock_source.update_clock();
     }
 
     auto &so = thread->scheduling_entity();
-    auto status = so.schedule()->enqueue_thread(m_runtime, thread, control);
+    auto status = so.schedule()->enqueue_thread(m_runtime, thread, options);
     if (Status::Ok != status) {
         return status;
     }
@@ -731,7 +731,7 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueControl control) -> Status
     // comes from m_runtime and not from Cpu::id().
     so.m_curr_cpu = m_runtime.which_cpu;
 
-    if (!!(control & EnqueueControl::Restore)) {
+    if (!!(options & EnqueueOptions::Restore)) {
     }
 
     m_runtime.num_queued_threads += 1;
@@ -739,18 +739,18 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueControl control) -> Status
     return Status::Ok;
 }
 
-auto Scheduler::dequeue_thread(Thread *thread, DequeueControl control) -> Status {
+auto Scheduler::dequeue_thread(Thread *thread, DequeueOptions options) -> Status {
     m_canary.verify<Self>();
 
-    if (!(control & DequeueControl::SkipClock)) {
+    if (!(options & DequeueOptions::SkipClock)) {
         m_runtime.clock_source.update_clock();
     }
 
-    if (!!(control & DequeueControl::Save)) {
+    if (!!(options & DequeueOptions::Save)) {
     }
 
     auto &so = thread->scheduling_entity();
-    auto status = so.schedule()->dequeue_thread(m_runtime, thread, control);
+    auto status = so.schedule()->dequeue_thread(m_runtime, thread, options);
     if (Status::Ok != status) {
         return status;
     }
@@ -760,21 +760,21 @@ auto Scheduler::dequeue_thread(Thread *thread, DequeueControl control) -> Status
     return Status::Ok;
 }
 
-auto Scheduler::activate_thread(Thread *thread, EnqueueControl control) -> void {
+auto Scheduler::activate_thread(Thread *thread, EnqueueOptions options) -> void {
     DEBUG_ASSERT(thread);
 
     m_canary.verify<Self>();
 
     auto &rqs = thread->scheduling_entity().runqueue_state();
     if (rqs.is_transient_state_migrating()) {
-        control |= EnqueueControl::Migrated;
+        options |= EnqueueOptions::Migrated;
     }
 
-    enqueue_thread(thread, control);
+    enqueue_thread(thread, options);
     rqs.set_transient_state_queueing();
 }
 
-auto Scheduler::deactivate_thread(Thread *thread, DequeueControl control) -> void {
+auto Scheduler::deactivate_thread(Thread *thread, DequeueOptions options) -> void {
     DEBUG_ASSERT(thread->is_state_sleeping() == false);
 
     m_canary.verify<Self>();
@@ -782,7 +782,7 @@ auto Scheduler::deactivate_thread(Thread *thread, DequeueControl control) -> voi
     auto &rqs = thread->scheduling_entity().runqueue_state();
     rqs.set_transient_state_migrating();
 
-    dequeue_thread(thread, control);
+    dequeue_thread(thread, options);
 }
 
 auto Scheduler::Current::park_thread(Thread *curr) -> void {
@@ -827,7 +827,7 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void 
 
     m_canary.verify<Self>();
 
-    auto const enqueue_control = EnqueueControl::WakeUp;
+    auto const enqueue_control = EnqueueOptions::WakeUp;
     auto schedule = set_schedule(thread);
 
     Guard guard{get_lock()};
