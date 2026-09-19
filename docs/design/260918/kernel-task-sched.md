@@ -196,14 +196,84 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 
 ### 适配清单不再由我手工维护
 
-`sched_normal_discipline = "fair"` 一打开，`fair.cpp` 就进构建，编译器自己把清单打出来。
-下面这 0 条是用当前 HEAD 跑出来的（`-ferror-limit=0`），不是我抄的：
+框架每改一次，清单就重新生成一次；下面这 69 条是用当前 HEAD 跑出来的，不是我抄的。
 
-| fair.cpp 行 | 编译器说 |
-|---|---|
+**先修第一条**：`fair.cpp:5` 的 include 是 *fatal* 错误，不修的话编译在那里就停，
+下面 67 条一条都报不出来。（生成这张表时我用的是一份改好 include 的副本，没有动 fair.cpp。）
 
+| 文件 | 行 | 编译器说 |
+|---|---|---|
+| fair.cpp | 5 | #include <ours/task/sched/runtime.hpp> -> sched/run_queue.hpp (fatal; hides everything below until fixed) |
+| fair.cpp | 33 | unknown type name 'Runtime' |
+| fair.cpp | 97 | abstract class is marked 'final' [-Werror,-Wabstract-final-class] |
+| fair.cpp | 101 | unknown type name 'Runtime' |
+| fair.cpp | 102 | unknown type name 'Runtime' |
+| fair.cpp | 104 | unknown type name 'Runtime' |
+| fair.cpp | 105 | unknown type name 'Runtime' |
+| fair.cpp | 107 | unknown type name 'Runtime' |
+| fair.cpp | 108 | unknown type name 'Runtime' |
+| fair.cpp | 109 | unknown type name 'Runtime' |
+| fair.cpp | 111 | unknown type name 'Runtime' |
+| fair.cpp | 113 | unknown type name 'Runtime' |
+| fair.cpp | 114 | unknown type name 'Runtime' |
+| fair.cpp | 115 | unknown type name 'Runtime' |
+| fair.cpp | 116 | unknown type name 'Runtime' |
+| fair.cpp | 117 | unknown type name 'Runtime' |
+| fair.cpp | 128 | unknown type name 'Runtime' |
+| fair.cpp | 129 | unknown type name 'Runtime' |
+| fair.cpp | 131 | unknown type name 'Runtime' |
+| fair.cpp | 134 | unknown type name 'Runtime' |
+| fair.cpp | 135 | no member named 'of' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 139 | unknown type name 'Runtime' |
+| fair.cpp | 143 | unknown type name 'Runtime' |
+| fair.cpp | 167 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 174 | unknown type name 'Runtime' |
+| fair.cpp | 175 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 176 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 183 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 195 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 198 | unknown type name 'Runtime' |
+| fair.cpp | 199 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 209 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 210 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 216 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 217 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 221 | unknown type name 'Runtime' |
+| fair.cpp | 222 | use of undeclared identifier 'DequeueControl' |
+| fair.cpp | 227 | use of undeclared identifier 'DequeueControl' |
+| fair.cpp | 235 | unknown type name 'Runtime' |
+| fair.cpp | 236 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 260 | unknown type name 'Runtime' |
+| fair.cpp | 261 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 291 | unknown type name 'Runtime' |
+| fair.cpp | 292 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 300 | unknown type name 'Runtime' |
+| fair.cpp | 301 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 306 | unknown type name 'Runtime' |
+| fair.cpp | 307 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 316 | unknown type name 'Runtime' |
+| fair.cpp | 317 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 331 | unknown type name 'Runtime' |
+| fair.cpp | 332 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 348 | unknown type name 'Runtime' |
+| fair.cpp | 349 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 363 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 372 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 373 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 374 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 377 | unknown type name 'Runtime' |
+| fair.cpp | 378 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 387 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 404 | unknown type name 'Runtime' |
+| fair.cpp | 405 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 419 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 424 | unknown type name 'Runtime' |
+| fair.cpp | 425 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 437 | unknown type name 'Runtime' |
+| fair.cpp | 454 | unknown type name 'Runtime' |
+| fair.cpp | 462 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 
-重新生成的办法：把 `rr.cpp` 的真实 ninja 命令拎出来指向 `fair.cpp`，加
-`-fsyntax-only -ferror-limit=0`，输出去掉 ANSI 转义。
+重新生成的办法：把 `rr.cpp` 的真实 ninja 命令从 ninja 里拎出来指向 `fair.cpp` 的副本
+（副本里先把那一行 include 改掉），加 `-fsyntax-only -ferror-limit=0`，输出去掉 ANSI 转义。
 
 （清单随每次框架改动自动重生成，见上。）

@@ -351,13 +351,13 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
 
     /// Execution time charged to this thread so far.
     ///
-    /// Named `m_exec_runtime` rather than `m_run_queue` because `m_run_queue` is
-    /// already taken, by `Scheduler`, for a completely unrelated thing -- the
-    /// per-CPU run-queue object. The accessor keeps its old name for now;
+    /// Named `m_exec_runtime` rather than `m_runtime` because that name belonged
+    /// to the per-CPU run-queue object, which is a completely unrelated thing
+    /// (it has since been renamed to RunQueue). The accessor keeps its own name;
     /// renaming it reaches into `fair.*`, so it is queued rather than done
     /// here.
     FORCE_INLINE
-    auto run_queue() const -> SchedDuration {
+    auto runtime() const -> SchedDuration {
         return m_exec_runtime;
     }
 

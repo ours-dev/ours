@@ -1694,3 +1694,47 @@ Fair 的队列，而留着它会让 Fair 的 `RunQueue` 和框架的新名字在
 - 没有把形参缩写成 `rq`。Linux 用 `rq`，但这棵树几乎不用缩写，而作者在选名字时也正是
   因为这一点否掉了把类型叫 `Rq` 的选项。
 - 没有改 `SchedEntity::m_exec_runtime`——那是「执行时长」，和这个对象无关。
+
+## 修上一条改名扫过头的地方，并补回被截断的适配清单（2026-09-19）
+
+**文件**
+- `kernel/include/ours/task/sched/sched_entity.hpp` — `run_queue()` 还原为 `runtime()`
+- `docs/design/260918/kernel-task-sched.md` — 适配清单从 0 条补回 69 条
+
+**症状一：改名扫到了不该扫的东西**
+
+`Runtime` → `RunQueue` 那一轮，我把标识符 `runtime` 一律替换成了 `run_queue`，
+于是 `SchedEntity::runtime()` ——**线程已执行时长**的访问器，和运行队列毫无关系——
+被改成了 `run_queue()`。
+
+**构建没有发现它。** 因为同一个提交里刚把 `fair.hpp` 移出构建（`scheduler.hpp` 不再
+需要它），而 `fair.hpp:45` 的 `object.runtime()` 正是全树唯一的调用者。一次改动同时
+制造了错误和移走了唯一的检查者。
+
+**症状二：那张「0 条」的适配清单是假的**
+
+同一轮我把清单重生成写进了设计文档，结果是 0 条。不是真没有——`fair.cpp:5` include 的
+`runtime.hpp` 已随改名消失，那是 **fatal error**，编译在那一行就停了，后面 67 条根本
+没机会被报出来。我把一张空表当成结论提交了。
+
+**改法**
+
+访问器还原成 `runtime()`（不趁机改名——那要动 `fair.*`，是清单里的一条，不是这次修复
+的内容）。
+
+清单改用一份**把那行 include 改好的 fair.cpp 副本**来生成，绕过 fatal 截断；
+`fair.cpp:5` 本身作为第一条手工列在表首，并注明「不先修它，下面 67 条一条都看不到」。
+`fair.cpp` 本体一个字符没动。
+
+**教训**
+
+两条都指向同一件事：**「构建通过」这个信号，在你同时移走了检查者的时候是空的。**
+`fair.hpp` 出构建和误改访问器发生在同一个提交里，所以通过只说明剩下的代码自洽。
+清单那条同理——`-ferror-limit=0` 挡不住 fatal error，出现 fatal 时错误计数根本不是
+「还剩多少」。
+
+**验证**
+
+构建成功（按退出码）。QEMU 两个镜像各 28 秒：`kernel.dev.dbg_1.obi` 线程交替 153883 次、
+断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+适配清单 69 条（1 条 include + 68 条编译器报出）。
