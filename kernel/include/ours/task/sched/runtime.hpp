@@ -4,9 +4,15 @@
 #define OURS_TASK_SCHED_RUNTIME_HPP 1
 
 #include <ours/sync/spin_lock.hpp>
-#include <ours/task/sched/fair.hpp>
-#include <ours/task/sched/rr_run_queue.hpp>
 #include <ours/task/sched/sched_clock.hpp>
+
+// Whichever discipline occupies Discipline::Normal brings its own queue type
+// with it, so only that one's header is pulled in.
+#if SCHED_NORMAL_DISCIPLINE_FAIR
+#include <ours/task/sched/fair.hpp>
+#else
+#include <ours/task/sched/rr_run_queue.hpp>
+#endif
 #include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
@@ -15,6 +21,24 @@
 #include <ustl/mem/container_of.hpp>
 
 namespace ours::task::sched {
+/// The run queue of whichever discipline occupies `Discipline::Normal`.
+///
+/// RoundRobin and Fair are mutually exclusive -- RoundRobin is the stand-in
+/// that keeps the kernel running while the rest of it is brought up, and Fair
+/// is the one that replaces it -- so the slot has one queue, of whichever
+/// type the selected discipline uses. This used to be two members side by
+/// side with a named accessor for the stand-in, which made the transitional
+/// discipline look like a permanent second citizen; it is not, it is the one
+/// that is here now.
+///
+/// The choice is `sched_normal_discipline` in //kernel/kernel_params.gni, the
+/// same shape as MemMap's two mutually exclusive implementations.
+#if SCHED_NORMAL_DISCIPLINE_FAIR
+using NormalRunQueue = RunQueue;
+#else
+using NormalRunQueue = RrRunQueue;
+#endif
+
 /// Data required for executing the scheduler. The class is passed around to
 /// a function that will perform the scheduling work and acts as a capability
 /// token.
@@ -54,22 +78,10 @@ struct Runtime {
     FORCE_INLINE
     auto queue() -> auto & {
         if constexpr (Disci == Discipline::Normal) {
-            return m_fair_queue;
+            return m_normal_queue;
         } else {
             static_assert(Disci != Disci, "no run queue is registered for this discipline");
         }
-    }
-
-    /// RoundRobin's FIFO, which `queue<>()` cannot reach.
-    ///
-    /// RoundRobin is Fair's stand-in during bring-up and registers under
-    /// `Discipline::Normal`, the same slot Fair claims, so the enum cannot
-    /// tell the two apart -- see the assertion in `Scheduler::init()` that
-    /// refuses them both at once. Until `Discipline` distinguishes them, this
-    /// one is reached by name.
-    FORCE_INLINE
-    auto rr_run_queue() -> RrRunQueue & {
-        return m_rr_queue;
     }
 
     FORCE_INLINE
@@ -171,8 +183,7 @@ struct Runtime {
     Thread::MigratingList migrating_threads;
 
     // Physical time.
-    RunQueue m_fair_queue;
-    RrRunQueue m_rr_queue;
+    NormalRunQueue m_normal_queue;
 
     SchedTime last_updated_time;
     SchedDuration total_expected_runtime;

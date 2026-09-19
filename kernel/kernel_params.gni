@@ -9,6 +9,14 @@ declare_args() {
   lockdep_metadata_only = false 
   lockdep_lock_name_tracing = false 
 
+  # Which discipline occupies Discipline::Normal. The two are mutually
+  # exclusive: RoundRobin is a deliberately plain stand-in that keeps the rest
+  # of the kernel running while it is brought up, and Fair (EEVDF) is the
+  # intended one. Only the selected discipline's source is compiled, and
+  # Runtime's Normal run queue takes that discipline's queue type, so
+  # switching is this argument rather than a hand edit of a source list.
+  sched_normal_discipline = "rr"
+
   sched_hptick = false
   sched_delay_dequeue = false
   sched_extra_invariant_validation = false

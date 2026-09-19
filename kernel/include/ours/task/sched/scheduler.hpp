@@ -157,19 +157,6 @@ class Scheduler {
         return m_runtime.rqlock;
     }
 
-    /// The run queues moved to Runtime, where a discipline reaches its own off
-    /// the parameter it is already handed. These two forward for now; they and
-    /// `of()` go away together, and nothing in the framework calls them.
-    FORCE_INLINE
-    auto fair_run_queue() -> RunQueue & {
-        return m_runtime.queue<Discipline::Normal>();
-    }
-
-    FORCE_INLINE
-    auto rr_run_queue() -> RrRunQueue & {
-        return m_runtime.rr_run_queue();
-    }
-
   private:
     class Migrator;
 

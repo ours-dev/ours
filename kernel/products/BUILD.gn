@@ -128,8 +128,12 @@ config("lockdep") {
 }
 
 config("scheduler") {
+  assert(sched_normal_discipline == "rr" || sched_normal_discipline == "fair",
+         "sched_normal_discipline must be \"rr\" or \"fair\"")
+  _sched_normal_is_fair = sched_normal_discipline == "fair"
   defines = [
     "SCHED_HPTICK=$sched_hptick",
+    "SCHED_NORMAL_DISCIPLINE_FAIR=$_sched_normal_is_fair",
     "SCHED_DELAY_DEQUEUE=$sched_delay_dequeue",
     "SCHED_EXTRA_INVARIANT_VALIDATION=$sched_extra_invariant_validation",
     "SCHED_UNPARK_PREEMPT=$sched_unpark_preempt",

@@ -1494,3 +1494,76 @@ fair.cpp:135 一处，而它不在构建里。QEMU 两个镜像各 30 秒：`ker
 - 没有删 `Scheduler::fair_run_queue()` / `rr_run_queue()`，也没把 `of()` 转私有。
   那是 F3，单独一个提交——这一步只是把队列挪到该在的地方。
 - 没有引入 CRTP 转发层。队列既然已经在 discipline 手里那个对象上，就不需要有人再递一次。
+
+## 哪个 discipline 占 `Normal` 槽位成为构建选项；`Scheduler` 卸下队列访问器（2026-09-18）
+
+**文件**
+- `kernel/kernel_params.gni` — 新 GN 参数 `sched_normal_discipline`（默认 `"rr"`）
+- `kernel/products/BUILD.gn` — 变成 `SCHED_NORMAL_DISCIPLINE_FAIR` 宏，带合法性断言
+- `kernel/kernel/task/sched/BUILD.gn` — 按参数编 `rr.cpp` 或 `fair.cpp`
+- `kernel/include/ours/task/sched/runtime.hpp` — `NormalRunQueue` 别名跟着构建走，
+  两条队列合成一条；删掉 `rr_run_queue()`
+- `kernel/include/ours/task/sched/scheduler.hpp` — 删掉两个队列访问器
+- `kernel/kernel/task/sched/rr.cpp` — 9 处改走 `queue<Discipline::Normal>()`
+
+**症状**
+
+上一步给 `RoundRobin` 单挖了一个具名 `rr_run_queue()`，理由是「它和 Fair 共用
+`Discipline::Normal` 槽位但队列类型不同，枚举分不开」。
+
+那是把症状当成了结构。作者澄清：**RR 是过渡实现，存在的意义是让内核其余部分先活着，
+它一定会被 Fair 换掉。** 既然两者永远只链接一个，正确的表达不是给替身开后门，
+而是让槽位的队列类型跟着构建走。
+
+顺带一提，旧的选择方式是 `BUILD.gn` 里一行注释：「Put it back here and remove rr.cpp
+to run on Fair again」——一次手工编辑源文件列表。
+
+**改法**
+
+```gn
+# kernel_params.gni
+sched_normal_discipline = "rr"   # 或 "fair"
+```
+
+```cpp
+// runtime.hpp
+#if SCHED_NORMAL_DISCIPLINE_FAIR
+using NormalRunQueue = RunQueue;
+#else
+using NormalRunQueue = RrRunQueue;
+#endif
+
+NormalRunQueue m_normal_queue;   // 改前是并列的 m_fair_queue + m_rr_queue
+```
+
+于是 `queue<Discipline::Normal>()` 对**当班的那个** discipline 都成立，替身不再是二等公民。
+对照物是本仓自己的 `MemMap`——同样是「两个互斥实现，构建期择一」。
+
+`Scheduler` 那两个队列访问器随之删除（零调用者），因为它们的返回类型是写死的
+`RunQueue` / `RrRunQueue`，而现在只有一个类型存在。
+
+**一个本来没打算要的好处**：`fair.cpp` 的适配清单不用我手工维护了。
+把参数切成 `"fair"`，fair.cpp 就进构建，**编译器自己把清单打出来**——41 条，
+已生成写进 `docs/design/260918/kernel-task-sched.md`，不是抄的。
+
+**参照**
+
+`Linux` 的 sched_class 是全部编进去的，不是互斥的——这一条**不照 Linux**，
+因为这里的互斥是过渡状态，不是长期结构。本仓自己的 `MemMap` 才是对照物。
+
+**验证**
+
+两个方向都验了：
+
+- `sched_normal_discipline = "rr"`（默认）：构建成功、无告警；QEMU 两个镜像各 30 秒，
+  `kernel.dev.dbg_1.obi` 线程交替 171795 次、断言/panic/异常计数 0；
+  `kernel.dev.obi` userboot 正常、计数 0。
+- `sched_normal_discipline = "fair"`：`gn gen` 成功，`fair.cpp` 确实进了构建并报出
+  那 41 条待适配项——开关是真的在起作用，不是摆设。（临时构建树已删。）
+
+`git diff` 确认 `fair.hpp` / `fair.cpp` 未改动。
+
+**故意没做**
+
+- 没有把 `Discipline::Deadline` 也接进开关。它今天零引用，是存根。
+- 没有改 `Scheduler::of()` 的可见性——它现在零调用者，但转私有是独立一件事。
