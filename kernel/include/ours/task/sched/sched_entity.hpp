@@ -342,11 +342,38 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         return m_profile.effective.discipline;
     }
 
-    /// Fair's virtual deadline key. Reaches into FairState because Fair's run
-    /// queue is ordered on it and the comparator only has a SchedEntity.
+    /// The virtual deadline this thread is ordered by.
+    ///
+    /// Reaches into FairState because two of its three readers are Fair's own
+    /// -- the run-queue comparator and the preemption test -- and both only
+    /// have a SchedEntity to work from. The third is WaitQueue, which orders
+    /// parked threads by the same key (see the EEVDF note on
+    /// WaitQueue::QueueKey).
+    ///
+    /// It returns `vdeadline`, not `deadline`. The two are the same type and
+    /// sat side by side in one flat struct until recently, and the readers had
+    /// ended up on the wrong one: `deadline` has no writer anywhere in the
+    /// tree, while `vdeadline` is what Fair actually maintains, writing it in
+    /// four places. A key that is always zero is not an ordering -- every
+    /// comparison tied and the tie-break carried the whole decision, so both
+    /// the run queue and the wait queue were in arrival order while their
+    /// comments described EEVDF.
+    ///
+    /// The tell was WaitQueue's own field name: `m_queue_key.vdeadline`, fed
+    /// from `deadline()`. The name had said which one it wanted all along.
+    ///
+    /// No behaviour changes under RoundRobin, which writes neither: the key
+    /// stays zero and the queues stay in arrival order, which is the right
+    /// answer for a discipline that has no notion of a deadline. It starts
+    /// mattering when Fair returns.
+    ///
+    /// `FairState::deadline` keeps no accessor now. It is left in place per
+    /// the scaffolding rule, and it is the field a future Deadline discipline
+    /// would want -- at which point it belongs in that discipline's state,
+    /// not in Fair's.
     FORCE_INLINE
-    auto deadline() const -> SchedTime {
-        return m_fair.deadline;
+    auto virtual_deadline() const -> SchedTime {
+        return m_fair.vdeadline;
     }
 
     /// Execution time charged to this thread so far -- real time on a CPU, not

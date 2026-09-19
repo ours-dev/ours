@@ -1814,3 +1814,48 @@ Fair 同时维护着 `vruntime`（它自己写了四处），却在比较时读�
 
 构建成功——框架里零调用者，所以对构建免费。QEMU 两个镜像各 26 秒，断言/panic/异常
 计数均为 0，userboot 正常。适配清单已重生成。
+
+## 排序键改读 Fair 真正维护的那个字段（2026-09-19）
+
+**文件**
+- `sched_entity.hpp` — `deadline()` → `virtual_deadline()`，返回 `m_fair.vdeadline`
+- `kernel/kernel/task/wait_queue.cpp` — 跟随
+
+**症状**
+
+`SchedParams` 还是一个扁平结构体时，`deadline` 和 `vdeadline` 同型、同名族、并排坐着，
+于是三个读者都落在了错的那个上：
+
+| 位置 | 读的是 |
+|---|---|
+| fair.hpp:113 | Fair 运行队列的排序比较器 |
+| fair.cpp:212 | 抢占判据 |
+| wait_queue.cpp:143 | 等待队列排序键 |
+
+**`deadline` 全树零写入，`vdeadline` 是 Fair 真正维护的那个（写四处）。**
+一个恒为零的键不是排序——所有比较都相等，全部决定落在 tie-break 上，于是运行队列和
+等待队列实际都按到达顺序，而它们的注释都写着 EEVDF。
+
+**决定性的线索是 WaitQueue 自己的字段名**：`m_queue_key.vdeadline`，却被喂 `deadline()`。
+名字早就说了它想要哪一个。
+
+**改法**
+
+改**访问器**而不是改三个读者——两个读者在 `fair.*` 里，不是我的。一处改动，三个到位。
+名字跟着语义走：`virtual_deadline()`。
+
+`FairState::deadline` 从此没有任何访问器。按存根规矩留着，并在注释里写明：它是将来
+Deadline 纪律会要的那个字段，真到那天它该待在那个纪律的状态里，而不是 Fair 的。
+
+**行为**
+
+**当前构建下完全不变。** RoundRobin 两个字段都不写，键仍是零，队列仍按到达顺序——
+对一个没有截止期概念的纪律来说这本来就是对的答案。它在 Fair 回来时才开始起作用。
+
+**验证**
+
+构建成功。QEMU：release 镜像连跑 3 次（HEAD 对照组也跑了 3 次），断言/panic 计数 0。
+适配清单重生成为 76 条。
+
+（这一轮排查中发现了一个**与本改动无关**的间歇性用户态缺页，见
+`docs/repairs/260919/userabi-user-fault.md`。对照实验确认它在 HEAD 上也存在。）
