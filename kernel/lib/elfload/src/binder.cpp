@@ -128,6 +128,27 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
         return Status::InvArgs;
     }
 
+    // Two tags further along, the same shape. DT_REL and DT_RELR are
+    // relocation formats this binder does not apply at all, and saying nothing
+    // about them is a51f4cd's failure wearing a different tag: there, a table
+    // eftl could not read was taken for a table that was not there, the GOT
+    // kept its link-time fill, and the first call through it left ring 3 for
+    // an address nothing had written. Skipping a format outright ends the same
+    // way. `-Wl,-z,pack-relative-relocs` is all it would take -- it moves every
+    // RELATIVE entry into .relr.dyn -- and such an image would load, bind
+    // "successfully", and run with link-time pointers.
+    //
+    // glibc's elf_dynamic_do_Rel() walks whichever of the three an image
+    // declares. Until this one does, it has to refuse what it cannot apply.
+    if (declares(dynamic.value(), eftl::elf::DynTag::Rel)) {
+        log::error("elfload: the importer declares DT_REL, which this binder does not apply");
+        return Status::Unsupported;
+    }
+    if (declares(dynamic.value(), eftl::elf::DynTag::Relr)) {
+        log::error("elfload: the importer declares DT_RELR, which this binder does not apply");
+        return Status::Unsupported;
+    }
+
     if (relas.is_none() && plt_relas.is_none()) {
         return Status::Ok;
     }

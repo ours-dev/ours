@@ -157,3 +157,72 @@ load_vdso(vdso_bytes.unwrap(), loader, vdso);
   只搬位置，不改实现——换 eftl 是和「按段权限映射」同一件事，一起做才有意义，记在
   `docs/repairs/260919/elfload.md`。
 - 宿主单测仍然没写。
+## 绑定器拒绝它不会应用的重定位格式
+
+### 症状
+
+没有症状——这正是问题。`Binder::bind()` 只处理 `DT_RELA` 和 `DT_JMPREL`，
+对 `DT_REL` 和 `DT_RELR` 一声不吭地跳过，然后返回 `Status::Ok`。
+
+### 为什么这是个错
+
+这是 `a51f4cd` 那个 bug 换了个标签重演。那次是 eftl 读不出一张 PLT 重定位表
+（缺 `DT_RELAENT`），绑定器把"读不出来"当成了"不存在"，GOT 保留链接期的填充值，
+第一次经 GOT 的调用就在 ring 3 跳到了没人写过的地址。整段跳过一种格式的结局完全
+一样：镜像能加载，绑定"成功"，然后带着链接期指针运行。
+
+触发它不需要什么特殊构造，`-Wl,-z,pack-relative-relocs` 就够了——它把每一条
+`R_X86_64_RELATIVE` 从 `.rela.dyn` 搬进 `.relr.dyn`，`DT_RELA` 随之消失。
+
+glibc 的 `elf_dynamic_do_Rel()` 是按镜像声明了哪一种就走哪一种的；在本绑定器
+做到这一点之前，它至少要拒绝自己应用不了的东西。
+
+### 改动
+
+`kernel/lib/elfload/src/binder.cpp`，接在已有的两处"声明了但读不出来"检查之后：
+
+改前——两种格式静默跳过：
+
+```cpp
+    if (plt_relas.is_none() && declares(dynamic.value(), eftl::elf::DynTag::JmpRel)) {
+        log::error("elfload: the importer declares DT_JMPREL but it cannot be read");
+        return Status::InvArgs;
+    }
+
+    if (relas.is_none() && plt_relas.is_none()) {
+        return Status::Ok;
+    }
+```
+
+改后：
+
+```cpp
+    if (declares(dynamic.value(), eftl::elf::DynTag::Rel)) {
+        log::error("elfload: the importer declares DT_REL, which this binder does not apply");
+        return Status::Unsupported;
+    }
+    if (declares(dynamic.value(), eftl::elf::DynTag::Relr)) {
+        log::error("elfload: the importer declares DT_RELR, which this binder does not apply");
+        return Status::Unsupported;
+    }
+
+    if (relas.is_none() && plt_relas.is_none()) {
+        return Status::Ok;
+    }
+```
+
+### 验证
+
+先试了给 shell 加 `-Wl,-z,pack-relative-relocs`：标志确实进了链接命令，但 shell
+一条 `R_X86_64_RELATIVE` 都没有，没东西可打包，`DT_RELR` 也就没出现——这条路
+证不了任何东西。
+
+改为直接改产物：把 `shell.image.elf` 动态数组里那条绑定器从不读的 `DT_DEBUG`
+（偏移 `0x5f0`）改写成 `DT_RELR`，重新打包启动：
+
+```
+[3542545000 cpu0 error] elfload: the importer declares DT_RELR, which this binder does not apply
+```
+
+并且这一行之后再没有任何 `bound '...' to ...`，说明是在绑定开始前就退出的。
+删掉产物重新链接后，两个镜像都正常绑定 `ours_debug_write` / `ours_command_list`。
