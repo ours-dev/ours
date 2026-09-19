@@ -8,7 +8,7 @@
 #include <ours/status.hpp>
 #include <ours/task/sched/config.hpp>
 #include <ours/task/sched/profiles.hpp>
-#include <ours/task/sched/runtime.hpp>
+#include <ours/task/sched/run_queue.hpp>
 #include <ours/task/sched/types.hpp>
 
 #include <gktl/canary.hpp>
@@ -76,11 +76,11 @@ USTL_ENABLE_ENUM_BITMASK(DequeueOptions);
 
 /// Schedule operation should be exclusively implemented for per discipline.
 ///
-/// Every parameter here is named, and on the |Runtime &| that is a
+/// Every parameter here is named, and on the |RunQueue &| that is a
 /// requirement rather than a courtesy: a clang thread-safety attribute names
 /// an expression, and there is no expression for an unnamed parameter -- so
-/// `TA_REQUIRES(runtime.lock())` cannot even be written on a hook declared
-/// `(Runtime &, Thread *curr)`. Two of the eighteen entry points below say
+/// `TA_REQUIRES(run_queue.lock())` cannot even be written on a hook declared
+/// `(RunQueue &, Thread *curr)`. Two of the eighteen entry points below say
 /// which lock they are called under; the rest are called under the same lock
 /// and said nothing, and the reason they said nothing is that they could not.
 ///
@@ -93,70 +93,70 @@ class ISchedule {
   public:
     /// [Required] Insert |thread| to runqueue.
     ///
-    /// Requires the runqueue lock of runtime is been holding by caller.
+    /// Requires the runqueue lock of run_queue is been holding by caller.
     ///
     /// Return Status::Ok if enqueue action really happened.
-    TA_REQUIRES(runtime.lock())
-    virtual auto enqueue_thread(Runtime &runtime, Thread *thread, EnqueueOptions options)
+    TA_REQUIRES(run_queue.lock())
+    virtual auto enqueue_thread(RunQueue &run_queue, Thread *thread, EnqueueOptions options)
         -> Status = 0;
 
     /// [Required] Remove |thread| from runqueue.
     ///
     /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
     /// to dequeue.
-    TA_REQUIRES(runtime.lock())
-    virtual auto dequeue_thread(Runtime &runtime, Thread *thread, DequeueOptions options)
+    TA_REQUIRES(run_queue.lock())
+    virtual auto dequeue_thread(RunQueue &run_queue, Thread *thread, DequeueOptions options)
         -> Status = 0;
 
-    TA_REQUIRES(runtime.lock())
-    virtual auto yield_thread(Runtime &runtime, Thread *curr) -> void {}
-    TA_REQUIRES(runtime.lock())
-    virtual auto yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
+    TA_REQUIRES(run_queue.lock())
+    virtual auto yield_thread(RunQueue &run_queue, Thread *curr) -> void {}
+    TA_REQUIRES(run_queue.lock())
+    virtual auto yield_to_thread(RunQueue &run_queue, Thread *curr, Thread *next) -> Status {
         return Status::NotSupported;
     }
 
     /// Evaluate whether preempt the thread |curr| with given |thread| if needed.
     ///
     /// Return Status::Ok if able to preempt.
-    TA_REQUIRES(runtime.lock())
-    virtual auto unpark_preempt(Runtime &runtime, Thread *curr, Thread *thread,
+    TA_REQUIRES(run_queue.lock())
+    virtual auto unpark_preempt(RunQueue &run_queue, Thread *curr, Thread *thread,
                                 UnparkOptions options) -> Status {
         return Status::Unimplemented;
     }
 
-    TA_REQUIRES(runtime.lock())
-    virtual auto evaluate_next_thread(Runtime &runtime, Thread *curr) -> Thread * = 0;
-    TA_REQUIRES(runtime.lock())
-    virtual auto put_prev_thread(Runtime &runtime, Thread *prev) -> void {}
-    TA_REQUIRES(runtime.lock())
-    virtual auto set_next_thread(Runtime &runtime, Thread *next) -> void {}
+    TA_REQUIRES(run_queue.lock())
+    virtual auto evaluate_next_thread(RunQueue &run_queue, Thread *curr) -> Thread * = 0;
+    TA_REQUIRES(run_queue.lock())
+    virtual auto put_prev_thread(RunQueue &run_queue, Thread *prev) -> void {}
+    TA_REQUIRES(run_queue.lock())
+    virtual auto set_next_thread(RunQueue &run_queue, Thread *next) -> void {}
 
     /// [Optional] Update the scheduluing data of thread |curr|.
-    TA_REQUIRES(runtime.lock())
-    virtual auto update_thread(Runtime &runtime, Thread *curr) -> void {}
+    TA_REQUIRES(run_queue.lock())
+    virtual auto update_thread(RunQueue &run_queue, Thread *curr) -> void {}
 
-    virtual auto override_thread_base_profile(Runtime &runtime, Thread *thread,
+    virtual auto override_thread_base_profile(RunQueue &run_queue, Thread *thread,
                                               BaseProfile const &profile) -> Status {
         return Status::Unimplemented;
     }
 
-    virtual auto on_thread_init(Runtime &runtime, Thread *thread) -> void {}
-    virtual auto on_thread_dead(Runtime &runtime, Thread *thread) -> void {}
-    TA_REQUIRES(runtime.lock())
-    virtual auto on_thread_unpark(Runtime &runtime, Thread *thread) -> void {}
+    virtual auto on_thread_init(RunQueue &run_queue, Thread *thread) -> void {}
+    virtual auto on_thread_dead(RunQueue &run_queue, Thread *thread) -> void {}
+    TA_REQUIRES(run_queue.lock())
+    virtual auto on_thread_unpark(RunQueue &run_queue, Thread *thread) -> void {}
 
-    virtual auto on_thread_tick(Runtime &runtime, Thread *curr, bool queued) -> void = 0;
+    virtual auto on_thread_tick(RunQueue &run_queue, Thread *curr, bool queued) -> void = 0;
 
-    /// Number of threads queued on |runtime|'s CPU for this schedule.
+    /// Number of threads queued on |run_queue|'s CPU for this schedule.
     ///
-    /// The Runtime is the parameter every other entry point here takes, and it
+    /// The RunQueue is the parameter every other entry point here takes, and it
     /// is what says *which CPU* is being asked about. Without it the only
     /// implementation an ISchedule can write is "the CPU I happen to be
     /// running on" -- which is precisely the assumption that broke every
     /// cross-CPU wakeup, since Scheduler::do_unpark_thread() runs on the waker
     /// and manipulates the target's queues.
     [[nodiscard]]
-    TA_REQUIRES(runtime.lock()) virtual auto num_queued(Runtime &runtime) const -> usize = 0;
+    TA_REQUIRES(run_queue.lock()) virtual auto num_queued(RunQueue &run_queue) const -> usize = 0;
 
     /// [Optional] Attempts to assign a target CPU on which |thread| will run.
     ///

@@ -21,40 +21,40 @@ namespace ours::task::sched {
 /// Discipline::Normal is how it comes back.
 ///
 /// Only the parts of ISchedule the generic Scheduler actually drives are
-/// implemented. Its Runtime bookkeeping -- curr_started_time in particular --
+/// implemented. Its RunQueue bookkeeping -- curr_started_time in particular --
 /// is the discipline's to maintain (nothing outside Fair touched it before),
 /// so this one keeps it too.
 class RoundRobin final: public Schedule<RoundRobin, Discipline::Normal> {
     using Self = RoundRobin;
 
   public:
-    auto enqueue_thread(Runtime &, Thread *, EnqueueOptions) -> Status override;
-    auto dequeue_thread(Runtime &, Thread *, DequeueOptions) -> Status override;
+    auto enqueue_thread(RunQueue &, Thread *, EnqueueOptions) -> Status override;
+    auto dequeue_thread(RunQueue &, Thread *, DequeueOptions) -> Status override;
 
-    TA_REQUIRES(runtime.lock())
-    auto yield_thread(Runtime &runtime, Thread *) -> void override;
-    TA_REQUIRES(runtime.lock())
-    auto yield_to_thread(Runtime &runtime, Thread *, Thread *) -> Status override;
+    TA_REQUIRES(run_queue.lock())
+    auto yield_thread(RunQueue &run_queue, Thread *) -> void override;
+    TA_REQUIRES(run_queue.lock())
+    auto yield_to_thread(RunQueue &run_queue, Thread *, Thread *) -> Status override;
 
-    TA_REQUIRES(runtime.lock())
-    auto evaluate_next_thread(Runtime &runtime, Thread *) -> Thread * override;
-    TA_REQUIRES(runtime.lock())
-    auto put_prev_thread(Runtime &runtime, Thread *) -> void override;
-    TA_REQUIRES(runtime.lock())
-    auto set_next_thread(Runtime &runtime, Thread *) -> void override;
+    TA_REQUIRES(run_queue.lock())
+    auto evaluate_next_thread(RunQueue &run_queue, Thread *) -> Thread * override;
+    TA_REQUIRES(run_queue.lock())
+    auto put_prev_thread(RunQueue &run_queue, Thread *) -> void override;
+    TA_REQUIRES(run_queue.lock())
+    auto set_next_thread(RunQueue &run_queue, Thread *) -> void override;
 
-    TA_REQUIRES(runtime.lock())
-    auto update_thread(Runtime &runtime, Thread *curr) -> void override;
+    TA_REQUIRES(run_queue.lock())
+    auto update_thread(RunQueue &run_queue, Thread *curr) -> void override;
 
-    auto on_thread_init(Runtime &, Thread *) -> void override;
-    auto on_thread_tick(Runtime &, Thread *, bool queued) -> void override;
+    auto on_thread_init(RunQueue &, Thread *) -> void override;
+    auto on_thread_tick(RunQueue &, Thread *, bool queued) -> void override;
 
     [[nodiscard]]
-    TA_REQUIRES(runtime.lock()) auto num_queued(Runtime &runtime) const -> usize override;
+    TA_REQUIRES(run_queue.lock()) auto num_queued(RunQueue &run_queue) const -> usize override;
 
   private:
     /// Charge |curr| for the time since it was last charged.
-    static auto charge(Runtime &, Thread *curr) -> void;
+    static auto charge(RunQueue &, Thread *curr) -> void;
 
     /// Whether |ctx| has used up the slice it was given at set_next_thread().
     [[nodiscard]]

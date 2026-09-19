@@ -22,11 +22,11 @@ auto Scheduler::Migrator::move_queued_thread(Scheduler *self, Thread *thread, Cp
 
     self->deactivate_thread(thread, DequeueOptions::SkipClock);
 
-    self->m_runtime.m_rqlock.release();
+    self->m_run_queue.m_rqlock.release();
 
     self = &Current::get(newcpu);
 
-    self->m_runtime.m_rqlock.acquire();
+    self->m_run_queue.m_rqlock.acquire();
 
     self->activate_thread(thread, EnqueueOptions::None);
     self->unpark_preempt(thread, UnparkOptions::None);

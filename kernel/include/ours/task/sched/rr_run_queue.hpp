@@ -12,7 +12,7 @@
 namespace ours::task::sched {
 /// The round-robin discipline's per-CPU state: one FIFO of runnable contexts.
 ///
-/// Held by Runtime -- the per-CPU object a discipline is handed -- so that
+/// Held by RunQueue -- the per-CPU object a discipline is handed -- so that
 /// RoundRobin reaches it straight off its own parameter instead of
 /// recovering the whole Scheduler to find it. It is intrusive
 /// through SchedEntity::m_rr_hook, a list hook distinct from the set hook Fair's

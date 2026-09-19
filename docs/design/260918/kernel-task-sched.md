@@ -197,54 +197,11 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 ### 适配清单不再由我手工维护
 
 `sched_normal_discipline = "fair"` 一打开，`fair.cpp` 就进构建，编译器自己把清单打出来。
-下面这 44 条是用当前 HEAD 跑出来的（`-ferror-limit=0`），不是我抄的：
+下面这 0 条是用当前 HEAD 跑出来的（`-ferror-limit=0`），不是我抄的：
 
 | fair.cpp 行 | 编译器说 |
 |---|---|
-| 97 | abstract class is marked 'final' [-Werror,-Wabstract-final-class] |
-| 101 | unknown type name 'EnqueueControl' |
-| 102 | unknown type name 'DequeueControl' |
-| 117 | unknown type name 'UnparkControl'; did you mean 'mm::UnmapControl'? |
-| 118 | non-virtual member function marked 'override' hides virtual member function |
-| 135 | no member named 'of' in 'ours::task::sched::Scheduler' |
-| 139 | unknown type name 'DequeueControl' |
-| 167 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 175 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 176 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 183 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 195 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 199 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 209 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 210 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 216 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 217 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 221 | unknown type name 'DequeueControl' |
-| 222 | use of undeclared identifier 'DequeueControl' |
-| 227 | use of undeclared identifier 'DequeueControl' |
-| 235 | unknown type name 'DequeueControl' |
-| 236 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 239 | no member named 'curr_thread' in 'ours::task::sched::Runtime' |
-| 260 | unknown type name 'EnqueueControl' |
-| 261 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 264 | no member named 'curr_thread' in 'ours::task::sched::Runtime' |
-| 292 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 301 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 307 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 317 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 322 | reference to non-static member function must be called; did you mean to call it with no arguments? |
-| 332 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 349 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 363 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 372 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 373 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 374 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 378 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 387 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 405 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 419 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
-| 425 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
-| 437 | unknown type name 'UnparkControl'; did you mean 'mm::UnmapControl'? |
-| 462 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+
 
 重新生成的办法：把 `rr.cpp` 的真实 ninja 命令拎出来指向 `fair.cpp`，加
 `-fsyntax-only -ferror-limit=0`，输出去掉 ANSI 转义。

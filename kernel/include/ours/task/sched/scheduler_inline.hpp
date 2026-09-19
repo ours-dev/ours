@@ -9,7 +9,7 @@
 namespace ours::task::sched {
 FORCE_INLINE
 inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
-    DEBUG_ASSERT(prev == m_runtime.m_curr_thread);
+    DEBUG_ASSERT(prev == m_run_queue.m_curr_thread);
 
     if (prev == m_idle_thread) {
         set_state(State::Idling, false);
@@ -24,12 +24,12 @@ inline auto Scheduler::put_prev_thread(Thread *prev) -> void {
     // except init_first_thread(), which only ever runs for a CPU's idler and
     // the boot thread -- so for every ordinary thread select_target_cpu()'s
     // "prefer where it last ran" was reading a field frozen at construction.
-    ctx.m_last_cpu = m_runtime.m_which_cpu;
+    ctx.m_last_cpu = m_run_queue.m_which_cpu;
 
-    ctx.schedule()->put_prev_thread(m_runtime, prev);
+    ctx.schedule()->put_prev_thread(m_run_queue, prev);
 }
 
-/// No precondition on m_runtime.m_curr_thread here. This used to assert that it
+/// No precondition on m_run_queue.m_curr_thread here. This used to assert that it
 /// was null, describing a hand-over protocol -- put_prev_thread() clears it,
 /// set_next_thread() finds it empty -- that nothing implements: curr_thread
 /// has exactly one writer, switch_context(), which runs *after* this, and
@@ -50,9 +50,9 @@ inline auto Scheduler::set_next_thread(Thread *next) -> void {
     // at enqueue: a discipline takes the thread it is about to run *off* its
     // queue (RoundRobin::set_next_thread does), so "running here" is a state
     // enqueue_thread() never sees.
-    ctx.m_curr_cpu = m_runtime.m_which_cpu;
+    ctx.m_curr_cpu = m_run_queue.m_which_cpu;
 
-    ctx.schedule()->set_next_thread(m_runtime, next);
+    ctx.schedule()->set_next_thread(m_run_queue, next);
 }
 } // namespace ours::task::sched
 

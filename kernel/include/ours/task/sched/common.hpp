@@ -139,7 +139,7 @@ static_assert(MIN_WEIGHT > Weight{0});
 
 /// The smallest slice a thread is meant to be given in a single round.
 ///
-/// A constant, not a per-CPU field. It never varied per CPU -- every Runtime
+/// A constant, not a per-CPU field. It never varied per CPU -- every RunQueue
 /// initialised it from the same expression -- and a value that is the same on
 /// every CPU costs a cache line in each run queue to say so. Linux draws the
 /// same line: sysctl_sched_base_slice is a global, not a member of struct rq.
@@ -174,8 +174,8 @@ constexpr SchedDuration SCHED_GRANULARITY = to_sched_duration(TARGETED_LATENCY);
 
 /// The period in which every runnable thread executes once.
 ///
-/// Free function rather than a Runtime member: it reads nothing per-CPU, and
-/// leaving it on Runtime meant a discipline had to be handed the whole run
+/// Free function rather than a RunQueue member: it reads nothing per-CPU, and
+/// leaving it on RunQueue meant a discipline had to be handed the whole run
 /// queue to ask a question with a compile-time answer.
 FORCE_INLINE
 constexpr auto scheduling_period() -> SchedDuration {

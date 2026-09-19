@@ -1646,3 +1646,51 @@ error: 'm_total_weight' is a private member of 'ours::task::sched::Runtime'
 - 没有给字段加 `TA_GUARDED`。那是新增 `-Werror` 失败的最大来源——
   `Scheduler::init_first_thread()` 由 BSP 只持线程 PI 锁写**远程** Runtime 的
   `m_curr_thread`——每条出路都该有自己的决定和提交。
+
+## `Runtime` 改名为 `RunQueue`（2026-09-19）
+
+**文件**
+- `sched/runtime.hpp` → `sched/run_queue.hpp`（`git mv`），类 `Runtime` → `RunQueue`
+- 形参与局部 `runtime` → `run_queue`，`Scheduler::m_runtime` → `m_run_queue`
+- `schedule.hpp`、`rr.hpp`、`rr.cpp`、`scheduler.*`、`scheduler_inline.hpp`、
+  `scheduler_pi.cpp`、`scheduler_migrator.cpp`、`sched_entity.hpp`、`types.hpp`、
+  `common.hpp` 共 231 处
+- `scheduler.hpp` — 摘掉 F3 之后就不再需要的 `fair.hpp` include
+
+**症状**
+
+`Runtime` 什么都没说——**什么的 runtime？** 这个词在系统编程里通常指「运行时库」或
+「运行期」，而这个对象是**每 CPU 的运行队列**：CPU 号、队列锁、调度时钟、当班 discipline
+的队列、权重与线程计数、上下文切换的线程三元组、迁移链表。Linux 管这一整包叫
+`struct rq`，而且它同样内含各 discipline 的子队列（`rq` 含 `cfs_rq`）——所以
+「run queue」这个名字扛得住它的全部内容，不是勉强套上去的。
+
+**改法**
+
+框架层拿回 `RunQueue` 这个最正的名字，纪律的叫 `FairRunQueue` / `RrRunQueue`——
+名字和层级完全对应。文件跟着改名（`git mv` 保留历史）。
+
+`scheduler.hpp` 里那个 `fair.hpp` 的 include 必须摘掉：F3 之后 `Scheduler` 不再持有
+Fair 的队列，而留着它会让 Fair 的 `RunQueue` 和框架的新名字在同一命名空间里撞车。
+
+**`fair.hpp` 和 `fair.cpp` 一个字符没动**，代价是**默认（RR）构建下两个名字不冲突，
+切到 Fair 构建就冲突**——因为 Fair 的类还叫 `RunQueue`。`NormalRunQueue` 的 Fair 分支
+现在写的是 `FairRunQueue`（Fair 还没有这个名字），注释里写明了这就是适配清单里的一条。
+这是作者本人点名要的走法：框架先拿正名，Fair 那半由作者改。
+
+**参照**
+
+`Linux struct rq`（`kernel/sched/sched.h`），以及它与 `cfs_rq` / `rt_rq` / `dl_rq`
+的包含关系。
+
+**验证**
+
+构建成功（按退出码）、无告警。QEMU 两个镜像各 30 秒：`kernel.dev.dbg_1.obi` 线程交替
+168015 次、断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+`git diff` 确认 `fair.*` 未改动；适配清单已重生成。
+
+**故意没做**
+
+- 没有把形参缩写成 `rq`。Linux 用 `rq`，但这棵树几乎不用缩写，而作者在选名字时也正是
+  因为这一点否掉了把类型叫 `Rq` 的选项。
+- 没有改 `SchedEntity::m_exec_runtime`——那是「执行时长」，和这个对象无关。

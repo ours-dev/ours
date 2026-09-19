@@ -8,9 +8,8 @@
 #include <ours/platform/timer.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/sched/config.hpp>
-#include <ours/task/sched/fair.hpp>
 #include <ours/task/sched/rr.hpp>
-#include <ours/task/sched/runtime.hpp>
+#include <ours/task/sched/run_queue.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/timer.hpp>
@@ -65,7 +64,7 @@ class Scheduler {
     /// context switch, so the thread a CPU is executing *before* its first
     /// switch -- the boot context on the BSP, each CPU's idler once
     /// task::init() has built it -- has to be installed by hand, or
-    /// m_runtime.m_curr_thread stays null until something dereferences it.
+    /// m_run_queue.m_curr_thread stays null until something dereferences it.
     /// Zircon does the same in Scheduler::InitializeFirstThread(): mark the
     /// thread running, pin it to its CPU, make it active_thread_.
     static auto init_first_thread(Thread *thread, CpuNum cpunum) -> void;
@@ -118,11 +117,11 @@ class Scheduler {
 
     auto assert_thread_in_scheduler(Thread *thread) -> void;
 
-    /// The Scheduler that owns |runtime|.
+    /// The Scheduler that owns |run_queue|.
     ///
-    /// A Runtime is a member of exactly one Scheduler, so this is the same
+    /// A RunQueue is a member of exactly one Scheduler, so this is the same
     /// member-to-owner recovery Thread::of(SchedEntity *) performs, and it is here
-    /// for the same reason: an ISchedule entry point is handed the Runtime as
+    /// for the same reason: an ISchedule entry point is handed the RunQueue as
     /// its capability token and has no other honest way back to the scheduler
     /// around it.
     ///
@@ -132,23 +131,23 @@ class Scheduler {
     /// dependency on `which_cpu` being right for something the pointer
     FORCE_INLINE
     auto num_runnable() const -> usize {
-        return m_runtime.m_num_queued_threads;
+        return m_run_queue.m_num_queued_threads;
     }
 
     FORCE_INLINE
     auto is_state_active() const -> bool {
         return STATES[usize(State::Active)]
             .load(std::memory_order_relaxed)
-            .test(m_runtime.m_which_cpu);
+            .test(m_run_queue.m_which_cpu);
     }
 
-    /// TA_RETURN_CAPABILITY makes `get_lock()` and `m_runtime.m_rqlock` one
+    /// TA_RETURN_CAPABILITY makes `get_lock()` and `m_run_queue.m_rqlock` one
     /// capability to the analysis. Both spellings are in use: Scheduler's own
     /// methods say `TA_REQUIRES(get_lock())`, ISchedule's virtuals say
-    /// `TA_REQUIRES(runtime.rqlock)`, and enqueue_thread() calls the latter
+    /// `TA_REQUIRES(run_queue.rqlock)`, and enqueue_thread() calls the latter
     /// while holding the former.
-    TA_RETURN_CAPABILITY(m_runtime.m_rqlock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
-        return m_runtime.m_rqlock;
+    TA_RETURN_CAPABILITY(m_run_queue.m_rqlock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
+        return m_run_queue.m_rqlock;
     }
 
   private:
@@ -216,7 +215,7 @@ class Scheduler {
     ///  * |curr|'s PI lock is held on entry and *not* released by this
     ///    activation. finish_switch_context() releases the PI lock of
     ///    whichever thread ran before -- the one recorded in
-    ///    m_runtime.m_prev_thread -- on the far side of the switch, on the
+    ///    m_run_queue.m_prev_thread -- on the far side of the switch, on the
     ///    next thread's stack. A lock released by a different activation than
     ///    the one that acquired it is outside the analysis's model entirely.
     ///
@@ -233,7 +232,7 @@ class Scheduler {
     ///
     /// |curr| is the thread running *now*, not the one being switched to --
     /// both call sites pass the resuming thread (switch_context() passes its
-    /// own |curr|, trampoline_handoff() passes m_runtime.m_curr_thread), and
+    /// own |curr|, trampoline_handoff() passes m_run_queue.m_curr_thread), and
     /// the definition has always named it so. The declaration said |next|,
     /// which is the mental model from before this became a static: back then
     /// the caller was on the near side of the switch and the thread it named
@@ -328,7 +327,7 @@ class Scheduler {
     /// [MP] Takes migrating_threads_lock only long enough to swap the list
     /// out, then works on the private copy unlocked. Same TA_EXCLUDES logic as
     /// do_unpark_thread(): the lock is acquired and released within.
-    TA_EXCLUDES(m_runtime.m_migrating_threads_lock)
+    TA_EXCLUDES(m_run_queue.m_migrating_threads_lock)
     auto process_migrating_threads(SchedTime now) -> void;
 
     /// A stub (asserts only) called from process_migrating_threads() under
@@ -352,7 +351,7 @@ class Scheduler {
     auto set_next_thread(Thread *thread) -> void;
 
     gktl::Canary m_canary{this};
-    Runtime m_runtime;
+    RunQueue m_run_queue;
     usize m_num_switches;
 
     /// Indexed directly by `Discipline` -- entry `i` is the schedule

@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_TASK_SCHED_RUNTIME_HPP
-#define OURS_TASK_SCHED_RUNTIME_HPP 1
+#ifndef OURS_TASK_SCHED_RUN_QUEUE_HPP
+#define OURS_TASK_SCHED_RUN_QUEUE_HPP 1
 
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/sched/sched_clock.hpp>
@@ -33,8 +33,14 @@ namespace ours::task::sched {
 ///
 /// The choice is `sched_normal_discipline` in //kernel/kernel_params.gni, the
 /// same shape as MemMap's two mutually exclusive implementations.
+///
+/// The Fair branch names `FairRunQueue`, which Fair does not define yet: its
+/// class is still called `RunQueue`, the name this per-CPU object has now
+/// taken. Renaming it is part of bringing Fair back -- see the adaptation
+/// list in docs/design/260918 -- and until then the Fair branch does not
+/// build, which is the same thing the rest of that list already says.
 #if SCHED_NORMAL_DISCIPLINE_FAIR
-using NormalRunQueue = RunQueue;
+using NormalRunQueue = FairRunQueue;
 #else
 using NormalRunQueue = RrRunQueue;
 #endif
@@ -50,24 +56,24 @@ using NormalRunQueue = RrRunQueue;
 /// surface below is the measured need -- nothing invented, nothing measured
 /// left out. It used to be a struct of fourteen public fields handed by
 /// reference to sixteen virtuals, so a discipline could write
-/// `runtime.clock_source.update_clock()` (defeating the caller's SkipClock
-/// decision), `runtime.total_weight -= w` (corrupting the generic Scheduler's
+/// `run_queue.clock_source.update_clock()` (defeating the caller's SkipClock
+/// decision), `run_queue.total_weight -= w` (corrupting the generic Scheduler's
 /// accounting), or reach the whole Scheduler through `Scheduler::of()`.
 ///
 /// Deliberately NOT a friend of any discipline. C++ friendship is class-wide:
 /// `friend class Fair` would hand Fair every private member and make every
 /// claim above false.
-class Runtime {
+class RunQueue {
     friend class Scheduler;
 
   public:
-    /// Records that this Runtime's CPU should preempt what it is running.
+    /// Records that this RunQueue's CPU should preempt what it is running.
     ///
     /// |m_which_cpu|, not add_pending()'s default. The default is the mask of
-    /// the CPU *executing* the call, and a Runtime is not always the running
+    /// the CPU *executing* the call, and a RunQueue is not always the running
     /// CPU's: Scheduler::do_unpark_thread() reaches into the target CPU's
-    /// Runtime from the waker, and every ISchedule entry point is handed a
-    /// Runtime that may be remote for the same reason. Left at the default, a
+    /// RunQueue from the waker, and every ISchedule entry point is handed a
+    /// RunQueue that may be remote for the same reason. Left at the default, a
     /// cross-CPU wakeup marked the waker as needing to preempt and told the
     /// target nothing.
     ///
@@ -82,7 +88,7 @@ class Runtime {
     /// The queues live here, on the object a discipline is already handed,
     /// rather than on Scheduler. A discipline used to reach its own by
     /// recovering the whole Scheduler from this one --
-    /// `Scheduler::of(runtime).rr_run_queue()`, a container_of round trip to
+    /// `Scheduler::of(run_queue).rr_run_queue()`, a container_of round trip to
     /// fetch something that could have been in reach -- and that route is
     /// what let it reach anything else on the Scheduler too.
     ///
@@ -97,14 +103,14 @@ class Runtime {
     ///
     /// It has to stay publicly nameable even though the member is private:
     /// clang resolves a thread-safety attribute's argument *with access
-    /// control on*, so `TA_REQUIRES(runtime.m_rqlock)` in schedule.hpp would
+    /// control on*, so `TA_REQUIRES(run_queue.m_rqlock)` in schedule.hpp would
     /// be a hard error rather than a warning. TA_RETURN_CAPABILITY makes this
     /// accessor and the member one capability to the analysis, the same
     /// construction `Scheduler::get_lock()` already uses, and the same one
     /// Zircon uses for `Thread::get_lock()`.
     ///
     /// This is also the honest limit of the seal: a discipline can still call
-    /// `runtime.lock().acquire()`. No design that spells `TA_REQUIRES(param.x)`
+    /// `run_queue.lock().acquire()`. No design that spells `TA_REQUIRES(param.x)`
     /// can close that, because the capability must be nameable to be named.
     TA_RETURN_CAPABILITY(m_rqlock) FORCE_INLINE auto lock() -> sync::SpinLock & {
         return m_rqlock;
@@ -112,7 +118,7 @@ class Runtime {
 
     /// The CPU this run queue is -- never `Cpu::id()`.
     ///
-    /// A Runtime handed to a discipline is not always the running CPU's:
+    /// A RunQueue handed to a discipline is not always the running CPU's:
     /// `Scheduler::do_unpark_thread()` runs on the waker and mutates the
     /// target's queue. Reading the executing CPU instead is the mistake this
     /// subsystem has already made once.
@@ -161,7 +167,7 @@ class Runtime {
     /// backwards, and a zero-length interval is not an event.
     ///
     /// What to do with the answer stays with the discipline -- RR adds it to
-    /// the thread's runtime, Fair also weights it into a virtual runtime --
+    /// the thread's run_queue, Fair also weights it into a virtual run_queue --
     /// which is why this returns the duration instead of applying it.
     [[nodiscard]]
     FORCE_INLINE
@@ -211,7 +217,7 @@ class Runtime {
     /// Programs the timer of the CPU *executing* this call, not of
     /// which_cpu(): Driver::reset_preempt() reaches TickDevice::Current::get(),
     /// which has no CpuNum parameter to give it. Every caller today is on the
-    /// local reschedule path, so the two coincide -- but a Runtime handed to a
+    /// local reschedule path, so the two coincide -- but a RunQueue handed to a
     /// discipline is not always the running CPU's, and if this is ever reached
     /// from a remote one the timer lands on the wrong CPU with no diagnostic.
     /// The assertion below says so where it can; it is compiled out at
@@ -248,4 +254,4 @@ class Runtime {
 };
 } // namespace ours::task::sched
 
-#endif // #ifndef OURS_TASK_SCHED_RUNTIME_HPP
+#endif // #ifndef OURS_TASK_SCHED_RUN_QUEUE_HPP

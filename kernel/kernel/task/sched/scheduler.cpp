@@ -10,7 +10,7 @@
 /// delegates the actual insertion/removal to the thread's own discipline via
 /// `ISchedule::enqueue_thread`/`dequeue_thread`, and -- only once the
 /// discipline reports Status::Ok -- maintains this scheduler's aggregate
-/// accounting, `m_runtime.m_num_queued_threads` and `m_runtime.m_total_weight`.
+/// accounting, `m_run_queue.m_num_queued_threads` and `m_run_queue.m_total_weight`.
 ///
 /// The discipline's Status is returned verbatim, and any non-Ok result means
 /// nothing was accounted for. In particular Status::Delayed (see
@@ -103,8 +103,8 @@ auto Scheduler::trampoline_handoff() -> void {
     // this thread, which takes its PI lock, finds it already held by this CPU
     // and dies on `!is_held()`. That was the first tick of the boot. Zircon's
     // thread trampoline does the same: LockHandoff, then arch_enable_ints().
-    Self::complete_context_switch(self.m_runtime.m_curr_thread);
-    self.m_runtime.m_curr_thread->get_pi_lock().release();
+    Self::complete_context_switch(self.m_run_queue.m_curr_thread);
+    self.m_run_queue.m_curr_thread->get_pi_lock().release();
 
     arch::local_irq_enable();
 }
@@ -168,7 +168,7 @@ auto Scheduler::on_thread_init(Thread *thread, BaseProfile const &profile, CpuNu
         // assertion, so a discipline with no registered ISchedule now says so
         // by name instead of producing a wild call.
         auto *const schedule = self.set_schedule(thread);
-        schedule->on_thread_init(self.m_runtime, thread);
+        schedule->on_thread_init(self.m_run_queue, thread);
     }
 }
 
@@ -191,7 +191,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
     // Bind it to its discipline exactly as on_thread_init() would; a thread
     // that is already running is still a thread the discipline must know.
     auto *const schedule = self.set_schedule(thread);
-    schedule->on_thread_init(self.m_runtime, thread);
+    schedule->on_thread_init(self.m_run_queue, thread);
 
     // Now the part no other path provides. The switch that would normally
     // install a current thread has not happened and never will for this one:
@@ -200,8 +200,8 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
     // the idler this scheduler falls back to when it runs out of work -- the
     // seat evaluate_next_thread() and put_prev_thread()/set_next_thread()
     // consult through m_idle_thread, which nothing else ever wrote.
-    self.m_runtime.m_curr_thread = thread;
-    self.m_runtime.m_curr_started_time = self.m_runtime.m_clock_source.update_clock();
+    self.m_run_queue.m_curr_thread = thread;
+    self.m_run_queue.m_curr_started_time = self.m_run_queue.m_clock_source.update_clock();
     if (thread->is_idle_thread()) {
         self.m_idle_thread = thread;
     }
@@ -210,7 +210,7 @@ auto Scheduler::init_first_thread(Thread *thread, CpuNum cpunum) -> void {
 auto Scheduler::on_thread_dead(Thread *thread) -> void {
     [[maybe_unused]]
     auto &ctx = thread->scheduling_entity();
-    // se.schedule()->on_thread_dead(m_runtime, thread);
+    // se.schedule()->on_thread_dead(m_run_queue, thread);
 }
 
 /// Unpark don't really cause entry into reschedule routine. It just
@@ -350,14 +350,14 @@ auto Scheduler::init(CpuNum cpunum) -> void {
         m_schedules[slot] = entry.instance;
     }
 
-    m_runtime.m_which_cpu = cpunum;
+    m_run_queue.m_which_cpu = cpunum;
 }
 
 auto Scheduler::assert_thread_in_scheduler(Thread *thread) -> void {
     [[maybe_unused]]
     auto &ctx = thread->scheduling_entity();
 
-    DEBUG_ASSERT(ctx.curr_cpu() == m_runtime.m_which_cpu);
+    DEBUG_ASSERT(ctx.curr_cpu() == m_run_queue.m_which_cpu);
     DEBUG_ASSERT(ctx.schedule() == get_schedule(thread));
 }
 
@@ -373,7 +373,7 @@ auto Scheduler::set_state(State state, bool on) -> void {
     auto expected = word.load(std::memory_order_relaxed);
     for (;;) {
         auto desired = expected;
-        desired.set(m_runtime.m_which_cpu, on);
+        desired.set(m_run_queue.m_which_cpu, on);
         if (word.compare_exchange_weak(expected, desired, std::memory_order_relaxed,
                                        std::memory_order_relaxed)) {
             return;
@@ -452,10 +452,10 @@ auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
     Guard pi_guard{current->get_pi_lock()};
     Guard rq_guard{get_lock()};
 
-    m_runtime.m_clock_source.update_clock();
+    m_run_queue.m_clock_source.update_clock();
 
     auto &ctx = current->scheduling_entity();
-    ctx.schedule()->update_thread(m_runtime, current);
+    ctx.schedule()->update_thread(m_run_queue, current);
 }
 
 auto Scheduler::migrate_thread(Thread *thread) -> void {
@@ -478,8 +478,8 @@ auto Scheduler::steal_work_from(CpuMask const &mask) -> Thread * {
 auto Scheduler::process_migrating_threads(SchedTime now) -> void {
     Thread::MigratingList migrating_threads;
     {
-        Guard guard{m_runtime.m_migrating_threads_lock};
-        m_runtime.m_migrating_threads.swap(migrating_threads);
+        Guard guard{m_run_queue.m_migrating_threads_lock};
+        m_run_queue.m_migrating_threads.swap(migrating_threads);
     }
 
     CpuMask to_resched;
@@ -524,14 +524,14 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
     // sections (Current::yield_to_thread records it and drops the lock;
     // reschedule_common takes the lock again and reads it), so leaving a stale
     // one behind would hand the same thread over twice.
-    if (auto *const nominated = std::exchange(m_runtime.m_next_thread, nullptr); nominated) {
+    if (auto *const nominated = std::exchange(m_run_queue.m_next_thread, nullptr); nominated) {
         return nominated;
     }
 
     if (auto &ctx = curr->scheduling_entity();
         ctx.discipline() == Discipline::Normal &&
-        ctx.schedule()->num_queued(m_runtime) == m_runtime.m_num_queued_threads) {
-        if (auto *const next = ctx.schedule()->evaluate_next_thread(m_runtime, curr); next) {
+        ctx.schedule()->num_queued(m_run_queue) == m_run_queue.m_num_queued_threads) {
+        if (auto *const next = ctx.schedule()->evaluate_next_thread(m_run_queue, curr); next) {
             return next;
         }
     }
@@ -547,7 +547,7 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
         if (!schedule) {
             continue;
         }
-        if (auto *const next = schedule->evaluate_next_thread(m_runtime, curr); next) {
+        if (auto *const next = schedule->evaluate_next_thread(m_run_queue, curr); next) {
             return next;
         }
     }
@@ -570,15 +570,15 @@ auto Scheduler::pick_next_thread(Thread *curr) -> Thread * {
 auto Scheduler::complete_context_switch(Thread *curr) -> void {
     Self &self = Scheduler::Current::get();
 
-    auto const prev_thread = std::exchange(self.m_runtime.m_prev_thread, nullptr);
+    auto const prev_thread = std::exchange(self.m_run_queue.m_prev_thread, nullptr);
     prev_thread->get_pi_lock().release();
 
     self.set_state(State::Idling, curr == self.m_idle_thread);
 }
 
 auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
-    m_runtime.m_prev_thread = curr;
-    m_runtime.m_curr_thread = next;
+    m_run_queue.m_prev_thread = curr;
+    m_run_queue.m_curr_thread = next;
 
     // Make sure that the same aspace doesn't be swaped out, which will
     // lead to flush TLB fully without global pages.
@@ -609,7 +609,7 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
     // And there are following things about local variables to note:
     //  1. |next| after context switch is in unknown state, which inable to be used again.
     //  2. |curr| after context switch is the **real** current thread.
-    //  3. |curr| before context switch was cached in |m_runtime.scheduling_entity.prev_thread|.
+    //  3. |curr| before context switch was cached in |m_run_queue.scheduling_entity.prev_thread|.
     //
     // Everything past the switch belongs to whichever CPU is running this
     // thread *now*, which is why complete_context_switch() asks
@@ -633,7 +633,7 @@ auto Scheduler::switch_context(Thread *curr, Thread *next) -> void {
 }
 
 auto Scheduler::update_runtime() -> void {
-    m_runtime.m_clock_source.update_clock();
+    m_run_queue.m_clock_source.update_clock();
 }
 
 auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
@@ -641,9 +641,9 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     DEBUG_ASSERT(arch::irqs_disabled(), "Enter {} with IRQ enabled", __func__);
     DEBUG_ASSERT(curr->preemption_state().preemption_disabled_count() != 0,
                  "Enter {}() with preempt enabled", __func__);
-    DEBUG_ASSERT(m_runtime.m_which_cpu == Cpu::id(), "Invoke {}() on mismatched CPU[{}]", __func__,
+    DEBUG_ASSERT(m_run_queue.m_which_cpu == Cpu::id(), "Invoke {}() on mismatched CPU[{}]", __func__,
                  Cpu::id());
-    DEBUG_ASSERT(curr == m_runtime.m_curr_thread);
+    DEBUG_ASSERT(curr == m_run_queue.m_curr_thread);
 
     assert_thread_in_scheduler(curr);
 
@@ -666,9 +666,9 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     // When unparking a thread, in |Scheduler::enqueue_thread| the clock had been updated
     // and send to the clock driver a skip request. Therefore we firstly try to response the
     // possible request.
-    m_runtime.m_clock_source.accept_skip_next_clock_update();
-    m_runtime.m_clock_source.update_clock();
-    m_runtime.m_clock_source.note_clock_updated();
+    m_run_queue.m_clock_source.accept_skip_next_clock_update();
+    m_run_queue.m_clock_source.update_clock();
+    m_run_queue.m_clock_source.note_clock_updated();
 
     curr->preemption_state().flush_pending_remote();
 
@@ -716,11 +716,11 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueOptions options) -> Status
     m_canary.verify<Self>();
 
     if (!(options & EnqueueOptions::SkipClock)) {
-        m_runtime.m_clock_source.update_clock();
+        m_run_queue.m_clock_source.update_clock();
     }
 
     auto &so = thread->scheduling_entity();
-    auto status = so.schedule()->enqueue_thread(m_runtime, thread, options);
+    auto status = so.schedule()->enqueue_thread(m_run_queue, thread, options);
     if (Status::Ok != status) {
         return status;
     }
@@ -728,14 +728,14 @@ auto Scheduler::enqueue_thread(Thread *thread, EnqueueOptions options) -> Status
     // The thread is on this CPU's queue now, so this is the CPU that owns it.
     // |this| is not necessarily the running CPU -- do_unpark_thread() enqueues
     // into the target's queue from the waker -- which is exactly why the value
-    // comes from m_runtime and not from Cpu::id().
-    so.m_curr_cpu = m_runtime.m_which_cpu;
+    // comes from m_run_queue and not from Cpu::id().
+    so.m_curr_cpu = m_run_queue.m_which_cpu;
 
     if (!!(options & EnqueueOptions::Restore)) {
     }
 
-    m_runtime.m_num_queued_threads += 1;
-    m_runtime.m_total_weight += so.weight();
+    m_run_queue.m_num_queued_threads += 1;
+    m_run_queue.m_total_weight += so.weight();
     return Status::Ok;
 }
 
@@ -743,20 +743,20 @@ auto Scheduler::dequeue_thread(Thread *thread, DequeueOptions options) -> Status
     m_canary.verify<Self>();
 
     if (!(options & DequeueOptions::SkipClock)) {
-        m_runtime.m_clock_source.update_clock();
+        m_run_queue.m_clock_source.update_clock();
     }
 
     if (!!(options & DequeueOptions::Save)) {
     }
 
     auto &so = thread->scheduling_entity();
-    auto status = so.schedule()->dequeue_thread(m_runtime, thread, options);
+    auto status = so.schedule()->dequeue_thread(m_run_queue, thread, options);
     if (Status::Ok != status) {
         return status;
     }
 
-    m_runtime.m_num_queued_threads -= 1;
-    m_runtime.m_total_weight -= so.weight();
+    m_run_queue.m_num_queued_threads -= 1;
+    m_run_queue.m_total_weight -= so.weight();
     return Status::Ok;
 }
 
@@ -789,8 +789,8 @@ auto Scheduler::Current::park_thread(Thread *curr) -> void {
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
 
-    DEBUG_ASSERT(self.m_runtime.m_which_cpu == Cpu::id());
-    DEBUG_ASSERT(curr == self.m_runtime.m_curr_thread);
+    DEBUG_ASSERT(self.m_run_queue.m_which_cpu == Cpu::id());
+    DEBUG_ASSERT(curr == self.m_run_queue.m_curr_thread);
     DEBUG_ASSERT(curr->state() & (Thread::State::Parked | Thread::State::Sleeping));
 
     self.reschedule_common(curr, Mode::Regular);
@@ -808,7 +808,7 @@ auto Scheduler::Current::park_thread(Thread *curr) -> void {
 /// happens on the waker's CPU, and the target CPU is told about it afterwards
 /// through RescheduleMask(), never by running any of this on it.
 auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void {
-    DEBUG_ASSERT(thread != m_runtime.m_curr_thread);
+    DEBUG_ASSERT(thread != m_run_queue.m_curr_thread);
 
     // Every state a thread can be woken out of, not only the two a wait queue
     // produces. Thread::resume() unparks from Initial (a thread that has never
@@ -840,30 +840,30 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
         unpark_preempt(thread, options);
     }
 
-    schedule->on_thread_unpark(m_runtime, thread);
+    schedule->on_thread_unpark(m_run_queue, thread);
 }
 
 /// Asks whether the thread just inserted should preempt what the target CPU is
 /// running. Like do_unpark_thread(), which is its only caller, this runs on the
-/// waker's CPU and reads the *target* CPU's runtime under that CPU's run queue
+/// waker's CPU and reads the *target* CPU's run_queue under that CPU's run queue
 /// lock.
 auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
-    auto const current_thread = m_runtime.m_curr_thread;
+    auto const current_thread = m_run_queue.m_curr_thread;
     auto const x_schedule = thread->scheduling_entity().schedule();
     auto const y_schedule = current_thread->scheduling_entity().schedule();
 
     auto &preemption_state = current_thread->preemption_state();
     if (x_schedule == y_schedule) {
         // To the same schedule, preemption depends on schedule's internal implementation.
-        x_schedule->unpark_preempt(m_runtime, current_thread, thread, options);
+        x_schedule->unpark_preempt(m_run_queue, current_thread, thread, options);
     } else if (x_schedule > y_schedule) {
-        m_runtime.mark_preempt_pending();
+        m_run_queue.mark_preempt_pending();
     }
 
     // The queue event has occurred. Therefore there is none of need to process
     // meaningless clock update.
     if (preemption_state.has_preempt_request()) {
-        m_runtime.m_clock_source.request_skip_next_clock_update();
+        m_run_queue.m_clock_source.request_skip_next_clock_update();
     }
 }
 
@@ -890,7 +890,7 @@ auto Scheduler::select_target_cpu(Thread *thread) -> CpuNum {
     //
     // Load is the run queue's depth, `num_queued_threads`, which enqueue and
     // dequeue keep up to date. It used to be `total_expected_runtime`, a field
-    // of Runtime that nothing in the tree ever writes -- so every comparison
+    // of RunQueue that nothing in the tree ever writes -- so every comparison
     // was 0 > 0 and the answer was always the lowest-numbered candidate.
     // Nothing showed until the secondaries came up: with one CPU online the
     // degenerate answer is also the right one. With four, every thread the
@@ -983,7 +983,7 @@ auto Scheduler::find_active_scheduler_for(Thread *thread, F f, Args &&...args) -
 auto Scheduler::Current::preempt(Thread *curr) -> void {
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
-    DEBUG_ASSERT(curr == self.m_runtime.m_curr_thread);
+    DEBUG_ASSERT(curr == self.m_run_queue.m_curr_thread);
 
     return self.reschedule_common(curr, Mode::Preempt);
 }
@@ -991,7 +991,7 @@ auto Scheduler::Current::preempt(Thread *curr) -> void {
 auto Scheduler::Current::reschedule(Thread *curr) -> void {
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
-    DEBUG_ASSERT(curr == self.m_runtime.m_curr_thread);
+    DEBUG_ASSERT(curr == self.m_run_queue.m_curr_thread);
 
     // No preemptibility check here any more: the caller's guard has already
     // disabled interrupts and preemption by the time this runs, so the check
@@ -1002,7 +1002,7 @@ auto Scheduler::Current::reschedule(Thread *curr) -> void {
 auto Scheduler::Current::idle(Thread *curr) -> void {
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
-    DEBUG_ASSERT(curr == self.m_runtime.m_curr_thread);
+    DEBUG_ASSERT(curr == self.m_run_queue.m_curr_thread);
 
     return self.reschedule_common(curr, Mode::Idle);
 }
@@ -1011,7 +1011,7 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
 
-    DEBUG_ASSERT(current == self.m_runtime.m_curr_thread);
+    DEBUG_ASSERT(current == self.m_run_queue.m_curr_thread);
 
     auto &so = current->scheduling_entity();
     {
@@ -1024,9 +1024,9 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
         // from noticing.
         Guard guard{self.get_lock()};
 
-        self.m_runtime.m_clock_source.update_clock();
-        so.schedule()->yield_thread(self.m_runtime, current);
-        self.m_runtime.m_clock_source.request_skip_next_clock_update();
+        self.m_run_queue.m_clock_source.update_clock();
+        so.schedule()->yield_thread(self.m_run_queue, current);
+        self.m_run_queue.m_clock_source.request_skip_next_clock_update();
     }
 
     self.reschedule_common(current, Mode::Regular);
@@ -1036,7 +1036,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
 
-    DEBUG_ASSERT(curr == self.m_runtime.m_curr_thread);
+    DEBUG_ASSERT(curr == self.m_run_queue.m_curr_thread);
 
     auto &curr_so = curr->scheduling_entity();
     auto &next_so = thread->scheduling_entity();
@@ -1049,7 +1049,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
             return Status::BadState;
         }
 
-        yielded = curr_so.schedule()->yield_to_thread(self.m_runtime, curr, thread);
+        yielded = curr_so.schedule()->yield_to_thread(self.m_run_queue, curr, thread);
         if (Status::Ok == yielded) {
             SCHEDULE_YIELD_PAST.add(1);
         }

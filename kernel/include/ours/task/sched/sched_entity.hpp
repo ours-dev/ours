@@ -351,13 +351,13 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
 
     /// Execution time charged to this thread so far.
     ///
-    /// Named `m_exec_runtime` rather than `m_runtime` because `m_runtime` is
+    /// Named `m_exec_runtime` rather than `m_run_queue` because `m_run_queue` is
     /// already taken, by `Scheduler`, for a completely unrelated thing -- the
     /// per-CPU run-queue object. The accessor keeps its old name for now;
     /// renaming it reaches into `fair.*`, so it is queued rather than done
     /// here.
     FORCE_INLINE
-    auto runtime() const -> SchedDuration {
+    auto run_queue() const -> SchedDuration {
         return m_exec_runtime;
     }
 
@@ -432,7 +432,7 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
 
     /// The framework's own accounting: how long this thread has run, and where
     /// the current slice started counting from. Every discipline charges time
-    /// the same way -- `Runtime::charge_current()` hands back the interval --
+    /// the same way -- `RunQueue::charge_current()` hands back the interval --
     /// so these belong to the framework rather than to any one discipline.
     SchedDuration m_exec_runtime;
     SchedDuration m_prev_exec_runtime;
