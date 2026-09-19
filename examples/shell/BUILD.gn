@@ -25,4 +25,10 @@ user_executable("shell") {
   ]
 
   sources = [ "shell.cpp" ]
+
+  # Every system call this program makes goes through //system/lib/ou. The
+  # vDSO is already on the link line (user_executable() puts it there); what
+  # this dependency adds is the library that gives each of its entry points a
+  # name, so nothing here has to know the raw ABI.
+  deps = [ "//system/lib/ou" ]
 }
