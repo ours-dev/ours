@@ -195,7 +195,15 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
                         return Status::NotFound;
                     }
                     value = m_bias + definition.value() + static_cast<u64>(rela.r_addend);
-                    log::debug("elfload: bound '{}' to {:X}", spelling, value);
+                    // Info, not debug. A ring-3 fault through an unbound or
+                    // wrongly bound slot lands far from anything that can say
+                    // why -- the only witness is a register dump with no
+                    // symbols -- and when exactly that happened, neither image
+                    // printed a single bound value, because debug is below the
+                    // floor in both. What a loader resolved is a handful of
+                    // lines per program and it is the first thing the next
+                    // such dump needs beside it.
+                    log::info("elfload: bound '{}' to {:X}", spelling, value);
                 }
             } else {
                 log::error("elfload: relocation type {} is one this binder does not apply", type);
