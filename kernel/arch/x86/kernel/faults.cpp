@@ -7,6 +7,7 @@
 
 #include <arch/halt.hpp>
 #include <arch/interrupt.hpp>
+#include <arch/x86/system.hpp>
 #include <logz4/log.hpp>
 
 namespace ours {
@@ -34,6 +35,19 @@ namespace {
     [[noreturn]]
     static auto panic_exception(arch::IrqFrame *frame, char const *msg) -> void {
         log::error("{}: vector={}, error_code={:#x}", msg, u32(frame->vector), frame->error_code);
+
+        // The faulting address, which the dump did not carry and which is the
+        // first thing anyone reading it wants. CR2 is only meaningful for a
+        // page fault, and only until the next one, which cannot happen here --
+        // nothing below faults and the function ends in a halt loop.
+        //
+        // For an instruction-fetch fault it equals rip and says nothing new;
+        // for every data fault it is the whole question, and a dump that
+        // printed rip alone left the reader to guess which address the
+        // instruction was reaching for.
+        if (frame->vector == arch::IrqVec::PageFault) {
+            log::error("  cr2={:#x}", arch::Cr2::read().get<arch::Cr2::Address>());
+        }
         log::error("  rip={:#x} (+{:#x})  cs={:#x}  rsp={:#x}", frame->rip,
                    frame->rip - VirtAddr(mm::IMAGE_START), frame->cs, frame->usp);
         log::error("  rax={:#x}  rbx={:#x}  rcx={:#x}  rdx={:#x}", frame->ax, frame->bx, frame->cx,
