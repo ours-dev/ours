@@ -1780,3 +1780,37 @@ virtual auto enqueue_thread(RunQueue &rq, Thread *thread, EnqueueOptions options
 
 - 没有把 `Scheduler::m_run_queue` 改成 `m_rq`。作者说的是形参；成员不在同一个作用域
   压力下，展开的名字在那里更清楚。
+
+## `SchedEntity::runtime()` 改名为 `exec_runtime()`（2026-09-19）
+
+**文件**
+- `kernel/include/ours/task/sched/sched_entity.hpp` — 一个访问器
+
+**症状**
+
+字段早已叫 `m_exec_runtime`（因为 `m_runtime` 当时属于每 CPU 对象），访问器却还叫
+`runtime()`，名实不符。而且那个撞名的对象现在叫 `RunQueue` 了，`runtime()` 这个名字
+失去了它仅剩的解释。
+
+**原因**
+
+更要紧的是另一重歧义：它旁边就是 Fair 的 `vruntime`——**同一个量，用虚拟时间度量**。
+`exec_` 这个前缀是承重的，不是装饰。
+
+顺带记一条观察（不动它，Fair 是作者的）：这个访问器的调用者**全部**在 `fair.*` 里，
+而且每一处都用在周围算术分明指虚拟量的地方——
+
+```cpp
+avg_vruntime() - object.runtime()          // fair.hpp:45
+current.runtime() < min_vruntime_          // fair.cpp:78
+ctx.deadline() <= ctx.runtime()            // fair.cpp:212
+```
+
+Fair 同时维护着 `vruntime`（它自己写了四处），却在比较时读实际执行时长。
+和 `deadline`/`vdeadline` 那一对是同一个模式的两张面孔。改名不修它，但至少框架不再
+暗示这两个量可以互换。
+
+**验证**
+
+构建成功——框架里零调用者，所以对构建免费。QEMU 两个镜像各 26 秒，断言/panic/异常
+计数均为 0，userboot 正常。适配清单已重生成。

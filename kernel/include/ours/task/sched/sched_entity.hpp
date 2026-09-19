@@ -349,15 +349,20 @@ class SchedEntity: public gktl::mixin::Comparable<SchedEntity> {
         return m_fair.deadline;
     }
 
-    /// Execution time charged to this thread so far.
+    /// Execution time charged to this thread so far -- real time on a CPU, not
+    /// any discipline's virtual time.
     ///
-    /// Named `m_exec_runtime` rather than `m_runtime` because that name belonged
-    /// to the per-CPU run-queue object, which is a completely unrelated thing
-    /// (it has since been renamed to RunQueue). The accessor keeps its own name;
-    /// renaming it reaches into `fair.*`, so it is queued rather than done
-    /// here.
+    /// The `exec_` is load bearing. Plain `runtime()` used to sit beside a
+    /// per-CPU object called `Runtime` that had nothing to do with it, and it
+    /// still sits beside Fair's `vruntime`, which is the same quantity
+    /// measured in virtual time. Every one of this accessor's callers is in
+    /// `fair.*`, and every one of them uses it where the virtual quantity is
+    /// what the surrounding arithmetic means -- `avg_vruntime() - runtime()`,
+    /// `runtime() < min_vruntime_`. Whether that is right is Fair's to say;
+    /// the name at least stops the framework from implying the two are
+    /// interchangeable.
     FORCE_INLINE
-    auto runtime() const -> SchedDuration {
+    auto exec_runtime() const -> SchedDuration {
         return m_exec_runtime;
     }
 

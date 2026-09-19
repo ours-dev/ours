@@ -196,15 +196,18 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 
 ### 适配清单不再由我手工维护
 
-框架每改一次，清单就重新生成一次；下面这 69 条是用当前 HEAD 跑出来的，不是我抄的。
+框架每改一次，清单就重新生成一次；下面这 75 条是用当前 HEAD 跑出来的，不是我抄的。
 
 **先修第一条**：`fair.cpp:5` 的 include 是 *fatal* 错误，不修的话编译在那里就停，
-下面 68 条一条都报不出来。（生成这张表时我用的是一份改好 include 的副本，没有动 fair.cpp。）
+下面 74 条一条都报不出来。（生成这张表时我用的是一份改好 include 的副本，没有动 fair.cpp。）
 
 | 文件 | 行 | 编译器说 |
 |---|---|---|
 | fair.cpp | 5 | #include <ours/task/sched/runtime.hpp> -> sched/run_queue.hpp (fatal; hides everything below until fixed) |
 | fair.cpp | 33 | unknown type name 'Runtime' |
+| fair.cpp | 51 | no member named 'runtime' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 78 | no member named 'runtime' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 79 | no member named 'runtime' in 'ours::task::sched::SchedEntity' |
 | fair.cpp | 97 | abstract class is marked 'final' [-Werror,-Wabstract-final-class] |
 | fair.cpp | 101 | unknown type name 'Runtime' |
 | fair.cpp | 102 | unknown type name 'Runtime' |
@@ -227,6 +230,7 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 | fair.cpp | 139 | unknown type name 'Runtime' |
 | fair.cpp | 143 | unknown type name 'Runtime' |
 | fair.cpp | 167 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.cpp | 171 | no member named 'runtime' in 'ours::task::sched::SchedEntity' |
 | fair.cpp | 174 | unknown type name 'Runtime' |
 | fair.cpp | 175 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | fair.cpp | 176 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
@@ -236,6 +240,7 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 | fair.cpp | 199 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | fair.cpp | 209 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
 | fair.cpp | 210 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
+| fair.cpp | 212 | no member named 'runtime' in 'ours::task::sched::SchedEntity' |
 | fair.cpp | 216 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
 | fair.cpp | 217 | no member named 'm_params' in 'ours::task::sched::SchedEntity' |
 | fair.cpp | 221 | unknown type name 'Runtime' |
@@ -272,6 +277,7 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 | fair.cpp | 437 | unknown type name 'Runtime' |
 | fair.cpp | 454 | unknown type name 'Runtime' |
 | fair.cpp | 462 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| fair.hpp | 45 | no member named 'runtime' in 'ours::task::sched::SchedEntity' |
 
 重新生成的办法：把 `rr.cpp` 的真实 ninja 命令从 ninja 里拎出来指向 `fair.cpp` 的副本
 （副本里先把那一行 include 改掉），加 `-fsyntax-only -ferror-limit=0`，输出去掉 ANSI 转义。
