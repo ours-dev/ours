@@ -46,10 +46,6 @@ config("user.config") {
     # default_executable_configs for is_kernel toolchains.
     "//build/config:build_id",
   ]
-
-  # Same reason as the kernel's (//kernel/products:kernel.config): the image
-  # is linked as a PIE below, so the code has to be compiled to match.
-  cflags = [ "-fpie" ]
 }
 
 # What a user program needs in order to say anything about the system it runs
@@ -77,17 +73,16 @@ config("user.headers") {
   ]
 }
 
-# A user binary is loaded by the kernel, not by a dynamic linker, and there
-# is no libc for it to call into: it is a static PIE with the same shape as
-# the kernel image itself.  ET_DYN with R_X86_64_RELATIVE relocations is
-# what lets the loader place it at an address it chooses; -static is what
-# keeps a PT_INTERP out of it, since nothing exists that could honour one.
+# What every ring-3 target agrees on, whatever shape it is linked into: no
+# hosted runtime, and no instruction the kernel has not turned on.
+#
+# The link policy is deliberately NOT here. It used to be, and that made the
+# config unusable for the vDSO: `-static` and `--pie` are both refused
+# alongside `-shared`, so a shared object in this toolchain could not be
+# linked at all. What is left is what a static PIE and a shared object can
+# both carry; :user.executable and :user.shared below add the rest.
 config("user.standalone") {
-  configs = [
-    "//build/config:freestanding",
-    "//build/config:static-link",
-    "//build/config:pie-link",
-  ]
+  configs = [ "//build/config:freestanding" ]
 
   # No SSE, MMX or x87 in a user program either -- not because ring 3 may not
   # use them, but because this kernel has not turned them on: nothing writes
@@ -110,5 +105,57 @@ config("user.standalone") {
     "-mno-3dnow",
     "-mno-avx",
     "-mno-avx2",
+  ]
+}
+
+# A user program: loaded by the kernel, not by a dynamic linker, and with no
+# libc to call into -- a static PIE with the same shape as the kernel image
+# itself. ET_DYN with R_X86_64_RELATIVE relocations is what lets the loader
+# place it at an address it chooses; -static is what keeps a PT_INTERP out of
+# it, since nothing exists that could honour one.
+#
+# Reached through the user toolchain's `executable_configs`, so it lands on
+# executables only (//build/toolchain/ours/BUILD.gn).
+config("user.executable") {
+  configs = [
+    "//build/config:static-link",
+    "//build/config:pie-link",
+  ]
+
+  # Same reason as the kernel's (//kernel/products:kernel.config): the image
+  # is linked as a PIE, so the code has to be compiled to match.
+  cflags = [ "-fpie" ]
+}
+
+# A shared object in ring 3, which today means the vDSO alone.
+#
+# The user-mode mirror of //kernel/phys:phys-module, and for the same reasons:
+#
+#   * -fPIC because the kernel picks the load address at run time.
+#   * -fno-plt because a call through a PLT stub needs lazy-binding machinery
+#     no one here can service; without it an imported function reaches the GOT
+#     the way an imported variable does, leaving the loader a single
+#     relocation type to apply. `-z now` says the same thing to the linker.
+#   * --no-dynamic-linker because there is none: the kernel maps this image
+#     and binds against it itself.
+#   * -Bsymbolic so the object's references to its own default-visibility
+#     symbols are resolved at link time. Default visibility here is not an
+#     invitation to preempt the definition -- nothing can -- it is how a
+#     symbol reaches .dynsym, which is the whole export mechanism.
+#
+# -shared itself comes from the toolchain's solink_module tool, so a
+# loadable_module() gets it without this config saying so.
+config("user.shared") {
+  cflags = [
+    "-fPIC",
+    "-fno-plt",
+  ]
+  asmflags = [ "-fPIC" ]
+  ldflags = [
+    "-nostdlib",
+    "-nostdlib++",
+    "-Wl,-z,now",
+    "-Wl,--no-dynamic-linker",
+    "-Wl,-Bsymbolic",
   ]
 }

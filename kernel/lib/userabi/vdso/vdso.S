@@ -36,11 +36,19 @@ OURS_VDSO_TABLE:
     .long OURS_VDSO_MAGIC
     .short OURS_VDSO_VERSION
     .short OURS_VDSO_NR_ENTRIES
-    .long ours_vdso_debug_write - OURS_VDSO_TABLE
-    .long ours_vdso_command_list - OURS_VDSO_TABLE
+    .long ours_debug_write - OURS_VDSO_TABLE
+    .long ours_command_list - OURS_VDSO_TABLE
 .size OURS_VDSO_TABLE, . - OURS_VDSO_TABLE
 
 // ---- The stubs -------------------------------------------------------------
+//
+// Each stub is `.globl` with default visibility, which is what puts it in
+// .dynsym: this object is linked -shared, and .dynsym is how a program that
+// merely *calls* ours_debug_write() gets bound to it at load time, with no
+// table lookup of its own. The internal labels below (OURS_VDSO_TABLE, the
+// OURS_VDSO_SYSRET_* return addresses) stay `.hidden` -- they are this
+// image's own business, and an exported symbol is a promise to something
+// outside it.
 
 .section .text, "ax", @progbits
 
@@ -56,10 +64,9 @@ OURS_VDSO_TABLE:
 // %r10 on this path, not %rcx. This stub takes two arguments, so it does not
 // have to move anything.
 .balign 16
-.globl ours_vdso_debug_write
-.hidden ours_vdso_debug_write
-.type ours_vdso_debug_write, @function
-ours_vdso_debug_write:
+.globl ours_debug_write
+.type ours_debug_write, @function
+ours_debug_write:
     mov $OURS_SYS_DEBUG_WRITE, %eax
     syscall
     // The kernel reads the return address out of the syscall frame and refuses
@@ -69,7 +76,7 @@ ours_vdso_debug_write:
 .hidden OURS_VDSO_SYSRET_DEBUG_WRITE
 OURS_VDSO_SYSRET_DEBUG_WRITE:
     ret
-.size ours_vdso_debug_write, . - ours_vdso_debug_write
+.size ours_debug_write, . - ours_debug_write
 
 // ours_command_list(char *buffer, usize length) -> Status
 //
@@ -77,16 +84,15 @@ OURS_VDSO_SYSRET_DEBUG_WRITE:
 // besides move the number into %eax and trap would be a place for the ABI to
 // drift between the two.
 .balign 16
-.globl ours_vdso_command_list
-.hidden ours_vdso_command_list
-.type ours_vdso_command_list, @function
-ours_vdso_command_list:
+.globl ours_command_list
+.type ours_command_list, @function
+ours_command_list:
     mov $OURS_SYS_COMMAND_LIST, %eax
     syscall
 .globl OURS_VDSO_SYSRET_COMMAND_LIST
 .hidden OURS_VDSO_SYSRET_COMMAND_LIST
 OURS_VDSO_SYSRET_COMMAND_LIST:
     ret
-.size ours_vdso_command_list, . - ours_vdso_command_list
+.size ours_command_list, . - ours_command_list
 
 .section .note.GNU-stack, "", @progbits

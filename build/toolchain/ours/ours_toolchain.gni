@@ -343,7 +343,8 @@ template("ours_toolchain") {
       if (restat_cc) {
         # Concatenated into $command (not the command_launcher property,
         # which GN does not substitution-expand) so {{output}} resolves.
-        command = string_join(" ", restat_command_launcher.local) + " " + command
+        command =
+            string_join(" ", restat_command_launcher.local) + " " + command
       }
     }
 
@@ -355,7 +356,8 @@ template("ours_toolchain") {
           "$cxx $target_flag $switches {{cflags}} {{cflags_cc}} -c {{source}}"
       restat = true
       if (restat_cc) {
-        command = string_join(" ", restat_command_launcher.local) + " " + command
+        command =
+            string_join(" ", restat_command_launcher.local) + " " + command
       }
     }
 
@@ -389,8 +391,7 @@ template("ours_toolchain") {
     tool("solink") {
       forward_variables_from(_link_common, "*")
       description = "SOLINK $outfile"
-      command =
-          "$ld $link_target_flag $switches -Wl,-shared $link_inputs$strip_command"
+      command = "$ld $link_target_flag $switches -Wl,-shared $link_inputs$strip_command"
       default_output_extension = ".so"
       output_prefix = "lib"
       link_output = unstripped_outfile
@@ -401,8 +402,7 @@ template("ours_toolchain") {
     tool("solink_module") {
       forward_variables_from(_link_common, "*")
       description = "SOLINK_MODULE $outfile"
-      command =
-          "$ld $link_target_flag $switches -Wl,-shared $link_inputs$strip_command"
+      command = "$ld $link_target_flag $switches -Wl,-shared $link_inputs$strip_command"
       default_output_extension = ".so"
       output_prefix = ""
       link_output = unstripped_outfile
@@ -432,8 +432,7 @@ template("ours_toolchain") {
       default_output_dir = "{{target_out_dir}}"
       output_prefix = "lib"
       default_output_extension = ".rlib"
-      outputs =
-          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+      outputs = [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
     }
 
     tool("rust_staticlib") {
@@ -443,8 +442,7 @@ template("ours_toolchain") {
       default_output_dir = "{{target_out_dir}}"
       output_prefix = "lib"
       default_output_extension = ".a"
-      outputs =
-          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+      outputs = [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
     }
 
     tool("rust_cdylib") {
@@ -454,8 +452,7 @@ template("ours_toolchain") {
       default_output_dir = "{{target_out_dir}}"
       output_prefix = "lib"
       default_output_extension = ".so"
-      outputs =
-          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+      outputs = [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
     }
 
     # Procedural macros execute at compile time on the build host.
@@ -468,8 +465,7 @@ template("ours_toolchain") {
       default_output_dir = "{{target_out_dir}}"
       output_prefix = "lib"
       default_output_extension = ".so"
-      outputs =
-          [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+      outputs = [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
     }
 
     # ---- Toolchain-scope arguments ----
@@ -507,7 +503,8 @@ template("ours_toolchain") {
       # is LLVM; GCC toolchains resolve through the cross-GCC directory and
       # its <cpu>-elf- tool prefix. LLVM-only utilities (llvm-ifs and
       # friends) resolve through clang_tool_dir in their own templates.
-      toolchain_tools = {}
+      toolchain_tools = {
+      }
       if (_use_gcc) {
         toolchain_tools = {
           directory = rebase_path(gcc_tool_dir, root_build_dir) + "/"
@@ -523,7 +520,8 @@ template("ours_toolchain") {
       # Build the toolchain_variant scope.
       # This controls variant-specific config selection.
       # Clear the propagated value from BUILDCONFIG.gn first.
-      toolchain_variant = {}
+      toolchain_variant = {
+      }
       toolchain_variant = {
         base = get_label_info(":$target_name", "label_no_toolchain")
         if (defined(invoker.variant_name)) {
@@ -558,6 +556,19 @@ template("ours_toolchain") {
         }
         if (defined(invoker.configs)) {
           configs += invoker.configs
+        }
+
+        # Link policy that only an executable may carry. The user toolchain
+        # needs this seam: its programs are static PIEs (-static --pie), but
+        # the vDSO built beside them is a shared object, and ld.lld refuses
+        # -shared together with either flag. Put those flags in `configs` and
+        # every target in the toolchain gets them, including the ones that
+        # cannot be built with them; BUILDCONFIG.gn already keeps
+        # default_executable_configs and default_shared_library_configs apart
+        # for exactly this, so the fix is to fill the field it reads rather
+        # than to have each shared target subtract flags again.
+        if (defined(invoker.executable_configs)) {
+          executable_configs += invoker.executable_configs
         }
         if (defined(invoker.prefix_configs)) {
           prefix_configs += invoker.prefix_configs

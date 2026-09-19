@@ -5,27 +5,37 @@
 import("//build/toolchain/toolchain_environment.gni")
 import("//kernel/phys/kernel_elf_binary.gni")
 
-assert(toolchain_environment == "user",
-       "the vDSO runs in ring 3 and must be built in a //build/toolchain/ours:user-* toolchain")
+assert(
+    toolchain_environment == "user",
+    "the vDSO runs in ring 3 and must be built in a //build/toolchain/ours:user-* toolchain")
 
-# The vDSO.
+# The vDSO: a shared object whose .dynsym is the kernel's ABI surface.
 #
-# An ordinary user-mode ELF, the same static-PIE shape as userboot beside it,
-# rather than the loadable_module Zircon uses for libzircon.so. That is a
-# deliberate difference and worth stating: a dynamic shared object earns its
-# dynamic section by being resolved at run time, and nothing here resolves
-# anything -- there is no dynamic linker, and userboot finds the exports
-# through the entry table at e_entry instead of through .dynsym. Building it
-# `-shared` today would mean fighting //system:user.config (which forces
-# -static and --pie; ld.lld refuses -shared with either) to produce a symbol
-# table with no reader.
+# It was a static PIE until now, on the grounds that nothing resolved anything
+# against it -- the program was handed the export table at e_entry and did its
+# own offset arithmetic. That is the thing being removed: a program should be
+# able to *call* ours_debug_write() and have the loader bind it, the way
+# Zircon's programs call zx_* against libzircon.so and the way a
+# physload_module() binds against physload (//kernel/phys/physload_module.gni).
+# So this is a shared object now, and its symbol table is the export table.
 #
-# The day something links against the vDSO rather than being handed it, this
-# becomes a loadable_module and userboot grows a relocation pass. Zircon's
-# userboot does exactly that with elfldltl; //kernel/lib/eftl is the local
-# equivalent and already has the hash-table lookups it would need.
+# `-shared` and `-static`/`--pie` are mutually exclusive in ld.lld, which is
+# why //system:user.config no longer carries the static-PIE link policy; it
+# moved to //system:user.executable, which the toolchain applies to
+# executables only.
 kernel_elf_binary("vdso") {
   visibility = [ "//kernel/products/image/*" ]
+
+  # Not an executable: no startup files, no link-time closure over its
+  # symbols, and -shared from the toolchain's solink_module tool.
+  target_type = "loadable_module"
+
+  # Swap the executable link policy for the shared-object one. The subtraction
+  # is possible because the toolchain puts the label in
+  # default_executable_configs directly, which kernel_elf_binary()'s
+  # set_defaults() forwards here.
+  configs -= [ "//system:user.executable" ]
+  configs += [ "//system:user.shared" ]
 
   # No .code-patches section: that is a kernel-side facility, and asking for
   # one would only add an empty file to the package. With patches off the ELF

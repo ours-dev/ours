@@ -39,6 +39,7 @@ ours_toolchain("kernel-x86") {
   cpu = "x86"
   os = target_os
   environment = "kernel"
+
   # Link with lld directly.  Left to itself the Clang driver hands an
   # ELF-target link to the host `gcc`, which cannot build an image for
   # another architecture (ours_toolchain.gni, elf_linker).
@@ -62,6 +63,7 @@ ours_toolchain("kernel-riscv") {
   cpu = "riscv"
   os = target_os
   environment = "kernel"
+
   # Link with lld directly.  Left to itself the Clang driver hands an
   # ELF-target link to the host `gcc`, which cannot build an image for
   # another architecture (ours_toolchain.gni, elf_linker).
@@ -85,6 +87,7 @@ ours_toolchain("kernel-arm") {
   cpu = "arm"
   os = target_os
   environment = "kernel"
+
   # Link with lld directly.  Left to itself the Clang driver hands an
   # ELF-target link to the host `gcc`, which cannot build an image for
   # another architecture (ours_toolchain.gni, elf_linker).
@@ -129,6 +132,7 @@ ours_toolchain("kernel-phys-riscv") {
   cpu = "riscv"
   os = target_os
   environment = "kernel.phys"
+
   # Link with lld directly.  Left to itself the Clang driver hands an
   # ELF-target link to the host `gcc`, which cannot build an image for
   # another architecture (ours_toolchain.gni, elf_linker).
@@ -151,6 +155,7 @@ ours_toolchain("kernel-phys-arm") {
   cpu = "arm"
   os = target_os
   environment = "kernel.phys"
+
   # Link with lld directly.  Left to itself the Clang driver hands an
   # ELF-target link to the host `gcc`, which cannot build an image for
   # another architecture (ours_toolchain.gni, elf_linker).
@@ -188,8 +193,12 @@ ours_toolchain("user-x86") {
   tags = [ "user" ]
   tool_dir = clang_tool_dir
   configs = [ "//system:user.config" ]
-}
 
+  # The static-PIE link policy, which only an executable can carry: the vDSO
+  # in this same toolchain is a shared object, and -static/--pie are refused
+  # beside -shared. See //system:user.executable.
+  executable_configs = [ "//system:user.executable" ]
+}
 # The host-toolchain smoke test lives in its own directory
 # (//build/toolchain/host-smoke-test) — deliberately not here.  See that
 # BUILD.gn for why a file that calls toolchain() must never also define a
