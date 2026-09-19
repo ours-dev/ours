@@ -60,13 +60,13 @@ class PageTable {
         return m_pgd_phys;
     }
 
-    auto map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, MapControl control,
+    auto map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, MapOptions options,
                    usize *mapped) -> Status;
 
-    auto map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, MapControl control,
+    auto map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, MapOptions options,
                         usize *mapped) -> Status;
 
-    auto unmap_pages(VirtAddr va, usize n, UnmapControl control, usize *unmapped) -> Status;
+    auto unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status;
 
     auto protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status;
 

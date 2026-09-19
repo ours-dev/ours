@@ -104,12 +104,12 @@ auto make_bootstrap_area(BootstrapData **data) -> PhysAddr {
 
     auto status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
         BOOTSTRAP16_BUFFER_BASE, BOOTSTRAP16_BUFFER_BASE, MIN_BOOTSTRAP16_BUFFER_SIZE >> PAGE_SHIFT,
-        mm::MmuFlags::PermMask | mm::MmuFlags::Discache, mm::MapControl::ErrorIfExisting, 0);
+        mm::MmuFlags::PermMask | mm::MmuFlags::Discache, mm::MapOptions::ErrorIfExisting, 0);
     ASSERT(Status::Ok == status);
 
     status = mm::VmAspace::kernel_aspace()->arch_aspace().map(
         gdt_base, gdt_base, 1, mm::MmuFlags::PermMask | mm::MmuFlags::Discache,
-        mm::MapControl::ErrorIfExisting, 0);
+        mm::MapOptions::ErrorIfExisting, 0);
     ASSERT(Status::Ok == status);
 
     return BOOTSTRAP16_BUFFER_BASE;

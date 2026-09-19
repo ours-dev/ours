@@ -53,6 +53,16 @@ namespace ours {
 /// The C++ spelling of OURS_SYSCALL_COUNT above.
 inline constexpr auto SYSCALL_COUNT = usize{OURS_SYSCALL_COUNT};
 
+/// The most bytes one sys_debug_write() will copy.
+///
+/// A ceiling on one call, so that a program cannot hold a CPU inside the
+/// kernel for as long as it likes by asking for a gigabyte of output. The
+/// number is arbitrary; what is not arbitrary is that there is one, and that
+/// both sides know the same one. It lives here rather than in the handler
+/// because the caller has to split its text to fit -- a limit only the kernel
+/// knows is a limit the caller discovers as Status::OutOfRange.
+inline constexpr auto MAX_DEBUG_WRITE = usize{256};
+
 /// The C++ spelling of the numbers above.
 enum class SyscallNumber : usize {
     DebugWrite = OURS_SYS_DEBUG_WRITE,

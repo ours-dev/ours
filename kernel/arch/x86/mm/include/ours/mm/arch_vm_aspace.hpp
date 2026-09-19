@@ -27,13 +27,13 @@ class ArchVmAspace {
 
     auto init() -> Status;
 
-    auto map(VirtAddr, PhysAddr, usize n, MmuFlags flags, MapControl control, usize *mapped)
+    auto map(VirtAddr, PhysAddr, usize n, MmuFlags flags, MapOptions options, usize *mapped)
         -> Status;
 
-    auto map_bulk(VirtAddr, PhysAddr *, usize n, MmuFlags flags, MapControl control, usize *mapped)
+    auto map_bulk(VirtAddr, PhysAddr *, usize n, MmuFlags flags, MapOptions options, usize *mapped)
         -> Status;
 
-    auto unmap(VirtAddr, usize n, UnmapControl control, usize *unmapped) -> Status;
+    auto unmap(VirtAddr, usize n, UnmapOptions options, usize *unmapped) -> Status;
 
     auto protect(VirtAddr, usize n, MmuFlags) -> Status;
 
@@ -43,7 +43,7 @@ class ArchVmAspace {
         return Status::Unsupported;
     }
 
-    auto harvest_accessed(VirtAddr va, usize n, HarvestControl action) -> Status;
+    auto harvest_accessed(VirtAddr va, usize n, HarvestOptions action) -> Status;
 
     auto active_cpus() const -> CpuMask;
 

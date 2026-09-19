@@ -23,7 +23,7 @@ class OwnedWaitQueue: protected WaitQueue {
     using Self = OwnedWaitQueue;
 
   public:
-    enum class NotifyControl {
+    enum class NotifyOptions {
         None,
     };
 
@@ -75,7 +75,7 @@ class OwnedWaitQueue: protected WaitQueue {
         -> ustl::Option<UnparkThreads>;
 
     template <typename UnparkThreads> // Thread::UnparkList
-    auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyControl) -> void;
+    auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyOptions) -> void;
 
     using Base::is_empty;
     using Base::peek;

@@ -365,13 +365,13 @@ class PmNode {
 
     auto alloc_frames_slowpath(Gaf, usize, MemoryAllocationContext const &) -> PmFrame *;
 
-    auto alloc_frames_direct_reclaim(Gaf, usize, AllocationControl, MemoryAllocationContext const &)
+    auto alloc_frames_direct_reclaim(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
         -> PmFrame *;
 
-    auto alloc_frames_direct_compact(Gaf, usize, AllocationControl, MemoryAllocationContext const &)
+    auto alloc_frames_direct_compact(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
         -> PmFrame *;
 
-    auto get_frame_from_zone_queues(Gaf, usize, AllocationControl, MemoryAllocationContext const &)
+    auto get_frame_from_zone_queues(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
         -> PmFrame *;
 
     /// Fills in the context the zone walk filters on.

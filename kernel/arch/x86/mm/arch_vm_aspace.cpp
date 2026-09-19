@@ -123,21 +123,21 @@ auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     // Finally, exchange the IO-Bitmap in TSS
 }
 
-auto ArchVmAspace::map(VirtAddr va, PhysAddr pa, usize n, MmuFlags mmuf, MapControl control,
+auto ArchVmAspace::map(VirtAddr va, PhysAddr pa, usize n, MmuFlags mmuf, MapOptions options,
                        usize *mapped) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.map_pages(va, pa, n, mmuf, control, mapped);
+    return m_page_table.map_pages(va, pa, n, mmuf, options, mapped);
 }
 
-auto ArchVmAspace::map_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, MapControl control,
+auto ArchVmAspace::map_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, MapOptions options,
                             usize *mapped) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.map_pages_bulk(va, pa, n, flags, control, mapped);
+    return m_page_table.map_pages_bulk(va, pa, n, flags, options, mapped);
 }
 
-auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapControl control, usize *unmapped) -> Status {
+auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.unmap_pages(va, n, control, unmapped);
+    return m_page_table.unmap_pages(va, n, options, unmapped);
 }
 
 auto ArchVmAspace::query(VirtAddr va, PhysAddr *pa, MmuFlags *mmuf) -> Status {

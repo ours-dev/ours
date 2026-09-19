@@ -171,7 +171,7 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
         // set is what tells the next releaser there is a queue to consult.
         publish(static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended);
         m_waiters.notify_threads_locked(ustl::move(*batch), default_hook,
-                                        task::OwnedWaitQueue::NotifyControl::None);
+                                        task::OwnedWaitQueue::NotifyOptions::None);
     } else {
         publish(State::Available);
     }

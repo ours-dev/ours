@@ -44,11 +44,11 @@ class VmMapping final: public VmAreaOrMapping {
     /// VmArea::unmap_locked() converted the wrong way, subtracting the base
     /// before calling the absolute unmap_locked() and silently naming a range
     /// at the bottom of the address space.
-    auto map(VirtAddr base, usize size, bool commit, MapControl) -> Status;
+    auto map(VirtAddr base, usize size, bool commit, MapOptions) -> Status;
 
     auto protect(VirtAddr base, usize size, MmuFlags) -> Status;
 
-    auto unmap(VirtAddr base, usize, UnmapControl) -> Status;
+    auto unmap(VirtAddr base, usize, UnmapOptions) -> Status;
 
     /// Return the final mapping status and how many pages mapped.
     auto fault(VmFault *vmf) -> ustl::Pair<Status, usize>;
@@ -60,15 +60,15 @@ class VmMapping final: public VmAreaOrMapping {
     friend class VmArea;
     friend class VmObject;
 
-    auto map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit, MapControl control)
+    auto map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit, MapOptions options)
         -> Status;
 
-    auto map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, MapControl control)
+    auto map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, MapOptions options)
         -> Status;
 
     /// Tear the pages of [base, base + size) down, assuming the aspace lock is
     /// already held.
-    auto unmap_locked(VirtAddr base, usize size, UnmapControl control) -> Status;
+    auto unmap_locked(VirtAddr base, usize size, UnmapOptions options) -> Status;
 
     /// Rewrite the flags of [base, base + size), assuming the aspace lock is
     /// already held and the range was validated against this mapping.

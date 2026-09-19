@@ -1,14 +1,14 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef ARCH_PAGING_CONTROLS_HPP
-#define ARCH_PAGING_CONTROLS_HPP 1
+#ifndef ARCH_PAGING_OPTIONS_HPP
+#define ARCH_PAGING_OPTIONS_HPP 1
 
 #include <arch/types.hpp>
 
 #include <ustl/util/enum_bits.hpp>
 
 namespace arch::paging {
-enum class MapControl {
+enum class MapOptions {
     SkipIfExisting,
     OverwriteIfExisting,
     ErrorIfExisting,
@@ -17,15 +17,15 @@ enum class MapControl {
     ///
     TryMerge = BIT(3),
 };
-USTL_ENABLE_ENUM_BITMASK(MapControl);
+USTL_ENABLE_ENUM_BITMASK(MapOptions);
 
-enum class UnmapControl {
+enum class UnmapOptions {
     /// For semantics.
     None,
 };
-USTL_ENABLE_ENUM_BITMASK(UnmapControl);
+USTL_ENABLE_ENUM_BITMASK(UnmapOptions);
 
-enum class HarvestControl {
+enum class HarvestOptions {
     /// Only updates the frame's age if it is accessed.
     UpdateAge = BIT(0),
 
@@ -35,8 +35,8 @@ enum class HarvestControl {
     /// If the frame is accessed we remove the accessed flag.
     ResetUnaccessed = BIT(2),
 };
-USTL_ENABLE_ENUM_BITMASK(HarvestControl);
+USTL_ENABLE_ENUM_BITMASK(HarvestOptions);
 
 } // namespace arch::paging
 
-#endif // #ifndef ARCH_PAGING_CONTROLS_HPP
+#endif // #ifndef ARCH_PAGING_OPTIONS_HPP

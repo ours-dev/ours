@@ -80,7 +80,7 @@ static_assert(gaf_zone_type(Gaf::Reclaim) == ZoneType::Normal);
 static_assert(gaf_zone_type(Gaf::Dma) == ZoneType::Dma);
 static_assert(gaf_zone_type(Gaf::Dma32) == ZoneType::Dma32);
 
-enum class AllocationControl : u32 {
+enum class AllocationOptions : u32 {
     NoFragment = 0_bit,
 
     NoBlock = 1_bit,
@@ -89,7 +89,7 @@ enum class AllocationControl : u32 {
 
     Kswapd = 3_bit,
 };
-USTL_ENABLE_ENUM_BITMASK(AllocationControl);
+USTL_ENABLE_ENUM_BITMASK(AllocationOptions);
 
 } // namespace ours::mm
 

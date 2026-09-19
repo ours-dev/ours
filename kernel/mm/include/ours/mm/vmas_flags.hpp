@@ -10,9 +10,9 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::mm {
-using ::arch::paging::HarvestControl;
-using ::arch::paging::MapControl;
-using ::arch::paging::UnmapControl;
+using ::arch::paging::HarvestOptions;
+using ::arch::paging::MapOptions;
+using ::arch::paging::UnmapOptions;
 
 /// Which address space this is.
 ///

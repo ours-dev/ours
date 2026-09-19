@@ -35,8 +35,8 @@ namespace {
     }
 
     FORCE_INLINE
-    auto gaf_to_allocation_control(Gaf gaf) -> AllocationControl {
-        return AllocationControl();
+    auto gaf_to_allocation_control(Gaf gaf) -> AllocationOptions {
+        return AllocationOptions();
     }
 
 } // namespace
@@ -458,25 +458,25 @@ struct AllocationContext {
     NodeMask m_nodes;
 };
 
-auto PmNode::get_frame_from_zone_queues(Gaf gaf, usize order, AllocationControl control,
+auto PmNode::get_frame_from_zone_queues(Gaf gaf, usize order, AllocationOptions options,
                                         MemoryAllocationContext const &context) -> PmFrame * {
-    // TODO(SmallHuaZi): AllocationControl::NoFragment is not honoured yet. It
+    // TODO(SmallHuaZi): AllocationOptions::NoFragment is not honoured yet. It
     // should stop the walk before the remote zones rather than being ignored,
     // but what exactly it forbids has not been settled.
     return m_zone_queues.for_each_zone([&](PmZone &zone) -> PmFrame * {
         if (!context.allowed_nodes.test(zone.which_node())) {
             return nullptr;
         }
-        return zone.alloc_frames(gaf, order, control, context);
+        return zone.alloc_frames(gaf, order, options, context);
     });
 }
 
-auto PmNode::alloc_frames_direct_reclaim(Gaf gaf, usize order, AllocationControl control,
+auto PmNode::alloc_frames_direct_reclaim(Gaf gaf, usize order, AllocationOptions options,
                                          MemoryAllocationContext const &context) -> PmFrame * {
     return 0;
 }
 
-auto PmNode::alloc_frames_direct_compact(Gaf gaf, usize order, AllocationControl control,
+auto PmNode::alloc_frames_direct_compact(Gaf gaf, usize order, AllocationOptions options,
                                          MemoryAllocationContext const &context) -> PmFrame * {
     return 0;
 }

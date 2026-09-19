@@ -105,14 +105,14 @@ auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueH
 }
 
 template <typename UnparkThreads>
-auto OwnedWaitQueue::notify_threads_locked(UnparkThreads, INotifyRequeueHook &, NotifyControl)
+auto OwnedWaitQueue::notify_threads_locked(UnparkThreads, INotifyRequeueHook &, NotifyOptions)
     -> void {}
 
 template auto OwnedWaitQueue::lock_for_notify_operation<Thread::UnparkList>(usize,
                                                                             INotifyRequeueHook &)
     -> ustl::Option<Thread::UnparkList>;
 template auto OwnedWaitQueue::notify_threads_locked(Thread::UnparkList, INotifyRequeueHook &,
-                                                    NotifyControl) -> void;
+                                                    NotifyOptions) -> void;
 
 /// Both halves of an ownership edge run under the owner thread's PI lock:
 /// the list they splice into is that thread's outgoing edge set in the

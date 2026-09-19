@@ -364,7 +364,7 @@ auto CpuLocal::Mapper::build_dense(VirtAddr slot, Gaf gaf) -> Status {
 
             auto mapped = usize(0);
             auto const status = m_aspace.map(va + done * PAGE_SIZE, frame_to_phys(frame), n,
-                                             MAP_FLAGS, MapControl::ErrorIfExisting, &mapped);
+                                             MAP_FLAGS, MapOptions::ErrorIfExisting, &mapped);
             if (Status::Ok != status) {
                 return status;
             }

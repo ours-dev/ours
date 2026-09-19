@@ -273,7 +273,7 @@ auto VmArea::map_with_vmo(VmPlacement where, usize size, MmuFlags mmuf, ustl::Ar
     if (!!(VmMapOption::Commit & option)) {
         status = vmo->commit_range(0, size);
         if (Status::Ok == status) {
-            status = mapping->map(mapping->base(), size, true, MapControl::ErrorIfExisting);
+            status = mapping->map(mapping->base(), size, true, MapOptions::ErrorIfExisting);
         }
 
         if (Status::Ok != status) {
@@ -430,7 +430,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
         // absolute address, the same as its protect_locked() sibling and the
         // same as what VmMapping::unmap() computes before calling it.
         auto const status = mapping->unmap_locked(overlap_base, overlap_last - overlap_base + 1,
-                                                  UnmapControl::None);
+                                                  UnmapOptions::None);
         if (Status::Ok != status) {
             return status;
         }

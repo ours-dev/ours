@@ -19,10 +19,10 @@ namespace ours::mm {
 // because <arch/paging/...> was included ahead of every ours/ header, so
 // `ours::arch` had not been declared yet at this point in the file. That is
 // not something an include order should be load-bearing for.
-using ::arch::paging::HarvestControl;
-using ::arch::paging::MapControl;
+using ::arch::paging::HarvestOptions;
+using ::arch::paging::MapOptions;
 using ::arch::paging::MmuFlags;
-using ::arch::paging::UnmapControl;
+using ::arch::paging::UnmapOptions;
 
 enum class ZoneType {
     Dma,

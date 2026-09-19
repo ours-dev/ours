@@ -7,17 +7,11 @@
 #include <logz4/log.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 #include <ours/types.hpp>
 #include <ustl/views/span.hpp>
 
 namespace ours {
-namespace {
-    /// A ceiling on one call, so that a user program cannot hold a CPU inside
-    /// the kernel for as long as it likes by asking for a gigabyte of output.
-    /// The number is arbitrary; what is not arbitrary is that there is one.
-    constexpr auto MAX_DEBUG_WRITE = usize{256};
-} // namespace
-
 auto sys_debug_write(char const *const buffer, usize const length) -> Status {
     if (length == 0) {
         return Status::Ok;

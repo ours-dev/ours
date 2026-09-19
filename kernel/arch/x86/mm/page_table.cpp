@@ -84,11 +84,11 @@ auto PageTable::alias_to(Self &other, VirtAddr base, usize n) -> Status {
     return Status::Ok;
 }
 
-auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, MapControl control,
+auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, MapOptions options,
                           usize *mapped) -> Status {
     // The engine always rejects a page that is already mapped; there is no
-    // overwrite/skip mode to honor yet, so `control` goes unused for now.
-    (void)control;
+    // overwrite/skip mode to honor yet, so `options` goes unused for now.
+    (void)options;
 
     auto result = [&] {
         Guard<sync::SpinLock> guard(m_lock);
@@ -108,8 +108,8 @@ auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, Map
 }
 
 auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags,
-                               MapControl control, usize *mapped) -> Status {
-    (void)control;
+                               MapOptions options, usize *mapped) -> Status {
+    (void)options;
 
     usize done = 0;
     Status status = Status::Ok;
@@ -132,8 +132,8 @@ auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flag
     return status;
 }
 
-auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapControl control, usize *unmapped) -> Status {
-    (void)control;
+auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {
+    (void)options;
 
     auto result = [&] {
         Guard<sync::SpinLock> guard(m_lock);

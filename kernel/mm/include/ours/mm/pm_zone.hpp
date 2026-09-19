@@ -89,7 +89,7 @@ class PmZone {
     ///
     /// Assumptions:
     ///     1) |order| must be lesser than `MAX_FRAME_ORDER`.
-    auto alloc_frames(Gaf, usize, AllocationControl, MemoryAllocationContext const &) -> PmFrame *;
+    auto alloc_frames(Gaf, usize, AllocationOptions, MemoryAllocationContext const &) -> PmFrame *;
 
     auto alloc_frame(Gaf gaf, usize order) -> PmFrame *;
 

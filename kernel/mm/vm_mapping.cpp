@@ -18,7 +18,7 @@ using VmMappingCache = ObjectCache::Instance<VmMapping>;
 template <usize MaxNumPages>
 class MappingCoalescer {
   public:
-    MappingCoalescer(VmMapping *mapping, VirtAddr base, MmuFlags mmuf, MapControl ctrl)
+    MappingCoalescer(VmMapping *mapping, VirtAddr base, MmuFlags mmuf, MapOptions ctrl)
         // Initializer order follows the member declaration order below.
         : mapping_(mapping)
         , va_(base)
@@ -47,7 +47,7 @@ class MappingCoalescer {
     usize nr_pages_;
     usize total_mapped_;
     MmuFlags mmuf_;
-    MapControl map_ctrl_;
+    MapOptions map_ctrl_;
 };
 
 template <usize MaxNumPages>
@@ -69,7 +69,7 @@ auto MappingCoalescer<MaxNumPages>::commit() -> Status {
 
     usize nr_mapped = 0;
     auto const status = mapping_->aspace()->arch_aspace().map_bulk(
-        va_, pa_, nr_pages_, mmuf_, MapControl::TryLargePage, &nr_mapped);
+        va_, pa_, nr_pages_, mmuf_, MapOptions::TryLargePage, &nr_mapped);
     if (Status::Ok != status) {
         log::error("Failed to map {} pages at {}", nr_pages_, va_);
     }
@@ -166,7 +166,7 @@ auto VmMapping::destroy() -> Status {
 
 FORCE_INLINE
 auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool commit,
-                          MapControl control) -> Status {
+                          MapOptions options) -> Status {
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(ustl::mm::is_aligned(base, PAGE_SIZE));
@@ -198,7 +198,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
     // through, so the loop no longer opens by dereferencing an Option just to
     // give them names.
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
-        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, control);
+        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, options);
 
         // TODO: Request pages in larger batches (e.g. folios) instead of
         // page-by-page.  Currently require_owned_page(1) is called per
@@ -226,7 +226,7 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
 }
 
 FORCE_INLINE
-auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, MapControl control)
+auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, MapOptions options)
     -> Status {
     m_canary.verify<Self>();
 
@@ -241,7 +241,7 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
 
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
-        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, control);
+        MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, options);
         for (usize offset = 0; offset < region_size; offset += PAGE_SIZE) {
             if (auto const appended = coalescer.append(phys_base + offset);
                 Status::Ok != appended) {
@@ -258,7 +258,7 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
 }
 
 /// Do check arguments and dispatch the request to correct sub-routine for different VmObjects.
-auto VmMapping::map(VirtAddr base, usize size, bool commit, MapControl control) -> Status {
+auto VmMapping::map(VirtAddr base, usize size, bool commit, MapOptions options) -> Status {
     m_canary.verify<Self>();
 
     // FIXME: map() does not acquire m_aspace->get_lock(), unlike protect()
@@ -278,9 +278,9 @@ auto VmMapping::map(VirtAddr base, usize size, bool commit, MapControl control) 
     }
 
     if (auto paged = as<VmObjectPaged>(m_vmo.as_ptr_mut())) {
-        return map_paged(paged, base, size, commit, control);
+        return map_paged(paged, base, size, commit, options);
     } else if (auto physical = as<VmObjectPhysical>(m_vmo.as_ptr_mut())) {
-        return map_physical(physical, base, size, control);
+        return map_physical(physical, base, size, options);
     }
 
     return Status::Ok;
@@ -326,7 +326,7 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
         if (!(region_mmuf & MmuFlags::PermMask)) {
             // Unmap those regions which has no any permission.
-            (void)arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, UnmapControl::None, 0);
+            (void)arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, UnmapOptions::None, 0);
             continue;
         }
 
@@ -336,7 +336,7 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     return Status::Ok;
 }
 
-auto VmMapping::unmap(VirtAddr base, usize size, UnmapControl control) -> Status {
+auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status {
     m_canary.verify<Self>();
 
     if (!is_active()) {
@@ -354,14 +354,14 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapControl control) -> Status
         return Status::InvArgs;
     }
 
-    return unmap_locked(base, size, control);
+    return unmap_locked(base, size, options);
 }
 
-auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapControl control) -> Status {
+auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) -> Status {
     auto &arch_aspace = m_aspace->arch_aspace();
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {
-        auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, control, 0);
+        auto status = arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, options, 0);
         if (Status::Ok != status) {
             log::error("Failed to unmap range[{:X}, {:X})", region_base, region_size);
             return status;
@@ -433,7 +433,7 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // map, and the faulting instruction succeeds on retry.
     //
     // This has to be settled here rather than by handing map() a control that
-    // says "overwrite": PageTable::map_pages() ignores MapControl outright --
+    // says "overwrite": PageTable::map_pages() ignores MapOptions outright --
     // it says so in a comment -- and the paging engine always rejects an entry
     // that already exists. An unconditional map() therefore reported
     // AlreadyExists for a fault that was in fact already resolved, which the
@@ -490,7 +490,7 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // records the intent for when the arch layer starts reading it.
     usize nr_mapped = 0;
     if (auto const status = arch_aspace.map(va, frame_to_phys(*page), 1, mmuf,
-                                            MapControl::ErrorIfExisting, &nr_mapped);
+                                            MapOptions::ErrorIfExisting, &nr_mapped);
         Status::Ok != status) {
         return {status, 0};
     }
