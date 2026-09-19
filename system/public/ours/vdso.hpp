@@ -46,7 +46,35 @@
 
 #ifdef __cplusplus
 
+#include <ours/status.hpp>
 #include <ours/types.hpp>
+
+/// The vDSO's exported entry points, as a program calls them.
+///
+/// This is the whole user-facing surface: a program declares nothing, looks up
+/// nothing, and calls ours_debug_write() the way it would call any function.
+/// The linker records an undefined symbol, userboot resolves it against the
+/// vDSO's .dynsym when it loads the image, and the call lands on the stub that
+/// traps (kernel/lib/userabi/src/userboot.cpp, bind_imports()). That is the
+/// same arrangement Zircon's programs have with libzircon.so, and the same one
+/// a phys module has with physload one layer down.
+///
+/// `extern "C"` because binding is by name and a mangled name is an
+/// implementation detail of one compiler: these names are the ABI.
+extern "C" {
+/// Writes |length| bytes of |buffer| to the kernel's debug console.
+///
+/// A debug facility, not a console: it exists so a program can prove it
+/// reached ring 3 and got back. The kernel caps one call's length (see
+/// MAX_DEBUG_WRITE in kernel/lib/syscall/src/debug.cpp) rather than spending
+/// unbounded time in the kernel on a user program's say-so, and answers
+/// OutOfRange past it instead of truncating.
+auto ours_debug_write(char const *buffer, usize length) -> ours::Status;
+
+/// Writes the kshell command registry into |buffer| as text, one command per
+/// line, NUL terminated; NoSpace when the registry does not fit.
+auto ours_command_list(char *buffer, usize length) -> ours::Status;
+}
 
 namespace ours {
 /// The table the vDSO publishes at its ELF entry point.

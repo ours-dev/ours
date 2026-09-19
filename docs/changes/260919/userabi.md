@@ -129,3 +129,138 @@ Zircon 那边还有一个现成的用法可以对照：`zircon/kernel/lib/userab
 - 没让内核去读 OBI 顶层的 BOOTFS item（产品级 `bootfs` 注入的那块）。内核现在只认
   kernel package，示例程序因此还是打在 kernel package 里；真正的 Zircon 分层
   （内核包只放内核自己的东西，其余走产品 BOOTFS）要等内核能读那个 item 之后再说。
+
+## 用户程序改成加载时按名字绑定 vDSO，不再自己查表（2026-09-19）
+
+**文件**
+- `system/user_executable.gni` —— 新建。用户程序的构建模板：PIE、链接 vDSO、
+  `-fno-plt -z now --no-dynamic-linker`，打包进内核包。
+- `system/BUILD.gn` —— 新增 `config("user.program")`。
+- `system/public/ours/vdso.hpp` —— 新增 `ours_debug_write` / `ours_command_list`
+  的 `extern "C"` 声明。
+- `kernel/lib/userabi/src/userboot.cpp` —— 新增 `bind_imports()`（按名字把程序的
+  未定义符号绑到 vDSO 的 `.dynsym`，并应用程序自己的 `R_X86_64_RELATIVE`），
+  `MappedImage` 增加内核侧视图与 `image_base`。
+- `kernel/lib/userabi/BUILD.gn` —— 依赖 `//kernel/lib/eftl`。
+- `kernel/lib/userabi/vdso/BUILD.gn` —— 加 `-soname,libours.so`，visibility 放开。
+- `examples/shell/BUILD.gn`、`examples/shell/shell.cpp` —— 改用新模板，直接调用。
+
+**症状**
+潜伏。加一个系统调用要动五个地方：vdso.S 加 stub、`vdso.hpp` 加偏移宏、加结构体
+字段、版本号加一，然后**每个用户程序**在自己的 `Vdso` 类里加一个访问器。程序在能
+调用系统调用之前，得先自己跑一遍「动态链接」。
+
+**原因**
+这是把链接器和加载器的活派给了应用程序。原来的机制是：vDSO 在 e_entry 放一张表，
+内核把表的运行时地址塞进 `%rdi`，程序检查 magic/version，再把每个 `u32` 偏移加回
+表基址、强转成函数指针。等于每个程序各自手写一份只支持一张表的动态链接器。
+
+ELF 早就描述了这件事：共享对象的 `.dynsym` 是导出表，导入方的 `.rela.dyn` 是
+「这些名字请在加载时填进这些槽位」。physload 那边已经用上了（`ModuleLoader::load()`
+的 `SymbolBinder` 把模块的未定义符号绑到 physload 的导出表），用户态却在另起炉灶。
+
+**改法**
+三件事凑成一个机制：
+
+1. 程序侧（`user_executable()` + `config("user.program")`）：PIE，链接 vDSO，
+   `-fno-plt -z now`。于是 `ours_debug_write` 变成一个 `R_X86_64_GLOB_DAT` 重定位，
+   而不是一次手工偏移计算；拼错名字是链接错误，不是启动时才发现的空指针。
+2. 头文件侧：`<ours/vdso.hpp>` 直接声明这两个 `extern "C"` 函数。程序 include 它、
+   调用它，别的什么都不做。
+3. 加载器侧：`bind_imports()` 用 eftl 读程序的 `PT_DYNAMIC`，逐条处理
+   `.rela.dyn`/`.rela.plt`，`RELATIVE` 用程序自己的 bias，其余按符号名去 vDSO 的
+   `.dynsym` 里查，查不到就报名字并拒绝启动。
+
+shell 改前：
+```cpp
+class Vdso {
+  public:
+    using DebugWriteFn = auto (*)(char const *buffer, usize length) -> usize;
+    static constexpr auto bind(ours::VdsoEntryTable const *table) -> Vdso {
+        if (table == nullptr || table->magic != OURS_VDSO_MAGIC ||
+            table->version != OURS_VDSO_VERSION || table->nr_entries < OURS_VDSO_NR_ENTRIES) {
+            return Vdso{};
+        }
+        return Vdso{table};
+    }
+    auto debug_write() const -> DebugWriteFn { return entry<DebugWriteFn>(m_table->debug_write); }
+    // ... entry<Fn>()：reinterpret_cast<usize>(m_table) + offset
+};
+
+extern "C" [[noreturn]] auto _start(ours::VdsoEntryTable const *const table) -> void {
+    auto const vdso = Vdso::bind(table);
+    if (!vdso.valid()) { for (;;) { __asm__ volatile("pause"); } }
+    Console const console{vdso};
+    console.line(BANNER);
+```
+
+改后：
+```cpp
+extern "C" [[noreturn]] auto _start() -> void {
+    Console::line(BANNER);
+```
+`Console::write()` 里那一行也从 `m_write(at, chunk)` 变成 `ours_debug_write(at, chunk)`
+——一个普通函数调用。整个 `Vdso` 类（约 50 行）连同 `_start` 的参数一起删掉。
+
+加载器新增的核心：
+```cpp
+if (type == R_X86_64_RELATIVE) {
+    value = program_bias + static_cast<u64>(rela.r_addend);
+} else if (type == R_X86_64_64 || type == R_X86_64_GLOB_DAT || type == R_X86_64_JUMP_SLOT) {
+    ...
+    auto const definition = find_export(exports.value(), spelling);
+    if (definition.is_none()) {
+        log::error("userboot: the program needs '{}', which the vDSO does not export", spelling);
+        return Status::NotFound;
+    }
+    value = vdso_bias + definition.value() + static_cast<u64>(rela.r_addend);
+}
+memory.write<u64>(static_cast<u64>(rela.r_offset), value);
+```
+
+两个容易写错的点，都在注释里写清楚了：一是**写必须走内核侧视图**，不能写用户虚拟
+地址——那是另一个地址空间，从内核写过去打到的是当前地址空间的同名地址；`MappedImage`
+因此多了 `view`（同一批物理页的内核指针）和 `image_base`。二是 `r_offset` 是链接期
+地址，交给 `eftl::elf::MappedMemory` 按 `LoadRegion` 翻译，**不能**再自己加一次 bias，
+否则双重计数、写到镜像外面去。
+
+被否掉的方案：把 `ours::phys::ElfImage::relocate_and_bind()` 直接搬来用。它的内存
+模型不对——phys 那边镜像就躺在一段物理内存里，写它就是写它；内核这边镜像是映射进
+另一个地址空间的，写要走自己的物理映射视图。共用的是 eftl 和思路，不是那段代码。
+
+**参照**
+`Zircon`：程序链接 `libzircon.so` 并直接调用 `zx_*`，userboot 用 elfldltl
+做重定位（`zircon/kernel/lib/userabi/userboot/`）。本项目内部的对照物更贴近：
+`ours::phys::ElfImage::relocate_and_bind()` 与 `kernel/phys/elf_image.cpp` 里的
+`SymbolicRelocationPass`——支持的重定位类型（1/6/7 + 8）、`st_shndx == 0` 判导入、
+找不到定义就报名字失败，全部照抄它的判断，只是导出方从 `resolve_export()` 换成了
+另一个 ELF 的 `.dynsym`。
+
+**验证**
+- 构建通过；clang-format/clang-tidy 干净（`_start` 的命名告警是 ELF 入口点约定，
+  不能改）。
+- `llvm-readelf` 看 shell 的产物形状：
+  ```
+  Type: DYN (Shared object file)
+  NEEDED  Shared library: [libours.so]
+  FLAGS   SYMBOLIC BIND_NOW
+  Relocation section '.rela.dyn' contains 2 entries:
+    ... R_X86_64_GLOB_DAT  ours_debug_write + 0
+    ... R_X86_64_GLOB_DAT  ours_command_list + 0
+  ```
+- QEMU 实测两个镜像。`kernel.dev.dbg_1.obi` 打出了绑定过程本身：
+  ```
+  [debug] userboot: bound 'ours_debug_write' to A01300
+  [debug] userboot: bound 'ours_command_list' to A01310
+  ours shell: the kernel's command registry, seen from ring 3
+  ```
+  两个地址都落在 vDSO 的映射区间 `[A00000, A03000)` 内。文件里那两个 GOT 槽位是
+  零，所以「程序跑出了完整输出」本身就是绑定成功的证据——没绑上就是调用地址 0。
+
+**故意没做**
+- 没转 `//kernel/lib/userabi/userboot`。它还是静态 PIE、还在用入口表，所以
+  `VdsoEntryTable` 也还留着。下一条单独做，做完那张表就能删。
+- 没做符号版本、`DT_NEEDED` 搜索、作用域规则、惰性绑定。只有一个导入方和一个导出
+  方，多出来的都是还没有的问题。
+- 查导出仍是线性扫描。vDSO 现在导出两个符号；`DT_GNU_HASH` 就在镜像里，等表长到
+  值得用再用。

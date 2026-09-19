@@ -26,7 +26,14 @@ source_set("userabi") {
   # image live in, and PhysMap, to turn those into the physical address map_phys
   # wants. A VmoDispatcher is what retires both. //kernel/phys:handoff is where
   # the kernel package itself comes from.
+  #
+  # //kernel/lib/eftl reads the ELF dynamic tables -- the symbol table the
+  # vDSO exports through and the relocations a program imports through. The
+  # hand-rolled Elf64Header in userboot.cpp stays for the placement pass,
+  # where a dozen lines of arithmetic beat a traits-parameterised view; the
+  # binding pass is the opposite case, and is what eftl exists for.
   deps = [
+    "//kernel/lib/eftl",
     "//kernel/lib/logz4",
     "//kernel/mm",
     "//kernel/object",

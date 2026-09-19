@@ -127,6 +127,46 @@ config("user.executable") {
   cflags = [ "-fpie" ]
 }
 
+# A program that is bound to the vDSO at load time
+# (//system/user_executable.gni).
+#
+# The difference from :user.executable is that this one is NOT closed over its
+# own symbols: it calls ours_debug_write() and friends and leaves them
+# undefined, for userboot to resolve against the vDSO's .dynsym. -static is
+# what forbids exactly that, which is why the two configs cannot be one.
+#
+# Still a PIE: the kernel picks the load address, and the relocation pass that
+# binds the imports applies the image's own R_X86_64_RELATIVE entries in the
+# same sweep.
+config("user.program") {
+  configs = [ "//build/config:pie-link" ]
+
+  cflags = [
+    "-fPIE",
+
+    # An imported function then reaches the GOT the way an imported variable
+    # does, leaving the loader a single relocation type to apply. `-z now`
+    # says the same thing to the linker: nothing here can service a lazily
+    # bound PLT stub, since the kernel binds an image once, at load.
+    "-fno-plt",
+  ]
+
+  ldflags = [
+    "-nostdlib",
+    "-nostdlib++",
+    "-Wl,-z,now",
+
+    # There is no dynamic linker: the kernel maps the vDSO and binds against
+    # it itself, so a PT_INTERP would name something that cannot exist.
+    "-Wl,--no-dynamic-linker",
+
+    # The program's references to its own definitions are resolved at link
+    # time -- nothing can preempt them, and every such reference left dynamic
+    # would be one more relocation for the loader to apply at boot.
+    "-Wl,-Bsymbolic",
+  ]
+}
+
 # A shared object in ring 3, which today means the vDSO alone.
 #
 # The user-mode mirror of //kernel/phys:phys-module, and for the same reasons:

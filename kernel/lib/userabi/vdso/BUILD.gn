@@ -24,7 +24,12 @@ assert(
 # moved to //system:user.executable, which the toolchain applies to
 # executables only.
 kernel_elf_binary("vdso") {
-  visibility = [ "//kernel/products/image/*" ]
+  # Public, because this is the system ABI: every user_executable() links
+  # against the `.binary` subtarget's output to have its imports checked
+  # (//system/user_executable.gni), and //kernel/products/image packages the
+  # stripped copy. Narrowing it to the two of them would mean naming every
+  # future user program's directory here.
+  visibility = [ "*" ]
 
   # Not an executable: no startup files, no link-time closure over its
   # symbols, and -shared from the toolchain's solink_module tool.
@@ -49,5 +54,14 @@ kernel_elf_binary("vdso") {
   # linker finds the exports: the kernel already reads e_entry to load an
   # image, so the table costs no new machinery on either side. Zircon points
   # e_entry at _zx_process_exit for the same reason.
-  ldflags = [ "-Wl,-e,OURS_VDSO_TABLE" ]
+  ldflags = [
+    "-Wl,-e,OURS_VDSO_TABLE",
+
+    # Without a SONAME, a linker handed this file on the command line records
+    # its build-directory path in the importer's DT_NEEDED. Nothing reads
+    # DT_NEEDED here -- the kernel maps the one vDSO it has -- but a path from
+    # someone's out/ directory baked into every program is a fact that would
+    # be wrong the moment anyone looked at it.
+    "-Wl,-soname,libours.so",
+  ]
 }

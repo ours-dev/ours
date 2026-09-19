@@ -1,0 +1,95 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//kernel/phys/kernel_elf_binary.gni")
+
+# Defines a program that runs in ring 3 and reaches the kernel through the
+# vDSO, packaged as a file in the kernel package's BootFS.
+#
+# What this template exists to do is make the syscall surface reachable by
+# *calling it*. A program written against it declares nothing and binds
+# nothing: it includes <ours/vdso.hpp>, calls ours_debug_write(), and the
+# linker records an undefined symbol that userboot resolves against the vDSO's
+# .dynsym when it loads the image (kernel/lib/userabi/src/userboot.cpp,
+# bind_imports()). Before this, every program carried its own copy of the
+# lookup -- an entry-table struct, a magic/version check, and one accessor per
+# entry doing `table + offset` arithmetic -- which is a dynamic linker written
+# by hand, once per program, for a table the ELF format already describes.
+#
+# The shape that makes that work, and why each piece:
+#
+#   * A PIE executable linked against the vDSO, not a static one. -static is
+#     what forbids an undefined symbol; it is also what the user toolchain
+#     applies to every executable by default, so it is subtracted here.
+#   * -fno-plt with -z now: an imported function then reaches the GOT the way
+#     an imported variable does, so the loader has one relocation type to
+#     apply and never has to service a lazily-bound PLT stub -- there is no
+#     lazy binding in a kernel that binds an image once, at load.
+#   * --no-dynamic-linker: there is none. The kernel maps the vDSO and binds
+#     against it itself, so a PT_INTERP would name something that cannot exist.
+#   * The vDSO on the link line, so an import that no vDSO entry defines is a
+#     link error here rather than an unresolved symbol discovered at boot.
+#
+# This mirrors //kernel/phys/physload_module.gni, which is the same
+# arrangement one layer down: a phys module leaves the phys runtime undefined
+# and physload binds it at load time. Zircon does it with libzircon.so, which
+# its programs link against and userboot relocates with elfldltl.
+#
+# Parameters:
+#
+#   install_name (optional)
+#     BootFS file name for the packaged program. Defaults to target_name --
+#     this is the name kernel.select.userboot selects.
+#
+#   deps, sources, configs, testonly, visibility
+#     Standard GN meanings.
+template("user_executable") {
+  # The vDSO as a link input: the linker target's own output, not the
+  # packaged copy. kernel_elf_image() strips section headers from what goes
+  # into the package, and a linker needs them to read .dynsym -- the *loader*
+  # does not, since it reaches the same tables through PT_DYNAMIC.
+  _vdso_label = "//kernel/lib/userabi/vdso:vdso.binary"
+  _vdso_file = get_label_info(_vdso_label, "target_out_dir") + "/vdso"
+
+  kernel_elf_binary(target_name) {
+    forward_variables_from(invoker,
+                           "*",
+                           [
+                             "configs",
+                             "deps",
+                             "ldflags",
+                             "visibility",
+                           ])
+    forward_variables_from(invoker, [ "visibility" ])
+
+    # A user program has no kernel text to patch; asking for the section would
+    # only add an empty `<name>/code-patches` file to the package. With patches
+    # off, kernel_elf_image() installs the ELF as one bare file rather than a
+    # `<name>/` subtree, which is what the loader looks up by name.
+    has_patches = false
+
+    # Cleared first because GN refuses to replace one non-empty list with
+    # another, and kernel_elf_binary()'s own set_defaults() has already put
+    # default_executable_configs here.
+    configs = []
+    configs = invoker.configs
+    configs -= [ "//system:user.executable" ]
+    configs += [ "//system:user.program" ]
+
+    deps = [ _vdso_label ]
+    if (defined(invoker.deps)) {
+      deps += invoker.deps
+    }
+
+    inputs = [ _vdso_file ]
+    ldflags = [ rebase_path(_vdso_file, root_build_dir) ]
+    if (defined(invoker.ldflags)) {
+      ldflags += invoker.ldflags
+    }
+  }
+}
+
+set_defaults("user_executable") {
+  configs = default_executable_configs
+}

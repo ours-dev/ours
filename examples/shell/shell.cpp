@@ -3,6 +3,12 @@
 ///
 /// A shell that runs in ring 3 and talks to the kernel only through the vDSO.
 ///
+/// It calls ours_debug_write() and ours_command_list() as plain functions. It
+/// does not declare them, resolve them, or know where they are: they are
+/// undefined symbols that userboot binds to the vDSO's .dynsym when it loads
+/// this image, which is what //system/user_executable.gni arranges and what
+/// <ours/vdso.hpp> declares.
+///
 /// What it is for: userboot proved that the kernel can build a process, map an
 /// ELF into it and answer one system call. This is the next question -- can a
 /// *program*, one that is not part of the kernel's own bring-up, do something
@@ -37,8 +43,7 @@ class Str {
   public:
     constexpr Str() = default;
 
-    constexpr Str(char const *data, usize size)
-        : m_data(data), m_size(size) {}
+    constexpr Str(char const *data, usize size) : m_data(data), m_size(size) {}
 
     /// Deduces the length of a literal, minus its NUL.
     ///
@@ -46,8 +51,7 @@ class Str {
     /// length and does not look for a terminator, so sending it would put a
     /// stray byte on the console.
     template <usize N>
-    constexpr Str(char const (&literal)[N])
-        : m_data(literal), m_size(N - 1) {}
+    constexpr Str(char const (&literal)[N]) : m_data(literal), m_size(N - 1) {}
 
     [[nodiscard]]
     constexpr auto data() const -> char const * {
@@ -83,63 +87,6 @@ constexpr auto length_of(char const *text, usize const limit) -> usize {
     return n;
 }
 
-/// The vDSO's exports, resolved once.
-///
-/// Every entry in the table is a byte offset from the table itself, because
-/// nothing relocates the vDSO -- see <ours/vdso.hpp>. Adding the base back is
-/// the whole of the "dynamic linking" this program does, and doing it in one
-/// place means no call site has to remember that.
-class Vdso {
-  public:
-    using DebugWriteFn = auto (*)(char const *buffer, usize length) -> usize;
-    using CommandListFn = auto (*)(char *buffer, usize length) -> usize;
-
-    /// Returns an unusable Vdso rather than trapping when the table is not one
-    /// this program understands.
-    ///
-    /// It cannot report the problem: the only output it has is the very entry
-    /// it is trying to reach. So the caller is left to spin, and `valid()` is
-    /// what it asks.
-    static constexpr auto bind(ours::VdsoEntryTable const *table) -> Vdso {
-        if (table == nullptr || table->magic != OURS_VDSO_MAGIC ||
-            table->version != OURS_VDSO_VERSION || table->nr_entries < OURS_VDSO_NR_ENTRIES) {
-            return Vdso{};
-        }
-        return Vdso{table};
-    }
-
-    [[nodiscard]]
-    constexpr auto valid() const -> bool {
-        return m_table != nullptr;
-    }
-
-    [[nodiscard]]
-    auto debug_write() const -> DebugWriteFn {
-        return entry<DebugWriteFn>(m_table->debug_write);
-    }
-
-    [[nodiscard]]
-    auto command_list() const -> CommandListFn {
-        return entry<CommandListFn>(m_table->command_list);
-    }
-
-  private:
-    constexpr Vdso() = default;
-
-    constexpr explicit Vdso(ours::VdsoEntryTable const *table)
-        : m_table(table) {}
-
-    template <typename Fn>
-    auto entry(u32 const offset) const -> Fn {
-        // The const is dropped on purpose: the table is read-only data, but
-        // what it points at is code, and a pointer-to-function cannot carry it.
-        auto const address = reinterpret_cast<usize>(m_table) + offset;
-        return reinterpret_cast<Fn>(address);
-    }
-
-    ours::VdsoEntryTable const *m_table = nullptr;
-};
-
 /// Output, in the only form this program has.
 ///
 /// The kernel's debug write has a ceiling on one call (it will not spend
@@ -147,21 +94,18 @@ class Vdso {
 /// longer is split here rather than silently truncated there.
 class Console {
   public:
-    constexpr explicit Console(Vdso const &vdso)
-        : m_write(vdso.debug_write()) {}
-
-    auto write(Str const text) const -> void {
+    static auto write(Str const text) -> void {
         auto const *at = text.data();
         auto left = text.size();
         while (left != 0) {
             auto const chunk = left < CHUNK ? left : CHUNK;
-            static_cast<void>(m_write(at, chunk));
+            static_cast<void>(ours_debug_write(at, chunk));
             at += chunk;
             left -= chunk;
         }
     }
 
-    auto line(Str const text) const -> void {
+    static auto line(Str const text) -> void {
         write(text);
         write("\n");
     }
@@ -171,8 +115,6 @@ class Console {
     /// value here does not fail loudly -- the kernel answers OutOfRange and
     /// writes nothing -- so it is worth keeping the two in step.
     static constexpr usize CHUNK = 256;
-
-    Vdso::DebugWriteFn m_write;
 };
 
 /// The kshell command registry, fetched into this program's own memory.
@@ -184,8 +126,8 @@ class Registry {
   public:
     static constexpr usize CAPACITY = 2048;
 
-    auto fetch(Vdso const &vdso) -> ours::Status {
-        return static_cast<ours::Status>(vdso.command_list()(m_text, CAPACITY));
+    auto fetch() -> ours::Status {
+        return ours_command_list(m_text, CAPACITY);
     }
 
     [[nodiscard]]
@@ -204,34 +146,28 @@ constexpr Str BANNER{"ours shell: the kernel's command registry, seen from ring 
 /// `extern "C"`, because ld.lld resolves the default entry point by the symbol
 /// name `_start` and a mangled name would not answer to it.
 ///
-/// The parameter is not decoration: the kernel puts the vDSO's export table
-/// address in the first start argument, which arch_build_uspace_irqframe()
-/// places in %rdi -- exactly where the ordinary SysV convention says a first
-/// parameter lives, so declaring it is all it takes to receive it.
+/// It takes no arguments any more. It used to take the vDSO's export table,
+/// which the kernel put in %rdi, because finding the entry points was this
+/// program's own problem: check a magic number, check a version, add a u32
+/// offset to the table address, cast the result to a function pointer. All of
+/// that is gone -- the calls below are ordinary calls to undefined symbols,
+/// and userboot binds them to the vDSO's definitions while it loads this image
+/// (kernel/lib/userabi/src/userboot.cpp, bind_imports()).
 extern "C" [[noreturn]]
-auto _start(ours::VdsoEntryTable const *const table) -> void {
-    auto const vdso = Vdso::bind(table);
-    if (!vdso.valid()) {
-        // Nothing to say it with. See Vdso::bind().
-        for (;;) {
-            __asm__ volatile("pause");
-        }
-    }
-
-    Console const console{vdso};
-    console.line(BANNER);
+auto _start() -> void {
+    Console::line(BANNER);
 
     static Registry registry;
-    auto const status = registry.fetch(vdso);
+    auto const status = registry.fetch();
 
-    console.line("--- commands ---");
-    console.write(registry.text());
+    Console::line("--- commands ---");
+    Console::write(registry.text());
     if (status == ours::Status::NoSpace) {
-        console.line("(truncated: the registry outgrew this program's buffer)");
+        Console::line("(truncated: the registry outgrew this program's buffer)");
     } else if (status != ours::Status::Ok) {
-        console.line("(command_list failed)");
+        Console::line("(command_list failed)");
     }
-    console.line("--- end ---");
+    Console::line("--- end ---");
 
     // Nothing to do next, and nothing to exit to: there is no exit syscall yet
     // and returning from _start would return into whatever the kernel left on
