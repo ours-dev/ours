@@ -95,3 +95,65 @@ if (Status::Ok != binder.unwrap().bind(image.unwrap(), loaded.image)) {
   仍在 `userboot.cpp` 里，下一条做。
 - 宿主单测还没写。骨架里的 `test/` 目录先删掉了，等测试跟着代码一起进来，而不是
   留一个指向不存在文件的 BUILD.gn。
+
+## 放置也搬过来，成为 `elfload::Loader`（2026-09-19）
+
+**文件**
+- `kernel/lib/elfload/include/elfload/loader.hpp` + `src/loader.cpp` —— 新建。
+  `Elf64Header`/`Elf64ProgramHeader`/`PT_LOAD` 和原来的 `map_elf_image()` 整体搬来，
+  成为 `elfload::Loader::map()`。
+- `kernel/lib/userabi/src/userboot.cpp` —— 少了 190 行；`load_program()` 和
+  `load_vdso()` 改成调 `loader.map(...)`。
+- `kernel/lib/elfload/BUILD.gn` —— 加 `//kernel/mm`、`//kernel/object` 依赖。
+- `docs/repairs/260919/elfload.md` —— 「三个段当成一段映射」那条从 userabi 挪过来，
+  因为代码挪过来了。
+
+**症状**
+无。承接上一条：绑定已经是组件了，放置还留在 bring-up 路径里，两半各在一处。
+
+**原因**
+同一个判据：这段代码需要知道什么。放置需要知道地址空间、VMO、VMA、帧分配器——它需要
+对象层；但它**不**需要知道「第一个用户程序」「内核包」「启动选项」。userboot.cpp 里
+剩下的才是真正属于 bring-up 的东西：从包里挑哪个程序、建进程、栈放哪、起线程。
+
+`userboot.cpp` 从 659 行降到 469 行，降的正好是「怎么把一个 ELF 放进内存」。
+
+**改法**
+`Loader` 由根 VMA 构造，因为它的语义就是「某个地址空间的加载器」：
+
+```cpp
+// userboot_init()
+elfload::Loader const loader{*root_vma.dispatcher()};
+load_program(image.unwrap(), program.text, loader, *root_vma.dispatcher(), loaded);
+load_vdso(vdso_bytes.unwrap(), loader, vdso);
+```
+
+`load_program()` 仍然额外拿着 `root_vma`，不是遗漏：**栈**是它自己映射的
+（`create_paged` + `root_vma.map`）。栈放在哪、多大、要不要可执行，是 bring-up 的
+决定，不是加载 ELF 的一部分——Loader 只管把文件里的段放进去。
+
+和 Binder 的构造方式是对称的：一个「针对这个地址空间的加载器」，一个「针对这个导出
+方的绑定器」，都把只需回答一次的问题在构造时回答掉。
+
+**参照**
+`ours::phys::ElfImage::load_at()`（`kernel/phys/elf_image.cpp`）：同样是「先算出
+镜像占多大、再把每段拷进去」，区别是 phys 直接写物理内存，这里要经对象层建 VMO 再
+映射。`ModuleLoader::load()` 与这里的 `userboot_init()` 位置相同——挑镜像、驱动
+加载器、然后运行它。
+
+**验证**
+- 构建通过；clang-format / clang-tidy 干净。
+- QEMU 实测两个镜像，行为不变：
+  ```
+  [info]  userboot: found 'shell', 1608 bytes of ELF
+  [info]  userboot: vdso mapped [A00000, A03000)
+  [debug] elfload: bound 'ours_debug_write' to A012F0
+  --- end ---
+  ```
+- 行数：`userboot.cpp` 469，`elfload/src/loader.cpp` 175，`binder.cpp` 198。
+
+**故意没做**
+- 放置仍然用手写的 `Elf64Header`，没换成 eftl 的 `LoadPolicy::make_plan()`。这一步
+  只搬位置，不改实现——换 eftl 是和「按段权限映射」同一件事，一起做才有意义，记在
+  `docs/repairs/260919/elfload.md`。
+- 宿主单测仍然没写。

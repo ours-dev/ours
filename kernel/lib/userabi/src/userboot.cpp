@@ -14,6 +14,7 @@
 #include <cstring>
 
 #include <elfload/binder.hpp>
+#include <elfload/loader.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
@@ -184,46 +185,6 @@ namespace {
         return ustl::ok(result.unwrap());
     }
 
-    /// The 64-bit ELF header and program header, as far as loading needs
-    /// them.
-    ///
-    /// Declared here rather than reached for from //kernel/lib/eftl or
-    /// ours::phys::ElfImage. eftl is built for dynamic linking and reaches
-    /// segments through a variant of traits classes; ElfImage has exactly
-    /// the load plan wanted, but lives in phys's `physload.core` source_set
-    /// and is not linked into the kernel. Loading one static PIE is two
-    /// dozen lines of arithmetic, and having those lines visible is worth
-    /// more here than the reuse would be.
-    struct [[gnu::packed]] Elf64Header {
-        u8 ident[16];
-        u16 type;
-        u16 machine;
-        u32 version;
-        u64 entry;
-        u64 phoff;
-        u64 shoff;
-        u32 flags;
-        u16 ehsize;
-        u16 phentsize;
-        u16 phnum;
-        u16 shentsize;
-        u16 shnum;
-        u16 shstrndx;
-    };
-
-    struct [[gnu::packed]] Elf64ProgramHeader {
-        u32 type;
-        u32 flags;
-        u64 offset;
-        u64 vaddr;
-        u64 paddr;
-        u64 filesz;
-        u64 memsz;
-        u64 align;
-    };
-
-    constexpr u32 PT_LOAD = 1;
-
     /// What loading produced: the mapped image, and the top of the stack that
     /// was mapped beside it.
     ///
@@ -248,14 +209,6 @@ namespace {
     constexpr VirtAddr USER_STACK_TOP = USER_ASPACE_BASE + MB(16);
     constexpr usize USER_STACK_SIZE = PAGE_SIZE;
 
-    /// Lays userboot's PT_LOAD segments out in fresh frames and maps them
-    /// into a new user address space.
-    ///
-    /// userboot is a PIE (ET_DYN) with no relocations at all -- checked with
-    /// llvm-readelf, and true because it references nothing outside itself
-    /// -- so it can be laid down at any page-aligned base and simply run.
-    /// That is what makes this short: no relocation pass, no dynamic
-    /// linking, no symbol resolution.
     /// Where the vDSO goes.
     ///
     /// Between the image and the stack, at a fixed address for the same reason
@@ -266,139 +219,6 @@ namespace {
     /// that it should be fixed.
     constexpr VirtAddr VDSO_BASE = USER_ASPACE_BASE + MB(8);
 
-    /// Lays an ELF's PT_LOAD segments out in fresh frames and maps them into a
-    /// user address space at |where|.
-    ///
-    /// Placement only: whatever the image needs fixing up afterwards is
-    /// bind_imports()' business, and the two are kept apart because the order
-    /// between them is forced -- an image cannot be bound to the vDSO before
-    /// the vDSO has a load address, so every image is placed first and bound
-    /// second.
-    ///
-    /// The segments land in one contiguous run of frames, from the lowest
-    /// p_vaddr any PT_LOAD claims to the highest. That is a simplification
-    /// (a real loader honours each segment's own permissions and the gaps
-    /// between them), and it is also the invariant bind_imports() relies on
-    /// when it describes the image to eftl as a single load region.
-    ///
-    /// One routine for both, because they differ only in placement,
-    /// permissions and name. The vDSO in particular must NOT be writable: it
-    /// is the only code allowed to enter the kernel, so a program able to
-    /// rewrite it could put a trap anywhere it liked inside the one range the
-    /// kernel trusts.
-    auto map_elf_image(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
-                       mm::VmPlacement where, arch::paging::MmuFlags flags, char const *name,
-                       elfload::Image &out) -> Status {
-        if (bytes.size() < sizeof(Elf64Header)) {
-            log::error("userboot: {} is too small to be an ELF", name);
-            return Status::InvArgs;
-        }
-
-        Elf64Header header{};
-        std::memcpy(&header, bytes.data(), sizeof(header));
-
-        // The segments' virtual addresses are relative to nothing in
-        // particular for a PIE, so the span is measured from the lowest to the
-        // highest address any PT_LOAD claims, and the whole thing is then
-        // placed where the caller says. `memsz` and not `filesz`: the
-        // difference between them is .bss, which occupies address space but
-        // occupies no bytes in the file.
-        auto lowest = ~VirtAddr(0);
-        auto highest = VirtAddr(0);
-        for (auto index = u16(0); index < header.phnum; ++index) {
-            Elf64ProgramHeader phdr{};
-            auto const at = header.phoff + usize(index) * header.phentsize;
-            if (at + sizeof(phdr) > bytes.size()) {
-                log::error("userboot: {} program header {} runs past the image", name, index);
-                return Status::InvArgs;
-            }
-            std::memcpy(&phdr, bytes.data() + at, sizeof(phdr));
-            if (phdr.type != PT_LOAD) {
-                continue;
-            }
-            lowest = std::min(lowest, VirtAddr(phdr.vaddr));
-            highest = std::max(highest, VirtAddr(phdr.vaddr + phdr.memsz));
-        }
-
-        if (lowest > highest) {
-            log::error("userboot: {} has no PT_LOAD segments", name);
-            return Status::InvArgs;
-        }
-
-        // Whole pages: the frame allocator deals in nothing smaller, and a
-        // mapping cannot start or end mid-page either.
-        lowest = ustl::mm::align_down(lowest, PAGE_SIZE);
-        highest = ustl::mm::align_up(highest, PAGE_SIZE);
-        out.span = highest - lowest;
-
-        auto const nr_frames = out.span / PAGE_SIZE;
-        auto *const backing = mm::get_frames_n<u8>(mm::GAF_USER, nr_frames);
-        if (!backing) {
-            log::error("userboot: could not allocate {} frames for {}", nr_frames, name);
-            return Status::OutOfMem;
-        }
-
-        // Zero first, then copy each segment's file bytes over the top. That
-        // is what gives .bss its zeroes: the gap between filesz and memsz is
-        // never written again, so it keeps the zeroes from here.
-        std::memset(backing, 0, out.span);
-        for (auto index = u16(0); index < header.phnum; ++index) {
-            Elf64ProgramHeader phdr{};
-            std::memcpy(&phdr, bytes.data() + header.phoff + usize(index) * header.phentsize,
-                        sizeof(phdr));
-            if (phdr.type != PT_LOAD || phdr.filesz == 0) {
-                continue;
-            }
-            if (phdr.offset + phdr.filesz > bytes.size()) {
-                log::error("userboot: {} segment {} content runs past the image", name, index);
-                return Status::InvArgs;
-            }
-            std::memcpy(backing + (VirtAddr(phdr.vaddr) - lowest), bytes.data() + phdr.offset,
-                        phdr.filesz);
-        }
-
-        // Two steps, deliberately: first say what the memory *is*, then say
-        // where it appears. That split is the whole reason a VMO is a separate
-        // object from a mapping -- it is what lets the same memory be mapped
-        // twice, and what makes "hand a program some memory" a different
-        // operation from "put it in that program's address space".
-        //
-        // A physical VMO, because these frames already exist and have already
-        // been filled in. A paged VMO is the honest answer -- these are
-        // ordinary anonymous pages, not MMIO -- and is what this becomes the
-        // moment mm::VmObjectPaged::write() stops returning Unimplemented.
-        object::KernelHandle<object::VmoDispatcher> vmo;
-        Rights vmo_rights;
-        auto const status = object::VmoDispatcher::create_physical(
-            mm::PhysMap::virt_to_phys(backing), out.span, vmo, vmo_rights);
-        if (Status::Ok != status) {
-            log::error("userboot: could not create the {} VMO: {}", name, to_string(status));
-            return status;
-        }
-
-        // Through the dispatcher, not through the VmArea it stands for: a
-        // VmArea knows what a mapping is allowed to be, but cannot know who is
-        // asking, and every future sys_vmar_map has to answer that. Rights
-        // live on the handle, so the entry point has to be on the object that
-        // a handle names.
-        auto mapping =
-            root_vma.map(*vmo.dispatcher(), where, out.span, flags, mm::VmMapOption::Commit, name);
-        if (mapping.is_err()) {
-            log::error("userboot: could not map {}: {}", name, to_string(mapping.unwrap_err()));
-            return mapping.unwrap_err();
-        }
-
-        out.base = mapping.unwrap()->base();
-        out.view = backing;
-        out.image_base = lowest;
-        // e_entry is a file-relative address for a PIE, so it moves with the
-        // load base like everything else. It is the first instruction of a
-        // program; for the vDSO it means nothing at all -- nothing jumps to a
-        // vDSO -- and is recorded here only because one routine maps both.
-        out.entry = out.base + (VirtAddr(header.entry) - lowest);
-        return Status::Ok;
-    }
-
     /// Maps the first user program's image and gives it a stack.
     /// |name| is a plain char const * rather than a string_view because both
     /// the mapping and the process below want a C string, and both constants it
@@ -406,7 +226,8 @@ namespace {
     /// (userboot_init) where .data() is taken, and it is provably terminated
     /// there rather than at each use.
     auto load_program(ustl::views::Span<u8 const> bytes, char const *name,
-                      object::VmaDispatcher &root_vma, LoadedImage &out) -> Status {
+                      elfload::Loader const &loader, object::VmaDispatcher &root_vma,
+                      LoadedImage &out) -> Status {
         using arch::paging::MmuFlags;
 
         // MmuFlags::User is the whole point of this line: without it the pages
@@ -423,8 +244,8 @@ namespace {
         constexpr auto IMAGE_FLAGS =
             MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Executable;
 
-        auto status = map_elf_image(bytes, root_vma, mm::VmPlacement::at(USER_ASPACE_BASE),
-                                    IMAGE_FLAGS, name, out.image);
+        auto status =
+            loader.map(bytes, mm::VmPlacement::at(USER_ASPACE_BASE), IMAGE_FLAGS, name, out.image);
         if (Status::Ok != status) {
             return status;
         }
@@ -465,13 +286,13 @@ namespace {
     /// address space allowed to enter the kernel, so a program that could
     /// rewrite it could place a trap anywhere inside the one range the kernel
     /// trusts.
-    auto load_vdso(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
+    auto load_vdso(ustl::views::Span<u8 const> bytes, elfload::Loader const &loader,
                    elfload::Image &out) -> Status {
         using arch::paging::MmuFlags;
         constexpr auto VDSO_FLAGS = MmuFlags::User | MmuFlags::Readable | MmuFlags::Executable;
 
         auto const status =
-            map_elf_image(bytes, root_vma, mm::VmPlacement::at(VDSO_BASE), VDSO_FLAGS, "vdso", out);
+            loader.map(bytes, mm::VmPlacement::at(VDSO_BASE), VDSO_FLAGS, "vdso", out);
         if (Status::Ok != status) {
             return status;
         }
@@ -548,10 +369,16 @@ auto userboot_init() -> void {
         return;
     }
 
+    // One loader for this process's address space: every image it is built
+    // out of goes through the same one, and the object that may map into it is
+    // what they have in common.
+    elfload::Loader const loader{*root_vma.dispatcher()};
+
     LoadedImage loaded;
     // ProgramName::text is the C string these two want; that is what the type
     // exists for (see select_userboot()).
-    if (Status::Ok != load_program(image.unwrap(), program.text, *root_vma.dispatcher(), loaded)) {
+    if (Status::Ok !=
+        load_program(image.unwrap(), program.text, loader, *root_vma.dispatcher(), loaded)) {
         return;
     }
 
@@ -571,7 +398,7 @@ auto userboot_init() -> void {
     }
 
     elfload::Image vdso;
-    if (Status::Ok != load_vdso(vdso_bytes.unwrap(), *root_vma.dispatcher(), vdso)) {
+    if (Status::Ok != load_vdso(vdso_bytes.unwrap(), loader, vdso)) {
         return;
     }
 

@@ -8,17 +8,23 @@ import("//build/cpp/cpp_interface.gni")
 #     image's exports. It needs a buffer and two ELF files and nothing else --
 #     no address space, no kernel object -- which is what makes the part with
 #     all the arithmetic in it testable on the host.
-#   * the loader (to come) places an ELF's segments in an address space, which
-#     it can only do through the object layer.
+#   * the loader places an ELF's segments in an address space, which it can
+#     only do through the object layer -- a VMO for the frames it filled in, a
+#     VMA to put them in a process.
 #
 # Both are the user-space counterpart of //kernel/phys:elf_image, which does
 # the same two jobs one layer down for the images physload loads.
 source_set("elfload") {
-  sources = [ "src/binder.cpp" ]
+  sources = [
+    "src/binder.cpp",
+    "src/loader.cpp",
+  ]
   public_deps = [ ":headers" ]
   deps = [
     "//kernel/lib/eftl",
     "//kernel/lib/logz4",
+    "//kernel/mm",
+    "//kernel/object",
   ]
   visibility = [ "*" ]
 }
@@ -30,9 +36,11 @@ cpp_interface("headers") {
   public = [
     "include/elfload/binder.hpp",
     "include/elfload/image.hpp",
+    "include/elfload/loader.hpp",
   ]
   public_deps = [
     "//kernel/lib/eftl:headers",
+    "//kernel/object:headers",
     "//system/lib/ustl:headers",
     "//system/public",
   ]
