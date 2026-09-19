@@ -33,7 +33,8 @@ namespace userabi {
 using namespace ours;
 
 namespace {
-    /// The name userboot's ELF has inside the kernel package's BootFS.
+    /// The default first user program, and the name its ELF has inside the
+    /// kernel package's BootFS.
     ///
     /// Not "userboot/image.elf". `kernel_elf_binary("userboot")` in
     /// //kernel/lib/userabi/userboot/BUILD.gn sets `has_patches = false`,
@@ -44,18 +45,90 @@ namespace {
     /// kernel's own name; it has to be stated.
     constexpr std::string_view USERBOOT_FILE{"userboot"};
 
-    /// The program this loader would rather start: //examples/shell.
+    /// The boot option that names the program the one user process runs:
+    /// `kernel.select.userboot=<name>`, a file in the kernel package.
     ///
-    /// userboot exists to prove the kernel can reach ring 3 and answer one
-    /// call; once something more useful is in the package there is no reason to
-    /// start the proof instead of the program. It stays a fallback rather than
-    /// a replacement so that the kernel does not depend on //examples existing
-    /// -- a tree built without it still boots to userboot.
-    constexpr std::string_view PROGRAM_FILE{"shell"};
+    /// This is Zircon's option of the same name (its default is likewise
+    /// "userboot"; see lib/boot-options/options.inc), taken over wholesale
+    /// because the property it encodes is the same one: *which* program runs
+    /// first belongs to the image being booted, not to the kernel. What stood
+    /// here before was a compiled-in preference -- start "shell", fall back to
+    /// "userboot" when the package has no shell -- which put the name of an
+    /// //examples target inside the kernel and made "what ran" a function of
+    /// what a package happened to contain rather than of anything the image
+    /// states. An image that wants a different program now says so
+    /// (//kernel/products/image/dev/BUILD.gn).
+    ///
+    /// Zircon resolves the option one stage earlier, in physboot:
+    /// HandoffPrep::UsePackageFiles() matches it against the kernel package
+    /// and hands the kernel a loaded ELF. ours::phys::Handoff deliberately
+    /// carries neither the command line nor a userboot image -- its comment
+    /// says vmours can re-derive the command line from boot_package(), so a
+    /// second copy would be two answers to one question -- so the lookup
+    /// happens here instead, against that same OBI container.
+    constexpr std::string_view USERBOOT_OPTION{"kernel.select.userboot"};
 
     /// The vDSO's name in the same BootFS, installed by
     /// //kernel/lib/userabi/vdso with the same has_patches = false convention.
     constexpr std::string_view VDSO_FILE{"vdso"};
+
+    /// A program name, kept as a NUL-terminated buffer rather than as a view.
+    ///
+    /// The option's value is a slice of the command-line item's payload that
+    /// ends at a space or at the end of the line, while ProcessDispatcher and
+    /// the loader below both want a C string; copying once here is cheaper
+    /// than having each caller find that out. The capacity matches the
+    /// fixed-size option strings phys::BootOptions already keeps for
+    /// `kernel.phys.next` and `kernel.name`, which is the same 64 characters
+    /// Zircon's SmallString holds this option in.
+    struct ProgramName {
+        char text[64]{};
+
+        [[nodiscard]]
+        auto view() const -> std::string_view {
+            return {text};
+        }
+    };
+
+    /// Resolves `kernel.select.userboot` against the OBI command line.
+    ///
+    /// Falls back to USERBOOT_FILE whenever the container has no command line
+    /// or the option is absent, which is the common case: only an image that
+    /// wants something other than the proof-of-life program writes it.
+    ///
+    /// The command line comes from the OBI container, never from the
+    /// bootloader: GRUB's command line steers phys alone, and by the time
+    /// vmours runs, the options that survive are the ones the image baked into
+    /// its Config item.
+    auto select_userboot() -> ProgramName {
+        ProgramName name{};
+        auto selected = USERBOOT_FILE;
+
+        auto const package = boot::boot_package();
+        if (package.is_ok()) {
+            auto const cmdline = package.unwrap().command_line();
+            if (cmdline.is_some()) {
+                auto const value = cmdline.value().value(USERBOOT_OPTION);
+                if (value.is_some()) {
+                    // A name that does not fit is rejected rather than
+                    // truncated: a truncated name would be looked up, not
+                    // found, and reported as a missing file -- which sends the
+                    // reader looking in the package for something the kernel
+                    // itself mangled.
+                    if (value.value().size() < sizeof(name.text)) {
+                        selected = value.value();
+                    } else {
+                        log::error("userboot: {}={} is longer than {} characters, using '{}'",
+                                   USERBOOT_OPTION, value.value(), sizeof(name.text) - 1,
+                                   USERBOOT_FILE);
+                    }
+                }
+            }
+        }
+
+        std::memcpy(name.text, selected.data(), selected.size());
+        return name;
+    }
 
     /// Decompresses the kernel package into a fresh buffer.
     ///
@@ -457,23 +530,20 @@ auto userboot_init() -> void {
                   bootfs.file_data(index).size());
     }
 
-    auto program = PROGRAM_FILE;
-    auto image = package.unwrap().file(program);
+    // Whichever program the image asked for. A name that is not in the package
+    // is a hard error rather than something to fall back from: the image said
+    // what it wants started, and quietly starting a different program would
+    // turn a packaging mistake into a boot that looks fine and is not the one
+    // that was configured.
+    auto const program = select_userboot();
+    auto const image = package.unwrap().file(program.view());
     if (image.is_err()) {
-        // Not an error yet: a tree built without //examples has no shell, and
-        // the proof-of-life program is still there to start.
-        log::info("userboot: no '{}' in the kernel package, falling back to '{}'", program,
-                  USERBOOT_FILE);
-        program = USERBOOT_FILE;
-        image = package.unwrap().file(program);
-    }
-    if (image.is_err()) {
-        log::error("userboot: '{}' is not in the kernel package: {}", program,
-                   to_string(image.unwrap_err()));
+        log::error("userboot: {}={} but no such file in the kernel package: {}", USERBOOT_OPTION,
+                   program.view(), to_string(image.unwrap_err()));
         return;
     }
 
-    log::info("userboot: found '{}', {} bytes of ELF", program, image.unwrap().size());
+    log::info("userboot: found '{}', {} bytes of ELF", program.view(), image.unwrap().size());
 
     // One call builds both the process and the only object that may map into
     // it. They come back together because neither is useful alone: a process
@@ -490,17 +560,17 @@ auto userboot_init() -> void {
     Rights process_rights;
     Rights root_vma_rights;
     auto status =
-        object::ProcessDispatcher::create(object::JobDispatcher::root_job(), program.data(),
-                                          process, process_rights, root_vma, root_vma_rights);
+        object::ProcessDispatcher::create(object::JobDispatcher::root_job(), program.text, process,
+                                          process_rights, root_vma, root_vma_rights);
     if (Status::Ok != status) {
         log::error("userboot: could not create the process: {}", to_string(status));
         return;
     }
 
     LoadedImage loaded;
-    // .data() is a C string here: both PROGRAM_FILE and USERBOOT_FILE are
-    // constexpr views over string literals, so the terminator is the literal's.
-    if (Status::Ok != load_program(image.unwrap(), program.data(), *root_vma.dispatcher(), loaded)) {
+    // ProgramName::text is the C string these two want; that is what the type
+    // exists for (see select_userboot()).
+    if (Status::Ok != load_program(image.unwrap(), program.text, *root_vma.dispatcher(), loaded)) {
         return;
     }
 
