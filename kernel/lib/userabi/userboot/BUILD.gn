@@ -3,7 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/toolchain/toolchain_environment.gni")
-import("//kernel/phys/kernel_elf_binary.gni")
+import("//system/user_executable.gni")
 
 # The kernel toolchain would compile this file happily and produce something
 # that cannot run in ring 3 (-mcmodel=kernel puts every symbol reference in
@@ -12,20 +12,18 @@ import("//kernel/phys/kernel_elf_binary.gni")
 assert(toolchain_environment == "user",
        "userboot must be built in a //build/toolchain/ours:user-* toolchain")
 
-# The same packaging template the kernel image itself uses, so userboot lands
-# in the kernel package's BootFS beside vmours/image.elf and the kernel can
-# find it there through ours::boot::kernel_package().  Zircon does exactly
-# this: userboot is a file in the STORAGE_KERNEL BootFS, not an OBI item of
-# its own.
-kernel_elf_binary("userboot") {
+# A program bound to the vDSO at load time, like every other user program
+# (//system/user_executable.gni).  It lands in the kernel package's BootFS
+# beside vmours/image.elf, which is where the kernel looks for it by name --
+# Zircon does exactly this: userboot is a file in the STORAGE_KERNEL BootFS,
+# not an OBI item of its own.
+#
+# It is the default first program, the one that runs when an image does not
+# name another with kernel.select.userboot, so it is deliberately the smallest
+# thing that proves the path works: reach ring 3, call one vDSO entry, come
+# back.
+user_executable("userboot") {
   visibility = [ "//kernel/products/image/*" ]
-
-  # Code patching rewrites kernel text out of physboot before the kernel
-  # runs; a user program has no such section, and asking for one would only
-  # add an empty `userboot/code-patches` file to the package.  With patches
-  # off, kernel_elf_image() installs the ELF as a bare `userboot` file rather
-  # than a `userboot/` subtree.
-  has_patches = false
 
   sources = [ "userboot.cpp" ]
 }

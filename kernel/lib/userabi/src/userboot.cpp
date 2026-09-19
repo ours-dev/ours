@@ -431,9 +431,9 @@ namespace {
         out.view = backing;
         out.image_base = lowest;
         // e_entry is a file-relative address for a PIE, so it moves with the
-        // load base like everything else. For userboot it is the first
-        // instruction; for the vDSO it is the export table, which is the whole
-        // reason that image is linked with -Wl,-e,OURS_VDSO_TABLE.
+        // load base like everything else. It is the first instruction of a
+        // program; for the vDSO it means nothing at all -- nothing jumps to a
+        // vDSO -- and is recorded here only because one routine maps both.
         out.entry = out.base + (VirtAddr(header.entry) - lowest);
         return Status::Ok;
     }
@@ -689,7 +689,8 @@ namespace {
         return Status::Ok;
     }
 
-    /// Maps the vDSO and validates the export table it publishes.
+    /// Maps the vDSO, which is the image every user program's imports are
+    /// bound to.
     ///
     /// Read-only and executable, never writable: this is the only code in the
     /// address space allowed to enter the kernel, so a program that could
@@ -706,35 +707,18 @@ namespace {
             return status;
         }
 
-        // The table is read through the kernel's own view of the frames rather
-        // than through the user mapping: the mapping is not this address
-        // space, and reading a user address from here would be reading
-        // whatever the *current* address space has there.
-        auto const table_offset = out.entry - out.base;
-        if (table_offset + sizeof(VdsoEntryTable) > out.span) {
-            log::error("userboot: the vDSO entry table runs past the image");
-            return Status::InvArgs;
-        }
-        VdsoEntryTable table{};
-        std::memcpy(&table, bytes.data() + table_offset, sizeof(table));
-
-        // Checked, because e_entry is only a promise. A vDSO built from a
-        // different tree, or one whose table moved, would otherwise be called
-        // into as an indirect jump to whatever happens to be there -- in ring
-        // 3, with no way to report what went wrong.
-        if (table.magic != OURS_VDSO_MAGIC) {
-            log::error("userboot: vDSO entry table magic is {:X}, expected {:X}", table.magic,
-                       u32{OURS_VDSO_MAGIC});
-            return Status::BadType;
-        }
-        if (table.version != OURS_VDSO_VERSION) {
-            log::error("userboot: vDSO ABI version {} does not match the kernel's {}",
-                       table.version, u16{OURS_VDSO_VERSION});
-            return Status::Unsupported;
-        }
-
-        log::info("userboot: vdso mapped [{:X}, {:X}), table at {:X}, {} entries", out.base,
-                  out.base + out.span, out.entry, table.nr_entries);
+        // No magic or version check any more, and nothing is lost by that.
+        // There used to be an export table at e_entry carrying both, because
+        // the program was about to take a u32 offset out of it and call
+        // through it -- a table from another tree meant an indirect jump into
+        // whatever happened to be there, so it had to be recognised first.
+        //
+        // What replaces it is a better check, and it happens in bind_imports():
+        // a vDSO that does not export what the program imports fails by name
+        // ("the program needs 'ours_command_list', which the vDSO does not
+        // export"), before anything runs. A version number says two images
+        // disagree; this says which call is missing.
+        log::info("userboot: vdso mapped [{:X}, {:X})", out.base, out.base + out.span);
         return Status::Ok;
     }
 } // namespace
@@ -852,15 +836,17 @@ auto userboot_init() -> void {
     // start(), not resume(): where a kernel thread only needs to be made
     // runnable, a user thread has to be told where in user space to begin.
     // This is the same argument list a future sys_thread_start carries.
-    // arg1 is the vDSO's export table, which is the only thing the program is
-    // told about the world it wakes up in. It lands in %rdi
-    // (arch_build_uspace_irqframe), so `_start` simply takes it as its first
-    // parameter -- no dynamic linker, no symbol lookup, no fixed address baked
-    // into the binary.
+    //
+    // No arguments. arg1 used to be the vDSO's export table, because that was
+    // the only way a program could reach a system call; a program's imports
+    // are bound before it runs now, so there is nothing it needs to be told at
+    // entry. The pair stays in the struct because a process started with a
+    // handle to its bootstrap channel is what goes here next -- which is what
+    // Zircon's userboot receives.
     status = thread.dispatcher()->start({
         .entry = loaded.image.entry,
         .stack = loaded.stack_top,
-        .arg1 = vdso.entry,
+        .arg1 = 0,
         .arg2 = 0,
     });
     if (Status::Ok != status) {

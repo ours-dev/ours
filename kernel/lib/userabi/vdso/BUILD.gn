@@ -11,13 +11,12 @@ assert(
 
 # The vDSO: a shared object whose .dynsym is the kernel's ABI surface.
 #
-# It was a static PIE until now, on the grounds that nothing resolved anything
-# against it -- the program was handed the export table at e_entry and did its
-# own offset arithmetic. That is the thing being removed: a program should be
-# able to *call* ours_debug_write() and have the loader bind it, the way
-# Zircon's programs call zx_* against libzircon.so and the way a
+# It was a static PIE, on the grounds that nothing resolved anything against it
+# -- the program was handed an export table at e_entry and did its own offset
+# arithmetic. A program now *calls* ours_debug_write() and the loader binds it,
+# the way Zircon's programs call zx_* against libzircon.so and the way a
 # physload_module() binds against physload (//kernel/phys/physload_module.gni).
-# So this is a shared object now, and its symbol table is the export table.
+# So this is a shared object, and its symbol table is the export table.
 #
 # `-shared` and `-static`/`--pie` are mutually exclusive in ld.lld, which is
 # why //system:user.config no longer carries the static-PIE link policy; it
@@ -54,9 +53,11 @@ kernel_elf_binary("vdso") {
   # linker finds the exports: the kernel already reads e_entry to load an
   # image, so the table costs no new machinery on either side. Zircon points
   # e_entry at _zx_process_exit for the same reason.
+  # No -Wl,-e: nothing jumps to a vDSO, and nothing needs to find anything at
+  # its entry point any more. It used to point at the export table, which was
+  # how a program with no dynamic linker reached the stubs; the stubs are in
+  # .dynsym now and the kernel binds against them there.
   ldflags = [
-    "-Wl,-e,OURS_VDSO_TABLE",
-
     # Without a SONAME, a linker handed this file on the command line records
     # its build-directory path in the importer's DT_NEEDED. Nothing reads
     # DT_NEEDED here -- the kernel maps the one vDSO it has -- but a path from

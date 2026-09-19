@@ -4,51 +4,34 @@
 // The vDSO: the only image in a user address space that contains a `syscall`
 // instruction.
 //
-// Zircon counterpart: //zircon/kernel/lib/userabi/vdso. Two things are copied
-// from it deliberately. The first is the shape of a stub -- put the number in
-// %eax, trap, and label the return address, because that label is what an
-// "approved call site" means. The second is using the ELF entry point as the
-// handle a program with no dynamic linker can find the exports through:
-// Zircon links its vDSO with `-Wl,-e,_zx_process_exit` for exactly that
-// reason ("so it can be found without reading the .dynsym").
+// Zircon counterpart: //zircon/kernel/lib/userabi/vdso, from which the shape
+// of a stub is copied deliberately -- put the number in %eax, trap, and label
+// the return address, because that label is what an "approved call site"
+// means.
 //
-// Written in assembly rather than C++, and not only because of the `syscall`
-// instruction. The entry table below holds offsets computed by the linker
-// (`entry - OURS_VDSO_TABLE`); C++ cannot form that as a constant initialiser,
-// so a C++ table would have to be filled in at run time by code that does not
-// exist here -- there is no startup in a vDSO.
+// This file used to carry an export table at the ELF entry point as well, so
+// that a program with no dynamic linker could find the stubs by offset. It is
+// gone: the image is linked -shared now, so the stubs are in .dynsym, and the
+// kernel binds a program's imports to them as it loads the program
+// (kernel/lib/userabi/src/userboot.cpp). The ELF format's own answer, in place
+// of a private one.
+//
+// Written in assembly rather than C++ because of the `syscall` instruction and
+// because the return-address labels have to be exact: a stub that did anything
+// besides move the number into %eax and trap would be a place for the ABI to
+// drift.
 
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
-
-// ---- The entry table -------------------------------------------------------
-//
-// Placed at the ELF entry point by -Wl,-e,OURS_VDSO_TABLE (see BUILD.gn), so
-// the kernel finds it with the field it already reads to load any image. Every
-// entry is a byte offset from the start of this table: nothing relocates the
-// vDSO, so an absolute address here would be whatever the linker guessed.
-
-.section .rodata.vdso.table, "a", @progbits
-.balign 8
-.globl OURS_VDSO_TABLE
-.hidden OURS_VDSO_TABLE
-OURS_VDSO_TABLE:
-    .long OURS_VDSO_MAGIC
-    .short OURS_VDSO_VERSION
-    .short OURS_VDSO_NR_ENTRIES
-    .long ours_debug_write - OURS_VDSO_TABLE
-    .long ours_command_list - OURS_VDSO_TABLE
-.size OURS_VDSO_TABLE, . - OURS_VDSO_TABLE
 
 // ---- The stubs -------------------------------------------------------------
 //
 // Each stub is `.globl` with default visibility, which is what puts it in
 // .dynsym: this object is linked -shared, and .dynsym is how a program that
 // merely *calls* ours_debug_write() gets bound to it at load time, with no
-// table lookup of its own. The internal labels below (OURS_VDSO_TABLE, the
-// OURS_VDSO_SYSRET_* return addresses) stay `.hidden` -- they are this
-// image's own business, and an exported symbol is a promise to something
-// outside it.
+// table lookup of its own. The OURS_VDSO_SYSRET_* return addresses stay
+// `.hidden` -- they are this image's own business, and an exported symbol is a
+// promise to something outside it.
 
 .section .text, "ax", @progbits
 

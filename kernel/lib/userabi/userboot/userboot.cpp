@@ -9,44 +9,26 @@
 /// process, map an ELF into it, reach its entry point, and answer a system
 /// call from it.
 ///
-/// Nothing here may reference the C or C++ runtime. There is no libc, no
-/// crt1.o and no dynamic linker in this image (see //system:user.config):
-/// the kernel jumps straight to the ELF entry point with a stack and
-/// nothing else, so `_start` is the whole runtime.
+/// Nothing here may reference the C or C++ runtime. There is no libc and no
+/// crt1.o in this image (see //system:user.config): the kernel jumps straight
+/// to the ELF entry point with a stack and nothing else, so `_start` is the
+/// whole runtime. There is no dynamic linker either -- but there are undefined
+/// symbols, which the kernel's own loader binds to the vDSO as it maps this
+/// image (//system/user_executable.gni).
 
 #include <ours/vdso.hpp>
 
 namespace {
 /// The one thing this program has to say.
 ///
-/// `constexpr` and read through a RIP-relative reference, which matters more
-/// than it looks: the image is a static PIE that the kernel maps at an address
-/// of its choosing and does *not* relocate (see load_image() in
-/// //kernel/lib/userabi/userboot.cpp -- it has no relocation pass because this
-/// binary has no relocations). An absolute address baked into the image here
-/// would therefore be read as-is and point nowhere.
+/// `constexpr` and read through a RIP-relative reference. The kernel does run
+/// a relocation pass over this image now (bind_imports() in
+/// //kernel/lib/userabi/src/userboot.cpp applies R_X86_64_RELATIVE along with
+/// the imports), so an absolute address here would in fact be fixed up -- but
+/// RIP-relative is still the right shape: it needs no relocation at all, and
+/// the cheapest entry in a relocation table is the one that is not there.
 constexpr char MESSAGE[] = "userboot: hello from ring 3";
 
-/// The vDSO's export table, as this program sees it.
-///
-/// There is no `syscall` instruction anywhere in this image, and that is the
-/// point rather than an accident of style: the kernel refuses a trap whose
-/// return address lies outside the vDSO, so one written here would not work
-/// even if it were written correctly. Entering the kernel is the vDSO's job.
-using DebugWriteFn = auto (*)(char const *buffer, usize length) -> usize;
-
-/// Resolves one entry of the table into something callable.
-///
-/// Every entry is a byte offset from the table itself, because nothing
-/// relocates the vDSO -- see <ours/vdso.hpp>. Adding the base back here is the
-/// whole of the "dynamic linking" this program does.
-template <typename Fn>
-auto vdso_entry(ours::VdsoEntryTable const *const table, u32 const offset) -> Fn {
-    // The const is dropped on purpose: the table is read-only data, but what
-    // it points at is code, and a pointer-to-function cannot carry it.
-    auto const address = reinterpret_cast<usize>(table) + offset;
-    return reinterpret_cast<Fn>(address);
-}
 } // namespace
 
 /// `extern "C"`, because ld.lld resolves the default entry point by the symbol
@@ -54,28 +36,22 @@ auto vdso_entry(ours::VdsoEntryTable const *const table, u32 const offset) -> Fn
 /// linked -fvisibility=hidden all the same: the entry is reached through the
 /// ELF header's e_entry, never through a dynamic symbol.
 ///
-/// The parameter is not decoration. The kernel puts the vDSO's export table
-/// address in the first start argument, which arch_build_uspace_irqframe()
-/// places in %rdi -- exactly where the ordinary SysV convention says a first
-/// parameter lives, so declaring it is all it takes to receive it.
+/// It takes no arguments. It used to take the vDSO's export table, check its
+/// magic and version, and turn an offset into a function pointer -- work that
+/// userboot (the kernel-side loader, not this program) now does by binding
+/// this image's undefined symbols to the vDSO's .dynsym before the first
+/// instruction runs.
 extern "C" [[noreturn]]
-auto _start(ours::VdsoEntryTable const *const vdso) -> void {
-    // Checked before it is called through. A table this program cannot
-    // recognise would otherwise be an indirect call to whatever happens to be
-    // at that address, in ring 3, with no way left to say so -- the only
-    // output this program has is the very entry it is trying to reach.
-    if (vdso == nullptr || vdso->magic != OURS_VDSO_MAGIC || vdso->version != OURS_VDSO_VERSION ||
-        vdso->nr_entries < OURS_VDSO_NR_ENTRIES) {
-        for (;;) {
-            __asm__ volatile("pause");
-        }
-    }
-
-    auto const debug_write = vdso_entry<DebugWriteFn>(vdso, vdso->debug_write);
-
+auto _start() -> void {
+    // There is no `syscall` instruction anywhere in this image, and that is
+    // the point rather than an accident of style: the kernel refuses a trap
+    // whose return address lies outside the vDSO, so one written here would
+    // not work even if it were written correctly. Entering the kernel is the
+    // vDSO's job, and this is a call into it.
+    //
     // sizeof - 1, because the kernel is given a length and does not look for a
     // terminator; sending the NUL would put a stray byte on the console.
-    static_cast<void>(debug_write(MESSAGE, sizeof(MESSAGE) - 1));
+    static_cast<void>(ours_debug_write(MESSAGE, sizeof(MESSAGE) - 1));
 
     // One call, and then nothing. Coming back here at all is the second half
     // of what this program tests: it means SYSRET restored the user %rip and

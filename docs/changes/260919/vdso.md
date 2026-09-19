@@ -107,3 +107,80 @@ physload 的导出表上，`config("user.shared")` 的每一条 flag 都是照
   再说。
 - 没碰系统调用号与 stub 的「一处描述、处处生成」问题：现在加一个系统调用仍要手写
   `syscall.hpp` 的宏和 vdso.S 的 stub。那是独立的一件事。
+
+## 删掉 vDSO 的入口表，userboot 也改成直接调用（2026-09-19）
+
+**文件**
+- `kernel/lib/userabi/vdso/vdso.S` —— 删掉 `OURS_VDSO_TABLE` 整节。
+- `kernel/lib/userabi/vdso/BUILD.gn` —— 去掉 `-Wl,-e,OURS_VDSO_TABLE`。
+- `system/public/ours/vdso.hpp` —— 删掉 magic／version／偏移宏／`VdsoEntryTable`
+  与那一串 `static_assert`，只留两个函数声明。
+- `kernel/lib/userabi/userboot/BUILD.gn`、`userboot/userboot.cpp` —— 改用
+  `user_executable()`，`_start()` 不再收参数，直接调用 `ours_debug_write()`。
+- `kernel/lib/userabi/src/userboot.cpp` —— `load_vdso()` 不再校验入口表，
+  `thread.start()` 不再传 `arg1`。
+
+**症状**
+无。这是把上一条换掉的旧机制清理干净——入口表已经没有读者。
+
+**原因**
+留着不删有实际代价，不只是「多了点代码」：这张表是一份**需要手工保持同步**的三处
+契约（vdso.S 的 `.long` 顺序、vdso.hpp 的偏移宏、同文件的结构体字段），而
+`static_assert` 只能证明后两处彼此一致，证明不了第一处。加一个系统调用时，最容易
+错的恰恰是这里，而且错了要到 ring 3 跳进一个野地址才发现。删掉它，契约就只剩
+`<ours/vdso.hpp>` 里的函数声明——链接器和加载器负责让它成立。
+
+`_start` 的参数同理。它原来接的是表地址（内核放在 `%rdi`），现在程序进来时导入已经
+绑好，没有什么需要在入口告诉它。`ThreadStartArgs` 的 `arg1/arg2` 保留着：下一个要
+放进去的是 bootstrap channel 的 handle，Zircon 的 userboot 收的就是那个。
+
+**改法**
+改前（vdso.S）：
+```asm
+.section .rodata.vdso.table, "a", @progbits
+.balign 8
+.globl OURS_VDSO_TABLE
+.hidden OURS_VDSO_TABLE
+OURS_VDSO_TABLE:
+    .long OURS_VDSO_MAGIC
+    .short OURS_VDSO_VERSION
+    .short OURS_VDSO_NR_ENTRIES
+    .long ours_debug_write - OURS_VDSO_TABLE
+    .long ours_command_list - OURS_VDSO_TABLE
+```
+改后：整节删除，`ldflags` 里的 `-Wl,-e,OURS_VDSO_TABLE` 一起删——没有东西会跳进
+vDSO，它的 e_entry 从此不表示任何东西。
+
+改前（加载器）：
+```cpp
+VdsoEntryTable table{};
+std::memcpy(&table, bytes.data() + table_offset, sizeof(table));
+if (table.magic != OURS_VDSO_MAGIC) { ... return Status::BadType; }
+if (table.version != OURS_VDSO_VERSION) { ... return Status::Unsupported; }
+```
+改后：这段校验没有了，换成的检查更强——`bind_imports()` 发现 vDSO 没导出程序要的
+名字时会直接报名字失败。版本号只能说「两个镜像对不上」，这个能说「缺的是哪个调用」。
+
+**参照**
+`Zircon` 的 vDSO 也把 e_entry 指向 `_zx_process_exit`（「so it can be found without
+reading the .dynsym」），那是给**不读 .dynsym** 的场合留的后门；ours 现在读
+`.dynsym`，所以这个后门没有存在的理由。
+
+**验证**
+- 构建通过，clang-format/clang-tidy 干净。
+- QEMU 实测两条路径。默认程序 userboot（临时把 dev.dbg_1 的
+  `kernel.select.userboot` 清空后构建、启动，验证完即还原）：
+  ```
+  [info]  userboot: found 'userboot', 1024 bytes of ELF
+  [debug] userboot: bound 'ours_debug_write' to A012F0
+  userboot: hello from ring 3
+  ```
+  选中的程序 shell（`kernel.dev.obi`，未改动）：`vdso mapped [A00000, A03000)`
+  之后照常打印完整命令表。两个程序现在走的是同一条机制。
+
+**故意没做**
+- 没动 `OURS_VDSO_SYSRET_*` 标号。它们是内核将来校验「合法 syscall 返回地址」用的
+  （见 `kernel/lib/syscall/src/table.cpp` 的注释），和入口表无关。
+- 系统调用号仍然是 `system/public/ours/syscall.hpp` 里的手写宏，stub 仍然是 vdso.S
+  里手写的汇编。现在加一个系统调用要动三处（号、stub、声明），比原来的五处少，但
+  仍然不是「一处描述、处处生成」。那是下一件事。
