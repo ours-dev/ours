@@ -31,8 +31,8 @@ namespace {
 /// A member rather than a file-local helper because it reads SchedEntity's private
 /// accounting fields and Thread's private scheduling_entity(); the friendship
 /// both classes extend to RoundRobin does not reach a free function.
-auto RoundRobin::charge(RunQueue &run_queue, Thread *curr) -> void {
-    auto const elapsed = run_queue.charge_current();
+auto RoundRobin::charge(RunQueue &rq, Thread *curr) -> void {
+    auto const elapsed = rq.charge_current();
     if (elapsed == SchedDuration{0}) [[unlikely]] {
         return;
     }
@@ -59,8 +59,8 @@ auto RrRunQueue::peek() -> SchedEntity * {
     return head ? &head.value() : nullptr;
 }
 
-auto RoundRobin::enqueue_thread(RunQueue &run_queue, Thread *thread, EnqueueOptions) -> Status {
-    auto &queue = run_queue.queue<Discipline::Normal>();
+auto RoundRobin::enqueue_thread(RunQueue &rq, Thread *thread, EnqueueOptions) -> Status {
+    auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
     auto &ctx = thread->scheduling_entity();
@@ -68,7 +68,7 @@ auto RoundRobin::enqueue_thread(RunQueue &run_queue, Thread *thread, EnqueueOpti
     // The running thread is not on the FIFO -- set_next_thread() took it off
     // -- so an enqueue of it is a request to re-queue, which put_prev_thread()
     // is the one to honour. Being asked here is a no-op, not an error.
-    if (thread == run_queue.current_thread()) {
+    if (thread == rq.current_thread()) {
         return Status::Ok;
     }
 
@@ -77,18 +77,18 @@ auto RoundRobin::enqueue_thread(RunQueue &run_queue, Thread *thread, EnqueueOpti
     return Status::Ok;
 }
 
-auto RoundRobin::dequeue_thread(RunQueue &run_queue, Thread *thread, DequeueOptions) -> Status {
-    auto &queue = run_queue.queue<Discipline::Normal>();
+auto RoundRobin::dequeue_thread(RunQueue &rq, Thread *thread, DequeueOptions) -> Status {
+    auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
     auto &ctx = thread->scheduling_entity();
 
     // Same asymmetry as enqueue: the running thread already left the FIFO at
     // set_next_thread(), so the only thing to record is that it is no longer
-    // queueable. Charging it first keeps its run_queue honest for whoever reads
+    // queueable. Charging it first keeps its rq honest for whoever reads
     // it later.
-    if (thread == run_queue.current_thread()) {
-        charge(run_queue, thread);
+    if (thread == rq.current_thread()) {
+        charge(rq, thread);
     } else if (ctx.runqueue_state().is_active()) {
         queue.dequeue(ctx);
     }
@@ -96,8 +96,8 @@ auto RoundRobin::dequeue_thread(RunQueue &run_queue, Thread *thread, DequeueOpti
     return Status::Ok;
 }
 
-auto RoundRobin::evaluate_next_thread(RunQueue &run_queue, Thread *) -> Thread * {
-    auto &queue = run_queue.queue<Discipline::Normal>();
+auto RoundRobin::evaluate_next_thread(RunQueue &rq, Thread *) -> Thread * {
+    auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
     auto *const head = queue.peek();
@@ -108,8 +108,8 @@ auto RoundRobin::evaluate_next_thread(RunQueue &run_queue, Thread *) -> Thread *
 /// the FIFO -- that is the rotation that makes this round-robin -- and its
 /// slice is charged up to now first so the next set_next_thread() starts it
 /// from a clean baseline.
-auto RoundRobin::put_prev_thread(RunQueue &run_queue, Thread *prev) -> void {
-    auto &queue = run_queue.queue<Discipline::Normal>();
+auto RoundRobin::put_prev_thread(RunQueue &rq, Thread *prev) -> void {
+    auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
     auto &ctx = prev->scheduling_entity();
@@ -118,7 +118,7 @@ auto RoundRobin::put_prev_thread(RunQueue &run_queue, Thread *prev) -> void {
         return;
     }
 
-    charge(run_queue, prev);
+    charge(rq, prev);
     queue.enqueue(ctx);
 }
 
@@ -126,8 +126,8 @@ auto RoundRobin::put_prev_thread(RunQueue &run_queue, Thread *prev) -> void {
 /// member, see enqueue_thread() -- and its slice starts now: prev_runtime is
 /// the baseline slice_spent() measures from, and curr_started_time is where
 /// charge() measures elapsed time from.
-auto RoundRobin::set_next_thread(RunQueue &run_queue, Thread *next) -> void {
-    auto &queue = run_queue.queue<Discipline::Normal>();
+auto RoundRobin::set_next_thread(RunQueue &rq, Thread *next) -> void {
+    auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
     auto &ctx = next->scheduling_entity();
@@ -136,7 +136,7 @@ auto RoundRobin::set_next_thread(RunQueue &run_queue, Thread *next) -> void {
     }
 
     ctx.m_prev_exec_runtime = ctx.m_exec_runtime;
-    run_queue.restart_current_slice();
+    rq.restart_current_slice();
 }
 
 /// Called on every clock update for the running thread. Once its slice is
@@ -144,47 +144,47 @@ auto RoundRobin::set_next_thread(RunQueue &run_queue, Thread *next) -> void {
 /// A lone runnable thread keeps running regardless -- there is nobody to
 /// rotate to, and asking for a reschedule would only pay for a switch back to
 /// itself.
-auto RoundRobin::update_thread(RunQueue &run_queue, Thread *curr) -> void {
-    auto &queue = run_queue.queue<Discipline::Normal>();
+auto RoundRobin::update_thread(RunQueue &rq, Thread *curr) -> void {
+    auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
-    charge(run_queue, curr);
+    charge(rq, curr);
 
     if (queue.num_queued() && slice_spent(curr->scheduling_entity())) {
-        run_queue.mark_preempt_pending();
+        rq.mark_preempt_pending();
     }
 }
 
 /// Yielding under round-robin is giving up the rest of the slice: mark it
 /// spent and let put_prev_thread() rotate. Pointless with nobody else queued.
-auto RoundRobin::yield_thread(RunQueue &run_queue, Thread *curr) -> void {
-    auto &queue = run_queue.queue<Discipline::Normal>();
+auto RoundRobin::yield_thread(RunQueue &rq, Thread *curr) -> void {
+    auto &queue = rq.queue<Discipline::Normal>();
     queue.verify();
 
     if (!queue.num_queued()) {
         return;
     }
 
-    charge(run_queue, curr);
-    run_queue.mark_preempt_pending();
+    charge(rq, curr);
+    rq.mark_preempt_pending();
 }
 
-auto RoundRobin::yield_to_thread(RunQueue &run_queue, Thread *curr, Thread *next) -> Status {
-    run_queue.queue<Discipline::Normal>().verify();
+auto RoundRobin::yield_to_thread(RunQueue &rq, Thread *curr, Thread *next) -> Status {
+    rq.queue<Discipline::Normal>().verify();
 
     if (!next->scheduling_entity().runqueue_state().is_active()) {
         return Status::BadState;
     }
 
-    charge(run_queue, curr);
-    run_queue.nominate_next_thread(next);
+    charge(rq, curr);
+    rq.nominate_next_thread(next);
     return Status::Ok;
 }
 
 /// The slice is the RunQueue's scheduling period, fixed at init because nothing
 /// in this discipline ever scales it. Timeslice::length() would otherwise read
 /// a zero base and slice_spent() would be true from the first tick.
-auto RoundRobin::on_thread_init(RunQueue &run_queue, Thread *thread) -> void {
+auto RoundRobin::on_thread_init(RunQueue &rq, Thread *thread) -> void {
     auto &timeslice = thread->scheduling_entity().m_timeslice;
     if (!timeslice.is_custom_timeslice()) {
         timeslice.m_base = static_cast<u32>(scheduling_period().raw());
@@ -195,8 +195,8 @@ auto RoundRobin::on_thread_init(RunQueue &run_queue, Thread *thread) -> void {
 /// path goes through update_thread() instead and never calls this.
 auto RoundRobin::on_thread_tick(RunQueue &, Thread *, bool) -> void {}
 
-auto RoundRobin::num_queued(RunQueue &run_queue) const -> usize {
-    return run_queue.queue<Discipline::Normal>().num_queued();
+auto RoundRobin::num_queued(RunQueue &rq) const -> usize {
+    return rq.queue<Discipline::Normal>().num_queued();
 }
 
 /// Required, not decorative -- see the identical block at the end of fair.cpp:

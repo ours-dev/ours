@@ -1738,3 +1738,45 @@ Fair 的队列，而留着它会让 Fair 的 `RunQueue` 和框架的新名字在
 构建成功（按退出码）。QEMU 两个镜像各 28 秒：`kernel.dev.dbg_1.obi` 线程交替 153883 次、
 断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
 适配清单 69 条（1 条 include + 68 条编译器报出）。
+
+## `RunQueue` 的形参叫 `rq`（2026-09-19）
+
+**文件**
+- `run_queue.hpp`、`rr.hpp`、`schedule.hpp`、`scheduler.hpp`、`rr.cpp`、`scheduler.cpp`
+  共 86 处
+
+**症状**
+
+上一条改名时我把形参定成了 `run_queue`，理由是「这棵树几乎不用缩写，作者也正因此否掉了
+把类型叫 `Rq`」。作者纠正：**形参可以用 `rq`，类名不能用 `Rq`。**
+
+这个区分是对的，而我把它抹平了。类名是给读者建立概念的——`Rq` 对没读过 Linux 调度器的人
+什么都没说。形参是在一个几行长的作用域里反复出现的局部名字，那里简短比展开更清楚，
+而且 `rq` 在调度器语境里是通用词汇。
+
+**改法**
+
+```cpp
+// 改前
+TA_REQUIRES(run_queue.lock())
+virtual auto enqueue_thread(RunQueue &run_queue, Thread *thread, EnqueueOptions options) -> Status = 0;
+// 改后
+TA_REQUIRES(rq.lock())
+virtual auto enqueue_thread(RunQueue &rq, Thread *thread, EnqueueOptions options) -> Status = 0;
+```
+
+类型 `RunQueue` / `RrRunQueue` / `NormalRunQueue` 和成员 `Scheduler::m_run_queue`
+都不动——只改形参和引用形参的局部名。替换用的词边界正则天然跳过 `m_run_queue`、
+`rr_run_queue`、`fair_run_queue`（前面都是 `_`），`#include` 行整行跳过，免得把
+`sched/run_queue.hpp` 改成 `sched/rq.hpp`；改完专门查过这两类误伤。
+
+**验证**
+
+构建成功（按退出码）、无告警。QEMU 两个镜像各 28 秒：`kernel.dev.dbg_1.obi` 线程交替
+162994 次、断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+`git diff` 确认 `fair.*` 未改动；适配清单已重生成。
+
+**故意没做**
+
+- 没有把 `Scheduler::m_run_queue` 改成 `m_rq`。作者说的是形参；成员不在同一个作用域
+  压力下，展开的名字在那里更清楚。

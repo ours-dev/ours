@@ -845,7 +845,7 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
 
 /// Asks whether the thread just inserted should preempt what the target CPU is
 /// running. Like do_unpark_thread(), which is its only caller, this runs on the
-/// waker's CPU and reads the *target* CPU's run_queue under that CPU's run queue
+/// waker's CPU and reads the *target* CPU's rq under that CPU's run queue
 /// lock.
 auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
     auto const current_thread = m_run_queue.m_curr_thread;

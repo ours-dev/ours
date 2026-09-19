@@ -31,26 +31,26 @@ class RoundRobin final: public Schedule<RoundRobin, Discipline::Normal> {
     auto enqueue_thread(RunQueue &, Thread *, EnqueueOptions) -> Status override;
     auto dequeue_thread(RunQueue &, Thread *, DequeueOptions) -> Status override;
 
-    TA_REQUIRES(run_queue.lock())
-    auto yield_thread(RunQueue &run_queue, Thread *) -> void override;
-    TA_REQUIRES(run_queue.lock())
-    auto yield_to_thread(RunQueue &run_queue, Thread *, Thread *) -> Status override;
+    TA_REQUIRES(rq.lock())
+    auto yield_thread(RunQueue &rq, Thread *) -> void override;
+    TA_REQUIRES(rq.lock())
+    auto yield_to_thread(RunQueue &rq, Thread *, Thread *) -> Status override;
 
-    TA_REQUIRES(run_queue.lock())
-    auto evaluate_next_thread(RunQueue &run_queue, Thread *) -> Thread * override;
-    TA_REQUIRES(run_queue.lock())
-    auto put_prev_thread(RunQueue &run_queue, Thread *) -> void override;
-    TA_REQUIRES(run_queue.lock())
-    auto set_next_thread(RunQueue &run_queue, Thread *) -> void override;
+    TA_REQUIRES(rq.lock())
+    auto evaluate_next_thread(RunQueue &rq, Thread *) -> Thread * override;
+    TA_REQUIRES(rq.lock())
+    auto put_prev_thread(RunQueue &rq, Thread *) -> void override;
+    TA_REQUIRES(rq.lock())
+    auto set_next_thread(RunQueue &rq, Thread *) -> void override;
 
-    TA_REQUIRES(run_queue.lock())
-    auto update_thread(RunQueue &run_queue, Thread *curr) -> void override;
+    TA_REQUIRES(rq.lock())
+    auto update_thread(RunQueue &rq, Thread *curr) -> void override;
 
     auto on_thread_init(RunQueue &, Thread *) -> void override;
     auto on_thread_tick(RunQueue &, Thread *, bool queued) -> void override;
 
     [[nodiscard]]
-    TA_REQUIRES(run_queue.lock()) auto num_queued(RunQueue &run_queue) const -> usize override;
+    TA_REQUIRES(rq.lock()) auto num_queued(RunQueue &rq) const -> usize override;
 
   private:
     /// Charge |curr| for the time since it was last charged.

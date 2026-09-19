@@ -56,8 +56,8 @@ using NormalRunQueue = RrRunQueue;
 /// surface below is the measured need -- nothing invented, nothing measured
 /// left out. It used to be a struct of fourteen public fields handed by
 /// reference to sixteen virtuals, so a discipline could write
-/// `run_queue.clock_source.update_clock()` (defeating the caller's SkipClock
-/// decision), `run_queue.total_weight -= w` (corrupting the generic Scheduler's
+/// `rq.clock_source.update_clock()` (defeating the caller's SkipClock
+/// decision), `rq.total_weight -= w` (corrupting the generic Scheduler's
 /// accounting), or reach the whole Scheduler through `Scheduler::of()`.
 ///
 /// Deliberately NOT a friend of any discipline. C++ friendship is class-wide:
@@ -88,7 +88,7 @@ class RunQueue {
     /// The queues live here, on the object a discipline is already handed,
     /// rather than on Scheduler. A discipline used to reach its own by
     /// recovering the whole Scheduler from this one --
-    /// `Scheduler::of(run_queue).rr_run_queue()`, a container_of round trip to
+    /// `Scheduler::of(rq).rr_run_queue()`, a container_of round trip to
     /// fetch something that could have been in reach -- and that route is
     /// what let it reach anything else on the Scheduler too.
     ///
@@ -103,14 +103,14 @@ class RunQueue {
     ///
     /// It has to stay publicly nameable even though the member is private:
     /// clang resolves a thread-safety attribute's argument *with access
-    /// control on*, so `TA_REQUIRES(run_queue.m_rqlock)` in schedule.hpp would
+    /// control on*, so `TA_REQUIRES(rq.m_rqlock)` in schedule.hpp would
     /// be a hard error rather than a warning. TA_RETURN_CAPABILITY makes this
     /// accessor and the member one capability to the analysis, the same
     /// construction `Scheduler::get_lock()` already uses, and the same one
     /// Zircon uses for `Thread::get_lock()`.
     ///
     /// This is also the honest limit of the seal: a discipline can still call
-    /// `run_queue.lock().acquire()`. No design that spells `TA_REQUIRES(param.x)`
+    /// `rq.lock().acquire()`. No design that spells `TA_REQUIRES(param.x)`
     /// can close that, because the capability must be nameable to be named.
     TA_RETURN_CAPABILITY(m_rqlock) FORCE_INLINE auto lock() -> sync::SpinLock & {
         return m_rqlock;
@@ -167,7 +167,7 @@ class RunQueue {
     /// backwards, and a zero-length interval is not an event.
     ///
     /// What to do with the answer stays with the discipline -- RR adds it to
-    /// the thread's run_queue, Fair also weights it into a virtual run_queue --
+    /// the thread's rq, Fair also weights it into a virtual rq --
     /// which is why this returns the duration instead of applying it.
     [[nodiscard]]
     FORCE_INLINE

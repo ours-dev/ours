@@ -117,7 +117,7 @@ class Scheduler {
 
     auto assert_thread_in_scheduler(Thread *thread) -> void;
 
-    /// The Scheduler that owns |run_queue|.
+    /// The Scheduler that owns |rq|.
     ///
     /// A RunQueue is a member of exactly one Scheduler, so this is the same
     /// member-to-owner recovery Thread::of(SchedEntity *) performs, and it is here
@@ -144,7 +144,7 @@ class Scheduler {
     /// TA_RETURN_CAPABILITY makes `get_lock()` and `m_run_queue.m_rqlock` one
     /// capability to the analysis. Both spellings are in use: Scheduler's own
     /// methods say `TA_REQUIRES(get_lock())`, ISchedule's virtuals say
-    /// `TA_REQUIRES(run_queue.rqlock)`, and enqueue_thread() calls the latter
+    /// `TA_REQUIRES(rq.rqlock)`, and enqueue_thread() calls the latter
     /// while holding the former.
     TA_RETURN_CAPABILITY(m_run_queue.m_rqlock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
         return m_run_queue.m_rqlock;
