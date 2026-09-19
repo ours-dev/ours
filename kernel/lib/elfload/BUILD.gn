@@ -1,0 +1,40 @@
+import("//build/cpp/cpp_interface.gni")
+
+# Loads an ELF image into a user address space and binds its imports.
+#
+# Two halves, kept apart on purpose:
+#
+#   * the binder applies relocations and resolves imports against another
+#     image's exports. It needs a buffer and two ELF files and nothing else --
+#     no address space, no kernel object -- which is what makes the part with
+#     all the arithmetic in it testable on the host.
+#   * the loader (to come) places an ELF's segments in an address space, which
+#     it can only do through the object layer.
+#
+# Both are the user-space counterpart of //kernel/phys:elf_image, which does
+# the same two jobs one layer down for the images physload loads.
+source_set("elfload") {
+  sources = [ "src/binder.cpp" ]
+  public_deps = [ ":headers" ]
+  deps = [
+    "//kernel/lib/eftl",
+    "//kernel/lib/logz4",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/elfload/binder.hpp",
+    "include/elfload/image.hpp",
+  ]
+  public_deps = [
+    "//kernel/lib/eftl:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

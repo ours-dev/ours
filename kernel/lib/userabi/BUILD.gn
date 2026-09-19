@@ -27,13 +27,11 @@ source_set("userabi") {
   # wants. A VmoDispatcher is what retires both. //kernel/phys:handoff is where
   # the kernel package itself comes from.
   #
-  # //kernel/lib/eftl reads the ELF dynamic tables -- the symbol table the
-  # vDSO exports through and the relocations a program imports through. The
-  # hand-rolled Elf64Header in userboot.cpp stays for the placement pass,
-  # where a dozen lines of arithmetic beat a traits-parameterised view; the
-  # binding pass is the opposite case, and is what eftl exists for.
+  # //kernel/lib/elfload is where loading an ELF lives: this library picks the
+  # program and builds the process around it, and hands the ELF itself to a
+  # component whose only job that is.
   deps = [
-    "//kernel/lib/eftl",
+    "//kernel/lib/elfload",
     "//kernel/lib/logz4",
     "//kernel/mm",
     "//kernel/object",

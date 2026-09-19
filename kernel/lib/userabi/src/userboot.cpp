@@ -13,10 +13,7 @@
 
 #include <cstring>
 
-#include <eftl/elf/dynamic_image.hpp>
-#include <eftl/elf/mapped_memory.hpp>
-#include <eftl/elf/parser.hpp>
-#include <eftl/elf/symbol.hpp>
+#include <elfload/binder.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
@@ -227,42 +224,6 @@ namespace {
 
     constexpr u32 PT_LOAD = 1;
 
-    /// The x86-64 relocation types this loader applies.
-    ///
-    /// Four, and no more, because of how the images are built: a program is
-    /// compiled -fno-plt and linked -z now, so an imported function reaches
-    /// the GOT the way an imported variable does (GLOB_DAT), and there is no
-    /// lazily-bound stub to service. JUMP_SLOT is accepted anyway because a
-    /// linker may still emit one for an address taken rather than called, and
-    /// with BIND_NOW it means the same thing: store the resolved address.
-    /// RELATIVE is the image's own absolute pointers; R_X86_64_64 is a
-    /// symbol's address stored whole.
-    constexpr u32 R_X86_64_64 = 1;
-    constexpr u32 R_X86_64_GLOB_DAT = 6;
-    constexpr u32 R_X86_64_JUMP_SLOT = 7;
-    constexpr u32 R_X86_64_RELATIVE = 8;
-
-    /// One mapped ELF image: where it landed, how much of the address space it
-    /// covers, what its e_entry resolved to, and how the kernel reaches its
-    /// bytes.
-    ///
-    /// |view| and |image_base| exist for the binding pass below. Relocations
-    /// have to be written into the image *before* it runs, and the kernel
-    /// cannot write through the user mapping -- that mapping is in another
-    /// address space, and writing to those addresses from here would hit
-    /// whatever the current address space has there. |view| is the kernel's
-    /// own pointer to the same frames, so a write through it lands in the page
-    /// the program will read. |image_base| is the lowest p_vaddr the ELF
-    /// claims, which is what every address in its dynamic tables is relative
-    /// to; `base - image_base` is the load bias.
-    struct MappedImage {
-        VirtAddr base = 0;
-        usize span = 0;
-        VirtAddr entry = 0;
-        u8 *view = nullptr;
-        VirtAddr image_base = 0;
-    };
-
     /// What loading produced: the mapped image, and the top of the stack that
     /// was mapped beside it.
     ///
@@ -273,7 +234,7 @@ namespace {
     /// takes the entry point as an argument and keeps it on the dispatcher, so
     /// there is nothing left to leave lying around.
     struct LoadedImage {
-        MappedImage image;
+        elfload::Image image;
         VirtAddr stack_top = 0;
     };
 
@@ -327,7 +288,7 @@ namespace {
     /// kernel trusts.
     auto map_elf_image(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
                        mm::VmPlacement where, arch::paging::MmuFlags flags, char const *name,
-                       MappedImage &out) -> Status {
+                       elfload::Image &out) -> Status {
         if (bytes.size() < sizeof(Elf64Header)) {
             log::error("userboot: {} is too small to be an ELF", name);
             return Status::InvArgs;
@@ -497,198 +458,6 @@ namespace {
         return Status::Ok;
     }
 
-    /// Resolves one symbol name against an image's dynamic symbol table.
-    ///
-    /// A linear scan, and it stays one until the table stops being two entries
-    /// long: the vDSO publishes one symbol per system call, a program imports
-    /// each of them once, and building either hash table eftl can read
-    /// (DT_HASH, DT_GNU_HASH) would cost more than the scans it saves. The
-    /// tables are there in the image -- this just does not need them yet.
-    ///
-    /// Returns the symbol's link-time value, which the caller turns into an
-    /// address by adding the exporter's load bias.
-    auto find_export(eftl::elf::SymbolTableView<eftl::elf::TraitsNative> const &symbols,
-                     std::string_view const name) -> ustl::Option<u64> {
-        for (usize index = 0; index < symbols.size(); ++index) {
-            auto const spelling = symbols.symbol_name(index);
-            if (spelling.is_none()) {
-                continue;
-            }
-            auto const text = std::string_view(reinterpret_cast<char const *>(spelling->data()),
-                                               spelling->size());
-            if (text != name) {
-                continue;
-            }
-            auto const symbol = symbols.symbol_at(index);
-            // SHN_UNDEF in the exporter means the name is imported there too,
-            // not defined -- binding to it would bind to nothing.
-            if (symbol.is_none() || symbol->st_shndx == 0) {
-                continue;
-            }
-            return ustl::some(static_cast<u64>(symbol->st_value));
-        }
-        return ustl::NONE;
-    }
-
-    /// Binds a loaded program's imports to the vDSO's definitions, and applies
-    /// its own relative relocations.
-    ///
-    /// This is the whole of the dynamic linking a user program gets, and it is
-    /// deliberately the smallest thing that deserves the name: one importer,
-    /// one exporter, no DT_NEEDED search, no lookup scope, no lazy binding,
-    /// no versioning. What it buys is that a program *calls* ours_debug_write()
-    /// instead of carrying a hand-written copy of this function's job -- an
-    /// export table, a magic and version check, and `table + offset` per entry,
-    /// written once per program.
-    ///
-    /// It is the same pass ours::phys::ElfImage::relocate_and_bind() runs for a
-    /// phys module against physload's export table, reduced to what one
-    /// address space and one exporter need: the exporter here is an ELF rather
-    /// than a generated table, so the definitions come out of .dynsym rather
-    /// than out of resolve_export().
-    ///
-    /// A static image with no PT_DYNAMIC is not an error -- it has nothing to
-    /// bind, which is exactly the shape userboot still has.
-    auto bind_imports(ustl::views::Span<u8 const> program_file, MappedImage const &program,
-                      ustl::views::Span<u8 const> vdso_file, MappedImage const &vdso) -> Status {
-        using Traits = eftl::elf::TraitsNative;
-
-        auto program_binary =
-            eftl::elf::Parser::parse_as<Traits>(program_file.data(), program_file.size());
-        if (program_binary.is_err()) {
-            log::error("userboot: the program is not an ELF this loader can read");
-            return Status::InvArgs;
-        }
-
-        auto const dynamic = program_binary->dynamic_image();
-        if (dynamic.is_none()) {
-            log::debug("userboot: the program has no PT_DYNAMIC; nothing to bind");
-            return Status::Ok;
-        }
-
-        auto const relas = dynamic->dynamic_rela_table();
-        auto const plt_relas = dynamic->dynamic_plt_rela_table();
-        if (relas.is_none() && plt_relas.is_none()) {
-            return Status::Ok;
-        }
-
-        auto const symbols = dynamic->dynamic_symbols();
-        if (symbols.is_none()) {
-            // Relocations that name symbols, with no table to name them from.
-            log::error("userboot: the program has relocations but no readable .dynsym");
-            return Status::InvArgs;
-        }
-
-        // The exporter's side of the contract.
-        auto vdso_binary = eftl::elf::Parser::parse_as<Traits>(vdso_file.data(), vdso_file.size());
-        if (vdso_binary.is_err()) {
-            log::error("userboot: the vDSO is not an ELF this loader can read");
-            return Status::InvArgs;
-        }
-        auto const vdso_dynamic = vdso_binary->dynamic_image();
-        if (vdso_dynamic.is_none()) {
-            log::error("userboot: the vDSO has no PT_DYNAMIC, so it exports nothing");
-            return Status::InvArgs;
-        }
-        auto const exports = vdso_dynamic->dynamic_symbols();
-        if (exports.is_none()) {
-            log::error("userboot: the vDSO has no readable .dynsym");
-            return Status::InvArgs;
-        }
-
-        // One region, because map_elf_image() laid the image out as one: every
-        // link-time address from image_base to image_base + span appears at the
-        // same offset in |view|. A loader that gave each segment its own
-        // mapping would hand eftl one region per segment instead; the
-        // translation it does is the same either way.
-        eftl::elf::LoadRegion const region{
-            .virtual_start = program.image_base,
-            .virtual_end = program.image_base + program.span,
-            .image_offset = 0,
-            .permissions = eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable,
-        };
-        eftl::elf::MappedMemory<Traits> memory(program.view, program.span, {&region, 1});
-
-        auto const program_bias = static_cast<u64>(program.base - program.image_base);
-        auto const vdso_bias = static_cast<u64>(vdso.base - vdso.image_base);
-
-        auto bind = [&](auto const &table) -> Status {
-            for (usize index = 0; index < table.size(); ++index) {
-                auto const entry = table.relocation_at(index);
-                if (entry.is_none()) {
-                    return Status::InvArgs;
-                }
-                auto const &rela = entry.value();
-                auto const type = std::remove_cvref_t<decltype(table)>::type(rela);
-                auto const symbol_index = std::remove_cvref_t<decltype(table)>::symbol_index(rela);
-
-                u64 value = 0;
-                if (type == R_X86_64_RELATIVE) {
-                    // The image's own absolute pointers: no symbol involved,
-                    // just "wherever this image landed".
-                    value = program_bias + static_cast<u64>(rela.r_addend);
-                } else if (type == R_X86_64_64 || type == R_X86_64_GLOB_DAT ||
-                           type == R_X86_64_JUMP_SLOT) {
-                    auto const symbol = symbols->symbol_at(static_cast<usize>(symbol_index));
-                    auto const name = symbols->symbol_name(static_cast<usize>(symbol_index));
-                    if (symbol.is_none() || name.is_none()) {
-                        return Status::InvArgs;
-                    }
-                    auto const spelling = std::string_view(
-                        reinterpret_cast<char const *>(name->data()), name->size());
-
-                    if (symbol->st_shndx != 0) {
-                        // Defined in the program itself; -Bsymbolic should have
-                        // resolved it at link time, so reaching here means the
-                        // linker left one for the loader.
-                        value = program_bias + static_cast<u64>(symbol->st_value) +
-                                static_cast<u64>(rela.r_addend);
-                    } else {
-                        auto const definition = find_export(exports.value(), spelling);
-                        if (definition.is_none()) {
-                            // Loud, and fatal. The alternative is binding to
-                            // zero and faulting in ring 3 at a call whose
-                            // target says nothing about which import was
-                            // missing.
-                            log::error("userboot: the program needs '{}', which the vDSO does "
-                                       "not export",
-                                       spelling);
-                            return Status::NotFound;
-                        }
-                        value = vdso_bias + definition.value() + static_cast<u64>(rela.r_addend);
-                        log::debug("userboot: bound '{}' to {:X}", spelling, value);
-                    }
-                } else {
-                    log::error("userboot: the program carries relocation type {}, which this "
-                               "loader does not apply",
-                               type);
-                    return Status::Unsupported;
-                }
-
-                // r_offset is a link-time address; MappedMemory translates it
-                // through the region above into an offset in |view|. Adding the
-                // bias here would double-count the load address.
-                if (!memory.write<u64>(static_cast<u64>(rela.r_offset), value)) {
-                    log::error("userboot: relocation {} writes outside the image", index);
-                    return Status::OutOfRange;
-                }
-            }
-            return Status::Ok;
-        };
-
-        if (relas.is_some()) {
-            if (auto const status = bind(relas.value()); status != Status::Ok) {
-                return status;
-            }
-        }
-        if (plt_relas.is_some()) {
-            if (auto const status = bind(plt_relas.value()); status != Status::Ok) {
-                return status;
-            }
-        }
-        return Status::Ok;
-    }
-
     /// Maps the vDSO, which is the image every user program's imports are
     /// bound to.
     ///
@@ -697,7 +466,7 @@ namespace {
     /// rewrite it could place a trap anywhere inside the one range the kernel
     /// trusts.
     auto load_vdso(ustl::views::Span<u8 const> bytes, object::VmaDispatcher &root_vma,
-                   MappedImage &out) -> Status {
+                   elfload::Image &out) -> Status {
         using arch::paging::MmuFlags;
         constexpr auto VDSO_FLAGS = MmuFlags::User | MmuFlags::Readable | MmuFlags::Executable;
 
@@ -801,7 +570,7 @@ auto userboot_init() -> void {
         return;
     }
 
-    MappedImage vdso;
+    elfload::Image vdso;
     if (Status::Ok != load_vdso(vdso_bytes.unwrap(), *root_vma.dispatcher(), vdso)) {
         return;
     }
@@ -810,7 +579,17 @@ auto userboot_init() -> void {
     // the vDSO's exports. This has to happen before the thread starts and
     // after both load addresses are known, which is the only reason the
     // program is not simply bound as it is mapped.
-    if (Status::Ok != bind_imports(image.unwrap(), loaded.image, vdso_bytes.unwrap(), vdso)) {
+    //
+    // The vDSO is the exporter every program in this process binds against, so
+    // it is what the binder is made from; binding a second program would reuse
+    // this one rather than re-reading the vDSO's symbol table.
+    auto const binder = elfload::Binder::from(vdso_bytes.unwrap(), vdso);
+    if (binder.is_err()) {
+        log::error("userboot: the vDSO cannot be bound against: {}",
+                   to_string(binder.unwrap_err()));
+        return;
+    }
+    if (Status::Ok != binder.unwrap().bind(image.unwrap(), loaded.image)) {
         return;
     }
 
