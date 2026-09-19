@@ -56,17 +56,34 @@ auto memcmp(void const *x, void const *y, size_t n) -> int {
     return 0;
 }
 
+/// Returns a pointer to the *matching byte*, not to the start of the buffer.
+///
+/// It used to return `p`, so every hit looked as though it were at offset 0.
+/// Nothing in the kernel calls memchr() by name, which is why that survived:
+/// the caller that does is libc++, which lowers `std::string_view::find(char)`
+/// onto `char_traits<char>::find` and that onto this function. Every such
+/// search therefore answered 0 whenever the character occurred anywhere at all
+/// -- `"kernel.select.userboot=shell".find('=')` was 0, so
+/// obi::CommandLineView::value() split the token at the wrong place and every
+/// `key=value` boot option parsed as an empty key with the whole token as its
+/// value. A wrong answer rather than a failed one, which is exactly why it
+/// stayed hidden: callers test for npos and got a plausible index instead.
+///
+/// The return type is `void const *` because that is what this tree's
+/// freestanding <string.h> declares; C's own memchr() returns `void *` from a
+/// `const void *`, and reconciling the two is a separate change to the shared
+/// header, not to this definition.
 WEAK_LINK
 auto memchr(void const *str, int c, size_t n) -> void const * {
-    auto p = static_cast<char const *>(str);
+    auto const *p = static_cast<char const *>(str);
 
     for (size_t i = 0; i < n; i++) {
-        if (p[i] == (char)c) {
-            return (void *)p;
+        if (p[i] == static_cast<char>(c)) {
+            return p + i;
         }
     }
 
-    return NULL;
+    return nullptr;
 }
 
 extern "C" WEAK_LINK
