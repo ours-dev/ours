@@ -1,85 +1,62 @@
 # userabi 待修项（2026-09-19）
 
-## 1. 间歇性：shell 第一次 syscall 调用跳进未映射地址
+## 1. ~~间歇性：shell 第一次 syscall 调用跳进未映射地址~~ —— 已结案，并非本文档原先写的那样
 
-**状态**：机制已定位，责任方已缩小；**当前树上 20 次启动未复现**，而且出故障的那个
-二进制已经不存在了（见「为什么现在复现不了」）。**不能当作已修**。
+**结论：这个故障不是间歇的，它是确定性的；而且在我着手调查之前就已经被修掉了。**
+真因是 `a51f4cd fix(eftl): read a PLT relocation table that has no DT_RELAENT beside it`，
+它的提交信息里逐字写着同一个 `rip=0x15c6 against an image mapped at 0x200000`，
+以及「page fault before, both bound and the shell's full output after」。
 
-### 现象
+机制（引自该提交）：`relocation_table_from_tags()` 要求 entry-size 标签存在，而 PLT 表的
+调用方传的是 `DT_RELAENT`——那是描述 `DT_RELA` 的，链接器只在真有 `DT_RELA` 时才发它。
+一个重定位全是 PLT 槽的程序两者皆无，于是整张 `.rela.plt` 被读成「不存在」。
+`bind()` 又把「读不出」当成「没有」返回 `Ok`，一条重定位都没应用，`.got.plt` 保留链接期
+初值——lld 写进去的是 `.plt` 项的 VA `+6`，`0x15c6 - 6 = 0x15c0`，正好压在 RX 段末尾
+`0x15bc` 之后。
 
-`kernel.dev.obi` 与 `kernel.dev.dbg_1.obi` 各命中过一次：
+**「未应用的槽读出来是什么」是区分两种形状的指纹**：GLOB_DAT 读出 0，JUMP_SLOT 读出
+`.plt + 6`。我之所以在 `r12=0x0` 和 `rip=0x15c6` 之间卡住，正是因为我拿着一份
+**GLOB_DAT 形状**的二进制去解释一次 **JUMP_SLOT 形状**的故障。
 
-```
-userboot: mapped [200000, 204000) into its own aspace, entry at 201400, stack 1200000
-userboot: vdso mapped [A00000, A03000)
-Unhandled page fault: vector=14, error_code=0x14
-  rip=0x15c6 (+0x77c00015c6)  cs=0x33  rsp=0x11fffa0
-  rax=0x0  rbx=0x3b  rcx=0x0  rdx=0x0
-  rsi=0x3b  rdi=0x2003b5  rbp=0x11fffc8
-  r12=0x0  r13=0x0  r14=0x2003b5  r15=0x3b
-```
+## 2. 我为什么把确定性故障误判成间歇的 —— 这条比那个 bug 更值得记
 
-### 定位到的机制
+**我启动的镜像，是另一个会话正在重建的镜像。**
 
-`error_code=0x14` = P=0（页不存在）+ U/S=1（用户态）+ I/D=1（**取指**），`cs=0x33`
-确认 ring 3，`rsp` 在 shell 的栈上（栈顶 `0x1200000`）。
+这个 worktree 当天有两个会话交替提交：调度器那条线（`abe6f1d` 16:49 … `2ed56f1` 17:20）
+和 userabi 那条线（`4f5c209` 16:43、`966704b` 16:51、`a51f4cd` 17:21、`ba6d2de` 17:21、
+`1af605e` 17:22）。`out/bringup.x86/kernel.dev.obi` 是**同一个文件名**，内容在我两次启动
+之间被换掉了。
 
-**出错的是 shell 的第一次 `ours_debug_write(msg, 59)`**，证据三条互相印证：
+所以：
 
-1. `rsi = rbx = r15 = 0x3b` = **59**。正常启动时 shell 打印的第一行是
-   `ours shell: the kernel's command registry, seen from ring 3` —— 58 字符 + 换行 = 59。
-2. `rdi = r14 = 0x2003b5` 落在 shell 只读段 `[0x200000, 0x2003f1)` 内，正是那条字符串。
-3. 正常启动里这一行**总会出现**；出故障那次 `vdso mapped` 之后**什么都没有**就崩了。
+- 故障命中的那一代镜像，带的是 JUMP_SLOT 形状的 shell，`a51f4cd` 尚未落地。
+- 我随后跑的「6 次对照」和「14 次复现」用的是**已经修好**的镜像。
+- 「同一镜像连跑 3 次未复现」这句话字面为真，而它毫无意义——那个文件名下已经是另一份内容。
 
-这次调用走的是一个**函数指针槽**。反汇编（当时的 shell）：
+**教训**：在这个共享 worktree 里，一次启动的结果只有在能说清「当时跑的是哪一份二进制」
+时才成立。见第 3 条。
 
-```
-1561: movq 0x1138(%rip), %r12   # 0x26a0     ← 从槽里取
-158c: callq *%r12
-15b6: jmpq *0x10e4(%rip)        # 0x26a0     ← 尾跳同一个槽
-```
+另外订正本文档原先的一处归因错误：shell 从 1784 字节变成 1712 字节，**不是** `1af605e`
+（`//system/lib/ou`）造成的——出故障那份 1784 字节的 shell 已经链了 ou。把它变小的是
+`ba6d2de`，它把 `-fno-plt` 移进 `user.standalone`，删掉了 `.plt` 与 `.got.plt`
+（72 字节 ≈ 2×16 + 3×8 + 对齐），顺带把重定位形状从 JUMP_SLOT 换成了 GLOB_DAT。
 
-而 `0x26a0` 正是一条 `R_X86_64_GLOB_DAT` 重定位的目标：
+## 3. 镜像不自报家门，所以故障日志钉不回二进制
 
-```
-0x26a0  R_X86_64_GLOB_DAT  ours_debug_write + 0
-0x26a8  R_X86_64_GLOB_DAT  ours_command_list + 0
-```
+一份故障日志里没有任何东西能说明它跑的是哪一份镜像。上面整场调查、以及四条分析路线里
+被浪费掉的大半，都源于缺这一行。
 
-两个符号在 shell 里都是 UND，**由 `elfload::Binder::bind()` 在装载时填入**。
-所以故障 = 第一次通过该槽调用时，槽里的值不是 vDSO 里 `ours_debug_write` 的地址。
+shell 有 `PT_NOTE`（build-id），`kernel/lib/eftl/include/eftl/elf/note.hpp` 已经能读。
+两条可做的（互补，不互斥）：
 
-`rip=0x15c6` 既不在 shell 的 `[200000,204000)` 里，也不在 vDSO 的 `[A00000,A03000)` 里。
+1. `scripts/qemu_boot.py` 在启动前打印所用 `.obi` 的 mtime 与 sha256。**成本最低，
+   立刻消除本次这类误判。**
+2. `userboot.cpp` 的两行加载日志里各带上程序的 build-id，让**内核自己**说出它加载了哪一份。
 
-### 已排除
+## 4. binder 对它不会应用的重定位格式仍然沉默
 
-- **不是调度器改动引起的**。带当时那笔调度器改动跑 3 次、回到 HEAD 跑 3 次，六次全干净；
-  故障只在最初各一次。
-- **不是「线程先于绑定启动」的竞态**。`userboot.cpp` 里 `binder.bind()` 在
-  `thread.dispatcher()->start()` **之前**，顺序是对的，注释也写明了这一点。
-- **不是绑定算式写错**。`binder.cpp` 里 `value = m_bias + definition + addend`，
-  而 `m_bias = image.base - image.image_base`；静态核对：vDSO 导出
-  `ours_debug_write` 于 `0x12f0`，装载基址 `0xA00000`，得 `0xA012F0`，正确。
-
-### 为什么现在复现不了
-
-出故障那次日志里 shell 是 **1784 字节**，当前树上是 **1712 字节**——不是同一个二进制。
-其间落了 `1af605e`「feat(ou): a named C++ entry for every system call」，新增
-`system/lib/ou` 并让 shell 依赖它，shell 因此被重建。
-
-**所以：出故障的那份代码已经不存在了。** 这既可能意味着它被顺带修掉了，也可能意味着它
-只是换了个形状还在。20 次启动（6 次对照 + 14 次专门复现）全部正常，shell 输出每次都有。
-
-### 建议的下一步
-
-1. **先把绑定结果变成可见的。** `binder.cpp:198` 是
-   `log::debug("elfload: bound '{}' to {:X}", ...)`，而 debug 级别在两个镜像里都没打印——
-   所以我手上那两次故障日志里**没有任何绑定值**可查。把它提到 `log::info`（或让 dbg 镜像
-   打开 debug），下一次复现就能直接看到槽里被写了什么。这是目前最值钱的一步。
-2. 若再次复现，用当次的 shell 二进制把 `rip` 落到符号上——本次做不到，因为二进制已换。
-3. 间歇性的来源仍未知。已排除线程启动顺序；还没查的是**绑定写入的可见性**：
-   `Binder::bind()` 通过 `importer.view`（内核侧 physmap 视图）写，而用户态从自己的映射读，
-   两者是同一批物理页。x86 上数据是相干的，但值得确认 `view` 与用户映射指向的确实是同一批
-   帧、且写入发生在映射建立之后没有被别处覆盖。
-
-**归属**：`kernel/lib/userabi`、`kernel/lib/elfload`。
+`bind()` 只质询 `DT_RELA`（`binder.cpp:122`）和 `DT_JMPREL`（`:126`）。
+`DT_REL` 与 `DT_RELR` 既不应用也不拒绝——哪天给用户目标加上
+`-Wl,-z,pack-relative-relocs`，`.relr.dyn` 里每一条都会被静默跳过，然后在 ring 3 以
+**和 `a51f4cd` 完全相同的方式**炸掉。这正是 `binder.cpp:38-46` 那段注释声称已经堵上的
+失败模式，它只堵住了两个标签里的两个。
