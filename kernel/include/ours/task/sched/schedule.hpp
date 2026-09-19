@@ -120,7 +120,7 @@ class ISchedule {
     /// Return Status::Ok if able to preempt.
     TA_REQUIRES(runtime.rqlock)
     virtual auto unpark_preempt(Runtime &runtime, Thread *curr, Thread *thread,
-                                UnparkControl control) -> Status {
+                                UnparkOptions options) -> Status {
         return Status::Unimplemented;
     }
 

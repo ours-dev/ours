@@ -29,7 +29,7 @@ auto Scheduler::Migrator::move_queued_thread(Scheduler *self, Thread *thread, Cp
     self->m_runtime.rqlock.acquire();
 
     self->activate_thread(thread, EnqueueOptions::None);
-    self->unpark_preempt(thread, UnparkControl::None);
+    self->unpark_preempt(thread, UnparkOptions::None);
 }
 
 } // namespace ours::task::sched

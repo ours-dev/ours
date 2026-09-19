@@ -79,12 +79,12 @@ enum class EnqueueOptions;
 enum class DequeueOptions;
 
 // [[=bits::bitmask]]
-enum class UnparkControl {
+enum class UnparkOptions {
     None,
     Initial = (1 << 0),
     ThisCpu = (1 << 1),
 };
-USTL_ENABLE_ENUM_BITMASK(UnparkControl);
+USTL_ENABLE_ENUM_BITMASK(UnparkOptions);
 
 struct Runtime;
 class Scheduler;

@@ -162,6 +162,8 @@ FairState     m_fair;               // deadline / vruntime / vdeadline / vlag / 
 |---|---|---|
 | 8 处 | `EnqueueControl` / `DequeueControl` | `EnqueueOptions` / `DequeueOptions` |
 
+`UnparkControl` 同批改成了 `UnparkOptions`，`fair.cpp` 另有 2 处。
+
 若其中有形参名叫 `control` 的，一并改成 `options`——框架侧已经这么改了。
 
 （F2 起的清单待各步完成后追加。）

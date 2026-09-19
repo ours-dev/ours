@@ -1386,3 +1386,31 @@ flags；这里是类型化的位掩码，比它强，只是名字选错了。）
 - 没有动 `UnparkControl`。它是同族里剩下的一个，但不在你点名的范围里；要不要一起改
   由你定。（`NotifyControl`、`MapControl`、`UnmapControl`、`HarvestControl`、
   `AllocationControl` 在别的子系统里，更不在范围内。）
+
+## `UnparkControl` 改名为 `UnparkOptions`（2026-09-18）
+
+**文件**
+- `types.hpp`（定义）、`schedule.hpp`、`sched/scheduler.hpp`、`task/scheduler.hpp`、
+  `scheduler.cpp`、`scheduler_migrator.cpp`、`thread.cpp` — 类型 18 处、形参/局部 10 处
+
+**症状**
+
+同族里最后一个。理由和上一节一样：它是位掩码（`Initial | ThisCpu`），调用方用它说
+这次唤醒要按哪些方式做，不是一个「控制器」。
+
+**改法**
+
+`UnparkControl` → `UnparkOptions`，形参 `control` → `options`（`unpark_thread` 两个重载、
+`do_unpark_thread`、`unpark_preempt`）。
+
+**验证**
+
+构建成功（按退出码），无告警。QEMU：`kernel.dev.dbg_1.obi` 30 秒，线程交替 173657 次、
+断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+`fair.hpp` 不引用它（`grep -c` 为 0），所以仍不需要垫片；`fair.cpp` 的 2 处已进适配清单。
+
+**故意没做**
+
+- 没有动别的子系统里的 `*Control`：`NotifyControl`（task/owned_wait_queue.hpp）、
+  `MapControl`/`UnmapControl`/`HarvestControl`（kernel/lib/arch）、
+  `AllocationControl`（kernel/mm）。它们同病，但不在这次点名范围内。

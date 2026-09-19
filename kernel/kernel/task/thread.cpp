@@ -226,7 +226,7 @@ auto Thread::resume() -> Status {
     if (state == State::Suspend) {
         Scheduler::unpark_thread(this);
     } else if (state == State::Initial) {
-        Scheduler::unpark_thread(this, UnparkControl::Initial);
+        Scheduler::unpark_thread(this, UnparkOptions::Initial);
     }
 
     THREAD_RESUME_COUNT.add(1);

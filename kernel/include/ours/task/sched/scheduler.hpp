@@ -80,9 +80,9 @@ class Scheduler {
     /// their Guard first, on the theory that this call would release the
     /// lock for them, and so leaked it.
     TA_REQUIRES(thread->get_pi_lock())
-    static auto unpark_thread(Thread *thread, UnparkControl = UnparkControl::None) -> void;
+    static auto unpark_thread(Thread *thread, UnparkOptions = UnparkOptions::None) -> void;
 
-    static auto unpark_thread(Thread::UnparkList, UnparkControl = UnparkControl::None) -> void;
+    static auto unpark_thread(Thread::UnparkList, UnparkOptions = UnparkOptions::None) -> void;
 
     // TODO(SmallHuaZi)
     static auto migrate_thread(Thread *thread) -> void;
@@ -305,12 +305,12 @@ class Scheduler {
     /// as "expecting lock to be held at the end of function".)
     TA_REQUIRES(thread->get_pi_lock())
     TA_EXCLUDES(get_lock())
-    auto do_unpark_thread(Thread *thread, UnparkControl control) -> void;
+    auto do_unpark_thread(Thread *thread, UnparkOptions options) -> void;
 
     /// Evaulates the given |thread| whether be able to preempt current thread.
     /// If it can does, send out preemption request to this scheduler.
     TA_REQUIRES(get_lock())
-    auto unpark_preempt(Thread *thread, UnparkControl control) -> void;
+    auto unpark_preempt(Thread *thread, UnparkOptions options) -> void;
 
     /// Which thread should run next on this CPU. Pure selection: it reads the
     /// run queues and answers, and changes nothing about who owns the CPU.

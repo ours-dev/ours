@@ -6,7 +6,7 @@
 #include <ours/task/sched/scheduler.hpp>
 
 namespace ours::task {
-using sched::UnparkControl;
+using sched::UnparkOptions;
 
 using sched::DEFAULT_PRIORITY;
 using sched::HIGHEST_PRIORITY;

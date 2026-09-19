@@ -220,12 +220,12 @@ auto Scheduler::on_thread_dead(Thread *thread) -> void {
 /// then the Scheduler::unpark_preempt will call PreemptionState::add_pending()
 /// to set preemption flags reschedule() gets called on the nearest possible
 /// occasion.
-auto Scheduler::unpark_thread(Thread *thread, UnparkControl control) -> void {
+auto Scheduler::unpark_thread(Thread *thread, UnparkOptions options) -> void {
     DEBUG_ASSERT(thread != Thread::Current::get());
 
     /// Assign CPU for passed |thread|
     CpuNum target_cpu;
-    if (!!(control & UnparkControl::ThisCpu)) {
+    if (!!(options & UnparkOptions::ThisCpu)) {
         target_cpu = Cpu::id();
     } else {
         target_cpu = select_target_cpu(thread);
@@ -234,12 +234,12 @@ auto Scheduler::unpark_thread(Thread *thread, UnparkControl control) -> void {
     auto &self = Scheduler::Current::get(target_cpu);
     self.m_canary.verify<Self>();
 
-    self.do_unpark_thread(thread, control);
+    self.do_unpark_thread(thread, options);
 
     reschedule_mask(CpuMask::of(target_cpu));
 }
 
-auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkControl control) -> void {
+auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkOptions options) -> void {
     CpuMask to_resched;
     while (!threads.empty()) {
         auto *const thread = &threads.front().value();
@@ -254,7 +254,7 @@ auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkControl control)
         Guard thread_guard{thread->get_pi_lock()};
 
         CpuNum target_cpu;
-        if (!!(control & UnparkControl::ThisCpu)) {
+        if (!!(options & UnparkOptions::ThisCpu)) {
             target_cpu = Cpu::id();
         } else {
             target_cpu = select_target_cpu(thread);
@@ -263,7 +263,7 @@ auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkControl control)
         auto &self = Self::Current::get(target_cpu);
         self.m_canary.verify<Self>();
 
-        self.do_unpark_thread(thread, control);
+        self.do_unpark_thread(thread, options);
 
         to_resched.set(target_cpu);
     }
@@ -807,7 +807,7 @@ auto Scheduler::Current::park_thread(Thread *curr) -> void {
 /// This is Zircon's Scheduler::Unblock() -> target->Insert(): the insert
 /// happens on the waker's CPU, and the target CPU is told about it afterwards
 /// through RescheduleMask(), never by running any of this on it.
-auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void {
+auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void {
     DEBUG_ASSERT(thread != m_runtime.curr_thread);
 
     // Every state a thread can be woken out of, not only the two a wait queue
@@ -837,7 +837,7 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void 
 
     if constexpr (SCHED_UNPARK_PREEMPT) {
         // Check if |thread| is able to preempt current thread.
-        unpark_preempt(thread, control);
+        unpark_preempt(thread, options);
     }
 
     schedule->on_thread_unpark(m_runtime, thread);
@@ -847,7 +847,7 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkControl control) -> void 
 /// running. Like do_unpark_thread(), which is its only caller, this runs on the
 /// waker's CPU and reads the *target* CPU's runtime under that CPU's run queue
 /// lock.
-auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
+auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
     auto const current_thread = m_runtime.curr_thread;
     auto const x_schedule = thread->scheduling_entity().schedule();
     auto const y_schedule = current_thread->scheduling_entity().schedule();
@@ -855,7 +855,7 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkControl control) -> void {
     auto &preemption_state = current_thread->preemption_state();
     if (x_schedule == y_schedule) {
         // To the same schedule, preemption depends on schedule's internal implementation.
-        x_schedule->unpark_preempt(m_runtime, current_thread, thread, control);
+        x_schedule->unpark_preempt(m_runtime, current_thread, thread, options);
     } else if (x_schedule > y_schedule) {
         m_runtime.mark_preempt_pending();
     }
