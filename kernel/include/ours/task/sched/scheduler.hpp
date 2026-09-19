@@ -157,22 +157,17 @@ class Scheduler {
         return m_runtime.rqlock;
     }
 
-    /// The Fair discipline's run queue for this CPU. Held directly here
-    /// (rather than through its own CpuLocal instance) since Scheduler
-    /// is already a per-CPU singleton -- see RunQueue's doc comment in
-    /// fair.hpp for why this deliberately couples Scheduler to Fair.
+    /// The run queues moved to Runtime, where a discipline reaches its own off
+    /// the parameter it is already handed. These two forward for now; they and
+    /// `of()` go away together, and nothing in the framework calls them.
     FORCE_INLINE
     auto fair_run_queue() -> RunQueue & {
-        return m_fair_runqueue;
+        return m_runtime.queue<Discipline::Normal>();
     }
 
-    /// The round-robin discipline's FIFO for this CPU, held here for the same
-    /// reason as the Fair queue above. Both slots exist at once so that
-    /// switching disciplines is a matter of which one is registered, not of
-    /// which one Scheduler was compiled to carry.
     FORCE_INLINE
     auto rr_run_queue() -> RrRunQueue & {
-        return m_rr_runqueue;
+        return m_runtime.rr_run_queue();
     }
 
   private:
@@ -383,9 +378,6 @@ class Scheduler {
     /// implementing `Discipline(i)`, or null if none is registered.
     static constexpr auto NUM_DISCIPLINE = std::to_underlying(Discipline::Count);
     std::array<ISchedule *, NUM_DISCIPLINE> m_schedules{};
-
-    RunQueue m_fair_runqueue;
-    RrRunQueue m_rr_runqueue;
 
     Thread *m_idle_thread;
 

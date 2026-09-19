@@ -3,52 +3,13 @@
 #ifndef OURS_TASK_SCHED_RR_HPP
 #define OURS_TASK_SCHED_RR_HPP 1
 
+#include <ours/task/sched/rr_run_queue.hpp>
 #include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/schedule.hpp>
 
 #include <gktl/canary.hpp>
-#include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::task::sched {
-/// The round-robin discipline's per-CPU state: one FIFO of runnable contexts.
-///
-/// Held by Scheduler beside Fair's RunQueue, for the reason given there --
-/// Scheduler is already the per-CPU singleton, so the queue rides in it
-/// rather than through a CpuLocal instance of its own. It is intrusive
-/// through SchedEntity::m_rr_hook, a list hook distinct from the set hook Fair's
-/// RunQueue uses: a SchedEntity is never on both queues, but the two containers
-/// need different node shapes.
-class RrRunQueue {
-    using Self = RrRunQueue;
-
-  public:
-    FORCE_INLINE
-    auto verify() const -> void {
-        m_canary.verify<Self>();
-    }
-
-    /// Runnable contexts in arrival order; the head is the next to run.
-    auto enqueue(SchedEntity &ctx) -> void;
-    auto dequeue(SchedEntity &ctx) -> void;
-
-    /// The context at the head of the FIFO, or null when it is empty.
-    [[nodiscard]]
-    auto peek() -> SchedEntity *;
-
-    [[nodiscard]]
-    FORCE_INLINE
-    auto num_queued() const -> usize {
-        return m_num_queued;
-    }
-
-  private:
-    using Queue = ustl::collections::intrusive::List<SchedEntity, SchedEntity::RrQueueOption>;
-
-    gktl::Canary m_canary{this};
-    Queue m_queue;
-    usize m_num_queued = 0;
-};
-
 /// A deliberately plain round-robin discipline for bring-up.
 ///
 /// It exists so the rest of the kernel can be brought up on a scheduler with

@@ -1414,3 +1414,83 @@ flags；这里是类型化的位掩码，比它强，只是名字选错了。）
 - 没有动别的子系统里的 `*Control`：`NotifyControl`（task/owned_wait_queue.hpp）、
   `MapControl`/`UnmapControl`/`HarvestControl`（kernel/lib/arch）、
   `AllocationControl`（kernel/mm）。它们同病，但不在这次点名范围内。
+
+## F2：运行队列搬进 `Runtime`，按 `Discipline` 选取（2026-09-18）
+
+**文件**
+- `kernel/include/ours/task/sched/rr_run_queue.hpp` — 新文件，`RrRunQueue` 从 `rr.hpp` 拆出
+- `kernel/include/ours/task/sched/rr.hpp` — 只剩 `RoundRobin`
+- `kernel/include/ours/task/sched/runtime.hpp` — 持有两条队列，新增 `queue<Disci>()`
+- `kernel/include/ours/task/sched/scheduler.hpp` — 卸下两个队列成员，访问器改为转发
+- `kernel/kernel/task/sched/rr.cpp` — 删掉 `rq(runtime)` 辅助函数
+
+**症状**
+
+队列住在 `Scheduler` 上，而 discipline 手里拿到的是 `Runtime &`。于是它要取**自己的**队列，
+得先把整个 `Scheduler` 反查出来：
+
+```cpp
+// rr.cpp，改前
+auto rq(Runtime &runtime) -> RrRunQueue & {
+    return Scheduler::of(runtime).rr_run_queue();   // container_of 往返
+}
+```
+
+这条路不只是绕。它把整个 `Scheduler` 交到了 discipline 手上——`Scheduler::of()` 一旦拿到，
+`num_runnable()`、`get_lock()`、`init()`、所有静态入口点都在射程之内。**为了拿一样本来就
+该在手边的东西，交出了全部。**
+
+**原因**
+
+拥有权放错了层。队列是每 CPU 的调度状态，而 `Runtime` 就是那个「每 CPU 的调度状态」对象，
+也正是框架递给 discipline 的那个。Linux 也是这么嵌的：`struct rq` 内联 `cfs_rq`、`rt_rq`、
+`dl_rq`，而 `sched_class` 的钩子收的就是 `struct rq *`。
+
+**改法**
+
+队列按值搬进 `Runtime`，并由**框架**按 `Discipline` 选取：
+
+```cpp
+template <Discipline Disci>
+FORCE_INLINE auto queue() -> auto & {
+    if constexpr (Disci == Discipline::Normal) {
+        return m_fair_queue;
+    } else {
+        static_assert(Disci != Disci, "no run queue is registered for this discipline");
+    }
+}
+```
+
+**键是框架自己的键**，这一点是要紧的。`Disci` 是 discipline 已经传给
+`Schedule<Derived, Discipline>`、也已经用来注册的那个模板实参——身份只声明一次，
+队列选取和注册槽位都从它导出。另一种写法是让框架去问 `typename Derived::Queue`，
+那等于把闸门的钥匙交给被闸的一方：discipline 写一行 `using Queue = 别人的队列;`，
+框架就照办。
+
+**拆出 `rr_run_queue.hpp` 是必需的，不是整理**：`rr.hpp` include 了 `schedule.hpp`，
+而 `schedule.hpp` include `runtime.hpp`，所以 `Runtime` 按值持有 `RrRunQueue` 会成环。
+`fair.hpp` 不 include `schedule.hpp`，没有这个问题。
+
+**一处如实说明**：`RoundRobin` 够不到 `queue<>()`。它是 Fair 在 bring-up 期间的替身，
+注册在同一个 `Discipline::Normal` 槽位上，而两者队列类型不同——枚举分不开它们。
+所以 `rr_run_queue()` 仍是具名访问器，注释里写明了原因，并指向 `Scheduler::init()` 里
+那条拒绝两个 discipline 抢同一槽位的断言。要让枚举分得开，得先决定 `Discipline` 怎么
+表达「RR 顶替 Fair」——那是设计决定，不是这次改动。
+
+**参照**
+
+`Linux struct rq`（`kernel/sched/sched.h`）内联 `cfs_rq cfs; rt_rq rt; dl_rq dl;`，
+以及 `sched_class` 钩子收 `struct rq *` 的形状。
+
+**验证**
+
+构建成功（按退出码），无告警。**`Scheduler::of()` 现在在构建里零调用者**——只剩
+fair.cpp:135 一处，而它不在构建里。QEMU 两个镜像各 30 秒：`kernel.dev.dbg_1.obi`
+线程交替 170709 次、断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+`git diff` 确认 `fair.hpp`/`fair.cpp` 未改动；19 处适配已列进设计文档。
+
+**故意没做**
+
+- 没有删 `Scheduler::fair_run_queue()` / `rr_run_queue()`，也没把 `of()` 转私有。
+  那是 F3，单独一个提交——这一步只是把队列挪到该在的地方。
+- 没有引入 CRTP 转发层。队列既然已经在 discipline 手里那个对象上，就不需要有人再递一次。

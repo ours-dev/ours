@@ -166,4 +166,32 @@ FairState     m_fair;               // deadline / vruntime / vdeadline / vlag / 
 
 若其中有形参名叫 `control` 的，一并改成 `options`——框架侧已经这么改了。
 
-（F2 起的清单待各步完成后追加。）
+### F2 —— 队列搬进 `Runtime`，按 `Discipline` 选取（已完成）
+
+```cpp
+template <Discipline Disci>
+FORCE_INLINE auto Runtime::queue() -> auto & {
+    if constexpr (Disci == Discipline::Normal) {
+        return m_fair_queue;
+    } else {
+        static_assert(Disci != Disci, "no run queue is registered for this discipline");
+    }
+}
+```
+
+你自己动 Fair 的时候要做的（共 19 处）：
+
+| fair.cpp | 现在 | 改成 |
+|---|---|---|
+| 135 | `Scheduler::of(runtime).fair_run_queue()` | `runtime.queue<Discipline::Normal>()` |
+| 17 处 | `Scheduler::Current::get().fair_run_queue()` | `runtime.queue<Discipline::Normal>()`（该函数手里有 `runtime` 时） |
+| 96 | 注释里同样的拼法 | 一并改 |
+
+**注意**：那 17 处里凡是所在函数没有 `runtime` 形参的（例如 `RunQueue` 自己的成员函数），
+改不成参数形式——那类地方要么从调用方把队列传进来，要么保留 `Current::get()` 并接受它
+只对本 CPU 正确。这正是 rr.cpp:9-26 记录过的那类跨 CPU 事故，值得逐处看一眼。
+
+**`Scheduler::of()` 现在在构建里零调用者**，只剩 fair.cpp:135。F3 把它转私有时，
+那一处会变成硬编译错误——这是有意的。
+
+（F3/F4 的清单待完成后追加。）

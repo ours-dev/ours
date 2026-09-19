@@ -4,8 +4,10 @@
 #define OURS_TASK_SCHED_RUNTIME_HPP 1
 
 #include <ours/sync/spin_lock.hpp>
-#include <ours/task/sched/sched_entity.hpp>
+#include <ours/task/sched/fair.hpp>
+#include <ours/task/sched/rr_run_queue.hpp>
 #include <ours/task/sched/sched_clock.hpp>
+#include <ours/task/sched/sched_entity.hpp>
 #include <ours/task/sched/types.hpp>
 #include <ours/task/thread.hpp>
 
@@ -31,6 +33,43 @@ struct Runtime {
     /// `mark_preempt_pending()` and the local case falls out of it.
     auto mark_preempt_pending() -> void {
         curr_thread->preemption_state().add_pending(CpuMask::of(which_cpu));
+    }
+
+    /// This CPU's run queue for |Disci|.
+    ///
+    /// The queues live here, on the object a discipline is already handed,
+    /// rather than on Scheduler. A discipline used to reach its own by
+    /// recovering the whole Scheduler from this one --
+    /// `Scheduler::of(runtime).rr_run_queue()`, a container_of round trip to
+    /// fetch something that could have been in reach -- and that route is
+    /// what let it reach anything else on the Scheduler too.
+    ///
+    /// Selected by the `Discipline` the caller is, which is the framework's
+    /// own key: it is the template argument a discipline already supplies to
+    /// `Schedule<Derived, Discipline>` and already registers under, so the
+    /// mapping lives here rather than in a typedef each discipline writes for
+    /// itself. Linux nests the same way -- `struct rq` holds `cfs_rq`,
+    /// `rt_rq` and `dl_rq` inline and hands the whole `rq` to a `sched_class`.
+    template <Discipline Disci>
+    FORCE_INLINE
+    auto queue() -> auto & {
+        if constexpr (Disci == Discipline::Normal) {
+            return m_fair_queue;
+        } else {
+            static_assert(Disci != Disci, "no run queue is registered for this discipline");
+        }
+    }
+
+    /// RoundRobin's FIFO, which `queue<>()` cannot reach.
+    ///
+    /// RoundRobin is Fair's stand-in during bring-up and registers under
+    /// `Discipline::Normal`, the same slot Fair claims, so the enum cannot
+    /// tell the two apart -- see the assertion in `Scheduler::init()` that
+    /// refuses them both at once. Until `Discipline` distinguishes them, this
+    /// one is reached by name.
+    FORCE_INLINE
+    auto rr_run_queue() -> RrRunQueue & {
+        return m_rr_queue;
     }
 
     FORCE_INLINE
@@ -132,6 +171,9 @@ struct Runtime {
     Thread::MigratingList migrating_threads;
 
     // Physical time.
+    RunQueue m_fair_queue;
+    RrRunQueue m_rr_queue;
+
     SchedTime last_updated_time;
     SchedDuration total_expected_runtime;
 };

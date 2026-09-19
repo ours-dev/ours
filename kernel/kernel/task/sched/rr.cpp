@@ -17,14 +17,6 @@ namespace {
     /// is how a thread reaches a CPU that is halted in its idle loop. With the
     /// running CPU's queue, a cross-CPU wakeup incremented the target's
     /// num_queued_threads while putting the thread on the waker's own FIFO --
-    /// so the target saw work it did not have and the waker ran a thread it
-    /// had just given away. Every thread the kernel created still ended up on
-    /// CPU 0, only now with the bookkeeping disagreeing about it.
-    FORCE_INLINE
-    auto rq(Runtime &runtime) -> RrRunQueue & {
-        return Scheduler::of(runtime).rr_run_queue();
-    }
-
 } // namespace
 
 /// Charge |curr| for the time since it was last charged. This is the whole
@@ -68,7 +60,7 @@ auto RrRunQueue::peek() -> SchedEntity * {
 }
 
 auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueOptions) -> Status {
-    auto &queue = rq(runtime);
+    auto &queue = runtime.rr_run_queue();
     queue.verify();
 
     auto &ctx = thread->scheduling_entity();
@@ -86,7 +78,7 @@ auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueOptions
 }
 
 auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueOptions) -> Status {
-    auto &queue = rq(runtime);
+    auto &queue = runtime.rr_run_queue();
     queue.verify();
 
     auto &ctx = thread->scheduling_entity();
@@ -105,7 +97,7 @@ auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueOptions
 }
 
 auto RoundRobin::evaluate_next_thread(Runtime &runtime, Thread *) -> Thread * {
-    auto &queue = rq(runtime);
+    auto &queue = runtime.rr_run_queue();
     queue.verify();
 
     auto *const head = queue.peek();
@@ -117,7 +109,7 @@ auto RoundRobin::evaluate_next_thread(Runtime &runtime, Thread *) -> Thread * {
 /// slice is charged up to now first so the next set_next_thread() starts it
 /// from a clean baseline.
 auto RoundRobin::put_prev_thread(Runtime &runtime, Thread *prev) -> void {
-    auto &queue = rq(runtime);
+    auto &queue = runtime.rr_run_queue();
     queue.verify();
 
     auto &ctx = prev->scheduling_entity();
@@ -135,7 +127,7 @@ auto RoundRobin::put_prev_thread(Runtime &runtime, Thread *prev) -> void {
 /// the baseline slice_spent() measures from, and curr_started_time is where
 /// charge() measures elapsed time from.
 auto RoundRobin::set_next_thread(Runtime &runtime, Thread *next) -> void {
-    auto &queue = rq(runtime);
+    auto &queue = runtime.rr_run_queue();
     queue.verify();
 
     auto &ctx = next->scheduling_entity();
@@ -153,7 +145,7 @@ auto RoundRobin::set_next_thread(Runtime &runtime, Thread *next) -> void {
 /// rotate to, and asking for a reschedule would only pay for a switch back to
 /// itself.
 auto RoundRobin::update_thread(Runtime &runtime, Thread *curr) -> void {
-    auto &queue = rq(runtime);
+    auto &queue = runtime.rr_run_queue();
     queue.verify();
 
     charge(runtime, curr);
@@ -166,7 +158,7 @@ auto RoundRobin::update_thread(Runtime &runtime, Thread *curr) -> void {
 /// Yielding under round-robin is giving up the rest of the slice: mark it
 /// spent and let put_prev_thread() rotate. Pointless with nobody else queued.
 auto RoundRobin::yield_thread(Runtime &runtime, Thread *curr) -> void {
-    auto &queue = rq(runtime);
+    auto &queue = runtime.rr_run_queue();
     queue.verify();
 
     if (!queue.num_queued()) {
@@ -178,7 +170,7 @@ auto RoundRobin::yield_thread(Runtime &runtime, Thread *curr) -> void {
 }
 
 auto RoundRobin::yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
-    rq(runtime).verify();
+    runtime.rr_run_queue().verify();
 
     if (!next->scheduling_entity().runqueue_state().is_active()) {
         return Status::BadState;
@@ -204,7 +196,7 @@ auto RoundRobin::on_thread_init(Runtime &runtime, Thread *thread) -> void {
 auto RoundRobin::on_thread_tick(Runtime &, Thread *, bool) -> void {}
 
 auto RoundRobin::num_queued(Runtime &runtime) const -> usize {
-    return rq(runtime).num_queued();
+    return runtime.rr_run_queue().num_queued();
 }
 
 /// Required, not decorative -- see the identical block at the end of fair.cpp:
