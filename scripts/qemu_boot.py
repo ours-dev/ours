@@ -27,6 +27,8 @@ qemu_debug.py adds -S -gdb.
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 import os
 import shutil
 import subprocess
@@ -75,6 +77,34 @@ def die(message: str) -> "typing.NoReturn":  # noqa: F821
     sys.exit(f"qemu-boot: {message}")
 
 
+def digest(path: Path) -> str:
+    with open(path, "rb") as fd:
+        return hashlib.sha256(fd.read()).hexdigest()
+
+
+def identify(label: str, path: Path, sha: str) -> None:
+    """Print which bytes this boot is actually running.
+
+    This exists because of a whole wasted investigation. `out/` is shared with
+    every other session working in this worktree, and a run of
+    `IMAGE=out/bringup.x86/kernel.dev.obi qemu_boot.py` says nothing about
+    which build of that name it got. A fault was chased as "intermittent"
+    across six control runs and fourteen reproduction attempts before it turned
+    out to be deterministic and already fixed: half those boots had silently
+    picked up someone else's rebuild. A log that does not name its own image
+    cannot be compared against another log, and no amount of care at the
+    keyboard fixes that -- the identity has to be in the log.
+
+    The digest is the part that matters. mtime alone would not have caught it:
+    a rebuild that produces identical bytes moves the mtime, and two different
+    builds can land in the same second.
+    """
+    stamp = datetime.datetime.fromtimestamp(path.stat().st_mtime)
+    print(f"qemu-boot: {label} {path}", file=sys.stderr)
+    print(f"qemu-boot:   {path.stat().st_size} bytes, built {stamp:%Y-%m-%d %H:%M:%S}, "
+          f"sha256 {sha[:16]}", file=sys.stderr)
+
+
 def build_esp(work: Path, shim: Path, image: Path, env: dict[str, str]) -> Path:
     """Assemble a bootable FAT image and return its path."""
     if work.exists():
@@ -85,6 +115,18 @@ def build_esp(work: Path, shim: Path, image: Path, env: dict[str, str]) -> Path:
 
     shutil.copy2(shim, esp / "boot" / "bootshim")
     shutil.copy2(image, esp / "boot" / "image.obi")
+
+    # The identity is taken from the copy, not from the source, and then
+    # checked back against the source: a concurrent `ninja` rewriting the .obi
+    # mid-copy would otherwise hand us a torn image and a digest that describes
+    # neither half of it. Better to refuse than to boot something no log can
+    # name.
+    copied = digest(esp / "boot" / "image.obi")
+    if copied != digest(image):
+        die(f"{image} changed while it was being copied -- another build is "
+            "writing it; wait for that build to finish and run this again")
+    identify("booting", image, copied)
+    identify("via shim", shim, digest(esp / "boot" / "bootshim"))
     (esp / "boot" / "grub" / "grub.cfg").write_text(GRUB_CFG)
 
     platform = ROOT / "prebuilt/grub/lib/x86_64-elf/grub/x86_64-efi"
