@@ -197,7 +197,7 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 ### 适配清单不再由我手工维护
 
 `sched_normal_discipline = "fair"` 一打开，`fair.cpp` 就进构建，编译器自己把清单打出来。
-下面这 41 条是用当前 HEAD 跑出来的（`-ferror-limit=0`），不是我抄的：
+下面这 44 条是用当前 HEAD 跑出来的（`-ferror-limit=0`），不是我抄的：
 
 | fair.cpp 行 | 编译器说 |
 |---|---|
@@ -206,7 +206,7 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 | 102 | unknown type name 'DequeueControl' |
 | 117 | unknown type name 'UnparkControl'; did you mean 'mm::UnmapControl'? |
 | 118 | non-virtual member function marked 'override' hides virtual member function |
-| 135 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| 135 | no member named 'of' in 'ours::task::sched::Scheduler' |
 | 139 | unknown type name 'DequeueControl' |
 | 167 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | 175 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
@@ -223,12 +223,15 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 | 227 | use of undeclared identifier 'DequeueControl' |
 | 235 | unknown type name 'DequeueControl' |
 | 236 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| 239 | no member named 'curr_thread' in 'ours::task::sched::Runtime' |
 | 260 | unknown type name 'EnqueueControl' |
 | 261 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| 264 | no member named 'curr_thread' in 'ours::task::sched::Runtime' |
 | 292 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | 301 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | 307 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | 317 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
+| 322 | reference to non-static member function must be called; did you mean to call it with no arguments? |
 | 332 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | 349 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
 | 363 | no member named 'fair_run_queue' in 'ours::task::sched::Scheduler' |
@@ -246,4 +249,4 @@ FORCE_INLINE auto Runtime::queue() -> auto & {
 重新生成的办法：把 `rr.cpp` 的真实 ninja 命令拎出来指向 `fair.cpp`，加
 `-fsyntax-only -ferror-limit=0`，输出去掉 ANSI 转义。
 
-（F4 的清单待完成后追加。）
+（清单随每次框架改动自动重生成，见上。）

@@ -1567,3 +1567,82 @@ NormalRunQueue m_normal_queue;   // 改前是并列的 m_fair_queue + m_rr_queue
 
 - 没有把 `Discipline::Deadline` 也接进开关。它今天零引用，是存根。
 - 没有改 `Scheduler::of()` 的可见性——它现在零调用者，但转私有是独立一件事。
+
+## F4（改过的）：封装 `Runtime`，删掉 `Scheduler::of()`（2026-09-18）
+
+**文件**
+- `runtime.hpp` — `struct` → `class`，14 个字段加 `m_` 前缀并转私有，
+  `friend class Scheduler`；新增 `lock()`、`which_cpu()`、`current_thread()`
+- `types.hpp` — 前向声明的 tag 跟着改（`-Wmismatched-tags` 是 error）
+- `schedule.hpp`、`rr.hpp` — 19 条 `TA_REQUIRES` 改指 `runtime.lock()`
+- `rr.cpp` — 2 处改用 `current_thread()`
+- `scheduler.hpp` — 删掉 `of()`
+- `scheduler.hpp`/`scheduler_inline.hpp`/`scheduler.cpp`/`scheduler_migrator.cpp` — 58 处字段名跟随
+
+**原计划是错的，先说这个**
+
+F4 原本写的是「`Runtime` 解散并入 `Scheduler`」，理由是 `Scheduler::of()` 用
+`container_of` 能把它还原成 `Scheduler`，证明它没有独立身份。
+
+**F2 之后这个理由不成立了。** 队列搬进 `Runtime` 之后，两边的分工变成了：
+
+- `Scheduler`：派发层——`m_schedules` 注册表、idle 线程、状态掩码、上下文切换
+- `Runtime`：运行队列本身——CPU 号、锁、时钟、队列、计数、线程三元组、迁移链表
+
+这正是 Linux 的 `struct rq` 与驱动它的那层之间的分界。解散它等于把「纪律可以看的」
+和「纪律绝不能看的」重新拌回一起——恰好是这一整串改动要消除的东西。
+
+所以 F4 改成：**切断回边，把已经成型的边界封住。**
+
+**改法**
+
+`Scheduler::of()` 删除（构建里零调用者）。`Runtime` 变成 `class`，字段私有，
+唯一 friend 是 `Scheduler`，公开面是实测出来的需要：
+
+- `lock()`、`which_cpu()`、`current_thread()`、`clock()`、`queue<Disci>()`
+- `charge_current()`、`restart_current_slice()`、`nominate_next_thread()`、
+  `arm_preempt_timer()`、`mark_preempt_pending()`
+
+`lock()` 带 `TA_RETURN_CAPABILITY`。**这一条不是风格问题**：clang 解析 thread-safety
+属性的实参时**是过访问控制的**，所以 `TA_REQUIRES(runtime.m_rqlock)` 会是硬错误而不是
+警告。19 条注解全部改指访问器，和 `Scheduler::get_lock()` 已有的做法一致。
+
+**封住的边界，也说清没封住的**
+
+改完之后**靠 C++ 访问控制硬编译失败**的：`runtime.clock_source.update_clock()`
+（绕开调用方的 SkipClock 决定）、`runtime.total_weight -= w`（破坏 Scheduler 的聚合
+记账）、`runtime.prev_thread = p`（上下文切换交接槽）、`runtime.migrating_threads_lock`、
+以及 `Scheduler::of(runtime)` 本身。
+
+**没封住的，如实列**：`runtime.lock().acquire()` 仍然编得过。能力必须公开可命名才能被
+注解命名，所以任何写 `TA_REQUIRES(param.x)` 的设计都堵不住这一条——注释里写明了。
+
+**刻意不 friend 任何 discipline**。C++ 的友元是整类的，`friend class Fair` 会把每个私有
+成员都交出去，上面每一句「纪律碰不到」就全成了假话。
+
+**参照**
+
+`Linux struct rq`；`Zircon Thread::get_lock()` 同样是公开访问器套私有锁，
+理由相同（属性实参要过访问控制）。
+
+**验证**
+
+反向验证过，不是只看构建通过：写了一个探针 TU 从纪律的位置访问 `rt.m_total_weight`，
+
+```
+error: 'm_total_weight' is a private member of 'ours::task::sched::Runtime'
+```
+
+全量构建成功（按退出码）、无告警。QEMU 两个镜像各 30 秒：`kernel.dev.dbg_1.obi`
+线程交替 177397 次、断言/panic/异常计数 0；`kernel.dev.obi` userboot 正常、计数 0。
+`fair.cpp` 适配清单已重新生成，44 条（上一轮 41 条，新增的是 `which_cpu`、
+`curr_thread`、`of()` 三类）。
+
+**故意没做**
+
+- 没有解散 `Runtime`，理由见上。
+- 没有给 `Runtime` 改名。它现在装的是 Linux 叫 `struct rq` 的东西，而 `Runtime`
+  这个名字同样没说清是什么的 runtime；但 `RunQueue` 被 Fair 占着，改名要先定名字。
+- 没有给字段加 `TA_GUARDED`。那是新增 `-Werror` 失败的最大来源——
+  `Scheduler::init_first_thread()` 由 BSP 只持线程 PI 锁写**远程** Runtime 的
+  `m_curr_thread`——每条出路都该有自己的决定和提交。

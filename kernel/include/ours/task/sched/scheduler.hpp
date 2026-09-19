@@ -65,7 +65,7 @@ class Scheduler {
     /// context switch, so the thread a CPU is executing *before* its first
     /// switch -- the boot context on the BSP, each CPU's idler once
     /// task::init() has built it -- has to be installed by hand, or
-    /// m_runtime.curr_thread stays null until something dereferences it.
+    /// m_runtime.m_curr_thread stays null until something dereferences it.
     /// Zircon does the same in Scheduler::InitializeFirstThread(): mark the
     /// thread running, pin it to its CPU, make it active_thread_.
     static auto init_first_thread(Thread *thread, CpuNum cpunum) -> void;
@@ -130,31 +130,25 @@ class Scheduler {
     /// which walks CPU_OFFSETS with a remote CPU number -- a load off an
     /// unrelated cacheline on every enqueue, tick and context switch, and a
     /// dependency on `which_cpu` being right for something the pointer
-    /// arithmetic already knows. This is a compile-time constant subtraction.
-    FORCE_INLINE
-    static auto of(Runtime &runtime) -> Self & {
-        return *ustl::mem::container_of(&runtime, &Self::m_runtime);
-    }
-
     FORCE_INLINE
     auto num_runnable() const -> usize {
-        return m_runtime.num_queued_threads;
+        return m_runtime.m_num_queued_threads;
     }
 
     FORCE_INLINE
     auto is_state_active() const -> bool {
         return STATES[usize(State::Active)]
             .load(std::memory_order_relaxed)
-            .test(m_runtime.which_cpu);
+            .test(m_runtime.m_which_cpu);
     }
 
-    /// TA_RETURN_CAPABILITY makes `get_lock()` and `m_runtime.rqlock` one
+    /// TA_RETURN_CAPABILITY makes `get_lock()` and `m_runtime.m_rqlock` one
     /// capability to the analysis. Both spellings are in use: Scheduler's own
     /// methods say `TA_REQUIRES(get_lock())`, ISchedule's virtuals say
     /// `TA_REQUIRES(runtime.rqlock)`, and enqueue_thread() calls the latter
     /// while holding the former.
-    TA_RETURN_CAPABILITY(m_runtime.rqlock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
-        return m_runtime.rqlock;
+    TA_RETURN_CAPABILITY(m_runtime.m_rqlock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
+        return m_runtime.m_rqlock;
     }
 
   private:
@@ -222,7 +216,7 @@ class Scheduler {
     ///  * |curr|'s PI lock is held on entry and *not* released by this
     ///    activation. finish_switch_context() releases the PI lock of
     ///    whichever thread ran before -- the one recorded in
-    ///    m_runtime.prev_thread -- on the far side of the switch, on the
+    ///    m_runtime.m_prev_thread -- on the far side of the switch, on the
     ///    next thread's stack. A lock released by a different activation than
     ///    the one that acquired it is outside the analysis's model entirely.
     ///
@@ -239,7 +233,7 @@ class Scheduler {
     ///
     /// |curr| is the thread running *now*, not the one being switched to --
     /// both call sites pass the resuming thread (switch_context() passes its
-    /// own |curr|, trampoline_handoff() passes m_runtime.curr_thread), and
+    /// own |curr|, trampoline_handoff() passes m_runtime.m_curr_thread), and
     /// the definition has always named it so. The declaration said |next|,
     /// which is the mental model from before this became a static: back then
     /// the caller was on the near side of the switch and the thread it named
@@ -334,7 +328,7 @@ class Scheduler {
     /// [MP] Takes migrating_threads_lock only long enough to swap the list
     /// out, then works on the private copy unlocked. Same TA_EXCLUDES logic as
     /// do_unpark_thread(): the lock is acquired and released within.
-    TA_EXCLUDES(m_runtime.migrating_threads_lock)
+    TA_EXCLUDES(m_runtime.m_migrating_threads_lock)
     auto process_migrating_threads(SchedTime now) -> void;
 
     /// A stub (asserts only) called from process_migrating_threads() under

@@ -86,7 +86,7 @@ enum class UnparkOptions {
 };
 USTL_ENABLE_ENUM_BITMASK(UnparkOptions);
 
-struct Runtime;
+class Runtime;
 class Scheduler;
 class ISchedule;
 class Fair;

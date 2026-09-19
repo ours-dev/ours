@@ -79,7 +79,7 @@ USTL_ENABLE_ENUM_BITMASK(DequeueOptions);
 /// Every parameter here is named, and on the |Runtime &| that is a
 /// requirement rather than a courtesy: a clang thread-safety attribute names
 /// an expression, and there is no expression for an unnamed parameter -- so
-/// `TA_REQUIRES(runtime.rqlock)` cannot even be written on a hook declared
+/// `TA_REQUIRES(runtime.lock())` cannot even be written on a hook declared
 /// `(Runtime &, Thread *curr)`. Two of the eighteen entry points below say
 /// which lock they are called under; the rest are called under the same lock
 /// and said nothing, and the reason they said nothing is that they could not.
@@ -96,7 +96,7 @@ class ISchedule {
     /// Requires the runqueue lock of runtime is been holding by caller.
     ///
     /// Return Status::Ok if enqueue action really happened.
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto enqueue_thread(Runtime &runtime, Thread *thread, EnqueueOptions options)
         -> Status = 0;
 
@@ -104,13 +104,13 @@ class ISchedule {
     ///
     /// Return Status::Ok if dequeue action really happened. Status::Delayed if delay
     /// to dequeue.
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto dequeue_thread(Runtime &runtime, Thread *thread, DequeueOptions options)
         -> Status = 0;
 
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto yield_thread(Runtime &runtime, Thread *curr) -> void {}
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto yield_to_thread(Runtime &runtime, Thread *curr, Thread *next) -> Status {
         return Status::NotSupported;
     }
@@ -118,21 +118,21 @@ class ISchedule {
     /// Evaluate whether preempt the thread |curr| with given |thread| if needed.
     ///
     /// Return Status::Ok if able to preempt.
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto unpark_preempt(Runtime &runtime, Thread *curr, Thread *thread,
                                 UnparkOptions options) -> Status {
         return Status::Unimplemented;
     }
 
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto evaluate_next_thread(Runtime &runtime, Thread *curr) -> Thread * = 0;
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto put_prev_thread(Runtime &runtime, Thread *prev) -> void {}
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto set_next_thread(Runtime &runtime, Thread *next) -> void {}
 
     /// [Optional] Update the scheduluing data of thread |curr|.
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto update_thread(Runtime &runtime, Thread *curr) -> void {}
 
     virtual auto override_thread_base_profile(Runtime &runtime, Thread *thread,
@@ -142,7 +142,7 @@ class ISchedule {
 
     virtual auto on_thread_init(Runtime &runtime, Thread *thread) -> void {}
     virtual auto on_thread_dead(Runtime &runtime, Thread *thread) -> void {}
-    TA_REQUIRES(runtime.rqlock)
+    TA_REQUIRES(runtime.lock())
     virtual auto on_thread_unpark(Runtime &runtime, Thread *thread) -> void {}
 
     virtual auto on_thread_tick(Runtime &runtime, Thread *curr, bool queued) -> void = 0;
@@ -156,7 +156,7 @@ class ISchedule {
     /// cross-CPU wakeup, since Scheduler::do_unpark_thread() runs on the waker
     /// and manipulates the target's queues.
     [[nodiscard]]
-    TA_REQUIRES(runtime.rqlock) virtual auto num_queued(Runtime &runtime) const -> usize = 0;
+    TA_REQUIRES(runtime.lock()) virtual auto num_queued(Runtime &runtime) const -> usize = 0;
 
     /// [Optional] Attempts to assign a target CPU on which |thread| will run.
     ///

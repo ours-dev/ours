@@ -42,10 +42,28 @@ using NormalRunQueue = RrRunQueue;
 /// Data required for executing the scheduler. The class is passed around to
 /// a function that will perform the scheduling work and acts as a capability
 /// token.
-struct Runtime {
+/// One CPU's run queue: the lock, the CPU's identity, the scheduler clock,
+/// the discipline's queue, and the bookkeeping a scheduling decision is made
+/// from. Linux calls the same object `struct rq`.
+///
+/// It is a class with private fields and exactly one friend, and the public
+/// surface below is the measured need -- nothing invented, nothing measured
+/// left out. It used to be a struct of fourteen public fields handed by
+/// reference to sixteen virtuals, so a discipline could write
+/// `runtime.clock_source.update_clock()` (defeating the caller's SkipClock
+/// decision), `runtime.total_weight -= w` (corrupting the generic Scheduler's
+/// accounting), or reach the whole Scheduler through `Scheduler::of()`.
+///
+/// Deliberately NOT a friend of any discipline. C++ friendship is class-wide:
+/// `friend class Fair` would hand Fair every private member and make every
+/// claim above false.
+class Runtime {
+    friend class Scheduler;
+
+  public:
     /// Records that this Runtime's CPU should preempt what it is running.
     ///
-    /// |which_cpu|, not add_pending()'s default. The default is the mask of
+    /// |m_which_cpu|, not add_pending()'s default. The default is the mask of
     /// the CPU *executing* the call, and a Runtime is not always the running
     /// CPU's: Scheduler::do_unpark_thread() reaches into the target CPU's
     /// Runtime from the waker, and every ISchedule entry point is handed a
@@ -56,7 +74,7 @@ struct Runtime {
     /// This is the one place that rule is written down; callers say
     /// `mark_preempt_pending()` and the local case falls out of it.
     auto mark_preempt_pending() -> void {
-        curr_thread->preemption_state().add_pending(CpuMask::of(which_cpu));
+        m_curr_thread->preemption_state().add_pending(CpuMask::of(m_which_cpu));
     }
 
     /// This CPU's run queue for |Disci|.
@@ -74,6 +92,45 @@ struct Runtime {
     /// mapping lives here rather than in a typedef each discipline writes for
     /// itself. Linux nests the same way -- `struct rq` holds `cfs_rq`,
     /// `rt_rq` and `dl_rq` inline and hands the whole `rq` to a `sched_class`.
+    /// The run-queue lock, and the one capability every annotation in this
+    /// subsystem names.
+    ///
+    /// It has to stay publicly nameable even though the member is private:
+    /// clang resolves a thread-safety attribute's argument *with access
+    /// control on*, so `TA_REQUIRES(runtime.m_rqlock)` in schedule.hpp would
+    /// be a hard error rather than a warning. TA_RETURN_CAPABILITY makes this
+    /// accessor and the member one capability to the analysis, the same
+    /// construction `Scheduler::get_lock()` already uses, and the same one
+    /// Zircon uses for `Thread::get_lock()`.
+    ///
+    /// This is also the honest limit of the seal: a discipline can still call
+    /// `runtime.lock().acquire()`. No design that spells `TA_REQUIRES(param.x)`
+    /// can close that, because the capability must be nameable to be named.
+    TA_RETURN_CAPABILITY(m_rqlock) FORCE_INLINE auto lock() -> sync::SpinLock & {
+        return m_rqlock;
+    }
+
+    /// The CPU this run queue is -- never `Cpu::id()`.
+    ///
+    /// A Runtime handed to a discipline is not always the running CPU's:
+    /// `Scheduler::do_unpark_thread()` runs on the waker and mutates the
+    /// target's queue. Reading the executing CPU instead is the mistake this
+    /// subsystem has already made once.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto which_cpu() const -> CpuNum {
+        return m_which_cpu;
+    }
+
+    /// The thread running on `which_cpu()` -- not `Thread::Current::get()`,
+    /// for the same reason. Read-only here: the writer is the context switch,
+    /// which is Scheduler's.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto current_thread() const -> Thread * {
+        return m_curr_thread;
+    }
+
     template <Discipline Disci>
     FORCE_INLINE
     auto queue() -> auto & {
@@ -86,7 +143,7 @@ struct Runtime {
 
     FORCE_INLINE
     auto clock() -> SchedTime {
-        return clock_source.clock();
+        return m_clock_source.clock();
     }
 
     /// How long the running thread has been running since it was last charged,
@@ -110,12 +167,12 @@ struct Runtime {
     FORCE_INLINE
     auto charge_current() -> SchedDuration {
         auto const now = clock();
-        auto const elapsed = now - curr_started_time;
+        auto const elapsed = now - m_curr_started_time;
         if (elapsed <= SchedDuration{0}) [[unlikely]] {
             return SchedDuration{0};
         }
 
-        curr_started_time = now;
+        m_curr_started_time = now;
         return elapsed;
     }
 
@@ -128,7 +185,7 @@ struct Runtime {
     /// two together would charge that interval twice, once to each.
     FORCE_INLINE
     auto restart_current_slice() -> void {
-        curr_started_time = clock();
+        m_curr_started_time = clock();
     }
 
     /// Ask that |next| be the thread chosen at the next reschedule.
@@ -146,7 +203,7 @@ struct Runtime {
     /// out.
     FORCE_INLINE
     auto nominate_next_thread(Thread *next) -> void {
-        next_thread = next;
+        m_next_thread = next;
     }
 
     /// Reprogram the preemption timer to fire |delta| from now.
@@ -162,31 +219,32 @@ struct Runtime {
     /// guarantee.
     FORCE_INLINE
     auto arm_preempt_timer(SchedDuration delta) -> void {
-        DEBUG_ASSERT(which_cpu == CpuNum(Cpu::id()));
-        clock_source.reset_preempt(delta);
+        DEBUG_ASSERT(m_which_cpu == CpuNum(Cpu::id()));
+        m_clock_source.reset_preempt(delta);
     }
 
-    CpuNum which_cpu;
-    sync::SpinLock rqlock;
+  private:
+    CpuNum m_which_cpu;
+    sync::SpinLock m_rqlock;
 
-    SchedClock clock_source;
+    SchedClock m_clock_source;
 
-    Weight total_weight;
-    usize num_queued_threads;
-    Thread *prev_thread;
-    Thread *curr_thread;
-    Thread *next_thread;
-    SchedTime curr_started_time;
-    SchedTime curr_preempt_time;
+    Weight m_total_weight;
+    usize m_num_queued_threads;
+    Thread *m_prev_thread;
+    Thread *m_curr_thread;
+    Thread *m_next_thread;
+    SchedTime m_curr_started_time;
+    SchedTime m_curr_preempt_time;
 
-    sync::SpinLock migrating_threads_lock;
-    Thread::MigratingList migrating_threads;
+    sync::SpinLock m_migrating_threads_lock;
+    Thread::MigratingList m_migrating_threads;
 
     // Physical time.
     NormalRunQueue m_normal_queue;
 
-    SchedTime last_updated_time;
-    SchedDuration total_expected_runtime;
+    SchedTime m_last_updated_time;
+    SchedDuration m_total_expected_runtime;
 };
 } // namespace ours::task::sched
 

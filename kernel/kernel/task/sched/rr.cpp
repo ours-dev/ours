@@ -68,7 +68,7 @@ auto RoundRobin::enqueue_thread(Runtime &runtime, Thread *thread, EnqueueOptions
     // The running thread is not on the FIFO -- set_next_thread() took it off
     // -- so an enqueue of it is a request to re-queue, which put_prev_thread()
     // is the one to honour. Being asked here is a no-op, not an error.
-    if (thread == runtime.curr_thread) {
+    if (thread == runtime.current_thread()) {
         return Status::Ok;
     }
 
@@ -87,7 +87,7 @@ auto RoundRobin::dequeue_thread(Runtime &runtime, Thread *thread, DequeueOptions
     // set_next_thread(), so the only thing to record is that it is no longer
     // queueable. Charging it first keeps its runtime honest for whoever reads
     // it later.
-    if (thread == runtime.curr_thread) {
+    if (thread == runtime.current_thread()) {
         charge(runtime, thread);
     } else if (ctx.runqueue_state().is_active()) {
         queue.dequeue(ctx);
