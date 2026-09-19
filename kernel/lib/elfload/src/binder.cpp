@@ -35,6 +35,25 @@ namespace {
     /// SHN_UNDEF: the symbol is imported, not defined, by the image whose
     /// table it is in.
     constexpr u16 SHN_UNDEF = 0;
+
+    /// Whether |dynamic| names |tag| at all, readable or not.
+    ///
+    /// Asked of the two relocation tables because eftl answers NONE both for
+    /// "this image has no such table" and for "it has one I could not read",
+    /// and only the first is harmless. Treating the second as the first is
+    /// how a .rela.plt once went unapplied without a word: the GOT kept its
+    /// link-time values and the first call through it jumped to an
+    /// unrelocated address in ring 3, far from anything that could say why.
+    template <typename Dynamic>
+    [[nodiscard]]
+    auto declares(Dynamic const &dynamic, eftl::elf::DynTag const tag) -> bool {
+        for (auto const entry: dynamic.entries()) {
+            if (static_cast<i64>(entry.d_tag) == static_cast<i64>(tag)) {
+                return true;
+            }
+        }
+        return false;
+    }
 } // namespace
 
 auto Binder::from(Bytes const file, Image const &image) -> Result {
@@ -97,6 +116,18 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
 
     auto const relas = dynamic->dynamic_rela_table();
     auto const plt_relas = dynamic->dynamic_plt_rela_table();
+
+    // A table the image declares and eftl could not produce is refused, not
+    // skipped: skipping it leaves every pointer in it at its link-time value.
+    if (relas.is_none() && declares(dynamic.value(), eftl::elf::DynTag::Rela)) {
+        log::error("elfload: the importer declares DT_RELA but it cannot be read");
+        return Status::InvArgs;
+    }
+    if (plt_relas.is_none() && declares(dynamic.value(), eftl::elf::DynTag::JmpRel)) {
+        log::error("elfload: the importer declares DT_JMPREL but it cannot be read");
+        return Status::InvArgs;
+    }
+
     if (relas.is_none() && plt_relas.is_none()) {
         return Status::Ok;
     }

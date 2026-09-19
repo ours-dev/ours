@@ -609,13 +609,28 @@ class DynamicImageView final {
 
         auto const address = unique_tag_value(address_tag);
         auto const size = unique_tag_value(size_tag);
+        if (address.is_none() || size.is_none()) {
+            return ustl::NONE;
+        }
+
+        // The entry-size tag is checked when it is there and not required when
+        // it is not. The PLT table is why: DT_JMPREL has no size tag of its own
+        // -- DT_PLTREL names its entry *type*, and the type fixes the size --
+        // so its callers pass DT_RELAENT/DT_RELENT, which describe DT_RELA and
+        // DT_REL. A linker emits those only when the object has a DT_RELA or a
+        // DT_REL. An executable whose only relocations are PLT slots has
+        // neither, and requiring the tag made its whole .rela.plt read as
+        // "absent": the loader applied nothing, the GOT kept its link-time
+        // values, and the first call through it jumped to an unrelocated
+        // address. The type already says how big an entry is; a present tag
+        // that disagrees is still refused below.
         auto const entry_size = unique_tag_value(entry_size_tag);
-        if (address.is_none() || size.is_none() || entry_size.is_none()) {
+        if (entry_size.is_some() && entry_size.value() != sizeof(Entry)) {
             return ustl::NONE;
         }
         auto const byte_count = to_usize(size.value());
         if (byte_count.is_none() || byte_count.value() == 0 ||
-            byte_count.value() % sizeof(Entry) != 0 || entry_size.value() != sizeof(Entry)) {
+            byte_count.value() % sizeof(Entry) != 0) {
             return ustl::NONE;
         }
         auto const entries = bytes_at_virtual_address(address.value(), byte_count.value());
