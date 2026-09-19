@@ -184,3 +184,75 @@ reading the .dynsym」），那是给**不读 .dynsym** 的场合留的后门；
 - 系统调用号仍然是 `system/public/ours/syscall.hpp` 里的手写宏，stub 仍然是 vdso.S
   里手写的汇编。现在加一个系统调用要动三处（号、stub、声明），比原来的五处少，但
   仍然不是「一处描述、处处生成」。那是下一件事。
+
+## 编译模型（`-fpie`、`-fno-plt`）放回每个 ring-3 目标，不只可执行文件（2026-09-19）
+
+**文件**
+- `system/BUILD.gn` —— `-fpie` 与 `-fno-plt` 移进 `config("user.standalone")`；
+  `user.executable` 只剩 `-static --pie`，`user.program` 只剩链接期 flag，
+  `user.shared` 只剩 `-fPIC`。
+
+**症状**
+第一个用户态库 `//system/lib/ou` 一链进 shell 就出两个问题：
+```
+ld.lld: error: relocation R_X86_64_32 cannot be used against local symbol; recompile with -fPIC
+>>> defined in user-x86/obj/system/lib/ou/src/ou.debug.cpp.o
+```
+修掉这个之后，shell 的导入从 `.rela.dyn` 的 `R_X86_64_GLOB_DAT` 变成了 `.rela.plt` 的
+`R_X86_64_JUMP_SLOT`（这又撞出了 eftl 的 DT_RELAENT 问题，见同日 `eftl.md`）。
+
+**原因**
+本文件前面「vDSO 改成共享对象」那一条拆 config 时，把 `-fpie` 跟着 `-static --pie`
+一起搬进了 `user.executable`，把 `-fno-plt` 放在了 `user.program`。两者都只作用于
+**可执行文件目标本身**。而一个程序由很多目标组成：它链进来的每个 `source_set`、
+每个库，编译时都拿不到这两个 flag。
+
+区分的判据是：**链接策略**因产物而异（可执行文件要 `-static --pie`，共享对象要
+`-shared`），但**编译模型**对所有 ring-3 代码都一样——内核决定加载地址，所以谁都
+不能写死地址；一个导入函数都该经 GOT 调用，所以谁都不该生成 PLT。把编译模型挂在
+「可执行文件」上，等于说「只有程序自己的 .cpp 是位置无关的」，第一个库就会打破它。
+
+之前没暴露，是因为 userboot 和 shell 都只有一个翻译单元，没有第二个目标。
+
+**改法**
+```gn
+# 改前
+config("user.executable") {
+  configs = [ ":static-link", ":pie-link" ]
+  cflags = [ "-fpie" ]
+}
+config("user.program") {
+  cflags = [ "-fPIE", "-fno-plt" ]
+  ...
+}
+
+# 改后
+config("user.standalone") {      # 每个 ring-3 目标
+  cflags = [ "-fpie", "-fno-plt" ]
+  cflags += [ "-msoft-float", ... ]
+}
+config("user.executable") {      # 只有链接策略
+  configs = [ ":static-link", ":pie-link" ]
+}
+```
+`user.shared` 在后面加 `-fPIC`，后出现的 flag 覆盖前面的 `-fpie`，vDSO 仍然没有任何
+重定位（`llvm-readelf -r` 确认）。
+
+**参照**
+`Zircon //build/config/zircon:user` 把 `-fPIE` 放在所有用户态代码共享的 config 上，
+可执行文件与共享库只在链接侧分叉；本项目内核侧 `//kernel/products:kernel.config`
+也是编译模型在全局、链接形状在产物上。
+
+**验证**
+- 构建通过。shell 的重定位回到预期形状：
+  ```
+  Relocation section '.rela.dyn' contains 2 entries:
+    ... R_X86_64_GLOB_DAT  ours_debug_write + 0
+    ... R_X86_64_GLOB_DAT  ours_command_list + 0
+  ```
+  vDSO：`There are no relocations in this file.`
+- QEMU 实测两个镜像，shell 完整输出。
+
+**故意没做**
+- 没把 `-fpie` 升成 `-fPIE`。原来就是 `-fpie`（小模型，镜像在低 2 GiB），这一条只
+  挪位置不改语义。

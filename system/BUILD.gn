@@ -84,6 +84,27 @@ config("user.headers") {
 config("user.standalone") {
   configs = [ "//build/config:freestanding" ]
 
+  # Position-independent code, for every ring-3 target and not only for the
+  # executables. The kernel picks the load address, so nothing here may bake
+  # one in -- and a library compiled without this produces an R_X86_64_32
+  # against a string literal that the executable it is linked into cannot
+  # accept ("relocation ... cannot be used against local symbol"). The link
+  # policy below differs between an executable and a shared object; the
+  # compilation model does not, which is why this is here and -static/--pie
+  # are not. :user.shared raises it to -fPIC, and the later flag wins.
+  #
+  # -fno-plt for the same reason. Every call to an imported function should
+  # reach the GOT the way an imported variable does, so the loader has one
+  # relocation type to apply and no PLT stub to service. It used to sit on
+  # :user.program alone, which covered the executable's own translation units
+  # and missed every library linked into it: //system/lib/ou's calls into the
+  # vDSO went through a PLT, the program grew a .rela.plt, and the image's
+  # relocations stopped being the shape the rest of this config describes.
+  cflags = [
+    "-fpie",
+    "-fno-plt",
+  ]
+
   # No SSE, MMX or x87 in a user program either -- not because ring 3 may not
   # use them, but because this kernel has not turned them on: nothing writes
   # CR4.OSFXSR (arch/x86/system.hpp defines the bit and no code sets it), so
@@ -97,7 +118,7 @@ config("user.standalone") {
   # The real fix is FPU/SSE state that survives a context switch, and then
   # turning the bit on; until that exists, saying so here is better than every
   # user program discovering it. See docs/repairs/260910/x86.md.
-  cflags = [
+  cflags += [
     "-msoft-float",
     "-mno-mmx",
     "-mno-sse",
@@ -121,10 +142,6 @@ config("user.executable") {
     "//build/config:static-link",
     "//build/config:pie-link",
   ]
-
-  # Same reason as the kernel's (//kernel/products:kernel.config): the image
-  # is linked as a PIE, so the code has to be compiled to match.
-  cflags = [ "-fpie" ]
 }
 
 # A program that is bound to the vDSO at load time
@@ -141,19 +158,16 @@ config("user.executable") {
 config("user.program") {
   configs = [ "//build/config:pie-link" ]
 
-  cflags = [
-    "-fPIE",
-
-    # An imported function then reaches the GOT the way an imported variable
-    # does, leaving the loader a single relocation type to apply. `-z now`
-    # says the same thing to the linker: nothing here can service a lazily
-    # bound PLT stub, since the kernel binds an image once, at load.
-    "-fno-plt",
-  ]
-
+  # The compilation model -- -fpie, -fno-plt -- is not here: it belongs to
+  # every ring-3 target, including the libraries a program links, and lives in
+  # :user.standalone for that reason. What is here is only what linking an
+  # executable against the vDSO adds.
   ldflags = [
     "-nostdlib",
     "-nostdlib++",
+
+    # Nothing here can service a lazily bound PLT stub, since the kernel binds
+    # an image once, at load.
     "-Wl,-z,now",
 
     # There is no dynamic linker: the kernel maps the vDSO and binds against
@@ -171,11 +185,10 @@ config("user.program") {
 #
 # The user-mode mirror of //kernel/phys:phys-module, and for the same reasons:
 #
-#   * -fPIC because the kernel picks the load address at run time.
-#   * -fno-plt because a call through a PLT stub needs lazy-binding machinery
-#     no one here can service; without it an imported function reaches the GOT
-#     the way an imported variable does, leaving the loader a single
-#     relocation type to apply. `-z now` says the same thing to the linker.
+#   * -fPIC because the kernel picks the load address at run time (raising
+#     :user.standalone's -fpie, which every ring-3 target already has, along
+#     with -fno-plt).
+#   * `-z now`, because nothing here can service a lazily bound PLT stub.
 #   * --no-dynamic-linker because there is none: the kernel maps this image
 #     and binds against it itself.
 #   * -Bsymbolic so the object's references to its own default-visibility
@@ -186,10 +199,7 @@ config("user.program") {
 # -shared itself comes from the toolchain's solink_module tool, so a
 # loadable_module() gets it without this config saying so.
 config("user.shared") {
-  cflags = [
-    "-fPIC",
-    "-fno-plt",
-  ]
+  cflags = [ "-fPIC" ]
   asmflags = [ "-fPIC" ]
   ldflags = [
     "-nostdlib",
