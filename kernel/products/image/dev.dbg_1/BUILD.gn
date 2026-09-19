@@ -4,44 +4,73 @@
 
 # kernel.dev.dbg_1 内核镜像（无单测的调试镜像，dev 的对照）。
 #
-# 同 //kernel/products/image/kernel.dev/：镜像本体定义在这里，产品只选择。
+# 同
+# //kernel/products/image/kernel.dev/：镜像本体定义在这里，产品只选择。
 #
-# 产物：$root_out_dir/kernel.dev.dbg_1.obi（默认扁平输出在 out 根）。
+# 产物：$root_out_dir/kernel.dev.dbg_1.obi（默认扁平输出在 out
+# 根）。
 
 import("//build/obi/kernel_cmdline.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 
 kernel_package("ours") {
-  visibility = [ ":*", "//products/*" ]
+  visibility = [
+    ":*",
+    "//products/*",
+  ]
   prefix = ""
   deps = [
     "..:common_package_items",
+
     # dbg.1, not dbg.0 -- the whole point of this image is the diagnostics
     # kernel_debug_level 1 turns on (KERNEL_DEBUG_LEVEL=1, and with it
     # DEBUG_ASSERT and logz4's Debug/Trace levels).
     # Built against dbg.0 it was a byte-for-byte policy twin of kernel.dev.
     "//kernel/products/bin:vmours(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1)",
+
+    # 这个镜像的第一个用户程序：示例
+    # shell。它不在共享零件里，因为「跑哪个程序」
+    # 是镜像的属性 —— 由本镜像声明它，再由下面的 cmdline
+    # 指名它。工具链后缀同上：
+    # 不写就会在内核工具链里编出一个 -mcmodel=kernel
+    # 的“用户程序”。
+    "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
   ]
 }
 
+# 镜像级内核 cmdline：指名第一个用户进程跑哪个程序。
+#
+# 内核不认
+# //examples，只认这个名字（kernel/lib/userabi/src/userboot.cpp 的
+# USERBOOT_OPTION，对标 Zircon 的
+# kernel.select.userboot）。不写这一行，内核就跑 默认的 userboot
+# —— 那个只证明「能进 ring 3 并答一次调用」的程序。
+#
+# 值是 BootFS 里的文件名，不是 label：kernel_elf_binary("shell")
+# 设了 has_patches = false，所以它落成一个裸的 `shell`
+# 文件而不是 `shell/` 子树。
 kernel_cmdline("cmdline") {
-  visibility = [ ":*", "//products/*" ]
-  args = []
+  visibility = [
+    ":*",
+    "//products/*",
+  ]
+  args = [ "kernel.select.userboot=shell" ]
 }
 
 kernel_image("dev.dbg_1") {
   visibility = [ "//products/*" ]
 
-  # See //kernel/products/image/dev: the documented name is kernel.dev.dbg_1.obi.
+  # See //kernel/products/image/dev: the documented name is
+  # kernel.dev.dbg_1.obi.
   output_name = "kernel.dev.dbg_1"
 
   # Same topology fix as //kernel/products/image/dev: physload has to be item
   # 0 for obit's --bootable check, and physboot has to name the phys toolchain.
   deps = [
-    "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     ":cmdline",
     ":ours",
+    "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     "//kernel/phys/image/physboot(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
   ]
 }

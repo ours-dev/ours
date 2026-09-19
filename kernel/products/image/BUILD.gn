@@ -4,14 +4,16 @@
 
 # 内核镜像定义（对标 Fuchsia //zircon/kernel/image）。
 #
-# 每个镜像 = 一个子目录（kernel.dev/、kernel.dev.dbg_1/），内含 kernel_package
-# （内核存储块，按 switchset 工具链编译内核可执行文件）+ kernel_cmdline（镜像级
-# cmdline）+ kernel_image（组装产物）；产品（//products/<name>.gni）只按 label
+# 每个镜像 = 一个子目录（kernel.dev/、kernel.dev.dbg_1/），内含
+# kernel_package （内核存储块，按 switchset
+# 工具链编译内核可执行文件）+ kernel_cmdline（镜像级
+# cmdline）+
+# kernel_image（组装产物）；产品（//products/<name>.gni）只按 label
 # 选择镜像，不在这里实例化。
 #
 # 本文件只放所有镜像共用的组装零件：
 #   common_package_items —— 供所有产品的 kernel_package 引用，放所有镜像共享的
-#   bootfs 载荷（当前是 userboot）。
+#   bootfs 载荷（vDSO，以及默认的第一个用户程序 userboot）。
 
 group("common_package_items") {
   visibility = [
@@ -20,19 +22,29 @@ group("common_package_items") {
     "//tests/*",
   ]
 
-  # userboot 是每个镜像都要带的用户态载荷，所以挂在共享零件上而不是逐个镜像
+  # userboot
+  # 是每个镜像都要带的用户态载荷，所以挂在共享零件上而不是逐个镜像
   # 重复声明 —— 这个 group 存在的理由就是这个。
   #
-  # 它必须显式指名 user 工具链：deps 是在内核工具链上下文里求值的，不写工具链
-  # 后缀就会用 kernel-x86 编译出一个 -mcmodel=kernel 的“用户程序”。对标
-  # Fuchsia 的 kernel_package("zircon")，userboot 同样是内核包 BootFS 里的一个
-  # 文件，而不是独立的 OBI item。
+  # 它必须显式指名 user 工具链：deps
+  # 是在内核工具链上下文里求值的，不写工具链 后缀就会用
+  # kernel-x86 编译出一个 -mcmodel=kernel 的“用户程序”。对标
+  # Fuchsia 的 kernel_package("zircon")，userboot 同样是内核包 BootFS
+  # 里的一个 文件，而不是独立的 OBI item。
+  #
+  # 只有「每个镜像都要的」才放这里。userboot 是内核不写
+  # kernel.select.userboot 时默认启动的那个程序，vDSO
+  # 是唯一能进内核的那段代码，两个都符合。镜像想跑别的
+  # 程序，是它自己的 kernel_package 去声明（见
+  # ./dev/BUILD.gn），而不是把那个程序 塞进这个共享 group ——
+  # //examples/shell 曾经就在这里，于是每个产品、每个 image、
+  # 连 //tests/*
+  # 的冒烟镜像都被迫带上一份示例程序，而「到底跑哪个」还得靠内核在包里
+  # 猜。对标 Fuchsia
+  # //zircon/kernel/image:common-package-items，那边同样只有
+  # userboot、vDSO 和 version-string.txt。
   deps = [
     "//kernel/lib/userabi/userboot(//build/toolchain/ours:user-${target_cpu})",
     "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
-
-    # The example shell, which the loader starts instead of userboot. Same
-    # explicit user toolchain, same reason.
-    "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
   ]
 }

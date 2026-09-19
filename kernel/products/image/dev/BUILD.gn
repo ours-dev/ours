@@ -4,9 +4,10 @@
 
 # dev 内核镜像（带单测的开发内核）。
 #
-# 对标 Fuchsia //zircon/kernel/image/user/BUILD.gn：一个镜像 = 一个子目录，
-# 内含 kernel_package（内核存储块，按 switchset 工具链编译内核可执行文件）+
-# kernel_cmdline（镜像级 cmdline）+ kernel_image（组装产物）。产品
+# 对标 Fuchsia //zircon/kernel/image/user/BUILD.gn：一个镜像 =
+# 一个子目录， 内含 kernel_package（内核存储块，按 switchset
+# 工具链编译内核可执行文件）+ kernel_cmdline（镜像级
+# cmdline）+ kernel_image（组装产物）。产品
 # （//products/<name>.gni）只按 label 选择，不在这里实例化。
 #
 # 产物：$root_out_dir/kernel.dev.obi（默认扁平输出在 out 根）。
@@ -15,38 +16,65 @@ import("//build/obi/kernel_cmdline.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 
-# 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0 switchset
-# 工具链，对标 Fuchsia kernel_package("zircon") 的 deps 写法）。prefix=""
-# ——BootFS 顶层是扁平命名空间，内核落在 vmours/image.elf 等顶层路径。
+# 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0
+# switchset 工具链，对标 Fuchsia kernel_package("zircon") 的 deps
+# 写法）。prefix="" ——BootFS 顶层是扁平命名空间，内核落在
+# vmours/image.elf 等顶层路径。
 kernel_package("ours") {
-  visibility = [ ":*", "//products/*" ]
-  # 含带单测的内核（vmours.with-tests 是 testonly），必须 testonly。
+  visibility = [
+    ":*",
+    "//products/*",
+  ]
+
+  # 含带单测的内核（vmours.with-tests 是 testonly），必须
+  # testonly。
   testonly = true
   prefix = ""
   deps = [
     "..:common_package_items",
     "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
+
+    # 这个镜像的第一个用户程序：示例
+    # shell。它不在共享零件里，因为「跑哪个程序」
+    # 是镜像的属性 —— 由本镜像声明它，再由下面的 cmdline
+    # 指名它。工具链后缀同上：
+    # 不写就会在内核工具链里编出一个 -mcmodel=kernel
+    # 的“用户程序”。
+    "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
   ]
 }
 
-# 镜像级内核 cmdline（空 = 维持 phys 侧默认启动行为）。
+# 镜像级内核 cmdline：指名第一个用户进程跑哪个程序。
+#
+# 内核不认
+# //examples，只认这个名字（kernel/lib/userabi/src/userboot.cpp 的
+# USERBOOT_OPTION，对标 Zircon 的
+# kernel.select.userboot）。不写这一行，内核就跑 默认的 userboot
+# —— 那个只证明「能进 ring 3 并答一次调用」的程序。
+#
+# 值是 BootFS 里的文件名，不是 label：kernel_elf_binary("shell")
+# 设了 has_patches = false，所以它落成一个裸的 `shell`
+# 文件而不是 `shell/` 子树。
 kernel_cmdline("cmdline") {
-  visibility = [ ":*", "//products/*" ]
-  args = []
+  visibility = [
+    ":*",
+    "//products/*",
+  ]
+  args = [ "kernel.select.userboot=shell" ]
 }
 
-# dev 镜像：physload 以 stripped ELF 进入 OBI item 0（x86 boot shim 从容器
-# 里加载它）；GRUB 双文件流程的 physload.bin 仍照常发布。rsp 顺序 =
-# kernel_image deps 的后序 DFS，physload 声明在首位即 item 0（--bootable
-# 在打包期断言该拓扑）。
+# dev 镜像：physload 以 stripped ELF 进入 OBI item 0（x86 boot shim
+# 从容器 里加载它）；GRUB 双文件流程的 physload.bin
+# 仍照常发布。rsp 顺序 = kernel_image deps 的后序 DFS，physload
+# 声明在首位即 item 0（--bootable 在打包期断言该拓扑）。
 kernel_image("dev") {
   visibility = [ "//products/*" ]
   testonly = true
 
-  # The artifact everything else already calls it: //BUILD.gn, products/README.md,
-  # products/bringup/BUILD.gn and the comment above all say kernel.dev.obi, but
-  # without this the image took its basename from the target name and landed at
-  # dev.obi.
+  # The artifact everything else already calls it: //BUILD.gn,
+  # products/README.md, products/bringup/BUILD.gn and the comment above all say
+  # kernel.dev.obi, but without this the image took its basename from the target
+  # name and landed at dev.obi.
   output_name = "kernel.dev"
 
   # Order is the OBI topology, and physload was missing from it entirely --
@@ -56,9 +84,9 @@ kernel_image("dev") {
   # kernel toolchain and lands at a different path than the packer expects.
   # This mirrors //kernel/products/image/fake, which builds.
   deps = [
-    "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     ":cmdline",
     ":ours",
+    "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
     "//kernel/phys/image/physboot(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
   ]
 }
