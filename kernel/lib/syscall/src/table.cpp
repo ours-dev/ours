@@ -109,6 +109,47 @@ namespace {
         frame->ax = static_cast<usize>(status);
     }
 
+    /// The register layout of every call with more than three arguments:
+    /// the fourth in %r10 (the vDSO stub moved it from %rcx, which SYSCALL
+    /// overwrites), the fifth and sixth in %r8/%r9, the seventh and eighth in
+    /// %r12/%r13 (loaded by the stub from the caller's stack). Every 32-bit
+    /// value -- a handle, a count, an option word -- is truncated from its
+    /// register rather than trusted, for the reason sys_handle_close_shim
+    /// gives.
+    auto sys_channel_create_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status =
+            sys_channel_create(static_cast<ChannelCreateOptions>(static_cast<u32>(frame->di)),
+                               user_copy::UserOutPtr<HandleValue>(frame->si),
+                               user_copy::UserOutPtr<HandleValue>(frame->dx));
+        frame->ax = static_cast<usize>(status);
+    }
+
+    auto sys_channel_write_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_channel_write(
+            static_cast<HandleValue>(frame->di),
+            static_cast<ChannelWriteOptions>(static_cast<u32>(frame->si)),
+            user_copy::UserInPtr<u8 const>(frame->dx), static_cast<u32>(frame->r10),
+            user_copy::UserInPtr<HandleValue const>(frame->r8), static_cast<u32>(frame->r9));
+        frame->ax = static_cast<usize>(status);
+    }
+
+    auto sys_channel_read_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_channel_read(
+            static_cast<HandleValue>(frame->di),
+            static_cast<ChannelReadOptions>(static_cast<u32>(frame->si)),
+            user_copy::UserOutPtr<u8>(frame->dx), user_copy::UserOutPtr<HandleValue>(frame->r10),
+            static_cast<u32>(frame->r8), static_cast<u32>(frame->r9),
+            user_copy::UserOutPtr<u32>(frame->r12), user_copy::UserOutPtr<u32>(frame->r13));
+        frame->ax = static_cast<usize>(status);
+    }
+
+    auto sys_object_wait_one_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_object_wait_one(
+            static_cast<HandleValue>(frame->di), static_cast<Signals>(static_cast<u32>(frame->si)),
+            static_cast<Instant>(frame->dx), user_copy::UserOutPtr<Signals>(frame->r10));
+        frame->ax = static_cast<usize>(status);
+    }
+
     auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
         auto const status = sys_debug_write(user_copy::UserInPtr<char const>(frame->di), frame->si);
         frame->ax = static_cast<usize>(status);
@@ -158,6 +199,10 @@ namespace {
         table[OURS_SYS_DEBUG_WRITE] = &sys_debug_write_shim;
         table[OURS_SYS_COMMAND_LIST] = &sys_command_list_shim;
         table[OURS_SYS_HANDLE_CLOSE] = &sys_handle_close_shim;
+        table[OURS_SYS_CHANNEL_CREATE] = &sys_channel_create_shim;
+        table[OURS_SYS_CHANNEL_WRITE] = &sys_channel_write_shim;
+        table[OURS_SYS_CHANNEL_READ] = &sys_channel_read_shim;
+        table[OURS_SYS_OBJECT_WAIT_ONE] = &sys_object_wait_one_shim;
 
         return table;
     }

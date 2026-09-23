@@ -11,9 +11,11 @@ assert(toolchain_environment == "user",
 # The named C++ entry to every system call, for programs that run in ring 3.
 source_set("ou") {
   sources = [
+    "src/channel.cpp",
     "src/command.cpp",
     "src/debug.cpp",
     "src/handle.cpp",
+    "src/object.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]
@@ -24,9 +26,11 @@ source_set("ou") {
 # //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
   public = [
+    "include/ou/channel.hpp",
     "include/ou/command.hpp",
     "include/ou/debug.hpp",
     "include/ou/handle.hpp",
+    "include/ou/object.hpp",
     "include/ou/str.hpp",
   ]
 

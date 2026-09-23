@@ -61,10 +61,25 @@ config("user.headers") {
   configs = [
     "//system/public:public.config",
 
+    # rights.hpp and signals.hpp name their bitmask operators through ustl's
+    # USTL_ENABLE_ENUM_BITMASK (<type_traits> and <utility>, nothing else).
+    # A user program reaches them as soon as it includes <ours/vdso.hpp>.
+    "//system/lib/ustl:headers.config",
+
     # A user program is as freestanding as the kernel is: no host libc++, and
     # the host's own headers stop with `#error "No thread API"` as soon as the
     # prelude below includes <cstddef>.
     "//build/config:freestanding_libcxx_include",
+
+    # And the freestanding C declarations libc++ delegates to, after it (its
+    # wrapper headers reach these with include_next). Without them the first
+    # <utility> a user program sees -- ustl's enum_bits.hpp, through
+    # <ours/signals.hpp> -- stops on libc++'s `using ::memcpy` in <cstring>.
+    # The same config the kernel toolchain applies; the headers live in
+    # //system/lib/libc/include, and moving the config beside them is part of
+    # giving user programs a libc (design 3.6). Declarations only: nothing
+    # here defines memcpy for a user program.
+    "//kernel/lib/libc:headers.after",
   ]
   inputs = [ "//kernel/include/ours/prelude.hpp" ]
   cflags_cc = [

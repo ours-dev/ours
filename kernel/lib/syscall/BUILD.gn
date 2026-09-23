@@ -15,9 +15,11 @@ source_set("syscall") {
   # task.cpp / vmo.cpp are still Unimplemented stubs, waiting on the handle
   # table their signatures are written against.
   sources = [
+    "src/channel.cpp",
     "src/command.cpp",
     "src/debug.cpp",
     "src/handle.cpp",
+    "src/object.cpp",
     "src/table.cpp",
     "src/task.cpp",
     "src/vmo.cpp",

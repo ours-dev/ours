@@ -20,7 +20,9 @@
 
 #ifdef __cplusplus
 
+#include <ours/signals.hpp>
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 #include <ours/types.hpp>
 
 /// The vDSO's exported entry points, as a program calls them.
@@ -52,6 +54,29 @@ auto ours_command_list(char *buffer, usize length) -> ours::Status;
 /// Closes |handle|. HANDLE_INVALID is accepted and ignored; any other value
 /// that names nothing in the caller's table answers BadHandle.
 auto ours_handle_close(ours::HandleValue handle) -> ours::Status;
+
+/// Makes a channel and writes a handle to each end into |out0| and |out1|.
+auto ours_channel_create(ours::ChannelCreateOptions options, ours::HandleValue *out0,
+                         ours::HandleValue *out1) -> ours::Status;
+
+/// Queues |num_bytes| of |bytes| on the channel's other end. Handles in a
+/// message are not supported yet: |num_handles| must be 0.
+auto ours_channel_write(ours::HandleValue channel, ours::ChannelWriteOptions options,
+                        void const *bytes, u32 num_bytes, ours::HandleValue const *handles,
+                        u32 num_handles) -> ours::Status;
+
+/// Takes the next message into |bytes|. ShouldWait when there is none yet,
+/// PeerClosed when there is none and never will be, BufferTooSmall (with the
+/// sizes in |actual_*|) when it does not fit.
+auto ours_channel_read(ours::HandleValue channel, ours::ChannelReadOptions options, void *bytes,
+                       ours::HandleValue *handles, u32 num_bytes, u32 num_handles,
+                       u32 *actual_bytes, u32 *actual_handles) -> ours::Status;
+
+/// Waits until the object asserts any of |signals|, the handle is closed, or
+/// |deadline| passes (0 polls; INSTANT_INFINITE waits for ever), and writes
+/// what was asserted into |observed|.
+auto ours_object_wait_one(ours::HandleValue handle, ours::Signals signals, ours::Instant deadline,
+                          ours::Signals *observed) -> ours::Status;
 }
 
 #endif // __cplusplus

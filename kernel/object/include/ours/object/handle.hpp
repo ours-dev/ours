@@ -187,10 +187,17 @@ class KernelHandle {
         DEBUG_ASSERT(m_dispatcher);
     }
 
+    /// From a handle to a more derived type, taking over its reference.
+    ///
+    /// Through release(), because the other specialisation's m_dispatcher is
+    /// private to it: this constructor used to name that member directly and
+    /// compiled only because nothing had instantiated it with a U other than
+    /// T. release() is also the right verb -- the reference moves, and the
+    /// object must not be told it lost a holder.
     template <typename U>
     FORCE_INLINE
     KernelHandle(KernelHandle<U> &&handle)
-        : m_dispatcher(ustl::move(handle).m_dispatcher) {}
+        : m_dispatcher(handle.release()) {}
 
     /// Move-assignment, and no copy-assignment.
     ///

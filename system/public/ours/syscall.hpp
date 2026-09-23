@@ -60,6 +60,34 @@
 /// handle up.
 #define OURS_SYS_HANDLE_CLOSE 2
 
+/// ours_channel_create(ChannelCreateOptions options, HandleValue *out0,
+///                     HandleValue *out1) -> Status
+///
+/// Makes both ends of a new channel and puts a handle to each in the caller's
+/// table. Both values are written out before either handle is installed, so
+/// a bad out-pointer leaves nothing behind.
+#define OURS_SYS_CHANNEL_CREATE 3
+
+/// ours_channel_write(HandleValue channel, ChannelWriteOptions options,
+///                    void const *bytes, u32 num_bytes,
+///                    HandleValue const *handles, u32 num_handles) -> Status
+///
+/// Six arguments: the fourth travels in %r10.
+#define OURS_SYS_CHANNEL_WRITE 4
+
+/// ours_channel_read(HandleValue channel, ChannelReadOptions options,
+///                   void *bytes, HandleValue *handles, u32 num_bytes,
+///                   u32 num_handles, u32 *actual_bytes,
+///                   u32 *actual_handles) -> Status
+///
+/// Eight arguments: the fourth travels in %r10, the seventh and eighth -- on
+/// the stack under SysV -- in %r12 and %r13.
+#define OURS_SYS_CHANNEL_READ 5
+
+/// ours_object_wait_one(HandleValue handle, Signals signals, Instant deadline,
+///                      Signals *observed) -> Status
+#define OURS_SYS_OBJECT_WAIT_ONE 6
+
 #ifdef __cplusplus
 
 #include <ours/types.hpp>
@@ -103,11 +131,34 @@ inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
 /// knows is a limit the caller discovers as Status::OutOfRange.
 inline constexpr auto MAX_DEBUG_WRITE = usize{256};
 
+/// Options for the channel calls. None is the only value any of them accepts
+/// today; anything else answers InvArgs rather than being ignored, so that a
+/// program cannot come to depend on a bit that does nothing. They are
+/// separate types, one per call, because the bits each will grow are
+/// unrelated (Zircon's ZX_CHANNEL_WRITE_USE_IOVEC and ZX_CHANNEL_READ_MAY_DISCARD
+/// share no meaning), and a type per call makes passing one to the other a
+/// compile error.
+enum class ChannelCreateOptions : u32 {
+    None = 0,
+};
+
+enum class ChannelWriteOptions : u32 {
+    None = 0,
+};
+
+enum class ChannelReadOptions : u32 {
+    None = 0,
+};
+
 /// The C++ spelling of the numbers above.
 enum class SyscallNumber : usize {
     DebugWrite = OURS_SYS_DEBUG_WRITE,
     CommandList = OURS_SYS_COMMAND_LIST,
     HandleClose = OURS_SYS_HANDLE_CLOSE,
+    ChannelCreate = OURS_SYS_CHANNEL_CREATE,
+    ChannelWrite = OURS_SYS_CHANNEL_WRITE,
+    ChannelRead = OURS_SYS_CHANNEL_READ,
+    ObjectWaitOne = OURS_SYS_OBJECT_WAIT_ONE,
 };
 } // namespace ours
 

@@ -11,6 +11,14 @@ source_set("public") {
   # compile or link inputs from the consuming toolchain's defaults.
   configs = []
   public_configs = [ ":public.config" ]
+
+  # rights.hpp and signals.hpp spell their bitmask operators with
+  # USTL_ENABLE_ENUM_BITMASK, which needs only <type_traits> and <utility>.
+  # They were always written that way; the ustl include path simply never had
+  # to reach a user program until <ours/vdso.hpp> started naming Signals in
+  # ours_object_wait_one(). Exported rather than hand-copied, so that the
+  # operators on an ABI enum are the same ones the kernel compiles against.
+  public_deps = [ "//system/lib/ustl:headers" ]
 }
 
 config("public.config") {

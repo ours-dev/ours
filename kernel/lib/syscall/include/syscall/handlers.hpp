@@ -3,7 +3,9 @@
 #ifndef SYSCALL_HANDLERS_HPP
 #define SYSCALL_HANDLERS_HPP 1
 
+#include <ours/signals.hpp>
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 #include <ours/types.hpp>
 #include <user_copy/user_copy.hpp>
 
@@ -35,6 +37,25 @@ auto sys_command_list(user_copy::UserOutPtr<char> buffer, usize length) -> Statu
 
 /// Takes |handle| out of the calling process's table and lets it go.
 auto sys_handle_close(HandleValue handle) -> Status;
+
+/// Makes a channel; its two handle values go to |out0| and |out1|.
+auto sys_channel_create(ChannelCreateOptions options, user_copy::UserOutPtr<HandleValue> out0,
+                        user_copy::UserOutPtr<HandleValue> out1) -> Status;
+
+/// Queues a message of |num_bytes| from |bytes| on the channel's peer.
+auto sys_channel_write(HandleValue channel, ChannelWriteOptions options,
+                       user_copy::UserInPtr<u8 const> bytes, u32 num_bytes,
+                       user_copy::UserInPtr<HandleValue const> handles, u32 num_handles) -> Status;
+
+/// Takes the next message on the channel into |bytes|.
+auto sys_channel_read(HandleValue channel, ChannelReadOptions options,
+                      user_copy::UserOutPtr<u8> bytes, user_copy::UserOutPtr<HandleValue> handles,
+                      u32 num_bytes, u32 num_handles, user_copy::UserOutPtr<u32> actual_bytes,
+                      user_copy::UserOutPtr<u32> actual_handles) -> Status;
+
+/// Waits for any of |signals| on the object |handle| names.
+auto sys_object_wait_one(HandleValue handle, Signals signals, Instant deadline,
+                         user_copy::UserOutPtr<Signals> observed) -> Status;
 
 } // namespace ours
 

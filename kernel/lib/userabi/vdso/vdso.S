@@ -95,4 +95,97 @@ OURS_VDSO_SYSRET_HANDLE_CLOSE:
     ret
 .size ours_handle_close, . - ours_handle_close
 
+// ours_channel_create(ChannelCreateOptions options, HandleValue *out0,
+//                     HandleValue *out1) -> Status
+//
+// Three arguments, all in their SysV registers already.
+.balign 16
+.globl ours_channel_create
+.type ours_channel_create, @function
+ours_channel_create:
+    mov $OURS_SYS_CHANNEL_CREATE, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_CHANNEL_CREATE
+.hidden OURS_VDSO_SYSRET_CHANNEL_CREATE
+OURS_VDSO_SYSRET_CHANNEL_CREATE:
+    ret
+.size ours_channel_create, . - ours_channel_create
+
+// ours_channel_write(HandleValue channel, ChannelWriteOptions options,
+//                    void const *bytes, u32 num_bytes,
+//                    HandleValue const *handles, u32 num_handles) -> Status
+//
+// The first stub with a fourth argument. SysV passes it in %rcx, which the
+// SYSCALL instruction is about to overwrite with the return address, so it
+// moves to %r10 -- the register the kernel reads it from. %r8 and %r9 are
+// already where the kernel expects them.
+.balign 16
+.globl ours_channel_write
+.type ours_channel_write, @function
+ours_channel_write:
+    mov %rcx, %r10
+    mov $OURS_SYS_CHANNEL_WRITE, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_CHANNEL_WRITE
+.hidden OURS_VDSO_SYSRET_CHANNEL_WRITE
+OURS_VDSO_SYSRET_CHANNEL_WRITE:
+    ret
+.size ours_channel_write, . - ours_channel_write
+
+// ours_channel_read(HandleValue channel, ChannelReadOptions options,
+//                   void *bytes, HandleValue *handles, u32 num_bytes,
+//                   u32 num_handles, u32 *actual_bytes,
+//                   u32 *actual_handles) -> Status
+//
+// Eight arguments. The first six arrive in registers; SysV puts the seventh
+// and eighth on the caller's stack, just above the return address, and the
+// kernel reads them from %r12 and %r13 (the frame saves both). Those two are
+// callee-saved, so this stub owes its caller their old values: it pushes
+// them, loads the arguments into them, traps, and restores them.
+//
+// Stack on entry:           after both pushes:
+//    0(%rsp)  return addr      0(%rsp)  saved %r13
+//    8(%rsp)  actual_bytes     8(%rsp)  saved %r12
+//   16(%rsp)  actual_handles  16(%rsp)  return addr
+//                             24(%rsp)  actual_bytes
+//                             32(%rsp)  actual_handles
+//
+// Zircon's vDSO does exactly this, at the same offsets (0x18 and 0x20):
+// the m_syscall macro in kernel/lib/userabi/vdso/syscalls-x86.S.
+.balign 16
+.globl ours_channel_read
+.type ours_channel_read, @function
+ours_channel_read:
+    push %r12
+    push %r13
+    mov %rcx, %r10
+    mov 24(%rsp), %r12
+    mov 32(%rsp), %r13
+    mov $OURS_SYS_CHANNEL_READ, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_CHANNEL_READ
+.hidden OURS_VDSO_SYSRET_CHANNEL_READ
+OURS_VDSO_SYSRET_CHANNEL_READ:
+    pop %r13
+    pop %r12
+    ret
+.size ours_channel_read, . - ours_channel_read
+
+// ours_object_wait_one(HandleValue handle, Signals signals, Instant deadline,
+//                      Signals *observed) -> Status
+//
+// Four arguments: the fourth moves from %rcx to %r10, as in channel_write.
+.balign 16
+.globl ours_object_wait_one
+.type ours_object_wait_one, @function
+ours_object_wait_one:
+    mov %rcx, %r10
+    mov $OURS_SYS_OBJECT_WAIT_ONE, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_OBJECT_WAIT_ONE
+.hidden OURS_VDSO_SYSRET_OBJECT_WAIT_ONE
+OURS_VDSO_SYSRET_OBJECT_WAIT_ONE:
+    ret
+.size ours_object_wait_one, . - ours_object_wait_one
+
 .section .note.GNU-stack, "", @progbits
