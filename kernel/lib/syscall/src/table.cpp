@@ -12,7 +12,6 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
-#include <ours/task/thread.hpp>
 #include <ours/types.hpp>
 
 namespace ours {
@@ -60,15 +59,11 @@ namespace {
     /// refused, which is the property that was asked for.
     [[nodiscard]]
     auto trapped_from_vdso(arch::SyscallFrame const *const frame) -> bool {
-        auto const *const thread = task::Thread::Current::get();
-        if (thread == nullptr) {
+        auto const *const process = object::ProcessDispatcher::current();
+        if (process == nullptr) {
             return false;
         }
-        auto const &user_thread = thread->user_thread();
-        if (!user_thread) {
-            return false;
-        }
-        return user_thread->process().vdso_contains(frame->ip);
+        return process->vdso_contains(frame->ip);
     }
 
     /// The answer to a trap that did not come through the vDSO.

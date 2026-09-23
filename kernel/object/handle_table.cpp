@@ -1,0 +1,84 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#include <ours/koid.hpp>
+#include <ours/lockdep.hpp>
+#include <ours/object/handle_table.hpp>
+
+namespace ours::object {
+HandleTable::HandleTable()
+    : m_koid(KoIdGenerator::generate()), m_random(0), m_lock(), m_handles(), m_count(0) {}
+
+HandleTable::~HandleTable() {
+    // Every handle still here is closed now. One at a time, each taken out
+    // under the lock and destroyed after it: closing the last handle to an
+    // object runs its on_zero_handles(), which must not happen under a table
+    // lock (see the class comment).
+    for (;;) {
+        ustl::Box<Handle> handle;
+        {
+            Guard guard{m_lock};
+            auto front = m_handles.front();
+            if (!front) {
+                break;
+            }
+            auto &raw = *front;
+            static_cast<void>(m_handles.erase(m_handles.iterator_to(raw)));
+            raw.set_table_koid(0);
+            m_count -= 1;
+            handle = ustl::Box<Handle>::from_raw(&raw);
+        }
+    }
+}
+
+auto HandleTable::value_of(Handle const &handle) const -> HandleValue {
+    return ((handle.base_value() << HANDLE_RESERVED_BITS) | HANDLE_FIXED_BITS_MASK) ^ m_random;
+}
+
+auto HandleTable::add(ustl::Box<Handle> handle) -> HandleValue {
+    DEBUG_ASSERT(handle);
+    auto *const raw = handle.into_raw();
+    DEBUG_ASSERT(raw->table_koid() == 0, "a handle is in at most one table");
+    auto const value = value_of(*raw);
+
+    Guard guard{m_lock};
+    raw->set_table_koid(m_koid);
+    m_handles.push_back(*raw);
+    m_count += 1;
+    return value;
+}
+
+auto HandleTable::remove(HandleValue const value) -> ustl::Box<Handle> {
+    Guard guard{m_lock};
+    auto *const handle = lookup_locked(value);
+    if (handle == nullptr) {
+        return ustl::Box<Handle>();
+    }
+    static_cast<void>(m_handles.erase(m_handles.iterator_to(*handle)));
+    handle->set_table_koid(0);
+    m_count -= 1;
+    return ustl::Box<Handle>::from_raw(handle);
+}
+
+auto HandleTable::lookup_locked(HandleValue const value) const -> Handle * {
+    // 1. The fixed bits.
+    if ((value & HANDLE_FIXED_BITS_MASK) != HANDLE_FIXED_BITS_MASK) {
+        return nullptr;
+    }
+
+    // 2. Undo this table's random, then drop the fixed bits.
+    auto const base_value = (value ^ m_random) >> HANDLE_RESERVED_BITS;
+
+    // 3 and 4. In the backed arena, and a live handle with this base value.
+    auto *const handle = Handle::from_base_value(base_value);
+    if (handle == nullptr) {
+        return nullptr;
+    }
+
+    // 5. And it is one of ours.
+    if (handle->table_koid() != m_koid) {
+        return nullptr;
+    }
+    return handle;
+}
+
+} // namespace ours::object

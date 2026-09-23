@@ -26,13 +26,15 @@ constexpr auto SHARED_ASPACE_SIZE = USER_ASPACE_SIZE - USER_ASPACE_RESTRICTED_SI
 
 namespace ours::object {
 ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *const name,
-                                     ustl::Arc<mm::VmAspace> aspace)
+                                     ustl::Arc<mm::VmAspace> aspace,
+                                     ustl::Arc<HandleTable> handle_table)
     : Base()
     , m_parent(nullptr)
     , m_state(State::Initial)
     , m_name(name)
     , m_job(ustl::move(job))
     , m_aspace(ustl::move(aspace))
+    , m_handle_table(ustl::move(handle_table))
     , m_vdso_code_base(0)
     , m_vdso_code_size(0) {}
 
@@ -72,7 +74,13 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
     // root_vma_out holding a dispatcher, which the caller's KernelHandle
     // releases on its own -- and the aspace dies with it, since the root VMA
     // was the last thing referencing it.
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(job, name, ustl::move(aspace)));
+    auto handle_table = ustl::Arc<HandleTable>::adopt(new (mm::GAF_KERNEL) HandleTable());
+    if (!handle_table) {
+        return Status::OutOfMem;
+    }
+
+    auto self = ustl::Arc<Self>::adopt(
+        new (mm::GAF_USER) Self(job, name, ustl::move(aspace), ustl::move(handle_table)));
     if (!self) {
         return Status::OutOfMem;
     }
@@ -82,6 +90,14 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
 
     DISPATCHER_PROCESS_CREATE_COUNT.add(1);
     return Status::Ok;
+}
+
+auto ProcessDispatcher::current() -> Self * {
+    auto *const thread = ThreadDispatcher::current();
+    if (thread == nullptr) {
+        return nullptr;
+    }
+    return &thread->process();
 }
 
 auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {

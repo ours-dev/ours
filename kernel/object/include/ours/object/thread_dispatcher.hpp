@@ -43,6 +43,11 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     static auto spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
                       KernelHandle<Self> *out) -> Status;
 
+    /// The user thread the calling kernel thread runs on behalf of, or null
+    /// on an ordinary kernel thread. See ProcessDispatcher::current().
+    [[nodiscard]]
+    static auto current() -> Self *;
+
     auto start(TaskState const &state) -> Status;
 
     auto resume() -> void;

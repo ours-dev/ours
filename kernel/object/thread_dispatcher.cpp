@@ -71,6 +71,14 @@ auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *n
     return Status::Ok;
 }
 
+auto ThreadDispatcher::current() -> Self * {
+    auto *const thread = task::Thread::Current::get();
+    if (thread == nullptr) {
+        return nullptr;
+    }
+    return thread->user_thread_mut();
+}
+
 auto ThreadDispatcher::resume() -> void {
     verify_canary();
 }

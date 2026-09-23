@@ -55,6 +55,12 @@ using HandleValue = u32;
 /// filled (Zircon ZX_HANDLE_INVALID).
 constexpr auto HANDLE_INVALID = HandleValue{0};
 
+/// The two low bits every valid handle value has set. A value without them is
+/// refused before anything else is looked at, which is what keeps zero and
+/// small hand-made integers from naming anything (Zircon
+/// ZX_HANDLE_FIXED_BITS_MASK).
+constexpr auto HANDLE_FIXED_BITS_MASK = HandleValue{0x3};
+
 enum class Status : u32;
 enum class Signals : u32;
 enum class Rights : u32;

@@ -211,6 +211,17 @@ namespace task {
             return m_user_thread;
         }
 
+        /// The same user thread, as the mutable object it is, for the object
+        /// layer (object::ThreadDispatcher::current()). The accessor above
+        /// cannot give it out that way: ustl::Rc makes its pointee const
+        /// through a const Arc, and the dispatcher is shared, mutable state.
+        /// Raw, and not an Arc, because every caller is running on this
+        /// thread, which keeps the dispatcher alive for as long as it looks.
+        FORCE_INLINE
+        auto user_thread_mut() -> object::ThreadDispatcher * {
+            return m_user_thread.as_ptr_mut();
+        }
+
         /// The followings is a group of accessor.
         FORCE_INLINE
         auto tid() -> KoId {

@@ -49,6 +49,22 @@ class ProcessDispatcher: public ProcessDispatcherBase {
                               KernelHandle<VmaDispatcher> &root_vma, Rights &root_vma_rights)
         -> Status;
 
+    /// The process the calling thread belongs to, or null on a kernel thread.
+    ///
+    /// The object layer's answer to "who is asking", so that a system call
+    /// never has to walk task::Thread itself (lib/syscall touches objects
+    /// only). Raw, for the same reason as aspace(): the caller is running on
+    /// a thread of this process, which is itself the proof it is alive.
+    [[nodiscard]]
+    static auto current() -> Self *;
+
+    /// The handles this process holds.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto handle_table() -> HandleTable & {
+        return m_handle_table.as_ref_mut();
+    }
+
     auto attach_thread(ThreadDispatcher &thread) -> Status;
 
     auto detach_thread(ThreadDispatcher &thread) -> Status;
@@ -103,7 +119,7 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     static constexpr auto MAGIC = gktl::magic("ProcessDispatcher");
 
     ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *name,
-                      ustl::Arc<mm::VmAspace> aspace);
+                      ustl::Arc<mm::VmAspace> aspace, ustl::Arc<HandleTable> handle_table);
 
     Self *m_parent;
 
@@ -126,6 +142,11 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// only Arc on create()'s stack and free the aspace on return. Zircon's
     /// ProcessDispatcher holds it the same way, as fbl::RefPtr<VmAspace>.
     ustl::Arc<mm::VmAspace> m_aspace;
+
+    /// Held through an Arc rather than by value because Zircon's
+    /// create_shared() gives two processes one table; the base class
+    /// HandleTable already carries the count for it.
+    ustl::Arc<HandleTable> m_handle_table;
 
     /// Where this process's vDSO is mapped. Zero until set_vdso_code_range(),
     /// and a zero size is what makes vdso_contains() refuse everything.
