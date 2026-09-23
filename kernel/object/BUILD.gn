@@ -3,10 +3,12 @@ import("//build/cpp/cpp_interface.gni")
 if (toolchain_environment == "kernel") {
   source_set("object") {
     sources = [
+      "channel_dispatcher.cpp",
       "dispatcher.cpp",
       "handle.cpp",
       "handle_table.cpp",
       "job_dispatcher.cpp",
+      "message_packet.cpp",
       "process_dispatcher.cpp",
       "resource_dispatcher.cpp",
       "thread_dispatcher.cpp",
@@ -25,6 +27,7 @@ cpp_interface("headers") {
     "include/ours/object/handle_table.hpp",
     "include/ours/object/handle.hpp",
     "include/ours/object/job_dispatcher.hpp",
+    "include/ours/object/message_packet.hpp",
     "include/ours/object/observer.hpp",
     "include/ours/object/pager_dispatcher.hpp",
     "include/ours/object/process_dispatcher.hpp",
@@ -37,6 +40,7 @@ cpp_interface("headers") {
   ]
   public_deps = [
     "//kernel/lib/gktl:headers",
+    "//kernel/lib/user_copy:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",
     "//system/lib/ustl:headers",

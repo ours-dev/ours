@@ -236,3 +236,76 @@ Zircon `Dispatcher::AddObserver()`/`RemoveObserver()`/`UpdateState()`/`Cancel()`
 **故意没做**
 - 带中间值的 deadline：要先有用户态可读的时钟（P1-E）。
 - 被 kill 打断的等待把内部码带回用户态的问题，归 P1-A 的「sysret 前检查挂起信号」。
+
+## Channel：共享锁的一对端点，只传字节（2026-09-23）
+
+**文件**
+- `kernel/object/include/ours/object/dispatcher.hpp` — 新增 `PeerHolder`；填好 `PeeredDispatcher`（构造、`init_peer`、`peer()`、`peer_lock()`，以及原先为空的 `on_zero_handles()`）
+- `kernel/object/include/ours/object/message_packet.hpp`、`message_packet.cpp`（新）
+- `kernel/object/include/ours/object/channel_dispatcher.hpp`、`channel_dispatcher.cpp`（`.cpp` 新）
+- `kernel/object/BUILD.gn` — 新源文件；依赖 `//kernel/lib/user_copy:headers`
+
+**症状**
+`ChannelDispatcher` 只有一个 `create()` 声明，第三个出参类型写成了 `Signals *`，没有实现文件；
+`PeeredDispatcher` 没有构造函数、没有 peer，它的 `on_zero_handles()` 是个 `final {}` 空函数。
+有了 `wait_one` 也没有任何对象可以等。
+
+**原因**
+这是方案里 P0 切片的核心对象，此前没有调用者。
+
+**改法**
+- **`PeerHolder`**：两端共享一把 `sync::Mutex`。写入要在对端排队并置对端 READABLE，关闭要清对端
+  WRITABLE——一把锁让这些都成为对端看不到半截的单步操作。P0 不像 Zircon 那样把它变成
+  `Dispatcher::get_lock()` 的返回值（那要改基类）；各端的信号仍由各自的 `m_lock` 守护，锁序固定为
+  holder → 端点 `m_lock`。
+- **`PeeredDispatcher::on_zero_handles()`**：照 Zircon，把「断开这一对」集中在基类模板里——两端互相
+  持有 `Arc`，在 holder 锁下**两个方向都断**，再通知幸存的一端 `on_peer_zero_handles_locked()`。
+  对端的 `Arc` 在锁内移出、锁外释放，若是最后一个引用，析构发生在锁外。
+- **`MessagePacket`**：在取锁**之前**把用户字节直接拷进一块 kmalloc 缓冲（≤ `CHANNEL_MAX_MSG_BYTES`），
+  读出时先出队、放锁、再由调用者拷出。零字节消息不分配缓冲。
+- **读写语义**（照 Zircon `ChannelDispatcher`）：
+  - 写：对端已关回 `PeerClosed`；对端队列满（`CHANNEL_MAX_PENDING_MESSAGES = 64`）回 `NoResource`，
+    **不清 WRITABLE**（决策 D11：WRITABLE 只表示对端存活）。
+  - 读：队空且对端存活回 `ShouldWait`，队空且对端已关回 `PeerClosed`——对端关闭前写下的消息仍先交付；
+    缓冲不够回 `BufferTooSmall` 并报出长度，消息留在队首；读空后清 READABLE。
+- 这一端未读的消息留到对象析构时再释放——那时已不持有任何锁，也没有别人能碰到队列。
+- `create()` 的第三个出参改为 `Rights *`：工厂在对象旁边报告的是给它们的权限，这里其他 `create()` 都是这样。
+
+改前：
+
+```cpp
+    static auto create(KernelHandle<Self> *handle0, KernelHandle<Self> *handle1, Signals *signals)
+        -> Status;
+    ...
+    auto on_zero_handles() -> void final {}
+```
+
+改后（节选）：
+
+```cpp
+    auto on_zero_handles() -> void final {
+        ustl::Arc<Derived> peer;
+        {
+            Guard guard{m_holder->lock()};
+            peer = ustl::move(m_peer);
+            static_cast<Derived *>(this)->on_zero_handles_locked();
+            if (peer) {
+                static_cast<Self &>(*peer).m_peer = ustl::Arc<Derived>();
+                peer->on_peer_zero_handles_locked();
+            }
+        }
+    }
+```
+
+**参照**
+Zircon `PeerHolder`、`PeeredDispatcher::on_zero_handles()`/`InitPeer()`（`kernel/object/include/object/dispatcher.h`）；
+`ChannelDispatcher::Create()`/`Write()`/`Read()`/`OnPeerZeroHandlesLocked()`（`kernel/object/channel_dispatcher.cc`）；
+`MessagePacket`（`kernel/object/message_packet.cc`）。
+
+**验证**
+构建通过；两个镜像都启动到 shell 打完命令表。channel 此时还没有调用者，读写语义在第 7 步由用户态的
+自环测试验证。
+
+**故意没做**
+- 消息里带句柄、`channel_call`、64 KiB 消息：P1。
+- 把共享锁并进 `Dispatcher::get_lock()`：等 EventPair/Socket 出现时再做（方案 2.4）。

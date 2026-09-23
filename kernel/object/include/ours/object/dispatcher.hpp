@@ -4,6 +4,7 @@
 #define OURS_OBJECT_DISPATCHER_HPP 1
 
 #include <ours/compiler.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/object/observer.hpp>
 #include <ours/object/types.hpp>
 #include <ours/rights.hpp>
@@ -143,6 +144,35 @@ class SoloDispatcher: public Dispatcher {
     }
 };
 
+/// The lock two peered objects share -- the two ends of one channel.
+///
+/// Every operation on a peered object touches both ends: a write queues on
+/// the peer and raises the peer's READABLE; a close clears the peer's
+/// WRITABLE. One lock for the pair is what makes each of those a single step
+/// that the other end can never see half done. Zircon's PeerHolder.
+///
+/// Zircon goes one step further and returns this lock from the dispatcher's
+/// own virtual get_lock(), so that the pair's signals are guarded by it too.
+/// That is deferred here (design 2.4): the holder lock guards the pair's
+/// state, each end keeps its own Dispatcher lock for signals and observers,
+/// and the order between them is fixed -- holder first.
+class PeerHolder final: public ustl::RefCounted<PeerHolder, ustl::sync::ThreadSafePolicy> {
+  public:
+    PeerHolder() = default;
+
+    /// const, with the lock mutable, because the ends hold the holder through
+    /// an `Arc<PeerHolder> const` -- the link never changes -- and ustl::Rc
+    /// makes the pointee of a const Arc const. Taking a lock is not a change
+    /// to what the holder is.
+    [[nodiscard]]
+    auto lock() const -> sync::Mutex & {
+        return m_lock;
+    }
+
+  private:
+    mutable sync::Mutex m_lock;
+};
+
 template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>
 class PeeredDispatcher: public Dispatcher {
     using Base = Dispatcher;
@@ -162,7 +192,67 @@ class PeeredDispatcher: public Dispatcher {
         return Derived::TYPE_TAG;
     }
 
-    auto on_zero_handles() -> void final {}
+    /// The last handle to this end went away: cut the pair apart and tell
+    /// the peer.
+    ///
+    /// Centralised here for every peered type, as in Zircon: Derived supplies
+    /// on_zero_handles_locked() (what this end does about itself) and
+    /// on_peer_zero_handles_locked() (what the surviving end does), and this
+    /// function owns the part they all share -- breaking the reference cycle
+    /// in both directions under the holder lock. Each end holds an Arc to the
+    /// other, so without this neither would ever be freed.
+    ///
+    /// The peer's Arc is moved out before the lock and dropped after it, so
+    /// that if this was the last reference the peer is destroyed outside the
+    /// lock rather than under it.
+    auto on_zero_handles() -> void final {
+        ustl::Arc<Derived> peer;
+        {
+            Guard guard{m_holder->lock()};
+            peer = ustl::move(m_peer);
+            static_cast<Derived *>(this)->on_zero_handles_locked();
+            if (peer) {
+                static_cast<Self &>(*peer).m_peer = ustl::Arc<Derived>();
+                peer->on_peer_zero_handles_locked();
+            }
+        }
+    }
+
+  protected:
+    explicit PeeredDispatcher(ustl::Arc<PeerHolder> holder)
+        : Base(Derived::MAGIC), m_holder(ustl::move(holder)) {}
+
+    /// Links this end to |peer|. Part of construction: called once, before
+    /// either end is reachable from anywhere else, which is why it takes no
+    /// lock (Zircon's InitPeer()).
+    auto init_peer(ustl::Arc<Derived> peer) -> void {
+        DEBUG_ASSERT(!m_peer);
+        m_peer_koid = peer->koid();
+        m_peer = ustl::move(peer);
+    }
+
+    /// The lock this end shares with its peer.
+    [[nodiscard]]
+    auto peer_lock() -> sync::Mutex & {
+        return m_holder->lock();
+    }
+
+    /// The other end, or empty once it has lost its last handle. Read under
+    /// peer_lock().
+    [[nodiscard]]
+    auto peer() -> ustl::Arc<Derived> & {
+        return m_peer;
+    }
+
+    [[nodiscard]]
+    auto peer_koid() const -> KoId {
+        return m_peer_koid;
+    }
+
+  private:
+    ustl::Arc<PeerHolder> const m_holder;
+    ustl::Arc<Derived> m_peer;
+    KoId m_peer_koid = 0;
 };
 
 } // namespace ours::object
