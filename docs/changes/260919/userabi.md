@@ -264,3 +264,50 @@ memory.write<u64>(static_cast<u64>(rela.r_offset), value);
   方，多出来的都是还没有的问题。
 - 查导出仍是线性扫描。vDSO 现在导出两个符号；`DT_GNU_HASH` 就在镜像里，等表长到
   值得用再用。
+
+## 结案：「间歇性」ring-3 取指缺页其实是确定性的，且早已被 `a51f4cd` 修掉（2026-09-23）
+
+**文件**
+- `docs/repairs/260919/userabi-user-fault.md` — 四条全部了结，整份删除；排查结论移到这里
+
+**症状**
+shell 第一次经 GOT 调 vDSO 时在 ring 3 取指缺页，`rip=0x15c6`，镜像映射在 `0x200000`。
+一度被判为间歇性：6 次对照、14 次复现都没再出现。
+
+**原因**
+故障本身：`a51f4cd` 之前，eftl 的 `relocation_table_from_tags()` 要求 entry-size 标签，
+PLT 表的调用方传的却是 `DT_RELAENT`——那是描述 `DT_RELA` 的，链接器只在真有
+`DT_RELA` 时才发。一个重定位全是 PLT 槽的程序两者皆无，整张 `.rela.plt` 被读成
+「不存在」，`bind()` 又把「读不出」当成「没有」返回 `Ok`，`.got.plt` 保留链接期初值。
+
+**「未应用的槽读出什么」是区分两种形状的指纹**：lld 的 `writeGotPlt` 给 JUMP_SLOT 槽
+写的是对应 `.plt` 项 `+6`（`0x15c6 - 6 = 0x15c0`，正好在 RX 段末尾 `0x15bc` 之后），
+而 GLOB_DAT 槽读出 0。排查时卡在 `r12=0x0` 与 `rip=0x15c6` 对不上，就是拿着一份
+GLOB_DAT 形状的二进制去解释一次 JUMP_SLOT 形状的故障。
+
+误判为间歇的原因比 bug 本身更值得记：`out/bringup.x86/kernel.dev.obi` 是这个 worktree
+所有会话共用的同一个文件名，我两次启动之间它被另一个会话的重建换掉了。命中故障的那一代
+还没有 `a51f4cd`，之后的 20 次启动跑的都是已修好的镜像。「同一镜像连跑 3 次未复现」
+字面为真，但毫无意义。
+
+顺带订正一处归因：shell 从 1784 字节变成 1712 字节不是 `1af605e` 造成的，是 `ba6d2de`
+把 `-fno-plt` 移进 `user.standalone`，删掉了 `.plt`/`.got.plt`，同时把重定位形状从
+JUMP_SLOT 换成 GLOB_DAT。
+
+**改法**
+故障：无需再改，`a51f4cd` 已修。由此引出的两处缺口各自修掉：
+- `ee6ca56` — `scripts/qemu_boot.py` 打印镜像的 sha256，拷贝途中被改写则拒绝启动
+- `36bfd0d` — `Binder::bind()` 拒绝 `DT_REL`/`DT_RELR`，不再静默跳过
+
+**参照**
+lld `GotPltSection::writeTo()` / `writeGotPlt`（JUMP_SLOT 初值）；glibc
+`elf_dynamic_do_Rel()`（三种重定位格式按声明各走一遍）。
+
+**验证**
+`a51f4cd` 的提交信息逐字记着同一个 `rip=0x15c6`，以及「page fault before, both bound
+and the shell's full output after」。当前两个镜像都绑定 `ours_debug_write` /
+`ours_command_list` 并跑到 shell 输出。
+
+**故意没做**
+没有给 shell 恢复 JUMP_SLOT 形状去重现一次——`a51f4cd` 的作者已经在那个形状下验过
+修复前后，重复它不增加信息。
