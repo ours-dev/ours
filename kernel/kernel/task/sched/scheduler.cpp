@@ -96,6 +96,7 @@ auto Scheduler::trampoline_handoff() -> void {
     auto &self = Scheduler::Current::get();
     self.m_canary.verify<Self>();
 
+    auto const current_thread = Thread::Current::get();
     // Release the two locks handed across the switch -- the previous thread's
     // PI lock (finish_switch_context) and this thread's own, taken by whoever
     // unparked it -- *before* interrupts come back on. With interrupts enabled
@@ -103,9 +104,20 @@ auto Scheduler::trampoline_handoff() -> void {
     // this thread, which takes its PI lock, finds it already held by this CPU
     // and dies on `!is_held()`. That was the first tick of the boot. Zircon's
     // thread trampoline does the same: LockHandoff, then arch_enable_ints().
-    Self::complete_context_switch(self.m_run_queue.m_curr_thread);
-    self.m_run_queue.m_curr_thread->get_pi_lock().release();
+    Self::complete_context_switch(current_thread);
+    current_thread->get_pi_lock().release();
 
+    // And then on, here, explicitly -- nothing else will do it. A thread that
+    // is switched back *in* returns through reschedule_common() into its
+    // caller, whose Guard<..., IrqSave> restores the interrupt state that
+    // thread saved. A thread running for the first time returns into nothing:
+    // it starts here, with no Guard of its own on its stack, and
+    // x86_switch_context() does not carry RFLAGS across. So it arrives with
+    // interrupts off, and without this line it would stay that way for life
+    // -- every later park saves that 0 and restores it. Measured: every
+    // kernel thread (DPC workers, kshell, laborer, the sample threads) started
+    // with IF=0, and a sample thread printed 71080 times on cpu2 with
+    // interrupts off throughout, so that CPU took no tick and no IPI.
     arch::local_irq_enable();
 }
 
