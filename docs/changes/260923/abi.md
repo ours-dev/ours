@@ -196,3 +196,69 @@ Zircon `ZX_ERR_PEER_CLOSED`、`ZX_ERR_BUFFER_TOO_SMALL`、`ZX_ERR_BAD_SYSCALL`�
 - 没有把 `InternalIrqKilled`/`InternalIrqRetry` 这类内核内部码挪到私有枚举（方案 3c 的一部分）：它们被 task
   代码广泛使用，挪动是一次独立的重构，与这次要做的系统调用无关。
 - 没有改成 Zircon 的负数 i32 编码：调用方都通过 ou 与 `Ok` 比较，改有符号会波及整棵树（方案第 9 节）。
+
+## `HandleValue`、`HANDLE_INVALID`、有符号的 `Instant`、`INSTANT_INFINITE` 与 channel 上限（2026-09-23）
+
+**文件**
+- `system/public/ours/types.hpp` — `using Handle = u32` 改名为 `HandleValue`，加 `HANDLE_INVALID = 0`；`Instant` 由无符号的 `Time` 改为 `i64`
+- `system/public/ours/syscall.hpp` — 加 `INSTANT_INFINITE`、`CHANNEL_MAX_MSG_BYTES = 4096`、`CHANNEL_MAX_MSG_HANDLES = 64`；改写 `OURS_SYS_DEBUG_WRITE` 上那段已经过时的注释
+
+**症状**
+潜伏：接下来的六个系统调用需要这些类型和常量，而原来的定义要么缺失，要么会误导。
+
+**原因**
+- `ours::Handle` 与 `object::Handle` 同名：系统调用层会同时看到「程序手里的数字」和「它解析出来的内核
+  句柄」，同一个函数里两个都叫 `Handle` 迟早读错（决策 D4）。树里没有任何地方用 `ours::Handle`，改名零成本。
+- `Instant` 是 `usize` 的别名：两个时刻相减得不到有符号的差，「一个已经过去的截止时间」也表示不了。
+  Zircon 的 `zx_instant_mono_t` 是 `i64`。同样没人用它。
+- `syscall.hpp` 在 `OURS_SYS_DEBUG_WRITE` 的注释里说寄存器约定「让用户程序里的内联 `syscall` 可读」——
+  这与「系统调用只能经 vDSO」的规则直接矛盾，读者会以为内联 `syscall` 是被认可的写法。
+
+**改法**
+改前：
+
+```cpp
+using Instant = Time;
+...
+using KoId = u32;
+using Handle = u32;
+```
+
+改后：
+
+```cpp
+using Instant = i64;
+...
+using KoId = u32;
+using HandleValue = u32;
+constexpr auto HANDLE_INVALID = HandleValue{0};
+```
+
+`syscall.hpp` 新增：
+
+```cpp
+inline constexpr auto INSTANT_INFINITE = std::numeric_limits<Instant>::max();
+inline constexpr auto CHANNEL_MAX_MSG_BYTES = u32{4096};
+inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
+```
+
+`INSTANT_INFINITE` 没有复用内核的 `INFINITE_TIME`：后者是内核定时器代码大量使用的 chrono `TimePoint`，
+而 ABI 需要的是程序放进寄存器的那个普通数字。把 `INFINITE_TIME` 挪进内核 `time::` 是方案里 3d 的
+另一半，它牵动十几处定时器代码，和这次要做的系统调用无关，没做。
+
+`CHANNEL_MAX_MSG_BYTES` 取 4 KiB，等于单次 kmalloc 的上限：消息要在拿 channel 锁之前整体拷进一块
+内核内存，而这块内存不能走 vmalloc（全系统只有 256 个区间，`vfree` 没有 TLB shootdown）。以后放宽是
+兼容变更，收紧不是，所以先取小的。
+
+注释改为：用户程序不自己发这些号；这套寄存器约定是 vDSO 桩与内核之间的契约——第 4 个参数由桩从
+`%rcx` 挪到 `%r10`，SysV 放在栈上的第 7、8 个参数由桩装进 `%r12`、`%r13`。
+
+**参照**
+Zircon `ZX_HANDLE_INVALID`、`zx_instant_mono_t`、`ZX_TIME_INFINITE`、`ZX_CHANNEL_MAX_MSG_BYTES`（64 KiB）、
+`ZX_CHANNEL_MAX_MSG_HANDLES`（64）。
+
+**验证**
+构建通过；两个镜像都启动到 shell 打完命令表。
+
+**故意没做**
+`INFINITE_TIME` 的迁移见上。

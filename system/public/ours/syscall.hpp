@@ -24,12 +24,19 @@
 
 /// Write a string to the kernel's debug console.
 ///
-/// Arguments follow the ordinary x86-64 SysV argument registers, which is
-/// what makes an inline `syscall` in a user program readable: %rdi is the
-/// buffer, %rsi its length in bytes.  %rax carries the number in and the
-/// ours::Status out.  Note %rcx and %r11 are NOT arguments and never can be:
-/// the SYSCALL instruction overwrites both before the kernel sees them, which
-/// is why the fourth SysV argument register is %r10 here and not %rcx.
+/// No user program issues these numbers itself: the only `syscall`
+/// instruction in a user address space is in the vDSO, and the kernel refuses
+/// a trap from anywhere else. The register convention below is therefore the
+/// contract between the vDSO stubs and the kernel, not something a program
+/// sees -- a program calls ours_debug_write() (<ours/vdso.hpp>).
+///
+/// Arguments ride in the x86-64 SysV argument registers, so that a stub is
+/// mostly the trap itself: %rdi is the buffer, %rsi its length in bytes. %rax
+/// carries the number in and the ours::Status out. %rcx and %r11 are NOT
+/// arguments and never can be: the SYSCALL instruction overwrites both before
+/// the kernel sees them, which is why the fourth argument travels in %r10
+/// (the stub moves it there from %rcx), and the seventh and eighth -- which
+/// SysV puts on the stack -- in %r12 and %r13.
 ///
 /// This is a debug facility, not a console: it exists so that the first user
 /// program can prove it reached user mode and got back, and it has no
@@ -49,9 +56,34 @@
 
 #include <ours/types.hpp>
 
+#include <limits>
+
 namespace ours {
 /// The C++ spelling of OURS_SYSCALL_COUNT above.
 inline constexpr auto SYSCALL_COUNT = usize{OURS_SYSCALL_COUNT};
+
+/// A deadline that never arrives: wait until the condition holds, however
+/// long that takes (Zircon ZX_TIME_INFINITE).
+///
+/// Its own constant rather than the kernel's INFINITE_TIME, which is a chrono
+/// TimePoint the kernel's timers are written against. This one is the plain
+/// number a program passes in a register.
+inline constexpr auto INSTANT_INFINITE = std::numeric_limits<Instant>::max();
+
+/// The most bytes one channel message may carry.
+///
+/// 4 KiB, which is the largest single kmalloc: a message is copied into one
+/// kernel allocation before the channel's lock is taken, and that allocation
+/// does not go through vmalloc, whose 256 regions are shared by the whole
+/// system and whose vfree has no TLB shootdown yet. Zircon allows 64 KiB;
+/// raising this later is compatible, lowering it would not be.
+inline constexpr auto CHANNEL_MAX_MSG_BYTES = u32{4096};
+
+/// The most handles one channel message may carry (Zircon's number). Handles
+/// in messages are not implemented yet: a write naming any answers
+/// NotSupported. The limit is stated now because it is part of the shape of
+/// channel_write and channel_read, not of their current implementation.
+inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
 
 /// The most bytes one sys_debug_write() will copy.
 ///

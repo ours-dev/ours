@@ -23,7 +23,13 @@ using PgOff = isize;
 
 using Ticks = usize;
 using Time = usize;
-using Instant = Time;
+
+/// A point in time as the system-call ABI carries it: signed nanoseconds on
+/// the monotonic clock, as Zircon's zx_instant_mono_t. Signed so that the
+/// difference of two instants is itself an instant-shaped number, and so that
+/// "a deadline in the past" is representable without wrapping. It was an
+/// alias of the unsigned Time, and nothing used it.
+using Instant = i64;
 
 using TicksSteady = Ticks;
 using InstantSteady = Instant;
@@ -34,7 +40,20 @@ using InstantSystem = Instant;
 using DurationTicksSystem = usize;
 
 using KoId = u32;
-using Handle = u32;
+
+/// A handle as a program holds it: a number that names an entry in the
+/// calling process's handle table, and means nothing anywhere else.
+///
+/// Called HandleValue rather than Handle, which it used to be, because the
+/// system-call layer has both in view at once: this number, and the
+/// object::Handle it resolves to. Two types spelled `Handle` in one function
+/// is a misreading waiting to happen.
+using HandleValue = u32;
+
+/// The value no handle ever has. Closing it is a no-op that succeeds, which
+/// is what lets a caller close a slot without first asking whether it was
+/// filled (Zircon ZX_HANDLE_INVALID).
+constexpr auto HANDLE_INVALID = HandleValue{0};
 
 enum class Status : u32;
 enum class Signals : u32;
