@@ -125,3 +125,57 @@ Zircon `kernel/lib/userabi/vdso/syscalls-x86.S`（`m_syscall`）；`sys_channel_
 
 **故意没做**
 没有为了绕开这个问题把用户线程钉在 CPU0 上：下层有缺陷，要修的是下层，不是在上层绕路。
+
+## 错误优先级对齐方案 4.5：先解析句柄，再查参数；非 vDSO 陷入回 BadSyscall（2026-09-23）
+
+**文件**
+- `kernel/lib/syscall/src/channel.cpp` — `channel_write`/`channel_read` 先 `get_dispatcher()`，再查 options/数量/长度
+- `kernel/object/wait.cpp` — `wait_one` 先挂观察者（同时完成解析与 `Wait` 检查），再拒绝不支持的 deadline（先摘下观察者）
+- `kernel/lib/syscall/src/table.cpp` — `sys_not_from_vdso` 回 `BadSyscall`
+
+**症状**
+对抗式审查指出，与方案 4.5 的两条约定不符：
+- 「BadHandle > BadType > AccessDenied > InvArgs，即先解析句柄、再检查参数」——三个调用都是先查参数，
+  于是「坏句柄 + 坏参数」回的是 InvArgs/NotSupported/OutOfRange，而不是 BadHandle。
+- 「非 vDSO 陷入 P0 回 BadSyscall」——实际回的是 AccessDenied，和「句柄缺权限」无法区分。
+
+**原因**
+写处理函数时按 Zircon 的顺序（它先校验 options 再取 dispatcher）写了，没有对照方案。两种顺序都说得通，
+但方案已经定了，就照方案来。
+
+**改法**
+改前（`channel_write`）：
+
+```cpp
+    if (options != ChannelWriteOptions::None) {
+        return Status::InvArgs;
+    }
+    ...
+    ustl::Arc<ChannelDispatcher> dispatcher;
+    if (auto const status = ...get_dispatcher(channel, Rights::Write, &dispatcher); ...
+```
+
+改后：
+
+```cpp
+    ustl::Arc<ChannelDispatcher> dispatcher;
+    if (auto const status = ...get_dispatcher(channel, Rights::Write, &dispatcher); ...
+
+    if (options != ChannelWriteOptions::None) {
+        return Status::InvArgs;
+    }
+```
+
+参数检查仍然在任何用户拷贝、任何分配之前。`wait_one` 里挂观察者本身就是解析句柄的那一步，所以
+deadline 检查挪到它之后，不支持时先摘下观察者再返回。
+
+`sys_not_from_vdso`：`AccessDenied` → `BadSyscall`（Zircon `sys_invalid_syscall()` 回 `ZX_ERR_BAD_SYSCALL`）。
+
+**参照**
+方案 `docs/design/260923/userspace-interface.md` 4.5；Zircon `sys_invalid_syscall()`（`kernel/lib/syscalls/syscalls.cc`）。
+
+**验证**
+构建通过；两个镜像启动正常。这几个错误路径要到 channel 的运行时测试（被 mm 的 AP 分配问题挡着）一起验证。
+
+**故意没做**
+没有改成 Zircon 的顺序再去改方案——方案先定下的约定优先。

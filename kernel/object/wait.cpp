@@ -45,10 +45,6 @@ namespace {
 
 auto wait_one(HandleValue const handle, Signals const signals, Instant const deadline,
               Signals *const observed) -> Status {
-    if (deadline != 0 && deadline != INSTANT_INFINITE) {
-        return Status::NotSupported;
-    }
-
     // Never null: the syscall layer refuses a trap from anything but a user
     // process's vDSO before a handler runs.
     auto *const process = ProcessDispatcher::current();
@@ -59,6 +55,15 @@ auto wait_one(HandleValue const handle, Signals const signals, Instant const dea
     auto status = process->handle_table().attach_observer(handle, &observer, signals, &object);
     if (Status::Ok != status) {
         return status;
+    }
+
+    // Attaching is also what resolved the handle and checked Wait, which is
+    // why it comes before this: BadHandle and AccessDenied outrank a bad
+    // argument (design 4.5). The observer has to come off again.
+    if (deadline != 0 && deadline != INSTANT_INFINITE) {
+        auto ignored = Signals::None;
+        static_cast<void>(object->detach_observer(&observer, &ignored));
+        return Status::NotSupported;
     }
 
     // A poll does not sleep: attaching already reported a condition that

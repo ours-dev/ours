@@ -63,6 +63,17 @@ auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const opti
                        user_copy::UserInPtr<u8 const> const bytes, u32 const num_bytes,
                        [[maybe_unused]] user_copy::UserInPtr<HandleValue const> const handles,
                        u32 const num_handles) -> Status {
+    // The handle first, then the arguments: BadHandle > BadType >
+    // AccessDenied > InvArgs (design 4.5). A program that passes a closed
+    // handle and a bad option learns about the handle, which is the mistake
+    // it has to fix first.
+    ustl::Arc<ChannelDispatcher> dispatcher;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            channel, Rights::Write, &dispatcher);
+        status != Status::Ok) {
+        return status;
+    }
+
     if (options != ChannelWriteOptions::None) {
         return Status::InvArgs;
     }
@@ -74,13 +85,6 @@ auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const opti
     }
     if (num_bytes > CHANNEL_MAX_MSG_BYTES) {
         return Status::OutOfRange;
-    }
-
-    ustl::Arc<ChannelDispatcher> dispatcher;
-    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
-            channel, Rights::Write, &dispatcher);
-        status != Status::Ok) {
-        return status;
     }
 
     // The copy from user memory, before the channel's lock is taken.
@@ -98,15 +102,19 @@ auto sys_channel_read(HandleValue const channel, ChannelReadOptions const option
                       u32 const num_bytes, [[maybe_unused]] u32 const num_handles,
                       user_copy::UserOutPtr<u32> const actual_bytes,
                       user_copy::UserOutPtr<u32> const actual_handles) -> Status {
-    if (options != ChannelReadOptions::None) {
-        return Status::InvArgs;
-    }
-
+    // The handle first, then the arguments: BadHandle > BadType >
+    // AccessDenied > InvArgs (design 4.5). A program that passes a closed
+    // handle and a bad option learns about the handle, which is the mistake
+    // it has to fix first.
     ustl::Arc<ChannelDispatcher> dispatcher;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
             channel, Rights::Read, &dispatcher);
         status != Status::Ok) {
         return status;
+    }
+
+    if (options != ChannelReadOptions::None) {
+        return Status::InvArgs;
     }
 
     u32 length = 0;

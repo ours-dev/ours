@@ -75,7 +75,11 @@ namespace {
     /// the difference between a rule and a wish.
     auto sys_not_from_vdso(arch::SyscallFrame *const frame) -> void {
         log::warn("syscall: refused a trap from {:X}, which is outside the vDSO", frame->ip);
-        frame->ax = static_cast<usize>(Status::AccessDenied);
+        // BadSyscall, not AccessDenied (design 4.5): AccessDenied is what a
+        // handle lacking a right answers, and a program has to be able to tell
+        // "your handle cannot do that" from "that was not a system call".
+        // Zircon's sys_invalid_syscall() answers ZX_ERR_BAD_SYSCALL as well.
+        frame->ax = static_cast<usize>(Status::BadSyscall);
     }
 
     /// The dispatch layer, one shim per call.
