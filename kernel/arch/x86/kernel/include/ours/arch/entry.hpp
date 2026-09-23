@@ -25,9 +25,14 @@ namespace {
 
         frame->cs = X86_GDT_USER_CODE64;
         frame->uss = X86_GDT_USER_DATA;
-        frame->flags
-            .set<ArchCpuState::IOPL>(1) // Enable pesmission level
-            .set<ArchCpuState::IF>(1);  // Enable interrupt
+        // IOPL 0, stated rather than left to the zeroed frame, because it used
+        // to say 1 under a comment calling it "enable permission level". IOPL
+        // is the highest CPL allowed to run in/out/cli/sti without faulting;
+        // ring 3 is CPL 3, so 1 granted it nothing and only made the number
+        // look like a privilege. Port access for a user driver is the TSS I/O
+        // bitmap's job, per task, not a flag every process inherits. Linux
+        // and Zircon both start user threads at IOPL 0.
+        frame->flags.set<ArchCpuState::IOPL>(0).set<ArchCpuState::IF>(1);
 
         // Don't modify, it is required.
         frame->di = arg1;

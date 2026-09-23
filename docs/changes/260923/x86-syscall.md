@@ -141,3 +141,47 @@ Linux `syscall_init()`（`arch/x86/kernel/cpu/common.c`）的 SYSCALL_MASK；Zir
 没有照 Zircon 在设置 FMASK 后把同一个掩码应用到当前 CPU 的 RFLAGS
 （`x86_restore_flags(x86_save_flags() & ~mask)`，防固件留下的脏位）。那是另一件事，
 和系统调用入口无关。
+
+## 用户线程以 IOPL 0 启动（2026-09-23）
+
+**文件**
+- `kernel/arch/x86/kernel/include/ours/arch/entry.hpp` — `arch_build_uspace_irqframe()` 的 IOPL 由 1 改为 0
+
+**症状**
+无可观察的症状。这个值本身不给 ring 3 任何权限，但写法让人以为它给了。
+
+**原因**
+IOPL 表示「CPL 不高于它的代码可以不陷入地执行 in/out/cli/sti」。用户态是 CPL 3，IOPL=1
+对它什么都不放开。原来的注释写的是 "Enable pesmission level"，把一个无效的数字说成了一项
+特权。而且这个值会跟着每次 SYSRET（从 R11 恢复 RFLAGS）一直留在用户态的 RFLAGS 里。
+
+用户态驱动如果需要端口访问，按设计是走每个任务自己的 TSS I/O 位图（方案里的 IoPorts 对象），
+而不是一个所有进程都继承的标志位。
+
+**改法**
+改前：
+
+```cpp
+        frame->flags
+            .set<ArchCpuState::IOPL>(1) // Enable pesmission level
+            .set<ArchCpuState::IF>(1);  // Enable interrupt
+```
+
+改后：
+
+```cpp
+        frame->flags.set<ArchCpuState::IOPL>(0).set<ArchCpuState::IF>(1);
+```
+
+帧本来就是清零的，但仍然显式写出 0，并在注释里说明原来为什么是错的，免得有人照着旧写法
+再把它改回去。
+
+**参照**
+Linux `start_thread_common()`（`arch/x86/kernel/process_64.c`）的 `regs->flags = X86_EFLAGS_IF`；
+Zircon `arch_enter_uspace()` 的 `X86_FLAGS_IF`（外加 IOPL 为 0）。
+
+**验证**
+构建通过；两个镜像都启动到 shell 打完命令表。
+
+**故意没做**
+无。
