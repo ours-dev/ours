@@ -27,9 +27,17 @@ namespace arch {
 /// already gone by the time the first instruction of the stub runs and
 /// storing the trashed values would invite a handler to believe them.
 ///
-/// The user stack pointer is deliberately absent as well: the stub parks it
-/// in this CPU's percpu block (X86_PERCPU_SAVED_USER_SP_OFFSET) across the
-/// call, since it has to swap stacks before it has anywhere to push to.
+/// The user stack pointer is the last member, and it has to be in here rather
+/// than anywhere per-CPU. SYSCALL leaves %rsp on the user stack, so the stub
+/// can only stash it in a per-CPU scratch slot long enough to load the kernel
+/// stack -- and it used to leave it there for the whole call, restoring it on
+/// the way out. That holds exactly as long as no handler ever sleeps: the
+/// first one that blocks lets another thread's syscall on this CPU overwrite
+/// the slot, and a thread that wakes on a different CPU restores that CPU's
+/// value instead. Either way SYSRET returns onto somebody else's stack. So the
+/// stub copies the slot into the frame immediately, and the slot is scratch
+/// for two instructions and nothing more. Linux's entry_SYSCALL_64 does the
+/// same with TSS.sp2 and pt_regs->sp.
 ///
 /// Zircon counterpart: `x86_syscall_general_regs_t` in
 /// zircon/kernel/arch/x86/include/arch/x86/general_regs.h, filled by the
@@ -70,6 +78,13 @@ struct SyscallFrame final {
     /// The user RFLAGS -- SYSCALL's saved %r11, masked by IA32_FMASK on the
     /// way in and restored by SYSRET on the way out.
     ArchCpuState flags;
+
+    /// The user %rsp, popped straight back into %rsp on the way out.
+    ///
+    /// It is also what makes the frame an even number of slots: eighteen
+    /// pushes from a 16-byte aligned stack top leave %rsp aligned at the
+    /// `call`, which the SysV ABI requires and seventeen did not provide.
+    usize sp;
 };
 
 static_assert(offsetof(SyscallFrame, ax) == X86_SYSCALLFRAME_OFFSET_AX);
@@ -89,6 +104,8 @@ static_assert(offsetof(SyscallFrame, r14) == X86_SYSCALLFRAME_OFFSET_R14);
 static_assert(offsetof(SyscallFrame, r15) == X86_SYSCALLFRAME_OFFSET_R15);
 static_assert(offsetof(SyscallFrame, ip) == X86_SYSCALLFRAME_OFFSET_IP);
 static_assert(offsetof(SyscallFrame, flags) == X86_SYSCALLFRAME_OFFSET_FLAGS);
+static_assert(offsetof(SyscallFrame, sp) == X86_SYSCALLFRAME_OFFSET_SP);
+static_assert(sizeof(SyscallFrame) % 16 == 0, "the stub calls C++ with this frame on top");
 static_assert(sizeof(SyscallFrame) == X86_SYSCALLFRAME_SIZE);
 
 } // namespace arch

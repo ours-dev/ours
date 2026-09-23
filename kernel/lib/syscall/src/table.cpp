@@ -6,6 +6,7 @@
 
 #include <arch/syscall.hpp>
 #include <logz4/log.hpp>
+#include <ours/assert.hpp>
 #include <ours/compiler.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/status.hpp>
@@ -160,6 +161,13 @@ extern "C" constinit auto SYSCALL_TABLE = make_syscall_table();
 /// have done the vDSO half anyway -- it cannot reach the current thread, whose
 /// pointer lives behind a mangled C++ per-CPU template.
 extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
+    // The stub pushes an even number of slots onto a 16-byte aligned kernel
+    // stack, so |frame| -- %rsp at its `call` -- is aligned the way the SysV
+    // ABI promises every C++ function. Checked because every handler below
+    // assumes it, and a misaligned stack says so only later, as an aligned
+    // spill faulting somewhere unrelated.
+    DEBUG_ASSERT(reinterpret_cast<usize>(frame) % 16 == 0, "misaligned syscall frame");
+
     if (!trapped_from_vdso(frame)) [[unlikely]] {
         return sys_not_from_vdso(frame);
     }

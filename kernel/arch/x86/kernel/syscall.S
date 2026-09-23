@@ -114,9 +114,9 @@
 //  rsi - arg 2
 //  rdi - arg 1
 //  rbp - saved
-//  rsp - the *user* stack; the stub parks it in this CPU's percpu block
-//        (X86_PERCPU_SAVED_USER_SP_OFFSET), not in the frame, because it has
-//        to swap stacks before it has anywhere to push to
+//  rsp - the *user* stack; saved into the frame (SyscallFrame::sp), passing
+//        through this CPU's percpu block (X86_PERCPU_SAVED_USER_SP_OFFSET)
+//        only for the two instructions it takes to reach the kernel stack
 //  r8  - arg 5
 //  r9  - arg 6
 //  r10 - arg 4
@@ -129,9 +129,20 @@
     // Swap to the kernel GS register
     swapgs
 
-    // Swap stack
+    // Swap stack.  The per-CPU slot is scratch, not storage: the user %rsp
+    // goes from there into the frame at once, as its first (highest) member.
+    // Leaving it in the slot for the whole call -- which this stub used to --
+    // is correct only while no handler sleeps.  One that blocks lets another
+    // thread's syscall on this CPU overwrite the slot, and a thread that wakes
+    // on another CPU would read that CPU's slot; SYSRET then lands on a stack
+    // that is not the caller's.  Linux's entry_SYSCALL_64 does the same dance
+    // with TSS.sp2 and pt_regs->sp.
     mov %rsp, CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_USER_SP_OFFSET)
     mov CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_KERNEL_SP_OFFSET), %rsp
+    // A bare pushq rather than push_val: the macro splits its operand on
+    // whitespace, and CPU_LOCAL_ACCESS expands to a %gs-relative operand that
+    // contains some.
+    pushq CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_USER_SP_OFFSET)  // SP
 
     // Everything below builds arch::SyscallFrame (arch/x86/syscall.hpp) on the
     // kernel stack, from its last member downwards -- the stack grows down, so
@@ -198,8 +209,12 @@
     pop_reg %rcx  // RIP
     pop_reg %r11  // RFLAGS
 
-    // Restore user stack.
-    mov CPU_LOCAL_ACCESS(X86_PCPU + X86_PERCPU_SAVED_USER_SP_OFFSET), %rsp
+    // Restore the user stack from the frame -- the slot this thread pushed,
+    // on whichever CPU it happens to be leaving from.  `popq %rsp` loads the
+    // popped value into %rsp outright (the increment is discarded), and it is
+    // the last thing the kernel stack is used for; Linux ends its fast path
+    // the same way.
+    pop_reg %rsp
 
     // Swap GS
     swapgs
