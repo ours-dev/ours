@@ -13,13 +13,13 @@ auto x86_has_feature(CpuFeatureType type) -> bool {
     return features.has_feature(type);
 }
 
-bool FEATURE_HAS_FSGSBASE = false;
+bool feature_has_fsgsbase = false;
 bool feature_has_smap = false;
 
 INIT_CODE
 auto x86_init_feature_percpu(CpuNum cpunum) -> void {
     if (cpunum == 0) {
-        FEATURE_HAS_FSGSBASE = x86_has_feature(CpuFeatureType::FsGsBase);
+        feature_has_fsgsbase = x86_has_feature(CpuFeatureType::FsGsBase);
         feature_has_smap = x86_has_feature(CpuFeatureType::Smap);
     }
 }

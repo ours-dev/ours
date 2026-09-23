@@ -10,7 +10,7 @@ using arch::CpuFeatureType;
 
 auto x86_has_feature(CpuFeatureType type) -> bool;
 
-extern bool FEATURE_HAS_FSGSBASE;
+extern bool feature_has_fsgsbase;
 
 /// Whether CR4.SMAP is set -- x86_init_mmu_percpu() sets it on exactly the
 /// CPUs that report the feature, so the two are the same fact.
