@@ -114,43 +114,8 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
 
     USTL_NO_MOVEABLE_AND_COPYABLE(HandleTable);
 
-    template <typename T>
-    class Allocator {
-        using Self = Allocator;
-
-      public:
-        using value_type = T;
-
-        template <typename U>
-        using rebind = Allocator<U>;
-
-        auto allocate() -> Handle *;
-    };
-
-    constexpr static auto NUM_HANDLES_PER_BLOCK = 8;
-
-    // The storage question this TODO asked was settled by
-    // docs/architecture/object/handle-lookup.md: Handles live in one
-    // system-wide arena (handle.cpp), and a table only links its own through
-    // m_handles below. The Allocator and NUM_HANDLES_PER_BLOCK above are the
-    // earlier, per-table idea, left exactly as they were.
-    //
-    // TODO(SmallHuaZi): the handle storage is still to be designed. It used to
-    // be declared as
-    //
-    //     using HandleList = ustl::collections::Deque<
-    //         Handle, Allocator<Handle>,
-    //         DequeOptions<BlockSize<NUM_HANDLES_PER_BLOCK>>>;
-    //     HandleList m_handles;
-    //
-    // over Boost.Container, which this project does not depend on. That
-    // declaration never typechecked anyway: the Allocator above exposes a
-    // no-argument `allocate() -> Handle *`, which satisfies no container's
-    // allocator contract. Nothing reads m_handles yet -- HandleTable has no
-    // implementation file and no callers -- so the member is parked here
-    // rather than guessed at, together with the block-allocated intent that
-    // NUM_HANDLES_PER_BLOCK records.
-
+    /// What every handle in this table carries as its table koid -- the fifth
+    /// check, which keeps one process's values from resolving in another.
     KoId m_koid;
 
     /// Pre-shifted left by HANDLE_RESERVED_BITS, so that the XOR in

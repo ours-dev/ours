@@ -411,3 +411,53 @@ Zircon `ChannelDispatcher::Write()` 失败时由调用方的 `MessagePacketPtr` 
 
 **故意没做**
 无。
+
+## 删掉 `HandleTable` 里旧的每表分配器桩与那段 TODO（2026-09-23）
+
+**文件**
+- `kernel/object/include/ours/object/handle_table.hpp` — 删 `Allocator<T>`、`NUM_HANDLES_PER_BLOCK` 与描述旧 `Deque` 存储的 TODO；给 `m_koid` 补一行说明
+
+**症状**
+无行为差异：全树没有任何引用，`Allocator::allocate()` 只有声明没有定义。问题在于读者：同一个类里并存
+两种「句柄存在哪」的说法，TODO 还写着「存储尚待设计」，而存储早已定了。
+
+**原因**
+旧想法是每张表按块分配自己的句柄（一个 `ustl::Deque`，原先建在 Boost.Container 上，从未通过类型检查）。
+`docs/architecture/object/handle-lookup.md` 选了全系统一个 arena，理由正是句柄值要能用一次算术定位到槽位——
+每表一套存储会破坏这个前提。实现落地之后，这个桩描述的方向已经被设计本身否掉。
+
+**改法**
+改前：
+
+```cpp
+    template <typename T>
+    class Allocator {
+        ...
+        auto allocate() -> Handle *;
+    };
+
+    constexpr static auto NUM_HANDLES_PER_BLOCK = 8;
+
+    // ... TODO(SmallHuaZi): the handle storage is still to be designed. ...
+
+    KoId m_koid;
+```
+
+改后：
+
+```cpp
+    /// What every handle in this table carries as its table koid -- the fifth
+    /// check, which keeps one process's values from resolving in another.
+    KoId m_koid;
+```
+
+按主人的决定删除（桩一律不顺手删，这次是明确要求）。旧想法留在 git 历史里。
+
+**参照**
+`docs/architecture/object/handle-lookup.md`「决定：`Handle` 住在一块 arena 里」。
+
+**验证**
+构建通过；两个镜像启动正常，shell 关句柄两次仍得 Ok / BadHandle。
+
+**故意没做**
+无。
