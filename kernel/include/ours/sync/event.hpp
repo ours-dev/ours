@@ -15,6 +15,15 @@ class Event {
     using Self = Event;
 
   public:
+    /// A manual-reset event, not signalled.
+    ///
+    /// There was no constructor, so m_flags was whatever the memory held: zero
+    /// for the two events that live in zeroed per-CPU storage, garbage for any
+    /// event on a stack -- and a garbage AutoUnsignal bit changes which
+    /// waiters a signal() releases. object::wait_one() puts one on the stack
+    /// for every wait.
+    Event() : m_canary(this), m_result(), m_flags(Flags::None), m_wq() {}
+
     auto signal(Status = Status::Ok) -> void;
 
     auto unsignal() -> void;

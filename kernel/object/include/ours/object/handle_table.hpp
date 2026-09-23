@@ -95,6 +95,18 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
         return Status::Ok;
     }
 
+    /// Starts |observer| watching the object |value| names for |signals|,
+    /// provided the handle grants Wait, and reports the object in |object| so
+    /// the caller can stop watching later.
+    ///
+    /// Under this table's lock, and that is the point of it being a verb here
+    /// rather than a lookup followed by an attach: the handle cannot be closed
+    /// between being found and being watched through. A close that comes after
+    /// cancels the observer instead (remove() calls Dispatcher::cancel()).
+    /// Lock order: this table, then the object -- as everywhere else.
+    auto attach_observer(HandleValue value, SignalObserver *observer, Signals signals,
+                         ustl::Arc<Dispatcher> *object) -> Status;
+
   private:
     /// The five checks. Null when any of them fails.
     [[nodiscard]]

@@ -25,6 +25,7 @@ HandleTable::~HandleTable() {
             static_cast<void>(m_handles.erase(m_handles.iterator_to(raw)));
             raw.set_table_koid(0);
             m_count -= 1;
+            raw.dispatcher()->cancel(&raw);
             handle = ustl::Box<Handle>::from_raw(&raw);
         }
     }
@@ -56,7 +57,31 @@ auto HandleTable::remove(HandleValue const value) -> ustl::Box<Handle> {
     static_cast<void>(m_handles.erase(m_handles.iterator_to(*handle)));
     handle->set_table_koid(0);
     m_count -= 1;
+
+    // Every wait made through this handle ends here, as Cancelled: once the
+    // handle is gone nothing can satisfy them, and a thread blocked in
+    // object_wait_one on a handle another thread closed would otherwise sleep
+    // forever. Done under the table lock, before anyone else can see the
+    // handle gone -- Zircon's HandleTable::RemoveHandleLocked() cancels at the
+    // same point.
+    handle->dispatcher()->cancel(handle);
+
     return ustl::Box<Handle>::from_raw(handle);
+}
+
+auto HandleTable::attach_observer(HandleValue const value, SignalObserver *const observer,
+                                  Signals const signals, ustl::Arc<Dispatcher> *const object)
+    -> Status {
+    Guard guard{m_lock};
+    auto *const handle = lookup_locked(value);
+    if (handle == nullptr) {
+        return Status::BadHandle;
+    }
+    if (!handle->has_rights(Rights::Wait)) {
+        return Status::AccessDenied;
+    }
+    *object = handle->dispatcher();
+    return (*object)->attach_observer(observer, handle, signals);
 }
 
 auto HandleTable::lookup_locked(HandleValue const value) const -> Handle * {

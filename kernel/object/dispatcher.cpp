@@ -37,8 +37,18 @@ auto Dispatcher::attach_observer(SignalObserver *observer, void const *handle, S
 
     observer->m_handle = handle;
     observer->m_triggering_signals = signals;
-    m_observers.push_back(*observer);
 
+    // Level-triggered: a condition that already holds is reported now, and
+    // the observer is never linked. Zircon's Dispatcher::AddObserver() does
+    // the same -- a wait for READABLE on a channel with a message queued
+    // must not wait for the *next* message.
+    auto const current = m_signals.load(std::memory_order_relaxed);
+    if (!!(current & signals)) {
+        observer->on_match(current);
+        return Status::Ok;
+    }
+
+    m_observers.push_back(*observer);
     return Status::Ok;
 }
 
@@ -67,6 +77,35 @@ auto Dispatcher::notify_observers_locked(Signals signals) -> void {
         }
         iter = m_observers.erase(iter);
         observer.on_match(signals);
+    }
+}
+auto Dispatcher::update_state(Signals const clear, Signals const set) -> void {
+    Guard guard{get_lock()};
+    update_state_locked(clear, set);
+}
+
+auto Dispatcher::update_state_locked(Signals const clear, Signals const set) -> void {
+    auto const previous = m_signals.load(std::memory_order_relaxed);
+    auto const next = (previous & ~clear) | set;
+    if (next == previous) {
+        return;
+    }
+    m_signals.store(next, std::memory_order_release);
+    notify_observers_locked(next);
+}
+
+auto Dispatcher::cancel(void const *const handle) -> void {
+    Guard guard{get_lock()};
+
+    auto const current = m_signals.load(std::memory_order_relaxed);
+    for (auto iter = m_observers.begin(), end = m_observers.end(); iter != end;) {
+        auto &observer = *iter;
+        if (observer.m_handle != handle) {
+            ++iter;
+            continue;
+        }
+        iter = m_observers.erase(iter);
+        observer.on_cancel(current);
     }
 }
 } // namespace ours::object

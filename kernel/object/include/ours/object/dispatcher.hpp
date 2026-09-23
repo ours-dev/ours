@@ -62,9 +62,37 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
         return m_handle_count.fetch_sub(1, std::memory_order_acq_rel) == 1;
     }
 
+    /// Starts |observer| watching for any of |signals|.
+    ///
+    /// Level-triggered, as Zircon's AddObserver(): if one of them is already
+    /// asserted the observer is told at once (on_match) and is never linked.
+    /// Without that, a waiter that arrives after the signal went up would
+    /// wait for a change that already happened. |handle| identifies the
+    /// handle the observer watches through, for cancel().
     auto attach_observer(SignalObserver *, void const *handle, Signals) -> Status;
 
+    /// Stops |observer| watching, if it still is, and reports the signals
+    /// asserted now.
     auto detach_observer(SignalObserver *, Signals *) -> Status;
+
+    /// Clears |clear|, then sets |set|, and tells every observer the result
+    /// matches. Nothing is told when the set of signals did not change.
+    ///
+    /// Thread context only: the lock is a Mutex. A producer in interrupt
+    /// context (a timer, an interrupt object) is meant to defer to a DPC.
+    auto update_state(Signals clear, Signals set) -> void;
+
+    /// Ends every observation that was made through |handle|: the handle is
+    /// being closed, and a wait through a closed handle cannot be satisfied.
+    /// Each such observer is told on_cancel().
+    auto cancel(void const *handle) -> void;
+
+    /// The signals asserted right now. A snapshot: they may change the moment
+    /// this returns.
+    [[nodiscard]]
+    auto signals() const -> Signals {
+        return m_signals.load(std::memory_order_acquire);
+    }
 
     virtual auto on_zero_handles() -> void {}
 
@@ -74,6 +102,10 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
 
     auto notify_observers_locked(Signals signals) -> void;
+
+    /// update_state() for a caller that already holds get_lock(), as a
+    /// channel does when it queues a message and raises READABLE in one step.
+    auto update_state_locked(Signals clear, Signals set) -> void;
 
     Dispatcher(u32 magic);
     virtual ~Dispatcher() = default;

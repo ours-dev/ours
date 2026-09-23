@@ -12,6 +12,7 @@ if (toolchain_environment == "kernel") {
       "thread_dispatcher.cpp",
       "vma_dispatcher.cpp",
       "vmo_dispatcher.cpp",
+      "wait.cpp",
     ]
     public_deps = [ ":headers" ]
   }
@@ -32,6 +33,7 @@ cpp_interface("headers") {
     "include/ours/object/types.hpp",
     "include/ours/object/vma_dispatcher.hpp",
     "include/ours/object/vmo_dispatcher.hpp",
+    "include/ours/object/wait.hpp",
   ]
   public_deps = [
     "//kernel/lib/gktl:headers",

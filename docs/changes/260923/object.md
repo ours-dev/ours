@@ -166,3 +166,73 @@ Zircon `Handle::Make()`/`Handle::Delete()`、`NewHandleValue()`（`kernel/object
 - `HandleTable` 里旧设计留下的 `Allocator` 模板和 `NUM_HANDLES_PER_BLOCK` 原样保留，只在那段 TODO 前
   补了一句「存储问题已由 handle-lookup.md 定下」。
 - 进程死亡时清空句柄表：`~HandleTable()` 已经会逐个关闭，但 P1 之前进程不会死。
+
+## 信号核心：电平触发的 attach、`update_state`、`cancel`，与 `object::wait_one`（2026-09-23）
+
+**文件**
+- `kernel/include/ours/sync/event.hpp` — 补构造函数
+- `kernel/object/include/ours/object/dispatcher.hpp`、`dispatcher.cpp` — `attach_observer` 电平触发；`update_state`/`update_state_locked`/`cancel`/`signals()`
+- `kernel/object/include/ours/object/handle_table.hpp`、`handle_table.cpp` — `attach_observer(value, ...)` 动词；`remove()` 与析构时 `cancel(handle)`
+- `kernel/object/include/ours/object/handle.hpp` — `Handle::dispatcher()` 的非 const 重载
+- `kernel/object/include/ours/object/wait.hpp`、`kernel/object/wait.cpp`（新）— `WaitSignalObserver` 与 `wait_one`
+
+**症状**
+没有任何办法等一个对象。`SignalObserver` 的骨架在，但：
+- `attach_observer` 只是把观察者挂上链表——条件已经成立时，等待者要等的是一次「已经发生过的变化」，永远等不到；
+- 没有任何代码改变过对象的信号，也就没有任何代码通知过观察者；
+- 句柄被关时，经它挂着的等待无人收拾；
+- `sync::Event` 没有构造函数，放在栈上时 `m_flags` 是垃圾，`AutoUnsignal` 位随机。
+
+**原因**
+这一层一直没有调用者，缺的东西都没被逼出来。
+
+**改法**
+照 Zircon 的信号机制补齐：
+
+- `attach_observer`：**电平触发**。已经置位的条件当场 `on_match()`，观察者不入链。等可读的 channel 里
+  已经有消息，不能去等「下一条」。
+- `update_state(clear, set)`：先清后置，**集合没变就不通知**；变了才对匹配的观察者 `on_match()`。
+  另有 `_locked` 版本给已经持锁的调用者（channel 入队与置 READABLE 要一步完成）。
+- `cancel(handle)`：结束所有经这个句柄做的观察，各自 `on_cancel()`。`HandleTable::remove()` 在表锁下、
+  别人看到句柄消失之前调用它，否则一个线程在另一个线程关掉的句柄上 `wait_one` 会永远睡下去。
+- `HandleTable::attach_observer(value, ...)`：查句柄、查 `Wait` 权限、挂观察者在**同一把表锁**下完成，
+  句柄不可能在「找到」与「开始观察」之间被关掉。锁序：表 → 对象。
+- `object::wait_one`：挂上 → 在栈上的 `Event` 上睡 → 摘下 → 读当前信号，整个流程封在对象层，
+  lib/syscall 只搬参数。P0 只接受 deadline 为 0（轮询）或 `INSTANT_INFINITE`，其余回 NotSupported——
+  用户态还读不到时钟，算不出别的截止时间。
+
+改前（`attach_observer`）：
+
+```cpp
+    observer->m_handle = handle;
+    observer->m_triggering_signals = signals;
+    m_observers.push_back(*observer);
+```
+
+改后：
+
+```cpp
+    observer->m_handle = handle;
+    observer->m_triggering_signals = signals;
+
+    auto const current = m_signals.load(std::memory_order_relaxed);
+    if (!!(current & signals)) {
+        observer->on_match(current);
+        return Status::Ok;
+    }
+
+    m_observers.push_back(*observer);
+```
+
+**参照**
+Zircon `Dispatcher::AddObserver()`/`RemoveObserver()`/`UpdateState()`/`Cancel()`
+（`kernel/object/dispatcher.cc`）；`WaitSignalObserver`（`kernel/object/wait_signal_observer.cc`）；
+`sys_object_wait_one()`（`kernel/lib/syscalls/object_wait.cc`）；`HandleTable::RemoveHandleLocked()`。
+
+**验证**
+构建通过；两个镜像都启动到 shell 打完命令表，`close` 两次的结果不变。等待机制本身没有内核自测，
+按方案在第 7 步由用户态验证（`wait_one` 立即满足、关闭对端后得到 PEER_CLOSED）。
+
+**故意没做**
+- 带中间值的 deadline：要先有用户态可读的时钟（P1-E）。
+- 被 kill 打断的等待把内部码带回用户态的问题，归 P1-A 的「sysret 前检查挂起信号」。

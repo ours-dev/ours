@@ -101,6 +101,15 @@ class Handle final {
         return m_dispatcher;
     }
 
+    /// The same object, reachable as the mutable thing it is. Two overloads
+    /// for the reason KernelHandle::dispatcher() has two: ustl::Rc makes the
+    /// pointee of a const Arc const, and every dispatcher method that matters
+    /// -- cancel(), update_state() -- changes the object.
+    [[nodiscard]]
+    auto dispatcher() -> ustl::Arc<Dispatcher> & {
+        return m_dispatcher;
+    }
+
     [[nodiscard]]
     auto rights() const -> Rights {
         return m_rights;
