@@ -185,3 +185,76 @@ Zircon `arch_enter_uspace()` 的 `X86_FLAGS_IF`（外加 IOPL 为 0）。
 
 **故意没做**
 无。
+
+## 系统调用处理函数在开中断的状态下运行（2026-09-23）
+
+**文件**
+- `kernel/lib/syscall/src/table.cpp` — `syscall_dispatch()` 进入后开中断、返回前关中断；顺手把取调用号的三目运算改成 if
+
+**症状**
+潜伏。IA32_FMASK 在进入时清掉了 IF，而之后再没有地方把它打开，于是整个处理函数都在关中断
+状态下运行：不能被抢占；处理函数里的任何等待都是带着关中断进去的；一个耗时长的调用会让这个
+CPU 在整个调用期间都收不到时钟中断。今天的两个调用都很短，所以看不出来。
+
+**原因**
+入口关中断是必要的：桩在换栈、把用户 RSP 从 per-CPU 槽搬进帧的那几条指令期间，一次中断就可能
+让同一个 CPU 上的别的线程覆盖那个槽。但这个窗口在帧建好之后就结束了——用户状态已经全部在本线程
+自己的内核栈上。此后再关着中断就只剩坏处。
+
+出口同样需要关中断：桩从第一次弹栈开始就在恢复用户状态，接着装入用户 RSP、换回用户 GS。
+这个窗口里来一次中断，处理程序看到的是内核 CS 配用户栈，或者一个它不会再换回来的用户 GS。
+
+所以开关中断的时机必须**晚于**「用户 RSP 进帧」——这就是它排在那一步之后单独提交的原因。
+
+**改法**
+改前：
+
+```cpp
+extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
+    if (!trapped_from_vdso(frame)) [[unlikely]] {
+        return sys_not_from_vdso(frame);
+    }
+    auto const number = frame->ax < SYSCALL_COUNT ? frame->ax : SYSCALL_COUNT;
+    SYSCALL_TABLE[number](frame);
+}
+```
+
+改后：
+
+```cpp
+extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
+    DEBUG_ASSERT(reinterpret_cast<usize>(frame) % 16 == 0, "misaligned syscall frame");
+
+    arch::local_irq_enable();
+
+    if (!trapped_from_vdso(frame)) [[unlikely]] {
+        sys_not_from_vdso(frame);
+    } else {
+        auto number = SYSCALL_COUNT;
+        if (frame->ax < SYSCALL_COUNT) {
+            number = frame->ax;
+        }
+        SYSCALL_TABLE[number](frame);
+    }
+
+    arch::local_irq_disable();
+}
+```
+
+开关放在 C++ 里而不是在桩里写 `sti`/`cli`，与 Zircon 相同：以后出口要检查挂起信号（被 kill 的
+线程不应带着返回值回到用户态），那个检查也在 C++ 这一侧，必须在关中断之后、SYSRET 之前做，
+否则会丢唤醒。现在所有要求都集中在同一个函数里。
+
+提前 `return` 改成了单一出口，否则关中断那一行在拒绝路径上会被跳过。
+
+**参照**
+Zircon `do_syscall_pre()` / `do_syscall_post()`（`kernel/lib/syscalls/syscalls.cc`）：前者
+`arch_enable_ints()`，后者 `arch_disable_ints()` 并在关中断后检查线程信号。Linux
+`do_syscall_64()` 中的 `local_irq_enable()`（`syscall_enter_from_user_mode` 内部）与
+`syscall_exit_to_user_mode` 中的关中断。
+
+**验证**
+构建通过；两个镜像各启动两次，都跑到 shell 打完命令表，无断言。
+
+**故意没做**
+出口的挂起信号检查（Kill/Suspend）属于 P1-A，要等线程退出路径能用，才有检查到之后该做的事。

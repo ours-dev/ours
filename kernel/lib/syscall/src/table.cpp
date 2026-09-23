@@ -4,6 +4,7 @@
 
 #include <array>
 
+#include <arch/interrupt.hpp>
 #include <arch/syscall.hpp>
 #include <logz4/log.hpp>
 #include <ours/assert.hpp>
@@ -168,17 +169,40 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
     // spill faulting somewhere unrelated.
     DEBUG_ASSERT(reinterpret_cast<usize>(frame) % 16 == 0, "misaligned syscall frame");
 
+    // SYSCALL entered with IF clear (IA32_FMASK), and everything up to here
+    // needed that: the stub was still juggling the user %rsp through a
+    // per-CPU slot. It is in the frame now, on this thread's own stack, so
+    // nothing below is tied to this CPU any more. Leaving IF clear past this
+    // point would make every handler unpreemptible, carry a closed interrupt
+    // window into every wait a handler enters, and cost this CPU its timer
+    // ticks for as long as a long call ran. Zircon's do_syscall_pre()
+    // re-enables at the same point, "to maintain kernel preemptiveness".
+    arch::local_irq_enable();
+
     if (!trapped_from_vdso(frame)) [[unlikely]] {
-        return sys_not_from_vdso(frame);
+        sys_not_from_vdso(frame);
+    } else {
+        // Clamped, not branched around: SYSCALL_TABLE has one entry more than
+        // SYSCALL_COUNT and that last slot answers Status::OutOfRange, so a
+        // number at or above the count is rewritten onto it and dispatched
+        // like any other. %rax is entirely user-controlled, and without this
+        // the call below would index past the table by an offset the caller
+        // chose.
+        auto number = SYSCALL_COUNT;
+        if (frame->ax < SYSCALL_COUNT) {
+            number = frame->ax;
+        }
+        SYSCALL_TABLE[number](frame);
     }
 
-    // Clamped, not branched around: SYSCALL_TABLE has one entry more than
-    // SYSCALL_COUNT and that last slot answers Status::OutOfRange, so a number
-    // at or above the count is rewritten onto it and dispatched like any
-    // other. %rax is entirely user-controlled, and without this the call below
-    // would index past the table by an offset the caller chose.
-    auto const number = frame->ax < SYSCALL_COUNT ? frame->ax : SYSCALL_COUNT;
-    SYSCALL_TABLE[number](frame);
+    // Off again before the stub pops the frame. From its first pop onwards
+    // the stub is restoring user state on the kernel stack, then loads the
+    // user %rsp and swaps to the user GS: an interrupt taken in that window
+    // would find a kernel CS with a user stack, or a user GS it would not
+    // swap back. Zircon's do_syscall_post() disables here for the same
+    // reason, and so that a pending-signal check (not written yet) cannot
+    // lose a wakeup between the check and SYSRET.
+    arch::local_irq_disable();
 }
 
 } // namespace ours
