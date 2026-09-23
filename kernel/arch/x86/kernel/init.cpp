@@ -44,13 +44,34 @@ static auto x86_enable_syscall() -> void {
     // 1. Disable nested interrupt.
     // 2. Escalates IO privilege level(U->K).
     // 3. Clear those unused status bits.
+    // 4. Clear the three flags whose user value would be a kernel bug. Every
+    //    one of them is a flag user code may set with a plain popf, and
+    //    SYSCALL carries RFLAGS into ring 0 untouched except for this mask:
+    //    - TF: a single-step trap would fire after the first kernel
+    //      instruction, before the stub has left the user stack. #DB does not
+    //      switch stacks from CPL 0, so the CPU would push its frame through a
+    //      stack pointer userspace chose.
+    //    - DF: the SysV ABI promises DF=0 at every function entry, and the
+    //      compiler's `rep movs` for memcpy trusts it. A user DF=1 runs every
+    //      kernel copy backwards from its start.
+    //    - AC: on a CPU with SMAP, AC=1 is exactly the permission for ring 0
+    //      to touch user pages. Carried in from user space it switches SMAP
+    //      off for the whole syscall.
+    // Linux's SYSCALL_MASK (syscall_init() in arch/x86/kernel/cpu/common.c)
+    // masks all three for these reasons. So does Zircon's x86_init_percpu()
+    // (kernel/arch/x86/mp.cc): its X86_FLAGS_STATUS_MASK is 0xfff, which takes
+    // in TF and DF, and it names AC separately.
     constexpr usize RFLAGS_STATUS_MASK = (usize{1} << 0) | (usize{1} << 2) | (usize{1} << 4) |
                                          (usize{1} << 6) | (usize{1} << 7) | (usize{1} << 11);
+    constexpr usize RFLAGS_TRAP_FLAG = usize{1} << 8;
     constexpr usize RFLAGS_INTERRUPT_FLAG = usize{1} << 9;
+    constexpr usize RFLAGS_DIRECTION_FLAG = usize{1} << 10;
     constexpr usize RFLAGS_IOPL_MASK = usize{3} << 12;
     constexpr usize RFLAGS_NESTED_TASK = usize{1} << 14;
+    constexpr usize RFLAGS_ALIGNMENT_CHECK = usize{1} << 18;
     constexpr usize DISABLED_FLAG_BIT_MASK =
-        RFLAGS_STATUS_MASK | RFLAGS_INTERRUPT_FLAG | RFLAGS_IOPL_MASK | RFLAGS_NESTED_TASK;
+        RFLAGS_STATUS_MASK | RFLAGS_TRAP_FLAG | RFLAGS_INTERRUPT_FLAG | RFLAGS_DIRECTION_FLAG |
+        RFLAGS_IOPL_MASK | RFLAGS_NESTED_TASK | RFLAGS_ALIGNMENT_CHECK;
     MsrIo::write(MsrRegAddr::IA32Fmask, DISABLED_FLAG_BIT_MASK);
 }
 

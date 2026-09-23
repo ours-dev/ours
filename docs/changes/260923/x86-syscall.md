@@ -85,3 +85,59 @@ Linux `entry_SYSCALL_64`（`arch/x86/entry/entry_64.S`）：`movq %rsp, PER_CPU_
 - 没有顺手核对/改 `exception.S` 的 `interrupt_common`：`IrqFrame` 22 槽 = 176 字节，
   长模式下 CPU 压中断帧前会先把 RSP 对齐到 16，所以本来就是对齐的，不用改。
 - FMASK、IOPL、处理函数期间开中断是同一个入口的另外三处问题，各自单独提交。
+
+## SYSCALL 入口屏蔽 TF、DF、AC（2026-09-23）
+
+**文件**
+- `kernel/arch/x86/kernel/init.cpp` — `x86_enable_syscall()` 的 IA32_FMASK 加上 TF、DF、AC 三位
+
+**症状**
+潜伏，当前没有用户程序去设这三位。但任何一个用户程序只要一条 `popf` 就能设上，
+设上之后就是内核漏洞，而不是用户程序自己的问题。
+
+**原因**
+SYSCALL 进入 ring 0 时，RFLAGS 除了被 FMASK 屏蔽的位以外原样带进来。原来的掩码只有
+状态位、IF、IOPL、NT，漏了三位，每一位都各自构成一个问题：
+
+- **TF**：单步陷阱会在内核第一条指令之后触发，这时桩还没离开用户栈。CPL 0 下 #DB 不换栈，
+  CPU 会沿着用户选定的栈指针压异常帧——这等于让用户态替内核挑写入地址。
+- **DF**：SysV ABI 保证每个函数入口 DF=0，编译器给 memcpy 生成的 `rep movs` 依赖这一点。
+  用户带进来 DF=1，内核里每一次拷贝都会从起点往回倒着写。
+- **AC**：在支持 SMAP 的 CPU 上，AC=1 正是「允许 ring 0 访问用户页」的开关。从用户态带进来，
+  等于整个系统调用期间 SMAP 都是关着的。
+
+**改法**
+改前：
+
+```cpp
+    constexpr usize DISABLED_FLAG_BIT_MASK =
+        RFLAGS_STATUS_MASK | RFLAGS_INTERRUPT_FLAG | RFLAGS_IOPL_MASK | RFLAGS_NESTED_TASK;
+```
+
+改后：
+
+```cpp
+    constexpr usize RFLAGS_TRAP_FLAG = usize{1} << 8;
+    constexpr usize RFLAGS_DIRECTION_FLAG = usize{1} << 10;
+    constexpr usize RFLAGS_ALIGNMENT_CHECK = usize{1} << 18;
+    constexpr usize DISABLED_FLAG_BIT_MASK =
+        RFLAGS_STATUS_MASK | RFLAGS_TRAP_FLAG | RFLAGS_INTERRUPT_FLAG | RFLAGS_DIRECTION_FLAG |
+        RFLAGS_IOPL_MASK | RFLAGS_NESTED_TASK | RFLAGS_ALIGNMENT_CHECK;
+```
+
+每一位的理由写在注释里，挨着它的定义。
+
+**参照**
+Linux `syscall_init()`（`arch/x86/kernel/cpu/common.c`）的 SYSCALL_MASK；Zircon
+`x86_init_percpu()`（`kernel/arch/x86/mp.cc`）：`X86_FLAGS_STATUS_MASK`（`0xfff`，
+包含 TF、IF、DF）加上单独列出的 `X86_FLAGS_AC`。
+
+**验证**
+构建通过；两个镜像都启动到 shell 打完命令表。三位的反向测试（用户程序故意 `popf`
+设 TF/DF/AC 再调用 vDSO）没有做——要写一个专门的测试程序，而且它在修复前的症状是
+内核崩溃或静默的内存损坏，不是能从日志里干净读出来的结果。
+
+**故意没做**
+没有照 Zircon 在设置 FMASK 后把同一个掩码应用到当前 CPU 的 RFLAGS
+（`x86_restore_flags(x86_save_flags() & ~mask)`，防固件留下的脏位）。那是另一件事，
+和系统调用入口无关。
