@@ -21,9 +21,16 @@ Dispatcher::Dispatcher(u32 magic)
     , m_handle_count()
     , m_signals(Signals::None) {}
 
+// Neither of these verifies the canary. They used to call
+// m_canary.verify<Self>(), with Self = Dispatcher -- but the canary is seeded
+// from the concrete type's MAGIC (SoloDispatcher's constructor passes
+// Derived::MAGIC), so on every real object that check compared, say,
+// "ChannelDispatcher" against "Dispatcher" and asserted. It stayed hidden only
+// because nothing had called either function yet. The base cannot name the
+// concrete type; the dispatcher methods that call these do, through
+// verify_canary().
 auto Dispatcher::attach_observer(SignalObserver *observer, void const *handle, Signals signals)
     -> Status {
-    m_canary.verify<Self>();
     DEBUG_ASSERT(observer);
 
     Guard guard{get_lock()};
@@ -36,7 +43,6 @@ auto Dispatcher::attach_observer(SignalObserver *observer, void const *handle, S
 }
 
 auto Dispatcher::detach_observer(SignalObserver *observer, Signals *signals) -> Status {
-    m_canary.verify<Self>();
     DEBUG_ASSERT(observer);
 
     Guard guard{get_lock()};

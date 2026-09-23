@@ -79,11 +79,33 @@ class KernelHandle {
     /// operator for the same reason.
     FORCE_INLINE
     auto operator=(KernelHandle &&other) -> KernelHandle & {
-        m_dispatcher = ustl::move(other.m_dispatcher);
+        reset(other.release());
         return *this;
     }
 
-    ~KernelHandle() = default;
+    /// A KernelHandle counts as a handle: dropping the last one is the object
+    /// losing its last holder, exactly as closing its last user handle is.
+    ///
+    /// It used to be defaulted, which meant an object that never reached a
+    /// user handle table -- one end of a channel pair whose other end was
+    /// handed out and whose own end was dropped on an error path, say -- never
+    /// heard that it had lost its holders, and a peer waiting on PEER_CLOSED
+    /// would wait forever. Zircon's KernelHandle destructor does the same.
+    /// Moving a KernelHandle into a user Handle goes through release(), which
+    /// hands the reference over without this notification.
+    ~KernelHandle() {
+        if (m_dispatcher) {
+            m_dispatcher->on_zero_handles();
+        }
+    }
+
+    /// Gives up the object without telling it it lost a holder: the caller
+    /// is taking the reference somewhere that will count it (Handle::make()).
+    [[nodiscard]]
+    FORCE_INLINE
+    auto release() -> ustl::Arc<T> {
+        return ustl::move(m_dispatcher);
+    }
 
     /// Two overloads, because ustl::Rc propagates constness through
     /// `operator->` (`Rc<T> const` yields `T const *`), unlike fbl::RefPtr and
@@ -101,14 +123,23 @@ class KernelHandle {
         return m_dispatcher;
     }
 
+    /// Replaces the object held, telling the old one it lost a holder.
+    ///
+    /// It called `on_zero()`, which does not exist on any dispatcher; it
+    /// compiled only because nothing had instantiated it.
     template <std::derived_from<Dispatcher> U>
     FORCE_INLINE
     auto reset(ustl::Arc<U> dispatcher) -> void {
         if (m_dispatcher) {
-            m_dispatcher->on_zero();
+            m_dispatcher->on_zero_handles();
         }
 
         m_dispatcher = ustl::move(dispatcher);
+    }
+
+    FORCE_INLINE
+    auto reset() -> void {
+        reset(ustl::Arc<T>());
     }
 
     USTL_NOCOPYABLE(KernelHandle);

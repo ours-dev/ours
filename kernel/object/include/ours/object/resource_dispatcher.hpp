@@ -29,6 +29,8 @@ class ResourceDispatcher: public ResourceDispatcherBase {
     USTL_DECLARE_HOOK_OPTION(Self, m_managed_hook, ManagedOption);
 
   public:
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Resource);
+
     static constexpr auto MAX_NAME_SIZE = 32;
 
     using Kind = RsrcKind;

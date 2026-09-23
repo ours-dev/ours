@@ -25,6 +25,8 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     using Base = ThreadDispatcherBase;
 
   public:
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Thread);
+
     enum class State {
         Running,
     };

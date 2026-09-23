@@ -29,6 +29,8 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     using Base = ProcessDispatcherBase;
 
   public:
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Process);
+
     enum class State {
         Initial,
         Running,

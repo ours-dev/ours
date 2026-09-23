@@ -19,6 +19,8 @@ class PagerDispatcher: public PagerDispatcherBase {
     using Base = PagerDispatcherBase;
 
   public:
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Pager);
+
     enum class Operation : u8 {
         Dirty,
         WriteBackPreamble,

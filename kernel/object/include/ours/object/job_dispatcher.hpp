@@ -23,6 +23,8 @@ class JobDispatcher: public JobDispatcherBase {
     using Self = JobDispatcher;
 
   public:
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Job);
+
     /// The job every process created during bring-up belongs to.
     ///
     /// Built once from an init hook (job_dispatcher.cpp) rather than handed

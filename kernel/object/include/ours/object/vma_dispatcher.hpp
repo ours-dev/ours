@@ -47,6 +47,8 @@ class VmaDispatcher final: public VmaDispatcherBase {
     using Base = VmaDispatcherBase;
 
   public:
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Vmar);
+
     /// Wraps |vma| in a new dispatcher and reports the rights its first handle
     /// should carry.
     ///

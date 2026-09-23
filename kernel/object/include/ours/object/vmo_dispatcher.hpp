@@ -37,6 +37,8 @@ class VmoDispatcher final: public VmoDispatcherBase {
     using Base = VmoDispatcherBase;
 
   public:
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Vmo);
+
     /// Wraps an already-built VmObject. Zircon's VmObjectDispatcher::Create
     /// has exactly this shape, and for the same reason: what kind of VmObject
     /// to build is the caller's decision, not this layer's.
