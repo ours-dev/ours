@@ -22,6 +22,8 @@
 #include <ours/boot/handoff.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/object/handle.hpp>
+#include <ours/object/handle_table.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
@@ -439,21 +441,42 @@ auto userboot_init() -> void {
         return;
     }
 
+    // The first process is handed the root job, as a handle in its own table.
+    //
+    // That is the whole of what it is given, and it is enough: a job is what
+    // processes are created under, so the program that holds the root one is
+    // the one that can start the rest of the system. Zircon's userboot is
+    // handed the root job the same way, in its bootstrap message; there is no
+    // message yet, so the value goes straight into the entry register and the
+    // program learns what it is by the order it was started in.
+    //
+    // Default rights -- ManageProcess among them. Narrowing them to what the
+    // first program needs is a decision for when there is more than one.
+    auto bootstrap =
+        object::Handle::make(ustl::Arc<object::Dispatcher>(object::JobDispatcher::root_job()),
+                             object::JobDispatcher::default_right());
+    if (!bootstrap) {
+        log::error("userabi: could not make a handle to the root job");
+        return;
+    }
+    auto const bootstrap_value = process.dispatcher()->handle_table().add(ustl::move(bootstrap));
+    log::info("userabi: root job -> {} as handle {:#x}", program.view(), bootstrap_value);
+
     // start(), not resume(): where a kernel thread only needs to be made
     // runnable, a user thread has to be told where in user space to begin.
     // This is the same argument list a future sys_thread_start carries.
     //
-    // No arguments. arg1 used to be the vDSO's export table, because that was
-    // the only way a program could reach a system call; a program's imports
-    // are bound before it runs now, so there is nothing it needs to be told at
-    // entry. The pair stays in the struct because a process started with a
-    // handle to its bootstrap channel is what goes here next -- which is what
-    // Zircon's userboot receives.
+    // %rdi is the handle just installed and %rsi the vDSO's base. The base is
+    // not needed to make a system call -- the program's imports are bound
+    // before it runs -- but it is the one fact about its own address space a
+    // program cannot otherwise find, and a runtime that walks its own stack
+    // or binds itself later (P2) wants it. arg1 used to be the vDSO's export
+    // table, when a program resolved its system calls by hand.
     status = thread.dispatcher()->start({
         .entry = loaded.image.entry,
         .stack = loaded.stack_top,
-        .arg1 = 0,
-        .arg2 = 0,
+        .arg1 = bootstrap_value,
+        .arg2 = vdso.base,
     });
     if (Status::Ok != status) {
         log::error("userboot: could not start the entry thread: {}", to_string(status));
