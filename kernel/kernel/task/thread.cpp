@@ -221,7 +221,7 @@ auto Thread::resume() -> Status {
         return Status::Ok;
     }
 
-    m_signals &= ~Signals::Suspend;
+    m_signals &= ~ThreadSignals::Suspend;
 
     if (state == State::Suspend) {
         Scheduler::unpark_thread(this);
@@ -239,9 +239,9 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
     auto const is_to_suspend = SuspendOrKillOp::Suspend == op;
     auto set_signals = gktl::defer([this, is_to_suspend]() {
         if (is_to_suspend) {
-            m_signals |= Signals::Suspend;
+            m_signals |= ThreadSignals::Suspend;
         } else {
-            m_signals |= Signals::Kill;
+            m_signals |= ThreadSignals::Kill;
         }
     });
 
@@ -529,7 +529,8 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
         Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
         DEBUG_ASSERT(current_thread->state() == Thread::State::Running);
 
-        if (Interruptible::Yes == interruptible && current_thread->signals() != Signals::None) {
+        if (Interruptible::Yes == interruptible &&
+            current_thread->signals() != ThreadSignals::None) {
             /// Throw up to the caller who make decision
             if (current_thread->check_kill_signal()) {
                 return Status::InternalIrqKilled;
@@ -589,9 +590,9 @@ auto Thread::Current::do_suspend() -> void {
 
         if (current_thread->check_kill_signal()) {
             need_exit = true;
-        } else if (!!(current_thread->signals() & Signals::Suspend)) {
+        } else if (!!(current_thread->signals() & ThreadSignals::Suspend)) {
             // Clear the signal suspending.
-            current_thread->m_signals &= ~Signals::Suspend;
+            current_thread->m_signals &= ~ThreadSignals::Suspend;
 
             // Mark this thread suspend so rescheduling not to place it
             // onto runqueue again.
@@ -618,18 +619,18 @@ auto Thread::Current::process_pending_signals() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
 
-    Signals signals;
-    while ((signals = current_thread->signals()) != Signals::None) {
-        if (!!(signals & Signals::Kill)) {
+    ThreadSignals signals;
+    while ((signals = current_thread->signals()) != ThreadSignals::None) {
+        if (!!(signals & ThreadSignals::Kill)) {
         }
 
-        if (!!(signals & Signals::Suspend)) {
+        if (!!(signals & ThreadSignals::Suspend)) {
             arch::local_irq_enable();
             Thread::Current::do_suspend();
             arch::local_irq_disable();
         }
 
-        if (!!(signals & Signals::None)) {
+        if (!!(signals & ThreadSignals::None)) {
         }
     }
 }

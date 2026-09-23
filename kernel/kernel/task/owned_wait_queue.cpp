@@ -255,7 +255,7 @@ auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline co
     // that can invert priorities; blocking with a half-built chain walk is a
     // deadlock. Recorded in docs/repairs.
     Guard<sync::SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{curr->get_pi_lock()};
-    return park_thread(curr, deadline, Signals::None, interruptible);
+    return park_thread(curr, deadline, ThreadSignals::None, interruptible);
 }
 
 template <typename Upstream, typename Downstream>

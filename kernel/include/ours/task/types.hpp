@@ -6,6 +6,7 @@
 #include <ours/types.hpp>
 
 #include <ustl/function/fn.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 namespace ours::task {
 /// A thread's entry point: a plain function plus one pointer of context.
@@ -41,6 +42,24 @@ enum class Interruptible {
     Yes,
     No,
 };
+
+/// Requests pending against a thread: stop at the next safe point, or die.
+///
+/// These used to be ours::Signals, the public header's object-signal type,
+/// which made two unrelated things share one set of bits. An object signal is
+/// state an observer waits on through a handle (a channel became readable, a
+/// process terminated) and it is ABI; these are orders the kernel gives one of
+/// its own threads, checked when the thread parks and on its way back to user
+/// space, and no program ever sees them. Sharing the enum put Kill on bit 1,
+/// which is where every object's WRITABLE lives. Zircon keeps the same split:
+/// ZX_*_SIGNAL_* for objects, THREAD_SIGNAL_KILL / THREAD_SIGNAL_SUSPEND in
+/// Thread::signals_.
+enum class ThreadSignals : u32 {
+    None,
+    Suspend = 0_bit,
+    Kill = 1_bit,
+};
+USTL_ENABLE_ENUM_BITMASK(ThreadSignals);
 
 } // namespace ours::task
 

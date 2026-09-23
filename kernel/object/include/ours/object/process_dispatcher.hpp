@@ -19,7 +19,7 @@ namespace ours::object {
 constexpr auto RIGHTS_DEFAULT_PROCESS = Rights::Signal | Rights::Io;
 
 using ProcessDispatcherBase =
-    SoloDispatcher<ProcessDispatcher, RIGHTS_DEFAULT_PROCESS, Signals::Suspend>;
+    SoloDispatcher<ProcessDispatcher, RIGHTS_DEFAULT_PROCESS, Signals::None>;
 
 class ProcessDispatcher: public ProcessDispatcherBase {
     using Self = ProcessDispatcher;

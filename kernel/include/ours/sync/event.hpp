@@ -20,14 +20,15 @@ class Event {
     auto unsignal() -> void;
 
     auto wait() -> Status {
-        return wait_etc(time::Deadline::infinite(), task::Interruptible::No, Signals::None);
+        return wait_etc(time::Deadline::infinite(), task::Interruptible::No,
+                        task::ThreadSignals::None);
     }
 
     auto wait(time::Deadline const &deadline) -> Status {
-        return wait_etc(deadline, task::Interruptible::Yes, Signals::None);
+        return wait_etc(deadline, task::Interruptible::Yes, task::ThreadSignals::None);
     }
 
-    auto wait(time::Deadline const &deadline, Signals sigmask) -> Status {
+    auto wait(time::Deadline const &deadline, task::ThreadSignals sigmask) -> Status {
         return wait_etc(deadline, task::Interruptible::Yes, sigmask);
     }
 
@@ -38,7 +39,8 @@ class Event {
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
 
-    auto wait_etc(time::Deadline, task::Interruptible interruptible, Signals sigmask) -> Status;
+    auto wait_etc(time::Deadline, task::Interruptible interruptible, task::ThreadSignals sigmask)
+        -> Status;
 
   private:
     gktl::Canary m_canary;

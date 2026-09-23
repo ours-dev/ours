@@ -16,8 +16,7 @@ namespace ours::object {
 /// Rights a freshly created thread handle carries.
 constexpr auto RIGHTS_DEFAULT_THREAD = Rights::Signal | Rights::Io;
 
-using ThreadDispatcherBase =
-    SoloDispatcher<ThreadDispatcher, RIGHTS_DEFAULT_THREAD, Signals::Suspend>;
+using ThreadDispatcherBase = SoloDispatcher<ThreadDispatcher, RIGHTS_DEFAULT_THREAD, Signals::None>;
 
 class ThreadDispatcher: public ThreadDispatcherBase {
     using Self = ThreadDispatcher;

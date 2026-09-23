@@ -22,8 +22,8 @@ using task::Thread;
 /// unsignal(). This mirrors Zircon's Event::WaitWorker(), which returns
 /// result_ directly when it is not kNotSignalled, clearing it first for
 /// AUTOUNSIGNAL.
-auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible, Signals sigmask)
-    -> Status {
+auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
+                     task::ThreadSignals sigmask) -> Status {
     // Interrupts and preemption both off, not just the lock: this guard is
     // carried into reschedule_common() through park_thread(), and that is the
     // state it requires and asserts. A plain Guard left interrupts on and the

@@ -14,7 +14,6 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/stack.hpp>
 #include <ours/mm/types.hpp>
-#include <ours/signals.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/task/config.hpp>
@@ -224,7 +223,7 @@ namespace task {
         }
 
         FORCE_INLINE
-        auto signals() -> Signals {
+        auto signals() -> ThreadSignals {
             return m_signals;
         }
 
@@ -345,14 +344,14 @@ namespace task {
 
         FORCE_INLINE
         auto check_kill_signal() const -> bool {
-            return !!(m_signals & Signals::Kill);
+            return !!(m_signals & ThreadSignals::Kill);
         }
 
         FORCE_INLINE
         auto check_kill_or_suspend_signal() const -> Status {
-            if (!!(m_signals & Signals::Kill)) {
+            if (!!(m_signals & ThreadSignals::Kill)) {
                 return Status::InternalIrqKilled;
-            } else if (!!(m_signals & Signals::Suspend)) {
+            } else if (!!(m_signals & ThreadSignals::Suspend)) {
                 return Status::InternalIrqRetry;
             }
 
@@ -511,7 +510,7 @@ namespace task {
         /// same reason.
         Flags m_flags TA_GUARDED(get_pi_lock());
         State m_state;
-        Signals m_signals;
+        ThreadSignals m_signals;
 
         sync::SpinLock m_pi_lock;
 

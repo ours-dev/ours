@@ -9,14 +9,52 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours {
+/// Object signals: the state of a kernel object that a program can wait on
+/// through a handle (ours_object_wait_one).
+///
+/// The bit positions are Zircon's, deliberately -- ZX_OBJECT_READABLE and
+/// friends in zircon/types.h -- so that anything written against Zircon's
+/// documentation of what a signal means lands on the same bit here. Positions
+/// 0..22 are per object type: bit 3 is SIGNALED on an event and TERMINATED on
+/// a task, the same bit read two ways, exactly as in Zircon. Only the ones
+/// something in this tree raises are named; more are added with the objects
+/// that raise them.
+///
+/// This enum used to hold Suspend and Kill. Those are orders the kernel gives
+/// its own threads, not observable object state, and they now live in
+/// task::ThreadSignals. Kill sat on bit 1, which is WRITABLE.
 enum class Signals : u32 {
-    None,
-    Suspend = 0_bit,
-    Kill = 1_bit,
+    None = 0,
 
-    MaxCount,
+    /// Bits 0..2, shared by every object that has a peer or a queue.
+    Readable = 0_bit,
+    Writable = 1_bit,
+    PeerClosed = 2_bit,
+
+    /// Bit 3: the one per-type bit so far. An event is SIGNALED; a job,
+    /// process or thread is TERMINATED.
+    Signaled = 3_bit,
+    Terminated = 3_bit,
+
+    /// Not a state of the object at all. object_wait_one reports it in its
+    /// observed set when the handle it was waiting through is closed under it
+    /// (Zircon ZX_SIGNAL_HANDLE_CLOSED).
+    HandleClosed = 23_bit,
+
+    /// Bits 24..31 belong to user programs: object_signal may set and clear
+    /// these on any object, and the kernel assigns them no meaning.
+    User0 = 24_bit,
+    User1 = 25_bit,
+    User2 = 26_bit,
+    User3 = 27_bit,
+    User4 = 28_bit,
+    User5 = 29_bit,
+    User6 = 30_bit,
+    User7 = 31_bit,
+
+    UserAll = User0 | User1 | User2 | User3 | User4 | User5 | User6 | User7,
 };
 USTL_ENABLE_ENUM_BITMASK(Signals);
 } // namespace ours
 
-#endif // #ifndef OURS_RIGHTS_HPP
+#endif // #ifndef OURS_SIGNALS_HPP

@@ -3,7 +3,6 @@
 #ifndef OURS_TASK_WAIT_QUEUE_HPP
 #define OURS_TASK_WAIT_QUEUE_HPP 1
 
-#include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/sync/types.hpp>
@@ -115,10 +114,11 @@ class WaitQueue {
 
     /// Puts the current thread at the end of waiter queue and then blocks
     /// until some threads wakes the queue up again.
-    auto park_thread(Thread *, time::Deadline = time::Deadline::infinite(), Signals = Signals::None,
-                     Interruptible = Interruptible::Yes) -> Status;
+    auto park_thread(Thread *, time::Deadline = time::Deadline::infinite(),
+                     ThreadSignals = ThreadSignals::None, Interruptible = Interruptible::Yes)
+        -> Status;
 
-    auto park_thread_common(Thread *thread, time::Deadline, Signals) -> Status;
+    auto park_thread_common(Thread *thread, time::Deadline, ThreadSignals) -> Status;
 
     auto unpark_thread(Thread *thread, Status = Status::Ok) -> void;
 
@@ -189,7 +189,7 @@ class WaitQueue {
 
     explicit WaitQueue(Type type);
 
-    auto park_thread_preamble(Thread *, time::Deadline, Signals, Interruptible) -> Status;
+    auto park_thread_preamble(Thread *, time::Deadline, ThreadSignals, Interruptible) -> Status;
 
     auto park_thread_postamble(Thread *, time::Deadline) -> Status;
 

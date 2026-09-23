@@ -34,7 +34,7 @@ WaitQueue::WaitQueue(Type type)
     // every instance, derived ones included. That is deliberate; see Type.
     : m_canary(this), m_type(type), m_waiters(), m_lock(), m_next_seq(0) {}
 
-auto WaitQueue::park_thread(Thread *thread, time::Deadline deadline, Signals sigmask,
+auto WaitQueue::park_thread(Thread *thread, time::Deadline deadline, ThreadSignals sigmask,
                             Interruptible interruptible) -> Status {
     m_canary.verify<Self>();
 
@@ -47,7 +47,7 @@ auto WaitQueue::park_thread(Thread *thread, time::Deadline deadline, Signals sig
     return park_thread_postamble(thread, deadline);
 }
 
-auto WaitQueue::park_thread_preamble(Thread *thread, time::Deadline deadline, Signals sigmask,
+auto WaitQueue::park_thread_preamble(Thread *thread, time::Deadline deadline, ThreadSignals sigmask,
                                      Interruptible interruptible) -> Status {
     using namespace time;
     DEBUG_ASSERT(Thread::Current::get() == thread);
