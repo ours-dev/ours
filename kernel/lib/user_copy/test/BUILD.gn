@@ -1,0 +1,14 @@
+# Host-side tests. These link googletest and run on the build machine, so
+# they exercise the library's own logic rather than anything that needs a
+# booted kernel -- here, the range arithmetic in <user_copy/range.hpp>, which
+# depends on nothing but <ours/types.hpp>.
+executable("user_copy") {
+  testonly = true
+  sources = [ "user_copy_test.cpp" ]
+  deps = [
+    "//kernel/lib/user_copy:headers",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

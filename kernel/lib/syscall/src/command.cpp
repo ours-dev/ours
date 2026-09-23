@@ -2,8 +2,9 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <cstring>
+
 #include <gktl/command.hpp>
-#include <ours/mm/vmm.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
@@ -19,70 +20,88 @@ namespace {
     extern "C" gktl::Command const COMMANDS_START[] LINK_NAME("__commands_start");
     extern "C" gktl::Command const COMMANDS_END[] LINK_NAME("__commands_end");
 
-    /// Appends |text| at |at|, never past |limit|, and reports where it got to.
+    /// Text on its way into a user buffer, a piece at a time.
     ///
-    /// Returns the *would-be* end even when it ran out of room, so the caller
-    /// can tell "filled exactly" from "truncated" without a second length pass.
-    auto append(char *at, char const *const limit, char const *text) -> char * {
-        if (text == nullptr) {
-            return at;
-        }
-        while (*text != '\0') {
-            if (at < limit) {
-                *at = *text;
+    /// The registry's strings live in the kernel image, and the destination is
+    /// user memory, so every piece crosses the boundary through a copy; there
+    /// is no buffer large enough on a kernel stack to assemble the whole list
+    /// first. It keeps the old contract: what fits is written, the length that
+    /// *would* have been written is still counted so a caller can tell "filled
+    /// exactly" from "truncated", and the result is always NUL terminated.
+    ///
+    /// One byte of the caller's buffer is held back for that terminator.
+    class UserTextWriter final {
+      public:
+        UserTextWriter(user_copy::UserOutPtr<char> const buffer, usize const size)
+            : m_buffer(buffer), m_capacity(size - 1) {}
+
+        auto append(char const *const text) -> void {
+            if (text == nullptr) {
+                return;
             }
-            ++at;
-            ++text;
+            auto const length = std::strlen(text);
+            if (m_status == Status::Ok && m_length < m_capacity) {
+                auto count = m_capacity - m_length;
+                if (length < count) {
+                    count = length;
+                }
+                m_status = m_buffer.element_offset(m_length).copy_array_to_user(text, count);
+            }
+            m_length += length;
         }
-        return at;
-    }
+
+        /// Terminates the text and says whether all of it fitted.
+        [[nodiscard]]
+        auto finish() -> Status {
+            if (m_status != Status::Ok) {
+                return m_status;
+            }
+            auto end = m_length;
+            auto result = Status::Ok;
+            if (end > m_capacity) {
+                end = m_capacity;
+                result = Status::NoSpace;
+            }
+            constexpr char NUL = '\0';
+            if (auto const status = m_buffer.element_offset(end).copy_to_user(NUL);
+                status != Status::Ok) {
+                return status;
+            }
+            return result;
+        }
+
+      private:
+        user_copy::UserOutPtr<char> m_buffer;
+        usize m_capacity;
+        usize m_length = 0;
+        Status m_status = Status::Ok;
+    };
 } // namespace
 
-auto sys_command_list(char *const buffer, usize const length) -> Status {
-    if (buffer == nullptr || length == 0) {
+auto sys_command_list(user_copy::UserOutPtr<char> const buffer, usize const length) -> Status {
+    if (buffer.is_null() || length == 0) {
         return Status::InvArgs;
     }
 
-    // The same range check sys_debug_write() makes, and for the same reason:
-    // a buffer that starts in user space and runs past the split would let a
-    // user program have the kernel write over its own memory. The end is
-    // computed as a length rather than as `start + length`, because that sum
-    // can wrap and a wrapped pointer passes a naive check by landing back
-    // below the split.
-    //
-    // This one writes rather than reads, so getting it wrong is worse. Same
-    // caveat as sys_debug_write: without a copy_to_user that can survive the
-    // page being unmapped underneath it, this is a check plus a direct store,
-    // and the fault handler that would make it honest does not exist yet.
-    auto const start = reinterpret_cast<VirtAddr>(buffer);
-    if (mm::is_kernel_address(start) || length > VirtAddr(-1) - start ||
-        mm::is_kernel_address(start + length - 1)) {
+    // The whole buffer up front, not piece by piece as the copies go: a buffer
+    // that runs out of the user half is refused before any of it is written,
+    // rather than half-filled and then refused.
+    if (!user_copy::is_user_range(buffer.address(), length)) {
         return Status::InvArgs;
     }
 
-    // One byte is reserved up front so the result is always terminated, even
-    // when it is cut short. A caller that gets an un-terminated buffer back has
-    // no way to tell where the text ends.
-    auto *const limit = buffer + length - 1;
-    auto *at = buffer;
-
+    UserTextWriter writer(buffer, length);
     for (auto const *command = COMMANDS_START; command != COMMANDS_END; ++command) {
         if (command->cmd == nullptr) {
             continue;
         }
-        at = append(at, limit, command->cmd);
+        writer.append(command->cmd);
         if (command->help != nullptr && command->help[0] != '\0') {
-            at = append(at, limit, "  ");
-            at = append(at, limit, command->help);
+            writer.append("  ");
+            writer.append(command->help);
         }
-        at = append(at, limit, "\n");
+        writer.append("\n");
     }
-
-    if (at > limit) {
-        *limit = '\0';
-        return Status::NoSpace;
-    }
-    *at = '\0';
-    return Status::Ok;
+    return writer.finish();
 }
 } // namespace ours

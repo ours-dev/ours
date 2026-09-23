@@ -21,6 +21,7 @@ source_set("kernel") {
     "task/thread.cpp",
     "time/hpet.cpp",
     "time/time.cpp",
+    "user_copy.cpp",
     "uspace.S",
   ]
 

@@ -105,6 +105,10 @@ class ArchCpuState final {
     enum Field : usize {
         IF = 9,
         IOPL = 12,
+        /// Alignment check / access control. With CR4.SMAP set it is the one
+        /// bit that lets ring 0 touch user pages, which is why the page-fault
+        /// handler reads it out of a frame (see x86_handle_page_fault()).
+        AC = 18,
     };
 
     constexpr ArchCpuState() noexcept = default;

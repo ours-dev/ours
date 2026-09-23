@@ -95,13 +95,17 @@ namespace {
     /// instruction overwrote both before the kernel got control, which is why
     /// their slots in the frame are pushed as zero and why a fourth argument
     /// would have to come from %r10.
+    ///
+    /// A pointer argument becomes a user_copy::UserPtr here and nowhere else:
+    /// the register holds a number the user chose, and this is the point where
+    /// it is given a type that can only be copied through.
     auto sys_command_list_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_command_list(reinterpret_cast<char *>(frame->di), frame->si);
-        frame->ax = usize(status);
+        auto const status = sys_command_list(user_copy::UserOutPtr<char>(frame->di), frame->si);
+        frame->ax = static_cast<usize>(status);
     }
 
     auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_debug_write(reinterpret_cast<char const *>(frame->di), frame->si);
+        auto const status = sys_debug_write(user_copy::UserInPtr<char const>(frame->di), frame->si);
         frame->ax = static_cast<usize>(status);
     }
 

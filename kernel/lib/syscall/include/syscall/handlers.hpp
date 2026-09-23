@@ -5,6 +5,7 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <user_copy/user_copy.hpp>
 
 namespace ours {
 /// The typed system-call entry points.
@@ -17,20 +18,20 @@ namespace ours {
 /// -- the same split Zircon draws between its generated syscall wrappers and
 /// the sys_* functions they call.
 ///
-/// A pointer parameter here is a *user* pointer. It has been range-checked
-/// against the user half of the address space by the time the callee runs, but
-/// it is not otherwise trusted, and it must not be dereferenced by anything
-/// that cannot survive the page under it going away.
+/// A pointer parameter here is a user_copy::UserPtr, not a C++ pointer. The
+/// type is the rule: it cannot be dereferenced, only copied through, and every
+/// copy checks the range and opens the SMAP window. The direction is part of
+/// the type, so writing through an input is a compile error.
 
 /// Write |length| bytes of |buffer| to the kernel's debug console.
-auto sys_debug_write(char const *buffer, usize length) -> Status;
+auto sys_debug_write(user_copy::UserInPtr<char const> buffer, usize length) -> Status;
 
 /// Writes the kshell command registry into |buffer| as text, one command per
 /// line ("name  help"), always NUL terminated.
 ///
 /// Status::NoSpace when the registry did not fit; what did fit is still
 /// terminated, so a caller can show it and ask for more room.
-auto sys_command_list(char *buffer, usize length) -> Status;
+auto sys_command_list(user_copy::UserOutPtr<char> buffer, usize length) -> Status;
 
 } // namespace ours
 

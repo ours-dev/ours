@@ -5,6 +5,7 @@ import("//build/cpp/cpp_interface.gni")
 # themselves free of any arch detail.
 cpp_interface("headers") {
   public = [ "include/syscall/handlers.hpp" ]
+  public_deps = [ "//kernel/lib/user_copy:headers" ]
   visibility = [ "*" ]
 }
 
@@ -22,6 +23,7 @@ source_set("syscall") {
   ]
   public_deps = [
     ":headers",
+    "//kernel/lib/user_copy",
     "//kernel/object:headers",
   ]
   deps = [

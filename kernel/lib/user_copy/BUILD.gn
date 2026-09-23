@@ -1,0 +1,31 @@
+import("//build/cpp/cpp_interface.gni")
+import("//build/ours/cpu.gni")
+
+# Moves bytes across the user/kernel boundary: typed user pointers, range
+# checks, and the SMAP bracket around each copy. The bracket itself is the
+# architecture's (arch_copy_from_user()/arch_copy_to_user(), in
+# //kernel/arch/$ours_cpu/kernel/user_copy.cpp); this library owns the part
+# every architecture shares -- which addresses a user may name, and a pointer
+# type that cannot be dereferenced.
+if (toolchain_environment == "kernel") {
+  source_set("user_copy") {
+    sources = [ "src/user_copy.cpp" ]
+    public_deps = [ ":headers" ]
+    deps = [
+      "//kernel/arch/$ours_cpu:headers",
+      "//kernel/mm:headers",
+    ]
+    visibility = [ "*" ]
+  }
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/user_copy/range.hpp",
+    "include/user_copy/user_copy.hpp",
+  ]
+  public_deps = [ "//system/public" ]
+  visibility = [ "*" ]
+}
