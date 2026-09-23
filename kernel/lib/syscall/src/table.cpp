@@ -99,6 +99,16 @@ namespace {
         frame->ax = static_cast<usize>(status);
     }
 
+    /// A handle arrives as a u32 in the low half of %rdi. The SysV ABI leaves
+    /// the upper half of a register unspecified when it carries a 32-bit
+    /// argument, so it is truncated here rather than trusted to be zero -- a
+    /// caller whose compiler left garbage there has still passed a valid
+    /// handle.
+    auto sys_handle_close_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_handle_close(static_cast<HandleValue>(frame->di));
+        frame->ax = static_cast<usize>(status);
+    }
+
     auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
         auto const status = sys_debug_write(user_copy::UserInPtr<char const>(frame->di), frame->si);
         frame->ax = static_cast<usize>(status);
@@ -147,6 +157,7 @@ namespace {
 
         table[OURS_SYS_DEBUG_WRITE] = &sys_debug_write_shim;
         table[OURS_SYS_COMMAND_LIST] = &sys_command_list_shim;
+        table[OURS_SYS_HANDLE_CLOSE] = &sys_handle_close_shim;
 
         return table;
     }

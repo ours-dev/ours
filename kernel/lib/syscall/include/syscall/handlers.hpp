@@ -33,6 +33,9 @@ auto sys_debug_write(user_copy::UserInPtr<char const> buffer, usize length) -> S
 /// terminated, so a caller can show it and ask for more room.
 auto sys_command_list(user_copy::UserOutPtr<char> buffer, usize length) -> Status;
 
+/// Takes |handle| out of the calling process's table and lets it go.
+auto sys_handle_close(HandleValue handle) -> Status;
+
 } // namespace ours
 
 #endif // SYSCALL_HANDLERS_HPP

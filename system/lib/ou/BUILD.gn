@@ -13,6 +13,7 @@ source_set("ou") {
   sources = [
     "src/command.cpp",
     "src/debug.cpp",
+    "src/handle.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]
@@ -25,6 +26,7 @@ cpp_interface("headers") {
   public = [
     "include/ou/command.hpp",
     "include/ou/debug.hpp",
+    "include/ou/handle.hpp",
     "include/ou/str.hpp",
   ]
 

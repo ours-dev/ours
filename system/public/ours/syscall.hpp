@@ -52,6 +52,14 @@
 /// copy_to_user worth the name.
 #define OURS_SYS_COMMAND_LIST 1
 
+/// ours_handle_close(HandleValue handle) -> Status
+///
+/// Takes |handle| out of the caller's handle table; when it was the last
+/// handle to its object, the object learns it has no holders left. Closing
+/// HANDLE_INVALID succeeds and does nothing. No right is needed to give a
+/// handle up.
+#define OURS_SYS_HANDLE_CLOSE 2
+
 #ifdef __cplusplus
 
 #include <ours/types.hpp>
@@ -99,6 +107,7 @@ inline constexpr auto MAX_DEBUG_WRITE = usize{256};
 enum class SyscallNumber : usize {
     DebugWrite = OURS_SYS_DEBUG_WRITE,
     CommandList = OURS_SYS_COMMAND_LIST,
+    HandleClose = OURS_SYS_HANDLE_CLOSE,
 };
 } // namespace ours
 

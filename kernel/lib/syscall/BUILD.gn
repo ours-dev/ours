@@ -17,6 +17,7 @@ source_set("syscall") {
   sources = [
     "src/command.cpp",
     "src/debug.cpp",
+    "src/handle.cpp",
     "src/table.cpp",
     "src/task.cpp",
     "src/vmo.cpp",

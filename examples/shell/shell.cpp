@@ -26,6 +26,7 @@
 
 #include <ou/command.hpp>
 #include <ou/debug.hpp>
+#include <ou/handle.hpp>
 #include <ou/str.hpp>
 
 namespace {
@@ -50,18 +51,40 @@ class Registry {
 };
 
 constexpr ou::Str BANNER{"ours shell: the kernel's command registry, seen from ring 3"};
+
+/// Prints "<what><status name>" on a line of its own.
+auto report(ou::Str const what, ours::Status const status) -> void {
+    static_cast<void>(ou::debug_write(what));
+    static_cast<void>(ou::debug_line(ou::Str::from_c_str(ours::to_string(status), 32)));
+}
+
+/// Gives up the handle this program was started with, and checks that the
+/// kernel then refuses it.
+///
+/// The first close has to succeed: the value came from the kernel, which put
+/// the root job into this process's table and the value into %rdi. The second
+/// has to fail with BadHandle, because the same number no longer names
+/// anything here -- and that is the handle table's whole job, observed from
+/// the side of the boundary that relies on it.
+auto check_handle_close(ours::HandleValue const bootstrap) -> void {
+    report("shell: close(bootstrap) = ", ou::handle_close(bootstrap));
+    report("shell: close again = ", ou::handle_close(bootstrap));
+}
 } // namespace
 
 /// `extern "C"`, because ld.lld resolves the default entry point by the symbol
 /// name `_start` and a mangled name would not answer to it.
 ///
-/// It takes no arguments. Finding the system calls is not this program's
-/// problem: the calls below are undefined symbols that userboot binds to the
-/// vDSO's definitions while it loads this image
-/// (kernel/lib/userabi/src/userboot.cpp, and elfload::Binder under it).
+/// |bootstrap| is the one handle this process starts with (%rdi), and
+/// |vdso_base| where the vDSO was mapped (%rsi) -- see userabi's
+/// userboot_init(). Finding the system calls is not this program's problem:
+/// the calls below are undefined symbols that userboot binds to the vDSO's
+/// definitions while it loads this image (elfload::Binder).
 extern "C" [[noreturn]]
-auto _start() -> void {
+auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr const vdso_base)
+    -> void {
     static_cast<void>(ou::debug_line(BANNER));
+    check_handle_close(bootstrap);
 
     static Registry registry;
     auto const status = registry.fetch();

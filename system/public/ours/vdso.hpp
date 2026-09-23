@@ -48,6 +48,10 @@ auto ours_debug_write(char const *buffer, usize length) -> ours::Status;
 /// Writes the kshell command registry into |buffer| as text, one command per
 /// line, NUL terminated; NoSpace when the registry does not fit.
 auto ours_command_list(char *buffer, usize length) -> ours::Status;
+
+/// Closes |handle|. HANDLE_INVALID is accepted and ignored; any other value
+/// that names nothing in the caller's table answers BadHandle.
+auto ours_handle_close(ours::HandleValue handle) -> ours::Status;
 }
 
 #endif // __cplusplus

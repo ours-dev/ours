@@ -78,4 +78,21 @@ OURS_VDSO_SYSRET_COMMAND_LIST:
     ret
 .size ours_command_list, . - ours_command_list
 
+// ours_handle_close(HandleValue handle) -> Status
+//
+// One argument, already in %edi. The kernel reads it as a u32 and ignores the
+// upper half of %rdi, which the SysV ABI leaves unspecified for a 32-bit
+// argument -- so there is nothing to clear here either.
+.balign 16
+.globl ours_handle_close
+.type ours_handle_close, @function
+ours_handle_close:
+    mov $OURS_SYS_HANDLE_CLOSE, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_HANDLE_CLOSE
+.hidden OURS_VDSO_SYSRET_HANDLE_CLOSE
+OURS_VDSO_SYSRET_HANDLE_CLOSE:
+    ret
+.size ours_handle_close, . - ours_handle_close
+
 .section .note.GNU-stack, "", @progbits
