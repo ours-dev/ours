@@ -8,7 +8,11 @@
 namespace ours::object {
 class PagerDispatcher;
 
-using PagerDispatcherBase = SoloDispatcher<PagerDispatcher, Rights::Default>;
+/// Zircon ZX_DEFAULT_PAGER_RIGHTS.
+constexpr auto RIGHTS_DEFAULT_PAGER =
+    Rights::Inspect | Rights::Transfer | Rights::AttachVmo | Rights::ManageVmo;
+
+using PagerDispatcherBase = SoloDispatcher<PagerDispatcher, RIGHTS_DEFAULT_PAGER>;
 
 class PagerDispatcher: public PagerDispatcherBase {
     using Self = PagerDispatcher;

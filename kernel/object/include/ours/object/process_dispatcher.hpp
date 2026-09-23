@@ -16,7 +16,10 @@
 
 namespace ours::object {
 /// Rights a freshly created process handle carries.
-constexpr auto RIGHTS_DEFAULT_PROCESS = Rights::Signal | Rights::Io;
+/// Zircon ZX_DEFAULT_PROCESS_RIGHTS.
+constexpr auto RIGHTS_DEFAULT_PROCESS = Rights::Basic | Rights::Io | Rights::Property |
+                                        Rights::Enumerate | Rights::Destroy | Rights::Signal |
+                                        Rights::ManageProcess | Rights::ManageThread;
 
 using ProcessDispatcherBase =
     SoloDispatcher<ProcessDispatcher, RIGHTS_DEFAULT_PROCESS, Signals::None>;

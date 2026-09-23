@@ -14,7 +14,10 @@ namespace ours::object {
 /// carried it as a comment -- per-object default rights are kernel policy
 /// rather than public ABI, so each belongs beside its dispatcher, and there
 /// was no VMO dispatcher header to put it beside. There is now.
-constexpr auto RIGHTS_DEFAULT_VMO = Rights::Signal | Rights::Io;
+/// Zircon ZX_DEFAULT_VMO_RIGHTS. Execute is not among them: mapping a VMO
+/// executable takes a handle that was granted it separately.
+constexpr auto RIGHTS_DEFAULT_VMO =
+    Rights::Basic | Rights::Io | Rights::Property | Rights::Map | Rights::Signal;
 
 using VmoDispatcherBase = SoloDispatcher<VmoDispatcher, RIGHTS_DEFAULT_VMO, Signals::None>;
 

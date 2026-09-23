@@ -11,7 +11,10 @@
 
 namespace ours::object {
 /// Rights a freshly created VMA handle carries.
-constexpr auto RIGHTS_DEFAULT_VMA = Rights::Signal | Rights::Io;
+/// Zircon ZX_DEFAULT_VMAR_RIGHTS: a region is not waited on, and what may be
+/// mapped into it is added per handle (Read/Write/Execute) by whoever creates
+/// it, not granted by default.
+constexpr auto RIGHTS_DEFAULT_VMA = (Rights::Basic & ~Rights::Wait) | Rights::OpChildren;
 
 using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Signals::None>;
 

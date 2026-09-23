@@ -7,7 +7,13 @@
 #include <ours/object/handle.hpp>
 
 namespace ours::object {
-using ChannelDispatcherBase = PeeredDispatcher<ChannelDispatcher, Rights::Default, Signals::None>;
+/// Zircon ZX_DEFAULT_CHANNEL_RIGHTS: no Duplicate, so that a channel end has
+/// exactly one holder unless someone deliberately mints a second.
+constexpr auto RIGHTS_DEFAULT_CHANNEL =
+    (Rights::Basic & ~Rights::Duplicate) | Rights::Io | Rights::Signal | Rights::SignalPeer;
+
+using ChannelDispatcherBase =
+    PeeredDispatcher<ChannelDispatcher, RIGHTS_DEFAULT_CHANNEL, Signals::None>;
 
 class ChannelDispatcher: public ChannelDispatcherBase {
     using Base = ChannelDispatcherBase;

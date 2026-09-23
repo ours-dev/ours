@@ -14,7 +14,9 @@
 
 namespace ours::object {
 /// Rights a freshly created thread handle carries.
-constexpr auto RIGHTS_DEFAULT_THREAD = Rights::Signal | Rights::Io;
+/// Zircon ZX_DEFAULT_THREAD_RIGHTS.
+constexpr auto RIGHTS_DEFAULT_THREAD = Rights::Basic | Rights::Io | Rights::Property |
+                                       Rights::Destroy | Rights::Signal | Rights::ManageThread;
 
 using ThreadDispatcherBase = SoloDispatcher<ThreadDispatcher, RIGHTS_DEFAULT_THREAD, Signals::None>;
 

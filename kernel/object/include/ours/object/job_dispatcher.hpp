@@ -10,7 +10,14 @@
 #include <ustl/rc.hpp>
 
 namespace ours::object {
-using JobDispatcherBase = SoloDispatcher<JobDispatcher, Rights::None>;
+/// Zircon ZX_DEFAULT_JOB_RIGHTS. It was Rights::None, which would have made
+/// every job handle useless the moment a system call checked it.
+constexpr auto RIGHTS_DEFAULT_JOB = Rights::Basic | Rights::Io | Rights::Property | Rights::Policy |
+                                    Rights::Enumerate | Rights::Destroy | Rights::Signal |
+                                    Rights::ManageJob | Rights::ManageProcess |
+                                    Rights::ManageThread;
+
+using JobDispatcherBase = SoloDispatcher<JobDispatcher, RIGHTS_DEFAULT_JOB>;
 
 class JobDispatcher: public JobDispatcherBase {
     using Self = JobDispatcher;

@@ -9,17 +9,54 @@
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours {
+/// What a handle permits. Rights live on the handle, not on the object: two
+/// handles to one channel may carry different rights, and a system call checks
+/// the handle it was given.
+///
+/// The bit values are Zircon's (zircon/rights.h), all of them, including the
+/// ones no object here uses yet. This used to be five bits in an order of its
+/// own, with Signal on bit 4 where Zircon keeps EXECUTE; nothing in user space
+/// depended on the values, so this was the cheapest moment to change them, and
+/// matching Zircon means its rights documentation describes these bits
+/// exactly.
 enum class Rights : u32 {
-    None,
+    None = 0,
     Duplicate = 0_bit,
     Transfer = 1_bit,
     Read = 2_bit,
     Write = 3_bit,
-    Signal = 4_bit,
+    Execute = 4_bit,
+    Map = 5_bit,
+    GetProperty = 6_bit,
+    SetProperty = 7_bit,
+    Enumerate = 8_bit,
+    Destroy = 9_bit,
+    SetPolicy = 10_bit,
+    GetPolicy = 11_bit,
+    Signal = 12_bit,
+    SignalPeer = 13_bit,
+    Wait = 14_bit,
+    Inspect = 15_bit,
+    ManageJob = 16_bit,
+    ManageProcess = 17_bit,
+    ManageThread = 18_bit,
+    ApplyProfile = 19_bit,
+    ManageSocket = 20_bit,
+    OpChildren = 21_bit,
+    Resize = 22_bit,
+    AttachVmo = 23_bit,
+    ManageVmo = 24_bit,
 
+    /// Not a right. Passed to handle_duplicate/handle_replace to mean "the
+    /// rights the source handle already has".
+    SameRights = 31_bit,
+
+    /// The groups Zircon composes its defaults from (ZX_RIGHTS_BASIC and
+    /// friends).
+    Basic = Transfer | Duplicate | Wait | Inspect,
     Io = Read | Write,
-
-    Default = Duplicate,
+    Property = GetProperty | SetProperty,
+    Policy = GetPolicy | SetPolicy,
 };
 USTL_ENABLE_ENUM_BITMASK(Rights);
 

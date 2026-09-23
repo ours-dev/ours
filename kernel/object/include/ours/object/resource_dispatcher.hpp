@@ -11,7 +11,11 @@
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::object {
-using ResourceDispatcherBase = SoloDispatcher<ResourceDispatcher, Rights::Default>;
+/// Zircon ZX_DEFAULT_RESOURCE_RIGHTS: a resource is not waited on.
+constexpr auto RIGHTS_DEFAULT_RESOURCE =
+    (Rights::Basic & ~Rights::Wait) | Rights::Write | Rights::GetProperty;
+
+using ResourceDispatcherBase = SoloDispatcher<ResourceDispatcher, RIGHTS_DEFAULT_RESOURCE>;
 
 class ResourceDispatcher: public ResourceDispatcherBase {
     using Base = ResourceDispatcherBase;
