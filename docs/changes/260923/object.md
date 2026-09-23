@@ -369,3 +369,45 @@ arena 耗尽和 generation 回绕都没有实测——前者要 4096 个在用�
 
 **故意没做**
 无。
+
+## 队列满时被拒的消息在 channel 锁外释放（2026-09-23）
+
+**文件**
+- `kernel/object/channel_dispatcher.cpp`、`include/ours/object/channel_dispatcher.hpp` — `write_self_locked()` 改收 `ustl::Box<MessagePacket> &`，只在成功时 `into_raw()`
+
+**症状**
+潜伏：对端队列满（`NoResource`）时，被拒的 MessagePacket 作为 `write_self_locked()` 的按值参数在函数
+返回时析构——此时 holder 锁还拿着，`kfree` 发生在锁内。违反 `message_packet.hpp` 写明的「在锁外创建、
+在锁外释放」。
+
+**原因**
+所有权通过按值参数传进了持锁的函数，失败路径上它在那里死掉。
+
+**改法**
+改前：
+
+```cpp
+    return peer->write_self_locked(ustl::move(message));
+...
+auto ChannelDispatcher::write_self_locked(ustl::Box<MessagePacket> message) -> Status {
+```
+
+改后：
+
+```cpp
+    return peer->write_self_locked(message);
+...
+auto ChannelDispatcher::write_self_locked(ustl::Box<MessagePacket> &message) -> Status {
+```
+
+成功时照旧 `message.into_raw()` 入队；失败时包仍归 `write()` 的参数所有，参数的生命期在 `write()` 的局部
+变量（锁的 guard）之后才结束，释放于是落在锁外。
+
+**参照**
+Zircon `ChannelDispatcher::Write()` 失败时由调用方的 `MessagePacketPtr` 在锁外释放。
+
+**验证**
+构建通过；两个镜像启动正常。队列满的路径需要 64 条未读消息，channel 的运行时测试还被 mm 的 AP 分配问题挡着，未实测。
+
+**故意没做**
+无。

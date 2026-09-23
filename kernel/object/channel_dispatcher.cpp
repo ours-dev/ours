@@ -60,15 +60,18 @@ auto ChannelDispatcher::create(KernelHandle<Self> *const handle0, KernelHandle<S
 auto ChannelDispatcher::write(ustl::Box<MessagePacket> message) -> Status {
     verify_canary();
 
+    // |message| outlives the guard below -- a parameter is destroyed after
+    // the function's locals -- so a packet that is not queued is freed only
+    // after the shared lock is released.
     Guard guard{peer_lock()};
     auto &peer = this->peer();
     if (!peer) {
         return Status::PeerClosed;
     }
-    return peer->write_self_locked(ustl::move(message));
+    return peer->write_self_locked(message);
 }
 
-auto ChannelDispatcher::write_self_locked(ustl::Box<MessagePacket> message) -> Status {
+auto ChannelDispatcher::write_self_locked(ustl::Box<MessagePacket> &message) -> Status {
     if (m_message_count >= CHANNEL_MAX_PENDING_MESSAGES) {
         return Status::NoResource;
     }

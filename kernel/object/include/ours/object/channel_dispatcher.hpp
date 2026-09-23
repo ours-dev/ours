@@ -87,7 +87,11 @@ class ChannelDispatcher final: public ChannelDispatcherBase {
     explicit ChannelDispatcher(ustl::Arc<PeerHolder> holder);
 
     /// Queues a message the peer wrote, under the shared lock.
-    auto write_self_locked(ustl::Box<MessagePacket> message) -> Status;
+    ///
+    /// By reference, and it takes the packet only on success: a message
+    /// refused for a full queue stays with the caller's Box and is freed when
+    /// write() returns -- after the lock -- rather than here, under it.
+    auto write_self_locked(ustl::Box<MessagePacket> &message) -> Status;
 
     /// Messages the peer wrote and this end has not read yet. Guarded by
     /// peer_lock().
