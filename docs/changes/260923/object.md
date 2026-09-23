@@ -309,3 +309,63 @@ Zircon `PeerHolder`、`PeeredDispatcher::on_zero_handles()`/`InitPeer()`（`kern
 **故意没做**
 - 消息里带句柄、`channel_call`、64 KiB 消息：P1。
 - 把共享锁并进 `Dispatcher::get_lock()`：等 EventPair/Socket 出现时再做（方案 2.4）。
+
+## 句柄 arena 的两处边界：先占槽再取引用；generation 永不为 0（2026-09-23）
+
+**文件**
+- `kernel/object/handle.cpp`、`include/ours/object/handle.hpp` — `reserve_slot()` 从 `emplace()` 里拆出；`make(KernelHandle)` 先占槽再 `release()`；`reserve()` 回绕时跳过 generation 0；`lookup()` 拒绝 generation 0
+
+**症状**
+对抗式审查发现，两处都潜伏：
+1. arena 满时，`make(KernelHandle)` 已经 `release()` 了引用，`reserve()` 失败后对象被悄悄丢掉——没人调用
+   它的 `on_zero_handles()`。一个 channel 端在这里被丢掉，它的对端永远等不到 PEER_CLOSED。
+2. 空槽记录的「当前 base value」是 0，而下标 0、generation 0 的 base value 也是 0。generation 从 1 数起，
+   但回绕后会到 0；此外用户值 `0b11` 解码出的正是 0，于是 `lookup(0)` 会把一个空槽的存储当成句柄交出去
+   （第 5 道关最终会挡住，但那是在读一块没有对象的内存）。
+
+**原因**
+1. 引用转移和占槽的顺序反了。Zircon `Handle::Make()` 先从 arena 取槽，取到了才从 KernelHandle 拿走引用。
+2. 「0 表示没有句柄」这个约定没有被 generation 的取值范围守住。
+
+**改法**
+改前：
+
+```cpp
+auto Handle::make(KernelHandle<Dispatcher> kernel_handle, Rights const rights) -> ustl::Box<Self> {
+    auto dispatcher = kernel_handle.release();
+    if (!dispatcher) {
+        return ustl::Box<Self>();
+    }
+    return emplace(ustl::move(dispatcher), rights);
+}
+```
+
+改后：
+
+```cpp
+auto Handle::make(KernelHandle<Dispatcher> kernel_handle, Rights const rights) -> ustl::Box<Self> {
+    if (!kernel_handle.dispatcher()) {
+        return ustl::Box<Self>();
+    }
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, kernel_handle.release(), rights);
+}
+```
+
+槽占不到时，KernelHandle 仍握着对象，析构时照常通知 `on_zero_handles()`。
+
+generation：`reserve()` 回绕到 0 时改用 1；`lookup()` 先拒绝 generation 为 0 的 base value，
+「0 = 空槽」于是不会和任何能走到比较那一步的查询相等。
+
+**参照**
+Zircon `Handle::Make()`（`kernel/object/handle.cc`：`GetNewBaseValue()` 成功后才 `kernel_handle.release()`）。
+
+**验证**
+构建通过；两个镜像启动日志不变（`'shell' starts with handle 0x100003`，close 两次得 Ok / BadHandle）。
+arena 耗尽和 generation 回绕都没有实测——前者要 4096 个在用句柄，后者要同一槽复用 4095 次。
+
+**故意没做**
+无。

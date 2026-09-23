@@ -11,6 +11,7 @@
 
 #include <ustl/box.hpp>
 #include <ustl/collections/intrusive/list.hpp>
+#include <ustl/option.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/util/noncopyable.hpp>
 
@@ -141,10 +142,15 @@ class Handle final {
   private:
     Handle(ustl::Arc<Dispatcher> dispatcher, Rights rights, u32 base_value);
 
-    /// Where a new handle for |dispatcher| goes. The dispatcher's handle
-    /// count is raised here, before the Handle exists, so that it can never
-    /// be observed lower than the number of handles that name it.
-    static auto emplace(ustl::Arc<Dispatcher> dispatcher, Rights rights) -> ustl::Box<Self>;
+    /// Claims an arena slot for a new handle; none when the arena is full.
+    static auto reserve_slot() -> ustl::Option<u32>;
+
+    /// Builds the handle for |dispatcher| in the slot |base_value| was
+    /// reserved for. The dispatcher's handle count is raised here, before the
+    /// Handle exists, so that it can never be observed lower than the number
+    /// of handles that name it.
+    static auto emplace(u32 base_value, ustl::Arc<Dispatcher> dispatcher, Rights rights)
+        -> ustl::Box<Self>;
 
     std::atomic<KoId> m_table_koid;
     ustl::Arc<Dispatcher> m_dispatcher;

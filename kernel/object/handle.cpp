@@ -58,13 +58,20 @@ namespace {
                 return ustl::none();
             }
 
-            // The generation counts up from whatever this slot last carried.
-            // Zircon's NewHandleValue(); a slot never used before starts at
-            // generation 1, so no base value is ever zero.
+            // The generation counts up from whatever this slot last carried,
+            // as Zircon's NewHandleValue() does -- with one difference: it
+            // skips zero when it wraps. Generation zero is reserved to mean
+            // "no handle": a free slot records a live base value of 0, and
+            // index 0 at generation 0 is also 0, so a handle there would be
+            // indistinguishable from an empty slot (and value 0b11 would find
+            // it). lookup() rejects generation zero for the same reason.
             auto const old_generation =
                 (m_last_base_value[index] & HANDLE_GENERATION_MASK) >> HANDLE_GENERATION_SHIFT;
-            auto const generation =
+            auto generation =
                 ((old_generation + 1) << HANDLE_GENERATION_SHIFT) & HANDLE_GENERATION_MASK;
+            if (generation == 0) {
+                generation = u32{1} << HANDLE_GENERATION_SHIFT;
+            }
             auto const base_value = index | generation;
             m_last_base_value[index] = base_value;
             return ustl::some(base_value);
@@ -105,6 +112,12 @@ namespace {
 
         [[nodiscard]]
         auto lookup(u32 const base_value) -> Handle * {
+            // Generation zero never names a handle (see reserve()), and
+            // letting it through would compare it against the 0 that marks
+            // an empty slot -- and hand back storage nothing lives in.
+            if ((base_value & HANDLE_GENERATION_MASK) == 0) {
+                return nullptr;
+            }
             auto const index = base_value & HANDLE_INDEX_MASK;
             if (index >= HANDLE_ARENA_SLOTS) {
                 return nullptr;
@@ -169,48 +182,69 @@ auto Handle::Disposer::operator()(Handle *const handle) const noexcept -> void {
     handle_arena.release(handle_arena.index_of(handle));
 }
 
-auto Handle::emplace(ustl::Arc<Dispatcher> dispatcher, Rights const rights) -> ustl::Box<Self> {
-    auto const base_value = handle_arena.reserve();
+auto Handle::reserve_slot() -> ustl::Option<u32> {
+    auto base_value = handle_arena.reserve();
     if (!base_value) {
         // Not a panic: a program that opens handles without closing them can
         // reach this, and what a program can reach must not take the kernel
         // down. Zircon logs throttled and returns null here too.
         OBJECT_HANDLE_ARENA_EXHAUSTED.add(1);
         log::warn("object: the handle arena is full ({} slots)", HANDLE_ARENA_SLOTS);
-        return ustl::Box<Self>();
     }
+    return base_value;
+}
 
+auto Handle::emplace(u32 const base_value, ustl::Arc<Dispatcher> dispatcher, Rights const rights)
+    -> ustl::Box<Self> {
     dispatcher->increase_handle_count();
     // Placement new rather than std::construct_at: the constructor is
     // private, so only a member of Handle may name it.
     auto *const handle =
-        ::new (handle_arena.slot(*base_value)) Self(ustl::move(dispatcher), rights, *base_value);
-    handle_arena.publish(*base_value);
+        ::new (handle_arena.slot(base_value)) Self(ustl::move(dispatcher), rights, base_value);
+    handle_arena.publish(base_value);
     return ustl::Box<Self>::from_raw(handle);
 }
 
 auto Handle::make(KernelHandle<Dispatcher> kernel_handle, Rights const rights) -> ustl::Box<Self> {
+    if (!kernel_handle.dispatcher()) {
+        return ustl::Box<Self>();
+    }
+
+    // The slot first, and only then the reference, in Zircon's order. If the
+    // arena is full the KernelHandle still holds the object when this
+    // returns, so its destructor tells the object it lost its last holder --
+    // a channel end dropped here raises PEER_CLOSED on its peer. Taking the
+    // reference first, as this used to, let the object go quietly.
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        return ustl::Box<Self>();
+    }
+
     // release(), not a copy: the reference moves from the KernelHandle into
     // the Handle, and the object must not be told it lost a holder -- it is
     // gaining one.
-    auto dispatcher = kernel_handle.release();
-    if (!dispatcher) {
-        return ustl::Box<Self>();
-    }
-    return emplace(ustl::move(dispatcher), rights);
+    return emplace(*base_value, kernel_handle.release(), rights);
 }
 
 auto Handle::make(ustl::Arc<Dispatcher> kernel_handle, Rights const rights) -> ustl::Box<Self> {
     if (!kernel_handle) {
         return ustl::Box<Self>();
     }
-    return emplace(ustl::move(kernel_handle), rights);
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, ustl::move(kernel_handle), rights);
 }
 
 auto Handle::clone(Self *const kernel_handle, Rights const rights) -> ustl::Box<Self> {
     DEBUG_ASSERT(kernel_handle);
     DEBUG_ASSERT(kernel_handle->has_rights(rights), "a clone may not widen its source's rights");
-    return emplace(kernel_handle->m_dispatcher, rights);
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, kernel_handle->m_dispatcher, rights);
 }
 
 auto Handle::from_base_value(u32 const base_value) -> Self * {
