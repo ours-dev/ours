@@ -7,89 +7,107 @@
 #include <ours/types.hpp>
 
 namespace ours {
+/// Every value is written out, because these numbers cross the system-call
+/// boundary in %rax and a program compiled against one build of this header
+/// has to mean the same thing by them as a kernel built against the next.
+/// They were implicit, so inserting a status anywhere but the end would have
+/// silently renumbered everything after it. Aliases (Unsupported,
+/// OutOfMem...) carry no number of their own.
 enum class Status : u32 {
     /// Indicates a successful operation.
-    Ok,
+    Ok = 0,
 
     /// The operation is delayed and will be performed later.
     /// For example, the operation is enqueued to a DPC queue.
-    Delayed,
+    Delayed = 1,
 
     /// The host, device, or service is not reachable.
-    NotReachable,
+    NotReachable = 2,
 
     /// The operation is not supported, implemented or enabled.
-    NotSupported,
+    NotSupported = 3,
     Unsupported = NotSupported,
     Unimplemented = NotSupported,
 
     /// The object is not found.
-    NotFound,
+    NotFound = 4,
 
     /// The memory is not enough.
-    NoMemory,
+    NoMemory = 5,
     OutOfMem = NoMemory,
 
     /// The filesystem or device space is exhausted.
-    NoSpace,
+    NoSpace = 6,
 
     /// The resource, like peripherals or network interfaces, is not available.
-    NoResource,
+    NoResource = 7,
 
     /// The object, like a file or directory, already exists.
-    AlreadyExists,
+    AlreadyExists = 8,
 
     /// The operation failed because the named entity is already owned or controlled
     /// by another entity. The operation could succeed later if the current owner
     /// releases the entity.
-    AlreadyBound,
+    AlreadyBound = 9,
 
-    InvArgs,
+    InvArgs = 10,
 
     /// An argument is outside the valid range for this operation.
-    OutOfRange,
+    OutOfRange = 11,
 
     /// The time limit for the operation elapsed before the operation completed.
-    TimeOut,
+    TimeOut = 12,
 
     /// The operation should wait for a condition to be met.
-    ShouldWait,
+    ShouldWait = 13,
 
     /// The operation should retry.
-    ShouldRetry,
+    ShouldRetry = 14,
 
     /// The operation was cancelled.
-    Cancelled,
+    Cancelled = 15,
 
     /// The operation failed because the current state of the object does not allow
     /// it, or a precondition of the operation is not satisfied.
-    BadState,
-    BadHandle,
-    BadType,
-    BadSyscall,
+    BadState = 16,
+    BadHandle = 17,
+    BadType = 18,
+    BadSyscall = 19,
 
     /// The operation is not allowed due to insufficient permissions.
-    AccessDenied,
+    AccessDenied = 20,
 
     /// The path is not a directory.
-    BadPath,
-    NotDir,
-    NotFile,
-    NotEmpty,
+    BadPath = 21,
+    NotDir = 22,
+    NotFile = 23,
+    NotEmpty = 24,
 
-    NotConnected,
-    ConnectionRefused,
-    ConnectionAborted,
-    ConnectionReset,
+    NotConnected = 25,
+    ConnectionRefused = 26,
+    ConnectionAborted = 27,
+    ConnectionReset = 28,
 
     /// The system encountered an otherwise unspecified error while performing the
     /// operation.
-    InternalError,
+    InternalError = 29,
 
-    InternalIrqKilled,
-    InternalIrqRetry,
+    InternalIrqKilled = 30,
+    InternalIrqRetry = 31,
 
     /// The maximum number of status values.
+    /// A peer object -- the other end of a channel -- has gone: every handle
+    /// to it was closed. Distinct from BadHandle (this caller's handle is
+    /// fine) and from BadState (nothing this caller can do will change it).
+    /// Zircon ZX_ERR_PEER_CLOSED.
+    PeerClosed = 32,
+
+    /// The caller's buffer cannot hold what there is to return, and the
+    /// operation left it where it was so the caller can retry with a larger
+    /// one -- channel_read reports the sizes it needed. Not NoSpace, which is
+    /// about a filesystem or device filling up. Zircon ZX_ERR_BUFFER_TOO_SMALL.
+    BufferTooSmall = 33,
+
     MaxCount,
 };
 
@@ -159,6 +177,10 @@ inline auto to_string(Status status) -> char const * {
             return "InternalIrqKilled";
         case Status::InternalIrqRetry:
             return "InternalIrqRetry";
+        case Status::PeerClosed:
+            return "PeerClosed";
+        case Status::BufferTooSmall:
+            return "BufferTooSmall";
         case Status::MaxCount:
             return "MaxCount";
     }

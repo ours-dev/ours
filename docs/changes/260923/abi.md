@@ -135,3 +135,64 @@ Zircon `system/public/zircon/rights.h`：`ZX_RIGHT_*` 与 `ZX_DEFAULT_{CHANNEL,J
 
 **故意没做**
 `VmaDispatcher` 改名为 `Vmar` 属于 P1-C（D2/D3 一起定）；这里只把它的默认权限设成 Zircon VMAR 的。
+
+## Status 显式编号，新增 `PeerClosed`、`BufferTooSmall`；未知调用号回 `BadSyscall`（2026-09-23）
+
+**文件**
+- `system/public/ours/status.hpp` — 每个非别名的枚举值都写出数字（与原来的隐式值逐一相同，0..31），新增 `PeerClosed = 32`、`BufferTooSmall = 33`
+- `kernel/lib/syscall/src/table.cpp` — `sys_bad_syscall_number` 回 `BadSyscall`，不再回 `OutOfRange`
+
+**症状**
+潜伏。channel 需要「对端已关闭」和「缓冲区太小」这两个结果，原来的枚举里都没有。
+
+**原因**
+- 编号是隐式的：在中间插入任何一个新值，后面所有值都会悄悄变号。而这些数字是经 `%rax` 穿过
+  系统调用边界的，按旧头文件编译的程序和按新头文件编译的内核会对同一个数字理解不同。
+- `NoSpace` 和 `BadState` 都不是 `BufferTooSmall`/`PeerClosed` 的替代：前者讲的是文件系统或设备满了，
+  后者讲的是「以目前状态不允许」；channel_read 需要告诉调用者「换个更大的缓冲区重试」，
+  channel_write 需要告诉调用者「对面没人了，重试也没用」。
+- 调用号越界回 `OutOfRange`，和「某个参数越界」混在一起；调用者分不清是调用本身不存在，还是参数错了。
+
+**改法**
+改前：
+
+```cpp
+enum class Status : u32 {
+    Ok,
+    Delayed,
+    ...
+    InternalIrqRetry,
+
+    MaxCount,
+};
+```
+
+改后：
+
+```cpp
+enum class Status : u32 {
+    Ok = 0,
+    Delayed = 1,
+    ...
+    InternalIrqRetry = 31,
+
+    PeerClosed = 32,
+    BufferTooSmall = 33,
+
+    MaxCount,
+};
+```
+
+编号由脚本按原顺序生成，保证与原来的隐式值一致；别名（`Unsupported`、`OutOfMem`……）不单独编号。
+
+**参照**
+Zircon `ZX_ERR_PEER_CLOSED`、`ZX_ERR_BUFFER_TOO_SMALL`、`ZX_ERR_BAD_SYSCALL`（`system/public/zircon/errors.h`）；
+未知调用号回 `ZX_ERR_BAD_SYSCALL` 见 `unknown_syscall()`（`kernel/lib/syscalls/syscalls.cc`）。
+
+**验证**
+构建通过；两个镜像都启动到 shell 打完命令表。
+
+**故意没做**
+- 没有把 `InternalIrqKilled`/`InternalIrqRetry` 这类内核内部码挪到私有枚举（方案 3c 的一部分）：它们被 task
+  代码广泛使用，挪动是一次独立的重构，与这次要做的系统调用无关。
+- 没有改成 Zircon 的负数 i32 编码：调用方都通过 ou 与 `Ok` 比较，改有符号会波及整棵树（方案第 9 节）。

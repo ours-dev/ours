@@ -116,8 +116,13 @@ namespace {
     /// which is what lets the range check be a `cmov` instead of a
     /// conditional jump: the stub clamps an out-of-range number onto this
     /// slot's index and calls through the table either way.
+    ///
+    /// BadSyscall rather than OutOfRange: OutOfRange is what a real call says
+    /// about one of its *arguments*, and a caller has to be able to tell "you
+    /// asked for a call that does not exist" from that. Zircon answers
+    /// ZX_ERR_BAD_SYSCALL here.
     auto sys_bad_syscall_number(arch::SyscallFrame *const frame) -> void {
-        frame->ax = static_cast<usize>(Status::OutOfRange);
+        frame->ax = static_cast<usize>(Status::BadSyscall);
     }
 
     /// The table x86_syscall indexes. %rax is user-controlled, so every slot
@@ -187,7 +192,7 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
         sys_not_from_vdso(frame);
     } else {
         // Clamped, not branched around: SYSCALL_TABLE has one entry more than
-        // SYSCALL_COUNT and that last slot answers Status::OutOfRange, so a
+        // SYSCALL_COUNT and that last slot answers Status::BadSyscall, so a
         // number at or above the count is rewritten onto it and dispatched
         // like any other. %rax is entirely user-controlled, and without this
         // the call below would index past the table by an offset the caller
