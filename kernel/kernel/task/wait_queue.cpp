@@ -73,6 +73,33 @@ auto WaitQueue::park_thread_preamble(Thread *thread, time::Deadline deadline, Th
     return Status::Ok;
 }
 
+auto WaitQueue::park_thread_preamble_locked(Thread *thread, time::Deadline deadline,
+                                            ThreadSignals sigmask, Interruptible interruptible)
+    -> Status {
+    using namespace time;
+    DEBUG_ASSERT(Thread::Current::get() == thread);
+
+    if (deadline.when() < SteadyClock::now()) {
+        return Status::TimeOut;
+    }
+
+    if (Interruptible::Yes == interruptible && !!(thread->signals() & ~sigmask)) {
+        auto const status = thread->check_kill_or_suspend_signal();
+        if (Status::Ok != status) {
+            return status;
+        }
+    }
+
+    thread->set_state_parked();
+
+    auto &waiter_state = thread->waiter_state();
+    waiter_state.m_waitqueue = this;
+    waiter_state.m_interruptible = interruptible;
+
+    enqueue_waiter_locked(waiter_state);
+    return Status::Ok;
+}
+
 auto WaitQueue::park_thread_postamble(Thread *thread, time::Deadline deadline) -> Status {
     using namespace time;
     DEBUG_ASSERT(Thread::Current::get() == thread);
@@ -133,9 +160,12 @@ auto WaitQueue::update_parked_thread_effective_profile(Thread *thread) -> void {
 }
 
 auto WaitQueue::enqueue_waiter(WaiterState &waiter) -> void {
-    auto const thread = Thread::of(&waiter);
-
     Guard guard(m_lock);
+    enqueue_waiter_locked(waiter);
+}
+
+auto WaitQueue::enqueue_waiter_locked(WaiterState &waiter) -> void {
+    auto const thread = Thread::of(&waiter);
 
     // Snapshotted here rather than read on every comparison: the tree is
     // walked under m_lock, and the scheduling context is guarded by the

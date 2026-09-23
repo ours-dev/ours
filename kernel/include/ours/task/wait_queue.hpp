@@ -122,6 +122,33 @@ class WaitQueue {
 
     auto unpark_thread(Thread *thread, Status = Status::Ok) -> void;
 
+    /// The two halves of park_thread(), for a waiter that must look at the
+    /// condition it is waiting for *under this queue's lock*.
+    ///
+    /// park_thread() takes the queue lock only to enqueue. A waiter that
+    /// checks its condition under that lock, releases it, and then calls
+    /// park_thread() leaves a gap in which a notify can find the condition
+    /// false-to-true, see an empty queue, and wake nobody -- after which the
+    /// waiter enqueues and sleeps for good. sync::Event::wait_etc() did
+    /// exactly that. The fix is to enqueue before the lock is let go:
+    ///
+    ///     Guard guard{queue.get_lock()};
+    ///     if (condition) { ...return; }
+    ///     status = queue.park_thread_preamble_locked(...);   // enqueued
+    ///     guard.unlock();
+    ///     status = queue.park_thread_postamble(...);         // parks
+    ///
+    /// A notify that comes after the unlock finds the waiter queued; the wake
+    /// it then issues waits on the waiter's PI lock, which the waiter holds
+    /// until it has actually parked, so nothing is lost there either. This is
+    /// the shape of Zircon's Event::WaitWorker(), whose single thread_lock
+    /// covers both the check and the block.
+    TA_REQUIRES(get_lock())
+    auto park_thread_preamble_locked(Thread *, time::Deadline, ThreadSignals, Interruptible)
+        -> Status;
+
+    auto park_thread_postamble(Thread *, time::Deadline) -> Status;
+
     auto update_parked_thread_effective_profile(Thread *thread) -> void;
 
     /// Collect waiters without waking them, so the caller can act while they
@@ -191,12 +218,14 @@ class WaitQueue {
 
     auto park_thread_preamble(Thread *, time::Deadline, ThreadSignals, Interruptible) -> Status;
 
-    auto park_thread_postamble(Thread *, time::Deadline) -> Status;
-
     /// Both of these expect the caller to hold |waiter|'s thread PI lock.
     /// The queue's own spin lock is taken underneath it, never the other
     /// way round.
     auto enqueue_waiter(WaiterState &waiter) -> void;
+
+    /// enqueue_waiter() for a caller already holding the queue lock.
+    TA_REQUIRES(get_lock())
+    auto enqueue_waiter_locked(WaiterState &waiter) -> void;
 
     /// Returns false if the waiter was already off this queue, which is
     /// the normal outcome when a timeout and a notify race for it.

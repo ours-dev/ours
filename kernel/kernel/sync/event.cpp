@@ -4,6 +4,7 @@
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
 
+
 namespace ours::sync {
 using task::Scheduler;
 using task::Thread;
@@ -40,6 +41,15 @@ auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
     // SpinLock does not nest. Taking the queue lock underneath the PI lock is
     // the direction the rest of the tree already uses -- see the note on
     // WaitQueue::enqueue_waiter.
+    //
+    // And the queue lock is held from the check through the enqueue, not
+    // dropped in between as it used to be. In that gap a signal() on another
+    // CPU found the result unset and the queue empty, latched the result and
+    // woke nobody; this thread then enqueued and slept for good -- and every
+    // later signal() returned early on the latched result. Holding the lock
+    // across both means a signal either lands before the check (and the check
+    // sees it) or after the enqueue (and finds this thread to wake). See
+    // WaitQueue::park_thread_preamble_locked().
     {
         Guard queue_guard{m_wq.get_lock()};
         if (m_result.is_some()) {
@@ -49,9 +59,15 @@ auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
             }
             return result;
         }
+
+        auto const status =
+            m_wq.park_thread_preamble_locked(current_thread, deadline, sigmask, interruptible);
+        if (Status::Ok != status) {
+            return status;
+        }
     }
 
-    return m_wq.park_thread(current_thread, deadline, sigmask, interruptible);
+    return m_wq.park_thread_postamble(current_thread, deadline);
 }
 
 /// Puts the event back into the unsignalled state, so a later wait()
