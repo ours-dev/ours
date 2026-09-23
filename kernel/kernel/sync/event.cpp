@@ -4,6 +4,7 @@
 #include <ours/task/scheduler.hpp>
 #include <ours/time/clock.hpp>
 
+#include <arch/auto_interrupt_disabler.hpp>
 
 namespace ours::sync {
 using task::Scheduler;
@@ -95,6 +96,15 @@ auto Event::unsignal() -> void {
 /// all already answer none() for an empty queue, which is the same "nobody
 /// took it" the latch rule asks about.
 auto Event::signal(Status status) -> void {
+    // Interrupts off for all of it: the queue lock here, and the PI and
+    // run-queue locks Scheduler::unpark_thread() takes below, are spin locks
+    // an interrupt on this CPU can want too -- the tick takes the run-queue
+    // lock. With interrupts on, a tick that lands while one of them is held
+    // spins on it for ever. This was safe only while every caller happened to
+    // run with interrupts off; object::wait_one's observer signals from system
+    // call context, which runs with them on. Zircon's Event::SignalEtc() holds
+    // its lock IrqSave for the same reason.
+    arch::AutoInterruptDisabler const irq_disabler;
     Guard guard{m_wq.get_lock()};
 
     // Already signalled and not yet consumed. A second signal has nothing to
