@@ -193,3 +193,82 @@ static_assert(std::size(GENERATED_SHIMS) == syscall_abi::SYSCALL_COUNT);
 - `sys_not_implemented` 和表长 `SYSCALL_COUNT + 1 = 257` 保留：表长改用生成的计数在第 8 条，
   这一条只换 shim 的来源，行为不变。
 - `SyscallHandler`、`sys_bad_syscall_number`、`sys_not_from_vdso` 仍是手写：它们不对应描述里的任何调用。
+
+## 分发表按生成的调用数定长；删掉 `sys_not_implemented`（2026-09-24）
+
+**文件**
+- `kernel/lib/syscall/src/table.cpp` — `TABLE_SIZE = syscall_abi::SYSCALL_COUNT + 1`；删掉 `sys_not_implemented` 与上一条的 `DISPATCH_SLOTS`；加"无空槽"的编译期检查
+
+**症状**
+行为变化：8..255 号原来回 `Unimplemented`，现在回 `BadSyscall`。今天没有合法程序能发出
+这些号——vDSO 的桩只用 0..7，而绕开 vDSO 的陷入在查表之前就被拒——所以这个变化目前观察不到。
+
+**原因**
+256 个槽是调用号还在公共头里时定下的：号是公开的，就得给将来的调用预留一段，预留段里的号
+回答"这个调用存在，只是还没实现"（`Unimplemented`）。号私有之后没有什么需要预留：加一个调用
+就是描述里加一条，vDSO 和内核一起重新生成。于是 8..255 不再是"没实现的调用"，它们根本不是调用，
+正确的回答是 `BadSyscall`。
+
+`Unimplemented` 与 `BadSyscall` 的区别对调用者是有意义的：前者说"你问的东西存在，换个版本
+也许就有"，后者说"你问的不是一个系统调用"。对一个从不存在的号回前者，是在撒谎。
+
+**改法**
+改前：
+
+```cpp
+    auto sys_not_implemented(arch::SyscallFrame *const frame) -> void {
+        frame->ax = static_cast<usize>(Status::Unimplemented);
+    }
+    ...
+    constexpr auto DISPATCH_SLOTS = usize{256};
+    constexpr auto TABLE_SIZE = DISPATCH_SLOTS + 1;
+
+    constexpr auto make_syscall_table() {
+        std::array<SyscallHandler, TABLE_SIZE> table{};
+        for (auto &entry: table) {
+            entry = &sys_not_implemented;
+        }
+        table[DISPATCH_SLOTS] = &sys_bad_syscall_number;
+        ...
+```
+
+改后：
+
+```cpp
+    constexpr auto TABLE_SIZE = syscall_abi::SYSCALL_COUNT + 1;
+
+    constexpr auto make_syscall_table() {
+        std::array<SyscallHandler, TABLE_SIZE> table{};
+        table[syscall_abi::SYSCALL_COUNT] = &sys_bad_syscall_number;
+        ...
+```
+
+表不再先整体填一个默认处理函数，所以漏填的槽会是空指针——而 `%rax` 是用户给的，空槽就是
+一次按用户意愿发起的"经零地址的间接调用"。为此加了编译期检查：
+
+```cpp
+static_assert(
+    [] {
+        for (auto const entry: make_syscall_table()) {
+            if (entry == nullptr) {
+                return false;
+            }
+        }
+        return true;
+    }(),
+    "every SYSCALL_TABLE slot must have a handler");
+```
+
+`sys_bad_syscall_number` 的注释同时改正：钳位早已从桩里的 `cmov` 搬进 `syscall_dispatch()`。
+
+**参照**
+Zircon：表长是 kazoo 生成的 `ZX_SYS_COUNT`，越界号走 `unknown_syscall`，回 `ZX_ERR_BAD_SYSCALL`。
+
+**验证**
+- 构建通过；两个镜像启动正常。
+- `llvm-nm -S`：`SYSCALL_TABLE` 由 257 × 8 字节变为 `0x48` = 9 × 8 字节。
+- 本地删掉哨兵槽的赋值（未提交）：`static assertion failed ...: every SYSCALL_TABLE slot must have a handler`。
+
+**故意没做**
+钳位仍是 C++ 的 `if`，可能被编译成条件跳转，预测错时会越界读表再间接调用（Spectre V1）。
+它归第 13 条，用 `confine_array_index` 修。
