@@ -68,6 +68,17 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     auto activate(bool suspend) -> Status;
 
+    /// Tells this thread to die: a thread that has started moves to Dying and
+    /// its kernel thread gets the Kill signal, which it acts on at its next
+    /// return towards ring 3. A thread that never started is left as it is,
+    /// and one already dying or dead is left alone.
+    ///
+    /// Called by ProcessDispatcher::kill() with the process's lock held; takes
+    /// this thread's own lock after it.
+    ///
+    /// Zircon counterpart: ThreadDispatcher::Kill().
+    auto kill() -> void;
+
     FORCE_INLINE
     auto process() -> ProcessDispatcher & {
         return m_process.as_ref_mut();

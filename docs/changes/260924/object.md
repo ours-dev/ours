@@ -298,3 +298,81 @@ Zircon 的 `ThreadDispatcher::~ThreadDispatcher()` 与 `ProcessDispatcher::~Proc
 
 **故意没做**
 没有给 ThreadDispatcher 加名字成员：只为一行日志不值得。
+
+## `ProcessDispatcher::kill` 与 `TASK_RETCODE_*`（2026-09-24）
+
+**文件**
+- `system/public/ours/types.hpp` — `TASK_RETCODE_*` 六个常量（数值同 Zircon）
+- `kernel/object/process_dispatcher.cpp`、`.hpp` — `kill(i64)`、`m_retcode`
+- `kernel/object/thread_dispatcher.cpp`、`.hpp` — `kill()`
+
+**症状**
+没有运行时症状。对象层还没有"结束一个进程"的操作，下一条（用户态异常杀进程）需要它。
+
+**原因**
+杀进程的语义要落在对象层：它要在进程锁下改状态、遍历线程表、给每个线程发 Kill，而这些都是
+对象层的状态。内核线程（`task::Thread`）只负责接收信号、在回 ring 3 的路上自行退出（第 20、21 条）。
+
+**改法**
+新增，没有改前。
+
+```cpp
+auto ProcessDispatcher::kill(i64 const retcode) -> void {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    if (m_state == State::Dead || m_state == State::Dying) {
+        return;
+    }
+    m_retcode = retcode;
+
+    if (m_thread_list.empty()) {
+        m_state = State::Dead;
+        return;
+    }
+
+    m_state = State::Dying;
+    for (auto &thread: m_thread_list) {
+        thread.kill();
+    }
+}
+
+auto ThreadDispatcher::kill() -> void {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    switch (m_state) {
+        case State::Running:
+            if (!(m_flags & Flags::Active)) {
+                break;
+            }
+            static_cast<void>(m_kernel_thread->kill());
+            m_state = State::Dying;
+            break;
+        case State::Dying:
+        case State::Dead:
+            break;
+    }
+}
+```
+
+- 只发信号，不 exit：线程在自己回 ring 3 的路上处理 Kill（异常尾部、SYSRET 之前）。所以 `kill()` 可以
+  持着会睡眠的进程锁运行，也可以由一个线程对自己的进程调用。
+- 只有第一次 kill 的 retcode 算数：已在死亡中的进程保留它死亡的原因（Zircon 同）。
+- 没有线程的进程直接进 Dead；Zircon 随后的 `FinishDeadTransition()`（TERMINATED 信号、拆地址空间）在 P1-B。
+- 从没启动过的线程（`Active` 未置）不动，与 Zircon 对 INITIAL/INITIALIZED 线程的处理一致。
+- 锁序与 `attach_thread()`、`detach_thread()` 相同：进程锁在前，线程锁在后。
+
+`TASK_RETCODE_*` 取 Zircon 的数值（-1024 … -1029）：它们是 ABI，没有理由不同。
+
+**参照**
+Zircon `ProcessDispatcher::Kill()`、`KillAllThreadsLocked()`（`kernel/object/process_dispatcher.cc`）、
+`ThreadDispatcher::Kill()`（`kernel/object/thread_dispatcher.cc`）、`ZX_TASK_RETCODE_*`（`zircon/syscalls/object.h`）。
+
+**验证**
+构建通过；两个镜像启动正常。`kill` 还没有调用者，下一条接上。
+
+**故意没做**
+- 进程在最后一个线程退出时转 Dead、`finish_dead_transition`、`VmAspace::destroy`、TERMINATED 信号：P1-B。
+- 对另一颗 CPU 上正在运行的线程不发 IPI（`suspend_or_kill` 的 Running 分支只置信号）：P1-A 里只有进程杀自己，
+  不受影响；多线程进程要等目标线程下一次中断才会死。

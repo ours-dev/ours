@@ -74,6 +74,17 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     auto attach_thread(ThreadDispatcher &thread) -> Status;
 
+    /// Ends this process with |retcode|: it starts dying, and every thread
+    /// in it is told to die. Returns at once; the threads exit on their own
+    /// way back to ring 3, and the process object goes when the last
+    /// reference to it does.
+    ///
+    /// Only the first kill's retcode counts. A process that is already dying
+    /// keeps the reason it is dying for.
+    ///
+    /// Zircon counterpart: ProcessDispatcher::Kill() with KillAllThreadsLocked().
+    auto kill(i64 retcode) -> void;
+
     auto detach_thread(ThreadDispatcher &thread) -> Status;
 
     /// Records where this process's vDSO landed.
@@ -135,6 +146,10 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// outside it is set_vdso_code_range()'s assertion, made while the
     /// process is still being built by one thread.
     State m_state;
+
+    /// The code the process ends with; see kill(). Guarded by get_lock().
+    /// Nothing reads it yet: process_exit and get_info (P1-B) will.
+    i64 m_retcode;
 
     ktl::Name<MAX_NAME_SIZE> m_name;
 

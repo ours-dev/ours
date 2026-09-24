@@ -101,6 +101,26 @@ enum class Clock : u32 {
     Steady,
 };
 
+/// The return code a task ends with when the kernel, not the task, ended it.
+///
+/// A task's return code is otherwise whatever it passed to its exit; these
+/// negative values are reserved to say who ended it instead, so that a parent
+/// reading the code can tell "exited with -1028" from "killed because an
+/// exception went unhandled". The numbers are Zircon's (ZX_TASK_RETCODE_*),
+/// kept identical because they are ABI and there is no reason to differ.
+/// Killed through task_kill.
+inline constexpr auto TASK_RETCODE_SYSCALL_KILL = i64{-1024};
+/// Killed by the out-of-memory killer.
+inline constexpr auto TASK_RETCODE_OOM_KILL = i64{-1025};
+/// Killed by its job's policy.
+inline constexpr auto TASK_RETCODE_POLICY_KILL = i64{-1026};
+/// Killed by the vDSO.
+inline constexpr auto TASK_RETCODE_VDSO_KILL = i64{-1027};
+/// Killed because an exception went unhandled.
+inline constexpr auto TASK_RETCODE_EXCEPTION_KILL = i64{-1028};
+/// Killed because a process critical to its job died.
+inline constexpr auto TASK_RETCODE_CRITICAL_PROCESS_KILL = i64{-1029};
+
 } // namespace ours
 
 #endif // #ifndef OURS_TYPES_HPP

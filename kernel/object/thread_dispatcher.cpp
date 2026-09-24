@@ -162,6 +162,28 @@ auto ThreadDispatcher::on_exit() -> Status {
     return m_process->detach_thread(*this);
 }
 
+auto ThreadDispatcher::kill() -> void {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    switch (m_state) {
+        case State::Running:
+            // Active is set when the thread starts (attach_thread()); one
+            // that never started has nothing running to kill. Zircon leaves
+            // INITIAL and INITIALIZED threads alone for the same reason.
+            if (!(m_flags & Flags::Active)) {
+                break;
+            }
+            DEBUG_ASSERT(m_kernel_thread, "a started thread with no kernel thread");
+            static_cast<void>(m_kernel_thread->kill());
+            m_state = State::Dying;
+            break;
+        case State::Dying:
+        case State::Dead:
+            break;
+    }
+}
+
 auto ThreadDispatcher::mark_dead() -> void {
     verify_canary();
 

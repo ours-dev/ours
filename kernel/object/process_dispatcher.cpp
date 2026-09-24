@@ -32,6 +32,7 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
     : Base()
     , m_parent(nullptr)
     , m_state(State::Initial)
+    , m_retcode(0)
     , m_name(name)
     , m_job(ustl::move(job))
     , m_aspace(ustl::move(aspace))
@@ -148,6 +149,34 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
         m_state = State::Running;
     }
     return Status::Ok;
+}
+
+auto ProcessDispatcher::kill(i64 const retcode) -> void {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    if (m_state == State::Dead || m_state == State::Dying) {
+        return;
+    }
+    m_retcode = retcode;
+
+    // No thread to wait for: straight to Dead, as Zircon does. What Zircon
+    // does next -- FinishDeadTransition(), signalling TERMINATED and tearing
+    // the address space down -- is P1-B.
+    if (m_thread_list.empty()) {
+        m_state = State::Dead;
+        return;
+    }
+
+    // Dying, and every thread told. Under the lock that attach_thread() and
+    // detach_thread() take, so no thread can be added after this, and none is
+    // half-way out of the list while this walks it. Each kill only raises a
+    // signal: the threads act on it themselves, on their way back to ring 3,
+    // which is also why this can hold a sleeping lock while it runs.
+    m_state = State::Dying;
+    for (auto &thread: m_thread_list) {
+        thread.kill();
+    }
 }
 
 /// Takes |thread| out of this process, as its kernel thread exits.
