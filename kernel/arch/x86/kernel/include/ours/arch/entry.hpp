@@ -5,13 +5,23 @@
 
 #include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/entry.hpp>
+#include <ours/assert.hpp>
 
+#include <arch/interrupt.hpp>
 #include <arch/x86/macro/system.hpp>
 
 namespace ours {
 namespace {
+    /// The caller must have interrupts off, as Zircon's arch_enter_uspace()
+    /// asserts too. x86_enter_uspace swaps GS to the user's base before it
+    /// reaches iretq, and an interrupt taken in between sees a kernel CS in
+    /// its frame, so the entry stub skips its own swapgs and runs the handler
+    /// with the user's GS base under every per-CPU access. IF=1 in the frame
+    /// being built is what turns interrupts back on, atomically with the
+    /// privilege change.
     [[noreturn]] FORCE_INLINE
     auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
+        DEBUG_ASSERT(arch::irqs_disabled());
         x86_enter_uspace(frame);
     }
 

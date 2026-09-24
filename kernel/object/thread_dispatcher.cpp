@@ -4,6 +4,7 @@
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/thread.hpp>
 
+#include <arch/interrupt.hpp>
 #include <gktl/counter.hpp>
 #include <heap/new.hpp>
 
@@ -94,6 +95,13 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
     arch::IrqFrame frame{};
     arch_build_uspace_irqframe(&frame, task.entry, task.stack, task.arg1, task.arg2);
 
+    // The scheduler's thread trampoline enables interrupts before it calls
+    // here, and they have to go off again for the last stretch into ring 3:
+    // see arch_enter_uspace() for the swapgs/iretq window. Zircon's
+    // ThreadDispatcher::StartRoutine makes the same arch_disable_ints() call
+    // right before its arch_enter_uspace(). Nothing re-enables them on this
+    // side; the IF bit in the frame does that as iretq lands in user mode.
+    arch::local_irq_disable();
     arch_enter_uspace(&frame);
 }
 

@@ -461,3 +461,79 @@ Zircon `ChannelDispatcher::Write()` 失败时由调用方的 `MessagePacketPtr` 
 
 **故意没做**
 无。
+
+## 进 ring 3 前关中断：`ThreadDispatcher::trampoline` 补上 `local_irq_disable`（2026-09-23）
+
+**文件**
+- `kernel/object/thread_dispatcher.cpp` — `arch_enter_uspace()` 之前关中断
+- `kernel/arch/x86/kernel/include/ours/arch/entry.hpp` — `arch_enter_uspace()` 断言中断已关，并注释为什么
+
+**症状**
+潜伏，当前没观察到。用户线程第一次进 ring 3 的最后几条指令里如果恰好来一个时钟中断，
+中断处理会用用户态的 GS base 做每 CPU 访问：读到的是地址 0 附近的垃圾，写就是 #PF，
+而 #PF 处理本身也要访问每 CPU 数据，结果是嵌套故障甚至三重错误。窗口只有几条指令宽，
+所以启动测试几乎不可能撞上，但 CPU 多、时钟频率高时迟早会撞上。
+
+**原因**
+调度器的线程蹦床（`scheduler.cpp`）在调用线程入口前打开中断——新线程的上下文切换
+不携带 RFLAGS，不这样做线程会一直 IF=0 地跑下去。所以到 `ThreadDispatcher::trampoline`
+时中断是开着的。
+
+`x86_enter_uspace` 的最后一段是：
+
+```asm
+    swapgs
+    iretq
+```
+
+`swapgs` 之后、`iretq` 之前，GS base 已经是用户的值，而 CPU 仍在 ring 0。
+这时来一个中断，CPU 压的帧里 CS 是内核代码段；中断入口桩按惯例看帧里的 CS
+决定要不要 `swapgs`——"从内核来的，不用换"——于是处理函数带着用户 GS base 跑起来，
+每一次 `CPU_LOCAL_ACCESS` 都落到错误的地址。这就是为什么所有内核都要求
+"进用户态的最后一跳必须关中断"：换 GS 和降特权这两件事之间不能被打断，而它们又
+没法用一条指令同时完成。
+
+打开中断的正确时机是 `iretq` 本身：帧里的 RFLAGS 带着 IF=1，`iretq` 在切换到 ring 3
+的同一条指令里把它装进去，中间没有任何可被打断的空隙。
+
+**改法**
+改前：
+
+```cpp
+    arch::IrqFrame frame{};
+    arch_build_uspace_irqframe(&frame, task.entry, task.stack, task.arg1, task.arg2);
+
+    arch_enter_uspace(&frame);
+```
+
+改后：
+
+```cpp
+    arch::IrqFrame frame{};
+    arch_build_uspace_irqframe(&frame, task.entry, task.stack, task.arg1, task.arg2);
+
+    arch::local_irq_disable();
+    arch_enter_uspace(&frame);
+```
+
+并在 `arch_enter_uspace()` 里加 `DEBUG_ASSERT(arch::irqs_disabled())`，把这个前提
+从"调用者记得"变成"忘了就在 dbg 镜像里断言失败"。
+
+关在 `trampoline` 而不是 `x86_enter_uspace` 汇编里加一条 `cli`：后者能用，但把前提
+藏进了汇编，调用者读 C++ 代码时看不到"这里中断必须是关的"。Zircon 也是 C++ 侧关、
+arch 侧断言，照着它做，两边对照时一一对得上。
+
+**参照**
+- `Zircon ThreadDispatcher::StartRoutine()`：`arch_disable_ints()` 紧挨着 `arch_enter_uspace(&iframe)`。
+- `Zircon arch_enter_uspace()`（`kernel/arch/x86/arch.cc`）：第一行 `DEBUG_ASSERT(arch_ints_disabled())`。
+- Linux 的返回用户态路径（`syscall_exit_to_user_mode()` → `local_irq_disable_exit_to_user()`）同理：
+  检查完待处理工作之后关中断，直到 `swapgs; iretq/sysretq` 都不再打开。
+
+**验证**
+构建通过；`kernel.dev.obi` 与 `kernel.dev.dbg_1.obi` 各启动一次，init↔shell 对话
+与 shell 的通道自检照常输出；dbg_1 下 `DEBUG_ASSERT` 生效且没有触发。窗口本身太窄，
+没有构造出"改前必现"的复现。
+
+**故意没做**
+没有顺手把 `x86_enter_uspace` 的其它寄存器处理（比如清掉未指定的通用寄存器、防止内核值
+泄漏到用户态）一起改：帧是 `IrqFrame frame{}` 零初始化后填的，当前不泄漏；那是另一件事。
