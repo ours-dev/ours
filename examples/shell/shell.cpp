@@ -58,8 +58,7 @@ constexpr ou::Str BANNER{"ours shell: the kernel's command registry, seen from r
 
 /// Prints "<what><status name>" on a line of its own.
 auto report(ou::Str const what, ours::Status const status) -> void {
-    static_cast<void>(ou::debug_write(what));
-    static_cast<void>(ou::debug_line(ou::Str::from_c_str(ours::to_string(status), 32)));
+    static_cast<void>(ou::debug_line({what, ou::Str::from_c_str(ours::to_string(status), 32)}));
 }
 
 /// Gives up the handle this program was started with, and checks that the
@@ -77,15 +76,13 @@ auto check_handle_close(ours::HandleValue const bootstrap) -> void {
 
 /// Prints "<what><got>" and whether that was |want|; answers whether it was.
 auto expect(ou::Str const what, ours::Status const got, ours::Status const want) -> bool {
-    static_cast<void>(ou::debug_write(what));
-    static_cast<void>(ou::debug_write(ou::Str::from_c_str(ours::to_string(got), 32)));
+    auto const got_name = ou::Str::from_c_str(ours::to_string(got), 32);
     if (got == want) {
-        static_cast<void>(ou::debug_line(""));
+        static_cast<void>(ou::debug_line({what, got_name}));
         return true;
     }
-    static_cast<void>(ou::debug_write(" (expected "));
-    static_cast<void>(ou::debug_write(ou::Str::from_c_str(ours::to_string(want), 32)));
-    static_cast<void>(ou::debug_line(")"));
+    auto const want_name = ou::Str::from_c_str(ours::to_string(want), 32);
+    static_cast<void>(ou::debug_line({what, got_name, " (expected ", want_name, ")"}));
     return false;
 }
 
@@ -101,6 +98,47 @@ auto spells(char const *const bytes, u32 const length, ou::Str const text) -> bo
         }
     }
     return true;
+}
+
+/// Answers whoever started this program, if it was started with a channel.
+///
+/// Started by init, the bootstrap handle is one end of a channel with "ping"
+/// on it (or about to be): read it, print it, answer "pong" -- the other half
+/// of the first slice, whose log lines are the completion criterion
+/// (design 5). Started by the kernel directly, the handle is the root job,
+/// and a channel read on it answers BadType: there is nobody to answer, and
+/// the checks below run as before.
+auto answer_bootstrap(ours::HandleValue const bootstrap) -> void {
+    using ours::Signals;
+    using ours::Status;
+
+    char buffer[32] = {};
+    u32 actual = 0;
+    auto status = ou::channel_read(bootstrap, buffer, sizeof(buffer), &actual);
+    if (status == Status::BadType) {
+        static_cast<void>(ou::debug_line("shell: started by the kernel; no one to answer"));
+        return;
+    }
+    if (status == Status::ShouldWait) {
+        auto observed = Signals::None;
+        status = ou::object_wait_one(bootstrap, Signals::Readable | Signals::PeerClosed,
+                                     ours::INSTANT_INFINITE, &observed);
+        if (status == Status::Ok) {
+            status = ou::channel_read(bootstrap, buffer, sizeof(buffer), &actual);
+        }
+    }
+    if (status != Status::Ok) {
+        report("shell: reading the bootstrap channel = ", status);
+        return;
+    }
+
+    static_cast<void>(ou::debug_line({"shell: bootstrap says \"", ou::Str(buffer, actual), "\""}));
+
+    constexpr ou::Str PONG{"pong"};
+    status = ou::channel_write(bootstrap, PONG.data(), static_cast<u32>(PONG.size()));
+    if (status != Status::Ok) {
+        report("shell: answering = ", status);
+    }
 }
 
 /// A channel with both ends in this one process: everything the kernel
@@ -183,6 +221,7 @@ extern "C" [[noreturn]]
 auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr const vdso_base)
     -> void {
     static_cast<void>(ou::debug_line(BANNER));
+    answer_bootstrap(bootstrap);
     check_handle_close(bootstrap);
     check_channel_loopback();
 

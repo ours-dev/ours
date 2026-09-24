@@ -34,17 +34,21 @@ kernel_package("ours") {
     "..:common_package_items",
     "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
 
-    # 这个镜像的第一个用户程序：示例
-    # shell。它不在共享零件里，因为「跑哪个程序」
-    # 是镜像的属性 —— 由本镜像声明它，再由下面的 cmdline
-    # 指名它。工具链后缀同上：
-    # 不写就会在内核工具链里编出一个 -mcmodel=kernel
-    # 的“用户程序”。
+    # 示例 shell。它不再是这个镜像的第一个用户程序 —— 那是下面的
+    # init —— 而是 init 用 process_spawn_boot 起的第二个，所以仍要打进包里。
+    # 它不在共享零件里，因为「包里有哪些程序」是镜像的属性。工具链后缀同上：
+    # 不写就会在内核工具链里编出一个 -mcmodel=kernel 的“用户程序”。
     "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
+
+    # The first system service. It is what this image starts (see the
+    # cmdline below), and it starts the shell above with
+    # process_spawn_boot -- which is why the shell is still packaged.
+    "//system/service/init(//build/toolchain/ours:user-${target_cpu})",
   ]
 }
 
-# 镜像级内核 cmdline：指名第一个用户进程跑哪个程序。
+# 镜像级内核 cmdline：指名第一个用户进程跑哪个程序 —— init，它拿着根 job
+# 再去起 shell（P0 的第一条垂直切片，docs/design/260923/userspace-interface.md 第 5 节）。
 #
 # 内核不认
 # //examples，只认这个名字（kernel/lib/userabi/src/userboot.cpp 的
@@ -60,7 +64,7 @@ kernel_cmdline("cmdline") {
     ":*",
     "//products/*",
   ]
-  args = [ "kernel.select.userboot=shell" ]
+  args = [ "kernel.select.userboot=init" ]
 }
 
 # dev 镜像：physload 以 stripped ELF 进入 OBI item 0（x86 boot shim
