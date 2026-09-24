@@ -324,3 +324,54 @@ Zircon `kernel/arch/x86/syscall.S`：`cmp $ZX_SYS_COUNT, %rax; jae .Lunknown_sys
 
 **故意没做**
 Spectre V2（间接调用的目标注入）不在这一条：Zircon 在这里用 retpoline，本项目还没有这套设施。
+
+## `//kernel/lib/syscall:headers` 只对本库可见，不再转出私有调用号头（2026-09-24）
+
+**文件**
+- `kernel/lib/syscall/BUILD.gn` — `:headers` 的 `visibility` 从 `["*"]` 收窄为 `[":*"]`；`source_set("syscall")` 对 `:headers` 的依赖从 `public_deps` 改为 `deps`
+
+**症状**
+审查发现：第 4 条给 `//system/public:syscalls.private` 设了 `visibility`，只放行 `//kernel/lib/syscall/*`
+和 vDSO，说这是"让调用号保持私有"。但第 6 条让 `:headers`（`visibility = ["*"]`）经 `public_deps`
+带上了 `syscalls.private`，而 `source_set("syscall")` 又经 `public_deps` 带上 `:headers`——于是任何依赖
+`//kernel/lib/syscall` 的目标（今天是 `kernel/top`）都拿到了私有头的 include 路径。
+
+**原因**
+GN 的 `visibility` 只管"谁可以直接依赖我"，挡不住经 `public_deps` 转出去的 config。私有性要在
+每一层转发处守住，而不只是在源头声明。
+
+**改法**
+改前：
+
+```gn
+cpp_interface("headers") {
+  public = [ "include/syscall/handlers.hpp" ]
+  public_deps = [
+    "//kernel/lib/user_copy:headers",
+    "//system/public:syscalls.private",
+  ]
+  visibility = [ "*" ]
+}
+
+source_set("syscall") {
+  ...
+  public_deps = [
+    ":headers",
+    "//kernel/lib/user_copy",
+    "//kernel/object:headers",
+  ]
+```
+
+改后：`:headers` 的 `visibility = [ ":*" ]`；`source_set("syscall")` 把 `":headers"` 挪进 `deps`。
+`handlers.hpp` 只被本库的源文件包含；处理函数经分发表到达，库外没有人按名字调用它们。
+
+**参照**
+无对应物（GN 的可见性规则）。
+
+**验证**
+- 构建通过；重新生成的 ninja 文件里，带私有路径 `gen/system/public/private` 的只剩
+  `kernel/lib/syscall` 自己的 `headers.ninja` 与 `syscall.ninja`（`kernel/top` 不再有）。
+- 两个镜像启动正常。
+
+**故意没做**
+无。

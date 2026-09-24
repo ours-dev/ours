@@ -10,7 +10,14 @@ cpp_interface("headers") {
     "//kernel/lib/user_copy:headers",
     "//system/public:syscalls.private",
   ]
-  visibility = [ "*" ]
+
+  # This library's own sources only. handlers.hpp includes the generated
+  # declarations, so this target carries the include path to the private
+  # call-number headers (//system/public:syscalls.private); open to everyone,
+  # it re-exported what that target's visibility exists to keep private. The
+  # handlers are reached through the dispatch table, never called by name
+  # from outside.
+  visibility = [ ":*" ]
 }
 
 source_set("syscall") {
@@ -31,11 +38,15 @@ source_set("syscall") {
     "src/vmo.cpp",
   ]
   public_deps = [
-    ":headers",
     "//kernel/lib/user_copy",
     "//kernel/object:headers",
   ]
   deps = [
+    # Not public: whoever links this library reaches it through the dispatch
+    # table and has no business with the handler declarations or the private
+    # headers behind them.
+    ":headers",
+
     # TEMPORARY: only for sys_process_spawn_boot (src/process.cpp), the one
     # handler allowed to reach below kernel/object. The edge goes with it when
     # the user-space loader lands (docs/repairs/260923/syscall.md).
