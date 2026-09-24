@@ -1,11 +1,15 @@
 import("//build/cpp/cpp_interface.gni")
 
-# The typed system-call entry points. table.cpp's shims unpack the register
+# The typed system-call entry points. The generated shims unpack the register
 # frame into these signatures, which is the seam that keeps the handlers
-# themselves free of any arch detail.
+# themselves free of any arch detail. The declarations are generated too, from
+# //system/public/ours/syscalls.gni, hence the dependency on its output.
 cpp_interface("headers") {
   public = [ "include/syscall/handlers.hpp" ]
-  public_deps = [ "//kernel/lib/user_copy:headers" ]
+  public_deps = [
+    "//kernel/lib/user_copy:headers",
+    "//system/public:syscalls.private",
+  ]
   visibility = [ "*" ]
 }
 
@@ -15,6 +19,7 @@ source_set("syscall") {
   # task.cpp / vmo.cpp are still Unimplemented stubs, waiting on the handle
   # table their signatures are written against.
   sources = [
+    "src/argument.hpp",
     "src/channel.cpp",
     "src/command.cpp",
     "src/debug.cpp",

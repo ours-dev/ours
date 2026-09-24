@@ -98,3 +98,98 @@ vDSO 桩、内核 wrapper 与分发；设计 4.7。
 - 生成器暂不校验 `type` 是否真有其类型：类型名写错会在编译生成的声明时报错（第 6、9 条），
   比在生成器里维护一份类型表更不容易与代码脱节。
 - 描述里的 `doc` 这一步还没有被任何产物用到；第 9 条生成 `vdso.hpp` 的声明时用。
+
+## `sys_*` 声明与拆帧 shim 改由生成器产出（2026-09-24）
+
+**文件**
+- `build/syscall/gen_syscalls.py` — 新增 `--kernel-decls`、`--kernel-shims`；校验"ret 为 void 当且仅当 noreturn"
+- `system/public/BUILD.gn` — 生成动作多两个输出
+- `kernel/lib/syscall/include/syscall/handlers.hpp` — 手写的 8 个声明换成 `#include <syscall_abi/kernel_decls.inc>`
+- `kernel/lib/syscall/src/argument.hpp`（新建）— `syscall::from_register<T>()`，寄存器到参数类型的唯一转换
+- `kernel/arch/x86/lib/arch/include/arch/x86/syscall.hpp` — `arch::syscall_arg<N>(frame)`，参数寄存器序
+- `kernel/lib/syscall/src/table.cpp` — 删掉手写的 8 个 shim，改 include 生成的 `kernel_shims.inc`，表从 `GENERATED_SHIMS` 填；删掉上一条的过渡 `static_assert`
+- `kernel/lib/syscall/BUILD.gn` — `:headers` 依赖 `syscalls.private`
+- `docs/repairs/260923/syscall.md` — 删除清单里"`table.cpp` 的表项"改为生成物
+
+**症状**
+没有运行时症状。一个调用的签名原来写三遍：`handlers.hpp` 的声明、各自 `.cpp` 的定义、
+`table.cpp` 里 shim 的拆帧调用。声明和定义之间有编译器把关，但 shim 里"第几个参数从哪个
+寄存器取、截成什么类型"全凭手写，写错一个寄存器就是把一个参数当成另一个，编译照过。
+
+**原因**
+shim 做的事完全是机械的：按参数序取寄存器、按参数类型转换、把结果写回 `ax`。机械的东西
+手写，出错的方式只有"抄错"，而抄错恰恰是编译器看不出来的那一种。
+
+**改法**
+改前（`table.cpp`，每个调用一个）：
+
+```cpp
+    auto sys_channel_write_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_channel_write(
+            static_cast<HandleValue>(frame->di),
+            static_cast<ChannelWriteOptions>(static_cast<u32>(frame->si)),
+            user_copy::UserInPtr<u8 const>(frame->dx), static_cast<u32>(frame->r10),
+            user_copy::UserInPtr<HandleValue const>(frame->r8), static_cast<u32>(frame->r9));
+        frame->ax = static_cast<usize>(status);
+    }
+```
+
+改后（生成，`kernel_shims.inc`）：
+
+```cpp
+auto sys_channel_write_shim(arch::SyscallFrame *const frame) -> void {
+    auto const result = sys_channel_write(
+        syscall::from_register<HandleValue>(arch::syscall_arg<0>(frame)),
+        syscall::from_register<ChannelWriteOptions>(arch::syscall_arg<1>(frame)),
+        syscall::from_register<user_copy::UserInPtr<u8 const>>(arch::syscall_arg<2>(frame)),
+        ...);
+    frame->ax = static_cast<usize>(result);
+}
+...
+constexpr SyscallHandler GENERATED_SHIMS[] = { &sys_debug_write_shim, ... };
+static_assert(std::size(GENERATED_SHIMS) == syscall_abi::SYSCALL_COUNT);
+```
+
+原来散在各 shim 注释里的规则，各自归位到一个地方：
+
+- **寄存器序**进 arch 头的 `arch::syscall_arg<N>()`：rdi、rsi、rdx、r10、r8、r9、r12、r13，
+  以及 rcx/r11 为什么永远不能是参数（SYSCALL 进内核前已经用返回地址和 RFLAGS 覆盖了它们）。
+  这是架构的事，放在架构的头里。
+- **类型转换**进 `argument.hpp` 的 `syscall::from_register<T>()`：指针在这里、也只在这里变成
+  `UserPtr`；枚举先截成底层类型再转换；整数截到自身宽度——32 位的句柄、计数、选项字落在
+  64 位寄存器的低半，SysV 不保证高半为零，所以截断而不是信任。
+
+声明从描述生成，定义仍然手写，这个分工本身就是检查：定义的签名与描述不符时，它是另一个
+没人调用的重载，而生成的 shim 调用的那个声明找不到定义，链接失败。
+
+填表从逐个 `table[OURS_SYS_X] = &..._shim` 变成一个循环：
+
+```cpp
+        for (auto number = usize(0); number < syscall_abi::SYSCALL_COUNT; ++number) {
+            table[number] = GENERATED_SHIMS[number];
+        }
+```
+
+`GENERATED_SHIMS` 的下标与调用号出自同一处——条目在 `syscalls.gni` 里的位置。
+
+同时删掉了 `table.cpp` 里一段早已不实的 TODO（"只填了 debug_write，其余等句柄表"）：
+句柄表 P0 就有了，八个调用全都填上了。
+
+生成器新增一条校验：`ret` 为 `void` 当且仅当调用带 `noreturn`。结果寄存器是回来的唯一途径，
+一个会返回却什么都不返回的调用，没有告诉调用者任何可以检查的东西。
+
+**参照**
+- Zircon kazoo 生成的 `wrapper_<name>`（`kernel/lib/syscalls/syscall-wrappers`），按 `SafeSyscallArgument<T>::Sanitize()`
+  逐个清洗参数后调 `sys_<name>`（`kernel/lib/syscalls/include/lib/syscalls/safe-syscall-argument.h`）。
+- 设计 4.7 产物 4、5。
+
+**验证**
+- 增量构建与干净构建通过；两个镜像启动正常，init↔shell 对话与 shell 的通道检查照常。
+- 本地把 `sys_handle_close` 的定义改成 `u16` 形参（未提交）：
+  `ld.lld: error: undefined hidden symbol: ours::sys_handle_close(unsigned int)`。
+  （先试的 `u64` 在函数体里触发了 `-Wshorten-64-to-32`，没走到链接，所以换了一个能隐式转换的类型。）
+
+**故意没做**
+- `sys_not_implemented` 和表长 `SYSCALL_COUNT + 1 = 257` 保留：表长改用生成的计数在第 8 条，
+  这一条只换 shim 的来源，行为不变。
+- `SyscallHandler`、`sys_bad_syscall_number`、`sys_not_from_vdso` 仍是手写：它们不对应描述里的任何调用。

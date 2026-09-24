@@ -13,53 +13,25 @@ namespace ours {
 /// The typed system-call entry points.
 ///
 /// These take arguments and return a Status like ordinary functions. Nothing
-/// about a register frame reaches them: table.cpp holds one small shim per
-/// call that pulls the arguments out of arch::SyscallFrame and puts the Status
-/// back into it. That shim is the dispatch layer, and keeping it separate is
-/// what lets these be read, reviewed and eventually tested as plain functions
-/// -- the same split Zircon draws between its generated syscall wrappers and
-/// the sys_* functions they call.
+/// about a register frame reaches them: a generated shim per call
+/// (syscall_abi/kernel_shims.inc, included by table.cpp) pulls the arguments
+/// out of arch::SyscallFrame and puts the Status back into it. That shim is
+/// the dispatch layer, and keeping it separate is what lets these be read,
+/// reviewed and eventually tested as plain functions -- the same split Zircon
+/// draws between its generated syscall wrappers and the sys_* functions they
+/// call.
 ///
 /// A pointer parameter here is a user_copy::UserPtr, not a C++ pointer. The
 /// type is the rule: it cannot be dereferenced, only copied through, and every
 /// copy checks the range and opens the SMAP window. The direction is part of
 /// the type, so writing through an input is a compile error.
 
-/// Write |length| bytes of |buffer| to the kernel's debug console.
-auto sys_debug_write(user_copy::UserInPtr<char const> buffer, usize length) -> Status;
-
-/// Writes the kshell command registry into |buffer| as text, one command per
-/// line ("name  help"), always NUL terminated.
-///
-/// Status::NoSpace when the registry did not fit; what did fit is still
-/// terminated, so a caller can show it and ask for more room.
-auto sys_command_list(user_copy::UserOutPtr<char> buffer, usize length) -> Status;
-
-/// Takes |handle| out of the calling process's table and lets it go.
-auto sys_handle_close(HandleValue handle) -> Status;
-
-/// Makes a channel; its two handle values go to |out0| and |out1|.
-auto sys_channel_create(ChannelCreateOptions options, user_copy::UserOutPtr<HandleValue> out0,
-                        user_copy::UserOutPtr<HandleValue> out1) -> Status;
-
-/// Queues a message of |num_bytes| from |bytes| on the channel's peer.
-auto sys_channel_write(HandleValue channel, ChannelWriteOptions options,
-                       user_copy::UserInPtr<u8 const> bytes, u32 num_bytes,
-                       user_copy::UserInPtr<HandleValue const> handles, u32 num_handles) -> Status;
-
-/// Takes the next message on the channel into |bytes|.
-auto sys_channel_read(HandleValue channel, ChannelReadOptions options,
-                      user_copy::UserOutPtr<u8> bytes, user_copy::UserOutPtr<HandleValue> handles,
-                      u32 num_bytes, u32 num_handles, user_copy::UserOutPtr<u32> actual_bytes,
-                      user_copy::UserOutPtr<u32> actual_handles) -> Status;
-
-/// TEMPORARY: starts a kernel-package program as a new process under |job|.
-auto sys_process_spawn_boot(HandleValue job, user_copy::UserInPtr<char const> name, usize name_size,
-                            HandleValue bootstrap) -> Status;
-
-/// Waits for any of |signals| on the object |handle| names.
-auto sys_object_wait_one(HandleValue handle, Signals signals, Instant deadline,
-                         user_copy::UserOutPtr<Signals> observed) -> Status;
+// The declarations are generated from //system/public/ours/syscalls.gni
+// (design 4.7), one per entry. The definitions are written by hand, one per
+// file under src/, and that split is the check: a definition whose
+// signature has drifted from its entry is a different overload that nothing
+// calls, and the generated shim's call to the declared one fails to link.
+#include <syscall_abi/kernel_decls.inc>
 
 } // namespace ours
 

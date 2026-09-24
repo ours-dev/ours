@@ -52,10 +52,14 @@ if (current_toolchain == default_toolchain) {
     _description = "$target_gen_dir/syscalls.json"
     _numbers = "$target_gen_dir/private/syscall_abi/numbers.hpp"
     _vdso_stubs = "$target_gen_dir/private/syscall_abi/vdso_stubs.inc"
+    _kernel_decls = "$target_gen_dir/private/syscall_abi/kernel_decls.inc"
+    _kernel_shims = "$target_gen_dir/private/syscall_abi/kernel_shims.inc"
     sources = [ _description ]
     outputs = [
       _numbers,
       _vdso_stubs,
+      _kernel_decls,
+      _kernel_shims,
     ]
     args = [
       rebase_path(_description, root_build_dir),
@@ -63,6 +67,10 @@ if (current_toolchain == default_toolchain) {
       rebase_path(_numbers, root_build_dir),
       "--vdso-stubs",
       rebase_path(_vdso_stubs, root_build_dir),
+      "--kernel-decls",
+      rebase_path(_kernel_decls, root_build_dir),
+      "--kernel-shims",
+      rebase_path(_kernel_shims, root_build_dir),
     ]
     deps = [ ":syscalls.json" ]
     visibility = [ ":syscalls.private" ]

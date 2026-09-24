@@ -50,6 +50,9 @@ PRIMITIVES = {
     "i8", "i16", "i32", "i64", "isize",
 }
 
+# The tree's .clang-format column limit; generated code is read as well.
+LINE_WIDTH = 100
+
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 TYPE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -123,6 +126,11 @@ class Call:
             raise DescriptionError(f"{self.name}: unknown attrs {sorted(unknown_attrs)}")
         if not TYPE_NAME.match(self.ret):
             raise DescriptionError(f"{self.name}: '{self.ret}' is not a type name")
+        # A call that returns nothing is one that never returns: the result
+        # register is the only way back, and a call that comes back without
+        # using it has told the caller nothing it can check.
+        if ("noreturn" in self.attrs) != (self.ret == "void"):
+            raise DescriptionError(f"{self.name}: ret is void exactly when the call is noreturn")
 
         raw_args = raw.get("args", [])
         if len(raw_args) > MAX_ARGS:
@@ -153,6 +161,10 @@ class Call:
     @property
     def upper(self) -> str:
         return self.name.upper()
+
+    @property
+    def noreturn(self) -> bool:
+        return "noreturn" in self.attrs
 
 
 def load(path: pathlib.Path) -> List[Call]:
@@ -232,6 +244,83 @@ def render_vdso_stubs(calls: List[Call]) -> str:
     return "\n".join(lines)
 
 
+def kernel_type(arg: Arg) -> str:
+    """The type a sys_* handler takes |arg| as, spelled inside namespace ours.
+
+    A pointer is a user_copy::UserPtr and never a C++ pointer: the kernel can
+    copy through it but cannot dereference it, and its direction is part of
+    the type, so writing through an input does not compile. `void` data is
+    carried as bytes.
+    """
+    if not arg.is_pointer:
+        return arg.type
+    pointee = "u8" if arg.type == "void" else arg.type
+    if arg.dir == "in":
+        return f"user_copy::UserInPtr<{pointee} const>"
+    return f"user_copy::UserOutPtr<{pointee}>"
+
+
+def render_kernel_decls(calls: List[Call]) -> str:
+    """The typed sys_* declarations, included by <syscall/handlers.hpp>
+    inside namespace ours.
+
+    Each handler is defined by hand, so a definition that has drifted from
+    its entry here is a different overload that nothing calls, and the
+    generated shim's call to this one fails to link.
+    """
+    lines = [HEADER_BANNER]
+    for call in calls:
+        params = [f"{kernel_type(a)} {a.name}" for a in call.args]
+        lines.append(f"/// {call.brief}")
+        if call.noreturn:
+            lines.append("[[noreturn]]")
+        one_line = f"auto sys_{call.name}({', '.join(params)}) -> {call.ret};"
+        if len(one_line) <= LINE_WIDTH:
+            lines.append(one_line)
+        else:
+            joined = ",\n    ".join(params)
+            lines.append(f"auto sys_{call.name}(\n    {joined}) -> {call.ret};")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_kernel_shims(calls: List[Call]) -> str:
+    """One shim per call, which unpacks arch::SyscallFrame into the handler's
+    arguments and puts the result back in the frame, and the table of them.
+
+    Included by table.cpp inside its anonymous namespace, after the
+    SyscallHandler type. The result goes into `frame->ax` rather than being
+    returned because the entry stub pops the whole frame back into the
+    registers on its way out, so a C++ return value would be overwritten.
+    """
+    lines = [HEADER_BANNER]
+    for call in calls:
+        lines.append(f"auto sys_{call.name}_shim(arch::SyscallFrame *const frame) -> void {{")
+        arguments = [
+            f"syscall::from_register<{kernel_type(a)}>(arch::syscall_arg<{i}>(frame))"
+            for i, a in enumerate(call.args)
+        ]
+        if not arguments:
+            invocation = f"sys_{call.name}()"
+        else:
+            joined = ",\n        ".join(arguments)
+            invocation = f"sys_{call.name}(\n        {joined})"
+        if call.noreturn:
+            lines.append(f"    {invocation};")
+        else:
+            lines.append(f"    auto const result = {invocation};")
+            lines.append("    frame->ax = static_cast<usize>(result);")
+        lines.append("}")
+        lines.append("")
+    lines.append("constexpr SyscallHandler GENERATED_SHIMS[] = {")
+    for call in calls:
+        lines.append(f"    &sys_{call.name}_shim,")
+    lines.append("};")
+    lines.append("static_assert(std::size(GENERATED_SHIMS) == syscall_abi::SYSCALL_COUNT);")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("description", type=pathlib.Path,
@@ -240,6 +329,10 @@ def main() -> int:
                         help="write the private call-number header here")
     parser.add_argument("--vdso-stubs", type=pathlib.Path,
                         help="write the vDSO's stub instantiations here")
+    parser.add_argument("--kernel-decls", type=pathlib.Path,
+                        help="write the kernel's sys_* declarations here")
+    parser.add_argument("--kernel-shims", type=pathlib.Path,
+                        help="write the kernel's frame-unpacking shims here")
     args = parser.parse_args()
 
     try:
@@ -252,6 +345,10 @@ def main() -> int:
         write_if_changed(args.numbers, render_numbers(calls))
     if args.vdso_stubs:
         write_if_changed(args.vdso_stubs, render_vdso_stubs(calls))
+    if args.kernel_decls:
+        write_if_changed(args.kernel_decls, render_kernel_decls(calls))
+    if args.kernel_shims:
+        write_if_changed(args.kernel_shims, render_kernel_shims(calls))
     return 0
 
 

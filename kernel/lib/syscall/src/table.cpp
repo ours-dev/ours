@@ -3,7 +3,10 @@
 #include <syscall/handlers.hpp>
 #include <syscall_abi/numbers.hpp>
 
+#include "argument.hpp"
+
 #include <array>
+#include <iterator>
 
 #include <arch/interrupt.hpp>
 #include <arch/syscall.hpp>
@@ -83,89 +86,15 @@ namespace {
         frame->ax = static_cast<usize>(Status::BadSyscall);
     }
 
-    /// The dispatch layer, one shim per call.
-    ///
-    /// This is the piece table.cpp's own TODO used to say was missing. Its job
-    /// is exactly two conversions and nothing else: the arguments come out of
-    /// the frame in the order the x86-64 SysV registers put them, and the
-    /// Status goes back into `ax`, because the stub pops the frame into the
-    /// registers on the way out and a C++ return value would be discarded.
-    ///
-    /// %rcx and %r11 are not readable here and never will be: the SYSCALL
-    /// instruction overwrote both before the kernel got control, which is why
-    /// their slots in the frame are pushed as zero and why a fourth argument
-    /// would have to come from %r10.
-    ///
-    /// A pointer argument becomes a user_copy::UserPtr here and nowhere else:
-    /// the register holds a number the user chose, and this is the point where
-    /// it is given a type that can only be copied through.
-    auto sys_command_list_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_command_list(user_copy::UserOutPtr<char>(frame->di), frame->si);
-        frame->ax = static_cast<usize>(status);
-    }
-
-    /// A handle arrives as a u32 in the low half of %rdi. The SysV ABI leaves
-    /// the upper half of a register unspecified when it carries a 32-bit
-    /// argument, so it is truncated here rather than trusted to be zero -- a
-    /// caller whose compiler left garbage there has still passed a valid
-    /// handle.
-    auto sys_handle_close_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_handle_close(static_cast<HandleValue>(frame->di));
-        frame->ax = static_cast<usize>(status);
-    }
-
-    /// The register layout of every call with more than three arguments:
-    /// the fourth in %r10 (the vDSO stub moved it from %rcx, which SYSCALL
-    /// overwrites), the fifth and sixth in %r8/%r9, the seventh and eighth in
-    /// %r12/%r13 (loaded by the stub from the caller's stack). Every 32-bit
-    /// value -- a handle, a count, an option word -- is truncated from its
-    /// register rather than trusted, for the reason sys_handle_close_shim
-    /// gives.
-    auto sys_channel_create_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status =
-            sys_channel_create(static_cast<ChannelCreateOptions>(static_cast<u32>(frame->di)),
-                               user_copy::UserOutPtr<HandleValue>(frame->si),
-                               user_copy::UserOutPtr<HandleValue>(frame->dx));
-        frame->ax = static_cast<usize>(status);
-    }
-
-    auto sys_channel_write_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_channel_write(
-            static_cast<HandleValue>(frame->di),
-            static_cast<ChannelWriteOptions>(static_cast<u32>(frame->si)),
-            user_copy::UserInPtr<u8 const>(frame->dx), static_cast<u32>(frame->r10),
-            user_copy::UserInPtr<HandleValue const>(frame->r8), static_cast<u32>(frame->r9));
-        frame->ax = static_cast<usize>(status);
-    }
-
-    auto sys_channel_read_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_channel_read(
-            static_cast<HandleValue>(frame->di),
-            static_cast<ChannelReadOptions>(static_cast<u32>(frame->si)),
-            user_copy::UserOutPtr<u8>(frame->dx), user_copy::UserOutPtr<HandleValue>(frame->r10),
-            static_cast<u32>(frame->r8), static_cast<u32>(frame->r9),
-            user_copy::UserOutPtr<u32>(frame->r12), user_copy::UserOutPtr<u32>(frame->r13));
-        frame->ax = static_cast<usize>(status);
-    }
-
-    auto sys_object_wait_one_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_object_wait_one(
-            static_cast<HandleValue>(frame->di), static_cast<Signals>(static_cast<u32>(frame->si)),
-            static_cast<Instant>(frame->dx), user_copy::UserOutPtr<Signals>(frame->r10));
-        frame->ax = static_cast<usize>(status);
-    }
-
-    auto sys_process_spawn_boot_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_process_spawn_boot(static_cast<HandleValue>(frame->di),
-                                                   user_copy::UserInPtr<char const>(frame->si),
-                                                   frame->dx, static_cast<HandleValue>(frame->r10));
-        frame->ax = static_cast<usize>(status);
-    }
-
-    auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
-        auto const status = sys_debug_write(user_copy::UserInPtr<char const>(frame->di), frame->si);
-        frame->ax = static_cast<usize>(status);
-    }
+    // The dispatch layer: one shim per call, generated from
+    // //system/public/ours/syscalls.gni, and GENERATED_SHIMS, the list of them
+    // in call-number order. A shim's job is exactly two conversions and
+    // nothing else -- each argument out of its register through
+    // syscall::from_register() (argument.hpp), in the order
+    // arch::syscall_arg() gives, and the result back into `ax` -- so there is
+    // nothing in one that a person should have to write, or could get subtly
+    // wrong by writing.
+#include <syscall_abi/kernel_shims.inc>
 
     /// The answer to a system-call number that does not exist at all, as
     /// against one that exists and has no handler yet.
@@ -194,11 +123,9 @@ namespace {
     /// have to jump around the call and set the return value in assembly,
     /// which means spelling a Status constant there.
     ///
-    /// TODO(SmallHuaZi): only OURS_SYS_DEBUG_WRITE is filled in. The rest
-    /// answer Unimplemented, because lib/syscall's other typed entry points
-    /// (sys_thread_spawn and friends) take object::Handle*, and resolving a
-    /// user's handle number into one needs the handle table that does not
-    /// exist yet.
+    /// Every call the description names is filled in from GENERATED_SHIMS;
+    /// the numbers between the last of them and SYSCALL_COUNT answer
+    /// Unimplemented until the table is sized by the generated count.
     constexpr auto TABLE_SIZE = SYSCALL_COUNT + 1;
 
     constexpr auto make_syscall_table() {
@@ -208,33 +135,18 @@ namespace {
         }
         table[SYSCALL_COUNT] = &sys_bad_syscall_number;
 
-        table[OURS_SYS_DEBUG_WRITE] = &sys_debug_write_shim;
-        table[OURS_SYS_COMMAND_LIST] = &sys_command_list_shim;
-        table[OURS_SYS_HANDLE_CLOSE] = &sys_handle_close_shim;
-        table[OURS_SYS_CHANNEL_CREATE] = &sys_channel_create_shim;
-        table[OURS_SYS_CHANNEL_WRITE] = &sys_channel_write_shim;
-        table[OURS_SYS_CHANNEL_READ] = &sys_channel_read_shim;
-        table[OURS_SYS_OBJECT_WAIT_ONE] = &sys_object_wait_one_shim;
-        table[OURS_SYS_PROCESS_SPAWN_BOOT] = &sys_process_spawn_boot_shim;
+        // Index i of GENERATED_SHIMS is call number i: both are generated
+        // from the position of the entry in syscalls.gni, which is the only
+        // place a call's number is decided.
+        for (auto number = usize(0); number < syscall_abi::SYSCALL_COUNT; ++number) {
+            table[number] = GENERATED_SHIMS[number];
+        }
 
         return table;
     }
 } // namespace
 
 extern "C" constinit auto SYSCALL_TABLE = make_syscall_table();
-
-// The generated numbers against the hand-written ones, until the next commit
-// makes the table out of the generated shims and the macros go. An entry moved
-// in syscalls.gni without the header following it -- or the reverse -- stops
-// the build here instead of sending one call's arguments to another's handler.
-static_assert(syscall_abi::SYS_DEBUG_WRITE == OURS_SYS_DEBUG_WRITE);
-static_assert(syscall_abi::SYS_COMMAND_LIST == OURS_SYS_COMMAND_LIST);
-static_assert(syscall_abi::SYS_HANDLE_CLOSE == OURS_SYS_HANDLE_CLOSE);
-static_assert(syscall_abi::SYS_CHANNEL_CREATE == OURS_SYS_CHANNEL_CREATE);
-static_assert(syscall_abi::SYS_CHANNEL_WRITE == OURS_SYS_CHANNEL_WRITE);
-static_assert(syscall_abi::SYS_CHANNEL_READ == OURS_SYS_CHANNEL_READ);
-static_assert(syscall_abi::SYS_OBJECT_WAIT_ONE == OURS_SYS_OBJECT_WAIT_ONE);
-static_assert(syscall_abi::SYS_PROCESS_SPAWN_BOOT == OURS_SYS_PROCESS_SPAWN_BOOT);
 
 /// The one door, and the only place the vDSO rule is checked.
 ///

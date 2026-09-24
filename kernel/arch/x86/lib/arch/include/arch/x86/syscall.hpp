@@ -108,6 +108,44 @@ static_assert(offsetof(SyscallFrame, sp) == X86_SYSCALLFRAME_OFFSET_SP);
 static_assert(sizeof(SyscallFrame) % 16 == 0, "the stub calls C++ with this frame on top");
 static_assert(sizeof(SyscallFrame) == X86_SYSCALLFRAME_SIZE);
 
+/// The register the |N|th argument of a system call (counting from zero)
+/// arrived in: %rdi, %rsi, %rdx, %r10, %r8, %r9, %r12, %r13.
+///
+/// The first six are the SysV argument registers with one substitution, and
+/// the substitution is forced. SYSCALL overwrites %rcx with the user return
+/// address and %r11 with RFLAGS before the kernel gets control -- that is why
+/// their slots in the frame are pushed as zero -- so neither can ever carry an
+/// argument, and the vDSO stub moves the fourth argument, which SysV passes in
+/// %rcx, to %r10. SysV puts the seventh and eighth on the caller's stack; the
+/// stub loads them into %r12 and %r13, which the frame saves like every other
+/// register. A ninth is refused by the generator rather than read from the
+/// user stack, which would take a user_copy on every call that had one.
+///
+/// Zircon counterpart: the argument order in its x86 syscall.S, which the
+/// generated wrappers read the same way.
+template <usize N>
+[[nodiscard]]
+constexpr auto syscall_arg(SyscallFrame const *const frame) -> usize {
+    static_assert(N < 8, "a system call takes at most eight arguments");
+    if constexpr (N == 0) {
+        return frame->di;
+    } else if constexpr (N == 1) {
+        return frame->si;
+    } else if constexpr (N == 2) {
+        return frame->dx;
+    } else if constexpr (N == 3) {
+        return frame->r10;
+    } else if constexpr (N == 4) {
+        return frame->r8;
+    } else if constexpr (N == 5) {
+        return frame->r9;
+    } else if constexpr (N == 6) {
+        return frame->r12;
+    } else {
+        return frame->r13;
+    }
+}
+
 } // namespace arch
 
 #endif // ARCH_X86_SYSCALL_HPP
