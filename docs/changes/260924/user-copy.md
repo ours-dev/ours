@@ -231,3 +231,54 @@ CR0 都是 WP=1、CD=0，说明之后有别处设好了；这个怀疑是错的�
 **故意没做**
 - capture-faults 变体（在不能睡眠的上下文里读用户内存，给 futex 用）：P1 之后。
 - 拒绝错误码里的 RSVD/PK/SS 位：计划列为不在 P1-A。
+
+## 范围检查与拷贝之间加 `lfence`（Spectre V1 / V1.1）（2026-09-24）
+
+**文件**
+- `kernel/arch/x86/kernel/user_copy.cpp` — `copy()` 在调用汇编之前 `lfence`
+
+**症状**
+潜伏。`user_copy::is_user_range()` 的范围检查是一个分支，拷贝在它被预测的那一侧先跑起来。
+
+**原因**
+- 从用户拷入（`copy_from_user`）：误预测时，源地址可以是内核地址，拷贝会推测地读内核内存，
+  留下可测的缓存痕迹——Spectre V1。
+- 拷出到用户（`copy_to_user`）：误预测时，目的地址可以是内核地址，拷贝会推测地写内核数据
+  （返回地址、函数指针），后续的推测代码可能用上这些值——Spectre V1.1（推测写越界）。
+
+`rep movs` 的地址来自调用者，没法像句柄查找那样用 `cmov` 夹住一个下标；`lfence` 让它之后的指令
+在它之前的全部指令（包括那个检查）完成之前都不开始执行。
+
+**改法**
+改前：
+
+```cpp
+        DEBUG_ASSERT(*resume == 0, "a user copy inside a user copy");
+
+        auto const faulted = feature_has_smap ? x86_user_copy_smap(dst, src, size, resume)
+                                              : x86_user_copy(dst, src, size, resume);
+```
+
+改后：
+
+```cpp
+        DEBUG_ASSERT(*resume == 0, "a user copy inside a user copy");
+
+        asm volatile("lfence" ::: "memory");
+
+        auto const faulted = feature_has_smap ? x86_user_copy_smap(dst, src, size, resume)
+                                              : x86_user_copy(dst, src, size, resume);
+```
+
+放在 arch 层而不是通用层的检查旁边：`lfence` 是 x86 的指令，其他架构有各自的屏障（arm64 的 CSDB）。
+
+**参照**
+Zircon `_arch_copy_to_or_from_user()`（`kernel/arch/x86/user-copy/user-copy.cc`）：`can_access()` 之后、
+`_x86_copy_to_or_from_user()` 之前 `__asm__ __volatile__("lfence" ::: "memory")`，注释同样分 V1 与 V1.1。
+
+**验证**
+- 构建通过；反汇编 `arch_copy_from_user`：`lfence` 在取槽之后、调用 `x86_user_copy_smap`/`x86_user_copy` 之前。
+- 两个镜像在 Nehalem 与 `CPU=max` 下都跑到 `shell: bad-pointer checks passed`。
+
+**故意没做**
+无。

@@ -28,6 +28,18 @@ namespace {
         // with no recovery at all.
         DEBUG_ASSERT(*resume == 0, "a user copy inside a user copy");
 
+        // The range check that admitted this copy (user_copy::is_user_range)
+        // is a branch, and the copy below runs on the predicted side of it
+        // before it resolves. Mispredicted, a copy *from* a kernel address
+        // reads kernel memory into a buffer the program will see the cache
+        // trace of (Spectre V1), and a copy *to* one speculatively stores
+        // over kernel data -- a return address, a function pointer -- that
+        // other speculative code may then use (Spectre V1.1). lfence holds
+        // everything after it until every earlier instruction, the check
+        // included, has completed. Zircon's _arch_copy_to_or_from_user() puts
+        // the same lfence between can_access() and the copy.
+        asm volatile("lfence" ::: "memory");
+
         auto const faulted = feature_has_smap ? x86_user_copy_smap(dst, src, size, resume)
                                               : x86_user_copy(dst, src, size, resume);
 
