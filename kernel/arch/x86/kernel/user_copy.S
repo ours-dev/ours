@@ -35,11 +35,39 @@
 // out. A page fault the copy itself raises is handled the same way, with AC
 // clear, and the copy resumes with it set.
 //
-// void x86_user_copy(void *dst, void const *src, usize len)
+// u32 x86_user_copy(void *dst, void const *src, usize len, VirtAddr *resume)
 //
-//   %rdi  dst   -- rep movs writes through it and advances it
-//   %rsi  src   -- rep movs reads through it and advances it
-//   %rdx  len   -- split into quadwords (%rcx for rep movsq) and a byte tail
+//   %rdi  dst     -- rep movs writes through it and advances it
+//   %rsi  src     -- rep movs reads through it and advances it
+//   %rdx  len     -- split into quadwords (%rcx for rep movsq) and a byte tail
+//   %rcx  resume  -- the running thread's data-fault resume slot; moved to
+//                    %r10 on entry, because rep movs needs %rcx
+//
+//   returns 0 when every byte was copied, 1 when a page fault on the user
+//   side could not be resolved. The C++ caller turns 1 into InvArgs; the
+//   assembly does not spell a Status.
+//
+// Fault recovery (design 4.6). Before it touches user memory the routine
+// stores the address of its fault exit in *resume, and it clears the slot
+// before it returns, on either path. If the copy faults on a user address and
+// the page-fault handler cannot resolve it, the handler finds the slot set
+// and the faulting instruction inside [x86_user_copy_begin,
+// x86_user_copy_end), and instead of panicking it rewrites the frame's
+// instruction pointer to the slot's address and returns. The copy then
+// resumes at its own fault exit, closes the SMAP window, clears the slot and
+// returns 1. The address check is what keeps anything else from being sent
+// there: on a CPU without SMAP, an interrupt taken in the middle of the copy
+// whose handler touched a user address would otherwise find the slot set too.
+//
+// Two invariants make that safe, and both are local to this file:
+//
+//   - Between setting the slot and clearing it, nothing calls and nothing
+//     touches the stack. The fault exit is reached with the stack exactly as
+//     it was at the faulting instruction, which is exactly as it was on entry,
+//     so its `ret` returns to the caller.
+//   - The fault exit uses only %r10 (the slot) and %rax (the result). %r10
+//     survives the fault because the exception entry saves every general
+//     register into the frame and restores it on the way out.
 //
 // The direction flag is clear on entry, as the SysV ABI promises every
 // function; SYSCALL clears it (IA32_FMASK) and so does every interrupt stub.
@@ -51,27 +79,40 @@
 
 .macro user_copy name, smap
 .function \name, global, nosection=nosection
-    movq %rdx, %rcx
-    shrq $3, %rcx
+    movq %rcx, %r10
+    leaq .Lfault_\name(%rip), %rax
+    movq %rax, (%r10)
 .if \smap
     stac
 .endif
+    movq %rdx, %rcx
+    shrq $3, %rcx
     rep movsq
     movl %edx, %ecx
     andl $7, %ecx
     rep movsb
+    xorl %eax, %eax
+.Ldone_\name:
 .if \smap
     clac
 .endif
+    movq $0, (%r10)
     ret
+
+.Lfault_\name:
+    movl $1, %eax
+    jmp .Ldone_\name
 .end_function
 .endm
 
 // Both variants in one section, one after the other, so that the range they
-// occupy together is contiguous.
+// occupy together -- the only instructions a resumable user fault may come
+// from -- is one contiguous interval with a label at each end.
 .section .text.x86_user_copy, "ax", @progbits
 
+.label x86_user_copy_begin, global
 user_copy x86_user_copy, 0
 user_copy x86_user_copy_smap, 1
+.label x86_user_copy_end, global
 
 .section .note.GNU-stack, "", @progbits

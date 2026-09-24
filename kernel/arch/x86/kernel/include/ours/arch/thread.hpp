@@ -31,12 +31,29 @@ class X86Thread {
 
     auto init(VirtAddr entry_point) -> void;
 
+    /// The running thread's data-fault resume slot (design 4.6).
+    ///
+    /// Zero, except while the thread is inside x86_user_copy (user_copy.S),
+    /// which stores the address of its own fault exit here before it touches
+    /// user memory and clears it before returning. A page fault on a user
+    /// address that the ordinary handler cannot resolve, taken with this set
+    /// and at an instruction inside the copy, resumes there instead of
+    /// panicking, and the copy returns failure.
+    ///
+    /// Per thread, not per CPU: a copy that faults on a lazily committed page
+    /// may block while the page is supplied, and wake on another CPU, and the
+    /// slot has to go with it.
+    ///
+    /// Zircon counterpart: arch().page_fault_resume, read by x86_pfe_handler().
+    static auto current_data_fault_resume() -> VirtAddr *;
+
   private:
     friend class Thread;
 
     VirtAddr m_fs_base;
     VirtAddr m_gs_base;
     VirtAddr m_sp;
+    VirtAddr m_data_fault_resume = 0;
 };
 using ArchThread = X86Thread;
 

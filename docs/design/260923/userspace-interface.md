@@ -392,9 +392,9 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 ### 4.6 用户指针拷贝
 
 - **新库** `kernel/lib/user_copy`（include/src/test 结构），提供 `UserInPtr<T>`、`UserOutPtr<T>`、`UserInOutPtr<T>`、`UserOutHandle`，以及 `copy_from_user`、`copy_to_user`、`copy_array_*`。
-- **做法**：先检查整个 [p, p+len) 都在用户半区且不回绕，否则回 InvArgs。`stac`/`clac` 只包住拷贝本身；在没有 SMAP 的 CPU 上用代码补丁换成 nop，做法同 `idt.cpp:96-115` 对 clac 的处理。
+- **做法**：先检查整个 [p, p+len) 都在用户半区且不回绕，否则回 InvArgs。`stac`/`clac` 只包住拷贝本身。（2026-09-24 修订：本内核不带 `.code-patches` 构建，所以不用代码补丁换 nop，而是 `user_copy.S` 里一个宏展开出带 `stac`/`clac` 与不带的两个变体，按 `feature_has_smap` 选。）
 - **P0 不做故障恢复**（只跑受信程序），但缺页处理要把“内核态访问一个 P=1 的用户页”直接 panic，报 SMAP 违规。今天这种情况是活锁：`vm_mapping.cpp:443` 看到 PTE 已经存在就回 Ok，指令重试后再次缺页。改成 panic 至少失败得响亮。
-- **P1 加故障恢复**：线程的 arch 状态里加 `data_fault_resume`；`x86_handle_page_fault` 遇到内核态访问用户地址时先按需调页，失败且设置了 resume 就把 ip 改到 resume 点。大约 30 行。
+- **P1 加故障恢复**：线程的 arch 状态里加 `data_fault_resume`；`x86_handle_page_fault` 遇到内核态访问用户地址时先按需调页，失败且设置了 resume 就把 ip 改到 resume 点。大约 30 行。（2026-09-24 修订：改 ip 还要求出错指令落在拷贝例程自己的区间 `[x86_user_copy_begin, x86_user_copy_end)` 里。只看槽的话，在没有 SMAP 的 CPU 上，拷贝途中来的中断若在处理函数里碰了用户地址，也会被送到拷贝的出口——带着中断的栈，等于一次跳到任意返回地址。）
 - **使用规则**：
   - 持有 `VmAspace::m_lock`（自旋锁）或缺页路径会拿的任何锁时，不得拷贝用户内存；
   - 对象锁下也不拷贝：写入先拷进内核缓冲再取锁，读出先出队、放锁、再拷出；

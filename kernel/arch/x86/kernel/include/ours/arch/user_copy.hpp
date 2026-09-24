@@ -3,6 +3,7 @@
 #ifndef OURS_ARCH_USER_COPY_HPP
 #define OURS_ARCH_USER_COPY_HPP 1
 
+#include <ours/status.hpp>
 #include <ours/types.hpp>
 
 namespace ours {
@@ -14,12 +15,11 @@ namespace ours {
 /// 0 may touch a user page only while RFLAGS.AC is set, so the copy is
 /// bracketed by stac/clac and those two instructions bracket nothing else.
 ///
-/// There is no fault recovery yet. A copy that faults on a page the user's
-/// address space can supply (a lazily committed one) is resolved by the page
-/// fault handler like any other and resumes; one that faults on a hole is a
-/// kernel panic. That is the stated P0 limit -- only programs from the kernel
-/// package run -- and Zircon's data_fault_resume is the planned answer
-/// (docs/design/260923/userspace-interface.md, 4.6).
+/// A copy that faults on a page the user's address space can supply (a
+/// lazily committed one) is resolved by the page-fault handler like any other
+/// and resumes. One that faults on a hole -- an unmapped page, a write to a
+/// read-only mapping -- is sent back to the copy's own fault exit (the
+/// data-fault resume, design 4.6), and these return InvArgs.
 ///
 /// The copy is x86_user_copy or x86_user_copy_smap (user_copy.S), picked by
 /// feature_has_smap.
@@ -28,9 +28,11 @@ namespace ours {
 /// kernel/arch/x86/user-copy/user-copy.cc, which pick a stac/clac or plain
 /// variant by code patching. This kernel does not build with .code-patches,
 /// so the choice is a cached flag instead.
-auto arch_copy_from_user(void *dst, VirtAddr src, usize size) -> void;
+[[nodiscard]]
+auto arch_copy_from_user(void *dst, VirtAddr src, usize size) -> Status;
 
-auto arch_copy_to_user(VirtAddr dst, void const *src, usize size) -> void;
+[[nodiscard]]
+auto arch_copy_to_user(VirtAddr dst, void const *src, usize size) -> Status;
 
 } // namespace ours
 

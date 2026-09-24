@@ -39,9 +39,10 @@ auto is_user_range(ours::VirtAddr addr, usize size) -> bool;
 
 /// Copies |size| bytes from user address |src| into kernel memory at |dst|.
 ///
-/// InvArgs if the range is not wholly in the user half. A range that is, but
-/// is not mapped, panics for now: there is no fault recovery yet, and only
-/// programs from the kernel package run.
+/// InvArgs if the range is not wholly in the user half, and InvArgs if it is
+/// but some page of it cannot be made present -- unmapped, or mapped without
+/// the access the copy needs. The copy may have moved some bytes by then; a
+/// caller that failed has nothing to rely on in |dst|.
 [[nodiscard]]
 auto copy_from_user(void *dst, ours::VirtAddr src, usize size) -> ours::Status;
 

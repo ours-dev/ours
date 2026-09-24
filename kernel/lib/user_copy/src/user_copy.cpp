@@ -21,10 +21,10 @@ auto copy_from_user(void *const dst, ours::VirtAddr const src, usize const size)
     if (!is_user_range(src, size)) {
         return ours::Status::InvArgs;
     }
-    if (size != 0) {
-        ours::arch_copy_from_user(dst, src, size);
+    if (size == 0) {
+        return ours::Status::Ok;
     }
-    return ours::Status::Ok;
+    return ours::arch_copy_from_user(dst, src, size);
 }
 
 auto copy_to_user(ours::VirtAddr const dst, void const *const src, usize const size)
@@ -32,10 +32,10 @@ auto copy_to_user(ours::VirtAddr const dst, void const *const src, usize const s
     if (!is_user_range(dst, size)) {
         return ours::Status::InvArgs;
     }
-    if (size != 0) {
-        ours::arch_copy_to_user(dst, src, size);
+    if (size == 0) {
+        return ours::Status::Ok;
     }
-    return ours::Status::Ok;
+    return ours::arch_copy_to_user(dst, src, size);
 }
 
 } // namespace user_copy
