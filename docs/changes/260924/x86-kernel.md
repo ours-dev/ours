@@ -226,3 +226,14 @@ Zircon `x86_reset_tss_io_bitmap()`（`kernel/arch/x86/ioport.cc`，`bitmap_set` 
 
 **故意没做**
 每进程的 I/O 端口授权（Zircon 的 `zx_ioports_request`）：还没有需要端口的用户驱动。
+
+## 勘误：P1-A 第 17–29 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「来自 ring 3 的 CPU 异常杀掉进程」一节把 NMI 列为"不论哪一环都仍是致命的"。错：NMI 只打日志然后返回，不论打断的是哪一环；
+  真正致命的是 #NM、#DF、#CSO、#TS、#MC、#VE、#VC。
+- 同一节把 "#CP → General" 算作照 Zircon 的映射。错：Zircon 对 #CP 在任何一环都 `exception_die`；这里把 ring 3 的 #CP 当作
+  程序的错杀掉进程，是本内核的偏离。CET 没有开启，今天不会有 #CP。
+- 同一节说"地址空间解决不了的 #PF → FatalPageFault"。有一个缺口：`x86_handle_page_fault()` 丢掉了错误码的取指位，
+  从已映射但不可执行的用户页取指会被地址空间当成伪缺页"解决"，无限重试而不是杀进程。已交接（mm 的取指原因与权限检查）。

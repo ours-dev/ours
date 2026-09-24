@@ -559,3 +559,10 @@ Zircon `sys_invalid_syscall()` 直接调 `Thread::Current::SignalPolicyException
 
 **故意没做**
 无。
+
+## 勘误：P1-A 第 17–29 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「从 vDSO 之外陷入：杀掉进程」一节写"lib/syscall 因此仍只 include 对象层的头"。当时的 `table.cpp` 其实 include 了
+  `<ours/task/exception.hpp>`。已由「lib/syscall 回到只 include 对象层的头」一节改正。

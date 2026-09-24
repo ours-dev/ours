@@ -64,3 +64,11 @@ Zircon `kernel/arch/x86/syscall.S` 的 `.Lthread_signaled` 与 `x86_syscall_proc
 
 **故意没做**
 无。
+
+## 勘误：P1-A 第 17–29 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「SYSRET 之前检查挂起的线程信号」一节写"之后再到来的信号，由发送方随后的 IPI 在 SYSRET 之后立刻打断用户态接住"。
+  不成立：`suspend_or_kill()` 对一个 Running 的线程只置信号位、不发 IPI（Zircon 在这里调 `mp_interrupt()`）。信号不会丢，
+  但要等目标线程下一次从 ring 3 进内核才被处理。补 IPI 的事已交接（与 `exit()` 的另外几处一起）；`syscall.S` 的注释已改正。

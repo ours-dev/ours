@@ -468,3 +468,11 @@ Zircon `ThreadDispatcher::ThreadDispatcher()` 里 `kcounter_add(dispatcher_threa
 
 **故意没做**
 泄漏本身（待修项 1、2）。
+
+## 勘误：P1-A 第 17–29 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「`ProcessDispatcher::kill` 与 `TASK_RETCODE_*`」一节写线程"在自己回 ring 3 的路上处理 Kill（异常尾部、SYSRET 之前）"，
+  漏了第三条路：线程第一次进用户态。当时这条路不检查挂起信号，已由「线程第一次进 ring 3 之前也检查挂起信号」一节补上。
+- 「销毁计数并打日志」一节说析构时"内核线程早已销毁"，对从未启动过的线程不成立；已改注释并记入 `docs/repairs/260924/object.md`。

@@ -183,3 +183,13 @@ P1-A 计划第 20 条会逐个看：有的调用点已经在外层关了中断�
   内核 panic。
 - 同一个函数还有两处早于 P1-A 的缺陷（Parked 分支重复加锁、Sleeping 分支与定时器竞争），以及
   `Thread::Current::tid()` 读错每 CPU 槽，已记入 `docs/repairs/260924/kernel-task.md` 第 2–4 条并交接。
+
+## 勘误：P1-A 第 17–29 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「`process_pending_signals` 的 Kill 分支让线程退出」一节写 `m_signals` "由别的 CPU 在 PI 锁下写"。不完全：
+  `suspend_or_kill()` 里的 `gktl::defer` 动作会执行两次（`DeferredAction::invoke()` 不标记已执行），第二次在 PI 锁释放之后，
+  是一次锁外的读改写。已交接给独立会话（与 `SPAWNED_THREADS_LOCK`、可 join 线程的退出循环、Kill 不发 IPI 一起）。
+- 同一节写 `process_pending_signals()` "关中断，所以检查之后到来的信号不会在返回前被错过"。只对本 CPU 成立；另一颗 CPU
+  在这个窗口里置的信号不会丢，但要等下一次进内核，因为还不发 IPI。
