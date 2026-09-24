@@ -64,11 +64,18 @@ auto report(ou::Str const what, ours::Status const status) -> void {
 /// Gives up the handle this program was started with, and checks that the
 /// kernel then refuses it.
 ///
-/// The first close has to succeed: the value came from the kernel, which put
-/// the root job into this process's table and the value into %rdi. The second
-/// has to fail with BadHandle, because the same number no longer names
-/// anything here -- and that is the handle table's whole job, observed from
-/// the side of the boundary that relies on it.
+/// The first close has to succeed: the value came from whoever started this
+/// program, which put a handle into this process's table and its value into
+/// %rdi -- the root job when the kernel started it, init's end of a channel
+/// when init did. The second has to fail with BadHandle, because the same
+/// number no longer names anything here -- and that is the handle table's
+/// whole job, observed from the side of the boundary that relies on it.
+///
+/// Closing the channel end is harmless to init, although init wakes on
+/// PeerClosed as well as Readable: answer_bootstrap() runs first, so "pong"
+/// is already queued on init's end, and a message stays readable after the
+/// writer's end is gone. Whichever signal wakes init, Readable is set by
+/// then, and that is the one it checks.
 auto check_handle_close(ours::HandleValue const bootstrap) -> void {
     report("shell: close(bootstrap) = ", ou::handle_close(bootstrap));
     report("shell: close again = ", ou::handle_close(bootstrap));
