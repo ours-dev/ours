@@ -31,21 +31,33 @@ class X86Thread {
 
     auto init(VirtAddr entry_point) -> void;
 
-    /// The running thread's data-fault resume slot (design 4.6).
-    ///
-    /// Zero, except while the thread is inside x86_user_copy (user_copy.S),
-    /// which stores the address of its own fault exit here before it touches
-    /// user memory and clears it before returning. A page fault on a user
-    /// address that the ordinary handler cannot resolve, taken with this set
-    /// and at an instruction inside the copy, resumes there instead of
-    /// panicking, and the copy returns failure.
+    /// What the running thread's user copy in progress has told the page-fault
+    /// handler (design 4.6). All zero outside a copy.
+    struct UserCopyState {
+        /// The address of the copy's own fault exit. x86_user_copy
+        /// (user_copy.S) stores it before touching user memory and clears it
+        /// before returning.
+        VirtAddr resume = 0;
+
+        /// The user operand of the copy -- the range the range check admitted.
+        /// A fault inside the copy is resumed only if it lies here. The copy
+        /// has two operands and only one of them is the user's; a fault on the
+        /// other one (a null kernel buffer, say) is a kernel bug that should
+        /// stop the kernel, not an InvArgs the system call quietly returns.
+        VirtAddr user_base = 0;
+        usize user_size = 0;
+    };
+
+    /// The running thread's user-copy state.
     ///
     /// Per thread, not per CPU: a copy that faults on a lazily committed page
     /// may block while the page is supplied, and wake on another CPU, and the
-    /// slot has to go with it.
+    /// state has to go with it.
     ///
     /// Zircon counterpart: arch().page_fault_resume, read by x86_pfe_handler().
-    static auto current_data_fault_resume() -> VirtAddr *;
+    /// Zircon keeps the resume address alone; the admitted range is this
+    /// kernel's addition.
+    static auto current_user_copy() -> UserCopyState *;
 
   private:
     friend class Thread;
@@ -53,7 +65,7 @@ class X86Thread {
     VirtAddr m_fs_base;
     VirtAddr m_gs_base;
     VirtAddr m_sp;
-    VirtAddr m_data_fault_resume = 0;
+    UserCopyState m_user_copy;
 };
 using ArchThread = X86Thread;
 

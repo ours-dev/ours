@@ -21,35 +21,44 @@ namespace {
     constexpr usize PAGE_FAULT_WRITE = 1u << 1;
     constexpr usize PAGE_FAULT_USER = 1u << 2;
 
-    /// Whether the faulting instruction belongs to a user copy in progress:
-    /// the running thread has a resume address (it is inside x86_user_copy),
-    /// and the instruction is in the copy routine itself.
+    /// Whether this fault is one a user copy in progress may take back: the
+    /// running thread is inside x86_user_copy (its resume address is set),
+    /// the faulting instruction is in the copy routine itself, and |addr|
+    /// lies in the user operand the copy was admitted for.
     ///
-    /// Both halves, not the slot alone. On a CPU without SMAP an interrupt
-    /// taken in the middle of a copy runs with the slot still set, and if its
-    /// handler touched a user address it would pass for the copy -- and be
-    /// sent to the copy's exit with the interrupt's stack, which is a jump to
-    /// an arbitrary return address.
+    /// Each half closes a different hole:
+    ///
+    ///  - the instruction, because the state alone would also cover an
+    ///    interrupt taken in the middle of a copy on a CPU without SMAP: if
+    ///    its handler faulted on a user address it would pass for the copy,
+    ///    and be sent to the copy's exit with the interrupt's stack -- a jump
+    ///    to an arbitrary return address;
+    ///  - the address, because a copy has two operands and only one is the
+    ///    user's. A fault on the other one -- a null or wild kernel buffer --
+    ///    is a kernel bug, and resuming it would turn the bug into an InvArgs
+    ///    the system call returns without a word.
     ///
     /// Zircon counterpart: the page_fault_resume slot x86_pfe_handler() reads;
-    /// the address check is this kernel's addition (design 4.6, as revised
+    /// both checks are this kernel's additions (design 4.6, as revised
     /// 2026-09-24).
-    auto inside_user_copy(arch::IrqFrame const *const frame) -> bool {
-        auto const resume = *task::X86Thread::current_data_fault_resume();
+    auto user_copy_may_resume(arch::IrqFrame const *const frame, VirtAddr const addr) -> bool {
+        auto const &state = *task::X86Thread::current_user_copy();
         auto const ip = frame->ip;
-        return resume != 0 && ip >= reinterpret_cast<usize>(x86_user_copy_begin) &&
-               ip < reinterpret_cast<usize>(x86_user_copy_end);
+        auto const in_routine = ip >= reinterpret_cast<usize>(x86_user_copy_begin) &&
+                                ip < reinterpret_cast<usize>(x86_user_copy_end);
+        auto const in_operand = addr - state.user_base < state.user_size;
+        return state.resume != 0 && in_routine && in_operand;
     }
 
     /// Sends a user copy whose fault could not be resolved to its fault exit,
     /// from where it returns failure and the system call InvArgs.
     ///
     /// Only ever asked after x86_handle_page_fault() has established that
-    /// ring 0 faulted on a user address inside a copy. Nothing is logged: a
-    /// program passing a bad pointer is ordinary, and the InvArgs it gets back
-    /// says everything that happened.
+    /// ring 0 faulted on a user address a copy may resume from. Nothing is
+    /// logged: a program passing a bad pointer is ordinary, and the InvArgs it
+    /// gets back says everything that happened.
     auto resume_user_copy(arch::IrqFrame *const frame) -> void {
-        frame->ip = *task::X86Thread::current_data_fault_resume();
+        frame->ip = task::X86Thread::current_user_copy()->resume;
     }
 } // namespace
 
@@ -84,12 +93,17 @@ auto x86_handle_page_fault(arch::IrqFrame *frame) -> Status {
     // resolves ring-0 faults on its own addresses through page_fault(), so the
     // refusal covers user addresses only. A null dereference in the kernel
     // lands here as an access to user address 0, which says what happened
-    // well enough.
+    // well enough -- inside a copy as well as outside one, because address 0
+    // is never in a copy's admitted user range (the range check starts at
+    // USER_ASPACE_BASE).
     auto const supervisor = (error_code & PAGE_FAULT_USER) == 0;
     auto const user_address = !mm::is_kernel_address(addr);
-    if (supervisor && user_address && !inside_user_copy(frame)) {
+    if (supervisor && user_address && !user_copy_may_resume(frame, addr)) {
         auto const access_open = frame->flags.get<arch::ArchCpuState::AC>() != 0;
-        if (feature_has_smap && !access_open) {
+        if (task::X86Thread::current_user_copy()->resume != 0) {
+            log::error("user copy faulted on {:#x}, outside the user range it was admitted for",
+                       addr);
+        } else if (feature_has_smap && !access_open) {
             log::error(
                 "potential SMAP violation: ring 0 touched user address {:#x} outside user_copy",
                 addr);
@@ -112,7 +126,7 @@ auto x86_handle_page_fault(arch::IrqFrame *frame) -> Status {
 
     // Not resolvable, and a user copy's: not the kernel's to die of. By the
     // check above, a ring-0 fault on a user address that got this far is
-    // inside a copy.
+    // one a copy may resume from.
     if (supervisor && user_address) {
         resume_user_copy(frame);
         return Status::Ok;

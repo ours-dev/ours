@@ -49,8 +49,8 @@ auto X86Thread::switch_thread(Thread *prev, Thread *next) -> void {
     x86_switch_context(&prev_arch.m_sp, next_arch.m_sp);
 }
 
-auto X86Thread::current_data_fault_resume() -> VirtAddr * {
-    return &Thread::Current::get()->m_arch_thread.m_data_fault_resume;
+auto X86Thread::current_user_copy() -> UserCopyState * {
+    return &Thread::Current::get()->m_arch_thread.m_user_copy;
 }
 
 auto X86Thread::init(VirtAddr entry_point) -> void {

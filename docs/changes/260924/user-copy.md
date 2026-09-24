@@ -282,3 +282,65 @@ Zircon `_arch_copy_to_or_from_user()`（`kernel/arch/x86/user-copy/user-copy.cc`
 
 **故意没做**
 无。
+
+## 拷贝里的故障只在"被放行的那个用户操作数"上才恢复（2026-09-24）
+
+**文件**
+- `kernel/arch/x86/kernel/include/ours/arch/thread.hpp`、`kernel/arch/x86/kernel/task/thread.cpp` — 槽换成 `UserCopyState{resume, user_base, user_size}`，访问器改为 `current_user_copy()`
+- `kernel/arch/x86/kernel/user_copy.cpp` — `copy()` 多一个 `user` 参数，拷贝前后填、清被放行的用户区间；改正一处 Zircon 函数名
+- `kernel/arch/x86/mm/fault.cpp` — `inside_user_copy()` 改为 `user_copy_may_resume(frame, addr)`，多查 CR2 是否落在该区间
+
+**症状**
+审查发现（P1-A 第 1–16 条的对抗审查）：内核自己的一侧出错也会被恢复。比如
+`copy_from_user(dst = nullptr, 合法的用户源, n)`：`rep movs` 写 0 地址缺页，CR2 在 [0, 2 MiB) 里，
+按 `!is_kernel_address` 算是"用户地址"，出错指令又在拷贝例程里——于是被送去故障出口，系统调用
+安静地返回 `InvArgs`。一个内核 bug 被伪装成了程序传了坏指针。第 15 条的记录说"拷贝的内核侧出错是
+内核 bug，应当停机"，代码没有兑现。
+
+**原因**
+拷贝有两个操作数，只有一个是用户的。"地址不在内核半区"不等于"地址是这次拷贝的用户操作数"。
+能区分二者的只有拷贝自己：它知道范围检查放行的是哪一段。
+
+**改法**
+改前：
+
+```cpp
+    auto inside_user_copy(arch::IrqFrame const *const frame) -> bool {
+        auto const resume = *task::X86Thread::current_data_fault_resume();
+        auto const ip = frame->ip;
+        return resume != 0 && ip >= reinterpret_cast<usize>(x86_user_copy_begin) &&
+               ip < reinterpret_cast<usize>(x86_user_copy_end);
+    }
+```
+
+改后：
+
+```cpp
+    auto user_copy_may_resume(arch::IrqFrame const *const frame, VirtAddr const addr) -> bool {
+        auto const &state = *task::X86Thread::current_user_copy();
+        auto const ip = frame->ip;
+        auto const in_routine = ip >= reinterpret_cast<usize>(x86_user_copy_begin) &&
+                                ip < reinterpret_cast<usize>(x86_user_copy_end);
+        auto const in_operand = addr - state.user_base < state.user_size;
+        return state.resume != 0 && in_routine && in_operand;
+    }
+```
+
+`copy()` 在调用汇编前填 `user_base/user_size`（`arch_copy_from_user` 传 `src`，`arch_copy_to_user` 传 `dst`），
+返回后清零。拷贝里、但不在被放行区间的内核态故障，在调页之前就被拒绝，并打出专门的消息
+"user copy faulted on {addr}, outside the user range it was admitted for"。
+
+仍然管不到的一种：内核侧操作数恰好是一个**已映射**的用户地址——那根本不缺页。这只能靠 SMAP
+（有 SMAP 时窗口内也允许，所以连 SMAP 也挡不住）。这是内核自己的 bug，不在这一条的范围内。
+
+**参照**
+Zircon 的 `page_fault_resume` 只有恢复地址，没有区间；区间检查是本内核的补充（设计 4.6 已修订的"指令须在拷贝例程内"之外的又一条）。
+Linux 的异常表同样只按出错 ip 认领，不看地址。
+
+**验证**
+- 构建通过；两个镜像在 Nehalem 与 `CPU=max` 下都跑到 `shell: bad-pointer checks passed`（用户侧的故障仍然恢复）。
+- 在 `sys_debug_write` 里临时 `copy_array_from_user(nullptr, 1)`（未提交）：
+  `user copy faulted on 0x0, outside the user range it was admitted for`，随后内核停机——改前是静默返回 `InvArgs`。
+
+**故意没做**
+无。
