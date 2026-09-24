@@ -179,3 +179,41 @@ deadline 检查挪到它之后，不支持时先摘下观察者再返回。
 
 **故意没做**
 没有改成 Zircon 的顺序再去改方案——方案先定下的约定优先。
+
+## shell 的 channel 自环测试：四个调用的运行时验证（2026-09-23）
+
+**文件**
+- `examples/shell/shell.cpp` — `check_channel_loopback()`：两端都在同一个进程里，逐项核对 channel 的语义
+
+**症状**
+`channel_create/write/read` 与 `object_wait_one` 此前只做到「构建通过、导出已绑定」，从未在运行时被调用过——
+第一次 `channel_create` 就撞上 AP 上 kmalloc 挂死（已由 `5b1ce2f` 修复）。
+
+**原因**
+单线程程序做不了真正睡眠的等待，但能验证其余全部语义：等待是电平触发的，条件已满足的等待不会睡。
+
+**改法**
+依次调用并与期望值比对，每行打印「结果（期望值）」，全部符合时打印 `shell: channel checks passed`：
+
+| 步骤 | 期望 |
+|---|---|
+| `channel_create` | Ok |
+| `write(a, "ping")` | Ok |
+| `wait_one(b, READABLE, 0)` | Ok，observed 含 READABLE 与 WRITABLE |
+| `read(b, 2 字节)` | BufferTooSmall，actual = 4，消息留在队首 |
+| `read(b)` | Ok，内容为 "ping" |
+| `read(b)` | ShouldWait |
+| `close(a)` 后 `wait_one(b, PEER_CLOSED, ∞)` | Ok，observed 含 PEER_CLOSED、不含 WRITABLE |
+| `read(b)`、`write(b)` | PeerClosed |
+| `close(b)` | Ok |
+
+没有 libc，字节比较手写（`spells()`）。
+
+**参照**
+Zircon `ChannelDispatcher` 的读写语义；`zx_object_wait_one` 的电平触发约定。
+
+**验证**
+两个镜像都打印出全部期望值与 `shell: channel checks passed`。
+
+**故意没做**
+真正睡眠、由另一端唤醒的等待要两个程序——那是 P0 第 9 步（init ↔ shell 的 ping/pong）。

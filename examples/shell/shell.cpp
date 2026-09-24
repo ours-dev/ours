@@ -22,11 +22,15 @@
 /// entry point with a stack and nothing else, so `_start` is the whole
 /// runtime.
 
+#include <ours/signals.hpp>
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 
+#include <ou/channel.hpp>
 #include <ou/command.hpp>
 #include <ou/debug.hpp>
 #include <ou/handle.hpp>
+#include <ou/object.hpp>
 #include <ou/str.hpp>
 
 namespace {
@@ -70,6 +74,101 @@ auto check_handle_close(ours::HandleValue const bootstrap) -> void {
     report("shell: close(bootstrap) = ", ou::handle_close(bootstrap));
     report("shell: close again = ", ou::handle_close(bootstrap));
 }
+
+/// Prints "<what><got>" and whether that was |want|; answers whether it was.
+auto expect(ou::Str const what, ours::Status const got, ours::Status const want) -> bool {
+    static_cast<void>(ou::debug_write(what));
+    static_cast<void>(ou::debug_write(ou::Str::from_c_str(ours::to_string(got), 32)));
+    if (got == want) {
+        static_cast<void>(ou::debug_line(""));
+        return true;
+    }
+    static_cast<void>(ou::debug_write(" (expected "));
+    static_cast<void>(ou::debug_write(ou::Str::from_c_str(ours::to_string(want), 32)));
+    static_cast<void>(ou::debug_line(")"));
+    return false;
+}
+
+/// Whether the first |length| bytes of |bytes| spell |text|. By hand: there
+/// is no libc in this image to call memcmp from.
+auto spells(char const *const bytes, u32 const length, ou::Str const text) -> bool {
+    if (length != text.size()) {
+        return false;
+    }
+    for (u32 i = 0; i < length; ++i) {
+        if (bytes[i] != text.data()[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// A channel with both ends in this one process: everything the kernel
+/// promises about one, checked from the side of the boundary that relies on
+/// it. Nothing here blocks -- the waits are satisfied before they start (the
+/// wait is level-triggered) -- so a single-threaded program can run it all.
+/// A wait that really sleeps needs a second program to wake it.
+auto check_channel_loopback() -> void {
+    using ours::Signals;
+    using ours::Status;
+
+    auto ok = true;
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        return;
+    }
+
+    constexpr ou::Str PING{"ping"};
+    ok &= expect("shell: write(ping) = ",
+                 ou::channel_write(a, PING.data(), static_cast<u32>(PING.size())), Status::Ok);
+
+    // Already readable, so a poll must succeed and report Readable.
+    auto observed = Signals::None;
+    ok &= expect("shell: wait_one(READABLE, poll) = ",
+                 ou::object_wait_one(b, Signals::Readable, 0, &observed), Status::Ok);
+    ok &= !!(observed & Signals::Readable) && !!(observed & Signals::Writable);
+
+    // Too small a buffer leaves the message where it is and says how long it
+    // is.
+    char buffer[16] = {};
+    u32 actual = 0;
+    ok &= expect("shell: read(2 bytes) = ", ou::channel_read(b, buffer, 2, &actual),
+                 Status::BufferTooSmall);
+    ok &= actual == PING.size();
+
+    ok &=
+        expect("shell: read = ", ou::channel_read(b, buffer, sizeof(buffer), &actual), Status::Ok);
+    if (spells(buffer, actual, PING)) {
+        static_cast<void>(ou::debug_line("shell: loopback ping ok"));
+    } else {
+        ok = false;
+        static_cast<void>(ou::debug_line("shell: loopback read the wrong bytes"));
+    }
+
+    ok &= expect("shell: read on empty = ", ou::channel_read(b, buffer, sizeof(buffer), &actual),
+                 Status::ShouldWait);
+
+    // Closing one end tells the other: PeerClosed goes up, Writable comes
+    // down, and every further read or write says so.
+    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+    ok &= expect("shell: wait_one(PEER_CLOSED) = ",
+                 ou::object_wait_one(b, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed),
+                 Status::Ok);
+    ok &= !!(observed & Signals::PeerClosed) && !(observed & Signals::Writable);
+    ok &= expect("shell: read after peer closed = ",
+                 ou::channel_read(b, buffer, sizeof(buffer), &actual), Status::PeerClosed);
+    ok &= expect("shell: write after peer closed = ",
+                 ou::channel_write(b, PING.data(), static_cast<u32>(PING.size())),
+                 Status::PeerClosed);
+    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: channel checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: channel checks FAILED"));
+    }
+}
 } // namespace
 
 /// `extern "C"`, because ld.lld resolves the default entry point by the symbol
@@ -85,6 +184,7 @@ auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr c
     -> void {
     static_cast<void>(ou::debug_line(BANNER));
     check_handle_close(bootstrap);
+    check_channel_loopback();
 
     static Registry registry;
     auto const status = registry.fetch();
