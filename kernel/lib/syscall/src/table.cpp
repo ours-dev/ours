@@ -9,6 +9,7 @@
 #include <iterator>
 
 #include <arch/interrupt.hpp>
+#include <arch/nospec.hpp>
 #include <arch/syscall.hpp>
 #include <logz4/log.hpp>
 #include <ours/assert.hpp>
@@ -198,6 +199,18 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
         if (frame->ax < syscall_abi::SYSCALL_COUNT) {
             number = frame->ax;
         }
+        // And confined, because the clamp above is C++ and may well compile
+        // to a branch. Mispredicted, it would hand the load below the raw
+        // %rax, and the CPU would fetch a "handler" from wherever the caller
+        // pointed past the table and speculatively call it -- a jump to an
+        // address of the user's choosing, however briefly. confine_array_index
+        // turns any index past the table into 0 with a conditional move that
+        // cannot run ahead of its comparison, so the worst a wrong path can do
+        // is start the call in slot 0. Architecturally it changes nothing:
+        // |number| is already in range by the time it gets here. Zircon's
+        // x86 syscall.S pairs its `jae .Lunknown_syscall` with a `cmovge` of
+        // zero for the same reason.
+        number = arch::confine_array_index(number, TABLE_SIZE);
         SYSCALL_TABLE[number](frame);
     }
 

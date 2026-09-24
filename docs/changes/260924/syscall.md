@@ -272,3 +272,55 @@ Zircon：表长是 kazoo 生成的 `ZX_SYS_COUNT`，越界号走 `unknown_syscal
 **故意没做**
 钳位仍是 C++ 的 `if`，可能被编译成条件跳转，预测错时会越界读表再间接调用（Spectre V1）。
 它归第 13 条，用 `confine_array_index` 修。
+
+## 分发表下标加 `confine_array_index`（Spectre V1）（2026-09-24）
+
+**文件**
+- `kernel/lib/syscall/src/table.cpp` — `syscall_dispatch()` 在钳位之后再夹一次下标
+
+**症状**
+潜伏。`%rax` 完全由用户决定，而钳位是一段 C++ 的 `if`。
+
+**原因**
+钳位把越界号改写成哨兵槽的下标，架构上是对的；但它是 C++，编译器可以把它编成条件跳转。
+一旦编成跳转并被误预测，下面的 `SYSCALL_TABLE[number]` 会拿原始的 `%rax` 作下标，从表外
+用户指定的位置取出一个"处理函数"再间接调用——哪怕只在推测路径上存在片刻，这也是一次跳到
+用户所选地址的执行。
+
+**改法**
+改前：
+
+```cpp
+        auto number = syscall_abi::SYSCALL_COUNT;
+        if (frame->ax < syscall_abi::SYSCALL_COUNT) {
+            number = frame->ax;
+        }
+        SYSCALL_TABLE[number](frame);
+```
+
+改后：
+
+```cpp
+        auto number = syscall_abi::SYSCALL_COUNT;
+        if (frame->ax < syscall_abi::SYSCALL_COUNT) {
+            number = frame->ax;
+        }
+        number = arch::confine_array_index(number, TABLE_SIZE);
+        SYSCALL_TABLE[number](frame);
+```
+
+钳位保留（架构上的语义：越界号落到哨兵槽，回 `BadSyscall`）；`confine_array_index` 只管推测
+路径，把任何表外下标变成 0，最坏是推测地开始执行槽 0 的 shim——一个合法的目标。架构上它什么
+也不改变，因为走到这里时 `number` 已在范围内。
+
+**参照**
+Zircon `kernel/arch/x86/syscall.S`：`cmp $ZX_SYS_COUNT, %rax; jae .Lunknown_syscall` 之后紧跟
+`cmovge %r11, %rax`（%r11 为 0），注释说明分支之后只可能在错误路径上越界，而这一步必须是 cmov。
+
+**验证**
+- 构建通过；两个镜像启动正常。
+- `syscall_dispatch` 反汇编：钳位在这次构建里恰好编成了 `cmovbq`，新加的一道是 `cmovaq`，
+  之后才是 `callq *(%rcx,%rax,8)`。钳位编成什么由编译器决定，第二道不依赖它。
+
+**故意没做**
+Spectre V2（间接调用的目标注入）不在这一条：Zircon 在这里用 retpoline，本项目还没有这套设施。
