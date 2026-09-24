@@ -22,9 +22,11 @@ field its line carries.
 Zircon counterpart: the verify-abi action in
 //zircon/kernel/lib/userabi/vdso/BUILD.gn, which compares the .ifs extracted
 from libzircon.so against //src/zircon/lib/zircon/zircon.ifs. That file is
-maintained by hand; libours.ifs is generated from the same description as the
-stubs, so what this catches is a stub the macro failed to emit or a symbol
-exported by accident, rather than two hand-written lists drifting apart.
+generated too -- by zither's ifs backend from the zx syscall library, and
+checked in as a golden -- so the two designs catch the same thing: a stub the
+generator or macro failed to emit, or a symbol exported by accident. The
+difference is only that libours.ifs is generated at build time rather than
+kept as a checked-in golden.
 """
 
 from __future__ import annotations

@@ -77,10 +77,12 @@ template("user_executable") {
     configs -= [ "//system:user.executable" ]
     configs += [ "//system:user.program" ]
 
-    # //system/public for the edge, not the include path, which the
-    # toolchain's //system:user.headers already supplies: <ours/vdso.hpp>
-    # includes a generated file, and without a dependency on its generator a
-    # clean build could compile a program before the file exists.
+    # //system/public for two things the toolchain's //system:user.headers
+    # cannot give: <ours/vdso.hpp> includes a generated file,
+    # ours/vdso_decls.inc, and both the include path to it
+    # (:vdso_decls.config) and the edge that orders a program's compiles after
+    # its generator come only through a dependency. Without this, every
+    # program including <ours/vdso.hpp> fails to find the file.
     deps = [
       "//system/public",
       _vdso_label,

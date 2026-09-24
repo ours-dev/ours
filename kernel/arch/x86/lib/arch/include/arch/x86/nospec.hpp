@@ -11,11 +11,14 @@ namespace arch {
 /// |index| if it is below |size|, otherwise 0; see <arch/nospec.hpp>.
 ///
 /// `cmp` computes size - index, and `cmova` moves |index| into the result
-/// only when that is "above" -- unsigned greater, so size > index. Until the
-/// comparison resolves the move cannot execute, and the result a speculative
-/// path consumes is still the 0 it started as. Intel, "Analyzing potential
-/// bounds check bypass vulnerabilities", section 5.2 (bounds clipping); AMD,
-/// "Software techniques for managing speculation", mitigation V1-2.
+/// only when that is "above" -- unsigned greater, so size > index. A cmov's
+/// condition is never predicted: whatever consumes the result waits until the
+/// comparison has executed, and then gets the value that is right for the
+/// real inputs. So an index at or past |size| comes out as 0 on every path,
+/// speculative ones included, because the comparison says so -- not because 0
+/// is handed out while it is pending. Intel, "Analyzing potential bounds check
+/// bypass vulnerabilities", section 5.2 (bounds clipping); AMD, "Software
+/// techniques for managing speculation", mitigation V1-2.
 [[nodiscard]]
 inline auto confine_array_index(usize const index, usize const size) -> usize {
     usize safe_index = 0;
@@ -30,10 +33,11 @@ inline auto confine_array_index(usize const index, usize const size) -> usize {
 /// |a| if |x| equals |y|, otherwise |b|; see <arch/nospec.hpp>.
 ///
 /// The result starts as |a| and `cmovnz` replaces it with |b| when the
-/// comparison found them different -- the same data dependency as above.
+/// comparison found them different -- the same data dependency as above: a
+/// consumer gets |a| only once the comparison has actually found x == y.
 [[nodiscard]]
-inline auto conditional_select_nospec_eq(usize const x, usize const y, usize const a,
-                                         usize const b) -> usize {
+inline auto conditional_select_nospec_eq(usize const x, usize const y, usize const a, usize const b)
+    -> usize {
     usize select = a;
     asm("cmp %1, %2\n\t"
         "cmovnz %3, %0"

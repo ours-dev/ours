@@ -164,8 +164,8 @@ namespace {
             auto *const handle = reinterpret_cast<Handle *>(address);
             // std::launder only for a real address: the Handle there was made
             // by placement new into byte storage. The test is on the selected
-            // result, which no speculative path can see as anything but 0
-            // until the comparison is known.
+            // result, which is the slot's address only if the comparison
+            // really matched -- a cmov's consumers wait for its comparison.
             return handle ? std::launder(handle) : nullptr;
         }
 

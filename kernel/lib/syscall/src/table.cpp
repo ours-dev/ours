@@ -22,11 +22,13 @@
 namespace ours {
 namespace {
     /// x86_syscall (arch/x86/kernel/syscall.S) saves the user registers into
-    /// an arch::SyscallFrame on the kernel stack and then does
-    /// `call *SYSCALL_TABLE(, %rax, 8)` with %rdi holding a pointer to it. It
-    /// pops the whole frame back into the registers afterwards, so a handler
-    /// answers by writing `frame->ax` rather than by returning a value -- a
-    /// C++ return value would be overwritten on the way out.
+    /// an arch::SyscallFrame on the kernel stack and calls syscall_dispatch()
+    /// below with %rdi pointing at it; the dispatcher checks where the trap
+    /// came from, clamps and confines the number, and calls the handler out
+    /// of SYSCALL_TABLE. The stub pops the whole frame back into the
+    /// registers afterwards, so a handler answers by writing `frame->ax`
+    /// rather than by returning a value -- a C++ return value would be
+    /// overwritten on the way out.
     ///
     /// The frame used to be spelled `void *` here, because nothing in the tree
     /// described the stub's push order. arch::SyscallFrame does now

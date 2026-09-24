@@ -32,10 +32,11 @@ config("public.config") {
 # The system-call ABI, generated from one description (design 4.7).
 #
 # The outputs do not depend on the toolchain that asks for them, so they are
-# produced once, in the default toolchain, and every other toolchain reaches
-# them through :syscalls.private below. The default toolchain describes actions
-# and the metadata graph and compiles nothing; that is where an action whose
-# product is shared by the kernel, the vDSO and every user program belongs.
+# produced once, in the default toolchain -- a fixed, always-loaded place --
+# and every other toolchain reaches them through :syscalls.private or
+# :vdso_decls below. (The default toolchain does compile some host-side tools
+# and tests; what matters is only that it is one toolchain, so the action runs
+# once rather than once per toolchain that asks.)
 import("ours/syscalls.gni")
 
 _syscalls_gen_dir =
@@ -113,8 +114,11 @@ config("syscalls.private.config") {
 # The half of the generated ABI that is nobody's business but the kernel's and
 # the vDSO's: the call numbers, and what is built from them. A program names a
 # call by its vDSO symbol and never sees a number (design D8), which is what
-# the visibility below enforces -- a user program that depended on this would
-# be depending on the one thing the vDSO exists to hide.
+# the visibility below is for -- a user program that depended on this would
+# be depending on the one thing the vDSO exists to hide. Visibility only
+# limits direct dependents, so the two it admits must not pass it on:
+# //kernel/lib/syscall:headers is itself private to that library, and the
+# vDSO is a leaf.
 group("syscalls.private") {
   public_deps = [ ":syscalls.gen($default_toolchain)" ]
   public_configs = [ ":syscalls.private.config" ]

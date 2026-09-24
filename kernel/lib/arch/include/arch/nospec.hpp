@@ -15,9 +15,10 @@
 // the user chose, that is a read of any kernel byte, one cache line at a time.
 //
 // These close the gap with a data dependency instead of a branch: the result
-// is produced by a conditional move, which cannot execute until the
-// comparison it depends on has, so no speculative path ever sees the
-// unchecked value. They do not replace the ordinary check -- that is still
+// is produced by a conditional move, whose condition is not predicted, so
+// everything that consumes the result waits for the comparison and then sees
+// the value that is right for the real inputs. No speculative path ever sees
+// the unchecked value. They do not replace the ordinary check -- that is still
 // what returns an error on the architectural path -- they back it up on the
 // speculative one.
 //
