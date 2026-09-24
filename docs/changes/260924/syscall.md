@@ -389,3 +389,58 @@ source_set("syscall") {
   理由只是"它是一个固定的工具链，动作只跑一次"；`system/public/BUILD.gn` 的注释已改正。
 - 第一节说 `syscalls.private` 的 `visibility` 让调用号保持私有。不完全：`visibility` 只管直接依赖者，第 6 条让
   `//kernel/lib/syscall:headers`（对所有人可见）把它转了出去。已由「`//kernel/lib/syscall:headers` 只对本库可见」一节改正。
+
+## vDSO 校验要求整条 `syscall` 指令都在 vDSO 里（2026-09-24）
+
+**文件**
+- `kernel/object/include/ours/object/process_dispatcher.hpp` — `vdso_contains(pc)` 改为 `vdso_contains(addr, len)`，判断一个区间
+- `kernel/arch/x86/lib/arch/include/arch/x86/syscall.hpp` — `arch::SYSCALL_INSN_SIZE = 2`
+- `kernel/lib/syscall/src/table.cpp` — `trapped_from_vdso()` 传 `(frame->ip - 2, 2)`
+- `docs/repairs/260923/x86-kernel.md` — 删掉第 2 条
+
+**症状**
+潜伏（加固项）。原来比较的是返回地址 `frame->ip` 是否落在 `[base, base + span)`。返回地址是 `syscall`
+**之后**的那个字节，于是一条恰好位于 vDSO 下方最后两个字节、返回地址等于 vDSO 第一个字节的 `syscall`
+也会被接受。程序映像就映射在 vDSO 下方；今天还没有能映射内存的系统调用，所以够不到，`vmar_map` 之后就能够到。
+
+**原因**
+被问的是"这条指令是谁的"，不是"返回地址在哪"。一条指令占 `[ip - 2, ip)`，它的全部字节都得属于 vDSO。
+
+**改法**
+改前：
+
+```cpp
+    auto vdso_contains(VirtAddr pc) const -> bool {
+        return pc - m_vdso_code_base < m_vdso_code_size;
+    }
+    ...
+        return process->vdso_contains(frame->ip);
+```
+
+改后：
+
+```cpp
+    auto vdso_contains(VirtAddr addr, usize len) const -> bool {
+        return len <= m_vdso_code_size && addr - m_vdso_code_base <= m_vdso_code_size - len;
+    }
+    ...
+        return process->vdso_contains(frame->ip - arch::SYSCALL_INSN_SIZE,
+                                      arch::SYSCALL_INSN_SIZE);
+```
+
+等价于 `base + 2 <= ip <= base + span`。计划里比较过两种看似更简单的写法：`base < ip` 会放过
+`ip = base + 1`；"`ip - 2` 落在 `[base, base + span)`" 会放过 `ip = base + span + 1`。区间写法两端都对，
+而且不会回绕：`addr` 低于 base 时减法回绕成一个巨大的偏移，第二个比较拒绝它；没有 vDSO 的进程
+（大小为 0）对任何长度为 2 的区间都答否。
+
+**参照**
+Zircon `VDso::ValidSyscallPC()`：精确比较返回地址是否是某个批准的 `SYSRET` 标签。这里的区间检查是它的
+一个真子集；精确白名单要等 `OURS_VDSO_SYSRET_*` 的地址能传给内核（生成器产物 ⑦，P1 后期）。
+
+**验证**
+- 构建通过；两个镜像启动正常——所有真正的系统调用仍被接受。
+- 用宿主 Python 按同样的算术核对边界（base = 0xa00000，span = 0x2000）：`ip = base+1` 拒、`base+2` 收、
+  `base+span` 收、`base+span+1` 拒、`ip = 0`/`1`（回绕）拒。
+
+**故意没做**
+精确的 SYSRET 白名单（见参照）。

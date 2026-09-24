@@ -108,6 +108,10 @@ static_assert(offsetof(SyscallFrame, sp) == X86_SYSCALLFRAME_OFFSET_SP);
 static_assert(sizeof(SyscallFrame) % 16 == 0, "the stub calls C++ with this frame on top");
 static_assert(sizeof(SyscallFrame) == X86_SYSCALLFRAME_SIZE);
 
+/// The length of the SYSCALL instruction (0f 05). The frame records the
+/// address after it, so this is how far back the instruction itself starts.
+constexpr auto SYSCALL_INSN_SIZE = usize{2};
+
 /// The register the |N|th argument of a system call (counting from zero)
 /// arrived in: %rdi, %rsi, %rdx, %r10, %r8, %r9, %r12, %r13.
 ///

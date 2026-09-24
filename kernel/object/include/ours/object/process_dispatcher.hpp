@@ -103,17 +103,22 @@ class ProcessDispatcher: public ProcessDispatcherBase {
         m_vdso_code_size = size;
     }
 
-    /// Whether |pc| is an address inside this process's vDSO.
+    /// Whether all of [addr, addr + len) lies inside this process's vDSO.
     ///
-    /// A process with no vDSO answers false for every address, which is the
-    /// safe direction: it can make no system call at all rather than any.
+    /// A range and not a point, because what is asked about is an instruction
+    /// -- the `syscall` a trap came from -- and all of its bytes have to be the
+    /// vDSO's. A process with no vDSO answers false for every range, which is
+    /// the safe direction: it can make no system call at all rather than any.
     ///
-    /// The subtraction form answers both ends at once and cannot wrap, the
-    /// same shape ours::mm::is_kernel_address() uses.
+    /// Written as two comparisons that cannot wrap: |len| no larger than the
+    /// vDSO, then |addr|'s offset into it no further than what leaves room for
+    /// |len|. The subtraction wraps an |addr| below the base to a huge offset,
+    /// which the second comparison refuses -- the same shape
+    /// ours::mm::is_kernel_address() uses for one end.
     [[nodiscard]]
     FORCE_INLINE
-    auto vdso_contains(VirtAddr pc) const -> bool {
-        return pc - m_vdso_code_base < m_vdso_code_size;
+    auto vdso_contains(VirtAddr addr, usize len) const -> bool {
+        return len <= m_vdso_code_size && addr - m_vdso_code_base <= m_vdso_code_size - len;
     }
 
     /// The address space every thread of this process runs in.

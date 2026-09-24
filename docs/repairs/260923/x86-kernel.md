@@ -1,6 +1,6 @@
 # x86/kernel 待修项（2026-09-23）
 
-两条都是对 P0 系统调用系列做对抗式审查时发现的，都不是那个系列引入的。
+对 P0 系统调用系列做对抗式审查时发现的，不是那个系列引入的。（原第 2 条"vDSO 入口校验的下边界差一个指令长度"已由 P1-A 第 28 条修掉，见 `docs/changes/260924/syscall.md`。）
 
 ## 1. IST 从来没配置：NMI / #MC 压栈到地址 0 附近，内核栈溢出直接三重错误
 
@@ -23,14 +23,3 @@
 3. 在依赖它之前，给 NMI / #MC / #DB 的桩加「偏执」的 GS 处理：读 `MSR_GS_BASE` 或与本 CPU 的 per-CPU
    基址比较，而不是信 CS 的 RPL。`syscall.S` 在 swapgs 前后各有一个两条指令的窗口，CR4.FSGSBASE 开着，
    用户态可以 `wrgsbase` 任意值——落在窗口里的 NMI 会拿着用户选的 GS 去访问 per-CPU 数据。
-
-## 2. vDSO 入口校验的下边界差一个指令长度（加固项，今天够不到）
-
-`trapped_from_vdso()`（`kernel/lib/syscall/src/table.cpp`）拿 `frame->ip`——`syscall` **之后**的返回地址——
-去比 `[base, base + span)`。于是一个 `syscall` 位于 `base - 2`、返回地址恰好等于 `base` 的陷入也会被接受。
-
-今天够不到：vDSO 下方紧挨着的只有程序映像，而包里的程序远小于 8 MiB，也还没有任何能映射内存的系统调用。
-一旦有了 `vmar_map` 就可能够到。
-
-改法：比较 `ip - 2`（SYSCALL 是两个字节），即接受 `base < ip <= base + span`；更好的是等
-`OURS_VDSO_SYSRET_*` 的地址能传到内核后，照 Zircon `VDso::ValidSyscallPC` 做精确的返回地址白名单。

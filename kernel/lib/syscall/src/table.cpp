@@ -43,10 +43,13 @@ namespace {
     /// SYSCALL parked in %rcx -- so it is the address of the instruction
     /// *after* the trap, and testing it says where the trap came from.
     ///
-    /// It is the address after, not of, the `syscall` instruction, so the
-    /// range has to cover one byte past the last instruction of the vDSO.
-    /// It does: the mapping is page-granular and the image is padded to a page
-    /// boundary, so there is always something after the final instruction.
+    /// It is the address after, not of, the `syscall` instruction, so what is
+    /// checked is the instruction itself: the SYSCALL_INSN_SIZE bytes that end
+    /// at `frame->ip`, all of which have to be the vDSO's. Checking the return
+    /// address alone admitted a `syscall` sitting in the last two bytes
+    /// *below* the vDSO, whose return address is the vDSO's first byte -- and
+    /// the program image is mapped below it. Nothing could reach that while no
+    /// system call maps memory, but vmar_map would have.
     ///
     /// A thread with no user thread is a kernel thread, and a kernel thread
     /// does not execute `syscall` -- it calls the functions directly. Refusing
@@ -66,7 +69,8 @@ namespace {
         if (process == nullptr) {
             return false;
         }
-        return process->vdso_contains(frame->ip);
+        return process->vdso_contains(frame->ip - arch::SYSCALL_INSN_SIZE,
+                                      arch::SYSCALL_INSN_SIZE);
     }
 
     /// The answer to a trap that did not come through the vDSO.
