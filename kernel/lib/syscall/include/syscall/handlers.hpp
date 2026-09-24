@@ -53,6 +53,10 @@ auto sys_channel_read(HandleValue channel, ChannelReadOptions options,
                       u32 num_bytes, u32 num_handles, user_copy::UserOutPtr<u32> actual_bytes,
                       user_copy::UserOutPtr<u32> actual_handles) -> Status;
 
+/// TEMPORARY: starts a kernel-package program as a new process under |job|.
+auto sys_process_spawn_boot(HandleValue job, user_copy::UserInPtr<char const> name, usize name_size,
+                            HandleValue bootstrap) -> Status;
+
 /// Waits for any of |signals| on the object |handle| names.
 auto sys_object_wait_one(HandleValue handle, Signals signals, Instant deadline,
                          user_copy::UserOutPtr<Signals> observed) -> Status;

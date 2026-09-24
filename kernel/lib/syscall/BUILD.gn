@@ -20,6 +20,7 @@ source_set("syscall") {
     "src/debug.cpp",
     "src/handle.cpp",
     "src/object.cpp",
+    "src/process.cpp",
     "src/table.cpp",
     "src/task.cpp",
     "src/vmo.cpp",
@@ -30,6 +31,10 @@ source_set("syscall") {
     "//kernel/object:headers",
   ]
   deps = [
+    # TEMPORARY: only for sys_process_spawn_boot (src/process.cpp), the one
+    # handler allowed to reach below kernel/object. The edge goes with it when
+    # the user-space loader lands (docs/repairs/260923/syscall.md).
+    "//kernel/lib/userabi",
     # command.cpp walks the GKTL_COMMAND registry the linker collects; it reads
     # the records and copies text out, and deliberately does not call
     # gktl::run_command() -- running kernel code on argv that came from ring 3

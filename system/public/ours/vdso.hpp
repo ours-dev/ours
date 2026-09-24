@@ -77,6 +77,18 @@ auto ours_channel_read(ours::HandleValue channel, ours::ChannelReadOptions optio
 /// what was asserted into |observed|.
 auto ours_object_wait_one(ours::HandleValue handle, ours::Signals signals, ours::Instant deadline,
                           ours::Signals *observed) -> ours::Status;
+
+/// TEMPORARY -- goes when a user-space loader exists (design P1-C).
+///
+/// Starts the program named by |name_size| bytes of |name| from the kernel
+/// package as a new process under |job|, which must grant ManageProcess.
+/// |bootstrap| leaves the caller's table on entry, whatever the outcome, and
+/// becomes the new process's one handle, its value in the program's %rdi;
+/// HANDLE_INVALID starts it with none. NotFound when the package has no such
+/// file. Returns no handle to the process: nothing can wait on or kill one
+/// yet.
+auto ours_process_spawn_boot(ours::HandleValue job, char const *name, usize name_size,
+                             ours::HandleValue bootstrap) -> ours::Status;
 }
 
 #endif // __cplusplus

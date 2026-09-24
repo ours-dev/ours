@@ -188,4 +188,22 @@ OURS_VDSO_SYSRET_OBJECT_WAIT_ONE:
     ret
 .size ours_object_wait_one, . - ours_object_wait_one
 
+// ours_process_spawn_boot(HandleValue job, char const *name, usize name_size,
+//                         HandleValue bootstrap) -> Status
+//
+// TEMPORARY (see <ours/vdso.hpp>). Four arguments: the fourth moves from %rcx
+// to %r10.
+.balign 16
+.globl ours_process_spawn_boot
+.type ours_process_spawn_boot, @function
+ours_process_spawn_boot:
+    mov %rcx, %r10
+    mov $OURS_SYS_PROCESS_SPAWN_BOOT, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_PROCESS_SPAWN_BOOT
+.hidden OURS_VDSO_SYSRET_PROCESS_SPAWN_BOOT
+OURS_VDSO_SYSRET_PROCESS_SPAWN_BOOT:
+    ret
+.size ours_process_spawn_boot, . - ours_process_spawn_boot
+
 .section .note.GNU-stack, "", @progbits

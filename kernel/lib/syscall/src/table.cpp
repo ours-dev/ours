@@ -154,6 +154,13 @@ namespace {
         frame->ax = static_cast<usize>(status);
     }
 
+    auto sys_process_spawn_boot_shim(arch::SyscallFrame *const frame) -> void {
+        auto const status = sys_process_spawn_boot(static_cast<HandleValue>(frame->di),
+                                                   user_copy::UserInPtr<char const>(frame->si),
+                                                   frame->dx, static_cast<HandleValue>(frame->r10));
+        frame->ax = static_cast<usize>(status);
+    }
+
     auto sys_debug_write_shim(arch::SyscallFrame *const frame) -> void {
         auto const status = sys_debug_write(user_copy::UserInPtr<char const>(frame->di), frame->si);
         frame->ax = static_cast<usize>(status);
@@ -207,6 +214,7 @@ namespace {
         table[OURS_SYS_CHANNEL_WRITE] = &sys_channel_write_shim;
         table[OURS_SYS_CHANNEL_READ] = &sys_channel_read_shim;
         table[OURS_SYS_OBJECT_WAIT_ONE] = &sys_object_wait_one_shim;
+        table[OURS_SYS_PROCESS_SPAWN_BOOT] = &sys_process_spawn_boot_shim;
 
         return table;
     }

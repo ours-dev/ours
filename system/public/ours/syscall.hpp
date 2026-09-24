@@ -88,6 +88,15 @@
 ///                      Signals *observed) -> Status
 #define OURS_SYS_OBJECT_WAIT_ONE 6
 
+/// ours_process_spawn_boot(HandleValue job, char const *name, usize name_size,
+///                         HandleValue bootstrap) -> Status
+///
+/// TEMPORARY. Starts the program |name| from the kernel package as a new
+/// process under |job|, handing it |bootstrap|. It exists only until a user
+/// space loader can build a process out of VMOs and VMARs (design P1-C), and
+/// goes with it; see docs/repairs/260923/syscall.md.
+#define OURS_SYS_PROCESS_SPAWN_BOOT 7
+
 #ifdef __cplusplus
 
 #include <ours/types.hpp>
@@ -131,6 +140,11 @@ inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
 /// knows is a limit the caller discovers as Status::OutOfRange.
 inline constexpr auto MAX_DEBUG_WRITE = usize{256};
 
+/// The longest program name process_spawn_boot accepts, in bytes, not
+/// counting a terminator (none is passed). The kernel keeps names in 64-byte
+/// buffers, as Zircon's kernel.select.userboot does.
+inline constexpr auto PROCESS_BOOT_NAME_MAX = usize{63};
+
 /// Options for the channel calls. None is the only value any of them accepts
 /// today; anything else answers InvArgs rather than being ignored, so that a
 /// program cannot come to depend on a bit that does nothing. They are
@@ -159,6 +173,7 @@ enum class SyscallNumber : usize {
     ChannelWrite = OURS_SYS_CHANNEL_WRITE,
     ChannelRead = OURS_SYS_CHANNEL_READ,
     ObjectWaitOne = OURS_SYS_OBJECT_WAIT_ONE,
+    ProcessSpawnBoot = OURS_SYS_PROCESS_SPAWN_BOOT,
 };
 } // namespace ours
 
