@@ -18,6 +18,7 @@ source_set("elfload") {
   sources = [
     "src/binder.cpp",
     "src/loader.cpp",
+    "src/program.cpp",
   ]
   public_deps = [ ":headers" ]
   deps = [
@@ -37,6 +38,7 @@ cpp_interface("headers") {
     "include/elfload/binder.hpp",
     "include/elfload/image.hpp",
     "include/elfload/loader.hpp",
+    "include/elfload/program.hpp",
   ]
   public_deps = [
     "//kernel/lib/eftl:headers",

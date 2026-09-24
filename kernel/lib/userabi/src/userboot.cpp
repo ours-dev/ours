@@ -15,6 +15,7 @@
 
 #include <elfload/binder.hpp>
 #include <elfload/loader.hpp>
+#include <elfload/program.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
@@ -361,11 +362,31 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     }
     std::memcpy(program.text, name.data(), name.size());
 
+    // The vDSO is in the package beside the programs, but it is not one:
+    // it is mapped into every process by this function, and a process
+    // started *from* it would begin at an e_entry that means nothing.
+    // check_program() below would refuse it as well, for its entry lying in
+    // a non-executable segment; it is named here so the refusal says why.
+    if (program.view() == VDSO_FILE) {
+        log::error("userabi: '{}' is the vDSO, not a program", program.view());
+        return Status::InvArgs;
+    }
+
     auto const image = package.file(program.view());
     if (image.is_err()) {
         log::error("userabi: '{}' is not in the kernel package: {}", program.view(),
                    to_string(image.unwrap_err()));
         return Status::NotFound;
+    }
+
+    // Checked before the process exists, not left to the loader: until the
+    // fault path can kill a process (design P1-A), a bad entry point is a
+    // ring-3 fault the kernel cannot contain, and even after that a process
+    // that dies on its first instruction is a worse answer to the caller
+    // than an error from this call.
+    if (auto const status = elfload::check_program(image.unwrap()); Status::Ok != status) {
+        log::error("userabi: '{}' is not a program this kernel can start", program.view());
+        return status;
     }
 
     log::info("userboot: found '{}', {} bytes of ELF", program.view(), image.unwrap().size());
