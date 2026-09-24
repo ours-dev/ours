@@ -38,14 +38,19 @@ arena = **一段地址连续、按固定步长切成同尺寸槽位的内存**�
 **第一层，`base_value`（32 位，仅内核可见）**：
 
 ```
- [31..30] 保留，必须为 0     kHandleReservedBits = 2
- [29..18] generation         kHandleGenerationMask
- [17..0]  arena 下标         kHandleIndexMask = kMaxHandleCount - 1
+ [31..30] 保留，必须为 0     HANDLE_RESERVED_BITS = 2
+ [29..18] generation         HANDLE_GENERATION_MASK
+ [17..0]  arena 下标         HANDLE_INDEX_MASK = HANDLE_MAX_COUNT - 1
 ```
 
-`kMaxHandleCount = 256 * 1024`，**必须是 2 的幂**（`static_assert`），下标才能用掩码取。
-`kHandleGenerationShift = log2(kMaxHandleCount) = 18`。Zircon 另有 `static_assert` 要求
-generation 至少能数到 255，否则位宽不够用。
+`HANDLE_MAX_COUNT = 256 * 1024`，**必须是 2 的幂**（`static_assert`），下标才能用掩码取。
+`HANDLE_GENERATION_SHIFT = log2(HANDLE_MAX_COUNT) = 18`。和 Zircon 一样另有 `static_assert`
+要求 generation 至少能数到 255，否则位宽不够用。（Zircon 里对应的名字是 `kHandleReservedBits`、
+`kHandleGenerationMask`、`kMaxHandleCount`。）
+
+保留的第 31 位在内核里另有一个用处：arena 给**占用中**的槽记录 `base_value | HANDLE_LIVE_MARK`
+（第 31 位），空槽记 0。查找拿 `base_value | HANDLE_LIVE_MARK` 去比，空槽的 0 永远比不中——
+所以不再需要把 generation 0 留作"空"的记号，查找也少了一道判断（见下文第 4 道关）。
 
 **第二层，用户看到的值**：
 
@@ -54,6 +59,10 @@ handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
 ```
 
 左移 2 位正是保留位存在的理由：`base_value` 的高 2 位为零，移位才不丢信息。
+
+每表随机数**必须预先左移 2 位**（低 2 位为零）：XOR 之后低 2 位仍得是 `0b11`，
+第 1 道关才对合法值成立。Zircon 生成随机数时同样先左移 `kHandleReservedBits`。
+（P1-A 里随机数仍取 0；CPRNG 在 P1-E。）
 
 ## 槽位复用：generation 是必须的
 
@@ -72,11 +81,16 @@ handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
 
 1. **低 2 位必须是 1** —— 挡掉 0（`ZX_HANDLE_INVALID`）和随手编的小整数。
 2. **XOR 回每表随机数** —— 用户猜不出别人的值，也看不出 arena 布局。
-3. **`arena_.Committed()`** —— 下标落在尚未提交的页上就直接失败（arena 是惰性提交的，
-   不是启动时一次性铺满）。
-4. **`base_value` 全等比较** —— generation 对不上就失败，见上一节。Zircon 用
-   `conditional_select_nospec_eq()` 做这个比较，是**常数时间**的，防的是用旁路探测
-   arena 布局；这一步不能图省事写成普通 `if`。
+3. **下标落在 arena 内** —— Zircon 是 `arena_.Committed()`（惰性提交，下标落在未提交的页上
+   就失败）。这里 arena 目前固定 `HANDLE_ARENA_SLOTS = 2^12` 个槽、启动时就有，所以这一道是
+   `arch::confine_array_index()`：越界的下标被夹成 0，而不是用一个分支拒绝——夹成 0 之后
+   第 4 道关自然失败，因为探针里仍是原来的下标。惰性提交推迟到 P1-C。
+4. **`base_value` 全等比较** —— generation 对不上就失败，见上一节。和 Zircon 一样用
+   `conditional_select_nospec_eq()` 做：结果是槽地址或 0，由条件传送产生，而不是由分支决定。
+   防的是 **Spectre V1**：分支会被预测，误预测的路径会拿着用户选的 `Handle`（它的对象、
+   它的权限）先跑一段，把选择留在缓存里。本文档早先写"防用旁路探测 arena 布局"，理由写错了——
+   哪些槽被占用并不是值得设防的秘密。失败时返回的 0 在推测路径上被访问也无害：
+   `USER_ASPACE_BASE` 以下（2 MiB）在任何地址空间里都不映射。这一步不能图省事写成普通 `if`。
 5. **`handle->handle_table_id() == 本表 koid`** —— A 进程的合法值在 B 进程里解析不出来。
 
 分工：**第 5 条是进程间隔离，第 4 条是时间上的隔离（复用后的陈旧值）**，1、2、3 是加固。
@@ -84,9 +98,10 @@ handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
 
 ## 容量与耗尽
 
-- `kMaxHandleCount = 256 * 1024`（全系统，不是每进程），2 的幂。
-- `kHighHandleCount = kMaxHandleCount * 7 / 8`：越过这条线就打印一次告警，且**带节流**
-  （Zircon 用 `handle_count_high_log_.Ready()`），否则告警本身会淹掉串口。
+- `HANDLE_MAX_COUNT = 256 * 1024`（全系统，不是每进程）是编码能表示的上限，2 的幂；
+  当前真正有内存的是 `HANDLE_ARENA_SLOTS = 2^12` 个槽。
+- Zircon 另有 `kHighHandleCount = kMaxHandleCount * 7 / 8`：越过这条线就打印一次告警，且**带节流**
+  （`handle_count_high_log_.Ready()`），否则告警本身会淹掉串口。本项目还没有这条线。
 - 耗尽时 `Alloc()` **返回 nullptr，不 panic**：记一个计数器、打印一条告警，让调用方把
   失败当作普通错误往上报。用户进程能耗尽的资源不该能把内核打死。
 

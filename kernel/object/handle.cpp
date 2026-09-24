@@ -1,5 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/sync/mutex.hpp>
@@ -9,6 +10,7 @@
 
 #include <cstddef>
 
+#include <arch/nospec.hpp>
 #include <gktl/counter.hpp>
 #include <logz4/log.hpp>
 #include <ustl/option.hpp>
@@ -18,6 +20,18 @@ GKTL_COUNTER(OBJECT_HANDLE_ARENA_EXHAUSTED, "object.handle.arena_exhausted");
 
 namespace ours::object {
 namespace {
+    /// Set in the live record of an occupied slot, and never in a base value.
+    ///
+    /// A base value is 30 bits (HANDLE_RESERVED_BITS are shifted out of the
+    /// user's number), so bit 31 is free, and marking live records with it
+    /// is what lets lookup() be a single comparison: an empty slot records 0,
+    /// which no marked probe can equal, whatever generation or index the
+    /// probe names. Before the mark, generation 0 had to be reserved to mean
+    /// "empty" and lookup() had to reject it with a branch of its own.
+    constexpr u32 HANDLE_LIVE_MARK = u32{1} << 31;
+    static_assert(HANDLE_LIVE_MARK > (HANDLE_GENERATION_MASK | HANDLE_INDEX_MASK),
+                  "the live mark must lie outside every base value");
+
     /// The system-wide pool every Handle lives in.
     ///
     /// Equal-sized slots at consecutive addresses, so that a slot index is a
@@ -29,9 +43,9 @@ namespace {
     ///  - the base value it last carried, from which the next generation is
     ///    counted -- that is what makes a value kept past close() stop
     ///    resolving once the slot is reused;
-    ///  - the base value of the Handle living in it right now, or zero. A
-    ///    lookup compares against this without taking the arena lock, which
-    ///    is why it is atomic.
+    ///  - the base value of the Handle living in it right now, marked with
+    ///    HANDLE_LIVE_MARK, or zero. A lookup compares against this without
+    ///    taking the arena lock, which is why it is atomic.
     ///
     /// Zircon counterpart: HandleTableArena, over fbl::GPArena. GPArena keeps
     /// the base value inside the freed slot (PreserveSize) and reads it back;
@@ -58,20 +72,15 @@ namespace {
                 return ustl::none();
             }
 
-            // The generation counts up from whatever this slot last carried,
-            // as Zircon's NewHandleValue() does -- with one difference: it
-            // skips zero when it wraps. Generation zero is reserved to mean
-            // "no handle": a free slot records a live base value of 0, and
-            // index 0 at generation 0 is also 0, so a handle there would be
-            // indistinguishable from an empty slot (and value 0b11 would find
-            // it). lookup() rejects generation zero for the same reason.
+            // The generation counts up from whatever this slot last carried
+            // and wraps through zero, as Zircon's NewHandleValue() does.
+            // Zero used to be skipped, because an empty slot recorded 0 and
+            // index 0 at generation 0 is also 0; the live mark keeps the two
+            // apart now (see HANDLE_LIVE_MARK).
             auto const old_generation =
                 (m_last_base_value[index] & HANDLE_GENERATION_MASK) >> HANDLE_GENERATION_SHIFT;
-            auto generation =
+            auto const generation =
                 ((old_generation + 1) << HANDLE_GENERATION_SHIFT) & HANDLE_GENERATION_MASK;
-            if (generation == 0) {
-                generation = u32{1} << HANDLE_GENERATION_SHIFT;
-            }
             auto const base_value = index | generation;
             m_last_base_value[index] = base_value;
             return ustl::some(base_value);
@@ -85,7 +94,7 @@ namespace {
 
         /// Makes a Handle constructed in its slot visible to lookups.
         auto publish(u32 const base_value) -> void {
-            m_live_base_value[base_value & HANDLE_INDEX_MASK].store(base_value,
+            m_live_base_value[base_value & HANDLE_INDEX_MASK].store(base_value | HANDLE_LIVE_MARK,
                                                                     std::memory_order_release);
         }
 
@@ -110,25 +119,54 @@ namespace {
             m_free_count += 1;
         }
 
+        /// The live Handle whose base value is |base_value|, or null.
+        ///
+        /// |base_value| comes straight from a number the user passed, so this
+        /// runs on every system call that names a handle, and every step is
+        /// written to hold under speculative execution (Spectre V1) as well as
+        /// on the architectural path. A branch on "is the index in range" or
+        /// "does the slot hold this value" would be predicted, and a
+        /// mispredicted path would go on to use a Handle the user chose --
+        /// its dispatcher, its rights -- before the check resolved, leaving
+        /// that choice readable in the cache. So there is no branch:
+        ///
+        ///  - the index is confined, not checked. An index at or past the
+        ///    arena's end becomes 0, and the comparison below then fails by
+        ///    itself, because the probe still names the original index and no
+        ///    live record at slot 0 can equal it;
+        ///  - the comparison selects, not branches: the result is the slot's
+        ///    address or 0, by a conditional move that cannot execute before
+        ///    the comparison has.
+        ///
+        /// The 0 a failed lookup yields is safe to touch speculatively as
+        /// well. A caller's `if (!handle)` is itself a branch, and past a
+        /// misprediction it may load through the null pointer at a small
+        /// offset; nothing is mapped below USER_ASPACE_BASE in any address
+        /// space, so that load reads no data and fills no cache line.
+        ///
+        /// The TODO this replaces called the concern timing, a program
+        /// probing which slots are live. That is not what the select is for:
+        /// liveness is not a secret worth a mitigation. The select is for
+        /// Spectre V1.
+        ///
+        /// Zircon counterpart: Handle::FromU32(), which confines the slot
+        /// address through GPArena::Confine() and selects it with
+        /// fbl::conditional_select_nospec_eq().
         [[nodiscard]]
         auto lookup(u32 const base_value) -> Handle * {
-            // Generation zero never names a handle (see reserve()), and
-            // letting it through would compare it against the 0 that marks
-            // an empty slot -- and hand back storage nothing lives in.
-            if ((base_value & HANDLE_GENERATION_MASK) == 0) {
-                return nullptr;
-            }
-            auto const index = base_value & HANDLE_INDEX_MASK;
-            if (index >= HANDLE_ARENA_SLOTS) {
-                return nullptr;
-            }
-            // TODO(P1): a constant-time comparison, as Zircon's
-            // conditional_select_nospec_eq(). A branch on this equality lets a
-            // program probe which slots are live by timing.
-            if (m_live_base_value[index].load(std::memory_order_acquire) != base_value) {
-                return nullptr;
-            }
-            return std::launder(reinterpret_cast<Handle *>(&m_storage[index]));
+            static_assert(USER_ASPACE_BASE == MB(2),
+                          "a failed lookup's null result is touched speculatively; see above");
+            auto const index =
+                arch::confine_array_index(base_value & HANDLE_INDEX_MASK, HANDLE_ARENA_SLOTS);
+            auto const live = m_live_base_value[index].load(std::memory_order_acquire);
+            auto const address = arch::conditional_select_nospec_eq(
+                live, base_value | HANDLE_LIVE_MARK, reinterpret_cast<usize>(&m_storage[index]), 0);
+            auto *const handle = reinterpret_cast<Handle *>(address);
+            // std::launder only for a real address: the Handle there was made
+            // by placement new into byte storage. The test is on the selected
+            // result, which no speculative path can see as anything but 0
+            // until the comparison is known.
+            return handle ? std::launder(handle) : nullptr;
         }
 
       private:
