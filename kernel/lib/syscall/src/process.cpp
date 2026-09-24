@@ -28,22 +28,28 @@ auto sys_process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char con
                             usize const name_size, HandleValue const bootstrap) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
 
-    // The bootstrap handle leaves the caller's table first, before anything
-    // can fail: it is consumed whatever the outcome, as a handle written into
-    // a channel is in Zircon. A caller that gets an error back does not have
-    // to guess whether it still holds the handle -- it never does.
+    // The job is resolved before the bootstrap handle leaves the table, so
+    // that the two may name the same handle: a caller handing its only job
+    // handle to the child holds a reference to the job from here on, and the
+    // removal below then takes nothing this call still needs. The other order
+    // made that case fail with BadHandle, after the handle was already gone.
+    ustl::Arc<object::JobDispatcher> parent;
+    auto const resolved = table.get_dispatcher(job, Rights::ManageProcess, &parent);
+
+    // The bootstrap handle leaves the caller's table whatever the outcome,
+    // failure included, as a handle written into a channel is consumed in
+    // Zircon: a caller that gets an error back does not have to guess
+    // whether it still holds the handle -- it never does. It is dropped at
+    // return, after the table's lock is long released.
     ustl::Box<object::Handle> handed;
     if (bootstrap != HANDLE_INVALID) {
         handed = table.remove(bootstrap);
-        if (!handed) {
+        if (resolved == Status::Ok && !handed) {
             return Status::BadHandle;
         }
     }
-
-    ustl::Arc<object::JobDispatcher> parent;
-    if (auto const status = table.get_dispatcher(job, Rights::ManageProcess, &parent);
-        status != Status::Ok) {
-        return status;
+    if (resolved != Status::Ok) {
+        return resolved;
     }
 
     // Moving a handle into another process is what Transfer is for.

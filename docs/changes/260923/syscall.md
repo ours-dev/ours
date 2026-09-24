@@ -217,3 +217,74 @@ Zircon `ChannelDispatcher` 的读写语义；`zx_object_wait_one` 的电平触�
 
 **故意没做**
 真正睡眠、由另一端唤醒的等待要两个程序——那是 P0 第 9 步（init ↔ shell 的 ping/pong）。
+
+## `ours_process_spawn_boot`：先解析 job，再取走 bootstrap（2026-09-23）
+
+**文件**
+- `kernel/lib/syscall/src/process.cpp` — `sys_process_spawn_boot` 两步调换顺序
+
+**症状**
+调用者把同一个句柄同时当 `job` 和 `bootstrap` 传（"把我唯一的 job 句柄交给子进程"），
+得到 `BadHandle`，而且那个句柄已经从自己的表里没了——既没启动成功，也拿不回句柄。
+
+**原因**
+原来的顺序是先 `table.remove(bootstrap)`，再 `table.get_dispatcher(job, ...)`。
+两者是同一个值时，第一步已经把句柄摘走，第二步在表里查不到，只能报 `BadHandle`。
+"不论成败都消耗 bootstrap"这条规则本身没错，错在它被实现成了"第一步就消耗"，
+于是后面任何需要读同一张表的步骤都看不到它。
+
+规则真正要求的只是**返回时**句柄已经不在调用者表里；什么时候摘，可以按依赖排。
+job 要的是一个对象引用（`Arc<JobDispatcher>`），拿到之后就不再依赖表里的句柄，
+所以先解析 job、再摘 bootstrap，两者同名也互不影响。
+
+**改法**
+改前：
+
+```cpp
+    ustl::Box<object::Handle> handed;
+    if (bootstrap != HANDLE_INVALID) {
+        handed = table.remove(bootstrap);
+        if (!handed) {
+            return Status::BadHandle;
+        }
+    }
+
+    ustl::Arc<object::JobDispatcher> parent;
+    if (auto const status = table.get_dispatcher(job, Rights::ManageProcess, &parent);
+        status != Status::Ok) {
+        return status;
+    }
+```
+
+改后：
+
+```cpp
+    ustl::Arc<object::JobDispatcher> parent;
+    auto const resolved = table.get_dispatcher(job, Rights::ManageProcess, &parent);
+
+    ustl::Box<object::Handle> handed;
+    if (bootstrap != HANDLE_INVALID) {
+        handed = table.remove(bootstrap);
+        if (resolved == Status::Ok && !handed) {
+            return Status::BadHandle;
+        }
+    }
+    if (resolved != Status::Ok) {
+        return resolved;
+    }
+```
+
+job 解析失败时仍然先摘掉 bootstrap 再返回错误，保住"一律消耗"的语义；
+两个错误同时出现时报 job 的那个，因为它是第一个参数，也是设计 4.5
+"先解析句柄、再查其余参数"里先被查的那个。
+
+**参照**
+`Zircon sys_channel_write()` / `msg_put_handles()`：写入的句柄无论调用成败都从调用者表里移除。
+Zircon 的 `sys_process_create()` 没有 bootstrap 参数，这是本项目临时 syscall 的自有形状。
+
+**验证**
+构建通过；两个镜像启动，init 仍能启动 shell 并收到 "pong"。同名传参的路径没有用户程序
+去走，未实测；它等 P1-A 的错误路径测试程序一起覆盖。
+
+**故意没做**
+没有给这个 syscall 加测试用例：它是临时的，loader 落地就删（`docs/repairs/260923/syscall.md`）。
