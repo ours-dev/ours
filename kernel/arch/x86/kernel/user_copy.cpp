@@ -3,57 +3,31 @@
 #include <ours/arch/user_copy.hpp>
 #include <ours/arch/x86/feature.hpp>
 
-#include <cstring>
+// The copy itself, in user_copy.S: one routine per SMAP setting, so that the
+// stac/clac window is written out and holds the copy and nothing else. See the
+// file's header for why it is not memcpy.
+extern "C" auto x86_user_copy(void *dst, void const *src, usize len) -> void;
+extern "C" auto x86_user_copy_smap(void *dst, void const *src, usize len) -> void;
 
 namespace ours {
 namespace {
-    /// The span of code in which ring 0 may touch user pages.
-    ///
-    /// On a CPU with SMAP that is exactly the span where RFLAGS.AC is set, and
-    /// this is the only place in the kernel that sets it. An object rather than
-    /// a stac/clac pair written out at each site, so that the clac cannot be
-    /// forgotten on an early return.
-    ///
-    /// Both instructions carry a "memory" clobber: without it the compiler is
-    /// free to move the copy's loads and stores across them, and a store the
-    /// optimiser sinks past the clac is a store SMAP refuses.
-    ///
-    /// An interrupt taken inside the window does not inherit it: every entry
-    /// stub begins with clac (idt.S), and iretq puts AC back from the frame on
-    /// the way out. A page fault the copy itself raises is resolved the same
-    /// way, with AC clear, and the copy resumes with it set.
-    ///
-    /// On a CPU without SMAP both instructions are #UD, and there is nothing
-    /// to open: the window is empty.
-    ///
-    /// Linux counterpart: __uaccess_begin()/__uaccess_end() (stac()/clac()).
-    class UserAccessWindow final {
-      public:
-        UserAccessWindow() {
-            if (feature_has_smap) {
-                asm volatile("stac" ::: "memory");
-            }
+    /// The variant this CPU can run: the plain one where stac/clac would be
+    /// #UD, the bracketed one where SMAP would otherwise refuse the access.
+    auto copy(void *const dst, void const *const src, usize const size) -> void {
+        if (feature_has_smap) {
+            x86_user_copy_smap(dst, src, size);
+        } else {
+            x86_user_copy(dst, src, size);
         }
-
-        ~UserAccessWindow() {
-            if (feature_has_smap) {
-                asm volatile("clac" ::: "memory");
-            }
-        }
-
-        UserAccessWindow(UserAccessWindow const &) = delete;
-        auto operator=(UserAccessWindow const &) -> UserAccessWindow & = delete;
-    };
+    }
 } // namespace
 
 auto arch_copy_from_user(void *const dst, VirtAddr const src, usize const size) -> void {
-    UserAccessWindow const window;
-    std::memcpy(dst, reinterpret_cast<void const *>(src), size);
+    copy(dst, reinterpret_cast<void const *>(src), size);
 }
 
 auto arch_copy_to_user(VirtAddr const dst, void const *const src, usize const size) -> void {
-    UserAccessWindow const window;
-    std::memcpy(reinterpret_cast<void *>(dst), src, size);
+    copy(reinterpret_cast<void *>(dst), src, size);
 }
 
 } // namespace ours

@@ -21,10 +21,13 @@ namespace ours {
 /// package run -- and Zircon's data_fault_resume is the planned answer
 /// (docs/design/260923/userspace-interface.md, 4.6).
 ///
+/// The copy is x86_user_copy or x86_user_copy_smap (user_copy.S), picked by
+/// feature_has_smap.
+///
 /// Zircon counterpart: arch_copy_from_user()/arch_copy_to_user() in
-/// kernel/arch/x86/user_copy.cc, which pick a stac/clac or plain variant by
-/// code patching. This kernel does not build with .code-patches, so the choice
-/// is a cached flag instead (feature_has_smap).
+/// kernel/arch/x86/user-copy/user-copy.cc, which pick a stac/clac or plain
+/// variant by code patching. This kernel does not build with .code-patches,
+/// so the choice is a cached flag instead.
 auto arch_copy_from_user(void *dst, VirtAddr src, usize size) -> void;
 
 auto arch_copy_to_user(VirtAddr dst, void const *src, usize size) -> void;
