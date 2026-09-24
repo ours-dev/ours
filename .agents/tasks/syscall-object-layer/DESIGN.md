@@ -1,5 +1,11 @@
 # syscall-object-layer
 
+> **2026-09-23 更新：本计划的排期已被取代。** 主人要求先按「资源与服务」设计用户层接口，结果是
+> `docs/design/260923/userspace-interface.md`；其第 5 节的 P0 切片已全部落地（`handle_close`、
+> `channel_create/write/read`、`object_wait_one`、临时的 `process_spawn_boot`，以及 init ↔ shell 的 ping/pong）。
+> 下面 §2/§5 把 channel 排在 P2 的顺序**不再适用**；接下来按该设计的 P1 批次（P1-A 边界 → P1-B 生命周期 →
+> P1-C 加载器 → P1-D 多路与同步）推进。本文的现状盘点与句柄查找的论证仍可参考。
+
 补充基本的系统调用接口，完成 **用户 → 内核 → 用户** 的完整调用链测试。
 硬规矩：**syscall 层只能碰 `kernel/object` 的对象**，不允许直接 touch `task::Thread`、
 `mm::VmAspace` / `VmArea` / `VmObject` 或任何 arch 细节。凡是 syscall 需要而 dispatcher
