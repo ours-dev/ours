@@ -16,7 +16,8 @@ lacks is a door into the kernel nobody wrote down.
 one symbol per line in a fixed flow style, and generated_ifs_file() copies
 that style on purpose so that the two can be compared as text. The lines
 are read with a regular expression for that reason, and anything that does
-not match is refused rather than skipped.
+not match is refused rather than skipped. Each symbol is compared on every
+field its line carries.
 
 Zircon counterpart: the verify-abi action in
 //zircon/kernel/lib/userabi/vdso/BUILD.gn, which compares the .ifs extracted
@@ -35,14 +36,39 @@ import sys
 from typing import List, Optional, Tuple
 
 SONAME = re.compile(r"^SoName:\s*(\S+)\s*$")
-SYMBOL = re.compile(r"^\s*-\s*\{\s*Name:\s*([^,\s}]+)\s*,\s*Type:\s*([^,\s}]+)\s*[,}]")
+SYMBOL = re.compile(r"^\s*-\s*\{(.*)\}\s*$")
+FIELD = re.compile(r"^\s*([A-Za-z]+)\s*:\s*(\S+)\s*$")
+
+# A symbol is compared on every field its line carries, not just Name and Type:
+# `Undefined: true` on an ours_* would be a call the vDSO imports rather than
+# defines, and `Weak: true` one a program's own definition could override --
+# either would bind a program to something other than the kernel's stub.
+Symbol = Tuple[Tuple[str, str], ...]
 
 
 class IfsError(Exception):
     pass
 
 
-def read_ifs(path: pathlib.Path) -> Tuple[Optional[str], List[Tuple[str, str]]]:
+def parse_symbol(path: pathlib.Path, number: int, body: str) -> Symbol:
+    fields = {}
+    for part in body.split(","):
+        match = FIELD.match(part)
+        if not match:
+            raise IfsError(f"{path}:{number}: not a symbol field: {part!r}")
+        fields[match.group(1)] = match.group(2)
+    if "Name" not in fields or "Type" not in fields:
+        raise IfsError(f"{path}:{number}: a symbol needs Name and Type")
+    return tuple(sorted(fields.items()))
+
+
+def describe(symbol: Symbol) -> str:
+    fields = dict(symbol)
+    rest = ", ".join(f"{k}: {v}" for k, v in symbol if k != "Name")
+    return f"{fields['Name']} ({rest})"
+
+
+def read_ifs(path: pathlib.Path) -> Tuple[Optional[str], List[Symbol]]:
     soname = None
     symbols = []
     in_symbols = False
@@ -62,7 +88,7 @@ def read_ifs(path: pathlib.Path) -> Tuple[Optional[str], List[Tuple[str, str]]]:
         match = SYMBOL.match(line)
         if not match:
             raise IfsError(f"{path}:{number}: not a symbol line: {line!r}")
-        symbols.append((match.group(1), match.group(2)))
+        symbols.append(parse_symbol(path, number, match.group(1)))
     return soname, sorted(symbols)
 
 
@@ -83,10 +109,10 @@ def main() -> int:
     problems = []
     if expected_soname != actual_soname:
         problems.append(f"SONAME: described {expected_soname}, linked {actual_soname}")
-    for name, kind in sorted(set(expected) - set(actual)):
-        problems.append(f"described but not exported: {name} ({kind})")
-    for name, kind in sorted(set(actual) - set(expected)):
-        problems.append(f"exported but not described: {name} ({kind})")
+    for symbol in sorted(set(expected) - set(actual)):
+        problems.append(f"described but not exported: {describe(symbol)}")
+    for symbol in sorted(set(actual) - set(expected)):
+        problems.append(f"exported but not described: {describe(symbol)}")
     if problems:
         print(f"the vDSO does not match {args.expected}:", file=sys.stderr)
         for problem in problems:

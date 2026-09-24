@@ -277,3 +277,60 @@ Zircon `//zircon/kernel/lib/userabi/vdso/BUILD.gn`：`ifs_extract("vdso.ifs")` �
 **故意没做**
 - `user_executable()` 仍然链接 vDSO 本体而不是 `libours.ifs` 的桩库：计划列为不在 P1-A。
 - 生成器产物 ⑦（`VDSO_SYSRET_OFFSET[]` 与 build-id）不在 P1-A。
+
+## vDSO 的 ABI 比对看符号的全部字段，不只是名字和类型（2026-09-24）
+
+**文件**
+- `build/syscall/verify_vdso_abi.py` — 每个符号按它那一行的全部字段比较
+
+**症状**
+审查发现：比对只取 `Name` 与 `Type`，`Undefined`、`Weak` 被静默丢弃。vDSO 里一个 `ours_*` 若变成
+未定义（vDSO 导入它而不是定义它）或弱符号（程序自己的同名定义可以顶替它），比对照样通过。
+
+**原因**
+正则只捕获了前两个字段，其余被"`[,}]`"之后的部分吞掉。两份 .ifs 的格式相同，所以字段一多一少不会
+让解析失败，只会让检查变窄。
+
+**改法**
+改前：
+
+```python
+SYMBOL = re.compile(r"^\s*-\s*\{\s*Name:\s*([^,\s}]+)\s*,\s*Type:\s*([^,\s}]+)\s*[,}]")
+...
+        symbols.append((match.group(1), match.group(2)))
+```
+
+改后：
+
+```python
+SYMBOL = re.compile(r"^\s*-\s*\{(.*)\}\s*$")
+FIELD = re.compile(r"^\s*([A-Za-z]+)\s*:\s*(\S+)\s*$")
+...
+def parse_symbol(path, number, body):
+    fields = {}
+    for part in body.split(","):
+        match = FIELD.match(part)
+        if not match:
+            raise IfsError(...)
+        fields[match.group(1)] = match.group(2)
+    ...
+    return tuple(sorted(fields.items()))
+```
+
+每个符号成了"字段元组"，集合相减时任何字段不同都算不匹配；读不懂的字段一律拒绝。
+
+**参照**
+无对应物（Zircon 的 `verify-abi` 是逐字比较两份 .ifs）。
+
+**验证**
+- 构建通过，`vdso.abi_check.ok` 照常生成（真实的 vDSO 与描述一致）。
+- 把 `vdso.actual.ifs` 的副本里 `ours_debug_write` 加上 `Undefined: true`、另一份里 `ours_handle_close` 加上 `Weak: true`，
+  直接运行脚本，都以非零退出：
+
+  ```
+  described but not exported: ours_debug_write (Type: Func)
+  exported but not described: ours_debug_write (Type: Func, Undefined: true)
+  ```
+
+**故意没做**
+无。
