@@ -245,7 +245,16 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
         }
     });
 
-    Guard thread_guard{get_pi_lock()};
+    // Interrupts and preemption off for as long as the PI lock is held, as in
+    // resume() above. A plain Guard on a SpinLock changes neither, and the
+    // thread killing or suspending *itself* is the case that bites: holding
+    // its own PI lock, it takes a timer interrupt, and the interrupt's exit
+    // path calls Thread::Current::preempt(), which acquires that same lock on
+    // the same CPU -- a self-deadlock with nothing else involved. Linux
+    // try_to_wake_up() takes p->pi_lock with raw_spin_lock_irqsave() for the
+    // same reason, and Zircon's SuspendOrKillInternal() runs its whole
+    // transaction under PreemptDisableAndIrqSaveOption.
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> thread_guard{get_pi_lock()};
     auto const curr_state = state();
 
     // Attempt to kill a thread in dead state, so do nothing. Just get out of here.
