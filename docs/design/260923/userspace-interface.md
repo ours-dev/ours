@@ -491,7 +491,7 @@ init: shell says "pong"
 
 | 批次 | 内容 | 前置 | 完成判据 |
 |---|---|---|---|
-| P1-A 边界 | 系统调用生成器；UserPtr 的 `data_fault_resume`；fault-kill（`on_user_exception`；Kill 分支先开中断再 `Thread::Current::exit`；sysret 前检查挂起信号）；非 vDSO 陷入改为杀进程；KoId 改 u64；arena 惰性提交、随机数、常数时间比较 | CPRNG（或暂时仍取 0） | 传坏指针或故意 #GP 的程序被杀掉，内核继续运行 |
+| P1-A 边界 | 系统调用生成器；UserPtr 的 `data_fault_resume`；fault-kill（`on_user_exception`；Kill 分支先开中断再 `Thread::Current::exit`；sysret 前检查挂起信号）；非 vDSO 陷入改为杀进程；KoId 改 u64；句柄查找的常数时间选择（Spectre V1）。arena 惰性提交推迟到 P1-C，每表随机数推迟到 P1-E 的 CPRNG（2026-09-24 定） | 无（随机数暂取 0） | 把坏指针交给系统调用得到 `InvArgs`；自己解引用坏指针、#GP、ud2、从 vDSO 外陷入的程序被杀掉；两种情况内核都继续运行。计划见 `.agents/tasks/syscall-boundary/PLAN.md` |
 | P1-B 生命周期 | 进程状态机、`process_exit`、线程 `on_exit` 摘表并清 `m_kernel_thread`、`VmAspace::destroy`、TERMINATED、get_info(HandleValid/HandleBasic/Process)、`task_kill`、job 子表与 `job_create`、内核内部的 init critical | P1-A | init 读到 shell 的退出码；循环起停 100 次，内存不增长 |
 | P1-C 加载器专线 | D2、D3 定案；Vmar 改名；process_create/thread_create/process_start；vmo_create/get_size；vmar_map；handle_duplicate/replace；句柄随消息转移与每进程记账；processargs；独立的 userboot；runtime/crt0；用户侧 libc；Binder 和 bootfs::View 移到 system/lib；BootFS VMO；**删除 spawn_boot** | P1-B；mm 的 `size()`、边界检查、偏移透传、`write()` | init 在用户态从 BootFS 装载 shell；lib/syscall 不再依赖 userabi |
 | P1-D 多路与同步 | wait_many、event、eventpair、object_signal/signal_peer、port、get/set_property；thread_start/exit；futex；内核版 channel_call；消息上限升到 64 KiB | TLB shootdown、缺页路径的 VMO 锁、OwnedWaitQueue 退避协议、Semaphore | 一个多线程服务用 port 同时服务两个客户端 |
