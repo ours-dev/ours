@@ -209,3 +209,71 @@ Zircon `kernel/lib/userabi/vdso/syscalls-x86.S` 的 `m_syscall` 宏，由 kazoo 
 **故意没做**
 - 没有给桩加 CFI：原来的桩也没有，加了就不再字节相同；等有需要从 vDSO 里回溯的场景再说。
 - 7 参数的形状没有写：生成器拒绝 7 参数，第一个需要的调用是 P1-C 的 `vmar_map`。
+
+## 从描述生成 `libours.ifs`，并与 vDSO 的实际导出比对（2026-09-24）
+
+**文件**
+- `system/public/BUILD.gn` — 默认工具链里 `generated_ifs_file("libours")`，符号由 `ours_syscalls` 用 foreach 拼出
+- `build/syscall/verify_vdso_abi.py`（新建）— 比对两份 .ifs 的 SONAME 与符号表
+- `kernel/lib/userabi/vdso/BUILD.gn` — `toolchain_utils_action("vdso.ifs")` 用 llvm-ifs 读出实际导出；`action("vdso.abi_check")`；以 `validations` 挂到 vDSO 上
+
+**症状**
+没有运行时症状。第 5 条之后桩和描述出自同一处，但"桩宏确实为每一条都发出了一个导出符号"
+没有人检查：宏里某个分支写错（比如漏了 `.globl`），或者有人在 `vdso.S` 里顺手加了一个导出，
+构建都照常通过。前者是程序能声明、却绑定不上的调用；后者是一扇没人写进描述的进内核的门。
+
+**原因**
+生成保证的是"输入一致"，不保证"产物符合预期"。vDSO 的 `.dynsym` 就是系统 ABI 本身，
+值得用最终产物去对一次账。
+
+**改法**
+描述 → `libours.ifs`（纯 GN，无脚本）：
+
+```gn
+  _libours_symbols = []
+  foreach(call, ours_syscalls) {
+    _libours_symbols += [ "ours_${call.name}" ]
+  }
+
+  generated_ifs_file("libours") {
+    soname = "libours.so"
+    symbols = _libours_symbols
+  }
+```
+
+链接后的 vDSO → `vdso.actual.ifs`（`llvm-ifs --input-format=ELF --strip-ifs-target`，读链接器
+输出、带节头的那一份——那才是链接器和程序看到的）。然后 `verify_vdso_abi.py` 比对：SONAME
+相同，符号集合相同，多一个少一个都报出来。
+
+.ifs 是 YAML，标准库解析不了；但 llvm-ifs 每个符号一行、格式固定，`generated_ifs_file()`
+刻意照抄了这个格式，所以按行正则读取，读不懂的行一律拒绝而不是跳过。
+
+检查以 `validations` 挂在 vDSO 上而不是作为依赖：它读的是 vDSO 自己的输出，也没有人消费它
+写出的东西；失败照样让构建失败，所以不会有镜像带着一个导出与描述不符的 vDSO 被打包。
+这是树里第一次真正给 `validations` 赋值（`kernel/phys/*.gni` 之前只是转发）。
+
+顺带：`toolchain_utils_action()` 不给 `script` 时会把工具二进制本身当脚本，而 `.gn` 把
+所有 action 的解释器设成了 python3——第一次构建就是 python3 去解析 llvm-ifs 的二进制。
+用 `script = true` 走模板的标准驱动。
+
+**参照**
+Zircon `//zircon/kernel/lib/userabi/vdso/BUILD.gn`：`ifs_extract("vdso.ifs")` 从 libzircon.so
+读出导出，`action("verify-abi")` 与 `//src/zircon/lib/zircon/zircon.ifs` 比对，并作为 vDSO 的
+`public_deps` 保证内核拿不到未经核对的 vDSO。区别在于 Zircon 的 `zircon.ifs` 是手写的，
+这里的 `libours.ifs` 由描述生成。
+
+**验证**
+- 构建与干净构建通过，`vdso.abi_check.ok` 生成；两个镜像启动正常，OBI 哈希与上一条相同
+  （检查不改变任何被打包的东西）。
+- 本地在 `vdso.S` 里多导出一个 `ours_extra`、并把 `ours_debug_write` 设为 hidden（未提交），
+  检查失败：
+
+  ```
+  the vDSO does not match gen/system/public/libours.ifs:
+    described but not exported: ours_debug_write (Func)
+    exported but not described: ours_extra (Func)
+  ```
+
+**故意没做**
+- `user_executable()` 仍然链接 vDSO 本体而不是 `libours.ifs` 的桩库：计划列为不在 P1-A。
+- 生成器产物 ⑦（`VDSO_SYSRET_OFFSET[]` 与 build-id）不在 P1-A。

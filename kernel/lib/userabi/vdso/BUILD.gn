@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/toolchain/c_utils.gni")
 import("//build/toolchain/toolchain_environment.gni")
 import("//kernel/phys/kernel_elf_binary.gni")
 
@@ -52,6 +53,13 @@ kernel_elf_binary("vdso") {
   # holds only the macro they instantiate.
   deps = [ "//system/public:syscalls.private" ]
 
+  # A validation rather than a dependency: the check reads this target's own
+  # output, and nothing consumes what it writes. It still fails the build, so
+  # no image is packaged with a vDSO whose exports differ from the
+  # description. Zircon makes its verify-abi a public_dep of the vDSO for the
+  # same guarantee.
+  validations = [ ":vdso.abi_check" ]
+
   # No -Wl,-e: nothing jumps to a vDSO, and nothing needs to find anything at
   # its entry point any more. It used to point at the export table, which was
   # how a program with no dynamic linker reached the stubs; the stubs are in
@@ -63,5 +71,49 @@ kernel_elf_binary("vdso") {
     # someone's out/ directory baked into every program is a fact that would
     # be wrong the moment anyone looked at it.
     "-Wl,-soname,libours.so",
+  ]
+}
+
+# The exports the linked vDSO actually has, as llvm-ifs reads them out of the
+# linker's output -- the copy with section headers, which is what a linker, and
+# so a program, would see.
+_vdso_file = "$target_out_dir/vdso"
+_vdso_ifs = "$target_gen_dir/vdso.actual.ifs"
+
+toolchain_utils_action("vdso.ifs") {
+  visibility = [ ":*" ]
+  utils = [ "llvm-ifs" ]
+
+  # The template's standard driver: without a script it would hand the
+  # llvm-ifs binary itself to python3, which .gn sets as every action's
+  # interpreter.
+  script = true
+  deps = [ ":vdso.binary" ]
+  sources = [ _vdso_file ]
+  outputs = [ _vdso_ifs ]
+  args = [
+    "--input-format=ELF",
+    "--strip-ifs-target",
+    "--output-ifs=" + rebase_path(_vdso_ifs, root_build_dir),
+    rebase_path(_vdso_file, root_build_dir),
+  ]
+}
+
+# Those exports against libours.ifs, which is generated from the description:
+# the same SONAME, the same symbols, nothing missing and nothing extra.
+action("vdso.abi_check") {
+  visibility = [ ":*" ]
+  script = "//build/syscall/verify_vdso_abi.py"
+  _libours = "//system/public:libours($default_toolchain)"
+  _expected = get_label_info(_libours, "target_gen_dir") + "/libours.ifs"
+  sources = [
+    _expected,
+    _vdso_ifs,
+  ]
+  outputs = [ "$target_out_dir/$target_name.ok" ]
+  args = rebase_path(sources + outputs, root_build_dir)
+  deps = [
+    ":vdso.ifs",
+    _libours,
   ]
 }

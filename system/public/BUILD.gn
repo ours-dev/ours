@@ -87,6 +87,24 @@ if (current_toolchain == default_toolchain) {
   }
 }
 
+if (current_toolchain == default_toolchain) {
+  # The vDSO's ABI as a text stub: its SONAME and one Func per call. What the
+  # linked vDSO actually exports is checked against this
+  # (//kernel/lib/userabi/vdso:vdso.abi_check).
+  import("//build/toolchain/generated_ifs_file.gni")
+
+  _libours_symbols = []
+  foreach(call, ours_syscalls) {
+    _libours_symbols += [ "ours_${call.name}" ]
+  }
+
+  generated_ifs_file("libours") {
+    soname = "libours.so"
+    symbols = _libours_symbols
+    visibility = [ "//kernel/lib/userabi/vdso:*" ]
+  }
+}
+
 config("syscalls.private.config") {
   include_dirs = [ "$_syscalls_gen_dir/private" ]
   visibility = [ ":syscalls.private" ]
