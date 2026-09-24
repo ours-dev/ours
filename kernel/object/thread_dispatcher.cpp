@@ -7,6 +7,7 @@
 #include <arch/interrupt.hpp>
 #include <gktl/counter.hpp>
 #include <heap/new.hpp>
+#include <logz4/log.hpp>
 
 GKTL_COUNTER(DISPATCHER_THREAD_SPAWN_COUNT, "dispatcher.thread.spawn");
 GKTL_COUNTER(DISPATCHER_THREAD_DESTROY_COUNT, "dispatcher.thread.destroy");
@@ -23,6 +24,14 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
     , m_parked_reason()
     , m_kernel_thread(nullptr)
     , m_process(ustl::move(process)) {}
+
+/// See ~ProcessDispatcher() for why this is counted and logged. The thread
+/// keeps no name of its own -- its kernel thread had one, and is gone by now
+/// -- so the line names it by koid and by the process it belonged to.
+ThreadDispatcher::~ThreadDispatcher() {
+    DISPATCHER_THREAD_DESTROY_COUNT.add(1);
+    log::info("object: thread (koid {}) of process '{}' destroyed", koid(), m_process->name());
+}
 
 auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
                              KernelHandle<Self> *out) -> Status {

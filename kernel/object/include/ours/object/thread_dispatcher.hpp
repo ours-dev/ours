@@ -110,7 +110,7 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     static auto trampoline(Self *) -> i32;
 
     ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name);
-    ~ThreadDispatcher() = default;
+    ~ThreadDispatcher() override;
 
     auto on_exit() -> Status;
 

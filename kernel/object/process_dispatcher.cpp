@@ -7,6 +7,7 @@
 
 #include <gktl/counter.hpp>
 #include <heap/new.hpp>
+#include <logz4/log.hpp>
 
 GKTL_COUNTER(DISPATCHER_PROCESS_CREATE_COUNT, "dispatcher.process.create");
 GKTL_COUNTER(DISPATCHER_PROCESS_DESTROY_COUNT, "dispatcher.process.destroy");
@@ -37,6 +38,16 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
     , m_handle_table(ustl::move(handle_table))
     , m_vdso_code_base(0)
     , m_vdso_code_size(0) {}
+
+/// The last reference is gone. Counted and logged because nothing else
+/// witnesses it: a killed process has no parent that waits on it yet (P1-B),
+/// and the line is how a test -- or a reader of the log -- tells that the
+/// whole chain let go, thread to process to handle table, rather than that
+/// something still holds a reference and the process lives on unseen.
+ProcessDispatcher::~ProcessDispatcher() {
+    DISPATCHER_PROCESS_DESTROY_COUNT.add(1);
+    log::info("object: process '{}' (koid {}) destroyed", name(), koid());
+}
 
 auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const name,
                                KernelHandle<Self> &process_out, Rights &process_rights,

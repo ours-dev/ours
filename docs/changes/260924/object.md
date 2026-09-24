@@ -247,3 +247,54 @@ dispatcher 销毁日志（第 24 条）确认整条析构链。
 
 **故意没做**
 `Dying` 状态这一条只声明、不设置——由下一条的 `ThreadDispatcher::kill` 设置。
+
+## ThreadDispatcher 与 ProcessDispatcher 的销毁计数并打日志（2026-09-24）
+
+**文件**
+- `kernel/object/process_dispatcher.cpp`、`kernel/object/include/ours/object/process_dispatcher.hpp` — 新增 `~ProcessDispatcher()`、`name()`
+- `kernel/object/thread_dispatcher.cpp`、`kernel/object/include/ours/object/thread_dispatcher.hpp` — `~ThreadDispatcher()` 从 `= default` 改为有定义
+
+**症状**
+没有运行时症状。`DISPATCHER_THREAD_DESTROY_COUNT`、`DISPATCHER_PROCESS_DESTROY_COUNT` 两个计数器早已声明，
+从来没人加过；进程和线程对象死掉时什么痕迹也不留。
+
+**原因**
+接下来的杀进程要能验证"整条析构链都放手了"：线程 → ThreadDispatcher → ProcessDispatcher → 句柄表。
+这条链上任何一处多持了一个引用，进程就不会被析构，而今天没有父进程会等它（`process_exit`、get_info 在 P1-B），
+所以没有别的东西能发现。销毁那一刻的一行日志，就是测试（和读日志的人）的观察点。
+
+**改法**
+改前：
+
+```cpp
+    ~ThreadDispatcher() = default;
+```
+
+`ProcessDispatcher` 没有显式析构函数。
+
+改后：
+
+```cpp
+ThreadDispatcher::~ThreadDispatcher() {
+    DISPATCHER_THREAD_DESTROY_COUNT.add(1);
+    log::info("object: thread (koid {}) of process '{}' destroyed", koid(), m_process->name());
+}
+
+ProcessDispatcher::~ProcessDispatcher() {
+    DISPATCHER_PROCESS_DESTROY_COUNT.add(1);
+    log::info("object: process '{}' (koid {}) destroyed", name(), koid());
+}
+```
+
+ThreadDispatcher 自己不存名字（名字给了它的内核线程，而那时内核线程早已销毁），所以按 koid 和所属进程名来称呼。
+析构发生的位置：最后一个引用放手处，可能是 DPC worker（线程销毁时放掉它对 ThreadDispatcher 的引用），不会在持锁路径上。
+
+**参照**
+Zircon 的 `ThreadDispatcher::~ThreadDispatcher()` 与 `ProcessDispatcher::~ProcessDispatcher()` 同样做
+`kcounter_add(dispatcher_*_destroy_count, 1)`。
+
+**验证**
+构建通过；两个镜像启动正常，日志里没有 `destroyed`——今天还没有进程或线程对象会死。第 26 条之后由杀进程触发。
+
+**故意没做**
+没有给 ThreadDispatcher 加名字成员：只为一行日志不值得。

@@ -58,6 +58,13 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     [[nodiscard]]
     static auto current() -> Self *;
 
+    /// The name the process was created with, for diagnostics.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto name() const -> char const * {
+        return m_name.data();
+    }
+
     /// The handles this process holds.
     [[nodiscard]]
     FORCE_INLINE
@@ -120,6 +127,7 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *name,
                       ustl::Arc<mm::VmAspace> aspace, ustl::Arc<HandleTable> handle_table);
+    ~ProcessDispatcher() override;
 
     Self *m_parent;
 
