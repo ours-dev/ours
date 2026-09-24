@@ -179,8 +179,8 @@ static_assert(std::size(GENERATED_SHIMS) == syscall_abi::SYSCALL_COUNT);
 一个会返回却什么都不返回的调用，没有告诉调用者任何可以检查的东西。
 
 **参照**
-- Zircon kazoo 生成的 `wrapper_<name>`（`kernel/lib/syscalls/syscall-wrappers`），按 `SafeSyscallArgument<T>::Sanitize()`
-  逐个清洗参数后调 `sys_<name>`（`kernel/lib/syscalls/include/lib/syscalls/safe-syscall-argument.h`）。
+- Zircon kazoo 生成的 `wrapper_<name>`（`lib/syscalls/kernel-wrappers.inc`，由 `kernel/lib/syscalls/syscalls.cc` include），
+  按 `SafeSyscallArgument<T>::Sanitize()` 逐个清洗参数后调 `sys_<name>`（`kernel/lib/syscalls/include/lib/syscalls/safe-syscall-argument.h`）。
 - 设计 4.7 产物 4、5。
 
 **验证**
