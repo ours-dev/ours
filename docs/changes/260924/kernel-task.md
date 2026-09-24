@@ -88,3 +88,87 @@ CPU 停在自旋里，不 panic，也不再打任何日志。
 同文件里还有几处 `Guard guard{get_pi_lock()}`（`do_suspend`、`exit` 等），没有一并改。
 P1-A 计划第 20 条会逐个看：有的调用点已经在外层关了中断，只加 Guard 选项不一定对，
 要按各自的上下文判断，不适合在这一条里批量改。
+
+## `process_pending_signals` 的 Kill 分支让线程退出（2026-09-24）
+
+**文件**
+- `kernel/kernel/task/thread.cpp` — `process_pending_signals()` 重写；`exit()` 入口加两条断言；`m_signals` 的三处写入改 `ktl::write_once`
+- `kernel/include/ours/task/thread.hpp` — `signals()` 改 `ktl::read_once`
+- `docs/repairs/260924/kernel-task.md` — 新增 `do_suspend` 一项
+
+**症状**
+潜伏。一个线程一旦被置上 Kill，回 ring 3 的路上进入 `process_pending_signals()`，Kill 分支是空的，
+信号永远不清，`while` 在关中断的状态下永远转下去：这颗 CPU 死锁，没有任何输出。
+
+**原因**
+这个函数的循环以"信号清空"为出口，每个分支都得让自己的那一位消失：Suspend 分支在 `do_suspend()`
+里清；Kill 分支什么都没做；未知位同样没人清。一个分支不处理自己的位，循环就没有出口。
+
+**改法**
+改前：
+
+```cpp
+    ThreadSignals signals;
+    while ((signals = current_thread->signals()) != ThreadSignals::None) {
+        if (!!(signals & ThreadSignals::Kill)) {
+        }
+
+        if (!!(signals & ThreadSignals::Suspend)) {
+            arch::local_irq_enable();
+            Thread::Current::do_suspend();
+            arch::local_irq_disable();
+        }
+
+        if (!!(signals & ThreadSignals::None)) {
+        }
+    }
+```
+
+改后：
+
+```cpp
+    DEBUG_ASSERT(arch::irqs_disabled(), "{}() entered with interrupts on", __func__);
+
+    ThreadSignals signals;
+    while ((signals = current_thread->signals()) != ThreadSignals::None) {
+        if (!!(signals & ThreadSignals::Kill)) {
+            arch::local_irq_enable();
+            Thread::Current::exit(0);
+        }
+
+        if (!!(signals & ThreadSignals::Suspend)) {
+            arch::local_irq_enable();
+            Thread::Current::do_suspend();
+            arch::local_irq_disable();
+            continue;
+        }
+
+        panic("thread {} has signals {:#x} nobody handles", ...);
+    }
+```
+
+- Kill 先于 Suspend：一个既被挂起又被杀的线程没有可以恢复进去的东西。
+- 退出前开中断：`exit()` 里 ThreadDispatcher 的 `on_exit()` 要拿会睡眠的锁。
+- 未知位直接 panic，而不是再写一个空分支让循环空转。
+- 删掉 `signals & ThreadSignals::None` 那个空分支（与 None 按位与恒为零，条件永假）——主人同意删除。
+
+`exit()` 入口断言中断开、抢占开：它的调用者（线程入口返回后的 trampoline、上面两条信号路径）都
+承诺能阻塞，断言把这个承诺写死。没有断言"不持自旋锁"：`SpinLock::num_held_cpu()` 存在，但 PI 锁会
+在上下文切换时交接，这个每 CPU 计数是否平衡没有核实过。
+
+`m_signals` 由别的 CPU 在 PI 锁下写，由线程自己在回用户态的路上不加锁地读，所以读写都改成
+`ktl::read_once`/`ktl::write_once`：不撕裂、不被编译器缓存或推迟。
+
+**参照**
+- Zircon `Thread::Current::ProcessPendingSignals()`（`kernel/kernel/thread.cc`）：先看 Kill，
+  `arch_enable_ints(); Thread::Current::Exit(0);`；Suspend 分支挂起后再关中断。
+- Zircon `Thread::Current::Exit()`：用户线程在 `ExitingCurrent()` 前 `DEBUG_ASSERT(!arch_ints_disabled())`。
+- Zircon 的 `signals_` 是 relaxed 原子量。
+
+**验证**
+- 构建通过；两个镜像在 `SMP=4` 与 `SMP=1` 下都跑到 `shell: bad-pointer checks passed` 与 `--- end ---`。
+- dbg_1 日志里内核线程 `laborer` 走 trampoline 退出一次，`exit()` 的两条新断言成立。
+- Kill 分支本身这一条还走不到：没有代码置 Kill。第 26 条（用户态异常杀进程）之后实测。
+
+**故意没做**
+`do_suspend()` 的锁（见待修项），P1-A 不会置 Suspend。

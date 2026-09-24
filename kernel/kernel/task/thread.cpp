@@ -17,6 +17,7 @@
 #include <gktl/counter.hpp>
 #include <gktl/defer.hpp>
 #include <gktl/init_hook.hpp>
+#include <ktl/rwonce.hpp>
 #include <logz4/log.hpp>
 
 namespace {
@@ -221,7 +222,7 @@ auto Thread::resume() -> Status {
         return Status::Ok;
     }
 
-    m_signals &= ~ThreadSignals::Suspend;
+    ktl::write_once(m_signals, m_signals & ~ThreadSignals::Suspend);
 
     if (state == State::Suspend) {
         Scheduler::unpark_thread(this);
@@ -238,10 +239,13 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
 
     auto const is_to_suspend = SuspendOrKillOp::Suspend == op;
     auto set_signals = gktl::defer([this, is_to_suspend]() {
+        // write_once: the target reads its own signals with no lock held, on
+        // its way back to ring 3 (process_pending_signals()), and a plain
+        // store is one the compiler may tear or defer.
         if (is_to_suspend) {
-            m_signals |= ThreadSignals::Suspend;
+            ktl::write_once(m_signals, m_signals | ThreadSignals::Suspend);
         } else {
-            m_signals |= ThreadSignals::Kill;
+            ktl::write_once(m_signals, m_signals | ThreadSignals::Kill);
         }
     });
 
@@ -601,7 +605,8 @@ auto Thread::Current::do_suspend() -> void {
             need_exit = true;
         } else if (!!(current_thread->signals() & ThreadSignals::Suspend)) {
             // Clear the signal suspending.
-            current_thread->m_signals &= ~ThreadSignals::Suspend;
+            ktl::write_once(current_thread->m_signals,
+                            current_thread->m_signals & ~ThreadSignals::Suspend);
 
             // Mark this thread suspend so rescheduling not to place it
             // onto runqueue again.
@@ -628,19 +633,36 @@ auto Thread::Current::process_pending_signals() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
 
+    // Called on the last stretch back to ring 3 -- the exception tail, and
+    // (next) the path to SYSRET -- which runs with interrupts off so that a
+    // signal raised after this check cannot be missed before the return.
+    // Each branch below turns them on for what it does and, if it comes back
+    // at all, off again.
+    DEBUG_ASSERT(arch::irqs_disabled(), "{}() entered with interrupts on", __func__);
+
     ThreadSignals signals;
     while ((signals = current_thread->signals()) != ThreadSignals::None) {
+        // Kill first, and for good: a thread that is both suspended and
+        // killed has nothing to resume into. Exiting needs interrupts on --
+        // the ThreadDispatcher's on_exit() takes sleeping locks -- and does
+        // not come back. This branch used to be empty, and a pending Kill
+        // made this loop spin for ever with interrupts off.
         if (!!(signals & ThreadSignals::Kill)) {
+            arch::local_irq_enable();
+            Thread::Current::exit(0);
         }
 
         if (!!(signals & ThreadSignals::Suspend)) {
             arch::local_irq_enable();
             Thread::Current::do_suspend();
             arch::local_irq_disable();
+            continue;
         }
 
-        if (!!(signals & ThreadSignals::None)) {
-        }
+        // A bit neither branch handles would never be cleared, and the loop
+        // would spin on it for ever -- with interrupts off, so silently.
+        panic("thread {} has signals {:#x} nobody handles", current_thread->name(),
+              static_cast<u32>(signals));
     }
 }
 
@@ -668,6 +690,20 @@ auto Thread::Current::kill() -> void {
 auto Thread::Current::exit(i32 retcode) -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
+
+    // The dying thread still has work that may block: its ThreadDispatcher's
+    // on_exit() below takes sleeping locks. So it has to arrive here able to
+    // block -- interrupts on, preemption on -- which is what every caller
+    // promises: the trampoline after the thread's entry returns, and the two
+    // signal paths, which turn interrupts back on before calling. Zircon's
+    // Thread::Current::Exit() asserts the same before ExitingCurrent().
+    //
+    // Not asserted: that no spin lock is held. SpinLock::num_held_cpu() exists,
+    // but the PI lock is handed across a context switch, and whether that
+    // per-CPU count balances has not been checked.
+    DEBUG_ASSERT(!arch::irqs_disabled(), "{}() entered with interrupts off", __func__);
+    DEBUG_ASSERT(Thread::Current::preemption_state().is_preemption_enabled(),
+                 "{}() entered with preemption off", __func__);
 
     log::trace("Thread |{}| is preparing exiting", current_thread->name());
 

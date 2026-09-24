@@ -235,7 +235,11 @@ namespace task {
 
         FORCE_INLINE
         auto signals() -> ThreadSignals {
-            return m_signals;
+            // read_once: a thread reads its own signals without the PI lock
+            // (process_pending_signals()) while another CPU may be setting
+            // them under it. Zircon keeps signals_ in a relaxed atomic for
+            // the same reason.
+            return ktl::read_once(m_signals);
         }
 
         FORCE_INLINE
