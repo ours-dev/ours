@@ -73,3 +73,28 @@ for managing speculation" V1-2。
 
 **故意没做**
 没有照 Zircon 再加 `conditional_select_nospec_lt`：本项目还没有需要它的地方。
+
+## x86 的 `nospec.hpp` 登记进 `//kernel/arch/x86:headers`（2026-09-24）
+
+**文件**
+- `kernel/arch/x86/BUILD.gn` — 头文件列表加 `arch/x86/nospec.hpp`
+
+**症状**
+审查发现：第 11 条新增的 `kernel/arch/x86/lib/arch/include/arch/x86/nospec.hpp` 没有登记在它所属目标的
+头文件列表里（通用的 `arch/nospec.hpp` 登记了）。编译照常——include 路径是目录级的——但 `gn check`
+和依赖分析看不到这个文件属于谁。
+
+**原因**
+漏登记。`random.hpp`、`syscall.hpp` 等同类的 x86 补全头都在这张表里。
+
+**改法**
+改前：列表里没有 `"arch/x86/nospec.hpp"`。改后：按字母序插在 `msr.hpp` 与 `page_table.hpp` 之间。
+
+**参照**
+无。
+
+**验证**
+`gn gen` 与构建通过。
+
+**故意没做**
+无。

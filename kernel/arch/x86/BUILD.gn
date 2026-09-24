@@ -96,6 +96,7 @@ cpp_interface("headers") {
     "arch/x86/macro/syscallframe.hpp",
     "arch/x86/macro/system.hpp",
     "arch/x86/msr.hpp",
+    "arch/x86/nospec.hpp",
     "arch/x86/page_table.hpp",
     "arch/x86/pmu.hpp",
     "arch/x86/processor.hpp",
