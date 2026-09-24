@@ -32,11 +32,37 @@ auto debug_write(Str const text) -> Status {
     return Status::Ok;
 }
 
-auto debug_line(Str const text) -> Status {
-    auto const status = debug_write(text);
-    if (Status::Ok != status) {
-        return status;
+auto debug_line(std::initializer_list<Str> const pieces) -> Status {
+    usize total = 1; // the newline
+    for (auto const &piece: pieces) {
+        total += piece.size();
+    }
+
+    if (total <= ours::MAX_DEBUG_WRITE) {
+        // Assembled here and handed over in one call, which is what keeps
+        // the line whole (see the declaration).
+        char line[ours::MAX_DEBUG_WRITE];
+        usize at = 0;
+        for (auto const &piece: pieces) {
+            for (usize i = 0; i < piece.size(); ++i) {
+                line[at] = piece.data()[i];
+                at += 1;
+            }
+        }
+        line[at] = '\n';
+        at += 1;
+        return ours_debug_write(line, at);
+    }
+
+    for (auto const &piece: pieces) {
+        if (auto const status = debug_write(piece); Status::Ok != status) {
+            return status;
+        }
     }
     return debug_write("\n");
+}
+
+auto debug_line(Str const text) -> Status {
+    return debug_line({text});
 }
 } // namespace ou

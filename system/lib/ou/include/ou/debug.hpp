@@ -5,6 +5,8 @@
 
 #include <ou/str.hpp>
 
+#include <initializer_list>
+
 #include <ours/status.hpp>
 
 namespace ou {
@@ -23,7 +25,19 @@ namespace ou {
 /// in step with the kernel by hand.
 auto debug_write(Str text) -> ours::Status;
 
-/// debug_write() with a newline after it.
+/// Writes |pieces| one after another, then a newline, as one line.
+///
+/// One line, one system call, whenever it fits in MAX_DEBUG_WRITE: the kernel
+/// writes each call's bytes out under its logger's lock, so a line that goes
+/// out in one call cannot be split by another program printing at the same
+/// moment. It used to go out as the text and then the newline, and a caller
+/// building a line from parts made a call per part; with two processes on
+/// two CPUs the console read `shell: close(bootstrap) = init: shell says
+/// "pongOk"`. A line longer than the limit still goes out, in several calls,
+/// and can then interleave.
+auto debug_line(std::initializer_list<Str> pieces) -> ours::Status;
+
+/// debug_line() of a single piece.
 auto debug_line(Str text) -> ours::Status;
 } // namespace ou
 
