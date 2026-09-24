@@ -172,3 +172,14 @@ P1-A 计划第 20 条会逐个看：有的调用点已经在外层关了中断�
 
 **故意没做**
 `do_suspend()` 的锁（见待修项），P1-A 不会置 Suspend。
+
+## 勘误：P1-A 第 1–16 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「`suspend_or_kill` 关中断、关抢占后再拿 PI 锁」一节的**症状**写"CPU 停在自旋里，不 panic，也不再打任何日志"。
+  这只对 dbg_0 成立。dbg_1（`KERNEL_DEBUG_LEVEL=1`）里，`Thread::Current::preempt()` 在中断出口对同一把锁的
+  第二次获取会触发 `SpinLock::acquire()` 的 `DEBUG_ASSERT(!is_held())`（`kernel/kernel/sync/spin_lock.cpp`），
+  内核 panic。
+- 同一个函数还有两处早于 P1-A 的缺陷（Parked 分支重复加锁、Sleeping 分支与定时器竞争），以及
+  `Thread::Current::tid()` 读错每 CPU 槽，已记入 `docs/repairs/260924/kernel-task.md` 第 2–4 条并交接。

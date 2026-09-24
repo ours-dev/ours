@@ -25,7 +25,7 @@ arena = **一段地址连续、按固定步长切成同尺寸槽位的内存**�
 
 这不是随手选的分配器，而是**让 handle 值能成立的前提**：槽位等宽且连续，于是
 `地址 ↔ 下标` 是一次纯算术（`(addr - base) / sizeof(Handle)`），一个小整数就能指认一个
-`Handle`。`Handle::m_baseval` 存的就是那个下标。
+`Handle`。`Handle::m_base_value` 存的是那个下标连同 generation（见下文 `base_value` 的位布局）。
 
 被否掉的替代方案：每进程维护一张「数字 → `Handle *`」的映射。它多一层间接、每进程多一份
 内存、且每次查找多一处要加锁——而 handle 查找在**每一次系统调用的入口**都要发生一遍，
@@ -66,12 +66,15 @@ handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
 
 ## 槽位复用：generation 是必须的
 
-一个 arena 槽被释放后会再分配给别人。`GetNewBaseValue()` 读出**空闲槽里存着的旧
-`base_value`**，把 generation 加一再写回（`NewHandleValue()`），所以同一个下标每次复用都
-得到不同的 `base_value`。
+一个 arena 槽被释放后会再分配给别人。本内核的 `HandleArena::reserve()` 从
+`m_last_base_value[下标]` 读出这个槽上次用过的 `base_value`，把 generation 加一再记回去，
+所以同一个下标每次复用都得到不同的 `base_value`。这份记录**放在槽外**，释放后不必去读已析构的
+对象。（Zircon 的 `GetNewBaseValue()`/`NewHandleValue()` 把旧值留在空闲槽内部、从那里读回。）
 
-解析时 `Handle::FromU32()` 由值算出下标、取到槽地址，**再比对
-`handle->base_value() == value`**——陈旧的值下标虽然对，generation 对不上，解析失败。
+解析时 `Handle::from_base_value()` → `HandleArena::lookup()` 由值算出下标，拿
+`base_value | HANDLE_LIVE_MARK` 去比槽外的原子记录 `m_live_base_value[下标]`，**不读 Handle 本身**
+——陈旧的值下标虽然对，generation 对不上，解析失败。（Zircon 的 `Handle::FromU32()` 比的是
+槽内对象的 `handle->base_value() == value`。）
 
 （本文档早先的版本写着「不加 generation 位，靠随机数和表 koid 挡」。那是错的：
 随机数是每张表一个常量，同一张表里前后两次复用同一槽位算出的值会完全相同，
@@ -91,7 +94,7 @@ handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
    它的权限）先跑一段，把选择留在缓存里。本文档早先写"防用旁路探测 arena 布局"，理由写错了——
    哪些槽被占用并不是值得设防的秘密。失败时返回的 0 在推测路径上被访问也无害：
    `USER_ASPACE_BASE` 以下（2 MiB）在任何地址空间里都不映射。这一步不能图省事写成普通 `if`。
-5. **`handle->handle_table_id() == 本表 koid`** —— A 进程的合法值在 B 进程里解析不出来。
+5. **`handle->table_koid() == 本表 koid`**（Zircon 叫 `handle_table_id()`）—— A 进程的合法值在 B 进程里解析不出来。
 
 分工：**第 5 条是进程间隔离，第 4 条是时间上的隔离（复用后的陈旧值）**，1、2、3 是加固。
 将来谁想省掉一步，先看清省的是哪一类。
@@ -102,7 +105,7 @@ handle 值 = ((base_value << 2) | 0b11) XOR 该表的随机数
   当前真正有内存的是 `HANDLE_ARENA_SLOTS = 2^12` 个槽。
 - Zircon 另有 `kHighHandleCount = kMaxHandleCount * 7 / 8`：越过这条线就打印一次告警，且**带节流**
   （`handle_count_high_log_.Ready()`），否则告警本身会淹掉串口。本项目还没有这条线。
-- 耗尽时 `Alloc()` **返回 nullptr，不 panic**：记一个计数器、打印一条告警，让调用方把
+- 耗尽时 `Handle::reserve_slot()`（Zircon 是 `Alloc()`）**返回空，不 panic**：记一个计数器、打印一条告警，让调用方把
   失败当作普通错误往上报。用户进程能耗尽的资源不该能把内核打死。
 
 ## 这条决定对 `mm` 提出的要求

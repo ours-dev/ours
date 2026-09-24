@@ -344,3 +344,17 @@ Linux 的异常表同样只按出错 ip 认领，不看地址。
 
 **故意没做**
 无。
+
+## 勘误：P1-A 第 1–16 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「拷贝改为一段汇编」一节写 Zircon 的 `user-copy.S` "同一个文件按 `-DSMAP` 汇编两次；`user-copy.cc` 用代码补丁在启动时选定"。
+  都不准：它按 MOVSB × SMAP 汇编成**四个**变体（movsq、movsq_smap、movsb、movsb_smap，见 `user-copy/BUILD.gn`），
+  `SelectX86UserCopyAlternative()` 在 ERMS/FSRM/AMD Zen 上选 `rep movsb`、有 SMAP 时选 \_smap，补丁由
+  `kernel/arch/x86/code-patches/code-patches.cc` 打上，不在 `user-copy.cc`。本项目只有两个 SMAP 变体、都是四字拷贝加字节尾，
+  没有按 ERMS/FSRM 选 `rep movsb` 的那一半。`user_copy.S` 的注释已改正。
+- 「范围检查与拷贝之间加 `lfence`」一节引用的 `_arch_copy_to_or_from_user()` 不存在；Zircon 的函数叫
+  `_arch_copy_to_from_user()`（模板，`user-copy.cc`），`lfence` 在它的 `can_access()` 之后。代码注释已改正。
+- 「用户拷贝的故障恢复」一节说"拷贝的内核侧出错是内核 bug，应当停机"，但当时的代码按 `!is_kernel_address` 判断，
+  0 地址等内核侧故障会被当作用户地址恢复成 `InvArgs`。已由「拷贝里的故障只在被放行的那个用户操作数上才恢复」一节改正。

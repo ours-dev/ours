@@ -208,3 +208,14 @@ Zircon：`<zircon/syscalls.h>` 包含 kazoo 生成的 `syscalls/gen/cdecls.inc`�
 
 **故意没做**
 `user_executable()` 改为链接生成的 `libours.ifs` 而不是 vDSO 本体，不在 P1-A（计划"明确不在 P1-A"一节）。
+
+## 勘误：P1-A 第 1–16 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「调用号离开公共头」一节的**验证**写 grep 之后"只剩 `table.cpp` 注释里的一处历史说明（`OURS_SYSTEM_*` 头文件守卫另计）"。
+  数错了：在那次提交上有两处——`table.cpp` 的历史注释，以及同一次提交新写的 `system/public/ours/syscall.hpp` 头注释
+  （"They used to be, as OURS_SYS_* macros"）；括号里的说法也不对，`OURS_SYSTEM_*` 守卫匹配不到 `OURS_SYS_`
+  这个模式之外的东西，本来就不会命中。如今 `table.cpp` 那处已随后续修改消失，只剩 `syscall.hpp` 的一处。
+- 文中"kazoo 生成"的说法应读作 zither（见 `syscall.md` 的勘误）。`<zircon/syscalls.h>` 包含的
+  `syscalls/gen/cdecls.inc` 由 zither 的 `legacy_syscall_cdecl` 后端生成。

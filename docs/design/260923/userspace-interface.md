@@ -550,7 +550,7 @@ P1 的前置：
 | D4 | 公共句柄值类型叫什么 | A 改名为 `ours::HandleValue`，用户侧 `ou::Handle` 做 RAII；B 保留 `ours::Handle` | **A**。系统调用层会同时出现 `ours::Handle` 和 `object::Handle` |
 | D5 | 从公共 Signals 挪出的线程控制位叫什么 | A `task::ThreadSignals`；B `task::PendingActions`；C `task::ThreadRequests` | **A**，便于对照 Zircon 的 `THREAD_SIGNAL_*` |
 | D6 | Rights 位布局 | A 整体换成 Zircon 位值；B 保留现有 5 位，按需追加 | **A**。现在还没有用户态依赖，换的成本最低，之后可以直接对照 Zircon 的权限文档 |
-| D7 | 系统调用描述用什么格式 | A GN scope 列表 + 只用标准库的 Python 生成器；B `.pyl` 文件；C FIDL 子集 + fidlc/kazoo | **A**。它就在构建图里，不用写解析器，也能直接喂给 `generated_ifs_file` |
+| D7 | 系统调用描述用什么格式 | A GN scope 列表 + 只用标准库的 Python 生成器；B `.pyl` 文件；C FIDL 子集 + fidlc/zither | **A**。它就在构建图里，不用写解析器，也能直接喂给 `generated_ifs_file` |
 | D8 | 调用号是否算公共 ABI | A 私有，由生成器按位置分配；B 公共，手工编号 | **A**。用户只能经 vDSO 进入内核，调用号没有别的消费者 |
 | D9 | userboot 和 init 是一个进程还是两个 | A P1 起分成两个，P0 用配置合并；B 永久合并 | **A**。内核引导消息里带根资源这类特权对象，其格式应该只被一个随内核构建的小程序理解 |
 | D10 | ProcessDispatcher 上的 `m_parent`/`m_children`/`CREATED_PROCESS_LIST` 怎么处理 | A 新代码不读写它们，删除前问主人；B 做成 POSIX 式进程树 | **A**。层级由 job 表达（Zircon 同样没有进程父子关系）；这些成员可能是预留的脚手架 |
@@ -603,7 +603,7 @@ P1 的前置：
 | Channel 队列满 | 超过 3500 条抛策略异常 | 回 NoResource，不清 WRITABLE | ours 没有异常机制；不改变 WRITABLE 的含义 |
 | 消息上限 | 64 KiB | P0 4 KiB，P1 64 KiB | vmalloc 区间数有限，vfree 没有 shootdown |
 | Status 编码 | 负的 i32 | 正的 u32，显式编号 | 调用方都经 ou 与 Ok 比较；改成有符号会波及整棵树 |
-| 系统调用描述 | FIDL + fidlc/kazoo | GN scope 列表 + Python 生成器 | 树里没有 IDL 工具链；列表由构建生成 |
+| 系统调用描述 | FIDL + fidlc/zither（早先是 kazoo） | GN scope 列表 + Python 生成器 | 树里没有 IDL 工具链；列表由构建生成 |
 | sysret 白名单 | 每个调用可以有多个 VIA 调用点 | 每个调用号一个偏移 | ours 的 vDSO 内部函数不自己发系统调用，真出现了再扩成列表 |
 | 出参句柄的发布顺序 | 新的 Rust 实现先入表后写出 | 预留 → 写出 → 发布 | 写出失败时不会漏句柄，也没有可见窗口 |
 | 句柄表校验 | 第五关用进程 koid；表锁是 BrwLock | 用表 koid；P0 用 Mutex | 给 create_shared 留余地；`sync::RwLock` 还没实现 |

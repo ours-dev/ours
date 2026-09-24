@@ -375,3 +375,18 @@ Zircon `//zircon/kernel/lib/userabi/vdso/BUILD.gn`：`verify-abi` 是 vDSO 的 `
 
 **故意没做**
 无。
+
+## 勘误：P1-A 第 1–16 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 「vDSO 的桩改由生成器产出」一节的**参照**写"Zircon ... 由 kazoo 生成的 `syscalls-stubs.S` 逐行实例化"。两处都错：
+  Zircon 现在的生成器是 zither（`zircon/tools/zither`，kazoo 是它之前的那一个，本地的 Zircon 树里已经没有）；
+  `kernel/lib/userabi/vdso/syscalls-stubs.S` 是**手写**的，它把 `KERNEL_SYSCALL`/`INTERNAL_SYSCALL` 这两个
+  X 宏映射到 `m_syscall`，再 include zither 生成的 `<lib/syscalls/syscalls.inc>`。所以 Zircon 是三层——
+  `syscalls-x86.S` 的宏、手写的 X 宏适配、生成的清单——本项目是两层（宏 + 生成的清单）。
+- 「从描述生成 `libours.ifs`」一节写 Zircon 的 `zircon.ifs` 是手写的。错：它由 zither 的 ifs 后端从 zx 的
+  FIDL 系统调用库生成，作为 golden 签入树中，构建时与生成物比对。两边的检查因此抓的是同一类问题；区别只在
+  那份 .ifs 是签入的 golden 还是构建时生成。
+- 同一节说"不会有镜像带着一个导出与描述不符的 vDSO 被打包"，但当时挂的是 `validations`，挡不住打包。已由
+  「vDSO 的 ABI 比对从 validation 改为镜像的 data_dep」一节改正；比对只看 Name/Type 的问题由「看符号的全部字段」一节改正。

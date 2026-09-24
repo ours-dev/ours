@@ -375,3 +375,17 @@ source_set("syscall") {
 
 **故意没做**
 无。
+
+## 勘误：P1-A 第 1–16 条对抗审查查出的记录错误（2026-09-24）
+
+本文件只增不改，更正写在这里。
+
+- 第一节**参照**里的 "Zircon 的 kazoo（`zircon/tools/kazoo`）"：本地 Zircon 树里没有这个目录。现在的生成器是
+  zither（`zircon/tools/zither`），它的 kernel 后端生成 `lib/syscalls/zx-syscall-numbers.h` 与
+  `lib/syscalls/kernel-wrappers.inc`，`legacy_syscall_cdecl` 后端生成 `cdecls.inc`。FIDL 源 `//zircon/vdso/*.fidl` 的路径是对的。
+  文中其他写"kazoo 生成"的地方同样应读作 zither。
+- 第一节**改法**写"默认工具链本来就只描述 action 和元数据图、不编译任何东西"。错：默认工具链（`kernel-x86`）
+  有 `cxx` 规则，也编译一些宿主侧工具和测试（prof、unwind、obit、ustl 的测试）。把生成器放在那里仍然成立，
+  理由只是"它是一个固定的工具链，动作只跑一次"；`system/public/BUILD.gn` 的注释已改正。
+- 第一节说 `syscalls.private` 的 `visibility` 让调用号保持私有。不完全：`visibility` 只管直接依赖者，第 6 条让
+  `//kernel/lib/syscall:headers`（对所有人可见）把它转了出去。已由「`//kernel/lib/syscall:headers` 只对本库可见」一节改正。
