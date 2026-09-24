@@ -647,7 +647,12 @@ auto Thread::Current::kill() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
 
-    DEBUG_ASSERT(current_thread->is_idle_thread(), "Try to kill the idle thread");
+    // The idle thread is the one thread that must never die: it is what a
+    // CPU runs when nothing else can. The message always said so; the
+    // condition said the opposite, which demanded the idle thread and
+    // refused every other one. Zircon Thread::Current::Kill() asserts
+    // !IsIdle() in the same place.
+    DEBUG_ASSERT(!current_thread->is_idle_thread(), "Try to kill the idle thread");
     current_thread->kill();
 }
 
