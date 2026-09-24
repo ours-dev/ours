@@ -74,3 +74,85 @@ SRAT 解析跑在 `PlatformInitLevel::PrePmm + 1`，此时一个 `PmNode` 都还
   `InitLevel::Irq` 才跑，比这里晚得多；正确做法是先记 `apicid → node`，等 MADT 分好号
   再映射，属于另一件事（待修项第 2 条）。
 - 没有处理 SRAT 指向无内存节点的 CPU（待修项第 3 条）。
+
+## 内核态在 user_copy 之外碰用户地址：不论有没有 SMAP 都拒绝（2026-09-24）
+
+**文件**
+- `kernel/arch/x86/mm/fault.cpp` — 调页之前的拒绝条件从"SMAP 开、AC 清、用户地址"改为"内核态、用户地址、不在用户拷贝里"；`inside_user_copy()` 与 `resume_user_copy()` 拆开
+
+**症状**
+潜伏。没有 SMAP 的 CPU 上（这里 QEMU 的默认型号 Nehalem 就是），内核代码若绕过 `user_copy`
+直接解引用一个用户指针、而那一页尚未提交，缺页处理会替它把页调进来，访问成功，什么也不报。
+同样的 bug 在有 SMAP 的 CPU 上会被当场拒绝。一个 bug 抓不抓得到取决于 CPU 型号。
+
+**原因**
+原来的拒绝条件是 SMAP 报告这类错误的方式（`SMAP 开 && AC 清 && 用户地址`），不是这类错误本身的
+定义。本内核的规则是"ring 0 只在 user_copy 里碰用户内存"，它不依赖 CPU 特性；检查也不该依赖。
+
+今天还没有惰性提交的用户映射（程序、栈、vDSO 都是 `Commit` 映射的），所以这个差别暂时触发不到；
+P1-C 的 `vmar_map` 不带 commit 之后就会有。
+
+**改法**
+改前：
+
+```cpp
+    auto const supervisor = (error_code & PAGE_FAULT_USER) == 0;
+    auto const access_open = frame->flags.get<arch::ArchCpuState::AC>() != 0;
+    if (supervisor && feature_has_smap && !access_open && !mm::is_kernel_address(addr)) {
+        log::error("potential SMAP violation: ...", addr);
+        return Status::AccessDenied;
+    }
+    ...
+    if (resume_user_copy(frame, addr, supervisor)) {
+        return Status::Ok;
+    }
+    return status;
+```
+
+改后：
+
+```cpp
+    auto const supervisor = (error_code & PAGE_FAULT_USER) == 0;
+    auto const user_address = !mm::is_kernel_address(addr);
+    if (supervisor && user_address && !inside_user_copy(frame)) {
+        auto const access_open = frame->flags.get<arch::ArchCpuState::AC>() != 0;
+        if (feature_has_smap && !access_open) {
+            log::error("potential SMAP violation: ring 0 touched user address {:#x} outside user_copy", addr);
+        } else {
+            log::error("page fault in kernel mode on user address {:#x} outside user_copy", addr);
+        }
+        return Status::AccessDenied;
+    }
+    ...
+    if (supervisor && user_address) {
+        resume_user_copy(frame);
+        return Status::Ok;
+    }
+    return status;
+```
+
+"在用户拷贝里"= 槽非零且出错指令在拷贝例程区间内（`inside_user_copy()`），与上一条恢复路径用同一个
+判断。于是调页之后的恢复不必再重复检查：走到那里的内核态用户地址故障，按前面的拒绝，一定在拷贝里。
+SMAP 能解释时仍打原来的 "potential SMAP violation"，否则打新的消息。
+
+内核自己地址上的内核态缺页照旧交给 `page_fault()`——这与 Zircon 不同：Zircon 对任何没有
+`page_fault_resume` 的内核态缺页都停机，因为它的内核从不按需调入自己的内存；本内核还没有这个前提。
+
+改之前查过 profiler：采样器的内存读取器限定在内核栈窗口内，明确不展开用户栈（`sampler.cpp`），
+所以没有合法的 user_copy 之外的用户内存访问会被这一条误伤。
+
+**参照**
+- Zircon `x86_pfe_handler()`（`kernel/arch/x86/exceptions_c.cc`）：内核态缺页没有 `pfr` 就
+  `exception_die(frame, "page fault in kernel mode\n")`，SMAP 能解释时先打 "potential SMAP failure"。
+- Linux `do_user_addr_fault()` 对 SMAP 的同类检查（`X86_PF_USER` 清且 `EFLAGS.AC` 清时 `bad_area_nosemaphore`）；
+  Linux 没有 SMAP 时不拒绝这类访问，这里比它更严。
+
+**验证**
+- 构建通过；两个镜像在 Nehalem 与 `CPU=max` 下都跑到 `shell: bad-pointer checks passed` 和 `--- end ---`
+  （拷贝里的故障仍然走恢复路径）。
+- Nehalem 下在 `sys_debug_write` 里临时裸读一次 `0x7fff'ffff'e000`（未提交）：
+  `page fault in kernel mode on user address 0x7fffffffe000 outside user_copy`，随后内核停机。
+  注意裸读一个**已在**页表里的用户页在没有 SMAP 时根本不缺页，这一条管不到——那只能靠 SMAP。
+
+**故意没做**
+没有把内核自己地址上的内核态缺页也改成停机：要先确认内核不再按需调入自己的内存（vmalloc 等）。
