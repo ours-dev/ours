@@ -197,7 +197,7 @@ extern "C" {
 `<ours/vdso.hpp>` 的是 `userboot.cpp`，而它根本没用到——删掉。
 
 **参照**
-Zircon：`<zircon/syscalls.h>` 包含 kazoo 生成的 `<zircon/syscalls/internal/cdecls.inc>`，
+Zircon：`<zircon/syscalls.h>` 包含 kazoo 生成的 `syscalls/gen/cdecls.inc`，
 外壳手写、声明生成，同样的切分。
 
 **验证**
