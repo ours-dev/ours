@@ -12,9 +12,9 @@ the outputs, so that a malformed entry is refused by the first build that sees
 it rather than by the one output that happens to trip over it.
 
 Standard library only: the host's python3 is 3.9, with no tomllib and nothing
-installed beside it. Zircon's counterpart is kazoo, which reads FIDL; the
-description here is a GN scope list because GN is the one parser this tree
-already has.
+installed beside it. Zircon's counterpart is zither (zircon/tools/zither;
+kazoo before it), which reads the zx FIDL library; the description here is a
+GN scope list because GN is the one parser this tree already has.
 """
 
 from __future__ import annotations

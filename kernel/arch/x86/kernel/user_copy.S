@@ -15,10 +15,13 @@
 //                       copy is bracketed by stac/clac, and those two
 //                       instructions bracket nothing else in the kernel.
 //
-// The C++ side (user_copy.cpp) picks one by feature_has_smap. Zircon picks by
-// patching the code at boot, which this kernel does not build with
-// (ours_kernel_has_code_patches = false); a cached flag is the same choice
-// made one call later.
+// The C++ side (user_copy.cpp) picks one by feature_has_smap. Zircon builds
+// four alternatives -- quadword or `rep movsb` copy, each with and without
+// SMAP -- and patches the chosen one in at boot (code-patches.cc), taking
+// `rep movsb` where the CPU makes it fast (ERMS, FSRM). This kernel does not
+// build with code patches (ours_kernel_has_code_patches = false), so it keeps
+// the SMAP half of that choice as a cached flag and has only the quadword
+// copy.
 //
 // Why assembly rather than memcpy between an inline stac and clac, which is
 // what this used to be. That was correct -- the "memory" clobbers kept the
@@ -73,7 +76,8 @@
 // function; SYSCALL clears it (IA32_FMASK) and so does every interrupt stub.
 //
 // Zircon counterpart: kernel/arch/x86/user-copy/user-copy.S, assembled once
-// per variant with -DSMAP; Linux's is arch/x86/lib/copy_user_64.S.
+// per alternative with -DSMAP and -DMOVSB; Linux's is
+// arch/x86/lib/copy_user_64.S.
 
 #include <ours/arch/asm.hpp>
 

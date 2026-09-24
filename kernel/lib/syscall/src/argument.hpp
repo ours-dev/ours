@@ -35,8 +35,9 @@ struct IsUserPtr<user_copy::UserPtr<T, D>>: std::true_type {};
 ///     above a valid handle has still passed a valid handle.
 ///
 /// Zircon counterpart: SafeSyscallArgument<T>::Sanitize() in
-/// kernel/lib/syscalls/include/lib/syscalls/safe-syscall-argument.h, applied by the kazoo-generated
-/// wrappers for the same reason.
+/// kernel/lib/syscalls/include/lib/syscalls/safe-syscall-argument.h, applied
+/// for the same reason by the zither-generated wrappers
+/// (lib/syscalls/kernel-wrappers.inc).
 template <typename T>
 [[nodiscard]]
 constexpr auto from_register(usize const value) -> T {
