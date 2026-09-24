@@ -15,6 +15,8 @@
 #include <ours/assert.hpp>
 #include <ours/compiler.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/thread_dispatcher.hpp>
+#include <ours/task/exception.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
@@ -73,15 +75,28 @@ namespace {
                                       arch::SYSCALL_INSN_SIZE);
     }
 
-    /// The answer to a trap that did not come through the vDSO.
+    /// The answer to a trap that did not come through the vDSO: the process
+    /// is killed.
     ///
-    /// Refused rather than killed, for now. Zircon raises a policy exception,
-    /// which is the right end state -- a program that forged a trap is not one
-    /// whose next instruction should be trusted -- but there is no exception
-    /// machinery here yet, and a status the caller cannot ignore is already
-    /// the difference between a rule and a wish.
+    /// A program that forged a trap is not one whose next instruction should
+    /// be trusted, so returning an error it could ignore is not enough. It is
+    /// raised as a PolicyError exception (BadSyscall, the call number as the
+    /// detail), whose handling today is to kill the process; the thread exits
+    /// at the pending-signal check on the way back out
+    /// (x86_syscall_process_pending_signals), before SYSRET.
+    ///
+    /// Zircon counterpart: sys_invalid_syscall(), which raises
+    /// ZX_EXCP_POLICY_CODE_BAD_SYSCALL through SignalPolicyException().
     auto sys_not_from_vdso(arch::SyscallFrame *const frame) -> void {
         log::warn("syscall: refused a trap from {:X}, which is outside the vDSO", frame->ip);
+
+        // Only a user thread executes `syscall`; a kernel thread calls the
+        // functions directly. One getting here is a kernel bug, and there is
+        // no process to kill for it.
+        auto *const thread = object::ThreadDispatcher::current();
+        ASSERT(thread, "a trap from a kernel thread at {:#x}", frame->ip);
+        thread->on_policy_exception(task::PolicyCode::BadSyscall, frame->ax, frame->ip, frame->sp);
+
         // BadSyscall, not AccessDenied (design 4.5): AccessDenied is what a
         // handle lacking a right answers, and a program has to be able to tell
         // "your handle cannot do that" from "that was not a system call".

@@ -180,13 +180,31 @@ auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context) 
     verify_canary();
 
     log::warn("terminating process '{}' (koid {}) thread koid {}: type={} vector={} "
-              "error_code={:#x} rip={:#x} sp={:#x} cr2={:#x}",
+              "error_code={:#x} rip={:#x} sp={:#x} cr2={:#x} synth_code={} synth_data={:#x}",
               m_process->name(), m_process->koid(), koid(), task::to_string(context.type),
               context.vector_name, context.error_code, context.ip, context.sp,
-              context.fault_address);
+              context.fault_address, context.synth_code, context.synth_data);
     task::arch_dump_exception_context(context);
 
     m_process->kill(TASK_RETCODE_EXCEPTION_KILL);
+}
+
+auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 const data,
+                                           VirtAddr const ip, VirtAddr const sp) -> void {
+    on_user_exception(task::ExceptionContext{
+        .type = task::ExceptionType::PolicyError,
+        .vector_name = task::to_string(code),
+        .error_code = 0,
+        .ip = ip,
+        .sp = sp,
+        .fault_address = 0,
+        .synth_code = static_cast<u32>(code),
+        .synth_data = data,
+        // Raised from inside a system call: there is no exception frame, and
+        // the syscall frame's registers are the program's arguments rather
+        // than the state at a fault.
+        .frame = nullptr,
+    });
 }
 
 auto ThreadDispatcher::kill() -> void {

@@ -444,3 +444,70 @@ Zircon `VDso::ValidSyscallPC()`：精确比较返回地址是否是某个批准�
 
 **故意没做**
 精确的 SYSRET 白名单（见参照）。
+
+## 从 vDSO 之外陷入：杀掉进程，而不只是拒绝（2026-09-24）
+
+**文件**
+- `kernel/include/ours/task/exception.hpp` — `PolicyCode`（`BadSyscall = 18`，同 Zircon）
+- `kernel/object/thread_dispatcher.cpp`、`.hpp` — `on_policy_exception()`：构造合成的 PolicyError 上下文，交给 `on_user_exception()`；报告行加上 `synth_code`、`synth_data`
+- `kernel/lib/syscall/src/table.cpp` — `sys_not_from_vdso()` 调 `on_policy_exception()`；没有 ThreadDispatcher 时 ASSERT
+
+**症状**
+绕开 vDSO 自己发 `syscall` 的程序只拿到一个 `BadSyscall`，可以忽略它继续跑。"只能经 vDSO 进内核"
+这条规则被违反的代价只是一个错误码。
+
+**原因**
+伪造陷入的程序，它的下一条指令不值得信任——它已经证明自己在绕开规则。原先只拒绝，是因为那时还没有
+异常机制；第 26 条之后有了。
+
+**改法**
+改前：
+
+```cpp
+    auto sys_not_from_vdso(arch::SyscallFrame *const frame) -> void {
+        log::warn("syscall: refused a trap from {:X}, which is outside the vDSO", frame->ip);
+        frame->ax = static_cast<usize>(Status::BadSyscall);
+    }
+```
+
+改后：
+
+```cpp
+    auto sys_not_from_vdso(arch::SyscallFrame *const frame) -> void {
+        log::warn("syscall: refused a trap from {:X}, which is outside the vDSO", frame->ip);
+
+        auto *const thread = object::ThreadDispatcher::current();
+        ASSERT(thread, "a trap from a kernel thread at {:#x}", frame->ip);
+        thread->on_policy_exception(task::PolicyCode::BadSyscall, frame->ax, frame->ip, frame->sp);
+
+        frame->ax = static_cast<usize>(Status::BadSyscall);
+    }
+```
+
+`on_policy_exception()` 在对象层里造一个 `ExceptionContext{PolicyError, "BadSyscall", synth_code = 18,
+synth_data = 调用号, frame = nullptr}`，走与 CPU 异常相同的 `on_user_exception()`：报告、杀进程。
+lib/syscall 因此仍只 include 对象层的头。线程在返回路上的挂起信号检查处退出（第 21 条），不会 SYSRET 回 ring 3。
+`frame = nullptr`：陷入发生在系统调用里，没有异常帧；系统调用帧里的寄存器是程序的参数，不是故障时的状态——
+报告打 "no frame to dump"。
+
+**参照**
+Zircon `sys_invalid_syscall()`（`kernel/lib/syscalls/syscalls.cc`）：`Thread::Current::SignalPolicyException(ZX_EXCP_POLICY_CODE_BAD_SYSCALL, num)`
+后返回 `ZX_ERR_BAD_SYSCALL`；`ZX_EXCP_POLICY_CODE_BAD_SYSCALL` = 18。
+
+**验证**
+- 构建通过；两个镜像正常启动。
+- 临时在 shell 的 `--- end ---` 之后放一条裸 `syscall`（`movl $0, %eax; syscall`），后面跟一行
+  "SURVIVED"（未提交）。两个镜像都依次出现：
+
+  ```
+  syscall: refused a trap from 202AB4, which is outside the vDSO
+  terminating process 'shell' (koid 23) thread koid 27: type=PolicyError vector=BadSyscall error_code=0x0 rip=0x202ab4 sp=0x11fff40 cr2=0x0 synth_code=18 synth_data=0x0
+    no frame to dump: raised from inside a system call
+  object: thread (koid 27) of process 'shell' destroyed
+  object: process 'shell' (koid 23) destroyed
+  ```
+
+  没有 "SURVIVED"——线程没有回到 ring 3；内核继续运行。
+
+**故意没做**
+常驻的探针测试（第 30 条）连同第 27 条一起，等 `sync::Mutex` 的丢失唤醒修好再提交（`docs/repairs/260924/sync.md`）。

@@ -53,6 +53,23 @@ constexpr auto to_string(ExceptionType const type) -> char const * {
     return "?";
 }
 
+/// Which rule a PolicyError broke. The values are Zircon's
+/// ZX_EXCP_POLICY_CODE_*, for the same reason as ExceptionType's.
+enum class PolicyCode : u32 {
+    /// A system call trapped from outside the process's vDSO. The detail is
+    /// the call number the program put in the register.
+    BadSyscall = 18,
+};
+
+[[nodiscard]]
+constexpr auto to_string(PolicyCode const code) -> char const * {
+    switch (code) {
+        case PolicyCode::BadSyscall:
+            return "BadSyscall";
+    }
+    return "?";
+}
+
 /// Everything known about one user exception, gathered by the architecture
 /// where it happened and carried up to the object layer, which decides what
 /// becomes of the thread (today: its process is killed).

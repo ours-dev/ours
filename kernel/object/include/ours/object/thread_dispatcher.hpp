@@ -14,6 +14,7 @@
 
 namespace ours::task {
 struct ExceptionContext;
+enum class PolicyCode : u32;
 } // namespace ours::task
 
 namespace ours::object {
@@ -95,6 +96,16 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     auto process() const -> ProcessDispatcher const & {
         return m_process.as_ref();
     }
+
+    /// This thread broke a rule the kernel enforces -- |code|, with |data| as
+    /// its detail -- in a system call made from |ip|. Raised as a synthetic
+    /// PolicyError exception and handled like any other unhandled one: the
+    /// process is killed. Called from system-call context, interrupts on; the
+    /// thread exits at the pending-signal check on the way back out.
+    ///
+    /// Zircon counterpart: Thread::Current::SignalPolicyException(), which
+    /// sys_invalid_syscall() raises with ZX_EXCP_POLICY_CODE_BAD_SYSCALL.
+    auto on_policy_exception(task::PolicyCode code, u64 data, VirtAddr ip, VirtAddr sp) -> void;
 
     FORCE_INLINE
     auto mark_active() -> void {
