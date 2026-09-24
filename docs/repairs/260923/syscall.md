@@ -7,7 +7,8 @@
 
 **要删的东西：**
 - `OURS_SYS_PROCESS_SPAWN_BOOT`、`PROCESS_BOOT_NAME_MAX`（`system/public/ours/syscall.hpp`）
-- `ours_process_spawn_boot` 的声明与桩（`system/public/ours/vdso.hpp`、`kernel/lib/userabi/vdso/vdso.S`）
+- `ours_process_spawn_boot` 的声明（`system/public/ours/vdso.hpp`）
+- `system/public/ours/syscalls.gni` 里的 `process_spawn_boot` 条目——vDSO 桩由它生成，删掉条目桩就没了
 - `kernel/lib/syscall/src/process.cpp` 与它在 `table.cpp` 的表项
 - `//kernel/lib/syscall` 对 `//kernel/lib/userabi` 的 GN 依赖——这条边是「系统调用只碰 kernel/object」规则唯一的例外
 - `ou::process_spawn_boot`（`system/lib/ou/include/ou/process.hpp`、`src/process.cpp`）

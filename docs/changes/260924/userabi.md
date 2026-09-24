@@ -111,3 +111,101 @@ vDSO 按名字单独拒绝，尽管 `check_program()` 本身也会拒它（入�
   `USER_ASPACE_BASE`，段的原始 `p_vaddr` 只决定相对布局，不决定落点。
 - 没有给错误单独开一个 Status（类似 Linux 的 ENOEXEC）：沿用 `Loader::map()` 对畸形 ELF
   已经在用的 `InvArgs`，这个 syscall 是临时的，不值得为它扩 ABI。
+
+## vDSO 的桩改由生成器产出，`vdso.S` 只留一个宏（2026-09-24）
+
+**文件**
+- `build/syscall/gen_syscalls.py` — 新增 `--vdso-stubs`，每个调用一行宏调用
+- `system/public/BUILD.gn` — 生成动作多一个输出 `syscall_abi/vdso_stubs.inc`
+- `kernel/lib/userabi/vdso/vdso.S` — 八个手写桩换成一个 `.macro ours_syscall` 加 `#include <syscall_abi/vdso_stubs.inc>`
+- `kernel/lib/userabi/vdso/BUILD.gn` — 依赖 `syscalls.private`；删掉一段与下文矛盾的旧注释
+- `docs/repairs/260923/syscall.md` — 删除清单里的"vdso.S 的桩"改为"`syscalls.gni` 的条目"
+
+**症状**
+没有运行时症状。八个桩是同一个形状的八份拷贝，参数个数决定用哪一种（≤3、4–6、8），
+调用号来自 `<ours/syscall.hpp>` 的宏；加一个调用要同时记得选对形状、写对号、写对 sysret 标签名。
+
+**原因**
+桩的"形状"和"清单"是两件事：形状（寄存器怎么搬、7/8 号参数怎么从栈上取、sysret 标签
+怎么放）值得写一次、读一次；清单（有哪些调用、各自几个参数、几号）必须跟描述走。手写时两者
+混在一起，形状被复制了八次，清单散在八处。
+
+**改法**
+改前（每个调用一段，共八段）：
+
+```asm
+.balign 16
+.globl ours_channel_write
+.type ours_channel_write, @function
+ours_channel_write:
+    mov %rcx, %r10
+    mov $OURS_SYS_CHANNEL_WRITE, %eax
+    syscall
+.globl OURS_VDSO_SYSRET_CHANNEL_WRITE
+.hidden OURS_VDSO_SYSRET_CHANNEL_WRITE
+OURS_VDSO_SYSRET_CHANNEL_WRITE:
+    ret
+.size ours_channel_write, . - ours_channel_write
+```
+
+改后（`vdso.S` 里一个宏，按参数个数分三支，noreturn 以 `ud2` 结尾）：
+
+```asm
+.macro ours_syscall name, sysret, number, nargs, noreturn
+.balign 16
+.globl \name
+.type \name, @function
+\name:
+.if \nargs <= 3
+.elseif \nargs <= 6
+    mov %rcx, %r10
+.elseif \nargs == 8
+    push %r12
+    push %r13
+    mov %rcx, %r10
+    mov 24(%rsp), %r12
+    mov 32(%rsp), %r13
+.else
+    .error "a vDSO stub takes 0 to 6, or 8, arguments"
+.endif
+    mov $\number, %eax
+    syscall
+...
+.endm
+
+#include <syscall_abi/vdso_stubs.inc>
+```
+
+生成的清单：
+
+```
+ours_syscall ours_channel_write, OURS_VDSO_SYSRET_CHANNEL_WRITE, 4, 6, 0
+ours_syscall ours_channel_read, OURS_VDSO_SYSRET_CHANNEL_READ, 5, 8, 0
+...
+```
+
+原来散在各个桩上的说明（rcx/r11 为什么不能当参数、第 4 个参数为什么搬到 r10、7/8 号参数的
+栈图、32 位参数为什么不清高半）集中到宏的注释上。指令顺序保持原样（先 `mov %rcx,%r10`
+再 `mov $n,%eax`；8 参数先 push），这是字节级相同的前提。
+
+`vdso.S` 不再 include `<ours/syscall.hpp>` 和 `<ours/vdso.hpp>`：号在生成的清单里，
+声明它根本用不到。
+
+**参照**
+Zircon `kernel/lib/userabi/vdso/syscalls-x86.S` 的 `m_syscall` 宏，由 kazoo 生成的
+`syscalls-stubs.S` 逐行实例化——同一种"手写形状、生成清单"的切分。
+
+**验证**
+改动前后各导出一次 vDSO 的三样东西并比对，全部相同：
+
+| 比对项 | 结果 |
+|---|---|
+| `llvm-objcopy --only-section=.text -O binary`（139 字节） | 相同 |
+| `llvm-readelf --dyn-syms`，按名字排序（8 个 `ours_*`） | 相同 |
+| `llvm-nm -n`（17 个符号，含 8 个 `OURS_VDSO_SYSRET_*`） | 相同 |
+
+干净构建通过；两个镜像启动正常，dev 镜像的 OBI 哈希与上一条提交时完全一致。
+
+**故意没做**
+- 没有给桩加 CFI：原来的桩也没有，加了就不再字节相同；等有需要从 vDSO 里回溯的场景再说。
+- 7 参数的形状没有写：生成器拒绝 7 参数，第一个需要的调用是 P1-C 的 `vmar_map`。

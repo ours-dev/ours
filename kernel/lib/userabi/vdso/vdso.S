@@ -20,190 +20,106 @@
 // because the return-address labels have to be exact: a stub that did anything
 // besides move the number into %eax and trap would be a place for the ABI to
 // drift.
-
-#include <ours/syscall.hpp>
-#include <ours/vdso.hpp>
-
-// ---- The stubs -------------------------------------------------------------
 //
-// Each stub is `.globl` with default visibility, which is what puts it in
-// .dynsym: this object is linked -shared, and .dynsym is how a program that
+// The stubs themselves are no longer written here. Each is one line of
+// syscall_abi/vdso_stubs.inc, generated from //system/public/ours/syscalls.gni
+// (design 4.7), invoking the one macro below. What is left by hand is the
+// shape of a stub, written once, rather than eight copies of it that had to
+// agree with each other and with the kernel.
+
+// ---- The stub --------------------------------------------------------------
+//
+// ours_syscall name, sysret, number, nargs, noreturn
+//
+//   name      the exported entry point, ours_<call>
+//   sysret    the label on the instruction after `syscall`
+//   number    the call number, private to this image and the kernel (D8)
+//   nargs     how many arguments the call takes
+//   noreturn  1 when the call never comes back
+//
+// The entry point is `.globl` with default visibility, which is what puts it
+// in .dynsym: this object is linked -shared, and .dynsym is how a program that
 // merely *calls* ours_debug_write() gets bound to it at load time, with no
-// table lookup of its own. The OURS_VDSO_SYSRET_* return addresses stay
-// `.hidden` -- they are this image's own business, and an exported symbol is a
-// promise to something outside it.
-
-.section .text, "ax", @progbits
-
-// ours_debug_write(char const *buffer, usize length) -> Status
+// table lookup of its own. The sysret label stays `.hidden` -- it is this
+// image's own business, and an exported symbol is a promise to something
+// outside it. The kernel reads the return address out of the syscall frame
+// and refuses any trap whose return address is outside this image; that
+// address is the label's.
 //
-// The arguments arrive in %rdi and %rsi under the ordinary SysV convention and
-// stay there: the syscall ABI was chosen to match it for the first six
-// arguments precisely so a stub is the trap and nothing else. %eax carries the
-// number in and the Status out.
+// Registers. The arguments arrive in the SysV argument registers and the
+// kernel reads them from %rdi, %rsi, %rdx, %r10, %r8, %r9, %r12, %r13 -- the
+// SysV order for the first six, which is what lets a short stub be the trap
+// and nothing else. %eax carries the number in and the Status out.
 //
-// %rcx and %r11 are clobbered by the SYSCALL instruction itself, which is why
-// they can never be argument registers -- the fourth SysV argument register is
-// %r10 on this path, not %rcx. This stub takes two arguments, so it does not
-// have to move anything.
+//   - %rcx and %r11 can never be argument registers: the SYSCALL instruction
+//     overwrites both, with the return address and RFLAGS, before the kernel
+//     sees them. So a fourth argument, which SysV passes in %rcx, is moved to
+//     %r10 first -- the register the kernel reads it from.
+//
+//   - SysV puts the seventh and eighth arguments on the caller's stack, just
+//     above the return address, and the kernel reads them from %r12 and %r13
+//     (the syscall frame saves both). Those two are callee-saved, so the stub
+//     owes its caller their old values: it pushes them, loads the arguments
+//     into them, traps, and restores them.
+//
+//       Stack on entry:           after both pushes:
+//          0(%rsp)  return addr      0(%rsp)  saved %r13
+//          8(%rsp)  argument 7       8(%rsp)  saved %r12
+//         16(%rsp)  argument 8      16(%rsp)  return addr
+//                                   24(%rsp)  argument 7
+//                                   32(%rsp)  argument 8
+//
+//   - Seven arguments has no shape yet, and the generator refuses it: it needs
+//     a stub that saves and loads %r12 alone, and the first call to need one
+//     is vmar_map (design P1-C). More than eight is refused outright.
+//
+// A 32-bit argument -- a handle, a count, an option word -- is left as it is:
+// SysV leaves the upper half of its register unspecified, and the kernel
+// truncates rather than trusting it to be zero, so there is nothing to clear.
+//
+// A noreturn call ends in ud2 rather than ret: returning from it would be a
+// kernel bug, and a fault at the next instruction says so where a `ret` would
+// wander off into whatever the caller had on its stack.
+//
+// Zircon's vDSO has the same register plan and the same offsets (0x18 and
+// 0x20) for arguments 7 and 8: the m_syscall macro in
+// kernel/lib/userabi/vdso/syscalls-x86.S.
+.macro ours_syscall name, sysret, number, nargs, noreturn
 .balign 16
-.globl ours_debug_write
-.type ours_debug_write, @function
-ours_debug_write:
-    mov $OURS_SYS_DEBUG_WRITE, %eax
-    syscall
-    // The kernel reads the return address out of the syscall frame and refuses
-    // any trap whose return address is outside this image. That address is the
-    // one right here, one byte past `syscall`.
-.globl OURS_VDSO_SYSRET_DEBUG_WRITE
-.hidden OURS_VDSO_SYSRET_DEBUG_WRITE
-OURS_VDSO_SYSRET_DEBUG_WRITE:
-    ret
-.size ours_debug_write, . - ours_debug_write
-
-// ours_command_list(char *buffer, usize length) -> Status
-//
-// Same shape as the stub above, and deliberately so: a stub that did anything
-// besides move the number into %eax and trap would be a place for the ABI to
-// drift between the two.
-.balign 16
-.globl ours_command_list
-.type ours_command_list, @function
-ours_command_list:
-    mov $OURS_SYS_COMMAND_LIST, %eax
-    syscall
-.globl OURS_VDSO_SYSRET_COMMAND_LIST
-.hidden OURS_VDSO_SYSRET_COMMAND_LIST
-OURS_VDSO_SYSRET_COMMAND_LIST:
-    ret
-.size ours_command_list, . - ours_command_list
-
-// ours_handle_close(HandleValue handle) -> Status
-//
-// One argument, already in %edi. The kernel reads it as a u32 and ignores the
-// upper half of %rdi, which the SysV ABI leaves unspecified for a 32-bit
-// argument -- so there is nothing to clear here either.
-.balign 16
-.globl ours_handle_close
-.type ours_handle_close, @function
-ours_handle_close:
-    mov $OURS_SYS_HANDLE_CLOSE, %eax
-    syscall
-.globl OURS_VDSO_SYSRET_HANDLE_CLOSE
-.hidden OURS_VDSO_SYSRET_HANDLE_CLOSE
-OURS_VDSO_SYSRET_HANDLE_CLOSE:
-    ret
-.size ours_handle_close, . - ours_handle_close
-
-// ours_channel_create(ChannelCreateOptions options, HandleValue *out0,
-//                     HandleValue *out1) -> Status
-//
-// Three arguments, all in their SysV registers already.
-.balign 16
-.globl ours_channel_create
-.type ours_channel_create, @function
-ours_channel_create:
-    mov $OURS_SYS_CHANNEL_CREATE, %eax
-    syscall
-.globl OURS_VDSO_SYSRET_CHANNEL_CREATE
-.hidden OURS_VDSO_SYSRET_CHANNEL_CREATE
-OURS_VDSO_SYSRET_CHANNEL_CREATE:
-    ret
-.size ours_channel_create, . - ours_channel_create
-
-// ours_channel_write(HandleValue channel, ChannelWriteOptions options,
-//                    void const *bytes, u32 num_bytes,
-//                    HandleValue const *handles, u32 num_handles) -> Status
-//
-// The first stub with a fourth argument. SysV passes it in %rcx, which the
-// SYSCALL instruction is about to overwrite with the return address, so it
-// moves to %r10 -- the register the kernel reads it from. %r8 and %r9 are
-// already where the kernel expects them.
-.balign 16
-.globl ours_channel_write
-.type ours_channel_write, @function
-ours_channel_write:
+.globl \name
+.type \name, @function
+\name:
+.if \nargs <= 3
+.elseif \nargs <= 6
     mov %rcx, %r10
-    mov $OURS_SYS_CHANNEL_WRITE, %eax
-    syscall
-.globl OURS_VDSO_SYSRET_CHANNEL_WRITE
-.hidden OURS_VDSO_SYSRET_CHANNEL_WRITE
-OURS_VDSO_SYSRET_CHANNEL_WRITE:
-    ret
-.size ours_channel_write, . - ours_channel_write
-
-// ours_channel_read(HandleValue channel, ChannelReadOptions options,
-//                   void *bytes, HandleValue *handles, u32 num_bytes,
-//                   u32 num_handles, u32 *actual_bytes,
-//                   u32 *actual_handles) -> Status
-//
-// Eight arguments. The first six arrive in registers; SysV puts the seventh
-// and eighth on the caller's stack, just above the return address, and the
-// kernel reads them from %r12 and %r13 (the frame saves both). Those two are
-// callee-saved, so this stub owes its caller their old values: it pushes
-// them, loads the arguments into them, traps, and restores them.
-//
-// Stack on entry:           after both pushes:
-//    0(%rsp)  return addr      0(%rsp)  saved %r13
-//    8(%rsp)  actual_bytes     8(%rsp)  saved %r12
-//   16(%rsp)  actual_handles  16(%rsp)  return addr
-//                             24(%rsp)  actual_bytes
-//                             32(%rsp)  actual_handles
-//
-// Zircon's vDSO does exactly this, at the same offsets (0x18 and 0x20):
-// the m_syscall macro in kernel/lib/userabi/vdso/syscalls-x86.S.
-.balign 16
-.globl ours_channel_read
-.type ours_channel_read, @function
-ours_channel_read:
+.elseif \nargs == 8
     push %r12
     push %r13
     mov %rcx, %r10
     mov 24(%rsp), %r12
     mov 32(%rsp), %r13
-    mov $OURS_SYS_CHANNEL_READ, %eax
+.else
+    .error "a vDSO stub takes 0 to 6, or 8, arguments"
+.endif
+    mov $\number, %eax
     syscall
-.globl OURS_VDSO_SYSRET_CHANNEL_READ
-.hidden OURS_VDSO_SYSRET_CHANNEL_READ
-OURS_VDSO_SYSRET_CHANNEL_READ:
+.globl \sysret
+.hidden \sysret
+\sysret:
+.if \noreturn
+    ud2
+.else
+.if \nargs == 8
     pop %r13
     pop %r12
+.endif
     ret
-.size ours_channel_read, . - ours_channel_read
+.endif
+.size \name, . - \name
+.endm
 
-// ours_object_wait_one(HandleValue handle, Signals signals, Instant deadline,
-//                      Signals *observed) -> Status
-//
-// Four arguments: the fourth moves from %rcx to %r10, as in channel_write.
-.balign 16
-.globl ours_object_wait_one
-.type ours_object_wait_one, @function
-ours_object_wait_one:
-    mov %rcx, %r10
-    mov $OURS_SYS_OBJECT_WAIT_ONE, %eax
-    syscall
-.globl OURS_VDSO_SYSRET_OBJECT_WAIT_ONE
-.hidden OURS_VDSO_SYSRET_OBJECT_WAIT_ONE
-OURS_VDSO_SYSRET_OBJECT_WAIT_ONE:
-    ret
-.size ours_object_wait_one, . - ours_object_wait_one
+.section .text, "ax", @progbits
 
-// ours_process_spawn_boot(HandleValue job, char const *name, usize name_size,
-//                         HandleValue bootstrap) -> Status
-//
-// TEMPORARY (see <ours/vdso.hpp>). Four arguments: the fourth moves from %rcx
-// to %r10.
-.balign 16
-.globl ours_process_spawn_boot
-.type ours_process_spawn_boot, @function
-ours_process_spawn_boot:
-    mov %rcx, %r10
-    mov $OURS_SYS_PROCESS_SPAWN_BOOT, %eax
-    syscall
-.globl OURS_VDSO_SYSRET_PROCESS_SPAWN_BOOT
-.hidden OURS_VDSO_SYSRET_PROCESS_SPAWN_BOOT
-OURS_VDSO_SYSRET_PROCESS_SPAWN_BOOT:
-    ret
-.size ours_process_spawn_boot, . - ours_process_spawn_boot
+#include <syscall_abi/vdso_stubs.inc>
 
 .section .note.GNU-stack, "", @progbits

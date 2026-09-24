@@ -51,12 +51,18 @@ if (current_toolchain == default_toolchain) {
     script = "//build/syscall/gen_syscalls.py"
     _description = "$target_gen_dir/syscalls.json"
     _numbers = "$target_gen_dir/private/syscall_abi/numbers.hpp"
+    _vdso_stubs = "$target_gen_dir/private/syscall_abi/vdso_stubs.inc"
     sources = [ _description ]
-    outputs = [ _numbers ]
+    outputs = [
+      _numbers,
+      _vdso_stubs,
+    ]
     args = [
       rebase_path(_description, root_build_dir),
       "--numbers",
       rebase_path(_numbers, root_build_dir),
+      "--vdso-stubs",
+      rebase_path(_vdso_stubs, root_build_dir),
     ]
     deps = [ ":syscalls.json" ]
     visibility = [ ":syscalls.private" ]

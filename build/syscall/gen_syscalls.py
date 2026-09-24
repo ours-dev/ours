@@ -213,12 +213,33 @@ def render_numbers(calls: List[Call]) -> str:
     return "\n".join(lines)
 
 
+def render_vdso_stubs(calls: List[Call]) -> str:
+    """One `ours_syscall` line per call, for the macro in the vDSO's vdso.S.
+
+    The macro is written by hand and this only instantiates it: the shape of
+    a stub is assembly worth reading once, and the list of stubs is the part
+    that has to follow the description.
+    """
+    # `//` comments are fine: vdso.S goes through the C preprocessor, which
+    # strips them before the assembler sees the line.
+    lines = [HEADER_BANNER]
+    for call in calls:
+        noreturn = 1 if "noreturn" in call.attrs else 0
+        lines.append(
+            f"ours_syscall ours_{call.name}, OURS_VDSO_SYSRET_{call.upper}, "
+            f"{call.number}, {len(call.args)}, {noreturn}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("description", type=pathlib.Path,
                         help="the description as JSON, from generated_file()")
     parser.add_argument("--numbers", type=pathlib.Path,
                         help="write the private call-number header here")
+    parser.add_argument("--vdso-stubs", type=pathlib.Path,
+                        help="write the vDSO's stub instantiations here")
     args = parser.parse_args()
 
     try:
@@ -229,6 +250,8 @@ def main() -> int:
 
     if args.numbers:
         write_if_changed(args.numbers, render_numbers(calls))
+    if args.vdso_stubs:
+        write_if_changed(args.vdso_stubs, render_vdso_stubs(calls))
     return 0
 
 

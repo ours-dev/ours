@@ -48,11 +48,10 @@ kernel_elf_binary("vdso") {
 
   sources = [ "vdso.S" ]
 
-  # The entry point is the export table, not a function -- nothing ever jumps
-  # to a vDSO. This is the whole mechanism by which a program with no dynamic
-  # linker finds the exports: the kernel already reads e_entry to load an
-  # image, so the table costs no new machinery on either side. Zircon points
-  # e_entry at _zx_process_exit for the same reason.
+  # The stubs are generated from //system/public/ours/syscalls.gni; vdso.S
+  # holds only the macro they instantiate.
+  deps = [ "//system/public:syscalls.private" ]
+
   # No -Wl,-e: nothing jumps to a vDSO, and nothing needs to find anything at
   # its entry point any more. It used to point at the export table, which was
   # how a program with no dynamic linker reached the stubs; the stubs are in
