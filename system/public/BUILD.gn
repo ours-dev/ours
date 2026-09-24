@@ -25,3 +25,59 @@ config("public.config") {
   visibility = [ "*" ]
   include_dirs = [ "." ]
 }
+
+# The system-call ABI, generated from one description (design 4.7).
+#
+# The outputs do not depend on the toolchain that asks for them, so they are
+# produced once, in the default toolchain, and every other toolchain reaches
+# them through :syscalls.private below. The default toolchain describes actions
+# and the metadata graph and compiles nothing; that is where an action whose
+# product is shared by the kernel, the vDSO and every user program belongs.
+import("ours/syscalls.gni")
+
+_syscalls_gen_dir =
+    get_label_info(":syscalls.gen($default_toolchain)", "target_gen_dir")
+
+if (current_toolchain == default_toolchain) {
+  # The description as JSON: GN parses the .gni, so the generator never has to.
+  generated_file("syscalls.json") {
+    outputs = [ "$target_gen_dir/syscalls.json" ]
+    contents = ours_syscalls
+    output_conversion = "json"
+    visibility = [ ":syscalls.gen" ]
+  }
+
+  action("syscalls.gen") {
+    script = "//build/syscall/gen_syscalls.py"
+    _description = "$target_gen_dir/syscalls.json"
+    _numbers = "$target_gen_dir/private/syscall_abi/numbers.hpp"
+    sources = [ _description ]
+    outputs = [ _numbers ]
+    args = [
+      rebase_path(_description, root_build_dir),
+      "--numbers",
+      rebase_path(_numbers, root_build_dir),
+    ]
+    deps = [ ":syscalls.json" ]
+    visibility = [ ":syscalls.private" ]
+  }
+}
+
+config("syscalls.private.config") {
+  include_dirs = [ "$_syscalls_gen_dir/private" ]
+  visibility = [ ":syscalls.private" ]
+}
+
+# The half of the generated ABI that is nobody's business but the kernel's and
+# the vDSO's: the call numbers, and what is built from them. A program names a
+# call by its vDSO symbol and never sees a number (design D8), which is what
+# the visibility below enforces -- a user program that depended on this would
+# be depending on the one thing the vDSO exists to hide.
+group("syscalls.private") {
+  public_deps = [ ":syscalls.gen($default_toolchain)" ]
+  public_configs = [ ":syscalls.private.config" ]
+  visibility = [
+    "//kernel/lib/syscall/*",
+    "//kernel/lib/userabi/vdso/*",
+  ]
+}

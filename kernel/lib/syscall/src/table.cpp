@@ -1,6 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
+#include <syscall_abi/numbers.hpp>
 
 #include <array>
 
@@ -221,6 +222,19 @@ namespace {
 } // namespace
 
 extern "C" constinit auto SYSCALL_TABLE = make_syscall_table();
+
+// The generated numbers against the hand-written ones, until the next commit
+// makes the table out of the generated shims and the macros go. An entry moved
+// in syscalls.gni without the header following it -- or the reverse -- stops
+// the build here instead of sending one call's arguments to another's handler.
+static_assert(syscall_abi::SYS_DEBUG_WRITE == OURS_SYS_DEBUG_WRITE);
+static_assert(syscall_abi::SYS_COMMAND_LIST == OURS_SYS_COMMAND_LIST);
+static_assert(syscall_abi::SYS_HANDLE_CLOSE == OURS_SYS_HANDLE_CLOSE);
+static_assert(syscall_abi::SYS_CHANNEL_CREATE == OURS_SYS_CHANNEL_CREATE);
+static_assert(syscall_abi::SYS_CHANNEL_WRITE == OURS_SYS_CHANNEL_WRITE);
+static_assert(syscall_abi::SYS_CHANNEL_READ == OURS_SYS_CHANNEL_READ);
+static_assert(syscall_abi::SYS_OBJECT_WAIT_ONE == OURS_SYS_OBJECT_WAIT_ONE);
+static_assert(syscall_abi::SYS_PROCESS_SPAWN_BOOT == OURS_SYS_PROCESS_SPAWN_BOOT);
 
 /// The one door, and the only place the vDSO rule is checked.
 ///

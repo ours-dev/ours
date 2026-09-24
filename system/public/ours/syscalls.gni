@@ -1,0 +1,304 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The system calls, described once.
+#
+# Everything that has to agree about a call is generated from this list by
+# //build/syscall/gen_syscalls.py: the private call numbers the kernel and the
+# vDSO share, the vDSO stubs, the extern "C" declarations a program calls, the
+# kernel's typed sys_* declarations and the shims that unpack a register frame
+# into them. Before this file each of those was written by hand, in four
+# places, kept in step by nothing but care; a handler whose definition drifts
+# from the entry here now fails to link (design 4.7).
+#
+# Adding a call is three things by hand: an entry here, the body of
+# sys_<name>() in //kernel/lib/syscall, and its ou:: wrapper.
+#
+# The position of an entry is its call number. The numbers are private to the
+# kernel and the vDSO -- a program names a call by its vDSO symbol, never by a
+# number -- so reordering is allowed, but it changes both sides at once and
+# nothing else, which is exactly what a private number is for.
+#
+# Each entry:
+#
+#   name    The call, without the ours_ prefix. The vDSO exports ours_<name>,
+#           the kernel defines sys_<name>.
+#   brief   One line.
+#   doc     More lines, as a list of strings. Written for the program that
+#           calls it; what the kernel does inside belongs with sys_<name>.
+#   args    In order, at most 8, and not exactly 7 (the vDSO has no 7-argument
+#           stub yet; the first call to need one is vmar_map, design P1-C).
+#           Each is a scope:
+#             name     The parameter's name.
+#             type     A primitive (u8 .. u64, i8 .. i64, usize, char, void) or
+#                      a type in namespace ours.
+#             dir      Only on a pointer, and what makes it one: "in" (the
+#                      kernel reads through it) or "out" (it writes).
+#             count    Only on a pointer: the name of the argument that holds
+#                      its length in elements. Without one the pointer names
+#                      exactly one element.
+#             release  Only on a HandleValue: true when the call consumes the
+#                      handle whatever its outcome.
+#   attrs   Any of "blocking" (may wait), "noreturn" (never comes back; the
+#           stub ends in ud2), "debug" (a debug facility with no counterpart
+#           in a finished system).
+#   ret     The return type. "Status" unless the call returns a plain value.
+
+ours_syscalls = [
+  {
+    name = "debug_write"
+    brief = "Writes |length| bytes of |buffer| to the kernel's debug console."
+    doc = [
+      "A debug facility, not a console: it exists so a program can prove it",
+      "reached ring 3 and got back. One call takes at most MAX_DEBUG_WRITE",
+      "bytes (<ours/syscall.hpp>) and answers OutOfRange past it rather than",
+      "truncating, so that a program cannot hold a CPU in the kernel for as",
+      "long as it likes by asking for a gigabyte of output.",
+    ]
+    args = [
+      {
+        name = "buffer"
+        type = "char"
+        dir = "in"
+        count = "length"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = [ "debug" ]
+    ret = "Status"
+  },
+  {
+    name = "command_list"
+    brief = "Writes the kshell command registry into |buffer| as text."
+    doc = [
+      "One command per line, always NUL terminated. NoSpace when the registry",
+      "does not fit; what did fit is still terminated, so a caller can show",
+      "it and ask again with more room.",
+    ]
+    args = [
+      {
+        name = "buffer"
+        type = "char"
+        dir = "out"
+        count = "length"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = [ "debug" ]
+    ret = "Status"
+  },
+  {
+    name = "handle_close"
+    brief = "Closes |handle|."
+    doc = [
+      "HANDLE_INVALID is accepted and ignored; any other value that names",
+      "nothing in the caller's table answers BadHandle. No right is needed to",
+      "give a handle up. When it was the last handle to its object, the",
+      "object learns it has no holders left.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "HandleValue"
+        release = true
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "channel_create"
+    brief = "Makes a channel and writes a handle to each end into |out0| and |out1|."
+    doc = [
+      "Both values are written out before either handle is installed, so a",
+      "bad out-pointer leaves nothing behind.",
+    ]
+    args = [
+      {
+        name = "options"
+        type = "ChannelCreateOptions"
+      },
+      {
+        name = "out0"
+        type = "HandleValue"
+        dir = "out"
+      },
+      {
+        name = "out1"
+        type = "HandleValue"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "channel_write"
+    brief = "Queues |num_bytes| of |bytes| on the channel's other end."
+    doc = [
+      "Handles in a message are not supported yet: |num_handles| must be 0.",
+      "At most CHANNEL_MAX_MSG_BYTES bytes and CHANNEL_MAX_MSG_HANDLES",
+      "handles (<ours/syscall.hpp>).",
+    ]
+    args = [
+      {
+        name = "channel"
+        type = "HandleValue"
+      },
+      {
+        name = "options"
+        type = "ChannelWriteOptions"
+      },
+      {
+        name = "bytes"
+        type = "void"
+        dir = "in"
+        count = "num_bytes"
+      },
+      {
+        name = "num_bytes"
+        type = "u32"
+      },
+      {
+        name = "handles"
+        type = "HandleValue"
+        dir = "in"
+        count = "num_handles"
+      },
+      {
+        name = "num_handles"
+        type = "u32"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "channel_read"
+    brief = "Takes the next message on the channel into |bytes|."
+    doc = [
+      "ShouldWait when there is none yet, PeerClosed when there is none and",
+      "never will be, BufferTooSmall (with the sizes in |actual_*|) when it",
+      "does not fit.",
+    ]
+    args = [
+      {
+        name = "channel"
+        type = "HandleValue"
+      },
+      {
+        name = "options"
+        type = "ChannelReadOptions"
+      },
+      {
+        name = "bytes"
+        type = "void"
+        dir = "out"
+        count = "num_bytes"
+      },
+      {
+        name = "handles"
+        type = "HandleValue"
+        dir = "out"
+        count = "num_handles"
+      },
+      {
+        name = "num_bytes"
+        type = "u32"
+      },
+      {
+        name = "num_handles"
+        type = "u32"
+      },
+      {
+        name = "actual_bytes"
+        type = "u32"
+        dir = "out"
+      },
+      {
+        name = "actual_handles"
+        type = "u32"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "object_wait_one"
+    brief = "Waits until the object asserts any of |signals|."
+    doc = [
+      "Returns when the object asserts any of |signals|, the handle is",
+      "closed, or |deadline| passes (0 polls; INSTANT_INFINITE waits for",
+      "ever), and writes what was asserted into |observed|.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "HandleValue"
+      },
+      {
+        name = "signals"
+        type = "Signals"
+      },
+      {
+        name = "deadline"
+        type = "Instant"
+      },
+      {
+        name = "observed"
+        type = "Signals"
+        dir = "out"
+      },
+    ]
+    attrs = [ "blocking" ]
+    ret = "Status"
+  },
+  {
+    # TEMPORARY: goes when a user-space loader can build a process out of
+    # VMOs and VMARs (design P1-C), and with it this entry, which is all that
+    # removing the call takes on this side (docs/repairs/260923/syscall.md).
+    name = "process_spawn_boot"
+    brief = "TEMPORARY: starts a program from the kernel package as a new process."
+    doc = [
+      "Goes when a user-space loader exists (design P1-C).",
+      "",
+      "Starts the program named by |name_size| bytes of |name| under |job|,",
+      "which must grant ManageProcess. |bootstrap| leaves the caller's table",
+      "whatever the outcome and becomes the new process's one handle, its",
+      "value in the program's %rdi; HANDLE_INVALID starts it with none.",
+      "NotFound when the package has no such file. Returns no handle to the",
+      "process: nothing can wait on or kill one yet.",
+    ]
+    args = [
+      {
+        name = "job"
+        type = "HandleValue"
+      },
+      {
+        name = "name"
+        type = "char"
+        dir = "in"
+        count = "name_size"
+      },
+      {
+        name = "name_size"
+        type = "usize"
+      },
+      {
+        name = "bootstrap"
+        type = "HandleValue"
+        release = true
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+]
