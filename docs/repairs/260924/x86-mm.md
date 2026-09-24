@@ -36,3 +36,9 @@ release 下则对空指针取锁。
 Linux 的做法：`init_cpu_to_node()` 发现节点不在线时调 `init_memory_less_node()`，
 建一个没有内存的 `pg_data_t`，分配回退到最近的有内存节点。本项目要么同样建空节点，
 要么在认领时把这类 CPU 改挂到距离最近的有内存节点上。
+
+## 4. 从已映射但不可执行的用户页取指，缺页被当成伪缺页无限重试（已交接）
+
+`x86_handle_page_fault()` 只把错误码的 P/W/U 位翻译成 `VmfCause`，丢掉了第 4 位（取指）；`VmMapping::fault()` 只对写检查
+权限，页已存在且读写权限一致就回 Ok。用户程序跳进自己的栈（NX）时，同一条取指永远缺页，进程不会被杀。
+改法照 Zircon：`VMM_PF_FLAG_INSTRUCTION`，映射没有执行权限时拒绝取指缺页。

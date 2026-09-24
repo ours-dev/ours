@@ -41,3 +41,20 @@ unpark 一个已是 Ready/Running 的线程（dbg_1 触发 `scheduler.cpp` 的�
 每 CPU 模板里的空指针，地址折叠成常量 `offsetof(Thread, m_tid)` = 0x70，于是生成 `movq %gs:0x70, ...`。
 每个 prof 样本的 tid 都是垃圾值。改为 `Thread::Current::get()->m_tid`。`PmNode::Current::hard_affinity()`
 （`kernel/mm/include/ours/mm/pm_node.hpp`）是同一个错误，属于 mm。
+
+## 5. `gktl::DeferredAction::invoke()` 不标记已执行，`suspend_or_kill` 的置信号动作跑两次（已交接）
+
+第二次在 PI 锁释放之后，是一次锁外的 `m_signals` 读改写，可能冲掉另一颗 CPU 在锁下置的 Kill。
+
+## 6. `SPAWNED_THREADS_LOCK` 以普通 Guard 获取（已交接）
+
+`spawn_etc`、`erase_from_global_list`、`init_first` 拿它时可被抢占；`exit()` 在关中断、关抢占、持 PI 锁时也要拿它。
+同一 CPU 上被抢占的持有者与退出的线程互等，永久死锁。改为 `Guard<SpinLock, IrqSave>`。
+
+## 7. 可 join 线程的退出循环在关中断下 `hlt`（已交接）
+
+`try_wake_joiners()` 恒返回 false，循环永不结束，且持着 PI 锁。今天没有可 join 的线程会走到。
+
+## 8. 杀一个正在另一颗 CPU 上运行的线程，不发 IPI（已交接）
+
+`suspend_or_kill()` 的 Running 分支只置信号位。目标线程要等下一次从 ring 3 进内核才处理。Zircon 在此调 `mp_interrupt()`。
