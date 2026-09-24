@@ -97,3 +97,78 @@ NMI 另有 `x86_nmi_handler()`。
   会死锁，这是另一件事。
 - IST 仍未配置（`docs/repairs/260923/x86-kernel.md` #1）：NMI/#DF/#MC 在坏栈上仍然是致命的，
   这一条只保证它们不进入簿记、抢占和信号路径。
+
+## 来自 ring 3 的 CPU 异常杀掉进程，而不是停掉内核（2026-09-24）
+
+**文件**
+- `kernel/include/ours/task/exception.hpp`（新建，内核私有）— `ExceptionType`（数值同 `ZX_EXCP_*`）、`ExceptionContext`、`arch_dump_exception_context()` 的声明
+- `kernel/arch/x86/kernel/faults.cpp` — 分发时识别来自用户态的异常并返回上下文；中断收尾之后 `deliver_user_exception()`；`arch_dump_exception_context()`
+- `kernel/arch/x86/mm/fault.cpp`、`include/ours/arch/x86/faults.hpp` — `x86_handle_page_fault()` 改为接收调用者先读出的 CR2
+- `kernel/arch/x86/lib/arch/include/arch/x86/interrupt.hpp` — `to_string(IrqVec)` 补上几个用户能触发的向量名
+- `kernel/include/ours/task/thread.hpp`、`kernel/kernel/task/thread.cpp` — `Thread::Current::on_user_exception()`
+- `kernel/object/thread_dispatcher.cpp`、`.hpp` — `ThreadDispatcher::on_user_exception()`：报告并 `kill(TASK_RETCODE_EXCEPTION_KILL)`
+- `kernel/mm/include/ours/mm/stack.hpp` — `Stack::base()`
+
+**症状**
+任何用户程序执行一条 `ud2`、读一个未映射的地址、除以零，内核都会 panic 停机——异常分发不看来自哪一环，
+一律走 `panic_exception()`。P1-A 完成判据的后一半就是这件事。
+
+**原因**
+用户态的故障是程序自己的，它的后果应该落在程序身上。内核停机只该留给内核自己的错误。
+
+**改法**
+分三段，各在自己的层里：
+
+1. **架构层认出它、描述它。** `x86_dispatch_exception()` 多一个出参；来自 CPL3、且属于用户能引起的
+   那一类向量时，填一个 `ExceptionContext`（类型、向量名、错误码、rip、sp、CR2、帧）并返回 true，
+   而不是处理或 panic。映射照 Zircon：#UD → UndefinedInstruction；地址空间解决不了的 #PF →
+   FatalPageFault；#DB → HwBreakpoint（主人决定：程序能用 popf 置 TF，没有调试器接手时放它回去
+   等于让它随意刷串口）；#BP → SwBreakpoint；#DE、#OF、#BR、#NP、#SS、#GP、#MF、#AC、#XM、#CP →
+   General。NMI、#NM、#DF、#CSO、#TS、#MC、#VE、#VC 不论哪一环都仍是致命的。
+   CR2 在分发的第一步读出、传给缺页处理——此时中断仍关着，而处理过程可能自己再缺页、覆盖 CR2。
+
+2. **中断收尾之后再交付。** 第 19 条的尾部（postamble → 抢占）之后，来自用户态且有异常时调
+   `deliver_user_exception()`：断言帧在本线程的内核栈上；开中断；`Thread::Current::on_user_exception()`；
+   关中断；`process_pending_signals()`——Kill 在这里生效，线程退出，不再返回；万一返回，panic。
+
+   ```cpp
+    if (from_user) {
+        if (raised) {
+            deliver_user_exception(frame, user_exception);
+        }
+        Thread::Current::process_pending_signals();
+    }
+   ```
+
+3. **对象层决定后果。** `ThreadDispatcher::on_user_exception()` 打一行报告和寄存器，然后
+   `m_process->kill(TASK_RETCODE_EXCEPTION_KILL)`。死的是进程而不是线程（Zircon 同）：一个线程出了故障，
+   它的进程里没有别的东西可以被信任能收拾残局。报告用 warn 级：程序死于自己的 bug 不是内核错误。
+   没有异常通道（`zx_task_create_exception_channel`），所以现在没有人能先接住它。
+
+**参照**
+- Zircon `x86_exception_handler()` / `handle_exception_types()` / `x86_unhandled_exception()` /
+  `x86_pfe_handler()`（`kernel/arch/x86/exceptions_c.cc`）、`dispatch_user_exception()`、
+  `arch_dump_exception_context()`（无帧时打 "no frame to dump"）。
+- `ZX_EXCP_*`（`zircon/syscalls/exception.h`）、`ZX_TASK_RETCODE_EXCEPTION_KILL`。
+
+**验证**
+- 构建通过；两个镜像在 `SMP=4` 与 `SMP=1` 下照常跑到 `shell: bad-pointer checks passed` 与 `--- end ---`。
+- 临时在 shell 的 `--- end ---` 之后加一条 `ud2`（未提交），两个镜像都依次出现：
+
+  ```
+  terminating process 'shell' (koid 23) thread koid 27: type=UndefinedInstruction vector=invalid opcode error_code=0x0 rip=0x202a7a sp=0x11fff40 cr2=0x0
+    rax=0x0  rbx=0x0  rcx=0xa01447  rdx=0x3
+    ...
+  object: thread (koid 27) of process 'shell' destroyed
+  object: process 'shell' (koid 23) destroyed
+  ```
+
+  之后内核继续运行（dbg_1 一直跑到 30 秒观察窗口结束，别的内核线程照常打日志），没有断言。
+- 换成读地址 `0x10`：`type=FatalPageFault vector=page fault error_code=0x4 ... cr2=0x10`，同样两行 destroyed。
+- 下一条把这些做成常驻的探针测试。
+
+**故意没做**
+- 把 3 号门（#BP）设成 DPL 3、让 `int3` 在用户态成为断点：没有调试器需要它，不在 P1-A。
+- 被杀进程的地址空间、页表、用户页和内核栈目前都泄漏（`~VmAspace` 为空；`VmAspace::destroy` 在 P1-B），
+  数量以被杀的进程数为上限。
+- 退出码只能在内核日志里看到（`process_exit`、get_info 在 P1-B）。

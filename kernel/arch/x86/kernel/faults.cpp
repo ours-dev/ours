@@ -3,12 +3,14 @@
 #include <ours/mm/vmm.hpp>
 #include <ours/platform/init.hpp>
 #include <ours/platform/interrupt.hpp>
+#include <ours/task/exception.hpp>
 #include <ours/task/thread.hpp>
 
 #include <arch/halt.hpp>
 #include <arch/interrupt.hpp>
 #include <arch/x86/system.hpp>
 #include <logz4/log.hpp>
+#include <ustl/option.hpp>
 
 namespace ours {
 namespace {
@@ -63,13 +65,102 @@ namespace {
         }
     }
 
-    auto x86_dispatch_exception(arch::IrqVec vector, arch::IrqFrame *frame) -> void {
+    FORCE_INLINE
+    auto is_from_uspace(arch::IrqFrame const *frame) -> bool {
+        return (frame->cs & 0x3) != 0;
+    }
+
+    /// The kind of user exception |vector| is, when a thread in ring 3 raises
+    /// it and the kernel should kill its process for it; none for a vector
+    /// that is not the thread's doing.
+    ///
+    /// The mapping is Zircon's (exceptions_c.cc): #UD is its own kind, #PF
+    /// is FatalPageFault once the address space has failed to resolve it, #DB
+    /// and #BP are breakpoints, and the rest of the faults a program can cause
+    /// are General. #BP and #OF cannot actually arrive from ring 3 today: every
+    /// IDT gate has DPL 0 (idt.cpp), so `int3` from ring 3 is a #GP, and INTO
+    /// is #UD in 64-bit mode. They are mapped for completeness.
+    ///
+    /// Not here, so fatal whatever the ring: NMI (not the thread's doing),
+    /// #NM, #DF, #CSO, #TS, #MC, #VE, #VC -- nothing a program can cause
+    /// short of a kernel bug or broken hardware.
+    auto user_exception_type(arch::IrqVec const vector) -> ustl::Option<task::ExceptionType> {
+        using arch::IrqVec;
+        using task::ExceptionType;
+        switch (vector) {
+            case IrqVec::DivideError:
+            case IrqVec::Overflow:
+            case IrqVec::BoundRangeExceeded:
+            case IrqVec::SegmentNotPresent:
+            case IrqVec::StackFaultException:
+            case IrqVec::GeneralProtection:
+            case IrqVec::X87FloatingPoint:
+            case IrqVec::AlignmentCheck:
+            case IrqVec::SimdFloatingPoint:
+            case IrqVec::ControlProtection:
+                return ustl::some(ExceptionType::General);
+            case IrqVec::InvalidOpcode:
+                return ustl::some(ExceptionType::UndefinedInstruction);
+            case IrqVec::PageFault:
+                return ustl::some(ExceptionType::FatalPageFault);
+            case IrqVec::Debug:
+                // A program can set TF with popf and take one after every
+                // instruction; with no debugger to hand it to, letting it
+                // return would let a program flood the console at will.
+                // Zircon's answer, with no handler attached, is the kill too.
+                return ustl::some(ExceptionType::HwBreakpoint);
+            case IrqVec::Breakpoint:
+                return ustl::some(ExceptionType::SwBreakpoint);
+            default:
+                return ustl::none();
+        }
+    }
+
+    auto make_user_exception(task::ExceptionType const type, arch::IrqFrame const *const frame,
+                             VirtAddr const fault_address) -> task::ExceptionContext {
+        return task::ExceptionContext{
+            .type = type,
+            .vector_name = arch::to_string(frame->vector),
+            .error_code = frame->error_code,
+            .ip = frame->ip,
+            .sp = frame->usp,
+            .fault_address = fault_address,
+            .synth_code = 0,
+            .synth_data = 0,
+            .frame = frame,
+        };
+    }
+
+    /// Handles |vector|. Returns true when it was an exception a user thread
+    /// raised and the kernel will not resolve, with its description in
+    /// |user_exception|; the caller delivers it once the interrupt is put away.
+    auto x86_dispatch_exception(arch::IrqVec vector, arch::IrqFrame *frame,
+                                task::ExceptionContext *user_exception) -> bool {
         using namespace arch;
         if (vector == IrqVec::PageFault) {
-            if (x86_handle_page_fault(frame) != Status::Ok) {
-                panic_exception(frame, "Unhandled page fault");
+            // CR2 first, before anything that could itself fault and replace
+            // it: interrupts are still off here, and the handler below may
+            // well take a fault of its own while it looks for the page.
+            auto const cr2 = Cr2::read().get<Cr2::Address>();
+            if (x86_handle_page_fault(frame, cr2) == Status::Ok) {
+                return false;
             }
-            return;
+            if (is_from_uspace(frame)) {
+                *user_exception =
+                    make_user_exception(task::ExceptionType::FatalPageFault, frame, cr2);
+                return true;
+            }
+            panic_exception(frame, "Unhandled page fault");
+        }
+
+        // A fault a program raised is its own, not the kernel's: it is handed
+        // up to kill the process rather than handled -- or panicked on --
+        // below. The switch below is what ring 0 gets.
+        if (is_from_uspace(frame)) {
+            if (auto const type = user_exception_type(vector)) {
+                *user_exception = make_user_exception(*type, frame, 0);
+                return true;
+            }
         }
 
         // Everything below that panics is a *fault*: the CPU pushes the address
@@ -182,13 +273,66 @@ namespace {
             default:
                 panic_exception(frame, "Unhandled interrupt vector");
         }
+        return false;
     }
 
-    FORCE_INLINE
-    auto is_from_uspace(arch::IrqFrame *frame) -> bool {
-        return (frame->cs & 0x3) != 0;
+    /// Delivers a user exception the dispatcher returned, and ends the thread.
+    ///
+    /// Runs after the interrupt is fully put away (arch_handle_exception()),
+    /// because what follows can block and exits the thread. Interrupts go on
+    /// for the object layer, which takes sleeping locks to kill the process,
+    /// and off again for the signal check, which is where the Kill that
+    /// raised takes effect: the thread exits there and never returns.
+    ///
+    /// Zircon counterpart: dispatch_user_exception() followed by the pending
+    /// signal check at the end of x86_exception_handler().
+    [[noreturn]]
+    auto deliver_user_exception(arch::IrqFrame const *const frame,
+                                task::ExceptionContext const &context) -> void {
+        using task::Thread;
+
+        // The frame is on this thread's own kernel stack, which is what lets
+        // it outlive the switch-outs below. It stays true while every
+        // exception uses the one kernel stack; a #DB moved onto an IST stack
+        // (percpu.hpp reserves DEBUG_BREAK_STACK) would break it, and this is
+        // where that would show.
+        auto const &stack = Thread::Current::get()->kernel_stack();
+        auto const where = reinterpret_cast<VirtAddr>(frame);
+        DEBUG_ASSERT(where >= stack.base() && where < stack.top(),
+                     "exception frame {:#x} is not on the thread's kernel stack", where);
+
+        arch::local_irq_enable();
+        Thread::Current::on_user_exception(context);
+        arch::local_irq_disable();
+        Thread::Current::process_pending_signals();
+
+        panic("a user exception ({}) did not end thread {}", task::to_string(context.type),
+              Thread::Current::get()->name());
     }
+
 } // namespace
+
+/// The registers of a user exception, after the line that reports it
+/// (ThreadDispatcher::on_user_exception()). The same set panic_exception()
+/// prints, at warning level: a program dying of its own fault is not a kernel
+/// error, but whoever reads the log wants the registers all the same.
+///
+/// Zircon counterpart: arch_dump_exception_context(), which prints "no frame
+/// to dump" for a synthetic exception too.
+auto task::arch_dump_exception_context(task::ExceptionContext const &context) -> void {
+    auto const *const frame = context.frame;
+    if (frame == nullptr) {
+        log::warn("  no frame to dump: raised from inside a system call");
+        return;
+    }
+    log::warn("  rax={:#x}  rbx={:#x}  rcx={:#x}  rdx={:#x}", frame->ax, frame->bx, frame->cx,
+              frame->dx);
+    log::warn("  rsi={:#x}  rdi={:#x}  rbp={:#x}", frame->si, frame->di, frame->bp);
+    log::warn("  r8={:#x}  r9={:#x}  r10={:#x}  r11={:#x}", frame->r8, frame->r9, frame->r10,
+              frame->r11);
+    log::warn("  r12={:#x}  r13={:#x}  r14={:#x}  r15={:#x}", frame->r12, frame->r13, frame->r14,
+              frame->r15);
+}
 
 /// The pending-signal check on the way out of a system call, called by
 /// x86_syscall (syscall.S) after the dispatcher returns and before the saved
@@ -231,15 +375,19 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     // that x86_exception_handler() never sees one.
     if (vector == arch::IrqVec::Nmi || vector == arch::IrqVec::DoubleFault ||
         vector == arch::IrqVec::MachineCheck) {
-        x86_dispatch_exception(vector, frame);
+        // None of the three is a user exception (user_exception_type()), so
+        // nothing comes back to deliver.
+        task::ExceptionContext unused{};
+        static_cast<void>(x86_dispatch_exception(vector, frame, &unused));
         return;
     }
 
     auto const irqnum = HIrqNum(vector);
     auto const from_user = is_from_uspace(frame);
 
+    task::ExceptionContext user_exception{};
     platform_start_handling_irq(irqnum, frame);
-    x86_dispatch_exception(vector, frame);
+    auto const raised = x86_dispatch_exception(vector, frame, &user_exception);
     auto const need_preempt = platform_finish_handling_irq(irqnum, frame);
 
     // The order is Zircon's x86_exception_handler(): finish the interrupt,
@@ -255,6 +403,11 @@ extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     }
     if (from_user) {
         log::trace("Exception[{}] from user space", to_string(vector));
+        // Only a ring-3 exception is ever raised, so this is the one place
+        // it can be delivered.
+        if (raised) {
+            deliver_user_exception(frame, user_exception);
+        }
         Thread::Current::process_pending_signals();
     }
 

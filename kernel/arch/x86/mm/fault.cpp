@@ -62,13 +62,10 @@ namespace {
     }
 } // namespace
 
-using arch::Cr2;
 using mm::VmfCause;
 
-auto x86_handle_page_fault(arch::IrqFrame *frame) -> Status {
+auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status {
     usize const error_code = frame->error_code;
-
-    VirtAddr const addr = Cr2::read().get<Cr2::Address>();
 
     // Ring 0 may touch a user address in exactly one place: inside a user
     // copy (user_copy.S). Anywhere else it is a kernel bug -- something

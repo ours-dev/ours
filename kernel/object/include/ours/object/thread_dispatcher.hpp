@@ -12,6 +12,10 @@
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/option.hpp>
 
+namespace ours::task {
+struct ExceptionContext;
+} // namespace ours::task
+
 namespace ours::object {
 /// Rights a freshly created thread handle carries.
 /// Zircon ZX_DEFAULT_THREAD_RIGHTS.
@@ -124,6 +128,12 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     ~ThreadDispatcher() override;
 
     auto on_exit() -> Status;
+
+    /// This thread raised |context| in ring 3 and nothing handles it: report
+    /// it and kill the process with TASK_RETCODE_EXCEPTION_KILL. Called by
+    /// task::Thread::Current::on_user_exception(), in the thread's own
+    /// context, interrupts on.
+    auto on_user_exception(task::ExceptionContext const &context) -> void;
 
     auto on_resume() -> Status;
 

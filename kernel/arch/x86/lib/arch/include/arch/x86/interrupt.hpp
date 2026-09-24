@@ -81,6 +81,23 @@ constexpr auto to_string(IrqVec vector) noexcept -> char const * {
             return "general protection";
         case IrqVec::PageFault:
             return "page fault";
+        // Named too, because a user thread can raise them and the report that
+        // kills its process prints this: "interrupt", the default below,
+        // would misname a floating-point fault.
+        case IrqVec::CoprocessorSegmentOverrun:
+            return "coprocessor segment overrun";
+        case IrqVec::X87FloatingPoint:
+            return "x87 floating point";
+        case IrqVec::AlignmentCheck:
+            return "alignment check";
+        case IrqVec::MachineCheck:
+            return "machine check";
+        case IrqVec::SimdFloatingPoint:
+            return "simd floating point";
+        case IrqVec::Virtualizatoin:
+            return "virtualization";
+        case IrqVec::ControlProtection:
+            return "control protection";
         case IrqVec::ApicTimer:
             return "apic timer";
         case IrqVec::ApicError:

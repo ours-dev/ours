@@ -28,6 +28,11 @@ class Stack {
         return m_base + m_size;
     }
 
+    FORCE_INLINE
+    auto base() const -> VirtAddr {
+        return m_base;
+    }
+
   private:
     USTL_NO_MOVEABLE_AND_COPYABLE(Stack);
 

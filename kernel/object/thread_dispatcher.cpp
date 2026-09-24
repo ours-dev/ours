@@ -2,6 +2,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
+#include <ours/task/exception.hpp>
 #include <ours/task/thread.hpp>
 
 #include <arch/interrupt.hpp>
@@ -160,6 +161,32 @@ auto ThreadDispatcher::activate(bool suspend) -> Status {
 auto ThreadDispatcher::on_exit() -> Status {
     verify_canary();
     return m_process->detach_thread(*this);
+}
+
+/// The only answer there is yet: there are no exception channels (Zircon's
+/// zx_task_create_exception_channel) for a debugger or a supervisor to take
+/// the exception first, so it is reported and the process dies. What dies is
+/// the process, not the thread, as in Zircon: a thread that faulted has left
+/// its process in a state nothing else in it can be trusted to recover from.
+///
+/// Logged as a warning rather than an error: a program dying of its own bug is
+/// not a kernel fault. The report goes out before the kill so that it is
+/// there even if the kill path itself goes wrong.
+///
+/// Zircon counterpart: the end of dispatch_user_exception(), which prints the
+/// crash report and kills with ZX_TASK_RETCODE_EXCEPTION_KILL when no handler
+/// took the exception.
+auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context) -> void {
+    verify_canary();
+
+    log::warn("terminating process '{}' (koid {}) thread koid {}: type={} vector={} "
+              "error_code={:#x} rip={:#x} sp={:#x} cr2={:#x}",
+              m_process->name(), m_process->koid(), koid(), task::to_string(context.type),
+              context.vector_name, context.error_code, context.ip, context.sp,
+              context.fault_address);
+    task::arch_dump_exception_context(context);
+
+    m_process->kill(TASK_RETCODE_EXCEPTION_KILL);
 }
 
 auto ThreadDispatcher::kill() -> void {

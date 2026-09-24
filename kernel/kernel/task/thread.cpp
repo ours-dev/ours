@@ -666,6 +666,19 @@ auto Thread::Current::process_pending_signals() -> void {
     }
 }
 
+auto Thread::Current::on_user_exception(ExceptionContext const &context) -> void {
+    auto const current_thread = Thread::Current::get();
+    current_thread->m_canary.verify<Self>();
+    DEBUG_ASSERT(!arch::irqs_disabled(), "{}() entered with interrupts off", __func__);
+
+    // Only a user thread executes in ring 3, and only a user thread has a
+    // ThreadDispatcher; an exception from ring 3 on a kernel thread would
+    // mean the frame lied about where it came from.
+    ASSERT(current_thread->m_user_thread, "a user exception on kernel thread {}",
+           current_thread->name());
+    current_thread->m_user_thread->on_user_exception(context);
+}
+
 /// #1 A kill itself.
 ///    A send a kill signal to itself and when go back to userspace it will
 ///    process the signal.
