@@ -13,7 +13,7 @@ class Stack {
     using Self = Stack;
 
   public:
-    constexpr static auto DEFAULT_STACK_SIZE = KB(16); // Four pages.
+    constexpr static auto DEFAULT_STACK_SIZE = 16_kb; // Four pages.
 
     Stack();
 
