@@ -50,20 +50,28 @@ constexpr auto operator""_bit(unsigned long long v) -> usize {
     return usize{1} << v;
 }
 
-constexpr auto operator""_kb(unsigned long long v) -> isize {
-    return isize(v) << 10;
+/// Byte sizes. usize, because a size is never negative and every interface
+/// that takes one -- Stack::init(), kmalloc(), a mapping's length -- takes a
+/// usize; these used to return isize, which made a constant spelled with them
+/// deduce as signed wherever it was declared `auto`.
+constexpr auto operator""_kb(unsigned long long v) -> usize {
+    return usize(v) << 10;
 }
-constexpr auto operator""_mb(unsigned long long v) -> isize {
-    return isize(v) << 20;
+constexpr auto operator""_mb(unsigned long long v) -> usize {
+    return usize(v) << 20;
 }
-constexpr auto operator""_gb(unsigned long long v) -> isize {
-    return isize(v) << 30;
+constexpr auto operator""_gb(unsigned long long v) -> usize {
+    return usize(v) << 30;
 }
-constexpr auto operator""_tb(unsigned long long v) -> isize {
-    return isize(v) << 40;
+constexpr auto operator""_tb(unsigned long long v) -> usize {
+    return usize(v) << 40;
 }
-constexpr auto operator""_pb(unsigned long long v) -> isize {
-    return isize(v) << 40;
+/// 2^50. It shifted by 40, the same as _tb, so 1_pb was a terabyte.
+constexpr auto operator""_pb(unsigned long long v) -> usize {
+    return usize(v) << 50;
 }
+
+static_assert(16_kb == 16384);
+static_assert(1_pb == 1024 * 1_tb);
 
 #endif // PRELUDE_HPP
