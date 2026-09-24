@@ -154,6 +154,13 @@ namespace {
     };
     static_assert(HANDLE_ARENA_SLOTS <= 65536, "free slots are recorded as u16");
 
+    // The arena is sized statically, HANDLE_ARENA_SLOTS times this, so a
+    // member added to Handle costs every slot at once. Pinned here so that the
+    // cost is a decision rather than a side effect. Widening KoId to 64 bits
+    // did not move it: m_table_koid took the four bytes of padding that sat
+    // before m_dispatcher's pointer alignment.
+    static_assert(sizeof(Handle) == 40, "Handle's size is the arena's size; see above");
+
     HandleArena handle_arena;
 } // namespace
 

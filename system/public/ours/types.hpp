@@ -39,7 +39,18 @@ using TicksSystem = Ticks;
 using InstantSystem = Instant;
 using DurationTicksSystem = usize;
 
-using KoId = u32;
+/// A kernel object's id: unique for the life of the system, never reused.
+///
+/// 64 bits, as Zircon's zx_koid_t, because "never reused" is the whole
+/// contract and 32 bits cannot keep it. Every dispatcher and every handle
+/// table draws one, a channel_create() draws two, and at one id per
+/// microsecond -- a tight loop of creates on one core -- 2^32 runs out in
+/// 72 minutes. The wrap then hands out 0, which is KOID_INVALID and also
+/// what Handle::table_koid() reads while a handle is in no table, and after
+/// that ids already in use: a handle moved into a table that happens to share
+/// its koid with the old one passes the table check it was meant to fail.
+/// At 2^64 the same loop runs for half a million years.
+using KoId = u64;
 
 /// A handle as a program holds it: a number that names an entry in the
 /// calling process's handle table, and means nothing anywhere else.

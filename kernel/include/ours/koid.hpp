@@ -17,7 +17,9 @@ class KoIdGenerator {
     using Self = KoIdGenerator;
 
   public:
-    static auto generate(KoId count = 1) -> KoId {
+    /// Reserves |count| consecutive ids and returns the first. A count, not
+    /// an id, so a usize.
+    static auto generate(usize count = 1) -> KoId {
         return TRACKER.fetch_add(count, std::memory_order_relaxed);
     }
 
