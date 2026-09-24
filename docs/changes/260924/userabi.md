@@ -334,3 +334,44 @@ def parse_symbol(path, number, body):
 
 **故意没做**
 无。
+
+## vDSO 的 ABI 比对从 validation 改为镜像的 data_dep，真正挡住打包（2026-09-24）
+
+**文件**
+- `kernel/lib/userabi/vdso/BUILD.gn` — `validations = [ ":vdso.abi_check" ]` 改为 `data_deps = [ ":vdso.abi_check" ]`
+
+**症状**
+审查发现：第 10 条的注释和记录都说"不会有镜像带着一个导出与描述不符的 vDSO 被打包"，但 ninja 的
+validation 只让构建失败，不阻挡任何东西——打包可能与检查并行完成，失败报告出来时镜像已经在磁盘上。
+
+**原因**
+GN 的 `validations` 在 ninja 里是 `|@` 边：被验证的目标构建完就可以被消费，验证失败只影响
+"整次构建是否成功"。要让打包等检查通过，打包必须依赖检查。
+
+**改法**
+改前：
+
+```gn
+  validations = [ ":vdso.abi_check" ]
+```
+
+改后：
+
+```gn
+  data_deps = [ ":vdso.abi_check" ]
+```
+
+`kernel_elf_binary()` 把 `data_deps` 转发给镜像目标（打包消费的正是它）；检查读的是链接器输出
+`:vdso.binary`，不是镜像目标，所以没有环。
+
+**参照**
+Zircon `//zircon/kernel/lib/userabi/vdso/BUILD.gn`：`verify-abi` 是 vDSO 的 `public_deps`，注释写明
+"a kernel can't be built with a vDSO that doesn't have a verified ABI"。
+
+**验证**
+- `ninja -t inputs kernel.dev.obi` 里出现 `vdso.abi_check.ok`（改前没有）。
+- 在 `vdso.S` 里临时多导出一个 `ours_extra`（未提交）：检查失败，`kernel.dev.obi` 的修改时间不变——没有被重新打包。
+- 还原后构建、两个镜像启动正常，OBI 哈希与改前相同。
+
+**故意没做**
+无。

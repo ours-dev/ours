@@ -53,12 +53,14 @@ kernel_elf_binary("vdso") {
   # holds only the macro they instantiate.
   deps = [ "//system/public:syscalls.private" ]
 
-  # A validation rather than a dependency: the check reads this target's own
-  # output, and nothing consumes what it writes. It still fails the build, so
-  # no image is packaged with a vDSO whose exports differ from the
-  # description. Zircon makes its verify-abi a public_dep of the vDSO for the
-  # same guarantee.
-  validations = [ ":vdso.abi_check" ]
+  # A dependency of the packaged image, not a validation. A validation fails
+  # the build but does not hold anything up: ninja may package a mismatched
+  # vDSO in parallel and report the failure afterwards, leaving the image on
+  # disk. As a data_dep of the image target, everything that packages the
+  # vDSO waits for the check to pass. The check reads the linker's output
+  # (:vdso.binary), not the image target, so there is no cycle. Zircon makes
+  # its verify-abi a public_dep of the vDSO for the same guarantee.
+  data_deps = [ ":vdso.abi_check" ]
 
   # No -Wl,-e: nothing jumps to a vDSO, and nothing needs to find anything at
   # its entry point any more. It used to point at the export table, which was
