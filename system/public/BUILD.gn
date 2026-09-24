@@ -18,7 +18,10 @@ source_set("public") {
   # to reach a user program until <ours/vdso.hpp> started naming Signals in
   # ours_object_wait_one(). Exported rather than hand-copied, so that the
   # operators on an ABI enum are the same ones the kernel compiles against.
-  public_deps = [ "//system/lib/ustl:headers" ]
+  public_deps = [
+    ":vdso_decls",
+    "//system/lib/ustl:headers",
+  ]
 }
 
 config("public.config") {
@@ -54,12 +57,14 @@ if (current_toolchain == default_toolchain) {
     _vdso_stubs = "$target_gen_dir/private/syscall_abi/vdso_stubs.inc"
     _kernel_decls = "$target_gen_dir/private/syscall_abi/kernel_decls.inc"
     _kernel_shims = "$target_gen_dir/private/syscall_abi/kernel_shims.inc"
+    _vdso_decls = "$target_gen_dir/public/ours/vdso_decls.inc"
     sources = [ _description ]
     outputs = [
       _numbers,
       _vdso_stubs,
       _kernel_decls,
       _kernel_shims,
+      _vdso_decls,
     ]
     args = [
       rebase_path(_description, root_build_dir),
@@ -71,9 +76,14 @@ if (current_toolchain == default_toolchain) {
       rebase_path(_kernel_decls, root_build_dir),
       "--kernel-shims",
       rebase_path(_kernel_shims, root_build_dir),
+      "--vdso-decls",
+      rebase_path(_vdso_decls, root_build_dir),
     ]
     deps = [ ":syscalls.json" ]
-    visibility = [ ":syscalls.private" ]
+    visibility = [
+      ":syscalls.private",
+      ":vdso_decls",
+    ]
   }
 }
 
@@ -94,4 +104,21 @@ group("syscalls.private") {
     "//kernel/lib/syscall/*",
     "//kernel/lib/userabi/vdso/*",
   ]
+}
+
+config("vdso_decls.config") {
+  include_dirs = [ "$_syscalls_gen_dir/public" ]
+  visibility = [ ":vdso_decls" ]
+}
+
+# The public half of the generated ABI: the declarations <ours/vdso.hpp>
+# includes. Carried by :public, so a target that depends on the public headers
+# gets both the include path and the edge that orders its compiles after the
+# generator. A target that reaches the headers only through a toolchain config
+# -- as every user program does, through //system:user.headers -- has no such
+# edge, and user_executable() adds one for it.
+group("vdso_decls") {
+  public_deps = [ ":syscalls.gen($default_toolchain)" ]
+  public_configs = [ ":vdso_decls.config" ]
+  visibility = [ ":public" ]
 }

@@ -31,7 +31,6 @@
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
-#include <ours/vdso.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace userabi {

@@ -321,6 +321,45 @@ def render_kernel_shims(calls: List[Call]) -> str:
     return "\n".join(lines)
 
 
+def user_type(name: str) -> str:
+    """|name| as a program spells it: primitives bare, the rest in ours::."""
+    return name if name in PRIMITIVES else f"ours::{name}"
+
+
+def user_param(arg: Arg) -> str:
+    if not arg.is_pointer:
+        return f"{user_type(arg.type)} {arg.name}"
+    const = " const" if arg.dir == "in" else ""
+    return f"{user_type(arg.type)}{const} *{arg.name}"
+
+
+def render_vdso_decls(calls: List[Call]) -> str:
+    """The vDSO's entry points as a program calls them, included by
+    <ours/vdso.hpp> inside its extern "C" block.
+
+    The documentation is the description's, written for the caller: this
+    is the one place a program reads it.
+    """
+    lines = [HEADER_BANNER]
+    for call in calls:
+        lines.append(f"/// {call.brief}")
+        if call.doc:
+            lines.append("///")
+            lines += [f"/// {line}".rstrip() for line in call.doc]
+        if call.noreturn:
+            lines.append("[[noreturn]]")
+        params = [user_param(a) for a in call.args]
+        ret = user_type(call.ret)
+        one_line = f"auto ours_{call.name}({', '.join(params)}) -> {ret};"
+        if len(one_line) <= LINE_WIDTH:
+            lines.append(one_line)
+        else:
+            joined = ",\n    ".join(params)
+            lines.append(f"auto ours_{call.name}(\n    {joined}) -> {ret};")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("description", type=pathlib.Path,
@@ -333,6 +372,8 @@ def main() -> int:
                         help="write the kernel's sys_* declarations here")
     parser.add_argument("--kernel-shims", type=pathlib.Path,
                         help="write the kernel's frame-unpacking shims here")
+    parser.add_argument("--vdso-decls", type=pathlib.Path,
+                        help="write the vDSO's extern \"C\" declarations here")
     args = parser.parse_args()
 
     try:
@@ -349,6 +390,8 @@ def main() -> int:
         write_if_changed(args.kernel_decls, render_kernel_decls(calls))
     if args.kernel_shims:
         write_if_changed(args.kernel_shims, render_kernel_shims(calls))
+    if args.vdso_decls:
+        write_if_changed(args.vdso_decls, render_vdso_decls(calls))
     return 0
 
 

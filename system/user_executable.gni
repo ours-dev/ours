@@ -77,7 +77,14 @@ template("user_executable") {
     configs -= [ "//system:user.executable" ]
     configs += [ "//system:user.program" ]
 
-    deps = [ _vdso_label ]
+    # //system/public for the edge, not the include path, which the
+    # toolchain's //system:user.headers already supplies: <ours/vdso.hpp>
+    # includes a generated file, and without a dependency on its generator a
+    # clean build could compile a program before the file exists.
+    deps = [
+      "//system/public",
+      _vdso_label,
+    ]
     if (defined(invoker.deps)) {
       deps += invoker.deps
     }
