@@ -172,3 +172,57 @@ NMI 另有 `x86_nmi_handler()`。
 - 被杀进程的地址空间、页表、用户页和内核栈目前都泄漏（`~VmAspace` 为空；`VmAspace::destroy` 在 P1-B），
   数量以被杀的进程数为上限。
 - 退出码只能在内核日志里看到（`process_exit`、get_info 在 P1-B）。
+
+## TSS 的 I/O 位图关掉全部端口（2026-09-24）
+
+**文件**
+- `kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp` — `X86Tss::init()` 把整张 I/O 位图置全 1
+
+**症状**
+第 17–29 条的对抗审查发现（早于 P1-A）：ring 3 可以对 0..0xFFFF 任何端口执行 `in`/`out`，不产生任何异常。
+用户程序往 0x64 或 0xCF9 写一个字节就能让机器复位；经 0xCF8/0xCFC 能改 PCI 配置空间（打开 bus master、
+重映射 BAR，再用 DMA 写内核内存）；能直接编程 PIT、PIC、COM1。P1-A 的"#GP 杀进程"在端口 I/O 上从来不会触发。
+
+**原因**
+用户线程运行在 IOPL 0（`entry.hpp`），这时 CPL 3 的 `in/out/ins/outs` 由 TSS 的 I/O 权限位图决定：位为 1
+拒绝（#GP），为 0 放行。`X86Tss::init()` 只设置了位图基址和末尾的终止字节，8192 字节的位图本身保持零初始化，
+即**全部放行**；TSS 描述符的 limit（`sizeof(X86Tss) - 1`）又覆盖了整张位图，处理器不会因越界而拒绝。
+`entry.hpp` 里"端口访问归 TSS I/O 位图管"的注释说的没错，只是这张位图什么都没管。
+
+**改法**
+改前：
+
+```cpp
+    auto init() -> void {
+        io_port_bitmap_base = static_cast<u16>(ustl::mem::offset_of(&Self::io_bitmap));
+        io_bitmap[arch::MAX_IO_BITMAP_BYTES] = 0xff;
+    }
+```
+
+改后：
+
+```cpp
+    auto init() -> void {
+        io_port_bitmap_base = static_cast<u16>(ustl::mem::offset_of(&Self::io_bitmap));
+        for (auto &byte: io_bitmap) {
+            byte = 0xff;
+        }
+    }
+```
+
+位图之后的那个字节也仍是全 1（架构要求：跨越最后一个字节的访问会读到它）。将来需要端口的驱动进程，
+由它自己的线程打开它需要的那几个端口，而不是对所有程序敞开。
+
+**参照**
+Zircon `x86_reset_tss_io_bitmap()`（`kernel/arch/x86/ioport.cc`，`bitmap_set` 整张位图），在
+`x86_initialize_percpu_tss()`（`descriptor.cc`）里于 `ltr` 之前调用。
+
+**验证**
+- 构建通过；两个镜像启动正常。
+- 临时在 shell 的 `--- end ---` 之后 `inb $0x80` 再打一行 "SURVIVED"（未提交）：
+  - 改前：打出 `shell: SURVIVED a port read`——端口读直接成功；
+  - 改后：`terminating process 'shell' ... type=General vector=general protection error_code=0x0`，随后两行 destroyed，
+    没有 "SURVIVED"。
+
+**故意没做**
+每进程的 I/O 端口授权（Zircon 的 `zx_ioports_request`）：还没有需要端口的用户驱动。

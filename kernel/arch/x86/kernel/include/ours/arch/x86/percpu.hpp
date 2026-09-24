@@ -57,10 +57,30 @@ enum IntrStackOrdering {
 struct PACKED X86Tss {
     typedef X86Tss Self;
 
+    /// Points the CPU at the I/O permission bitmap below and closes every
+    /// port in it.
+    ///
+    /// Ring 3 runs at IOPL 0, so its in/out/ins/outs are decided by this
+    /// bitmap: a set bit refuses the port with #GP, a clear bit lets the
+    /// access through without the kernel seeing anything. The bitmap used to
+    /// be left as the zero-initialised storage gave it -- every port open --
+    /// so any program could reset the machine through port 0x64 or 0xCF9,
+    /// rewrite PCI configuration through 0xCF8/0xCFC, or program the PIT and
+    /// the PIC, and none of it was a fault the kernel could kill it for.
+    /// Every bit set here is every port closed; a driver process that needs
+    /// ports will get them opened for its own threads, not for everyone.
+    ///
+    /// The byte after the bitmap is all ones as well, as the architecture
+    /// requires: an access that straddles the last byte reads one past it.
+    ///
+    /// Zircon counterpart: x86_reset_tss_io_bitmap() (ioport.cc), called
+    /// before ltr in x86_initialize_percpu_tss() (descriptor.cc).
     FORCE_INLINE
     auto init() -> void {
         io_port_bitmap_base = static_cast<u16>(ustl::mem::offset_of(&Self::io_bitmap));
-        io_bitmap[arch::MAX_IO_BITMAP_BYTES] = 0xff;
+        for (auto &byte: io_bitmap) {
+            byte = 0xff;
+        }
     }
 
     // We hope to use two views to access the bitmap.
