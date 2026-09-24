@@ -376,3 +376,45 @@ Zircon `ProcessDispatcher::Kill()`、`KillAllThreadsLocked()`（`kernel/object/p
 - 进程在最后一个线程退出时转 Dead、`finish_dead_transition`、`VmAspace::destroy`、TERMINATED 信号：P1-B。
 - 对另一颗 CPU 上正在运行的线程不发 IPI（`suspend_or_kill` 的 Running 分支只置信号）：P1-A 里只有进程杀自己，
   不受影响；多线程进程要等目标线程下一次中断才会死。
+
+## 线程第一次进 ring 3 之前也检查挂起信号（2026-09-24）
+
+**文件**
+- `kernel/object/thread_dispatcher.cpp` — `ThreadDispatcher::trampoline()` 在 `arch_enter_uspace()` 之前调 `process_pending_signals()`
+
+**症状**
+审查发现（潜伏，P1-A 里够不到）：一个线程被启动（`attach_thread` 已让它就绪）、还没真正运行时，它的进程被杀了。
+这个线程照样从入口点开始执行用户程序，直到它的第一次中断或系统调用才死——在一个已经在死亡中的进程里跑了用户代码。
+
+**原因**
+回 ring 3 有三条路：异常尾部、SYSRET 之前、以及线程**第一次**进用户态。前两条都检查挂起信号（第 19、21 条），
+第三条没有。
+
+**改法**
+改前：
+
+```cpp
+    arch::local_irq_disable();
+    arch_enter_uspace(&frame);
+```
+
+改后：
+
+```cpp
+    arch::local_irq_disable();
+    task::Thread::Current::process_pending_signals();
+    arch_enter_uspace(&frame);
+```
+
+在关中断之后检查，与另外两条路一致：之后再到来的信号不会落在"检查之后、进入之前"的空隙里。Kill 就在这里退出线程。
+
+**参照**
+Zircon `ThreadDispatcher::StartRoutine()`：`arch_disable_ints(); arch_iframe_process_pending_signals(&iframe); arch_enter_uspace(&iframe);`。
+
+**验证**
+- 构建通过；两个镜像启动正常。
+- 临时在 trampoline 里对名为 shell 的进程调 `kill()`，放在这次检查之前（未提交）：dbg_1 日志只有
+  `userabi: 'shell' starts ...`，接着两行 destroyed，shell 的横幅一次也没打出——它没有执行任何用户指令；没有断言。
+
+**故意没做**
+无。

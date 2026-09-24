@@ -112,6 +112,15 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
     // right before its arch_enter_uspace(). Nothing re-enables them on this
     // side; the IF bit in the frame does that as iretq lands in user mode.
     arch::local_irq_disable();
+
+    // The first way back to ring 3 checks pending signals like every other
+    // one does -- the exception tail, and the path to SYSRET. A thread killed
+    // after it was started but before it first ran would otherwise begin its
+    // program at the entry point, and die only at its first interrupt or
+    // system call, having run user code in a process that is already dying.
+    // A Kill exits the thread here. Zircon's StartRoutine makes the same
+    // arch_iframe_process_pending_signals() call before arch_enter_uspace().
+    task::Thread::Current::process_pending_signals();
     arch_enter_uspace(&frame);
 }
 
