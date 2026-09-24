@@ -144,7 +144,7 @@ SMAP 能解释时仍打原来的 "potential SMAP violation"，否则打新的消
 **参照**
 - Zircon `x86_pfe_handler()`（`kernel/arch/x86/exceptions_c.cc`）：内核态缺页没有 `pfr` 就
   `exception_die(frame, "page fault in kernel mode\n")`，SMAP 能解释时先打 "potential SMAP failure"。
-- Linux `do_user_addr_fault()` 对 SMAP 的同类检查（`X86_PF_USER` 清且 `EFLAGS.AC` 清时 `bad_area_nosemaphore`）；
+- Linux `do_user_addr_fault()` 对 SMAP 的同类检查（`X86_PF_USER` 清且 `EFLAGS.AC` 清时直接报错：较新的内核调 `page_fault_oops()`，较早的是 `bad_area_nosemaphore()`）；
   Linux 没有 SMAP 时不拒绝这类访问，这里比它更严。
 
 **验证**
