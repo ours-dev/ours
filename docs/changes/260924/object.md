@@ -173,3 +173,77 @@ Zircon `ProcessDispatcher::AddInitializedThread()`（`kernel/object/process_disp
 
 **故意没做**
 `detach_thread()` 仍是 `Unimplemented`，下一条实现。
+
+## 线程退出时，ThreadDispatcher 离开它的进程（2026-09-24）
+
+**文件**
+- `kernel/object/include/ours/object/thread_dispatcher.hpp` — `State` 加 `Dying`、`Dead`；新增 `mark_dead()`；注明 `m_kernel_thread` 由 `get_lock()` 保护、退出后置空
+- `kernel/object/thread_dispatcher.cpp` — `on_exit()` 调 `detach_thread()`；`mark_dead()`
+- `kernel/object/process_dispatcher.cpp` — `detach_thread()` 从 `Unimplemented` 变为真实实现
+
+**症状**
+潜伏，下一条就会触发。一个用户线程退出后，它的 ThreadDispatcher 仍挂在进程的侵入式线程表上，
+`m_kernel_thread` 仍指向一个即将被 DPC 销毁的 `task::Thread`：
+- 杀进程遍历线程表时会找到一个背后什么都没有的线程，再经悬空指针去"杀"它；
+- ThreadDispatcher 最终析构时仍被链在表里，侵入式链表钩子的自检会在析构时报错（在 DPC worker 里）。
+
+**原因**
+`on_exit()` 什么也不做，`detach_thread()` 是 `Unimplemented`。对象的生命周期（由句柄和引用决定）
+比它所代表的内核线程长，两者之间的指针必须在线程退出那一刻就断开，而不是等对象析构。
+
+**改法**
+改前：
+
+```cpp
+auto ThreadDispatcher::on_exit() -> Status {
+    verify_canary();
+    return Status::Ok;
+}
+
+auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
+    verify_canary();
+    return Status::Unimplemented;
+}
+```
+
+改后：
+
+```cpp
+auto ThreadDispatcher::on_exit() -> Status {
+    verify_canary();
+    return m_process->detach_thread(*this);
+}
+
+auto ThreadDispatcher::mark_dead() -> void {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    m_state = State::Dead;
+    m_kernel_thread = nullptr;
+}
+
+auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    thread.mark_dead();
+    static_cast<void>(m_thread_list.erase(m_thread_list.iterator_to(thread)));
+    return Status::Ok;
+}
+```
+
+置 Dead、清指针、出表在进程锁下一次完成（线程锁在内，与 `attach_thread()` 同序）：杀进程在进程锁下
+遍历时，每个线程要么还在表里且活着，要么已经完全不在——不会有"在表里但已没有内核线程"的中间态。
+`detach_thread()` 保留了原名（主人同意），没有另起 `remove_thread`。
+
+**参照**
+Zircon `ThreadDispatcher::ExitingCurrent()`（`kernel/object/thread_dispatcher.cc`）：在线程锁下
+`SetStateLocked(DEAD)` 与 `ResetCoreThread()`，随后 `process_->RemoveThread(this)`（进程锁下出表）。
+Zircon 分两段加锁；这里合成一段，更严格。
+
+**验证**
+构建通过；两个镜像启动正常。用户线程退出这条路径要到下一条之后（杀进程）才会真正走到，届时由
+dispatcher 销毁日志（第 24 条）确认整条析构链。
+
+**故意没做**
+`Dying` 状态这一条只声明、不设置——由下一条的 `ThreadDispatcher::kill` 设置。

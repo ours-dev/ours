@@ -138,9 +138,27 @@ auto ThreadDispatcher::activate(bool suspend) -> Status {
     return Status::Ok;
 }
 
+/// The kernel thread is exiting (task::Thread::Current::exit()), in its own
+/// context and able to block. This object leaves its process now, while the
+/// thread still exists, rather than when the object is finally destroyed:
+/// handles may keep it alive long after, and until then the process's
+/// intrusive list would still link it -- a kill walking that list would find a
+/// thread with nothing behind it, and destroying the object while linked
+/// trips the list hook's own check.
+///
+/// Zircon counterpart: ThreadDispatcher::ExitingCurrent(), which calls
+/// process_->RemoveThread(this).
 auto ThreadDispatcher::on_exit() -> Status {
     verify_canary();
-    return Status::Ok;
+    return m_process->detach_thread(*this);
+}
+
+auto ThreadDispatcher::mark_dead() -> void {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    m_state = State::Dead;
+    m_kernel_thread = nullptr;
 }
 
 auto ThreadDispatcher::on_resume() -> Status {

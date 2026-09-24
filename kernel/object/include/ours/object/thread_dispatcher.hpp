@@ -27,8 +27,20 @@ class ThreadDispatcher: public ThreadDispatcherBase {
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Thread);
 
+    /// Guarded by get_lock().
+    ///
+    ///   Running  from creation until the thread starts to die; the kernel
+    ///            thread may not have started yet.
+    ///   Dying    killed, and the kernel thread told so, but not yet gone.
+    ///   Dead     the kernel thread has exited and left the process; it is
+    ///            no longer reachable from this object.
+    ///
+    /// Zircon's has Initial, Initialized and Suspended as well; nothing here
+    /// distinguishes those yet.
     enum class State {
         Running,
+        Dying,
+        Dead,
     };
 
     enum class ParkedReason : u16 {};
@@ -74,6 +86,14 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         m_flags |= Flags::Active;
     }
 
+    /// Marks this thread gone, as it leaves its process: Dead, and no longer
+    /// pointing at a kernel thread that is about to be destroyed.
+    ///
+    /// Called by ProcessDispatcher::detach_thread() with the process's lock
+    /// held; takes this thread's own lock after it, the order attach_thread()
+    /// uses too.
+    auto mark_dead() -> void;
+
   private:
     enum class Flags {
         Active = 0_bit,
@@ -103,6 +123,10 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     Flags m_flags;
     State m_state;
     ParkedReason m_parked_reason;
+    /// The kernel thread this object runs as. Guarded by get_lock(); null
+    /// once the thread has exited (mark_dead()), because the task::Thread is
+    /// destroyed after its exit while this object may live on in handles.
+    /// Zircon clears its core_thread_ at the same point (ResetCoreThread()).
     task::Thread *m_kernel_thread;
 
     ustl::Arc<ProcessDispatcher> m_process;

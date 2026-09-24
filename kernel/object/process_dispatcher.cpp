@@ -139,9 +139,20 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
     return Status::Ok;
 }
 
+/// Takes |thread| out of this process, as its kernel thread exits.
+///
+/// Under the process's lock, like attach_thread(), so that a kill walking the
+/// list sees each thread either still listed and alive or gone entirely --
+/// never listed but already without a kernel thread.
+///
+/// Zircon counterpart: ProcessDispatcher::RemoveThread().
 auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
     verify_canary();
-    return Status::Unimplemented;
+
+    Guard guard{get_lock()};
+    thread.mark_dead();
+    static_cast<void>(m_thread_list.erase(m_thread_list.iterator_to(thread)));
+    return Status::Ok;
 }
 
 } // namespace ours::object
