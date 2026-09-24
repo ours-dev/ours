@@ -219,8 +219,9 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
     // user %rsp and swaps to the user GS: an interrupt taken in that window
     // would find a kernel CS with a user stack, or a user GS it would not
     // swap back. Zircon's do_syscall_post() disables here for the same
-    // reason, and so that a pending-signal check (not written yet) cannot
-    // lose a wakeup between the check and SYSRET.
+    // reason, and so that the pending-signal check the stub makes next
+    // (x86_syscall_process_pending_signals) cannot lose a wakeup between the
+    // check and SYSRET.
     arch::local_irq_disable();
 }
 

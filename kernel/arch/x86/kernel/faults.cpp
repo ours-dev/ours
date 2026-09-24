@@ -190,6 +190,19 @@ namespace {
     }
 } // namespace
 
+/// The pending-signal check on the way out of a system call, called by
+/// x86_syscall (syscall.S) after the dispatcher returns and before the saved
+/// user registers are popped. Interrupts are off, as process_pending_signals()
+/// requires. It may not return: a pending Kill exits the thread here.
+///
+/// Zircon passes the saved registers along so that a debugger can read a
+/// suspended thread's state; nothing here reads them yet, so none are passed.
+/// Zircon counterpart: x86_syscall_process_pending_signals() in
+/// kernel/arch/x86/exceptions_c.cc.
+extern "C" auto x86_syscall_process_pending_signals() -> void {
+    task::Thread::Current::process_pending_signals();
+}
+
 extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     using task::Thread;
     auto const vector = frame->vector;

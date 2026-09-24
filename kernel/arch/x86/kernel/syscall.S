@@ -190,6 +190,22 @@
     // displacement would emit R_X86_64_32S and break the link.
     call syscall_dispatch
 
+    // Pending thread signals, last, with interrupts already off (the
+    // dispatcher turns them off before it returns). A Kill raised while the
+    // call ran -- by another thread, or by the call itself -- has to be
+    // acted on before the thread is back in ring 3, not whenever it next
+    // happens to take an interrupt; and with interrupts off, one raised after
+    // this check is caught by the IPI its sender follows it with, rather than
+    // lost between the check and SYSRET. %rsp is where the dispatcher found
+    // it, still 16-byte aligned for the call.
+    //
+    // Zircon's syscall.S calls x86_syscall_process_pending_signals() at the
+    // same point, but only when do_syscall()'s return says a signal is
+    // pending. Here the call is unconditional: with nothing pending it is one
+    // load and a return, and it saves threading a flag back through the
+    // dispatcher.
+    call x86_syscall_process_pending_signals
+
     pop_reg %rax
     pop_reg %rbx
     pop_reg %rcx  // Will be overwritten with RIP later on.
