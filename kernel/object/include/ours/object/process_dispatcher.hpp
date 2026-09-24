@@ -89,8 +89,10 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     /// Records where this process's vDSO landed.
     ///
-    /// The syscall path refuses a trap whose return address is outside this
-    /// range, which is what makes "syscalls only through the vDSO" a property
+    /// The syscall path refuses -- and kills the process for -- a trap whose
+    /// `syscall` instruction is not wholly inside this range (vdso_contains()
+    /// over the SYSCALL_INSN_SIZE bytes before the return address), which is
+    /// what makes "syscalls only through the vDSO" a property
     /// the kernel enforces rather than a convention programs are asked to
     /// follow. Set once, while the process is still being built and before any
     /// thread of it has run.

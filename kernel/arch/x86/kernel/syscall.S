@@ -192,12 +192,13 @@
 
     // Pending thread signals, last, with interrupts already off (the
     // dispatcher turns them off before it returns). A Kill raised while the
-    // call ran -- by another thread, or by the call itself -- has to be
+    // call ran -- by the call itself, or by another thread -- has to be
     // acted on before the thread is back in ring 3, not whenever it next
-    // happens to take an interrupt; and with interrupts off, one raised after
-    // this check is caught by the IPI its sender follows it with, rather than
-    // lost between the check and SYSRET. %rsp is where the dispatcher found
-    // it, still 16-byte aligned for the call.
+    // happens to take an interrupt. One raised on another CPU after this
+    // check is not lost -- the signal stays set -- but no IPI follows it yet
+    // (suspend_or_kill() only sets the bit for a Running thread), so it is
+    // acted on at this thread's next entry to the kernel from ring 3. %rsp is
+    // where the dispatcher found it, still 16-byte aligned for the call.
     //
     // Zircon's syscall.S calls x86_syscall_process_pending_signals() at the
     // same point, but only when do_syscall()'s return says a signal is

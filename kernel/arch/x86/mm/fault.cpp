@@ -86,18 +86,22 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     //
     // Zircon's x86_pfe_handler() dies on any ring-0 fault without a
     // page_fault_resume address ("page fault in kernel mode"), and prints
-    // "potential SMAP failure" first when SMAP explains it. This kernel still
-    // resolves ring-0 faults on its own addresses through page_fault(), so the
-    // refusal covers user addresses only. A null dereference in the kernel
-    // lands here as an access to user address 0, which says what happened
-    // well enough -- inside a copy as well as outside one, because address 0
-    // is never in a copy's admitted user range (the range check starts at
-    // USER_ASPACE_BASE).
+    // "potential SMAP failure" first when SMAP explains it. Here a ring-0
+    // fault on a kernel address already stops the kernel without a check of
+    // its own: page_fault() refuses every kernel address (NotFound), and the
+    // caller panics on that. A user address is the one page_fault() may
+    // resolve, and so the one that has to be refused here. A null
+    // dereference in the kernel lands here as an access to user address 0,
+    // which says what happened well enough -- inside a copy as well as
+    // outside one, because address 0 is never in a copy's admitted user range
+    // (the range check starts at USER_ASPACE_BASE).
     auto const supervisor = (error_code & PAGE_FAULT_USER) == 0;
     auto const user_address = !mm::is_kernel_address(addr);
     if (supervisor && user_address && !user_copy_may_resume(frame, addr)) {
         auto const access_open = frame->flags.get<arch::ArchCpuState::AC>() != 0;
-        if (task::X86Thread::current_user_copy()->resume != 0) {
+        auto const in_routine = frame->ip >= reinterpret_cast<usize>(x86_user_copy_begin) &&
+                                frame->ip < reinterpret_cast<usize>(x86_user_copy_end);
+        if (task::X86Thread::current_user_copy()->resume != 0 && in_routine) {
             log::error("user copy faulted on {:#x}, outside the user range it was admitted for",
                        addr);
         } else if (feature_has_smap && !access_open) {

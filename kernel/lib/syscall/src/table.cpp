@@ -128,7 +128,8 @@ namespace {
         frame->ax = static_cast<usize>(Status::BadSyscall);
     }
 
-    /// The table x86_syscall indexes. %rax is user-controlled, so every slot
+    /// The table syscall_dispatch() indexes, with the number from %rax
+    /// clamped and confined. %rax is user-controlled, so every slot
     /// has to be a valid target -- a null entry would be an indirect call
     /// through zero from user space.
     ///

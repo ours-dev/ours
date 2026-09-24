@@ -633,9 +633,12 @@ auto Thread::Current::process_pending_signals() -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
 
-    // Called on the last stretch back to ring 3 -- the exception tail, and
-    // (next) the path to SYSRET -- which runs with interrupts off so that a
-    // signal raised after this check cannot be missed before the return.
+    // Called on the last stretch back to ring 3 -- the exception tail, the
+    // path to SYSRET, and a thread's first entry -- with interrupts off, so
+    // that nothing on this CPU can raise a signal between this check and the
+    // return. A signal raised on another CPU in that window stays set and is
+    // acted on at this thread's next entry to the kernel; no IPI is sent for
+    // it yet (suspend_or_kill()'s Running branch only sets the bit).
     // Each branch below turns them on for what it does and, if it comes back
     // at all, off again.
     DEBUG_ASSERT(arch::irqs_disabled(), "{}() entered with interrupts on", __func__);
@@ -708,8 +711,9 @@ auto Thread::Current::exit(i32 retcode) -> void {
     // on_exit() below takes sleeping locks. So it has to arrive here able to
     // block -- interrupts on, preemption on -- which is what every caller
     // promises: the trampoline after the thread's entry returns, and the two
-    // signal paths, which turn interrupts back on before calling. Zircon's
-    // Thread::Current::Exit() asserts the same before ExitingCurrent().
+    // signal paths, which turn interrupts back on before calling. Stricter
+    // than Zircon, whose Thread::Current::Exit() asserts only that interrupts
+    // are on, and only for a user thread, before ExitingCurrent().
     //
     // Not asserted: that no spin lock is held. SpinLock::num_held_cpu() exists,
     // but the PI lock is handed across a context switch, and whether that

@@ -77,13 +77,18 @@ namespace {
     /// The mapping is Zircon's (exceptions_c.cc): #UD is its own kind, #PF
     /// is FatalPageFault once the address space has failed to resolve it, #DB
     /// and #BP are breakpoints, and the rest of the faults a program can cause
-    /// are General. #BP and #OF cannot actually arrive from ring 3 today: every
-    /// IDT gate has DPL 0 (idt.cpp), so `int3` from ring 3 is a #GP, and INTO
-    /// is #UD in 64-bit mode. They are mapped for completeness.
+    /// are General -- with one addition: Zircon dies on #CP in every ring,
+    /// where a ring-3 #CP here is the program's and kills it. CET is not
+    /// enabled, so no #CP can arrive yet.
     ///
-    /// Not here, so fatal whatever the ring: NMI (not the thread's doing),
-    /// #NM, #DF, #CSO, #TS, #MC, #VE, #VC -- nothing a program can cause
-    /// short of a kernel bug or broken hardware.
+    /// #BP and #OF cannot actually arrive from ring 3 today: every IDT gate
+    /// has DPL 0 (idt.cpp), so `int3` from ring 3 is a #GP, and INTO is #UD
+    /// in 64-bit mode. They are mapped for completeness.
+    ///
+    /// Not here, and fatal whatever the ring: #NM, #DF, #CSO, #TS, #MC, #VE,
+    /// #VC -- nothing a program can cause short of a kernel bug or broken
+    /// hardware. Not here and not fatal: NMI, which is not the thread's doing;
+    /// it is logged and returned from, whichever ring it interrupted.
     auto user_exception_type(arch::IrqVec const vector) -> ustl::Option<task::ExceptionType> {
         using arch::IrqVec;
         using task::ExceptionType;
