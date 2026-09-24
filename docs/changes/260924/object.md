@@ -418,3 +418,53 @@ Zircon `ThreadDispatcher::StartRoutine()`：`arch_disable_ints(); arch_iframe_pr
 
 **故意没做**
 无。
+
+## 线程 dispatcher 的创建计数挪进构造函数，与销毁计数成对；析构注释改正（2026-09-24）
+
+**文件**
+- `kernel/object/thread_dispatcher.cpp` — `DISPATCHER_THREAD_SPAWN_COUNT` 从 `spawn()` 成功之后挪到构造函数；析构函数注释改写
+- `docs/repairs/260924/object.md`（新建）— 未启动线程的内核线程泄漏、被杀进程的地址空间泄漏、AMD 上的 `lfence`
+
+**症状**
+审查发现：第 24 条让析构函数在每次销毁时加 destroy 计数，而创建计数只在 `task::Thread::spawn()` 成功后才加。
+spawn 在构造之后失败（koid 用尽、`ThreadCache` 分配失败、栈初始化失败）时，destroy 加一、spawn 不加，两个计数漂开。
+析构注释说"它的内核线程早已不在"，对从未启动过的线程不成立。
+
+**原因**
+成对的计数要在成对的位置上加：对象生、对象死。
+
+**改法**
+改前：
+
+```cpp
+ThreadDispatcher::ThreadDispatcher(...) : ... , m_process(ustl::move(process)) {}
+...
+    *out = KernelHandle<Self>(ustl::move(self));
+
+    DISPATCHER_THREAD_SPAWN_COUNT.add(1);
+    return Status::Ok;
+```
+
+改后：
+
+```cpp
+ThreadDispatcher::ThreadDispatcher(...) : ... , m_process(ustl::move(process)) {
+    DISPATCHER_THREAD_SPAWN_COUNT.add(1);
+}
+...
+    *out = KernelHandle<Self>(ustl::move(self));
+    return Status::Ok;
+```
+
+析构注释改为分两种情况说明：跑过的线程，其内核线程已经退出、自行 `mark_dead()` 并在销毁时放掉了对本对象的引用；
+从未启动的线程，其内核线程仍在全局表上、Initial 状态，没有东西释放它（没有 Zircon `Thread::Forget()` 的对应物，
+记入待修项）。
+
+**参照**
+Zircon `ThreadDispatcher::ThreadDispatcher()` 里 `kcounter_add(dispatcher_thread_create_count, 1)`，析构函数里加 destroy 计数。
+
+**验证**
+构建通过；两个镜像启动正常。
+
+**故意没做**
+泄漏本身（待修项 1、2）。

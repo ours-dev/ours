@@ -24,11 +24,26 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
     , m_state(State::Running)
     , m_parked_reason()
     , m_kernel_thread(nullptr)
-    , m_process(ustl::move(process)) {}
+    , m_process(ustl::move(process)) {
+    // Counted here, where the object comes into being, so that it pairs with
+    // the destroy count in the destructor on every path: counted after
+    // task::Thread::spawn() succeeded, as it was, a spawn that failed after
+    // this constructor ran destroyed a dispatcher that had never been counted.
+    // Zircon counts dispatcher.thread.create in its constructor too.
+    DISPATCHER_THREAD_SPAWN_COUNT.add(1);
+}
 
 /// See ~ProcessDispatcher() for why this is counted and logged. The thread
-/// keeps no name of its own -- its kernel thread had one, and is gone by now
-/// -- so the line names it by koid and by the process it belonged to.
+/// keeps no name of its own -- its kernel thread has one -- so the line names
+/// it by koid and by the process it belonged to.
+///
+/// For a thread that ran, the kernel thread is gone by the time this runs: it
+/// exited, detached itself (mark_dead()) and dropped its reference to this
+/// object as it was destroyed. For one that was spawned and never started,
+/// it is not: it is still on the global thread list in the Initial state,
+/// and nothing frees it -- there is no equivalent yet of Zircon's
+/// Thread::Forget() (docs/repairs/260924/object.md). No path reaches that
+/// today: userabi::launch() starts every thread it spawns.
 ThreadDispatcher::~ThreadDispatcher() {
     DISPATCHER_THREAD_DESTROY_COUNT.add(1);
     log::info("object: thread (koid {}) of process '{}' destroyed", koid(), m_process->name());
@@ -77,8 +92,6 @@ auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *n
     // the freed dispatcher that its trampoline runs on. Nothing caught it
     // because no caller existed.
     *out = KernelHandle<Self>(ustl::move(self));
-
-    DISPATCHER_THREAD_SPAWN_COUNT.add(1);
     return Status::Ok;
 }
 
