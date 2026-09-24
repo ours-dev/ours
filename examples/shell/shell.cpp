@@ -25,6 +25,7 @@
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/vdso.hpp>
 
 #include <ou/channel.hpp>
 #include <ou/command.hpp>
@@ -214,6 +215,101 @@ auto check_channel_loopback() -> void {
         static_cast<void>(ou::debug_line("shell: channel checks FAILED"));
     }
 }
+
+/// Bad user pointers handed to the kernel: each call must come back InvArgs,
+/// and the kernel must still be here to answer the next one.
+///
+/// The vDSO entry points are called directly rather than through ou, so that
+/// the pointers reach the kernel exactly as written here. Two kinds:
+///
+///   UNMAPPED  inside the user half of the address space, so the range check
+///             passes, but nothing is mapped there: the copy faults, the fault
+///             handler cannot resolve it, and the copy's data-fault resume
+///             turns it into InvArgs. Used as a source (copy_from_user) and as
+///             a destination (copy_to_user), which are different copies.
+///   KERNEL    the kernel half: refused by the range check before any copy.
+///             It answered InvArgs before the resume existed and is here so
+///             that it keeps doing so.
+///
+/// A third kind belongs here and is missing: a destination that is mapped
+/// but read-only, such as the vDSO. Every x86 leaf PTE is currently built
+/// writable (docs/repairs/260924/x86-kernel.md), so such a write succeeds;
+/// the checks go in with that fix.
+auto check_bad_pointers() -> void {
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr auto UNMAPPED = ours::VirtAddr{0x7fff'ffff'e000};
+    constexpr auto KERNEL = ours::VirtAddr{0xffff'8000'0000'0000};
+
+    auto ok = true;
+    ok &= expect("shell: debug_write(unmapped) = ",
+                 ours_debug_write(reinterpret_cast<char const *>(UNMAPPED), 8), Status::InvArgs);
+    ok &= expect("shell: debug_write(kernel half) = ",
+                 ours_debug_write(reinterpret_cast<char const *>(KERNEL), 8), Status::InvArgs);
+
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        return;
+    }
+
+    // The message is copied in before the channel is touched, so a bad source
+    // leaves the channel as it was.
+    ok &= expect("shell: channel_write(from unmapped) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None,
+                                    reinterpret_cast<void const *>(UNMAPPED), 8, nullptr, 0),
+                 Status::InvArgs);
+    constexpr char BYTE = 'x';
+    ok &= expect("shell: channel_write(1 byte) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, &BYTE, 1, nullptr, 0),
+                 Status::Ok);
+
+    // Read into nothing: the message is taken off the queue before it is
+    // copied out, so when the copy fails the message is gone -- the same
+    // choice Zircon makes, and the next read finds the channel empty.
+    u32 actual_bytes = 0;
+    u32 actual_handles = 0;
+    ok &= expect("shell: channel_read(into unmapped) = ",
+                 ours_channel_read(b, ours::ChannelReadOptions::None,
+                                   reinterpret_cast<void *>(UNMAPPED), nullptr, 1, 0,
+                                   &actual_bytes, &actual_handles),
+                 Status::InvArgs);
+    char buffer[4] = {};
+    ok &= expect("shell: channel_read(after the lost message) = ",
+                 ours_channel_read(b, ours::ChannelReadOptions::None, buffer, nullptr,
+                                   sizeof(buffer), 0, &actual_bytes, &actual_handles),
+                 Status::ShouldWait);
+
+    // A poll, so that the wait ends at once and the kernel goes on to write
+    // |observed| -- into nothing.
+    ok &= expect("shell: wait_one(observed = unmapped, poll) = ",
+                 ours_object_wait_one(b, Signals::Readable, 0,
+                                      reinterpret_cast<Signals *>(UNMAPPED)),
+                 Status::InvArgs);
+
+    // Both handle values are written out before either handle is installed,
+    // so the failed create leaves nothing behind and the next one works.
+    ours::HandleValue c = ours::HANDLE_INVALID;
+    ours::HandleValue d = ours::HANDLE_INVALID;
+    ok &= expect("shell: channel_create(out0 = unmapped) = ",
+                 ours_channel_create(ours::ChannelCreateOptions::None,
+                                     reinterpret_cast<ours::HandleValue *>(UNMAPPED), &d),
+                 Status::InvArgs);
+    ok &= expect("shell: channel_create(after that) = ",
+                 ours_channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok);
+
+    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    ok &= expect("shell: close(c) = ", ou::handle_close(c), Status::Ok);
+    ok &= expect("shell: close(d) = ", ou::handle_close(d), Status::Ok);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: bad-pointer checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: bad-pointer checks FAILED"));
+    }
+}
 } // namespace
 
 /// `extern "C"`, because ld.lld resolves the default entry point by the symbol
@@ -231,6 +327,7 @@ auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr c
     answer_bootstrap(bootstrap);
     check_handle_close(bootstrap);
     check_channel_loopback();
+    check_bad_pointers();
 
     static Registry registry;
     auto const status = registry.fetch();
