@@ -191,21 +191,64 @@ namespace {
 } // namespace
 
 extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
-    auto const irqnum = HIrqNum(frame->vector);
-    platform_start_handling_irq(irqnum, frame);
-
-    x86_dispatch_exception(frame->vector, frame);
-
     using task::Thread;
-    if (is_from_uspace(frame)) {
-        log::trace("Exception[{}] from user space", to_string(frame->vector));
-        Thread::Current::process_pending_signals();
+    auto const vector = frame->vector;
+
+    // NMI, #DF and #MC take none of the bookkeeping below. They can arrive
+    // anywhere -- inside another interrupt's handler, between the preamble
+    // and postamble of one, with a per-CPU structure half updated -- and the
+    // bookkeeping is exactly what they must not touch:
+    //
+    //  - the preamble and postamble write the per-CPU CURRENT_FRAME and move
+    //    the preempt count. An NMI nested in an IRQ used to run the full set,
+    //    so its postamble cleared CURRENT_FRAME to null under the IRQ still on
+    //    the stack, which then carried on believing it had a frame;
+    //  - preempting would switch threads while NMIs are still masked, which
+    //    they stay until the next iretq, and that iretq would then belong to
+    //    some other thread's return path;
+    //  - processing signals could exit the thread from inside an NMI.
+    //
+    // #DF and #MC stop the kernel in x86_dispatch_exception() and never
+    // return; they skip the bookkeeping because nothing on a double-fault or
+    // machine-check path should depend on per-CPU state being consistent.
+    // (The dedicated IST stacks such exceptions want are not configured yet:
+    // docs/repairs/260923/x86-kernel.md, #1.)
+    //
+    // Zircon gives the NMI its own handler (x86_nmi_handler()) and asserts
+    // that x86_exception_handler() never sees one.
+    if (vector == arch::IrqVec::Nmi || vector == arch::IrqVec::DoubleFault ||
+        vector == arch::IrqVec::MachineCheck) {
+        x86_dispatch_exception(vector, frame);
+        return;
     }
 
+    auto const irqnum = HIrqNum(vector);
+    auto const from_user = is_from_uspace(frame);
+
+    platform_start_handling_irq(irqnum, frame);
+    x86_dispatch_exception(vector, frame);
     auto const need_preempt = platform_finish_handling_irq(irqnum, frame);
+
+    // The order is Zircon's x86_exception_handler(): finish the interrupt,
+    // then preempt, then signals. Signals come last because the next change
+    // to them lets a pending Kill exit the thread from here, and a thread
+    // that exits must not leave behind the preempt count the preamble raised
+    // or a CURRENT_FRAME pointing into its dead stack -- so the interrupt has
+    // to be fully put away first. They also come after the preemption, so
+    // that a signal sent while this thread was switched out is seen before it
+    // returns to ring 3 rather than one interrupt later.
     if (need_preempt) {
         Thread::Current::preempt();
     }
+    if (from_user) {
+        log::trace("Exception[{}] from user space", to_string(vector));
+        Thread::Current::process_pending_signals();
+    }
+
+    // Still off, as the stub's iretq path requires: nothing above may leave
+    // interrupts enabled on its way back here.
+    DEBUG_ASSERT(arch::irqs_disabled(), "interrupts enabled on the way out of exception {}",
+                 to_string(vector));
 }
 
 } // namespace ours
