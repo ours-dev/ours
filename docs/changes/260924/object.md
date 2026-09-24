@@ -97,3 +97,79 @@ Zircon 把 base 值存在槽内对象里；这里存在槽外的 `m_live_base_va
 - 第 5 道关（句柄的表 koid 等于本表 koid）仍是普通比较：到那一步时拿到的已是一个真实存在的
   `Handle`，推测路径上最多看到"别的进程的一个合法句柄"，这与 Zircon 相同。
 - arena 惰性提交推迟到 P1-C（2026-09-24 定）。
+
+## 进程的状态与线程表由同一把进程锁保护（2026-09-24）
+
+**文件**
+- `kernel/object/process_dispatcher.cpp` — `attach_thread()` 在进程锁下完成状态检查、启动线程、入表、Initial→Running
+- `kernel/object/include/ours/object/process_dispatcher.hpp` — 删掉 `m_thread_list_lock`；`m_state` 与 `m_thread_list` 注明由 `get_lock()` 保护
+
+**症状**
+潜伏。原来的 `attach_thread()` 先启动线程（`activate(false)`），再拿一把只管线程表的锁把它入表；
+进程的 `m_state` 从未被任何锁保护，也从未离开 Initial。
+
+**原因**
+接下来的杀进程（第 25 条）要"在锁下遍历线程表，逐个杀掉"。两把锁、两个步骤之间有缝：
+- 线程已经在跑、还没入表时，一次杀进程遍历看不到它，它就活了下来；
+- 进程已经开始死亡时，仍然可以有新线程被加进来。
+
+只有把"检查状态、启动线程、入表"放进同一把锁里，任何拿这把锁的观察者看到的进程才要么还没有这个
+线程、要么这个线程已在运行且在表里。
+
+**改法**
+改前：
+
+```cpp
+auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
+    verify_canary();
+    thread.mark_active();
+
+    thread.activate(false);
+
+    Guard guard{m_thread_list_lock};
+    m_thread_list.push_back(thread);
+    return Status::Ok;
+}
+```
+
+改后：
+
+```cpp
+auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
+    verify_canary();
+
+    Guard guard{get_lock()};
+
+    auto const initial_thread = m_thread_list.empty();
+    auto const expected = initial_thread ? State::Initial : State::Running;
+    if (m_state != expected) {
+        return Status::BadState;
+    }
+
+    thread.mark_active();
+    if (auto const status = thread.activate(false); Status::Ok != status) {
+        return status;
+    }
+    m_thread_list.push_back(thread);
+
+    if (initial_thread) {
+        m_state = State::Running;
+    }
+    return Status::Ok;
+}
+```
+
+用 dispatcher 自带的 `get_lock()` 而不是另开一把：状态本来就该由对象锁保护，两把锁只会带来锁序问题。
+锁序：进程锁在前，线程锁在后（`activate()` 拿线程的锁）。两把都是 `sync::Mutex`，`activate()` 里
+`resume()` 会拿 PI 自旋锁，持 Mutex 再拿自旋锁没有问题。
+
+**参照**
+Zircon `ProcessDispatcher::AddInitializedThread()`（`kernel/object/process_dispatcher.cc`）：`Guard<CriticalMutex> guard{get_lock()}` 下
+判断是否首线程、按状态拒绝、`MakeRunnable`、`thread_list_.push_back`、首线程时 `SetStateLocked(State::RUNNING)`。
+
+**验证**
+构建通过；两个镜像启动正常，init 和 shell 各自的首线程经新路径启动（进程 Initial→Running），
+坏指针检查与通道检查照常。
+
+**故意没做**
+`detach_thread()` 仍是 `Unimplemented`，下一条实现。

@@ -100,14 +100,42 @@ auto ProcessDispatcher::current() -> Self * {
     return &thread->process();
 }
 
+/// Makes |thread| one of this process's running threads.
+///
+/// One lock, the process's own, over the three things that have to change
+/// together: the state check, starting the thread, and the list. With the
+/// list under a lock of its own -- as it used to be -- a kill walking the list
+/// could run between the thread starting and the thread being listed, and
+/// miss a thread that was already running; or a thread could be added to a
+/// process that had begun dying. Under one lock the process is, to anyone
+/// who takes that lock, either without the thread or with it running.
+///
+/// The first thread moves the process from Initial to Running; any later one
+/// requires Running, so that nothing is added to a process that is dying.
+///
+/// Lock order: this process's lock, then the thread's (activate() takes it).
+///
+/// Zircon counterpart: ProcessDispatcher::AddInitializedThread().
 auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
     verify_canary();
+
+    Guard guard{get_lock()};
+
+    auto const initial_thread = m_thread_list.empty();
+    auto const expected = initial_thread ? State::Initial : State::Running;
+    if (m_state != expected) {
+        return Status::BadState;
+    }
+
     thread.mark_active();
-
-    thread.activate(false);
-
-    Guard guard{m_thread_list_lock};
+    if (auto const status = thread.activate(false); Status::Ok != status) {
+        return status;
+    }
     m_thread_list.push_back(thread);
+
+    if (initial_thread) {
+        m_state = State::Running;
+    }
     return Status::Ok;
 }
 

@@ -123,6 +123,9 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     Self *m_parent;
 
+    /// Guarded by get_lock(), together with m_thread_list. The one read
+    /// outside it is set_vdso_code_range()'s assertion, made while the
+    /// process is still being built by one thread.
     State m_state;
 
     ktl::Name<MAX_NAME_SIZE> m_name;
@@ -165,8 +168,9 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     USTL_DECLARE_LIST(Self, ChildrenList, ChildrenListOption);
     ChildrenList m_children;
 
-    /// All threads belong to this process.
-    sync::Mutex m_thread_list_lock;
+    /// Every thread of this process that has been started and has not yet
+    /// exited. Guarded by get_lock(), together with m_state; see
+    /// attach_thread() for why the two share one lock.
     ThreadDispatcher::List m_thread_list;
 
     /// For all of process.
