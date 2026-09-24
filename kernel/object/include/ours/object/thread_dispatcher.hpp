@@ -97,15 +97,17 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         return m_process.as_ref();
     }
 
-    /// This thread broke a rule the kernel enforces -- |code|, with |data| as
-    /// its detail -- in a system call made from |ip|. Raised as a synthetic
-    /// PolicyError exception and handled like any other unhandled one: the
-    /// process is killed. Called from system-call context, interrupts on; the
-    /// thread exits at the pending-signal check on the way back out.
+    /// This thread made a system call without going through the vDSO: the
+    /// trap came from |ip|, with |number| in the call-number register. The
+    /// process is killed for it (a PolicyError, BadSyscall).
     ///
-    /// Zircon counterpart: Thread::Current::SignalPolicyException(), which
-    /// sys_invalid_syscall() raises with ZX_EXCP_POLICY_CODE_BAD_SYSCALL.
-    auto on_policy_exception(task::PolicyCode code, u64 data, VirtAddr ip, VirtAddr sp) -> void;
+    /// Its own entry point, rather than the system-call layer naming a
+    /// task::PolicyCode, so that //kernel/lib/syscall keeps to kernel/object's
+    /// headers (design 4.7). Zircon's sys_invalid_syscall() calls
+    /// Thread::Current::SignalPolicyException() directly; this is the same
+    /// call, one layer up.
+    auto on_bad_syscall(u64 number, VirtAddr ip, VirtAddr sp) -> void;
+
 
     FORCE_INLINE
     auto mark_active() -> void {
@@ -145,6 +147,15 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// task::Thread::Current::on_user_exception(), in the thread's own
     /// context, interrupts on.
     auto on_user_exception(task::ExceptionContext const &context) -> void;
+
+    /// This thread broke a rule the kernel enforces -- |code|, with |data| as
+    /// its detail -- in a system call made from |ip|. Raised as a synthetic
+    /// PolicyError exception and handled like any other unhandled one: the
+    /// process is killed. Called from system-call context, interrupts on; the
+    /// thread exits at the pending-signal check on the way back out.
+    ///
+    /// Zircon counterpart: Thread::Current::SignalPolicyException().
+    auto on_policy_exception(task::PolicyCode code, u64 data, VirtAddr ip, VirtAddr sp) -> void;
 
     auto on_resume() -> Status;
 

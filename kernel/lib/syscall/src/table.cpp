@@ -16,7 +16,6 @@
 #include <ours/compiler.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
-#include <ours/task/exception.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
@@ -95,7 +94,7 @@ namespace {
         // no process to kill for it.
         auto *const thread = object::ThreadDispatcher::current();
         ASSERT(thread, "a trap from a kernel thread at {:#x}", frame->ip);
-        thread->on_policy_exception(task::PolicyCode::BadSyscall, frame->ax, frame->ip, frame->sp);
+        thread->on_bad_syscall(frame->ax, frame->ip, frame->sp);
 
         // BadSyscall, not AccessDenied (design 4.5): AccessDenied is what a
         // handle lacking a right answers, and a program has to be able to tell

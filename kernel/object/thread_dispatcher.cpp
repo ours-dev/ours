@@ -216,6 +216,11 @@ auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 cons
     });
 }
 
+auto ThreadDispatcher::on_bad_syscall(u64 const number, VirtAddr const ip, VirtAddr const sp)
+    -> void {
+    on_policy_exception(task::PolicyCode::BadSyscall, number, ip, sp);
+}
+
 auto ThreadDispatcher::kill() -> void {
     verify_canary();
 

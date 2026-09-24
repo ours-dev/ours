@@ -511,3 +511,51 @@ Zircon `sys_invalid_syscall()`（`kernel/lib/syscalls/syscalls.cc`）：`Thread:
 
 **故意没做**
 常驻的探针测试（第 30 条）连同第 27 条一起，等 `sync::Mutex` 的丢失唤醒修好再提交（`docs/repairs/260924/sync.md`）。
+
+## lib/syscall 回到只 include 对象层的头：`on_bad_syscall()`（2026-09-24）
+
+**文件**
+- `kernel/object/include/ours/object/thread_dispatcher.hpp`、`thread_dispatcher.cpp` — 新增公开的 `on_bad_syscall(number, ip, sp)`；`on_policy_exception()` 挪进私有部分
+- `kernel/lib/syscall/src/table.cpp` — 调 `on_bad_syscall()`，删掉 `#include <ours/task/exception.hpp>`
+
+**症状**
+审查发现：第 29 条的记录写"lib/syscall 因此仍只 include 对象层的头"，但 `table.cpp` 为了写出
+`task::PolicyCode::BadSyscall` 而 include 了 task 层的 `<ours/task/exception.hpp>`——违反了设计 4.7 给 lib/syscall
+定的依赖白名单（`kernel/object`、`user_copy`、arch 的 syscall 帧头）。
+
+**原因**
+策略码是 task 层的类型，让系统调用层去拼它，就是让系统调用层知道了对象层下面的东西。系统调用层只需要说
+"这个线程绕开了 vDSO"，怎么把它变成一个异常是对象层的事。
+
+**改法**
+改前：
+
+```cpp
+#include <ours/task/exception.hpp>
+...
+        thread->on_policy_exception(task::PolicyCode::BadSyscall, frame->ax, frame->ip, frame->sp);
+```
+
+改后：
+
+```cpp
+        thread->on_bad_syscall(frame->ax, frame->ip, frame->sp);
+```
+
+```cpp
+auto ThreadDispatcher::on_bad_syscall(u64 const number, VirtAddr const ip, VirtAddr const sp)
+    -> void {
+    on_policy_exception(task::PolicyCode::BadSyscall, number, ip, sp);
+}
+```
+
+**参照**
+Zircon `sys_invalid_syscall()` 直接调 `Thread::Current::SignalPolicyException(ZX_EXCP_POLICY_CODE_BAD_SYSCALL, num)`；
+这里是同一个调用，往上挪了一层。
+
+**验证**
+构建通过；`grep task/ kernel/lib/syscall` 为空；两个镜像启动正常；临时的裸 `syscall` 探针（未提交）仍然得到
+`type=PolicyError vector=BadSyscall ... synth_code=18` 与两行 destroyed。
+
+**故意没做**
+无。
