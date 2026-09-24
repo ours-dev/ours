@@ -802,27 +802,65 @@ auto PmNode::Current::set_nid(NnId nid) -> void {
 /// platform_init_apic() at InitLevel::Irq -- three levels after this hook --
 /// so at this point it is empty, and a walk of it alone publishes nothing.
 /// That was the other way this used to fail on the same boot.
+auto PmNode::Current::publish(CpuNum const cpu) -> void {
+    auto const nid = DYNAMIC_CPU_TO_NODE[cpu];
+    if (nid == NUMA_MAX_NODE) {
+        // Not claimed yet. bootstrap() claims only the CPU it runs on;
+        // claim_possible_cpus() and the NUMA topology parse claim the rest.
+        return;
+    }
+
+    auto *const node = PmNode::node(nid);
+    DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
+    node->m_canary.verify<Self>();
+
+    Guard guard{node->get_lock()};
+    node->m_work_cpus.set(cpu);
+    // PmNode::init() builds the hard affinity from STATIC_CPU_TO_NODE, but
+    // only for the CPUs claimed by then -- the boot CPU. A CPU claimed later
+    // joins it here, so that the node's mask says the same thing as the table.
+    if (STATIC_CPU_TO_NODE[cpu] == nid) {
+        node->m_hard_affinity.set(cpu);
+    }
+    PmNode::Current::set(node, cpu);
+}
+
 auto PmNode::Current::init() -> void {
-    auto const publish = [](CpuNum const cpu) {
-        auto const nid = DYNAMIC_CPU_TO_NODE[cpu];
-        if (nid == NUMA_MAX_NODE) {
-            // bootstrap() claims every CPU it can see, so a CPU still on the
-            // sentinel appeared after it. It gets its node when it is brought
-            // up, through set_nid().
-            return;
-        }
-
-        auto *const node = PmNode::node(nid);
-        DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
-        node->m_canary.verify<Self>();
-
-        Guard guard{node->get_lock()};
-        node->m_work_cpus.set(cpu);
-        PmNode::Current::set(node, cpu);
-    };
-
-    Cpu::possible_mask().for_each(publish);
+    Cpu::possible_mask().for_each(&Current::publish);
     publish(CpuLocal::current_cpu());
+}
+
+/// Every CPU the MADT reported gets a node -- before any of them runs.
+///
+/// bootstrap() could only claim the CPU it runs on: the possible mask is
+/// filled by the MADT parse (platform_init_apic(), InitLevel::Irq), long
+/// after the PMM. Every other CPU was left on the NUMA_MAX_NODE sentinel, and
+/// nothing ever moved it -- the only other claimant is the SRAT parse, which
+/// a kernel built without NUMA never compiles in and a machine without an
+/// SRAT never feeds. So current_node() on an AP answered NUMA_MAX_NODE, and
+/// the first kmalloc() on an AP -- a user thread's channel_create(), on
+/// CPU1 -- read m_node_caches[NUMA_MAX_NODE], one past the end, took the
+/// ListMemberHook after the array for a NodeCache, and spun for ever on a list
+/// pointer it had mistaken for that NodeCache's lock. The comment in
+/// bootstrap() describes that exact failure for the boot CPU; this is the same
+/// hole for the others.
+///
+/// A CPU no topology source placed goes where the boot CPU went, which is the
+/// first node that owns memory -- the fallback bootstrap() chose, and on a
+/// machine without an SRAT the only node there is. Linux does this in the same
+/// place and for the same reason: init_cpu_to_node() after the ACPI parse,
+/// with numa_set_node() for each possible CPU, before smp_init() brings the
+/// APs up.
+auto PmNode::Current::claim_possible_cpus() -> void {
+    auto const fallback = nid(CpuLocal::current_cpu());
+    DEBUG_ASSERT(fallback < NUMA_MAX_NODE, "the boot CPU has no node");
+
+    Cpu::possible_mask().for_each([fallback](CpuNum const cpu) {
+        if (nid(cpu) == NUMA_MAX_NODE) {
+            set_nid_early(cpu, fallback);
+        }
+        publish(cpu);
+    });
 }
 
 /// Once per-CPU storage exists, so that alloc_frames() can be called without
@@ -831,5 +869,9 @@ auto PmNode::Current::init() -> void {
 /// after CpuLocal::init() returns -- a hook at exactly that level would run
 /// with the units laid out but before main.cpp had said so.
 GKTL_INIT_HOOK(RegisterNode, PmNode::Current::init, gktl::InitLevel::CpuLocal + 1);
+
+/// After InitLevel::Irq, where the MADT parse fills the possible mask, and
+/// before InitLevel::Platform, where x86_bring_aps() starts the CPUs in it.
+GKTL_INIT_HOOK(ClaimPossibleCpus, PmNode::Current::claim_possible_cpus, gktl::InitLevel::Irq + 1);
 
 } // namespace ours::mm

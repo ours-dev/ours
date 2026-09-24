@@ -502,10 +502,19 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     /// definition for why it does not go through set_nid().
     static auto init() -> void;
 
+    /// Gives every CPU the firmware reported a node, and publishes it, before
+    /// any of them starts. Run once, from an init hook after the MADT parse;
+    /// see the definition for why bootstrap() could not do this itself.
+    static auto claim_possible_cpus() -> void;
+
   private:
     friend class PmNode;
 
     static auto inherit_thread_context(Gaf &gaf) -> Status;
+
+    /// Records |cpu| in its node's CPU masks and points its per-CPU slot at
+    /// the node. Nothing for a CPU still on the NUMA_MAX_NODE sentinel.
+    static auto publish(CpuNum cpu) -> void;
 
     PmNode *m_node;
     NodeMask m_hard_affinity;
