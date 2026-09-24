@@ -6,7 +6,7 @@
 `thread_create` / `process_start`、`vmo_create` / `vmar_map`、processargs、移到 `system/lib` 的 Binder）。
 
 **要删的东西：**
-- `OURS_SYS_PROCESS_SPAWN_BOOT`、`PROCESS_BOOT_NAME_MAX`（`system/public/ours/syscall.hpp`）
+- `PROCESS_BOOT_NAME_MAX`（`system/public/ours/syscall.hpp`）；调用号随 `syscalls.gni` 条目一起消失
 - `ours_process_spawn_boot` 的声明（`system/public/ours/vdso.hpp`）
 - `system/public/ours/syscalls.gni` 里的 `process_spawn_boot` 条目——vDSO 桩由它生成，删掉条目桩就没了
 - `kernel/lib/syscall/src/process.cpp`（它的声明、shim 和表项都是生成物，随 `syscalls.gni` 条目一起消失）

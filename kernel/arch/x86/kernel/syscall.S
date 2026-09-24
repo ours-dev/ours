@@ -1,6 +1,5 @@
 #include <arch/x86/macro/syscallframe.hpp>
 #include <ours/arch/asm.hpp>
-#include <ours/syscall.hpp>
 #include <ours/arch/x86/percpu.hpp>
 
 /// Intel® 64 and IA-32 Architectures Software Developer's Manual, Volume 2B:

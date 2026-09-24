@@ -116,24 +116,30 @@ namespace {
     /// has to be a valid target -- a null entry would be an indirect call
     /// through zero from user space.
     ///
-    /// One entry longer than SYSCALL_COUNT. The extra slot at the end is the
-    /// out-of-range answer, and it exists so the stub's range check can clamp
-    /// rather than branch: a number at or above SYSCALL_COUNT is rewritten to
-    /// this index and dispatched like any other. Without it the stub would
-    /// have to jump around the call and set the return value in assembly,
-    /// which means spelling a Status constant there.
+    /// One entry longer than DISPATCH_SLOTS. The extra slot at the end is the
+    /// out-of-range answer, and it exists so the range check can clamp rather
+    /// than branch: a number at or above DISPATCH_SLOTS is rewritten to this
+    /// index and dispatched like any other.
     ///
     /// Every call the description names is filled in from GENERATED_SHIMS;
-    /// the numbers between the last of them and SYSCALL_COUNT answer
-    /// Unimplemented until the table is sized by the generated count.
-    constexpr auto TABLE_SIZE = SYSCALL_COUNT + 1;
+    /// the numbers between the last of them and DISPATCH_SLOTS answer
+    /// Unimplemented.
+    ///
+    /// 256 is the size the table had when the count lived in the public
+    /// header as OURS_SYSCALL_COUNT. It is private now, and kept as it was
+    /// only so that moving the numbers out changes nothing a caller can see;
+    /// sizing the table by the generated count is a change of its own.
+    constexpr auto DISPATCH_SLOTS = usize{256};
+    static_assert(syscall_abi::SYSCALL_COUNT <= DISPATCH_SLOTS);
+
+    constexpr auto TABLE_SIZE = DISPATCH_SLOTS + 1;
 
     constexpr auto make_syscall_table() {
         std::array<SyscallHandler, TABLE_SIZE> table{};
         for (auto &entry: table) {
             entry = &sys_not_implemented;
         }
-        table[SYSCALL_COUNT] = &sys_bad_syscall_number;
+        table[DISPATCH_SLOTS] = &sys_bad_syscall_number;
 
         // Index i of GENERATED_SHIMS is call number i: both are generated
         // from the position of the entry in syscalls.gni, which is the only
@@ -181,13 +187,13 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
         sys_not_from_vdso(frame);
     } else {
         // Clamped, not branched around: SYSCALL_TABLE has one entry more than
-        // SYSCALL_COUNT and that last slot answers Status::BadSyscall, so a
+        // DISPATCH_SLOTS and that last slot answers Status::BadSyscall, so a
         // number at or above the count is rewritten onto it and dispatched
         // like any other. %rax is entirely user-controlled, and without this
         // the call below would index past the table by an offset the caller
         // chose.
-        auto number = SYSCALL_COUNT;
-        if (frame->ax < SYSCALL_COUNT) {
+        auto number = DISPATCH_SLOTS;
+        if (frame->ax < DISPATCH_SLOTS) {
             number = frame->ax;
         }
         SYSCALL_TABLE[number](frame);

@@ -63,3 +63,77 @@ using KoId = u64;
   的 koid 是 P1-B 的事。
 - `Thread::spawn()` 里 `KOID_INVALID == tid` 的检查保留：u64 下实际不会触发，但它表达的是
   "生成器不发 0"这条约定。
+
+## 调用号离开公共头（2026-09-24）
+
+**文件**
+- `system/public/ours/syscall.hpp` — 删掉 `OURS_SYSCALL_COUNT`、`OURS_SYS_*`、`ours::SYSCALL_COUNT`、`SyscallNumber`；重写头注释；去掉 `#ifdef __cplusplus`
+- `kernel/arch/x86/kernel/syscall.S` — 删掉不再用到的 `#include <ours/syscall.hpp>`
+- `kernel/lib/syscall/src/table.cpp` — 私有常量 `DISPATCH_SLOTS = 256` 取代公共的 `SYSCALL_COUNT`
+- `docs/repairs/260923/syscall.md` — 删除清单里的 `OURS_SYS_PROCESS_SPAWN_BOOT` 一项改为随条目消失
+
+**症状**
+没有运行时症状。公共头的注释写着"用户程序把其中一个号放进系统调用号寄存器"——这在
+vDSO 规则之下不成立，却以公共 ABI 的身份印在每个用户程序都能 include 的头里。
+
+**原因**
+这个项目的规则是：用户程序只能经 vDSO 进内核，`syscall` 指令只存在于 vDSO 里，内核拒绝
+来自别处的陷入。于是调用号从来不是程序看得到的东西，它是 vDSO 的桩和内核分发表之间的私有
+约定（设计 D8）。把它放在公共头里，等于把 vDSO 要隐藏的那样东西公开发布——一个程序拿到号，
+唯一能做的就是绕开 vDSO 自己发陷入，而那正是规则禁止的。
+
+放在公共头里还有一个后果：一旦用户程序依赖了某个号，调整顺序就成了 ABI 变化。私有之后，
+号只在 vDSO 和内核之间，两边同时从 `syscalls.gni` 生成，重排只是一次重新构建。
+
+此前前三条提交已经让内核和 vDSO 都改用生成的 `syscall_abi::`，这一条删掉的只是没有人再
+用的旧定义。
+
+**改法**
+改前（节选）：
+
+```cpp
+// The system-call ABI: the contract between a user program and the kernel's
+// entry stub. ... a user program puts one of them in the syscall-number register.
+#define OURS_SYSCALL_COUNT 256
+#define OURS_SYS_DEBUG_WRITE 0
+...
+#ifdef __cplusplus
+namespace ours {
+inline constexpr auto SYSCALL_COUNT = usize{OURS_SYSCALL_COUNT};
+...
+enum class SyscallNumber : usize { DebugWrite = OURS_SYS_DEBUG_WRITE, ... };
+}
+#endif
+```
+
+改后：头里只剩两侧共享的常量——`INSTANT_INFINITE`、`CHANNEL_MAX_MSG_BYTES`、
+`CHANNEL_MAX_MSG_HANDLES`、`MAX_DEBUG_WRITE`、`PROCESS_BOOT_NAME_MAX` 和三个 `*Options` 枚举；
+头注释说明号为什么不在这里、在哪里。汇编不再 include 它，所以 `#ifdef __cplusplus` 的分层
+也一起去掉。
+
+`table.cpp` 的表长原来取自公共的 `SYSCALL_COUNT`（256）。本条只挪位置不改行为：
+
+```cpp
+    constexpr auto DISPATCH_SLOTS = usize{256};
+    static_assert(syscall_abi::SYSCALL_COUNT <= DISPATCH_SLOTS);
+
+    constexpr auto TABLE_SIZE = DISPATCH_SLOTS + 1;
+```
+
+按生成的计数定表长是下一条的事，它会改变 8..255 号的返回值，值得单独一条。
+
+表外的名字一律写全限定的 `syscall_abi::SYSCALL_COUNT`，不用 using 指令：否则删掉
+`ours::SYSCALL_COUNT` 之后，同名的生成常量会悄悄顶上，表长在这一条里就变成 9。
+
+**参照**
+Zircon：`zx-syscall-numbers.h` 由 kazoo 生成，只给内核和 vDSO 用；公共的 `<zircon/syscalls.h>`
+只有 `zx_*` 函数声明，没有号。
+
+**验证**
+- `grep -rn "OURS_SYS_\|OURS_SYSCALL_COUNT\|SyscallNumber" kernel system examples`：只剩
+  `table.cpp` 注释里的一处历史说明（`OURS_SYSTEM_*` 头文件守卫另计）。
+- `grep -rnw SYSCALL_COUNT`：只剩 `syscall_abi::` 限定的。
+- 干净构建通过；两个镜像启动正常。
+
+**故意没做**
+无。
