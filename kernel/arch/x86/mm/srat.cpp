@@ -98,7 +98,16 @@ namespace {
             cpus[count] = count;
             cpu_possible_mask().set(count);
             // HINT(SmallHuaZi)
-            mm::PmNode::Current::set_nid(static_cast<CpuNum>(count), NnId{binding.domain});
+            // set_nid_early(), not set_nid(): this runs at PrePmm + 1, before
+            // any PmNode exists. set_nid() is the run-time move between two
+            // live nodes -- it finds no node to join, so it wrote only the
+            // dynamic table and left STATIC_CPU_TO_NODE on the sentinel.
+            // bootstrap() then saw the CPU as already claimed and did not
+            // fill it either, and PmNode::init(), which builds each node's
+            // hard affinity from the static table, built them all empty.
+            // Linux records the same thing just as early and just as plainly:
+            // numa_set_node() into early_per_cpu(x86_cpu_to_node_map).
+            mm::PmNode::Current::set_nid_early(static_cast<CpuNum>(count), NnId{binding.domain});
             count += 1;
         });
     }
