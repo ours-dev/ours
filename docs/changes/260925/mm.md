@@ -464,3 +464,61 @@ Zircon 的 `pmm_count_free_pages()`（`zircon/kernel/vm/pmm.cc:154`）转调 `Pm
 
 **故意没做**
 每 CPU 的帧缓存（`FramePcpuCache`）还是空壳，今天不持有帧；有了之后要把它们也算进来，或者明确说"不含 pcpu 缓存"。
+
+## zone 锁关着中断拿：不带选项的 `Guard` 什么也不关（2026-09-25）
+
+**文件**
+- `kernel/mm/pm_zone.cpp` — 三处 `Guard guard{m_lock}` 换成 `ZoneGuard`（`Guard<sync::SpinLock, IrqSave>`）
+
+**症状**
+释放死进程页表的改动（下一节）加上之后，dbg_1 间歇性断言失败，三次启动挂一次：
+
+```
+Assertion failed on !is_held()
+```
+
+临时让这条断言打出锁地址和调用者（未提交）：锁在 physmap 里，调用者符号化后是 `ours::mm::PmZone::free_frame()`——
+同一颗 CPU 重复获取了同一个 zone 的锁。
+
+**原因**
+`Guard guard{m_lock}` 经推导指引变成 `Guard<SpinLock>`，不带任何选项。`lockdep::Guard` 为每个选项构造一个状态保存器
+（`std::tuple<StateSaver<LockType, Options>...> m_savers`），没有选项就是空 tuple：**既不关中断，也不关抢占**。
+`spin_lock.hpp` 的注释自己写着"until the Guard learns to save that state, holding this lock disables nothing at all"。
+
+于是线程可以持着 zone 锁被时钟中断抢占；同一颗 CPU 上的下一个线程再去释放同一个 zone 的帧，就看到锁"被本 CPU 持有"。
+debug 构建里断言拦住；release 构建里它会一直自旋，直到自己也被抢占、让持锁者回来——一个潜伏的活锁。以前很少撞上，
+死进程开始从 DPC 线程成批地还页表页之后，窗口就被频繁踩中了。
+
+**改法**
+改前：
+
+```cpp
+        Guard guard{m_lock};
+        frame = m_fset.acquire_frame(order);
+```
+
+改后：
+
+```cpp
+    using ZoneGuard = Guard<sync::SpinLock, IrqSave>;
+    ...
+        ZoneGuard guard{m_lock};
+        frame = m_fset.acquire_frame(order);
+```
+
+- **IrqSave 而不是 PreemptDisable**：PMM 在还没有线程的时候就在用，那时没有"抢占"可关；而在中断里释放的帧也不能撞上底下
+  持着的同一把锁。关中断同时挡住了这两件事。
+- 用的是共享原语本来就提供的选项，不是另写一个替代品。
+
+**参照**
+Linux 的 `zone->lock` 一律 `spin_lock_irqsave()`（`rmqueue_bulk()`、`free_one_page()`）。Zircon 的 PMM 锁是 `Mutex`，
+与这里的模型不同。
+
+**验证**
+- 构建通过；clang-format 干净。
+- 带着下一节的页表释放一起启动 dbg_1 连续 4 次，都是 `probes done (11 killed, 0 survived)`、没有断言（改前 3 次里挂 1 次，
+  另一轮单次启动也挂过）。
+
+**故意没做**
+全树其余不带选项的 `Guard{spinlock}`（约 30 个文件）有同样的问题，属于 sync/lockdep 那条线：已交接给独立会话，由它在框架层面
+决定"默认 Guard 关抢占"还是"必须写明选项"，再审一遍调用点。

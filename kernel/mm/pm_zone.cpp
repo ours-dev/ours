@@ -1,5 +1,6 @@
 #include <ours/assert.hpp>
 #include <ours/init.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/pm_node.hpp>
@@ -9,6 +10,25 @@
 
 #include <logz4/log.hpp>
 namespace ours::mm {
+namespace {
+    /// The zone lock is taken with interrupts off, as Linux takes zone->lock
+    /// (spin_lock_irqsave in rmqueue_bulk() and free_one_page()).
+    ///
+    /// It used to be `Guard guard{m_lock}`, and a Guard with no option saves no
+    /// state: it neither disables interrupts nor holds off preemption
+    /// (lockdep::Guard builds one saver per option, and there were none). So a
+    /// thread could be preempted holding a zone lock, and the next thread on
+    /// that CPU to free a frame in the zone found the lock "held by this CPU":
+    /// the debug build asserted (SpinLock::acquire(), !is_held()), a release
+    /// build would have spun until it was itself preempted. It surfaced once
+    /// dead processes started giving their memory back from a DPC thread,
+    /// which frees in bursts.
+    ///
+    /// IrqSave rather than PreemptDisable: the PMM is used before there are
+    /// threads to hold preemption off for, and a frame freed from an interrupt
+    /// must not meet the lock held underneath it either.
+    using ZoneGuard = Guard<sync::SpinLock, IrqSave>;
+} // namespace
 
 PmZone::PmZone(NnId nid, ZoneType type, Pfn start_pfn, Pfn end_pfn, usize present_frames)
     // Initializer order follows the member declaration order in pm-zone.hpp.
@@ -62,8 +82,9 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
     if (!frame) {
         // The zone's lock covers the frame set; the set has none of its own.
         // Held only across the buddy call, so the zeroing below -- which can be
-        // a whole max-order block -- happens outside it.
-        Guard guard{m_lock};
+        // a whole max-order block -- happens outside it. IrqSave: see
+        // ZoneGuard.
+        ZoneGuard guard{m_lock};
         frame = m_fset.acquire_frame(order);
     }
 
@@ -80,7 +101,7 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
 }
 
 auto PmZone::free_frames() -> usize {
-    Guard guard{m_lock};
+    ZoneGuard guard{m_lock};
     return m_fset.free_frames();
 }
 
@@ -92,7 +113,7 @@ auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
             // Here no pcpu cache.
         });
     } else {
-        Guard guard{m_lock};
+        ZoneGuard guard{m_lock};
         m_fset.release_frame(frame, order);
     }
     m_managed_frames += BIT(order);
