@@ -60,6 +60,9 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
         parse_name(USERBOOT_OPTION, value.value(), m_userboot);
     }
     parse_flag(cmdline, SHELL_OPTION, m_shell);
+    if (auto const value = cmdline.value(KERNEL_NAME_OPTION); value.is_some()) {
+        parse_name(KERNEL_NAME_OPTION, value.value(), m_kernel_name);
+    }
 }
 
 auto setup_options() -> void {

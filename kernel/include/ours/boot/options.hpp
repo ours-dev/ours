@@ -39,6 +39,10 @@ class BootOptions final {
     /// the same default; see shell().
     static constexpr std::string_view SHELL_OPTION{"kernel.shell"};
 
+    /// The kernel's own directory in the kernel package, by the option phys
+    /// boots it by; see kernel_name().
+    static constexpr std::string_view KERNEL_NAME_OPTION{"kernel.name"};
+
     /// Applies the options `cmdline` names and leaves the rest at their
     /// defaults. A value an option cannot take is logged and ignored rather
     /// than refused: nothing downstream could act on an error, and the
@@ -89,6 +93,31 @@ class BootOptions final {
         return m_shell;
     }
 
+    /// `kernel.name=<dir>`; "vmours" when absent -- phys::BootOptions'
+    /// default, since both must name the same directory.
+    ///
+    /// The directory of the kernel package that holds this kernel's own
+    /// files, under KernelPackage's fixed names (IMAGE_ELF, CODE_PATCHES).
+    /// phys reads the option to find the image it loads (physboot_init());
+    /// vmours reads it to know which part of the package is its own, which is
+    /// what userabi refuses to copy into the BootFS it hands to user space
+    /// (the blacklist of docs/repairs/260925/userabi.md item 1). Zircon's
+    /// counterpart is `kernel.select` (lib/boot-options/options.inc), which
+    /// names the kernel package to boot out of STORAGE_KERNEL.
+    ///
+    /// The two readers can disagree, where Zircon's cannot: its kernel is
+    /// handed physboot's parsed gBootOptions, while this parses the image's
+    /// Config item again and never sees the bootloader's command line (see
+    /// the class comment). So `kernel.name=` typed at GRUB boots a directory
+    /// other than the one named here. For the one use so far that is
+    /// tolerable -- the blacklist is a backstop, and the whitelist in front
+    /// of it is what decides -- but a use that must know the directory phys
+    /// actually booted should take it from the handoff, not from this.
+    [[nodiscard]]
+    auto kernel_name() const -> std::string_view {
+        return m_kernel_name;
+    }
+
   private:
     bool m_shell{false};
 
@@ -98,6 +127,10 @@ class BootOptions final {
     /// 64 bytes is what phys::BootOptions keeps for `kernel.phys.next` and
     /// `kernel.name`, and what Zircon's SmallString holds this option in.
     char m_userboot[64]{"userboot"};
+
+    /// Same size as phys::BootOptions' copy of this option, so any name phys
+    /// accepts fits here too.
+    char m_kernel_name[64]{"vmours"};
 };
 
 /// Parses the image's command line into the options options() returns.
