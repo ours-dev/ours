@@ -97,6 +97,13 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
 
     virtual auto on_zero_handles() -> void {}
 
+    /// ustl's recycle hook: the last reference to this object is gone. It is
+    /// destroyed here, or -- when the calling thread is already destroying
+    /// one -- queued for that outer deletion to destroy after it. Public
+    /// because ustl::RefCounted::release() has to see it; nothing else calls
+    /// it. See the definition.
+    static auto rc_recycle(Dispatcher *object) noexcept -> void;
+
   protected:
     /// RefCounted::destroy() calls ~T() when the last reference goes; the
     /// destructor stays protected otherwise, as MemCache and VmAspace do.
@@ -118,6 +125,12 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     std::atomic<Signals> m_signals;
 
     SignalObserver::List m_observers;
+
+  private:
+    /// The next object in the deleting thread's pending list, while this one
+    /// waits in it (rc_recycle()). Unused otherwise: an object is only ever
+    /// linked here after its last reference is gone.
+    Dispatcher *m_next_to_delete = nullptr;
 };
 
 template <typename Derived, Rights DefaultRights, Signals ExtraSignals = Signals::None>

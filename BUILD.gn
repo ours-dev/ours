@@ -73,6 +73,7 @@ group("default") {
     "//system/lib/logz4:logz4-test($host_toolchain)",
     "//system/lib/ustl:bitfields-test($host_toolchain)",
     "//system/lib/ustl:bitset-test($host_toolchain)",
+    "//system/lib/ustl:rc-test($host_toolchain)",
 
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the

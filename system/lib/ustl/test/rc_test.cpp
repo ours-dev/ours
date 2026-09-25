@@ -3,8 +3,8 @@
 /// Host smoke test for the redesigned intrusive Rc/Weak (ustl::rc.hpp).
 ///
 /// Covers: strong/weak counts, weak upgrade/lock races, polymorphic
-/// destruction, disposer priority, checked downcast, single-threaded policy
-/// and into_raw ownership transfer.
+/// destruction, disposer priority, checked downcast, single-threaded policy,
+/// into_raw ownership transfer and the rc_recycle hook.
 
 #include <ustl/rc.hpp>
 
@@ -92,6 +92,44 @@ struct Cacheable: ustl::RefCounted<Cacheable> {
         ++DESTROYED;
     }
 };
+
+// Recycle hook: a link in a chain whose destructor would release the next
+// link. Without the hook, dropping the head recurses once per link; with it,
+// the outermost release runs the chain as a loop -- the kernel's SafeDeleter
+// for dispatchers, in miniature.
+struct Link: ustl::RefCounted<Link> {
+    static Link *PENDING;
+    static bool DELETING;
+    static int RECYCLED;
+
+    ustl::Rc<Link> next;
+    Link *next_to_delete = nullptr;
+
+    ~Link() {
+        ++DESTROYED;
+    }
+
+    static auto rc_recycle(Link *link) noexcept -> void {
+        ++RECYCLED;
+        if (DELETING) {
+            link->next_to_delete = PENDING;
+            PENDING = link;
+            return;
+        }
+        DELETING = true;
+        while (link != nullptr) {
+            link->rc_finish();
+            link = PENDING;
+            if (link != nullptr) {
+                PENDING = link->next_to_delete;
+            }
+        }
+        DELETING = false;
+    }
+};
+Link *Link::PENDING = nullptr;
+bool Link::DELETING = false;
+int Link::RECYCLED = 0;
 
 auto test_basic() {
     DESTROYED = 0;
@@ -231,6 +269,40 @@ auto test_custom_deallocate() {
     assert(Cached::FREED == 1);
 }
 
+auto test_recycle() {
+    DESTROYED = 0;
+    Link::RECYCLED = 0;
+
+    // A strong reference that is not the last one does not recycle.
+    {
+        auto a = ustl::Rc<Link>::adopt(new Link());
+        {
+            auto b = a;
+        }
+        assert(Link::RECYCLED == 0);
+        assert(DESTROYED == 0);
+    }
+    assert(Link::RECYCLED == 1);
+    assert(DESTROYED == 1);
+
+    // A chain long enough that recursing once per link would exhaust the
+    // stack: every link must still be destroyed, by the loop.
+    constexpr int LENGTH = 1'000'000;
+    DESTROYED = 0;
+    Link::RECYCLED = 0;
+    {
+        auto head = ustl::Rc<Link>::adopt(new Link());
+        auto *tail = head.as_ptr_mut();
+        for (int i = 1; i < LENGTH; ++i) {
+            tail->next = ustl::Rc<Link>::adopt(new Link());
+            tail = tail->next.as_ptr_mut();
+        }
+    }
+    assert(Link::RECYCLED == LENGTH);
+    assert(DESTROYED == LENGTH);
+    assert(Link::PENDING == nullptr && !Link::DELETING);
+}
+
 } // namespace
 
 auto main() -> int {
@@ -243,6 +315,7 @@ auto main() -> int {
     test_downcast();
     test_into_raw();
     test_custom_deallocate();
+    test_recycle();
     std::printf("all rc tests passed\n");
     return 0;
 }

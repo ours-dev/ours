@@ -204,3 +204,106 @@ Zircon `ProcessDispatcher::FinishDeadTransition()`（`zircon/kernel/object/proce
 **故意没做**
 - 读退出码的 `object_get_info(Process)`：计划 K24。用户态在 K23 之前拿不到进程句柄。
 - 线程的 TERMINATED、从 job 摘除：前者没有使用者，后者 job 还没有子进程列表。
+
+## 对象析构走每线程的延迟删除链表：一条互相持有的对象链不再按长度递归（2026-09-25）
+
+**文件**
+- `system/lib/ustl/include/ustl/rc.hpp` — `RefCounted` 新增回收挂钩：T 若声明 `static auto rc_recycle(T *) noexcept -> void`，最后一次 `release()` 交给它；新增 `rc_finish()`（析构载荷、归还存储）
+- `system/lib/ustl/test/rc_test.cpp` — `test_recycle()`：挂钩的触发时机，与一条一百万个节点的链
+- `BUILD.gn` — `rc-test` 挂进根目录的 host 测试列表
+- `kernel/include/ours/task/thread.hpp` — `task::Thread` 新增 `recursive_object_deletion_list()`（`void *`）
+- `kernel/object/include/ours/object/dispatcher.hpp`、`kernel/object/dispatcher.cpp` — `Dispatcher::rc_recycle()` 与 `m_next_to_delete`
+
+**症状**
+潜伏，是文件系统计划 K9/K10（channel 消息携带句柄）的前置：一个 channel 端经 channel 传给自己的 channel，再传，套上一千层，
+然后关掉最外层——每一层的析构释放下一层的最后一个引用，析构函数一层套一层压在关句柄的那个线程的内核栈上，栈的深度由用户
+程序决定。
+
+**原因**
+`ustl::RefCounted::release()` 在强计数归零时直接调 `~T()`。只要一个对象的析构会释放另一个同类对象的最后一个引用
+（队列里的消息持有句柄，句柄持有对象；进程持有句柄表），链有多长，递归就有多深，没有任何上限。
+
+**改法**
+改前：
+
+```cpp
+    auto release() noexcept -> void {
+        if (strong_sub()) {
+            destroy();
+            if (weak_sub()) {
+                reclaim();
+            }
+        } else {
+            static_cast<void>(weak_sub());
+        }
+    }
+```
+
+改后：
+
+```cpp
+    auto release() noexcept -> void {
+        if (strong_sub()) {
+            if constexpr (detail::HasRcRecycle<T>) {
+                T::rc_recycle(static_cast<T *>(this));
+            } else {
+                rc_finish();
+            }
+        } else {
+            static_cast<void>(weak_sub());
+        }
+    }
+```
+
+```cpp
+auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
+    auto *const thread = task::Thread::Current::get();
+    if (thread == nullptr) {
+        object->rc_finish();
+        return;
+    }
+
+    auto *const pending = static_cast<Dispatcher **>(thread->recursive_object_deletion_list());
+    if (pending != nullptr) {
+        object->m_next_to_delete = *pending;
+        *pending = object;
+        return;
+    }
+
+    Dispatcher *list = nullptr;
+    thread->set_recursive_object_deletion_list(&list);
+    while (object != nullptr) {
+        object->rc_finish();
+        object = list;
+        if (object != nullptr) {
+            list = object->m_next_to_delete;
+        }
+    }
+    thread->set_recursive_object_deletion_list(nullptr);
+}
+```
+
+- **挂钩放在 ustl，而不是在内核里绕开 `RefCounted`**：`RefCounted` 是框架，"最后一个引用放掉时由类型自己接手"是一个通用的
+  能力（fbl 的 `fbl_recycle()` 就是它），内核的 Dispatcher 只是第一个用它的。不声明 `rc_recycle` 的类型行为完全不变
+  （`if constexpr`，零开销）。
+- **链表挂在线程上**：只有当前线程会碰它，不需要锁；`task` 层看到的只是 `void *`，不认识 Dispatcher。
+- **没有当前线程时直接析构**：早期启动还没有线程，也还没有 Dispatcher 链。
+- 次序是后进先出，与 Zircon 相同。
+
+**参照**
+Zircon `SafeDeleter::Delete()`（`zircon/kernel/object/dispatcher.cc:30-54`），由 `Dispatcher::fbl_recycle()`（同文件）调用；
+链表在 `Thread::recursive_object_deletion_list()`。ours 的挂钩名 `rc_recycle` 对应 fbl 的 `fbl_recycle`。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- ustl 的 `rc-test`（host 工具链，现已挂进根目录的 host 测试列表）通过：非最后一个引用不触发挂钩；一条一百万个节点、每个持有
+  下一个的链，放掉链头后恰好触发一百万次挂钩、析构一百万个对象，不递归。`rc-race-test`、`rc-doc-examples-test` 与改前行为一致
+  （race 测试打印的 `fail` 计数是竞争中弱引用升级失败的统计，改前同样非零）。
+- 两个镜像照常：dev `init: shell closed its channel`，dbg_1 `probes done (11 killed, 0 survived)`——每个 Dispatcher 的析构现在都
+  经过 `rc_recycle()`。有一次 dbg_1 在 40 秒窗口内没跑完：那次整个启动都慢（探针第 21 秒才开始，平时第 4 秒），宿主机当时另有
+  会话在全量编译；放宽到 60 秒后照常跑完。
+- 真正的深链（嵌套一千层的 channel）要等 channel 能传句柄（K10）才造得出来，回归放在那一步。
+
+**故意没做**
+Zircon 的 TODO 说不是每种对象都需要延迟删除（event 不会持有别的对象），这里同样一律延迟：代价是一次线程字段的读写，
+不值得按类型区分。

@@ -231,6 +231,23 @@ namespace task {
             return m_user_thread.as_ptr_mut();
         }
 
+        /// The list of kernel objects this thread has been handed to delete
+        /// while it was already deleting one, or null when it is deleting
+        /// none; see object::Dispatcher::rc_recycle(). Opaque here -- the task
+        /// layer does not know what a dispatcher is -- and only ever touched
+        /// by the thread itself, so it needs no lock.
+        ///
+        /// Zircon counterpart: Thread::recursive_object_deletion_list().
+        FORCE_INLINE
+        auto recursive_object_deletion_list() const -> void * {
+            return m_recursive_object_deletion_list;
+        }
+
+        FORCE_INLINE
+        auto set_recursive_object_deletion_list(void *const list) -> void {
+            m_recursive_object_deletion_list = list;
+        }
+
         /// The followings is a group of accessor.
         FORCE_INLINE
         auto tid() -> KoId {
@@ -520,6 +537,9 @@ namespace task {
         /// Null if kernel thread.
         mm::VmAspace *m_aspace;
         ustl::Arc<object::ThreadDispatcher> m_user_thread;
+
+        /// See recursive_object_deletion_list().
+        void *m_recursive_object_deletion_list = nullptr;
 
         /// Same story as m_arch_thread: set up before publication, afterwards
         /// only its top is read (TSS.sp0 on the switch, the AP bring-up

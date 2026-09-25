@@ -1,6 +1,7 @@
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/dispatcher.hpp>
+#include <ours/task/thread.hpp>
 
 #include <atomic>
 
@@ -20,6 +21,60 @@ Dispatcher::Dispatcher(u32 magic)
     , m_lock()
     , m_handle_count()
     , m_signals(Signals::None) {}
+
+/// The last reference is gone: destroy the object, without letting a chain of
+/// objects that own one another recurse down the stack.
+///
+/// A dispatcher can hold the last reference to another dispatcher -- a
+/// channel's queued messages hold handles, and a handle holds its object; a
+/// process holds its handle table -- so destroying one can release another,
+/// whose destructor releases a third. Done directly, each link is one more
+/// frame of destructors on the stack that dropped the first reference, and
+/// the length of the chain is the program's to choose: a channel end sent
+/// through a channel sent through a channel, a thousand deep, then closed.
+/// This turns that recursion into a loop. The first release on a thread
+/// runs the deletions and records a pending list on the thread; any release
+/// that happens during them finds the list and queues its object instead of
+/// destroying it, and the loop takes the queued objects one by one after the
+/// object in hand is gone. The stack depth is that of one destructor,
+/// whatever the chain.
+///
+/// Before there is a current thread (early boot) there is nowhere to keep
+/// the list, and the object is destroyed at once; no dispatcher chains exist
+/// that early.
+///
+/// Zircon counterpart: SafeDeleter::Delete(), reached from
+/// Dispatcher::fbl_recycle() (kernel/object/dispatcher.cc), with the list in
+/// Thread::recursive_object_deletion_list(). Zircon pushes and pops at the
+/// front, so queued objects go last-in first-out; so do these.
+auto Dispatcher::rc_recycle(Dispatcher *object) noexcept -> void {
+    auto *const thread = task::Thread::Current::get();
+    if (thread == nullptr) {
+        object->rc_finish();
+        return;
+    }
+
+    auto *const pending = static_cast<Dispatcher **>(thread->recursive_object_deletion_list());
+    if (pending != nullptr) {
+        // A deletion further up this thread's stack owns the loop.
+        object->m_next_to_delete = *pending;
+        *pending = object;
+        return;
+    }
+
+    Dispatcher *list = nullptr;
+    thread->set_recursive_object_deletion_list(&list);
+    while (object != nullptr) {
+        // May release other dispatchers, which land on |list|.
+        object->rc_finish();
+
+        object = list;
+        if (object != nullptr) {
+            list = object->m_next_to_delete;
+        }
+    }
+    thread->set_recursive_object_deletion_list(nullptr);
+}
 
 // Neither of these verifies the canary. They used to call
 // m_canary.verify<Self>(), with Self = Dispatcher -- but the canary is seeded

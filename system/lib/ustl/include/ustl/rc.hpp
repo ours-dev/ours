@@ -46,6 +46,14 @@ namespace detail {
     template <typename U>
     concept HasRcTypeTag = RcTypeTag<U>::VALUE != 0;
 
+    /// Whether T takes over the end of its own last release: it declares a
+    /// public `static auto rc_recycle(T *) noexcept -> void`. See
+    /// `RefCounted::release()`.
+    template <typename T>
+    concept HasRcRecycle = requires(T *object) {
+        { T::rc_recycle(object) } noexcept;
+    };
+
     /// The threading policy of a `RefCounted`-derived type, or `void` when T is
     /// not ref-counted. Inherited by derived classes through the base alias.
     template <typename T, typename = void>
@@ -118,11 +126,22 @@ class RefCounted {
     /// Drop one strong reference. The payload is destroyed when the count
     /// reaches zero; the storage is reclaimed only when the weak count also
     /// reaches zero (see `release_weak`).
+    ///
+    /// A T that declares `static auto rc_recycle(T *) noexcept -> void` takes
+    /// that moment over: when the strong count reaches zero, release() hands
+    /// the object to rc_recycle() instead, and rc_recycle() owes it exactly
+    /// one rc_finish() -- now, or later, but on a live object nobody else can
+    /// reach any more. That is fbl's fbl_recycle(), and what it is for is the
+    /// same: an object whose destructor drops the last reference to another
+    /// such object, and so on down a chain the program built, recurses once
+    /// per link on whatever stack released the first one. A type can defer
+    /// the next link instead of recursing into it (Zircon's SafeDeleter).
     auto release() noexcept -> void {
         if (strong_sub()) {
-            destroy();
-            if (weak_sub()) {
-                reclaim();
+            if constexpr (detail::HasRcRecycle<T>) {
+                T::rc_recycle(static_cast<T *>(this));
+            } else {
+                rc_finish();
             }
         } else {
             static_cast<void>(weak_sub());
@@ -196,6 +215,18 @@ class RefCounted {
     }
 
   protected:
+    /// The rest of a last release: destroys the payload, then drops the weak
+    /// reference the strong owners held, reclaiming the storage if that was
+    /// the last one. release() calls it directly unless T declares
+    /// rc_recycle(), which must call it instead -- once, and never on an object
+    /// with a strong reference outstanding.
+    auto rc_finish() noexcept -> void {
+        destroy();
+        if (weak_sub()) {
+            reclaim();
+        }
+    }
+
     /// Virtual destructor: makes payload destruction polymorphic (a derived
     /// object held through a base `Rc` is destroyed as its most-derived type)
     /// and keeps plain `delete` on `T*` safe. The counting machinery never
