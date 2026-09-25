@@ -152,6 +152,19 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
 auto ThreadDispatcher::start(TaskState const &state) -> Status {
     verify_canary();
 
+    // Every user thread's first instruction is named here, so this is where
+    // an entry point outside the user address space is refused. Let through,
+    // it would reach the iretq in x86_enter_uspace, which on Intel faults in
+    // ring 0 on a non-canonical address with the user's %gs already loaded
+    // (arch_is_valid_user_pc() has the details); arch_enter_uspace() would
+    // stop it only by panicking. The entry comes from an ELF header today
+    // (elfload does not check e_entry), and from a caller of process_start
+    // once P1-C lands. Zircon refuses it the same way, with
+    // ZX_ERR_INVALID_ARGS, in ThreadDispatcher::MakeRunnable().
+    if (!arch_is_valid_user_pc(state.entry)) {
+        return Status::InvArgs;
+    }
+
     m_user_entry = state;
     auto status = m_process->attach_thread(*this);
     if (Status::Ok != status) {

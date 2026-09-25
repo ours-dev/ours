@@ -103,3 +103,60 @@ auto ProcessDispatcher::finish_dead_transition() -> void {
   子进程列表）、critical-to-job 处理（没有这个概念）。
 - `create_shared()` 的共享句柄表：它还没有实现；将来两个进程共用一张表时，`clean()` 必须改成 Zircon 那样按共享计数，
   最后一个进程死时才清。在 `finish_dead_transition()` 的注释之外不做预留。
+
+## `ThreadDispatcher::start()` 拒绝用户地址空间以外的入口（2026-09-25）
+
+**文件**
+- `kernel/object/thread_dispatcher.cpp` — `start()` 开头用 `arch_is_valid_user_pc()` 检查 `state.entry`，不合格返回 `Status::InvArgs`
+
+**症状**
+入口不受任何检查：一个入口越界的线程会一直走到 `x86_enter_uspace` 的 `iretq`。在 Intel 上那是 ring 0、用户 %gs 下的 #GP
+（原因与谓词的定义见 `x86-kernel.md` 同日"用户态的 pc 只能落在用户地址空间"一条）。QEMU 的 TCG 按 AMD 的方式在 ring 3 报错，
+所以临时实验里（shell 入口改成 `1 << 47`）只看到 shell 被当成自己出错杀掉。
+
+**原因**
+`start()` 是每个用户线程第一条指令的唯一出处，却原样收下 entry：
+
+```cpp
+auto ThreadDispatcher::start(TaskState const &state) -> Status {
+    verify_canary();
+
+    m_user_entry = state;
+```
+
+entry 今天来自 ELF 头——`elfload` 只算 `base + (e_entry - lowest)`，不检查——P1-C 之后来自 `process_start` 的调用者，也就是用户态。
+arch 层在 `arch_enter_uspace()` 里新加了一道 `ASSERT`，但那只能把坏入口变成内核 panic；该在对象层就把它当成调用者的错误拒掉。
+
+**改法**
+改后：
+
+```cpp
+    if (!arch_is_valid_user_pc(state.entry)) {
+        return Status::InvArgs;
+    }
+
+    m_user_entry = state;
+```
+
+放在 `m_user_entry` 赋值和 `attach_thread()` 之前：被拒的线程什么状态都没留下，调用者拿到的是一个普通的参数错误。
+`userabi::launch()` 已有的错误路径会把它报出来并返回给 `process_spawn_boot` 的调用者。
+
+**参照**
+- `Zircon ThreadDispatcher::MakeRunnable()`（`kernel/object/thread_dispatcher.cc`）：第一行就是 `if (!arch_is_valid_user_pc(entry.pc)) return ZX_ERR_INVALID_ARGS;`。
+
+**验证**
+- 临时实验（未提交，已还原），shell 入口改成 `1 << 47`：
+
+  ```
+  [3637518000 cpu1 info] EXPERIMENT: starting 'shell' at 0x800000000000
+  [3637881000 cpu1 error] userabi: could not start 'shell': InvArgs
+  init: spawning shell = InvArgs
+  ```
+
+  dbg_1 同样；内核照常运行。
+- 撤掉实验后两个镜像正常启动到 `--- end ---`；dev 有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`。
+- clang-tidy 对 `thread_dispatcher.cpp` 在改动行上无告警。
+
+**故意没做**
+- 被拒之后，`spawn()` 已经建好的内核线程和 dispatcher 的去向：这是 `docs/repairs/260924/object.md` 第 1 条"从未启动的线程，其内核线程泄漏"，与本条无关，没有一并处理。
+- 没有检查 `state.stack`：本条只管会让 iretq/sysretq 在 ring 0 出错的返回地址（sysret_problem 讲的是 RIP）。栈指针要不要也限定在用户区间，等 `process_start`/`thread_start` 有了用户态调用者时再对照 Zircon 的系统调用入口决定。
