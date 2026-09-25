@@ -25,6 +25,16 @@ struct alignas(PAGE_SIZE) PACKED Gdt {
         return static_cast<u16>(sizeof(descs) + cpunum * sizeof(tss[0]));
     }
 
+    /// tss_selector() run backwards: the CPU whose TSS descriptor `selector`
+    /// names. A selector is the descriptor's byte offset into this table, and
+    /// the TSS descriptors follow the fixed ones one per CPU, in CPU order.
+    /// Kept beside tss_selector() so the layout is spelled out in one place.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto cpu_of_tss_selector(u16 selector) const -> CpuNum {
+        return static_cast<CpuNum>((selector - sizeof(descs)) / sizeof(tss[0]));
+    }
+
     FORCE_INLINE
     auto get_tss_desc(CpuNum cpunum) -> arch::GdtDesc64 & {
         return tss[cpunum];
@@ -68,6 +78,28 @@ auto x86_dump_gdt() -> void {
 auto x86_set_tss_sp(VirtAddr sp) -> void {
     auto tss = &mm::CpuLocal::access(X86_PCPU).tss;
     tss->sp0 = sp;
+}
+
+/// For the paranoid entry path (x86_handle_paranoid_exception()), which has
+/// to know the CPU before it may touch per-CPU data, and so cannot ask
+/// Cpu::id(): that reads the answer through %gs, the very register in doubt.
+///
+/// TR can be trusted where %gs cannot. x86_setup_tss_percpu() loads each CPU's
+/// own TSS selector into it, and ltr is ring 0 only, so a user can neither
+/// change it nor point it at another CPU. Nothing here touches per-CPU storage:
+/// str, and arithmetic on the table's layout -- `GDT` is named only for its
+/// member function, no descriptor is read.
+///
+/// A CPU that has not reached its ltr yet has TR = 0, which names no TSS and
+/// comes out as a huge number; the assertion catches that. Such a CPU has no
+/// IST stacks either, so an NMI there cannot be survived regardless.
+///
+/// Linux reads the CPU number back out of the limit of a per-CPU GDT entry
+/// (LOAD_CPU_AND_NODE_SEG_LIMIT, used by GET_PERCPU_BASE) for the same reason.
+auto x86_cpu_num_from_tr() -> CpuNum {
+    auto const cpunum = GDT.cpu_of_tss_selector(arch::str());
+    DEBUG_ASSERT(cpunum < MAX_CPU, "TR names no CPU's TSS: {}", cpunum);
+    return cpunum;
 }
 
 INIT_CODE

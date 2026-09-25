@@ -72,6 +72,16 @@ inline auto ltr(u16 const selector) -> void {
     asm volatile("ltr %0" : : "rm"(selector) : "memory");
 }
 
+/// The selector this CPU's TR was last loaded with by ltr(). Each CPU loads
+/// its own, and ltr is ring 0 only, so the answer identifies the CPU even
+/// when nothing else that normally does (%gs) can be trusted.
+[[nodiscard]]
+inline auto str() -> u16 {
+    u16 selector;
+    asm volatile("str %0" : "=r"(selector));
+    return selector;
+}
+
 struct PACKED GdtDesc32 {
     using Self = GdtDesc32;
 

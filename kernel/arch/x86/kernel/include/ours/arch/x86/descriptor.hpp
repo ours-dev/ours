@@ -58,6 +58,10 @@ auto x86_dump_gdt() -> void;
 
 auto x86_set_tss_sp(VirtAddr sp) -> void;
 
+/// The CPU this runs on, worked out from TR instead of %gs; see the
+/// definition for when that matters.
+auto x86_cpu_num_from_tr() -> CpuNum;
+
 } // namespace ours
 #endif // !defined(__ASSEMBLY__) && !defined(__ASSEMBLER__)
 

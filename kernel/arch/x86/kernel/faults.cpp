@@ -1,5 +1,7 @@
 #include <ours/arch/apic.hpp>
+#include <ours/arch/x86/descriptor.hpp>
 #include <ours/arch/x86/faults.hpp>
+#include <ours/mm/cpu_local.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/platform/init.hpp>
 #include <ours/platform/interrupt.hpp>
@@ -352,40 +354,58 @@ extern "C" auto x86_syscall_process_pending_signals() -> void {
     task::Thread::Current::process_pending_signals();
 }
 
+/// The C++ half of paranoid_common (exception.S): NMI, #DF and #MC, which
+/// idt.S keeps away from interrupt_common and arch_handle_exception().
+///
+/// %gs first. These three can interrupt a swapgs pair half done, so on entry
+/// %gs.base may be the user's even though the frame's CS says ring 0 (the
+/// comment on paranoid_common has the windows). Until the ScopedInstall below
+/// is built nothing may touch per-CPU storage -- no Cpu::id(), no
+/// Thread::Current, no logging -- which is why the CPU comes from TR. It
+/// holds because this kernel compiles with -fno-stack-protector and traps
+/// UBSan in place: no instrumentation reads %gs behind the code's back. A
+/// stack protector keyed off %gs, or a tracing hook on function entry, would
+/// have to be kept out of this function and of the two it calls first --
+/// Linux marks its equivalents noinstr for that reason.
+///
+/// Then none of arch_handle_exception()'s bookkeeping. These vectors arrive
+/// anywhere -- inside another interrupt's handler, between the preamble and
+/// postamble of one, with a per-CPU structure half updated -- and the
+/// bookkeeping is exactly what they must not touch:
+///
+///  - the preamble and postamble write the per-CPU CURRENT_FRAME and move
+///    the preempt count. An NMI nested in an IRQ used to run the full set, so
+///    its postamble cleared CURRENT_FRAME to null under the IRQ still on the
+///    stack, which then carried on believing it had a frame;
+///  - preempting would switch threads while NMIs are still masked, which they
+///    stay until the next iretq, and that iretq would then belong to some
+///    other thread's return path;
+///  - processing signals could exit the thread from inside an NMI.
+///
+/// #DF and #MC stop the kernel in x86_dispatch_exception() and never return;
+/// they come this way because nothing on a double-fault or machine-check path
+/// should depend on per-CPU state being consistent -- %gs included. None of
+/// the three is a user exception (user_exception_type()), so nothing comes
+/// back to deliver.
+///
+/// Zircon gives the NMI its own handler, x86_nmi_handler(), and asserts that
+/// x86_exception_handler() never sees one.
+extern "C" auto x86_handle_paranoid_exception(arch::IrqFrame *frame) -> void {
+    mm::CpuLocal::ScopedInstall const kernel_gs{x86_cpu_num_from_tr()};
+
+    task::ExceptionContext unused{};
+    static_cast<void>(x86_dispatch_exception(frame->vector, frame, &unused));
+}
+
 extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {
     using task::Thread;
     auto const vector = frame->vector;
 
-    // NMI, #DF and #MC take none of the bookkeeping below. They can arrive
-    // anywhere -- inside another interrupt's handler, between the preamble
-    // and postamble of one, with a per-CPU structure half updated -- and the
-    // bookkeeping is exactly what they must not touch:
-    //
-    //  - the preamble and postamble write the per-CPU CURRENT_FRAME and move
-    //    the preempt count. An NMI nested in an IRQ used to run the full set,
-    //    so its postamble cleared CURRENT_FRAME to null under the IRQ still on
-    //    the stack, which then carried on believing it had a frame;
-    //  - preempting would switch threads while NMIs are still masked, which
-    //    they stay until the next iretq, and that iretq would then belong to
-    //    some other thread's return path;
-    //  - processing signals could exit the thread from inside an NMI.
-    //
-    // #DF and #MC stop the kernel in x86_dispatch_exception() and never
-    // return; they skip the bookkeeping because nothing on a double-fault or
-    // machine-check path should depend on per-CPU state being consistent.
-    // (The dedicated IST stacks such exceptions want are not configured yet:
-    // docs/repairs/260923/x86-kernel.md, #1.)
-    //
-    // Zircon gives the NMI its own handler (x86_nmi_handler()) and asserts
-    // that x86_exception_handler() never sees one.
-    if (vector == arch::IrqVec::Nmi || vector == arch::IrqVec::DoubleFault ||
-        vector == arch::IrqVec::MachineCheck) {
-        // None of the three is a user exception (user_exception_type()), so
-        // nothing comes back to deliver.
-        task::ExceptionContext unused{};
-        static_cast<void>(x86_dispatch_exception(vector, frame, &unused));
-        return;
-    }
+    // NMI, #DF and #MC never come here: idt.S sends them to paranoid_common
+    // and x86_handle_paranoid_exception(), which explains why.
+    DEBUG_ASSERT(vector != arch::IrqVec::Nmi && vector != arch::IrqVec::DoubleFault &&
+                     vector != arch::IrqVec::MachineCheck,
+                 "vector {} belongs on the paranoid path", u32(vector));
 
     auto const irqnum = HIrqNum(vector);
     auto const from_user = is_from_uspace(frame);

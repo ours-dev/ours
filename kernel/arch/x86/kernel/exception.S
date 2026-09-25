@@ -72,3 +72,49 @@
     iretq
 
 .end_function
+
+// The entry for NMI, #DF and #MC; idt.S routes those three here and every
+// other vector to interrupt_common.
+//
+// What sets it apart is the missing swapgs. interrupt_common swaps %gs when
+// the saved CS says the CPU came from ring 3, which is right for anything
+// that cannot fire while a swapgs pair is half done. These three can: an NMI
+// or #MC lands between SYSCALL and its swapgs, between the exit swapgs and
+// SYSRET, or in the same spots around every other interrupt taken from ring
+// 3 -- CS already ring 0, %gs.base still the user's. Testing CS there would
+// leave the user's %gs in place, and with FSGSBASE a user can make that any
+// value it likes. So nothing is decided here: x86_handle_paranoid_exception()
+// works out which CPU it is on from TR, installs that CPU's %gs, and puts the
+// old value back before returning (mm::CpuLocal::ScopedInstall). Whatever the
+// interrupted code was in the middle of, it resumes with the %gs it had.
+//
+// No lfence either. The one in interrupt_common guards the conditional
+// swapgs against speculation (the "swapgs bug"); there is no conditional
+// swapgs here, and the wrmsr that does change %gs is serialising.
+//
+// Zircon counterpart: the .Lnmi branch of interrupt_common, which brackets
+// x86_nmi_handler() with rdmsr/wrmsr of MSR_IA32_GS_BASE. Linux:
+// paranoid_entry / paranoid_exit in arch/x86/entry/entry_64.S.
+.function paranoid_common, global, align=64, cfi=custom
+    .cfi_signal_frame
+    .cfi_def_cfa %rsp, 7 * 8
+    .cfi_offset %rip, -(5 * 8)
+    all_cfi_same_value
+
+    cld
+
+    save_general_registers
+    zero_general_registers
+
+    // Pass the IrqFrame in %rdi.
+    mov %rsp, %rdi
+    call x86_handle_paranoid_exception
+
+    restore_general_registers
+
+    // Drop vector number and error code.
+    add_to_sp 16
+
+    iretq
+
+.end_function

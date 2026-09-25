@@ -2,6 +2,7 @@
 #include <ours/mm/cfg.hpp>
 
 .extern interrupt_common
+.extern paranoid_common
 
 // This is called 256 times in a row, with isr.current set to the iteration
 // count starting at 0.  This is inside the definition for the ISR table,
@@ -42,7 +43,21 @@
      .endif
         // Fill in the interrupt number.
         push_val $isr.current
+
+        // NMI (2), #DF (8) and #MC (18) go to paranoid_common, which does not
+        // decide %gs from the saved CS: these three can land inside a swapgs
+        // pair, where CS says ring 0 and %gs.base is still the user's. They
+        // are also exactly the vectors given IST stacks (idt.cpp), and for the
+        // same reason -- nothing about the interrupted context can be assumed.
+        // Sorted here, when the table is assembled, so the other 253 stubs pay
+        // nothing for it at run time.
+        isr.current.is_paranoid = isr.current == 2 || isr.current == 8 || \
+                                  isr.current == 18
+     .if isr.current.is_paranoid
+        jmp paranoid_common
+     .else
         jmp interrupt_common
+     .endif
 
         // Should never go back here.
         int3
