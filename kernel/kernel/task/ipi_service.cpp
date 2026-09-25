@@ -1,4 +1,3 @@
-#include <arch/spin_hint.hpp>
 #include <ours/arch/mp.hpp>
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
@@ -8,10 +7,12 @@
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/scheduler.hpp>
-#include <ustl/collections/intrusive/list.hpp>
 
 #include <atomic>
 #include <new>
+
+#include <arch/spin_hint.hpp>
+#include <ustl/collections/intrusive/list.hpp>
 
 namespace ours {
 namespace {
@@ -56,6 +57,14 @@ namespace {
     /// only ever taken by a *sender* for a CPU that is not itself, or by this
     /// CPU's own handler -- never both from the same CPU -- so a handler
     /// interrupting a sender on the same core cannot deadlock on it.
+    ///
+    /// That argument does not cover preemption, so the lock is still held
+    /// with interrupts off on both sides. A sender preempted while holding
+    /// CPU B's mailbox lock leaves it held by its own CPU, and the next
+    /// thread there to sync_exec() B spins on it for good. Zircon's
+    /// mp_sync_exec() saves the interrupt state before taking ipi_task_lock
+    /// for the same reason, and its mp_mbx_generic_irq() takes it from the
+    /// handler.
     struct Mailbox {
         sync::SpinLock lock;
         SyncSlotList calls;
@@ -182,7 +191,7 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
         slots[cpu].call = &call;
 
         auto &mailbox = CurrentMailbox::get(cpu);
-        Guard guard{mailbox.lock};
+        Guard<sync::SpinLock, IrqSave> guard{mailbox.lock};
         mailbox.calls.push_back(slots[cpu]);
     });
 
@@ -206,7 +215,9 @@ auto IpiService::handle_generic() -> void {
     for (;;) {
         SyncCall *call = nullptr;
         {
-            Guard guard{mailbox.lock};
+            // Interrupts are already off in the handler; IrqSave states the
+            // lock's rule here as well, see Mailbox.
+            Guard<sync::SpinLock, IrqSave> guard{mailbox.lock};
             if (mailbox.calls.empty()) {
                 return;
             }
@@ -230,9 +241,8 @@ auto IpiService::handle_generic() -> void {
         auto expected = call->outstanding.load(std::memory_order_relaxed);
         for (;;) {
             auto const desired = expected & self_mask;
-            if (call->outstanding.compare_exchange_weak(expected, desired,
-                                                        std::memory_order_release,
-                                                        std::memory_order_relaxed)) {
+            if (call->outstanding.compare_exchange_weak(
+                    expected, desired, std::memory_order_release, std::memory_order_relaxed)) {
                 break;
             }
         }

@@ -198,11 +198,15 @@ auto OwnedWaitQueue::reset_owner() -> void {
 /// there.
 TA_NO_THREAD_SAFETY_ANALYSIS
 auto OwnedWaitQueue::disown_all_queues(Thread *thread) -> void {
-    Guard guard{thread->get_pi_lock()};
+    // Both with interrupts off: the PI lock is taken by the tick's
+    // Thread::Current::preempt() and the queue lock by a timeout's callback,
+    // each from interrupt context on whatever CPU they fire on. Nothing here
+    // wakes or re-queues a thread, so preemption can stay as it is.
+    Guard<sync::SpinLock, IrqSave> guard{thread->get_pi_lock()};
 
     while (!thread->m_owned_wait_queues.empty()) {
         auto &owq = *thread->m_owned_wait_queues.front();
-        Guard queue_guard{owq.get_lock()};
+        Guard<sync::SpinLock, IrqSave> queue_guard{owq.get_lock()};
         owq.reset_owner();
     }
 }
@@ -210,7 +214,17 @@ auto OwnedWaitQueue::disown_all_queues(Thread *thread) -> void {
 auto OwnedWaitQueue::override_thread_base_profile(Thread *thread, BaseProfile const &profile)
     -> void {
     // Acquires |thread|'s lock before to get the wait queue it owned.
-    Guard guard{thread->get_pi_lock()};
+    //
+    // Preemption off as well as interrupts. A new base profile can make
+    // |thread| -- or whatever it now boosts through the queue it waits in --
+    // outrank the running thread. The scheduler hook below is where that
+    // reschedule will be asked for (it is empty today), and it must be
+    // deferred until the PI lock is dropped, as it is for every other holder
+    // of a PI lock around a wake. Zircon's SetThreadBaseProfileAndPropagate()
+    // runs under EagerReschedDisableAndIrqSaveOption; this tree's lockdep has
+    // no eager-resched tag, and preemption is the part of it that matters to
+    // the local CPU.
+    Guard<sync::SpinLock, IrqSaveAndPreemptDisable> guard{thread->get_pi_lock()};
 
     auto const wq = thread->waiter_state().wait_queue();
     auto const owq = as<OwnedWaitQueue>(wq);

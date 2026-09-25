@@ -132,7 +132,7 @@ class WaitQueue {
     /// waiter enqueues and sleeps for good. sync::Event::wait_etc() did
     /// exactly that. The fix is to enqueue before the lock is let go:
     ///
-    ///     Guard guard{queue.get_lock()};
+    ///     Guard<sync::SpinLock, IrqSave> guard{queue.get_lock()};
     ///     if (condition) { ...return; }
     ///     status = queue.park_thread_preamble_locked(...);   // enqueued
     ///     guard.unlock();
@@ -187,9 +187,9 @@ class WaitQueue {
     }
 
     /// TA_RETURN_CAPABILITY is what lets `TA_REQUIRES(get_lock())` on a method
-    /// be satisfied by a `Guard guard{m_lock}` in its caller: the analysis
-    /// matches capabilities by expression, and without this a call to
-    /// get_lock() is an opaque value unrelated to m_lock.
+    /// be satisfied by a `Guard<sync::SpinLock, IrqSave> guard{m_lock}` in its
+    /// caller: the analysis matches capabilities by expression, and without
+    /// this a call to get_lock() is an opaque value unrelated to m_lock.
     TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto get_lock() -> sync::SpinLock & {
         return m_lock;
     }
@@ -252,6 +252,11 @@ class WaitQueue {
     USTL_DECLARE_MULTISET(WaiterState, Queue, ustl::collections::intrusive::Compare<WaiterOrder>,
                           WaiterState::ManagedOption);
     Queue m_waiters;
+    /// Held with interrupts off, always: a timeout firing on this CPU takes it
+    /// from its timer callback (handle_timeout(), through dequeue_waiter()) to
+    /// take its waiter off the queue, and would spin for ever on a holder it
+    /// had interrupted. Zircon's wait queues are only ever touched under an
+    /// IrqSave transaction for the same reason.
     sync::SpinLock m_lock;
     /// Hands out QueueKey::seq. Per-queue rather than global: it only has
     /// to order waiters against their own queue's peers.

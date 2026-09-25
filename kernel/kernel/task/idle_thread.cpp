@@ -63,7 +63,7 @@ auto IdleThread::init(CpuNum cpunum) -> void {
     // published yet" is exactly the kind of reasoning the analysis exists to
     // replace.
     {
-        Guard guard{m_thread->get_pi_lock()};
+        Guard<sync::SpinLock, IrqSave> guard{m_thread->get_pi_lock()};
         m_thread->set_flag_idle();
         m_thread->set_flag_nofree();
     }

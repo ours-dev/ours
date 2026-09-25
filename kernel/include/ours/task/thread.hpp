@@ -530,6 +530,11 @@ namespace task {
         /// copied from object::ThreadDispatcher.
         KoId m_tid;
 
+        /// Modelled on Linux's alloc_lock (task_lock()), which only holds off
+        /// preemption. Here it is taken IrqSave all the same: that is the rule
+        /// for every spin lock in the tree, and this one is held around frame
+        /// allocation (PmNode::Current::alloc_frames()), which the page fault
+        /// path reaches with interrupts already off.
         sync::SpinLock m_resource_lock;
 
         /// Under the PI lock. That is the lock every path that changes the
@@ -543,6 +548,13 @@ namespace task {
         State m_state;
         ThreadSignals m_signals;
 
+        /// Held with interrupts off by every holder, as Linux holds p->pi_lock
+        /// (raw_spin_lock_irqsave): the tick's Thread::Current::preempt()
+        /// takes the running thread's from interrupt context, and a sleep's
+        /// timeout takes the sleeper's from its timer callback. A holder whose
+        /// scope reaches reschedule_common() or wakes a thread holds preemption
+        /// off as well -- IrqSaveAndPreemptDisable -- so that a reschedule the
+        /// wake asks for waits until the lock is dropped.
         sync::SpinLock m_pi_lock;
 
         /// Owned by the runqueue: the lock of the scheduler this thread is

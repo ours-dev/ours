@@ -116,7 +116,10 @@ auto CpuStopper::worker_thread() -> void {
     Work *work = nullptr;
     while (1) {
         {
-            Guard guard{m_lock};
+            // IrqSave, as queue_work() takes it: Linux's cpu_stop_get_work()
+            // likewise holds stopper->lock with interrupts off, since
+            // cpu_stop_queue_work() takes it IrqSave from any context.
+            Guard<sync::SpinLock, IrqSave> guard{m_lock};
             if (!m_works.empty()) {
                 work = &*m_works.front();
                 m_works.pop_front();

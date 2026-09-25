@@ -145,7 +145,7 @@ auto WaitQueue::update_parked_thread_effective_profile(Thread *thread) -> void {
 
     auto &waiter = thread->waiter_state();
 
-    Guard guard(m_lock);
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
     if (waiter.m_waitqueue != this) {
         return;
     }
@@ -160,7 +160,7 @@ auto WaitQueue::update_parked_thread_effective_profile(Thread *thread) -> void {
 }
 
 auto WaitQueue::enqueue_waiter(WaiterState &waiter) -> void {
-    Guard guard(m_lock);
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
     enqueue_waiter_locked(waiter);
 }
 
@@ -177,7 +177,7 @@ auto WaitQueue::enqueue_waiter_locked(WaiterState &waiter) -> void {
 }
 
 auto WaitQueue::dequeue_waiter(WaiterState &waiter, Status status) -> bool {
-    Guard guard(m_lock);
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
 
     // A timeout firing on one CPU can meet a notify on another, both aimed
     // at this waiter. Whoever takes the lock second must not erase the
@@ -229,7 +229,7 @@ auto WaitQueue::notify_one(Status status) -> void {
 
     Thread *thread = nullptr;
     {
-        Guard<sync::SpinLock> guard(m_lock);
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
         if (m_waiters.empty()) {
             return;
         }
@@ -248,7 +248,7 @@ auto WaitQueue::notify_all(Status status) -> void {
     for (;;) {
         Thread *thread = nullptr;
         {
-            Guard<sync::SpinLock> guard(m_lock);
+            Guard<sync::SpinLock, IrqSave> guard(m_lock);
             if (m_waiters.empty()) {
                 return;
             }

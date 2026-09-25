@@ -387,7 +387,7 @@ auto Thread::join([[maybe_unused]] i32 *retcode, [[maybe_unused]] time::Deadline
 auto Thread::detach() -> Status {
     m_canary.verify<Self>();
 
-    Guard guard{get_pi_lock()};
+    Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
 
     if (state() != State::Dead) {
         m_flags |= Flags::Detached;
@@ -423,7 +423,7 @@ auto Thread::bind_user_thread(ustl::Arc<object::ThreadDispatcher> user_thread) -
 
     // The PI lock, because that is what guards m_flags; m_user_thread has
     // no readers that race this (the thread is still Initial).
-    Guard guard{get_pi_lock()};
+    Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
     m_user_thread = user_thread;
 
     m_flags |= Flags::Detached;
@@ -438,12 +438,12 @@ auto Thread::destroy() -> void {
     // for and it costs nothing here.
     auto nofree = false;
     {
-        Guard guard{get_pi_lock()};
+        Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
         nofree = !!(m_flags & Flags::NoFree);
     }
 
     {
-        Guard guard{get_resource_lock()};
+        Guard<SpinLock, lockdep::IrqSave> guard{get_resource_lock()};
         Scheduler::on_thread_dead(this);
         set_state_dead();
     }
@@ -643,7 +643,15 @@ auto Thread::Current::do_suspend() -> void {
 
     auto need_exit = false;
     {
-        Guard guard{current_thread->get_pi_lock()};
+        // Interrupts and preemption both off: the guard is carried into
+        // reschedule_common() through Scheduler::Current::reschedule() below,
+        // and that is the state it requires, exactly as for
+        // Thread::Current::reschedule() and yield(). When this thread is
+        // resumed, reschedule() returns with the PI lock held again, and the
+        // guard's release at the end of this scope restores the interrupt and
+        // preemption state process_pending_signals() entered with -- both on,
+        // which is what Thread::Current::exit() below asserts.
+        Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
 
         if (current_thread->check_kill_signal()) {
             need_exit = true;
@@ -779,7 +787,10 @@ auto Thread::Current::exit(i32 retcode) -> void {
 
     auto thread_desc_recyclable = false;
     {
-        Guard guard{current_thread->get_pi_lock()};
+        // The disablers above already hold interrupts and preemption off, and
+        // this guard says the same of itself: it is carried into
+        // reschedule_common() on the recyclable path, which needs both.
+        Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
         current_thread->set_state_dead();
         current_thread->m_task_state.set_retcode(retcode);
 
@@ -836,7 +847,7 @@ auto Thread::Current::exit(i32 retcode) -> void {
     // panic() rather than unreachable() for what follows: falling through is
     // precisely the defect this replaces, and it cost a silent triple fault
     // to find. Zircon spells it "somehow fell through thread_exit()".
-    Guard guard{current_thread->get_pi_lock()};
+    Guard<SpinLock, lockdep::IrqSaveAndPreemptDisable> guard{current_thread->get_pi_lock()};
     Scheduler::Current::reschedule(current_thread);
     panic("Thread |{}| fell through exit()", current_thread->name());
 }
