@@ -291,11 +291,13 @@ auto vmalloc_self_test() -> void {
     //
     // One page *past* the window, not the window's own size. Exactly
     // VMALLOC_SIZE is a legal request that this machine cannot back, and
-    // finding that out means committing a million pages through
-    // VmObjectPaged::commit_range(), whose outer loop is O(n^2)
-    // (docs/repairs/260903/mm.md). Written that way the self test took the
-    // boot from three seconds to over seven minutes before faulting. The
-    // request under test here is the one that is refused by inspection.
+    // finding that out means committing up to a million pages before the
+    // allocator runs dry. While VmObjectPaged::commit_range() still recommitted
+    // the whole range once per page, a test written that way took the boot
+    // from three seconds to over seven minutes before faulting; the loop is
+    // gone, but a boot-time self test still has no business exhausting the
+    // machine. The request under test here is the one that is refused by
+    // inspection.
     auto *impossible = new (ours::mm::GAF_KERNEL) u8[VMALLOC_SIZE + PAGE_SIZE];
     check(impossible == nullptr, "an impossible new returns null");
 

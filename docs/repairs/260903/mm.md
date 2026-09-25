@@ -11,19 +11,14 @@
 
 ---
 
-## 1. 页面仓库做完之后新暴露的三件（原第 1 条已修，见 `docs/changes/260903/mm.md` 第 7 节）
+## 1. 页面仓库做完之后新暴露的几件（原第 1 条已修，见 `docs/changes/260903/mm.md` 第 7 节）
 
-`VmCowPages` 现在真的记页了，随之而来三件独立的小账，按严重程度排：
+`VmCowPages` 现在真的记页了，随之而来几件独立的小账，按严重程度排（commit 的 O(n²) 外层循环已修，见 `docs/changes/260925/mm.md`）：
 
 - **`~VmCowPages()` 不释放自己拥有的页。** 改前页从没被记下来，谈不上释放；现在仓库知道
   自己有哪些页了，才第一次有条件在析构时还给伙伴分配器。要连带把 `VmObjectPaged::decommit()`
   一起想清楚（对应 `Zircon VmCowPages::DecommitRangeLocked()`）。不修就是每个 VMO 死掉时
   泄漏它的全部页。
-- **`VmObjectPaged::commit_range_internal()` 的外层循环是 O(n²)。** 它按
-  `for (i = 0; i < size; i += PAGE_SIZE)` 循环，而循环体每次都调
-  `commit_range_locked(offset, size, ...)` 提交**整个** size。改前这让一个 4 页 VMO 分配
-  16 页并泄漏 12 页；现在第二遍起全部命中仓库，只剩多余的查找，但循环本身仍然是错的。
-  循环体里那个 `nr_commited` 也从来没被读过。
 - **`VmPageMap` 一页一个 B 树条目。** 1 GiB 的 VMO 就是 26 万个条目，顺序遍历每页一次
   O(log n) 查找。`Zircon VmPageListNode` 把 16 页并成一个树节点正是为了摊掉这个，
   键改成 `index >> 4`、值改成 16 槽数组即可，接口不用动。

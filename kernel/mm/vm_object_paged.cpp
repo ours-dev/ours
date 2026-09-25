@@ -29,17 +29,38 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     if (!vmo) {
         return Status::OutOfMem;
     }
+    // Adopted before the commit, not after it. If the commit fails part way,
+    // dropping this reference is what gives back the pages it did get
+    // (~VmCowPages frees every page it owns); adopted afterwards, a failed
+    // commit would leave nobody holding the object or its pages.
+    auto vmo_ref = ustl::Arc<Self>::adopt(vmo);
 
-    /// A non-lazy VMO need we directly request pages it demands.
-    if (!(vmof & VmoFlags::Lazy)) {
+    // A non-lazy VMO has every page it will ever need committed here, so that
+    // no access to it can fault. That is the whole promise of the flag, and it
+    // is why the status matters: a kernel stack is Pinned, and a stack page
+    // that is missing turns the first push that reaches it into a page fault
+    // on a kernel address -- which page_fault() refuses and the kernel dies
+    // of. The status used to be thrown away, and create() answered Ok for a
+    // VMO with holes in it.
+    //
+    // An empty VMO has nothing to commit and is skipped, not handed to
+    // commit_range(): a Pinned commit of zero bytes is InvArgs there, as it
+    // is in Zircon's CommitRangeInternal, because pinning nothing is a caller
+    // error. VmArea::reserve() makes exactly such a VMO for every reservation
+    // it records -- and while the commit status was ignored, nobody saw that
+    // its commit had always failed.
+    if (!(vmof & VmoFlags::Lazy) && size != 0) {
         CommitOptions options{};
         if (!!(vmof & VmoFlags::Pinned)) {
             options |= CommitOptions::Pin;
         }
 
-        vmo->commit_range(0, size, options);
+        auto const commit_status = vmo_ref->commit_range(0, size, options);
+        if (Status::Ok != commit_status) {
+            return commit_status;
+        }
     }
-    *out = ustl::Arc<Self>::adopt(vmo);
+    *out = ustl::move(vmo_ref);
 
     return Status::Ok;
 }
@@ -58,20 +79,30 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     }
 
     Guard guard{m_mutex};
-    if (m_cow_pages->size_locked() < size) {
+    // The whole range, offset included, and written so that it cannot wrap:
+    // this used to compare |size| alone against the object's size, so a range
+    // starting anywhere but 0 was admitted however far it ran past the end.
+    auto const total = m_cow_pages->size_locked();
+    if (size > total || offset > total - size) {
         return Status::OutOfRange;
     }
 
-    for (usize i = 0; i < size; i += PAGE_SIZE) {
-        usize nr_commited = 0;
-        auto status = m_cow_pages->commit_range_locked(offset, size, &nr_commited);
-
-        if (status != Status::Ok && status != Status::ShouldWait) {
-            return status;
-        }
-    }
-
-    return Status::Ok;
+    // One call commits the whole range. This used to sit in a loop that called
+    // it once per page -- each time for the entire range, so a VMO of n pages
+    // cost n^2 page lookups, and a Pinned kernel stack paid it on every thread
+    // created.
+    //
+    // The loop was a half-copy of Zircon's VmObjectPaged::CommitRangeInternal,
+    // whose loop exists for one reason: CommitRangeLocked may stop early with
+    // ZX_ERR_SHOULD_WAIT when a page source has to supply pages, and the loop
+    // waits on the page request with the lock dropped, advances offset by the
+    // length committed so far, and tries again. Without the advance the loop
+    // only repeats itself. And there is nothing here to wait for: no VMO has a
+    // page source yet, and commit_range_locked() asserts that it never answers
+    // ShouldWait. When the first pager-backed VMO arrives, bring back Zircon's
+    // loop whole -- the wait, the advance, the retry -- not the shape of it.
+    usize nr_committed = 0;
+    return m_cow_pages->commit_range_locked(offset, size, &nr_committed);
 }
 
 auto VmObjectPaged::commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status {
