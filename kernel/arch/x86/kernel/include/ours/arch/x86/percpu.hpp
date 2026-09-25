@@ -30,17 +30,24 @@
 #include <ustl/mem/container_of.hpp>
 
 namespace ours {
-struct InterruptStatck {
+/// One of the dedicated stacks an IST gate switches to (IntrStackOrdering).
+///
+/// base() and top() mean what they mean on mm::Stack: base() is the lowest
+/// byte, top() one past the highest -- the value a downward-growing stack
+/// starts from, and so the value a TSS IST slot holds. They used to be named
+/// the other way round (top() returned the lowest byte), which is harmless
+/// only as long as nothing loads one into %rsp.
+struct InterruptStack {
     constexpr static auto INTR_STACK_SIZE = KB(16);
 
     FORCE_INLINE
-    auto top() -> void * {
-        return stack;
+    auto base() -> VirtAddr {
+        return reinterpret_cast<VirtAddr>(stack);
     }
 
     FORCE_INLINE
-    auto bottom() -> void * {
-        return stack + INTR_STACK_SIZE;
+    auto top() -> VirtAddr {
+        return reinterpret_cast<VirtAddr>(stack + INTR_STACK_SIZE);
     }
 
     u8 stack[INTR_STACK_SIZE];
@@ -111,7 +118,7 @@ struct alignas(16) X86PerCpu {
     u32 apic_id;
     u32 padding_;
     CpuNum cpunum;
-    InterruptStatck intr_stack[MAX_NUM_STACKS];
+    InterruptStack intr_stack[MAX_NUM_STACKS];
 };
 
 static_assert(offsetof(X86PerCpu, tss.sp0) == X86_PERCPU_SAVED_KERNEL_SP_OFFSET);
