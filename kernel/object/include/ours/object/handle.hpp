@@ -48,6 +48,33 @@ static_assert((HANDLE_GENERATION_MASK >> HANDLE_GENERATION_SHIFT) >= 255,
 constexpr u32 HANDLE_ARENA_SLOTS = u32{1} << 12;
 static_assert(HANDLE_ARENA_SLOTS <= HANDLE_MAX_COUNT);
 
+/// The live handles one process has created (HANDLE_MAX_PER_PROCESS).
+///
+/// Its own small object, shared by the process and by every handle it
+/// created, rather than a counter in the process: a handle can outlive its
+/// creator -- sent to another process, or queued in a message -- and has to
+/// give its count back when it goes, to an account that is still there.
+///
+/// No Zircon counterpart: Zircon bounds handles by its arena and by job
+/// policy, not per process; this is design 4.8 of the userspace interface.
+class HandleAccount: public ustl::RefCounted<HandleAccount, ustl::sync::ThreadSafePolicy> {
+  public:
+    /// Counts one more handle, unless the account is full.
+    [[nodiscard]]
+    auto try_charge() -> bool;
+
+    /// Gives back the count of a handle that is going.
+    auto refund() -> void;
+
+    [[nodiscard]]
+    auto live() const -> u32 {
+        return m_live.load(std::memory_order_relaxed);
+    }
+
+  private:
+    std::atomic<u32> m_live{0};
+};
+
 /// One entry in a handle table: an object, the rights this entry grants over
 /// it, and which table it belongs to.
 ///
@@ -140,7 +167,8 @@ class Handle final {
     USTL_NOCOPYABLE(Handle);
 
   private:
-    Handle(ustl::Arc<Dispatcher> dispatcher, Rights rights, u32 base_value);
+    Handle(ustl::Arc<Dispatcher> dispatcher, Rights rights, u32 base_value,
+           ustl::Arc<HandleAccount> account);
 
     /// Claims an arena slot for a new handle; none when the arena is full.
     static auto reserve_slot() -> ustl::Option<u32>;
@@ -149,11 +177,15 @@ class Handle final {
     /// reserved for. The dispatcher's handle count is raised here, before the
     /// Handle exists, so that it can never be observed lower than the number
     /// of handles that name it.
-    static auto emplace(u32 base_value, ustl::Arc<Dispatcher> dispatcher, Rights rights)
-        -> ustl::Box<Self>;
+    static auto emplace(u32 base_value, ustl::Arc<Dispatcher> dispatcher, Rights rights,
+                        ustl::Arc<HandleAccount> account) -> ustl::Box<Self>;
 
     std::atomic<KoId> m_table_koid;
     ustl::Arc<Dispatcher> m_dispatcher;
+
+    /// The process that created this handle, as the account it is charged
+    /// to; empty for a handle the kernel made on its own behalf.
+    ustl::Arc<HandleAccount> m_account;
     Rights const m_rights;
     u32 const m_base_value;
 

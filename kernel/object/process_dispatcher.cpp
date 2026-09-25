@@ -28,7 +28,8 @@ constexpr auto SHARED_ASPACE_SIZE = USER_ASPACE_SIZE - USER_ASPACE_RESTRICTED_SI
 namespace ours::object {
 ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *const name,
                                      ustl::Arc<mm::VmAspace> aspace,
-                                     ustl::Arc<HandleTable> handle_table)
+                                     ustl::Arc<HandleTable> handle_table,
+                                     ustl::Arc<HandleAccount> handle_account)
     : Base()
     , m_parent(nullptr)
     , m_state(State::Initial)
@@ -37,6 +38,7 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
     , m_job(ustl::move(job))
     , m_aspace(ustl::move(aspace))
     , m_handle_table(ustl::move(handle_table))
+    , m_handle_account(ustl::move(handle_account))
     , m_vdso_code_base(0)
     , m_vdso_code_size(0) {}
 
@@ -91,8 +93,13 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
         return Status::OutOfMem;
     }
 
-    auto self = ustl::Arc<Self>::adopt(
-        new (mm::GAF_USER) Self(job, name, ustl::move(aspace), ustl::move(handle_table)));
+    auto handle_account = ustl::Arc<HandleAccount>::adopt(new (mm::GAF_KERNEL) HandleAccount());
+    if (!handle_account) {
+        return Status::OutOfMem;
+    }
+
+    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(
+        job, name, ustl::move(aspace), ustl::move(handle_table), ustl::move(handle_account)));
     if (!self) {
         return Status::OutOfMem;
     }

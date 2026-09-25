@@ -400,6 +400,54 @@ auto check_handle_transfer() -> void {
     }
 }
 
+/// The per-process handle quota (HANDLE_MAX_PER_PROCESS): channels are
+/// created until the kernel answers NoResource, a pair is closed, and one more
+/// create then works. Everything is closed again afterwards, so the rest of
+/// the program runs with its quota back.
+///
+/// Only the number of pairs made is printed, not a fixed expectation: how many
+/// handles this program already holds when it gets here depends on how it was
+/// started.
+auto check_handle_quota() -> void {
+    using ours::HandleValue;
+    using ours::Status;
+
+    // One pair more than the quota could ever allow, so that the loop ends on
+    // the kernel's refusal and never on running out of room here.
+    constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
+    static HandleValue made[ROOM];
+    u32 count = 0;
+    auto status = Status::Ok;
+    while (count + 2 <= ROOM) {
+        status = ou::channel_create(&made[count], &made[count + 1]);
+        if (status != Status::Ok) {
+            break;
+        }
+        count += 2;
+    }
+
+    auto ok = expect("shell: channel_create past the quota = ", status, Status::NoResource);
+    char count_text[10];
+    static_cast<void>(ou::debug_line(
+        {"shell: ", decimal(count / 2, count_text), " channels made before the quota"}));
+
+    if (count >= 2) {
+        ok &= ou::handle_close(made[count - 1]) == Status::Ok;
+        ok &= ou::handle_close(made[count - 2]) == Status::Ok;
+        ok &= expect("shell: channel_create after closing one = ",
+                     ou::channel_create(&made[count - 2], &made[count - 1]), Status::Ok);
+    }
+    for (u32 i = 0; i < count; ++i) {
+        ok &= ou::handle_close(made[i]) == Status::Ok;
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: handle quota checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: handle quota checks FAILED"));
+    }
+}
+
 /// Bad user pointers handed to the kernel: each call must come back InvArgs,
 /// and the kernel must still be here to answer the next one.
 ///
@@ -538,6 +586,7 @@ auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -
     check_handle_close(bootstrap);
     check_channel_loopback();
     check_handle_transfer();
+    check_handle_quota();
     check_bad_pointers(vdso_base);
 
     static Registry registry;

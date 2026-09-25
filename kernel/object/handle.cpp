@@ -3,7 +3,9 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/handle.hpp>
+#include <ours/object/process_dispatcher.hpp>
 #include <ours/sync/mutex.hpp>
+#include <ours/syscall.hpp>
 
 #include <atomic>
 #include <new>
@@ -196,15 +198,52 @@ namespace {
     // member added to Handle costs every slot at once. Pinned here so that the
     // cost is a decision rather than a side effect. Widening KoId to 64 bits
     // did not move it: m_table_koid took the four bytes of padding that sat
-    // before m_dispatcher's pointer alignment.
-    static_assert(sizeof(Handle) == 40, "Handle's size is the arena's size; see above");
+    // before m_dispatcher's pointer alignment. m_account did, from 40 to 48:
+    // 32 KiB across today's 4096 slots, the price of charging a handle to the
+    // process that made it wherever the handle goes (HANDLE_MAX_PER_PROCESS).
+    static_assert(sizeof(Handle) == 48, "Handle's size is the arena's size; see above");
+
+    /// The account a handle made now is charged to: the calling process's,
+    /// or none when the kernel makes it on its own behalf (the root job handle
+    /// the first program starts with). Empty with |refused| set when the
+    /// process is at HANDLE_MAX_PER_PROCESS.
+    auto charge_current(bool *const refused) -> ustl::Arc<HandleAccount> {
+        *refused = false;
+        auto *const process = ProcessDispatcher::current();
+        if (process == nullptr) {
+            return {};
+        }
+        auto account = process->handle_account();
+        if (!account->try_charge()) {
+            *refused = true;
+            return {};
+        }
+        return account;
+    }
 
     HandleArena handle_arena;
 } // namespace
 
-Handle::Handle(ustl::Arc<Dispatcher> dispatcher, Rights const rights, u32 const base_value)
+auto HandleAccount::try_charge() -> bool {
+    auto live = m_live.load(std::memory_order_relaxed);
+    do {
+        if (live >= HANDLE_MAX_PER_PROCESS) {
+            return false;
+        }
+    } while (!m_live.compare_exchange_weak(live, live + 1, std::memory_order_relaxed));
+    return true;
+}
+
+auto HandleAccount::refund() -> void {
+    DEBUG_ASSERT(m_live.load(std::memory_order_relaxed) != 0, "a refund with nothing charged");
+    m_live.fetch_sub(1, std::memory_order_relaxed);
+}
+
+Handle::Handle(ustl::Arc<Dispatcher> dispatcher, Rights const rights, u32 const base_value,
+               ustl::Arc<HandleAccount> account)
     : m_table_koid(0)
     , m_dispatcher(ustl::move(dispatcher))
+    , m_account(ustl::move(account))
     , m_rights(rights)
     , m_base_value(base_value) {}
 
@@ -217,6 +256,12 @@ Handle::~Handle() {
     // is ever destroyed while a table lock is held (see HandleTable).
     if (m_dispatcher && m_dispatcher->decrease_handle_count()) {
         m_dispatcher->on_zero_handles();
+    }
+
+    // The creator's room back, whether the handle died in its table, in
+    // someone else's, or in a message nobody read.
+    if (m_account) {
+        m_account->refund();
     }
 }
 
@@ -239,13 +284,13 @@ auto Handle::reserve_slot() -> ustl::Option<u32> {
     return base_value;
 }
 
-auto Handle::emplace(u32 const base_value, ustl::Arc<Dispatcher> dispatcher, Rights const rights)
-    -> ustl::Box<Self> {
+auto Handle::emplace(u32 const base_value, ustl::Arc<Dispatcher> dispatcher, Rights const rights,
+                     ustl::Arc<HandleAccount> account) -> ustl::Box<Self> {
     dispatcher->increase_handle_count();
     // Placement new rather than std::construct_at: the constructor is
     // private, so only a member of Handle may name it.
-    auto *const handle =
-        ::new (handle_arena.slot(base_value)) Self(ustl::move(dispatcher), rights, base_value);
+    auto *const handle = ::new (handle_arena.slot(base_value))
+        Self(ustl::move(dispatcher), rights, base_value, ustl::move(account));
     handle_arena.publish(base_value);
     return ustl::Box<Self>::from_raw(handle);
 }
@@ -255,41 +300,66 @@ auto Handle::make(KernelHandle<Dispatcher> kernel_handle, Rights const rights) -
         return ustl::Box<Self>();
     }
 
-    // The slot first, and only then the reference, in Zircon's order. If the
-    // arena is full the KernelHandle still holds the object when this
-    // returns, so its destructor tells the object it lost its last holder --
-    // a channel end dropped here raises PEER_CLOSED on its peer. Taking the
-    // reference first, as this used to, let the object go quietly.
+    // The account and the slot first, and only then the reference, in
+    // Zircon's order. If either is refused the KernelHandle still holds the
+    // object when this returns, so its destructor tells the object it lost
+    // its last holder -- a channel end dropped here raises PEER_CLOSED on its
+    // peer. Taking the reference first, as this used to, let the object go
+    // quietly.
+    auto refused = false;
+    auto account = charge_current(&refused);
+    if (refused) {
+        return ustl::Box<Self>();
+    }
     auto const base_value = reserve_slot();
     if (!base_value) {
+        if (account) {
+            account->refund();
+        }
         return ustl::Box<Self>();
     }
 
     // release(), not a copy: the reference moves from the KernelHandle into
     // the Handle, and the object must not be told it lost a holder -- it is
     // gaining one.
-    return emplace(*base_value, kernel_handle.release(), rights);
+    return emplace(*base_value, kernel_handle.release(), rights, ustl::move(account));
 }
 
 auto Handle::make(ustl::Arc<Dispatcher> kernel_handle, Rights const rights) -> ustl::Box<Self> {
     if (!kernel_handle) {
         return ustl::Box<Self>();
     }
-    auto const base_value = reserve_slot();
-    if (!base_value) {
+    auto refused = false;
+    auto account = charge_current(&refused);
+    if (refused) {
         return ustl::Box<Self>();
     }
-    return emplace(*base_value, ustl::move(kernel_handle), rights);
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        if (account) {
+            account->refund();
+        }
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, ustl::move(kernel_handle), rights, ustl::move(account));
 }
 
 auto Handle::clone(Self *const kernel_handle, Rights const rights) -> ustl::Box<Self> {
     DEBUG_ASSERT(kernel_handle);
     DEBUG_ASSERT(kernel_handle->has_rights(rights), "a clone may not widen its source's rights");
-    auto const base_value = reserve_slot();
-    if (!base_value) {
+    auto refused = false;
+    auto account = charge_current(&refused);
+    if (refused) {
         return ustl::Box<Self>();
     }
-    return emplace(*base_value, kernel_handle->m_dispatcher, rights);
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        if (account) {
+            account->refund();
+        }
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, kernel_handle->m_dispatcher, rights, ustl::move(account));
 }
 
 auto Handle::from_base_value(u32 const base_value) -> Self * {

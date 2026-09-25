@@ -40,11 +40,21 @@ inline constexpr auto INSTANT_INFINITE = std::numeric_limits<Instant>::max();
 /// raising this later is compatible, lowering it would not be.
 inline constexpr auto CHANNEL_MAX_MSG_BYTES = u32{4096};
 
-/// The most handles one channel message may carry (Zircon's number). Handles
-/// in messages are not implemented yet: a write naming any answers
-/// NotSupported. The limit is stated now because it is part of the shape of
-/// channel_write and channel_read, not of their current implementation.
+/// The most handles one channel message may carry (Zircon's number).
 inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
+
+/// The most live handles one process may have created, wherever they are now:
+/// in its own table, in another process's, or queued in a message on the
+/// way. Creating one past it answers NoResource; closing one gives the room
+/// back.
+///
+/// Counted against the creator, not the holder, so that sending handles
+/// away does not make room for more: a process that makes channels and
+/// writes their ends into a channel nobody reads would otherwise fill the
+/// system-wide arena from a table that always looks empty. A quarter of
+/// today's arena, so that no one process can exhaust it alone; it grows when
+/// the arena does.
+inline constexpr auto HANDLE_MAX_PER_PROCESS = u32{1024};
 
 /// The most bytes one sys_debug_write() will copy.
 ///

@@ -374,3 +374,92 @@ channel 消息只能带字节。文件系统计划里 open、/svc 转发、proce
 
 **故意没做**
 系统调用层的句柄转移（从写者的表里摘下、放进读者的表）是下一步。
+
+## 每个存活的句柄记在创建它的进程名下：`HANDLE_MAX_PER_PROCESS`（2026-09-25）
+
+**文件**
+- `system/public/ours/syscall.hpp` — 新增 `HANDLE_MAX_PER_PROCESS = 1024`；`CHANNEL_MAX_MSG_HANDLES` 的注释去掉"尚未实现"（上一节漏改）
+- `kernel/object/include/ours/object/handle.hpp`、`kernel/object/handle.cpp` — 新增 `HandleAccount`；`Handle` 多一个 `m_account`（40 → 48 字节）；`make()`/`clone()` 先记账、再占槽；析构时归还
+- `kernel/object/include/ours/object/process_dispatcher.hpp`、`kernel/object/process_dispatcher.cpp` — 进程创建时建自己的账户，`handle_account()`
+- `examples/shell/shell.cpp` — 新增 `check_handle_quota()`
+
+**症状**
+句柄只受全系统 arena（4096 个槽）的限制。一个进程不停地建 channel、把一端写进一个没人读的 channel，就能在自己的句柄表看起来
+空空如也的情况下把整个 arena 耗尽，别的进程从此建不出任何句柄。上一节让句柄能进消息之后，这条路就通了。
+
+**原因**
+没有按进程的记账。按"持有者"记也不行：句柄一写进消息就不在任何表里了，按表记账等于允许把句柄送走来腾地方。所以接口设计 §4.8
+定的是按**创建者**记，在途的也算。
+
+**改法**
+改前：
+
+```cpp
+auto Handle::make(ustl::Arc<Dispatcher> kernel_handle, Rights const rights) -> ustl::Box<Self> {
+    ...
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, ustl::move(kernel_handle), rights);
+}
+```
+
+改后：
+
+```cpp
+    auto refused = false;
+    auto account = charge_current(&refused);
+    if (refused) {
+        return ustl::Box<Self>();
+    }
+    auto const base_value = reserve_slot();
+    if (!base_value) {
+        if (account) {
+            account->refund();
+        }
+        return ustl::Box<Self>();
+    }
+    return emplace(*base_value, ustl::move(kernel_handle), rights, ustl::move(account));
+```
+
+```cpp
+auto HandleAccount::try_charge() -> bool {
+    auto live = m_live.load(std::memory_order_relaxed);
+    do {
+        if (live >= HANDLE_MAX_PER_PROCESS) {
+            return false;
+        }
+    } while (!m_live.compare_exchange_weak(live, live + 1, std::memory_order_relaxed));
+    return true;
+}
+```
+
+- **账户是独立的小对象**，进程与它建出的每个句柄各持一个引用：句柄可以比创建者活得久（送给别的进程、排在消息里），死的时候
+  要把额度还给一个仍然存在的账户。直接指向进程会在进程先死时悬空，持有进程的强引用又会让死进程赖着不走。
+- **记账在前、占槽在后**：占槽失败就退还；两者都失败时 `KernelHandle` 仍持有对象，照原样通知对象失去最后一个持有者。
+- **内核自建的句柄不记账**：没有当前进程时（例如第一个程序拿到的 root job 句柄）账户为空。
+- **Handle 从 40 字节变成 48 字节**：arena 是静态的，每个槽一起变大，4096 个槽多 32 KiB。`handle.cpp` 的 `static_assert` 本来就是为了
+  让这笔开销成为一个有意的决定，注释写明了原因。
+- **1024**：今天 arena 的四分之一，任何一个进程都耗不尽它；arena 按设计增长到 2^18 时一起放大。
+
+**参照**
+无直接对应物：Zircon 靠全局 arena 上限与 job policy 限制句柄，不按进程记账。本项目接口设计 §4.8 的规定。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- 两个镜像的 shell 都打出：
+
+```
+shell: channel_create past the quota = NoResource
+shell: 512 channels made before the quota
+shell: handle quota checks passed
+```
+
+  512 对即 1024 个句柄，恰好是上限（这时 shell 已关掉它其余的句柄）；关掉一对之后能再建一对，最后全部关掉，之后的检查照常
+  （dev `init: shell closed its channel`，dbg_1 `probes done (11 killed, 0 survived)`）。
+- 第一版测试有个错：数组只开到上限那么大，循环在撞上配额之前就停了，打出"Ok (expected NoResource)"。数组多开一对后才真正越过配额。
+- "在途的句柄也算"没有单独的运行时检查：账户挂在句柄上，与句柄在哪里无关，由结构保证。
+
+**故意没做**
+超额时的日志、计数器：配额满是程序自己的事，回 NoResource 就够了，与 arena 满（那是全系统的事，有计数器和 warn）不同。

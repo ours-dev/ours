@@ -72,6 +72,14 @@ class ProcessDispatcher: public ProcessDispatcherBase {
         return m_handle_table.as_ref_mut();
     }
 
+    /// The account every handle this process creates is charged to
+    /// (HANDLE_MAX_PER_PROCESS); a handle takes its own reference to it.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto handle_account() const -> ustl::Arc<HandleAccount> {
+        return m_handle_account;
+    }
+
     auto attach_thread(ThreadDispatcher &thread) -> Status;
 
     /// Ends this process with |retcode|: it starts dying, and every thread
@@ -151,7 +159,8 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     static constexpr auto MAGIC = gktl::magic("ProcessDispatcher");
 
     ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *name,
-                      ustl::Arc<mm::VmAspace> aspace, ustl::Arc<HandleTable> handle_table);
+                      ustl::Arc<mm::VmAspace> aspace, ustl::Arc<HandleTable> handle_table,
+                      ustl::Arc<HandleAccount> handle_account);
     ~ProcessDispatcher() override;
 
     /// The work of dying that must not run under the process lock; see the
@@ -192,6 +201,10 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// create_shared() gives two processes one table; the base class
     /// HandleTable already carries the count for it.
     ustl::Arc<HandleTable> m_handle_table;
+
+    /// See handle_account(). Shared, not owned: the handles this process
+    /// made keep it as long as they live.
+    ustl::Arc<HandleAccount> m_handle_account;
 
     /// Where this process's vDSO is mapped. Zero until set_vdso_code_range(),
     /// and a zero size is what makes vdso_contains() refuse everything.
