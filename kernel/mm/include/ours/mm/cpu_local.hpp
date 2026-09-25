@@ -111,6 +111,8 @@ class CpuLocal {
     /// this once, on itself, during bring-up.
     static auto init_percpu(CpuNum cpu) -> void;
 
+    class ScopedInstall;
+
     /// The two below take a CPU_LOCAL variable and reach *this CPU's copy*.
     /// The x86 contract is that %gs holds `offset(cpu)`, so the displacement is
     /// the variable's own address -- its handle -- and nothing has to be
@@ -330,6 +332,59 @@ class CpuLocal {
     static std::array<CpuMask, usize(State::NumStates)> STATES;
     static isize CURRENT_CPU_OFFSET;
     static CpuNum CURRENT_CPUNUM;
+};
+
+/// Points the calling CPU's base register at `cpu`'s unit for the lifetime of
+/// the object, and puts back whatever it held before.
+///
+/// For the entry paths that cannot trust the base register. On x86 an NMI or
+/// #MC can land between SYSCALL and its swapgs, or between the exit swapgs and
+/// SYSRET -- and in the same spots around every interrupt taken from ring 3.
+/// There the saved CS already says ring 0 while %gs.base is still the user's,
+/// so "swapgs if we came from user mode" does the wrong thing, and every
+/// per-CPU access in the handler lands wherever the user pointed %gs. With
+/// FSGSBASE that is anywhere: ring 3 sets it with a plain wrgsbase. So those
+/// paths do not ask what %gs holds. The caller works out which CPU it is on
+/// without it -- on x86 from TR, which user mode cannot load -- and hands the
+/// number in here.
+///
+/// Putting back the old value, rather than deciding what ought to be there,
+/// is what lets one path serve every window: whether the interrupted code was in
+/// the kernel with the kernel's %gs, or halfway through a swapgs pair with the
+/// user's, it gets back exactly what it had, and its own swapgs still pairs.
+/// The other half of the pair (the swapped-out value in KERNEL_GS_BASE) is
+/// never touched.
+///
+/// Neither end touches per-CPU storage. The constructor reads CPU_OFFSETS by
+/// its ordinary address and the rest is the register itself, so the object is
+/// usable while %gs is still wrong -- which is the point. It reads the table
+/// directly rather than through offset_of(), whose "this CPU has a unit"
+/// assertion is false before CpuLocal::init_early(), when the boot CPU runs on
+/// the template with offset 0 and an NMI is no less possible.
+///
+/// Linux counterpart: SAVE_AND_SET_GSBASE in paranoid_entry and the wrgsbase
+/// in paranoid_exit (arch/x86/entry/entry_64.S), with the CPU from
+/// GET_PERCPU_BASE. Zircon's NMI path does the same with rdmsr/wrmsr of
+/// MSR_IA32_GS_BASE (interrupt_common's .Lnmi, kernel/arch/x86/exceptions.S).
+class CpuLocal::ScopedInstall {
+  public:
+    FORCE_INLINE
+    explicit ScopedInstall(CpuNum cpu)
+        : m_saved(ArchCpuLocal::installed()) {
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU number: {}", cpu);
+        ArchCpuLocal::install(CpuLocal::CPU_OFFSETS[cpu]);
+    }
+
+    FORCE_INLINE
+    ~ScopedInstall() {
+        ArchCpuLocal::install(m_saved);
+    }
+
+  private:
+    USTL_NO_MOVEABLE_AND_COPYABLE(ScopedInstall);
+
+    /// What the base register held when the object was made.
+    isize m_saved;
 };
 
 /// Owning handle to a per-CPU allocation.

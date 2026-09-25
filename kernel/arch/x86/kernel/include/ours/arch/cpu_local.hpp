@@ -39,6 +39,19 @@ struct ArchCpuLocal {
         ::arch::MsrIo::write(::arch::MsrRegAddr::IA32GsBase, offset);
     }
 
+    /// What the base register holds right now, read from the register itself
+    /// rather than from CURRENT_CPU_OFFSET -- which would need %gs to be right
+    /// already.
+    ///
+    /// Everywhere but one place that is this CPU's offset by construction, so
+    /// only CpuLocal::ScopedInstall asks: on the entry paths that cannot trust
+    /// %gs it is how the value the interrupted code was running with is kept,
+    /// to be put back on the way out.
+    FORCE_INLINE
+    static auto installed() -> isize {
+        return ::arch::MsrIo::read<isize>(::arch::MsrRegAddr::IA32GsBase);
+    }
+
     /// `handle` is the object's address in the linker template -- for a
     /// `CPU_LOCAL` variable, simply `&var`.
     template <typename Integer>
