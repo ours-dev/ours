@@ -61,6 +61,19 @@ enum IntrStackOrdering {
     MAX_NUM_STACKS,
 };
 
+/// The TSS slot a dedicated stack is published in, as the IDT gate's ist
+/// field names it.
+///
+/// The two numberings differ by one and this is the only place they meet.
+/// IntrStackOrdering counts from 0 because it indexes X86PerCpu::intr_stack;
+/// the gate's ist field counts from 1 because 0 there means "stay on the
+/// current stack". Handing the ordering to the gate directly -- which
+/// x86_init_idt_early() used to do -- quietly gave #DF, ordering 0, no stack
+/// switch at all.
+constexpr auto ist_slot(IntrStackOrdering which) -> u8 {
+    return static_cast<u8>(which + 1);
+}
+
 struct PACKED X86Tss {
     typedef X86Tss Self;
 
@@ -90,19 +103,25 @@ struct PACKED X86Tss {
         }
     }
 
+    /// Publishes |top| as the stack pointer the CPU loads for a gate whose
+    /// ist field is |slot| -- the SDM's IST1..IST7, hence 1-based.
+    FORCE_INLINE
+    auto set_ist(u8 slot, VirtAddr top) -> void {
+        DEBUG_ASSERT(slot >= 1 && slot <= NUM_IST_SLOTS, "Invalid IST slot: {}", slot);
+        ist[slot - 1] = top;
+    }
+
+    constexpr static u8 NUM_IST_SLOTS = 7;
+
     // We hope to use two views to access the bitmap.
     u32 reserved0{};
     u64 sp0{};
     u64 sp1{};
     u64 sp2{};
     u64 reserved1{};
-    u64 ist1{};
-    u64 ist2{};
-    u64 ist3{};
-    u64 ist4{};
-    u64 ist5{};
-    u64 ist6{};
-    u64 ist7{};
+    /// IST1..IST7, one array so that set_ist() can index it: ist[n - 1] is
+    /// the SDM's ISTn.
+    u64 ist[NUM_IST_SLOTS]{};
     u64 reserved2{};
     u16 reserved3{};
     u16 io_port_bitmap_base{};
@@ -110,6 +129,9 @@ struct PACKED X86Tss {
 };
 static_assert(offsetof(X86Tss, sp0) == 4);
 static_assert(offsetof(X86Tss, sp2) == 20);
+static_assert(offsetof(X86Tss, ist) == 0x24, "IST1 sits at byte 0x24 of a 64-bit TSS");
+static_assert(ist_slot(static_cast<IntrStackOrdering>(MAX_NUM_STACKS - 1)) <=
+              X86Tss::NUM_IST_SLOTS);
 
 struct alignas(16) X86PerCpu {
     typedef X86PerCpu Self;

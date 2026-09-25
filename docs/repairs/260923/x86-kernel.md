@@ -1,25 +1,22 @@
 # x86/kernel 待修项（2026-09-23）
 
-对 P0 系统调用系列做对抗式审查时发现的，不是那个系列引入的。（原第 2 条"vDSO 入口校验的下边界差一个指令长度"已由 P1-A 第 28 条修掉，见 `docs/changes/260924/syscall.md`。）
+对 P0 系统调用系列做对抗式审查时发现的，不是那个系列引入的。（原第 2 条"vDSO 入口校验的下边界差一个指令长度"已由 P1-A 第 28 条修掉，见 `docs/changes/260924/syscall.md`。原第 1 条的 IST 部分已在 `docs/changes/260925/x86-kernel.md` 修掉，下面是它剩下的一半。）
 
-## 1. IST 从来没配置：NMI / #MC 压栈到地址 0 附近，内核栈溢出直接三重错误
+## 1. NMI / #MC 按 CS 判断要不要 swapgs，syscall 出入口的窗口里会拿着用户的 GS 基址访问 per-CPU 数据
 
-**严重程度：中。** 今天就能触发（QEMU monitor 的 `nmi`、硬件 #MC、任何一次内核栈溢出），只是少见。
+**严重程度：中。** 窗口只有几条指令，触发靠 NMI 的时机；但有 FSGSBASE 的 CPU 上 GS 基址由用户任意设定。
 
-- `IntrStackOrdering`（`kernel/arch/x86/kernel/include/ours/arch/x86/percpu.hpp:49-55`）从 0 编号：
-  `DOUBLE_FAULT_STACK = 0`、`NMI_STACK = 1`、`DEBUG_BREAK_STACK = 2`、`MACHINE_CHECK_STACK = 3`。
-  `x86_init_idt_early()`（`idt.cpp:120-122`）把这些数直接写进门的 `ist` 字段——#DF 于是是 IST 0，也就是
-  **不换栈**。
-- `tss.ist1..ist7` 从来没有被写过：`x86_setup_tss_percpu()`（`descriptor.cpp:91-106`）只调 `tss->init()`，
-  全树 grep 不到任何对 `.istN` 的赋值；`X86PerCpu::intr_stack[]` 声明了却没人用。
-- 结果：NMI / #MC 从 `tss.ist1` / `tss.ist3` 取到 RSP = 0，第一次压栈在 `0xffff_ffff_ffff_fff8`，缺页，
-  panic 成「kernel 地址上的 Unhandled page fault」；内核栈溢出时 #PF 压不了栈，#DF 在同一个坏栈上也压不了，
-  三重错误、没有任何诊断。
+- `interrupt_common`（`exception.S`）只看压栈的 CS：CPL 为 3 才 `swapgs`。
+- `x86_syscall`（`syscall.S`）进门时，`syscall` 已把 CPL 变成 0，但到第一条 `swapgs` 之前 GS 基址还是用户的；
+  出门时，`swapgs` 之后到 `sysretq` 完成之前也一样。IA32_FMASK 清了 IF 和 TF，普通中断和单步落不进这两个窗口，
+  NMI 和 #MC 可以。
+- 落进去的 NMI 看到 CS 是内核，就不 `swapgs`，`arch_handle_exception()` 里所有 `%gs:` 相对访问（`CpuLocal`、
+  `Thread::Current::get()`、logz4 的 CPU 号和域槽）都落在用户选的地址上。CR4.FSGSBASE 在支持的 CPU 上是开的，
+  用户态可以 `wrgsbase` 任意值再 `syscall`：没有 SMAP 时内核会把用户页当成自己的 per-CPU 块读（伪造的当前线程指针），
+  有 SMAP 或 GS 为 0（没有 FSGSBASE 时用户改不了它）时，是 ring 0 碰用户地址，`x86_handle_page_fault()` 拒绝后内核 panic。
 
-改法：
-1. IST 编号改成从 1 开始（或写门时 +1），让 #DF、NMI、#MC 各有真的 IST 槽；
-2. `x86_setup_tss_percpu()` 里 `tss->ist{n} = intr_stack[n-1]` 的高端，照 Zircon
-   `x86_initialize_percpu_tss()`；
-3. 在依赖它之前，给 NMI / #MC / #DB 的桩加「偏执」的 GS 处理：读 `MSR_GS_BASE` 或与本 CPU 的 per-CPU
-   基址比较，而不是信 CS 的 RPL。`syscall.S` 在 swapgs 前后各有一个两条指令的窗口，CR4.FSGSBASE 开着，
-   用户态可以 `wrgsbase` 任意值——落在窗口里的 NMI 会拿着用户选的 GS 去访问 per-CPU 数据。
+改法：NMI（和 #MC）不信 CS。照 `Zircon interrupt_common` 的 `.Lnmi` 分支：`rdmsr MSR_IA32_GS_BASE` 存进被调用者保存的寄存器，
+用 IST 栈的地址反推本 CPU 的 per-CPU 基址（IST 栈就嵌在 `X86PerCpu` 里）写进 GS_BASE，处理完再写回原值。
+ours 的 %gs 装的是"本 CPU 单元相对模板的偏移"（`percpu.hpp` 顶部），反推时要换算成这个值，而不是 `X86PerCpu` 的地址。
+Linux 的对应物是 `paranoid_entry` / `paranoid_exit`（`arch/x86/entry/entry_64.S`），有 FSGSBASE 时同样是存—写—还原，
+而不是看 GS_BASE 的符号位。

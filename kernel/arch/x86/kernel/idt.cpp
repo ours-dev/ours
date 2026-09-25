@@ -81,14 +81,19 @@ auto x86_load_idt() -> void {
     PIDT->load();
 }
 
+/// Makes |vec|'s gate switch to the stack published in TSS slot IST|slot|.
+///
+/// |slot| is the 1-based number the gate's ist field holds, where 0 means "no
+/// switch": ist_slot() turns an IntrStackOrdering into it.
 INIT_CODE
-static auto x86_set_vector_ist(arch::IrqVec vec, u8 ist) -> void {
+static auto x86_set_vector_ist(arch::IrqVec vec, u8 slot) -> void {
     auto const index = usize(vec);
     DEBUG_ASSERT(index < std::size(IDT.entries_), "Invalid vector: {}", index);
+    DEBUG_ASSERT(slot >= 1 && slot <= X86Tss::NUM_IST_SLOTS, "Invalid IST slot: {}", slot);
     auto &entry = IDT.entries_[index];
-    entry.ist = ist;
+    entry.ist = slot;
 
-    log::info("Vector[{}] was bind to IST[{}]", index, ist);
+    log::info("Vector[{}] was bind to IST[{}]", index, slot);
 }
 
 INIT_CODE
@@ -117,9 +122,22 @@ auto x86_init_idt_early() -> void {
         rectify_idt(entry, clac_shift);
     }
 
-    x86_set_vector_ist(arch::IrqVec::DoubleFault, DOUBLE_FAULT_STACK);
-    x86_set_vector_ist(arch::IrqVec::Nmi, NMI_STACK);
-    x86_set_vector_ist(arch::IrqVec::MachineCheck, MACHINE_CHECK_STACK);
+    // The three vectors that can arrive with %rsp unusable take a stack of
+    // their own: #DF, when a kernel stack overflow leaves nowhere to push the
+    // #PF; NMI and #MC, which can land at any instruction -- including
+    // between SYSCALL and the stack swap in syscall.S, where %rsp is still
+    // the user's. These used to pass the IntrStackOrdering straight in, which
+    // numbers from 0, so #DF got ist = 0 -- "no switch" -- and NMI and #MC
+    // named slots x86_setup_tss_percpu() never filled, switching to %rsp = 0.
+    //
+    // #DB keeps the thread's stack: DEBUG_BREAK_STACK is reserved but not
+    // assigned, because deliver_user_exception() relies on every exception
+    // frame living on the thread's kernel stack. Zircon's x86_init_percpu()
+    // assigns the same three vectors (NMI_IST_INDEX and friends) and leaves
+    // #DB alone too.
+    x86_set_vector_ist(arch::IrqVec::DoubleFault, ist_slot(DOUBLE_FAULT_STACK));
+    x86_set_vector_ist(arch::IrqVec::Nmi, ist_slot(NMI_STACK));
+    x86_set_vector_ist(arch::IrqVec::MachineCheck, ist_slot(MACHINE_CHECK_STACK));
 
     // x86_dump_idt();
 }

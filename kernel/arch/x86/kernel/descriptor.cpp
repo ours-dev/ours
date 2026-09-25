@@ -89,8 +89,40 @@ auto x86_setup_gdt() -> void {
 INIT_CODE
 auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU number: {}", cpunum);
-    auto tss = &mm::CpuLocal::access(X86_PCPU, cpunum).tss;
+    auto &pcpu = mm::CpuLocal::access(X86_PCPU, cpunum);
+    auto tss = &pcpu.tss;
     tss->init();
+
+    // Publish this CPU's dedicated stacks in the IST slots their gates name
+    // (x86_init_idt_early()). Until this was done every slot held 0, so an
+    // NMI or #MC switched to %rsp = 0 and faulted pushing its own frame at
+    // 0xfffffffffffffff8. That #PF then reported the *interrupted* context:
+    // an NMI that caught a user thread killed its process for a
+    // FatalPageFault on a kernel address, pinning the kernel's fault on the
+    // program.
+    //
+    // The stacks are this CPU's own, taken from the same X86_PCPU as the TSS,
+    // and for the same reason init_arch() calls this a second time on the
+    // boot CPU: before CpuLocal::init() X86_PCPU resolves to the template,
+    // and slots naming the template's stacks would be stale once CPU 0 moves
+    // to its own chunk. DEBUG_BREAK_STACK is published although no gate uses
+    // it; a slot nothing names costs nothing.
+    //
+    // Two limits come with IST, both as in Zircon. There is no guard page:
+    // overflowing one of these runs into the neighbouring per-CPU data. And
+    // every entry starts again from the top, so a handler must not re-enable
+    // its own vector before it is done -- an NMI handler that takes a fault
+    // and returns from it with iretq unmasks NMIs, and the next NMI lands on
+    // the frame of the first. Linux's entry_64.S carries a nested-NMI
+    // protocol for exactly that; here the rule is simply that the NMI and #MC
+    // paths do not fault.
+    //
+    // Zircon counterpart: x86_tss_assign_ists(), called from
+    // x86_initialize_percpu_tss().
+    for (auto i = 0; i < MAX_NUM_STACKS; ++i) {
+        auto const which = static_cast<IntrStackOrdering>(i);
+        tss->set_ist(ist_slot(which), pcpu.intr_stack[which].top());
+    }
 
     // Do not use PGDT, because it is readonly.
     GDT.get_tss_desc(cpunum)
