@@ -5,10 +5,26 @@
 
 #include <gktl/types.hpp>
 
+#include <concepts>
 #include <memory>
+
+#include <ustl/collections/error.hpp>
+#include <ustl/result.hpp>
 
 namespace gktl {
 
+/// A fixed-capacity radix tree whose nodes all live in one array, reserved up
+/// front and never grown.
+///
+/// `A` follows the ustl fallible allocator protocol -- `Rebind<U>`,
+/// `try_allocate(n)` returning `ustl::Result`, `deallocate(p, n)`, and
+/// `resource()` to rebind from -- the same one ustl::collections::BTree
+/// takes, so `ustl::collections::Allocator<T>` is the allocator to hand it.
+/// It deliberately does not speak std::allocator_traits: the standard
+/// protocol's default, std::allocator, bottoms out in the global
+/// `operator new(size_t)`, which in this kernel is a weak stub that panics,
+/// and its `allocate()` reports failure by throwing rather than by a value
+/// `reserve()` could return.
 template <class T, class A, class KofT, class KeyEncoder>
 class RadixTree final {
   public:
@@ -31,8 +47,11 @@ class RadixTree final {
 
     RadixTree() = default;
 
+    /// The node allocator is rebound from `allocator`'s resource, as BTree
+    /// does: ustl allocators have no converting constructor between element
+    /// types, only the resource they share.
     explicit RadixTree(Allocator const &allocator, KeyOfValue key_of = {}, Encoder encoder = {})
-        : m_node_allocator(allocator), m_key_of(key_of), m_encoder(encoder) {}
+        : m_node_allocator(*allocator.resource()), m_key_of(key_of), m_encoder(encoder) {}
 
     RadixTree(RadixTree const &) = delete;
     auto operator=(RadixTree const &) -> RadixTree & = delete;
@@ -50,11 +69,12 @@ class RadixTree final {
             capacity = 1;
         }
 
-        m_nodes = NodeAllocatorTraits::allocate(m_node_allocator, capacity);
-        if (m_nodes == nullptr) {
+        auto allocation = m_node_allocator.try_allocate(capacity);
+        if (allocation.is_err()) {
             return false;
         }
 
+        m_nodes = allocation.value();
         m_capacity = capacity;
         return alloc_node(0, 0) != nullptr;
     }
@@ -65,9 +85,9 @@ class RadixTree final {
         }
 
         for (usize i = 0; i < m_size; ++i) {
-            NodeAllocatorTraits::destroy(m_node_allocator, &m_nodes[i]);
+            std::destroy_at(&m_nodes[i]);
         }
-        NodeAllocatorTraits::deallocate(m_node_allocator, m_nodes, m_capacity);
+        m_node_allocator.deallocate(m_nodes, m_capacity);
 
         m_nodes = nullptr;
         m_capacity = 0;
@@ -172,8 +192,15 @@ class RadixTree final {
         Node(u64 key, usize length) : key(key & KEY_MASK), length(length) {}
     };
 
-    using NodeAllocator = typename std::allocator_traits<Allocator>::template rebind_alloc<Node>;
-    using NodeAllocatorTraits = std::allocator_traits<NodeAllocator>;
+    using NodeAllocator = typename Allocator::template Rebind<Node>;
+
+    static_assert(
+        requires(NodeAllocator &allocator, Node *node, usize count) {
+            {
+                allocator.try_allocate(count)
+            } noexcept -> std::same_as<ustl::Result<Node *, ustl::collections::Error>>;
+            { allocator.deallocate(node, count) } noexcept -> std::same_as<void>;
+        }, "RadixTree allocators must use the USTL fallible allocation interface.");
 
     template <class Key>
     [[nodiscard]]
@@ -251,9 +278,7 @@ class RadixTree final {
             return nullptr;
         }
 
-        auto *node = &m_nodes[m_size++];
-        NodeAllocatorTraits::construct(m_node_allocator, node, key, length);
-        return node;
+        return std::construct_at(&m_nodes[m_size++], key, length);
     }
 
     auto mark_value(Node *node, Value const &value) -> void {

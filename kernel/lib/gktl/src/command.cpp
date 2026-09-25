@@ -4,7 +4,8 @@
 #include <gktl/command.hpp>
 #include <gktl/radix_tree.hpp>
 
-#include <memory>
+#include <ktl/memory_resource.hpp>
+#include <ustl/collections/allocator.hpp>
 
 namespace gktl {
 namespace {
@@ -45,10 +46,19 @@ namespace {
         }
     };
 
-    using CommandTree =
-        RadixTree<Command, std::allocator<Command>, CommandKeyOfValue, CommandKeyEncoder>;
+    using CommandAllocator = ustl::collections::Allocator<Command>;
+    using CommandTree = RadixTree<Command, CommandAllocator, CommandKeyOfValue, CommandKeyEncoder>;
 
-    CommandTree TREE{};
+    /// The kernel heap is named explicitly instead of taken from the ustl
+    /// default resource. A default-constructed allocator latches whatever
+    /// the default is at construction, and TREE is constructed by
+    /// ccrt::init_global_static_objects() at the top of start_kernel(), long
+    /// before init_pmm() installs ktl::kernel_memory_resource() as that
+    /// default -- so it would latch the null resource, reserve() would fail,
+    /// and every command would quietly be "not found". Naming the resource
+    /// only records which heap to use; nothing is allocated until the first
+    /// dispatch, by which time the heap is up.
+    CommandTree TREE{CommandAllocator{ktl::kernel_memory_resource()}};
     bool TREE_BUILT{};
 
     auto build_radix_tree() -> void {

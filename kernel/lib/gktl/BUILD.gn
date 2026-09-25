@@ -5,6 +5,7 @@ source_set("gktl") {
     "src/command.cpp",
     "src/init_hook.cpp",
   ]
+  deps = [ "//kernel/lib/ktl" ]
   public_deps = [ ":headers" ]
 }
 
@@ -22,6 +23,7 @@ cpp_interface("headers") {
     "include/gktl/types.hpp",
     "include/gktl/vtable_packer.hpp",
   ]
+  public_deps = [ "//system/lib/ustl:headers" ]
 }
 
 # Host-side test. gktl is a kernel library, but <gktl/defer.hpp> includes
