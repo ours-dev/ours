@@ -246,6 +246,16 @@
     //
     // The first system call this kernel ever made printed its string and then
     // died on the way home for exactly this reason.
+    //
+    // No check that %rcx is canonical, though on Intel a non-canonical one
+    // makes this instruction #GP in ring 0 -- with the user's %rsp and %gs
+    // already loaded above. It cannot be one: %rcx is the address after the
+    // SYSCALL, and USER_ASPACE_SIZE leaves the last page below 2^47 out of
+    // every address space, so no SYSCALL can end at the edge. Nothing writes
+    // the frame's IP in between yet; whatever comes to (thread-state writes,
+    // signal returns) must pass arch_is_valid_user_pc(). Linux checks here
+    // instead and falls back to IRET (do_syscall_64()); Zircon, like this,
+    // keeps bad values from getting in (sysret_problem.md).
     sysretq
 
 .end_function

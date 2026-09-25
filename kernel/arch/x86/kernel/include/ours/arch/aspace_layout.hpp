@@ -68,6 +68,15 @@
 /// page is left out because an address one past the end of a mapping at the
 /// very top would be non-canonical, and bounds arithmetic is easier when the
 /// end is still a representable address.
+///
+/// That missing page is also what makes SYSRET safe, and must not be given
+/// back. SYSRET returns to the address after the SYSCALL, and a SYSCALL in the
+/// last two bytes of a page at 0x7fff'ffff'f000 would return to
+/// 0x8000'0000'0000 -- non-canonical, which on Intel faults in ring 0 on the
+/// user's stack and %gs (see arch_is_valid_user_pc()). With the page unmappable
+/// no instruction can end there, so syscall.S returns without checking. It is
+/// the first of the measures in Zircon's docs/concepts/kernel/
+/// sysret_problem.md, and Zircon leaves the same page out.
 #define USER_ASPACE_BASE MB(2)
 #define USER_ASPACE_SIZE ((1UL << 47) - PAGE_SIZE - USER_ASPACE_BASE)
 

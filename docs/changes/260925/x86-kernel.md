@@ -371,3 +371,92 @@ Global 的语义是"这个翻译在所有地址空间里都一样，切 CR3 时�
 **故意没做**
 - 程序映像仍整体 RWX 映射（`docs/repairs/260919/elfload.md` 第 1 条），所以程序自己的只读段仍可写；按段映射在计划 K21 之后。
 - `docs/repairs/260924/x86-kernel.md` 里写的后续验证（往 vDSO 写的三项坏指针检查、写 vDSO 的探针）各自单独提交。
+
+## 用户态的 pc 只能落在用户地址空间：`arch_is_valid_user_pc()`（2026-09-25）
+
+**文件**
+- `kernel/arch/x86/kernel/include/ours/arch/entry.hpp` — 新增 `arch_is_valid_user_pc()`；`arch_enter_uspace()` 在 iretq 之前用它 `ASSERT`（所有构建都开）
+- `kernel/arch/x86/kernel/include/ours/arch/aspace_layout.hpp` — `USER_ASPACE_SIZE` 的注释补上"最后一页也是 SYSRET 安全的前提，不能还回去"
+- `kernel/arch/x86/kernel/syscall.S` — `sysretq` 前写明为什么这里不检查 %rcx
+
+（配套的 `ThreadDispatcher::start()` 拒绝非法入口，记在 `object.md` 同日条目，单独提交。）
+
+**症状**
+QEMU 上看不出来，真机 Intel 上是内核被接管的通路。临时实验（未提交，已还原）：在 `userabi::launch()` 里把 shell 的入口改成 `1 << 47`。改前：
+
+```
+[3410119000 cpu2 info] EXPERIMENT: starting 'shell' at 0x800000000000
+[3410983000 cpu0 warn] terminating process 'shell' ... type=General vector=general protection error_code=0x0 rip=0x800000000000
+```
+
+内核毫无检查地让一个线程从非规范地址起步。QEMU 的 TCG 把这个 #GP 报在 ring 3（AMD 的行为），所以只是 shell 被杀；
+Intel 真机上 #GP 发生在 ring 0（见下），这个实验在 QEMU 上复现不出那一步，未实测。
+
+**原因**
+`iretq` 和 `sysretq` 在 Intel 上遇到非规范的返回地址时，是在**特权切换之前**、仍在 ring 0 触发 #GP 的。而那时：
+- `x86_enter_uspace` / `interrupt_common` 的出口已经 `swapgs`，%gs 是用户的；
+- `syscall.S` 的出口还已经 `popq %rsp`，栈也是用户的。
+
+这个 #GP 走 `interrupt_common`，压栈的 CS 是内核的，于是不 swapgs，处理函数拿用户的 %gs 访问 per-CPU 数据——和 NMI 窗口是同一类问题，
+但 #GP 不是 paranoid 向量，上一条的修复管不到它。AMD 在 ring 3 报这个错，所以只在 Intel 上致命（Zircon `sysret_problem.md` 开头就是这段）。
+
+用户态 pc 的来源有这几处：
+1. `sysretq` 的 %rcx：`SYSCALL` 的下一条指令地址。一条 `SYSCALL` 放在 `0x7fff'ffff'f000` 那页的最后两个字节，下一条就是 `0x8000'0000'0000`。
+   ours 的 `USER_ASPACE_SIZE` 本来就少了最后一页（与 Zircon 同），这一页映射不了，所以这条路是安全的——但原注释只说是为了"边界运算方便"，
+   没说它还挡着 SYSRET；以后有人把这页"收回"，洞就重新打开了。
+2. 中断返回的 iret 帧：RIP 是硬件从正在执行的用户指令压的，必然规范。
+3. 线程的第一条指令：`ThreadDispatcher::start()` 收到的 entry。今天来自 ELF 头（`elfload` 只算 `base + (e_entry - lowest)`，不检查），
+   P1-C 之后来自 `process_start` 的调用者。**这里没有任何检查。**
+4. 将来的线程状态写入、信号返回、异常恢复：还不存在。
+
+改前 `arch_enter_uspace()`：
+
+```cpp
+    auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
+        DEBUG_ASSERT(arch::irqs_disabled());
+        x86_enter_uspace(frame);
+    }
+```
+
+**改法**
+改后：
+
+```cpp
+    constexpr auto arch_is_valid_user_pc(VirtAddr pc) -> bool {
+        return pc >= USER_ASPACE_BASE && pc < USER_ASPACE_BASE + USER_ASPACE_SIZE;
+    }
+    ...
+    auto arch_enter_uspace(arch::IrqFrame *frame) -> void {
+        DEBUG_ASSERT(arch::irqs_disabled());
+        ASSERT(arch_is_valid_user_pc(frame->ip), "entering user mode at {:#x}", frame->ip);
+        x86_enter_uspace(frame);
+    }
+```
+
+- 用户区间整个在 2^47 以下，落在里面就一定规范，所以一个区间判断同时回答了"规范"和"是用户地址"。
+- `ASSERT` 而不是 `DEBUG_ASSERT`：这是坏入口还能以"内核 panic、用的是内核自己的 %gs"收场的最后一刻，过了这行就是 ring 0 的 #GP。Zircon 的 `arch_enter_uspace()` 同样是全构建都开的 `ASSERT`。
+- 与 Zircon 的一处不同：Zircon 的 `arch_is_valid_user_pc()` 还放行 0（给"让线程立刻出错"的测试用）。这里不放：`TaskState` 的 entry 默认就是 0，放行只会让忘了设入口的调用者悄悄起一个跑到 0 的线程。
+- 来源 1 不加运行时检查，只把理由写在 `USER_ASPACE_SIZE` 和 `sysretq` 旁边。被否掉的方案：像 Linux `do_syscall_64()` 那样在返回路径上检查 %rcx、不合格就改走 IRET——
+  ours 没有带修正的 IRET 出口（Linux 靠 `error_entry` 识别 `native_irq_return_iret` 上的故障），而且来源本身已经堵住；Zircon 也是堵来源而不查出口。
+
+**参照**
+- `Zircon arch_is_valid_user_pc()`（`kernel/arch/x86/include/arch/vm.h`）、`arch_enter_uspace()` 里的 `ASSERT`（`kernel/arch/x86/arch.cc`）、`USER_ASPACE_SIZE`（`kernel_aspace.h`，同样减掉 4096）；设计说明 `docs/concepts/kernel/sysret_problem.md`。
+- `Linux do_syscall_64()`（`arch/x86/entry/syscall_64.c`）："SYSRET with non-canonical RCX/RIP will #GP in kernel space"，查 `regs->ip >= TASK_SIZE_MAX` 后改走 IRET。
+
+**验证**
+- 构建通过；clang-format 已跑；clang-tidy 对 `thread_dispatcher.cpp`（连带 `entry.hpp`、`aspace_layout.hpp`）无新告警。
+- 同一实验，本条与 `object.md` 那条合在一起之后：
+
+  ```
+  [3637518000 cpu1 info] EXPERIMENT: starting 'shell' at 0x800000000000
+  [3637881000 cpu1 error] userabi: could not start 'shell': InvArgs
+  init: spawning shell = InvArgs
+  ```
+
+  线程根本不会被启动；dbg_1 同样。`arch_enter_uspace()` 的 `ASSERT` 因为 `start()` 先拒绝了而没有机会触发。
+- 撤掉实验后两个镜像正常启动：dev 有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`、`--- end ---`；
+  dbg_1 有后两行和 `--- end ---`，无断言——正常入口都通过了新加的 `ASSERT`。
+
+**故意没做**
+- `elfload` 不检查 `e_entry` 是否落在映射出来的可执行段里：由 `start()` 统一把关就够堵住这个洞；让加载器报出更早、更准确的错误是另一件事。
+- 线程状态写入等将来的 pc 写入点：接口还不存在，要求写在了 `arch_is_valid_user_pc()` 的注释里。
