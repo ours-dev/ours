@@ -80,6 +80,9 @@ group("default") {
     # covered by the TLA+ model named in the header.
     "//system/lib/concurrent:chain-lock-test($host_toolchain)",
 
+    # gktl::DeferredAction's run-at-most-once contract; see the target.
+    "//kernel/lib/gktl:tests($host_toolchain)",
+
     # //kernel/mm's pure-bookkeeping smoke tests: plain hosted main()s over
     # the mm sources they exercise (the buddy allocator, the protection-range
     # tracker). The group sat unwired for a while -- frame-buddy-smoke was

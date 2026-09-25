@@ -193,3 +193,92 @@ P1-A 计划第 20 条会逐个看：有的调用点已经在外层关了中断�
   是一次锁外的读改写。已交接给独立会话（与 `SPAWNED_THREADS_LOCK`、可 join 线程的退出循环、Kill 不发 IPI 一起）。
 - 同一节写 `process_pending_signals()` "关中断，所以检查之后到来的信号不会在返回前被错过"。只对本 CPU 成立；另一颗 CPU
   在这个窗口里置的信号不会丢，但要等下一次进内核，因为还不发 IPI。
+
+## `gktl::DeferredAction::invoke()` 让动作最多跑一次（2026-09-24）
+
+**文件**
+- `kernel/lib/gktl/include/gktl/defer.hpp` — `invoke()` 先置 `m_invoked` 再调用；删掉 const 重载；禁止拷贝；成员改 `m_` 前缀
+- `kernel/lib/gktl/test/defer_test.cpp` — 新增主机测试，数动作跑了几次
+- `kernel/lib/gktl/BUILD.gn` — `defer-test` 与 `tests`；`defer.hpp` 列进 `headers` 的 `public`
+- `BUILD.gn` — 默认组带上 `//kernel/lib/gktl:tests($host_toolchain)`
+- `docs/repairs/260924/kernel-task.md` — 删掉第 5 条
+
+**症状**
+每次 `Thread::suspend_or_kill()` 都会把 Kill/Suspend 位或进 `m_signals` 两次。第一次在目标线程的 PI 锁下；
+第二次来自 `~DeferredAction`，在锁已释放、中断已恢复、抢占已重新打开之后。dbg_1 的 vmours 反汇编里
+能看到 `popfq` 之后还有一条不在锁里的 `orl`。P1-A 的 fault-kill 每杀一次都走这条路。
+
+**原因**
+`invoke()` 调了动作，却不记下"已经调过"；析构函数也调 `invoke()`，于是动作再跑一遍。
+`cancel()` 只是把同一个标志置位——它能拦住析构，恰恰说明标志的意思是"动作已花掉"，而 `invoke()` 忘了花。
+
+第二次为什么有害，而不只是多余：`set_signals` 在 `thread_guard` **之前**声明，析构顺序与声明相反，
+所以它比锁活得久，第二次运行落在锁外。`m_signals | Kill` 是读—改—写三步：读到旧值，或上一位，写回。
+这三步之间另一颗 CPU 可以在锁下置 Suspend（或 Kill），锁外这次写回会用旧值把它冲掉。
+`ktl::write_once` 只保证那一次存储不撕裂、不被推迟，保证不了读和写之间没人插进来——那是锁的事，
+而这一次恰好不在锁里。
+
+const 重载有同样的缺陷而且修不好：const 对象记不下自己跑过，通过它 `invoke()` 只能意味着
+"现在跑一次，出作用域再跑一次"。可拷贝也是同一类问题：拷贝出来的对象带着自己那份待执行的动作，
+两个对象各自析构时各跑一次。
+
+**改法**
+改前：
+
+```cpp
+    auto invoke() -> void {
+        if (!invoked_) {
+            invocable_();
+        }
+    }
+
+    auto invoke() const -> void {
+        if (!invoked_) {
+            invocable_();
+        }
+    }
+```
+
+改后：
+
+```cpp
+    DeferredAction(Self const &) = delete;
+    auto operator=(Self const &) -> Self & = delete;
+
+    auto invoke() -> void {
+        if (m_invoked) {
+            return;
+        }
+        m_invoked = true;
+        m_invocable();
+    }
+```
+
+- 标志在调用**之前**置位，和 fit 的 `call()` 先清空 target 再调用一样：动作如果回头对自己的
+  `DeferredAction` 调 `invoke()`，看到的是已花掉，而不是递归再跑。
+- 禁止拷贝后 `defer()` 照样按值返回：它返回的是纯右值，C++17 保证直接构造进调用者的变量，不经拷贝。
+  没有加移动构造——目前没有人需要把一个 defer 挪出作用域，加了就得处理"被移走的那个不能再跑"。
+- 成员 `invoked_`/`invocable_` 改成 `m_invoked`/`m_invocable`：这几行本来就要改，`.clang-tidy` 要求私有成员带 `m_`。
+
+树里另外两个用户：`kernel/mm/object_cache.cpp` 的 `MemCache::create()` 只用 `cancel()` 和析构，
+不调 `invoke()`，行为不变；`scheduler.hpp`/`scheduler.cpp` 里提到 `gktl::defer` 的只是注释，
+那段代码早已拆掉。`suspend_or_kill()` 本身不用改：早调 `invoke()` 的写法是对的，错的是 `invoke()`。
+
+**参照**
+- `fit::deferred_action::call()`（Fuchsia `sdk/lib/fit/include/lib/fit/defer.h`）：先把 target 挪到局部变量并
+  `reset()`，再调用；拷贝构造与拷贝赋值 `= delete`。
+- Linux 没有对应的 RAII 设施；最接近的是 `include/linux/cleanup.h` 的 `__cleanup`，它没有"提前执行"这个操作，
+  也就没有这个问题。
+
+**验证**
+- `defer-test`（主机）通过；把 `HEAD` 的旧 `defer.hpp` 换进去编同一个测试，
+  `test_invoke_runs_once` 断言失败（`count.runs == 1`，实际 2）——测试确实能抓住这个错。
+- 构建通过；clang-tidy 对 `defer_test.cpp`（连带 `defer.hpp`）只剩模板参数 `Invocable_` 的命名一条，改动前就有。
+- 两个镜像启动：dev 日志有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`；
+  dbg_1 跑到 `--- end ---`。
+- 反汇编 dbg_1 vmours 的 `suspend_or_kill`：对 `m_signals`（`0x98(%rbx)`）的 `orl` 只剩一条，在锁内；`popfq` 之后直接是返回。
+
+**故意没做**
+- 没给 `defer()` 加 `[[nodiscard]]`（fit 有 `warn_unused_result`）：丢掉返回值会让动作立刻执行，是另一类错，
+  不属于"最多跑一次"。
+- 模板参数 `Invocable_` 的命名告警是旧的，与本条无关，没动。
