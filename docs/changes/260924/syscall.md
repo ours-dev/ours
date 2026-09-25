@@ -699,3 +699,29 @@ shell: probe trap_outside_vdso killed
 
 **故意没做**
 没有加构建期检查去禁止别处出现裸 `syscall`：内核已经在运行期拒绝并杀掉，这个探针保证那条拒绝路径一直有效。
+
+## 拒绝陷入的日志：地址带 `0x`（2026-09-24）
+
+**文件**
+- `kernel/lib/syscall/src/table.cpp` — `sys_not_from_vdso` 的 warn 格式 `{:X}` 改 `{:#x}`
+
+**症状**
+`syscall: refused a trap from 201944, which is outside the vDSO`——没有前缀，读起来像十进制；
+紧接着的 `terminating process` 报告写的是 `rip=0x201944`，两行对不上眼。
+
+**原因**
+格式串用了 `{:X}`，大写、无前缀。树里其他地址都用 `{:#x}`。
+
+**改法**
+改前：`log::warn("syscall: refused a trap from {:X}, which is outside the vDSO", frame->ip);`
+
+改后：`log::warn("syscall: refused a trap from {:#x}, which is outside the vDSO", frame->ip);`
+
+**参照**
+无，格式统一。
+
+**验证**
+dbg_1 启动，`trap_outside_vdso` 探针打出 `refused a trap from 0x201944`，其余不变。
+
+**故意没做**
+无。

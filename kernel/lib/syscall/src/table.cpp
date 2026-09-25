@@ -87,7 +87,7 @@ namespace {
     /// Zircon counterpart: sys_invalid_syscall(), which raises
     /// ZX_EXCP_POLICY_CODE_BAD_SYSCALL through SignalPolicyException().
     auto sys_not_from_vdso(arch::SyscallFrame *const frame) -> void {
-        log::warn("syscall: refused a trap from {:X}, which is outside the vDSO", frame->ip);
+        log::warn("syscall: refused a trap from {:#x}, which is outside the vDSO", frame->ip);
 
         // Only a user thread executes `syscall`; a kernel thread calls the
         // functions directly. One getting here is a kernel bug, and there is
