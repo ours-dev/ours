@@ -51,7 +51,7 @@ class I8253ClockDevice {
     /// the PC speaker's channel -- which left channel 0 half-programmed,
     /// waiting for its high byte, and poked the speaker gate instead.
     auto shutdown() -> void {
-        Guard guard{m_lock};
+        Guard<sync::SpinLock, IrqSave> guard{m_lock};
         arch::outb(PIT_MODE, 0x30);
         arch::outb(PIT_CH0, 0); // LSB
         arch::outb(PIT_CH0, 0); // MSB
@@ -60,7 +60,7 @@ class I8253ClockDevice {
     /// Mode 4, software-triggered strobe: the counter runs down once per
     /// reload, so every event needs a set_next_event_tick() of its own.
     auto set_mode_oneshot() -> Status {
-        Guard guard{m_lock};
+        Guard<sync::SpinLock, IrqSave> guard{m_lock};
         arch::outb(PIT_MODE, 0x38);
         return Status::Ok;
     }
@@ -68,7 +68,7 @@ class I8253ClockDevice {
     /// Mode 2, rate generator: the counter reloads PIT_LATCH by itself and
     /// interrupts every 1/HZ with no further programming.
     auto set_mode_periodic() -> Status {
-        Guard guard{m_lock};
+        Guard<sync::SpinLock, IrqSave> guard{m_lock};
         arch::outb(PIT_MODE, 0x34);
         arch::outb(PIT_CH0, static_cast<u8>(PIT_LATCH & 0xffu));        // LSB
         arch::outb(PIT_CH0, static_cast<u8>((PIT_LATCH >> 8) & 0xffu)); // MSB
@@ -76,7 +76,7 @@ class I8253ClockDevice {
     }
 
     auto set_next_event_tick(Ticks delta) -> Status {
-        Guard guard{m_lock};
+        Guard<sync::SpinLock, IrqSave> guard{m_lock};
         arch::outb(PIT_CH0, static_cast<u8>(delta & 0xffu));        // LSB
         arch::outb(PIT_CH0, static_cast<u8>((delta >> 8) & 0xffu)); // MSB
         return Status::Ok;
@@ -87,6 +87,18 @@ class I8253ClockDevice {
     }
 
   private:
+    /// Serialises the multi-byte programming sequences: channel 0 takes its
+    /// reload value as two consecutive writes, and a second writer landing
+    /// between them leaves the counter holding half of each.
+    ///
+    /// Always taken with IrqSave. set_next_event_tick() runs from the tick
+    /// interrupt, which reprograms the next one-shot event through the timer
+    /// queue, as well as from thread context whenever a timer is armed; the
+    /// mode changes run in thread context when the tick device is set up. A
+    /// thread holding the lock with interrupts on would meet that interrupt
+    /// spinning on it from the same CPU. Linux's i8253_lock is likewise only
+    /// ever taken with interrupts off -- the clockevents callbacks run with
+    /// them disabled, and pit_read() uses raw_spin_lock_irqsave().
     sync::SpinLock m_lock;
 
     ClockEventDevice m_clkevt;
