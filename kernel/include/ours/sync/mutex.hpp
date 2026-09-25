@@ -27,8 +27,17 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(State);
 
+    /// How long a contended acquire spins before it parks. Zircon's
+    /// Mutex::SPIN_MAX_DURATION, value included: long enough to cover a short
+    /// critical section running on another CPU, short against the cost of a
+    /// park and a wake.
+    ///
+    /// The default argument used to be Duration{} -- zero -- which was
+    /// harmless only because the spin loop ignored its duration anyway.
+    constexpr static auto SPIN_MAX_DURATION = Duration(Microseconds(150));
+
     TA_ACQUIRE() FORCE_INLINE
-    auto acquire(Duration spining_duration = Duration{}) -> void;
+    auto acquire(Duration spining_duration = SPIN_MAX_DURATION) -> void;
 
     TA_RELEASE() auto release() -> void;
 

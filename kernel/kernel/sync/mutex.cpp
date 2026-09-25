@@ -77,8 +77,30 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
         preempt_disabler.disable();
     }
 
-    auto now_ticks = time::SteadyClock::ticks();
-    auto const deadline_ticks = now_ticks; // FIXME(SmallHuaZi)
+    // The adaptive spin: keep retrying for |spining_duration| on the bet that
+    // the owner is running on another CPU and about to let go, which is far
+    // cheaper than parking and being woken. The loop below cuts the bet off
+    // early when it is plainly lost -- somebody already queued, or the owner
+    // last seen on this very CPU.
+    //
+    // The deadline used to be `now_ticks` itself, with a FIXME, so the loop
+    // body ran exactly once and every contended acquire went straight to the
+    // park. It is taken on the steady clock's time rather than in raw ticks:
+    // there is no duration-to-ticks conversion to build it with, and a tick
+    // count means nothing across a clock-source switch. Zircon converts once
+    // through timer_get_ticks_to_time_ratio(); reading now() per iteration
+    // costs a multiply, which is noise next to a spin hint.
+    //
+    // Before the first clock source enrolls, the steady clock reads zero and
+    // stays there (Clock::time_of), so a deadline on it would never arrive
+    // and the loop would spin for as long as the owner held on. Skip the spin
+    // then: one attempt, then the park, which is what every acquire did
+    // before the deadline was fixed.
+    auto const spin_start = time::SteadyClock::now();
+    auto spin_until = spin_start;
+    if (spin_start.time_since_epoch() != Duration::zero()) {
+        spin_until += spining_duration;
+    }
 
     do {
         auto old_mutex_state = State::Available;
@@ -116,8 +138,7 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
         }
 
         arch::spin_hint();
-        now_ticks = time::SteadyClock::ticks();
-    } while (now_ticks < deadline_ticks);
+    } while (time::SteadyClock::now() < spin_until);
 
     // Every exit above either returned false on a successful CAS or broke out
     // to here: contended by another thread, self-owned, or the spin deadline

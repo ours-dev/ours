@@ -337,3 +337,73 @@ publish(new_mutex_state);   // compare_exchange_strong, release / relaxed
 **故意没做**
 - 自旋阶段（`deadline_ticks = now_ticks`）——下一节。
 - `State::Handoff` 位仍然没有人用；它是 Zircon 没有的东西，用途不明，不动。
+
+## `Mutex` 的自旋阶段真的自旋（2026-09-24）
+
+**文件**
+- `kernel/kernel/sync/mutex.cpp` — `acquire_slowpath()` 的截止时间从 `now_ticks` 改成 `now + spining_duration`
+- `kernel/include/ours/sync/mutex.hpp` — 新增 `SPIN_MAX_DURATION`（150 µs），作 `acquire()` 的默认参数
+
+**症状**
+性能问题，不是正确性问题：每一次争用都直接 park，从不先自旋等持有者放手。
+临界区很短、持有者正在另一颗 CPU 上跑的情形——内核里最常见的那种——白白多付一次 park + 唤醒。
+
+**原因**
+截止时间就是起点：
+
+```cpp
+auto now_ticks = time::SteadyClock::ticks();
+auto const deadline_ticks = now_ticks; // FIXME(SmallHuaZi)
+do {
+    ...
+    now_ticks = time::SteadyClock::ticks();
+} while (now_ticks < deadline_ticks);
+```
+
+`do-while` 的循环体只跑一次。而 `acquire()` 的默认参数又是 `Duration{}`（零），
+所以即便截止时间写对了，默认路径也不会自旋——两处错叠在一起，谁都显不出来。
+
+**改法**
+
+```cpp
+constexpr static auto SPIN_MAX_DURATION = Duration(Microseconds(150));   // mutex.hpp
+auto acquire(Duration spining_duration = SPIN_MAX_DURATION) -> void;
+
+auto const spin_start = time::SteadyClock::now();                          // mutex.cpp
+auto spin_until = spin_start;
+if (spin_start.time_since_epoch() != Duration::zero()) {
+    spin_until += spining_duration;
+}
+do { ... } while (time::SteadyClock::now() < spin_until);
+```
+
+- **用时间而不是 tick**：树里没有 duration → ticks 的换算；而且时钟源会切换，
+  一个 tick 数跨过切换就没有意义。每圈多一次 `now()`（一次乘法），相对 `spin_hint()` 可以忽略。
+- **时钟源就绪前不自旋**：没有时钟源时 `Clock::time_of()` 恒返回零，截止时间永远到不了，
+  循环会一直转到持有者放手为止。此时退回"试一次就 park"，也就是修之前的行为。
+- **150 µs** 照抄 Zircon 的 `SPIN_MAX_DURATION`。提前停转的两个条件保持不变：
+  看到 `Contended`（已经有人去排队）、持有者上次出现在本 CPU。
+
+**参照**
+- Zircon `Mutex::AcquireContendedMutex()`：`spin_until_ticks = ClampAdd(now_ticks, time_to_ticks.Scale(spin_max_duration))`，
+  用 `timer_get_ticks_to_time_ratio().Inverse()` 一次换算。
+- Zircon `kernel/include/kernel/mutex.h`：`static constexpr zx_duration_t SPIN_MAX_DURATION = ZX_USEC(150);`
+- Linux `mutex_optimistic_spin()`：思路相同（持有者在跑就转），但用 `owner->on_cpu` 判断而不是时长上限。
+
+**验证**
+- 构建通过；clang-format 无残留；clang-tidy 在改动行上无新诊断。
+- dev 镜像：`init: shell says "pong"`、`shell: channel checks passed`、
+  `shell: bad-pointer checks passed` 都在；dbg_1 镜像后两行都在。
+- `mutex.stress`（本地启动钩子，隔离 worktree）：4 次启动 × 5 轮，**20/20 ok**。
+
+  | 版本 | 一轮耗时（20000 × 3 线程） |
+  |---|---|
+  | 不自旋（上一节） | 2.1–2.9 s |
+  | 自旋 150 µs | 1.5–3.1 s，中位约 2.4 s |
+
+  QEMU TCG 下看不出收益：模拟的 CPU 上自旋和 park/唤醒都慢，差别被噪声盖住。真机上才该有差距，未实测。
+
+**故意没做**
+- 没有做 Linux 那种"持有者不在 CPU 上就立刻停转"的判断：需要读持有者线程的运行状态，
+  而持有者可能随时退出——Linux 靠 RCU 保住 `owner`，本树还没有对应机制。
+- 时间片延长那条路（`TimesliceExtension<true>`）的自旋逻辑没动，见 `docs/repairs/260924/sync.md` 第 3 条。
