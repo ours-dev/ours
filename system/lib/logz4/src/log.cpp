@@ -150,6 +150,13 @@ namespace {
 template <typename FormatString>
 auto vlog(Logger &logger, Domain const *domain, Level level, FormatString fmt,
           ustl::fmt::FormatArgs const &args) -> void {
+    // A line logged through a Domain's own members names its domain; one
+    // logged through the free functions belongs to whatever LogDomain scope
+    // the running context is in, if any.
+    if (domain == nullptr) {
+        domain = current_domain();
+    }
+
     // The one level check on the path: a named domain filters at its own
     // floor (which may be looser than the global one), everyone else at the
     // global floor. It stays here, behind the vlog_dispatch() call, rather

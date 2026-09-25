@@ -43,7 +43,21 @@ auto reset() -> void {
     logz4::set_min_level(logz4::Level::Trace);
     ALPHA.clear_min_level();
     BETA.clear_min_level();
+    logz4::Domain::named<"kshell">.clear_min_level();
+    logz4::current_domain_slot() = nullptr;
     g_emergency.clear();
+}
+
+// Two stand-ins for per-thread slots, for the test that swaps the hook.
+logz4::Domain const *g_slot_a = nullptr;
+logz4::Domain const *g_slot_b = nullptr;
+
+auto slot_a() -> logz4::Domain const *& {
+    return g_slot_a;
+}
+
+auto slot_b() -> logz4::Domain const *& {
+    return g_slot_b;
 }
 } // namespace
 
@@ -222,7 +236,10 @@ auto main() -> int {
             assert(domain.name() != nullptr);
             ++seen;
         }
-        assert(seen == 2);
+        // alpha, beta, and the kshell of the LogDomain tests below: a domain
+        // named only as a LogDomain template argument is registered too.
+        assert(seen == 3);
+        assert(logz4::Domain::find("kshell") == &logz4::Domain::named<"kshell">);
 
         // What the console does with `log level alpha debug`.
         logger = CaptureLogger{};
@@ -254,6 +271,89 @@ auto main() -> int {
         logger.text.clear();
         logz4::dump_recent(BETA);
         assert(logger.text == "[info] (beta) b1\n");
+    }
+
+    // A LogDomain scope puts the free functions' lines into its domain, and
+    // leaving it puts them back -- the shape the feature was asked for in.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        {
+            logz4::LogDomain<"kshell"> domain;
+            log::trace("Heelo");
+        }
+        log::trace("Workd");
+        assert(logger.text == "[trace] (kshell) Heelo\n[trace] Workd\n");
+    }
+
+    // Scopes nest; each one hands back the one it replaced.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        {
+            logz4::LogDomain<"alpha"> outer;
+            log::info("1");
+            {
+                logz4::LogDomain<"beta"> inner;
+                log::info("2");
+            }
+            log::info("3");
+        }
+        log::info("4");
+        assert(logger.text == "[info] (alpha) 1\n[info] (beta) 2\n[info] (alpha) 3\n[info] 4\n");
+        assert(logz4::current_domain() == nullptr);
+    }
+
+    // A line in a scope is filtered at the scope's domain floor, and lands in
+    // the ring under that domain.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        logz4::set_min_level(logz4::Level::Error);
+        ALPHA.set_min_level(logz4::Level::Debug);
+        {
+            logz4::LogDomain<"alpha"> domain;
+            log::debug("in scope");
+        }
+        log::debug("out of scope");
+        assert(logger.text == "[debug] (alpha) in scope\n");
+
+        CaptureLogger only_alpha;
+        assert(logz4::ring::dump_to(only_alpha, ALPHA) == 1);
+    }
+
+    // A domain's own members name it outright, whatever scope they run in.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        {
+            logz4::LogDomain<"alpha"> domain;
+            BETA.info("explicit");
+        }
+        assert(logger.text == "[info] (beta) explicit\n");
+    }
+
+    // Leaving restores the slot the guard wrote on the way in, not whichever
+    // slot the context has by then: the kernel installs its per-thread hook
+    // while boot is already running, possibly inside a scope.
+    {
+        reset();
+        logz4::set_domain_slot(slot_a);
+        {
+            logz4::LogDomain<"alpha"> domain;
+            assert(g_slot_a == &ALPHA);
+            logz4::set_domain_slot(slot_b);
+            assert(logz4::current_domain() == nullptr);
+        }
+        assert(g_slot_a == nullptr);
+        assert(g_slot_b == nullptr);
+        // Leave a hook installed that reset() can clear; the image's own
+        // default slot is private to domain.cpp.
+        logz4::set_domain_slot(slot_a);
     }
 
     {

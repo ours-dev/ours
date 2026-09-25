@@ -24,7 +24,27 @@ namespace {
     extern "C" Domain section_start[] LINK_NAME("__start_logz4_domains");
     extern "C" Domain section_end[] LINK_NAME("__stop_logz4_domains");
 #endif
+
+    /// The slot for an image with one thread of execution, and for the
+    /// start of any image, before a per-context hook is installed.
+    Domain const *image_domain = nullptr;
+
+    auto image_domain_slot() -> Domain const *& {
+        return image_domain;
+    }
+
+    /// Constant-initialized, so a LogDomain entered by the first line of an
+    /// image already has a slot to write.
+    Domain const *&(*registered_slot)() = image_domain_slot;
 } // namespace
+
+auto set_domain_slot(Domain const *&(*slot)()) -> void {
+    registered_slot = slot;
+}
+
+auto current_domain_slot() -> Domain const *& {
+    return registered_slot();
+}
 
 auto Domain::all() -> std::span<Domain> {
     return {section_start, section_end};

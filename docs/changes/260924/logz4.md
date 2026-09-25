@@ -331,3 +331,108 @@ clang-format 只在它认得出是属性的地方断行。`BreakAfterAttributes`
 **故意没做**
 没有在 `system/lib/logz4/.clang-format` 里登记：`InheritParentConfig` 下列表类键是整体覆盖而不是合并，
 在子配置里写 `AttributeMacros` 就得把父配置的整张表抄一遍。
+
+## 作用域守卫 `LogDomain<"name">`：作用域内自由函数的日志都归这个域（2026-09-24）
+
+**文件**
+- `system/lib/logz4/include/logz4/domain.hpp` — 新增 `LogDomain<Name>`、`set_domain_slot()`、`current_domain_slot()`、`current_domain()`
+- `system/lib/logz4/src/domain.cpp` — 默认的整镜像单槽，以及挂钩
+- `system/lib/logz4/src/log.cpp` — `vlog()` 在没有显式域时取当前域
+- `system/lib/logz4/test/logz4_test.cpp` — 作用域、嵌套、按域级别、守卫恢复自己写过的槽
+
+**症状**
+不是故障。想要的写法是：
+
+```cpp
+{
+    logz4::LogDomain<"kshell"> domain;
+    log::trace("Heelo");       // [trace] (kshell) Heelo
+}
+log::trace("Workd");           // [trace] Workd
+```
+
+也就是"进入一个域"，而不是每一行都点名 `KSHELL.trace(...)`。上一版只有后者。
+
+**原因**
+上一版的域是随调用点传进 `vlog()` 的参数：每一行自己说自己属于谁。要让一段代码
+整体属于某个域，就得有"当前在哪个域"这个状态，由作用域进入时设置、离开时恢复，
+而 `vlog()` 去读它。这个状态放在哪，是这一条的核心：
+
+- **不能是一个全局变量**：内核里多个 CPU 同时打日志，一个 CPU 进了 kshell 域，
+  别的 CPU 上的行全都会被标成 `(kshell)`。
+- **也不能按 CPU 存**：kshell 的线程在作用域里会睡（`sleep_for` 等串口），
+  睡着的时候同一个 CPU 上换上来的线程会继承它的域。
+- **只能按执行上下文存**：内核里是线程；中断打断线程时，中断处理不属于被打断线程的域。
+
+而 logz4 在 `system/lib`，不认识内核的线程，所以"上下文"交给镜像来定义——
+和 `set_clock()` / `set_cpu()` 一样，库提供挂钩，内核（下一条）装上按线程的实现。
+
+**改法**
+
+```cpp
+// domain.hpp（新增）
+auto set_domain_slot(Domain const *&(*slot)()) -> void;
+PHYS_EXPORT auto current_domain_slot() -> Domain const *&;
+
+template <DomainName Name>
+class LogDomain final {
+  public:
+    [[nodiscard("a LogDomain only lasts as long as the named object holding it")]]
+    LogDomain() : m_slot(&current_domain_slot()), m_outer(*m_slot) {
+        *m_slot = &Domain::named<Name>;
+    }
+    ~LogDomain() { *m_slot = m_outer; }
+  private:
+    Domain const **m_slot;
+    Domain const *m_outer;
+};
+
+// log.cpp（vlog 开头，新增）
+if (domain == nullptr) {
+    domain = current_domain();
+}
+```
+
+取舍：
+
+1. **名字仍是编译期的**（`LogDomain<"kshell">`，不是 `LogDomain{"kshell"}`）。守卫进入的是
+   `Domain::named<Name>`，所以只作为守卫模板实参出现过的名字也在链接段注册表里，
+   `log level kshell debug` 可以在 kshell 进入作用域之前就设好；进入作用域不做任何查找。
+   运行时字符串的方案被否掉：那样按域的级别只能变成按名字匹配的指令表，
+   `log domains` 也列不出所有域。
+
+2. **动态作用域，不是词法作用域。** 作用域里调用的函数，不管写在哪个文件，打的行都归这个域。
+   这和 Linux `pr_fmt`、GLib `G_LOG_DOMAIN`（按文件、编译期固定）不同，和 Rust tracing 的
+   `span.enter()`、log4j `ThreadContext` 相同。不想让被调用者的行算进来，作用域就要在调用前结束。
+
+3. **守卫记住自己写的是哪个槽**，离开时恢复那个槽，而不是离开时再问一次"当前槽"。
+   内核在启动途中才装上按线程的挂钩；一个跨越这次安装的作用域，如果离开时重新取槽，
+   会把旧值写进新槽、而旧槽里的域永远不被清掉。测试里专门换了一次挂钩验证这一点。
+
+4. **`current_domain_slot()` 是导出函数，不是内联。** phys 模块里的守卫必须写 physload 的
+   `vlog()` 读的那个槽；内联的话模块拿到的是自己的隐藏副本——和上一条级别检查不内联是同一个理由。
+
+5. **构造函数 `[[nodiscard]]`**（C++20 允许用在构造函数上）。`LogDomain<"kshell">{};`
+   这种裸临时对象当行就进入又离开，是 RAII 守卫的经典错误；实测它在 `-Werror` 下直接报
+   `ignoring temporary created by a constructor declared with 'nodiscard' attribute`。
+
+6. **显式写法 `Domain::xxx()` 这一条还保留**，并且优先于作用域：内核装好按线程的槽之前，
+   kshell 不能改用作用域写法（否则它的域会泄漏到别的 CPU），所以删掉显式写法放在迁移 kshell 那一条。
+
+**参照**
+- Rust `tracing`：`Span::enter()` 返回 `Entered` 守卫，当前 span 存在线程局部的 `Dispatch` 里。
+- log4j2 `ThreadContext.push()` / `pop()`（NDC）。
+- GLib `G_LOG_DOMAIN`、Linux `pr_fmt`：词法（按文件）版本的同一需求，作为对照。
+
+**验证**
+- `logz4-test` 通过，新增用例：你的例子原样（`[trace] (kshell) Heelo` / `[trace] Workd`）、
+  三层嵌套依次恢复、作用域内按域下限过滤并按域进 ring、显式域优先于作用域、
+  中途换挂钩后守卫恢复原槽且不碰新槽；注册表计数从 2 变成 3——只作为守卫实参出现的
+  "kshell" 也被注册了。
+- 全量构建通过；clang-tidy 无新告警。
+- QEMU `kernel.dev.obi`：三行检查都在，`(kshell) console on COM1` 照旧（内核还没用作用域）。
+
+**故意没做**
+- **内核的按线程槽不在这一条**：要给 `Thread` 加字段，还要处理中断上下文，是下一条。
+  在那之前内核用的是整镜像单槽，所以这一条里内核代码不使用 `LogDomain`。
+- **不防非 LIFO 的销毁**（比如把守卫放进堆对象里乱序析构）。守卫是给局部变量用的。

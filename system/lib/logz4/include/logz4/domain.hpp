@@ -231,6 +231,83 @@ template <DomainName Name>
 LOGZ4_DOMAIN_SECTION
 constinit Domain Domain::named{Name.chars};
 
+/// Where "the current domain" of the running context is kept: the slot the
+/// free functions read and LogDomain writes.
+///
+/// It has to follow whatever the image calls a context, which logz4 cannot
+/// know, so the image plugs it in -- the way set_clock() and set_cpu() plug
+/// in time and CPU. `slot` returns a reference to the running context's own
+/// slot. Until something is installed, and in images that never install
+/// anything (phys, the host test), there is one slot for the whole image,
+/// which is right for a single thread of execution and nothing else.
+///
+/// A kernel must install a per-thread slot, not a per-CPU one: a thread may
+/// sleep inside a LogDomain scope, and whatever runs on its CPU meanwhile
+/// would otherwise log under a domain it never entered.
+auto set_domain_slot(Domain const *&(*slot)()) -> void;
+
+/// The running context's slot, through whatever set_domain_slot() installed.
+///
+/// Exported rather than inline: a phys module's LogDomain has to write the
+/// slot physload's vlog() reads, and an inline accessor would be the
+/// module's own hidden copy.
+PHYS_EXPORT
+auto current_domain_slot() -> Domain const *&;
+
+/// The domain the running context is in, or null outside every LogDomain.
+[[nodiscard]]
+inline auto current_domain() -> Domain const * {
+    return current_domain_slot();
+}
+
+/// Puts everything logged in its scope into the domain `Name`:
+///
+///     {
+///         logz4::LogDomain<"kshell"> domain;
+///         log::trace("Heelo");       // [trace] (kshell) Heelo
+///     }
+///     log::trace("Workd");           // [trace] Workd
+///
+/// The scope is dynamic, not lexical: a function called from inside it logs
+/// in the domain too, wherever that function is written. That is the
+/// difference from Linux's pr_fmt and GLib's G_LOG_DOMAIN, which are fixed
+/// per file at compile time, and the likeness to Rust tracing's
+/// `span.enter()` guard and log4j's ThreadContext -- context that travels
+/// with the thread of execution. A scope that should not claim its callees'
+/// lines has to end before it calls them.
+///
+/// Scopes nest: an inner LogDomain wins for its extent and hands back the
+/// outer one when it ends. The guard remembers which slot it wrote and the
+/// value it replaced, so leaving restores exactly that -- even if the
+/// context's slot changed meanwhile (a kernel installs its per-thread hook
+/// after boot has already started logging).
+///
+/// Leaving is the destructor, so a guard must be a named local. A bare
+/// `LogDomain<"kshell">{};` enters and leaves on the same line; the
+/// constructor is [[nodiscard]] to make the compiler say so.
+template <DomainName Name>
+class LogDomain final {
+  public:
+    [[nodiscard("a LogDomain only lasts as long as the named object holding it")]]
+    LogDomain()
+        : m_slot(&current_domain_slot()), m_outer(*m_slot) {
+        *m_slot = &Domain::named<Name>;
+    }
+
+    ~LogDomain() {
+        *m_slot = m_outer;
+    }
+
+    LogDomain(LogDomain const &) = delete;
+    auto operator=(LogDomain const &) -> LogDomain & = delete;
+
+  private:
+    /// Not re-fetched on the way out: the running context's slot is only
+    /// the right one to restore if it is the one written on the way in.
+    Domain const **m_slot;
+    Domain const *m_outer;
+};
+
 } // namespace logz4
 
 #endif // LOGZ4_DOMAIN_HPP
