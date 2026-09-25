@@ -159,7 +159,12 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
     // as Event::wait_etc().
     Guard<SpinLock, IrqSaveAndPreemptDisable> pi_guard{current_thread->get_pi_lock()};
     {
-        Guard queue_guard{m_waiters.get_lock()};
+        // IrqSave although pi_guard already has interrupts off: a wait
+        // queue's lock is also taken from interrupt context -- a timeout
+        // firing wakes its waiter through it -- so every holder states that
+        // it holds it with interrupts off, rather than inheriting that from
+        // whatever happens to surround it.
+        Guard<SpinLock, IrqSave> queue_guard{m_waiters.get_lock()};
 
         // Contended is written only under this lock -- set by contenders here,
         // taken out by the owner's release_slowpath() -- so a waiter that

@@ -52,7 +52,9 @@ auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
     // sees it) or after the enqueue (and finds this thread to wake). See
     // WaitQueue::park_thread_preamble_locked().
     {
-        Guard queue_guard{m_wq.get_lock()};
+        // IrqSave although the PI guard above already has interrupts off; see
+        // the same guard in Mutex::acquire_slowpath().
+        Guard<SpinLock, IrqSave> queue_guard{m_wq.get_lock()};
         if (m_result.is_some()) {
             auto const result = *m_result;
             if (!!(m_flags & Flags::AutoUnsignal)) {
@@ -74,8 +76,14 @@ auto Event::wait_etc(time::Deadline deadline, task::Interruptible interruptible,
 /// Puts the event back into the unsignalled state, so a later wait()
 /// blocks again. Takes the wait queue lock because signal() decides what
 /// to do by reading m_result under it.
+///
+/// Interrupts off, like every holder of a wait queue's lock: a timeout that
+/// fires on this CPU wakes its waiter through the same lock, and would spin
+/// on it for ever underneath a holder it interrupted. This one used to take
+/// the lock bare -- `Guard guard{...}` is Guard<SpinLock> with no option,
+/// which saves no state at all.
 auto Event::unsignal() -> void {
-    Guard guard{m_wq.get_lock()};
+    Guard<SpinLock, IrqSave> guard{m_wq.get_lock()};
     m_result.reset();
 }
 
@@ -104,8 +112,16 @@ auto Event::signal(Status status) -> void {
     // run with interrupts off; object::wait_one's observer signals from system
     // call context, which runs with them on. Zircon's Event::SignalEtc() holds
     // its lock IrqSave for the same reason.
+    //
+    // The disabler is kept even though the guard below is IrqSave as well,
+    // because it has to outlast the guard's unlock(): unpark_thread() runs
+    // after the queue lock is dropped and still needs interrupts off. Today
+    // a Guard's savers happen to live until the guard is destroyed, not
+    // until unlock(), but that is not a promise -- Zircon's Guard::Release()
+    // restores the saved interrupt state along with the lock, and
+    // lockdep/docs/interface.md moves this Guard to that shape.
     arch::AutoInterruptDisabler const irq_disabler;
-    Guard guard{m_wq.get_lock()};
+    Guard<SpinLock, IrqSave> guard{m_wq.get_lock()};
 
     // Already signalled and not yet consumed. A second signal has nothing to
     // add: the standing result is what the next waiter will read, and no one
