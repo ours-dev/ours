@@ -1,0 +1,49 @@
+# obi 待修项（2026-09-25）
+
+按严重程度排。第 2 条是一项独立的工作，涉及 phys、打包器和密钥管理，可以单独立项。
+
+## 1. 镜像从不写校验值，启动时也就不校验
+
+**现象**：OBI 头和每个条目都留了 32 字节的 digest 字段（`kernel/lib/obi/include/obi/package_format.hpp:90、107`），启动时的解析器在头部带
+`ContainerFlags::Crc32` 时会逐项校验 CRC32（`kernel/lib/obi/include/obi/container_view.hpp:223-239`）。但打包器调用的是
+`builder.build(/*crc=*/false)`（`kernel/lib/obi/cli/pack.cpp:422`，`cli/modify.cpp:112、169` 同样），所以镜像里从来没有校验值。
+镜像在盘上或传输中坏了几个字节，phys 照常装载。
+
+**改法**：`pack.cpp` 与 `modify.cpp` 改成 `build(true)`。校验代码与宿主测试（`kernel/lib/obi/test/smoke.cpp:167` 的逐位翻转测试）已经在了。
+对照：ZBI 的 `ZBI_FLAGS_CRC32`。
+
+**注意**：CRC 只防意外损坏，不防有意篡改（改完内容顺手重算 CRC 即可），后者见第 2 条。
+
+**验收**：两个镜像照常启动；另写一个脚本（Python）把镜像里内核条目的一个字节翻转后再启动，phys 应当拒绝这个容器并报错，而不是继续装载。
+
+## 2. 没有防篡改：条目没有签名，也没有人验
+
+**现象**：谁能改镜像文件，谁就能换掉内核、userboot 或任何用户程序，启动链上没有任何一环会发现。
+
+**原因**：只有校验值（第 1 条），没有签名；也没有谁在装载之前验证来源。
+
+**改法**：
+
+- 构建时生成一对 Ed25519 密钥。私钥只留在构建机上，永不进镜像；公钥编进 physload。
+- 每个条目的 digest 字段写 SHA-256（字段本来就是 32 字节），容器头再单独签一次名。
+- physload 在装载任何条目之前验签，失败就拒绝启动。
+- 信任链的起点放在 UEFI Secure Boot：由固件验 bootshim/physload，physload 再验 OBI。
+
+**不要做**：内核启动后自己校验自己。能改内核的人也能改掉校验，所以必须由上一级来验。
+
+**参照**：Fuchsia 的 ZBI 自带 CRC32，防篡改交给 bootloader 的 verified boot（AVB/vbmeta）。这一点未在本地 checkout 核对。
+
+**验收**：改动任一条目的一个字节，或换上另一把私钥签出的镜像，physload 都拒绝启动；正常构建的两个镜像照常启动。
+
+## 3. 标着 LZ4 的条目实际没有压缩
+
+**现象**：`kernel_package()` 总是带 `--compressed=lz4`（`kernel/lib/obi/cli/pack.cpp:54`），但编码器 `compress_literals()` 只输出纯 literal 序列
+（`kernel/lib/obi/include/obi/compression.hpp:18-21、32-57`，调用在 `pack.cpp:124`），也就是原样存储、前面加几个长度字节。镜像并没有变小，
+条目上的"压缩"只是名义上的。
+
+**影响**：只影响镜像体积，不涉及安全；尤其不能把它当成对内核映像的"遮挡"。
+
+**改法**：接入真正的 LZ4 块编码器（按规矩从上游官方发布取、放进 vendor），解码侧（`compression.hpp:136` 的 `decompress()`）已经是
+标准 LZ4 块格式，不用改。或者在接入之前，让 `kernel_package()` 不再声称压缩。
+
+**验收**：`kernel.dev.obi` 明显变小；两个镜像照常启动；`kernel/lib/obi/test` 的压缩往返测试通过。
