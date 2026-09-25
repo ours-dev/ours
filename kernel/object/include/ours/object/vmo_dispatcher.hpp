@@ -72,6 +72,28 @@ class VmoDispatcher final: public VmoDispatcherBase {
         return m_vmo;
     }
 
+    /// Copies |size| bytes starting at byte |offset| of the VMO into the
+    /// kernel buffer |out|. A range not wholly inside the VMO is OutOfRange
+    /// and copies nothing; a kind of VMO that cannot be read this way (a
+    /// physical one) is NotSupported.
+    ///
+    /// Zircon VmObjectDispatcher::Read(), with a kernel buffer where Zircon's
+    /// takes a user pointer. That is deliberate rather than unfinished: the
+    /// copy runs under the VMO's lock (mm::VmObject::read()) and must not
+    /// fault, so the vmo_read system call bounces through a kernel page and copies out
+    /// to the user after the lock is dropped. What the object layer owes the
+    /// layers above is a way to reach a VMO's bytes without naming mm; no
+    /// rights are checked here -- that is the caller's, against its handle.
+    auto read(void *out, u64 offset, usize size) -> Status {
+        return m_vmo->read(out, VirtAddr(offset), size);
+    }
+
+    /// Copies |size| bytes from the kernel buffer |in| into the VMO at byte
+    /// |offset|. The same rules as read(); Zircon VmObjectDispatcher::Write().
+    auto write(void const *in, u64 offset, usize size) -> Status {
+        return m_vmo->write(in, VirtAddr(offset), size);
+    }
+
   private:
     // SoloDispatcher's constructor reads Derived::MAGIC to build the
     // canary; MAGIC stays private otherwise, so it needs this base in.

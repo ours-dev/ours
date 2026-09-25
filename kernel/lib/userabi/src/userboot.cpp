@@ -13,6 +13,7 @@
 
 #include <cstring>
 
+#include "user_bootfs.hpp"
 #include <elfload/binder.hpp>
 #include <elfload/loader.hpp>
 #include <elfload/program.hpp>
@@ -165,6 +166,15 @@ namespace {
     /// the first program could reach it. Written once, before any user thread
     /// exists, and only read after that.
     ustl::Option<phys::KernelPackage> resident_package;
+
+    /// The BootFS user space is given (make_user_bootfs()), built once from
+    /// the resident package, and the rights a handle to it is to carry.
+    ///
+    /// Held here rather than handed out because nothing can receive it yet:
+    /// the first process gets one handle, the root job, in %rdi. It goes out
+    /// in the first process's processargs message once there is one.
+    object::KernelHandle<object::VmoDispatcher> resident_bootfs;
+    Rights resident_bootfs_rights;
 
     /// Where the vDSO goes.
     ///
@@ -447,6 +457,16 @@ auto userboot_init() -> void {
 
     // Kept, so that programs started later come out of the same package.
     resident_package = ustl::some(package.unwrap());
+
+    // Built before the first process starts, so that the VMO exists by the
+    // time anything could ask for it. A failure is logged inside and is not
+    // fatal: the first program runs without a BootFS, which it can say, and
+    // which is less than it would otherwise get rather than more.
+    //
+    // The decompressed package stays where it is. Every program is still
+    // loaded out of it (launch()), and the kernel's own files are in it.
+    static_cast<void>(make_user_bootfs(*resident_package, boot::options().kernel_name(),
+                                       resident_bootfs, resident_bootfs_rights));
 
     // Whichever program the image asked for (`kernel.select.userboot`, see
     // boot::BootOptions::userboot()). A name that is not in the package is a

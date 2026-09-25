@@ -12,6 +12,8 @@ cpp_interface("headers") {
 source_set("userabi") {
   sources = [
     "src/resource.cpp",
+    "src/user_bootfs.cpp",
+    "src/user_bootfs.hpp",
     "src/userboot.cpp",
   ]
   public_deps = [ ":headers" ]
@@ -31,6 +33,7 @@ source_set("userabi") {
   # program and builds the process around it, and hands the ELF itself to a
   # component whose only job that is.
   deps = [
+    "//kernel/lib/bootfs",
     "//kernel/lib/elfload",
     "//kernel/lib/logz4",
     "//kernel/mm",
