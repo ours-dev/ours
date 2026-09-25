@@ -86,33 +86,68 @@ auto OwnedWaitQueue::snapshot_thread_inherited_profile(Thread *thread) -> sched:
     return thread->scheduling_entity().m_profile.inherited.snapshot();
 }
 
-/// Collects up to |max_notify| waiters to wake, leaving the queue lock held
-/// for the notify_threads_locked() that follows.
+/// Takes up to |max_notify| waiters off the queue, earliest virtual deadline
+/// first, under the lock the caller already holds.
 ///
-/// TODO(SmallHuaZi): a placeholder, and deliberately shaped like the base
-/// class's own: WaitQueue::lock_for_notify_one/all are themselves stubs that
-/// return none(), so the whole notify path is unwritten -- there is nothing
-/// underneath this to build on yet. Until it exists, Mutex::release_slowpath()
-/// finds no one to hand the mutex to and simply drops it to Available.
+/// This used to be a stub that answered none() unconditionally, written when
+/// WaitQueue's own lock_for_notify_one/all were stubs too. Those were filled
+/// in for Event and this one was not, so Mutex::release_slowpath() never found
+/// anybody to hand the mutex to: it dropped the mutex to Available and every
+/// thread parked in acquire_slowpath() slept for good. Any contention at all
+/// cost the loser its thread.
 ///
-/// Writing it for real needs two decisions first: where the queue lock is
-/// acquired and released across this pair of calls, and how INotifyRequeueHook
-/// interacts with the priority-inheritance propagation in begin_propagate().
+/// The two open questions the stub recorded are answered as follows. The
+/// queue lock is the caller's across this call and whatever it publishes
+/// after it, and is dropped before notify_threads(); see the note there for
+/// why. The hook is asked per waiter and stops the batch the first time it
+/// declines, which is the part of Zircon's
+/// OwnedWaitQueue::LockForWakeOperationOrBackoff() that means anything while
+/// the hook takes no arguments; priority inheritance is still unarmed (see
+/// park_and_assign_owner()), so there is no ownership to transfer here yet.
 template <typename UnparkThreads>
-auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
+auto OwnedWaitQueue::lock_for_notify_operation(usize max_notify, INotifyRequeueHook &hook)
     -> ustl::Option<UnparkThreads> {
-    return ustl::NONE;
+    verify_owned();
+    m_lock.assert_held();
+
+    UnparkThreads threads;
+    for (usize i = 0; i < max_notify && !m_waiters.empty(); ++i) {
+        if (!hook.allow()) {
+            break;
+        }
+        threads.push_back(*dequeue_front_locked(Status::Ok));
+    }
+
+    if (threads.empty()) {
+        return ustl::none();
+    }
+    return ustl::some(ustl::move(threads));
 }
 
+/// Wakes each thread lock_for_notify_operation() dequeued, one PI lock at a
+/// time, through the same wake_dequeued_thread() that notify_one() uses --
+/// which also drops the waiter's edge into this queue's PI node.
+///
+/// Mind |this| after the first wake. The thread woken may be the new owner of
+/// whatever this queue guards; once it runs, it can release that and free the
+/// storage the queue lives in. A mutex hands off to exactly one thread, so
+/// the loop never comes back round to touch the queue again; a caller that
+/// wakes more than one has to keep the queue alive itself.
 template <typename UnparkThreads>
-auto OwnedWaitQueue::notify_threads_locked(UnparkThreads, INotifyRequeueHook &, NotifyOptions)
-    -> void {}
+auto OwnedWaitQueue::notify_threads(UnparkThreads threads, INotifyRequeueHook &, NotifyOptions)
+    -> void {
+    while (!threads.empty()) {
+        auto *const thread = &*threads.front();
+        threads.pop_front();
+        wake_dequeued_thread(thread, Status::Ok);
+    }
+}
 
 template auto OwnedWaitQueue::lock_for_notify_operation<Thread::UnparkList>(usize,
                                                                             INotifyRequeueHook &)
     -> ustl::Option<Thread::UnparkList>;
-template auto OwnedWaitQueue::notify_threads_locked(Thread::UnparkList, INotifyRequeueHook &,
-                                                    NotifyOptions) -> void;
+template auto OwnedWaitQueue::notify_threads(Thread::UnparkList, INotifyRequeueHook &,
+                                             NotifyOptions) -> void;
 
 /// Both halves of an ownership edge run under the owner thread's PI lock:
 /// the list they splice into is that thread's outgoing edge set in the

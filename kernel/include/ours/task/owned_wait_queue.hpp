@@ -70,13 +70,30 @@ class OwnedWaitQueue: protected WaitQueue {
     auto lock_for_park_and_assign_owner_or_backoff(Thread *const, Thread *new_owner)
         -> ustl::Option<ParkAndAssignOwner>;
 
+    /// First half of a wake: takes up to |max_notify| waiters off the queue
+    /// without waking them. The caller holds get_lock() -- "lock_for" names
+    /// the phase, as it does for WaitQueue::lock_for_notify_one() -- so that
+    /// whatever it publishes next (Mutex::release_slowpath() writes the new
+    /// owner into its state word) is ordered against every waiter that checks
+    /// that word under the same lock before enqueueing.
+    ///
+    /// Nothing is returned for an empty queue.
     template <typename UnparkThreads> // Thread::UnparkList
-    auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
+    TA_REQUIRES(get_lock()) auto lock_for_notify_operation(usize max_notify, INotifyRequeueHook &)
         -> ustl::Option<UnparkThreads>;
 
+    /// Second half: wakes what lock_for_notify_operation() collected.
+    ///
+    /// Called with the queue lock *dropped*, which is where this parts ways
+    /// with Zircon's OwnedWaitQueue::WakeThreadsLocked(). Waking takes each
+    /// thread's PI lock, and in this tree the PI lock is the outer one and
+    /// the queue lock the inner (see WaitQueue::enqueue_waiter); Zircon can
+    /// wake under the queue lock only because its ChainLock transaction
+    /// already holds every lock involved. Hence no "_locked" suffix.
     template <typename UnparkThreads> // Thread::UnparkList
-    auto notify_threads_locked(UnparkThreads threads, INotifyRequeueHook &, NotifyOptions) -> void;
+    auto notify_threads(UnparkThreads threads, INotifyRequeueHook &, NotifyOptions) -> void;
 
+    using Base::get_lock;
     using Base::is_empty;
     using Base::peek;
 

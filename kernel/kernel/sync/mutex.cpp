@@ -1,3 +1,4 @@
+#include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/sync/mutex.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
@@ -7,6 +8,7 @@
 #include <atomic>
 
 #include <arch/spin_hint.hpp>
+#include <ustl/option.hpp>
 
 using ours::mm::CpuLocal;
 using ours::task::Thread;
@@ -153,27 +155,47 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
         }
     };
 
-    // The option is engaged only when there is somebody to hand off to:
-    // locking an empty queue succeeds and still leaves nothing to wake. The
-    // condition answers that once, and the body then moves the waiters
-    // straight out of the option and on into notify_threads_locked(), so the
-    // list itself is never copied.
-    //
-    // What this replaced could not say any of it: lock_for_notify_operation
-    // wrote through an out-parameter and returned a bool nobody acted on, so
-    // the successor and the state that publishes it had to be
-    // default-initialised above an if/else, and a separate `do_wake` carried
-    // the same answer to the end of the function.
-    if (auto batch = m_waiters.lock_for_notify_operation<Thread::UnparkList>(1, default_hook)) {
-        auto *const new_owner = &*batch->front();
+    // Preemption stays off from the publish to the wake. Between the two the
+    // mutex is owned by a thread that is not running yet; were this thread
+    // preempted there, the mutex would sit with a sleeping owner for as long
+    // as the preemption lasted and every other contender would queue behind
+    // it. Zircon's ReleaseContendedMutex() holds preemption off across the
+    // same span, for the same reason.
+    task::AutoPreemptDisabler const preempt_disabler;
 
-        // The owner pointer *is* the state: a non-null owner with Contended
-        // set is what tells the next releaser there is a queue to consult.
-        publish(static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended);
-        m_waiters.notify_threads_locked(ustl::move(*batch), default_hook,
-                                        task::OwnedWaitQueue::NotifyOptions::None);
-    } else {
-        publish(State::Available);
+    // The option is engaged only when there is somebody to hand off to:
+    // locking an empty queue succeeds and still leaves nothing to wake.
+    ustl::Option<Thread::UnparkList> batch;
+    {
+        // Dequeue and publish under the queue lock, as one step. The lock is
+        // what a waiter has to take to join the queue, so holding it here
+        // means "nobody is queued" stays true until Available is in m_state.
+        // Interrupts off because this is a spin lock the timeout handler can
+        // take from interrupt context (WaitQueue::handle_timeout); nothing
+        // parks on a mutex with a deadline today, but the queue does not know
+        // that.
+        Guard<SpinLock, IrqSave> guard{m_waiters.get_lock()};
+        batch = m_waiters.lock_for_notify_operation<Thread::UnparkList>(1, default_hook);
+
+        if (batch) {
+            auto *const new_owner = &*batch->front();
+
+            // The owner pointer *is* the state: a non-null owner with
+            // Contended set is what tells the next releaser there is a queue
+            // to consult.
+            publish(static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended);
+        } else {
+            publish(State::Available);
+        }
+    }
+
+    // The wake runs with the queue lock dropped: it takes the new owner's PI
+    // lock, and that lock is ordered outside the queue lock. See
+    // OwnedWaitQueue::notify_threads(). Nothing after the wake may touch the
+    // mutex -- once running, its new owner is free to release and free it.
+    if (batch) {
+        m_waiters.notify_threads(ustl::move(*batch), default_hook,
+                                 task::OwnedWaitQueue::NotifyOptions::None);
     }
 }
 
