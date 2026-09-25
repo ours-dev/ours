@@ -616,7 +616,7 @@ auto ArchVmAspace::destroy() -> Teardown {
 
 **文件**
 - `kernel/mm/vm_aspace.cpp`、`vm_area.cpp`、`vm_mapping.cpp` — 地址空间锁（`VmAspace::m_lock`，VmArea/VmMapping 的
-  `get_lock()` 就是它）八处、`ALL_ASPACE_LIST_LOCK` 两处改为 `Guard<sync::SpinLock, IrqSave>`
+  `get_lock()` 就是它）六处、`ALL_ASPACE_LIST_LOCK` 两处改为 `Guard<sync::SpinLock, IrqSave>`
 - `kernel/mm/pm_node.cpp`、`include/ours/mm/pm_node.hpp` — 节点锁四处、当前线程资源锁三处改为 IrqSave
 - `kernel/mm/object_cache.cpp` — `NodeCache::lock` 四处（原来写成 `Guard<sync::SpinLock>`，显式地不带选项）改为 IrqSave
 - `kernel/mm/cpu_local.cpp` — `CpuLocal::Dyn` 的锁两处改为 IrqSave
