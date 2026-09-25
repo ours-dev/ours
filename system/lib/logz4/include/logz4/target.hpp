@@ -9,10 +9,29 @@
 
 #include <atomic>
 #include <optional>
+#include <span>
 
+#include <ours/compiler.hpp>
 #include <ours/types.hpp>
 #include <ustl/util/move.hpp>
 #include <ustl/views/string_view.hpp>
+
+/// The linker section every Target is placed in, which the image's linker
+/// script bounds into the one array Target::all() walks -- the way
+/// GKTL_COMMAND records land in .gktl.commands, and Linux's dynamic_debug
+/// descriptors in __dyndbg.
+///
+/// A macro only because the spelling depends on the object format, which is
+/// build configuration: ELF takes a bare name, and this one is a C identifier
+/// so that a default GNU ld/LLD layout (a hosted test) also defines
+/// __start_logz4_targets/__stop_logz4_targets for it; Mach-O, where the host
+/// unit test is linked on macOS, wants "segment,section" and bounds it with
+/// section$start$/section$end$ symbols instead (src/target.cpp).
+#if defined(__MACH__)
+#define LOGZ4_TARGET_SECTION LINK_SECTION("__DATA,__logz4_targets")
+#else
+#define LOGZ4_TARGET_SECTION LINK_SECTION("logz4_targets")
+#endif
 
 namespace logz4 {
 
@@ -68,7 +87,8 @@ struct TargetName final {
 ///
 /// A Target cannot be constructed any other way. `named` is the only
 /// constructor call in the tree, and that is what lets the name stand for
-/// the object (see TargetName above).
+/// the object (see TargetName above) -- and, since `named` places every
+/// instance in LOGZ4_TARGET_SECTION, what makes all() the complete list.
 ///
 /// The free functions (`log::warn(...)`) remain: they are the anonymous
 /// target, filtered by the global floor alone and printed without a name,
@@ -80,6 +100,25 @@ class Target final {
 
     Target(Target const &) = delete;
     auto operator=(Target const &) -> Target & = delete;
+
+    /// Every Target linked into this image, in link order.
+    ///
+    /// Read off the linker section rather than collected as each target
+    /// first logs, so a target is listed from the moment it is linked in:
+    /// `log level kshell debug` has to work before kshell has said anything,
+    /// or there would be no way to see its first debug line.
+    ///
+    /// The list is per image. A phys module's targets sit in the module's own
+    /// section, not in physload's -- the same split as Linux, whose modules
+    /// each carry a __dyndbg section that ddebug_add_module() registers at
+    /// load time. Nothing in phys needs them yet; it has no console.
+    [[nodiscard]]
+    static auto all() -> std::span<Target>;
+
+    /// The target called `name`, or null. A linear scan: an image holds tens
+    /// of targets, and this runs when someone types a console command.
+    [[nodiscard]]
+    static auto find(ustl::views::StringView name) -> Target *;
 
     [[nodiscard]]
     auto name() const -> char const * {
@@ -185,8 +224,11 @@ class Target final {
 // before any dynamic initializer has run -- constant initialization is what
 // guarantees that, and it is also why the level lives in the object instead
 // of a table filled in at start-up.
+//
+// Each instantiation is a COMDAT member in LOGZ4_TARGET_SECTION, so the
+// linker keeps one copy per name and all() sees each name once.
 template <TargetName Name>
-constinit Target Target::named{Name.chars};
+LOGZ4_TARGET_SECTION constinit Target Target::named{Name.chars};
 
 } // namespace logz4
 

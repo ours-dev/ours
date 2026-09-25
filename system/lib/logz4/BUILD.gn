@@ -21,6 +21,7 @@ source_set("logz4") {
     "src/init.cpp",
     "src/log.cpp",
     "src/ring.cpp",
+    "src/target.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]

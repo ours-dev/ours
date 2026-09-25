@@ -209,6 +209,30 @@ auto main() -> int {
         assert(logger.text == "[warn] (beta) beta warn\n[warn] (alpha) let through\n");
     }
 
+    // Every target is in the registry, found by the name it was declared
+    // with, whether or not it has logged anything yet.
+    {
+        reset();
+        assert(logz4::Target::find("alpha") == &ALPHA);
+        assert(logz4::Target::find("beta") == &BETA);
+        assert(logz4::Target::find("alph") == nullptr);
+        assert(logz4::Target::find("") == nullptr);
+        auto seen = usize{0};
+        for (auto const &target: logz4::Target::all()) {
+            assert(target.name() != nullptr);
+            ++seen;
+        }
+        assert(seen == 2);
+
+        // What the console does with `log level alpha debug`.
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        logz4::set_min_level(logz4::Level::Error);
+        logz4::Target::find("alpha")->set_min_level(logz4::Level::Debug);
+        ALPHA.debug("through the registry");
+        assert(logger.text == "[debug] (alpha) through the registry\n");
+    }
+
     // A ring dump can be narrowed to one target; the full dump still
     // carries every line, anonymous ones included.
     {

@@ -153,3 +153,94 @@ KSHELL.warn("failed to spawn console thread");   // [warn] (kshell) failed to ..
 - **注册表（按名字找目标）不在这一步。** 要把所有 Target 收进一个链接段、再给各个链接脚本
   划出边界，是单独的一步。
 - **没给 panic 行一个目标。** 两处 `vlog()` 直接调用传 `nullptr`，panic 输出保持原样。
+
+## Target 注册表：链接段收集，按名字查找（2026-09-24）
+
+**文件**
+- `system/lib/logz4/include/logz4/target.hpp` — `Target::named` 放进 `LOGZ4_TARGET_SECTION`；新增 `Target::all()` / `Target::find(name)`
+- `system/lib/logz4/src/target.cpp` — 新增：按段边界符号给出 `std::span<Target>`，线性查名字
+- `system/lib/logz4/BUILD.gn` — 加 `src/target.cpp`
+- `kernel/kernel.ld`、`kernel/phys/phys.ld`、`kernel/phys/physload.ld` — `.data` 开头 `KEEP(*(logz4_targets))` 并划出 `__start_logz4_targets` / `__stop_logz4_targets`
+- `system/lib/logz4/test/logz4_test.cpp` — 注册表用例
+
+**症状**
+上一条让每个 Target 带上了自己的级别，但只有手里拿着这个对象的代码能改它。控制台敲
+`log level kshell debug` 时，命令只有一个字符串 "kshell"，没有办法从名字找到对象。
+
+**原因**
+Target 分散在各个翻译单元里，彼此不知道对方存在。要按名字找，得有一张表；而这张表
+不能靠"第一次打日志时登记"来填：那样的话，一个还没打过日志的目标查不到，
+而"先把它的 debug 打开、再看它的第一行 debug"恰恰是最常见的用法——等它先说话再去开，
+第一行已经被过滤掉了。
+
+**改法**
+和 `GKTL_COMMAND` 进 `.gktl.commands`、Linux dynamic_debug 描述符进 `__dyndbg` 同一个办法：
+让链接器把所有 Target 排成一个数组。定义处只多一个段属性：
+
+```cpp
+// target.hpp（改前）
+template <TargetName Name>
+constinit Target Target::named{Name.chars};
+
+// target.hpp（改后）
+template <TargetName Name>
+LOGZ4_TARGET_SECTION
+constinit Target Target::named{Name.chars};
+```
+
+每个实例化是段里的一个 COMDAT 成员，同名只留一份，所以 `all()` 里每个名字出现一次。
+段属性写在库里、只写一次，使用处 `constexpr auto &KSHELL = Target::named<"kshell">;`
+不需要任何属性或宏。
+
+几个取舍：
+
+1. **段名因目标文件格式而异，所以用一个宏 `LOGZ4_TARGET_SECTION`。** ELF 取裸名
+   `logz4_targets`，Mach-O 要 `"__DATA,__logz4_targets"`（主机单测在 macOS 上是 Mach-O）。
+   宏在这里承载的是构建配置（目标文件格式）到厂商属性的映射，符合"宏只做这两件事"的规矩。
+
+2. **ELF 段名是 C 标识符，边界符号用 `__start_`/`__stop_` 这对名字。** 默认的 GNU ld / LLD
+   布局会为 C 标识符命名的段自动合成这两个符号，所以托管的 ELF 测试不需要链接脚本；
+   内核和 phys 的脚本则显式 `PROVIDE_HIDDEN` 同名符号。`target.cpp` 在所有镜像里读的
+   是同一对符号。Mach-O 由链接器合成 `section$start$__DATA$__logz4_targets`。
+
+3. **放在 `.data`，不在 RELRO。** 命令表和计数器描述符在 `.data.rel.ro` 里，因为只读；
+   Target 带着运行时要写的级别，必须可写。phys 的两个脚本里同样显式放进 `:data`：
+   记录里有名字指针，physload 是 PIC，指针是 `R_X86_64_RELATIVE` 重定位，目标必须在可写段
+   （和 `.phys.exports` 同一个约束）；放成孤儿段的话，在写明了 PHDRS 的脚本里它会继承
+   前一个段的 PHDR，落到哪儿说不准。
+
+4. **KEEP。** 一个目标如果所有打日志的代码都被 `--gc-sections` 收掉了，它仍然留在表里、
+   仍然可以按名字设级别。
+
+```
+# kernel.ld（改后，.data 开头）
+PROVIDE_HIDDEN(__start_logz4_targets = .);
+KEEP(*(logz4_targets))
+PROVIDE_HIDDEN(__stop_logz4_targets = .);
+*(SORT_BY_ALIGNMENT(.data*))
+```
+
+**参照**
+- Linux dynamic_debug：`DEFINE_DYNAMIC_DEBUG_METADATA` 把 `struct _ddebug` 放进 `__dyndbg`，
+  `vmlinux.lds.h` 的 `BOUNDED_SECTION_BY(__dyndbg, ___dyndbg)` 划边界，
+  `dynamic_debug_init()` 遍历；模块各带一个 `__dyndbg`，`ddebug_add_module()` 在加载时登记。
+- 本仓库 `GKTL_COMMAND` / `.gktl.commands` / `gktl::run_command()`。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 全量通过（kernel、physload 两遍链接、bootshim）。
+- 主机 `logz4-test`（Mach-O）通过：`find("alpha") == &ALPHA`、`find("alph") == nullptr`、
+  `all()` 恰好 2 个、经 `find()` 设下限后 `ALPHA.debug` 在全局 error 下放行。
+- `llvm-nm vmours`：`__start_logz4_targets == __stop_logz4_targets == __data_start`
+  （这一步内核里还没有目标，空表，符号存在）。
+- clang-tidy 无新告警（边界数组是可写对象，按变量规则命名 `section_start`/`section_end`）。
+- QEMU：`kernel.dev.obi` 仍有 `init: shell says "pong"`、`shell: channel checks passed`、
+  `shell: bad-pointer checks passed`；`kernel.dev.dbg_1.obi` 两条 shell 检查行都在。
+
+**故意没做**
+- **边界符号不是 weak。** 默认 ELF 布局只在段存在时才合成 `__start_`/`__stop_`，所以一个托管的
+  ELF 程序链接了 logz4 却一个 Target 都没声明，会链接失败。用 weak 可以让它链过去，
+  但弱未定义符号解析成 0，得到一个悄悄说"没有这个目标"的空表——不如一个说明原因的链接错误。
+  目前这样的程序不存在（主机上链接 logz4 的只有 logz4-test，它声明了目标）。
+- **phys 模块的目标不并进 physload 的表。** 每个镜像一张表，和 Linux 每个模块一个 `__dyndbg`
+  一样；phys 没有控制台，暂时没人需要跨镜像查。
+- **没有哈希/排序。** 一个镜像几十个目标，查找只在有人敲命令时发生，线性扫描足够。
