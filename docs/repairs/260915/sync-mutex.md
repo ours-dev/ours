@@ -17,10 +17,3 @@
 等的就是加锁协议。
 
 后果：持低优先级锁的线程可以无限期挡住高优先级线程。当前只有优先级相同的线程在跑，所以看不出来。
-
-## 2. `Mutex::try_release()` 的快路径是死的
-
-`try_release()` 构造的期望值是**不带** `Contended` 的裸线程指针，而 `acquire` 存进
-`m_state` 的总是 `thread | Contended`，所以那个 CAS 永远失败，`release()` 每次都走
-`release_slowpath()`。不是正确性问题（队列为空时 `publish(State::Available)` 收尾），
-但「无竞争时的快速释放」这条路名存实亡，读代码的人会以为它生效。

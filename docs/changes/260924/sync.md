@@ -256,3 +256,84 @@ state.finished.fetch_add(1, std::memory_order_release);
 - 不在启动时自动跑：它会给每次 dbg 启动加几秒，而且现在只有通过启动钩子才能跑起来，
   那个钩子是验证用的，不属于内核。
 - 没有测 `CriticalMutex`（时间片延长那条路）：那个类现在是空的。
+
+## `Mutex` 快路径只存裸线程指针，`try_release()` 的快路径复活（2026-09-24）
+
+**文件**
+- `kernel/kernel/sync/mutex.cpp` — `acquire_common()` / `acquire_slowpath()` 存裸指针；
+  `try_release()` 与 `publish` 改 strong CAS、release 序；交接时只在还有人排队时带 `Contended`
+
+**症状**
+不是正确性问题，是一条名存实亡的路：每一次 `release()` 都走 `release_slowpath()` 拿队列锁；
+慢路径里的自旋者一看到 `Contended` 就放弃自旋——而无争用的锁也带着 `Contended`。
+另有一处潜伏的内存序错误（见下），x86 上看不出来。原记于
+`docs/repairs/260915/sync-mutex.md` 第 2 条，本条修掉后从那里删除。
+
+**原因**
+`Contended` 应当回答一个问题："可能有人在队列里吗？"它只有在这个意义下才有用——释放者据此决定
+走快路径还是去查队列，自旋者据此决定继续转还是去排队。旧代码在**每一次**获取时都把它或进去：
+
+```cpp
+auto const new_mutex_state =
+    static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
+```
+
+而 `try_release()` 期待的是裸指针：
+
+```cpp
+auto old_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
+if (m_state.compare_exchange_weak(old_mutex_state, State::Available, std::memory_order_acquire,
+                                  std::memory_order_relaxed)) {
+```
+
+于是这个 CAS 永远失败；位的含义被冲成了"锁被持有"，和 owner 指针非空是同一句话，信息量为零。
+
+同一处还有两个错：
+- **内存序**：解锁用的是 acquire 成功序。解锁必须是 release，否则临界区里的写可以被重排到解锁之后，
+  下一个拿锁的人读到旧值。x86 的 `lock cmpxchg` 是全屏障所以看不出来，弱内存序的机器上就是真 bug。
+  `publish` 同理。
+- **weak CAS**：`try_release()` 若伪失败，会带着裸指针作为"观察到的状态"进入慢路径；此时若有竞争者
+  刚打上 `Contended`，`publish` 那个"期待值必须精确匹配"的 CAS 就会 panic 一把健康的锁。
+  `publish` 本身用 weak 也一样：它是一致性检查，伪失败就是误报。
+
+**改法**
+
+```cpp
+// acquire_common() / acquire_slowpath()
+auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
+
+// try_release()
+if (m_state.compare_exchange_strong(old_mutex_state, State::Available,
+                                    std::memory_order_release, std::memory_order_acquire)) {
+
+// release_slowpath() 交接
+auto new_mutex_state = static_cast<State>(reinterpret_cast<usize>(new_owner));
+if (!m_waiters.is_empty()) {
+    new_mutex_state |= State::Contended;
+}
+publish(new_mutex_state);   // compare_exchange_strong, release / relaxed
+```
+
+- 至此不变式完整成立：**`Contended` 只在队列锁下写**——竞争者在 `acquire_slowpath()` 里打上，
+  持有者在 `release_slowpath()` 里拿掉。上一节注释里有意没写这句话，这一节把它写进去了。
+- 交接给最后一个等待者时不带 `Contended`，新主人释放时走快路径；Zircon 同样按
+  "还有没有人在等"决定带不带 `STATE_FLAG_CONTESTED`。
+- 自旋循环里遇到 `Contended` 就停的那条判断，现在终于是它该有的意思："已经有人去排队了，
+  锁会交给队头，不会交给自旋的人"。
+
+**参照**
+- Zircon `Mutex::AcquireCommon()`：快路径 CAS 存 `reinterpret_cast<uintptr_t>(current_thread)`，不带标志。
+- Zircon `Mutex::TryRelease()`：`compare_exchange_strong(..., memory_order_release, memory_order_acquire)`。
+- Zircon `Mutex::ReleaseContendedMutex()`：`if (still_waiting) new_mutex_state |= STATE_FLAG_CONTESTED;`，
+  发布用 strong CAS、release 序，失败即 panic。
+
+**验证**
+- 构建通过；clang-format 无残留；clang-tidy 在改动行上无新诊断。
+- dev 镜像：`init: shell says "pong"`、`shell: channel checks passed`、
+  `shell: bad-pointer checks passed` 都在；dbg_1 镜像后两行都在。
+- `mutex.stress`（同上一节的本地启动钩子，隔离 worktree）：4 次启动 × 5 轮，**20/20 ok**，
+  一轮 2.1–2.9 s，与上一版持平——自旋阶段仍然不自旋，争用下的耗时主要在 park/唤醒上。
+
+**故意没做**
+- 自旋阶段（`deadline_ticks = now_ticks`）——下一节。
+- `State::Handoff` 位仍然没有人用；它是 Zircon 没有的东西，用途不明，不动。

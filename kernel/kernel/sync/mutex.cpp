@@ -29,8 +29,18 @@ auto Mutex::acquire_common(Duration spining_duration,
                            TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension)
     -> bool {
     auto const current_thread = Thread::Current::get();
-    auto const new_mutex_state =
-        static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
+    // The bare thread pointer, with no flag bits. Contended means "a waiter
+    // may be queued" and is written only under the wait-queue lock, by a
+    // contender on its way to park (acquire_slowpath) or by the releaser
+    // handing off (release_slowpath). An uncontended acquire leaves it
+    // clear, which is what lets try_release() take the fast path back out.
+    //
+    // This used to OR Contended in on every acquire. try_release() expects
+    // the bare pointer, so its CAS failed every time and every release took
+    // the queue lock; and a spinner in acquire_slowpath() saw Contended on
+    // an uncontended mutex and gave up spinning at once. Zircon's
+    // Mutex::AcquireCommon() stores the bare pointer too.
+    auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
 
     {
         if constexpr (TimesliceExtensionEnabled) {
@@ -58,8 +68,9 @@ template <bool TimesliceExtensionEnabled>
 auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_thread,
                              TimesliceExtension<TimesliceExtensionEnabled> timeslice_extension)
     -> bool {
-    auto const new_mutex_state =
-        static_cast<State>(reinterpret_cast<usize>(current_thread)) | State::Contended;
+    // Bare, for the same reason as in acquire_common(): whoever takes the
+    // mutex here takes it without a queue behind it.
+    auto const new_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
 
     task::AutoPreemptDisabler preempt_disabler{task::AutoPreemptDisabler::Defer};
     if constexpr (TimesliceExtensionEnabled) {
@@ -83,7 +94,11 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
         }
 
         if (!!(old_mutex_state & State::Contended)) {
-            // Stop spinning because the mutex has been contested by other thread.
+            // Somebody has already given up spinning and queued (or is about
+            // to, under the queue lock). The owner will hand the mutex to the
+            // head of that queue, not to whoever spins, so spinning further
+            // only burns this CPU. Zircon: "All spinners convert to blocking
+            // when the first one reaches the max spin duration."
             break;
         }
 
@@ -125,8 +140,8 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
     {
         Guard queue_guard{m_waiters.get_lock()};
 
-        // Once Contended is in m_state it stays there until the owner's
-        // release_slowpath() takes it out, under this lock, so a waiter that
+        // Contended is written only under this lock -- set by contenders here,
+        // taken out by the owner's release_slowpath() -- so a waiter that
         // finds it set has nothing to write. Otherwise there are two cases,
         // and the loop only re-runs when a CAS loses to a fast-path acquire
         // or release that changed m_state under it:
@@ -190,10 +205,22 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
     return false;
 }
 
+/// The uncontended release: the bare owner pointer back to Available.
+///
+/// Strong, not weak. A spurious failure would send the caller into
+/// release_slowpath() with the bare pointer as the "observed" state, and the
+/// publish there -- a CAS expecting exactly that value -- would panic the
+/// moment a contender had set Contended in the meantime.
+///
+/// Release on success, so the critical section's stores are visible to
+/// whoever acquires next; acquire on failure, so the slow path starts from
+/// the state the contender published. The old orders were acquire/relaxed,
+/// which let the critical section leak past the unlock on any machine
+/// weaker than x86. Same pair as Zircon's Mutex::TryRelease().
 auto Mutex::try_release(Thread *current_thread) -> State {
     auto old_mutex_state = static_cast<State>(reinterpret_cast<usize>(current_thread));
-    if (m_state.compare_exchange_weak(old_mutex_state, State::Available, std::memory_order_acquire,
-                                      std::memory_order_relaxed)) {
+    if (m_state.compare_exchange_strong(old_mutex_state, State::Available,
+                                        std::memory_order_release, std::memory_order_acquire)) {
         return State::Available;
     }
 
@@ -206,9 +233,15 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
 
     // Publishing the new state is the same step either way -- only the value
     // differs -- and it must not be reached twice, so it lives here.
+    //
+    // The CAS is a consistency check as much as a store: with the queue lock
+    // held, nothing but this owner may change a Contended state, so a
+    // mismatch is corruption, not a race to retry. It has to be strong for
+    // that to hold -- a spurious weak failure would panic a healthy mutex --
+    // and release-ordered for the same reason try_release() is.
     auto const publish = [&](State new_mutex_state) {
-        if (!m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
-                                           std::memory_order_acquire, std::memory_order_relaxed))
+        if (!m_state.compare_exchange_strong(old_mutex_state, new_mutex_state,
+                                             std::memory_order_release, std::memory_order_relaxed))
             [[unlikely]] {
             panic("Mutex handoff state changed");
         }
@@ -239,10 +272,17 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
         if (batch) {
             auto *const new_owner = &*batch->front();
 
-            // The owner pointer *is* the state: a non-null owner with
-            // Contended set is what tells the next releaser there is a queue
-            // to consult.
-            publish(static_cast<State>(reinterpret_cast<usize>(new_owner)) | State::Contended);
+            // The owner pointer *is* the state, and Contended goes with it only
+            // while somebody is still queued -- it is what tells the new
+            // owner's release there is a queue to consult. Handing off to the
+            // last waiter leaves it clear, so that release takes the fast path
+            // like any other uncontended one. Zircon's ReleaseContendedMutex()
+            // sets STATE_FLAG_CONTESTED on the same condition.
+            auto new_mutex_state = static_cast<State>(reinterpret_cast<usize>(new_owner));
+            if (!m_waiters.is_empty()) {
+                new_mutex_state |= State::Contended;
+            }
+            publish(new_mutex_state);
         } else {
             publish(State::Available);
         }
