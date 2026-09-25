@@ -52,7 +52,7 @@ if (current_toolchain == default_toolchain) {
   }
 
   action("syscalls.gen") {
-    script = "//build/syscall/gen_syscalls.py"
+    script = "//build/abi/gen_syscalls.py"
     _description = "$target_gen_dir/syscalls.json"
     _numbers = "$target_gen_dir/private/syscall_abi/numbers.hpp"
     _vdso_stubs = "$target_gen_dir/private/syscall_abi/vdso_stubs.inc"

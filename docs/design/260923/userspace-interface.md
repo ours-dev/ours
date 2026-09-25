@@ -411,7 +411,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 - **返回形态**有三种：Status（eax）、原始值（`Instant`、`u32` 等）、`[[noreturn]]`（syscall 之后跟 `ud2`）。
 - **生成器**是 P1-A 的第一件事；P0 的 6 个桩手写。
   - 描述文件是 `//system/public/ours/syscalls.gni`，一个 GN scope 列表，每条包含 name、brief、args{name, type, dir, count, release}、attrs{blocking, noreturn, debug}；
-  - 经 `generated_file(output_conversion="json")` 转成 JSON，交给只用标准库的 `//build/syscall/gen_syscalls.py`（宿主 python3 是 3.9，没有 tomllib）。
+  - 经 `generated_file(output_conversion="json")` 转成 JSON，交给只用标准库的 `//build/abi/gen_syscalls.py`（宿主 python3 是 3.9，没有 tomllib）。
   - 产物七样：
     1. 私有调用号头；
     2. vDSO 桩汇编；

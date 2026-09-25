@@ -105,7 +105,7 @@ toolchain_utils_action("vdso.ifs") {
 # the same SONAME, the same symbols, nothing missing and nothing extra.
 action("vdso.abi_check") {
   visibility = [ ":*" ]
-  script = "//build/syscall/verify_vdso_abi.py"
+  script = "//build/abi/verify_vdso_abi.py"
   _libours = "//system/public:libours($default_toolchain)"
   _expected = get_label_info(_libours, "target_gen_dir") + "/libours.ifs"
   sources = [

@@ -5,7 +5,7 @@
 # The system calls, described once.
 #
 # Everything that has to agree about a call is generated from this list by
-# //build/syscall/gen_syscalls.py: the private call numbers the kernel and the
+# //build/abi/gen_syscalls.py: the private call numbers the kernel and the
 # vDSO share, the vDSO stubs, the extern "C" declarations a program calls, the
 # kernel's typed sys_* declarations and the shims that unpack a register frame
 # into them. Before this file each of those was written by hand, in four
