@@ -21,6 +21,7 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
 #include <ours/boot/handoff.hpp>
+#include <ours/boot/options.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/object/handle.hpp>
@@ -37,54 +38,18 @@ namespace userabi {
 using namespace ours;
 
 namespace {
-    /// The default first user program, and the name its ELF has inside the
-    /// kernel package's BootFS.
-    ///
-    /// Not "userboot/image.elf". `kernel_elf_binary("userboot")` in
-    /// //kernel/lib/userabi/userboot/BUILD.gn sets `has_patches = false`,
-    /// and kernel_elf_image() installs a patch-less binary as one bare file
-    /// rather than as a `<name>/` subtree -- which is why vmours, which does
-    /// have patches, is "vmours/image.elf" instead. The two live in the same
-    /// BootFS with different shapes, so this cannot be derived from the
-    /// kernel's own name; it has to be stated.
-    constexpr std::string_view USERBOOT_FILE{"userboot"};
-
-    /// The boot option that names the program the one user process runs:
-    /// `kernel.select.userboot=<name>`, a file in the kernel package.
-    ///
-    /// This is Zircon's option of the same name (its default is likewise
-    /// "userboot"; see lib/boot-options/options.inc), taken over wholesale
-    /// because the property it encodes is the same one: *which* program runs
-    /// first belongs to the image being booted, not to the kernel. What stood
-    /// here before was a compiled-in preference -- start "shell", fall back to
-    /// "userboot" when the package has no shell -- which put the name of an
-    /// //examples target inside the kernel and made "what ran" a function of
-    /// what a package happened to contain rather than of anything the image
-    /// states. An image that wants a different program now says so
-    /// (//kernel/products/image/dev/BUILD.gn).
-    ///
-    /// Zircon resolves the option one stage earlier, in physboot:
-    /// HandoffPrep::UsePackageFiles() matches it against the kernel package
-    /// and hands the kernel a loaded ELF. ours::phys::Handoff deliberately
-    /// carries neither the command line nor a userboot image -- its comment
-    /// says vmours can re-derive the command line from boot_package(), so a
-    /// second copy would be two answers to one question -- so the lookup
-    /// happens here instead, against that same OBI container.
-    constexpr std::string_view USERBOOT_OPTION{"kernel.select.userboot"};
-
     /// The vDSO's name in the same BootFS, installed by
     /// //kernel/lib/userabi/vdso with the same has_patches = false convention.
     constexpr std::string_view VDSO_FILE{"vdso"};
 
     /// A program name, kept as a NUL-terminated buffer rather than as a view.
     ///
-    /// The option's value is a slice of the command-line item's payload that
-    /// ends at a space or at the end of the line, while ProcessDispatcher and
-    /// the loader below both want a C string; copying once here is cheaper
-    /// than having each caller find that out. The capacity matches the
-    /// fixed-size option strings phys::BootOptions already keeps for
-    /// `kernel.phys.next` and `kernel.name`, which is the same 64 characters
-    /// Zircon's SmallString holds this option in.
+    /// launch() is handed a view -- from the boot options for the first
+    /// program, from a user buffer for process_spawn_boot -- while
+    /// ProcessDispatcher and the loader below both want a C string; copying
+    /// once here is cheaper than having each caller find that out. The
+    /// capacity is the one boot::BootOptions gives `kernel.select.userboot`,
+    /// so any name the command line can select also fits here.
     struct ProgramName {
         char text[64]{};
 
@@ -93,46 +58,6 @@ namespace {
             return {text};
         }
     };
-
-    /// Resolves `kernel.select.userboot` against the OBI command line.
-    ///
-    /// Falls back to USERBOOT_FILE whenever the container has no command line
-    /// or the option is absent, which is the common case: only an image that
-    /// wants something other than the proof-of-life program writes it.
-    ///
-    /// The command line comes from the OBI container, never from the
-    /// bootloader: GRUB's command line steers phys alone, and by the time
-    /// vmours runs, the options that survive are the ones the image baked into
-    /// its Config item.
-    auto select_userboot() -> ProgramName {
-        ProgramName name{};
-        auto selected = USERBOOT_FILE;
-
-        auto const package = boot::boot_package();
-        if (package.is_ok()) {
-            auto const cmdline = package.unwrap().command_line();
-            if (cmdline.is_some()) {
-                auto const value = cmdline.value().value(USERBOOT_OPTION);
-                if (value.is_some()) {
-                    // A name that does not fit is rejected rather than
-                    // truncated: a truncated name would be looked up, not
-                    // found, and reported as a missing file -- which sends the
-                    // reader looking in the package for something the kernel
-                    // itself mangled.
-                    if (value.value().size() < sizeof(name.text)) {
-                        selected = value.value();
-                    } else {
-                        log::error("userboot: {}={} is longer than {} characters, using '{}'",
-                                   USERBOOT_OPTION, value.value(), sizeof(name.text) - 1,
-                                   USERBOOT_FILE);
-                    }
-                }
-            }
-        }
-
-        std::memcpy(name.text, selected.data(), selected.size());
-        return name;
-    }
 
     /// Decompresses the kernel package into a fresh buffer.
     ///
@@ -523,12 +448,13 @@ auto userboot_init() -> void {
     // Kept, so that programs started later come out of the same package.
     resident_package = ustl::some(package.unwrap());
 
-    // Whichever program the image asked for. A name that is not in the package
-    // is a hard error rather than something to fall back from: the image said
+    // Whichever program the image asked for (`kernel.select.userboot`, see
+    // boot::BootOptions::userboot()). A name that is not in the package is a
+    // hard error rather than something to fall back from: the image said
     // what it wants started, and quietly starting a different program would
     // turn a packaging mistake into a boot that looks fine and is not the one
     // that was configured.
-    auto const program = select_userboot();
+    auto const program = boot::options().userboot();
 
     // The first process is handed the root job, as a handle in its own table.
     // A job is what processes are created under, so the program that holds
@@ -542,13 +468,12 @@ auto userboot_init() -> void {
         log::error("userabi: could not make a handle to the root job");
         return;
     }
-    log::info("userabi: handing {} the root job", program.view());
+    log::info("userabi: handing {} the root job", program);
 
-    auto const status =
-        launch(object::JobDispatcher::root_job(), program.view(), ustl::move(bootstrap));
+    auto const status = launch(object::JobDispatcher::root_job(), program, ustl::move(bootstrap));
     if (Status::Ok != status) {
-        log::error("userboot: {}={} could not be started: {}", USERBOOT_OPTION, program.view(),
-                   to_string(status));
+        log::error("userboot: {}={} could not be started: {}", boot::BootOptions::USERBOOT_OPTION,
+                   program, to_string(status));
     }
 }
 } // namespace userabi

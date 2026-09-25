@@ -4,6 +4,7 @@ import("//kernel/kernel_params.gni")
 
 source_set("top") {
   sources = [
+    "boot_options.cpp",
     "handoff.cpp",
     "main.cpp",
     "panic.cpp",

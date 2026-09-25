@@ -1,8 +1,9 @@
 #include <ours/boot/handoff.hpp>
+#include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
-#include <ours/ipi_service.hpp>
 #include <ours/cpu_mask.hpp>
 #include <ours/init.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/start.hpp>
 #include <ours/task/scheduler.hpp>
@@ -121,6 +122,7 @@ auto start_kernel(PhysAddr handoff) -> void {
     com1_put('L');
 
     boot::setup_handoff(handoff);
+    boot::setup_options();
     com1_put('H');
 
     // The dynamic CPU-Local allocator for BP will be installed.
