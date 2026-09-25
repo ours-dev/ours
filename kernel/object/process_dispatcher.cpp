@@ -270,15 +270,15 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 /// Dead under the lock only on the Running/Dying -> Dead edge, so only one of
 /// them ever gets here.
 ///
-/// Two parts of Zircon's FinishDeadTransition() so far. The address space is
+/// Three parts of Zircon's FinishDeadTransition(). The address space is
 /// torn down, so the process's memory comes back now rather than never. And
 /// the handle table is emptied, so every object the process held a handle to
 /// sees it go now -- the peer of each channel it held reads PEER_CLOSED --
 /// rather than whenever the process object itself is destroyed. Outside the
 /// lock because both can run other objects' destructors (a VMO's, on
 /// unmapping; on_zero_handles(), on closing), which take those objects' locks
-/// and must not nest inside this one. Raising TERMINATED, the third part,
-/// comes in a later step (docs/design/260924/userspace-filesystem.md, K7).
+/// and must not nest inside this one. TERMINATED, the third part, is raised
+/// last, when the rest is done.
 ///
 /// The table object itself stays: it is empty and lives on with the process,
 /// which is harmless and keeps handle_table() valid for anyone still holding
@@ -297,6 +297,20 @@ auto ProcessDispatcher::finish_dead_transition() -> void {
 
     auto const closed = m_handle_table->clean();
     log::debug("object: process '{}' (koid {}) dead, {} handles closed", name(), koid(), closed);
+
+    // TERMINATED last, once everything above is done: a waiter woken by it
+    // may look at the process at once -- read its return code, count on its
+    // memory being back -- and has to find the process finished rather than
+    // finishing. Zircon raises ZX_TASK_TERMINATED at the same point, after
+    // the address space and the handle table. The code is read under the
+    // lock it is guarded by, though nothing writes it any more: every writer
+    // requires a state before Dead.
+    auto const retcode = [this] {
+        Guard guard{get_lock()};
+        return m_retcode;
+    }();
+    update_state(Signals::None, Signals::Terminated);
+    log::debug("object: process '{}' (koid {}) terminated, retcode {}", name(), koid(), retcode);
 }
 
 } // namespace ours::object

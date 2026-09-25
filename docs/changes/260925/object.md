@@ -160,3 +160,47 @@ arch 层在 `arch_enter_uspace()` 里新加了一道 `ASSERT`，但那只能把�
 **故意没做**
 - 被拒之后，`spawn()` 已经建好的内核线程和 dispatcher 的去向：这是 `docs/repairs/260924/object.md` 第 1 条"从未启动的线程，其内核线程泄漏"，与本条无关，没有一并处理。
 - 没有检查 `state.stack`：本条只管会让 iretq/sysretq 在 ring 0 出错的返回地址（sysret_problem 讲的是 RIP）。栈指针要不要也限定在用户区间，等 `process_start`/`thread_start` 有了用户态调用者时再对照 Zircon 的系统调用入口决定。
+
+## 进程死透之后发出 TERMINATED（2026-09-25）
+
+**文件**
+- `kernel/object/process_dispatcher.cpp` — `finish_dead_transition()` 最后 `update_state(None, Terminated)`，打一行带 retcode 的调试日志；注释改为"三件"
+
+**症状**
+进程死了，它的对象上没有任何信号变化。等一个进程结束的人（计划 K24 之后，经进程句柄）没有东西可等。
+
+**原因**
+缺这一步。Zircon 的 `FinishDeadTransition()` 在拆完地址空间、清完句柄表之后置 `ZX_TASK_TERMINATED`。
+
+**改法**
+改前：`finish_dead_transition()` 拆地址空间、清句柄表，到此为止。
+
+改后，在最后：
+
+```cpp
+    auto const retcode = [this] {
+        Guard guard{get_lock()};
+        return m_retcode;
+    }();
+    update_state(Signals::None, Signals::Terminated);
+    log::debug("object: process '{}' (koid {}) terminated, retcode {}", name(), koid(), retcode);
+```
+
+- **放在最后**：被它唤醒的人可能立刻去看这个进程——读退出码、指望内存已经还回来——必须看到一个已经结束的进程，而不是正在结束的。
+- **retcode 在锁下读**：它由进程锁保护；Dead 之后已经没人写（每个写者都要求 Dead 之前的状态），但读法仍按它的保护规则来。
+- 信号位是 `Signals::Terminated`（bit 3，与 SIGNALED 同位，`system/public/ours/signals.hpp`），值同 Zircon。
+
+**参照**
+Zircon `ProcessDispatcher::FinishDeadTransition()`（`zircon/kernel/object/process_dispatcher.cc:547` 起）：
+`exceptionate_` 关闭 → 地址空间 `Destroy()` → `shareable_state_->DecrementShareCount()`（句柄表）→
+`UpdateState(0u, ZX_TASK_TERMINATED)` → 从 job 摘除。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- dbg_1：11 个 fault_probe 各一行 `object: process 'fault_probe' (koid K) terminated, retcode -1028`（`TASK_RETCODE_EXCEPTION_KILL`，
+  Zircon 的值），shell 一行 `… terminated, retcode 0`；按 CPU 核对，12 行每一行之前都有同一进程的 `dead, … handles closed` 和
+  `mm: aspace … destroyed`。dev：`init: shell closed its channel`。
+
+**故意没做**
+- 读退出码的 `object_get_info(Process)`：计划 K24。用户态在 K23 之前拿不到进程句柄。
+- 线程的 TERMINATED、从 job 摘除：前者没有使用者，后者 job 还没有子进程列表。
