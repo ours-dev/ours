@@ -1,18 +1,32 @@
 # sync 待修项（2026-09-24）
 
-## 1. `sync::Mutex` 争用时丢失唤醒（已交接给独立会话）
+## 1. `Mutex` 没有析构函数，释放者放队列锁时 mutex 可能已被销毁
 
-`Mutex::acquire_slowpath()` 里，CAS 失败且看到 `State::Contended` 的线程跳出自旋，调用
-`OwnedWaitQueue::park_and_assign_owner()`。后者只拿等待者自己的 PI 锁就 park，在等待队列锁下
-**不再复查**互斥锁的状态。持有者的 `release_slowpath()` 若恰好落在"等待者 CAS 失败之后、入队之前"，
-会看到队列为空、发布 `State::Available`；等待者随后 park 在一把没人持有、也没人会释放的锁上，永远睡下去。
+`Mutex::release_slowpath()` 在队列锁下发布新状态（`Available` 或新主人），然后才放队列锁。
+发布 `Available` 的那一刻起，别的线程就能走快路径拿锁、放锁、再销毁这个 mutex（比如引用计数
+归零的 dispatcher）；释放者随后那一下 `m_lock.store(UNLOCKED)` 就写进了已释放的内存。
+交接给新主人的路径同理：新主人一被唤醒就可能放锁并销毁。
 
-发现经过：P1-A 第 27 条的探针测试（dbg_1 镜像里 shell 逐个启动 `fault_probe` 看它被杀）。被杀进程的
-句柄表在 DPC worker 里销毁，关闭通道一端，在**持有**通道 dispatcher 的 `sync::Mutex` 时给 shell 的 Event
-发信号；shell 醒来立刻 `detach_observer()` 去拿同一把锁。临时日志在约一半的启动里停在
-"DBG detaching from koid 31"，QEMU monitor 显示 shell 不在任何运行队列上。
+潜伏：今天没有观察到。触发条件是"最后一次释放与销毁在另一颗 CPU 上紧挨着发生"。
 
-改法照 Zircon `Mutex::AcquireContendedMutex()`：在 `ReleaseContendedMutex()` 也会拿的锁下复查互斥锁字再阻塞。
+照 Zircon `Mutex::~Mutex()` 改：析构时自旋，直到 `m_waiters` 的队列锁 `is_unlocked()`，
+再断言状态是 `Available`。它的注释把这个窗口讲得很清楚（`ReleaseContendedMutex()` 末尾）。
 
-**阻塞的工作**：P1-A 第 27、30 条（探针测试）。它们的代码已写好、验证过一轮，暂存在会话外，等这一条修好再提交——
-否则 dbg_1 镜像约一半的启动会停在第一或第二个探针之后。
+## 2. 递归获取 `Mutex` 静默死锁
+
+持有者再 `acquire()` 同一把锁，会在 `acquire_slowpath()` 里打上 `Contended` 然后 park——
+等的是自己，永远不会醒，也没有任何诊断。
+
+照 Zircon `Mutex::AcquireContendedMutex()`：阻塞之前
+`if (LK_DEBUGLEVEL > 0 && IsHeld()) panic(...)`。本树对应 `KERNEL_DEBUG_LEVEL`，
+`holder() == current_thread` 即可判断。
+
+## 3. `acquire_common<true>` 的返回值和 `acquire()` 的循环含义冲突
+
+`Mutex::acquire()` 把 `acquire_common()` 的返回值读作"还没拿到，再来一次"。但时间片延长那条
+实例化（`TimesliceExtension<true>`）在拿到锁时返回的是 `set_timeslice_extension()` 的结果——
+Zircon 里这个 bool 的意思是"延长设上了，释放时要清"，与"没拿到"无关。一旦有人走 `true` 这条路，
+拿到锁、设上延长，就会被当成没拿到，再去抢一次自己持有的锁（见第 2 条）。
+
+潜伏：`acquire()` 只实例化 `false`，`CriticalMutex` 还是空类。实现 `CriticalMutex` 之前要先把
+这两个含义拆开（Zircon 的 `Acquire()` 丢掉返回值，`CriticalMutex::Acquire()` 才用它）。
