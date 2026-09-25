@@ -424,6 +424,24 @@ auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         return {Status::AccessDenied, 0};
     }
 
+    // Checked before the page tables are asked, for the same reason the write
+    // is: the answer has to be the same whether or not the page is present.
+    // The present case is the one that matters. The spurious-fault shortcut
+    // below compares only the entry against the region, and a fetch from an
+    // NX page whose entry already matches its region -- a user stack --
+    // passes that comparison, returns Ok, and the fetch retries into the same
+    // fault for ever. The arch handler cannot refuse it instead: after a
+    // protect() that added Executable, a fetch through a stale NX entry is
+    // spurious, and only this region says which case it is.
+    //
+    // Zircon's VmMapping::PageFaultLockedObject() adds
+    // ARCH_MMU_FLAG_PERM_EXECUTE to the flags it requires for
+    // VMM_PF_FLAG_INSTRUCTION, ahead of any lookup.
+    bool const will_execute = !!(vmf->cause & VmfCause::Instruction);
+    if (will_execute && !(mmuf & MmuFlags::Executable)) {
+        return {Status::AccessDenied, 0};
+    }
+
     auto &arch_aspace = m_aspace->arch_aspace();
 
     // Ask the page tables before asking the VMO. A fault can arrive on a page

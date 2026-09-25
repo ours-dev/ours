@@ -18,6 +18,18 @@ enum class VmfCause {
 
     /// Fault request from software.
     Software = BIT(3),
+
+    /// The access was an instruction fetch.
+    ///
+    /// Without it an instruction fetch looks like a read to the mapping, and a
+    /// read is allowed on a page that is present but not executable. The
+    /// mapping then answered a fetch from such a page (a user stack, which is
+    /// NX) as a spurious fault, the CPU retried the same fetch, and it faulted
+    /// again for ever instead of killing the process. VmMapping::fault()
+    /// refuses this cause on a region without MmuFlags::Executable.
+    ///
+    /// Zircon: VMM_PF_FLAG_INSTRUCTION.
+    Instruction = BIT(4),
 };
 USTL_ENABLE_ENUM_BITMASK(VmfCause);
 

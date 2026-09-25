@@ -166,3 +166,110 @@ SMAP 能解释时仍打原来的 "potential SMAP violation"，否则打新的消
   内核地址上的内核态缺页本来就会停机，与 Zircon 一致。"故意没做"里那条理由因此不成立，也不需要做。`fault.cpp` 的注释已改正。
 - 同一节新增的停机消息 "user copy faulted on ..., outside the user range it was admitted for" 只看槽是否被设。拷贝进行中
   来一个中断、其处理函数碰了用户地址时，也会被归到拷贝头上。现在还要求出错指令在拷贝例程里。
+
+## 从不可执行的用户页取指：缺页交给映射判定，不再当伪缺页无限重试（2026-09-24）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_fault.hpp` — `VmfCause` 加 `Instruction`
+- `kernel/arch/x86/mm/fault.cpp` — `x86_handle_page_fault()` 把错误码第 4 位（I/D）翻译成 `VmfCause::Instruction`
+- `kernel/mm/vm_mapping.cpp` — `VmMapping::fault()` 对没有 `MmuFlags::Executable` 的区域拒绝取指缺页
+
+**症状**
+用户程序跳进自己的栈（`((void(*)())stack_buffer)()`）后既不返回、也不被杀：日志停在 `--- end ---`，
+没有 `terminating process`。线程在 #PF（`error_code=0x15`，P|U|I）里原地打转；它仍可被抢占，所以外部 kill
+还有效，但故障本身永远不会杀掉它。P1-A 的规则"地址空间解决不了的 #PF 杀进程"（`x86_dispatch_exception()`）
+从未被触发。
+
+**原因**
+缺页的原因有四个维度：页在不在（P）、读还是写（W）、哪个特权级（U）、是不是取指（I/D）。翻译成 `VmfCause`
+时只留了前三个，于是一次取指到了映射那里就和一次读没有区别。
+
+读在一个"存在但不可执行"的页上是合法的，所以 `VmMapping::fault()` 一路放行：写检查不适用；接着查页表，发现
+PTE 已经在、权限（含 NX）与区域的记录一致，按"另一个 CPU 已经解决了 / 本 CPU 还在用旧 TLB"处理，回 `Ok`。
+`iretq` 回去重做同一次取指，PTE 没有变，NX 还在，再缺页——而每一次都被当成已解决。伪缺页捷径本身没错，错在它
+假定"PTE 与区域一致"就意味着"这次访问是区域允许的"，而这个推论只对区域允许的访问类型成立；把访问类型丢掉，
+推论就对一切访问都成立了。
+
+userboot 的栈是 `User|Readable|Writable`、没有 `Executable`，PTE 带 NX，EFER.NXE 在 BSP 和 AP 上都无条件打开，
+所以今天就能复现。程序映像整体映射为 RWX，只有栈（以及将来任何不可执行的映射）会撞上。
+
+**改法**
+
+改前：
+
+```cpp
+// kernel/mm/include/ours/mm/vm_fault.hpp
+enum class VmfCause {
+    None,
+    Write = BIT(0),
+    Absent = BIT(1),
+    User = BIT(2),
+    Software = BIT(3),
+};
+
+// kernel/arch/x86/mm/fault.cpp
+cause |= (error_code & PAGE_FAULT_PRESENT) ? VmfCause::None : VmfCause::Absent;
+cause |= (error_code & PAGE_FAULT_WRITE) ? VmfCause::Write : VmfCause::None;
+cause |= (error_code & PAGE_FAULT_USER) ? VmfCause::User : VmfCause::None;
+
+// kernel/mm/vm_mapping.cpp, VmMapping::fault()
+bool const will_write = !!(vmf->cause & VmfCause::Write);
+if (will_write && !(mmuf & MmuFlags::Writable)) {
+    return {Status::AccessDenied, 0};
+}
+
+auto &arch_aspace = m_aspace->arch_aspace();
+// ... query(): present and permissions match -> return {Status::Ok, 0};
+```
+
+改后：
+
+```cpp
+// kernel/mm/include/ours/mm/vm_fault.hpp
+    Software = BIT(3),
+    Instruction = BIT(4),   // Zircon: VMM_PF_FLAG_INSTRUCTION
+
+// kernel/arch/x86/mm/fault.cpp
+constexpr usize PAGE_FAULT_INSTRUCTION = 1u << 4;
+...
+cause |= (error_code & PAGE_FAULT_INSTRUCTION) ? VmfCause::Instruction : VmfCause::None;
+
+// kernel/mm/vm_mapping.cpp, VmMapping::fault(), right after the write check
+bool const will_execute = !!(vmf->cause & VmfCause::Instruction);
+if (will_execute && !(mmuf & MmuFlags::Executable)) {
+    return {Status::AccessDenied, 0};
+}
+```
+
+检查放在查页表之前，和写检查同一位置：不论页在不在，答案都一样。`AccessDenied` 经
+`Thread::Current::page_fault()` 返回到 `x86_dispatch_exception()`，按 P1-A 的规则变成 `FatalPageFault` 杀进程。
+
+被否掉的方案：在 arch 处理函数里见到 P|I 就直接判死。取指缺页在页已存在时并不总是违规——`protect()` 给区域加上
+`Executable` 之后，页表里可能还是旧的 NX 项，这时的缺页是伪缺页，`VmMapping::fault()` 里"权限不一致就 `protect()`
+一次"的分支正是为它准备的。页该有什么权限只有映射知道，arch 层只负责如实翻译。
+
+**参照**
+- Zircon `x86_pfe_handler()`（`kernel/arch/x86/exceptions_c.cc`）：`PFEX_I` → `VMM_PF_FLAG_INSTRUCTION`，只翻译不判定。
+- Zircon `VmMapping::PageFaultLockedObject()`（`kernel/vm/vm_mapping.cc`）：`VMM_PF_FLAG_INSTRUCTION` 时把
+  `ARCH_MMU_FLAG_PERM_EXECUTE` 加进所需权限，在任何查找之前一次性比较，不满足即 `ZX_ERR_ACCESS_DENIED`。
+- Linux `do_user_addr_fault()` → `access_error()`（`arch/x86/mm/fault.c`）走的是另一条路：它不看 `VM_EXEC`，而是把
+  "非写且 `X86_PF_PROT`（页已存在）"一律判错，经 `bad_area_access_error()` 发 SIGSEGV；不存在的页先按 VMA 的
+  `vm_page_prot`（带 NX）调入，重新取指时再以 PROT 缺页被判错。它敢这样做，是因为 `mprotect()` 返回前已改好 PTE，
+  用户页上不存在"页表还是旧的"非写伪缺页。本内核的伪缺页捷径恰恰是为 `protect()` 没改到的项准备的，
+  "存在即违规"在这里不成立，所以照 Zircon 按区域权限判定。
+
+**验证**
+- 构建通过（`prebuilt/ninja/ninja -C out/bringup.x86`）；clang-format 已跑；clang-tidy 在改动行上无新告警。
+- 临时探针（未提交）：`examples/shell/shell.cpp` 的 `--- end ---` 之后，经函数指针调用栈上一个只含 `ret`（0xc3）的缓冲区。
+  - 改前（`kernel.dev.obi`，40 s）：停在 `--- end ---`，无 `terminating`、无后续输出，探针之后的 "PROBE: returned" 也没有打出。
+  - 改后 `kernel.dev.obi`：
+    `terminating process 'shell' (koid 35) thread koid 39: type=FatalPageFault vector=page fault error_code=0x15 rip=0x11fff70 sp=0x11fff38 cr2=0x11fff70`，
+    随后 `object: thread (koid 39) of process 'shell' destroyed`、`object: process 'shell' (koid 35) destroyed`，无 panic。
+  - 改后 `kernel.dev.dbg_1.obi`：同样的三行（koid 23/27，cpu1），内核继续运行到 60 s 观察结束（`I'm Thread 1/2` 持续输出）。
+  - `rip == cr2 == 栈地址`，确认是取指本身缺页，不是 `ret` 之后的某个访问。
+
+**故意没做**
+- 没有补读权限检查。Zircon 对非写缺页还要求 `ARCH_MMU_FLAG_PERM_READ`；本内核 x86 上"存在即可读"，
+  一个有 `Executable` 无 `Readable` 的区域目前无法在页表里表达，补上也触发不到。等有架构能表达只执行页时再加。
+- 没有碰 `docs/repairs/260924/x86-kernel.md` #1（所有叶子 PTE 被强制 `Writable|Global`）：那条不清 NX，
+  不影响本问题，已交给另一个会话。

@@ -20,6 +20,10 @@ namespace {
     constexpr usize PAGE_FAULT_PRESENT = 1u << 0;
     constexpr usize PAGE_FAULT_WRITE = 1u << 1;
     constexpr usize PAGE_FAULT_USER = 1u << 2;
+    /// I/D. The CPU reports it only with EFER.NXE or CR4.SMEP set; NXE is on
+    /// on every CPU this kernel runs (mmu.cpp), so a fetch is never mistaken
+    /// for a read.
+    constexpr usize PAGE_FAULT_INSTRUCTION = 1u << 4;
 
     /// Whether this fault is one a user copy in progress may take back: the
     /// running thread is inside x86_user_copy (its resume address is set),
@@ -118,6 +122,13 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     cause |= (error_code & PAGE_FAULT_PRESENT) ? VmfCause::None : VmfCause::Absent;
     cause |= (error_code & PAGE_FAULT_WRITE) ? VmfCause::Write : VmfCause::None;
     cause |= (error_code & PAGE_FAULT_USER) ? VmfCause::User : VmfCause::None;
+    // Translated, not judged here. A fetch from a present page is not always
+    // a violation: after a protect() that added Executable the page tables
+    // can still hold the old NX entry, and that fault is spurious. Only the
+    // mapping knows which permissions the page is meant to have, so it is
+    // VmMapping::fault() that refuses the fetch. Zircon's x86_pfe_handler()
+    // likewise only maps PFEX_I to VMM_PF_FLAG_INSTRUCTION.
+    cause |= (error_code & PAGE_FAULT_INSTRUCTION) ? VmfCause::Instruction : VmfCause::None;
 
     // Call the top level page fault handling routine.
     auto const status = task::Thread::Current::page_fault(addr, cause);
