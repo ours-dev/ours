@@ -1,0 +1,38 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/user_executable.gni")
+
+# Reached only through the diagnostics image, which names it with a user
+# toolchain. The assert is for anyone who names it without one: the kernel
+# toolchain would build a -mcmodel=kernel "user program" that dies with a #GP
+# at its first instruction.
+assert(
+    toolchain_environment == "user",
+    "kernel/lib/syscall/test/fault_probe must be built in a //build/toolchain/ours:user-* toolchain")
+
+# A program whose only job is to fault on command, so that the kernel's
+# answer to a user fault -- kill the process, keep running -- is exercised on
+# every boot of the diagnostics image.
+#
+# It is this library's test, not an example: what it checks is the syscall
+# boundary P1-A drew (a program that breaks the rules is killed, the kernel
+# carries on), and what it does is the opposite of what a program should be
+# written to do. Zircon keeps the same kind of test beside its core tests,
+# zircon/system/utest/core/bad-syscall.
+#
+# It is a ring-3 program rather than a host test like the other test/
+# directories, because the thing under test is what the kernel does to it.
+# The shell in the diagnostics image drives it (examples/shell/shell.cpp,
+# run_probes()): only that shell holds the root job a new process needs.
+#
+# Not testonly, though it is a test: the image that packages it is an
+# ordinary product, and GN would make the whole image testonly to take it.
+user_executable("fault_probe") {
+  visibility = [ "//kernel/products/image/*" ]
+
+  sources = [ "fault_probe.cpp" ]
+  deps = [ "//system/lib/ou" ]
+}

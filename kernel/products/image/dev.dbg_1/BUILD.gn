@@ -36,6 +36,12 @@ kernel_package("ours") {
     # 不写就会在内核工具链里编出一个 -mcmodel=kernel
     # 的“用户程序”。
     "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
+
+    # lib/syscall's test: the program the shell starts and watches die, one
+    # probe at a time (examples/shell/shell.cpp, run_probes()). Here only:
+    # this is the image whose shell holds the root job, and the one with
+    # DEBUG_ASSERT on, so the kill path runs under every assertion it has.
+    "//kernel/lib/syscall/test/fault_probe(//build/toolchain/ours:user-${target_cpu})",
   ]
 }
 

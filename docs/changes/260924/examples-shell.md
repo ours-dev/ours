@@ -102,3 +102,57 @@ shell: bad-pointer checks passed
 
 **故意没做**
 往只读页写的三项（见上）。
+
+## shell 驱动 `fault_probe`：逐个起探针进程，看它们被杀（2026-09-24）
+
+**文件**
+- `examples/shell/shell.cpp` — `answer_bootstrap()` 改为返回 bool；新增 `decimal()`、`run_probes()`；include `<ou/process.hpp>`
+
+**症状**
+`fault_probe`（`docs/changes/260924/syscall.md` 同日一节）需要有人起它、告诉它撞哪一条、再判断结果。
+dbg_1 里唯一的用户程序就是 shell。
+
+**原因**
+起一个新进程要 root job 的句柄。只有被内核直接选中的 shell 拿到的 bootstrap 句柄是 root job；init 起的 shell
+拿到的是 channel 的一端。原来的 `answer_bootstrap()` 只打日志，不把"我是被谁起的"告诉调用者。
+
+**改法**
+改前：
+
+```cpp
+auto answer_bootstrap(ours::HandleValue const bootstrap) -> void {
+    ...
+    if (status == Status::BadType) {
+        static_cast<void>(ou::debug_line("shell: started by the kernel; no one to answer"));
+        return;
+    }
+```
+
+```cpp
+    answer_bootstrap(bootstrap);
+    check_handle_close(bootstrap);
+```
+
+改后：返回 false 表示 bootstrap 是 root job；这时在 `check_handle_close()` 关掉它之前先跑探针。
+
+```cpp
+    if (!answer_bootstrap(bootstrap)) {
+        run_probes(bootstrap);
+    }
+    check_handle_close(bootstrap);
+```
+
+`run_probes()` 对每个探针：建一对 channel，把探针名写进自己这一端，用 `process_spawn_boot` 起
+`fault_probe` 并把另一端交过去，然后 `wait_one(Readable | PeerClosed)`。进程被杀时句柄表随之销毁，
+它那一端关闭，这边看到 PeerClosed 且无消息可读，记为 killed；读到消息就是探针活下来了，记为 SURVIVED 并打出
+它的回答。最后打 `shell: probes done (N killed, M survived)`。`decimal()` 手写，因为这里没有 libc。
+
+**参照**
+无对应物；本项目自己的启动自检。Zircon 的同类测试由 core-tests 的 runner 在进程内驱动。
+
+**验证**
+见 `syscall.md` 同日一节。
+
+**故意没做**
+没有给探针设超时：`object_wait_one` 今天只接受 0 和无限两种 deadline（P1-E）。探针如果既不死也不回话，shell
+会卡在这里——但那本身就是要查的故障，日志停在哪个探针上也就说明了是哪一个。

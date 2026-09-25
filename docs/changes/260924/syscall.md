@@ -566,3 +566,79 @@ Zircon `sys_invalid_syscall()` 直接调 `Thread::Current::SignalPolicyException
 
 - 「从 vDSO 之外陷入：杀掉进程」一节写"lib/syscall 因此仍只 include 对象层的头"。当时的 `table.cpp` 其实 include 了
   `<ours/task/exception.hpp>`。已由「lib/syscall 回到只 include 对象层的头」一节改正。
+
+## lib/syscall 的第一个测试：`fault_probe`，每次启动 dbg_1 都让程序去撞一遍边界（2026-09-24）
+
+**文件**
+- `kernel/lib/syscall/test/fault_probe/BUILD.gn` — 新建；`user_executable("fault_probe")`，只对镜像可见
+- `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — 新建；从 bootstrap channel 读一个探针名，执行对应的违规动作
+- `kernel/products/image/dev.dbg_1/BUILD.gn` — 把 `fault_probe` 打进 dbg_1 的包；dev 镜像不打
+- `examples/shell/shell.cpp` — 驱动，见 `examples-shell.md` 同日一节
+
+**症状**
+P1-A 完成判据的后一半——"程序自己解引用坏指针、#GP、ud2 会被杀，内核继续运行"——之前只靠临时探针验证过，
+验证完就删了，没有任何东西在每次启动时再撞一遍。杀进程这条链（异常尾部 → `on_user_exception` →
+`ProcessDispatcher::kill` → 信号检查处退出 → 对象析构）跨了 arch、task、object 三层，任何一层回退都不会有人发现。
+
+**原因**
+每条链路都需要一个真的违规的程序才能走到，而一个正常写的程序永远不会去走。这正是 examples 里不该有它的原因：
+examples 是给人照着写的，而这里每个函数都是反例。它测试的是 lib/syscall 在 P1-A 画下的边界，所以放在这个库自己的
+`test/` 下（库的目录约定是 `include/ src/ test/`）。和别的 `test/` 目录不同，它不是 host 上的 gtest，而是 ring 3
+程序，因为被测的恰恰是内核怎么对待它。
+
+**改法**
+改前：无。
+
+改后：`fault_probe` 从 bootstrap channel 读一个名字，打印，然后做那一件事；每个动作都是 `asm volatile`，
+不给优化器折叠或删掉的机会。走过了违规指令就说明探针失败：写回 "survived" 然后原地自旋（还没有 exit 调用），
+驱动据此区分。
+
+```cpp
+constexpr Probe PROBES[] = {
+    {"pf_unmapped", pf_unmapped},
+    {"pf_kernel", pf_kernel},
+    {"ud2", ud2},
+    {"gp_hlt", gp_hlt},
+    {"gp_int80", gp_int80},
+    {"gp_int3", gp_int3},
+    {"de", de},
+    {"db_tf", db_tf},
+    {"gp_io", gp_io},
+};
+```
+
+内核对每个探针打出的报告（dbg_1，Nehalem，SMP=4）：
+
+| 探针 | 动作 | type | vector | error_code | cr2 |
+|---|---|---|---|---|---|
+| pf_unmapped | 读 0x10 | FatalPageFault | page fault | 0x4 | 0x10 |
+| pf_kernel | 读内核半区首字节 | FatalPageFault | page fault | 0x4 | 0xffff800000000000 |
+| ud2 | `ud2` | UndefinedInstruction | invalid opcode | 0 | — |
+| gp_hlt | `hlt` | General | general protection | 0 | — |
+| gp_int80 | `int $0x80` | General | general protection | 0x402 | — |
+| gp_int3 | `int3` | General | general protection | 0x1a | — |
+| de | 除以 0 | General | divide error | 0 | — |
+| db_tf | popf 置 TF | HwBreakpoint | debug | 0 | — |
+| gp_io | `inb $0x80` | General | general protection | 0 | — |
+
+几条值得看的：
+- `0x402` 和 `0x1a` 是 #GP 的"IDT 选择子"错误码：`(向量 << 3) | 2`，bit 1 表示指向 IDT。`int3` 的门 DPL 是 0，
+  所以 ring 3 的 `int3` 不是 #BP 而是 #GP，报的是第 3 项。
+- `pf_kernel` 的 error_code 是 0x4（用户态、读、页不存在），不是保护违例：内核半区的那一页恰好没映射。
+  两种情况都要被杀，报告的区别说明这条路径不依赖页是否存在。
+- `gp_io` 是 `c84ecf4c`（TSS I/O 位图关掉全部端口）的回归项；那之前这一条会静默成功。
+
+**参照**
+Zircon 的同类测试在 `zircon/system/utest/core/bad-syscall/`（`bad-syscall.cc` 加一个单独的 `syscall.S`），
+属于 core-tests，由 userboot 直接起。ours 还没有测试运行器，由 dbg_1 的 shell 驱动。
+
+**验证**
+dbg_1 在默认配置下连续启动 4 次、`CPU=max` 1 次、`SMP=1`（观察窗口 50 秒）1 次，每次都是
+`shell: probes done (9 killed, 0 survived)`，每个探针都有一行 `terminating process 'fault_probe'` 报告和
+thread、process 两行 destroyed，没有断言、没有 panic，之后照常跑到 `--- end ---`。dev 镜像不受影响。
+
+**故意没做**
+- 往 vDSO（只读映射）写的探针：每个 x86 叶子页表项今天都被强制加了 Writable（`docs/repairs/260924/x86-kernel.md`
+  第 1 条），这个写会成功，探针会因为和故障路径无关的原因报 survived。那条修好时一起加。
+- 从 vDSO 之外陷入的探针（`trap_outside_vdso`）：需要全树唯一一处裸 `syscall`，单独一条提交。
+- 不设 `testonly`：打包它的镜像是普通产品，GN 会要求整个镜像都变成 testonly。

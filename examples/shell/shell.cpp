@@ -32,6 +32,7 @@
 #include <ou/debug.hpp>
 #include <ou/handle.hpp>
 #include <ou/object.hpp>
+#include <ou/process.hpp>
 #include <ou/str.hpp>
 
 namespace {
@@ -116,7 +117,10 @@ auto spells(char const *const bytes, u32 const length, ou::Str const text) -> bo
 /// (design 5). Started by the kernel directly, the handle is the root job,
 /// and a channel read on it answers BadType: there is nobody to answer, and
 /// the checks below run as before.
-auto answer_bootstrap(ours::HandleValue const bootstrap) -> void {
+///
+/// Answers whether the handle was a channel -- false means this program was
+/// started by the kernel and holds the root job.
+auto answer_bootstrap(ours::HandleValue const bootstrap) -> bool {
     using ours::Signals;
     using ours::Status;
 
@@ -125,7 +129,7 @@ auto answer_bootstrap(ours::HandleValue const bootstrap) -> void {
     auto status = ou::channel_read(bootstrap, buffer, sizeof(buffer), &actual);
     if (status == Status::BadType) {
         static_cast<void>(ou::debug_line("shell: started by the kernel; no one to answer"));
-        return;
+        return false;
     }
     if (status == Status::ShouldWait) {
         auto observed = Signals::None;
@@ -137,7 +141,7 @@ auto answer_bootstrap(ours::HandleValue const bootstrap) -> void {
     }
     if (status != Status::Ok) {
         report("shell: reading the bootstrap channel = ", status);
-        return;
+        return true;
     }
 
     static_cast<void>(ou::debug_line({"shell: bootstrap says \"", ou::Str(buffer, actual), "\""}));
@@ -147,6 +151,82 @@ auto answer_bootstrap(ours::HandleValue const bootstrap) -> void {
     if (status != Status::Ok) {
         report("shell: answering = ", status);
     }
+    return true;
+}
+
+/// |value| in decimal, into |buffer|. By hand: no libc here.
+auto decimal(u32 value, char (&buffer)[10]) -> ou::Str {
+    auto at = sizeof(buffer);
+    do {
+        buffer[--at] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
+    return {buffer + at, sizeof(buffer) - at};
+}
+
+/// Programs that fault, and the kernel still here afterwards (P1-A).
+///
+/// Each probe is a fresh fault_probe process (lib/syscall's test,
+/// kernel/lib/syscall/test/fault_probe), told over a channel which fault to
+/// commit. The kernel's answer to a fault from ring 3 is to kill the
+/// process: its handle table goes with it, its end of the channel closes, and
+/// this end sees PeerClosed with nothing to read. A probe that survives writes
+/// back instead, and that is a failure. Between the two, the kernel's log
+/// carries the report for each kill and the destruction of the process and
+/// thread objects -- the parts of the chain this program cannot see.
+///
+/// Run only by the shell the kernel starts directly, which holds the root
+/// job a new process needs; the dev image starts the shell from init, with a
+/// channel instead, and does not package fault_probe.
+auto run_probes(ours::HandleValue const job) -> void {
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr ou::Str PROBES[] = {
+        "pf_unmapped", "pf_kernel", "ud2", "gp_hlt", "gp_int80", "gp_int3", "de", "db_tf", "gp_io",
+    };
+
+    u32 killed = 0;
+    u32 survived = 0;
+    for (auto const probe: PROBES) {
+        ours::HandleValue here = ours::HANDLE_INVALID;
+        ours::HandleValue there = ours::HANDLE_INVALID;
+        if (!expect("shell: probe channel_create = ", ou::channel_create(&here, &there),
+                    Status::Ok)) {
+            return;
+        }
+        static_cast<void>(ou::channel_write(here, probe.data(), static_cast<u32>(probe.size())));
+
+        // |there| leaves this process whatever happens.
+        if (auto const status = ou::process_spawn_boot(job, "fault_probe", there);
+            status != Status::Ok) {
+            report("shell: spawning fault_probe = ", status);
+            static_cast<void>(ou::handle_close(here));
+            return;
+        }
+
+        auto observed = Signals::None;
+        static_cast<void>(ou::object_wait_one(here, Signals::Readable | Signals::PeerClosed,
+                                              ours::INSTANT_INFINITE, &observed));
+        if (!!(observed & Signals::Readable)) {
+            char answer[32] = {};
+            u32 actual = 0;
+            static_cast<void>(ou::channel_read(here, answer, sizeof(answer), &actual));
+            static_cast<void>(ou::debug_line(
+                {"shell: probe ", probe, " SURVIVED (", ou::Str(answer, actual), ")"}));
+            ++survived;
+        } else {
+            static_cast<void>(ou::debug_line({"shell: probe ", probe, " killed"}));
+            ++killed;
+        }
+        static_cast<void>(ou::handle_close(here));
+    }
+
+    char killed_text[10];
+    char survived_text[10];
+    static_cast<void>(
+        ou::debug_line({"shell: probes done (", decimal(killed, killed_text), " killed, ",
+                        decimal(survived, survived_text), " survived)"}));
 }
 
 /// A channel with both ends in this one process: everything the kernel
@@ -324,7 +404,12 @@ extern "C" [[noreturn]]
 auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr const vdso_base)
     -> void {
     static_cast<void>(ou::debug_line(BANNER));
-    answer_bootstrap(bootstrap);
+    // The probes need the root job, which is what |bootstrap| is when the
+    // kernel started this program -- and check_handle_close() is about to
+    // close it.
+    if (!answer_bootstrap(bootstrap)) {
+        run_probes(bootstrap);
+    }
     check_handle_close(bootstrap);
     check_channel_loopback();
     check_bad_pointers();
