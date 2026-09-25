@@ -278,7 +278,7 @@ GN 模板叫 `protocol_library("io")`，放在 `//build/abi/protocol_library.gni
 |---|---|---|---|
 | K | 内核 | 解压内核包，建 BootFS VmoDispatcher：整体提交，rights = Basic\|Read\|Map\|GetProperty；铸 vmex 槽位。建 bootstrap channel，写一条 processargs：JobDefault（根 job）、VmoBootfs、SystemResource（vmex），environ 带命令行里的 `userboot.*`。用内核 elfload 装载 userboot 并启动，rdi 为 bootstrap 端 | userboot：根 job、BootFS VMO、vmex |
 | U | userboot | runtime 解析 processargs。复制 BootFS，用 vmex 把其中一份换成 bootfs_x；用 launcher 从 bootfs_x 起 `userboot.next`（默认 `bin/init`），转交根 job、不可执行的那份 BootFS 和 vmex；关掉 bootfs_x，process_exit(0) | init：根 job、BootFS VMO、vmex |
-| I1 | init | runtime 解析 processargs。用 vmo_read 把 Header、Entry[] 和名字表读进 bump 缓冲，建 `bootfs::Tree`，同时隐藏内核私有条目。在进程内直接读 `config/services`。复制 BootFS，再用 vmex 换出可执行的一份 bootfs_x 给 launcher 用；不可执行的那份留给 GetBackingMemory 的 Slice | init：Tree、清单、两份 BootFS |
+| I1 | init | runtime 解析 processargs。用 vmo_read 把 Header、Entry[] 和名字表读进 bump 缓冲，建 `bootfs::Tree`。VMO 里本来就只有白名单放行的条目（K12），不需要再隐藏什么。在进程内直接读 `config/services`。复制 BootFS，再用 vmex 换出可执行的一份 bootfs_x 给 launcher 用；不可执行的那份留给 GetBackingMemory 的 Slice | init：Tree、清单、两份 BootFS |
 | I2 | init | 按清单顺序处理每个服务：建 (o_c, o_s)；为每个 uses 铸一条根连接，各带一个新 grant；调 launch（§4.6），从 bootfs_x 装 binary，processargs 带 NsDir、DirectoryRequest = o_s 和 VmarRoot，bootstrap channel 由 launcher 自己建；保留返回的进程句柄，以 TERMINATED 挂进 Loop | 子进程：NsDir、o_s。init：o_c、进程句柄、各连接的服务端 |
 | S1 | shell | fsio 按最长前缀选中 /boot，写 `Open("config/services", ProtocolFile\|Describe, R_STAR_DIR 的子集, s)`，等 OnRepresentation | shell：c。init：s 的连接记录 |
 | S2 | shell | `fsio::connect("/svc/ours.echo.Echo")`，过程见 §4.4 | c 在 shell，s 在 echo，init 不留状态 |
@@ -288,8 +288,8 @@ GN 模板叫 `protocol_library("io")`，放在 `//build/abi/protocol_library.gni
 - **清单的 binary 字段由生成器填写**，取 `user_executable` 的实际安装名（`system/user_executable.gni:41` 的 install_name）。清单在 U13 才有，那时 U9 已经把程序挪进 `bin/`，所以它从一开始就是 `bin/echo`、`bin/shell`。
 - **内核私有文件**：
   - dev 镜像的包里有 `vmours/image.elf`（`kernel/products/image/dev/BUILD.gn:21-22`），而内核带 KASLR（`kernel/phys/physboot.cpp:144-148`），所以内核映像不能暴露给普通进程。
-  - M1 由 init 在建 Tree 时隐藏所有不是 user 工具链产出的条目。
-  - 这份隐藏清单由构建生成为 `config/boot_private`：从 kernel_package 汇总的 distribution 条目里挑（条目带 label，label 含工具链；机制见 `build/dist/distribution_manifest.gni`）。不能写死 "vmours"，因为内核目录名是 phys 的启动选项 `kernel.name`（`kernel/phys/include/ours/phys/boot_options.hpp:66`），init 无从得知。
+  - **黑白名单，在内核里过滤**（2026-09-25 定，见 `docs/repairs/260925/userabi.md` 第 1 条）：只在 init 里隐藏是不够的——持有原始 BootFS VMO 的 userboot 和 init 仍能按偏移读出整个内核 ELF。所以 K12 建 VMO 时就只拷**白名单**里的条目：名单由构建从 GN metadata 生成（标在产出文件的 target 上，如 `user_executable()`；机制见 `build/dist/distribution_manifest.gni`），随内核包打入，默认不放行。**黑名单**兜底：内核自己的目录（phys 的启动选项 `kernel.name`，`kernel/phys/include/ours/phys/boot_options.hpp:66`；vmours 的 `BootOptions` 要补上这一项）与补丁表，即使误入白名单也拒绝，并在启动时报错。
+  - 不用"跳过内核目录"这一条特判：内核包以后会装什么说不准，写死今天已知的那一项，新加的私有文件就会悄悄漏出去。
   - 长期把用户 BootFS 拆成独立的 OBI 条目（D7）。Fuchsia 的内核包和用户 bootfs 就是两类条目：STORAGE_KERNEL 与 STORAGE_BOOTFS（`zircon/kernel/phys/kernel-package.cc:65`）。
 
 ### 4.2 init 的组成
@@ -513,7 +513,7 @@ auto install_startup_namespace() -> Status;
 | 句柄类型不符 | v1 查不到类型：第一次使用时得到 BadType，服务端关连接；read_etc 落地后补上 |
 | 回复残留泄漏给下一个客户端 | 回复缓冲先清零，只发 handler 报告的长度 |
 | 读越界 | 按 §2.2 的 Seek/Read 边界规则，做加法前先查溢出 |
-| 内核映像泄露 | init 隐藏构建生成的私有条目（§4.1）；长期拆成独立的 OBI 条目 |
+| 内核映像泄露 | K12 只把白名单里的条目拷进 BootFS VMO，内核目录与补丁表另有黑名单兜底（§4.1）；长期拆成独立的 OBI 条目 |
 | 路径 TOCTOU | BootFS 不可变，init 单线程，连接钉住节点而不是名字；可变文件系统上的 rename/unlink 竞争推迟处理 |
 
 ## 7 内核前置工作（及夹在其间的生成器、用户侧提交）
@@ -553,7 +553,7 @@ auto install_startup_namespace() -> Status;
 | K9 | `feat(object): let a MessagePacket carry handles` | `kernel/object/include/ours/object/message_packet.hpp`；`channel_dispatcher.cpp:87` | MessagePacket 加一个 `ustl::Box<Handle>` 数组。在途句柄的 table_koid 为 0，正好满足 `handle_table.cpp:41` 的断言；析构时关掉没被取走的句柄。`read(max_handles)`：字节或句柄任一放不下就回 BufferTooSmall，消息留在队首 | 日志不变 | K8 |
 | K10 | `feat(syscall): move handles through channel_write and channel_read` | `kernel/lib/syscall/src/channel.cpp:83、:133-137`；`handle_table.cpp`；`build/abi/gen_syscalls.py:97-98`、`syscalls.gni` | 生成器的 release 放宽到 HandleValue 数组，channel_write 的 handles 参数标 release（§3.2；初稿里它是单独的一步）。新增 `HandleTable::remove_for_transfer`：锁外拷入句柄值，在一次表锁内全部摘下；先摘后查：缺 Transfer 回 AccessDenied，句柄正是被写的 channel 回 NotSupported，同一值出现两次时第二次摘除得 BadHandle；无论成败句柄都被消耗。读端先拷字节，再写出句柄值，全部成功后才发布（沿用 `channel.cpp:43-58` 的顺序）。对照 Zircon 的 msg_put_handles / msg_get_handles（`zircon/kernel/lib/syscalls/channel.cc:314、:146`）。顺手改正 `handle_table.cpp:64-66` 的注释：Zircon 的 RemoveHandleLocked 并不取消等待（`handle_table.cc:124-135`），取消发生在接收端（`channel.cc:166`） | dbg_1 shell：经 channel 传过去一个 channel 端，再经它 ping 通；传 channel 自己回 NotSupported；数组含坏值回 BadHandle，且其余句柄已被消耗；嵌套 1000 层 channel 再关闭，内核照常运行；syscall 描述测试覆盖 HandleValue 数组上的 release | K9、G1 |
 | K11 | `feat(object): charge every live handle to the process that created it` | `handle.cpp`、`process_dispatcher`、`system/public/ours/syscall.hpp` | 按接口设计 §4.8 实现 `HANDLE_MAX_PER_PROCESS`：在途句柄也计入，关闭时归还，超额回 NoResource | dbg_1：循环 channel_create 直到得到 NoResource；关掉一个之后能再建 | K10 |
-| K12 | `feat(userabi): hand the kernel package out as a read-only BootFS VMO` | `kernel/lib/userabi/src/userboot.cpp`、`kernel/object/vmo_dispatcher.cpp` | 建一个 Pinned、整体提交的 VmObjectPaged，用 K2 的 write 从解压缓冲拷入。rights 为 Basic\|Read\|Map\|GetProperty，不给 Write，也不给 Execute（可执行权经 vmex 换得，D3）。解压缓冲暂不释放：spawn_boot 还在读它，vfree 也没有 TLB shootdown；K25 删掉 spawn_boot 之后，只剩后一条理由 | 出现 `userabi: bootfs vmo <N> bytes`；回读的头部 magic 一致 | K2 |
+| K12 | `feat(userabi): hand the kernel package out as a read-only BootFS VMO` | `kernel/lib/userabi/src/userboot.cpp`、`kernel/object/vmo_dispatcher.cpp`；生成白名单的 GN 模板；`kernel/include/ours/boot/options.hpp`（补 `kernel.name`） | 建一个 Pinned、整体提交的 VmObjectPaged，用 K2 的 write 写入一份只含白名单条目的 BootFS（重建头部、条目表和名字表）；内核目录与补丁表按黑名单拒绝，误入白名单即报错（§4.1）。rights 为 Basic\|Read\|Map\|GetProperty，不给 Write，也不给 Execute（可执行权经 vmex 换得，D3）。解压缓冲暂不释放：spawn_boot 还在读它，vfree 也没有 TLB shootdown；K25 删掉 spawn_boot 之后，只剩后一条理由 | 出现 `userabi: bootfs vmo <N> bytes`；回读的头部 magic 一致 | K2 |
 | K13 | `feat(syscall): vmo_read` | `kernel/lib/syscall/src/vmo.cpp`（今天是空壳）、`syscalls.gni` | `ours_vmo_read(HandleValue vmo, void *buffer, u64 offset, usize length)`，要求 Read 权限。在 VMO 锁下先拷进一页中转缓冲，放锁后再拷给用户（接口设计 §4.6） | 功能在 K14 验证 | K2 |
 | U1 | `feat(libc): give user programs mem* and str*` | `kernel/lib/libc/string.cpp` → `system/lib/libc/src`；`system/BUILD.gn:80-82` | 内核与用户共用一份实现；user_executable 默认链接 | shell 里一次 memcpy 的结果正确 | — |
 | U2 | `feat(runtime): parse processargs into a startup-handle table` | `system/public/ours/process_args.hpp`（新）、`system/lib/runtime`（新） | 实现接口设计 §3.3 的格式；runtime 负责解析，提供 `take_startup_handle(HandleType, u16)` 和 names 访问；main 返回后，runtime 调 process_exit。process_args.hpp 里另有一个 header-only 的构造器，内核和用户态共用：K14 的内核一侧和 shell 一侧、K23 的 launcher 都用它写 processargs，全系统只有这一份编码 | 宿主单测：构造器写出的消息由解析器原样读回 | U1、K5 |
@@ -674,7 +674,7 @@ inline constexpr u32 PORT_MAX_USER_PACKETS = 256;
 |---|---|---|---|---|---|
 | G3 | `refactor(abi): share the description front end as description.py` | `build/abi/description.py`、`gen_syscalls.py` | 抽出 §3.2 所列的共享部分；两个 action 都加 inputs | 五个输出与 G3 前一个提交的产物字节相同（阶段二的 G2 和十来个新系统调用已经改过它们，不能再拿 G1 之后的比）；两个 action 都已加上 description.py 的 inputs | G1 |
 | G4 | `feat(abi): generate protocol code; add system/lib/wire and ours.io` | `build/abi/gen_protocols.py`、`protocol_library.gni`、`system/lib/wire`、`system/public/ours/io/*.gni` | 实现 §3。G 阶段支持：consts、bits、enum、定长 struct、一段尾部数组、必选句柄、one_way、two_way、event；回复句柄仅在 Ok 时出现 | gen_protocols_test.py；wire 的宿主测试喂畸形消息 | G3 |
-| U10 | `feat(init): serve /boot` | `system/lib/loop`（新）、`system/service/init`；接口设计 | 新建 Loop 库（§4.2，port + wait_async），init 用它加上 BootServer、Connection 和 §2.4 的检查，隐藏构建生成的私有条目；§4.2 的两条 static_assert 落在这里。Supervisor 把 U7 的 wait_one(TERMINATED) 换成 Loop 上的一个槽。同一提交修订接口设计：§1 的现状列、§3.6 的 /svc 手写消息改为引用生成的 io 协议、§5 与 §8 把 IDL 从 P2 提前 | init 对自己的 /boot 连接自测：Open 并 Read `vdso` 的前 4 字节，得到 `\x7fELF` | K28、K14、G4、U3、U7 |
+| U10 | `feat(init): serve /boot` | `system/lib/loop`（新）、`system/service/init`；接口设计 | 新建 Loop 库（§4.2，port + wait_async），init 用它加上 BootServer、Connection 和 §2.4 的检查（不再隐藏任何条目：K12 交来的 VMO 里只有白名单条目）；§4.2 的两条 static_assert 落在这里。Supervisor 把 U7 的 wait_one(TERMINATED) 换成 Loop 上的一个槽。同一提交修订接口设计：§1 的现状列、§3.6 的 /svc 手写消息改为引用生成的 io 协议、§5 与 §8 把 IDL 从 P2 提前 | init 对自己的 /boot 连接自测：Open 并 Read `vdso` 的前 4 字节，得到 `\x7fELF` | K28、K14、G4、U3、U7 |
 | U11 | `feat(fsio): a namespace, an fd table and /boot for the shell` | `system/lib/fsio`（新）、init、`examples/shell` | init 用 launcher 起 shell，processargs 带 NsDir /boot 和 VmarRoot；shell 用 fsio 读、列 /boot | `init: launched shell from /boot/bin/shell`、`shell: ls /boot: bin config userboot vdso`、`shell: open /boot/vdso with WriteBytes = AccessDenied`、`shell: raw Open("..") on /boot = BadPath`。services 那一行要到 U13 才有 | U10 |
 | U12 | `feat(init): GetBackingMemory for /boot files, read-only` | init 的 BootServer、fsio | 从不可执行的那份 BootFS 为条目建 Slice（K20），再用 handle_duplicate（K15）把 rights 钉成 Basic\|Read\|Map\|GetProperty 后发出，关掉 Slice 本身：不依赖父句柄恰好不带 Execute。连接要有 ReadBytes（同 Rust VFS，`file/common.rs:73-77`）；options 只收 Read，Execute 按 §2.5 的保留位规则回 NotSupported。每个 grant 终身至多 `GRANT_MAX_BACKING_VMOS` 个，超了回 NoResource：发出的句柄记在 init 名下（K11），init 又看不到客户端何时关掉它，不设上限的话，任何持有 /boot 连接的客户端都能耗尽 init 的句柄配额（§4.2） | shell：对 `vdso` 取 backing memory，vmar_map(R) 进自己的根 VMAR，读出 `\x7fELF`；vmo_write 回 AccessDenied；带 Execute 回 NotSupported；第 GRANT_MAX_BACKING_VMOS + 1 次回 NoResource | U11、K20、K21、K15 |
 | U13 | `feat(init): route /svc from a generated service manifest; add echo` | `build/service/gen_service_manifest.py`、system_service 与 service_manifest 模板、`system/lib/svc`、`examples/echo`、init 的 SvcRouter 与 Supervisor | 按 §4.3–4.4；svc::Outgoing 用 U10 的 Loop 同时等 o_s 和各条客户端 channel。Supervisor 按清单用 launcher 起每个服务，把进程句柄以 TERMINATED 挂进 Loop，记下退出码并把提供者标为不可用；o_c 的 PEER_CLOSED 是第二个信号，先到哪个都一样处理。生成器检查服务数 ≤ SERVICES_MAX（§4.2） | M1 判据全部行（§1） | U12 |
@@ -773,7 +773,7 @@ fault_probe 只打进 dbg_1（`kernel/products/image/dev.dbg_1/BUILD.gn:44`）�
 | D4 | M1 的多路复用 | **已定（2026-09-25）**：M1 直接上 Port（原选项 B）。init 和 echo 共用的 Loop 建在 port + object_wait_async 上（§4.2），内核步骤为 K26、K27、K28（§7.4）；等待者先用 sync::Event，Semaphore 不再是前置条件；object_wait_many 推迟到 P2 | — 。否决的原推荐 A（object_wait_many 加 64 项预算）：连接池只有 56 槽，出现 shell 和 echo 以外的程序之前还得再换一次 |
 | D5 | ordinal 方案 | **已定（2026-09-25）：哈希 ordinal 加 selector，不做显式编号**。SHA-256 哈希加可选的 selector，照 fidlc（§3.1）；M1 不用分配库号，也不检入 golden，改名时写 selector 钉住编号 | — 。否决 B（显式编号 `ordinal_base << 32 \| method`，由 GN metadata 查全构建唯一，另检入 golden）：主人认为“直接编号太危险”。它唯一的长处是十六进制转储里看得懂 |
 | D6 | BootFS 的 mode、uid、gid 什么时候落盘 | A：M1 由 init 合成；M2 随 GetBackingMemory 的 Execute 升级 BootFS 格式，从 GN metadata 填入真实值和 Executable 标志。B：M1 就升级格式 | **已定（2026-09-25，按推荐）：A**。M1 不外发任何可执行物，而格式改动会牵动 phys、KernelPackage 和打包器。“盘上 mode 从第一天就存”这一条，从第一个可写文件系统起严格执行 |
-| D7 | /boot 与内核包是否分开 | A：M1 由 init 隐藏构建生成的私有条目；长期在 OBI 里加一个独立的用户 BootFS 条目。B：现在就分开 | **已定（2026-09-25，按推荐）：A** |
+| D7 | /boot 与内核包是否分开 | A：M1 由 init 隐藏构建生成的私有条目；长期在 OBI 里加一个独立的用户 BootFS 条目。B：现在就分开 | **已定（2026-09-25，按推荐）：A**；**同日修订**：隐藏改为内核在 K12 按黑白名单过滤，只拷白名单条目（init 隐藏挡不住持有原始 VMO 的程序，见 §4.1） |
 | D8 | 连接权限类型的名字 | IoRights 或 FsRights | **已定（2026-09-25，按推荐）：ours::io::IoRights**。/svc 这类非文件系统节点也用它；与句柄的 `ours::Rights` 在 GetBackingMemory 这类方法里会同时出现，名字不同才不会混淆 |
 | D9 | 路径的编码 | A：字节串，只禁 NUL 和 '/'。B：照 fuchsia.io 要求 UTF-8 | **已定（2026-09-25，按推荐）：A**。服务端逐段按字节比较，用不着解释编码 |
 | D10 | kernel/lib/bootfs 挪空之后是否删除 | 删除，或者保留为转发 | **已定（2026-09-25，按推荐）：删除**。它只剩转发，没有独立的职责（§4.5） |
@@ -826,7 +826,7 @@ fault_probe 只打进 dbg_1（`kernel/products/image/dev.dbg_1/BUILD.gn:44`）�
 | M1 就做 export_namespace 和 Fd 0x30 | protocol | 推迟到 M2 | M1 的 shell 不起子进程；它要起子进程得有可执行 VMO，那要等 GetBackingMemory 的 Execute |
 | 解码器在 v1 校验句柄的对象类型 | permissions | 更正 | v1 做不到，按 §2.5 的表述处理 |
 | M1 就做 revoke(grant) | permissions | 推迟到 P1-B 之后 | 触发事件（注销）在 M1 不存在 |
-| 建 Tree 时跳过写死的 "vmours" 常量 | 闭环评审 | 改用别的做法 | 目录名是 phys 的启动选项，init 无从得知；改用构建生成的私有条目表 |
+| 建 Tree 时跳过写死的 "vmours" 常量 | 闭环评审 | 改用别的做法 | 目录名是 phys 的启动选项，init 无从得知；而且 init 里隐藏挡不住持有原始 VMO 的程序。定为内核在 K12 按黑白名单过滤（2026-09-25，§4.1） |
 | M1 借 process_spawn_boot 起 shell 和 echo（原 D1-A） | 初稿 | 否决（2026-09-25） | 依赖先行（D1）：文件系统不建在替身上；spawn_boot 在 K25 删除，排在文件系统之前 |
 | M1 由内核直接起 init，U8 再插入 userboot（原 D2-A） | 初稿 | 否决（2026-09-25） | 依赖先行（D2）：M1 跑在 kernel → userboot → init 上 |
 | GetBackingMemory 在 M1 回 NotSupported | 初稿 | 否决（2026-09-25） | 依赖先行：Read 有基本的真实实现（U12），只有 Execute 留到 M2 |
@@ -861,4 +861,4 @@ fault_probe 只打进 dbg_1（`kernel/products/image/dev.dbg_1/BUILD.gn:44`）�
 | userboot | 在用户态解压 ZBI，然后起 component_manager | 有 userboot（U8），next 由 `userboot.next` 选；BootFS 由内核解压 | D2 |
 | 句柄转移时取消等待 | 在接收端取消（`channel.cc:166`） | 在发送端摘除句柄时取消（`handle_table.cpp:61-67`） | 效果等价，只是更早 |
 | 句柄数量限制 | 靠 job policy 和内存压力兜底 | 每进程上限，在途句柄也计入 | 同接口设计 §9 |
-| 内核包与用户 BootFS | 两类 ZBI 条目 | M1 共用一个包，init 隐藏私有条目 | D7 |
+| 内核包与用户 BootFS | 两类 ZBI 条目 | 共用一个包，内核按黑白名单只把用户条目拷进 BootFS VMO | D7 |
