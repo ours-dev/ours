@@ -255,3 +255,71 @@ kernel_cmdline("cmdline") {
   不是这一条的范围。
 - **没有让 `sys_command_list` 看 `kernel.shell`**。原因同上一条：它列注册表，不执行。
 - **dbg_1 不出提示符的问题没查**：改动之前就是这样，与本条无关。
+
+## kshell 改用具名日志目标 `(kshell)`，派发命令时打一行 debug（2026-09-24）
+
+**文件**
+- `kernel/lib/kshell/kshell/shell.cpp` — 声明 `KSHELL` 目标；两处手写 `"kshell: "` 前缀的日志改走它；启动成功打一行 info；`dispatch()` 打一行 debug
+
+**症状**
+kshell 的日志靠手写前缀区分出处（`log::warn("kshell: failed to spawn console thread")`），
+而且正常启动时 kshell 一行日志都不打——提示符是直接写 COM1 的，不经过 logger，
+所以记录里看不出控制台到底起没起来。敲了命令没反应时，也分不清是命令没被派发，
+还是派发了但命令本身什么都没说：`gktl::run_command()` 对不认识的名字一声不吭。
+
+**原因**
+没有具名目标之前，"只看 kshell 的调试输出"只能把全局下限放到 debug，
+和 `kernel/top/main.cpp` 测试线程每秒上万行的 `I'm Thread N` 混在一起，等于没有。
+所以 kshell 里也就没人写 debug 行。
+
+**改法**
+kshell 是 logz4 目标（`docs/changes/260924/logz4.md`）的第一个真正用户：
+
+```cpp
+// shell.cpp（改前）
+log::info("kshell: not started ({} is off)", ours::boot::BootOptions::SHELL_OPTION);
+log::warn("kshell: failed to spawn console thread");
+
+// shell.cpp（改后）
+constexpr auto &KSHELL = logz4::Target::named<"kshell">;
+...
+KSHELL.info("not started ({} is off)", ours::boot::BootOptions::SHELL_OPTION);
+KSHELL.warn("failed to spawn console thread");
+KSHELL.info("console on COM1");                                   // 新增，resume() 之后
+KSHELL.debug("run '{}' with {} argument(s)", argv[0], argc - 1);  // 新增，dispatch() 里
+```
+
+每条命令一行，用 debug 而不是 info：平时在提示符下是噪声，要查"命令为什么没反应"时
+`log level kshell debug` 单独打开，其它子系统的 debug 不受影响。
+
+**参照**
+- Linux：文件顶部 `#define pr_fmt(fmt) "kshell: " fmt`，`pr_debug()` 由 dynamic_debug 按模块打开。
+- Zircon 的内核 shell（`kernel/lib/console`）没有等价的派发日志。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 通过；clang-format / clang-tidy 对 shell.cpp 无告警。
+- QEMU `kernel.dev.obi`：`[... info] (kshell) console on COM1`，以及
+  `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`。
+- QEMU `kernel.dev.dbg_1.obi`，在 `kshell> ` 依次敲：
+
+  ```
+  log level warn          → 全局放到 warn，main.cpp 测试线程的 debug 洪流停下
+  log targets             → log: global floor warn / kshell  warn (default)
+                            （这条命令自己的 debug 行被全局 warn 挡住）
+  log level kshell debug
+  log targets             → [... debug] (kshell) run 'log' with 1 argument(s)
+                            log: global floor warn / kshell  debug
+  log dump kshell         → 只回放 (kshell) 的记录
+  log level kshell default
+  log targets             → 无 debug 行，kshell  warn (default)
+  ```
+
+  打开 kshell 的 debug 之后，日志里只有 `(kshell)` 的 debug 行，`I'm Thread`、`trace` 行数为 0。
+  `log dump kshell` 里没有启动时那行 `console on COM1`：256 槽的环在这之前已经被测试线程的
+  debug 行冲掉了，符合环的语义。
+
+**故意没做**
+- **提示符和回显仍然直接写 COM1，不走 logger。** 它们是终端交互，不是日志；
+  代价是提示符会和并发的日志行交错（实测 `kshel[4255394000 cpu0 info] ...`），这是原有行为。
+- **没有替 `gktl::run_command()` 报"未知命令"。** 它返回 void，要报得改 gktl 的接口，
+  不属于这一条。
