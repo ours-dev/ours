@@ -21,12 +21,6 @@ namespace {
     constexpr std::uint16_t COM1_PORT = 0x3F8;
     constexpr std::size_t LINE_MAX = 128;
 
-    /// Every line this file logs carries `(kshell)` in place of the
-    /// "kshell: " prefix the call sites used to spell out by hand, and
-    /// `log level kshell debug` turns on the per-command trace in dispatch()
-    /// without turning on anyone else's debug output.
-    constexpr auto &KSHELL = logz4::Domain::named<"kshell">;
-
     auto serial_putc(char c) -> void {
         while ((arch::inb(COM1_PORT + 5) & 0x20) == 0) {
         }
@@ -69,11 +63,19 @@ namespace {
             }
         }
         if (argc != 0) {
+            // The shell's own line, in the shell's domain. The scope closes
+            // before the command runs: a LogDomain reaches every callee, and
+            // `prof: stopped` is prof talking, not kshell -- nor should
+            // `log level kshell warn` be able to silence it.
+            //
             // Debug, not info: one line per command is noise at the prompt.
             // It earns its place when a command seems to do nothing, since
             // gktl::run_command() says nothing about a name it does not
             // know: this line shows what the shell parsed and handed over.
-            KSHELL.debug("run '{}' with {} argument(s)", argv[0], argc - 1);
+            {
+                logz4::LogDomain<"kshell"> domain;
+                log::debug("run '{}' with {} argument(s)", argv[0], argc - 1);
+            }
             gktl::run_command(argc, argv);
         }
     }
@@ -119,6 +121,10 @@ namespace {
     }
 
     auto spawn() -> void {
+        // Everything bringing the console up says, including whatever
+        // Thread::spawn() logs on the shell's behalf, is kshell's.
+        logz4::LogDomain<"kshell"> domain;
+
         // `kernel.shell` is off unless the image asks for it: this thread runs
         // any registered command, in ring 0, for whoever can write to COM1.
         // Zircon makes the same check in the same place -- kernel_shell_init()
@@ -136,7 +142,7 @@ namespace {
         // docs/changes/260910/kshell.md) nothing in the log said so, and
         // "no prompt" looked the same as "no shell".
         if (!ours::boot::options().shell()) {
-            KSHELL.info("not started ({} is off)", ours::boot::BootOptions::SHELL_OPTION);
+            log::info("not started ({} is off)", ours::boot::BootOptions::SHELL_OPTION);
             return;
         }
 
@@ -144,7 +150,7 @@ namespace {
             "kshell", [](void *) -> i32 { return shell_main(); }, nullptr,
             ours::task::DEFAULT_PRIORITY);
         if (thread == nullptr) {
-            KSHELL.warn("failed to spawn console thread");
+            log::warn("failed to spawn console thread");
             return;
         }
 
@@ -158,7 +164,7 @@ namespace {
         // returns, so leaving it joinable only keeps a corpse nobody collects.
         thread->detach();
         thread->resume();
-        KSHELL.info("console on COM1");
+        log::info("console on COM1");
     }
 
     GKTL_INIT_HOOK(KShellInit, spawn, gktl::InitLevel::Platform)

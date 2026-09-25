@@ -5,7 +5,6 @@
 
 #include <logz4/filter.hpp>
 #include <logz4/level.hpp>
-#include <logz4/log.hpp>
 
 #include <atomic>
 #include <optional>
@@ -13,7 +12,6 @@
 
 #include <ours/compiler.hpp>
 #include <ours/types.hpp>
-#include <ustl/util/move.hpp>
 #include <ustl/views/string_view.hpp>
 
 /// The linker section every Domain is placed in, which the image's linker
@@ -71,28 +69,26 @@ struct DomainName final {
     char chars[N]{};
 };
 
-/// A named log domain: who a line came from.
+/// A named log domain: who a line came from, and the level floor that
+/// applies to it.
 ///
 /// GLib calls this a log domain (`G_LOG_DOMAIN`), the Rust `log` crate a
 /// target (filtered with `RUST_LOG=kshell=debug`), Android and Fuchsia
 /// syslog a tag. Linux has no single object for it; a file defines
 /// `pr_fmt` to prefix its lines and dynamic_debug switches pr_debug() sites
 /// per module. A Domain does both jobs: its name is printed on every line
-/// (`[warn] (kshell) ...`) and recorded in the ring, and it carries its own
-/// level floor so one subsystem's debug output can be turned on without
-/// turning on everyone's.
+/// logged in it (`[warn] (kshell) ...`) and recorded in the ring, and it
+/// carries its own level floor so one subsystem's debug output can be
+/// turned on without turning on everyone's.
 ///
-///     constexpr auto &KSHELL = logz4::Domain::named<"kshell">;
-///     KSHELL.warn("failed to spawn console thread");
+/// Code does not log *through* a Domain; it enters one, with LogDomain below,
+/// and logs with the ordinary free functions. A Domain is what the console
+/// finds by name (`log level kshell debug`) and what the ring filters on.
 ///
-/// A Domain cannot be constructed any other way. `named` is the only
-/// constructor call in the tree, and that is what lets the name stand for
-/// the object (see DomainName above) -- and, since `named` places every
-/// instance in LOGZ4_DOMAIN_SECTION, what makes all() the complete list.
-///
-/// The free functions (`log::warn(...)`) remain: they are the anonymous
-/// domain, filtered by the global floor alone and printed without a name,
-/// so existing call sites keep compiling and can move over one at a time.
+/// A Domain cannot be constructed any other way than `named`, and that is
+/// what lets the name stand for the object (see DomainName above) -- and,
+/// since `named` places every instance in LOGZ4_DOMAIN_SECTION, what makes
+/// all() the complete list.
 class Domain final {
   public:
     template <DomainName Name>
@@ -161,46 +157,6 @@ class Domain final {
     [[nodiscard]]
     auto is_enabled(Level level) const -> bool {
         return level >= min_level();
-    }
-
-    template <typename... Args>
-    auto log(Level level, ustl::views::StringView fmt, Args &&...args) const -> void {
-        detail::emit(this, level, fmt, ustl::forward<Args>(args)...);
-    }
-
-    // The same compile-time gate as the free debug()/trace(): in an image
-    // built without KERNEL_DEBUG_LEVEL these calls vanish, whatever floor the
-    // domain is later given -- a per-domain runtime floor can only let
-    // through what the build kept. The call sits *inside* the `if constexpr`
-    // so that it is a discarded statement: not even instantiated, rather
-    // than instantiated and left for the optimizer to delete.
-    template <typename... Args>
-    auto trace(ustl::views::StringView fmt, Args &&...args) const -> void {
-        if constexpr (LOGZ4_VERBOSE_LOGGING) {
-            log(Level::Trace, fmt, ustl::forward<Args>(args)...);
-        }
-    }
-
-    template <typename... Args>
-    auto debug(ustl::views::StringView fmt, Args &&...args) const -> void {
-        if constexpr (LOGZ4_VERBOSE_LOGGING) {
-            log(Level::Debug, fmt, ustl::forward<Args>(args)...);
-        }
-    }
-
-    template <typename... Args>
-    auto info(ustl::views::StringView fmt, Args &&...args) const -> void {
-        log(Level::Info, fmt, ustl::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-    auto warn(ustl::views::StringView fmt, Args &&...args) const -> void {
-        log(Level::Warn, fmt, ustl::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-    auto error(ustl::views::StringView fmt, Args &&...args) const -> void {
-        log(Level::Error, fmt, ustl::forward<Args>(args)...);
     }
 
   private:

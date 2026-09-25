@@ -323,3 +323,65 @@ KSHELL.debug("run '{}' with {} argument(s)", argv[0], argc - 1);  // 新增，di
   代价是提示符会和并发的日志行交错（实测 `kshel[4255394000 cpu0 info] ...`），这是原有行为。
 - **没有替 `gktl::run_command()` 报"未知命令"。** 它返回 void，要报得改 gktl 的接口，
   不属于这一条。
+
+## kshell 改用作用域写法 `LogDomain<"kshell">`（2026-09-24）
+
+**文件**
+- `kernel/lib/kshell/kshell/shell.cpp` — 删掉 `KSHELL` 常量；`spawn()` 整个进入 kshell 域；`dispatch()` 只把自己那行 debug 放进域，命令在域外执行
+
+**症状**
+不是故障。logz4 的域改成了作用域模型（`docs/changes/260924/logz4.md`），`KSHELL.warn(...)`
+这种成员写法删掉了，kshell 是它唯一的用户。
+
+**原因**
+作用域是动态的：域里调用的任何函数打的行都算这个域的。所以作用域放在哪、到哪结束，
+决定了哪些行被标成 `(kshell)`。
+
+**改法**
+
+```cpp
+// shell.cpp（改前）
+KSHELL.debug("run '{}' with {} argument(s)", argv[0], argc - 1);
+gktl::run_command(argc, argv);
+
+// shell.cpp（改后）
+{
+    logz4::LogDomain<"kshell"> domain;
+    log::debug("run '{}' with {} argument(s)", argv[0], argc - 1);
+}
+gktl::run_command(argc, argv);
+```
+
+- **`dispatch()` 的作用域在执行命令前结束。** 命令的输出是命令自己的：`prof: stopped` 是 prof 在说话，
+  不是 kshell；而且 `log level kshell warn` 不应该能把 prof 的输出静音。
+- **`spawn()` 整个在域里。** 起控制台过程中说的话都算 kshell 的，包括 `Thread::spawn()` 替它打的
+  trace（分配内核栈、VMO commit）——这是动态作用域的本意。
+- **`shell_main()` 不开作用域。** 它自己不打日志；开了的话每条命令的输出都会被标成 kshell，
+  理由同第一条。
+
+**参照**
+Rust `tracing` 里 span 该包多大是同一个问题：包住调用就把被调用者的事件算进来。
+
+**验证**
+- 全量构建通过；clang-tidy 对 shell.cpp 无告警。
+- QEMU `kernel.dev.obi`：`[... info] (kshell) console on COM1`，`init: shell says "pong"`、
+  `shell: channel checks passed`、`shell: bad-pointer checks passed` 都在。
+- QEMU `kernel.dev.dbg_1.obi`，在 `kshell> ` 依次敲：
+
+  ```
+  log level warn
+  log level kshell debug
+  log domains     → [... debug] (kshell) run 'log' with 1 argument(s)
+                    log: global floor warn / kshell  debug
+  log level info
+  prof.stop       → [... debug] (kshell) run 'prof.stop' with 0 argument(s)
+                    [... info] prof: stopped                 ← 不带 (kshell)
+                    [... info] prof: no samples collected    ← 不带 (kshell)
+  log dump kshell → 只回放 (kshell) 的记录
+  ```
+
+  启动时 `spawn()` 作用域里 `Thread::spawn()` 的 trace 行带 `(kshell)`
+  （`Allcoated Kernel stack`、`VMO Commit Action`），其它 CPU 上测试线程的 debug 洪流一行都没有。
+
+**故意没做**
+没有给 prof、mutex.stress 等命令开它们自己的域。各自迁移时在命令入口开一个 `LogDomain<"prof">` 即可。

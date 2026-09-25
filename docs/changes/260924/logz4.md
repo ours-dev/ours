@@ -499,3 +499,54 @@ logz4::Domain const *m_log_domain = nullptr;
   这里只是不依赖它。
 - **异常（缺页、#GP）不算中断上下文**，它们记在当前线程的域下。异常是线程自己引起的，
   归到线程正在做的事情下面是对的。
+
+## 只保留作用域写法：删掉 `Domain` 上的日志成员，`vlog_dispatch()` 恢复原签名（2026-09-24）
+
+**文件**
+- `system/lib/logz4/include/logz4/domain.hpp` — 删掉 `log/trace/debug/info/warn/error` 成员；类注释改为"进入域，再用自由函数"
+- `system/lib/logz4/include/logz4/log.hpp` — `vlog_dispatch()`/`vlog()` 去掉域参数；`detail::emit()` 并回 `log()`
+- `system/lib/logz4/src/log.cpp` — `vlog()` 总是读当前域
+- `kernel/top/panic.cpp`、`kernel/phys/panic.cpp` — 两处直接调用去掉 `nullptr` 参数，回到改动前的样子
+- `system/lib/logz4/test/logz4_test.cpp` — 原来经由成员打日志的用例改为在作用域里打（`log_in<"alpha">(level, ...)`）；删掉"显式成员优先于作用域"的用例
+- `kernel/lib/kshell/kshell/shell.cpp` — 改用 `LogDomain<"kshell">`（见 `kshell.md`）
+
+**症状**
+同一件事有两种写法：`KSHELL.warn(...)` 和 `{ LogDomain<"kshell"> d; log::warn(...); }`。
+两种写法的优先级还得额外规定（上一版：显式成员优先）。
+
+**原因**
+定下来的模型是"进入一个域"：说什么由调用点决定，谁在说由外围的作用域决定。
+成员写法让调用点同时决定这两件事，和作用域并存就要回答"两个说法冲突听谁的"——
+一个本不该存在的问题。上一版保留它，只是因为内核还没有按线程的槽，kshell 没法先迁移。
+
+**改法**
+kshell 迁移完，成员写法就没有用户了，一并删掉。于是域不再需要沿调用路径传下去：
+
+```cpp
+// log.hpp（改前，上一版）
+auto vlog_dispatch(Logger &logger, Domain const *domain, Level level,
+                   ustl::views::StringView fmt, ustl::fmt::FormatArgs const &args) -> void;
+
+// log.hpp（改后，与引入域之前完全相同）
+auto vlog_dispatch(Logger &logger, Level level, ustl::views::StringView fmt,
+                   ustl::fmt::FormatArgs const &args) -> void;
+
+// log.cpp（改后）
+auto const *const domain = current_domain();
+```
+
+`vlog_dispatch()` 是 physload 导出给模块的 ABI，它回到原签名也就意味着这一整串功能
+在模块边界上没有留下任何变化；panic 的两处直接调用也回到原样。
+`Domain` 现在只是"一个有名字、有级别、在注册表里的记录"：控制台按名字找它，ring 按它过滤，
+`LogDomain` 进入它。
+
+**参照**
+Rust `tracing`：事件（`info!`）本身不带 span，span 由外围的 `enter()` 决定——这里是同一个分工。
+
+**验证**
+- 全量构建通过；`logz4-test` 通过；clang-tidy 无新告警。
+- QEMU `kernel.dev.dbg_1.obi` 见 `kshell.md` 同日同名一节；`kernel.dev.obi` 三行检查都在。
+
+**故意没做**
+没有保留成员写法作为"一次性给某一行指定域"的捷径：需要时写一个两行的作用域，
+而不是让同一件事重新有两种写法。

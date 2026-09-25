@@ -31,7 +31,7 @@ auto vpanic(String fmt, FormatArgs const &args) -> void {
     quiesce_machine();
 
     logz4::dump_recent();
-    log::vlog(logz4::get_global_logger(), nullptr, logz4::Level::Error, fmt, args);
+    log::vlog(logz4::get_global_logger(), logz4::Level::Error, fmt, args);
     while (1) {
         arch::halt();
     }
@@ -54,7 +54,7 @@ auto vpanic(std::string_view message) -> void {
     quiesce_machine();
 
     logz4::dump_recent();
-    log::vlog(logz4::get_global_logger(), nullptr, logz4::Level::Error, std::string_view("{}"),
+    log::vlog(logz4::get_global_logger(), logz4::Level::Error, std::string_view("{}"),
               std::make_format_args(message));
     while (1) {
         arch::halt();

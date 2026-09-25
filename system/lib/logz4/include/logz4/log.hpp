@@ -50,49 +50,36 @@ auto dump_recent(Domain const &only) -> void;
 // hidden, and a hidden undefined reference can never bind to the loader's
 // export table.)
 //
-// `domain` is who wrote the line, or null for the anonymous domain the free
-// functions below log to. It is a pointer rather than a name so that the
-// record ring can keep it for filtering at the cost of one word.
+// A line carries no domain argument: vlog() attributes it to the running
+// context's current domain (LogDomain, domain.hpp), so a call site says what
+// happened and the scope around it says who is speaking.
 PHYS_EXPORT
-auto vlog_dispatch(Logger &logger, Domain const *domain, Level level, ustl::views::StringView fmt,
+auto vlog_dispatch(Logger &logger, Level level, ustl::views::StringView fmt,
                    ustl::fmt::FormatArgs const &args) -> void;
 
-/// Formats `fmt`/`args` into one whole line (metadata prefix, domain name,
-/// body, newline), appends it to the record ring, and hands it to `logger`
-/// in a single write() call. Defined in log.cpp for ustl::views::StringView;
-/// every caller in the tree passes exactly that type.
+/// Formats `fmt`/`args` into one whole line (metadata prefix, current
+/// domain, body, newline), appends it to the record ring, and hands it to
+/// `logger` in a single write() call. Defined in log.cpp for
+/// ustl::views::StringView; every caller in the tree passes exactly that
+/// type.
 template <typename String>
-auto vlog(Logger &logger, Domain const *domain, Level level, String fmt,
-          ustl::fmt::FormatArgs const &args) -> void;
-
-namespace detail {
-    /// The one path from a call site into vlog_dispatch(), shared by the free
-    /// functions and Domain's members so the argument handling below exists
-    /// once.
-    template <typename... Args>
-    inline auto emit(Domain const *domain, Level level, ustl::views::StringView fmt, Args &&...args)
-        -> void {
-        // Each argument goes through decay_format_arg() and the lambda binds
-        // the results as lvalues, which is what make_format_args() requires
-        // -- the decay may hand back a prvalue string_view, and it has to
-        // outlive the argument store.
-        //
-        // Without the decay, a `char buf[N]` argument reaches the store as an
-        // array type and this libc++ formats it as nothing at all:
-        // `log::info("|{}|", name)` printed "||" for a name that was perfectly
-        // well formed. It fails silently, which makes it a bad thing for a
-        // logger to do -- the one line you added to find a bug is the line
-        // that lies to you.
-        return [&](auto &&...prepared) {
-            vlog_dispatch(get_global_logger(), domain, level, fmt,
-                          ustl::fmt::make_format_args(prepared...));
-        }(ustl::fmt::decay_format_arg(ustl::forward<Args>(args))...);
-    }
-} // namespace detail
+auto vlog(Logger &logger, Level level, String fmt, ustl::fmt::FormatArgs const &args) -> void;
 
 template <typename... Args>
 inline auto log(Level level, ustl::views::StringView fmt, Args &&...args) -> void {
-    detail::emit(nullptr, level, fmt, ustl::forward<Args>(args)...);
+    // Each argument goes through decay_format_arg() and the lambda binds the
+    // results as lvalues, which is what make_format_args() requires -- the
+    // decay may hand back a prvalue string_view, and it has to outlive the
+    // argument store.
+    //
+    // Without the decay, a `char buf[N]` argument reaches the store as an
+    // array type and this libc++ formats it as nothing at all: `log::info("|{}|",
+    // name)` printed "||" for a name that was perfectly well formed. It fails
+    // silently, which makes it a bad thing for a logger to do -- the one line
+    // you added to find a bug is the line that lies to you.
+    return [&](auto &&...prepared) {
+        vlog_dispatch(get_global_logger(), level, fmt, ustl::fmt::make_format_args(prepared...));
+    }(ustl::fmt::decay_format_arg(ustl::forward<Args>(args))...);
 }
 
 // The Debug/Trace levels are compiled out unless the image was built with

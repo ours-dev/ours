@@ -8,6 +8,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <cassert>
 
@@ -58,6 +59,13 @@ auto slot_a() -> logz4::Domain const *& {
 
 auto slot_b() -> logz4::Domain const *& {
     return g_slot_b;
+}
+
+/// One line logged from inside `Name`'s scope.
+template <logz4::DomainName Name, typename... Args>
+auto log_in(logz4::Level level, std::string_view fmt, Args &&...args) -> void {
+    logz4::LogDomain<Name> domain;
+    logz4::log(level, fmt, std::forward<Args>(args)...);
 }
 } // namespace
 
@@ -152,13 +160,13 @@ auto main() -> int {
         assert(g_emergency.find("[error] boom\n") != std::string::npos);
     }
 
-    // A domain prints its name after the bracket, and nothing else about the
-    // line changes.
+    // A line in a domain prints the name after the bracket, and nothing else
+    // about the line changes.
     {
         reset();
         logger = CaptureLogger{};
         logz4::set_global_logger(logger);
-        ALPHA.info("hello {}", 7);
+        log_in<"alpha">(logz4::Level::Info, "hello {}", 7);
         assert(logger.writes == 1);
         assert(logger.text == "[info] (alpha) hello 7\n");
     }
@@ -169,7 +177,7 @@ auto main() -> int {
         logz4::set_global_logger(logger);
         logz4::set_clock(read_time);
         logz4::set_cpu(read_cpu);
-        ALPHA.warn("x");
+        log_in<"alpha">(logz4::Level::Warn, "x");
         assert(logger.text == "[42 cpu3 warn] (alpha) x\n");
     }
 
@@ -189,8 +197,8 @@ auto main() -> int {
         assert(!ALPHA.own_min_level().has_value());
         logz4::set_min_level(logz4::Level::Warn);
         assert(ALPHA.min_level() == logz4::Level::Warn);
-        ALPHA.info("dropped");
-        ALPHA.warn("kept");
+        log_in<"alpha">(logz4::Level::Info, "dropped");
+        log_in<"alpha">(logz4::Level::Warn, "kept");
         assert(logger.text == "[warn] (alpha) kept\n");
     }
 
@@ -202,9 +210,9 @@ auto main() -> int {
         logz4::set_global_logger(logger);
         logz4::set_min_level(logz4::Level::Error);
         ALPHA.set_min_level(logz4::Level::Debug);
-        ALPHA.debug("alpha debug");
-        ALPHA.trace("alpha trace");
-        BETA.info("beta info");
+        log_in<"alpha">(logz4::Level::Debug, "alpha debug");
+        log_in<"alpha">(logz4::Level::Trace, "alpha trace");
+        log_in<"beta">(logz4::Level::Info, "beta info");
         log::info("anonymous info");
         assert(logger.text == "[debug] (alpha) alpha debug\n");
         assert(ALPHA.own_min_level() == logz4::Level::Debug);
@@ -216,10 +224,10 @@ auto main() -> int {
         logger = CaptureLogger{};
         logz4::set_global_logger(logger);
         ALPHA.set_min_level(logz4::Level::Error);
-        ALPHA.warn("held back");
-        BETA.warn("beta warn");
+        log_in<"alpha">(logz4::Level::Warn, "held back");
+        log_in<"beta">(logz4::Level::Warn, "beta warn");
         ALPHA.clear_min_level();
-        ALPHA.warn("let through");
+        log_in<"alpha">(logz4::Level::Warn, "let through");
         assert(logger.text == "[warn] (beta) beta warn\n[warn] (alpha) let through\n");
     }
 
@@ -246,7 +254,7 @@ auto main() -> int {
         logz4::set_global_logger(logger);
         logz4::set_min_level(logz4::Level::Error);
         logz4::Domain::find("alpha")->set_min_level(logz4::Level::Debug);
-        ALPHA.debug("through the registry");
+        log_in<"alpha">(logz4::Level::Debug, "through the registry");
         assert(logger.text == "[debug] (alpha) through the registry\n");
     }
 
@@ -256,10 +264,10 @@ auto main() -> int {
         reset();
         logger = CaptureLogger{};
         logz4::set_global_logger(logger);
-        ALPHA.info("a1");
-        BETA.info("b1");
+        log_in<"alpha">(logz4::Level::Info, "a1");
+        log_in<"beta">(logz4::Level::Info, "b1");
         log::info("n1");
-        ALPHA.warn("a2");
+        log_in<"alpha">(logz4::Level::Warn, "a2");
 
         CaptureLogger only_alpha;
         assert(logz4::ring::dump_to(only_alpha, ALPHA) == 2);
@@ -323,18 +331,6 @@ auto main() -> int {
 
         CaptureLogger only_alpha;
         assert(logz4::ring::dump_to(only_alpha, ALPHA) == 1);
-    }
-
-    // A domain's own members name it outright, whatever scope they run in.
-    {
-        reset();
-        logger = CaptureLogger{};
-        logz4::set_global_logger(logger);
-        {
-            logz4::LogDomain<"alpha"> domain;
-            BETA.info("explicit");
-        }
-        assert(logger.text == "[info] (beta) explicit\n");
     }
 
     // Leaving restores the slot the guard wrote on the way in, not whichever
