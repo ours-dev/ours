@@ -8,6 +8,7 @@ cpp_interface("headers") {
     "include/logz4/log.hpp",
     "include/logz4/logger.hpp",
     "include/logz4/ring.hpp",
+    "include/logz4/target.hpp",
   ]
   public_deps = [
     "//system/lib/ustl:headers",

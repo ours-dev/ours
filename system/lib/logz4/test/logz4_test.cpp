@@ -4,6 +4,7 @@
 #include <logz4/filter.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
+#include <logz4/target.hpp>
 
 #include <string>
 #include <string_view>
@@ -24,6 +25,9 @@ class CaptureLogger final: public logz4::Logger {
     usize writes = 0;
 };
 
+constexpr auto &ALPHA = logz4::Target::named<"alpha">;
+constexpr auto &BETA = logz4::Target::named<"beta">;
+
 auto read_time() -> logz4::Time {
     return 42;
 }
@@ -37,6 +41,8 @@ auto reset() -> void {
     logz4::set_clock(nullptr);
     logz4::set_cpu(nullptr);
     logz4::set_min_level(logz4::Level::Trace);
+    ALPHA.clear_min_level();
+    BETA.clear_min_level();
     g_emergency.clear();
 }
 } // namespace
@@ -130,6 +136,100 @@ auto main() -> int {
         g_emergency.clear();
         logz4::dump_recent();
         assert(g_emergency.find("[error] boom\n") != std::string::npos);
+    }
+
+    // A target prints its name after the bracket, and nothing else about the
+    // line changes.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        ALPHA.info("hello {}", 7);
+        assert(logger.writes == 1);
+        assert(logger.text == "[info] (alpha) hello 7\n");
+    }
+
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        logz4::set_clock(read_time);
+        logz4::set_cpu(read_cpu);
+        ALPHA.warn("x");
+        assert(logger.text == "[42 cpu3 warn] (alpha) x\n");
+    }
+
+    // One name, one object: a second mention of "alpha" is the same Target,
+    // so a floor set through either spelling governs both.
+    {
+        assert(&logz4::Target::named<"alpha"> == &ALPHA);
+        assert(&logz4::Target::named<"beta"> != &ALPHA);
+        assert(std::string_view(BETA.name()) == "beta");
+    }
+
+    // A target follows the global floor until it is given its own.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        assert(!ALPHA.own_min_level().has_value());
+        logz4::set_min_level(logz4::Level::Warn);
+        assert(ALPHA.min_level() == logz4::Level::Warn);
+        ALPHA.info("dropped");
+        ALPHA.warn("kept");
+        assert(logger.text == "[warn] (alpha) kept\n");
+    }
+
+    // Its own floor may be looser than the global one: that is the use --
+    // one subsystem's debug output with everyone else held at error.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        logz4::set_min_level(logz4::Level::Error);
+        ALPHA.set_min_level(logz4::Level::Debug);
+        ALPHA.debug("alpha debug");
+        ALPHA.trace("alpha trace");
+        BETA.info("beta info");
+        log::info("anonymous info");
+        assert(logger.text == "[debug] (alpha) alpha debug\n");
+        assert(ALPHA.own_min_level() == logz4::Level::Debug);
+    }
+
+    // ...or stricter, and clearing it hands the target back to the global.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        ALPHA.set_min_level(logz4::Level::Error);
+        ALPHA.warn("held back");
+        BETA.warn("beta warn");
+        ALPHA.clear_min_level();
+        ALPHA.warn("let through");
+        assert(logger.text == "[warn] (beta) beta warn\n[warn] (alpha) let through\n");
+    }
+
+    // A ring dump can be narrowed to one target; the full dump still
+    // carries every line, anonymous ones included.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        ALPHA.info("a1");
+        BETA.info("b1");
+        log::info("n1");
+        ALPHA.warn("a2");
+
+        CaptureLogger only_alpha;
+        assert(logz4::ring::dump_to(only_alpha, ALPHA) == 2);
+        assert(only_alpha.text == "[info] (alpha) a1\n[warn] (alpha) a2\n");
+
+        CaptureLogger all;
+        assert(logz4::ring::dump_to(all) == 4);
+
+        logger.text.clear();
+        logz4::dump_recent(BETA);
+        assert(logger.text == "[info] (beta) b1\n");
     }
 
     {

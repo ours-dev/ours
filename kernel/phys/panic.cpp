@@ -25,7 +25,7 @@ auto vpanic(std::string_view message) -> void {
     // parsed by it a second time. See the kernel's vpanic() for what that
     // cost.
     logz4::dump_recent();
-    log::vlog(logz4::get_global_logger(), logz4::Level::Error, std::string_view("{}"),
+    log::vlog(logz4::get_global_logger(), nullptr, logz4::Level::Error, std::string_view("{}"),
               ustl::fmt::make_format_args(message));
     while (1)
         ;

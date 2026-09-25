@@ -25,12 +25,13 @@ namespace {
         u32 cpu;
         std::atomic<u64> ticket;
         Time time;
+        Target const *target;
         Level level;
         u16 len;
         char bytes[LINE_BYTES];
     };
 
-    static_assert(sizeof(Slot) == 544, "Slot layout is part of the .bss budget");
+    static_assert(sizeof(Slot) == 552, "Slot layout is part of the .bss budget");
 
     /// Claimed in order by fetch_add; the slot is `ticket % SLOT_COUNT`.
     /// Monotonic, so replay order is reconstructed even after wraps.
@@ -39,7 +40,8 @@ namespace {
     Slot slots[SLOT_COUNT];
 } // namespace
 
-auto append(char const *line, usize len, Time time, u32 cpu, Level level) -> void {
+auto append(char const *line, usize len, Time time, u32 cpu, Level level, Target const *target)
+    -> void {
     auto const ticket = next_ticket.fetch_add(1, std::memory_order_acq_rel);
     auto &slot = slots[ticket % SLOT_COUNT];
 
@@ -61,6 +63,7 @@ auto append(char const *line, usize len, Time time, u32 cpu, Level level) -> voi
     slot.time = time;
     slot.cpu = cpu;
     slot.level = level;
+    slot.target = target;
     auto stored_len = len;
     if (stored_len > LINE_BYTES) {
         stored_len = LINE_BYTES;
@@ -73,48 +76,69 @@ auto append(char const *line, usize len, Time time, u32 cpu, Level level) -> voi
     slot.state.store(static_cast<u32>(SlotState::Committed), std::memory_order_release);
 }
 
-auto dump_to(Logger &sink) -> usize {
-    auto const next = next_ticket.load(std::memory_order_acquire);
-    auto first = u64{0};
-    if (next > SLOT_COUNT) {
-        first = next - SLOT_COUNT;
-    }
+namespace {
+    /// Both dumps in one loop. `only` null means every record, which is not
+    /// the same as "the anonymous target's records" -- nothing asks for
+    /// those alone, so the null needs no second meaning.
+    auto replay(Logger &sink, Target const *only) -> usize {
+        auto const next = next_ticket.load(std::memory_order_acquire);
+        auto first = u64{0};
+        if (next > SLOT_COUNT) {
+            first = next - SLOT_COUNT;
+        }
 
-    usize replayed = 0;
-    char copy[LINE_BYTES];
-    for (auto ticket = first; ticket < next; ++ticket) {
-        auto const &slot = slots[ticket % SLOT_COUNT];
-        if (slot.state.load(std::memory_order_acquire) != static_cast<u32>(SlotState::Committed)) {
-            continue;
+        usize replayed = 0;
+        char copy[LINE_BYTES];
+        for (auto ticket = first; ticket < next; ++ticket) {
+            auto const &slot = slots[ticket % SLOT_COUNT];
+            if (slot.state.load(std::memory_order_acquire) !=
+                static_cast<u32>(SlotState::Committed)) {
+                continue;
+            }
+            // A committed slot whose ticket disagrees with the position being
+            // replayed has been claimed by a newer producer: its bytes belong
+            // to the future, not to this position.
+            if (slot.ticket.load(std::memory_order_relaxed) != ticket) {
+                continue;
+            }
+            auto const len = slot.len;
+            if (len > LINE_BYTES) {
+                continue;
+            }
+            // Like `len`, read after the first check and vouched for by the
+            // recheck below: a target taken from a slot that is being
+            // overwritten is thrown away together with that slot's bytes.
+            if (only != nullptr && slot.target != only) {
+                continue;
+            }
+            if (len != 0) {
+                std::memcpy(copy, slot.bytes, len);
+            }
+            // Recheck after the copy: a producer that claimed this slot
+            // mid-memcpy would have moved state off Committed or changed the
+            // ticket, and the bytes in `copy` would be torn.
+            if (slot.state.load(std::memory_order_acquire) !=
+                static_cast<u32>(SlotState::Committed)) {
+                continue;
+            }
+            if (slot.ticket.load(std::memory_order_relaxed) != ticket) {
+                continue;
+            }
+            if (len != 0) {
+                sink.write(copy, len);
+            }
+            ++replayed;
         }
-        // A committed slot whose ticket disagrees with the position being
-        // replayed has been claimed by a newer producer: its bytes belong
-        // to the future, not to this position.
-        if (slot.ticket.load(std::memory_order_relaxed) != ticket) {
-            continue;
-        }
-        auto const len = slot.len;
-        if (len > LINE_BYTES) {
-            continue;
-        }
-        if (len != 0) {
-            std::memcpy(copy, slot.bytes, len);
-        }
-        // Recheck after the copy: a producer that claimed this slot
-        // mid-memcpy would have moved state off Committed or changed the
-        // ticket, and the bytes in `copy` would be torn.
-        if (slot.state.load(std::memory_order_acquire) != static_cast<u32>(SlotState::Committed)) {
-            continue;
-        }
-        if (slot.ticket.load(std::memory_order_relaxed) != ticket) {
-            continue;
-        }
-        if (len != 0) {
-            sink.write(copy, len);
-        }
-        ++replayed;
+        return replayed;
     }
-    return replayed;
+} // namespace
+
+auto dump_to(Logger &sink) -> usize {
+    return replay(sink, nullptr);
+}
+
+auto dump_to(Logger &sink, Target const &only) -> usize {
+    return replay(sink, &only);
 }
 
 auto reset_for_test() -> void {
