@@ -263,7 +263,9 @@ auto Scheduler::unpark_thread(Thread::UnparkList threads, UnparkOptions options)
         // magic (here, reschedule_mask(), Current::tick()), so the first
         // unpark of the boot died in the check rather than in anything real.
         thread->m_canary.verify<Thread>();
-        Guard thread_guard{thread->get_pi_lock()};
+        // IrqSave only: the reschedule this may call for is collected in
+        // |to_resched| and requested after the loop, once no PI lock is held.
+        Guard<SpinLock, IrqSave> thread_guard{thread->get_pi_lock()};
 
         CpuNum target_cpu;
         if (!!(options & UnparkOptions::ThisCpu)) {
@@ -461,8 +463,12 @@ auto Scheduler::tick_thread(Thread *current, SchedTime now) -> void {
     //
     // The order is the tree's: a thread's PI lock outside, the run queue's
     // lock inside. Zircon's tick path takes the same pair the same way round.
-    Guard pi_guard{current->get_pi_lock()};
-    Guard rq_guard{get_lock()};
+    //
+    // Interrupts are already off -- this runs from the tick -- and both guards
+    // are IrqSave all the same: each lock is also taken in thread context, and
+    // is only ever held with interrupts off.
+    Guard<SpinLock, IrqSave> pi_guard{current->get_pi_lock()};
+    Guard<SpinLock, IrqSave> rq_guard{get_lock()};
 
     m_run_queue.m_clock_source.update_clock();
 
@@ -490,7 +496,7 @@ auto Scheduler::steal_work_from(CpuMask const &mask) -> Thread * {
 auto Scheduler::process_migrating_threads(SchedTime now) -> void {
     Thread::MigratingList migrating_threads;
     {
-        Guard guard{m_run_queue.m_migrating_threads_lock};
+        Guard<SpinLock, IrqSave> guard{m_run_queue.m_migrating_threads_lock};
         m_run_queue.m_migrating_threads.swap(migrating_threads);
     }
 
@@ -653,8 +659,8 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     DEBUG_ASSERT(arch::irqs_disabled(), "Enter {} with IRQ enabled", __func__);
     DEBUG_ASSERT(curr->preemption_state().preemption_disabled_count() != 0,
                  "Enter {}() with preempt enabled", __func__);
-    DEBUG_ASSERT(m_run_queue.m_which_cpu == Cpu::id(), "Invoke {}() on mismatched CPU[{}]", __func__,
-                 Cpu::id());
+    DEBUG_ASSERT(m_run_queue.m_which_cpu == Cpu::id(), "Invoke {}() on mismatched CPU[{}]",
+                 __func__, Cpu::id());
     DEBUG_ASSERT(curr == m_run_queue.m_curr_thread);
 
     assert_thread_in_scheduler(curr);
@@ -673,7 +679,14 @@ auto Scheduler::reschedule_common(Thread *curr, Mode mode) -> void {
     rqs.set_transient_state_rescheduling();
 
     // Grabs this scheduler's runqueue lock.
-    Guard guard{get_lock()};
+    //
+    // IrqSave over interrupts the entry assertion has already seen off, so it
+    // saves and later restores "off". The saver belongs to this frame, not to
+    // the lock: unguard() below hands the lock to switch_context(), which
+    // drops it before the switch, while the saver stays here until this thread
+    // is switched back in and returns -- restoring "off" for the caller, whose
+    // own guard then restores what it saved.
+    Guard<SpinLock, IrqSave> guard{get_lock()};
 
     // When unparking a thread, in |Scheduler::enqueue_thread| the clock had been updated
     // and send to the clock driver a skip request. Therefore we firstly try to response the
@@ -842,7 +855,7 @@ auto Scheduler::do_unpark_thread(Thread *thread, UnparkOptions options) -> void 
     auto const enqueue_control = EnqueueOptions::WakeUp;
     auto schedule = set_schedule(thread);
 
-    Guard guard{get_lock()};
+    Guard<SpinLock, IrqSave> guard{get_lock()};
 
     thread->set_state_ready();
     activate_thread(thread, enqueue_control);
@@ -984,7 +997,7 @@ auto Scheduler::find_active_scheduler_for(Thread *thread, F f, Args &&...args) -
         auto const target_cpu = Self::select_target_cpu(thread);
         auto &self = Scheduler::Current::get(target_cpu);
 
-        Guard guard{self.get_lock()};
+        Guard<SpinLock, IrqSave> guard{self.get_lock()};
         if (self.is_state_active()) {
             f(thread, &self, ustl::forward<Args>(args)...);
             return target_cpu;
@@ -1034,7 +1047,7 @@ auto Scheduler::Current::yield_thread(Thread *current) -> void {
         // scoped its guard this way; this one did not, and the inverted
         // TA_REQUIRE(get_lock()) on reschedule_common() kept the analysis
         // from noticing.
-        Guard guard{self.get_lock()};
+        Guard<SpinLock, IrqSave> guard{self.get_lock()};
 
         self.m_run_queue.m_clock_source.update_clock();
         so.schedule()->yield_thread(self.m_run_queue, current);
@@ -1055,7 +1068,7 @@ auto Scheduler::Current::yield_to_thread(Thread *curr, Thread *thread) -> Status
 
     Status yielded;
     {
-        Guard guard{self.get_lock()};
+        Guard<SpinLock, IrqSave> guard{self.get_lock()};
 
         if (curr_so.schedule() != next_so.schedule()) {
             return Status::BadState;

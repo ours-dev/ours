@@ -231,6 +231,10 @@ class RunQueue {
 
   private:
     CpuNum m_which_cpu;
+    /// Held with interrupts off by every holder, as Linux holds rq->lock and
+    /// Zircon a scheduler's queue_lock_: the tick takes it from interrupt
+    /// context (Scheduler::tick_thread()), and a holder in thread context that
+    /// the tick interrupted would leave it spinning on its own CPU's lock.
     sync::SpinLock m_rqlock;
 
     SchedClock m_clock_source;
@@ -243,6 +247,7 @@ class RunQueue {
     SchedTime m_curr_started_time;
     SchedTime m_curr_preempt_time;
 
+    /// IrqSave like m_rqlock, whose run queue it feeds.
     sync::SpinLock m_migrating_threads_lock;
     Thread::MigratingList m_migrating_threads;
 

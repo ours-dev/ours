@@ -28,7 +28,7 @@ auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
     // Is the thread in active state?
     if (auto const which_cpu = context.curr_cpu(); which_cpu != INVALID_CPU_NUM) {
         auto &scheduler = Scheduler::Current::get(which_cpu);
-        Guard guard{scheduler.get_lock()};
+        Guard<sync::SpinLock, IrqSave> guard{scheduler.get_lock()};
 
         scheduler.assert_thread_in_scheduler(&thread);
 
