@@ -35,6 +35,10 @@ class BootOptions final {
     /// userboot() for why it is the image's to choose.
     static constexpr std::string_view USERBOOT_OPTION{"kernel.select.userboot"};
 
+    /// Whether the kernel shell starts. Zircon's option of the same name and
+    /// the same default; see shell().
+    static constexpr std::string_view SHELL_OPTION{"kernel.shell"};
+
     /// Applies the options `cmdline` names and leaves the rest at their
     /// defaults. A value an option cannot take is logged and ignored rather
     /// than refused: nothing downstream could act on an error, and the
@@ -68,7 +72,26 @@ class BootOptions final {
         return m_userboot;
     }
 
+    /// `kernel.shell`, `kernel.shell=true`: start the kernel shell on COM1.
+    /// False when absent.
+    ///
+    /// Off by default, as in Zircon, because of what the shell is: a ring-0
+    /// thread that runs whatever registered command a serial line names, with
+    /// no notion of who is typing. That is the right thing for a bring-up
+    /// image driven over its console and the wrong thing to get by
+    /// forgetting to say otherwise, so an image that wants it asks for it
+    /// (//kernel/products/image/dev/BUILD.gn). This only decides whether the
+    /// shell *starts*; whether it is in the kernel at all is the build
+    /// argument kernel_shell_enabled (//kernel/kernel_params.gni), and with
+    /// that off this option is read and has nothing to steer.
+    [[nodiscard]]
+    auto shell() const -> bool {
+        return m_shell;
+    }
+
   private:
+    bool m_shell{false};
+
     /// A copy, NUL-terminated, rather than a view into the command line: the
     /// value is a slice of the Config item that ends at a space, and holding
     /// the slice would tie this object to the package mapping for good.

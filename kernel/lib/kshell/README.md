@@ -15,11 +15,18 @@ and backspace) and dispatches them through `gktl::run_command`.
 Drive it interactively over QEMU's serial console, or from scripts:
 `prof.start tick 4` / `prof.stop` / `prof.dump` (see libprof).
 
-## Turning it off
+## Turning it on and off
 
 The shell runs every registered command, in ring 0, for whoever can write to
-the serial line, so a kernel can be built without it: the GN argument
-`kernel_shell_enabled = false` (`//kernel/kernel_params.gni`) leaves this
-library and `//kernel/commands` out of the link.
+the serial line, so it is switched at two levels:
 
-    tools/set.py bringup.x86 --args kernel_shell_enabled=false
+- **Boot:** the thread starts only when the image's command line says
+  `kernel.shell=true` (or bare `kernel.shell`). It is off by default, as in
+  Zircon; the bring-up images ask for it in their `kernel_cmdline`
+  (`//kernel/products/image/dev`, `dev.dbg_1`). Off, the log says
+  `kshell: not started (kernel.shell is off)`.
+- **Build:** the GN argument `kernel_shell_enabled = false`
+  (`//kernel/kernel_params.gni`) leaves this library and `//kernel/commands`
+  out of the link, whatever the command line says.
+
+      tools/set.py bringup.x86 --args kernel_shell_enabled=false

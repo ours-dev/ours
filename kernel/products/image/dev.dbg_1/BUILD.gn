@@ -50,12 +50,19 @@ kernel_package("ours") {
 # 值是 BootFS 里的文件名，不是 label：kernel_elf_binary("shell")
 # 设了 has_patches = false，所以它落成一个裸的 `shell`
 # 文件而不是 `shell/` 子树。
+#
+# `kernel.shell=true`: the kernel shell is off by default (see
+# //kernel/products/image/dev), and this image had it before the option
+# existed, so it keeps it.
 kernel_cmdline("cmdline") {
   visibility = [
     ":*",
     "//products/*",
   ]
-  args = [ "kernel.select.userboot=shell" ]
+  args = [
+    "kernel.select.userboot=shell",
+    "kernel.shell=true",
+  ]
 }
 
 kernel_image("dev.dbg_1") {

@@ -126,3 +126,132 @@ if (kernel_shell_enabled) {
   脚手架。
 - **没有让 `sys_command_list` 在无 shell 时返回空**。它列的是注册表，不是 shell 能跑
   什么；让它知道 shell 存不存在，就得把构建参数再接进 syscall 库，换来的只是少列一行。
+
+## 启动参数 kernel.shell：默认不起 shell，要用的镜像自己打开（2026-09-24）
+
+**文件**
+- `kernel/include/ours/boot/options.hpp` —— `BootOptions` 加 `SHELL_OPTION` 和 `shell()`，默认 `false`
+- `kernel/top/boot_options.cpp` —— 新增 `parse_flag()`，解析 `kernel.shell`
+- `kernel/lib/obi/include/obi/command_line_view.hpp` —— 新增 `CommandLineView::parse_bool()`
+- `kernel/phys/boot_options.cpp` —— 删掉自己的 `parse_bool()`，改用上面那个
+- `kernel/lib/kshell/kshell/shell.cpp` —— `spawn()` 在 `kernel.shell` 关着时直接返回并打一行日志
+- `kernel/lib/kshell/BUILD.gn` —— 加 `//kernel/phys:handoff`（obi 头文件）
+- `kernel/products/image/dev/BUILD.gn`、`kernel/products/image/dev.dbg_1/BUILD.gn` —— cmdline 加 `kernel.shell=true`
+- `kernel/lib/kshell/README.md` —— 「Turning it on and off」
+
+**症状**
+潜伏，同上一条：链接进来的 kshell 一定会启动。上一条让它可以不被链接，但一个带着
+shell 的内核（比如同一份 vmours 既给调试镜像也给别的镜像用）仍然没有办法「带着但
+不开」。
+
+**原因**
+`KShellInit` 这个 init hook 无条件 `spawn()`：
+
+```cpp
+// kernel/lib/kshell/kshell/shell.cpp（改前）
+auto spawn() -> void {
+    auto *thread = ours::task::Thread::spawn("kshell", ...);
+    ...
+    thread->resume();
+}
+```
+
+「要不要起 shell」本该是被启动的那个镜像的决定，却被写死成了「起」。更要紧的是
+默认值的方向：shell 是一个在 ring 0 里、谁往串口写字就替谁跑命令的线程，这种东西
+应该是**要了才有**，而不是**忘了关就有**。Zircon 的 `kernel.shell` 默认就是 `false`。
+
+**改法**
+
+```cpp
+// kernel/lib/kshell/kshell/shell.cpp（改后）
+auto spawn() -> void {
+    if (!ours::boot::options().shell()) {
+        log::info("kshell: not started ({} is off)", ours::boot::BootOptions::SHELL_OPTION);
+        return;
+    }
+    ...
+}
+```
+
+```gn
+# kernel/products/image/dev/BUILD.gn（改后）
+kernel_cmdline("cmdline") {
+  args = [
+    "kernel.select.userboot=init",
+    "kernel.shell=true",
+  ]
+}
+```
+
+几个取舍：
+
+1. **读参数走上一步做好的 `boot::BootOptions`，不在 kshell 里再查一次命令行**。
+   这正是那一步的目的：名字、默认值、语法只写一处。
+
+2. **布尔语法和 phys 共用一份**。phys 读 `aslr.disabled` 用的是自己匿名命名空间里的
+   `parse_bool()`（`1/true/yes`、`0/false/no`，其他值报错）。内核第一次有布尔参数，
+   如果再写一份，同一条命令行上的同一个词就可能对两个读者意思不同。所以把它提到
+   两者都能用的 `obi::CommandLineView::parse_bool()`，phys 改为调用它，行为不变：
+
+   ```cpp
+   // kernel/phys/boot_options.cpp（改前）
+   if (!parse_bool(value.value(), m_aslr_disabled)) { return Status::InvArgs; }
+   // （改后）
+   auto const parsed = obi::CommandLineView::parse_bool(value.value());
+   if (parsed.is_none()) { return Status::InvArgs; }
+   m_aslr_disabled = parsed.value();
+   ```
+
+   和 Zircon 的差别是有意的：Zircon `BootOptions::Parse(bool)` 把除
+   `false`/`0`/`off` 之外的一切（包括拼错的词）都当成 true；这里拼错的值会报错并保留
+   默认值。对一个默认关的后门来说，`kernel.shell=flase` 应该是一句抱怨，而不是一个 shell。
+
+3. **在 hook 里判断，不去「不注册 hook」**。注册是链接期的段记录，没法依赖命令行；
+   「根本不链接」是构建的决定（上一条的 `kernel_shell_enabled`），不是启动的决定。
+   两层是正交的：构建关了，启动参数写什么都没用（读了，没人消费）。
+
+4. **关着的时候打一行 info**。上一次 kshell 不出现（线程创建了没 resume，
+   `docs/changes/260910/kshell.md`）日志里什么都没有，「没有提示符」和「没有 shell」
+   看起来一样。现在关着会明说 `kshell: not started (kernel.shell is off)`。
+
+5. **打开放在镜像 cmdline 里，不放产品级 `kernel_cmdline`**，照 `kernel.select.userboot`
+   的先例：跑什么、开不开 shell 都是镜像的属性。
+
+**参照**
+- Zircon `lib/boot-options/include/lib/boot-options/options.inc` 的
+  `DEFINE_OPTION("kernel.shell", bool, shell, {false}, ...)`。
+- Zircon `kernel/lib/console/mod.rs` 的 `kernel_shell_init()`：
+  `if boot_options.shell { console_start(); }`——同样的检查，同样在「要启动时」做。
+  它由 `kernel/top/main.cc` 在 `userboot_init()` 之前调用。
+- Zircon `BootOptions::Parse(std::string_view, bool BootOptions::*)`：布尔语法，见上。
+
+**验证**
+- 共享 worktree 里另一个会话有未提交的改动（先是 logz4，后是 `kernel/commands/log.cpp`）
+  让整棵树暂时编不过，所以这一条在「HEAD + 本改动」的临时 worktree 里构建和启动；
+  提交的文件和那里测的逐字节一致。下表在 16ede780 上测；logz4 的两个提交落地后，
+  又在 11c4ae93 上重测了 dev 开（提示符 + `mutex.stress`）、dev 关、dbg_1 开，结果相同。
+- 构建通过；clang-format 无改动；clang-tidy 对改动行无新告警（phys 头里的
+  `BOOT_OPTIONS`、obi 的 `text_` 是原有的）。
+- QEMU，逐一改 cmdline 验证四种写法：
+
+  | 镜像 cmdline | 结果 |
+  |---|---|
+  | dev `kernel.shell=true` | `kshell> ` 出现，敲 `mutex.stress` → `ok -- 20000 rounds x 3 threads` |
+  | dev 不写 | `kshell: not started (kernel.shell is off)`，无提示符，敲 `log` 无回应 |
+  | dev 裸 `kernel.shell` | `kshell> ` 出现，`log` 正常 |
+  | dbg_1 `kernel.shell=flase` | `boot: kernel.shell=flase is not a boolean, keeping false`，未启动 |
+  | dbg_1 `kernel.shell=false` | `kshell: not started (kernel.shell is off)` |
+  | dbg_1 `kernel.shell=true` | 无「not started」行（选项读到了）；这次没出提示符——dbg_1 的提示符本来就时有时无（上一步重构的那次启动里出现过），与本条无关 |
+
+  所有 dev 启动都有 `init: shell says "pong"`、`shell: channel checks passed`、
+  `shell: bad-pointer checks passed`；所有 dbg_1 都有两条 checks passed。
+- 两层叠加：`kernel_shell_enabled=false` 构建 + `kernel.shell=true` 镜像 → 符号表里
+  没有 kshell / `run_command` / 命令回调，启动日志里没有任何 kshell 行，pong 和两条
+  checks 都在，ring 3 列出的命令只剩 `dump-frame`。
+
+**故意没做**
+- **`kernel.shell.script` 没接**。`kernel/kernel_shell_script.gni` 已经按 Zircon 的编码
+  产出它，但没人读；接上它要在 kshell 里加「先跑脚本、再决定是否进交互」的逻辑，
+  不是这一条的范围。
+- **没有让 `sys_command_list` 看 `kernel.shell`**。原因同上一条：它列注册表，不执行。
+- **dbg_1 不出提示符的问题没查**：改动之前就是这样，与本条无关。

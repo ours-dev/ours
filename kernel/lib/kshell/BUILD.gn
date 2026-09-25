@@ -13,6 +13,14 @@ source_set("kshell") {
     "//system/lib/ustl:headers",
     "//system/public",
   ]
+
+  # <ours/boot/options.hpp>, for `kernel.shell`: the header takes an
+  # obi::CommandLineView, and //kernel/phys:handoff is the target that carries
+  # obi's include dirs to kernel code (//kernel/lib/userabi reaches the boot
+  # package the same way). boot::options() itself is defined in //kernel/top,
+  # which depends on this library and so cannot be named here; it resolves at
+  # link time like userabi's boot::boot_package().
+  deps = [ "//kernel/phys:handoff" ]
   visibility = [ "*" ]
 }
 

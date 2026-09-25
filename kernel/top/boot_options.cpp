@@ -32,12 +32,34 @@ namespace {
         std::memcpy(buffer, value.data(), value.size());
         buffer[value.size()] = '\0';
     }
+
+    /// Reads a boolean option into `result`: the bare key means true, and
+    /// `key=<value>` takes CommandLineView::parse_bool()'s grammar -- the one
+    /// phys::BootOptions reads `aslr.disabled` with, so a word means the same
+    /// thing to every reader of the one command line. A value outside that
+    /// grammar keeps the default, and says so.
+    auto parse_flag(obi::CommandLineView const &cmdline, std::string_view const option,
+                    bool &result) -> void {
+        if (cmdline.contains(option)) {
+            result = true;
+        }
+        if (auto const value = cmdline.value(option); value.is_some()) {
+            auto const flag = obi::CommandLineView::parse_bool(value.value());
+            if (flag.is_none()) {
+                log::error("boot: {}={} is not a boolean, keeping {}", option, value.value(),
+                           result);
+                return;
+            }
+            result = flag.value();
+        }
+    }
 } // namespace
 
 auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
     if (auto const value = cmdline.value(USERBOOT_OPTION); value.is_some()) {
         parse_name(USERBOOT_OPTION, value.value(), m_userboot);
     }
+    parse_flag(cmdline, SHELL_OPTION, m_shell);
 }
 
 auto setup_options() -> void {

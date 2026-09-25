@@ -7,18 +7,6 @@
 
 namespace ours::phys {
 namespace {
-    auto parse_bool(std::string_view value, bool &result) -> bool {
-        if (value == "1" || value == "true" || value == "yes") {
-            result = true;
-            return true;
-        }
-        if (value == "0" || value == "false" || value == "no") {
-            result = false;
-            return true;
-        }
-        return false;
-    }
-
     /// Copy a value into one of the fixed-size BootOptions name buffers.
     /// A value that does not fit is a malformed command line, not a
     /// truncatable one.
@@ -40,9 +28,11 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> Status {
         m_aslr_disabled = true;
     }
     if (auto const value = cmdline.value("aslr.disabled"); value.is_some()) {
-        if (!parse_bool(value.value(), m_aslr_disabled)) {
+        auto const parsed = obi::CommandLineView::parse_bool(value.value());
+        if (parsed.is_none()) {
             return Status::InvArgs;
         }
+        m_aslr_disabled = parsed.value();
     }
     if (auto const value = cmdline.value("kernel.phys.next"); value.is_some()) {
         if (!parse_name(value.value(), m_next_module, sizeof(m_next_module))) {

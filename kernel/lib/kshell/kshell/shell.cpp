@@ -5,6 +5,7 @@
 // registry (GKTL_COMMAND) declares commands; this is the missing front end:
 // a bring-up console that reads COM1 lines and dispatches them, which is
 // also how the sampling profiler gets driven in automated runs.
+#include <ours/boot/options.hpp>
 #include <ours/task/thread.hpp>
 #include <ours/time/clock.hpp>
 
@@ -106,6 +107,27 @@ namespace {
     }
 
     auto spawn() -> void {
+        // `kernel.shell` is off unless the image asks for it: this thread runs
+        // any registered command, in ring 0, for whoever can write to COM1.
+        // Zircon makes the same check in the same place -- kernel_shell_init()
+        // (kernel/lib/console/mod.rs) calls console_start() only when
+        // gBootOptions->shell is set -- so a kernel that carries the shell
+        // still has to be told to run it.
+        //
+        // Checked here, when the thread would start, rather than by leaving the
+        // hook unregistered: registration is a linker-section record and cannot
+        // depend on the command line, and not linking the shell at all is the
+        // build's decision (kernel_shell_enabled), not the boot's.
+        //
+        // Said out loud rather than returning quietly: the last time this
+        // console failed to appear (the thread was spawned and never resumed,
+        // docs/changes/260910/kshell.md) nothing in the log said so, and
+        // "no prompt" looked the same as "no shell".
+        if (!ours::boot::options().shell()) {
+            log::info("kshell: not started ({} is off)", ours::boot::BootOptions::SHELL_OPTION);
+            return;
+        }
+
         auto *thread = ours::task::Thread::spawn(
             "kshell", [](void *) -> i32 { return shell_main(); }, nullptr,
             ours::task::DEFAULT_PRIORITY);

@@ -75,6 +75,29 @@ class CommandLineView final {
         return found.is_some() && found.value().size() == option.size();
     }
 
+    /// The value half of a boolean option: `1`/`true`/`yes` or `0`/`false`/
+    /// `no`, and none for anything else. The bare key -- `aslr.disabled` with
+    /// no `=` -- means true as well; that half is contains()'s to answer.
+    ///
+    /// Here rather than with either reader because the command line is one
+    /// text read by two of them, phys::BootOptions and the kernel's
+    /// boot::BootOptions, and a word that meant true to one and false to the
+    /// other would be a boot that quietly did half of what it was told.
+    ///
+    /// Stricter than Zircon's BootOptions::Parse(bool), which takes anything
+    /// but `false`/`0`/`off` as true: here an unrecognised value is reported
+    /// to the caller, so `kernel.shell=flase` is a complaint, not a shell.
+    [[nodiscard]]
+    static auto parse_bool(std::string_view const value) -> ustl::Option<bool> {
+        if (value == "1" || value == "true" || value == "yes") {
+            return ustl::Option<bool>(true);
+        }
+        if (value == "0" || value == "false" || value == "no") {
+            return ustl::Option<bool>(false);
+        }
+        return ustl::NONE;
+    }
+
     /// Find a `key=value` token and return only the value portion.
     [[nodiscard]]
     auto value(std::string_view key) const -> ustl::Option<std::string_view> {
