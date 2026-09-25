@@ -289,3 +289,45 @@ GLib `G_LOG_DOMAIN`、`g_log_set_handler(log_domain, ...)`。
 
 **故意没做**
 改名和改模型分开提交：这一条只动名字，作用域守卫 `LogDomain` 是下一条。
+
+## `LOGZ4_DOMAIN_SECTION` 登记进 .clang-format，属性宏单独占一行（2026-09-24）
+
+**文件**
+- `.clang-format` — `AttributeMacros` 和 `Macros` 各加一项 `LOGZ4_DOMAIN_SECTION`
+- `system/lib/logz4/include/logz4/domain.hpp` — 重新格式化后宏回到自己那一行
+
+**症状**
+`Domain::named` 的定义被 clang-format 排成了一行：
+
+```cpp
+// 改前（格式化结果）
+template <DomainName Name>
+LOGZ4_DOMAIN_SECTION constinit Domain Domain::named{Name.chars};
+
+// 改后
+template <DomainName Name>
+LOGZ4_DOMAIN_SECTION
+constinit Domain Domain::named{Name.chars};
+```
+
+本仓库的规矩是属性宏单独占一行（`PACKED` 除外）。
+
+**原因**
+clang-format 只在它认得出是属性的地方断行。`BreakAfterAttributes` 只作用于真正的 `[[...]]`，
+一个它不认识的宏名在它眼里就是普通标识符。根 `.clang-format` 里 `INIT_CODE` 等宏靠
+`AttributeMacros`（别把名字读错）加 `Macros`（给出一个"长得像属性"的展开）两处登记才会断行，
+新宏没有登记，于是被并到声明上。
+
+**改法**
+照根配置里已有条目的写法登记。`Macros` 里的展开只给格式化器看，写 ELF 的拼法就够了——
+真正的展开按目标文件格式二选一（见 `domain.hpp`），格式化器不关心。
+
+**参照**
+无，本项目格式化配置。
+
+**验证**
+`clang-format -i domain.hpp` 后宏独占一行；其它文件的格式不受影响（这个宏只在 `domain.hpp` 出现）。
+
+**故意没做**
+没有在 `system/lib/logz4/.clang-format` 里登记：`InheritParentConfig` 下列表类键是整体覆盖而不是合并，
+在子配置里写 `AttributeMacros` 就得把父配置的整张表抄一遍。

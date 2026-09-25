@@ -228,7 +228,8 @@ class Domain final {
 // Each instantiation is a COMDAT member in LOGZ4_DOMAIN_SECTION, so the
 // linker keeps one copy per name and all() sees each name once.
 template <DomainName Name>
-LOGZ4_DOMAIN_SECTION constinit Domain Domain::named{Name.chars};
+LOGZ4_DOMAIN_SECTION
+constinit Domain Domain::named{Name.chars};
 
 } // namespace logz4
 

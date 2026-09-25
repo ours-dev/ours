@@ -18,6 +18,7 @@ AttributeMacros:
   - INIT_CONST
   - INIT_DATA
   - KERNEL_API
+  - LOGZ4_DOMAIN_SECTION
   - NAKED
   - NO_INLINE
   - PACKED
@@ -56,6 +57,7 @@ Macros:
   - 'INIT_CONST=[[gnu::section(".init.rodata")]]'
   - 'INIT_DATA=[[gnu::section(".init.data")]]'
   - 'KERNEL_API=[[gnu::visibility("hidden")]]'
+  - 'LOGZ4_DOMAIN_SECTION=[[gnu::section("logz4_domains")]]'
   - 'NAKED=[[gnu::naked]]'
   - 'NO_INLINE=[[gnu::noinline]]'
   - 'PHYS_EXPORT=[[gnu::visibility("default")]]'
