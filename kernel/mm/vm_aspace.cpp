@@ -1,6 +1,7 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
+#include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
@@ -49,14 +50,30 @@ VmAspace::VmAspace(VirtAddr base, usize size, Kind kind, VmasFlags flags, char c
 /// the list before, because until destroy() existed no aspace was ever
 /// destroyed. Zircon's ~VmAspace erases from its list at the same point.
 ///
-/// The page tables are not freed here yet; ArchVmAspace frees nothing on its
-/// own (a later step).
+/// Then the page tables, which destroy() had to leave: by now no CPU runs on
+/// them (ArchVmAspace::destroy() gives the argument). Zircon's ~VmAspace calls
+/// arch_aspace_.Destroy() at the same point, after the same erase.
 VmAspace::~VmAspace() {
     DEBUG_ASSERT(!m_root_vma && !m_last_fault,
                  "aspace '{}' destroyed without destroy() -- or a reference cycle broke", name());
-    Guard guard{ALL_ASPACE_LIST_LOCK};
-    if (m_managed_hook.is_linked()) {
-        static_cast<void>(ALL_ASPACE_LIST.erase(ALL_ASPACE_LIST.iterator_to(*this)));
+    {
+        Guard guard{ALL_ASPACE_LIST_LOCK};
+        if (m_managed_hook.is_linked()) {
+            static_cast<void>(ALL_ASPACE_LIST.erase(ALL_ASPACE_LIST.iterator_to(*this)));
+        }
+    }
+
+    auto const teardown = m_arch.destroy();
+    if (teardown.leaves != 0) {
+        log::warn("mm: aspace '{}' still had {} pages mapped when its tables went", name(),
+                  teardown.leaves);
+    }
+    // With the free-frame count in a debug build: taken after every page this
+    // process held is back, the difference between two of these lines is
+    // exactly what the process leaked, or what is still in flight.
+    if constexpr (KERNEL_DEBUG_LEVEL > 0) {
+        log::debug("mm: aspace '{}' gone, {} page-table pages freed, {} frames free", name(),
+                   teardown.tables, free_frame_count());
     }
 }
 

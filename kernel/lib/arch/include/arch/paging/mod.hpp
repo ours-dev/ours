@@ -146,7 +146,65 @@ class Paging final {
         return ustl::ok(protected_pages);
     }
 
+    /// What free_tables() did: the table pages it gave back, and the leaves it
+    /// stepped over.
+    struct TableTeardown {
+        usize tables = 0;
+        usize leaves = 0;
+    };
+
+    /// Frees every table hanging off the top-level entries [first, last] of
+    /// the table rooted at |table|, deepest first, clearing each entry that
+    /// pointed at one; |deallocate(pa, size)| gives a table back, the mirror
+    /// of map()'s allocator. The root table itself is the caller's.
+    ///
+    /// Leaves are stepped over and counted, never freed: the frames they point
+    /// at belong to whoever mapped them -- a VMO -- and a large leaf at an
+    /// upper level holds a data frame, not a table, so recursing into it would
+    /// free someone's memory as page tables. A count other than zero means the
+    /// caller tore the table down with something still mapped.
+    ///
+    /// Only for a table no CPU has loaded: nothing here flushes a TLB or a
+    /// paging-structure cache. Unmapping never frees a table (Zircon's
+    /// RemoveMapping does, deferring the free past the flush), so an address
+    /// space accumulates tables for its whole life and they all come back
+    /// here, at once, when it is destroyed.
+    template <typename PhysToVirt, typename Deallocator>
+    static auto free_tables(PhysAddr table, PhysToVirt &&phys_to_table, Deallocator &&deallocate,
+                            usize first, usize last) -> TableTeardown {
+        TableTeardown result;
+        free_below<Traits::PAGING_LEVEL>(table, phys_to_table, deallocate, first, last, result);
+        return result;
+    }
+
   private:
+    // Depth is the number of paging levels, fixed at compile time, so the
+    // recursion is bounded by construction rather than by the tree's shape.
+    template <Level Level, typename PhysToVirt, typename Deallocator>
+    static auto free_below(PhysAddr pa_table, PhysToVirt &&phys_to_table, Deallocator &&deallocate,
+                           usize first, usize last, TableTeardown &result) -> void {
+        Table<Level> &table = *reinterpret_cast<Table<Level> *>(phys_to_table(pa_table));
+        for (auto index = first; index <= last; ++index) {
+            auto &entry = table[index];
+            if (!entry.is_present()) {
+                continue;
+            }
+            if (entry.is_terminal()) {
+                result.leaves += 1;
+                continue;
+            }
+            if constexpr (Level != Traits::FINAL_LEVEL) {
+                constexpr auto NEXT = Traits::next_level(Level);
+                auto const child = entry.address();
+                free_below<NEXT>(child, phys_to_table, deallocate, 0,
+                                 Traits::template NUM_PTES<NEXT> - 1, result);
+                entry = {};
+                deallocate(child, Traits::template SIZE_OF_TABLE<NEXT>);
+                result.tables += 1;
+            }
+        }
+    }
+
     // Locates the PTE for `addr` at `Level` within the table rooted at
     // `pa_table`. Identical for every operation below — it's the one
     // piece of the walk that never varies.

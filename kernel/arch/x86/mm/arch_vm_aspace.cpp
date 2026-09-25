@@ -44,7 +44,9 @@ ArchVmAspace::ArchVmAspace(VirtAddr base, usize size, Kind kind)
     , m_pcid(INVALID_PCID)
     , m_kind(kind)
     , m_active_cpus()
-    , m_range(base, size)
+    // {start, end}, which is what gktl::Range holds. This was (base, size),
+    // which made the end the size; nothing read it until destroy().
+    , m_range{base, base + size}
     , m_page_table() {}
 
 auto ArchVmAspace::init() -> Status {
@@ -90,6 +92,39 @@ auto ArchVmAspace::init() -> Status {
     }
 
     return Status::Ok;
+}
+
+/// Gives back every page-table page of a user address space: the tables
+/// under its own half of the root, then the root. The frames its leaves
+/// pointed at are not touched -- they belong to the VMOs that were mapped, and
+/// VmAspace::destroy() has already unmapped and released those; a leaf still
+/// present here is counted and reported instead.
+///
+/// Called from ~VmAspace, and only from there, because freeing a table is safe
+/// only once no CPU can walk it:
+///
+///  - the dying process's last thread ran VmAspace::destroy() on these very
+///    tables, so they cannot go then;
+///  - its final reference is dropped later, from Thread::destroy(), a DPC that
+///    runs on the same CPU after the dying thread has been switched away from
+///    for the last time -- and that switch loaded another root into CR3,
+///    which, with PCIDs never allocated and user leaves never Global, flushes
+///    every translation and paging-structure cache entry these tables fed;
+///  - a process has one thread, so no other CPU is running on them either.
+///
+/// The assertion below stands in for Zircon's `active_cpus_ == 0` (this tree
+/// does not maintain m_active_cpus): it catches, on this CPU at least, the day
+/// one of those premises stops holding.
+auto ArchVmAspace::destroy() -> Teardown {
+    m_canary.verify<Self>();
+
+    if (m_kind != VmasKind::User || m_page_table.pgd_phys() == 0) {
+        return {};
+    }
+    DEBUG_ASSERT(arch::Cr3::read().get<arch::Cr3::PageTableAddress>() != m_page_table.pgd_phys(),
+                 "freeing the page tables this CPU is running on");
+
+    return m_page_table.destroy(m_range.start, m_range.end);
 }
 
 auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {

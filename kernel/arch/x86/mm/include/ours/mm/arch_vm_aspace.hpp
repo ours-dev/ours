@@ -18,6 +18,7 @@ class ArchVmAspace {
   public:
     using Kind = VmasKind;
     using Flags = VmasFlags;
+    using Teardown = PageTable::TableTeardown;
 
     ArchVmAspace(VirtAddr base, usize size, Kind kind);
 
@@ -26,6 +27,12 @@ class ArchVmAspace {
     static auto switch_context(Self *from, Self *to) -> void;
 
     auto init() -> Status;
+
+    /// Frees a user address space's page tables; see the definition. Called
+    /// from ~VmAspace, never from VmAspace::destroy().
+    ///
+    /// Zircon counterpart: X86ArchVmAspace::Destroy().
+    auto destroy() -> Teardown;
 
     auto map(VirtAddr, PhysAddr, usize n, MmuFlags flags, MapOptions options, usize *mapped)
         -> Status;

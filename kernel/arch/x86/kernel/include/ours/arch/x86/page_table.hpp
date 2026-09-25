@@ -33,6 +33,8 @@ class PageTable {
     using Engine = ::arch::paging::Paging<ArchPaging>;
 
   public:
+    using TableTeardown = Engine::TableTeardown;
+
     PageTable() = default;
     ~PageTable() = default;
 
@@ -71,6 +73,11 @@ class PageTable {
     auto protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status;
 
     auto query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags) -> Status;
+
+    /// Frees every table under the top-level entries covering [base, end) and
+    /// then the root table, leaving this object with no table at all; see
+    /// the definition for when that is safe.
+    auto destroy(VirtAddr base, VirtAddr end) -> TableTeardown;
 
   private:
     sync::SpinLock m_lock;

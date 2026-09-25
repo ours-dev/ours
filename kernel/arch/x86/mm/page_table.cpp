@@ -1,4 +1,6 @@
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/arch/x86/page_table.hpp>
+#include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
@@ -21,6 +23,11 @@ namespace {
         return alloc_page_table(size, align);
     }
 
+    /// alloc_table()'s mirror, for PageTable::destroy().
+    auto free_table(PhysAddr pa, usize size) -> void {
+        free_page_table(pa, size);
+    }
+
     constexpr auto to_status(arch::paging::MapError error) -> Status {
         switch (error) {
             case arch::paging::MapError::InvArgs:
@@ -36,11 +43,15 @@ namespace {
 
 auto PageTable::init_mmu() -> Status {
     constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
-    constexpr auto ORDER = get_order(Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL> / PAGE_SIZE);
 
-    PhysAddr phys;
-    auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, ORDER);
-    if (!frame) {
+    // Through alloc_table() like every table below it, so that destroy() can
+    // give all of them back through one allocator pair. It was
+    // alloc_frames() directly -- the same frames today, but a root that came
+    // from somewhere else than the tables it roots is one change away from
+    // being freed to the wrong allocator.
+    auto const phys =
+        alloc_table(Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>, Engine::Traits::TABLE_ALIGNMENT);
+    if (!phys) {
         return Status::NoMemory;
     }
 
@@ -191,6 +202,36 @@ auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags) -> Sta
         *flags = mapping.flags;
     }
     return Status::Ok;
+}
+
+/// Frees the tables under the top-level entries covering [base, end) -- a
+/// user address space's own half -- and then the root table itself.
+///
+/// Only for a table no CPU has loaded, since nothing here flushes a TLB: the
+/// caller is ~VmAspace, which runs once the last reference to the address
+/// space is gone, and that is after its last thread was switched away from
+/// for good (ArchVmAspace::destroy() says why that holds).
+///
+/// The range must stop short of the kernel's top-level entries. alias_to()
+/// copied those in from the kernel's own root, so the tables under them are
+/// the kernel's, shared by every address space: freeing them would pull the
+/// kernel out from under every CPU. Checked, not assumed.
+auto PageTable::destroy(VirtAddr const base, VirtAddr const end) -> TableTeardown {
+    constexpr auto TOP_LEVEL = ArchPaging::PAGING_LEVEL;
+    DEBUG_ASSERT(m_pgd_phys != 0, "destroying a page table that has no root");
+    DEBUG_ASSERT(base < end, "an empty range to destroy");
+
+    auto const first = Engine::Traits::virt_to_index(TOP_LEVEL, base);
+    auto const last = Engine::Traits::virt_to_index(TOP_LEVEL, end - 1);
+    ASSERT(last < Engine::Traits::virt_to_index(TOP_LEVEL, KERNEL_ASPACE_BASE),
+           "top-level entries {}..{} reach the kernel's, which are shared", first, last);
+
+    Guard<sync::SpinLock> guard(m_lock);
+    auto result = Engine::free_tables(m_pgd_phys, phys_to_virt, free_table, first, last);
+    free_table(m_pgd_phys, Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>);
+    result.tables += 1;
+    m_pgd_phys = 0;
+    return result;
 }
 
 } // namespace ours::mm

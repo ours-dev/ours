@@ -522,3 +522,92 @@ Linux 的 `zone->lock` 一律 `spin_lock_irqsave()`（`rmqueue_bulk()`、`free_o
 **故意没做**
 全树其余不带选项的 `Guard{spinlock}`（约 30 个文件）有同样的问题，属于 sync/lockdep 那条线：已交接给独立会话，由它在框架层面
 决定"默认 Guard 关抢占"还是"必须写明选项"，再审一遍调用点。
+
+## 死进程的页表页在 `~VmAspace` 里归还（2026-09-25）
+
+**文件**
+- `kernel/lib/arch/include/arch/paging/mod.hpp` — 分页引擎新增 `free_tables()`（与 `TableTeardown`），自底向上释放给定顶层表项下的全部中间表
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp`、`kernel/arch/x86/mm/page_table.cpp` — `PageTable::destroy(base, end)`；`init_mmu()` 改经 `alloc_table()` 取根表
+- `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp`、`kernel/arch/x86/mm/arch_vm_aspace.cpp` — `ArchVmAspace::destroy()`；`m_range` 改成 `{base, base + size}`
+- `kernel/mm/vm_aspace.cpp` — `~VmAspace()` 调 `m_arch.destroy()`，报告残留的叶子，debug 构建打出页表页数与空闲帧总数
+- `docs/repairs/260924/object.md` — 第 2 条删除
+
+**症状**
+上一节之后，死进程的映射和 VMO 都还回来了，页表还没有：`~ArchVmAspace() = default`、`~PageTable() = default`，而 unmap 从不
+释放变空的中间表。每个死进程留下它的 PML4 和用户半区的全部 PDPT/PD/PT。
+
+**原因**
+没有人释放页表，也没有能释放它的地方：`VmAspace::destroy()` 跑在进程最后一个线程上，CR3 还指着这张表，不能在那里释放。
+
+**改法**
+改前：`~VmAspace()` 只从 `ALL_ASPACE_LIST` 摘下自己。
+
+改后：
+
+```cpp
+    template <typename PhysToVirt, typename Deallocator>
+    static auto free_tables(PhysAddr table, PhysToVirt &&phys_to_table, Deallocator &&deallocate,
+                            usize first, usize last) -> TableTeardown {
+        TableTeardown result;
+        free_below<Traits::PAGING_LEVEL>(table, phys_to_table, deallocate, first, last, result);
+        return result;
+    }
+```
+
+`free_below<Level>` 逐项：不存在的跳过；叶子（包括上层 PS=1 的大页）只计数、不释放；否则先递归，再清表项、释放子表。
+
+```cpp
+auto PageTable::destroy(VirtAddr const base, VirtAddr const end) -> TableTeardown {
+    ...
+    ASSERT(last < Engine::Traits::virt_to_index(TOP_LEVEL, KERNEL_ASPACE_BASE), ...);
+
+    Guard<sync::SpinLock> guard(m_lock);
+    auto result = Engine::free_tables(m_pgd_phys, phys_to_virt, free_table, first, last);
+    free_table(m_pgd_phys, Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>);
+    result.tables += 1;
+    m_pgd_phys = 0;
+    return result;
+}
+```
+
+```cpp
+auto ArchVmAspace::destroy() -> Teardown {
+    ...
+    DEBUG_ASSERT(arch::Cr3::read().get<arch::Cr3::PageTableAddress>() != m_page_table.pgd_phys(),
+                 "freeing the page tables this CPU is running on");
+
+    return m_page_table.destroy(m_range.start, m_range.end);
+}
+```
+
+- **只在析构里释放**：最后一个引用在 `Thread::destroy()`（一个 DPC）里放掉，那时这颗 CPU 已经最后一次切离这个线程，切换时
+  装入了别的根表；PCID 从未分配、用户叶子不再是 Global，所以这次写 CR3 冲掉了这张表喂过的全部 TLB 与分页结构缓存；进程只有
+  一个线程，没有别的 CPU 在它上面跑。断言替代 Zircon 的 `active_cpus_ == 0`（本树不维护 `m_active_cpus`），至少在本 CPU 上
+  抓住前提失效的那一天。
+- **绝不碰内核的顶层表项**：`alias_to()` 把内核根表的顶层表项浅拷进每个用户根表，它们下面的表是内核的、所有地址空间共享。
+  范围由 `m_range` 算出，并用 `ASSERT` 核对最后一项在内核那一项之前。
+- **叶子不释放**：它们指向的帧归 VMO，`VmAspace::destroy()` 已经拆掉并放掉了；这里剩下叶子就说明拆除漏了什么，打 warn。
+- **一对分配器**：根表原来直接 `alloc_frames()`，改经 `alloc_table()`，与其下所有表一样，由 `free_table()` 对称归还。
+- **`m_range` 的构造**：`gktl::Range` 是 `{start, end}`，原来写成 `(base, size)`，end 被赋成了长度；之前没有人读过它。
+
+**参照**
+- Zircon `VmAspace::~VmAspace()`（`zircon/kernel/vm/vm_aspace.cc:270-293`）：先从全局链表摘下，再 `arch_aspace_.Destroy()`；
+  :285-289 的注释说明页表为什么要等到析构。
+- Zircon `X86ArchVmAspace::Destroy()`（`zircon/kernel/arch/x86/mmu.cc` 约 :913 起）：断言 `active_cpus_ == 0`，再释放顶层页。
+  差别：Zircon 的 unmap（`RemoveMapping`）在表变空时就把它挂进 `ConsistencyManager` 延后释放，所以到 Destroy 时用户半区已空、
+  只需释放顶层页；ours 的 unmap 从不释放表，所以在这里一次性扫一遍。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- dbg_1（默认配置 4 次、`SMP=1`、`CPU=max` 各 1 次，都在上一节 zone 锁修复之后）：每个地址空间（11 个 fault_probe 与 shell）
+  都是 `gone, 6 page-table pages freed`——PML4、一张 PDPT、一张 PD，程序映像、vDSO、栈各一张 PT——从没有 `still had … pages
+  mapped` 的 warn；`probes done (11 killed, 0 survived)`。dev：`init: shell closed its channel`。
+- 设计里的另一项判据——"相邻两个进程的空闲帧数之差恰好是一个内核栈"——这里**核对不了**：相邻两次计数之间差 −26 到 +54，
+  因为测量时系统并不静止（shell 在进程 Dead 时就起下一个探针，与上一个的析构并行；另有一组测试线程持续分配与释放）。能确认的是
+  每个地址空间归还的页表页数恒定、没有残留叶子。要做精确的泄漏核对，得在静止点取数，留给有进程句柄与 TERMINATED 之后（计划
+  K7、U6），那时 shell 可以等上一个进程彻底消失再起下一个。
+
+**故意没做**
+- unmap 时释放变空的表（Zircon 的做法）：进程活着的时候表只增不减，到死一次还清。长寿进程反复映射/拆除会一直攒着表，
+  等真有这样的进程再做。
+- 每个进程一个的内核栈仍随线程泄漏（`kernel/mm/stack.cpp`，释放要等 TLB shootdown），与本节无关，另案。
