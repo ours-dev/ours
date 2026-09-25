@@ -49,8 +49,10 @@
 /// them in which the waiter could be preempted away mid-spin. That state
 /// keeping now belongs to the Guard callers wrap around the lock, which saves
 /// and restores it through the LOCKDEP_STATE_SAVER declarations in
-/// spin-lock.hpp; the lock itself is bare. Note the corollary: until a caller
-/// actually goes through such a Guard, holding one of these disables nothing.
+/// spin_lock.hpp; the lock itself is bare. The corollary -- a Guard that names
+/// no option holds the lock with nothing disabled -- used to be a trap every
+/// `Guard guard{lock}` in the tree fell into. It is a compile error now: see
+/// lockdep_option_required() in spin_lock.hpp.
 ///
 /// -- Why the exchange names its failure order ----------------------------
 ///

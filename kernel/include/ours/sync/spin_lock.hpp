@@ -56,8 +56,10 @@ namespace spinlock {
     /// None of these changes what acquire()/release() do to the running
     /// thread's state: the lock is bare, and preemption is the Guard's
     /// concern. Monitored, NoTrace and DisablePreempt only select how much
-    /// bookkeeping the lock will eventually do. Note that until the Guard
-    /// learns to save that state, holding this lock disables nothing at all.
+    /// bookkeeping the lock will eventually do. In particular DisablePreempt
+    /// here does not make an option-less Guard hold preemption off: such a
+    /// Guard would disable nothing at all, and is refused at compile time --
+    /// see lockdep_option_required() below.
     constexpr static auto DEFAULT_OPTIONS = Option::DisablePreempt;
 
     constexpr static auto MONITORED_OPTIONS = Option::Monitored | Option::DisablePreempt;
@@ -175,6 +177,31 @@ namespace spinlock {
     template <Option Options>
     auto lockdep_get_state_saver(SpinLock<Options> *, lockdep::IrqSaveAndPreemptDisable *)
         -> std::tuple<::arch::AutoInterruptDisabler, task::AutoPreemptDisabler>;
+
+    /// Makes `Guard guard{lock}` on any SpinLock a compile error; see
+    /// lockdep::OptionRequired. acquire() touches neither interrupts nor
+    /// preemption, so an option-less Guard -- which the deduction guide
+    /// produces from the most natural spelling there is -- held the lock with
+    /// both enabled.
+    ///
+    /// Refusing it was chosen over quietly honouring DEFAULT_OPTIONS
+    /// (DisablePreempt) as the Guard's default, for three reasons. Preemption
+    /// alone is the wrong answer for every lock also taken from interrupt
+    /// context -- the run queues, the wait queues, the IPI mailboxes -- so a
+    /// default would only have moved the audit from every call site to the
+    /// ones that silently needed more. AutoPreemptDisabler reaches the current
+    /// thread's PreemptionState, which does not exist yet for the locks the
+    /// boot takes before the first thread is set up. And it is what Zircon
+    /// does: its SpinLock is registered with LOCK_DEP_POLICY_OPTION, so
+    /// `Guard<SpinLock>` names no policy and fails its static_assert.
+    ///
+    /// What to write instead is the rule the tree follows: `Guard<SpinLock,
+    /// IrqSave>` -- every spin lock held with interrupts off, as Zircon holds
+    /// all of its own -- and `Guard<SpinLock, IrqSaveAndPreemptDisable>` where
+    /// the scope reaches reschedule_common() or wakes a thread, so that the
+    /// reschedule a wake asks for waits until the lock is dropped.
+    template <Option Options>
+    auto lockdep_option_required(SpinLock<Options> *) -> void;
 
 } // namespace spinlock
 
