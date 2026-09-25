@@ -64,6 +64,24 @@ class OwnedWaitQueue: protected WaitQueue {
 
     auto park_and_assign_owner(Thread *const, time::Deadline const &, Interruptible) -> Status;
 
+    /// The two halves of park_and_assign_owner(), for a caller whose reason
+    /// to block lives outside the queue and has to be re-read under the
+    /// queue's lock -- Mutex decides between taking the mutex and queueing
+    /// for it by looking at its state word there.
+    ///
+    /// park_and_assign_owner() cannot serve such a caller: it enqueues under
+    /// a lock it takes and drops by itself, so whatever the caller checked
+    /// beforehand can change before the enqueue, and a waker that runs in that
+    /// gap sees an empty queue. Same contract as
+    /// WaitQueue::park_thread_preamble_locked()/park_thread_postamble():
+    /// |curr|'s PI lock is held, interrupts and preemption off, across both
+    /// halves; the queue lock across the preamble only.
+    TA_REQUIRES(get_lock())
+    auto park_and_assign_owner_preamble_locked(Thread *const, time::Deadline const &, Interruptible)
+        -> Status;
+
+    auto park_and_assign_owner_postamble(Thread *const, time::Deadline const &) -> Status;
+
     struct ParkAndAssignOwner {
         Thread *new_owner;
     };

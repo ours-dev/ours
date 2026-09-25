@@ -36,7 +36,7 @@ auto OwnedWaitQueue::notify_threads_locked(UnparkThreads, INotifyRequeueHook &, 
 （见下一条要修的），所以慢路径里 CAS 失败后看到的旧值必然带 `Contended`，自旋循环第一圈就 break，
 直奔 park。争用一次，丢一个线程。
 
-用户描述里那个竞态（等待者 CAS 失败后、入队前，持有者发布 `Available`）是真的，但它叠在这个
+报告里描述的那个竞态（等待者 CAS 失败后、入队前，持有者发布 `Available`）是真的，但它叠在这个
 更大的洞上面：在这一条之前，即便等待者赶在释放之前入了队，也照样没人叫它。那一条是下一节。
 
 **改法**
@@ -98,3 +98,91 @@ if (batch) {
 - `~Mutex` 不等队列锁放掉：发布 `Available` 之后、放队列锁之前，别的线程可以走快路径拿锁、放锁、
   销毁 mutex，放锁那一下就写到了已释放的内存。Zircon 在 `Mutex::~Mutex()` 里自旋等 OWQ 锁放开来
   挡这个。本树的 `Mutex` 没有析构函数，另记待修。
+
+## `Mutex` 的等待者在队列锁下复查状态再 park（2026-09-24）
+
+**文件**
+- `kernel/kernel/sync/mutex.cpp` — `acquire_slowpath()` 自旋结束后，持 PI 锁 + 队列锁复查 `m_state`，
+  决定"拿下"还是"入队"，入队用新的两段式 park
+- `kernel/include/ours/task/owned_wait_queue.hpp`、`kernel/kernel/task/owned_wait_queue.cpp` —
+  新增 `park_and_assign_owner_preamble_locked()` / `park_and_assign_owner_postamble()`
+
+**症状**
+上一节补上唤醒之后仍会丢唤醒：等待者 CAS 失败之后、入队之前，持有者若恰好释放，
+等待者就睡在一把没人持有的锁上。dbg_1 探针测试里表现为 shell 停在 `detach_observer()`。
+
+**原因**
+"要不要睡"和"入队"不在同一把锁下。旧代码：
+
+```cpp
+// 自旋循环里最后一次 CAS 失败，就是最后一次看 m_state
+auto const status = m_waiters.park_and_assign_owner(current_thread, time::Deadline::infinite(),
+                                                    task::Interruptible::No);
+```
+
+`park_and_assign_owner()` 先拿 PI 锁，再在 `enqueue_waiter()` 里自己拿、自己放队列锁。
+释放者 `release_slowpath()` 在队列锁下看队列：此刻等待者还没入队，队列为空，于是发布 `Available`。
+这之后等待者入队、park。它等的是一次"释放"，而那次释放已经发生过了——释放只发生一次，
+错过就是永远错过。条件变量的经典丢唤醒，一模一样：检查条件和进入等待之间必须没有缝。
+
+堵缝的办法只有一个：让"看条件"和"入队"在释放者也必须拿的那把锁下连成一步。
+这样释放要么落在检查之前（等待者看见 `Available`，直接拿下），要么落在入队之后
+（释放者看见等待者，交接给它）。
+
+**改法**
+
+```cpp
+Guard<SpinLock, IrqSaveAndPreemptDisable> pi_guard{current_thread->get_pi_lock()};
+{
+    Guard queue_guard{m_waiters.get_lock()};
+    auto old_mutex_state = m_state.load(std::memory_order_relaxed);
+    while (!(old_mutex_state & State::Contended)) {
+        if (State::Available == old_mutex_state) {
+            if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state, ...)) {
+                record_initial_assigned_cpu();
+                return false;                        // 释放已经发生：直接拿下
+            }
+        } else if (m_state.compare_exchange_weak(old_mutex_state,
+                                                 old_mutex_state | State::Contended, ...)) {
+            break;                                   // 有主：打上 Contended，逼它走慢路径
+        }
+    }
+    status = m_waiters.park_and_assign_owner_preamble_locked(current_thread, ...);  // 入队
+}
+status = m_waiters.park_and_assign_owner_postamble(current_thread, ...);            // 睡
+```
+
+- 锁序 PI 锁在外、队列锁在内，和 `WaitQueue::enqueue_waiter` 一致；PI 锁要关中断关抢占，
+  因为后半段把它带进 `reschedule_common()`。形状与 `Event::wait_etc()` 相同。
+- `Contended` 一旦在 `m_state` 里，只有持有者的 `release_slowpath()` 在队列锁下能把它拿掉；
+  所以"看到 `Available`"意味着队列必空（队列里有人必有 `Contended`），直接拿下是安全的。
+- 用 CAS 循环而不是 Zircon 的 `fetch_or`：`State` 是枚举，`std::atomic<State>` 没有 `fetch_or`；
+  顺带也不会像 `fetch_or` 那样先让别的 CPU 看到一个"无主但 Contended"的瞬态。循环只在 CAS 输给
+  快路径的获取/释放时重来。
+- `OwnedWaitQueue` 新增两段式 park，契约照抄 `WaitQueue::park_thread_preamble_locked()` /
+  `park_thread_postamble()`。原来的 `park_and_assign_owner()` 保留不动（现在没有调用者）：
+  它的注释说明了为什么等锁这类调用者不能用它。
+
+被否掉的方案：在 `park_and_assign_owner()` 里加一个回调让它在队列锁下复查。那是把 mutex 的
+状态机塞进等待队列；两段式把判断留在 mutex 自己手里，`Event` 已经是这么用的。
+
+**参照**
+- Zircon `Mutex::AcquireContendedMutex()`（`kernel/kernel/mutex.cc`）：拿到 OWQ 锁后
+  `val_.fetch_or(STATE_FLAG_CONTESTED)`，旧值是 `STATE_FREE` 就直接拿下，否则
+  `BlockAndAssignOwnerLocked()`。注释原话的意思：CONTESTED 只能在持 OWQ 锁时改。
+- Linux `__mutex_lock_common()`：持 `wait_lock` 后先 `__mutex_trylock()` 再
+  `__mutex_add_waiter()`，同一个"锁下先复查再入队"。
+- 本树 `Event::wait_etc()` + `WaitQueue::park_thread_preamble_locked()`：同一类缝，先前已补过。
+
+**验证**
+- 构建通过；clang-format 无残留；clang-tidy 在改动行上无新诊断。
+- dev 镜像：`init: shell says "pong"`、`shell: channel checks passed`、
+  `shell: bad-pointer checks passed` 都在。dbg_1 镜像：后两行都在。
+- 专门的争用压力测试见后续一节；P1-A 探针测试不在树里，未实测。
+
+**故意没做**
+- 快路径仍然存 `thread | Contended`，所以 `try_release()` 的快路径仍是死的——下一节单独改。
+  注释里因此没有写"Contended 只在队列锁下设置"：这句话要到下一节才成立。
+- 自旋阶段仍然不自旋（`deadline_ticks = now_ticks`），另起一节。
+- 递归获取（持有者再 `acquire()` 自己）会在这里永远 park。Zircon 在阻塞前
+  `if (LK_DEBUGLEVEL > 0 && IsHeld()) panic(...)`；本树还没有，另记待修。

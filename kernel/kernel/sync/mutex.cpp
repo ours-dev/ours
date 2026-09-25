@@ -106,20 +106,79 @@ auto Mutex::acquire_slowpath(Duration spining_duration, task::Thread *current_th
 
     // Every exit above either returned false on a successful CAS or broke out
     // to here: contended by another thread, self-owned, or the spin deadline
-    // passed. None of those acquired the mutex, so block until a releaser
-    // hands it over.
+    // passed. None of those acquired the mutex. What happens next -- take it
+    // after all, or queue for it -- is decided under the wait queue's lock,
+    // the one release_slowpath() holds while it chooses between handing off
+    // and publishing Available.
     //
-    // Until now this returned `true` and nothing else: the comment said "make
-    // current thread sleep" and no sleep followed. m_waiters was written only
-    // by release_slowpath(), which picks a successor out of a queue that
-    // nothing ever joined, so the wake half ran against a permanently empty
-    // queue -- and a caller that lost the race returned from acquire()
-    // believing it held a mutex whose m_state named another thread.
-    auto const status = m_waiters.park_and_assign_owner(current_thread, time::Deadline::infinite(),
-                                                        task::Interruptible::No);
+    // It used to be decided outside that lock: the failed CAS above was the
+    // last look at m_state, and park_and_assign_owner() then enqueued under a
+    // lock it took by itself. A release landing between the two found the
+    // queue empty and published Available; this thread then queued on a mutex
+    // nobody held and nobody would release, and slept for good.
+    //
+    // The PI lock goes outside the queue lock, the order the tree uses (see
+    // WaitQueue::enqueue_waiter), and with interrupts and preemption off
+    // because the postamble carries it into reschedule_common(). Same shape
+    // as Event::wait_etc().
+    Guard<SpinLock, IrqSaveAndPreemptDisable> pi_guard{current_thread->get_pi_lock()};
+    {
+        Guard queue_guard{m_waiters.get_lock()};
+
+        // Once Contended is in m_state it stays there until the owner's
+        // release_slowpath() takes it out, under this lock, so a waiter that
+        // finds it set has nothing to write. Otherwise there are two cases,
+        // and the loop only re-runs when a CAS loses to a fast-path acquire
+        // or release that changed m_state under it:
+        //
+        //  - Available: the owner released after the CAS above failed.
+        //    Nobody can be queued behind that (a queued waiter implies
+        //    Contended), so take the mutex rather than park waiting for a
+        //    release that already happened.
+        //  - Held: set Contended on it. That is what sends the owner's
+        //    release down the slow path, where it will find this thread
+        //    queued.
+        //
+        // Zircon's AcquireContendedMutex() does the same with one fetch_or,
+        // storing the owner afterwards if the old value was free; State is an
+        // enum, which std::atomic gives no fetch_or, and the CAS also never
+        // shows other CPUs an ownerless Contended in between.
+        auto old_mutex_state = m_state.load(std::memory_order_relaxed);
+        while (!(old_mutex_state & State::Contended)) {
+            if (State::Available == old_mutex_state) {
+                if (m_state.compare_exchange_weak(old_mutex_state, new_mutex_state,
+                                                  std::memory_order_acquire,
+                                                  std::memory_order_relaxed)) {
+                    record_initial_assigned_cpu();
+
+                    if constexpr (TimesliceExtensionEnabled) {
+                        return current_thread->preemption_state().set_timeslice_extension(
+                            timeslice_extension.value);
+                    }
+                    return false;
+                }
+            } else if (m_state.compare_exchange_weak(
+                           old_mutex_state, old_mutex_state | State::Contended,
+                           std::memory_order_acq_rel, std::memory_order_relaxed)) {
+                break;
+            }
+        }
+
+        // Held by somebody, with Contended in m_state: whenever that owner
+        // releases, it has to take this lock first and will find this thread
+        // queued.
+        auto const status = m_waiters.park_and_assign_owner_preamble_locked(
+            current_thread, time::Deadline::infinite(), task::Interruptible::No);
+        if (Status::Ok != status) {
+            // Could not park -- the caller retries rather than proceeding
+            // unlocked, which is the whole point of reporting "not acquired".
+            return true;
+        }
+    }
+
+    auto const status =
+        m_waiters.park_and_assign_owner_postamble(current_thread, time::Deadline::infinite());
     if (Status::Ok != status) {
-        // Could not park -- the caller retries rather than proceeding
-        // unlocked, which is the whole point of reporting "not acquired".
         return true;
     }
 

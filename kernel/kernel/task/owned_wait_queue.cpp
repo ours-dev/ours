@@ -293,6 +293,24 @@ auto OwnedWaitQueue::park_and_assign_owner(Thread *const curr, time::Deadline co
     return park_thread(curr, deadline, ThreadSignals::None, interruptible);
 }
 
+/// Enqueues |curr| under the lock the caller holds; see the declaration for
+/// the contract. The owner assignment is left unarmed for the reason given in
+/// park_and_assign_owner() above -- once the ChainLock-style protocol exists,
+/// this is where the edge to the owner gets added, while the queue lock still
+/// pins down who the owner is.
+auto OwnedWaitQueue::park_and_assign_owner_preamble_locked(Thread *const curr,
+                                                           time::Deadline const &deadline,
+                                                           Interruptible interruptible) -> Status {
+    verify_owned();
+    return park_thread_preamble_locked(curr, deadline, ThreadSignals::None, interruptible);
+}
+
+auto OwnedWaitQueue::park_and_assign_owner_postamble(Thread *const curr,
+                                                     time::Deadline const &deadline) -> Status {
+    verify_owned();
+    return park_thread_postamble(curr, deadline);
+}
+
 template <typename Upstream, typename Downstream>
 constexpr static auto FromThreadToOwq =
     std::is_same_v<Upstream, Thread> && std::is_same_v<Downstream, OwnedWaitQueue>;
