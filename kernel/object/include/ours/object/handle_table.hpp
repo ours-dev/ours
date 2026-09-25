@@ -81,6 +81,13 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     [[nodiscard]]
     auto remove(HandleValue value) -> ustl::Box<Handle>;
 
+    /// Takes the |count| handles |values| names out of this table, for a
+    /// message written to |channel|; see the definition. Every handle found
+    /// is removed and ends up in |out|, whatever the answer.
+    [[nodiscard]]
+    auto remove_for_transfer(HandleValue const *values, u32 count, Dispatcher const *channel,
+                             ustl::Box<Handle> *out) -> Status;
+
     /// The object |value| names, as a T, provided the handle grants every
     /// right in |required|.
     template <typename T>
@@ -119,6 +126,9 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// The five checks. Null when any of them fails.
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto lookup_locked(HandleValue value) const -> Handle *;
+
+    /// Takes |handle|, which is in this table, out of it; see the definition.
+    TA_REQUIRES(m_lock) auto unlink_locked(Handle *handle) -> ustl::Box<Handle>;
 
     USTL_NO_MOVEABLE_AND_COPYABLE(HandleTable);
 

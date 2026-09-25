@@ -38,8 +38,9 @@
 #             count    Only on a pointer: the name of the argument that holds
 #                      its length in elements. Without one the pointer names
 #                      exactly one element.
-#             release  Only on a HandleValue: true when the call consumes the
-#                      handle whatever its outcome.
+#             release  Only on a HandleValue passed by value or as an input
+#                      array: true when the call consumes the handle (every
+#                      handle in the array) whatever its outcome.
 #   attrs   Any of "blocking" (may wait), "noreturn" (never comes back; the
 #           stub ends in ud2), "debug" (a debug facility with no counterpart
 #           in a finished system).
@@ -141,11 +142,14 @@ ours_syscalls = [
   },
   {
     name = "channel_write"
-    brief = "Queues |num_bytes| of |bytes| on the channel's other end."
+    brief = "Queues |bytes| and |handles| on the channel's other end."
     doc = [
-      "Handles in a message are not supported yet: |num_handles| must be 0.",
       "At most CHANNEL_MAX_MSG_BYTES bytes and CHANNEL_MAX_MSG_HANDLES",
-      "handles (<ours/syscall.hpp>).",
+      "handles (<ours/syscall.hpp>). Every handle in |handles| leaves the",
+      "caller's table whatever the outcome: on success it is in the message,",
+      "on failure it is closed. Each needs Transfer (AccessDenied), none may",
+      "be |channel| itself (NotSupported), and a value named twice is gone",
+      "the second time (BadHandle).",
     ]
     args = [
       {
@@ -171,6 +175,7 @@ ours_syscalls = [
         type = "HandleValue"
         dir = "in"
         count = "num_handles"
+        release = true
       },
       {
         name = "num_handles"

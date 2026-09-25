@@ -92,10 +92,13 @@ class Arg:
             raise DescriptionError(f"{where}: count on an argument that is not a pointer")
         if self.dir is None and self.type == "void":
             raise DescriptionError(f"{where}: void is only a pointee")
-        # A handle a call consumes is a handle *value*: a pointer to handles
-        # would need the kernel to say which of them it took.
-        if self.release and (self.type != "HandleValue" or self.dir is not None):
-            raise DescriptionError(f"{where}: release is only for a HandleValue passed by value")
+        # A handle a call consumes is a handle *value* the caller hands in:
+        # one passed by value, or an input array of them (channel_write's
+        # handles). Never an output -- a handle the kernel writes out is one
+        # the caller receives, not one it gives up.
+        if self.release and (self.type != "HandleValue" or self.dir not in (None, "in")):
+            raise DescriptionError(
+                f"{where}: release is only for a HandleValue passed by value or as an input array")
 
     @property
     def is_pointer(self) -> bool:

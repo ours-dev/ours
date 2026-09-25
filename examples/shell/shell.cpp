@@ -298,6 +298,108 @@ auto check_channel_loopback() -> void {
     }
 }
 
+/// Handles that travel in messages: out of the writer's table, into the
+/// reader's, and consumed whatever the write answers.
+///
+/// Four things. A channel end sent through a channel still works on the other
+/// side -- a message goes through it. A channel cannot be sent through
+/// itself. A write with one bad value in its handle array fails, and still
+/// takes the good handles with it: none is left behind for the caller to
+/// wonder about. And a chain of channel ends, each queued in the next, a
+/// thousand deep, can be dropped from the top: the kernel frees it as a loop
+/// (Dispatcher::rc_recycle), not a thousand destructors deep on one stack.
+///
+/// The vDSO entry points are called directly: ou's channel_write takes no
+/// handles.
+auto check_handle_transfer() -> void {
+    using ours::HandleValue;
+    using ours::Status;
+
+    constexpr ou::Str PING{"ping"};
+
+    auto ok = true;
+    HandleValue a = ours::HANDLE_INVALID;
+    HandleValue b = ours::HANDLE_INVALID;
+    HandleValue c = ours::HANDLE_INVALID;
+    HandleValue d = ours::HANDLE_INVALID;
+    if (!expect("shell: transfer channel_create(a, b) = ", ou::channel_create(&a, &b),
+                Status::Ok) ||
+        !expect("shell: transfer channel_create(c, d) = ", ou::channel_create(&c, &d),
+                Status::Ok)) {
+        return;
+    }
+
+    // d travels a -> b; what comes out of b is a new value for the same end.
+    ok &= expect("shell: write(a, handles = [d]) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, nullptr, 0, &d, 1),
+                 Status::Ok);
+    ok &= expect("shell: close(d) after sending it = ", ou::handle_close(d), Status::BadHandle);
+    HandleValue got = ours::HANDLE_INVALID;
+    u32 actual_bytes = 0;
+    u32 actual_handles = 0;
+    ok &= expect("shell: read(b) = ",
+                 ours_channel_read(b, ours::ChannelReadOptions::None, nullptr, &got, 0, 1,
+                                   &actual_bytes, &actual_handles),
+                 Status::Ok);
+    ok &= actual_handles == 1 && got != ours::HANDLE_INVALID;
+    ok &= expect("shell: write(c, ping) = ",
+                 ou::channel_write(c, PING.data(), static_cast<u32>(PING.size())), Status::Ok);
+    char buffer[8] = {};
+    u32 length = 0;
+    ok &= expect("shell: read(the received end) = ",
+                 ou::channel_read(got, buffer, sizeof(buffer), &length), Status::Ok);
+    ok &= spells(buffer, length, PING);
+
+    // A channel sent through itself is refused -- and consumed like any
+    // other handle in the array.
+    ok &= expect("shell: write(a, handles = [a]) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, nullptr, 0, &a, 1),
+                 Status::NotSupported);
+    ok &= expect("shell: close(a) after that = ", ou::handle_close(a), Status::BadHandle);
+
+    // One bad value fails the write and takes the good handle anyway.
+    HandleValue e = ours::HANDLE_INVALID;
+    HandleValue f = ours::HANDLE_INVALID;
+    ok &= expect("shell: transfer channel_create(e, f) = ", ou::channel_create(&e, &f), Status::Ok);
+    HandleValue const mixed[] = {e, HandleValue{0x7ffffff3}};
+    ok &= expect("shell: write(c, handles = [e, bad]) = ",
+                 ours_channel_write(c, ours::ChannelWriteOptions::None, nullptr, 0, mixed, 2),
+                 Status::BadHandle);
+    ok &= expect("shell: close(e) after that = ", ou::handle_close(e), Status::BadHandle);
+
+    // A thousand deep: each end queued in the next channel, then only the
+    // last one kept -- and closed.
+    constexpr u32 DEPTH = 1000;
+    auto chain_ok = true;
+    HandleValue inner = f;
+    for (u32 i = 0; i < DEPTH && chain_ok; ++i) {
+        HandleValue writer = ours::HANDLE_INVALID;
+        HandleValue holder = ours::HANDLE_INVALID;
+        chain_ok &= ou::channel_create(&writer, &holder) == Status::Ok;
+        chain_ok &= ours_channel_write(writer, ours::ChannelWriteOptions::None, nullptr, 0, &inner,
+                                       1) == Status::Ok;
+        chain_ok &= ou::handle_close(writer) == Status::Ok;
+        inner = holder;
+    }
+    chain_ok &= ou::handle_close(inner) == Status::Ok;
+    ok &= chain_ok;
+    if (chain_ok) {
+        static_cast<void>(ou::debug_line("shell: a 1000-deep chain of ends, closed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: the 1000-deep chain FAILED"));
+    }
+
+    ok &= ou::handle_close(b) == Status::Ok;
+    ok &= ou::handle_close(c) == Status::Ok;
+    ok &= ou::handle_close(got) == Status::Ok;
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: handle transfer checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: handle transfer checks FAILED"));
+    }
+}
+
 /// Bad user pointers handed to the kernel: each call must come back InvArgs,
 /// and the kernel must still be here to answer the next one.
 ///
@@ -435,6 +537,7 @@ auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -
     }
     check_handle_close(bootstrap);
     check_channel_loopback();
+    check_handle_transfer();
     check_bad_pointers(vdso_base);
 
     static Registry registry;

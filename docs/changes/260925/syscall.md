@@ -139,3 +139,114 @@ error_code 0x7 = 页存在、写、用户态；cr2 是 vDSO 的基址。dev 不�
 
 **故意没做**
 写程序**自己**只读段的探针（设计里的 `pf_write_ro`）：程序映像今天仍整体 RWX 映射，要等 launcher 按段映射（U6）。
+
+## 句柄经 channel 转移：写者的表里摘下，读者的表里装上，写的句柄无论成败都被消耗（2026-09-25）
+
+**文件**
+- `kernel/lib/syscall/src/channel.cpp` — `sys_channel_write()` 先拷句柄值、摘下全部句柄，再按次序回答；`sys_channel_read()` 先拷字节、再拷句柄值、最后装入
+- `kernel/object/handle_table.cpp`、`include/ours/object/handle_table.hpp` — 新增 `remove_for_transfer()`；摘除的公共部分抽成 `unlink_locked()`，`remove()` 也用它；改正"Zircon 在同一处取消等待"的注释
+- `build/abi/gen_syscalls.py` — `release` 允许用在 `dir = "in"` 的 HandleValue 数组上
+- `system/public/ours/syscalls.gni` — `channel_write` 的 `handles` 标 `release = true`；文档改写
+- `examples/shell/shell.cpp` — 新增 `check_handle_transfer()`
+
+**症状**
+`channel_write` 的 `num_handles` 非零一律回 NotSupported：程序之间没有办法递交句柄。
+
+**原因**
+缺的是系统调用层这一半。上一节已让 `MessagePacket` 能持有句柄。
+
+**改法**
+改前：
+
+```cpp
+    if (num_handles != 0) {
+        return Status::NotSupported;
+    }
+```
+
+改后（写端摘要）：
+
+```cpp
+    HandleValue values[CHANNEL_MAX_MSG_HANDLES];
+    ... handles.copy_array_from_user(values, num_handles) ...
+
+    ustl::Arc<ChannelDispatcher> dispatcher;
+    auto const resolved = table.get_dispatcher(channel, Rights::Write, &dispatcher);
+
+    ustl::Box<Handle> taken[CHANNEL_MAX_MSG_HANDLES];
+    auto const removed =
+        table.remove_for_transfer(values, num_handles, dispatcher.as_ptr(), taken);
+
+    if (resolved != Status::Ok) { return resolved; }
+    if (options != ChannelWriteOptions::None) { return Status::InvArgs; }
+    if (removed != Status::Ok) { return removed; }
+    ...
+    MessagePacket::create(bytes, num_bytes, taken, num_handles, &message)
+```
+
+```cpp
+auto HandleTable::remove_for_transfer(HandleValue const *const values, u32 const count,
+                                      Dispatcher const *const channel, ustl::Box<Handle> *const out)
+    -> Status {
+    ...
+    Guard guard{m_lock};
+    for (u32 i = 0; i < count; ++i) {
+        auto *const handle = lookup_locked(values[i]);
+        if (handle == nullptr) {
+            latch(Status::BadHandle);
+            continue;
+        }
+        out[i] = unlink_locked(handle);
+        if (!out[i]->has_rights(Rights::Transfer)) {
+            latch(Status::AccessDenied);
+        } else if (out[i]->dispatcher().as_ptr() == channel) {
+            latch(Status::NotSupported);
+        }
+    }
+    return status;
+}
+```
+
+- **消耗**：句柄值拷进来之后，被点名的每个句柄都在一次表锁内摘下，进 `taken`；写失败时它们随 `taken` 在所有锁之外关闭，
+  写成功时进消息。只有两种出口什么也不消耗：句柄数超限、句柄值数组拷不进来——那时根本不知道要消耗哪些。
+- **先摘后查**，只记第一个错误：摘不到回 BadHandle（同一个值第二次出现时，第一次已经把它摘走了）；缺 Transfer 回 AccessDenied；
+  句柄正是被写的 channel 回 NotSupported——一个排在自己对端队列里的 channel 端，会通过自己的队列让两端互相保活，外面再也关不掉。
+- **回答的次序**照设计 4.5：channel 句柄本身的错误最先，然后是选项，然后是句柄数组，最后是字节数。channel 句柄要在摘除之前解析：
+  它可能就在数组里，这里持有的引用让它在被拒绝期间活着。
+- **读端**先拷字节，再把每个句柄的值（值只取决于句柄与本表，装入前就算得出）一次拷给用户，两次都成功才逐个装入本表；
+  拷失败时句柄随 `taken` 关闭，没有任何东西被看见过——与 `channel_create()` 发布出参的次序相同。
+- **取消等待**的注释改正：本树在句柄离开表时就取消经它的等待；Zircon 的 `RemoveHandleLocked()` 并不取消，关闭的句柄在销毁时取消，
+  转移的句柄在接收端 `msg_get_handles()` 装入之前取消。效果相同，本树更早，而且只在一处。
+
+**参照**
+- Zircon `msg_put_handles()`（`zircon/kernel/lib/syscalls/channel.cc:314`）：拷入句柄值，在一次写锁内逐个
+  `get_handle_for_message_locked()`，只锁存第一个错误，失败的槽留空；`get_handle_for_message_locked()` / `common_handle_checks_locked()`
+  （`zircon/kernel/object/user_handles.cc`）先 `RemoveHandleLocked()` 再查 Transfer 与"是不是 channel 自己"。
+- Zircon `channel_write()` 用 `fit::defer` 的 `RemoveUserHandles()` 保证早退时也消耗句柄；本树先摘再回答，效果相同。
+- Zircon `msg_get_handles()`（同文件 :146 起）：先把值拷给用户，成功后取消等待、装入句柄表。
+
+**验证**
+- 构建通过；clang-format 干净（shell 里剩下的差异是原有的两处）；clang-tidy 在改动行上无新告警。
+- 生成器的新规则（临时脚本）：按值的 HandleValue 与输入数组接受 `release`，输出数组与非 HandleValue 拒绝。
+- 两个镜像的 shell 都打出：
+
+```
+shell: write(a, handles = [d]) = Ok
+shell: close(d) after sending it = BadHandle
+shell: read(b) = Ok
+shell: write(c, ping) = Ok
+shell: read(the received end) = Ok
+shell: write(a, handles = [a]) = NotSupported
+shell: close(a) after that = BadHandle
+shell: write(c, handles = [e, bad]) = BadHandle
+shell: close(e) after that = BadHandle
+shell: a 1000-deep chain of ends, closed
+shell: handle transfer checks passed
+```
+
+  一千层的那条链——每个 channel 端排在下一个 channel 的队列里，只保留最外层一个再关掉——由 K8 的 `rc_recycle()` 摊成循环释放；
+  内核照常跑完：dev `init: shell closed its channel`，dbg_1 `probes done (11 killed, 0 survived)`，到 `--- end ---`。
+
+**故意没做**
+- 读端的句柄类型与 rights 校验（`channel_read_etc`）：设计里推迟到 GetBackingMemory 之前。
+- 在途句柄的按进程记账（`HANDLE_MAX_PER_PROCESS`）：下一步。

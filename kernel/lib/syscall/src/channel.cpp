@@ -61,35 +61,56 @@ auto sys_channel_create(ChannelCreateOptions const options,
 
 auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const options,
                        user_copy::UserInPtr<u8 const> const bytes, u32 const num_bytes,
-                       [[maybe_unused]] user_copy::UserInPtr<HandleValue const> const handles,
-                       u32 const num_handles) -> Status {
-    // The handle first, then the arguments: BadHandle > BadType >
-    // AccessDenied > InvArgs (design 4.5). A program that passes a closed
-    // handle and a bad option learns about the handle, which is the mistake
-    // it has to fix first.
-    ustl::Arc<ChannelDispatcher> dispatcher;
-    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
-            channel, Rights::Write, &dispatcher);
-        status != Status::Ok) {
-        return status;
+                       user_copy::UserInPtr<HandleValue const> const handles, u32 const num_handles)
+    -> Status {
+    // The handle values first, out of user memory and outside every lock:
+    // every handle they name leaves the caller's table below whatever this
+    // call ends up answering, and that needs the values. A count over the
+    // limit or a buffer that faults consumes nothing -- there are no values
+    // to consume -- which is the one way out that leaves the table as it was.
+    if (num_handles > CHANNEL_MAX_MSG_HANDLES) {
+        return Status::OutOfRange;
+    }
+    HandleValue values[CHANNEL_MAX_MSG_HANDLES];
+    if (num_handles != 0) {
+        if (auto const status = handles.copy_array_from_user(values, num_handles);
+            status != Status::Ok) {
+            return status;
+        }
     }
 
+    // The channel, before the handles leave: it may be one of them, and a
+    // reference held here keeps it alive while the write refuses it.
+    auto &table = ProcessDispatcher::current()->handle_table();
+    ustl::Arc<ChannelDispatcher> dispatcher;
+    auto const resolved = table.get_dispatcher(channel, Rights::Write, &dispatcher);
+
+    // Consumed now, whatever comes next: every handle named is out of the
+    // table and in |taken|, and whatever does not end up in a queued message
+    // is closed when |taken| goes, after every lock. Zircon's channel_write()
+    // gets the same effect from a deferred RemoveUserHandles().
+    ustl::Box<Handle> taken[CHANNEL_MAX_MSG_HANDLES];
+    auto const removed = table.remove_for_transfer(values, num_handles, dispatcher.as_ptr(), taken);
+
+    // Then the answer, in the order of design 4.5: the channel handle first
+    // (BadHandle > BadType > AccessDenied), then the arguments.
+    if (resolved != Status::Ok) {
+        return resolved;
+    }
     if (options != ChannelWriteOptions::None) {
         return Status::InvArgs;
     }
-    // Handles in messages are P1: they need transfer accounting and the
-    // "consumed whether or not the write succeeds" rule. Refused outright
-    // rather than silently dropped, so no program can come to rely on it.
-    if (num_handles != 0) {
-        return Status::NotSupported;
+    if (removed != Status::Ok) {
+        return removed;
     }
     if (num_bytes > CHANNEL_MAX_MSG_BYTES) {
         return Status::OutOfRange;
     }
 
-    // The copy from user memory, before the channel's lock is taken.
+    // The copy from user memory, before the channel's lock is taken. The
+    // handles move into the packet only if it is made.
     ustl::Box<MessagePacket> message;
-    if (auto const status = MessagePacket::create(bytes, num_bytes, nullptr, 0, &message);
+    if (auto const status = MessagePacket::create(bytes, num_bytes, taken, num_handles, &message);
         status != Status::Ok) {
         return status;
     }
@@ -98,9 +119,8 @@ auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const opti
 
 auto sys_channel_read(HandleValue const channel, ChannelReadOptions const options,
                       user_copy::UserOutPtr<u8> const bytes,
-                      [[maybe_unused]] user_copy::UserOutPtr<HandleValue> const handles,
-                      u32 const num_bytes, u32 const num_handles,
-                      user_copy::UserOutPtr<u32> const actual_bytes,
+                      user_copy::UserOutPtr<HandleValue> const handles, u32 const num_bytes,
+                      u32 const num_handles, user_copy::UserOutPtr<u32> const actual_bytes,
                       user_copy::UserOutPtr<u32> const actual_handles) -> Status {
     // The handle first, then the arguments: BadHandle > BadType >
     // AccessDenied > InvArgs (design 4.5). A program that passes a closed
@@ -145,6 +165,33 @@ auto sys_channel_read(HandleValue const channel, ChannelReadOptions const option
     // the message, which has already left the queue -- Zircon's
     // sys_channel_read() makes the same trade: the alternative is copying to
     // user memory with a channel lock held.
-    return message->copy_data_to(bytes);
+    if (auto const copied = message->copy_data_to(bytes); copied != Status::Ok) {
+        return copied;
+    }
+    if (count == 0) {
+        return Status::Ok;
+    }
+
+    // Then the handles: their values out first, and only once that copy has
+    // worked are they installed. A value is a pure function of the handle and
+    // this table, so it is known before the handle is in the table; if the
+    // copy faults the handles die with |taken| and nothing was ever visible
+    // -- the same order channel_create() publishes in, and Zircon's
+    // msg_get_handles(), which copies the values out before it moves a
+    // single handle into the table.
+    auto &table = ProcessDispatcher::current()->handle_table();
+    ustl::Box<Handle> taken[CHANNEL_MAX_MSG_HANDLES];
+    message->take_handles(taken);
+    HandleValue values[CHANNEL_MAX_MSG_HANDLES];
+    for (u32 i = 0; i < count; ++i) {
+        values[i] = table.value_of(*taken[i]);
+    }
+    if (auto const copied = handles.copy_array_to_user(values, count); copied != Status::Ok) {
+        return copied;
+    }
+    for (u32 i = 0; i < count; ++i) {
+        static_cast<void>(table.add(ustl::move(taken[i])));
+    }
+    return Status::Ok;
 }
 } // namespace ours
