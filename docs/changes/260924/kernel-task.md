@@ -347,3 +347,88 @@ A 只能被本 CPU 再调度（`Scheduler::steal_work_from()` 还是桩，没有
 - `exit()` 里 PI 锁 → `SPAWNED_THREADS_LOCK` 的嵌套顺序与 Zircon（list lock 在前、线程锁在后）相反。
   今天没有反向嵌套的路径，所以不构成死锁；以后若有人在持 `SPAWNED_THREADS_LOCK` 时去拿某个线程的 PI 锁
   （比如遍历线程表的调试命令），就得先定顺序。
+
+## 可 join 线程改为明确不支持：`exit()` 报错而不是停机，`join()` 返回 `NotSupported`（2026-09-24）
+
+**文件**
+- `kernel/kernel/task/thread.cpp` — `exit()` 的可 join 分支改 `panic`；`join()` 返回 `Status::NotSupported`，注释列出缺什么；`try_wake_joiners()` 返回 `true`；删掉不再用的 `<arch/halt.hpp>`
+- `kernel/include/ours/task/thread.hpp` — `join()` 声明处注明不支持
+- `docs/repairs/260924/kernel-task.md` — 删掉第 7 条
+
+**症状**
+潜伏，今天够不到：每个会退出的线程都是 Detached（`spawn()` 的调用者都会 `detach()`，`bind_user_thread()` 给每个用户线程置 Detached），
+也没有人调 `join()`。一旦有线程不 detach 就退出，这颗 CPU 关着中断、持着自己的 PI 锁 `hlt` 下去，不再醒；
+之后任何 CPU 去拿这把 PI 锁都在它后面自旋。不 panic，不打日志。
+
+**原因**
+`exit()` 的可 join 分支是：
+
+```cpp
+while (!current_thread->m_task_state.try_wake_joiners(Status::Ok)) {
+    arch::halt();
+}
+```
+
+而 `try_wake_joiners()` 唤醒之后恒 `return false`。循环没有出口；关着中断的 `hlt` 也等不到能打断它的中断。
+
+照抄 Zircon 的形状但抄错了两处：Zircon 的 `TryWakeJoiners()` 只在 chain lock 退让（backoff）时返回 false，唤醒成功就返回 true；
+循环体是 `arch::Yield()`（自旋提示），不是 `hlt`。
+
+只修返回值不够让 join 变对。和 `Zircon Thread::Join()` 对照，join 这条路还缺：
+
+1. `join()` 把 `this`（被 join 的线程）挂到结果队列上，并断言 `this == Current`——等于线程 join 自己。Zircon 断言的正相反：`this != current_thread`，挂的是调用者。
+2. "是否已死"的检查和挂起不是一步，`exit()` 的唤醒可以落在两者之间，join 的一方就永远睡下去。
+3. `exit()` 对可 join 线程照样丢掉 PI 锁、排一个释放用的 Dpc；join 的一方也会 `destroy()`——释放两次，
+   而且 join 的一方可能在 `exit()` 还跑在这个线程的栈上时就把它释放了。Zircon 在这里不排 Dpc，持着线程锁直接进最后一次调度（`!queue_free_dpc`）。
+4. 没人把可 join 的线程从 `SPAWNED_THREADS` 摘下来（Zircon 在 `Join()` 里 `EraseFromListsLocked()`），`destroy()` 不摘。
+5. `detach()` 对已死的线程在持 PI 锁时调 `join()`，`join()` 再拿同一把锁，自锁死。Zircon 的 `Detach()` 先放锁再 `Join()`。
+6. 唤醒 joiner 要在退出线程的 PI 锁里再拿 joiner 的 PI 锁。本项目刻意没有全局 thread_lock，这种嵌套要靠 ChainLock 式的退让来避免死锁，线程锁现在还没有。
+
+第 6 条决定了做对 join 不是这一条改动能完成的事；而今天没有任何用户态需求要 join。所以诚实的做法是明确地不支持。
+
+**改法**
+改前：
+
+```cpp
+        } else {
+            while (!current_thread->m_task_state.try_wake_joiners(Status::Ok)) {
+                arch::halt();
+            }
+        }
+```
+
+改后：
+
+```cpp
+        } else {
+            panic("thread |{}| exited joinable, and join() is not supported: detach() it",
+                  current_thread->name());
+        }
+```
+
+`join()` 的函数体整个换成 `return Status::NotSupported;`，上面的注释逐条写了上面 1–6，给以后实现 join 的人当清单。
+`try_wake_joiners()` 改成 `return true`：`notify_all()` 自旋拿锁、把队列清空，不会失败。它现在没有调用者，
+但留着一个名为 try、却恒返回"失败"的函数，就是留着下一次同样的死循环。
+
+被否掉的方案：让可 join 的线程退出后留作"尸体"（照 Zircon 不排 Dpc、持锁调度），只让 `join()` 不支持。
+这样 exit 一侧和 Zircon 一致，但没有 join 就没有人回收，每个忘了 `detach()` 的线程都安静地泄漏一个 Thread 和一整个内核栈，
+还留着第 3、4 条的半成品。panic 让"必须 detach"这条规则在第一次被违反时就被看见。
+
+**参照**
+- `Zircon Thread::Current::Exit()`（`kernel/kernel/thread.cc`）：可 join 分支 `while (TryWakeJoiners(ZX_OK) == false) arch::Yield();`，之后不排 `free_dpc`，持锁 `RescheduleInternal()`。
+- `Zircon TaskState::TryWakeJoiners()`：`AcquireOrBackoff()` 拿到队列锁才 `WakeAllLocked()`，结果非空即返回 true。
+- `Zircon Thread::Join()`：`DEBUG_ASSERT(this != current_thread)`；在 list lock 与目标线程锁下检查 `THREAD_DEATH`，否则换成当前线程锁与队列锁去 `task_state_.Join(current_thread, ...)`；最后 `EraseFromListsLocked()`、`free_thread_resources()`。
+- `Zircon Thread::Detach()`：已死的线程先 `guard.Release()` 再 `Join(nullptr, 0)`。
+
+**验证**
+- 构建通过；clang-tidy 在改动行上没有新告警。
+- 两个镜像启动：dev 日志有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`；
+  dbg_1 跑到 `--- end ---`，Detached 的 `laborer` 正常退出。
+- 临时注释掉 `kernel/top/main.cpp` 里的 `laborer->detach()`（未提交，已还原）再启动 dbg_1：
+  日志出现 `thread |laborer| exited joinable, and join() is not supported: detach() it`，内核 panic 停下，而不是无声地停机。
+
+**故意没做**
+- 没有实现 join，理由见上面第 6 条和"被否掉的方案"。`TaskState::join()` 与计数器 `thread.join` 留着，给以后的实现用。
+- `detach()` 对已死线程的分支没改：现在可 join 的线程死不了，走到这个分支意味着线程已是 Detached，调用者手里的指针可能已被释放，
+  那是调用者的错，不是这里能补的。它调 `join()` 也不再自锁死，因为 `join()` 不再拿锁。
+- `TaskState::invoke()` 在入口函数返回后、线程还没 Dead 时就 `notify_all()` 一次，实现 join 时要么删掉、要么让 joiner 醒来后重查状态。今天没有 joiner，不动。

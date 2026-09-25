@@ -169,6 +169,9 @@ namespace task {
 
         /// Core method family.
 
+        /// Returns Status::NotSupported: joining is not implemented yet, and a
+        /// thread must be detach()ed before it exits. The definition lists
+        /// what a working join still needs.
         auto join(i32 *retcode, time::Deadline deadline) -> Status;
 
         auto detach() -> Status;

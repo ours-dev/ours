@@ -42,10 +42,6 @@ unpark 一个已是 Ready/Running 的线程（dbg_1 触发 `scheduler.cpp` 的�
 每个 prof 样本的 tid 都是垃圾值。改为 `Thread::Current::get()->m_tid`。`PmNode::Current::hard_affinity()`
 （`kernel/mm/include/ours/mm/pm_node.hpp`）是同一个错误，属于 mm。
 
-## 7. 可 join 线程的退出循环在关中断下 `hlt`（已交接）
-
-`try_wake_joiners()` 恒返回 false，循环永不结束，且持着 PI 锁。今天没有可 join 的线程会走到。
-
 ## 8. 杀一个正在另一颗 CPU 上运行的线程，不发 IPI（已交接）
 
 `suspend_or_kill()` 的 Running 分支只置信号位。目标线程要等下一次从 ring 3 进内核才处理。Zircon 在此调 `mp_interrupt()`。

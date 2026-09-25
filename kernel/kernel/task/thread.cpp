@@ -13,7 +13,6 @@
 #include <ours/time/timer.hpp>
 
 #include <arch/auto_interrupt_disabler.hpp>
-#include <arch/halt.hpp>
 #include <gktl/counter.hpp>
 #include <gktl/defer.hpp>
 #include <gktl/init_hook.hpp>
@@ -80,9 +79,15 @@ auto TaskState::join(Thread *thread, time::Deadline deadline) -> Status {
     return m_result_wait_queue.park_thread(thread, deadline);
 }
 
+/// Returns whether the joiners were woken, so a caller may retry on false --
+/// Zircon's TryWakeJoiners() fails when its chain-lock acquisition backs off.
+/// This one cannot fail: notify_all() spins for its locks and drains the queue
+/// rather than backing off. It used to return false regardless, and exit()'s
+/// joinable branch looped on it with interrupts off until the CPU was lost
+/// (see Thread::Current::exit(); nothing calls this now).
 auto TaskState::try_wake_joiners(Status status) -> bool {
     m_result_wait_queue.notify_all(status);
-    return false;
+    return true;
 }
 
 Thread::Thread(KoId tid, char const *name, sched::BaseProfile const &profile)
@@ -321,31 +326,34 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
     return Status::Ok;
 }
 
-auto Thread::join(i32 *retcode, time::Deadline deadline) -> Status {
+/// Not supported yet: every thread is detached (spawn()'s callers detach()
+/// what they spawn, bind_user_thread() detaches every user thread), and
+/// Thread::Current::exit() refuses to let a joinable one die. What stands
+/// between this and a working join, compared against Zircon Thread::Join():
+///
+///  - It has to park the *caller* on the result queue. The old body parked
+///    `this` -- the thread being joined -- and asserted `this == Current`,
+///    i.e. a thread joining itself, which Zircon asserts against.
+///  - The "is it Dead yet?" check and the park have to be one step against
+///    exit()'s set_state_dead() and wake, or the wake can land in between
+///    and the joiner sleeps for good: WaitQueue::park_thread_preamble_locked()
+///    is the shape for that.
+///  - exit() must not queue the free Dpc for a joinable thread, and must go
+///    into its last reschedule still holding its PI lock, so the joiner --
+///    which frees the thread -- cannot free the stack exit() is running on
+///    (Zircon's `!queue_free_dpc` path). Today exit() drops that lock and
+///    queues the Dpc for everything that is not NoFree.
+///  - The joiner has to unlink the thread from SPAWNED_THREADS (Zircon's
+///    EraseFromListsLocked() in Join()); destroy() does not.
+///  - detach() of a Dead thread calls join() with the PI lock still held;
+///    Zircon's Detach() releases it first.
+///  - Waking joiners takes their PI locks inside the exiting thread's. With no
+///    global thread_lock by design, that nesting needs the ChainLock-style
+///    backoff the thread locks do not have yet.
+auto Thread::join([[maybe_unused]] i32 *retcode, [[maybe_unused]] time::Deadline deadline)
+    -> Status {
     m_canary.verify<Self>();
-    DEBUG_ASSERT(this == Current::get());
-
-    {
-        Guard guard{get_pi_lock()};
-        if (!!(m_flags & Flags::Detached)) {
-            return Status::BadState;
-        }
-    }
-
-    if (state() != State::Dead) {
-        auto const status = m_task_state.join(this, deadline);
-        if (Status::Ok != status) {
-            return status;
-        }
-    }
-
-    if (retcode) {
-        *retcode = m_task_state.retcode();
-    }
-
-    destroy();
-    THREAD_JOIN_COUNT.add(1);
-    return Status::Ok;
+    return Status::NotSupported;
 }
 
 auto Thread::detach() -> Status {
@@ -753,9 +761,17 @@ auto Thread::Current::exit(i32 retcode) -> void {
                 thread_desc_recyclable = true;
             }
         } else {
-            while (!current_thread->m_task_state.try_wake_joiners(Status::Ok)) {
-                arch::halt();
-            }
+            // A joinable thread has to stay behind for join() to reap, and
+            // join() is not supported (see it), so no one ever would. Say so
+            // rather than leak it. This branch used to loop
+            // `while (!try_wake_joiners(Status::Ok)) arch::halt();` -- with
+            // interrupts off and this PI lock held, on a function that always
+            // returned false: the CPU stopped for good, silently, and any
+            // other CPU that later reached for this thread's PI lock spun
+            // behind it. Zircon's loop there calls arch::Yield() on a
+            // TryWakeJoiners() that fails only on chain-lock backoff.
+            panic("thread |{}| exited joinable, and join() is not supported: detach() it",
+                  current_thread->name());
         }
 
         if (thread_desc_recyclable) {
