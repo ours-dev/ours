@@ -25,16 +25,3 @@
 m_pages。前者与 Zircon 一致，推荐。
 
 **必须在 K16 之前修掉。**
-
-## 2. `m_last_fault` 用 `Arc::adopt()` 包一个查找出来的裸指针
-
-`VmAspace::page_fault_internal()`（`vm_aspace.cpp:178`）：
-
-```cpp
-m_last_fault = ustl::Arc<VmMapping>::adopt(m_root_vma->find_mapping_locked(vmf.va));
-```
-
-`adopt()` 接管一个引用而不增加计数。如果 `find_mapping_locked()` 返回的是树里借出来的裸指针（没有先加引用），
-这里就凭空多出一个所有者：`m_last_fault` 下次被替换或 aspace 析构时，会多减一次计数，映射被提前释放。
-今天没暴露，因为 aspace 从不析构，映射也从不被拆。K6（`VmAspace::destroy`）会让它暴露，那一步要先核对
-`find_mapping_locked()` 的所有权约定，再决定这里用 `adopt` 还是用加引用的构造。

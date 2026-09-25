@@ -212,3 +212,15 @@ lookup cursor，每页 `RequirePage(write, ...)`，经 `paddr_to_physmap()` 拷�
   被两处同时改写时会并发插入。登记为 `docs/repairs/260925/mm.md` 第 1 条，必须在 K16（共享 vDSO VMO）之前修。
 - 查这件事时看到 `m_last_fault` 用 `Arc::adopt()` 包查找出来的裸指针，可能多出一个所有者，登记为同文件第 2 条，
   K6 之前核对。
+
+## 勘误：`m_last_fault` 的 `Arc::adopt()` 不是缺陷（2026-09-25）
+
+本文件只增不改，更正写在这里。
+
+「VmObjectPaged 的内核缓冲读写」一节的"故意没做"说 `m_last_fault = Arc::adopt(find_mapping_locked(va))` 可能凭空多出一个
+所有者，并登记为 `docs/repairs/260925/mm.md` 第 2 条。这是误判：ustl 的 `Rc(T *)` 与 `Rc::adopt(T *)`
+（`system/lib/ustl/include/ustl/rc.hpp:283-293`）总是 `retain()`，对象从强计数 0 起步，第一个 Rc 把它变成 1——它不是 fbl 的
+`AdoptRef`（那个不加计数）。所以 `m_last_fault` 拿到的是它自己的一个引用，替换或析构时减掉的正是它加过的那一个。
+
+误判的来源是 `VmAspace::kernel_aspace()` 的注释，它说 adopt "takes ownership of a raw pointer without retaining it"，与 ustl 的
+实现不符。该注释已改正（`kernel/mm/include/ours/mm/vm_aspace.hpp`），待修项第 2 条已删除。

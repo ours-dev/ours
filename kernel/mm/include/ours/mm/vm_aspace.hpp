@@ -56,12 +56,11 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// init_kernel_aspace() and never destroyed, and every caller in the tree
     /// uses it as `kernel_aspace()->something` and drops it immediately.
     ///
-    /// Returning `Arc<VmAspace>` was worse than merely redundant. It was
-    /// built with `Arc::adopt(KERNEL_ASPACE)`, and adopt *takes* ownership of
-    /// a raw pointer without retaining it -- so every call produced a
-    /// temporary that decremented, on destruction, a reference nobody had
-    /// ever incremented for it. What kept that from mattering is that the
-    /// kernel aspace is never released, which is a poor thing to depend on.
+    /// It used to return `Arc::adopt(KERNEL_ASPACE)`. In ustl that is not
+    /// fbl's AdoptRef: `Rc(T *)` and `adopt()` retain (an object starts at a
+    /// strong count of zero, and the first Rc makes it one), so each call was
+    /// a balanced retain and release -- correct, and pure cost for a pointer
+    /// that owns nothing.
     ///
     /// Null until init_vmm() has run. Callers that run earlier -- the boot
     /// thread is built in task::init_early(), before any address space exists
