@@ -301,7 +301,7 @@ auto check_channel_loopback() -> void {
 /// and the kernel must still be here to answer the next one.
 ///
 /// The vDSO entry points are called directly rather than through ou, so that
-/// the pointers reach the kernel exactly as written here. Two kinds:
+/// the pointers reach the kernel exactly as written here. Three kinds:
 ///
 ///   UNMAPPED  inside the user half of the address space, so the range check
 ///             passes, but nothing is mapped there: the copy faults, the fault
@@ -311,12 +311,14 @@ auto check_channel_loopback() -> void {
 ///   KERNEL    the kernel half: refused by the range check before any copy.
 ///             It answered InvArgs before the resume existed and is here so
 ///             that it keeps doing so.
-///
-/// A third kind belongs here and is missing: a destination that is mapped
-/// but read-only, such as the vDSO. Every x86 leaf PTE is currently built
-/// writable (docs/repairs/260924/x86-kernel.md), so such a write succeeds;
-/// the checks go in with that fix.
-auto check_bad_pointers() -> void {
+///   |vdso|    mapped, and in the user half, but read-only: the vDSO. Only
+///             ever a destination -- reading it is legitimate -- and the copy
+///             faults on a page that is present, so the fault is a protection
+///             violation the address space refuses rather than a page it
+///             cannot supply. Until every x86 leaf PTE stopped being built
+///             writable whatever it asked for, these writes went through and
+///             each call answered Ok, having written into the vDSO.
+auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     using ours::Signals;
     using ours::Status;
 
@@ -380,6 +382,26 @@ auto check_bad_pointers() -> void {
     ok &= expect("shell: channel_create(after that) = ",
                  ours_channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok);
 
+    // The same three destinations, pointed at the vDSO: mapped, but not for
+    // writing. The message is lost the same way, and nothing reaches the
+    // vDSO -- the next call through it still works, which is the proof.
+    ok &= expect("shell: channel_write(1 byte) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, &BYTE, 1, nullptr, 0),
+                 Status::Ok);
+    ok &=
+        expect("shell: channel_read(into the vDSO) = ",
+               ours_channel_read(b, ours::ChannelReadOptions::None, reinterpret_cast<void *>(vdso),
+                                 nullptr, 1, 0, &actual_bytes, &actual_handles),
+               Status::InvArgs);
+    ok &= expect("shell: wait_one(observed = vDSO, poll) = ",
+                 ours_object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(vdso)),
+                 Status::InvArgs);
+    ours::HandleValue e = ours::HANDLE_INVALID;
+    ok &= expect("shell: channel_create(out0 = vDSO) = ",
+                 ours_channel_create(ours::ChannelCreateOptions::None,
+                                     reinterpret_cast<ours::HandleValue *>(vdso), &e),
+                 Status::InvArgs);
+
     ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
     ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
     ok &= expect("shell: close(c) = ", ou::handle_close(c), Status::Ok);
@@ -402,8 +424,7 @@ auto check_bad_pointers() -> void {
 /// the calls below are undefined symbols that userboot binds to the vDSO's
 /// definitions while it loads this image (elfload::Binder).
 extern "C" [[noreturn]]
-auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr const vdso_base)
-    -> void {
+auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -> void {
     static_cast<void>(ou::debug_line(BANNER));
     // The probes need the root job, which is what |bootstrap| is when the
     // kernel started this program -- and check_handle_close() is about to
@@ -413,7 +434,7 @@ auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr c
     }
     check_handle_close(bootstrap);
     check_channel_loopback();
-    check_bad_pointers();
+    check_bad_pointers(vdso_base);
 
     static Registry registry;
     auto const status = registry.fetch();
