@@ -14,3 +14,12 @@ and backspace) and dispatches them through `gktl::run_command`.
 
 Drive it interactively over QEMU's serial console, or from scripts:
 `prof.start tick 4` / `prof.stop` / `prof.dump` (see libprof).
+
+## Turning it off
+
+The shell runs every registered command, in ring 0, for whoever can write to
+the serial line, so a kernel can be built without it: the GN argument
+`kernel_shell_enabled = false` (`//kernel/kernel_params.gni`) leaves this
+library and `//kernel/commands` out of the link.
+
+    tools/set.py bringup.x86 --args kernel_shell_enabled=false

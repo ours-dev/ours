@@ -6,6 +6,7 @@ Usage:
   tools/set.py <product>.<arch>       # e.g. tools/set.py bringup.x86
   tools/set.py <product>.<arch> --variant lto[,ubsan-trap]
   tools/set.py <product>.<arch> --clang-dir <path>  # override the clang tool dir
+  tools/set.py <product>.<arch> --args kernel_shell_enabled=false  # any GN arg
   tools/set.py --list                 # list valid products and arches
 
 This is the equivalent of `fx set <product>.<board>`: it writes args.gn
@@ -23,6 +24,14 @@ so a build generated without it cannot find the C++ standard library headers
 (<cstdint>, <format>, ...) and the kernel compile fails at the first
 include.  A missing clang tool dir is reported as a warning, not silently
 dropped.
+
+--args appends a GN build argument to args.gn, the way `fx set --args` does;
+repeat it for more than one.  It exists because this script owns args.gn and
+rewrites it from scratch on every run: an argument added to the file by hand
+(or with `gn args`) is gone the next time anyone re-runs set.py, so a build
+argument such as kernel_shell_enabled (//kernel/kernel_params.gni) is only
+really selectable if it can be said here.  The value is GN syntax, so a string
+keeps its quotes: --args 'sched_normal_discipline="fair"'.
 """
 
 # PEP 604 annotations (`str | None`) are evaluated at definition time without
@@ -107,7 +116,7 @@ def parse_target(spec: str) -> tuple[str, str]:
 
 
 def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
-              tool_dir: str | None) -> int:
+              tool_dir: str | None, extra_args: list[str]) -> int:
     """Write args.gn and run gn gen."""
     if arch not in VALID_CPUS:
         print(f"error: unknown CPU '{arch}'.  Valid values: {', '.join(VALID_CPUS)}",
@@ -131,12 +140,23 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
         lines.append(f"select_variant = [{quoted}]")
     if tool_dir:
         lines.append(f"clang_tool_dir = \"{tool_dir}\"")
+    # Written verbatim as `name = value`: the value is GN syntax and GN is the
+    # one to judge it, so a misspelt name or a bad value surfaces as gn gen's
+    # own error below rather than as a second, weaker check here.
+    for arg in extra_args:
+        name, sep, value = arg.partition("=")
+        if not sep or not name.strip() or not value.strip():
+            print(f"error: --args '{arg}' is not <name>=<value>", file=sys.stderr)
+            return 1
+        lines.append(f"{name.strip()} = {value.strip()}")
 
     args_gn = out_dir / "args.gn"
     args_gn.write_text("\n".join(lines) + "\n")
 
     triple = VALID_CPUS[arch]
     variant_note = f", variants={variants}" if variants else ""
+    if extra_args:
+        variant_note += f", args={extra_args}"
     tool_note = f", clang={tool_dir}" if tool_dir else ", clang=PATH (no libc++ wiring!)"
     print(f"Generated {args_gn}  (product={product}, cpu={arch}, triple={triple}{variant_note}{tool_note})")
     if not tool_dir:
@@ -198,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="list valid products and arches")
     parser.add_argument("--out", default="",
                         help="output directory (default: out/<product>.<arch>)")
+    parser.add_argument("--args", action="append", default=[], metavar="NAME=VALUE",
+                        help="extra GN build argument written into args.gn "
+                             "(repeatable; the value is GN syntax)")
     args = parser.parse_args(argv)
 
     if args.list or args.target is None:
@@ -221,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = ROOT / args.out
     else:
         out_dir = ROOT / "out" / f"{product}.{arch}"
-    return set_build(product, arch, variants, out_dir, tool_dir)
+    return set_build(product, arch, variants, out_dir, tool_dir, args.args)
 
 
 if __name__ == "__main__":

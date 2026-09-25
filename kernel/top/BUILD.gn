@@ -1,5 +1,6 @@
 import("//build/ours/cpu.gni")
 import("//build/toolchain/toolchain_environment.gni")
+import("//kernel/kernel_params.gni")
 
 source_set("top") {
   sources = [
@@ -10,13 +11,11 @@ source_set("top") {
   deps = [
     "//kernel/arch/$ours_cpu/kernel",
     "//kernel/arch/x86/kernel:headers",
-    "//kernel/commands",
     "//kernel/driver",
     "//kernel/kernel",
     "//kernel/lib/acpi:header",
     "//kernel/lib/ccrt",
     "//kernel/lib/gktl",
-    "//kernel/lib/kshell",
     "//kernel/lib/logz4",
     "//kernel/lib/prof",
     "//kernel/lib/syscall",
@@ -27,4 +26,28 @@ source_set("top") {
     "//kernel/phys:handoff",
     "//system/lib/logz4",
   ]
+
+  # The console, gated on the dependency edge rather than on an #if inside
+  # either library: neither has a line that makes sense without the other, so
+  # the whole of each is in or out, and a kernel built without them never
+  # compiles them. See kernel_shell_enabled in //kernel/kernel_params.gni.
+  #
+  # Both go together. kshell is the front end that runs commands; //kernel/
+  # commands exists only to put commands on its prompt (its BUILD.gn says so),
+  # so without the shell it is callbacks nothing can reach and help strings
+  # nothing prints.
+  #
+  # What deliberately stays is the registry itself. gktl is not the console --
+  # it also carries the init hooks and counters every kernel needs -- and a
+  # command that belongs to a subsystem's own file (mm's `dump-frame`) keeps
+  # its record in .gktl.commands, where sys_command_list still finds it. That
+  # is the right answer rather than a leak: the syscall lists the registry and
+  # never runs it, and with the shell gone nothing calls gktl::run_command(),
+  # so --gc-sections drops the dispatcher and no command is reachable at all.
+  if (kernel_shell_enabled) {
+    deps += [
+      "//kernel/commands",
+      "//kernel/lib/kshell",
+    ]
+  }
 }
