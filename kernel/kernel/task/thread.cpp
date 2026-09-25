@@ -1,4 +1,7 @@
+#include <ours/cpu.hpp>
 #include <ours/dpc.hpp>
+#include <ours/ipi_event.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/mod.hpp>
@@ -286,6 +289,31 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             break;
         }
         case State::Running: {
+            // On this CPU, a Running thread is the caller itself -- a thread
+            // killing itself -- and it meets the signal on its own way back
+            // to ring 3. On another CPU, nothing guarantees it enters the
+            // kernel soon: a loop in ring 3 makes no system call, and takes an
+            // interrupt only if one happens to be due there. So interrupt it.
+            // IpiEvent::Interrupt has an empty handler; what it buys is the
+            // interrupt's tail, which runs process_pending_signals() before
+            // returning to ring 3. If the IPI finds the thread in the kernel
+            // instead, the check on its way out of the kernel acts on it; if
+            // it finds interrupts off on that path, it stays pending until
+            // SYSRET or IRETQ turns them on, and is taken in ring 3.
+            //
+            // curr_cpu() cannot change under us: a Running thread leaves its
+            // CPU only through a reschedule, every one of which holds its PI
+            // lock, and we hold that. Nor can Cpu::id(), with preemption off.
+            //
+            // Zircon's SuspendOrKillInternal() sends mp_interrupt() to
+            // curr_cpu_ here, and Linux's signal_wake_up_state() ends in
+            // kick_process(), which IPIs the task's CPU when it is not this
+            // one.
+            auto const cpu = curr_cpu();
+            DEBUG_ASSERT(cpu != INVALID_CPU_NUM, "Running thread {} belongs to no CPU", name());
+            if (cpu != Cpu::id()) {
+                IpiService::send_event(cpu, IpiEvent::Interrupt);
+            }
             break;
         }
         case State::Suspend: {
@@ -652,9 +680,11 @@ auto Thread::Current::process_pending_signals() -> void {
     // Called on the last stretch back to ring 3 -- the exception tail, the
     // path to SYSRET, and a thread's first entry -- with interrupts off, so
     // that nothing on this CPU can raise a signal between this check and the
-    // return. A signal raised on another CPU in that window stays set and is
-    // acted on at this thread's next entry to the kernel; no IPI is sent for
-    // it yet (suspend_or_kill()'s Running branch only sets the bit).
+    // return. A signal raised on another CPU in that window is not missed
+    // either: suspend_or_kill() follows it with an interrupt IPI to this CPU,
+    // which stays pending while interrupts are off and is taken the moment
+    // the return to ring 3 turns them on -- and that interrupt's tail comes
+    // back here.
     // Each branch below turns them on for what it does and, if it comes back
     // at all, off again.
     DEBUG_ASSERT(arch::irqs_disabled(), "{}() entered with interrupts on", __func__);

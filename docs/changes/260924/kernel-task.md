@@ -432,3 +432,80 @@ while (!current_thread->m_task_state.try_wake_joiners(Status::Ok)) {
 - `detach()` 对已死线程的分支没改：现在可 join 的线程死不了，走到这个分支意味着线程已是 Detached，调用者手里的指针可能已被释放，
   那是调用者的错，不是这里能补的。它调 `join()` 也不再自锁死，因为 `join()` 不再拿锁。
 - `TaskState::invoke()` 在入口函数返回后、线程还没 Dead 时就 `notify_all()` 一次，实现 join 时要么删掉、要么让 joiner 醒来后重查状态。今天没有 joiner，不动。
+
+## 杀或挂起一个在别的 CPU 上运行的线程，发一个中断 IPI（2026-09-24）
+
+**文件**
+- `kernel/kernel/task/thread.cpp` — `suspend_or_kill()` 的 Running 分支：目标不在本 CPU 就 `IpiService::send_event(cpu, IpiEvent::Interrupt)`；`process_pending_signals()` 的注释改正
+- `kernel/arch/x86/kernel/syscall.S` — `call x86_syscall_process_pending_signals` 上方的注释改正
+- `docs/repairs/260924/kernel-task.md` — 删掉第 8 条
+
+**症状**
+潜伏。今天唯一的 kill 是线程在 fault 路径上杀自己。一旦有别的 CPU 去杀（P1-B 的 `task_kill`、多线程进程被杀），
+目标若在 ring 3 里跑一个不做系统调用的循环，而它那颗 CPU 上又恰好没有到期的定时器中断，Kill 就一直挂在 `m_signals` 里没人处理，
+进程迟迟不死。P1-A 在 `syscall.S` 和 `process_pending_signals()` 里的注释原本假定会有 IPI 跟上，勘误里已改为"还不发"。
+
+**原因**
+信号只在线程从内核回 ring 3 的最后一段被检查：系统调用出口（`x86_syscall_process_pending_signals`）、
+中断/异常出口（`arch_handle_exception()` 的 `from_user` 分支）、第一次进用户态。置了信号位而目标不进内核，检查就不会发生。
+
+Running 分支原来只是 `break`：它依赖目标"很快"进内核，而这件事没人保证。Ready 分支同样只 `break`，但那是对的——
+Ready 的线程下一次被调度上 CPU 时必然从内核出发回到 ring 3，路上会经过检查。
+
+**改法**
+改前：
+
+```cpp
+        case State::Running: {
+            break;
+        }
+```
+
+改后：
+
+```cpp
+        case State::Running: {
+            auto const cpu = curr_cpu();
+            DEBUG_ASSERT(cpu != INVALID_CPU_NUM, "Running thread {} belongs to no CPU", name());
+            if (cpu != Cpu::id()) {
+                IpiService::send_event(cpu, IpiEvent::Interrupt);
+            }
+            break;
+        }
+```
+
+- 用 `IpiEvent::Interrupt`（`IrqVec::IpiInterrupt`，处理函数是空的），不用 `Resched`：要的只是让目标进一次中断，
+  中断出口在 `from_user` 时会跑 `process_pending_signals()`。Resched 会额外置一个"待抢占"位，平白多一次调度。
+  Zircon 这里用的也是 `mp_interrupt()`（`mp_ipi::INTERRUPT`），不是 reschedule。
+- 目标就是调用者自己（本 CPU 上 Running 的只能是当前线程）时不发：它自己回 ring 3 的路上就会看到信号。
+- 读 `curr_cpu()` 不会读到过时的值：一个 Running 的线程离开 CPU 只能经过一次调度，而每条调度路径都先拿它的 PI 锁，这里正持着。
+  `Cpu::id()` 也不会变，Guard 关了抢占。调度器在 `set_next_thread()` 里写 `m_curr_cpu` 时还没拿新线程的 PI 锁，
+  但从 B 的队列里挑出来的线程，入队时 `m_curr_cpu` 已经是 B。
+- 几种落点都不丢：IPI 打在 ring 3 → 中断出口检查；打在内核里 → 离开内核那一段检查；打在回 ring 3 前已关中断的那一小段 →
+  中断挂起，SYSRET/IRETQ 一开中断就在 ring 3 被取走，再走一次中断出口。
+
+两处注释改为：另一颗 CPU 在窗口里置的信号不会漏，`suspend_or_kill()` 随后发的中断 IPI 在关中断期间挂起，回到 ring 3 时被取走，中断出口再检查一次。
+
+**参照**
+- `Zircon Thread::SuspendOrKillInternal()`：`case THREAD_RUNNING: mp_interrupt(mp_ipi_target::MASK, cpu_num_to_mask(scheduler_state_.curr_cpu_));`，
+  注释说这一步"不是必需的，只是让挂起或杀掉更早发生，而不是等下一次时钟中断或系统调用"。
+- `Linux signal_wake_up_state()` → `kick_process()`（`kernel/sched/core.c`）：`if ((cpu != smp_processor_id()) && task_curr(p)) smp_send_reschedule(cpu);`——
+  同样只对"正在别的 CPU 上跑"的任务发，本 CPU 不发。
+
+**验证**
+- 构建通过；clang-tidy 在改动行上没有新告警。
+- 两个镜像启动：dev 日志有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`；dbg_1 跑到 `--- end ---`。
+- 临时实验（未提交，已还原）：在 `labour_routine()` 里起一个绑在 CPU 1 上自旋的内核线程，50 ms 后从 CPU 0 `kill()` 它，
+  并在 `x86_handle_ipi_interrupt()` 里临时打一行日志。dbg_1：
+
+  ```
+  [4357634000 cpu0 info] EXPERIMENT: killing ipi-probe from CPU[0]: running true curr_cpu 1
+  [4358153000 cpu1 info] EXPERIMENT: IPI-Interrupt on CPU[1]
+  ```
+
+  IPI 落在目标所在的 CPU 上，约 0.5 ms 后。dev 那次目标恰好是 Ready，按设计没有发。
+  自旋的是内核线程，不回 ring 3，所以"Kill 在中断出口被处理、线程退出"这一段没有端到端测到；那要等有跨线程的 kill 调用者（P1-B）。
+
+**故意没做**
+- Ready 分支不发 IPI，理由见上：它下次上 CPU 必然经过检查。Zircon 同样只 `break`。
+- 没有把 `x86_handle_ipi_resched()` 里自己调 `apic_issue_eoi()`、分发处又调一次的重复 EOI 一起改：那属于 x86-kernel，与本条无关。

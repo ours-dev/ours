@@ -41,7 +41,3 @@ unpark 一个已是 Ready/Running 的线程（dbg_1 触发 `scheduler.cpp` 的�
 每 CPU 模板里的空指针，地址折叠成常量 `offsetof(Thread, m_tid)` = 0x70，于是生成 `movq %gs:0x70, ...`。
 每个 prof 样本的 tid 都是垃圾值。改为 `Thread::Current::get()->m_tid`。`PmNode::Current::hard_affinity()`
 （`kernel/mm/include/ours/mm/pm_node.hpp`）是同一个错误，属于 mm。
-
-## 8. 杀一个正在另一颗 CPU 上运行的线程，不发 IPI（已交接）
-
-`suspend_or_kill()` 的 Running 分支只置信号位。目标线程要等下一次从 ring 3 进内核才处理。Zircon 在此调 `mp_interrupt()`。
