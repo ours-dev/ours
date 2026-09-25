@@ -13,6 +13,7 @@
 source_set("commands") {
   sources = [
     "log.cpp",
+    "mutex_stress.cpp",
     "prof.cpp",
   ]
   deps = [
@@ -22,6 +23,7 @@ source_set("commands") {
     "//kernel/lib/prof",
     "//kernel/lib/unwind:headers",
     "//kernel/mm:headers",
+    "//system/lib/lockdep",
     "//system/lib/logz4:headers",
   ]
   visibility = [ "*" ]

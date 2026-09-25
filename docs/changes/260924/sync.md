@@ -186,3 +186,73 @@ status = m_waiters.park_and_assign_owner_postamble(current_thread, ...);        
 - 自旋阶段仍然不自旋（`deadline_ticks = now_ticks`），另起一节。
 - 递归获取（持有者再 `acquire()` 自己）会在这里永远 park。Zircon 在阻塞前
   `if (LK_DEBUGLEVEL > 0 && IsHeld()) panic(...)`；本树还没有，另记待修。
+
+## `mutex.stress`：专测 `Mutex` 丢唤醒的控制台命令（2026-09-24）
+
+**文件**
+- `kernel/commands/mutex_stress.cpp` — 新增 `mutex.stress [rounds]`
+- `kernel/commands/BUILD.gn` — 加入源文件，依赖 `//system/lib/lockdep`（`Guard`）
+
+**症状**
+无（新增测试）。前两节修的丢唤醒，正常启动几乎碰不到——要靠 P1-A 探针测试一个接一个杀进程，
+才在约一半的启动里撞上一次。没有一个能按需复现它的东西，就说不清修好没有。
+
+**原因**
+丢唤醒的窗口是"等待者 CAS 失败"到"等待者入队"之间那几条指令，只有释放恰好落在里面才会出事。
+要稳定撞上，得同时满足：有人在锁里待得够久，让别人来得及 CAS 失败并走向 park；
+又有人释放得够频繁，让释放有机会落进那个窗口。
+
+**改法**
+三个线程钉在三个不同的 CPU 上（真并行，不是时间片轮转），抢同一把 `sync::Mutex`：
+两个在锁里 `spin_hint()` 64 次（制造"来得及失败"），一个拿了就放（制造"频繁释放"）。
+
+```cpp
+for (usize i = 0; i < state.rounds; ++i) {
+    Guard guard{state.mutex};
+    if (state.mutex.holder() != self) { ++violations; }   // holder() 必须是自己
+    auto const before = state.counter;                     // 读
+    for (usize k = 0; k < worker.hold_spins; ++k) { arch::spin_hint(); }
+    state.counter = before + 1;                            // 写：两个线程同时在里面就会丢增量
+}
+state.finished.fetch_add(1, std::memory_order_release);
+```
+
+判定：
+- 丢唤醒 = 有线程永远回不来。命令线程按**时钟**轮询完成计数，20 秒没到齐就报
+  `STUCK -- k/3 workers finished ..., holder X`。`holder 0x0` 就是"睡在一把没人持有的锁上"。
+- 互斥被破坏 = 计数器丢增量或 `holder()` 不对，报 `FAILED`。
+- 都没有，报 `ok -- N rounds x 3 threads in T us`。
+
+几处取舍：
+- 做成控制台命令而不是单元测试：树里还没有内核内的 unittest 运行时（`vmours.with-tests`
+  的依赖图还是空的），而 mutex 的慢路径就是调度器，没法在主机上测。按树的约定，
+  只为控制台存在的文件放 `kernel/commands`。
+- 超时按时钟而不是按轮询次数：第一版数 3000 次 `sleep_for(10ms)`，实测 30000 ms 的"超时"
+  花了约 118 秒——每次睡眠都被节拍向上取整。
+- 状态放堆上：失败时卡住的线程还指着它，只能泄漏，不能随栈弹掉。
+
+**参照**
+无直接对应。Zircon 的内核内单元测试（`k ut` 运行）里，`kernel/tests/pi_tests.cc` 让多个线程阻塞在
+`OwnedWaitQueue` 上、再验证唤醒与优先级继承（不经过 `Mutex`），`kernel/tests/mutex_spin_time_tests.cc` 测自旋阶段；
+本树没有那套运行时，所以落成控制台命令。
+
+**验证**
+- 构建通过；clang-format 无残留；clang-tidy 在新文件上无诊断。dev、dbg_1 两个镜像启动回归通过。
+- **目前从 kshell 敲不了**：任何 kshell 命令第一次分派都会 panic，因为 `gktl::run_command()` 的
+  命令树用 `std::allocator`，落到裸 `operator new` 的 panic 桩上。那是 gktl 的问题，已交接给独立会话。
+  下表是用一个**只在本地、未提交**的启动钩子直接调用本命令跑出来的（每次启动连跑 5 轮，
+  每轮 20000 次 × 3 线程），修复前的两个版本在隔离的 worktree 里构建，没有动共享工作区：
+
+  | mutex 版本 | 启动次数 | 轮数 | STUCK | FAILED | 一轮耗时 |
+  |---|---|---|---|---|---|
+  | 修复前（`c4f4300b`） | 1 | 1 | 1（1/3 回来，holder 0x0） | 0 | — |
+  | 只补唤醒（`4bf196fa`） | 3 | 15 | 4（均 2/3 回来，holder 0x0） | 0 | 2.2–2.9 s |
+  | 补上复查（`4b70d646`） | 4 | 20 | 0 | 0 | 2.3–2.9 s |
+
+  修复前那一行只跑出一轮：第一轮就卡住，之后的轮次在超时前没来得及跑完（轮询按次数计时的旧版本）。
+  "只补唤醒"那一行正是报告里的竞态：锁已空（holder 0x0），有一个线程睡在队列里。
+
+**故意没做**
+- 不在启动时自动跑：它会给每次 dbg 启动加几秒，而且现在只有通过启动钩子才能跑起来，
+  那个钩子是验证用的，不属于内核。
+- 没有测 `CriticalMutex`（时间片延长那条路）：那个类现在是空的。
