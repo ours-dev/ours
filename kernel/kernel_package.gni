@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/dist/generated_resource.gni")
 import("//build/obi/obi_input.gni")
 
 # kernel_package() — convenience wrapper around obi_input for kernel storage.
@@ -9,18 +10,50 @@ import("//build/obi/obi_input.gni")
 # Collects kernel ELF and support files from deps, emits obi_input_args so
 # the parent obi() includes them as a STORAGE_KERNEL item (compressed BootFS).
 #
+# With `user_bootfs = true` it also packages `config/user_bootfs`: the whitelist
+# of files user space may see, one BootFS name per line, gathered from the
+# `bootfs_user_visible` metadata of everything in deps (user_executable() sets
+# it; so does the vDSO). The kernel builds the BootFS it hands to user space out
+# of the whitelisted files only, so anything nobody marked -- the kernel's own
+# image and code patches, the list itself, whatever is added later -- stays the
+# kernel's by default rather than by someone remembering to exclude it
+# (docs/repairs/260925/userabi.md). The list is generated, never written by
+# hand.
+#
+# Opt-in, and only for the package that carries the image's user payload:
+# every kernel-storage item of an image is merged into one BootFS, so a second
+# package with a list of its own (physboot's, say) would put a second
+# `config/user_bootfs` beside the first. A package that should have a list and
+# does not simply gives user space nothing -- the safe way to be wrong.
+#
 # Parameters:
 #   deps (required)     — kernel executable + support files.
 #   prefix              — BootFS directory prefix (default: target_name).
+#   user_bootfs         — package the user-visible whitelist (default false).
 #   testonly, visibility
 template("kernel_package") {
-  assert(defined(invoker.deps),
-         "kernel_package($target_name) requires `deps`")
+  assert(defined(invoker.deps), "kernel_package($target_name) requires `deps`")
 
   if (defined(invoker.prefix)) {
     _prefix = invoker.prefix
   } else {
     _prefix = target_name
+  }
+
+  _user_bootfs = defined(invoker.user_bootfs) && invoker.user_bootfs
+  if (_user_bootfs) {
+    _user_visible = "$target_name.user_visible"
+    generated_resource(_user_visible) {
+      forward_variables_from(invoker,
+                             [
+                               "deps",
+                               "testonly",
+                             ])
+      visibility = [ ":*" ]
+      data_keys = [ "bootfs_user_visible" ]
+      output_conversion = "list lines"
+      outputs = [ "config/user_bootfs" ]
+    }
   }
 
   obi_input(target_name) {
@@ -30,6 +63,9 @@ template("kernel_package") {
                              "testonly",
                              "visibility",
                            ])
+    if (_user_bootfs) {
+      deps += [ ":$_user_visible" ]
+    }
     type = "kernel-storage"
     prefix = _prefix
     compressed = "lz4"

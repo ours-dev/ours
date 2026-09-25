@@ -47,6 +47,14 @@ kernel_elf_binary("vdso") {
   # is installed as a bare `vdso` file rather than a `vdso/` subtree.
   has_patches = false
 
+  # User-visible: a user-space loader binds a program's imports against this
+  # file's .dynsym, so it has to find it in the BootFS the kernel hands out
+  # (//kernel/kernel_package.gni). It is the vDSO's image as data; the one the
+  # kernel maps into every process is the kernel's own copy.
+  metadata = {
+    bootfs_user_visible = [ "vdso" ]
+  }
+
   sources = [ "vdso.S" ]
 
   # The stubs are generated from //system/public/ours/syscalls.gni; vdso.S

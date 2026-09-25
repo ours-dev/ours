@@ -47,3 +47,16 @@
 标准 LZ4 块格式，不用改。或者在接入之前，让 `kernel_package()` 不再声称压缩。
 
 **验收**：`kernel.dev.obi` 明显变小；两个镜像照常启动；`kernel/lib/obi/test` 的压缩往返测试通过。
+
+## 4. 合并多个 kernel-storage 条目时，同名文件不报错，两份都进 BootFS
+
+**现象**：一个镜像的多个 `kernel_package()`（镜像自己的与 physboot 的）被打进同一个 BootFS。2026-09-25 给 `kernel_package()`
+加用户可见名单时，两个包各生成了一份 `config/user_bootfs`，结果内核包里并列出现两个同名条目（25 字节与 0 字节），打包器一声不吭。
+内核按名字查文件时拿到的是第一个，哪一个在前取决于打包顺序。
+
+**原因**：分发清单层（`build/dist`）只在同一个清单内检查"同一目标路径、不同来源"，跨多个 obi_input 合并时没有再查一遍。
+
+**改法**：打包器合并同一类 BootFS 条目时检查目标路径唯一，重名即报错（与 `expand_and_find_conflicting_dist_entries.py`
+的判据一致）。
+
+**验收**：人为让两个 `kernel_package()` 产出同名文件，构建失败并指出两个来源；两个镜像照常构建、启动。

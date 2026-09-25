@@ -15,6 +15,10 @@ import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 
 kernel_package("ours") {
+  # This package carries the image's user programs, so it carries the
+  # whitelist of what user space may see (//kernel/kernel_package.gni).
+  user_bootfs = true
+
   visibility = [
     ":*",
     "//products/*",

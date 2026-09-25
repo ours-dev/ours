@@ -21,6 +21,10 @@ import("//kernel/kernel_package.gni")
 # 写法）。prefix="" ——BootFS 顶层是扁平命名空间，内核落在
 # vmours/image.elf 等顶层路径。
 kernel_package("ours") {
+  # This package carries the image's user programs, so it carries the
+  # whitelist of what user space may see (//kernel/kernel_package.gni).
+  user_bootfs = true
+
   visibility = [
     ":*",
     "//products/*",

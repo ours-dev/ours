@@ -52,6 +52,12 @@ template("user_executable") {
   _vdso_label = "//kernel/lib/userabi/vdso:vdso.binary"
   _vdso_file = get_label_info(_vdso_label, "target_out_dir") + "/vdso"
 
+  if (defined(invoker.install_name)) {
+    _install_name = invoker.install_name
+  } else {
+    _install_name = target_name
+  }
+
   kernel_elf_binary(target_name) {
     forward_variables_from(invoker,
                            "*",
@@ -59,9 +65,22 @@ template("user_executable") {
                              "configs",
                              "deps",
                              "ldflags",
+                             "metadata",
                              "visibility",
                            ])
     forward_variables_from(invoker, [ "visibility" ])
+
+    # A user program is a file user space may see: its name goes on the
+    # whitelist kernel_package() builds, and only whitelisted files are put
+    # in the BootFS the kernel hands to user space. Everything else in the
+    # package -- the kernel's own image and code patches first of all --
+    # stays the kernel's by default. See //kernel/kernel_package.gni.
+    metadata = {
+      bootfs_user_visible = [ _install_name ]
+      if (defined(invoker.metadata)) {
+        forward_variables_from(invoker.metadata, "*")
+      }
+    }
 
     # A user program has no kernel text to patch; asking for the section would
     # only add an empty `<name>/code-patches` file to the package. With patches
