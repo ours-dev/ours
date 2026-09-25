@@ -31,8 +31,8 @@
 extern "C" auto fault_probe_trap_outside_vdso() -> void;
 
 namespace {
-/// The address of the vDSO, for the probes that need a mapped page they may
-/// not write to. Unused until such a probe is enabled (see PROBES).
+/// What a probe does. |vdso_base| is for the one that needs a page that is
+/// mapped but may not be written.
 using Action = auto (*)(ours::VirtAddr vdso_base) -> void;
 
 struct Probe {
@@ -55,6 +55,15 @@ auto pf_kernel(ours::VirtAddr) -> void {
                      : "=r"(value)
                      :
                      : "rax");
+}
+
+/// A write to the vDSO, which every process has mapped read-only. #PF,
+/// present, user write -- a protection violation the address space refuses,
+/// where pf_unmapped is a page that is not there at all. Until leaf page-table
+/// entries stopped being built writable whatever they asked for, this write
+/// went through and the probe reported "survived".
+auto pf_write_vdso(ours::VirtAddr const vdso_base) -> void {
+    __asm__ volatile("movb $0, (%0)" : : "r"(vdso_base) : "memory");
 }
 
 /// #UD.
@@ -113,14 +122,10 @@ auto trap_outside_vdso(ours::VirtAddr) -> void {
     fault_probe_trap_outside_vdso();
 }
 
-/// Missing: a write to the vDSO (mapped read-only), which should end in a
-/// #PF the address space refuses. Every x86 leaf page-table entry is built
-/// writable today (docs/repairs/260924/x86-kernel.md, #1), so the write would
-/// succeed and the probe would report "survived" for a reason that has
-/// nothing to do with the fault path. It goes in with that fix.
 constexpr Probe PROBES[] = {
     {"pf_unmapped", pf_unmapped},
     {"pf_kernel", pf_kernel},
+    {"pf_write_vdso", pf_write_vdso},
     {"ud2", ud2},
     {"gp_hlt", gp_hlt},
     {"gp_int80", gp_int80},

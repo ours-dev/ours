@@ -183,8 +183,9 @@ auto run_probes(ours::HandleValue const job) -> void {
     using ours::Status;
 
     constexpr ou::Str PROBES[] = {
-        "pf_unmapped", "pf_kernel", "ud2",   "gp_hlt", "gp_int80",
-        "gp_int3",     "de",        "db_tf", "gp_io",  "trap_outside_vdso",
+        "pf_unmapped", "pf_kernel", "pf_write_vdso",     "ud2",
+        "gp_hlt",      "gp_int80",  "gp_int3",           "de",
+        "db_tf",       "gp_io",     "trap_outside_vdso",
     };
 
     u32 killed = 0;

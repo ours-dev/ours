@@ -92,3 +92,50 @@ auto ThreadDispatcher::exit_current() -> void {
 - `thread_exit`、`task_kill`：计划里不需要它们的步骤（设计 §7.6 的"基本范围"）。
 - init 仍然 `halt()` 而不退出：它是其余程序的起点，今天没有任何东西会注意到它不在了。
 - fault_probe 失败时仍然自旋回话，改成退出在 K14（探针名改走 argv 时一起改）。
+
+## `fault_probe` 加 `pf_write_vdso`：程序自己写只读页，被杀（2026-09-25）
+
+**文件**
+- `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — 新探针 `pf_write_vdso`；删掉"缺这一项"的注释；`Action` 的注释改写
+- `examples/shell/shell.cpp` — 探针表加一项，共 11 个
+- `docs/design/260924/userspace-filesystem.md` — 外部前置 X1 标为已修；到 U6 的探针数由 11 改 12
+
+**症状**
+fault_probe 缺一类故障：页**存在**但权限不够（写只读）。已有的 `pf_unmapped`、`pf_kernel` 都是"页不在"或"内核地址"，
+走不到地址空间"拒绝一个保护违例"的那条路。以前加不了：每个叶子页表项都可写，写 vDSO 会成功，探针会报 survived。
+
+**原因**
+X1（`docs/changes/260925/x86-kernel.md`，叶子只带请求的权限）修掉之后，vDSO 第一次真的只读了。
+
+**改法**
+改前：`PROBES[]` 上方一段注释写明"缺：写 vDSO；等页表项的修复"。
+
+改后：
+
+```cpp
+auto pf_write_vdso(ours::VirtAddr const vdso_base) -> void {
+    __asm__ volatile("movb $0, (%0)" : : "r"(vdso_base) : "memory");
+}
+```
+
+`vdso_base` 就是程序启动时 `%rsi` 里的那个值，`Action` 一直为此带着这个参数。
+
+**参照**
+Fuchsia 的 vDSO 测试守的是同一条边界的另一面：`src/zircon/tests/vdso/vdso.cc:124-127` 断言对 vDSO 代码页做
+`zx_vmar_protect` 得到 `ZX_ERR_ACCESS_DENIED`——vDSO 的保护改不了，这里验证它的保护确实生效。没有找到"直接写 vDSO 被杀"
+的现成对应物；本探针是 ours 自己的。
+
+**验证**
+dbg_1：
+
+```
+fault_probe: pf_write_vdso
+terminating process 'fault_probe' (koid 55) thread koid 59: type=FatalPageFault vector=page fault error_code=0x7 rip=0x201980 sp=0x11fff78 cr2=0xa00000 ...
+shell: probe pf_write_vdso killed
+shell: probes done (11 killed, 0 survived)
+```
+
+error_code 0x7 = 页存在、写、用户态；cr2 是 vDSO 的基址。dev 不受影响。
+
+**故意没做**
+写程序**自己**只读段的探针（设计里的 `pf_write_ro`）：程序映像今天仍整体 RWX 映射，要等 launcher 按段映射（U6）。
