@@ -87,7 +87,7 @@ auto PageTable::alias_to(Self &other, VirtAddr base, usize n) -> Status {
     // tables for that range, so a mapping either one makes later is visible
     // to both -- exactly what aliasing the kernel range into every new
     // address space needs, without walking or duplicating anything below.
-    Guard<sync::SpinLock> guard(m_lock);
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
     for (auto idx = start_idx; idx <= end_idx; ++idx) {
         dst[idx] = src[idx];
     }
@@ -102,7 +102,7 @@ auto PageTable::map_pages(VirtAddr va, PhysAddr pa, usize n, MmuFlags flags, Map
     (void)options;
 
     auto result = [&] {
-        Guard<sync::SpinLock> guard(m_lock);
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
         return Engine::map(m_pgd_phys, phys_to_virt, alloc_table, va, pa, n, flags);
     }();
 
@@ -125,7 +125,7 @@ auto PageTable::map_pages_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flag
     usize done = 0;
     Status status = Status::Ok;
     {
-        Guard<sync::SpinLock> guard(m_lock);
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
         for (usize i = 0; i < n; ++i) {
             auto result = Engine::map(m_pgd_phys, phys_to_virt, alloc_table, va + i * PAGE_SIZE,
                                       pa[i], 1, flags);
@@ -147,7 +147,7 @@ auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *u
     (void)options;
 
     auto result = [&] {
-        Guard<sync::SpinLock> guard(m_lock);
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
         return Engine::unmap(m_pgd_phys, phys_to_virt, va, n);
     }();
 
@@ -170,7 +170,7 @@ auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *u
 
 auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
     auto result = [&] {
-        Guard<sync::SpinLock> guard(m_lock);
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
         return Engine::protect(m_pgd_phys, phys_to_virt, va, n, flags);
     }();
 
@@ -187,7 +187,7 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
 
 auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags) -> Status {
     auto result = [&] {
-        Guard<sync::SpinLock> guard(m_lock);
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
         return Engine::query(m_pgd_phys, phys_to_virt, va);
     }();
 
@@ -226,7 +226,7 @@ auto PageTable::destroy(VirtAddr const base, VirtAddr const end) -> TableTeardow
     ASSERT(last < Engine::Traits::virt_to_index(TOP_LEVEL, KERNEL_ASPACE_BASE),
            "top-level entries {}..{} reach the kernel's, which are shared", first, last);
 
-    Guard<sync::SpinLock> guard(m_lock);
+    Guard<sync::SpinLock, IrqSave> guard(m_lock);
     auto result = Engine::free_tables(m_pgd_phys, phys_to_virt, free_table, first, last);
     free_table(m_pgd_phys, Engine::Traits::SIZE_OF_TABLE<TOP_LEVEL>);
     result.tables += 1;

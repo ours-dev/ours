@@ -80,6 +80,13 @@ class PageTable {
     auto destroy(VirtAddr base, VirtAddr end) -> TableTeardown;
 
   private:
+    /// Held with interrupts off. Its holders include the page fault path,
+    /// which reaches it from the #PF handler with interrupts still off, and
+    /// init_vmm(), which re-protects the kernel image's mappings before
+    /// InitLevel::Threading gives the boot CPU a thread whose preemption
+    /// could be held off. Holding it with interrupts on anywhere else would
+    /// let a holder be preempted, and the next thread on this CPU to map or
+    /// fault in the same address space spin on a lock its own CPU holds.
     sync::SpinLock m_lock;
     PhysAddr m_pgd_phys = 0;
 };
