@@ -57,7 +57,7 @@ VmAspace::~VmAspace() {
     DEBUG_ASSERT(!m_root_vma && !m_last_fault,
                  "aspace '{}' destroyed without destroy() -- or a reference cycle broke", name());
     {
-        Guard guard{ALL_ASPACE_LIST_LOCK};
+        Guard<sync::SpinLock, IrqSave> guard{ALL_ASPACE_LIST_LOCK};
         if (m_managed_hook.is_linked()) {
             static_cast<void>(ALL_ASPACE_LIST.erase(ALL_ASPACE_LIST.iterator_to(*this)));
         }
@@ -117,7 +117,7 @@ auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags, char co
     aspace->init();
     {
         // Entrollment into the global list.
-        Guard guard{ALL_ASPACE_LIST_LOCK};
+        Guard<sync::SpinLock, IrqSave> guard{ALL_ASPACE_LIST_LOCK};
         ALL_ASPACE_LIST.push_back(*aspace);
     }
     *out = ustl::Arc<VmAspace>::adopt(aspace);
@@ -208,7 +208,7 @@ auto VmAspace::destroy() -> Status {
     ustl::Arc<VmMapping> last_fault;
     Status status;
     {
-        Guard guard{m_lock};
+        Guard<sync::SpinLock, IrqSave> guard{m_lock};
         if (m_destroyed) {
             return Status::BadState;
         }
@@ -247,7 +247,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
         u32 num_mapped = 0;
         {
             // Grabs the aspace's lock to prevent another operation on it from users.
-            Guard guard{get_lock()};
+            Guard<sync::SpinLock, IrqSave> guard{get_lock()};
 
             // Nothing is mapped in a destroyed aspace, and its root VMA is gone.
             // No thread of a dead process runs user code, so this is not

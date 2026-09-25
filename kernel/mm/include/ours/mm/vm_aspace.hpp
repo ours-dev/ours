@@ -131,6 +131,13 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     Flags m_flags;
     VirtAddr m_base;
     VirtAddr m_size;
+    /// Held with interrupts off. The page fault path takes it from the #PF
+    /// handler, where interrupts are still off, and the thread-context holders
+    /// -- map, protect, unmap, destroy -- have to match: a holder preempted
+    /// with it held leaves the next thread of the process to fault on this CPU
+    /// spinning on a lock its own CPU holds, which is the shape PmZone's lock
+    /// was found in. The sleeping lock Zircon uses here (a CriticalMutex) is
+    /// the eventual fix; see docs/repairs/260925/mm.md.
     sync::SpinLock m_lock;
 
     /// Set by destroy(), under m_lock. A destroyed aspace answers no more

@@ -714,7 +714,7 @@ auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallbac
     local_node->m_canary.verify<Self>();
 
     auto const current_thread = task::Thread::Current::get();
-    Guard guard{current_thread->get_resource_lock()};
+    Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
 
     return local_node->alloc_frames(gaf, order, fallback);
 }
@@ -730,7 +730,7 @@ auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize order, NodeMask const
     local_node->m_canary.verify<Self>();
 
     auto const current_thread = task::Thread::Current::get();
-    Guard guard{current_thread->get_resource_lock()};
+    Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
 
     return local_node->alloc_frames_fragment(gaf, order, fallback);
 }
@@ -746,7 +746,7 @@ auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize order, NodeMask const &fa
     local_node->m_canary.verify<Self>();
 
     auto const current_thread = task::Thread::Current::get();
-    Guard guard{current_thread->get_resource_lock()};
+    Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
 
     return local_node->alloc_frames_bulk(gaf, order, fallback);
 }
@@ -763,7 +763,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
     if (old_nid != NUMA_MAX_NODE) {
         if (auto node = PmNode::node(old_nid)) {
             node->m_canary.verify<Self>();
-            Guard guard{node->get_lock()};
+            Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
 
             // Erases ourselves from the node to which the CPU belongs.
             node->m_work_cpus.set(cpunum, 0);
@@ -773,7 +773,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
     DYNAMIC_CPU_TO_NODE[cpunum] = new_nid;
     if (auto node = PmNode::node(new_nid)) {
         node->m_canary.verify<Self>();
-        Guard guard{node->get_lock()};
+        Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
 
         node->m_work_cpus.set(cpunum);
         PmNode::Current::set(node, cpunum);
@@ -814,7 +814,7 @@ auto PmNode::Current::publish(CpuNum const cpu) -> void {
     DEBUG_ASSERT(node, "CPU {} was claimed by node {}, which does not exist", cpu, nid);
     node->m_canary.verify<Self>();
 
-    Guard guard{node->get_lock()};
+    Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
     node->m_work_cpus.set(cpu);
     // PmNode::init() builds the hard affinity from STATIC_CPU_TO_NODE, but
     // only for the CPUs claimed by then -- the boot CPU. A CPU claimed later

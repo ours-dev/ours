@@ -329,7 +329,7 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
         return Status::InvArgs;
     }
 
-    Guard guard{get_lock()};
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
     base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;
@@ -379,7 +379,7 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status
         return Status::InvArgs;
     }
 
-    Guard guard{get_lock()};
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
     base = ustl::mm::align_down(base, PAGE_SIZE);
     if (!check_range(base, size)) {
         return Status::InvArgs;

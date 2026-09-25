@@ -682,7 +682,7 @@ auto CpuLocal::Dyn::allocate(usize size, usize align) -> VirtAddr {
     DEBUG_ASSERT(align_bytes <= ArchCpuLocal::UNIT_ALIGN,
                  "Alignment beyond a unit boundary is not supported");
 
-    Guard guard{m_lock};
+    Guard<sync::SpinLock, IrqSave> guard{m_lock};
 
     auto found = allocate_locked(cells, align_bytes);
     if (NOWHERE == found && grow()) {
@@ -698,7 +698,7 @@ auto CpuLocal::Dyn::deallocate(VirtAddr handle, usize size) -> void {
 
     auto const cells = align_up(size, DYN_CELL_SIZE) / DYN_CELL_SIZE;
 
-    Guard guard{m_lock};
+    Guard<sync::SpinLock, IrqSave> guard{m_lock};
 
     for (auto &chunk: m_dynchunks) {
         if (handle < chunk.base || handle >= chunk.base + chunk.size) {

@@ -322,6 +322,10 @@ struct MemCache::NodeCache {
     /// Puts |slab| on the partial list unless it is already on it.
     auto park(Slab *slab) -> void;
 
+    /// Held with interrupts off, like SLUB's kmem_cache_node::list_lock
+    /// (spin_lock_irqsave in get_partial_node() and __slab_free()): the
+    /// per-CPU caches above it are already IrqSave, and a free reaching this
+    /// list from an interrupt must not meet it held underneath.
     sync::SpinLock lock;
     Slab::List partials;
     usize num_partials;
@@ -341,7 +345,7 @@ struct MemCache::NodeCache {
 MemCache::NodeCache MemCache::NodeCache::BOOTSTRAP[NUMA_MAX_NODE];
 
 auto MemCache::NodeCache::take_object(Slab *slab, bool *exhausted) -> void * {
-    Guard<sync::SpinLock> guard{lock};
+    Guard<sync::SpinLock, IrqSave> guard{lock};
 
     auto *const object = slab::get_object(slab);
     *exhausted = !slab::has_object(slab);
@@ -349,7 +353,7 @@ auto MemCache::NodeCache::take_object(Slab *slab, bool *exhausted) -> void * {
 }
 
 auto MemCache::NodeCache::take_partial() -> Slab * {
-    Guard<sync::SpinLock> guard{lock};
+    Guard<sync::SpinLock, IrqSave> guard{lock};
 
     auto front = partials.front();
     if (!front) {
@@ -363,7 +367,7 @@ auto MemCache::NodeCache::take_partial() -> Slab * {
 }
 
 auto MemCache::NodeCache::park(Slab *slab) -> void {
-    Guard<sync::SpinLock> guard{lock};
+    Guard<sync::SpinLock, IrqSave> guard{lock};
     if (slab->is_linked()) {
         return;
     }
@@ -736,7 +740,7 @@ auto MemCache::free(void *object) -> void {
 
     Slab *to_destroy = nullptr;
     {
-        Guard<sync::SpinLock> guard{node_cache->lock};
+        Guard<sync::SpinLock, IrqSave> guard{node_cache->lock};
 
         auto const was_full = !slab::has_object(host);
 

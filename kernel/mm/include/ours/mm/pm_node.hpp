@@ -321,7 +321,7 @@ class PmNode {
     /// reference into a value the next re-homing rewrites under the caller;
     /// a copy is the only thing that can be handed out without the lock.
     auto work_cpus() -> CpuMask {
-        Guard guard{get_lock()};
+        Guard<sync::SpinLock, IrqSave> guard{get_lock()};
         return m_work_cpus;
     }
 
@@ -342,7 +342,8 @@ class PmNode {
 
     /// TA_RETURN_CAPABILITY ties the accessor to the member for the
     /// thread-safety analysis, so `TA_GUARDED(get_lock())` on the masks below and
-    /// a `Guard guard{node->get_lock()}` at a call site name the same lock.
+    /// a `Guard<sync::SpinLock, IrqSave> guard{node->get_lock()}` at a call
+    /// site name the same lock.
     TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE constexpr auto get_lock() -> sync::SpinLock & {
         return m_lock;
     }
@@ -391,6 +392,11 @@ class PmNode {
 
     NnId m_id;
 
+    /// Held with interrupts off. PmNode::Current::init() publishes every CPU
+    /// under it at InitLevel::CpuLocal + 1, long before InitLevel::Threading
+    /// gives the boot CPU a thread whose preemption could be held off, and
+    /// work_cpus() reads it at run time; IrqSave is the option that is right
+    /// in both.
     sync::SpinLock m_lock;
 
     /// The affinity based on hardware/software.

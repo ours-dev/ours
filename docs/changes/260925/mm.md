@@ -611,3 +611,70 @@ auto ArchVmAspace::destroy() -> Teardown {
 - unmap 时释放变空的表（Zircon 的做法）：进程活着的时候表只增不减，到死一次还清。长寿进程反复映射/拆除会一直攒着表，
   等真有这样的进程再做。
 - 每个进程一个的内核栈仍随线程泄漏（`kernel/mm/stack.cpp`，释放要等 TLB shootdown），与本节无关，另案。
+
+## mm 其余的自旋锁也都写明 IrqSave（2026-09-25）
+
+**文件**
+- `kernel/mm/vm_aspace.cpp`、`vm_area.cpp`、`vm_mapping.cpp` — 地址空间锁（`VmAspace::m_lock`，VmArea/VmMapping 的
+  `get_lock()` 就是它）八处、`ALL_ASPACE_LIST_LOCK` 两处改为 `Guard<sync::SpinLock, IrqSave>`
+- `kernel/mm/pm_node.cpp`、`include/ours/mm/pm_node.hpp` — 节点锁四处、当前线程资源锁三处改为 IrqSave
+- `kernel/mm/object_cache.cpp` — `NodeCache::lock` 四处（原来写成 `Guard<sync::SpinLock>`，显式地不带选项）改为 IrqSave
+- `kernel/mm/cpu_local.cpp` — `CpuLocal::Dyn` 的锁两处改为 IrqSave
+- `include/ours/mm/vm_aspace.hpp`、`pm_node.hpp` — 锁的声明处写明为什么是 IrqSave
+
+**症状**
+潜伏，当前启动里没有观察到。和上面「zone 锁关着中断拿」一节是同一个缺陷的其余位置：持锁线程被抢占，同 CPU 下一个线程要
+同一把锁，自旋在"本 CPU 持有"的锁上——dbg_1 在 `SpinLock::acquire()` 的 `DEBUG_ASSERT(!is_held())` 停下，release 版自旋
+到自己也被抢占为止。最容易撞上的是地址空间锁：进程的一个线程在 `map`/`unmap`/`protect` 里持锁被抢占，同一进程的另一个
+线程在同一颗 CPU 上缺页，缺页路径（`VmAspace::page_fault_internal()`）去拿同一把锁。今天用户进程都是单线程，所以碰不到。
+
+**原因**
+`Guard guard{get_lock()}` 经推导指引成了 `Guard<SpinLock>`；`Guard<sync::SpinLock> guard{lock}` 则是显式写出的同一个
+类型。两者的 saver 元组都是空的，`SpinLock::acquire()` 本身只做 CAS，所以持锁期间中断和抢占都开着。改之前：
+
+```cpp
+    Guard guard{get_lock()};
+    return unmap_locked(aligned_base, aligned_size);
+```
+
+```cpp
+auto MemCache::NodeCache::take_partial() -> Slab * {
+    Guard<sync::SpinLock> guard{lock};
+```
+
+缺页路径是在 #PF 处理函数里、中断还关着的时候拿地址空间锁的，所以缺页那一侧"碰巧"关着中断；线程上下文的持有者没有，
+两侧不对称，而自旋锁要求**所有**持有者都不会在持锁时让出 CPU。
+
+**改法**
+全部 IrqSave：
+
+```cpp
+    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    return unmap_locked(aligned_base, aligned_size);
+```
+
+```cpp
+auto MemCache::NodeCache::take_partial() -> Slab * {
+    Guard<sync::SpinLock, IrqSave> guard{lock};
+```
+
+为什么不是 PreemptDisable：节点锁在 `InitLevel::CpuLocal + 1` 由 `PmNode::Current::init()` 拿，远早于
+`InitLevel::Threading` 给启动 CPU 装上线程——那时 `AutoPreemptDisabler` 要经 `Thread::Current` 找 PreemptionState，
+还无处可找；地址空间锁的缺页一侧本来就关着中断；`NodeCache` 在它上层的 per-CPU 缓存已经是 `Guard<LocalLock, IrqSave>`。
+IrqSave 只碰标志寄存器，在哪个阶段都成立。
+
+地址空间锁在关中断下持有的时间会变长（`map`、`destroy` 里的页表操作都在锁内），这是自旋锁本身的代价，不是这次改动引入的：
+`docs/repairs/260925/mm.md` 第 1 条已经建议照 Zircon 把它换成可睡眠的锁，那时这里的 IrqSave 随之消失。
+
+**参照**
+- Linux SLUB `kmem_cache_node::list_lock`：`spin_lock_irqsave()`（`mm/slub.c` 的 `get_partial_node()`、`__slab_free()`）。
+- Zircon `VmAspace::lock_` 是 `CriticalMutex`（`zircon/kernel/vm/include/vm/vm_aspace.h`），可睡眠，不存在这个问题。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- QEMU：dev 到 `init: shell closed its channel`、`--- end ---`；dbg_1 到 `shell: probes done (11 killed, 0 survived)`、
+  `--- end ---`，无断言。每个 fault_probe 的地址空间照旧 `6 page-table pages freed`。
+
+**故意没做**
+- 没有把地址空间锁换成可睡眠的锁，那是 mm 的待修项，不是选项问题。
+- `page_queues.cpp` 本来就写的 IrqSave，未动。
