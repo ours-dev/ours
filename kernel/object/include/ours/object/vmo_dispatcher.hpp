@@ -61,8 +61,9 @@ class VmoDispatcher final: public VmoDispatcherBase {
         -> Status;
 
     /// A window onto physical memory that already exists and that this object
-    /// does not own: MMIO, or -- as userboot's loaded image currently is --
-    /// frames some other allocation is keeping alive. Nothing here frees them.
+    /// does not own, such as MMIO. Nothing here frees it. (Loaded ELF images
+    /// used to come through here too, which is how their frames leaked; they
+    /// are paged VMOs now.)
     static auto create_physical(PhysAddr base, usize size, KernelHandle<Self> &handle_out,
                                 Rights &rights_out) -> Status;
 

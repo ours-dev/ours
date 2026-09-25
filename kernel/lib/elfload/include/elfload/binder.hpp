@@ -31,10 +31,11 @@ namespace elfload {
 /// here has two libraries to choose between yet.
 ///
 /// It touches no address space and no kernel object. It is handed an Image --
-/// already mapped, with a pointer the caller can write through -- and writes
-/// into it. That is the whole reason this is a component of its own rather
-/// than part of the loader: everything a relocation pass can get wrong is
-/// reachable from a host test with a buffer and two ELF files.
+/// already mapped, with a writer the loader supplies (Image::writer) -- and
+/// writes into it. That is the whole reason this is a component of its own
+/// rather than part of the loader: everything a relocation pass can get wrong
+/// is reachable from a host test with a buffer, a writer over it and two ELF
+/// files.
 class Binder final {
   public:
     using Bytes = ustl::views::Span<u8 const>;

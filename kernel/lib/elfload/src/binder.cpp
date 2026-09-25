@@ -5,7 +5,6 @@
 #include <type_traits>
 
 #include <eftl/elf/dynamic_image.hpp>
-#include <eftl/elf/mapped_memory.hpp>
 #include <eftl/elf/parser.hpp>
 #include <logz4/log.hpp>
 
@@ -160,18 +159,26 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
         return Status::InvArgs;
     }
 
-    // One region, because the Loader lays an image out as one: every link-time
-    // address from image_base to image_base + span appears at the same offset
-    // in |view|. A loader that gave each segment its own mapping would build
-    // one region per segment instead; the translation eftl does is the same
-    // either way.
-    eftl::elf::LoadRegion const region{
-        .virtual_start = importer.image_base,
-        .virtual_end = importer.image_base + importer.span,
-        .image_offset = 0,
-        .permissions = eftl::elf::SegPerms::Readable | eftl::elf::SegPerms::Writable,
+    // Where a relocation lands. r_offset is a link-time address, and the
+    // Loader lays an image out as one run from image_base to image_base +
+    // span, so its place in the image is simply its distance from image_base.
+    // Refused, not clamped, when the 8 bytes do not lie wholly inside: a
+    // relocation aimed outside its own image is a corrupt or hostile file.
+    //
+    // This was eftl's MappedMemory over a pointer to the bytes, with one load
+    // region -- the same arithmetic, spelled for a contiguous buffer. The image
+    // is no longer one (see Image::writer), and with a single region the
+    // translation was never more than this subtraction.
+    auto store = [&importer](u64 const r_offset, u64 const value) -> Status {
+        if (r_offset < importer.image_base) {
+            return Status::OutOfRange;
+        }
+        auto const at = r_offset - importer.image_base;
+        if (at > importer.span || importer.span - at < sizeof(value)) {
+            return Status::OutOfRange;
+        }
+        return importer.writer.write(importer.writer.context, at, &value, sizeof(value));
     };
-    eftl::elf::MappedMemory<Traits> memory(importer.view, importer.span, {&region, 1});
 
     auto const bias = static_cast<u64>(importer.base - importer.image_base);
 
@@ -231,13 +238,14 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
                 return Status::Unsupported;
             }
 
-            // r_offset is a link-time address, which MappedMemory translates
-            // through the region above into an offset in |view|. Adding the
-            // bias here as well would double-count the load address and push
-            // the write outside the image.
-            if (!memory.write<u64>(static_cast<u64>(rela.r_offset), value)) {
-                log::error("elfload: relocation {} writes outside the image", index);
-                return Status::OutOfRange;
+            // r_offset is a link-time address, which store() turns into an
+            // offset in the image. Adding the bias here as well would
+            // double-count the load address and push the write outside it.
+            if (auto const status = store(static_cast<u64>(rela.r_offset), value);
+                Status::Ok != status) {
+                log::error("elfload: relocation {} at {:#x} could not be written: {}", index,
+                           static_cast<u64>(rela.r_offset), to_string(status));
+                return status;
             }
         }
         return Status::Ok;

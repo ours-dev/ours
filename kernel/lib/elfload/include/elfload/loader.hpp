@@ -28,10 +28,10 @@ class Loader final {
 
     explicit Loader(ours::object::VmaDispatcher &root_vma) : m_root_vma(root_vma) {}
 
-    /// Lays |file|'s PT_LOAD segments out in fresh frames and maps them at
+    /// Lays |file|'s PT_LOAD segments out in a fresh paged VMO and maps it at
     /// |where| with |flags|.
     ///
-    /// The segments land in one contiguous run of frames, from the lowest
+    /// The segments land in one VMO covering one range, from the lowest
     /// p_vaddr any PT_LOAD claims to the highest. That is a simplification --
     /// a real loader honours each segment's own permissions and the gaps
     /// between them -- and it is also the invariant Binder relies on when it

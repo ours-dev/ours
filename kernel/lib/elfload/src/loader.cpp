@@ -8,7 +8,6 @@
 
 #include <logz4/log.hpp>
 #include <ours/mm/physmap.hpp>
-#include <ours/mm/pmm.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ustl/mem/align.hpp>
 
@@ -59,6 +58,14 @@ namespace {
     };
 
     constexpr u32 PT_LOAD = 1;
+
+    /// The ImageWriter for an image backed by a VMO: |context| is the
+    /// mm::VmObject, and |offset| is already an offset into it, because the
+    /// VMO starts at the image's lowest address.
+    auto write_through_vmo(void *const context, usize const offset, void const *const bytes,
+                           usize const size) -> Status {
+        return static_cast<mm::VmObject *>(context)->write(bytes, offset, size);
+    }
 } // namespace
 
 auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags const flags,
@@ -99,23 +106,44 @@ auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags co
         return Status::InvArgs;
     }
 
-    // Whole pages: the frame allocator deals in nothing smaller, and a
-    // mapping cannot start or end mid-page either.
+    // Whole pages: a VMO commits nothing smaller, and a mapping cannot start
+    // or end mid-page either.
     lowest = ustl::mm::align_down(lowest, PAGE_SIZE);
     highest = ustl::mm::align_up(highest, PAGE_SIZE);
     out.span = highest - lowest;
 
-    auto const nr_frames = out.span / PAGE_SIZE;
-    auto *const backing = mm::get_frames_n<u8>(mm::GAF_USER, nr_frames);
-    if (!backing) {
-        log::error("elfload: could not allocate {} frames for {}", nr_frames, name);
-        return Status::OutOfMem;
+    // A paged VMO, whole and resident from the start. Two steps,
+    // deliberately: first say what the memory *is*, then say where it
+    // appears. That split is the whole reason a VMO is a separate object from
+    // a mapping -- it is what lets the same memory be mapped twice, and what
+    // makes "hand a program some memory" a different operation from "put it
+    // in that program's address space".
+    //
+    // This used to take a run of frames with get_frames_n(), fill them, and
+    // wrap them in a *physical* VMO. A physical VMO does not own its frames
+    // -- it is a window onto memory someone else keeps alive -- so nothing
+    // ever gave them back: every image loaded leaked all of its pages, and a
+    // process could not be torn down without leaking them for good (step K6
+    // of docs/design/260924/userspace-filesystem.md needs them returned).
+    // Paged is also simply what these are: ordinary anonymous pages, which
+    // the VMO now owns and frees with itself.
+    //
+    // Pinned, and so committed here, for the reason create_paged() gives:
+    // nothing services a fault on it yet.
+    object::KernelHandle<object::VmoDispatcher> vmo;
+    Rights vmo_rights;
+    if (auto const status = object::VmoDispatcher::create_paged(out.span, vmo, vmo_rights);
+        Status::Ok != status) {
+        log::error("elfload: could not create the {} VMO: {}", name, to_string(status));
+        return status;
     }
+    // A reference of its own: the dispatcher hands its VMO out read-only.
+    auto memory = vmo.dispatcher()->vmo();
 
-    // Zero first, then copy each segment's file bytes over the top. That
-    // is what gives .bss its zeroes: the gap between filesz and memsz is
-    // never written again, so it keeps the zeroes from here.
-    std::memset(backing, 0, out.span);
+    // A new VMO reads as zero everywhere, which is what gives .bss its
+    // zeroes: the gap between filesz and memsz is never written. Each
+    // segment's file bytes then go to its offset from the lowest address --
+    // the same layout as before, through the VMO instead of a pointer.
     for (auto index = u16(0); index < header.phnum; ++index) {
         Elf64ProgramHeader phdr{};
         std::memcpy(&phdr, bytes.data() + header.phoff + usize(index) * header.phentsize,
@@ -123,31 +151,20 @@ auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags co
         if (phdr.type != PT_LOAD || phdr.filesz == 0) {
             continue;
         }
-        if (phdr.offset + phdr.filesz > bytes.size()) {
+        if (phdr.offset > bytes.size() || phdr.filesz > bytes.size() - phdr.offset) {
             log::error("elfload: {} segment {} content runs past the image", name, index);
             return Status::InvArgs;
         }
-        std::memcpy(backing + (VirtAddr(phdr.vaddr) - lowest), bytes.data() + phdr.offset,
-                    phdr.filesz);
-    }
-
-    // Two steps, deliberately: first say what the memory *is*, then say
-    // where it appears. That split is the whole reason a VMO is a separate
-    // object from a mapping -- it is what lets the same memory be mapped
-    // twice, and what makes "hand a program some memory" a different
-    // operation from "put it in that program's address space".
-    //
-    // A physical VMO, because these frames already exist and have already
-    // been filled in. A paged VMO is the honest answer -- these are
-    // ordinary anonymous pages, not MMIO -- and is what this becomes the
-    // moment mm::VmObjectPaged::write() stops returning Unimplemented.
-    object::KernelHandle<object::VmoDispatcher> vmo;
-    Rights vmo_rights;
-    auto const status = object::VmoDispatcher::create_physical(mm::PhysMap::virt_to_phys(backing),
-                                                               out.span, vmo, vmo_rights);
-    if (Status::Ok != status) {
-        log::error("elfload: could not create the {} VMO: {}", name, to_string(status));
-        return status;
+        // A segment whose file bytes run past its own place in the span
+        // (filesz > memsz, or a vaddr the first pass did not see) is refused
+        // by the VMO's own range check rather than written short.
+        if (auto const status = memory->write(bytes.data() + phdr.offset,
+                                              VirtAddr(phdr.vaddr) - lowest, phdr.filesz);
+            Status::Ok != status) {
+            log::error("elfload: {} segment {} does not fit its image: {}", name, index,
+                       to_string(status));
+            return status;
+        }
     }
 
     // Through the dispatcher, not through the VmArea it stands for: a
@@ -163,7 +180,11 @@ auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags co
     }
 
     out.base = mapping.unwrap()->base();
-    out.view = backing;
+    // The Binder writes relocations through the VMO as well. The pointer
+    // stays valid for as long as the image does: the mapping holds its own
+    // reference to the VMO, so the object outlives both references dropped
+    // at the end of this function.
+    out.writer = {.write = write_through_vmo, .context = memory.as_ptr_mut()};
     out.image_base = lowest;
     // e_entry is a file-relative address for a PIE, so it moves with the
     // load base like everything else. It is the first instruction of a
