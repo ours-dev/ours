@@ -268,3 +268,106 @@ NMI 处理函数里再打日志，就在同一颗 CPU 上去抢这把锁。持�
 
 **故意没做**
 - #DF、#MC 仍然打日志并 panic：那两条路径本来就是致命的，打不出来至多丢一次诊断；要彻底解决需要一套 NMI/panic 安全的输出通道，另起一项。
+
+## 叶子页表项只带请求的权限，Global 只给内核页；`ltr` 临时换回可写的 GDT（2026-09-25）
+
+**文件**
+- `kernel/arch/x86/lib/arch/include/arch/paging/x86_pagings.hpp` — 重写 `X86Pte<Level>::make()`
+- `kernel/arch/x86/kernel/descriptor.cpp` — `x86_setup_tss_percpu()` 在 `ltr` 前后切换 GDT
+- `docs/repairs/260924/x86-kernel.md` — 唯一一条已修，文件删除
+
+**症状**
+QEMU monitor `info tlb`（dev，`SMP=1`，init 在 ring 3）改前：程序和 vDSO 的页全是 `-G-DA--UW`——vDSO 按
+`User|Readable|Executable` 映射，却可写、全局。表现有二：
+
+- 没有任何只读映射对内核是只读的：内核 `.text`/`.rodata`、IDT 与 GDT 的只读别名、程序的只读段、vDSO，ring 0 都能写。
+  把 vDSO 里的地址交给 `channel_read` 当输出缓冲，内核直接写进 vDSO 并回 Ok。
+- 用户页是全局页，切换 CR3 后 TLB 项仍在。所有程序都映射在同样的地址（0x200000、0xa00000），下一个进程可能沿用
+  上一个进程的旧翻译；一旦死进程的帧被释放（文件系统计划的 K6，`VmAspace::destroy`），就是跨进程读写被重新分配的内存。
+
+改后同一方法：程序页 `---DA--UW`，vDSO `----A--U-`，都不再全局；内核映像按段分成 `-G--A----`（`.text`，只读可执行）、
+`XG--A----`（`.rodata`）、`XG-DA---W`（数据），W^X 第一次在内核里成立。
+
+**原因**
+`MmuFlagsConv<X86MmuFlags>::to_arch()` 把 `MmuFlags` 正确地换成了 x86 的位，但 `make()` 随后把
+`X86_KERNEL_PAGE_FLAGS`（Present|Accessed|Dirty|Writable|Global）OR 进每一个叶子，把刚算出来的只读和"用户"一起盖掉了。
+中间表项同理：OR 的是叶子自己的 flags 加内核默认值，于是一张页表的权限取决于它下面第一个被映射的页。
+
+Global 的语义是"这个翻译在所有地址空间里都一样，切 CR3 时不用冲"。只有内核半区满足这一点。
+
+**改法**
+改前：
+
+```cpp
+    static constexpr auto make(PhysAddr addr, X86MmuFlags flags, bool terminal) -> X86Pte {
+        auto const default_flags =
+            terminal ? (Level == X86PagingLevel::PageTable ? X86_KERNEL_PAGE_FLAGS
+                                                           : X86_KERNEL_HUGE_PAGE_FLAGS)
+                     : X86_KERNEL_PD_FLAGS;
+        auto const resolved =
+            terminal ? flags
+                     : static_cast<X86MmuFlags>(static_cast<PteVal>(flags) &
+                                                static_cast<PteVal>(~X86_MMUF_NOEXECUTABLE));
+        return {static_cast<PteVal>((addr & X86_PG_FRAME) | PteVal(resolved) | default_flags)};
+    }
+```
+
+改后：
+
+```cpp
+    static constexpr auto make(PhysAddr addr, X86MmuFlags flags, bool terminal) -> X86Pte {
+        auto const frame = static_cast<PteVal>(addr & X86_PG_FRAME);
+        if (!terminal) {
+            constexpr auto TABLE_FLAGS =
+                PteVal(X86_MMUF_PRESENT | X86_MMUF_ACCESSED | X86_MMUF_WRITABLE | X86_MMUF_USER);
+            return {frame | TABLE_FLAGS};
+        }
+
+        auto value = frame | PteVal(flags) | PteVal(X86_MMUF_PRESENT | X86_MMUF_ACCESSED);
+        if (!!(flags & X86MmuFlags::Writable)) {
+            value |= PteVal(X86_MMUF_DIRTY);
+        }
+        if (!(flags & X86MmuFlags::User)) {
+            value |= PteVal(X86_MMUF_GLOBAL);
+        }
+        if constexpr (Level != X86PagingLevel::PageTable) {
+            value |= PteVal(X86_MMUF_PAGE_SIZE);
+        }
+        return {value};
+    }
+```
+
+- **叶子**：只带请求的权限，外加 Present、Accessed，可写时加 Dirty（免得 CPU 首次访问时自己去置，这两个位今天没人读）。
+- **Global = 非 User**：PTE 这一层不知道自己在填哪个地址空间，但不需要知道——内核地址空间从不映射 User 页，用户地址空间
+  在共享的内核半区之下只映射 User 页，所以"不带 User"恰好就是"内核页"。
+- **中间表项**一律 `Present|Accessed|Writable|User`，永不 NX：NX 沿层级 AND，只有叶子有资格决定；上层扣下的权限会扣掉
+  下面所有页的。
+
+改完第一次启动就暴露了一个依赖"默认可写"的地方：`x86_setup_gdt()` 把 GDTR 指向 GDT 的**只读**别名，而
+`x86_setup_tss_percpu()` 之后执行的 `ltr` 要往 GDTR 所指的表里写 TSS 描述符的 busy 位。改为：
+
+```cpp
+    GDT.load();
+    arch::ltr(GDT.tss_selector(cpunum));
+    x86_load_gdt();
+```
+
+即只在这一条指令期间装载可写的 `GDT`，之后换回只读别名。
+
+**参照**
+- Zircon `X86PageTableMmu::terminal_flags()`（`zircon/kernel/arch/x86/mmu.cc:263`）：叶子只按请求加 RW、U、NX，
+  `use_global_mappings_`（只有内核地址空间为真）时加 G；`intermediate_flags()`（同文件 :261）为 `RW | U`。
+- Zircon 的 GDT 不存在 `ltr` 的问题：`gdt_setup()`（`zircon/kernel/arch/x86/descriptor.cc:143` 起）把 GDT 真正占用的页映射成
+  可读写，只把 64 KiB 区域里剩下的部分映射成只读。
+- Linux `native_load_tr_desc()`（`arch/x86/include/asm/desc.h`）：当前 GDT 是只读的 fixmap 副本时，先装可写的 direct GDT，
+  `ltr`，再装回 fixmap——本树的做法与之相同（本地没有 Linux 源码，行号未核实）。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- `info tlb` 前后对比见"症状"。
+- dev 与 dbg_1 在默认配置、`CPU=max`、`SMP=1` 下都正常：dev 的 init 收到 "pong"、看到 shell 退出，`bad-pointer checks passed`；
+  dbg_1 `probes done (10 killed, 0 survived)`。
+
+**故意没做**
+- 程序映像仍整体 RWX 映射（`docs/repairs/260919/elfload.md` 第 1 条），所以程序自己的只读段仍可写；按段映射在计划 K21 之后。
+- `docs/repairs/260924/x86-kernel.md` 里写的后续验证（往 vDSO 写的三项坏指针检查、写 vDSO 的探针）各自单独提交。

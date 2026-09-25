@@ -166,7 +166,21 @@ auto x86_setup_tss_percpu(CpuNum cpunum) -> void {
         .set_granularity(arch::SegGran::Byte)
         .set_longmode(true);
 
+    // ltr writes too: it marks the descriptor it loads busy, in the table
+    // GDTR points at. Once x86_setup_gdt() has run, that is the read-only
+    // alias, and the write faults -- a #PF in the middle of bringing the CPU
+    // up. It went unnoticed while every page was mapped writable whatever it
+    // asked for (arch::paging::X86Pte::make()). So the writable table is
+    // loaded for the one instruction and the alias put back after it.
+    //
+    // Linux does the same in native_load_tr_desc(): if the current GDT is the
+    // read-only fixmap copy, load the direct one, ltr, and load the fixmap one
+    // again. Zircon avoids the question by mapping the GDT's real pages
+    // read-write and only the unused rest of its 64 KiB read-only
+    // (gdt_setup()).
+    GDT.load();
     arch::ltr(GDT.tss_selector(cpunum));
+    x86_load_gdt();
 }
 
 } // namespace ours

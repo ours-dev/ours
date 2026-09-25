@@ -33,21 +33,64 @@ template <X86PagingLevel Level>
 struct X86Pte {
     using ValueType = PteVal;
 
+    /// An entry pointing at |addr|: a page mapped with |flags| when |terminal|,
+    /// otherwise the next table down.
+    ///
+    /// A leaf carries exactly the permissions it was asked for. This used to OR
+    /// X86_KERNEL_PAGE_FLAGS -- Present, Accessed, Dirty, Writable and Global
+    /// -- into every leaf, after MmuFlagsConv::to_arch() had worked out the
+    /// right bits, so every page in the system was writable and global:
+    ///
+    ///  - Writable everywhere meant no read-only mapping was read-only to the
+    ///    kernel. Kernel .text and .rodata, the IDT and GDT aliases, a
+    ///    program's read-only segments and the vDSO could all be written from
+    ///    ring 0, and a system call handed a pointer into the vDSO wrote its
+    ///    answer there and returned Ok.
+    ///  - Global on a user page meant its TLB entry survived the CR3 switch to
+    ///    another process. Every program is mapped at the same addresses, so
+    ///    the next one could run through the previous one's translation --
+    ///    and once a dead process's frames are freed (VmAspace::destroy), read
+    ///    and write whoever the allocator gives them to next.
+    ///
+    /// Global belongs to kernel mappings only, because only they are the same
+    /// in every address space: Zircon gives it to the kernel aspace alone
+    /// (X86PageTableMmu::terminal_flags(), use_global_mappings_). This layer
+    /// does not know which address space it is filling, but it does not need
+    /// to: a leaf without User is a kernel page -- the kernel aspace maps
+    /// nothing with User, and a user aspace maps nothing without it below the
+    /// kernel half it shares -- so "not User" is exactly "kernel".
+    ///
+    /// Accessed is preset on every leaf, and Dirty on a writable one, so the
+    /// CPU does not have to set them itself on the first access; nothing reads
+    /// either bit yet.
+    ///
+    /// A table entry grants everything -- Writable and User, and never NX,
+    /// since NX ANDs down the hierarchy -- because only the leaf may decide:
+    /// an upper-level entry that withheld a permission would withhold it from
+    /// every page beneath, and mapping a read-only segment first would then
+    /// poison the executable one next to it. Zircon's intermediate_flags() is
+    /// the same RW|U. It used to be the leaf's own flags plus the kernel
+    /// defaults, which made a table's permissions depend on whichever page
+    /// happened to be mapped under it first.
     static constexpr auto make(PhysAddr addr, X86MmuFlags flags, bool terminal) -> X86Pte {
-        auto const default_flags =
-            terminal ? (Level == X86PagingLevel::PageTable ? X86_KERNEL_PAGE_FLAGS
-                                                           : X86_KERNEL_HUGE_PAGE_FLAGS)
-                     : X86_KERNEL_PD_FLAGS;
-        // NX ANDs down the hierarchy: an upper-level entry carrying it marks
-        // every page beneath non-executable. Only the leaf may decide, so a
-        // non-terminal entry never carries the bit — otherwise mapping a
-        // read-only segment first would poison the whole upper region and
-        // later executable segments would fault on instruction fetch.
-        auto const resolved =
-            terminal ? flags
-                     : static_cast<X86MmuFlags>(static_cast<PteVal>(flags) &
-                                                static_cast<PteVal>(~X86_MMUF_NOEXECUTABLE));
-        return {static_cast<PteVal>((addr & X86_PG_FRAME) | PteVal(resolved) | default_flags)};
+        auto const frame = static_cast<PteVal>(addr & X86_PG_FRAME);
+        if (!terminal) {
+            constexpr auto TABLE_FLAGS =
+                PteVal(X86_MMUF_PRESENT | X86_MMUF_ACCESSED | X86_MMUF_WRITABLE | X86_MMUF_USER);
+            return {frame | TABLE_FLAGS};
+        }
+
+        auto value = frame | PteVal(flags) | PteVal(X86_MMUF_PRESENT | X86_MMUF_ACCESSED);
+        if (!!(flags & X86MmuFlags::Writable)) {
+            value |= PteVal(X86_MMUF_DIRTY);
+        }
+        if (!(flags & X86MmuFlags::User)) {
+            value |= PteVal(X86_MMUF_GLOBAL);
+        }
+        if constexpr (Level != X86PagingLevel::PageTable) {
+            value |= PteVal(X86_MMUF_PAGE_SIZE);
+        }
+        return {value};
     }
 
     constexpr auto address() const -> PhysAddr {
