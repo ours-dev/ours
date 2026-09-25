@@ -1,21 +1,8 @@
 # x86/kernel 待修项（2026-09-25）
 
-修 NMI 的 IST 栈与 %gs 时看到的，不是那两处改动引入的。按严重程度排。
+修 NMI 的 IST 栈与 %gs 时看到的，不是那两处改动引入的。按严重程度排。（原第 1 条"NMI 路径打日志会自锁"已修，见 `docs/changes/260925/x86-kernel.md` 第 3 条。）
 
-## 1. NMI 路径打日志，会在同一颗 CPU 上自锁
-
-**严重程度：中。** 需要 NMI 恰好打在持有串口锁的 CPU 上；真机上 NMI 一多（watchdog、PMU 的 NMI 模式）就不罕见。
-
-- `x86_dispatch_exception()` 对 NMI 做的唯一一件事是 `log::info("#NMI")`（`faults.cpp`）。
-- logz4 的串口输出拿一把 TAS 锁（`kernel/lib/logz4/kernel.cpp` 里 `m_lock.test_and_set`）。NMI 打断的如果正是持锁的那段代码，
-  NMI 处理函数会在同一颗 CPU 上永远等这把锁：持锁者要等 NMI 返回才能继续。
-- 同理，NMI 路径上任何拿锁的代码都有这个问题；IST 栈的注释里"NMI/#MC 路径不能出错"是同一类约束。
-
-改法：NMI 路径不同步打日志。Zircon 的 `x86_nmi_handler()` 只做 `kcounter_add(exceptions_nmi, 1)` 和 CPU 上下文交换请求，
-不打印；Linux 让 NMI 里的 printk 写进 per-CPU 缓冲，稍后在安全的上下文里刷出（`printk_nmi` / `printk_safe`，新版是 nbcon 的延后刷出）。
-最小的一步是把那行日志换成一个 per-CPU 计数。
-
-## 2. `sysretq` 返回非规范 RCX 时，#GP 落在 ring 0、用户的栈和 %gs 上
+## 1. `sysretq` 返回非规范 RCX 时，#GP 落在 ring 0、用户的栈和 %gs 上
 
 **严重程度：低（潜伏，当前触发不到）。**
 

@@ -215,3 +215,56 @@ for (auto i = 0; i < MAX_NUM_STACKS; ++i) {
 **故意没做**
 - NMI 处理路径里还会打日志，日志要拿锁；NMI 打断一个正持有日志锁的 CPU 会死锁。这是另一个问题（Linux 用 NMI-safe 的 printk 缓冲解决），没有一并改。
 - `sysretq` 返回非规范 RCX 时在 ring 0 触发 #GP（此时栈和 GS 都已是用户的，CVE-2012-0217）：ours 目前 RCX 只可能是 `syscall` 自己存下的返回地址，触发不到；等有了修改线程寄存器的接口再加检查，已记入 repairs。
+
+## NMI 处理不再打日志（2026-09-25）
+
+**文件**
+- `kernel/arch/x86/kernel/faults.cpp` — `x86_dispatch_exception()` 的 NMI 分支去掉 `log::info("#NMI")`，换成说明为什么这里必须安静的注释
+
+**症状**
+潜伏：NMI 恰好打在正持有串口锁的 CPU 上时，这颗 CPU 永远卡死。未实测触发。
+
+**原因**
+NMI 屏蔽不了，可以落在任何一条指令上，包括 logz4 正在往串口写一行日志、手里拿着锁的时候。
+logz4 的串口锁是一把 TAS 自旋锁（`kernel/lib/logz4/kernel.cpp`）：
+
+```cpp
+        while (m_lock.test_and_set(std::memory_order_acquire)) {
+```
+
+NMI 处理函数里再打日志，就在同一颗 CPU 上去抢这把锁。持锁的代码要等 NMI 返回才能继续执行、才能放锁，NMI 又要等锁——死锁，而且没有任何输出。
+关中断保护不了：那挡的是普通中断，挡不住 NMI。这不是日志独有的问题，NMI 路径上任何拿锁的代码都一样，所以规则是 NMI 路径一把锁都不拿。
+
+改前：
+
+```cpp
+            case IrqVec::Nmi:
+                log::info("#NMI");
+                break;
+```
+
+**改法**
+改后：
+
+```cpp
+            case IrqVec::Nmi:
+                // Deliberately silent. An NMI cannot be masked, so it can
+                // land while this very CPU holds the serial lock in the
+                // middle of a log line; ...
+                break;
+```
+
+被否掉的方案：换成一个 per-CPU 计数（Zircon 的做法）。现在没有任何读者，按要求只移除；将来要统计 NMI 次数时，计数是无锁的，可以直接加。
+
+**参照**
+- `Zircon x86_nmi_handler()`（`kernel/arch/x86/exceptions_c.cc`）：只 `kcounter_add(exceptions_nmi, 1)` 和 `g_cpu_context_exchange.HandleRequest()`，不打印。
+- Linux：NMI 里的 printk 写进 per-CPU 缓冲，稍后在安全上下文刷出（`printk_nmi` / `printk_safe`，新版 nbcon 的延后刷出）。
+
+**验证**
+- 构建通过；clang-format 已跑；clang-tidy 对 `faults.cpp` 无告警。
+- 两个镜像正常启动：dev 有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`、`--- end ---`；dbg_1 有后两行和 `--- end ---`。
+- 启动完成后 QEMU monitor 打 `nmi`：dbg_1 在 NMI（约 41 s）之后仍持续输出（48.9 s 还有 `I'm Thread` 行），说明 NMI 处理完正常返回；dev 那时本已空闲，没有输出，也没有 panic。
+  NMI 确实会送达并走 paranoid 路径，是上一条里用 `#NMI` 日志确认过的；本条去掉日志后不再能直接看到它。
+
+**故意没做**
+- #DF、#MC 仍然打日志并 panic：那两条路径本来就是致命的，打不出来至多丢一次诊断；要彻底解决需要一套 NMI/panic 安全的输出通道，另起一项。

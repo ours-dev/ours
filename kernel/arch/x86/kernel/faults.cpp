@@ -188,7 +188,14 @@ namespace {
                 log::info("#DB");
                 break;
             case IrqVec::Nmi:
-                log::info("#NMI");
+                // Deliberately silent. An NMI cannot be masked, so it can
+                // land while this very CPU holds the serial lock in the
+                // middle of a log line; logging here would then spin on that
+                // lock forever, its holder waiting on the NMI to return.
+                // Nothing on the NMI path may take a lock at all. Zircon's
+                // x86_nmi_handler() prints nothing either (it bumps a
+                // kcounter); Linux diverts NMI-time printk into a per-CPU
+                // buffer that is flushed later from a safe context.
                 break;
             case IrqVec::Breakpoint:
                 log::info("#BK");
