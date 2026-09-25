@@ -42,11 +42,6 @@ unpark 一个已是 Ready/Running 的线程（dbg_1 触发 `scheduler.cpp` 的�
 每个 prof 样本的 tid 都是垃圾值。改为 `Thread::Current::get()->m_tid`。`PmNode::Current::hard_affinity()`
 （`kernel/mm/include/ours/mm/pm_node.hpp`）是同一个错误，属于 mm。
 
-## 6. `SPAWNED_THREADS_LOCK` 以普通 Guard 获取（已交接）
-
-`spawn_etc`、`erase_from_global_list`、`init_first` 拿它时可被抢占；`exit()` 在关中断、关抢占、持 PI 锁时也要拿它。
-同一 CPU 上被抢占的持有者与退出的线程互等，永久死锁。改为 `Guard<SpinLock, IrqSave>`。
-
 ## 7. 可 join 线程的退出循环在关中断下 `hlt`（已交接）
 
 `try_wake_joiners()` 恒返回 false，循环永不结束，且持着 PI 锁。今天没有可 join 的线程会走到。

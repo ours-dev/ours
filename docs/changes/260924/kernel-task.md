@@ -282,3 +282,68 @@ const 重载有同样的缺陷而且修不好：const 对象记不下自己跑�
 - 没给 `defer()` 加 `[[nodiscard]]`（fit 有 `warn_unused_result`）：丢掉返回值会让动作立刻执行，是另一类错，
   不属于"最多跑一次"。
 - 模板参数 `Invocable_` 的命名告警是旧的，与本条无关，没动。
+
+## `SPAWNED_THREADS_LOCK` 一律关中断获取（2026-09-24）
+
+**文件**
+- `kernel/kernel/task/thread.cpp` — `create_first()`、`spawn_etc()`、`erase_from_global_list()` 的 Guard 加 `lockdep::IrqSave`
+- `kernel/include/ours/task/thread.hpp` — 锁的声明处写明"必须关中断"及原因
+- `docs/repairs/260924/kernel-task.md` — 删掉第 6 条
+
+**症状**
+潜伏，窄窗口。`spawn_etc()` 持锁时本 CPU 来一个时钟中断并抢占它，接着本 CPU 上一个 Detached 线程
+（每个用户线程都是，`bind_user_thread` 置的）走 `exit()` 去摘链：dbg_0 关着中断永远自旋；
+dbg_1 在 `SpinLock::acquire()` 的 `DEBUG_ASSERT(!is_held())` 上 panic。P1-A 的 fault-kill 让用户线程退出变得常见。
+
+**原因**
+一把自旋锁只要有一个持有者在关中断的状态下拿它，所有持有者就都得关中断拿。
+
+`exit()` 在 `AutoInterruptDisabler` + `AutoPreemptDisabler` + 自己的 PI 锁之下调 `erase_from_global_list()`，
+这一处天然是关中断的。另外两处（`spawn_etc`、`create_first`）用的是 `Guard guard{...}`，推导成
+`Guard<SpinLock>`——只拿锁，中断和抢占都不动。于是：
+
+1. 线程 A 在 `spawn_etc()` 里拿到锁，中断开着；
+2. 时钟中断，出口处 `preempt()` 把 A 换下，A 带着锁回到本 CPU 的运行队列；
+3. 线程 B 在本 CPU 上 `exit()`，关中断、关抢占，去拿同一把锁，自旋。
+
+A 只能被本 CPU 再调度（`Scheduler::steal_work_from()` 还是桩，没有别的 CPU 会把它拿走），
+而本 CPU 关着中断在自旋，永远不会再调度。和 `dpc.cpp` 里 `DpcRunner::Queue::enqueue()` 修过的是同一个形状。
+
+只关中断就够，不需要再关抢占：本项目的抢占只发生在中断出口和主动 `reschedule`，
+关了中断的临界区里两者都不会发生。
+
+**改法**
+改前（三处相同）：
+
+```cpp
+    Guard guard{SPAWNED_THREADS_LOCK};
+```
+
+改后：
+
+```cpp
+    Guard<SpinLock, lockdep::IrqSave> guard{SPAWNED_THREADS_LOCK};
+```
+
+`erase_from_global_list()` 的调用者已经关了中断，那里的 IrqSave 只是保存再恢复同一个"关"，
+写上是为了让"这把锁总是关中断拿"在每个获取点都成立，不依赖调用者。
+原因写在锁的声明处，三个获取点各自只写一句指过去。
+
+**参照**
+- `Zircon Thread::CreateEtc()`：`Guard<SpinLock, IrqSave> list_guard{&list_lock_}` 之后才 `thread_list->push_front(t)`；
+  `ConstructFirstThreadSecondaryCpu` 同样以 `Guard<SpinLock, IrqSave>` 持有 list lock。
+- `Linux copy_process()` 与 `release_task()`（`kernel/fork.c`、`kernel/exit.c`）：全局任务链由 `tasklist_lock` 保护，
+  写侧一律 `write_lock_irq(&tasklist_lock)`。
+
+**验证**
+- 构建通过；clang-tidy 在改动行上没有新告警（`SPAWNED_THREADS`/`SPAWNED_THREADS_LOCK` 的命名告警改动前就有）。
+- 两个镜像启动：dev 日志有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`；
+  dbg_1 跑到 `--- end ---`，Detached 的内核线程 `laborer` 经 `exit()` → `erase_from_global_list()` 正常退出。
+- 抢占落在 `spawn_etc` 临界区里的那个竞争窗口没有专门构造，未实测。
+
+**故意没做**
+- 没有给 `SPAWNED_THREADS` 加 `TA_GUARDED(SPAWNED_THREADS_LOCK)`：两者都是 static 成员，声明顺序是链表在前、锁在后，
+  要加得调换顺序并处理 `create_first()` 那样早期的调用点，是另一件事。
+- `exit()` 里 PI 锁 → `SPAWNED_THREADS_LOCK` 的嵌套顺序与 Zircon（list lock 在前、线程锁在后）相反。
+  今天没有反向嵌套的路径，所以不构成死锁；以后若有人在持 `SPAWNED_THREADS_LOCK` 时去拿某个线程的 PI 锁
+  （比如遍历线程表的调试命令），就得先定顺序。

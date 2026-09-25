@@ -598,6 +598,22 @@ namespace task {
         USTL_DECLARE_HOOK_OPTION(Self, m_unpark_hook, UnparkListOption);
 
         static SpawnedList SPAWNED_THREADS;
+
+        /// Always taken with interrupts off (`Guard<SpinLock, IrqSave>`),
+        /// because Thread::Current::exit() takes it with interrupts off.
+        ///
+        /// A dying Detached thread -- every user thread is one -- unlinks
+        /// itself from inside exit()'s interrupts-off, preemption-off,
+        /// PI-locked section. If spawn_etc() on the same CPU held this lock
+        /// with interrupts on, a tick could preempt it mid-section; the exiting
+        /// thread would then spin on a lock whose holder sits in this CPU's run
+        /// queue (Scheduler::steal_work_from() is a stub, so no other CPU takes
+        /// it), and this CPU never reschedules while it spins with interrupts
+        /// off: a hang in dbg_0, SpinLock::acquire()'s !is_held() assertion in
+        /// dbg_1. Once any holder runs with interrupts off, all of them must.
+        /// Zircon takes its thread_list lock as Guard<SpinLock, IrqSave> in
+        /// CreateEtc(); Linux takes tasklist_lock with write_lock_irq() in
+        /// copy_process() and release_task().
         static sync::SpinLock SPAWNED_THREADS_LOCK;
 
       public:

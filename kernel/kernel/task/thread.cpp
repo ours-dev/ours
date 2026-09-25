@@ -131,7 +131,8 @@ auto Thread::create_first(KoId tid, char const *name, sched::BaseProfile const &
     // carries its own count, which become_idle() releases.
     self->m_preemption_state.disable_preemption();
 
-    Guard guard{SPAWNED_THREADS_LOCK};
+    // IrqSave, as every holder of this lock must: see its declaration.
+    Guard<SpinLock, lockdep::IrqSave> guard{SPAWNED_THREADS_LOCK};
     SPAWNED_THREADS.push_back(*self);
 }
 
@@ -167,7 +168,11 @@ auto Thread::spawn_etc(KoId tid, char const *name, StartRoutine entry, void *arg
     self->m_arch_thread.init(VirtAddr(trampoline_routine));
 
     {
-        Guard guard{SPAWNED_THREADS_LOCK};
+        // Interrupts off, or a tick preempting this section leaves the lock
+        // held by a thread parked in this CPU's run queue -- and exit() on
+        // this CPU then spins on it with interrupts off, for good. See the
+        // lock's declaration.
+        Guard<SpinLock, lockdep::IrqSave> guard{SPAWNED_THREADS_LOCK};
         SPAWNED_THREADS.push_back(*self);
     }
 
@@ -428,7 +433,10 @@ auto Thread::trampoline() -> void {
 
 FORCE_INLINE
 auto Thread::erase_from_global_list() -> void {
-    Guard guard{SPAWNED_THREADS_LOCK};
+    // exit() calls this with interrupts already off, where saving and
+    // restoring them is a no-op; the option is for the rule, not for this
+    // caller -- see the lock's declaration.
+    Guard<SpinLock, lockdep::IrqSave> guard{SPAWNED_THREADS_LOCK};
     return erase_from_global_list_locked();
 }
 
