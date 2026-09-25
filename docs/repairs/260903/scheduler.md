@@ -33,12 +33,17 @@ ours 有这个计数，但我试的时候 `SpinLock::num_held_cpu()` 读出来�
 所以这条现在走得通了，而且比逐个给队列锁打 `IrqSave` 更普适：任何用普通 `Guard` 持自旋锁
 的地方仍然会被抢占，并留下一把没人能释放的锁。
 
-## 4. `PreemptionState::IrqNestedCounter` 全树无人增减
+## 4. 中断里睡眠没有断言；`NmiNestedCounter` 同样无人增减
 
-`is_preemption_enabled()` 把 `in_interrupt()` 算进去了，但那个计数没有任何写入点，
-所以这一层保护目前是空的。Zircon 进中断时 `arch_set_blocking_disallowed(true)`，
-`int_handler_start()` 里 `PreemptDisable()` + `EagerReschedDisable()`。
-changes 第 20 条只补了出口那一半。
+`IrqNestedCounter` / `in_interrupt()` 已删（`docs/changes/260924/kernel-task.md` 末条），
+进中断的禁用计数由 `handle_irq_preamble()` 抬起。剩下两件：
+
+- Zircon `int_handler_start()` 还会 `arch_set_blocking_disallowed(true)`，可能睡眠的锁
+  （`Mutex::Acquire()`、`BrwLock`、user-copy）断言它为假。ours 没有等价断言；可以用
+  `irq::current_frame() != nullptr` 当信号，但 ours 的 #PF 在前导/尾声之间、关中断关抢占地处理，
+  得先像 `Zircon x86_pfe_handler()` 那样在缺页路径里放开，否则断言会打在缺页上。
+- `PreemptionState::NmiNestedCounter` 只被 `is_preemption_enabled()` 读，从不写；NMI 路径按设计
+  不做任何簿记（`arch_handle_exception()` 的注释）。删还是维护，待定。
 
 ## 5. `Driver::update_clock()` 的基准写错了
 

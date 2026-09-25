@@ -84,9 +84,9 @@ logz4::Domain const *boot_domain = nullptr;
 ///
 /// "Handling an interrupt" is read off irq::current_frame(), which the IRQ
 /// preamble sets and the postamble clears. That is the only such signal the
-/// tree keeps -- PreemptionState's IrqNestedCounter is never incremented, so
-/// in_interrupt() is always false. The few instructions of entry glue
-/// before the preamble run under the thread's slot; they do not log.
+/// tree keeps: PreemptionState deliberately carries no hard-IRQ count (its
+/// Tag says why). The few instructions of entry glue before the preamble run
+/// under the thread's slot; they do not log.
 auto domain_slot() -> logz4::Domain const *& {
     if (ours::irq::current_frame() != nullptr) {
         return ours::mm::CpuLocal::access(IRQ_DOMAIN);

@@ -48,6 +48,14 @@ auto handle_irq_generic(VIrqNum virqnum) -> IrqReturn {
     return get_irq_dispatcher()->handle_irq(virqnum);
 }
 
+/// Zircon's int_handler_start(). Runs for every vector that takes the
+/// bookkeeping -- device interrupts, IPIs and exceptions such as #PF alike;
+/// arch_handle_exception() keeps NMI, #DF and #MC out.
+///
+/// Raising the two disable counts is what makes the handler non-preemptible.
+/// Linux's irq_enter_rcu() also bumps a hard-IRQ count in preempt_count;
+/// there is deliberately no such count here, and PreemptionState's Tag says
+/// why. CURRENT_FRAME is this CPU's "handling an interrupt" signal instead.
 auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
     mm::CpuLocal::write(CURRENT_FRAME, frame);
 

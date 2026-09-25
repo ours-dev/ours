@@ -38,11 +38,15 @@ class PreemptionState {
     /// reschedule was refused. Those flags record whether a *request* is
     /// pending; they say nothing about whether preemption is *allowed*, and
     /// are left out here on purpose.
+    ///
+    /// Nor is there a hard-IRQ term. An interrupt handler is covered by the
+    /// two disable counts, which irq::handle_irq_preamble() raises on the way
+    /// in exactly as Zircon's int_handler_start() does. See the note on Tag
+    /// for why the word keeps no interrupt count of its own.
     FORCE_INLINE
     auto is_preemption_enabled() const -> bool {
         return preemption_disabled_count() == 0 && eager_resched_disabled_count() == 0 &&
-               !in_interrupt() && !m_counter.get<Tag::NmiNestedCounter>() &&
-               !m_counter.get<Tag::TimesliceExtension>();
+               !m_counter.get<Tag::NmiNestedCounter>() && !m_counter.get<Tag::TimesliceExtension>();
     }
 
     FORCE_INLINE
@@ -97,11 +101,6 @@ class PreemptionState {
         m_counter.set<Tag::NoReschedPreempt>(1);
         m_counter.set<Tag::NoReschedEager>(1);
         m_pendings.store(CpuMask());
-    }
-
-    FORCE_INLINE
-    auto in_interrupt() const -> bool {
-        return m_counter.get<Tag::IrqNestedCounter>();
     }
 
     FORCE_INLINE
@@ -162,10 +161,36 @@ class PreemptionState {
 
     auto flush_pending_local() -> void;
 
+    /// There is no hard-IRQ nesting count, although Linux keeps one in the
+    /// same word (the HARDIRQ bits of preempt_count, raised by irq_enter_rcu()
+    /// and dropped by irq_exit_rcu()). There was an IrqNestedCounter field,
+    /// read by an in_interrupt() that fed is_preemption_enabled(), but
+    /// nothing ever wrote it. It was removed rather than maintained:
+    ///
+    ///  - Keeping it would have changed nothing. The IRQ preamble already
+    ///    raises both disable counts, so is_preemption_enabled() is false for
+    ///    the whole handler without it. Zircon's PreemptionState is the model
+    ///    here, and its word holds only the disable counts and the timeslice
+    ///    extension flags (PreemptIsEnabled() is `state_ == 0`).
+    ///  - What Linux needs the bits for, ours does not have. __irq_exit_rcu()
+    ///    tests !in_interrupt() to know it is the outermost exit and may run
+    ///    softirqs, and in_interrupt() tells hardirq from softirq from task
+    ///    context for the many checks built on it. Ours has no softirq layer.
+    ///  - Linux counts device interrupts only: an exception such as #PF goes
+    ///    through irqentry_enter(), which leaves HARDIRQ alone. Ours has one
+    ///    preamble for every vector, #PF included, so a count kept there would
+    ///    call a page fault an interrupt unless the preamble learned to tell
+    ///    vectors apart -- all of it for a field nobody reads.
+    ///
+    /// "Is this CPU handling an interrupt" is answered per CPU by
+    /// irq::current_frame(), which the preamble sets and the postamble
+    /// clears; logz4 and the sampling profiler read it. Zircon's equivalent
+    /// is likewise per CPU and outside PreemptionState: the
+    /// blocking_disallowed flag that int_handler_start() sets. A second
+    /// signal kept here would only drift from the first, as this one did.
     enum class Tag {
         PreemptionDisabledCounter,
         EagerReschedDisabledCounter,
-        IrqNestedCounter,
         NmiNestedCounter,
 
         NoReschedPreempt,
@@ -179,11 +204,10 @@ class PreemptionState {
 
     using BitField = ustl::BitFields<Field<Tag::PreemptionDisabledCounter, 8, u8>,   // Bits 0..7
                                      Field<Tag::EagerReschedDisabledCounter, 8, u8>, // Bits 8..15
-                                     Field<Tag::IrqNestedCounter, 4, u8>,            // Bits 16..19
-                                     Field<Tag::NmiNestedCounter, 4, u8>,            // Bits 20..23
-                                     Field<Tag::NoReschedPreempt, 1, bool>,          // Bit 24
-                                     Field<Tag::NoReschedEager, 1, bool>,            // Bit 25
-                                     Field<Tag::TimesliceExtension, 1, bool>         // Bit 25
+                                     Field<Tag::NmiNestedCounter, 4, u8>,            // Bits 16..19
+                                     Field<Tag::NoReschedPreempt, 1, bool>,          // Bit 20
+                                     Field<Tag::NoReschedEager, 1, bool>,            // Bit 21
+                                     Field<Tag::TimesliceExtension, 1, bool>         // Bit 22
                                      >;
     BitField m_counter;
 

@@ -509,3 +509,113 @@ Ready 的线程下一次被调度上 CPU 时必然从内核出发回到 ring 3�
 **故意没做**
 - Ready 分支不发 IPI，理由见上：它下次上 CPU 必然经过检查。Zircon 同样只 `break`。
 - 没有把 `x86_handle_ipi_resched()` 里自己调 `apic_issue_eoi()`、分发处又调一次的重复 EOI 一起改：那属于 x86-kernel，与本条无关。
+
+## 删掉从没人写过的 `IrqNestedCounter` 和 `in_interrupt()`（2026-09-24）
+
+**文件**
+- `kernel/include/ours/task/preemption_state.hpp` — 删掉 `Tag::IrqNestedCounter`、它的 4 位字段和 `in_interrupt()`；`is_preemption_enabled()` 去掉 `!in_interrupt()` 这一项；在 `Tag` 上写明为什么这个字里不放中断计数；顺手改正位号注释（原来两个字段都标 `Bit 25`）
+- `kernel/kernel/irq/mod.cpp` — `handle_irq_preamble()` 补文档注释：它是 Zircon 的 `int_handler_start()`，对所有向量都跑，故意不加 hard-IRQ 计数
+- `kernel/lib/logz4/kernel.cpp` — `domain_slot()` 的注释原来引用 `IrqNestedCounter` 从不自增，改为指向 `Tag` 上的说明
+
+**症状**
+无可见症状。`IrqNestedCounter` 全树只有读和声明，没有一处增减，所以 `in_interrupt()` 恒为 false，
+`is_preemption_enabled()` 里的 `!in_interrupt()` 永远不起作用。真正能回答"本 CPU 是否在处理中断"的
+只有 `irq::current_frame()`，logz4 的 `domain_slot()` 正是因此绕开了 `in_interrupt()`。
+（`docs/repairs/260903/scheduler.md` 第 4 条记的就是这件事。）
+
+**原因**
+这是一个"两份信号、只有一份活着"的问题。要么让它活，要么删掉，二选一；对照 Zircon 和 Linux 之后选了删：
+
+1. **维护它什么也不会改变。** 这个计数唯一的读者是 `is_preemption_enabled()`，而中断前导已经把
+   两个禁用计数都抬起来了：
+
+   ```cpp
+   auto handle_irq_preamble(HIrqNum irqnum, arch::IrqFrame *frame) -> void {
+       mm::CpuLocal::write(CURRENT_FRAME, frame);
+       auto &preemption_state = task::Thread::Current::preemption_state();
+       preemption_state.disable_eager_reschedule();
+       preemption_state.disable_preemption();
+   }
+   ```
+
+   所以整个处理函数期间 `preemption_disabled_count() != 0`，`is_preemption_enabled()` 本来就是 false。
+   `!in_interrupt()` 就算有人维护，也只会在"已经为 false"的地方再 false 一次。
+   `PreemptionState` 照的是 Zircon（`PreemptReenableDelayFlush`、eager resched、timeslice extension、pending mask），
+   而 Zircon 的 `PreemptIsEnabled()` 就是 `state_.load() == 0`，这个字里只有两个禁用计数和 timeslice extension 标志，
+   没有中断计数。进中断时 `int_handler_start()` 做的也正是 `PreemptDisable()` + `EagerReschedDisable()`。
+
+2. **Linux 要这几位的理由，ours 没有。** Linux 的 `preempt_count` 是全内核唯一回答
+   "在 hardirq / softirq / NMI / 进程上下文"的字，`in_interrupt()` = `irq_count()` = NMI|HARDIRQ|SOFTIRQ 位。
+   最直接的消费者是 `__irq_exit_rcu()`：`preempt_count_sub(HARDIRQ_OFFSET)` 之后 `if (!in_interrupt() && local_softirq_pending()) invoke_softirq();`
+   ——它要知道自己是不是最外层的中断出口，才能决定跑不跑软中断。ours 没有软中断这一层，没有这个问题要回答。
+
+3. **Linux 只给设备中断计数，不给异常计数；ours 的前导对所有向量都跑。** Linux 的 hard-IRQ 位是
+   `irq_enter_rcu()` → `__irq_enter_raw()` → `preempt_count_add(HARDIRQ_OFFSET)` 加的，调用点在
+   `arch/x86/include/asm/irq_stack.h`（设备中断和 sysvec 的路径）；#PF 走 `DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)`
+   → `irqentry_enter()`，不碰 HARDIRQ。ours 的 `arch_handle_exception()` 对除 NMI/#DF/#MC 外的每个向量都调
+   `platform_start_handling_irq()`，#PF 也在里面。在前导里直接 `++` 就会把缺页算成"中断上下文"；要做对得先让前导
+   区分向量——为一个没人读的字段。
+
+4. **"是否在中断里"已经有一个按 CPU 的信号。** `irq::current_frame()` 由前导置、尾声清，logz4 和采样 profiler 在用。
+   Zircon 对应的东西同样是按 CPU、且不在 `PreemptionState` 里：`int_handler_start()` 置的 `blocking_disallowed`。
+   再在每线程的字里放一份，只会和它漂移——这一份已经漂成了死字段。
+
+改前：
+
+```cpp
+    auto is_preemption_enabled() const -> bool {
+        return preemption_disabled_count() == 0 && eager_resched_disabled_count() == 0 &&
+               !in_interrupt() && !m_counter.get<Tag::NmiNestedCounter>() &&
+               !m_counter.get<Tag::TimesliceExtension>();
+    }
+    ...
+    auto in_interrupt() const -> bool {
+        return m_counter.get<Tag::IrqNestedCounter>();
+    }
+    ...
+                                     Field<Tag::IrqNestedCounter, 4, u8>,            // Bits 16..19
+                                     Field<Tag::NmiNestedCounter, 4, u8>,            // Bits 20..23
+                                     Field<Tag::NoReschedPreempt, 1, bool>,          // Bit 24
+                                     Field<Tag::NoReschedEager, 1, bool>,            // Bit 25
+                                     Field<Tag::TimesliceExtension, 1, bool>         // Bit 25
+```
+
+**改法**
+改后：
+
+```cpp
+    auto is_preemption_enabled() const -> bool {
+        return preemption_disabled_count() == 0 && eager_resched_disabled_count() == 0 &&
+               !m_counter.get<Tag::NmiNestedCounter>() && !m_counter.get<Tag::TimesliceExtension>();
+    }
+    ...
+                                     Field<Tag::NmiNestedCounter, 4, u8>,            // Bits 16..19
+                                     Field<Tag::NoReschedPreempt, 1, bool>,          // Bit 20
+                                     Field<Tag::NoReschedEager, 1, bool>,            // Bit 21
+                                     Field<Tag::TimesliceExtension, 1, bool>         // Bit 22
+```
+
+`in_interrupt()` 整个删除，上面四条理由原样写进 `Tag` 的注释，读代码的人不必来翻这份记录。
+字段删掉后后面的位整体前移 4 位；没有汇编或别处按位号读这个字（`raw_value()` 是私有的且无调用者），所以前移无害。
+
+被否掉的方案：在 `handle_irq_preamble()` / `handle_irq_postamble()` 里增减计数（Linux `irq_enter`/`irq_exit` 式）。
+理由见上：对唯一的读者零效果；要和 Linux 语义一致还得先区分异常与中断；而且会造出第二个和 `current_frame()` 平行的信号。
+
+**参照**
+- `Zircon int_handler_start()` / `int_handler_finish()`（`kernel/include/kernel/interrupt.h`）：只动禁用计数和 `arch_set_blocking_disallowed()`。
+- `Zircon PreemptionState::PreemptIsEnabled()`（`kernel/include/kernel/thread.h`）：`state_.load() == 0`。
+- `Zircon x86_exception_handler()`（`kernel/arch/x86/exceptions_c.cc`）：`arch_blocking_disallowed()` 为真即判"中断处理里递归"。
+- `Linux irq_enter_rcu()` / `__irq_exit_rcu()`（`kernel/softirq.c`），`__irq_enter_raw()`（`include/linux/hardirq.h`），`in_interrupt()` / `irq_count()`（`include/linux/preempt.h`）。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 通过。
+- clang-format 已跑；clang-tidy 对 `irq/mod.cpp`、`logz4/kernel.cpp`（连带头文件）在改动行上无告警，只有 `mod.cpp` 两条原有的 `CURRENT_FRAME`/`IRQ_DISPATCHER` 命名告警。
+- 两个镜像启动：
+  - `kernel.dev.obi`：`init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`、`--- end ---` 都在。
+  - `kernel.dev.dbg_1.obi`：`shell: channel checks passed`、`shell: bad-pointer checks passed`、`--- end ---` 都在，无断言、无 panic。
+    这个镜像里 shell 由内核直接起（"started by the kernel; no one to answer"），不经 init，所以本来就没有 `init: shell says "pong"`。
+
+**故意没做**
+- `NmiNestedCounter` 处境完全相同（只读不写；NMI 路径按设计不做任何簿记），但任务只涉及 IRQ 计数，没有一并删，留在 repairs。
+- Zircon 的 `blocking_disallowed`（在可能睡眠的锁里断言"不在中断里"）ours 还没有，另记在 repairs；它不属于 `PreemptionState`，
+  而且 ours 的 #PF 目前在前导/尾声之间、关抢占关中断地处理，照搬之前得先像 Zircon `x86_pfe_handler()` 那样在缺页路径里放开。
