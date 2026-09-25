@@ -25,6 +25,11 @@ class VmObjectPhysical: public VmObject {
         return Status::Ok;
     }
 
+    [[nodiscard]]
+    auto size() const -> usize override {
+        return size_;
+    }
+
     auto lookup_range(usize offset, usize size, PhysAddr *pa) -> Status {
         m_canary.verify<Self>();
 

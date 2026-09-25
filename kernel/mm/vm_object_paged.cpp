@@ -1,6 +1,12 @@
 #include <ours/lockdep.hpp>
+#include <ours/mm/memmap.hpp>
 #include <ours/mm/object_cache.hpp>
+#include <ours/mm/physmap.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+
+#include <algorithm>
+
+#include <cstring>
 
 #include <gktl/init_hook.hpp>
 #include <heap/new.hpp>
@@ -131,16 +137,89 @@ auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *page
     return Status::Unimplemented;
 }
 
-auto VmObjectPaged::read(void *out, VirtAddr offset, usize size) -> Status {
+/// One walk over the pages [offset, offset + size) touches, handing |copy| the
+/// physmap address of each and the slice of the caller's buffer that belongs
+/// to it.
+///
+/// Zircon counterpart: VmObjectPaged::ReadWriteInternal, with the same shape
+/// -- range check, a lookup cursor over the whole page range, RequirePage per
+/// page, copy through the physmap -- minus everything that exists for a user
+/// buffer: dropping the lock around a copy that may fault, the partial-length
+/// return, the soft fault retry. read() and write() take kernel buffers only
+/// (see VmObject::read()), so the copy cannot fault and runs under m_mutex.
+/// That is a sleeping lock, not a spin lock, so a long copy holds up other
+/// users of this VMO but never a CPU with interrupts off.
+template <typename Copy>
+auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool const will_write,
+                               Copy const &copy) -> Status {
     m_canary.verify<Self>();
 
-    return Status::Unimplemented;
+    if (!size) {
+        return Status::Ok;
+    }
+
+    Guard guard{m_mutex};
+    // Checked before anything is copied, and written so that it cannot wrap,
+    // as commit_range_internal() is. A range that runs off the end copies
+    // nothing rather than a prefix: no caller here wants a short read, and
+    // Zircon answers ZX_ERR_OUT_OF_RANGE the same way unless the caller asks
+    // for TrimLength.
+    auto const total = m_cow_pages->size_locked();
+    if (size > total || offset > total - size) {
+        return Status::OutOfRange;
+    }
+
+    // The cursor serves whole pages, so it is made for the page-aligned span
+    // that covers the byte range; the copy below cuts each page back down to
+    // the bytes that were asked for.
+    auto const first_page = align_down(offset, PAGE_SIZE);
+    auto const end_page = align_up(offset + size, PAGE_SIZE);
+    auto cursor = m_cow_pages->make_cursor(first_page, end_page - first_page);
+    if (!cursor) {
+        return cursor.unwrap_err();
+    }
+
+    // The request only matters when a page source has to be asked, which no
+    // VMO has yet; the cursor is handed one anyway, as the fault path does,
+    // because that is its contract.
+    MultiPageRequest request;
+    usize done = 0;
+    while (done < size) {
+        auto const at = offset + done;
+        auto const in_page = at - align_down(at, PAGE_SIZE);
+        auto const chunk = std::min<usize>(size - done, PAGE_SIZE - in_page);
+
+        // A reader is content with whatever is there and a writer needs a page
+        // of its own -- the same choice the fault path makes. For an anonymous
+        // VMO both commit a zeroed page where there was none, so a read of a
+        // never-written page reads zero (see VmCowPages::Cursor).
+        auto page = cursor->require_page(will_write, 1, &request);
+        if (!page) {
+            return page.unwrap_err();
+        }
+
+        auto *const base = PhysMap::phys_to_virt<u8>(frame_to_phys(*page));
+        copy(base + in_page, done, chunk);
+        done += chunk;
+    }
+
+    return Status::Ok;
 }
 
-auto VmObjectPaged::write(void *in, VirtAddr offset, usize size) -> Status {
-    m_canary.verify<Self>();
+auto VmObjectPaged::read(void *const out, VirtAddr const offset, usize const size) -> Status {
+    auto *const dst = static_cast<u8 *>(out);
+    return read_write(offset, size, false,
+                      [dst](u8 const *const page, usize const done, usize const chunk) {
+                          std::memcpy(dst + done, page, chunk);
+                      });
+}
 
-    return Status::Unimplemented;
+auto VmObjectPaged::write(void const *const in, VirtAddr const offset, usize const size) -> Status {
+    auto const *const src = static_cast<u8 const *>(in);
+    return read_write(offset, size, true,
+                      [src](u8 *const page, usize const done, usize const chunk) {
+                          std::memcpy(page, src + done, chunk);
+                      });
 }
 
 INIT_CODE

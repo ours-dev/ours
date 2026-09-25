@@ -118,3 +118,97 @@ O(n²) 那个循环是照 Zircon `VmObjectPaged::CommitRangeInternal()` 抄了�
   效果相同。等有回收（`docs/repairs/260903/mm.md` 第 8 条）时再做。
 - `docs/repairs/260903/mm.md` 第 1 条的首项"`~VmCowPages()` 不释放自己拥有的页"已经被别的改动修掉了（析构函数现在调
   `drain_owned()`），不是这次修的，这里不删，留给改它的那条线核对。
+
+## VmObjectPaged 的内核缓冲读写，与 VmObject::size()（2026-09-25）
+
+**文件**
+- `kernel/mm/vm_object_paged.cpp` — 实现 `read()`/`write()`，共用私有模板 `read_write()`
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp` — `write()` 改收 `void const *`；加 `size()`；声明 `read_write()`
+- `kernel/mm/include/ours/mm/vm_object.hpp` — `write()` 改收 `void const *`；改正两处抄错的注释；加纯虚 `size()`
+- `kernel/mm/include/ours/mm/vm_object_physical.hpp` — 实现 `size()`
+- `docs/repairs/260925/mm.md` — 新增两条（见"故意没做"）
+
+**症状**
+`VmObjectPaged::read()`/`write()` 都回 `Unimplemented`。文件系统计划里，K3（程序映像改用 paged VMO）、
+K12（把内核包做成 BootFS VMO）、K13（`vmo_read` 系统调用）都要往 VMO 里写或从中读，没有这两个就无从下手。
+
+**原因**
+缺的是功能，不是错。基类 `write()` 的注释还是 `read()` 的复制品（"Read the |size| of bytes..."），参数也是
+非 const 的 `void *`，写入源被声明成可写的。
+
+**改法**
+改前：
+
+```cpp
+auto VmObjectPaged::read(void *out, VirtAddr offset, usize size) -> Status {
+    m_canary.verify<Self>();
+
+    return Status::Unimplemented;
+}
+
+auto VmObjectPaged::write(void *in, VirtAddr offset, usize size) -> Status {
+    m_canary.verify<Self>();
+
+    return Status::Unimplemented;
+}
+```
+
+改后（摘要）：
+
+```cpp
+template <typename Copy>
+auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool const will_write,
+                               Copy const &copy) -> Status {
+    ...
+    Guard guard{m_mutex};
+    auto const total = m_cow_pages->size_locked();
+    if (size > total || offset > total - size) {
+        return Status::OutOfRange;
+    }
+
+    auto const first_page = align_down(offset, PAGE_SIZE);
+    auto const end_page = align_up(offset + size, PAGE_SIZE);
+    auto cursor = m_cow_pages->make_cursor(first_page, end_page - first_page);
+    ...
+    while (done < size) {
+        ...
+        auto page = cursor->require_page(will_write, 1, &request);
+        ...
+        auto *const base = PhysMap::phys_to_virt<u8>(frame_to_phys(*page));
+        copy(base + in_page, done, chunk);
+        done += chunk;
+    }
+    return Status::Ok;
+}
+```
+
+`read()` 与 `write()` 各传一个 `memcpy` 的 lambda，方向相反。
+
+- **只收内核缓冲**：拷贝在 `m_mutex` 下做，不能缺页。用户缓冲要在每次拷贝前后放锁（Zircon 的 `ReadUser`），
+  等 `vmo_read`/`vmo_write` 系统调用时再做（计划里经内核中转页，接口设计 §4.6）。`m_mutex` 是会睡眠的锁，
+  长拷贝只挡住这个 VMO 的其他使用者，不会关着中断占住 CPU。
+- **越界整体拒绝**：越界就回 OutOfRange，一个字节也不拷，不做短读。Zircon 同样回 `ZX_ERR_OUT_OF_RANGE`，
+  除非调用方要 `TrimLength`。
+- **没写过的页读出为零**：读和写走同一个 cursor，读用 `require_read_page()`。对匿名 VMO 这会提交一个清零的页，
+  读到的是 0；Zircon 用零页标记而不提交，占用更小，这里没有标记（`VmCowPages::Cursor` 的注释写了取舍）。
+- **`size()`** 不拿锁：分页 VMO 的大小今天没有任何东西能改（`Resizable` 没有实现）。注释写明，哪天能改了就要拿锁，
+  Zircon 的 `size_locked()` 同样要求持锁。
+
+**参照**
+Zircon `VmObjectPaged::ReadWriteInternal()`（`zircon/kernel/vm/vm_object_paged.cc:1281`）：范围检查，为整段页范围建
+lookup cursor，每页 `RequirePage(write, ...)`，经 `paddr_to_physmap()` 拷贝。`Read()`/`Write()`（同文件 :1428、:1451）
+各传一个拷贝 lambda，形状相同。
+
+**验证**
+- 构建通过；clang-format、clang-tidy 在改动行上无新告警（两条 `modernize-use-override` 落在原有的析构函数上）。
+- 临时启动探针（未提交），dev 与 dbg_1 结果相同：3 页 Lazy VMO；跨第 0/1 页写 20 字节再读回，一致；读从没写过的
+  第 2 页，全 0；读越过末尾、offset 回绕、在末尾写 1 字节都回 OutOfRange；在末尾读 0 字节回 Ok；`size()` 为 0x3000。
+- 去掉探针后两个镜像照常：dev 到 `--- end ---`，dbg_1 `probes done (10 killed, 0 survived)`。
+
+**故意没做**
+- 用户缓冲的读写：见上。
+- 物理 VMO 的 `read()`/`write()` 仍回 `Unsupported`，与接口设计一致（physical VMO 回 NotSupported）。
+- 缺页路径不拿 VMO 的锁：`VmCowPages` 的页仓库由地址空间的 SpinLock 和 VMO 的 Mutex 分头保护，同一个 VMO
+  被两处同时改写时会并发插入。登记为 `docs/repairs/260925/mm.md` 第 1 条，必须在 K16（共享 vDSO VMO）之前修。
+- 查这件事时看到 `m_last_fault` 用 `Arc::adopt()` 包查找出来的裸指针，可能多出一个所有者，登记为同文件第 2 条，
+  K6 之前核对。

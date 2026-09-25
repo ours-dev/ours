@@ -104,15 +104,27 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return Status::Unsupported;
     }
 
-    /// Read the |size| of bytes from |offset| into |out|
+    /// Copies |size| bytes starting at byte |offset| of this object into the
+    /// kernel buffer |outbuf|.
+    ///
+    /// Kernel buffers only: the copy runs under the object's lock and must not
+    /// fault. A user buffer needs the lock dropped around each copy (Zircon's
+    /// ReadUser), which nothing here does yet. A range that does not lie
+    /// wholly inside the object is OutOfRange and nothing is copied.
     virtual auto read(void *outbuf, VirtAddr offset, usize size) -> Status {
         return Status::Unsupported;
     }
 
-    /// Read the |size| of bytes from |offset| into |out|
-    virtual auto write(void *inbuf, VirtAddr offset, usize size) -> Status {
+    /// Copies |size| bytes from the kernel buffer |inbuf| into this object,
+    /// starting at byte |offset|. The same rules as read().
+    virtual auto write(void const *inbuf, VirtAddr offset, usize size) -> Status {
         return Status::Unsupported;
     }
+
+    /// The object's size in bytes, which is the bound read(), write() and
+    /// commit_range() check a range against. Zircon: VmObject::size_locked().
+    [[nodiscard]]
+    virtual auto size() const -> usize = 0;
 
     virtual auto dirty_pages(VirtAddr offset, usize size) -> Status {
         return Status::Unimplemented;

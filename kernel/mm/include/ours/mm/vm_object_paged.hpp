@@ -33,11 +33,20 @@ class VmObjectPaged: public VmObject {
     ///
     auto supply_pages(VirtAddr, usize, VmPage::List *, SupplyOption) -> Status override;
 
-    ///
+    /// A page nobody has written reads as zero. Reading it commits a zeroed
+    /// page, as a fault would (VmCowPages::Cursor::require_read_page()).
     auto read(void *out, VirtAddr offset, usize size) -> Status override;
 
-    ///
-    auto write(void *out, VirtAddr offset, usize size) -> Status override;
+    /// Commits every page the range touches.
+    auto write(void const *in, VirtAddr offset, usize size) -> Status override;
+
+    /// Read without m_mutex: nothing can change a paged VMO's size, because
+    /// Resizable has no implementation. The day it does, this has to take the
+    /// lock, as Zircon's size_locked() requires its caller to.
+    [[nodiscard]]
+    auto size() const -> usize override {
+        return m_cow_pages->size_locked();
+    }
 
     FORCE_INLINE
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
@@ -50,6 +59,12 @@ class VmObjectPaged: public VmObject {
 
   private:
     auto commit_range_internal(VirtAddr offset, usize size, CommitOptions option) -> Status;
+
+    /// The page walk read() and write() share; |copy| moves the bytes between
+    /// one page and the caller's buffer. Defined in the .cpp, the only place it
+    /// is instantiated.
+    template <typename Copy>
+    auto read_write(VirtAddr offset, usize size, bool will_write, Copy const &copy) -> Status;
 
     ustl::Arc<VmCowPages> m_cow_pages;
     sync::Mutex m_mutex;
