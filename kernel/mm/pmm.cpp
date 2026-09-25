@@ -82,6 +82,24 @@ auto free_page_table(PhysAddr base, usize size) -> void {
     free_frames(phys_to_frame(base), get_order(size / PAGE_SIZE));
 }
 
+auto free_frame_count() -> usize {
+    usize total = 0;
+    // LocalContiguous and not a shared queue: the shared ones list other
+    // nodes' zones too, for fallback, and would count them once per node.
+    PmNode::for_each_nid(PmNode::State::Online, [&total](NnId const nid) {
+        auto *const node = PmNode::node(nid);
+        if (!node) {
+            return;
+        }
+        for (auto *const zone: node->zone_queues()->get_queue(ZoneQueues::LocalContiguous)) {
+            if (zone) {
+                total += zone->free_frames();
+            }
+        }
+    });
+    return total;
+}
+
 auto current_node() -> NnId {
     return PmNode::Current::nid();
 }

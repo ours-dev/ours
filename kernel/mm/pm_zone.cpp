@@ -79,6 +79,11 @@ auto PmZone::alloc_frame(Gaf gaf, usize order) -> PmFrame * {
     return frame;
 }
 
+auto PmZone::free_frames() -> usize {
+    Guard guard{m_lock};
+    return m_fset.free_frames();
+}
+
 auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
     ensure_fset_attached();
 

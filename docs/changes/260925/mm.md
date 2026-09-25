@@ -404,3 +404,63 @@ auto ProcessDispatcher::finish_dead_transition() -> void {
   第 1 条）时一起处理。
 - 从未 Running 过就被丢掉的进程（`create()` 的失败路径、`launch()` 的提前返回）不会走到 `destroy()`，它们的地址空间照旧因为
   引用环而泄漏。要等进程对象有 `on_zero_handles()`（计划 K23）才有地方统一处理。
+
+## `pmm::free_frame_count()`：空闲帧总数，供"还回来了没有"这类核对（2026-09-25）
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — `FrameSet::free_frames()`（按阶遍历 free 链表，块数乘块大小）；声明 `PmZone::free_frames()`
+- `kernel/mm/pm_zone.cpp` — `PmZone::free_frames()`：持 zone 锁调上面那个
+- `kernel/mm/include/ours/mm/pmm.hpp`、`kernel/mm/pmm.cpp` — `free_frame_count()`：对在线节点的本地 zone 求和
+
+**症状**
+没有办法回答"物理内存还回来了没有"。文件系统计划的 K6（拆地址空间、释放页表）要用"每个死进程前后的空闲帧数之差"
+来证明没有泄漏，而 PMM 没有任何地方给出空闲帧数。
+
+**原因**
+缺的是接口。伙伴分配器本来就有逐阶的 `FrameBuddy::free_count(order)`，只是没人往上汇总。
+
+**改法**
+改前：无。
+
+改后：
+
+```cpp
+    auto free_frames() const -> usize {
+        usize total = 0;
+        for (usize order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
+            total += m_buddy.free_count(order) << order;
+        }
+        return total;
+    }
+```
+
+```cpp
+auto free_frame_count() -> usize {
+    usize total = 0;
+    PmNode::for_each_nid(PmNode::State::Online, [&total](NnId const nid) {
+        ...
+        for (auto *const zone: node->zone_queues()->get_queue(ZoneQueues::LocalContiguous)) {
+            if (zone) {
+                total += zone->free_frames();
+            }
+        }
+    });
+    return total;
+}
+```
+
+- 只数本地 zone（`LocalContiguous`）：共享队列里有别的节点的 zone（用于回退分配），按节点累加会重复计数。
+- 遍历链表而不是维护计数器：只用于诊断，不给分配路径加任何开销；代价是和碎片程度成正比的时间，以及结果一返回就可能过时——
+  所以它适合做"之前/之后"的差，不适合当水位线用。
+
+**参照**
+Linux 的 `nr_free_pages()`（`global_zone_page_state(NR_FREE_PAGES)`）是维护出来的计数器；这里是按需遍历，更慢但零侵入。
+Zircon 的 `pmm_count_free_pages()`（`zircon/kernel/vm/pmm.cc:154`）转调 `Pmm::Node().CountFreePages()`，同样是整机汇总。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- 临时启动探针（未提交）：分配一个 order-3 块前后与释放后分别计数，两个镜像都是"少 8、再恢复"
+  （dev：126309 → 126301 → 126309；dbg_1：126240 → 126232 → 126240）。
+
+**故意没做**
+每 CPU 的帧缓存（`FramePcpuCache`）还是空壳，今天不持有帧；有了之后要把它们也算进来，或者明确说"不含 pcpu 缓存"。

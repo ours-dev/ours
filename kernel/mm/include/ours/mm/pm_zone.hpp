@@ -56,6 +56,19 @@ class FrameSet {
         m_buddy.release(frame, order);
     }
 
+    /// Free frames, counted in pages: every block on every order's list,
+    /// weighted by its size. A walk of the lists, not a counter, so it costs
+    /// time proportional to how fragmented the set is -- for a diagnostic,
+    /// not a hot path.
+    [[nodiscard]]
+    auto free_frames() const -> usize {
+        usize total = 0;
+        for (usize order = 0; order < FrameBuddy::NUM_ORDERS; ++order) {
+            total += m_buddy.free_count(order) << order;
+        }
+        return total;
+    }
+
   private:
     FrameBuddy m_buddy;
 };
@@ -94,6 +107,11 @@ class PmZone {
     auto alloc_frame(Gaf gaf, usize order) -> PmFrame *;
 
     auto free_frame(PmFrame *frame, usize order) -> void;
+
+    /// How many frames this zone could hand out right now; see
+    /// FrameSet::free_frames().
+    [[nodiscard]]
+    auto free_frames() -> usize;
 
     auto find_frame(usize order) -> PmFrame *;
 

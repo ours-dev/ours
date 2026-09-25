@@ -197,6 +197,14 @@ inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {
 
 auto free_frames(PmFrame::List *list) -> void;
 
+/// Every frame the buddy allocators could hand out right now, in pages,
+/// summed over the online nodes' own zones. For diagnostics: it walks every
+/// free list under each zone's lock, and the answer is stale the moment it
+/// returns. What it is good for is a difference -- the same count taken
+/// before and after something that should have given memory back.
+[[nodiscard]]
+auto free_frame_count() -> usize;
+
 auto pin_frame(PmFrame *frame) -> Status;
 
 auto unpin_frame(PmFrame *frame) -> Status;
