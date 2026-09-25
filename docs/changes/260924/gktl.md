@@ -115,7 +115,7 @@ Zircon 的内核容器同样不走 std 分配器，而是 `fbl::AllocChecker` + 
   都回到提示符，不再 panic。**但命令其实没有执行**——`log level bogus` 应当打出的
   `log: unknown level 'bogus'` 没有出现。原因是下一层的缺陷：整棵树一次要约 50 个
   552 字节的节点（≈27 KiB），而 `ktl::KernelMemoryResource` 直接调 `heap::kmalloc()`，
-  超过 4 KiB 一律返回空，`reserve()` 因而失败。这一条单独修，见下一节。
+  超过 4 KiB 一律返回空，`reserve()` 因而失败。这一条单独修，见同日 `ktl.md`。
 
 **故意没做**
 - 没有把 `TREE`/`TREE_BUILT` 改成小写：仓库里可变全局的惯例就是大写，改名是另一件事。

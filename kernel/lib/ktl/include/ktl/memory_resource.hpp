@@ -13,8 +13,15 @@ namespace ktl {
 /// be used from kernel code at all: their default resource is the hosted
 /// `new`/`delete` one, which does not exist here.
 ///
-/// Alignment is the one place this is not a drop-in. `ktl::kmalloc` takes no
-/// alignment argument and only promises the heap's natural alignment, so a
+/// It allocates through the kernel's `operator new(size, gaf)` and frees
+/// through `operator delete`, the same kmalloc-or-vmalloc routing every other
+/// kernel allocation gets (Linux's kvmalloc()/kvfree()). A request above
+/// heap::KMALLOC_MAX_SIZE therefore inherits vmalloc's contract: it may block,
+/// so a container that can grow that large must not do so from an interrupt
+/// handler or with a spin lock held.
+///
+/// Alignment is the one place this is not a drop-in. Neither heap takes an
+/// alignment argument and both only promise their natural alignment, so a
 /// request for more than that is refused rather than quietly satisfied with
 /// a under-aligned block.
 class KernelMemoryResource final: public ustl::collections::MemoryResource {
