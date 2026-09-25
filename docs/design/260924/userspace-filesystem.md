@@ -1,6 +1,8 @@
-# ours 用户空间文件系统：设计（2026-09-24）
+# ours 用户空间文件系统：设计（2026-09-24，2026-09-25 修订 D3）
 
 > 输入：protocol、generator、boot、permissions、kernel 五个方向的设计，加一致性、安全、闭环三份评审。主人已定四条：fuchsia.io 子集；/boot 与 /svc 先内置在 init；协议代码用生成器；v1 纯能力、形状为 DAC 预留。评审的每一条要么落进正文，要么在第 9 节写明否决理由。代码引用在 HEAD（70b7a4da）上复核过，Fuchsia 引用在本地 checkout 上复核过，没核到的标“未核实”。本文建立在 `docs/design/260923/userspace-interface.md`（下称“接口设计”）之上。它 §1 的“现状”一栏已经过时：HandleTable 和 Channel 已实现。
+>
+> **2026-09-25 修订**：D3 改为“可执行是一项能力”——`vmo_create` 永不带 Execute，Execute 只能经 `vmo_replace_as_executable(vmo, vmex)` 取得，vmex 是内核只交给 init 的资源句柄（Zircon 的做法）。初稿的 D3 按 VMO 的来源（内核铸造的 BootFS VMO）授予 Execute，那是特例而不是能力，已否决（§9）。随之改动 §1、§4.6、§6.1、§6.5、§7.1 K8、§7.2（新增 K14、K15，原 K14–K17 顺延为 K16–K19）、§8、§9、§10。
 
 ## 1 总览
 
@@ -16,7 +18,8 @@
 - Open 请求的 rights 必须同时是连接 rights 的子集和节点能力的子集，只缩不扩；
 - 没有环境根，服务端永远看不到绝对路径；
 - 连接记录现在就带 principal（v1 恒为 0）和 grant，rights 拆成 cap_rights 与 effective 两个字段，为 DAC 留好形状；
-- 永不外发可写 VMO。
+- 永不外发可写 VMO；
+- 可执行是一项能力：只有持 vmex 资源的进程能把 VMO 换成可执行，换的同时去掉 Write（D3）。
 
 **第一个里程碑 M1**：两个镜像都能启动，dev 镜像的日志依次出现下面几行。
 
@@ -355,9 +358,10 @@ service shell binary=shell start=eager restart=never uses=/boot:rx,/svc/ours.ech
   - 接口：`launch(Spec &&) -> Result<ou::Handle, Status>`。
   - Spec 包括：name、程序所在的 VMO 及偏移、vdso、job、argv、`NamespaceEntry[]`（path 加目录连接，按 names 下标发成 `NsDir | i << 16`），以及可选的 directory_request。
   - 句柄类型沿用 Zircon 的数值：PA_NS_DIR 0x20、PA_DIRECTORY_REQUEST 0x3B（`zircon/system/public/zircon/processargs.h:140,155`）。对照 `ProcessBuilder::add_namespace_entries`（`src/lib/process_builder/src/process_builder.rs:377`）。
-- **装段方式**（D3 的推荐）
-  - 只读段和可执行段直接从 BootFS VMO 映射，偏移为 `entry.data_offset + p_offset`。
-  - 可写段用 vmo_create + vmo_write 复制；Binder 也用 vmo_write 写 GOT。
+- **装段方式**（D3）
+  - init 启动时用 vmex 把 BootFS VMO 换成可执行的一份：`vmo_replace_as_executable(bootfs, vmex, &bootfs_x)`。BootFS VMO 本来就不带 Write，换出来的句柄是 Read\|Map\|GetProperty\|Execute。init 本身就是 vmex 的持有者，所以这不是权限放大。对照 Fuchsia BootfsSvc 用 `bootfs_vmex` 对 bin/、lib/ 下的文件调 `replace_as_executable`（`src/sys/component_manager/src/bootfs.rs:179-183、294-305`）。
+  - 只读段和可执行段直接从 `bootfs_x` 映射，偏移为 `entry.data_offset + p_offset`；只有 PF_X 的段按 X 映射。
+  - 可写段用 vmo_create + vmo_write 复制，这些 VMO 永远不带 Execute；Binder 也用 vmo_write 写 GOT。
   - launcher 自己不映射任何东西，所以用不到 vmar_unmap。
   - 这改动了接口设计 §3.2 的第 2、4、5 步。
 - **进程句柄**原样返回。降到 Wait|Inspect|Destroy 要等 handle_replace（M2）。
@@ -409,7 +413,12 @@ auto install_startup_namespace() -> Status;
 - **纯能力**，检查规则见 §2.4。进程没有 "/" 连接，只有 processargs 给的 NsDir；服务端永远看不到绝对路径。
 - **身份由铸造者决定。** 每个子进程的 /svc 连接由 init 铸造，允许表固定在它的合成目录上。能用什么服务，取决于这条连接是谁铸的，而不是客户端自称是谁。
 - **服务替客户端开文件**时，只能在客户端交来的目录连接上按相对路径打开，即 openat 的做法；绝不用服务自己的命名空间去解析客户端给的字符串。
-- **可执行**：M1 不外发任何可执行 VMO。B 段起，Execute 只来自内核铸造的 BootFS VMO（D3）。
+- **可执行是一项能力**（D3）：
+  - `vmo_create` 永不带 Execute，内核铸造的 BootFS VMO 也不带。
+  - Execute 只能经 `vmo_replace_as_executable(vmo, vmex)` 取得：它消耗原句柄，新句柄在原 rights 上加 Execute、去掉 Write。对照 Zircon `sys_vmo_replace_as_executable`（`zircon/kernel/lib/syscalls/vmo.rs:360-387`）；Zircon 保留 Write（给 JIT 用），ours 去掉，真有 JIT 时再议。
+  - vmex 是 System 种类的资源槽位 [VMEX, VMEX+1)，同 `ZX_RSRC_SYSTEM_VMEX_BASE = 1`（`zircon/system/public/zircon/syscalls/resource.h:36`）。内核只把它交给 init；init 决定再交给谁（今天只有它自己的 launcher）。
+  - 去掉 Write 只保证之后不能再用这个句柄建可写映射；换之前已经建好的可写映射、别处留着的带 Write 的句柄仍然有效。所以 vmex 的持有者属于可信基，这与 Zircon 相同。能执行任意代码的，永远只是被授予 vmex 的那几个进程，而不是任何能调 vmo_create 的进程。
+  - M1 不外发任何可执行 VMO，也还用不到 vmex。
 
 ### 6.2 为 DAC 预留的形状
 
@@ -462,7 +471,7 @@ auto install_startup_namespace() -> Status;
 |---|---|
 | 糊涂代理：init 转发 /svc | 名字必须是单段且在允许表里；路径由 init 自己拼，选项固定；目标只能是提供者的 DirectoryRequest（§4.4） |
 | 糊涂代理：服务替客户端开路径 | 只在客户端交来的目录连接上做 openat |
-| 权限放大 | 子集检查、节点能力上限、没有 INHERIT 位；M1 不发 VMO；B 段起 vmo_create 不带 Execute，BootFS VMO 不带 Write |
+| 权限放大 | 子集检查、节点能力上限、没有 INHERIT 位；M1 不发 VMO；vmo_create 与 BootFS VMO 都不带 Execute，Execute 只能凭 vmex 换得且换时去掉 Write；BootFS VMO 不带 Write |
 | 路径穿越 | 服务端做语法检查，逐段按节点解析；没有符号链接和挂载；客户端先做文本规范化，".." 越过根时停在 "/" |
 | 自环：让 init 自己跟自己对话 | 消息头的 direction 字段。init 同时持有一条 channel 两端时仍会泄漏两条连接记录，由 grant 配额兜底；有了 get_info(HandleBasic) 之后，拒绝 related_koid 指向 init 自己服务端的 object |
 | 句柄耗尽、针对 init 的 DoS | 每进程句柄上限，在途句柄也计入（K4）；wait_many 预算加每 grant 配额；回复遇到 NoResource 即断开该连接；NoResource 只让单个请求失败；o_c 一收到入站消息就关掉 |
@@ -499,7 +508,7 @@ auto install_startup_namespace() -> Status;
 | K5 | `feat(syscall): object_wait_many` | `kernel/object/wait.cpp:46-98`、`syscalls.gni`、`system/public/ours`（WaitItem、`WAIT_MANY_MAX_ITEMS = 64`） | 泛化 wait_one：N 个 WaitSignalObserver 共用一个 sync::Event；每一项都要 Wait 权限；count > 64 回 InvArgs；deadline 仍只接受 0 和无限 | dbg_1：写第二个 channel 后 pending[1] 为 READABLE；deadline 0 回 TimeOut；count 65 回 InvArgs | G2 |
 | K6 | `fix(mm): propagate commit errors and commit a VMO range once` | `kernel/mm/vm_object_paged.cpp:40、:65-72` | 创建时不再丢掉 commit_range 的返回值；commit 循环原来每一页都重新提交整个区间（平方复杂度），改为只提交一次 | 日志不变 | — |
 | K7 | `feat(mm): kernel-buffer VmObjectPaged::read/write and VmObject::size()` | `vm_object_paged.cpp:103-113`；`kernel/mm/include/ours/mm/vm_object.hpp` | 经 cursor 按页拷贝；越界或溢出回 OutOfRange；未提交的页读出为零；不在自旋锁下拷贝 | 日志不变，功能在 K8 验证 | K6 |
-| K8 | `feat(userabi): hand the kernel package out as a read-only BootFS VMO` | `kernel/lib/userabi/src/userboot.cpp`、`kernel/object/vmo_dispatcher.cpp` | 建一个 Pinned、整体提交的 VmObjectPaged，用 K7 的 write 从解压缓冲拷入。rights 为 Basic\|Read\|Map\|GetProperty，不给 Write，也不给 Execute（按 D3 到 B5 再加）。解压缓冲暂不释放：spawn_boot 还在读它，vfree 也没有 TLB shootdown | 出现 `userabi: bootfs vmo <N> bytes`；回读的头部 magic 一致 | K7 |
+| K8 | `feat(userabi): hand the kernel package out as a read-only BootFS VMO` | `kernel/lib/userabi/src/userboot.cpp`、`kernel/object/vmo_dispatcher.cpp` | 建一个 Pinned、整体提交的 VmObjectPaged，用 K7 的 write 从解压缓冲拷入。rights 为 Basic\|Read\|Map\|GetProperty，不给 Write，也不给 Execute（可执行权经 vmex 换得，D3）。解压缓冲暂不释放：spawn_boot 还在读它，vfree 也没有 TLB shootdown | 出现 `userabi: bootfs vmo <N> bytes`；回读的头部 magic 一致 | K7 |
 | K9 | `feat(syscall): vmo_read` | `kernel/lib/syscall/src/vmo.cpp`（今天是空壳）、`syscalls.gni` | `ours_vmo_read(HandleValue vmo, void *buffer, u64 offset, usize length)`，要求 Read 权限。在 VMO 锁下先拷进一页中转缓冲，放锁后再拷给用户（接口设计 §4.6） | 功能在 K11 验证 | K7 |
 | K10 | `feat(object): close a process's handles when it reaches Dead` | `kernel/object/process_dispatcher.cpp:163-168、:189-196` | 进入 Dead 有三条路：kill 时没有线程、最后一个线程 detach、以后的 process_exit。三条路都在锁内把表里的句柄摘出来，在锁外销毁。这是接口设计 §2.2 finish_dead_transition 的前半段，不含 VmAspace::destroy 和 TERMINATED。顺序照 Zircon 的 FinishDeadTransition（`zircon/kernel/object/process_dispatcher.cc:547-576`） | dbg_1：fault_probe 被杀后，它持有的 channel 的对端看到 PEER_CLOSED | K3 |
 | U1 | `feat(libc): give user programs mem* and str*` | `kernel/lib/libc/string.cpp` → `system/lib/libc/src`；`system/BUILD.gn:80-82` | 内核与用户共用一份实现；user_executable 默认链接 | shell 里一次 memcpy 的结果正确 | — |
@@ -518,15 +527,17 @@ auto install_startup_namespace() -> Status;
 | G4 | `feat(abi): seven-argument vDSO stubs` | `gen_syscalls.py:35-38`、`kernel/lib/userabi/vdso/vdso.S` | 已有桩的 .text 字节不变 | G1 |
 | K12 | `feat(object): one shared vDSO VMO mapped by ProcessDispatcher::create` | 取代 `userboot.cpp:246-268` 为每个进程拷一份的做法（接口设计 D2-A） | 日志不变 | K8 |
 | K13 | `feat(syscall): vmo_create and vmo_write` | `create_paged` 的 Pinned（`vmo_dispatcher.cpp:48`）改为 Lazy 并设上限；新 VMO 不带 Execute | 写入后读回一致；越界回 OutOfRange | K9 |
+| K14 | `feat(object): a System resource slot for vmex, handed to init` | 按接口设计 §2.6 重写 `ResourceDispatcher::create`（今天自相矛盾，也不构造对象），先只支持 System 种类、size = 1 的槽位；补完 `userabi::make_resource_handle`；内核铸一个 [VMEX, VMEX+1) 的槽位，在 init 的 processargs 里作为 `SystemResource`（0x54）交出，handle_info 的 arg 写槽位的 base（Vmex = 1）。校验照 Zircon `validate_ranged_resource`（`zircon/kernel/object/resource.rs:159`） | 第一个进程能按 arg 取出 vmex 句柄，dev 的 init 打出 `init: vmex resource ok`；拿它当别的种类用（例如给 vmo_replace_as_executable 传一个 Mmio 资源）回 AccessDenied | K11 |
+| K15 | `feat(syscall): vmo_replace_as_executable` | `ours_vmo_replace_as_executable(HandleValue vmo, HandleValue vmex, HandleValue *out)`：vmex 必须是覆盖 VMEX 槽位的 System 资源；无论成败原句柄都被消耗；新句柄 rights = 原 rights − Write + Execute（D3）。同一提交修订接口设计 §4.2 的 Vmo 行与 §9：删去“临时带 Execute”的偏离 | 没有 vmex 回 AccessDenied；原句柄带 Write 时新句柄不带 Write；换出的 VMO 能按 X 映射（K16 验证） | K14、K13 |
 | U7 | `feat(bootfs): page-align file data and zero the tail` | `builder.hpp:17` 的 ALIGNMENT 从 8 改为页大小 | 宿主往返测试；phys 照常解出内核 | U3 |
-| K14 | `feat(syscall): vmar_map with a page-aligned vmo_offset` | 签名不再暴露 mm 类型（`vma_dispatcher.cpp:49-67`）；root VMAR 补上 R/W/X（`:38-44`）；vmo_offset 透传：`vm_area.cpp:267` 今天写死为 0，paged 路径已经会加 m_vmo_ofs（`vm_mapping.cpp:191、485`），`map_physical` 还要补（`:235`）；保存每个映射的权限上限；processargs 加 VmarRoot；BootFS VMO 加 Execute（D3）；同一提交按 D3 修订接口设计 §2.3、§3.2、§4.2、§9 | W+X 被拒；不带 Execute 的 VMO 按 X 映射被拒；写只读映射会杀掉进程，内核继续运行 | G4、K13、U7 |
-| K15 | `feat(launch): process_create, thread_create, process_start, get_property and system/lib/launch` | 装段方式见 §4.6；同一提交修订接口设计 D13（§4.6 的 vDSO 一致性） | dbg_1 出现 `hello: bootstrap ok` | K12、K14 |
-| K16 | `feat(syscall): process_exit` | 复用 K10 的 Dead 迁移 | 进程退出后出现 `process 'hello' … destroyed` | K15 |
-| U8 | `feat(userboot): kernel -> userboot -> init` | 按 D2 | 出现 `userboot: started init`，M1 判据不变 | K15、K16 |
+| K16 | `feat(syscall): vmar_map with a page-aligned vmo_offset` | 签名不再暴露 mm 类型（`vma_dispatcher.cpp:49-67`）；root VMAR 补上 R/W/X（`:38-44`）；vmo_offset 透传：`vm_area.cpp:267` 今天写死为 0，paged 路径已经会加 m_vmo_ofs（`vm_mapping.cpp:191、485`），`map_physical` 还要补（`:235`）；保存每个映射的权限上限；processargs 加 VmarRoot；同一提交按 D3 修订接口设计 §2.3、§3.2 | W+X 被拒；不带 Execute 的 VMO 按 X 映射被拒；经 K15 换出的 BootFS VMO 能按 X 映射；写只读映射会杀掉进程，内核继续运行 | G4、K15、U7 |
+| K17 | `feat(launch): process_create, thread_create, process_start, get_property and system/lib/launch` | 装段方式见 §4.6；同一提交修订接口设计 D13（§4.6 的 vDSO 一致性） | dbg_1 出现 `hello: bootstrap ok` | K12、K16 |
+| K18 | `feat(syscall): process_exit` | 复用 K10 的 Dead 迁移 | 进程退出后出现 `process 'hello' … destroyed` | K17 |
+| U8 | `feat(userboot): kernel -> userboot -> init` | 按 D2；vmex 与其余启动句柄一起经 userboot 转交给 init | 出现 `userboot: started init`，M1 判据不变 | K17、K18 |
 | U9 | `feat(init): launch services from /boot with the launcher` | — | 出现 `init: launched echo from /boot` | U8 |
 | U10 | `refactor(tests): drive fault_probe from a test program, not the shell` | shell 今天经 spawn_boot 起它（`examples/shell/shell.cpp:202`）；dev.dbg_1 的 cmdline 改为 `init` | dbg_1 的探针日志不变 | U9 |
-| K17 | `refactor(syscall): remove process_spawn_boot` | 按 `docs/repairs/260923/syscall.md` 第 1 条列出的清单删除 | lib/syscall 不再依赖 userabi | U10 |
-| U11 | `build(system): install user programs under bin/` | 清单里的 binary 自动变成 `bin/echo` | `ls /boot` 出现 `bin` | K17 |
+| K19 | `refactor(syscall): remove process_spawn_boot` | 按 `docs/repairs/260923/syscall.md` 第 1 条列出的清单删除 | lib/syscall 不再依赖 userabi | U10 |
+| U11 | `build(system): install user programs under bin/` | 清单里的 binary 自动变成 `bin/echo` | `ls /boot` 出现 `bin` | K19 |
 
 ### 7.3 M2（依赖 B 段）
 
@@ -550,9 +561,9 @@ auto install_startup_namespace() -> Status;
 
 | # | 问题 | 选项 | 推荐 |
 |---|---|---|---|
-| D1 | M1 的边界 | A：只做 §7.1 的 21 步，起程序由 spawn_boot 做后端，GetBackingMemory 先回 NotSupported。B：连同用户态加载器一起做 | **A**。代价是 spawn_boot 要活到 K17 |
+| D1 | M1 的边界 | A：只做 §7.1 的 21 步，起程序由 spawn_boot 做后端，GetBackingMemory 先回 NotSupported。B：连同用户态加载器一起做 | **A**。代价是 spawn_boot 要活到 K19 |
 | D2 | userboot 的时机 | A：M1 由内核直接起 init，U8 再插入 userboot。B：现在就做 userboot，等于把 B 段整体提前。C：永远不做 userboot | **A**。这是对已批准的 kernel → userboot → init 的暂时偏离；init 收到的 processargs 格式不变，以后插入 userboot 时 init 不用改 |
-| D3 | 可执行权从哪来 | A：Execute 只来自内核铸造的 BootFS VMO；vmo_create 永不带 Execute；vmar_map 接受页对齐的 vmo_offset；launcher 直接从 BootFS VMO 映射只读段和可执行段；撤回接口设计 §2.3、§4.2、§9 的偏离。B：照接口设计 §4.2，vmo_create 带 Execute，launcher 复制所有段 | **A**。B 让任何进程都能把同一个 VMO 先按 W、再按 X 各映射一次，从而执行任意代码；单个映射上的 W+X 检查挡不住这种双重映射。A 在内核里只多了 vmo_offset 透传这一件事，代码现状也已照 Zircon 不带 Execute（`vmo_dispatcher.hpp:19-20`） |
+| D3 | 可执行权从哪来 | **已定（2026-09-25）**：可执行是一项能力。vmo_create 与 BootFS VMO 都不带 Execute；Execute 只能经 `vmo_replace_as_executable(vmo, vmex)` 取得，换时去掉 Write；vmex 是 System 资源槽位，内核只交给 init。vmar_map 接受页对齐的 vmo_offset，launcher 从换出的 BootFS VMO 直接映射只读段和可执行段。撤回接口设计 §4.2、§9“vmo_create 临时带 Execute”的偏离 | — 。否决的两种：vmo_create 带 Execute（任何进程都能把同一个 VMO 先按 W、再按 X 各映射一次，单个映射上的 W+X 检查挡不住）；按来源授予（只有内核铸造的 BootFS VMO 带 Execute，是特例而不是能力，见 §9） |
 | D4 | M1 的多路复用 | A：object_wait_many，加 §4.2 的预算和配额。B：先做 port + wait_async，需要把 P1-D 的 PortDispatcher、锁序、Semaphore 一起提前 | **A**。出现 shell 和 echo 以外的程序之前换成 B |
 | D5 | ordinal 方案 | A：SHA-256 哈希加可选的 selector，照 fidlc。B：显式编号 `ordinal_base << 32 \| method`，全构建唯一由 GN metadata 检查，另检入 golden | **A**。M1 不用分配库号，也不用检入 golden；ours 只有一棵源码树，改名时写 selector 钉住编号即可。B 的长处是十六进制转储里看得懂 |
 | D6 | BootFS 的 mode、uid、gid 什么时候落盘 | A：M1 由 init 合成；M2 随 GetBackingMemory 升级 BootFS 格式，从 GN metadata 填入真实值和 Executable 标志。B：M1 就升级格式 | **A**。M1 不外发任何可执行物，而格式改动会牵动 phys、KernelPackage 和打包器。“盘上 mode 从第一天就存”这一条，从第一个可写文件系统起严格执行 |
@@ -586,6 +597,8 @@ auto install_startup_namespace() -> Status;
 | handle_duplicate/replace、vmo_create_child 进 M1 | permissions、generator | 推迟到 M2 | M1 没有消费者 |
 | channel_read_etc 提前到 P1-C | generator | 推迟到 GetBackingMemory 之前 | M1 只核对句柄个数 |
 | vmo_create 带 Execute；vmar_map 只收 vmo_offset=0 | kernel | 否决 | 见 D3 |
+| Execute 只来自内核铸造的 BootFS VMO（初稿的 D3-A） | 综合稿 | 否决（2026-09-25） | 按 VMO 的来源授予，而不是按持有的能力；换成 vmex，谁能执行由谁持有 vmex 决定 |
+| vmo_replace_as_executable 保留 Write（Zircon 的语义） | — | 推迟 | 只有 JIT 需要；没有 JIT 之前去掉 Write，让可执行句柄不能再建可写映射 |
 | 加载器用“映射进 launcher → memcpy → unmap” | boot、接口设计 §3.2 | 否决 | 改为 vmo_write 加直接映射，省掉依赖 TLB shootdown 的 vmar_unmap |
 | 不做 userboot | boot | 否决 | 见 D2 |
 | 按 bin/、lib/ 路径前缀判断是否可执行，并据此合成 mode | protocol、boot | 否决 | 判据来自构建生成的条目标志（M2）；M1 合成的 mode 不区分可执行 |
@@ -614,7 +627,9 @@ auto install_startup_namespace() -> Status;
 | rights 别名 | R_STAR_DIR 等都含 CONNECT | 不含 Connect，另有 SVC_DIR_RIGHTS | 与节点能力检查一致 |
 | 路径编码 | FIDL string，必须是 UTF-8 | 字节串 | D9 |
 | mode/uid/gid | 只存不解释（`node.fidl:151-154`） | v1 只存；以后按 DAC 解释，而且只会减权 | 多用户方向 |
-| 可执行判据 | BootfsSvc 按目录名判断（`bootfs.rs:44-53`），再经 vmex 换成可执行 | 构建生成的条目标志；Execute 只从 BootFS 根往下继承，没有 vmex | 判据来自构建，而不是路径约定 |
+| 可执行判据 | BootfsSvc 按目录名判断（`bootfs.rs:44-53`），再经 vmex 换成可执行 | 可执行权同样经 vmex 换得；launcher 按 PF_X 决定哪些段按 X 映射，GetBackingMemory 按构建生成的条目标志（M2） | 判据来自构建，而不是路径约定 |
+| vmo_replace_as_executable | 在原 rights 上加 EXECUTE，保留 WRITE（`vmo.rs:382-385`） | 加 Execute、去 Write | 没有 JIT 之前，可执行句柄不应再能建可写映射 |
+| vmex 的来源 | 内核把整个 system resource 交给 userboot，userboot 用 resource_create 派生 vmex（`src/bringup/lib/userboot/rust/src/program.rs:102-112`） | 内核直接铸 Vmex 槽位交给 init，按 arg 区分 | 还没有 resource_create（P2）；有了之后改为交整个 system resource、由持有者派生 |
 | 每文件 VMO | `Vmo::create` + `transfer_data`（`bootfs.rs:204-220`） | M2 用 Slice 子 VMO | ours 没有 transfer_data；BootFS 已整体提交且不可写 |
 | GetBackingMemory 返回的 VMO | 按 VmoFlags 可以带 WRITE（`file/common.rs:40` 起的 `vmo_flags_to_rights`） | 永远不带 Write、SetProperty、Resize | 不外发可写 VMO |
 | /boot 由谁托管 | component_manager 的 BootfsSvc | init 内置 | 主人的决定 |
