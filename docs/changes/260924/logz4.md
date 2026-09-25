@@ -436,3 +436,66 @@ if (domain == nullptr) {
 - **内核的按线程槽不在这一条**：要给 `Thread` 加字段，还要处理中断上下文，是下一条。
   在那之前内核用的是整镜像单槽，所以这一条里内核代码不使用 `LogDomain`。
 - **不防非 LIFO 的销毁**（比如把守卫放进堆对象里乱序析构）。守卫是给局部变量用的。
+
+## 内核的当前域按线程存，中断用每 CPU 的独立槽（2026-09-24）
+
+**文件**
+- `kernel/include/ours/task/thread.hpp` — `Thread` 加 `m_log_domain` 字段和 `log_domain()` 访问器
+- `kernel/lib/logz4/kernel.cpp` — `domain_slot()`：中断中用每 CPU 的 `IRQ_DOMAIN`，否则用当前线程的槽，还没有线程时用 `boot_domain`；在 `InitLevel::CpuLocal` 通过 `set_domain_slot()` 装上
+
+**症状**
+上一条之后，内核用的还是库默认的整镜像单槽。只要有代码进入 `LogDomain`，同一时刻其它 CPU
+上的所有行都会被标成那个域；进入作用域的线程一旦睡眠，换上来的线程也会继承它的域。
+
+**原因**
+"当前在哪个域"是执行上下文的属性。内核里的执行上下文是线程，再加上中断——中断借用被打断
+线程的栈，但不属于它：kshell 在自己的作用域里等串口时来的一次时钟中断，不是 kshell 在说话。
+
+**改法**
+
+```cpp
+// kernel.cpp（新增）
+auto domain_slot() -> logz4::Domain const *& {
+    if (ours::irq::current_frame() != nullptr) {
+        return ours::mm::CpuLocal::access(IRQ_DOMAIN);
+    }
+    if (auto *const thread = ours::task::Thread::Current::get(); thread != nullptr) {
+        return thread->log_domain();
+    }
+    return boot_domain;
+}
+GKTL_INIT_HOOK(Logz4DomainSlot, install_domain_slot, gktl::InitLevel::CpuLocal);
+
+// thread.hpp（新增）
+logz4::Domain const *m_log_domain = nullptr;
+```
+
+- **线程槽不加锁**：写它的是守卫，读它的是 `vlog()`，两者都跑在这个线程自己身上。
+- **中断的判定用 `irq::current_frame()`**：IRQ 前导置位、收尾清零。树里另一个看起来更对口的
+  `PreemptionState::in_interrupt()` 读的是 `IrqNestedCounter`，而这个计数从来没有被加过，恒为假。
+  前导之前那几条入口汇编跑在线程槽下，它们不打日志。
+- **中断槽每 CPU 一个就够**：中断不离开它的 CPU，处理函数里开的作用域在返回前就关了。
+- **`boot_domain`**：CPU 还没有当前线程时（早期启动、AP 刚起来还没换上 idle 线程）的槽。
+  现在没有代码在这个窗口里进入作用域；它存在是为了让这种情况无害，而不是空指针解引用。
+- **和 `install_cpu()` 同一级别**：两个挂钩都读 CPU 本地存储，这一级之前它不存在。
+  在此之前开启、在此之后结束的作用域，靠上一条里"守卫记住自己写的槽"恢复到正确的地方。
+
+**参照**
+- Linux 没有等价物；最接近的是 `current` 上的每任务状态（例如 `current->comm`）配合
+  `in_interrupt()` 区分上下文——这里正是这个组合。
+- Rust `tracing` 的当前 span 是线程局部的，同一个理由：上下文跟着执行线索走，不跟着 CPU。
+
+**验证**
+- 全量构建通过；clang-tidy 对 `kernel.cpp` 无告警（`IRQ_DOMAIN` 按树里 CPU_LOCAL 的惯例大写，窄 NOLINT）。
+- 临时实验（未提交）：让 kshell 线程整个生命周期都在 `LogDomain<"kshell">` 里，它每 10 ms 在里面睡一次。
+  `kernel.dev.dbg_1.obi` 上跑到提示符再敲三条命令：日志里 155024 行 `I'm Thread N`（其它 CPU 上的测试线程）
+  和定时器中断的 `Exception[apic timer]` trace 行，**没有一行**带 `(kshell)`；带 `(kshell)` 的 6 行全部
+  来自 kshell 线程自己，其中两行 `VMO Commit Action` 是它自己线程上的缺页——动态作用域本该如此。
+  用库默认的单槽，这 15 万行都会被标成 `(kshell)`。
+- 实验还原后 `kernel.dev.obi` 三行检查都在。
+
+**故意没做**
+- **没有去修 `IrqNestedCounter` 从不递增的问题。** 那是中断/调度子系统的事，不在这一条的范围里；
+  这里只是不依赖它。
+- **异常（缺页、#GP）不算中断上下文**，它们记在当前线程的域下。异常是线程自己引起的，
+  归到线程正在做的事情下面是对的。

@@ -33,6 +33,10 @@
 #include <ustl/rc.hpp>
 #include <ustl/util/enum_bits.hpp>
 
+namespace logz4 {
+class Domain;
+} // namespace logz4
+
 namespace ours {
 namespace object {
     class ProcessDispatcher;
@@ -362,6 +366,13 @@ namespace task {
             return m_memory_allocation_state;
         }
 
+        /// The slot logz4 keeps this thread's current log domain in; see
+        /// m_log_domain.
+        FORCE_INLINE
+        auto log_domain() -> logz4::Domain const *& {
+            return m_log_domain;
+        }
+
         FORCE_INLINE
         auto check_kill_signal() const -> bool {
             return !!(m_signals & ThreadSignals::Kill);
@@ -562,6 +573,18 @@ namespace task {
         TaskState m_task_state;
         WaiterState m_waiter_state;
         mm::MemoryAllocationState m_memory_allocation_state;
+
+        /// The logz4::LogDomain scope this thread is in, or null: what every
+        /// line it logs through the free functions is attributed to.
+        ///
+        /// Per thread and not per CPU, because a thread can sleep inside a
+        /// scope -- kshell does, waiting on the serial port -- and whatever
+        /// runs on its CPU meanwhile has not entered it. Unguarded: the
+        /// thread itself is the only writer (the guard runs on it) and the
+        /// only reader (so does vlog()). An interrupt that arrives while the
+        /// thread is in a scope neither reads nor writes this; it gets a slot
+        /// of its own (kernel/lib/logz4/kernel.cpp).
+        logz4::Domain const *m_log_domain = nullptr;
 
         /// The wait queues this thread owns: the outgoing edges of its node in
         /// the profile inheritance graph.

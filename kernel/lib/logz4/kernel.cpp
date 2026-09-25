@@ -3,10 +3,13 @@
 #include <ours/start.hpp>
 
 #include <logz4/clock.hpp>
+#include <logz4/domain.hpp>
 #include <logz4/log.hpp>
 
 #if defined(ARCH_X86)
+#include <ours/irq/mod.hpp>
 #include <ours/mm/cpu_local.hpp>
+#include <ours/task/thread.hpp>
 
 #include <atomic>
 
@@ -56,6 +59,49 @@ auto read_cpu() -> u32 {
 auto install_cpu() -> void {
     logz4::set_cpu(read_cpu);
 }
+
+/// The log domain of whatever is handling an interrupt on this CPU.
+///
+/// An interrupt borrows the stack of the thread it lands on but none of its
+/// context: a timer tick that arrives while kshell sits in its LogDomain is
+/// not kshell speaking. So it neither reads nor writes the thread's slot.
+/// One per CPU is enough because an interrupt never leaves its CPU, and a
+/// LogDomain opened inside a handler is closed before the handler returns.
+///
+/// Upper-case like every other CPU_LOCAL in the tree, hence the NOLINT.
+CPU_LOCAL
+logz4::Domain const *IRQ_DOMAIN; // NOLINT(readability-identifier-naming)
+
+/// Before this CPU has a current thread -- early boot, and an AP between
+/// coming up and adopting its idle thread -- there is no per-thread slot to
+/// use. Nothing in that window enters a LogDomain today; the slot exists so
+/// that doing so is harmless rather than a null dereference.
+logz4::Domain const *boot_domain = nullptr;
+
+/// logz4's current-domain slot, per execution context (see
+/// logz4::set_domain_slot()): the interrupt's, while one is being handled;
+/// otherwise the running thread's.
+///
+/// "Handling an interrupt" is read off irq::current_frame(), which the IRQ
+/// preamble sets and the postamble clears. That is the only such signal the
+/// tree keeps -- PreemptionState's IrqNestedCounter is never incremented, so
+/// in_interrupt() is always false. The few instructions of entry glue
+/// before the preamble run under the thread's slot; they do not log.
+auto domain_slot() -> logz4::Domain const *& {
+    if (ours::irq::current_frame() != nullptr) {
+        return ours::mm::CpuLocal::access(IRQ_DOMAIN);
+    }
+    if (auto *const thread = ours::task::Thread::Current::get(); thread != nullptr) {
+        return thread->log_domain();
+    }
+    return boot_domain;
+}
+
+/// Same level as install_cpu() and for the same reason: both hooks read
+/// CPU-local storage, which does not exist before this level.
+auto install_domain_slot() -> void {
+    logz4::set_domain_slot(domain_slot);
+}
 } // namespace
 
 auto logz4::emergency_write(char const *s, usize n) -> void {
@@ -70,6 +116,7 @@ auto init_bootstrap_logging() -> void {
 } // namespace ours
 
 GKTL_INIT_HOOK(Logz4Cpu, install_cpu, gktl::InitLevel::CpuLocal);
+GKTL_INIT_HOOK(Logz4DomainSlot, install_domain_slot, gktl::InitLevel::CpuLocal);
 #else
 namespace ours {
 auto init_bootstrap_logging() -> void {}
