@@ -300,3 +300,107 @@ Zircon `VmMapping::DestroyLockedObject()`（`zircon/kernel/vm/vm_mapping.cc` 约
 
 **故意没做**
 `VmAreaOrMapping::m_aspace` 不置空：地址空间销毁后，仍可能有人经 VMAR 句柄拿着区域对象，它们加锁要经过这个指针。
+
+## VmAspace::destroy：进程 Dead 时拆掉它的地址空间，析构时从全局链表摘下（2026-09-25）
+
+**文件**
+- `kernel/mm/vm_aspace.cpp`、`include/ours/mm/vm_aspace.hpp` — 新增 `destroy()`、`m_destroyed`、`m_name`/`name()`；`~VmAspace()` 从 `ALL_ASPACE_LIST` 摘下；`page_fault_internal()` 对已拆的地址空间回 NotFound
+- `kernel/mm/vm_area.cpp` — `VmArea::destroy()` 遇到映射拆除失败不再中途返回
+- `kernel/object/process_dispatcher.cpp` — `finish_dead_transition()` 先调 `m_aspace->destroy()`，再清句柄表
+- `docs/repairs/260924/object.md` — 第 2 条收窄为"只剩页表页不释放"
+
+**症状**
+进程死后，它的地址空间从来不会被释放：映射、程序映像、栈、只被它们引用的 VMO 的每一页，全部留着。每杀一个进程泄漏一份。
+
+**原因**
+三个引用环，谁也拆不开：
+1. `VmAspace::m_root_vma` 持有根 VMA，根 VMA 的 `m_aspace` 持有地址空间；
+2. 每个映射、每个子区域都持有 `Arc<VmAspace>`，它们又被根 VMA 的集合持有；
+3. `m_last_fault` 持有一个映射，映射持有地址空间。
+
+`~VmAspace()` 是空的，而且从来没有运行过——也就从来没人发现它还挂在 `ALL_ASPACE_LIST` 上：那个钩子是 SafeLink，
+带着链接析构会 `__builtin_trap`。
+
+**改法**
+改前：
+
+```cpp
+VmAspace::~VmAspace() {}
+```
+
+```cpp
+auto ProcessDispatcher::finish_dead_transition() -> void {
+    auto const closed = m_handle_table->clean();
+    ...
+```
+
+改后：
+
+```cpp
+auto VmAspace::destroy() -> Status {
+    ...
+    ustl::Arc<VmArea> root;
+    ustl::Arc<VmMapping> last_fault;
+    Status status;
+    {
+        Guard guard{m_lock};
+        if (m_destroyed) {
+            return Status::BadState;
+        }
+        m_destroyed = true;
+
+        last_fault = ustl::move(m_last_fault);
+        status = m_root_vma->destroy();
+        root = ustl::move(m_root_vma);
+    }
+    ...
+}
+
+VmAspace::~VmAspace() {
+    DEBUG_ASSERT(!m_root_vma && !m_last_fault, ...);
+    Guard guard{ALL_ASPACE_LIST_LOCK};
+    if (m_managed_hook.is_linked()) {
+        static_cast<void>(ALL_ASPACE_LIST.erase(ALL_ASPACE_LIST.iterator_to(*this)));
+    }
+}
+```
+
+```cpp
+auto ProcessDispatcher::finish_dead_transition() -> void {
+    static_cast<void>(m_aspace->destroy());
+
+    auto const closed = m_handle_table->clean();
+    ...
+```
+
+- **打断环**：在锁内拆掉根 VMA 下的整棵树，再把 `m_root_vma` 与 `m_last_fault` 移出；移出的引用在放锁之后才释放，因为释放
+  可能跑 `~VmMapping` 并释放 VMO 的页。
+- **页表不在这里释放**：`destroy()` 通常跑在进程最后一个线程上，CR3 还指着这张表。页表留给对象真正析构的时候——那时最后
+  一个引用在 DPC 线程上放掉，这颗 CPU 早已切走（下一步）。Zircon 同样这样拆成两半。
+- **`m_aspace` 保留到进程对象析构**：还在跑的最后一个线程经 `aspace()` 拿它。
+- **VMA 各自的 `Arc<VmAspace>` 不置空**：VMAR 句柄可能比进程活得久，区域加锁要经过它；这样的句柄看到区域已不活跃，所有操作回 BadState。
+- **`VmArea::destroy()` 不再中途返回**：它原来在第一个映射拆除失败时就返回，剩下的树照样映射着、活着，而地址空间以为自己拆完了。
+  现在报告第一个错误并继续；`VmMapping::destroy()` 无论 unmap 成败都会把映射从集合里摘下，所以循环总有进展。
+
+**参照**
+- Zircon `ProcessDispatcher::FinishDeadTransition()`（`zircon/kernel/object/process_dispatcher.cc:547`）：先拆地址空间，再处理句柄表。
+- Zircon `VmAspace::Destroy()`（`zircon/kernel/vm/vm_aspace.cc:303` 起）：`DestroyLocked()` 根 VMAR、`root_vmar_.reset()`，不释放页表；
+  `~VmAspace`（同文件 :270-293）先从全局链表摘下，再 `arch_aspace_.Destroy()`，:285-289 的注释写明了为什么页表要留到析构。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无新告警。
+- dbg_1（默认配置、`SMP=1`）：11 个探针和 shell 各打出一行 `mm: aspace '…' destroyed`，`probes done (11 killed, 0 survived)`；
+  dev：`init: shell closed its channel`。
+- 临时在 `~VmAspace()` 里打一行日志（已去掉）：11 个 fault_probe 与两个镜像里的 shell 的析构都跑了，都紧跟在各自
+  `process … destroyed` 之后，从 `ALL_ASPACE_LIST` 摘下时没有 trap——这是 `~VmAspace` 在本树里第一次运行。
+- 观察到的一个现象：dbg_1 里落在 cpu0 上的探针，从线程退出到 `aspace destroyed` 要 0.6～1.5 秒，其余 CPU 上约 10 毫秒。
+  时间花在日志上：dbg_1 以 trace 级别每释放一帧打一行 `Free frame`（每个探针约 22 行），而 cpu0 同时被约一万行
+  `I'm Thread` 的调试输出占着，每行要等 10～100 毫秒。拆除本身只有这 22 页的工作量。
+
+**故意没做**
+- 页表页的释放：下一步，`~VmAspace()` 里的 `ArchVmAspace::destroy()`。
+- 在锁外释放 VMO 的页：今天 `VmMapping::destroy()` 在地址空间的自旋锁下放掉 `m_vmo`，最后一个引用会在锁内释放它的页。
+  这条路上没有会睡眠的锁，正确；只是锁持有时间随映射大小增长。等地址空间的锁换成可睡眠的锁（`docs/repairs/260925/mm.md`
+  第 1 条）时一起处理。
+- 从未 Running 过就被丢掉的进程（`create()` 的失败路径、`launch()` 的提前返回）不会走到 `destroy()`，它们的地址空间照旧因为
+  引用环而泄漏。要等进程对象有 `on_zero_handles()`（计划 K23）才有地方统一处理。

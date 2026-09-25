@@ -637,6 +637,7 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
 auto VmArea::destroy() -> Status {
     m_canary.verify<Self>();
 
+    auto first_error = Status::Ok;
     ustl::Arc<Self> curr(this);
     while (curr) {
         while (!curr->m_subvmas.empty()) {
@@ -649,9 +650,18 @@ auto VmArea::destroy() -> Status {
                 continue;
             }
 
-            auto status = aom->destroy();
-            if (Status::Ok != status) {
-                return status;
+            // Carried on past a failure, and the first one reported. It used to
+            // return here, which left the rest of the tree mapped and alive --
+            // under an address space that went on to consider itself torn
+            // down. Carrying on always makes progress: VmMapping::destroy()
+            // takes the mapping out of this set whatever its unmap did, and
+            // the one answer that leaves it linked -- BadState, already
+            // destroyed -- cannot come from a mapping still in a set.
+            if (auto const status = aom->destroy(); Status::Ok != status) {
+                DEBUG_ASSERT(status != Status::BadState, "a destroyed mapping was still linked");
+                if (Status::Ok == first_error) {
+                    first_error = status;
+                }
             }
         }
 
@@ -674,7 +684,7 @@ auto VmArea::destroy() -> Status {
     }
 
     m_num_mappings = 0;
-    return Status::Ok;
+    return first_error;
 }
 
 auto VmArea::contains(VirtAddr addr) const -> bool {

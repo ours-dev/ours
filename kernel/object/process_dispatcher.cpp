@@ -270,14 +270,15 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 /// Dead under the lock only on the Running/Dying -> Dead edge, so only one of
 /// them ever gets here.
 ///
-/// For now, one part of Zircon's FinishDeadTransition(): the handle table is
-/// emptied, so every object the process held a handle to sees it go now --
-/// the peer of each channel it held reads PEER_CLOSED -- rather than whenever
-/// the process object itself is destroyed. Outside the lock because closing a
-/// handle can run the object's on_zero_handles(), which takes that object's
-/// lock and must not nest inside this one. Tearing the address space down and
-/// raising TERMINATED, the other parts, come in later steps
-/// (docs/design/260924/userspace-filesystem.md, K6 and K7).
+/// Two parts of Zircon's FinishDeadTransition() so far. The address space is
+/// torn down, so the process's memory comes back now rather than never. And
+/// the handle table is emptied, so every object the process held a handle to
+/// sees it go now -- the peer of each channel it held reads PEER_CLOSED --
+/// rather than whenever the process object itself is destroyed. Outside the
+/// lock because both can run other objects' destructors (a VMO's, on
+/// unmapping; on_zero_handles(), on closing), which take those objects' locks
+/// and must not nest inside this one. Raising TERMINATED, the third part,
+/// comes in a later step (docs/design/260924/userspace-filesystem.md, K7).
 ///
 /// The table object itself stays: it is empty and lives on with the process,
 /// which is harmless and keeps handle_table() valid for anyone still holding
@@ -287,6 +288,13 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 /// table goes through ShareableProcessState::DecrementShareCount() and
 /// HandleTable::Clean().
 auto ProcessDispatcher::finish_dead_transition() -> void {
+    // The address space first, as in Zircon: every mapping goes, and every
+    // VMO only this process referenced -- its image, its stack -- with it.
+    // m_aspace itself is kept until this object is destroyed: the process's
+    // threads reach it through here (aspace()), and the last of them is
+    // still running, on these page tables, as this runs.
+    static_cast<void>(m_aspace->destroy());
+
     auto const closed = m_handle_table->clean();
     log::debug("object: process '{}' (koid {}) dead, {} handles closed", name(), koid(), closed);
 }

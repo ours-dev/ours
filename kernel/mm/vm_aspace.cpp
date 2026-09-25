@@ -37,10 +37,28 @@ VmAspace::VmAspace(VirtAddr base, usize size, Kind kind, VmasFlags flags, char c
     , m_flags(flags)
     , m_base(base)
     , m_size(size)
+    , m_name(name)
     , m_arch(base, size, kind)
     , m_root_vma() {}
 
-VmAspace::~VmAspace() {}
+/// The last reference is gone, which for a user aspace can only happen after
+/// destroy(): until then the root VMA and every mapping under it hold one.
+///
+/// Out of ALL_ASPACE_LIST first, under its lock. The hook is a SafeLink, whose
+/// destructor traps on a node still linked -- and nothing took an aspace off
+/// the list before, because until destroy() existed no aspace was ever
+/// destroyed. Zircon's ~VmAspace erases from its list at the same point.
+///
+/// The page tables are not freed here yet; ArchVmAspace frees nothing on its
+/// own (a later step).
+VmAspace::~VmAspace() {
+    DEBUG_ASSERT(!m_root_vma && !m_last_fault,
+                 "aspace '{}' destroyed without destroy() -- or a reference cycle broke", name());
+    Guard guard{ALL_ASPACE_LIST_LOCK};
+    if (m_managed_hook.is_linked()) {
+        static_cast<void>(ALL_ASPACE_LIST.erase(ALL_ASPACE_LIST.iterator_to(*this)));
+    }
+}
 
 /// The range an address space of |kind| covers.
 ///
@@ -142,6 +160,56 @@ auto VmAspace::init() -> Status {
     return Status::Ok;
 }
 
+/// Unmaps everything in this user address space and lets go of the tree.
+///
+/// Called as the process that owns it becomes Dead, from
+/// ProcessDispatcher::finish_dead_transition(): usually on the process's last
+/// thread, whose CR3 still points at these page tables. So nothing is freed
+/// that the CPU may still walk -- the mappings go, and with them the VMOs only
+/// they referenced (a program's image, its stack), but the page-table pages
+/// stay until the object itself is destroyed, by which time that thread has
+/// been switched away from for the last time. Zircon splits it the same way:
+/// VmAspace::Destroy() tears the regions down, ~VmAspace frees the tables
+/// (the comment in its vm_aspace.cc explains the running thread).
+///
+/// Before this, nothing ever destroyed an address space, and nothing could:
+/// the root VMA holds an Arc to its aspace and the aspace holds the root VMA
+/// (every mapping holds one too), and m_last_fault kept a mapping alive. So a
+/// dead process's memory -- all of it -- was never returned. Moving the root
+/// VMA and the last-fault cache out is what breaks those cycles; they are
+/// released after the lock, because releasing them can run ~VmMapping and
+/// free a VMO's pages.
+///
+/// The VMAs keep their own Arc<VmAspace>: a VMAR handle can outlive the
+/// process, and a region takes its lock through that pointer. Such a handle
+/// finds its region inactive and every operation answers BadState.
+auto VmAspace::destroy() -> Status {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(is_user(), "only a user address space is ever destroyed");
+
+    ustl::Arc<VmArea> root;
+    ustl::Arc<VmMapping> last_fault;
+    Status status;
+    {
+        Guard guard{m_lock};
+        if (m_destroyed) {
+            return Status::BadState;
+        }
+        m_destroyed = true;
+
+        last_fault = ustl::move(m_last_fault);
+        status = m_root_vma->destroy();
+        root = ustl::move(m_root_vma);
+    }
+
+    if (Status::Ok != status) {
+        log::warn("mm: tearing down aspace '{}' left something mapped: {}", name(),
+                  to_string(status));
+    }
+    log::debug("mm: aspace '{}' destroyed", name());
+    return status;
+}
+
 /// Because of cyclic dependency between VmAspace and VmArea, there is not yet
 /// a better way to inline it.
 auto VmAspace::root_vma() -> ustl::Arc<VmArea> {
@@ -163,6 +231,13 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
         {
             // Grabs the aspace's lock to prevent another operation on it from users.
             Guard guard{get_lock()};
+
+            // Nothing is mapped in a destroyed aspace, and its root VMA is gone.
+            // No thread of a dead process runs user code, so this is not
+            // reached in practice; Zircon asserts it (VmAspace::PageFault()).
+            if (m_destroyed) {
+                return Status::NotFound;
+            }
 
             // m_last_fault is an empty Arc until the first lookup succeeds, so
             // the cache test has to ask whether there is a mapping at all

@@ -14,6 +14,7 @@
 
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
+#include <ktl/name.hpp>
 #include <ktl/result.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/rc.hpp>
@@ -94,6 +95,19 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto root_vma() -> ustl::Arc<VmArea>;
 
+    /// Tears down everything mapped in this user address space; see the
+    /// definition. Once only; the object itself lives on until its last
+    /// reference goes.
+    ///
+    /// Zircon counterpart: VmAspace::Destroy().
+    auto destroy() -> Status;
+
+    [[nodiscard]]
+    FORCE_INLINE
+    auto name() const -> char const * {
+        return m_name.data();
+    }
+
     VmAspace(VirtAddr, usize, Kind, Flags, char const *);
     ~VmAspace();
 
@@ -118,6 +132,13 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     VirtAddr m_base;
     VirtAddr m_size;
     sync::SpinLock m_lock;
+
+    /// Set by destroy(), under m_lock. A destroyed aspace answers no more
+    /// faults: its root VMA is gone.
+    bool m_destroyed = false;
+
+    /// For diagnostics. The constructor used to take a name and drop it.
+    ktl::Name<32> m_name;
 
     /// Architecture specific context.
     ArchVmAspace m_arch;
