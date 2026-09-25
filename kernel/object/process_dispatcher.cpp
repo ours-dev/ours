@@ -154,28 +154,36 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
 auto ProcessDispatcher::kill(i64 const retcode) -> void {
     verify_canary();
 
-    Guard guard{get_lock()};
-    if (m_state == State::Dead || m_state == State::Dying) {
-        return;
-    }
-    m_retcode = retcode;
+    auto became_dead = false;
+    {
+        Guard guard{get_lock()};
+        if (m_state == State::Dead || m_state == State::Dying) {
+            return;
+        }
+        m_retcode = retcode;
 
-    // No thread to wait for: straight to Dead, as Zircon does. What Zircon
-    // does next -- FinishDeadTransition(), signalling TERMINATED and tearing
-    // the address space down -- is P1-B.
-    if (m_thread_list.empty()) {
-        m_state = State::Dead;
-        return;
+        // No thread to wait for: straight to Dead, as Zircon does, and the
+        // rest of dying happens below, outside the lock.
+        if (m_thread_list.empty()) {
+            m_state = State::Dead;
+            became_dead = true;
+        } else {
+            // Dying, and every thread told. Under the lock that
+            // attach_thread() and detach_thread() take, so no thread can be
+            // added after this, and none is half-way out of the list while
+            // this walks it. Each kill only raises a signal: the threads act
+            // on it themselves, on their way back to ring 3, which is also why
+            // this can hold a sleeping lock while it runs. The last of them to
+            // leave finishes the process (detach_thread()).
+            m_state = State::Dying;
+            for (auto &thread: m_thread_list) {
+                thread.kill();
+            }
+        }
     }
 
-    // Dying, and every thread told. Under the lock that attach_thread() and
-    // detach_thread() take, so no thread can be added after this, and none is
-    // half-way out of the list while this walks it. Each kill only raises a
-    // signal: the threads act on it themselves, on their way back to ring 3,
-    // which is also why this can hold a sleeping lock while it runs.
-    m_state = State::Dying;
-    for (auto &thread: m_thread_list) {
-        thread.kill();
+    if (became_dead) {
+        finish_dead_transition();
     }
 }
 
@@ -185,14 +193,61 @@ auto ProcessDispatcher::kill(i64 const retcode) -> void {
 /// list sees each thread either still listed and alive or gone entirely --
 /// never listed but already without a kernel thread.
 ///
-/// Zircon counterpart: ProcessDispatcher::RemoveThread().
+/// The last thread out makes the process Dead, whether it was killed (Dying)
+/// or simply the last to finish (Running). This used to leave the state
+/// alone: only "killed with no threads" ever reached Dead, and a process whose
+/// threads all exited stayed Running forever, its handles open until the last
+/// reference to the process object happened to go -- which a handle to the
+/// process held anywhere, including in its own table, could put off for good.
+///
+/// Zircon counterpart: ProcessDispatcher::RemoveThread(), which sets DEAD when
+/// the list empties and calls FinishDeadTransition() after dropping the lock.
 auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
     verify_canary();
 
-    Guard guard{get_lock()};
-    thread.mark_dead();
-    static_cast<void>(m_thread_list.erase(m_thread_list.iterator_to(thread)));
+    auto became_dead = false;
+    {
+        Guard guard{get_lock()};
+        thread.mark_dead();
+        static_cast<void>(m_thread_list.erase(m_thread_list.iterator_to(thread)));
+        if (m_thread_list.empty()) {
+            DEBUG_ASSERT(m_state == State::Running || m_state == State::Dying,
+                         "a process with threads is Running or Dying");
+            m_state = State::Dead;
+            became_dead = true;
+        }
+    }
+
+    if (became_dead) {
+        finish_dead_transition();
+    }
     return Status::Ok;
+}
+
+/// What a process does once it is Dead, outside its lock and exactly once:
+/// both ways in (kill() with no threads, detach_thread() of the last one) set
+/// Dead under the lock only on the Running/Dying -> Dead edge, so only one of
+/// them ever gets here.
+///
+/// For now, one part of Zircon's FinishDeadTransition(): the handle table is
+/// emptied, so every object the process held a handle to sees it go now --
+/// the peer of each channel it held reads PEER_CLOSED -- rather than whenever
+/// the process object itself is destroyed. Outside the lock because closing a
+/// handle can run the object's on_zero_handles(), which takes that object's
+/// lock and must not nest inside this one. Tearing the address space down and
+/// raising TERMINATED, the other parts, come in later steps
+/// (docs/design/260924/userspace-filesystem.md, K6 and K7).
+///
+/// The table object itself stays: it is empty and lives on with the process,
+/// which is harmless and keeps handle_table() valid for anyone still holding
+/// the process.
+///
+/// Zircon counterpart: ProcessDispatcher::FinishDeadTransition(), where the
+/// table goes through ShareableProcessState::DecrementShareCount() and
+/// HandleTable::Clean().
+auto ProcessDispatcher::finish_dead_transition() -> void {
+    auto const closed = m_handle_table->clean();
+    log::debug("object: process '{}' (koid {}) dead, {} handles closed", name(), koid(), closed);
 }
 
 } // namespace ours::object

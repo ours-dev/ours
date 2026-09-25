@@ -9,10 +9,21 @@ HandleTable::HandleTable()
     : m_koid(KoIdGenerator::generate()), m_random(0), m_lock(), m_handles(), m_count(0) {}
 
 HandleTable::~HandleTable() {
-    // Every handle still here is closed now. One at a time, each taken out
-    // under the lock and destroyed after it: closing the last handle to an
-    // object runs its on_zero_handles(), which must not happen under a table
-    // lock (see the class comment).
+    static_cast<void>(clean());
+}
+
+/// Closes every handle in the table, one at a time: each is taken out under
+/// the lock and destroyed after it, because closing the last handle to an
+/// object runs its on_zero_handles(), which must not happen under a table
+/// lock (see the class comment).
+///
+/// Zircon's HandleTable::Clean() swaps the whole list out under the lock and
+/// then destroys it outside, in one pass each. One at a time here because a
+/// Handle is linked by an intrusive hook into exactly one list, and there is
+/// no second list type to swap into; the cost is a lock round trip per handle,
+/// on a path taken once per process.
+auto HandleTable::clean() -> u32 {
+    u32 closed = 0;
     for (;;) {
         ustl::Box<Handle> handle;
         {
@@ -28,7 +39,9 @@ HandleTable::~HandleTable() {
             raw.dispatcher()->cancel(&raw);
             handle = ustl::Box<Handle>::from_raw(&raw);
         }
+        closed += 1;
     }
+    return closed;
 }
 
 auto HandleTable::value_of(Handle const &handle) const -> HandleValue {

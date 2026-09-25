@@ -67,6 +67,14 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// Installs |handle| and returns its value.
     auto add(ustl::Box<Handle> handle) -> HandleValue;
 
+    /// Closes every handle in the table and says how many there were. The
+    /// table stays usable -- it is simply empty -- which is what a process
+    /// needs when it dies: its handles go at once, while the table itself
+    /// lives on with the process object.
+    ///
+    /// Zircon counterpart: HandleTable::Clean().
+    auto clean() -> u32;
+
     /// Takes the handle named |value| out of this table; empty if |value|
     /// names nothing here. The caller owns the handle now, and destroying it
     /// -- which closes it -- happens outside this table's lock.

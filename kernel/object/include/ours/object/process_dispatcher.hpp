@@ -147,6 +147,10 @@ class ProcessDispatcher: public ProcessDispatcherBase {
                       ustl::Arc<mm::VmAspace> aspace, ustl::Arc<HandleTable> handle_table);
     ~ProcessDispatcher() override;
 
+    /// The work of dying that must not run under the process lock; see the
+    /// definition.
+    auto finish_dead_transition() -> void;
+
     Self *m_parent;
 
     /// Guarded by get_lock(), together with m_thread_list. The one read
