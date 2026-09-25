@@ -237,3 +237,92 @@ Zircon `x86_reset_tss_io_bitmap()`（`kernel/arch/x86/ioport.cc`，`bitmap_set` 
   程序的错杀掉进程，是本内核的偏离。CET 没有开启，今天不会有 #CP。
 - 同一节说"地址空间解决不了的 #PF → FatalPageFault"。有一个缺口：`x86_handle_page_fault()` 丢掉了错误码的取指位，
   从已映射但不可执行的用户页取指会被地址空间当成伪缺页"解决"，无限重试而不是杀进程。已交接（mm 的取指原因与权限检查）。
+
+## 重调度 IPI 只发一次 EOI，由分发器发（2026-09-24）
+
+**文件**
+- `kernel/arch/x86/kernel/mp.cpp` — `x86_handle_ipi_resched()` 去掉自己发的 `apic_issue_eoi()`，补上为什么不在这里发的注释
+
+**症状**
+潜伏，当前触发不到。每个 `IrqVec::IpiResched` 都发两次 EOI：`x86_handle_ipi_resched()` 开头一次，
+`x86_dispatch_exception()` 的 `case IrqVec::IpiResched:` 在它返回后又一次。今天中断处理全程关中断、不嵌套，
+第二次 EOI 时 ISR 里没有别的位，写 EOI 寄存器什么也不发生，所以看不出来。
+一旦某个中断处理里重新开中断（比如平台 IRQ 处理为了等慢设备而开中断），
+而重调度 IPI 正好嵌在里面，外层那个中断就会被提前退役。
+
+**原因**
+EOI 不带向量号。LAPIC 收到 EOI 时清掉的是 ISR 里**当前优先级最高**的那一位——它不知道、也不关心是哪个处理函数写的。
+嵌套时 ISR 里同时有两位：外层（比如一个平台 IRQ）和内层的 IpiResched（向量更高，所以优先级更高）。
+第一次 EOI 清掉 IpiResched，这是对的；第二次 EOI 此时看到的最高位已经是**外层那个**，于是把它也清了，
+而外层的处理函数还在跑。后果：
+- 外层向量所在的优先级类不再被 ISR 屏蔽，同一个源（或同类更低的源）可以在它的处理函数返回前再次打进来，
+  处理函数被自己重入；
+- 对电平触发的 IOAPIC 源，EOI 还会经 LAPIC 广播给 IOAPIC 清 Remote-IRR，设备还没被服务完就重新投递；
+- 外层处理函数最后自己那次 EOI 又会去清"当时最高的那位"，错位一路传下去——每多一次 EOI，就有一个中断被错误地退役。
+
+三个 IPI 向量里只有 IpiResched 这样：IpiGeneric、IpiInterrupt 的处理函数都不发 EOI，统一由分发器发。
+两种约定混在一起本身就是隐患——读分发器的人会以为每个 case 各发一次，读处理函数的人会以为 EOI 已经在里面了。
+
+**改法**
+改前（`mp.cpp`）：
+
+```cpp
+auto x86_handle_ipi_resched() -> void {
+    apic_issue_eoi();
+
+    auto const this_cpu = Cpu::id();
+    log::trace("IPI-Resched on CPU[{}]", this_cpu);
+
+    task::Thread::Current::preemption_state().add_pending();
+}
+```
+
+改后：
+
+```cpp
+/// No EOI here: x86_dispatch_exception() issues it after this returns, as it
+/// does for every other IPI vector. An EOI retires whichever vector is highest
+/// in service, not "this one", so a second EOI from here would retire the
+/// interrupt this IPI nested in -- letting its source fire again while its
+/// handler is still running. Zircon's mp_mbx_reschedule_irq() likewise leaves
+/// the EOI to the X86_INT_IPI_RESCHEDULE case in x86_exception_handler().
+auto x86_handle_ipi_resched() -> void {
+    auto const this_cpu = Cpu::id();
+    log::trace("IPI-Resched on CPU[{}]", this_cpu);
+
+    task::Thread::Current::preemption_state().add_pending();
+}
+```
+
+分发器（`faults.cpp`）不动，三个 IPI case 都是"调处理函数，再 `apic_issue_eoi()`"：
+
+```cpp
+            case IrqVec::IpiResched:
+                x86_handle_ipi_resched();
+                apic_issue_eoi();
+                break;
+```
+
+被否掉的方案：反过来，删掉分发器里的那次、让每个处理函数自己发。否掉是因为 EOI 属于"中断控制器"这一层，
+处理函数属于"这个 IPI 要做什么"这一层（`x86_handle_ipi_generic()` 转手就交给了与架构无关的 `IpiService`），
+把 EOI 放进去等于让每个新 IPI 的作者都记得一件和他的逻辑无关的事；而且 Zircon 也是分发器发。
+
+EOI 从 `add_pending()` 之前挪到了之后，这不改变行为：此时 IF=0，EOI 早一点晚一点，下一个 IPI 都要等 `iretq` 开中断才能进来。
+
+**参照**
+Zircon `x86_exception_handler()`（`kernel/arch/x86/exceptions_c.cc`）里的 `case X86_INT_IPI_RESCHEDULE:`：
+先调 `mp_mbx_reschedule_irq()`，再 `apic_issue_eoi()`；`mp_mbx_reschedule_irq()`（`kernel/kernel/mp.cc`）本身只置
+`PreemptSetPending()`，不碰 APIC。`X86_INT_IPI_GENERIC` / `X86_INT_IPI_INTERRUPT` 同一写法。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 构建通过；`clang-format` 无改动；`clang-tidy -p out/bringup.x86` 在改动行上无新诊断。
+- `kernel.dev.obi` 启动约 16 s：`init: shell says "pong"`、`shell: bad-pointer checks passed` 都在，无 panic。
+- `kernel.dev.dbg_1.obi` 启动约 16 s：`shell: bad-pointer checks passed` 在；日志里 `IPI-Resched` /
+  `reschedule ipi` 共 12449 行，四个 CPU 上的两个测试线程持续交替运行，没有挂死或丢调度。
+  （这个镜像由内核直接起 shell，没有 init，所以本来就不打 "pong"。）
+- 嵌套场景本身未实测：今天没有会在中断处理里开中断的路径，造不出 ISR 里两位同时在的状态。
+
+**故意没做**
+- 没把分发器里各 case 的 `apic_issue_eoi()` 收成 switch 之后的一处：ApicTimer 的 EOI 在 `apic_handle_timer_irq()`
+  里面（只发一次，没有重复），ApicSpurious 按架构不能 EOI，IpiSuspend 永不返回，收拢要另起一次改动并逐个核对。
+- `PlatformIrqMin...Max` 那一支的 `TODO: Replace it with IrqChip::issue_eoi()` 不在本次范围。

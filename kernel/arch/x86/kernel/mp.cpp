@@ -78,9 +78,13 @@ auto x86_handle_ipi_generic() -> void {
 
 auto x86_handle_ipi_interrupt() -> void {}
 
+/// No EOI here: x86_dispatch_exception() issues it after this returns, as it
+/// does for every other IPI vector. An EOI retires whichever vector is highest
+/// in service, not "this one", so a second EOI from here would retire the
+/// interrupt this IPI nested in -- letting its source fire again while its
+/// handler is still running. Zircon's mp_mbx_reschedule_irq() likewise leaves
+/// the EOI to the X86_INT_IPI_RESCHEDULE case in x86_exception_handler().
 auto x86_handle_ipi_resched() -> void {
-    apic_issue_eoi();
-
     auto const this_cpu = Cpu::id();
     log::trace("IPI-Resched on CPU[{}]", this_cpu);
 
