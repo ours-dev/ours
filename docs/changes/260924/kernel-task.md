@@ -619,3 +619,71 @@ Ready 的线程下一次被调度上 CPU 时必然从内核出发回到 ring 3�
 - `NmiNestedCounter` 处境完全相同（只读不写；NMI 路径按设计不做任何簿记），但任务只涉及 IRQ 计数，没有一并删，留在 repairs。
 - Zircon 的 `blocking_disallowed`（在可能睡眠的锁里断言"不在中断里"）ours 还没有，另记在 repairs；它不属于 `PreemptionState`，
   而且 ours 的 #PF 目前在前导/尾声之间、关抢占关中断地处理，照搬之前得先像 Zircon `x86_pfe_handler()` 那样在缺页路径里放开。
+
+## 删掉 `NmiNestedCounter`，并写明嵌套中断的计数该放哪（2026-09-24）
+
+**文件**
+- `kernel/include/ours/task/preemption_state.hpp` — 删掉 `Tag::NmiNestedCounter` 和它的 4 位字段，`is_preemption_enabled()` 去掉对应一项；
+  `Tag` 上的注释扩成两个计数一起说，并加一段"嵌套中断服务的计数该放哪"；位号注释随之前移
+
+**症状**
+无可见症状。和上一条的 `IrqNestedCounter` 一样：只被 `is_preemption_enabled()` 读，全树没有一处写，恒为 0。
+
+**原因**
+NMI 路径按设计不做任何簿记（`arch_handle_exception()` 的注释：NMI、#DF、#MC 直接进 `x86_dispatch_exception()`，
+不跑前导/尾声）。理由是 NMI 可以落在任何地方，包括 IRQ 前导做到一半的时候，它不能去动底下那段代码正在改的状态。
+而这个字段唯一可能的写入点恰恰就是 NMI 路径——要维护它，就得推翻那条设计。Zircon 的 `x86_nmi_handler()`
+同样不碰 `PreemptionState`，只做 `kcounter_add` 和 `g_cpu_context_exchange.HandleRequest()`。
+
+Linux 确实在 `__nmi_enter()` 里 `__preempt_count_add(NMI_OFFSET + HARDIRQ_OFFSET)`，给 `in_nmi()` 用
+（printk、perf、tracing、lockdep 靠它避开 NMI 可能打断的锁）。ours 真需要"是否在 NMI 里"时，那也是一个按 CPU 的信号，
+由 NMI 路径自己置，不属于每线程的抢占字。
+
+改前：
+
+```cpp
+        return preemption_disabled_count() == 0 && eager_resched_disabled_count() == 0 &&
+               !m_counter.get<Tag::NmiNestedCounter>() && !m_counter.get<Tag::TimesliceExtension>();
+    ...
+                                     Field<Tag::NmiNestedCounter, 4, u8>,            // Bits 16..19
+                                     Field<Tag::NoReschedPreempt, 1, bool>,          // Bit 20
+                                     Field<Tag::NoReschedEager, 1, bool>,            // Bit 21
+                                     Field<Tag::TimesliceExtension, 1, bool>         // Bit 22
+```
+
+**改法**
+改后：
+
+```cpp
+        return preemption_disabled_count() == 0 && eager_resched_disabled_count() == 0 &&
+               !m_counter.get<Tag::TimesliceExtension>();
+    ...
+                                     Field<Tag::NoReschedPreempt, 1, bool>,          // Bit 16
+                                     Field<Tag::NoReschedEager, 1, bool>,            // Bit 17
+                                     Field<Tag::TimesliceExtension, 1, bool>         // Bit 18
+```
+
+**关于嵌套中断服务（计划中）为什么也不要这两个计数。** 这是删之前被问到的问题，答案写进了 `Tag` 的注释：
+
+1. 嵌套是 CPU 的属性，不是线程的。任何处理函数还在栈上时线程都切不走，所以每线程的计数只会是按 CPU 状态的镜像。
+2. 抢占这一面，禁用计数本身就会嵌套：内层处理函数退出时看到外层前导抬起的计数还在，`is_preemption_enabled()` 为假，
+   只有最外层出口会接手挂起的抢占。Linux 的同一效果来自 HARDIRQ 位：`raw_irqentry_exit_cond_resched()` 只在
+   `!preempt_count()` 时 `preempt_schedule_irq()`，内层出口时外层的 HARDIRQ 还在，所以不会调度。ours 里扮演这个角色的是
+   `PreemptionDisabledCounter`，不需要另一个计数。
+3. 嵌套真正会弄坏的是 `CURRENT_FRAME`：内层尾声写 null，外层还在跑却以为自己不在中断里（NMI 曾经这样坏过，见
+   `arch_handle_exception()` 的注释）。要做的是前导保存被替换的帧、尾声还原而不是写 null——Zircon 的
+   `int_handler_saved_state_t` 对 `blocking_disallowed` 就是这么做的；需要问"嵌套了几层"时，深度也放在 `kernel/irq`
+   里 `CURRENT_FRAME` 旁边，按 CPU。
+
+**参照**
+- `Zircon x86_nmi_handler()`（`kernel/arch/x86/exceptions_c.cc`）：不碰 `PreemptionState`。
+- `Zircon int_handler_start()` / `int_handler_finish()`（`kernel/include/kernel/interrupt.h`）：保存再还原 `blocking_disallowed`，不是直接置假。
+- `Linux __nmi_enter()`（`include/linux/hardirq.h`）；`raw_irqentry_exit_cond_resched()`（`kernel/entry/common.c`）。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 通过；clang-format 已跑；clang-tidy（经 `irq/mod.cpp` 带入头文件）无新告警。
+- 两个镜像启动：`kernel.dev.obi` 有 `init: shell says "pong"`、`shell: channel checks passed`、`shell: bad-pointer checks passed`、`--- end ---`；
+  `kernel.dev.dbg_1.obi` 有后两行和 `--- end ---`，无断言、无 panic（这个镜像不经 init，没有 pong 行，同上一条）。
+
+**故意没做**
+- 没有顺手把 `CURRENT_FRAME` 改成保存/还原：嵌套中断还没开，现在改是为不存在的调用者写代码；等做嵌套时和开中断、IRQ 栈一起做。
