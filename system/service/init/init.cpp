@@ -39,8 +39,14 @@ auto report(ou::Str const what, ours::Status const status) -> void {
 
 [[noreturn]]
 auto halt() -> void {
-    // See examples/shell/shell.cpp for why `pause` is load-bearing: C++
-    // licenses the optimiser to delete a loop with no side effects.
+    // `pause` is load-bearing, not decoration. C++'s forward-progress rule
+    // makes a loop with no side effects undefined behaviour, and clang acts on
+    // that licence: at -O2 it deletes `for (;;) {}` outright and lets control
+    // fall off the end of the function. An `asm volatile` is a side effect the
+    // optimiser must keep.
+    //
+    // init halts rather than exiting: it is the process the system's other
+    // programs are started from, and nothing yet would notice it gone.
     for (;;) {
         __asm__ volatile("pause");
     }
@@ -96,6 +102,17 @@ auto _start(ours::HandleValue const job, [[maybe_unused]] ours::VirtAddr const v
         halt();
     }
     static_cast<void>(ou::debug_line({"init: shell says \"", ou::Str(buffer, actual), "\""}));
+
+    // And then until the shell is gone. It exits when it is done, its handles
+    // close as its process dies, and this end reads PEER_CLOSED -- the one
+    // sign of a child's end there is until a process handle and TERMINATED
+    // come with the user-space loader.
+    status = ou::object_wait_one(here, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
+    if (status != Status::Ok) {
+        report("init: waiting for the shell to finish = ", status);
+        halt();
+    }
+    static_cast<void>(ou::debug_line("init: shell closed its channel"));
 
     halt();
 }

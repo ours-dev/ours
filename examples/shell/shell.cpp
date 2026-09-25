@@ -428,16 +428,8 @@ auto _start(ours::HandleValue const bootstrap, [[maybe_unused]] ours::VirtAddr c
     }
     static_cast<void>(ou::debug_line("--- end ---"));
 
-    // Nothing to do next, and nothing to exit to: there is no exit system call
-    // yet and returning from _start would return into whatever the kernel left
-    // on the stack. Halting here is the honest end of the program.
-    //
-    // `pause` is load-bearing, not decoration. C++'s forward-progress rule
-    // makes a loop with no side effects undefined behaviour, and clang acts on
-    // that licence: at -O2 it deletes `for (;;) {}` outright and lets control
-    // fall off the end of the function. An `asm volatile` is a side effect the
-    // optimiser must keep.
-    for (;;) {
-        __asm__ volatile("pause");
-    }
+    // Done. Exiting rather than spinning is what lets whoever started this
+    // program see it finish: its handles close as the process dies, so init's
+    // end of the bootstrap channel reads PEER_CLOSED.
+    ou::process_exit(0);
 }

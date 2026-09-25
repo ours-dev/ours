@@ -65,6 +65,10 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     [[nodiscard]]
     static auto current() -> Self *;
 
+    /// Ends the calling user thread; see the definition.
+    [[noreturn]]
+    static auto exit_current() -> void;
+
     auto start(TaskState const &state) -> Status;
 
     auto resume() -> void;
@@ -107,7 +111,6 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// Thread::Current::SignalPolicyException() directly; this is the same
     /// call, one layer up.
     auto on_bad_syscall(u64 number, VirtAddr ip, VirtAddr sp) -> void;
-
 
     FORCE_INLINE
     auto mark_active() -> void {

@@ -103,6 +103,18 @@ auto ThreadDispatcher::current() -> Self * {
     return thread->user_thread_mut();
 }
 
+/// The calling user thread leaves: its kernel thread exits, and on the way
+/// out on_exit() takes this object out of its process. The retcode given to
+/// the kernel thread means nothing to anyone -- a process's code is the one
+/// ProcessDispatcher recorded -- so it is 0, as Zircon passes.
+///
+/// Zircon counterpart: ThreadDispatcher::ExitCurrent(), which calls
+/// Thread::Current::Exit(0).
+auto ThreadDispatcher::exit_current() -> void {
+    DEBUG_ASSERT(current() != nullptr, "only a user thread exits through its dispatcher");
+    task::Thread::Current::exit(0);
+}
+
 auto ThreadDispatcher::resume() -> void {
     verify_canary();
 }

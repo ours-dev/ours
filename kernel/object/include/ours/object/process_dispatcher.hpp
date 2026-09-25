@@ -85,6 +85,13 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// Zircon counterpart: ProcessDispatcher::Kill() with KillAllThreadsLocked().
     auto kill(i64 retcode) -> void;
 
+    /// The calling thread's process ends with |retcode|, and the calling
+    /// thread with it; see the definition. Called on a thread of this process.
+    ///
+    /// Zircon counterpart: ProcessDispatcher::Exit().
+    [[noreturn]]
+    auto exit(i64 retcode) -> void;
+
     auto detach_thread(ThreadDispatcher &thread) -> Status;
 
     /// Records where this process's vDSO landed.
@@ -158,8 +165,9 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// process is still being built by one thread.
     State m_state;
 
-    /// The code the process ends with; see kill(). Guarded by get_lock().
-    /// Nothing reads it yet: process_exit and get_info (P1-B) will.
+    /// The code the process ends with; see kill() and exit(). Guarded by
+    /// get_lock(). Nothing reads it yet: get_info does, in step K24 of
+    /// docs/design/260924/userspace-filesystem.md.
     i64 m_retcode;
 
     ktl::Name<MAX_NAME_SIZE> m_name;

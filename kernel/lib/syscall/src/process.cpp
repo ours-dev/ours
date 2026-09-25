@@ -13,6 +13,22 @@
 #include <userabi/userboot.hpp>
 
 namespace ours {
+/// The calling process ends. All of it happens in the object layer
+/// (ProcessDispatcher::exit()); this handler exists to be the entry, and to
+/// keep the system-call layer from naming the task layer that finally ends
+/// the thread (design 4.7).
+///
+/// No Status: the call does not come back, so there is no frame->ax to write
+/// and no caller to read one. The generated shim knows it is noreturn and
+/// writes nothing; the vDSO stub follows the `syscall` with ud2, so that a
+/// kernel bug returning here faults at once rather than running on.
+///
+/// Zircon counterpart: sys_process_exit(), which calls
+/// ProcessDispatcher::ExitCurrent(retcode).
+auto sys_process_exit(i64 const retcode) -> void {
+    object::ProcessDispatcher::current()->exit(retcode);
+}
+
 /// TEMPORARY, and the one handler that breaks the rule every other one keeps:
 /// a system call touches kernel/object and nothing below it. This one reaches
 /// into userabi, and through it elfload, which maps frames and writes through

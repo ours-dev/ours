@@ -187,6 +187,47 @@ auto ProcessDispatcher::kill(i64 const retcode) -> void {
     }
 }
 
+/// The process ends with |retcode|, by its own hand: it starts dying, every
+/// other thread in it is told to die, and the calling thread exits here. The
+/// last thread out -- this one, or whichever of the others leaves last --
+/// makes it Dead (detach_thread()).
+///
+/// The code is recorded only on the way into Dying. A process already dying
+/// keeps the code it is dying with: a kill that got there first, or an exit
+/// racing on another thread, decided it, and two threads calling exit at once
+/// must not leave the answer to whichever took the lock second.
+///
+/// The calling thread is not killed with the others. It is on its way out
+/// already, and killing the current thread would only raise a signal it never
+/// returns to ring 3 to act on.
+///
+/// Zircon counterpart: ProcessDispatcher::Exit(), which sets retcode_ only
+/// when not already DYING, enters DYING -- killing every thread -- and then
+/// calls ThreadDispatcher::ExitCurrent().
+auto ProcessDispatcher::exit(i64 const retcode) -> void {
+    verify_canary();
+
+    auto *const current = ThreadDispatcher::current();
+    DEBUG_ASSERT(current != nullptr && &current->process() == this,
+                 "exit() is called on a thread of the exiting process");
+    {
+        Guard guard{get_lock()};
+        DEBUG_ASSERT(m_state == State::Running || m_state == State::Dying,
+                     "a process with a thread running is Running or Dying");
+        if (m_state != State::Dying) {
+            m_retcode = retcode;
+            m_state = State::Dying;
+            for (auto &thread: m_thread_list) {
+                if (&thread != current) {
+                    thread.kill();
+                }
+            }
+        }
+    }
+
+    ThreadDispatcher::exit_current();
+}
+
 /// Takes |thread| out of this process, as its kernel thread exits.
 ///
 /// Under the process's lock, like attach_thread(), so that a kill walking the

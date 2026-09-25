@@ -262,6 +262,26 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "process_exit"
+    brief = "Ends the calling process with |retcode|; never returns."
+    doc = [
+      "Every thread of the process is killed, the calling one exits here, and",
+      "the process is Dead once the last of them has left: its handles close",
+      "then, so the far end of each channel it held reads PEER_CLOSED.",
+      "",
+      "Only the first way out decides the code: a process already dying --",
+      "killed, or exiting on another thread -- keeps the code it had.",
+    ]
+    args = [
+      {
+        name = "retcode"
+        type = "i64"
+      },
+    ]
+    attrs = [ "noreturn" ]
+    ret = "void"
+  },
+  {
     # TEMPORARY: goes when a user-space loader can build a process out of
     # VMOs and VMARs (design P1-C), and with it this entry, which is all that
     # removing the call takes on this side (docs/repairs/260923/syscall.md).

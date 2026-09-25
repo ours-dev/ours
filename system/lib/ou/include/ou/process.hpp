@@ -9,6 +9,11 @@
 #include <ours/types.hpp>
 
 namespace ou {
+/// Ends this process with |retcode|. Every thread in it is killed; this one
+/// exits here and never comes back.
+[[noreturn]]
+auto process_exit(i64 retcode) -> void;
+
 /// TEMPORARY -- goes when a user-space loader exists.
 ///
 /// Starts |name| from the kernel package as a new process under |job| (which
