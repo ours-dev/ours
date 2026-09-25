@@ -84,14 +84,16 @@ auto ChannelDispatcher::write_self_locked(ustl::Box<MessagePacket> &message) -> 
     return Status::Ok;
 }
 
-auto ChannelDispatcher::read(u32 const max_bytes, u32 *const actual_bytes,
-                             ustl::Box<MessagePacket> *const out) -> Status {
+auto ChannelDispatcher::read(u32 const max_bytes, u32 const max_handles, u32 *const actual_bytes,
+                             u32 *const actual_handles, ustl::Box<MessagePacket> *const out)
+    -> Status {
     verify_canary();
 
     Guard guard{peer_lock()};
     auto front = m_messages.front();
     if (!front) {
         *actual_bytes = 0;
+        *actual_handles = 0;
         if (m_peer_has_closed) {
             return Status::PeerClosed;
         }
@@ -99,8 +101,14 @@ auto ChannelDispatcher::read(u32 const max_bytes, u32 *const actual_bytes,
     }
 
     auto &message = *front;
+    // Both sizes, whether or not the message fits, so that a caller whose
+    // buffers were too small learns how big to come back with. Either one
+    // too small leaves the message where it is, at the front: taking the
+    // bytes and dropping the handles, or the other way round, would lose
+    // part of a message nobody asked to lose. Zircon's ReadMsg does the same.
     *actual_bytes = message.num_bytes();
-    if (message.num_bytes() > max_bytes) {
+    *actual_handles = message.num_handles();
+    if (message.num_bytes() > max_bytes || message.num_handles() > max_handles) {
         return Status::BufferTooSmall;
     }
 

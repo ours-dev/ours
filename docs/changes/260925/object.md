@@ -307,3 +307,70 @@ Zircon `SafeDeleter::Delete()`（`zircon/kernel/object/dispatcher.cc:30-54`）�
 **故意没做**
 Zircon 的 TODO 说不是每种对象都需要延迟删除（event 不会持有别的对象），这里同样一律延迟：代价是一次线程字段的读写，
 不值得按类型区分。
+
+## MessagePacket 能携带句柄；`ChannelDispatcher::read` 按字节与句柄两个上限取消息（2026-09-25）
+
+**文件**
+- `kernel/object/include/ours/object/message_packet.hpp`、`kernel/object/message_packet.cpp` — `create()` 多收一组 `Box<Handle>`；新增 `num_handles()`、`take_handles()`；析构时关掉没被取走的句柄
+- `kernel/object/include/ours/object/channel_dispatcher.hpp`、`kernel/object/channel_dispatcher.cpp` — `read()` 多收 `max_handles`、多报 `actual_handles`
+- `kernel/lib/syscall/src/channel.cpp` — 跟着新签名走：write 仍传空句柄数组（系统调用层的句柄转移在下一步），read 把 `num_handles` 与实际句柄数传递下去
+
+**症状**
+channel 消息只能带字节。文件系统计划里 open、/svc 转发、processargs 都要随消息递交句柄。
+
+**原因**
+缺的是功能：`MessagePacket` 只有一段字节缓冲。
+
+**改法**
+改前：
+
+```cpp
+    static auto create(user_copy::UserInPtr<u8 const> bytes, u32 num_bytes, ustl::Box<Self> *out)
+        -> Status;
+```
+
+```cpp
+    *actual_bytes = message.num_bytes();
+    if (message.num_bytes() > max_bytes) {
+        return Status::BufferTooSmall;
+    }
+```
+
+改后：
+
+```cpp
+    static auto create(user_copy::UserInPtr<u8 const> bytes, u32 num_bytes,
+                       ustl::Box<Handle> *handles, u32 num_handles, ustl::Box<Self> *out)
+        -> Status;
+```
+
+```cpp
+    *actual_bytes = message.num_bytes();
+    *actual_handles = message.num_handles();
+    if (message.num_bytes() > max_bytes || message.num_handles() > max_handles) {
+        return Status::BufferTooSmall;
+    }
+```
+
+- **在途句柄不属于任何句柄表**：table koid 为 0，任何进程的句柄值都解析不到它；`create()` 断言这一点。
+- **句柄只在包建成时才移入**：数组分配、包分配都成功之后才逐个 `into_raw()` 进来；任何一步失败，句柄仍在调用者手里的
+  `Box` 里，随调用者关闭——"写进 channel 的句柄无论成败都被消耗"由此成立，句柄永远不会同时在两处或哪儿都不在。
+- **没被读走的句柄由包关闭**：包在任何 channel 锁之外释放（原有约定），关句柄可能释放另一个 channel 端的最后引用、层层连锁，
+  由上一节的 `Dispatcher::rc_recycle()` 摊成循环。
+- **放不下就整条留下**：字节或句柄任一个超出上限回 BufferTooSmall，消息留在队首，两个实际数量都报告给调用者，好让它按大小重来。
+  只取字节丢句柄（或反过来）会丢掉调用者没打算丢的一半。
+- 数组用 kmalloc 的裸 `Handle *` 数组而不是 `Box<Handle>` 数组：缓冲区里没有跑过构造函数，析构时再逐个包回 `Box` 关闭。
+
+**参照**
+- Zircon 的 `MessagePacket` 同样由包持有一组 `Handle*`（`zircon/kernel/object/include/object/message_packet.h:89` 的
+  `handles()`；本地 checkout 里它的实现已经换成 Rust，经 `rust_message_packet_get_handles()` 取出）。
+- Zircon `ChannelDispatcher::ReadMsg()`（`zircon/kernel/object/channel_dispatcher.cc:361-365`）：先报两个数量，
+  字节或句柄任一超出就回 `ZX_ERR_BUFFER_TOO_SMALL` 并留下消息——除非调用者带了 `may_discard`（ours 没有这个选项）。
+
+**验证**
+- 构建通过；clang-format 干净；clang-tidy 在改动行上无告警。
+- 两个镜像照常：`shell: channel checks passed`、`bad-pointer checks passed`；dev `init: shell closed its channel`；dbg_1
+  `probes done (11 killed, 0 survived)`。行为不变是预期的：系统调用层还不会往包里放句柄。
+
+**故意没做**
+系统调用层的句柄转移（从写者的表里摘下、放进读者的表）是下一步。

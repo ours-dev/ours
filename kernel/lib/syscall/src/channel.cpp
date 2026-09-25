@@ -89,7 +89,7 @@ auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const opti
 
     // The copy from user memory, before the channel's lock is taken.
     ustl::Box<MessagePacket> message;
-    if (auto const status = MessagePacket::create(bytes, num_bytes, &message);
+    if (auto const status = MessagePacket::create(bytes, num_bytes, nullptr, 0, &message);
         status != Status::Ok) {
         return status;
     }
@@ -99,7 +99,7 @@ auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const opti
 auto sys_channel_read(HandleValue const channel, ChannelReadOptions const options,
                       user_copy::UserOutPtr<u8> const bytes,
                       [[maybe_unused]] user_copy::UserOutPtr<HandleValue> const handles,
-                      u32 const num_bytes, [[maybe_unused]] u32 const num_handles,
+                      u32 const num_bytes, u32 const num_handles,
                       user_copy::UserOutPtr<u32> const actual_bytes,
                       user_copy::UserOutPtr<u32> const actual_handles) -> Status {
     // The handle first, then the arguments: BadHandle > BadType >
@@ -118,8 +118,9 @@ auto sys_channel_read(HandleValue const channel, ChannelReadOptions const option
     }
 
     u32 length = 0;
+    u32 count = 0;
     ustl::Box<MessagePacket> message;
-    auto const status = dispatcher->read(num_bytes, &length, &message);
+    auto const status = dispatcher->read(num_bytes, num_handles, &length, &count, &message);
 
     // The sizes are reported both for a message delivered and for one that
     // did not fit -- the second is how a caller learns how big a buffer to
@@ -131,7 +132,7 @@ auto sys_channel_read(HandleValue const channel, ChannelReadOptions const option
             }
         }
         if (!actual_handles.is_null()) {
-            if (auto const copied = actual_handles.copy_to_user(u32{0}); copied != Status::Ok) {
+            if (auto const copied = actual_handles.copy_to_user(count); copied != Status::Ok) {
                 return copied;
             }
         }

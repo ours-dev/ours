@@ -70,7 +70,8 @@ class ChannelDispatcher final: public ChannelDispatcherBase {
     /// still delivered first. BufferTooSmall when the head message is longer
     /// than |max_bytes|; it stays where it is, and |actual_bytes| says how
     /// long it is, so the caller can retry with a larger buffer.
-    auto read(u32 max_bytes, u32 *actual_bytes, ustl::Box<MessagePacket> *out) -> Status;
+    auto read(u32 max_bytes, u32 max_handles, u32 *actual_bytes, u32 *actual_handles,
+              ustl::Box<MessagePacket> *out) -> Status;
 
     /// PeeredDispatcher's hooks, called under the shared lock.
     auto on_zero_handles_locked() -> void;
