@@ -76,17 +76,17 @@ SECTIONS {
 
     PROVIDE_HIDDEN(__data_start = .);
     .data : {
-        /* logz4::Target registry (Target::all()). Writable, unlike the
+        /* logz4::Domain registry (Domain::all()). Writable, unlike the
          * command and counter-descriptor registries in RELRO below: each
-         * record holds its target's runtime level floor, which `log level`
-         * stores into. KEEP because nothing references a target that no
+         * record holds its domain's runtime level floor, which `log level`
+         * stores into. KEEP because nothing references a domain that no
          * surviving code logs to, and it should still be listed -- and
          * settable -- by name. The bound names are the __start_/__stop_ pair
          * a default layout would synthesize for this C-identifier section,
-         * so src/target.cpp reads the same symbols everywhere. */
-        PROVIDE_HIDDEN(__start_logz4_targets = .);
-        KEEP(*(logz4_targets))
-        PROVIDE_HIDDEN(__stop_logz4_targets = .);
+         * so src/domain.cpp reads the same symbols everywhere. */
+        PROVIDE_HIDDEN(__start_logz4_domains = .);
+        KEEP(*(logz4_domains))
+        PROVIDE_HIDDEN(__stop_logz4_domains = .);
 
         *(SORT_BY_ALIGNMENT(.data*))
     }

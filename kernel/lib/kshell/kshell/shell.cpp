@@ -12,8 +12,8 @@
 #include <arch/x86/io.hpp>
 #include <gktl/command.hpp>
 #include <gktl/init_hook.hpp>
+#include <logz4/domain.hpp>
 #include <logz4/log.hpp>
-#include <logz4/target.hpp>
 #include <ustl/fmt/format_to.hpp>
 
 namespace kshell {
@@ -25,7 +25,7 @@ namespace {
     /// "kshell: " prefix the call sites used to spell out by hand, and
     /// `log level kshell debug` turns on the per-command trace in dispatch()
     /// without turning on anyone else's debug output.
-    constexpr auto &KSHELL = logz4::Target::named<"kshell">;
+    constexpr auto &KSHELL = logz4::Domain::named<"kshell">;
 
     auto serial_putc(char c) -> void {
         while ((arch::inb(COM1_PORT + 5) & 0x20) == 0) {

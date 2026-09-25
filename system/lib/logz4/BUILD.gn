@@ -8,7 +8,7 @@ cpp_interface("headers") {
     "include/logz4/log.hpp",
     "include/logz4/logger.hpp",
     "include/logz4/ring.hpp",
-    "include/logz4/target.hpp",
+    "include/logz4/domain.hpp",
   ]
   public_deps = [
     "//system/lib/ustl:headers",
@@ -21,7 +21,7 @@ source_set("logz4") {
     "src/init.cpp",
     "src/log.cpp",
     "src/ring.cpp",
-    "src/target.cpp",
+    "src/domain.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]

@@ -25,7 +25,7 @@ namespace {
         u32 cpu;
         std::atomic<u64> ticket;
         Time time;
-        Target const *target;
+        Domain const *domain;
         Level level;
         u16 len;
         char bytes[LINE_BYTES];
@@ -40,7 +40,7 @@ namespace {
     Slot slots[SLOT_COUNT];
 } // namespace
 
-auto append(char const *line, usize len, Time time, u32 cpu, Level level, Target const *target)
+auto append(char const *line, usize len, Time time, u32 cpu, Level level, Domain const *domain)
     -> void {
     auto const ticket = next_ticket.fetch_add(1, std::memory_order_acq_rel);
     auto &slot = slots[ticket % SLOT_COUNT];
@@ -63,7 +63,7 @@ auto append(char const *line, usize len, Time time, u32 cpu, Level level, Target
     slot.time = time;
     slot.cpu = cpu;
     slot.level = level;
-    slot.target = target;
+    slot.domain = domain;
     auto stored_len = len;
     if (stored_len > LINE_BYTES) {
         stored_len = LINE_BYTES;
@@ -78,9 +78,9 @@ auto append(char const *line, usize len, Time time, u32 cpu, Level level, Target
 
 namespace {
     /// Both dumps in one loop. `only` null means every record, which is not
-    /// the same as "the anonymous target's records" -- nothing asks for
+    /// the same as "the anonymous domain's records" -- nothing asks for
     /// those alone, so the null needs no second meaning.
-    auto replay(Logger &sink, Target const *only) -> usize {
+    auto replay(Logger &sink, Domain const *only) -> usize {
         auto const next = next_ticket.load(std::memory_order_acquire);
         auto first = u64{0};
         if (next > SLOT_COUNT) {
@@ -106,9 +106,9 @@ namespace {
                 continue;
             }
             // Like `len`, read after the first check and vouched for by the
-            // recheck below: a target taken from a slot that is being
+            // recheck below: a domain taken from a slot that is being
             // overwritten is thrown away together with that slot's bytes.
-            if (only != nullptr && slot.target != only) {
+            if (only != nullptr && slot.domain != only) {
                 continue;
             }
             if (len != 0) {
@@ -137,7 +137,7 @@ auto dump_to(Logger &sink) -> usize {
     return replay(sink, nullptr);
 }
 
-auto dump_to(Logger &sink, Target const &only) -> usize {
+auto dump_to(Logger &sink, Domain const &only) -> usize {
     return replay(sink, &only);
 }
 

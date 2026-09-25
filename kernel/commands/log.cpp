@@ -1,18 +1,18 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 //
-// `log`: dump logz4's record ring, list the log targets, or move a level
-// floor -- the global one or a single target's. The logging library itself
+// `log`: dump logz4's record ring, list the log domains, or move a level
+// floor -- the global one or a single domain's. The logging library itself
 // stays free of any dependency on gktl's command registry -- phys links
 // //system/lib/logz4 and has no console at all.
 #include <format>
 #include <string_view>
 
 #include <gktl/command.hpp>
+#include <logz4/domain.hpp>
 #include <logz4/filter.hpp>
 #include <logz4/level.hpp>
 #include <logz4/log.hpp>
-#include <logz4/target.hpp>
 #include <ustl/fmt/format_to.hpp>
 
 namespace {
@@ -20,7 +20,7 @@ namespace {
 /// sink as one line.
 ///
 /// Not a log line: it would pass through the very floors this command sets,
-/// so `log level error` followed by `log targets` would print nothing, and
+/// so `log level error` followed by `log domains` would print nothing, and
 /// a typo'd level would be reported at a severity the operator may just have
 /// silenced. It is also kept out of the record ring, which holds what the
 /// kernel said, not the console's answers -- the same routing dump_recent()
@@ -37,16 +37,16 @@ auto reply(std::format_string<Args const &...> fmt, Args const &...args) -> void
     logz4::get_global_logger().write(line, length);
 }
 
-/// `default` hands a target back to the global floor. A word rather than a
-/// level name because it is not a level: the target stops having one.
+/// `default` hands a domain back to the global floor. A word rather than a
+/// level name because it is not a level: the domain stops having one.
 constexpr std::string_view FOLLOW_GLOBAL = "default";
 
-auto find_target(char const *name) -> logz4::Target * {
-    auto *const target = logz4::Target::find(name);
-    if (target == nullptr) {
-        reply("log: no target '{}' (see `log targets`)", name);
+auto find_domain(char const *name) -> logz4::Domain * {
+    auto *const domain = logz4::Domain::find(name);
+    if (domain == nullptr) {
+        reply("log: no domain '{}' (see `log domains`)", name);
     }
-    return target;
+    return domain;
 }
 
 auto parse_level(char const *name, logz4::Level &level) -> bool {
@@ -57,37 +57,37 @@ auto parse_level(char const *name, logz4::Level &level) -> bool {
     return true;
 }
 
-/// `log dump [<target>]`
+/// `log dump [<domain>]`
 auto dump(int argc, char **argv) -> int {
     if (argc == 2) {
         logz4::dump_recent();
         return 0;
     }
-    auto const *const target = find_target(argv[2]);
-    if (target == nullptr) {
+    auto const *const domain = find_domain(argv[2]);
+    if (domain == nullptr) {
         return 1;
     }
-    logz4::dump_recent(*target);
+    logz4::dump_recent(*domain);
     return 0;
 }
 
-/// `log targets`: every target in the image with the floor it filters at.
-auto list_targets() -> int {
+/// `log domains`: every domain in the image with the floor it filters at.
+auto list_domains() -> int {
     reply("log: global floor {}", logz4::level_name(logz4::min_level()));
-    for (auto const &target: logz4::Target::all()) {
-        if (auto const own = target.own_min_level(); own.has_value()) {
-            reply("  {:<12} {}", target.name(), logz4::level_name(*own));
+    for (auto const &domain: logz4::Domain::all()) {
+        if (auto const own = domain.own_min_level(); own.has_value()) {
+            reply("  {:<12} {}", domain.name(), logz4::level_name(*own));
         } else {
-            reply("  {:<12} {} ({})", target.name(), logz4::level_name(target.min_level()),
+            reply("  {:<12} {} ({})", domain.name(), logz4::level_name(domain.min_level()),
                   FOLLOW_GLOBAL);
         }
     }
     return 0;
 }
 
-/// `log level <level>` moves the global floor; `log level <target> <level>`
-/// gives one target its own, and `log level <target> default` takes it away.
-/// The argument count tells the two apart, so a target that happens to be
+/// `log level <level>` moves the global floor; `log level <domain> <level>`
+/// gives one domain its own, and `log level <domain> default` takes it away.
+/// The argument count tells the two apart, so a domain that happens to be
 /// called "warn" is still reachable.
 auto set_level(int argc, char **argv) -> int {
     auto level = logz4::Level::Info;
@@ -99,18 +99,18 @@ auto set_level(int argc, char **argv) -> int {
         return 0;
     }
 
-    auto *const target = find_target(argv[2]);
-    if (target == nullptr) {
+    auto *const domain = find_domain(argv[2]);
+    if (domain == nullptr) {
         return 1;
     }
     if (argv[3] == FOLLOW_GLOBAL) {
-        target->clear_min_level();
+        domain->clear_min_level();
         return 0;
     }
     if (!parse_level(argv[3], level)) {
         return 1;
     }
-    target->set_min_level(level);
+    domain->set_min_level(level);
     return 0;
 }
 
@@ -126,17 +126,17 @@ auto log_command(int argc, char **argv) -> int {
     if (verb == "dump" && argc <= 3) {
         return dump(argc, argv);
     }
-    if (verb == "targets" && argc == 2) {
-        return list_targets();
+    if (verb == "domains" && argc == 2) {
+        return list_domains();
     }
     if (verb == "level" && (argc == 3 || argc == 4)) {
         return set_level(argc, argv);
     }
-    reply("usage: log [dump [<target>] | targets | level [<target>] <level>|default]");
+    reply("usage: log [dump [<domain>] | domains | level [<domain>] <level>|default]");
     return 1;
 }
 } // namespace
 
 GKTL_COMMAND(LogDump, "log", log_command,
-             "log [dump [<target>] | targets | level [<target>] <level>|default]: "
-             "dump the record ring, list targets, or set the global or a target's floor")
+             "log [dump [<domain>] | domains | level [<domain>] <level>|default]: "
+             "dump the record ring, list domains, or set the global or a domain's floor")

@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <logz4/clock.hpp>
+#include <logz4/domain.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
-#include <logz4/target.hpp>
 
 #include <cstring>
 
@@ -118,15 +118,15 @@ namespace {
     /// severity — the same shape as Android printk. The integer is printed
     /// as-is; converting units is the clock's job, not ours.
     ///
-    /// The target follows the bracket, in parentheses: `[warn] (kshell) ...`.
+    /// The domain follows the bracket, in parentheses: `[warn] (kshell) ...`.
     /// Outside the bracket because it is not metadata about the moment the
     /// way time, cpu and level are, but the start of what was said -- where
     /// Linux's pr_fmt puts its "kshell: " prefix, which is what call sites
-    /// in this tree wrote by hand before targets existed. The anonymous
-    /// target prints nothing, so an unconverted line looks exactly as it
+    /// in this tree wrote by hand before domains existed. The anonymous
+    /// domain prints nothing, so an unconverted line looks exactly as it
     /// did.
     auto write_prefix(LineBuilder &line, Time time, bool have_time, u32 cpu, bool have_cpu,
-                      Level level, Target const *target) -> void {
+                      Level level, Domain const *domain) -> void {
         line.append("[");
         if (have_time) {
             line.append_decimal(time);
@@ -139,26 +139,26 @@ namespace {
         }
         line.append(level_name(level));
         line.append("] ");
-        if (target != nullptr) {
+        if (domain != nullptr) {
             line.append("(");
-            line.append(target->name());
+            line.append(domain->name());
             line.append(") ");
         }
     }
 } // namespace
 
 template <typename FormatString>
-auto vlog(Logger &logger, Target const *target, Level level, FormatString fmt,
+auto vlog(Logger &logger, Domain const *domain, Level level, FormatString fmt,
           ustl::fmt::FormatArgs const &args) -> void {
-    // The one level check on the path: a named target filters at its own
+    // The one level check on the path: a named domain filters at its own
     // floor (which may be looser than the global one), everyone else at the
     // global floor. It stays here, behind the vlog_dispatch() call, rather
-    // than being hoisted inline into Target's members: a phys module has its
+    // than being hoisted inline into Domain's members: a phys module has its
     // own hidden copy of the inline global floor, which nobody sets -- the
     // boot option lands in physload's -- so an inline check there would
     // filter module lines against the compile-time default instead.
-    if (target != nullptr) {
-        if (!target->is_enabled(level)) {
+    if (domain != nullptr) {
+        if (!domain->is_enabled(level)) {
             return;
         }
     } else if (!is_enabled(level)) {
@@ -180,7 +180,7 @@ auto vlog(Logger &logger, Target const *target, Level level, FormatString fmt,
 
     char line[ring::LINE_BYTES];
     LineBuilder builder{line, sizeof(line)};
-    write_prefix(builder, time, have_time, cpu_id, have_cpu, level, target);
+    write_prefix(builder, time, have_time, cpu_id, have_cpu, level, domain);
 
     // Four bytes held back so the ellipsis and the newline always fit, even
     // for a body that overruns the rest of the line.
@@ -200,7 +200,7 @@ auto vlog(Logger &logger, Target const *target, Level level, FormatString fmt,
     *cursor++ = '\n';
     auto const total = static_cast<usize>(cursor - line);
 
-    ring::append(line, total, time, cpu_id, level, target);
+    ring::append(line, total, time, cpu_id, level, domain);
 
     if (logger.is_null()) {
         // Nothing installed yet: an Error line still deserves the boot
@@ -215,12 +215,12 @@ auto vlog(Logger &logger, Target const *target, Level level, FormatString fmt,
     logger.write(line, total);
 }
 
-template auto vlog(Logger &, Target const *, Level, ustl::views::StringView,
+template auto vlog(Logger &, Domain const *, Level, ustl::views::StringView,
                    ustl::fmt::FormatArgs const &args) -> void;
 
-auto vlog_dispatch(Logger &logger, Target const *target, Level level, ustl::views::StringView fmt,
+auto vlog_dispatch(Logger &logger, Domain const *domain, Level level, ustl::views::StringView fmt,
                    ustl::fmt::FormatArgs const &args) -> void {
-    vlog(logger, target, level, fmt, args);
+    vlog(logger, domain, level, fmt, args);
 }
 
 namespace {
@@ -249,7 +249,7 @@ auto dump_recent() -> void {
     dump_to_current([](Logger &sink) { static_cast<void>(ring::dump_to(sink)); });
 }
 
-auto dump_recent(Target const &only) -> void {
+auto dump_recent(Domain const &only) -> void {
     dump_to_current([&](Logger &sink) { static_cast<void>(ring::dump_to(sink, only)); });
 }
 } // namespace logz4

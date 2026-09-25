@@ -244,3 +244,48 @@ PROVIDE_HIDDEN(__stop_logz4_targets = .);
 - **phys 模块的目标不并进 physload 的表。** 每个镜像一张表，和 Linux 每个模块一个 `__dyndbg`
   一样；phys 没有控制台，暂时没人需要跨镜像查。
 - **没有哈希/排序。** 一个镜像几十个目标，查找只在有人敲命令时发生，线性扫描足够。
+
+## 改名：`Target` → `Domain`（2026-09-24）
+
+**文件**
+- `system/lib/logz4/include/logz4/target.hpp` → `domain.hpp`，`src/target.cpp` → `src/domain.cpp`
+- `system/lib/logz4/include/logz4/{log,ring}.hpp`、`src/{log,ring}.cpp`、`test/logz4_test.cpp`、`BUILD.gn` — 标识符与注释
+- `kernel/kernel.ld`、`kernel/phys/phys.ld`、`kernel/phys/physload.ld` — 段名 `logz4_targets` → `logz4_domains`
+- `kernel/commands/log.cpp` — `log targets` → `log domains`，提示文字随之改
+- `kernel/lib/kshell/kshell/shell.cpp` — `Target::named` → `Domain::named`
+
+**症状**
+无运行时症状，是命名问题。
+
+**原因**
+这个功能在需求里叫"日志空间"，用户给出的目标写法是 `LogDomain`：一个作用域，
+作用域里的日志行都属于它。"target" 是 Rust `log` crate 的叫法，它在那里是每条记录上
+的一个字符串属性，跟作用域无关；"domain" 是 GLib 的叫法（`G_LOG_DOMAIN`），
+而下一步要做的正是按作用域进入/退出的域。名字和接下来的模型不一致，就先改名字。
+
+**改法**
+纯改名，行为不变：
+
+```cpp
+// 改前
+constexpr auto &KSHELL = logz4::Target::named<"kshell">;
+// 改后
+constexpr auto &KSHELL = logz4::Domain::named<"kshell">;
+```
+
+`TargetName` → `DomainName`，`LOGZ4_TARGET_SECTION` → `LOGZ4_DOMAIN_SECTION`，
+边界符号 `__start_/__stop_logz4_targets` → `__start_/__stop_logz4_domains`，
+控制台 `log targets` → `log domains`。类注释里对照物的说法同步改正：GLib 叫 domain，
+Rust 叫 target。
+
+**参照**
+GLib `G_LOG_DOMAIN`、`g_log_set_handler(log_domain, ...)`。
+
+**验证**
+- 全量构建通过；`logz4-test` 通过；clang-tidy 无新告警。
+- `llvm-nm vmours`：`__start_logz4_domains`..`__stop_logz4_domains` 相距 0x10，正好一个 `Domain`（kshell）。
+- QEMU `kernel.dev.dbg_1.obi`：`log level warn`、`log level kshell debug`、`log domains` →
+  `[... debug] (kshell) run 'log' with 1 argument(s)` / `log: global floor warn` / `kshell  debug`。
+
+**故意没做**
+改名和改模型分开提交：这一条只动名字，作用域守卫 `LogDomain` 是下一条。

@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <logz4/clock.hpp>
+#include <logz4/domain.hpp>
 #include <logz4/filter.hpp>
 #include <logz4/log.hpp>
 #include <logz4/ring.hpp>
-#include <logz4/target.hpp>
 
 #include <string>
 #include <string_view>
@@ -25,8 +25,8 @@ class CaptureLogger final: public logz4::Logger {
     usize writes = 0;
 };
 
-constexpr auto &ALPHA = logz4::Target::named<"alpha">;
-constexpr auto &BETA = logz4::Target::named<"beta">;
+constexpr auto &ALPHA = logz4::Domain::named<"alpha">;
+constexpr auto &BETA = logz4::Domain::named<"beta">;
 
 auto read_time() -> logz4::Time {
     return 42;
@@ -138,7 +138,7 @@ auto main() -> int {
         assert(g_emergency.find("[error] boom\n") != std::string::npos);
     }
 
-    // A target prints its name after the bracket, and nothing else about the
+    // A domain prints its name after the bracket, and nothing else about the
     // line changes.
     {
         reset();
@@ -159,15 +159,15 @@ auto main() -> int {
         assert(logger.text == "[42 cpu3 warn] (alpha) x\n");
     }
 
-    // One name, one object: a second mention of "alpha" is the same Target,
+    // One name, one object: a second mention of "alpha" is the same Domain,
     // so a floor set through either spelling governs both.
     {
-        assert(&logz4::Target::named<"alpha"> == &ALPHA);
-        assert(&logz4::Target::named<"beta"> != &ALPHA);
+        assert(&logz4::Domain::named<"alpha"> == &ALPHA);
+        assert(&logz4::Domain::named<"beta"> != &ALPHA);
         assert(std::string_view(BETA.name()) == "beta");
     }
 
-    // A target follows the global floor until it is given its own.
+    // A domain follows the global floor until it is given its own.
     {
         reset();
         logger = CaptureLogger{};
@@ -196,7 +196,7 @@ auto main() -> int {
         assert(ALPHA.own_min_level() == logz4::Level::Debug);
     }
 
-    // ...or stricter, and clearing it hands the target back to the global.
+    // ...or stricter, and clearing it hands the domain back to the global.
     {
         reset();
         logger = CaptureLogger{};
@@ -209,17 +209,17 @@ auto main() -> int {
         assert(logger.text == "[warn] (beta) beta warn\n[warn] (alpha) let through\n");
     }
 
-    // Every target is in the registry, found by the name it was declared
+    // Every domain is in the registry, found by the name it was declared
     // with, whether or not it has logged anything yet.
     {
         reset();
-        assert(logz4::Target::find("alpha") == &ALPHA);
-        assert(logz4::Target::find("beta") == &BETA);
-        assert(logz4::Target::find("alph") == nullptr);
-        assert(logz4::Target::find("") == nullptr);
+        assert(logz4::Domain::find("alpha") == &ALPHA);
+        assert(logz4::Domain::find("beta") == &BETA);
+        assert(logz4::Domain::find("alph") == nullptr);
+        assert(logz4::Domain::find("") == nullptr);
         auto seen = usize{0};
-        for (auto const &target: logz4::Target::all()) {
-            assert(target.name() != nullptr);
+        for (auto const &domain: logz4::Domain::all()) {
+            assert(domain.name() != nullptr);
             ++seen;
         }
         assert(seen == 2);
@@ -228,12 +228,12 @@ auto main() -> int {
         logger = CaptureLogger{};
         logz4::set_global_logger(logger);
         logz4::set_min_level(logz4::Level::Error);
-        logz4::Target::find("alpha")->set_min_level(logz4::Level::Debug);
+        logz4::Domain::find("alpha")->set_min_level(logz4::Level::Debug);
         ALPHA.debug("through the registry");
         assert(logger.text == "[debug] (alpha) through the registry\n");
     }
 
-    // A ring dump can be narrowed to one target; the full dump still
+    // A ring dump can be narrowed to one domain; the full dump still
     // carries every line, anonymous ones included.
     {
         reset();

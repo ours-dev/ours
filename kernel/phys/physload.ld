@@ -119,17 +119,17 @@ SECTIONS {
 
     .data : {
         . = ALIGN(8);
-        /* logz4::Target registry; see kernel.ld. Placed explicitly rather
+        /* logz4::Domain registry; see kernel.ld. Placed explicitly rather
          * than left an orphan: an orphan section is put wherever the linker
          * judges closest by flags, and with PHDRS spelled out it would
          * inherit whichever segment precedes it. It holds pointers (the
-         * target names), so it must be in :data for the relative fixups to
+         * domain names), so it must be in :data for the relative fixups to
          * land -- the same constraint as .phys.exports above. phys has no
-         * console to look targets up from, but this image links the registry
+         * console to look domains up from, but this image links the registry
          * code, which names the bounds. */
-        PROVIDE_HIDDEN(__start_logz4_targets = .);
-        KEEP(*(logz4_targets))
-        PROVIDE_HIDDEN(__stop_logz4_targets = .);
+        PROVIDE_HIDDEN(__start_logz4_domains = .);
+        KEEP(*(logz4_domains))
+        PROVIDE_HIDDEN(__stop_logz4_domains = .);
 
         *(.data*)
     } :data

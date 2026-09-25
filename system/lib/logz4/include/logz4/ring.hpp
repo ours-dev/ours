@@ -10,7 +10,7 @@
 #include <ours/types.hpp>
 
 namespace logz4 {
-class Target;
+class Domain;
 } // namespace logz4
 
 namespace logz4::ring {
@@ -29,10 +29,10 @@ inline constexpr usize SLOT_COUNT = 256;
 /// including multiple CPUs and interrupt handlers concurrently. When the
 /// ring is full the oldest record is silently overwritten.
 ///
-/// `target` is null for the anonymous target. Its name is already part of
+/// `domain` is null for the anonymous domain. Its name is already part of
 /// `line`; the pointer is kept beside it so a dump can select by source
 /// without parsing its own output back.
-auto append(char const *line, usize len, Time time, u32 cpu, Level level, Target const *target)
+auto append(char const *line, usize len, Time time, u32 cpu, Level level, Domain const *domain)
     -> void;
 
 /// Replay the surviving records, oldest first, each as one write() to
@@ -41,7 +41,7 @@ auto append(char const *line, usize len, Time time, u32 cpu, Level level, Target
 auto dump_to(Logger &sink) -> usize;
 
 /// The same, replaying only the records `only` wrote.
-auto dump_to(Logger &sink, Target const &only) -> usize;
+auto dump_to(Logger &sink, Domain const &only) -> usize;
 
 /// Wipe every record and restart ticketing. Test scaffolding only.
 auto reset_for_test() -> void;

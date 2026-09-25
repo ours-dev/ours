@@ -1,12 +1,12 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <logz4/target.hpp>
+#include <logz4/domain.hpp>
 
 #include <ours/compiler.hpp>
 
 namespace logz4 {
 namespace {
-    // The bounds of LOGZ4_TARGET_SECTION. On ELF the linker script of every
+    // The bounds of LOGZ4_DOMAIN_SECTION. On ELF the linker script of every
     // freestanding image defines them (kernel.ld, phys.ld, physload.ld), and
     // a default GNU ld/LLD layout defines them itself because the section
     // name is a C identifier. Mach-O's linkers synthesize section$start$ and
@@ -14,26 +14,26 @@ namespace {
     //
     // A default ELF layout defines __start_/__stop_ only when the section
     // exists, so a hosted ELF program linking this file must declare at least
-    // one Target. Not weak to paper over that: a weak undefined reference
+    // one Domain. Not weak to paper over that: a weak undefined reference
     // resolves to address zero, and an empty registry that silently answers
-    // "no such target" is worse than a link error that says why.
+    // "no such domain" is worse than a link error that says why.
 #if defined(__MACH__)
-    extern "C" Target section_start[] LINK_NAME("section$start$__DATA$__logz4_targets");
-    extern "C" Target section_end[] LINK_NAME("section$end$__DATA$__logz4_targets");
+    extern "C" Domain section_start[] LINK_NAME("section$start$__DATA$__logz4_domains");
+    extern "C" Domain section_end[] LINK_NAME("section$end$__DATA$__logz4_domains");
 #else
-    extern "C" Target section_start[] LINK_NAME("__start_logz4_targets");
-    extern "C" Target section_end[] LINK_NAME("__stop_logz4_targets");
+    extern "C" Domain section_start[] LINK_NAME("__start_logz4_domains");
+    extern "C" Domain section_end[] LINK_NAME("__stop_logz4_domains");
 #endif
 } // namespace
 
-auto Target::all() -> std::span<Target> {
+auto Domain::all() -> std::span<Domain> {
     return {section_start, section_end};
 }
 
-auto Target::find(ustl::views::StringView name) -> Target * {
-    for (auto &target: all()) {
-        if (name == target.name()) {
-            return &target;
+auto Domain::find(ustl::views::StringView name) -> Domain * {
+    for (auto &domain: all()) {
+        if (name == domain.name()) {
+            return &domain;
         }
     }
     return nullptr;

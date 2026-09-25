@@ -13,7 +13,7 @@
 #include <ustl/views/string_view.hpp>
 
 namespace logz4 {
-class Target;
+class Domain;
 
 /// Last-resort output, used only when an Error-severity line arrives and no
 /// logger has been installed yet (early panic before console bring-up).
@@ -41,7 +41,7 @@ auto dump_recent() -> void;
 
 /// The same, keeping only the lines `only` wrote.
 PHYS_EXPORT
-auto dump_recent(Target const &only) -> void;
+auto dump_recent(Domain const &only) -> void;
 
 // The one cross-module entry point: physload exports this plain function so
 // physload_module images bind their log calls to physload's single global
@@ -50,27 +50,27 @@ auto dump_recent(Target const &only) -> void;
 // hidden, and a hidden undefined reference can never bind to the loader's
 // export table.)
 //
-// `target` is who wrote the line, or null for the anonymous target the free
+// `domain` is who wrote the line, or null for the anonymous domain the free
 // functions below log to. It is a pointer rather than a name so that the
 // record ring can keep it for filtering at the cost of one word.
 PHYS_EXPORT
-auto vlog_dispatch(Logger &logger, Target const *target, Level level, ustl::views::StringView fmt,
+auto vlog_dispatch(Logger &logger, Domain const *domain, Level level, ustl::views::StringView fmt,
                    ustl::fmt::FormatArgs const &args) -> void;
 
-/// Formats `fmt`/`args` into one whole line (metadata prefix, target name,
+/// Formats `fmt`/`args` into one whole line (metadata prefix, domain name,
 /// body, newline), appends it to the record ring, and hands it to `logger`
 /// in a single write() call. Defined in log.cpp for ustl::views::StringView;
 /// every caller in the tree passes exactly that type.
 template <typename String>
-auto vlog(Logger &logger, Target const *target, Level level, String fmt,
+auto vlog(Logger &logger, Domain const *domain, Level level, String fmt,
           ustl::fmt::FormatArgs const &args) -> void;
 
 namespace detail {
     /// The one path from a call site into vlog_dispatch(), shared by the free
-    /// functions and Target's members so the argument handling below exists
+    /// functions and Domain's members so the argument handling below exists
     /// once.
     template <typename... Args>
-    inline auto emit(Target const *target, Level level, ustl::views::StringView fmt, Args &&...args)
+    inline auto emit(Domain const *domain, Level level, ustl::views::StringView fmt, Args &&...args)
         -> void {
         // Each argument goes through decay_format_arg() and the lambda binds
         // the results as lvalues, which is what make_format_args() requires
@@ -84,7 +84,7 @@ namespace detail {
         // logger to do -- the one line you added to find a bug is the line
         // that lies to you.
         return [&](auto &&...prepared) {
-            vlog_dispatch(get_global_logger(), target, level, fmt,
+            vlog_dispatch(get_global_logger(), domain, level, fmt,
                           ustl::fmt::make_format_args(prepared...));
         }(ustl::fmt::decay_format_arg(ustl::forward<Args>(args))...);
     }
