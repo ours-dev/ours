@@ -33,6 +33,12 @@ assert(
 user_executable("fault_probe") {
   visibility = [ "//kernel/products/image/*" ]
 
-  sources = [ "fault_probe.cpp" ]
+  sources = [
+    "fault_probe.cpp",
+
+    # The tree's only `syscall` outside the vDSO, as the counter-example the
+    # trap_outside_vdso probe needs; see the file.
+    "trap.S",
+  ]
   deps = [ "//system/lib/ou" ]
 }

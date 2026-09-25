@@ -26,6 +26,10 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 
+// trap.S: a `syscall` executed from this program's own text rather than the
+// vDSO's.
+extern "C" auto fault_probe_trap_outside_vdso() -> void;
+
 namespace {
 /// The address of the vDSO, for the probes that need a mapped page they may
 /// not write to. Unused until such a probe is enabled (see PROBES).
@@ -103,6 +107,12 @@ auto db_tf(ours::VirtAddr) -> void {
                      : "memory", "cc");
 }
 
+/// A system call made without the vDSO: the kernel refuses the trap and
+/// kills the process for it (a PolicyError, BadSyscall).
+auto trap_outside_vdso(ours::VirtAddr) -> void {
+    fault_probe_trap_outside_vdso();
+}
+
 /// Missing: a write to the vDSO (mapped read-only), which should end in a
 /// #PF the address space refuses. Every x86 leaf page-table entry is built
 /// writable today (docs/repairs/260924/x86-kernel.md, #1), so the write would
@@ -118,6 +128,7 @@ constexpr Probe PROBES[] = {
     {"de", de},
     {"db_tf", db_tf},
     {"gp_io", gp_io},
+    {"trap_outside_vdso", trap_outside_vdso},
 };
 
 auto same(ou::Str const a, ou::Str const b) -> bool {

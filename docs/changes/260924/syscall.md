@@ -642,3 +642,60 @@ thread、process 两行 destroyed，没有断言、没有 panic，之后照常�
   第 1 条），这个写会成功，探针会因为和故障路径无关的原因报 survived。那条修好时一起加。
 - 从 vDSO 之外陷入的探针（`trap_outside_vdso`）：需要全树唯一一处裸 `syscall`，单独一条提交。
 - 不设 `testonly`：打包它的镜像是普通产品，GN 会要求整个镜像都变成 testonly。
+
+## `fault_probe` 加 `trap_outside_vdso`：全树唯一一处 vDSO 之外的裸 `syscall`（2026-09-24）
+
+**文件**
+- `kernel/lib/syscall/test/fault_probe/trap.S` — 新建；`fault_probe_trap_outside_vdso()`，一条 `syscall`
+- `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — 新探针 `trap_outside_vdso`
+- `kernel/lib/syscall/test/fault_probe/BUILD.gn` — sources 加 `trap.S`
+- `examples/shell/shell.cpp` — 驱动的探针表加一项
+
+**症状**
+"从 vDSO 之外陷入就杀进程"（本文件「从 vDSO 之外陷入：杀掉进程」一节）只用临时的裸 `syscall` 验证过一次。
+规则是"`syscall` 指令只存在于 vDSO"，所以正常的树里没有任何东西能走到这条拒绝路径——它可以悄悄坏掉。
+
+**原因**
+一条内核强制执行的规则，需要一个故意违反它的程序，否则没有东西能证明强制仍然有效。这条指令必须存在于某个地方；
+决策 2 定的是：只允许在这个文件里，只打进 dbg_1。
+
+**改法**
+改前：`fault_probe` 有 9 个探针，没有裸 `syscall`。
+
+改后：
+
+```asm
+fault_probe_trap_outside_vdso:
+    xorl %eax, %eax
+    syscall
+    ret
+```
+
+```cpp
+auto trap_outside_vdso(ours::VirtAddr) -> void {
+    fault_probe_trap_outside_vdso();
+}
+```
+
+调用号放 0（vDSO 里 `debug_write` 的号），但无关紧要：内核在看号之前就按返回地址拒绝了。单独写成 `.S`，
+而不是 C++ 里的内联汇编，是为了让 `grep` 一眼看出全树的裸 `syscall` 只有两处：`vdso.S` 与这个文件。
+
+**参照**
+Zircon `zircon/system/utest/core/bad-syscall/syscall.S`：同样是一个单独的汇编文件，从程序自己的代码里执行
+`syscall`，由 `bad-syscall.cc` 断言它被拒绝。Zircon 那边会先报 `ZX_EXCP_POLICY_CODE_BAD_SYSCALL` 异常，
+没有处理者时进程被杀；ours 没有异常 channel，直接杀。
+
+**验证**
+dbg_1 默认配置连续启动 3 次、`CPU=max SMP=1` 1 次，每次都是 `shell: probes done (10 killed, 0 survived)`，
+新探针的日志为：
+
+```
+syscall: refused a trap from 201944, which is outside the vDSO
+terminating process 'fault_probe' (koid 125) thread koid 129: type=PolicyError vector=BadSyscall ... synth_code=18
+shell: probe trap_outside_vdso killed
+```
+
+`grep` 全树 `.S/.cpp/.hpp` 的 `syscall` 指令，只有 `kernel/lib/userabi/vdso/vdso.S` 与本文件。dev 镜像不受影响。
+
+**故意没做**
+没有加构建期检查去禁止别处出现裸 `syscall`：内核已经在运行期拒绝并杀掉，这个探针保证那条拒绝路径一直有效。
