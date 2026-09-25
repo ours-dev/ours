@@ -138,6 +138,25 @@ auto VmMapping::activate() -> Status {
 auto VmMapping::destroy() -> Status {
     m_canary.verify<Self>();
 
+    // Once only. Everything below undoes something activate() did exactly
+    // once -- the VMO's list, the parent's count and set -- so a second pass
+    // would unlink a node that is no longer linked and count the parent down
+    // twice. Zircon's DestroyLocked() refuses a mapping that is no longer
+    // alive in the same way.
+    if (!is_active()) {
+        return Status::BadState;
+    }
+
+    // The address space's last-fault cache may be this mapping, and it holds
+    // a reference: left there, it would keep the mapping -- and through it the
+    // VMO and the address space itself -- alive after the mapping is gone,
+    // and hand the next fault in this range a mapping that no longer covers
+    // anything. Cleared first, as Zircon's DestroyLockedObject() does, because
+    // clearing it is right whatever happens below.
+    if (m_aspace->m_last_fault.as_ptr() == this) {
+        m_aspace->m_last_fault = {};
+    }
+
     // Take the mapping out of the page tables first, but do not let a failure
     // here abandon the bookkeeping below. This used to return early, which left
     // the mapping linked into its VMO's mapping list and its parent's subvma
@@ -151,8 +170,14 @@ auto VmMapping::destroy() -> Status {
                    m_base);
     }
 
+    // And let go of the VMO. The mapping object can outlive its destruction
+    // -- anyone holding an Arc to it keeps it -- and while it kept m_vmo, it
+    // kept every page of the object too: a destroyed mapping of a program's
+    // image pinned the image. A mapping that maps nothing has no business
+    // with a VMO. Zircon resets object_ at the same point.
     if (m_vmo) {
         m_vmo->remove_mapping(*this);
+        m_vmo = {};
     }
     if (m_parent) {
         m_parent->m_num_mappings -= 1;
@@ -266,6 +291,12 @@ auto VmMapping::map(VirtAddr base, usize size, bool commit, MapOptions options) 
     // a potential data race if map() runs concurrently with
     // protect()/unmap() on the same mapping — page-table entries and
     // m_protection_ranges can be mutated from multiple threads.
+
+    // A destroyed mapping has no VMO any more (destroy() lets it go), and
+    // nothing to map into: its range belongs to nobody now.
+    if (!is_active()) {
+        return Status::BadState;
+    }
 
     size = ustl::mm::align_up(size, PAGE_SIZE);
     if (!size) {

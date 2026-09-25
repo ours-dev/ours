@@ -224,3 +224,79 @@ lookup cursor，每页 `RequirePage(write, ...)`，经 `paddr_to_physmap()` 拷�
 
 误判的来源是 `VmAspace::kernel_aspace()` 的注释，它说 adopt "takes ownership of a raw pointer without retaining it"，与 ustl 的
 实现不符。该注释已改正（`kernel/mm/include/ours/mm/vm_aspace.hpp`），待修项第 2 条已删除。
+
+## 拆掉的映射放下它的 VMO，清掉地址空间的 last-fault 缓存，并且只拆一次（2026-09-25）
+
+**文件**
+- `kernel/mm/vm_mapping.cpp` — `VmMapping::destroy()`：已拆则回 BadState；先清 `m_aspace->m_last_fault`（若是自己）；`remove_mapping` 后置空 `m_vmo`；`VmMapping::map()` 对已拆的映射回 BadState
+
+**症状**
+潜伏，是文件系统计划 K6（`VmAspace::destroy`）的前置：
+
+- 拆掉的映射仍持有 `m_vmo`。映射对象本身可以比"被拆"活得久——任何持有它 `Arc` 的人都让它活着——而它活着 VMO 就活着，
+  VMO 的每一页也就不还。
+- `VmAspace::m_last_fault` 持有最近一次缺页命中的映射的一个引用。这个映射被拆后，缓存仍指着它：映射、它的 VMO、以及
+  （映射持有 `Arc<VmAspace>`）整个地址空间都被这个缓存留住，下一次落在这段范围的缺页还会拿到一个什么也不覆盖的映射。
+- `destroy()` 没有"只做一次"的保护：第二次调用会把已摘下的节点再摘一次、父节点的计数再减一次。
+
+**原因**
+`destroy()` 撤销的是 `activate()` 做过的事——挂进 VMO 的映射链表、父节点计数、父节点的集合——但它没有撤销"持有 VMO"这一件，
+也不知道地址空间里还有一个缓存指着自己。
+
+**改法**
+改前：
+
+```cpp
+auto VmMapping::destroy() -> Status {
+    m_canary.verify<Self>();
+
+    auto const status = m_aspace->arch_aspace().unmap(m_base, m_size >> PAGE_SHIFT, {}, 0);
+    ...
+    if (m_vmo) {
+        m_vmo->remove_mapping(*this);
+    }
+    ...
+```
+
+改后：
+
+```cpp
+auto VmMapping::destroy() -> Status {
+    m_canary.verify<Self>();
+
+    if (!is_active()) {
+        return Status::BadState;
+    }
+
+    if (m_aspace->m_last_fault.as_ptr() == this) {
+        m_aspace->m_last_fault = {};
+    }
+
+    auto const status = m_aspace->arch_aspace().unmap(m_base, m_size >> PAGE_SHIFT, {}, 0);
+    ...
+    if (m_vmo) {
+        m_vmo->remove_mapping(*this);
+        m_vmo = {};
+    }
+    ...
+```
+
+`VmMapping::map()` 开头加 `if (!is_active()) return Status::BadState;`：拆掉的映射没有 VMO 了，也没有东西可映射。`fault()`
+本来就有同样的检查。
+
+放下 VMO 可能就是它的最后一个引用，于是 `~VmObjectPaged` → `~VmCowPages` → `free_frames()` 在调用者持有的锁下运行；
+这条路上没有会睡眠的锁，在自旋锁下也安全。
+
+**参照**
+Zircon `VmMapping::DestroyLockedObject()`（`zircon/kernel/vm/vm_mapping.cc` 约 :1120-1165）：先
+`if (aspace_->last_fault_ == this) aspace_->last_fault_ = nullptr;`，最后 `object_.reset()`；对不再存活的映射，
+`DestroyLocked()` 回 `ZX_ERR_BAD_STATE`。
+
+**验证**
+- 构建通过；clang-format 干净。
+- 两个镜像照常：dev `vmalloc: self test passed`（vfree 走的就是拆映射这条路，现在它连 VMO 一起放掉）、`init: shell closed its channel`；
+  dbg_1 `probes done (11 killed, 0 survived)`。
+- 地址空间整体的回收在下一步（`VmAspace::destroy`），届时核对帧数。
+
+**故意没做**
+`VmAreaOrMapping::m_aspace` 不置空：地址空间销毁后，仍可能有人经 VMAR 句柄拿着区域对象，它们加锁要经过这个指针。
