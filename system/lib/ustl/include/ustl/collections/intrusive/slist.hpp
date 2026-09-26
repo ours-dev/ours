@@ -190,7 +190,7 @@ class Slist final {
         detail::require(Algorithms::unique(node));
         Algorithms::link_after(position.pointed_node(), node);
         increment_size();
-        refresh_last();
+        cache_if_last(node);
         return IterMut(node);
     }
 
@@ -247,7 +247,7 @@ class Slist final {
         Algorithms::unlink_after(previous_node);
         Algorithms::init(node);
         decrement_size();
-        refresh_last();
+        cache_if_last(previous_node);
         std::invoke(disposer, ValueTraits::to_value_ptr(node));
         return IterMut(next);
     }
@@ -307,37 +307,45 @@ class Slist final {
         if constexpr (PackedOptions::CONSTANT_TIME_SIZE) {
             std::swap(m_size, other.m_size);
         }
-        refresh_last();
-        other.refresh_last();
+        if constexpr (PackedOptions::CACHE_LAST) {
+            // Each chain took its last node along, so the cached pointers
+            // trade places too -- except that an empty list caches its own
+            // header, and headers never change hands.
+            std::swap(m_last, other.m_last);
+            if (m_last == other.header()) {
+                m_last = header();
+            }
+            if (other.m_last == header()) {
+                other.m_last = other.header();
+            }
+        }
     }
 
     [[nodiscard]]
     constexpr auto previous(IterMut position) noexcept -> IterMut {
-        return IterMut(Algorithms::get_previous_node(header(), position.pointed_node()));
+        return IterMut(previous_node(header(), position.pointed_node()));
     }
 
     [[nodiscard]]
     constexpr auto previous(Iter position) const noexcept -> Iter {
-        return Iter(Algorithms::get_previous_node(header(), position.pointed_node()));
+        return Iter(previous_node(header(), position.pointed_node()));
     }
 
     [[nodiscard]]
     constexpr auto previous(IterMut previous_from, IterMut position) noexcept -> IterMut {
-        return IterMut(
-            Algorithms::get_previous_node(previous_from.pointed_node(), position.pointed_node()));
+        return IterMut(previous_node(previous_from.pointed_node(), position.pointed_node()));
     }
 
     [[nodiscard]]
     constexpr auto previous(Iter previous_from, Iter position) const noexcept -> Iter {
-        return Iter(
-            Algorithms::get_previous_node(previous_from.pointed_node(), position.pointed_node()));
+        return Iter(previous_node(previous_from.pointed_node(), position.pointed_node()));
     }
 
     constexpr auto splice_after(Iter position, Slist &source) noexcept -> void {
         if (this == &source || source.empty()) {
             return;
         }
-        splice_after(position, source, source.before_begin(), source.previous(source.end()),
+        splice_after(position, source, source.before_begin(), Iter(source.last_node()),
                      source.size());
     }
 
@@ -366,8 +374,12 @@ class Slist final {
             increase_size(count);
             source.decrease_size(count);
         }
-        refresh_last();
-        source.refresh_last();
+        // The range now ends this list if it went in after the last node, and
+        // `before_first` ends the source if the range was its tail. Asking
+        // both also covers a splice within one list, and a no-op splice
+        // leaves neither of them newly last.
+        cache_if_last(before_last.pointed_node());
+        source.cache_if_last(before_first.pointed_node());
     }
 
     constexpr auto splice(Iter position, Slist &source) noexcept -> void {
@@ -451,12 +463,19 @@ class Slist final {
     }
 
     constexpr auto reverse() noexcept -> void {
+        if constexpr (PackedOptions::CACHE_LAST) {
+            // The first node becomes the last. Noted before the links turn
+            // around, while it is still the header's successor; an empty list
+            // goes on caching its header.
+            if (!empty()) {
+                m_last = NodeTraits::get_next(header());
+            }
+        }
         if constexpr (PackedOptions::LINEAR) {
             NodeTraits::set_next(header(), Algorithms::reverse(NodeTraits::get_next(header())));
         } else {
             Algorithms::reverse(header());
         }
-        refresh_last();
     }
 
     template <typename Predicate>
@@ -657,9 +676,36 @@ class Slist final {
         }
     }
 
-    constexpr auto refresh_last() noexcept -> void {
+    /// The node before `position`, searching forward from `from`. The node
+    /// before end() is the last node, which CacheLast keeps at hand: answering
+    /// from the cache is what makes insert(end(), ...) and splice(end(), ...)
+    /// as cheap as push_back(), where a walk would cost the whole list. Boost's
+    /// slist_impl::previous() short-cuts end() the same way.
+    [[nodiscard]]
+    constexpr auto previous_node(NodePtr const from, NodePtr const position) const noexcept
+        -> NodePtr {
         if constexpr (PackedOptions::CACHE_LAST) {
-            m_last = Algorithms::get_previous_node(header(), end_node());
+            if (position == end_node()) {
+                return m_last;
+            }
+        }
+        return Algorithms::get_previous_node(from, position);
+    }
+
+    /// With CacheLast, records `node` as the last node if it now is the last
+    /// one, i.e. its successor is the end node. A change to the chain can only
+    /// make one of the nodes it touched the new last node, so each operation
+    /// asks about exactly those, in O(1). Finding the end again by walking
+    /// from the header would make every insert and erase O(n) -- and clear(),
+    /// which erases one node at a time, O(n^2) -- defeating the option, which
+    /// exists so that push_back() need not walk. Boost's slist_impl keeps its
+    /// cache the same way, operation by operation (insert_after() checks
+    /// `get_last_node() == prev_n`).
+    constexpr auto cache_if_last(NodePtr const node) noexcept -> void {
+        if constexpr (PackedOptions::CACHE_LAST) {
+            if (NodeTraits::get_next(node) == end_node()) {
+                m_last = node;
+            }
         }
     }
 

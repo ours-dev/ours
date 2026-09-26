@@ -491,3 +491,125 @@ Boost.Intrusive `slist_impl::iterator_to()`（`system/lib/boost.intrusive/includ
   `insert_after()` 的 `require(Algorithms::unique(node))` 对这类节点形同虚设。这是同一个判据的另一面：hook 不知道自己挂在
   哪种表里，只能看 next。后果只是漏检、不会误 trap，Boost 也是这样，没动。
 - repairs 第 5、6 条。
+
+## `CacheLast` 名副其实：末尾缓存按操作就地维护，`previous(end())` 直接读缓存（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/collections/intrusive/slist.hpp`
+  - 删掉每次修改后从表头走一遍的 `refresh_last()`，改为 `cache_if_last()`：insert、erase、splice 只问被动到的节点是否成了末尾；
+  - `swap()` 交换两边的缓存再修正空表；`reverse()` 在翻转前记下新的末尾；
+  - 新增 `previous_node()`，有缓存时 `previous(end())` 直接返回缓存；`splice_after(position, source)` 用 `source.last_node()` 代替 `source.previous(source.end())`。
+- `system/lib/ustl/test/slist_cache_last_test.cpp` — 新增：两张表对照普通 vector 模型的随机差分测试
+- `system/lib/ustl/BUILD.gn` — 新 `:slist-cache-last-test`，并入 `:tests`
+- `docs/repairs/260926/ustl.md` — 删掉第 5 条
+
+**症状**
+性能问题，潜伏：仓库里没有 `CacheLast` 的使用者。基准（`-O2`，20000 个元素，宿主机上跑）：
+
+| 配置 | `push_back()` × 20000 | `clear()` |
+|---|---|---|
+| 环形，不带缓存 | 127 ms | 0.01 ms |
+| 环形 + `CacheLast`，改前 | 118 ms | 112 ms |
+| 线性 + `CacheLast`，改前 | 130 ms | 113 ms |
+| 环形 + `CacheLast`，改后 | 0.02 ms | 0.01 ms |
+| 线性 + `CacheLast`，改后 | 0.02 ms | 0.03 ms |
+
+改前开了缓存，`push_back()` 和不开几乎一样慢，`clear()` 反而慢了一万倍。
+
+**原因**
+`CacheLast` 存在的理由只有一个：不带缓存时 `last_node()` 是 `get_previous_node(header(), end_node())`，要从表头走到末尾，
+`push_back()` 因此是 O(n)。ustl 缓存了 `m_last`，却在每次修改之后用同一种走法重新算它：
+
+```cpp
+constexpr auto refresh_last() noexcept -> void {
+    if constexpr (PackedOptions::CACHE_LAST) {
+        m_last = Algorithms::get_previous_node(header(), end_node());
+    }
+}
+```
+
+`insert_after()`、`erase_after_and_dispose()`、`splice_after()`（两次）、`swap()`（两次）、`reverse()` 都在最后调它。于是：
+
+- `push_back()` 读缓存是 O(1)，紧接着 `insert_after()` 里的 `refresh_last()` 又走了一遍，省下的全赔回去。
+- `clear()` 是一个一个 erase，每次 erase 都走一遍，整体 O(n²)。不开缓存时根本不走，所以开了反而慢了一万倍。
+- `sort()`、`merge()` 每移动一个元素就 splice 一次，也都变成了 O(n²)。
+- 另外两处该用缓存却没用：`previous(end())`（`insert(end(), ...)`、`splice(end(), ...)` 都靠它）和
+  `splice_after(position, source)` 找源表末尾，都在走表。
+
+为什么能 O(1) 就地维护：末节点就是后继为 end 节点的那个节点。一次操作只改动少数几个节点的后继，所以如果末节点变了，新的
+末节点一定是这几个节点之一，逐个问一下"你的后继是不是 end"就够了：
+
+- `insert_after()`：新插入的节点。
+- `erase_after()`：被删节点的前驱。
+- `splice_after()`：这段区间的最后一个节点（它可能成了目标表的末尾），以及 `before_first`（区间原来是源表的尾巴时，它成了源表
+  的末尾）。同一张表内部的 splice，两个问题问的是同一张表；什么也不动的 splice（`position == before_first`）两个都不会
+  变成末尾。所以不用分情况讨论。
+- `swap()`：两条链各自带着末节点换了主人，缓存跟着交换即可。唯一的例外是空表：空表缓存的是自己的表头，而表头不会换主人，
+  交换后要改回自己的表头。
+- `reverse()`：原来的第一个节点成为末尾，在翻转之前趁它还是表头的后继时记下来。
+
+**改法**
+改前，`insert_after()` 以 `refresh_last();` 结尾；改后：
+
+```cpp
+Algorithms::link_after(position.pointed_node(), node);
+increment_size();
+cache_if_last(node);
+```
+
+```cpp
+constexpr auto cache_if_last(NodePtr const node) noexcept -> void {
+    if constexpr (PackedOptions::CACHE_LAST) {
+        if (NodeTraits::get_next(node) == end_node()) {
+            m_last = node;
+        }
+    }
+}
+```
+
+`swap()` 改前两句 `refresh_last()`，改后：
+
+```cpp
+if constexpr (PackedOptions::CACHE_LAST) {
+    std::swap(m_last, other.m_last);
+    if (m_last == other.header()) {
+        m_last = header();
+    }
+    if (other.m_last == header()) {
+        other.m_last = other.header();
+    }
+}
+```
+
+`previous()` 的四个重载改走 `previous_node()`，它在有缓存且问的是 `end()` 时直接返回 `m_last`。
+
+否掉的方案：
+- **照 Boost 在每个操作里各写各的条件**（`insert_after()` 里判 `get_last_node() == prev_n`，splice 里分目标表、源表两种情况）：
+  对 insert 等价，但 splice 要区分目标表、源表、同一张表、什么也不动这几种情况，Boost 的 `priv_splice_after()` 就只处理了
+  两张不同的表。"后继是不是 end" 这个问法对所有操作都一样，不用分情况。
+- **只把 insert/erase 改成就地维护，swap、reverse、splice 保留 `refresh_last()`**：sort、merge 每个元素一次 splice，仍然是
+  O(n²)。
+
+**参照**
+Boost.Intrusive `slist_impl`（`system/lib/boost.intrusive/include/boost/intrusive/slist.hpp`）：`insert_after()` 的
+`if (get_last_node() == prev_n) set_last_node(n)`（`:832`）、`priv_splice_after()`、`priv_swap_cache_last()`、`reverse()`，
+以及 `previous()` 在 `cache_last` 下对 `end()` 的短路（`:1882-1890`）。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 成功；`host/obj/system/lib/ustl/` 下 90 个测试全部退出码 0（新测试 0.37 秒）。
+- 差分测试：3 个种子，每种配置跑 20000 步（环形/线性 × 带不带缓存），覆盖 insert_after、push_back、`insert(end())`、push_front、
+  erase_after、`erase(iterator_to())`、整表 splice、区间 splice（跨表、同表、什么也不动）、`splice(end())`、swap、reverse、sort、
+  merge、remove_if、移出再移回。每步之后比对内容，再 `push_back()` 一个探针，确认它落在末尾。
+- 反向验证做不了：改前的实现结果是对的，只是慢，用改前的头文件跑新测试照样通过。改做变异验证：在 scratch 副本里分别删掉
+  7 处维护中的一处（splice 的两句、erase、insert、swap 的空表修正、reverse、`previous(end())` 的短路改成返回 `from`），
+  新测试都在 50 步以内失败。
+- 两版四配置探针都通过；上面的基准表。
+- `clang-format` 无差异；`clang-tidy -p out/bringup.x86`（`--header-filter` 覆盖 `slist.hpp`，跑三个 slist 测试）零告警。
+- QEMU：release 镜像 30 秒，起到 shell，libc 自检通过。debug 镜像第一次 30 秒时 shell 没跑完：它停在 handle transfer 检查
+  之前，但 28 秒时仍有来自用户态的时钟中断，说明 shell 还在跑。日志几乎全是两个调试线程的 `I'm Thread`（26 万行，上一次
+  12 万行），宿主机负载约为 4。改跑 60 秒，137 行 shell 输出全部出齐，libc 自检通过，没有 panic/assert。内核里唯一的 `Slist`
+  使用者（lockdep 的 `LockContext`）不带 `CacheLast`，这次改动对它行为不变。
+
+**故意没做**
+- 不带缓存的表 `push_back()` 仍然 O(n)：要 O(1) 就是开 `CacheLast` 的用处。
+- 没给 `m_last` 加"缓存等于真实末尾"的调试断言：检查本身就是 O(n)，放进每次修改又回到了原来的问题；由差分测试守着。

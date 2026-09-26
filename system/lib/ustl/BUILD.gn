@@ -609,6 +609,12 @@ executable("sgtree-test") {
   deps = [ ":headers" ]
 }
 
+executable("slist-cache-last-test") {
+  testonly = true
+  sources = [ "test/slist_cache_last_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
 executable("slist-hook-headers-test") {
   testonly = true
   sources = [ "test/slist_hook_headers_test.cpp" ]
@@ -761,6 +767,7 @@ group("tests") {
     ":set-hook-test",
     ":set-test",
     ":sgtree-test",
+    ":slist-cache-last-test",
     ":slist-hook-headers-test",
     ":slist-hook-test",
     ":slist-iterator-headers-test",

@@ -1,20 +1,9 @@
 # ustl 待修项（2026-09-26）
 
-第 2 条是修 `Option<T &>` → `Option<T const &>` 时看到的；第 5、6 条是修线性 `Slist` 的 swap 时看到的，都不是那几次改动
-引入的（各次改动都见 `docs/changes/260926/ustl.md`）。第 1、3、4 条已修。按严重程度排，编号不重排。
+第 2 条是修 `Option<T &>` → `Option<T const &>` 时看到的；第 6 条是修线性 `Slist` 的 swap 时看到的，都不是那几次改动
+引入的（各次改动都见 `docs/changes/260926/ustl.md`）。第 1、3、4、5 条已修。按严重程度排，编号不重排。
 
 ---
-
-## 5. `CacheLast` 名不副实：每次插入、删除都从表头走一遍
-
-`CACHE_LAST` 的用处是让 `push_back()` 变成 O(1)。但 `insert_after()`、`erase_after_and_dispose()`、`splice_after()`、`swap()`、
-`reverse()` 最后都调 `refresh_last()`，而它是 `m_last = Algorithms::get_previous_node(header(), end_node())`，从表头走到末尾，
-O(n)。于是开了 `CacheLast` 之后，`push_back()` 读 `m_last` 是 O(1)，紧接着的 `refresh_last()` 又走一遍整表；而且每次修改
-都多走一遍。结果是对的，只是这个选项白开。
-
-Boost 按操作就地维护缓存：`insert_after()` 里 `if (get_last_node() == prev_n) set_last_node(n);`
-（`system/lib/boost.intrusive/include/boost/intrusive/slist.hpp:832`），`swap()` 走 `priv_swap_cache_last()`，只在确实需要时
-才重新找末尾。照这个把各操作里的 `refresh_last()` 换成就地更新。目前没有使用者。
 
 ## 2. 树容器里 12 处 `static_cast<T const &>` 已经多余（清理）
 
