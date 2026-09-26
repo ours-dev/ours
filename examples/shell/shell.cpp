@@ -316,8 +316,7 @@ auto check_channel_loopback() -> void {
 /// thousand deep, can be dropped from the top: the kernel frees it as a loop
 /// (Dispatcher::rc_recycle), not a thousand destructors deep on one stack.
 ///
-/// The vDSO entry points are called directly: ou's channel_write takes no
-/// handles.
+/// Through ou, whose channel_read and channel_write carry handles.
 auto check_handle_transfer() -> void {
     using ours::HandleValue;
     using ours::Status;
@@ -337,16 +336,14 @@ auto check_handle_transfer() -> void {
     }
 
     // d travels a -> b; what comes out of b is a new value for the same end.
-    ok &= expect("shell: write(a, handles = [d]) = ",
-                 ours_channel_write(a, ours::ChannelWriteOptions::None, nullptr, 0, &d, 1),
+    ok &= expect("shell: write(a, handles = [d]) = ", ou::channel_write(a, nullptr, 0, &d, 1),
                  Status::Ok);
     ok &= expect("shell: close(d) after sending it = ", ou::handle_close(d), Status::BadHandle);
     HandleValue got = ours::HANDLE_INVALID;
     u32 actual_bytes = 0;
     u32 actual_handles = 0;
     ok &= expect("shell: read(b) = ",
-                 ours_channel_read(b, ours::ChannelReadOptions::None, nullptr, &got, 0, 1,
-                                   &actual_bytes, &actual_handles),
+                 ou::channel_read(b, nullptr, 0, &actual_bytes, &got, 1, &actual_handles),
                  Status::Ok);
     ok &= actual_handles == 1 && got != ours::HANDLE_INVALID;
     ok &= expect("shell: write(c, ping) = ",
@@ -359,8 +356,7 @@ auto check_handle_transfer() -> void {
 
     // A channel sent through itself is refused -- and consumed like any
     // other handle in the array.
-    ok &= expect("shell: write(a, handles = [a]) = ",
-                 ours_channel_write(a, ours::ChannelWriteOptions::None, nullptr, 0, &a, 1),
+    ok &= expect("shell: write(a, handles = [a]) = ", ou::channel_write(a, nullptr, 0, &a, 1),
                  Status::NotSupported);
     ok &= expect("shell: close(a) after that = ", ou::handle_close(a), Status::BadHandle);
 
@@ -369,9 +365,9 @@ auto check_handle_transfer() -> void {
     HandleValue f = ours::HANDLE_INVALID;
     ok &= expect("shell: transfer channel_create(e, f) = ", ou::channel_create(&e, &f), Status::Ok);
     HandleValue const mixed[] = {e, HandleValue{0x7ffffff3}};
-    ok &= expect("shell: write(c, handles = [e, bad]) = ",
-                 ours_channel_write(c, ours::ChannelWriteOptions::None, nullptr, 0, mixed, 2),
-                 Status::BadHandle);
+    ok &=
+        expect("shell: write(c, handles = [e, bad]) = ", ou::channel_write(c, nullptr, 0, mixed, 2),
+               Status::BadHandle);
     ok &= expect("shell: close(e) after that = ", ou::handle_close(e), Status::BadHandle);
 
     // A thousand deep: each end queued in the next channel, then only the
@@ -383,8 +379,7 @@ auto check_handle_transfer() -> void {
         HandleValue writer = ours::HANDLE_INVALID;
         HandleValue holder = ours::HANDLE_INVALID;
         chain_ok &= ou::channel_create(&writer, &holder) == Status::Ok;
-        chain_ok &= ours_channel_write(writer, ours::ChannelWriteOptions::None, nullptr, 0, &inner,
-                                       1) == Status::Ok;
+        chain_ok &= ou::channel_write(writer, nullptr, 0, &inner, 1) == Status::Ok;
         chain_ok &= ou::handle_close(writer) == Status::Ok;
         inner = holder;
     }
