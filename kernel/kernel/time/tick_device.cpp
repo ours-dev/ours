@@ -279,28 +279,89 @@ auto TickDevice::switch_to_oneshot(ClockEventDevice::Handler handler) -> Status 
 ///
 ///  3. For a device emulating periodic mode in oneshot, the next tick is
 ///     armed. It is scheduled from the previous *deadline*, not from now, so
-///     interrupt latency does not accumulate into drift. If ticks were
-///     missed, the deadline lands in the past and program_event() clamps it
-///     to the device's minimum delta, so the lost ticks are made up one
-///     interrupt at a time; Linux instead loops here calling tick_periodic()
-///     once per missed tick, which is only worth it once jiffies feeds
-///     timekeeping.
+///     interrupt latency does not accumulate into drift.
+///
+/// Step 3 is also where missed ticks are made up, and *how* is what decides
+/// whether this handler is stable. When the handler runs more than a period
+/// late, "previous deadline plus one period" is already in the past. This
+/// used to be programmed anyway, with the forcing program_event() clamping it
+/// to the device's minimum delta -- so the missed tick was made up by another
+/// interrupt, a few microseconds later, and the next one by another after
+/// that. That only converges while one tick interrupt costs less than a
+/// period. Once it costs more, every make-up interrupt leaves the deadline
+/// further behind than it found it, interrupts arrive back to back, and the
+/// thread they land on gets the minimum delta between them and nothing else.
+/// Nothing in the loop sheds load, so it never recovers: this is what hung
+/// dbg_1's fault_probe, whose user thread on cpu0 was interrupted forever by
+/// ticks made expensive by a trace line per ring-3 interrupt and a serial
+/// port shared with three other CPUs.
+///
+/// So the next deadline is armed with LateDeadline::Reject, and a deadline
+/// that is already past comes back as TimeOut instead of as an interrupt. The
+/// missed period is then counted right here and the deadline moved on by one
+/// more, until it is ahead of now -- Linux's loop around
+/// clockevents_program_event(dev, next, false). However late this handler
+/// ran, the interrupt it leaves armed is in the future, and the time until it
+/// belongs to whatever was interrupted.
+///
+/// A missed period advances jiffies and nothing else. Linux calls the whole
+/// tick_periodic() per missed period, update_process_times() included,
+/// because its CPU-time accounting is tick-counted (account_process_tick()
+/// charges one TICK_NSEC per call). Nothing under on_tick() counts calls
+/// that way: the scheduler charges the clock delta since its last update,
+/// and the timer queue runs everything whose deadline is at or before now,
+/// so the one call above has already covered all the time that passed; a
+/// second call would find nothing to do. The profiler's tick source does
+/// count calls, and would record the one interrupted context several times
+/// over at one instant -- fabricated samples, not caught-up ones. And the
+/// loop must stay cheap to be sure to end. It ends because each pass costs a
+/// few instructions while moving the deadline a whole period; with on_tick()
+/// inside it, whose cost has no bound, it would end only while a tick costs
+/// less than a period -- the very condition whose failure this loop exists
+/// to survive, moved inside one interrupt with interrupts off.
+///
+/// jiffies itself does have to count every period: it is a count of periods,
+/// and it is what the local APIC is calibrated against.
+///
+/// The loop also relies on advancing jiffies not advancing the clock that
+/// program_event() measures "now" by. Linux guards the per-period
+/// tick_periodic() with timekeeping_valid_for_hres() for exactly this: with
+/// jiffies as the clocksource, each pass would move now along with the
+/// deadline and the loop would never get ahead. Here jiffies is not a
+/// ClockSource at all -- ClockSource::Default::init() is not implemented --
+/// and SteadyClock reads the HPET, or zero before one exists, which leaves
+/// every deadline ahead. Enrolling jiffies as a source is the change that
+/// would need that guard added here.
 auto TickDevice::handle_periodic_event(ClockEventDevice *device) -> void {
     auto const cpu = Cpu::id();
-    if (cpu == ClockSource::Default::CPUNUM) {
-        ClockSource::Default::advance_ticks(1);
-    }
+    auto const do_timer = [cpu] {
+        if (cpu == ClockSource::Default::CPUNUM) {
+            ClockSource::Default::advance_ticks(1);
+        }
+    };
 
+    // The deadline this interrupt answers, read before on_tick() as Linux
+    // reads dev->next_event before tick_periodic(): every later tick is
+    // counted from it, and nothing that on_tick() does may move that base.
+    auto next = device->next_event();
+
+    do_timer();
     TickSched::get().on_tick(SteadyClock::now());
 
     if (!device->is_mode_oneshot()) {
         return;
     }
 
-    auto const next = device->next_event() + NSEC_PER_TICK;
-    auto const status = device->program_event(next);
-    DEBUG_ASSERT(Status::Ok == status, "Failed to re-arm the emulated periodic tick on CPU[{}]",
-                 cpu);
+    for (;;) {
+        next += NSEC_PER_TICK;
+        auto const status = device->program_event(next, ClockEventDevice::LateDeadline::Reject);
+        if (Status::TimeOut != status) {
+            DEBUG_ASSERT(Status::Ok == status,
+                         "Failed to re-arm the emulated periodic tick on CPU[{}]", cpu);
+            return;
+        }
+        do_timer();
+    }
 }
 
 } // namespace ours::time

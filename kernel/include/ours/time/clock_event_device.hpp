@@ -46,6 +46,27 @@ class ClockEventDevice {
     };
     USTL_ENABLE_INNER_ENUM_BITMASK(Feature);
 
+    /// What program_event() does with a deadline it cannot meet -- one that
+    /// has already passed, or one the device refuses as too close.
+    ///
+    /// The two callers want opposite things from such a deadline, which is
+    /// why this is the caller's choice and not the device's. Linux spells
+    /// the same choice as clockevents_program_event()'s `force` argument.
+    enum class LateDeadline : u8 {
+        /// Arm the soonest interrupt the hardware can deliver instead. For a
+        /// caller whose only interest in a missed deadline is to be
+        /// interrupted about it as soon as possible: the timer queue, which
+        /// then runs whatever has expired. Linux's force = true.
+        Force,
+
+        /// Arm nothing and return Status::TimeOut. For a caller that has
+        /// something cheaper to do with a missed deadline than take an
+        /// interrupt for it: the emulated periodic tick, which counts the
+        /// missed period in place and moves on to the next one. Linux's
+        /// force = false, and its -ETIME.
+        Reject,
+    };
+
     struct Vtable;
 
     /// How good a tick source this device is, relative to the others on the
@@ -79,8 +100,12 @@ class ClockEventDevice {
     /// Configure the clock event device with the specified frequency and delta ticks.
     auto configure(usize frequency, Ticks min_delta, Ticks max_delta) -> void;
 
-    /// Program the clock event device to trigger an event at the specified time point.
-    auto program_event(TimePoint<> expired) -> Status;
+    /// Arms the device to interrupt at |expiry|. |late| says what happens when
+    /// that cannot be done as asked; see LateDeadline. Defaulted to Force
+    /// because that is what every caller but one wants, and the one exception
+    /// (TickDevice::handle_periodic_event) has to say so where it is written.
+    /// Linux's clockevents_program_event().
+    auto program_event(TimePoint<> expiry, LateDeadline late = LateDeadline::Force) -> Status;
 
     /// Switch the clock event device to a new state and modify its work mode.
     auto switch_mode(Mode target) -> Status;

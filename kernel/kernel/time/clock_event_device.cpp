@@ -116,14 +116,25 @@ auto ClockEventDevice::configure(usize freq, Ticks min_delta, Ticks max_delta) -
     m_max_delta = ticks_to_time(m_max_delta_ticks);
 }
 
-auto ClockEventDevice::program_event(TimePoint<> expiry) -> Status {
+auto ClockEventDevice::program_event(TimePoint<> expiry, LateDeadline late) -> Status {
     m_canary.verify<Self>();
 
     if (m_mode == Mode::Shutdown) {
         return Status::BadState;
     }
 
+    // Recorded even when the deadline is then rejected, as Linux records
+    // dev->next_event before it can return -ETIME: the device's next_event()
+    // is "the deadline last asked for", and the caller that is told TimeOut
+    // is about to ask for a later one anyway.
     m_next_event = expiry;
+
+    // A device that takes an absolute deadline is handed it as it is, under
+    // either policy, and its own answer is returned -- Linux's shortcut for
+    // CLOCK_EVT_FEAT_KTIME. It is the one that knows whether it can still
+    // meet the deadline, so a TimePoint driver that could be used to emulate
+    // the periodic tick must itself return TimeOut for one already past. No
+    // driver enrolls with Feature::TimePoint today.
     if (!!(m_feature & Feature::TimePoint)) {
         return set_next_event_time(expiry);
     }
@@ -132,21 +143,37 @@ auto ClockEventDevice::program_event(TimePoint<> expiry) -> Status {
     // now -- the real now, off the steady clock, not a default-constructed
     // TimePoint (which is the epoch, and turned every delta into an absolute
     // time that the clamp below then pinned at m_max_delta).
-    //
-    // A deadline already in the past is programmed at m_min_delta rather
-    // than rejected: the caller is the timer queue, which has no retry loop,
-    // and what it wants from a late deadline is an interrupt as soon as the
-    // hardware can deliver one. This is the `force` path of Linux's
-    // clockevents_program_event(); the clamp handles it because a negative
-    // delta is below m_min_delta.
     auto const now = SteadyClock::now();
+
+    // A deadline that is not ahead of now is refused before anything is
+    // written to the hardware, when the caller asked for that. Linux tests
+    // `delta <= 0` at the same point.
+    if (late == LateDeadline::Reject && expiry <= now) {
+        return Status::TimeOut;
+    }
+
+    // Under Force, a deadline already in the past is programmed at
+    // m_min_delta rather than rejected: the caller is the timer queue, which
+    // has no retry loop, and what it wants from a late deadline is an
+    // interrupt as soon as the hardware can deliver one. The clamp handles
+    // that because a negative delta is below m_min_delta. Under Reject only a
+    // deadline that is still ahead gets here, and the clamp can then only
+    // move it later, never earlier: a future deadline closer than the device
+    // can manage is armed at the closest it can.
     auto const delta = std::clamp(expiry - now, m_min_delta, m_max_delta);
 
-    auto status = set_next_event_tick(time_to_ticks(delta));
+    auto const status = set_next_event_tick(time_to_ticks(delta));
     if (Status::Ok == status) {
         return status;
     }
 
+    // The device refused -- the HPET does when the comparator write may have
+    // landed too late to match (see program_min_delta()). Under Reject that
+    // is the same verdict as a deadline already past and goes back to the
+    // caller unretried, as Linux's `(rc && force) ? ... : rc` does.
+    if (late == LateDeadline::Reject) {
+        return status;
+    }
     return program_min_delta();
 }
 
@@ -156,9 +183,10 @@ auto ClockEventDevice::program_event(TimePoint<> expiry) -> Status {
 /// A driver returns TimeOut when it cannot promise the interrupt it was just
 /// asked for -- the HPET does, because its comparator fires on equality and a
 /// comparator written late is missed rather than late. There is nobody above
-/// to retry: the timer queue programs and moves on, and the periodic tick
-/// asserts. So the retry lives here, and only failing every attempt is an
-/// error the caller sees.
+/// to retry: the timer queue programs and moves on. So the retry lives here,
+/// and only failing every attempt is an error the caller sees. Only
+/// LateDeadline::Force comes here; the emulated periodic tick asks with
+/// Reject and treats a refusal as a missed period of its own.
 ///
 /// The delta grows by one m_min_delta per attempt rather than doubling. What
 /// pushes an attempt over the edge is an interrupt or an SMI landing in the
