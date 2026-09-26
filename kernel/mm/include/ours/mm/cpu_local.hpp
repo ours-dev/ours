@@ -7,11 +7,15 @@
 #include <ours/assert.hpp>
 #include <ours/cpu.hpp>
 #include <ours/cpu_mask.hpp>
+#include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local_defs.hpp>
+#include <ours/task/types.hpp>
 
 #include <array>
 #include <new>
+#include <tuple>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <ustl/function/invoke.hpp>
 #include <ustl/traits/is_invocable.hpp>
 #include <ustl/util/move.hpp>
@@ -112,6 +116,9 @@ class CpuLocal {
     static auto init_percpu(CpuNum cpu) -> void;
 
     class ScopedInstall;
+
+    template <typename T, typename... Options>
+    class Pinned;
 
     /// The two below take a CPU_LOCAL variable and reach *this CPU's copy*.
     /// The x86 contract is that %gs holds `offset(cpu)`, so the displacement is
@@ -325,6 +332,12 @@ class CpuLocal {
 
     static auto free_raw(VirtAddr handle, usize size) -> void;
 
+    /// What a Pinned holds for the option |Option|, as `Type`. Specialised
+    /// after Pinned, once per option; left undefined otherwise, so an option
+    /// with no saver fails to compile instead of saving nothing.
+    template <typename Option>
+    struct PinnedSaver;
+
     static Mapper *MAPPER;
     static Dyn *DYN;
 
@@ -512,6 +525,162 @@ auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
 
     return PerCpu<T>(handle, n);
 }
+
+/// The calling CPU's copy of a per-CPU object, for a scope in which the
+/// caller cannot be moved off this CPU or have that copy changed under it.
+///
+/// access(), with_current(), current_cpu() and PerCpu::ref_mut() work out
+/// which CPU is running once, when they are called, and hand the answer back.
+/// Nothing keeps it true afterwards. The kernel preempts on interrupt exit --
+/// arch_handle_exception() calls Thread::Current::preempt() -- so between the
+/// call and the last use of its result the thread can be switched out, and
+/// then either resume on another CPU still holding the first one's copy,
+/// racing that CPU's own code on it, or resume where it was to find that the
+/// thread which ran in between changed the copy under it. Protecting the
+/// scope afterwards does not help: the resolve itself is the moment that has
+/// to be covered. MemCache::allocate() gets it right by hand -- an
+/// AutoPreemptDisabler first, then ptr_mut() -- and nothing but care keeps
+/// the next caller from writing the two lines the other way round.
+///
+/// This object does both in the one order that works, and does not let them
+/// be separated. The savers are its first member, so interrupts are off or
+/// preemption is held -- whichever |Options| ask for -- before the
+/// constructor resolves anything, and they are destroyed last, once the
+/// reference is gone. There is no way to get the reference without the
+/// protection.
+///
+/// |Options| are the tags a lock's Guard takes, from <ours/lockdep.hpp>,
+/// meaning what they mean on a spin lock, and at least one is required for
+/// the reason Guard<SpinLock> requires one: without an option this would be
+/// access() with extra steps.
+///
+///   - PreemptDisable: only threads touch the object. Other threads on this
+///     CPU are held off; interrupts still arrive. It goes through the current
+///     thread's PreemptionState, so it cannot be used before the first
+///     thread exists.
+///   - IrqSave: an interrupt handler touches it too. Interrupts off also
+///     means no preemption, and this is the one option usable before the
+///     first thread exists.
+///   - IrqSaveAndPreemptDisable: as IrqSave, for a scope that may wake a
+///     thread, so that the reschedule the wake asks for waits for the scope
+///     to end -- the same rule spin_lock.hpp gives for its Guard.
+///
+/// Two things are outside what it can cover.
+///
+///   - Other CPUs. access(t, cpu), for_each() and fold() reach this copy from
+///     elsewhere without asking. An object they write still needs a lock or
+///     atomics; pinning only settles which copy is *this* CPU's.
+///   - Blocking. Holding preemption off does not stop a thread that sleeps
+///     from switching away (see AutoPreemptDisabler), and it may be woken on
+///     another CPU. Debug builds check on the way out that the thread is still
+///     on the CPU it was pinned to, which catches that after the fact.
+///
+/// And not every per-CPU read needs it. A value that is the same for the
+/// calling thread whichever CPU it reads it on -- the current thread pointer
+/// is the case in point: every CPU's slot holds whoever is running there --
+/// needs only to be read in one instruction, with CpuLocal::read(). Pinning
+/// is for a copy the caller goes on using, where the CPU it belongs to
+/// matters. Linux reads `current` the same way, with a single %gs load
+/// (this_cpu_read_stable()) and no preempt_disable().
+///
+/// Linux counterparts: get_cpu_ptr()/put_cpu_ptr(), which is
+/// preempt_disable() and then this_cpu_ptr() in that order, and
+/// local_lock_irqsave() for the interrupt case. Zircon's is
+/// percpu::WithCurrentPreemptDisable() (kernel/include/kernel/percpu.h),
+/// which takes a callback where this takes a scope.
+template <typename T, typename... Options>
+class CpuLocal::Pinned {
+    static_assert(sizeof...(Options) > 0,
+                  "CpuLocal::Pinned needs an option: PreemptDisable, IrqSave or "
+                  "IrqSaveAndPreemptDisable; with none it protects nothing");
+
+  public:
+    /// The calling CPU's copy of a CPU_LOCAL variable.
+    FORCE_INLINE
+    explicit Pinned(T &var)
+        : m_savers(), m_cpu(CpuLocal::current_cpu()), m_object(&CpuLocal::access(var, m_cpu)) {}
+
+    /// The calling CPU's copy of a dynamic allocation.
+    FORCE_INLINE
+    explicit Pinned(PerCpu<T> &percpu)
+        : m_savers(), m_cpu(CpuLocal::current_cpu()), m_object(&percpu.ref_mut(m_cpu)) {}
+
+    /// The body runs before any member is destroyed, so the check is made
+    /// while the savers are still holding: the CPU seen here is the one the
+    /// whole scope ran on unless the scope itself gave the CPU away.
+    FORCE_INLINE
+    ~Pinned() {
+        DEBUG_ASSERT(CpuLocal::current_cpu() == m_cpu,
+                     "Pinned to CPU[{}] but leaving on CPU[{}]: the scope blocked", m_cpu,
+                     CpuLocal::current_cpu());
+    }
+
+    FORCE_INLINE
+    auto operator*() const -> T & {
+        return *m_object;
+    }
+
+    FORCE_INLINE
+    auto operator->() const -> T * {
+        return m_object;
+    }
+
+    /// The CPU whose copy this is, which is also the CPU the caller is on for
+    /// as long as the object lives.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto cpu() const -> CpuNum {
+        return m_cpu;
+    }
+
+  private:
+    USTL_NO_MOVEABLE_AND_COPYABLE(Pinned);
+
+    /// Declared first because members are initialised in declaration order
+    /// and destroyed in reverse: this is what puts the savers' construction
+    /// ahead of the resolve below and their destruction after everything
+    /// else. Moving it down would resolve with nothing held.
+    ///
+    /// One saver per option, from CpuLocal::PinnedSaver.
+    [[no_unique_address]]
+    std::tuple<typename CpuLocal::PinnedSaver<Options>::Type...> m_savers;
+
+    CpuNum m_cpu;
+    T *m_object;
+};
+
+/// The savers a CpuLocal::Pinned holds for each option: the same types a
+/// Guard<SpinLock, ...> holds for the same tag (see spin_lock.hpp), so an
+/// option means one thing whether it guards a lock or pins a CPU.
+///
+/// Spelled out here rather than obtained from lockdep's own lookup, which is
+/// that library's machinery for its Guard and not an interface for others to
+/// build on.
+///
+/// task::AutoPreemptDisabler is incomplete here and cannot be completed --
+/// its header includes thread.hpp, which includes this one. Naming it in an
+/// alias needs no more than the declaration in <ours/task/types.hpp>, and a
+/// Pinned<T, PreemptDisable> needs <ours/task/auto_preempt_disabler.hpp>
+/// where it is used, as a Guard<SpinLock, PreemptDisable> does.
+///
+/// IrqSaveAndPreemptDisable is a tuple for the order it destroys in, the
+/// same as SpinLock's: preemption is re-enabled first, so a reschedule that
+/// was held back runs with interrupts still off, and interrupts come back
+/// last.
+template <>
+struct CpuLocal::PinnedSaver<IrqSave> {
+    using Type = ::arch::AutoInterruptDisabler;
+};
+
+template <>
+struct CpuLocal::PinnedSaver<PreemptDisable> {
+    using Type = task::AutoPreemptDisabler;
+};
+
+template <>
+struct CpuLocal::PinnedSaver<IrqSaveAndPreemptDisable> {
+    using Type = std::tuple<::arch::AutoInterruptDisabler, task::AutoPreemptDisabler>;
+};
 
 template <typename T, typename... Options>
 class CpuLocal::Current {

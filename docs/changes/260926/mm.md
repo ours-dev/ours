@@ -268,3 +268,138 @@ PT[0xD0]    = 0x800000001FDC8161  P=1 RW=0
   `tighten_init_rodata()` 的注释里。
 - 没有给 `.init.rodata` 之外的段加同类收紧。清单里其它 `rw-` 的段（`.data`、`.bss`、
   `.init.data`）本来就该可写。
+
+## `CpuLocal::Pinned`：先关抢占/中断、再取本 CPU 那份，两步绑成一个对象（2026-09-26）
+
+**文件**
+- `kernel/mm/include/ours/mm/cpu_local.hpp` — 新增 `CpuLocal::Pinned<T, Options...>`，
+  以及它每个选项对应的 saver（私有的 `CpuLocal::PinnedSaver`）。
+
+**症状**
+潜伏，而且是一类问题而不是一个 bug：`CpuLocal` 取「当前 CPU 那份」的接口
+（`access()`、`with_current()`、`current_cpu()`、`PerCpu::ref_mut()`/`ptr_mut()`）
+自己既不关抢占也不关中断，只在被调用的那一刻算一次「现在是哪个 CPU」，把答案交出去。
+调用者如果没在取之前先把抢占或中断关掉，拿到的引用在下一条指令就可能已经不是
+「本 CPU 的」了。现在没有观察到的故障，这次也不改任何调用点。
+
+**原因**
+内核在内核态会被抢占：`arch_handle_exception()`（`kernel/arch/x86/kernel/faults.cpp`）
+在中断收尾时，只要 `irq::handle_irq_postamble()` 说 `PreemptionState` 允许、而且有挂着
+的本地调度请求，就调 `Thread::Current::preempt()`。于是「取本 CPU 那份」和「最后一次用它」
+之间只要开着抢占，就有两种坏法：
+
+1. 线程被换下，之后在**另一个 CPU** 上接着跑，手里还拿着原来那个 CPU 的那份，
+   和那个 CPU 自己的代码同时改它；
+2. 线程没被迁走，但中间跑过的**同一个 CPU 上的另一个线程**改了同一份，
+   回来时这边的读-改-写基于的是旧值。
+
+关键在于「取」这个动作本身就必须处在保护里。先取后保护是没用的——保护开始之前那几条
+指令就是窗口。`MemCache::allocate()` 现在是手写对的（先 `AutoPreemptDisabler`，再
+`ptr_mut()`），但只是靠写的人小心，把两行写反，编译器和运行时都不会说什么。
+
+单独的 `CpuLocal::read()`/`write()` 不在此列：它们各是一条 `%gs` 相对寻址指令，
+执行中不会被切走。但 `read()` 接 `write()` 是两条指令，那是非原子的读-改-写。
+
+**改法**
+加一个 RAII 对象，让「保护」和「取」无法分开，顺序也无法写反：
+
+```cpp
+// 改前：顺序靠调用者自觉（MemCache::allocate() 的写法）
+task::AutoPreemptDisabler preempt_disabler{};
+...
+return allocate(gaf, nid, m_cpu_caches.ptr_mut());
+```
+
+```cpp
+// 改后：构造时先关，再取；析构时先放引用，再开
+CpuLocal::Pinned<CpuCache, PreemptDisable> cache{m_cpu_caches};
+cache->...;
+```
+
+核心是成员声明顺序：
+
+```cpp
+template <typename T, typename... Options>
+class CpuLocal::Pinned {
+    ...
+    explicit Pinned(PerCpu<T> &percpu)
+        : m_savers(), m_cpu(CpuLocal::current_cpu()), m_object(&percpu.ref_mut(m_cpu)) {}
+
+    ~Pinned() {
+        DEBUG_ASSERT(CpuLocal::current_cpu() == m_cpu, ...);
+    }
+    ...
+  private:
+    [[no_unique_address]]
+    std::tuple<typename CpuLocal::PinnedSaver<Options>::Type...> m_savers;  // 必须第一个
+    CpuNum m_cpu;
+    T *m_object;
+};
+```
+
+成员按声明顺序构造、逆序析构，所以 saver 一定在 `current_cpu()` 之前生效、在一切之后
+才撤。反汇编确认过：`PreemptDisable` 版本在读 `CURRENT_CPUNUM` 之前先把当前线程的
+抢占计数加一；`IrqSave` 版本是 `pushf; cli` 之后才读，`push; popf` 在最后。
+
+选项沿用 `Guard` 的标签（`<ours/lockdep.hpp>` 里的 `PreemptDisable`、`IrqSave`、
+`IrqSaveAndPreemptDisable`），含义与它们在自旋锁上一样；每个标签对应的 saver 也和
+`spin_lock.hpp` 里 `Guard<SpinLock, ...>` 用的是同样的类型：
+
+| 选项 | saver | 用在 |
+|---|---|---|
+| `PreemptDisable` | `task::AutoPreemptDisabler` | 只有线程会碰的数据 |
+| `IrqSave` | `arch::AutoInterruptDisabler` | 中断处理函数也会碰；第一个线程存在之前唯一能用的 |
+| `IrqSaveAndPreemptDisable` | 两者的 `std::tuple` | 作用域里可能唤醒线程，要把调度推迟到作用域结束 |
+
+至少要一个选项，和 `Guard<SpinLock>` 必须带选项同理：不带选项就等于 `access()`。
+不认识的选项撞上 `PinnedSaver` 未定义的主模板，编译失败，而不是悄悄什么都不存。
+
+被否掉的做法：
+
+- **通过 `lockdep::StateSaver` 去查 saver**（第一版就是这么写的，在 `ours::mm` 里为
+  `Pinned` 手写 `lockdep_get_state_saver()` 声明，靠 ADL 查到）。按开发者的意见改掉了：
+  `StateSaver` 是 lockdep 给它自己的 `Guard` 用的内部机制，不是让别的模块搭在上面的接口。
+  现在在 `CpuLocal` 里私有地列出三条映射。
+- **在 `sync::LocalLock` 上套一个 `Guard` 再取引用**。`LocalLock` 就是 Linux `local_lock`
+  的对应物，语义很贴，但 lockdep 目前按锁的类型分类（`DefaultLockClass`），所有
+  `LocalLock` 是同一个类：嵌套两个 `Pinned` 会被报成重复获取，不同 `Pinned` 与别的锁之间
+  的先后也会被混成一条依赖边，报出假的环。关抢占本身不会死锁，没必要让 lockdep 管它。
+- **不要求选项、默认关抢占**。第一个线程建起来之前关抢占用不了（要经过当前线程的
+  `PreemptionState`），而中断里也会碰的数据只关抢占又不够，默认值总会对一部分调用者是错的。
+
+不是所有 per-CPU 读都要 `Pinned`：对调用线程来说「在哪个 CPU 上读都一样」的值——典型的
+是当前线程指针，每个 CPU 的槽里放的都是正在那里跑的线程——只要一条指令读完
+（`CpuLocal::read()`）就行。`Pinned` 是给「拿到之后还要接着用、而且属于哪个 CPU 很要紧」
+的那份用的。这一点写进了 `Pinned` 的注释。
+
+**参照**
+- Linux `get_cpu_ptr()`/`put_cpu_ptr()`（`include/linux/percpu-defs.h`）：
+  `preempt_disable()` 之后才 `this_cpu_ptr()`，顺序和这里一样；中断场景对应
+  `local_lock_irqsave()`（`include/linux/local_lock.h`）。
+- Linux `current`：x86 的 `get_current()`（`arch/x86/include/asm/current.h`）是一条
+  `%gs` load（`this_cpu_read_stable()`，字段名随版本变过），不关抢占——就是上面
+  「不需要 Pinned」那一类。
+- Zircon `percpu::WithCurrentPreemptDisable()`（`zircon/kernel/include/kernel/percpu.h`），
+  回调形式；这里用作用域对象，是因为调用点往往要在同一作用域里多次使用那份数据。
+
+**验证**
+- 构建通过；`clang-format` 干净；`clang-tidy` 在新增行上无诊断（`cpu()` 按提示加了
+  `[[nodiscard]]`）。
+- 仓库里还没有调用者，所以写了一个临时 TU（不入库），用 `object_cache.cpp` 在
+  `kernel_x86.dbg.0`/`dbg.1` 下的真实编译参数编译：三种选项、`CPU_LOCAL` 变量和
+  `PerCpu<T>` 两种来源都实例化通过；故意传一个非标签类型报
+  `implicit instantiation of undefined template 'ours::mm::CpuLocal::PinnedSaver<NotATag>'`，
+  不传选项报 `static_assert` 的那句说明。反汇编核对了上面说的保护先于取值。
+- 两个镜像 QEMU 实测都跑到 `--- end ---`：dev 上 `init: shell closed its channel`、
+  `512 channels made before the quota`；dbg_1 上 `probes done (11 killed, 0 survived)`、
+  `bootfs checks passed`。dbg_1 在 25 秒窗口里没跑完、放到 50 秒跑完；这次改动只加了一个
+  未实例化的模板，不改变生成的代码。
+- 运行时行为（包括析构里「没有被迁走」的断言）要等第一个调用点换过来才真正跑到，**未实测**。
+
+**故意没做**
+- 没改任何调用点。哪些地方真的需要换成 `Pinned`，要看逐个调用点的审计结果，一处一处改。
+- 没给 `access()`/`current_cpu()` 加 Linux `debug_smp_processor_id()` 那种「抢占开着就报警」
+  的调试检查。调用点没换完之前加，会在大量现有路径上直接触发。
+- 没管别的 CPU 通过 `access(t, cpu)`/`for_each()`/`fold()` 访问这份数据的情况：那需要锁或
+  原子操作，`Pinned` 只解决「哪一份是本 CPU 的」。
+- 没加 Linux `this_cpu_add()` 那种单指令的 per-CPU 读-改-写原语。
