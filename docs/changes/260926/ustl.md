@@ -613,3 +613,57 @@ Boost.Intrusive `slist_impl`（`system/lib/boost.intrusive/include/boost/intrusi
 **故意没做**
 - 不带缓存的表 `push_back()` 仍然 O(n)：要 O(1) 就是开 `CacheLast` 的用处。
 - 没给 `m_last` 加"缓存等于真实末尾"的调试断言：检查本身就是 O(n)，放进每次修改又回到了原来的问题；由差分测试守着。
+
+## `slist.hpp` 里 `NoSize`/`NoLast` 的注释删掉已经不存在的 Slab 用法（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/collections/intrusive/slist.hpp` — `NoSize`/`NoLast` 上的注释
+- `docs/repairs/260926/ustl.md` — 删掉第 6 条
+
+**症状**
+注释说错了，不影响代码。
+
+**原因**
+注释用 Slab 当 `[[no_unique_address]]` 的理由："Slab embeds an `Slist<Object, ConstantTimeSize<false>>` in a page-frame
+descriptor and static_asserts that it is one pointer wide (see kernel/mm/slab.hpp)"。现在 `kernel/mm/slab.hpp` 用的是裸的
+free-list 指针，全仓库只剩这段注释提到这个用法，读的人会去找一个不存在的约束。
+
+同一段的第一句"every read and write of m_size/m_last already goes through an `if constexpr` guarded helper"在上一条改动之后
+也不准了：`swap()` 和 `reverse()` 是在 `if constexpr` 块里直接读写 `m_last` 的，并没有经过辅助函数。
+
+**改法**
+改前：
+
+```cpp
+/// Placeholders for the two optional members below. Every read and
+/// write of m_size/m_last already goes through an `if constexpr`
+/// guarded helper, so when an option is off the member only has to
+/// stop occupying space -- which [[no_unique_address]] does for an
+/// empty type.
+///
+/// This matters to more than footprint: Slab embeds an
+/// Slist<Object, ConstantTimeSize<false>> in a page-frame descriptor
+/// and static_asserts that it is one pointer wide (see
+/// kernel/mm/slab.hpp).
+```
+
+改后：
+
+```cpp
+/// Placeholders for the two optional members below. Every read and
+/// write of m_size/m_last sits behind an `if constexpr` on its option,
+/// so when an option is off the member only has to stop occupying
+/// space -- which [[no_unique_address]] does for an empty type.
+```
+
+逐个核对过：`m_size`、`m_last` 的每一处读写都在它那个选项的 `if constexpr` 里。
+
+**参照**
+无，文档修正。
+
+**验证**
+`clang-format` 无差异；`prebuilt/ninja/ninja -C out/bringup.x86` 成功；90 个 ustl 测试全部退出码 0。只改注释，编译产物不变，
+没跑 QEMU。
+
+**故意没做**
+无。

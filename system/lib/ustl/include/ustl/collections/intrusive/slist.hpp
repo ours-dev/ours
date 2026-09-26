@@ -731,15 +731,9 @@ class Slist final {
     }
 
     /// Placeholders for the two optional members below. Every read and
-    /// write of m_size/m_last already goes through an `if constexpr`
-    /// guarded helper, so when an option is off the member only has to
-    /// stop occupying space -- which [[no_unique_address]] does for an
-    /// empty type.
-    ///
-    /// This matters to more than footprint: Slab embeds an
-    /// Slist<Object, ConstantTimeSize<false>> in a page-frame descriptor
-    /// and static_asserts that it is one pointer wide (see
-    /// kernel/mm/slab.hpp).
+    /// write of m_size/m_last sits behind an `if constexpr` on its option,
+    /// so when an option is off the member only has to stop occupying
+    /// space -- which [[no_unique_address]] does for an empty type.
     struct NoSize {};
     struct NoLast {};
 
