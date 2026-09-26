@@ -20,21 +20,41 @@ auto Aspace::map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags)
         return alloc_page_table(size, alignment);
     };
 
-    if constexpr (DUAL_ASPACE) {
-        auto upper_result =
-            UpperPaging::map(m_upper_pgd, PhysToTable(), allocator, va, pa, n, flags);
-        if (!upper_result) {
-            return ustl::err(upper_result.unwrap_err());
+    // One root (x86, RISC-V): the root table's low entries translate the lower
+    // half and its high ones the upper, so every address -- kernel half
+    // included -- is looked up through that one table.
+    if constexpr (!DUAL_ASPACE) {
+        return LowerPaging::map(m_lower_pgd, PhysToTable(), allocator, va, pa, n, flags);
+    } else {
+        // Two roots (arm64: TTBR0 for the lower half, TTBR1 for the upper), and
+        // the hardware sends an address to exactly one of them.  This used to
+        // map every range into *both* tables, indexing each by the same low
+        // bits of the address, which produced two wrong mappings at once: the
+        // identity map of low RAM also landed in the upper root, giving the
+        // kernel half a phantom alias of low physical memory, and the kernel's
+        // upper-half mappings also landed in the lower root, i.e. inside the
+        // user half.  It was also not unwind-safe -- an upper map that
+        // succeeded stayed in the table when the lower one then failed.
+        if (n == 0) {
+            return ustl::ok();
         }
-    }
+        // Guard the multiplication before computing the last byte's address.
+        if (n > (~usize{0}) / PAGE_SIZE) {
+            return ustl::err(MapError::InvArgs);
+        }
+        auto const last = va + (n * PAGE_SIZE - 1);
+        // Wrapped past the top of the address space, or straddling the two
+        // halves: no single root can hold the range, and splitting it across
+        // both is the bug above, so refuse it rather than guess.
+        if (last < va || is_upper(va) != is_upper(last)) {
+            return ustl::err(MapError::InvArgs);
+        }
 
-    auto result = LowerPaging::map(m_lower_pgd, PhysToTable(), allocator, va, pa, n, flags);
-    if (!result) {
-        return ustl::err(result.unwrap_err());
+        if (is_upper(va)) {
+            return UpperPaging::map(m_upper_pgd, PhysToTable(), allocator, va, pa, n, flags);
+        }
+        return LowerPaging::map(m_lower_pgd, PhysToTable(), allocator, va, pa, n, flags);
     }
-    DEBUG_ASSERT(result, "Failed to map");
-
-    return ustl::ok();
 }
 
 auto Aspace::unmap(VirtAddr va, usize n) -> Status {

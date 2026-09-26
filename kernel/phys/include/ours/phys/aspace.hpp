@@ -26,6 +26,20 @@ class PHYS_EXPORT Aspace {
 
     static constexpr auto DUAL_ASPACE = !std::is_same_v<LowerPaging, UpperPaging>;
 
+    /// Which of the two roots translates |va| when there are two (DUAL_ASPACE).
+    ///
+    /// A two-root scheme describes its lower half as AlwaysZero and its upper
+    /// half as AlwaysOne (arch::paging::VirtAddrExt), so the unaddressable
+    /// bits -- and therefore the top bit -- are what tell the halves apart;
+    /// the static_assert below this class holds the two paging schemes to that.
+    /// arm64 itself selects TTBR0 or TTBR1 by bit 55 of the address rather
+    /// than bit 63, but the two agree on any address whose top-byte tag is
+    /// zero, and phys maps nothing tagged.
+    [[nodiscard]]
+    static constexpr auto is_upper(VirtAddr const va) -> bool {
+        return (va >> 63) != 0;
+    }
+
     auto init() -> void {
         using LowerPagingTraits = LowerPaging::PagingTraits;
         m_lower_pgd =
@@ -41,7 +55,7 @@ class PHYS_EXPORT Aspace {
         m_upper_pgd =
             alloc_page_table(UpperPagingTraits::SIZE_OF_TABLE<UpperPagingTraits::PAGING_LEVEL>,
                              UpperPagingTraits::TABLE_ALIGNMENT);
-        DEBUG_ASSERT(m_lower_pgd, "");
+        DEBUG_ASSERT(m_upper_pgd, "");
     }
 
     auto map(VirtAddr va, usize n, PhysAddr pa, MmuFlags flags) -> ustl::Result<void, MapError>;
@@ -110,6 +124,21 @@ class PHYS_EXPORT Aspace {
     PhysAddr m_allocation_lower_bound;
     PhysAddr m_allocation_upper_bound;
 };
+
+/// is_upper() reads the top bit to pick a root, which is only sound if the two
+/// roots really do split the space by that bit: a lower scheme that addressed
+/// anything with the top bit set, or an upper one that addressed anything with
+/// it clear, would send addresses to the wrong table.  This lives at namespace
+/// scope rather than inside map(): map() is not a template, so the branch that
+/// `if constexpr` discards is still parsed and its static_asserts still fire,
+/// and a single-root arch (x86, VirtAddrExt::Canonical) would fail to build.
+static_assert(!Aspace::DUAL_ASPACE ||
+                  (Aspace::LowerPaging::PagingTraits::VIRT_ADDR_EXT ==
+                       arch::paging::VirtAddrExt::AlwaysZero &&
+                   Aspace::UpperPaging::PagingTraits::VIRT_ADDR_EXT ==
+                       arch::paging::VirtAddrExt::AlwaysOne),
+              "DUAL_ASPACE requires the lower and upper paging schemes to split "
+              "the address space by the top bit");
 
 /// Provided by architecture-specific code.
 auto arch_setup_aspace(Aspace &aspace) -> void;
