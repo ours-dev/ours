@@ -101,3 +101,75 @@ A k:rodata  : [0xFFFFFF88400FE000, 0x1000]     <- .ccrt_init，RELRO
   `enrol_handoff_mappings()` 里，靠近真正依赖它的地方。
 - 没有把 `k:physmap`/`k:cpulocal` 也变成某种「内核自己的清单」结构。两条常量用一张
   两行的表表达就够了，再抽象一层只会多一个要读的间接层。
+
+## `INIT_CONST` 改名 `INIT_RODATA`，`const` 由人手写（2026-09-26）
+
+**文件**
+- `kernel/include/ours/init.hpp` — `INIT_CONST` → `INIT_RODATA`，`MEM_INIT_CONST` → `MEM_INIT_RODATA`
+- `kernel/mm/init_vmm.cpp` — 唯一的使用点补上 `const`
+
+**症状**
+潜伏。`INIT_CONST` 的展开只是一个链接段属性：
+
+```c
+#define INIT_SECTION(name) LINK_SECTION(".init." name)
+#define INIT_CONST         INIT_SECTION("rodata")
+```
+
+它不带 `const`。全树唯一的使用点是 `kernel/mm/init_vmm.cpp` 那张预设 VMA 表
+（原 `PHYS_VMOS`，现 `PRESET_VMAS`），一直是个**可写数组**，名字是唯一暗示它只读的东西。
+
+**原因**
+这是从「`.init.rodata` 段为什么是 `WA` 而不是只读」查出来的。那个输出段有三个可写贡献者，
+这张表是其中之一，也是唯一纯属漏掉的一个（另两个见下）。
+
+宏改名而不是让宏发出 `const`，理由不是风格，是**宏做不到**：宏只能前置，而前置的 `const`
+绑到被指物。对指针声明它产生的是
+
+```c
+const int *p    // 可变的指针，指向常量数据
+```
+
+而作者要的是
+
+```c
+int *const p    // 只读的指针
+```
+
+也就是说，这个宏恰好会在「constness 最要紧」的那些声明上静默地给出错的东西，
+只在「手写 `const` 本来就不费事」的简单情形下是对的。所以关键字留在声明处，
+由写它的人放到正确的那一侧。`INIT_CODE`/`INIT_DATA` 本来也只是段名，`INIT_RODATA`
+和它们对齐。
+
+**改法**
+宏改名，使用点写成 `PhysVma const PRESET_VMAS[]`。`MEM_INIT_CONST` 一起改名
+（它当前没有使用点，但留一个旧名字就是留一个下次被复制的坏名字）。
+
+**参照**
+无，本项目自有约定。同一条约定的前一次是 `FORCE_INLINE` 不许把 `inline` 打包进去
+（见 `system/public/ours/compiler.hpp`）：属性宏只展开成属性。
+
+**验证**
+- `out/bringup.x86`、`out/numa.x86` 两个配置构建通过，两个镜像启动到 shell 全部检查通过，
+  numa 7 个 AP 全 online，无 fault / panic / 断言失败。
+- **段权限没有变，仍是 `WA`**，这一点要说清楚不要误以为修好了。查了 `init_vmm.cpp.o`：
+
+```
+[271] .init.rodata      PROGBITS  ...  WA
+[272] .rela.init.rodata RELA      ...
+      R_X86_64_64  .rodata.str1.1 + 741
+      R_X86_64_64  .rodata.str1.1 + 74b
+```
+
+表里的 `char const *name` 需要重定位，而内核是 DYN 镜像，所以工具链必须把段标成可写。
+`const` 加的是**编译期**保证（谁写它就编译不过），不是硬件保证。
+
+**故意没做**
+- 没有让 `.init.rodata` 真的只读。试过两条，这个 lld 都不行：输出段属性 `(READONLY)`
+  报 `symbol not found: READONLY`；把输出段改名 `.data.rel.ro.init` 想蹭 RELRO 也没用
+  （`.ccrt_init` 能进 RELRO 靠的是 `INIT_ARRAY` 段类型，不是名字）。
+  剩下的办法是内核自己把 `[__init_rodata_start, __init_rodata_end)` 重新保护成只读——
+  这里**不需要** RELRO，因为 `fix_mapping()` 的重定位走的是镜像物理页的恒等映射，
+  最终映射从来不需要可写。这是单独一条，留在待修项里。
+- 没有动 `.gktl.init_hook` 和 `.task.schedules` 这两个可写贡献者。它们的条目里有函数指针，
+  同样是重定位的缘故，不是漏加 `const`（两者本来就是 `const`/`constexpr`）。

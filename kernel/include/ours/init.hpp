@@ -14,17 +14,31 @@
 /// The data marked this just used on boot time.
 #define INIT_DATA INIT_SECTION("data")
 
-/// The read only data marked this just read on boot time.
-#define INIT_CONST INIT_SECTION("rodata")
+/// Boot-time data that is only read. The section, and only the section --
+/// `const` belongs at the declaration.
+///
+/// Named for what it does, like INIT_CODE and INIT_DATA above. It was
+/// INIT_CONST, which claimed a constness it never conferred: its one user was
+/// a plainly mutable array, and the name was the only thing suggesting
+/// otherwise.
+///
+/// Teaching it to emit `const` was the other way out, and it does not work. A
+/// macro can only prepend, and a leading `const` binds to the pointee: given a
+/// pointer declaration it produces `const int *p` -- a mutable pointer to
+/// constant data -- where the author wanted `int *const p`. It would be
+/// silently wrong for exactly the declarations where constness matters and
+/// right only where writing `const` by hand costs nothing. So the keyword stays
+/// at the declaration, where whoever writes it can put it on the correct side.
+#define INIT_RODATA INIT_SECTION("rodata")
 
 #ifdef CONFIG_MEM_HOTPLUG
 #define MEM_INIT_CODE
 #define MEM_INIT_DATA
-#define MEM_INIT_CONST
+#define MEM_INIT_RODATA
 #else
 #define MEM_INIT_CODE INIT_CODE
 #define MEM_INIT_DATA INIT_DATA
-#define MEM_INIT_CONST INIT_CONST
+#define MEM_INIT_RODATA INIT_RODATA
 #endif // #ifdef CONFIG_MEM_HOTPLUG
 
 #endif // #ifndef OURS_INIT_HPP

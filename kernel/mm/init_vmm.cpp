@@ -61,8 +61,8 @@ namespace {
     /// physboot reports what it actually mapped, KASLR offset and RELRO splits
     /// included, and enrol_handoff_mappings() below reads that instead. What is
     /// left is the two ranges phys does not describe, for opposite reasons.
-    INIT_CONST
-    PhysVma PRESET_VMAS[] = {
+    INIT_RODATA
+    PhysVma const PRESET_VMAS[] = {
         // The physmap. phys does map it, but its base and size are
         // architectural constants out of aspace_layout.hpp -- the same header
         // phys reads -- so there is nothing to be told.
