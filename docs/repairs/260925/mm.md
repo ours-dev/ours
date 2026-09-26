@@ -55,3 +55,41 @@ resource lock 都不经过。于是 `CpuLocal::Mapper::build_dense()` 这类指�
 **顺带**：`MemoryAllocationState::disable()` 目前没有任何调用者
 （`kernel/mm/include/ours/mm/memory_allocation_state.hpp`），所以这条不急；
 但在第一个 `disable()` 落地之前必须定下来，否则那个调用者会以为自己挡住了而实际没挡住。
+
+## 3. `.init.rodata` 实际是可写的，内核可以自己把它保护成只读
+
+**现象**：潜伏。`llvm-readelf -S` 里这个输出段是 `WA`，所以 physboot 按段权限建立的映射
+也是可写的——`.init.rodata` 这个名字在硬件层面不成立。内核的 init hook 表
+（`.gktl.init_hook`）和调度类注册表（`.task.schedules`）都在里面，运行期可写。
+
+**原因**：段里的条目含指针（函数指针、字符串指针），内核是 DYN 镜像，所以这些是
+`R_X86_64_64` 重定位，工具链必须把段标成可写。让它在重定位之后变只读的标准机制是
+`PT_GNU_RELRO`，而 lld 只把它认得的少数段放进 RELRO（`.data.rel.ro`、`.got`、`.dynamic`，
+以及按**段类型**认的 `INIT_ARRAY`——`.ccrt_init` 就是这么进去的）。
+
+**这里其实不需要 RELRO**，这是关键：RELRO 存在的理由是「动态链接器要通过最终映射写这些页」。
+ours 不是这样——`ElfImage::fix_mapping()` 的注释写着，重定位是通过镜像物理页的**恒等映射**
+做的，做完才建立内核映射。所以最终映射从来不需要可写，段被标成 `WA` 只是工具链假设了一个
+在这个镜像上不成立的前提。
+
+**试过且不行的两条**（省得别人再试）：
+
+- 输出段属性 `(READONLY)`：`ld.lld: error: kernel.ld:158: symbol not found: READONLY`。
+  LLVM 23 的 lld 不认这个 GNU ld 扩展。
+- 把输出段改名 `.data.rel.ro.init` 想蹭进 RELRO：段仍是 `WA`，也没多出第四个 `GNU_RELRO`。
+
+**改法**：内核在 `init_vmm()` 里 enrol 完 physboot 的映射清单之后，把
+`[__init_rodata_start, __init_rodata_end)` 重新保护成只读。链接脚本已经 `PROVIDE_HIDDEN`
+了这两个符号，只差两行 `extern char const[] LINK_NAME(...)` 声明
+（照 `kernel/mm/include/ours/mm/vmm.hpp` 里 `KERNEL_INIT_START` 的样子）。那个段独占整页的
+PT_LOAD（`0xd0000`，后面紧跟 `ALIGN(MAXPAGESIZE)`），范围干净。
+
+这**不是**在质疑 handoff 清单：清单如实报告了 physboot 建立了什么，而「`.init.rodata` 本该
+只读」是只有内核知道的事实。要在改动记录里把这个区别写清楚，否则下一个人会以为
+清单又被绕过了。
+
+**要先确认**：`reclaim_init_area()` 之后这些帧会还给 buddy，内核虚拟映射还在
+（`EarlyMem::reclaim_init_area()` 的注释说 "the mappings stay"）。重用那些帧的人是走
+physmap 别名写的，所以只读的内核映射不挡他们——但这条要实测确认，不要只靠推理。
+
+**严重程度**：低。没有人写它，所以今天没有故障；价值在于把「只读」变成硬件保证而不是命名约定。
