@@ -257,7 +257,7 @@ cpp_interface("boot-obi") {
     "include/ours/phys/kernel_package.hpp",
   ]
   public_deps = [
-    "//kernel/lib/bootfs:headers",
+    "//system/lib/bootfs:headers",
     "//kernel/lib/obi",
   ]
 }

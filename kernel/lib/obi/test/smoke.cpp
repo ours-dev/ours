@@ -4,7 +4,7 @@
 /// obi-smoke — broad coverage of the current obi library surface: building
 /// and parsing multi-item containers, compression round-trips, CRC
 /// detection, and a battery of malformed-image rejections.  BootFS is
-/// exercised separately (obi doesn't depend on it — see kernel/lib/bootfs/).
+/// exercised separately (obi doesn't depend on it — see system/lib/bootfs/).
 
 #include <obi/checksum.hpp>
 #include <obi/command_line_view.hpp>

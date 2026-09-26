@@ -22,7 +22,7 @@ cpp_interface("headers") {
     "include/obi/package_format.hpp",
   ]
   public_deps = [
-    "//kernel/lib/bootfs:headers",
+    "//system/lib/bootfs:headers",
     "//system/lib/ustl:headers",
     "//system/public",
   ]

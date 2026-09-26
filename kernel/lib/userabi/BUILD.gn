@@ -33,7 +33,7 @@ source_set("userabi") {
   # program and builds the process around it, and hands the ELF itself to a
   # component whose only job that is.
   deps = [
-    "//kernel/lib/bootfs",
+    "//system/lib/bootfs",
     "//kernel/lib/elfload",
     "//kernel/lib/logz4",
     "//kernel/mm",

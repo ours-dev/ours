@@ -9,7 +9,7 @@ executable("obit") {
     "validate.cpp",
   ]
   deps = [
-    "//kernel/lib/bootfs:bootfs",
+    "//system/lib/bootfs:bootfs",
     "//kernel/lib/obi:obi",
     "//vendor/cxxopt",
   ]
