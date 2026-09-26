@@ -667,3 +667,67 @@ free-list 指针，全仓库只剩这段注释提到这个用法，读的人会�
 
 **故意没做**
 无。
+
+## 四棵树 const 查找里多余的 `static_cast<T const &>` 去掉，返回类型钉进测试（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/collections/intrusive/{bstree,rbtree,avltree,splaytree}.hpp` — const 版 `find`/`lower_bound`/`upper_bound` 去掉 cast，各 3 处
+- `system/lib/ustl/test/intrusive_const_accessors_test.cpp` — 四棵树的 const 查找：`static_assert` 钉返回类型，运行时在 const 树上查一遍
+- `system/lib/ustl/BUILD.gn` — `intrusive-const-accessors-test` 的说明带上这四棵树
+- `docs/repairs/260926/ustl.md` — 删掉第 2 条；到这里本日 ustl 待修项全部修完
+
+**症状**
+无，纯清理。
+
+**原因**
+这 12 处 cast 当初是为了凑返回类型：`Option<T &>` 不能转成 `Option<T const &>`，只好先把元素 cast 成 `T const &`，让
+`some_ref()` 直接推导出 `Option<T const &>`。本日第一条改动之后，`Option<T &>` 能隐式收窄成 `Option<T const &>`，list、slist、
+sgtree、treap、hashtable 的 const 访问器就是这么写的，这 12 个 cast 成了第二种写法。一个仓库里同一件事两种写法，读的人会
+以为两者有区别，然后去找这个区别。
+
+**改法**
+改前（四个文件各 3 处，形状完全相同）：
+
+```cpp
+return node == header()
+           ? ustl::NONE
+           : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+```
+
+改后，和同一个类里非 const 版一字不差，只有声明的返回类型不同：
+
+```cpp
+return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
+```
+
+返回类型不变，照样是声明的 `Option<T const &>`。区别在于这四棵树现在也依赖 `Option<T &>` 的收窄，所以把它们加进
+`intrusive_const_accessors_test`：
+
+```cpp
+template <typename Tree, typename Value>
+constexpr auto CONST_LOOKUPS =
+    std::same_as<decltype(std::declval<Tree const &>().find(std::declval<Value const &>())),
+                 ustl::Option<Value const &>> && ...;
+
+static_assert(CONST_LOOKUPS<Bstree, TreeValue>);
+static_assert(CONST_LOOKUPS<RBTree, RbValue>);
+static_assert(CONST_LOOKUPS<Avltree, AvlValue>);
+static_assert(CONST_LOOKUPS<Splaytree, SplayValue>);
+```
+
+另外在 const 树上对一个成员和一个比它小的键分别调 `find`、`lower_bound`、`upper_bound`，确认拿到的是成员本身或者空。
+`KeyLess` 改成成员模板，四种值类型共用一个比较器。
+
+**参照**
+无，本项目自有的清理。形状照 sgtree 的 `find() const`：`ustl::some_ref(*to_value(node))`。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 成功；90 个 ustl 测试全部退出码 0。
+- 变异验证：在 scratch 副本里把 bstree 的 `find() const` 的返回类型改回 `Option<T &>`，编译时
+  `static_assert(CONST_LOOKUPS<Bstree, TreeValue>)` 失败，说明钉得住。
+- `clang-format` 无差异；`clang-tidy -p out/bringup.x86`（`--header-filter` 覆盖四个树头文件）零告警。
+- QEMU：这些树被 timer、wait_queue、fair 调度器和 vm_area 用到。debug 镜像跑 60 秒、release 镜像跑 30 秒，都起到 shell，
+  libc 自检通过；没有 panic/assert，被终止的进程只有 fault_probe。
+
+**故意没做**
+无。

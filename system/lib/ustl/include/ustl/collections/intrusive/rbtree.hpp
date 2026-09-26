@@ -388,9 +388,7 @@ class RBTree final {
     [[nodiscard]]
     constexpr auto find(T const &value) const noexcept -> ustl::Option<T const &> {
         const auto node = Algorithms::find(header(), value, NodeCompare{&m_compare});
-        return node == header()
-                   ? ustl::NONE
-                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     [[nodiscard]]
@@ -402,9 +400,7 @@ class RBTree final {
     [[nodiscard]]
     constexpr auto lower_bound(T const &value) const noexcept -> ustl::Option<T const &> {
         const auto node = Algorithms::lower_bound(header(), value, NodeCompare{&m_compare});
-        return node == header()
-                   ? ustl::NONE
-                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     template <typename Key, typename Compare>
@@ -434,9 +430,7 @@ class RBTree final {
     [[nodiscard]]
     constexpr auto upper_bound(T const &value) const noexcept -> ustl::Option<T const &> {
         const auto node = Algorithms::upper_bound(header(), value, NodeCompare{&m_compare});
-        return node == header()
-                   ? ustl::NONE
-                   : ustl::some_ref(static_cast<T const &>(*ValueTraits::to_value_ptr(node)));
+        return node == header() ? ustl::NONE : ustl::some_ref(*ValueTraits::to_value_ptr(node));
     }
 
     template <typename Key, typename Compare>

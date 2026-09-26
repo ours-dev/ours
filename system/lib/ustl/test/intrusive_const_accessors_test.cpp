@@ -9,11 +9,20 @@
 // static_asserts pin the narrowed type: an accessor that went back to
 // handing out `Option<T &>` from a const container would pass every runtime
 // check here.
+//
+// Bstree, RBTree, Avltree and Splaytree used to get the narrowed type another
+// way, by casting the element to `T const &` before `some_ref()`; the casts
+// are gone and their lookups now rely on the same conversion, so they are
+// pinned here too.
 
+#include <ustl/collections/intrusive/avltree.hpp>
+#include <ustl/collections/intrusive/bstree.hpp>
 #include <ustl/collections/intrusive/hashtable.hpp>
 #include <ustl/collections/intrusive/list.hpp>
+#include <ustl/collections/intrusive/rbtree.hpp>
 #include <ustl/collections/intrusive/sgtree.hpp>
 #include <ustl/collections/intrusive/slist.hpp>
+#include <ustl/collections/intrusive/splaytree.hpp>
 #include <ustl/collections/intrusive/treap.hpp>
 #include <ustl/option.hpp>
 
@@ -44,10 +53,24 @@ struct HashValue final: intrusive::UnorderedSetBaseHook<> {
     int m_key{};
 };
 
+// Bstree takes the same hook as TreeValue; the other three trees each want
+// their own.
+struct RbValue final: intrusive::SetBaseHook<> {
+    int m_key{};
+};
+
+struct AvlValue final: intrusive::AvlSetBaseHook<> {
+    int m_key{};
+};
+
+struct SplayValue final: intrusive::SplaySetBaseHook<> {
+    int m_key{};
+};
+
 struct KeyLess final {
+    template <typename Value>
     [[nodiscard]]
-    constexpr auto operator()(TreeValue const &left, TreeValue const &right) const noexcept
-        -> bool {
+    constexpr auto operator()(Value const &left, Value const &right) const noexcept -> bool {
         return left.m_key < right.m_key;
     }
 };
@@ -85,6 +108,10 @@ using Treap = intrusive::Treap<TreeValue, intrusive::Compare<KeyLess>,
                                intrusive::PriorityOfValue<KeyPriority>>;
 using Hashtable =
     intrusive::Hashtable<HashValue, intrusive::Hash<KeyHash>, intrusive::Equal<KeyEqual>>;
+using Bstree = intrusive::Bstree<TreeValue, intrusive::Compare<KeyLess>>;
+using RBTree = intrusive::RBTree<RbValue, intrusive::Compare<KeyLess>>;
+using Avltree = intrusive::Avltree<AvlValue, intrusive::Compare<KeyLess>>;
+using Splaytree = intrusive::Splaytree<SplayValue, intrusive::Compare<KeyLess>>;
 
 static_assert(
     std::same_as<decltype(std::declval<List const &>().front()), ustl::Option<ListValue const &>>);
@@ -101,6 +128,39 @@ static_assert(
 static_assert(std::same_as<
               decltype(std::declval<Hashtable const &>().find(std::declval<HashValue const &>())),
               ustl::Option<HashValue const &>>);
+
+// find(), lower_bound() and upper_bound() on a const tree all hand out a const
+// element.
+template <typename Tree, typename Value>
+constexpr auto CONST_LOOKUPS =
+    std::same_as<decltype(std::declval<Tree const &>().find(std::declval<Value const &>())),
+                 ustl::Option<Value const &>> &&
+    std::same_as<decltype(std::declval<Tree const &>().lower_bound(std::declval<Value const &>())),
+                 ustl::Option<Value const &>> &&
+    std::same_as<decltype(std::declval<Tree const &>().upper_bound(std::declval<Value const &>())),
+                 ustl::Option<Value const &>>;
+
+static_assert(CONST_LOOKUPS<Bstree, TreeValue>);
+static_assert(CONST_LOOKUPS<RBTree, RbValue>);
+static_assert(CONST_LOOKUPS<Avltree, AvlValue>);
+static_assert(CONST_LOOKUPS<Splaytree, SplayValue>);
+
+/// One member keyed `key` in an otherwise empty tree, looked up through a
+/// const reference: each lookup must find the member itself, or nothing.
+template <typename Tree, typename Value>
+auto check_const_lookups(int const key) -> void {
+    Value member{.m_key = key};
+    Value const below{.m_key = key - 1};
+    Tree tree{};
+    Tree const &const_tree = tree;
+    static_cast<void>(tree.insert_unique(member));
+    assert(&const_tree.find(member).value() == &member);
+    assert(const_tree.find(below).is_none());
+    assert(&const_tree.lower_bound(below).value() == &member);
+    assert(&const_tree.lower_bound(member).value() == &member);
+    assert(&const_tree.upper_bound(below).value() == &member);
+    assert(const_tree.upper_bound(member).is_none());
+}
 } // namespace
 
 auto main() -> int {
@@ -150,4 +210,9 @@ auto main() -> int {
     static_cast<void>(table.insert_unique(hash_member));
     assert(&const_table.find(hash_member).value() == &hash_member);
     assert(const_table.find(hash_absent).is_none());
+
+    check_const_lookups<Bstree, TreeValue>(10);
+    check_const_lookups<RBTree, RbValue>(20);
+    check_const_lookups<Avltree, AvlValue>(30);
+    check_const_lookups<Splaytree, SplayValue>(40);
 }

@@ -187,9 +187,9 @@ executable("set-test") {
 }
 
 # Every const accessor that hands out an element from List, Slist, Sgtree,
-# Treap and Hashtable, called on a const container. Mostly a compile-time
-# test: those accessors only compile because Option<T &> widens to
-# Option<T const &>.
+# Treap and Hashtable, and the const lookups of Bstree, RBTree, Avltree and
+# Splaytree, called on a const container. Mostly a compile-time test: those
+# accessors only compile because Option<T &> widens to Option<T const &>.
 executable("intrusive-const-accessors-test") {
   testonly = true
   sources = [ "test/intrusive_const_accessors_test.cpp" ]
