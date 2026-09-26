@@ -754,3 +754,140 @@ Linux 在同一个窗口用同一张表：`early_per_cpu(x86_cpu_to_node_map, cp
   那个「取成员地址当 handle」的写法，和本条无关。
 - 没有让 `resolve_local_node()` 在节点不存在时找别的节点顶上。`fallback` 掩码是
   `PmNode::alloc_frames()` 里的事，这里只负责回答「我在哪个节点」。
+
+## `InitStage` 拆开：buddy 接管和堆可用不再是同一个值（2026-09-25）
+
+**文件**
+- `kernel/mm/include/ours/mm/init_stage.hpp` — `InitStage` 在 `Pmm` 和 `Vmm` 之间插入 `Heap`
+- `kernel/mm/include/ours/mm/pmm.hpp` — 新增 `heap_enabled()`；改正 `alloc_page_table()` 那段写反了的注释
+- `kernel/mm/init_pmm.cpp` — `set_init_stage(InitStage::Pmm)` 移到 `EarlyMem::do_handoff()` 之后紧邻的一行；`init_cache()` 改成置 `InitStage::Heap`
+- `kernel/mm/sparse_memmap.cpp` — `SparseMemMap::Impl::allocate()` 改判 `heap_enabled()`
+- `docs/repairs/260925/mm.md` — 删掉第 1 条
+
+**症状**
+`out/numa.x86`（`mm_numa = true`，QEMU `NUMA=1`、8 CPU、1 GiB、四节点）启动到
+`Released 16 regions, ... to the buddy allocator` 之后立刻死在一次写缺页：
+
+```
+[error] Unhandled page fault: vector=14, error_code=0x2
+[error]   cr2=0xffffff8800016fff
+[error]   rip=0xffffff8840024525 (+0x24525)  cs=0x10  rsp=0xffffff884008c3b8
+[error]   rax=0xffffff8800000000  rcx=0x17000  rdx=0x17000  rsi=0xffffff803fe60000
+```
+
+`error_code=0x2` 是「不存在 + 写 + ring 0」。`+0x24525` 在 `memmove` 里
+（`movb %dil, -0x1(%rax,%rcx)`），`rax` 是 `ARCH_CPU_LOCAL_VIRT_BASE`、`rcx` 是
+`CpuLocal::Mapper::unit_size()`、`rsi` 是 physmap 里的 replica，所以挂在 `CpuLocal::init()`
+里那句 `std::copy_n(replica, Mapper::unit_size(), base)` 的**第一条**存储上——`memmove`
+见 `dst >= src` 走倒序拷，先写最后一个字节。`out/bringup.x86`（单节点）不复现。
+
+在 fault 现场用 QMP 顺着 `CR3` 走页表，上面三级都在，叶级整页是 0：
+
+```
+PML4[511] @0x3febbff8 = 0x000000003fea0027   -> PDPT 0x3fea0000
+PDPT[0x20] @0x3fea0100 = 0x000000003fe9c027  -> PD   0x3fe9c000
+PD[0]      @0x3fe9c000 = 0x000000003fe9b027  -> PT   0x3fe9b000
+PT[0..31]  @0x3fe9b000 = 全 0
+```
+
+`build_dense()` 把 23 个页分 16+4+2+1 四次映射，四次都返回 Ok；叶级表是事后被整页清零的。
+
+**原因**
+一个 `InitStage` 同时回答两个互不相干的问题，而这两件事在时间上不重合。
+
+`pmm_enabled()` 的名字和注释都说的是「the real page allocator has taken over from
+EarlyMem」——这件事在 `EarlyMem::do_handoff()` 那一刻就成立了。但
+`set_init_stage(InitStage::Pmm)` 原来写在 `init_cache()` 里，也就是**两步之后**，
+因为 `SparseMemMap::Impl::allocate()` 也拿同一个判据分支，而它的非 early 路径是
+`new`，要等 kmalloc。于是同一个值被迫同时表示「buddy 接管了」和「堆能用了」，
+只能取两者中较晚的那个。
+
+`do_handoff()` 和 `init_cache()` 之间夹着 `mm::CpuLocal::init()`（`kernel/top/main.cpp:151`）。
+它经 `ArchVmAspace::map` → `PageTable::map_pages` → `alloc_table` → `alloc_page_table()`
+要页表页，而后者按 `pmm_enabled()` 分支——此时还是 false，于是走 EarlyMem：
+
+```cpp
+auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
+    if (pmm_enabled()) { /* buddy */ }
+    auto *table = EarlyMem::allocate<u8>(size, alignment, node);
+    ...
+}
+```
+
+关键在于 `do_handoff()` **不是一次完整的交接**：它只是把 bootmem 里还标着空闲的区间
+逐个 `free_frames()` 给 buddy，bootmem 自己的位图原封不动。所以从那一刻起，
+同一批物理页有两个主人。`alloc_page_table()` 走 EarlyMem 拿到的 `0x3fe9c000`、`0x3fe9b000`
+（TopDown，紧贴 physload 自己那几张表下面）在 bootmem 里被标成已用，但 buddy 手上那份
+副本不会因此消失。接着 `build_dense()` 为 unit 1..15 调
+`alloc_frames(nid, GAF_BOOT, order)`（`GAF_BOOT` 含 `Gaf::Zero`），NUMA 下节点 3 的内存
+就在顶端，于是某个 unit 拿到了 `0x3fe9b000` 并清零——擦掉了还在用的叶级页表。
+
+`alloc_page_table()` 的注释把这条不变量写反了：
+
+> Before the buddy this comes from EarlyMem, which never gives it back:
+> do_handoff() releases what bootmem still calls free, and an allocation is not free.
+
+「分配过的就不是空闲的」只在 `do_handoff()` **之前**分配才成立。这条注释是对的推理
+用在了错的时刻上，而正是 `pmm_enabled()` 迟到两步把那个时刻拖了过来。
+
+单节点之所以躲过去：只有一个节点，buddy 从低端发页，碰不到 EarlyMem TopDown 占的顶端。
+这也是为什么同样的代码在 `out/bringup.x86` 上一直是好的——它不是好的，只是没被踩到。
+
+**改法**
+把两个问题拆成两个值：
+
+- `InitStage::Pmm` = buddy 拥有物理内存，紧跟 `do_handoff()` 置位；`pmm_enabled()` 照旧读它，
+  现在名副其实。
+- `InitStage::Heap` = 对象缓存、kmalloc、`ktl` 的 memory resource 都在，`new` 可用；
+  `init_cache()` 置位。新增 `heap_enabled()` 读它，`SparseMemMap::Impl::allocate()` 改用它。
+
+两个枚举项都写了注释说明各自断言的是什么事实，以及为什么不能合并——合并就是这条 bug。
+
+被否掉的两个方案：
+
+- **只把 `set_init_stage(InitStage::Pmm)` 提前，不加 `Heap`**：实测缺页没了，换成
+  `#GP  rip=+0x37fd9`，因为 `SparseMemMap::Impl::allocate()` 会在堆还不存在时走 `new`。
+  `init_cache()` 原来那句「It waits for the heap rather than for the page allocator」
+  说的就是这件事，它是对的，只是把约束加在了错的地方——该拆的是判据，不是推迟事实。
+- **让 `do_handoff()` 把交出去的区间在 bootmem 里标成已用**（或者之后一律拒绝分配）：
+  这只是把静默踩内存变成一次可见的失败，`CpuLocal::init()` 依然拿不到页表页，还得配合
+  本条才能起来。可以以后作为一道额外的护栏加上，但不是修法。
+
+还有一件不是选择而是前置条件：`pmm_enabled()` 提前之后，`CpuLocal::init()` 的页表改从
+buddy 拿，而 `alloc_page_table()` 走的是不带节点参数的 `alloc_frames(gaf, ...)`，那条路经
+`PmNode::Current::get()`——那个 per-CPU 指针要到 `InitLevel::CpuLocal + 1` 才发布。
+所以先有上一条「不再走穿空的 per-CPU PmNode」，本条才能起来；两条一起才是完整的修法。
+
+**参照**
+Linux 把这两件事分给两个各自独立的判据，从来没有合过：`alloc_low_pages()`
+（`arch/x86/mm/init.c`）看 `after_bootmem`，而 `after_bootmem` 就在
+`mm_core_init()` 里 `memblock_free_all()` 之后置位——和这里把 `InitStage::Pmm` 紧贴
+`do_handoff()` 是同一个位置、同一个理由。「堆能不能用」则由
+`slab_is_available()`（`mm/slab_common.c`，`slab_state >= UP`）单独回答，
+`kmem_cache_init()` 里置位。本条做的就是把 ours 这边合成一个的东西拆回这两个。
+
+另外 Linux 的 `memblock_free_all()` 会把交出去的区间从 memblock 的可用集合里摘掉
+（`memblock_discard()` / `memblock.memory` 之后不再被 `memblock_alloc` 使用），
+所以它没有「交接之后 memblock 还在发同一批页」这个口子。ours 的 `do_handoff()`
+目前没有这一步，本条靠的是不再有人在那之后问 EarlyMem 要页；把那一步补上是另一件事。
+
+**验证**
+- `out/bringup.x86`、`out/numa.x86` 两个配置全量构建通过。
+- `out/numa.x86`（`NUMA=1`，8 CPU，四节点）**首次完整启动**：8 个 CPU 全部 online
+  （`CPU[1]..CPU[7] is online`），shell 跑完 `channel checks passed`、
+  `handle transfer checks passed`、`handle quota checks passed`、
+  `bad-pointer checks passed`、`vmo_read checks passed`、`libc checks passed`，
+  进程正常销毁；整段日志里没有 page fault / #GP / panic / 断言失败。
+- `out/bringup.x86` 无回归：同样跑完全部 checks 并正常销毁，无 panic。
+- 对照：把这两条改动 checkout 回 HEAD~2 重新构建再启动，缺页的 vector、cr2、rip 与
+  改动前完全一致，确认修的就是这一条。
+
+**故意没做**
+- 没有让 `do_handoff()` 在 bootmem 里回填「已交出」。见「改法」里被否掉的第二条——
+  它是一道护栏而不是修法，而且要单独验证「EarlyMem 之后一律失败」不会打到别的调用者。
+  作为待修项留在 `docs/repairs/260925/mm.md`。
+- 没有修 `alloc_page_table()` 忽略 `node` 参数这件事。它在 buddy 分支上从不使用传进来的
+  `node`，调用者指定的节点被丢掉；这是另一个独立的缺陷，同样留在待修项里。
+- 没有动 `free_page_table()` 的 `!pmm_enabled()` 早退。判据提前之后它反而更对了：
+  窗口里的页表现在本来就来自 buddy，还给 buddy 是对的。
+- 没有碰 `InitStage::Vmm` / `All` 的含义，也没有给它们加判据函数——当前没有调用者按它们分支。

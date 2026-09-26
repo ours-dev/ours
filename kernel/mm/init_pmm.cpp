@@ -76,7 +76,17 @@ auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
     init_memmap();
     MemMap::get().dump();
 
+    // The handover itself, and the stage that says so, in the same breath.
+    //
+    // do_handoff() gives the buddy every range bootmem still calls free without
+    // marking those ranges used in bootmem, so from this line on EarlyMem and
+    // the buddy would otherwise both believe they own the same frames. Anything
+    // that still asked EarlyMem -- alloc_page_table(), for all of
+    // CpuLocal::init() -- got memory the buddy was free to hand out again.
+    // Announcing the stage here is what makes pmm_enabled() mean what its name
+    // says; see InitStage::Pmm.
     EarlyMem::do_handoff();
+    set_init_stage(InitStage::Pmm);
 }
 
 /// The object caches and kmalloc, on top of the page allocator init_pmm() left
@@ -101,12 +111,14 @@ auto init_cache() -> void {
     // kernel heap now that it is up.
     ktl::init_memory_resource();
 
-    // Ok, PMM is available now. This is also what makes pmm_enabled() true,
-    // which is how MemMap::Impl::allocate() stops falling back to
-    // EarlyMem -- the stage is the single place that says so. It waits for the
-    // heap rather than for the page allocator because that fallback path is
-    // what MemMap uses to allocate, and it needs both.
-    set_init_stage(InitStage::Pmm);
+    // The heap exists now, which is what MemMap::Impl::allocate() waits for:
+    // its non-early path is `new`, not a page allocation, so it needs this
+    // stage rather than InitStage::Pmm. The two used to be the same value, and
+    // that is the whole of the bug described on InitStage::Pmm -- one stage
+    // cannot answer both "the buddy owns the frames" (true since
+    // do_handoff(), well before this point) and "`new` works" (true only
+    // here).
+    set_init_stage(InitStage::Heap);
 }
 
 INIT_CODE

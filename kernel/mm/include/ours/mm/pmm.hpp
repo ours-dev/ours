@@ -47,10 +47,22 @@ constexpr auto min_pfn() -> Pfn {
 /// Derived from the init stage rather than tracked by a flag of its own: the
 /// two would say the same thing, and two things saying the same thing can
 /// disagree. set_init_stage(InitStage::Pmm) is the single point that makes
-/// this true.
+/// this true, and it sits immediately after EarlyMem::do_handoff() because
+/// that call is the handover -- see InitStage::Pmm.
 FORCE_INLINE
 inline auto pmm_enabled() -> bool {
     return get_init_stage() >= InitStage::Pmm;
+}
+
+/// Whether the kernel heap exists, i.e. whether `new`/kmalloc may be called.
+///
+/// Separate from pmm_enabled() and never a substitute for it. A caller that
+/// only needs frames must ask pmm_enabled(); a caller that needs `new` must
+/// ask this one. Collapsing the two is what made alloc_page_table() keep
+/// taking frames from EarlyMem after the buddy already owned them.
+FORCE_INLINE
+inline auto heap_enabled() -> bool {
+    return get_init_stage() >= InitStage::Heap;
 }
 
 [[nodiscard]]
@@ -179,6 +191,14 @@ auto get_frame_n(NnId nid, Gaf gaf, usize nr_frame, NodeMask const &nodes = node
 /// not free. A page table taken this early therefore stays reserved for the
 /// life of the kernel, which is what we want -- kernel page tables are not
 /// freed anyway.
+///
+/// That reasoning only holds *before* do_handoff(), and pmm_enabled() is what
+/// keeps it there. It used to become true two steps later, when the heap came
+/// up, so every page table allocated in between -- all of CpuLocal::init()'s --
+/// came out of EarlyMem after the buddy had already been handed the same
+/// ranges. Marking such a page used in bootmem changes nothing: the buddy's
+/// copy of it does not go away, and the next Gaf::Zero allocation to land on
+/// that frame zeroes a live page table.
 ///
 /// Linux's counterpart is alloc_low_pages() (arch/x86/mm/init.c), branching on
 /// `after_bootmem` exactly as this branches on pmm_enabled().

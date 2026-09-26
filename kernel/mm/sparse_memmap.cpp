@@ -29,7 +29,10 @@ FORCE_INLINE
 constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NnId nid, Args &&...args)
     -> T * {
     T *object;
-    if (pmm_enabled()) {
+    // heap_enabled(), not pmm_enabled(): the branch below is `new`, so what it
+    // needs is kmalloc, not the page allocator. These were one stage until the
+    // buddy's arrival was given a stage of its own.
+    if (heap_enabled()) {
         object = new (gaf, nid) T[n](ustl::forward<Args>(args)...);
     } else {
         object = EarlyMem::allocate<T>(n, a, nid);
