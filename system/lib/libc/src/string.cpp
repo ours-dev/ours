@@ -1,3 +1,20 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+///
+/// The generic mem* and strlen: byte loops, correct everywhere and fast
+/// nowhere.
+///
+/// Every definition is WEAK_LINK on purpose. These are the defaults, and an
+/// architecture that has something better -- `rep movsb` where the CPU makes
+/// it fast, a word-at-a-time strlen -- supplies a strong definition of the
+/// same name, and the linker takes it over this one without any other file
+/// changing. It is the pattern kernel/arch/x86/mm/srat.cpp already uses to
+/// replace the weak acpi_init_numa() stub in kernel/arch/x86/mm/numa.cpp.
+/// Until an override exists, the weak definition is simply the only one.
+///
+/// The loops are safe from being compiled into calls to themselves because
+/// every toolchain that builds this file is -ffreestanding (see BUILD.gn),
+/// which stops clang from recognising a copy loop as memcpy.
 #include <cstring>
 
 #include <ours/compiler.hpp>

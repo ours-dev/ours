@@ -164,3 +164,44 @@ source_set("libc") {
   注释里已写明现在可以做了。
 - `<string.h>` 的两条旧待修项（查找类函数返回 const 指针；9 个只声明没定义的 str*）不在这里处理，仍在 `docs/repairs/260919/libc.md`。
   U1 的标题说"mem* 和 str*"，实际只有 `strlen`：全树和 U2–U13 都没有别的 str* 调用方，不为标题去补。
+
+## 写明 `string.cpp` 里的 `WEAK_LINK` 是给架构优化版留的口子（2026-09-25）
+
+**文件**
+- `system/lib/libc/src/string.cpp` — 文件头加 SPDX 与说明注释，代码不变
+
+**症状**
+无。上一节把 `WEAK_LINK` 列为"另行讨论"：全树没有强定义覆盖这些函数，git 历史里也查不到它为什么是 weak，
+读代码的人只能看到它的副作用（同一镜像里混进第二份 mem*，链接器会悄悄挑一个）。
+
+**原因**
+主人确认（2026-09-25）：weak 是有意的，给后续的架构优化留口子。这里的实现是逐字节循环，处处正确、处处不快；某个架构有更好的写法
+（CPU 支持快速 `rep movsb` 时的 memcpy、按字扫描的 strlen）时，提供同名的强定义，链接器就用它替掉这里的默认版本，其他文件一个不用改。
+这个意图只在主人脑子里，不写下来，下一个看到"没人覆盖的 weak"的人会把它当多余的东西删掉。
+
+**改法**
+改前：文件开头直接是 `#include`，没有任何说明。
+
+改后：
+
+```cpp
+/// Every definition is WEAK_LINK on purpose. These are the defaults, and an
+/// architecture that has something better -- `rep movsb` where the CPU makes
+/// it fast, a word-at-a-time strlen -- supplies a strong definition of the
+/// same name, and the linker takes it over this one without any other file
+/// changing. It is the pattern kernel/arch/x86/mm/srat.cpp already uses to
+/// replace the weak acpi_init_numa() stub in kernel/arch/x86/mm/numa.cpp.
+```
+
+另外写明了这些循环为什么不会被编译成调用自己（编它的工具链都是 `-ffreestanding`）。
+
+**参照**
+仓库里已有的同一模式：`kernel/arch/x86/mm/numa.cpp` 的 `WEAK_LINK acpi_init_numa()` 桩，由 `kernel/arch/x86/mm/srat.cpp` 的强定义覆盖。
+Zircon 的 x86 memcpy/memset 走的是另一条路（强定义的 code-patching 桩），这里按本仓库自己的做法。
+
+**验证**
+两个镜像构建、启动：dev 与 dbg_1 的 shell 都打出 `shell: libc checks passed`；dev `init: shell closed its channel`，
+dbg_1 `shell: probes done (11 killed, 0 survived)`。
+
+**故意没做**
+无。
