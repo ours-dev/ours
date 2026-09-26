@@ -59,7 +59,7 @@ group("default") {
     # target identity.
     "//build/toolchain/host-smoke-test:host-toolchain-smoke-test($host_toolchain)",
 
-    # Logic-only unit tests for //kernel/lib/arch and //system/lib/ustl.
+    # Logic-only unit tests for //kernel/lib/arch.
     # These exercise pure bit-layout code (no inline asm) and are written
     # as plain hosted `int main()` + <cassert> programs, so they belong on
     # the host toolchain like the smoke tests above — the default toolchain
@@ -71,16 +71,13 @@ group("default") {
     "//kernel/lib/arch:x86-paging-smoke($host_toolchain)",
     "//kernel/lib/arch:x86-system-smoke($host_toolchain)",
     "//system/lib/logz4:logz4-test($host_toolchain)",
-    "//system/lib/ustl:bitfields-test($host_toolchain)",
-    "//system/lib/ustl:bitset-test($host_toolchain)",
-    "//system/lib/ustl:rc-test($host_toolchain)",
 
-    # Option<T &> widening to Option<T const &>, and the intrusive
-    # containers' const accessors that depend on it. Both are largely
-    # static_assert and overload checks, so building them is most of the
-    # test.
-    "//system/lib/ustl:option-test($host_toolchain)",
-    "//system/lib/ustl:intrusive-const-accessors-test($host_toolchain)",
+    # Every //system/lib/ustl test, through ustl's own group rather than a
+    # line per test. This list used to name them one by one and reached five
+    # of the 89; the rest, most of the intrusive containers' tests among them,
+    # were compiled by nothing, so a header change could break them unseen.
+    # Plain hosted main()s, hence the host toolchain as for the tests above.
+    "//system/lib/ustl:tests($host_toolchain)",
 
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the

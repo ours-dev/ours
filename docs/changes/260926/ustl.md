@@ -115,3 +115,95 @@ Rust 的 `Option<&mut T>` 不会隐式变成 `Option<&T>`（要 `.as_deref()`）
 - 拥有型 `Option<T>` 仍然没有 `Option<U>` → `Option<T>` 的转换：没有需求，不顺手加。
 - 没把 `ustl/test/` 下其余没接进构建的测试接进去（list/slist/sgtree/treap/unordered_set 等在宿主上都能编过且通过），那是单独一件事，
   记在 repairs。
+
+## ustl 的 88 个测试全部进默认构建，根 `BUILD.gn` 改成只挂 `ustl:tests` 一个组（2026-09-26）
+
+**文件**
+- `system/lib/ustl/BUILD.gn` — 给 71 个没有 target 的测试各建一个 `executable`；`:tests` 组补全到 88 个、按字母排；option-test 的说明从根 `BUILD.gn` 挪到它自己的 stanza 上；`intrusive_slist_parity_test.cpp` 不建 target，在原位留注释
+- `BUILD.gn` — `default` 里逐个点名的 5 个 ustl 测试换成一行 `//system/lib/ustl:tests($host_toolchain)`
+- `docs/repairs/260926/ustl.md` — 删掉原第 1 条（就是这条）；新增第 1 条：`Slist` 的 swap 在空表上把表头接错
+
+**症状**
+潜伏。`system/lib/ustl/test/` 有 89 个测试文件，`ustl/BUILD.gn` 只给 17 个建了 `executable`，默认构建只编其中 5 个
+（bitfields、bitset、rc、option、intrusive-const-accessors）。其余 84 个不随任何构建编译，头文件把它们改坏了也没人知道：
+上一条的 const 访问器编译错误能潜伏下来，这是原因之一；这次接进来时又牵出一个真 bug——`intrusive_slist_parity_test`
+永远不返回（见 repairs 第 1 条）。
+
+**原因**
+一个测试要进构建，得同时出现在三份手写清单里：`ustl/BUILD.gn` 的 `executable`、`ustl:tests` 组、根 `BUILD.gn` 的
+`default`。漏掉任何一份，测试就无声地不编：
+
+- GN 没有 glob，目录里多一个 `.cpp` 没有 target 认领，GN 不会发现。
+- 非默认工具链里的 target 只有从默认图引用到才会生成 ninja 规则。`enum-bits-test` 这类有 `executable`、也在
+  `ustl:tests` 里、但 `ustl:tests` 没人引用的，在 `out/bringup.x86/host/` 下根本没有规则，连 `ninja all` 也碰不到。
+- 根 `default` 绕过 `ustl:tests` 逐个点名，于是每加一个测试要改两个文件，第二个文件总被忘掉——点到 5 个为止。
+
+后两份清单其实是同一件事记了两遍。`gktl`、`acpi`、`obi`、`libc`、`ffl` 在根里都只挂自己的 `tests` 组，ustl 是例外。
+
+**改法**
+根 `BUILD.gn` 改前，逐个点名：
+
+```gn
+    "//system/lib/logz4:logz4-test($host_toolchain)",
+    "//system/lib/ustl:bitfields-test($host_toolchain)",
+    "//system/lib/ustl:bitset-test($host_toolchain)",
+    "//system/lib/ustl:rc-test($host_toolchain)",
+
+    # Option<T &> widening to Option<T const &>, and the intrusive
+    # containers' const accessors that depend on it. Both are largely
+    # static_assert and overload checks, so building them is most of the
+    # test.
+    "//system/lib/ustl:option-test($host_toolchain)",
+    "//system/lib/ustl:intrusive-const-accessors-test($host_toolchain)",
+```
+
+改后，挂组：
+
+```gn
+    "//system/lib/logz4:logz4-test($host_toolchain)",
+
+    # Every //system/lib/ustl test, through ustl's own group rather than a
+    # line per test. This list used to name them one by one and reached five
+    # of the 89; the rest, most of the intrusive containers' tests among them,
+    # were compiled by nothing, so a header change could break them unseen.
+    # Plain hosted main()s, hence the host toolchain as for the tests above.
+    "//system/lib/ustl:tests($host_toolchain)",
+```
+
+以后加测试只动 `ustl/BUILD.gn`：一个 stanza 加组里一行。新 stanza 和原有的同一形状，target 名是文件名去掉 `.cpp`、
+下划线换短横线：
+
+```gn
+executable("any-hook-test") {
+  testonly = true
+  sources = [ "test/any_hook_test.cpp" ]
+  deps = [ ":headers" ]
+}
+```
+
+先试再接：用 `rc-test.ninja` 里的宿主编译、链接参数，把 84 个没进默认构建的测试逐个单独编译、链接、运行（超时 120 秒）。
+83 个退出码 0；`intrusive_slist_parity_test` 超时，插桩看卡在 `Slist::sort()`，根因是
+`CircularSlistAlgorithms::swap_nodes` 在空表上把表头接错。它记进 repairs，不建 target，断言一行没动。
+
+否掉的方案：
+- **在根 `default` 里逐个点名全部 88 个**（原计划的写法）：正是造成这条问题的写法，两份清单要同步，还要在根里多 83 行。
+- **一份名单加 `foreach` 生成 stanza 和组**：能把后两份清单并成一份，但和文件里原有的逐个写 stanza 不一致；讨论后保留
+  逐个写，代价是组里仍要手写一行。
+- **把 `//system/lib:tests` 挂进根**：它会一起拉进 derive、hsien 等别的库的测试组，那些编不编得过没查，超出这次范围。
+
+**参照**
+无，本项目自有的构建组织问题。仓库里的先例是根 `BUILD.gn` 对 `//kernel/lib/gktl:tests($host_toolchain)`、
+`//kernel/lib/acpi:tests($host_toolchain)` 的写法：库自己维护 `tests` 组，根只引用组。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 成功；`out/bringup.x86/host/obj/system/lib/ustl/` 下 88 个测试二进制逐个运行，
+  全部退出码 0。
+- 默认构建多出 83 个宿主编译单元，单独试编时合计约 130 秒 CPU（`-O2 -g2`）。
+- `gn format`：新增部分没有差异。`ustl/BUILD.gn` 的 `public` 头文件列表、根 `BUILD.gn` 的 `//benches:benches` 原本就会被
+  `gn format` 改写，没动。
+- 没改 C++ 文件，不涉及 clang-format/clang-tidy；内核和 phys 的源码与 target 都没动，没跑 QEMU。
+
+**故意没做**
+- 没修 `Slist` 的 swap bug：那是 ustl 源码的改动，还要补用例，单独一次。修法（两处常量对调）和已做过的验证写在
+  `docs/repairs/260926/ustl.md` 第 1 条。
+- 没整理 `ustl/BUILD.gn` 里 `public` 头文件列表的顺序：和本次无关的纯格式改动。
