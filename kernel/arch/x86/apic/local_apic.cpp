@@ -363,13 +363,31 @@ auto ApicTimerEvent::setup_timer(u32 clocks, bool oneshot, bool masked) -> Statu
 CPU_LOCAL
 static ApicTimerEvent CLKDEV_STORAGE;
 
-static ClockEventDevice *LAPIC_TIMER_EVENT;
-
+/// The ApicTimer vector's entry. Every CPU's local APIC timer raises the same
+/// vector, but each one only ever interrupts its own CPU, so the device that
+/// fired is always the calling CPU's copy of CLKDEV_STORAGE -- Linux's
+/// local_apic_timer_interrupt() takes `this_cpu_ptr(&lapic_events)` for the
+/// same reason. Resolving "this CPU" is safe here without pinning: this runs
+/// with interrupts off, so nothing can migrate the caller between reading
+/// the per-CPU offset and using what it names.
+///
+/// It used to go through a plain global `ClockEventDevice *` that every CPU's
+/// init_apic_timer() overwrote, so after bring-up every CPU's interrupt
+/// handled the *last* AP's device. The device is oneshot-only and TickDevice
+/// emulates the periodic tick by re-arming from the device's own
+/// next_event(), so N CPUs took turns pushing one shared deadline a period
+/// further out, and each of them ticked at HZ / N.
 auto apic_handle_timer_irq() -> void {
-    DEBUG_ASSERT(LAPIC_TIMER_EVENT);
+    auto &self = CpuLocal::access(CLKDEV_STORAGE);
+    // The per-CPU form of the null check that used to guard the global: the
+    // LVT timer is masked out of reset and init_apic_timer() leaves it masked,
+    // so this vector cannot fire before init_apic_timer() has bound the device
+    // to this CPU. The template's m_cpumask is empty, so an unbound copy fails.
+    DEBUG_ASSERT(self.m_cpumask.test(Cpu::id()),
+                 "APIC timer interrupt on CPU[{}] before its device was bound", Cpu::id());
 
     apic_issue_eoi();
-    LAPIC_TIMER_EVENT->handle_event();
+    self.m_clkevt.handle_event();
 }
 
 namespace {
@@ -663,7 +681,6 @@ static auto init_apic_timer() -> void {
     auto &self = CpuLocal::access(CLKDEV_STORAGE);
     self.m_cpumask = CpuMask::of(Cpu::id());
     self.m_clkevt.set_cpumask(&self.m_cpumask);
-    LAPIC_TIMER_EVENT = &self.m_clkevt;
 
     // A "tick" of this device is whatever set_next_event_tick() counts, and
     // that depends on the mode: a divided bus cycle in the counting mode, a
@@ -684,7 +701,7 @@ static auto init_apic_timer() -> void {
         log::info("APIC timer not calibrated on CPU[{}], skip enrolling it", Cpu::id());
         return;
     }
-    ClockEventDevice::enroll(*LAPIC_TIMER_EVENT, usize(freq), 0xF, 0x7FFFFFFF);
+    ClockEventDevice::enroll(self.m_clkevt, usize(freq), 0xF, 0x7FFFFFFF);
 }
 
 /// Initialize APIC performance monitoring interrupt.
