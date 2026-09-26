@@ -1,5 +1,6 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
+#include <ours/boot/handoff.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/init.hpp>
 #include <ours/mm/physmap.hpp>
@@ -53,56 +54,22 @@ namespace {
     [[maybe_unused]]
     constexpr auto PRESET_VMA_MMU_FLAGS = MmuFlags::PermMask;
 
-    /// Used in init_vmm_postheap.
-    /// TODO(SmallHuaZi) These be provided by PhysBoot through HandOff rather than
-    /// direct to use linking symbols.
-    /// In image order, and gapless: every page between IMAGE_START and
-    /// IMAGE_END has to be claimed here, or the VMM is free to hand that
-    /// address out again to something else while the loaded image still
-    /// occupies it.
+    /// The ranges the VMM records that physboot's mapping list does not cover.
+    ///
+    /// Everything the kernel image occupies used to be listed here too, copied
+    /// from the linker symbols (KERNEL_CODE_START and friends). It is gone:
+    /// physboot reports what it actually mapped, KASLR offset and RELRO splits
+    /// included, and enrol_handoff_mappings() below reads that instead. What is
+    /// left is the two ranges phys does not describe, for opposite reasons.
     INIT_CONST
-    PhysVma PHYS_VMOS[] = {
-        // The ELF head: .dynamic, plus the tables physboot read the image
-        // through (.dynsym, .rela.dyn, the build-ID note).
-        {.name = "k:head",
-         .base = VirtAddr(IMAGE_START),
-         .size = usize(KERNEL_CODE_START - IMAGE_START),
-         .vmaf = VmaFlags::Read | VmaFlags::Write,
-         .backing = PhysVma::Backing::Mapped},
-        {.name = "k:code",
-         .base = VirtAddr(KERNEL_CODE_START),
-         .size = usize(KERNEL_CODE_END - KERNEL_CODE_START),
-         .vmaf = VmaFlags::Exec | VmaFlags::Read,
-         .backing = PhysVma::Backing::Mapped},
-        {.name = "k:rodata",
-         .base = VirtAddr(KERNEL_RODATA_START),
-         .size = usize(KERNEL_RODATA_END - KERNEL_RODATA_START),
-         .vmaf = VmaFlags::Read,
-         .backing = PhysVma::Backing::Mapped},
-        {.name = "k:data",
-         .base = VirtAddr(KERNEL_DATA_START),
-         .size = usize(KERNEL_DATA_END - KERNEL_DATA_START),
-         .vmaf = VmaFlags::Write | VmaFlags::Read,
-         .backing = PhysVma::Backing::Mapped},
-        // Writable only until physboot finished relocating, and mapped
-        // read-only ever since.
-        {.name = "k:relro",
-         .base = VirtAddr(KERNEL_RELRO_START),
-         .size = usize(KERNEL_RELRO_END - KERNEL_RELRO_START),
-         .vmaf = VmaFlags::Read,
-         .backing = PhysVma::Backing::Mapped},
-        {.name = "k:bss",
-         .base = VirtAddr(KERNEL_BSS_START),
-         .size = usize(KERNEL_BSS_END - KERNEL_BSS_START),
-         .vmaf = VmaFlags::Read | VmaFlags::Write,
-         .backing = PhysVma::Backing::Mapped},
-        {.name = "k:init",
-         .base = VirtAddr(KERNEL_INIT_START),
-         .size = usize(KERNEL_INIT_END - KERNEL_INIT_START),
-         .vmaf = VmaFlags::Read | VmaFlags::Write | VmaFlags::Exec,
-         .backing = PhysVma::Backing::Mapped},
+    PhysVma PRESET_VMAS[] = {
+        // The physmap. phys does map it, but its base and size are
+        // architectural constants out of aspace_layout.hpp -- the same header
+        // phys reads -- so there is nothing to be told.
+        //
+        // If ASLR is ever applied to it, this needs to fix up with
+        // get_kernel_virt_base().
         {.name = "k:physmap",
-         // If ASLR(Address space layout randomilization) enabled, this needs to fix up with get_kernel_virt_base().
          .base = PhysMap::VIRT_BASE,
          .size = PhysMap::SIZE,
          .vmaf = VmaFlags::Read | VmaFlags::Write,
@@ -113,6 +80,10 @@ namespace {
         // none of it is the VMM's to protect -- hence AddressSpace, and the
         // full window rather than the part in use today, so a later chunk
         // does not land on something the VMM has since given out.
+        //
+        // Not in phys's mapping list either, and it could not be: the units are
+        // placed per NUMA node, and the topology is parsed in the kernel long
+        // after the handoff.
         //
         // The window begins exactly where the physmap ends. A one-page
         // read-only "k:padding" used to stand there as a guard against
@@ -153,12 +124,75 @@ namespace {
         DEBUG_ASSERT(Status::Ok == status);
     }
 
+    /// A name for a mapping, from what it permits.
+    ///
+    /// physboot's list carries permissions and no name, deliberately: the `k:`
+    /// vocabulary is the kernel's, and it follows from the permissions anyway.
+    /// The answers are the same three words the hand-written table used, and
+    /// they no longer claim to know which *section* a range holds -- a claim
+    /// that table was making on the strength of a symbol, while the mapping it
+    /// described had already been split by RELRO into runs no section boundary
+    /// explains.
+    [[nodiscard]]
+    INIT_CODE
+    auto name_of(phys::MappingPerms const perms) -> char const * {
+        if (!!(perms & phys::MappingPerms::Exec)) {
+            return "k:code";
+        }
+        if (!!(perms & phys::MappingPerms::Write)) {
+            return "k:data";
+        }
+        return "k:rodata";
+    }
+
+    [[nodiscard]]
+    INIT_CODE
+    auto vma_flags_of(phys::MappingPerms const perms) -> VmaFlags {
+        auto flags = VmaFlags::None;
+        if (!!(perms & phys::MappingPerms::Read)) {
+            flags |= VmaFlags::Read;
+        }
+        if (!!(perms & phys::MappingPerms::Write)) {
+            flags |= VmaFlags::Write;
+        }
+        if (!!(perms & phys::MappingPerms::Exec)) {
+            flags |= VmaFlags::Exec;
+        }
+        return flags;
+    }
+
+    /// Claims and re-protects every range physboot mapped for the kernel.
+    ///
+    /// This replaces a table written from the kernel's own linker symbols. The
+    /// symbols say where sections were linked; the list says what physboot
+    /// established, KASLR bias and RELRO clipping included, and only physboot
+    /// ever knew that. The list is gapless over the loaded image, which is the
+    /// property the old table's comment demanded and could only assert: a page
+    /// inside the image that no VMA claims is a page the VMM may hand out to
+    /// something else while the image still occupies it.
+    INIT_CODE
+    auto enrol_handoff_mappings() -> void {
+        auto const mappings = boot::handoff().mem.mappings;
+        ASSERT(!mappings.empty(), "physboot handed over no kernel mappings");
+
+        for (auto const &mapping: mappings) {
+            entrol_preset_vma({
+                .name = name_of(mapping.perms),
+                .base = mapping.base,
+                .size = mapping.size,
+                .vmaf = vma_flags_of(mapping.perms),
+                .backing = PhysVma::Backing::Mapped,
+            });
+        }
+    }
+
     INIT_CODE
     auto init_vmm_preheap() -> void {
         VmAspace::init_kernel_aspace();
 
-        for (usize i = 0; i < std::size(PHYS_VMOS); ++i) {
-            entrol_preset_vma(PHYS_VMOS[i]);
+        enrol_handoff_mappings();
+        for (usize i = 0; i < std::size(PRESET_VMAS); ++i) {
+            entrol_preset_vma(PRESET_VMAS[i]);
         }
 
         auto frame = alloc_frames(GAF_KERNEL, usize(0));
