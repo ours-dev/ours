@@ -410,3 +410,84 @@ Boost.Intrusive `slist_impl::swap()` 和 `priv_swap_lists()`（`system/lib/boost
 - 线性表上 `iterator_to()` 对末尾元素 trap：另一个 bug，记在 repairs 第 4 条。
 - `CacheLast` 每次修改 O(n)：记在 repairs 第 5 条。
 - `slist.hpp` 里引用 Slab 的过时注释：记在 repairs 第 6 条。
+
+## 线性 `Slist` 上对最后一个元素调 `iterator_to()` 不再 trap（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/collections/intrusive/slist.hpp` — `s_iterator_to()` 的两个重载改调新的私有函数 `require_linked()`，它只在环形表上检查"节点已挂链"
+- `system/lib/ustl/test/slist_test.cpp` — 对线性表的末尾元素调 `iterator_to()`（两个重载）、`previous()`、`erase()`
+- `docs/repairs/260926/ustl.md` — 删掉第 4 条
+
+**症状**
+潜伏，仓库里没有线性 `Slist` 的使用者。对线性 `Slist` 的最后一个元素调 `iterator_to()`，进程以 SIGTRAP 退出，所有构建都一样；
+`erase(iterator_to(last))`、`insert(iterator_to(last), ...)`、`previous(iterator_to(last))` 连带着一起 trap。
+
+**原因**
+`iterator_to()` 从一个元素直接得到指向它的迭代器，前提是这个元素确实挂在链上：拿一个没挂链的元素做迭代器，后面的
+`erase()`、`previous()` 就会去改一条不存在的链。所以 `s_iterator_to()` 先检查：
+
+```cpp
+detail::require(!Algorithms::inited(node));
+```
+
+`inited()` 判的是 next 为空指针，`init()` 把摘下来的节点就置成这样。这个判据在环形表上成立：环里每个节点都有后继，末节点
+的后继是表头。在线性表上不成立：末节点的后继本来就是空指针，和"没挂链"一模一样。于是线性表的末尾元素必然被当成没挂链。
+`detail::require()` 失败就调 `__builtin_trap()`，它不是调试断言，发布构建也照样 trap。
+
+线性表上也换不出别的判据：要分清"是末尾"还是"没挂链"，只能从表头走一遍看它在不在链上，O(n)；而且 `s_iterator_to()` 是静态
+函数，手里根本没有表头。Boost 的做法就是线性表不查：`slist_impl::iterator_to()` 的断言写作 `LINEAR || !inited(...)`，而且只是
+调试期的 invariant assert；`s_iterator_to()` 则一律不查。
+
+**改法**
+改前，两个重载各带一份检查：
+
+```cpp
+static constexpr auto s_iterator_to(T &value) noexcept -> IterMut {
+    const auto node = ValueTraits::to_node_ptr(value);
+    detail::require(!Algorithms::inited(node));
+    return IterMut(node);
+}
+```
+
+改后，两个重载都改调一个私有函数，检查和"线性表为什么不能查"的说明只写在一处：
+
+```cpp
+static constexpr auto s_iterator_to(T &value) noexcept -> IterMut {
+    const auto node = ValueTraits::to_node_ptr(value);
+    require_linked(node);
+    return IterMut(node);
+}
+
+static constexpr auto require_linked(typename NodeTraits::ConstNodePtr const node) noexcept
+    -> void {
+    if constexpr (!PackedOptions::LINEAR) {
+        detail::require(!Algorithms::inited(node));
+    }
+}
+```
+
+环形表照旧检查，而且仍然在所有构建里生效。这比 Boost 只在调试期检查更严，保留下来。
+
+否掉的方案：
+- **在两个重载里各写一份 `if constexpr`。**检查和理由要抄两遍，正是上上一条 bug 的形状：`swap_nodes()` 的两份抄本在同一处
+  一起写错。
+- **照 Boost 把 `s_iterator_to()` 的检查整个去掉。**在环形表上这个检查是对的，而且只读一个指针，没有理由丢掉。
+
+**参照**
+Boost.Intrusive `slist_impl::iterator_to()`（`system/lib/boost.intrusive/include/boost/intrusive/slist.hpp:1817`）：
+`BOOST_INTRUSIVE_INVARIANT_ASSERT(LINEAR || !NodeAlgorithms::inited(...))`；同文件 `:1784` 的 `s_iterator_to()` 不做检查。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 成功；`host/obj/system/lib/ustl/` 下 89 个测试全部退出码 0。
+- 反向验证：`slist_test` 用改前的 `slist.hpp`（HEAD 版，前置 `-I` 遮住）重编运行，以 SIGTRAP（-5）退出。
+- 探针：最初那版在线性、线性 + `CacheLast`、环形 + `CacheLast`、环形四种配置下全部通过。它对 `[1, 2, 3, 5, 6]` 调
+  `erase(iterator_to(v[6]))`，对末尾元素调 `previous(iterator_to(...))`。
+- `clang-format` 无差异；`clang-tidy -p out/bringup.x86`（`--header-filter` 覆盖 `slist.hpp`，跑 `slist_test` 和
+  `intrusive_const_accessors_test`）零告警。
+- QEMU 各跑 30 秒：两个镜像都起到 shell，libc 自检通过；没有 panic/assert，被终止的进程只有故意缺页的 fault_probe。
+
+**故意没做**
+- slist hook 的 `is_linked()` 对线性表的末尾元素返回 false，所以 safe-link hook 析构时的 `require(!is_linked())`、
+  `insert_after()` 的 `require(Algorithms::unique(node))` 对这类节点形同虚设。这是同一个判据的另一面：hook 不知道自己挂在
+  哪种表里，只能看 next。后果只是漏检、不会误 trap，Boost 也是这样，没动。
+- repairs 第 5、6 条。

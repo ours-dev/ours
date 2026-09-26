@@ -153,5 +153,20 @@ auto main() -> int {
         cached_other.begin()->m_value != 7 || cached_other_second->m_value != 8) {
         return 12;
     }
+
+    // In a linear list the last element's next is null, just like an element
+    // in no list at all, so iterator_to() must not use a null next to reject
+    // unlinked elements there; it once did, and trapped on every last element.
+    // `six` is last in the sorted `linear_moved`.
+    const auto six_position = linear_moved.iterator_to(six);
+    if (six_position->m_value != 6 || linear_moved.previous(six_position) != linear_moved.begin() ||
+        std::as_const(linear_moved).iterator_to(six)->m_value != 6) {
+        return 13;
+    }
+    const auto after_six = linear_moved.erase(six_position);
+    if (after_six != linear_moved.end() || linear_moved.size() != 1U ||
+        linear_moved.begin()->m_value != 5) {
+        return 14;
+    }
     return 0;
 }

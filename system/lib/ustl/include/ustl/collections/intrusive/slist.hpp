@@ -577,14 +577,14 @@ class Slist final {
     [[nodiscard]]
     static constexpr auto s_iterator_to(T &value) noexcept -> IterMut {
         const auto node = ValueTraits::to_node_ptr(value);
-        detail::require(!Algorithms::inited(node));
+        require_linked(node);
         return IterMut(node);
     }
 
     [[nodiscard]]
     static constexpr auto s_iterator_to(T const &value) noexcept -> Iter {
         const auto node = ValueTraits::to_node_ptr(value);
-        detail::require(!Algorithms::inited(node));
+        require_linked(node);
         return Iter(node_from_const(node));
     }
 
@@ -668,6 +668,20 @@ class Slist final {
         -> NodePtr {
         return PointerTraits<NodePtr>::pointer_to(const_cast<Node &>(
             *PointerTraits<typename NodeTraits::ConstNodePtr>::to_raw_pointer(node)));
+    }
+
+    /// Traps when `node` is plainly in no list, which only a circular list
+    /// can tell: there every linked node has a successor, while init() leaves
+    /// an unlinked one with a null next. In a linear list the last element's
+    /// next is null too, so the same test rejects a valid iterator_to() on
+    /// the last element -- and "last" versus "unlinked" cannot be told apart
+    /// without walking the list. Boost's slist_impl::iterator_to() skips the
+    /// check for linear lists for the same reason (`LINEAR || !inited(...)`).
+    static constexpr auto require_linked(typename NodeTraits::ConstNodePtr const node) noexcept
+        -> void {
+        if constexpr (!PackedOptions::LINEAR) {
+            detail::require(!Algorithms::inited(node));
+        }
     }
 
     /// Placeholders for the two optional members below. Every read and
