@@ -326,4 +326,40 @@ ours_syscalls = [
     attrs = []
     ret = "Status"
   },
+  {
+    name = "vmo_read"
+    brief = "Copies |length| bytes of the VMO, from byte |offset|, into |buffer|."
+    doc = [
+      "Needs Read on |vmo|. All or nothing: OutOfRange when the range does",
+      "not lie wholly inside the VMO, and nothing is copied then. A page",
+      "nobody has written reads as zero. InvArgs when |buffer| cannot take",
+      "|length| bytes -- outside the user half, or not writable all the way;",
+      "the kernel may have written some of it before finding out, so after a",
+      "failure its contents are unspecified. Reading 0 bytes checks the",
+      "handle and the offset and touches nothing. NotSupported on a VMO that",
+      "is a window onto physical memory rather than pages of its own.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "HandleValue"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "out"
+        count = "length"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
 ]

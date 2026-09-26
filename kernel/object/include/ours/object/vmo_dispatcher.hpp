@@ -7,6 +7,8 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 
+#include <user_copy/user_copy.hpp>
+
 namespace ours::object {
 /// Rights a freshly created VMO handle carries.
 ///
@@ -77,16 +79,33 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// and copies nothing; a kind of VMO that cannot be read this way (a
     /// physical one) is NotSupported.
     ///
-    /// Zircon VmObjectDispatcher::Read(), with a kernel buffer where Zircon's
-    /// takes a user pointer. That is deliberate rather than unfinished: the
-    /// copy runs under the VMO's lock (mm::VmObject::read()) and must not
-    /// fault, so the vmo_read system call bounces through a kernel page and copies out
-    /// to the user after the lock is dropped. What the object layer owes the
-    /// layers above is a way to reach a VMO's bytes without naming mm; no
-    /// rights are checked here -- that is the caller's, against its handle.
+    /// For the kernel's own use (userabi fills and checks the BootFS VMO
+    /// through this and write()). The copy runs under the VMO's lock
+    /// (mm::VmObject::read()) and must not fault, which is why it takes a
+    /// kernel buffer; a user buffer goes through read_user(). No rights are
+    /// checked here -- that is the caller's, against its handle.
     auto read(void *out, u64 offset, usize size) -> Status {
         return m_vmo->read(out, VirtAddr(offset), size);
     }
+
+    /// Copies [offset, offset + length) of the VMO to the user buffer |out|:
+    /// the body of the vmo_read system call. Zircon
+    /// VmObjectDispatcher::Read(), which takes a user pointer the same way.
+    ///
+    ///   - OutOfRange when the range does not lie wholly inside the VMO,
+    ///     checked before anything is read, so nothing is delivered. A
+    ///     zero-length range is in range up to and including the end.
+    ///   - Zero length is then Ok without looking at |out|.
+    ///   - InvArgs when |out| cannot take |length| bytes: outside the user
+    ///     half (checked before the first page is read), or unmapped or
+    ///     read-only somewhere along it (found while copying, and what was
+    ///     copied before that stays there).
+    ///   - NotSupported when the VMO cannot be read at all (a physical one),
+    ///     but only once the checks above have passed; see the definition.
+    ///   - All or nothing on success; no count on failure.
+    ///
+    /// No rights are checked here; the system call has checked Read.
+    auto read_user(user_copy::UserOutPtr<u8> out, u64 offset, usize length) -> Status;
 
     /// Copies |size| bytes from the kernel buffer |in| into the VMO at byte
     /// |offset|. The same rules as read(); Zircon VmObjectDispatcher::Write().

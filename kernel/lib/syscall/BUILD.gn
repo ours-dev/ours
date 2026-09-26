@@ -22,9 +22,9 @@ cpp_interface("headers") {
 
 source_set("syscall") {
   # table.cpp owns the dispatch table syscall.S indexes and the shims that
-  # unpack its frame; debug.cpp is the first typed handler with a body.
-  # task.cpp / vmo.cpp are still Unimplemented stubs, waiting on the handle
-  # table their signatures are written against.
+  # unpack its frame; every other file holds the handlers of one family.
+  # task.cpp is still Unimplemented stubs, and vmo.cpp carries placeholders
+  # for the VMO calls that have no syscalls.gni entry yet beside vmo_read.
   sources = [
     "src/argument.hpp",
     "src/channel.cpp",

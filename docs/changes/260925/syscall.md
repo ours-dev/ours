@@ -250,3 +250,139 @@ shell: handle transfer checks passed
 **故意没做**
 - 读端的句柄类型与 rights 校验（`channel_read_etc`）：设计里推迟到 GetBackingMemory 之前。
 - 在途句柄的按进程记账（`HANDLE_MAX_PER_PROCESS`）：下一步。
+
+## `vmo_read`：按页经一页内核中转缓冲拷给用户，全部检查先于第一次读（2026-09-25）
+
+**文件**
+- `system/public/ours/syscalls.gni` — 末尾追加 `vmo_read`（追加在最后，已有桩的编号和字节都不变）
+- `kernel/lib/syscall/src/vmo.cpp` — `sys_vmo_read()`：解析句柄（要 Read），然后交给对象；改掉"VMO 类型还不存在"的过时注释
+- `kernel/object/vmo_dispatcher.cpp`、`include/ours/object/vmo_dispatcher.hpp` — 新增 `VmoDispatcher::read_user()`，范围检查、零长度、用户半区检查、逐页中转都在这里；`read()` 的注释改为指向它
+- `kernel/lib/syscall/BUILD.gn` — 改掉说 vmo.cpp 是空壳的过时注释
+- `system/lib/ou/include/ou/vmo.hpp`、`src/vmo.cpp`、`BUILD.gn` — `ou::vmo_read()`
+- `examples/shell/shell.cpp` — `check_vmo_read()`
+- `docs/design/260924/userspace-filesystem.md` — K14 的验证列补上这一步测不到的路径
+
+**症状**
+无，新功能。文件系统计划 K13：init 要用 `vmo_read` 读 BootFS 的头部、条目表和名字表（I1），BootServer 按请求拷文件内容。
+
+**原因**
+这一节的学习价值在"为什么要中转、为什么中转写在对象层"。
+
+- **VMO 锁下不能拷给用户。**拷到用户内存可能缺页；缺页路径将来要拿 VMO 的锁（`docs/repairs/260925/mm.md` 第 1 条的修法，
+  照 Zircon），到那时如果本线程还拿着同一把锁、用户缓冲区又恰好映射自同一个 VMO，就自己等自己。今天缺页路径只拿地址空间的自旋锁，
+  所以不会死锁，但这是"碰巧"——修 mm 那一条时不应该还要回头翻系统调用。
+- **Zircon 不中转**：`VmObjectPaged::ReadUser()` 在 VMO 锁下直接从物理页拷给用户，用的是 `copy_array_to_user_capture_faults`
+  ——出错时不跑缺页处理，而是把出错地址报回来；它随即放锁、手动把那一页缺进来、再从断点继续。本内核的用户拷贝会直接走缺页处理，
+  没有"只报告不处理"的变体，所以锁必须在拷贝前就放掉，字节得先落在一块内核内存里。代价是每页多一次 memcpy。
+- **中转缓冲为什么是堆上的一页**：内核栈只有 4 页，而拷贝途中的 #PF 不走 IST，会叠在同一个栈上；今天系统调用里最大的栈上缓冲
+  不到 1 KiB。`new (GAF_KERNEL)` 一页正好落在 kmalloc 最大的 4096 档。
+- **为什么写在对象层**：第一版把中转循环写在 `sys_vmo_read()` 里，用到了 `new (mm::GAF_KERNEL)` 和 mm 的 `PAGE_SIZE`——
+  系统调用层直接碰了 kernel/object 以下的东西，违反了 `kernel/lib/syscall/BUILD.gn` 里"只有 spawn_boot 这一个例外"的规则
+  和接口设计 4.7 的依赖白名单。编译得过，只是因为 `//kernel/object:headers` 公开地把 mm 和 heap 的头文件一路传了上来，
+  这条规则今天没有机械检查。审查指出后挪进了 `VmoDispatcher::read_user()`，与 Zircon `VmObjectDispatcher::Read(user_out_ptr)`
+  和本仓库 `MessagePacket::copy_data_to()`（对象层自己把消息拷给用户）同形。
+
+**改法**
+改前：`kernel/lib/syscall/src/vmo.cpp` 只有两个占位声明，没有任何 VMO 系统调用。
+
+```cpp
+namespace ours::syscall {
+// Declarations only -- the VMO object type does not exist yet. ...
+auto vmo_create(object::Handle *handle) -> object::Handle *;
+auto vmo_create_child(object::Handle *handle) -> object::Handle *;
+}
+```
+
+改后，系统调用只剩两步，和 Zircon `sys_vmo_read()`（`zircon/kernel/lib/syscalls/vmo.rs:81-83`）一样：
+
+```cpp
+auto sys_vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer, u64 const offset,
+                  usize const length) -> Status {
+    ustl::Arc<VmoDispatcher> dispatcher;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            vmo, Rights::Read, &dispatcher);
+        status != Status::Ok) {
+        return status;
+    }
+    return dispatcher->read_user(buffer, offset, length);
+}
+```
+
+对象层做其余的事：
+
+```cpp
+    auto const size = m_vmo->size();
+    if (length > size || offset > size - length) {
+        return Status::OutOfRange;
+    }
+    if (length == 0) {
+        return m_vmo->read(nullptr, VirtAddr(offset), 0);
+    }
+    if (!user_copy::is_user_range(out.address(), length)) {
+        return Status::InvArgs;
+    }
+    auto bounce = ustl::Box<Bounce>::from_raw(new (mm::GAF_KERNEL) Bounce);
+    ...
+    while (done < length) {
+        auto const at = offset + done;
+        auto const step = std::min<usize>(length - done, PAGE_SIZE - at % PAGE_SIZE);
+        // m_vmo->read() takes and drops the VMO's lock; the copy out holds none.
+        ... m_vmo->read(bounce->bytes, VirtAddr(at), step) ...
+        ... out.element_offset(done).copy_array_to_user(bounce->bytes, step) ...
+    }
+```
+
+- **检查的顺序就是用户看到的错误优先级**：句柄（BadHandle > BadType > AccessDenied，零长度也一样）→ 范围（OutOfRange）
+  → 零长度直接回 Ok → 用户缓冲区（InvArgs）→ 拷贝。
+- **范围一次查完**：`VmObjectPaged::read()` 自己只查它拿到的那一段；按页循环时，一个越过末尾的请求会先把前几页交出去，
+  再在最后一段回 OutOfRange。先对整个范围查一次，才是"要么全给、要么一个字节都不给"。先查"长度不超过大小"再做减法，
+  所以 `offset + length` 回绕到 0 附近的请求也被挡住。
+- **零长度也问一次 VMO**：`m_vmo->read(nullptr, offset, 0)`。paged VMO 对零字节读在做任何事之前就回 Ok，不看指针；
+  physical VMO 回 NotSupported。这样零长度也和别的长度一样，告诉调用者这个 VMO 能不能读。
+- **缓冲区整段先查**：本内核没有共享零页，读一个没人写过的页会真的提交一页清零的内存。一个注定失败的调用不该让 VMO 平白长出内存，
+  所以在读第一页之前就把 `[buffer, buffer + length)` 整段对照用户半区查一遍。
+- **每一步不越过 VMO 的页边界**：第一步可能从页中间开始，之后每一步都从页边界开始。一次持锁只覆盖一页，无论用户要多长。
+- **部分失败不报字数**：拷到一半缺页失败，就回 InvArgs，已经拷过去的字节留在用户缓冲区里。Zircon 内部算了字数
+  （`VmObjectDispatcher::Read()` 返回 status 和字数），但 `sys_vmo_read()` 只取了 `.first`，把字数丢了；这里干脆不算。
+- `blocking` 属性不加：它在本仓库的意思是"可能等待事件"，Zircon 给 `vmo_read` 标 `@blocking` 是因为 pager 支持的 VMO 可能要等页，
+  这里没有 pager；等 VMO 互斥锁那一下不算。
+
+**参照**
+- Zircon `sys_vmo_read()`（`zircon/kernel/lib/syscalls/vmo.rs:66-83`）、`VmObjectDispatcher::Read()`
+  （`zircon/kernel/object/vm_object_dispatcher.cc:168-172`）、`VmObjectPaged::ReadUser()` 与 `ReadWriteInternal()`
+  （`zircon/kernel/vm/vm_object_paged.cc`）。
+- 与 Zircon 的两处差别，都写在 `read_user()` 的注释里：
+  - 用户缓冲区不能写时，这里一律回 InvArgs（本内核 user_copy 的统一规则，接口设计 4.6）；Zircon 在缓冲区不在用户半区或未映射时
+    回 NotFound，只读时回 AccessDenied。
+  - physical VMO：Zircon 的 `VmObject::ReadUser()` 在看范围和缓冲区之前就回 NotSupported；这里要等范围检查、用户半区检查和
+    中转缓冲分配都过了，`mm::VmObject::read()` 才回 NotSupported，所以可能先回 OutOfRange、InvArgs 或 NoMemory。潜伏：
+    `create_physical()` 没有调用者，用户态拿不到 physical VMO。
+
+**验证**
+- 生成器：`sys_vmo_read` 编号 9，4 参数桩，`ours_vmo_read` 进了 libours.ifs；vDSO 的 ABI 检查照常通过。
+- 两个镜像构建、启动。dev 和 dbg_1 的 shell 都打出下面 6 行和 `shell: vmo_read checks passed`；dev `init: shell closed its channel`，
+  dbg_1 `shell: probes done (11 killed, 0 survived)`：
+
+  ```
+  shell: vmo_read(HANDLE_INVALID) = BadHandle
+  shell: vmo_read(a channel) = BadType
+  shell: vmo_read(a channel, 0 bytes) = BadType
+  shell: vmo_read(a channel, into the kernel half) = BadType
+  shell: vmo_read(a channel, far offset) = BadType
+  shell: vmo_read(closed) = BadHandle
+  ```
+
+  后三行把"句柄错"和"参数错"配在一起（零长度、内核半区的缓冲区、够不着的偏移），证明句柄先于一切参数检查。
+- **未实测**：成功的读、跨页、OutOfRange、零长度读、坏缓冲区的 InvArgs——用户态现在还拿不到任何 VMO 句柄（BootFS VMO 在 K14
+  随 processargs 交出去）。这些已写进设计 K14 的验证列，由 dbg_1 的 shell 在 BootFS VMO 上补测。
+- 审查：四个方向（语义、内存与锁、注释准确性、构建与测试）并行审查，每条发现另派一人反驳。成立三条，都已在本提交处理：
+  中转循环越层（挪进对象层）、physical VMO 的注释与实际顺序不符（改注释）、测试覆盖缺口（写进 K14）。
+
+**故意没做**
+- `ou::vmo_write` 与 `vmo_write`：设计把它放在 K17，与 `vmo_create` 一起，那时才有可写的 VMO。
+- `VmoDispatcher::size()` 的公开接口：第一版为了在系统调用里先查范围加过，范围检查挪进对象层之后没有调用者，删掉；`vmo_get_size` 落地时再加。
+- 共享零页：读没写过的页会提交一页清零内存（`mm::VmObjectPaged::read()` 的注释已写明）。今天所有 VMO 都是 Pinned、创建时整体提交的，
+  碰不到；Lazy VMO 在 K17 出现后才有意义，属于 mm。
+- `vmo_dispatcher.hpp` 里 `create_paged` 注释说"size 由 VMO 自己按页向上取整"，不对：`VmCowPages` 原样保存大小。这是旧注释，
+  和本提交无关，不在这里顺手改。
+  已记为 `docs/repairs/260925/object.md` 第 1 条。

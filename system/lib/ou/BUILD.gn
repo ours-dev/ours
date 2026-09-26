@@ -17,6 +17,7 @@ source_set("ou") {
     "src/handle.cpp",
     "src/object.cpp",
     "src/process.cpp",
+    "src/vmo.cpp",
   ]
   public_deps = [ ":headers" ]
   visibility = [ "*" ]
@@ -34,6 +35,7 @@ cpp_interface("headers") {
     "include/ou/object.hpp",
     "include/ou/process.hpp",
     "include/ou/str.hpp",
+    "include/ou/vmo.hpp",
   ]
 
   # <ours/vdso.hpp> for the symbols the kernel binds these to,

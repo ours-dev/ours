@@ -34,6 +34,7 @@
 #include <ou/object.hpp>
 #include <ou/process.hpp>
 #include <ou/str.hpp>
+#include <ou/vmo.hpp>
 
 namespace {
 /// The kshell command registry, fetched into this program's own memory.
@@ -564,6 +565,54 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
         static_cast<void>(ou::debug_line("shell: bad-pointer checks FAILED"));
     }
 }
+
+/// vmo_read's refusals: what it says before it looks at a VMO.
+///
+/// No VMO handle reaches this program yet -- the BootFS arrives with the
+/// processargs message -- so a successful read cannot be checked here, only
+/// that the handle is resolved first and resolved strictly: a value that
+/// names nothing is BadHandle, one that names something other than a VMO is
+/// BadType, and both win over every argument error. So the calls below pair
+/// a bad handle with a bad buffer (the kernel half), an offset no VMO could
+/// reach, and a length of zero, and each must still be about the handle
+/// (design 4.5: BadHandle > BadType > AccessDenied > the arguments).
+auto check_vmo_read() -> void {
+    using ours::Status;
+
+    constexpr auto KERNEL = ours::VirtAddr{0xffff'8000'0000'0000};
+    constexpr auto FAR = u64{0xffff'ffff'ffff'0000};
+
+    auto ok = true;
+    char buffer[16] = {};
+    ok &= expect("shell: vmo_read(HANDLE_INVALID) = ",
+                 ou::vmo_read(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
+
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        return;
+    }
+    ok &= expect("shell: vmo_read(a channel) = ", ou::vmo_read(a, buffer, 0, sizeof(buffer)),
+                 Status::BadType);
+    ok &= expect("shell: vmo_read(a channel, 0 bytes) = ", ou::vmo_read(a, buffer, 0, 0),
+                 Status::BadType);
+    ok &= expect("shell: vmo_read(a channel, into the kernel half) = ",
+                 ou::vmo_read(a, reinterpret_cast<void *>(KERNEL), 0, sizeof(buffer)),
+                 Status::BadType);
+    ok &= expect("shell: vmo_read(a channel, far offset) = ",
+                 ou::vmo_read(a, buffer, FAR, sizeof(buffer)), Status::BadType);
+
+    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    ok &= expect("shell: vmo_read(closed) = ", ou::vmo_read(b, buffer, 0, sizeof(buffer)),
+                 Status::BadHandle);
+    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vmo_read checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vmo_read checks FAILED"));
+    }
+}
 } // namespace
 
 /// `extern "C"`, because ld.lld resolves the default entry point by the symbol
@@ -588,6 +637,7 @@ auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -
     check_handle_transfer();
     check_handle_quota();
     check_bad_pointers(vdso_base);
+    check_vmo_read();
 
     static Registry registry;
     auto const status = registry.fetch();

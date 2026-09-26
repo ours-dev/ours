@@ -1,0 +1,12 @@
+/// SPDX-License-Identifier: MIT
+/// Copyright (c) 2026 ours Developers
+#include <ou/vmo.hpp>
+
+#include <ours/vdso.hpp>
+
+namespace ou {
+auto vmo_read(ours::HandleValue const vmo, void *const buffer, u64 const offset, usize const length)
+    -> ours::Status {
+    return ours_vmo_read(vmo, buffer, offset, length);
+}
+} // namespace ou
