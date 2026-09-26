@@ -578,7 +578,8 @@ auto CpuLocal::allocate(usize n, usize align) -> PerCpu<T> {
 /// And not every per-CPU read needs it. A value that is the same for the
 /// calling thread whichever CPU it reads it on -- the current thread pointer
 /// is the case in point: every CPU's slot holds whoever is running there --
-/// needs only to be read in one instruction, with CpuLocal::read(). Pinning
+/// needs only to be read in one instruction, with CpuLocal::read() -- which
+/// is what Current<T>::get() does for a T that fits in a register. Pinning
 /// is for a copy the caller goes on using, where the CPU it belongs to
 /// matters. Linux reads `current` the same way, with a single %gs load
 /// (this_cpu_read_stable()) and no preempt_disable().
@@ -685,9 +686,41 @@ struct CpuLocal::PinnedSaver<IrqSaveAndPreemptDisable> {
 template <typename T, typename... Options>
 class CpuLocal::Current {
   public:
+    /// This CPU's instance: a reference when T is an object, the value when T
+    /// fits in a register.
+    ///
+    /// Two shapes because the two kinds of T are used in two ways. A large T
+    /// is an object the caller goes on working with, so it gets a reference,
+    /// and keeping the caller on this CPU while it does is the caller's job
+    /// (CpuLocal::Pinned). A T that fits in a register is, in every instance in
+    /// the tree, a pointer naming which object is current on this CPU -- the
+    /// running Thread, this CPU's PmNode -- read once and used as a value.
+    ///
+    /// That read has to be one instruction. Through access() it was two: load
+    /// %gs:CURRENT_CPU_OFFSET, then load the slot at template + offset. A
+    /// thread preempted between them and resumed on another CPU loads the
+    /// first CPU's slot, and for Thread::Current that slot by then names
+    /// whichever thread the first CPU switched to -- the caller would go on to
+    /// raise that thread's preemption count, or run in its address space.
+    /// CpuLocal::read() is a single %gs-relative load; a preemption lands
+    /// before it or after it, and either way it reads the slot of the CPU the
+    /// caller is on at that instant -- for Thread::Current, the caller itself.
+    ///
+    /// Nothing moves a preempted thread to another CPU yet --
+    /// Scheduler::steal_work_from() is a stub -- so the two-load form had not
+    /// failed; the first load balancer would have made it fail. Zircon's
+    /// arch_get_current_thread() (arch/x86/include/arch/current_thread.h)
+    /// reads current_thread straight from gs for this reason, and Linux's
+    /// get_current() is likewise one %gs load (this_cpu_read_stable()).
+    ///
+    /// The size test is the one set() makes to choose write().
     FORCE_INLINE
-    static auto get() -> T & {
-        return CpuLocal::access(CURRENT_INSTANCE);
+    static auto get() -> decltype(auto) {
+        if constexpr (sizeof(T) <= sizeof(usize)) {
+            return CpuLocal::read(CURRENT_INSTANCE);
+        } else {
+            return CpuLocal::access(CURRENT_INSTANCE);
+        }
     }
 
     FORCE_INLINE

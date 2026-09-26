@@ -403,3 +403,94 @@ class CpuLocal::Pinned {
 - 没管别的 CPU 通过 `access(t, cpu)`/`for_each()`/`fold()` 访问这份数据的情况：那需要锁或
   原子操作，`Pinned` 只解决「哪一份是本 CPU 的」。
 - 没加 Linux `this_cpu_add()` 那种单指令的 per-CPU 读-改-写原语。
+
+## `CpuLocal::Current::get()` 对放得进寄存器的 T 改成一条 `%gs` load，`Thread::Current::get()` 不再分两步读（2026-09-26）
+
+**文件**
+- `kernel/mm/include/ours/mm/cpu_local.hpp` — `CpuLocal::Current<T>::get()` 按 `sizeof(T)` 分两种：
+  放得进一个寄存器就经 `CpuLocal::read()` 返回值，否则照旧经 `access()` 返回引用；
+  `Pinned` 注释里「只要一条指令读完」那句补上指向它。
+- `docs/repairs/260926/mm.md` — 删掉已修的第 1 条，其余顺延。
+
+**症状**
+潜伏，今天触发不到。一旦就绪线程可以跨 CPU 迁移（负载均衡、work stealing），`Thread::Current::get()`
+可能返回**别的线程**，调用者接着对它的抢占计数、地址空间、锁上下文动手。
+
+**原因**
+`Thread::Current` 继承 `CpuLocal::Current<Thread *>`，`get()` 原来是 `access(CURRENT_INSTANCE)`，
+反汇编是三条：
+
+```
+movq %gs:CURRENT_CPU_OFFSET(%rip), %rcx   ; 1. 读本 CPU 的偏移
+leaq CURRENT_INSTANCE(%rip), %rax          ; 2. 模板地址
+addq %rax, %rcx
+movq (%rcx), %rcx                          ; 3. 读槽
+```
+
+第 1 条和第 3 条之间如果被抢占、并在另一个 CPU 上恢复，第 3 条读的是**第一个 CPU 的槽**，
+而那个槽此时已经被上下文切换改成了第一个 CPU 换上去的线程。当前线程指针的特殊之处就在这里：
+每个 CPU 的槽在切换时都会被改写，所以「读的是哪个 CPU 的槽」与「读的是在哪一刻」必须是同一条指令。
+
+今天没事，只因为没有任何东西会移动一个被抢占的线程：`Scheduler::steal_work_from()` 是
+`return 0;`，`migrate_thread()` 是空分支，被抢占的线程由 `put_prev_thread()` 放回本 CPU 的队列。
+第一个负载均衡落地时它就会坏。
+
+**改法**
+
+```cpp
+// 改前
+FORCE_INLINE
+static auto get() -> T & {
+    return CpuLocal::access(CURRENT_INSTANCE);
+}
+```
+
+```cpp
+// 改后
+FORCE_INLINE
+static auto get() -> decltype(auto) {
+    if constexpr (sizeof(T) <= sizeof(usize)) {
+        return CpuLocal::read(CURRENT_INSTANCE);
+    } else {
+        return CpuLocal::access(CURRENT_INSTANCE);
+    }
+}
+```
+
+改后同一处只剩一条 `movq %gs:CURRENT_INSTANCE(%rip), %rax`：抢占只能落在它之前或之后，
+读到的都是调用者此刻所在 CPU 的槽，对 `Thread::Current` 来说就是调用者自己。
+
+改在 `CpuLocal::Current` 而不是只给 `Thread::Current` 加一个遮蔽的 `get()`：病根是这个接口对
+「指向当前对象的指针」这种槽也返回 `T &`（槽的引用），而引用只有在调用者被钉在这个 CPU 上时才有意义；
+按值读才是这类槽该有的形状。树里放得进寄存器的 `Current<T>` 只有两个，`Thread *` 和 `PmNode *`，
+调用者全是按值用（`->`、比较、存进局部变量），没有人绑定引用或经它写入（写有 `set()`）。
+大小判断沿用 `set()` 选 `write()` 的那一个，读写对称。对象型的 `Current<T>`（`Scheduler`、
+`TickDevice`、`TimerQueue` 等）照旧返回引用，持续使用时该由调用者用 `CpuLocal::Pinned` 钉住。
+
+`PmNode::Current` 跟着变成单指令读，但它原来的两步读并不会出错：PmNode 槽在上下文切换时不变，
+读到「刚才那个 CPU 的节点」与「读完再被迁走」是同一种过时。
+
+**参照**
+- Zircon `arch_get_current_thread()`（`zircon/kernel/arch/x86/include/arch/current_thread.h`）：
+  `READ_PERCPU_FIELD(current_thread)` 直接从 gs 读，注释写明不经 `x86_get_percpu()->current_thread`
+  分两步读，就是为了避免两步之间上下文切换、读到别的 CPU 的当前线程。
+- Linux x86 `get_current()`（`arch/x86/include/asm/current.h`）：一条 `%gs` load
+  （`this_cpu_read_stable()`）。
+
+**验证**
+- 构建通过；`clang-format` 干净；`clang-tidy` 在改动行上无新诊断。
+- 反汇编：用 `object_cache.cpp` 的 `kernel_x86.dbg.0` 编译参数编临时 TU，`Pinned<u64, PreemptDisable>`
+  里取当前线程的序列从上面三条变成一条 `movq %gs:...CURRENT_INSTANCE...(%rip), %rax`。
+- QEMU：两个镜像都跑到 `--- end ---`，dbg_1 上 `probes done (11 killed, 0 survived)`、
+  `512 channels made before the quota`、`bootfs checks passed`。
+  **这一轮是在临时反向应用 faa117f7（LAPIC 定时器按 CPU 取设备）的工作区上跑的**：
+  以 HEAD（含 faa117f7）为底时，无论带不带本改动，dbg_1 都会在 fault_probe 阶段卡住——某个新启动的
+  探针线程始终没被调度，shell 一直等它；反向应用 faa117f7 后带本改动两个镜像都通过。
+  也就是说那个卡住来自 faa117f7，与本改动无关，已另行告知。
+
+**故意没做**
+- 没修 `Thread::Current::tid()` 和 `PmNode::Current::hard_affinity()` 里的 `CURRENT_INSTANCE->field`
+  （读模板副本的指针）。前者已记在 `docs/repairs/260924/kernel-task.md` 第 4 条并交接给别的会话，
+  后者没有调用者。两处都是把 `CURRENT_INSTANCE` 当普通对象用；这次的改动之后正确写法是
+  `Current::get()->field`。
+- `get(CpuNum)` 没改：它读的是指定 CPU 的槽，不存在「读哪个 CPU」的竞争，返回引用也仍然合理。
