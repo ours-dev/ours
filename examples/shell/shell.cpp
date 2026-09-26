@@ -567,6 +567,11 @@ auto check_handle_quota() -> void {
     }
 }
 
+/// Two addresses no call may copy to or from, for the checks below. What each
+/// one tests is in check_bad_pointers().
+constexpr auto UNMAPPED = ours::VirtAddr{0x7fff'ffff'e000};
+constexpr auto KERNEL = ours::VirtAddr{0xffff'8000'0000'0000};
+
 /// Bad user pointers handed to the kernel: each call must come back InvArgs,
 /// and the kernel must still be here to answer the next one.
 ///
@@ -591,9 +596,6 @@ auto check_handle_quota() -> void {
 auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     using ours::Signals;
     using ours::Status;
-
-    constexpr auto UNMAPPED = ours::VirtAddr{0x7fff'ffff'e000};
-    constexpr auto KERNEL = ours::VirtAddr{0xffff'8000'0000'0000};
 
     auto ok = true;
     ok &= expect("shell: debug_write(unmapped) = ",
@@ -801,7 +803,6 @@ auto check_libc(u8 const seed) -> void {
 auto check_vmo_read() -> void {
     using ours::Status;
 
-    constexpr auto KERNEL = ours::VirtAddr{0xffff'8000'0000'0000};
     constexpr auto FAR = u64{0xffff'ffff'ffff'0000};
 
     auto ok = true;
@@ -835,6 +836,150 @@ auto check_vmo_read() -> void {
         static_cast<void>(ou::debug_line("shell: vmo_read checks FAILED"));
     }
 }
+
+/// The BootFS the kernel built for user space, read through vmo_read: what is
+/// in it, and what vmo_read does on a VMO that exists.
+///
+/// Two things were left to be checked from this side once a program held the
+/// BootFS. That it holds no kernel file (design K12, the whitelist and the
+/// blacklist behind it): every entry is printed with its size, and none may
+/// be the kernel's image or code patches, whatever directory it sits in.
+/// And the paths of vmo_read that need a real VMO (K13): a read across a
+/// page boundary, the edges of the range, and destinations the kernel may
+/// not write to.
+///
+/// Only the shell the kernel starts holds the BootFS; started by init, this
+/// says so and checks nothing.
+auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> void {
+    using ours::Status;
+
+    if (bootfs == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: bootfs checks skipped (no BootFS here)"));
+        return;
+    }
+
+    auto ok = true;
+    bootfs::Header header{};
+    ok &= expect("shell: vmo_read(header) = ", ou::vmo_read(bootfs, &header, 0, sizeof(header)),
+                 Status::Ok);
+
+    // The entry table and the names, into fixed buffers: this image's BootFS
+    // has four files, and a much bigger one is not what this check is for.
+    constexpr u32 MAX_ENTRIES = 16;
+    constexpr u32 MAX_NAMES = 512;
+    bootfs::Entry entries[MAX_ENTRIES];
+    char names[MAX_NAMES];
+    if (!ok || header.file_count == 0 || header.file_count > MAX_ENTRIES ||
+        header.name_table_size > MAX_NAMES) {
+        static_cast<void>(ou::debug_line("shell: bootfs checks FAILED (header)"));
+        return;
+    }
+    auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
+    ok &= expect("shell: vmo_read(entries) = ",
+                 ou::vmo_read(bootfs, entries, sizeof(header), entries_size), Status::Ok);
+    ok &= expect("shell: vmo_read(names) = ",
+                 ou::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size),
+                 Status::Ok);
+
+    for (u32 i = 0; ok && i < header.file_count; ++i) {
+        auto const &entry = entries[i];
+        if (u64{entry.name_offset} + entry.name_size > header.name_table_size) {
+            ok = false;
+            break;
+        }
+        auto const name = ou::Str(names + entry.name_offset, entry.name_size);
+        char size_text[10];
+        static_cast<void>(
+            ou::debug_line({"shell: bootfs entry ", name, " (",
+                            ou::decimal(static_cast<u32>(entry.data_size), size_text), " bytes)"}));
+
+        // The kernel's own files, wherever they sit: the names
+        // KernelPackage gives a kernel image and its patches.
+        auto base = name;
+        for (usize at = name.size(); at > 0; --at) {
+            if (name.data()[at - 1] == '/') {
+                base = ou::Str(name.data() + at, name.size() - at);
+                break;
+            }
+        }
+        if (spells(base.data(), static_cast<u32>(base.size()), "image.elf") ||
+            spells(base.data(), static_cast<u32>(base.size()), "code-patches")) {
+            static_cast<void>(ou::debug_line({"shell: bootfs holds a kernel file: ", name}));
+            ok = false;
+        }
+    }
+
+    // Across a page boundary: one read of 16 bytes that the kernel copies in
+    // two steps, one per page, against two reads of 8 that each stay inside
+    // a page. The boundary is inside one file's data, past its first page,
+    // so both sides are that file's own bytes: at a file's start, every file
+    // here would do -- they are all ELF programs and begin with the same
+    // header -- and a second step that fetched the wrong file's first page
+    // would still compare equal. The page size is the data alignment the
+    // kernel records in every entry. And each buffer starts full of a
+    // different pattern, so that a half nobody wrote cannot match the same
+    // half of another.
+    auto const page = entries[0].alignment;
+    bootfs::Entry const *spanning = nullptr;
+    for (u32 i = 0; i < header.file_count && spanning == nullptr; ++i) {
+        if (entries[i].data_size >= page + 8) {
+            spanning = &entries[i];
+        }
+    }
+    if (spanning == nullptr) {
+        static_cast<void>(ou::debug_line("shell: no BootFS file spans two pages"));
+        ok = false;
+    } else {
+        auto const boundary = spanning->data_offset + page;
+        u8 across[16];
+        u8 before[8];
+        u8 after[8];
+        for (auto &b: across) {
+            b = 0xa5;
+        }
+        for (auto &b: before) {
+            b = 0x5a;
+        }
+        for (auto &b: after) {
+            b = 0x3c;
+        }
+        ok &= expect("shell: vmo_read(across a page boundary) = ",
+                     ou::vmo_read(bootfs, across, boundary - 8, sizeof(across)), Status::Ok);
+        ok &= expect("shell: vmo_read(the page before) = ",
+                     ou::vmo_read(bootfs, before, boundary - 8, sizeof(before)), Status::Ok);
+        ok &= expect("shell: vmo_read(the page after) = ",
+                     ou::vmo_read(bootfs, after, boundary, sizeof(after)), Status::Ok);
+        ok &= same_bytes(across, before, sizeof(before)) &&
+              same_bytes(across + sizeof(before), after, sizeof(after));
+    }
+
+    // The edges of the range: empty at the very end is in range, a byte
+    // there is not, and neither is one byte more than the whole VMO.
+    auto const size = header.total_size;
+    u8 byte = 0;
+    ok &= expect("shell: vmo_read(offset = size, 0 bytes) = ", ou::vmo_read(bootfs, &byte, size, 0),
+                 Status::Ok);
+    ok &= expect("shell: vmo_read(offset = size, 1 byte) = ", ou::vmo_read(bootfs, &byte, size, 1),
+                 Status::OutOfRange);
+    ok &= expect("shell: vmo_read(size + 1 bytes) = ",
+                 ou::vmo_read(bootfs, &byte, 0, static_cast<usize>(size) + 1), Status::OutOfRange);
+
+    // Destinations the kernel may not write: the kernel half (refused before
+    // any page is read), nothing mapped, and the read-only vDSO (both found
+    // while copying).
+    ok &= expect("shell: vmo_read(into the kernel half) = ",
+                 ou::vmo_read(bootfs, reinterpret_cast<void *>(KERNEL), 0, 8), Status::InvArgs);
+    ok &= expect("shell: vmo_read(into unmapped) = ",
+                 ou::vmo_read(bootfs, reinterpret_cast<void *>(UNMAPPED), 0, 8), Status::InvArgs);
+    ok &= expect("shell: vmo_read(into the vDSO) = ",
+                 ou::vmo_read(bootfs, reinterpret_cast<void *>(vdso), 0, 8), Status::InvArgs);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: bootfs checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: bootfs checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -863,6 +1008,7 @@ auto main(int, char **) -> int {
     check_handle_quota();
     check_bad_pointers(runtime::vdso_base());
     check_vmo_read();
+    check_bootfs(bootfs, runtime::vdso_base());
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
 
     static Registry registry;

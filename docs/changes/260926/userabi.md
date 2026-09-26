@@ -108,3 +108,72 @@ init 和 shell 靠手写的 `_start` 猜 `rdi` 是什么（shell 甚至用"对�
 审查：三个方向（内核一侧、init 与 shell 的每条路径、注释准确性）并行审查、逐条反驳核实。代码没有发现问题；成立的五条都是注释，已在本提交改正：
 runtime 里"init 先 spawn 后写"的说法因本提交而过时（现在三个启动方都先写后启动）；shell 的 `check_handle_close` 把"句柄怎么进到本进程的表里"说错了
 （是 runtime 读消息时装进去的，值由本进程的表决定）；以及上面那条关于 Zircon 丢弃 bootstrap 端的说法。
+
+## dbg_1 的 shell 用 vmo_read 列出 BootFS，并补测 vmo_read 的跨页、边界与坏缓冲区（2026-09-26）
+
+**文件**
+- `examples/shell/shell.cpp` — 新增 `check_bootfs()`；两个坏地址常量 `UNMAPPED`、`KERNEL` 从 `check_bad_pointers()`、`check_vmo_read()` 里提到文件作用域共用
+
+**症状**
+无，补测试。设计步骤 K14 的第 ④ 个提交。两件事要等用户程序真正拿到 BootFS 才能从用户态这一侧检查：
+K12 的验收（交给用户态的 BootFS 里没有内核文件），和 K13 当时没有 VMO 可读、只测到了"句柄被拒绝"的那些 `vmo_read` 路径。
+
+**原因**
+这一节的学习价值在"测试要真能抓到错"。第一版的跨页检查被审查指出两个"永远会通过"的漏洞，都记在改法里。
+
+**改法**
+改前：dbg_1 的 shell 只打一行 `shell: bootfs has 4 entries`。
+
+改后，`check_bootfs()` 依次做：
+
+```cpp
+    ou::vmo_read(bootfs, &header, 0, sizeof(header));
+    ou::vmo_read(bootfs, entries, sizeof(header), entries_size);
+    ou::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size);
+    // print every entry with its size; none may be image.elf or code-patches, in any directory
+    ...
+    auto const boundary = spanning->data_offset + page;   // inside one file, past its first page
+    ou::vmo_read(bootfs, across, boundary - 8, sizeof(across));   // two steps in the kernel
+    ou::vmo_read(bootfs, before, boundary - 8, sizeof(before));
+    ou::vmo_read(bootfs, after, boundary, sizeof(after));
+    ...
+    ou::vmo_read(bootfs, &byte, size, 0);       // Ok
+    ou::vmo_read(bootfs, &byte, size, 1);       // OutOfRange
+    ou::vmo_read(bootfs, &byte, 0, size + 1);   // OutOfRange
+    // into the kernel half, into unmapped, into the vDSO: InvArgs
+```
+
+- **内核文件检查**：每个条目连同大小打出来，并拒绝基名为 `image.elf` 或 `code-patches` 的条目，不管它在哪个目录——这是内核包里内核映像和补丁表的固定名字（`KernelPackage`），与内核里黑名单按文件名的那一半相同。
+- **跨页读，第一版的两个漏洞**：
+  - 第一版把页边界放在第一个文件的开头，用 ELF 魔数证明"读到了东西"。审查指出这个镜像里四个文件都是 ELF，开头 24 字节完全相同：
+    内核第二步若读成了别的文件的首页，比较照样相等。改为把边界放在**一个文件内部**——找第一个至少跨两页的文件（shell），取它第二页的开头，
+    两边都是这个文件自己的字节。
+  - 边界前 8 字节原本是名字表之后补齐的零，而缓冲区也初始化为零：内核若"返回 Ok 却没写这半边"，也比较相等。改为三个缓冲区各自先填上
+    不同的哨兵值（0xa5、0x5a、0x3c），没被写到的那一半不可能与另一个缓冲区相等。
+  - 页大小取条目里记录的数据对齐（内核按页对齐文件数据并把它写进每个条目），用户态本身拿不到 `PAGE_SIZE`。
+- **边界与坏缓冲区**与 `read_user()` 的文档一一对应：`offset = size` 读 0 字节在范围内、读 1 字节不在；比整个 VMO 多一字节不在；
+  目标在内核半区（读第一页之前就被拒）、未映射、只读的 vDSO（拷贝时才发现）都回 InvArgs。
+
+**参照**
+Zircon `zircon/system/utest/core/vmo/vmo.cc` 对 `zx_vmo_read` 的同类用例（越过末尾、末尾处长度 0、坏缓冲区）。坏缓冲区的错误码不同：
+这里一律 InvArgs（本内核 user_copy 的统一规则），Zircon 是 NotFound 与 AccessDenied（见 `docs/changes/260925/syscall.md` 的 vmo_read 一节）。
+
+**验证**
+- dbg_1：shell 读出 4 个条目，名字与大小和同一次启动里内核打出的包清单逐一相同——
+
+  ```
+  shell: bootfs entry userboot (1736 bytes)
+  shell: bootfs entry vdso (1536 bytes)
+  shell: bootfs entry shell (24672 bytes)
+  shell: bootfs entry fault_probe (7872 bytes)
+  ```
+
+  而内核包里有 8 个文件（另有 `config/user_bootfs`、`vmours/code-patches`、`vmours/image.elf`、`physboot`）：内核自己的文件没有交给用户态，
+  这是 K12 第一次从用户态这一侧得到确认。随后各项 `vmo_read` 都得到预期答案，`shell: bootfs checks passed`。
+- dev：`shell: bootfs checks skipped (no BootFS here)`（init 启动的 shell 不持有 BootFS），其余与上一个提交相同。
+- **变异检查**：临时把内核 `read_user()` 的第二步改为读下一页（`at = offset + done + PAGE_SIZE`），dbg_1 打出 `shell: bootfs checks FAILED`；
+  还原后重新构建，两个镜像的哈希与通过的那次相同。
+- 审查：成立两条，都是跨页检查的检出力不够（见上），已在本提交改正。
+
+**故意没做**
+- 读出整个文件的内容并逐字节核对：没有独立的参照来源；在 K20 的 Slice 与 K21 的映射落地后，可以把同一个文件经映射读出来与 `vmo_read` 对比。
