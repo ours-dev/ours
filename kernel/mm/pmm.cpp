@@ -51,13 +51,27 @@ auto node_soft_affinity(NnId nid) -> CpuMask const * {
     return nullptr;
 }
 
-/// Declared in pmm.hpp and called from kmalloc and MemCache::allocate to
-/// resolve "no preference" into a real node, but never defined until now.
+/// A zeroed page for one level of a page table, from whichever allocator is up.
+/// See the declaration in pmm.hpp for why the choice lives here.
 auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
     if (pmm_enabled()) {
-        PhysAddr phys;
-        auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, get_order(size / PAGE_SIZE));
-        return frame ? phys : PhysAddr{0};
+        // Through the node-taking overload, so that `node` means the same thing
+        // on both sides of the handover. It used to be read only by the EarlyMem
+        // branch below, which made "a table on node N" honoured before the
+        // handover and silently ignored after it -- the caller's argument
+        // dropped in favour of whatever node the running CPU belongs to.
+        //
+        // Which node a page table sits on is not cosmetic under NUMA: the CPU
+        // that walks it is, by construction, one of the CPUs of the node whose
+        // memory it maps, and a table walk is a chain of dependent loads that
+        // the hardware cannot overlap.
+        //
+        // bootmem::ANY_NODE is >= NUMA_MAX_NODE, which this overload forwards to
+        // the node-less one, so "no preference" -- every in-tree caller today --
+        // behaves exactly as before, PmNode::Current::inherit_thread_context()
+        // and the MemoryAllocationState counter included.
+        auto *frame = alloc_frames(node, GAF_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
+        return frame ? frame_to_phys(frame) : PhysAddr{0};
     }
 
     // Zeroed by hand: the boot allocator has no notion of Gaf, and a page table
@@ -100,6 +114,8 @@ auto free_frame_count() -> usize {
     return total;
 }
 
+/// Called from kmalloc and MemCache::allocate to resolve "no preference" into a
+/// real node.
 auto current_node() -> NnId {
     return PmNode::Current::nid();
 }

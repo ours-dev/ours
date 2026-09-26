@@ -26,36 +26,32 @@ m_pages。前者与 Zircon 一致，推荐。
 
 **必须在 K16 之前修掉。**
 
-## 2. `alloc_page_table()` 在 buddy 分支上丢掉 `node`
+## 2. `alloc_frames` 的带节点重载不检查 `MemoryAllocationState`，不带节点的检查
+
+**现象**：潜伏。`MemoryAllocationState` 的 `disable()` 计数当前没有调用者，所以两条路径的
+行为暂时一致。
+
+**原因**：不带节点的 `alloc_frames(gaf, ...)` 经 `PmNode::Current::alloc_frames()`，
+开头就是
 
 ```cpp
-auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
-    if (pmm_enabled()) {
-        PhysAddr phys;
-        auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, get_order(size / PAGE_SIZE));
-        return frame ? phys : PhysAddr{0};
-    }
-    auto *table = EarlyMem::allocate<u8>(size, alignment, node);   // 只有这条用了 node
+if (auto const status = inherit_thread_context(gaf); Status::Ok != status) {
+    return ustl::err(status);
+}
 ```
 
-EarlyMem 分支按 `node` 分配，buddy 分支不按——它调的是不带节点的重载，节点由
-`PmNode::Current` 决定。于是「给我节点 N 上的一页页表」这个请求在交接前后拿到不同的答案，
-而 NUMA 下页表页放在哪个节点是有意义的（walk 它的是本节点的 CPU）。
+而 `inherit_thread_context()` 在 `!mem_state.is_enabled()` 时回 `Status::AccessDenied`，
+也就是尊重「这段区间里不许分配」。带节点的 `alloc_frames(nid, gaf, ...)`
+（`kernel/mm/pmm.cpp`）在 `nid < NUMA_MAX_NODE` 时直接
+`PmNode::node(nid)->alloc_frames(...)`，绕过整个 `Current` 层，那个检查和线程的
+resource lock 都不经过。于是 `CpuLocal::Mapper::build_dense()` 这类指定节点的调用者
+完全不受计数器约束。
 
-**现象**：潜伏，而且当前一个调用者都没有——`kernel/arch/x86/mm/page_table.cpp` 的
-`alloc_table()` 用的是两参数重载，`node` 取默认的 `bootmem::ANY_NODE`。所以这条修完
-也不会改变任何现有行为；它是一个公开接口静默丢弃调用者传进来的值，这件事本身是错的。
+**要先问清楚**：这个不对称是有意的（「指定了节点就是内核基础设施，不受线程策略管」）
+还是漏的。如果是漏的，`inherit_thread_context()` 应该提到两条路径的共同上游；
+如果是有意的，`MemoryAllocationState` 的注释要写明它只约束哪一条路径，
+否则下一个人会以为 `disable()` 能挡住所有分配。
 
-**改法**：`alloc_frames(node, GAF_KERNEL | Gaf::Zero, order)`。那个重载在
-`nid >= NUMA_MAX_NODE` 时自己退回不带节点的版本，所以 `ANY_NODE` 的行为一字不变，
-包括仍然经过 `PmNode::Current::inherit_thread_context()`。
-
-**注意不要改成「永远用 `current_node()` 解析」**：那会绕过 `inherit_thread_context()`，
-也就是绕过 `MemoryAllocationState` 那个「这段区间里不许分配」的计数器。
-禁止分配是调用者的明确意图，页表也不该例外。
-
-**顺带记一笔**（另一条，还没查）：`alloc_frames` 这一族里，不带节点的重载经
-`PmNode::Current::alloc_frames()`，会检查 `MemoryAllocationState`；带节点的重载
-（`alloc_frames(nid, ...)`）直接走 `PmNode::node(nid)->alloc_frames()`，**不检查**。
-`build_dense()` 等指定节点的调用者因此完全不受那个计数器约束。这个不对称是有意的还是漏的，
-要问清楚再动。
+**顺带**：`MemoryAllocationState::disable()` 目前没有任何调用者
+（`kernel/mm/include/ours/mm/memory_allocation_state.hpp`），所以这条不急；
+但在第一个 `disable()` 落地之前必须定下来，否则那个调用者会以为自己挡住了而实际没挡住。

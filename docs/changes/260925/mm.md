@@ -971,3 +971,81 @@ Linux 从另一头到达同一个状态：`memblock_free_all()` 结束时调 `me
 - 没有回收 bootmem 的静态存储（`USABLE_STORAGE` / `RESERVATION_STORAGE`）。
   它们在 `.init` 数据里，`reclaim_init_area()` 会连着整段一起还给 buddy；
   单独处理它们没有意义。
+
+## `alloc_page_table()` 不再丢掉调用者指定的 `node`（2026-09-25）
+
+**文件**
+- `kernel/mm/pmm.cpp` — buddy 分支改用带节点的 `alloc_frames` 重载；顺手把一条贴错函数的
+  注释挪回 `current_node()` 头上
+- `docs/repairs/260925/mm.md` — 删掉第 2 条
+
+**症状**
+潜伏，而且当前一个调用者都触发不到：唯一的内核调用点
+`kernel/arch/x86/mm/page_table.cpp` 的 `alloc_table()` 用的是两参数重载，
+`node` 取默认的 `bootmem::ANY_NODE`。所以这条改完不会改变任何现有行为。
+
+**原因**
+`alloc_page_table(size, alignment, node)` 的 `node` 只有 EarlyMem 分支在用：
+
+```cpp
+auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
+    if (pmm_enabled()) {
+        PhysAddr phys;
+        auto *frame = alloc_frames(GAF_KERNEL | Gaf::Zero, &phys, get_order(size / PAGE_SIZE));
+        return frame ? phys : PhysAddr{0};   // node 到这里就没了
+    }
+    auto *table = EarlyMem::allocate<u8>(size, alignment, node);
+```
+
+buddy 分支调的是不带节点的重载，节点由 `PmNode::Current` 决定。于是同一个请求在
+`do_handoff()` 前后拿到不同的答案：之前按调用者说的节点分配，之后按当前 CPU 所在的节点分配。
+一个公开接口静默丢弃调用者传进来的值，这件事本身就是错的——不需要等到有人被它咬。
+
+而 NUMA 下页表页落在哪个节点不是装饰：walk 它的 CPU 按构造就是它所映射的那块内存所属节点的
+CPU，而一次表遍历是一串相互依赖的 load，硬件没法重叠掉。跨节点放页表等于给每次 TLB miss
+加一趟远程访存。
+
+**改法**
+```cpp
+auto *frame = alloc_frames(node, GAF_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
+return frame ? frame_to_phys(frame) : PhysAddr{0};
+```
+
+`alloc_frames(NnId, Gaf, usize, NodeMask const&)` 在 `nid >= NUMA_MAX_NODE` 时自己退回不带
+节点的重载，而 `bootmem::ANY_NODE` 就是 `NnId` 的最大值，所以「无偏好」这条路径一字未变——
+包括仍然经过 `PmNode::Current::alloc_frames()` 里的 `inherit_thread_context()`，
+也就是仍然尊重 `MemoryAllocationState` 那个「这段区间里不许分配」的计数器。
+不需要为了带上节点而复制那段逻辑。
+
+被否掉的方案：**在这里用 `current_node()` 把 `ANY_NODE` 解析成具体节点，然后一律走带节点的
+重载**。看起来更统一，但带节点的重载直接调 `PmNode::node(nid)->alloc_frames()`，
+不经过 `inherit_thread_context()`，于是禁止分配的区间里页表分配会照样成功。
+禁止分配是调用者的明确意图，页表不该是例外。
+
+另一个被否掉的：**把 `node` 参数删掉**。它当前没人传，但 EarlyMem 分支在用它，
+而且 phys 侧的 `Aspace` 和按节点放页表都是明确在规划里的东西
+（`.agents` 的约定：没有调用者的声明默认是脚手架，不是死代码）。让参数生效比删掉它对。
+
+顺带：`alloc_page_table()` 头上那条注释写的是「called from kmalloc and
+MemCache::allocate to resolve "no preference" into a real node」——那说的是
+`current_node()`，贴错了函数。挪回去了。
+
+**参照**
+Linux 的页表页分配一路带着节点：`__pte_alloc_one_node(nid, ...)` /
+`pte_alloc_one_node()` 收 `nid` 并交给 `alloc_pages_node()`，`pgd_alloc()` 之下的每一层
+都是 `NUMA_NO_NODE` 或者一个具体节点，没有哪一层把它悄悄换成「当前 CPU 的节点」。
+`NUMA_NO_NODE` 由 `alloc_pages_node()` 统一解析，和这里靠带节点的重载自己退回是同一个手法。
+
+**验证**
+- `out/bringup.x86`、`out/numa.x86` 两个配置构建通过。
+- `out/numa.x86`（`NUMA=1`，8 CPU，四节点）：7 个 AP 全部 online，shell 六组检查全过，
+  进程正常销毁，无 fault / panic / 断言失败。
+- `out/bringup.x86`：六组检查全过，正常销毁，无回归。
+- 行为上应当完全不变（所有调用者都传 `ANY_NODE`），两个镜像的日志也确实和上一条一致。
+
+**故意没做**
+- 没有给 `PageTable::alloc_table()` 接上节点。「内核页表该放在哪个节点」不是这里能定的：
+  候选是「它所映射的内存所在的节点」和「walk 它的 CPU 所在的节点」，在
+  `CpuLocal::Mapper` 那种场合两者一致，在 physmap 那种场合不一致。要先定下来再改。
+- 没有碰 `alloc_frames` 这一族里「带节点的重载不检查 `MemoryAllocationState`、
+  不带节点的检查」这个不对称。那是另一件事，留在待修项里。
