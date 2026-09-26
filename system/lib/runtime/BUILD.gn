@@ -43,12 +43,12 @@ group("tests") {
 # User programs only. Not in the host toolchain (keyed on is_host_toolchain,
 # since toolchain_environment reads "user" there) nor the kernel ones:
 # _start, a system call through ou, and a main to call exist only in a ring-3
-# program. Not yet a default dependency of user_executable() either: every
-# program still defines its own _start, which this one would collide with.
-# Programs move one producer-consumer pair at a time: fault_probe first,
-# since only the shell starts it; init and the shell together with the
-# kernel's own processargs (design K14); userboot last, when it becomes a
-# launcher (U8). Until then each program names this dependency itself.
+# program. Not yet a default dependency of user_executable() either:
+# userboot still defines its own _start, which this one would collide with,
+# until it becomes a launcher (U8). Programs moved one producer-consumer pair
+# at a time -- fault_probe, then init and the shell together with the
+# kernel's own processargs (design K14) -- and until userboot follows, each
+# names this dependency itself.
 if (!is_host_toolchain && toolchain_environment == "user") {
   source_set("runtime") {
     sources = [

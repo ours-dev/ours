@@ -55,13 +55,14 @@ namespace {
     ///
     /// Waits for the message first, as Zircon's newer start-up code does
     /// (ld::ProcessargsBuffer, which says why: the parent "might have started
-    /// this process before sending its bootstrap message"). Ours does exactly
-    /// that today -- init spawns the shell and only then writes to it -- and
-    /// a child that reads before the write lands, on another CPU, would find
-    /// nothing. The wait ends on READABLE, or on PEER_CLOSED if the starter
-    /// drops its end without writing, and then the read reports PeerClosed
-    /// rather than hanging; only a starter that keeps its end and never
-    /// writes leaves this waiting, which is that starter's bug.
+    /// this process before sending its bootstrap message"). No starter here
+    /// does that today -- the kernel, init and the shell all write the
+    /// message before the child exists -- but the protocol allows the other
+    /// order, and a child that read before such a write landed, on another
+    /// CPU, would find nothing. The wait ends on READABLE, or on PEER_CLOSED
+    /// if the starter drops its end without writing, and then the read
+    /// reports PeerClosed rather than hanging; only a starter that keeps its
+    /// end and never writes leaves this waiting, which is that starter's bug.
     ///
     /// Then one read, which must find the message: a message that does not
     /// fit is bigger than any channel message can be.

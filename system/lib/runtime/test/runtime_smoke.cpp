@@ -4,8 +4,8 @@
 /// The smallest program on the runtime: a main and nothing else, so that
 /// linking it proves the start-up code links -- _start as the entry point,
 /// main found under its C name, and no PLT. It is never packaged or run;
-/// the programs that run on the runtime are fault_probe first, then init and
-/// the shell (design K14).
+/// the programs that run on the runtime are init, the shell and fault_probe
+/// (design K14).
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 

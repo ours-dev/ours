@@ -7,6 +7,8 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
+#include <span>
+
 #include <user_copy/user_copy.hpp>
 #include <ustl/box.hpp>
 #include <ustl/collections/intrusive/list.hpp>
@@ -52,6 +54,19 @@ class MessagePacket final {
     static auto create(user_copy::UserInPtr<u8 const> bytes, u32 num_bytes,
                        ustl::Box<Handle> *handles, u32 num_handles, ustl::Box<Self> *out) -> Status;
 
+    /// The same, with the bytes copied from kernel memory: for a message the
+    /// kernel writes itself, such as the processargs a first process is
+    /// started with (userabi). Every handle must be present -- the kernel
+    /// has no business sending an empty slot, and nothing checks for one in
+    /// a build without DEBUG_ASSERT.
+    ///
+    /// Its own overload rather than the user one with a kernel address:
+    /// a user pointer is checked to lie in the user half, and a kernel
+    /// buffer does not. Zircon MessagePacket::Create(const char *data, ...),
+    /// its kernel-buffer twin.
+    static auto create(std::span<u8 const> bytes, ustl::Box<Handle> *handles, u32 num_handles,
+                       ustl::Box<Self> *out) -> Status;
+
     ~MessagePacket();
 
     [[nodiscard]]
@@ -78,6 +93,12 @@ class MessagePacket final {
 
   private:
     MessagePacket(u8 *data, u32 num_bytes, Handle **handles, u32 num_handles);
+
+    /// What both create()s do once the bytes are in |data| (a kmalloc buffer
+    /// of |num_bytes|, or null for none), which this takes over whatever it
+    /// answers.
+    static auto assemble(u8 *data, u32 num_bytes, ustl::Box<Handle> *handles, u32 num_handles,
+                         ustl::Box<Self> *out) -> Status;
 
     u8 *m_data;
     u32 m_num_bytes;

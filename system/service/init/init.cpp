@@ -3,12 +3,13 @@
 ///
 /// init -- the first system service.
 ///
-/// The kernel starts it with one handle, the root job, and nothing else. What
-/// it does with that today is the whole of the first vertical slice
-/// (docs/design/260923/userspace-interface.md, section 5): make a channel,
-/// start the shell with one end of it, say "ping", sleep until the shell
-/// answers, and print the answer. Every step goes through the vDSO; nothing
-/// here executes a syscall instruction.
+/// The kernel starts it on the runtime (//system/lib/runtime) with a
+/// processargs message holding two startup handles: the root job and the
+/// BootFS VMO. What it does with them today is the whole of the first
+/// vertical slice (docs/design/260923/userspace-interface.md, section 5):
+/// look at the BootFS, start the shell, say "ping" to it, sleep until the
+/// shell answers, and print the answer. Every step goes through the vDSO;
+/// nothing here executes a syscall instruction.
 ///
 /// The wait in the middle is the first in the system that really sleeps: the
 /// answer can only come from another process, which has to be started,
@@ -17,19 +18,27 @@
 /// the right user stack (73bb1ca), that the wake is not lost (0f9e32b), and
 /// that an allocation on an AP works (5b1ce2f).
 ///
-/// There is no exit system call yet, so it ends by spinning, as every program
-/// here does.
+/// It never returns from main: it is the process the system's other programs
+/// are started from, and nothing yet would notice it gone.
 
+#include <ours/process_args.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
 
+#include <string_view>
+
+#include <bootfs/format.hpp>
 #include <ou/channel.hpp>
 #include <ou/debug.hpp>
+#include <ou/handle.hpp>
 #include <ou/object.hpp>
 #include <ou/process.hpp>
 #include <ou/str.hpp>
+#include <ou/vmo.hpp>
+#include <runtime/main.hpp>
+#include <runtime/startup.hpp>
 
 namespace {
 /// Prints "<what><status name>".
@@ -54,25 +63,94 @@ auto halt() -> void {
 
 constexpr ou::Str SHELL{"shell"};
 constexpr ou::Str PING{"ping"};
+
+/// Reads the BootFS header through vmo_read and says how many files it
+/// holds -- the first time a program looks at the BootFS the kernel built
+/// for it (design K12), and the first vmo_read of a real VMO.
+///
+/// init keeps the handle: the shell gets no BootFS from it. Passing one on
+/// would take handle_duplicate (K15), since init is about to need its own.
+auto describe_bootfs(ours::HandleValue const bootfs) -> void {
+    if (bootfs == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("init: started without a BootFS"));
+        return;
+    }
+    bootfs::Header header{};
+    if (auto const status = ou::vmo_read(bootfs, &header, 0, sizeof(header));
+        status != ours::Status::Ok) {
+        report("init: reading the BootFS header = ", status);
+        return;
+    }
+    if (header.magic != bootfs::Header::MAGIC) {
+        static_cast<void>(ou::debug_line("init: the BootFS header has the wrong magic"));
+        return;
+    }
+    char count[10];
+    static_cast<void>(
+        ou::debug_line({"init: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
+}
+
+/// Starts the shell under |job| with |peer| -- the far end of the channel
+/// init talks to it on -- as its User0 startup handle, and argv {"shell"}.
+///
+/// The conversation cannot use the shell's bootstrap channel, which the
+/// runtime closes as soon as it has read the processargs off it: init would
+/// see PEER_CLOSED before the shell had said anything. The shell gets no job
+/// either -- it needs none to answer a ping, and the dev image packages
+/// nothing for it to start.
+///
+/// The message is written before the shell exists, as the kernel writes the
+/// first process's. |peer| and the shell's bootstrap end leave this process
+/// whatever the answer.
+auto start_shell(ours::HandleValue const job, ours::HandleValue peer) -> ours::Status {
+    using ours::Status;
+
+    u8 message[128];
+    u32 length = 0;
+    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0)};
+    std::string_view const args[] = {{SHELL.data(), SHELL.size()}};
+    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
+        status != Status::Ok) {
+        static_cast<void>(ou::handle_close(peer));
+        return status;
+    }
+
+    ours::HandleValue bootstrap = ours::HANDLE_INVALID;
+    ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
+    if (auto const status = ou::channel_create(&bootstrap, &bootstrap_there);
+        status != Status::Ok) {
+        static_cast<void>(ou::handle_close(peer));
+        return status;
+    }
+    auto const written = ou::channel_write(bootstrap, message, length, &peer, 1);
+    static_cast<void>(ou::handle_close(bootstrap));
+    if (written != Status::Ok) {
+        static_cast<void>(ou::handle_close(bootstrap_there));
+        return written;
+    }
+    return ou::process_spawn_boot(job, SHELL, bootstrap_there);
+}
 } // namespace
 
-/// |job| is the root job (%rdi); the vDSO base (%rsi) is not needed.
-extern "C" [[noreturn]]
-auto _start(ours::HandleValue const job, [[maybe_unused]] ours::VirtAddr const vdso_base) -> void {
+auto main(int, char **) -> int {
     using ours::Signals;
     using ours::Status;
 
+    auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
+    if (job == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("init: started without the root job"));
+        halt();
+    }
     static_cast<void>(ou::debug_line("init: started with the root job"));
+    describe_bootfs(runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0));
 
     ours::HandleValue here = ours::HANDLE_INVALID;
-    ours::HandleValue there = ours::HANDLE_INVALID;
-    if (auto const status = ou::channel_create(&here, &there); status != Status::Ok) {
+    ours::HandleValue peer = ours::HANDLE_INVALID;
+    if (auto const status = ou::channel_create(&here, &peer); status != Status::Ok) {
         report("init: channel_create = ", status);
         halt();
     }
-
-    // |there| leaves this process here, whether or not the spawn works.
-    if (auto const status = ou::process_spawn_boot(job, SHELL, there); status != Status::Ok) {
+    if (auto const status = start_shell(job, peer); status != Status::Ok) {
         report("init: spawning shell = ", status);
         halt();
     }
@@ -103,10 +181,11 @@ auto _start(ours::HandleValue const job, [[maybe_unused]] ours::VirtAddr const v
     }
     static_cast<void>(ou::debug_line({"init: shell says \"", ou::Str(buffer, actual), "\""}));
 
-    // And then until the shell is gone. It exits when it is done, its handles
-    // close as its process dies, and this end reads PEER_CLOSED -- the one
-    // sign of a child's end there is until a process handle and TERMINATED
-    // come with the user-space loader.
+    // And then until the shell lets go of its end: it closes it as it checks
+    // that closing a handle works, or its process dying closes it. Either way
+    // this is the shell being done with init, not necessarily the shell being
+    // gone -- that sign is TERMINATED on a process handle, which comes with
+    // the user-space loader (design K23).
     status = ou::object_wait_one(here, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
     if (status != Status::Ok) {
         report("init: waiting for the shell to finish = ", status);

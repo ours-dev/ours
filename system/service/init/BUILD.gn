@@ -9,10 +9,15 @@ assert(toolchain_environment == "user",
        "init must be built in a //build/toolchain/ours:user-* toolchain")
 
 # init: the first system service, the program the kernel starts with the root
-# job. For now its whole job is to start the next program and prove the two
-# can talk; supervising services is what it grows into (design 3.6).
+# job and the BootFS. For now its whole job is to look at the BootFS, start
+# the next program and prove the two can talk; supervising services is what
+# it grows into (design 3.6).
 user_executable("init") {
   visibility = [ "//kernel/products/image/*" ]
   sources = [ "init.cpp" ]
-  deps = [ "//system/lib/ou" ]
+  deps = [
+    "//system/lib/bootfs:headers",
+    "//system/lib/ou",
+    "//system/lib/runtime",
+  ]
 }

@@ -4,6 +4,8 @@
 #include <ours/object/message_packet.hpp>
 #include <ours/syscall.hpp>
 
+#include <cstring>
+
 #include <heap/kmalloc.hpp>
 #include <heap/new.hpp>
 
@@ -62,7 +64,31 @@ auto MessagePacket::create(user_copy::UserInPtr<u8 const> const bytes, u32 const
             return status;
         }
     }
+    return assemble(data, num_bytes, handles, num_handles, out);
+}
 
+auto MessagePacket::create(std::span<u8 const> const bytes, ustl::Box<Handle> *const handles,
+                           u32 const num_handles, ustl::Box<Self> *const out) -> Status {
+    // Checked before the narrowing below, so a span longer than a u32 cannot
+    // wrap into a small, acceptable size.
+    if (bytes.size() > CHANNEL_MAX_MSG_BYTES || num_handles > CHANNEL_MAX_MSG_HANDLES) {
+        return Status::OutOfRange;
+    }
+    auto const num_bytes = static_cast<u32>(bytes.size());
+
+    u8 *data = nullptr;
+    if (num_bytes != 0) {
+        data = static_cast<u8 *>(heap::kmalloc(num_bytes, mm::GAF_KERNEL));
+        if (data == nullptr) {
+            return Status::NoMemory;
+        }
+        std::memcpy(data, bytes.data(), num_bytes);
+    }
+    return assemble(data, num_bytes, handles, num_handles, out);
+}
+
+auto MessagePacket::assemble(u8 *const data, u32 const num_bytes, ustl::Box<Handle> *const handles,
+                             u32 const num_handles, ustl::Box<Self> *const out) -> Status {
     // The array before the packet, and the handles moved into it only once
     // nothing can fail any more: until then they stay in |handles|, the
     // caller's, so a failure here closes them there and no handle is ever in

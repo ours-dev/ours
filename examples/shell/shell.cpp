@@ -17,12 +17,13 @@
 /// per-call size limit, not the symbols the loader binds, not that a trap is
 /// involved at all.
 ///
-/// There is still no runtime here: no crt1.o and no C++ runtime (see
-/// //system:user.config). The kernel jumps straight to the ELF entry point
-/// with a stack and nothing else, so `_start` is the whole of it. The C
-/// library is the only library code linked in besides ou -- mem* and strlen,
-/// //system/lib/libc -- and check_libc() is where this program makes sure it
-/// is there and right.
+/// It runs on the runtime (//system/lib/runtime): the entry point is the
+/// runtime's, which reads the processargs message this program was started
+/// with and calls main. What main finds among the startup handles says who
+/// started it and what to do -- a channel to init (User0) to answer, the root
+/// job to start fault probes under, the BootFS to look at. The C library it
+/// links is mem* and strlen (//system/lib/libc), and check_libc() is where
+/// this program makes sure it is there and right.
 
 #include <ours/process_args.hpp>
 #include <ours/signals.hpp>
@@ -34,6 +35,7 @@
 
 #include <cstring>
 
+#include <bootfs/format.hpp>
 #include <ou/channel.hpp>
 #include <ou/command.hpp>
 #include <ou/debug.hpp>
@@ -42,6 +44,8 @@
 #include <ou/process.hpp>
 #include <ou/str.hpp>
 #include <ou/vmo.hpp>
+#include <runtime/main.hpp>
+#include <runtime/startup.hpp>
 
 namespace {
 /// The kshell command registry, fetched into this program's own memory.
@@ -71,24 +75,26 @@ auto report(ou::Str const what, ours::Status const status) -> void {
     static_cast<void>(ou::debug_line({what, ou::Str::from_c_str(ours::to_string(status), 32)}));
 }
 
-/// Gives up the handle this program was started with, and checks that the
+/// Gives up a handle this program was started with, and checks that the
 /// kernel then refuses it.
 ///
-/// The first close has to succeed: the value came from whoever started this
-/// program, which put a handle into this process's table and its value into
-/// %rdi -- the root job when the kernel started it, init's end of a channel
-/// when init did. The second has to fail with BadHandle, because the same
-/// number no longer names anything here -- and that is the handle table's
-/// whole job, observed from the side of the boundary that relies on it.
+/// The first close has to succeed: the handle came from whoever started this
+/// program, which sent it in the processargs message -- the root job when
+/// the kernel started it, a channel to init when init did -- and it entered
+/// this process's table, under a value of this table's choosing, when the
+/// runtime read that message before main. The second has to fail with
+/// BadHandle, because the same number no longer names anything here -- and
+/// that is the handle table's whole job, observed from the side of the
+/// boundary that relies on it.
 ///
-/// Closing the channel end is harmless to init, although init wakes on
-/// PeerClosed as well as Readable: answer_bootstrap() runs first, so "pong"
-/// is already queued on init's end, and a message stays readable after the
-/// writer's end is gone. Whichever signal wakes init, Readable is set by
-/// then, and that is the one it checks.
-auto check_handle_close(ours::HandleValue const bootstrap) -> void {
-    report("shell: close(bootstrap) = ", ou::handle_close(bootstrap));
-    report("shell: close again = ", ou::handle_close(bootstrap));
+/// Closing init's channel is harmless to init, although init wakes on
+/// PeerClosed as well as Readable: answer_init() runs first, so "pong" is
+/// already queued on init's end, and a message stays readable after the
+/// writer's end is gone. It is also what makes init print "shell closed its
+/// channel", here rather than when this process ends.
+auto check_handle_close(ours::HandleValue const startup) -> void {
+    report("shell: close(startup handle) = ", ou::handle_close(startup));
+    report("shell: close again = ", ou::handle_close(startup));
 }
 
 /// Prints "<what><got>" and whether that was |want|; answers whether it was.
@@ -118,49 +124,64 @@ auto spells(char const *const bytes, u32 const length, ou::Str const text) -> bo
     return true;
 }
 
-/// Answers whoever started this program, if it was started with a channel.
+/// Answers init, if init started this program.
 ///
-/// Started by init, the bootstrap handle is one end of a channel with "ping"
-/// on it (or about to be): read it, print it, answer "pong" -- the other half
-/// of the first slice, whose log lines are the completion criterion
-/// (design 5). Started by the kernel directly, the handle is the root job,
-/// and a channel read on it answers BadType: there is nobody to answer, and
-/// the checks below run as before.
-///
-/// Answers whether the handle was a channel -- false means this program was
-/// started by the kernel and holds the root job.
-auto answer_bootstrap(ours::HandleValue const bootstrap) -> bool {
+/// Started by init, the User0 startup handle is a channel with "ping" on it
+/// (or about to be): read it, print it, answer "pong" -- the other half of
+/// the first slice, whose log lines are the completion criterion (design 5).
+/// Started by the kernel directly there is no such handle, and nobody to
+/// answer.
+auto answer_init(ours::HandleValue const peer) -> void {
     using ours::Signals;
     using ours::Status;
 
+    if (peer == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: started by the kernel; no one to answer"));
+        return;
+    }
+
+    auto observed = Signals::None;
+    auto status = ou::object_wait_one(peer, Signals::Readable | Signals::PeerClosed,
+                                      ours::INSTANT_INFINITE, &observed);
     char buffer[32] = {};
     u32 actual = 0;
-    auto status = ou::channel_read(bootstrap, buffer, sizeof(buffer), &actual);
-    if (status == Status::BadType) {
-        static_cast<void>(ou::debug_line("shell: started by the kernel; no one to answer"));
-        return false;
-    }
-    if (status == Status::ShouldWait) {
-        auto observed = Signals::None;
-        status = ou::object_wait_one(bootstrap, Signals::Readable | Signals::PeerClosed,
-                                     ours::INSTANT_INFINITE, &observed);
-        if (status == Status::Ok) {
-            status = ou::channel_read(bootstrap, buffer, sizeof(buffer), &actual);
-        }
+    if (status == Status::Ok) {
+        status = ou::channel_read(peer, buffer, sizeof(buffer), &actual);
     }
     if (status != Status::Ok) {
-        report("shell: reading the bootstrap channel = ", status);
-        return true;
+        report("shell: reading init's channel = ", status);
+        return;
     }
-
-    static_cast<void>(ou::debug_line({"shell: bootstrap says \"", ou::Str(buffer, actual), "\""}));
+    static_cast<void>(ou::debug_line({"shell: init says \"", ou::Str(buffer, actual), "\""}));
 
     constexpr ou::Str PONG{"pong"};
-    status = ou::channel_write(bootstrap, PONG.data(), static_cast<u32>(PONG.size()));
+    status = ou::channel_write(peer, PONG.data(), static_cast<u32>(PONG.size()));
     if (status != Status::Ok) {
         report("shell: answering = ", status);
     }
-    return true;
+}
+
+/// Reads the BootFS header through vmo_read and says how many files it
+/// holds, as init does (the design's check for this step, K14). Only the
+/// shell the kernel starts has a BootFS; init keeps its own.
+auto describe_bootfs(ours::HandleValue const bootfs) -> void {
+    if (bootfs == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: started without a BootFS"));
+        return;
+    }
+    bootfs::Header header{};
+    if (auto const status = ou::vmo_read(bootfs, &header, 0, sizeof(header));
+        status != ours::Status::Ok) {
+        report("shell: reading the BootFS header = ", status);
+        return;
+    }
+    if (header.magic != bootfs::Header::MAGIC) {
+        static_cast<void>(ou::debug_line("shell: the BootFS header has the wrong magic"));
+        return;
+    }
+    char count[10];
+    static_cast<void>(
+        ou::debug_line({"shell: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
 }
 
 /// How one fault_probe run ended, from this side of its answer channel.
@@ -768,9 +789,10 @@ auto check_libc(u8 const seed) -> void {
 
 /// vmo_read's refusals: what it says before it looks at a VMO.
 ///
-/// No VMO handle reaches this program yet -- the BootFS arrives with the
-/// processargs message -- so a successful read cannot be checked here, only
-/// that the handle is resolved first and resolved strictly: a value that
+/// Only what a call answers before it reads anything, so that this runs in
+/// every image, with or without a BootFS; reads of a real VMO are made on the
+/// BootFS, which only the shell the kernel starts holds. What is checked here
+/// is that the handle is resolved first and resolved strictly: a value that
 /// names nothing is BadHandle, one that names something other than a VMO is
 /// BadType, and both win over every argument error. So the calls below pair
 /// a bad handle with a bad buffer (the kernel half), an offset no VMO could
@@ -815,30 +837,33 @@ auto check_vmo_read() -> void {
 }
 } // namespace
 
-/// `extern "C"`, because ld.lld resolves the default entry point by the symbol
-/// name `_start` and a mangled name would not answer to it.
-///
-/// |bootstrap| is the one handle this process starts with (%rdi), and
-/// |vdso_base| where the vDSO was mapped (%rsi) -- see userabi's
-/// userboot_init(). Finding the system calls is not this program's problem:
-/// the calls below are undefined symbols that userboot binds to the vDSO's
-/// definitions while it loads this image (elfload::Binder).
-extern "C" [[noreturn]]
-auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -> void {
+/// Finding the system calls is not this program's problem: the calls below
+/// are undefined symbols that the kernel binds to the vDSO's definitions while
+/// it loads this image (elfload::Binder).
+auto main(int, char **) -> int {
     static_cast<void>(ou::debug_line(BANNER));
-    // The probes need the root job, which is what |bootstrap| is when the
-    // kernel started this program -- and check_handle_close() is about to
-    // close it.
-    if (!answer_bootstrap(bootstrap)) {
-        run_probes(bootstrap);
+
+    // Started by init: a channel to answer on. Started by the kernel: the root
+    // job, to start probes under, and the BootFS. Which ones are there is how
+    // this program knows who started it.
+    auto const peer = runtime::take_startup_handle(ours::HandleType::User0, 0);
+    auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
+    auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+
+    answer_init(peer);
+    describe_bootfs(bootfs);
+    if (job != ours::HANDLE_INVALID) {
+        run_probes(job);
     }
-    check_handle_close(bootstrap);
+    // One startup handle closed twice: init's channel when there is one --
+    // closing it is init's cue -- and otherwise the job, done with now.
+    check_handle_close(peer != ours::HANDLE_INVALID ? peer : job);
     check_channel_loopback();
     check_handle_transfer();
     check_handle_quota();
-    check_bad_pointers(vdso_base);
+    check_bad_pointers(runtime::vdso_base());
     check_vmo_read();
-    check_libc(static_cast<u8>(vdso_base >> 20));
+    check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
 
     static Registry registry;
     auto const status = registry.fetch();
@@ -853,8 +878,7 @@ auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -
     }
     static_cast<void>(ou::debug_line("--- end ---"));
 
-    // Done. Exiting rather than spinning is what lets whoever started this
-    // program see it finish: its handles close as the process dies, so init's
-    // end of the bootstrap channel reads PEER_CLOSED.
-    ou::process_exit(0);
+    // Done: the runtime ends the process with this. Its remaining handles
+    // close as it dies.
+    return 0;
 }
