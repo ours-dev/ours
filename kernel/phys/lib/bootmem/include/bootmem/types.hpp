@@ -106,8 +106,8 @@ enum class MemoryType : u8 {
     /// become the buddy's, and from Free because until then they must not.
     Transient,
 
-    /// Given to the page allocator at EarlyMem::do_handoff(): the buddy owns it
-    /// now, and bootmem must never hand it out again.
+    /// Handed to the memory manager at EarlyMem::do_handoff(): mm owns it now,
+    /// and bootmem must never give it out again.
     ///
     /// This is what the handover does to a Free range, and the reason the
     /// handover is expressible at all. It used to be that bootmem released its
@@ -115,7 +115,7 @@ enum class MemoryType : u8 {
     /// allocators both believed they owned the same frames and the second taker
     /// wrote over the first. Naming the state ends that: after the handover
     /// nothing in bootmem is Free, so find_free() finds nothing.
-    PageAllocator,
+    Mmu,
 };
 
 [[nodiscard]]
@@ -143,8 +143,8 @@ constexpr auto to_string(MemoryType const type) -> char const * {
             return "kernel data";
         case MemoryType::Transient:
             return "transient";
-        case MemoryType::PageAllocator:
-            return "page allocator";
+        case MemoryType::Mmu:
+            return "mmu";
     }
     return "invalid";
 }

@@ -150,7 +150,7 @@ static auto free_unused_memory() -> void {
 /// show, so mutating inside the walk would skip ranges. Sixteen or so iterations
 /// over a list of the same length, once, at boot.
 ///
-/// The type is MemoryType::PageAllocator and not a blanket reservation over
+/// The type is MemoryType::Mmu and not a blanket reservation over
 /// [min_address, max_address): with typed reservations a single range covering
 /// everything would overlap the phys image, the page tables and the firmware's
 /// holes, all of which are already reserved as something else -- and reserve()
@@ -184,7 +184,7 @@ static auto retire_bootmem() -> void {
         }
 
         auto const reserved =
-            EarlyMem::reserve(first.base, first.size, bootmem::MemoryType::PageAllocator);
+            EarlyMem::reserve(first.base, first.size, bootmem::MemoryType::Mmu);
         // A hard failure, not a log line. Carrying on would leave bootmem
         // willing to hand out memory the buddy owns, which is the state this
         // exists to end -- and the loop would not terminate either.

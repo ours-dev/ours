@@ -148,3 +148,37 @@ bootmem 先持有、交接给 buddy 的形状，`PageAllocator` 这个类型是�
 - 没有给 `PhysicalMemory` 加按类型查询的接口。等第一个真正要按类型走的消费者出现再加，
   否则形状是猜的。
 - 没有动 bootmem 先持有、再交给 buddy 的整体顺序（见「参照」）。
+
+## `MemoryType::PageAllocator` 改名 `Mmu`（2026-09-26）
+
+**文件**
+- `kernel/phys/lib/bootmem/include/bootmem/types.hpp` — 枚举项和 `to_string()`
+- `kernel/mm/early_mem.cpp` — `retire_bootmem()` 的调用点和注释
+
+**症状**
+无，纯改名。
+
+**原因**
+这个取值说的是「交接之后这段内存归内存管理器了」。原来叫 `PageAllocator`，是从
+「谁会把它发出去」的角度命名的——buddy。改叫 `Mmu`，是从「归谁」的角度命名的——mm 子系统。
+用户选了后者。
+
+拼写用 `Mmu` 而不是 `MMU`，跟这个仓库里缩写的既有写法一致：`PageFrame::Role` 是
+`None, Io, Lru, Vmm, Pmm, Slab, Heap, Folio`，缩写一律首字母大写其余小写。
+
+**改法**
+一处枚举项、一处 `to_string()`、一处调用点、两处注释。`MemoryType::PageTable`
+没有动——那是 phys 建的、内核继续走的页表，和这一项不是一回事。
+
+**参照**
+Zircon 的 `vm_page_state::MMU` 专指页表页，语义上对应的是这里的 `PageTable` 而不是 `Mmu`。
+本项在 Zircon 里没有对应物，因为它的 PMM 一开始就拥有全部 RAM、保留区是从 PMM 里分配出来的，
+没有「交接」这个状态需要命名。
+
+**验证**
+- 两个配置构建通过。
+- `out/numa.x86`：7 个 AP 全部 online，shell 六组检查全过，无 fault / panic / 断言失败。
+- `out/bringup.x86`：构建通过，无回归。
+
+**故意没做**
+- 没有改 `PageTable`。下一条要给帧打的 `Role` 也不会因为这次改名而改叫别的。
