@@ -37,22 +37,64 @@ config("headers.after") {
   ]
 }
 
-# The functions.
+# The byte loops themselves, under names of their own (ours::libc::memcpy
+# and so on; src/string_impl.hpp says why). Built in every toolchain the
+# library is, and in the host one for the tests, which is safe because it
+# defines no C name.
+source_set("impl") {
+  sources = [
+    "src/string_impl.cpp",
+    "src/string_impl.hpp",
+  ]
+
+  # Explicit although every target toolchain is -ffreestanding already, which
+  # implies it: this file is only correct with it (string_impl.cpp says why),
+  # and the host toolchain the tests build it in is not freestanding.
+  cflags = [ "-fno-builtin" ]
+
+  # x86-64's char, on every host. The loops are written to be right whatever
+  # char's signedness -- memcmp reads u8 -- and a regression to reading
+  # `char` would show only where char is signed; on a host where it is not
+  # (Linux on arm64), the tests would pass on the broken code.
+  #
+  # Keyed on is_host_toolchain, not on toolchain_environment: in
+  # //build/toolchain/ours:host, where the tests are built, that variable is
+  # "user" -- "host" is what the default toolchain, which builds nothing,
+  # sees (//build/toolchain/toolchain_environment.gni).
+  if (is_host_toolchain) {
+    cflags += [ "-fsigned-char" ]
+  }
+  visibility = [
+    ":*",
+    "test:*",
+  ]
+}
+
+# The C names: memcpy() and the rest, each forwarding to :impl.
 #
-# Never in a host toolchain. The definitions have C linkage and the names the
-# host's own libc uses, so a host executable linking them would replace its
-# libc's memcpy with this one; and a host compile is not -ffreestanding,
-# which is what stops clang from recognising a byte loop as memcpy and
-# compiling memcpy into a call to itself. Every toolchain that builds this
-# today -- kernel, kernel.phys, user -- is freestanding.
+# Never in a host toolchain. These definitions have the names the host's own
+# libc uses, so a host executable linking them would replace its libc's
+# memcpy with this one -- googletest's included, and with it the host
+# functions the tests use as their reference. The target is simply not
+# defined in the host toolchain, so a host dependency on it fails as an
+# unknown label. An assert inside it would not do: the host toolchain loads
+# this file for :impl and the tests, and loading a file evaluates every
+# target in it.
 #
 # A source_set, as every library under system/lib is: its objects go into
 # every image that depends on it. The user toolchain links without
 # --gc-sections, so every user program carries all of them, a few hundred
 # bytes, whether it calls them or not.
-source_set("libc") {
-  assert(toolchain_environment != "host",
-         "//system/lib/libc defines the host libc's own symbols; see above")
-  sources = [ "src/string.cpp" ]
-  visibility = [ "*" ]
+if (!is_host_toolchain) {
+  source_set("libc") {
+    sources = [ "src/string.cpp" ]
+    deps = [ ":impl" ]
+    visibility = [ "*" ]
+  }
+}
+
+# Host unit tests for :impl; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:string($host_toolchain)" ]
 }

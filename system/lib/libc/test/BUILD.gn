@@ -1,0 +1,13 @@
+# Host-side tests of the byte loops (//system/lib/libc:impl), called by
+# their ours::libc names. The C names are not linked here: they would
+# replace the host libc's own, which googletest runs on.
+executable("string") {
+  testonly = true
+  sources = [ "string_test.cpp" ]
+  deps = [
+    "//system/lib/libc:impl",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
