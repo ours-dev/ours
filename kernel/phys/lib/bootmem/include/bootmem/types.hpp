@@ -116,6 +116,10 @@ enum class MemoryType : u8 {
     /// wrote over the first. Naming the state ends that: after the handover
     /// nothing in bootmem is Free, so find_free() finds nothing.
     Mmu,
+
+    /// Not a type: the bound for arrays indexed by one, the way Role::Count and
+    /// ZoneType::Count are used in this tree.
+    Count,
 };
 
 [[nodiscard]]
@@ -145,6 +149,8 @@ constexpr auto to_string(MemoryType const type) -> char const * {
             return "transient";
         case MemoryType::Mmu:
             return "mmu";
+        case MemoryType::Count:
+            break;
     }
     return "invalid";
 }

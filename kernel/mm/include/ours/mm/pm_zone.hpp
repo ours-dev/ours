@@ -145,6 +145,18 @@ class PmZone {
         return m_reserved_frames;
     }
 
+    /// Records |count| frames of this zone as taken before the buddy existed.
+    ///
+    /// Only init_memmap() calls this, single-threaded, once per reserved range.
+    /// It exists because m_reserved_frames had no writer at all: the field is
+    /// documented as the difference between present and managed frames, and
+    /// PmNode::dump() printed it, but every zone reported zero however much
+    /// early memory it had lost.
+    FORCE_INLINE
+    auto add_reserved_frames(usize const count) -> void {
+        m_reserved_frames += count;
+    }
+
     FORCE_INLINE
     constexpr auto start_pfn() const -> usize {
         return m_start_pfn;

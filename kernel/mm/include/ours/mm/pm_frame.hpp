@@ -31,6 +31,17 @@ namespace page {
         Slab,
         Heap,
         Folio,
+
+        /// A hardware page-table page. It belongs to whichever ArchVmAspace
+        /// built it, is walked by the CPU rather than read by the kernel, and
+        /// must never move or be reclaimed while any root points at it.
+        ///
+        /// Zircon marks the same frames vm_page_state::MMU, both at
+        /// ArmArchVmAspace::AllocPageTable() and for the tables physboot built
+        /// (PmmNode::InitReservedRange() hands those to
+        /// ArchVmAspace::HandoffPageTablesFromPhysboot()).
+        Mmu,
+
         Count,
     };
 

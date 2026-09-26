@@ -390,6 +390,25 @@ class PhysicalMemory final {
         return ustl::ok(ustl::views::Span<MemRange const>(out.data(), count));
     }
 
+    /// Every reservation, in address order, with what it is for.
+    ///
+    /// Separate from visit() rather than a third MemoryView: the usable and free
+    /// views answer "which addresses", and their visitor sees a MemoryRegion,
+    /// which has a node but no type. A caller that wants the type wants the
+    /// reservation itself, so that is what it gets. Returning false stops the
+    /// walk, as everywhere else here.
+    ///
+    /// Mutating this allocator from the visitor is not allowed: reserve() and
+    /// release() both reorder the list under it.
+    template <typename Visitor>
+    auto visit_reservations(Visitor &&visitor) const -> void {
+        for (auto index = usize{0}; index < reservation_count_; ++index) {
+            if (!visitor(storage_.reservations[index])) {
+                return;
+            }
+        }
+    }
+
     [[nodiscard]]
     constexpr auto min_address() const -> PhysAddr {
         return usable_count_ == 0 ? PhysAddr{} : storage_.usable[0].range.base;

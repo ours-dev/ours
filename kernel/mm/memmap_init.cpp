@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include <logz4/log.hpp>
 #include <ustl/mem/align.hpp>
 
 namespace ours::mm {
@@ -68,6 +69,111 @@ namespace {
         }
         return last;
     }
+
+    /// What a frame inside a reservation of |type| is.
+    ///
+    /// Only PageTable has an owner in the mm vocabulary: the aspace that built
+    /// it walks it, and Zircon marks the same frames vm_page_state::MMU. The
+    /// rest are memory the kernel or the boot chain simply holds -- an image, a
+    /// blob, a descriptor array -- with no mm-side owner to name, so they keep
+    /// Role::None and are described by the Reserved flag alone.
+    [[nodiscard]]
+    INIT_CODE
+    auto role_of(bootmem::MemoryType const type) -> page::Role {
+        return type == bootmem::MemoryType::PageTable ? page::Role::Mmu : page::Role::None;
+    }
+
+    /// Stamps every frame the boot chain claimed with what it holds.
+    ///
+    /// Until the reservations carried a type this was impossible: a reserved
+    /// range was a bare address range, so a page table the CPU is walking, the
+    /// kernel image and a hole the firmware declared were one fact, and the only
+    /// thing the memmap could say about any of them was nothing at all -- frames
+    /// inside a reservation came out of init_memmap_range() with Role::None and
+    /// not even the Reserved flag, which init_memmap_reserved() gave only to
+    /// holes. The single record that such a frame was taken was that the buddy
+    /// never received it.
+    ///
+    /// This also gives PmZone::m_reserved_frames its first writer. The field has
+    /// always been documented as `present_frames - managed_frames` and printed
+    /// by PmNode::dump(), and has always read zero.
+    ///
+    /// Runs after the descriptors exist and before EarlyMem::do_handoff(), which
+    /// is the only window where both halves are true: the frames have
+    /// descriptors to stamp, and every reservation that will ever matter is
+    /// already on the books -- the phys chain's, replayed by
+    /// handoff_early_pmm(), and the kernel's own (node and zone descriptors, the
+    /// memmap itself, the boot CPU's provisional per-CPU unit, the AP
+    /// trampoline). The one type that appears later is Mmu, which do_handoff()
+    /// creates for the ranges it gives the buddy; those frames are the buddy's
+    /// and get their role from it.
+    INIT_CODE
+    auto stamp_reserved_frames() -> void {
+        auto frames_by_type = std::array<usize, usize(bootmem::MemoryType::Count)>{};
+
+        EarlyMem::visit_reservations([&](bootmem::Reservation const reservation) {
+            // Transient is deliberately left alone. Those frames go back to the
+            // buddy once their one user is done (CpuLocal::init() releases the
+            // provisional unit, free_bootstrap16_buffer() the trampoline), so
+            // counting them as reserved would make the tally wrong from the
+            // moment they return -- and nothing clears the flag on the way out.
+            if (reservation.type == bootmem::MemoryType::Transient) {
+                return true;
+            }
+
+            auto const role = role_of(reservation.type);
+            auto const start_pfn = phys_to_pfn(reservation.range.base);
+            auto const end_pfn = phys_to_pfn(ustl::mm::align_up(reservation.range.end(), PAGE_SIZE));
+
+            for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
+                if (!pfn_valid(pfn)) {
+                    // A reservation outside usable RAM -- a peripheral window, a
+                    // firmware hole -- has no descriptor to stamp.
+                    continue;
+                }
+                auto *const frame = pfn_to_frame(pfn);
+                if (!(frame->flags() & page::Flags::Initialized)) {
+                    // Inside a section, outside every zone: the walk above never
+                    // reached it, so there is nothing consistent to add to.
+                    continue;
+                }
+
+                frame->mark_reserved();
+                if (role != page::Role::None) {
+                    frame->set_role(role);
+                    // A page table cannot be moved or reclaimed while a root
+                    // still points at it, which is what Pinned says.
+                    frame->mark_pinned();
+                }
+
+                auto *const node = PmNode::node(frame->nid());
+                if (node == nullptr) {
+                    continue;
+                }
+                node->add_reserved_frames(1);
+                if (auto *const zone = node->zone_queues()->get_local_zone(frame->zone())) {
+                    zone->add_reserved_frames(1);
+                }
+                frames_by_type[usize(reservation.type)] += 1;
+            }
+            return true;
+        });
+
+        // The line that makes the stamping checkable, next to
+        // free_unused_memory()'s "Released N regions" and there for the same
+        // reason: a total nobody can read is a total nobody can be wrong about.
+        // One line per type that has frames, so the list says which kinds of
+        // early memory this boot actually produced rather than a single number
+        // that hides them.
+        for (auto index = usize{0}; index < frames_by_type.size(); ++index) {
+            if (frames_by_type[index] == 0) {
+                continue;
+            }
+            log::info("Reserved {} frames ({} KiB) of {}", frames_by_type[index],
+                      (frames_by_type[index] * PAGE_SIZE) >> 10,
+                      bootmem::to_string(bootmem::MemoryType(index)));
+        }
+    }
 } // namespace
 
 INIT_CODE
@@ -126,6 +232,9 @@ auto init_memmap() -> void {
     if (hole_start_pfn < end_pfn) {
         init_memmap_reserved(hole_start_pfn, end_pfn, ZoneType::Normal, 0);
     }
+
+    // Last, because it reads the descriptors the walk above created.
+    stamp_reserved_frames();
 }
 
 } // namespace ours::mm

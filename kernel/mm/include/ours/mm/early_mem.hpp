@@ -95,6 +95,16 @@ struct EarlyMem {
         return BOOTMEM->release(range.unwrap());
     }
 
+    /// Every reserved range and what it holds. See
+    /// bootmem::PhysicalMemory::visit_reservations().
+    template <typename Visitor>
+    static auto visit_reservations(Visitor &&visitor) -> void {
+        if (BOOTMEM == nullptr) {
+            return;
+        }
+        BOOTMEM->visit_reservations(visitor);
+    }
+
     template <typename Visitor>
     [[nodiscard]]
     static auto visit(bootmem::MemoryQuery const query, Visitor &&visitor) -> Status {

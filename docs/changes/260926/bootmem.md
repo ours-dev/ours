@@ -182,3 +182,99 @@ Zircon 的 `vm_page_state::MMU` 专指页表页，语义上对应的是这里的
 
 **故意没做**
 - 没有改 `PageTable`。下一条要给帧打的 `Role` 也不会因为这次改名而改叫别的。
+
+## 按保留类型给页帧打 `Role` 和 `Reserved`，并让 `reserved_frames` 第一次有人写（2026-09-26）
+
+**文件**
+- `kernel/phys/lib/bootmem/include/bootmem/physical_memory.hpp` — 新增 `visit_reservations()`
+- `kernel/phys/lib/bootmem/include/bootmem/types.hpp` — `MemoryType` 加 `Count`
+- `kernel/mm/include/ours/mm/early_mem.hpp` — `visit_reservations()` 门面
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `page::Role` 新增 `Mmu`
+- `kernel/mm/include/ours/mm/pm_zone.hpp`、`pm_node.hpp` — 新增 `add_reserved_frames()`
+- `kernel/mm/memmap_init.cpp` — 新增 `stamp_reserved_frames()`，`init_memmap()` 末尾调用；按类型汇总并打印
+
+**症状**
+潜伏。帧描述符说不出自己装着什么：`init_memmap_range()` 给每个可用帧
+`Role::None`，`init_memmap_reserved()` 只给**空洞**打 `Flags::Reserved`——落在
+bootmem 保留区里的帧两样都没有。一页正被硬件走的页表和一页空闲内存，在描述符层面完全一样，
+唯一的区别是 buddy 没收到它。
+
+另一处：`PmZone::m_reserved_frames` 从来没有写者。头文件里写着
+`managed_frames_ = present_frames_ - reserved_frames_`，`PmNode::dump()` 也在打印它，
+但每个 zone 不论丢了多少早期内存都报 0。
+
+**原因**
+上一条给保留区加了类型，但内核只是把类型收下存进自己的 bootmem，没有人读。这一条是读的那一半。
+
+读不到的原因不只是没写代码：`PhysicalMemory` 原来根本没有能读出类型的出口。`visit()` 的两个视图
+（`Usable`/`Free`）回答的是「哪些地址」，访问器看到的 `MemoryRegion` 有 node 没有 type。
+想要类型的调用者要的是保留区本身，所以新增 `visit_reservations()` 直接交出 `Reservation`，
+而不是再加一个 `MemoryView`。
+
+`Role` 新增 `Mmu` 而不是复用现有项：`Vmm` 是虚存管理器持有的页，`Pmm` 在 buddy 的语义里表示
+「正挂在空闲链上」（`FrameBuddy::is_mergeable()` 第一条就是
+`buddy->role() != Role::Pmm → false`），都不是页表。Zircon 同样给页表页一个专属状态
+`vm_page_state::MMU`。`Role` 的位宽是 `bit_width(Role::Count)`，从 8 变 9 仍是 4 位，不溢出。
+
+**改法**
+`init_memmap()` 末尾加一遍 `stamp_reserved_frames()`：遍历保留区，按类型给帧打标。
+
+```cpp
+[[nodiscard]]
+auto role_of(bootmem::MemoryType const type) -> page::Role {
+    return type == bootmem::MemoryType::PageTable ? page::Role::Mmu : page::Role::None;
+}
+```
+
+只有 `PageTable` 在 mm 的词汇里有主人——建它的那个 aspace 在走它；其余
+（镜像、blob、描述符数组）是内核或启动链单纯持有的内存，mm 侧没有可命名的所有者，
+所以保持 `Role::None`，只用 `Reserved` 标志描述。页表额外 `mark_pinned()`：
+只要还有根指向它就不能移动、不能回收，这正是 Pinned 的意思。
+
+**跑在这个位置，是因为只有这个窗口两个条件同时成立**：帧描述符已经建好可以打标，
+而且所有以后会有意义的保留区都已经在账上了——phys 链那边的（`handoff_early_pmm()` 原样重放）
+加上内核自己的（node/zone 描述符、memmap 本身、boot CPU 的临时 per-CPU unit、AP 蹦床）。
+唯一更晚出现的类型是 `Mmu`，那是 `do_handoff()` 交给 buddy 的那批，它们的 role 由 buddy 给。
+
+**`Transient` 故意跳过**：那些帧用完要还给 buddy（`CpuLocal::init()` 释放临时 unit，
+`free_bootstrap16_buffer()` 释放蹦床），算成保留会在它们回来的那一刻让账目变错——
+而且还回去的路上没有人清 `Flags::Reserved`。
+
+顺带给 `PmZone`/`PmNode` 的 `m_reserved_frames` 加上第一个写者，并在最后按类型打一行总数。
+这一行是让整件事**可验证**的东西，和 `free_unused_memory()` 的「Released N regions」并列、
+出于同一个理由：没人能读的总数就是没人能发现它错了的总数。
+
+**验证**
+- 两个配置构建通过。
+- `out/numa.x86`（`NUMA=1`，8 CPU，四节点）：7 个 AP 全 online，shell 六组检查全过，
+  无 fault / panic / 断言失败。
+- `out/bringup.x86`：六组检查全过，无回归。新增的启动输出：
+
+```
+[info] Reserved 246 frames (984 KiB) of phys image
+[info] Reserved 191 frames (764 KiB) of boot package
+[info] Reserved 229 frames (916 KiB) of kernel image
+[info] Reserved 12 frames (48 KiB) of page table
+[info] Reserved 2052 frames (8208 KiB) of kernel data
+```
+
+两处能和 phys 侧的日志对上，是这次最有力的交叉验证：
+
+- **kernel image 229 帧** 对上 physboot 打的 `Kernel image at 0x..., 229 pages`
+  （numa 那次是 234 对 234）。
+- **page table 12 帧** 对上 phys 日志里 12 行 `Allocate page table`
+  （`0x3FEBB000`、`3FEBA`、`3FEB9`、`3FEB8`、`3FEB7`、`3FEB6`、`3FEB5`、`3FEB4`、`3FEB3`、
+  `3FEA0`、`3FE9F`、`3FE9E`）。一个不多一个不少。
+
+**故意没做 / 顺带发现**
+- `handoff` 一帧都没打上标，查了一遍：交接快照缓冲区是按 `alignof(bootmem::MemRange)`（8 字节）
+  分配的，所以它的保留区是**跨页的一小段尾巴**
+  （`[0x3FE9DBE0, 0x3FE9E000) handoff`），而它落在的那一页没有被 `init_memmap()` 初始化过
+  （`pfn_valid()` 为真但没有 `Flags::Initialized`），于是被新加的守卫正确跳过。
+  帧是下游一切东西的单位，所以一段要活到内核里的保留区应该是**整页粒度**的。
+  这是上游的问题，单独一条改。
+- 没有让任何人**读** `Role::Mmu`。它现在是描述，不是判据。第一个判据大概是页表回收或者
+  `free_page_table()`，等那件事真要做的时候再接。
+- 没有动 `m_managed_frames`。头文件说它应该等于 `present - reserved`，现在
+  `reserved` 终于有值了，这个恒等式可以开始校验——但 `managed` 目前是在
+  `PmZone::free_frame()`/`alloc_frame()` 里增减的运行期计数，把两者对齐是另一件事。
