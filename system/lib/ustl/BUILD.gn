@@ -483,9 +483,11 @@ executable("intrusive-rbtree-parity-test") {
   deps = [ ":headers" ]
 }
 
-# test/intrusive_slist_parity_test.cpp has no target: it never returns,
-# because Slist::sort() spins on a list that Slist::swap() has corrupted.
-# Wire it in with the fix; see docs/repairs/260926/ustl.md.
+executable("intrusive-slist-parity-test") {
+  testonly = true
+  sources = [ "test/intrusive_slist_parity_test.cpp" ]
+  deps = [ ":headers" ]
+}
 
 executable("intrusive-splaytree-parity-test") {
   testonly = true
@@ -730,6 +732,7 @@ group("tests") {
     ":intrusive-rbtree-nodes-headers-test",
     ":intrusive-rbtree-nodes-test",
     ":intrusive-rbtree-parity-test",
+    ":intrusive-slist-parity-test",
     ":intrusive-splaytree-parity-test",
     ":intrusive-tree-node-headers-test",
     ":intrusive-tree-node-test",

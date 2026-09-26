@@ -98,5 +98,40 @@ auto main() -> int {
     }
 
     Algorithms::set_sentinel(&destination);
-    return Algorithms::is_sentinel(&destination) ? 0 : 11;
+    if (!Algorithms::is_sentinel(&destination)) {
+        return 11;
+    }
+
+    // swap_nodes() on two list headers, where an empty list is a header that
+    // points at itself. The swap of `spare` and `first` above never meets
+    // that case: `spare` is unlinked (a null next), not empty. Whichever
+    // header was empty must come out pointing at itself, and each argument
+    // order below puts the empty header on a different side.
+    Node left{};
+    Node right{};
+    Node one{};
+    Node two{};
+    Algorithms::init_header(&left);
+    Algorithms::init_header(&right);
+    Algorithms::swap_nodes(&left, &right);
+    if (!Algorithms::is_empty(&left) || !Algorithms::is_empty(&right)) {
+        return 12;
+    }
+
+    Algorithms::init(&one);
+    Algorithms::init(&two);
+    Algorithms::link_after(&left, &one);
+    Algorithms::link_after(&one, &two);
+    Algorithms::swap_nodes(&left, &right);
+    if (!Algorithms::is_empty(&left) || Traits::get_next(&right) != &one ||
+        Traits::get_next(&one) != &two || Traits::get_next(&two) != &right) {
+        return 13;
+    }
+
+    Algorithms::swap_nodes(&left, &right);
+    if (!Algorithms::is_empty(&right) || Traits::get_next(&left) != &one ||
+        Traits::get_next(&one) != &two || Traits::get_next(&two) != &left) {
+        return 14;
+    }
+    return 0;
 }

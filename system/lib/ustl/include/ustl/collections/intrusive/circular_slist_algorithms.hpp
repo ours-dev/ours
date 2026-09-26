@@ -142,9 +142,31 @@ class CircularSlistAlgorithms final {
         if (!is_null && !is_empty) {
             NodeTraits::set_next(other_next == node ? node : get_previous_node(node), other);
         }
-        NodeTraits::set_next(node,
-                             other_is_empty ? other : (other_next == node ? other : other_next));
-        NodeTraits::set_next(other, is_empty ? node : (next == other ? node : next));
+
+        // Each node now stands where the other stood, so it takes over the
+        // other's successor, except where that successor is one of the two
+        // nodes being swapped. An empty list's header points at itself, so
+        // whichever node takes an empty header's place must point at *itself*:
+        // pointing it at the header it traded places with leaves that list
+        // never leading back to its own header, and every walk of it --
+        // clear(), the merges inside Slist::sort(), get_previous_node() --
+        // spins. And where the other node directly preceded this one, the two
+        // trade order, so this one is now followed by the other. The rule is
+        // written once and applied in both directions; the two copies that
+        // boost::intrusive::circular_slist_algorithms::swap_nodes() spells
+        // out inline are where this port once mixed up `node` and `other`.
+        const auto next_in_place_of = [](NodePtr const mover, NodePtr const place,
+                                         NodePtr const place_next) noexcept -> NodePtr {
+            if (place_next == place) {
+                return mover;
+            }
+            if (place_next == mover) {
+                return place;
+            }
+            return place_next;
+        };
+        NodeTraits::set_next(node, next_in_place_of(node, other, other_next));
+        NodeTraits::set_next(other, next_in_place_of(other, node, next));
     }
     static constexpr auto reverse(NodePtr const node) noexcept -> void {
         const auto end = node;

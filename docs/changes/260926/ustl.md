@@ -207,3 +207,113 @@ executable("any-hook-test") {
 - 没修 `Slist` 的 swap bug：那是 ustl 源码的改动，还要补用例，单独一次。修法（两处常量对调）和已做过的验证写在
   `docs/repairs/260926/ustl.md` 第 1 条。
 - 没整理 `ustl/BUILD.gn` 里 `public` 头文件列表的顺序：和本次无关的纯格式改动。
+
+## `Slist` 的 swap 在空表上把表头接错：每次移动、swap 和 sort 都会弄坏链表（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/collections/intrusive/circular_slist_algorithms.hpp` — `swap_nodes()` 末尾两句改成一条两个方向共用的规则，被换空的表头指回自己
+- `system/lib/ustl/test/circular_slist_algorithms_test.cpp` — 补空表头的 `swap_nodes()` 用例：两边都空、一边空（两个参数顺序各一次）
+- `system/lib/ustl/test/slist_test.cpp` — 补移动构造（空表、非空表）、移动赋值、`swap()`；结尾的三元表达式改成 `if`
+- `system/lib/ustl/BUILD.gn` — 接进 `intrusive-slist-parity-test`，删掉原位的说明注释
+- `docs/repairs/260926/ustl.md` — 删掉第 1 条；新增第 3 条（线性 `Slist` 不能 swap）
+
+**症状**
+- `intrusive_slist_parity_test` 运行不返回（-O0、-O2 一样），插桩定位在 `left.sort(compare)`。
+- 移动一个空 `Slist` 后，源表和目标表都"非空"；移动一个非空 `Slist` 后，源表 `empty()` 仍返回 false。小程序输出：
+
+  ```
+  move empty:     source.empty()=0 dest.empty()=0     # 应为 1 1
+  move non-empty: source.empty()=0 dest.size()=1      # 应为 source.empty()=1
+  ```
+
+- 内核里潜伏：唯一持有 `Slist` 的 `gktl::ChainBuffer` 还是空壳，没有调用路径。
+
+**原因**
+环形单链表里"空"就是表头指向自己：`init_header()` 写 `set_next(node, node)`，`is_empty()` 判 `get_next(node) == node`。
+没挂在任何链上的节点是另一种状态：`init()` 把 next 置空指针。
+
+`swap_nodes(node, other)` 交换两个节点在链里的位置，所以每个节点接过对方原来的后继。只有两种例外，都是那个后继恰好是
+参与交换的两个节点之一：
+
+- 对方的后继就是对方自己，即对方是空表头。这时接过来的是"空"这个状态，自己应该指向**自己**。
+- 对方的后继就是自己，即对方紧挨在自己前面。交换后两者前后倒过来，自己的后继变成对方。
+
+移植时第一种例外写反了，而且两句一起错：
+
+```cpp
+NodeTraits::set_next(node,
+                     other_is_empty ? other : (other_next == node ? other : other_next));
+NodeTraits::set_next(other, is_empty ? node : (next == other ? node : next));
+```
+
+对方为空时，`node` 被指向 `other` 而不是自己，另一句对称。Boost 原版是 `other_empty ? this_node`、`this_empty ? other_node`。
+
+为什么错一个指针就让整张表失效：环形链表的每一次遍历都靠"走回表头"终止，终止条件永远是 `current != header`。
+被换空的表头指向别人的表头，从它出发的遍历全都走进别人的环，再也回不来；`empty()` 也判它非空。
+
+- 一边空：拿到元素的一边是对的，被换空的一边坏了。`clear()`、`get_previous_node()`、`merge()` 的
+  `while (!source.empty())` 都不终止。
+- 两边都空：两个表头互相指，形成一个两节点的环，各自把对方的表头当成一个元素。`clear()` 会把对方的表头当成 hook
+  去改写，下面反向验证里 slist_test 的 SIGSEGV 就是这么来的。
+
+撞上它的路径比看上去多：`Slist(Slist &&other) : Slist() { swap(other); }`，新建的表必然是空的，**每次移动构造都中**；
+`operator=(Slist &&)` 先 `clear()` 再 `swap()`，同样；`sort()` 的第一步就把 carry 和一个空 bin 交换，carry 从此是坏的，
+下一次 `merge()` 就停不下来。
+
+为什么一直没发现：`circular_slist_algorithms_test` 只拿一个 `init()` 过的节点（next 为空指针）和链上节点交换，
+碰不到"空表头"那一支；`slist_test` 不移动、不 swap、不 sort；覆盖 sort 的 parity 测试直到上一条改动之前从没编过。
+双向链表的 `CircularListAlgorithms::swap_nodes()` 是照 Boost 的另一种写法（先 `init_header()`，再交换前后指针）搬的，
+没有这个问题，`intrusive-list-parity-test` 也一直能过。
+
+**改法**
+改前就是上面那两句。改后：
+
+```cpp
+const auto next_in_place_of = [](NodePtr const mover, NodePtr const place,
+                                 NodePtr const place_next) noexcept -> NodePtr {
+    if (place_next == place) {
+        return mover;
+    }
+    if (place_next == mover) {
+        return place;
+    }
+    return place_next;
+};
+NodeTraits::set_next(node, next_in_place_of(node, other, other_next));
+NodeTraits::set_next(other, next_in_place_of(other, node, next));
+```
+
+`next_in_place_of(mover, place, place_next)` 就是 `mover` 站到 `place` 的位置之后该有的后继。规则只写一次，两个方向各调
+一次，`node` 和 `other` 只在调用处出现。和 Boost 逐项核对过：三种情况（对方空、相邻、其余）的结果相同，对方是未挂链的
+节点（next 为空指针）时也一样，接过来的是空指针。
+
+否掉的方案：**只把两个常量对调。**改动最小，也和 Boost 逐字对应，但规则仍然抄两份、藏在嵌套三元表达式里，这次正是
+两份抄本在同一处一起写错。仓库规范也不许三元表达式。
+
+两个测试文件补的用例：
+
+- 算法层：两个空表头交换后仍然都空；左边有两个元素、右边空，交换后元素到右边且环回到右表头，左表头指回自己；
+  再换回来，确认反方向也对。两个参数顺序正好走到规则的两次调用。
+- 容器层：从空表移动构造、从非空表移动构造（源表变空且还能再用，目标表的环回到自己的表头）、移动赋值（旧元素被
+  摘下）、`swap()` 把空表放在参数一侧。三处 `NOLINTNEXTLINE(bugprone-use-after-move)`：被移走的表是什么状态，
+  正是要测的东西。
+
+**参照**
+Boost.Intrusive `circular_slist_algorithms::swap_nodes()`
+（`system/lib/boost.intrusive/include/boost/intrusive/circular_slist_algorithms.hpp:292`）。
+Linux 没有对应的坑：它的单链表（`llist`、`hlist`）以空指针结尾，没有"指向自己的空表头"这种状态。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/bringup.x86` 成功（242 步，包括 include 了 `slist.hpp` 的内核编译单元）。
+- `out/bringup.x86/host/obj/system/lib/ustl/` 下 89 个测试逐个运行，全部退出码 0，`intrusive-slist-parity-test` 在内。
+- 反向验证：三个测试用改前的头文件（HEAD 版本，用前置 `-I` 遮住）重编运行。`circular_slist_algorithms_test` 退出 12，
+  即两边都空的那条；`slist_test` 以 SIGSEGV 退出（-11）；parity 测试 10 秒超时。新用例确实抓得住。
+- `clang-format` 三个 C++ 文件无差异；`clang-tidy -p out/bringup.x86`（`--header-filter` 覆盖
+  `circular_slist_algorithms.hpp` 和 `slist.hpp`）零告警，3 条 use-after-move 被上面 3 个 NOLINT 压住。
+- QEMU 各跑 30 秒：`kernel.dev.dbg_1.obi` 起到 shell 和 fault_probe，日志里 6 行缺页全是 fault_probe 故意触发、被正常
+  终止的用户态缺页；`kernel.dev.obi` 起到 init 和 shell，shell 自检全过。两个都没有 panic/assert。
+
+**故意没做**
+- `swap_nodes()` 前面两句 `if` 里的三元表达式没改：它们是对的，改写是纯风格清理。
+- 线性 `Slist`（`Linear<true>`）的 swap：`LinearSlistAlgorithms` 根本没有 `swap_nodes()`，一实例化就编不过。
+  那是另一件事，记在 `docs/repairs/260926/ustl.md` 第 3 条。
