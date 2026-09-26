@@ -770,3 +770,41 @@ lockdep 迁到 `std::atomic` 之后（见 `docs/changes/260926/lockdep.md`），
 
 **故意没做**
 头文件里原有的 `clang-tidy` 命名告警没修：与这次无关，而且如果这层封装以后要删，改名就白做了。
+
+## 删掉 `ustl/sync/atomic.hpp` 和 `atomic-test`（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/sync/atomic.hpp` — 删除（`sync/` 目录只有它，目录一并去掉）
+- `system/lib/ustl/test/atomic_test.cpp` — 删除
+- `system/lib/ustl/BUILD.gn` — 从 `headers` 的 `public` 列表里去掉这个头文件，删掉 `atomic-test` 这个 target 和它在 `tests` 组里的条目
+- `docs/repairs/260912/atomics.md` — 结语改成已删除
+
+**症状**
+无，清理。
+
+**原因**
+lockdep 迁走之后，`ustl::sync` 的 `Atomic`、`AtomicRef`、`MemoryOrder` 和两个 fence 在整个仓库里只剩自己的测试在用；上一条
+改动只在文件头写了"内核不再使用"。维护者决定不保留：仓库一律用 `std::atomic`，两套写法并存只会让人照着错的那套写。
+
+**改法**
+直接删除，不留转发头文件：没有任何使用者需要过渡。`ustl::sync` 命名空间本身还在，`rc.hpp` 的 `ThreadSafePolicy`、
+`SingleThreadedPolicy` 住在那里，和这个头文件无关。
+
+`kernel/mm/page_queues.cpp` 里有一段注释提到 `ustl::sync::Atomic` 的默认构造函数曾是 `= default`、会留下不确定的初值。
+那段注释用的是过去时，讲的是迁移前的历史，删除之后依然成立，没动。
+
+**参照**
+无。仓库的取向见 `docs/changes/260912/atomics.md`。
+
+**验证**
+- 全仓库再搜一遍 `ustl/sync/atomic`、`ustl::sync::Atomic`、`MemoryOrder`、`AtomicRef`、`AtomicU32`、`AtomicUsize`，除了上面那段
+  注释和改动记录，没有别的引用。
+- `prebuilt/gn/gn gen out/bringup.x86 --export-rust-project` 和 `prebuilt/ninja/ninja -C out/bringup.x86` 都成功；89 个 ustl
+  测试全部退出码 0。
+- 顺序上踩了一个坑：为了不让测试脚本跑到残留的 `atomic-test` 二进制，我手工删了 `out/` 里它的产物，连
+  `atomic-test.ninja` 也删了。但旧的 `host/toolchain.ninja` 还 `subninja` 着它，ninja 连构建图都加载不了，也就触发不了 gn 重新
+  生成。正确的顺序是先让 gn 重新生成，或者只删二进制。按 `tools/set.py` 的做法重跑 `gn gen` 之后恢复正常。
+- 内核目标文件本来就不依赖这个头文件（`ninja -t deps` 为 0），镜像不受影响，没跑 QEMU。
+
+**故意没做**
+无。

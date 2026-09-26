@@ -51,7 +51,6 @@ cpp_interface("headers") {
     "include/ustl/fmt/formatter.hpp",
     "include/ustl/fmt/make_format_args.hpp",
     "include/ustl/source_location.hpp",
-    "include/ustl/sync/atomic.hpp",
     "include/ustl/views/span.hpp",
     "include/ustl/views/string_view.hpp",
     "include/ustl/collections/allocator.hpp",
@@ -171,12 +170,6 @@ executable("option-test") {
 executable("lazy-init-test") {
   testonly = true
   sources = [ "test/lazy_init_test.cpp" ]
-  deps = [ ":headers" ]
-}
-
-executable("atomic-test") {
-  testonly = true
-  sources = [ "test/atomic_test.cpp" ]
   deps = [ ":headers" ]
 }
 
@@ -692,7 +685,6 @@ group("tests") {
   deps = [
     ":any-hook-headers-test",
     ":any-hook-test",
-    ":atomic-test",
     ":avltree-test",
     ":binary-reader-test",
     ":bitfields-test",
