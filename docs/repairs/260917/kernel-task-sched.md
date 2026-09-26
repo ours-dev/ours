@@ -115,7 +115,7 @@ ld.lld: error: undefined hidden symbol: lockdep::report_violation(lockdep::Viola
 
 两者都是 lockdep 明文交给使用方实现的——`report.hpp:47` 的注释写着
 「Supplied by the environment, like `current_lock_context()`」。全树只有
-`system/lib/lockdep/tests/threaded.cpp` 实现了它们，那是 lockdep 自己的主机测试。
+`system/lib/lockdep/test/threaded.cpp` 和 `test/smoke.cpp` 实现了它们，那是 lockdep 自己的主机测试。
 `system/lib/lockdep` 目录下没有 `src/`。
 
 **后果**：这棵树的锁定序**从未被任何东西校验过**，而且现在也验不了。所有关于
