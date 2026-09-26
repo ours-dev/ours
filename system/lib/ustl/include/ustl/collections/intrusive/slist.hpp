@@ -292,7 +292,18 @@ class Slist final {
     }
 
     constexpr auto swap(Slist &other) noexcept -> void {
-        Algorithms::swap_nodes(header(), other.header());
+        // A circular list's last node points back at its header, so swapping
+        // two lists has to re-aim those back links too, which is the work
+        // swap_nodes() does. A linear list ends in a null pointer and nothing
+        // in it refers to its header: exchanging the two headers' successors
+        // hands each chain over whole. LinearSlistAlgorithms offers only that
+        // exchange, swap_trailing_nodes(), and no swap_nodes() at all -- the
+        // same split Boost's slist_impl::swap() makes in priv_swap_lists().
+        if constexpr (PackedOptions::LINEAR) {
+            Algorithms::swap_trailing_nodes(header(), other.header());
+        } else {
+            Algorithms::swap_nodes(header(), other.header());
+        }
         if constexpr (PackedOptions::CONSTANT_TIME_SIZE) {
             std::swap(m_size, other.m_size);
         }

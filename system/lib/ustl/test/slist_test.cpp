@@ -11,6 +11,11 @@ struct Value final: ustl::collections::intrusive::SlistBaseHook<> {
 };
 
 using Slist = ustl::collections::intrusive::Slist<Value>;
+using LinearSlist =
+    ustl::collections::intrusive::Slist<Value, ustl::collections::intrusive::Linear<true>>;
+using CachedLinearSlist =
+    ustl::collections::intrusive::Slist<Value, ustl::collections::intrusive::Linear<true>,
+                                        ustl::collections::intrusive::CacheLast<true>>;
 
 struct MemberValue final {
     int m_key{};
@@ -105,6 +110,48 @@ auto main() -> int {
     if (!assigned.empty() || emptied.size() != 2U || emptied.begin()->m_value != 3 ||
         emptied_end != emptied.end()) {
         return 9;
+    }
+
+    // A linear list ends in a null pointer rather than back at its header, so
+    // its swap() exchanges the two headers' successors; there is no
+    // swap_nodes() for it to call. A move and sort() both go through swap(),
+    // which is how either used to fail to compile for a linear list.
+    Value five{.m_value = 5};
+    Value six{.m_value = 6};
+    LinearSlist linear_source{};
+    linear_source.push_front(five);
+    linear_source.push_front(six);
+    LinearSlist linear_moved(std::move(linear_source));
+    // NOLINTNEXTLINE(bugprone-use-after-move): the moved-from state is what is under test.
+    if (!linear_source.empty() || linear_moved.size() != 2U || linear_moved.begin()->m_value != 6) {
+        return 10;
+    }
+    linear_moved.sort([](Value const &left, Value const &right) noexcept {
+        return left.m_value < right.m_value;
+    });
+    auto linear_end = linear_moved.begin();
+    ++linear_end;
+    ++linear_end;
+    if (linear_moved.begin()->m_value != 5 || linear_end != linear_moved.end()) {
+        return 11;
+    }
+
+    // With the last node cached, swap() has to leave each list caching its
+    // own last node, or the next push_back() appends to the other list.
+    Value seven{.m_value = 7};
+    Value eight{.m_value = 8};
+    Value nine{.m_value = 9};
+    CachedLinearSlist cached{};
+    cached.push_back(seven);
+    CachedLinearSlist cached_other{};
+    cached.swap(cached_other);
+    cached_other.push_back(eight);
+    cached.push_back(nine);
+    auto cached_other_second = cached_other.begin();
+    ++cached_other_second;
+    if (cached.size() != 1U || cached.begin()->m_value != 9 || cached_other.size() != 2U ||
+        cached_other.begin()->m_value != 7 || cached_other_second->m_value != 8) {
+        return 12;
     }
     return 0;
 }

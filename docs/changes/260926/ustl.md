@@ -317,3 +317,96 @@ Linux 没有对应的坑：它的单链表（`llist`、`hlist`）以空指针结
 - `swap_nodes()` 前面两句 `if` 里的三元表达式没改：它们是对的，改写是纯风格清理。
 - 线性 `Slist`（`Linear<true>`）的 swap：`LinearSlistAlgorithms` 根本没有 `swap_nodes()`，一实例化就编不过。
   那是另一件事，记在 `docs/repairs/260926/ustl.md` 第 3 条。
+
+## 线性 `Slist` 能 swap 了：`swap()` 按 `LINEAR` 分派到 `swap_trailing_nodes()`（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/collections/intrusive/slist.hpp` — `swap()` 按 `PackedOptions::LINEAR` 分派：环形表调 `swap_nodes()`，线性表调 `swap_trailing_nodes()`
+- `system/lib/ustl/test/slist_test.cpp` — 补线性 `Slist` 的移动构造和 `sort()`，以及线性 + `CacheLast` 在 `swap()` 之后的 `push_back()`
+- `docs/repairs/260926/ustl.md` — 删掉第 3 条；新增第 4、5、6 条
+
+**症状**
+潜伏。`Slist<T, Linear<true>>`（带不带 `CacheLast<true>` 都一样）一旦被移动构造、移动赋值、`swap()` 或 `sort()`，就编不过：
+
+```
+slist.hpp:295:21: error: no member named 'swap_nodes' in
+  'ustl::collections::intrusive::LinearSlistAlgorithms<ustl::collections::intrusive::SlistNodeTraits<void *>>'
+```
+
+仓库里没有线性 `Slist` 的使用者，所以没人撞上。
+
+更正上一条的一句话：那里说"内核里唯一持有 `Slist` 的是 `gktl::ChainBuffer`"，不对。lockdep 的 `LockContext`（每个内核
+`Thread` 一份）持有一个 `AcquiredLockEntry::List`，也是 `Slist`。它只做 `push_front()`、`erase(iterator_to())` 和遍历，
+不移动、不 swap、不 sort，所以上一条的 bug 在内核里确实是潜伏的，结论不变，理由写错了。
+
+**原因**
+`Slist` 按 `Linear` 选项在两套节点算法里二选一：
+
+```cpp
+using Algorithms = std::conditional_t<PackedOptions::LINEAR, LinearSlistAlgorithms<NodeTraits>,
+                                      CircularSlistAlgorithms<NodeTraits>>;
+```
+
+两套算法的接口并不相同，因为两种链表的"交换"本来就不是一回事：
+
+- 环形表的末节点指回表头。交换两张表，除了表头的后继，还得把两个末节点的回指也改过来。`swap_nodes()` 做的就是这件事：
+  找到各自的前驱，再改指针。
+- 线性表的末节点指向空指针，链里没有任何节点指回表头；进入整条链的唯一入口就是表头的后继。所以交换两个表头的后继，就把
+  两条链整个交换了。线性算法只提供这个操作，叫 `swap_trailing_nodes()`，没有 `swap_nodes()`。
+
+`Slist::swap()` 却无条件调用 `Algorithms::swap_nodes()`。类模板的成员函数不被调用就不实例化，所以线性 `Slist` 平时编得
+过，一移动就编不过：移动构造是 `: Slist() { swap(other); }`，移动赋值先 `clear()` 再 `swap()`，`sort()` 每一步都
+`carry.swap(bins[index])`。`linear_slist_algorithms_test` 只测算法层，没有测试实例化过线性 `Slist`。
+
+`CACHE_LAST` 这一支在 `swap()` 里本来就对：交换之后两边各自 `refresh_last()`，从表头走到末尾重算缓存，线性、环形都成立。
+它的代价是 O(n)，但 `Slist` 的每次修改都这样（见 repairs 第 5 条），不是 `swap()` 特有的问题。
+
+**改法**
+改前：
+
+```cpp
+constexpr auto swap(Slist &other) noexcept -> void {
+    Algorithms::swap_nodes(header(), other.header());
+    ...
+```
+
+改后，照 Boost 在容器层分派，注释写明两种表为什么不同：
+
+```cpp
+constexpr auto swap(Slist &other) noexcept -> void {
+    if constexpr (PackedOptions::LINEAR) {
+        Algorithms::swap_trailing_nodes(header(), other.header());
+    } else {
+        Algorithms::swap_nodes(header(), other.header());
+    }
+    ...
+```
+
+否掉的方案：
+- **给 `LinearSlistAlgorithms` 补一个 `swap_nodes()`，内部转给 `swap_trailing_nodes()`。**两个名字说的不是一件事：
+  `swap_nodes()` 是"交换两个节点在各自链里的位置"，`swap_trailing_nodes()` 是"交换两个节点之后的整条链"。只有两个节点
+  都是表头时两者结果相同；对链中的元素节点就不同了。起一个名不副实的同名函数，算法层就在撒谎。Boost 也是让两者各自存在，
+  由容器分派。
+- **顺手移植 Boost 的 `priv_swap_cache_last()`（O(1) 维护末尾缓存的 swap）。**其他修改仍然每次 O(n) 重算，单独让 swap 变成
+  O(1) 没有意义；要改就像 repairs 第 5 条那样整体改。
+
+**参照**
+Boost.Intrusive `slist_impl::swap()` 和 `priv_swap_lists()`（`system/lib/boost.intrusive/include/boost/intrusive/slist.hpp:721`、
+`:2141-2146`）：`cache_last` 走 `priv_swap_cache_last()`，否则按 `bool_<LINEAR>` 分到 `swap_nodes()` 或
+`swap_trailing_nodes()`。`linear_slist_algorithms::swap_trailing_nodes()` 和 ustl 的实现逐行一致。
+
+**验证**
+- 探针：线性、线性 + `CacheLast`、环形 + `CacheLast`、环形四种配置，逐个跑 push/insert/erase/移动构造/移动赋值/`swap()`（两个
+  方向）/splice/`sort()`/`merge()`/`reverse()`/`remove_if()`/`clear()`，结果全对。探针同时撞出线性表上 `iterator_to()`
+  对末尾元素必然 trap 的问题，另记为 repairs 第 4 条。
+- `prebuilt/ninja/ninja -C out/bringup.x86` 成功；`host/obj/system/lib/ustl/` 下 89 个测试全部退出码 0。
+- 反向验证：`slist_test` 用改前的 `slist.hpp`（HEAD 版，前置 `-I` 遮住）重编，报 2 个错，线性、线性 + `CacheLast` 各一个
+  "no member named 'swap_nodes'"。
+- `clang-format` 无差异；`clang-tidy -p out/bringup.x86`（`--header-filter` 覆盖 `slist.hpp`、`linear_slist_algorithms.hpp`）
+  零告警，4 条 use-after-move 被 4 个 NOLINT 压住（新增 1 个）。
+- QEMU 各跑 30 秒：两个镜像都起到 shell，shell 的 libc 自检通过；没有 panic/assert，被终止的进程只有故意缺页的 fault_probe。
+
+**故意没做**
+- 线性表上 `iterator_to()` 对末尾元素 trap：另一个 bug，记在 repairs 第 4 条。
+- `CacheLast` 每次修改 O(n)：记在 repairs 第 5 条。
+- `slist.hpp` 里引用 Slab 的过时注释：记在 repairs 第 6 条。
