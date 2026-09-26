@@ -101,13 +101,23 @@ namespace {
     /// extra_reservations=1: the buffer's own range is reserved by the
     /// allocate() below before snapshot() runs, so the estimate has to
     /// include it.
+    ///
+    /// Whole pages, at page alignment, and not alignof(MemRange): this buffer
+    /// outlives the jump -- the kernel's mh.ranges points into it -- so its
+    /// reservation has to be something the kernel can describe, and downstream
+    /// of the handoff the unit of everything is a frame. Asking for eight-byte
+    /// alignment produced a reservation that was a sub-page tail of a page it
+    /// shared with free memory ([0x3FE9DBE0, 0x3FE9E000)), which no frame
+    /// descriptor can represent: the page is neither wholly free nor wholly
+    /// handoff, and init_memmap()'s own walk had not even initialised it.
     auto snapshot_memory_map() -> std::span<bootmem::MemRange const> {
         auto const bootmem = global_bootmem();
         auto const max_entries = bootmem->max_snapshot_entries(/*extra_reservations=*/1);
-        auto const buffer =
-            detail::allocate_top_down(max_entries * sizeof(bootmem::MemRange),
-                                      alignof(bootmem::MemRange), bootmem::MemoryType::Handoff,
-                                      "the boot memory map snapshot");
+        auto const bytes =
+            ustl::mm::align_up(max_entries * sizeof(bootmem::MemRange), usize(PAGE_SIZE));
+        auto const buffer = detail::allocate_top_down(bytes, PAGE_SIZE,
+                                                     bootmem::MemoryType::Handoff,
+                                                     "the boot memory map snapshot");
         auto *const entries = reinterpret_cast<bootmem::MemRange *>(buffer.base);
         auto const snapshot = bootmem->snapshot({entries, max_entries});
         if (snapshot.is_err()) {
