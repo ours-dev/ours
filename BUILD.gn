@@ -73,10 +73,10 @@ group("default") {
     "//system/lib/logz4:logz4-test($host_toolchain)",
 
     # Every //system/lib/ustl test, through ustl's own group rather than a
-    # line per test. This list used to name them one by one and reached five
-    # of the 89; the rest, most of the intrusive containers' tests among them,
-    # were compiled by nothing, so a header change could break them unseen.
-    # Plain hosted main()s, hence the host toolchain as for the tests above.
+    # line per test. This list used to name them one by one and reached only
+    # five; the rest, most of the intrusive containers' tests among them, were
+    # compiled by nothing, so a header change could break them unseen. Plain
+    # hosted main()s, hence the host toolchain as for the tests above.
     "//system/lib/ustl:tests($host_toolchain)",
 
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
