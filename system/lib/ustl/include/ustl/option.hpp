@@ -240,12 +240,35 @@ template <typename T>
 class [[nodiscard]]
 Option<T &>
     final {
+    template <typename>
+    friend class Option;
+
   public:
     constexpr Option() noexcept = default;
 
     constexpr Option(NoneValue) noexcept {}
 
     constexpr explicit Option(T &value) noexcept : m_value(std::addressof(value)) {}
+
+    /// Widens wherever the pointer inside widens, under the same constraint
+    /// `Box<U>` and `Rc<U>` use — above all `Option<T &>` to
+    /// `Option<T const &>`, the conversion a bare `T &` gets from the
+    /// language for free.
+    ///
+    /// A const accessor needs it to return the `Option<T &>` it naturally
+    /// builds: the intrusive containers reach an element through mutable
+    /// nodes even when the container is const, and narrow to const only at
+    /// the return, as Boost.Intrusive's `list::front() const` does with a
+    /// plain `T &`. Without this conversion that return does not compile.
+    ///
+    /// Implicit on purpose: `other` already aliases the object, so nothing
+    /// new becomes aliased and `some_ref`'s rule that aliasing is spelled at
+    /// the call site still holds; only access is narrowed. Requiring `U *` to
+    /// convert to `T *` rules out dropping const and downcasting, and
+    /// `!std::is_same_v` leaves the same-type case to the copy constructor.
+    template <typename U>
+        requires(std::is_convertible_v<U *, T *> && !std::is_same_v<U, T>)
+    constexpr Option(Option<U &> const &other) noexcept : m_value(other.m_value) {}
 
     constexpr auto operator=(NoneValue) noexcept -> Option & {
         m_value = nullptr;

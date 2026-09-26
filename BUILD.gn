@@ -75,6 +75,13 @@ group("default") {
     "//system/lib/ustl:bitset-test($host_toolchain)",
     "//system/lib/ustl:rc-test($host_toolchain)",
 
+    # Option<T &> widening to Option<T const &>, and the intrusive
+    # containers' const accessors that depend on it. Both are largely
+    # static_assert and overload checks, so building them is most of the
+    # test.
+    "//system/lib/ustl:option-test($host_toolchain)",
+    "//system/lib/ustl:intrusive-const-accessors-test($host_toolchain)",
+
     # //system/lib/concurrent's chain lock. Its arbitration rule is a pure
     # decision over two token values and its state is one std::atomic, so the
     # whole protocol runs on the host; the concurrent half it cannot reach is

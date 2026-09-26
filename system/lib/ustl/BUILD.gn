@@ -184,6 +184,16 @@ executable("set-test") {
   deps = [ ":headers" ]
 }
 
+# Every const accessor that hands out an element from List, Slist, Sgtree,
+# Treap and Hashtable, called on a const container. Mostly a compile-time
+# test: those accessors only compile because Option<T &> widens to
+# Option<T const &>.
+executable("intrusive-const-accessors-test") {
+  testonly = true
+  sources = [ "test/intrusive_const_accessors_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
 executable("rc-test") {
   testonly = true
   sources = [ "test/rc_test.cpp" ]
@@ -243,6 +253,7 @@ group("tests") {
     ":box-doc-examples-test",
     ":box-test",
     ":enum-bits-test",
+    ":intrusive-const-accessors-test",
     ":lazy-init-test",
     ":option-test",
     ":rc-test",
