@@ -1,0 +1,14 @@
+# Host-side tests. These link googletest and run on the build machine: the
+# encoder in <ours/process_args.hpp> and the decoder here work on bytes and
+# handle values alone, so a message can be written, read back and broken on
+# purpose without a kernel.
+executable("process_args") {
+  testonly = true
+  sources = [ "process_args_test.cpp" ]
+  deps = [
+    "//system/lib/runtime:process_args",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

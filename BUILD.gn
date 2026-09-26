@@ -142,6 +142,11 @@ group("default") {
     # own functions stay out of the way.
     "//system/lib/libc:tests",
 
+    # processargs, the message a process is started with: the encoder in
+    # <ours/process_args.hpp> and //system/lib/runtime's decoder, against
+    # each other and against Zircon's golden bytes.
+    "//system/lib/runtime:tests",
+
     # Fixed-point arithmetic, which the scheduler's weighting needs and which
     # the kernel cannot get from floating point. Almost all of its checking is
     # static_assert inside the test translation unit, so building this target

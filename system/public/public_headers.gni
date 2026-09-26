@@ -11,6 +11,7 @@ ours_public_headers = [
   "ours/compiler.hpp",
   "ours/macro_abi.hpp",
   "ours/panic.hpp",
+  "ours/process_args.hpp",
   "ours/rights.hpp",
   "ours/signals.hpp",
   "ours/status.hpp",

@@ -1,0 +1,38 @@
+import("//build/cpp/cpp_interface.gni")
+
+# What runs before a program's main and after it: reading the processargs
+# message the process was started with, holding its startup handles until
+# they are claimed, and the call into main.
+#
+# This is the part that works on bytes and handle values alone -- the
+# decoder and the handle table -- and so builds in every toolchain,
+# including the host one its tests run in. The start-up code that reads the
+# bootstrap channel and calls main is user-only and comes separately.
+source_set("process_args") {
+  sources = [
+    "src/process_args.cpp",
+    "src/startup_handles.cpp",
+  ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/runtime/process_args.hpp",
+    "include/runtime/startup_handles.hpp",
+  ]
+
+  # <ours/process_args.hpp>, the format this decodes.
+  public_deps = [ "//system/public" ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:process_args($host_toolchain)" ]
+}
