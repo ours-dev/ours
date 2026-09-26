@@ -24,10 +24,13 @@
 /// //system/lib/libc -- and check_libc() is where this program makes sure it
 /// is there and right.
 
+#include <ours/process_args.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
+
+#include <string_view>
 
 #include <cstring>
 
@@ -171,24 +174,134 @@ auto decimal(u32 value, char (&buffer)[10]) -> ou::Str {
     return {buffer + at, sizeof(buffer) - at};
 }
 
+/// How one fault_probe run ended, from this side of its answer channel.
+struct ProbeRun {
+    /// Started at all; false when making the channels or the process failed,
+    /// which has been reported already.
+    bool started;
+    /// Its end of the answer channel closed with nothing in it: the kernel
+    /// killed it, or it never reached main.
+    bool killed;
+    char answer[32];
+    u32 answer_size;
+};
+
+/// Starts fault_probe under |job| with |probe| as argv[1], and waits for it
+/// to answer or die.
+///
+/// The probe is started the way every program on the runtime is: a
+/// processargs message on its bootstrap channel (argv = {"fault_probe",
+/// probe}), written before the process starts, with one startup handle --
+/// the far end of a second channel, as User0, for the answer. The answer
+/// cannot come back on the bootstrap channel, because the runtime closes that
+/// as soon as it has read the message: waiting on it, this would see
+/// PeerClosed before the probe had even reached main and count every probe
+/// as killed.
+auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
+    using ours::Signals;
+    using ours::Status;
+
+    ProbeRun run{};
+
+    // The message first, while this holds no handles: a name that does not
+    // encode leaves nothing to clean up.
+    u8 message[128];
+    u32 length = 0;
+    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0)};
+    std::string_view const args[] = {"fault_probe", {probe.data(), probe.size()}};
+    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
+        status != Status::Ok) {
+        report("shell: encoding the probe's processargs = ", status);
+        return run;
+    }
+
+    ours::HandleValue answer = ours::HANDLE_INVALID;
+    ours::HandleValue answer_there = ours::HANDLE_INVALID;
+    ours::HandleValue bootstrap = ours::HANDLE_INVALID;
+    ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
+    if (!expect("shell: probe channel_create = ", ou::channel_create(&answer, &answer_there),
+                Status::Ok)) {
+        return run;
+    }
+    if (!expect("shell: probe channel_create = ", ou::channel_create(&bootstrap, &bootstrap_there),
+                Status::Ok)) {
+        static_cast<void>(ou::handle_close(answer));
+        static_cast<void>(ou::handle_close(answer_there));
+        return run;
+    }
+
+    // |answer_there| leaves this process with the message, whatever the
+    // write answers.
+    auto status = ou::channel_write(bootstrap, message, length, &answer_there, 1);
+    // The message is queued; this end has nothing more to say, and holding it
+    // would keep a handle charged to this process for nothing.
+    static_cast<void>(ou::handle_close(bootstrap));
+    if (status != Status::Ok) {
+        report("shell: writing the probe's processargs = ", status);
+        static_cast<void>(ou::handle_close(answer));
+        static_cast<void>(ou::handle_close(bootstrap_there));
+        return run;
+    }
+
+    // |bootstrap_there| leaves this process whatever happens.
+    if (status = ou::process_spawn_boot(job, "fault_probe", bootstrap_there);
+        status != Status::Ok) {
+        report("shell: spawning fault_probe = ", status);
+        static_cast<void>(ou::handle_close(answer));
+        return run;
+    }
+    run.started = true;
+
+    auto observed = Signals::None;
+    static_cast<void>(ou::object_wait_one(answer, Signals::Readable | Signals::PeerClosed,
+                                          ours::INSTANT_INFINITE, &observed));
+    run.killed = !(observed & Signals::Readable);
+    if (!run.killed) {
+        static_cast<void>(
+            ou::channel_read(answer, run.answer, sizeof(run.answer), &run.answer_size));
+
+        // And then until the probe has let go of its end. That end was made
+        // here, so it is charged to this process (the per-creator handle
+        // quota) for as long as it lives, and a probe that answered is still
+        // on its way out: return now and the quota check further on counts
+        // it -- one handle short, depending on how fast the probe dies. A
+        // killed probe's end has closed already; that is what woke the wait.
+        //
+        // This narrows the window rather than closing it: the kernel raises
+        // PEER_CLOSED in ~Handle before it refunds the handle to its creator
+        // (docs/repairs/260926/object.md), so for a few instructions after
+        // this wakes the handle may still be counted. The checks that run
+        // before the quota check are what make that gap unobservable today.
+        static_cast<void>(
+            ou::object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed));
+    }
+    static_cast<void>(ou::handle_close(answer));
+    return run;
+}
+
 /// Programs that fault, and the kernel still here afterwards (P1-A).
 ///
 /// Each probe is a fresh fault_probe process (lib/syscall's test,
-/// kernel/lib/syscall/test/fault_probe), told over a channel which fault to
-/// commit. The kernel's answer to a fault from ring 3 is to kill the
-/// process: its handle table goes with it, its end of the channel closes, and
-/// this end sees PeerClosed with nothing to read. A probe that survives writes
-/// back instead, and that is a failure. Between the two, the kernel's log
-/// carries the report for each kill and the destruction of the process and
-/// thread objects -- the parts of the chain this program cannot see.
+/// kernel/lib/syscall/test/fault_probe), told by its argv which fault to
+/// commit (run_probe()). The kernel's answer to a fault from ring 3 is to
+/// kill the process: its handle table goes with it, its end of the answer
+/// channel closes, and this end sees PeerClosed with nothing to read. A
+/// probe that survives writes back instead, and that is a failure. Between
+/// the two, the kernel's log carries the report for each kill and the
+/// destruction of the process and thread objects -- the parts of the chain
+/// this program cannot see.
+///
+/// "killed" here only means the answer channel closed empty, which is also
+/// what a probe that never reached main looks like. That each one ran is in
+/// the log: a `fault_probe: <name>` line before each kill. And one more run,
+/// with a name no probe has, is the control: it must answer "unknown" and
+/// return from main, the one path through which the runtime ends a probe
+/// with main's own value.
 ///
 /// Run only by the shell the kernel starts directly, which holds the root
 /// job a new process needs; the dev image starts the shell from init, with a
 /// channel instead, and does not package fault_probe.
 auto run_probes(ours::HandleValue const job) -> void {
-    using ours::Signals;
-    using ours::Status;
-
     constexpr ou::Str PROBES[] = {
         "pf_unmapped", "pf_kernel", "pf_write_vdso",     "ud2",
         "gp_hlt",      "gp_int80",  "gp_int3",           "de",
@@ -198,37 +311,18 @@ auto run_probes(ours::HandleValue const job) -> void {
     u32 killed = 0;
     u32 survived = 0;
     for (auto const probe: PROBES) {
-        ours::HandleValue here = ours::HANDLE_INVALID;
-        ours::HandleValue there = ours::HANDLE_INVALID;
-        if (!expect("shell: probe channel_create = ", ou::channel_create(&here, &there),
-                    Status::Ok)) {
+        auto const run = run_probe(job, probe);
+        if (!run.started) {
             return;
         }
-        static_cast<void>(ou::channel_write(here, probe.data(), static_cast<u32>(probe.size())));
-
-        // |there| leaves this process whatever happens.
-        if (auto const status = ou::process_spawn_boot(job, "fault_probe", there);
-            status != Status::Ok) {
-            report("shell: spawning fault_probe = ", status);
-            static_cast<void>(ou::handle_close(here));
-            return;
-        }
-
-        auto observed = Signals::None;
-        static_cast<void>(ou::object_wait_one(here, Signals::Readable | Signals::PeerClosed,
-                                              ours::INSTANT_INFINITE, &observed));
-        if (!!(observed & Signals::Readable)) {
-            char answer[32] = {};
-            u32 actual = 0;
-            static_cast<void>(ou::channel_read(here, answer, sizeof(answer), &actual));
-            static_cast<void>(ou::debug_line(
-                {"shell: probe ", probe, " SURVIVED (", ou::Str(answer, actual), ")"}));
-            ++survived;
-        } else {
+        if (run.killed) {
             static_cast<void>(ou::debug_line({"shell: probe ", probe, " killed"}));
             ++killed;
+        } else {
+            static_cast<void>(ou::debug_line({"shell: probe ", probe, " SURVIVED (",
+                                              ou::Str(run.answer, run.answer_size), ")"}));
+            ++survived;
         }
-        static_cast<void>(ou::handle_close(here));
     }
 
     char killed_text[10];
@@ -236,6 +330,19 @@ auto run_probes(ours::HandleValue const job) -> void {
     static_cast<void>(
         ou::debug_line({"shell: probes done (", decimal(killed, killed_text), " killed, ",
                         decimal(survived, survived_text), " survived)"}));
+
+    constexpr ou::Str CONTROL{"none"};
+    auto const control = run_probe(job, CONTROL);
+    if (!control.started) {
+        return;
+    }
+    if (control.killed) {
+        static_cast<void>(ou::debug_line(
+            "shell: control probe none died without answering (expected \"unknown\")"));
+    } else {
+        static_cast<void>(ou::debug_line({"shell: control probe none answered \"",
+                                          ou::Str(control.answer, control.answer_size), "\""}));
+    }
 }
 
 /// A channel with both ends in this one process: everything the kernel

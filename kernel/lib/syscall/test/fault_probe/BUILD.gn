@@ -40,5 +40,8 @@ user_executable("fault_probe") {
     # trap_outside_vdso probe needs; see the file.
     "trap.S",
   ]
-  deps = [ "//system/lib/ou" ]
+  deps = [
+    "//system/lib/ou",
+    "//system/lib/runtime",
+  ]
 }

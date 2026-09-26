@@ -3,16 +3,20 @@
 ///
 /// Faults on command.
 ///
-/// Started with one handle, a channel whose other end holds the name of a
-/// probe. It reads the name, prints it, and does the one thing the probe
+/// Started on the runtime (//system/lib/runtime): the probe's name is
+/// argv[1], and the one startup handle is a channel (User0) whose other end
+/// the driver holds. It prints the name and does the one thing the probe
 /// names -- each of them something a user program is not allowed to get
-/// away with. The kernel's answer is to kill this process (P1-A); the peer
+/// away with. The kernel's answer is to kill this process (P1-A); the driver
 /// sees that as PeerClosed on its end of the channel with nothing to read.
 ///
 /// If execution ever gets past the faulting instruction, the probe failed:
-/// this writes "survived" back and spins, so that the driver can tell the
-/// difference and say which probe it was. An unknown name is answered with
-/// "unknown" the same way.
+/// this writes "survived" back and returns from main, so that the driver can
+/// tell the difference and say which probe it was. An unknown name is
+/// answered with "unknown" the same way. Returning is what makes the second
+/// case worth having: the driver runs one deliberately unknown probe, and
+/// that is the only run in which main returns and the runtime ends the
+/// process with main's value.
 ///
 /// Every action is an `asm volatile`: a load whose result is unused, or a
 /// division the compiler can see is by zero, is exactly what an optimiser
@@ -20,11 +24,10 @@
 
 #include <ou/channel.hpp>
 #include <ou/debug.hpp>
-#include <ou/object.hpp>
 #include <ou/str.hpp>
-#include <ours/signals.hpp>
-#include <ours/status.hpp>
-#include <ours/syscall.hpp>
+#include <ours/process_args.hpp>
+#include <runtime/main.hpp>
+#include <runtime/startup.hpp>
 
 // trap.S: a `syscall` executed from this program's own text rather than the
 // vDSO's.
@@ -148,41 +151,47 @@ auto same(ou::Str const a, ou::Str const b) -> bool {
     return true;
 }
 
-/// The end of a failed or unknown probe: say so to the driver, then stay.
-/// There is no exit system call yet, and returning from _start would return
-/// into whatever the kernel left on the stack.
-[[noreturn]]
-auto answer_and_stay(ours::HandleValue const channel, ou::Str const answer) -> void {
-    static_cast<void>(ou::channel_write(channel, answer.data(), static_cast<u32>(answer.size())));
-    for (;;) {
-        __asm__ volatile("pause");
+/// What main returns, which the runtime passes to process_exit and a debug
+/// kernel prints as the process's retcode. Distinct, so that the log alone
+/// says how a probe that was not killed ended.
+enum ExitCode : int {
+    /// The probe's instruction did not fault.
+    SURVIVED = 1,
+    /// No probe has that name -- the driver's control run.
+    UNKNOWN = 2,
+    /// Started without a probe name.
+    NO_NAME = 3,
+};
+
+/// Says |answer| to the driver on |channel|, the User0 startup handle.
+/// Without one there is no one to tell, and the exit code has to do.
+auto reply(ours::HandleValue const channel, ou::Str const answer) -> void {
+    if (channel == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("fault_probe: no answer channel (User0)"));
+        return;
     }
+    static_cast<void>(ou::channel_write(channel, answer.data(), static_cast<u32>(answer.size())));
 }
 } // namespace
 
-/// |bootstrap| is the channel the driver holds the other end of (%rdi), and
-/// |vdso_base| where the vDSO was mapped (%rsi).
-extern "C" [[noreturn]]
-auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -> void {
-    using ours::Signals;
-
-    auto observed = Signals::None;
-    static_cast<void>(ou::object_wait_one(bootstrap, Signals::Readable | Signals::PeerClosed,
-                                          ours::INSTANT_INFINITE, &observed));
-    char buffer[32] = {};
-    u32 actual = 0;
-    if (ou::channel_read(bootstrap, buffer, sizeof(buffer), &actual) != ours::Status::Ok) {
-        answer_and_stay(bootstrap, "no probe name");
+auto main(int const argc, char **const argv) -> int {
+    auto const answer = runtime::take_startup_handle(ours::HandleType::User0, 0);
+    if (argc < 2) {
+        static_cast<void>(ou::debug_line("fault_probe: no probe name"));
+        reply(answer, "no probe name");
+        return NO_NAME;
     }
-    auto const name = ou::Str(buffer, actual);
+    auto const name = ou::Str::from_c_str(argv[1], 32);
     static_cast<void>(ou::debug_line({"fault_probe: ", name}));
 
     for (auto const &probe: PROBES) {
         if (same(name, probe.name)) {
-            probe.action(vdso_base);
-            answer_and_stay(bootstrap, "survived");
+            probe.action(runtime::vdso_base());
+            reply(answer, "survived");
+            return SURVIVED;
         }
     }
     static_cast<void>(ou::debug_line({"fault_probe: unknown probe ", name}));
-    answer_and_stay(bootstrap, "unknown");
+    reply(answer, "unknown");
+    return UNKNOWN;
 }

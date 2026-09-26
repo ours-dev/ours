@@ -45,8 +45,10 @@ group("tests") {
 # _start, a system call through ou, and a main to call exist only in a ring-3
 # program. Not yet a default dependency of user_executable() either: every
 # program still defines its own _start, which this one would collide with.
-# init, the shell and fault_probe move to main together (design K14);
-# userboot keeps its own _start until it becomes a launcher (U8).
+# Programs move one producer-consumer pair at a time: fault_probe first,
+# since only the shell starts it; init and the shell together with the
+# kernel's own processargs (design K14); userboot last, when it becomes a
+# launcher (U8). Until then each program names this dependency itself.
 if (!is_host_toolchain && toolchain_environment == "user") {
   source_set("runtime") {
     sources = [
