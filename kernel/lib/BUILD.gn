@@ -3,7 +3,6 @@
 _libraries = [
   "acpi",
   "ccrt",
-  "clock",
   "code_patching",
   "eftl",
   "gktl",

@@ -43,9 +43,10 @@ config("standalone") {
 config("static-pic-link") {
   configs = [ "//build/config:static-link" ]
   # The compiler runtime is a link input, not a driver option. clang emits
-  # calls into it -- __udivti3 and friends, from the 128-bit fixed-point math
-  # in //kernel/lib/clock -- with no call site in the source to show for it,
-  # and -nostdlib below drops it along with libc. Naming the archive is what
+  # calls into it -- __udivti3 and friends, today from libc++'s std::format,
+  # whose integer formatter is instantiated for unsigned __int128 whether or
+  # not anything prints one -- with no call site in the source to show for
+  # it, and -nostdlib below drops it along with libc. Naming the archive is what
   # brings it back: this links with ld.lld directly, so -rtlib=compiler-rt
   # would never be seen by the driver that understands it.
   inputs = [
