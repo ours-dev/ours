@@ -64,7 +64,11 @@ inline auto apply_memory_map(View::MemoryMap const &map, bootmem::PhysicalMemory
         if (range.is_err()) {
             return range.unwrap_err();
         }
-        if (auto const status = memory.reserve(range.unwrap()); status != Status::Ok) {
+        // Everything Multiboot does not call Available is memory the firmware
+        // says is not ours; it does not distinguish MMIO from a plain hole.
+        if (auto const status =
+                memory.reserve(range.unwrap(), bootmem::MemoryType::FirmwareReserved);
+            status != Status::Ok) {
             return status;
         }
     }

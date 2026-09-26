@@ -43,7 +43,7 @@ class BootPackageInput final {
         if (range.is_err()) {
             return range.unwrap_err();
         }
-        return memory.reserve(range.unwrap());
+        return memory.reserve(range.unwrap(), bootmem::MemoryType::BootPackage);
     }
 
   private:

@@ -76,6 +76,7 @@ auto Aspace::alloc_page_table(usize size, usize alignment) const -> PhysAddr {
         .upper = upper,
         .node = bootmem::ANY_NODE,
         .direction = bootmem::AllocationDirection::TopDown,
+        .type = bootmem::MemoryType::PageTable,
     });
     auto const phys = allocated.is_ok() ? allocated.unwrap().base : PhysAddr{};
 

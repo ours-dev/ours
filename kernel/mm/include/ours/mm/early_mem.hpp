@@ -28,12 +28,13 @@ struct EarlyMem {
     static auto dump() -> void;
 
     [[nodiscard]]
-    static auto reserve(PhysAddr const base, usize const size) -> Status {
+    static auto reserve(PhysAddr const base, usize const size, bootmem::MemoryType const type)
+        -> Status {
         auto const range = bootmem::Range::from(base, size);
         if (range.is_err()) {
             return range.unwrap_err();
         }
-        return BOOTMEM == nullptr ? Status::BadState : BOOTMEM->reserve(range.unwrap());
+        return BOOTMEM == nullptr ? Status::BadState : BOOTMEM->reserve(range.unwrap(), type);
     }
 
     [[nodiscard]]
@@ -45,19 +46,27 @@ struct EarlyMem {
         return BOOTMEM == nullptr ? Status::BadState : BOOTMEM->assign_node(range.unwrap(), node);
     }
 
+    /// Every overload takes the type explicitly rather than defaulting it. A
+    /// default would be the one value nobody chose, and the whole reason the
+    /// type exists is that the kernel on the far side of the handoff cannot ask
+    /// what a reserved range was for -- an allocation site that does not say is
+    /// a range that can never be described again.
     template <typename T = u8>
-    static auto allocate(usize const count, NnId const node) -> T * {
-        return allocate<T>(count, alignof(T), min_address(), max_address(), node);
+    static auto allocate(usize const count, NnId const node, bootmem::MemoryType const type)
+        -> T * {
+        return allocate<T>(count, alignof(T), min_address(), max_address(), node, type);
     }
 
     template <typename T = u8>
-    static auto allocate(usize const count, usize const alignment, NnId const node) -> T * {
-        return allocate<T>(count, alignment, min_address(), max_address(), node);
+    static auto allocate(usize const count, usize const alignment, NnId const node,
+                         bootmem::MemoryType const type) -> T * {
+        return allocate<T>(count, alignment, min_address(), max_address(), node, type);
     }
 
     template <typename T = u8>
     static auto allocate(usize const count, usize const alignment, PhysAddr const lower,
-                         PhysAddr const upper, NnId const node) -> T * {
+                         PhysAddr const upper, NnId const node, bootmem::MemoryType const type)
+        -> T * {
         if (BOOTMEM == nullptr || count > std::numeric_limits<usize>::max() / sizeof(T)) {
             return nullptr;
         }
@@ -68,6 +77,7 @@ struct EarlyMem {
             .upper = upper,
             .node = node,
             .direction = bootmem::AllocationDirection::TopDown,
+            .type = type,
         });
         return allocation.is_ok() ? PhysMap::phys_to_virt<T>(allocation.unwrap().base) : nullptr;
     }

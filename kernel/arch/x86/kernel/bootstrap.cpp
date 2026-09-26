@@ -123,7 +123,7 @@ static auto init_bootstrap16_buffer() -> void {
     }
 
     auto buffer = mm::EarlyMem::allocate(MIN_BOOTSTRAP16_BUFFER_SIZE, PAGE_SIZE, 0, KB(64),
-                                         bootmem::ANY_NODE);
+                                         bootmem::ANY_NODE, bootmem::MemoryType::Transient);
     ASSERT(buffer, "Failed to allocate APs's bootstrap buffer");
 
     set_bootstrap16_buffer(mm::PhysMap::virt_to_phys(buffer));

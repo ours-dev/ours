@@ -56,7 +56,10 @@ namespace {
 
     auto load_kernel_image(ElfImage &image) -> KernelPlacement {
         auto const image_pages = ustl::mm::align_up(image.size(), PAGE_SIZE);
-        auto const target = detail::allocate_top_down(image_pages, PAGE_SIZE, "kernel image").base;
+        auto const target = detail::allocate_top_down(image_pages, PAGE_SIZE,
+                                                     bootmem::MemoryType::KernelImage,
+                                                     "kernel image")
+                                .base;
         std::memset(reinterpret_cast<void *>(target), 0, image_pages);
 
         auto const entry = image.load_at(target);
@@ -103,7 +106,8 @@ namespace {
         auto const max_entries = bootmem->max_snapshot_entries(/*extra_reservations=*/1);
         auto const buffer =
             detail::allocate_top_down(max_entries * sizeof(bootmem::MemRange),
-                                      alignof(bootmem::MemRange), "the boot memory map snapshot");
+                                      alignof(bootmem::MemRange), bootmem::MemoryType::Handoff,
+                                      "the boot memory map snapshot");
         auto *const entries = reinterpret_cast<bootmem::MemRange *>(buffer.base);
         auto const snapshot = bootmem->snapshot({entries, max_entries});
         if (snapshot.is_err()) {

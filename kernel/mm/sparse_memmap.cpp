@@ -35,7 +35,7 @@ constexpr auto SparseMemMap::Impl::allocate(usize n, usize a, Gaf gaf, NnId nid,
     if (heap_enabled()) {
         object = new (gaf, nid) T[n](ustl::forward<Args>(args)...);
     } else {
-        object = EarlyMem::allocate<T>(n, a, nid);
+        object = EarlyMem::allocate<T>(n, a, nid, bootmem::MemoryType::KernelData);
         if (!object) {
             panic("Failed to allocate {} map",
                   ustl::traits::IsSameV<T, PmFrame> ? "frame" : "section");

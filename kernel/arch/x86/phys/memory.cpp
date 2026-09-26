@@ -15,7 +15,7 @@
 
 namespace ours::phys {
 static bootmem::MemoryRegion BOOTSTRAP_MEMORY_REGIONS[100];
-static bootmem::Range BOOTSTRAP_RESERVED_REGIONS[100];
+static bootmem::Reservation BOOTSTRAP_RESERVED_REGIONS[100];
 
 BootMem BOOTMEM{{.usable = BOOTSTRAP_MEMORY_REGIONS, .reservations = BOOTSTRAP_RESERVED_REGIONS}};
 
@@ -24,7 +24,8 @@ auto arch_init_memory(Aspace *aspace) -> void {
 
     // VGA text memory is usable in neither memory-discovery path.
     auto const vga = bootmem::Range::from(0xB0000, 0x10000);
-    if (vga.is_err() || mem->reserve(vga.unwrap()) != Status::Ok) {
+    if (vga.is_err() ||
+        mem->reserve(vga.unwrap(), bootmem::MemoryType::Peripheral) != Status::Ok) {
         panic("Failed to reserve VGA memory");
     }
 

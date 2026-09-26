@@ -270,7 +270,8 @@ class CpuLocal::Mapper {
 
 auto CpuLocal::Mapper::init_early() -> Status {
     auto const span = replica_span();
-    auto *block = EarlyMem::allocate<u8>(span, span, bootmem::ANY_NODE);
+    auto *block =
+        EarlyMem::allocate<u8>(span, span, bootmem::ANY_NODE, bootmem::MemoryType::Transient);
     if (!block) {
         return Status::OutOfMem;
     }

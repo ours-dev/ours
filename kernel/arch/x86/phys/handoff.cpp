@@ -40,6 +40,7 @@ auto arch_handoff_to_kernel(VirtAddr const entry, PhysAddr const pgd, Handoff *c
         .upper = bootmem->max_address(),
         .node = bootmem::ANY_NODE,
         .direction = bootmem::AllocationDirection::TopDown,
+        .type = bootmem::MemoryType::Handoff,
     });
     if (allocated.is_err()) {
         panic("No memory for the kernel handoff trampoline: {}",

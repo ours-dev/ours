@@ -306,7 +306,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     // frees these: a PmNode lives as long as the kernel does.
     auto create_status = Status::Ok;
     nodes.for_each([&create_status](NnId nid) {
-        auto node = EarlyMem::allocate<PmNode>(1, nid);
+        auto node = EarlyMem::allocate<PmNode>(1, nid, bootmem::MemoryType::KernelData);
         if (!node) {
             create_status = Status::OutOfMem;
             return;
@@ -371,7 +371,7 @@ auto PmNode::init() -> Status {
             continue;
         }
 
-        auto zone = EarlyMem::allocate<PmZone>(1, m_id);
+        auto zone = EarlyMem::allocate<PmZone>(1, m_id, bootmem::MemoryType::KernelData);
         if (!zone) {
             panic("No enough memory to place node[{}].zone[{}]", m_id, to_string(ztype));
         }

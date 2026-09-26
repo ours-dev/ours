@@ -94,7 +94,7 @@ class BootMemFixture final {
 
   private:
     std::array<MemoryRegion, 8> memory_regions_{};
-    std::array<Range, 8> reserved_regions_{};
+    std::array<bootmem::Reservation, 8> reserved_regions_{};
     PhysicalMemory memory_;
 };
 

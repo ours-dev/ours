@@ -43,7 +43,7 @@ namespace {
     INIT_DATA
     bootmem::MemoryRegion USABLE_STORAGE[MAX_EARLY_MEMORY_REGIONS];
     INIT_DATA
-    bootmem::Range RESERVATION_STORAGE[MAX_EARLY_MEMORY_REGIONS];
+    bootmem::Reservation RESERVATION_STORAGE[MAX_EARLY_MEMORY_REGIONS];
     INIT_DATA
     ustl::LazyInit<bootmem::PhysicalMemory> KERNEL_BOOTMEM;
 } // namespace
@@ -133,15 +133,21 @@ auto handoff_early_pmm(phys::MemoryHandoff const &mh) -> Status {
         .usable = USABLE_STORAGE,
         .reservations = RESERVATION_STORAGE,
     });
-    // Every entry -- free or not -- is RAM physload knew about, so it
-    // is all usable(); the entries flagged used are additionally
-    // reserved(), same as physload's own construction from an OBI
-    // memory item (kernel/phys/memory.cpp's register_range).
+    // Every entry -- free or not -- is RAM physload knew about, so it is all
+    // usable(); a claimed entry is additionally reserved(), same as physload's
+    // own construction from an OBI memory item (kernel/phys/memory.cpp's
+    // register_range).
+    //
+    // entry.type carries the claim across verbatim: this is the only moment the
+    // kernel can learn that a given range holds a page table it is about to
+    // walk rather than a hole in RAM, because the phys program that knew is
+    // gone. Reconstructing it later is not possible, which is why the type
+    // travels with the range instead of being inferred from addresses here.
     for (auto const &entry: mh.ranges) {
         if (bootmem->add_usable(entry.range, 0) != Status::Ok) {
             return Status::BadState;
         }
-        if (entry.used && bootmem->reserve(entry.range) != Status::Ok) {
+        if (entry.used() && bootmem->reserve(entry.range, entry.type) != Status::Ok) {
             return Status::BadState;
         }
     }

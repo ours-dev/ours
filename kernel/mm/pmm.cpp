@@ -76,7 +76,7 @@ auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
 
     // Zeroed by hand: the boot allocator has no notion of Gaf, and a page table
     // whose unused entries are leftover bytes is a set of mappings nobody made.
-    auto *table = EarlyMem::allocate<u8>(size, alignment, node);
+    auto *table = EarlyMem::allocate<u8>(size, alignment, node, bootmem::MemoryType::PageTable);
     if (!table) {
         return PhysAddr{0};
     }

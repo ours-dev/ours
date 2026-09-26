@@ -125,8 +125,8 @@ static auto free_unused_memory() -> void {
               nr_frames, (nr_frames * PAGE_SIZE) >> 20);
 }
 
-/// Marks everything bootmem describes as reserved, so that it has nothing left
-/// to give.
+/// Hands every range bootmem still calls free over to the page allocator on the
+/// books as well as in fact, so that bootmem has nothing left to give.
 ///
 /// free_unused_memory() above hands the buddy every range bootmem still calls
 /// free -- and then leaves bootmem's own bitmap untouched, so bootmem goes on
@@ -145,33 +145,52 @@ static auto free_unused_memory() -> void {
 /// find_free() finds nothing, so a late allocate() returns null and its caller's
 /// existing null check turns it into a visible failure.
 ///
-/// One reservation over [min_address, max_address) rather than one per released
-/// range, for two reasons. It cannot be done inside the walk above -- reserving
-/// while visiting the free view changes what the visitor has left to see -- and
-/// since every free range is being released, "reserve what was released" and
-/// "reserve everything" describe the same set. Reserving a hole that was never
-/// usable costs nothing either: a reservation only ever subtracts from the
-/// usable list, and there is no usable range there to subtract from.
+/// One free range at a time, taken from the front, rather than a walk that
+/// reserves as it goes: a reservation changes what the free view has left to
+/// show, so mutating inside the walk would skip ranges. Sixteen or so iterations
+/// over a list of the same length, once, at boot.
+///
+/// The type is MemoryType::PageAllocator and not a blanket reservation over
+/// [min_address, max_address): with typed reservations a single range covering
+/// everything would overlap the phys image, the page tables and the firmware's
+/// holes, all of which are already reserved as something else -- and reserve()
+/// refuses that on purpose, because retyping someone else's claim is how the
+/// information gets lost. Claiming only what was actually released also leaves
+/// each range saying who has it, which is what the kernel reads on the other
+/// side.
 ///
 /// Linux reaches the same state from the other direction: memblock_free_all()
 /// ends with memblock_discard(), which throws the memblock arrays away
-/// altogether, and memblock_alloc() after that is a NULL-deref rather than a
+/// altogether, so memblock_alloc() after that is a NULL-deref rather than a
 /// silent double allocation.
 INIT_CODE
 static auto retire_bootmem() -> void {
-    auto const lower = EarlyMem::min_address();
-    auto const upper = EarlyMem::max_address();
-    if (upper <= lower) {
-        // No usable range was ever added; there is nothing to retire, and
-        // Range::from() rejects a zero size.
-        return;
-    }
+    for (;;) {
+        auto first = bootmem::Range{};
+        auto found = false;
+        [[maybe_unused]]
+        auto const status = EarlyMem::visit_free(
+            EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
+            [&](bootmem::MemoryRegion const region) {
+                first = region.range;
+                found = true;
+                // The first one is enough: reserving it is what makes the next
+                // call see the one after.
+                return false;
+            });
+        DEBUG_ASSERT(status == Status::Ok, "Failed to enumerate the released memory");
+        if (!found) {
+            return;
+        }
 
-    auto const status = EarlyMem::reserve(lower, upper - lower);
-    // A hard failure, not a log line. Carrying on would leave bootmem willing
-    // to hand out memory the buddy owns, which is the state this exists to end.
-    ASSERT(Status::Ok == status, "Failed to retire the boot allocator: {}",
-           static_cast<u32>(status));
+        auto const reserved =
+            EarlyMem::reserve(first.base, first.size, bootmem::MemoryType::PageAllocator);
+        // A hard failure, not a log line. Carrying on would leave bootmem
+        // willing to hand out memory the buddy owns, which is the state this
+        // exists to end -- and the loop would not terminate either.
+        ASSERT(Status::Ok == reserved, "Failed to retire the boot allocator: {}",
+               static_cast<u32>(reserved));
+    }
 }
 
 INIT_CODE

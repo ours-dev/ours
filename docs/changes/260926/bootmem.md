@@ -1,0 +1,150 @@
+# kernel/phys/lib/bootmem 改动记录（2026-09-26）
+
+## 保留区带类型，并从 physboot 传到内核（2026-09-26）
+
+**文件**
+- `kernel/phys/lib/bootmem/include/bootmem/types.hpp` — 新增 `MemoryType` 和 `to_string()`；新增 `Reservation`；`MemRange` 的 `bool used` 换成 `MemoryType type` 加 `used()`；`AllocationRequest` 加 `type`；`PhysicalMemoryStorage::reservations` 变成 `Span<Reservation>`
+- `kernel/phys/lib/bootmem/include/bootmem/physical_memory.hpp` — `reserve()` 收类型、只合并同类型、按 base 有序插入；`allocate()` 把 `request.type` 传下去；`release()` 保留切剩部分的类型；`snapshot()` 输出类型；删掉不再有调用者的 `replace_reservation()`
+- `kernel/phys/memory.cpp`、`kernel/arch/x86/phys/memory.cpp`、`kernel/phys/include/ours/phys/boot_package_input.hpp`、`kernel/phys/lib/multiboot/include/multiboot/memory_map.hpp`、`kernel/phys/aspace.cpp`、`kernel/phys/detail/boot_alloc.hpp`、`kernel/phys/module_loader.cpp`、`kernel/phys/physboot.cpp`、`kernel/arch/x86/phys/handoff.cpp` — phys 侧每个保留点报出自己的类型
+- `kernel/mm/include/ours/mm/early_mem.hpp` — `reserve()`/`allocate()` 收类型，且**不给默认值**
+- `kernel/mm/pm_node.cpp`、`kernel/mm/sparse_memmap.cpp`、`kernel/mm/cpu_local.cpp`、`kernel/arch/x86/kernel/bootstrap.cpp`、`kernel/mm/pmm.cpp` — 内核侧每个早期分配报出自己的类型
+- `kernel/mm/init_pmm.cpp` — `handoff_early_pmm()` 按 `entry.type` 重建保留区
+- `kernel/mm/early_mem.cpp` — `retire_bootmem()` 改成逐段保留为 `PageAllocator`
+- 两个 smoke test 跟着改
+
+**症状**
+潜伏，而且是一整类问题的根，不是单个 bug。内核拿到手的内存图里，一段保留内存长什么样都一样：
+physload 的镜像、一张内核正要走的页表、固件声明的空洞、一个没人再用的临时缓冲——四者是同一个事实。
+`bootmem::Reservation` 原来就是个裸 `Range`，`MemRange` 只有一个 `bool used`。
+
+直接后果是 `mm::init_memmap_reserved()` 只能把这些帧一律打成 reserved，谁也说不出它们装着什么。
+本轮之前修掉的 NUMA 启动缺页（`docs/changes/260925/mm.md`）就是这个缺失的一个表现：
+一页还在被硬件走的页表和一段空闲内存在 bootmem 眼里没有区别，于是被发了第二次。
+
+**原因**
+交接是单向的、一次性的：physboot 做完 `snapshot()` 就没了，内核之后再想问「这段保留内存是干什么的」
+没有对象可问。**信息必须跟着范围一起过河**，否则就永久丢失。原来过河的只有「被占了」这一个比特。
+
+Zircon 的 `memalloc::Type`（`kernel/phys/lib/memalloc/include/lib/memalloc/range.h`）就是干这件事的，
+三十多个取值：`kKernelPageTables`、`kDataZbi`、`kVdso`、`kUserboot`、`kBootMachineStack`、
+`kPhysScratch`…… 内核侧 `PmmNode::InitReservedRange()` 按类型分流：
+
+```cpp
+if (range.type == memalloc::Type::kKernelPageTables) {
+    ArchVmAspace::HandoffPageTablesFromPhysboot(&reserved);
+    return;
+}
+for (auto& p : reserved) {
+    p.set_state(vm_page_state::WIRED);
+}
+```
+
+ours 之前没有这一层，所以连「把这批帧标成 MMU」都无从下手——不知道哪些是。
+
+**改法**
+一个枚举而不是「一个 bool 加一个用途」：两个字段会互相矛盾，而 `Free` 作为枚举的一个取值之后，
+一段内存不可能既是空闲的又是页表。零值故意是 `Unknown` 而不是 `Free`——没被写过的字节读出来是
+「保留、用途未记录」，这是错也要错在安全那一侧。
+
+改动前：
+
+```cpp
+struct MemRange final {
+    Range range{};
+    bool used{};
+};
+
+struct PhysicalMemoryStorage final {
+    ustl::views::Span<MemoryRegion> usable{};
+    ustl::views::Span<Range> reservations{};
+};
+```
+
+改动后：
+
+```cpp
+enum class MemoryType : u8 {
+    Unknown, Free, FirmwareReserved, Peripheral, PhysImage, BootPackage,
+    KernelImage, PageTable, Handoff, KernelData, Transient, PageAllocator,
+};
+
+struct Reservation final {
+    Range range{};
+    MemoryType type{MemoryType::Unknown};
+};
+
+struct MemRange final {
+    Range range{};
+    MemoryType type{MemoryType::Unknown};
+
+    [[nodiscard]]
+    constexpr auto used() const -> bool {
+        return type != MemoryType::Free;
+    }
+};
+```
+
+每个取值都有真实的保留点，没有预留的空项：`PhysImage`（physload 自己和它加载的模块）、
+`BootPackage`（OBI 容器）、`KernelImage`（physboot 放下的内核镜像）、`PageTable`
+（phys 建的、内核继续走的那些表）、`Handoff`（交接结构和跳转蹦床）、
+`FirmwareReserved` / `Peripheral`（固件说的非 RAM 和 MMIO）、`KernelData`
+（节点/zone 描述符、帧 memmap，终生保留）、`Transient`（早期占用、之后还给 buddy：
+boot CPU 的临时 per-CPU unit、AP 蹦床缓冲）、`PageAllocator`（交接时给了 buddy 的）。
+
+**`reserve()` 只合并同类型**，因为合并是在声称「这两段可以互换」，而不同用途的两段不可互换——
+把一张页表和紧邻的 phys 镜像并成一条，正好把这次加类型要留住的东西抹掉。代价是保留表条目变多，
+上界从「一条一段连续保留」变成「一条一段同类型连续保留」。
+
+**不同类型的重叠直接回 `AlreadyExists`**，不静默改写：那意味着两个子系统都认为自己拥有这段，
+是调用者的 bug；悄悄挑一个赢家正是信息丢失的方式。
+
+**踩到的坑（重要）**：第一版 `reserve()` 沿用了原来「先定位插入点，再向后吞并」的写法，
+遇到不同类型就 `break`。这会破坏保留表的**有序性**：已有 `[0x1000,0x2000)` Peripheral，
+再 `reserve([0x2000,0x3000), PageTable)`，定位到下标 0（它的 `end()` 不小于新 base），
+吞并循环第一眼就是不同类型且不重叠 → break → `erase_count == 0` → 把新条目插在下标 0，
+于是表变成 `[0x2000..) , [0x1000..)`。而 `find_free()`、`snapshot()`、`visit()` 全都假定升序并在
+「`reserved.base >= end`」处 `break`——顺序错了不是变慢，是给出错误答案。实测表现是内核在
+`init_platform_early()` 里静默挂死，连 panic 都没打出来。
+
+所以改成三步：先把同类型的邻居吞并成 `merged`（循环到不再增长，和 `add_usable()` 同一个形状，
+因为吞掉一个可能让下一个进入射程）；再检查有没有不同类型与 `merged` 重叠；最后按 `merged.base`
+插到保持有序的位置。插入点必须由 `merged` 算，不能由入参 `range` 算——吞并可能把 base 往下移了。
+`replace_reservation()` 没有调用者了，删掉。
+
+**`retire_bootmem()` 跟着改**。它上一条改动里是「一条保留盖住 `[min_address, max_address)`」，
+在有类型之后这条会与 phys 镜像、页表、固件空洞全部重叠，被新的 `reserve()` 正确地拒绝。
+改成逐段：反复取 free 视图的第一段并把它保留成 `PageAllocator`，直到没有。不能边走边保留——
+保留会改变遍历器还能看到什么。类型选 `PageAllocator` 而不是 `KernelData`，是因为这批帧的事实就是
+「buddy 拥有了」，而这正是内核在河对岸要读的东西。
+
+**`EarlyMem::allocate()` 的类型参数不给默认值**，四个重载都要显式传。默认值会变成「没人选过的那个值」，
+而加类型的全部意义就是河对岸问不到——一个不说自己是什么的分配点，就是一段永远无法再被描述的内存。
+
+**参照**
+`memalloc::Type` 与 `PmmNode::InitReservedRange()`，见上。一处刻意的不同：Zircon 的
+`InitReservedRange()` 是**让 PMM 先拥有全部 RAM，再把保留区从 PMM 里分配出来**
+（`pmm_alloc_range()`），所以它根本没有「交接」这一步，也就没有两个主人的可能。ours 目前还是
+bootmem 先持有、交接给 buddy 的形状，`PageAllocator` 这个类型是在现有形状里把交接说清楚；
+要不要改成 Zircon 那个顺序是后面的事，本条没有动它。
+
+**验证**
+- `out/bringup.x86`、`out/numa.x86` 两个配置全量构建通过。
+- `out/numa.x86`（`NUMA=1`，8 CPU，四节点）：7 个 AP 全部 online，shell 六组检查全过
+  （channel / handle transfer / handle quota / bad-pointer / vmo_read / libc），进程正常销毁，
+  无 fault / panic / 断言失败。`Released 16 regions, 255666 frames (998 MiB)`。
+- `out/bringup.x86`：六组检查全过，正常销毁，无回归。
+- 行为应当完全不变（类型只是被记录和搬运，还没有人按它分支），两个镜像的日志与上一条一致。
+- `kernel/phys/lib/bootmem/test/physical_memory_smoke.cpp` 和
+  `kernel/phys/lib/multiboot/test/memory_map_smoke.cpp` 跟着改了。前者在本 checkout 里
+  **单独编译不过**（`error: "No thread API"`、`ours/types.hpp` 里一片 unknown type），
+  是它自己的编译参数问题，与本改动无关，而且它不在任何配置的默认目标里；后者在默认构建里，通过。
+
+**故意没做**
+- **没有让任何人按类型分支**。内核这一步只是把类型收下并存进自己的 bootmem，
+  `init_memmap` 仍然一律 `mark_reserved()`。按类型给帧打 `Role`（`PageTable` → MMU，
+  `Transient` → 可以还给 buddy，`KernelData` → 永久占用）是下一条，单独验证。
+- 没有把 `Unknown` 做成编译错误。现在已经没有产生 `Unknown` 的调用点，但它得留着，
+  因为零初始化的字节必须读出「保留」而不是「空闲」。
+- 没有给 `PhysicalMemory` 加按类型查询的接口。等第一个真正要按类型走的消费者出现再加，
+  否则形状是猜的。
+- 没有动 bootmem 先持有、再交给 buddy 的整体顺序（见「参照」）。
