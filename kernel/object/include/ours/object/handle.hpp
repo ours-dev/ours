@@ -106,9 +106,21 @@ class Handle final {
     /// A new handle to |dispatcher|, as one more holder of it.
     static auto make(ustl::Arc<Dispatcher> kernel_handle, Rights rights) -> ustl::Box<Self>;
 
-    /// A second handle to the same object, with |rights| -- which the caller
-    /// has already checked are no more than |kernel_handle| grants.
-    static auto clone(Self *kernel_handle, Rights rights) -> ustl::Box<Self>;
+    /// A second handle to the object |source| names, with |rights| -- which
+    /// the caller has already checked are no more than |source| grants --
+    /// charged to the current process. Empty when that process is at its
+    /// quota or the arena is exhausted.
+    ///
+    /// |source| must still be in its table, under that table's lock, for the
+    /// whole call: the clone takes its reference to the object from |source|,
+    /// and a close in between destroys |source| and gives its slot back to
+    /// the arena, where a new handle -- possibly to another object -- may
+    /// already live. Reading its object then would clone a freed handle's, or
+    /// a stranger's. And had |source| been the object's last handle, that
+    /// close would also have run on_zero_handles(), which the clone would
+    /// then contradict. HandleTable::duplicate() is the caller that honours
+    /// this.
+    static auto clone(Self *source, Rights rights) -> ustl::Box<Self>;
 
     /// The live handle whose base value is |base_value|, if there is one.
     ///

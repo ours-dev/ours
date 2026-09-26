@@ -31,4 +31,31 @@ auto sys_handle_close(HandleValue const handle) -> Status {
     }
     return Status::Ok;
 }
+
+/// The checks and the copy are the table's (HandleTable::duplicate(), under
+/// its lock); this handler does the out-parameter in the order of design
+/// 4.1: the new handle's value is worked out and written to the program
+/// first, and the handle goes into the table only after that write has
+/// worked. A write that faults drops the duplicate here, after every lock,
+/// and nothing was ever visible -- sys_channel_create() publishes its two
+/// ends the same way.
+///
+/// Zircon does it the other way round: its handler adds the handle and
+/// returns the value, and the generated wrapper copies it out afterwards;
+/// when that copy fails the handle is already in the table, so the wrapper
+/// raises a HANDLE_LEAK policy exception on the thread
+/// (kernel-wrappers.inc.tmpl). Writing first leaves nothing to leak.
+auto sys_handle_duplicate(HandleValue const handle, Rights const rights,
+                          user_copy::UserOutPtr<HandleValue> const out) -> Status {
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+    ustl::Box<object::Handle> duplicate;
+    if (auto const status = table.duplicate(handle, rights, &duplicate); status != Status::Ok) {
+        return status;
+    }
+    if (auto const status = out.copy_to_user(table.value_of(*duplicate)); status != Status::Ok) {
+        return status;
+    }
+    static_cast<void>(table.add(ustl::move(duplicate)));
+    return Status::Ok;
+}
 } // namespace ours

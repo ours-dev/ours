@@ -344,9 +344,9 @@ auto Handle::make(ustl::Arc<Dispatcher> kernel_handle, Rights const rights) -> u
     return emplace(*base_value, ustl::move(kernel_handle), rights, ustl::move(account));
 }
 
-auto Handle::clone(Self *const kernel_handle, Rights const rights) -> ustl::Box<Self> {
-    DEBUG_ASSERT(kernel_handle);
-    DEBUG_ASSERT(kernel_handle->has_rights(rights), "a clone may not widen its source's rights");
+auto Handle::clone(Self *const source, Rights const rights) -> ustl::Box<Self> {
+    DEBUG_ASSERT(source);
+    DEBUG_ASSERT(source->has_rights(rights), "a clone may not widen its source's rights");
     auto refused = false;
     auto account = charge_current(&refused);
     if (refused) {
@@ -359,7 +359,7 @@ auto Handle::clone(Self *const kernel_handle, Rights const rights) -> ustl::Box<
         }
         return ustl::Box<Self>();
     }
-    return emplace(*base_value, kernel_handle->m_dispatcher, rights, ustl::move(account));
+    return emplace(*base_value, source->m_dispatcher, rights, ustl::move(account));
 }
 
 auto Handle::from_base_value(u32 const base_value) -> Self * {

@@ -8,4 +8,9 @@ namespace ou {
 auto handle_close(ours::HandleValue const handle) -> ours::Status {
     return ours_handle_close(handle);
 }
+
+auto handle_duplicate(ours::HandleValue const handle, ours::Rights const rights,
+                      ours::HandleValue *const out) -> ours::Status {
+    return ours_handle_duplicate(handle, rights, out);
+}
 } // namespace ou

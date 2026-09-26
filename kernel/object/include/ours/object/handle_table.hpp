@@ -110,6 +110,13 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
         return Status::Ok;
     }
 
+    /// A second handle to the object |value| names, with |rights|, into
+    /// |out|, for handle_duplicate; see the definition. The duplicate is in
+    /// no table yet: the caller works out its value (value_of()), copies it
+    /// to the program, and only then add()s it.
+    [[nodiscard]]
+    auto duplicate(HandleValue value, Rights rights, ustl::Box<Handle> *out) -> Status;
+
     /// Starts |observer| watching the object |value| names for |signals|,
     /// provided the handle grants Wait, and reports the object in |object| so
     /// the caller can stop watching later.

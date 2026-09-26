@@ -26,6 +26,7 @@
 /// this program makes sure it is there and right.
 
 #include <ours/process_args.hpp>
+#include <ours/rights.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
@@ -980,6 +981,99 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
         static_cast<void>(ou::debug_line("shell: bootfs checks FAILED"));
     }
 }
+
+/// handle_duplicate: a second handle to the same object, never with more
+/// rights than the first.
+///
+/// What needs no particular object runs in every image: a value that names
+/// nothing, and a channel, which is never made with Duplicate. What needs one
+/// runs on the BootFS, which only the shell the kernel starts holds: a copy
+/// reads what the original reads; a right the original lacks, or SameRights
+/// with a right beside it, is refused; a copy without Read cannot vmo_read;
+/// and an out pointer the kernel cannot write gives no handle -- checked by
+/// failing more times than the quota allows and then succeeding once.
+auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
+    using ours::Rights;
+    using ours::Status;
+
+    auto ok = true;
+    ours::HandleValue copy = ours::HANDLE_INVALID;
+    ok &= expect("shell: handle_duplicate(HANDLE_INVALID) = ",
+                 ou::handle_duplicate(ours::HANDLE_INVALID, Rights::SameRights, &copy),
+                 Status::BadHandle);
+
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        return;
+    }
+    ok &= expect("shell: handle_duplicate(a channel) = ",
+                 ou::handle_duplicate(a, Rights::SameRights, &copy), Status::AccessDenied);
+    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+
+    if (bootfs == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: handle_duplicate on a VMO skipped (no BootFS)"));
+    } else {
+        // Same rights: both read the same header.
+        ok &= expect("shell: handle_duplicate(bootfs, SameRights) = ",
+                     ou::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
+        bootfs::Header original{};
+        bootfs::Header copied{};
+        ok &= expect("shell: vmo_read(original) = ",
+                     ou::vmo_read(bootfs, &original, 0, sizeof(original)), Status::Ok);
+        ok &= expect("shell: vmo_read(copy) = ", ou::vmo_read(copy, &copied, 0, sizeof(copied)),
+                     Status::Ok);
+        ok &= copy != bootfs && same_bytes(&original, &copied, sizeof(original)) &&
+              original.magic == bootfs::Header::MAGIC;
+        ok &= expect("shell: close(copy) = ", ou::handle_close(copy), Status::Ok);
+
+        // Never wider: the BootFS is handed out without Write, and bit 31
+        // beside another right is not "the same rights".
+        ok &= expect("shell: handle_duplicate(bootfs, Write) = ",
+                     ou::handle_duplicate(bootfs, Rights::Write, &copy), Status::InvArgs);
+        ok &= expect("shell: handle_duplicate(bootfs, SameRights | Read) = ",
+                     ou::handle_duplicate(bootfs, Rights::SameRights | Rights::Read, &copy),
+                     Status::InvArgs);
+
+        // Narrower: without Read, the copy cannot be read through.
+        ours::HandleValue unreadable = ours::HANDLE_INVALID;
+        ok &= expect("shell: handle_duplicate(bootfs, without Read) = ",
+                     ou::handle_duplicate(bootfs, Rights::Basic | Rights::Map, &unreadable),
+                     Status::Ok);
+        u8 byte = 0;
+        ok &= expect("shell: vmo_read(the copy without Read) = ",
+                     ou::vmo_read(unreadable, &byte, 0, 1), Status::AccessDenied);
+        ok &= expect("shell: close(the copy without Read) = ", ou::handle_close(unreadable),
+                     Status::Ok);
+
+        // The out pointer is written before the handle is published: one the
+        // kernel cannot write fails the call, and leaves no handle behind.
+        // InvArgs alone would not show that -- a kernel that published first
+        // and failed the copy afterwards answers the same, with the handle
+        // left in the table. So fail one more time than this process may hold
+        // handles, then succeed once: had any failure left its duplicate
+        // behind, charged to this process, the quota would be used up by now
+        // and the last call would answer NoResource.
+        auto leaked = false;
+        for (u32 i = 0; i < ours::HANDLE_MAX_PER_PROCESS + 1 && !leaked; ++i) {
+            leaked = ours_handle_duplicate(bootfs, Rights::SameRights,
+                                           reinterpret_cast<ours::HandleValue *>(KERNEL)) !=
+                     Status::InvArgs;
+        }
+        ok &= expect("shell: handle_duplicate(out = kernel half), past the quota = ",
+                     leaked ? Status::InternalError : Status::InvArgs, Status::InvArgs);
+        ok &= expect("shell: handle_duplicate(bootfs) after that = ",
+                     ou::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
+        ok &= expect("shell: close(copy) = ", ou::handle_close(copy), Status::Ok);
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: handle_duplicate checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: handle_duplicate checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -1009,6 +1103,7 @@ auto main(int, char **) -> int {
     check_bad_pointers(runtime::vdso_base());
     check_vmo_read();
     check_bootfs(bootfs, runtime::vdso_base());
+    check_handle_duplicate(bootfs);
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
 
     static Registry registry;

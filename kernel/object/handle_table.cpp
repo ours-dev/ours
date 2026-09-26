@@ -139,6 +139,48 @@ auto HandleTable::remove_for_transfer(HandleValue const *const values, u32 const
     return status;
 }
 
+/// Checks, in Zircon's order (handle_dup_replace(), lib/syscalls/
+/// handle_ops.cc), and answers with the first that fails:
+///
+///   BadHandle     |value| names no handle in this table;
+///   AccessDenied  the handle lacks Duplicate;
+///   InvArgs       |rights| asks for a right the handle does not have;
+///   NoResource    the calling process is at its handle quota, or the arena
+///                 is full.
+///
+/// Rights::SameRights means "the handle's own rights", and only as the whole
+/// word: SameRights | Read is not "the same, plus Read" but a request for
+/// bit 31, which no handle has, and fails the subset test like any other
+/// right the handle lacks. Asking for exactly the handle's rights, or for
+/// none at all, is allowed.
+///
+/// Under this table's lock from the lookup to the clone, as Zircon holds
+/// its table lock across the same span: the clone takes its reference to
+/// the object from the source handle, which must not be closed in between
+/// (Handle::clone()). The clone takes the arena's lock inside this one --
+/// table, then arena -- and the arena's lock takes nothing further.
+auto HandleTable::duplicate(HandleValue const value, Rights rights, ustl::Box<Handle> *const out)
+    -> Status {
+    Guard guard{m_lock};
+    auto *const source = lookup_locked(value);
+    if (source == nullptr) {
+        return Status::BadHandle;
+    }
+    if (!source->has_rights(Rights::Duplicate)) {
+        return Status::AccessDenied;
+    }
+    if (rights == Rights::SameRights) {
+        rights = source->rights();
+    } else if (!source->has_rights(rights)) {
+        return Status::InvArgs;
+    }
+    *out = Handle::clone(source, rights);
+    if (!*out) {
+        return Status::NoResource;
+    }
+    return Status::Ok;
+}
+
 auto HandleTable::attach_observer(HandleValue const value, SignalObserver *const observer,
                                   Signals const signals, ustl::Arc<Dispatcher> *const object)
     -> Status {
