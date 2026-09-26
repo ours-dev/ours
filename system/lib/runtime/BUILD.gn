@@ -36,3 +36,39 @@ group("tests") {
   testonly = true
   public_deps = [ "test:process_args($host_toolchain)" ]
 }
+
+# The start-up code: the entry point every user program that links this
+# gets (_start, src/crt0.S), and what it runs before main and after.
+#
+# User programs only. Not in the host toolchain (keyed on is_host_toolchain,
+# since toolchain_environment reads "user" there) nor the kernel ones:
+# _start, a system call through ou, and a main to call exist only in a ring-3
+# program. Not yet a default dependency of user_executable() either: every
+# program still defines its own _start, which this one would collide with.
+# init, the shell and fault_probe move to main together (design K14);
+# userboot keeps its own _start until it becomes a launcher (U8).
+if (!is_host_toolchain && toolchain_environment == "user") {
+  source_set("runtime") {
+    sources = [
+      "src/crt0.S",
+      "src/start.cpp",
+    ]
+    public_deps = [
+      ":process_args",
+      ":start.headers",
+    ]
+    deps = [ "//system/lib/ou" ]
+    visibility = [ "*" ]
+  }
+
+  # main.hpp in particular must stay out of anything built hosted, where
+  # declaring main extern "C" is an error.
+  cpp_interface("start.headers") {
+    public = [
+      "include/runtime/main.hpp",
+      "include/runtime/startup.hpp",
+    ]
+    public_deps = [ ":headers" ]
+    visibility = [ ":*" ]
+  }
+}

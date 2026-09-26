@@ -100,3 +100,101 @@ constexpr auto handle_info(HandleType const type, u16 const arg) -> u32 {
 - `runtime::take_startup_handle` 这个全局入口：同上，它需要一张全局的表，随启动代码一起加。
 - bump 分配器：设计把它列在 runtime 里，第一个使用者是 I1 的 init，到那时再加。
 - 解码器不检查各段是否互相重叠（例如字符串段压在 handle_info 上）：编码器从不这样写，而重叠本身不会让读越界；Zircon 两个解码器也都不查。
+
+## runtime 的启动代码：`_start` → 读 processargs → `main` → `process_exit`（2026-09-26）
+
+**文件**
+- `system/lib/runtime/src/crt0.S` — 新增：`_start`（x86-64）与 `runtime_call_main`
+- `system/lib/runtime/src/start.cpp` — 新增：`runtime_start()`，以及 `take_startup_handle()`、`process_args()`、`vdso_base()`
+- `system/lib/runtime/include/runtime/main.hpp`、`startup.hpp` — 新增：`main` 的 C 名字声明；启动之后的查询接口与 `EXIT_START_FAILED`
+- `system/lib/runtime/BUILD.gn` — 只在用户工具链里定义的 `source_set("runtime")` 与 `start.headers`
+- `system/lib/runtime/test/runtime_smoke.cpp`、`test/BUILD.gn`、`BUILD.gn` — 只链接、不运行的冒烟程序，进默认构建
+- `docs/design/260923/userspace-interface.md` — 3.6：`ou::take_startup_handle` 改为 `runtime::take_startup_handle`
+- `docs/design/260924/userspace-filesystem.md` — K14：写明 runtime 会关掉 bootstrap、会先等消息，以及 init 今天的写入顺序
+- `docs/repairs/260926/runtime.md` — 新增第 1 条：没有人执行 `.init_array`
+
+**症状**
+无，新功能。设计步骤 U2 的后半：有了格式和解码器，还要有一段"在 main 之前运行"的代码去读消息、调 main；今天每个程序都手写自己的 `_start`。
+
+**原因**
+这一节的学习价值在 crt0 该做的几件事，以及为什么 `main` 必须由汇编来调。
+
+- **栈对齐**：内核进入程序时 `rsp` 对 16 取余是 8（设计 3.4，等于"刚被 call 进来"）。`_start` 在第一次 call 之前把它对齐到 16，
+  被调函数才能拿到 ABI 要求的栈。今天程序用 `-mno-sse` 编译，对齐错了也不出事，但打开 SSE 那天就会在 `movaps` 上出错。
+- **`rbp` 清零**：按帧指针回溯的代码看到 0 就停，`_start` 是最外层。
+- **`main` 由汇编调**：C++ 规定程序不得调用 `main`（[basic.start.main]）。而且用户程序是 `-ffreestanding` 编译的，对编译器来说 `main`
+  只是普通函数，名字会被修饰成 `_Z4mainiPPc`，汇编里的 `main` 找不到它。所以 runtime 提供 `<runtime/main.hpp>`，把 `main` 声明为
+  `extern "C"`，程序在定义 `main` 的文件里包含它；真正的调用在 `crt0.S` 的 `runtime_call_main` 里，一条 `jmp main`。Zircon 的程序是
+  hosted 编译，`main` 不会被修饰，它的 `crt1.S` 直接写 `main` 就行；hosted 下把 `main` 声明成 `extern "C"` 反而是错误（-Wmain），
+  所以这个头不能进宿主构建。
+- **argv 放在哪**：argv 里的每个指针都指向消息里的字符串，所以消息缓冲必须活到进程结束——放在静态区。argv 指针数组放在
+  `runtime_start()` 自己的栈帧上（`__builtin_alloca`），这个帧永不返回，main 运行期间一直有效。旧版 Zircon 的 `__libc_start_main`
+  也是把 argv 放在启动帧的变长数组里。最坏情况是一条 4 KiB 的消息全是空串，约 4060 个指针、32 KiB，在 64 KiB 的栈里放得下。
+- **全局变量为什么是 `constinit`**：没有任何代码执行 `.init_array`（加载器不做，runtime 也还没做），需要构造函数的全局对象会停留在零值、
+  且不报错。`constinit` 让编译器保证 runtime 自己的全局变量都是常量初始化的。程序的全局变量没有这层保护，记为待修项。
+
+**改法**
+改前：每个程序自己写 `extern "C" [[noreturn]] auto _start(HandleValue bootstrap, VirtAddr vdso_base) -> void`，自己约定 `bootstrap` 是什么。
+
+改后，入口：
+
+```asm
+_start:
+    xorl %ebp, %ebp
+    andq $-16, %rsp
+    call runtime_start
+    ud2
+
+runtime_call_main:
+    jmp main
+```
+
+`runtime_start()`（节选）：
+
+```cpp
+    runtime::vdso = vdso_base;
+    if (bootstrap != ours::HANDLE_INVALID) {
+        runtime::read_processargs(bootstrap);   // wait, read, close, parse, fill the handle table
+    }
+    auto const args = runtime::startup_args.args();
+    auto **const argv =
+        static_cast<char **>(__builtin_alloca(sizeof(char *) * (usize{args.size()} + 1)));
+    ...
+    ou::process_exit(runtime_call_main(static_cast<int>(args.size()), argv));
+```
+
+- **先等再读**：第一版只读一次、读不到就失败，理由是"启动方总是先写消息再启动进程"。审查指出这个前提今天就不成立：init 是先
+  `process_spawn_boot` shell、后写消息（`init.cpp:75-81`），shell 在另一个 CPU 上可能抢先读到空队列。今天 shell 自己处理了
+  ShouldWait，K14 换成 runtime 后这层处理就没了。改为照 Zircon 新版（`ld::ProcessargsBuffer`）先等 READABLE 或 PEER_CLOSED：
+  启动方不写就丢掉自己那端时，等待醒来、读报 PeerClosed，不会挂死；只有启动方一直握着那端又不写，才会一直等——那是启动方的 bug。
+- **读完就关 bootstrap**：照 Zircon。消息是它唯一的用途；程序若要和启动方说话，启动方另给一个 channel 作为启动句柄。
+  后果是对端在 main 运行之前就看到 PEER_CLOSED，K14 迁移 init、shell、fault_probe 时要照顾到（已写进设计 K14 行）。
+- **没有 bootstrap（`rdi` 为 0）也能启动**：设计 3.4 允许；这时没有句柄，argc 为 0，argv 仍是只含结尾 `nullptr` 的合法数组。
+- **启动失败的退出码**：读不到消息或消息不合法，打一行 `runtime: ...` 日志，以 `EXIT_START_FAILED` 退出。第一版取 -1，审查指出 main
+  返回 -1 时经符号扩展正好也是 -1，父进程分不清"main 没跑"和"main 返回了 -1"。改为 `INT32_MIN - 1`，在 int 范围之外，没有任何
+  main 的返回值能得到它。Zircon 在这里直接 panic；这里若制造一个故障，内核会把它当成程序自己的错报告，所以用有序的退出。
+- **`take_startup_handle` 在 runtime 而不在 ou**：设计 3.6 原写作 `ou::take_startup_handle`，同一句又说 runtime 不并进 ou。
+  ou 是"一个系统调用一个具名入口"，这个函数不是系统调用，而是 runtime 自己的簿记，所以改名为 `runtime::take_startup_handle`，设计同步修订。
+- **还没有程序用它**：每个程序都还自己定义 `_start`，把 runtime 设为 `user_executable()` 的默认依赖会重复定义。init、shell、fault_probe
+  在 K14 一起迁移；userboot 要到 U8 变成 launcher 时才迁移（第一版注释写成"K14 全部迁移"，审查指出 userboot 不在其列）。
+
+**参照**
+- 入口：Zircon `sdk/lib/c/startup/crt1.S`（`_start` 把 `main` 的地址交给 `__libc_start_main`）、musl `ldso/dynlink` 的 x86-64 入口
+  `dl-entry.S`（`and $-16,%rsp`、清 `rbp` 后再 call）。
+- 读消息：Zircon `sdk/lib/ld/include/lib/ld/processargs.h` 的 `ProcessargsBuffer`（先等 READABLE）、`sdk/lib/c/startup/processargs-get-handles.cc`
+  （读完关掉 bootstrap）；旧版 `__libc_start_main.c`（argv 在启动帧的变长数组里，调 `exit(main(argc, argv, envp))`）。
+
+**验证**
+- 冒烟程序 `runtime_smoke` 链接通过；`llvm-readelf`/`llvm-objdump` 检查：入口地址就是 `_start`；`main` 是本地符号、以 C 名字在同一次链接里
+  解析，`runtime_call_main` 是一条 `jmp main`；没有 `.rela.plt`，只有 vDSO 导入的 GLOB_DAT，与其他程序相同；没有 `.init_array`；
+  `runtime_start` 里的顺序是 `object_wait_one` → `channel_read` → `handle_close` → `ProcessArgs::parse`。
+- 两个镜像构建、启动，日志不变：dev `init: shell closed its channel`，dbg_1 `shell: probes done (11 killed, 0 survived)`。
+- **未实测**：`_start` 到 `main` 这条路径还没有真正运行过——没有程序使用 runtime，内核也还不发 processargs。第一次运行在 K14。
+- 审查：三个方向（入口 ABI 与汇编、`runtime_start` 的每条路径、构建与文档）并行审查、逐条反驳核实。成立的四条都已在本提交处理：
+  不等待的前提今天就不成立（init 先 spawn 后写）；退出码 -1 与 main 的 -1 撞车；BUILD.gn 注释漏了 userboot 要到 U8 才迁移；
+  设计 K14 行对 init 那条日志的说法不准（它今天是 shell 主动关 bootstrap 时触发的，并不表示 shell 退出了）。
+
+**故意没做**
+- 执行 `.init_array`：记为 `docs/repairs/260926/runtime.md` 第 1 条。今天没有程序有它；做它需要先查清链接器提供边界符号的条件。
+- `environ` 指针数组与 `getenv`：没有使用者；环境变量经 `runtime::process_args().environ()` 读。
+- 未被认领的启动句柄保持打开，与 Zircon 一样；何时关掉只有程序自己知道。

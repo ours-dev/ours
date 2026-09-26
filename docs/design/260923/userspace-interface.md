@@ -312,7 +312,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
   1. `system/public/ours`：ABI 头。
   2. `system/lib/ou`：每个系统调用一个具名入口；P1 加 RAII 类型。
   3. `system/lib/libc`：把 `kernel/lib/libc/string.cpp` 挪过来，内核与用户共用，并补齐只声明未定义的函数（`docs/repairs/260919/libc.md`）。
-  4. `system/lib/runtime`（新建）：汇编 crt0、processargs 解析、`ou::take_startup_handle(HandleType, u16)`、bump 分配器、调 main，main 返回后调 process_exit。它不并进 ou，因为 ou 的约定是“一个调用一个入口”。
+  4. `system/lib/runtime`（新建）：汇编 crt0、processargs 解析、`runtime::take_startup_handle(HandleType, u16)`（2026-09-26 由 `ou::` 改名：它不是系统调用，是 runtime 自己的簿记）、bump 分配器、调 main，main 返回后调 process_exit。它不并进 ou，因为 ou 的约定是“一个调用一个入口”。
   5. `system/lib/elfload`（Binder 与 Loader 算法，去掉对内核 logz4 胶水的依赖）、`system/lib/bootfs`、`system/lib/launch`。
   6. 程序：userboot、init、shell。`user_executable()` 默认链接 runtime 和 libc。
 

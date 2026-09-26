@@ -12,3 +12,14 @@ executable("process_args") {
   ]
   visibility = [ "*" ]
 }
+
+# A user program on the runtime, built only to be linked and inspected; see
+# runtime_smoke.cpp. User toolchain only, like the runtime itself.
+if (!is_host_toolchain && toolchain_environment == "user") {
+  import("//system/user_executable.gni")
+
+  user_executable("runtime_smoke") {
+    sources = [ "runtime_smoke.cpp" ]
+    deps = [ "//system/lib/runtime" ]
+  }
+}
