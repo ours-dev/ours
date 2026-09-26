@@ -163,17 +163,6 @@ auto answer_bootstrap(ours::HandleValue const bootstrap) -> bool {
     return true;
 }
 
-/// |value| in decimal, into |buffer|. By hand: the C library here is mem*
-/// and strlen, with nothing that formats a number.
-auto decimal(u32 value, char (&buffer)[10]) -> ou::Str {
-    auto at = sizeof(buffer);
-    do {
-        buffer[--at] = static_cast<char>('0' + value % 10);
-        value /= 10;
-    } while (value != 0);
-    return {buffer + at, sizeof(buffer) - at};
-}
-
 /// How one fault_probe run ended, from this side of its answer channel.
 struct ProbeRun {
     /// Started at all; false when making the channels or the process failed,
@@ -328,8 +317,8 @@ auto run_probes(ours::HandleValue const job) -> void {
     char killed_text[10];
     char survived_text[10];
     static_cast<void>(
-        ou::debug_line({"shell: probes done (", decimal(killed, killed_text), " killed, ",
-                        decimal(survived, survived_text), " survived)"}));
+        ou::debug_line({"shell: probes done (", ou::decimal(killed, killed_text), " killed, ",
+                        ou::decimal(survived, survived_text), " survived)"}));
 
     constexpr ou::Str CONTROL{"none"};
     auto const control = run_probe(job, CONTROL);
@@ -538,7 +527,7 @@ auto check_handle_quota() -> void {
     auto ok = expect("shell: channel_create past the quota = ", status, Status::NoResource);
     char count_text[10];
     static_cast<void>(ou::debug_line(
-        {"shell: ", decimal(count / 2, count_text), " channels made before the quota"}));
+        {"shell: ", ou::decimal(count / 2, count_text), " channels made before the quota"}));
 
     if (count >= 2) {
         ok &= ou::handle_close(made[count - 1]) == Status::Ok;

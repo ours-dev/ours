@@ -65,4 +65,13 @@ auto debug_line(std::initializer_list<Str> const pieces) -> Status {
 auto debug_line(Str const text) -> Status {
     return debug_line({text});
 }
+
+auto decimal(u32 value, char (&buffer)[10]) -> Str {
+    auto at = sizeof(buffer);
+    do {
+        buffer[--at] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value != 0);
+    return {buffer + at, sizeof(buffer) - at};
+}
 } // namespace ou

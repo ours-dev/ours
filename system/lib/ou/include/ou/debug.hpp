@@ -39,6 +39,15 @@ auto debug_line(std::initializer_list<Str> pieces) -> ours::Status;
 
 /// debug_line() of a single piece.
 auto debug_line(Str text) -> ours::Status;
+
+/// |value| in decimal, written into |buffer| and returned as the piece that
+/// holds it, for a debug_line: `ou::debug_line({"made ", decimal(n, text)})`.
+///
+/// Ten characters is every u32. The caller owns the buffer, so the Str stays
+/// valid as long as the line being built does, with nothing allocated. Here
+/// because there is nothing else to format a number with: the C library a
+/// program links is mem* and strlen (//system/lib/libc), with no printf.
+auto decimal(u32 value, char (&buffer)[10]) -> Str;
 } // namespace ou
 
 #endif // #ifndef OU_DEBUG_HPP

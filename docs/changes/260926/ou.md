@@ -52,3 +52,41 @@ dev `init: shell closed its channel`，dbg_1 `shell: probes done (11 killed, 0 s
 **故意没做**
 - `check_bad_pointers()` 仍直接调 vDSO：它要让坏指针原样到达内核，经过 ou 就多了一层可能碰到指针的代码。
 - `system/lib/ou/README.md` 里"目前内核只有两个系统调用"已经过时，与本改动无关，不在这里顺手改。
+
+## `ou::decimal()`：十进制格式化从 shell 挪进 ou（2026-09-26）
+
+**文件**
+- `system/lib/ou/include/ou/debug.hpp`、`src/debug.cpp` — 新增 `ou::decimal(u32, char (&)[10]) -> Str`
+- `examples/shell/shell.cpp` — 删掉文件内私有的 `decimal()`，三处调用改为 `ou::decimal()`
+
+**症状**
+无，行为不变。K14 的下一个提交里 init 要打印 `init: bootfs has <n> entries`，而把数字变成文字的函数只在 shell 文件里、是私有的。
+
+**原因**
+复制一份给 init 会让同一段代码出现两次，以后改一处忘一处。这个函数本来就是为 `debug_line` 拼行用的——ou 的 `debug_line` 收一组
+`ou::Str`，数字要先变成 `Str` 才能放进去——所以放在 ou 的调试输出旁边。程序链接的 libc 只有 mem* 和 strlen，没有 printf，
+不存在别的现成做法。
+
+**改法**
+改前（`examples/shell/shell.cpp`，文件内私有）：
+
+```cpp
+auto decimal(u32 value, char (&buffer)[10]) -> ou::Str {
+```
+
+改后（`system/lib/ou/include/ou/debug.hpp`）：
+
+```cpp
+auto decimal(u32 value, char (&buffer)[10]) -> Str;
+```
+
+实现原样搬过去。缓冲区由调用方提供，返回的 `Str` 指向它，拼一行的这段时间里一直有效，不分配。
+
+**参照**
+无，本项目自有；Zircon 的程序用 libc 的 printf。
+
+**验证**
+两个镜像构建、启动，用到它的两行与以前逐字相同：dbg_1 `shell: probes done (11 killed, 0 survived)`，两边 `shell: 512 channels made before the quota`。
+
+**故意没做**
+格式化更多类型（有符号、十六进制）：没有使用者。
