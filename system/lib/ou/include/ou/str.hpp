@@ -10,12 +10,13 @@ namespace ou {
 ///
 /// The standard library's spelling of this is std::string_view, and this is
 /// not a preference for a hand-written substitute: it is what a program with
-/// no libc can link. `std::string_view{"text"}` calls strlen() at run time and
-/// its comparisons call memcmp(), and a ring-3 program here is linked
-/// -nostdlib with no libc behind it, so those are undefined symbols rather
-/// than an implementation someone forgot to enable. The day ou ships the
-/// handful of string and memory functions a freestanding libc++ leans on, this
-/// type becomes an alias and the API stops changing shape.
+/// no libc could link. `std::string_view{"text"}` calls strlen() at run time
+/// and its comparisons call memcmp(), and a ring-3 program here was linked
+/// -nostdlib with no libc behind it, so those were undefined symbols. Every
+/// user program now links the functions a freestanding libc++ leans on
+/// (//system/lib/libc, through user_executable()), so the remaining step is
+/// to make this type an alias of std::string_view; the API stops changing
+/// shape then.
 ///
 /// Every entry point in this library takes one of these rather than a
 /// (pointer, length) pair, so a length can never be passed for the wrong

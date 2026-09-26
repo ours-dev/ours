@@ -23,9 +23,10 @@ vDSO         mov $n, %eax; syscall           ← 唯一允许陷入内核的代�
 
 ## 为什么有 `ou::Str` 而不用 `std::string_view`
 
-不是偏好，是链接不上：用户程序 `-nostdlib`，没有 libc；`std::string_view{"text"}` 在运行时
-调 `strlen()`，比较调 `memcmp()`。等本库提供了 freestanding libc++ 依赖的那几个字符串/内存
-函数，`Str` 改成别名，接口形状不变。
+不是偏好，是当初链接不上：用户程序 `-nostdlib`，没有 libc；`std::string_view{"text"}` 在运行时
+调 `strlen()`，比较调 `memcmp()`。现在每个用户程序都链接了 freestanding libc++ 依赖的那几个
+字符串/内存函数（`//system/lib/libc`，由 `user_executable()` 默认带上），剩下的一步是把 `Str`
+改成 `std::string_view` 的别名，接口形状不变。
 
 ## 构建
 

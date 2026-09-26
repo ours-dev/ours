@@ -75,11 +75,10 @@ config("user.headers") {
     # wrapper headers reach these with include_next). Without them the first
     # <utility> a user program sees -- ustl's enum_bits.hpp, through
     # <ours/signals.hpp> -- stops on libc++'s `using ::memcpy` in <cstring>.
-    # The same config the kernel toolchain applies; the headers live in
-    # //system/lib/libc/include, and moving the config beside them is part of
-    # giving user programs a libc (design 3.6). Declarations only: nothing
-    # here defines memcpy for a user program.
-    "//kernel/lib/libc:headers.after",
+    # The same config the kernel toolchains apply, beside the headers it
+    # names. Declarations only: the definitions are //system/lib/libc itself,
+    # which user_executable() links (//system/user_executable.gni).
+    "//system/lib/libc:headers.after",
   ]
   inputs = [ "//kernel/include/ours/prelude.hpp" ]
   cflags_cc = [
@@ -145,10 +144,12 @@ config("user.standalone") {
 }
 
 # A user program: loaded by the kernel, not by a dynamic linker, and with no
-# libc to call into -- a static PIE with the same shape as the kernel image
-# itself. ET_DYN with R_X86_64_RELATIVE relocations is what lets the loader
-# place it at an address it chooses; -static is what keeps a PT_INTERP out of
-# it, since nothing exists that could honour one.
+# crt1.o or C++ runtime to start it -- a static PIE with the same shape as the
+# kernel image itself. Its C library is linked in like any other library
+# (//system/lib/libc, a default dependency of user_executable()). ET_DYN with
+# R_X86_64_RELATIVE relocations is what lets the loader place it at an
+# address it chooses; -static is what keeps a PT_INTERP out of it, since
+# nothing exists that could honour one.
 #
 # Reached through the user toolchain's `executable_configs`, so it lands on
 # executables only (//build/toolchain/ours/BUILD.gn).

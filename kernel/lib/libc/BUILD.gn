@@ -1,29 +1,13 @@
-config("headers.after") {
-  visibility = [ "*" ]
-
-  # libc++ must be searched before the C headers so its wrapper headers can
-  # delegate to this freestanding C surface with include_next.
-  cflags_c = [
-    "-isystem",
-    rebase_path("//system/lib/libc/include", root_build_dir),
-  ]
-  cflags_cc = [
-    "-isystem",
-    rebase_path("//system/lib/libc/include", root_build_dir),
-  ]
-}
-
-source_set("string") {
-  sources = [ "string.cpp" ]
-  visibility = [ "*" ]
-}
-
+# The kernel's C and C++ runtime glue, built on the C library the kernel
+# shares with user programs (//system/lib/libc: the mem* and strlen
+# definitions, and the headers.after config that puts its C headers on the
+# search path).
 source_set("libc") {
   sources = [
     "cpp_dependencies.cpp",
     "libcxx.cpp",
   ]
-  deps = [ ":string" ]
+  deps = [ "//system/lib/libc" ]
   visibility = [ "*" ]
 }
 
@@ -31,6 +15,6 @@ source_set("libc") {
 # their __cxa_* / verbose-abort hooks from kernel/lib/ccrt (the phys images).
 source_set("format-glue") {
   sources = [ "libcxx_format_glue.cpp" ]
-  deps = [ ":string" ]
+  deps = [ "//system/lib/libc" ]
   visibility = [ "*" ]
 }

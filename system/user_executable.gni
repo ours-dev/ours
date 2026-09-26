@@ -102,7 +102,16 @@ template("user_executable") {
     # (:vdso_decls.config) and the edge that orders a program's compiles after
     # its generator come only through a dependency. Without this, every
     # program including <ours/vdso.hpp> fails to find the file.
+    #
+    # //system/lib/libc for mem* and strlen, which the compiler calls on its
+    # own -- a zero-initialised array or a struct copy past its inline limit
+    # -- and libc++ calls from std::string_view. Here rather than in a
+    # toolchain config because a config cannot add a dependency, and rather
+    # than in every program's BUILD.gn because no program chooses to need
+    # it. The vDSO is not a user_executable and so never gets it: it is the
+    # system-call stubs and nothing else, mapped into every process.
     deps = [
+      "//system/lib/libc",
       "//system/public",
       _vdso_label,
     ]

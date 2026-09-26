@@ -25,7 +25,7 @@ conflicting types）；真正按 C 原型链接进来的第三方对象文件会
 ## 2. `<string.h>` 里有一批只声明没定义的函数
 
 `strcpy`、`strncpy`、`strcat`、`strncat`、`strcmp`、`strncmp`、`strchr`、
-`strrchr`、`strstr` 在 `kernel/lib/libc/string.cpp` 里都没有实现，全树也搜不到别处
+`strrchr`、`strstr` 在 `system/lib/libc/src/string.cpp`（2026-09-25 前在 `kernel/lib/libc/string.cpp`）里都没有实现，全树也搜不到别处
 的定义。现在没人用，一旦有人（或某个 libc++ 头的某条路径）用上，是链接期才会暴露
 的错误。
 

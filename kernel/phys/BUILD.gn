@@ -220,7 +220,7 @@ physload_module("physboot") {
     # the compiler open-codes calls to memcpy/memset that must resolve
     # inside the module.  Everything else comes from physload.
     "//kernel/lib/ccrt",
-    "//kernel/lib/libc:string",
+    "//system/lib/libc",
   ]
 }
 

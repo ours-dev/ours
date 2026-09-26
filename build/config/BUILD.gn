@@ -265,7 +265,7 @@ config("default_include_dirs") {
     root_gen_dir,
   ]
   if (is_kernel) {
-    configs = [ "//kernel/lib/libc:headers.after" ]
+    configs = [ "//system/lib/libc:headers.after" ]
   }
 }
 

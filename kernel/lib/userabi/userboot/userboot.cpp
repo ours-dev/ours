@@ -9,10 +9,11 @@
 /// process, map an ELF into it, reach its entry point, and answer a system
 /// call from it.
 ///
-/// Nothing here may reference the C or C++ runtime. There is no libc and no
-/// crt1.o in this image (see //system:user.config): the kernel jumps straight
-/// to the ELF entry point with a stack and nothing else, so `_start` is the
-/// whole runtime. There is no dynamic linker either -- but there are undefined
+/// There is no C++ runtime and no crt1.o in this image (see
+/// //system:user.config): the kernel jumps straight to the ELF entry point
+/// with a stack and nothing else, so `_start` is the whole runtime. The C
+/// library is linked in, as into every user program (mem* and strlen,
+/// //system/lib/libc), and nothing here calls it. There is no dynamic linker either -- but there are undefined
 /// symbols, which the kernel's own loader binds to the vDSO as it maps this
 /// image (//system/user_executable.gni).
 

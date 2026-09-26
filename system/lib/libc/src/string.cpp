@@ -1,7 +1,7 @@
+#include <cstring>
+
 #include <ours/compiler.hpp>
 #include <ours/types.hpp>
-
-#include <cstring>
 
 extern "C" WEAK_LINK
 auto memcpy(void *d, void const *s, size_t n) -> void * {

@@ -17,15 +17,19 @@
 /// per-call size limit, not the symbols the loader binds, not that a trap is
 /// involved at all.
 ///
-/// There is still no C or C++ runtime here: no libc, no crt1.o, no standard
-/// library (see //system:user.config). The kernel jumps straight to the ELF
-/// entry point with a stack and nothing else, so `_start` is the whole
-/// runtime.
+/// There is still no runtime here: no crt1.o and no C++ runtime (see
+/// //system:user.config). The kernel jumps straight to the ELF entry point
+/// with a stack and nothing else, so `_start` is the whole of it. The C
+/// library is the only library code linked in besides ou -- mem* and strlen,
+/// //system/lib/libc -- and check_libc() is where this program makes sure it
+/// is there and right.
 
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
+
+#include <cstring>
 
 #include <ou/channel.hpp>
 #include <ou/command.hpp>
@@ -96,8 +100,9 @@ auto expect(ou::Str const what, ours::Status const got, ours::Status const want)
     return false;
 }
 
-/// Whether the first |length| bytes of |bytes| spell |text|. By hand: there
-/// is no libc in this image to call memcmp from.
+/// Whether the first |length| bytes of |bytes| spell |text|. By hand rather
+/// than with memcmp(), so that check_libc() can check memcmp() and the rest
+/// of the C library with something that does not depend on them.
 auto spells(char const *const bytes, u32 const length, ou::Str const text) -> bool {
     if (length != text.size()) {
         return false;
@@ -155,7 +160,8 @@ auto answer_bootstrap(ours::HandleValue const bootstrap) -> bool {
     return true;
 }
 
-/// |value| in decimal, into |buffer|. By hand: no libc here.
+/// |value| in decimal, into |buffer|. By hand: the C library here is mem*
+/// and strlen, with nothing that formats a number.
 auto decimal(u32 value, char (&buffer)[10]) -> ou::Str {
     auto at = sizeof(buffer);
     do {
@@ -566,6 +572,109 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     }
 }
 
+/// Whether |a| and |b| hold the same |length| bytes, checked by hand for the
+/// same reason as spells().
+///
+auto same_bytes(void const *const a, void const *const b, usize const length) -> bool {
+    auto const *const x = static_cast<u8 const *>(a);
+    auto const *const y = static_cast<u8 const *>(b);
+    for (usize i = 0; i < length; ++i) {
+        if (x[i] != y[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Big enough that copying one is a call to memcpy() rather than inline moves;
+/// the compiler's inline limit for a copy is well under this.
+struct Large {
+    u8 bytes[256];
+};
+
+/// Makes |out| from |seed| through a pointer the compiler cannot see through,
+/// so that neither the copy below nor the value copied can be folded away.
+[[gnu::noinline]]
+auto fill(Large *const out, u8 const seed) -> void {
+    for (usize i = 0; i < sizeof(out->bytes); ++i) {
+        out->bytes[i] = static_cast<u8>(seed + i);
+    }
+}
+
+/// The C library every user program now links (//system/lib/libc): each
+/// function once, with its answer checked by hand.
+///
+/// Two kinds of call, because both used to be link errors. Calls by name,
+/// which under -ffreestanding stay calls whatever their arguments. And calls
+/// the compiler makes on its own: a local array zero-initialised past its
+/// inline limit is a memset(), a large struct copy a memcpy(). Before the
+/// library was linked, writing either in a user program failed to link.
+///
+/// |seed| comes from outside (the vDSO's address), so that nothing below is
+/// a constant the compiler could evaluate instead of calling.
+auto check_libc(u8 const seed) -> void {
+    auto ok = true;
+
+    // By name, with a length the compiler does not know: the check the plan
+    // asks for (design U1).
+    char source[32] = {};
+    for (usize i = 0; i < sizeof(source); ++i) {
+        source[i] = static_cast<char>('a' + (seed + i) % 26);
+    }
+    char copy[32] = {};
+    auto const length = static_cast<usize>(seed % 16) + 8;
+    auto const *const returned = std::memcpy(copy, source, length);
+    ok &= returned == copy && same_bytes(copy, source, length) && copy[length] == 0;
+
+    // Overlap in both directions.
+    char moving[16] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    std::memmove(moving + 2, moving, 8);
+    ok &= spells(moving, 10, "0101234567");
+    std::memmove(moving, moving + 2, 8);
+    ok &= spells(moving, 10, "0123456767");
+
+    // The matching byte itself, not the start of the buffer.
+    ok &= std::memchr(moving, '6', 10) == moving + 6;
+    ok &= std::memchr(moving, 'x', 10) == nullptr;
+
+    // A NUL-terminated word of a length only known at run time.
+    char word[16] = {};
+    auto const letters = static_cast<usize>(seed % 8) + 3;
+    for (usize i = 0; i < letters; ++i) {
+        word[i] = 'w';
+    }
+    ok &= std::strlen(word) == letters;
+
+    // Byte order as unsigned char: 0x80 sorts after 0x01.
+    u8 const high[] = {0x80};
+    u8 const low[] = {static_cast<u8>(seed % 2 + 1)};
+    ok &= std::memcmp(high, low, 1) > 0 && std::memcmp(low, high, 1) < 0;
+    ok &= std::memcmp(source, copy, length) == 0;
+
+    // What the compiler calls on its own. |a| changes after the copy, so
+    // |b| has to be bytes of its own: left unchanged, the compiler reads |a|
+    // wherever |b| is used and drops the copy -- the call this is here for.
+    Large a;
+    fill(&a, seed);
+    Large b = a;
+    fill(&a, static_cast<u8>(seed + 1));
+    Large expected;
+    fill(&expected, seed);
+    ok &= same_bytes(&b, &expected, sizeof(Large));
+    u8 zeroed[256] = {};
+    auto zero = true;
+    for (auto const byte: zeroed) {
+        zero &= byte == 0;
+    }
+    ok &= zero;
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: libc checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: libc checks FAILED"));
+    }
+}
+
 /// vmo_read's refusals: what it says before it looks at a VMO.
 ///
 /// No VMO handle reaches this program yet -- the BootFS arrives with the
@@ -638,6 +747,7 @@ auto _start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -
     check_handle_quota();
     check_bad_pointers(vdso_base);
     check_vmo_read();
+    check_libc(static_cast<u8>(vdso_base >> 20));
 
     static Registry registry;
     auto const status = registry.fetch();
