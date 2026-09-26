@@ -173,3 +173,98 @@ int *const p    // 只读的指针
   最终映射从来不需要可写。这是单独一条，留在待修项里。
 - 没有动 `.gktl.init_hook` 和 `.task.schedules` 这两个可写贡献者。它们的条目里有函数指针，
   同样是重定位的缘故，不是漏加 `const`（两者本来就是 `const`/`constexpr`）。
+
+## 内核把 `.init.rodata` 的映射改成只读（2026-09-26）
+
+**文件**
+- `kernel/mm/include/ours/mm/vmm.hpp` — 新增 `KERNEL_INIT_RODATA_START/END` 两个链接符号声明
+- `kernel/mm/init_vmm.cpp` — 新增 `tighten_init_rodata()`，enrol 每条 handoff 映射时去掉 Write
+- `docs/repairs/260925/mm.md` — 删掉第 3 条
+
+**症状**
+潜伏。`.init.rodata` 这个段名承诺只读，而映射是可写的——physboot 按 PT_LOAD 的 flags 建映射，
+而那个段在 ELF 里是 `WA`。内核的 init hook 表（`.gktl.init_hook`）、计数器描述符和
+调度类注册表（`.task.schedules`）都在里面，运行期可写。没有人写它们，所以今天没有故障；
+值在于把「只读」从命名约定变成硬件保证。
+
+**原因**
+段之所以是 `WA`，是因为里面的条目含指针（init hook 的函数指针、discipline 的 `&INSTANCE`），
+内核是 DYN 镜像，这些是 `R_X86_64_64` 动态重定位，clang 无论对象多 `const` 都必须把段标可写。
+标准的解法是 `PT_GNU_RELRO`，而 lld 只把它认得的段放进 RELRO——这正是 `kernel.ld` 第 98 行
+那条注释说的，所以其它 RELRO 段全被并进了 `.data.rel.ro`。`.init.rodata` 并不进去，
+因为它必须留在 `.init*` 尾巴里让 `reclaim_init_area()` 整段回收。
+
+**但这里不需要 RELRO，这是整条改动的支点。** RELRO 存在的理由是动态链接器要
+**通过它正在修补的那个映射**写重定位。physboot 不是这样：`ElfImage::fix_mapping()` 的契约
+写得很清楚——`relocate()` 已经通过镜像物理页的**恒等映射**跑完了，内核映射是之后才建的。
+所以没有任何人会通过这个地址写这些页，内核完全可以去掉 Write。而且「这个段本该只读」
+这件事只有内核知道。
+
+**改法**
+不是事后 `protect()`，而是在 enrol 每条 handoff 映射时就把权限收紧：
+
+```cpp
+auto const perms = tighten_init_rodata(mapping.perms, mapping.base, mapping.size);
+entrol_preset_vma({
+    .name = name_of(perms),
+    ...
+    .vmaf = vma_flags_of(perms),
+```
+
+因为 `entrol_preset_vma()` 正是用这些 flags 去 `reserve()`（`extract_permissions(vmaf)`），
+所以在这里收紧能让 **VMA 和硬件说同一句话**。事后再 `arch_aspace().protect()` 会留下
+「VMA 说可写、页表说只读」的分裂，那是下一个人要查半天的东西。名字也跟着变成 `k:rodata`。
+
+`ASSERT` 要求映射**整条**落在 `[__init_rodata_start, __init_rodata_end)` 内：两端都被
+`kernel.ld` 的 `ALIGN(MAXPAGESIZE)` 对齐过，physboot 又只映射整页，所以部分重叠意味着这两条
+前提之一不成立了——而「从半条映射里去掉 Write」不是这里能做的事。
+
+**这不是内核在质疑 handoff 清单**：清单如实报告了 physboot 建立了什么，这是内核对**自己的
+数据**做的决定，做在知识所在的地方。改动记录里写明这一点，否则下一个人会以为清单又被绕过了。
+
+**参照**
+无直接对应物。Zircon 的内核镜像保护走
+`VmAspace::ProtectRegion` / `vm_init()` 里对 `__rodata_start` 一类符号的重新保护，
+思路相同（内核按自己知道的语义收紧启动时建立的映射），但它没有「init 尾巴要整段回收」
+这个额外约束，所以不需要在 RELRO 之外另找办法。
+
+**验证**
+- 两个配置构建通过，`out/bringup.x86`、`out/numa.x86` 都启动到 shell 全部检查通过，
+  numa 7 个 AP 全 online，无 fault / panic / 断言失败。
+- `kernel.dev.dbg_1.obi`（断言全开 + trace）也干净，而且那条 VMA 的名字从
+  `k:data` 变成了 `k:rodata`：
+
+```
+A k:code    : [0xFFFFFF88400E0000, 0x9000]
+A k:rodata  : [0xFFFFFF88400E9000, 0x1000]   <- .init.rodata，原来是 k:data
+A k:data    : [0xFFFFFF88400EA000, 0x15000]
+```
+
+- **硬件层面直接验证**：在 QEMU 里用 QMP 读 `CR3`，顺着页表走到 physboot 那一条
+  `.init.rodata` 映射的虚拟地址（同一次启动的 debug 日志里报的是
+  `[0xFFFFFF88400D0000, 0xFFFFFF88400D1000) <- 0x1FDC8000 rw-`）：
+
+```
+CR3=0x1FEDB000
+PML4[0x1FF] = 0x000000001FEBF027  P=1 RW=1
+PDPT[0x21]  = 0x000000001FEBE027  P=1 RW=1
+PD[0x0]     = 0x000000001FEBD027  P=1 RW=1
+PT[0xD0]    = 0x800000001FDC8161  P=1 RW=0
+```
+
+叶级 PTE 是 `0x...161`——P、A、G、NX 都在，**RW 位是 0**。physboot 映射成 `rw-` 的那一页，
+内核起来之后是只读的。
+
+- `reclaim_init_area()` 之后这些帧会还给 buddy（`kernel/top/main.cpp:64`，在
+  `init_platform()` 之后无条件跑），而内核虚拟映射仍在。两个镜像都跑过了这一步并继续启动
+  userboot、跑完 shell，说明重用那些帧的人走 physmap 别名写，不受这个只读映射影响——
+  这条原来在待修项里标着「要实测确认」，现在确认了。
+
+**故意没做**
+- 没有对 `.init.text` 做对应的事。它已经是 `r-x`，physboot 映射出来就是对的。
+- 没有去动 `.init.rodata` 在 ELF 里仍是 `WA` 这件事。那要么需要 lld 支持
+  `(READONLY)`/`INPUT_SECTION_FLAGS`（都不支持），要么需要把段挪出 `.init*` 尾巴
+  （和整段回收冲突）。现在的状态是：ELF 说可写，映射是只读的，理由写在
+  `tighten_init_rodata()` 的注释里。
+- 没有给 `.init.rodata` 之外的段加同类收紧。清单里其它 `rw-` 的段（`.data`、`.bss`、
+  `.init.data`）本来就该可写。

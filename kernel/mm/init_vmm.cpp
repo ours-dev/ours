@@ -145,6 +145,47 @@ namespace {
         return "k:rodata";
     }
 
+    /// `.init.rodata` without the write permission physboot had to map it with.
+    ///
+    /// The section's name promises read-only and the toolchain cannot deliver
+    /// it: its contents hold pointers -- an init hook's function pointer, a
+    /// discipline's &INSTANCE -- so in this DYN image they carry dynamic
+    /// relocations and clang must mark the section writable. The usual cure is
+    /// PT_GNU_RELRO, and lld only applies that to the sections it recognises,
+    /// which is why kernel.ld had to merge every other RELRO section into
+    /// `.data.rel.ro`; `.init.rodata` cannot join them, because it has to stay
+    /// in the `.init*` tail that reclaim_init_area() hands back.
+    ///
+    /// But RELRO is not what this needs. RELRO exists because a dynamic linker
+    /// writes the relocations *through the mapping it is fixing up*. physboot
+    /// does not: ElfImage::fix_mapping()'s contract is that relocate() has
+    /// already run through the identity map of the image's physical pages, and
+    /// the kernel mapping is built afterwards. Nothing ever writes these pages
+    /// through this address, so the kernel is free to drop Write -- and it is
+    /// the only party that knows the section was meant to be read-only.
+    ///
+    /// This is not the kernel second-guessing the handoff list. The list
+    /// reports what physboot mapped, truthfully; this is a decision about the
+    /// kernel's own data, taken where the knowledge is.
+    [[nodiscard]]
+    INIT_CODE
+    auto tighten_init_rodata(phys::MappingPerms const perms, VirtAddr const base,
+                             usize const size) -> phys::MappingPerms {
+        auto const first = VirtAddr(KERNEL_INIT_RODATA_START);
+        auto const last = VirtAddr(KERNEL_INIT_RODATA_END);
+        if (base >= last || first >= base + size) {
+            return perms;
+        }
+        // Whole mappings only. Both ends of the range are page aligned by
+        // kernel.ld and physboot maps whole pages, so a partial overlap would
+        // mean one of those two stopped being true -- and dropping Write from
+        // half a mapping is not something this can do.
+        ASSERT(first <= base && base + size <= last,
+               "a mapping straddles .init.rodata: [0x{:X}, 0x{:X}) vs [0x{:X}, 0x{:X})", base,
+               base + size, first, last);
+        return perms & ~phys::MappingPerms::Write;
+    }
+
     [[nodiscard]]
     INIT_CODE
     auto vma_flags_of(phys::MappingPerms const perms) -> VmaFlags {
@@ -176,11 +217,17 @@ namespace {
         ASSERT(!mappings.empty(), "physboot handed over no kernel mappings");
 
         for (auto const &mapping: mappings) {
+            // The permissions the VMA will carry *and* stamp into the page
+            // tables: entrol_preset_vma() reserves with extract_permissions() of
+            // exactly these flags, so tightening here keeps the VMA and the
+            // hardware saying the same thing. Re-protecting afterwards would
+            // leave the VMA claiming Write on pages that no longer have it.
+            auto const perms = tighten_init_rodata(mapping.perms, mapping.base, mapping.size);
             entrol_preset_vma({
-                .name = name_of(mapping.perms),
+                .name = name_of(perms),
                 .base = mapping.base,
                 .size = mapping.size,
-                .vmaf = vma_flags_of(mapping.perms),
+                .vmaf = vma_flags_of(perms),
                 .backing = PhysVma::Backing::Mapped,
             });
         }

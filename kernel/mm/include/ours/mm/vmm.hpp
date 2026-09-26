@@ -28,6 +28,15 @@ extern char const KERNEL_RELRO_END[] LINK_NAME("__relro_end");
 extern char const KERNEL_INIT_START[] LINK_NAME("__init_start");
 extern char const KERNEL_INIT_END[] LINK_NAME("__init_end");
 
+/// The boot-time data that is only ever read: the init-hook table, the counter
+/// descriptors, the scheduler-discipline registry (kernel.ld's `.init.rodata`).
+///
+/// Both ends are page aligned -- kernel.ld puts an ALIGN(MAXPAGESIZE) on each
+/// side -- which is what lets the range be re-protected without splitting a
+/// mapping; see init_vmm.cpp.
+extern char const KERNEL_INIT_RODATA_START[] LINK_NAME("__init_rodata_start");
+extern char const KERNEL_INIT_RODATA_END[] LINK_NAME("__init_rodata_end");
+
 extern char const KERNEL_BSS_START[] LINK_NAME("__bss_start");
 extern char const KERNEL_BSS_END[] LINK_NAME("__bss_end");
 
