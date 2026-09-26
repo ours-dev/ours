@@ -891,3 +891,83 @@ Linux 把这两件事分给两个各自独立的判据，从来没有合过：`a
 - 没有动 `free_page_table()` 的 `!pmm_enabled()` 早退。判据提前之后它反而更对了：
   窗口里的页表现在本来就来自 buddy，还给 buddy 是对的。
 - 没有碰 `InitStage::Vmm` / `All` 的含义，也没有给它们加判据函数——当前没有调用者按它们分支。
+
+## `do_handoff()` 交接之后把 bootmem 整个封掉，让它再也发不出内存（2026-09-25）
+
+**文件**
+- `kernel/mm/early_mem.cpp` — 新增 `retire_bootmem()`，`EarlyMem::do_handoff()` 在
+  `free_unused_memory()` 之后调用它
+- `docs/repairs/260925/mm.md` — 删掉第 2 条的 (a)
+
+**症状**
+潜伏，当前触发不到。上一条把 `InitStage::Pmm` 提到 `do_handoff()` 后面之后，已经没有
+调用者会在交接之后问 EarlyMem 要内存了。但那是**调用者的性质**，不是 bootmem 的性质：
+下一个在那之后调 `EarlyMem::allocate()` 的人会拿到 buddy 也认为自己拥有的页，
+而且和上次一样安静——不报错、不返回 null，就是两个主人写同一页。
+
+**原因**
+`free_unused_memory()` 把 bootmem 里还标着空闲的区间逐个 `free_frames()` 交给 buddy，
+然后**不动 bootmem 自己的位图**。于是从那一行起，同一批物理页有两个主人，谁先发出去谁赢，
+另一个不知情。这是一次不完整的交接：给出去了，但没有从账上划掉。
+
+这不是假设。`alloc_page_table()` 原来就在这个窗口里从 EarlyMem 拿页表页，
+接下来一个用 `Gaf::Zero` 分配的 per-CPU unit 落在了还在用的叶级页表上把它清零，
+启动在几千条指令之后死在一个 PTE 已经蒸发的虚拟地址上
+（见本文件「`InitStage` 拆开」那一条）。
+
+**改法**
+交接完成后，用一条 `EarlyMem::reserve(min_address(), max_address() - min_address())`
+把 bootmem 描述的整个范围标成已保留。`find_free()` 从此找不到任何空闲区间，
+所以交接之后的 `allocate()` 返回 null，调用者现有的 null 检查
+（`alloc_page_table()` 回 0 → `Status::NoMemory`；`init_bootstrap16_buffer()` 的
+`ASSERT(buffer, ...)`）就把它变成一次可见的失败，而不是一次静默的踩内存。
+
+**一条整段，而不是逐个区间**，有两个原因：
+
+- 不能在 `visit_free()` 的遍历里边走边 `reserve()`——保留会改变 free 视图，
+  遍历器看到的剩余区间当场就变了。
+- 既然释放的是**全部**空闲区间，「保留刚释放的」和「保留全部」是同一个集合。
+  顺带保留了本来就不可用的空洞也没有代价：保留只从 usable 列表里减，
+  空洞那里本来就没有 usable 区间可减。
+
+`ASSERT` 而不是记一行日志：这一步失败意味着 bootmem 仍然愿意发出 buddy 拥有的内存，
+正是这个函数存在的目的所在，带着这个状态往下走没有意义。
+
+`max_address()` 是 `end()`，即开区间上界，所以尺寸是 `upper - lower`；
+`usable_count_ == 0` 时两者都是 0，提前返回，因为 `bootmem::Range::from()` 拒绝零长度。
+
+被否掉的方案：**给 EarlyMem 加一个 `handed_off_` 标志，之后一律拒绝分配并断言**。
+效果类似，但它是在 bootmem 旁边再放一个「bootmem 还有没有内存」的说法，
+而 bootmem 的保留列表本来就是回答这个问题的地方——两个东西说同一件事，就会有一天说不一致
+（`pmm_enabled()` 的注释里已经写过这条理由）。
+
+**验证过交接之后确实没人再要**：`EarlyMem::allocate()` 的全部调用点——
+`init_bootstrap16_buffer()`（`PlatformInitLevel::PrePmm`）、`PmNode::bootstrap()`
+与 `PmNode::init()`（`init_pmm()` 内，`do_handoff()` 之前）、
+`CpuLocal::Mapper::init_early()`（`start_kernel` 里远在 PMM 之前）、
+`SparseMemMap::Impl::allocate()`（早期路径，memmap 在 `do_handoff()` 之前建完，
+之后走 `heap_enabled()` 那支）、`alloc_page_table()`（上一条已经改成走 buddy）——
+全部在交接之前。`free_bootstrap16_buffer()` 把那三页还给 buddy 而不是还给 EarlyMem，
+不受影响。
+
+**参照**
+Linux 从另一头到达同一个状态：`memblock_free_all()` 结束时调 `memblock_discard()`，
+把 memblock 的数组整个扔掉，此后 `memblock_alloc()` 是一次 NULL 解引用，
+而不是一次静默的双重分配。ours 这边 bootmem 的存储是静态数组，扔不掉，
+所以用「全部保留」表达同一件事。
+
+**验证**
+- `out/bringup.x86`、`out/numa.x86` 两个配置构建通过。
+- `out/numa.x86`（`NUMA=1`，8 CPU，四节点）启动无变化：8 个 CPU 全部 online，
+  shell 六组检查全过，进程正常销毁，`Released 16 regions, 255668 frames (998 MiB)`
+  与上一条相同，无 fault / panic / 断言失败。
+- `out/bringup.x86` 无回归：同样跑完全部 checks 并正常销毁。
+
+**故意没做**
+- 没有让 `EarlyMem::allocate()` 在交接之后额外断言。返回 null 已经足够，
+  而调用者本来就该检查分配失败；再加一层断言等于替调用者决定 null 一定是 bug。
+- 没有动 `EarlyMem::deallocate()` / `release()`。交接之后没人调它，
+  而它本来就是 `allocate()` 的反操作，跟着一起失效是自然的。
+- 没有回收 bootmem 的静态存储（`USABLE_STORAGE` / `RESERVATION_STORAGE`）。
+  它们在 `.init` 数据里，`reclaim_init_area()` 会连着整段一起还给 buddy；
+  单独处理它们没有意义。

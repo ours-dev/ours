@@ -26,24 +26,7 @@ m_pages。前者与 Zircon 一致，推荐。
 
 **必须在 K16 之前修掉。**
 
-## 2. `EarlyMem::do_handoff()` 之后 bootmem 仍认为那些区间空闲，`alloc_page_table()` 也还忽略 `node`
-
-两件事，同一段代码里发现的，都还没修。
-
-**（a）`do_handoff()` 不是一次完整的交接。** 它只是把 bootmem 里还标着空闲的区间逐个
-`free_frames()` 给 buddy，bootmem 自己的位图原封不动。所以交接之后再从 EarlyMem 拿一页，
-拿到的是 buddy 也认为自己拥有的页——这正是 `changes/260925/mm.md` 那条 NUMA 缺页的成因。
-现在的状态是「不再有人在那之后问 EarlyMem 要页」，靠的是把 `InitStage::Pmm` 提到
-`do_handoff()` 后面；但那只是**没人走**，不是**走不通**。应该让它走不通：
-`do_handoff()` 把交出去的区间从 bootmem 的可用集合里摘掉（Linux 的
-`memblock_free_all()` 就是这么做的，之后 `memblock_alloc` 再也拿不到那些页），
-或者干脆让 `EarlyMem::allocate()` 在交接之后一律失败并断言。
-
-**风险**：要先确认交接之后确实没有别的调用者还在问 EarlyMem 要内存。已知按
-`pmm_enabled()` / `heap_enabled()` 分支的只有 `alloc_page_table()`、`free_page_table()`、
-`SparseMemMap::Impl::allocate()` 三处，但直接调 `EarlyMem::allocate<T>()` 的地方要单独扫一遍。
-
-**（b）`alloc_page_table()` 在 buddy 分支上丢掉 `node`。**
+## 2. `alloc_page_table()` 在 buddy 分支上丢掉 `node`
 
 ```cpp
 auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
@@ -58,12 +41,21 @@ auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
 EarlyMem 分支按 `node` 分配，buddy 分支不按——它调的是不带节点的重载，节点由
 `PmNode::Current` 决定。于是「给我节点 N 上的一页页表」这个请求在交接前后拿到不同的答案，
 而 NUMA 下页表页放在哪个节点是有意义的（walk 它的是本节点的 CPU）。
-改法是把 `node` 传下去：`node < NUMA_MAX_NODE` 时用
-`alloc_frames(node, GAF_KERNEL | Gaf::Zero, order)`，否则保持现在的行为。
 
-**注意不要顺手改成「永远用 `current_node()` 解析」**：那会绕过
-`PmNode::Current::alloc_frames()` 里的 `inherit_thread_context()`，也就是绕过
-`MemoryAllocationState` 那个「这段区间里不许分配」的计数器。禁止分配是调用者的明确意图，
-页表也不该例外。
+**现象**：潜伏，而且当前一个调用者都没有——`kernel/arch/x86/mm/page_table.cpp` 的
+`alloc_table()` 用的是两参数重载，`node` 取默认的 `bootmem::ANY_NODE`。所以这条修完
+也不会改变任何现有行为；它是一个公开接口静默丢弃调用者传进来的值，这件事本身是错的。
 
-**严重程度**：（a）是护栏，（b）是 NUMA 局部性，都不影响当前启动。
+**改法**：`alloc_frames(node, GAF_KERNEL | Gaf::Zero, order)`。那个重载在
+`nid >= NUMA_MAX_NODE` 时自己退回不带节点的版本，所以 `ANY_NODE` 的行为一字不变，
+包括仍然经过 `PmNode::Current::inherit_thread_context()`。
+
+**注意不要改成「永远用 `current_node()` 解析」**：那会绕过 `inherit_thread_context()`，
+也就是绕过 `MemoryAllocationState` 那个「这段区间里不许分配」的计数器。
+禁止分配是调用者的明确意图，页表也不该例外。
+
+**顺带记一笔**（另一条，还没查）：`alloc_frames` 这一族里，不带节点的重载经
+`PmNode::Current::alloc_frames()`，会检查 `MemoryAllocationState`；带节点的重载
+（`alloc_frames(nid, ...)`）直接走 `PmNode::node(nid)->alloc_frames()`，**不检查**。
+`build_dense()` 等指定节点的调用者因此完全不受那个计数器约束。这个不对称是有意的还是漏的，
+要问清楚再动。

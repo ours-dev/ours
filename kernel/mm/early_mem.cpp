@@ -125,9 +125,59 @@ static auto free_unused_memory() -> void {
               nr_frames, (nr_frames * PAGE_SIZE) >> 20);
 }
 
+/// Marks everything bootmem describes as reserved, so that it has nothing left
+/// to give.
+///
+/// free_unused_memory() above hands the buddy every range bootmem still calls
+/// free -- and then leaves bootmem's own bitmap untouched, so bootmem goes on
+/// believing those ranges are free. Both allocators then think they own the
+/// same frames, and the loser is whoever allocated first: the frame gets handed
+/// out a second time and written over. That is not theory. alloc_page_table()
+/// used to run in exactly that window and take page tables from here; the next
+/// per-CPU unit allocated with Gaf::Zero landed on a live leaf table and blanked
+/// it, and the boot died several thousand instructions later writing to a
+/// virtual address whose PTE had evaporated (see docs/changes/260925/mm.md).
+///
+/// The window is closed now -- pmm_enabled() becomes true on the line after
+/// do_handoff() -- but "nobody asks any more" is a property of the callers, and
+/// the next one that does will corrupt memory just as quietly. This makes it a
+/// property of bootmem instead: a reservation covering everything means
+/// find_free() finds nothing, so a late allocate() returns null and its caller's
+/// existing null check turns it into a visible failure.
+///
+/// One reservation over [min_address, max_address) rather than one per released
+/// range, for two reasons. It cannot be done inside the walk above -- reserving
+/// while visiting the free view changes what the visitor has left to see -- and
+/// since every free range is being released, "reserve what was released" and
+/// "reserve everything" describe the same set. Reserving a hole that was never
+/// usable costs nothing either: a reservation only ever subtracts from the
+/// usable list, and there is no usable range there to subtract from.
+///
+/// Linux reaches the same state from the other direction: memblock_free_all()
+/// ends with memblock_discard(), which throws the memblock arrays away
+/// altogether, and memblock_alloc() after that is a NULL-deref rather than a
+/// silent double allocation.
+INIT_CODE
+static auto retire_bootmem() -> void {
+    auto const lower = EarlyMem::min_address();
+    auto const upper = EarlyMem::max_address();
+    if (upper <= lower) {
+        // No usable range was ever added; there is nothing to retire, and
+        // Range::from() rejects a zero size.
+        return;
+    }
+
+    auto const status = EarlyMem::reserve(lower, upper - lower);
+    // A hard failure, not a log line. Carrying on would leave bootmem willing
+    // to hand out memory the buddy owns, which is the state this exists to end.
+    ASSERT(Status::Ok == status, "Failed to retire the boot allocator: {}",
+           static_cast<u32>(status));
+}
+
 INIT_CODE
 auto EarlyMem::do_handoff() -> void {
     free_unused_memory();
+    retire_bootmem();
 }
 
 /// Deliberately NOT INIT_CODE, and neither is any frame still on the stack
