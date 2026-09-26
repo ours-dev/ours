@@ -8,7 +8,6 @@ source_set("time") {
         "timer_queue.cpp",
         "clock.cpp",
         "init.cpp",
-        "mod.cpp",
     ]
     deps = [
         "//kernel/lib/gktl:headers",
