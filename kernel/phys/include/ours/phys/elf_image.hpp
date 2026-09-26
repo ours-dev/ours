@@ -5,6 +5,7 @@
 
 #include <ours/compiler.hpp>
 #include <ours/phys/aspace.hpp>
+#include <ours/phys/handoff.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
@@ -54,14 +55,33 @@ class ElfImage final {
     auto init(std::span<u8 const> file) -> Status;
     PHYS_EXPORT [[nodiscard]]
     auto load_at(PhysAddr phys_addr) -> ustl::Result<PhysAddr, Status>;
+    /// Told about each mapping fix_mapping() makes, in the order it makes them.
+    ///
+    /// A function pointer and a context rather than a template callback, because
+    /// fix_mapping() is PHYS_EXPORT: a physload_module binds it as a symbol
+    /// through the export table, and a template has no symbol to bind. Returning
+    /// false stops the walk and fails the mapping, which is how a recorder
+    /// reports that it ran out of room -- silently dropping a mapping would hand
+    /// the kernel a list that is missing a range it is running on.
+    using MappingRecorder = auto (*)(void *context, VirtAddr base, PhysAddr paddr, usize size,
+                                     MappingPerms perms) -> bool;
+
     /// Map the image's load segments at `target_base` in `aspace`, carving
     /// PT_GNU_RELRO out of its segments at map time rather than
     /// re-protecting afterwards.  Must run after relocate(): the
     /// relocations are applied through the identity mapping of the image's
     /// physical pages, never through the mapping built here (physboot
     /// relocates, then maps).
+    ///
+    /// `recorder`, when given, is told about every mapping this establishes --
+    /// including the runs a RELRO interval splits a segment into, which is the
+    /// only place the final permissions of those pages are ever computed. That
+    /// is why the list is produced here and not reconstructed by a caller
+    /// walking the load plan again: a second walk would have to repeat the
+    /// clipping and could disagree with it.
     PHYS_EXPORT
-    auto fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status;
+    auto fix_mapping(Aspace &aspace, VirtAddr target_base, MappingRecorder recorder = nullptr,
+                     void *recorder_context = nullptr) -> Status;
 
     [[nodiscard]]
     auto size() const -> usize {

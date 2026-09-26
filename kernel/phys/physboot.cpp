@@ -72,12 +72,67 @@ namespace {
         return {.base = target, .entry_offset = entry.unwrap() - target};
     }
 
+    /// Collects the mappings fix_mapping() makes, for the handoff.
+    ///
+    /// A whole page rather than a StaticVec in physboot's .bss: the array has to
+    /// outlive the jump, because the kernel's mh.mappings is a span into it, and
+    /// physboot's own image is MemoryType::PhysImage -- memory the kernel is
+    /// free to reuse. The one page is MemoryType::Handoff, the same claim the
+    /// memory-map snapshot makes, and for the same reason.
+    class MappingRecorder final {
+      public:
+        MappingRecorder() {
+            auto const buffer = detail::allocate_top_down(PAGE_SIZE, PAGE_SIZE,
+                                                         bootmem::MemoryType::Handoff,
+                                                         "the kernel mapping list");
+            m_entries = reinterpret_cast<MemoryMapping *>(buffer.base);
+            m_capacity = PAGE_SIZE / sizeof(MemoryMapping);
+        }
+
+        /// ElfImage::MappingRecorder. False means the page is full, which fails
+        /// the mapping rather than handing the kernel a list with a hole in it.
+        static auto record(void *const context, VirtAddr const base, PhysAddr const paddr,
+                           usize const size, MappingPerms const perms) -> bool {
+            auto *const self = static_cast<MappingRecorder *>(context);
+            if (self->m_count >= self->m_capacity) {
+                return false;
+            }
+            self->m_entries[self->m_count++] = {
+                .base = base,
+                .paddr = paddr,
+                .size = size,
+                .perms = perms,
+            };
+            return true;
+        }
+
+        [[nodiscard]]
+        auto entries() const -> ustl::views::Span<MemoryMapping const> {
+            return {m_entries, m_count};
+        }
+
+      private:
+        MemoryMapping *m_entries{};
+        usize m_capacity{};
+        usize m_count{};
+    };
+
     /// Map the kernel's segments at its linked (plus KASLR) virtual base and
     /// the physmap window, all into the aspace physload established -- the
     /// one whose root the kernel adopts as its own CR3.
-    auto build_kernel_aspace(ElfImage &image, VirtAddr const load_base) -> void {
+    ///
+    /// Only the image's own segments are recorded for the handoff. The physmap
+    /// below is not: its address and size are architectural constants
+    /// (ARCH_PHYSMAP_VIRT_BASE, ARCH_PHYSMAP_SIZE) that the kernel compiles in
+    /// and phys reads from the same header, so telling it would be telling it
+    /// what it already knows. The image's layout is the opposite case -- where
+    /// it landed depends on KASLR and on how the ELF was split, neither of which
+    /// the kernel witnessed.
+    auto build_kernel_aspace(ElfImage &image, VirtAddr const load_base,
+                             MappingRecorder *const recorder) -> void {
         auto *const aspace = global_aspace();
-        auto const fix_status = image.fix_mapping(*aspace, load_base);
+        auto const fix_status =
+            image.fix_mapping(*aspace, load_base, &MappingRecorder::record, recorder);
         if (fix_status != Status::Ok) {
             panic("Failed to map kernel ELF segments: {}", static_cast<u32>(fix_status));
         }
@@ -164,12 +219,24 @@ auto physboot_init(PhysLoadHandoff const &handoff) -> void {
         panic("Failed to relocate the kernel image: {}", static_cast<u32>(status));
     }
 
-    build_kernel_aspace(image, load_base);
+    // Before build_kernel_aspace(): the recorder takes its page from bootmem,
+    // and every bootmem allocation has to happen before snapshot_memory_map()
+    // or the kernel never learns the range is taken.
+    MappingRecorder recorder;
+    build_kernel_aspace(image, load_base, &recorder);
 
     // 4. Fill the kernel-side handoff: memory map, placement, boot package.
     auto *const kernel_handoff = global_handoff();
     kernel_handoff->mem.ranges = snapshot_memory_map();
     kernel_handoff->mem.kernel_load_addr = placement.base;
+    kernel_handoff->mem.mappings = recorder.entries();
+    for (auto const &mapping: kernel_handoff->mem.mappings) {
+        log::debug("Kernel mapping [0x{:X}, 0x{:X}) <- 0x{:X} {}{}{}", mapping.base,
+                   mapping.base + mapping.size, mapping.paddr,
+                   !!(mapping.perms & MappingPerms::Read) ? "r" : "-",
+                   !!(mapping.perms & MappingPerms::Write) ? "w" : "-",
+                   !!(mapping.perms & MappingPerms::Exec) ? "x" : "-");
+    }
     kernel_handoff->boot_package = kpackage.handoff();
 
     // 5. Hand off to the kernel. Never returns.

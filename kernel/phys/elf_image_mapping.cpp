@@ -33,8 +33,13 @@ namespace {
 class SegmentMapper final {
   public:
     SegmentMapper(Aspace &aspace, ElfImage::LoadPlan const &plan, VirtAddr target_base,
-                  PhysAddr pa_load)
-        : m_aspace(aspace), m_plan(plan), m_target_base(target_base), m_pa_load(pa_load) {}
+                  PhysAddr pa_load, ElfImage::MappingRecorder recorder, void *recorder_context)
+        : m_aspace(aspace)
+        , m_plan(plan)
+        , m_target_base(target_base)
+        , m_pa_load(pa_load)
+        , m_recorder(recorder)
+        , m_recorder_context(recorder_context) {}
 
     auto map_all() -> Status {
         // Map each ELF load interval independently.  Page-granularity
@@ -80,6 +85,27 @@ class SegmentMapper final {
         VirtAddr first{0};
         VirtAddr last{0};
     };
+
+    /// The same permissions again, in the vocabulary that crosses the handoff.
+    ///
+    /// Derived from MmuFlags rather than from SegPerms so that the recorder
+    /// reports what was actually mapped: map_run() is handed MmuFlags, and the
+    /// RELRO clipping below takes Writable away from that value, not from the
+    /// segment's ELF permissions.
+    [[nodiscard]]
+    static constexpr auto handoff_permissions(MmuFlags const flags) noexcept -> MappingPerms {
+        auto perms = MappingPerms::None;
+        if (!!(flags & MmuFlags::Readable)) {
+            perms |= MappingPerms::Read;
+        }
+        if (!!(flags & MmuFlags::Writable)) {
+            perms |= MappingPerms::Write;
+        }
+        if (!!(flags & MmuFlags::Executable)) {
+            perms |= MappingPerms::Exec;
+        }
+        return perms;
+    }
 
     [[nodiscard]]
     static constexpr auto map_permissions(eftl::elf::SegPerms permissions) noexcept -> MmuFlags {
@@ -209,6 +235,13 @@ class SegmentMapper final {
         if (mapped.is_err()) {
             return Status::InvArgs;
         }
+        // After the mapping, not before: a run the hardware never got is not a
+        // mapping, and the kernel must not be told about one.
+        if (m_recorder != nullptr &&
+            !m_recorder(m_recorder_context, first, physical, last - first,
+                        handoff_permissions(permissions))) {
+            return Status::NoMemory;
+        }
         return Status::Ok;
     }
 
@@ -216,10 +249,14 @@ class SegmentMapper final {
     ElfImage::LoadPlan const &m_plan;
     VirtAddr m_target_base;
     PhysAddr m_pa_load;
+    ElfImage::MappingRecorder m_recorder;
+    void *m_recorder_context;
 };
 
-auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base) -> Status {
-    return SegmentMapper(aspace, m_load_plan, target_base, m_pa_load).map_all();
+auto ElfImage::fix_mapping(Aspace &aspace, VirtAddr target_base, MappingRecorder recorder,
+                           void *recorder_context) -> Status {
+    return SegmentMapper(aspace, m_load_plan, target_base, m_pa_load, recorder, recorder_context)
+        .map_all();
 }
 
 } // namespace ours::phys

@@ -11,9 +11,58 @@
 #include <ours/types.hpp>
 
 #include <ustl/option.hpp>
+#include <ustl/util/enum_bits.hpp>
 #include <ustl/views/span.hpp>
 
 namespace ours::phys {
+/// What a mapping permits, in terms that mean the same thing on both sides of
+/// the handoff.
+///
+/// Deliberately not arch::paging::MmuFlags. That type is the architecture's
+/// page-table vocabulary -- it carries Present, Global, cacheability and
+/// whatever else the hardware has -- and a value crossing this boundary should
+/// carry only what the receiver is entitled to interpret. vmours turns these
+/// into its own VmaFlags; it has no business inheriting phys's PTE bits.
+enum class MappingPerms : u8 {
+    None = 0,
+    Read = BIT(0),
+    Write = BIT(1),
+    Exec = BIT(2),
+};
+USTL_ENABLE_ENUM_BITMASK(MappingPerms);
+
+/// One mapping the phys program made that the kernel inherits.
+///
+/// physboot builds the kernel's address space -- it loads the image and maps
+/// each of its ELF load segments, splitting them where PT_GNU_RELRO takes write
+/// permission away -- and then jumps into a kernel that is already running on
+/// those mappings. Until now it told the kernel nothing about them, so
+/// init_vmm() rebuilt the list from the kernel's own linker symbols
+/// (KERNEL_CODE_START and friends) and hoped the two agreed. They are two
+/// descriptions of one act by the party that did not perform it, which is the
+/// definition of a thing that can drift: the symbols say where sections were
+/// linked, the mappings say what physboot actually established, and nothing
+/// checked them against each other.
+///
+/// No name field. vmours needs a name for its VMAs, but naming is its own
+/// vocabulary (the `k:` prefix) and follows from the permissions; carrying a
+/// string across the boundary would make phys the author of the kernel's
+/// diagnostics.
+///
+/// Zircon's counterpart is PhysMapping, grouped into PhysVmar, in
+/// kernel/phys/include/phys/handoff.h.
+struct MemoryMapping {
+    /// Virtual base, whole pages, in the kernel's own address space.
+    VirtAddr base;
+
+    /// The physical page it is backed by.
+    PhysAddr paddr;
+
+    usize size;
+
+    MappingPerms perms;
+};
+
 struct MemoryHandoff {
     /// The final memory map physload/physboot built during early boot: one
     /// entry per maximal run of usable RAM, each flagged as still free or
@@ -26,6 +75,17 @@ struct MemoryHandoff {
     /// platform's memory map (see bootmem::PhysicalMemory::snapshot()).
     ustl::views::Span<bootmem::MemRange const> ranges;
     PhysAddr kernel_load_addr;
+
+    /// Every mapping physboot made for the kernel, in address order and
+    /// gapless over the loaded image: see MemoryMapping.
+    ///
+    /// The kernel image only. The physmap and the per-CPU window are not here
+    /// and should not be: their addresses are architectural constants the
+    /// kernel already has (ARCH_PHYSMAP_VIRT_BASE, ARCH_CPU_LOCAL_VIRT_BASE),
+    /// and the per-CPU window is not even populated by phys -- CpuLocal::Mapper
+    /// fills it a chunk at a time, after the NUMA topology exists, which is
+    /// knowledge phys does not have.
+    ustl::views::Span<MemoryMapping const> mappings;
 };
 
 enum class UartKind : u8 {
