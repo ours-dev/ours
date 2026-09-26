@@ -678,3 +678,79 @@ IrqSave 只碰标志寄存器，在哪个阶段都成立。
 **故意没做**
 - 没有把地址空间锁换成可睡眠的锁，那是 mm 的待修项，不是选项问题。
 - `page_queues.cpp` 本来就写的 IrqSave，未动。
+
+## `PmNode::Current` 的分配入口不再走穿空的 per-CPU 指针（2026-09-25）
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_node.hpp` — 新增私有 `Current::resolve_local_node()`
+- `kernel/mm/pm_node.cpp` — `Current::alloc_frames()`、`alloc_frames_fragment()`、
+  `alloc_frames_bulk()` 三个入口改用它，拿不到节点就回 `Status::BadState`
+
+**症状**
+潜伏，当前没有调用者会在这个窗口里走到——但只要有，就是一次读低端物理内存的野指针。
+触发条件：在 `PmNode::Current::init()`（`GKTL_INIT_HOOK(..., InitLevel::CpuLocal + 1)`）
+之前调用不带节点参数的 `alloc_frames(gaf, ...)`。把 `alloc_page_table()` 的判据改成
+「buddy 已接管」之后立刻就能看到，形态是
+
+```
+#GP General protection fault: vector=13, error_code=0x0
+  rip=+0x37fd9   r14=0x22a840f00000004
+```
+
+`+0x37fd9` 在 `PmNode::alloc_frames` 里 `movq (%r14,%r13), %rdi`，`r14` 是
+`ZoneQueues` 的 span 基址，非规范地址。
+
+**原因**
+`PmNode::Current` 继承 `CpuLocal::Current<PmNode *>`，那个 per-CPU 指针
+（`CURRENT_INSTANCE`）由 `Current::init()` 在 `InitLevel::CpuLocal + 1` 发布。而
+`mm::CpuLocal::init()` 本身排在 `InitLevel::CpuLocal`——它要给每个 CPU 建 unit，还要为
+那些 unit 建页表，这些分配全都发生在指针被发布**之前**。此时 `Current::get()` 读到的是
+模板里那份初值，也就是空。
+
+空指针在这里不会当场挂掉，这是最坏的部分：`vmours` 接手的还是 physload 那张页表，
+低端物理内存是恒等映射的，所以 `nullptr->m_zone_queues` 读的是物理页 0 附近的垃圾，
+读得通。垃圾被当成 `Span<PmZone*>` 的基址，于是错误在 `get_frame_from_zone_queues()`
+里以别的形态爆出来，离真正的原因很远。
+
+这个坑踩过一次了：`Current::publish()` 的注释记着「That is what left CURRENT_INSTANCE
+null across the zero-page allocation in `init_vmm_preheap()`: `Current::alloc_frames()`
+went on through a null PmNode, and `get_frame_from_zone_queues()` spun on the
+ZoneQueues it read out of address 0x48.」当时的修法是让 `publish()` 无条件发布，
+把那一次的空补上；但**分配入口自己走穿空指针**这件事没动，所以窗口一换就又来一遍。
+
+`DEBUG_ASSERT(local_node)` 没挡住，因为 `kernel.dev.obi` 是 `KERNEL_DEBUG_LEVEL=0` 的
+那份镜像，断言编译掉了；断言完了还照样解引用，等于发布版里什么检查都没有。
+
+**改法**
+把「当前 CPU 的 PmNode」这件事收进一个函数：per-CPU 指针有就用，没有就退回
+`Current::nid()`，即 `DYNAMIC_CPU_TO_NODE[cpu]`，再 `PmNode::node(nid)`。这张表是
+`PmNode::bootstrap()` 用 `set_nid_early()` 填的，比任何 per-CPU 存储都早——
+`nid()` 的注释本来就写着「The array is also the only answer that works this early」，
+只是 `alloc_frames()` 当时没照着用。
+
+`DEBUG_ASSERT` 换成真的 `return ustl::err(Status::BadState)`。走到这里只有两种可能：
+AP 在 `claim_possible_cpus()` 之前分配（调用者的错），或者没有任何节点拥有内存
+（`bootstrap()` 已经在那种情况下回 `BadState` 了）。两种都该是可见的失败，
+不该是一次能读通的野指针。
+
+没有把 `nid()` 直接替换掉 `get()`：per-CPU 指针是热路径上省一次数组查找和一次
+`PmNode::node()` 的手段，发布之后它是对的，只是不能当成「永远非空」。
+
+**参照**
+Linux 在同一个窗口用同一张表：`early_per_cpu(x86_cpu_to_node_map, cpu)`
+（`arch/x86/mm/numa.c`）在 per-CPU 区建立之前回答 `cpu_to_node()`，
+`setup_per_cpu_areas()` 之后才切到 per-CPU 副本。差别在于 Linux 的
+`early_per_cpu` 宏把「有没有 per-CPU 区」这个判断藏在一个地方，而这里原来是
+每个调用点自己 assert 一下就往下走。
+
+**验证**
+- `out/bringup.x86`、`out/numa.x86` 两个配置构建通过。
+- `out/bringup.x86` 启动无变化：一路到 shell 跑完并正常销毁进程，无 panic。
+- `out/numa.x86` 仍然停在原来那个写缺页（`cr2=0xffffff8800016fff`）——本条是它的
+  前置条件，不是它的修法，那条是 `docs/repairs/260925/mm.md` 第 1 条。
+
+**故意没做**
+- 没有动 `hard_affinity()`，它用的是 `CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity)`
+  那个「取成员地址当 handle」的写法，和本条无关。
+- 没有让 `resolve_local_node()` 在节点不存在时找别的节点顶上。`fallback` 掩码是
+  `PmNode::alloc_frames()` 里的事，这里只负责回答「我在哪个节点」。

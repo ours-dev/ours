@@ -703,14 +703,35 @@ auto PmNode::Current::inherit_thread_context(Gaf &gaf) -> Status {
     return Status::Ok;
 }
 
+auto PmNode::Current::resolve_local_node() -> PmNode * {
+    // The fast answer, and the only one once the init hook has run.
+    if (auto *const node = Current::get()) {
+        return node;
+    }
+
+    auto const nid = Current::nid();
+    if (nid >= NUMA_MAX_NODE) {
+        // No topology source has claimed this CPU. bootstrap() claims the boot
+        // CPU before the first allocation, so this is an AP asking before
+        // claim_possible_cpus() has run -- a caller error, not a shortage.
+        return nullptr;
+    }
+    return PmNode::node(nid);
+}
+
 auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
     if (auto const status = inherit_thread_context(gaf); Status::Ok != status) {
         return ustl::err(status);
     }
 
-    auto const local_node = PmNode::Current::get();
-    DEBUG_ASSERT(local_node);
+    auto *const local_node = Current::resolve_local_node();
+    if (!local_node) {
+        // A real return rather than DEBUG_ASSERT: this used to assert and then
+        // dereference anyway, so a release build walked through a null PmNode
+        // instead of failing here.
+        return ustl::err(Status::BadState);
+    }
     local_node->m_canary.verify<Self>();
 
     auto const current_thread = task::Thread::Current::get();
@@ -725,8 +746,13 @@ auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize order, NodeMask const
         return ustl::err(status);
     }
 
-    auto const local_node = PmNode::Current::get();
-    DEBUG_ASSERT(local_node);
+    auto *const local_node = Current::resolve_local_node();
+    if (!local_node) {
+        // A real return rather than DEBUG_ASSERT: this used to assert and then
+        // dereference anyway, so a release build walked through a null PmNode
+        // instead of failing here.
+        return ustl::err(Status::BadState);
+    }
     local_node->m_canary.verify<Self>();
 
     auto const current_thread = task::Thread::Current::get();
@@ -741,8 +767,13 @@ auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize order, NodeMask const &fa
         return ustl::err(status);
     }
 
-    auto const local_node = PmNode::Current::get();
-    DEBUG_ASSERT(local_node);
+    auto *const local_node = Current::resolve_local_node();
+    if (!local_node) {
+        // A real return rather than DEBUG_ASSERT: this used to assert and then
+        // dereference anyway, so a release build walked through a null PmNode
+        // instead of failing here.
+        return ustl::err(Status::BadState);
+    }
     local_node->m_canary.verify<Self>();
 
     auto const current_thread = task::Thread::Current::get();

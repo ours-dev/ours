@@ -518,6 +518,26 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
 
     static auto inherit_thread_context(Gaf &gaf) -> Status;
 
+    /// The calling CPU's PmNode, answered even before CURRENT_INSTANCE exists.
+    ///
+    /// The per-CPU pointer is filled by Current::init(), an init hook at
+    /// InitLevel::CpuLocal + 1 -- i.e. after CpuLocal::init(), which allocates
+    /// the per-CPU units themselves and the page tables that map them. Read
+    /// before that, `get()` answers null, and a null PmNode is not a failure
+    /// the allocation paths below notice on their own: they walk straight into
+    /// it and read a ZoneQueues out of low memory, which phys's identity map
+    /// still makes readable, so the wreck surfaces somewhere else entirely.
+    /// That has happened twice -- once on init_vmm_preheap()'s zero-page
+    /// allocation (see the comment on publish()), once as a #GP inside
+    /// CpuLocal::init() -- which is why the resolution lives here rather than
+    /// in each caller.
+    ///
+    /// nid() is what makes an answer possible this early: it reads
+    /// DYNAMIC_CPU_TO_NODE, which bootstrap() fills for the boot CPU long
+    /// before any per-CPU storage exists. Linux consults the same table
+    /// through early_per_cpu(x86_cpu_to_node_map) for exactly this window.
+    static auto resolve_local_node() -> PmNode *;
+
     /// Records |cpu| in its node's CPU masks and points its per-CPU slot at
     /// the node. Nothing for a CPU still on the NUMA_MAX_NODE sentinel.
     static auto publish(CpuNum cpu) -> void;
