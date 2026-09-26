@@ -6,6 +6,12 @@
 #include <cstddef>
 #include <cstdint>
 
+/// The ours kernel no longer uses anything in this header. It moved to
+/// std::atomic, which is freestanding-safe and is the spelling the repository
+/// prefers wherever the standard one works, and lockdep, the last user
+/// there, followed. The wrappers stay because ustl is a standalone library
+/// whose headers need not serve only this kernel. New code should use
+/// std::atomic and std::memory_order rather than copy these.
 namespace ustl::sync {
 
 struct MemoryOrder {

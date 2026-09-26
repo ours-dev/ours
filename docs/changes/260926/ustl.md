@@ -731,3 +731,42 @@ static_assert(CONST_LOOKUPS<Splaytree, SplayValue>);
 
 **故意没做**
 无。
+
+## `ustl/sync/atomic.hpp` 顶部写明本内核不再使用它（2026-09-26）
+
+**文件**
+- `system/lib/ustl/include/ustl/sync/atomic.hpp` — 在 `namespace ustl::sync` 前加一段说明
+- `docs/repairs/260912/atomics.md` — 第 1 条关闭
+
+**症状**
+无，文档性改动。
+
+**原因**
+lockdep 迁到 `std::atomic` 之后（见 `docs/changes/260926/lockdep.md`），内核里已经没有任何代码用这个头文件，
+`ninja -t deps` 里依赖它的只剩 ustl 自己的 `atomic-test`。但头文件本身什么也没说，看起来仍是一个正常可用的原子量封装，
+下一个写并发代码的人很可能照着它写，把刚迁走的写法又带回内核。
+
+**改法**
+改前，头文件从 include 直接进入 `namespace ustl::sync`，没有任何说明。改后，在命名空间前加：
+
+```cpp
+/// The ours kernel no longer uses anything in this header. It moved to
+/// std::atomic, which is freestanding-safe and is the spelling the repository
+/// prefers wherever the standard one works, and lockdep, the last user
+/// there, followed. The wrappers stay because ustl is a standalone library
+/// whose headers need not serve only this kernel. New code should use
+/// std::atomic and std::memory_order rather than copy these.
+```
+
+否掉的方案：**删掉这个头文件和 `atomic-test`**。内核确实不需要它了，但 ustl 是独立的 freestanding 库，头文件不必只服务于本
+内核；删不删是 ustl 自己的取舍，不属于待修的缺陷，留给维护者决定。
+
+**参照**
+无，文档性改动。仓库的取向见 `docs/changes/260912/atomics.md`。
+
+**验证**
+`clang-format` 无差异；`prebuilt/ninja/ninja -C out/bringup.x86` 成功；`atomic-test` 退出码 0。`clang-tidy` 报的是
+`MemoryOrder::Relaxed` 等原有的命名告警，不在改动的行上。只加注释，编译产物不变，没跑 QEMU。
+
+**故意没做**
+头文件里原有的 `clang-tidy` 命名告警没修：与这次无关，而且如果这层封装以后要删，改名就白做了。
