@@ -324,6 +324,14 @@ auto Mutex::release_slowpath(Thread *current_thread, State old_mutex_state) -> v
     }
 }
 
+auto Mutex::is_locked() const -> bool {
+    return holder() != nullptr;
+}
+
+auto Mutex::assert_held() const -> void {
+    DEBUG_ASSERT(holder() == Thread::Current::get(), "the calling thread does not hold this mutex");
+}
+
 auto Mutex::release() -> void {
     m_canary.verify<Self>();
 

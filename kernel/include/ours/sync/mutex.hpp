@@ -41,10 +41,28 @@ class TA_CAPABILITY("Mutex") Mutex: public priv::LockNameStorage<Mutex, LOCK_TRA
 
     TA_RELEASE() auto release() -> void;
 
+    /// Whether any thread holds this mutex. A snapshot: by the time the
+    /// caller looks at the answer it may be stale, so it is for diagnostics
+    /// and assertions, never for deciding whether to acquire.
+    [[nodiscard]]
     auto is_locked() const -> bool;
 
-    [[nodiscard]]
-    TA_ASSERT() auto assert_held() const -> bool;
+    /// Asserts that the calling thread holds this mutex, and tells the
+    /// thread-safety analysis so.
+    ///
+    /// The second half is the point where the analysis cannot see the
+    /// acquisition: a lock reached through another object -- a child
+    /// mapping's aspace lock, which is the parent's -- or taken by a caller
+    /// the analysis does not follow. The first half is checked in debug builds
+    /// only; the claim to the analysis holds in every build.
+    ///
+    /// void, not bool. It used to return a bool marked [[nodiscard]], which
+    /// is at odds with TA_ASSERT: the annotation says the lock is held once
+    /// the call returns, while a bool hands the verdict to the caller to act
+    /// on. It was also declared and never defined, so the first caller would
+    /// have failed to link. Zircon: Mutex::AssertHeld(), void and TA_ASSERT(),
+    /// with DEBUG_ASSERT(IsHeld()) inside.
+    TA_ASSERT() auto assert_held() const -> void;
 
     auto holder() const -> task::Thread * {
         return get_holder_from(m_state.load(std::memory_order_relaxed));
