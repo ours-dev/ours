@@ -18,12 +18,19 @@ assert(toolchain_environment == "user",
 # Zircon does exactly this: userboot is a file in the STORAGE_KERNEL BootFS,
 # not an OBI item of its own.
 #
-# It is the default first program, the one that runs when an image does not
-# name another with kernel.select.userboot, so it is deliberately the smallest
-# thing that proves the path works: reach ring 3, call one vDSO entry, come
-# back.
+# The kernel always starts it first (kernel.select.userboot names another
+# build of it, and defaults to this one).  It starts the program the image's
+# userboot.next option names, handing on the root job and the BootFS; with
+# no userboot.next it only proves the path works -- reach ring 3, read its
+# processargs, say so.  It runs on the runtime, as init does, because the
+# processargs message is how it learns both what to start and what to start
+# it with.
 user_executable("userboot") {
   visibility = [ "//kernel/products/image/*" ]
 
   sources = [ "userboot.cpp" ]
+  deps = [
+    "//system/lib/ou",
+    "//system/lib/runtime",
+  ]
 }

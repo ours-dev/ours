@@ -244,3 +244,72 @@ if (auto const status = encode_process_args(message, {infos, count}, args,
 **故意没做**
 - 让 userboot 程序读取 `userboot.next` 并启动下一个程序：那是下一步，需要把 userboot 改成链接 runtime。
 - 去掉 `kernel.select.userboot`：Zircon 保留了它，用来选第一个进程跑哪个 userboot 程序（eng 镜像换成测试版），ours 也保留。
+
+## userboot 程序读 `userboot.next`，把根 job 与 BootFS 转交给下一个程序并启动它（2026-09-26）
+
+**文件**
+- `kernel/lib/userabi/userboot/userboot.cpp` — 改为跑在 runtime 上：`main()` 在 environ 里找 `userboot.next=`，用 `process_spawn_boot` 启动它，并交出根 job 与 BootFS；没有这个选项时仍只打印一行存活证明
+- `kernel/lib/userabi/userboot/BUILD.gn` — 依赖 `//system/lib/ou` 和 `//system/lib/runtime`，注释改成新的职责
+
+**症状**
+userboot 程序什么也启动不了：没有 runtime，`_start` 不读 processargs，打一行 hello 就停住。
+所以镜像想跑 init，只能让内核用 `kernel.select.userboot=init` 直接启动 init，userboot 被顶替掉。
+这和 Zircon 的模型相反：userboot 永远是第一个进程，接下来跑谁由它自己决定。
+
+**原因**
+第一个进程能拿到的一切——根 job、BootFS，以及上一条加上的 `userboot.*` environ——都在 processargs 消息里。
+不读这条消息，userboot 既不知道该启动谁，也没有可以用来启动的 job。旧的 userboot 是按 Zircon 的
+trivial-test-userboot 写的，只证明「能进 ring 3、能答一次调用」，没有为「启动下一个程序」留任何位置。
+
+**改法**
+改前（整个程序就是这个入口）：
+```cpp
+extern "C" [[noreturn]]
+auto _start() -> void {
+    static_cast<void>(ours_debug_write(MESSAGE, sizeof(MESSAGE) - 1));
+    for (;;) {
+        __asm__ volatile("pause");
+    }
+}
+```
+改后：
+```cpp
+auto main(int, char **) -> int {
+    auto const next = find_next();
+    if (next.empty()) {
+        static_cast<void>(ou::debug_line("userboot: hello from ring 3"));
+        halt();
+    }
+    auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
+    ...
+    auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+    if (auto const status = start_next(job, bootfs, next); status != ours::Status::Ok) {
+```
+`start_next()` 给下一个程序的 processargs 与内核给 userboot 的一样：JobDefault、VmoBootfs（有才给），argv = {name}。
+所以 init 被 userboot 启动时，看到的和以前被内核直接启动时完全相同，init 一行都不用改。
+
+几处取舍：
+- **先 spawn、后写 processargs**，顺序和内核的 `make_bootstrap()` 相反。原因是 job 句柄既要作为 spawn 的父 job，又要放进消息里交出去；
+  而 `channel_write` 会把发送的句柄移出本进程。如果先写，手里就没有 job 可以用来 spawn 了。
+  否掉的方案是先 `handle_duplicate` 一份：可行，但 userboot 会白白多握一个根 job 句柄。
+  反过来的顺序没有代价——runtime 会等到 READABLE 才读消息。
+- **多个 `userboot.next` 时取最后一个**，与 Zircon `parse_cmdline()` 逐项覆盖的行为一致：写在后面的覆盖前面的，
+  bootloader 才能在镜像默认值后面追加覆盖。
+- **启动之后停住，不退出**：Zircon 的 userboot 会等下一个程序结束再退出，但 ours 还没有进程结束的通知（进程句柄上的 TERMINATED，设计 K23）。
+- **没有 BootFS 也照样启动**：内核建不出 BootFS 时就不给，该由下一个程序自己应对，init 本来就会处理。
+
+**参照**
+- `Zircon userboot main.rs`：`parse_option()` 认 `userboot.next`，`run()` 用 `launch_program()` 启动它并把系统句柄交出去。
+  ours 暂不支持 Zircon 用 `+` 分隔参数的写法（`bin/component_manager+--boot`），也不支持 `userboot.root`。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/userboot-next` 通过；clang-tidy 在这个文件上没有诊断。
+- QEMU，临时改 dev 镜像的 cmdline（验证后已还原）：
+  - 只写 `userboot.x=init`（没有 next）：日志里 `userabi: handing userboot its processargs` → `userboot: hello from ring 3`，之后停住。
+  - 写 `userboot.next=init`：`userboot: starting init` → `userboot: started init` → `init: started with the root job` → `init: bootfs has 4 entries`
+    → init 起 shell → `init: shell says "pong"` → `init: shell closed its channel`。
+
+**故意没做**
+- 改两个镜像的 cmdline：放在下一条单独提交。
+- 支持 `+` 分隔的参数、`userboot.root`：还没有需求。
+- 内核 `launch()` 的日志前缀仍是 `userboot:`（例如 `userboot: found 'init'`）。现在 userboot 已经是一个独立的程序，这个前缀容易让人误读，但它属于内核侧的命名，本条不动。
