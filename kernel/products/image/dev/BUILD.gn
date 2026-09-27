@@ -96,7 +96,7 @@ kernel_package("ours") {
 # unset, so it takes its default -- and init no longer runs in its place. The
 # kernel does not parse `userboot.next`: it forwards every `userboot.*` token
 # as an environment string in userboot's processargs
-# (collect_userboot_options() in kernel/lib/userabi/src/userboot.cpp), and
+# (collect_user_options() in kernel/lib/userabi/src/userboot.cpp), and
 # the userboot program reads it (kernel/lib/userabi/userboot/userboot.cpp),
 # as Zircon's userboot reads its own userboot.next. Without this line
 # userboot only says hello and halts.

@@ -464,3 +464,67 @@ userboot 的退出不会带走任何东西：next 挂在根 job 下，而不是 
 **故意没做**
 - 等 next 结束再退出（Zircon 的做法）：需要进程句柄上的 TERMINATED（K23）。
 - 让存活证明路径也退出：那条路径要证明的正是「从最后一次系统调用返回后，ring 3 还在继续运行」。
+
+## 内核向用户态转发的 cmdline 选项从 `userboot.*` 扩成前缀白名单，加入 `ours.autorun.*`（2026-09-26）
+
+**文件**
+- `kernel/lib/userabi/src/userboot.cpp` — `USERBOOT_OPTION_PREFIX` 换成前缀表 `USER_OPTION_PREFIXES`（`userboot.`、`ours.autorun.`），`collect_userboot_options()` 等改名为 `collect_user_options()` / `UserOptions` / `MAX_USER_OPTIONS` / `USER_OPTIONS_BYTES`
+- `kernel/include/ours/boot/options.hpp`、`kernel/products/image/dev/BUILD.gn` — 注释里的函数名跟着改
+
+**症状**
+无法在开机时指定一个在 shell 之后运行的程序。构建会话已经让 `--with` 只负责把程序打进 BootFS（`69526fd2`），但 cmdline 上没有任何选项能让用户态知道「开机后要跑它」：内核只把 `userboot.*` 转给 userboot，别的 token 根本出不了 ring 0。
+
+**原因**
+Zircon 用 `zircon.autorun.boot=<command>` 做这件事，读它的是 console-launcher（也就是起 shell 的那个组件），不是 userboot。在 ours 里对应的角色是 init。所以这个选项既不属于内核，也不属于 userboot，而原来的白名单只认 userboot 自己的前缀，它就没有路可走。
+
+白名单本身是对的，必须保留：内核选项（`kernel.shell`、`kernel.name`……）只管 ring 0，新加一个内核选项不应该因为没人记得过滤就漏到用户态。所以这里不把条件放宽成「除了 `kernel.*` 以外都转发」这种黑名单，而是把单个前缀变成一张表：以后每多一族用户态选项，就在表里加一行，要有人明确决定它可以越过这条边界。
+
+**改法**
+改前：
+```cpp
+    constexpr std::string_view USERBOOT_OPTION_PREFIX{"userboot."};
+    ...
+            if (!token.starts_with(USERBOOT_OPTION_PREFIX)) {
+                return;
+            }
+```
+改后：
+```cpp
+    constexpr std::string_view USER_OPTION_PREFIXES[] = {
+        "userboot.",
+        "ours.autorun.",
+    };
+    ...
+    auto is_user_option(std::string_view const token) -> bool {
+        for (auto const prefix: USER_OPTION_PREFIXES) {
+            if (token.starts_with(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    ...
+            if (!is_user_option(token)) {
+                return;
+            }
+```
+选项名定为 `ours.autorun.boot=<name>[+arg...]`，直接照搬 `zircon.autorun.boot` 的形状：`+` 分隔参数，保留 `.boot` 后缀，给将来的 `.system` 留出位置。内核仍然只转发整个 token，不解析；userboot 负责把不属于自己的部分交给 init（下一条），init 负责解析并执行（再下一条）。
+
+函数和常量随之改名：它们收集的已经不只是 userboot 的选项，名字再叫 `userboot_options` 就会误导读的人。
+
+被否掉的方案：
+- 叫 `userboot.autorun=`：省了内核这一步，但这个选项并不归 userboot 管，挂在它名下是说错了归属。
+- 内核直接把选项放进 init 的 processargs：init 不是内核起的，内核够不着它。
+
+**参照**
+- `Zircon userboot main.rs` 的 `parse_option()`：只认 `userboot.*`。Zircon 不在内核里过滤，而是把整个 ZBI 交给下一个程序，由 component_manager 通过 `fuchsia.boot.Arguments` 提供其余选项。
+- `Fuchsia console_launcher.cc` 的 `GetArguments()`（`autorun_boot`）、`console-launcher.cml` 的 `fuchsia.zircon.autorun.boot`、`docs/reference/kernel/kernel_cmdline.md` 的 `zircon.autorun.boot`。
+
+**验证**
+- 构建通过；clang-tidy 在 `userboot.cpp` 上没有新诊断。
+- QEMU dev（另开 `out/autorun`，加 `--with //kernel/lib/syscall/test/fault_probe`，临时往 cmdline 里加 `ours.autorun.boot=fault_probe+hello+world`，构建完即还原）：日志出现 `userabi: passing ours.autorun.boot=fault_probe+hello+world to userboot`；userboot 照常起 init，init 起 shell，`init: shell says "pong"`。
+- QEMU dbg_1（60 秒）：只转发 `userboot.next=shell`，shell 自检照常跑。
+
+**故意没做**
+- userboot 转交、init 执行：分别是后两条改动。
+- 把 `kernel.*` 以外的选项全部转发：理由见「原因」，白名单是有意保留的。

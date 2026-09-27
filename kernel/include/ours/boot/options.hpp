@@ -57,7 +57,7 @@ class BootOptions final {
     /// neither puts a system service here. What userboot starts next is a
     /// separate option, `userboot.next`, which the kernel does not parse: it
     /// forwards every `userboot.*` token to the userboot program as a
-    /// processargs environment string (collect_userboot_options() in
+    /// processargs environment string (collect_user_options() in
     /// //kernel/lib/userabi/src/userboot.cpp), and the program reads it
     /// (//kernel/lib/userabi/userboot/userboot.cpp).
     ///

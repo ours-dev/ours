@@ -176,49 +176,70 @@ namespace {
     object::KernelHandle<object::VmoDispatcher> resident_bootfs;
     Rights resident_bootfs_rights;
 
-    /// The command-line options that belong to the userboot program rather
-    /// than to the kernel -- `userboot.next`, the program it starts next,
-    /// first among them.
+    /// The command-line options that belong to user space rather than to the
+    /// kernel: `userboot.*`, the userboot program's own -- `userboot.next`,
+    /// the program it starts next, first among them -- and `ours.autorun.*`,
+    /// which init reads (`ours.autorun.boot`, a program to start once the
+    /// shell is up). The kernel parses neither family; it only decides that
+    /// they cross.
     ///
-    /// The prefix is an allow list for what of the image's command line
+    /// The table is an allow list for what of the image's command line
     /// crosses into user space: the kernel's own options (`kernel.shell`,
     /// `kernel.name`, ...) steer ring 0 and stay there, and a new kernel
     /// option does not leak out by default because nobody remembered to
-    /// filter it. Zircon draws the same line by name -- its userboot parses
-    /// only `userboot.*` keys (parse_option() in
+    /// filter it. A new user-space option family is one more row here.
+    ///
+    /// Zircon draws the userboot half of this line by name -- its userboot
+    /// parses only `userboot.*` keys (parse_option() in
     /// zircon/kernel/lib/userabi/userboot/main.rs) -- but after the fact,
     /// because it reads the whole CMDLINE item out of the ZBI VMO it is
-    /// handed. Here the kernel forwards the tokens instead, as Zircon's
-    /// userboot once received the command line as its environment, so the
-    /// userboot program needs no boot-container parser of its own.
-    constexpr std::string_view USERBOOT_OPTION_PREFIX{"userboot."};
+    /// handed, and hands that ZBI on so that component_manager can serve the
+    /// rest (`zircon.autorun.boot` among it) as fuchsia.boot.Arguments. Here
+    /// the kernel forwards the tokens instead, as Zircon's userboot once
+    /// received the command line as its environment, and the userboot program
+    /// passes on what is not its own; nobody in user space needs a
+    /// boot-container parser.
+    constexpr std::string_view USER_OPTION_PREFIXES[] = {
+        "userboot.",
+        "ours.autorun.",
+    };
 
-    /// How many `userboot.*` tokens are forwarded, and how many bytes they
-    /// may take in the processargs message (each token plus its NUL).
+    /// How many user-space tokens are forwarded, and how many bytes they may
+    /// take in the processargs message (each token plus its NUL).
     ///
     /// Bounded, because the message is built in a fixed buffer on this
     /// thread's stack (make_bootstrap()). Generous for what exists -- today
-    /// there is exactly one such option -- without letting a runaway command
-    /// line decide the size of a kernel stack frame.
-    constexpr u32 MAX_USERBOOT_OPTIONS = 8;
-    constexpr usize USERBOOT_OPTIONS_BYTES = 384;
+    /// there are two such options -- without letting a runaway command line
+    /// decide the size of a kernel stack frame.
+    constexpr u32 MAX_USER_OPTIONS = 8;
+    constexpr usize USER_OPTIONS_BYTES = 384;
 
-    /// The `userboot.*` tokens of the image's command line, in order.
+    /// The user-space tokens of the image's command line, in order.
     ///
     /// Views into the boot package's Config item, which stays mapped for the
     /// kernel's lifetime; they are only held until make_bootstrap() has
     /// copied them into the message.
-    struct UserbootOptions {
-        std::string_view tokens[MAX_USERBOOT_OPTIONS];
+    struct UserOptions {
+        std::string_view tokens[MAX_USER_OPTIONS];
         u32 count{0};
     };
 
-    /// Picks the `userboot.*` tokens out of the image's command line.
+    /// Whether |token| belongs to one of the USER_OPTION_PREFIXES families.
+    auto is_user_option(std::string_view const token) -> bool {
+        for (auto const prefix: USER_OPTION_PREFIXES) {
+            if (token.starts_with(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Picks the user-space tokens out of the image's command line.
     ///
     /// Not a boot::BootOptions entry, although that is where the kernel's
     /// options are parsed: nothing here is parsed. The kernel neither knows
-    /// which `userboot.*` keys exist nor what their values mean -- that is
-    /// the userboot program's to decide -- so it relays whole tokens, and
+    /// which user-space keys exist nor what their values mean -- that is the
+    /// user programs' to decide -- so it relays whole tokens, and
     /// BootOptions' rule of one name, one default and one grammar per option
     /// has nothing to hold on to.
     ///
@@ -227,8 +248,8 @@ namespace {
     /// program nobody asked for, while a dropped one leaves userboot on its
     /// defaults with the reason in the log -- as boot::BootOptions ignores a
     /// value it cannot take rather than refusing to boot.
-    auto collect_userboot_options() -> UserbootOptions {
-        UserbootOptions options;
+    auto collect_user_options() -> UserOptions {
+        UserOptions options;
         auto const package = boot::boot_package();
         if (package.is_err()) {
             return options;
@@ -240,11 +261,11 @@ namespace {
 
         usize bytes = 0;
         cmdline.value().for_each_token([&options, &bytes](std::string_view const token) -> void {
-            if (!token.starts_with(USERBOOT_OPTION_PREFIX)) {
+            if (!is_user_option(token)) {
                 return;
             }
-            if (options.count == MAX_USERBOOT_OPTIONS ||
-                bytes + token.size() + 1 > USERBOOT_OPTIONS_BYTES) {
+            if (options.count == MAX_USER_OPTIONS ||
+                bytes + token.size() + 1 > USER_OPTIONS_BYTES) {
                 log::error("userabi: dropping {}: no room for it in the first process's "
                            "processargs",
                            token);
@@ -260,9 +281,9 @@ namespace {
     /// %rdi, with its processargs message already queued on it (design 3.3).
     ///
     /// The message carries argv = {|program|}, the environment
-    /// collect_userboot_options() finds -- the image's `userboot.*` options,
-    /// which is how the userboot program learns `userboot.next` -- and the
-    /// startup handles:
+    /// collect_user_options() finds -- the image's user-space options, which
+    /// is how the userboot program learns `userboot.next` and init, through
+    /// it, `ours.autorun.boot` -- and the startup handles:
     ///
     ///   JobDefault  the root job, with its default rights -- what processes
     ///               are created under, so the first process is the one that
@@ -324,13 +345,13 @@ namespace {
         // Sized to hold the most this can ever write, so that encoding cannot
         // fail for want of room: the header, two handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
-        // and the environment collect_userboot_options() has already bounded.
+        // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 2 * sizeof(u32) + 64 + USERBOOT_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 2 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};
-        auto const environ = collect_userboot_options();
+        auto const environ = collect_user_options();
         for (auto index = u32(0); index < environ.count; ++index) {
             log::info("userabi: passing {} to {}", environ.tokens[index], program);
         }
@@ -663,8 +684,8 @@ auto userboot_init() -> void {
     // The first process starts like every other one on the runtime: a
     // bootstrap channel in %rdi with a processargs message on it, written
     // before the process exists (make_bootstrap()). What it gets is the root
-    // job, the BootFS and the `userboot.*` options -- everything userboot
-    // needs to start the next program and hand the first two on to it.
+    // job, the BootFS and the user-space options -- everything userboot
+    // needs to start the next program and hand the rest on to it.
     auto const has_bootfs = static_cast<bool>(resident_bootfs.dispatcher());
     auto bootstrap = make_bootstrap(program);
     if (!bootstrap) {
