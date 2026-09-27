@@ -26,10 +26,21 @@ import("//build/obi/obi_input.gni")
 # `config/user_bootfs` beside the first. A package that should have a list and
 # does not simply gives user space nothing -- the safe way to be wrong.
 #
+# With `init_startup = true` it also packages `config/init/startup`: init's
+# startup list, one line per init_startup() entry in deps
+# (//system/service/init/init_startup.gni), gathered from their `init_startup`
+# metadata the same way the whitelist is. It is the image's counterpart of the
+# children a Fuchsia parent manifest starts eagerly, and it is itself marked
+# user-visible, since init reads it out of the BootFS user space is given.
+# Opt-in for the same reason as the whitelist, and only meaningful in an image
+# whose user space starts with init.
+#
 # Parameters:
 #   deps (required)     — kernel executable + support files.
 #   prefix              — BootFS directory prefix (default: target_name).
 #   user_bootfs         — package the user-visible whitelist (default false).
+#   init_startup        — package init's startup list (default false; needs
+#                         user_bootfs, or init could not see the list).
 #   testonly, visibility
 template("kernel_package") {
   assert(defined(invoker.deps), "kernel_package($target_name) requires `deps`")
@@ -41,6 +52,32 @@ template("kernel_package") {
   }
 
   _user_bootfs = defined(invoker.user_bootfs) && invoker.user_bootfs
+  _init_startup = defined(invoker.init_startup) && invoker.init_startup
+  assert(!_init_startup || _user_bootfs,
+         "kernel_package($target_name): init_startup needs user_bootfs")
+
+  if (_init_startup) {
+    _startup = "$target_name.init_startup"
+    _startup_path = "config/init/startup"
+    generated_resource(_startup) {
+      forward_variables_from(invoker,
+                             [
+                               "deps",
+                               "testonly",
+                             ])
+      visibility = [ ":*" ]
+      data_keys = [ "init_startup" ]
+      output_conversion = "list lines"
+      outputs = [ _startup_path ]
+
+      # Seen by the whitelist below, which walks this target as one of its
+      # deps: without it the list would reach the BootFS but not user space.
+      metadata = {
+        bootfs_user_visible = [ _startup_path ]
+      }
+    }
+  }
+
   if (_user_bootfs) {
     _user_visible = "$target_name.user_visible"
     generated_resource(_user_visible) {
@@ -49,6 +86,9 @@ template("kernel_package") {
                                "deps",
                                "testonly",
                              ])
+      if (_init_startup) {
+        deps += [ ":$_startup" ]
+      }
       visibility = [ ":*" ]
       data_keys = [ "bootfs_user_visible" ]
       output_conversion = "list lines"
@@ -65,6 +105,9 @@ template("kernel_package") {
                            ])
     if (_user_bootfs) {
       deps += [ ":$_user_visible" ]
+    }
+    if (_init_startup) {
+      deps += [ ":$_startup" ]
     }
     type = "kernel-storage"
     prefix = _prefix

@@ -16,27 +16,22 @@ import("//build/obi/kernel_cmdline.gni")
 import("//build/product/ours_args.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
+import("//system/service/init/init_startup.gni")
 
 # The user programs this image carries: its boot flow first, then whatever
 # the build adds through `ours.with` (//build/product/ours_args.gni;
 # tools/set.py --with).
 #
 # The boot flow is this image's own and is not a per-build choice -- userboot
-# starts init, init starts the shell -- as in Fuchsia, where userboot always
-# starts component_manager and `fx set --with` only makes more packages
-# available without touching what boots. So `ours.with` adds to this list and
-# never replaces it: a program it names is built and packaged, and runs when
-# something running starts it.
+# starts init, init starts what its startup list names -- as in Fuchsia, where
+# userboot always starts component_manager and `fx set --with` only makes more
+# packages available without touching what boots. So `ours.with` adds to this
+# list and never replaces it: a program it names is built and packaged, and
+# runs when something running starts it.
 _user_programs = [
-  # 示例 shell。它不再是这个镜像的第一个用户程序 ——
-  # 那是下面的 init —— 而是 init 用 process_spawn_boot
-  # 起的第二个，所以仍要打进包里。
-  # 它不在共享零件里，因为「包里有哪些程序」是镜像的属性。
-  "//examples/shell",
-
   # The first system service. It is what userboot starts in this image
-  # (userboot.next in the cmdline below), and it starts the shell above with
-  # process_spawn_boot -- which is why the shell is still packaged.
+  # (userboot.next in the cmdline below), and it starts the entries of its
+  # startup list (the init_startup() targets below).
   "//system/service/init",
 ]
 
@@ -51,14 +46,31 @@ if (defined(ours.with)) {
   }
 }
 
+# init's startup list for this image: what init starts once userboot has
+# started it, and with which startup handles. Ours' counterpart of the eager
+# children of Fuchsia's bootstrap.cml; kernel_package("ours") below gathers
+# these into config/init/startup (init_startup = true).
+#
+# 示例
+# shell。它不在共享零件里，因为「开机起哪些程序」是镜像的属性。
+# `init` gives it the channel init runs its liveness check on (init sends, the
+# shell answers "pong").
+init_startup("shell") {
+  visibility = [ ":*" ]
+  program = "//examples/shell"
+  capabilities = [ "init" ]
+}
+
 # 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0
 # switchset 工具链，对标 Fuchsia kernel_package("zircon") 的 deps
 # 写法）。prefix="" ——BootFS 顶层是扁平命名空间，内核落在
 # vmours/image.elf 等顶层路径。
 kernel_package("ours") {
   # This package carries the image's user programs, so it carries the
-  # whitelist of what user space may see (//kernel/kernel_package.gni).
+  # whitelist of what user space may see (//kernel/kernel_package.gni), and
+  # init's startup list.
   user_bootfs = true
+  init_startup = true
 
   visibility = [
     ":*",
@@ -70,6 +82,7 @@ kernel_package("ours") {
   testonly = true
   prefix = ""
   deps = [
+    ":shell",
     "..:common_package_items",
     "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
   ]
