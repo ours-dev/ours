@@ -22,6 +22,22 @@ cpp_interface("autorun") {
   ]
 }
 
+# How a line of init's startup list, config/init/startup, reads: its command
+# (split like autorun, hence the dependency) and the capabilities it asks for
+# (include/init/startup.hpp). Its own target for :autorun's reason: the host
+# test reaches it without init.
+cpp_interface("startup") {
+  public = [ "include/init/startup.hpp" ]
+  public_deps = [
+    ":autorun",
+    "//system/public",
+  ]
+  visibility = [
+    ":*",
+    "test:*",
+  ]
+}
+
 # init: the first system service, the program userboot starts (userboot.next)
 # with the root job and the BootFS. For now its whole job is to look at the
 # BootFS, start the next program and prove the two can talk; supervising
