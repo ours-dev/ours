@@ -44,6 +44,7 @@ cpp_interface("headers") {
     "include/ustl/iterator/reverse_iterator.hpp",
     "include/ustl/iterator/traits.hpp",
     "include/ustl/function/fn.hpp",
+    "include/ustl/function/function.hpp",
     "include/ustl/function/bind.hpp",
     "include/ustl/function/invoke.hpp",
     "include/ustl/fmt/format_args.hpp",
@@ -205,6 +206,14 @@ executable("rc-race-test") {
 executable("rc-doc-examples-test") {
   testonly = true
   sources = [ "test/rc_doc_examples_test.cpp" ]
+  deps = [ ":headers" ]
+}
+
+# Function's 24-byte limit is checked by static_asserts on
+# std::is_constructible_v, so building it is half the test.
+executable("function-test") {
+  testonly = true
+  sources = [ "test/function_test.cpp" ]
   deps = [ ":headers" ]
 }
 
@@ -710,6 +719,7 @@ group("tests") {
     ":enum-bits-test",
     ":foundation-headers-test",
     ":foundation-test",
+    ":function-test",
     ":iiterator-headers-test",
     ":iiterator-test",
     ":intrusive-avltree-nodes-headers-test",
