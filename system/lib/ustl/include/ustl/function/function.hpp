@@ -24,7 +24,7 @@ namespace detail {
     ///
     /// Nothrow move construction is required because moving a Function moves its
     /// target, and Function's own move is noexcept.
-    template <typename T, std::size_t Size, std::size_t Align>
+    template <typename T, usize Size, usize Align>
     concept FitsInline =
         sizeof(T) <= Size && alignof(T) <= Align && std::is_nothrow_move_constructible_v<T>;
 } // namespace detail
@@ -68,8 +68,8 @@ class Function<R(Args...)> final {
   public:
     /// The most bytes a target may occupy, and the strictest alignment it may
     /// ask for.
-    constexpr static std::size_t INLINE_SIZE = 24;
-    constexpr static std::size_t INLINE_ALIGN = alignof(void *);
+    constexpr static usize INLINE_SIZE = 24;
+    constexpr static usize INLINE_ALIGN = alignof(void *);
 
   private:
     /// Everything but the size, spelled once for both places a callable is

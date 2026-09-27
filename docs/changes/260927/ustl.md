@@ -109,3 +109,38 @@ Zircon `fit::inline_function<Signature, inline_target_size>`
   不需要保存的场景，`FunctionRef` 更轻（两个指针），真有调用方需要时再加。
 - **没对平凡可复制的目标走 memcpy 快路径。** 每种目标一张表，relocate 就是
   一次移动构造加析构，对平凡类型编译器本身就会折叠成拷贝。
+
+## Function 的大小常量改用 usize（2026-09-27）
+
+**文件**
+- `system/lib/ustl/include/ustl/function/function.hpp`：`INLINE_SIZE`、`INLINE_ALIGN`，以及 `detail::FitsInline` 的两个模板参数
+- `system/lib/ustl/test/function_test.cpp`：`Bytes<N>` 的模板参数
+
+**症状**
+无运行时症状，是写法问题。项目约定整数类型用 prelude 里的别名，而新写的
+`Function` 用了 `std::size_t`。
+
+**原因**
+prelude（`kernel/include/ours/prelude.hpp`）会被强制包含进所有 C++ 编译：
+内核工具链通过 `//kernel/products:headers`，主机工具链通过 `host-prelude`，
+用户程序通过 `//system:user.headers`。所以 ustl 头文件里直接写 `usize` 在哪个
+工具链下都能编译，`ustl/io/direct_memory.hpp` 早就是这么写的。
+
+**改法**
+
+之前：`constexpr static std::size_t INLINE_SIZE = 24;`
+
+之后：`constexpr static usize INLINE_SIZE = 24;`
+
+`<cstddef>` 保留，`std::byte` 和 `std::nullptr_t` 还要用。
+
+**参照**
+无，本项目自有约定。
+
+**验证**
+- 主机测试 `function-test` 通过。
+- `kernel.dev.obi` 构建通过。
+
+**故意没做**
+ustl 里其它 44 个头文件的 `std::size_t` 这次没动。那是一次单独的全库扫描，
+不和这次混在一起。

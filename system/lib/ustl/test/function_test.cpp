@@ -23,7 +23,7 @@ using ustl::function::Function;
 
 // A lambda's closure is its captures, laid out like a struct; these stand in
 // for closures of an exact size.
-template <std::size_t N>
+template <usize N>
 struct Bytes {
     std::array<std::byte, N> bytes{};
     auto operator()() const -> int {
