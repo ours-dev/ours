@@ -6,32 +6,26 @@ declare_args() {
   # Per-build customization of what a kernel image carries, as one bundle.
   #
   # This is Ours' counterpart of Fuchsia's `fx set --with`: it lets one build
-  # directory say "this image carries these user programs, and userboot starts
-  # that one", so that several sessions can each build and boot their own image
-  # side by side instead of sharing one out/bringup.x86 and one hard-coded
-  # program set. tools/set.py writes it from --with/--next; it can also be
-  # written into args.gn by hand.
+  # directory say "this image also carries these user programs", so that
+  # several sessions can each build and boot their own image side by side
+  # instead of sharing one out/bringup.x86. tools/set.py writes it from --with;
+  # it can also be written into args.gn by hand.
+  #
+  # It follows Fuchsia's model, in which what boots is the product's and a
+  # build only makes more programs available: userboot always starts
+  # component_manager there (userboot.next), and `fx set --with` adds packages
+  # without touching that. Here the image's boot flow -- userboot, init, the
+  # shell -- is likewise fixed by the image and not a field of this bundle.
   #
   # Fields (every one optional):
   #
   #   with
   #     List of plain GN labels -- "//examples/foo", no toolchain suffix --
-  #     naming the user programs the image carries. The image appends the user
-  #     toolchain itself, because a label resolved in the kernel toolchain would
-  #     build a -mcmodel=kernel "user program". When present this REPLACES the
-  #     image's own default list rather than adding to it: ninja only builds
-  #     what the default target can reach through deps, so leaving a program
-  #     out of this list is exactly what keeps it from being built for the
-  #     image.
-  #
-  #   next
-  #     BootFS file name of the program userboot starts next -- the value of
-  #     `userboot.next=`. userboot itself is always the first user process and
-  #     is not chosen here (that would be kernel.select.userboot, which images
-  #     leave at its default); this field names what userboot hands the root
-  #     job and the BootFS to. Named after the option, as in Zircon, rather than
-  #     "userboot", because its value is never userboot. Whatever it names must
-  #     be among the programs the image carries.
+  #     naming user programs the image carries IN ADDITION to its boot flow.
+  #     The image appends the user toolchain itself, because a label resolved
+  #     in the kernel toolchain would build a -mcmodel=kernel "user program".
+  #     A program named here is built and packaged into the BootFS; it runs
+  #     when something that is already running starts it.
   #
   # Why one scope and not one argument per field: new knobs land as new fields
   # without growing the flat argument namespace. The cost is GN's semantics for

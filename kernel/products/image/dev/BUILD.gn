@@ -17,31 +17,38 @@ import("//build/product/ours_args.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 
-# The user programs this image carries, and which one userboot starts. Both
-# can be replaced per build through the `ours` argument bundle
-# (//build/product/ours_args.gni; tools/set.py --with/--next); what
-# follows are this image's own defaults.
+# The user programs this image carries: its boot flow first, then whatever
+# the build adds through `ours.with` (//build/product/ours_args.gni;
+# tools/set.py --with).
+#
+# The boot flow is this image's own and is not a per-build choice -- userboot
+# starts init, init starts the shell -- as in Fuchsia, where userboot always
+# starts component_manager and `fx set --with` only makes more packages
+# available without touching what boots. So `ours.with` adds to this list and
+# never replaces it: a program it names is built and packaged, and runs when
+# something running starts it.
+_user_programs = [
+  # 示例 shell。它不再是这个镜像的第一个用户程序 ——
+  # 那是下面的 init —— 而是 init 用 process_spawn_boot
+  # 起的第二个，所以仍要打进包里。
+  # 它不在共享零件里，因为「包里有哪些程序」是镜像的属性。
+  "//examples/shell",
+
+  # The first system service. It is what userboot starts in this image
+  # (userboot.next in the cmdline below), and it starts the shell above with
+  # process_spawn_boot -- which is why the shell is still packaged.
+  "//system/service/init",
+]
+
 if (defined(ours.with)) {
-  _user_programs = ours.with
-} else {
-  _user_programs = [
-    # 示例 shell。它不再是这个镜像的第一个用户程序 ——
-    # 那是下面的 init —— 而是 init 用 process_spawn_boot
-    # 起的第二个，所以仍要打进包里。
-    # 它不在共享零件里，因为「包里有哪些程序」是镜像的属性。
-    "//examples/shell",
-
-    # The first system service. It is what userboot starts in this image
-    # (userboot.next in the cmdline below), and it starts the shell above with
-    # process_spawn_boot -- which is why the shell is still packaged.
-    "//system/service/init",
-  ]
-}
-
-if (defined(ours.next)) {
-  _next = ours.next
-} else {
-  _next = "init"
+  # A program already in the boot flow is skipped rather than listed twice,
+  # so naming one in --with is harmless instead of a duplicate-dependency
+  # error.
+  foreach(program, ours.with) {
+    if (filter_include(_user_programs, [ program ]) == []) {
+      _user_programs += [ program ]
+    }
+  }
 }
 
 # 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0
@@ -79,10 +86,11 @@ kernel_package("ours") {
 }
 
 # The image-level kernel cmdline. `userboot.next` names the program userboot
-# starts next: init by default, which takes the root job userboot hands it
-# and starts the shell with it (P0's first vertical slice,
-# docs/design/260923/userspace-interface.md section 5). ours.next overrides
-# the name (see _next at the top of this file).
+# starts next: init, which takes the root job userboot hands it and starts the
+# shell with it (P0's first vertical slice,
+# docs/design/260923/userspace-interface.md section 5). Fixed here rather than
+# taken from a build argument: the boot flow belongs to the image (see
+# _user_programs at the top of this file).
 #
 # The first user process is always userboot -- kernel.select.userboot is left
 # unset, so it takes its default -- and init no longer runs in its place. The
@@ -107,7 +115,7 @@ kernel_cmdline("cmdline") {
     "//products/*",
   ]
   args = [
-    "userboot.next=$_next",
+    "userboot.next=init",
     "kernel.shell=true",
   ]
 }

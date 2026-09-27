@@ -340,3 +340,85 @@ ours 侧的 userboot.next 实现见 `docs/changes/260926/userabi.md` 最后五�
 **故意没做**
 - 没加 `kernel.select.userboot` 对应的开关：镜像都用默认的 `userboot`，要换 userboot 变体（像 Zircon 的
   `userboot-test-rust`）时再加，字段可以叫 `userboot`——那时它的值才真的是一个 userboot。
+
+## 改用 Fuchsia 的模型：删掉 `--next`，`--with` 改为追加（2026-09-26）
+
+**文件**
+- `build/product/ours_args.gni` — 删掉 `next` 字段；`with` 改为"在镜像自己的程序之外追加"
+- `kernel/products/image/dev/BUILD.gn` — 开机流程固定为 `userboot.next=init`；`ours.with` 追加进程序列表，已在列表里的跳过
+- `tools/set.py` — 删掉 `--next`，以及只为它存在的 gn gen 后检查和失败撤销逻辑
+
+**症状**
+无运行时症状，是模型问题。用户问"都 `--with` 了为啥还要 `--next`"，追下去发现前两条的模型和 Fuchsia 不一样：
+ours 让一次构建同时改"包里有什么"（`--with` 替换列表）和"开机跑什么"（`--next`），
+而 Fuchsia 里 `--with` 从来不碰开机流程。
+
+**原因**
+Fuchsia 的分工是：开机流程属于产品，构建只让更多程序"可用"。
+- 开机固定是 userboot → component_manager（`zircon/kernel/lib/userabi/userboot/main.rs` 的
+  `DEFAULT_NEXT_BOOT = "bin/component_manager+--boot"`，只有 eng 的开发配置能改，
+  见 `src/lib/assembly/platform_configuration/src/subsystems/development.rs`）；
+  component_manager 再按 `root.cml` → `bootstrap` 起系统服务，其中 console-launcher 在串口上起 shell。
+- `fx set --with` 只把包加进 universe（`tools/devshell/set` 的说明），开机后再按需运行。
+- 要"开机后自动跑某个程序"，用的是 `zircon.autorun.boot=<command>`，由 console-launcher 在 shell 起来后执行
+  （`docs/reference/kernel/kernel_cmdline.md`），开机流程本身仍不变。
+
+照这个模型，`--next` 让每个构建目录改开机流程，是把产品的属性搬进了构建参数；
+`--with` 替换列表更会让"开机流程需要的程序"（init、shell）被一个构建参数拿掉。
+
+改前：
+
+```gn
+if (defined(ours.with)) {
+  _user_programs = ours.with
+} else {
+  _user_programs = [ "//examples/shell", "//system/service/init" ]
+}
+if (defined(ours.next)) {
+  _next = ours.next
+} ...
+    "userboot.next=$_next",
+```
+
+**改法**
+改后：
+
+```gn
+_user_programs = [ "//examples/shell", "//system/service/init" ]
+if (defined(ours.with)) {
+  foreach(program, ours.with) {
+    if (filter_include(_user_programs, [ program ]) == []) {
+      _user_programs += [ program ]
+    }
+  }
+}
+...
+    "userboot.next=init",
+```
+
+- 开机流程（userboot → init → shell）写死在镜像里，不再是构建参数。
+- `ours.with` 追加：给的程序会被编译、打进 BootFS，但开机不会自动运行它。
+  已经在开机流程里的程序（比如再写一次 `//examples/shell`）跳过，不会变成重复依赖。
+- set.py 的 gn gen 后检查整段删掉：它唯一检查的是"`--next` 指名的程序在不在包里"，
+  现在开机流程固定、`--with` 只增不减，不会再出现这种不一致。
+
+代价：以前"只想构建 A 就不构建 B"的诉求，现在只对**额外**的程序成立；init、shell 是开机流程，
+总会被编译——这和 Fuchsia 的 base 包集合是同一回事。
+
+**参照**
+Fuchsia `fx set --with`（`tools/devshell/set`）、userboot 的 `DEFAULT_NEXT_BOOT`（`userboot/main.rs`）、
+`root.cml`/`bootstrap.cml`、console-launcher 的 `autorun_boot` 配置（`src/bringup/bin/console-launcher`）。
+
+**验证**
+- `gn format --dry-run` 通过；set.py 里不再有 next 相关代码，`--next` 被 argparse 拒绝，不建目录。
+- 默认目录：rsp 为 `--entry=userboot.next=init`，白名单 `userboot vdso shell init`。
+- `--with //kernel/lib/syscall/test/fault_probe --with //examples/shell`：白名单 `userboot vdso shell init fault_probe`，
+  shell 只出现一次。
+- QEMU 同时跑 60 秒，零 panic：默认 dev 包里 8 个文件；加了 fault_probe 的 dev 包里 9 个文件（日志列出
+  `fault_probe (7952 bytes)`），开机同样是 `userboot: started init` → `init: started with the root job` →
+  `shell: libc checks passed`，fault_probe 没有被运行（0 个进程）；dbg_1 照旧 userboot → shell，fault_probe 被 kill 59 次。
+
+**故意没做**
+- `--autorun`（对应 `zircon.autorun.boot`）还没加：要 init/shell 先能读这个选项并运行指名的程序，
+  那是用户态的活，另交会话；落地后构建这边再加开关，并把刚删的"指名的程序必须在包里"检查按 autorun 重新加回来。
+- 没动 dbg_1：它的程序集合和开机流程就是这个诊断镜像的用途，也不读 `ours`。
