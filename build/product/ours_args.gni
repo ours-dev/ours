@@ -1,0 +1,46 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+declare_args() {
+  # Per-build customization of what a kernel image carries, as one bundle.
+  #
+  # This is Ours' counterpart of Fuchsia's `fx set --with`: it lets one build
+  # directory say "this image carries these user programs, and userboot starts
+  # that one", so that several sessions can each build and boot their own image
+  # side by side instead of sharing one out/bringup.x86 and one hard-coded
+  # program set. tools/set.py writes it from --with/--userboot; it can also be
+  # written into args.gn by hand.
+  #
+  # Fields (every one optional):
+  #
+  #   with
+  #     List of plain GN labels -- "//examples/foo", no toolchain suffix --
+  #     naming the user programs the image carries. The image appends the user
+  #     toolchain itself, because a label resolved in the kernel toolchain would
+  #     build a -mcmodel=kernel "user program". When present this REPLACES the
+  #     image's own default list rather than adding to it: ninja only builds
+  #     what the default target can reach through deps, so leaving a program
+  #     out of this list is exactly what keeps it from being built for the
+  #     image.
+  #
+  #   userboot
+  #     BootFS file name that userboot starts as the first user process -- the
+  #     value of `kernel.select.userboot=`. userboot is the kernel-side launcher;
+  #     this only names its target. Whatever it names must be among the programs
+  #     the image carries.
+  #
+  # Why one scope and not one argument per field: new knobs land as new fields
+  # without growing the flat argument namespace. The cost is GN's semantics for
+  # scope arguments: args.gn replaces the default scope wholesale, it does not
+  # merge field by field. So the default is empty and each consumer supplies its
+  # own default for a missing field (`if (defined(ours.with))`), which is also
+  # where those defaults belong -- which programs an image carries by default is
+  # a property of that image, not of the build.
+  #
+  # Consumed by //kernel/products/image/dev only. dev.dbg_1 is a fixed
+  # diagnostic image whose program set is its purpose (see its BUILD.gn), and
+  # fake stands in for vmours; neither reads this.
+  ours = {
+  }
+}
