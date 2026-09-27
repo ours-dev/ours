@@ -1,4 +1,5 @@
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/assert.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
@@ -6,6 +7,7 @@
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_mapping.hpp>
 
+#include <arch/interrupt.hpp>
 #include <gktl/counter.hpp>
 #include <gktl/init_hook.hpp>
 #include <heap/new.hpp>
@@ -236,29 +238,42 @@ auto VmAspace::root_vma() -> ustl::Arc<VmArea> {
 auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
     m_canary.verify<Self>();
 
-    // Refused rather than resolved, because resolving it would block where
-    // blocking is not allowed. m_lock is a mutex now, and so is the VMO's lock
-    // beneath it; taking either with a spin lock held, with preemption off, or
-    // with interrupts masked parks a thread that can never be woken -- whoever
-    // would release the lock cannot be scheduled onto a CPU that is spinning
-    // for it.
+    // Every caller must be able to block, and this is where that is enforced
+    // for both entries: page_fault() from the architecture's fault handler and
+    // soft_fault() from kernel code that has just dropped its locks to resolve
+    // a fault out of line.
     //
-    // Only the architecture's fault entry can tell, so it says so with
-    // VmfCause::MaySleep; see may_sleep_resolving() in arch/x86/mm/fault.cpp.
-    // Absent means no by design, so a caller that never learned about this flag
-    // gets an error instead of a wedged CPU.
+    // Resolving may block: m_lock is a mutex, the VMO's lock beneath it will be
+    // one, and supplying a page can wait on reclaim. So this is not a question
+    // this function can answer by refusing -- there is no fault it could
+    // resolve without blocking -- only one it can check its callers got right.
+    // This used to be a VmfCause::MaySleep bit the fault entry set and this
+    // function refused without. The hardware path now stops the kernel before
+    // any fault that may not sleep reaches here (x86_handle_page_fault()), which
+    // left the bit redundant there and wrong everywhere else: soft_fault() never
+    // set it, so every soft fault was refused.
     //
-    // Reaching here without it is a kernel bug either way: it means kernel code
-    // touched pageable memory while holding something. Linux says the same
-    // thing by sending such a fault to bad_area_nosemaphore() instead of taking
-    // mmap_lock. It is logged rather than silent because nothing else will say
-    // what happened -- a user copy turns this into the InvArgs its system call
-    // returns, and the address alone does not name the caller's mistake.
-    if (!(cause & VmfCause::MaySleep)) {
-        log::error("page fault at {:#x} in a context that cannot sleep; cause={:#x}", va,
-                   static_cast<usize>(cause));
-        return Status::BadState;
-    }
+    // Zircon asks the same of its callers in the same place --
+    // PageFaultInternal() opens with lockdep::AssertNoLocksHeld() -- and
+    // SoftFault() carries the same contract in its header: may block, must be
+    // called without locks held.
+    //
+    // Two of the four atomic conditions are checked. Interrupt-handler context
+    // is implemented here as raised preemption, and preemption itself cannot be
+    // checked against a fixed value in this shared path: a hardware fault
+    // arrives with the exception preamble's count of one, a soft fault with
+    // none. The fault entry checks preemption against its own baseline; a soft
+    // fault caller in an interrupt handler would already have a spin lock or
+    // masked interrupts to be caught by below, as every spin lock in this tree
+    // is held with interrupts off.
+    //
+    // ASSERT rather than DEBUG_ASSERT for the reason the fault entry stops the
+    // kernel in release builds as well: with the check compiled out, a violation
+    // does not fail, it hangs on a mutex that can never be released to it.
+    ASSERT(sync::SpinLock::num_held_cpu() == 0,
+           "page fault at {:#x} resolved with {} spin lock(s) held on this CPU", va,
+           sync::SpinLock::num_held_cpu());
+    ASSERT(!arch::irqs_disabled(), "page fault at {:#x} resolved with interrupts disabled", va);
 
     auto status = Status::Ok;
     // The fault descriptor lives here, outside the loop, so that its

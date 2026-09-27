@@ -145,9 +145,10 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// in that order.
     ///
     /// Reaching a sleepable context took the #PF handler enabling interrupts
-    /// first, which it does only where sleeping is allowed; VmfCause::MaySleep
-    /// carries that answer down, and page_fault_internal() refuses a fault
-    /// that arrives without it rather than blocking where it must not.
+    /// first, which it does only where sleeping is allowed; a fault from a
+    /// context that may not sleep stops the kernel there instead. Every path
+    /// into page_fault_internal() -- that handler and soft_fault() -- must
+    /// therefore arrive able to block, and page_fault_internal() asserts it.
     ///
     /// Zircon's counterpart is a CriticalMutex (vm_aspace.h), whose point is
     /// the timeslice extension that keeps a holder from being preempted in the

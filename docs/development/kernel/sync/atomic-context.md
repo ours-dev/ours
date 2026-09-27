@@ -186,19 +186,44 @@ must know whether it may sleep. `may_sleep_resolving()` in
   one, because of that preamble;
 - being in an interrupt handler is covered by the preemption count.
 
-The answer travels to the architecture-independent resolver as
-`VmfCause::MaySleep`, and `VmAspace::page_fault_internal()` refuses a fault
-that arrives without it. The default is "may not sleep", so a caller that
-never learned about the flag gets an error rather than a CPU wedged on a mutex.
+A "no" is fatal, not a refusal. Resolving any fault may block -- the address
+space's lock is a mutex, the VMO's will be one, supplying a page can wait on
+reclaim -- so there is no correct way to resolve a fault from a context that
+promised not to sleep. What gets here is kernel code that touched pageable
+memory while holding something, which is a bug. A ring-0 fault logs one line
+saying why and returns an error, so `x86_dispatch_exception()` stops the
+kernel through `panic_exception()` with the full register dump; a ring-3 fault
+can only get here if this CPU's counts are corrupt, and panics outright.
+
+Only faults that may sleep reach the architecture-independent resolver.
+`VmAspace::page_fault_internal()` is shared by both entries -- `page_fault()`
+from the fault handler, and `soft_fault()` from kernel code resolving a fault
+out of line -- and it asserts, rather than checks, that its caller may block:
+no spin lock held, interrupts enabled. Preemption cannot be asserted there
+against a fixed value, because the two entries arrive with different
+baselines -- one from the exception preamble, zero from a soft fault.
+
+This is Zircon's arrangement. `x86_pfe_handler()` never sends a fault that
+may not block into the VM, and `VmAspace::PageFaultInternal()` opens with
+`lockdep::AssertNoLocksHeld()`. The one difference is that Zircon's checks are
+debug-only, so a violation in a release build goes on to take a mutex under a
+spin lock and hangs; here both stay in release builds and stop the kernel.
+
+An earlier version carried the answer down as a `VmfCause::MaySleep` bit and
+had the resolver refuse faults without it. That was worse on two counts: a
+refused user copy turned the kernel bug into an ordinary `InvArgs` from the
+system call, and `soft_fault()` never set the bit, so every soft fault was
+refused.
 
 A kernel-mode fault is not automatically atomic. Faults taken inside
-`user_copy` during a system call are kernel mode, hold no lock, and sleep
-normally; in the boot measured when this was written, five of eight faults
-were of that kind. What is refused is only kernel code touching pageable
-memory while holding a spin lock, with preemption off, or with interrupts
-masked. A refused fault inside a user copy makes the copy fail, which is the
-semantics of Linux's `pagefault_disable()` plus `__copy_from_user_inatomic()`:
-the caller drops what it holds and retries with the sleeping variant.
+`user_copy` during a system call are kernel mode, hold no lock, and may sleep;
+in the boot measured when this was written, five of eight faults were of that
+kind. The work that legitimately needs to touch user memory while holding a
+lock is a different pattern -- Linux's `pagefault_disable()` plus
+`__copy_from_user_inatomic()`, Zircon's `*_capture_faults()` copies -- in which
+the copy reports the fault instead of resolving it, and the caller drops its
+lock, calls `soft_fault()`, and retries. This kernel does not have that
+interface yet; nothing in the tree copies under a lock.
 
 ## References
 

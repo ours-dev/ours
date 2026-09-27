@@ -30,26 +30,6 @@ enum class VmfCause {
     ///
     /// Zircon: VMM_PF_FLAG_INSTRUCTION.
     Instruction = BIT(4),
-
-    /// The faulting context can be put to sleep, so the resolver is free to
-    /// take a mutex -- which it has to, because VmAspace's lock is one.
-    ///
-    /// Set by the architecture's fault entry, which is the only place that can
-    /// tell: it has the interrupted frame, and it knows whether this CPU was
-    /// holding a spin lock or had disabled preemption at the time. On x86 that
-    /// is may_sleep_resolving() in arch/x86/mm/fault.cpp.
-    ///
-    /// Absent is the conservative answer on purpose. A caller that does not
-    /// know whether it may sleep gets a refused fault rather than a
-    /// deadlocked one, so forgetting to set this fails loudly instead of
-    /// hanging the CPU on a mutex it can never be scheduled to acquire.
-    ///
-    /// Linux does not carry this in its flags word -- faulthandler_disabled()
-    /// is asked directly at the top of do_user_addr_fault(), which it can do
-    /// because the check and the resolver live in the same arch file. Here the
-    /// resolver is architecture-independent and cannot see the frame, so the
-    /// answer has to travel.
-    MaySleep = BIT(5),
 };
 USTL_ENABLE_ENUM_BITMASK(VmfCause);
 

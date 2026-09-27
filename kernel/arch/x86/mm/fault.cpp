@@ -263,10 +263,6 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // Zircon's x86_pfe_handler() enables interrupts at the same point and for
     // the same reason; Linux's do_user_addr_fault() does it before it takes
     // mmap_lock.
-    //
-    // MaySleep tells the architecture-independent resolver the same thing it
-    // told the CPU: the resolver never sees the frame or this CPU's lock depth.
-    cause |= VmfCause::MaySleep;
     arch::local_irq_enable();
 
     auto const status = task::Thread::Current::page_fault(addr, cause);

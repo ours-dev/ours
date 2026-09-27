@@ -595,3 +595,99 @@ if (!(cause & VmfCause::MaySleep)) {
 - 没有动 `VmObjectPaged::m_mutex`，缺页路径也还没去拿它——那是第 3 步。
 - `docs/repairs/260925/mm.md` 第 1 条**仍未删**：三步走完两步，页树现在还是只由地址空间的锁
   间接保护着，`fault()` 进 cursor 之前仍未取 VMO 的锁。
+
+---
+
+## 删掉 `VmfCause::MaySleep`，缺页解析器改为断言调用方可阻塞（2026-09-26）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_fault.hpp` — 删除 `VmfCause::MaySleep`
+- `kernel/arch/x86/mm/fault.cpp` — 不再设置它
+- `kernel/mm/vm_aspace.cpp` — `page_fault_internal()` 的拒绝改为两条 `ASSERT`
+- `kernel/mm/include/ours/mm/vm_aspace.hpp` — `m_lock` 的注释跟着改
+- `docs/development/kernel/sync/atomic-context.md` — 实例一节改成现状
+
+**症状**
+
+`VmAspace::soft_fault()` 每次都会被拒。它不经过 `x86_handle_page_fault()`，没人给它加
+`MaySleep`，而 `page_fault_internal()` 见不到这一位就返回 `BadState`。当前没有调用方，所以没出事；
+但第一个调用方恰恰会是 capture 模式的"放锁、`soft_fault()`、重试"，也就是最需要它的地方。
+
+**原因**
+
+`MaySleep` 是在"不可睡就拒绝"这个设计下引入的：体系结构入口知道能不能睡，解析器不知道，
+所以要一路传下去。上一条（`x86-mm.md` 第 2 条）已经让不可睡的硬件缺页在入口直接停机，
+于是能进解析器的硬件缺页一定可睡，这一位对它们只剩冗余；而对 `soft_fault()` 这类
+不经入口的调用方，它又是错的——缺省值"不可睡"把合法的调用挡在了外面。
+
+更根本的一点：解析器面对"调用方不能睡"时，并没有一个正确的动作可做。它能解析的每一个缺页都可能阻塞，
+所以这不是它该用返回值回答的问题，只是它该检查调用方有没有做对的前提。
+
+Zircon 正是这样定义的：`VmAspace::PageFaultInternal()`（`zircon/kernel/vm/vm_aspace.cc`）
+第一行是 `lockdep::AssertNoLocksHeld()`，`SoftFault()` 的头文件注释写明
+"May block on page requests and must be called without locks held"，`SoftFault()` 本身只是
+`PageFault(va, flags | VMM_PF_FLAG_SW_FAULT)`。
+
+**改法**
+
+改前：
+
+```cpp
+if (!(cause & VmfCause::MaySleep)) {
+    log::error("page fault at {:#x} in a context that cannot sleep; cause={:#x}", va,
+               static_cast<usize>(cause));
+    return Status::BadState;
+}
+```
+
+改后：
+
+```cpp
+ASSERT(sync::SpinLock::num_held_cpu() == 0,
+       "page fault at {:#x} resolved with {} spin lock(s) held on this CPU", va,
+       sync::SpinLock::num_held_cpu());
+ASSERT(!arch::irqs_disabled(), "page fault at {:#x} resolved with interrupts disabled", va);
+```
+
+`x86_handle_page_fault()` 里那句 `cause |= VmfCause::MaySleep;` 删掉，`vm_fault.hpp` 里的定义连同注释删掉。
+`soft_fault()` 本身一行没改：拒绝没了，共同入口上的断言自然覆盖它。
+
+只断言四个条件里的两个。抢占在这里没法对着固定值查：硬件缺页带着异常前导抬的 1 进来，
+软件缺页是 0。入口处已经按自己的基线查过抢占；而中断处理程序里调 `soft_fault()` 的话，
+必然持着自旋锁或关着中断——本内核所有自旋锁都是 `IrqSave` 持有的——会被这两条抓到。
+
+用 `ASSERT` 而不是 `DEBUG_ASSERT`，理由和入口处在 release 构建里也停机一样：检查被编译掉之后，
+违规不会失败，而是挂死在一把永远轮不到它的 Mutex 上。这是比 Zircon 严的地方，它这里只在 debug 构建检查。
+
+**参照**
+
+`Zircon VmAspace::PageFaultInternal()`、`VmAspace::SoftFault()`、`lockdep::AssertNoLocksHeld()`；
+`Linux might_sleep()`——在可能睡的函数入口断言调用方不在原子上下文里，同一个思路。
+
+**验证**
+
+构建通过；`clang-format` 与 `clang-tidy -p out/bringup.x86` 跑过 `vm_aspace.cpp` 和 `fault.cpp`，
+改动行无新告警。两个镜像各跑 50 秒，零错误、零断言。
+
+`soft_fault()` 没有调用方，用临时探针在每次硬件缺页解析完、仍在可睡上下文里时，对同一地址再调一次
+`soft_fault()`，比较两个入口的返回值（`kernel.dev.dbg_1.obi`）：
+
+```
+PROBE #1 addr=0x10               user=true  page_fault=4  soft_fault=4  (BadState=16)
+PROBE #2 addr=0xffff800000000000 user=true  page_fault=4  soft_fault=4  (BadState=16)
+PROBE #3 addr=0xa00000           user=true  page_fault=20 soft_fault=20 (BadState=16)
+PROBE #4 addr=0x7fffffffe000     user=false page_fault=4  soft_fault=4  (BadState=16)
+```
+
+4 是 `NotFound`，20 是 `AccessDenied`。`soft_fault()` 在用户态和 user_copy 两种上下文里都和
+`page_fault()` 给出同样的答案，没有一次是改前会得到的 `BadState`，也没有触发断言。探针已撤掉。
+
+探针还顺带说明了一件事：**这次启动里没有任何一次缺页被成功解析**。三次是 fault_probe
+故意给的坏地址，user_copy 撞到的 `0x7fffffffe000` 也解析不了，拷贝失败返回。
+也就是说，按需分页的成功路径目前只有当初写 `VmMapping::fault()` 时的专项探针测过，
+正常启动根本走不到。
+
+**故意没做**
+
+- 仍然不做 capture 模式的拷贝接口。树里没有在锁里做 user copy 的调用方。
+- `docs/repairs/260925/mm.md` 第 1 条仍未删：缺页路径还没在建 cursor 前拿 VMO 的锁，那是第 3 步。
