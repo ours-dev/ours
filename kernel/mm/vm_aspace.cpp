@@ -217,6 +217,8 @@ auto VmAspace::destroy() -> Status {
         m_destroyed = true;
 
         last_fault = ustl::move(m_last_fault);
+        // m_lock is the root VMA's lock; the analysis only sees two names.
+        m_root_vma->get_lock().assert_held();
         status = m_root_vma->destroy();
         root = ustl::move(m_root_vma);
     }
@@ -306,12 +308,14 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
                 VM_ASPACE_LAST_FAULT_HIT.add(1);
             } else {
                 VM_ASPACE_LAST_FAULT_MISS.add(1);
+                m_root_vma->get_lock().assert_held();
                 m_last_fault = ustl::Arc<VmMapping>::adopt(m_root_vma->find_mapping_locked(vmf.va));
                 if (!m_last_fault) {
                     return Status::NotFound;
                 }
             }
 
+            m_last_fault->get_lock().assert_held();
             auto const [final_status, mapped] = m_last_fault->page_fault(&vmf);
             status = final_status;
             num_mapped = static_cast<u32>(mapped);

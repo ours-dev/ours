@@ -180,8 +180,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         return !!(m_vmaf & VmaFlags::Mapping);
     }
 
-    FORCE_INLINE
-    auto get_lock() -> sync::Mutex & {
+    TA_RETURN_CAPABILITY(m_aspace->get_lock()) FORCE_INLINE auto get_lock() -> sync::Mutex & {
         return m_aspace->get_lock();
     }
 
@@ -345,9 +344,11 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         m_vmaf |= VmaFlags::Active;
     }
 
+    TA_REQUIRES(get_lock())
     virtual auto activate() -> Status;
 
     /// This routine by default just remove itself.
+    TA_REQUIRES(get_lock())
     virtual auto destroy() -> Status;
 
     friend class VmObject;

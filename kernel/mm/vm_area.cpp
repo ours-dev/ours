@@ -53,6 +53,10 @@ auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *par
         // A root VMA has no parent so just mark it active.
         self->mark_active();
     } else {
+        // Created under the parent's lock, which is this area's too: both
+        // live in one address space. Asserted, because the analysis does not
+        // follow the lock from create_subvma() through Builder to here.
+        self->get_lock().assert_held();
         self->activate();
     }
 
@@ -310,6 +314,7 @@ auto VmArea::map_with_vmo(VmPlacement where, usize size, MmuFlags mmuf, ustl::Ar
             // drops it on its own.
             auto const teardown = [&] {
                 Guard guard{get_lock()};
+                mapping->get_lock().assert_held();
                 return mapping->destroy();
             }();
             if (Status::Ok != teardown) {
@@ -434,6 +439,8 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
             // actually held the key, so nothing is released twice.
             child->retain();
             iter = m_subvmas.erase(iter);
+            // The same lock as ours; see VmAreaOrMapping::get_lock().
+            child->get_lock().assert_held();
             auto const status = child->destroy();
             child->release();
             if (Status::Ok != status) {
@@ -452,6 +459,7 @@ auto VmArea::unmap_locked(VirtAddr base, usize size) -> Status {
         // |overlap_base| straight through: VmMapping::unmap_locked() takes an
         // absolute address, the same as its protect_locked() sibling and the
         // same as what VmMapping::unmap() computes before calling it.
+        mapping->get_lock().assert_held();
         auto const status = mapping->unmap_locked(overlap_base, overlap_last - overlap_base + 1,
                                                   UnmapOptions::None);
         if (Status::Ok != status) {
@@ -596,6 +604,7 @@ auto VmArea::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status 
         VirtAddr const overlap_base = std::max(mapping->base(), base);
         VirtAddr const overlap_last = std::min(mapping->last(), last);
 
+        mapping->get_lock().assert_held();
         auto const status =
             mapping->protect_locked(overlap_base, overlap_last - overlap_base + 1, mmuf);
         if (Status::Ok != status) {
@@ -685,6 +694,7 @@ auto VmArea::destroy() -> Status {
             // takes the mapping out of this set whatever its unmap did, and
             // the one answer that leaves it linked -- BadState, already
             // destroyed -- cannot come from a mapping still in a set.
+            aom->get_lock().assert_held();
             if (auto const status = aom->destroy(); Status::Ok != status) {
                 DEBUG_ASSERT(status != Status::BadState, "a destroyed mapping was still linked");
                 if (Status::Ok == first_error) {
@@ -702,6 +712,7 @@ auto VmArea::destroy() -> Status {
         // spellings compile the same and differ only when the walk is more than
         // one level deep, which is why the shape of the loop hid it.
         auto *const parent = curr->m_parent;
+        curr->get_lock().assert_held();
         curr->Base::destroy();
         if (curr.as_ptr() == this) {
             break;

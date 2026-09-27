@@ -50,6 +50,7 @@ class VmMapping final: public VmAreaOrMapping {
     auto unmap(VirtAddr base, usize, UnmapOptions) -> Status;
 
     /// Return the final mapping status and how many pages mapped.
+    TA_REQUIRES(get_lock())
     auto page_fault(VmFault *vmf) -> ustl::Pair<Status, usize>;
 
     VmMapping(VmArea *, VirtAddr, usize, VmaFlags, ustl::Arc<VmObject>, usize, char const *);
@@ -67,6 +68,7 @@ class VmMapping final: public VmAreaOrMapping {
 
     /// Tear the pages of [base, base + size) down, assuming the aspace lock is
     /// already held.
+    TA_REQUIRES(get_lock())
     auto unmap_locked(VirtAddr base, usize size, UnmapOptions options) -> Status;
 
     /// Rewrite the flags of [base, base + size), assuming the aspace lock is
@@ -76,9 +78,12 @@ class VmMapping final: public VmAreaOrMapping {
     /// address space's single lock and it is not recursive, so a VmArea that
     /// already holds it while descending its children cannot call the public
     /// protect(), which takes it.
+    TA_REQUIRES(get_lock())
     auto protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status;
 
+    TA_REQUIRES(get_lock())
     virtual auto activate() -> Status override;
+    TA_REQUIRES(get_lock())
     virtual auto destroy() -> Status override;
 
     ustl::Arc<VmObject> m_vmo;

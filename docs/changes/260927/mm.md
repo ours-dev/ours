@@ -615,3 +615,88 @@ auto VmArea::create_mapping(...) -> Status {
   和 `VmAreaOrMapping::get_lock()` 都加上 `TA_RETURN_CAPABILITY`。这会波及所有 `*_locked()`
   函数，范围太大，另做。
 - 没用 `Mutex::assert_held()` 做运行期检查：它只有声明、没有定义，调用会链接失败。
+
+## 地址空间锁加上线程安全注解，"调用方必须持锁"改由编译器检查（2026-09-27）
+
+修掉 `docs/repairs/260927/mm.md` 第 1 条。那个文件只有这一条，修完后删除。前置条件是 `Mutex::assert_held()`
+要有定义，这一步已在 `260927/sync-mutex.md` 里完成。
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_aspace.hpp`：`get_lock()` 加 `TA_RETURN_CAPABILITY(m_lock)`；
+  `m_destroyed`、`m_last_fault` 加 `TA_GUARDED(m_lock)`
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp`：`get_lock()` 加 `TA_RETURN_CAPABILITY(m_aspace->get_lock())`；
+  `activate()`、`destroy()` 加 `TA_REQUIRES(get_lock())`
+- `kernel/mm/include/ours/mm/vm_area.hpp`：以下函数加 `TA_REQUIRES(get_lock())`：
+  `find_mapping_locked()`、`create_subaom_preamble()`、`alloc_spot()`、`unmap_locked()`、
+  `protect_locked()`、`can_protect_locked()`、`destroy()`
+- `kernel/mm/include/ours/mm/vm_mapping.hpp`：以下函数加 `TA_REQUIRES(get_lock())`：
+  `page_fault()`、`unmap_locked()`、`protect_locked()`、`activate()`、`destroy()`
+- `kernel/mm/vm_area.cpp`、`vm_aspace.cpp`、`vm_mapping.cpp`：在 11 处跨对象调用之前加上
+  `X->get_lock().assert_held()`
+
+**症状**
+没有运行时症状，缺的是编译期检查。这些函数都要求调用方持地址空间锁，但这个要求只写在
+函数名（`_locked`）和注释里。创建映射的整条路径就这样无锁跑了很久，直到本文件前面
+"创建映射和子 VMA 全程持地址空间锁"那一节才补上。
+
+**原因**
+两层 `get_lock()` 都没有 `TA_RETURN_CAPABILITY`。分析器因此把每一次 `Guard{get_lock()}`
+都当成一把来历不明的锁，任何 `TA_REQUIRES(get_lock())` 都和调用方的 Guard 对不上，
+所以之前谁也没有写这个注解。VMO 那一侧已经做到了：`VmObject::lock()` 有注解，
+`make_cursor()` 和 `add_mapping()` 漏拿锁就编译失败。
+
+**改法**
+第一步，把两层 `get_lock()` 都标成返回同一把锁：
+
+```cpp
+// VmAspace
+TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto get_lock() -> sync::Mutex & { return m_lock; }
+
+// VmAreaOrMapping
+TA_RETURN_CAPABILITY(m_aspace->get_lock()) FORCE_INLINE auto get_lock() -> sync::Mutex & {
+    return m_aspace->get_lock();
+}
+```
+
+第二步，给要求持锁的函数加 `TA_REQUIRES(get_lock())`，然后按编译错误逐个处理调用点。
+一共报了 11 处，运行时全都确实持着锁，只是分析器证明不了。分两类：
+
+- 9 处跨对象调用。比如 `VmArea::unmap_locked()` 持着自己的锁去调用 `child->unmap_locked()`，
+  分析器要求的是 `child->m_aspace->m_lock`。它不知道子节点和父节点在同一个地址空间里，
+  所以认为这是另一把锁。
+- 2 处在 `VmArea::create_common()` 和 `VmMapping::create()` 里调用 `activate()`。
+  锁是 `create_subvma()` 或 `create_mapping()` 拿的，中间隔着 `Builder`，分析器跟不过去。
+
+每一处都在调用前写一句：
+
+```cpp
+child->get_lock().assert_held();
+auto const status = child->destroy();
+```
+
+`assert_held()` 标了 `TA_ASSERT()`，告诉分析器"这把锁已经持有"。在调试构建里，它还会在运行时
+检查持有者就是当前线程。所以这不是绕过检查，而是把"这就是同一把锁"这个判断交给运行期去验证。
+
+**参照**
+Zircon：
+- `VmAddressRegionOrMapping::lock()` 标 `TA_RET_CAP(aspace_->lock())`
+  （`zircon/kernel/vm/include/vm/vm_address_region.h`）；
+- 各 `*Locked()` 函数标 `TA_REQ(lock())`；
+- 在子节点上调用它们之前写 `AssertHeld(child->lock_ref())`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，`-Wthread-safety -Werror` 下无告警。
+- 探针：临时删掉 `create_mapping()` 里的 `Guard{get_lock()}`，编译报错
+  `calling function 'create_subaom_preamble' requires holding Mutex 'm_aspace->m_lock' exclusively`。
+  已还原。
+- QEMU 实测：dbg_1 跑 2 次，dev 跑 1 次，`usercopy.test` 全部 18/18。dbg_1 的
+  `KERNEL_DEBUG_LEVEL=1`，`DEBUG_ASSERT` 生效，11 处运行期检查一处都没触发。
+- clang-tidy：只有原本就有的 `modernize-use-override` 和常量命名告警，改动行上没有新的。
+
+**故意没做**
+- `VmArea::dump_locked()` 没加注解。它是 const 成员函数，而 `get_lock()` 不是 const，
+  const 的 `ustl::Arc` 解引用出来的也是 const 的 `VmAspace`，写不出能通过编译的表达式。
+  它只用于诊断输出。
+- `VmAspace` 的 `m_root_vma` 没加 `TA_GUARDED`。`root_vma()` 在各处被不持锁地读取，
+  用来拿根 VMA 再调用它的公开接口，而那些接口自己会拿锁。它创建后到 `destroy()`
+  之前都不会变，要加注解得先理清 `destroy()` 之后的读者。

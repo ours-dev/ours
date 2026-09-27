@@ -161,6 +161,7 @@ class VmArea final: public VmAreaOrMapping {
 
     auto contains(VirtAddr addr) const -> bool;
 
+    TA_REQUIRES(get_lock())
     auto find_mapping_locked(VirtAddr va) -> VmMapping *;
 
     auto dump() const -> void;
@@ -179,9 +180,11 @@ class VmArea final: public VmAreaOrMapping {
     /// unconditionally. The two callers do not even want the same check
     /// (an area is bounded by a VmaFlags allowance, a mapping by the MmuFlags
     /// it is being created with), which is why each now makes its own.
+    TA_REQUIRES(get_lock())
     auto create_subaom_preamble(VmPlacement where, usize size)
         -> ktl::Result<ustl::Pair<VirtAddr, usize>>;
 
+    TA_REQUIRES(get_lock())
     auto alloc_spot(usize size, usize align, VirtAddr lower_limit, VirtAddr upper_limit)
         -> ktl::Result<VirtAddr>;
 
@@ -189,16 +192,20 @@ class VmArea final: public VmAreaOrMapping {
 
     /// Unmap everything inside [base, base + size), assuming the aspace lock is
     /// already held and the range was validated against this area.
+    TA_REQUIRES(get_lock())
     auto unmap_locked(VirtAddr base, usize size) -> Status;
 
     /// Fan a protect() down to the children overlapping [base, base + size),
     /// assuming the aspace lock is already held.
+    TA_REQUIRES(get_lock())
     auto protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status;
 
     /// Whether every child overlapping [base, base + size) would accept
     /// |mmuf|. Run before protect_locked() applies anything; see there.
+    TA_REQUIRES(get_lock())
     auto can_protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> bool;
 
+    TA_REQUIRES(get_lock())
     virtual auto destroy() -> Status override;
 
   private:

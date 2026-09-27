@@ -79,8 +79,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto accessed_fault(VirtAddr va) -> Status;
 
-    FORCE_INLINE
-    auto get_lock() -> sync::Mutex & {
+    TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto get_lock() -> sync::Mutex & {
         return m_lock;
     }
 
@@ -159,7 +158,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     /// Set by destroy(), under m_lock. A destroyed aspace answers no more
     /// faults: its root VMA is gone.
-    bool m_destroyed = false;
+    bool m_destroyed TA_GUARDED(m_lock) = false;
 
     /// For diagnostics. The constructor used to take a name and drop it.
     ktl::Name<32> m_name;
@@ -169,7 +168,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     /// The only root region.
     ustl::Arc<VmArea> m_root_vma;
-    ustl::Arc<VmMapping> m_last_fault;
+    ustl::Arc<VmMapping> m_last_fault TA_GUARDED(m_lock);
 
     AlsrConfig m_alsr_config;
 

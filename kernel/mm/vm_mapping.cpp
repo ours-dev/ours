@@ -116,6 +116,9 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
         VmMappingCache::put(mapping);
         return status;
     }
+    // Created under the parent area's lock, which is the new mapping's too.
+    // Asserted, because the analysis does not follow it through Builder.
+    mapping->get_lock().assert_held();
     mapping->activate();
 
     *out = ustl::Arc<Self>::adopt(mapping);
