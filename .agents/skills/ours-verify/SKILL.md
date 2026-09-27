@@ -1,0 +1,62 @@
+---
+name: ours-verify
+description: Build the ours kernel and boot both dev images in QEMU to prove a change works. Use after any change to kernel, phys, userboot, init, shell or build files, before every commit, and whenever the user says verify, build and boot, "验证一下", "跑一下", "启动看看", or asks whether something still boots. A clean compile is not verification in this repo.
+---
+
+# Verify an ours change
+
+Done means it builds, **both** images boot, and the shell finishes its
+self-checks. "It compiles" is not done, and neither is booting one image.
+
+## Run it
+
+From the repo root:
+
+```bash
+python3 .agents/skills/ours-verify/scripts/boot_check.py
+```
+
+It builds `out/bringup.x86` with `prebuilt/ninja`, boots `kernel.dev.dbg_1.obi`
+and `kernel.dev.obi` side by side, stops QEMU once each verdict is in (about
+25 seconds end to end), and prints one line per image. Exit code 0 means both
+passed. Paste those lines to the user as the evidence.
+
+Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
+`--only dbg|rel`, `--timeout N`. `SMP=1`, `NUMA=1` and the other
+`scripts/qemu_boot.py` variables pass through.
+
+For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
+first; this skill checks behaviour, that one checks the source.
+
+## Reading a failure
+
+| Summary says | Meaning | Next step |
+|---|---|---|
+| `error-level line` | panic or failed ASSERT | read the printed context; for a backtrace see [references/debugging.md](references/debugging.md) |
+| dbg FAIL, rel PASS | an assertion caught it; rel ran past it with assertions compiled out | fix the assertion's cause, not the assertion |
+| both FAIL at the same point | nothing is masked by an assertion | debug the shared stage shown in `reached:` |
+| `no "--- end ---" within Ns` | hang or livelock | `reached:` shows the last stage; rerun with `SMP=1` to test for an SMP race |
+| `QEMU exited` | reset or triple fault (`-no-reboot` turns a reset into an exit) | debug under the gdbstub |
+
+## Gotchas
+
+- Build and boot on the macOS host with `prebuilt/` only. Never use the
+  `dev-common` container, never build the `ours-dev` image, never install into
+  system directories. If a prebuilt tool is missing, say so and stop rather
+  than substituting something close and calling it verified.
+- `qemu-system-x86_64` is not on PATH (qemu_boot.py uses `prebuilt/qemu`),
+  there is no `timeout` command, and the kernel never exits. Never start
+  qemu_boot.py in the foreground; it hangs the session.
+- The dbg image logs `I'm Thread 1/2` at debug level forever, thousands of
+  lines a second. `tail` of a dbg log shows nothing else, so search for
+  markers instead of tailing.
+- Expected noise, not failures: GRUB's `WARNING: no console will be available
+  to OS` and `error: no suitable video mode found.`; in dbg, `fault_probe`
+  terminated with FatalPageFault and `Exception[divide error] from user space`
+  (deliberate fault tests); the host linker's `ignoring -lto_library` warning.
+- Objects orphaned by a rename stay in `out/` and can satisfy a link, hiding
+  breakage. If a build looks healthier than it should, rebuild into a fresh
+  `--out`; a full build takes about 30 seconds.
+- Other sessions often share this worktree. Two sessions must not build or
+  boot from the same out dir; use `--out out/<your-lane>`.
+- If the shell's closing output changes, update `END_MARKER` in the script.
