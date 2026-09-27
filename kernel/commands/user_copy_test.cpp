@@ -24,6 +24,12 @@
 //     first byte, not the start of the buffer.
 //   - soft_fault() on a captured fault must make the page present, and the
 //     retried copy must then succeed and round-trip; on the hole it must fail.
+//   - VmObjectPaged::read_user()/write_user() must move bytes straight
+//     between a VMO page and a user buffer under the VMO's lock, resolving a
+//     user-side fault with the lock dropped: into an absent page, across a
+//     fault that strikes part-way through, from a user page into the VMO, not
+//     at all into a hole -- and into a mapping of the very VMO being read,
+//     which is the case a copy that resolved faults in place would deadlock on.
 //   - The resolving copies must demand-page P1 in place -- the successful
 //     demand-paging path, which a normal boot never reaches, because every
 //     fault the boot takes is on an address that cannot be resolved -- and
@@ -47,10 +53,12 @@
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cfg.hpp>
+#include <ours/mm/gaf.hpp>
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
 #include <ours/mm/vm_mapping.hpp>
+#include <ours/mm/vm_object_paged.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
@@ -224,6 +232,139 @@ namespace {
         }
     }
 
+    /// VmObjectPaged::read_user() and write_user(): the bytes go between a VMO
+    /// page and a user buffer in one copy, under the VMO's lock, and a fault on
+    /// the user side is captured, resolved with the lock dropped, and retried.
+    ///
+    /// The VMO holds A B at offset 0, C just before its second page and D just
+    /// after it. The user buffers are fresh scratch pages, absent until touched,
+    /// and a hole; and for the last check, a mapping of the VMO itself.
+    auto run_vmo_checks(Tally &tally, ustl::Arc<mm::VmArea> &root) -> void {
+        constexpr u64 A = 0x1111'2222'3333'4444;
+        constexpr u64 B = 0x5555'6666'7777'8888;
+        constexpr u64 C = 0x9999'aaaa'bbbb'cccc;
+        constexpr u64 D = 0xdddd'eeee'ffff'0000;
+        constexpr u64 E = 0x0123'4567'89ab'cdef;
+
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        if (auto const status =
+                mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags{}, &vmo);
+            status != Status::Ok) {
+            log::error("usercopy.test: could not create the VMO: {}", static_cast<int>(status));
+            tally.failed += 1;
+            return;
+        }
+        u64 const head[2] = {A, B};
+        u64 const seam[2] = {C, D};
+        if (vmo->write(head, 0, sizeof(head)) != Status::Ok ||
+            vmo->write(seam, PAGE_SIZE - 8, sizeof(seam)) != Status::Ok) {
+            log::error("usercopy.test: could not fill the VMO");
+            tally.failed += 1;
+            return;
+        }
+
+        auto const flags = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto scratch = root->map_anon(mm::VmPlacement::anywhere(), 3 * PAGE_SIZE, flags,
+                                      mm::VmMapOption::None, "usercopy.test buffers");
+        if (scratch.is_err()) {
+            log::error("usercopy.test: could not map the VMO test buffers: {}",
+                       static_cast<int>(scratch.unwrap_err()));
+            tally.failed += 1;
+            return;
+        }
+        auto const q0 = scratch.unwrap()->base();
+        auto const q1 = q0 + PAGE_SIZE;
+        auto const qhole = q0 + 2 * PAGE_SIZE;
+        if (root->unmap(qhole, PAGE_SIZE) != Status::Ok) {
+            log::error("usercopy.test: could not punch the VMO test hole");
+            tally.failed += 1;
+            static_cast<void>(root->unmap(q0, 3 * PAGE_SIZE));
+            return;
+        }
+        log::info("usercopy.test: VMO buffers Q0={:#x} Q1={:#x} hole={:#x}", q0, q1, qhole);
+
+        // Q0 is absent, so the copy faults with the VMO's lock held: this is
+        // the capture, drop, soft_fault(), retake, retry round trip.
+        {
+            auto const status = vmo->read_user(user_copy::UserOutPtr<u8>(q0), 0, 16);
+            u64 got[2] = {};
+            auto const back = user_copy::copy_from_user(got, q0, sizeof(got));
+            log::info(
+                "usercopy.test:   read_user(VMO[0..16) -> absent Q0): {}, Q0 holds {:#x} {:#x}",
+                static_cast<int>(status), got[0], got[1]);
+            verdict(tally, status == Status::Ok && back == Status::Ok && got[0] == A && got[1] == B,
+                    "read_user into an absent user page resolves it and delivers the bytes");
+        }
+
+        // VMO [PAGE-8, PAGE+8) into user [Q1-8, Q1+8): the first 8 bytes land
+        // in Q0, present now; the next 8 fault on Q1. The retry has to start
+        // from the 9th byte, with the cursor rebuilt at the VMO's second page.
+        {
+            auto const status =
+                vmo->read_user(user_copy::UserOutPtr<u8>(q1 - 8), PAGE_SIZE - 8, 16);
+            u64 got[2] = {};
+            auto const back = user_copy::copy_from_user(got, q1 - 8, sizeof(got));
+            log::info(
+                "usercopy.test:   read_user(VMO seam -> Q0 end + absent Q1): {}, got {:#x} {:#x}",
+                static_cast<int>(status), got[0], got[1]);
+            verdict(tally, status == Status::Ok && back == Status::Ok && got[0] == C && got[1] == D,
+                    "a read_user that faults part-way resumes where it stopped");
+        }
+
+        // The other direction: E, put in Q0 by a plain copy, into VMO offset 8.
+        {
+            auto const put = user_copy::copy_to_user(q0, &E, sizeof(E));
+            auto const status = vmo->write_user(user_copy::UserInPtr<u8>(q0), 8, 8);
+            u64 got = 0;
+            auto const back = vmo->read(&got, 8, sizeof(got));
+            log::info("usercopy.test:   write_user(Q0 -> VMO[8..16)): {}, VMO holds {:#x}",
+                      static_cast<int>(status), got);
+            verdict(tally,
+                    put == Status::Ok && status == Status::Ok && back == Status::Ok && got == E,
+                    "write_user moves a user page's bytes into the VMO");
+        }
+
+        {
+            auto const status = vmo->read_user(user_copy::UserOutPtr<u8>(qhole), 0, 8);
+            log::info("usercopy.test:   read_user(VMO -> hole): {}", static_cast<int>(status));
+            verdict(tally, status == Status::InvArgs,
+                    "read_user into an unmapped page fails with InvArgs");
+        }
+
+        // What the bounce page existed to avoid: the user buffer is a mapping
+        // of the very VMO being read. VMO page 0 is copied into VMO page 1
+        // through that mapping, whose page tables are empty, so the copy faults
+        // while this VMO's lock is held -- and resolving that fault means
+        // looking up this same VMO. Resolved in place it would deadlock as soon
+        // as the fault path takes the VMO's lock; captured, it is resolved with
+        // the lock dropped. A regression here shows up as a command that never
+        // finishes.
+        {
+            auto self = root->map_with_vmo(mm::VmPlacement::anywhere(), 2 * PAGE_SIZE, flags,
+                                           ustl::Arc<mm::VmObject>(vmo), mm::VmMapOption::None,
+                                           "usercopy.test self");
+            if (self.is_err()) {
+                log::error("usercopy.test: could not map the VMO: {}",
+                           static_cast<int>(self.unwrap_err()));
+                tally.failed += 1;
+            } else {
+                auto const m = self.unwrap()->base();
+                auto const status = vmo->read_user(user_copy::UserOutPtr<u8>(m + PAGE_SIZE), 0, 16);
+                u64 got[2] = {};
+                auto const back = vmo->read(got, PAGE_SIZE, sizeof(got));
+                log::info("usercopy.test:   read_user(VMO[0..16) -> its own mapping at {:#x}): {}, "
+                          "VMO[PAGE..] holds {:#x} {:#x}",
+                          m + PAGE_SIZE, static_cast<int>(status), got[0], got[1]);
+                verdict(
+                    tally, status == Status::Ok && back == Status::Ok && got[0] == A && got[1] == E,
+                    "read_user into a mapping of the same VMO neither deadlocks nor loses bytes");
+                static_cast<void>(root->unmap(m, 2 * PAGE_SIZE));
+            }
+        }
+
+        static_cast<void>(root->unmap(q0, 3 * PAGE_SIZE));
+    }
+
     /// Puts the calling thread on |next| and loads its page tables, and hands
     /// back what it was on before.
     ///
@@ -280,6 +421,8 @@ namespace {
                 run_checks(tally, p0, p1, hole);
             }
         }
+
+        run_vmo_checks(tally, root);
 
         // Back onto the thread's own address space before the test's goes, so
         // that nothing is left running on page tables that are being freed.

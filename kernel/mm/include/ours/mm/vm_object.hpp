@@ -11,6 +11,7 @@
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ktl/name.hpp>
+#include <user_copy/user_copy.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/option.hpp>
 
@@ -108,8 +109,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// kernel buffer |outbuf|.
     ///
     /// Kernel buffers only: the copy runs under the object's lock and must not
-    /// fault. A user buffer needs the lock dropped around each copy (Zircon's
-    /// ReadUser), which nothing here does yet. A range that does not lie
+    /// fault. A user buffer goes through read_user(). A range that does not lie
     /// wholly inside the object is OutOfRange and nothing is copied.
     virtual auto read(void *outbuf, VirtAddr offset, usize size) -> Status {
         return Status::Unsupported;
@@ -118,6 +118,27 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// Copies |size| bytes from the kernel buffer |inbuf| into this object,
     /// starting at byte |offset|. The same rules as read().
     virtual auto write(void const *inbuf, VirtAddr offset, usize size) -> Status {
+        return Status::Unsupported;
+    }
+
+    /// Copies |size| bytes starting at byte |offset| of this object straight
+    /// into the user buffer |out|, with no kernel buffer in between.
+    ///
+    /// The copy runs under the object's lock, so a page fault on the user side
+    /// is captured rather than resolved in place, and the lock is dropped to
+    /// resolve it; see VmObjectPaged::read_write(). InvArgs when some page of
+    /// the user buffer cannot be made present, OutOfRange as read() has it.
+    /// The user bytes before a failure may have been written.
+    ///
+    /// Unsupported by default, which is where a physical VMO stays: Zircon's
+    /// VmObject::ReadUser() answers ZX_ERR_NOT_SUPPORTED for one too.
+    virtual auto read_user(user_copy::UserOutPtr<u8> out, VirtAddr offset, usize size) -> Status {
+        return Status::Unsupported;
+    }
+
+    /// Copies |size| bytes from the user buffer |in| straight into this object,
+    /// starting at byte |offset|. The same rules as read_user().
+    virtual auto write_user(user_copy::UserInPtr<u8> in, VirtAddr offset, usize size) -> Status {
         return Status::Unsupported;
     }
 

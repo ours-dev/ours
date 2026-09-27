@@ -3,8 +3,10 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/vm_object_paged.hpp>
+#include <ours/task/thread.hpp>
 
 #include <algorithm>
+#include <optional>
 
 #include <cstring>
 
@@ -141,13 +143,33 @@ auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *page
 /// physmap address of each and the slice of the caller's buffer that belongs
 /// to it.
 ///
+/// |copy| answers with a UserCopyCaptureResult. A kernel-buffer copy (read(),
+/// write()) cannot fault and always answers Ok. A user-buffer copy
+/// (read_user(), write_user()) can, and it runs under m_mutex, so the fault
+/// must not be resolved in place: resolving takes the address space's lock,
+/// which would put it inside this VMO's -- the reverse of the order the page
+/// fault path takes them in -- and would deadlock outright if the user buffer
+/// is a mapping of this very VMO. It uses the capturing copies instead and
+/// hands the fault back. This function then lets go of m_mutex, resolves the
+/// fault with soft_fault() where sleeping and the address space's lock are
+/// both allowed, takes m_mutex again, and carries on from the first byte not
+/// yet copied.
+///
+/// Carrying on means looking the page up again, never reusing what was found
+/// before the lock went down. In that window the VMO is anybody's: the page at
+/// this offset may have been replaced, or decommitted and its memory handed to
+/// something else, so a pointer kept across the drop would read or write
+/// memory that no longer belongs to this VMO. What survives is |done|, which is
+/// this function's own progress and says nothing about the VMO's state; the
+/// cursor is rebuilt from it every time the lock is retaken.
+///
 /// Zircon counterpart: VmObjectPaged::ReadWriteInternal, with the same shape
-/// -- range check, a lookup cursor over the whole page range, RequirePage per
-/// page, copy through the physmap -- minus everything that exists for a user
-/// buffer: dropping the lock around a copy that may fault, the partial-length
-/// return, the soft fault retry. read() and write() take kernel buffers only
-/// (see VmObject::read()), so the copy cannot fault and runs under m_mutex.
-/// That is a sleeping lock, not a spin lock, so a long copy holds up other
+/// -- range check, a lookup cursor over the page range, RequirePage per page,
+/// copy through the physmap, and on a captured fault drop the lock,
+/// SoftFaultInRange() and retry -- minus the partial-length return: a call that
+/// fails here fails, and says so.
+///
+/// m_mutex is a sleeping lock, not a spin lock, so a long copy holds up other
 /// users of this VMO but never a CPU with interrupts off.
 template <typename Copy>
 auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool const will_write,
@@ -158,49 +180,94 @@ auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool con
         return Status::Ok;
     }
 
-    Guard guard{m_mutex};
-    // Checked before anything is copied, and written so that it cannot wrap,
-    // as commit_range_internal() is. A range that runs off the end copies
-    // nothing rather than a prefix: no caller here wants a short read, and
-    // Zircon answers ZX_ERR_OUT_OF_RANGE the same way unless the caller asks
-    // for TrimLength.
-    auto const total = m_cow_pages->size_locked();
-    if (size > total || offset > total - size) {
-        return Status::OutOfRange;
-    }
-
-    // The cursor serves whole pages, so it is made for the page-aligned span
-    // that covers the byte range; the copy below cuts each page back down to
-    // the bytes that were asked for.
-    auto const first_page = align_down(offset, PAGE_SIZE);
-    auto const end_page = align_up(offset + size, PAGE_SIZE);
-    auto cursor = m_cow_pages->make_cursor(first_page, end_page - first_page);
-    if (!cursor) {
-        return cursor.unwrap_err();
-    }
-
-    // The request only matters when a page source has to be asked, which no
-    // VMO has yet; the cursor is handed one anyway, as the fault path does,
-    // because that is its contract.
-    MultiPageRequest request;
     usize done = 0;
-    while (done < size) {
-        auto const at = offset + done;
-        auto const in_page = at - align_down(at, PAGE_SIZE);
-        auto const chunk = std::min<usize>(size - done, PAGE_SIZE - in_page);
+    // The last fault resolved, and how far the copy had got when it was taken;
+    // see the livelock check below.
+    std::optional<VirtAddr> retried_at;
+    usize retried_done = 0;
 
-        // A reader is content with whatever is there and a writer needs a page
-        // of its own -- the same choice the fault path makes. For an anonymous
-        // VMO both commit a zeroed page where there was none, so a read of a
-        // never-written page reads zero (see VmCowPages::Cursor).
-        auto page = cursor->require_page(will_write, 1, &request);
-        if (!page) {
-            return page.unwrap_err();
+    while (done < size) {
+        std::optional<UserCopyFault> fault;
+        {
+            Guard guard{m_mutex};
+            // Checked before anything is copied, and written so that it cannot
+            // wrap, as commit_range_internal() is. A range that runs off the end
+            // copies nothing rather than a prefix: no caller here wants a short
+            // read, and Zircon answers ZX_ERR_OUT_OF_RANGE the same way unless
+            // the caller asks for TrimLength. Rechecked each time the lock is
+            // retaken, because the size is only known to be what it was while
+            // the lock is held.
+            auto const total = m_cow_pages->size_locked();
+            if (size > total || offset > total - size) {
+                return Status::OutOfRange;
+            }
+
+            // The cursor serves whole pages, so it is made for the page-aligned
+            // span from the first byte still to copy to the end of the range;
+            // the copy below cuts each page back down to the bytes asked for.
+            auto const first_page = align_down(offset + done, PAGE_SIZE);
+            auto const end_page = align_up(offset + size, PAGE_SIZE);
+            auto cursor = m_cow_pages->make_cursor(first_page, end_page - first_page);
+            if (!cursor) {
+                return cursor.unwrap_err();
+            }
+
+            // The request only matters when a page source has to be asked,
+            // which no VMO has yet; the cursor is handed one anyway, as the
+            // fault path does, because that is its contract.
+            MultiPageRequest request;
+            while (done < size) {
+                auto const at = offset + done;
+                auto const in_page = at - align_down(at, PAGE_SIZE);
+                auto const chunk = std::min<usize>(size - done, PAGE_SIZE - in_page);
+
+                // A reader is content with whatever is there and a writer needs
+                // a page of its own -- the same choice the fault path makes. For
+                // an anonymous VMO both commit a zeroed page where there was
+                // none, so a read of a never-written page reads zero (see
+                // VmCowPages::Cursor).
+                auto page = cursor->require_page(will_write, 1, &request);
+                if (!page) {
+                    return page.unwrap_err();
+                }
+
+                auto *const base = PhysMap::phys_to_virt<u8>(frame_to_phys(*page));
+                auto const result = copy(base + in_page, done, chunk);
+                if (result.fault.has_value()) {
+                    fault = result.fault;
+                    break;
+                }
+                if (result.status != Status::Ok) {
+                    return result.status;
+                }
+                done += chunk;
+            }
         }
 
-        auto *const base = PhysMap::phys_to_virt<u8>(frame_to_phys(*page));
-        copy(base + in_page, done, chunk);
-        done += chunk;
+        if (!fault.has_value()) {
+            break;
+        }
+
+        // A fault that comes back at the same address with no progress since
+        // the last one was resolved means soft_fault() said the page was fine
+        // and the copy still cannot touch it. Going round again would spin
+        // here for ever with nothing to say why, which is worse than failing.
+        // A race can land here too -- the page resolved, then unmapped again
+        // before the lock came back -- and for that InvArgs is the right answer
+        // anyway: the program took away its own buffer.
+        if (retried_at == fault->va && retried_done == done) {
+            log::warn("VMO user copy: fault at {:#x} persists after it was resolved", fault->va);
+            return Status::InvArgs;
+        }
+        retried_at = fault->va;
+        retried_done = done;
+
+        // Outside the lock: may sleep, and takes the address space's lock. A
+        // fault that cannot be resolved is a user buffer that cannot take or
+        // give the bytes, which user_copy answers InvArgs to everywhere.
+        if (task::Thread::Current::soft_fault(fault->va, fault->cause) != Status::Ok) {
+            return Status::InvArgs;
+        }
     }
 
     return Status::Ok;
@@ -211,6 +278,7 @@ auto VmObjectPaged::read(void *const out, VirtAddr const offset, usize const siz
     return read_write(offset, size, false,
                       [dst](u8 const *const page, usize const done, usize const chunk) {
                           std::memcpy(dst + done, page, chunk);
+                          return UserCopyCaptureResult{.status = Status::Ok, .fault = {}};
                       });
 }
 
@@ -219,7 +287,29 @@ auto VmObjectPaged::write(void const *const in, VirtAddr const offset, usize con
     return read_write(offset, size, true,
                       [src](u8 *const page, usize const done, usize const chunk) {
                           std::memcpy(page, src + done, chunk);
+                          return UserCopyCaptureResult{.status = Status::Ok, .fault = {}};
                       });
+}
+
+/// Zircon: VmObjectPaged::ReadUser(), which likewise hands ReadWriteInternal a
+/// copy_array_to_user_capture_faults() routine.
+auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr const offset,
+                              usize const size) -> Status {
+    return read_write(
+        offset, size, false, [out](u8 const *const page, usize const done, usize const chunk) {
+            return out.element_offset(done).copy_array_to_user_capture_faults(page, chunk);
+        });
+}
+
+/// Zircon: VmObjectPaged::WriteUser(). A chunk a fault interrupts is copied
+/// again whole on the retry; the page is overwritten with the same bytes, so
+/// the repetition is harmless.
+auto VmObjectPaged::write_user(user_copy::UserInPtr<u8> const in, VirtAddr const offset,
+                               usize const size) -> Status {
+    return read_write(
+        offset, size, true, [in](u8 *const page, usize const done, usize const chunk) {
+            return in.element_offset(done).copy_array_from_user_capture_faults(page, chunk);
+        });
 }
 
 INIT_CODE

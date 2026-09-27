@@ -222,8 +222,19 @@ kind. The work that legitimately needs to touch user memory while holding a
 lock is a different pattern -- Linux's `pagefault_disable()` plus
 `__copy_from_user_inatomic()`, Zircon's `*_capture_faults()` copies -- in which
 the copy reports the fault instead of resolving it, and the caller drops its
-lock, calls `soft_fault()`, and retries. This kernel does not have that
-interface yet; nothing in the tree copies under a lock.
+lock, calls `soft_fault()`, and retries.
+
+This kernel has that interface: `user_copy::copy_{from,to}_user_capture_faults()`
+and the matching `UserPtr` methods. The request rides in bit 63 of the copy's
+resume address, and `x86_handle_page_fault()` answers it *before* its
+may-not-sleep check -- a capturing copy is the one kind of kernel code that may
+legitimately fault where sleeping is not allowed, so the handler hands the
+fault's address and cause back in `%rdx`/`%rcx` without enabling interrupts,
+taking a lock or blocking. The first callers are `VmObjectPaged::read_user()`
+and `write_user()`, which copy between a VMO page and a user buffer under the
+VMO's lock and resolve a captured fault with the lock dropped. `usercopy.test`
+at the kshell prompt exercises all of it, including a capture taken under a
+spin lock with interrupts off.
 
 ## References
 
