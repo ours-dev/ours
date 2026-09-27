@@ -138,7 +138,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     /// took it with interrupts still off. That forced every other holder --
     /// map, protect, unmap, destroy -- to match, and worse, it made this lock
     /// unable to nest a mutex inside it. The VMO's page tree is guarded by
-    /// VmObjectPaged::m_mutex, so the fault path could not take that lock and
+    /// the object's own lock, VmObject::lock(), so the fault path could not take that lock and
     /// went around it, leaving VmCowPages::m_pages written under two unrelated
     /// locks. That is item 1 of docs/repairs/260925/mm.md, and this is what
     /// unblocks the fix: the fault path now takes this lock and then the VMO's,

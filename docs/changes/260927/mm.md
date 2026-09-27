@@ -380,3 +380,74 @@ Zircon：
 - 创建映射这条路径没动：`create_mapping()` 挑空位、挂进父 VMA 的 `m_subvmas`、
   `add_mapping()` 挂进 `VmObject::m_mappings`，全程不持任何锁。这和本条同属一类问题，
   但范围更大，已记入 `docs/repairs/260927/mm.md` 第 1 条。
+
+## 对象锁上移到 VmObject，并由它保护 VMO 的映射链表（2026-09-27）
+
+修 `docs/repairs/260927/mm.md` 第 1 条的前一半。后一半（创建映射时持地址空间锁）见下一节。
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_object.hpp`：新增 `m_lock` 和 `lock()`；`m_mappings` 加 `TA_GUARDED(m_lock)`；
+  `add_mapping()` 和 `remove_mapping()` 加 `TA_REQUIRES(m_lock)`
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`、`vm_object_paged.cpp`：删掉自己的 `m_mutex` 和 `lock()`，
+  改用基类的 `m_lock`
+- `kernel/mm/vm_mapping.cpp`：`activate()` 和 `destroy()` 在 `Guard{m_vmo->lock()}` 下增删映射
+- `kernel/mm/include/ours/mm/vm_aspace.hpp`：注释里的引用跟着改
+
+**症状**
+潜伏，当前触发不到：还没有两个地址空间同时映射同一个 VMO。一旦出现（首先是 K16 的共享 vDSO），
+两边的 `activate()` 或 `destroy()` 会并发修改同一个侵入式链表 `VmObject::m_mappings`。
+轻则丢一个节点，重则链表成环，或者 `~VmMapping` 析构时发现 hook 仍在链上而 trap。
+
+**原因**
+`m_mappings` 属于 VMO，而改它的人属于各自的地址空间。每个改动方最多持着自己那个地址空间的锁，
+彼此不相干。所以这个链表需要一把属于 VMO 的锁。
+
+VMO 本来有一把锁，但它在 `VmObjectPaged` 里（`m_mutex`），只管页树；
+`VmObjectPhysical` 根本没有锁，而物理 VMO 同样会被映射。
+
+**改法**
+把锁从 `VmObjectPaged` 上移到 `VmObject`，叫 `m_lock`，同时保护页树和映射链表：
+
+之前：
+
+```cpp
+class VmObject { ... VmMapping::List m_mappings; };
+class VmObjectPaged: public VmObject { ... sync::Mutex m_mutex; };
+
+// VmMapping::activate()
+m_vmo->add_mapping(*this);
+```
+
+之后：
+
+```cpp
+class VmObject {
+    ...
+    sync::Mutex m_lock;
+    VmMapping::List m_mappings TA_GUARDED(m_lock);
+};
+
+// VmMapping::activate()
+Guard guard{m_vmo->lock()};
+m_vmo->add_mapping(*this);
+```
+
+只用一把锁而不是两把，理由和 Zircon 相同：以后改页的操作（比如 decommit）需要在"页和映射都不会变"
+的状态下，遍历这个 VMO 的每一个映射去撤掉页表项。如果是两把锁，就得同时拿两把，还要再定一个锁序。
+
+锁序不变：地址空间在外，VMO 在内。`activate()` 和 `destroy()` 都在地址空间锁下被调用
+（`destroy()` 已经如此；`activate()` 要等下一节补上）。
+
+**参照**
+Zircon：
+- `VmObject::AddMappingLocked()`，声明为 `TA_REQ(lock())`（`include/vm/vm_object.h`）；
+- `VmMapping::Activate()` 取 `Guard<CriticalMutex> guard{object_->lock()}` 再进 `ActivateLocked()`
+  （`vm_mapping.cc`）。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，`-Wthread-safety -Werror` 下无告警。
+  这说明除了 `activate()` 和 `destroy()`，没有别的地方在不持锁时碰 `m_mappings`。
+- QEMU 实测，无 panic：dev 的 `usercopy.test` 18/18；dbg_1 跑到 64.9 s，`usercopy.test` 18/18。
+
+**故意没做**
+`VmObjectPhysical` 的 `lookup_range()` 没加锁。物理 VMO 的范围在创建后就不会变，没有需要保护的可变状态。

@@ -45,7 +45,7 @@ class VmObjectPaged: public VmObject {
 
     auto write_user(user_copy::UserInPtr<u8> in, VirtAddr offset, usize size) -> Status override;
 
-    /// Read without m_mutex: nothing can change a paged VMO's size, because
+    /// Read without m_lock: nothing can change a paged VMO's size, because
     /// Resizable has no implementation. The day it does, this has to take the
     /// lock, as Zircon's size_locked() requires its caller to.
     [[nodiscard]]
@@ -53,21 +53,11 @@ class VmObjectPaged: public VmObject {
         return m_cow_pages->size_locked();
     }
 
-    /// The lock over this object's pages. A mapping takes it to fault a page
-    /// in or to map a range, inside its address space's lock: the order is
-    /// always address space, then object, as in Zircon, where
-    /// VmMapping::PageFault() takes `Guard<CriticalMutex>{paged->lock()}` with
-    /// the aspace lock already held. Nothing takes them the other way round;
-    /// copy_page_by_page() lets go of this one before it resolves a user fault.
-    TA_RETURN_CAPABILITY(m_mutex) FORCE_INLINE auto lock() -> sync::Mutex & {
-        return m_mutex;
-    }
-
-    /// A cursor walks VmCowPages::m_pages and inserts into it, and m_mutex is
-    /// the one lock that tree has. The fault path used to build one under the
+    /// A cursor walks VmCowPages::m_pages and inserts into it, and m_lock --
+    /// the object's lock, VmObject::lock() -- is the one lock that tree has. The fault path used to build one under the
     /// address space's lock alone, which is how the tree came to be written
     /// under two unrelated locks; TA_REQUIRES makes that a compile error.
-    TA_REQUIRES(m_mutex)
+    TA_REQUIRES(m_lock)
     FORCE_INLINE
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
         return m_cow_pages->make_cursor(offset, size);
@@ -101,7 +91,6 @@ class VmObjectPaged: public VmObject {
         -> Status;
 
     ustl::Arc<VmCowPages> m_cow_pages;
-    sync::Mutex m_mutex;
 };
 
 } // namespace ours::mm

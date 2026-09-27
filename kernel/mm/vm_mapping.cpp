@@ -130,6 +130,11 @@ auto VmMapping::activate() -> Status {
     // Note when a mapping was added into a VMO's mapping list, the inside counter
     // has not been increased implicitly. It is required to pay attention to manually
     // install and uninstall a mapping, avoiding lifecycle problem.
+    //
+    // Under the object's lock, which the list belongs to; see
+    // VmObject::add_mapping(). Zircon's VmMapping::Activate() takes
+    // object_->lock() around ActivateLocked() the same way.
+    Guard guard{m_vmo->lock()};
     m_vmo->add_mapping(*this);
 
     return Status::Ok;
@@ -176,7 +181,10 @@ auto VmMapping::destroy() -> Status {
     // image pinned the image. A mapping that maps nothing has no business
     // with a VMO. Zircon resets object_ at the same point.
     if (m_vmo) {
-        m_vmo->remove_mapping(*this);
+        {
+            Guard guard{m_vmo->lock()};
+            m_vmo->remove_mapping(*this);
+        }
         m_vmo = {};
     }
     if (m_parent) {

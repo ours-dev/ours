@@ -86,7 +86,7 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
         return Status::Ok;
     }
 
-    Guard guard{m_mutex};
+    Guard guard{m_lock};
     // The whole range, offset included, and written so that it cannot wrap:
     // this used to compare |size| alone against the object's size, so a range
     // starting anywhere but 0 was admitted however far it ran past the end.
@@ -145,14 +145,14 @@ auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *page
 ///
 /// |copy| answers with a UserCopyCaptureResult. A kernel-buffer copy (read(),
 /// write()) cannot fault and always answers Ok. A user-buffer copy
-/// (read_user(), write_user()) can, and it runs under m_mutex, so the fault
+/// (read_user(), write_user()) can, and it runs under m_lock, so the fault
 /// must not be resolved in place: resolving takes the address space's lock,
 /// which would put it inside this VMO's -- the reverse of the order the page
 /// fault path takes them in -- and would deadlock outright if the user buffer
 /// is a mapping of this very VMO. It uses the capturing copies instead and
-/// hands the fault back. This function then lets go of m_mutex, resolves the
+/// hands the fault back. This function then lets go of m_lock, resolves the
 /// fault with soft_fault() where sleeping and the address space's lock are
-/// both allowed, takes m_mutex again, and carries on from the first byte not
+/// both allowed, takes m_lock again, and carries on from the first byte not
 /// yet copied.
 ///
 /// Carrying on means looking the page up again, never reusing what was found
@@ -169,7 +169,7 @@ auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *page
 /// SoftFaultInRange() and retry -- minus the partial-length return: a call that
 /// fails here fails, and says so.
 ///
-/// m_mutex is a sleeping lock, not a spin lock, so a long copy holds up other
+/// m_lock is a sleeping lock, not a spin lock, so a long copy holds up other
 /// users of this VMO but never a CPU with interrupts off.
 auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
                                       bool const will_write, CopyPage const &copy) -> Status {
@@ -188,7 +188,7 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
     while (done < size) {
         ustl::Option<UserCopyFault> fault;
         {
-            Guard guard{m_mutex};
+            Guard guard{m_lock};
             // Checked before anything is copied, and written so that it cannot
             // wrap, as commit_range_internal() is. A range that runs off the end
             // copies nothing rather than a prefix: no caller here wants a short

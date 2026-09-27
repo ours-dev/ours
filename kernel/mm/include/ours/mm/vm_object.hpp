@@ -7,6 +7,7 @@
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_page.hpp>
 #include <ours/status.hpp>
+#include <ours/sync/mutex.hpp>
 
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
@@ -178,6 +179,25 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return m_type;
     }
 
+    /// The object's lock: over its pages (a paged VMO's page tree) and over
+    /// the list of mappings of it. One lock for both, as Zircon has one, and
+    /// for the reason Zircon does: an operation that changes pages -- a
+    /// decommit, say -- has to reach every mapping of them while no page and
+    /// no mapping can change under it.
+    ///
+    /// Taken inside an address space's lock, never the other way round:
+    /// VmMapping::page_fault(), map_paged(), activate() and destroy() all run
+    /// with the aspace lock held and take this one inside it, and
+    /// VmObjectPaged::copy_page_by_page() lets go of this one before it
+    /// resolves a user fault. Zircon's VmMapping::PageFault() takes
+    /// `paged->lock()` with the aspace lock already held.
+    ///
+    /// It lives here and not in VmObjectPaged, where it began, because the
+    /// mapping list does: a physical VMO has mappings too.
+    TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto lock() -> sync::Mutex & {
+        return m_lock;
+    }
+
   protected:
     friend class VmMapping;
 
@@ -198,11 +218,18 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     virtual ~VmObject() = default;
     USTL_NO_MOVEABLE_AND_COPYABLE(VmObject);
 
+    /// Under the object's lock, because the mappings of one object can belong
+    /// to different address spaces: each of those holds only its own aspace
+    /// lock, and two of them adding a mapping of this object at once would
+    /// otherwise write this list concurrently. Zircon:
+    /// VmObject::AddMappingLocked(), TA_REQ(lock()).
+    TA_REQUIRES(m_lock)
     FORCE_INLINE
     auto add_mapping(VmMapping &mapping) -> void {
         m_mappings.push_back(mapping);
     }
 
+    TA_REQUIRES(m_lock)
     FORCE_INLINE
     auto remove_mapping(VmMapping &mapping) -> void {
         (void)m_mappings.erase(m_mappings.iterator_to(mapping));
@@ -211,7 +238,9 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     gktl::Canary m_canary;
     Type const m_type;
     Flags m_flags;
-    VmMapping::List m_mappings;
+
+    sync::Mutex m_lock;
+    VmMapping::List m_mappings TA_GUARDED(m_lock);
 
     constexpr static auto MAX_NAME_SIZE = 32;
     ktl::Name<MAX_NAME_SIZE> m_name;
