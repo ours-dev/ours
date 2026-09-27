@@ -570,6 +570,28 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
     m_canary.verify<Self>();
 
+    // Whether the calling thread may allocate at all: a thread that has
+    // disabled allocation (MemoryAllocationState::disable()) is refused here,
+    // whichever way it asked. This is the one function every frame
+    // allocation reaches -- the node-less entries through
+    // PmNode::Current, the ones naming a node directly, and the bulk and
+    // fragment loops once per step -- so the rule cannot be walked around.
+    //
+    // It used to be asked only by PmNode::Current::inherit_thread_context(),
+    // bundled with the NUMA policy, so alloc_frames(nid, ...) skipped it along
+    // with the policy it had every right to skip. The two are different
+    // questions -- may this thread allocate, and where from -- and only the
+    // second one depends on whether the caller named a node. Linux splits them
+    // the same way: current_gfp_context() applies the task's scoped
+    // restrictions in __alloc_pages(), which alloc_pages_node() reaches too,
+    // while the mempolicy is consulted only by alloc_pages().
+    //
+    // Thread::Current is always there by now: task::init_early() makes the
+    // boot thread current before the PMM exists.
+    if (!task::Thread::Current::memory_allocation_state().is_enabled()) {
+        return ustl::err(Status::AccessDenied);
+    }
+
     if (order > MAX_FRAME_ORDER) {
         return ustl::err(Status::InvArgs);
     }
@@ -678,14 +700,10 @@ constinit decltype(PmNode::Current::DYNAMIC_CPU_TO_NODE) PmNode::Current::DYNAMI
     return value;
 }();
 
-auto PmNode::Current::inherit_thread_context(Gaf &gaf) -> Status {
-    auto &mem_state = task::Thread::Current::memory_allocation_state();
-    if (!mem_state.is_enabled()) {
-        return Status::AccessDenied;
-    }
-
+auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
     if constexpr (MEMORY_ALLOCATION_POLICY) {
         using Kind = MemoryAllocationPolicy::Kind;
+        auto &mem_state = task::Thread::Current::memory_allocation_state();
         if (auto policy = mem_state.get_policy()) {
             switch (policy->kind()) {
                 case Kind::Bind:
@@ -721,7 +739,7 @@ auto PmNode::Current::resolve_local_node() -> PmNode * {
 
 auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame *> {
-    if (auto const status = inherit_thread_context(gaf); Status::Ok != status) {
+    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
         return ustl::err(status);
     }
 
@@ -742,7 +760,7 @@ auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallbac
 
 auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    if (auto const status = inherit_thread_context(gaf); Status::Ok != status) {
+    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
         return ustl::err(status);
     }
 
@@ -763,7 +781,7 @@ auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize order, NodeMask const
 
 auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize order, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    if (auto const status = inherit_thread_context(gaf); Status::Ok != status) {
+    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
         return ustl::err(status);
     }
 

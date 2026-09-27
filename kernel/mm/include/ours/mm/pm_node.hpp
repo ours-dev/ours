@@ -523,7 +523,12 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
   private:
     friend class PmNode;
 
-    static auto inherit_thread_context(Gaf &gaf) -> Status;
+    /// Where the calling thread's memory policy says its frames should come
+    /// from. Only for the node-less entries: a caller that names a node has
+    /// already said where, which is why PmNode::alloc_frames() does not apply
+    /// it. Whether the thread may allocate at all is a different question,
+    /// asked in PmNode::alloc_frames() for every caller.
+    static auto apply_thread_policy(Gaf &gaf) -> Status;
 
     /// The calling CPU's PmNode, answered even before CURRENT_INSTANCE exists.
     ///

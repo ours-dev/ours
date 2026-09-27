@@ -68,8 +68,10 @@ auto alloc_page_table(usize size, usize alignment, NnId node) -> PhysAddr {
         //
         // bootmem::ANY_NODE is >= NUMA_MAX_NODE, which this overload forwards to
         // the node-less one, so "no preference" -- every in-tree caller today --
-        // behaves exactly as before, PmNode::Current::inherit_thread_context()
-        // and the MemoryAllocationState counter included.
+        // behaves exactly as before, the thread's NUMA policy included
+        // (PmNode::Current::apply_thread_policy()). The MemoryAllocationState
+        // counter applies either way: PmNode::alloc_frames() checks it for
+        // every caller.
         auto *frame = alloc_frames(node, GAF_KERNEL | Gaf::Zero, get_order(size / PAGE_SIZE));
         return frame ? frame_to_phys(frame) : PhysAddr{0};
     }

@@ -700,3 +700,85 @@ Zircon：
 - `VmAspace` 的 `m_root_vma` 没加 `TA_GUARDED`。`root_vma()` 在各处被不持锁地读取，
   用来拿根 VMA 再调用它的公开接口，而那些接口自己会拿锁。它创建后到 `destroy()`
   之前都不会变，要加注解得先理清 `destroy()` 之后的读者。
+
+## 禁止分配的检查挪到 PmNode::alloc_frames()，指定节点的分配也受它约束（2026-09-27）
+
+修掉 `docs/repairs/260925/mm.md` 第 1 条（原第 2 条）。那个文件只剩这一条，修完后删除。
+
+**文件**
+- `kernel/mm/pm_node.cpp`：
+  - `PmNode::alloc_frames()` 开头检查 `MemoryAllocationState::is_enabled()`；
+  - `PmNode::Current::inherit_thread_context()` 改名为 `apply_thread_policy()`，只保留 NUMA 策略
+- `kernel/mm/include/ours/mm/pm_node.hpp`：声明随之改名，补注释
+- `kernel/mm/pmm.cpp`：注释里的引用跟着改
+- `docs/repairs/260925/mm.md`：删除
+
+**症状**
+潜伏：`MemoryAllocationState::disable()` 目前还没有调用者。一旦有了，线程声明"这里不许分配"
+之后，只要改用指定节点的 `alloc_frames(nid, ...)`，照样能分配出来。比如 `CpuLocal::Mapper::build_dense()`
+和 `object_cache` 建 slab 都走这条路径。
+
+**原因**
+`inherit_thread_context()` 里捆着两条性质不同的规则：
+- **这个线程此刻能不能分配**，即 disable 计数。这是约束当前线程上下文的安全规则，
+  和内存从哪个节点来无关，应当对所有分配生效。
+- **该从哪个节点分配**，即 NUMA 策略。这是放置偏好，调用方指定了节点就该跳过。
+
+它只在 `PmNode::Current::*`（不带节点的入口）里被调用。带节点的入口直接调用
+`PmNode::node(nid)->alloc_frames()`，跳过策略是对的，但禁止检查也被一起跳过了。
+
+**改法**
+
+之前：
+
+```cpp
+auto PmNode::Current::inherit_thread_context(Gaf &gaf) -> Status {
+    if (!mem_state.is_enabled()) { return Status::AccessDenied; }
+    /* NUMA 策略 */
+}
+// 只有 PmNode::Current::alloc_frames/_fragment/_bulk 调用它
+```
+
+之后：
+
+```cpp
+auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback) -> ... {
+    m_canary.verify<Self>();
+    if (!task::Thread::Current::memory_allocation_state().is_enabled()) {
+        return ustl::err(Status::AccessDenied);
+    }
+    ...
+}
+
+auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status { /* 只剩 NUMA 策略 */ }
+```
+
+`PmNode::alloc_frames()` 是所有页框分配的必经之处：不带节点的入口经 `PmNode::Current` 到这里，
+带节点的入口直接到这里，批量和碎片分配也是循环调用它。检查放在这里，任何入口都绕不过去。
+
+这里读取 `Thread::Current` 是安全的。`main.cpp` 里 `task::init_early()` 在建 PMM 之前就把 boot 线程设为
+当前线程，而不带节点的入口本来就依赖这一点。`CpuLocal::init()` 里的带节点分配发生在那之后。
+
+`disable()` 和 `enable()` 按要求保留。
+
+**参照**
+Linux：
+- `memalloc_noio_save()`、`memalloc_nofs_save()` 这类作用域约束记在 `current->flags` 里，由
+  `current_gfp_context()` 在 `__alloc_pages()` 里应用；
+  `alloc_pages_node()` 同样会走到这里；
+- mempolicy 只在不指定节点的 `alloc_pages()` 里通过 `get_task_policy()` 查询。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过；clang-tidy 在改动行上无新告警。
+- 临时探针：在 `init_vmm()` 之后 `disable()`，然后分别做一次带节点和一次不带节点的分配，
+  再 `enable()` 后做一次带节点的分配：
+
+  ```
+  PROBE disabled: by_node=false nodeless=false after_enable=true
+  ```
+
+  修复前，带节点的分配会成功（它根本不经过这个检查）。探针已撤掉。
+- QEMU 实测：两个镜像的 `usercopy.test` 都是 18/18，无异常。
+
+**故意没做**
+`apply_thread_policy()` 里的 `switch` 仍然是空的，NUMA 策略还没实现，它只是保留下来的脚手架。
