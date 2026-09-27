@@ -87,6 +87,9 @@ auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vma
         return Status::InvArgs;
     }
 
+    // From finding the spot to linking the new area into this one's set, all
+    // under the address space lock; see create_subaom_preamble().
+    Guard guard{get_lock()};
     auto const result = create_subaom_preamble(where, requested_size);
     if (result.is_err()) {
         return result.unwrap_err();
@@ -128,6 +131,11 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
         return Status::InvArgs;
     }
 
+    // From finding the spot to linking the mapping into this area's set and
+    // its VMO's list, all under the address space lock; see
+    // create_subaom_preamble(). The VMO's own lock is taken inside it, by
+    // VmMapping::activate(), in the one order the two are ever taken.
+    Guard guard{get_lock()};
     auto const result = create_subaom_preamble(where, requested_size);
     if (result.is_err()) {
         return result.unwrap_err();
@@ -165,6 +173,15 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
     return Status::Ok;
 }
 
+/// Picks where a new child goes. Called with the address space lock held, and
+/// the caller keeps holding it until the child is linked into m_subvmas.
+///
+/// The spot found here is only free while nobody else can insert: this reads
+/// m_subvmas and the caller's activate() writes it. Both ran with no lock at
+/// all, so two threads creating in one area could pick the same spot, and
+/// their inserts wrote the set concurrently. Zircon's
+/// VmAddressRegion::CreateSubVmarInternal() takes the aspace lock around the
+/// same span.
 auto VmArea::create_subaom_preamble(VmPlacement where, usize size)
     -> ktl::Result<ustl::Pair<VirtAddr, usize>> {
     if (!is_active()) {
@@ -288,7 +305,13 @@ auto VmArea::map_with_vmo(VmPlacement where, usize size, MmuFlags mmuf, ustl::Ar
             // VmMapping::destroy() is the counterpart activate() asks for in
             // its own comment: it unmaps whatever did get installed, takes the
             // mapping off the VMO list and the parent, and clears Active.
-            auto const teardown = mapping->destroy();
+            // Under the address space lock, as every other destroy() runs:
+            // create_mapping() let go of it on return, and map() takes and
+            // drops it on its own.
+            auto const teardown = [&] {
+                Guard guard{get_lock()};
+                return mapping->destroy();
+            }();
             if (Status::Ok != teardown) {
                 log::error("Failed to tear down the mapping at {} after a failed map: {}",
                            mapping->base(), to_string(teardown));
@@ -607,9 +630,14 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
         return status;
     }
 
+    // Created under the address space lock, as create_mapping() does, and
+    // released before protect() below takes it again for itself.
     ustl::Arc<VmMapping> mapping;
-    status = VmMapping::create(this, aligned_base, size, m_vmaf, ustl::move(vmo), 0, mmuf, name,
-                               &mapping);
+    {
+        Guard guard{get_lock()};
+        status = VmMapping::create(this, aligned_base, size, m_vmaf, ustl::move(vmo), 0, mmuf, name,
+                                   &mapping);
+    }
     if (Status::Ok != status) {
         return status;
     }

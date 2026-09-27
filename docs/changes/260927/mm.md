@@ -532,3 +532,86 @@ slab 归还页面走 `__free_pages()`，自己从不设 `PageBuddy`。
 - 没有给伙伴系统加一个独立于 `role` 的"在空闲链表上"标记。`Role::Pmm` 本来就承担这个含义，
   问题在于有人在锁外写它，而不是缺一个标记。
 - `page::PmmBody` 仍然保留，`pm_frame.hpp` 里还引用它（hook 说明和 static_assert）。
+
+## 创建映射和子 VMA 全程持地址空间锁（2026-09-27）
+
+修 `docs/repairs/260927/mm.md` 第 1 条的后一半（前一半是上面"对象锁上移到 VmObject"那一节）。
+这一条修完，那个 repairs 文件已经没有条目了，所以一并删掉。
+
+**文件**
+- `kernel/mm/vm_area.cpp`：
+  - `create_mapping()` 和 `create_subvma()`：从挑空位到挂进父 VMA，全程取 `Guard{get_lock()}`；
+  - `reserve()`：`VmMapping::create()` 放在锁内，锁在随后的 `protect()` 之前释放；
+  - `map_with_vmo()`：失败回滚时，`mapping->destroy()` 放在锁内；
+  - `create_subaom_preamble()`：补注释，说明调用方必须持锁
+- `docs/repairs/260927/mm.md`：删除
+
+**症状**
+潜伏，当前触发不到：还没有多线程用户进程并发 `vmar_map`，也没有多个地址空间同时映射同一个 VMO。
+
+**原因**
+`create_mapping()` → `create_subaom_preamble()` → `Builder::build()` → `VmMapping::create()`
+→ `activate()` 这一整条路径不持任何锁。其中三处写的都是共享状态：
+- `alloc_spot()` 读父 VMA 的 `m_subvmas` 找空位；
+- `VmAreaOrMapping::activate()` 往同一个 `m_subvmas` 里插入；
+- `m_num_mappings += 1`。
+
+两个线程在同一个 VMA 里同时创建映射，可能挑中同一个空位；两边的插入还会并发修改同一棵树。
+`VmaSet::insert()` 只在起始地址完全相同时才报冲突，部分重叠的情况会悄悄插进去。
+
+`map_with_vmo()` 的失败回滚直接调用 `mapping->destroy()`。而 `destroy()` 在其它地方
+（`unmap_locked()`、`VmArea::destroy()`）都是持着地址空间锁调用的。
+
+**改法**
+
+之前：
+
+```cpp
+auto VmArea::create_mapping(...) -> Status {
+    if (!validate_mmuflags(mmuf)) { return Status::InvArgs; }
+    auto const result = create_subaom_preamble(where, requested_size);
+    ...
+    m_num_mappings += 1;
+```
+
+之后：
+
+```cpp
+auto VmArea::create_mapping(...) -> Status {
+    if (!validate_mmuflags(mmuf)) { return Status::InvArgs; }
+    Guard guard{get_lock()};
+    auto const result = create_subaom_preamble(where, requested_size);
+    ...
+    m_num_mappings += 1;
+```
+
+`create_subvma()` 同理。`VmMapping::activate()` 在锁内再取 VMO 的锁（上一节），
+锁序仍是地址空间在外、VMO 在内。
+
+`reserve()` 和 `map_with_vmo()` 都要先创建映射，再对它调用会自己拿锁的操作（`protect()`、`map()`）。
+所以锁只包住创建这一步，不跨过后面的调用，否则同一把 Mutex 会被同一个线程拿两次。
+
+锁内会分配内存（`VmMappingCache::get()`、`ProtectionRanges::init()`）。已经确认这些分配不会
+反过来拿内核地址空间的锁：MemCache 的 slab 直接来自 `alloc_frames()`，kmalloc 不会转去 vmalloc。
+
+**参照**
+- Zircon `VmAddressRegion::CreateSubVmarInternal()`：在 `Guard<CriticalMutex> guard{lock()}`
+  （地址空间锁）下完成挑空位、构造和激活；
+- Zircon `VmMapping::Activate()`：在其中取对象锁。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过；clang-tidy 在 `vm_area.cpp` 上无新告警。
+- QEMU 实测，加上上一节的竞态修复之后：
+  - dbg_1 共 8 次，dev 共 3 次，全部 `usercopy.test` 18/18；
+  - 没有 `#UD`、`#PF`、`#GP`；
+  - 内核栈、vmalloc、各个 `map_phys` 都走这条路径，启动过程本身就大量覆盖了它。
+- 在加上竞态修复之前，这个改动跑出过一次 `#UD`。已经查明那是 object_cache 原有的竞态，
+  见上一节。
+- 没有写"两个线程并发创建映射"的专门测试，这个场景未实测。
+
+**故意没做**
+- 没给 `create_subaom_preamble()`、`VmAreaOrMapping::activate()` 加 `TA_REQUIRES`。`get_lock()`
+  返回的是 `m_aspace->get_lock()`，要让分析器认出它是同一把锁，得先给 `VmAspace::get_lock()`
+  和 `VmAreaOrMapping::get_lock()` 都加上 `TA_RETURN_CAPABILITY`。这会波及所有 `*_locked()`
+  函数，范围太大，另做。
+- 没用 `Mutex::assert_held()` 做运行期检查：它只有声明、没有定义，调用会链接失败。
