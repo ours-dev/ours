@@ -261,19 +261,14 @@ class PmNode {
     auto alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
         -> ustl::Result<PmFrame *, Status>;
 
-    /// Allocates a series of physically contiguous memory fragments that collectively
-    /// provide exactly |n| pages of memory. Instead of requiring the caller to manually
-    /// calculate how to break down the request into different-sized fragments, this
-    /// function automatically decomposes |n| into its binary representation and allocates
-    /// appropriately sized contiguous chunks for each set bit.
+    /// Allocates exactly |n| pages as a list of blocks, one per set bit of |n|:
+    /// bit k contributes one block of 2^k contiguous pages. Each block is
+    /// contiguous in itself; the blocks are not contiguous with each other.
     ///
-    /// For example, if |n| = 5 (0b101), this function will allocate:
-    /// - One fragment of size 2^0 = 1 page (for the least significant set bit)
-    /// - One fragment of size 2^2 = 4 pages (for the next set bit)
-    /// Together these provide exactly 5 pages of physically contiguous memory.
+    /// For example, |n| = 5 (0b101) yields a 1-page block and a 4-page block.
     ///
-    /// This approach ensures optimal use of available memory by using the largest
-    /// possible contiguous blocks first, minimizing fragmentation.
+    /// The blocks are taken smallest first. On failure every block already
+    /// taken is freed and the error returned.
     ///
     /// Parameters:
     ///   - |gaf|: Allocation flags specifying memory type, constraints, etc.
@@ -463,7 +458,7 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
                              NodeMask const &fallback = node_online_mask())
         -> ktl::Result<PmFrame *>;
 
-    static auto alloc_frames_fragment(Gaf gaf, usize order = 0,
+    static auto alloc_frames_fragment(Gaf gaf, usize n,
                                       NodeMask const &fallback = node_online_mask())
         -> ktl::Result<PmFrame::List>;
 

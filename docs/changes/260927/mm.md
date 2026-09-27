@@ -782,3 +782,68 @@ Linux：
 
 **故意没做**
 `apply_thread_policy()` 里的 `switch` 仍然是空的，NUMA 策略还没实现，它只是保留下来的脚手架。
+
+## PmNode::alloc_frames_fragment() 遇到 n 的 0 位时死循环（2026-09-27）
+
+PmNode 结构整理第 1 步（修潜伏 bug）的第一项。
+
+**文件**
+- `kernel/mm/pm_node.cpp`：循环每步都右移 n；`Current::alloc_frames_fragment()` 和
+  `Current::alloc_frames_bulk()` 的参数由 `order` 改名为 `n`
+- `kernel/mm/include/ours/mm/pm_node.hpp`：改正函数注释；`Current::alloc_frames_fragment()`
+  的参数改名为 `n`，去掉 `= 0` 默认值
+
+**症状**
+潜伏：`alloc_frames_fragment()` 目前没有调用者。一旦有人调用，只要 n 为偶数（二进制里某一位是 0）
+就会永远卡住。n = 2 在第一步就卡住。
+
+**原因**
+
+```cpp
+for (usize order = 0; n > 0; order += 1) {
+    if ((n & 1) == 0) {
+        continue;          // order 加 1，n 不变
+    }
+    ...
+    n >>= 1;               // 右移只在分配成功的分支里
+}
+```
+
+碰到 0 位时 `continue` 跳过了右移，下一轮检查的还是同一位，永远是 0。
+
+注释也写错了：它说 n = 5 分配出的 1 页块和 4 页块"合起来是 5 页物理连续的内存"。实际上每一块自身连续，
+块与块之间并不连续。两个 `Current::` 包装函数还把表示"页数"的参数叫成了 `order`。
+
+**改法**
+
+```cpp
+for (usize order = 0; n > 0; order += 1, n >>= 1) {
+    if ((n & 1) == 0) {
+        continue;
+    }
+    ...
+}
+```
+
+右移放进循环的步进表达式，每一步都执行。
+
+**参照**
+无直接对应。Linux 分配多页要么用 `alloc_pages()` 取一个 2^order 块，要么用 `alloc_pages_bulk()`
+取 n 个单页，没有按二进制位拆分的接口。
+
+**验证**
+- 临时探针：在 `init_vmm()` 之后调用 `alloc_frames_fragment(GAF_KERNEL, n)` 并释放：
+
+  ```
+  PROBE fragment n=6 -> blocks=2 pages=6
+  PROBE fragment n=5 -> blocks=2 pages=5
+  PROBE fragment n=1 -> blocks=1 pages=1
+  PROBE fragment n=8 -> blocks=1 pages=8
+  ```
+
+  n=6 和 n=8 修复前会卡死。探针已撤掉。
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+
+**故意没做**
+没检查 n 的最高位对应的 order 是否超过 `MAX_FRAME_ORDER`。超过时 `alloc_frames()` 会返回 `InvArgs`，
+已分配的块随之被释放，行为是对的。

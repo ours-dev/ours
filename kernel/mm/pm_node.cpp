@@ -618,14 +618,17 @@ auto PmNode::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
 
     PmFrame::List list;
-    for (usize order = 0; n > 0; order += 1) {
+    // One bit of |n| per step, whether or not it is set. The shift used to
+    // sit inside the branch that allocates, so the first clear bit was never
+    // shifted out: `continue` bumped the order and tested the same bit again,
+    // for ever. Any even |n| hung here -- n = 2 on its first step.
+    for (usize order = 0; n > 0; order += 1, n >>= 1) {
         if ((n & 1) == 0) {
             continue;
         }
 
         if (auto frame = this->alloc_frames(gaf, order, fallback)) {
             list.push_back(*frame.unwrap());
-            n >>= 1;
         } else {
             free_frames(&list);
             return ustl::err(frame.unwrap_err());
@@ -758,7 +761,7 @@ auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallbac
     return local_node->alloc_frames(gaf, order, fallback);
 }
 
-auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize order, NodeMask const &fallback)
+auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
     if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
         return ustl::err(status);
@@ -776,10 +779,10 @@ auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize order, NodeMask const
     auto const current_thread = task::Thread::Current::get();
     Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
 
-    return local_node->alloc_frames_fragment(gaf, order, fallback);
+    return local_node->alloc_frames_fragment(gaf, n, fallback);
 }
 
-auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize order, NodeMask const &fallback)
+auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
     if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
         return ustl::err(status);
@@ -797,7 +800,7 @@ auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize order, NodeMask const &fa
     auto const current_thread = task::Thread::Current::get();
     Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
 
-    return local_node->alloc_frames_bulk(gaf, order, fallback);
+    return local_node->alloc_frames_bulk(gaf, n, fallback);
 }
 
 auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
