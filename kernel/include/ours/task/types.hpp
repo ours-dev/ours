@@ -5,7 +5,6 @@
 
 #include <ours/types.hpp>
 
-#include <ustl/function/fn.hpp>
 #include <ustl/util/enum_bits.hpp>
 
 namespace ours::task {

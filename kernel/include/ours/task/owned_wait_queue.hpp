@@ -8,7 +8,7 @@
 #include <ours/task/wait_queue.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
-#include <ustl/function/fn.hpp>
+#include <ustl/function/function.hpp>
 #include <ustl/traits/is_same.hpp>
 
 namespace ours::task {
@@ -33,10 +33,13 @@ class OwnedWaitQueue: protected WaitQueue {
         BaseProfileOverrided,
     };
 
+    /// Asked under the queue's spin lock, so none of the three may allocate:
+    /// Function keeps each target inline and refuses at compile time one
+    /// larger than 24 bytes.
     struct INotifyRequeueHook {
-        ustl::function::Fn<auto()->bool> allow;
-        ustl::function::Fn<auto()->bool> on_notify;
-        ustl::function::Fn<auto()->bool> on_requeue;
+        ustl::function::Function<auto()->bool> allow;
+        ustl::function::Function<auto()->bool> on_notify;
+        ustl::function::Function<auto()->bool> on_requeue;
     };
 
     template <PropagateOp>
