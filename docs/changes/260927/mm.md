@@ -908,3 +908,40 @@ Linux `get_task_policy()` 读取的是 `current->mempolicy`；修改它的 `do_s
 
 **故意没做**
 `apply_thread_policy()` 里的 `switch` 仍然是空的。
+
+## PmNode::num_online_nodes() 改为数在线掩码，删掉从未更新的计数器（2026-09-27）
+
+PmNode 结构整理第 1 步的第三项。
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_node.hpp`：`num_online_nodes()` 改为 `node_online_mask().count()`；删掉 `NUM_ONLINE_NODES`
+- `kernel/mm/pm_node.cpp`：删掉 `NUM_ONLINE_NODES` 的定义
+
+**症状**
+潜伏：`PmNode::num_online_nodes()` 永远返回 0，但目前没有调用者。对外的 `mm::num_online_nodes()`
+（`pmm.hpp`）本来就是数掩码，结果是对的。
+
+**原因**
+"有几个在线节点"这件事被存了两份：一份是 `STATES[Online]` 掩码，由 `PmNode::init()` 的
+`set_state(m_id, State::Online)` 维护；另一份是 `NUM_ONLINE_NODES` 计数器，零初始化之后再没人碰过。
+两份数据只维护了一份，另一份自然就过时了。
+
+**改法**
+
+之前：`return NUM_ONLINE_NODES;`
+
+之后：`return node_online_mask().count();`
+
+只留掩码这一份数据。函数因此不再是 `constexpr`，它本来也读的是运行期数据。
+
+**参照**
+Linux `num_online_nodes()` 定义为 `num_node_state(N_ONLINE)`，即 `nodes_weight(node_states[N_ONLINE])`，
+没有单独的计数器。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+- 这个函数没有调用者，没有单独做探针。
+
+**故意没做**
+`NUM_NODES`（已创建的节点数）保留。它由 `bootstrap()` 在建节点时递增，数据本身是对的；它和可能节点掩码
+是否也是同一件事的两份记录，留到第 2 步拆拓扑时一起看。

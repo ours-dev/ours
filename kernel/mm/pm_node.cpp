@@ -204,7 +204,6 @@ auto ZoneIterator::move_next() -> ZoneRef {
 decltype(PmNode::STATES) PmNode::STATES;
 decltype(PmNode::NODES) PmNode::NODES;
 decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
-decltype(PmNode::NUM_ONLINE_NODES) PmNode::NUM_ONLINE_NODES;
 decltype(PmNode::NODE_DISTANCE) PmNode::NODE_DISTANCE;
 decltype(PmNode::ALLOWED_GAF) PmNode::ALLOWED_GAF = GAF_BOOT;
 

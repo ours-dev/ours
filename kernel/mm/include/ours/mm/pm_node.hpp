@@ -235,9 +235,14 @@ class PmNode {
         return NUM_NODES;
     }
 
+    /// Counted off the Online mask, as Linux's num_online_nodes() is
+    /// (num_node_state(N_ONLINE)). It used to return a NUM_ONLINE_NODES
+    /// counter that nothing ever incremented, so it answered 0 on every
+    /// machine; one fact kept in two places had drifted, and the mask is the
+    /// one init() actually maintains.
     FORCE_INLINE
-    constexpr static auto num_online_nodes() -> usize {
-        return NUM_ONLINE_NODES;
+    static auto num_online_nodes() -> usize {
+        return node_online_mask().count();
     }
 
     FORCE_INLINE
@@ -445,8 +450,6 @@ class PmNode {
 
     // Th fields bottom is readonly after initializing logically.
     static usize NUM_NODES;
-
-    static usize NUM_ONLINE_NODES;
 
     static Gaf ALLOWED_GAF;
 };
