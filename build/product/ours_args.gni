@@ -6,10 +6,11 @@ declare_args() {
   # Per-build customization of what a kernel image carries, as one bundle.
   #
   # This is Ours' counterpart of Fuchsia's `fx set --with`: it lets one build
-  # directory say "this image also carries these user programs", so that
-  # several sessions can each build and boot their own image side by side
-  # instead of sharing one out/bringup.x86. tools/set.py writes it from --with;
-  # it can also be written into args.gn by hand.
+  # directory say "this image also carries these user programs, and runs that
+  # one at boot", so that several sessions can each build and boot their own
+  # image side by side instead of sharing one out/bringup.x86. tools/set.py
+  # writes it from --with/--autorun; it can also be written into args.gn by
+  # hand.
   #
   # It follows Fuchsia's model, in which what boots is the product's and a
   # build only makes more programs available: userboot always starts
@@ -26,6 +27,16 @@ declare_args() {
   #     in the kernel toolchain would build a -mcmodel=kernel "user program".
   #     A program named here is built and packaged into the BootFS; it runs
   #     when something that is already running starts it.
+  #
+  #   autorun
+  #     A command init runs once the shell is up: `<BootFS name>[+arg...]`,
+  #     written into the image's cmdline as `ours.autorun.boot=` -- Ours'
+  #     counterpart of Zircon's `zircon.autorun.boot`, which console-launcher
+  #     runs after starting the shell. This is how a build asks for its own
+  #     program at boot without changing the boot flow: the flow still runs
+  #     userboot, init and the shell, and init then starts this command
+  #     (system/service/init). The program it names must be in the image --
+  #     usually through `with` -- which tools/set.py checks after gn gen.
   #
   # Why one scope and not one argument per field: new knobs land as new fields
   # without growing the flat argument namespace. The cost is GN's semantics for

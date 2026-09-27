@@ -7,7 +7,7 @@ Usage:
   tools/set.py <product>.<arch> --variant lto[,ubsan-trap]
   tools/set.py <product>.<arch> --clang-dir <path>  # override the clang tool dir
   tools/set.py <product>.<arch> --args kernel_shell_enabled=false  # any GN arg
-  tools/set.py <product>.<arch> --out out/mine --with //examples/foo
+  tools/set.py <product>.<arch> --out out/mine --with //examples/foo --autorun foo+arg
   tools/set.py --list                 # list valid products and arches
 
 This is the equivalent of `fx set <product>.<board>`: it writes args.gn
@@ -36,11 +36,19 @@ keeps its quotes: --args 'sched_normal_discipline="fair"'.
 
 --with is the `fx set --with` counterpart: it names user programs the dev
 image carries in addition to its own, so that several sessions can each build
-and boot their own image from their own --out directory. It is written into
-args.gn as the `ours` argument bundle (//build/product/ours_args.gni) and takes
-plain labels (//examples/foo); the image adds the user toolchain. As in
-Fuchsia, it adds programs without changing what boots: the image's boot flow
-(userboot, then init, then the shell) is its own.
+and boot their own image from their own --out directory. It takes plain labels
+(//examples/foo); the image adds the user toolchain. As in Fuchsia, it adds
+programs without changing what boots: the image's boot flow (userboot, then
+init, then the shell) is its own.
+
+--autorun is the `zircon.autorun.boot` counterpart: a command,
+`<BootFS name>[+arg...]`, that init runs once the shell is up. It is how a
+build runs its own program at boot, since --with only packages it. After gn gen
+the command's program is checked against what the image actually carries, and
+a directory that fails the check is put back the way it was.
+
+Both are written into args.gn as the `ours` argument bundle
+(//build/product/ours_args.gni).
 """
 
 # PEP 604 annotations (`str | None`) are evaluated at definition time without
@@ -52,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +75,21 @@ VALID_CPUS = {
 }
 
 DEFAULT_PRODUCT = "bringup"
+
+# The image that reads the `ours` bundle, and the two files `gn gen` writes for
+# it that the --autorun check reads: the pack response file, which carries the
+# image's `ours.autorun.boot=` entries, and the whitelist of user-visible
+# BootFS names gathered from its deps' metadata. Reading these instead of
+# re-deriving names from labels keeps one source of truth: whatever the build
+# decided the image carries is what gets checked.
+OURS_IMAGE_RSP = "//kernel/products/image/dev:_obi.dev.rsp"
+OURS_IMAGE_WHITELIST = "//kernel/products/image/dev:ours.user_visible"
+AUTORUN_ENTRY = "--entry=ours.autorun.boot="
+
+# An autorun command is spliced into the kernel command line, where whitespace
+# would split it into a second option and a quote would break the GN string
+# that carries it; `+` separates its words, as in zircon.autorun.boot.
+AUTORUN_COMMAND = re.compile(r"[A-Za-z0-9._+/=:,-]+")
 
 
 def list_products() -> list[str]:
@@ -124,31 +148,96 @@ def parse_target(spec: str) -> tuple[str, str]:
     return product, arch
 
 
-def ours_bundle(with_labels: list[str]) -> list[str] | None:
-    """Render --with as the args.gn lines of the `ours` bundle.
+def autorun_program(command: str) -> str | None:
+    """The BootFS name an autorun command starts: its first non-empty word.
 
-    Returns None when --with was not given, so the bundle stays at its empty
-    default and the image carries only its own programs.
-
-    Raises ValueError on a label GN would misread: it must be absolute, since
-    a relative one would resolve against the image's BUILD.gn rather than
-    against what the caller meant.
+    Mirrors how init splits `ours.autorun.boot` (init::AutorunCommand in
+    system/service/init): words are separated by `+` and empty ones are
+    skipped, so `+foo+bar` runs foo.
     """
-    if not with_labels:
+    for word in command.split("+"):
+        if word:
+            return word
+    return None
+
+
+def ours_bundle(with_labels: list[str], autorun: str) -> list[str] | None:
+    """Render --with/--autorun as the args.gn lines of the `ours` bundle.
+
+    Returns None when neither was given, so the bundle stays at its empty
+    default and the image carries and runs only its own programs. Only the
+    fields that were given are written: args.gn replaces the default scope
+    wholesale, and the image treats a missing field as "not asked for".
+
+    Raises ValueError on input GN or the kernel command line would misread: a
+    label must be absolute (a relative one would resolve against the image's
+    BUILD.gn rather than against what the caller meant), and an autorun command
+    must be one cmdline word that names a program.
+    """
+    if not with_labels and not autorun:
         return None
     for label in with_labels:
         if not label.startswith("//") or '"' in label:
             raise ValueError(f"--with '{label}' is not an absolute GN label (//path[:name])")
-    quoted = ", ".join(f"\"{label}\"" for label in with_labels)
-    return ["ours = {", f"  with = [ {quoted} ]", "}"]
+    if autorun and (not AUTORUN_COMMAND.fullmatch(autorun) or autorun_program(autorun) is None):
+        raise ValueError(f"--autorun '{autorun}' is not <BootFS name>[+arg...]")
+
+    lines = ["ours = {"]
+    if with_labels:
+        quoted = ", ".join(f"\"{label}\"" for label in with_labels)
+        lines.append(f"  with = [ {quoted} ]")
+    if autorun:
+        lines.append(f"  autorun = \"{autorun}\"")
+    lines.append("}")
+    return lines
+
+
+def check_autorun(gn: Path, out_dir: Path) -> str | None:
+    """Return an error if the autorun command names a program the image lacks.
+
+    Runs after `gn gen`, because both halves of the question are answers the
+    build gives: which command the image's cmdline carries (the last
+    `ours.autorun.boot`, since init takes the last), and which user programs
+    the image actually carries (the whitelist its deps' metadata produce,
+    which --with shaped). Without the check the mismatch would surface only in
+    QEMU, as `init: starting the autorun command = NotFound`.
+    """
+    result = subprocess.run(
+        [str(gn), "outputs", str(out_dir), OURS_IMAGE_RSP, OURS_IMAGE_WHITELIST],
+        cwd=str(ROOT), capture_output=True, text=True)
+    if result.returncode != 0:
+        return (f"cannot locate the image files for the --autorun check:\n"
+                f"{result.stderr.strip()}")
+    rsp_path, whitelist_path = (out_dir / p for p in result.stdout.split())
+
+    command = None
+    for line in rsp_path.read_text().splitlines():
+        if line.startswith(AUTORUN_ENTRY):
+            command = line[len(AUTORUN_ENTRY):]
+    if command is None:
+        return None
+    program = autorun_program(command)
+
+    programs = whitelist_path.read_text().split()
+    if program not in programs:
+        return (f"--autorun would start '{program}', but the image only carries "
+                f"{', '.join(programs)}.\n"
+                f"Add its label with --with, or run one of these.")
+    return None
 
 
 def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
               tool_dir: str | None, extra_args: list[str],
               ours: list[str] | None = None) -> int:
-    """Write args.gn and run gn gen."""
+    """Write args.gn and run gn gen.
+
+    With an `ours` bundle, the result is also checked (check_autorun); on
+    failure the directory is put back the way it was -- the previous args.gn
+    regenerated, or a directory this run created removed -- so a bad --autorun
+    never leaves behind a configured build of an image that runs nothing.
+    """
     if ours is not None and any(a.partition("=")[0].strip() == "ours" for a in extra_args):
-        print("error: --with and --args ours=... both set the `ours` bundle; "
+        print("error: --with/--autorun and --args ours=... both set the `ours` bundle; "
               "use one", file=sys.stderr)
         return 1
     if arch not in VALID_CPUS:
@@ -161,6 +250,9 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
               file=sys.stderr)
         return 1
 
+    created_out_dir = not out_dir.exists()
+    args_gn = out_dir / "args.gn"
+    previous_args = args_gn.read_text() if args_gn.is_file() else None
     out_dir.mkdir(parents=True, exist_ok=True)
 
     lines = [
@@ -185,7 +277,6 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
     if ours is not None:
         lines.extend(ours)
 
-    args_gn = out_dir / "args.gn"
     args_gn.write_text("\n".join(lines) + "\n")
 
     triple = VALID_CPUS[arch]
@@ -206,10 +297,38 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
     cmd = [str(gn), "gen", str(out_dir), "--export-rust-project"]
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(ROOT))
+    if result.returncode == 0 and ours is not None:
+        error = check_autorun(gn, out_dir)
+        if error is not None:
+            print(f"error: {error}", file=sys.stderr)
+            _restore(gn, out_dir, created_out_dir, previous_args)
+            return 1
     if result.returncode == 0:
         _refresh_debug_menu()
         print(f"Build:   ninja -C {out_dir} //products/{product}:{product}")
     return result.returncode
+
+
+def _restore(gn: Path, out_dir: Path, created: bool, previous_args: str | None) -> None:
+    """Undo a configuration that failed the --autorun check.
+
+    A directory this run created is removed outright. An existing one gets its
+    previous args.gn back and is regenerated, because build.ninja already
+    reflects the rejected arguments and ninja would otherwise keep building
+    them until something next touched args.gn.
+    """
+    if created:
+        shutil.rmtree(out_dir)
+        print(f"Removed {out_dir}; nothing was configured.", file=sys.stderr)
+        return
+    args_gn = out_dir / "args.gn"
+    if previous_args is None:
+        args_gn.unlink()
+    else:
+        args_gn.write_text(previous_args)
+    subprocess.run([str(gn), "gen", str(out_dir), "--export-rust-project"],
+                   cwd=str(ROOT), capture_output=True)
+    print(f"Restored the previous configuration of {out_dir}.", file=sys.stderr)
 
 
 def _refresh_debug_menu() -> None:
@@ -261,6 +380,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="extra user program the dev image carries, as a plain "
                              "label (//examples/foo); repeatable. It is built and "
                              "packaged; the boot flow does not change")
+    parser.add_argument("--autorun", default="", metavar="COMMAND",
+                        help="<BootFS name>[+arg...] that init runs once the shell "
+                             "is up (ours.autorun.boot, like zircon.autorun.boot); "
+                             "the program must be in the image")
     args = parser.parse_args(argv)
 
     if args.list or args.target is None:
@@ -285,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         out_dir = ROOT / "out" / f"{product}.{arch}"
     try:
-        ours = ours_bundle(args.with_labels)
+        ours = ours_bundle(args.with_labels, args.autorun)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -118,6 +118,15 @@ kernel_cmdline("cmdline") {
     "userboot.next=init",
     "kernel.shell=true",
   ]
+
+  # A build's own program to run once the shell is up (ours.autorun,
+  # //build/product/ours_args.gni). Last, because init takes the last
+  # `ours.autorun.boot` it sees, so an entry here overrides any the image might
+  # carry in future rather than being overridden by it.
+  if (defined(ours.autorun)) {
+    _autorun = ours.autorun
+    args += [ "ours.autorun.boot=$_autorun" ]
+  }
 }
 
 # dev 镜像：physload 以 stripped ELF 进入 OBI item 0（x86 boot shim

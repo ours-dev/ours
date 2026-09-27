@@ -422,3 +422,90 @@ Fuchsia `fx set --with`（`tools/devshell/set`）、userboot 的 `DEFAULT_NEXT_B
 - `--autorun`（对应 `zircon.autorun.boot`）还没加：要 init/shell 先能读这个选项并运行指名的程序，
   那是用户态的活，另交会话；落地后构建这边再加开关，并把刚删的"指名的程序必须在包里"检查按 autorun 重新加回来。
 - 没动 dbg_1：它的程序集合和开机流程就是这个诊断镜像的用途，也不读 `ours`。
+
+## `ours.autorun`/`--autorun`：让构建目录开机就跑自己的程序，对应 `zircon.autorun.boot`（2026-09-26）
+
+**文件**
+- `build/product/ours_args.gni` — 新增 `autorun` 字段
+- `kernel/products/image/dev/BUILD.gn` — `ours.autorun` 存在时在 cmdline 末尾追加 `ours.autorun.boot=<command>`
+- `tools/set.py` — 新增 `--autorun <BootFS 名>[+参数...]`；gn gen 后检查 autorun 指名的程序在镜像里，不在就报错并撤销本次配置
+
+**症状**
+上一条改成 Fuchsia 模型后，`--with` 只把程序打进包、不运行它，构建目录没有办法"开机就跑我的程序"。
+
+**原因**
+Fuchsia 的答案不是改开机流程，而是 `zircon.autorun.boot=<command>`：开机流程照旧，console-launcher 起完 shell
+后执行这条命令。ours 里对应 console-launcher 的是 init（它起 shell），用户态会话已经实现了
+`ours.autorun.boot`（dc17bafd..68f9a0f4：内核按白名单转发 `ours.autorun.*` → userboot 转给 init →
+init 起完 shell 后 `process_spawn_boot`）。构建这边缺的是把它变成按构建目录可选的参数。
+
+检查要放回来：`--autorun` 可以指名一个包里没有的程序，这种镜像能编能启动，只是在日志里多一行
+`init: starting the autorun command = NotFound`，很容易被当成"跑过了"。
+
+改前：
+
+```gn
+  args = [
+    "userboot.next=init",
+    "kernel.shell=true",
+  ]
+}
+```
+
+**改法**
+改后：
+
+```gn
+  args = [
+    "userboot.next=init",
+    "kernel.shell=true",
+  ]
+  if (defined(ours.autorun)) {
+    _autorun = ours.autorun
+    args += [ "ours.autorun.boot=$_autorun" ]
+  }
+}
+```
+
+```python
+def autorun_program(command: str) -> str | None:
+    for word in command.split("+"):
+        if word:
+            return word
+    return None
+...
+    command = None
+    for line in rsp_path.read_text().splitlines():
+        if line.startswith(AUTORUN_ENTRY):
+            command = line[len(AUTORUN_ENTRY):]      # init 取最后一个，这里也取最后一个
+    ...
+    if program not in programs:                      # programs = 镜像的用户可见白名单
+        return f"--autorun would start '{program}', but the image only carries ..."
+```
+
+- 追加在 cmdline **末尾**：init 取最后一个 `ours.autorun.boot`，放最后保证构建参数覆盖镜像将来可能自带的值。
+- 程序名的取法和 init 一致（`init::AutorunCommand::parse()`：按 `+` 切、跳过空词、第一个词是程序名），
+  否则 `+foo` 这种写法会在这里和 init 里得到不同答案。
+- 检查和失败撤销沿用上一版 `--next` 的做法（`gn outputs` 取 rsp 与白名单；新建目录删掉、已有目录恢复
+  args.gn 并重新 gen），只是检查对象换成 autorun。
+- `--autorun` 的字符集限制：不允许空白（会在 cmdline 上变成第二个选项）和引号（会破坏 GN 字符串）。
+
+**参照**
+Fuchsia `zircon.autorun.boot`（`docs/reference/kernel/kernel_cmdline.md`）与 console-launcher 的
+`LaunchAutorun()`（`src/bringup/bin/console-launcher/main.cc`）；ours 侧实现见
+`docs/changes/260926/` 下 userabi/init 相关条目。
+
+**验证**
+- `--with //kernel/lib/syscall/test/fault_probe --autorun fault_probe+none`：args.gn 写出 `autorun = "fault_probe+none"`，
+  rsp 末尾是 `--entry=ours.autorun.boot=fault_probe+none`。
+- `--autorun fault_probe`（没 `--with`）写新目录：报 `--autorun would start 'fault_probe', but the image only carries userboot, vdso, shell, init.`，目录删除。
+  `--autorun nosuch` 写已有目录：报错，args.gn 恢复且 diff 为空，rsp 里的 autorun 项也随重新 gen 回来了。
+- `--autorun "fault_probe none"`、`--autorun +++` 在建目录前被拒；只给 `--with` 时 rsp 里没有 autorun 项。
+- QEMU 同时跑 60 秒，零 panic：dev 日志 `userabi: passing ours.autorun.boot=fault_probe+none to userboot` →
+  `userboot: passing ... to init` → `init: spawned shell` → `init: autorun fault_probe+none` → `fault_probe: none`；
+  dbg_1 不读 `ours`，日志里没有 autorun，自己的探针照常跑完。
+
+**故意没做**
+- 不在 set.py 里检查"最多 8 个词"：那是 init 的 `AutorunCommand::MAX_WORDS`，超出时 init 拒绝并报错、shell 不受影响；
+  在这里再写一个 8 会多一份需要同步的真相。
+- dbg_1 不支持 autorun：它的开机流程是 userboot 直接起 shell，没有 init，而这正是这个诊断镜像的用途。
