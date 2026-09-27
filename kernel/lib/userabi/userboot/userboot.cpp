@@ -17,11 +17,15 @@
 /// runtime): _start reads the processargs message the kernel queued on the
 /// bootstrap channel (make_bootstrap() in //kernel/lib/userabi/src/
 /// userboot.cpp) and calls main(). That message carries the root job, the
-/// BootFS, and -- as environment strings -- the image's `userboot.*`
-/// options, which is how this program sees a command line it has no other
-/// way to reach. Zircon's userboot reads its options out of the ZBI's
-/// CMDLINE item instead (get_options() in main.rs); the kernel forwarding
-/// just the `userboot.*` tokens spares this program a boot-container parser.
+/// BootFS, and -- as environment strings -- the image's user-space options
+/// (collect_user_options() in //kernel/lib/userabi/src/userboot.cpp), which
+/// is how this program sees a command line it has no other way to reach.
+/// The `userboot.*` ones are its own; the rest (`ours.autorun.boot`, which
+/// init reads) it hands on to the next program as that program's
+/// environment. Zircon's userboot reads its options out of the ZBI's
+/// CMDLINE item instead (get_options() in main.rs) and hands the whole ZBI
+/// on; the kernel forwarding tokens spares both programs a boot-container
+/// parser.
 
 #include <string_view>
 
@@ -41,6 +45,28 @@ namespace {
 /// `key=value` form means anything, since a bare `userboot.next` names no
 /// program. Zircon's key of the same name (parse_option() in main.rs).
 constexpr std::string_view NEXT_OPTION{"userboot.next="};
+
+/// The family of options that are this program's own and stop here; every
+/// other environment string is the next program's and is handed on.
+constexpr std::string_view USERBOOT_OPTION_PREFIX{"userboot."};
+
+/// How many environment strings are handed on to the next program. The
+/// kernel forwards at most eight options in all (MAX_USER_OPTIONS in
+/// //kernel/lib/userabi/src/userboot.cpp), so this never drops one today; it
+/// is a bound of its own because the two limits live in different programs
+/// and nothing links them.
+constexpr u32 MAX_HANDED_ON = 8;
+
+/// The environment strings the next program gets: this program's own less
+/// its `userboot.*` options.
+///
+/// Views into this process's processargs, which the runtime keeps for the
+/// life of the process; held only until start_next() has copied them into
+/// the next program's message.
+struct HandedOn {
+    std::string_view entries[MAX_HANDED_ON];
+    u32 count{0};
+};
 
 /// Prints "<what><status name>".
 auto report(ou::Str const what, ours::Status const status) -> void {
@@ -86,10 +112,36 @@ auto find_next() -> std::string_view {
     return next;
 }
 
+/// The environment strings that are not this program's own options.
+///
+/// Not a filter the kernel could apply for it: the kernel sends one message,
+/// to this program, and has no say in what the next one gets. Zircon's
+/// userboot passes on everything instead -- the whole ZBI -- but a program
+/// there asks component_manager for the options it wants; here the
+/// environment *is* the options, so what `userboot.next` was is none of
+/// init's business. One that does not fit is dropped and named, as the
+/// kernel does with a token it has no room for.
+auto collect_handed_on() -> HandedOn {
+    HandedOn handed_on;
+    for (auto const entry: runtime::process_args().environ()) {
+        if (entry.starts_with(USERBOOT_OPTION_PREFIX)) {
+            continue;
+        }
+        if (handed_on.count == MAX_HANDED_ON) {
+            static_cast<void>(
+                ou::debug_line({"userboot: dropping ", to_str(entry), ": no room to hand it on"}));
+            continue;
+        }
+        handed_on.entries[handed_on.count++] = entry;
+    }
+    return handed_on;
+}
+
 /// Starts |name| from the kernel package under |job|, handing it |job| and
 /// |bootfs| as its JobDefault and VmoBootfs startup handles -- exactly what
 /// the kernel handed this program, so the next program starts as it would
-/// have had the kernel started it directly. argv is {|name|}.
+/// have had the kernel started it directly. argv is {|name|}; the environment
+/// is |environ|, the options that were not this program's.
 ///
 /// The process is started before its processargs are written, the reverse
 /// of the kernel's order (make_bootstrap()): |job| has to go into the
@@ -104,7 +156,7 @@ auto find_next() -> std::string_view {
 /// after the spawn loses them with the message, and the new process, finding
 /// PEER_CLOSED and no message, exits with runtime::EXIT_START_FAILED.
 auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
-                std::string_view const name) -> ours::Status {
+                std::string_view const name, HandedOn const &environ) -> ours::Status {
     using ours::Status;
 
     ours::HandleValue handles[2] = {job};
@@ -116,12 +168,17 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
     }
 
     // The header, two handle_infos and a name of at most 63 bytes and its
-    // NUL -- the kernel keeps program names in 64 -- come to 108 bytes.
-    u8 message[128];
+    // NUL -- the kernel keeps program names in 64 -- come to 108 bytes; the
+    // environment adds at most the 384 the kernel lets all its forwarded
+    // options take (USER_OPTIONS_BYTES), of which this hands on a subset.
+    // Should that bound ever outgrow this buffer, encoding fails with
+    // BufferTooSmall and the next program is not started -- loudly, rather
+    // than with an option quietly missing.
+    u8 message[512];
     u32 length = 0;
     std::string_view const args[] = {name};
-    if (auto const status =
-            ours::encode_process_args(message, {infos, count}, args, {}, {}, &length);
+    if (auto const status = ours::encode_process_args(
+            message, {infos, count}, args, {environ.entries, environ.count}, {}, &length);
         status != Status::Ok) {
         return status;
     }
@@ -170,7 +227,12 @@ auto main(int, char **) -> int {
     auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
 
     static_cast<void>(ou::debug_line({"userboot: starting ", to_str(next)}));
-    if (auto const status = start_next(job, bootfs, next); status != ours::Status::Ok) {
+    auto const handed_on = collect_handed_on();
+    for (auto index = u32(0); index < handed_on.count; ++index) {
+        static_cast<void>(ou::debug_line(
+            {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)}));
+    }
+    if (auto const status = start_next(job, bootfs, next, handed_on); status != ours::Status::Ok) {
         report("userboot: starting the next program = ", status);
         return 1;
     }

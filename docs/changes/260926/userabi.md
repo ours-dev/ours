@@ -528,3 +528,60 @@ Zircon 用 `zircon.autorun.boot=<command>` 做这件事，读它的是 console-l
 **故意没做**
 - userboot 转交、init 执行：分别是后两条改动。
 - 把 `kernel.*` 以外的选项全部转发：理由见「原因」，白名单是有意保留的。
+
+## userboot 把不属于自己的环境串转交给下一个程序（2026-09-26）
+
+**文件**
+- `kernel/lib/userabi/userboot/userboot.cpp` — 新增 `collect_handed_on()`，`start_next()` 把 `userboot.*` 以外的 environ 写进下一个程序的 processargs，消息缓冲从 128 放大到 512
+
+**症状**
+上一条改动之后，内核已经把 `ours.autorun.boot=...` 交给了 userboot，但 userboot 起 init 时 environ 是空的，init 看不到这个选项。
+
+**原因**
+内核只给一个进程发消息，就是 userboot。init 不是内核起的，内核够不着它；userboot 之后的每个程序能拿到什么，全看它的父进程交了什么。所以用户态选项要到达 init，中间必须经过 userboot 转交。userboot 原来只把 argv 和两个句柄交出去，环境串一个也没带。
+
+**改法**
+改前：
+```cpp
+    u8 message[128];
+    ...
+    if (auto const status =
+            ours::encode_process_args(message, {infos, count}, args, {}, {}, &length);
+```
+改后：
+```cpp
+auto collect_handed_on() -> HandedOn {
+    HandedOn handed_on;
+    for (auto const entry: runtime::process_args().environ()) {
+        if (entry.starts_with(USERBOOT_OPTION_PREFIX)) {
+            continue;
+        }
+        ...
+        handed_on.entries[handed_on.count++] = entry;
+    }
+    return handed_on;
+}
+    ...
+    u8 message[512];
+    ...
+    if (auto const status = ours::encode_process_args(message, {infos, count}, args,
+                                                      {environ.entries, environ.count}, {},
+                                                      &length);
+```
+`userboot.*` 是 userboot 自己的选项，到它这里就结束，不往下传：`userboot.next` 是什么，与 init 无关。其余的原样转交。这样，以后新增一族用户态选项只需要改内核的白名单，userboot 不用跟着改。
+
+缓冲区大小按内核的上限算：头部、两个 handle_info、64 字节的程序名，再加上内核允许所有转发选项占用的 384 字节（`USER_OPTIONS_BYTES`）。两个上限分属两个程序，没有任何东西把它们绑在一起。万一内核的上限将来超过这个缓冲区，编码会返回 `BufferTooSmall`，next 不会启动。这是有意为之：宁可起不来并留下报错，也不要悄悄丢掉一个选项。条数的上限（`MAX_HANDED_ON = 8`）同理，超出的那一条会在日志里点名后丢弃，和内核丢 token 的做法一致。
+
+被否掉的方案：原样转交全部 environ，包括 `userboot.*`。这样更省事，但会让 init 看到一堆和它无关的键；更重要的是，以后要是有人在 init 里读到了 `userboot.next`，两个程序对同一个键就有了两个主人。
+
+**参照**
+- `Zircon userboot main.rs`：Zircon 把整个 ZBI 交给下一个程序（component_manager），由后者通过 `fuchsia.boot.Arguments` 提供选项，其中包括 `zircon.autorun.boot`。ours 没有这层服务，environ 本身就是选项，所以由 userboot 在转交时去掉自己的那部分。
+
+**验证**
+- 构建通过；clang-tidy 在这个文件上没有诊断。
+- QEMU dev（`out/autorun`，cmdline 临时加 `ours.autorun.boot=fault_probe+hello+world`）：`userboot: passing ours.autorun.boot=fault_probe+hello+world to init`，没有 `userboot.next` 被转交；init 照常起 shell，`init: shell says "pong"`、`init: shell closed its channel`。
+- QEMU dbg_1：没有要转交的内容，userboot 照常起 shell；shell 的 8 组检查全部通过，11 个探针被杀，对照探针 `none` 答 `unknown`。约 12 秒时 QEMU 被另一个并发会话发来的 SIGTERM 结束，没有跑满 60 秒。
+
+**故意没做**
+- init 解析并执行 `ours.autorun.boot`：下一条。
+- 把转交的范围做成可配置：目前只有一族选项需要转交，规则就是「不是自己的就交出去」，没有什么需要配置。
