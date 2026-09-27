@@ -7,7 +7,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
-#include <optional>
+#include <ustl/option.hpp>
 
 namespace ours {
 /// The architecture's half of a user copy: move the bytes, and nothing else.
@@ -54,7 +54,7 @@ struct UserCopyFault {
 /// user_copy uses it as it is -- with the fault as pf_va and pf_flags.
 struct UserCopyCaptureResult {
     Status status;
-    std::optional<UserCopyFault> fault;
+    ustl::Option<UserCopyFault> fault;
 };
 
 /// The copies above, except that a page fault on the user side is not resolved.

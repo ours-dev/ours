@@ -6,7 +6,6 @@
 #include <ours/task/thread.hpp>
 
 #include <algorithm>
-#include <optional>
 
 #include <cstring>
 
@@ -14,6 +13,7 @@
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
 #include <ustl/mem/align.hpp>
+#include <ustl/option.hpp>
 
 using ustl::mm::align_down;
 using ustl::mm::align_up;
@@ -182,11 +182,11 @@ auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool con
     usize done = 0;
     // The last fault resolved, and how far the copy had got when it was taken;
     // see the livelock check below.
-    std::optional<VirtAddr> retried_at;
+    ustl::Option<VirtAddr> retried_at;
     usize retried_done = 0;
 
     while (done < size) {
-        std::optional<UserCopyFault> fault;
+        ustl::Option<UserCopyFault> fault;
         {
             Guard guard{m_mutex};
             // Checked before anything is copied, and written so that it cannot
@@ -232,7 +232,7 @@ auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool con
 
                 auto *const base = PhysMap::phys_to_virt<u8>(frame_to_phys(*page));
                 auto const result = copy(base + in_page, done, chunk);
-                if (result.fault.has_value()) {
+                if (result.fault.is_some()) {
                     fault = result.fault;
                     break;
                 }
@@ -243,7 +243,7 @@ auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool con
             }
         }
 
-        if (!fault.has_value()) {
+        if (fault.is_none()) {
             break;
         }
 
@@ -254,11 +254,11 @@ auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool con
         // A race can land here too -- the page resolved, then unmapped again
         // before the lock came back -- and for that InvArgs is the right answer
         // anyway: the program took away its own buffer.
-        if (retried_at == fault->va && retried_done == done) {
+        if (retried_at.is_some() && *retried_at == fault->va && retried_done == done) {
             log::warn("VMO user copy: fault at {:#x} persists after it was resolved", fault->va);
             return Status::InvArgs;
         }
-        retried_at = fault->va;
+        retried_at = ustl::some(fault->va);
         retried_done = done;
 
         // Outside the lock: may sleep, and takes the address space's lock. A

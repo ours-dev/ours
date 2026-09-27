@@ -115,7 +115,7 @@ namespace {
     /// whatever the copy left in them.
     auto to_capture_result(X86UserCopyRet const &result) -> UserCopyCaptureResult {
         if (result.faulted == 0) {
-            return UserCopyCaptureResult{.status = Status::Ok, .fault = std::nullopt};
+            return UserCopyCaptureResult{.status = Status::Ok, .fault = ustl::NONE};
         }
         return UserCopyCaptureResult{
             .status = Status::InvArgs,

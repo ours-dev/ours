@@ -93,7 +93,7 @@ namespace {
     /// What a capturing copy came back with, printed before its verdict so
     /// that the log is evidence and not only a list of passes.
     auto show(char const *const name, UserCopyCaptureResult const &result) -> void {
-        if (result.fault.has_value()) {
+        if (result.fault.is_some()) {
             log::info("usercopy.test:   {}: status={} fault va={:#x} cause={:#x}", name,
                       static_cast<int>(result.status), result.fault->va,
                       static_cast<usize>(result.fault->cause));
@@ -104,18 +104,18 @@ namespace {
 
     auto faulted_at(UserCopyCaptureResult const &result, VirtAddr const va, VmfCause const cause)
         -> bool {
-        if (result.status != Status::InvArgs || !result.fault.has_value()) {
+        if (result.status != Status::InvArgs || result.fault.is_none()) {
             return false;
         }
         return result.fault->va == va && result.fault->cause == cause;
     }
 
     auto refused_without_fault(UserCopyCaptureResult const &result) -> bool {
-        return result.status == Status::InvArgs && !result.fault.has_value();
+        return result.status == Status::InvArgs && result.fault.is_none();
     }
 
     auto succeeded(UserCopyCaptureResult const &result) -> bool {
-        return result.status == Status::Ok && !result.fault.has_value();
+        return result.status == Status::Ok && result.fault.is_none();
     }
 
     auto run_checks(Tally &tally, VirtAddr const p0, VirtAddr const p1, VirtAddr const hole)

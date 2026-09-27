@@ -148,3 +148,62 @@ PROBE capture#3: user=0x7fffffffe000 size=1 -> faulted=1 va=0x7fffffffe000 cause
 - `VmoDispatcher::read_user()` / `write_user()` 还在用中转页，第三步去掉。
 - 探针顺带看到：`0x7fffffffe000` 这个地址的读写一直解析不了（`Absent`），每次启动都有系统调用在用户栈顶
   之上拷贝。这更像是用户栈布局或某个调用方传错了地址，不属于这一条，没有追。
+
+## 捕获式用户拷贝的 fault 字段由 std::optional 改为 ustl::Option（2026-09-27）
+
+**文件**
+- `kernel/arch/x86/kernel/include/ours/arch/user_copy.hpp`：`UserCopyCaptureResult::fault` 改为 `ustl::Option<UserCopyFault>`
+- `kernel/arch/x86/kernel/user_copy.cpp`：`std::nullopt` 改为 `ustl::NONE`
+- `kernel/mm/vm_object_paged.cpp`：`read_write()` 里的 `fault` 和 `retried_at` 改为 `ustl::Option`
+- `kernel/commands/user_copy_test.cpp`：`has_value()` 改为 `is_some()` / `is_none()`
+
+**症状**
+潜伏，当前触发不到。现有的每次解引用之前都先检查过 `has_value()`。
+
+**原因**
+本构建把 libc++ 的 hardening 设成了 NONE（`build/config/clang/include/__config_site`）。
+对空的 `std::optional` 做 `*` 或 `->`，`_LIBCPP_ASSERT_VALID_ELEMENT_ACCESS`
+不做任何检查，结果是未定义行为：直接读未初始化的存储，然后继续往下跑。
+`std::optional` 只有 `.value()` 有检查，会经 `__libcpp_verbose_abort` 走到 `ours::panic`。
+
+`ustl::Option` 的 `value()`、`*`、`->` 都会先调 `require_some()`，为空就
+`__builtin_trap()`。漏掉一次检查，它会当场停下，而不是把垃圾值（这里是一个
+错误的缺页地址）交给 `soft_fault()`。
+
+之前选 `std::optional`，依据的是"std 和 ustl 都有时用 std"的约定。那条约定的
+前提是 ustl 的版本没有增加价值，而在关掉 hardening 的构建里，这个前提对
+optional 不成立。
+
+**改法**
+
+之前：
+
+```cpp
+std::optional<UserCopyFault> fault;
+...
+if (retried_at == fault->va && retried_done == done) {
+retried_at = fault->va;
+```
+
+之后：
+
+```cpp
+ustl::Option<UserCopyFault> fault;
+...
+if (retried_at.is_some() && *retried_at == fault->va && retried_done == done) {
+retried_at = ustl::some(fault->va);
+```
+
+`ustl::Option` 没有和值比较的 `operator==`，所以要先显式判断 `is_some()`，
+读起来也更直白。
+
+**参照**
+Zircon 的 `UserCopyCaptureFaultsResult` 用的是 `ktl::optional`（即 `std::optional`）。
+Zircon 开启了 libc++ hardening，空访问会被断言拦下；本项目没开，所以没有照搬。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。
+- QEMU 实测：两个镜像的 `usercopy.test` 都是 18/18，无 panic。
+
+**故意没做**
+内核其它地方的 `std::optional` 没有顺手一起换，每处单独处理。
