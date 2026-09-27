@@ -49,8 +49,9 @@ struct UserCopyFault {
 /// fault may or may not have been copied, so the caller has to redo the whole
 /// request, not only what follows the fault.
 ///
-/// Zircon: UserCopyCaptureFaultsResult (lib/user_copy/include/lib/user_copy/
-/// user_copy.h), with the fault as pf_va and pf_flags.
+/// Zircon: UserCopyCaptureFaultsResult in kernel/include/arch/user_copy.h --
+/// the arch interface, which is where this lives too, so that //kernel/lib/
+/// user_copy uses it as it is -- with the fault as pf_va and pf_flags.
 struct UserCopyCaptureResult {
     Status status;
     std::optional<UserCopyFault> fault;

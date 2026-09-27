@@ -6,6 +6,7 @@
 #include <limits>
 #include <type_traits>
 
+#include <ours/arch/user_copy.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
@@ -25,13 +26,19 @@ namespace user_copy {
 /// over arch_copy_from_user()/arch_copy_to_user().
 ///
 /// Rules for callers, which the types cannot check:
-///  - Do not copy while holding a spin lock, or any lock the page-fault path
-///    takes. A copy can fault, and resolving the fault can sleep. The first
-///    version of the SMAP check hung silently for exactly this reason: the
-///    user buffer was first touched inside the logger, under its lock, and
-///    the fault handler's own log line waited on that lock forever.
-///  - Copy into a kernel buffer first, then take the object's lock; dequeue
-///    under the lock, drop it, then copy out.
+///  - The plain copies resolve a fault in place, so they must not run under a
+///    spin lock, nor under any lock the page-fault path takes -- the address
+///    space's lock, or a VMO's. Resolving can sleep, and takes those locks. The
+///    first version of the SMAP check hung silently for exactly this reason: the
+///    user buffer was first touched inside the logger, under its lock, and the
+///    fault handler's own log line waited on that lock forever.
+///  - A copy that has to run under such a lock uses the *_capture_faults
+///    variants. They do not resolve the fault; they hand it back, and the
+///    caller drops its lock, resolves it with Thread::Current::soft_fault(),
+///    re-takes the lock, looks its state up again, and retries. Do not route
+///    the bytes through a kernel bounce buffer instead: it costs a copy per
+///    page and exists only to avoid holding the lock, which capture already
+///    makes safe.
 
 /// Whether [addr, addr + size) is a range a user program may name.
 [[nodiscard]]
@@ -50,6 +57,27 @@ auto copy_from_user(void *dst, ours::VirtAddr src, usize size) -> ours::Status;
 /// Same contract as copy_from_user().
 [[nodiscard]]
 auto copy_to_user(ours::VirtAddr dst, void const *src, usize size) -> ours::Status;
+
+/// copy_from_user(), except that a page fault on the user side is handed back
+/// rather than resolved, so that it is safe under a lock (see the rules above).
+///
+/// Three outcomes, as in Zircon's UserCopyCaptureFaultsResult:
+///  - Ok, no fault: everything was copied.
+///  - InvArgs with a fault: the copy stopped on a user page that is not
+///    present or not accessible the way the copy needed. soft_fault() the
+///    fault once the lock is dropped; if that succeeds, retry the whole
+///    request. The bytes before the fault may or may not have moved.
+///  - InvArgs, no fault: the range is not wholly in the user half, and nothing
+///    was attempted. There is nothing to resolve; it is a bad argument.
+[[nodiscard]]
+auto copy_from_user_capture_faults(void *dst, ours::VirtAddr src, usize size)
+    -> ours::UserCopyCaptureResult;
+
+/// copy_to_user() with fault capture. Same contract as
+/// copy_from_user_capture_faults().
+[[nodiscard]]
+auto copy_to_user_capture_faults(ours::VirtAddr dst, void const *src, usize size)
+    -> ours::UserCopyCaptureResult;
 
 /// Which way a user pointer may be copied through.
 enum class Direction {
@@ -135,6 +163,45 @@ class UserPtr final {
             return ours::Status::InvArgs;
         }
         return user_copy::copy_to_user(m_address, src, count * sizeof(Value));
+    }
+
+    /// The four copies above with fault capture. A count too large to express
+    /// in bytes is refused without a fault, like an address outside the user
+    /// half: there is nothing to resolve.
+    [[nodiscard]]
+    auto copy_from_user_capture_faults(Value *const dst) const -> ours::UserCopyCaptureResult
+        requires(D != Direction::Out)
+    {
+        return user_copy::copy_from_user_capture_faults(dst, m_address, sizeof(Value));
+    }
+
+    [[nodiscard]]
+    auto copy_array_from_user_capture_faults(Value *const dst, usize const count) const
+        -> ours::UserCopyCaptureResult
+        requires(D != Direction::Out)
+    {
+        if (count > std::numeric_limits<usize>::max() / sizeof(Value)) {
+            return ours::UserCopyCaptureResult{.status = ours::Status::InvArgs, .fault = {}};
+        }
+        return user_copy::copy_from_user_capture_faults(dst, m_address, count * sizeof(Value));
+    }
+
+    [[nodiscard]]
+    auto copy_to_user_capture_faults(Value const &src) const -> ours::UserCopyCaptureResult
+        requires(D != Direction::In)
+    {
+        return user_copy::copy_to_user_capture_faults(m_address, &src, sizeof(Value));
+    }
+
+    [[nodiscard]]
+    auto copy_array_to_user_capture_faults(Value const *const src, usize const count) const
+        -> ours::UserCopyCaptureResult
+        requires(D != Direction::In)
+    {
+        if (count > std::numeric_limits<usize>::max() / sizeof(Value)) {
+            return ours::UserCopyCaptureResult{.status = ours::Status::InvArgs, .fault = {}};
+        }
+        return user_copy::copy_to_user_capture_faults(m_address, src, count * sizeof(Value));
     }
 
   private:

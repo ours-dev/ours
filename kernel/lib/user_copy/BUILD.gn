@@ -27,5 +27,17 @@ cpp_interface("headers") {
     "include/user_copy/user_copy.hpp",
   ]
   public_deps = [ "//system/public" ]
+
+  # user_copy.hpp includes <ours/arch/user_copy.hpp> for the capture result
+  # type, as Zircon's user_ptr.h includes <arch/user_copy.h>, and that header
+  # names mm::VmfCause. Kernel toolchain only: the host tests include range.hpp
+  # and nothing else, and //kernel/mm:headers does not evaluate under the host
+  # toolchain (its //kernel/phys:handoff dependency is kernel-only).
+  if (toolchain_environment == "kernel") {
+    public_deps += [
+      "//kernel/arch/$ours_cpu:headers",
+      "//kernel/mm:headers",
+    ]
+  }
   visibility = [ "*" ]
 }

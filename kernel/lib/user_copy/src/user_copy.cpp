@@ -38,4 +38,28 @@ auto copy_to_user(ours::VirtAddr const dst, void const *const src, usize const s
     return ours::arch_copy_to_user(dst, src, size);
 }
 
+// The same two checks as the plain copies, answered without a fault: an
+// out-of-range address was never attempted, and an empty copy touches nothing.
+auto copy_from_user_capture_faults(void *const dst, ours::VirtAddr const src, usize const size)
+    -> ours::UserCopyCaptureResult {
+    if (!is_user_range(src, size)) {
+        return ours::UserCopyCaptureResult{.status = ours::Status::InvArgs, .fault = {}};
+    }
+    if (size == 0) {
+        return ours::UserCopyCaptureResult{.status = ours::Status::Ok, .fault = {}};
+    }
+    return ours::arch_copy_from_user_capture_faults(dst, src, size);
+}
+
+auto copy_to_user_capture_faults(ours::VirtAddr const dst, void const *const src, usize const size)
+    -> ours::UserCopyCaptureResult {
+    if (!is_user_range(dst, size)) {
+        return ours::UserCopyCaptureResult{.status = ours::Status::InvArgs, .fault = {}};
+    }
+    if (size == 0) {
+        return ours::UserCopyCaptureResult{.status = ours::Status::Ok, .fault = {}};
+    }
+    return ours::arch_copy_to_user_capture_faults(dst, src, size);
+}
+
 } // namespace user_copy

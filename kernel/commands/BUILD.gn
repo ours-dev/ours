@@ -17,6 +17,7 @@ source_set("commands") {
     "log.cpp",
     "mutex_stress.cpp",
     "prof.cpp",
+    "user_copy_test.cpp",
   ]
   deps = [
     "//kernel/lib/gktl",
@@ -24,6 +25,7 @@ source_set("commands") {
     "//kernel/lib/ktl",
     "//kernel/lib/prof",
     "//kernel/lib/unwind:headers",
+    "//kernel/lib/user_copy",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
     "//system/lib/logz4:headers",
