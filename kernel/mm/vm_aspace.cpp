@@ -208,7 +208,7 @@ auto VmAspace::destroy() -> Status {
     ustl::Arc<VmMapping> last_fault;
     Status status;
     {
-        Guard<sync::SpinLock, IrqSave> guard{m_lock};
+        Guard guard{m_lock};
         if (m_destroyed) {
             return Status::BadState;
         }
@@ -236,6 +236,30 @@ auto VmAspace::root_vma() -> ustl::Arc<VmArea> {
 auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_pages) -> Status {
     m_canary.verify<Self>();
 
+    // Refused rather than resolved, because resolving it would block where
+    // blocking is not allowed. m_lock is a mutex now, and so is the VMO's lock
+    // beneath it; taking either with a spin lock held, with preemption off, or
+    // with interrupts masked parks a thread that can never be woken -- whoever
+    // would release the lock cannot be scheduled onto a CPU that is spinning
+    // for it.
+    //
+    // Only the architecture's fault entry can tell, so it says so with
+    // VmfCause::MaySleep; see may_sleep_resolving() in arch/x86/mm/fault.cpp.
+    // Absent means no by design, so a caller that never learned about this flag
+    // gets an error instead of a wedged CPU.
+    //
+    // Reaching here without it is a kernel bug either way: it means kernel code
+    // touched pageable memory while holding something. Linux says the same
+    // thing by sending such a fault to bad_area_nosemaphore() instead of taking
+    // mmap_lock. It is logged rather than silent because nothing else will say
+    // what happened -- a user copy turns this into the InvArgs its system call
+    // returns, and the address alone does not name the caller's mistake.
+    if (!(cause & VmfCause::MaySleep)) {
+        log::error("page fault at {:#x} in a context that cannot sleep; cause={:#x}", va,
+                   static_cast<usize>(cause));
+        return Status::BadState;
+    }
+
     auto status = Status::Ok;
     // The fault descriptor lives here, outside the loop, so that its
     // MultiPageRequest survives every retry: a request raised on one pass has
@@ -247,7 +271,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
         u32 num_mapped = 0;
         {
             // Grabs the aspace's lock to prevent another operation on it from users.
-            Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+            Guard guard{get_lock()};
 
             // Nothing is mapped in a destroyed aspace, and its root VMA is gone.
             // No thread of a dead process runs user code, so this is not

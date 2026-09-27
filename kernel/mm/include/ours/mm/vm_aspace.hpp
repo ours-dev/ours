@@ -10,6 +10,7 @@
 #include <ours/mm/arch_vm_aspace.hpp>
 #include <ours/mm/vm_fault.hpp>
 #include <ours/mm/vmas_flags.hpp>
+#include <ours/sync/mutex.hpp>
 #include <ours/sync/spin_lock.hpp>
 
 #include <gktl/canary.hpp>
@@ -79,7 +80,7 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     auto accessed_fault(VirtAddr va) -> Status;
 
     FORCE_INLINE
-    auto get_lock() -> sync::SpinLock & {
+    auto get_lock() -> sync::Mutex & {
         return m_lock;
     }
 
@@ -131,14 +132,29 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
     Flags m_flags;
     VirtAddr m_base;
     VirtAddr m_size;
-    /// Held with interrupts off. The page fault path takes it from the #PF
-    /// handler, where interrupts are still off, and the thread-context holders
-    /// -- map, protect, unmap, destroy -- have to match: a holder preempted
-    /// with it held leaves the next thread of the process to fault on this CPU
-    /// spinning on a lock its own CPU holds, which is the shape PmZone's lock
-    /// was found in. The sleeping lock Zircon uses here (a CriticalMutex) is
-    /// the eventual fix; see docs/repairs/260925/mm.md.
-    sync::SpinLock m_lock;
+    /// Sleepable, and it has to be.
+    ///
+    /// It was a spin lock, held with interrupts off, because the #PF handler
+    /// took it with interrupts still off. That forced every other holder --
+    /// map, protect, unmap, destroy -- to match, and worse, it made this lock
+    /// unable to nest a mutex inside it. The VMO's page tree is guarded by
+    /// VmObjectPaged::m_mutex, so the fault path could not take that lock and
+    /// went around it, leaving VmCowPages::m_pages written under two unrelated
+    /// locks. That is item 1 of docs/repairs/260925/mm.md, and this is what
+    /// unblocks the fix: the fault path now takes this lock and then the VMO's,
+    /// in that order.
+    ///
+    /// Reaching a sleepable context took the #PF handler enabling interrupts
+    /// first, which it does only where sleeping is allowed; VmfCause::MaySleep
+    /// carries that answer down, and page_fault_internal() refuses a fault
+    /// that arrives without it rather than blocking where it must not.
+    ///
+    /// Zircon's counterpart is a CriticalMutex (vm_aspace.h), whose point is
+    /// the timeslice extension that keeps a holder from being preempted in the
+    /// middle of the critical section. sync::CriticalMutex exists here but is
+    /// an empty shell -- it inherits Mutex protected and re-exposes nothing,
+    /// so it cannot be acquired yet. A plain Mutex until it can.
+    sync::Mutex m_lock;
 
     /// Set by destroy(), under m_lock. A destroyed aspace answers no more
     /// faults: its root VMA is gone.

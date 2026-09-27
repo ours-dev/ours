@@ -181,7 +181,7 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     }
 
     FORCE_INLINE
-    auto get_lock() -> sync::SpinLock & {
+    auto get_lock() -> sync::Mutex & {
         return m_aspace->get_lock();
     }
 

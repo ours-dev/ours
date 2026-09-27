@@ -218,6 +218,11 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // mmap_lock.
     auto const sleepable = may_sleep_resolving(frame);
     if (sleepable) {
+        // Told to the resolver as well, not only to the CPU. VmAspace's lock is
+        // a mutex, and this is the only place that can tell whether taking it
+        // is allowed -- the resolver is architecture-independent and never sees
+        // the frame or this CPU's lock depth.
+        cause |= VmfCause::MaySleep;
         arch::local_irq_enable();
     }
 

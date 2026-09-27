@@ -323,7 +323,7 @@ auto VmArea::unmap(VirtAddr base, usize size) -> Status {
         return Status::InvArgs;
     }
 
-    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    Guard guard{get_lock()};
     return unmap_locked(aligned_base, aligned_size);
 }
 
@@ -469,7 +469,7 @@ auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
         return Status::InvArgs;
     }
 
-    Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+    Guard guard{get_lock()};
 
     // Ask before doing. A protect that fails halfway would leave the first
     // children rewritten and the rest untouched, with nothing in the return

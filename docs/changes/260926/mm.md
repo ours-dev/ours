@@ -494,3 +494,104 @@ static auto get() -> decltype(auto) {
   后者没有调用者。两处都是把 `CURRENT_INSTANCE` 当普通对象用；这次的改动之后正确写法是
   `Current::get()->field`。
 - `get(CpuNum)` 没改：它读的是指定 CPU 的槽，不存在「读哪个 CPU」的竞争，返回引用也仍然合理。
+
+---
+
+## `VmAspace::m_lock` 换成可睡眠的 Mutex（`docs/repairs/260925/mm.md` 第 1 条的第二步）（2026-09-26）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_fault.hpp` — 新增 `VmfCause::MaySleep`
+- `kernel/arch/x86/mm/fault.cpp` — 可睡时把该位塞进 cause
+- `kernel/mm/include/ours/mm/vm_aspace.hpp` — `m_lock` 与 `get_lock()` 换类型
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — `get_lock()` 的转发跟着换
+- `kernel/mm/vm_aspace.cpp`、`vm_area.cpp`、`vm_mapping.cpp` — 六个持锁点；缺页入口加拒绝
+
+**症状**
+
+潜伏。`VmCowPages::m_pages` 这棵 B 树被两条互不相干的锁保护着改写：缺页走地址空间的
+`sync::SpinLock`，`read()`/`write()`/`commit_range()` 走 `VmObjectPaged::m_mutex`。
+同一个 VMO 被两个地址空间映射、两边同时缺页，或者一边缺页一边 `write()`，就会并发改同一棵树。
+K16（所有进程共用一个 vDSO VMO）是第一个会撞上的场景。
+
+**原因**
+
+之所以绕开 VMO 的锁，不是疏忽而是被逼的：缺页持的是自旋锁，自旋锁里不能拿会睡眠的 Mutex。
+所以只要地址空间的锁还是自旋锁，缺页路径就**不可能**和 `VmObject` 的操作在同一把锁上互斥。
+换锁是前提，不是优化。
+
+原来的注释自己就写明了这一点，也点了 Zircon 的对应物：
+
+```cpp
+/// Held with interrupts off. The page fault path takes it from the #PF
+/// handler, where interrupts are still off, ... The sleeping lock Zircon uses
+/// here (a CriticalMutex) is the eventual fix; see docs/repairs/260925/mm.md.
+sync::SpinLock m_lock;
+```
+
+**改法**
+
+```cpp
+sync::Mutex m_lock;
+```
+
+`get_lock()` 的返回类型跟着换，`VmAreaOrMapping::get_lock()` 的转发也跟着换。六个持锁点从
+
+```cpp
+Guard<sync::SpinLock, IrqSave> guard{get_lock()};
+```
+
+改成
+
+```cpp
+Guard guard{get_lock()};
+```
+
+——`Guard` 自己推导锁类型，显式写出的 `SpinLock, IrqSave` 才是需要去掉的东西。六处是
+`VmArea::unmap`、`VmArea::protect`、`VmMapping::protect`、`VmMapping::unmap`、
+`VmAspace::destroy`、`VmAspace::page_fault_internal`。查过 `VmAspace::switch_aspace()`
+不取这把锁，所以上下文切换路径不受影响。
+
+第二件事：并非每次缺页都能睡（第一步已经把判据建好），而现在拿不到锁就得阻塞。所以
+`page_fault_internal()` 开头拒绝不可睡的缺页：
+
+```cpp
+if (!(cause & VmfCause::MaySleep)) {
+    log::error("page fault at {:#x} in a context that cannot sleep; cause={:#x}", va,
+               static_cast<usize>(cause));
+    return Status::BadState;
+}
+```
+
+这个答案只有体系结构的缺页入口知道（它手上有中断帧，也知道本 CPU 的锁深度），所以用
+`VmfCause::MaySleep` 传下来。**缺省是"不可睡"**：漏设这一位的调用方会拿到一个错误，
+而不是一颗挂死在永远等不到的 Mutex 上的 CPU。
+
+**参照**
+
+`Zircon VmAspace::lock_`（`zircon/kernel/vm/include/vm/vm_aspace.h:336`）和
+`VmCowPages::lock_`（`vm_cow_pages.h:176`）都是 `CriticalMutex`。
+`Linux` 把不可睡的缺页送去 `bad_area_nosemaphore()` 而不是拿 `mmap_lock`，和这里的拒绝同义。
+
+**验证**
+
+构建通过；七个文件跑过 `clang-format`，四个 `.cpp` 跑过 `clang-tidy -p out/bringup.x86`，
+改动行上无新告警（既有的是计数器名和 `mapping_`/`va_`/`pa_` 这些旧式命名，未动）。
+
+两个镜像在 QEMU 里各跑 50 秒、零错误零断言：`kernel.dev.obi` 到 shell 进程创建又销毁，
+`kernel.dev.dbg_1.obi` 到 49.9 秒仍在 cpu2/cpu3 上调度线程。日志里**没有一条
+"cannot sleep" 拒绝**，也就是每次缺页都带着 `MaySleep` 到达——和第一步探针数到的
+八次全部 `sleepable=true` 一致。
+
+**未实测的部分要说清**：`Mutex::acquire()` 先自旋、只在争用时才睡。这次启动里没有
+两个线程同时在同一个地址空间上缺页的场景，所以**真正睡下去那条路没有被走到**，
+被证明的是"换成 Mutex 之后一切照常工作"，不是"睡眠路径正确"。
+要证明后者得有并发缺页的负载，属于第 3 步之后的事。
+
+**故意没做**
+
+- 没有用 `sync::CriticalMutex`。它是 Zircon 那边的对应物，但本内核里是个空壳：
+  `protected Mutex` 继承，`public:`/`private:` 里什么都没有，连 `acquire` 都没暴露，
+  拿不了。它存在是为将来的 timeslice extension（避免持锁者被抢占），等它能用再换。
+- 没有动 `VmObjectPaged::m_mutex`，缺页路径也还没去拿它——那是第 3 步。
+- `docs/repairs/260925/mm.md` 第 1 条**仍未删**：三步走完两步，页树现在还是只由地址空间的锁
+  间接保护着，`fault()` 进 cursor 之前仍未取 VMO 的锁。
