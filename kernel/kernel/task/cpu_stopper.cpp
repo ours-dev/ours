@@ -113,8 +113,14 @@ auto CpuStopper::queue_work_cpus(CpuMask const &cpus, Fn fn, Done *done) -> bool
 }
 
 auto CpuStopper::worker_thread() -> void {
-    Work *work = nullptr;
     while (1) {
+        // Declared per iteration. Hoisted out of the loop, it kept the last
+        // work once the queue ran dry, and the loop ran that work again --
+        // after its done->completion had let a stop_cpu() caller return and
+        // take the Work, which lives in that caller's frame, with it.
+        // Linux's cpu_stopper_thread() likewise starts each pass from
+        // `work = NULL`.
+        Work *work = nullptr;
         {
             // IrqSave, as queue_work() takes it: Linux's cpu_stop_get_work()
             // likewise holds stopper->lock with interrupts off, since

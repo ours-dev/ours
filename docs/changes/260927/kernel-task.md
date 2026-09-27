@@ -55,3 +55,52 @@ Zircon `OwnedWaitQueue::IWakeRequeueHook`，它是一个带虚函数的接口类
 `CpuStopper::Fn` 还是 `std::function`，这次没动。`stop_cpus()` 要把同一个 fn
 分给多个 CPU 的 `m_stop_work`，这要求 fn 能拷贝，而 `Function` 只能移动。
 这一处怎么改需要先定设计，单独处理。
+
+## CpuStopper::worker_thread() 的 work 指针每轮重置（2026-09-27）
+
+**文件**
+- `kernel/kernel/task/cpu_stopper.cpp`：`worker_thread()` 里的 `work` 声明挪进循环
+
+**症状**
+潜伏，当前触发不到：CpuStopper 还没有接上（没有创建 worker，也没有调用方）。
+一旦接上，第一个 work 跑完、队列变空之后，worker 不会退出，而是再跑一遍同一个
+work，而且会一直这样跑下去。
+
+**原因**
+`Work *work = nullptr;` 写在 `while` 外面，循环里只在队列非空时给它赋值。队列空了，
+`work` 仍然指向上一个 work，`if (!work) break;` 永远不成立。
+
+更糟的是那个 work 已经失效了。`stop_cpu()` 的 `Work` 是调用方栈上的局部变量，
+worker 执行 `done->completion.signal()` 之后，调用方就从 `wait()` 返回，栈帧随之
+回收。再跑一遍就是读已经释放的栈内存，还会再对一个已经不存在的 `Event` 调一次 `signal()`。
+
+**改法**
+
+之前：
+
+```cpp
+Work *work = nullptr;
+while (1) {
+    { /* 队列非空时 work = front */ }
+    if (!work) { break; }
+```
+
+之后：
+
+```cpp
+while (1) {
+    Work *work = nullptr;
+    { /* 队列非空时 work = front */ }
+    if (!work) { break; }
+```
+
+**参照**
+Linux `cpu_stopper_thread()`：每轮都从 `work = NULL` 开始，再在
+`stopper->lock` 下从 `stopper->works` 取。
+
+**验证**
+`kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。这段代码还不可达，所以启动验证
+说明不了什么，没有专门测。
+
+**故意没做**
+没有把 CpuStopper 接上：谁来创建 worker、`m_state` 谁来初始化，都属于把它启用起来的工作。
