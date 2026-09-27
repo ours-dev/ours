@@ -1,8 +1,30 @@
 # CLAUDE.md
 
-Load skills from .agents/skills
+## Skills
 
-Write C++ code through skill @cpp-write-and-verify
+Skills live in `.agents/skills/` so every agent can use them. Claude Code only
+discovers the ones linked from `.claude/skills/`
+(`ln -s ../../.agents/skills/<name> .claude/skills/<name>`). The ones nearly
+every task needs:
+
+- `ours-verify`: done means it builds and **both** images boot. Run it before
+  every commit.
+- `ours-kernel-design`: settled design decisions. Load it before reading code
+  for any design, placement or review question about `kernel/` or `system/`.
+- `cpp-write-and-verify`: every C++ edit, with `modern-cpp-development` for
+  style.
+
+## Repo conventions
+
+- Tooling scripts are Python, never shell.
+- Toolchains come from official upstream releases into `prebuilt/`. Never
+  build the dev container or install anything into system directories.
+- Lists describing build products are generated from GN metadata, not kept by
+  hand. GN templates are named for their artifact (`rust_library`), not the
+  tool.
+- Benchmarks go in `benches/`; files that only register kshell console
+  commands go in `kernel/commands`; new C++ libraries are scaffolded with
+  copier from `tools/templates/cpp_library`.
 
 ## Commit after every change
 
@@ -11,14 +33,17 @@ let several fixes pile up in the working tree: once they blur together the
 commit messages stop being writable, which is how this tree reached ~280
 uncommitted paths.
 
-The rhythm is: diagnose -> fix -> build -> boot it -> commit -> next thing.
+The rhythm is: diagnose -> fix -> build and boot it (`ours-verify`) -> commit
+-> next thing.
 An update to the running repair document belongs in the same commit as the
 change it describes.
 
 This worktree often holds work from other concurrent sessions. Check
 `git diff <file>` before staging: a file can carry both your hunks and someone
 else's in-flight feature, and sweeping theirs into your commit is worse than
-leaving yours uncommitted.
+leaving yours uncommitted. Commit with `git commit -- <paths>`, never
+`git add` followed by a bare `git commit`: the sessions share one index, and a
+bare commit takes whatever the others have staged.
 
 ## 文档
 

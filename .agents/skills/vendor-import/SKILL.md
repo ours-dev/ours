@@ -1,6 +1,6 @@
 ---
 name: vendor-import
-description: Import a third-party C/C++ library into this repo's vendor/ tree and wire it up to GN via build/secondary/, following the existing vendor/cxxopt pattern. Use whenever the user asks to add, vendor, or import a third-party library (e.g. "add nlohmann/json", "vendor in googletest", "pull in <library>") — never hand-roll something a well-known library already does without asking first (see feedback_third_party_libs_need_approval memory); this skill is how an approved library actually gets added to the tree.
+description: Import a third-party C/C++ library into this repo's vendor/ tree and wire it up to GN via build/secondary/, following the existing vendor/cxxopt pattern. Use whenever the user asks to add, vendor, or import a third-party library (e.g. "add nlohmann/json", "vendor in googletest", "pull in <library>") — never hand-roll something a well-known library already does without asking first, and never add one without the user's approval; this skill is how an approved library actually gets added to the tree.
 ---
 
 # Vendor Import

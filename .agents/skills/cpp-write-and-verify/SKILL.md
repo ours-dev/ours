@@ -48,9 +48,10 @@ that's llvm-23 only (llvm-22 carries the compiler but not these tools), and
 `out/<dir>/compile_commands.json` invokes
 `../../prebuilt/clang/llvm-23/bin/clang++` — same tree.
 
-Fallback, only if the prebuilt tree is absent: the `dev-common` container has
-an LLVM at `/usr/lib/llvm-22/bin/` — run it via
-`docker exec dev-common bash -lc '...'`.
+If the prebuilt tree is absent, do **not** fall back to the `dev-common`
+container, even if it is already running: the user has refused its use for
+verification. Say plainly that formatting and lint could not be run, and never
+report a host-side approximation as a clang-format/clang-tidy pass.
 
 ## Step 1 — clang-format
 

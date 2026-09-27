@@ -227,6 +227,21 @@ function only when there is no state to guard.
 
 1. Every C++ change must be run through `clang-format` and `clang-tidy` before it's considered done — see `.agents/skills/cpp-write-and-verify` for the exact binaries and paths (the `prebuilt/` LLVM tree) in this environment. Don't restate or improvise those commands here; that skill is the single source of truth for them and drifts if duplicated.
 
+## Gotchas
+
+Corrections that recur, one line each. Add a line whenever the same fix has to be made twice.
+
+- Never wrap something the language already spells in a macro; attribute macros exist only for vendor attributes (`[[gnu::...]]`, `[[msvc::...]]`).
+- Attribute macros (`INIT_CODE`, `FORCE_INLINE`) go on their own line above the declaration; `PACKED` is the one exception and stays inline with the type. An attribute macro expands to the attribute only: never fold `inline` into one, write `inline` where the language needs it.
+- New constants are `SCREAMING_SNAKE_CASE`, as the checked-in `.clang-tidy` requires. Legacy `kCamelCase` constants are not a template to copy.
+- Device-driver families dispatch through a `constexpr` ops table, never `virtual`: the user rejects virtual dispatch there on instruction-cache grounds.
+- In ustl's intrusive node algorithms, a policy or observer (tree augmentation, for example) is a struct of function pointers passed as a parameter to the operations that need it, never a class template parameter and never a per-policy template, so the shared algorithm is emitted once. Each such operation comes in a policy-taking and a plain variant.
+- Compiler runtime symbols the compiler emits (`__udivti3`, soft-float helpers, wide atomics) come from the toolchain's own library, `libclang_rt.builtins` under LLVM or `libgcc` under GCC. Never hand-write them.
+- A bitmask of caller-supplied flags is named `*Options` (`UnmapOptions`, `EnqueueOptions`) and its parameter `options`; never `*Control`.
+- Prefer freestanding-safe `std::` facilities (`std::atomic`, `std::memory_order`, `<type_traits>`) over ustl wrappers. The exception is optional values: use `ustl::Option`, which traps on empty access, never `std::optional`.
+- Use the prelude integer aliases (`u8` ... `usize`, `kernel/include/ours/prelude.hpp`) instead of `std::size_t` or `std::uint32_t`.
+- Source and header file names separate words with underscores, never hyphens.
+
 ## Workflow
 
 1. Before adding a new type or utility, check whether `ustl`/`ktl`/`gktl` already has one — this repo deliberately avoids re-deriving container/ownership/result primitives that already exist (see "Standard library layering").
