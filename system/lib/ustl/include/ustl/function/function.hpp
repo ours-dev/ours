@@ -36,10 +36,10 @@ class Function;
 /// Function itself, in INLINE_SIZE bytes, and a target that does not fit is a
 /// compile error rather than a silent trip to the heap.
 ///
-/// Why not std::function (which ustl::function::Fn still aliases): it moves a
-/// target larger than its small buffer to the heap, behind the caller's back,
-/// and the heap is exactly what code running under a spin lock or with
-/// interrupts off may not touch. Here the size is part of the contract. A
+/// Why not std::function (which ustl::function::Fn aliased until every user
+/// moved here and it was deleted): it moves a target larger than its small
+/// buffer to the heap, behind the caller's back, and the heap is exactly what
+/// code running under a spin lock or with interrupts off may not touch. Here the size is part of the contract. A
 /// capture list that grows past the limit stops compiling at the line that
 /// grew it, and the fix -- capture a pointer to a struct instead of the
 /// struct -- is the caller's to make on purpose.

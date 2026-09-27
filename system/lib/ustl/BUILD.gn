@@ -43,7 +43,6 @@ cpp_interface("headers") {
     "include/ustl/iterator/function.hpp",
     "include/ustl/iterator/reverse_iterator.hpp",
     "include/ustl/iterator/traits.hpp",
-    "include/ustl/function/fn.hpp",
     "include/ustl/function/function.hpp",
     "include/ustl/function/bind.hpp",
     "include/ustl/function/invoke.hpp",

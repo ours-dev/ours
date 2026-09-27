@@ -144,3 +144,41 @@ prelude（`kernel/include/ours/prelude.hpp`）会被强制包含进所有 C++ �
 **故意没做**
 ustl 里其它 44 个头文件的 `std::size_t` 这次没动。那是一次单独的全库扫描，
 不和这次混在一起。
+
+## 删掉 ustl::function::Fn（2026-09-27）
+
+**文件**
+- `system/lib/ustl/include/ustl/function/fn.hpp`：删除
+- `system/lib/ustl/BUILD.gn`：从 `headers` 里去掉它
+- `system/lib/ustl/include/ustl/function/function.hpp`：注释里对 `Fn` 的引用改成过去时
+
+**症状**
+无。最后一个使用者 CpuStopper 已经改用 `Function`，`Fn` 没人用了。
+
+**原因**
+`Fn` 只是 `std::function` 的别名：
+
+```cpp
+template <typename Signature>
+using Fn = std::function<Signature>;
+```
+
+留着它，就等于给"会悄悄分配的回调"留了一个看起来像 ustl 自家设施的入口。
+这个树里需要类型擦除回调的地方，要么在锁下，要么在中断里，都不该用它。
+
+**改法**
+删掉头文件及其在 BUILD.gn 里的登记。之前的使用者已经逐个迁到 `Function`：
+- Timer 和 ClockEventDevice：`260927/kernel-time.md`
+- OwnedWaitQueue 和 CpuStopper：`260927/kernel-task.md`
+
+**参照**
+无。
+
+**验证**
+- 重新 `gn gen` 后，`kernel.dev.obi`、`kernel.dev.dbg_1.obi` 和主机测试 `function-test`
+  均构建通过，`function-test` 运行通过。
+- 这次删的是一个已经没人包含的头文件，内核代码没有变化，所以没有再启动 QEMU。
+
+**故意没做**
+`ustl/function/bind.hpp` 和 `invoke.hpp` 保留。它们只是转出 `std::bind_front` 和
+`std::invoke`，不涉及分配，而且 Timer 和 cpu_local 还在用。
