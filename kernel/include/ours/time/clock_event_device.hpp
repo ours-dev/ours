@@ -17,10 +17,11 @@
 #include <gktl/vtable_packer.hpp>
 #include <mtl/ratio.hpp>
 #include <ustl/collections/intrusive/list.hpp>
-#include <ustl/function/fn.hpp>
+#include <ustl/function/function.hpp>
 #include <ustl/mem/container_of.hpp>
 #include <ustl/traits/invoke_args.hpp>
 #include <ustl/util/enum_bits.hpp>
+#include <ustl/util/move.hpp>
 #include <ustl/util/type_list.hpp>
 
 namespace ours::time {
@@ -28,7 +29,10 @@ class ClockEventDevice {
     using Self = ClockEventDevice;
 
   public:
-    using Handler = ustl::function::Fn<auto(Self *)->void>;
+    /// Runs in the device's interrupt handler, so it must not allocate; see
+    /// Timer::Handler. Move-only, so a handler changes hands through
+    /// set_event_handler() and take_event_handler() and is never duplicated.
+    using Handler = ustl::function::Function<auto(Self *)->void>;
 
     enum class Mode : u8 {
         Detached,
@@ -112,12 +116,17 @@ class ClockEventDevice {
 
     FORCE_INLINE
     auto set_event_handler(Handler handler) -> void {
-        m_event_handler = handler;
+        m_event_handler = ustl::move(handler);
     }
 
+    /// Moves the handler out and leaves the device with none, which is what
+    /// detaching a device needs anyway: Linux's clockevents_exchange_device()
+    /// sets the outgoing device's handler to clockevents_handle_noop(). A
+    /// getter that copied would need a copyable Handler, and one that is
+    /// copyable cannot hold a move-only target.
     FORCE_INLINE
-    auto get_event_handler() -> Handler {
-        return m_event_handler;
+    auto take_event_handler() -> Handler {
+        return ustl::move(m_event_handler);
     }
 
     FORCE_INLINE

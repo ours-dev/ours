@@ -15,7 +15,7 @@
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/set.hpp>
 #include <ustl/function/bind.hpp>
-#include <ustl/function/fn.hpp>
+#include <ustl/function/function.hpp>
 
 namespace ours::time {
 /// How much later than its deadline a timer may run.
@@ -175,7 +175,11 @@ class Timer: public ustl::collections::intrusive::SetBaseHook<> {
         /// the deadline with forward() first, or it expires again at once.
         Restart,
     };
-    using Handler = ustl::function::Fn<auto(Timer *)->HandlerResult>;
+    /// Runs in interrupt context, so it must not allocate: a Function keeps
+    /// its target inline and refuses at compile time one larger than 24
+    /// bytes, where the std::function this used to be moved such a target to
+    /// the heap without a word.
+    using Handler = ustl::function::Function<auto(Timer *)->HandlerResult>;
 
     constexpr Timer(ClockId clkid = ClockId::Monotonic)
         : m_canary(this)

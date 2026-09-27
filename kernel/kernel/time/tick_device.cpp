@@ -186,13 +186,11 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     ClockEventDevice::Handler handler;
     TimePoint<> next_event = INFINITE_TIME;
     if (has_device()) {
-        handler = m_clkdev->get_event_handler();
-        next_event = m_clkdev->next_event();
-
         // clockevents_exchange_device(): the outgoing device is detached --
         // stopped, and with no handler, so a straggling interrupt from it
-        // finds nothing to run.
-        m_clkdev->set_event_handler(nullptr);
+        // finds nothing to run. Taking the handler is what leaves it empty.
+        handler = m_clkdev->take_event_handler();
+        next_event = m_clkdev->next_event();
         (void)m_clkdev->switch_mode(ClockEventDevice::Mode::Detached);
     } else {
         // The first device this CPU ever gets. There is no deadline to carry
