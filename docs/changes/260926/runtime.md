@@ -198,3 +198,63 @@ runtime_call_main:
 - 执行 `.init_array`：记为 `docs/repairs/260926/runtime.md` 第 1 条。今天没有程序有它；做它需要先查清链接器提供边界符号的条件。
 - `environ` 指针数组与 `getenv`：没有使用者；环境变量经 `runtime::process_args().environ()` 读。
 - 未被认领的启动句柄保持打开，与 Zircon 一样；何时关掉只有程序自己知道。
+
+## `ProcessArgs::option()`：按键名取环境串的值，最后一个为准（2026-09-26）
+
+**文件**
+- `system/lib/runtime/include/runtime/process_args.hpp`、`src/process_args.cpp` — 新增 `ProcessArgs::option(name)`
+- `system/lib/runtime/test/process_args_test.cpp` — 新增 `Option.TakesTheLastWholeNameMatch`
+- `kernel/lib/userabi/userboot/userboot.cpp` — 删掉 `find_next()`，改用 `option()`
+- `system/service/init/init.cpp` — 删掉 `find_autorun()`，改用 `option()`
+
+**症状**
+userboot 的 `find_next()` 和 init 的 `find_autorun()` 是同一段代码：遍历 environ，找 `key=` 前缀，以最后一个为准。两份之间只靠注释互相指着。
+
+**原因**
+「cmdline 转来的选项以最后一个为准」是这套 environ 的约定，不是哪个程序自己的事。每个读选项的程序各写一遍，迟早会出现一个取第一个、另一个取最后一个的情况，镜像默认值和 bootloader 追加的值谁生效，就要看是哪个程序在读。这个约定应该只有一个主人。放在 runtime 里是因为它本来就拥有 processargs 的解码。
+
+顺带修掉一个潜在的前缀误配：按 `starts_with("userboot.next")` 匹配（不带 `=`）会把 `userboot.next-is-test=` 也算进来。原来两处都把 `=` 写进前缀常量里，所以没出错，但这条规则是靠调用方记得才成立的。`option()` 按完整键名匹配，要求键名后面紧跟 `=`。
+
+**改法**
+改前（userboot 和 init 各一份）：
+```cpp
+auto find_next() -> std::string_view {
+    std::string_view next;
+    for (auto const entry: runtime::process_args().environ()) {
+        if (entry.starts_with(NEXT_OPTION)) {           // NEXT_OPTION = "userboot.next="
+            next = entry.substr(NEXT_OPTION.size());
+        }
+    }
+    return next;
+}
+```
+改后：
+```cpp
+auto ProcessArgs::option(std::string_view const name) const -> std::string_view {
+    std::string_view value;
+    for (auto const entry: m_environ) {
+        if (entry.size() > name.size() && entry.starts_with(name) && entry[name.size()] == '=') {
+            value = entry.substr(name.size() + 1);
+        }
+    }
+    return value;
+}
+...
+    auto const next = runtime::process_args().option(NEXT_OPTION);   // "userboot.next"
+```
+返回 `std::string_view`，而不是 `std::optional`：找不到、以及 `key=` 后面没有值，这两种情况对现有的两个读者含义相同（都是「没有指名程序」）。等哪天真有读者需要区分它们，再换成 `std::optional`。
+
+取最后一个而不是像 `getenv()` 那样取第一个：这份 environ 是镜像 cmdline 的转发，cmdline 上后面的词覆盖前面的。
+
+**参照**
+- `Zircon userboot main.rs` 的 `parse_cmdline()`：遇到一个选项就赋值一次，所以最后一个生效。
+- POSIX `getenv()`：取第一个。这里有意与它不同，理由见上。
+
+**验证**
+- 主机单测 `process_args` 16 个全部通过，新增的用例覆盖：最后一个生效、`userboot.next` 不会匹配到 `userboot.next-is-test`、不带 `=` 或值为空都读成空、键名前缀（`oth`）不会匹配到 `other`、找不到时返回空。
+- clang-tidy 在改动的三个源文件上没有诊断。
+- QEMU dev（cmdline 临时加 `ours.autorun.boot=nosuch ours.autorun.boot=fault_probe+none`）：两条都转到了 init，init 只运行了后一条（`init: autorun fault_probe+none`，然后 `fault_probe: unknown probe none`），shell 照常回答 pong。
+- QEMU dbg_1：userboot 照常起 shell，shell 的各组检查全部通过。
+
+**故意没做**
+- 三个程序各自的上限（内核 8 条/384 字节、userboot 的 `MAX_HANDED_ON`、init 的 512 字节缓冲）收拢到一处：下一条。

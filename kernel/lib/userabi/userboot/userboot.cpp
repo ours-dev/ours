@@ -41,10 +41,11 @@
 #include <runtime/startup.hpp>
 
 namespace {
-/// The option naming the program to start next, with its `=`: only the
-/// `key=value` form means anything, since a bare `userboot.next` names no
-/// program. Zircon's key of the same name (parse_option() in main.rs).
-constexpr std::string_view NEXT_OPTION{"userboot.next="};
+/// The option naming the program to start next. Only the `key=value` form
+/// means anything, since a bare `userboot.next` names no program;
+/// runtime::ProcessArgs::option() reads both as empty. Zircon's key of the
+/// same name (parse_option() in main.rs).
+constexpr std::string_view NEXT_OPTION{"userboot.next"};
 
 /// The family of options that are this program's own and stop here; every
 /// other environment string is the next program's and is handed on.
@@ -93,23 +94,6 @@ auto halt() -> void {
     for (;;) {
         __asm__ volatile("pause");
     }
-}
-
-/// The value of `userboot.next=` among the environment strings the kernel
-/// passed, or empty when there is none.
-///
-/// The last one wins, as in Zircon's parse_cmdline(), which assigns each
-/// option as it meets it: a later word on a command line overrides an
-/// earlier one, which is what lets a bootloader append to an image's
-/// defaults.
-auto find_next() -> std::string_view {
-    std::string_view next;
-    for (auto const entry: runtime::process_args().environ()) {
-        if (entry.starts_with(NEXT_OPTION)) {
-            next = entry.substr(NEXT_OPTION.size());
-        }
-    }
-    return next;
 }
 
 /// The environment strings that are not this program's own options.
@@ -200,7 +184,7 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
 } // namespace
 
 auto main(int, char **) -> int {
-    auto const next = find_next();
+    auto const next = runtime::process_args().option(NEXT_OPTION);
     if (next.empty()) {
         // No program named: the proof-of-life image. Reaching this line at
         // all is what it proves -- the kernel built a process, mapped this

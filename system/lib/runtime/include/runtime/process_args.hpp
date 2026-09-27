@@ -135,6 +135,24 @@ class ProcessArgs {
         return m_names;
     }
 
+    /// The value of the last `<name>=<value>` among the environment strings,
+    /// or empty when there is none -- or when it gives no value, which its
+    /// readers so far treat alike: an option that names no program asks for
+    /// nothing.
+    ///
+    /// The last one, not the first as getenv() finds: the environment of the
+    /// system's first programs is the image's command line relayed
+    /// (collect_user_options() in //kernel/lib/userabi/src/userboot.cpp),
+    /// and on a command line a later word overrides an earlier one, which is
+    /// what lets a bootloader append to an image's defaults. Zircon's
+    /// userboot gets the same from parse_cmdline() in main.rs, which assigns
+    /// each option as it meets it.
+    ///
+    /// |name| is matched whole: `userboot.next` does not find
+    /// `userboot.next-is-test=`.
+    [[nodiscard]]
+    auto option(std::string_view name) const -> std::string_view;
+
   private:
     u8 const *m_message = nullptr;
     u32 m_num_handles = 0;

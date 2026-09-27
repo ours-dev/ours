@@ -103,6 +103,16 @@ auto ProcessArgs::parse(std::span<u8 const> const message, u32 const num_handles
     return Status::Ok;
 }
 
+auto ProcessArgs::option(std::string_view const name) const -> std::string_view {
+    std::string_view value;
+    for (auto const entry: m_environ) {
+        if (entry.size() > name.size() && entry.starts_with(name) && entry[name.size()] == '=') {
+            value = entry.substr(name.size() + 1);
+        }
+    }
+    return value;
+}
+
 auto ProcessArgs::handle_info(u32 const index) const -> u32 {
     u32 info;
     std::memcpy(&info, m_message + m_handle_info_off + usize{index} * sizeof(u32), sizeof(info));

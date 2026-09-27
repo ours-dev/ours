@@ -72,13 +72,13 @@ auto halt() -> void {
 constexpr ou::Str SHELL{"shell"};
 constexpr ou::Str PING{"ping"};
 
-/// The option naming a program to start once the shell is up, with its `=`,
-/// as `ours.autorun.boot=<name>[+arg...]`: a BootFS file name and its
+/// The option naming a program to start once the shell is up, as
+/// `ours.autorun.boot=<name>[+arg...]`: a BootFS file name and its
 /// arguments, `+` standing for the spaces a kernel command line cannot hold
 /// inside one word. Zircon's `zircon.autorun.boot` has the same shape
 /// (docs/reference/kernel/kernel_cmdline.md); its value is a path, since
 /// Zircon's programs live in a namespace, where here they are BootFS names.
-constexpr std::string_view AUTORUN_OPTION{"ours.autorun.boot="};
+constexpr std::string_view AUTORUN_OPTION{"ours.autorun.boot"};
 
 /// How many words -- the name and its arguments -- an autorun command may
 /// have. More is refused rather than cut short: a truncated argv runs a
@@ -113,23 +113,6 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
     char count[10];
     static_cast<void>(
         ou::debug_line({"init: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
-}
-
-/// The value of `ours.autorun.boot=` among this process's environment
-/// strings, or empty when there is none.
-///
-/// The last one wins, as with userboot's `userboot.next` (find_next() in
-/// //kernel/lib/userabi/userboot/userboot.cpp): a later word on a command
-/// line overrides an earlier one, which is what lets a bootloader append to
-/// an image's defaults.
-auto find_autorun() -> std::string_view {
-    std::string_view command;
-    for (auto const entry: runtime::process_args().environ()) {
-        if (entry.starts_with(AUTORUN_OPTION)) {
-            command = entry.substr(AUTORUN_OPTION.size());
-        }
-    }
-    return command;
 }
 
 /// Starts the autorun |command| under |job|: its first `+`-separated word is
@@ -272,7 +255,8 @@ auto main(int, char **) -> int {
     // never let go of its channel, and the command should not wait on that.
     // A failure is reported and nothing more; it is the command that failed,
     // not the system, and the shell is already running.
-    if (auto const autorun = find_autorun(); !autorun.empty()) {
+    // The last one on the command line wins (runtime::ProcessArgs::option()).
+    if (auto const autorun = runtime::process_args().option(AUTORUN_OPTION); !autorun.empty()) {
         static_cast<void>(ou::debug_line({"init: autorun ", to_str(autorun)}));
         if (auto const status = start_autorun(job, autorun); status != Status::Ok) {
             report("init: starting the autorun command = ", status);

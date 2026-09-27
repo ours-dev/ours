@@ -190,6 +190,27 @@ TEST(Parse, ReadsBackWhatWasWritten) {
     }
 }
 
+/// option(): the last `name=value` wins, the name is matched whole, and an
+/// absent or valueless option reads as empty.
+TEST(Option, TakesTheLastWholeNameMatch) {
+    std::string_view const environ[] = {
+        "userboot.next=init", "userboot.next-is-test=1", "userboot.next=shell",
+        "ours.autorun.boot",  "ours.autorun.boot=",      "other=x",
+    };
+    u8 buffer[256];
+    u32 length = 0;
+    ASSERT_EQ(ours::encode_process_args(buffer, {}, {}, environ, {}, &length), Status::Ok);
+    runtime::ProcessArgs view;
+    ASSERT_EQ(runtime::ProcessArgs::parse({buffer, length}, 0, &view), Status::Ok);
+
+    EXPECT_EQ(view.option("userboot.next"), "shell");
+    EXPECT_EQ(view.option("userboot.next-is-test"), "1");
+    EXPECT_EQ(view.option("ours.autorun.boot"), "");
+    EXPECT_EQ(view.option("other"), "x");
+    EXPECT_EQ(view.option("oth"), "");
+    EXPECT_EQ(view.option("missing"), "");
+}
+
 TEST(Parse, NeedsTheWholeHeader) {
     EXPECT_EQ(parses({GOLDEN, sizeof(ours::ProcArgs) - 1}, 0), Status::InvArgs);
 }
