@@ -13,7 +13,7 @@ A microkernel **modeled after** these proven architectures, designed to explore 
 ### Skill Rules
 
 - If a task matches a skill, you MUST invoke it
-- Skills are located in agents/skills/<skill-name>/SKILL.md
+- Skills are located in .agents/skills/<skill-name>/SKILL.md
 - Never implement directly if a skill applies
 - Always follow the skill instructions exactly (do not partially apply them)
 
