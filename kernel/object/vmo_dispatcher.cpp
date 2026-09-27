@@ -102,7 +102,7 @@ auto VmoDispatcher::read_user(user_copy::UserOutPtr<u8> const out, u64 const off
         // Asked of the VMO rather than answered here, so that one which cannot
         // be read says NotSupported for an empty read too. |out| is never
         // looked at: a paged VMO answers a zero-byte read with Ok before
-        // anything else (mm::VmObjectPaged::read_write()).
+        // anything else (mm::VmObjectPaged::copy_page_by_page()).
         return m_vmo->read_user(out, VirtAddr(offset), 0);
     }
 

@@ -126,7 +126,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     ///
     /// The copy runs under the object's lock, so a page fault on the user side
     /// is captured rather than resolved in place, and the lock is dropped to
-    /// resolve it; see VmObjectPaged::read_write(). InvArgs when some page of
+    /// resolve it; see VmObjectPaged::copy_page_by_page(). InvArgs when some page of
     /// the user buffer cannot be made present, OutOfRange as read() has it.
     /// The user bytes before a failure may have been written.
     ///

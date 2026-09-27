@@ -216,3 +216,44 @@ Zircon `VmObjectPaged::ReadWriteInternal()`，它的 copy 参数也是模板
 **故意没做**
 没把 `read_write()` 提到 `VmObject` 里共用。`VmObjectPhysical` 还不支持 read/write，
 现在只有一个使用者。
+
+## VmObjectPaged::read_write 改名为 copy_page_by_page（2026-09-27）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`、`kernel/mm/vm_object_paged.cpp`：改名，注释补上函数做什么
+- `kernel/mm/include/ours/mm/vm_object.hpp`、`kernel/object/vmo_dispatcher.cpp`：注释里的引用跟着改
+
+**症状**
+无运行时症状，是可读性问题。`read_write` 看起来像是"读或写"，但这个函数本身既不读也不写：
+它把 `[offset, offset + size)` 一页一页取出来交给 `copy`，
+真正搬字节的是 `copy`，搬的方向也由 `copy` 决定。
+
+**原因**
+这个名字来自 Zircon 的 `ReadWriteInternal()`，说的是谁调用它（read 和 write 两条路径），
+而不是它做了什么。读者得先看完函数体，才知道它是一个按页遍历的循环。
+
+**改法**
+
+之前：
+
+```cpp
+auto read_write(VirtAddr offset, usize size, bool will_write, CopyPage const &copy) -> Status;
+```
+
+之后：
+
+```cpp
+auto copy_page_by_page(VirtAddr offset, usize size, bool will_write, CopyPage const &copy)
+    -> Status;
+```
+
+**参照**
+Zircon `VmObjectPaged::ReadWriteInternal()`，注释里仍然写着它，方便对照。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。
+- QEMU 实测：两个镜像的 `usercopy.test` 都是 18/18，无 panic。
+
+**故意没做**
+没改 `will_write` 和 `CopyPage`。前者说的是"这一页要不要可写"，名字准确；
+后者就是"复制一页"，也名副其实。

@@ -171,8 +171,8 @@ auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *page
 ///
 /// m_mutex is a sleeping lock, not a spin lock, so a long copy holds up other
 /// users of this VMO but never a CPU with interrupts off.
-auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool const will_write,
-                               CopyPage const &copy) -> Status {
+auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
+                                      bool const will_write, CopyPage const &copy) -> Status {
     m_canary.verify<Self>();
 
     if (!size) {
@@ -274,27 +274,27 @@ auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool con
 
 auto VmObjectPaged::read(void *const out, VirtAddr const offset, usize const size) -> Status {
     auto *const dst = static_cast<u8 *>(out);
-    return read_write(offset, size, false,
-                      [dst](u8 const *const page, usize const done, usize const chunk) {
-                          std::memcpy(dst + done, page, chunk);
-                          return UserCopyCaptureResult{.status = Status::Ok, .fault = {}};
-                      });
+    return copy_page_by_page(offset, size, false,
+                             [dst](u8 const *const page, usize const done, usize const chunk) {
+                                 std::memcpy(dst + done, page, chunk);
+                                 return UserCopyCaptureResult{.status = Status::Ok, .fault = {}};
+                             });
 }
 
 auto VmObjectPaged::write(void const *const in, VirtAddr const offset, usize const size) -> Status {
     auto const *const src = static_cast<u8 const *>(in);
-    return read_write(offset, size, true,
-                      [src](u8 *const page, usize const done, usize const chunk) {
-                          std::memcpy(page, src + done, chunk);
-                          return UserCopyCaptureResult{.status = Status::Ok, .fault = {}};
-                      });
+    return copy_page_by_page(offset, size, true,
+                             [src](u8 *const page, usize const done, usize const chunk) {
+                                 std::memcpy(page, src + done, chunk);
+                                 return UserCopyCaptureResult{.status = Status::Ok, .fault = {}};
+                             });
 }
 
 /// Zircon: VmObjectPaged::ReadUser(), which likewise hands ReadWriteInternal a
 /// copy_array_to_user_capture_faults() routine.
 auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr const offset,
                               usize const size) -> Status {
-    return read_write(
+    return copy_page_by_page(
         offset, size, false, [out](u8 const *const page, usize const done, usize const chunk) {
             return out.element_offset(done).copy_array_to_user_capture_faults(page, chunk);
         });
@@ -305,7 +305,7 @@ auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr cons
 /// the repetition is harmless.
 auto VmObjectPaged::write_user(user_copy::UserInPtr<u8> const in, VirtAddr const offset,
                                usize const size) -> Status {
-    return read_write(
+    return copy_page_by_page(
         offset, size, true, [in](u8 *const page, usize const done, usize const chunk) {
             return in.element_offset(done).copy_array_from_user_capture_faults(page, chunk);
         });

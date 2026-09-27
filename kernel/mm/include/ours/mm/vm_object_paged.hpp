@@ -72,14 +72,18 @@ class VmObjectPaged: public VmObject {
     using CopyPage =
         ustl::function::Function<auto(u8 *page, usize done, usize chunk)->UserCopyCaptureResult>;
 
-    /// The page walk read(), write(), read_user() and write_user() share.
+    /// Copies [offset, offset + size) one page at a time, handing |copy| each
+    /// page and the matching slice of the caller's buffer -- the page walk
+    /// read(), write(), read_user() and write_user() share. Named for what it
+    /// does rather than after Zircon's ReadWriteInternal(), which it mirrors.
     ///
     /// |copy| is a Function rather than a template parameter. As a template the
     /// walk -- range check, cursor, retry loop, livelock check -- was
     /// instantiated once per caller, four copies of the same code, to save one
     /// indirect call per page when each call copies up to a page. The trade
     /// ran the wrong way, so it is one walk and one indirect call now.
-    auto read_write(VirtAddr offset, usize size, bool will_write, CopyPage const &copy) -> Status;
+    auto copy_page_by_page(VirtAddr offset, usize size, bool will_write, CopyPage const &copy)
+        -> Status;
 
     ustl::Arc<VmCowPages> m_cow_pages;
     sync::Mutex m_mutex;
