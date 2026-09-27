@@ -19,7 +19,7 @@ import("//kernel/kernel_package.gni")
 
 # The user programs this image carries, and which one userboot starts. Both
 # can be replaced per build through the `ours` argument bundle
-# (//build/product/ours_args.gni; tools/set.py --with/--userboot); what
+# (//build/product/ours_args.gni; tools/set.py --with/--next); what
 # follows are this image's own defaults.
 if (defined(ours.with)) {
   _user_programs = ours.with
@@ -38,10 +38,10 @@ if (defined(ours.with)) {
   ]
 }
 
-if (defined(ours.userboot)) {
-  _userboot = ours.userboot
+if (defined(ours.next)) {
+  _next = ours.next
 } else {
-  _userboot = "init"
+  _next = "init"
 }
 
 # 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0
@@ -81,8 +81,8 @@ kernel_package("ours") {
 # The image-level kernel cmdline. `userboot.next` names the program userboot
 # starts next: init by default, which takes the root job userboot hands it
 # and starts the shell with it (P0's first vertical slice,
-# docs/design/260923/userspace-interface.md section 5). ours.userboot
-# overrides the name (see _userboot at the top of this file).
+# docs/design/260923/userspace-interface.md section 5). ours.next overrides
+# the name (see _next at the top of this file).
 #
 # The first user process is always userboot -- kernel.select.userboot is left
 # unset, so it takes its default -- and init no longer runs in its place. The
@@ -107,7 +107,7 @@ kernel_cmdline("cmdline") {
     "//products/*",
   ]
   args = [
-    "userboot.next=$_userboot",
+    "userboot.next=$_next",
     "kernel.shell=true",
   ]
 }

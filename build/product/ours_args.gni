@@ -9,7 +9,7 @@ declare_args() {
   # directory say "this image carries these user programs, and userboot starts
   # that one", so that several sessions can each build and boot their own image
   # side by side instead of sharing one out/bringup.x86 and one hard-coded
-  # program set. tools/set.py writes it from --with/--userboot; it can also be
+  # program set. tools/set.py writes it from --with/--next; it can also be
   # written into args.gn by hand.
   #
   # Fields (every one optional):
@@ -24,11 +24,14 @@ declare_args() {
   #     out of this list is exactly what keeps it from being built for the
   #     image.
   #
-  #   userboot
-  #     BootFS file name that userboot starts as the first user process -- the
-  #     value of `kernel.select.userboot=`. userboot is the kernel-side launcher;
-  #     this only names its target. Whatever it names must be among the programs
-  #     the image carries.
+  #   next
+  #     BootFS file name of the program userboot starts next -- the value of
+  #     `userboot.next=`. userboot itself is always the first user process and
+  #     is not chosen here (that would be kernel.select.userboot, which images
+  #     leave at its default); this field names what userboot hands the root
+  #     job and the BootFS to. Named after the option, as in Zircon, rather than
+  #     "userboot", because its value is never userboot. Whatever it names must
+  #     be among the programs the image carries.
   #
   # Why one scope and not one argument per field: new knobs land as new fields
   # without growing the flat argument namespace. The cost is GN's semantics for

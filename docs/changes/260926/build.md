@@ -265,3 +265,78 @@ Fuchsia `fx set --with <label>`（`//tools/devshell/set`，把 label 写入 args
 - 检查写死了 dev 镜像的两个 label：`ours` 目前只有 dev 读（见上一条）。以后如果别的镜像也读 `ours`，
   这里应改成从产品的镜像列表里找，而不是再加一对 label。
 - 不改 `scripts/qemu_boot.py`：并行跑本来就只需要各设一个 `WORK`，它已经支持。
+
+## `ours.userboot`/`--userboot` 改名为 `ours.next`/`--next`，检查改读 `userboot.next=`（2026-09-26）
+
+**文件**
+- `build/product/ours_args.gni` — 字段 `userboot` 改名 `next`，说明改为"userboot 接下来启动谁"
+- `kernel/products/image/dev/BUILD.gn` — `ours.userboot`/`_userboot` 改为 `ours.next`/`_next`
+- `tools/set.py` — `--userboot` 改为 `--next`；检查从找 `--entry=kernel.select.userboot=` 改为找 `--entry=userboot.next=`
+
+**症状**
+userabi 会话落地 `userboot.next`（a53c5ec5..52bfc80f）之后，dev 镜像的 cmdline 不再写
+`kernel.select.userboot=`，但 set.py 的检查还在 rsp 里找它：一用 `--userboot` 就报
+`dev.obi.rsp has no --entry=kernel.select.userboot=<name> entry`，开关不可用。
+
+名字本身也是错的：这个字段的值是 userboot **接下来**启动的程序（init、shell），从来不是 userboot 自己。
+用户的原话是「userboot 是 userboot，init 是 init，userboot 启动 init」。
+
+**原因**
+前两条改动沿用了当时镜像的写法 `kernel.select.userboot=init`——那时内核把这个选项指名的程序
+直接放进第一个进程，init 顶替了 userboot，于是"选第一个进程"和"选 userboot 启动谁"被混成一件事，
+参数也就顺势叫了 `userboot`。Zircon 把它们分成两个选项：`kernel.select.userboot` 选第一个进程跑哪个
+userboot 程序（正常是 `userboot`，eng 镜像是 `userboot-test-rust`），`userboot.next` 由 userboot
+程序自己读、决定它接下来启动谁。userboot.next 落地后 ours 也是这个模型，参数应当跟着它命名。
+
+改前：
+
+```gn
+if (defined(ours.userboot)) {
+  _userboot = ours.userboot
+} ...
+    "userboot.next=$_userboot",
+```
+
+```python
+USERBOOT_ENTRY = "--entry=kernel.select.userboot="
+    parser.add_argument("--userboot", default="", metavar="NAME", ...)
+```
+
+**改法**
+改后：
+
+```gn
+if (defined(ours.next)) {
+  _next = ours.next
+} ...
+    "userboot.next=$_next",
+```
+
+```python
+NEXT_ENTRY = "--entry=userboot.next="
+    parser.add_argument("--next", dest="next_program", default="", metavar="NAME", ...)
+```
+
+检查逻辑不变：`gn outputs` 取 dev 的 rsp 和白名单，rsp 里 `userboot.next=` 的值必须在白名单里，
+否则报错并撤销这次配置。旧开关 `--userboot` 直接删掉，不留兼容别名——它刚加进来一天，
+留着只会让"userboot 可以被选成别的程序"这个错误说法继续存在。
+`dest="next_program"` 是因为 `next` 是 Python 内建名，不拿它当变量。
+
+**参照**
+Zircon `userboot.next`（`zircon/kernel/lib/userabi/userboot/main.rs` 读取它）与
+`kernel.select.userboot`（`zircon/kernel/lib/boot-options/include/lib/boot-options/options.inc`）。
+ours 侧的 userboot.next 实现见 `docs/changes/260926/userabi.md` 最后五节。
+
+**验证**
+- 改名后 `build/product`、`kernel/products/image`、`tools/set.py` 里没有残留的 `ours.userboot`/`_userboot`/`--userboot`；`gn format --dry-run` 通过。
+- 默认配置：rsp 为 `--entry=userboot.next=init`。
+- `--with //examples/shell --next shell`：args.gn 写出 `next = "shell"`，rsp 为 `--entry=userboot.next=shell`；构建后 `init` 目录不存在。
+- `--with //examples/shell`（next 默认 init）：报 `userboot would start 'init' next, but the image only carries userboot, vdso, shell.`，新目录被删除。`--next nosuch` 同样被拒。`--userboot` 被 argparse 拒绝。
+- QEMU 同时跑 60 秒三个镜像，零 panic：
+  默认 dev：`passing userboot.next=init to userboot` → `userboot: started init` → `init: started with the root job`，userboot 随后退出，shell 跑完 `libc checks passed`；
+  定制 dev：`userboot: started shell`，日志里没有任何 init，shell 跑完 `libc checks passed`；
+  dbg_1：`userboot: started shell`，fault_probe 被 kill 11 次。
+
+**故意没做**
+- 没加 `kernel.select.userboot` 对应的开关：镜像都用默认的 `userboot`，要换 userboot 变体（像 Zircon 的
+  `userboot-test-rust`）时再加，字段可以叫 `userboot`——那时它的值才真的是一个 userboot。
