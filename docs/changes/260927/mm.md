@@ -945,3 +945,63 @@ Linux `num_online_nodes()` 定义为 `num_node_state(N_ONLINE)`，即 `nodes_wei
 **故意没做**
 `NUM_NODES`（已创建的节点数）保留。它由 `bootstrap()` 在建节点时递增，数据本身是对的；它和可能节点掩码
 是否也是同一件事的两份记录，留到第 2 步拆拓扑时一起看。
+
+## NodeRoute 去掉重复的 count_，for_each_node() 改为返回 void（2026-09-27）
+
+PmNode 结构整理第 1 步的第四项。
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_node.hpp`：`NodeRoute` 由 struct 改为 class，唯一的成员是私有的 `m_path`；
+  `for_each_node()` 返回 `void` 并加上约束
+
+**症状**
+潜伏：
+- 一条路由 `clear()` 之后，`end()` 仍然停在清空前的位置，遍历会越过最后一个元素；
+- `for_each_node()` 对任何有返回值的回调都是未定义行为。
+
+目前 `NodeRoute` 只在 `ZoneQueues::connect()` 里新建一次、遍历一次，从来不 `clear()`；
+`for_each_node()` 没有调用者，所以两者都触发不到。
+
+**原因**
+同一件事存了两份：`path_`（`StaticVec`）自己就记着元素个数，旁边又放了一个 `count_`。
+`set_next()` 两边都更新，`clear()` 只清了 `path_`，`end()` 却读的是 `count_`：
+
+```cpp
+constexpr auto clear() -> void { path_.clear(); }        // count_ 没清
+constexpr auto end() { return begin() + count_; }
+```
+
+`for_each_node()` 声明返回 `InvokeResultT<F, PmNode &, Args...>`，函数体里却没有 `return`。
+模板从没被实例化，所以编译器一直没机会指出来。
+
+**改法**
+只留 `m_path` 这一份数据，`end()` 用它的 `end()`：
+
+```cpp
+class NodeRoute {
+  public:
+    template <typename F, typename... Args>
+        requires ustl::traits::Invocable<F, PmNode &, Args...>
+    auto for_each_node(F &&f, Args &&...args) -> void;
+    ...
+    constexpr auto end() const { return m_path.end(); }
+  private:
+    ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
+};
+```
+
+`for_each_node()` 的语义是"每个节点都访问一遍"，不收集结果，所以返回 `void`。成员改成私有的 `m_` 前缀，
+与树里的命名规矩一致。原来那几个显式声明的构造、析构函数都是默认行为，一并去掉：
+`StaticVec` 删除了拷贝构造，`NodeRoute` 自然也不能拷贝。
+
+**参照**
+Linux 的对应物是 `build_zonelists()` 里用 `find_next_best_node()` 逐个挑出 `node_order[]`
+（`mm/page_alloc.c`），那里用的是普通数组加一个局部计数，没有这个问题。
+
+**验证**
+- 用内核编译参数单独编译一个实例化了 `for_each_node()` 的 TU，分别传入返回 `void`
+  和返回 `int` 的回调，均通过。
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+
+**故意没做**
+`set_next()` 这个名字没改（它的意思是"追加下一跳"）。命名统一留到第 2 步拆拓扑时一起处理。

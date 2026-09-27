@@ -34,44 +34,44 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {
-struct NodeRoute {
-    NodeRoute() : count_(), path_() {}
-
-    NodeRoute(NodeRoute &&) = default;
-    // Move-only: `path_` is a StaticVec, which deletes its own copy ctor.
-    NodeRoute(NodeRoute const &) = delete;
-
-    ~NodeRoute() = default;
-
+/// The other nodes, nearest first, as seen from one node: the order its
+/// allocations fall back through (ZoneQueues::connect() chains their zones in
+/// it). Built by PmNode::build_optimal_node_route().
+class NodeRoute {
+  public:
     template <typename F, typename... Args>
-    auto for_each_node(F &&f, Args &&...args) -> ustl::traits::InvokeResultT<F, PmNode &, Args...>;
+        requires ustl::traits::Invocable<F, PmNode &, Args...>
+    auto for_each_node(F &&f, Args &&...args) -> void;
 
     FORCE_INLINE
     constexpr auto set_next(NnId to) -> void {
-        // path_ has a fixed capacity, so the only failure is overflow -- which
-        // would also desynchronise count_ from it.
-        auto const result = path_.push_back(to);
+        // Fixed capacity: one hop per other node, so overflowing it means a
+        // node was visited twice.
+        auto const result = m_path.push_back(to);
         DEBUG_ASSERT(result, "NodeRoute overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
-        count_ += 1;
     }
 
     FORCE_INLINE
     constexpr auto clear() -> void {
-        path_.clear();
+        m_path.clear();
     }
 
     FORCE_INLINE
-    constexpr auto begin() {
-        return path_.begin();
+    constexpr auto begin() const {
+        return m_path.begin();
     }
 
     FORCE_INLINE
-    constexpr auto end() {
-        return begin() + count_;
+    constexpr auto end() const {
+        return m_path.end();
     }
 
-    usize count_;
-    ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> path_;
+  private:
+    /// The hops, and their count: StaticVec keeps both. There used to be a
+    /// count_ beside it, bumped by set_next() and read by end(), while clear()
+    /// emptied only the vector -- so a cleared route still ended count_ hops
+    /// in, past its last element.
+    ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
 };
 
 /// `ZoneQueues` is a helper class separated from `PmNode`, specifically
@@ -561,9 +561,13 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
 };
 
 template <typename F, typename... Args>
-auto NodeRoute::for_each_node(F &&f, Args &&...args)
-    -> ustl::traits::InvokeResultT<F, PmNode &, Args...> {
-    for (auto const nid: path_) {
+    requires ustl::traits::Invocable<F, PmNode &, Args...>
+auto NodeRoute::for_each_node(F &&f, Args &&...args) -> void {
+    // void, not the callback's result: every node is visited and nothing is
+    // collected. It was declared to return InvokeResultT<F, ...> and had no
+    // return statement -- undefined behaviour for any callback returning a
+    // value, unnoticed only because nothing has instantiated it yet.
+    for (auto const nid: m_path) {
         f(*PmNode::node(nid), ustl::forward<Args>(args)...);
     }
 }
