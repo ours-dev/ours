@@ -1005,3 +1005,64 @@ Linux 的对应物是 `build_zonelists()` 里用 `find_next_best_node()` 逐个�
 
 **故意没做**
 `set_next()` 这个名字没改（它的意思是"追加下一跳"）。命名统一留到第 2 步拆拓扑时一起处理。
+
+## ZoneQueues::connect() 按传入的节点掩码建路由（2026-09-27）
+
+PmNode 结构整理第 1 步的第五项。
+
+**文件**
+- `kernel/mm/pm_node.cpp`：`connect()` 把 `nodemask` 交给 `build_optimal_node_route()`，并在 `connected_`
+  里记下实际串进来的节点；`build_optimal_node_route()` 的第三个参数由"要排除的节点"改为"候选节点"
+- `kernel/mm/include/ours/mm/pm_node.hpp`：声明和注释跟着改
+
+**症状**
+潜伏：`connect(nodemask)` 完全忽略 `nodemask`。唯一的调用方 `bootstrap()` 传的是"可能节点"掩码，
+而有内存的节点本来就是它的子集，所以现在的结果碰巧正确。一旦有人传一个更小的掩码
+（比如只想把一部分节点作为回退），这个限制不会生效。
+
+**原因**
+
+```cpp
+auto ZoneQueues::connect(NodeMask const &nodemask) -> void {
+    NodeRoute node_path;
+    PmNode::build_optimal_node_route(nid_, node_path, connected_);   // 用的不是 nodemask
+```
+
+`build_optimal_node_route()` 的第三个参数是排除掩码，命中就跳过。这里传进去的 `connected_`
+从来没有被写过，永远是空的，所以什么也不排除；而 `nodemask` 根本没被用到。
+两个参数的语义还是反的：调用方给的是"要连哪些"，被调用方要的是"不要哪些"。
+
+**改法**
+
+```cpp
+PmNode::build_optimal_node_route(nid_, node_path, nodemask);
+for (auto next: node_path) {
+    insert_remote_queue(...);
+    connected_.set(next);
+}
+
+// build_optimal_node_route()
+if (visited.test(to) || !candidates.test(to)) { return; }
+```
+
+参数改成候选掩码，与调用方的意思一致。`connected_` 从"一个总是空的过滤器"变成
+"记录实际串进来了哪些节点"，这样它就有了明确的含义，不再是一个无人写入的字段。
+
+**参照**
+Linux `build_zonelists()` → `build_zonelists_in_node_order()`：用 `find_next_best_node(node, &used_mask)`
+从 `N_MEMORY` 节点里按距离逐个挑选，`used_mask` 对应这里的 `visited`。Linux 那边没有额外的排除参数。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+- NUMA：`out/numa.x86` 的 dbg_1 镜像用 `NUMA=1`（四节点）启动，一直跑到 shell，无异常。
+  每个节点的 `SharedAffinity` 队列都是先放自己的 zone，再按距离接上另外三个节点：
+
+  ```
+  Node[0-s-affi]  0:DMA 0:DMA32 1:DMA32 2:Normal 3:Normal
+  Node[1-s-affi]  1:DMA32 0:DMA 0:DMA32 3:Normal 2:Normal
+  Node[2-s-affi]  2:Normal 3:Normal 0:DMA 0:DMA32 1:DMA32
+  Node[3-s-affi]  3:Normal 2:Normal 1:DMA32 0:DMA 0:DMA32
+  ```
+
+**故意没做**
+队列结构本身（四个队列里两个用不上）留到第 4 步处理。

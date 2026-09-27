@@ -168,6 +168,7 @@ class ZoneQueues {
     std::array<PmZone *, MAX_ZONE_REF> queue_storage_;
     usize queue_sizes_[MaxNumQueues];
     ZoneQueue queues_[MaxNumQueues];
+    /// The remote nodes connect() chained into SharedAffinity.
     NodeMask connected_;
     NnId nid_;
 };
@@ -257,7 +258,11 @@ class PmNode {
         NODE_DISTANCE[x][y] = dis;
     }
 
-    static auto build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &filter)
+    /// Every node with memory in |candidates| other than |from|, nearest first:
+    /// the fallback order Linux's build_zonelists() gets from
+    /// find_next_best_node(). |candidates| used to be a filter of nodes to
+    /// *leave out*, which its one caller handed an always-empty mask.
+    static auto build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &candidates)
         -> void;
 
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;

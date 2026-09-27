@@ -71,13 +71,21 @@ auto ZoneQueues::insert_remote_queue(ZoneQueue const &queue) -> void {
     }(ustl::MakeEnumSequenceT<QueueType, LocalContiguous + 1, MaxNumQueues>());
 }
 
+/// Chains the zones of every node in |nodemask| behind this node's own, nearest
+/// node first.
+///
+/// |nodemask| used to be ignored: the route was built with connected_ as its
+/// filter, and connected_ was never written, so the route took every node with
+/// memory whatever the caller asked for. It now bounds the route, and
+/// connected_ records which nodes the route actually chained in.
 auto ZoneQueues::connect(NodeMask const &nodemask) -> void {
     NodeRoute node_path;
-    PmNode::build_optimal_node_route(nid_, node_path, connected_);
+    PmNode::build_optimal_node_route(nid_, node_path, nodemask);
 
     for (auto next: node_path) {
         auto zq = PmNode::node(next)->zone_queues();
         insert_remote_queue(zq->get_queue(QueueType::LocalContiguous));
+        connected_.set(next);
     }
 }
 
@@ -395,7 +403,8 @@ auto PmNode::init() -> Status {
     return Status::Ok;
 }
 
-auto PmNode::build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &filter) -> void {
+auto PmNode::build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &candidates)
+    -> void {
     NodeMask visited;
     visited.set(from, true);
 
@@ -403,7 +412,7 @@ auto PmNode::build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const
         NnId result = NUMA_MAX_NODE;
         usize distance = ustl::NumericLimits<usize>::max();
         for_each_nid(State::Memory, [&](NnId to) {
-            if (visited.test(to) || filter.test(to)) {
+            if (visited.test(to) || !candidates.test(to)) {
                 return;
             }
 
