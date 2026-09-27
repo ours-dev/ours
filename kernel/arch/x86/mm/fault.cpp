@@ -196,7 +196,7 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // a violation: after a protect() that added Executable the page tables
     // can still hold the old NX entry, and that fault is spurious. Only the
     // mapping knows which permissions the page is meant to have, so it is
-    // VmMapping::fault() that refuses the fetch. Zircon's x86_pfe_handler()
+    // VmMapping::page_fault() that refuses the fetch. Zircon's x86_pfe_handler()
     // likewise only maps PFEX_I to VMM_PF_FLAG_INSTRUCTION.
     cause |= (error_code & PAGE_FAULT_INSTRUCTION) ? VmfCause::Instruction : VmfCause::None;
 

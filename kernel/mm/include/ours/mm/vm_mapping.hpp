@@ -50,7 +50,7 @@ class VmMapping final: public VmAreaOrMapping {
     auto unmap(VirtAddr base, usize, UnmapOptions) -> Status;
 
     /// Return the final mapping status and how many pages mapped.
-    auto fault(VmFault *vmf) -> ustl::Pair<Status, usize>;
+    auto page_fault(VmFault *vmf) -> ustl::Pair<Status, usize>;
 
     VmMapping(VmArea *, VirtAddr, usize, VmaFlags, ustl::Arc<VmObject>, usize, char const *);
     virtual ~VmMapping() = default;

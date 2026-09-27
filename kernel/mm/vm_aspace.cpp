@@ -312,7 +312,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
                 }
             }
 
-            auto const [final_status, mapped] = m_last_fault->fault(&vmf);
+            auto const [final_status, mapped] = m_last_fault->page_fault(&vmf);
             status = final_status;
             num_mapped = static_cast<u32>(mapped);
         }

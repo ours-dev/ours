@@ -25,7 +25,7 @@ enum class VmfCause {
     /// read is allowed on a page that is present but not executable. The
     /// mapping then answered a fetch from such a page (a user stack, which is
     /// NX) as a spurious fault, the CPU retried the same fetch, and it faulted
-    /// again for ever instead of killing the process. VmMapping::fault()
+    /// again for ever instead of killing the process. VmMapping::page_fault()
     /// refuses this cause on a region without MmuFlags::Executable.
     ///
     /// Zircon: VMM_PF_FLAG_INSTRUCTION.
@@ -37,11 +37,11 @@ USTL_ENABLE_ENUM_BITMASK(VmfCause);
 /// the mapping that has to resolve it.
 ///
 /// Built on the faulting thread's own stack by VmAspace::page_fault_internal()
-/// and handed down by pointer. VmMapping::fault() used to be given a literal
+/// and handed down by pointer. VmMapping::page_fault() used to be given a literal
 /// `0` in its place.
 struct VmFault {
     /// The faulting address exactly as the hardware reported it, not page
-    /// aligned -- x86 takes it straight out of CR2. VmMapping::fault() aligns
+    /// aligned -- x86 takes it straight out of CR2. VmMapping::page_fault() aligns
     /// it down itself, so the unaligned value stays available to anything that
     /// wants to know which byte was touched.
     VirtAddr va;

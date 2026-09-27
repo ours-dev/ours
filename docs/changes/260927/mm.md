@@ -257,3 +257,33 @@ Zircon `VmObjectPaged::ReadWriteInternal()`，注释里仍然写着它，方便�
 **故意没做**
 没改 `will_write` 和 `CopyPage`。前者说的是"这一页要不要可写"，名字准确；
 后者就是"复制一页"，也名副其实。
+
+## VmMapping::fault 改名为 page_fault（2026-09-27）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_mapping.hpp`、`kernel/mm/vm_mapping.cpp`：改名
+- `kernel/mm/vm_aspace.cpp`：唯一的调用方
+- `kernel/mm/include/ours/mm/vm_fault.hpp`、`kernel/arch/x86/mm/fault.cpp`：注释里的引用
+
+**症状**
+无运行时症状，是可读性问题。
+
+**原因**
+单写 `fault`，读起来像是"制造一次错误"，而不是"处理一次缺页"。调用链上其它几层的
+名字都带着 `page_fault`（`VmAspace::page_fault_internal()`、`Thread::Current::page_fault()`），
+唯独到了 VmMapping 这一层断掉了。Zircon 在这一层叫 `VmMapping::PageFault()`。
+
+**改法**
+之前：`auto fault(VmFault *vmf) -> ustl::Pair<Status, usize>;`
+
+之后：`auto page_fault(VmFault *vmf) -> ustl::Pair<Status, usize>;`
+
+**参照**
+Zircon `VmMapping::PageFault()`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。
+- QEMU 实测：两个镜像的 `usercopy.test` 都是 18/18，无 panic。
+
+**故意没做**
+`Thread::Current::fault(VirtAddr, F &&)` 没改名。它是 `page_fault()` 和 `soft_fault()` 共用的私有辅助函数，只负责挑出当前线程的地址空间再转交，要改另外处理。

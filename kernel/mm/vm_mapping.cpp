@@ -419,7 +419,7 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) ->
 /// division unmap_locked() and protect_locked() already sit on, except that
 /// there the public half exists to take the lock, and here the only caller is
 /// the fault path.
-auto VmMapping::fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
+auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     m_canary.verify<Self>();
 
     DEBUG_ASSERT(vmf, "the fault path used to pass a literal 0 in place of this");
