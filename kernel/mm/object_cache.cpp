@@ -110,9 +110,15 @@ namespace slab {
         slab->unlink();
         auto const order = slab->order();
         stamp_compound_offsets(slab, order, false);
-        // Hand the frame back to the buddy: an explicit role change, which is the
-        // only thing that rewrites the role tag.
-        slab->become<page::PmmBody>();
+        // Handed back still tagged Slab. The buddy allocator reads Role::Pmm as
+        // "this frame is on my free list" (FrameBuddy::is_mergeable()), and only
+        // its own insert_frame(), under the zone lock, may say so. This used to
+        // stamp PmmBody here, before free_frames() had even reached the lock:
+        // for that window the frame claimed to be free while on no list, and a
+        // CPU releasing its buddy meanwhile coalesced it -- erasing a node that
+        // was never linked, which the intrusive list traps on. Seen as a #UD in
+        // FrameBuddy::release_inner() under dbg_1. Every other caller of
+        // free_frames() hands frames back in the role they were used in.
         mm::free_frames(slab, order);
     }
 
@@ -197,7 +203,7 @@ namespace slab {
         stamp_compound_offsets(frame, order, true);
         if (auto status = init(frame, owner, node_cache, size, next_offset); Status::Ok != status) {
             stamp_compound_offsets(frame, order, false);
-            frame->become<page::PmmBody>();
+            // Not stamped Pmm here either; see destroy().
             mm::free_frames(frame, order);
             return nullptr;
         }

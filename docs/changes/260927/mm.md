@@ -451,3 +451,84 @@ Zircon：
 
 **故意没做**
 `VmObjectPhysical` 的 `lookup_range()` 没加锁。物理 VMO 的范围在创建后就不会变，没有需要保护的可变状态。
+
+## object_cache 归还 slab 页框时不再提前标 Role::Pmm（2026-09-27）
+
+**文件**
+- `kernel/mm/object_cache.cpp`：`slab::destroy()` 和 `slab::create()` 的失败回滚里，删掉
+  `free_frames()` 之前的 `become<page::PmmBody>()`
+
+**症状**
+偶发。dbg_1 跑 `usercopy.test`，6 次里有 1 次：18 项全部通过，但在收尾释放页框时内核停在
+`#UD`，没有打出汇总行：
+
+```
+[20009617000 cpu1 trace] Free frame(B5F000, 0)
+[20009988000 cpu1 error] #UD Invalid opcode: vector=6, error_code=0x0
+[20010978000 cpu1 error]   rip=0xffffff884003e379 (+0x3e379) ...
+[20013553000 cpu1 error]   r8=0x1  r9=0xb5e  r10=...  r11=0x0
+```
+
+`+0x3e379` 是 `FrameBuddy::release_inner()` 末尾的 `ud2`。跳到这里的是
+`circular_list_algorithms` 的断言（`detail::require`）：合并伙伴时，要从空闲链表摘下
+伙伴 `B5E`，但它的节点 `next` 为空（`r11=0`），根本不在任何链表上。就在此前，
+cpu0 刚打出 `Free frame(B5E000, 0)`。`B5E` 和 `B5F` 互为伙伴。
+
+**原因**
+伙伴系统判断"伙伴是否空闲"只看 `FrameBuddy::is_mergeable()`：`role == Pmm`、order 相同、
+同 zone 同节点。也就是说，`Role::Pmm` 的含义就是"我在伙伴系统的空闲链表上"。这个标记只该由
+`insert_frame()` 在 zone 锁内、入链的同时打上；分配时 `remove_frame()` 在锁内把它改成 `None`。
+
+`object_cache` 却在锁外先打了这个标记：
+
+```cpp
+slab->become<page::PmmBody>();   // 锁外：role = Pmm，但还没入链
+mm::free_frames(slab, order);    // 这里面才去拿 zone 锁、入链
+```
+
+在这两行之间，这个页框自称空闲却不在链表上。此时另一个 CPU 释放它的伙伴，会在 zone 锁内
+看到 `role == Pmm`，把它当成空闲伙伴去合并，`erase` 一个从未入链的节点，于是 trap。
+dbg_1 下日志量大，QEMU 的 vCPU 容易在两行之间被挂起，窗口因此被拉长。
+
+其它所有调用 `free_frames()` 的地方（`VmCowPages` 的页、`CpuLocal`、`early_mem`）都是带着
+使用时的角色直接归还，只有这里提前改了角色。
+
+`memmap.hpp` 里 `frame_to_phys()` 旁边的注释记录过同一类错：当年 `as_ptr<PmFrame>()`
+顺手把角色设成 `Pmm`，已分配的页框因此被当成空闲块合并，被分配了两次。
+
+**改法**
+
+之前：
+
+```cpp
+stamp_compound_offsets(slab, order, false);
+slab->become<page::PmmBody>();
+mm::free_frames(slab, order);
+```
+
+之后：
+
+```cpp
+stamp_compound_offsets(slab, order, false);
+mm::free_frames(slab, order);   // 带着 Slab 角色归还，由 insert_frame() 在锁内改成 Pmm
+```
+
+`slab::create()` 失败回滚的那一处同样处理。
+
+**参照**
+Linux 用 `PageBuddy` 标记"在伙伴空闲链表上"，只在 `__free_one_page()` 里、持
+`zone->lock` 时由 `set_buddy_order()` 设置；`page_is_buddy()` 检查的正是这个标记。
+slab 归还页面走 `__free_pages()`，自己从不设 `PageBuddy`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。
+- QEMU 实测：dbg_1 连跑 6 次（3 个一组并行，加重主机负载），dev 跑 2 次，全部 18/18，
+  没有任何 `#UD`、`#PF`、`#GP`。修复前是 6 次出现 1 次，所以"6 次没出现"只能算有利证据，
+  不能算证明。结论主要靠上面的推理：寄存器、伙伴关系、释放顺序都和这个竞态对得上。
+- 同一工作区里还有未提交的 `vm_area.cpp` 加锁改动（见下一节），上面的启动都包含它。
+  这个修复本身只删了两行，不依赖那个改动。
+
+**故意没做**
+- 没有给伙伴系统加一个独立于 `role` 的"在空闲链表上"标记。`Role::Pmm` 本来就承担这个含义，
+  问题在于有人在锁外写它，而不是缺一个标记。
+- `page::PmmBody` 仍然保留，`pm_frame.hpp` 里还引用它（hook 说明和 static_assert）。
