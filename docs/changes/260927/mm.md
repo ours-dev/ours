@@ -287,3 +287,96 @@ Zircon `VmMapping::PageFault()`。
 
 **故意没做**
 `Thread::Current::fault(VirtAddr, F &&)` 没改名。它是 `page_fault()` 和 `soft_fault()` 共用的私有辅助函数，只负责挑出当前线程的地址空间再转交，要改另外处理。
+
+## 缺页和 map 在碰 VMO 的页树之前先拿 VMO 的锁；map() 拿地址空间锁（2026-09-27）
+
+修掉 `docs/repairs/260925/mm.md` 的第 1 条。前两步见 `260926/x86-mm.md`（#PF 在允许睡眠时开中断）
+和 `260926/mm.md`（`VmAspace::m_lock` 改为 Mutex）。
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`：新增 `lock()`；`make_cursor()` 加上 `TA_REQUIRES(m_mutex)`
+- `kernel/mm/vm_mapping.cpp`：
+  - `page_fault()` 和 `map_paged()` 建 cursor 之前取 `Guard{vmo->lock()}`，一直持到页表写完；
+  - `map()` 开头取 `Guard{get_lock()}`，删掉第 289 行的 FIXME
+- `docs/repairs/260925/mm.md`：删掉第 1 条，原第 2 条改为第 1 条
+
+**症状**
+潜伏，当前触发不到：还没有两个地址空间同时映射同一个 VMO，也没有一边缺页一边
+`vmo_write` 的场景。一旦出现，最早会是 K16 的共享 vDSO VMO，其次是 K17/K21 里
+launcher 先 `vmo_write` 再映射。到那时 `VmCowPages::m_pages` 这棵 B 树会被并发插入，
+表现为页丢失、同一个偏移上出现两个页，或者 B 树结构被破坏。
+
+**原因**
+`m_pages` 只有一把锁，就是 `VmObjectPaged::m_mutex`。`commit_range_internal()` 和
+`copy_page_by_page()` 都持着它，唯独缺页路径没有：`VmMapping::page_fault()` 只持地址空间锁，
+就直接 `make_cursor()`、`require_page()`，边查边插。`map_paged()` 也一样。
+
+地址空间锁保护的是"这个地址空间里有哪些映射"，管不到"这个 VMO 里有哪些页"。
+两个地址空间各持各的锁，同时对同一个 VMO 缺页，互相完全看不见；一边缺页、一边
+`write()` 持 VMO 锁，同样看不见对方。说"两把锁"其实不准确，这棵树在缺页路径上根本没被锁住。
+
+以前改不了，是因为地址空间锁是自旋锁，而且持锁时关着中断，在它里面不能拿会睡眠的
+Mutex。前两步把它换成了 Mutex，并让 #PF 只在允许睡眠的上下文里进入 VM，现在才能嵌套。
+
+`map()` 那个 FIXME 是同一类问题的另一面：它不拿地址空间锁，所以会和 `protect()`、
+`unmap()` 并发修改页表和 `m_protection_ranges`。如果 `is_active()` 检查通过之后恰好
+有人 `destroy()`，页还会被装进一个已经不属于任何映射的区间。
+
+**改法**
+
+`page_fault()` 之前：
+
+```cpp
+auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+...
+arch_aspace.map(va, frame_to_phys(*page), 1, mmuf, ...);
+```
+
+之后：
+
+```cpp
+Guard guard{paged->lock()};
+auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+...
+arch_aspace.map(va, frame_to_phys(*page), 1, mmuf, ...);   // 仍在 VMO 锁内
+```
+
+`map_paged()` 同理。`map()` 在最前面拿地址空间锁，`is_active()` 的检查也被包进了锁里。
+
+VMO 锁要一直持到页表写完，不能拿到页就放。否则在"查到页"和"写进页表"之间，
+这个页可能被 decommit 掉并还给分配器，页表里就会装上一个已经归别人的物理页。
+Zircon 的 `PageFaultLockedObject()` 也是持着对象锁完成映射的。
+
+锁序固定为地址空间在外、VMO 在内。反方向的嵌套只可能出现在
+`copy_page_by_page()` 里：它持 VMO 锁拷贝用户内存，拷贝过程中缺页。
+但那里用的是捕获式拷贝，会先放掉 VMO 锁再调 `soft_fault()`，所以不会形成反向嵌套。
+
+`make_cursor()` 加上 `TA_REQUIRES(m_mutex)`，把"建 cursor 必须持 VMO 锁"
+从约定变成编译期检查。实测：临时删掉 `page_fault()` 里的 Guard，编译报错
+`calling function 'make_cursor' requires holding Mutex 'paged->m_mutex' exclusively`。
+
+**参照**
+Zircon：
+- `VmMapping::PageFault()`（`zircon/kernel/vm/vm_mapping.cc`）：对分页 VMO 先取
+  `Guard<CriticalMutex>{paged->lock()}`，再进 `PageFaultLockedObject()`；
+- `VmMapping::MapRange()`：同样在对象锁下建 lookup cursor 并写页表。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，`-Wthread-safety -Werror` 下无告警。
+- 故意漏拿锁的探针如上，确实编译失败，确认注解起作用。
+- QEMU 实测，无 panic：
+  - dev 连跑两次 `usercopy.test`，两次都是 18/18；
+  - dbg_1 跑到 69.8 s，`usercopy.test` 18/18。
+- "`read_user` 读进同一个 VMO 的映射"这一项，现在同时是这条锁序的死锁回归测试：
+  `copy_page_by_page()` 持 VMO 锁，拷贝时对同一个 VMO 缺页。如果捕获机制失效，
+  缺页路径会在 `page_fault()` 里再拿同一把 Mutex，当场死锁。
+- 没有专门写"两个地址空间并发缺页同一个 VMO"的测试，这个场景未实测。
+
+**故意没做**
+- 没给 `VmCowPages::make_cursor()` 本身加注解。VmCowPages 没有自己的锁，它的锁在
+  VmObjectPaged 里；它的调用方 `commit_range_locked()` 和 `copy_page_by_page()`
+  都已经持着 `m_mutex`。
+- `map_paged()` 忽略 `commit` 参数的 FIXME 没动，那是另一个问题。
+- 创建映射这条路径没动：`create_mapping()` 挑空位、挂进父 VMA 的 `m_subvmas`、
+  `add_mapping()` 挂进 `VmObject::m_mappings`，全程不持任何锁。这和本条同属一类问题，
+  但范围更大，已记入 `docs/repairs/260927/mm.md` 第 1 条。

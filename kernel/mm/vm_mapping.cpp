@@ -213,6 +213,11 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
     // at something like index 0xFFFFFF88_00000 and no two mappings of one VMO
     // would ever agree on a slot. map_physical() already converts the same way
     // (`base - m_base`) before calling lookup_range().
+    //
+    // The object's lock is held from the cursor to the last page table entry,
+    // inside the address space lock map() holds: a page found here must still
+    // belong to the object when it is mapped. See VmObjectPaged::lock().
+    Guard guard{vmo->lock()};
     auto cursor = vmo->make_cursor(m_vmo_ofs + (base - m_base), size);
     if (!cursor) {
         return cursor.unwrap_err();
@@ -286,11 +291,13 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
 auto VmMapping::map(VirtAddr base, usize size, bool commit, MapOptions options) -> Status {
     m_canary.verify<Self>();
 
-    // FIXME: map() does not acquire m_aspace->get_lock(), unlike protect()
-    // and unmap() which both take the lock via Guard{get_lock()}.  This is
-    // a potential data race if map() runs concurrently with
-    // protect()/unmap() on the same mapping — page-table entries and
-    // m_protection_ranges can be mutated from multiple threads.
+    // The address space lock, as protect() and unmap() take it. Without it a
+    // map() raced them over the page tables and m_protection_ranges, and a
+    // destroy() between the is_active() check below and the mapping itself
+    // left pages installed in a range that belonged to nobody. It also puts
+    // map_paged() in the lock order the fault path uses: this lock, then the
+    // object's.
+    Guard guard{get_lock()};
 
     // A destroyed mapping has no VMO any more (destroy() lets it go), and
     // nothing to map into: its range belongs to nobody now.
@@ -415,10 +422,11 @@ auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) ->
 ///
 /// Runs with the address space lock already held: VmAspace::page_fault_internal()
 /// takes it around finding the mapping and this call, so that the mapping
-/// cannot be torn down between the two. Hence no Guard here -- the same
-/// division unmap_locked() and protect_locked() already sit on, except that
-/// there the public half exists to take the lock, and here the only caller is
-/// the fault path.
+/// cannot be torn down between the two. Hence no Guard on that lock here --
+/// the same division unmap_locked() and protect_locked() already sit on,
+/// except that there the public half exists to take the lock, and here the
+/// only caller is the fault path. The object's own lock is taken below, inside
+/// it, once the fault is known to need a page from a paged VMO.
 auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     m_canary.verify<Self>();
 
@@ -510,6 +518,15 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     if (!paged) {
         return {Status::NotSupported, 0};
     }
+
+    // The object's lock, inside the address space lock the caller holds. The
+    // page tree is guarded by this lock alone, and a fault used to walk and
+    // insert into it without it -- so two address spaces faulting on one VMO,
+    // or a fault racing a write() to it, wrote the tree concurrently. Held up
+    // to the page table entry, so the page cannot be decommitted between
+    // being found and being mapped. Zircon's VmMapping::PageFault() takes
+    // `Guard<CriticalMutex>{paged->lock()}` at the same point.
+    Guard guard{paged->lock()};
 
     // The same conversion map_paged() does, for the same reason: the cursor is
     // positioned in the VMO's byte space and |va| is an address.
