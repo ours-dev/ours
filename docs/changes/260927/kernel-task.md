@@ -104,3 +104,71 @@ Linux `cpu_stopper_thread()`：每轮都从 `work = NULL` 开始，再在
 
 **故意没做**
 没有把 CpuStopper 接上：谁来创建 worker、`m_state` 谁来初始化，都属于把它启用起来的工作。
+
+## CpuStopper 的 Fn 改用 ustl::function::Function，删掉 stop_cpus_nowait()（2026-09-27）
+
+**文件**
+- `kernel/include/ours/task/cpu_stopper.hpp`：`Fn` 改为 `Function`；删掉 `stop_cpus_nowait()`；`m_fn` 改为指针；补全各接口的注释
+- `kernel/kernel/task/cpu_stopper.cpp`：`stop_cpu()`、`stop_cpu_nowait()` 把 fn 移进 Work；`queue_work_cpus()` 给每个 CPU 装一个转发 lambda；`worker_thread()` 改为通过指针读 Work
+
+**症状**
+潜伏，当前触发不到：CpuStopper 还没有接上。有两个问题：
+- `Fn` 是 `std::function`，而 Work 是在 `m_lock` 下、关着中断入队的，目标一大就会分配内存。
+- `stop_cpu_nowait()` 只在自己分配 Work 时才填 fn。调用方自己传进来的 Work，
+  入队时里面是什么 fn 就跑什么 fn。
+
+**原因**
+第一个问题的道理和 Timer、OwnedWaitQueue 相同：锁下调用的回调必须保证不分配。
+
+换成 `Function` 之后，唯一麻烦的是 `stop_cpus()`：它要把同一个 fn 分给多个 CPU。
+原来是每个 CPU 的 `m_stop_work` 各拷一份 `std::function`，而 `Function` 只能移动，
+拷不了。
+
+**改法**
+
+`stop_cpus()` 的 fn 留在它自己的栈帧上，每个 CPU 的 Work 里放一个转发 lambda，
+只捕获一个指向它的指针：
+
+```cpp
+// 之前
+cpus.for_each([&is_queued, fn, done](CpuNum cpu) {
+    std::construct_at(&stopper.m_stop_work, fn, caller_pc(), done);
+
+// 之后
+cpus.for_each([&is_queued, &fn, done](CpuNum cpu) {
+    auto &work = stopper.m_stop_work;
+    work.fn = [shared = &fn] { return (*shared)(); };
+    work.caller = caller_pc();
+    work.done = done;
+```
+
+`stop_cpus()` 会等所有 CPU 跑完才返回，所以指针在整个过程中都有效。
+代价是这个 fn 会在多个 CPU 上并发地、通过同一个目标被调用，所以它必须经得起并发。
+Linux 的 `stop_cpus()` 把同一对 fn 和 arg 交给所有 CPU，是同样的约定，注释里写明了。
+
+顺带把 `construct_at` 覆盖旧 Work 改成了逐字段赋值。旧 Work 里的 fn 现在是
+`Function`，赋值会正确析构它，直接覆盖则跳过了析构。
+
+`stop_cpu_nowait()` 无论 Work 是不是调用方给的，都填 fn、caller、done。
+
+`worker_thread()` 以前用 `auto [fn, caller, done, _] = *work;` 把 Work 拷出来，
+Work 现在不可拷贝，所以改成通过指针读取。`signal()` 之后不再碰 `work`，
+因为 `stop_cpu()` 的调用方此时可能已经返回，把 Work 连同栈帧一起带走了。
+`m_fn` 随之从 `Fn` 改为 `Fn const *`，只用于诊断。
+
+删掉 `stop_cpus_nowait()`。原实现分配了 `works` 却不用，所有 CPU 共用同一个
+`m_stop_work`。更根本的问题是，一个只能移动的 fn 没法分给多个 CPU，
+又没有一个能活过所有 CPU 的栈帧可以托管它。Linux 现在也没有这个接口。
+
+**参照**
+Linux `stop_one_cpu()`、`stop_one_cpu_nowait()`（负责填 `work_buf`）、`stop_cpus()`，
+以及 `struct cpu_stopper` 里用于诊断的 `fn` 和 `caller`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过；clang-tidy 在改动行上无新告警。
+  `STOP_CPUS_MUTEX` 的命名告警是原有的。
+- QEMU 实测：两个镜像都无 panic，`usercopy.test` 都是 18/18。CpuStopper 还不可达，
+  所以这次启动只说明没有弄坏别的东西。
+
+**故意没做**
+没有把 CpuStopper 接上，也就是没做：创建 worker、初始化 `m_state`、定义它的 CpuLocal 实例。

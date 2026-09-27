@@ -23,7 +23,7 @@ sync::Mutex CpuStopper::STOP_CPUS_MUTEX;
 
 auto CpuStopper::stop_cpu(CpuNum cpu, Fn fn) -> Status {
     Done done{.retval = 0, .num_todo = 1, .completion{}};
-    Work work{.fn = fn, .caller = caller_pc(), .done = &done, .queue_hook = {}};
+    Work work{.fn = ustl::move(fn), .caller = caller_pc(), .done = &done, .queue_hook = {}};
 
     if (!queue_work_cpu(cpu, work)) {
         return Status::NotFound;
@@ -54,18 +54,15 @@ auto CpuStopper::stop_cpu_nowait(CpuNum cpu, Fn fn, Work *work) -> bool {
         // until its worker runs it, and a nowait caller has no handle to free
         // it through.
         work = new (mm::GAF_KERNEL) Work();
-        work->fn = fn;
-        work->caller = caller_pc();
-        work->done = nullptr;
     }
+    // Filled in whether or not the caller supplied |work|. It used to be
+    // filled only when allocated here, so a caller's own buffer was queued
+    // with whatever fn it happened to hold. Linux's stop_one_cpu_nowait()
+    // fills work_buf the same way.
+    work->fn = ustl::move(fn);
+    work->caller = caller_pc();
+    work->done = nullptr;
     return queue_work_cpu(cpu, *work);
-}
-
-auto CpuStopper::stop_cpus_nowait(CpuMask const &cpus, Fn fn, Work *works) -> bool {
-    if (!works) {
-        works = new (mm::GAF_KERNEL) Work[cpus.count()];
-    }
-    return queue_work_cpus(cpus, fn, nullptr);
 }
 
 auto CpuStopper::queue_work(Work &work) -> bool {
@@ -95,16 +92,22 @@ auto CpuStopper::queue_work_cpu(CpuNum cpu, Work &work) -> bool {
     return Current::get(cpu).queue_work(work);
 }
 
-auto CpuStopper::queue_work_cpus(CpuMask const &cpus, Fn fn, Done *done) -> bool {
+auto CpuStopper::queue_work_cpus(CpuMask const &cpus, Fn const &fn, Done *done) -> bool {
     bool is_queued = false;
 
     task::AutoPreemptDisabler preemption_disabler{};
-    cpus.for_each([&is_queued, fn, done](CpuNum cpu) {
+    cpus.for_each([&is_queued, &fn, done](CpuNum cpu) {
         auto &stopper = Current::get(cpu);
         stopper.m_canary.verify<Self>();
 
-        std::construct_at(&stopper.m_stop_work, fn, caller_pc(), done);
-        if (stopper.queue_work(stopper.m_stop_work)) {
+        // Assigned, not reconstructed over the old Work: the old fn is a
+        // Function and is destroyed properly by the assignment. Each CPU
+        // gets a forwarder to the caller's |fn|; see stop_cpus().
+        auto &work = stopper.m_stop_work;
+        work.fn = [shared = &fn] { return (*shared)(); };
+        work.caller = caller_pc();
+        work.done = done;
+        if (stopper.queue_work(work)) {
             is_queued = true;
         }
     });
@@ -136,20 +139,23 @@ auto CpuStopper::worker_thread() -> void {
             break;
         }
 
-        auto [fn, caller, done, _] = *work;
-        m_caller = caller;
-        m_fn = fn;
+        // Read through |work| rather than copied out of it: the Work owns a
+        // move-only Function. Nothing touches |work| after signal(), which is
+        // what lets a stop_cpu() caller return and take the Work with it.
+        auto *const done = work->done;
+        m_caller = work->caller;
+        m_fn = &work->fn;
 
         {
             task::AutoPreemptDisabler preemption_disabler{};
-            auto const retval = fn();
+            auto const retval = work->fn();
             if (done) {
                 done->retval = retval;
                 done->completion.signal();
             }
         }
 
-        m_fn = {};
+        m_fn = nullptr;
         m_caller = {};
     };
 }
