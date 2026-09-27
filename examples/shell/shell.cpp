@@ -81,7 +81,7 @@ auto report(ou::Str const what, ours::Status const status) -> void {
 ///
 /// The first close has to succeed: the handle came from whoever started this
 /// program, which sent it in the processargs message -- the root job when
-/// the kernel started it, a channel to init when init did -- and it entered
+/// userboot started it, a channel to init when init did -- and it entered
 /// this process's table, under a value of this table's choosing, when the
 /// runtime read that message before main. The second has to fail with
 /// BadHandle, because the same number no longer names anything here -- and
@@ -130,14 +130,14 @@ auto spells(char const *const bytes, u32 const length, ou::Str const text) -> bo
 /// Started by init, the User0 startup handle is a channel with "ping" on it
 /// (or about to be): read it, print it, answer "pong" -- the other half of
 /// the first slice, whose log lines are the completion criterion (design 5).
-/// Started by the kernel directly there is no such handle, and nobody to
-/// answer.
+/// Started by userboot (dbg_1's `userboot.next=shell`) there is no such
+/// handle, and nobody to answer.
 auto answer_init(ours::HandleValue const peer) -> void {
     using ours::Signals;
     using ours::Status;
 
     if (peer == ours::HANDLE_INVALID) {
-        static_cast<void>(ou::debug_line("shell: started by the kernel; no one to answer"));
+        static_cast<void>(ou::debug_line("shell: started by userboot; no one to answer"));
         return;
     }
 
@@ -164,7 +164,7 @@ auto answer_init(ours::HandleValue const peer) -> void {
 
 /// Reads the BootFS header through vmo_read and says how many files it
 /// holds, as init does (the design's check for this step, K14). Only the
-/// shell the kernel starts has a BootFS; init keeps its own.
+/// shell userboot starts has a BootFS; init keeps its own.
 auto describe_bootfs(ours::HandleValue const bootfs) -> void {
     if (bootfs == ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: started without a BootFS"));
@@ -309,8 +309,8 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
 /// return from main, the one path through which the runtime ends a probe
 /// with main's own value.
 ///
-/// Run only by the shell the kernel starts directly, which holds the root
-/// job a new process needs; the dev image starts the shell from init, with a
+/// Run only by the shell userboot starts, which userboot hands the root job
+/// a new process needs; the dev image starts the shell from init, with a
 /// channel instead, and does not package fault_probe.
 auto run_probes(ours::HandleValue const job) -> void {
     constexpr ou::Str PROBES[] = {
@@ -794,7 +794,7 @@ auto check_libc(u8 const seed) -> void {
 ///
 /// Only what a call answers before it reads anything, so that this runs in
 /// every image, with or without a BootFS; reads of a real VMO are made on the
-/// BootFS, which only the shell the kernel starts holds. What is checked here
+/// BootFS, which only the shell userboot starts holds. What is checked here
 /// is that the handle is resolved first and resolved strictly: a value that
 /// names nothing is BadHandle, one that names something other than a VMO is
 /// BadType, and both win over every argument error. So the calls below pair
@@ -849,7 +849,7 @@ auto check_vmo_read() -> void {
 /// page boundary, the edges of the range, and destinations the kernel may
 /// not write to.
 ///
-/// Only the shell the kernel starts holds the BootFS; started by init, this
+/// Only the shell userboot starts holds the BootFS; started by init, this
 /// says so and checks nothing.
 auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> void {
     using ours::Status;
@@ -987,7 +987,7 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
 ///
 /// What needs no particular object runs in every image: a value that names
 /// nothing, and a channel, which is never made with Duplicate. What needs one
-/// runs on the BootFS, which only the shell the kernel starts holds: a copy
+/// runs on the BootFS, which only the shell userboot starts holds: a copy
 /// reads what the original reads; a right the original lacks, or SameRights
 /// with a right beside it, is refused; a copy without Read cannot vmo_read;
 /// and an out pointer the kernel cannot write gives no handle -- checked by
@@ -1082,7 +1082,7 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
 auto main(int, char **) -> int {
     static_cast<void>(ou::debug_line(BANNER));
 
-    // Started by init: a channel to answer on. Started by the kernel: the root
+    // Started by init: a channel to answer on. Started by userboot: the root
     // job, to start probes under, and the BootFS. Which ones are there is how
     // this program knows who started it.
     auto const peer = runtime::take_startup_handle(ours::HandleType::User0, 0);

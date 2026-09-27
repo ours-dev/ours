@@ -32,8 +32,8 @@ group("common_package_items") {
   # Fuchsia 的 kernel_package("zircon")，userboot 同样是内核包 BootFS
   # 里的一个 文件，而不是独立的 OBI item。
   #
-  # 只有「每个镜像都要的」才放这里。userboot 是内核不写
-  # kernel.select.userboot 时默认启动的那个程序，vDSO
+  # 只有「每个镜像都要的」才放这里。userboot 是内核总是
+  # 第一个启动的那个程序，vDSO
   # 是唯一能进内核的那段代码，两个都符合。镜像想跑别的
   # 程序，是它自己的 kernel_package 去声明（见
   # ./dev/BUILD.gn），而不是把那个程序 塞进这个共享 group ——

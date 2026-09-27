@@ -650,18 +650,21 @@ auto userboot_init() -> void {
     static_cast<void>(make_user_bootfs(*resident_package, boot::options().kernel_name(),
                                        resident_bootfs, resident_bootfs_rights));
 
-    // Whichever program the image asked for (`kernel.select.userboot`, see
-    // boot::BootOptions::userboot()). A name that is not in the package is a
-    // hard error rather than something to fall back from: the image said
-    // what it wants started, and quietly starting a different program would
-    // turn a packaging mistake into a boot that looks fine and is not the one
-    // that was configured.
+    // The userboot program, always: `kernel.select.userboot` only picks which
+    // build of it (see boot::BootOptions::userboot()), and what runs after it
+    // is its own decision, from the `userboot.next` that make_bootstrap()
+    // forwards. A name that is not in the package is a hard error rather
+    // than something to fall back from: the image said which userboot it
+    // wants, and quietly starting a different program would turn a packaging
+    // mistake into a boot that looks fine and is not the one that was
+    // configured.
     auto const program = boot::options().userboot();
 
     // The first process starts like every other one on the runtime: a
     // bootstrap channel in %rdi with a processargs message on it, written
     // before the process exists (make_bootstrap()). What it gets is the root
-    // job and the BootFS.
+    // job, the BootFS and the `userboot.*` options -- everything userboot
+    // needs to start the next program and hand the first two on to it.
     auto const has_bootfs = static_cast<bool>(resident_bootfs.dispatcher());
     auto bootstrap = make_bootstrap(program);
     if (!bootstrap) {

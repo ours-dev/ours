@@ -30,9 +30,9 @@ namespace ours::boot {
 /// into its Config item.
 class BootOptions final {
   public:
-    /// The program the first user process runs, as a file in the kernel
-    /// package. Zircon's option of the same name, with the same default; see
-    /// userboot() for why it is the image's to choose.
+    /// Which build of the userboot program the first user process runs, as a
+    /// file in the kernel package. Zircon's option of the same name, with the
+    /// same default; see userboot() for what it does and does not choose.
     static constexpr std::string_view USERBOOT_OPTION{"kernel.select.userboot"};
 
     /// Whether the kernel shell starts. Zircon's option of the same name and
@@ -51,13 +51,25 @@ class BootOptions final {
 
     /// `kernel.select.userboot=<name>`; "userboot" when absent.
     ///
-    /// Which program runs first belongs to the image being booted, not to the
-    /// kernel: an image that wants something other than the proof-of-life
-    /// program says so in its cmdline (//kernel/products/image/dev/BUILD.gn).
-    /// What stood before the option was a compiled-in preference -- start
-    /// "shell", fall back to "userboot" when the package has none -- which put
-    /// an //examples target's name inside the kernel and made "what ran" a
-    /// function of what a package happened to contain.
+    /// The first user process is always a userboot program; this option
+    /// picks only *which* one. Zircon's images leave it at the default and
+    /// eng images swap in userboot-test-rust, a userboot built to run tests;
+    /// neither puts a system service here. What userboot starts next is a
+    /// separate option, `userboot.next`, which the kernel does not parse: it
+    /// forwards every `userboot.*` token to the userboot program as a
+    /// processargs environment string (collect_userboot_options() in
+    /// //kernel/lib/userabi/src/userboot.cpp), and the program reads it
+    /// (//kernel/lib/userabi/userboot/userboot.cpp).
+    ///
+    /// The images used to name init or the shell here, so that the program
+    /// ran in userboot's place. That left nowhere for userboot's own work --
+    /// choosing the next program and handing it the system's handles -- and
+    /// the images now say `userboot.next=` instead
+    /// (//kernel/products/image/dev/BUILD.gn). Before this option existed at
+    /// all there was a compiled-in preference -- start "shell", fall back to
+    /// "userboot" when the package has none -- which put an //examples
+    /// target's name inside the kernel and made "what ran" a function of what
+    /// a package happened to contain.
     ///
     /// Zircon resolves this option one stage earlier: physboot's
     /// HandoffPrep::UsePackageFiles() matches it against the kernel package

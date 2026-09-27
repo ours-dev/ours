@@ -361,3 +361,61 @@ cmdline 上方的注释改用英文写：gn format 会按空格重排注释，�
 **故意没做**
 - 改 `ours.userboot` / `tools/set.py --userboot` / `build/product/ours_args.gni`：由构建会话统一改名为 `next`。
 - `options.hpp` 与内核 `userboot_init()` 中「由镜像指名第一个程序」的注释：放在下一条。
+
+## 注释与设计文档改到「userboot 固定先跑，`userboot.next` 决定下一个」（2026-09-26）
+
+**文件**
+- `kernel/include/ours/boot/options.hpp` — `USERBOOT_OPTION` 与 `userboot()` 的说明：只选 userboot 程序本身，下一个程序由 `userboot.next` 决定
+- `kernel/lib/userabi/include/userabi/userboot.hpp`、`kernel/lib/userabi/src/userboot.cpp` — `userboot_init()` 的说明与函数内注释
+- `kernel/products/image/BUILD.gn` — 共享包里「userboot 是默认启动的程序」一句
+- `system/service/init/init.cpp`、`system/service/init/BUILD.gn` — init 由 userboot 启动，而不是内核
+- `examples/shell/shell.cpp` — 九处「the shell the kernel starts」改为 userboot；日志 `shell: started by the kernel; no one to answer` 改为 `started by userboot`
+- `docs/design/260924/userspace-filesystem.md`、`docs/design/260923/userspace-interface.md` — 标出 U8 / P1 §3.2 已落地和未落地的部分，P0 §3.1 第 2 步标为已被取代
+
+**症状**
+前三条改动之后，这些注释和文档仍然写着「镜像用 `kernel.select.userboot` 指名第一个程序」「shell/init 由内核直接启动」。dbg_1 的 shell 日志也还是
+`started by the kernel`，而实际上启动它的是 userboot。读注释的人会得到一个错误的启动模型。
+
+**原因**
+旧模型写在很多地方：选项说明、userabi 接口、镜像 BUILD、init/shell 的文件头和各个检查函数的前置条件说明。每一处都是在描述同一件事实——
+第一个进程由内核按镜像指名启动。这件事实变了，而这些注释不会随代码自动过期。尤其是 shell 里「只有内核直接启动的 shell 才有 BootFS/根 job」这类前置条件，
+会误导人去内核里找发放这些句柄的代码，而实际发放者已经换成了 userboot。
+
+**改法**
+改前（`options.hpp`）：
+```cpp
+/// The program the first user process runs, as a file in the kernel
+/// package. Zircon's option of the same name, with the same default; see
+/// userboot() for why it is the image's to choose.
+...
+/// Which program runs first belongs to the image being booted, not to the
+/// kernel: an image that wants something other than the proof-of-life
+/// program says so in its cmdline (//kernel/products/image/dev/BUILD.gn).
+```
+改后：
+```cpp
+/// Which build of the userboot program the first user process runs, as a
+/// file in the kernel package. Zircon's option of the same name, with the
+/// same default; see userboot() for what it does and does not choose.
+...
+/// The first user process is always a userboot program; this option
+/// picks only *which* one. Zircon's images leave it at the default and
+/// eng images swap in userboot-test-rust, a userboot built to run tests;
+/// neither puts a system service here. What userboot starts next is a
+/// separate option, `userboot.next`, which the kernel does not parse: ...
+```
+其余各处同理：把「the kernel starts」改为「userboot starts」，并写明句柄是 userboot 原样转交的。
+设计文档只加进度标注，不改原计划正文：计划本身是历史，读的人需要同时看到「原来打算怎么做」和「现在做到哪一步」。
+
+**参照**
+- `Zircon lib/boot-options/options.inc` 第 908 行 `kernel.select.userboot`；`zircon/kernel/image/eng` 用它换成 `userboot-test-rust`。
+- `Zircon userboot main.rs` 的 `userboot.next`。
+
+**验证**
+- 除一条日志字符串外只改了注释和文档。`prebuilt/ninja/ninja -C out/userboot-next` 通过；clang-format 与 `gn format` 都干净（clang-format 顺手改的 shell.cpp 里两处旧代码格式已剔除，不混进本提交）。
+- QEMU dev：`userboot: starting init` → `userboot: started init` → `init: shell says "pong"`。dbg_1：`userboot: starting shell` → `shell: started by userboot; no one to answer` → 8 组检查全部 `checks passed`。
+
+**故意没做**
+- `tools/set.py` 的 `--userboot` 检查仍在 pack 响应文件里找 `--entry=kernel.select.userboot=`。镜像已经不写这一项，所以 `--userboot` 现在会报「没有这一项」。
+  那个文件由构建会话负责，会和 `ours.userboot` → `next` 的改名一起改。
+- `docs/changes/` 与 `docs/repairs-20260830.md` 里的旧说法：前者只增不改，后者是只读归档。

@@ -224,7 +224,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 ### 3.1 P0 时序
 
 1. **内核**：`labour_routine → userabi::userboot_init()`。解压内核包，并把包视图**常驻**为 `userabi::KernelPackage` 单例（今天是局部变量，函数返回后就找不到了）。
-2. 按 `kernel.select.userboot` 选程序：dev 镜像改为 `init`，dev.dbg_1 保持 `shell` 用作回归。
+2. 按 `kernel.select.userboot` 选程序：dev 镜像改为 `init`，dev.dbg_1 保持 `shell` 用作回归。（已被取代，2026-09-26：`kernel.select.userboot` 只选 userboot 程序本身，内核总是先起 userboot；两个镜像改写 `userboot.next=init`、`userboot.next=shell`，由 userboot 转交根 job 与 BootFS 后启动它们。见 §3.2 与 `docs/changes/260926/userabi.md`。）
 3. 调 `userabi::launch(root_job, "init", HandleOwner{root_job, RIGHTS_DEFAULT_JOB})`，依次做：
    - `ProcessDispatcher::create`；
    - `Loader::map` 映像与 vDSO，`Binder::bind` 绑定导入；
@@ -243,6 +243,8 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 8. init 被唤醒，`channel_read` 读到 "pong"，打印出来，然后自旋（P1 之前没有 exit）。
 
 ### 3.2 P1 目标时序（内核 → userboot → init → shell）
+
+> 进度（2026-09-26）：内核 → userboot → init → shell 这条链已经通了。第 1 步中「environ 放 `userboot.*`」和第 2 步中「取 `userboot.next`、转交能力并启动 init」已落地，但只交出 JOB_DEFAULT 和 VMO_BOOTFS，启动用的是临时的 `process_spawn_boot`，userboot 起完 next 后停住而不是 `process_exit(0)`。其余句柄、`system/lib/launch` 都还没做。
 
 1. **内核**：
    - 从常驻包建 BootFS VMO：只读，创建时整体提交，需要 `VmObjectPaged::write` 的内核缓冲版。

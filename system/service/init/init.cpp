@@ -3,9 +3,10 @@
 ///
 /// init -- the first system service.
 ///
-/// The kernel starts it on the runtime (//system/lib/runtime) with a
-/// processargs message holding two startup handles: the root job and the
-/// BootFS VMO. What it does with them today is the whole of the first
+/// userboot starts it on the runtime (//system/lib/runtime), when the image
+/// names it with `userboot.next=init`, with a processargs message holding
+/// two startup handles: the root job and the BootFS VMO -- the ones the
+/// kernel gave userboot, handed on unchanged. What it does with them today is the whole of the first
 /// vertical slice (docs/design/260923/userspace-interface.md, section 5):
 /// look at the BootFS, start the shell, say "ping" to it, sleep until the
 /// shell answers, and print the answer. Every step goes through the vDSO;

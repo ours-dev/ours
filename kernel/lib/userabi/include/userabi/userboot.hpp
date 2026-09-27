@@ -18,9 +18,11 @@ namespace userabi {
 enum class HandleIndex {};
 
 /// Brings up the first user process: decompresses the kernel package and
-/// keeps it, builds the user BootFS from it, then launches the program
-/// `kernel.select.userboot` names with a bootstrap channel whose processargs
-/// message hands it the root job and the BootFS.
+/// keeps it, builds the user BootFS from it, then launches the userboot
+/// program (`kernel.select.userboot` picks which build, "userboot" by
+/// default) with a bootstrap channel whose processargs message hands it the
+/// root job, the BootFS and the image's `userboot.*` options. What runs after
+/// userboot is userboot's decision (`userboot.next`), not this function's.
 auto userboot_init() -> void;
 
 /// Starts the program |name| from the kernel package as a new process under
