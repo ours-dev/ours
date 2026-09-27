@@ -52,7 +52,10 @@ MODULE.bazel.lock
 .venv
 .cache
 .codex
-.claude
+# Claude Code state stays local, except the root .claude/skills/ links that
+# make .agents/skills visible to it.
+**/.claude/*
+!/.claude/skills/
 .reasonix
 .zcode
 .mypy_cache
