@@ -34,7 +34,30 @@ class X86Thread {
     /// What the running thread's user copy in progress has told the page-fault
     /// handler (design 4.6). All zero outside a copy.
     struct UserCopyState {
-        /// The address of the copy's own fault exit. x86_user_copy
+        /// Bit 63 of |resume|: whether a fault inside the copy is first handed
+        /// to the page-fault handler to resolve.
+        ///
+        /// Set, the fault is resolved in place like any other and the copy goes
+        /// on; only a fault that cannot be resolved is sent to the copy's exit.
+        /// Clear, the fault is not resolved at all. The handler sends it
+        /// straight to the exit with the faulting address in %rdx and its
+        /// VmfCause in %rcx, and the copy returns them to its caller. That is
+        /// fault capture: a copy that runs under a lock -- where resolving would
+        /// take the address space's lock inside it, or block where blocking is
+        /// not allowed -- gets the fault back, drops the lock, resolves it with
+        /// soft_fault(), and retries.
+        ///
+        /// The flag can live inside the address because every kernel address
+        /// has bit 63 set (the kernel's half starts at KERNEL_ASPACE_BASE and
+        /// runs to the top), so the exit's address is recovered by setting it
+        /// again. user_copy.cpp asserts that at compile time.
+        ///
+        /// Zircon: X86_PFR_RUN_FAULT_HANDLER_BIT in arch/x86/include/arch/
+        /// arch_thread.h, bit 63 of page_fault_resume for the same reason.
+        static constexpr VirtAddr RUN_FAULT_HANDLER = VirtAddr(1) << 63;
+
+        /// The address of the copy's own fault exit, with RUN_FAULT_HANDLER
+        /// cleared when the copy captures its faults. x86_user_copy
         /// (user_copy.S) stores it before touching user memory and clears it
         /// before returning.
         VirtAddr resume = 0;

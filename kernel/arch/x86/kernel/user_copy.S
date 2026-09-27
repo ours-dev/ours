@@ -38,17 +38,28 @@
 // out. A page fault the copy itself raises is handled the same way, with AC
 // clear, and the copy resumes with it set.
 //
-// u32 x86_user_copy(void *dst, void const *src, usize len, VirtAddr *resume)
+// X86UserCopyRet x86_user_copy(void *dst, void const *src, usize len,
+//                               VirtAddr *resume, VirtAddr resume_mask)
 //
-//   %rdi  dst     -- rep movs writes through it and advances it
-//   %rsi  src     -- rep movs reads through it and advances it
-//   %rdx  len     -- split into quadwords (%rcx for rep movsq) and a byte tail
-//   %rcx  resume  -- the running thread's data-fault resume slot; moved to
-//                    %r10 on entry, because rep movs needs %rcx
+//   %rdi  dst          -- rep movs writes through it and advances it
+//   %rsi  src          -- rep movs reads through it and advances it
+//   %rdx  len          -- split into quadwords (%rcx for rep movsq) and a
+//                         byte tail
+//   %rcx  resume       -- the running thread's data-fault resume slot; moved
+//                         to %r10 on entry, because rep movs needs %rcx
+//   %r8   resume_mask  -- ANDed into the fault exit's address before it is
+//                         stored: all ones to have faults resolved in place,
+//                         or with UserCopyState::RUN_FAULT_HANDLER (bit 63)
+//                         clear to have them captured instead
 //
-//   returns 0 when every byte was copied, 1 when a page fault on the user
-//   side could not be resolved. The C++ caller turns 1 into InvArgs; the
-//   assembly does not spell a Status.
+//   returns struct X86UserCopyRet { u32 faulted; u32 cause; VirtAddr va; },
+//   sixteen bytes of integers and so returned in %rax:%rdx under the SysV
+//   ABI: %eax is 0 when every byte was copied and 1 when the copy took its
+//   fault exit, the upper half of %rax the fault's VmfCause, %rdx the
+//   faulting address. The last two are only meaningful for a capturing copy
+//   that faulted -- only then did the page-fault handler put them in %rcx and
+//   %rdx; otherwise they are whatever the copy left there. The C++ caller
+//   turns a fault into InvArgs; the assembly does not spell a Status.
 //
 // Fault recovery (design 4.6). Before it touches user memory the routine
 // stores the address of its fault exit in *resume, and it clears the slot
@@ -68,9 +79,23 @@
 //     touches the stack. The fault exit is reached with the stack exactly as
 //     it was at the faulting instruction, which is exactly as it was on entry,
 //     so its `ret` returns to the caller.
-//   - The fault exit uses only %r10 (the slot) and %rax (the result). %r10
-//     survives the fault because the exception entry saves every general
-//     register into the frame and restores it on the way out.
+//   - The fault exit uses only %r10 (the slot), %rax (the result), and the
+//     %rcx and %rdx the page-fault handler wrote into the frame. %r10 survives
+//     the fault because the exception entry saves every general register into
+//     the frame and restores it on the way out; %rcx and %rdx come back the
+//     same way, rewritten.
+//
+// Fault capture. With RUN_FAULT_HANDLER clear in the stored exit address,
+// the page-fault handler does not try to resolve a fault inside the copy at
+// all. It writes the faulting address into the frame's %rdx and the fault's
+// VmfCause into its %rcx, sets the instruction pointer to the exit -- with
+// bit 63 put back, since clearing it made the address non-canonical -- and
+// returns. It enables nothing and takes no lock on the way, so a capturing
+// copy may run where resolving a fault could not: under a lock, with
+// preemption or interrupts off. The exit then only has to pack %rcx into the
+// upper half of %rax, and %rdx is already where the return struct wants it.
+// Those two registers are chosen for exactly that. Zircon: the same scheme in
+// arch/x86/user-copy/user-copy.S and x86_pfe_handler().
 //
 // The direction flag is clear on entry, as the SysV ABI promises every
 // function; SYSCALL clears it (IA32_FMASK) and so does every interrupt stub.
@@ -85,6 +110,7 @@
 .function \name, global, nosection=nosection
     movq %rcx, %r10
     leaq .Lfault_\name(%rip), %rax
+    andq %r8, %rax
     movq %rax, (%r10)
 .if \smap
     stac
@@ -104,7 +130,9 @@
     ret
 
 .Lfault_\name:
+    shlq $32, %rcx
     movl $1, %eax
+    orq %rcx, %rax
     jmp .Ldone_\name
 .end_function
 .endm

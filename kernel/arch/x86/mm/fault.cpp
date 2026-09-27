@@ -200,6 +200,44 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // likewise only maps PFEX_I to VMM_PF_FLAG_INSTRUCTION.
     cause |= (error_code & PAGE_FAULT_INSTRUCTION) ? VmfCause::Instruction : VmfCause::None;
 
+    // A user copy that captures its faults gets this one back unresolved.
+    //
+    // Such a copy runs under a lock its caller holds, and resolving the fault
+    // here would take the address space's lock inside it -- the reverse of the
+    // order the fault path takes them in, and a deadlock outright when the user
+    // buffer maps the object that is locked -- or block where the caller may
+    // not. So nothing is resolved. The fault's address and cause go into the
+    // frame's %rdx and %rcx, where the copy's exit packs them into its return
+    // value, and the instruction pointer goes to that exit. The caller drops
+    // its lock, resolves the fault with soft_fault(), and retries.
+    //
+    // It comes before the check below on purpose. That check stops the kernel
+    // on a fault from a context that may not sleep, and a capturing copy is
+    // exactly the one kind of kernel code that may legitimately fault there:
+    // it declared up front that it cannot have the fault resolved. Nothing on
+    // this path enables interrupts, takes a lock or blocks.
+    //
+    // Capture is only ever asked for through the copy's resume slot, and by
+    // the check at the top of this function a ring-0 fault on a user address
+    // that got this far is inside a copy, in the operand it was admitted for.
+    // RUN_FAULT_HANDLER clear in the slot is the request; setting it again
+    // restores the exit's canonical address, since every kernel address has
+    // bit 63 set.
+    //
+    // Zircon: the X86_PFR_RUN_FAULT_HANDLER_BIT test at the top of
+    // x86_pfe_handler(), which likewise returns before enabling anything.
+    if (supervisor && user_address) {
+        DEBUG_ASSERT(user_copy_may_resume(frame, addr));
+        using UserCopyState = task::X86Thread::UserCopyState;
+        auto const resume = task::X86Thread::current_user_copy()->resume;
+        if ((resume & UserCopyState::RUN_FAULT_HANDLER) == 0) {
+            frame->ip = resume | UserCopyState::RUN_FAULT_HANDLER;
+            frame->dx = addr;
+            frame->cx = static_cast<usize>(cause);
+            return Status::Ok;
+        }
+    }
+
     // A fault from a context that may not sleep is a kernel bug, and stops the
     // kernel here rather than being resolved.
     //

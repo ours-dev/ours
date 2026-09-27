@@ -3,8 +3,11 @@
 #ifndef OURS_ARCH_USER_COPY_HPP
 #define OURS_ARCH_USER_COPY_HPP 1
 
+#include <ours/mm/vm_fault.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+
+#include <optional>
 
 namespace ours {
 /// The architecture's half of a user copy: move the bytes, and nothing else.
@@ -33,6 +36,48 @@ auto arch_copy_from_user(void *dst, VirtAddr src, usize size) -> Status;
 
 [[nodiscard]]
 auto arch_copy_to_user(VirtAddr dst, void const *src, usize size) -> Status;
+
+/// A user-side fault a capturing copy did not resolve: where, and why --
+/// exactly what Thread::Current::soft_fault() takes.
+struct UserCopyFault {
+    VirtAddr va;
+    mm::VmfCause cause;
+};
+
+/// What a capturing copy returns. |fault| is set exactly when the copy stopped
+/// on a user-side page fault; then |status| is InvArgs and the bytes before the
+/// fault may or may not have been copied, so the caller has to redo the whole
+/// request, not only what follows the fault.
+///
+/// Zircon: UserCopyCaptureFaultsResult (lib/user_copy/include/lib/user_copy/
+/// user_copy.h), with the fault as pf_va and pf_flags.
+struct UserCopyCaptureResult {
+    Status status;
+    std::optional<UserCopyFault> fault;
+};
+
+/// The copies above, except that a page fault on the user side is not resolved.
+///
+/// For a copy that has to run while its caller holds a lock. Resolving a fault
+/// may block and takes the address space's lock, so doing it in place would
+/// either sleep where sleeping is not allowed or take that lock inside the
+/// caller's -- the wrong order, and a deadlock outright if the user buffer maps
+/// the very object the caller has locked. Instead the fault comes back in the
+/// result, and the caller drops its lock, calls soft_fault() with it, re-takes
+/// the lock, looks its state up again, and retries.
+///
+/// These may run anywhere -- under a spin lock, with preemption or interrupts
+/// off -- because a captured fault reaches neither the VM nor anything that
+/// could block.
+///
+/// Zircon: arch_copy_from_user_capture_faults(), arch_copy_to_user_capture_faults().
+[[nodiscard]]
+auto arch_copy_from_user_capture_faults(void *dst, VirtAddr src, usize size)
+    -> UserCopyCaptureResult;
+
+[[nodiscard]]
+auto arch_copy_to_user_capture_faults(VirtAddr dst, void const *src, usize size)
+    -> UserCopyCaptureResult;
 
 } // namespace ours
 

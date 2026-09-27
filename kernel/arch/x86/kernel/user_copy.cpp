@@ -1,30 +1,64 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/arch/thread.hpp>
 #include <ours/arch/user_copy.hpp>
 #include <ours/arch/x86/feature.hpp>
 #include <ours/assert.hpp>
 
+#include <cstddef>
+
 #include <arch/interrupt.hpp>
 
+// What the copy in user_copy.S returns, in %rax:%rdx: whether it took its fault
+// exit, and for a capturing copy that did, the fault's VmfCause and address.
+// The layout is the ABI between the assembly and this file -- faulted in the
+// low half of %rax, the cause in the high half, the address in %rdx -- so it is
+// pinned down here rather than left to whatever the compiler would pick.
+struct X86UserCopyRet {
+    u32 faulted;
+    u32 cause;
+    ours::VirtAddr va;
+};
+static_assert(sizeof(X86UserCopyRet) == 16 && offsetof(X86UserCopyRet, cause) == 4 &&
+                  offsetof(X86UserCopyRet, va) == 8,
+              "x86_user_copy returns this struct in %rax:%rdx; see user_copy.S");
+
 // The copy itself, in user_copy.S: one routine per SMAP setting, so that the
-// stac/clac window is written out and holds the copy and nothing else. Each
-// returns 0 when it copied everything and 1 when a user-side fault could not
-// be resolved; see the file's header for how the fault gets back here.
-extern "C" auto x86_user_copy(void *dst, void const *src, usize len, ours::VirtAddr *resume) -> u32;
-extern "C" auto x86_user_copy_smap(void *dst, void const *src, usize len, ours::VirtAddr *resume)
-    -> u32;
+// stac/clac window is written out and holds the copy and nothing else. See the
+// file's header for how a fault gets back here, and for what |resume_mask| does.
+extern "C" auto x86_user_copy(void *dst, void const *src, usize len, ours::VirtAddr *resume,
+                              ours::VirtAddr resume_mask) -> X86UserCopyRet;
+extern "C" auto x86_user_copy_smap(void *dst, void const *src, usize len, ours::VirtAddr *resume,
+                                   ours::VirtAddr resume_mask) -> X86UserCopyRet;
 
 namespace ours {
 namespace {
+    using UserCopyState = task::X86Thread::UserCopyState;
+
+    /// The two resume masks. Resolving leaves the exit's address untouched;
+    /// capturing clears RUN_FAULT_HANDLER in it, which the page-fault handler
+    /// reads as "hand this fault back, do not resolve it".
+    constexpr VirtAddr RESOLVE_FAULTS = ~VirtAddr(0);
+    constexpr VirtAddr CAPTURE_FAULTS = ~UserCopyState::RUN_FAULT_HANDLER;
+
+    // The flag rides in the exit's address, and the handler recovers the
+    // address by setting the bit again. That is only lossless if every address
+    // the exit can have -- every kernel address -- already has it set. The
+    // kernel's half starts at KERNEL_ASPACE_BASE and runs to the top of the
+    // address space, so checking the base is enough. Zircon makes the same
+    // check next to X86_PFR_RUN_FAULT_HANDLER_BIT.
+    static_assert((KERNEL_ASPACE_BASE & UserCopyState::RUN_FAULT_HANDLER) != 0,
+                  "RUN_FAULT_HANDLER must be set in every kernel address");
+
     /// The variant this CPU can run -- the plain one where stac/clac would be
     /// #UD, the bracketed one where SMAP would otherwise refuse the access --
     /// with the running thread's user-copy state filled in for the fault
     /// handler: the resume slot the routine writes, and |user|, the operand
     /// the range check admitted, which is the only range a fault may be
     /// resumed from.
-    auto copy(void *const dst, void const *const src, usize const size, VirtAddr const user)
-        -> Status {
+    auto copy(void *const dst, void const *const src, usize const size, VirtAddr const user,
+              VirtAddr const resume_mask) -> X86UserCopyRet {
         auto &state = *task::X86Thread::current_user_copy();
         // Set means a copy is already in progress on this thread and this one
         // was entered from inside it -- from a fault handler, say. The inner
@@ -47,8 +81,9 @@ namespace {
         // the same lfence between can_access() and the copy.
         asm volatile("lfence" ::: "memory");
 
-        auto const faulted = feature_has_smap ? x86_user_copy_smap(dst, src, size, &state.resume)
-                                              : x86_user_copy(dst, src, size, &state.resume);
+        auto const result = feature_has_smap
+                                ? x86_user_copy_smap(dst, src, size, &state.resume, resume_mask)
+                                : x86_user_copy(dst, src, size, &state.resume, resume_mask);
 
         state.user_base = 0;
         state.user_size = 0;
@@ -62,19 +97,50 @@ namespace {
                      "a user copy returned with the SMAP window open");
         DEBUG_ASSERT(state.resume == 0, "a user copy returned with its resume slot set");
 
-        // InvArgs, as in Zircon: from the caller's side a pointer that turned
-        // out not to be backed is a bad argument like any other, and the
-        // system call returns it.
-        return faulted ? Status::InvArgs : Status::Ok;
+        return result;
+    }
+
+    /// InvArgs, as in Zircon: from the caller's side a pointer that turned out
+    /// not to be backed is a bad argument like any other, and the system call
+    /// returns it.
+    auto to_status(X86UserCopyRet const &result) -> Status {
+        if (result.faulted != 0) {
+            return Status::InvArgs;
+        }
+        return Status::Ok;
+    }
+
+    /// The fault goes back to the caller only when there was one. A capturing
+    /// copy that finished has nothing to report, and %rcx:%rdx then hold
+    /// whatever the copy left in them.
+    auto to_capture_result(X86UserCopyRet const &result) -> UserCopyCaptureResult {
+        if (result.faulted == 0) {
+            return UserCopyCaptureResult{.status = Status::Ok, .fault = std::nullopt};
+        }
+        return UserCopyCaptureResult{
+            .status = Status::InvArgs,
+            .fault = UserCopyFault{.va = result.va, .cause = mm::VmfCause(result.cause)},
+        };
     }
 } // namespace
 
 auto arch_copy_from_user(void *const dst, VirtAddr const src, usize const size) -> Status {
-    return copy(dst, reinterpret_cast<void const *>(src), size, src);
+    return to_status(copy(dst, reinterpret_cast<void const *>(src), size, src, RESOLVE_FAULTS));
 }
 
 auto arch_copy_to_user(VirtAddr const dst, void const *const src, usize const size) -> Status {
-    return copy(reinterpret_cast<void *>(dst), src, size, dst);
+    return to_status(copy(reinterpret_cast<void *>(dst), src, size, dst, RESOLVE_FAULTS));
+}
+
+auto arch_copy_from_user_capture_faults(void *const dst, VirtAddr const src, usize const size)
+    -> UserCopyCaptureResult {
+    return to_capture_result(
+        copy(dst, reinterpret_cast<void const *>(src), size, src, CAPTURE_FAULTS));
+}
+
+auto arch_copy_to_user_capture_faults(VirtAddr const dst, void const *const src, usize const size)
+    -> UserCopyCaptureResult {
+    return to_capture_result(copy(reinterpret_cast<void *>(dst), src, size, dst, CAPTURE_FAULTS));
 }
 
 } // namespace ours
