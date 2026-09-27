@@ -12,6 +12,13 @@
 /// shell answers, and print the answer. Every step goes through the vDSO;
 /// nothing here executes a syscall instruction.
 ///
+/// Between the ping and the wait it also starts the program the image's
+/// `ours.autorun.boot` option names, if there is one -- Zircon's
+/// `zircon.autorun.boot`, which console-launcher, the component that starts
+/// Zircon's shell, runs in the same place. The option reaches init as an
+/// environment string: the kernel forwards it to userboot, and userboot
+/// hands on what is not its own.
+///
 /// The wait in the middle is the first in the system that really sleeps: the
 /// answer can only come from another process, which has to be started,
 /// scheduled -- on another CPU, as often as not -- and run to its reply. So
@@ -65,6 +72,23 @@ auto halt() -> void {
 constexpr ou::Str SHELL{"shell"};
 constexpr ou::Str PING{"ping"};
 
+/// The option naming a program to start once the shell is up, with its `=`,
+/// as `ours.autorun.boot=<name>[+arg...]`: a BootFS file name and its
+/// arguments, `+` standing for the spaces a kernel command line cannot hold
+/// inside one word. Zircon's `zircon.autorun.boot` has the same shape
+/// (docs/reference/kernel/kernel_cmdline.md); its value is a path, since
+/// Zircon's programs live in a namespace, where here they are BootFS names.
+constexpr std::string_view AUTORUN_OPTION{"ours.autorun.boot="};
+
+/// How many words -- the name and its arguments -- an autorun command may
+/// have. More is refused rather than cut short: a truncated argv runs a
+/// command nobody wrote.
+constexpr u32 MAX_AUTORUN_WORDS = 8;
+
+auto to_str(std::string_view const text) -> ou::Str {
+    return {text.data(), text.size()};
+}
+
 /// Reads the BootFS header through vmo_read and says how many files it
 /// holds -- the first time a program looks at the BootFS the kernel built
 /// for it (design K12), and the first vmo_read of a real VMO.
@@ -89,6 +113,85 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
     char count[10];
     static_cast<void>(
         ou::debug_line({"init: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
+}
+
+/// The value of `ours.autorun.boot=` among this process's environment
+/// strings, or empty when there is none.
+///
+/// The last one wins, as with userboot's `userboot.next` (find_next() in
+/// //kernel/lib/userabi/userboot/userboot.cpp): a later word on a command
+/// line overrides an earlier one, which is what lets a bootloader append to
+/// an image's defaults.
+auto find_autorun() -> std::string_view {
+    std::string_view command;
+    for (auto const entry: runtime::process_args().environ()) {
+        if (entry.starts_with(AUTORUN_OPTION)) {
+            command = entry.substr(AUTORUN_OPTION.size());
+        }
+    }
+    return command;
+}
+
+/// Starts the autorun |command| under |job|: its first `+`-separated word is
+/// the BootFS name, and all of them, the name included, are its argv.
+///
+/// Empty words are skipped, so `a++b` and a trailing `+` mean what they look
+/// like -- as in LaunchAutorun() in Fuchsia's console-launcher main.cc,
+/// which splits on `+` with kSplitWantNonEmpty and spawns the words as argv
+/// directly, no shell in between.
+///
+/// The program gets argv and nothing else: no job, since nothing it could be
+/// asked to do yet starts processes, and no BootFS, which init keeps. What it
+/// prints goes to the debug log like everyone else's.
+auto start_autorun(ours::HandleValue const job, std::string_view command) -> ours::Status {
+    using ours::Status;
+
+    std::string_view words[MAX_AUTORUN_WORDS];
+    u32 count = 0;
+    while (!command.empty()) {
+        auto const end = command.find('+');
+        auto const word = command.substr(0, end);
+        if (!word.empty()) {
+            if (count == MAX_AUTORUN_WORDS) {
+                return Status::OutOfRange;
+            }
+            words[count++] = word;
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        command.remove_prefix(end + 1);
+    }
+    if (count == 0) {
+        return Status::InvArgs;
+    }
+
+    // The header and the words: the kernel lets all its forwarded options
+    // take at most 384 bytes together (USER_OPTIONS_BYTES in
+    // //kernel/lib/userabi/src/userboot.cpp), so a command -- its words and
+    // their NULs no longer than the option -- always fits. Were that bound
+    // raised past this buffer, encoding would say BufferTooSmall rather than
+    // cut the command short.
+    u8 message[512];
+    u32 length = 0;
+    if (auto const status = ours::encode_process_args(message, {}, {words, count}, {}, {}, &length);
+        status != Status::Ok) {
+        return status;
+    }
+
+    ours::HandleValue bootstrap = ours::HANDLE_INVALID;
+    ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
+    if (auto const status = ou::channel_create(&bootstrap, &bootstrap_there);
+        status != Status::Ok) {
+        return status;
+    }
+    auto const written = ou::channel_write(bootstrap, message, length);
+    static_cast<void>(ou::handle_close(bootstrap));
+    if (written != Status::Ok) {
+        static_cast<void>(ou::handle_close(bootstrap_there));
+        return written;
+    }
+    return ou::process_spawn_boot(job, to_str(words[0]), bootstrap_there);
 }
 
 /// Starts the shell under |job| with |peer| -- the far end of the channel
@@ -161,6 +264,19 @@ auto main(int, char **) -> int {
         status != Status::Ok) {
         report("init: write(ping) = ", status);
         halt();
+    }
+
+    // The autorun program, now that the shell is up -- console-launcher
+    // starts `zircon.autorun.boot` beside the console shell too
+    // (LaunchAutorun() in its main.cc, just before RunSerialConsole()). Before the wait rather than after it: the shell may
+    // never let go of its channel, and the command should not wait on that.
+    // A failure is reported and nothing more; it is the command that failed,
+    // not the system, and the shell is already running.
+    if (auto const autorun = find_autorun(); !autorun.empty()) {
+        static_cast<void>(ou::debug_line({"init: autorun ", to_str(autorun)}));
+        if (auto const status = start_autorun(job, autorun); status != Status::Ok) {
+            report("init: starting the autorun command = ", status);
+        }
     }
 
     // Asleep until the shell writes back, or its end of the channel goes.
