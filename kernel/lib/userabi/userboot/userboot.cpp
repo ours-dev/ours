@@ -59,12 +59,11 @@ auto halt() -> void {
     // fall off the end of the function. An `asm volatile` is a side effect the
     // optimiser must keep.
     //
-    // userboot halts rather than exiting. Zircon's waits for the program it
-    // started and then exits; here nothing yet reports a process's end
-    // (TERMINATED on a process handle comes with the user-space loader,
-    // design K23), and halting keeps the one thing that can still be
-    // observed -- the timer interrupts the kernel goes on taking from user
-    // space -- as evidence that ring 3 resumed after its last system call.
+    // Only the proof-of-life image comes here; every path that was asked to
+    // start something ends in process_exit instead (see main). With nothing
+    // to hand on, staying keeps the one thing left to observe -- the timer
+    // interrupts the kernel goes on taking from user space -- as evidence
+    // that ring 3 resumed after its last system call.
     for (;;) {
         __asm__ volatile("pause");
     }
@@ -153,10 +152,17 @@ auto main(int, char **) -> int {
         halt();
     }
 
+    // From here on every path returns, and the runtime turns main's value
+    // into process_exit: userboot's work is done once the next program has
+    // what it needs, and a userboot that cannot give it that has nothing
+    // else to do either. Zircon's userboot ends the same way on success and
+    // on failure (main() in main.rs logs the error and returns). Its exit
+    // takes nothing with it: the next program lives under the root job, not
+    // under userboot, and holds the only handles userboot had.
     auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
     if (job == ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("userboot: started without the root job"));
-        halt();
+        return 1;
     }
     // Absent is allowed: the kernel starts this program without a BootFS
     // when it could not build one, and the next program is the one that has
@@ -166,8 +172,8 @@ auto main(int, char **) -> int {
     static_cast<void>(ou::debug_line({"userboot: starting ", to_str(next)}));
     if (auto const status = start_next(job, bootfs, next); status != ours::Status::Ok) {
         report("userboot: starting the next program = ", status);
-        halt();
+        return 1;
     }
     static_cast<void>(ou::debug_line({"userboot: started ", to_str(next)}));
-    halt();
+    return 0;
 }

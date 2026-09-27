@@ -404,7 +404,7 @@ service shell binary=bin/shell start=eager restart=never uses=/boot:rx,/svc/ours
 - **vDSO 一致性**：内核映射的共享 vDSO VMO，与 launcher 的 Binder 读取的，是 BootFS 里同一个 `vdso` 文件（`kernel/lib/userabi/src/userboot.cpp:43`），一致性由构造保证。因此接口设计 D13 的 build-id 核对不再需要，D13 要同步修改。
 - **userboot**（U8）
   - 今天的 `kernel/lib/userabi/userboot` 只是一个 ring 3 的 hello 程序。
-  - **部分落地（2026-09-26，`a53c5ec5`、`a2a5b2b5`、`ccc7847a`）**：userboot 已跑在 runtime 上。内核总是先起它，environ 带命令行里的 `userboot.*`（前缀白名单，内核不解析）；它读 `userboot.next`，把根 job 和 BootFS 原样转交给 next，再用 `process_spawn_boot` 起它；两个镜像的 cmdline 已删掉 `kernel.select.userboot`，改写 `userboot.next`。**还没做**：vmex（K18）、复制 BootFS 并换出 bootfs_x、用 launcher 起 next（今天用临时的 `process_spawn_boot`，K25 删它时要改这里），以及 process_exit(0)（今天起完 next 就停住）。
+  - **部分落地（2026-09-26，`a53c5ec5`、`a2a5b2b5`、`ccc7847a`）**：userboot 已跑在 runtime 上。内核总是先起它，environ 带命令行里的 `userboot.*`（前缀白名单，内核不解析）；它读 `userboot.next`，把根 job 和 BootFS 原样转交给 next，再用 `process_spawn_boot` 起它；两个镜像的 cmdline 已删掉 `kernel.select.userboot`，改写 `userboot.next`。**还没做**：vmex（K18）、复制 BootFS 并换出 bootfs_x、用 launcher 起 next（今天用临时的 `process_spawn_boot`，K25 删它时要改这里）。起完 next 后从 main 返回 0、由 runtime 调 process_exit 已做（`object: process 'userboot' … destroyed` 已出现在两个镜像的日志里）。
   - U8 把它换成真正的 userboot。内核总是先起它，processargs 带根 job、BootFS 和 vmex（SystemResource），environ 带命令行里的 `userboot.*`。
   - 顺序：复制 BootFS，用 vmex 把其中一份换成 bootfs_x；用 launcher 从 bootfs_x 起 `userboot.next`；交出的 VmoBootfs 是不可执行的那一份，连同根 job 和 vmex；然后关掉 bootfs_x，process_exit(0)。要是交出 bootfs_x，next 手里“不可执行的那份”其实带 Execute，而 Slice 的 rights 等于父句柄的 rights（K20）。U12 另外用 handle_duplicate 钉住 rights，两道防线各自成立。
   - `userboot.next` 默认是 init，U9 之后是 `bin/init`；dbg_1 设为 shell，U9 之后是 `bin/shell`。选项名同 Fuchsia（`zircon/kernel/lib/userabi/userboot/main.rs:14、27`），不支持 `userboot.root`。

@@ -419,3 +419,48 @@ cmdline 上方的注释改用英文写：gn format 会按空格重排注释，�
 - `tools/set.py` 的 `--userboot` 检查仍在 pack 响应文件里找 `--entry=kernel.select.userboot=`。镜像已经不写这一项，所以 `--userboot` 现在会报「没有这一项」。
   那个文件由构建会话负责，会和 `ours.userboot` → `next` 的改名一起改。
 - `docs/changes/` 与 `docs/repairs-20260830.md` 里的旧说法：前者只增不改，后者是只读归档。
+
+## userboot 启动 next 之后退出，而不是停住（2026-09-26）
+
+**文件**
+- `kernel/lib/userabi/userboot/userboot.cpp` — 读到 `userboot.next` 后，所有路径都从 `main()` 返回（成功返回 0，失败返回 1），由 runtime 调 `process_exit`；只有没有 next 的存活证明路径还会停住
+- `docs/design/260924/userspace-filesystem.md`、`docs/design/260923/userspace-interface.md` — 进度标注改为「已退出」
+
+**症状**
+userboot 启动 init/shell 之后永远在 `pause` 里空转。设计文档 U8 的顺序是「……然后 process_exit(0)」，验证判据也要求日志里出现
+`object: process 'userboot' … destroyed`，这两条之前都没有做到。
+
+**原因**
+userboot 把根 job 和 BootFS 交出去之后，手里什么也不剩，它的工作就结束了。继续留着它，只会白占一个进程、一个线程、一个地址空间，
+还会让「系统里还有谁」这个问题多出一个不做事的答案。上一条改动里让它停住的理由是「还没有进程结束的通知」，但这个理由只适用于
+**等待** next 结束（Zircon 的做法）；userboot 自己退出并不需要任何通知。
+
+**改法**
+改前：
+```cpp
+    static_cast<void>(ou::debug_line({"userboot: started ", to_str(next)}));
+    halt();
+}
+```
+改后：
+```cpp
+    static_cast<void>(ou::debug_line({"userboot: started ", to_str(next)}));
+    return 0;
+}
+```
+拿不到根 job、或者启动 next 失败时，同样 `return 1` 退出，不再停住：一个没法给下一个程序准备好条件的 userboot，也没有别的事可做。
+这和 Zircon 一致——它的 `main()` 记下错误后照样返回。
+userboot 的退出不会带走任何东西：next 挂在根 job 下，而不是 userboot 下，而且 userboot 原有的句柄已经全部交给了 next。
+没有 `userboot.next` 的存活证明镜像仍然停住，因为那里没有要交出的东西，留在 ring 3 本身就是它要证明的内容。
+
+**参照**
+- `Zircon userboot main.rs` 的 `main()`：`run()` 返回后（无论成败）进程结束。Zircon 在 `launch_program()` 之后还会等 next 结束；ours 没有等这一步，因为进程句柄上的 TERMINATED 还没做（设计 K23）。
+
+**验证**
+- 构建通过；clang-tidy 在这个文件上没有诊断。
+- QEMU dev：`userboot: started init` 之后是 `object: process 'userboot' (koid 26) destroyed`，init 照常起 shell，`init: shell says "pong"`。
+- QEMU dbg_1（60 秒）：`object: process 'userboot' (koid 26) terminated, retcode 0` → `destroyed`；shell 的 8 组检查全部通过，11 个探针被杀，对照探针 `none` 答 `unknown`。
+
+**故意没做**
+- 等 next 结束再退出（Zircon 的做法）：需要进程句柄上的 TERMINATED（K23）。
+- 让存活证明路径也退出：那条路径要证明的正是「从最后一次系统调用返回后，ring 3 还在继续运行」。

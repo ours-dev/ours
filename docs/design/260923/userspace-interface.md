@@ -244,7 +244,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 ### 3.2 P1 目标时序（内核 → userboot → init → shell）
 
-> 进度（2026-09-26）：内核 → userboot → init → shell 这条链已经通了。第 1 步中「environ 放 `userboot.*`」和第 2 步中「取 `userboot.next`、转交能力并启动 init」已落地，但只交出 JOB_DEFAULT 和 VMO_BOOTFS，启动用的是临时的 `process_spawn_boot`，userboot 起完 next 后停住而不是 `process_exit(0)`。其余句柄、`system/lib/launch` 都还没做。
+> 进度（2026-09-26）：内核 → userboot → init → shell 这条链已经通了。第 1 步中「environ 放 `userboot.*`」和第 2 步中「取 `userboot.next`、转交能力并启动 init」已落地，但只交出 JOB_DEFAULT 和 VMO_BOOTFS，启动用的是临时的 `process_spawn_boot`；userboot 起完 next 后以 0 退出。其余句柄、`system/lib/launch` 都还没做。
 
 1. **内核**：
    - 从常驻包建 BootFS VMO：只读，创建时整体提交，需要 `VmObjectPaged::write` 的内核缓冲版。
