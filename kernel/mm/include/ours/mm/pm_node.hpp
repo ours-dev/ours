@@ -24,7 +24,6 @@
 #include <ustl/collections/intrusive/slist.hpp>
 #include <ustl/collections/static_vec.hpp>
 #include <ustl/function/bind.hpp>
-#include <ustl/function/fn.hpp>
 #include <ustl/function/invoke.hpp>
 #include <ustl/iterator/traits.hpp>
 #include <ustl/mem/address_of.hpp>

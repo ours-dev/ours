@@ -12,7 +12,6 @@
 
 #include <gktl/canary.hpp>
 #include <ustl/collections/intrusive/list.hpp>
-#include <ustl/function/fn.hpp>
 #include <ustl/limits.hpp>
 #include <ustl/rc.hpp>
 #include <ustl/result.hpp>

@@ -171,9 +171,8 @@ auto VmObjectPaged::supply_pages(VirtAddr offset, usize size, VmPage::List *page
 ///
 /// m_mutex is a sleeping lock, not a spin lock, so a long copy holds up other
 /// users of this VMO but never a CPU with interrupts off.
-template <typename Copy>
 auto VmObjectPaged::read_write(VirtAddr const offset, usize const size, bool const will_write,
-                               Copy const &copy) -> Status {
+                               CopyPage const &copy) -> Status {
     m_canary.verify<Self>();
 
     if (!size) {

@@ -8,6 +8,7 @@
 #include <ours/sync/mutex.hpp>
 
 #include <logz4/log.hpp>
+#include <ustl/function/function.hpp>
 #include <ustl/result.hpp>
 
 namespace ours::mm {
@@ -64,12 +65,21 @@ class VmObjectPaged: public VmObject {
   private:
     auto commit_range_internal(VirtAddr offset, usize size, CommitOptions option) -> Status;
 
-    /// The page walk read(), write(), read_user() and write_user() share;
-    /// |copy| moves the bytes between one page and the caller's buffer and says
-    /// whether a user-side fault stopped it. Defined in the .cpp, the only place
-    /// it is instantiated.
-    template <typename Copy>
-    auto read_write(VirtAddr offset, usize size, bool will_write, Copy const &copy) -> Status;
+    /// Moves |chunk| bytes between |page| and the caller's buffer at |done|,
+    /// and says whether a user-side fault stopped it. |page| is writable even
+    /// for a read, so that one type serves both directions; the read copies
+    /// take it as `u8 const *`.
+    using CopyPage =
+        ustl::function::Function<auto(u8 *page, usize done, usize chunk)->UserCopyCaptureResult>;
+
+    /// The page walk read(), write(), read_user() and write_user() share.
+    ///
+    /// |copy| is a Function rather than a template parameter. As a template the
+    /// walk -- range check, cursor, retry loop, livelock check -- was
+    /// instantiated once per caller, four copies of the same code, to save one
+    /// indirect call per page when each call copies up to a page. The trade
+    /// ran the wrong way, so it is one walk and one indirect call now.
+    auto read_write(VirtAddr offset, usize size, bool will_write, CopyPage const &copy) -> Status;
 
     ustl::Arc<VmCowPages> m_cow_pages;
     sync::Mutex m_mutex;

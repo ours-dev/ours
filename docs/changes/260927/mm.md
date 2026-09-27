@@ -157,3 +157,62 @@ usercopy.test: ok -- 18 checks
 - `write_user()` 在对象层还没有调用方（没有 `sys_vmo_write`），目前只由 `usercopy.test` 调到。
 - 没有做 Zircon 的"部分长度返回"：失败就是失败，与 user_copy 其余接口的约定一致。
 - 缺页路径在建 cursor 前拿 VMO 的锁（第 1 条的第 3 步）还没做；那之前页树仍只由地址空间的锁间接保护，第 1 条不删。
+
+## VmObjectPaged::read_write 的 copy 参数由模板改为 ustl::function::Function（2026-09-27）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`：新增 `CopyPage` 别名，`read_write()` 不再是模板
+- `kernel/mm/vm_object_paged.cpp`：定义随之改签名，四个调用方不动
+- `kernel/mm/include/ours/mm/vm_mapping.hpp`、`pm_node.hpp`：删掉没人用的 `<ustl/function/fn.hpp>`
+
+**症状**
+没有功能问题，是代码体积问题。`read_write()` 是 `template <typename Copy>`，
+`read()`、`write()`、`read_user()`、`write_user()` 各传一个类型不同的 lambda，
+所以整段页遍历被实例化了四份：范围检查、cursor、重试循环、活锁检查、日志。
+
+**原因**
+模板换来的是每页省一次间接调用。可每次调用要拷贝的是最多一整页（4 KB），
+一次间接调用在它面前可以忽略。代价却是四份几乎一样的代码，这正是项目拒绝
+virtual 的理由（指令缓存）反过来落在了自己身上。这个模板是 `92da681e` 引入的，
+`8b84de4c` 加 user 拷贝时原样沿用，没有重新权衡。
+
+**改法**
+
+之前：
+
+```cpp
+template <typename Copy>
+auto read_write(VirtAddr offset, usize size, bool will_write, Copy const &copy) -> Status;
+```
+
+之后：
+
+```cpp
+using CopyPage =
+    ustl::function::Function<auto(u8 *page, usize done, usize chunk)->UserCopyCaptureResult>;
+
+auto read_write(VirtAddr offset, usize size, bool will_write, CopyPage const &copy) -> Status;
+```
+
+读和写的页指针原本一个是 `u8 const *`，一个是 `u8 *`。统一成 `u8 *` 之后，
+读方向的 lambda 照样写 `u8 const *` 参数，`u8 *` 能隐式转换过去，所以一个类型
+就能覆盖两个方向。四个 lambda 都只捕获一个指针（`dst`、`src`、`UserOutPtr`、
+`UserInPtr`），都在 24 字节以内。
+
+被否掉的方案是"函数指针 + `void *context`"，即线程入口和 Dpc 用的写法。
+能用，但每个调用方都得自己把缓冲区装进 context 再在回调里转回来。有了
+`Function`，这一步可以省掉，而且同样保证不分配。
+
+**参照**
+Zircon `VmObjectPaged::ReadWriteInternal()`，它的 copy 参数也是模板
+（`T copyfunc`）。这里没有照搬，理由见上。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。
+- QEMU 实测：两个镜像的 `usercopy.test` 都是 18/18，包括缺页重试和"读进同一个
+  VMO 的映射"这两项；无 panic。
+- 没有量化代码体积变化（未实测）。
+
+**故意没做**
+没把 `read_write()` 提到 `VmObject` 里共用。`VmObjectPhysical` 还不支持 read/write，
+现在只有一个使用者。
