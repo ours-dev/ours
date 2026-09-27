@@ -176,10 +176,93 @@ namespace {
     object::KernelHandle<object::VmoDispatcher> resident_bootfs;
     Rights resident_bootfs_rights;
 
+    /// The command-line options that belong to the userboot program rather
+    /// than to the kernel -- `userboot.next`, the program it starts next,
+    /// first among them.
+    ///
+    /// The prefix is an allow list for what of the image's command line
+    /// crosses into user space: the kernel's own options (`kernel.shell`,
+    /// `kernel.name`, ...) steer ring 0 and stay there, and a new kernel
+    /// option does not leak out by default because nobody remembered to
+    /// filter it. Zircon draws the same line by name -- its userboot parses
+    /// only `userboot.*` keys (parse_option() in
+    /// zircon/kernel/lib/userabi/userboot/main.rs) -- but after the fact,
+    /// because it reads the whole CMDLINE item out of the ZBI VMO it is
+    /// handed. Here the kernel forwards the tokens instead, as Zircon's
+    /// userboot once received the command line as its environment, so the
+    /// userboot program needs no boot-container parser of its own.
+    constexpr std::string_view USERBOOT_OPTION_PREFIX{"userboot."};
+
+    /// How many `userboot.*` tokens are forwarded, and how many bytes they
+    /// may take in the processargs message (each token plus its NUL).
+    ///
+    /// Bounded, because the message is built in a fixed buffer on this
+    /// thread's stack (make_bootstrap()). Generous for what exists -- today
+    /// there is exactly one such option -- without letting a runaway command
+    /// line decide the size of a kernel stack frame.
+    constexpr u32 MAX_USERBOOT_OPTIONS = 8;
+    constexpr usize USERBOOT_OPTIONS_BYTES = 384;
+
+    /// The `userboot.*` tokens of the image's command line, in order.
+    ///
+    /// Views into the boot package's Config item, which stays mapped for the
+    /// kernel's lifetime; they are only held until make_bootstrap() has
+    /// copied them into the message.
+    struct UserbootOptions {
+        std::string_view tokens[MAX_USERBOOT_OPTIONS];
+        u32 count{0};
+    };
+
+    /// Picks the `userboot.*` tokens out of the image's command line.
+    ///
+    /// Not a boot::BootOptions entry, although that is where the kernel's
+    /// options are parsed: nothing here is parsed. The kernel neither knows
+    /// which `userboot.*` keys exist nor what their values mean -- that is
+    /// the userboot program's to decide -- so it relays whole tokens, and
+    /// BootOptions' rule of one name, one default and one grammar per option
+    /// has nothing to hold on to.
+    ///
+    /// A token that does not fit is dropped and named, not truncated, and the
+    /// rest are still forwarded: a truncated `userboot.next=` would start a
+    /// program nobody asked for, while a dropped one leaves userboot on its
+    /// defaults with the reason in the log -- as boot::BootOptions ignores a
+    /// value it cannot take rather than refusing to boot.
+    auto collect_userboot_options() -> UserbootOptions {
+        UserbootOptions options;
+        auto const package = boot::boot_package();
+        if (package.is_err()) {
+            return options;
+        }
+        auto const cmdline = package.unwrap().command_line();
+        if (cmdline.is_none()) {
+            return options;
+        }
+
+        usize bytes = 0;
+        cmdline.value().for_each_token([&options, &bytes](std::string_view const token) -> void {
+            if (!token.starts_with(USERBOOT_OPTION_PREFIX)) {
+                return;
+            }
+            if (options.count == MAX_USERBOOT_OPTIONS ||
+                bytes + token.size() + 1 > USERBOOT_OPTIONS_BYTES) {
+                log::error("userabi: dropping {}: no room for it in the first process's "
+                           "processargs",
+                           token);
+                return;
+            }
+            options.tokens[options.count++] = token;
+            bytes += token.size() + 1;
+        });
+        return options;
+    }
+
     /// The first process's bootstrap channel: the end the process gets in
     /// %rdi, with its processargs message already queued on it (design 3.3).
     ///
-    /// The message carries argv = {|program|} and the startup handles:
+    /// The message carries argv = {|program|}, the environment
+    /// collect_userboot_options() finds -- the image's `userboot.*` options,
+    /// which is how the userboot program learns `userboot.next` -- and the
+    /// startup handles:
     ///
     ///   JobDefault  the root job, with its default rights -- what processes
     ///               are created under, so the first process is the one that
@@ -238,12 +321,21 @@ namespace {
             infos[count++] = handle_info(HandleType::VmoBootfs, 0);
         }
 
-        // The header, two handle_infos and a program name of at most 63
-        // bytes (boot::BootOptions keeps it in 64) come to 108 bytes.
-        u8 message[128];
+        // Sized to hold the most this can ever write, so that encoding cannot
+        // fail for want of room: the header, two handle_infos, a program name
+        // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
+        // and the environment collect_userboot_options() has already bounded.
+        constexpr usize MESSAGE_BYTES =
+            sizeof(ProcArgs) + 2 * sizeof(u32) + 64 + USERBOOT_OPTIONS_BYTES;
+        u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};
-        if (auto const status = encode_process_args(message, {infos, count}, args, {}, {}, &length);
+        auto const environ = collect_userboot_options();
+        for (auto index = u32(0); index < environ.count; ++index) {
+            log::info("userabi: passing {} to {}", environ.tokens[index], program);
+        }
+        if (auto const status = encode_process_args(message, {infos, count}, args,
+                                                    {environ.tokens, environ.count}, {}, &length);
             Status::Ok != status) {
             log::error("userabi: could not encode the processargs: {}", to_string(status));
             return {};

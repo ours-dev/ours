@@ -177,3 +177,70 @@ Zircon `zircon/system/utest/core/vmo/vmo.cc` 对 `zx_vmo_read` 的同类用例�
 
 **故意没做**
 - 读出整个文件的内容并逐字节核对：没有独立的参照来源；在 K20 的 Slice 与 K21 的映射落地后，可以把同一个文件经映射读出来与 `vmo_read` 对比。
+
+## 内核把 cmdline 中的 `userboot.*` 选项作为 environ 交给第一个进程（2026-09-26）
+
+**文件**
+- `kernel/lib/obi/include/obi/command_line_view.hpp` — 新增 `for_each_token()`，按顺序遍历 cmdline 的每个 token
+- `kernel/lib/userabi/src/userboot.cpp` — 新增 `collect_userboot_options()`；`make_bootstrap()` 把挑出的 token 写进 processargs 的 environ，消息缓冲按上限算大小
+
+**症状**
+第一个进程拿不到 cmdline 里的任何选项：processargs 的 environ 是空的。这使 Zircon 式的 `userboot.next` 做不出来——
+`userboot.next=<name>` 由 **userboot 程序**读取，决定它下一个启动谁，而 cmdline 只在内核手里。
+于是只能由内核直接用 `kernel.select.userboot=init` 启动 init，userboot 程序本身从未运行，init 顶替了它。
+
+**原因**
+这不是某一行写错了，而是缺了一条通道：内核→用户之间只有 processargs 这一条消息，它只带根 job、BootFS 和程序名。
+选项属于谁，就应该由谁来解析。`kernel.*` 选项控制的是 ring 0，由 `boot::BootOptions` 解析；
+`userboot.*` 选项控制的是 userboot 程序，内核既不知道有哪些 key，也不知道 value 的含义。
+所以内核能做的只有**原样转发**。在此之前没有转发的地方，这类选项就无处可放。
+
+**改法**
+改前（`make_bootstrap()`）：
+```cpp
+// The header, two handle_infos and a program name of at most 63
+// bytes (boot::BootOptions keeps it in 64) come to 108 bytes.
+u8 message[128];
+u32 length = 0;
+std::string_view const args[] = {program};
+if (auto const status = encode_process_args(message, {infos, count}, args, {}, {}, &length);
+```
+改后：
+```cpp
+constexpr usize MESSAGE_BYTES =
+    sizeof(ProcArgs) + 2 * sizeof(u32) + 64 + USERBOOT_OPTIONS_BYTES;
+u8 message[MESSAGE_BYTES];
+u32 length = 0;
+std::string_view const args[] = {program};
+auto const environ = collect_userboot_options();
+...
+if (auto const status = encode_process_args(message, {infos, count}, args,
+                                            {environ.tokens, environ.count}, {}, &length);
+```
+`collect_userboot_options()` 用新加的 `CommandLineView::for_each_token()` 遍历镜像 cmdline，
+只收以 `userboot.` 开头的 token，最多 8 个、合计（含 NUL）不超过 384 字节。消息缓冲按这些上限算出大小（492 字节），
+所以编码不会因为空间不够而失败。
+
+几处取舍：
+- **前缀白名单，而不是整条 cmdline**：内核自己的选项留在 ring 0，以后新增的 `kernel.*` 选项默认不会泄露到用户态，
+  不需要有人记得去过滤它。
+- **不做成 `BootOptions` 的一项**：`BootOptions` 的规则是每个选项有唯一的名字、默认值和语法，而这里一个都没有——内核什么也不解析，
+  只是转交整个 token。
+- **放不下就丢弃并记日志，不截断**：截断的 `userboot.next=` 会启动一个没人要的程序；丢弃则让 userboot 退回默认行为，原因写在日志里。
+  这和 `BootOptions` 遇到取不了的值时忽略它、而不是拒绝启动的做法一致。
+- **否掉的方案：像现在的 Zircon 那样，把整个启动容器作为 `VmoBootdata` 交给 userboot，由它自己找 CMDLINE 解析。**
+  这更贴近今天的 Zircon，但要把 OBI 解析搬进用户态；而且 ours 内核里的 OBI 目前没有现成的 VMO，改动大得多。
+
+**参照**
+- `Zircon userboot main.rs` 的 `parse_option()` / `get_options()`：userboot 只认 `userboot.next`、`userboot.root`、`userboot.crc`，
+  是从交给它的 ZBI VMO 里的 CMDLINE 项读出来的。ours 按同样的名字划边界，只是改由内核事先挑出来转交。
+- Zircon 早期的 userboot 是从 processargs 的环境变量里拿到内核 cmdline 的，本条走的是这条老路。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/userboot-next` 通过；clang-tidy 在改动行上没有新的诊断（`text_` 命名那条是原有的）。
+- QEMU（dev 镜像）：临时在 cmdline 里加 `userboot.next=probe kernel.x=1`（验证后已还原），日志里只出现
+  `userabi: passing userboot.next=probe to init`，`kernel.x=1` 和 `kernel.select.userboot=init` 都没有转发；init 起 shell、ping/pong 照常。
+
+**故意没做**
+- 让 userboot 程序读取 `userboot.next` 并启动下一个程序：那是下一步，需要把 userboot 改成链接 runtime。
+- 去掉 `kernel.select.userboot`：Zircon 保留了它，用来选第一个进程跑哪个 userboot 程序（eng 镜像换成测试版），ours 也保留。

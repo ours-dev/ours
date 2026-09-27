@@ -114,6 +114,25 @@ class CommandLineView final {
         return ustl::NONE;
     }
 
+    /// Calls |visit| with every whitespace-separated token, in order.
+    ///
+    /// For a reader that cannot name its keys in advance and so cannot ask
+    /// value() for them one at a time. The one so far is userabi, which
+    /// forwards every `userboot.*` token to the first process without
+    /// interpreting any of them (make_bootstrap() in
+    /// //kernel/lib/userabi/src/userboot.cpp): which keys exist is the
+    /// userboot program's business, not the kernel's.
+    template <typename Visit>
+    auto for_each_token(Visit &&visit) const -> void {
+        for (usize cursor = 0; cursor < text_.size();) {
+            auto const token = next_token(cursor);
+            if (token.empty()) {
+                break;
+            }
+            visit(token);
+        }
+    }
+
   private:
     explicit CommandLineView(std::string_view text) : text_(text) {}
 
