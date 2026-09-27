@@ -207,3 +207,55 @@ Zircon 开启了 libc++ hardening，空访问会被断言拦下；本项目没�
 
 **故意没做**
 内核其它地方的 `std::optional` 没有顺手一起换，每处单独处理。
+
+## 更正：`0x7fffffffe000` 的缺页是 shell 自测故意制造的，不是 bug（2026-09-27）
+
+**文件**
+无代码改动，只更正本文件"让用户拷贝能捕获缺页"一节末尾的猜测，以及
+`260926/mm.md`、`260926/x86-mm.md` 里探针日志的来历。
+
+**症状**
+那几节的探针日志显示，每次启动都有内核态的用户拷贝在 `0x7fffffffe000` 上缺页，而且解析不了
+（`NotFound`，原因为 `Absent`）。当时猜测是"用户栈布局或某个调用方传错了地址"，但没有追下去。
+
+**原因**
+地址是 shell 故意传的。`examples/shell/shell.cpp:573`：
+
+```cpp
+constexpr auto UNMAPPED = ours::VirtAddr{0x7fff'ffff'e000};
+```
+
+它在用户半区里，所以能通过 `is_user_range()` 的范围检查，但没有映射，拷贝一碰就缺页、解析失败，
+最后走数据缺页恢复返回 `InvArgs`。shell 用它测试每个接受用户指针的系统调用，是否都能把
+"在范围内但没映射"的指针正确拒绝。与之配对的 `KERNEL` 地址测的是另一条路径：被范围检查
+直接拒绝，根本不会发起拷贝。
+
+**改法**
+无。确认方法：在 `x86_pfe_handler` 的"内核态访问用户地址、解析失败、转去拷贝的恢复点"分支里，
+临时加一行日志，记录地址、原因、状态和 ip，然后启动 dev。每一行都紧跟着一条 shell 自测输出，
+一一对应：
+
+```
+DIAG unresolved user-copy fault: addr=0x7fffffffe000 cause=0x2 status=4 ...
+shell: debug_write(unmapped) = InvArgs
+DIAG unresolved user-copy fault: addr=0x7fffffffe000 cause=0x2 status=4 ...
+shell: channel_write(from unmapped) = InvArgs
+DIAG unresolved user-copy fault: addr=0x7fffffffe000 cause=0x3 status=4 ...
+shell: channel_read(into unmapped) = InvArgs
+...
+DIAG unresolved user-copy fault: addr=0xa00000 cause=0x1 status=20 ...
+```
+
+最后一条的 `0xa00000` 是 vDSO，对应"读进 vDSO"那项测试（`AccessDenied`）。探针用完已撤掉，
+`fault.cpp` 与提交版本一致。
+
+前两次探针没复现，是因为启动时没往 stdin 送命令，shell 的坏指针自测没跑到那一步。
+
+**参照**
+无。
+
+**验证**
+如上，dev 启动一次，DIAG 行与 shell 自测一一对应。
+
+**故意没做**
+shell 自测本身不改。
