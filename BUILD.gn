@@ -144,6 +144,11 @@ group("default") {
     # each other and against Zircon's golden bytes.
     "//system/lib/runtime:tests",
 
+    # init's `ours.autorun.boot` parsing: which argv a value becomes. The
+    # test itself is named, not a tests group beside init: that file asserts
+    # a user toolchain, which the default one is not and the host one is.
+    "//system/service/init/test:autorun($host_toolchain)",
+
     # A user program on the runtime's start-up code, built to be linked and
     # inspected rather than run; nothing packages it. The toolchain is named
     # because the program exists only in the user one.

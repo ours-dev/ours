@@ -1,0 +1,16 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Host-side tests. These link googletest and run on the build machine: how
+# an `ours.autorun.boot` value splits into argv is string handling alone, so
+# it is checked here rather than by booting an image with each spelling.
+executable("autorun") {
+  testonly = true
+  sources = [ "autorun_test.cpp" ]
+  deps = [
+    "//system/service/init:autorun",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+}

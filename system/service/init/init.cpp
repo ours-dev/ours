@@ -38,6 +38,7 @@
 #include <string_view>
 
 #include <bootfs/format.hpp>
+#include <init/autorun.hpp>
 #include <ou/channel.hpp>
 #include <ou/debug.hpp>
 #include <ou/handle.hpp>
@@ -72,19 +73,6 @@ auto halt() -> void {
 constexpr ou::Str SHELL{"shell"};
 constexpr ou::Str PING{"ping"};
 
-/// The option naming a program to start once the shell is up, as
-/// `ours.autorun.boot=<name>[+arg...]`: a BootFS file name and its
-/// arguments, `+` standing for the spaces a kernel command line cannot hold
-/// inside one word. Zircon's `zircon.autorun.boot` has the same shape
-/// (docs/reference/kernel/kernel_cmdline.md); its value is a path, since
-/// Zircon's programs live in a namespace, where here they are BootFS names.
-constexpr std::string_view AUTORUN_OPTION{"ours.autorun.boot"};
-
-/// How many words -- the name and its arguments -- an autorun command may
-/// have. More is refused rather than cut short: a truncated argv runs a
-/// command nobody wrote.
-constexpr u32 MAX_AUTORUN_WORDS = 8;
-
 auto to_str(std::string_view const text) -> ou::Str {
     return {text.data(), text.size()};
 }
@@ -115,38 +103,19 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
         ou::debug_line({"init: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
 }
 
-/// Starts the autorun |command| under |job|: its first `+`-separated word is
-/// the BootFS name, and all of them, the name included, are its argv.
-///
-/// Empty words are skipped, so `a++b` and a trailing `+` mean what they look
-/// like -- as in LaunchAutorun() in Fuchsia's console-launcher main.cc,
-/// which splits on `+` with kSplitWantNonEmpty and spawns the words as argv
-/// directly, no shell in between.
+/// Starts the autorun |command| under |job|, split by
+/// init::AutorunCommand::parse(): its first `+`-separated word is the BootFS
+/// name, and all of them, the name included, are its argv.
 ///
 /// The program gets argv and nothing else: no job, since nothing it could be
 /// asked to do yet starts processes, and no BootFS, which init keeps. What it
 /// prints goes to the debug log like everyone else's.
-auto start_autorun(ours::HandleValue const job, std::string_view command) -> ours::Status {
+auto start_autorun(ours::HandleValue const job, std::string_view const command) -> ours::Status {
     using ours::Status;
 
-    std::string_view words[MAX_AUTORUN_WORDS];
-    u32 count = 0;
-    while (!command.empty()) {
-        auto const end = command.find('+');
-        auto const word = command.substr(0, end);
-        if (!word.empty()) {
-            if (count == MAX_AUTORUN_WORDS) {
-                return Status::OutOfRange;
-            }
-            words[count++] = word;
-        }
-        if (end == std::string_view::npos) {
-            break;
-        }
-        command.remove_prefix(end + 1);
-    }
-    if (count == 0) {
-        return Status::InvArgs;
+    init::AutorunCommand parsed;
+    if (auto const status = init::AutorunCommand::parse(command, &parsed); status != Status::Ok) {
+        return status;
     }
 
     // The header and the words. The words and their NULs take no more than
@@ -155,7 +124,7 @@ auto start_autorun(ours::HandleValue const job, std::string_view command) -> our
     constexpr usize MESSAGE_BYTES = sizeof(ours::ProcArgs) + ours::USER_OPTIONS_BYTES;
     u8 message[MESSAGE_BYTES];
     u32 length = 0;
-    if (auto const status = ours::encode_process_args(message, {}, {words, count}, {}, {}, &length);
+    if (auto const status = ours::encode_process_args(message, {}, parsed.words(), {}, {}, &length);
         status != Status::Ok) {
         return status;
     }
@@ -172,7 +141,7 @@ auto start_autorun(ours::HandleValue const job, std::string_view command) -> our
         static_cast<void>(ou::handle_close(bootstrap_there));
         return written;
     }
-    return ou::process_spawn_boot(job, to_str(words[0]), bootstrap_there);
+    return ou::process_spawn_boot(job, to_str(parsed.name()), bootstrap_there);
 }
 
 /// Starts the shell under |job| with |peer| -- the far end of the channel
@@ -254,7 +223,8 @@ auto main(int, char **) -> int {
     // A failure is reported and nothing more; it is the command that failed,
     // not the system, and the shell is already running.
     // The last one on the command line wins (runtime::ProcessArgs::option()).
-    if (auto const autorun = runtime::process_args().option(AUTORUN_OPTION); !autorun.empty()) {
+    if (auto const autorun = runtime::process_args().option(init::AUTORUN_OPTION);
+        !autorun.empty()) {
         static_cast<void>(ou::debug_line({"init: autorun ", to_str(autorun)}));
         if (auto const status = start_autorun(job, autorun); status != Status::Ok) {
             report("init: starting the autorun command = ", status);
