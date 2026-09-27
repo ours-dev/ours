@@ -48,10 +48,10 @@ auto com1_write_byte(u8 byte) -> void {
 }
 } // namespace
 
-auto prof::arch::capture_sample_context() -> std::optional<prof::SampleContext> {
+auto prof::arch::capture_sample_context() -> ustl::Option<prof::SampleContext> {
     auto *frame = ours::irq::current_frame();
     if (frame == nullptr) {
-        return std::nullopt;
+        return ustl::NONE;
     }
     return prof::SampleContext{
         .pc = frame->ip,

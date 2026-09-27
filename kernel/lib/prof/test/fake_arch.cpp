@@ -8,7 +8,7 @@ namespace {
 bool g_pmu_present = false;
 u32 g_current_cpu = 0;
 u64 g_timestamp = 0;
-std::optional<prof::SampleContext> g_next_context;
+ustl::Option<prof::SampleContext> g_next_context;
 int g_pmu_start_calls = 0;
 int g_pmu_stop_calls = 0;
 std::string g_debug_output;
@@ -20,7 +20,7 @@ auto reset() -> void {
     g_pmu_present = false;
     g_current_cpu = 0;
     g_timestamp = 0;
-    g_next_context = std::nullopt;
+    g_next_context = ustl::NONE;
     g_pmu_start_calls = 0;
     g_pmu_stop_calls = 0;
     g_debug_output.clear();
@@ -38,7 +38,7 @@ auto set_timestamp(u64 ts) -> void {
     g_timestamp = ts;
 }
 
-auto set_next_sample_context(std::optional<prof::SampleContext> context) -> void {
+auto set_next_sample_context(ustl::Option<prof::SampleContext> context) -> void {
     g_next_context = context;
 }
 
@@ -69,7 +69,7 @@ auto prof::arch::stop_pmu_sampling() -> void {
     ++g_pmu_stop_calls;
 }
 
-auto prof::arch::capture_sample_context() -> std::optional<prof::SampleContext> {
+auto prof::arch::capture_sample_context() -> ustl::Option<prof::SampleContext> {
     return g_next_context;
 }
 

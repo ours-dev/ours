@@ -243,7 +243,7 @@ auto Sampler::on_scheduler_tick() -> void {
     }
 
     auto const context = arch::capture_sample_context();
-    if (!context.has_value()) {
+    if (context.is_none()) {
         return;
     }
     record_sample(*context);

@@ -5,8 +5,9 @@
 
 #include <prof/sampler.hpp>
 
-#include <optional>
 #include <string>
+
+#include <ustl/option.hpp>
 
 /// Test-only stand-in for the per-arch `prof::arch` seam
 /// (`prof/include/prof/arch.hpp`), so `prof::Sampler`'s own logic can be
@@ -21,7 +22,7 @@ auto reset() -> void;
 auto set_pmu_present(bool present) -> void;
 auto set_current_cpu(u32 cpu) -> void;
 auto set_timestamp(u64 ts) -> void;
-auto set_next_sample_context(std::optional<prof::SampleContext> context) -> void;
+auto set_next_sample_context(ustl::Option<prof::SampleContext> context) -> void;
 
 auto pmu_start_calls() -> int;
 auto pmu_stop_calls() -> int;

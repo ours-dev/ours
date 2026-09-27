@@ -3,9 +3,8 @@
 #ifndef PROF_ARCH_HPP
 #define PROF_ARCH_HPP 1
 
-#include <optional>
-
 #include <ours/status.hpp>
+#include <ustl/option.hpp>
 
 namespace prof {
 struct SampleContext;
@@ -31,9 +30,9 @@ namespace arch {
     auto stop_pmu_sampling() -> void;
 
     /// Capture the interrupted context on this CPU (tick-fallback source).
-    /// Returns nullopt when no trap frame is active.
+    /// Returns none when no trap frame is active.
     [[nodiscard]]
-    auto capture_sample_context() -> std::optional<SampleContext>;
+    auto capture_sample_context() -> ustl::Option<SampleContext>;
 
     /// The CPU executing on entry, used to pick this CPU's sample buffer and to
     /// tag records. Cheap; callable from interrupt context.
