@@ -552,9 +552,10 @@ namespace task {
 
         /// Modelled on Linux's alloc_lock (task_lock()), which only holds off
         /// preemption. Here it is taken IrqSave all the same: that is the rule
-        /// for every spin lock in the tree, and this one is held around frame
-        /// allocation (PmNode::Current::alloc_frames()), which the page fault
-        /// path reaches with interrupts already off.
+        /// for every spin lock in the tree, and one of its holders --
+        /// PmNode::Current::apply_thread_policy(), reading the memory policy --
+        /// runs on the frame-allocation path, which the page fault path
+        /// reaches with interrupts already off.
         sync::SpinLock m_resource_lock;
 
         /// Under the PI lock. That is the lock every path that changes the

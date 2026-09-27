@@ -847,3 +847,64 @@ for (usize order = 0; n > 0; order += 1, n >>= 1) {
 **故意没做**
 没检查 n 的最高位对应的 order 是否超过 `MAX_FRAME_ORDER`。超过时 `alloc_frames()` 会返回 `InvArgs`，
 已分配的块随之被释放，行为是对的。
+
+## 线程的 resource_lock 只包住读取内存策略，不再包住整个分配（2026-09-27）
+
+PmNode 结构整理第 1 步的第二项。
+
+**文件**
+- `kernel/mm/pm_node.cpp`：三个 `PmNode::Current::alloc_*` 去掉 `Guard{current_thread->get_resource_lock()}`；
+  `apply_thread_policy()` 只在拷贝策略指针时持锁
+- `kernel/include/ours/task/thread.hpp`：`m_resource_lock` 的注释跟着改
+
+**症状**
+潜伏：`Gaf::NoFail` 且带 `Gaf::DirectReclaim` 的分配，在快路径失败后会进入 `alloc_frames_slowpath()`，
+在那里调用 `task::Thread::Current::reschedule()`。此时仍持着线程的 `resource_lock`，这是一把关中断的
+自旋锁，等于在自旋锁下调度。回收和压缩目前都是空实现，这种分配也还没有人发起，所以触发不到。
+
+**原因**
+这把锁照的是 Linux 的 `task_lock()`（`alloc_lock`），用途是防止别的线程在读取时替换
+`task->mempolicy`。它要保护的只有"读策略"这一个动作，却被三个不带节点的分配入口从头持到尾，
+覆盖了整个分配：快路径、慢路径、等待重试。这样做有两个坏处：
+- 分配期间一直关中断、持自旋锁，慢路径不能睡眠，却有一条会调度的分支；
+- 同一线程的其它资源操作在分配期间都被挡住。
+
+**改法**
+
+之前：
+
+```cpp
+auto PmNode::Current::alloc_frames(...) {
+    apply_thread_policy(gaf);
+    ...
+    Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
+    return local_node->alloc_frames(gaf, order, fallback);   // 整个分配都在锁下
+}
+```
+
+之后：
+
+```cpp
+auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
+    if constexpr (MEMORY_ALLOCATION_POLICY) {
+        auto const policy = [] {
+            auto *const thread = task::Thread::Current::get();
+            Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+            return thread->memory_allocation_state().get_policy();   // 只拷贝 Arc
+        }();
+        ...
+```
+
+`MEMORY_ALLOCATION_POLICY` 关闭时这把锁一次都不会拿，而当前配置正是关闭的。
+
+**参照**
+Linux `get_task_policy()` 读取的是 `current->mempolicy`；修改它的 `do_set_mempolicy()` 在 `task_lock()`
+下替换指针。分配本身（`alloc_pages()` → `__alloc_pages()`）从不持 `task_lock()`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。新代码在 `if constexpr` 的分支里，当前配置下
+  只做类型检查，运行时不会执行。
+- QEMU 实测：两个镜像的 `usercopy.test` 都是 18/18，无异常。
+
+**故意没做**
+`apply_thread_policy()` 里的 `switch` 仍然是空的。

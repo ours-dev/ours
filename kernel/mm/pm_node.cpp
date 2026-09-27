@@ -706,8 +706,20 @@ constinit decltype(PmNode::Current::DYNAMIC_CPU_TO_NODE) PmNode::Current::DYNAMI
 auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
     if constexpr (MEMORY_ALLOCATION_POLICY) {
         using Kind = MemoryAllocationPolicy::Kind;
-        auto &mem_state = task::Thread::Current::memory_allocation_state();
-        if (auto policy = mem_state.get_policy()) {
+
+        // The thread's resource lock covers reading the policy and nothing
+        // more: it is what another thread takes to replace it, as Linux's
+        // task_lock() guards task->mempolicy. It used to be held by every
+        // node-less allocation entry around the whole allocation, slow path
+        // included -- a spin lock with interrupts off, held across a path that
+        // may reschedule() for Gaf::NoFail. Copying the Arc out is all that
+        // needs it.
+        auto const policy = [] {
+            auto *const thread = task::Thread::Current::get();
+            Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};
+            return thread->memory_allocation_state().get_policy();
+        }();
+        if (policy) {
             switch (policy->kind()) {
                 case Kind::Bind:
                     break;
@@ -755,9 +767,6 @@ auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallbac
     }
     local_node->m_canary.verify<Self>();
 
-    auto const current_thread = task::Thread::Current::get();
-    Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
-
     return local_node->alloc_frames(gaf, order, fallback);
 }
 
@@ -776,9 +785,6 @@ auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fa
     }
     local_node->m_canary.verify<Self>();
 
-    auto const current_thread = task::Thread::Current::get();
-    Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
-
     return local_node->alloc_frames_fragment(gaf, n, fallback);
 }
 
@@ -796,9 +802,6 @@ auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallba
         return ustl::err(Status::BadState);
     }
     local_node->m_canary.verify<Self>();
-
-    auto const current_thread = task::Thread::Current::get();
-    Guard<sync::SpinLock, IrqSave> guard{current_thread->get_resource_lock()};
 
     return local_node->alloc_frames_bulk(gaf, n, fallback);
 }
