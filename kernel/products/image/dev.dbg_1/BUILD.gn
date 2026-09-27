@@ -33,10 +33,10 @@ kernel_package("ours") {
     # Built against dbg.0 it was a byte-for-byte policy twin of kernel.dev.
     "//kernel/products/bin:vmours(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1)",
 
-    # 这个镜像的第一个用户程序：示例
+    # 这个镜像里 userboot 启动的程序：示例
     # shell。它不在共享零件里，因为「跑哪个程序」
-    # 是镜像的属性 —— 由本镜像声明它，再由下面的 cmdline
-    # 指名它。工具链后缀同上：
+    # 是镜像的属性 —— 由本镜像声明它，再由下面 cmdline 的
+    # userboot.next 指名它。工具链后缀同上：
     # 不写就会在内核工具链里编出一个 -mcmodel=kernel
     # 的“用户程序”。
     "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
@@ -49,17 +49,18 @@ kernel_package("ours") {
   ]
 }
 
-# 镜像级内核 cmdline：指名第一个用户进程跑哪个程序。
+# The image-level kernel cmdline. `userboot.next=shell` names the program
+# userboot starts next.
 #
-# 内核不认
-# //examples，只认这个名字（kernel/lib/userabi/src/userboot.cpp 的
-# USERBOOT_OPTION，对标 Zircon 的
-# kernel.select.userboot）。不写这一行，内核就跑 默认的 userboot
-# —— 那个只证明「能进 ring 3 并答一次调用」的程序。
+# The first user process is always userboot (kernel.select.userboot is left
+# at its default). It hands the root job and the BootFS on to the shell, so
+# the shell starts with exactly what it had when the kernel started it
+# directly. Zircon's userboot.next; the mechanism is described at the same
+# place in //kernel/products/image/dev.
 #
-# 值是 BootFS 里的文件名，不是 label：kernel_elf_binary("shell")
-# 设了 has_patches = false，所以它落成一个裸的 `shell`
-# 文件而不是 `shell/` 子树。
+# The value is a file name in the BootFS, not a label:
+# kernel_elf_binary("shell") sets has_patches = false, so it lands as a bare
+# `shell` file rather than a `shell/` subtree.
 #
 # `kernel.shell=true`: the kernel shell is off by default (see
 # //kernel/products/image/dev), and this image had it before the option
@@ -70,7 +71,7 @@ kernel_cmdline("cmdline") {
     "//products/*",
   ]
   args = [
-    "kernel.select.userboot=shell",
+    "userboot.next=shell",
     "kernel.shell=true",
   ]
 }

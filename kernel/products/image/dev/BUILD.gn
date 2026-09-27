@@ -31,8 +31,8 @@ if (defined(ours.with)) {
     # 它不在共享零件里，因为「包里有哪些程序」是镜像的属性。
     "//examples/shell",
 
-    # The first system service. It is what this image starts (see the
-    # cmdline below), and it starts the shell above with
+    # The first system service. It is what userboot starts in this image
+    # (userboot.next in the cmdline below), and it starts the shell above with
     # process_spawn_boot -- which is why the shell is still packaged.
     "//system/service/init",
   ]
@@ -78,21 +78,24 @@ kernel_package("ours") {
   }
 }
 
-# 镜像级内核 cmdline：指名第一个用户进程跑哪个程序 ——
-# 默认 init，它拿着根 job 再去起 shell（P0
-# 的第一条垂直切片，docs/design/260923/userspace-interface.md 第 5
-# 节）。 ours.userboot overrides the name (see _userboot at the top of this
-# file).
+# The image-level kernel cmdline. `userboot.next` names the program userboot
+# starts next: init by default, which takes the root job userboot hands it
+# and starts the shell with it (P0's first vertical slice,
+# docs/design/260923/userspace-interface.md section 5). ours.userboot
+# overrides the name (see _userboot at the top of this file).
 #
-# 内核不认
-# //examples，只认这个名字（kernel/lib/userabi/src/userboot.cpp 的
-# USERBOOT_OPTION，对标 Zircon 的
-# kernel.select.userboot）。不写这一行，内核就跑 默认的 userboot
-# —— 那个只证明「能进 ring 3 并答一次调用」的程序。
+# The first user process is always userboot -- kernel.select.userboot is left
+# unset, so it takes its default -- and init no longer runs in its place. The
+# kernel does not parse `userboot.next`: it forwards every `userboot.*` token
+# as an environment string in userboot's processargs
+# (collect_userboot_options() in kernel/lib/userabi/src/userboot.cpp), and
+# the userboot program reads it (kernel/lib/userabi/userboot/userboot.cpp),
+# as Zircon's userboot reads its own userboot.next. Without this line
+# userboot only says hello and halts.
 #
-# 值是 BootFS 里的文件名，不是 label：kernel_elf_binary("shell")
-# 设了 has_patches = false，所以它落成一个裸的 `shell`
-# 文件而不是 `shell/` 子树。
+# The value is a file name in the BootFS, not a label:
+# kernel_elf_binary("shell") sets has_patches = false, so it lands as a bare
+# `shell` file rather than a `shell/` subtree.
 #
 # `kernel.shell=true` starts the kernel shell on COM1 (the option is off by
 # default, as in Zircon; see ours::boot::BootOptions::shell()). This image is
@@ -104,7 +107,7 @@ kernel_cmdline("cmdline") {
     "//products/*",
   ]
   args = [
-    "kernel.select.userboot=$_userboot",
+    "userboot.next=$_userboot",
     "kernel.shell=true",
   ]
 }

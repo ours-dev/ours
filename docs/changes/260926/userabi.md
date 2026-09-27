@@ -313,3 +313,51 @@ auto main(int, char **) -> int {
 - 改两个镜像的 cmdline：放在下一条单独提交。
 - 支持 `+` 分隔的参数、`userboot.root`：还没有需求。
 - 内核 `launch()` 的日志前缀仍是 `userboot:`（例如 `userboot: found 'init'`）。现在 userboot 已经是一个独立的程序，这个前缀容易让人误读，但它属于内核侧的命名，本条不动。
+
+## dev、dev.dbg_1 两个镜像改用 `userboot.next`，userboot 固定先跑（2026-09-26）
+
+**文件**
+- `kernel/products/image/dev/BUILD.gn` — cmdline 从 `kernel.select.userboot=$_userboot` 改为 `userboot.next=$_userboot`（`_userboot` 变量不动），注释改写
+- `kernel/products/image/dev.dbg_1/BUILD.gn` — cmdline 从 `kernel.select.userboot=shell` 改为 `userboot.next=shell`，注释改写
+
+**症状**
+两个镜像都让内核直接启动 init（dev）或 shell（dbg_1），第一个用户进程不是 userboot。前两条改动已经让 userboot 能读取并执行 `userboot.next`，但镜像还没用上它。
+
+**原因**
+`kernel.select.userboot` 在 Zircon 里选的是**第一个进程跑哪个 userboot 程序**（正常是 `userboot`，eng 镜像换成测试版），而不是「系统跑哪个服务」。
+ours 以前借它来指名 init/shell，等于让 init 顶替了 userboot 的位置。结果是：凡是本该由 userboot 做的事（选下一个程序、分发启动句柄），都没有位置可放，
+只能被拆散到内核和 init 里去做。
+
+**改法**
+改前（dev）：
+```gn
+args = [
+  "kernel.select.userboot=$_userboot",
+  "kernel.shell=true",
+]
+```
+改后：
+```gn
+args = [
+  "userboot.next=$_userboot",
+  "kernel.shell=true",
+]
+```
+dbg_1 同理改为 `"userboot.next=shell"`。两边都不写 `kernel.select.userboot`，取默认的 `userboot`。
+`_userboot` 变量名和 `ours.userboot` 构建参数暂时不动，留给构建会话统一改名为 `next`。
+cmdline 上方的注释改用英文写：gn format 会按空格重排注释，把中文段落排出多余的空格（旧注释里的「就跑 默认的」就是这样来的）。
+
+**参照**
+- `Zircon lib/boot-options/options.inc` 的 `kernel.select.userboot`：只选 userboot 程序本身。
+- `Zircon userboot main.rs` 的 `userboot.next`：决定 userboot 接下来启动谁；`integration_tests.cc` 也是这样在 cmdline 里指名测试程序的。
+
+**验证**
+- `prebuilt/ninja/ninja -C out/userboot-next` 通过；`gn format --dry-run` 两个文件都干净。
+- QEMU dev：`userabi: passing userboot.next=init to userboot` → `userboot: starting init` → `userboot: started init` → `init: started with the root job`
+  → `init: spawned shell` → `init: shell says "pong"` → `init: shell closed its channel`。
+- QEMU dev.dbg_1（跑 60 秒）：`userboot: starting shell` → `userboot: started shell` → shell 的 8 组检查全部 `checks passed`（channel、handle transfer、
+  handle quota、bad-pointer、vmo_read、bootfs、handle_duplicate、libc），fault_probe 逐个被杀，没有 panic。shell 拿到的根 job 和 BootFS 与以前被内核直接启动时相同。
+
+**故意没做**
+- 改 `ours.userboot` / `tools/set.py --userboot` / `build/product/ours_args.gni`：由构建会话统一改名为 `next`。
+- `options.hpp` 与内核 `userboot_init()` 中「由镜像指名第一个程序」的注释：放在下一条。
