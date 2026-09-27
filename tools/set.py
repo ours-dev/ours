@@ -7,6 +7,7 @@ Usage:
   tools/set.py <product>.<arch> --variant lto[,ubsan-trap]
   tools/set.py <product>.<arch> --clang-dir <path>  # override the clang tool dir
   tools/set.py <product>.<arch> --args kernel_shell_enabled=false  # any GN arg
+  tools/set.py <product>.<arch> --out out/mine --with //examples/foo --userboot foo
   tools/set.py --list                 # list valid products and arches
 
 This is the equivalent of `fx set <product>.<board>`: it writes args.gn
@@ -32,6 +33,15 @@ rewrites it from scratch on every run: an argument added to the file by hand
 argument such as kernel_shell_enabled (//kernel/kernel_params.gni) is only
 really selectable if it can be said here.  The value is GN syntax, so a string
 keeps its quotes: --args 'sched_normal_discipline="fair"'.
+
+--with and --userboot are the `fx set --with` counterpart: they say which user
+programs the dev image carries and which one userboot starts, so that several
+sessions can each build and boot their own image from their own --out
+directory. They are written into args.gn as the `ours` argument bundle
+(//build/product/ours_args.gni). --with REPLACES the image's default program
+list rather than adding to it -- ninja only builds what the default target can
+reach, so a program left out of the list is a program left out of the build --
+and takes plain labels (//examples/foo); the image adds the user toolchain.
 """
 
 # PEP 604 annotations (`str | None`) are evaluated at definition time without
@@ -43,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +68,21 @@ VALID_CPUS = {
 }
 
 DEFAULT_PRODUCT = "bringup"
+
+# The image that reads the `ours` bundle, and the two files `gn gen` writes for
+# it that the --userboot check reads: the pack response file, which carries the
+# image's effective `kernel.select.userboot=` entry, and the whitelist of
+# user-visible BootFS names gathered from its deps' metadata. Reading these
+# instead of re-deriving names from labels keeps one source of truth: whatever
+# the build decided the image contains is what gets checked, defaults included.
+OURS_IMAGE_RSP = "//kernel/products/image/dev:_obi.dev.rsp"
+OURS_IMAGE_WHITELIST = "//kernel/products/image/dev:ours.user_visible"
+USERBOOT_ENTRY = "--entry=kernel.select.userboot="
+
+# A userboot target is a BootFS file name spliced into the kernel command line,
+# where whitespace would split it into a second option and a quote would break
+# the GN string that carries it.
+BOOTFS_NAME = re.compile(r"[A-Za-z0-9._+/-]+")
 
 
 def list_products() -> list[str]:
@@ -115,9 +141,86 @@ def parse_target(spec: str) -> tuple[str, str]:
     return product, arch
 
 
+def ours_bundle(with_labels: list[str], userboot: str) -> list[str] | None:
+    """Render --with/--userboot as the args.gn lines of the `ours` bundle.
+
+    Returns None when neither flag was given, so the bundle stays at its empty
+    default and every image keeps its own program list. Only the fields that
+    were given are written: args.gn replaces the default scope wholesale, and
+    the image fills a missing field with its own default, so writing a field
+    the user did not ask for would silently pin a value that is not ours to
+    choose.
+
+    Raises ValueError on input GN would misread: a label must be absolute (a
+    relative one would resolve against the image's BUILD.gn, not against the
+    caller's intent), and a userboot name must be a bare BootFS name.
+    """
+    if not with_labels and not userboot:
+        return None
+    for label in with_labels:
+        if not label.startswith("//") or '"' in label:
+            raise ValueError(f"--with '{label}' is not an absolute GN label (//path[:name])")
+    if userboot and not BOOTFS_NAME.fullmatch(userboot):
+        raise ValueError(f"--userboot '{userboot}' is not a BootFS file name")
+
+    lines = ["ours = {"]
+    if with_labels:
+        quoted = ", ".join(f"\"{label}\"" for label in with_labels)
+        lines.append(f"  with = [ {quoted} ]")
+    if userboot:
+        lines.append(f"  userboot = \"{userboot}\"")
+    lines.append("}")
+    return lines
+
+
+def check_userboot(gn: Path, out_dir: Path) -> str | None:
+    """Return an error if userboot's target is not among the image's programs.
+
+    Runs after `gn gen`, because both halves of the question are answers the
+    build gives: which name the image's command line hands userboot (whatever
+    --userboot said, or the image's default), and which user programs the image
+    actually carries (the whitelist its deps' metadata produce, which --with
+    shaped). A mismatch is an image that boots into "no such file" -- caught
+    here rather than in QEMU.
+    """
+    result = subprocess.run(
+        [str(gn), "outputs", str(out_dir), OURS_IMAGE_RSP, OURS_IMAGE_WHITELIST],
+        cwd=str(ROOT), capture_output=True, text=True)
+    if result.returncode != 0:
+        return (f"cannot locate the image files for the --userboot check:\n"
+                f"{result.stderr.strip()}")
+    rsp_path, whitelist_path = (out_dir / p for p in result.stdout.split())
+
+    userboot = None
+    for line in rsp_path.read_text().splitlines():
+        if line.startswith(USERBOOT_ENTRY):
+            userboot = line[len(USERBOOT_ENTRY):]
+    if userboot is None:
+        return f"{rsp_path} has no {USERBOOT_ENTRY}<name> entry"
+
+    programs = whitelist_path.read_text().split()
+    if userboot not in programs:
+        return (f"userboot would start '{userboot}', but the image only carries "
+                f"{', '.join(programs)}.\n"
+                f"Add its label with --with, or name one of these with --userboot.")
+    return None
+
+
 def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
-              tool_dir: str | None, extra_args: list[str]) -> int:
-    """Write args.gn and run gn gen."""
+              tool_dir: str | None, extra_args: list[str],
+              ours: list[str] | None = None) -> int:
+    """Write args.gn and run gn gen.
+
+    With an `ours` bundle, the result is also checked (check_userboot); on
+    failure the directory is put back the way it was -- the previous args.gn
+    regenerated, or a directory this run created removed -- so a bad
+    --with/--userboot pair never leaves behind a configured build of an image
+    that cannot boot.
+    """
+    if ours is not None and any(a.partition("=")[0].strip() == "ours" for a in extra_args):
+        print("error: --with/--userboot and --args ours=... both set the `ours` bundle; "
+              "use one", file=sys.stderr)
+        return 1
     if arch not in VALID_CPUS:
         print(f"error: unknown CPU '{arch}'.  Valid values: {', '.join(VALID_CPUS)}",
               file=sys.stderr)
@@ -128,6 +231,9 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
               file=sys.stderr)
         return 1
 
+    created_out_dir = not out_dir.exists()
+    args_gn = out_dir / "args.gn"
+    previous_args = args_gn.read_text() if args_gn.is_file() else None
     out_dir.mkdir(parents=True, exist_ok=True)
 
     lines = [
@@ -149,8 +255,9 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
             print(f"error: --args '{arg}' is not <name>=<value>", file=sys.stderr)
             return 1
         lines.append(f"{name.strip()} = {value.strip()}")
+    if ours is not None:
+        lines.extend(ours)
 
-    args_gn = out_dir / "args.gn"
     args_gn.write_text("\n".join(lines) + "\n")
 
     triple = VALID_CPUS[arch]
@@ -171,10 +278,38 @@ def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
     cmd = [str(gn), "gen", str(out_dir), "--export-rust-project"]
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(ROOT))
+    if result.returncode == 0 and ours is not None:
+        error = check_userboot(gn, out_dir)
+        if error is not None:
+            print(f"error: {error}", file=sys.stderr)
+            _restore(gn, out_dir, created_out_dir, previous_args)
+            return 1
     if result.returncode == 0:
         _refresh_debug_menu()
         print(f"Build:   ninja -C {out_dir} //products/{product}:{product}")
     return result.returncode
+
+
+def _restore(gn: Path, out_dir: Path, created: bool, previous_args: str | None) -> None:
+    """Undo a configuration that failed the --userboot check.
+
+    A directory this run created is removed outright. An existing one gets its
+    previous args.gn back and is regenerated, because build.ninja already
+    reflects the rejected arguments and ninja would otherwise keep building
+    them until something next touched args.gn.
+    """
+    if created:
+        shutil.rmtree(out_dir)
+        print(f"Removed {out_dir}; nothing was configured.", file=sys.stderr)
+        return
+    args_gn = out_dir / "args.gn"
+    if previous_args is None:
+        args_gn.unlink()
+    else:
+        args_gn.write_text(previous_args)
+    subprocess.run([str(gn), "gen", str(out_dir), "--export-rust-project"],
+                   cwd=str(ROOT), capture_output=True)
+    print(f"Restored the previous configuration of {out_dir}.", file=sys.stderr)
 
 
 def _refresh_debug_menu() -> None:
@@ -221,6 +356,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--args", action="append", default=[], metavar="NAME=VALUE",
                         help="extra GN build argument written into args.gn "
                              "(repeatable; the value is GN syntax)")
+    parser.add_argument("--with", dest="with_labels", action="append", default=[],
+                        metavar="LABEL",
+                        help="user program the dev image carries, as a plain label "
+                             "(//examples/foo); repeatable, and replaces the image's "
+                             "default list rather than adding to it")
+    parser.add_argument("--userboot", default="", metavar="NAME",
+                        help="BootFS name of the program userboot starts first "
+                             "(default: the image's own choice)")
     args = parser.parse_args(argv)
 
     if args.list or args.target is None:
@@ -244,7 +387,12 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = ROOT / args.out
     else:
         out_dir = ROOT / "out" / f"{product}.{arch}"
-    return set_build(product, arch, variants, out_dir, tool_dir, args.args)
+    try:
+        ours = ours_bundle(args.with_labels, args.userboot)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return set_build(product, arch, variants, out_dir, tool_dir, args.args, ours)
 
 
 if __name__ == "__main__":

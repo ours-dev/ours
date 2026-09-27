@@ -177,3 +177,91 @@ scope 型构建参数的用法参照本仓库 `build/config/BUILDCONFIG.gn` 的 
 - 没有照 Zircon 给 dbg_1 加 `kernel.pmm.alloc-random-should-wait` 这类压力测试开关：
   那些开关要内核侧先有读它们的代码，ours 目前只认 `kernel.select.userboot`、`kernel.shell`、`kernel.name`，
   已记入 `docs/repairs/260926/build.md`。
+
+## `tools/set.py` 加 `--with`/`--userboot`，并在 gn gen 后检查 userboot 目标确实在镜像里（2026-09-26）
+
+**文件**
+- `tools/set.py` — 新增 `--with`（可重复）、`--userboot` 两个开关，拼成 `ours = {...}` 写进 args.gn；gn gen 之后检查 userboot 的目标是否在镜像的程序里，不在就报错并撤销这次配置
+
+**症状**
+上一条立了 `ours` 参数包，但只能手写进 args.gn；而 `tools/set.py` 每次运行都整份重写 args.gn，
+手写的内容下次一跑就没了，所以参数实际上选不了。另外 `with` 和 `userboot` 可以互相矛盾：
+`--with //examples/shell` 换掉了默认列表但 userboot 仍默认启动 init，这样的镜像能编出来，
+进 QEMU 才发现第一个进程找不到文件。
+
+**原因**
+args.gn 归 set.py 所有（它的文档里写了这一点，`--args` 就是为此存在的），所以任何要"按目录选择"的构建参数
+都得能从 set.py 说出来。矛盾检查则必须在 gn gen 之后做：两个问题的答案都是构建给的——
+userboot 会被交给哪个名字（`--userboot` 或镜像默认值），镜像实际带了哪些用户程序（deps 的
+`bootfs_user_visible` metadata 汇出的白名单，`--with` 决定了它）。在 set.py 里从 label 猜 BootFS 文件名
+是另起一份真相，label 的最后一段不一定是产物名。
+
+改前：
+
+```python
+def set_build(product: str, arch: str, variants: list[str], out_dir: Path,
+              tool_dir: str | None, extra_args: list[str]) -> int:
+    ...
+    result = subprocess.run(cmd, cwd=str(ROOT))
+    if result.returncode == 0:
+        _refresh_debug_menu()
+```
+
+**改法**
+改后：
+
+```python
+def check_userboot(gn: Path, out_dir: Path) -> str | None:
+    result = subprocess.run(
+        [str(gn), "outputs", str(out_dir), OURS_IMAGE_RSP, OURS_IMAGE_WHITELIST], ...)
+    rsp_path, whitelist_path = (out_dir / p for p in result.stdout.split())
+    # rsp 里的 --entry=kernel.select.userboot=<name> 是镜像生效的 userboot 目标，
+    # 白名单是镜像实际带的用户程序；前者必须在后者里。
+    ...
+
+    result = subprocess.run(cmd, cwd=str(ROOT))
+    if result.returncode == 0 and ours is not None:
+        error = check_userboot(gn, out_dir)
+        if error is not None:
+            print(f"error: {error}", file=sys.stderr)
+            _restore(gn, out_dir, created_out_dir, previous_args)
+            return 1
+```
+
+取舍：
+
+- **只写用户给了的字段**：args.gn 里的 scope 整个替换默认值，镜像对缺省字段用自己的默认值兜底。
+  set.py 若替用户把 `userboot = "init"` 也写上，就是悄悄钉死了一个不该由它决定的值。
+- **文件路径问 GN 要**（`gn outputs <dir> <label>`），不在 set.py 里写死 `gen/...` 路径；
+  set.py 只认两个 label：`dev:_obi.dev.rsp` 和 `dev:ours.user_visible`。
+- **失败就撤销**：这次运行新建的目录整个删掉；已存在的目录恢复原 args.gn 并重新 gn gen——
+  build.ninja 已经按被拒的参数生成，不重新 gen 的话 ninja 会一直按它构建，直到有人再动 args.gn。
+  否掉的方案是"报错但留着 args.gn"：那会留下一个配置好了、却注定起不来的构建目录。
+- 输入先做两条便宜的检查：`--with` 必须是绝对 label（相对 label 会相对镜像的 BUILD.gn 解析，
+  不是用户以为的位置）；`--userboot` 必须是裸 BootFS 名（空白会把它切成第二个 cmdline 选项）。
+  和 `--args ours=...` 同时出现直接报错。
+
+**参照**
+Fuchsia `fx set --with <label>`（`//tools/devshell/set`，把 label 写入 args.gn 的
+`legacy_universe_package_labels` 等参数）。`kernel.select.userboot` 对标 Zircon 同名选项；
+检查的依据是 `kernel/kernel_package.gni` 从 `bootfs_user_visible` metadata 生成的白名单，
+这也是内核给用户态的 BootFS 的准入名单。
+
+**验证**
+- 不带新开关重跑 `set.py bringup.x86 --out out/ours-args`：args.gn 与改前逐字一致。
+- `--with //examples/shell --userboot shell`：args.gn 写出 `ours = { with = [...] userboot = "shell" }`。
+- `--with //examples/shell`（userboot 仍默认 init）写到新目录：报
+  `userboot would start 'init', but the image only carries userboot, vdso, shell.`，目录被删除。
+  同一组参数写到已有目录：报同样的错，args.gn 恢复且与原文件 diff 为空。
+- 相对 label、与 `--args ours=` 冲突：建目录之前就报错，不留目录。
+- 端到端：`out/ours-shell`（只带 shell、userboot=shell）完整构建后 `user-x86/obj/system/service/init`
+  **不存在**（默认目录里存在），init 确实没被编译。两个目录的 `kernel.dev.obi` 同时在 QEMU 里跑 40 秒
+  （各自的 WORK 目录）：默认镜像 kernel package 8 个文件、日志有 `init: started with the root job`，
+  shell 是 koid 40；定制镜像 7 个文件、没有 init，shell 是 koid 26（第一个进程）。两者都跑完
+  `shell: libc checks passed`，零 panic。
+
+**故意没做**
+- 没有给 set.py 写单元测试：仓库里还没有 set.py 的测试框架，上面的场景都是对真实 GN 跑的。
+- 检查写死了 dev 镜像的两个 label：`ours` 目前只有 dev 读（见上一条）。以后如果别的镜像也读 `ours`，
+  这里应改成从产品的镜像列表里找，而不是再加一对 label。
+- 不改 `scripts/qemu_boot.py`：并行跑本来就只需要各设一个 `WORK`，它已经支持。
