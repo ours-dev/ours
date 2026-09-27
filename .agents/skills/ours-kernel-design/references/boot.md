@@ -1,0 +1,74 @@
+# Boot chain and userspace startup
+
+The chain is GRUB (Multiboot2), bootshim, physload, physboot, vmours.
+
+## How bring-up work is ordered
+
+Follow the runtime execution order from `start_kernel` (`kernel/top/main.cpp`)
+and fix whatever the boot reaches next. A known defect further down the boot
+path is recorded in `docs/repairs` and deferred, however severe; jumping
+between modules is what the user wants to avoid.
+
+## phys
+
+- physload owns the entire phys runtime: console, BootMem, Aspace, ELF loaders,
+  panic, print, OBI parsing. Modules are dynamically linked against it, GRUB
+  style, so the system has exactly one of each. The point is one copy of that
+  machine code shared by physboot and physload, not the freedom to swap builds.
+- Modules share raw C++ struct layouts with physload, which is only safe when
+  both come from the same build. Every module carries a PT_INTERP build id
+  (`kernel/phys/kernel_elf_interp.gni`), and `ModuleLoader` refuses a module
+  whose id differs from physload's own. Keep that check. Zircon uses a fixed
+  entry symbol and relative-only relocation; this tree deliberately keeps
+  descriptor-based entry and GOT symbol binding, and borrows only the build-id
+  pairing.
+- `PHYS_EXPORT` marks the module ABI; adding a symbol to it is one
+  `PHYS_EXPORT`, never a source file copied into a module.
+- A module declares its entry with `PHYS_MODULE("name", init_fn)`, never a
+  fixed entry symbol or ELF entry address.
+- Modules are GN `loadable_module`s on `default_shared_library_configs`, never
+  `kernel_elf_binary`. Package them with `--strip-debug`, never
+  `--strip-sections`: the loader needs the section headers.
+- Treat the existing `kernel/phys` structure as provisional and check it
+  against this shape before extending it.
+- OBI bakes its item and string tables at build time and cannot be appended to
+  at run time (unlike Zircon's ZBI), so some shim facts travel in a
+  side-channel struct.
+
+## Image layout
+
+physboot loads vmours as one contiguous allocation and the kernel later frees
+the `.init*` region, so those sections sit at the tail of the loadable image
+(`kernel/kernel.ld`: `... .bss, .init.text, .init.rodata, .init.data,
+.ccrt_init`, with `__init_end == __executable_end`). Don't move `.bss` back
+behind them.
+
+## Boot options
+
+The bootloader command line is a phys-stage input only: it reaches
+`ours::phys::BootOptions` (`kernel.phys.next`, `kernel.name`, `aslr.disabled`)
+and stops there. vmours reads its options from the OBI Config item through
+`ours::boot::boot_package()`. Never carry the command line in `Handoff`; a new
+kernel option belongs in the OBI container.
+
+## userboot and init
+
+userboot is always the first user process, and it starts init: Zircon's
+`kernel.select.userboot` picks the userboot binary, and `userboot.next` names
+what it starts. Today the tree conflates the two: the dev image sets
+`kernel.select.userboot=init`, dev.dbg_1 sets `=shell`, and the kernel launches
+that program directly. Treat this as a known bug, not the design. Say "what
+userboot starts next", and never name a field `userboot` when its value is the
+next program.
+
+## Filesystems
+
+Everything plugs into one Linux-style VFS. A filesystem library only parses,
+looks up and reads; an adapter exposes it as the VFS's file-operation set.
+Don't build per-filesystem directory trees or servers. Design documents that
+describe `bootfs::Tree` or init serving `/boot` predate this decision.
+
+## Debug switches
+
+Debug-gated code keys off `KERNEL_DEBUG_LEVEL` (enabled when non-zero). No
+parallel `OURS_DEBUG`.
