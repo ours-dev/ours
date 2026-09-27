@@ -130,3 +130,125 @@ PROBE fault#4: user=false addr=0x7fffffffe000 ip=0xffffff884005f4fc if=1 locks=0
 - 没有改前导本身。让异常路径不抬抢占计数也许更干净，但那是 kernel/task 的设计决定，
   而且会影响每一个异常向量，不是修 VMO 锁顺手能带的。
 - `docs/repairs/260925/mm.md` 第 1 条**没有删**：三步只完成了第一步。
+
+---
+
+## 2. 不可睡的缺页改为停机，不再"拒绝"（2026-09-26）
+
+**文件**
+- `kernel/arch/x86/mm/fault.cpp` — `x86_handle_page_fault()` 对不可睡的缺页记下原因后停机；可睡时无条件开中断
+
+**症状**
+
+潜伏。第 1 条之后，不可睡的缺页会带着缺少 `VmfCause::MaySleep` 的 cause 进 VM，由
+`VmAspace::page_fault_internal()` 拒绝。对 user_copy 来说，拒绝会一路变成系统调用返回 `InvArgs`：
+一个内核 bug（持着自旋锁、关着抢占或中断去碰可分页内存）被悄悄地翻译成了"用户传了坏指针"。
+
+**原因**
+
+解析任何缺页都可能阻塞：`VmAspace` 的锁是 Mutex，第 3 步之后 VMO 的锁也是，补页还可能等回收。
+所以从已经承诺"不睡"的上下文里，根本不存在"正确地解析"这个选项，只有"打破承诺"和"不解析"。
+而"不解析"里又分两种：调用方事先知道自己在锁里、准备好了重试的（Zircon 的 capture 模式），
+和调用方根本没想到会缺页的——后者就是 bug。
+
+对照 Zircon 的 `x86_pfe_handler()`（`zircon/kernel/arch/x86/exceptions_c.cc`）：
+
+- 线程设了 `page_fault_resume` 且没置 `RUN_FAULT_HANDLER` 位（capture 模式），**完全不进 VM**，
+  把缺页地址和标志塞进 rdx/rcx，跳回恢复点；
+- 否则 `DEBUG_ASSERT(arch_num_spinlocks_held() == 0)`，开中断，进 VM；
+- VM 这一侧 `PageFaultInternal()` 第一行就是 `lockdep::AssertNoLocksHeld()`。
+
+也就是说 Zircon 的 VM 里没有"不能睡就拒绝"这个分支，意外的原子缺页一律当 bug 断言。
+
+**改法**
+
+改前：
+
+```cpp
+auto const sleepable = may_sleep_resolving(frame);
+if (sleepable) {
+    cause |= VmfCause::MaySleep;
+    arch::local_irq_enable();
+}
+
+auto const status = task::Thread::Current::page_fault(addr, cause);
+
+if (sleepable) {
+    arch::local_irq_disable();
+}
+```
+
+改后：
+
+```cpp
+if (!may_sleep_resolving(frame)) {
+    auto const &preemption = task::Thread::Current::preemption_state();
+    log::error("page fault at {:#x} from a context that may not sleep: user={} if={} "
+               "spinlocks={} preempt={}", ...);
+    if (!supervisor) {
+        panic("ring-3 page fault on a CPU whose lock or preemption counts say atomic");
+    }
+    return Status::BadState;
+}
+
+cause |= VmfCause::MaySleep;
+arch::local_irq_enable();
+
+auto const status = task::Thread::Current::page_fault(addr, cause);
+
+arch::local_irq_disable();
+```
+
+比 Zircon 更严的一处：Zircon 只用 `DEBUG_ASSERT`，release 构建里编译掉之后，意外的原子缺页会照常进 VM、
+在自旋锁里去拿 Mutex，可能直接挂死。这里 release 构建也停机。两种"更软"的做法都更糟：
+断言被编译掉会挂死；拒绝会把 bug 藏成一个 `InvArgs`。
+
+停机分两路，是为了保住最有用的现场：
+
+- **内核态缺页**只打一行"为什么不能睡"，然后返回错误，并在 user_copy 的 resume 分支之前返回。
+  `faults.cpp` 的 `x86_dispatch_exception()` 对内核态的失败缺页调 `panic_exception()`，
+  它打印 CR2 和全部寄存器——比这里直接 `panic()` 有用得多。
+- **用户态缺页**不可能正当地走到这里：用户代码不持内核锁、中断总是开着。走到了只能说明
+  这颗 CPU 的计数已经坏了，是内核自己的错，直接 `panic()`，不该杀一个无辜的进程了事。
+
+**顺带纠正一个说法**
+
+此前对比 Zircon 时，我说"Zircon 在进 VM 前把抢占也打开了，我们解析全程不可抢占、会拖延迟"。
+这是错的。Zircon 的前导 `int_handler_start()`（`zircon/kernel/include/kernel/interrupt.h`）
+同时做了 `PreemptDisable()` 和 `EagerReschedDisable()`；#PF 里只 `PreemptReenable()`，
+eager 计数留着。而按 `EagerReschedDisable()` 自己的注释，eager 计数非零时本地抢占只记账、
+不执行，但**阻塞仍然允许**。所以 Zircon 的缺页解析同样不可抢占，只是能睡。本内核只降抢占计数
+而不动 eager 的话，`is_preemption_enabled()` 照样为假，行为上没有差别，所以不做。
+
+**参照**
+
+`Zircon x86_pfe_handler()`、`VmAspace::PageFaultInternal()`、`int_handler_start()`、
+`PreemptionState::EagerReschedDisable()`；`Linux do_user_addr_fault()` 里
+`faulthandler_disabled()` → `bad_area_nosemaphore()`。
+
+**验证**
+
+构建通过；`clang-format` 与 `clang-tidy -p out/bringup.x86` 跑过，改动行无新告警。
+
+两个镜像各跑 50 秒，零错误零断言，日志里没有一条 "may not sleep"——和第 1 条探针测到的
+"启动里所有缺页都可睡"一致。
+
+停机分支启动里走不到，用临时探针强行把第一次内核态缺页判为不可睡，`kernel.dev.dbg_1.obi`：
+
+```
+page fault at 0x7fffffffe000 from a context that may not sleep: user=false if=1 spinlocks=0 pre...
+Unhandled page fault: vector=14, error_code=0x0
+  cr2=0x7fffffffe000
+  rip=0xffffff884005f7cc (+0x5f7cc)  cs=0x10  rsp=0xffffff880405c928
+  rax=... rbx=... （全部寄存器）
+```
+
+先是原因，再是 `panic_exception()` 的完整现场，没有走到 user_copy 的 resume。探针已撤掉。
+**用户态那一路的 `panic()` 未实测**：要让它触发，得先把每 CPU 计数弄坏。
+
+**故意没做**
+
+- `VmfCause::MaySleep` 和 `page_fault_internal()` 里的拒绝还在。它们现在对硬件缺页已经多余
+  （能进 VM 的一定可睡），但 `soft_fault()` 仍然会被那个拒绝挡住。下一条一起处理：
+  删掉标志和拒绝，换成"调用方没持锁"的断言，`soft_fault()` 共用它。
+- capture 模式的拷贝接口不做，树里还没有在锁里做 user copy 的调用方。

@@ -3,6 +3,7 @@
 #include <ours/arch/x86/feature.hpp>
 #include <ours/mm/fault.hpp>
 #include <ours/mm/vmm.hpp>
+#include <ours/panic.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/thread.hpp>
 
@@ -109,11 +110,12 @@ namespace {
     /// whether a reschedule *request* may be sent eagerly to other CPUs, not
     /// whether this thread may block, and the preamble raises it too.
     ///
-    /// Answering no does not refuse the fault. It resolves the way every fault
-    /// resolved before this: interrupts off, and only down paths that do not
-    /// sleep. What answering yes buys is the right for VmAspace's lock to
-    /// become a mutex, so that the fault path and VmObject's own operations
-    /// finally serialise against each other on the VMO's page tree.
+    /// Answering no is fatal: x86_handle_page_fault() stops the kernel rather
+    /// than resolve the fault, because resolving any fault may block and there
+    /// is no way to do that without breaking the promise the faulting context
+    /// made. What answering yes buys is the right for VmAspace's lock to be a
+    /// mutex, so that the fault path and VmObject's own operations serialise
+    /// against each other on the VMO's page tree.
     auto may_sleep_resolving(arch::IrqFrame const *const frame) -> bool {
         if (frame->flags.get<arch::ArchCpuState::IF>() == 0) {
             return false;
@@ -198,14 +200,51 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // likewise only maps PFEX_I to VMM_PF_FLAG_INSTRUCTION.
     cause |= (error_code & PAGE_FAULT_INSTRUCTION) ? VmfCause::Instruction : VmfCause::None;
 
-    // Call the top level page fault handling routine, with interrupts on
-    // wherever that is allowed.
+    // A fault from a context that may not sleep is a kernel bug, and stops the
+    // kernel here rather than being resolved.
+    //
+    // Resolving any fault may block: VmAspace's lock is a mutex, the VMO's lock
+    // beneath it will be one too, and supplying a page can wait on reclaim.
+    // There is no way to do that from a context that has promised not to sleep,
+    // only ways to break the promise. So what reaches here without the right to
+    // sleep is kernel code that touched pageable memory while holding a spin
+    // lock, with preemption off, or with interrupts masked.
+    //
+    // Zircon draws the same line in x86_pfe_handler(). A user copy that has to
+    // run under a lock says so up front, through the *_capture_faults variants,
+    // and its fault never reaches the VM at all; anything else must be able to
+    // block, which it DEBUG_ASSERTs through arch_num_spinlocks_held(). Here the
+    // check stays in release builds and is made fatal, because both softer
+    // answers are worse. An assertion compiled out lets the fault go on to take
+    // a mutex under a spin lock and hang. And the refusal this path used to
+    // give turned the bug into a quiet InvArgs from whichever system call
+    // happened to be copying -- hiding it exactly where it most needed saying.
+    //
+    // The line logged here is the *why*. For a ring-0 fault the error return
+    // makes faults.cpp stop the kernel through panic_exception(), which prints
+    // the registers; the user-copy resume further down must not see it. A ring-3
+    // fault cannot legitimately get here -- user code holds no kernel lock and
+    // runs with interrupts on -- so one that does means this CPU's counts are
+    // already corrupt, and that is the kernel's to die of, not the process's.
+    if (!may_sleep_resolving(frame)) {
+        auto const &preemption = task::Thread::Current::preemption_state();
+        log::error("page fault at {:#x} from a context that may not sleep: user={} if={} "
+                   "spinlocks={} preempt={}",
+                   addr, !supervisor, frame->flags.get<arch::ArchCpuState::IF>(),
+                   sync::SpinLock::num_held_cpu(), preemption.preemption_disabled_count());
+        if (!supervisor) {
+            panic("ring-3 page fault on a CPU whose lock or preemption counts say atomic");
+        }
+        return Status::BadState;
+    }
+
+    // Call the top level page fault handling routine, with interrupts on.
     //
     // Resolving a fault is not a short piece of work -- it walks the address
-    // space, it allocates, and it is about to start taking a sleepable lock on
-    // the VMO -- and running all of it with interrupts masked delays every
-    // timer tick and IPI on this CPU for as long as it takes. The gate cleared
-    // IF on the way in, so nothing else will turn them back on.
+    // space, it allocates, and it takes sleepable locks -- and running all of it
+    // with interrupts masked delays every timer tick and IPI on this CPU for as
+    // long as it takes. The gate cleared IF on the way in, so nothing else will
+    // turn them back on.
     //
     // They go off again before returning rather than being left on. Everything
     // above this frame -- the dispatch in faults.cpp and the stub that called
@@ -213,24 +252,26 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     // at the end restores the faulting context's own IF from the frame either
     // way, so the window is exactly this call and no wider.
     //
+    // Preemption is left as the exception preamble set it. Zircon's handler
+    // does call PreemptReenable() here, but leaves the eager-reschedule count
+    // the preamble also raised, and by its own definition a non-zero eager
+    // count keeps local preemption deferred. So resolution is not preemptible
+    // there either; it may only block, which a raised count never forbids.
+    // Dropping our preemption count alone would change no behaviour, since
+    // is_preemption_enabled() still reads the eager count.
+    //
     // Zircon's x86_pfe_handler() enables interrupts at the same point and for
     // the same reason; Linux's do_user_addr_fault() does it before it takes
     // mmap_lock.
-    auto const sleepable = may_sleep_resolving(frame);
-    if (sleepable) {
-        // Told to the resolver as well, not only to the CPU. VmAspace's lock is
-        // a mutex, and this is the only place that can tell whether taking it
-        // is allowed -- the resolver is architecture-independent and never sees
-        // the frame or this CPU's lock depth.
-        cause |= VmfCause::MaySleep;
-        arch::local_irq_enable();
-    }
+    //
+    // MaySleep tells the architecture-independent resolver the same thing it
+    // told the CPU: the resolver never sees the frame or this CPU's lock depth.
+    cause |= VmfCause::MaySleep;
+    arch::local_irq_enable();
 
     auto const status = task::Thread::Current::page_fault(addr, cause);
 
-    if (sleepable) {
-        arch::local_irq_disable();
-    }
+    arch::local_irq_disable();
 
     if (Status::Ok == status) {
         return Status::Ok;
