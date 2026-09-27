@@ -204,17 +204,12 @@ namespace {
         "ours.autorun.",
     };
 
-    /// How many user-space tokens are forwarded, and how many bytes they may
-    /// take in the processargs message (each token plus its NUL).
-    ///
-    /// Bounded, because the message is built in a fixed buffer on this
-    /// thread's stack (make_bootstrap()). Generous for what exists -- today
-    /// there are two such options -- without letting a runaway command line
-    /// decide the size of a kernel stack frame.
-    constexpr u32 MAX_USER_OPTIONS = 8;
-    constexpr usize USER_OPTIONS_BYTES = 384;
-
     /// The user-space tokens of the image's command line, in order.
+    ///
+    /// At most MAX_USER_OPTIONS of them, USER_OPTIONS_BYTES in all
+    /// (<ours/process_args.hpp>): the message is built in a fixed buffer on
+    /// this thread's stack (make_bootstrap()), and the programs that pass
+    /// the options on size theirs from the same bound.
     ///
     /// Views into the boot package's Config item, which stays mapped for the
     /// kernel's lifetime; they are only held until make_bootstrap() has

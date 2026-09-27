@@ -149,13 +149,11 @@ auto start_autorun(ours::HandleValue const job, std::string_view command) -> our
         return Status::InvArgs;
     }
 
-    // The header and the words: the kernel lets all its forwarded options
-    // take at most 384 bytes together (USER_OPTIONS_BYTES in
-    // //kernel/lib/userabi/src/userboot.cpp), so a command -- its words and
-    // their NULs no longer than the option -- always fits. Were that bound
-    // raised past this buffer, encoding would say BufferTooSmall rather than
-    // cut the command short.
-    u8 message[512];
+    // The header and the words. The words and their NULs take no more than
+    // the option they came from, and the kernel relays options within
+    // USER_OPTIONS_BYTES (<ours/process_args.hpp>), so a command always fits.
+    constexpr usize MESSAGE_BYTES = sizeof(ours::ProcArgs) + ours::USER_OPTIONS_BYTES;
+    u8 message[MESSAGE_BYTES];
     u32 length = 0;
     if (auto const status = ours::encode_process_args(message, {}, {words, count}, {}, {}, &length);
         status != Status::Ok) {

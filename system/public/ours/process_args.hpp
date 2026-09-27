@@ -130,6 +130,24 @@ constexpr auto handle_info_arg(u32 const info) -> u16 {
 /// here both refuse a value that sets any.
 inline constexpr auto HANDLE_INFO_RESERVED = u32{0xff00};
 
+/// How many of the image's command-line options the kernel relays to the
+/// first process as environment strings, and how many bytes they may take
+/// together, each with its NUL (collect_user_options() in
+/// //kernel/lib/userabi/src/userboot.cpp).
+///
+/// Here, beside the format, because more than the kernel sizes buffers by
+/// them. The options travel on -- userboot hands init the ones that are not
+/// its own, and init builds a command's argv out of one -- and each hop
+/// writes a new message into a fixed buffer. With the bound in one place
+/// every buffer is sized from it and fits by construction; spelled out in
+/// each program, a kernel that raised its bound would leave the others to
+/// find out at run time, as a BufferTooSmall on the boot path.
+///
+/// Generous for what exists -- two option families -- without letting a
+/// runaway command line decide the size of a kernel stack frame.
+inline constexpr u32 MAX_USER_OPTIONS = 8;
+inline constexpr usize USER_OPTIONS_BYTES = 384;
+
 namespace process_args_detail {
     /// Adds the encoded size of |strings| -- each one's bytes and its NUL --
     /// to |size|.

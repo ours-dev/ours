@@ -585,3 +585,57 @@ auto collect_handed_on() -> HandedOn {
 **故意没做**
 - init 解析并执行 `ours.autorun.boot`：下一条。
 - 把转交的范围做成可配置：目前只有一族选项需要转交，规则就是「不是自己的就交出去」，没有什么需要配置。
+
+## 转发选项的上限只定义一处：`ours::MAX_USER_OPTIONS` / `USER_OPTIONS_BYTES`（2026-09-26）
+
+**文件**
+- `system/public/ours/process_args.hpp` — 新增 `MAX_USER_OPTIONS = 8`、`USER_OPTIONS_BYTES = 384`
+- `kernel/lib/userabi/src/userboot.cpp` — 删掉本地同名常量，改用公共头里的
+- `kernel/lib/userabi/userboot/userboot.cpp` — 删掉 `MAX_HANDED_ON`；消息缓冲从手写的 512 改为按公共上限算出
+- `system/service/init/init.cpp` — autorun 的消息缓冲从手写的 512 改为按公共上限算出
+- `kernel/lib/userabi/include/userabi/userboot.hpp` — `userboot_init()` 的注释：转发的是用户态选项，不只 `userboot.*`
+
+**症状**
+潜伏，当前触发不到。内核转发的上限（8 条、384 字节）、userboot 的 `MAX_HANDED_ON = 8`、userboot 和 init 各自的 512 字节缓冲，四个数分别写在三个程序里，只靠注释对齐。只要内核把 384 调大到超过 512 能容纳的量，userboot 编码 init 的消息就会返回 `BufferTooSmall`，init 起不来，整个开机停在 userboot。编译期不会有任何提示。
+
+**原因**
+这些选项要经过三跳：内核 → userboot → init → autorun 程序。每一跳都把选项写进一条新消息，缓冲都是定长的。能保证每一跳都装得下的，只有第一跳定下的那个上限。上限写在内核的匿名命名空间里，后面两跳看不到它，只好各自抄一个数。抄来的数不会跟着原数变。
+
+**改法**
+改前：
+```cpp
+// kernel/lib/userabi/src/userboot.cpp
+    constexpr u32 MAX_USER_OPTIONS = 8;
+    constexpr usize USER_OPTIONS_BYTES = 384;
+// kernel/lib/userabi/userboot/userboot.cpp
+constexpr u32 MAX_HANDED_ON = 8;
+    u8 message[512];
+// system/service/init/init.cpp
+    u8 message[512];
+```
+改后：
+```cpp
+// system/public/ours/process_args.hpp
+inline constexpr u32 MAX_USER_OPTIONS = 8;
+inline constexpr usize USER_OPTIONS_BYTES = 384;
+// kernel/lib/userabi/userboot/userboot.cpp
+    std::string_view entries[ours::MAX_USER_OPTIONS];
+    constexpr usize MESSAGE_BYTES =
+        sizeof(ours::ProcArgs) + 2 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
+// system/service/init/init.cpp
+    constexpr usize MESSAGE_BYTES = sizeof(ours::ProcArgs) + ours::USER_OPTIONS_BYTES;
+```
+放在 `<ours/process_args.hpp>`，因为内核和用户程序都已经包含它（processargs 格式的唯一定义），不用新加依赖。userboot 的缓冲算法和内核给 userboot 算缓冲的式子完全一样：userboot 转交的是内核转来内容的子集，所以一定装得下。init 的 autorun 命令拆成若干词、每个词带 NUL 之后，总长度不会超过原来那个选项的长度。
+
+init 的 `MAX_AUTORUN_WORDS` 保留：它限制的是一条命令的词数，和转发上限不是一回事。
+
+**参照**
+- 无直接对应物。Zircon 没有这个问题：它把整个 ZBI VMO 交给下一个程序，选项由 component_manager 以服务的形式提供，中间不需要逐跳复制进定长消息。
+
+**验证**
+- 构建通过；主机单测 `process_args` 16 个全部通过；clang-tidy 在改动的源文件上没有诊断。
+- QEMU dev（cmdline 临时加 `ours.autorun.boot=fault_probe+none`）：userboot 把选项转给 init，init 运行 `fault_probe none`，shell 照常回答 pong。
+- QEMU dbg_1：shell 的各组检查全部通过。
+
+**故意没做**
+- 「内核把程序名存在 64 字节里」这个数，在 userboot 里也是写死的：它属于 `boot::BootOptions`，不是这次要收拢的转发上限，留待以后一起处理。

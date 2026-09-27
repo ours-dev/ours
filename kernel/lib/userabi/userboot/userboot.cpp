@@ -51,21 +51,17 @@ constexpr std::string_view NEXT_OPTION{"userboot.next"};
 /// other environment string is the next program's and is handed on.
 constexpr std::string_view USERBOOT_OPTION_PREFIX{"userboot."};
 
-/// How many environment strings are handed on to the next program. The
-/// kernel forwards at most eight options in all (MAX_USER_OPTIONS in
-/// //kernel/lib/userabi/src/userboot.cpp), so this never drops one today; it
-/// is a bound of its own because the two limits live in different programs
-/// and nothing links them.
-constexpr u32 MAX_HANDED_ON = 8;
-
 /// The environment strings the next program gets: this program's own less
 /// its `userboot.*` options.
 ///
 /// Views into this process's processargs, which the runtime keeps for the
 /// life of the process; held only until start_next() has copied them into
 /// the next program's message.
+///
+/// Room for every option the kernel may relay (ours::MAX_USER_OPTIONS), so a
+/// subset of them always fits.
 struct HandedOn {
-    std::string_view entries[MAX_HANDED_ON];
+    std::string_view entries[ours::MAX_USER_OPTIONS];
     u32 count{0};
 };
 
@@ -103,15 +99,16 @@ auto halt() -> void {
 /// userboot passes on everything instead -- the whole ZBI -- but a program
 /// there asks component_manager for the options it wants; here the
 /// environment *is* the options, so what `userboot.next` was is none of
-/// init's business. One that does not fit is dropped and named, as the
-/// kernel does with a token it has no room for.
+/// init's business. One that does not fit -- only possible if something
+/// other than the kernel wrote this program's message -- is dropped and
+/// named, as the kernel does with a token it has no room for.
 auto collect_handed_on() -> HandedOn {
     HandedOn handed_on;
     for (auto const entry: runtime::process_args().environ()) {
         if (entry.starts_with(USERBOOT_OPTION_PREFIX)) {
             continue;
         }
-        if (handed_on.count == MAX_HANDED_ON) {
+        if (handed_on.count == ours::MAX_USER_OPTIONS) {
             static_cast<void>(
                 ou::debug_line({"userboot: dropping ", to_str(entry), ": no room to hand it on"}));
             continue;
@@ -151,14 +148,14 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
         infos[count++] = ours::handle_info(ours::HandleType::VmoBootfs, 0);
     }
 
-    // The header, two handle_infos and a name of at most 63 bytes and its
-    // NUL -- the kernel keeps program names in 64 -- come to 108 bytes; the
-    // environment adds at most the 384 the kernel lets all its forwarded
-    // options take (USER_OPTIONS_BYTES), of which this hands on a subset.
-    // Should that bound ever outgrow this buffer, encoding fails with
-    // BufferTooSmall and the next program is not started -- loudly, rather
-    // than with an option quietly missing.
-    u8 message[512];
+    // The header, two handle_infos, a name of at most 63 bytes and its NUL
+    // -- the kernel keeps program names in 64 -- and the environment, a
+    // subset of what the kernel relayed and so within USER_OPTIONS_BYTES:
+    // the same sum the kernel sizes this program's own message by
+    // (make_bootstrap()), so encoding cannot fail for want of room.
+    constexpr usize MESSAGE_BYTES =
+        sizeof(ours::ProcArgs) + 2 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
+    u8 message[MESSAGE_BYTES];
     u32 length = 0;
     std::string_view const args[] = {name};
     if (auto const status = ours::encode_process_args(

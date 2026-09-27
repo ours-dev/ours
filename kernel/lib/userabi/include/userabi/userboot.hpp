@@ -21,7 +21,8 @@ enum class HandleIndex {};
 /// keeps it, builds the user BootFS from it, then launches the userboot
 /// program (`kernel.select.userboot` picks which build, "userboot" by
 /// default) with a bootstrap channel whose processargs message hands it the
-/// root job, the BootFS and the image's `userboot.*` options. What runs after
+/// root job, the BootFS and the image's user-space options (`userboot.*`,
+/// `ours.autorun.*`). What runs after
 /// userboot is userboot's decision (`userboot.next`), not this function's.
 auto userboot_init() -> void;
 
