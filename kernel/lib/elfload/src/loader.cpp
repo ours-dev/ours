@@ -183,7 +183,7 @@ auto Loader::map(ImageVmo &image, mm::VmPlacement const where, mm::MmuFlags cons
     // live on the handle, so the entry point has to be on the object that
     // a handle names.
     auto mapping =
-        m_root_vma.map(*vmo.dispatcher(), where, out.span, flags, mm::VmMapOption::Commit, name);
+        m_root_vmar.map(*vmo.dispatcher(), where, out.span, flags, mm::VmMapOption::Commit, name);
     if (mapping.is_err()) {
         log::error("elfload: could not map {}: {}", name, to_string(mapping.unwrap_err()));
         return mapping.unwrap_err();

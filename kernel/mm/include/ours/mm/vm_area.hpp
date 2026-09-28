@@ -112,7 +112,7 @@ class VmArea final: public VmAreaOrMapping {
     /// protected, which made sense while it was only their shared helper, and
     /// stopped making sense the moment anything wanted to map memory it had
     /// obtained separately: that is the shape of every zx_vmar_map, and it is
-    /// what //kernel/object's VmaDispatcher::map() needs.
+    /// what //kernel/object's VmarDispatcher::map() needs.
     ///
     /// Note what this does that create_mapping() does not: create_mapping()
     /// accepts a VmMapOption and never acts on Commit, so a caller that used

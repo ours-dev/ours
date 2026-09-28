@@ -12,7 +12,7 @@ if (toolchain_environment == "kernel") {
       "process_dispatcher.cpp",
       "resource_dispatcher.cpp",
       "thread_dispatcher.cpp",
-      "vma_dispatcher.cpp",
+      "vmar_dispatcher.cpp",
       "vmo_dispatcher.cpp",
       "wait.cpp",
     ]
@@ -34,7 +34,7 @@ cpp_interface("headers") {
     "include/ours/object/resource_dispatcher.hpp",
     "include/ours/object/thread_dispatcher.hpp",
     "include/ours/object/types.hpp",
-    "include/ours/object/vma_dispatcher.hpp",
+    "include/ours/object/vmar_dispatcher.hpp",
     "include/ours/object/vmo_dispatcher.hpp",
     "include/ours/object/wait.hpp",
   ]

@@ -80,7 +80,7 @@ enum class Rights : u32;
 ///
 /// The values are Zircon's ZX_OBJ_TYPE_* (zircon/types.h), so that
 /// object_get_info can report them unchanged when it exists. Only the types
-/// this kernel has a dispatcher for are named. VmaDispatcher is the Vmar here.
+/// this kernel has a dispatcher for are named. VmarDispatcher is the Vmar here.
 ///
 /// Zero is None and never names an object -- which is also what lets it serve
 /// as ustl::Rc's "no type tag" value for the checked downcast.

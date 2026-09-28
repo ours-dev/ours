@@ -30,7 +30,7 @@
 #include <ours/object/message_packet.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
-#include <ours/object/vma_dispatcher.hpp>
+#include <ours/object/vmar_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
@@ -431,7 +431,7 @@ namespace {
     /// (userboot_init) where .data() is taken, and it is provably terminated
     /// there rather than at each use.
     auto load_program(ustl::views::Span<u8 const> bytes, char const *name,
-                      elfload::Loader const &loader, object::VmaDispatcher &root_vma,
+                      elfload::Loader const &loader, object::VmarDispatcher &root_vmar,
                       LoadedImage &out) -> Status {
         using arch::paging::MmuFlags;
 
@@ -468,7 +468,7 @@ namespace {
             return status;
         }
 
-        auto stack = root_vma.map(
+        auto stack = root_vmar.map(
             *stack_vmo.dispatcher(), mm::VmPlacement::at(USER_STACK_TOP - USER_STACK_SIZE),
             USER_STACK_SIZE, MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable,
             mm::VmMapOption::Commit, "userboot-stack");
@@ -585,14 +585,14 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
 
     // One call builds both the process and the only object that may map into
     // it. They come back together because neither is useful alone: a process
-    // with no root VMA cannot be given any memory, and a VMA dispatcher with
+    // with no root VMAR cannot be given any memory, and a VMAR dispatcher with
     // no process names a region nothing will ever run in.
     object::KernelHandle<object::ProcessDispatcher> process;
-    object::KernelHandle<object::VmaDispatcher> root_vma;
+    object::KernelHandle<object::VmarDispatcher> root_vmar;
     Rights process_rights;
-    Rights root_vma_rights;
+    Rights root_vmar_rights;
     auto status = object::ProcessDispatcher::create(job, program.text, process, process_rights,
-                                                    root_vma, root_vma_rights);
+                                                    root_vmar, root_vmar_rights);
     if (Status::Ok != status) {
         log::error("userabi: could not create the process: {}", to_string(status));
         return status;
@@ -601,10 +601,10 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // One loader for this process's address space: every image it is built
     // out of goes through the same one, and the object that may map into it is
     // what they have in common.
-    elfload::Loader const loader{*root_vma.dispatcher()};
+    elfload::Loader const loader{*root_vmar.dispatcher()};
 
     LoadedImage loaded;
-    status = load_program(image.unwrap(), program.text, loader, *root_vma.dispatcher(), loaded);
+    status = load_program(image.unwrap(), program.text, loader, *root_vmar.dispatcher(), loaded);
     if (Status::Ok != status) {
         return status;
     }

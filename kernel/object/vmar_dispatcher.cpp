@@ -6,23 +6,23 @@
 // Arc needs the pointee's definition, not just its declaration -- vm_area.hpp
 // only forward-declares VmMapping.
 #include <ours/mm/vm_mapping.hpp>
-#include <ours/object/vma_dispatcher.hpp>
+#include <ours/object/vmar_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 
-GKTL_COUNTER(DISPATCHER_VMA_CREATE_COUNT, "dispatcher.vma.create");
-GKTL_COUNTER(DISPATCHER_VMA_DESTROY_COUNT, "dispatcher.vma.destroy");
+GKTL_COUNTER(DISPATCHER_VMAR_CREATE_COUNT, "dispatcher.vmar.create");
+GKTL_COUNTER(DISPATCHER_VMAR_DESTROY_COUNT, "dispatcher.vmar.destroy");
 
 namespace ours::object {
-VmaDispatcher::VmaDispatcher(ustl::Arc<mm::VmArea> vma) : Base(), m_vma(ustl::move(vma)) {
-    DISPATCHER_VMA_CREATE_COUNT.add(1);
+VmarDispatcher::VmarDispatcher(ustl::Arc<mm::VmArea> vma) : Base(), m_vma(ustl::move(vma)) {
+    DISPATCHER_VMAR_CREATE_COUNT.add(1);
 }
 
-VmaDispatcher::~VmaDispatcher() {
-    DISPATCHER_VMA_DESTROY_COUNT.add(1);
+VmarDispatcher::~VmarDispatcher() {
+    DISPATCHER_VMAR_DESTROY_COUNT.add(1);
 }
 
-auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
-                           Rights &rights_out) -> Status {
+auto VmarDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
+                            Rights &rights_out) -> Status {
     if (!vma) {
         return Status::InvArgs;
     }
@@ -46,9 +46,9 @@ auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle
     return Status::Ok;
 }
 
-auto VmaDispatcher::map(VmoDispatcher &vmo, mm::VmPlacement const where, usize const size,
-                        mm::MmuFlags const mmuf, mm::VmMapOption const option,
-                        char const *const name) -> ktl::Result<ustl::Arc<mm::VmMapping>> {
+auto VmarDispatcher::map(VmoDispatcher &vmo, mm::VmPlacement const where, usize const size,
+                         mm::MmuFlags const mmuf, mm::VmMapOption const option,
+                         char const *const name) -> ktl::Result<ustl::Arc<mm::VmMapping>> {
     verify_canary();
     vmo.verify_canary();
 

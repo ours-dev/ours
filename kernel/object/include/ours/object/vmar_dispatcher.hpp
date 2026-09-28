@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_OBJECT_VMA_DISPATCHER_HPP
-#define OURS_OBJECT_VMA_DISPATCHER_HPP 1
+#ifndef OURS_OBJECT_VMAR_DISPATCHER_HPP
+#define OURS_OBJECT_VMAR_DISPATCHER_HPP 1
 
 #include <ours/mm/vm_area.hpp>
 #include <ours/object/dispatcher.hpp>
@@ -14,9 +14,9 @@ namespace ours::object {
 /// Zircon ZX_DEFAULT_VMAR_RIGHTS: a region is not waited on, and what may be
 /// mapped into it is added per handle (Read/Write/Execute) by whoever creates
 /// it, not granted by default.
-constexpr auto RIGHTS_DEFAULT_VMA = (Rights::Basic & ~Rights::Wait) | Rights::OpChildren;
+constexpr auto RIGHTS_DEFAULT_VMAR = (Rights::Basic & ~Rights::Wait) | Rights::OpChildren;
 
-using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Signals::None>;
+using VmarDispatcherBase = SoloDispatcher<VmarDispatcher, RIGHTS_DEFAULT_VMAR, Signals::None>;
 
 /// The object-layer face of one mm::VmArea.
 ///
@@ -42,9 +42,9 @@ using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Sign
 /// hierarchy stops at Dispatcher -> SoloDispatcher -> the concrete object --
 /// and saying so is what lets the destructor below be marked `final` too.
 /// Zircon spells VmAddressRegionDispatcher the same way.
-class VmaDispatcher final: public VmaDispatcherBase {
-    using Self = VmaDispatcher;
-    using Base = VmaDispatcherBase;
+class VmarDispatcher final: public VmarDispatcherBase {
+    using Self = VmarDispatcher;
+    using Base = VmarDispatcherBase;
 
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Vmar);
@@ -103,18 +103,18 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// the destructor is reachable from the base rather than from callers.
     friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
 
-    static constexpr auto MAGIC = gktl::magic("VmaDispatcher");
+    static constexpr auto MAGIC = gktl::magic("VmarDispatcher");
 
-    explicit VmaDispatcher(ustl::Arc<mm::VmArea> vma);
+    explicit VmarDispatcher(ustl::Arc<mm::VmArea> vma);
 
     /// `final`, because Dispatcher's destructor is virtual: without it this
     /// silently overrides rather than saying so, and nothing would catch a
     /// later signature change that stopped overriding.
-    ~VmaDispatcher() final;
+    ~VmarDispatcher() final;
 
     ustl::Arc<mm::VmArea> m_vma;
 };
 
 } // namespace ours::object
 
-#endif // #ifndef OURS_OBJECT_VMA_DISPATCHER_HPP
+#endif // #ifndef OURS_OBJECT_VMAR_DISPATCHER_HPP

@@ -21,7 +21,7 @@ P0 期间有三条不变量：
 |---|---|---|---|---|
 | A 句柄与对象核心 | Handle、HandleTable、Dispatcher 信号核心、Object 通用调用 | 全局 Handle arena；每进程 HandleTable；`Dispatcher::m_signals` + `SignalObserver` | stub：`Handle::make/clone` 没有定义，`HandleTable` 没有存储（`kernel/object/include/ours/object/handle_table.hpp:39-55`）；`attach_observer` 不做电平检查（`kernel/object/dispatcher.cpp:24-36`） | P0 close / wait_one / 信号核心；P1 其余 |
 | B 任务 | Job、Process、Thread；Exception、SuspendToken、Profile、JobPolicy | `task::Thread`、`mm::VmAspace` | Job/Process/Thread 为 stub：内核内部的构造能用，面向用户的操作全缺。其余 missing | P0 只用内核内部路径；P1 create/start/exit/kill；P2 其余 |
-| C 内存 | Vmo、Vmar（现名 VmaDispatcher）、vDSO VMO、BootFS VMO、Pager、Stream | `VmObjectPaged/Physical`、`VmArea/VmMapping`、`VmAspace` | Vmo/Vmar/Pager 为 stub；vDSO VMO、BootFS VMO、Stream missing | P1；Pager/Stream P2 |
+| C 内存 | Vmo、Vmar（`VmarDispatcher`）、vDSO VMO、BootFS VMO、Pager、Stream | `VmObjectPaged/Physical`、`VmArea/VmMapping`、`VmAspace` | Vmo/Vmar/Pager 为 stub；vDSO VMO、BootFS VMO、Stream missing | P1；Pager/Stream P2 |
 | D IPC 与同步 | Channel（PeerHolder、MessagePacket）、Event、EventPair、Port、Futex、Socket、Fifo | PeerHolder 共享锁、`sync::Event`、`task::OwnedWaitQueue` | Channel 为 stub（`channel_dispatcher.hpp` 只有 `create()` 一个声明）；其余 missing | P0 Channel（只传字节）；P1 带句柄、Event/Port/Futex；P2 Socket/Fifo |
 | E 时间 | 单调时钟调用、Timer、Clock | `time::SteadyClock`、`time::Timer` + `ours::Dpc` | missing（内核侧已实现，用户侧没有入口） | P1；Clock P2 |
 | F 资源与设备 | Resource、Interrupt、IoPorts | 每个种类一个区间分配器、`irq::IrqObject`、TSS io_bitmap | Resource 为 stub（`create()` 内部检查自相矛盾，也不构造对象）；其余 missing | P1 交付根资源；P2 其余 |
@@ -117,7 +117,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 现状：
 - Vmo：stub。`vmo_dispatcher.cpp:22-65` 只有内核内部的 create；`vm_object_paged.cpp:103-113` 的 read/write 是 Unimplemented；没有 `size()`。
-- Vmar：stub。`vma_dispatcher.cpp:24-68` 有 create 和 map，但 map 暴露 mm 类型、没有 vmo 偏移，rights 推导还是 TODO（`:38`）。
+- Vmar：stub。`vmar_dispatcher.cpp`（原 `vma_dispatcher.cpp:24-68`）有 create 和 map，但 map 暴露 mm 类型、没有 vmo 偏移，rights 推导还是 TODO（`:38`）。
 - vDSO VMO：missing。`loader.cpp:108-146` 给每个进程复制一份。
 - BootFS VMO：missing。解压缓冲走 vmalloc，物理上不连续。
 - Pager：stub，只有一个头文件。

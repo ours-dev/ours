@@ -8,7 +8,7 @@
   镜像的 `.dynsym`。它只要一段内存和两个 ELF 文件，不碰地址空间、不碰内核对象，
   所以「算得最容易出错的那部分」可以在宿主上单测。
 - **loader**（待做）——把 PT_LOAD 段放进地址空间。这件事只能走对象层
-  （VmoDispatcher / VmaDispatcher）。
+  （VmoDispatcher / VmarDispatcher）。
 
 两者合起来是 `//kernel/phys:elf_image`（`ours::phys::ElfImage` +
 `SymbolicRelocationPass`）在用户态这一侧的对应物：physload 给它加载的模块做同样
