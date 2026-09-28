@@ -365,8 +365,13 @@ class PmNode {
 
     USTL_NO_MOVEABLE_AND_COPYABLE(PmNode);
 
-    /// Initialize this node. The primary task involves verifying the existence of the
-    /// specified PFN range.
+    /// Creates and registers a PmNode for every node in |nodes|; one of
+    /// bootstrap()'s steps. See pm_node_init.cpp.
+    static auto create_nodes(NodeMask const &nodes) -> Status;
+
+    /// Initialize this node: its span, its zones, its hard affinity. The
+    /// primary task involves verifying the existence of the specified PFN
+    /// range. Called by bootstrap() only; defined in pm_node_init.cpp.
     ///
     /// Requires:
     ///     1). Range [start, end) is sorted by address.

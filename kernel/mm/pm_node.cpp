@@ -22,18 +22,6 @@ namespace {
     GKTL_COUNTER(PM_NODE_LOCAL_HIT, "pm.node.local.hit");
     GKTL_COUNTER(PM_NODE_LOCAL_MISS, "pm.node.local.miss");
 
-    INIT_DATA
-    Pfn ZONE_LOWER_PFN[NR_ZONES_PER_NODE];
-
-    INIT_DATA
-    Pfn ZONE_UPPER_PFN[NR_ZONES_PER_NODE];
-
-    FORCE_INLINE
-    auto clamp_pfn_to_zone(Pfn pfn, ZoneType ztype) -> Pfn {
-        return std::clamp(pfn, ZONE_LOWER_PFN[static_cast<usize>(ztype)],
-                          ZONE_UPPER_PFN[static_cast<usize>(ztype)]);
-    }
-
     FORCE_INLINE
     auto gaf_to_allocation_control(Gaf gaf) -> AllocationOptions {
         return AllocationOptions();
@@ -221,183 +209,6 @@ PmNode::PmNode(NnId nid)
     , m_start_pfn()
     , m_zone_queues(nid)
     , m_page_queues() {}
-
-auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
-    ASSERT(!max_zone_pfn.empty());
-
-    // Records all nodes that own a usable memory range.
-    auto const visit_status =
-        EarlyMem::visit_usable(EarlyMem::min_address(), EarlyMem::max_address(), bootmem::ANY_NODE,
-                               [](bootmem::MemoryRegion const region) {
-                                   PmNode::set_state(region.node, State::Possible);
-                                   return true;
-                               });
-    if (visit_status != Status::Ok) {
-        return visit_status;
-    }
-
-    auto start_pfn = phys_to_pfn(EarlyMem::min_address());
-    for (usize i = 0; i < std::size(ZONE_LOWER_PFN); i++) {
-        auto end_pfn = std::max(max_zone_pfn[i], start_pfn);
-        ZONE_LOWER_PFN[i] = start_pfn;
-        ZONE_UPPER_PFN[i] = end_pfn;
-        start_pfn = end_pfn;
-    }
-
-    auto const &nodes = node_possible_mask();
-
-    // Give every CPU that no topology source claimed the first node that owns
-    // memory.
-    //
-    // Topology's two CPU-to-node tables start out filled with
-    // NUMA_MAX_NODE -- the "no node known yet" sentinel -- and the only thing
-    // that ever overwrites it is a topology source: on x86 the SRAT parse,
-    // which a kernel built without NUMA never compiles in and a machine
-    // without an SRAT never feeds. Left on the sentinel, that is what
-    // current_node() returns, and its callers index NUMA_MAX_NODE-long arrays
-    // with it -- MemCache::allocate() reads m_node_caches[NUMA_MAX_NODE], one
-    // past the end, takes the ListMemberHook that follows the array for a
-    // NodeCache, and spins forever on a list pointer it has mistaken for that
-    // NodeCache's lock.
-    //
-    // It has to happen here, not in PmNode::Current::init(): that hook runs at
-    // InitLevel::CpuLocal + 1, while the slab allocator starts asking which
-    // node it is on inside init_pmm(), several init levels earlier. Linux
-    // closes the same gap in the same place, with dummy_numa_init() and
-    // init_cpu_to_node().
-    //
-    // The `init()` pass below reads Topology::firmware_node() to build each node's
-    // hard affinity, so this has to come before it, not after.
-    auto fallback_nid = NnId(NUMA_MAX_NODE);
-    nodes.for_each([&fallback_nid](NnId const nid) {
-        if (fallback_nid == NUMA_MAX_NODE) {
-            fallback_nid = nid;
-        }
-    });
-    if (fallback_nid == NUMA_MAX_NODE) {
-        // No node owns usable memory; the passes below would build nothing and
-        // every allocation would fail somewhere less obvious than here.
-        return Status::BadState;
-    }
-
-    auto const claim_cpu = [fallback_nid](CpuNum const cpunum) {
-        if (Topology::cpu_to_node(cpunum) == NUMA_MAX_NODE) {
-            Topology::set_cpu_node_early(cpunum, fallback_nid);
-        }
-    };
-    // The possible mask is empty here: the MADT parse that fills it
-    // (assign_cpunum_for_apic(), from platform_init_apic()) runs at
-    // InitLevel::Irq, long after platform_init_pmm(). The walk is kept for
-    // the day the parse moves ahead of the PMM, but today it is the explicit
-    // claim of the running CPU that does the work -- and it would be needed
-    // regardless: a machine that handed us no MADT still has the CPU this
-    // code is executing on, and leaving that one on the sentinel is the
-    // exact failure above.
-    Cpu::possible_mask().for_each(claim_cpu);
-    claim_cpu(CpuLocal::current_cpu());
-
-    // Create all nodes.
-    //
-    // A pass of its own, ahead of init(), because the passes below reach across
-    // nodes: connect() walks every node's ZoneQueues, so the whole NODES table
-    // has to be populated before any of it runs. Registration lives here rather
-    // than at the end of init() for the same reason -- a node published only
-    // once it has finished initialising is invisible to the node that
-    // initialises before it, which is exactly the order these loops run in.
-    //
-    // EarlyMem is the only allocator up at this point, and asking it for node
-    // `nid`'s memory keeps the structure on the node it describes. Nothing ever
-    // frees these: a PmNode lives as long as the kernel does.
-    auto create_status = Status::Ok;
-    nodes.for_each([&create_status](NnId nid) {
-        auto node = EarlyMem::allocate<PmNode>(1, nid, bootmem::MemoryType::KernelData);
-        if (!node) {
-            create_status = Status::OutOfMem;
-            return;
-        }
-
-        new (node) PmNode(nid);
-        NODES[nid] = node;
-        NUM_NODES += 1;
-    });
-    if (create_status != Status::Ok) {
-        return create_status;
-    }
-
-    // Initialize all nodes.
-    nodes.for_each([](NnId nid) {
-        auto const status = PmNode::node(nid)->init();
-        ASSERT(status == Status::Ok);
-    });
-
-    // Connect all nodes.
-    nodes.for_each([&](NnId nid) {
-        auto zq = PmNode::node(nid)->zone_queues();
-        zq->connect(nodes);
-    });
-
-    // Debug
-    nodes.for_each([&](NnId nid) {
-        auto zq = PmNode::node(nid)->zone_queues();
-        zq->dump_queue(ZoneQueues::QueueType::SharedAffinity);
-    });
-
-    return Status::Ok;
-}
-
-auto PmNode::init() -> Status {
-    m_canary.verify<Self>();
-
-    auto const [node_start_pfn, node_end_pfn] = EarlyMem::get_pfn_range_node(m_id);
-    m_start_pfn = node_start_pfn;
-    m_spanned_frames = node_end_pfn - node_start_pfn;
-
-    if (m_spanned_frames != 0) {
-        set_state(m_id, State::Memory);
-    }
-    set_state(m_id, State::Online);
-
-    for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
-        if (Topology::firmware_node(cpu) == m_id) {
-            m_hard_affinity.set(cpu);
-        }
-    }
-
-    usize total_present_frames = 0;
-    for (usize i = 0; i < NR_ZONES_PER_NODE; ++i) {
-        auto const ztype = ZoneType(i);
-        auto const zone_start_pfn = clamp_pfn_to_zone(node_start_pfn, ztype);
-        auto const zone_end_pfn = clamp_pfn_to_zone(node_end_pfn, ztype);
-
-        if (zone_start_pfn < node_start_pfn || zone_end_pfn > node_end_pfn ||
-            zone_end_pfn <= zone_start_pfn) {
-            continue;
-        }
-
-        auto zone = EarlyMem::allocate<PmZone>(1, m_id, bootmem::MemoryType::KernelData);
-        if (!zone) {
-            panic("No enough memory to place node[{}].zone[{}]", m_id, to_string(ztype));
-        }
-
-        auto const num_present_frames =
-            EarlyMem::count_present_frames(zone_start_pfn, zone_end_pfn);
-        ASSERT(num_present_frames > 1);
-
-        new (zone) PmZone(m_id, ztype, zone_start_pfn, zone_end_pfn, num_present_frames);
-
-        zone_queues()->insert_local_zone(zone, ztype);
-
-        total_present_frames += num_present_frames;
-        PmNode::set_state(m_id, State(ztype));
-    }
-
-    m_present_frames = total_present_frames;
-
-    // NODES[m_id] and NUM_NODES are not touched here: bootstrap() publishes a
-    // node when it creates it, before this runs. See the comment there.
-    DEBUG_ASSERT(NODES[m_id] == this);
-    return Status::Ok;
-}
 
 auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Router {
     Router route;
@@ -899,9 +710,9 @@ auto PmNode::Current::init() -> void {
 /// the first kmalloc() on an AP -- a user thread's channel_create(), on
 /// CPU1 -- read m_node_caches[NUMA_MAX_NODE], one past the end, took the
 /// ListMemberHook after the array for a NodeCache, and spun for ever on a list
-/// pointer it had mistaken for that NodeCache's lock. The comment in
-/// bootstrap() describes that exact failure for the boot CPU; this is the same
-/// hole for the others.
+/// pointer it had mistaken for that NodeCache's lock. The comment on
+/// claim_unplaced_cpus() in pm_node_init.cpp describes that exact failure for
+/// the boot CPU; this is the same hole for the others.
 ///
 /// A CPU no topology source placed goes where the boot CPU went, which is the
 /// first node that owns memory -- the fallback bootstrap() chose, and on a

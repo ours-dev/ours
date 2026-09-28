@@ -1282,3 +1282,82 @@ Linux 把这些放在 `pg_data_t` 之外：
 - `PmNode::Current` 上的 `set_nid()` 没改名为 `set_cpu_node()`。它做的不只是改表，还要把 CPU 从一个节点的
   掩码挪到另一个节点，和 `Topology::set_cpu_node()` 不是一回事。
 - `bootstrap()` 拆分是第 3 步。
+
+## PmNode::bootstrap() 挪进 pm_node_init.cpp 并拆成具名步骤（2026-09-27）
+
+PmNode 结构整理第 3 步。
+
+**文件**
+- `kernel/mm/pm_node_init.cpp`（新）：`bootstrap()`、`create_nodes()`、`PmNode::init()`，
+  以及 zone 边界表和几个文件内部的步骤函数
+- `kernel/mm/pm_node.cpp`：删掉上述内容；一处交叉引用的注释跟着改
+- `kernel/mm/include/ours/mm/pm_node.hpp`：新增私有静态函数 `create_nodes()`；`init()` 的注释补充了定义位置
+- `kernel/mm/BUILD.gn`：加入新文件
+
+**症状**
+无运行时症状，是结构问题。`bootstrap()` 一个函数约 120 行，依次做了七件事：
+1. 扫描 EarlyMem，确定可能节点；
+2. 划定 zone 边界；
+3. 挑选后备节点；
+4. 认领还没有归属的 CPU；
+5. 创建节点；
+6. 逐个初始化；
+7. 连接回退队列，并打印调试输出。
+
+每一步只靠一行注释分隔。启动代码和运行期代码（分配、释放）混在同一个文件里。
+
+**原因**
+这些步骤之间的先后依赖，正是这个函数最需要让人看懂的地方：
+- CPU 必须在 `init()` 之前认领，因为 `init()` 要读固件节点来建硬亲和性；
+- 所有节点必须先创建，再初始化，最后连接，因为 `connect()` 要读其它节点的 zone 队列。
+
+这些依赖原来散落在长长的函数体里。mm 的约定是启动逻辑写成独立文件里的自由函数，
+`memmap_init.cpp` 就是这样和 `MemMap` 分开的。
+
+**改法**
+
+```cpp
+auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
+    if (auto const status = find_possible_nodes(); Status::Ok != status) { return status; }
+    set_zone_bounds(max_zone_pfn);
+
+    auto const &nodes = node_possible_mask();
+    auto const fallback = first_node(nodes);
+    if (fallback == NUMA_MAX_NODE) { return Status::BadState; }
+    claim_unplaced_cpus(fallback);
+
+    if (auto const status = create_nodes(nodes); Status::Ok != status) { return status; }
+    nodes.for_each([](NnId const nid) { ASSERT(PmNode::node(nid)->init() == Status::Ok); });
+
+    connect_nodes(nodes);
+    dump_fallback_queues(nodes);
+    return Status::Ok;
+}
+```
+
+- 只用 PmNode 公开接口的步骤，写成新文件匿名命名空间里的函数：
+  `find_possible_nodes`、`set_zone_bounds`、`first_node`、`claim_unplaced_cpus`、`connect_nodes`、
+  `dump_fallback_queues`。
+- 要用私有构造函数、要写 `NODES` 的"创建节点"，是 PmNode 的私有静态函数 `create_nodes()`。
+- `PmNode::init()` 也挪了过来：它和 `bootstrap()` 共用 zone 边界表，而且同样只在启动时运行。
+- 原来每一段前面的长注释（为什么要在这里认领 CPU、为什么先建全部节点再初始化），
+  都跟着移到了对应步骤函数的注释里。
+
+`create_nodes()` 有一处小差别：原来某个节点分配失败后，循环仍会继续为后面的节点分配；
+现在第一次失败就停止。两种写法最终返回的都是 `OutOfMem`，启动都会在调用方那里失败。
+
+**参照**
+Linux 把同样的工作分在几处：
+- `numa_init()` / `init_cpu_to_node()`：哪些节点、哪些 CPU 在哪个节点；
+- `free_area_init()`：节点和 zone；
+- `build_all_zonelists()`：回退顺序。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+- NUMA：`out/numa.x86` dbg_1 镜像用 `NUMA=1` 启动，跑到 shell，无异常；四个节点的回退队列与改动前逐行 `diff` 一致。
+- clang-tidy：新文件只有 `ZONE_LOWER_PFN`、`ZONE_UPPER_PFN` 两条命名告警，它们是原样搬过来的名字。
+
+**故意没做**
+- `PmNode::Current` 的 `init()`、`claim_possible_cpus()`、`publish()` 以及两个 init hook 也是启动代码，
+  但属于 CPU 归属这条线，这次没挪，留在 `pm_node.cpp`。
+- `ZoneQueues` 的结构调整是第 4 步。
