@@ -36,19 +36,3 @@ auto status = create_mapping(where, size, 0, mmuf, vmo, name, option, &mapping);
 `VmaDispatcher::map()` 无法提供 VMO 偏移参数——而 `zx_vmar_map` 是有的，"把一个大
 VMO 的某一段映射到某处"是常规操作（把 ELF 的三个 segment 按各自权限分别映射就需要
 它，那正是 userboot 下一步要做的事）。
-
-## 3. `VmObjectPaged::read()` / `write()` 是 `Unimplemented`
-
-```cpp
-auto VmObjectPaged::write(void *in, VirtAddr offset, usize size) -> Status {
-    m_canary.verify<Self>();
-    return Status::Unimplemented;
-}
-```
-
-没有任何办法把字节写进一个分页 VMO。直接后果：userboot 的镜像只能先用
-`get_frames_n()` 拿裸帧、经 physmap memcpy 填好，再包成 **physical** VMO 去映射——
-而它其实是普通的匿名内存，不是 MMIO。`//kernel/lib/userabi` 因此还去不掉对
-`//kernel/mm` 的依赖（`get_frames_n` + `PhysMap`），代码里注释写明了这一点。
-
-`write()` 一旦可用，userboot 的镜像就能改成分页 VMO，那处依赖也随之消失。

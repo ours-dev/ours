@@ -1,48 +1,8 @@
 # kernel/mm 待修项（2026-09-19）
 
-这两条是排查 userabi 缺页时顺路读到的，和那条缺页无关，各自独立可认领。
+这一条是排查 userabi 缺页时顺路读到的，和那条缺页无关，可独立认领。
 
-## 1. `alloc_frames_fragment()` 对任何偶数 n 都是死循环
-
-`kernel/mm/pm_node.cpp:595`：
-
-```cpp
-    for (usize order = 0; n > 0; order += 1) {
-        if ((n & 1) == 0) {
-            continue;
-        }
-
-        if (auto frame = this->alloc_frames(gaf, order, fallback)) {
-            list.push_back(*frame.unwrap());
-            n >>= 1;
-        } else {
-            ...
-        }
-    }
-```
-
-`n >>= 1` 只写在取到 frame 的那条分支里。`n` 是偶数时走 `continue`，`n` 一位都不
-移，下一轮 `n & 1` 仍然是 0，循环条件 `n > 0` 永远成立——`order` 一直加，`n` 一直
-不动，卡死在这里，而且是在持有分配路径的锁时卡死。
-
-n 为奇数时也只是碰巧对：它靠「取到就移一位」凑出了正确的位遍历，但这个不变量和
-`order` 的递增是两回事，写在两个地方迟早会分叉。
-
-改法是把移位提到循环的步进里，让「第 order 位」和 `order` 由同一处推进：
-
-```cpp
-    for (usize order = 0; n > 0; order += 1, n >>= 1) {
-        if ((n & 1) == 0) {
-            continue;
-        }
-        ...
-    }
-```
-
-对照 Linux 的 `__alloc_pages_bulk()` 不是同一个东西（那是批量同阶），这里更像把
-n 按二进制拆成若干 2^order 块，拆位的循环就该由位本身驱动。
-
-## 2. `map_physical()` 给每个保护区段都从同一个物理页重新开始
+## 1. `map_physical()` 给每个保护区段都从同一个物理页重新开始
 
 `kernel/mm/vm_mapping.cpp:243-249`：
 

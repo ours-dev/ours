@@ -122,3 +122,35 @@ PmNode 结构整理一共动了五步，但其中几块没有任何东西覆盖�
 **故意没做**
 - 没测运行期换节点（`PmNode::Current::set_nid()`）：它会改动全局的 CPU 归属，在测试里改了再改回来，会影响同时在跑的其它 CPU。
 - 没断言分配前后空闲页数完全相等：其它 CPU 同时在分配，结果会时好时坏。
+
+## 清理三条已修复却仍留在 repairs 里的旧条目（2026-09-28）
+
+**文件**
+- `docs/repairs/260919/kernel-mm.md`：删掉第 1 条（`alloc_frames_fragment()` 死循环），原第 2 条改为第 1 条
+- `docs/repairs/260910/mm.md`：删除（唯一的一条是 `NUM_ONLINE_NODES` 从未赋值）
+- `docs/repairs/260906/mm.md`：删掉第 3 条（`VmObjectPaged::read()` / `write()` 是 `Unimplemented`）
+
+**症状**
+这三条都已经修掉了，repairs 里却还留着。repairs 只该写"还没修的"，
+留着已修的条目，会让认领的人去修一个不存在的问题。
+
+**原因**
+修的时候是从 PmNode 结构整理或 VMO 读写的角度动手的，没有回头查早先日期的 repairs 文件里是否有同一条。
+
+**改法**
+逐条对照当前代码确认已修，然后删掉：
+- fragment 死循环：`260927/mm.md` 里的 `e09aa491`；
+- `NUM_ONLINE_NODES`：`260927/mm.md` 里的 `1c9e9bb7`，计数器已删，改为数在线掩码；
+- `read()` / `write()`：`92da681e`（kernel 缓冲区版本），之后又有 `8b84de4c` 的 `read_user()` / `write_user()`。
+
+**参照**
+无。
+
+**验证**
+对照代码逐条确认：`pm_node.cpp` 的 fragment 循环在步进里右移；`PmNode::num_online_nodes()`
+返回 `node_online_mask().count()`；`vm_object_paged.cpp` 里 `read()`、`write()` 都有实现。
+只动了文档，不涉及构建。
+
+**故意没做**
+同一批文件里还没修的条目都保留：`260919/kernel-mm.md` 的 `map_physical()` 物理偏移，
+`260906/mm.md` 的第 1、2 条。
