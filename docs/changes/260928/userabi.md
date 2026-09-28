@@ -144,3 +144,50 @@ infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_VMEX_BA
 **故意没做**
 - 没有资源相关的系统调用（Zircon 的 `resource_create`）。按设计，M1 里只有内核铸造的这一个槽位。
 - userboot 还不能用 vmex，K19 之后它才会先复制 BootFS，再把其中一份换成可执行的（U8）。
+
+## vDSO 支持 7 个参数的桩（G2，2026-09-28）
+
+**文件**
+- `kernel/lib/userabi/vdso/vdso.S`：`ours_syscall` 宏加 `nargs == 7` 分支，注释里的栈布局图补上 7 参数的情形
+- `build/abi/gen_syscalls.py`：删掉 `UNSUPPORTED_ARG_COUNTS` 和它的检查
+- `system/public/ours/syscalls.gni`：`args` 的说明去掉“不能正好 7 个”
+- `docs/design/260924/userspace-filesystem.md`：G2 标为已落地
+
+**症状**
+`vmar_map(vmar, options, vmar_offset, vmo, vmo_offset, length, *mapped_addr)` 有 7 个参数，
+生成器拒绝这种描述，vDSO 宏也没有对应的桩。
+
+**原因**
+缺功能。当初故意留空：写一个没有调用者的桩，没有东西能验证它。
+
+**改法**
+
+```asm
+.elseif \nargs == 7
+    push %r12              // 调用方的 %r12 是 callee-saved，要还
+    mov %rcx, %r10         // 第 4 个参数：SYSCALL 会覆盖 %rcx
+    mov 16(%rsp), %r12     // push 之后：0 = 旧 %r12，8 = 返回地址，16 = 第 7 个参数
+...
+.elseif \nargs == 7
+    pop %r12
+```
+
+- 只保存、装入 `%r12`。`%r13` 不携带参数，内核既不读它也不改它（syscall 帧保存后原样恢复），
+  所以桩不欠调用方什么。
+- 偏移 16（0x10）与 Zircon 的 `m_syscall` 宏对 7 个参数用的偏移相同。
+
+**参照**
+Zircon `kernel/lib/userabi/vdso/syscalls-x86.S` 的 `m_syscall` 宏：7 个参数时 `push_reg %r12`，
+从 `0x10(%rsp)` 取第 7 个参数。
+
+**验证**
+- 两个镜像均构建通过。改动前后的 `vdso.image.elf` 逐字节相同（`cmp`）：现在没有 7 个参数的调用，
+  已有桩一字节不变。
+- 把宏单独汇编，实例化一个 7 参数、一个 8 参数的桩，用 `llvm-objdump` 反汇编：
+  7 参数桩是 `push %r12; mov %rcx,%r10; mov 0x10(%rsp),%r12; mov $n,%eax; syscall; pop %r12; ret`，
+  8 参数桩和改动前一致。
+- `boot_check.py` 两个镜像都 PASS（dbg 12 passed；rel 11 passed、4 skipped）。
+
+**故意没做**
+- 7 参数桩在真实调用下的验证，留给 K21 的 `vmar_map`：它的第 7 个参数是输出地址，
+  取错了，shell 的映射检查就会失败。

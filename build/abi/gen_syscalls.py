@@ -32,11 +32,6 @@ from typing import Dict, List, Optional
 # eight for the same reason.
 MAX_ARGS = 8
 
-# A seventh argument needs a stub that saves and loads only %r12. It is left
-# out until a call needs one (vmar_map, design P1-C), rather than written now
-# with nothing to exercise it.
-UNSUPPORTED_ARG_COUNTS = {7}
-
 KNOWN_ATTRS = {"blocking", "noreturn", "debug"}
 KNOWN_DIRS = {"in", "out"}
 KNOWN_ARG_KEYS = {"name", "type", "dir", "count", "release"}
@@ -138,9 +133,6 @@ class Call:
         raw_args = raw.get("args", [])
         if len(raw_args) > MAX_ARGS:
             raise DescriptionError(f"{self.name}: {len(raw_args)} arguments, at most {MAX_ARGS}")
-        if len(raw_args) in UNSUPPORTED_ARG_COUNTS:
-            raise DescriptionError(
-                f"{self.name}: {len(raw_args)} arguments has no vDSO stub shape yet")
         self.args = [Arg(a, self.name, i) for i, a in enumerate(raw_args)]
 
         names = [a.name for a in self.args]

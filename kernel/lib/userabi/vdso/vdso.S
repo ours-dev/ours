@@ -62,16 +62,16 @@
 //     owes its caller their old values: it pushes them, loads the arguments
 //     into them, traps, and restores them.
 //
-//       Stack on entry:           after both pushes:
-//          0(%rsp)  return addr      0(%rsp)  saved %r13
-//          8(%rsp)  argument 7       8(%rsp)  saved %r12
-//         16(%rsp)  argument 8      16(%rsp)  return addr
-//                                   24(%rsp)  argument 7
-//                                   32(%rsp)  argument 8
+//       8 arguments, after both pushes:   7 arguments, after one push:
+//          0(%rsp)  saved %r13               0(%rsp)  saved %r12
+//          8(%rsp)  saved %r12               8(%rsp)  return addr
+//         16(%rsp)  return addr             16(%rsp)  argument 7
+//         24(%rsp)  argument 7
+//         32(%rsp)  argument 8
 //
-//   - Seven arguments has no shape yet, and the generator refuses it: it needs
-//     a stub that saves and loads %r12 alone, and the first call to need one
-//     is vmar_map (design P1-C). More than eight is refused outright.
+//     Seven saves and loads %r12 alone: %r13 carries nothing, and the kernel
+//     neither reads it nor lets it change, so the stub owes nothing for it.
+//     vmar_map is the call with seven. More than eight is refused outright.
 //
 // A 32-bit argument -- a handle, a count, an option word -- is left as it is:
 // SysV leaves the upper half of its register unspecified, and the kernel
@@ -81,8 +81,8 @@
 // kernel bug, and a fault at the next instruction says so where a `ret` would
 // wander off into whatever the caller had on its stack.
 //
-// Zircon's vDSO has the same register plan and the same offsets (0x18 and
-// 0x20) for arguments 7 and 8: the m_syscall macro in
+// Zircon's vDSO has the same register plan and the same offsets -- 0x10 for
+// argument 7 alone, 0x18 and 0x20 for arguments 7 and 8: the m_syscall macro in
 // kernel/lib/userabi/vdso/syscalls-x86.S.
 .macro ours_syscall name, sysret, number, nargs, noreturn
 .balign 16
@@ -92,6 +92,10 @@
 .if \nargs <= 3
 .elseif \nargs <= 6
     mov %rcx, %r10
+.elseif \nargs == 7
+    push %r12
+    mov %rcx, %r10
+    mov 16(%rsp), %r12
 .elseif \nargs == 8
     push %r12
     push %r13
@@ -99,7 +103,7 @@
     mov 24(%rsp), %r12
     mov 32(%rsp), %r13
 .else
-    .error "a vDSO stub takes 0 to 6, or 8, arguments"
+    .error "a vDSO stub takes 0 to 8 arguments"
 .endif
     mov $\number, %eax
     syscall
@@ -111,6 +115,8 @@
 .else
 .if \nargs == 8
     pop %r13
+    pop %r12
+.elseif \nargs == 7
     pop %r12
 .endif
     ret

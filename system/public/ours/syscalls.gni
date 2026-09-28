@@ -27,8 +27,7 @@
 #   brief   One line.
 #   doc     More lines, as a list of strings. Written for the program that
 #           calls it; what the kernel does inside belongs with syscall::<name>.
-#   args    In order, at most 8, and not exactly 7 (the vDSO has no 7-argument
-#           stub yet; the first call to need one is vmar_map, design P1-C).
+#   args    In order, at most 8.
 #           Each is a scope:
 #             name     The parameter's name.
 #             type     A primitive (u8 .. u64, i8 .. i64, usize, char, void) or
