@@ -363,6 +363,38 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "vmo_create"
+    brief = "Makes a VMO of |size| bytes and puts a handle to it in |out|."
+    doc = [
+      "|size| is rounded up to a page; zero makes an empty VMO. The memory is",
+      "committed lazily: a page exists once something touches it, and a page",
+      "nobody has written reads as zero. |options| must be None: Resizable is",
+      "NotSupported, any other bit InvArgs. OutOfRange past the largest size",
+      "a VMO can have. The handle has the default VMO rights, never Execute.",
+      "Its value goes to |out|, and it is in this process's table only once",
+      "that write has worked: InvArgs, and no new handle, when |out| cannot be",
+      "written. It counts against this process's handle quota (NoResource",
+      "past it).",
+    ]
+    args = [
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "options"
+        type = "VmoOptions"
+      },
+      {
+        name = "out"
+        type = "HandleValue"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "vmo_write"
     brief = "Copies |length| bytes from |buffer| into the VMO, from byte |offset|."
     doc = [

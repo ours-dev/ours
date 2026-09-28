@@ -17,6 +17,20 @@ class VmObjectPaged: public VmObject {
     using Self = VmObjectPaged;
 
   public:
+    /// The largest size a paged VMO may have, in bytes: the last whole page
+    /// below the top of the 64-bit range, less one more page, so that no
+    /// offset or size inside a VMO can be rounded up to a page, or have a page
+    /// added to it, without overflowing. What vmo_create checks a request
+    /// against.
+    ///
+    /// Zircon: VmObject::MAX_SIZE (vm_object.h), with the same guarantee that
+    /// a page more does not wrap. There it is VmPageList::MAX_SIZE, the reach of its page
+    /// list; the page tree here is keyed by 64-bit page offsets and reaches
+    /// further, so the arithmetic is the tighter bound.
+    constexpr static u64 MAX_SIZE = (~u64(0) & ~u64(PAGE_SIZE - 1)) - PAGE_SIZE;
+    static_assert(MAX_SIZE % PAGE_SIZE == 0);
+    static_assert(MAX_SIZE + PAGE_SIZE > MAX_SIZE, "a page more than MAX_SIZE must not wrap");
+
     static auto create(Gaf gaf, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out) -> Status;
 
     static auto create_contiguous(Gaf gaf, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out)

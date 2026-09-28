@@ -5,8 +5,11 @@
 #include <ours/mm/vm_object_physical.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 
+#include <utility>
+
 #include <gktl/counter.hpp>
 #include <heap/new.hpp>
+#include <ustl/mem/align.hpp>
 
 GKTL_COUNTER(DISPATCHER_VMO_CREATE_COUNT, "dispatcher.vmo.create");
 GKTL_COUNTER(DISPATCHER_VMO_DESTROY_COUNT, "dispatcher.vmo.destroy");
@@ -20,7 +23,8 @@ VmoDispatcher::~VmoDispatcher() {
     DISPATCHER_VMO_DESTROY_COUNT.add(1);
 }
 
-auto VmoDispatcher::create(ustl::Arc<mm::VmObject> vmo, KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
+auto VmoDispatcher::create(ustl::Arc<mm::VmObject> vmo, KernelHandle<Self> &handle_out,
+                           Rights &rights_out) -> Status {
     if (!vmo) {
         return Status::InvArgs;
     }
@@ -46,6 +50,39 @@ auto VmoDispatcher::create_paged(usize const size, KernelHandle<Self> &handle_ou
     // policy.
     ustl::Arc<mm::VmObjectPaged> vmo;
     auto const status = mm::VmObjectPaged::create(mm::GAF_USER, size, mm::VmoFlags::Pinned, &vmo);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    return create(ustl::move(vmo), handle_out, rights_out);
+}
+
+auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
+                                KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
+    // Options first, as Zircon's parse_create_syscall_flags() does: an
+    // unknown bit is the caller's mistake whatever the size, and a known one
+    // this kernel defers is a different answer from an unknown one.
+    constexpr auto KNOWN = std::to_underlying(VmoOptions::Resizable);
+    auto const bits = std::to_underlying(options);
+    if ((bits & ~KNOWN) != 0) {
+        return Status::InvArgs;
+    }
+    if (bits != 0) {
+        return Status::NotSupported;
+    }
+
+    // Checked before rounding: MAX_SIZE leaves a page of headroom below the
+    // top of the range, so anything that passes rounds up without wrapping.
+    if (size > mm::VmObjectPaged::MAX_SIZE) {
+        return Status::OutOfRange;
+    }
+    auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
+
+    // Lazy: committed a page at a time as it is touched -- by a fault on a
+    // mapping of it, or by vmo_write/vmo_read. A page nobody has written
+    // reads as zero.
+    ustl::Arc<mm::VmObjectPaged> vmo;
+    auto const status = mm::VmObjectPaged::create(mm::GAF_USER, rounded, mm::VmoFlags::Lazy, &vmo);
     if (Status::Ok != status) {
         return status;
     }

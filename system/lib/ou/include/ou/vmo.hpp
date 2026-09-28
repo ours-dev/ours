@@ -4,9 +4,15 @@
 #define OU_VMO_HPP 1
 
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 #include <ours/types.hpp>
 
 namespace ou {
+/// Makes a VMO of |size| bytes, rounded up to a page, and puts a handle to it
+/// in |out|. Committed lazily; unwritten pages read as zero. |options| must be
+/// None (Resizable is NotSupported). The handle never has Execute.
+auto vmo_create(u64 size, ours::VmoOptions options, ours::HandleValue *out) -> ours::Status;
+
 /// Copies |length| bytes of the VMO |vmo|, starting at byte |offset|, into
 /// |buffer|. Needs Read on the handle.
 ///

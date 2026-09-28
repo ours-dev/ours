@@ -912,6 +912,124 @@ auto check_vmo_write(ours::HandleValue const bootfs) -> void {
     }
 }
 
+/// vmo_create, and vmo_write on a VMO this program may write (K17).
+///
+/// Runs in every image: a VMO of its own is all it needs. What it pins down:
+///   - the options: Resizable is known and NotSupported, any other bit InvArgs,
+///     and an unknown bit wins over Resizable beside it;
+///   - the size: rounded up to a page (a 3-page-and-a-byte VMO reads at its
+///     last byte of page 4 and not one past it), zero is a valid empty VMO,
+///     and a size no VMO can have is OutOfRange;
+///   - lazy commit: a page nobody has written reads as zero;
+///   - vmo_write: bytes written across a page boundary read back the same,
+///     a range past the end is OutOfRange, and a handle without Write is
+///     AccessDenied;
+///   - a destination the handle value cannot be written to is InvArgs.
+auto check_vmo_create() -> void {
+    using ours::Rights;
+    using ours::Status;
+    using ours::VmoOptions;
+
+    constexpr auto PAGE = u64{4096};
+
+    auto ok = true;
+    ours::HandleValue vmo = ours::HANDLE_INVALID;
+    ok &=
+        expect("shell: vmo_create(Resizable) = ", ou::vmo_create(PAGE, VmoOptions::Resizable, &vmo),
+               Status::NotSupported);
+    ok &= expect("shell: vmo_create(an unknown option) = ",
+                 ou::vmo_create(PAGE, static_cast<VmoOptions>(1U << 5), &vmo), Status::InvArgs);
+    ok &= expect("shell: vmo_create(Resizable and an unknown option) = ",
+                 ou::vmo_create(PAGE, static_cast<VmoOptions>((1U << 1) | (1U << 5)), &vmo),
+                 Status::InvArgs);
+    ok &= expect("shell: vmo_create(the largest u64) = ",
+                 ou::vmo_create(~u64{0}, VmoOptions::None, &vmo), Status::OutOfRange);
+    ok &= expect(
+        "shell: vmo_create(out = kernel half) = ",
+        ou::vmo_create(PAGE, VmoOptions::None, reinterpret_cast<ours::HandleValue *>(KERNEL)),
+        Status::InvArgs);
+
+    // Empty: valid, and every non-empty range is past its end.
+    ours::HandleValue empty = ours::HANDLE_INVALID;
+    if (expect("shell: vmo_create(0 bytes) = ", ou::vmo_create(0, VmoOptions::None, &empty),
+               Status::Ok)) {
+        u8 byte = 0;
+        ok &= expect("shell: vmo_read(empty, 0 bytes) = ", ou::vmo_read(empty, &byte, 0, 0),
+                     Status::Ok);
+        ok &= expect("shell: vmo_write(empty, 1 byte) = ", ou::vmo_write(empty, &byte, 0, 1),
+                     Status::OutOfRange);
+        ok &= expect("shell: close(empty) = ", ou::handle_close(empty), Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // 3 pages and a byte: rounded up to 4.
+    if (!expect("shell: vmo_create(3 pages + 1 byte) = ",
+                ou::vmo_create(3 * PAGE + 1, VmoOptions::None, &vmo), Status::Ok)) {
+        static_cast<void>(ou::debug_line("shell: vmo_create checks FAILED"));
+        return;
+    }
+    u8 tail[8] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    ok &= expect("shell: vmo_read(the last bytes of page 4) = ",
+                 ou::vmo_read(vmo, tail, 4 * PAGE - sizeof(tail), sizeof(tail)), Status::Ok);
+    auto zero = true;
+    for (auto const b: tail) {
+        if (b != 0) {
+            zero = false;
+        }
+    }
+    ok &= zero;
+    if (zero) {
+        static_cast<void>(ou::debug_line("shell: an unwritten page reads as zero"));
+    }
+    ok &= expect("shell: vmo_read(one byte past page 4) = ", ou::vmo_read(vmo, tail, 4 * PAGE, 1),
+                 Status::OutOfRange);
+
+    // A write across the first page boundary, read back.
+    u8 const written[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    u8 back[16] = {};
+    ok &= expect("shell: vmo_write(across a page boundary) = ",
+                 ou::vmo_write(vmo, written, PAGE - 8, sizeof(written)), Status::Ok);
+    ok &= expect("shell: vmo_read(it back) = ", ou::vmo_read(vmo, back, PAGE - 8, sizeof(back)),
+                 Status::Ok);
+    auto same = true;
+    for (usize i = 0; i < sizeof(written); ++i) {
+        if (written[i] != back[i]) {
+            same = false;
+        }
+    }
+    ok &= same;
+    if (same) {
+        static_cast<void>(ou::debug_line("shell: vmo_write reads back the same"));
+    }
+    ok &= expect("shell: vmo_write(offset = size, 1 byte) = ",
+                 ou::vmo_write(vmo, written, 4 * PAGE, 1), Status::OutOfRange);
+    ok &=
+        expect("shell: vmo_write(size + 1 bytes) = ", ou::vmo_write(vmo, written, 0, 4 * PAGE + 1),
+               Status::OutOfRange);
+    ok &= expect("shell: vmo_write(from the kernel half) = ",
+                 ou::vmo_write(vmo, reinterpret_cast<void const *>(KERNEL), 0, 8), Status::InvArgs);
+
+    // A copy that may read but not write.
+    ours::HandleValue readonly = ours::HANDLE_INVALID;
+    if (expect("shell: handle_duplicate(vmo, without Write) = ",
+               ou::handle_duplicate(vmo, Rights::Basic | Rights::Read | Rights::Map, &readonly),
+               Status::Ok)) {
+        ok &= expect("shell: vmo_write(without Write) = ",
+                     ou::vmo_write(readonly, written, 0, sizeof(written)), Status::AccessDenied);
+        ok &= expect("shell: close(readonly) = ", ou::handle_close(readonly), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vmo_create checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vmo_create checks FAILED"));
+    }
+}
+
 /// The BootFS the kernel built for user space, read through vmo_read: what is
 /// in it, and what vmo_read does on a VMO that exists.
 ///
@@ -1177,6 +1295,7 @@ auto main(int, char **) -> int {
     check_bad_pointers(runtime::vdso_base());
     check_vmo_read();
     check_vmo_write(bootfs);
+    check_vmo_create();
     check_bootfs(bootfs, runtime::vdso_base());
     check_handle_duplicate(bootfs);
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));

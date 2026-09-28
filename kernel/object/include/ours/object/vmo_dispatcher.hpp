@@ -6,6 +6,7 @@
 #include <ours/mm/vm_object.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
+#include <ours/syscall.hpp>
 
 #include <user_copy/user_copy.hpp>
 
@@ -61,6 +62,26 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// .bss. `size` is rounded up to a page by the VMO itself.
     static auto create_paged(usize size, KernelHandle<Self> &handle_out, Rights &rights_out)
         -> Status;
+
+    /// The VMO a vmo_create call makes: |size| bytes of anonymous memory,
+    /// committed lazily -- a page exists only once it is touched.
+    ///
+    ///   - InvArgs for an option bit that means nothing; NotSupported for
+    ///     Resizable, which is known and deferred.
+    ///   - OutOfRange when |size| is past mm::VmObjectPaged::MAX_SIZE.
+    ///   - |size| is rounded up to a page; zero is a valid, empty VMO.
+    ///   - The handle's rights are the default VMO rights, which have no
+    ///     Execute (D3).
+    ///
+    /// Unlike create_paged(), which the kernel uses for memory that must be
+    /// resident before ring 3 runs, nothing here is committed up front: a
+    /// program may ask for a VMO far larger than it will ever touch.
+    ///
+    /// Zircon: sys_vmo_create() with VmObjectDispatcher::
+    /// parse_create_syscall_flags(), which checks the options and the size the
+    /// same way before VmObjectPaged::Create().
+    static auto create_user(u64 size, VmoOptions options, KernelHandle<Self> &handle_out,
+                            Rights &rights_out) -> Status;
 
     /// A window onto physical memory that already exists and that this object
     /// does not own, such as MMIO. Nothing here frees it. (Loaded ELF images

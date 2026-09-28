@@ -5,6 +5,11 @@
 #include <ours/vdso.hpp>
 
 namespace ou {
+auto vmo_create(u64 const size, ours::VmoOptions const options, ours::HandleValue *const out)
+    -> ours::Status {
+    return ours_vmo_create(size, options, out);
+}
+
 auto vmo_read(ours::HandleValue const vmo, void *const buffer, u64 const offset, usize const length)
     -> ours::Status {
     return ours_vmo_read(vmo, buffer, offset, length);

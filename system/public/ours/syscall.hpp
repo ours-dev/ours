@@ -89,6 +89,15 @@ enum class ChannelWriteOptions : u32 {
 enum class ChannelReadOptions : u32 {
     None = 0,
 };
+
+/// vmo_create's options. Only None is accepted: Resizable is recognised and
+/// answered NotSupported (it is deferred past M1), and any other bit is
+/// InvArgs. Resizable carries Zircon's ZX_VMO_RESIZABLE value so that a
+/// request ported from Zircon asks the same question.
+enum class VmoOptions : u32 {
+    None = 0,
+    Resizable = 1U << 1,
+};
 } // namespace ours
 
 #endif // OURS_SYSCALL_HPP
