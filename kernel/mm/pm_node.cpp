@@ -79,10 +79,8 @@ auto ZoneQueues::insert_remote_queue(ZoneQueue const &queue) -> void {
 /// memory whatever the caller asked for. It now bounds the route, and
 /// connected_ records which nodes the route actually chained in.
 auto ZoneQueues::connect(NodeMask const &nodemask) -> void {
-    NodeRoute node_path;
-    PmNode::build_optimal_node_route(nid_, node_path, nodemask);
-
-    for (auto next: node_path) {
+    auto const route = PmNode::Router::build(nid_, nodemask);
+    for (auto const next: route) {
         auto zq = PmNode::node(next)->zone_queues();
         insert_remote_queue(zq->get_queue(QueueType::LocalContiguous));
         connected_.set(next);
@@ -403,8 +401,8 @@ auto PmNode::init() -> Status {
     return Status::Ok;
 }
 
-auto PmNode::build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &candidates)
-    -> void {
+auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Router {
+    Router route;
     NodeMask visited;
     visited.set(from, true);
 
@@ -436,8 +434,9 @@ auto PmNode::build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const
             break;
         }
 
-        path.set_next(next);
+        route.push_back(next);
     }
+    return route;
 }
 
 /// CPU's and Thread's capacity on nodes.

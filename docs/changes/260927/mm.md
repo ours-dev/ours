@@ -1132,3 +1132,71 @@ Linux `__zone_watermark_ok()`（`mm/page_alloc.c`）的最后一段：从 `order
 **故意没做**
 `PmZone::find_frame(usize order)` 同样只有声明没有定义，不在这一项的范围内，没动。
 每 CPU 缓存是空实现，缓存里的页框不在伙伴链表上，所以将来有了缓存之后，这个查询不会把它们算进去。
+
+## NodeRoute 改为 PmNode 的内部类 Router，由 Router::build() 构造（2026-09-27）
+
+PmNode 结构整理第 2 步的提交 A。
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_node.hpp`：删掉顶层的 `NodeRoute` 和 `PmNode::build_optimal_node_route()`；
+  在 PmNode 的私有区新增内部类 `Router`，带静态工厂 `build()`
+- `kernel/mm/pm_node.cpp`：`build_optimal_node_route()` 改写为 `Router::build()`；`ZoneQueues::connect()` 改用它
+
+**症状**
+无运行时症状，是结构问题。`NodeRoute` 是一个顶层类型，但它只服务于一件事：节点初始化时给自己的
+zone 队列排出回退顺序。它的构造方式还很别扭：调用方先建一个空对象，再把它传给 PmNode 的静态函数去填。
+
+**原因**
+回退顺序是节点装配过程的一部分，外面没有人需要它。放在顶层，就等于把一个内部细节摆进了 `mm::`
+的公共命名空间；"先建空的再填"的写法，又让一个半成品在调用方手里存在了一段时间。
+
+**改法**
+
+之前：
+
+```cpp
+class NodeRoute { ... };                                    // 顶层
+static auto PmNode::build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &candidates) -> void;
+
+// ZoneQueues::connect()
+NodeRoute node_path;
+PmNode::build_optimal_node_route(nid_, node_path, nodemask);
+```
+
+之后：
+
+```cpp
+class PmNode {
+  private:
+    friend class ZoneQueues;
+    class Router {
+      public:
+        static auto build(NnId from, NodeMask const &candidates) -> Router;
+        ...
+      private:
+        auto push_back(NnId to) -> void;    // 原来的 set_next()，只有 build() 用
+        ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
+    };
+};
+
+// ZoneQueues::connect()
+auto const route = PmNode::Router::build(nid_, nodemask);
+```
+
+`Router` 放在私有区：它唯一的使用者 `ZoneQueues` 是 PmNode 的友元，可以访问。追加一跳的函数也改成私有，
+只有 `build()` 能往里写，拿到手的一定是完整的路由。`build()` 作为内部类的成员，可以直接使用 PmNode 的
+`for_each_nid()` 和 `distance()`。
+
+**参照**
+Linux `build_zonelists()`（`mm/page_alloc.c`）：用 `find_next_best_node()` 逐个挑出下一个最近的节点，
+直到挑完。那里的节点顺序也只是这个函数内部的一个局部数组，从不对外暴露。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+- NUMA：`out/numa.x86` 的 dbg_1 镜像用 `NUMA=1`（四节点）启动，跑到 shell，无异常。四个节点的
+  `SharedAffinity` 队列转储与改动前逐行 `diff`，完全一致。
+- `Router::for_each_node()` 仍然没有调用者，而 `Router` 现在是私有的，外面的 TU 没法实例化它，
+  所以这次没有单独做模板实例化检查。
+
+**故意没做**
+`clear()` 和 `for_each_node()` 目前都没有调用者，保留不删。

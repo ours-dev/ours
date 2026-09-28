@@ -34,46 +34,6 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {
-/// The other nodes, nearest first, as seen from one node: the order its
-/// allocations fall back through (ZoneQueues::connect() chains their zones in
-/// it). Built by PmNode::build_optimal_node_route().
-class NodeRoute {
-  public:
-    template <typename F, typename... Args>
-        requires ustl::traits::Invocable<F, PmNode &, Args...>
-    auto for_each_node(F &&f, Args &&...args) -> void;
-
-    FORCE_INLINE
-    constexpr auto set_next(NnId to) -> void {
-        // Fixed capacity: one hop per other node, so overflowing it means a
-        // node was visited twice.
-        auto const result = m_path.push_back(to);
-        DEBUG_ASSERT(result, "NodeRoute overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
-    }
-
-    FORCE_INLINE
-    constexpr auto clear() -> void {
-        m_path.clear();
-    }
-
-    FORCE_INLINE
-    constexpr auto begin() const {
-        return m_path.begin();
-    }
-
-    FORCE_INLINE
-    constexpr auto end() const {
-        return m_path.end();
-    }
-
-  private:
-    /// The hops, and their count: StaticVec keeps both. There used to be a
-    /// count_ beside it, bumped by set_next() and read by end(), while clear()
-    /// emptied only the vector -- so a cleared route still ended count_ hops
-    /// in, past its last element.
-    ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
-};
-
 /// `ZoneQueues` is a helper class separated from `PmNode`, specifically
 /// designed to manage zones of different priorities within a node and provide
 /// cross-node zone access and communication capabilities.
@@ -258,13 +218,6 @@ class PmNode {
         NODE_DISTANCE[x][y] = dis;
     }
 
-    /// Every node with memory in |candidates| other than |from|, nearest first:
-    /// the fallback order Linux's build_zonelists() gets from
-    /// find_next_best_node(). |candidates| used to be a filter of nodes to
-    /// *leave out*, which its one caller handed an always-empty mask.
-    static auto build_optimal_node_route(NnId from, NodeRoute &path, NodeMask const &candidates)
-        -> void;
-
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
 
     [[nodiscard]]
@@ -368,6 +321,54 @@ class PmNode {
 
   private:
     friend class ZoneQueues;
+
+    /// The other nodes with memory, nearest first, as seen from one node: the
+    /// order that node's allocations fall back through. ZoneQueues::connect()
+    /// chains their zones behind the node's own in this order.
+    ///
+    /// Nested and private because it is part of how a node is wired up, not
+    /// something anyone outside asks for: its one user is ZoneQueues, a
+    /// friend. It was a free-standing NodeRoute that the caller created empty
+    /// and handed to PmNode::build_optimal_node_route() to fill; build() now
+    /// returns a finished one.
+    class Router {
+      public:
+        /// Every node with memory in |candidates| other than |from|, nearest
+        /// first. Linux: the node order build_zonelists() gets by calling
+        /// find_next_best_node() until it runs out.
+        static auto build(NnId from, NodeMask const &candidates) -> Router;
+
+        template <typename F, typename... Args>
+            requires ustl::traits::Invocable<F, PmNode &, Args...>
+        auto for_each_node(F &&f, Args &&...args) const -> void;
+
+        FORCE_INLINE
+        constexpr auto clear() -> void {
+            m_path.clear();
+        }
+
+        FORCE_INLINE
+        constexpr auto begin() const {
+            return m_path.begin();
+        }
+
+        FORCE_INLINE
+        constexpr auto end() const {
+            return m_path.end();
+        }
+
+      private:
+        /// Appends the next hop. Fixed capacity: one hop per other node, so
+        /// overflowing it means a node was visited twice.
+        FORCE_INLINE
+        constexpr auto push_back(NnId to) -> void {
+            auto const result = m_path.push_back(to);
+            DEBUG_ASSERT(result, "Router overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
+        }
+
+        /// The hops, and their count: StaticVec keeps both.
+        ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
+    };
 
     PmNode(NnId nid);
 
@@ -573,11 +574,9 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
 
 template <typename F, typename... Args>
     requires ustl::traits::Invocable<F, PmNode &, Args...>
-auto NodeRoute::for_each_node(F &&f, Args &&...args) -> void {
+auto PmNode::Router::for_each_node(F &&f, Args &&...args) const -> void {
     // void, not the callback's result: every node is visited and nothing is
-    // collected. It was declared to return InvokeResultT<F, ...> and had no
-    // return statement -- undefined behaviour for any callback returning a
-    // value, unnoticed only because nothing has instantiated it yet.
+    // collected.
     for (auto const nid: m_path) {
         f(*PmNode::node(nid), ustl::forward<Args>(args)...);
     }
