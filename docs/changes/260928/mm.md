@@ -219,3 +219,91 @@ Zircon `VmObjectPaged::lock()` 返回 `cow_pages_->lock()`，同一棵父子树�
   锁放在 VmCowPages 里就能共享，用不着再多一层独立的锁对象。
   等 Snapshot 这类子对象有了自己的 VmCowPages、却仍要和父对象共用一把锁时，再引入它。
 - 行为没有变化：父子共用锁要等 K20 出现第一个 Slice 才有意义。
+
+## 新增 vmo_create_child(Slice)（K20，2026-09-28）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`、`vm_object_paged.cpp`：`create_child_slice()`；新增窗口 `m_cow_offset`、`m_size`，所有进入页树的偏移和范围检查都经过它
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp`、`vmo_dispatcher.cpp`：`VmoDispatcher::create_child()`
+- `kernel/object/include/ours/object/handle_table.hpp`：`get_dispatcher_with_rights()`
+- `system/public/ours/syscall.hpp`：`VmoChildOptions`
+- `kernel/lib/syscall/src/vmo.cpp`：`sys_vmo_create_child()`；删掉原来的占位声明
+- `system/public/ours/syscalls.gni`、`system/lib/ou/include/ou/vmo.hpp`、`system/lib/ou/src/vmo.cpp`：ABI 条目和 `ou::vmo_create_child()`
+- `examples/shell/shell.cpp`：`check_vmo_create_child()`
+- `docs/design/260924/userspace-filesystem.md`：K20 标为已落地；删去“只接受整体提交的父对象”及对应的后续项
+
+**症状**
+init 的 GetBackingMemory（U12）要把 BootFS 里的单个文件交出去，而 BootFS 是一个整块 VMO。
+没有 Slice，就只能交出整个 BootFS，或者把文件复制进一个新 VMO。前者越权，后者浪费内存。
+
+**原因**
+缺功能。
+
+**改法**
+
+```cpp
+// mm：子对象是同一组页上的一个窗口
+class VmObjectPaged {
+    ustl::Arc<VmCowPages> m_cow_pages;   // 父子共用，锁也在里面（上一个提交）
+    u64 const m_cow_offset;               // 本对象的 0 字节在页树里的位置
+    usize const m_size;                   // 本对象的大小
+};
+auto VmObjectPaged::create_child_slice(u64 offset, u64 size, Arc<VmObjectPaged> *out) -> Status {
+    if (offset、size 不页对齐) { return InvArgs; }
+    if (size > m_size || offset > m_size - size) { return InvArgs; }
+    *out = new VmObjectPaged(m_flags, m_cow_pages, m_cow_offset + offset, size);
+}
+// make_cursor / commit_range / copy_page_by_page：先按 m_size 查范围，再加 m_cow_offset
+
+// syscall
+auto sys_vmo_create_child(vmo, options, offset, size, out) -> Status {
+    table.get_dispatcher_with_rights(vmo, Duplicate | Read, &parent, &rights);
+    parent->create_child(options, offset, size, child);   // 选项 → 物理 VMO → 取整 → 窗口
+    Handle::make(child, rights); out.copy_to_user(...); table.add(...);
+}
+```
+
+几处取舍：
+- **窗口放在 VmObjectPaged 上，不另建 VmCowPages**。Zircon 给 Slice 建一个自己的 VmCowPages，
+  用 `parent_offset_` 指回父对象的页，查页时沿层级往上找。我们的 Slice 直接共用父对象的 VmCowPages，
+  只在对象上记 `{offset, size}`，没有层级查找，也就没有层级锁的问题。
+  代价是 Snapshot 这类需要自己页树的子对象，以后还是得走 Zircon 那条路。
+- **`make_cursor()` 按窗口查范围，这是安全边界**。VmCowPages 的页树是整个父对象的。
+  如果 Slice 的映射越过自己的末尾，而 make_cursor 不检查，缺页就会取到父对象窗口之外的页，
+  等于能读写没切给它的字节。现在越界回 OutOfRange，缺页路径随之失败。
+  shell 测了“Slice 末尾再往后一字节，父对象明明有这一页，也回 OutOfRange”。
+- **父对象可以是 Lazy**。上一个提交把锁挪进了 VmCowPages，父子锁住的是同一个 mutex。
+  通过 Slice 缺页插入的页，就在父对象读的那棵树里。设计文档原先“只接受整体提交的父对象”的限制因此去掉。
+- **子对象沿用父对象的 flags**。Pinned 父对象窗口里的页已经全部提交，Slice 不需要再提交；
+  Lazy 的父对象，Slice 被访问时按需提交。
+- **错误顺序**：先查句柄（BadHandle > BadType > AccessDenied，设计 4.5），再查选项，
+  再查 VMO 种类，最后查大小和窗口。未知位回 InvArgs；已知但没实现的种类（Snapshot、Reference 等）、
+  以及 Slice 旁边带别的位，回 NotSupported。物理 VMO 暂不支持切片。
+- **size 在 object 层取整**，和 `create_user()` 一样：先与 `MAX_SIZE` 比较，保证取整不会回绕。
+- **子句柄 rights 等于父句柄 rights**，不照 Zircon 加 SetProperty（设计 §10）。所以 BootFS 的 Slice 也没有 Write，
+  shell 测了往 vdso 的 Slice 里写，回 AccessDenied。
+- **`get_dispatcher_with_rights()`**：Slice 的 rights 要取自父句柄，而且要和查找对象在同一把锁下读出。
+  原来的 `get_dispatcher()` 改为调用它。
+
+**参照**
+- Zircon `sys_vmo_create_child()`（`zircon/kernel/lib/syscalls/vmo.rs`）：`GetDispatcherWithRights(ZX_RIGHT_DUPLICATE | ZX_RIGHT_READ)`，然后 `CreateChild()`。
+- Zircon `VmObjectPaged::CreateChildSlice()`（`zircon/kernel/vm/vm_object_paged.cc`）：offset 对齐检查，范围必须完全落在父对象内，否则 `ZX_ERR_INVALID_ARGS`。
+- `VmoChildOptions` 的位值照搬 `ZX_VMO_CHILD_*`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过；`boot_check.py` 两个镜像都 PASS
+  （dbg 12 passed；rel 11 passed、4 skipped）。两个镜像的 `usercopy.test` 都是 18/18、`pmnode.test` 都是 20/20。
+- 两个镜像的 shell 都打出 `vmo_create_child checks passed`：
+  - Lazy 父对象：父对象在第 2 页写入的字节，从 Slice 的 0 处读出；Slice 写入的字节，从父对象对应位置读出；
+  - Slice 末尾再往后 1 字节回 OutOfRange；
+  - Slice 的 Slice 落在两段偏移之和的位置；size 为 1 时取整为一页，最后一字节可读，再往后回 OutOfRange；
+  - offset 不对齐、范围越出父对象回 InvArgs；Snapshot、Slice|NoWrite 回 NotSupported；未知位回 InvArgs；
+  - 句柄是 channel 回 BadType，句柄不带 Read 回 AccessDenied。
+- 只在 dbg_1 跑的部分：对 BootFS 的 `vdso` 条目取 Slice，读出 `\x7fELF`；对它 vmo_write 回 AccessDenied。
+
+**故意没做**
+- 没有测“映射 Slice 时越过窗口会失败”：要等 K21 的 `vmar_map` 支持 vmo_offset 才能构造出这种映射。
+  这条防线目前只由 `make_cursor()` 的范围检查保证，读写路径的对应检查已经测过。
+- 父对象不记录它的子对象（Zircon 的 children list）。现在没有代码需要遍历子对象；
+  等 decommit 这类要通知所有共用页的对象的操作出现时再加。
+- Slice|NoWrite 本可以直接实现（去掉 Write 就行），但现在没有使用者，按“已知但未实现”回 NotSupported。

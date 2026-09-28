@@ -22,6 +22,12 @@ auto vmo_create(u64 size, ours::VmoOptions options, ours::HandleValue *out) -> o
 /// by then, so after any failure its contents are unspecified.
 auto vmo_read(ours::HandleValue vmo, void *buffer, u64 offset, usize length) -> ours::Status;
 
+/// A child of the VMO |vmo| -- options must be Slice today -- into |out|: the
+/// window [offset, offset + size) of it, over the same pages, with |vmo|'s
+/// rights. |vmo| must grant Duplicate and Read.
+auto vmo_create_child(ours::HandleValue vmo, ours::VmoChildOptions options, u64 offset, u64 size,
+                      ours::HandleValue *out) -> ours::Status;
+
 /// Replaces |vmo| with a handle to the same VMO that may be executed, into
 /// |out|: |vmo|'s rights less Write, plus Execute. |vmex| must be the VMEX
 /// System resource. |vmo| is consumed whatever the answer; duplicate it first

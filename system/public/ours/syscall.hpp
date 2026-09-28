@@ -98,6 +98,22 @@ enum class VmoOptions : u32 {
     None = 0,
     Resizable = 1U << 1,
 };
+
+/// vmo_create_child's options: which kind of child, and how it may be used.
+/// Only Slice is built; every other bit named here is recognised and answered
+/// NotSupported, and any bit not named here is InvArgs. The values are
+/// Zircon's ZX_VMO_CHILD_*, so a request ported from Zircon asks the same
+/// question.
+enum class VmoChildOptions : u32 {
+    None = 0,
+    Snapshot = 1U << 0,
+    Resizable = 1U << 2,
+    Slice = 1U << 3,
+    SnapshotAtLeastOnWrite = 1U << 4,
+    NoWrite = 1U << 5,
+    Reference = 1U << 6,
+    SnapshotModified = 1U << 7,
+};
 } // namespace ours
 
 #endif // OURS_SYSCALL_HPP

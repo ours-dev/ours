@@ -10,16 +10,6 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
-namespace ours::syscall {
-// Placeholder for vmo_create_child, which has no entry in syscalls.gni yet
-// and so no generated sys_ declaration to define. A pointer for the same
-// reason as task.cpp: object::Handle has no public constructor and no copy,
-// so it cannot cross a by-value signature. It is replaced, not filled in,
-// when its call lands (docs/design/260924/userspace-filesystem.md, 7.2): a
-// handler's signature comes from its generated declaration.
-auto vmo_create_child(object::Handle *handle) -> object::Handle *;
-} // namespace ours::syscall
-
 namespace ours {
 using object::Handle;
 using object::KernelHandle;
@@ -72,6 +62,43 @@ auto sys_vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer,
         return status;
     }
     return dispatcher->read_user(buffer, offset, length);
+}
+
+/// A child of |vmo|'s VMO -- today only a slice -- with the rights of |vmo|'s
+/// handle, published as vmo_create does (design 4.1).
+///
+/// The handle must grant Duplicate and Read, as Zircon's does: a slice is a
+/// second way into the same bytes, so it takes what a duplicate takes plus the
+/// right to read them. The rights are the parent handle's, unchanged: never
+/// Write added, and not Zircon's extra SetProperty either (design §10) -- a
+/// slice of a read-only BootFS is read-only, which GetBackingMemory relies on
+/// alongside its own handle_duplicate. Zircon sys_vmo_create_child().
+auto sys_vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 const offset,
+                          u64 const size, user_copy::UserOutPtr<HandleValue> const out) -> Status {
+    ustl::Arc<VmoDispatcher> parent;
+    Rights rights = Rights::None;
+    auto &table = ProcessDispatcher::current()->handle_table();
+    if (auto const status = table.get_dispatcher_with_rights(vmo, Rights::Duplicate | Rights::Read,
+                                                             &parent, &rights);
+        status != Status::Ok) {
+        return status;
+    }
+
+    KernelHandle<VmoDispatcher> child;
+    if (auto const status = parent->create_child(options, offset, size, child);
+        status != Status::Ok) {
+        return status;
+    }
+
+    auto handle = Handle::make(KernelHandle<object::Dispatcher>(ustl::move(child)), rights);
+    if (!handle) {
+        return Status::NoResource;
+    }
+    if (auto const status = out.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
+        return status;
+    }
+    static_cast<void>(table.add(ustl::move(handle)));
+    return Status::Ok;
 }
 
 /// A new handle to |vmo|'s VMO with Execute and without Write, in place of

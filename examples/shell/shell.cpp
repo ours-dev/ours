@@ -1268,6 +1268,187 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
     }
 }
 
+/// vmo_create_child(Slice): a window onto another VMO's pages (K20).
+///
+/// What needs no particular VMO runs in every image, on a Lazy VMO of its
+/// own, which is the case a slice could only be trusted with once parent and
+/// child shared one lock (VmCowPages::lock()):
+///   - the window: bytes written through the parent at page 2 read back at
+///     the slice's 0, and the other way round; one byte past the slice is
+///     OutOfRange although the parent has it; a slice of a slice lands at the
+///     sum of the offsets; a size of 1 rounds up to a page;
+///   - the arguments: an unaligned offset, and a range past the parent's end,
+///     are InvArgs; Snapshot, and Slice with NoWrite beside it, NotSupported;
+///     an unknown bit InvArgs;
+///   - the handle: a channel is BadType, one without Read AccessDenied.
+/// What needs the BootFS runs where userboot started this program: a slice of
+/// the `vdso` entry starts with the ELF magic, and inherits the BootFS
+/// handle's lack of Write.
+auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
+    using ours::Rights;
+    using ours::Status;
+    using ours::VmoChildOptions;
+    using ours::VmoOptions;
+
+    constexpr auto PAGE = u64{4096};
+
+    auto ok = true;
+    ours::HandleValue parent = ours::HANDLE_INVALID;
+    if (!expect("shell: vmo_create(3 pages) = ",
+                ou::vmo_create(3 * PAGE, VmoOptions::None, &parent), Status::Ok)) {
+        static_cast<void>(ou::debug_line("shell: vmo_create_child checks FAILED"));
+        return;
+    }
+
+    // Parent to slice.
+    u8 const down[4] = {0xd0, 0xd1, 0xd2, 0xd3};
+    u8 got[4] = {};
+    ok &= expect("shell: vmo_write(parent, page 2) = ",
+                 ou::vmo_write(parent, down, PAGE, sizeof(down)), Status::Ok);
+    ours::HandleValue slice = ours::HANDLE_INVALID;
+    ok &= expect("shell: vmo_create_child(Slice, page 2) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::Slice, PAGE, PAGE, &slice),
+                 Status::Ok);
+    ok &= expect("shell: vmo_read(slice, 0) = ", ou::vmo_read(slice, got, 0, sizeof(got)),
+                 Status::Ok);
+    ok &= same_bytes(down, got, sizeof(got));
+
+    // Slice to parent: the slice commits the page the parent reads.
+    u8 const up[4] = {0xa0, 0xa1, 0xa2, 0xa3};
+    ok &= expect("shell: vmo_write(slice, 8) = ", ou::vmo_write(slice, up, 8, sizeof(up)),
+                 Status::Ok);
+    ok &= expect("shell: vmo_read(parent, page 2 + 8) = ",
+                 ou::vmo_read(parent, got, PAGE + 8, sizeof(got)), Status::Ok);
+    ok &= same_bytes(up, got, sizeof(got));
+
+    // The window's end, which the parent's pages do not stop at.
+    ok &= expect("shell: vmo_read(slice, one byte past its end) = ",
+                 ou::vmo_read(slice, got, PAGE, 1), Status::OutOfRange);
+
+    // A slice of a slice: the parent's pages 2..3, then page 1 of that.
+    ours::HandleValue wide = ours::HANDLE_INVALID;
+    ours::HandleValue nested = ours::HANDLE_INVALID;
+    ok &= expect("shell: vmo_create_child(Slice, pages 2-3) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::Slice, PAGE, 2 * PAGE, &wide),
+                 Status::Ok);
+    ok &= expect("shell: vmo_create_child(Slice of it, its page 1) = ",
+                 ou::vmo_create_child(wide, VmoChildOptions::Slice, 0, 1, &nested), Status::Ok);
+    ok &= expect("shell: vmo_read(nested, 8) = ", ou::vmo_read(nested, got, 8, sizeof(got)),
+                 Status::Ok);
+    ok &= same_bytes(up, got, sizeof(got));
+    // A size of 1 was a page: its last byte is there, the next is not.
+    ok &= expect("shell: vmo_read(nested, last byte of the page) = ",
+                 ou::vmo_read(nested, got, PAGE - 1, 1), Status::Ok);
+    ok &= expect("shell: vmo_read(nested, one past) = ", ou::vmo_read(nested, got, PAGE, 1),
+                 Status::OutOfRange);
+    ok &= expect("shell: close(nested) = ", ou::handle_close(nested), Status::Ok);
+    ok &= expect("shell: close(wide) = ", ou::handle_close(wide), Status::Ok);
+
+    // The arguments.
+    ours::HandleValue refused = ours::HANDLE_INVALID;
+    ok &= expect("shell: vmo_create_child(unaligned offset) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::Slice, 8, PAGE, &refused),
+                 Status::InvArgs);
+    ok &= expect("shell: vmo_create_child(past the end) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::Slice, 2 * PAGE, 2 * PAGE, &refused),
+                 Status::InvArgs);
+    ok &= expect("shell: vmo_create_child(Snapshot) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::Snapshot, 0, PAGE, &refused),
+                 Status::NotSupported);
+    ok &= expect("shell: vmo_create_child(Slice | NoWrite) = ",
+                 ou::vmo_create_child(
+                     parent,
+                     static_cast<VmoChildOptions>(std::to_underlying(VmoChildOptions::Slice) |
+                                                  std::to_underlying(VmoChildOptions::NoWrite)),
+                     0, PAGE, &refused),
+                 Status::NotSupported);
+    ok &= expect(
+        "shell: vmo_create_child(an unknown bit) = ",
+        ou::vmo_create_child(parent, static_cast<VmoChildOptions>(1U << 9), 0, PAGE, &refused),
+        Status::InvArgs);
+
+    // The handle.
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        ok &= expect("shell: vmo_create_child(a channel) = ",
+                     ou::vmo_create_child(a, VmoChildOptions::Slice, 0, PAGE, &refused),
+                     Status::BadType);
+        ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+        ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ours::HandleValue unreadable = ours::HANDLE_INVALID;
+    ok &=
+        expect("shell: handle_duplicate(parent, without Read) = ",
+               ou::handle_duplicate(parent, Rights::Basic | Rights::Map, &unreadable), Status::Ok);
+    ok &= expect("shell: vmo_create_child(without Read) = ",
+                 ou::vmo_create_child(unreadable, VmoChildOptions::Slice, 0, PAGE, &refused),
+                 Status::AccessDenied);
+    ok &=
+        expect("shell: close(the copy without Read) = ", ou::handle_close(unreadable), Status::Ok);
+
+    ok &= expect("shell: close(slice) = ", ou::handle_close(slice), Status::Ok);
+    ok &= expect("shell: close(parent) = ", ou::handle_close(parent), Status::Ok);
+
+    if (bootfs == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vmo_create_child on the BootFS skipped"));
+    } else {
+        // The `vdso` entry, found the way check_bootfs() reads the directory.
+        bootfs::Header header{};
+        constexpr u32 MAX_ENTRIES = 16;
+        constexpr u32 MAX_NAMES = 512;
+        bootfs::Entry entries[MAX_ENTRIES];
+        char names[MAX_NAMES];
+        auto found = false;
+        ok &= expect("shell: vmo_read(header) = ", ou::vmo_read(bootfs, &header, 0, sizeof(header)),
+                     Status::Ok);
+        if (header.file_count <= MAX_ENTRIES && header.name_table_size <= MAX_NAMES) {
+            auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
+            ok &= expect("shell: vmo_read(entries) = ",
+                         ou::vmo_read(bootfs, entries, sizeof(header), entries_size), Status::Ok);
+            ok &= expect(
+                "shell: vmo_read(names) = ",
+                ou::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size),
+                Status::Ok);
+            for (u32 i = 0; ok && !found && i < header.file_count; ++i) {
+                auto const &entry = entries[i];
+                if (u64{entry.name_offset} + entry.name_size > header.name_table_size ||
+                    !spells(names + entry.name_offset, entry.name_size, "vdso")) {
+                    continue;
+                }
+                found = true;
+                ours::HandleValue vdso = ours::HANDLE_INVALID;
+                ok &= expect("shell: vmo_create_child(bootfs, Slice, vdso) = ",
+                             ou::vmo_create_child(bootfs, VmoChildOptions::Slice, entry.data_offset,
+                                                  entry.data_size, &vdso),
+                             Status::Ok);
+                char magic[4] = {};
+                ok &= expect("shell: vmo_read(the vdso slice, 0) = ",
+                             ou::vmo_read(vdso, magic, 0, sizeof(magic)), Status::Ok);
+                ok &= spells(magic, sizeof(magic),
+                             "\x7f"
+                             "ELF");
+                ok &=
+                    expect("shell: vmo_write(the vdso slice) = ", ou::vmo_write(vdso, magic, 0, 1),
+                           Status::AccessDenied);
+                ok &= expect("shell: close(the vdso slice) = ", ou::handle_close(vdso), Status::Ok);
+            }
+        }
+        if (!found) {
+            static_cast<void>(ou::debug_line("shell: no vdso entry in the BootFS"));
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vmo_create_child checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vmo_create_child checks FAILED"));
+    }
+}
+
 /// vmo_replace_as_executable: vmex turns a VMO handle into one that may be
 /// executed, and the handle it is given is consumed whatever the answer (K19).
 ///
@@ -1402,6 +1583,7 @@ auto main(int, char **) -> int {
     check_vmo_create();
     check_bootfs(bootfs, runtime::vdso_base());
     check_handle_duplicate(bootfs);
+    check_vmo_create_child(bootfs);
     check_vmo_replace_as_executable(bootfs, vmex);
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
 

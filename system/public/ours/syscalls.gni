@@ -395,6 +395,46 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "vmo_create_child"
+    brief = "Creates a child of the VMO |vmo| names: today, a slice of it."
+    doc = [
+      "|options| must be Slice: a window [offset, offset + size) of the",
+      "parent, over the same pages, so a write through either is seen",
+      "through the other. Any other known option is NotSupported, an unknown",
+      "bit InvArgs. |size| rounds up to a page; |offset| must be page-aligned",
+      "and the range must lie inside the parent (InvArgs). The handle must",
+      "grant Duplicate and Read (AccessDenied); the child's handle has the",
+      "same rights. Its value goes to |out|, and it is in this process's",
+      "table only once that write has worked. It counts against this",
+      "process's handle quota (NoResource past it).",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "HandleValue"
+      },
+      {
+        name = "options"
+        type = "VmoChildOptions"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "size"
+        type = "u64"
+      },
+      {
+        name = "out"
+        type = "HandleValue"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "vmo_replace_as_executable"
     brief = "Replaces |vmo| with a handle to the same VMO that may be executed."
     doc = [

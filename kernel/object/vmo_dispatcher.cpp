@@ -90,6 +90,57 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
     return create(ustl::move(vmo), handle_out, rights_out);
 }
 
+/// Only a slice, and only of a paged VMO: the options first, then the size,
+/// then the window, in the order Zircon's VmObjectDispatcher::CreateChild()
+/// and VmObjectPaged::CreateChildSlice() ask.
+///
+///   - An unknown bit is InvArgs; a known kind other than Slice, or Slice
+///     with any other bit beside it, is NotSupported (deferred, not wrong).
+///   - A physical VMO is NotSupported: Zircon slices those too, but nothing
+///     here needs it yet.
+///   - The size rounds up to a page, as vmo_create's does (Zircon rounds it
+///     in sys_vmo_create_child); one too large to round is OutOfRange.
+///   - The offset must be page-aligned and the rounded range must lie inside
+///     the parent, or InvArgs -- mm::VmObjectPaged::create_child_slice().
+auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset, u64 const size,
+                                 KernelHandle<Self> &handle_out) -> Status {
+    constexpr auto KNOWN = std::to_underlying(VmoChildOptions::Snapshot) |
+                           std::to_underlying(VmoChildOptions::Resizable) |
+                           std::to_underlying(VmoChildOptions::Slice) |
+                           std::to_underlying(VmoChildOptions::SnapshotAtLeastOnWrite) |
+                           std::to_underlying(VmoChildOptions::NoWrite) |
+                           std::to_underlying(VmoChildOptions::Reference) |
+                           std::to_underlying(VmoChildOptions::SnapshotModified);
+    auto const bits = std::to_underlying(options);
+    if ((bits & ~KNOWN) != 0) {
+        return Status::InvArgs;
+    }
+    if (options != VmoChildOptions::Slice) {
+        return Status::NotSupported;
+    }
+
+    auto *const paged = mm::as<mm::VmObjectPaged>(m_vmo.as_ptr_mut());
+    if (paged == nullptr) {
+        return Status::NotSupported;
+    }
+
+    // Checked before rounding, as in create_user(): MAX_SIZE leaves a page of
+    // headroom, so anything that passes rounds up without wrapping.
+    if (size > mm::VmObjectPaged::MAX_SIZE) {
+        return Status::OutOfRange;
+    }
+    auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
+
+    ustl::Arc<mm::VmObjectPaged> child;
+    if (auto const status = paged->create_child_slice(offset, rounded, &child);
+        Status::Ok != status) {
+        return status;
+    }
+
+    Rights ignored = Rights::None;
+    return create(ustl::move(child), handle_out, ignored);
+}
+
 auto VmoDispatcher::create_physical(PhysAddr const base, usize const size,
                                     KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
     ustl::Arc<mm::VmObjectPhysical> vmo;

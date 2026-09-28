@@ -37,6 +37,19 @@ class VmObjectPaged: public VmObject {
         -> Status;
 
     ///
+    /// A slice of this object: [offset, offset + size) of it, as an object of
+    /// its own, over the very same pages. A write through either is seen
+    /// through the other; the child has no pages and no lock of its own
+    /// (VmCowPages::lock()), so a fault through it commits into the tree the
+    /// parent reads.
+    ///
+    /// InvArgs unless both ends are page-aligned and the range lies wholly
+    /// inside this object; a slice of a slice is a slice of the first
+    /// object's pages at the sum of the offsets.
+    ///
+    /// Zircon: VmObjectPaged::CreateChildSlice(), with the same answers.
+    auto create_child_slice(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
+
     auto commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status override;
 
     ///
@@ -63,9 +76,11 @@ class VmObjectPaged: public VmObject {
     /// Read without m_lock: nothing can change a paged VMO's size, because
     /// Resizable has no implementation. The day it does, this has to take the
     /// lock, as Zircon's size_locked() requires its caller to.
+    ///
+    /// This object's size, not its pages': a slice sees only its window.
     [[nodiscard]]
     auto size() const -> usize override {
-        return m_cow_pages->size_locked();
+        return m_size;
     }
 
     /// A cursor walks VmCowPages::m_pages and inserts into it, and m_lock --
@@ -74,15 +89,28 @@ class VmObjectPaged: public VmObject {
     /// the address space's lock alone, which is how the tree came to be
     /// written under two unrelated locks; TA_REQUIRES makes that a compile
     /// error.
+    ///
+    /// |offset| is in this object's bytes; the cursor walks the shared pages
+    /// at m_cow_offset past it. The range is checked against this object's
+    /// size first, because nothing below would: the page tree is the parent's
+    /// too, and a mapping of a slice that ran past the slice's end would
+    /// otherwise reach the parent's pages beyond it.
     TA_REQUIRES(m_lock)
     FORCE_INLINE
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
+        if (size > m_size || offset > m_size - size) {
+            return ustl::err(Status::OutOfRange);
+        }
         assert_cow_pages_locked();
-        return m_cow_pages->make_cursor(offset, size);
+        return m_cow_pages->make_cursor(m_cow_offset + offset, size);
     }
 
     /// Priviate on logic, please go to use the facotry methods like VmObjectPaged::create*.
-    VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages>);
+    ///
+    /// |cow_offset| and |size| are the window of |cowpages| this object is:
+    /// 0 and the pages' size for an object created on its own pages, a range
+    /// inside them for a slice.
+    VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages> cowpages, u64 cow_offset, usize size);
     virtual ~VmObjectPaged() = default;
 
   private:
@@ -126,6 +154,14 @@ class VmObjectPaged: public VmObject {
         -> Status;
 
     ustl::Arc<VmCowPages> m_cow_pages;
+
+    /// Where this object's byte 0 sits in m_cow_pages, and how many bytes it
+    /// has. Every offset into the pages goes through the first, every range
+    /// check through the second. Zircon keeps the same pair on the slice's own
+    /// VmCowPages (parent_offset_, size_); ours shares one VmCowPages among
+    /// the whole tree, so the window lives on the object instead.
+    u64 const m_cow_offset;
+    usize const m_size;
 };
 
 } // namespace ours::mm

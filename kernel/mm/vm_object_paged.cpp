@@ -21,9 +21,12 @@ using ustl::mm::align_up;
 namespace ours::mm {
 using VmoPagedCache = ObjectCache::Instance<VmObjectPaged>;
 
-VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages)
+VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages, u64 const cow_offset,
+                             usize const size)
     : Base(gktl::magic<Self>(), Type::Paged, vmof, cowpages->lock())
-    , m_cow_pages(ustl::move(cowpages)) {}
+    , m_cow_pages(ustl::move(cowpages))
+    , m_cow_offset(cow_offset)
+    , m_size(size) {}
 
 auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)
     -> Status {
@@ -34,7 +37,7 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
         return status;
     }
 
-    auto vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages));
+    auto vmo = VmoPagedCache::get(GAF_KERNEL, vmof, ustl::move(cow_pages), 0, size);
     if (!vmo) {
         return Status::OutOfMem;
     }
@@ -74,6 +77,35 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     return Status::Ok;
 }
 
+/// No lock is taken: everything read here -- the window and the pages it
+/// sits on -- is fixed when the parent is built, and the child only adds a
+/// reference to the pages. Zircon takes the lock to link the child into the
+/// parent's list of children, which ours does not keep (nothing yet walks it).
+///
+/// The child keeps the parent's flags. For a Pinned parent every page of the
+/// window is already committed, and stays so; for a Lazy one the child
+/// commits into the shared tree as it is touched, which the parent then sees.
+auto VmObjectPaged::create_child_slice(u64 const offset, u64 const size,
+                                       ustl::Arc<VmObjectPaged> *const out) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+    // Wholly inside this object, written so that it cannot wrap.
+    if (size > m_size || offset > m_size - size) {
+        return Status::InvArgs;
+    }
+
+    auto child =
+        VmoPagedCache::get(GAF_KERNEL, m_flags, m_cow_pages, m_cow_offset + offset, usize(size));
+    if (!child) {
+        return Status::OutOfMem;
+    }
+    *out = ustl::Arc<Self>::adopt(child);
+    return Status::Ok;
+}
+
 FORCE_INLINE
 auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOptions option)
     -> Status {
@@ -91,8 +123,7 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     // The whole range, offset included, and written so that it cannot wrap:
     // this used to compare |size| alone against the object's size, so a range
     // starting anywhere but 0 was admitted however far it ran past the end.
-    auto const total = m_cow_pages->size_locked();
-    if (size > total || offset > total - size) {
+    if (size > m_size || offset > m_size - size) {
         return Status::OutOfRange;
     }
 
@@ -112,7 +143,7 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     // loop whole -- the wait, the advance, the retry -- not the shape of it.
     usize nr_committed = 0;
     assert_cow_pages_locked();
-    return m_cow_pages->commit_range_locked(offset, size, &nr_committed);
+    return m_cow_pages->commit_range_locked(m_cow_offset + offset, size, &nr_committed);
 }
 
 auto VmObjectPaged::commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status {
@@ -198,8 +229,7 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
             // the caller asks for TrimLength. Rechecked each time the lock is
             // retaken, because the size is only known to be what it was while
             // the lock is held.
-            auto const total = m_cow_pages->size_locked();
-            if (size > total || offset > total - size) {
+            if (size > m_size || offset > m_size - size) {
                 return Status::OutOfRange;
             }
 
@@ -209,7 +239,8 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
             auto const first_page = align_down(offset + done, PAGE_SIZE);
             auto const end_page = align_up(offset + size, PAGE_SIZE);
             assert_cow_pages_locked();
-            auto cursor = m_cow_pages->make_cursor(first_page, end_page - first_page);
+            auto cursor =
+                m_cow_pages->make_cursor(m_cow_offset + first_page, end_page - first_page);
             if (!cursor) {
                 return cursor.unwrap_err();
             }

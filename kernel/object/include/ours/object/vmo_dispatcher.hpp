@@ -87,6 +87,12 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// does not own, such as MMIO. Nothing here frees it. (Loaded ELF images
     /// used to come through here too, which is how their frames leaked; they
     /// are paged VMOs now.)
+    /// A child of this VMO, for vmo_create_child; see the definition. The
+    /// rights are the caller's to decide -- they come from the parent's
+    /// handle, which this object never sees.
+    auto create_child(VmoChildOptions options, u64 offset, u64 size, KernelHandle<Self> &handle_out)
+        -> Status;
+
     static auto create_physical(PhysAddr base, usize size, KernelHandle<Self> &handle_out,
                                 Rights &rights_out) -> Status;
 

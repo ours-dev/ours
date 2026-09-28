@@ -94,6 +94,19 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     [[nodiscard]]
     auto get_dispatcher(HandleValue const value, Rights const required, ustl::Arc<T> *const out)
         -> Status {
+        Rights ignored = Rights::None;
+        return get_dispatcher_with_rights(value, required, out, &ignored);
+    }
+
+    /// get_dispatcher(), and the handle's rights into |rights|: for a call
+    /// that hands out a new handle whose rights derive from the one it was
+    /// given (vmo_create_child). Read under the same lock as the lookup, so
+    /// the rights are the ones of the handle the object was found through.
+    /// Zircon: HandleTable::GetDispatcherWithRights().
+    template <typename T>
+    [[nodiscard]]
+    auto get_dispatcher_with_rights(HandleValue const value, Rights const required,
+                                    ustl::Arc<T> *const out, Rights *const rights) -> Status {
         Guard guard{m_lock};
         auto const *const handle = lookup_locked(value);
         if (handle == nullptr) {
@@ -107,6 +120,7 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
             return Status::AccessDenied;
         }
         *out = ustl::move(typed);
+        *rights = handle->rights();
         return Status::Ok;
     }
 
