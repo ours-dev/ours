@@ -1361,3 +1361,79 @@ Linux 把同样的工作分在几处：
 - `PmNode::Current` 的 `init()`、`claim_possible_cpus()`、`publish()` 以及两个 init hook 也是启动代码，
   但属于 CPU 归属这条线，这次没挪，留在 `pm_node.cpp`。
 - `ZoneQueues` 的结构调整是第 4 步。
+
+## ZoneQueues 收拢为 ZoneList：按类型的本地 zone 数组加一条回退链（2026-09-27）
+
+PmNode 结构整理第 4 步。
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_node.hpp`：`ZoneQueues` 改写为 `ZoneList`；PmNode 的成员和访问器改名为
+  `m_zone_list` / `zone_list()`；`get_frame_from_zone_queues` 改名为 `get_frame_from_zone_list`
+- `kernel/mm/pm_node.cpp`：`ZoneList` 的实现；改写 `ZoneIterator` 和 `AllocationContext`；更新所有使用点
+- `kernel/mm/pm_node_init.cpp`、`pmm.cpp`、`memmap_init.cpp`：跟着改用新接口
+
+**症状**
+无运行时症状，是结构问题，外加一段错误但没人调用的代码。`ZoneQueues` 有四个队列，
+共用一块数组，靠 `subspan()` 切出来，另外还要记四个长度：
+
+| 队列 | 内容 | 实际用途 |
+|---|---|---|
+| `LocalSequential` | 本节点的 zone，按类型下标，缺的类型为空 | 释放页框时按类型找 zone |
+| `LocalContiguous` | 同一批 zone，去掉空位 | `connect()` 拼接、统计、打印 |
+| `SharedAffinity` | 本节点加远端节点，按距离排序 | 分配时唯一遍历的队列 |
+| `SharedSequential` | 从未填过 | 无 |
+
+`ZoneIterator::move_next()` 根本不过滤：某个 zone 不满足条件时，它只是让游标多走一步，
+然后照样返回当前指向的那个 zone，不管它是否通过了检查。`AllocationContext` 在用它，不过两者都没有调用者。
+
+**原因**
+两个本地队列存的是同一份事实，只是一个有空位、一个没有。真正独立的信息只有两样：
+按类型能找到 zone，以及回退顺序。`SharedSequential` 从来没填过；从名字和 `Gaf::ThisNode` 的用法看，
+它想表达的是"只在本节点内分配"，也就是 Linux 的 `ZONELIST_NOFALLBACK`，
+而这个遍历用按类型的数组就能完成，不需要单独存一份。
+
+**改法**
+
+```cpp
+class ZoneList {
+  public:
+    auto insert_local_zone(PmZone *zone, ZoneType ztype) -> void;   // 写 m_zones，追加到 m_fallback
+    auto connect(NodeMask const &nodemask) -> void;                  // 追加远端节点的本地 zone
+    auto local_zone(ZoneType ztype) const -> ZoneRef;                // 原 get_local_zone()
+    auto for_each_local_zone(F &&f) const -> void;                   // 原 LocalContiguous 的用途
+    auto for_each_zone(F &&f) -> ...;                                 // 回退顺序
+    auto local_zones() const -> Zones;                                // 含空位，给过滤式遍历用
+    auto fallback() const -> Zones;
+  private:
+    std::array<ZoneRef, NR_ZONES_PER_NODE> m_zones;                   // Linux node_zones[]
+    ustl::collections::StaticVec<ZoneRef, MAX_ZONES> m_fallback;      // Linux node_zonelists[ZONELIST_FALLBACK]
+    NodeMask m_connected;
+    NnId m_nid;
+};
+```
+
+- `connect()` 不再从远端节点的 `LocalContiguous` 拷贝，而是对远端节点调用 `for_each_local_zone()`，按类型顺序追加。
+  结果和原来完全一样。
+- `ZoneIterator` 改为按下标遍历一个 `Zones` 视图：
+  - 遇到空位、类型超出上限、节点不在掩码里，都用 `continue` 跳过；
+  - 只返回通过全部检查的 zone。
+- `AllocationContext` 在 `Gaf::ThisNode` 时遍历 `local_zones()`，否则遍历 `fallback()`。
+- 成员改用 `m_` 前缀，原来是尾部下划线。
+- 回退链的调试输出标签从 `s-affi` 改为 `fallback`。
+
+**参照**
+Linux 在 `pg_data_t` 上放的是同样的两样：
+- `node_zones[MAX_NR_ZONES]`，按类型下标；
+- `node_zonelists[MAX_ZONELISTS]`，由 `build_zonelists()` 填。其中 `ZONELIST_FALLBACK` 是跨节点的回退顺序，
+  `ZONELIST_NOFALLBACK` 只含本节点，供 `__GFP_THISNODE` 使用。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+  `memmap_init` 建内存映射、`free_frame_count()` 统计空闲页都经过新接口，启动能走完就说明它们工作正常。
+- NUMA：`out/numa.x86` dbg_1 镜像用 `NUMA=1` 启动，跑到 shell，无异常。四个节点的回退链
+  （把标签换回 `s-affi` 后）与改动前逐行 `diff` 一致。
+- `ZoneIterator` 和 `AllocationContext` 仍然没有调用者，改写只经过编译检查，运行时行为未实测。
+
+**故意没做**
+- `AllocationContext` 和 `ZoneIterator` 按要求保留并改写，没有删掉。
+- 没有给 `Gaf::ThisNode` 单独建一条"只含本节点"的链。遍历 `local_zones()` 就能表达同样的意思。

@@ -123,7 +123,8 @@ namespace {
 
             auto const role = role_of(reservation.type);
             auto const start_pfn = phys_to_pfn(reservation.range.base);
-            auto const end_pfn = phys_to_pfn(ustl::mm::align_up(reservation.range.end(), PAGE_SIZE));
+            auto const end_pfn =
+                phys_to_pfn(ustl::mm::align_up(reservation.range.end(), PAGE_SIZE));
 
             for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
                 if (!pfn_valid(pfn)) {
@@ -151,7 +152,7 @@ namespace {
                     continue;
                 }
                 node->add_reserved_frames(1);
-                if (auto *const zone = node->zone_queues()->get_local_zone(frame->zone())) {
+                if (auto *const zone = node->zone_list()->local_zone(frame->zone())) {
                     zone->add_reserved_frames(1);
                 }
                 frames_by_type[usize(reservation.type)] += 1;
@@ -218,11 +219,11 @@ auto init_memmap() -> void {
 
             start_pfn = phys_to_pfn(region.range.base);
             end_pfn = phys_to_pfn(region.range.end());
-            for (auto zone: node->zone_queues()->get_queue(ZoneQueues::LocalContiguous)) {
-                start_pfn = init_memmap_zone(zone->zone_type(), zone->start_pfn(), zone->end_pfn(),
+            node->zone_list()->for_each_local_zone([&](PmZone &zone) {
+                start_pfn = init_memmap_zone(zone.zone_type(), zone.start_pfn(), zone.end_pfn(),
                                              start_pfn, end_pfn, hole_start_pfn, region.node);
                 hole_start_pfn = end_pfn;
-            }
+            });
             return true;
         });
     DEBUG_ASSERT(status == Status::Ok, "Failed to enumerate early memory");

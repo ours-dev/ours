@@ -4,6 +4,7 @@
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pm_node.hpp>
+#include <ours/mm/pm_zone.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_aspace.hpp>
 
@@ -100,18 +101,15 @@ auto free_page_table(PhysAddr base, usize size) -> void {
 
 auto free_frame_count() -> usize {
     usize total = 0;
-    // LocalContiguous and not a shared queue: the shared ones list other
-    // nodes' zones too, for fallback, and would count them once per node.
+    // The node's own zones, not its fallback order: that one lists other
+    // nodes' zones too, and would count them once per node.
     PmNode::for_each_nid(PmNode::State::Online, [&total](NnId const nid) {
         auto *const node = PmNode::node(nid);
         if (!node) {
             return;
         }
-        for (auto *const zone: node->zone_queues()->get_queue(ZoneQueues::LocalContiguous)) {
-            if (zone) {
-                total += zone->free_frames();
-            }
-        }
+        node->zone_list()->for_each_local_zone(
+            [&total](PmZone &zone) { total += zone.free_frames(); });
     });
     return total;
 }

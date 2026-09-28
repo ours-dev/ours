@@ -34,103 +34,101 @@
 #include <ustl/views/span.hpp>
 
 namespace ours::mm {
-/// `ZoneQueues` is a helper class separated from `PmNode`, specifically
-/// designed to manage zones of different priorities within a node and provide
-/// cross-node zone access and communication capabilities.
-class ZoneQueues {
-    using Self = ZoneQueues;
+/// A node's zones, kept two ways: by type, which is how a freed frame finds the
+/// zone it came from, and in fallback order, which is how an allocation looks
+/// for one -- this node's own zones first, then every other node's, nearest
+/// first.
+///
+/// Linux keeps the same pair on pg_data_t: node_zones[] indexed by zone type,
+/// and node_zonelists[ZONELIST_FALLBACK], which build_zonelists() fills.
+///
+/// It used to be ZoneQueues, four queues cut out of one shared array with
+/// subspan() and a length kept for each: LocalSequential (by type, with holes),
+/// LocalContiguous (the same zones without the holes), SharedAffinity (the
+/// fallback order, the only one an allocation walked) and SharedSequential
+/// (never filled). The two local ones were one fact stored twice; the fallback
+/// order is the only list that is not derived from the by-type array.
+class ZoneList {
+    using Self = ZoneList;
 
   public:
-    // Public because pm-node.cpp's ZoneIterator is built on top of these.
     using ZoneRef = PmZone *;
-    using ZoneQueue = ustl::views::Span<ZoneRef>;
-    enum QueueType {
-        /// A zone queue which arranged by zone type, there may be holes if a type of zone do not exist
-        /// in the node. It's just useful when we free a frame.
-        LocalSequential,
-        LocalContiguous,
-        SharedAffinity,
-        SharedSequential,
-        MaxNumQueues,
-    };
+    using Zones = ustl::views::Span<ZoneRef const>;
 
-    ZoneQueues(NnId nid) : queue_storage_(), queue_sizes_(), queues_(), connected_(), nid_(nid) {
-        init_queues();
-    }
+    explicit ZoneList(NnId nid) : m_zones(), m_fallback(), m_connected(), m_nid(nid) {}
 
-    ~ZoneQueues() = default;
-
+    /// Adds one of this node's own zones, under its type and at the end of
+    /// the fallback order -- before connect() appends anyone else's.
     FORCE_INLINE
-    constexpr auto insert_local_zone(PmZone *zone, ZoneType ztype) -> void {
-        DEBUG_ASSERT(static_cast<usize>(ztype) < NR_ZONES_PER_NODE);
-        DEBUG_ASSERT(get_queue(QueueType::LocalSequential)[static_cast<usize>(ztype)] == 0);
-        DEBUG_ASSERT(zone != 0);
+    auto insert_local_zone(PmZone *zone, ZoneType ztype) -> void {
+        auto const index = static_cast<usize>(ztype);
+        DEBUG_ASSERT(index < NR_ZONES_PER_NODE);
+        DEBUG_ASSERT(!m_zones[index], "zone type {} inserted twice", index);
+        DEBUG_ASSERT(zone);
 
-        get_queue(QueueType::LocalSequential)[static_cast<usize>(ztype)] = zone;
-        push_back(zone, QueueType::LocalContiguous);
-        push_back(zone, QueueType::SharedAffinity);
+        m_zones[index] = zone;
+        push_fallback(zone);
     }
 
+    /// Chains the zones of every node in |nodemask| behind this node's own,
+    /// nearest node first.
+    auto connect(NodeMask const &nodemask) -> void;
+
+    /// This node's zone of |ztype|, or null when the node has none.
+    FORCE_INLINE
+    auto local_zone(ZoneType ztype) const -> ZoneRef {
+        DEBUG_ASSERT(static_cast<usize>(ztype) < NR_ZONES_PER_NODE);
+        return m_zones[static_cast<usize>(ztype)];
+    }
+
+    /// This node's own zones in type order, skipping the types it has none of.
+    /// What LocalContiguous used to be kept for.
+    template <typename F>
+        requires ustl::traits::Invocable<F, PmZone &>
+    auto for_each_local_zone(F &&f) const -> void {
+        for (auto *const zone: m_zones) {
+            if (zone) {
+                f(*zone);
+            }
+        }
+    }
+
+    /// Visits the zones in fallback order. A callback returning void visits
+    /// every zone; one returning a value stops at the first result that tests
+    /// true and yields it.
     template <typename F>
     auto for_each_zone(F &&f) -> ustl::traits::InvokeResultT<F, PmZone &>;
 
     template <typename F, typename Predicate>
     auto for_each_zone_if(F &&f, Predicate &&p) -> ustl::traits::InvokeResultT<F, PmZone &>;
 
-    /// Call it after init_queues
-    auto connect(NodeMask const &nodemask) -> void;
-
-    auto dump_queue(QueueType type) const -> void;
-
+    /// The by-type array, holes included, for a walk that filters as it goes.
     FORCE_INLINE
-    constexpr auto get_local_zone(ZoneType ztype) -> ZoneRef {
-        DEBUG_ASSERT(static_cast<usize>(ztype) < NR_ZONES_PER_NODE);
-        return get_queue(QueueType::LocalSequential)[static_cast<usize>(ztype)];
+    auto local_zones() const -> Zones {
+        return Zones{m_zones.data(), m_zones.size()};
     }
 
+    /// The fallback order.
     FORCE_INLINE
-    constexpr auto get_queue(QueueType type) -> ZoneQueue {
-        return queues_[type].subspan(0, get_queue_size(type));
+    auto fallback() const -> Zones {
+        return Zones{m_fallback.data(), m_fallback.size()};
     }
 
-    FORCE_INLINE
-    constexpr auto get_queue(QueueType type) const -> ZoneQueue {
-        return queues_[type].subspan(0, get_queue_size(type));
-    }
-
-    FORCE_INLINE
-    constexpr auto get_queue_size(QueueType type) const -> usize {
-        return queue_sizes_[type];
-    }
+    auto dump_fallback() const -> void;
 
   private:
-    auto init_queues() -> void;
-
-    auto insert_remote_queue(ZoneQueue const &queue) -> void;
-
-    template <QueueType Type>
-    auto insert_remote_queue(ZoneQueue const &remote_queue) -> void;
-
-    template <QueueType Type>
-    auto priv_remove_zone(PmZone *zone) -> void;
-
     FORCE_INLINE
-    constexpr auto push_back(PmZone *zone, QueueType type) -> void {
-        queues_[type][queue_sizes_[type]] = zone;
-        queue_sizes_[type] += 1;
+    auto push_fallback(PmZone *zone) -> void {
+        auto const pushed = m_fallback.push_back(zone);
+        DEBUG_ASSERT(pushed, "fallback order overflowed its {} zones", MAX_ZONES);
     }
 
-    constexpr static usize NUM_LOCAL_QUEUES = SharedAffinity;
+    std::array<ZoneRef, NR_ZONES_PER_NODE> m_zones;
+    ustl::collections::StaticVec<ZoneRef, MAX_ZONES> m_fallback;
 
-    constexpr static usize MAX_ZONE_REF = {NUMA_MAX_NODE * (MaxNumQueues - NUM_LOCAL_QUEUES) +
-                                           (NR_ZONES_PER_NODE * NUM_LOCAL_QUEUES)};
-
-    std::array<PmZone *, MAX_ZONE_REF> queue_storage_;
-    usize queue_sizes_[MaxNumQueues];
-    ZoneQueue queues_[MaxNumQueues];
-    /// The remote nodes connect() chained into SharedAffinity.
-    NodeMask connected_;
-    NnId nid_;
+    /// The remote nodes connect() chained into the fallback order.
+    NodeMask m_connected;
+    NnId m_nid;
 };
 
 /// `PmNode` is a class that describes a NUMA domain.
@@ -288,8 +286,8 @@ class PmNode {
     }
 
     FORCE_INLINE
-    constexpr auto zone_queues() -> ZoneQueues * {
-        return &m_zone_queues;
+    constexpr auto zone_list() -> ZoneList * {
+        return &m_zone_list;
     }
 
     /// Records |count| frames of this node as taken before the buddy existed.
@@ -309,14 +307,14 @@ class PmNode {
     }
 
   private:
-    friend class ZoneQueues;
+    friend class ZoneList;
 
     /// The other nodes with memory, nearest first, as seen from one node: the
-    /// order that node's allocations fall back through. ZoneQueues::connect()
+    /// order that node's allocations fall back through. ZoneList::connect()
     /// chains their zones behind the node's own in this order.
     ///
     /// Nested and private because it is part of how a node is wired up, not
-    /// something anyone outside asks for: its one user is ZoneQueues, a
+    /// something anyone outside asks for: its one user is ZoneList, a
     /// friend. It was a free-standing NodeRoute that the caller created empty
     /// and handed to PmNode::build_optimal_node_route() to fill; build() now
     /// returns a finished one.
@@ -385,13 +383,13 @@ class PmNode {
     auto alloc_frames_direct_compact(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
         -> PmFrame *;
 
-    auto get_frame_from_zone_queues(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
+    auto get_frame_from_zone_list(Gaf, usize, AllocationOptions, MemoryAllocationContext const &)
         -> PmFrame *;
 
     /// Fills in the context the zone walk filters on.
     ///
     /// `fallback` is the caller's nodemask and has to reach the context, because
-    /// get_frame_from_zone_queues() skips any zone whose node is not in
+    /// get_frame_from_zone_list() skips any zone whose node is not in
     /// `allowed_nodes` -- a context left default-constructed rejects every zone,
     /// and the slowpath then spins waiting for a reclaim that will never make
     /// the walk succeed.
@@ -440,7 +438,7 @@ class PmNode {
 
     std::atomic<usize> m_reserved_frames;
 
-    ZoneQueues m_zone_queues;
+    ZoneList m_zone_list;
     PageQueues m_page_queues;
 
     [[no_unique_address]]
@@ -603,7 +601,7 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     /// the per-CPU units themselves and the page tables that map them. Read
     /// before that, `get()` answers null, and a null PmNode is not a failure
     /// the allocation paths below notice on their own: they walk straight into
-    /// it and read a ZoneQueues out of low memory, which phys's identity map
+    /// it and read a ZoneList out of low memory, which phys's identity map
     /// still makes readable, so the wreck surfaces somewhere else entirely.
     /// That has happened twice -- once on init_vmm_preheap()'s zero-page
     /// allocation (see the comment on publish()), once as a #GP inside

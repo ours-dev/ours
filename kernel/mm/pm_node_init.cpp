@@ -107,16 +107,14 @@ namespace {
 
     /// Chains every node's zones into its fallback order. Needs every node to
     /// exist and be initialised first: connect() walks the other nodes'
-    /// ZoneQueues.
+    /// ZoneList.
     auto connect_nodes(NodeMask const &nodes) -> void {
         nodes.for_each(
-            [&nodes](NnId const nid) { PmNode::node(nid)->zone_queues()->connect(nodes); });
+            [&nodes](NnId const nid) { PmNode::node(nid)->zone_list()->connect(nodes); });
     }
 
     auto dump_fallback_queues(NodeMask const &nodes) -> void {
-        nodes.for_each([](NnId const nid) {
-            PmNode::node(nid)->zone_queues()->dump_queue(ZoneQueues::QueueType::SharedAffinity);
-        });
+        nodes.for_each([](NnId const nid) { PmNode::node(nid)->zone_list()->dump_fallback(); });
     }
 } // namespace
 
@@ -158,7 +156,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
 /// Creates and registers a PmNode for every node in |nodes|.
 ///
 /// A step of its own, ahead of init(), because the steps after it reach across
-/// nodes: connect() walks every node's ZoneQueues, so the whole NODES table
+/// nodes: connect() walks every node's ZoneList, so the whole NODES table
 /// has to be populated before any of it runs. Registration lives here rather
 /// than at the end of init() for the same reason -- a node published only once
 /// it has finished initialising is invisible to the node that initialises
@@ -226,7 +224,7 @@ auto PmNode::init() -> Status {
 
         new (zone) PmZone(m_id, ztype, zone_start_pfn, zone_end_pfn, num_present_frames);
 
-        zone_queues()->insert_local_zone(zone, ztype);
+        zone_list()->insert_local_zone(zone, ztype);
 
         total_present_frames += num_present_frames;
         PmNode::set_state(m_id, State(ztype));
