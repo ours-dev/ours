@@ -24,9 +24,25 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     static auto with_source(ustl::Arc<PageSource> src, Gaf gaf, usize size,
                             ustl::Arc<VmCowPages> *out) -> Status;
 
+    TA_REQUIRES(m_lock)
     auto commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status;
 
+    TA_REQUIRES(m_lock)
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<Cursor, Status>;
+
+    /// The lock of every VmObjectPaged over these pages: over the page tree,
+    /// and -- through VmObject::lock(), which is this same mutex for a paged
+    /// VMO -- over each such object's list of mappings.
+    ///
+    /// It lives here, with the pages, because more than one object can sit on
+    /// one set of pages: a slice child shares its parent's VmCowPages. Were
+    /// the lock in the object, parent and child would each lock the same page
+    /// tree with a different mutex, which is no lock at all. Zircon keeps it
+    /// with the pages for the same reason: VmObjectPaged::lock() answers
+    /// cow_pages_->lock(), shared by the whole hierarchy.
+    TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto lock() -> sync::Mutex & {
+        return m_lock;
+    }
 
     FORCE_INLINE
     auto size_locked() const -> usize {
@@ -55,6 +71,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     VmPageMap m_pages;
     ustl::Arc<PageSource> m_page_source;
     usize m_size;
+
+    // Not TA_GUARDED over m_pages: the pages are walked by Cursor, a separate
+    // object that the analysis cannot tie back to this lock. The entry points
+    // that make a cursor or commit require it instead.
+    sync::Mutex m_lock;
 };
 
 /// A walk over one contiguous byte range of a VmCowPages, handing out the page

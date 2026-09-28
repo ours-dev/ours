@@ -154,3 +154,68 @@ PmNode 结构整理一共动了五步，但其中几块没有任何东西覆盖�
 **故意没做**
 同一批文件里还没修的条目都保留：`260919/kernel-mm.md` 的 `map_physical()` 物理偏移，
 `260906/mm.md` 的第 1、2 条。
+
+## VMO 的锁挪进 VmCowPages（K20 的前置，2026-09-28）
+
+**文件**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`：新增 `m_lock` 和 `lock()`；`make_cursor()`、`commit_range_locked()` 标上 `TA_REQUIRES(m_lock)`
+- `kernel/mm/include/ours/mm/vm_object.hpp`、`vm_object.cpp`：`m_lock` 从成员改为引用，由构造函数传入
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`、`vm_object_paged.cpp`：把 VmCowPages 的锁交给基类；新增 `assert_cow_pages_locked()`
+- `kernel/mm/include/ours/mm/vm_object_physical.hpp`、`vm_object_physical.cpp`：自带一把 `m_own_lock`
+
+**症状**
+K20 要做 Slice：子 VMO 是另一个 VmObjectPaged，和父对象共用同一个 VmCowPages。
+锁原来放在 VmObject 里，父子就会各拿一把锁去保护同一棵页树。这等于没有锁：
+父对象上的缺页和子对象上的缺页可以同时往 `m_pages` 里插页。
+设计文档原本的对策是只准对整体提交的父对象取 Slice，页从不变化，锁也就无所谓。可这只是把问题往后推。
+
+**原因**
+锁保护的是页树，却跟着对象走。只要一个对象独占一组页，这两种放法没有区别；
+一旦多个对象共用一组页，锁就必须跟着页走。
+
+**改法**
+
+```cpp
+// 之前：锁是对象自己的
+class VmObject { sync::Mutex m_lock; VmMapping::List m_mappings TA_GUARDED(m_lock); };
+
+// 之后：对象只持有引用，锁的主人由派生类决定
+class VmCowPages { sync::Mutex m_lock; /* make_cursor、commit_range_locked：TA_REQUIRES(m_lock) */ };
+class VmObject   { sync::Mutex &m_lock; VmMapping::List m_mappings TA_GUARDED(m_lock); };
+VmObjectPaged::VmObjectPaged(..., cowpages) : Base(..., cowpages->lock()), m_cow_pages(move(cowpages)) {}
+VmObjectPhysical::VmObjectPhysical(...)     : Base(..., m_own_lock), ... {}
+```
+
+几处取舍：
+- **VmObject 保留 `lock()`，只是里面存的变成了引用**。映射链表仍然归 VmObject，也仍然受这把锁保护；
+  VmMapping 的 `Guard{vmo->lock()}` 一行都不用改。以后同一个 VmCowPages 上的父子对象，
+  拿到的就是同一个 mutex，锁住任意一方，另一方的映射链表和共用的页树也一起锁住了。这正是 Zircon 的语义。
+- **physical VMO 自带一把锁**。它没有 VmCowPages，也不和任何对象共用页。
+  基类构造时，派生类的 `m_own_lock` 还没构造，这时绑定引用是合法的：基类只存下引用，
+  对象构造完之前没人会去加锁。
+- **`assert_cow_pages_locked()`**。线程安全分析把 `VmObject::m_lock` 和 `VmCowPages::m_lock`
+  当成两个名字，看不出前者是后者的引用。所以调用 VmCowPages 的加锁接口之前，先由这个函数说明：
+  要求持有前者（`TA_REQUIRES(m_lock)`），断言后者也已持有（`TA_ASSERT(m_cow_pages->lock())`），
+  debug 构建里还会真的检查 mutex 是否被持有。
+  Zircon 的 `cow_pages_locked()` 做同样的事，而且顺带返回 VmCowPages 指针。这里第一版也照这样写，
+  结果编译不过：分析器给经函数返回的对象命名为 `cow_pages_locked().m_lock`，和断言的名字对不上。
+  所以断言单独成一个函数，调用方随后直接用 `m_cow_pages->`。
+- **`m_pages` 没有标 `TA_GUARDED`**。页树由 Cursor 遍历，Cursor 是另一个对象，
+  分析器没法把它的访问追溯到这把锁上。所以注解放在产生 Cursor 和提交页的两个入口上。
+
+**参照**
+Zircon `VmObjectPaged::lock()` 返回 `cow_pages_->lock()`，同一棵父子树共用一把锁
+（`zircon/kernel/vm/include/vm/vm_object_paged.h`）；`VmObjectPaged::cow_pages_locked()` 用
+`TA_REQ(lock()) TA_ASSERT(cow_pages_->lock())` 在两个名字之间搭桥。`VmObjectPhysical` 有自己的锁。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，线程安全分析（`-Werror`）没有报错。
+- `boot_check.py` 两个镜像都 PASS（dbg 11 passed；rel 10 passed、3 skipped）。
+- QEMU 实测，两个镜像的 `usercopy.test` 都是 18/18、`pmnode.test` 都是 20/20。这两个测试会经过缺页路径和
+  `read_user`/`write_user` 的放锁重取，覆盖了新的加锁方式。
+
+**故意没做**
+- 没有照搬 Zircon 的 `VmHierarchyState`。我们的 Slice 直接共用父对象的 VmCowPages，
+  锁放在 VmCowPages 里就能共享，用不着再多一层独立的锁对象。
+  等 Snapshot 这类子对象有了自己的 VmCowPages、却仍要和父对象共用一把锁时，再引入它。
+- 行为没有变化：父子共用锁要等 K20 出现第一个 Slice 才有意义。

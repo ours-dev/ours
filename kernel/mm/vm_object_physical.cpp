@@ -4,7 +4,7 @@
 
 namespace ours::mm {
 VmObjectPhysical::VmObjectPhysical(PhysAddr base, usize size, VmoFlags VmoFlags)
-    : Base(gktl::magic<Self>(), VmObject::Type::Physical, VmoFlags)
+    : Base(gktl::magic<Self>(), VmObject::Type::Physical, VmoFlags, m_own_lock)
     , phys_base_(base)
     , size_(size) {}
 

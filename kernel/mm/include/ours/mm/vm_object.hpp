@@ -193,8 +193,11 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// resolves a user fault. Zircon's VmMapping::PageFault() takes
     /// `paged->lock()` with the aspace lock already held.
     ///
-    /// It lives here and not in VmObjectPaged, where it began, because the
-    /// mapping list does: a physical VMO has mappings too.
+    /// The mutex is not the object's own. A paged VMO's is its VmCowPages's,
+    /// shared with every object over the same pages (a slice and its parent);
+    /// a physical VMO, which has no pages to share, keeps one of its own. The
+    /// derived class says which by handing it to the constructor, as Zircon's
+    /// VmObject takes its lock from the hierarchy it belongs to.
     TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto lock() -> sync::Mutex & {
         return m_lock;
     }
@@ -214,7 +217,10 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     /// because only the derived constructor knows what it is being built as,
     /// and the canary has to hold that from the start. This is the shape
     /// `VmAreaOrMapping` already uses, for the same reason.
-    VmObject(u32 magic, Type type, Flags vmof);
+    ///
+    /// `lock` is the mutex lock() will answer (see there); it must outlive
+    /// this object, which it does by being the derived class's to keep.
+    VmObject(u32 magic, Type type, Flags vmof, sync::Mutex &lock);
 
     virtual ~VmObject() = default;
     USTL_NO_MOVEABLE_AND_COPYABLE(VmObject);
@@ -240,7 +246,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     Type const m_type;
     Flags m_flags;
 
-    sync::Mutex m_lock;
+    sync::Mutex &m_lock;
     VmMapping::List m_mappings TA_GUARDED(m_lock);
 
     constexpr static auto MAX_NAME_SIZE = 32;

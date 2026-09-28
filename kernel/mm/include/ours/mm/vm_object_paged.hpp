@@ -69,12 +69,15 @@ class VmObjectPaged: public VmObject {
     }
 
     /// A cursor walks VmCowPages::m_pages and inserts into it, and m_lock --
-    /// the object's lock, VmObject::lock() -- is the one lock that tree has. The fault path used to build one under the
-    /// address space's lock alone, which is how the tree came to be written
-    /// under two unrelated locks; TA_REQUIRES makes that a compile error.
+    /// the object's lock, VmObject::lock(), which is the VmCowPages's own --
+    /// is the one lock that tree has. The fault path used to build one under
+    /// the address space's lock alone, which is how the tree came to be
+    /// written under two unrelated locks; TA_REQUIRES makes that a compile
+    /// error.
     TA_REQUIRES(m_lock)
     FORCE_INLINE
     auto make_cursor(VirtAddr offset, usize size) -> ustl::Result<VmCowPages::Cursor, Status> {
+        assert_cow_pages_locked();
         return m_cow_pages->make_cursor(offset, size);
     }
 
@@ -83,6 +86,23 @@ class VmObjectPaged: public VmObject {
     virtual ~VmObjectPaged() = default;
 
   private:
+    /// Tells the analysis that m_cow_pages's lock is held, given m_lock is.
+    ///
+    /// The two are one mutex -- the constructor hands the VmCowPages's lock to
+    /// the base -- but the analysis knows them by two names, VmObject::m_lock
+    /// and VmCowPages::m_lock, and cannot see that one is a reference to the
+    /// other. This is where the code says so: it requires the first and
+    /// asserts the second, and in a debug build checks that the mutex is in
+    /// fact held. Called right before each use of m_cow_pages that requires
+    /// its lock. Zircon: VmObjectPaged::cow_pages_locked(), TA_REQ(lock())
+    /// and TA_ASSERT(cow_pages_->lock()). That one also returns the pages;
+    /// this one does not, because the analysis cannot name the lock of an
+    /// object a call returned, so the assertion has to stand on its own.
+    TA_REQUIRES(m_lock)
+    TA_ASSERT(m_cow_pages->lock()) FORCE_INLINE auto assert_cow_pages_locked() -> void {
+        m_cow_pages->lock().assert_held();
+    }
+
     auto commit_range_internal(VirtAddr offset, usize size, CommitOptions option) -> Status;
 
     /// Moves |chunk| bytes between |page| and the caller's buffer at |done|,

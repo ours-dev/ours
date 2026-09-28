@@ -22,7 +22,8 @@ namespace ours::mm {
 using VmoPagedCache = ObjectCache::Instance<VmObjectPaged>;
 
 VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages)
-    : Base(gktl::magic<Self>(), Type::Paged, vmof), m_cow_pages(ustl::move(cowpages)) {}
+    : Base(gktl::magic<Self>(), Type::Paged, vmof, cowpages->lock())
+    , m_cow_pages(ustl::move(cowpages)) {}
 
 auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)
     -> Status {
@@ -110,6 +111,7 @@ auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOpt
     // ShouldWait. When the first pager-backed VMO arrives, bring back Zircon's
     // loop whole -- the wait, the advance, the retry -- not the shape of it.
     usize nr_committed = 0;
+    assert_cow_pages_locked();
     return m_cow_pages->commit_range_locked(offset, size, &nr_committed);
 }
 
@@ -206,6 +208,7 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
             // the copy below cuts each page back down to the bytes asked for.
             auto const first_page = align_down(offset + done, PAGE_SIZE);
             auto const end_page = align_up(offset + size, PAGE_SIZE);
+            assert_cow_pages_locked();
             auto cursor = m_cow_pages->make_cursor(first_page, end_page - first_page);
             if (!cursor) {
                 return cursor.unwrap_err();
