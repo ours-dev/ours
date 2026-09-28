@@ -92,6 +92,22 @@ class ResourceDispatcher: public ResourceDispatcherBase {
 
     static inline Storage SYSTEM_RESOURCES;
 };
+/// Whether |handle|, in the calling process's table, names a resource of
+/// |kind| whose range covers all of [base, base + size): Ok, or why not.
+///
+///   - BadHandle when |handle| names nothing;
+///   - BadType when it names something other than a resource, or a resource
+///     of another kind;
+///   - OutOfRange when the resource does not cover the range.
+///
+/// No right is required of the handle: holding it is the capability. This is
+/// how a system call asks "may the caller do X" for the X a System slot names
+/// -- vmo_replace_as_executable asks it for VMEX.
+///
+/// Zircon: validate_ranged_resource() (zircon/kernel/object/resource.rs), with
+/// the same three answers.
+[[nodiscard]]
+auto validate_ranged_resource(HandleValue handle, RsrcKind kind, u64 base, u64 size) -> Status;
 } // namespace ours::object
 
 #endif // OURS_OBJECT_RESOURCE_DISPATCHER_HPP

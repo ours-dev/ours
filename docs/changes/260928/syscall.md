@@ -129,3 +129,79 @@ Zircon `sys_vmo_create()`（`zircon/kernel/lib/syscalls/vmo.rs`）：`parse_crea
 - 没有查询 VMO 大小的系统调用（Zircon 的 `vmo_get_size`），大小是否向上取整，只能通过读取边界间接验证。
 - 没测句柄配额用尽时回 NoResource：这是 `Handle::make()` 统一负责的路径，`handle_duplicate` 和
   `channel_create` 的配额测试已经覆盖。
+
+## 新增 vmo_replace_as_executable（K19，2026-09-28）
+
+**文件**
+- `kernel/object/include/ours/object/resource_dispatcher.hpp`、`resource_dispatcher.cpp`：`object::validate_ranged_resource()`
+- `kernel/lib/syscall/src/vmo.cpp`：`sys_vmo_replace_as_executable()`
+- `system/public/ours/syscalls.gni`：`vmo_replace_as_executable` 条目
+- `system/lib/ou/include/ou/vmo.hpp`、`system/lib/ou/src/vmo.cpp`：`ou::vmo_replace_as_executable()`
+- `examples/shell/shell.cpp`：`check_vmo_replace_as_executable()`
+- `docs/design/260923/userspace-interface.md`：§2 W^X 一句、§4.2 的 Vmo 行、§9 的 Execute 行
+- `docs/design/260924/userspace-filesystem.md`：K19 标为已落地
+
+**症状**
+VMO 的默认权限不带 Execute（D3），而用户态没有任何办法拿到一个带 Execute 的 VMO 句柄。
+K18 已经把 vmex 交到第一个进程手里，但它还换不出东西；launcher 按 X 映射 BootFS 里的代码（K21、§4.6）要靠这一步。
+
+**原因**
+缺功能。
+
+**改法**
+
+```cpp
+// object：Zircon validate_ranged_resource() 的三种回答
+auto validate_ranged_resource(HandleValue handle, RsrcKind kind, u64 base, u64 size) -> Status {
+    get_dispatcher<ResourceDispatcher>(handle, Rights::None, &r);   // BadHandle / BadType
+    if (r->kind() != kind) { return Status::BadType; }
+    if (base < rbase || size > rsize || base - rbase > rsize - size) { return Status::OutOfRange; }
+}
+
+// syscall：步骤照 Zircon
+auto sys_vmo_replace_as_executable(HandleValue vmo, HandleValue vmex, UserOutPtr<HandleValue> out) -> Status {
+    vmex_status = vmex == HANDLE_INVALID ? AccessDenied : validate_ranged_resource(vmex, System, VMEX, 1);
+    original = table.remove(vmo);                     // 从这里起原句柄已经没了
+    if (!original || 不是 VMO) { return BadHandle; }
+    if (vmex_status != Ok) { return vmex_status; }
+    Handle::make(original->dispatcher(), (rights & ~Write) | Execute);
+    out.copy_to_user(value); table.add(handle);        // 先写值，再入表（设计 4.1）
+}
+```
+
+几处取舍：
+- **先算 vmex 的结果，再摘原句柄，最后才报 vmex 的错**。这个顺序直接照搬 Zircon：vmex 不对，原句柄也照样消耗。
+  调用方因此只需要记一条规则：“传进去就没了”，不必分辨是哪一种失败。想留一份，就先 `handle_duplicate`（§4.6 的“先复制，再换”）。
+- **原句柄不是 VMO 时回 BadHandle，不是 BadType**。Zircon 在这里也回 `ZX_ERR_BAD_HANDLE`：
+  此时句柄已经从表里摘掉，从调用方看，它传进来的值已经不再指向任何东西。这和设计 4.5 的优先级
+  （BadHandle > BadType）并不冲突，因为消耗先于类型检查，是这个调用自身语义的一部分。
+- **vmex 句柄不要求任何 right**。持有它本身就是能力；Zircon 同样只查种类和范围。
+  设计评审当时否决了“用去掉 right 的 vmex 副本做反向检查”，原因就在这里。
+- **新句柄去掉 Write（D3）**。Zircon 保留 Write，是为了让 JIT 能改正在执行的代码；
+  ours 没有 JIT，于是让“能执行”和“能改写”不能落在同一个句柄上。这条偏离已记入接口设计 §9。
+- **vmex = HANDLE_INVALID 回 AccessDenied**。Zircon 这时去查 job 的 `ZX_POL_AMBIENT_MARK_VMO_EXEC` 策略；
+  ours 没有 job 策略，相当于这条策略永远是 deny。
+- **范围检查写成不会溢出的形式**：不计算 `base + size`，而是先比 base，再比“从资源起点量过去的剩余长度”。
+  调用方今天只传 `(VMEX, 1)`，但 `validate_ranged_resource` 以后还会被 `vmo_create_physical` 用来检查任意的 MMIO 范围。
+
+**参照**
+Zircon `sys_vmo_replace_as_executable()`（`zircon/kernel/lib/syscalls/vmo.rs`）：
+先 `validate_ranged_resource(vmex, ZX_RSRC_KIND_SYSTEM, ZX_RSRC_SYSTEM_VMEX_BASE, 1)`，
+再 `remove_handle()`，然后判断类型，最后 `make_and_add_handle(..., rights | ZX_RIGHT_EXECUTE)`。
+`validate_ranged_resource()` 在 `zircon/kernel/object/resource.rs`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过；`boot_check.py` 两个镜像都 PASS
+  （dbg 11 passed；rel 10 passed、3 skipped），两个镜像都打出 `vmo_replace_as_executable checks passed`：
+  - vmex 为 HANDLE_INVALID 回 AccessDenied，vmex 为 channel 回 BadType，vmex 为已关闭的句柄值回 BadHandle；
+    这三次之后，用原 VMO 句柄 `vmo_read` 都回 BadHandle，说明原句柄已被消耗；
+  - vmo 位置传 channel 回 BadHandle，之后再 close 这个 channel 也回 BadHandle，说明它同样被消耗了。
+- 只在 dbg_1 跑的部分（shell 由 userboot 启动，手里有 vmex 和 BootFS）：
+  - vmex 位置传 BootFS VMO 回 BadType；
+  - 用真正的 vmex 换出新句柄：新句柄能读出换之前写入的字节，`vmo_write` 回 AccessDenied（Write 已去掉），
+    原句柄回 BadHandle。
+
+**故意没做**
+- 没测“换出的 VMO 能按 X 映射”：这要等 `vmar_map` 支持 vmo_offset 和权限上限（K21），验证放在那里。
+- 没测 OutOfRange：全系统只能铸出 `[VMEX, VMEX+1)` 这一个 System 资源，构造不出不覆盖该槽位的 System 资源。
+- 没测新句柄超出配额时回 NoResource：这条路径和 `handle_duplicate` 一样，由 `Handle::make()` 统一负责，已有覆盖。

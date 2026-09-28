@@ -112,7 +112,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 - **dispatcher 签名不再暴露 mm 类型**：`VmarDispatcher::map(VmOptions, usize vmar_offset, VmoDispatcher &, u64 vmo_offset, usize length, Rights vmar_rights, Rights vmo_rights) -> Result<VirtAddr>`。翻译成 MmuFlags/VmPlacement 的工作在 dispatcher 内完成。偏移一律是字节偏移。
 - **提交策略**：用户的 `vmo_create` 一律按需提交（Lazy）；`create_paged(Pinned)` 只留给内核内部使用（userboot 的栈、vDSO、BootFS）。
 - **映射上限**：`vmar_map` 从第一天起就保存 per-mapping 上限，即 vmar rights ∩ vmo rights ∩ 区域的 CanMap*。`vmar_protect` 必须和这个上限在同一个提交里上线。今天 `vm_area.cpp:136-143` 直接拿区域的 `m_vmaf` 当上限，只读 BootFS 会因此被 protect 成可写。
-- **W^X**：系统调用层拒绝 PermWrite+PermExecute 的映射；launcher 为每个 PT_LOAD 建一个 VMO，按 p_flags 映射。`RIGHTS_DEFAULT_VMO` 暂时带 Execute，作为临时偏离记录在案。
+- **W^X**：系统调用层拒绝 PermWrite+PermExecute 的映射；launcher 为每个 PT_LOAD 建一个 VMO，按 p_flags 映射。`RIGHTS_DEFAULT_VMO` 不带 Execute，可执行句柄只能经 `vmo_replace_as_executable` 用 vmex 换出（K19）。
 - **共享 VMO 整体提交**：多个进程共享的 VMO（vDSO、BootFS）在创建时整体提交。缺页路径不取 VMO 锁（`vm_mapping.cpp:391-500`），惰性共享的 VMO 会被并发地往 page map 里插页。
 
 现状：
@@ -347,7 +347,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 | Process | BASIC + IO + PROPERTY + Enumerate + Destroy + Signal + ManageProcess + ManageThread | 相同（今天是 Signal+Io） |
 | Thread | BASIC + IO + PROPERTY + Destroy + Signal + ManageThread | 相同 |
 | Job | BASIC + IO + PROPERTY + GetPolicy + SetPolicy + Enumerate + Destroy + Signal + ManageJob + ManageProcess + ManageThread | 相同（今天是 None） |
-| Vmo | BASIC + IO + PROPERTY + Map + Signal **+ Execute** | 偏离：没有 vmex 之前临时带 Execute |
+| Vmo | BASIC + IO + PROPERTY + Map + Signal | 相同；Execute 只能经 `vmo_replace_as_executable` 换出，换出的句柄同时去掉 Write（见 §9） |
 | Vmar | BASIC − Wait + OpChildren，再加由区域 flags 推出的 R/W/X | 相同 |
 | Event / EventPair | BASIC + Signal；EventPair 再加 SignalPeer | 相同 |
 | Port | BASIC − Wait + IO | 相同 |
@@ -611,7 +611,7 @@ P1 的前置：
 | 句柄表校验 | 第五关用进程 koid；表锁是 BrwLock | 用表 koid；P0 用 Mutex | 给 create_shared 留余地；`sync::RwLock` 还没实现 |
 | 引导消息 | 内核给 userboot 发两条只含句柄的消息 | 全系统只有一种 processargs 消息，magic 用 ours 自己的 | 只有一个 runtime、一个解析器；不同的 magic 避免让人误以为线上兼容 |
 | BootFS | userboot 在用户态解压 ZBI | 内核解压后交出一个只读 VMO | lz4 解码器只在内核里，而且内核加载 userboot 时已经解压过一遍 |
-| VMO 的 Execute 权限 | 要经 vmex 换成可执行 | 在 P2 之前默认带 Execute；系统调用层拒绝 W+X | 先跑通；P2 引入 vmex 时从默认值里去掉 |
+| `vmo_replace_as_executable` 的新句柄 | 原 rights + Execute，保留 Write | 原 rights − Write + Execute | D3：能执行这段代码的句柄不能同时拿来改它；Zircon 保留 Write 是为了 JIT，ours 暂时没有 JIT（K19） |
 | Snapshot 子 VMO | COW | 先急切复制 | 语义不变，COW 放 P2 |
 | resource_create 的形状 | kind 塞在 options 低位，带 name，共 7 个参数 | kind 与 options 分成两个参数，不带 name | *Options 只放位掩码；名字走 set_property |
 | cprng_add_entropy | 不检查权限（fidl 文档自述为 BUG） | 要求 System/Cprng 资源 | 落实 Zircon 自己的结论 |

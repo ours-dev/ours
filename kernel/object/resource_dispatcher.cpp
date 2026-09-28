@@ -1,6 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <ours/mm/gaf.hpp>
+#include <ours/object/handle_table.hpp>
+#include <ours/object/process_dispatcher.hpp>
 #include <ours/object/resource_dispatcher.hpp>
 
 #include <heap/new.hpp>
@@ -48,6 +50,29 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
 
     rights = default_right();
     *out = KernelHandle<Self>(ustl::move(self));
+    return Status::Ok;
+}
+
+auto validate_ranged_resource(HandleValue const handle, RsrcKind const kind, u64 const base,
+                              u64 const size) -> Status {
+    ustl::Arc<ResourceDispatcher> resource;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            handle, Rights::None, &resource);
+        Status::Ok != status) {
+        return status;
+    }
+    if (resource->kind() != kind) {
+        return Status::BadType;
+    }
+
+    // [base, base + size) inside [rbase, rbase + rsize), written so that
+    // nothing overflows: base is compared first, then the rest measured from
+    // the resource's own base.
+    auto const rbase = u64(resource->base());
+    auto const rsize = u64(resource->size());
+    if (base < rbase || size > rsize || base - rbase > rsize - size) {
+        return Status::OutOfRange;
+    }
     return Status::Ok;
 }
 } // namespace ours::object

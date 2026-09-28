@@ -22,6 +22,13 @@ auto vmo_create(u64 size, ours::VmoOptions options, ours::HandleValue *out) -> o
 /// by then, so after any failure its contents are unspecified.
 auto vmo_read(ours::HandleValue vmo, void *buffer, u64 offset, usize length) -> ours::Status;
 
+/// Replaces |vmo| with a handle to the same VMO that may be executed, into
+/// |out|: |vmo|'s rights less Write, plus Execute. |vmex| must be the VMEX
+/// System resource. |vmo| is consumed whatever the answer; duplicate it first
+/// (ou::handle_duplicate) to keep a copy.
+auto vmo_replace_as_executable(ours::HandleValue vmo, ours::HandleValue vmex,
+                               ours::HandleValue *out) -> ours::Status;
+
 /// Copies |length| bytes from |buffer| into the VMO |vmo|, starting at byte
 /// |offset|. Needs Write on the handle.
 ///

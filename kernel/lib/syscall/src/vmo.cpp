@@ -5,6 +5,7 @@
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/resource_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
@@ -71,6 +72,56 @@ auto sys_vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer,
         return status;
     }
     return dispatcher->read_user(buffer, offset, length);
+}
+
+/// A new handle to |vmo|'s VMO with Execute and without Write, in place of
+/// |vmo| -- which this consumes whatever the answer (design D3, K19).
+///
+/// Zircon's sys_vmo_replace_as_executable(), step for step:
+///   1. vmex is checked first and its answer kept: a System resource covering
+///      the VMEX slot, or HANDLE_INVALID, which is AccessDenied here (Zircon
+///      asks the job policy, and ours has no ambient Execute to allow).
+///   2. |vmo| is taken out of the table. From here it is gone, whether or not
+///      the call succeeds; a caller that wants to keep a copy duplicates it
+///      first (handle_duplicate). BadHandle when it names nothing, and also
+///      when it names something that is not a VMO -- the handle is already
+///      consumed by then, and Zircon answers BAD_HANDLE there too.
+///   3. vmex's answer, now.
+///   4. The new handle: the old rights less Write, plus Execute. Zircon keeps
+///      Write (for JITs); ours drops it (D3), so a program cannot write the
+///      code it is about to run through the handle that lets it run it.
+/// The value goes out before the handle goes in, as for vmo_create.
+auto sys_vmo_replace_as_executable(HandleValue const vmo, HandleValue const vmex,
+                                   user_copy::UserOutPtr<HandleValue> const out) -> Status {
+    auto vmex_status = Status::AccessDenied;
+    if (vmex != HANDLE_INVALID) {
+        vmex_status =
+            object::validate_ranged_resource(vmex, RsrcKind::System, RSRC_SYSTEM_VMEX_BASE, 1);
+    }
+
+    auto &table = ProcessDispatcher::current()->handle_table();
+    auto original = table.remove(vmo);
+    if (!original) {
+        return Status::BadHandle;
+    }
+    if (!original->dispatcher().downcast<VmoDispatcher>()) {
+        return Status::BadHandle;
+    }
+
+    if (Status::Ok != vmex_status) {
+        return vmex_status;
+    }
+
+    auto const rights = (original->rights() & ~Rights::Write) | Rights::Execute;
+    auto handle = Handle::make(original->dispatcher(), rights);
+    if (!handle) {
+        return Status::NoResource;
+    }
+    if (auto const status = out.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
+        return status;
+    }
+    static_cast<void>(table.add(ustl::move(handle)));
+    return Status::Ok;
 }
 
 /// sys_vmo_read()'s mirror: the handle with Write, then the VMO. Zircon

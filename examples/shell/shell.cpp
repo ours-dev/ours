@@ -1267,6 +1267,99 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
         static_cast<void>(ou::debug_line("shell: handle_duplicate checks FAILED"));
     }
 }
+
+/// vmo_replace_as_executable: vmex turns a VMO handle into one that may be
+/// executed, and the handle it is given is consumed whatever the answer (K19).
+///
+/// What needs no vmex runs in every image, each on a VMO of its own so that
+/// "the original is gone" can be checked after every call:
+///   - vmex = HANDLE_INVALID is AccessDenied, and the VMO handle is gone;
+///   - vmex a channel is BadType; vmex a value that names nothing, BadHandle;
+///   - a VMO handle that is a channel is BadHandle, and the channel is gone.
+/// What needs vmex runs where userboot started this program: the BootFS as
+/// vmex is BadType (a VMO, not a resource), and the real vmex gives a handle
+/// that reads what the original wrote, cannot be written through (Write is
+/// dropped, design D3), and leaves the original's value naming nothing.
+auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::HandleValue const vmex)
+    -> void {
+    using ours::Status;
+    using ours::VmoOptions;
+
+    constexpr auto PAGE = u64{4096};
+
+    auto ok = true;
+    ours::HandleValue exec = ours::HANDLE_INVALID;
+    u8 byte = 0;
+
+    // A fresh VMO for each refusal: every one of them consumes it.
+    auto const refused = [&](ou::Str const what, ours::HandleValue const with, Status const want) {
+        ours::HandleValue vmo = ours::HANDLE_INVALID;
+        if (!expect("shell: vmo_create = ", ou::vmo_create(PAGE, VmoOptions::None, &vmo),
+                    Status::Ok)) {
+            return false;
+        }
+        auto passed = expect(what, ou::vmo_replace_as_executable(vmo, with, &exec), want);
+        passed &= expect("shell: vmo_read(the consumed handle) = ", ou::vmo_read(vmo, &byte, 0, 1),
+                         Status::BadHandle);
+        return passed;
+    };
+
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        return;
+    }
+    ok &=
+        refused("shell: vmo_replace_as_executable(vmex = HANDLE_INVALID) = ", ours::HANDLE_INVALID,
+                Status::AccessDenied);
+    ok &= refused("shell: vmo_replace_as_executable(vmex = a channel) = ", a, Status::BadType);
+
+    // A value that names nothing: b's, once b is closed.
+    auto const stale = b;
+    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    ok &= refused("shell: vmo_replace_as_executable(vmex = a closed handle) = ", stale,
+                  Status::BadHandle);
+
+    // Not a VMO: refused, and consumed all the same.
+    ok &= expect("shell: vmo_replace_as_executable(vmo = a channel) = ",
+                 ou::vmo_replace_as_executable(a, vmex, &exec), Status::BadHandle);
+    ok &= expect("shell: close(the consumed channel) = ", ou::handle_close(a), Status::BadHandle);
+
+    if (vmex == ours::HANDLE_INVALID || bootfs == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vmo_replace_as_executable with vmex skipped"));
+    } else {
+        ok &= refused("shell: vmo_replace_as_executable(vmex = the BootFS) = ", bootfs,
+                      Status::BadType);
+
+        ours::HandleValue vmo = ours::HANDLE_INVALID;
+        if (expect("shell: vmo_create = ", ou::vmo_create(PAGE, VmoOptions::None, &vmo),
+                   Status::Ok)) {
+            u8 const written = 0x5a;
+            ok &= expect("shell: vmo_write(before the replace) = ",
+                         ou::vmo_write(vmo, &written, 0, 1), Status::Ok);
+            ok &= expect("shell: vmo_replace_as_executable(vmex) = ",
+                         ou::vmo_replace_as_executable(vmo, vmex, &exec), Status::Ok);
+            ok &= expect("shell: vmo_read(the original) = ", ou::vmo_read(vmo, &byte, 0, 1),
+                         Status::BadHandle);
+            ok &=
+                expect("shell: vmo_read(the executable handle) = ", ou::vmo_read(exec, &byte, 0, 1),
+                       Status::Ok);
+            ok &= byte == written;
+            ok &= expect("shell: vmo_write(the executable handle) = ",
+                         ou::vmo_write(exec, &written, 0, 1), Status::AccessDenied);
+            ok &= expect("shell: close(the executable handle) = ", ou::handle_close(exec),
+                         Status::Ok);
+        } else {
+            ok = false;
+        }
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vmo_replace_as_executable checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vmo_replace_as_executable checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -1309,6 +1402,7 @@ auto main(int, char **) -> int {
     check_vmo_create();
     check_bootfs(bootfs, runtime::vdso_base());
     check_handle_duplicate(bootfs);
+    check_vmo_replace_as_executable(bootfs, vmex);
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
 
     static Registry registry;

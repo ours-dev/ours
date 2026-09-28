@@ -395,6 +395,38 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "vmo_replace_as_executable"
+    brief = "Replaces |vmo| with a handle to the same VMO that may be executed."
+    doc = [
+      "|vmex| must name a System resource covering the VMEX slot",
+      "(AccessDenied for HANDLE_INVALID, BadHandle for a value naming",
+      "nothing, BadType for anything else); no right is required of it.",
+      "|vmo| is consumed whatever the answer -- duplicate it first to keep",
+      "a copy -- and BadHandle when it names nothing or is not a VMO. The",
+      "new handle has |vmo|'s rights less Write, plus Execute. Its value goes",
+      "to |out|, and it is in this process's table only once that write has",
+      "worked. It counts against this process's handle quota (NoResource",
+      "past it).",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "HandleValue"
+      },
+      {
+        name = "vmex"
+        type = "HandleValue"
+      },
+      {
+        name = "out"
+        type = "HandleValue"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "vmo_write"
     brief = "Copies |length| bytes from |buffer| into the VMO, from byte |offset|."
     doc = [

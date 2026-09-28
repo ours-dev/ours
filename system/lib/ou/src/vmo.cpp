@@ -15,6 +15,11 @@ auto vmo_read(ours::HandleValue const vmo, void *const buffer, u64 const offset,
     return ours_vmo_read(vmo, buffer, offset, length);
 }
 
+auto vmo_replace_as_executable(ours::HandleValue const vmo, ours::HandleValue const vmex,
+                               ours::HandleValue *const out) -> ours::Status {
+    return ours_vmo_replace_as_executable(vmo, vmex, out);
+}
+
 auto vmo_write(ours::HandleValue const vmo, void const *const buffer, u64 const offset,
                usize const length) -> ours::Status {
     return ours_vmo_write(vmo, buffer, offset, length);
