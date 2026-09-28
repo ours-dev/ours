@@ -113,6 +113,24 @@ class VmoDispatcher final: public VmoDispatcherBase {
         return m_vmo->write(in, VirtAddr(offset), size);
     }
 
+    /// Copies |length| bytes from the user buffer |in| into the VMO at byte
+    /// |offset|: the body of the vmo_write system call, read_user()'s mirror.
+    /// Zircon VmObjectDispatcher::Write(), which takes a user pointer the same
+    /// way.
+    ///
+    ///   - OutOfRange when the range does not lie wholly inside the VMO,
+    ///     checked before anything is written.
+    ///   - Zero length is then Ok without looking at |in|.
+    ///   - InvArgs when |in| cannot give |length| bytes: outside the user half
+    ///     (checked before the first page is touched), or unmapped somewhere
+    ///     along it (found while copying). The VMO bytes before that point may
+    ///     have been written by then.
+    ///   - NotSupported when the VMO cannot be written this way (a physical
+    ///     one), once the checks above have passed.
+    ///
+    /// No rights are checked here; the system call has checked Write.
+    auto write_user(user_copy::UserInPtr<u8 const> in, u64 offset, usize length) -> Status;
+
   private:
     // SoloDispatcher's constructor reads Derived::MAGIC to build the
     // canary; MAGIC stays private otherwise, so it needs this base in.

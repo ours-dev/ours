@@ -20,8 +20,7 @@ VmoDispatcher::~VmoDispatcher() {
     DISPATCHER_VMO_DESTROY_COUNT.add(1);
 }
 
-auto VmoDispatcher::create(ustl::Arc<mm::VmObject> vmo, KernelHandle<Self> &handle_out,
-                           Rights &rights_out) -> Status {
+auto VmoDispatcher::create(ustl::Arc<mm::VmObject> vmo, KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
     if (!vmo) {
         return Status::InvArgs;
     }
@@ -114,5 +113,30 @@ auto VmoDispatcher::read_user(user_copy::UserOutPtr<u8> const out, u64 const off
     }
 
     return m_vmo->read_user(out, VirtAddr(offset), length);
+}
+
+/// read_user()'s mirror, check for check and in the same order, so that a
+/// write gets the same answer as a read of the same range would: OutOfRange
+/// before anything else, then an empty write, then the buffer.
+auto VmoDispatcher::write_user(user_copy::UserInPtr<u8 const> const in, u64 const offset,
+                               usize const length) -> Status {
+    auto const size = m_vmo->size();
+    if (length > size || offset > size - length) {
+        return Status::OutOfRange;
+    }
+
+    if (length == 0) {
+        // Asked of the VMO, as read_user() does, so that one which cannot be
+        // written says NotSupported for an empty write too.
+        return m_vmo->write_user(in, VirtAddr(offset), 0);
+    }
+
+    // The whole buffer first: writing commits the pages it lands on, and a
+    // call that is bound to fail should not cost the VMO memory.
+    if (!user_copy::is_user_range(in.address(), length)) {
+        return Status::InvArgs;
+    }
+
+    return m_vmo->write_user(in, VirtAddr(offset), length);
 }
 } // namespace ours::object

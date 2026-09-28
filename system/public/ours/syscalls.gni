@@ -363,6 +363,42 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "vmo_write"
+    brief = "Copies |length| bytes from |buffer| into the VMO, from byte |offset|."
+    doc = [
+      "Needs Write on |vmo|. OutOfRange when the range does not lie wholly",
+      "inside the VMO, and nothing is written then. InvArgs when |buffer|",
+      "cannot give |length| bytes -- outside the user half, or not readable",
+      "all the way; the VMO may have been written in part before the kernel",
+      "found out, so after a failure the range's contents are unspecified.",
+      "Writing 0 bytes checks the handle and the offset and touches nothing.",
+      "NotSupported on a VMO that is a window onto physical memory rather",
+      "than pages of its own.",
+    ]
+    args = [
+      {
+        name = "vmo"
+        type = "HandleValue"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "in"
+        count = "length"
+      },
+      {
+        name = "offset"
+        type = "u64"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "handle_duplicate"
     brief = "Makes a second handle to the object |handle| names, with |rights|."
     doc = [

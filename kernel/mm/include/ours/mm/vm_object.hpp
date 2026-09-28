@@ -139,7 +139,8 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
 
     /// Copies |size| bytes from the user buffer |in| straight into this object,
     /// starting at byte |offset|. The same rules as read_user().
-    virtual auto write_user(user_copy::UserInPtr<u8> in, VirtAddr offset, usize size) -> Status {
+    virtual auto write_user(user_copy::UserInPtr<u8 const> in, VirtAddr offset, usize size)
+        -> Status {
         return Status::Unsupported;
     }
 

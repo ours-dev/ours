@@ -628,8 +628,8 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     u32 actual_handles = 0;
     ok &= expect("shell: channel_read(into unmapped) = ",
                  ours_channel_read(b, ours::ChannelReadOptions::None,
-                                   reinterpret_cast<void *>(UNMAPPED), nullptr, 1, 0,
-                                   &actual_bytes, &actual_handles),
+                                   reinterpret_cast<void *>(UNMAPPED), nullptr, 1, 0, &actual_bytes,
+                                   &actual_handles),
                  Status::InvArgs);
     char buffer[4] = {};
     ok &= expect("shell: channel_read(after the lost message) = ",
@@ -639,10 +639,10 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 
     // A poll, so that the wait ends at once and the kernel goes on to write
     // |observed| -- into nothing.
-    ok &= expect("shell: wait_one(observed = unmapped, poll) = ",
-                 ours_object_wait_one(b, Signals::Readable, 0,
-                                      reinterpret_cast<Signals *>(UNMAPPED)),
-                 Status::InvArgs);
+    ok &=
+        expect("shell: wait_one(observed = unmapped, poll) = ",
+               ours_object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(UNMAPPED)),
+               Status::InvArgs);
 
     // Both handle values are written out before either handle is installed,
     // so the failed create leaves nothing behind and the next one works.
@@ -835,6 +835,80 @@ auto check_vmo_read() -> void {
         static_cast<void>(ou::debug_line("shell: vmo_read checks passed"));
     } else {
         static_cast<void>(ou::debug_line("shell: vmo_read checks FAILED"));
+    }
+}
+
+/// vmo_write's refusals: the handle is looked at before anything else.
+///
+/// The same order vmo_read keeps (design 4.5): BadHandle for a value that
+/// names nothing, BadType for something that is not a VMO, and AccessDenied for
+/// a VMO this handle may not write -- each ahead of every argument error, so the
+/// calls below pair them with an empty write, a buffer in the kernel half and an
+/// offset no VMO could reach. The BootFS handle is the VMO without Write: the
+/// kernel mints it read-only. Its first bytes are read before and after, and a
+/// refused write must have changed nothing.
+///
+/// A write that succeeds needs a VMO this program may write, and only
+/// vmo_create makes one; those checks come with it.
+auto check_vmo_write(ours::HandleValue const bootfs) -> void {
+    using ours::Status;
+
+    constexpr auto FAR = u64{0xffff'ffff'ffff'0000};
+
+    auto ok = true;
+    char const buffer[16] = {'o', 'v', 'e', 'r', 'w', 'r', 'i', 't', 't', 'e', 'n'};
+    ok &= expect("shell: vmo_write(HANDLE_INVALID) = ",
+                 ou::vmo_write(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
+
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        return;
+    }
+    ok &= expect("shell: vmo_write(a channel) = ", ou::vmo_write(a, buffer, 0, sizeof(buffer)),
+                 Status::BadType);
+    ok &= expect("shell: vmo_write(a channel, from the kernel half) = ",
+                 ou::vmo_write(a, reinterpret_cast<void const *>(KERNEL), 0, sizeof(buffer)),
+                 Status::BadType);
+    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    ok &= expect("shell: vmo_write(closed) = ", ou::vmo_write(b, buffer, 0, sizeof(buffer)),
+                 Status::BadHandle);
+    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+
+    if (bootfs != ours::HANDLE_INVALID) {
+        char before[sizeof(buffer)] = {};
+        char after[sizeof(buffer)] = {};
+        ok &= expect("shell: vmo_read(bootfs, before writing) = ",
+                     ou::vmo_read(bootfs, before, 0, sizeof(before)), Status::Ok);
+        ok &=
+            expect("shell: vmo_write(bootfs) = ", ou::vmo_write(bootfs, buffer, 0, sizeof(buffer)),
+                   Status::AccessDenied);
+        ok &= expect("shell: vmo_write(bootfs, 0 bytes) = ", ou::vmo_write(bootfs, buffer, 0, 0),
+                     Status::AccessDenied);
+        ok &= expect(
+            "shell: vmo_write(bootfs, from the kernel half, far offset) = ",
+            ou::vmo_write(bootfs, reinterpret_cast<void const *>(KERNEL), FAR, sizeof(buffer)),
+            Status::AccessDenied);
+        ok &= expect("shell: vmo_read(bootfs, after writing) = ",
+                     ou::vmo_read(bootfs, after, 0, sizeof(after)), Status::Ok);
+        auto unchanged = true;
+        for (usize i = 0; i < sizeof(before); ++i) {
+            if (before[i] != after[i]) {
+                unchanged = false;
+            }
+        }
+        ok &= unchanged;
+        if (unchanged) {
+            static_cast<void>(ou::debug_line("shell: the BootFS is as it was"));
+        } else {
+            static_cast<void>(ou::debug_line("shell: the BootFS CHANGED"));
+        }
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vmo_write checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vmo_write checks FAILED"));
     }
 }
 
@@ -1102,6 +1176,7 @@ auto main(int, char **) -> int {
     check_handle_quota();
     check_bad_pointers(runtime::vdso_base());
     check_vmo_read();
+    check_vmo_write(bootfs);
     check_bootfs(bootfs, runtime::vdso_base());
     check_handle_duplicate(bootfs);
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));

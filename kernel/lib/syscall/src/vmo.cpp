@@ -32,9 +32,8 @@ using object::VmoDispatcher;
 /// AccessDenied ahead of every argument error (design 4.5), and it applies
 /// to a zero-length read too -- a handle without Read is refused whatever
 /// the length, as Zircon's core-vmo test pins. Everything about the range,
-/// the buffer and the copy is the object's (VmoDispatcher::read_user()):
-/// the page-at-a-time bounce needs a kernel page and the VMO's page size,
-/// and this layer reaches nothing below kernel/object.
+/// the buffer and the copy is the object's (VmoDispatcher::read_user()); this
+/// layer reaches nothing below kernel/object.
 auto sys_vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer, u64 const offset,
                   usize const length) -> Status {
     ustl::Arc<VmoDispatcher> dispatcher;
@@ -44,5 +43,18 @@ auto sys_vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer,
         return status;
     }
     return dispatcher->read_user(buffer, offset, length);
+}
+
+/// sys_vmo_read()'s mirror: the handle with Write, then the VMO. Zircon
+/// sys_vmo_write().
+auto sys_vmo_write(HandleValue const vmo, user_copy::UserInPtr<u8 const> const buffer,
+                   u64 const offset, usize const length) -> Status {
+    ustl::Arc<VmoDispatcher> dispatcher;
+    if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
+            vmo, Rights::Write, &dispatcher);
+        status != Status::Ok) {
+        return status;
+    }
+    return dispatcher->write_user(buffer, offset, length);
 }
 } // namespace ours

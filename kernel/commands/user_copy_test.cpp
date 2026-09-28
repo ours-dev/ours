@@ -314,7 +314,7 @@ namespace {
         // The other direction: E, put in Q0 by a plain copy, into VMO offset 8.
         {
             auto const put = user_copy::copy_to_user(q0, &E, sizeof(E));
-            auto const status = vmo->write_user(user_copy::UserInPtr<u8>(q0), 8, 8);
+            auto const status = vmo->write_user(user_copy::UserInPtr<u8 const>(q0), 8, 8);
             u64 got = 0;
             auto const back = vmo->read(&got, 8, sizeof(got));
             log::info("usercopy.test:   write_user(Q0 -> VMO[8..16)): {}, VMO holds {:#x}",

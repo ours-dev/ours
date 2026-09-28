@@ -15,6 +15,15 @@ namespace ou {
 /// when |buffer| cannot take |length| bytes; some of it may have been written
 /// by then, so after any failure its contents are unspecified.
 auto vmo_read(ours::HandleValue vmo, void *buffer, u64 offset, usize length) -> ours::Status;
+
+/// Copies |length| bytes from |buffer| into the VMO |vmo|, starting at byte
+/// |offset|. Needs Write on the handle.
+///
+/// OutOfRange when the range runs past the VMO's end, and nothing is written
+/// then. InvArgs when |buffer| cannot give |length| bytes; part of the range
+/// may have been written by then, so after any failure its contents are
+/// unspecified.
+auto vmo_write(ours::HandleValue vmo, void const *buffer, u64 offset, usize length) -> ours::Status;
 } // namespace ou
 
 #endif // #ifndef OU_VMO_HPP

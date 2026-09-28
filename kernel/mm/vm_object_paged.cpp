@@ -303,7 +303,7 @@ auto VmObjectPaged::read_user(user_copy::UserOutPtr<u8> const out, VirtAddr cons
 /// Zircon: VmObjectPaged::WriteUser(). A chunk a fault interrupts is copied
 /// again whole on the retry; the page is overwritten with the same bytes, so
 /// the repetition is harmless.
-auto VmObjectPaged::write_user(user_copy::UserInPtr<u8> const in, VirtAddr const offset,
+auto VmObjectPaged::write_user(user_copy::UserInPtr<u8 const> const in, VirtAddr const offset,
                                usize const size) -> Status {
     return copy_page_by_page(
         offset, size, true, [in](u8 *const page, usize const done, usize const chunk) {

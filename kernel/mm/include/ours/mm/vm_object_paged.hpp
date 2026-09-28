@@ -43,7 +43,8 @@ class VmObjectPaged: public VmObject {
 
     auto read_user(user_copy::UserOutPtr<u8> out, VirtAddr offset, usize size) -> Status override;
 
-    auto write_user(user_copy::UserInPtr<u8> in, VirtAddr offset, usize size) -> Status override;
+    auto write_user(user_copy::UserInPtr<u8 const> in, VirtAddr offset, usize size)
+        -> Status override;
 
     /// Read without m_lock: nothing can change a paged VMO's size, because
     /// Resizable has no implementation. The day it does, this has to take the
