@@ -433,11 +433,8 @@ namespace {
     auto load_program(ustl::views::Span<u8 const> bytes, char const *name,
                       elfload::Loader const &loader, object::VmarDispatcher &root_vmar,
                       LoadedImage &out) -> Status {
-        using arch::paging::MmuFlags;
-
-        // MmuFlags::User is the whole point of this line: without it the pages
-        // are supervisor-only and ring 3 faults on the first instruction
-        // fetch. Writable as well as executable for now because the three
+        // Mapped through the root VMAR, which always maps for ring 3 (User).
+        // Writable as well as executable for now because the three
         // segments (R, RX, RW) are being mapped as one range; giving each its
         // own permissions is a later step, and one worth taking -- an image
         // that is writable and executable at once is exactly what W^X exists
@@ -446,11 +443,10 @@ namespace {
         // Note it does not defeat the vDSO rule: a program that writes a
         // `syscall` into its own text still traps from an address outside the
         // vDSO, which is exactly what the kernel refuses.
-        constexpr auto IMAGE_FLAGS =
-            MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable | MmuFlags::Executable;
+        constexpr auto IMAGE_PERMS =
+            VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute;
 
-        auto status =
-            loader.map(bytes, mm::VmPlacement::at(USER_ASPACE_BASE), IMAGE_FLAGS, name, out.image);
+        auto status = loader.map(bytes, USER_ASPACE_BASE, IMAGE_PERMS, name, out.image);
         if (Status::Ok != status) {
             return status;
         }
@@ -468,10 +464,15 @@ namespace {
             return status;
         }
 
-        auto stack = root_vmar.map(
-            *stack_vmo.dispatcher(), mm::VmPlacement::at(USER_STACK_TOP - USER_STACK_SIZE),
-            USER_STACK_SIZE, MmuFlags::User | MmuFlags::Readable | MmuFlags::Writable,
-            mm::VmMapOption::Commit, "userboot-stack");
+        //
+        // At its fixed place, populated now, and never executable later
+        // either: the ceiling is read and write.
+        constexpr auto STACK_OPTIONS = VmOptions::PermRead | VmOptions::PermWrite |
+                                       VmOptions::CanMapRead | VmOptions::CanMapWrite |
+                                       VmOptions::Specific | VmOptions::MapRange;
+        auto stack =
+            root_vmar.map(STACK_OPTIONS, USER_STACK_TOP - USER_STACK_SIZE - root_vmar.vma()->base(),
+                          *stack_vmo.dispatcher(), 0, USER_STACK_SIZE, "userboot-stack");
         if (stack.is_err()) {
             log::error("userboot: could not map a stack: {}", to_string(stack.unwrap_err()));
             return stack.unwrap_err();
@@ -492,11 +493,9 @@ namespace {
     /// rewrite it could place a trap anywhere inside the one range the kernel
     /// trusts.
     auto map_vdso(elfload::Loader const &loader, elfload::Image &out) -> Status {
-        using arch::paging::MmuFlags;
-        constexpr auto VDSO_FLAGS = MmuFlags::User | MmuFlags::Readable | MmuFlags::Executable;
+        constexpr auto VDSO_PERMS = VmOptions::PermRead | VmOptions::PermExecute;
 
-        auto const status =
-            loader.map(shared_vdso.image, mm::VmPlacement::at(VDSO_BASE), VDSO_FLAGS, "vdso", out);
+        auto const status = loader.map(shared_vdso.image, VDSO_BASE, VDSO_PERMS, "vdso", out);
         if (Status::Ok != status) {
             return status;
         }

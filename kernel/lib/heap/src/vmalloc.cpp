@@ -146,7 +146,8 @@ auto vmalloc(usize const size, Gaf const gaf) -> void * {
     // range would come back live with no page tables behind it. Committing the
     // VMO, installing the entries, and destroying the half-built mapping when
     // either fails all live in map_with_vmo().
-    auto mapping = WINDOW->map_with_vmo(ours::mm::VmPlacement::anywhere(), rounded, MMU_FLAGS, vmo,
+    auto mapping = WINDOW->map_with_vmo(ours::mm::VmPlacement::anywhere(), rounded, 0, MMU_FLAGS,
+                                        ours::mm::VmaFlags::PermMask, vmo,
                                         ours::mm::VmMapOption::Commit, "vmalloc");
     if (mapping.is_err()) {
         // The VMO's last reference goes with this return, and ~VmCowPages

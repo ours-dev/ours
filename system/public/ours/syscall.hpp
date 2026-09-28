@@ -22,6 +22,8 @@
 
 #include <limits>
 
+#include <ustl/util/enum_bits.hpp>
+
 namespace ours {
 /// A deadline that never arrives: wait until the condition holds, however
 /// long that takes (Zircon ZX_TIME_INFINITE).
@@ -98,6 +100,37 @@ enum class VmoOptions : u32 {
     None = 0,
     Resizable = 1U << 1,
 };
+
+/// vmar_map's options (and, later, vmar_allocate's and vmar_protect's): what
+/// the mapping may do, where it goes, and how it is populated. The values are
+/// Zircon's ZX_VM_*, so a request ported from Zircon asks the same question.
+///
+///   Perm*       The protection the pages get.
+///   Specific    At vmar_offset from the region's start, not wherever fits.
+///   CanMap*     The ceiling a later protect() is held to. Set by the kernel
+///               from the handles' rights; a program may not pass them.
+///   MapRange    Populate the whole range now rather than on first touch.
+/// The rest are named so that a program asking for them gets NotSupported,
+/// not InvArgs: they are Zircon's, deferred here.
+enum class VmOptions : u32 {
+    None = 0,
+    PermRead = 1U << 0,
+    PermWrite = 1U << 1,
+    PermExecute = 1U << 2,
+    Compact = 1U << 3,
+    Specific = 1U << 4,
+    SpecificOverwrite = 1U << 5,
+    CanMapSpecific = 1U << 6,
+    CanMapRead = 1U << 7,
+    CanMapWrite = 1U << 8,
+    CanMapExecute = 1U << 9,
+    MapRange = 1U << 10,
+    RequireNonResizable = 1U << 11,
+    AllowFaults = 1U << 12,
+    OffsetIsUpperLimit = 1U << 13,
+    PermReadIfXomUnsupported = 1U << 14,
+};
+USTL_ENABLE_ENUM_BITMASK(VmOptions);
 
 /// vmo_create_child's options: which kind of child, and how it may be used.
 /// Only Slice is built; every other bit named here is recognised and answered

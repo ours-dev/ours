@@ -122,8 +122,8 @@ auto VmArea::create_subvma(VmPlacement where, usize requested_size, VmaFlags vma
 }
 
 auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_ofs, MmuFlags mmuf,
-                            ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
-                            ustl::Arc<VmMapping> *out) -> Status {
+                            VmaFlags ceiling, ustl::Arc<VmObject> vmo, char const *name,
+                            VmMapOption option, ustl::Arc<VmMapping> *out) -> Status {
     m_canary.verify<Self>();
 
     // What this area permits, asked of the protection the mapping is being
@@ -132,6 +132,14 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
     // straight into the page tables unexamined. reserve() has always run this
     // check; the two ways of creating a mapping now agree.
     if (!validate_mmuflags(mmuf)) {
+        return Status::InvArgs;
+    }
+
+    // The mapping's own ceiling: what the caller asks, cut down to what this
+    // area allows. The protection it starts with has to fit under it, or the
+    // mapping would begin above the line protect() is held to.
+    auto const allowed = ceiling & permissions();
+    if ((permissions_of(mmuf) & ~allowed) != VmaFlags::None) {
         return Status::InvArgs;
     }
 
@@ -147,12 +155,18 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
 
     auto const [base, size] = *result;
 
-    // m_vmaf, deliberately: a mapping's VmaFlags are the ceiling a later
-    // protect() is checked against, and what this area permits is exactly that
-    // ceiling. |mmuf| is only where the mapping starts out, which is why the
-    // two are separate arguments and only one of them is an allowance.
+    // A mapping's VmaFlags are the ceiling a later protect() is checked
+    // against: this area's own flags, with the permission bits narrowed to
+    // |allowed|. |mmuf| is only where the mapping starts out, which is why the
+    // two are separate arguments and only one of them is an allowance. It used
+    // to be m_vmaf whole, so every mapping could be protect()ed up to whatever
+    // its area allowed -- a read-only BootFS mapping to writable (interface
+    // design 2.3); Zircon keeps the per-mapping ceiling for the same reason
+    // (VmMapping's CAN_MAP_* flags, from the rights the mapping was made
+    // with).
+    auto const vmaf = (m_vmaf & ~VmaFlags::PermMask) | allowed;
     ustl::Arc<VmAreaOrMapping> out_aom;
-    auto const status = Builder(&m_aspace, m_vmaf, size)
+    auto const status = Builder(&m_aspace, vmaf, size)
                             .set_parent(this)
                             .set_base(base)
                             .set_vmo(ustl::move(vmo))
@@ -258,7 +272,7 @@ auto VmArea::map_phys(PhysAddr phys_base, VmPlacement where, usize size, MmuFlag
         return ustl::err(status);
     }
 
-    return map_with_vmo(where, size, mmuf, ustl::move(vmo), options, name);
+    return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
 auto VmArea::map_anon(VmPlacement where, usize size, MmuFlags mmuf, VmMapOption options,
@@ -276,23 +290,23 @@ auto VmArea::map_anon(VmPlacement where, usize size, MmuFlags mmuf, VmMapOption 
         return ustl::err(status);
     }
 
-    return map_with_vmo(where, size, mmuf, ustl::move(vmo), options, name);
+    return map_with_vmo(where, size, 0, mmuf, VmaFlags::PermMask, ustl::move(vmo), options, name);
 }
 
-auto VmArea::map_with_vmo(VmPlacement where, usize size, MmuFlags mmuf, ustl::Arc<VmObject> vmo,
-                          VmMapOption option, char const *name)
-    -> ktl::Result<ustl::Arc<VmMapping>> {
+auto VmArea::map_with_vmo(VmPlacement where, usize size, u64 vmo_ofs, MmuFlags mmuf,
+                          VmaFlags ceiling, ustl::Arc<VmObject> vmo, VmMapOption option,
+                          char const *name) -> ktl::Result<ustl::Arc<VmMapping>> {
     m_canary.verify<Self>();
 
     ustl::Arc<VmMapping> mapping;
-    auto status = create_mapping(where, size, 0, mmuf, vmo, name, option, &mapping);
+    auto status = create_mapping(where, size, vmo_ofs, mmuf, ceiling, vmo, name, option, &mapping);
     if (Status::Ok != status) {
         return ustl::err(status);
     }
 
     // Do we immediately commit current mapping request?
     if (!!(VmMapOption::Commit & option)) {
-        status = vmo->commit_range(0, size);
+        status = vmo->commit_range(vmo_ofs, size);
         if (Status::Ok == status) {
             status = mapping->map(mapping->base(), size, true, MapOptions::ErrorIfExisting);
         }

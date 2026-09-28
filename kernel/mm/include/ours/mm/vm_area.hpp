@@ -66,13 +66,16 @@ class VmArea final: public VmAreaOrMapping {
 
     /// Create a mapping of |size| bytes where |where| says.
     ///
-    /// |mmuf| is the protection the pages get now; the ceiling a later
-    /// protect() may raise them to is this area's own VmaFlags, which is why
-    /// there is no separate flags argument. A mapping is a leaf, so it has no
-    /// allowance to hand on to anyone.
+    /// |mmuf| is the protection the pages get now; |ceiling| is what a later
+    /// protect() may ever raise them to, as far as this area allows -- the
+    /// mapping keeps `ceiling & permissions()`. A caller with nothing to add
+    /// passes VmaFlags::PermMask and gets this area's own allowance, which is
+    /// what every mapping got before a ceiling could be asked for. |mmuf|
+    /// must fit inside the result (InvArgs otherwise). A mapping is a leaf,
+    /// so its ceiling is its own and handed on to nobody.
     auto create_mapping(VmPlacement where, usize size, usize vmo_ofs, MmuFlags mmuf,
-                        ustl::Arc<VmObject> vmo, char const *name, VmMapOption option,
-                        ustl::Arc<VmMapping> *out) -> Status;
+                        VmaFlags ceiling, ustl::Arc<VmObject> vmo, char const *name,
+                        VmMapOption option, ustl::Arc<VmMapping> *out) -> Status;
 
     /// Create a sub-VMA of |size| bytes where |where| says.
     ///
@@ -119,8 +122,12 @@ class VmArea final: public VmAreaOrMapping {
     /// it directly got a live mapping with no pages installed, and faulted on
     /// first touch. Honouring Commit -- and unwinding correctly when it fails
     /// -- lives here.
-    auto map_with_vmo(VmPlacement where, usize size, MmuFlags, ustl::Arc<VmObject>, VmMapOption,
-                      char const *name) -> ktl::Result<ustl::Arc<VmMapping>>;
+    ///
+    /// |vmo_ofs| is where in the object the mapping starts, and Commit
+    /// commits from there; |ceiling| is create_mapping()'s.
+    auto map_with_vmo(VmPlacement where, usize size, u64 vmo_ofs, MmuFlags mmuf, VmaFlags ceiling,
+                      ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
+        -> ktl::Result<ustl::Arc<VmMapping>>;
 
     /// Tear down everything mapped in [base, base + size).
     auto unmap(VirtAddr base, usize size) -> Status;

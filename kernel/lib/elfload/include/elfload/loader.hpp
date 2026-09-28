@@ -54,7 +54,8 @@ class Loader final {
     explicit Loader(ours::object::VmarDispatcher &root_vmar) : m_root_vmar(root_vmar) {}
 
     /// Lays |file|'s PT_LOAD segments out in a fresh paged VMO and maps it at
-    /// |where| with |flags|.
+    /// the address |at| with the protection |perms| (VmOptions::Perm* bits
+    /// only).
     ///
     /// The segments land in one VMO covering one range, from the lowest
     /// p_vaddr any PT_LOAD claims to the highest. That is a simplification --
@@ -66,7 +67,7 @@ class Loader final {
     /// only ever a literal or a program name the caller already keeps
     /// terminated.
     [[nodiscard]]
-    auto map(Bytes file, ours::mm::VmPlacement where, ours::mm::MmuFlags flags, char const *name,
+    auto map(Bytes file, ours::VirtAddr at, ours::VmOptions perms, char const *name,
              Image &out) const -> ours::Status;
 
     /// The first half of the above: lays |file|'s PT_LOAD segments out in a
@@ -75,15 +76,20 @@ class Loader final {
     [[nodiscard]]
     static auto load(Bytes file, char const *name, ImageVmo &out) -> ours::Status;
 
-    /// The second half: maps an image load() laid out at |where| with |flags|.
+    /// The second half: maps an image load() laid out at |at| with |perms|.
     /// The VMO is shared, not copied; every address space it is mapped into
     /// sees the same pages.
+    ///
+    /// The mapping's ceiling is |perms| itself (the matching CanMap bits):
+    /// the kernel maps these images for the program, and nothing the program
+    /// does later should raise them -- the vDSO above all, which must never
+    /// become writable.
     ///
     /// |image| is not const because mapping takes a reference on its VMO, and
     /// ustl::Arc carries const through to the object it points at.
     [[nodiscard]]
-    auto map(ImageVmo &image, ours::mm::VmPlacement where, ours::mm::MmuFlags flags,
-             char const *name, Image &out) const -> ours::Status;
+    auto map(ImageVmo &image, ours::VirtAddr at, ours::VmOptions perms, char const *name,
+             Image &out) const -> ours::Status;
 
   private:
     ours::object::VmarDispatcher &m_root_vmar;

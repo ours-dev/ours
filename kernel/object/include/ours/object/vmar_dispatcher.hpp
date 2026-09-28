@@ -6,6 +6,7 @@
 #include <ours/mm/vm_area.hpp>
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
+#include <ours/syscall.hpp>
 
 #include <ktl/result.hpp>
 
@@ -61,32 +62,44 @@ class VmarDispatcher final: public VmarDispatcherBase {
     static auto create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
                        Rights &rights_out) -> Status;
 
-    /// Map |size| bytes of |vmo| where |where| says.
+    /// Maps [vmo_offset, vmo_offset + length) of |vmo| into this region, and
+    /// answers the address it landed at.
     ///
     /// One entry point taking a VMO, where there used to be two -- map_phys()
-    /// for a physical range and map_anon() for fresh anonymous pages. Those
-    /// were mm::VmArea's convenience wrappers surfaced verbatim, and both end
-    /// in the same mapping call; what differed was only which kind of
-    /// VmObject they built on the caller's behalf. Building it is now the
-    /// caller's own step (VmoDispatcher::create_paged / create_physical),
-    /// which is what makes "get some memory" and "put it somewhere" two
-    /// operations rather than one -- the split Zircon has between
-    /// zx_vmo_create and zx_vmar_map, and the reason the same VMO can be
-    /// mapped twice at two addresses.
+    /// for a physical range and map_anon() for fresh anonymous pages. Building
+    /// the VMO is the caller's own step (VmoDispatcher::create_*), which is
+    /// what makes "get some memory" and "put it somewhere" two operations --
+    /// the split Zircon has between zx_vmo_create and zx_vmar_map, and the
+    /// reason the same VMO can be mapped twice at two addresses.
     ///
-    /// No VMO offset, unlike zx_vmar_map: the whole VMO is mapped from its
-    /// start. mm::VmArea::map_with_vmo() hardcodes the offset to zero when it
-    /// calls create_mapping(), so an offset here could only be accepted and
-    /// ignored -- and this file has just been bitten once by an argument that
-    /// was accepted and ignored (see map_with_vmo's own note about Commit).
-    /// The parameter arrives when mm can honour it.
+    /// It used to take mm's placement and MMU flags and no VMO offset (mm
+    /// hardcoded it to zero), so the object layer's interface was mm's.
     ///
-    /// Still no rights check: there is no handle-holding caller to check
-    /// against yet. It belongs at the syscall entry once handle resolution
-    /// exists -- and it belongs on this side of the call, which is why the
-    /// entry point is here rather than on mm::VmArea.
-    auto map(VmoDispatcher &vmo, mm::VmPlacement where, usize size, mm::MmuFlags mmuf,
-             mm::VmMapOption option, char const *name) -> ktl::Result<ustl::Arc<mm::VmMapping>>;
+    /// Zircon's shape: VmAddressRegionDispatcher::Map() takes the options
+    /// word and no rights. The rights are the system call's to turn into
+    /// options -- a Perm bit the handles do not allow is refused there, and
+    /// the CanMap bits it sets from them become the mapping's ceiling here --
+    /// so a kernel caller, which has no handle to ask, says what it means in
+    /// the same words. Interface design 2.3 had this take the two handles'
+    /// rights instead; the options word says the same and keeps one meaning
+    /// for CanMap from the kernel up to vmar_allocate.
+    ///
+    /// Only Perm*, Specific, CanMap* and MapRange are acted on; any other bit
+    /// is NotSupported. Otherwise:
+    ///   - InvArgs: length 0; vmo_offset not page-aligned; vmar_offset
+    ///     without Specific, or not page-aligned, or outside this region;
+    ///   - AccessDenied: a Perm bit without its CanMap bit;
+    ///   - OutOfRange: the range, rounded up to a page, not inside the VMO.
+    ///     Zircon lets a mapping run past its VMO's end and faults the
+    ///     access instead; interface design 2.3 refuses it at the door.
+    /// W^X and "Write needs Read" are not checked here: they are rules for
+    /// what a program may ask (vmar_map), and userboot still maps its image
+    /// writable and executable as one range until segments get their own.
+    ///
+    /// |name| names the mapping in the kernel's dumps; the system call passes
+    /// its own.
+    auto map(VmOptions options, usize vmar_offset, VmoDispatcher &vmo, u64 vmo_offset, usize length,
+             char const *name) -> ktl::Result<VirtAddr>;
 
     FORCE_INLINE
     auto vma() const -> ustl::Arc<mm::VmArea> const & {

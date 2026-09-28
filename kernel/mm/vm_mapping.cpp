@@ -273,7 +273,11 @@ auto VmMapping::map_physical(VmObjectPhysical *vmo, VirtAddr base, usize size, M
 
     DEBUG_ASSERT(vmo);
     PhysAddr phys_base;
-    auto status = vmo->lookup_range(base - m_base, size, &phys_base);
+    // In the object's bytes, as map_paged() converts: the mapping may start
+    // anywhere in the object, and |base| is an address. This passed
+    // `base - m_base` alone, so a mapping at any object offset but 0 mapped
+    // the object's first bytes instead.
+    auto status = vmo->lookup_range(m_vmo_ofs + (base - m_base), size, &phys_base);
     if (Status::Ok != status) {
         return status;
     }

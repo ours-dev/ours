@@ -34,8 +34,9 @@ auto Stack::init(usize size) -> Status {
 
     ustl::Arc<VmMapping> mapping;
     status = rvma->create_mapping(VmPlacement::anywhere(), size, 0,
-                                  MmuFlags::Readable | MmuFlags::Writable, vmo, "k-stack-mapping",
-                                  VmMapOption::Pinned | VmMapOption::Commit, &mapping);
+                                  MmuFlags::Readable | MmuFlags::Writable, VmaFlags::PermMask, vmo,
+                                  "k-stack-mapping", VmMapOption::Pinned | VmMapOption::Commit,
+                                  &mapping);
     if (Status::Ok != status) {
         log::trace("Failed to allocate a VmMapping, size={}, reason={}", size, to_string(status));
         return status;

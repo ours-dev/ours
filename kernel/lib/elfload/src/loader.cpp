@@ -171,8 +171,8 @@ auto Loader::load(Bytes const bytes, char const *const name, ImageVmo &out) -> S
     return Status::Ok;
 }
 
-auto Loader::map(ImageVmo &image, mm::VmPlacement const where, mm::MmuFlags const flags,
-                 char const *const name, Image &out) const -> Status {
+auto Loader::map(ImageVmo &image, VirtAddr const at, VmOptions const perms, char const *const name,
+                 Image &out) const -> Status {
     auto &vmo = image.vmo;
     auto memory = vmo.dispatcher()->vmo();
     out.span = image.span;
@@ -182,14 +182,28 @@ auto Loader::map(ImageVmo &image, mm::VmPlacement const where, mm::MmuFlags cons
     // asking, and every future syscall::vmar_map has to answer that. Rights
     // live on the handle, so the entry point has to be on the object that
     // a handle names.
-    auto mapping =
-        m_root_vmar.map(*vmo.dispatcher(), where, out.span, flags, mm::VmMapOption::Commit, name);
+    //
+    // At |at| exactly, populated now, and never above |perms|: each Perm bit
+    // brings its CanMap bit and nothing else.
+    auto ceiling = VmOptions::None;
+    if (!!(perms & VmOptions::PermRead)) {
+        ceiling |= VmOptions::CanMapRead;
+    }
+    if (!!(perms & VmOptions::PermWrite)) {
+        ceiling |= VmOptions::CanMapWrite;
+    }
+    if (!!(perms & VmOptions::PermExecute)) {
+        ceiling |= VmOptions::CanMapExecute;
+    }
+    auto const options = perms | ceiling | VmOptions::Specific | VmOptions::MapRange;
+    auto const vmar_offset = at - m_root_vmar.vma()->base();
+    auto mapping = m_root_vmar.map(options, vmar_offset, *vmo.dispatcher(), 0, out.span, name);
     if (mapping.is_err()) {
         log::error("elfload: could not map {}: {}", name, to_string(mapping.unwrap_err()));
         return mapping.unwrap_err();
     }
 
-    out.base = mapping.unwrap()->base();
+    out.base = mapping.unwrap();
     // The Binder writes relocations through the VMO as well. The pointer
     // stays valid for as long as the image does: the mapping holds its own
     // reference to the VMO, so the object outlives both references dropped
@@ -204,7 +218,7 @@ auto Loader::map(ImageVmo &image, mm::VmPlacement const where, mm::MmuFlags cons
     return Status::Ok;
 }
 
-auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags const flags,
+auto Loader::map(Bytes const bytes, VirtAddr const at, VmOptions const perms,
                  char const *const name, Image &out) const -> Status {
     // Laid out for this one mapping. The ImageVmo's handle goes when this
     // returns; the mapping keeps the VMO alive by its own reference.
@@ -212,6 +226,6 @@ auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags co
     if (auto const status = load(bytes, name, image); Status::Ok != status) {
         return status;
     }
-    return map(image, where, flags, name, out);
+    return map(image, at, perms, name, out);
 }
 } // namespace elfload

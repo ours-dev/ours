@@ -109,7 +109,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 规则：
 - **命名**：对象层和 ABI 统一叫 Vmar（`VmarDispatcher`、`ours_vmar_*`、`RIGHTS_DEFAULT_VMAR`），`mm::VmArea` 不改名。改名放在第一个 vmar 系统调用之前做（P1-C）。
-- **dispatcher 签名不再暴露 mm 类型**：`VmarDispatcher::map(VmOptions, usize vmar_offset, VmoDispatcher &, u64 vmo_offset, usize length, Rights vmar_rights, Rights vmo_rights) -> Result<VirtAddr>`。翻译成 MmuFlags/VmPlacement 的工作在 dispatcher 内完成。偏移一律是字节偏移。
+- **dispatcher 签名不再暴露 mm 类型**：`VmarDispatcher::map(VmOptions, usize vmar_offset, VmoDispatcher &, u64 vmo_offset, usize length, char const *name) -> Result<VirtAddr>`（K21a 落地，2026-09-28）。照 Zircon 的 `VmAddressRegionDispatcher::Map()`，不收 rights：系统调用把两边句柄的 rights 换成 CanMap* 位，dispatcher 把 CanMap* 存成映射上限；内核调用方没有句柄，直接写出它要的 Perm* 和 CanMap*。翻译成 MmuFlags/VmPlacement 的工作在 dispatcher 内完成。偏移一律是字节偏移。
 - **提交策略**：用户的 `vmo_create` 一律按需提交（Lazy）；`create_paged(Pinned)` 只留给内核内部使用（userboot 的栈、vDSO、BootFS）。
 - **映射上限**：`vmar_map` 从第一天起就保存 per-mapping 上限，即 vmar rights ∩ vmo rights ∩ 区域的 CanMap*。`vmar_protect` 必须和这个上限在同一个提交里上线。今天 `vm_area.cpp:136-143` 直接拿区域的 `m_vmaf` 当上限，只读 BootFS 会因此被 protect 成可写。
 - **W^X**：系统调用层拒绝 PermWrite+PermExecute 的映射；launcher 为每个 PT_LOAD 建一个 VMO，按 p_flags 映射。`RIGHTS_DEFAULT_VMO` 不带 Execute，可执行句柄只能经 `vmo_replace_as_executable` 用 vmex 换出（K19）。

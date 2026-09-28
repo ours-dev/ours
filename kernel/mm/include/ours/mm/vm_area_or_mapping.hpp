@@ -135,6 +135,23 @@ constexpr auto extract_permissions(VmaFlags vmaflags) -> MmuFlags {
     return mmuf;
 }
 
+/// extract_permissions() the other way: the VmaFlags permission bits that
+/// |mmuf| asks for. What a ceiling is compared against.
+FORCE_INLINE
+constexpr auto permissions_of(MmuFlags mmuf) -> VmaFlags {
+    VmaFlags vmaf{};
+    if (!!(mmuf & MmuFlags::Readable)) {
+        vmaf |= VmaFlags::Read;
+    }
+    if (!!(mmuf & MmuFlags::Writable)) {
+        vmaf |= VmaFlags::Write;
+    }
+    if (!!(mmuf & MmuFlags::Executable)) {
+        vmaf |= VmaFlags::Exec;
+    }
+    return vmaf;
+}
+
 class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::ThreadSafePolicy> {
     using Self = VmAreaOrMapping;
     using Base = ustl::RefCounted<Self, ustl::sync::ThreadSafePolicy>;
@@ -168,6 +185,16 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
     FORCE_INLINE
     auto size() const -> VirtAddr {
         return m_size;
+    }
+
+    /// What this area allows mappings under it, or what this mapping's
+    /// protection may ever be raised to: the ceiling, as permission bits.
+    /// Read without the aspace lock: the permission bits are fixed when the
+    /// object is built, and only the state bits (Active) change after.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto permissions() const -> VmaFlags {
+        return m_vmaf & VmaFlags::PermMask;
     }
 
     FORCE_INLINE
