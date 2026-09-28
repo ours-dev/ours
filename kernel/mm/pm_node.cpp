@@ -675,6 +675,16 @@ auto PmNode::free_frames(PmFrame::List *list) -> void {
     list->clear_and_dispose([](PmFrame *frame) noexcept { free_frames(frame, frame->order()); });
 }
 
+auto PmNode::contains(usize const order, ZoneType const type) -> bool {
+    m_canary.verify<Self>();
+
+    auto *const zone = m_zone_queues.get_local_zone(type);
+    if (!zone) {
+        return false;
+    }
+    return zone->contains(order);
+}
+
 auto PmNode::dump() const -> void {
     // TODO(SmallHuaZi) merge them to a log sentence.
     log::info(

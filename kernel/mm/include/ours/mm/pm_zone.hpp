@@ -56,6 +56,19 @@ class FrameSet {
         m_buddy.release(frame, order);
     }
 
+    /// Whether some free block of at least |order| is on the lists, i.e.
+    /// whether an allocation of |order| could be served without reclaim.
+    /// Cheap: at most one emptiness test per order.
+    [[nodiscard]]
+    auto has_free_block(usize order) const -> bool {
+        for (auto o = order; o < FrameBuddy::NUM_ORDERS; ++o) {
+            if (!m_buddy.empty(o)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// Free frames, counted in pages: every block on every order's list,
     /// weighted by its size. A walk of the lists, not a counter, so it costs
     /// time proportional to how fragmented the set is -- for a diagnostic,
@@ -96,6 +109,14 @@ class PmZone {
 
     ~PmZone();
 
+    /// Whether this zone could serve an allocation of |order| from its free
+    /// lists right now. A snapshot under the zone lock: the answer may be
+    /// stale by the time the caller acts on it, so it is for choosing where to
+    /// try, never a promise that the allocation will succeed.
+    ///
+    /// Linux: the final loop of __zone_watermark_ok(), which looks for a
+    /// non-empty free_area from |order| up.
+    [[nodiscard]]
     auto contains(usize order) -> bool;
 
     /// Allocate a frame whose order equals to |order|

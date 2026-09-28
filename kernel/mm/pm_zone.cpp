@@ -105,6 +105,13 @@ auto PmZone::free_frames() -> usize {
     return m_fset.free_frames();
 }
 
+auto PmZone::contains(usize order) -> bool {
+    ensure_fset_attached();
+
+    ZoneGuard guard{m_lock};
+    return m_fset.has_free_block(order);
+}
+
 auto PmZone::free_frame(PmFrame *frame, usize order) -> void {
     ensure_fset_attached();
 

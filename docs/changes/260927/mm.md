@@ -1066,3 +1066,69 @@ Linux `build_zonelists()` → `build_zonelists_in_node_order()`：用 `find_next
 
 **故意没做**
 队列结构本身（四个队列里两个用不上）留到第 4 步处理。
+
+## PmNode::contains() 和 PmZone::contains() 补上定义（2026-09-27）
+
+PmNode 结构整理第 1 步的第六项，也是最后一项。实现方式按用户的选择：查询"该 zone 能否从空闲链表满足这个 order"，
+而不是删掉声明。
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_zone.hpp`：`FrameSet` 新增 `has_free_block(order)`；`PmZone::contains()` 补注释
+- `kernel/mm/pm_zone.cpp`：`PmZone::contains()` 的定义
+- `kernel/mm/include/ours/mm/pm_node.hpp`、`kernel/mm/pm_node.cpp`：`PmNode::contains()` 的注释和定义
+
+**症状**
+`PmNode::contains(order, type)` 和 `PmZone::contains(order)` 都只有声明、没有定义，也没有调用者。
+第一个调用的人会链接失败。
+
+**原因**
+接口先写好了，实现一直没补。两者其实是同一个问题的两层：节点这一层找到对应类型的 zone，
+zone 这一层查自己的空闲链表。
+
+**改法**
+
+```cpp
+// FrameSet
+auto has_free_block(usize order) const -> bool {
+    for (auto o = order; o < FrameBuddy::NUM_ORDERS; ++o) {
+        if (!m_buddy.empty(o)) { return true; }
+    }
+    return false;
+}
+
+auto PmZone::contains(usize order) -> bool {
+    ensure_fset_attached();
+    ZoneGuard guard{m_lock};
+    return m_fset.has_free_block(order);
+}
+
+auto PmNode::contains(usize order, ZoneType type) -> bool {
+    auto *const zone = m_zone_queues.get_local_zone(type);
+    if (!zone) { return false; }
+    return zone->contains(order);
+}
+```
+
+判断的是"有没有 order ≥ 要求的空闲块"，不是"恰好这个 order 的链表非空"：更大的块可以拆开来满足请求。
+结果只是一个快照，调用方拿到答案时它可能已经过时，所以只能用来决定先去哪里试，不能当成分配一定成功的保证。
+注释里写明了这一点。
+
+**参照**
+Linux `__zone_watermark_ok()`（`mm/page_alloc.c`）的最后一段：从 `order` 往上逐阶检查
+`z->free_area[o].nr_free`，找到非空的就返回 true。
+
+**验证**
+- 临时探针（dev 镜像，512 MB）：
+
+  ```
+  PROBE contains zone=DMA order0=true max=true beyond=false
+  PROBE contains zone=DMA32 order0=true max=true beyond=false
+  PROBE contains zone=Normal order0=false max=false beyond=false
+  ```
+
+  512 MB 的机器上没有 Normal zone，所以是 false；超出 `MAX_FRAME_ORDER` 的 order 一律 false。探针已撤掉。
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+
+**故意没做**
+`PmZone::find_frame(usize order)` 同样只有声明没有定义，不在这一项的范围内，没动。
+每 CPU 缓存是空实现，缓存里的页框不在伙伴链表上，所以将来有了缓存之后，这个查询不会把它们算进去。

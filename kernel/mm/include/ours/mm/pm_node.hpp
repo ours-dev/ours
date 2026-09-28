@@ -311,6 +311,12 @@ class PmNode {
     /// Free a list of frames, each back to its own node.
     static auto free_frames(PmFrame::List *list) -> void;
 
+    /// Whether this node's zone of |type| could serve an allocation of
+    /// |order| from its free lists right now; false when the node has no such
+    /// zone. A snapshot, like PmZone::contains(), which answers it.
+    ///
+    /// It used to be declared and never defined.
+    [[nodiscard]]
     auto contains(usize order, ZoneType type) -> bool;
 
     auto dump() const -> void;
