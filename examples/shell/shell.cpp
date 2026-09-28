@@ -30,6 +30,7 @@
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/syscall/resource.hpp>
 #include <ours/vdso.hpp>
 
 #include <string_view>
@@ -1280,6 +1281,16 @@ auto main(int, char **) -> int {
     auto const peer = runtime::take_startup_handle(ours::HandleType::User0, 0);
     auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
     auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+    // vmex comes only from userboot (design D3): init keeps its own and hands
+    // it to nobody, so in the image where init starts this program there is
+    // none, and that is right.
+    auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
+                                                   u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    if (vmex != ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vmex resource ok"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: started without vmex"));
+    }
 
     answer_init(peer);
     describe_bootfs(bootfs);

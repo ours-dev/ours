@@ -75,3 +75,72 @@ Zircon：
 **故意没做**
 - 没有像 Zircon 那样把 vDSO 拆成"只读段"和"代码段"两个映射。今天仍然是一个 R+X 映射，和改动前一样。
 - 没有把 vDSO VMO 的句柄交给第一个进程。这是 K23 用户态 launcher 自己映射 vDSO 时才需要的，届时再做。
+
+## vmex：内核铸造 System 资源槽位，交给第一个进程，userboot 再转交（K18，2026-09-28）
+
+`docs/design/260924/userspace-filesystem.md` 的 K18。
+
+**文件**
+- `system/public/ours/syscall/resource.hpp`：`RSRC_SYSTEM_VMEX_BASE = 1`、`RSRC_SYSTEM_COUNT = 2`
+- `kernel/object/include/ours/object/resource_dispatcher.hpp`、`resource_dispatcher.cpp`：重写 `create()`；新增 `kind()`、`base()`、`size()`
+- `kernel/lib/userabi/src/resource.hpp`（新）、`resource.cpp`：`make_system_resource_handle()`，取代原来的空函数 `make_resource_handle()`
+- `kernel/lib/userabi/src/userboot.cpp`：`make_bootstrap()` 多放一个 `SystemResource` 句柄
+- `kernel/lib/userabi/userboot/userboot.cpp`：userboot 把 vmex 原样转交给下一个程序
+- `system/service/init/init.cpp`、`examples/shell/shell.cpp`：按槽位取出 vmex 并报告
+- `docs/design/260924/userspace-filesystem.md`：K18 标为已落地
+
+**症状**
+- `ResourceDispatcher::create()` 没有任何一种调用能通过：它先拒绝 size 为 0，接着又要求 Root 种类的 size 必须为 0；
+  而且无论如何都不构造对象，直接返回 Ok，让调用方以为 `out` 里已经有了句柄。
+- `userabi::make_resource_handle()` 是空函数。
+- processargs 里预留的 `SystemResource = 0x54` 从来没有发过。
+
+没有 vmex，K19 的 `vmo_replace_as_executable` 就无从校验。按设计 D3，"可执行"是一项能力，
+只有持有 vmex 的进程才能把 VMO 换成可执行的。
+
+**原因**
+资源对象只写了一个框架，内容从来没补上。
+
+**改法**
+
+```cpp
+auto ResourceDispatcher::create(...) -> Status {
+    if (kind != Kind::System) { return Status::NotSupported; }
+    if (size != 1 || base >= RSRC_SYSTEM_COUNT) { return Status::InvArgs; }
+    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_KERNEL) Self(kind, base, size, flags, name));
+    rights = default_right();
+    *out = KernelHandle<Self>(ustl::move(self));
+}
+
+// make_bootstrap()：根 job、BootFS 之后
+handles[count] = make_system_resource_handle(RSRC_SYSTEM_VMEX_BASE, "vmex");
+infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_VMEX_BASE));
+```
+
+- **范围按 M1 收窄**：只支持 System 种类、一次一个槽位。其它种类回 NotSupported。
+  Zircon 在 `Storage` 里为 MMIO、IRQ、I/O 端口做区间重叠检查，这里等真正需要这几类时再做，所以 `storage` 参数先收下不用。
+- **槽位编号照搬 Zircon**：`ZX_RSRC_SYSTEM_VMEX_BASE = 1`，0 号（Zircon 的 hypervisor 槽）空着，不重新编号。
+  这样从 Zircon 移植过来的代码，问的还是同一个槽位。
+- **handle_info 的参数填槽位编号**：和 Zircon 的 userboot 给 system resource 打标签的方式一样。
+  接收方按 `SystemResource` 加槽位号取句柄。
+- **传递链照设计 §4.6**：内核只交给第一个进程 userboot；userboot 原样转交给 next（dev 是 init，dbg_1 是 shell）；
+  init 自己留着，不再外发。所以 dev 下由 init 启动的 shell 拿不到 vmex，这是预期行为。
+
+**参照**
+- Zircon `ResourceDispatcher::Create()`：对 `ZX_RSRC_KIND_SYSTEM` 同样只接受槽位表内的 base、大小为 1；
+- Zircon userboot 用 `get_resource_handle()` 铸造 system resource，放进 bootstrap 消息；
+- 槽位常量见 `zircon/system/public/zircon/syscalls/resource.h`。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。
+- QEMU 实测：
+  - dev：`init: vmex resource ok`；init 起的 shell 打出 `shell: started without vmex`；
+  - dbg_1：userboot 起的 shell 打出 `shell: vmex resource ok`；
+  - 两个镜像的 shell 检查都没有 FAILED，`usercopy.test` 都是 18/18；句柄配额测试仍是 512 个 channel 后触顶，
+    因为 vmex 不是 shell 自己创建的，不计入它的配额（K11 的记法）。
+- clang-tidy：新文件无告警；`resource_dispatcher.hpp` 里有两条原本就有的告警。
+- 反向检查（没有 vmex 时被拒绝、传错类型的句柄回 BadType）要等 K19 有了 `vmo_replace_as_executable` 才能做。
+
+**故意没做**
+- 没有资源相关的系统调用（Zircon 的 `resource_create`）。按设计，M1 里只有内核铸造的这一个槽位。
+- userboot 还不能用 vmex，K19 之后它才会先复制 BootFS，再把其中一份换成可执行的（U8）。

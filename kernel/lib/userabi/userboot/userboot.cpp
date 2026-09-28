@@ -36,6 +36,7 @@
 #include <ou/str.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
+#include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
@@ -118,9 +119,10 @@ auto collect_handed_on() -> HandedOn {
     return handed_on;
 }
 
-/// Starts |name| from the kernel package under |job|, handing it |job| and
-/// |bootfs| as its JobDefault and VmoBootfs startup handles -- exactly what
-/// the kernel handed this program, so the next program starts as it would
+/// Starts |name| from the kernel package under |job|, handing it |job|,
+/// |bootfs| and |vmex| as its JobDefault, VmoBootfs and SystemResource (slot
+/// RSRC_SYSTEM_VMEX_BASE) startup handles -- exactly what the kernel handed
+/// this program, so the next program starts as it would
 /// have had the kernel started it directly. argv is {|name|}; the environment
 /// is |environ|, the options that were not this program's.
 ///
@@ -137,24 +139,32 @@ auto collect_handed_on() -> HandedOn {
 /// after the spawn loses them with the message, and the new process, finding
 /// PEER_CLOSED and no message, exits with runtime::EXIT_START_FAILED.
 auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
-                std::string_view const name, HandedOn const &environ) -> ours::Status {
+                ours::HandleValue const vmex, std::string_view const name, HandedOn const &environ)
+    -> ours::Status {
     using ours::Status;
 
-    ours::HandleValue handles[2] = {job};
-    u32 infos[2] = {ours::handle_info(ours::HandleType::JobDefault, 0)};
+    ours::HandleValue handles[3] = {job};
+    u32 infos[3] = {ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 1;
     if (bootfs != ours::HANDLE_INVALID) {
         handles[count] = bootfs;
         infos[count++] = ours::handle_info(ours::HandleType::VmoBootfs, 0);
     }
+    // Handed on unused: userboot has nothing to make executable before K19,
+    // and the next program is the one design D3 gives it to.
+    if (vmex != ours::HANDLE_INVALID) {
+        handles[count] = vmex;
+        infos[count++] =
+            ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    }
 
-    // The header, two handle_infos, a name of at most 63 bytes and its NUL
+    // The header, three handle_infos, a name of at most 63 bytes and its NUL
     // -- the kernel keeps program names in 64 -- and the environment, a
     // subset of what the kernel relayed and so within USER_OPTIONS_BYTES:
     // the same sum the kernel sizes this program's own message by
     // (make_bootstrap()), so encoding cannot fail for want of room.
     constexpr usize MESSAGE_BYTES =
-        sizeof(ours::ProcArgs) + 2 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
+        sizeof(ours::ProcArgs) + 3 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
     u8 message[MESSAGE_BYTES];
     u32 length = 0;
     std::string_view const args[] = {name};
@@ -206,6 +216,8 @@ auto main(int, char **) -> int {
     // when it could not build one, and the next program is the one that has
     // to cope with that, as init already does.
     auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+    auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
+                                                   u16(ours::RSRC_SYSTEM_VMEX_BASE));
 
     static_cast<void>(ou::debug_line({"userboot: starting ", to_str(next)}));
     auto const handed_on = collect_handed_on();
@@ -213,7 +225,8 @@ auto main(int, char **) -> int {
         static_cast<void>(ou::debug_line(
             {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)}));
     }
-    if (auto const status = start_next(job, bootfs, next, handed_on); status != ours::Status::Ok) {
+    if (auto const status = start_next(job, bootfs, vmex, next, handed_on);
+        status != ours::Status::Ok) {
         report("userboot: starting the next program = ", status);
         return 1;
     }

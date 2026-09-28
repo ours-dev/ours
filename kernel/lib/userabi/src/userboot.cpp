@@ -10,6 +10,7 @@
 
 #include <cstring>
 
+#include "resource.hpp"
 #include "user_bootfs.hpp"
 #include <elfload/binder.hpp>
 #include <elfload/loader.hpp>
@@ -341,8 +342,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[2];
-        u32 infos[2] = {};
+        ustl::Box<object::Handle> handles[3];
+        u32 infos[3] = {};
         u32 count = 0;
         handles[count] =
             object::Handle::make(ustl::Arc<object::Dispatcher>(object::JobDispatcher::root_job()),
@@ -364,12 +365,24 @@ namespace {
             infos[count++] = handle_info(HandleType::VmoBootfs, 0);
         }
 
+        // vmex: the one capability that turns a VMO executable (design D3,
+        // K18). Minted here and nowhere else, so the first process is the only
+        // one that ever holds it, and it decides who gets it next. The
+        // handle_info's argument is the slot, as Zircon's userboot tags its
+        // system resources: the receiver asks for SystemResource with the
+        // slot it wants.
+        handles[count] = make_system_resource_handle(RSRC_SYSTEM_VMEX_BASE, "vmex");
+        if (!handles[count]) {
+            return {};
+        }
+        infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_VMEX_BASE));
+
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, two handle_infos, a program name
+        // fail for want of room: the header, three handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
         // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 2 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 3 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};

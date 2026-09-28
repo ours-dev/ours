@@ -42,9 +42,34 @@ class ResourceDispatcher: public ResourceDispatcherBase {
         Self::List resources;
     };
 
+    /// Mints a resource over [base, base + size) of |kind|.
+    ///
+    /// Only what M1 needs: the System kind, one slot at a time -- size 1 at a
+    /// base below RSRC_SYSTEM_COUNT (InvArgs otherwise). Every other kind is
+    /// NotSupported until something needs it; MMIO, IRQ and I/O-port ranges
+    /// bring the overlap checks Zircon keeps in Storage, which is why
+    /// |storage| is accepted and not yet used.
+    ///
+    /// Zircon: ResourceDispatcher::Create(), which for ZX_RSRC_KIND_SYSTEM
+    /// likewise accepts only a base inside the slot table and a size of 1.
     static auto create(KernelHandle<Self> *out, Rights &rights, Kind kind, PhysAddr base,
                        PhysAddr size, Flag flags, Name const &name, Storage *storage = nullptr)
         -> Status;
+
+    [[nodiscard]]
+    auto kind() const -> Kind {
+        return m_kind;
+    }
+
+    [[nodiscard]]
+    auto base() const -> PhysAddr {
+        return m_base;
+    }
+
+    [[nodiscard]]
+    auto size() const -> PhysAddr {
+        return m_size;
+    }
 
   private:
     // SoloDispatcher's constructor reads Derived::MAGIC to build the

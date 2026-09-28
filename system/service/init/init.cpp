@@ -33,6 +33,7 @@
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 
 #include <string_view>
@@ -197,6 +198,17 @@ auto main(int, char **) -> int {
     }
     static_cast<void>(ou::debug_line("init: started with the root job"));
     describe_bootfs(runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0));
+
+    // vmex, handed on by userboot: the capability to make a VMO executable
+    // (design D3). init keeps it for its own launcher and hands it to nobody
+    // (K23); until then holding it is all there is to check (K18).
+    auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
+                                                   u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    if (vmex != ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("init: vmex resource ok"));
+    } else {
+        static_cast<void>(ou::debug_line("init: started without vmex"));
+    }
 
     ours::HandleValue here = ours::HANDLE_INVALID;
     ours::HandleValue peer = ours::HANDLE_INVALID;
