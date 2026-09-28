@@ -594,6 +594,11 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     /// asked in PmNode::alloc_frames() for every caller.
     static auto apply_thread_policy(Gaf &gaf) -> Status;
 
+    /// apply_thread_policy() and resolve_local_node() together: what each
+    /// node-less alloc_* entry does before handing the request to a node. The
+    /// calling CPU's node, or why there is none.
+    static auto local_node_for(Gaf &gaf) -> ktl::Result<PmNode *>;
+
     /// The calling CPU's PmNode, answered even before CURRENT_INSTANCE exists.
     ///
     /// The per-CPU pointer is filled by Current::init(), an init hook at

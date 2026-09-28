@@ -510,8 +510,14 @@ auto PmNode::Current::resolve_local_node() -> PmNode * {
     return PmNode::node(nid);
 }
 
-auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
-    -> ktl::Result<PmFrame *> {
+/// What every node-less entry does before it can allocate: apply the thread's
+/// memory policy to |gaf|, then find the calling CPU's node.
+///
+/// The three entries below used to repeat these steps -- and the comment on the
+/// null check -- line for line, differing only in which PmNode method they
+/// ended with. A fourth entry would have been a fourth copy, and a fix to one
+/// of the steps a change in three places.
+auto PmNode::Current::local_node_for(Gaf &gaf) -> ktl::Result<PmNode *> {
     if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
         return ustl::err(status);
     }
@@ -524,44 +530,34 @@ auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallbac
         return ustl::err(Status::BadState);
     }
     local_node->m_canary.verify<Self>();
+    return ustl::ok(local_node);
+}
 
-    return local_node->alloc_frames(gaf, order, fallback);
+auto PmNode::Current::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
+    -> ktl::Result<PmFrame *> {
+    auto const node = local_node_for(gaf);
+    if (!node) {
+        return ustl::err(node.unwrap_err());
+    }
+    return (*node)->alloc_frames(gaf, order, fallback);
 }
 
 auto PmNode::Current::alloc_frames_fragment(Gaf gaf, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
-        return ustl::err(status);
+    auto const node = local_node_for(gaf);
+    if (!node) {
+        return ustl::err(node.unwrap_err());
     }
-
-    auto *const local_node = Current::resolve_local_node();
-    if (!local_node) {
-        // A real return rather than DEBUG_ASSERT: this used to assert and then
-        // dereference anyway, so a release build walked through a null PmNode
-        // instead of failing here.
-        return ustl::err(Status::BadState);
-    }
-    local_node->m_canary.verify<Self>();
-
-    return local_node->alloc_frames_fragment(gaf, n, fallback);
+    return (*node)->alloc_frames_fragment(gaf, n, fallback);
 }
 
 auto PmNode::Current::alloc_frames_bulk(Gaf gaf, usize n, NodeMask const &fallback)
     -> ktl::Result<PmFrame::List> {
-    if (auto const status = apply_thread_policy(gaf); Status::Ok != status) {
-        return ustl::err(status);
+    auto const node = local_node_for(gaf);
+    if (!node) {
+        return ustl::err(node.unwrap_err());
     }
-
-    auto *const local_node = Current::resolve_local_node();
-    if (!local_node) {
-        // A real return rather than DEBUG_ASSERT: this used to assert and then
-        // dereference anyway, so a release build walked through a null PmNode
-        // instead of failing here.
-        return ustl::err(Status::BadState);
-    }
-    local_node->m_canary.verify<Self>();
-
-    return local_node->alloc_frames_bulk(gaf, n, fallback);
+    return (*node)->alloc_frames_bulk(gaf, n, fallback);
 }
 
 auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
