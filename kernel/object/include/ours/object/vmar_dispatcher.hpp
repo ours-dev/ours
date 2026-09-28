@@ -101,6 +101,14 @@ class VmarDispatcher final: public VmarDispatcherBase {
     auto map(VmOptions options, usize vmar_offset, VmoDispatcher &vmo, u64 vmo_offset, usize length,
              char const *name) -> ktl::Result<VirtAddr>;
 
+    /// Tears down whatever is mapped in [base, base + length) of this region.
+    /// Today only vmar_map calls it, to take back a mapping whose address it
+    /// could not report; vmar_unmap will be the second caller.
+    auto unmap(VirtAddr base, usize length) -> Status {
+        verify_canary();
+        return m_vma->unmap(base, length);
+    }
+
     FORCE_INLINE
     auto vma() const -> ustl::Arc<mm::VmArea> const & {
         return m_vma;

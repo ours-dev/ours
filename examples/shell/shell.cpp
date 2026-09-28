@@ -45,6 +45,7 @@
 #include <ou/object.hpp>
 #include <ou/process.hpp>
 #include <ou/str.hpp>
+#include <ou/vmar.hpp>
 #include <ou/vmo.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
@@ -1541,6 +1542,180 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
         static_cast<void>(ou::debug_line("shell: vmo_replace_as_executable checks FAILED"));
     }
 }
+
+/// vmar_map through the root VMAR the kernel hands every process (K21).
+///
+/// Runs in every image, on VMOs of its own:
+///   - a mapping reads what the VMO holds, from vmo_offset on, and a write
+///     through a writable one is what vmo_read then finds;
+///   - a slice maps like any VMO, and a mapping longer than it is OutOfRange;
+///   - the protection: Write or Execute without Read, and Write with
+///     Execute, are InvArgs, and so is a CanMap bit a program passes;
+///   - the rights: a VMO handle without Map, and Execute on a VMO that has
+///     none (vmo_create never gives it), are AccessDenied;
+///   - the arguments: length 0, an unaligned vmo_offset, and a vmar_offset
+///     without Specific are InvArgs; a range past the VMO is OutOfRange; an
+///     option named but not acted on (Compact) is NotSupported;
+///   - an address that cannot be written back takes the mapping down: the
+///     same Specific spot maps fine on the next try.
+/// Where userboot started this program it also maps an executable copy of
+/// the BootFS (vmo_replace_as_executable) read and execute, and the BootFS
+/// itself, which has no Write, read-write is AccessDenied.
+auto check_vmar_map(ours::HandleValue const vmar, ours::HandleValue const bootfs,
+                    ours::HandleValue const vmex) -> void {
+    using ours::Rights;
+    using ours::Status;
+    using ours::VmoOptions;
+    using ours::VmOptions;
+
+    constexpr auto PAGE = u64{4096};
+    constexpr auto R = VmOptions::PermRead;
+    constexpr auto RW = VmOptions::PermRead | VmOptions::PermWrite;
+    constexpr auto RX = VmOptions::PermRead | VmOptions::PermExecute;
+
+    if (vmar == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vmar_map checks FAILED (no VmarRoot)"));
+        return;
+    }
+
+    auto ok = true;
+    ours::HandleValue vmo = ours::HANDLE_INVALID;
+    if (!expect("shell: vmo_create(2 pages) = ", ou::vmo_create(2 * PAGE, VmoOptions::None, &vmo),
+                Status::Ok)) {
+        static_cast<void>(ou::debug_line("shell: vmar_map checks FAILED"));
+        return;
+    }
+    u8 const second[4] = {0x21, 0x22, 0x23, 0x24};
+    ok &= expect("shell: vmo_write(page 2) = ", ou::vmo_write(vmo, second, PAGE, sizeof(second)),
+                 Status::Ok);
+
+    // Read-only, from vmo_offset = one page: the mapping starts at page 2.
+    ours::VirtAddr at = 0;
+    ok &= expect("shell: vmar_map(R, vmo_offset = page 2) = ",
+                 ou::vmar_map(vmar, R, 0, vmo, PAGE, PAGE, &at), Status::Ok);
+    if (at != 0) {
+        auto const *const bytes = reinterpret_cast<u8 const volatile *>(at);
+        u8 got[4] = {bytes[0], bytes[1], bytes[2], bytes[3]};
+        ok &= same_bytes(second, got, sizeof(got));
+    }
+
+    // Read-write: a store through the mapping is what vmo_read finds.
+    ours::VirtAddr rw = 0;
+    ok &=
+        expect("shell: vmar_map(RW) = ", ou::vmar_map(vmar, RW, 0, vmo, 0, PAGE, &rw), Status::Ok);
+    if (rw != 0) {
+        *reinterpret_cast<u8 volatile *>(rw + 16) = 0x77;
+        u8 back = 0;
+        ok &= expect("shell: vmo_read(what the mapping wrote) = ", ou::vmo_read(vmo, &back, 16, 1),
+                     Status::Ok);
+        ok &= back == 0x77;
+    }
+
+    // A slice maps like any VMO, and no further than its own end.
+    ours::HandleValue slice = ours::HANDLE_INVALID;
+    ok &= expect("shell: vmo_create_child(Slice, page 2) = ",
+                 ou::vmo_create_child(vmo, ours::VmoChildOptions::Slice, PAGE, PAGE, &slice),
+                 Status::Ok);
+    ours::VirtAddr sliced = 0;
+    ok &= expect("shell: vmar_map(R, the slice) = ",
+                 ou::vmar_map(vmar, R, 0, slice, 0, PAGE, &sliced), Status::Ok);
+    if (sliced != 0) {
+        ok &= *reinterpret_cast<u8 const volatile *>(sliced) == second[0];
+    }
+    ok &= expect("shell: vmar_map(R, 2 pages of a 1-page slice) = ",
+                 ou::vmar_map(vmar, R, 0, slice, 0, 2 * PAGE, &sliced), Status::OutOfRange);
+    ok &= expect("shell: close(slice) = ", ou::handle_close(slice), Status::Ok);
+
+    // The protection.
+    ours::VirtAddr refused = 0;
+    ok &= expect("shell: vmar_map(W without R) = ",
+                 ou::vmar_map(vmar, VmOptions::PermWrite, 0, vmo, 0, PAGE, &refused),
+                 Status::InvArgs);
+    ok &= expect("shell: vmar_map(X without R) = ",
+                 ou::vmar_map(vmar, VmOptions::PermExecute, 0, vmo, 0, PAGE, &refused),
+                 Status::InvArgs);
+    ok &= expect("shell: vmar_map(RWX) = ",
+                 ou::vmar_map(vmar, RW | VmOptions::PermExecute, 0, vmo, 0, PAGE, &refused),
+                 Status::InvArgs);
+    ok &= expect("shell: vmar_map(R | CanMapWrite) = ",
+                 ou::vmar_map(vmar, R | VmOptions::CanMapWrite, 0, vmo, 0, PAGE, &refused),
+                 Status::InvArgs);
+
+    // The rights.
+    ok &= expect("shell: vmar_map(RX, a VMO without Execute) = ",
+                 ou::vmar_map(vmar, RX, 0, vmo, 0, PAGE, &refused), Status::AccessDenied);
+    ours::HandleValue unmappable = ours::HANDLE_INVALID;
+    ok &= expect("shell: handle_duplicate(vmo, without Map) = ",
+                 ou::handle_duplicate(vmo, Rights::Basic | Rights::Read, &unmappable), Status::Ok);
+    ok &= expect("shell: vmar_map(R, a handle without Map) = ",
+                 ou::vmar_map(vmar, R, 0, unmappable, 0, PAGE, &refused), Status::AccessDenied);
+    ok &= expect("shell: close(the copy without Map) = ", ou::handle_close(unmappable), Status::Ok);
+
+    // The arguments.
+    ok &= expect("shell: vmar_map(length 0) = ", ou::vmar_map(vmar, R, 0, vmo, 0, 0, &refused),
+                 Status::InvArgs);
+    ok &= expect("shell: vmar_map(unaligned vmo_offset) = ",
+                 ou::vmar_map(vmar, R, 0, vmo, 8, PAGE, &refused), Status::InvArgs);
+    ok &= expect("shell: vmar_map(vmar_offset without Specific) = ",
+                 ou::vmar_map(vmar, R, PAGE, vmo, 0, PAGE, &refused), Status::InvArgs);
+    ok &= expect("shell: vmar_map(past the VMO) = ",
+                 ou::vmar_map(vmar, R, 0, vmo, PAGE, 2 * PAGE, &refused), Status::OutOfRange);
+    ok &= expect("shell: vmar_map(Compact) = ",
+                 ou::vmar_map(vmar, R | VmOptions::Compact, 0, vmo, 0, PAGE, &refused),
+                 Status::NotSupported);
+
+    // An address the kernel cannot write back: the mapping is taken down, so
+    // the same fixed spot is free for the next call. Had it stayed, that call
+    // would find the spot taken.
+    constexpr auto SPOT = usize{1} << 30;
+    ok &= expect("shell: vmar_map(Specific, mapped_addr = kernel half) = ",
+                 ou::vmar_map(vmar, R | VmOptions::Specific, SPOT, vmo, 0, PAGE,
+                              reinterpret_cast<ours::VirtAddr *>(KERNEL)),
+                 Status::InvArgs);
+    ok &= expect("shell: vmar_map(Specific, the same spot) = ",
+                 ou::vmar_map(vmar, R | VmOptions::Specific, SPOT, vmo, 0, PAGE, &refused),
+                 Status::Ok);
+
+    // Handles of the wrong kind.
+    ok &=
+        expect("shell: vmar_map(vmar = a VMO) = ", ou::vmar_map(vmo, R, 0, vmo, 0, PAGE, &refused),
+               Status::BadType);
+    ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
+
+    if (bootfs == ours::HANDLE_INVALID || vmex == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vmar_map of the BootFS skipped"));
+    } else {
+        ok &= expect("shell: vmar_map(RW, the BootFS) = ",
+                     ou::vmar_map(vmar, RW, 0, bootfs, 0, PAGE, &refused), Status::AccessDenied);
+
+        ours::HandleValue copy = ours::HANDLE_INVALID;
+        ours::HandleValue executable = ours::HANDLE_INVALID;
+        ok &= expect("shell: handle_duplicate(bootfs) = ",
+                     ou::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
+        ok &= expect("shell: vmo_replace_as_executable(the copy) = ",
+                     ou::vmo_replace_as_executable(copy, vmex, &executable), Status::Ok);
+        ours::VirtAddr code = 0;
+        ok &= expect("shell: vmar_map(RX, the executable BootFS) = ",
+                     ou::vmar_map(vmar, RX, 0, executable, 0, PAGE, &code), Status::Ok);
+        if (code != 0) {
+            bootfs::Header header{};
+            auto const *const bytes = reinterpret_cast<u8 const volatile *>(code);
+            auto *const out = reinterpret_cast<u8 *>(&header);
+            for (usize i = 0; i < sizeof(header); ++i) {
+                out[i] = bytes[i];
+            }
+            ok &= header.magic == bootfs::Header::MAGIC;
+        }
+        ok &= expect("shell: close(the executable BootFS) = ", ou::handle_close(executable),
+                     Status::Ok);
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vmar_map checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vmar_map checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -1560,6 +1735,9 @@ auto main(int, char **) -> int {
     // none, and that is right.
     auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    // The root VMAR, from the kernel's own processargs message (TEMPORARY,
+    // until K23's launcher puts it in the starter's).
+    auto const vmar = runtime::take_startup_handle(ours::HandleType::VmarRoot, 0);
     if (vmex != ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: vmex resource ok"));
     } else {
@@ -1585,6 +1763,7 @@ auto main(int, char **) -> int {
     check_handle_duplicate(bootfs);
     check_vmo_create_child(bootfs);
     check_vmo_replace_as_executable(bootfs, vmex);
+    check_vmar_map(vmar, bootfs, vmex);
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
 
     static Registry registry;

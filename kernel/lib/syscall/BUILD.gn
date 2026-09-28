@@ -23,8 +23,7 @@ cpp_interface("headers") {
 source_set("syscall") {
   # table.cpp owns the dispatch table syscall.S indexes and the shims that
   # unpack its frame; every other file holds the handlers of one family.
-  # task.cpp is still Unimplemented stubs, and vmo.cpp carries placeholders
-  # for the VMO calls that have no syscalls.gni entry yet beside vmo_read.
+  # task.cpp is still Unimplemented stubs.
   sources = [
     "src/argument.hpp",
     "src/channel.cpp",
@@ -35,6 +34,7 @@ source_set("syscall") {
     "src/process.cpp",
     "src/table.cpp",
     "src/task.cpp",
+    "src/vmar.cpp",
     "src/vmo.cpp",
   ]
   public_deps = [

@@ -255,3 +255,82 @@ Zircon 的 `sys_*`（`zircon/kernel/lib/syscalls/*.rs`）和它们的生成 wrap
 
 **故意没做**
 - `.agents/tasks/` 下的旧计划文档没改，它们记录的是当时的状态。
+
+## 新增 vmar_map；VmarRoot 暂由内核补发（K21b，2026-09-28）
+
+**文件**
+- `kernel/lib/syscall/src/vmar.cpp`（新）：`syscall::vmar_map()`；`kernel/lib/syscall/BUILD.gn` 加上它，删掉过时的“vmo.cpp 有占位”说明
+- `system/public/ours/syscalls.gni`：`vmar_map` 条目，第一个 7 参数的调用（G2 的桩）
+- `system/lib/ou/include/ou/vmar.hpp`、`system/lib/ou/src/vmar.cpp`（新）、`system/lib/ou/BUILD.gn`：`ou::vmar_map()`
+- `kernel/object/include/ours/object/vmar_dispatcher.hpp`：`VmarDispatcher::unmap()`
+- `kernel/object/include/ours/object/channel_dispatcher.hpp`、`channel_dispatcher.cpp`：临时的 `deliver_first()`
+- `kernel/lib/userabi/src/userboot.cpp`：`deliver_root_vmar()`，`launch()` 调用它
+- `system/lib/runtime/src/start.cpp`：启动时读两条消息
+- `examples/shell/shell.cpp`：取 VmarRoot，`check_vmar_map()`
+- `docs/design/260923/userspace-interface.md` §3.2：launcher 按 D3 修订；`docs/design/260924/userspace-filesystem.md`：K21 标为已落地，K23 行记下要删的临时通道
+
+**症状**
+用户态没法把 VMO 映射进自己的地址空间。launcher（K23）、GetBackingMemory 的使用者（U12）都要靠 `vmar_map`。
+另外，就算有了系统调用，进程也拿不到 VMAR 句柄：在 K23 之前，进程由内核的 `launch()` 创建，
+而写 processargs 的是父进程（init、userboot），它写消息时子进程和子进程的根 VMAR 都还不存在。
+
+**原因**
+缺功能。VmarRoot 的问题出在时序上：Zircon 由用户态 launcher 先 `process_create` 拿到根 VMAR，再写消息；
+我们的 launcher 要到 K23 才有。
+
+**改法**
+
+```cpp
+// 系统调用：照 Zircon sys_vmar_map() 的顺序
+auto vmar_map(vmar, options, vmar_offset, vmo, vmo_offset, length, mapped_addr) -> Status {
+    两个句柄连同 rights 取出;                          // BadHandle / BadType
+    if (!(vmo_rights & Map)) { return AccessDenied; }
+    未知位或 CanMap* → InvArgs;  W/X 不带 R → InvArgs;  W 与 X 同时 → InvArgs（W^X，D3）;
+    每个 Perm 位要两边句柄都有对应 right            // AccessDenied
+    两边都有的 right → CanMap*（映射的上限）
+    addr = region->map(options | CanMap*, ...);        // 偏移、大小、位置
+    if (写回地址失败) { region->unmap(addr, length); return status; }
+}
+
+// 临时通道（K23 删）：launch() 往子进程的 bootstrap channel 队首塞一条只带 VmarRoot 的 processargs
+channel->deliver_first(packet);
+// runtime：先读内核那条，再读父进程那条，句柄合进一张表
+```
+
+几处取舍：
+- **错误顺序照 Zircon**：Map 权限（AccessDenied）→ 选项合法性（InvArgs）→ 各 Perm 位对两边 rights（AccessDenied）。
+  设计 4.5 的“AccessDenied 先于参数错误”在这里不完全成立：Zircon 先查保护组合是否合法，再查 rights，照它。
+- **W^X 回 InvArgs**，“写或执行必须带读”也回 InvArgs：它们说的是“这不是本系统接受的保护组合”，
+  和 Zircon `is_valid_mapping_protection()` 不通过时的回答一致。Zircon 本身允许 W+X，也允许只执行，这两点是我们的偏离。
+- **地址写回失败就拆掉映射**。句柄可以先算值、写给调用方、再入表（设计 4.1），映射地址却只有建好之后才知道。
+  所以反过来：写回失败，就把刚建的映射拆掉，程序不会留下一块“被告知失败、其实已映射”的内存。
+  shell 用固定位置测了这一点：第一次写回失败，第二次在同一位置映射成功。如果映射还在，第二次会冲突。
+- **VmarRoot 走一条单独的消息，而不是寄存器**。这样 VmarRoot 仍通过 processargs 交付，和 K23 之后一致，
+  K23 只需把两条消息并回一条，runtime 改回读一次。内核把自己的消息插在队首（`deliver_first()`），
+  不管父进程是在 launch 之前还是之后写的消息，子进程读到的第一条总是内核的，runtime 靠这个顺序区分两条。
+  句柄在父进程的系统调用里创建，按 K11 记在父进程名下，和设计里 init 的配额算法一致。
+- **用户程序不能传 CanMap***：那是上限，程序自己选的上限等于没有上限。Zircon 同样拒绝。
+
+**参照**
+- Zircon `sys_vmar_map()`（`zircon/kernel/lib/syscalls/vmar.rs`）：`GetDispatcherAndRights` 两次，查 `ZX_RIGHT_MAP`，
+  `is_valid_mapping_protection()`，拒绝用户给的 `CAN_MAP_*`，按两边 rights 补上 `CAN_MAP_*`，再调 `VmAddressRegionDispatcher::Map()`。
+- Zircon 的 launcher（`process_builder`）：先 `zx_process_create` 得到根 VMAR，再把它作为 `PA_VMAR_ROOT` 写进 processargs。
+  这是 K23 要回到的形状。
+
+**验证**
+- 两个镜像均构建通过，vDSO ABI 检查通过；反汇编 `ours_vmar_map` 是 G2 的 7 参数桩
+  （`push %r12; mov %rcx,%r10; mov 0x10(%rsp),%r12`）。
+- `boot_check.py` 两个镜像都 PASS（dbg 13 passed；rel 12 passed、5 skipped），两个镜像的 shell 都打出 `vmar_map checks passed`：
+  - 按 vmo_offset = 第 2 页只读映射，读出第 2 页的字节；读写映射后写入一字节，`vmo_read` 读出同一个值；
+  - Slice 能按 R 映射并读出父对象的字节；映射长度超过 Slice 回 OutOfRange；
+  - 只 W、只 X、RWX、带 CanMapWrite 都回 InvArgs；
+  - vmo_create 的 VMO 按 RX 映射回 AccessDenied；不带 Map 的句柄回 AccessDenied；
+  - 长度 0、vmo_offset 不对齐、不带 Specific 却给 vmar_offset 都回 InvArgs；越过 VMO 回 OutOfRange；Compact 回 NotSupported；
+  - 地址写回内核半区回 InvArgs，随后在同一固定位置映射成功；vmar 位置传 VMO 回 BadType。
+- 只在 dbg_1 跑的部分：BootFS 按 RW 映射回 AccessDenied；复制 BootFS 并经 vmex 换出后，按 RX 映射成功，读出 BootFS 头部的 magic。
+- 所有进程启动时都要经过“读两条消息”，两个镜像里的 userboot、init、shell 和各探针都正常启动，说明新的启动路径可用。
+
+**故意没做**
+- 没有 `vmar_unmap`、`vmar_protect`：shell 映射的内存在进程退出前不会拆掉；映射上限的检查要等 `vmar_protect`。
+- 没测执行映射进来的代码：换出的 BootFS 里没有能直接跳进去运行的函数，K23 的 launcher 起进程时会真正执行它。
+- VmarRoot 的临时通道已记在 K23 行，由 K23 删除。

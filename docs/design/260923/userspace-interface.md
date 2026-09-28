@@ -261,10 +261,10 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 3. **init**：持有根 job 和根资源；为服务建子 job；读 BootFS 里的服务清单，依次启动 logger、console、shell；用 `object_wait_one(TERMINATED)` 加 `get_info(Process)` 回收子进程，必要时重启。
 4. **launcher 算法**（`system/lib/launch`）：
    1. `process_create`、`thread_create`；
-   2. 对每个 PT_LOAD：`vmo_create` → `vmar_map` 进 launcher 自己（R+W）→ memcpy 段内容；
+   2. 对每个 PT_LOAD：可写段 `vmo_create` → `vmar_map` 进 launcher 自己（R+W）→ memcpy 段内容，得到私有的一份；只读段和可执行段不复制，直接从 bootfs_x（经 vmex 换出的 BootFS，D3）按文件内页对齐的偏移映射（`vmar_map` 的 vmo_offset，K21）。`vmo_create` 建的 VMO 永远不带 Execute，按 X 映射会被拒；
    3. 用 `get_property(ProcessVdsoBaseAddress)` 读子进程的 vDSO 基址；
    4. Binder 按 BootFS 里 `vdso` 文件的 .dynsym，在 launcher 自己的临时视图里写 GOT；
-   5. `vmar_unmap` 临时视图，再按 p_flags `vmar_map` 进子进程。因为绑定已经完成，子进程直接以最终权限映射，RELRO 段也不需要 protect；
+   5. `vmar_unmap` 临时视图，再按 p_flags `vmar_map` 进子进程：W 与 X 不能同时出现（W^X，`vmar_map` 回 InvArgs），映射上限取两边句柄 rights 的交集。因为绑定已经完成，子进程直接以最终权限映射，RELRO 段也不需要 protect；
    6. 栈：`vmar_allocate` 留 guard，再 `vmo_create` + `vmar_map(R+W)`；
    7. `channel_create`，`channel_write` 写 processargs 并随消息转移句柄；
    8. `process_start(proc, thread, entry, sp, child_end, vdso_base)`；

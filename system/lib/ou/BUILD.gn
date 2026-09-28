@@ -17,6 +17,7 @@ source_set("ou") {
     "src/handle.cpp",
     "src/object.cpp",
     "src/process.cpp",
+    "src/vmar.cpp",
     "src/vmo.cpp",
   ]
   public_deps = [ ":headers" ]
@@ -35,6 +36,7 @@ cpp_interface("headers") {
     "include/ou/object.hpp",
     "include/ou/process.hpp",
     "include/ou/str.hpp",
+    "include/ou/vmar.hpp",
     "include/ou/vmo.hpp",
   ]
 

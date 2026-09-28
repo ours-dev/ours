@@ -394,6 +394,57 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "vmar_map"
+    brief = "Maps part of the VMO |vmo| into the region |vmar|."
+    doc = [
+      "Maps [vmo_offset, vmo_offset + length) of |vmo|, length rounded up to",
+      "a page, and writes the address to |mapped_addr|. |options| is",
+      "PermRead, optionally with PermWrite or PermExecute (never both, and",
+      "neither without PermRead: InvArgs), Specific to map at vmar_offset",
+      "from the region's start (vmar_offset must be 0 without it), and",
+      "MapRange to populate the range now. CanMap* are the kernel's to set",
+      "(InvArgs). |vmo| needs Map, and each Perm bit needs the matching",
+      "right on both handles (AccessDenied); the rights both grant become",
+      "the mapping's ceiling. vmo_offset must be page-aligned (InvArgs) and",
+      "the range inside the VMO (OutOfRange). Named options not acted on yet",
+      "are NotSupported. If |mapped_addr| cannot be written, the mapping is",
+      "taken down again.",
+    ]
+    args = [
+      {
+        name = "vmar"
+        type = "HandleValue"
+      },
+      {
+        name = "options"
+        type = "VmOptions"
+      },
+      {
+        name = "vmar_offset"
+        type = "usize"
+      },
+      {
+        name = "vmo"
+        type = "HandleValue"
+      },
+      {
+        name = "vmo_offset"
+        type = "u64"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+      {
+        name = "mapped_addr"
+        type = "VirtAddr"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "vmo_create_child"
     brief = "Creates a child of the VMO |vmo| names: today, a slice of it."
     doc = [

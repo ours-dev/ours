@@ -535,6 +535,51 @@ namespace {
         log::info("userabi: vdso laid out once, {} page(s), shared by every process", pages);
         return Status::Ok;
     }
+
+    /// Queues the VmarRoot message on |bootstrap|, the channel end a new
+    /// process is about to be given; see launch(). TEMPORARY, until K23.
+    ///
+    /// A processargs message like any other, with no arguments and one
+    /// handle, so that the runtime reads it with the parser it already has.
+    /// The handle is made on the caller's thread, so it is charged to the
+    /// process that asked for the launch, as K11 charges every handle to the
+    /// process that creates it -- the region is one of the handles a starter
+    /// is accountable for (userspace-filesystem design, the init quota).
+    auto deliver_root_vmar(object::Handle &bootstrap,
+                           object::KernelHandle<object::VmarDispatcher> root_vmar,
+                           Rights const rights) -> Status {
+        auto channel = bootstrap.dispatcher().downcast<object::ChannelDispatcher>();
+        if (!channel) {
+            // Not a channel: nothing the runtime could read a message from.
+            log::error("userabi: the bootstrap handle is not a channel");
+            return Status::BadType;
+        }
+
+        ustl::Box<object::Handle> handles[1];
+        handles[0] = object::Handle::make(
+            object::KernelHandle<object::Dispatcher>(ustl::move(root_vmar)), rights);
+        if (!handles[0]) {
+            return Status::NoResource;
+        }
+        u32 const infos[1] = {handle_info(HandleType::VmarRoot, 0)};
+
+        constexpr usize MESSAGE_BYTES = sizeof(ProcArgs) + sizeof(u32);
+        u8 message[MESSAGE_BYTES];
+        u32 length = 0;
+        if (auto const status = encode_process_args(message, {infos, 1}, {}, {}, {}, &length);
+            Status::Ok != status) {
+            log::error("userabi: could not encode the VmarRoot message: {}", to_string(status));
+            return status;
+        }
+
+        ustl::Box<object::MessagePacket> packet;
+        if (auto const status =
+                object::MessagePacket::create({message, length}, handles, 1, &packet);
+            Status::Ok != status) {
+            return status;
+        }
+        return channel->deliver_first(ustl::move(packet));
+    }
 } // namespace
 
 auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
@@ -655,6 +700,19 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     if (Status::Ok != status) {
         log::error("userabi: could not create the entry thread: {}", to_string(status));
         return status;
+    }
+
+    // The root VMAR, in a processargs message of its own ahead of the
+    // starter's (ChannelDispatcher::deliver_first()). TEMPORARY, until K23:
+    // whoever wrote the process's processargs did so before the process -- and
+    // so the region -- existed, and only this function ever holds the region.
+    // A process with no bootstrap channel gets no region handle, as it gets no
+    // other handle.
+    if (bootstrap) {
+        status = deliver_root_vmar(*bootstrap, ustl::move(root_vmar), root_vmar_rights);
+        if (Status::Ok != status) {
+            return status;
+        }
     }
 
     // The one handle the program starts with goes into its own table, and its

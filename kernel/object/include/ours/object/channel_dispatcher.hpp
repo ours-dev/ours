@@ -62,6 +62,21 @@ class ChannelDispatcher final: public ChannelDispatcherBase {
     /// after NoResource makes a new one.
     auto write(ustl::Box<MessagePacket> message) -> Status;
 
+    /// Queues |message| on *this* end, ahead of anything already there, and
+    /// raises Readable. For the kernel only, and TEMPORARY.
+    ///
+    /// userabi::launch() uses it to hand a new process its root VMAR in a
+    /// processargs message of its own (VmarRoot), because the starter that
+    /// wrote the process's real processargs could not: the process, and with
+    /// it the region, did not exist yet. Ahead, so that the process always
+    /// reads the kernel's message first whether its starter wrote before the
+    /// launch or after it -- which is the order the runtime relies on. Goes
+    /// with K23, when a user-space launcher creates the process first and
+    /// writes the VMAR into the one message itself, as Zircon's does.
+    ///
+    /// NoResource when the queue is full; the message is consumed either way.
+    auto deliver_first(ustl::Box<MessagePacket> message) -> Status;
+
     /// Takes the message at the head of this end's queue, provided it fits in
     /// |max_bytes|.
     ///
