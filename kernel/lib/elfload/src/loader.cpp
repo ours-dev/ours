@@ -68,8 +68,7 @@ namespace {
     }
 } // namespace
 
-auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags const flags,
-                 char const *const name, Image &out) const -> Status {
+auto Loader::load(Bytes const bytes, char const *const name, ImageVmo &out) -> Status {
     if (bytes.size() < sizeof(Elf64Header)) {
         log::error("elfload: {} is too small to be an ELF", name);
         return Status::InvArgs;
@@ -130,7 +129,7 @@ auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags co
     //
     // Pinned, and so committed here, for the reason create_paged() gives:
     // nothing services a fault on it yet.
-    object::KernelHandle<object::VmoDispatcher> vmo;
+    auto &vmo = out.vmo;
     Rights vmo_rights;
     if (auto const status = object::VmoDispatcher::create_paged(out.span, vmo, vmo_rights);
         Status::Ok != status) {
@@ -167,6 +166,17 @@ auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags co
         }
     }
 
+    out.image_base = lowest;
+    out.entry_offset = VirtAddr(header.entry) - lowest;
+    return Status::Ok;
+}
+
+auto Loader::map(ImageVmo &image, mm::VmPlacement const where, mm::MmuFlags const flags,
+                 char const *const name, Image &out) const -> Status {
+    auto &vmo = image.vmo;
+    auto memory = vmo.dispatcher()->vmo();
+    out.span = image.span;
+
     // Through the dispatcher, not through the VmArea it stands for: a
     // VmArea knows what a mapping is allowed to be, but cannot know who is
     // asking, and every future sys_vmar_map has to answer that. Rights
@@ -185,12 +195,23 @@ auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags co
     // reference to the VMO, so the object outlives both references dropped
     // at the end of this function.
     out.writer = {.write = write_through_vmo, .context = memory.as_ptr_mut()};
-    out.image_base = lowest;
+    out.image_base = image.image_base;
     // e_entry is a file-relative address for a PIE, so it moves with the
     // load base like everything else. It is the first instruction of a
     // program; for the vDSO it means nothing at all -- nothing jumps to a
     // vDSO -- and is recorded here only because one routine maps both.
-    out.entry = out.base + (VirtAddr(header.entry) - lowest);
+    out.entry = out.base + image.entry_offset;
     return Status::Ok;
+}
+
+auto Loader::map(Bytes const bytes, mm::VmPlacement const where, mm::MmuFlags const flags,
+                 char const *const name, Image &out) const -> Status {
+    // Laid out for this one mapping. The ImageVmo's handle goes when this
+    // returns; the mapping keeps the VMO alive by its own reference.
+    ImageVmo image;
+    if (auto const status = load(bytes, name, image); Status::Ok != status) {
+        return status;
+    }
+    return map(image, where, flags, name, out);
 }
 } // namespace elfload

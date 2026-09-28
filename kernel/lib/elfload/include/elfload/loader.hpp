@@ -5,12 +5,37 @@
 
 #include <elfload/image.hpp>
 
+#include <ours/object/handle.hpp>
 #include <ours/object/vma_dispatcher.hpp>
+#include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 #include <ustl/views/span.hpp>
 
 namespace elfload {
+/// An ELF image laid out in a VMO and not yet mapped anywhere: what
+/// Loader::load() makes and Loader::map() places.
+///
+/// The split exists for the vDSO. It is one image every process maps, and
+/// Zircon lays it out once (VDso::Create(), zircon/kernel/lib/userabi/vdso.cc)
+/// and maps that same VMO into each process; laying it out per process, as
+/// map() alone does, gave every process a private copy of the vDSO's pages.
+struct ImageVmo {
+    /// Owns the VMO. Every mapping of it takes its own reference as well.
+    ours::object::KernelHandle<ours::object::VmoDispatcher> vmo;
+
+    /// The span it covers, whole pages from the lowest p_vaddr any PT_LOAD
+    /// claims to the highest.
+    usize span = 0;
+
+    /// That lowest p_vaddr, page-aligned: the image address the VMO's offset 0
+    /// stands for.
+    ours::VirtAddr image_base = 0;
+
+    /// e_entry, relative to image_base.
+    ours::VirtAddr entry_offset = 0;
+};
+
 /// Places ELF images into one user address space.
 ///
 /// Constructed from the address space's root VMA, because that is what it is:
@@ -43,6 +68,22 @@ class Loader final {
     [[nodiscard]]
     auto map(Bytes file, ours::mm::VmPlacement where, ours::mm::MmuFlags flags, char const *name,
              Image &out) const -> ours::Status;
+
+    /// The first half of the above: lays |file|'s PT_LOAD segments out in a
+    /// fresh paged VMO and maps it nowhere. Static because it needs no address
+    /// space -- which is what lets one layout be mapped into many.
+    [[nodiscard]]
+    static auto load(Bytes file, char const *name, ImageVmo &out) -> ours::Status;
+
+    /// The second half: maps an image load() laid out at |where| with |flags|.
+    /// The VMO is shared, not copied; every address space it is mapped into
+    /// sees the same pages.
+    ///
+    /// |image| is not const because mapping takes a reference on its VMO, and
+    /// ustl::Arc carries const through to the object it points at.
+    [[nodiscard]]
+    auto map(ImageVmo &image, ours::mm::VmPlacement where, ours::mm::MmuFlags flags,
+             char const *name, Image &out) const -> ours::Status;
 
   private:
     ours::object::VmaDispatcher &m_root_vma;

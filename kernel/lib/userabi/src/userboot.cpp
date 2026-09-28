@@ -167,6 +167,33 @@ namespace {
     /// exists, and only read after that.
     ustl::Option<phys::KernelPackage> resident_package;
 
+    /// The vDSO, laid out in one VMO once and mapped into every process
+    /// launch() starts. Zircon's VDso::Create() makes its instance_ the same
+    /// way (zircon/kernel/lib/userabi/vdso.cc), and every process maps that one
+    /// VMO.
+    ///
+    /// It used to be laid out again for each process -- launch() called
+    /// Loader::map() on the vDSO's file, which copies it into a fresh VMO --
+    /// so every process carried a private copy of the vDSO's pages. Written
+    /// once by lay_out_vdso(), before any user thread exists, and only read
+    /// after that.
+    struct SharedVdso {
+        elfload::ImageVmo image;
+
+        /// The vDSO's file in the resident package, which the Binder reads the
+        /// vDSO's exports from when it binds a program.
+        ustl::views::Span<u8 const> file;
+
+        /// Laid out yet: the VMO handle is empty until lay_out_vdso() runs.
+        /// Not a ustl::Option, whose move has to be noexcept, which
+        /// KernelHandle's is not.
+        [[nodiscard]]
+        auto ready() const -> bool {
+            return static_cast<bool>(image.vmo.dispatcher());
+        }
+    };
+    SharedVdso shared_vdso;
+
     /// The BootFS user space is given (make_user_bootfs()), built once from
     /// the resident package, and the rights a handle to it is to carry.
     ///
@@ -444,20 +471,19 @@ namespace {
         return Status::Ok;
     }
 
-    /// Maps the vDSO, which is the image every user program's imports are
-    /// bound to.
+    /// Maps the shared vDSO, which is the image every user program's imports
+    /// are bound to, into the address space |loader| is for.
     ///
     /// Read-only and executable, never writable: this is the only code in the
     /// address space allowed to enter the kernel, so a program that could
     /// rewrite it could place a trap anywhere inside the one range the kernel
     /// trusts.
-    auto load_vdso(ustl::views::Span<u8 const> bytes, elfload::Loader const &loader,
-                   elfload::Image &out) -> Status {
+    auto map_vdso(elfload::Loader const &loader, elfload::Image &out) -> Status {
         using arch::paging::MmuFlags;
         constexpr auto VDSO_FLAGS = MmuFlags::User | MmuFlags::Readable | MmuFlags::Executable;
 
         auto const status =
-            loader.map(bytes, mm::VmPlacement::at(VDSO_BASE), VDSO_FLAGS, "vdso", out);
+            loader.map(shared_vdso.image, mm::VmPlacement::at(VDSO_BASE), VDSO_FLAGS, "vdso", out);
         if (Status::Ok != status) {
             return status;
         }
@@ -474,6 +500,27 @@ namespace {
         // export"), before anything runs. A version number says two images
         // disagree; this says which call is missing.
         log::info("userboot: vdso mapped [{:X}, {:X})", out.base, out.base + out.span);
+        return Status::Ok;
+    }
+
+    /// Lays the vDSO out once, for launch() to map into every process.
+    auto lay_out_vdso(phys::KernelPackage const &package) -> Status {
+        auto const file = package.file(VDSO_FILE);
+        if (file.is_err()) {
+            log::error("userabi: '{}' is not in the kernel package: {}", VDSO_FILE,
+                       to_string(file.unwrap_err()));
+            return file.unwrap_err();
+        }
+
+        elfload::ImageVmo image;
+        if (auto const status = elfload::Loader::load(file.unwrap(), "vdso", image);
+            Status::Ok != status) {
+            return status;
+        }
+        auto const pages = image.span / PAGE_SIZE;
+        shared_vdso.image = ustl::move(image);
+        shared_vdso.file = file.unwrap();
+        log::info("userabi: vdso laid out once, {} page(s), shared by every process", pages);
         return Status::Ok;
     }
 } // namespace
@@ -557,15 +604,13 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // enters the kernel through, and the only thing that can: the syscall
     // path refuses a trap whose return address lies outside the range
     // recorded below.
-    auto const vdso_bytes = package.file(VDSO_FILE);
-    if (vdso_bytes.is_err()) {
-        log::error("userboot: '{}' is not in the kernel package: {}", VDSO_FILE,
-                   to_string(vdso_bytes.unwrap_err()));
-        return Status::NotFound;
+    if (!shared_vdso.ready()) {
+        log::error("userabi: launch('{}') before the vDSO was laid out", name);
+        return Status::BadState;
     }
 
     elfload::Image vdso;
-    status = load_vdso(vdso_bytes.unwrap(), loader, vdso);
+    status = map_vdso(loader, vdso);
     if (Status::Ok != status) {
         return status;
     }
@@ -574,7 +619,7 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // the vDSO's exports. This has to happen before the thread starts and
     // after both load addresses are known, which is the only reason the
     // program is not simply bound as it is mapped.
-    auto const binder = elfload::Binder::from(vdso_bytes.unwrap(), vdso);
+    auto const binder = elfload::Binder::from(shared_vdso.file, vdso);
     if (binder.is_err()) {
         log::error("userboot: the vDSO cannot be bound against: {}",
                    to_string(binder.unwrap_err()));
@@ -655,6 +700,13 @@ auto userboot_init() -> void {
 
     // Kept, so that programs started later come out of the same package.
     resident_package = ustl::some(package.unwrap());
+
+    // The vDSO, once, before the first process: no process can run without
+    // it, so failing here is failing to start user space at all.
+    if (auto const status = lay_out_vdso(*resident_package); Status::Ok != status) {
+        log::error("userabi: could not lay out the vDSO: {}", to_string(status));
+        return;
+    }
 
     // Built before the first process starts, so that the VMO exists by the
     // time anything could ask for it. A failure is logged inside and is not

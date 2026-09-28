@@ -26,6 +26,13 @@
   `//system/user_executable.gni`, relocations resolved by `bind_imports()` in
   `kernel/lib/userabi/src/userboot.cpp`. Never reintroduce a hand-resolved
   export table.
+- There is one vDSO VMO, laid out once by the kernel (`userboot_init()`, like
+  Zircon's `VDso::Create()`), and it is mapped by whoever starts the process
+  -- today `userabi::launch()`, after K23 the user-space launcher through
+  `vmar_map` on a vDSO VMO handle it is given, as Zircon's userboot and
+  process_builder do. `ProcessDispatcher::create` does not map it. The user
+  chose Zircon's shape over "the kernel maps it at process creation"
+  (2026-09-28); never copy the vDSO per process.
 - Adding a syscall means: kernel handler, vDSO stub exported in `.dynsym`,
   declaration in `system/public/ours/vdso.hpp`, and exactly one named entry in
   `//system/lib/ou` (even if it only forwards). Ring-3 code calls `ou::...`,
