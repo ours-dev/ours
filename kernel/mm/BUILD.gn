@@ -17,6 +17,7 @@ if (toolchain_environment == "kernel") {
         "page_request.cpp",
       "pm_frame.cpp",
       "pm_node.cpp",
+      "pm_node_topology.cpp",
       "pm_zone.cpp",
       "pmm.cpp",
       "protection_ranges.cpp",

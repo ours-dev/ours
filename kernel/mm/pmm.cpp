@@ -119,7 +119,7 @@ auto free_frame_count() -> usize {
 /// Called from kmalloc and MemCache::allocate to resolve "no preference" into a
 /// real node.
 auto current_node() -> NnId {
-    return PmNode::Current::nid();
+    return PmNode::Topology::current_node();
 }
 
 auto node_online_mask() -> NodeMask const & {

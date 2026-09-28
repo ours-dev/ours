@@ -153,6 +153,7 @@ class PmNode {
     };
 
     class Current;
+    class Topology;
 
     template <typename F>
         requires ustl::traits::Invocable<F, NnId>
@@ -204,18 +205,6 @@ class PmNode {
     FORCE_INLINE
     static auto num_online_nodes() -> usize {
         return node_online_mask().count();
-    }
-
-    FORCE_INLINE
-    constexpr static auto distance(NnId x, NnId y) -> usize {
-        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE, "");
-        return NODE_DISTANCE[x][y];
-    }
-
-    FORCE_INLINE
-    constexpr static auto set_distance(NnId x, NnId y, usize dis) -> void {
-        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE, "");
-        NODE_DISTANCE[x][y] = dis;
     }
 
     static auto bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status;
@@ -458,12 +447,106 @@ class PmNode {
     static std::array<PmNode *, NUMA_MAX_NODE> NODES;
 
     // Th fields bottom is readonly after initializing logically.
-    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> NODE_DISTANCE;
-
-    // Th fields bottom is readonly after initializing logically.
     static usize NUM_NODES;
 
     static Gaf ALLOWED_GAF;
+};
+
+/// The machine's NUMA layout, as the firmware describes it: how far apart the
+/// nodes are, and which node each CPU belongs to.
+///
+/// Facts about the machine rather than about any PmNode, which is why they are
+/// kept apart from the nodes: the SRAT parse (x86 srat.cpp, InitLevel::PrePmm
+/// + 1) records them before a single PmNode exists, and a caller that only
+/// wants a node number -- mm::current_node() has dozens -- has no business
+/// with zones and free lists. They used to be spread over PmNode's statics
+/// (NODE_DISTANCE) and PmNode::Current's (STATIC_/DYNAMIC_CPU_TO_NODE).
+///
+/// Nested in PmNode so that the NUMA vocabulary stays under one name, the way
+/// PmNode::Current already is. What changes a PmNode when a CPU joins or
+/// leaves it -- its CPU masks, the per-CPU PmNode pointer -- stays with
+/// PmNode::Current; this only holds the tables.
+///
+/// Linux keeps the same facts in the same kind of place: numa_distance[]
+/// (arch/x86/mm/numa.c) and x86_cpu_to_node_map / the per-CPU numa_node behind
+/// cpu_to_node(), all outside pg_data_t.
+class PmNode::Topology {
+  public:
+    /// The firmware's distance between two nodes (the SLIT, or what the SRAT
+    /// parse fills in). Zero until someone sets it.
+    FORCE_INLINE
+    static auto distance(NnId const x, NnId const y) -> usize {
+        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE);
+        return DISTANCE[x][y];
+    }
+
+    FORCE_INLINE
+    static auto set_distance(NnId const x, NnId const y, usize const distance) -> void {
+        DEBUG_ASSERT(x < NUMA_MAX_NODE && y < NUMA_MAX_NODE);
+        DISTANCE[x][y] = distance;
+    }
+
+    /// The node |cpu| works on now; NUMA_MAX_NODE while nothing has claimed
+    /// it. Starts as firmware_node() and follows set_cpu_node() after that.
+    FORCE_INLINE
+    static auto cpu_to_node(CpuNum const cpu) -> NnId {
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
+        return CPU_TO_NODE[cpu];
+    }
+
+    /// The node the calling CPU belongs to.
+    ///
+    /// Read out of the table rather than through PmNode::Current, and not as
+    /// an optimisation. Current is a per-CPU `PmNode *`, so
+    /// `CURRENT_INSTANCE->m_id` dereferences the *template* copy of that
+    /// pointer at compile time -- it folds to `&(nullptr->m_id)`, i.e. the
+    /// constant 4, which then gets handed to %gs as if it were a per-CPU
+    /// handle. That is a wild access whichever model is in effect, and it
+    /// stays wrong after the pointer is set, because the fold already
+    /// happened.
+    ///
+    /// The table is also the only answer that works this early: nothing fills
+    /// the per-CPU pointer until PmNode::Current::init() runs from an init
+    /// hook, while allocation starts asking for a node long before that. This
+    /// is the same role Linux gives early_per_cpu(x86_cpu_to_node_map).
+    FORCE_INLINE
+    static auto current_node() -> NnId {
+        return cpu_to_node(CpuLocal::current_cpu());
+    }
+
+    /// The node the firmware put |cpu| on -- what a node's hard affinity is
+    /// built from. Unlike cpu_to_node(), a run-time move does not change it.
+    FORCE_INLINE
+    static auto firmware_node(CpuNum const cpu) -> NnId {
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
+        return FIRMWARE_CPU_TO_NODE[cpu];
+    }
+
+    /// Records the firmware's placement of |cpu|, which is also where it
+    /// starts out. Only while bringing up: the SRAT parse, and the fallback
+    /// claims in PmNode::bootstrap() and PmNode::Current::claim_possible_cpus().
+    FORCE_INLINE
+    static auto set_cpu_node_early(CpuNum const cpu, NnId const nid) -> void {
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
+        FIRMWARE_CPU_TO_NODE[cpu] = nid;
+        CPU_TO_NODE[cpu] = nid;
+    }
+
+    /// Moves |cpu| to |nid| in the table. Only the table: the nodes' own CPU
+    /// masks are PmNode::Current::set_nid()'s to update, which calls this.
+    FORCE_INLINE
+    static auto set_cpu_node(CpuNum const cpu, NnId const nid) -> void {
+        DEBUG_ASSERT(cpu < MAX_CPU, "Invalid CPU Number");
+        CPU_TO_NODE[cpu] = nid;
+    }
+
+  private:
+    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> DISTANCE;
+
+    /// Both start out on NUMA_MAX_NODE, the "no node known yet" sentinel;
+    /// see pm_node_topology.cpp.
+    static std::array<NnId, MAX_CPU> FIRMWARE_CPU_TO_NODE;
+    static std::array<NnId, MAX_CPU> CPU_TO_NODE;
 };
 
 /// The helper class be used to describe PmNode associated with current cpu context.
@@ -483,38 +566,6 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     FORCE_INLINE
     static auto hard_affinity() -> CpuMask const & {
         return CpuLocal::access(CURRENT_INSTANCE->m_hard_affinity);
-    }
-
-    /// The node the calling CPU belongs to.
-    ///
-    /// Read out of DYNAMIC_CPU_TO_NODE rather than through CURRENT_INSTANCE,
-    /// and not as an optimisation. CURRENT_INSTANCE is a per-CPU `PmNode *`, so
-    /// `CURRENT_INSTANCE->m_id` dereferences the *template* copy of that pointer
-    /// at compile time -- it folds to `&(nullptr->m_id)`, i.e. the constant 4,
-    /// which then gets handed to %gs as if it were a per-CPU handle. That is a
-    /// wild access whichever model is in effect, and it stays wrong after the
-    /// pointer is set, because the fold already happened.
-    ///
-    /// The array is also the only answer that works this early: nothing fills
-    /// CURRENT_INSTANCE until PmNode::Current::init() runs from an init hook,
-    /// while allocation starts asking for a node long before that. This is the
-    /// same role Linux gives early_per_cpu(x86_cpu_to_node_map).
-    FORCE_INLINE
-    static auto nid() -> NnId {
-        return nid(CpuLocal::current_cpu());
-    }
-
-    FORCE_INLINE
-    static auto nid(CpuNum cpunum) -> NnId {
-        DEBUG_ASSERT(cpunum < MAX_CPU, "Invalid CPU Number");
-        return DYNAMIC_CPU_TO_NODE[cpunum];
-    }
-
-    /// Used only on the early stage.
-    FORCE_INLINE
-    static auto set_nid_early(CpuNum cpunum, NnId nid) -> void {
-        STATIC_CPU_TO_NODE[cpunum] = nid;
-        DYNAMIC_CPU_TO_NODE[cpunum] = nid;
     }
 
     static auto set_nid(NnId nid) -> void;
@@ -554,8 +605,8 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     /// CpuLocal::init() -- which is why the resolution lives here rather than
     /// in each caller.
     ///
-    /// nid() is what makes an answer possible this early: it reads
-    /// DYNAMIC_CPU_TO_NODE, which bootstrap() fills for the boot CPU long
+    /// Topology::current_node() is what makes an answer possible this early:
+    /// it reads Topology's table, which bootstrap() fills for the boot CPU long
     /// before any per-CPU storage exists. Linux consults the same table
     /// through early_per_cpu(x86_cpu_to_node_map) for exactly this window.
     static auto resolve_local_node() -> PmNode *;
@@ -564,12 +615,14 @@ class PmNode::Current: public CpuLocal::Current<PmNode *> {
     /// the node. Nothing for a CPU still on the NUMA_MAX_NODE sentinel.
     static auto publish(CpuNum cpu) -> void;
 
+    // Not read yet. Kept as planned per-CPU state (the node, and the
+    // affinities an allocation from this CPU should honour); nothing
+    // constructs a Current instance today, which is why the compiler first
+    // noticed m_node once Current lost its static tables to Topology.
+    [[maybe_unused]]
     PmNode *m_node;
     NodeMask m_hard_affinity;
     NodeMask m_soft_affinity;
-
-    static std::array<NnId, MAX_CPU> STATIC_CPU_TO_NODE;
-    static std::array<NnId, MAX_CPU> DYNAMIC_CPU_TO_NODE;
 };
 
 template <typename F, typename... Args>

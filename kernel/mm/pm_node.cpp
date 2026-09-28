@@ -210,7 +210,6 @@ auto ZoneIterator::move_next() -> ZoneRef {
 decltype(PmNode::STATES) PmNode::STATES;
 decltype(PmNode::NODES) PmNode::NODES;
 decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
-decltype(PmNode::NODE_DISTANCE) PmNode::NODE_DISTANCE;
 decltype(PmNode::ALLOWED_GAF) PmNode::ALLOWED_GAF = GAF_BOOT;
 
 PmNode::PmNode(NnId nid)
@@ -250,7 +249,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     // Give every CPU that no topology source claimed the first node that owns
     // memory.
     //
-    // STATIC_CPU_TO_NODE and DYNAMIC_CPU_TO_NODE start out filled with
+    // Topology's two CPU-to-node tables start out filled with
     // NUMA_MAX_NODE -- the "no node known yet" sentinel -- and the only thing
     // that ever overwrites it is a topology source: on x86 the SRAT parse,
     // which a kernel built without NUMA never compiles in and a machine
@@ -267,7 +266,7 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     // closes the same gap in the same place, with dummy_numa_init() and
     // init_cpu_to_node().
     //
-    // The `init()` pass below reads STATIC_CPU_TO_NODE to build each node's
+    // The `init()` pass below reads Topology::firmware_node() to build each node's
     // hard affinity, so this has to come before it, not after.
     auto fallback_nid = NnId(NUMA_MAX_NODE);
     nodes.for_each([&fallback_nid](NnId const nid) {
@@ -282,8 +281,8 @@ auto PmNode::bootstrap(ustl::views::Span<Pfn> max_zone_pfn) -> Status {
     }
 
     auto const claim_cpu = [fallback_nid](CpuNum const cpunum) {
-        if (Current::nid(cpunum) == NUMA_MAX_NODE) {
-            Current::set_nid_early(cpunum, fallback_nid);
+        if (Topology::cpu_to_node(cpunum) == NUMA_MAX_NODE) {
+            Topology::set_cpu_node_early(cpunum, fallback_nid);
         }
     };
     // The possible mask is empty here: the MADT parse that fills it
@@ -358,9 +357,8 @@ auto PmNode::init() -> Status {
     }
     set_state(m_id, State::Online);
 
-    auto const &cpu_to_node = Current::STATIC_CPU_TO_NODE;
     for (CpuNum cpu = 0; cpu < MAX_CPU; ++cpu) {
-        if (cpu_to_node[cpu] == m_id) {
+        if (Topology::firmware_node(cpu) == m_id) {
             m_hard_affinity.set(cpu);
         }
     }
@@ -414,7 +412,7 @@ auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Route
                 return;
             }
 
-            auto const this_dis = PmNode::distance(from, to);
+            auto const this_dis = Topology::distance(from, to);
             if (distance > this_dis) {
                 result = to;
                 distance = this_dis;
@@ -566,7 +564,7 @@ auto PmNode::alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallbac
 
 auto PmNode::alloc_frames_postamble(PmFrame *frame, Gaf gaf, usize order,
                                     MemoryAllocationContext const &context) -> void {
-    if (PmNode::Current::nid() == m_id) {
+    if (Topology::current_node() == m_id) {
         PM_NODE_LOCAL_HIT.add(1);
     } else {
         PM_NODE_LOCAL_MISS.add(1);
@@ -708,18 +706,6 @@ auto PmNode::dump() const -> void {
     }
 }
 
-constinit decltype(PmNode::Current::STATIC_CPU_TO_NODE) PmNode::Current::STATIC_CPU_TO_NODE = [] {
-    decltype(PmNode::Current::STATIC_CPU_TO_NODE) value;
-    std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
-    return value;
-}();
-
-constinit decltype(PmNode::Current::DYNAMIC_CPU_TO_NODE) PmNode::Current::DYNAMIC_CPU_TO_NODE = [] {
-    decltype(PmNode::Current::DYNAMIC_CPU_TO_NODE) value;
-    std::fill(std::begin(value), std::end(value), NUMA_MAX_NODE);
-    return value;
-}();
-
 auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
     if constexpr (MEMORY_ALLOCATION_POLICY) {
         using Kind = MemoryAllocationPolicy::Kind;
@@ -759,7 +745,7 @@ auto PmNode::Current::resolve_local_node() -> PmNode * {
         return node;
     }
 
-    auto const nid = Current::nid();
+    auto const nid = Topology::current_node();
     if (nid >= NUMA_MAX_NODE) {
         // No topology source has claimed this CPU. bootstrap() claims the boot
         // CPU before the first allocation, so this is an AP asking before
@@ -827,7 +813,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
     DEBUG_ASSERT(cpunum < MAX_CPU);
     DEBUG_ASSERT(new_nid < NUMA_MAX_NODE);
 
-    auto const old_nid = DYNAMIC_CPU_TO_NODE[cpunum];
+    auto const old_nid = Topology::cpu_to_node(cpunum);
     if (old_nid == new_nid) {
         return;
     }
@@ -842,7 +828,7 @@ auto PmNode::Current::set_nid(CpuNum cpunum, NnId new_nid) -> void {
         }
     }
 
-    DYNAMIC_CPU_TO_NODE[cpunum] = new_nid;
+    Topology::set_cpu_node(cpunum, new_nid);
     if (auto node = PmNode::node(new_nid)) {
         node->m_canary.verify<Self>();
         Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
@@ -859,7 +845,7 @@ auto PmNode::Current::set_nid(NnId nid) -> void {
 /// Publishes each CPU's node into its per-CPU slot, now that the slots exist.
 ///
 /// Not through set_nid(). bootstrap() has already claimed every CPU with
-/// set_nid_early(), which fills both tables, so set_nid() finds the old and
+/// Topology::set_cpu_node_early(), which fills both tables, so set_nid() finds the old and
 /// new ids equal and returns before it reaches the per-CPU pointer. That is
 /// what left CURRENT_INSTANCE null across the zero-page allocation in
 /// init_vmm_preheap(): Current::alloc_frames() went on through a null
@@ -875,7 +861,7 @@ auto PmNode::Current::set_nid(NnId nid) -> void {
 /// so at this point it is empty, and a walk of it alone publishes nothing.
 /// That was the other way this used to fail on the same boot.
 auto PmNode::Current::publish(CpuNum const cpu) -> void {
-    auto const nid = DYNAMIC_CPU_TO_NODE[cpu];
+    auto const nid = Topology::cpu_to_node(cpu);
     if (nid == NUMA_MAX_NODE) {
         // Not claimed yet. bootstrap() claims only the CPU it runs on;
         // claim_possible_cpus() and the NUMA topology parse claim the rest.
@@ -888,10 +874,10 @@ auto PmNode::Current::publish(CpuNum const cpu) -> void {
 
     Guard<sync::SpinLock, IrqSave> guard{node->get_lock()};
     node->m_work_cpus.set(cpu);
-    // PmNode::init() builds the hard affinity from STATIC_CPU_TO_NODE, but
+    // PmNode::init() builds the hard affinity from Topology::firmware_node(), but
     // only for the CPUs claimed by then -- the boot CPU. A CPU claimed later
     // joins it here, so that the node's mask says the same thing as the table.
-    if (STATIC_CPU_TO_NODE[cpu] == nid) {
+    if (Topology::firmware_node(cpu) == nid) {
         node->m_hard_affinity.set(cpu);
     }
     PmNode::Current::set(node, cpu);
@@ -924,12 +910,12 @@ auto PmNode::Current::init() -> void {
 /// with numa_set_node() for each possible CPU, before smp_init() brings the
 /// APs up.
 auto PmNode::Current::claim_possible_cpus() -> void {
-    auto const fallback = nid(CpuLocal::current_cpu());
+    auto const fallback = Topology::current_node();
     DEBUG_ASSERT(fallback < NUMA_MAX_NODE, "the boot CPU has no node");
 
     Cpu::possible_mask().for_each([fallback](CpuNum const cpu) {
-        if (nid(cpu) == NUMA_MAX_NODE) {
-            set_nid_early(cpu, fallback);
+        if (Topology::cpu_to_node(cpu) == NUMA_MAX_NODE) {
+            Topology::set_cpu_node_early(cpu, fallback);
         }
         publish(cpu);
     });

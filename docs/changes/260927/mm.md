@@ -1200,3 +1200,85 @@ Linux `build_zonelists()`（`mm/page_alloc.c`）：用 `find_next_best_node()` �
 
 **故意没做**
 `clear()` 和 `for_each_node()` 目前都没有调用者，保留不删。
+
+## 距离表和 CPU→节点映射收进 PmNode::Topology（2026-09-27）
+
+PmNode 结构整理第 2 步的提交 B。
+
+**文件**
+- `kernel/mm/include/ours/mm/pm_node.hpp`：
+  - 新增内部类 `PmNode::Topology`；
+  - PmNode 删掉 `NODE_DISTANCE`、`distance()`、`set_distance()`；
+  - `PmNode::Current` 删掉 `nid()`、`nid(cpu)`、`set_nid_early()` 和两张表
+- `kernel/mm/pm_node_topology.cpp`（新）：三张表的定义
+- `kernel/mm/pm_node.cpp`：所有读写改走 `Topology`
+- `kernel/mm/pmm.cpp`：`mm::current_node()` 改为转调 `PmNode::Topology::current_node()`
+- `kernel/arch/x86/mm/srat.cpp`：`set_distance`、`set_cpu_node_early` 改走 `Topology`
+- `kernel/include/ours/cpu.hpp`：注释里的引用
+- `kernel/mm/BUILD.gn`：加入新文件
+
+**症状**
+无运行时症状，是结构问题。机器的 NUMA 布局分散在两处：
+- 节点间距离是 PmNode 的静态成员；
+- CPU→节点的两张表（固件绑定的 STATIC、当前所在的 DYNAMIC）是 PmNode::Current 的静态成员。
+
+问"CPU 3 在哪个节点"，要找 `PmNode::Current::nid(3)`。这个名字说的是"当前 CPU 的 PmNode"，
+和"某个 CPU 的节点号"不是一回事。
+
+**原因**
+这些是关于机器的事实，不是关于某个 PmNode 的：SRAT 解析（`PrePmm + 1`）在任何 PmNode 创建之前
+就把它们填好了；`mm::current_node()` 的几十个调用者只要一个节点号，与 zone、空闲链表无关。
+把它们挂在"单个节点"和"当前 CPU 的节点指针"这两个类上，职责就混了。
+
+**改法**
+新的内部类只管这三张表：
+
+```cpp
+class PmNode::Topology {
+  public:
+    static auto distance(NnId x, NnId y) -> usize;
+    static auto set_distance(NnId x, NnId y, usize distance) -> void;
+    static auto cpu_to_node(CpuNum cpu) -> NnId;        // 原 Current::nid(cpu)，DYNAMIC 表
+    static auto current_node() -> NnId;                 // 原 Current::nid()
+    static auto firmware_node(CpuNum cpu) -> NnId;      // 原 STATIC 表
+    static auto set_cpu_node_early(CpuNum, NnId) -> void;  // 原 Current::set_nid_early()
+    static auto set_cpu_node(CpuNum, NnId) -> void;        // 只改 DYNAMIC 表
+  private:
+    static std::array<std::array<usize, NUMA_MAX_NODE>, NUMA_MAX_NODE> DISTANCE;
+    static std::array<NnId, MAX_CPU> FIRMWARE_CPU_TO_NODE;
+    static std::array<NnId, MAX_CPU> CPU_TO_NODE;
+};
+```
+
+划分原则是"改不改 PmNode 自身的字段"：
+- 只读写表的，进 `Topology`。
+- 要改节点 CPU 掩码或每 CPU `PmNode *` 的（`publish()`、`claim_possible_cpus()`、运行期的 `set_nid()`），
+  留在 `PmNode::Current`，它们在改完节点之后顺带更新表。
+
+`mm::current_node()` 保留为轻量的对外入口。`pmm.hpp` 不包含 `pm_node.hpp`，所以只想要节点号的调用者
+不必接触 PmNode，也一个都不用改。
+
+原来 `Current::nid()` 上那段注释（为什么不能经 `CURRENT_INSTANCE->m_id` 读，以及为什么启动早期只能查表）
+搬到了 `Topology::current_node()` 上。
+
+`PmNode::Current` 的三个实例成员从来没被读过，而且也从来没有构造过 `Current` 实例。
+静态表挪走之后，编译器开始报 `m_node` 是未使用的私有字段。按"脚手架不删"的约定保留它们，
+加了 `[[maybe_unused]]` 和一段说明。
+
+**参照**
+Linux 把这些放在 `pg_data_t` 之外：
+- `numa_distance[]` 和 `numa_set_distance()`（`arch/x86/mm/numa.c`）；
+- 启动早期的 `x86_cpu_to_node_map`（`early_per_cpu`）；
+- 之后每 CPU 的 `numa_node`，由 `cpu_to_node()` 读取、`set_cpu_numa_node()` 写入。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过，QEMU 实测两个镜像 `usercopy.test` 都是 18/18。
+- NUMA：`out/numa.x86` dbg_1 镜像用 `NUMA=1` 启动，跑到 shell，无异常。
+  - 四个节点的回退队列、SRAT 输出，与改动前逐行 `diff` 一致。
+  - 临时探针打印每个 CPU 的 `firmware_node` 和 `cpu_to_node`，结果与 `scripts/qemu_boot.py` 里的
+    `NUMA_NODES = [(0, "0-1"), (1, "2-3"), (2, "4-6"), (3, "7")]` 完全吻合。探针已撤掉。
+
+**故意没做**
+- `PmNode::Current` 上的 `set_nid()` 没改名为 `set_cpu_node()`。它做的不只是改表，还要把 CPU 从一个节点的
+  掩码挪到另一个节点，和 `Topology::set_cpu_node()` 不是一回事。
+- `bootstrap()` 拆分是第 3 步。

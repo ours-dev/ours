@@ -48,7 +48,7 @@ namespace {
     auto reset_all_distances() -> void {
         for (auto i = 0; i < NUMA_MAX_NODE; ++i) {
             for (auto j = 0; j < NUMA_MAX_NODE; ++j) {
-                mm::PmNode::set_distance(i, j, 0);
+                mm::PmNode::Topology::set_distance(i, j, 0);
             }
         }
     }
@@ -73,7 +73,7 @@ namespace {
         auto const count = matrix->count();
         for (auto from = u32(0); from < count; ++from) {
             for (auto to = u32(0); to < count; ++to) {
-                mm::PmNode::set_distance(from, to, matrix->distance(from, to));
+                mm::PmNode::Topology::set_distance(from, to, matrix->distance(from, to));
             }
         }
 
@@ -98,16 +98,17 @@ namespace {
             cpus[count] = count;
             cpu_possible_mask().set(count);
             // HINT(SmallHuaZi)
-            // set_nid_early(), not set_nid(): this runs at PrePmm + 1, before
+            // set_cpu_node_early(), not set_nid(): this runs at PrePmm + 1, before
             // any PmNode exists. set_nid() is the run-time move between two
             // live nodes -- it finds no node to join, so it wrote only the
-            // dynamic table and left STATIC_CPU_TO_NODE on the sentinel.
+            // dynamic table and left the firmware table on the sentinel.
             // bootstrap() then saw the CPU as already claimed and did not
             // fill it either, and PmNode::init(), which builds each node's
             // hard affinity from the static table, built them all empty.
             // Linux records the same thing just as early and just as plainly:
             // numa_set_node() into early_per_cpu(x86_cpu_to_node_map).
-            mm::PmNode::Current::set_nid_early(static_cast<CpuNum>(count), NnId{binding.domain});
+            mm::PmNode::Topology::set_cpu_node_early(static_cast<CpuNum>(count),
+                                                     NnId{binding.domain});
             count += 1;
         });
     }

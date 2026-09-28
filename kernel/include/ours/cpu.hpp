@@ -22,7 +22,8 @@ class Cpu {
 
     static auto id() -> CpuNum;
 
-    /// For the node a CPU belongs to, use mm::PmNode::Current::nid(). `Cpu::nid()`
+    /// For the node a CPU belongs to, use mm::current_node() or
+    /// mm::PmNode::Topology::cpu_to_node(). `Cpu::nid()`
     /// used to duplicate it from a function-local `CPU_LOCAL static` that could
     /// never be written, so it always answered 0; it had no callers.
 
