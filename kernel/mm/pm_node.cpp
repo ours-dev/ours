@@ -83,61 +83,6 @@ auto ZoneList::dump_fallback() const -> void {
     }
 }
 
-/// Walks a list of zones, yielding only the ones that pass the filter: on one
-/// of |nodes|, and of a type no higher than the upper bound.
-///
-/// Rewritten along with ZoneList. The old move_next() did not filter at all:
-/// a zone failing a test only advanced the cursor one extra step, and the
-/// function then returned whatever zone it had landed on, filtered or not. It
-/// also could not walk the by-type array, whose holes are nulls it would have
-/// dereferenced.
-struct ZoneIterator {
-    using Self = ZoneIterator;
-    using ZoneRef = ZoneList::ZoneRef;
-
-    auto set_nodes(NodeMask const &nm) -> Self & {
-        nodes = &nm;
-        return *this;
-    }
-
-    auto set_zone_range(ZoneType lower, ZoneType upper) -> Self & {
-        lower_zone_type = lower;
-        upper_zone_type = upper;
-        return *this;
-    }
-
-    auto set_zones(ZoneList::Zones const list) -> Self & {
-        zones = list;
-        next = 0;
-        return *this;
-    }
-
-    auto move_next() -> ZoneRef;
-
-    ZoneList::Zones zones;
-    usize next = 0;
-    NodeMask const *nodes = nullptr;
-    ZoneType lower_zone_type; // Reserved and not used now.
-    ZoneType upper_zone_type;
-};
-
-auto ZoneIterator::move_next() -> ZoneRef {
-    while (next < zones.size()) {
-        auto *const zone = zones[next++];
-        if (!zone) {
-            continue; // A type this node has no zone of.
-        }
-        if (zone->zone_type() > upper_zone_type) {
-            continue;
-        }
-        if (nodes && !nodes->test(zone->which_node())) {
-            continue;
-        }
-        return zone;
-    }
-    return ZoneRef();
-}
-
 decltype(PmNode::STATES) PmNode::STATES;
 decltype(PmNode::NODES) PmNode::NODES;
 decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
@@ -190,33 +135,6 @@ auto PmNode::Router::build(NnId const from, NodeMask const &candidates) -> Route
     }
     return route;
 }
-
-/// CPU's and Thread's capacity on nodes.
-///
-/// 1. The former storaged in PmNode::Current is an optimized occasion.
-/// 2. The latter storaged in MemoryAllocationState is a hard constrict.
-
-struct AllocationContext {
-    auto build(PmNode *node, Gaf gaf, usize order, NodeMask const &nodemask) -> Status {
-        ziter.set_nodes(nodemask).set_zone_range(gaf_zone_type(gaf), gaf_zone_type(gaf));
-
-        // This node's zones only, for Gaf::ThisNode -- Linux's
-        // ZONELIST_NOFALLBACK, which SharedSequential was presumably reserved
-        // for -- or the whole fallback order.
-        auto const *const list = node->zone_list();
-        if (!!(gaf & Gaf::ThisNode)) {
-            ziter.set_zones(list->local_zones());
-        } else {
-            ziter.set_zones(list->fallback());
-        }
-
-        return Status::Ok;
-    }
-
-    ZoneIterator ziter;
-
-    NodeMask m_nodes;
-};
 
 auto PmNode::get_frame_from_zone_list(Gaf gaf, usize order, AllocationOptions options,
                                       MemoryAllocationContext const &context) -> PmFrame * {

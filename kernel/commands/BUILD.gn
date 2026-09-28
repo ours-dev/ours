@@ -16,6 +16,7 @@ source_set("commands") {
   sources = [
     "log.cpp",
     "mutex_stress.cpp",
+    "pm_node_test.cpp",
     "prof.cpp",
     "user_copy_test.cpp",
   ]

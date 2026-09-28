@@ -153,6 +153,54 @@ class PmNode {
     class Current;
     class Topology;
 
+    /// The other nodes with memory, nearest first, as seen from one node: the
+    /// order that node's allocations fall back through. ZoneList::connect()
+    /// chains their zones behind the node's own in this order.
+    ///
+    /// Nested because it is part of how a node is wired up; its one user in
+    /// the allocator is ZoneList::connect(). Public so that pmnode.test can
+    /// check the order it produces directly. It was a free-standing NodeRoute that the caller created empty
+    /// and handed to PmNode::build_optimal_node_route() to fill; build() now
+    /// returns a finished one.
+    class Router {
+      public:
+        /// Every node with memory in |candidates| other than |from|, nearest
+        /// first. Linux: the node order build_zonelists() gets by calling
+        /// find_next_best_node() until it runs out.
+        static auto build(NnId from, NodeMask const &candidates) -> Router;
+
+        template <typename F, typename... Args>
+            requires ustl::traits::Invocable<F, PmNode &, Args...>
+        auto for_each_node(F &&f, Args &&...args) const -> void;
+
+        FORCE_INLINE
+        constexpr auto clear() -> void {
+            m_path.clear();
+        }
+
+        FORCE_INLINE
+        constexpr auto begin() const {
+            return m_path.begin();
+        }
+
+        FORCE_INLINE
+        constexpr auto end() const {
+            return m_path.end();
+        }
+
+      private:
+        /// Appends the next hop. Fixed capacity: one hop per other node, so
+        /// overflowing it means a node was visited twice.
+        FORCE_INLINE
+        constexpr auto push_back(NnId to) -> void {
+            auto const result = m_path.push_back(to);
+            DEBUG_ASSERT(result, "Router overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
+        }
+
+        /// The hops, and their count: StaticVec keeps both.
+        ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
+    };
+
     template <typename F>
         requires ustl::traits::Invocable<F, NnId>
     static auto for_each_nid(State state, F &&f) -> ustl::traits::InvokeResultT<F, NnId> {
@@ -308,54 +356,6 @@ class PmNode {
 
   private:
     friend class ZoneList;
-
-    /// The other nodes with memory, nearest first, as seen from one node: the
-    /// order that node's allocations fall back through. ZoneList::connect()
-    /// chains their zones behind the node's own in this order.
-    ///
-    /// Nested and private because it is part of how a node is wired up, not
-    /// something anyone outside asks for: its one user is ZoneList, a
-    /// friend. It was a free-standing NodeRoute that the caller created empty
-    /// and handed to PmNode::build_optimal_node_route() to fill; build() now
-    /// returns a finished one.
-    class Router {
-      public:
-        /// Every node with memory in |candidates| other than |from|, nearest
-        /// first. Linux: the node order build_zonelists() gets by calling
-        /// find_next_best_node() until it runs out.
-        static auto build(NnId from, NodeMask const &candidates) -> Router;
-
-        template <typename F, typename... Args>
-            requires ustl::traits::Invocable<F, PmNode &, Args...>
-        auto for_each_node(F &&f, Args &&...args) const -> void;
-
-        FORCE_INLINE
-        constexpr auto clear() -> void {
-            m_path.clear();
-        }
-
-        FORCE_INLINE
-        constexpr auto begin() const {
-            return m_path.begin();
-        }
-
-        FORCE_INLINE
-        constexpr auto end() const {
-            return m_path.end();
-        }
-
-      private:
-        /// Appends the next hop. Fixed capacity: one hop per other node, so
-        /// overflowing it means a node was visited twice.
-        FORCE_INLINE
-        constexpr auto push_back(NnId to) -> void {
-            auto const result = m_path.push_back(to);
-            DEBUG_ASSERT(result, "Router overflowed its {} hop capacity", NUMA_MAX_NODE - 1);
-        }
-
-        /// The hops, and their count: StaticVec keeps both.
-        ustl::collections::StaticVec<NnId, NUMA_MAX_NODE - 1> m_path;
-    };
 
     PmNode(NnId nid);
 
