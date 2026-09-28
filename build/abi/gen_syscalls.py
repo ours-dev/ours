@@ -248,7 +248,7 @@ def render_vdso_stubs(calls: List[Call]) -> str:
 
 
 def kernel_type(arg: Arg) -> str:
-    """The type a sys_* handler takes |arg| as, spelled inside namespace ours.
+    """The type a handler takes |arg| as, spelled inside namespace ours::syscall.
 
     A pointer is a user_copy::UserPtr and never a C++ pointer: the kernel can
     copy through it but cannot dereference it, and its direction is part of
@@ -264,8 +264,9 @@ def kernel_type(arg: Arg) -> str:
 
 
 def render_kernel_decls(calls: List[Call]) -> str:
-    """The typed sys_* declarations, included by <syscall/handlers.hpp>
-    inside namespace ours.
+    """The typed handler declarations, included by <syscall/handlers.hpp>
+    inside namespace ours::syscall: syscall::<name>, with no sys_ prefix --
+    the namespace already says what it is.
 
     Each handler is defined by hand, so a definition that has drifted from
     its entry here is a different overload that nothing calls, and the
@@ -277,12 +278,12 @@ def render_kernel_decls(calls: List[Call]) -> str:
         lines.append(f"/// {call.brief}")
         if call.noreturn:
             lines.append("[[noreturn]]")
-        one_line = f"auto sys_{call.name}({', '.join(params)}) -> {call.ret};"
+        one_line = f"auto {call.name}({', '.join(params)}) -> {call.ret};"
         if len(one_line) <= LINE_WIDTH:
             lines.append(one_line)
         else:
             joined = ",\n    ".join(params)
-            lines.append(f"auto sys_{call.name}(\n    {joined}) -> {call.ret};")
+            lines.append(f"auto {call.name}(\n    {joined}) -> {call.ret};")
         lines.append("")
     return "\n".join(lines)
 
@@ -298,16 +299,16 @@ def render_kernel_shims(calls: List[Call]) -> str:
     """
     lines = [HEADER_BANNER]
     for call in calls:
-        lines.append(f"auto sys_{call.name}_shim(arch::SyscallFrame *const frame) -> void {{")
+        lines.append(f"auto {call.name}_shim(arch::SyscallFrame *const frame) -> void {{")
         arguments = [
             f"syscall::from_register<{kernel_type(a)}>(arch::syscall_arg<{i}>(frame))"
             for i, a in enumerate(call.args)
         ]
         if not arguments:
-            invocation = f"sys_{call.name}()"
+            invocation = f"syscall::{call.name}()"
         else:
             joined = ",\n        ".join(arguments)
-            invocation = f"sys_{call.name}(\n        {joined})"
+            invocation = f"syscall::{call.name}(\n        {joined})"
         if call.noreturn:
             lines.append(f"    {invocation};")
         else:
@@ -317,7 +318,7 @@ def render_kernel_shims(calls: List[Call]) -> str:
         lines.append("")
     lines.append("constexpr SyscallHandler GENERATED_SHIMS[] = {")
     for call in calls:
-        lines.append(f"    &sys_{call.name}_shim,")
+        lines.append(f"    &{call.name}_shim,")
     lines.append("};")
     lines.append("static_assert(std::size(GENERATED_SHIMS) == syscall_abi::SYSCALL_COUNT);")
     lines.append("")
@@ -372,7 +373,7 @@ def main() -> int:
     parser.add_argument("--vdso-stubs", type=pathlib.Path,
                         help="write the vDSO's stub instantiations here")
     parser.add_argument("--kernel-decls", type=pathlib.Path,
-                        help="write the kernel's sys_* declarations here")
+                        help="write the kernel's handler declarations here")
     parser.add_argument("--kernel-shims", type=pathlib.Path,
                         help="write the kernel's frame-unpacking shims here")
     parser.add_argument("--vdso-decls", type=pathlib.Path,

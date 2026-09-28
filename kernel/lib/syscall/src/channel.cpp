@@ -9,16 +9,16 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/status.hpp>
 
-namespace ours {
+namespace ours::syscall {
 using object::ChannelDispatcher;
 using object::Handle;
 using object::KernelHandle;
 using object::MessagePacket;
 using object::ProcessDispatcher;
 
-auto sys_channel_create(ChannelCreateOptions const options,
-                        user_copy::UserOutPtr<HandleValue> const out0,
-                        user_copy::UserOutPtr<HandleValue> const out1) -> Status {
+auto channel_create(ChannelCreateOptions const options,
+                    user_copy::UserOutPtr<HandleValue> const out0,
+                    user_copy::UserOutPtr<HandleValue> const out1) -> Status {
     if (options != ChannelCreateOptions::None) {
         return Status::InvArgs;
     }
@@ -59,9 +59,9 @@ auto sys_channel_create(ChannelCreateOptions const options,
     return Status::Ok;
 }
 
-auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const options,
-                       user_copy::UserInPtr<u8 const> const bytes, u32 const num_bytes,
-                       user_copy::UserInPtr<HandleValue const> const handles, u32 const num_handles)
+auto channel_write(HandleValue const channel, ChannelWriteOptions const options,
+                   user_copy::UserInPtr<u8 const> const bytes, u32 const num_bytes,
+                   user_copy::UserInPtr<HandleValue const> const handles, u32 const num_handles)
     -> Status {
     // The handle values first, out of user memory and outside every lock:
     // every handle they name leaves the caller's table below whatever this
@@ -117,11 +117,11 @@ auto sys_channel_write(HandleValue const channel, ChannelWriteOptions const opti
     return dispatcher->write(ustl::move(message));
 }
 
-auto sys_channel_read(HandleValue const channel, ChannelReadOptions const options,
-                      user_copy::UserOutPtr<u8> const bytes,
-                      user_copy::UserOutPtr<HandleValue> const handles, u32 const num_bytes,
-                      u32 const num_handles, user_copy::UserOutPtr<u32> const actual_bytes,
-                      user_copy::UserOutPtr<u32> const actual_handles) -> Status {
+auto channel_read(HandleValue const channel, ChannelReadOptions const options,
+                  user_copy::UserOutPtr<u8> const bytes,
+                  user_copy::UserOutPtr<HandleValue> const handles, u32 const num_bytes,
+                  u32 const num_handles, user_copy::UserOutPtr<u32> const actual_bytes,
+                  user_copy::UserOutPtr<u32> const actual_handles) -> Status {
     // The handle first, then the arguments: BadHandle > BadType >
     // AccessDenied > InvArgs (design 4.5). A program that passes a closed
     // handle and a bad option learns about the handle, which is the mistake
@@ -163,7 +163,7 @@ auto sys_channel_read(HandleValue const channel, ChannelReadOptions const option
 
     // After the channel's lock was released inside read(). A fault here loses
     // the message, which has already left the queue -- Zircon's
-    // sys_channel_read() makes the same trade: the alternative is copying to
+    // channel_read() makes the same trade: the alternative is copying to
     // user memory with a channel lock held.
     if (auto const copied = message->copy_data_to(bytes); copied != Status::Ok) {
         return copied;
@@ -194,4 +194,4 @@ auto sys_channel_read(HandleValue const channel, ChannelReadOptions const option
     }
     return Status::Ok;
 }
-} // namespace ours
+} // namespace ours::syscall

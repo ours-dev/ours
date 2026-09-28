@@ -179,7 +179,7 @@ auto Loader::map(ImageVmo &image, mm::VmPlacement const where, mm::MmuFlags cons
 
     // Through the dispatcher, not through the VmArea it stands for: a
     // VmArea knows what a mapping is allowed to be, but cannot know who is
-    // asking, and every future sys_vmar_map has to answer that. Rights
+    // asking, and every future syscall::vmar_map has to answer that. Rights
     // live on the handle, so the entry point has to be on the object that
     // a handle names.
     auto mapping =

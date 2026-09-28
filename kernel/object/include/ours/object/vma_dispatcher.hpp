@@ -34,7 +34,7 @@ using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Sign
 /// The reason this type has to exist at all, rather than letting bring-up code
 /// map through mm::VmArea directly, is that rights live on handles. A VmArea
 /// knows what a mapping is *allowed* to be (its VmaFlags ceiling); it does not
-/// know who is asking. Every future sys_vmar_map has to answer "may this
+/// know who is asking. Every future syscall::vmar_map has to answer "may this
 /// caller map here", and the only object in the tree that can answer it is the
 /// handle that got the caller here -- which means the mapping entry point has
 /// to be on the dispatcher, not on the VmArea.

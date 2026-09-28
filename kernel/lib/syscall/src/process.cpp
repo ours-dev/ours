@@ -12,7 +12,7 @@
 #include <ours/syscall.hpp>
 #include <userabi/userboot.hpp>
 
-namespace ours {
+namespace ours::syscall {
 /// The calling process ends. All of it happens in the object layer
 /// (ProcessDispatcher::exit()); this handler exists to be the entry, and to
 /// keep the system-call layer from naming the task layer that finally ends
@@ -25,7 +25,7 @@ namespace ours {
 ///
 /// Zircon counterpart: sys_process_exit(), which calls
 /// ProcessDispatcher::ExitCurrent(retcode).
-auto sys_process_exit(i64 const retcode) -> void {
+auto process_exit(i64 const retcode) -> void {
     object::ProcessDispatcher::current()->exit(retcode);
 }
 
@@ -40,8 +40,8 @@ auto sys_process_exit(i64 const retcode) -> void {
 /// program supplied; the loading code is exactly the code that starts the
 /// first program, not a second path; and it goes, with the GN edge that
 /// allows it, when the loader lands (docs/repairs/260923/syscall.md).
-auto sys_process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char const> const name,
-                            usize const name_size, HandleValue const bootstrap) -> Status {
+auto process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char const> const name,
+                        usize const name_size, HandleValue const bootstrap) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
 
     // The job is resolved before the bootstrap handle leaves the table, so
@@ -90,4 +90,4 @@ auto sys_process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char con
 
     return userabi::launch(ustl::move(parent), view, ustl::move(handed));
 }
-} // namespace ours
+} // namespace ours::syscall

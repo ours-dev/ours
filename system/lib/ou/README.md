@@ -8,7 +8,7 @@
 程序         ou::debug_write("...")          ← 具名、有类型、知道 ABI 的限制
 ou           ours_debug_write(ptr, len)      ← 原始 ABI，<ours/vdso.hpp> 声明
 vDSO         mov $n, %eax; syscall           ← 唯一允许陷入内核的代码
-内核         sys_debug_write(ptr, len)
+内核         syscall::debug_write(ptr, len)
 ```
 
 程序与内核之间只有一处知道「原始 ABI 长什么样」：本库。每个入口都在这里有名字，哪怕它

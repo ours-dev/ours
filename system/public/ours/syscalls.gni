@@ -13,7 +13,7 @@
 # from the entry here now fails to link (design 4.7).
 #
 # Adding a call is three things by hand: an entry here, the body of
-# sys_<name>() in //kernel/lib/syscall, and its ou:: wrapper.
+# syscall::<name>() in //kernel/lib/syscall, and its ou:: wrapper.
 #
 # The position of an entry is its call number. The numbers are private to the
 # kernel and the vDSO -- a program names a call by its vDSO symbol, never by a
@@ -23,10 +23,10 @@
 # Each entry:
 #
 #   name    The call, without the ours_ prefix. The vDSO exports ours_<name>,
-#           the kernel defines sys_<name>.
+#           the kernel defines syscall::<name>.
 #   brief   One line.
 #   doc     More lines, as a list of strings. Written for the program that
-#           calls it; what the kernel does inside belongs with sys_<name>.
+#           calls it; what the kernel does inside belongs with syscall::<name>.
 #   args    In order, at most 8, and not exactly 7 (the vDSO has no 7-argument
 #           stub yet; the first call to need one is vmar_map, design P1-C).
 #           Each is a scope:

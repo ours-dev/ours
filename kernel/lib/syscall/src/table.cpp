@@ -1,13 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
-#include <syscall_abi/numbers.hpp>
-
-#include "argument.hpp"
 
 #include <array>
 #include <iterator>
 
+#include "argument.hpp"
 #include <arch/interrupt.hpp>
 #include <arch/nospec.hpp>
 #include <arch/syscall.hpp>
@@ -19,6 +17,7 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
+#include <syscall_abi/numbers.hpp>
 
 namespace ours {
 namespace {
@@ -70,8 +69,7 @@ namespace {
         if (process == nullptr) {
             return false;
         }
-        return process->vdso_contains(frame->ip - arch::SYSCALL_INSN_SIZE,
-                                      arch::SYSCALL_INSN_SIZE);
+        return process->vdso_contains(frame->ip - arch::SYSCALL_INSN_SIZE, arch::SYSCALL_INSN_SIZE);
     }
 
     /// The answer to a trap that did not come through the vDSO: the process
@@ -86,7 +84,7 @@ namespace {
     ///
     /// Zircon counterpart: sys_invalid_syscall(), which raises
     /// ZX_EXCP_POLICY_CODE_BAD_SYSCALL through SignalPolicyException().
-    auto sys_not_from_vdso(arch::SyscallFrame *const frame) -> void {
+    auto not_from_vdso(arch::SyscallFrame *const frame) -> void {
         log::warn("syscall: refused a trap from {:#x}, which is outside the vDSO", frame->ip);
 
         // Only a user thread executes `syscall`; a kernel thread calls the
@@ -124,7 +122,7 @@ namespace {
     /// about one of its *arguments*, and a caller has to be able to tell "you
     /// asked for a call that does not exist" from that. Zircon answers
     /// ZX_ERR_BAD_SYSCALL here.
-    auto sys_bad_syscall_number(arch::SyscallFrame *const frame) -> void {
+    auto bad_syscall_number(arch::SyscallFrame *const frame) -> void {
         frame->ax = static_cast<usize>(Status::BadSyscall);
     }
 
@@ -149,7 +147,7 @@ namespace {
 
     constexpr auto make_syscall_table() {
         std::array<SyscallHandler, TABLE_SIZE> table{};
-        table[syscall_abi::SYSCALL_COUNT] = &sys_bad_syscall_number;
+        table[syscall_abi::SYSCALL_COUNT] = &bad_syscall_number;
 
         // Index i of GENERATED_SHIMS is call number i: both are generated
         // from the position of the entry in syscalls.gni, which is the only
@@ -208,7 +206,7 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
     arch::local_irq_enable();
 
     if (!trapped_from_vdso(frame)) [[unlikely]] {
-        sys_not_from_vdso(frame);
+        not_from_vdso(frame);
     } else {
         // Clamped, not branched around: SYSCALL_TABLE has one entry more than
         // there are calls, and that last slot answers Status::BadSyscall, so a

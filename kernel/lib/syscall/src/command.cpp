@@ -8,7 +8,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
-namespace ours {
+namespace ours::syscall {
 namespace {
     /// The registry's bounds, as the linker computes them.
     ///
@@ -78,7 +78,7 @@ namespace {
     };
 } // namespace
 
-auto sys_command_list(user_copy::UserOutPtr<char> const buffer, usize const length) -> Status {
+auto command_list(user_copy::UserOutPtr<char> const buffer, usize const length) -> Status {
     if (buffer.is_null() || length == 0) {
         return Status::InvArgs;
     }
@@ -104,4 +104,4 @@ auto sys_command_list(user_copy::UserOutPtr<char> const buffer, usize const leng
     }
     return writer.finish();
 }
-} // namespace ours
+} // namespace ours::syscall

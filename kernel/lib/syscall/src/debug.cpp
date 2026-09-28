@@ -7,8 +7,8 @@
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
 
-namespace ours {
-auto sys_debug_write(user_copy::UserInPtr<char const> const buffer, usize const length) -> Status {
+namespace ours::syscall {
+auto debug_write(user_copy::UserInPtr<char const> const buffer, usize const length) -> Status {
     if (length == 0) {
         return Status::Ok;
     }
@@ -55,4 +55,4 @@ auto sys_debug_write(user_copy::UserInPtr<char const> const buffer, usize const 
     log::get_global_logger().write(text, length);
     return Status::Ok;
 }
-} // namespace ours
+} // namespace ours::syscall

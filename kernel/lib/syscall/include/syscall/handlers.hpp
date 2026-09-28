@@ -9,8 +9,9 @@
 #include <ours/types.hpp>
 #include <user_copy/user_copy.hpp>
 
-namespace ours {
-/// The typed system-call entry points.
+namespace ours::syscall {
+/// The typed system-call entry points: syscall::<name> for the call
+/// ours_<name>.
 ///
 /// These take arguments and return a Status like ordinary functions. Nothing
 /// about a register frame reaches them: a generated shim per call
@@ -19,7 +20,9 @@ namespace ours {
 /// the dispatch layer, and keeping it separate is what lets these be read,
 /// reviewed and eventually tested as plain functions -- the same split Zircon
 /// draws between its generated syscall wrappers and the sys_* functions they
-/// call.
+/// call. Zircon needs the prefix because its handlers sit in the global
+/// namespace beside everything else; here the namespace says it, so the name
+/// is the call's own.
 ///
 /// A pointer parameter here is a user_copy::UserPtr, not a C++ pointer. The
 /// type is the rule: it cannot be dereferenced, only copied through, and every
@@ -33,6 +36,6 @@ namespace ours {
 // calls, and the generated shim's call to the declared one fails to link.
 #include <syscall_abi/kernel_decls.inc>
 
-} // namespace ours
+} // namespace ours::syscall
 
 #endif // SYSCALL_HANDLERS_HPP

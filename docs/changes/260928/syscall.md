@@ -205,3 +205,53 @@ Zircon `sys_vmo_replace_as_executable()`（`zircon/kernel/lib/syscalls/vmo.rs`�
 - 没测“换出的 VMO 能按 X 映射”：这要等 `vmar_map` 支持 vmo_offset 和权限上限（K21），验证放在那里。
 - 没测 OutOfRange：全系统只能铸出 `[VMEX, VMEX+1)` 这一个 System 资源，构造不出不覆盖该槽位的 System 资源。
 - 没测新句柄超出配额时回 NoResource：这条路径和 `handle_duplicate` 一样，由 `Handle::make()` 统一负责，已有覆盖。
+
+## 系统调用处理函数改名：`ours::sys_<name>` → `ours::syscall::<name>`（2026-09-28）
+
+**文件**
+- `build/abi/gen_syscalls.py`：生成的声明改为 `auto <name>(...)`；shim 改名为 `<name>_shim`，调用 `syscall::<name>`
+- `kernel/lib/syscall/include/syscall/handlers.hpp`：声明所在的命名空间从 `ours` 改为 `ours::syscall`
+- `kernel/lib/syscall/src/{channel,command,debug,handle,object,process,task,vmo}.cpp`：定义挪进 `ours::syscall`，去掉 `sys_` 前缀；
+  `task.cpp` 里 4 个 thread 占位函数一并改
+- `kernel/lib/syscall/src/table.cpp`：内部的 `sys_not_from_vdso`、`sys_bad_syscall_number` 同样去掉前缀
+- 注释与文档里指 ours 自己处理函数的地方：`loader.cpp`、`vma_dispatcher.hpp`、`kernel/top/BUILD.gn`、
+  `kernel/lib/syscall/BUILD.gn`、`system/public/ours/syscall.hpp`、`syscalls.gni`、`system/lib/ou/README.md`、
+  `docs/design/260923/userspace-interface.md`
+- `.agents/skills/ours-kernel-design/references/layering.md`：记下命名规则
+
+**症状**
+处理函数写成 `ours::sys_vmo_create`：前缀和命名空间说的是同一件事，却一个都省不掉。
+而且同一个名字在不同地方写法不同：用户态是 `ours_vmo_create`，ou 里是 `ou::vmo_create`，
+内核里偏偏多一个 `sys_`。
+
+**原因**
+照搬了 Zircon 的写法。Zircon 的 `sys_*` 放在全局命名空间里，和内核其余所有函数挤在一起，只能靠前缀区分。
+ours 的处理函数本来就有自己的库（`kernel/lib/syscall`），给它一个命名空间，前缀就多余了。
+
+**改法**
+
+```cpp
+// 之前
+namespace ours { auto sys_vmo_create(u64 size, VmoOptions options, UserOutPtr<HandleValue> out) -> Status; }
+auto sys_vmo_create_shim(arch::SyscallFrame *frame) -> void { ... sys_vmo_create(...); }
+
+// 之后
+namespace ours::syscall { auto vmo_create(u64 size, VmoOptions options, UserOutPtr<HandleValue> out) -> Status; }
+auto vmo_create_shim(arch::SyscallFrame *frame) -> void { ... syscall::vmo_create(...); }
+```
+
+- shim 仍留在 `table.cpp` 的 `ours::{匿名}` 里：它是分发层，不是处理函数，所以只写 `<name>_shim`，
+  调用时写全 `syscall::<name>`，一眼能看出跨过了哪一层。
+- 注释里提到 Zircon 函数的地方（`Zircon sys_vmo_create()` 这类）保留原名，那是 Zircon 的名字，照原样写才能对照查找。
+- `docs/changes/` 下的旧记录只增不改，里面的 `sys_*` 是当时的名字，不动。
+
+**参照**
+Zircon 的 `sys_*`（`zircon/kernel/lib/syscalls/*.rs`）和它们的生成 wrapper，即这里去掉前缀之前照搬的对象。
+
+**验证**
+- `kernel.dev.obi` 和 `kernel.dev.dbg_1.obi` 均构建通过。生成的声明和手写定义只要有一处名字对不上，shim 就会链接失败，
+  所以构建通过本身就说明每个处理函数都改对了。
+- `boot_check.py` 两个镜像都 PASS（dbg 12 passed；rel 11 passed、4 skipped）。
+
+**故意没做**
+- `.agents/tasks/` 下的旧计划文档没改，它们记录的是当时的状态。

@@ -83,7 +83,7 @@ P0 期间有三条不变量：
 |---|---|---|---|
 | Job | stub：`job_dispatcher.hpp:13` 的默认 rights 是 `Rights::None`，类里只有 `root_job()` | 见 4.2 | TERMINATED、JOB_NO_JOBS、JOB_NO_PROCESSES |
 | Process | stub：`process_dispatcher.cpp:39-85` 的 `create()` 能用；`:87-101` 的 `attach_thread` 在锁外执行，`detach_thread` 是 Unimplemented；State 从未迁移过 | 见 4.2 | TERMINATED |
-| Thread | stub：`thread_dispatcher.cpp` 的 spawn/start 能进 ring 3；State 只有 Running；`on_*` 是空的，`on_exit` 不清 `m_kernel_thread`；`kernel/lib/syscall/src/task.cpp` 的 `sys_thread_*` 全是 Unimplemented，也没进表 | 见 4.2 | TERMINATED、THREAD_RUNNING、THREAD_SUSPENDED |
+| Thread | stub：`thread_dispatcher.cpp` 的 spawn/start 能进 ring 3；State 只有 Running；`on_*` 是空的，`on_exit` 不清 `m_kernel_thread`；`kernel/lib/syscall/src/task.cpp` 的 `syscall::thread_*` 全是 Unimplemented，也没进表 | 见 4.2 | TERMINATED、THREAD_RUNNING、THREAD_SUSPENDED |
 
 Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-136` 对用户态故障一律 panic）。
 
@@ -418,11 +418,11 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
     1. 私有调用号头；
     2. vDSO 桩汇编；
     3. `<ours/vdso.hpp>` 包含的 extern "C" 声明；
-    4. 内核侧带类型的 `sys_*` 声明。处理函数的定义与描述不一致时会链接失败，今天四处手工同步之间缺的编译期关联由此补上；
+    4. 内核侧带类型的 `syscall::<name>` 声明。处理函数的定义与描述不一致时会链接失败，今天四处手工同步之间缺的编译期关联由此补上；
     5. 帧拆解 shim 与分发表；
     6. `libours.ifs` 加 ABI 比对，`user_executable` 改为链接它；
     7. 链接后读 vDSO 的 `.symtab`，生成 `VDSO_SYSRET_OFFSET[]` 和 build-id。
-  - 此后新增一个能力，人手只写三样：描述里的一条、`sys_<name>` 函数体、ou 入口。
+  - 此后新增一个能力，人手只写三样：描述里的一条、`syscall::<name>` 函数体、ou 入口。
 - **精确的 vDSO 入口校验**（P1 后期，随生成器一起做）：判断 `ip - vdso_base == VDSO_SYSRET_OFFSET[min(ax, COUNT)]`。一次比较同时挡住越界调用号、跳进 vDSO 中间陷入、借 A 的 syscall 指令发 B 号调用这三种情况。在它落地之前，vDSO 的“内部调用”不构成安全边界，所以内核按公开 ABI 校验所有参数，生成器也暂不提供 vdso_only 属性。
 - **lib/syscall 的依赖白名单**：`//kernel/object`、`//kernel/lib/user_copy`、arch 的 syscall 帧头文件。时钟、cprng、系统信息、日志这类无状态服务，经 kernel/object 里的薄门面访问（D15）。P0 的 spawn_boot 是唯一登记在案的例外。
 - **这条白名单暂时无法机械检查**：`//kernel/object:headers` 的 public_deps 里有 `//kernel/mm:headers`，`process_dispatcher.hpp` 又 include 了 task 的头文件。要等对象层的公开头不再暴露 mm/task 类型之后才能检查。
@@ -457,7 +457,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 | 3d | `Instant` 改为 i64，ABI 常量 `INFINITE_TIME` 改为 Instant 类型（chrono 版挪进内核 `time::`），加 `HANDLE_INVALID`、`CHANNEL_MAX_*`，`HandleValue` 改名（D4），改掉 `syscall.hpp` 的过时注释 | 构建并启动 |
 | 4a | Dispatcher 加 `ObjectType` 字段和 `downcast`；修 attach/detach 的 canary 校验；`KernelHandle` 析构调 `on_zero_handles`，修 `reset()`（`docs/repairs/260906/object.md #1`） | 构建并启动 |
 | 4b | 定义 `Handle::make/dup`；全局 arena（2^12 槽）；HandleTable（Mutex、五道关、random=0）；`ProcessDispatcher::handle_table()/current()`、`ThreadDispatcher::current()`；`table.cpp` 改经 `current()` 取当前进程 | 启动日志不变 |
-| 4c | 给 `ProcessDispatcher` 加 `name()` 访问器；`sys_debug_write` 加“<进程名>: ”前缀 | shell 输出的每一行变成 `shell: …` |
+| 4c | 给 `ProcessDispatcher` 加 `name()` 访问器；`syscall::debug_write` 加“<进程名>: ”前缀 | shell 输出的每一行变成 `shell: …` |
 | 5a | userabi 把根 job 句柄装进首个进程的表，rdi 放句柄值，rsi 放 vDSO 基址 | 内核日志出现 `userabi: root job -> shell as handle 0x…`；默认的 userboot 程序和 shell 都照旧运行 |
 | 5b | `ours_handle_close` 全套（处理函数、桩、`vdso.hpp` 声明、`ou::handle_close`）；shell 的 `_start` 接收 bootstrap 参数，bootstrap 不是 channel 时做两次 close | dev.dbg_1 日志出现 `shell: close(bootstrap) = Ok` 和 `shell: close again = BadHandle` |
 | 6a | `sync::Event` 构造函数；`Dispatcher::update_state`、电平检查、detach、`cancel(handle)`；`object::wait_one` | 构建并启动（功能在第 7 步由用户态验证，不为此加内核自测代码） |

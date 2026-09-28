@@ -56,7 +56,7 @@ inline constexpr auto CHANNEL_MAX_MSG_HANDLES = u32{64};
 /// the arena does.
 inline constexpr auto HANDLE_MAX_PER_PROCESS = u32{1024};
 
-/// The most bytes one sys_debug_write() will copy.
+/// The most bytes one debug_write call will copy.
 ///
 /// A ceiling on one call, so that a program cannot hold a CPU inside the
 /// kernel for as long as it likes by asking for a gigabyte of output. The

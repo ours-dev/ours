@@ -5,9 +5,9 @@
 #include <ours/object/wait.hpp>
 #include <ours/status.hpp>
 
-namespace ours {
-auto sys_object_wait_one(HandleValue const handle, Signals const signals, Instant const deadline,
-                         user_copy::UserOutPtr<Signals> const observed) -> Status {
+namespace ours::syscall {
+auto object_wait_one(HandleValue const handle, Signals const signals, Instant const deadline,
+                     user_copy::UserOutPtr<Signals> const observed) -> Status {
     Signals current = Signals::None;
     auto const status = object::wait_one(handle, signals, deadline, &current);
 
@@ -24,4 +24,4 @@ auto sys_object_wait_one(HandleValue const handle, Signals const signals, Instan
     }
     return status;
 }
-} // namespace ours
+} // namespace ours::syscall

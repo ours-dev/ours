@@ -41,7 +41,7 @@ source_set("top") {
   # What deliberately stays is the registry itself. gktl is not the console --
   # it also carries the init hooks and counters every kernel needs -- and a
   # command that belongs to a subsystem's own file (mm's `dump-frame`) keeps
-  # its record in .gktl.commands, where sys_command_list still finds it. That
+  # its record in .gktl.commands, where syscall::command_list still finds it. That
   # is the right answer rather than a leak: the syscall lists the registry and
   # never runs it, and with the shell gone nothing calls gktl::run_command(),
   # so --gc-sections drops the dispatcher and no command is reachable at all.

@@ -38,6 +38,10 @@
   `//system/lib/ou` (even if it only forwards). Ring-3 code calls `ou::...`,
   never raw `ours_*` symbols. Limits callers must respect (such as
   `MAX_DEBUG_WRITE`) live in `system/public/ours/syscall.hpp`.
+- The kernel handler for `ours_<name>` is `ours::syscall::<name>`, with no
+  `sys_` prefix: Zircon needs `sys_` because its handlers share the global
+  namespace, and here the namespace already says it (the user's call,
+  2026-09-28). Internal handlers in `table.cpp` follow suit.
 
 ## system/lib versus kernel/lib/k*
 
