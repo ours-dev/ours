@@ -20,6 +20,7 @@ source_set("commands") {
     "prof.cpp",
     "user_copy_test.cpp",
     "vma_seal_test.cpp",
+    "vmo_snapshot_test.cpp",
   ]
   deps = [
     "//kernel/lib/gktl",

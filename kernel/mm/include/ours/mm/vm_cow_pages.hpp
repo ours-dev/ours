@@ -24,6 +24,49 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     static auto with_source(ustl::Arc<PageSource> src, Gaf gaf, usize size,
                             ustl::Arc<VmCowPages> *out) -> Status;
 
+    /// A node of |size| bytes hanging under |parent|, in the parent's tree.
+    ///
+    /// The child's byte 0 is the parent's byte |parent_offset|, and it sees the
+    /// parent only in its first |parent_limit| bytes: what lies past that
+    /// reads as zero however large the child is, which is how a segment's
+    /// `.bss`, or the tail of the last page of its file, comes out zero. The
+    /// limit given is clamped, as Zircon's ClampedLimit() does, to what the
+    /// child can hold and to what the parent has past |parent_offset|, so a
+    /// caller may pass a length it has not checked. All three must be page
+    /// aligned.
+    ///
+    /// |hidden| makes a node that holds pages for its children and is never a
+    /// VMO of its own; see is_hidden().
+    ///
+    /// The child keeps |parent| alive and takes over its lock (lock()), which
+    /// is what lets a walk from the child up through its ancestors run under
+    /// one mutex. Nothing links the child into the parent yet: the parent does
+    /// not know its children, because nothing walks down.
+    static auto create_child(ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
+                             usize size, bool hidden, ustl::Arc<VmCowPages> *out) -> Status;
+
+    /// Whether this is a node that only holds pages its children share.
+    ///
+    /// A hidden node is never written: what it holds is content that at least
+    /// two nodes below it can see, and a write would be seen by all of them.
+    /// Its pages leave it by being copied or moved out into a node that
+    /// writes, never by a write to it, so an owned page is refused here and its
+    /// pages are never reported writable. Zircon: VmCowPages::is_hidden().
+    ///
+    /// Fixed when the node is made, so it needs no lock.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto is_hidden() const -> bool {
+        return m_hidden;
+    }
+
+    /// How many pages this node itself holds, not counting any it can see
+    /// through a parent.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto nr_pages_locked() const -> usize {
+        return m_pages.size();
+    }
+
     TA_REQUIRES(m_lock)
     auto commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status;
 
@@ -95,10 +138,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     friend class ObjectCache::Instance;
 
     /// |hierarchy| is the tree this node belongs to: a new one for a node with
-    /// no relatives, the parent's for one that will hang under it. It is a
+    /// no relatives, the parent's for one that hangs under it. It is a
     /// parameter, not made here, because making one can fail and a constructor
-    /// cannot say so.
-    VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy);
+    /// cannot say so. |parent| is empty for a node that hangs under nothing;
+    /// create_child() clamps |parent_limit| before it gets here.
+    VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
+               ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit, bool hidden);
 
     ~VmCowPages();
 
@@ -110,6 +155,20 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     VmPageMap m_pages;
     ustl::Arc<PageSource> m_page_source;
     usize m_size;
+
+    /// The node this one hangs under, or empty. It is a strong reference, so a
+    /// parent lives as long as any node below it, whichever handle to it the
+    /// user closes first; a parent cannot point back the same way without a
+    /// cycle, which is one more reason it keeps no list of children.
+    ustl::Arc<VmCowPages> m_parent;
+    /// Where this node's byte 0 is in the parent, and how many of its bytes
+    /// from there on the parent's content covers: this node sees the parent
+    /// only in [0, m_parent_limit). Past that it reads as zero. Zircon:
+    /// parent_offset_ and parent_limit_. All fixed at creation, so they are
+    /// read without the lock.
+    u64 const m_parent_offset;
+    u64 const m_parent_limit;
+    bool const m_hidden;
 
     /// Declared before m_lock, which is initialised from it, and destroyed
     /// after it: the reference is what keeps the mutex alive.
@@ -186,6 +245,18 @@ class VmCowPages::Cursor {
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
 
   private:
+    /// The page an ancestor of the target holds for the offset the cursor sits
+    /// on, or nullptr when the walk up reaches the top, or a node's limit,
+    /// without finding one; what lies past nothing reads as zero. The nearest
+    /// ancestor that has a page wins, and the walk never looks at the target's
+    /// own store: the callers have already done that.
+    ///
+    /// Zircon: VmCowPages::FindPageContentLocked(), which loops
+    /// `while (offset < cur.parent_limit_)` in the same way, adding the
+    /// parent offset at each hop.
+    [[nodiscard]]
+    auto find_ancestor_page() const -> VmPage *;
+
     auto convert_reference_to_page(AnonymousPageRequest *request) -> Status;
 
     [[nodiscard]]

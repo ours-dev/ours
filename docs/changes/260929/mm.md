@@ -183,3 +183,69 @@ None. The user chose one mutex per tree (decision 3) without writing the invaria
 - Why can the tree's mutex not be a member of the first node?
 - What does a node hold to keep the mutex alive, and what would go wrong if it held a plain reference?
 - Why does `VmObject::m_lock` need no change, given the mutex moved?
+
+## Title: A VmCowPages can hang under another, and a read walks up to find its page (2026-09-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — `m_parent`, `m_parent_offset`, `m_parent_limit`, `m_hidden`; `VmCowPages::create_child()`, `is_hidden()`, `nr_pages_locked()`; `Cursor::find_ancestor_page()`.
+- `kernel/mm/vm_cow_pages.cpp` — the constructor takes the parent link; `create_child()` clamps the limit and adopts the parent's `HierarchyState`; `find_ancestor_page()` is the walk; `require_read_page()` answers from above for a node with a parent or a hidden one; `require_owned_page()` refuses a hidden node and, for now, a node with a parent that has no page of its own.
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` — `size()`, which only the test uses.
+- `kernel/mm/vm_mapping.cpp` — `page_fault()` asserts that the page it maps is writable.
+- `kernel/commands/vmo_snapshot_test.cpp`, `kernel/commands/BUILD.gn` — the kernel command `vmosnapshot.test`, 35 checks.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — the order of work marks this step done.
+
+**Symptom**
+None. Latent, cannot be triggered today: `create_child()` has no caller outside the test, so no node the rest of the kernel sees has a parent. It is the first half of the read path of a copy-on-write child.
+
+**Cause**
+`VmCowPages` had no parent, so its store could only answer "this node has the page" or "nobody has it", and a read of a hole was answered by committing a zeroed page. A child that shares its parent's unwritten pages needs a third answer, "an ancestor has it, and it is not yours to write", and it needs to say that without allocating anything in the child: a read that allocated would copy on every read and defeat the point.
+
+Two rules decide the shape of the walk, and both come from where the coordinates live. The parent offset and the limit belong to the node whose parent it is, so an offset is compared with that node's limit and only then moved into the parent's coordinates; comparing after the move, or with the parent's limit, reads past the end of what the child is allowed to see. And the walk never looks at the target's own store, because the callers have looked there already; looking again would hide the difference between "the node has it" (writable) and "an ancestor has it" (on loan).
+
+**Change**
+The walk:
+
+```cpp
+while (node->m_parent && offset < node->m_parent_limit) {
+    offset += node->m_parent_offset;
+    node = node->m_parent.as_ptr();
+    if (auto *const page = node->m_pages.get_page(PgOff(offset >> PAGE_SHIFT))) {
+        return page;
+    }
+}
+return nullptr;
+```
+
+A read of a node with a parent, or a hidden one, answers the ancestor's page with `writable = false`, or `ZERO_PAGE` with `writable = false` when the walk finds none, which includes an offset past a limit. A node with no relatives still commits a zeroed page of its own on a read, as before, although `ZERO_PAGE` and the writable bit now exist: the fault path does not yet map by `writable`, and handing the shared page to a caller that maps every page as writable would let a write through. `page_fault()` now asserts `page->writable`, so that day is loud, in the debug image, and not silent.
+
+A hidden node refuses a writer (`BadState`) whether or not the slot is full, and reports its own pages as not writable. A write to a node with a parent and no page of its own answers `Unimplemented`, and does not allocate a zeroed page, because that would discard what the parent holds; the copy is the next step.
+
+`create_child()` clamps the limit to the child's size and to what the parent has past the offset (Zircon `ClampedLimit()`), so a caller may pass a length it has not checked, and refuses an argument that is not page aligned.
+
+**Reference**
+Zircon `VmCowPages::FindPageContentLocked()` (`vm_cow_pages.cc:2958`), which loops `while (offset < cur.parent_limit_)` and adds `parent_offset_` at each hop; `LookupCursor::RequireReadPage()`, which returns an ancestor's page with `writable = false` and `vm_get_zero_page()` past the limit; `ClampedLimit()` (`:113`); `VmCowPages::is_hidden()`.
+
+**Verification**
+- `scripts/format_cpp.py --check`: clean. `clang-tidy -p out/vmo-snapshot` on `vm_cow_pages.cpp` and the test: nothing on the changed lines; the one warning is the existing destructor without `override`.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts as before. dbg: 18 passed, 0 failed, 0 error lines. rel: 13 passed, 9 skipped, 0 failed, 0 error lines.
+- `boot_check.py` does not run kernel shell commands, so `vmosnapshot.test` was driven over COM1 with a script that waits for `--- end ---` and types the command: 35 checks ok on both images. The older commands still pass: `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 and `vmaseal.test` 13 on rel.
+- The test can fail. With the line `offset += node->m_parent_offset;` commented out, the debug image failed exactly four checks (the shifted child's page 0 and page 1, the clamped child, and the chain through the shifted child), 4 of 35; the line was restored and all 35 pass again.
+- The test also checks `ZERO_PAGE` for all zeros, which is the first check of the fix in the earlier entry of this file.
+- Not exercised: a node's own page winning over an ancestor's (a node with a parent cannot get a page of its own until a write copies one), any write, and concurrency. The test is single-threaded.
+
+**Deliberately not done**
+- No write. A write to a node with a parent answers `Unimplemented`; the fork-or-migrate write and the share count are the next step.
+- The parent does not know its children. Nothing walks down yet; the list arrives with the clone and the merge.
+- The fault path does not map by `writable`. No node with a parent is behind a mapping, and the assertion says so.
+- No recursion guard on destruction: a node holds its parent, so dropping the last reference to a long chain releases it recursively. Chains are one or two deep here; Zircon walks up iteratively.
+
+**How it was found**
+None: a new mechanism, taken from Zircon's lookup and adjusted to this tree's store. The offsets' coordinates were checked by hand against the four cases the test builds (a shifted child, a clamped one, a chain, a chain through a shifted node), and the mutation above showed the test sees them.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- In `find_ancestor_page()`, why is the offset compared with the node's limit before the parent offset is added, and what does a page-3 read of the grandchild do at the middle node?
+- Why does a node with no relatives still commit a zeroed page on a read, when `ZERO_PAGE` exists?
+- Why is a write to a node with a parent refused, rather than answered with a zeroed page like a hole of a plain node?

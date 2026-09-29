@@ -568,10 +568,13 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     }
 
     // |page->writable| is not consulted, and has to be the day it can be false.
-    // An object with no ancestor owns every page it hands out, so it is always
-    // true here; once a read can be answered with a page on loan, that page must
-    // be mapped without Write even in a mapping that allows it, or the first
-    // write would go through to the lender's page instead of faulting.
+    // A read of a node that hangs under another is answered with a page on
+    // loan, or the shared zero page, and that must be mapped without Write even
+    // in a mapping that allows it, or the first write would go through to the
+    // lender's page instead of faulting. No such node is behind a mapping yet,
+    // so this asserts rather than handles, and stops the day one is.
+    DEBUG_ASSERT(page->writable, "the fault path does not yet map a page on loan read-only");
+
     //
     // ErrorIfExisting states the expectation rather than papering over its
     // failure: the query above established that the entry is absent, so

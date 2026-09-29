@@ -62,6 +62,14 @@ class VmPageMap {
         return slot_page(slot.value()->second);
     }
 
+    /// How many pages the map holds, of either tag. What a test asks to learn
+    /// that a read allocated nothing, or that a write copied exactly one page;
+    /// nothing in the kernel proper needs it.
+    [[nodiscard]]
+    auto size() const -> usize {
+        return m_slots.size();
+    }
+
     /// Install |page| at |index|.
     ///
     /// Refuses to overwrite an occupied slot rather than replacing it: the
