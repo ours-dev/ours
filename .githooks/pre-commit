@@ -1,47 +1,99 @@
 #!/usr/bin/env python3
 
-"""Format staged C and C++ files before committing."""
+"""Check what is about to be committed. Changes nothing.
+
+Two checks, both on what this commit changes and nothing older:
+
+  - C and C++: the changed lines must be clang-format clean
+    (scripts/format_cpp.py --check).
+  - Markdown: the changed lines and new entries of documents must follow the
+    layout standard (scripts/lint_docs.py --changed).
+
+Claude Code already formats and checks on every edit, so this is the gate for
+everything else: another agent, an editor, or an edit made through a shell. It
+only reports. The old version of this hook formatted whole files and re-staged
+them, which reformats legacy code nobody touched and sweeps other sessions'
+unstaged hunks into the commit; fixing is left to the tool that knows which
+lines are yours. A check that cannot run (no clang-format, a worktree that
+predates the scripts) is reported and skipped rather than failing every commit.
+
+Enable it once per worktree:
+
+    git config extensions.worktreeConfig true
+    git config --worktree core.hooksPath .githooks
+
+Per worktree on purpose: worktrees share one .git/config, and a worktree whose
+branch predates this hook must not start running the old one.
+"""
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
-
+from pathlib import Path
 
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc")
+TOOL_FAILED = 2  # format_cpp.py: could not check, as opposed to 1, "checked, would change"
 
 
-def run(*args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(args, check=True, stdout=subprocess.PIPE)
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+
+
+def staged_paths() -> list[str]:
+    out = git("diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+    return [p for p in out.split("\0") if p]
+
+
+def run_tool(root: Path, script: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(root / "scripts" / script), *args], cwd=root, capture_output=True, text=True)
+
+
+def check_format(root: Path, paths: list[str]) -> int:
+    cpp = [p for p in paths if p.endswith(SOURCE_SUFFIXES)]
+    if not cpp:
+        return 0
+    if not (root / "scripts/format_cpp.py").is_file():
+        print("pre-commit: format check skipped: this worktree has no scripts/format_cpp.py", file=sys.stderr)
+        return 0
+    result = run_tool(root, "format_cpp.py", "--check", *cpp)
+    if result.returncode == 0:
+        return 0
+    if result.returncode == TOOL_FAILED:
+        print(f"pre-commit: format check skipped: {result.stderr.strip()}", file=sys.stderr)
+        return 0
+    dirty = [line.split(":", 1)[0] for line in result.stdout.splitlines() if line.endswith(": formatted: would change")]
+    print("pre-commit: these files have changed lines that are not clang-format clean:", file=sys.stderr)
+    for path in dirty:
+        print(f"  {path}", file=sys.stderr)
+    print("Format the lines you changed, then commit again:\n"
+          f"  python3 scripts/format_cpp.py {' '.join(dirty)}", file=sys.stderr)
+    return 1
+
+
+def check_docs(root: Path, paths: list[str]) -> int:
+    docs = [p for p in paths if p.endswith(".md")]
+    if not docs:
+        return 0
+    if not (root / "scripts/lint_docs.py").is_file():
+        print("pre-commit: document check skipped: this worktree has no scripts/lint_docs.py", file=sys.stderr)
+        return 0
+    result = run_tool(root, "lint_docs.py", "--changed", *docs)
+    if result.returncode == 0:
+        return 0
+    print("pre-commit: these documents break the layout standard (the Formatting section of CLAUDE.md):", file=sys.stderr)
+    print(result.stdout.rstrip() or result.stderr.rstrip(), file=sys.stderr)
+    return 1
 
 
 def main() -> int:
-    if shutil.which("clang-format") is None:
-        print(
-            "pre-commit: clang-format is required but was not found in PATH",
-            file=sys.stderr,
-        )
-        return 1
-
-    staged = run("git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
-    formatted = 0
-
-    for raw_path in staged.stdout.split(b"\0"):
-        if not raw_path:
-            continue
-        path = os.fsdecode(raw_path)
-        if not path.endswith(SOURCE_SUFFIXES):
-            continue
-
-        run("clang-format", "-i", "--style=file", "--", path)
-        run("git", "add", "--", path)
-        formatted += 1
-
-    if formatted:
-        print(f"pre-commit: formatted and re-staged {formatted} C/C++ file(s)")
-    return 0
+    root = Path(git("rev-parse", "--show-toplevel").strip())
+    os.chdir(root)
+    paths = staged_paths()
+    # Both run, so one failure does not hide the other.
+    failed = [check_format(root, paths), check_docs(root, paths)]
+    return 1 if any(failed) else 0
 
 
 if __name__ == "__main__":
