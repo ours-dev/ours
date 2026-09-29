@@ -26,7 +26,7 @@ auto require(bool const condition) -> void {
 // the test worth having: hand-built fixtures tend to reproduce whatever
 // alignment assumption the code under test already makes, which is exactly
 // how the same mistake this function works around (see the eftl
-// NoteSectionView finding noted in kernel/lib/eftl) went unnoticed by its
+// NoteSectionView finding noted in system/lib/eftl) went unnoticed by its
 // own test suite.
 constexpr std::array<u8, 36> REAL_BUILD_ID_NOTE = {
     0x04, 0x00, 0x00, 0x00,                                     // n_namesz = 4

@@ -22,7 +22,7 @@ source_set("elfload") {
   ]
   public_deps = [ ":headers" ]
   deps = [
-    "//kernel/lib/eftl",
+    "//system/lib/eftl",
     "//kernel/lib/logz4",
     "//kernel/mm",
     "//kernel/object",
@@ -41,7 +41,7 @@ cpp_interface("headers") {
     "include/elfload/program.hpp",
   ]
   public_deps = [
-    "//kernel/lib/eftl:headers",
+    "//system/lib/eftl:headers",
     "//kernel/object:headers",
     "//system/lib/ustl:headers",
     "//system/public",

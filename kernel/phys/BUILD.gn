@@ -125,7 +125,7 @@ source_set("physload.core") {
   configs += [ "//kernel/phys:phys-module" ]
   deps = [
     "//kernel/lib/ccrt",
-    "//kernel/lib/eftl",
+    "//system/lib/eftl",
     "//kernel/lib/ktl:headers",
     "//kernel/lib/libc:format-glue",
     "//system/lib/logz4",
@@ -158,7 +158,7 @@ source_set("bootshim.core") {
   ]
   deps = [
     "//kernel/lib/ccrt",
-    "//kernel/lib/eftl",
+    "//system/lib/eftl",
     "//kernel/lib/ktl:headers",
     "//kernel/lib/libc:format-glue",
     "//system/lib/logz4",
@@ -212,7 +212,7 @@ physload_module("physboot") {
     "//kernel/arch/$ours_cpu/kernel:headers",
     "//kernel/arch/$ours_cpu/phys:headers",
     "//kernel/lib/arch:headers",
-    "//kernel/lib/eftl:headers",
+    "//system/lib/eftl:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/lib/obi",
 
@@ -236,7 +236,7 @@ cpp_interface("headers") {
     "//kernel/lib/acpi:header",
     "//kernel/lib/arch:headers",
     "//kernel/arch/$ours_cpu/phys:headers",
-    "//kernel/lib/eftl:headers",
+    "//system/lib/eftl:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/mm:headers",
     "//system/lib/ustl:headers",

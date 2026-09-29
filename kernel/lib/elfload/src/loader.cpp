@@ -18,7 +18,7 @@ namespace {
     /// The 64-bit ELF header and program header, as far as loading needs
     /// them.
     ///
-    /// Declared here rather than reached for from //kernel/lib/eftl, which this
+    /// Declared here rather than reached for from //system/lib/eftl, which this
     /// library already depends on for the binding half. Placement asks two
     /// questions of a program header -- where does this segment go, and how much
     /// of it is in the file -- and answering them directly is two dozen lines of

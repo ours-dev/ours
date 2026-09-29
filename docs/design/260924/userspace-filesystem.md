@@ -392,7 +392,7 @@ service shell binary=bin/shell start=eager restart=never uses=/boot:rx,/svc/ours
   - 先复制，再换：`handle_duplicate(bootfs, SameRights, &copy)`，然后 `vmo_replace_as_executable(copy, vmex, &bootfs_x)`。replace 无论成败都消耗原句柄（K19），不先复制，就没有不可执行的那一份留给 GetBackingMemory 的 Slice（U12）。
   - BootFS VMO 本来就不带 Write，换出来的句柄是 Basic\|Read\|Map\|GetProperty\|Execute。做这件事的只有 userboot、init 和 dbg_1 的 shell，三者本身就是 vmex 的持有者，所以这不是权限放大。对照 Fuchsia BootfsSvc 用 `bootfs_vmex` 对 bin/、lib/ 下的文件调 `replace_as_executable`（`src/sys/component_manager/src/bootfs.rs:179-183、294-305`）。
 - **装段方式**（D3）
-  - 按 eftl 的 `make_plan`（`kernel/lib/eftl/include/eftl/elf/load_policy.hpp:185`）逐段规划。只读段和可执行段直接从 `bootfs_x` 映射，偏移为 `entry.data_offset + p_offset`；只有 PF_X 的段按 X 映射。
+  - 按 eftl 的 `make_plan`（`system/lib/eftl/include/eftl/elf/load_policy.hpp:185`）逐段规划。只读段和可执行段直接从 `bootfs_x` 映射，偏移为 `entry.data_offset + p_offset`；只有 PF_X 的段按 X 映射。
   - 可写段用 vmo_create + vmo_write 复制，这些 VMO 永远不带 Execute；Binder 也用 vmo_write 写 GOT。
   - launcher 自己不映射任何东西，所以用不到 vma_unmap。
   - 这改动了接口设计 §3.2 的第 2、4、5 步。

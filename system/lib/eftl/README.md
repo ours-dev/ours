@@ -225,5 +225,5 @@ if (result.is_ok()) {
 GN-based build system:
 
 ```
-gn gen out && ninja -C out kernel/lib/eftl:tests
+gn gen out && ninja -C out system/lib/eftl:tests
 ```
