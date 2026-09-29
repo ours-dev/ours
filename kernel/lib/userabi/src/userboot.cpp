@@ -13,9 +13,9 @@
 #include "resource.hpp"
 #include "user_bootfs.hpp"
 #include <elfload/binder.hpp>
-#include <elfload/loader.hpp>
 #include <elfload/program.hpp>
 #include <heap/new.hpp>
+#include <kelfload/loader.hpp>
 #include <logz4/log.hpp>
 #include <ours/arch/aspace_layout.hpp>
 #include <ours/assert.hpp>
@@ -179,7 +179,7 @@ namespace {
     /// once by lay_out_vdso(), before any user thread exists, and only read
     /// after that.
     struct SharedVdso {
-        elfload::ImageVmo image;
+        kelfload::ImageVmo image;
 
         /// The vDSO's file in the resident package, which the Binder reads the
         /// vDSO's exports from when it binds a program.
@@ -442,7 +442,7 @@ namespace {
     /// (userboot_init) where .data() is taken, and it is provably terminated
     /// there rather than at each use.
     auto load_program(ustl::views::Span<u8 const> bytes, char const *name,
-                      elfload::Loader const &loader, object::VmaDispatcher &root_vma,
+                      kelfload::Loader const &loader, object::VmaDispatcher &root_vma,
                       LoadedImage &out) -> Status {
         // Mapped through the root VMA, which always maps for ring 3 (User).
         // Writable as well as executable for now because the three
@@ -503,7 +503,7 @@ namespace {
     /// address space allowed to enter the kernel, so a program that could
     /// rewrite it could place a trap anywhere inside the one range the kernel
     /// trusts.
-    auto map_vdso(elfload::Loader const &loader, elfload::Image &out) -> Status {
+    auto map_vdso(kelfload::Loader const &loader, elfload::Image &out) -> Status {
         constexpr auto VDSO_PERMS = VmOptions::PermRead | VmOptions::PermExecute;
 
         auto const status = loader.map(shared_vdso.image, VDSO_BASE, VDSO_PERMS, "vdso", out);
@@ -535,8 +535,8 @@ namespace {
             return file.unwrap_err();
         }
 
-        elfload::ImageVmo image;
-        if (auto const status = elfload::Loader::load(file.unwrap(), "vdso", image);
+        kelfload::ImageVmo image;
+        if (auto const status = kelfload::Loader::load(file.unwrap(), "vdso", image);
             Status::Ok != status) {
             return status;
         }
@@ -612,7 +612,7 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // One loader for this process's address space: every image it is built
     // out of goes through the same one, and the object that may map into it is
     // what they have in common.
-    elfload::Loader const loader{*root_vma.dispatcher()};
+    kelfload::Loader const loader{*root_vma.dispatcher()};
 
     LoadedImage loaded;
     status = load_program(image.unwrap(), program.text, loader, *root_vma.dispatcher(), loaded);

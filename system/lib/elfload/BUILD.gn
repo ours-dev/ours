@@ -1,0 +1,44 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The half of loading an ELF that needs no address space: binding one image's
+# imports to another's exports (Binder), and checking that a file is a program
+# this system can start (check_program). It needs a buffer and two ELF files --
+# no kernel object -- so the kernel, which starts the first processes, and the
+# user-space launcher, which starts the rest, use the same code.
+#
+# Placing segments in an address space is the other half, and it is not here:
+# the kernel's is //kernel/lib/kelfload (through the object layer), a
+# launcher's goes through vma_map.
+#
+# Logs through logz4's interface only: whoever links this installs the logger
+# -- the kernel its serial one (//kernel/lib/logz4), a user program the
+# runtime's.
+source_set("elfload") {
+  sources = [
+    "src/binder.cpp",
+    "src/program.cpp",
+  ]
+  public_deps = [ ":headers" ]
+  deps = [
+    "//system/lib/eftl",
+    "//system/lib/logz4",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/elfload/binder.hpp",
+    "include/elfload/image.hpp",
+    "include/elfload/program.hpp",
+  ]
+  public_deps = [
+    "//system/lib/eftl:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

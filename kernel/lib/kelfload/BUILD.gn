@@ -1,0 +1,30 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The kernel's specialisation of //system/lib/elfload: placing an ELF's
+# segments in a user address space, which the kernel can only do through the
+# object layer -- a VMO for the pages it fills in, a VMA to put them in a
+# process. userabi uses it to start the processes the kernel starts itself;
+# binding the image to the vDSO afterwards is the generic half's Binder.
+#
+# system/lib/<name> and kernel/lib/k<name>, as concurrent and kconcurrent.
+source_set("kelfload") {
+  sources = [ "src/loader.cpp" ]
+  public_deps = [ ":headers" ]
+  deps = [
+    "//kernel/lib/logz4",
+    "//kernel/mm",
+    "//kernel/object",
+  ]
+  visibility = [ "*" ]
+}
+
+cpp_interface("headers") {
+  public = [ "include/kelfload/loader.hpp" ]
+  public_deps = [
+    "//kernel/object:headers",
+    "//system/lib/elfload:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}

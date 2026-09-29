@@ -1,14 +1,19 @@
 # elfload
 
-把一个 ELF 装进用户地址空间，并把它的导入绑到别的镜像的导出上。
+把一个 ELF 的导入绑到别的镜像的导出上，并检查一个文件是不是能启动的程序。
+内核（启动最初几个进程）和用户态 launcher（启动其余进程）共用这一份。
 
-分成两半，是故意的：
+装载分成两半，是故意的，这个库只有其中一半：
 
 - **binder**（`elfload::Binder`）——应用重定位，按名字把未定义符号解析到导出方
   镜像的 `.dynsym`。它只要一段内存和两个 ELF 文件，不碰地址空间、不碰内核对象，
   所以「算得最容易出错的那部分」可以在宿主上单测。
-- **loader**（待做）——把 PT_LOAD 段放进地址空间。这件事只能走对象层
-  （VmoDispatcher / VmaDispatcher）。
+- **loader**——把 PT_LOAD 段放进地址空间。它不在这里：内核的在
+  `//kernel/lib/kelfload`（走对象层，VmoDispatcher / VmaDispatcher），
+  launcher 的走 `vma_map`。
+
+日志只经 logz4 的接口打：链接它的一方负责装 logger——内核装串口的
+（`//kernel/lib/logz4`），用户程序装 runtime 的。
 
 两者合起来是 `//kernel/phys:elf_image`（`ours::phys::ElfImage` +
 `SymbolicRelocationPass`）在用户态这一侧的对应物：physload 给它加载的模块做同样

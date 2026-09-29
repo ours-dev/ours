@@ -1,10 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef ELFLOAD_LOADER_HPP
-#define ELFLOAD_LOADER_HPP 1
+#ifndef KELFLOAD_LOADER_HPP
+#define KELFLOAD_LOADER_HPP 1
 
 #include <elfload/image.hpp>
-
 #include <ours/object/handle.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
@@ -12,7 +11,7 @@
 #include <ours/types.hpp>
 #include <ustl/views/span.hpp>
 
-namespace elfload {
+namespace kelfload {
 /// An ELF image laid out in a VMO and not yet mapped anywhere: what
 /// Loader::load() makes and Loader::map() places.
 ///
@@ -68,7 +67,7 @@ class Loader final {
     /// terminated.
     [[nodiscard]]
     auto map(Bytes file, ours::VirtAddr at, ours::VmOptions perms, char const *name,
-             Image &out) const -> ours::Status;
+             elfload::Image &out) const -> ours::Status;
 
     /// The first half of the above: lays |file|'s PT_LOAD segments out in a
     /// fresh paged VMO and maps it nowhere. Static because it needs no address
@@ -89,11 +88,11 @@ class Loader final {
     /// ustl::Arc carries const through to the object it points at.
     [[nodiscard]]
     auto map(ImageVmo &image, ours::VirtAddr at, ours::VmOptions perms, char const *name,
-             Image &out) const -> ours::Status;
+             elfload::Image &out) const -> ours::Status;
 
   private:
     ours::object::VmaDispatcher &m_root_vma;
 };
-} // namespace elfload
+} // namespace kelfload
 
-#endif // #ifndef ELFLOAD_LOADER_HPP
+#endif // #ifndef KELFLOAD_LOADER_HPP

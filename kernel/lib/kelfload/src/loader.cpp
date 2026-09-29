@@ -1,6 +1,6 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <elfload/loader.hpp>
+#include <kelfload/loader.hpp>
 
 #include <algorithm>
 
@@ -11,8 +11,9 @@
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ustl/mem/align.hpp>
 
-namespace elfload {
+namespace kelfload {
 using namespace ours;
+using elfload::Image;
 
 namespace {
     /// The 64-bit ELF header and program header, as far as loading needs
@@ -228,4 +229,4 @@ auto Loader::map(Bytes const bytes, VirtAddr const at, VmOptions const perms,
     }
     return map(image, at, perms, name, out);
 }
-} // namespace elfload
+} // namespace kelfload

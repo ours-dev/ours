@@ -29,12 +29,14 @@ source_set("userabi") {
   # wants. A VmoDispatcher is what retires both. //kernel/phys:handoff is where
   # the kernel package itself comes from.
   #
-  # //kernel/lib/elfload is where loading an ELF lives: this library picks the
-  # program and builds the process around it, and hands the ELF itself to a
-  # component whose only job that is.
+  # //kernel/lib/kelfload places an ELF in a process and //system/lib/elfload
+  # binds it to the vDSO: this library picks the program and builds the
+  # process around it, and hands the ELF itself to the components whose only
+  # job that is.
   deps = [
     "//system/lib/bootfs",
-    "//kernel/lib/elfload",
+    "//system/lib/elfload",
+    "//kernel/lib/kelfload",
     "//kernel/lib/logz4",
     "//kernel/mm",
     "//kernel/object",
