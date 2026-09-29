@@ -1,0 +1,26 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The user-space launcher: how a program from BootFS becomes a running process.
+source_set("launch") {
+  sources = [
+    "src/launch.cpp",
+    "src/plan.cpp",
+  ]
+  public_deps = [ ":headers" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/launch/launch.hpp",
+    "include/launch/plan.hpp",
+  ]
+  public_deps = [ "//system/public" ]
+}
+
+group("tests") {
+  testonly = true
+  public_deps = [ "test:plan($host_toolchain)" ]
+}

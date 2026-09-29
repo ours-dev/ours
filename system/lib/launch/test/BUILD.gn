@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine: the
+# planner decides how to map a program from numbers alone, so it can be checked
+# without a kernel.
+executable("plan") {
+  testonly = true
+  sources = [ "plan_test.cpp" ]
+  deps = [
+    "//system/lib/launch",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
