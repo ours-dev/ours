@@ -102,13 +102,13 @@ VmCowPages::Cursor::Cursor(VmCowPages *target, VirtAddr offset, usize size)
     : m_target(target), m_offset(offset), m_end(offset + size) {}
 
 auto VmCowPages::Cursor::require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
-    -> ktl::Result<VmPage *> {
+    -> ktl::Result<RequireResult> {
     return will_write ? require_owned_page(nr_pages, request)
                       : require_read_page(nr_pages, request);
 }
 
 auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *request)
-    -> ktl::Result<VmPage *> {
+    -> ktl::Result<RequireResult> {
     DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
     // Replace page refernece with a real page.
@@ -124,9 +124,12 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     // populated must resolve to the page that is already there, or two
     // mappings of the same VMO see different memory and a re-fault silently
     // discards what the first fault wrote.
+    // A page found in this object's own store is its own, so it may be written:
+    // there is no other place a page can come from until an object can have an
+    // ancestor.
     if (auto *page = m_target->m_pages.get_page(index())) {
         advance();
-        return ktl::ok(page);
+        return ktl::ok(RequireResult{.page = page, .writable = true});
     }
 
     // Nothing here. Who answers that depends on whether anyone can:
@@ -159,16 +162,16 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
     }
 
     advance();
-    return ktl::ok(page);
+    return ktl::ok(RequireResult{.page = page, .writable = true});
 }
 
 auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *request)
-    -> ktl::Result<VmPage *> {
+    -> ktl::Result<RequireResult> {
     DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
     if (auto *page = m_target->m_pages.get_page(index())) {
         advance();
-        return ktl::ok(page);
+        return ktl::ok(RequireResult{.page = page, .writable = true});
     }
 
     // A read of an offset nobody has populated reads zero. Zircon answers it

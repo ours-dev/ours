@@ -93,6 +93,23 @@ class VmCowPages::Cursor {
     using Self = VmCowPages::Cursor;
 
   public:
+    /// What a lookup hands back: the page, and whether the caller may write it.
+    ///
+    /// The two are separate because the second is not a property of the page.
+    /// The same physical page can be the writer's own in one object and content
+    /// on loan from an ancestor in another, and only the cursor, which knows
+    /// which object it found the page in, can say which. A caller that maps the
+    /// page must map it read-only when |writable| is false, even into a mapping
+    /// whose own permission includes Write: the write then faults, asks for an
+    /// owned page, and gets the copy instead of the ancestor's page.
+    ///
+    /// Zircon counterpart: LookupCursor::RequireResult{page, writable}
+    /// (vm_cow_pages.h), which PageAsResultNoIncrement() fills in.
+    struct RequireResult {
+        VmPage *page;
+        bool writable;
+    };
+
     Cursor(VmCowPages *owner, VirtAddr offset, usize size);
     ~Cursor() = default;
 
@@ -103,15 +120,21 @@ class VmCowPages::Cursor {
     /// same dispatch as LookupCursor::RequirePage(bool write, ...); ours took
     /// no such flag, which is one reason it could never be defined.
     ///
+    /// A request to write always comes back |writable|; a request to read may
+    /// not, and every caller has to look, because it decides how the page is
+    /// mapped. Until an object can have an ancestor every page an object hands
+    /// out is its own, so every answer is |writable| today.
+    ///
     /// |nr_pages| is how far ahead the caller would accept pages for, and is
     /// only consulted when a page source has to be asked; |request| is the
     /// caller's stack-allocated waiting token, threaded down rather than
     /// allocated here because the fault path must not enter the allocator and
     /// risk recursing into reclaim and faulting again.
     auto require_page(bool will_write, usize nr_pages, MultiPageRequest *request)
-        -> ktl::Result<VmPage *>;
-    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<VmPage *>;
-    auto require_owned_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<VmPage *>;
+        -> ktl::Result<RequireResult>;
+    auto require_read_page(usize nr_pages, MultiPageRequest *request) -> ktl::Result<RequireResult>;
+    auto require_owned_page(usize nr_pages, MultiPageRequest *request)
+        -> ktl::Result<RequireResult>;
 
     auto create_read_request(usize nr_pages, PageRequest *request) -> Status;
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;

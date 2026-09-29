@@ -252,7 +252,11 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
                 return result.unwrap_err();
             }
 
-            if (auto const status = coalescer.append(frame_to_phys(*result));
+            // An owned page is asked for, so it is always writable; a mapping
+            // that takes borrowed pages will have to ask for reads instead and
+            // map what comes back by |writable|.
+            DEBUG_ASSERT(result->writable);
+            if (auto const status = coalescer.append(frame_to_phys(result->page));
                 Status::Ok != status) {
                 return status;
             }
@@ -563,6 +567,12 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         return {page.unwrap_err(), 0};
     }
 
+    // |page->writable| is not consulted, and has to be the day it can be false.
+    // An object with no ancestor owns every page it hands out, so it is always
+    // true here; once a read can be answered with a page on loan, that page must
+    // be mapped without Write even in a mapping that allows it, or the first
+    // write would go through to the lender's page instead of faulting.
+    //
     // ErrorIfExisting states the expectation rather than papering over its
     // failure: the query above established that the entry is absent, so
     // anything present by now was installed while this ran, which the address
@@ -570,7 +580,7 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // (PageTable::map_pages() ignores it and errors regardless), so this only
     // records the intent for when the arch layer starts reading it.
     usize nr_mapped = 0;
-    if (auto const status = arch_aspace.map(va, frame_to_phys(*page), 1, mmuf,
+    if (auto const status = arch_aspace.map(va, frame_to_phys(page->page), 1, mmuf,
                                             MapOptions::ErrorIfExisting, &nr_mapped);
         Status::Ok != status) {
         return {status, 0};

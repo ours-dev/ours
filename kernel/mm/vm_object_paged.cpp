@@ -264,7 +264,9 @@ auto VmObjectPaged::copy_page_by_page(VirtAddr const offset, usize const size,
                     return page.unwrap_err();
                 }
 
-                auto *const base = PhysMap::phys_to_virt<u8>(frame_to_phys(*page));
+                // A write asked for an owned page, which is always writable.
+                DEBUG_ASSERT(!will_write || page->writable);
+                auto *const base = PhysMap::phys_to_virt<u8>(frame_to_phys(page->page));
                 auto const result = copy(base + in_page, done, chunk);
                 if (result.fault.is_some()) {
                     fault = result.fault;
