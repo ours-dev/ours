@@ -1,3 +1,31 @@
 {
     "cmake.ignoreCMakeListsMissing": true,
+
+    // The repo's own clangd, the one that matches the compiler: the system
+    // clangd (Apple's) is older than the language level and the flags the
+    // tree builds with, and struggles on every file.
+    "clangd.path": "${workspaceFolder}/prebuilt/clang/llvm-23/bin/clangd",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}",
+        "--background-index",
+        "--header-insertion=never"
+    ],
+    // Two C++ language servers on one tree fight over it.
+    "C_Cpp.intelliSenseEngine": "disabled",
+
+    // Build outputs and toolchains: gigabytes and tens of thousands of files
+    // that change on every build and that nobody edits.
+    "files.watcherExclude": {
+        "**/out/**": true,
+        "**/prebuilt/**": true,
+        "**/.cache/**": true
+    },
+    "search.exclude": {
+        "**/out": true,
+        "**/prebuilt": true,
+        "**/.cache": true
+    },
+    "files.exclude": {
+        "**/.cache": true
+    }
 }
