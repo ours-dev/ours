@@ -49,7 +49,7 @@ namespace {
     /// address alone admitted a `syscall` sitting in the last two bytes
     /// *below* the vDSO, whose return address is the vDSO's first byte -- and
     /// the program image is mapped below it. Nothing could reach that while no
-    /// system call maps memory, but vmar_map would have.
+    /// system call maps memory, but vma_map would have.
     ///
     /// A thread with no user thread is a kernel thread, and a kernel thread
     /// does not execute `syscall` -- it calls the functions directly. Refusing

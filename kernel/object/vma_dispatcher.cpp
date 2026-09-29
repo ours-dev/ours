@@ -6,25 +6,25 @@
 // Arc needs the pointee's definition, not just its declaration -- vm_area.hpp
 // only forward-declares VmMapping.
 #include <ours/mm/vm_mapping.hpp>
-#include <ours/object/vmar_dispatcher.hpp>
+#include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 
 #include <ustl/mem/align.hpp>
 
-GKTL_COUNTER(DISPATCHER_VMAR_CREATE_COUNT, "dispatcher.vmar.create");
-GKTL_COUNTER(DISPATCHER_VMAR_DESTROY_COUNT, "dispatcher.vmar.destroy");
+GKTL_COUNTER(DISPATCHER_VMA_CREATE_COUNT, "dispatcher.vma.create");
+GKTL_COUNTER(DISPATCHER_VMA_DESTROY_COUNT, "dispatcher.vma.destroy");
 
 namespace ours::object {
-VmarDispatcher::VmarDispatcher(ustl::Arc<mm::VmArea> vma) : Base(), m_vma(ustl::move(vma)) {
-    DISPATCHER_VMAR_CREATE_COUNT.add(1);
+VmaDispatcher::VmaDispatcher(ustl::Arc<mm::VmArea> vma) : Base(), m_vma(ustl::move(vma)) {
+    DISPATCHER_VMA_CREATE_COUNT.add(1);
 }
 
-VmarDispatcher::~VmarDispatcher() {
-    DISPATCHER_VMAR_DESTROY_COUNT.add(1);
+VmaDispatcher::~VmaDispatcher() {
+    DISPATCHER_VMA_DESTROY_COUNT.add(1);
 }
 
-auto VmarDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
-                            Rights &rights_out) -> Status {
+auto VmaDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handle_out,
+                           Rights &rights_out) -> Status {
     if (!vma) {
         return Status::InvArgs;
     }
@@ -41,7 +41,7 @@ auto VmarDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handl
     // VmAddressRegionDispatcher::Create() adds them from the VMAR's own
     // CAN_MAP_READ / WRITE / EXECUTE: a region that cannot map executable
     // pages never hands out a handle claiming it can, and one that can -- a
-    // process's root region -- hands out a handle that lets vmar_map ask.
+    // process's root region -- hands out a handle that lets vma_map ask.
     auto rights = default_right();
     auto const allowed = self->m_vma->permissions();
     if (!!(allowed & mm::VmaFlags::Read)) {
@@ -58,8 +58,8 @@ auto VmarDispatcher::create(ustl::Arc<mm::VmArea> vma, KernelHandle<Self> &handl
     return Status::Ok;
 }
 
-auto VmarDispatcher::map(VmOptions const options, usize const vmar_offset, VmoDispatcher &vmo,
-                         u64 const vmo_offset, usize const length, char const *const name)
+auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDispatcher &vmo,
+                        u64 const vmo_offset, usize const length, char const *const name)
     -> ktl::Result<VirtAddr> {
     verify_canary();
     vmo.verify_canary();
@@ -98,21 +98,21 @@ auto VmarDispatcher::map(VmOptions const options, usize const vmar_offset, VmoDi
         return ktl::err(Status::OutOfRange);
     }
 
-    // Where: vmar_offset counts from this region's start, and only means
+    // Where: vma_offset counts from this region's start, and only means
     // something with Specific -- without it the kernel picks, and an offset
     // would be a request nobody reads. Zircon refuses that as well.
     auto where = mm::VmPlacement::anywhere();
     if (!!(options & VmOptions::Specific)) {
-        if (!ustl::mm::is_aligned(vmar_offset, PAGE_SIZE) || vmar_offset >= m_vma->size()) {
+        if (!ustl::mm::is_aligned(vma_offset, PAGE_SIZE) || vma_offset >= m_vma->size()) {
             return ktl::err(Status::InvArgs);
         }
-        where = mm::VmPlacement::at(m_vma->base() + vmar_offset);
-    } else if (vmar_offset != 0) {
+        where = mm::VmPlacement::at(m_vma->base() + vma_offset);
+    } else if (vma_offset != 0) {
         return ktl::err(Status::InvArgs);
     }
 
     // The options in mm's words. User always: everything mapped through a
-    // VMAR handle is for ring 3.
+    // VMA handle is for ring 3.
     auto mmuf = mm::MmuFlags::User;
     auto ceiling = mm::VmaFlags::None;
     if (!!(options & VmOptions::PermRead)) {
@@ -156,8 +156,8 @@ auto VmarDispatcher::map(VmOptions const options, usize const vmar_offset, VmoDi
     return ktl::ok(mapping.unwrap()->base());
 }
 
-auto VmarDispatcher::allocate(VmOptions const options, usize const offset, usize const size,
-                              KernelHandle<Self> &child_out, Rights &rights_out, VirtAddr &base_out)
+auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize const size,
+                             KernelHandle<Self> &child_out, Rights &rights_out, VirtAddr &base_out)
     -> Status {
     verify_canary();
 
@@ -181,9 +181,9 @@ auto VmarDispatcher::allocate(VmOptions const options, usize const offset, usize
     // asked of it fails -- which is what a guard is for. mm places it and
     // refuses a range that is taken or runs off this region.
     ustl::Arc<mm::VmArea> child;
-    if (auto const status = m_vma->create_subvma(mm::VmPlacement::at(m_vma->base() + offset),
-                                                 rounded, mm::VmaFlags::None, "vmar_allocate",
-                                                 mm::VmMapOption::None, &child);
+    if (auto const status =
+            m_vma->create_subvma(mm::VmPlacement::at(m_vma->base() + offset), rounded,
+                                 mm::VmaFlags::None, "vma_allocate", mm::VmMapOption::None, &child);
         Status::Ok != status) {
         return status;
     }

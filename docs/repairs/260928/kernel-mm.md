@@ -11,14 +11,14 @@
 这把锁的持有者包括：
 - 缺页路径：`VmMapping::page_fault()` 在地址空间锁之内取它，查页、必要时分配并插页、装页表项；
 - `read_user()`/`write_user()`：整段拷贝期间持有，缺页时放锁再重取（`VmObjectPaged::copy_page_by_page()`）；
-- `map_paged()`（`vmar_map` 带 MapRange、userboot 装镜像）、映射的建立和拆除。
+- `map_paged()`（`vma_map` 带 MapRange、userboot 装镜像）、映射的建立和拆除。
 
 **担心的场景**：BootFS 是一个整块 VMO，U12 之后 init 会为每个文件发一个 Slice，所有进程读 /boot 的缺页都落在这一把锁上；
 vDSO 也是一个 VMO，被每个进程映射。多核上并发缺页、并发 vmo_read 时，它们会不会在这把锁上排队，现在没有数据。
 
 **要先回答的问题**（写进 `benches/`）：
 - 单个 VMO 被 N 个线程（N = 1、2、4、8，分布在不同 CPU）并发 `vmo_read` 不同页，吞吐和延迟分布随 N 怎么变；
-- 同一个 BootFS 的 N 个 Slice 被并发缺页（经 `vmar_map` 映射后按页触碰），和 N 个独立 VMO 对比；
+- 同一个 BootFS 的 N 个 Slice 被并发缺页（经 `vma_map` 映射后按页触碰），和 N 个独立 VMO 对比；
 - 持锁时间的分布：缺页路径里分配页（`alloc_pages`）和装页表项各占多少，拷贝路径每次持锁拷多少字节。
 
 **数据出来之后可以讨论的方向**（不预设结论）：

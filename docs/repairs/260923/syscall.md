@@ -3,7 +3,7 @@
 ## 1. 删除临时的 `ours_process_spawn_boot`
 
 **删除条件：** P1-C 的用户态加载器落地——即 init 能在用户态从 BootFS VMO 装载一个程序（`process_create` /
-`thread_create` / `process_start`、`vmo_create` / `vmar_map`、processargs、移到 `system/lib` 的 Binder）。
+`thread_create` / `process_start`、`vmo_create` / `vma_map`、processargs、移到 `system/lib` 的 Binder）。
 
 **要删的东西：**
 - `PROCESS_BOOT_NAME_MAX`（`system/public/ours/syscall.hpp`）；调用号随 `syscalls.gni` 条目一起消失

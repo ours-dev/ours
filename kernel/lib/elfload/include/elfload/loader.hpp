@@ -6,7 +6,7 @@
 #include <elfload/image.hpp>
 
 #include <ours/object/handle.hpp>
-#include <ours/object/vmar_dispatcher.hpp>
+#include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/types.hpp>
@@ -38,7 +38,7 @@ struct ImageVmo {
 
 /// Places ELF images into one user address space.
 ///
-/// Constructed from the address space's root VMAR, because that is what it is:
+/// Constructed from the address space's root VMA, because that is what it is:
 /// a loader *for* that address space. Every image a process is built out of --
 /// its program, the vDSO -- goes through the same one, and the object that may
 /// map into the process is the thing they have in common.
@@ -51,7 +51,7 @@ class Loader final {
   public:
     using Bytes = ustl::views::Span<u8 const>;
 
-    explicit Loader(ours::object::VmarDispatcher &root_vmar) : m_root_vmar(root_vmar) {}
+    explicit Loader(ours::object::VmaDispatcher &root_vma) : m_root_vma(root_vma) {}
 
     /// Lays |file|'s PT_LOAD segments out in a fresh paged VMO and maps it at
     /// the address |at| with the protection |perms| (VmOptions::Perm* bits
@@ -92,7 +92,7 @@ class Loader final {
              Image &out) const -> ours::Status;
 
   private:
-    ours::object::VmarDispatcher &m_root_vmar;
+    ours::object::VmaDispatcher &m_root_vma;
 };
 } // namespace elfload
 

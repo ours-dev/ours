@@ -25,11 +25,11 @@ constexpr auto RIGHTS_DEFAULT_VMO =
 using VmoDispatcherBase = SoloDispatcher<VmoDispatcher, RIGHTS_DEFAULT_VMO, Signals::None>;
 
 /// The object-layer face of one mm::VmObject: a range of memory that exists
-/// independently of any address space, and that a VmarDispatcher can map.
+/// independently of any address space, and that a VmaDispatcher can map.
 ///
 /// Zircon counterpart: VmObjectDispatcher.
 ///
-/// The split between this and VmarDispatcher is the whole shape of the VM ABI:
+/// The split between this and VmaDispatcher is the whole shape of the VM ABI:
 /// a VMO is *what* the memory is, a VMA is *where* it appears. Keeping them
 /// apart is what lets the same pages be mapped twice, at different addresses
 /// with different protections, and what makes "hand a program some memory"

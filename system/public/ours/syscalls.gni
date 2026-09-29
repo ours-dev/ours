@@ -287,7 +287,7 @@ ours_syscalls = [
   },
   {
     # TEMPORARY: goes when a user-space loader can build a process out of
-    # VMOs and VMARs (design P1-C), and with it this entry, which is all that
+    # VMOs and VMAs (design P1-C), and with it this entry, which is all that
     # removing the call takes on this side (docs/repairs/260923/syscall.md).
     name = "process_spawn_boot"
     brief = "TEMPORARY: starts a program from the kernel package as a new process."
@@ -394,7 +394,7 @@ ours_syscalls = [
     ret = "Status"
   },
   {
-    name = "vmar_allocate"
+    name = "vma_allocate"
     brief = "Reserves part of the region |parent| as a sub-region."
     doc = [
       "Reserves [offset, offset + size) of |parent|, size rounded up to a",
@@ -439,14 +439,14 @@ ours_syscalls = [
     ret = "Status"
   },
   {
-    name = "vmar_map"
-    brief = "Maps part of the VMO |vmo| into the region |vmar|."
+    name = "vma_map"
+    brief = "Maps part of the VMO |vmo| into the region |vma|."
     doc = [
       "Maps [vmo_offset, vmo_offset + length) of |vmo|, length rounded up to",
       "a page, and writes the address to |mapped_addr|. |options| is",
       "PermRead, optionally with PermWrite or PermExecute (never both, and",
-      "neither without PermRead: InvArgs), Specific to map at vmar_offset",
-      "from the region's start (vmar_offset must be 0 without it), and",
+      "neither without PermRead: InvArgs), Specific to map at vma_offset",
+      "from the region's start (vma_offset must be 0 without it), and",
       "MapRange to populate the range now. CanMap* are the kernel's to set",
       "(InvArgs). |vmo| needs Map, and each Perm bit needs the matching",
       "right on both handles (AccessDenied); the rights both grant become",
@@ -457,7 +457,7 @@ ours_syscalls = [
     ]
     args = [
       {
-        name = "vmar"
+        name = "vma"
         type = "HandleValue"
       },
       {
@@ -465,7 +465,7 @@ ours_syscalls = [
         type = "VmOptions"
       },
       {
-        name = "vmar_offset"
+        name = "vma_offset"
         type = "usize"
       },
       {

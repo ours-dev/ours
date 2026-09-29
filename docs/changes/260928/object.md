@@ -107,3 +107,47 @@ Builder(&m_aspace, (m_vmaf & ~PermMask) | allowed, size)...
   后者要等有人按非零偏移映射物理 VMO。K21b 的 shell 检查会覆盖 paged VMO 的偏移和 Perm/CanMap 检查。
 - `VmOptions` 里没实现的位（Compact、SpecificOverwrite 等）在 dispatcher 里一律回 NotSupported，
   程序直接传 CanMap* 回 InvArgs 由 K21b 的系统调用负责。
+
+## 地址区域统一叫 Vma：撤回 Vmar 改名，ABI 一并改成 vma（2026-09-28）
+
+**文件**
+- 撤回“VmaDispatcher 改名为 VmarDispatcher”那一节的全部改名：`vma_dispatcher.{hpp,cpp}`、`VmaDispatcher`、`RIGHTS_DEFAULT_VMA`、计数器 `dispatcher.vma.*`、`root_vma` 等变量
+- ABI：`ours_vmar_map`/`ours_vmar_allocate` → `ours_vma_map`/`ours_vma_allocate`（`syscalls.gni`，参数名 `vmar`/`vmar_offset` → `vma`/`vma_offset`），
+  `syscall::vma_*`（`kernel/lib/syscall/src/vmar.cpp` → `vma.cpp`），`ou::vma_*`（`ou/vmar.hpp` → `ou/vma.hpp`）
+- 公共类型：`HandleType::VmarRoot`/`VmarLoaded` → `VmaRoot`/`VmaLoaded`，`ObjectType::Vmar` → `ObjectType::Vma`（数值不变）
+- 注释、shell 检查函数名、设计文档里指 ours 自己对象的 “VMAR”；
+  `docs/design/260923/userspace-interface.md` §2.3 的命名规则改写；`.agents/skills/ours-kernel-design/references/layering.md` 记下规则
+
+**症状**
+同一天先把对象层从 VmaDispatcher 改成了 VmarDispatcher（依据是接口设计 §2.3 的旧规则），用户否决：
+这个项目里地址区域就叫 Vma，与 mm 的 `VmArea` 同名同义。
+
+**原因**
+旧规则照搬 Zircon 的 VMAR 命名，但 ours 的 mm 层早就叫 `VmArea`，对象层和 ABI 再叫 Vmar，
+就是同一个概念在两层用两个名字——正是那次改名想消除的问题，只是统一的方向选反了。
+
+**改法**
+按标识符批量替换，然后逐行复查剩下的 “vmar/VMAR”：凡指 Zircon 的（`zx_vmar_map`、`sys_vmar_map()`、
+`VmAddressRegion`、“Zircon 的 VMAR”）保留原名，方便对照；指 ours 自己对象的全部改成 Vma。
+数值（`HandleType` 0x04、`ObjectType` 18、`VmOptions` 各位）仍照 Zircon，只改名字。
+
+**参照**
+无，本项目自有命名。对照 Zircon 时：ours 的 Vma = Zircon 的 VMAR（`VmAddressRegionDispatcher`）。
+
+**验证**
+- 重新 `gn gen` 后两个镜像均构建通过，vDSO ABI 检查通过（导出名随之变成 `ours_vma_*`）。
+- `boot_check.py` 两个镜像都 PASS（dbg 14 passed；rel 13 passed、5 skipped），shell 的 `vma_map checks passed`、`vma_allocate checks passed` 照旧。
+
+**故意没做**
+- `docs/changes/` 旧记录里的 vmar 名字不改，只增不改。
+
+**怎么发现的**
+无。
+
+**用户的预测**
+无。
+
+**你应该能回答的三个问题**
+- ours 的 Vma 对应 Zircon 的哪个对象？为什么数值照搬而名字不照搬？
+- 批量改名时，怎样区分“ours 的 vmar”和“Zircon 的 vmar”？
+- `mm::VmArea` 和 `object::VmaDispatcher` 为什么是两个对象而不是一个？

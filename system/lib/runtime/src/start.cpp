@@ -39,7 +39,7 @@ namespace {
     // hold any bootstrap message, and there is no need for Zircon's size
     // query before the read.
     //
-    // One slot more than a message can carry, for the root VMAR the kernel
+    // One slot more than a message can carry, for the root VMA the kernel
     // sends ahead of the starter's message (read_processargs()).
     constexpr u32 KERNEL_HANDLES = 1;
     alignas(ours::ProcArgs) constinit u8 message[ours::CHANNEL_MAX_MSG_BYTES] = {};
@@ -97,13 +97,13 @@ namespace {
     }
 
     /// Two messages, TEMPORARY until K23: first the kernel's, carrying only
-    /// the root VMAR (VmarRoot), then the starter's. The kernel's comes first
+    /// the root VMA (VmaRoot), then the starter's. The kernel's comes first
     /// whenever the starter wrote, because the kernel queues it ahead of
     /// anything already there (ChannelDispatcher::deliver_first()); it had to
     /// be sent separately because the starter wrote before the process, and
     /// so the region, existed. Its handle joins the starter's in one table,
     /// after them; argv and the environment are the starter's. With K23 a
-    /// user-space launcher creates the process first and puts VmarRoot in the
+    /// user-space launcher creates the process first and puts VmaRoot in the
     /// one message, and this goes back to a single read.
     auto read_processargs(ours::HandleValue const bootstrap) -> void {
         // The kernel's: small, and read into a buffer of its own so that the

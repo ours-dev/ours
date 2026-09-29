@@ -42,11 +42,11 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     static auto create(ustl::Arc<JobDispatcher> &job, char const *name,
                        KernelHandle<Self> &process_out, Rights &process_rights,
-                       KernelHandle<VmarDispatcher> &root_vmar, Rights &root_vmar_rights) -> Status;
+                       KernelHandle<VmaDispatcher> &root_vma, Rights &root_vma_rights) -> Status;
 
     static auto create_shared(ustl::Arc<JobDispatcher> &job, char const *name,
                               KernelHandle<Self> &process_out, Rights &process_rights,
-                              KernelHandle<VmarDispatcher> &root_vmar, Rights &root_vmar_rights)
+                              KernelHandle<VmaDispatcher> &root_vma, Rights &root_vma_rights)
         -> Status;
 
     /// The process the calling thread belongs to, or null on a kernel thread.

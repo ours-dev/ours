@@ -3,7 +3,7 @@
 #include <ours/mm/cfg.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
-#include <ours/object/vmar_dispatcher.hpp>
+#include <ours/object/vma_dispatcher.hpp>
 
 #include <gktl/counter.hpp>
 #include <heap/new.hpp>
@@ -54,8 +54,8 @@ ProcessDispatcher::~ProcessDispatcher() {
 
 auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const name,
                                KernelHandle<Self> &process_out, Rights &process_rights,
-                               KernelHandle<VmarDispatcher> &root_vmar_out,
-                               Rights &root_vmar_rights) -> Status {
+                               KernelHandle<VmaDispatcher> &root_vma_out, Rights &root_vma_rights)
+    -> Status {
     // The restricted range and not the full user half. USER_ASPACE_SIZE runs
     // to the 2^47 canonical split; PRIVATE_ASPACE_SIZE stops at 2^46 and
     // leaves the upper half of the user range for the shared aspace
@@ -77,7 +77,7 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
         return Status::InternalError;
     }
 
-    status = VmarDispatcher::create(ustl::move(root_vma), root_vmar_out, root_vmar_rights);
+    status = VmaDispatcher::create(ustl::move(root_vma), root_vma_out, root_vma_rights);
     if (Status::Ok != status) {
         return status;
     }
@@ -85,7 +85,7 @@ auto ProcessDispatcher::create(ustl::Arc<JobDispatcher> &job, char const *const 
     // Last, because it takes ownership of the aspace: everything above can
     // still fail and unwind by simply dropping Arcs, and after this line the
     // aspace has an owner that outlives this frame. A failure here leaves
-    // root_vmar_out holding a dispatcher, which the caller's KernelHandle
+    // root_vma_out holding a dispatcher, which the caller's KernelHandle
     // releases on its own -- and the aspace dies with it, since the root VMA
     // was the last thing referencing it.
     auto handle_table = ustl::Arc<HandleTable>::adopt(new (mm::GAF_KERNEL) HandleTable());

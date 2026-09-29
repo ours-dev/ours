@@ -6,7 +6,7 @@
  {"id": "verify-userboot",      "expect": ["ours-verify"], "query": "启动看看 userboot 现在能不能拉起 init"},
  {"id": "verify-debug-panic",   "expect": ["ours-verify"], "query": "dbg 镜像启动到一半 panic 了，帮我拿到 panic 时的调用栈"},
 
- {"id": "design-vmar-map",      "expect": ["ours-kernel-design"], "query": "我想加一个 vmar_map 系统调用，让 init 能直接映射 BootFS 的 VMO，先出个方案"},
+ {"id": "design-vma-map",      "expect": ["ours-kernel-design"], "query": "我想加一个 vma_map 系统调用，让 init 能直接映射 BootFS 的 VMO，先出个方案"},
  {"id": "design-cpulocal",      "expect": ["ours-kernel-design"], "query": "CpuLocal 的动态分配该怎么设计？参考 Linux 还是 Zircon？"},
  {"id": "design-pi-chain",      "expect": ["ours-kernel-design"], "query": "OwnedWaitQueue 里 PI 链加锁那几个 stub 该怎么补？给个思路"},
  {"id": "design-vmalloc-layer", "expect": ["ours-kernel-design"], "query": "vmalloc 应该在哪一层实现？"},

@@ -34,7 +34,7 @@ source_set("syscall") {
     "src/process.cpp",
     "src/table.cpp",
     "src/task.cpp",
-    "src/vmar.cpp",
+    "src/vma.cpp",
     "src/vmo.cpp",
   ]
   public_deps = [

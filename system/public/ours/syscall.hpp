@@ -101,12 +101,12 @@ enum class VmoOptions : u32 {
     Resizable = 1U << 1,
 };
 
-/// vmar_map's options (and, later, vmar_allocate's and vmar_protect's): what
+/// vma_map's options (and, later, vma_allocate's and vma_protect's): what
 /// the mapping may do, where it goes, and how it is populated. The values are
 /// Zircon's ZX_VM_*, so a request ported from Zircon asks the same question.
 ///
 ///   Perm*       The protection the pages get.
-///   Specific    At vmar_offset from the region's start, not wherever fits.
+///   Specific    At vma_offset from the region's start, not wherever fits.
 ///   CanMap*     The ceiling a later protect() is held to. Set by the kernel
 ///               from the handles' rights; a program may not pass them.
 ///   MapRange    Populate the whole range now rather than on first touch.

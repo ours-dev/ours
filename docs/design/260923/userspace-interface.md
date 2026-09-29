@@ -21,7 +21,7 @@ P0 期间有三条不变量：
 |---|---|---|---|---|
 | A 句柄与对象核心 | Handle、HandleTable、Dispatcher 信号核心、Object 通用调用 | 全局 Handle arena；每进程 HandleTable；`Dispatcher::m_signals` + `SignalObserver` | stub：`Handle::make/clone` 没有定义，`HandleTable` 没有存储（`kernel/object/include/ours/object/handle_table.hpp:39-55`）；`attach_observer` 不做电平检查（`kernel/object/dispatcher.cpp:24-36`） | P0 close / wait_one / 信号核心；P1 其余 |
 | B 任务 | Job、Process、Thread；Exception、SuspendToken、Profile、JobPolicy | `task::Thread`、`mm::VmAspace` | Job/Process/Thread 为 stub：内核内部的构造能用，面向用户的操作全缺。其余 missing | P0 只用内核内部路径；P1 create/start/exit/kill；P2 其余 |
-| C 内存 | Vmo、Vmar（`VmarDispatcher`）、vDSO VMO、BootFS VMO、Pager、Stream | `VmObjectPaged/Physical`、`VmArea/VmMapping`、`VmAspace` | Vmo/Vmar/Pager 为 stub；vDSO VMO、BootFS VMO、Stream missing | P1；Pager/Stream P2 |
+| C 内存 | Vmo、Vma（`VmaDispatcher`）、vDSO VMO、BootFS VMO、Pager、Stream | `VmObjectPaged/Physical`、`VmArea/VmMapping`、`VmAspace` | Vmo/Vma/Pager 为 stub；vDSO VMO、BootFS VMO、Stream missing | P1；Pager/Stream P2 |
 | D IPC 与同步 | Channel（PeerHolder、MessagePacket）、Event、EventPair、Port、Futex、Socket、Fifo | PeerHolder 共享锁、`sync::Event`、`task::OwnedWaitQueue` | Channel 为 stub（`channel_dispatcher.hpp` 只有 `create()` 一个声明）；其余 missing | P0 Channel（只传字节）；P1 带句柄、Event/Port/Futex；P2 Socket/Fifo |
 | E 时间 | 单调时钟调用、Timer、Clock | `time::SteadyClock`、`time::Timer` + `ours::Dpc` | missing（内核侧已实现，用户侧没有入口） | P1；Clock P2 |
 | F 资源与设备 | Resource、Interrupt、IoPorts | 每个种类一个区间分配器、`irq::IrqObject`、TSS io_bitmap | Resource 为 stub（`create()` 内部检查自相矛盾，也不构造对象）；其余 missing | P1 交付根资源；P2 其余 |
@@ -89,7 +89,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 | 签名 | 语义 | rights | 优先级 | ou 入口 |
 |---|---|---|---|---|
-| `Status ours_process_create(HandleValue job, char const *name, usize name_size, ProcessCreateOptions options, HandleValue *process_out, HandleValue *root_vmar_out)` | 在 job 下建一个 Initial 进程，同时返回 root VMAR（`ProcessDispatcher::create` 已经是这样）。返回前由对象层映射 vDSO，并把范围登记到 `VmAspace`（D2）。名字截断到 31 字节；job 已 Dying/Dead 回 BadState；options 只接受 None | job: ManageProcess | P1 | `ou::process_create` |
+| `Status ours_process_create(HandleValue job, char const *name, usize name_size, ProcessCreateOptions options, HandleValue *process_out, HandleValue *root_vma_out)` | 在 job 下建一个 Initial 进程，同时返回 root VMA（`ProcessDispatcher::create` 已经是这样）。返回前由对象层映射 vDSO，并把范围登记到 `VmAspace`（D2）。名字截断到 31 字节；job 已 Dying/Dead 回 BadState；options 只接受 None | job: ManageProcess | P1 | `ou::process_create` |
 | `Status ours_process_start(HandleValue process, HandleValue thread, VirtAddr entry, VirtAddr stack, HandleValue arg1, usize arg2)` | 只用于 Initial 进程的首线程；进程没登记 vDSO 回 BadState；entry/stack 必须是规范的用户地址。arg1 一进调用就从调用者的表里摘下，成败都被消耗，装进目标表后新值放 rdi。arg2 原样放 rsi，约定为 vDSO 基址。上面三件事在同一段进程锁内完成。内核起 userboot 也走同一个 `ProcessDispatcher::start` | process: Write；thread: Write；arg1: Transfer | P1 | `ou::process_start` |
 | `[[noreturn]] void ours_process_exit(i64 retcode)` | 第一次进入 Dying 时记下 retcode，对其余线程发 Kill，当前线程退出。最后一个线程摘下后进程转 Dead，在锁外执行 finish_dead_transition：清句柄表、`VmAspace::destroy`、置 TERMINATED、从 job 摘除。vDSO 桩在 syscall 之后跟一条 `ud2` | 无 | P1 | `ou::process_exit` |
 | `Status ours_task_kill(HandleValue task)` | job/process/thread 通用，异步执行，以 TERMINATED 置位为完成。进程的 retcode 为 `TASK_RETCODE_SYSCALL_KILL`；Initial 状态的进程直接转 Dead；根 job 被 kill 就停机 | Destroy | P1 | `ou::task_kill` |
@@ -108,16 +108,16 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 ### 2.3 C 内存
 
 规则：
-- **命名**：对象层和 ABI 统一叫 Vmar（`VmarDispatcher`、`ours_vmar_*`、`RIGHTS_DEFAULT_VMAR`），`mm::VmArea` 不改名。改名放在第一个 vmar 系统调用之前做（P1-C）。
-- **dispatcher 签名不再暴露 mm 类型**：`VmarDispatcher::map(VmOptions, usize vmar_offset, VmoDispatcher &, u64 vmo_offset, usize length, char const *name) -> Result<VirtAddr>`（K21a 落地，2026-09-28）。照 Zircon 的 `VmAddressRegionDispatcher::Map()`，不收 rights：系统调用把两边句柄的 rights 换成 CanMap* 位，dispatcher 把 CanMap* 存成映射上限；内核调用方没有句柄，直接写出它要的 Perm* 和 CanMap*。翻译成 MmuFlags/VmPlacement 的工作在 dispatcher 内完成。偏移一律是字节偏移。
+- **命名**：对象层和 ABI 统一叫 Vma（`VmaDispatcher`、`ours_vma_*`、`RIGHTS_DEFAULT_VMA`、`HandleType::VmaRoot`、`ObjectType::Vma`），与 mm 的 `VmArea` 同名同义，不用 Zircon 的 Vmar（用户决定，2026-09-28）。数值（句柄类型 0x04、对象类型 18、选项位）仍照 Zircon。
+- **dispatcher 签名不再暴露 mm 类型**：`VmaDispatcher::map(VmOptions, usize vma_offset, VmoDispatcher &, u64 vmo_offset, usize length, char const *name) -> Result<VirtAddr>`（K21a 落地，2026-09-28）。照 Zircon 的 `VmAddressRegionDispatcher::Map()`，不收 rights：系统调用把两边句柄的 rights 换成 CanMap* 位，dispatcher 把 CanMap* 存成映射上限；内核调用方没有句柄，直接写出它要的 Perm* 和 CanMap*。翻译成 MmuFlags/VmPlacement 的工作在 dispatcher 内完成。偏移一律是字节偏移。
 - **提交策略**：用户的 `vmo_create` 一律按需提交（Lazy）；`create_paged(Pinned)` 只留给内核内部使用（userboot 的栈、vDSO、BootFS）。
-- **映射上限**：`vmar_map` 从第一天起就保存 per-mapping 上限，即 vmar rights ∩ vmo rights ∩ 区域的 CanMap*。`vmar_protect` 必须和这个上限在同一个提交里上线。今天 `vm_area.cpp:136-143` 直接拿区域的 `m_vmaf` 当上限，只读 BootFS 会因此被 protect 成可写。
+- **映射上限**：`vma_map` 从第一天起就保存 per-mapping 上限，即 vma rights ∩ vmo rights ∩ 区域的 CanMap*。`vma_protect` 必须和这个上限在同一个提交里上线。今天 `vm_area.cpp:136-143` 直接拿区域的 `m_vmaf` 当上限，只读 BootFS 会因此被 protect 成可写。
 - **W^X**：系统调用层拒绝 PermWrite+PermExecute 的映射；launcher 为每个 PT_LOAD 建一个 VMO，按 p_flags 映射。`RIGHTS_DEFAULT_VMO` 不带 Execute，可执行句柄只能经 `vmo_replace_as_executable` 用 vmex 换出（K19）。
 - **共享 VMO 整体提交**：多个进程共享的 VMO（vDSO、BootFS）在创建时整体提交。缺页路径不取 VMO 锁（`vm_mapping.cpp:391-500`），惰性共享的 VMO 会被并发地往 page map 里插页。
 
 现状：
 - Vmo：stub。`vmo_dispatcher.cpp:22-65` 只有内核内部的 create；`vm_object_paged.cpp:103-113` 的 read/write 是 Unimplemented；没有 `size()`。
-- Vmar：stub。`vmar_dispatcher.cpp`（原 `vma_dispatcher.cpp:24-68`）有 create 和 map，但 map 暴露 mm 类型、没有 vmo 偏移，rights 推导还是 TODO（`:38`）。
+- Vma：stub。`vma_dispatcher.cpp`（原 `vma_dispatcher.cpp:24-68`）有 create 和 map，但 map 暴露 mm 类型、没有 vmo 偏移，rights 推导还是 TODO（`:38`）。
 - vDSO VMO：missing。`loader.cpp:108-146` 给每个进程复制一份。
 - BootFS VMO：missing。解压缓冲走 vmalloc，物理上不连续。
 - Pager：stub，只有一个头文件。
@@ -129,12 +129,12 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 | `Status ours_vmo_get_size(HandleValue vmo, u64 *size)` | 返回按页取整后的大小；依赖新增的 `VmObject::size()` | 无 | P1 | `ou::vmo_get_size` |
 | `Status ours_vmo_read(HandleValue vmo, void *buffer, u64 offset, usize length)` / `Status ours_vmo_write(HandleValue vmo, void const *buffer, u64 offset, usize length)` | 字节偏移；越界或溢出回 OutOfRange；未提交的页读出为零；不在自旋锁下拷贝；physical VMO 回 NotSupported | Read / Write | P1 | `ou::vmo_read` / `ou::vmo_write` |
 | `Status ours_vmo_op_range(HandleValue vmo, VmoOp op, u64 offset, u64 size, void *buffer, usize buffer_size)` | Commit / Decommit / Zero。VmoOp 是枚举，不是位掩码，所以不叫 *Options。malloc 释放内存靠 Decommit | Write | P1 | `ou::vmo_op_range` |
-| `Status ours_vmar_map(HandleValue vmar, VmOptions options, usize vmar_offset, HandleValue vmo, u64 vmo_offset, usize length, VirtAddr *mapped_addr)` | 7 个参数，第 7 个走 r12。PermWrite 和 PermExecute 都要求同时有 PermRead；拒绝 Write+Execute；每一位 Perm 都必须被两边句柄允许，交集存为映射上限。带 Specific 时 vmar_offset 相对 vmar 起点。vmo_offset 必须页对齐，且 `vmo_offset + length ≤ size`，否则 OutOfRange。自动加 `MmuFlags::User`，不预先提交 | vmo: Map；每位 Perm 两边都要对应的 Read/Write/Execute | P1 | `ou::vmar_map` |
-| `Status ours_vmar_unmap(HandleValue vmar, VirtAddr addr, usize length)` | addr 未对齐回 InvArgs（mm 会悄悄对齐，所以 dispatcher 先拦）；与 vDSO 区间相交回 AccessDenied（由 mm 执行）；只部分覆盖子区域时拒绝 | 整块覆盖子区域时需 OpChildren | P1 | `ou::vmar_unmap` |
-| `Status ours_vmar_allocate(HandleValue parent, VmOptions options, usize offset, usize size, HandleValue *child, VirtAddr *child_addr)` | 只接受 CanMapR/W/X 与 Specific；子区域 rights = 默认值 + 由 CanMap 位推出的 R/W/X。用于栈 guard 和 PIE 整体预留 | 每个 CanMap 位都要求 parent 有对应 rights | P1 | `ou::vmar_allocate` |
-| `Status ours_vmar_protect(HandleValue vmar, VmOptions options, VirtAddr addr, usize length)` | 新权限必须 ⊆ 映射上限且 ⊆ vmar 句柄的 rights；对 vDSO 拒绝。**只能和 per-mapping 上限同一个提交上线** | 对应的 Read/Write/Execute | P1 | `ou::vmar_protect` |
-| `Status ours_vmar_destroy(HandleValue vmar)` | 拆掉所有映射和子区域，并把区域标为失效；root 回 NotSupported；包含 vDSO 的拒绝。前置：`VmArea::destroy` 改为公开并持锁 | OpChildren | P1 | `ou::vmar_destroy` |
-| `ours_vmo_set_size`、`ours_vmo_create_child`（Slice，Snapshot 先用急切复制）、`ours_vmo_create_physical(HandleValue resource, PhysAddr paddr, usize size, HandleValue *out)`、`ours_vmo_set_cache_policy`、`ours_vmo_replace_as_executable`、`ours_vmo_create_contiguous`、`ours_vmar_op_range` | 形状照 Zircon。physical 要求 Mmio 资源覆盖所请求的范围；cache policy 要求 arch 先有 WC/UC 位 | 同 Zircon | P2 | 同名 |
+| `Status ours_vma_map(HandleValue vma, VmOptions options, usize vma_offset, HandleValue vmo, u64 vmo_offset, usize length, VirtAddr *mapped_addr)` | 7 个参数，第 7 个走 r12。PermWrite 和 PermExecute 都要求同时有 PermRead；拒绝 Write+Execute；每一位 Perm 都必须被两边句柄允许，交集存为映射上限。带 Specific 时 vma_offset 相对 vma 起点。vmo_offset 必须页对齐，且 `vmo_offset + length ≤ size`，否则 OutOfRange。自动加 `MmuFlags::User`，不预先提交 | vmo: Map；每位 Perm 两边都要对应的 Read/Write/Execute | P1 | `ou::vma_map` |
+| `Status ours_vma_unmap(HandleValue vma, VirtAddr addr, usize length)` | addr 未对齐回 InvArgs（mm 会悄悄对齐，所以 dispatcher 先拦）；与 vDSO 区间相交回 AccessDenied（由 mm 执行）；只部分覆盖子区域时拒绝 | 整块覆盖子区域时需 OpChildren | P1 | `ou::vma_unmap` |
+| `Status ours_vma_allocate(HandleValue parent, VmOptions options, usize offset, usize size, HandleValue *child, VirtAddr *child_addr)` | 只接受 CanMapR/W/X 与 Specific；子区域 rights = 默认值 + 由 CanMap 位推出的 R/W/X。用于栈 guard 和 PIE 整体预留 | 每个 CanMap 位都要求 parent 有对应 rights | P1 | `ou::vma_allocate` |
+| `Status ours_vma_protect(HandleValue vma, VmOptions options, VirtAddr addr, usize length)` | 新权限必须 ⊆ 映射上限且 ⊆ vma 句柄的 rights；对 vDSO 拒绝。**只能和 per-mapping 上限同一个提交上线** | 对应的 Read/Write/Execute | P1 | `ou::vma_protect` |
+| `Status ours_vma_destroy(HandleValue vma)` | 拆掉所有映射和子区域，并把区域标为失效；root 回 NotSupported；包含 vDSO 的拒绝。前置：`VmArea::destroy` 改为公开并持锁 | OpChildren | P1 | `ou::vma_destroy` |
+| `ours_vmo_set_size`、`ours_vmo_create_child`（Slice，Snapshot 先用急切复制）、`ours_vmo_create_physical(HandleValue resource, PhysAddr paddr, usize size, HandleValue *out)`、`ours_vmo_set_cache_policy`、`ours_vmo_replace_as_executable`、`ours_vmo_create_contiguous`、`ours_vma_op_range` | 形状照 Zircon。physical 要求 Mmio 资源覆盖所请求的范围；cache policy 要求 arch 先有 WC/UC 位 | 同 Zircon | P2 | 同名 |
 | `ours_pager_*`、`ours_stream_*` | 依赖 Port 和 PageSource 的读请求协议；`pager_dispatcher.hpp` 当作脚手架保留 | 同 Zircon | P2 | 同名 |
 
 ### 2.4 D IPC 与同步
@@ -251,7 +251,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
    - 建唯一的 vDSO VmoDispatcher，由内核持有、不外发，登记到对象层。
    - 调 `ProcessDispatcher::create(root_job, "userboot")`，它在内部映射 vDSO。
    - 内核 elfload 装载 userboot。
-   - `channel_create`，写一条 processargs 消息，带上 PROC_SELF、THREAD_SELF、VMAR_ROOT、JOB_DEFAULT、VMO_BOOTFS、Log、四个 ranged root resource；environ 里放 OBI 命令行中所有 `userboot.*` 项。
+   - `channel_create`，写一条 processargs 消息，带上 PROC_SELF、THREAD_SELF、VMA_ROOT、JOB_DEFAULT、VMO_BOOTFS、Log、四个 ranged root resource；environ 里放 OBI 命令行中所有 `userboot.*` 项。
    - 调 `ProcessDispatcher::start(arg1 = 用户端 channel, arg2 = vdso_base)`。
 2. **userboot**（与内核同构建的小程序）：
    - runtime 读出消息，从 environ 取 `userboot.next`（默认是 init）；
@@ -261,14 +261,14 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 3. **init**：持有根 job 和根资源；为服务建子 job；读 BootFS 里的服务清单，依次启动 logger、console、shell；用 `object_wait_one(TERMINATED)` 加 `get_info(Process)` 回收子进程，必要时重启。
 4. **launcher 算法**（`system/lib/launch`）：
    1. `process_create`、`thread_create`；
-   2. 对每个 PT_LOAD：可写段 `vmo_create` → `vmar_map` 进 launcher 自己（R+W）→ memcpy 段内容，得到私有的一份；只读段和可执行段不复制，直接从 bootfs_x（经 vmex 换出的 BootFS，D3）按文件内页对齐的偏移映射（`vmar_map` 的 vmo_offset，K21）。`vmo_create` 建的 VMO 永远不带 Execute，按 X 映射会被拒；
+   2. 对每个 PT_LOAD：可写段 `vmo_create` → `vma_map` 进 launcher 自己（R+W）→ memcpy 段内容，得到私有的一份；只读段和可执行段不复制，直接从 bootfs_x（经 vmex 换出的 BootFS，D3）按文件内页对齐的偏移映射（`vma_map` 的 vmo_offset，K21）。`vmo_create` 建的 VMO 永远不带 Execute，按 X 映射会被拒；
    3. 用 `get_property(ProcessVdsoBaseAddress)` 读子进程的 vDSO 基址；
    4. Binder 按 BootFS 里 `vdso` 文件的 .dynsym，在 launcher 自己的临时视图里写 GOT；
-   5. `vmar_unmap` 临时视图，再按 p_flags `vmar_map` 进子进程：W 与 X 不能同时出现（W^X，`vmar_map` 回 InvArgs），映射上限取两边句柄 rights 的交集。因为绑定已经完成，子进程直接以最终权限映射，RELRO 段也不需要 protect；
-   6. 栈：`vmar_allocate` 留 guard，再 `vmo_create` + `vmar_map(R+W)`；
+   5. `vma_unmap` 临时视图，再按 p_flags `vma_map` 进子进程：W 与 X 不能同时出现（W^X，`vma_map` 回 InvArgs），映射上限取两边句柄 rights 的交集。因为绑定已经完成，子进程直接以最终权限映射，RELRO 段也不需要 protect；
+   6. 栈：`vma_allocate` 留 guard，再 `vmo_create` + `vma_map(R+W)`；
    7. `channel_create`，`channel_write` 写 processargs 并随消息转移句柄；
    8. `process_start(proc, thread, entry, sp, child_end, vdso_base)`；
-   9. 关掉 child_vmar 和 parent_end；进程句柄用 `handle_replace` 降到 Wait+Inspect+Destroy。
+   9. 关掉 child_vma 和 parent_end；进程句柄用 `handle_replace` 降到 Wait+Inspect+Destroy。
 
 ### 3.3 引导协议
 
@@ -278,7 +278,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
   - 头部：`struct ProcArgs { u32 protocol, version, handle_info_off, args_off, args_num, environ_off, environ_num, names_off, names_num; }`，字段顺序与 `zx_proc_args` 相同；`PROCARGS_PROTOCOL` 用 ours 自己的 magic，避免让人误以为与 Zircon 线上兼容。
   - 每个句柄对应一个 u32：`handle_info(HandleType type, u16 arg) = u32(type) | u32(arg) << 16`，位布局同 `PA_HND`。
   - 字节布局：`[ProcArgs][u32 handle_info × nh][argv][environ][names]`，所有字符串以 NUL 结尾、首尾相接。消息里的句柄数组与 handle_info 按下标一一对应。上限就是 channel 的上限。
-- **`enum class HandleType : u8`** 沿用 Zircon 的数值：ProcSelf 0x01、ThreadSelf 0x02、JobDefault 0x03、VmarRoot 0x04、VmarLoaded 0x05、VmoStack 0x13、VmoExecutable 0x14、VmoBootdata 0x1A、VmoBootfs 0x1B、NsDir 0x20、Fd 0x30、DirectoryRequest 0x3B、LogSink 0x3D、Resource 0x3F、MmioResource 0x50、IrqResource 0x51、IoportResource 0x52、SystemResource 0x54、User0..2 0xF0..0xF2。ours 自有的类型（如 Debuglog）放在 0xE0–0xEF。VmoVdso 0x11 保留不用，因为 vDSO VMO 不外发。
+- **`enum class HandleType : u8`** 沿用 Zircon 的数值：ProcSelf 0x01、ThreadSelf 0x02、JobDefault 0x03、VmaRoot 0x04、VmaLoaded 0x05、VmoStack 0x13、VmoExecutable 0x14、VmoBootdata 0x1A、VmoBootfs 0x1B、NsDir 0x20、Fd 0x30、DirectoryRequest 0x3B、LogSink 0x3D、Resource 0x3F、MmioResource 0x50、IrqResource 0x51、IoportResource 0x52、SystemResource 0x54、User0..2 0xF0..0xF2。ours 自有的类型（如 Debuglog）放在 0xE0–0xEF。VmoVdso 0x11 保留不用，因为 vDSO VMO 不外发。
 
 ### 3.4 进程初始环境
 
@@ -301,7 +301,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 | 阶段 | 谁加载 | 谁把导入绑到 vDSO | 用到的接口 |
 |---|---|---|---|
 | P0 | 内核 `userabi::launch`。init 由内核直接起，shell 经 `process_spawn_boot` 起；只从内核包里取文件 | 内核 `elfload::Binder` | 不需要新的加载接口 |
-| P1 | 父进程的 launcher，从 BootFS VMO 映射后自己解析 | 父进程 launcher 用移到 `system/lib/elfload` 的 Binder，在自己的临时视图里写 GOT | process_create/thread_create/process_start、vmo_create、vmar_map/unmap/allocate、get_property、channel_* |
+| P1 | 父进程的 launcher，从 BootFS VMO 映射后自己解析 | 父进程 launcher 用移到 `system/lib/elfload` 的 Binder，在自己的临时视图里写 GOT | process_create/thread_create/process_start、vmo_create、vma_map/unmap/allocate、get_property、channel_* |
 | P2 | 同 P1 | 子进程的 crt0 用 rsi 里的基址自己绑定（先跑一段不需要重定位的自举代码） | 同 P1 |
 | 之后 | userboot 改由 phys 加载（`HandoffEnd::Elf`），内核不再解析任何 ELF | — | — |
 
@@ -348,7 +348,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 | Thread | BASIC + IO + PROPERTY + Destroy + Signal + ManageThread | 相同 |
 | Job | BASIC + IO + PROPERTY + GetPolicy + SetPolicy + Enumerate + Destroy + Signal + ManageJob + ManageProcess + ManageThread | 相同（今天是 None） |
 | Vmo | BASIC + IO + PROPERTY + Map + Signal | 相同；Execute 只能经 `vmo_replace_as_executable` 换出，换出的句柄同时去掉 Write（见 §9） |
-| Vmar | BASIC − Wait + OpChildren，再加由区域 flags 推出的 R/W/X | 相同 |
+| Vma | BASIC − Wait + OpChildren，再加由区域 flags 推出的 R/W/X | 相同 |
 | Event / EventPair | BASIC + Signal；EventPair 再加 SignalPeer | 相同 |
 | Port | BASIC − Wait + IO | 相同 |
 | Timer / Log | BASIC + Write + Signal；Log 以 Readable 创建时加 Read | 相同 |
@@ -375,7 +375,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 - **InfoTopic** 编号照搬 Zircon，高 4 位是版本号。
   - P1：HandleValid(1)、HandleBasic(2)、Process、Thread、Vmo、ProcessThreads、JobChildren、JobProcesses、HandleCount。
-  - P2：Vmar、HandleTable、ProcessMaps、TaskStats、KmemStats。
+  - P2：Vma、HandleTable、ProcessMaps、TaskStats、KmemStats。
 - **记录结构**：`InfoHandleBasic{KoId koid; Rights rights; ObjectType type; KoId related_koid; u32 reserved; u8 padding[4];}`。所有公共 ABI 结构体都用 static_assert 钉住 sizeof 和 offsetof。
 - **ObjectType** 编号照搬 Zircon：Process=1、Thread=2、Vmo=3、Channel=4、Event=5、Port=6、Resource=15、EventPair=16、Job=17、Vmar=18，其余照 `zircon/types.h`。
 - **分派**：syscall 层按 ObjectType switch，downcast 后调具名方法，不给 dispatcher 加虚函数。
@@ -487,7 +487,7 @@ shell: bootstrap says "ping"
 init: shell says "pong"
 ```
 
-如果主人否决 D1-A，第 1–7 步不变，第 8–9 步换成 P1-C 里 process_create、thread_create、process_start、vmo_create、vmo_get_size、vmar_map 这组子集。
+如果主人否决 D1-A，第 1–7 步不变，第 8–9 步换成 P1-C 里 process_create、thread_create、process_start、vmo_create、vmo_get_size、vma_map 这组子集。
 
 **P0 之后的 P1 批次**：
 
@@ -495,10 +495,10 @@ init: shell says "pong"
 |---|---|---|---|
 | P1-A 边界 | 系统调用生成器；UserPtr 的 `data_fault_resume`；fault-kill（`on_user_exception`；Kill 分支先开中断再 `Thread::Current::exit`；sysret 前检查挂起信号）；非 vDSO 陷入改为杀进程；KoId 改 u64；句柄查找的常数时间选择（Spectre V1）。arena 惰性提交推迟到 P1-C，每表随机数推迟到 P1-E 的 CPRNG（2026-09-24 定） | 无（随机数暂取 0） | 把坏指针交给系统调用得到 `InvArgs`；自己解引用坏指针、#GP、ud2、从 vDSO 外陷入的程序被杀掉；两种情况内核都继续运行。计划见 `.agents/tasks/syscall-boundary/PLAN.md` |
 | P1-B 生命周期 | 进程状态机、`process_exit`、线程 `on_exit` 摘表并清 `m_kernel_thread`、`VmAspace::destroy`、TERMINATED、get_info(HandleValid/HandleBasic/Process)、`task_kill`、job 子表与 `job_create`、内核内部的 init critical | P1-A | init 读到 shell 的退出码；循环起停 100 次，内存不增长 |
-| P1-C 加载器专线 | D2、D3 定案；Vmar 改名；process_create/thread_create/process_start；vmo_create/get_size；vmar_map；handle_duplicate/replace；句柄随消息转移与每进程记账；processargs；独立的 userboot；runtime/crt0；用户侧 libc；Binder 和 bootfs::View 移到 system/lib；BootFS VMO；**删除 spawn_boot** | P1-B；mm 的 `size()`、边界检查、偏移透传、`write()` | init 在用户态从 BootFS 装载 shell；lib/syscall 不再依赖 userabi |
+| P1-C 加载器专线 | D2、D3 定案；Vma 命名；process_create/thread_create/process_start；vmo_create/get_size；vma_map；handle_duplicate/replace；句柄随消息转移与每进程记账；processargs；独立的 userboot；runtime/crt0；用户侧 libc；Binder 和 bootfs::View 移到 system/lib；BootFS VMO；**删除 spawn_boot** | P1-B；mm 的 `size()`、边界检查、偏移透传、`write()` | init 在用户态从 BootFS 装载 shell；lib/syscall 不再依赖 userabi |
 | P1-D 多路与同步 | wait_many、event、eventpair、object_signal/signal_peer、port、get/set_property；thread_start/exit；futex；内核版 channel_call；消息上限升到 64 KiB | TLB shootdown、缺页路径的 VMO 锁、OwnedWaitQueue 退避协议、Semaphore | 一个多线程服务用 port 同时服务两个客户端 |
 | P1-E 时间与诊断 | clock/deadline/nanosleep、timer、debuglog、cprng、系统信息、ResourceDispatcher 重写与 ranged root 交付、debug_write 收口 | P1-C 的 processargs | shell 用 Log 句柄输出；带 deadline 的 wait_one 按时回 TimeOut |
-| P1-F 内存补全 | vmo_read/write、op_range、vmar_unmap/allocate/protect/destroy（protect 与 per-mapping 上限同一提交）、修 OOM 死循环（heap.md #3） | P1-C | malloc 能 Decommit 回收内存；对只读 BootFS 映射 protect 成可写会被拒绝 |
+| P1-F 内存补全 | vmo_read/write、op_range、vma_unmap/allocate/protect/destroy（protect 与 per-mapping 上限同一提交）、修 OOM 死循环（heap.md #3） | P1-C | malloc 能 Decommit 回收内存；对只读 BootFS 映射 protect 成可写会被拒绝 |
 
 ## 6 下层阻塞项
 
@@ -532,8 +532,8 @@ P1 的前置：
 | 线程退出后 ThreadDispatcher 仍挂在 SafeLink 链上，析构时 trap | `process_dispatcher.cpp:87-101`、`thread_dispatcher.cpp:125-142`、`list_hook.hpp:63-64` | 第一次 process_exit 就 trap | 在进程锁下 `remove_thread`，并清掉指针（Zircon `ResetCoreThread`） |
 | 进程死后什么都回收不了：aspace 与 root VMA 的 Arc 成环、`~VmAspace` 是空函数、没有 ArchVmAspace::destroy、内核栈和 elfload 取的帧都泄漏 | `vm_area_or_mapping.hpp:159-160`、`vm_aspace.hpp:127`、`vm_aspace.cpp:84-86`、`stack.cpp:23-55`、`loader.cpp:108-146` | 服务重启 | `VmAspace::destroy()`：拆 root VMA、摘出 `ALL_ASPACE_LIST`、页表释放推迟到 CR3 不再指向它（Zircon `VmAspace::Destroy`） |
 | `VmObjectPaged::read/write` 是 Unimplemented；没有 `VmObject::size()` | `vm_object_paged.cpp:103-113` | BootFS VMO、vmo_read/write/get_size | 内核缓冲版 + 用户拷贝版 |
-| 建映射不检查 VMO 边界；`map_with_vmo` 把偏移写死为 0；create 丢掉 `commit_range` 的返回值 | `vm_area.cpp:117-157,267,274`、`vm_cow_pages.cpp:39-41`、`vm_object_paged.cpp:40` | vmar_map | dispatcher 检查、偏移透传、错误传出 |
-| 映射的权限上限直接取区域的 `m_vmaf` | `vm_area.cpp:136-143` | vmar_protect | `create_mapping` 加 ceiling 参数 |
+| 建映射不检查 VMO 边界；`map_with_vmo` 把偏移写死为 0；create 丢掉 `commit_range` 的返回值 | `vm_area.cpp:117-157,267,274`、`vm_cow_pages.cpp:39-41`、`vm_object_paged.cpp:40` | vma_map | dispatcher 检查、偏移透传、错误传出 |
+| 映射的权限上限直接取区域的 `m_vmaf` | `vm_area.cpp:136-143` | vma_protect | `create_mapping` 加 ceiling 参数 |
 | 缺页路径不取 VMO 锁；aspace 锁是自旋锁 | `vm_mapping.cpp:391-500`、`vm_aspace.hpp:82-84` | 共享惰性 VMO、多线程进程 | D12 |
 | 没有 TLB shootdown | `docs/repairs/260919/x86-mm.md #1` | thread_start、unmap/protect/decommit | 先修 |
 | OwnedWaitQueue 的退避协议是占位；Semaphore 是桩 | `owned_wait_queue.hpp:63-78`、`sync-mutex.md #1`、`semaphore.cpp` | futex、channel_call 的 PI、port | 补完 |
@@ -547,7 +547,7 @@ P1 的前置：
 | # | 问题 | 选项 | 推荐 |
 |---|---|---|---|
 | D1 | P0 用什么方式起第二个程序 | A 临时的 `process_spawn_boot`（6 个新调用）；B 直接做用户态加载器（约 12 个新调用，还要先修 `VmObjectPaged::write`、做用户 libc、移植 Binder、定 vDSO 归属） | **A**。先跑通，B 的全部工作在 P1-C 照做，届时删掉 A。它违背分层规则，理由见 2.8 |
-| D2 | 用户创建的进程由谁映射 vDSO，范围记在哪 | A 由内核在 `ProcessDispatcher::create` 内映射，vDSO VMO 不外发，范围记在 `mm::VmAspace`；B 照 Zircon 发 vDSO VMO，由 vmar_map 按对象身份识别 | **A**。不变式在 Initial 状态下就成立；只有 mm 能在 unmap/protect/destroy 路径上拒绝对 vDSO 的改动；不必分发一个还得防 create_child、防“只读映射后再 protect”的特权 VMO。基址通过 `get_property(ProcessVdsoBaseAddress)` 读出 |
+| D2 | 用户创建的进程由谁映射 vDSO，范围记在哪 | A 由内核在 `ProcessDispatcher::create` 内映射，vDSO VMO 不外发，范围记在 `mm::VmAspace`；B 照 Zircon 发 vDSO VMO，由 vma_map 按对象身份识别 | **A**。不变式在 Initial 状态下就成立；只有 mm 能在 unmap/protect/destroy 路径上拒绝对 vDSO 的改动；不必分发一个还得防 create_child、防“只读映射后再 protect”的特权 VMO。基址通过 `get_property(ProcessVdsoBaseAddress)` 读出 |
 | D3 | P0 之后 ELF 由谁加载 | A 用户态 launcher，父进程用共享的 Binder 绑定导入，P2 改为 crt0 自绑定；B 保留一个永久的内核加载调用 | **A**。否则 ring 0 要为每次启动解析不可信的 ELF |
 | D4 | 公共句柄值类型叫什么 | A 改名为 `ours::HandleValue`，用户侧 `ou::Handle` 做 RAII；B 保留 `ours::Handle` | **A**。系统调用层会同时出现 `ours::Handle` 和 `object::Handle` |
 | D5 | 从公共 Signals 挪出的线程控制位叫什么 | A `task::ThreadSignals`；B `task::PendingActions`；C `task::ThreadRequests` | **A**，便于对照 Zircon 的 `THREAD_SIGNAL_*` |
@@ -576,7 +576,7 @@ P1 的前置：
 | P0 映射可执行时不查 Execute，用单个 RWX 镜像 VMO | startup | 否决 | rights 交集检查从第一天就做，否则以后收紧就是改语义 |
 | 把 HPET 的 MMIO 页映射给用户读时钟 | resource | 否决 | 暴露设备寄存器，Linux 也已放弃这种做法 |
 | 全局 thread_lock；虚函数 `get_type()`/`get_lock()` | Zircon | 否决 | 违反主人的规则；不新增虚函数 |
-| P0 的用户态加载器、Vmo/Vmar、processargs、独立 userboot | memory、startup | 推迟到 P1-C | 压着四处下层阻塞，P0 的成本被低估了 |
+| P0 的用户态加载器、Vmo/Vma、processargs、独立 userboot | memory、startup | 推迟到 P1-C | 压着四处下层阻塞，P0 的成本被低估了 |
 | P0 的 process_create/start/exit 与 fault-kill | task | 推迟到 P1-A/B | P0 的程序都是受信的，交换完消息后自旋即可；bring-up 期 panic 更响亮 |
 | P0 的生成器、sysret 白名单、KoId u64、get_info、handle_duplicate | object_model | 推迟到 P1 | 手写 6 个桩可控；生成器是 P1 第一件事 |
 | P0 的 UserPtr 故障恢复 | object_model、评审 2 | 推迟到 P1-A（与 fault-kill 同批） | P0 只跑受信程序；stac/clac 已经消除 SMAP 活锁，缺页 panic 能让违规暴露出来 |
@@ -584,7 +584,7 @@ P1 的前置：
 | 64 KiB 消息 | ipc | 推迟到 P1-D | 要等 BufferChain；vmalloc 有区间数限制，vfree 没有 shootdown |
 | exception channel、thread_read_state | task | 推迟到 P2 | init 用 TERMINATED、ProcessInfo 的 retcode 加内核打印的故障报告就能监督；异常通道是给调试器和崩溃报告器的 |
 | SuspendToken、Profile、JobPolicy、job_set_critical 系统调用 | task | P2 | 服务于调试、安全加固、实时性 |
-| Vmar 的 CanMapSpecific / SpecificOverwrite | memory | P2 | `VmPlacement::at` 遇到已占用地址一律拒绝 |
+| Vma 的 CanMapSpecific / SpecificOverwrite | memory | P2 | `VmPlacement::at` 遇到已占用地址一律拒绝 |
 | 在 ABI 里给 Profile 预留 Deadline 字段 | task | 否决（暂不进 ABI） | 调度器还没有这些参数，不预留可能写错的字段 |
 | 删除 ProcessDispatcher 的进程树成员 | task | 暂缓 | 可能是预留的脚手架，先问主人 |
 | 用 vdso_only 属性或隐藏符号当安全边界 | object_model、resource | 否决 | 精确的 sysret 校验落地之前，跳进桩就能陷入 |

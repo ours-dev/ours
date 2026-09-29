@@ -65,8 +65,8 @@ class ChannelDispatcher final: public ChannelDispatcherBase {
     /// Queues |message| on *this* end, ahead of anything already there, and
     /// raises Readable. For the kernel only, and TEMPORARY.
     ///
-    /// userabi::launch() uses it to hand a new process its root VMAR in a
-    /// processargs message of its own (VmarRoot), because the starter that
+    /// userabi::launch() uses it to hand a new process its root VMA in a
+    /// processargs message of its own (VmaRoot), because the starter that
     /// wrote the process's real processargs could not: the process, and with
     /// it the region, did not exist yet. Ahead, so that the process always
     /// reads the kernel's message first whether its starter wrote before the

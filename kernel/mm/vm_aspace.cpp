@@ -199,7 +199,7 @@ auto VmAspace::init() -> Status {
 /// released after the lock, because releasing them can run ~VmMapping and
 /// free a VMO's pages.
 ///
-/// The VMAs keep their own Arc<VmAspace>: a VMAR handle can outlive the
+/// The VMAs keep their own Arc<VmAspace>: a VMA handle can outlive the
 /// process, and a region takes its lock through that pointer. Such a handle
 /// finds its region inactive and every operation answers BadState.
 auto VmAspace::destroy() -> Status {

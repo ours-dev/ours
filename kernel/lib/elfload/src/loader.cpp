@@ -179,7 +179,7 @@ auto Loader::map(ImageVmo &image, VirtAddr const at, VmOptions const perms, char
 
     // Through the dispatcher, not through the VmArea it stands for: a
     // VmArea knows what a mapping is allowed to be, but cannot know who is
-    // asking, and every future syscall::vmar_map has to answer that. Rights
+    // asking, and every future syscall::vma_map has to answer that. Rights
     // live on the handle, so the entry point has to be on the object that
     // a handle names.
     //
@@ -196,8 +196,8 @@ auto Loader::map(ImageVmo &image, VirtAddr const at, VmOptions const perms, char
         ceiling |= VmOptions::CanMapExecute;
     }
     auto const options = perms | ceiling | VmOptions::Specific | VmOptions::MapRange;
-    auto const vmar_offset = at - m_root_vmar.vma()->base();
-    auto mapping = m_root_vmar.map(options, vmar_offset, *vmo.dispatcher(), 0, out.span, name);
+    auto const vma_offset = at - m_root_vma.vma()->base();
+    auto mapping = m_root_vma.map(options, vma_offset, *vmo.dispatcher(), 0, out.span, name);
     if (mapping.is_err()) {
         log::error("elfload: could not map {}: {}", name, to_string(mapping.unwrap_err()));
         return mapping.unwrap_err();

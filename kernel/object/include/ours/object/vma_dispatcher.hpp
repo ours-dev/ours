@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef OURS_OBJECT_VMAR_DISPATCHER_HPP
-#define OURS_OBJECT_VMAR_DISPATCHER_HPP 1
+#ifndef OURS_OBJECT_VMA_DISPATCHER_HPP
+#define OURS_OBJECT_VMA_DISPATCHER_HPP 1
 
 #include <ours/mm/vm_area.hpp>
 #include <ours/object/dispatcher.hpp>
@@ -15,9 +15,9 @@ namespace ours::object {
 /// Zircon ZX_DEFAULT_VMAR_RIGHTS: a region is not waited on, and what may be
 /// mapped into it is added per handle (Read/Write/Execute) by whoever creates
 /// it, not granted by default.
-constexpr auto RIGHTS_DEFAULT_VMAR = (Rights::Basic & ~Rights::Wait) | Rights::OpChildren;
+constexpr auto RIGHTS_DEFAULT_VMA = (Rights::Basic & ~Rights::Wait) | Rights::OpChildren;
 
-using VmarDispatcherBase = SoloDispatcher<VmarDispatcher, RIGHTS_DEFAULT_VMAR, Signals::None>;
+using VmaDispatcherBase = SoloDispatcher<VmaDispatcher, RIGHTS_DEFAULT_VMA, Signals::None>;
 
 /// The object-layer face of one mm::VmArea.
 ///
@@ -35,7 +35,7 @@ using VmarDispatcherBase = SoloDispatcher<VmarDispatcher, RIGHTS_DEFAULT_VMAR, S
 /// The reason this type has to exist at all, rather than letting bring-up code
 /// map through mm::VmArea directly, is that rights live on handles. A VmArea
 /// knows what a mapping is *allowed* to be (its VmaFlags ceiling); it does not
-/// know who is asking. Every future syscall::vmar_map has to answer "may this
+/// know who is asking. Every future syscall::vma_map has to answer "may this
 /// caller map here", and the only object in the tree that can answer it is the
 /// handle that got the caller here -- which means the mapping entry point has
 /// to be on the dispatcher, not on the VmArea.
@@ -43,12 +43,12 @@ using VmarDispatcherBase = SoloDispatcher<VmarDispatcher, RIGHTS_DEFAULT_VMAR, S
 /// hierarchy stops at Dispatcher -> SoloDispatcher -> the concrete object --
 /// and saying so is what lets the destructor below be marked `final` too.
 /// Zircon spells VmAddressRegionDispatcher the same way.
-class VmarDispatcher final: public VmarDispatcherBase {
-    using Self = VmarDispatcher;
-    using Base = VmarDispatcherBase;
+class VmaDispatcher final: public VmaDispatcherBase {
+    using Self = VmaDispatcher;
+    using Base = VmaDispatcherBase;
 
   public:
-    static constexpr auto TYPE_TAG = type_tag(ObjectType::Vmar);
+    static constexpr auto TYPE_TAG = type_tag(ObjectType::Vma);
 
     /// Wraps |vma| in a new dispatcher and reports the rights its first handle
     /// should carry.
@@ -82,23 +82,23 @@ class VmarDispatcher final: public VmarDispatcherBase {
     /// so a kernel caller, which has no handle to ask, says what it means in
     /// the same words. Interface design 2.3 had this take the two handles'
     /// rights instead; the options word says the same and keeps one meaning
-    /// for CanMap from the kernel up to vmar_allocate.
+    /// for CanMap from the kernel up to vma_allocate.
     ///
     /// Only Perm*, Specific, CanMap* and MapRange are acted on; any other bit
     /// is NotSupported. Otherwise:
-    ///   - InvArgs: length 0; vmo_offset not page-aligned; vmar_offset
+    ///   - InvArgs: length 0; vmo_offset not page-aligned; vma_offset
     ///     without Specific, or not page-aligned, or outside this region;
     ///   - AccessDenied: a Perm bit without its CanMap bit;
     ///   - OutOfRange: the range, rounded up to a page, not inside the VMO.
     ///     Zircon lets a mapping run past its VMO's end and faults the
     ///     access instead; interface design 2.3 refuses it at the door.
     /// W^X and "Write needs Read" are not checked here: they are rules for
-    /// what a program may ask (vmar_map), and userboot still maps its image
+    /// what a program may ask (vma_map), and userboot still maps its image
     /// writable and executable as one range until segments get their own.
     ///
     /// |name| names the mapping in the kernel's dumps; the system call passes
     /// its own.
-    auto map(VmOptions options, usize vmar_offset, VmoDispatcher &vmo, u64 vmo_offset, usize length,
+    auto map(VmOptions options, usize vma_offset, VmoDispatcher &vmo, u64 vmo_offset, usize length,
              char const *name) -> ktl::Result<VirtAddr>;
 
     /// Reserves [offset, offset + size) of this region as a sub-region of its
@@ -120,8 +120,8 @@ class VmarDispatcher final: public VmarDispatcherBase {
                   Rights &rights_out, VirtAddr &base_out) -> Status;
 
     /// Tears down whatever is mapped in [base, base + length) of this region.
-    /// Today vmar_map and vmar_allocate call it, to take back what they made
-    /// when they could not report it; vmar_unmap will be the next caller. A
+    /// Today vma_map and vma_allocate call it, to take back what they made
+    /// when they could not report it; vma_unmap will be the next caller. A
     /// sub-region wholly inside the range is destroyed, not left empty.
     auto unmap(VirtAddr base, usize length) -> Status {
         verify_canary();
@@ -143,18 +143,18 @@ class VmarDispatcher final: public VmarDispatcherBase {
     /// the destructor is reachable from the base rather than from callers.
     friend class ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePolicy>;
 
-    static constexpr auto MAGIC = gktl::magic("VmarDispatcher");
+    static constexpr auto MAGIC = gktl::magic("VmaDispatcher");
 
-    explicit VmarDispatcher(ustl::Arc<mm::VmArea> vma);
+    explicit VmaDispatcher(ustl::Arc<mm::VmArea> vma);
 
     /// `final`, because Dispatcher's destructor is virtual: without it this
     /// silently overrides rather than saying so, and nothing would catch a
     /// later signature change that stopped overriding.
-    ~VmarDispatcher() final;
+    ~VmaDispatcher() final;
 
     ustl::Arc<mm::VmArea> m_vma;
 };
 
 } // namespace ours::object
 
-#endif // #ifndef OURS_OBJECT_VMAR_DISPATCHER_HPP
+#endif // #ifndef OURS_OBJECT_VMA_DISPATCHER_HPP

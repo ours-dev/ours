@@ -71,7 +71,7 @@
 //
 //     Seven saves and loads %r12 alone: %r13 carries nothing, and the kernel
 //     neither reads it nor lets it change, so the stub owes nothing for it.
-//     vmar_map is the call with seven. More than eight is refused outright.
+//     vma_map is the call with seven. More than eight is refused outright.
 //
 // A 32-bit argument -- a handle, a count, an option word -- is left as it is:
 // SysV leaves the upper half of its register unspecified, and the kernel

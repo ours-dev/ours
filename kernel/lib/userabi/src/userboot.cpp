@@ -30,7 +30,7 @@
 #include <ours/object/message_packet.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
-#include <ours/object/vmar_dispatcher.hpp>
+#include <ours/object/vma_dispatcher.hpp>
 #include <ours/object/vmo_dispatcher.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
@@ -431,9 +431,9 @@ namespace {
     /// (userboot_init) where .data() is taken, and it is provably terminated
     /// there rather than at each use.
     auto load_program(ustl::views::Span<u8 const> bytes, char const *name,
-                      elfload::Loader const &loader, object::VmarDispatcher &root_vmar,
+                      elfload::Loader const &loader, object::VmaDispatcher &root_vma,
                       LoadedImage &out) -> Status {
-        // Mapped through the root VMAR, which always maps for ring 3 (User).
+        // Mapped through the root VMA, which always maps for ring 3 (User).
         // Writable as well as executable for now because the three
         // segments (R, RX, RW) are being mapped as one range; giving each its
         // own permissions is a later step, and one worth taking -- an image
@@ -471,8 +471,8 @@ namespace {
                                        VmOptions::CanMapRead | VmOptions::CanMapWrite |
                                        VmOptions::Specific | VmOptions::MapRange;
         auto stack =
-            root_vmar.map(STACK_OPTIONS, USER_STACK_TOP - USER_STACK_SIZE - root_vmar.vma()->base(),
-                          *stack_vmo.dispatcher(), 0, USER_STACK_SIZE, "userboot-stack");
+            root_vma.map(STACK_OPTIONS, USER_STACK_TOP - USER_STACK_SIZE - root_vma.vma()->base(),
+                         *stack_vmo.dispatcher(), 0, USER_STACK_SIZE, "userboot-stack");
         if (stack.is_err()) {
             log::error("userboot: could not map a stack: {}", to_string(stack.unwrap_err()));
             return stack.unwrap_err();
@@ -536,7 +536,7 @@ namespace {
         return Status::Ok;
     }
 
-    /// Queues the VmarRoot message on |bootstrap|, the channel end a new
+    /// Queues the VmaRoot message on |bootstrap|, the channel end a new
     /// process is about to be given; see launch(). TEMPORARY, until K23.
     ///
     /// A processargs message like any other, with no arguments and one
@@ -545,9 +545,9 @@ namespace {
     /// process that asked for the launch, as K11 charges every handle to the
     /// process that creates it -- the region is one of the handles a starter
     /// is accountable for (userspace-filesystem design, the init quota).
-    auto deliver_root_vmar(object::Handle &bootstrap,
-                           object::KernelHandle<object::VmarDispatcher> root_vmar,
-                           Rights const rights) -> Status {
+    auto deliver_root_vma(object::Handle &bootstrap,
+                          object::KernelHandle<object::VmaDispatcher> root_vma, Rights const rights)
+        -> Status {
         auto channel = bootstrap.dispatcher().downcast<object::ChannelDispatcher>();
         if (!channel) {
             // Not a channel: nothing the runtime could read a message from.
@@ -557,18 +557,18 @@ namespace {
 
         ustl::Box<object::Handle> handles[1];
         handles[0] = object::Handle::make(
-            object::KernelHandle<object::Dispatcher>(ustl::move(root_vmar)), rights);
+            object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), rights);
         if (!handles[0]) {
             return Status::NoResource;
         }
-        u32 const infos[1] = {handle_info(HandleType::VmarRoot, 0)};
+        u32 const infos[1] = {handle_info(HandleType::VmaRoot, 0)};
 
         constexpr usize MESSAGE_BYTES = sizeof(ProcArgs) + sizeof(u32);
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         if (auto const status = encode_process_args(message, {infos, 1}, {}, {}, {}, &length);
             Status::Ok != status) {
-            log::error("userabi: could not encode the VmarRoot message: {}", to_string(status));
+            log::error("userabi: could not encode the VmaRoot message: {}", to_string(status));
             return status;
         }
 
@@ -629,14 +629,14 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
 
     // One call builds both the process and the only object that may map into
     // it. They come back together because neither is useful alone: a process
-    // with no root VMAR cannot be given any memory, and a VMAR dispatcher with
+    // with no root VMA cannot be given any memory, and a VMA dispatcher with
     // no process names a region nothing will ever run in.
     object::KernelHandle<object::ProcessDispatcher> process;
-    object::KernelHandle<object::VmarDispatcher> root_vmar;
+    object::KernelHandle<object::VmaDispatcher> root_vma;
     Rights process_rights;
-    Rights root_vmar_rights;
+    Rights root_vma_rights;
     auto status = object::ProcessDispatcher::create(job, program.text, process, process_rights,
-                                                    root_vmar, root_vmar_rights);
+                                                    root_vma, root_vma_rights);
     if (Status::Ok != status) {
         log::error("userabi: could not create the process: {}", to_string(status));
         return status;
@@ -645,10 +645,10 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // One loader for this process's address space: every image it is built
     // out of goes through the same one, and the object that may map into it is
     // what they have in common.
-    elfload::Loader const loader{*root_vmar.dispatcher()};
+    elfload::Loader const loader{*root_vma.dispatcher()};
 
     LoadedImage loaded;
-    status = load_program(image.unwrap(), program.text, loader, *root_vmar.dispatcher(), loaded);
+    status = load_program(image.unwrap(), program.text, loader, *root_vma.dispatcher(), loaded);
     if (Status::Ok != status) {
         return status;
     }
@@ -702,14 +702,14 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
         return status;
     }
 
-    // The root VMAR, in a processargs message of its own ahead of the
+    // The root VMA, in a processargs message of its own ahead of the
     // starter's (ChannelDispatcher::deliver_first()). TEMPORARY, until K23:
     // whoever wrote the process's processargs did so before the process -- and
     // so the region -- existed, and only this function ever holds the region.
     // A process with no bootstrap channel gets no region handle, as it gets no
     // other handle.
     if (bootstrap) {
-        status = deliver_root_vmar(*bootstrap, ustl::move(root_vmar), root_vmar_rights);
+        status = deliver_root_vma(*bootstrap, ustl::move(root_vma), root_vma_rights);
         if (Status::Ok != status) {
             return status;
         }

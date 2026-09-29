@@ -29,7 +29,7 @@
 - There is one vDSO VMO, laid out once by the kernel (`userboot_init()`, like
   Zircon's `VDso::Create()`), and it is mapped by whoever starts the process
   -- today `userabi::launch()`, after K23 the user-space launcher through
-  `vmar_map` on a vDSO VMO handle it is given, as Zircon's userboot and
+  `vma_map` on a vDSO VMO handle it is given, as Zircon's userboot and
   process_builder do. `ProcessDispatcher::create` does not map it. The user
   chose Zircon's shape over "the kernel maps it at process creation"
   (2026-09-28); never copy the vDSO per process.
@@ -38,6 +38,10 @@
   `//system/lib/ou` (even if it only forwards). Ring-3 code calls `ou::...`,
   never raw `ours_*` symbols. Limits callers must respect (such as
   `MAX_DEBUG_WRITE`) live in `system/public/ours/syscall.hpp`.
+- The address-region object is **Vma** at every layer: `VmaDispatcher`,
+  `ours_vma_*`, `ou::vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
+  `mm::VmArea` -- not Zircon's "Vmar" (the user's call, 2026-09-28, after a
+  rename to Vmar was reverted). Values stay Zircon's.
 - The kernel handler for `ours_<name>` is `ours::syscall::<name>`, with no
   `sys_` prefix: Zircon needs `sys_` because its handlers share the global
   namespace, and here the namespace already says it (the user's call,
@@ -80,5 +84,5 @@ special-cases the one item known to be sensitive today.
 Get a slice running end to end before guaranteeing its semantics, but the
 running path must go through the real, if minimal, interfaces of the layers
 below. Routing around a missing interface with a different existing one (say,
-`vmo_read` because `vmar_map` does not exist yet) is a stand-in too: propose
+`vmo_read` because `vma_map` does not exist yet) is a stand-in too: propose
 adding the missing syscall first.
