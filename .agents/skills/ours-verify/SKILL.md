@@ -1,6 +1,6 @@
 ---
 name: ours-verify
-description: Build the ours kernel and boot both dev images in QEMU to prove a change works. Use after any change to kernel, phys, userboot, init, shell or build files, before every commit, and whenever the user says verify, build and boot, "验证一下", "跑一下", "启动看看", or asks whether something still boots. A clean compile is not verification in this repo.
+description: Build the ours kernel and boot both dev images in QEMU to prove a change works, and debug a boot that fails (breakpoints and backtraces through the lldb MCP server). Use after any change to kernel, phys, userboot, init, shell or build files, before every commit, whenever the user says verify, build and boot, "验证一下", "跑一下", "启动看看", or asks whether something still boots, and when a boot panics, asserts or hangs ("panic 了", "卡住了", "看下调用栈"). A clean compile is not verification in this repo.
 ---
 
 # Verify an ours change
@@ -32,7 +32,7 @@ first; this skill checks behaviour, that one checks the source.
 
 | Summary says | Meaning | Next step |
 |---|---|---|
-| `error-level line` | panic or failed ASSERT | read the printed context; for a backtrace see [references/debugging.md](references/debugging.md) |
+| `error-level line` | panic or failed ASSERT | read the printed context; for a backtrace, break on `vpanic` with the `lldb` MCP tool: [references/debugging.md](references/debugging.md) |
 | dbg FAIL, rel PASS | an assertion caught it; rel ran past it with assertions compiled out | fix the assertion's cause, not the assertion |
 | both FAIL at the same point | nothing is masked by an assertion | debug the shared stage shown in `reached:` |
 | `no "--- end ---" within Ns` | hang or livelock | `reached:` shows the last stage; rerun with `SMP=1` to test for an SMP race |

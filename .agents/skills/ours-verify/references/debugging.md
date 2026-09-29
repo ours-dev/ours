@@ -1,28 +1,51 @@
 # Debugging a failed boot
 
-The two scripts that do this are documented in their own docstrings; read
-those first, they stay current with the code:
+Use the `lldb` MCP server (`.mcp.json`, served by `scripts/lldb_mcp.py`): its
+`command` tool runs one lldb command in a live debugger and returns the output.
+The debugger already has `scripts/lldb_ours.py` loaded, so `cl`, `cpus`,
+`nodes` and `kthread` work from the first command. `scripts/qemu_debug.py` and
+`scripts/lldb_ours.py` document themselves; read their docstrings for detail.
 
-- `scripts/qemu_debug.py` boots an image halted under QEMU's gdbstub and
-  publishes the matching ELF at `out/.debug/kernel.elf`. It prints the exact
-  lldb command line once the stub is listening.
-- `scripts/lldb_ours.py` adds `cl` for CPU_LOCAL variables. A plain `p` on a
-  CPU_LOCAL symbol prints the linker template, not any CPU's value.
+## Attach and stop where you want
 
-## Driving it from an agent session
+1. Start `scripts/qemu_debug.py` in the background. It boots the image halted
+   before its first instruction, links the matching ELF to
+   `out/.debug/kernel.elf`, and prints `gdbstub ready on localhost:<port>` when
+   it can be attached. It never exits on its own.
+   - A private build: `OUT=$PWD/out/<dir>`. `OUT` must be absolute; a relative
+     one leaves a broken `out/.debug/kernel.elf` link and every breakpoint
+     silently stays unresolved.
+   - Another session may be debugging too: pick your own `PORT`.
+2. Through the `command` tool, one command per call:
+   `target create out/.debug/kernel.elf`, then
+   `target modules load --file kernel.elf --slide 0xffffff8840000000`, then
+   `gdb-remote localhost:<port>`. The session is now stopped at the reset
+   vector (`0xfff0`).
+3. Set breakpoints now (`breakpoint set -n start_kernel`, `-n vpanic`). QEMU
+   implements them itself, so they hold even though the kernel is not loaded
+   yet.
 
-- Start `scripts/qemu_debug.py` in the background: it waits for a debugger
-  and never returns on its own.
-- Use the system `/usr/bin/lldb --batch` with the command line qemu_debug.py
-  prints, plus `-o 'breakpoint set -n vpanic' -o 'continue' -o 'bt all'`.
-  Always import `scripts/lldb_ours.py` first.
-- Boot under the gdbstub is far slower than the ~3 seconds a normal boot
-  takes. Allow well over a minute before giving up, then kill both lldb and
-  QEMU.
+## Run, wait, inspect
 
-## Without a debugger
+- `continue` returns at once ("Process 1 resuming"). Poll `process status`
+  every second or two until it says `stopped` and shows the stop reason.
+- `process interrupt` stops a running kernel, landing on whichever vCPU it
+  catches; `thread list` shows all of them.
+- Inspect only while stopped: `bt`, `register read`, `memory read`, `cl <var>`.
+  While running these fail with "requires a process which is currently
+  stopped".
+- The server handles one request at a time, so a command that blocks holds up
+  every call after it.
+- Finish with `process kill`, then stop `qemu_debug.py`. The link it wrote
+  belongs to whoever booted last; leave it.
 
-To place a bare instruction address from a crash dump, look it up in the
-symbolled ELF, `out/<dir>/kernel_x86.dbg.1/obj/kernel/products/bin/vmours`,
-with `prebuilt/clang/llvm-23/bin/llvm-nm -C -n` or `llvm-objdump -d`. The
-kernel runs at slide `0xffffff8840000000`.
+## Without the MCP server
+
+`/usr/bin/lldb --batch` with the attach line `qemu_debug.py` prints, plus
+`-o 'breakpoint set -n vpanic' -o 'continue' -o 'bt all'`. Boot under the
+gdbstub is far slower than the ~3 seconds of a normal boot; allow over a minute.
+
+To place a bare instruction address from a crash dump without a debugger, look
+it up in `out/<dir>/kernel_x86.dbg.1/obj/kernel/products/bin/vmours` with
+`prebuilt/clang/llvm-23/bin/llvm-nm -C -n` or `llvm-objdump -d`; the kernel runs
+at slide `0xffffff8840000000`.
