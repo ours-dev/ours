@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import format_cpp
+import install_hooks
 
 REPO = Path(__file__).resolve().parent.parent
 try:
@@ -18,7 +19,6 @@ except format_cpp.FormatError:
 
 BAD = "int   a =1;\n"
 GOOD = "int a = 1;\n"
-TOOLS = ["format_cpp.py", "formatting.py", "lint_docs.py", "claude_hook.py", "gitdiff.py"]
 TEMPLATES = ["docs/changes/TEMPLATE.md", "docs/repairs/TEMPLATE.md", ".agents/tasks/TEMPLATE.md"]
 
 
@@ -30,7 +30,9 @@ class PreCommit(unittest.TestCase):
         self.top = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, self.top, ignore_errors=True)
         self.git("init", "-q")
-        for rel in [".clang-format", ".githooks/pre-commit", *TEMPLATES, *[f"scripts/{t}" for t in TOOLS]]:
+        # What the hook needs is install_hooks.REQUIRED, the list a worktree is judged by. A copy kept
+        # here went stale when format_cpp.py gained an import, and every check then "skipped".
+        for rel in [".clang-format", *TEMPLATES, *install_hooks.REQUIRED]:
             (self.top / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / rel, self.top / rel)
         # Found the way it is found in the real tree, not through CLANG_FORMAT: under a hook git

@@ -77,13 +77,13 @@ bare commit takes whatever the others have staged.
 A pre-commit hook (`.githooks/pre-commit`) refuses a commit whose changed C/C++
 lines are not clang-format clean or whose documents break the layout standard.
 Fix what it reports; do not bypass it with `--no-verify`. It only reports, and
-only about what you changed. Turn it on once in each worktree (per worktree on
-purpose: they share one `.git/config`, and a branch that predates the hook must
-not start running the old one):
+only about what you changed. It is switched on per worktree, on purpose: they
+share one `.git/config`, and a branch that predates the hook must not start
+running the old one. A Claude Code session turns it on by itself when it starts
+in a worktree that has the scripts; anywhere else, run:
 
 ```bash
-git config extensions.worktreeConfig true
-git config --worktree core.hooksPath .githooks
+python3 scripts/install_hooks.py
 ```
 
 ## Working with the user
