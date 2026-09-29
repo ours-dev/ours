@@ -12,16 +12,24 @@ for which fields and headings a document must have:
 
 Usage:
 
-    python3 scripts/lint_docs.py            # what you changed since HEAD
-    python3 scripts/lint_docs.py PATH...    # whole files, every rule
-    python3 scripts/lint_docs.py --all      # every tracked document
+    python3 scripts/lint_docs.py                    # what you changed since HEAD
+    python3 scripts/lint_docs.py --changed PATH...  # only what you changed in these files
+    python3 scripts/lint_docs.py PATH...            # whole files, every rule
+    python3 scripts/lint_docs.py --all              # every tracked document
     python3 scripts/lint_docs.py --all --summary
+    python3 scripts/lint_docs.py --claude-hook      # Claude Code PostToolUse payload on stdin
 
 The default mode reports only *new* violations, the way clang-tidy is used on
 changed lines: an untracked or newly added file is checked whole, while a
 modified file is checked only on the lines you added. Older documents are
 Chinese and predate the standard, so a violation they already had is not yours
 to fix. Exit status is 1 if anything is reported.
+
+--changed is the form for a hook or a commit gate: it looks only at the files it
+is given, so someone else's unfinished document elsewhere in the working tree
+cannot fail your edit or your commit. The Claude Code hook (.claude/settings.json)
+runs it after every Edit or Write of a document and tells the model what to fix,
+and .githooks/pre-commit runs it on the staged documents.
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -36,6 +44,9 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+
+import claude_hook as claude_hook_helpers
+import gitdiff
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -352,40 +363,82 @@ def check_family(path, p, added, is_new, std, add, wanted) -> None:
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True, env=gitdiff.git_env()).stdout
 
 
-def added_lines(path: str) -> set[int]:
-    lines: set[int] = set()
-    for hunk in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", git("diff", "-U0", "HEAD", "--", path), re.M):
-        start, count = int(hunk.group(1)), int(hunk.group(2) if hunk.group(2) is not None else 1)
-        lines.update(range(start, start + count))
-    return lines
-
-
-def changed_files() -> dict[str, Optional[set[int]]]:
-    """path -> the added line numbers, or None for a file that is new."""
+def changed_files(only: Optional[set[str]] = None) -> dict[str, Optional[set[int]]]:
+    """path -> the added line numbers, or None for a file that is new. With `only`, just
+    those paths: the others are neither listed nor diffed."""
+    wanted = lambda p: in_scope(p) and (ROOT / p).is_file() and (only is None or p in only)  # noqa: E731
+    modified: list[str] = []
     changed: dict[str, Optional[set[int]]] = {}
+    if not gitdiff.has_head(ROOT):  # no commits yet: there is nothing older, so every file is new
+        return {p: None for p in git("ls-files", "--cached", "--others", "--exclude-standard").splitlines()
+                if wanted(p)}
     for line in git("diff", "--name-status", "-M", "HEAD").splitlines():
         status, *names = line.split("\t")
         path = names[-1]
-        if status.startswith("D"):
+        if status.startswith("D") or not wanted(path):
             continue
-        changed[path] = None if status.startswith("A") else added_lines(path)
-    for path in git("ls-files", "--others", "--exclude-standard").splitlines():
-        changed[path] = None
-    return {p: a for p, a in changed.items() if in_scope(p) and (ROOT / p).is_file()}
+        if status.startswith("A"):
+            changed[path] = None
+        else:
+            modified.append(path)
+    if modified:
+        diff = gitdiff.repo_diff(ROOT)  # once, whole-repo and rename-aware: see gitdiff.py
+        for path in modified:
+            changed[path] = gitdiff.added_lines(diff, path)
+    untracked = git("ls-files", "--others", "--exclude-standard", *(["--", *sorted(only)] if only else [])).splitlines()
+    for path in untracked:
+        if wanted(path):
+            changed[path] = None
+    return changed
+
+
+def relative_to_root(path: Path) -> Optional[str]:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return None
+
+
+def claude_hook(stdin_text: str) -> int:
+    """PostToolUse: check the document the tool just wrote, and tell the model what to fix."""
+    path = claude_hook_helpers.edited_path(claude_hook_helpers.read_payload(stdin_text))
+    rel = relative_to_root(path) if path else None
+    if rel is None or not in_scope(rel) or not (ROOT / rel).is_file():
+        return 0
+    targets = changed_files(only={rel})
+    if rel not in targets:
+        return 0  # identical to HEAD: nothing of yours to check
+    violations = check_text(rel, (ROOT / rel).read_text(encoding="utf-8", errors="replace"), targets[rel], Standard.load())
+    if not violations:
+        return 0
+    shown = "\n".join(f"  line {v.line}: {v.rule}: {v.message}" for v in violations[:15])
+    more = f"\n  ... and {len(violations) - 15} more" if len(violations) > 15 else ""
+    print(claude_hook_helpers.block(
+        f"{rel} does not follow the repo's document layout standard (the Formatting section of CLAUDE.md, "
+        f"and the templates it names). Fix this before going on:\n{shown}{more}\n"
+        "Check again with: python3 scripts/lint_docs.py --changed " + rel))
+    return 0
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("paths", nargs="*", help="check these whole files instead of your changes")
+    parser.add_argument("--changed", action="store_true", help="with PATH...: check only what changed in those files")
     parser.add_argument("--all", action="store_true", help="check every tracked document, whole")
     parser.add_argument("--summary", action="store_true", help="print counts per rule, not each violation")
+    parser.add_argument("--claude-hook", action="store_true", help="read a Claude Code PostToolUse payload on stdin")
     args = parser.parse_args(argv)
+    if args.claude_hook:
+        return claude_hook(sys.stdin.read())
 
     targets: dict[str, Optional[set[int]]]
-    if args.paths:
+    if args.changed:
+        rels = {relative_to_root(Path(x).resolve()) or x for x in args.paths}
+        targets = changed_files(only=rels)
+    elif args.paths:
         targets = {str(Path(x).resolve().relative_to(ROOT)) if Path(x).is_absolute() else x: None for x in args.paths}
     elif args.all:
         targets = {p: None for p in git("ls-files").splitlines() if in_scope(p) and (ROOT / p).is_file()}

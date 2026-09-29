@@ -1,6 +1,12 @@
+import contextlib
+import io
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -237,6 +243,116 @@ class TemplatesAreTheSourceOfTruth(unittest.TestCase):
     def test_fenced_block_parsing(self):
         text = "intro\n```markdown\n**A**\nx\n**B**\n```\n```markdown\n**C**\n```\n"
         self.assertEqual(lint_docs.entry_labels(text), ["A", "B"])
+
+
+class InARepository(unittest.TestCase):
+    """The git side: which lines of which documents count as yours."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.top = Path(self.tmp.name).resolve()
+        self.patch = mock.patch.object(lint_docs, "ROOT", self.top)
+        self.patch.start()
+        self.git("init", "-q")
+
+    def tearDown(self):
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=self.top,
+                              capture_output=True, text=True, check=True).stdout
+
+    def write(self, rel, text):
+        p = self.top / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+        return p
+
+    def commit(self):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "x")
+
+    def test_only_the_added_lines_of_a_modified_document(self):
+        p = self.write("docs/notes.md", "# Notes\n\nold \n")            # a legacy trailing space
+        self.commit()
+        p.write_text("# Notes\n\nold \nnew \n")
+        self.assertEqual(lint_docs.changed_files(), {"docs/notes.md": {4}})
+        found = check_text("docs/notes.md", p.read_text(), {4}, STD)
+        self.assertEqual([v.line for v in found], [4])
+
+    def test_a_moved_document_is_not_blamed_for_its_body(self):
+        self.write("docs/old.md", "# Old\n\nlegacy \n")
+        self.commit()
+        self.git("mv", "docs/old.md", "docs/new.md")
+        self.assertEqual(lint_docs.changed_files(), {"docs/new.md": set()})
+        (self.top / "docs/new.md").write_text("# Old\n\nlegacy \nadded \n")
+        self.assertEqual(lint_docs.changed_files(), {"docs/new.md": {4}})
+
+    def test_a_new_document_is_checked_whole(self):
+        self.write("docs/keep.md", "# Keep\n")
+        self.commit()
+        self.write("docs/fresh.md", "# Fresh\n")
+        self.assertEqual(lint_docs.changed_files(), {"docs/fresh.md": None})
+        self.git("add", "docs/fresh.md")
+        self.assertEqual(lint_docs.changed_files(), {"docs/fresh.md": None})    # staged-new is new too
+
+    def test_a_repository_without_commits_has_only_new_files(self):
+        self.write("docs/a.md", "# A\n")
+        self.git("add", "docs/a.md")
+        self.write("docs/b.md", "# B\n")
+        self.assertEqual(lint_docs.changed_files(), {"docs/a.md": None, "docs/b.md": None})
+
+    def test_only_restricts_to_the_given_paths(self):
+        a, b = self.write("docs/a.md", "# A\n"), self.write("docs/b.md", "# B\n")
+        self.commit()
+        a.write_text("# A\nmore\n")
+        b.write_text("# B\nmore\n")
+        self.write("docs/c.md", "# C\n")
+        self.assertEqual(sorted(lint_docs.changed_files()), ["docs/a.md", "docs/b.md", "docs/c.md"])
+        self.assertEqual(sorted(lint_docs.changed_files(only={"docs/a.md"})), ["docs/a.md"])
+        self.assertEqual(sorted(lint_docs.changed_files(only={"docs/c.md"})), ["docs/c.md"])
+
+    def test_files_outside_the_documents_are_ignored(self):
+        self.write("README.md", "# R\n")
+        self.write("kernel/notes.md", "# K\n")
+        self.write("docs/ok.md", "# Ok\n")
+        self.assertEqual(sorted(lint_docs.changed_files()), ["docs/ok.md"])
+
+    def hook(self, payload):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = lint_docs.claude_hook(json.dumps(payload))
+        return code, out.getvalue()
+
+    def test_hook_blocks_with_the_problems_listed(self):
+        p = self.write("docs/notes.md", "# Notes\n\ntext \n")
+        code, out = self.hook({"tool_input": {"file_path": str(p)}})
+        self.assertEqual(code, 0)
+        answer = json.loads(out)
+        self.assertEqual(answer["decision"], "block")
+        self.assertIn("trailing-whitespace", answer["reason"])
+        self.assertIn("line 3", answer["reason"])
+        self.assertIn("--changed docs/notes.md", answer["reason"])
+
+    def test_hook_is_silent_when_there_is_nothing_of_yours_to_fix(self):
+        legacy = self.write("docs/legacy.md", "# Legacy\n\nold \n")
+        self.commit()
+        clean = self.write("docs/clean.md", "# Clean\n\ntext\n")
+        outside = self.write("README.md", "bad \n")
+        legacy.write_text("# Legacy\n\nold \nfine\n")     # only the pre-existing bad line is bad
+        for payload in [{"tool_input": {"file_path": str(clean)}}, {"tool_input": {"file_path": str(outside)}},
+                        {"tool_input": {"file_path": str(legacy)}}, {"tool_input": {}}, {},
+                        {"tool_input": {"file_path": str(self.top / "docs/missing.md")}}]:
+            with self.subTest(payload=payload):
+                self.assertEqual(self.hook(payload), (0, ""))
+
+    def test_hook_ignores_a_file_of_another_repository(self):
+        with tempfile.TemporaryDirectory() as elsewhere:
+            p = Path(elsewhere) / "docs" / "x.md"
+            p.parent.mkdir()
+            p.write_text("bad \n")
+            self.assertEqual(self.hook({"tool_input": {"file_path": str(p)}}), (0, ""))
 
 
 if __name__ == "__main__":

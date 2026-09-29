@@ -82,6 +82,12 @@ class InARepository(unittest.TestCase):
         self.assertEqual(self.fmt(p)[0], "formatted")
         self.assertEqual(p.read_text(), GOOD + GOOD)
 
+    def test_before_the_first_commit_everything_is_new(self):
+        p = self.write("first.cpp", BAD + BAD)
+        self.git("add", "first.cpp")            # tracked, but there is no HEAD to diff against
+        self.assertEqual(self.fmt(p)[0], "formatted")
+        self.assertEqual(p.read_text(), GOOD + GOOD)
+
     def test_an_unchanged_tracked_file_is_not_touched(self):
         p = self.write("legacy.cpp", BAD)
         self.commit("legacy.cpp")

@@ -26,19 +26,19 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
+import claude_hook as claude_hook_helpers
+from gitdiff import changed_ranges, diff_section, git_env, has_head, repo_diff
+
 SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc"}
 # Never ours to format: generated, third-party, or another agent's checkout.
 SKIP_PREFIXES = ("out/", "prebuilt/", "vendor/", ".legacy/", ".claude/", ".cache/")
-HUNK = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", re.M)
 
 
 class FormatError(Exception):
@@ -46,7 +46,7 @@ class FormatError(Exception):
 
 
 def run(args: list[str], cwd: Path, check: bool = True, **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=check, **kw)
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=check, env=git_env(), **kw)
 
 
 def find_clang_format(root: Path) -> str:
@@ -105,37 +105,25 @@ def skip_reason(top: Path, rel: str) -> Optional[str]:
     return None
 
 
-def changed_ranges(diff: str) -> list[tuple[int, int]]:
-    """Added line ranges (first, last), 1-based, from `git diff -U0` output."""
-    ranges = []
-    for m in HUNK.finditer(diff):
-        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
-        if count:  # a pure deletion adds no lines
-            ranges.append((start, start + count - 1))
-    return ranges
-
-
-def diff_section(diff: str, rel: str) -> str:
-    """The part of a `git diff` that concerns `rel`, or '' if it has no changes."""
-    for section in re.split(r"^(?=diff --git )", diff, flags=re.M):
-        target = re.search(r"^\+\+\+ b/(.+)$", section, re.M) or re.search(r"^rename to (.+)$", section, re.M)
-        if target and target.group(1) == rel:
-            return section
-    return ""
-
-
-def lines_to_format(top: Path, rel: str) -> Optional[list[tuple[int, int]]]:
-    """Ranges to format, [] for nothing to do, None to format the whole file."""
+def lines_to_format(top: Path, rel: str, diff_cache: Optional[dict] = None) -> Optional[list[tuple[int, int]]]:
+    """Ranges to format, [] for nothing to do, None to format the whole file. `diff_cache`
+    lets a caller checking many files pay for the repository diff once."""
     tracked = run(["git", "ls-files", "--error-unmatch", "--", rel], cwd=top, check=False).returncode == 0
-    if not tracked:
-        return None  # a new file: everything in it is yours
+    if not tracked or not has_head(top):
+        return None  # a new file, or a repository with no commits: everything in it is yours
     # Rename detection on, and no pathspec: a `git mv`'d file diffed by its new path alone
     # looks entirely added, and its whole legacy body would be formatted as if it were yours.
-    diff = run(["git", "diff", "-U0", "-M", "--no-color", "HEAD"], cwd=top, check=False).stdout
+    if diff_cache is not None and top in diff_cache:
+        diff = diff_cache[top]
+    else:
+        diff = repo_diff(top)
+        if diff_cache is not None:
+            diff_cache[top] = diff
     return changed_ranges(diff_section(diff, rel))
 
 
-def format_file(path: Path, check_only: bool = False, clang_format: Optional[str] = None) -> tuple[str, str]:
+def format_file(path: Path, check_only: bool = False, clang_format: Optional[str] = None,
+                diff_cache: Optional[dict] = None) -> tuple[str, str]:
     """(status, detail): status is 'formatted', 'clean', or 'skipped'."""
     path = path.resolve()
     top = repo_top(path)
@@ -150,7 +138,7 @@ def format_file(path: Path, check_only: bool = False, clang_format: Optional[str
         return "skipped", reason
     if not path.is_file():
         return "skipped", "no such file"
-    ranges = lines_to_format(top, rel)
+    ranges = lines_to_format(top, rel, diff_cache)
     if ranges == []:
         return "clean", "no changed lines"
 
@@ -159,7 +147,10 @@ def format_file(path: Path, check_only: bool = False, clang_format: Optional[str
     if ranges is not None:
         args += [f"--lines={a}:{b}" for a, b in ranges]
     before = path.read_bytes()
-    result = run(args + [str(path)], cwd=top, check=False)  # to stdout: the file is not touched yet
+    try:
+        result = run(args + [str(path)], cwd=top, check=False)  # to stdout: the file is not touched yet
+    except OSError as err:
+        raise FormatError(f"cannot run {exe}: {err}")
     if result.returncode != 0:
         raise FormatError(f"clang-format failed on {rel}: {result.stderr.strip()[:300]}")
     after = result.stdout.encode()
@@ -177,24 +168,15 @@ def format_file(path: Path, check_only: bool = False, clang_format: Optional[str
 
 def claude_hook(stdin_text: str) -> int:
     """PostToolUse: format the file the tool just wrote, and tell the model."""
-    try:
-        payload = json.loads(stdin_text or "{}")
-    except ValueError:
+    path = claude_hook_helpers.edited_path(claude_hook_helpers.read_payload(stdin_text))
+    if path is None:
         return 0
-    tool_input = payload.get("tool_input") or {}
-    response = payload.get("tool_response") or {}
-    target = tool_input.get("file_path") or (response.get("filePath") if isinstance(response, dict) else None)
-    if not target:
-        return 0
-    path = Path(target)
-    if not path.is_absolute():
-        path = Path(payload.get("cwd") or os.getcwd()) / path
     status, detail = format_file(path)
     if status != "formatted":
         return 0
-    note = (f"clang-format {detail} in {path.name} (the repo's .clang-format). The file on disk changed, "
-            "so Read it again before your next Edit to it.")
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": note}}))
+    print(claude_hook_helpers.context(
+        f"clang-format {detail} in {path.name} (the repo's .clang-format). The file on disk changed, "
+        "so Read it again before your next Edit to it."))
     return 0
 
 
@@ -208,15 +190,18 @@ def main(argv: list[str]) -> int:
         if args.claude_hook:
             return claude_hook(sys.stdin.read())
         would_change = False
+        cache: dict = {}
         for p in args.paths:
-            status, detail = format_file(Path(p), check_only=args.check)
+            status, detail = format_file(Path(p), check_only=args.check, diff_cache=cache)
             print(f"{p}: {status}: {detail}")
             would_change |= status == "formatted" and args.check
         return 1 if would_change else 0
     except FormatError as err:
-        # Never block an edit over a formatter problem, but never hide it either.
+        # Never block an edit over a formatter problem, but never hide it either. A hook
+        # exits 1 (shown, not blocking); on the command line 2 tells "could not check"
+        # apart from 1, "checked, and it would change".
         print(f"format_cpp: {err}", file=sys.stderr)
-        return 1
+        return 1 if args.claude_hook else 2
 
 
 if __name__ == "__main__":
