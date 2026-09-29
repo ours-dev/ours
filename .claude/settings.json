@@ -12,6 +12,12 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/format_gn.py\" --claude-hook",
+            "timeout": 30,
+            "statusMessage": "gn format"
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/lint_docs.py\" --claude-hook",
             "timeout": 30,
             "statusMessage": "lint_docs"

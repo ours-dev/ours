@@ -2,10 +2,14 @@
 
 """Check what is about to be committed. Changes nothing.
 
-Two checks, both on what this commit changes and nothing older:
+Three checks, each on what this commit changes and nothing older:
 
   - C and C++: the changed lines must be clang-format clean
     (scripts/format_cpp.py --check).
+  - GN: a changed .gn or .gni file must be in gn's layout, and must parse
+    (scripts/format_gn.py --check). Whole files, because gn cannot format a
+    range; a file that is not clean today is judged only if this commit
+    touches it, and lists are never required to be sorted.
   - Markdown: the changed lines and new entries of documents must follow the
     layout standard (scripts/lint_docs.py --changed).
 
@@ -34,6 +38,7 @@ import sys
 from pathlib import Path
 
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc")
+GN_SUFFIXES = (".gn", ".gni")  # the root dotfile, named .gn, ends with one too
 TOOL_FAILED = 2  # format_cpp.py: could not check, as opposed to 1, "checked, would change"
 
 
@@ -79,6 +84,32 @@ def check_format(root: Path, paths: list[str]) -> int:
     return 1
 
 
+def check_gn(root: Path, paths: list[str]) -> int:
+    gn = [p for p in paths if p.endswith(GN_SUFFIXES)]
+    if not gn:
+        return 0
+    if not (root / "scripts/format_gn.py").is_file():
+        print("pre-commit: GN check skipped: this worktree has no scripts/format_gn.py", file=sys.stderr)
+        return 0
+    result = run_tool(root, "format_gn.py", "--check", *gn)
+    if result.returncode == 0:
+        return 0
+    # One "path: status: detail" line per file, a parse error's detail running on for several lines.
+    # Nothing to report means the tool could not check (no gn, exit 2) or crashed (exit 1), which is
+    # not a finding: say so and let the commit through.
+    report = [line for line in result.stdout.splitlines() if not line.endswith(": clean: already formatted")]
+    if not report:
+        print(f"pre-commit: GN check skipped: {last_line(result.stderr)}", file=sys.stderr)
+        return 0
+    print("pre-commit: these GN files are not in gn's layout, or do not parse:", file=sys.stderr)
+    print("\n".join(report), file=sys.stderr)
+    dirty = [line.split(":", 1)[0] for line in report if line.endswith(": formatted: would change")]
+    if dirty:
+        print("Format them, then commit again:\n"
+              f"  python3 scripts/format_gn.py {' '.join(dirty)}", file=sys.stderr)
+    return 1
+
+
 def check_docs(root: Path, paths: list[str]) -> int:
     docs = [p for p in paths if p.endswith(".md")]
     if not docs:
@@ -101,8 +132,8 @@ def main() -> int:
     root = Path(git("rev-parse", "--show-toplevel").strip())
     os.chdir(root)
     paths = staged_paths()
-    # Both run, so one failure does not hide the other.
-    failed = [check_format(root, paths), check_docs(root, paths)]
+    # All run, so one failure does not hide another.
+    failed = [check_format(root, paths), check_gn(root, paths), check_docs(root, paths)]
     return 1 if any(failed) else 0
 
 

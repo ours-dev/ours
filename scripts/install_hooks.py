@@ -33,9 +33,9 @@ import gitdiff
 
 HOOKS_DIR = ".githooks"
 # What the current pre-commit calls. A worktree missing any of it predates the hook.
-REQUIRED = (".githooks/pre-commit", "scripts/format_cpp.py", "scripts/formatting.py", "scripts/lint_docs.py", "scripts/gitdiff.py",
-            "scripts/claude_hook.py")
-TOOLS = ("scripts/format_cpp.py", "scripts/lint_docs.py")
+REQUIRED = (".githooks/pre-commit", "scripts/format_cpp.py", "scripts/format_gn.py", "scripts/formatting.py", "scripts/lint_docs.py",
+            "scripts/gitdiff.py", "scripts/claude_hook.py")
+TOOLS = ("scripts/format_cpp.py", "scripts/format_gn.py", "scripts/lint_docs.py")
 CURRENT_MARKER = "format_cpp.py"  # the old pre-commit formatted whole files itself and never mentioned this
 
 

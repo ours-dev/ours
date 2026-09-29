@@ -34,11 +34,14 @@ every task needs:
 ## Repo conventions
 
 - Tooling scripts are Python, never shell.
-- C/C++ you change is formatted for you, on the lines you changed only: in
-  Claude Code by a hook (`.claude/settings.json`), elsewhere by
-  `python3 scripts/format_cpp.py <path>`. Never run `clang-format -i` on a
-  whole existing file: a sixth of the tree is not clean, so it buries your
-  change in unrelated churn.
+- C/C++ and GN you change are formatted for you: C/C++ on the lines you
+  changed only, GN as a whole file with every list left in the order you wrote
+  it. In Claude Code a hook does it (`.claude/settings.json`); elsewhere run
+  `python3 scripts/format_cpp.py <path>` or `python3 scripts/format_gn.py
+  <path>`. Never run `clang-format -i` on a whole existing file (a sixth of the
+  tree is not clean, so it buries your change in churn), and never plain
+  `gn format` (it sorts sources and deps, which reorders the link line and the
+  include path and so changes what the build produces).
 - Toolchains come from official upstream releases into `prebuilt/`. Never
   build the dev container or install anything into system directories.
 - Lists describing build products are generated from GN metadata, not kept by
@@ -78,12 +81,13 @@ leaving yours uncommitted. Commit with `git commit -- <paths>`, never
 bare commit takes whatever the others have staged.
 
 A pre-commit hook (`.githooks/pre-commit`) refuses a commit whose changed C/C++
-lines are not clang-format clean or whose documents break the layout standard.
-Fix what it reports; do not bypass it with `--no-verify`. It only reports, and
-only about what you changed. It is switched on per worktree, on purpose: they
-share one `.git/config`, and a branch that predates the hook must not start
-running the old one. A Claude Code session turns it on by itself when it starts
-in a worktree that has the scripts; anywhere else, run:
+lines are not clang-format clean, whose GN files are not in gn's layout, or
+whose documents break the layout standard. Fix what it reports; do not bypass
+it with `--no-verify`. It only reports, and only about what you changed. It is
+switched on per worktree, on purpose: they share one `.git/config`, and a
+branch that predates the hook must not start running the old one. A Claude Code
+session turns it on by itself when it starts in a worktree that has the
+scripts; anywhere else, run:
 
 ```bash
 python3 scripts/install_hooks.py
