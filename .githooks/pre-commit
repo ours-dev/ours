@@ -46,6 +46,10 @@ def staged_paths() -> list[str]:
     return [p for p in out.split("\0") if p]
 
 
+def last_line(text: str) -> str:
+    return (text.strip().splitlines() or ["no message"])[-1]
+
+
 def run_tool(root: Path, script: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, str(root / "scripts" / script), *args], cwd=root, capture_output=True, text=True)
 
@@ -64,6 +68,9 @@ def check_format(root: Path, paths: list[str]) -> int:
         print(f"pre-commit: format check skipped: {result.stderr.strip()}", file=sys.stderr)
         return 0
     dirty = [line.split(":", 1)[0] for line in result.stdout.splitlines() if line.endswith(": formatted: would change")]
+    if not dirty:  # exit 1 with no verdict is a crash, not a finding
+        print(f"pre-commit: format check skipped: {last_line(result.stderr)}", file=sys.stderr)
+        return 0
     print("pre-commit: these files have changed lines that are not clang-format clean:", file=sys.stderr)
     for path in dirty:
         print(f"  {path}", file=sys.stderr)
@@ -81,6 +88,9 @@ def check_docs(root: Path, paths: list[str]) -> int:
         return 0
     result = run_tool(root, "lint_docs.py", "--changed", *docs)
     if result.returncode == 0:
+        return 0
+    if not result.stdout.strip():  # violations are printed on stdout; a crash leaves it empty
+        print(f"pre-commit: document check skipped: {last_line(result.stderr)}", file=sys.stderr)
         return 0
     print("pre-commit: these documents break the layout standard (the Formatting section of CLAUDE.md):", file=sys.stderr)
     print(result.stdout.rstrip() or result.stderr.rstrip(), file=sys.stderr)

@@ -18,7 +18,7 @@ except format_cpp.FormatError:
 
 BAD = "int   a =1;\n"
 GOOD = "int a = 1;\n"
-TOOLS = ["format_cpp.py", "lint_docs.py", "claude_hook.py", "gitdiff.py"]
+TOOLS = ["format_cpp.py", "formatting.py", "lint_docs.py", "claude_hook.py", "gitdiff.py"]
 TEMPLATES = ["docs/changes/TEMPLATE.md", "docs/repairs/TEMPLATE.md", ".agents/tasks/TEMPLATE.md"]
 
 
@@ -27,8 +27,8 @@ class PreCommit(unittest.TestCase):
     """The real hook, in a scratch repository, driven through real `git commit`s."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.top = Path(self.tmp.name).resolve()
+        self.top = Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(shutil.rmtree, self.top, ignore_errors=True)
         self.git("init", "-q")
         for rel in [".clang-format", ".githooks/pre-commit", *TEMPLATES, *[f"scripts/{t}" for t in TOOLS]]:
             (self.top / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -44,9 +44,6 @@ class PreCommit(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "--no-verify", "-m", "base")
         self.env = {k: v for k, v in os.environ.items() if k != "CLANG_FORMAT"}
-
-    def tearDown(self):
-        shutil.rmtree(self.tmp.name, ignore_errors=True)
 
     def git(self, *args, env=None, check=True):
         return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=self.top, capture_output=True,
@@ -160,6 +157,16 @@ class PreCommit(unittest.TestCase):
         result = self.commit("a.cpp", env=dict(self.env, CLANG_FORMAT="/nonexistent/clang-format"))
         self.assertEqual(result.returncode, 0)
         self.assertIn("format check skipped", result.stderr)
+
+    def test_a_tool_that_crashes_is_not_taken_for_a_verdict(self):
+        (self.top / "scripts/claude_hook.py").write_text("raise SystemExit('broken')\n")
+        self.write("a.cpp", BAD)
+        self.write("docs/notes.md", "# Notes\n\ntrailing \n")
+        result = self.commit("a.cpp", "docs/notes.md")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("format check skipped", result.stderr)
+        self.assertIn("document check skipped", result.stderr)
+        self.assertIn("broken", result.stderr)
 
     def test_a_worktree_without_the_scripts_is_not_blocked(self):
         shutil.rmtree(self.top / "scripts")

@@ -34,21 +34,10 @@ from pathlib import Path
 from typing import Optional
 
 import claude_hook as claude_hook_helpers
-from gitdiff import changed_ranges, diff_section, git_env, has_head, repo_diff
+from formatting import FormatError, common_skip_reason, repo_top, run, submodule_paths
+from gitdiff import changed_ranges, diff_section, has_head, repo_diff
 
 SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc"}
-# Never ours to format: generated, third-party, or another agent's checkout.
-SKIP_PREFIXES = ("out/", "prebuilt/", "vendor/", ".legacy/", ".claude/", ".cache/")
-
-
-class FormatError(Exception):
-    pass
-
-
-def run(args: list[str], cwd: Path, check: bool = True, **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=check, env=git_env(), **kw)
-
-
 def find_clang_format(root: Path) -> str:
     override = os.environ.get("CLANG_FORMAT")
     if override:
@@ -66,22 +55,6 @@ def find_clang_format(root: Path) -> str:
     raise FormatError("no clang-format: expected prebuilt/clang/*/bin/clang-format (or set CLANG_FORMAT)")
 
 
-def repo_top(path: Path) -> Optional[Path]:
-    try:
-        out = run(["git", "rev-parse", "--show-toplevel"], cwd=path.parent).stdout.strip()
-    except (subprocess.CalledProcessError, OSError):
-        return None
-    return Path(out).resolve() if out else None
-
-
-def submodule_paths(top: Path) -> list[str]:
-    gm = top / ".gitmodules"
-    if not gm.is_file():
-        return []
-    out = run(["git", "config", "--file", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], cwd=top, check=False).stdout
-    return [line.split(None, 1)[1].strip().rstrip("/") + "/" for line in out.splitlines() if " " in line]
-
-
 def ignored_by_file(top: Path, rel: str) -> bool:
     ignore = top / ".clang-format-ignore"
     if not ignore.is_file():
@@ -96,10 +69,9 @@ def ignored_by_file(top: Path, rel: str) -> bool:
 def skip_reason(top: Path, rel: str) -> Optional[str]:
     if Path(rel).suffix not in SUFFIXES:
         return "not C/C++"
-    if rel.startswith(SKIP_PREFIXES):
-        return "generated or third-party"
-    if any(rel.startswith(p) for p in submodule_paths(top)):
-        return "inside a submodule"
+    common = common_skip_reason(top, rel)
+    if common:
+        return common
     if ignored_by_file(top, rel):
         return "listed in .clang-format-ignore"
     return None
