@@ -22,6 +22,22 @@
 #include <ustl/util/move.hpp>
 
 namespace ours::mm {
+/// What a caller asks of ONE operation that creates a mapping: options of the
+/// call, not properties of the result.
+///
+/// It is kept apart from VmaFlags on purpose, and the line between them is
+/// this: a VmMapOption is a request, a VmaFlags is what the object is. Some
+/// requests leave nothing behind -- Commit means "populate the pages now" and
+/// is gone once it has been done -- so they have no flag to become. Others
+/// outlive the call: Pinned and Sealed are asked for here and, at creation
+/// (VmArea::create_mapping()), become VmaFlags::Pinned and VmaFlags::Sealed on
+/// the mapping. The same word on both sides is that translation, not a
+/// duplicate: "make it sealed" and "it is sealed" are different statements.
+///
+/// This is Linux's split (MAP_* for the call, VM_* for the vma, translated in
+/// between). Zircon uses one set (VMAR_FLAG_*) for both. Neither is wrong; this
+/// project keeps the request and the state apart. The ABI has a third
+/// vocabulary, ours::VmOptions, for the same reason at another boundary.
 enum class VmMapOption {
     // For semenatics, no any effects.
     None,
@@ -99,6 +115,14 @@ class VmPlacement {
     bool m_fixed{};
 };
 
+/// What a VMA -- an area or a mapping -- IS: its attributes and state, stored on
+/// the object and true for as long as it lives. The permissions it allows
+/// (which a mapping's protection may never exceed), whether it is active,
+/// pinned or sealed, what kind of thing it is.
+///
+/// Not what a caller asked of a call: that is VmMapOption, and a request that
+/// outlives the call is translated into a flag here at creation. See
+/// VmMapOption.
 enum class VmaFlags : u32 {
     // For semantics, no any actual effects.
     None,
