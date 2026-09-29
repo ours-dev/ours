@@ -94,8 +94,9 @@ different lock. A few well-worked points beat a long list.
   init steps (scaffolding for planned work: ask about them, never recommend
   deleting them), `WEAK_LINK` generic defaults, `Fair` not being built by
   default (the user's own scheduler: never suggest editing it; record a bug
-  in it for `docs/repairs` instead). An earlier review of `kernel/lib/arch` put "delete
-  the empty stubs" first; that is a question for the user here, not a finding.
+  in it for `docs/repairs` instead). An earlier review of `kernel/lib/arch`
+  put "delete the empty stubs" first; that is a question for the user here,
+  not a finding.
 - When several cleanups are on the table, list naming fixes first: the user
   values them most, and later edits then land on the right names.
 - Review, don't fix. The deliverable is the report; changing the code under
@@ -128,15 +129,9 @@ report, say which findings were verified and which are read-only judgement.
 ### Produce a report
 
 Write the review to `.agents/tasks/<topic>/REVIEW.md`, creating the task
-directory if needed. Use this shape, as in
-`.agents/tasks/cpp-code-review-kernel-lib-arch/review.md`:
-
-- scope, date, and a method note: which authorities and tools were used, and
-  what was verified;
-- what is done well;
-- findings by severity (High, Medium, Minor), each with `file:line`;
-- teaching opportunities;
-- a suggested follow-up order.
+directory if needed, from the REVIEW.md skeleton in
+`.agents/tasks/TEMPLATE.md`, and run `python3 scripts/lint_docs.py` on it
+before you finish.
 
 Do not paste the report into the conversation. Reply with the path and the
 three to five findings that matter most.

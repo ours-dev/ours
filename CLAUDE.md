@@ -50,7 +50,8 @@ underspecified or substantial enough to need a plan; proceed directly on a
 small, well-specified, or mechanical change. Once a request needs a plan,
 break it into subtasks, and give each one a dedicated workspace under
 `.agents/tasks/` in the project root to hold its plan, track progress, and
-record how it was validated and reviewed.
+record how it was validated and reviewed, using the skeletons in
+`.agents/tasks/TEMPLATE.md`.
 
 ## Commit after every change
 
@@ -167,10 +168,10 @@ the fact. This document is for learning, so "why this was a mistake" and
 "which Linux/Zircon function it was fixed to match" need to be spelled out in
 full — not just which line changed. Append-only.
 
-**Outstanding repairs** go in `docs/repairs/<YYMMDD>/<MODULE>.md`, listing
-only what is not yet fixed, ordered by severity, each item independently
-claimable. Once an item is fixed, delete it from here and add an entry to
-changes.
+**Outstanding repairs** go in `docs/repairs/<YYMMDD>/<MODULE>.md` (template:
+`docs/repairs/TEMPLATE.md`), listing only what is not yet fixed, ordered by
+severity, each item independently claimable. Once an item is fixed, delete it
+from here and add an entry to changes.
 
 `<YYMMDD>` is a six-digit date, `<MODULE>` a hyphenated module path name
 (`kernel-time`, `x86-clock`). Splitting by module is how the length is kept
@@ -179,3 +180,32 @@ under control — don't merge two things back into one ever-growing file.
 `docs/repairs-20260830.md` is the single running log from before this
 structure existed, a read-only archive; **several agents write to it
 concurrently, so never rewrite the whole file**.
+
+## Formatting
+
+Many agents write documents here in turn, so a document's shape must not
+depend on who wrote it: copy the template instead of inventing a layout, and
+run `python3 scripts/lint_docs.py` before committing a document. It checks
+what you changed, so an older document's habits are not yours to fix.
+
+- Change record: `docs/changes/<YYMMDD>/<MODULE>.md`, template
+  `docs/changes/TEMPLATE.md`.
+- Repair item: `docs/repairs/<YYMMDD>/<MODULE>.md`, template
+  `docs/repairs/TEMPLATE.md`.
+- Task design, plan, result and review: `.agents/tasks/<topic>/DESIGN.md`,
+  `PLAN.md`, `RESULT.md`, `REVIEW.md`, skeletons in `.agents/tasks/TEMPLATE.md`.
+  An accepted design moves to `docs/design/<YYMMDD>/<topic>.md`.
+- Everything is written in English: documents, skills, code, comments and
+  commit messages. Older documents are in Chinese and are not rewritten; when
+  you add to one, write the new part in English.
+- Keep a template's headings and their order. A section with nothing to say
+  gets the word "None", not a deleted heading.
+- Markdown: `-` for bullets, one H1 that comes first, no skipped heading
+  levels, a language on every code fence (`text` for plain output), dates as
+  `YYYY-MM-DD`, no trailing whitespace or tabs, and a final newline.
+- Documents are not hard-wrapped: one paragraph or list item per line.
+  CLAUDE.md, AGENTS.md and skills are read raw, so they wrap at 80 columns.
+- Names are lowercase words joined by hyphens; the kind of a task document
+  (DESIGN, PLAN, RESULT, REVIEW, STATUS) is in capitals.
+- Commit messages are `type(scope): subject`, with the types listed in
+  `.gitmessage`.

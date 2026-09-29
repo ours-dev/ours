@@ -36,7 +36,7 @@ below).
 `clang-format` and `clang-tidy` live in the repo's prebuilt LLVM tree and run
 natively on the host — no container, no install, use the full path:
 
-```
+```text
 prebuilt/clang/llvm-23/bin/clang-format
 prebuilt/clang/llvm-23/bin/clang-tidy
 ```

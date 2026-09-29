@@ -13,12 +13,13 @@ get "fixed" back into a default.
 ## Before designing anything
 
 1. **Find the reference first.** Zircon is the default spec. Read the
-   counterpart in the local Fuchsia checkout (`~/Workspaces/projects/fuchsia/zircon`
-   on the main Mac) before explaining what an interface is meant to do or
-   shaping a mechanism, and cite the file. Ask which layer Zircon lets own the
-   decision (a boot option, a package member, a handoff field), not only what
-   a call does; Zircon's tests and alternate images usually show the seam. The
-   Linux exceptions are listed in the subsystem files.
+   counterpart in the local Fuchsia checkout
+   (`~/Workspaces/projects/fuchsia/zircon` on the main Mac) before explaining
+   what an interface is meant to do or shaping a mechanism, and cite the file.
+   Ask which layer Zircon lets own the decision (a boot option, a package
+   member, a handoff field), not only what a call does; Zircon's tests and
+   alternate images usually show the seam. The Linux exceptions are listed in
+   the subsystem files.
 2. **Build on the layer below, through its own abstractions.** A defect in
    that layer is a reason to fix it there or report it with evidence, never to
    route around it with a parallel implementation.
