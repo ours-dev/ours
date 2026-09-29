@@ -2,7 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// plan_mappings(): how the PT_LOAD segments of a program are mapped. The
-/// specification is the comment on the function in <launch/plan.hpp>.
+/// specification is the comment on its definition, in src/plan.cpp.
 #include <launch/plan.hpp>
 
 #include <array>
