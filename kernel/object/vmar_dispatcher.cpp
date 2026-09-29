@@ -156,4 +156,39 @@ auto VmarDispatcher::map(VmOptions const options, usize const vmar_offset, VmoDi
     return ktl::ok(mapping.unwrap()->base());
 }
 
+auto VmarDispatcher::allocate(VmOptions const options, usize const offset, usize const size,
+                              KernelHandle<Self> &child_out, Rights &rights_out, VirtAddr &base_out)
+    -> Status {
+    verify_canary();
+
+    constexpr auto PERM = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute;
+    if ((options & PERM) != VmOptions::None) {
+        return Status::InvArgs;
+    }
+    if (options != VmOptions::Specific) {
+        return Status::NotSupported;
+    }
+
+    if (size == 0 || !ustl::mm::is_aligned(offset, PAGE_SIZE) || offset >= m_vma->size()) {
+        return Status::InvArgs;
+    }
+    auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
+    if (rounded == 0) {
+        return Status::OutOfRange;
+    }
+
+    // VmaFlags::None: the sub-region allows no permission, so every mapping
+    // asked of it fails -- which is what a guard is for. mm places it and
+    // refuses a range that is taken or runs off this region.
+    ustl::Arc<mm::VmArea> child;
+    if (auto const status = m_vma->create_subvma(mm::VmPlacement::at(m_vma->base() + offset),
+                                                 rounded, mm::VmaFlags::None, "vmar_allocate",
+                                                 mm::VmMapOption::None, &child);
+        Status::Ok != status) {
+        return status;
+    }
+    base_out = child->base();
+    return create(ustl::move(child), child_out, rights_out);
+}
+
 } // namespace ours::object

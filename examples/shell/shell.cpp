@@ -1716,6 +1716,96 @@ auto check_vmar_map(ours::HandleValue const vmar, ours::HandleValue const bootfs
         static_cast<void>(ou::debug_line("shell: vmar_map checks FAILED"));
     }
 }
+
+/// vmar_allocate: a guard, a range of the root VMAR that nothing can be
+/// mapped into (K22).
+///
+/// Runs in every image. What it pins down:
+///   - the guard holds its range: a Specific mapping over it is refused, and
+///     still is after the guard's handle is closed -- the range belongs to
+///     the parent region, not to the handle;
+///   - the guard itself allows nothing: mapping into it is AccessDenied, its
+///     handle having none of Read, Write or Execute;
+///   - the options: only Specific is taken today, so CanMapRead and a missing
+///     Specific are NotSupported, and a Perm bit is InvArgs;
+///   - the arguments: a size of 0 and an unaligned offset are InvArgs;
+///   - a value the kernel cannot write back releases the range: the same
+///     spot can be reserved on the next call.
+auto check_vmar_allocate(ours::HandleValue const vmar) -> void {
+    using ours::Status;
+    using ours::VmoOptions;
+    using ours::VmOptions;
+
+    constexpr auto PAGE = u64{4096};
+    // Past check_vmar_map()'s fixed spot, and as far from anything else.
+    constexpr auto SPOT = (usize{1} << 30) + 64 * PAGE;
+    constexpr auto SPECIFIC_R = VmOptions::PermRead | VmOptions::Specific;
+
+    if (vmar == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vmar_allocate checks FAILED (no VmarRoot)"));
+        return;
+    }
+
+    auto ok = true;
+    ours::HandleValue vmo = ours::HANDLE_INVALID;
+    if (!expect("shell: vmo_create = ", ou::vmo_create(PAGE, VmoOptions::None, &vmo), Status::Ok)) {
+        static_cast<void>(ou::debug_line("shell: vmar_allocate checks FAILED"));
+        return;
+    }
+
+    ours::HandleValue guard = ours::HANDLE_INVALID;
+    ours::VirtAddr at = 0;
+    ok &= expect("shell: vmar_allocate(Specific, 1 page) = ",
+                 ou::vmar_allocate(vmar, VmOptions::Specific, SPOT, PAGE, &guard, &at), Status::Ok);
+    ours::VirtAddr mapped = 0;
+    ok &=
+        expect("shell: vmar_map(Specific, over the guard) = ",
+               ou::vmar_map(vmar, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
+    ok &= expect("shell: vmar_map(into the guard) = ",
+                 ou::vmar_map(guard, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped),
+                 Status::AccessDenied);
+    ok &= expect("shell: close(guard) = ", ou::handle_close(guard), Status::Ok);
+    ok &=
+        expect("shell: vmar_map(Specific, over the guard, handle closed) = ",
+               ou::vmar_map(vmar, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
+
+    // The options and the arguments.
+    constexpr auto ELSEWHERE = SPOT + 16 * PAGE;
+    ok &= expect("shell: vmar_allocate(Specific | CanMapRead) = ",
+                 ou::vmar_allocate(vmar, VmOptions::Specific | VmOptions::CanMapRead, ELSEWHERE,
+                                   PAGE, &guard, &at),
+                 Status::NotSupported);
+    ok &= expect("shell: vmar_allocate(without Specific) = ",
+                 ou::vmar_allocate(vmar, VmOptions::None, 0, PAGE, &guard, &at),
+                 Status::NotSupported);
+    ok &=
+        expect("shell: vmar_allocate(Specific | PermRead) = ",
+               ou::vmar_allocate(vmar, SPECIFIC_R, ELSEWHERE, PAGE, &guard, &at), Status::InvArgs);
+    ok &= expect("shell: vmar_allocate(size 0) = ",
+                 ou::vmar_allocate(vmar, VmOptions::Specific, ELSEWHERE, 0, &guard, &at),
+                 Status::InvArgs);
+    ok &= expect("shell: vmar_allocate(unaligned offset) = ",
+                 ou::vmar_allocate(vmar, VmOptions::Specific, ELSEWHERE + 8, PAGE, &guard, &at),
+                 Status::InvArgs);
+
+    // A child_addr the kernel cannot write: the range goes back, so the same
+    // spot can be taken right after.
+    ok &= expect("shell: vmar_allocate(child_addr = kernel half) = ",
+                 ou::vmar_allocate(vmar, VmOptions::Specific, ELSEWHERE, PAGE, &guard,
+                                   reinterpret_cast<ours::VirtAddr *>(KERNEL)),
+                 Status::InvArgs);
+    ok &= expect("shell: vmar_allocate(the same spot) = ",
+                 ou::vmar_allocate(vmar, VmOptions::Specific, ELSEWHERE, PAGE, &guard, &at),
+                 Status::Ok);
+    ok &= expect("shell: close(guard) = ", ou::handle_close(guard), Status::Ok);
+    ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vmar_allocate checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vmar_allocate checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -1764,6 +1854,7 @@ auto main(int, char **) -> int {
     check_vmo_create_child(bootfs);
     check_vmo_replace_as_executable(bootfs, vmex);
     check_vmar_map(vmar, bootfs, vmex);
+    check_vmar_allocate(vmar);
     check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
 
     static Registry registry;

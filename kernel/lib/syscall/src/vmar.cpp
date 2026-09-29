@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/vmar_dispatcher.hpp>
@@ -43,6 +44,69 @@ namespace {
 /// before the mapping is made, as a handle value does (design 4.1). Instead a
 /// write that fails takes the mapping back down: a program never ends up with
 /// memory mapped that it was told was not.
+/// Reserves [offset, offset + size) of |parent| as a sub-region, and writes
+/// its handle to |child| and its address to |child_addr|.
+///
+/// Zircon's sys_vmar_allocate(), in its order: the rights each CanMap bit
+/// would need of the parent (Read, Write, Execute), the parent with those
+/// rights (BadHandle, BadType, AccessDenied), then the region
+/// (VmarDispatcher::allocate(): only Specific without CanMap today). A bit
+/// VmOptions does not name is InvArgs before any of that.
+///
+/// Two values go out, and both before the handle goes into the table (design
+/// 4.1), so a program never holds a handle it was told it did not get. If
+/// either write fails, the sub-region is taken down again: closing the handle
+/// alone would leave it reserved, since the parent region holds it.
+auto vmar_allocate(HandleValue const parent, VmOptions const options, usize const offset,
+                   usize const size, user_copy::UserOutPtr<HandleValue> const child,
+                   user_copy::UserOutPtr<VirtAddr> const child_addr) -> Status {
+    if ((options & ~KNOWN_VM_OPTIONS) != VmOptions::None) {
+        return Status::InvArgs;
+    }
+
+    auto required = Rights::None;
+    if (!!(options & VmOptions::CanMapRead)) {
+        required |= Rights::Read;
+    }
+    if (!!(options & VmOptions::CanMapWrite)) {
+        required |= Rights::Write;
+    }
+    if (!!(options & VmOptions::CanMapExecute)) {
+        required |= Rights::Execute;
+    }
+
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+    ustl::Arc<object::VmarDispatcher> region;
+    if (auto const status = table.get_dispatcher(parent, required, &region); status != Status::Ok) {
+        return status;
+    }
+
+    object::KernelHandle<object::VmarDispatcher> sub;
+    auto rights = Rights::None;
+    VirtAddr base = 0;
+    if (auto const status = region->allocate(options, offset, size, sub, rights, base);
+        status != Status::Ok) {
+        return status;
+    }
+
+    auto handle =
+        object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(sub)), rights);
+    if (!handle) {
+        static_cast<void>(region->unmap(base, size));
+        return Status::NoResource;
+    }
+    auto status = child.copy_to_user(table.value_of(*handle));
+    if (status == Status::Ok) {
+        status = child_addr.copy_to_user(base);
+    }
+    if (status != Status::Ok) {
+        static_cast<void>(region->unmap(base, size));
+        return status;
+    }
+    static_cast<void>(table.add(ustl::move(handle)));
+    return Status::Ok;
+}
+
 auto vmar_map(HandleValue const vmar, VmOptions const options, usize const vmar_offset,
               HandleValue const vmo, u64 const vmo_offset, usize const length,
               user_copy::UserOutPtr<VirtAddr> const mapped_addr) -> Status {

@@ -334,3 +334,64 @@ channel->deliver_first(packet);
 - 没有 `vmar_unmap`、`vmar_protect`：shell 映射的内存在进程退出前不会拆掉；映射上限的检查要等 `vmar_protect`。
 - 没测执行映射进来的代码：换出的 BootFS 里没有能直接跳进去运行的函数，K23 的 launcher 起进程时会真正执行它。
 - VmarRoot 的临时通道已记在 K23 行，由 K23 删除。
+
+## 新增 vmar_allocate，只做 guard（K22，2026-09-28）
+
+**文件**
+- `kernel/object/include/ours/object/vmar_dispatcher.hpp`、`vmar_dispatcher.cpp`：`VmarDispatcher::allocate()`
+- `kernel/lib/syscall/src/vmar.cpp`：`syscall::vmar_allocate()`
+- `system/public/ours/syscalls.gni`、`system/lib/ou/include/ou/vmar.hpp`、`system/lib/ou/src/vmar.cpp`：ABI 条目和 `ou::vmar_allocate()`
+- `examples/shell/shell.cpp`：`check_vmar_allocate()`
+- `docs/design/260924/userspace-filesystem.md`：K22 标为已落地
+
+**症状**
+launcher 给子进程建栈时，要在栈下方留一页 guard（接口设计 §3.4）。没有办法占住一段地址而不映射任何东西，
+后来自动放置的映射就可能正好落在栈的下面，栈溢出时直接写进别人的内存，而不是 fault。
+
+**原因**
+缺功能。mm 早就有 `VmArea::create_subvma()`，只差对象层和系统调用把它接出来。
+
+**改法**
+
+```cpp
+// object：只做 guard 这一种形状
+auto VmarDispatcher::allocate(VmOptions options, usize offset, usize size,
+                              KernelHandle<Self> &child, Rights &rights, VirtAddr &base) -> Status {
+    Perm* → InvArgs;  options != Specific → NotSupported;  size 0 / offset 不对齐或越界 → InvArgs;
+    m_vma->create_subvma(at(base + offset), align_up(size), VmaFlags::None, ...);  // 什么都不允许
+    create(child) → rights = 默认值，不带 R/W/X
+}
+
+// syscall：Zircon sys_vmar_allocate() 的顺序
+未知位 → InvArgs;  由 CanMap* 算出父句柄需要的 rights;  get_dispatcher(parent, required);
+region->allocate(...);  Handle::make;  写出句柄值、写出地址;  任一失败 → region->unmap(base, size);  table.add
+```
+
+几处取舍：
+- **只收 Specific，不带任何 CanMap**（设计 K22 行定的范围）。子区域 `VmaFlags::None`，什么权限都不允许，
+  所以任何映射都进不去；它的句柄也就不带 Read/Write/Execute，往里 `vmar_map` 回 AccessDenied。
+  带 CanMap、能在里面继续映射的子区域，以及自动放置，等 launcher 真要切子 VMAR 时再做。
+- **Perm 位回 InvArgs，其余没实现的回 NotSupported**。区域本身没有“保护”，只有“允许什么”，
+  所以 Perm 位对 allocate 来说是写错了，和 Zircon 一样；CanMap 和不带 Specific 是“以后会支持”，回 NotSupported。
+- **两个输出都写成功才入表，失败就把区域拆掉**。子区域由父区域持有，不属于句柄，只关句柄拆不掉它；
+  所以写出失败时，要用 `VmarDispatcher::unmap()` 把整段拆掉（整段覆盖的子区域会被 destroy，而不是留个空壳）。
+  shell 测了：地址写回失败之后，同一个位置能再次 allocate 成功。
+- **关掉句柄不释放区域**。这是 Zircon 的语义，也是 guard 要的：launcher 把 guard 句柄关掉之后，范围仍然被占着。
+  shell 测了：关掉 guard 句柄后，在同一位置 `vmar_map(Specific)` 仍回 AlreadyExists。
+
+**参照**
+- Zircon `sys_vmar_allocate()`（`zircon/kernel/lib/syscalls/vmar.rs`）：由 `ZX_VM_CAN_MAP_*` 算出父句柄需要的 rights，
+  `GetDispatcherWithRights`，`VmAddressRegionDispatcher::Allocate()`，再建句柄、写出地址。
+- Zircon `VmAddressRegionDispatcher::Allocate()`：Perm 位回 `ZX_ERR_INVALID_ARGS`，子 VMAR 的 rights 由它的 CAN_MAP 位推出。
+
+**验证**
+- 两个镜像均构建通过；`boot_check.py` 两个镜像都 PASS（dbg 14 passed；rel 13 passed、5 skipped），
+  两个镜像的 shell 都打出 `vmar_allocate checks passed`：
+  - 按 Specific 占一页成功；在同一位置 `vmar_map(Specific)` 回 AlreadyExists；往 guard 里映射回 AccessDenied；
+  - 关掉 guard 句柄后，同一位置仍回 AlreadyExists；
+  - Specific|CanMapRead、不带 Specific 回 NotSupported；Specific|PermRead、size 0、offset 不对齐回 InvArgs；
+  - child_addr 指向内核半区回 InvArgs，随后在同一位置 allocate 成功。
+
+**故意没做**
+- 自动放置、CanMap 位、Compact 等其余选项。
+- `vmar_destroy`：要先把 `VmArea::destroy` 改成公开并持锁（接口设计 §2.3）。

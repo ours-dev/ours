@@ -101,9 +101,28 @@ class VmarDispatcher final: public VmarDispatcherBase {
     auto map(VmOptions options, usize vmar_offset, VmoDispatcher &vmo, u64 vmo_offset, usize length,
              char const *name) -> ktl::Result<VirtAddr>;
 
+    /// Reserves [offset, offset + size) of this region as a sub-region of its
+    /// own, and hands back a dispatcher for it, its rights and its address.
+    ///
+    /// Only the one shape the launcher needs today, a guard: Specific, and no
+    /// CanMap bit, so the sub-region can hold no mapping at all and nothing
+    /// placed "anywhere" later can land in it (interface design 3.4). A Perm
+    /// bit is InvArgs, as in Zircon -- a region has no protection of its own,
+    /// only what it allows -- and anything else, CanMap* and a missing
+    /// Specific included, is NotSupported until a caller needs it. Otherwise
+    /// InvArgs for a size of 0, and for an offset that is not page-aligned or
+    /// lies outside this region; |size| rounds up to a page.
+    ///
+    /// The sub-region belongs to this one, not to the handle: closing every
+    /// handle to it leaves it in place, and it goes with the address space.
+    /// Zircon: VmAddressRegionDispatcher::Allocate().
+    auto allocate(VmOptions options, usize offset, usize size, KernelHandle<Self> &child_out,
+                  Rights &rights_out, VirtAddr &base_out) -> Status;
+
     /// Tears down whatever is mapped in [base, base + length) of this region.
-    /// Today only vmar_map calls it, to take back a mapping whose address it
-    /// could not report; vmar_unmap will be the second caller.
+    /// Today vmar_map and vmar_allocate call it, to take back what they made
+    /// when they could not report it; vmar_unmap will be the next caller. A
+    /// sub-region wholly inside the range is destroyed, not left empty.
     auto unmap(VirtAddr base, usize length) -> Status {
         verify_canary();
         return m_vma->unmap(base, length);

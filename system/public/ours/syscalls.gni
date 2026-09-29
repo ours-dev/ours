@@ -394,6 +394,51 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "vmar_allocate"
+    brief = "Reserves part of the region |parent| as a sub-region."
+    doc = [
+      "Reserves [offset, offset + size) of |parent|, size rounded up to a",
+      "page, and writes a handle to the sub-region to |child| and its",
+      "address to |child_addr|. Today |options| must be exactly Specific:",
+      "the sub-region allows no mapping, which makes it a guard. CanMap*",
+      "and a missing Specific are NotSupported, a Perm bit or an unknown bit",
+      "InvArgs. A size of 0, or an offset that is not page-aligned or lies",
+      "outside |parent|, is InvArgs. Closing the handle does not release the",
+      "range; it goes with the address space. If either value cannot be",
+      "written, the range is released again and no handle is made.",
+    ]
+    args = [
+      {
+        name = "parent"
+        type = "HandleValue"
+      },
+      {
+        name = "options"
+        type = "VmOptions"
+      },
+      {
+        name = "offset"
+        type = "usize"
+      },
+      {
+        name = "size"
+        type = "usize"
+      },
+      {
+        name = "child"
+        type = "HandleValue"
+        dir = "out"
+      },
+      {
+        name = "child_addr"
+        type = "VirtAddr"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "vmar_map"
     brief = "Maps part of the VMO |vmo| into the region |vmar|."
     doc = [
