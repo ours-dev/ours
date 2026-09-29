@@ -51,6 +51,7 @@ source_set("syscall") {
     # handler allowed to reach below kernel/object. The edge goes with it when
     # the user-space loader lands (docs/repairs/260923/syscall.md).
     "//kernel/lib/userabi",
+
     # command.cpp walks the GKTL_COMMAND registry the linker collects; it reads
     # the records and copies text out, and deliberately does not call
     # gktl::run_command() -- running kernel code on argv that came from ring 3

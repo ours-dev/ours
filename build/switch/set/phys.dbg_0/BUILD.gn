@@ -1,6 +1,6 @@
 import("//build/switch/phys_switchset.gni")
 
 phys_switchset("phys.dbg_0") {
-    debug_level = 2
-    unit_tests_enabled = true
+  debug_level = 2
+  unit_tests_enabled = true
 }

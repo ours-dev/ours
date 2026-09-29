@@ -297,6 +297,7 @@ template("hermetic_source_set") {
 
     # Set the metadata for link_output_rspfile() to collect.
     output_file = "$output_name.$output_extension"
+
     # NOTE(ours): Fuchsia splits stripped/unstripped into exe.unstripped for
     # host clang toolchains; the Ours toolchain writes the link output at
     # $output_dir directly, so the rspfile must point there.  Kernel toolchains

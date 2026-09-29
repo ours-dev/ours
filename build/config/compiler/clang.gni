@@ -43,9 +43,9 @@ if (host_os == "mac") {
 
 # Where the compiler runtime archives live, one directory per target triple.
 #
-# The kernel links with ld.lld directly rather than through the clang driver,
-# so -rtlib=compiler-rt never gets a chance to resolve; the archive has to be
-# named as an ordinary linker input instead. See //kernel/products:static-pic-link.
+# The kernel links with ld.lld directly rather than through the clang driver, so
+# -rtlib=compiler-rt never gets a chance to resolve; the archive has to be named
+# as an ordinary linker input instead. See //kernel/products:static-pic-link.
 clang_runtime_lib_dir =
     "$_prebuilt_clang_root/lib/clang/$_prebuilt_clang_major/lib"
 _prebuilt_clang_version =

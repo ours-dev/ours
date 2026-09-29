@@ -65,9 +65,7 @@ template("obi_input") {
       # treats "--files" as always consuming the *next* token as a
       # manifest path, and "--compressed" as unconditionally turning
       # compression back on right after the reset.
-      obi_input_args += [
-        "--reset",
-      ]
+      obi_input_args += [ "--reset" ]
 
       if (defined(invoker.type) && invoker.type != "") {
         if (invoker.type == "cmdline") {

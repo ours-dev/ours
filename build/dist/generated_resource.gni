@@ -6,7 +6,6 @@
 # generated_file() target (fixed contents or metadata-derived), rolled into
 # one template.  Same distribution_entries/barrier semantics as resource().
 
-
 # PROVENANCE: adapted from Fuchsia's //build/dist/generated_resource.gni
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).
 

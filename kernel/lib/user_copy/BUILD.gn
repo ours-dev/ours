@@ -20,7 +20,8 @@ if (toolchain_environment == "kernel") {
 }
 
 # The headers are a target of their own so that a dependant needing only the
-# declarations does not pull in the sources -- see //build/cpp/cpp_interface.gni.
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
   public = [
     "include/user_copy/range.hpp",

@@ -7,7 +7,9 @@
 # hermetic link (hermetic_source_set) always allows these to be
 # undefined.
 #
-# PROVENANCE: copied from Fuchsia //build/config/arm64/builtins_linkage_symbols.gni (Copyright 2025 The Fuchsia Authors, BSD-style license); the aarch64 -moutline-atomics builtin symbols.
+# PROVENANCE: copied from Fuchsia
+# //build/config/arm64/builtins_linkage_symbols.gni (Copyright 2025 The Fuchsia
+# Authors, BSD-style license); the aarch64 -moutline-atomics builtin symbols.
 builtins_linkage_symbols = [
   # These are the -moutline-atomics symbols.
   "__aarch64_cas16_acq",

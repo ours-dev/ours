@@ -8,7 +8,6 @@
 # regular entries.  This is how kernel binaries get their install_name
 # (e.g. vmours) without double-packing the original.
 
-
 # PROVENANCE: adapted from Fuchsia's //build/dist/renamed_binary.gni
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).
 

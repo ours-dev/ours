@@ -1,4 +1,3 @@
-
 if (toolchain_environment == "kernel") {
   source_set("platform") {
     public_deps = [ "//kernel/platform:headers" ]

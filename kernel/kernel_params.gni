@@ -5,9 +5,9 @@ declare_args() {
   mp_max_cpus = 16
   kernel_extra_defines = []
 
-  lockdep_enable = false 
-  lockdep_metadata_only = false 
-  lockdep_lock_name_tracing = false 
+  lockdep_enable = false
+  lockdep_metadata_only = false
+  lockdep_lock_name_tracing = false
 
   # Which discipline occupies Discipline::Normal. The two are mutually
   # exclusive: RoundRobin is a deliberately plain stand-in that keeps the rest

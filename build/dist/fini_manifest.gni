@@ -99,6 +99,7 @@ template("fini_manifest") {
                            ])
 
     script = "//build/dist/convert_manifest_to_fini.py"
+
     # NOTE(ours): Fuchsia sets check_for_output_dir_leaks = false here; that
     # variable belongs to its BUILDCONFIG action() wrapper and is unknown to
     # the Ours build, so it is dropped (the script only writes its declared

@@ -1,7 +1,9 @@
 # Bringup product — minimal bootable kernel image collection.
 #
-# 产品定义见 //products/bringup.gni（声明式 scope）；本文件把该定义
-# 实例化成构建目标。构建它即一次性产出全部产物（默认落在 out 根，对标 Fuchsia）：
+# 产品定义见 //products/bringup.gni（声明式
+# scope）；本文件把该定义
+# 实例化成构建目标。构建它即一次性产出全部产物（默认落在
+# out 根，对标 Fuchsia）：
 #   $root_out_dir/kernel.dev.obi
 #   $root_out_dir/kernel.dev.dbg_1.obi
 #   $root_out_dir/product_info.json

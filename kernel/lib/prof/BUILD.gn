@@ -23,6 +23,7 @@ source_set("prof") {
     "src/dump.cpp",
     "src/sampler.cpp",
   ]
+
   # sampler.cpp calls into the unwinder, not just its headers, so consumers
   # linking this source_set need //kernel/lib/unwind's objects on their link
   # line too.

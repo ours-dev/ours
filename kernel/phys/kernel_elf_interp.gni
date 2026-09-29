@@ -42,6 +42,7 @@ template("kernel_elf_interp") {
       # must not make that ELF's boot or package payloads appear as contents of
       # the executable that links this generated PT_INTERP section.
       images_barrier = []
+
       # Renamed to the three-layer distribution key (see //build/dist).
       distribution_entries_barrier = []
       obi_input_args_barrier = []

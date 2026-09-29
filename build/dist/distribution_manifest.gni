@@ -101,6 +101,7 @@ template("distribution_manifest") {
                            ])
 
     script = "//build/python/modules/distribution_manifest/expand_and_find_conflicting_dist_entries.py"
+
     # NOTE(ours): Fuchsia sets check_for_output_dir_leaks = false here; that
     # variable belongs to its BUILDCONFIG action() wrapper (action tracer) and
     # is unknown to the Ours build, so it is dropped.  The script only writes

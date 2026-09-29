@@ -1,4 +1,3 @@
-
 # Parameters
 #
 #   * link_script:
@@ -14,9 +13,7 @@ template("link_config") {
 
   config(target_name) {
     inputs = [ invoker.link_script ]
-    ldflags = [
-      "-Wl,-T," + rebase_path(inputs[0], root_build_dir),
-    ]
+    ldflags = [ "-Wl,-T," + rebase_path(inputs[0], root_build_dir) ]
     if (defined(invoker.symbols)) {
       foreach(symbol, invoker.symbols) {
         ldflags += [ "-Wl,-defsym,$symbol" ]

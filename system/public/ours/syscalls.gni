@@ -419,7 +419,8 @@ ours_syscalls = [
     # VMOs and VMAs (design P1-C), and with it this entry, which is all that
     # removing the call takes on this side (docs/repairs/260923/syscall.md).
     name = "process_spawn_boot"
-    brief = "TEMPORARY: starts a program from the kernel package as a new process."
+    brief =
+        "TEMPORARY: starts a program from the kernel package as a new process."
     doc = [
       "Goes when a user-space loader exists (design P1-C).",
       "",
@@ -464,7 +465,8 @@ ours_syscalls = [
   },
   {
     name = "vmo_read"
-    brief = "Copies |length| bytes of the VMO, from byte |offset|, into |buffer|."
+    brief =
+        "Copies |length| bytes of the VMO, from byte |offset|, into |buffer|."
     doc = [
       "Needs Read on |vmo|. All or nothing: OutOfRange when the range does",
       "not lie wholly inside the VMO, and nothing is copied then. A page",
@@ -700,7 +702,8 @@ ours_syscalls = [
   },
   {
     name = "vmo_write"
-    brief = "Copies |length| bytes from |buffer| into the VMO, from byte |offset|."
+    brief =
+        "Copies |length| bytes from |buffer| into the VMO, from byte |offset|."
     doc = [
       "Needs Write on |vmo|. OutOfRange when the range does not lie wholly",
       "inside the VMO, and nothing is written then. InvArgs when |buffer|",

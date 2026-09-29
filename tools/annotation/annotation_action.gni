@@ -4,7 +4,8 @@ template("annotation_action") {
   assert(defined(invoker.compiler), "annotation_action requires compiler")
   assert(defined(invoker.sources), "annotation_action requires sources")
   assert(defined(invoker.config), "annotation_action requires config")
-  assert(defined(invoker.generated_outputs), "annotation_action requires generated_outputs")
+  assert(defined(invoker.generated_outputs),
+         "annotation_action requires generated_outputs")
 
   action(target_name) {
     script = "//tools/annotation/cli.py"
@@ -42,11 +43,17 @@ template("annotation_action") {
     ]
     if (defined(invoker.flags)) {
       foreach(flag, invoker.flags) {
-        args += [ "--flag", flag ]
+        args += [
+          "--flag",
+          flag,
+        ]
       }
     }
     foreach(source, invoker.sources) {
-      args += [ "--source", rebase_path(source, root_build_dir) ]
+      args += [
+        "--source",
+        rebase_path(source, root_build_dir),
+      ]
     }
   }
 }

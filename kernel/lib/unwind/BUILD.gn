@@ -24,6 +24,7 @@ source_set("unwind") {
 
 group("tests") {
   testonly = true
+
   # Hosted gtest programs — the default toolchain carries target identity
   # (freestanding kernel) and has no hosted libc wiring for them.
   public_deps = [

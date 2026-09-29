@@ -21,6 +21,7 @@ group("multiboot") {
 
 group("tests") {
   testonly = true
+
   # Plain hosted programs: they must build in the host toolchain (see
   # kernel/lib/obi:tests for the same fix) -- the default toolchain is a
   # bare switchset mount point with no hosted-libc/prelude wiring of its

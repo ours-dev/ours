@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 declare_args() {
-    # The C++ standard version used across the project.
-    ours_cxx_version = "2c"
+  # The C++ standard version used across the project.
+  ours_cxx_version = "2c"
 }
-

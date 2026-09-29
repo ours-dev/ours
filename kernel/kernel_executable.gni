@@ -5,9 +5,7 @@
 import("//build/ours/cpu.gni")
 import("//kernel/phys/kernel_elf_binary.gni")
 
-_kernel_executable_deps = [
-  "//kernel/top",
-]
+_kernel_executable_deps = [ "//kernel/top" ]
 
 _kernel_executable_cpu_deps = {
   arm = [ "//kernel/platform/arm:platform" ]

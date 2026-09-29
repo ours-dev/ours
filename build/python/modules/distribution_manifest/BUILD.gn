@@ -15,7 +15,6 @@
 
 group("distribution_manifest") {
   testonly = true
-
   # No deps: the module files are referenced by path from actions in
   # //build/dist (fini_manifest(), distribution_manifest()).
 }

@@ -16,13 +16,13 @@ hermetic_source_set("hermetic") {
   testonly = true
   sources = [ "smoke.cpp" ]
   global_symbols = [ "hermetic_smoke_symbol" ]
+
   # No undefined symbols may remain (host x86 builtins list is empty).
   undefined_symbols = false
 
   # This host has no libc++ runtime installed; the smoke TU needs none.
   hermetic_libs = []
 }
-
 
 import("//build/toolchain/ifs_extract.gni")
 

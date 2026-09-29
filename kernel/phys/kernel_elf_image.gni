@@ -113,6 +113,7 @@ template("kernel_elf_image") {
       debug_symbol_files = []
       images = []
       images_barrier = []
+
       # Three-layer distribution manifest keys (see //build/dist):
       # kernel ELF payloads are collected by fini_manifest() through
       # distribution_entries; the barrier stops the walk at this group's deps.
@@ -161,8 +162,9 @@ template("kernel_elf_image") {
         distribution_entries += [
           {
             destination = "$_image_name/code-patches"
-            source = rebase_path("$target_out_dir/$_main_target.code-patches.bin",
-                                 root_build_dir)
+            source =
+                rebase_path("$target_out_dir/$_main_target.code-patches.bin",
+                            root_build_dir)
             label = get_label_info(":$_main_target", "label_with_toolchain")
           },
         ]
@@ -173,6 +175,7 @@ template("kernel_elf_image") {
           label = get_label_info(":$_main_target", "label_with_toolchain")
           name = _image_name
           path = rebase_path(_package_path, root_build_dir)
+
           # Zircon convention: with code-patches the kernel ELF and the
           # patches live in an "$install_name/" subtree (image.elf +
           # code-patches.bin); without patches the ELF is a bare file at

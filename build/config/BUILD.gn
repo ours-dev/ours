@@ -286,7 +286,8 @@ config("executable_config") {
 
 config("default_libs") {
   # Kernel links against nothing — all symbols must be provided by the
-  # kernel's own code (including compiler builtins resolved through libclang_rt).
+  # kernel's own code (including compiler builtins resolved through
+  # libclang_rt).
 }
 
 # Content-derived ELF identity used by symbol and artifact indexing tools.
@@ -485,7 +486,6 @@ config("ifs-as-needed") {
   # `.as-needed` subtargets (see //build/toolchain/ifs_shared_library.gni).
   # The dir is anchored on the DEFAULT toolchain's root gen dir because the
   # stubs are generated once per build and reused across toolchains.
-  lib_dirs = [
-    get_label_info(".($default_toolchain)", "root_gen_dir") + "/ifs-as-needed"
-  ]
+  lib_dirs = [ get_label_info(".($default_toolchain)", "root_gen_dir") +
+               "/ifs-as-needed" ]
 }

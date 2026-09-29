@@ -25,9 +25,8 @@ template("phys_switchset") {
 
   _switchset_dir = get_label_info(":$target_name", "dir")
   _expected_dir = "//build/switch/set/$target_name"
-  assert(
-      _switchset_dir == _expected_dir,
-      "phys_switchset($target_name) must be instantiated in $_expected_dir")
+  assert(_switchset_dir == _expected_dir,
+         "phys_switchset($target_name) must be instantiated in $_expected_dir")
 
   assert(defined(invoker.debug_level),
          "phys_switchset($target_name) requires lk_debug_level")
@@ -38,7 +37,8 @@ template("phys_switchset") {
     2,
   ]
   assert(_allowed_debug_levels + [ _debug_level ] - [ _debug_level ] !=
-         _allowed_debug_levels, "debug_level must be one of 0, 1, or 2")
+             _allowed_debug_levels,
+         "debug_level must be one of 0, 1, or 2")
 
   assert(defined(invoker.unit_tests_enabled),
          "phys_switchset($target_name) requires unit_tests_enabled")
@@ -48,6 +48,7 @@ template("phys_switchset") {
       cpu = cpu
       os = target_os
       environment = "kernel.phys"
+
       # Link with the target GNU ld rather than the Clang driver.  The
       # driver hands an ELF-target link off to the host `gcc`, which
       # rejects the cross-architecture flags outright on a non-x86 host
@@ -77,4 +78,3 @@ template("phys_switchset") {
     }
   }
 }
-

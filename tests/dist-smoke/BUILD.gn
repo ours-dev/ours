@@ -57,7 +57,6 @@ fini_manifest("collision") {
 # renamed_binary smoke: install hello.txt under a different destination and
 # drop the original (keep_original unset).
 import("//build/dist/renamed_binary.gni")
-
 group("renamed_source") {
   metadata = {
     distribution_entries = []
@@ -86,14 +85,12 @@ fini_manifest("with_rename") {
   ]
 }
 
-
 # Full build/obi -> kernel/lib/obi wiring smoke: obi_input() emits the
 # obit .rsp arguments, obi() generates the rsp and runs pack_action.py
 # which invokes `obit pack`.  Produces a real, validate-able .obi from
 # the three-layer distribution pipeline output.
 import("//build/obi/obi.gni")
 import("//build/obi/obi_input.gni")
-
 obi_input("input_block") {
   # obi_input collects distribution entries from its OWN deps (the producers),
   # not from a fini_manifest target (fini_manifest() is created internally).
@@ -107,7 +104,6 @@ obi("obi_smoke") {
   output_name = "dist-smoke"
   deps = [ ":input_block" ]
 }
-
 
 # Nested-container smoke: an obi() containing another obi() directly
 # (the inner one self-registers as --type=container via its obi_input_args

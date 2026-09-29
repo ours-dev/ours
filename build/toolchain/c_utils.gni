@@ -53,8 +53,9 @@ template("toolchain_utils_action") {
     }
     if (util == "cc") {
       util = _clang_utils.cc
-      assert(utils_paths == [],
-             "\"cc\" must be used alone in toolchain_utils_action() `utils` list")
+      assert(
+          utils_paths == [],
+          "\"cc\" must be used alone in toolchain_utils_action() `utils` list")
       util_extra_args = _clang_utils.cc_extra_args
     } else {
       util = _clang_utils.prefix + util
@@ -93,8 +94,9 @@ template("toolchain_utils_action") {
       args += utils_paths + util_extra_args + invoker.args
     } else {
       script = rebase_path(utils_paths[0], "", root_build_dir)
-      assert(utils_paths == [ utils_paths[0] ],
-             "toolchain_utils_action(\"$target_name\") without `script` must have exactly one element in `utils`")
+      assert(
+          utils_paths == [ utils_paths[0] ],
+          "toolchain_utils_action(\"$target_name\") without `script` must have exactly one element in `utils`")
       args = util_extra_args + invoker.args
     }
   }

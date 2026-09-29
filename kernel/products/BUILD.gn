@@ -20,10 +20,12 @@ config("headers") {
 }
 
 config("host-prelude") {
-  # Host-built C++（如 obit）会 include system/public/ours/* 头，这些头依赖
-  # prelude.hpp 定义的全局整数别名（u8/u32/usize/...）。内核工具链通过上面的
-  # config("headers") 强制 -include prelude；host 工具链的 C++ 目标需要同样的
-  # prelude（仅 cflags_cc：prelude 是 C++ 头，不能喂给 C 编译）。
+  # Host-built C++（如 obit）会 include system/public/ours/*
+  # 头，这些头依赖 prelude.hpp
+  # 定义的全局整数别名（u8/u32/usize/...）。内核工具链通过上面的
+  # config("headers") 强制 -include prelude；host 工具链的 C++
+  # 目标需要同样的 prelude（仅 cflags_cc：prelude 是 C++
+  # 头，不能喂给 C 编译）。
   inputs = [ "//kernel/include/ours/prelude.hpp" ]
   cflags_cc = [
     "-include",
@@ -42,6 +44,7 @@ config("standalone") {
 
 config("static-pic-link") {
   configs = [ "//build/config:static-link" ]
+
   # The compiler runtime is a link input, not a driver option. clang emits
   # calls into it -- __udivti3 and friends, today from libc++'s std::format,
   # whose integer formatter is instantiated for unsigned __int128 whether or
@@ -164,9 +167,7 @@ config("kernel.config") {
     "//kernel/arch/$ours_cpu:abi",
     "//kernel/arch/$ours_cpu:kernel",
   ]
-  defines = [
-              "MP_MAX_CPUS=$mp_max_cpus",
-            ] + kernel_extra_defines
+  defines = [ "MP_MAX_CPUS=$mp_max_cpus" ] + kernel_extra_defines
   cflags = [ "-fpie" ]
 }
 

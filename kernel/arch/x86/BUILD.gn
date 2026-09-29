@@ -25,8 +25,9 @@ config("abi.integer-register") {
 config("abi.thread-pointer") {
   if (is_clang) {
     # Clang needs -mcmodel=kernel to tell it to use the right safe-stack ABI for
-    # the kernel.  It doesn't have any other effects that matter when using -fPIE
-    # as we do; it's not useful to us at all in GCC and doesn't exist for x86-32.el.
+    # the kernel. It doesn't have any other effects that matter when using -fPIE
+    # as we do; it's not useful to us at all in GCC and doesn't exist for
+    # x86-32.el.
     cflags = [ "-mcmodel=kernel" ]
     asmflags = cflags
     ldflags = cflags

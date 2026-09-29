@@ -38,7 +38,8 @@ template("kernel_switchset") {
     2,
   ]
   assert(_allowed_debug_levels + [ _debug_level ] - [ _debug_level ] !=
-         _allowed_debug_levels, "lk_debug_level must be one of 0, 1, or 2")
+             _allowed_debug_levels,
+         "lk_debug_level must be one of 0, 1, or 2")
 
   assert(defined(invoker.unit_tests_enabled),
          "kernel_switchset($target_name) requires unit_tests_enabled")
@@ -49,6 +50,7 @@ template("kernel_switchset") {
       os = target_os
       environment = "kernel"
       tool_dir = clang_tool_dir
+
       # Same reason as the phys toolchains: the kernel ELF is freestanding
       # and must not be linked through the host compiler driver.
       elf_linker = true
@@ -60,9 +62,7 @@ template("kernel_switchset") {
       ]
 
       strip = ours_strip_kernel_binaries
-      remove_common_configs = [
-        "//build/config:default_frame_pointers"
-      ]
+      remove_common_configs = [ "//build/config:default_frame_pointers" ]
       prefix_configs = [
         "//kernel/lib/arch:headers.config",
 

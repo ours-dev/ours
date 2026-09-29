@@ -22,6 +22,7 @@ source_set("x86") {
     "topology.cpp",
     "vga_console.cpp",
   ]
+
   # These sources end up in physload's ET_DYN link; phys-module's cflags
   # (-fPIC -fno-plt) are what make that legal.  :bootshim below stays
   # off this config on purpose -- boot-shim keeps the fixed-address EXEC
@@ -58,6 +59,7 @@ source_set("bootshim") {
   deps = [
     ":headers",
     "//kernel/lib/ccrt",
+
     # The machine-independent half of this shim: memory-map conversion and
     # image placement, kept where a host test can reach them.
     "//kernel/phys/lib/bootshim",

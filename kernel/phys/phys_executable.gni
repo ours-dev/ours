@@ -79,8 +79,9 @@ template("phys_executable") {
   } else {
     _obi_executable_item = false
   }
-  assert(!(_embed_in_obi && _obi_executable_item),
-         "phys_executable($target_name): embed_in_obi and obi_executable_item are exclusive")
+  assert(
+      !(_embed_in_obi && _obi_executable_item),
+      "phys_executable($target_name): embed_in_obi and obi_executable_item are exclusive")
 
   if (defined(invoker.export_table)) {
     _export_table = invoker.export_table

@@ -2,6 +2,7 @@ import("//build/cpp/cpp_interface.gni")
 
 source_set("kshell") {
   sources = [ "kshell/shell.cpp" ]
+
   # Mirrors //kernel/kernel/task's include surface: Thread::spawn's header
   # chain reaches ours/mm/init.hpp -> ours/phys/handoff.hpp, whose include
   # dirs ride in on the mm/object headers targets.

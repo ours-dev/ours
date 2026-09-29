@@ -74,6 +74,7 @@ template("physload_module") {
     if (defined(visibility)) {
       visibility += [ ":*" ]
     }
+
     # Replace rather than append: this template's set_defaults() below has
     # already put the shared-object config set on `invoker.configs`, and
     # loadable_module's own defaults are the same list.
@@ -91,6 +92,7 @@ template("physload_module") {
     if (!defined(deps)) {
       deps = []
     }
+
     # <format> (reached through ours/phys/print.hpp) needs the out-of-line
     # libc++ string members that only the explicit instantiation in the glue
     # provides; a module defines its own copy instead of importing one

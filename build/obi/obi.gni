@@ -42,8 +42,7 @@ import("//build/obi/obi_input.gni")
 #   * obit implements only lz4 BootFS compression, so `compressed = true`
 #     maps to "lz4" rather than Fuchsia's default "zstd".
 template("obi") {
-  assert(defined(invoker.deps),
-         "obi($target_name) requires `deps`")
+  assert(defined(invoker.deps), "obi($target_name) requires `deps`")
 
   _main_target = target_name
   if (defined(invoker.output_name)) {
@@ -60,6 +59,7 @@ template("obi") {
   _obi = "$_output_dir/$_output_name.obi"
   _rsp_target = "_obi.$target_name.rsp"
   _pack_target = "_obi.$target_name.pack"
+
   # obit runs on the build host; build it in the host toolchain regardless
   # of which context this obi() is evaluated in (the default toolchain
   # carries target identity).

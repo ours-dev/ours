@@ -38,7 +38,6 @@ config("public.config") {
 # and tests; what matters is only that it is one toolchain, so the action runs
 # once rather than once per toolchain that asks.)
 import("ours/syscalls.gni")
-
 _syscalls_gen_dir =
     get_label_info(":syscalls.gen($default_toolchain)", "target_gen_dir")
 
@@ -93,7 +92,6 @@ if (current_toolchain == default_toolchain) {
   # linked vDSO actually exports is checked against this
   # (//kernel/lib/userabi/vdso:vdso.abi_check).
   import("//build/toolchain/generated_ifs_file.gni")
-
   _libours_symbols = []
   foreach(call, ours_syscalls) {
     _libours_symbols += [ "ours_${call.name}" ]

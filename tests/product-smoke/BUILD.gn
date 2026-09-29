@@ -4,9 +4,10 @@
 
 # C++-free smoke test for the product() assembly engine (//build/product).
 #
-# bringup 产品刻意保持 cmdline/bootfs 为空（维持 phys 侧默认启动行为），所以
-# product() 的 v2 注入能力在这里用一个"假内核"产品来验证 —— 不编译任何内核
-# C++，只走完整的装配流水线：
+# bringup 产品刻意保持 cmdline/bootfs 为空（维持 phys
+# 侧默认启动行为），所以 product() 的 v2
+# 注入能力在这里用一个"假内核"产品来验证 ——
+# 不编译任何内核 C++，只走完整的装配流水线：
 #
 #   gn gen out/smoke --args='target_cpu="x86"'
 #   ninja -C out/smoke //tests/product-smoke:product_smoke
@@ -19,8 +20,10 @@
 #      └── [BTSF] bootfs   ← 产品级 bootfs 资源已注入
 #   out/smoke/product-smoke/product_info.json
 #
-# 与真实产品的差异：kernel_images[].package 指向本地 resource() 组（发出
-# distribution_entries 即可被 kernel_package 收集），而不是内核可执行文件。
+# 与真实产品的差异：kernel_images[].package 指向本地 resource()
+# 组（发出
+# distribution_entries 即可被 kernel_package
+# 收集），而不是内核可执行文件。
 
 import("//build/obi/resource.gni")
 import("//build/product/product.gni")
@@ -44,9 +47,10 @@ resource("bootfs_data") {
 }
 
 # ---- 冒烟产品：单镜像 + 产品级 cmdline + 产品级 bootfs ----
-# bootable=false：假"内核"是存储载荷而非 ELF，产物是纯容器（只有
-# CONF/KSTR/BTSF 三项），不满足 obit --bootable 的启动拓扑（item 0 必须
-# 是 Executable 入口），所以跳过该校验。
+# bootable=false：假"内核"是存储载荷而非
+# ELF，产物是纯容器（只有 CONF/KSTR/BTSF 三项），不满足 obit
+# --bootable 的启动拓扑（item 0 必须 是 Executable
+# 入口），所以跳过该校验。
 product("product_smoke") {
   kernel_images = [
     {

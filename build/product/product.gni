@@ -7,11 +7,14 @@ import("//build/obi/obi_input.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 
-# product() — 声明式产品装配引擎（对标 Fuchsia products/<name>.gni + assembly）。
+# product() — 声明式产品装配引擎（对标 Fuchsia products/<name>.gni
+# + assembly）。
 #
-# 产品 = 命名的、可选择的构建配置。一个 product() 定义一次性产出该产品所需的
-# 全部内容 —— 内核镜像(.obi)、注入的内核 cmdline 与 BOOTFS 资源、以及描述
-# 产物的 product_info.json 清单；不需要任何额外的手工拼装步骤。
+# 产品 = 命名的、可选择的构建配置。一个 product()
+# 定义一次性产出该产品所需的 全部内容 ——
+# 内核镜像(.obi)、注入的内核 cmdline 与 BOOTFS 资源、以及描述
+# 产物的 product_info.json
+# 清单；不需要任何额外的手工拼装步骤。
 #
 # 与内核侧职责的划分：
 #   * kernel/products/          — 内核怎么编译（configs）
@@ -68,8 +71,10 @@ import("//kernel/kernel_package.gni")
 #     供脚本/工具消费（对标 Fuchsia product bundle 的 images.json 思想）；
 #   * 产品信息 metadata（product_info），供文档/工具读取。
 #
-# PROVENANCE: 本地模板；产品概念与装配模型对标 Fuchsia //products/*.gni +
-# product bundle assembly；镜像聚合逻辑源自已移除的 //build/obi/kernel_product.gni。
+# PROVENANCE: 本地模板；产品概念与装配模型对标 Fuchsia
+# //products/*.gni + product bundle
+# assembly；镜像聚合逻辑源自已移除的
+# //build/obi/kernel_product.gni。
 template("product") {
   assert(defined(invoker.kernel_images),
          "product($target_name) requires `kernel_images`")
@@ -116,15 +121,17 @@ template("product") {
   if (defined(invoker.bootfs)) {
     _bootfs = invoker.bootfs
   }
+
   # ---- 装配每个内核镜像 ----
   _image_targets = []
   _image_info = []
   foreach(_entry, invoker.kernel_images) {
     if (defined(_entry.image)) {
-      # ---- 预定义镜像（Fuchsia 模式）----
-      # 条目为 { image = <label> }：镜像本体（kernel_package + kernel_cmdline +
-      # kernel_image）定义在 kernel/products/image/$name/，产品只按 label 选择。
-      # 镜像的 cmdline/switchset/physboot 在定义处决定；产品级 cmdline/bootfs
+      # ---- 预定义镜像（Fuchsia 模式）---- 条目为 { image = <label>
+      # }：镜像本体（kernel_package + kernel_cmdline +
+      # kernel_image）定义在 kernel/products/image/$name/，产品只按
+      # label 选择。 镜像的 cmdline/switchset/physboot
+      # 在定义处决定；产品级 cmdline/bootfs
       # 注入只作用于内联镜像条目（else 分支）。
       _label = _entry.image
       _image_targets += [ _label ]
@@ -135,84 +142,91 @@ template("product") {
         },
       ]
     } else {
-      assert(defined(_entry.output_name),
-             "product($target_name): each kernel_images entry requires `output_name`")
-      assert(defined(_entry.package),
-             "product($target_name): each kernel_images entry requires `package` (kernel executable label)")
+      assert(
+          defined(_entry.output_name),
+          "product($target_name): each kernel_images entry requires `output_name`")
+      assert(
+          defined(_entry.package),
+          "product($target_name): each kernel_images entry requires `package` (kernel executable label)")
 
-    _image_name = _entry.output_name
-    _extra_deps = []
-    if (defined(_entry.extra_deps)) {
-      _extra_deps = _entry.extra_deps
-    }
-    _entry_cmdline = []
-    if (defined(_entry.cmdline)) {
-      _entry_cmdline = _entry.cmdline
-    }
-    _entry_bootable = true
-    if (defined(_entry.bootable)) {
-      _entry_bootable = _entry.bootable
-    }
+      _image_name = _entry.output_name
+      _extra_deps = []
+      if (defined(_entry.extra_deps)) {
+        _extra_deps = _entry.extra_deps
+      }
+      _entry_cmdline = []
+      if (defined(_entry.cmdline)) {
+        _entry_cmdline = _entry.cmdline
+      }
+      _entry_bootable = true
+      if (defined(_entry.bootable)) {
+        _entry_bootable = _entry.bootable
+      }
 
-    _pkg_target = "_product.$target_name.pkg.$_image_name"
-    _cmdline_target = "_product.$target_name.cmdline.$_image_name"
-    _bootfs_target = "_product.$target_name.bootfs.$_image_name"
-    _image_target = "_product.$target_name.image.$_image_name"
+      _pkg_target = "_product.$target_name.pkg.$_image_name"
+      _cmdline_target = "_product.$target_name.cmdline.$_image_name"
+      _bootfs_target = "_product.$target_name.bootfs.$_image_name"
+      _image_target = "_product.$target_name.image.$_image_name"
 
-    # 内核存储块：共享配方（common_package_items）+ 所选 switchset 工具链下的
-    # 内核可执行文件，收进压缩 BootFS（STORAGE_KERNEL 项）。
-    # 注：switchset 工具链只在内联镜像处计算；预定义镜像的 switchset 在其
-    # 定义处（kernel/products/image/$name/）决定。
-    _switchset_toolchain = "//build/switch/set/$_switchset:kernel_${target_cpu}.$_switchset"
-    kernel_package(_pkg_target) {
-      visibility = [ ":*" ]
-      testonly = _testonly
-      prefix = "ours"
-      deps = [
-        "//kernel/products/image:common_package_items",
-        "${_entry.package}($_switchset_toolchain)",
-      ]
-    }
-
-    # 内核 cmdline：产品级 + 镜像级，注入到该镜像。
-    kernel_cmdline(_cmdline_target) {
-      visibility = [ ":*" ]
-      testonly = _testonly
-      args = _kernel_cmdline + _entry_cmdline
-    }
-
-    # NOTE: GN 的 foreach 不隔离作用域，循环局部变量在迭代间泄漏，因此
-    # 每个迭代先清空再追加（不能直接对非空列表重新赋值）。
-    _image_deps = []
-    _image_deps += [
-      ":$_pkg_target",
-      ":$_cmdline_target",
-    ]
-    _image_deps += _extra_deps
-    if (_bootfs != []) {
-      # BOOTFS 资源块：默认 files_type=bootfs、无前缀，落在 BootFS 根。
-      obi_input(_bootfs_target) {
+      # 内核存储块：共享配方（common_package_items）+ 所选
+      # switchset 工具链下的 内核可执行文件，收进压缩
+      # BootFS（STORAGE_KERNEL 项）。 注：switchset
+      # 工具链只在内联镜像处计算；预定义镜像的 switchset
+      # 在其
+      # 定义处（kernel/products/image/$name/）决定。
+      _switchset_toolchain =
+          "//build/switch/set/$_switchset:kernel_${target_cpu}.$_switchset"
+      kernel_package(_pkg_target) {
         visibility = [ ":*" ]
         testonly = _testonly
-        deps = _bootfs
+        prefix = "ours"
+        deps = [
+          "//kernel/products/image:common_package_items",
+          "${_entry.package}($_switchset_toolchain)",
+        ]
       }
-      _image_deps += [ ":$_bootfs_target" ]
-    }
 
-    _image_compressed = "lz4"
-    if (defined(invoker.compressed)) {
-      _image_compressed = invoker.compressed
-    }
+      # 内核 cmdline：产品级 + 镜像级，注入到该镜像。
+      kernel_cmdline(_cmdline_target) {
+        visibility = [ ":*" ]
+        testonly = _testonly
+        args = _kernel_cmdline + _entry_cmdline
+      }
 
-    kernel_image(_image_target) {
-      visibility = [ ":*" ]
-      testonly = _testonly
-      output_name = _image_name
-      product_dir = _product_dir
-      compressed = _image_compressed
-      bootable = _entry_bootable
-      deps = _image_deps
-    }
+      # NOTE: GN 的 foreach
+      # 不隔离作用域，循环局部变量在迭代间泄漏，因此
+      # 每个迭代先清空再追加（不能直接对非空列表重新赋值）。
+      _image_deps = []
+      _image_deps += [
+        ":$_pkg_target",
+        ":$_cmdline_target",
+      ]
+      _image_deps += _extra_deps
+      if (_bootfs != []) {
+        # BOOTFS 资源块：默认 files_type=bootfs、无前缀，落在
+        # BootFS 根。
+        obi_input(_bootfs_target) {
+          visibility = [ ":*" ]
+          testonly = _testonly
+          deps = _bootfs
+        }
+        _image_deps += [ ":$_bootfs_target" ]
+      }
+
+      _image_compressed = "lz4"
+      if (defined(invoker.compressed)) {
+        _image_compressed = invoker.compressed
+      }
+
+      kernel_image(_image_target) {
+        visibility = [ ":*" ]
+        testonly = _testonly
+        output_name = _image_name
+        product_dir = _product_dir
+        compressed = _image_compressed
+        bootable = _entry_bootable
+        deps = _image_deps
+      }
 
       _image_targets += [ ":$_image_target" ]
       _image_info += [
@@ -255,7 +269,8 @@ template("product") {
     kernel_images = _image_info
   }
 
-  # 元数据载体：product_info.json 的数据源（只挂 metadata，无 deps）。
+  # 元数据载体：product_info.json 的数据源（只挂 metadata，无
+  # deps）。
   group("_product.$_product_name.info") {
     metadata = {
       product_info = [ _product_info ]
@@ -263,7 +278,8 @@ template("product") {
     }
   }
 
-  # 产物清单：一次构建即得到描述全部产物的 JSON（对标 Fuchsia images.json）。
+  # 产物清单：一次构建即得到描述全部产物的 JSON（对标
+  # Fuchsia images.json）。
   generated_file("_product.$_product_name.info.json") {
     deps = [ ":_product.$_product_name.info" ]
     data_keys = [ "product_info" ]

@@ -4,7 +4,6 @@
 
 # Extracts the `.code-patches` section from one linked kernel ELF.
 import("//build/config/compiler/clang.gni")
-
 template("code_patches") {
   assert(defined(invoker.deps), "code_patches($target_name) requires deps")
   assert(defined(invoker.elf), "code_patches($target_name) requires elf")

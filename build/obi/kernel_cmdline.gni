@@ -10,8 +10,7 @@ import("//build/obi/obi_input.gni")
 #   args (required)  — list of "key=value" strings.
 #   deps, testonly, visibility (optional)
 template("kernel_cmdline") {
-  assert(defined(invoker.args),
-         "kernel_cmdline($target_name) requires `args`")
+  assert(defined(invoker.args), "kernel_cmdline($target_name) requires `args`")
 
   obi_input(target_name) {
     forward_variables_from(invoker,

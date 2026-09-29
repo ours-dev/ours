@@ -62,10 +62,12 @@ template("variant_toolchain_suite") {
   _exclude_tags = []
   if (defined(invoker.exclude_variant_tags)) {
     _exclude_tags = invoker.exclude_variant_tags
+
     # Set difference: elements of _exclude_tags not in all_variant_tags.
     _unknown_tags = _exclude_tags + all_variant_tags - all_variant_tags
-    assert(_unknown_tags == [],
-           "Unknown exclude_variant_tags ${_unknown_tags} in toolchain suite definition ${target_name}")
+    assert(
+        _unknown_tags == [],
+        "Unknown exclude_variant_tags ${_unknown_tags} in toolchain suite definition ${target_name}")
   }
 
   # The suite-level toolchain tags.  Local call sites pass these through the
@@ -82,8 +84,9 @@ template("variant_toolchain_suite") {
   }
   if (_toolchain_tags != []) {
     _unknown_tags = _suite_tags + all_toolchain_tags - all_toolchain_tags
-    assert(_unknown_tags == [],
-           "Unknown toolchain_tags ${_unknown_tags} in toolchain suite definition ${target_name}")
+    assert(
+        _unknown_tags == [],
+        "Unknown toolchain_tags ${_unknown_tags} in toolchain suite definition ${target_name}")
   }
 
   # As a special case, always ensure that "kernel-excluded" or "kernel-only"
@@ -131,7 +134,8 @@ template("variant_toolchain_suite") {
     ]
   }
 
-  # ---- Resolve enable_variants (force-include independent of select_variant) ----
+  # ---- Resolve enable_variants (force-include independent of select_variant)
+  # ----
   _enabled_names = []
   if (defined(invoker.enable_variants) && invoker.enable_variants != []) {
     _all_variant_names = []
@@ -139,9 +143,11 @@ template("variant_toolchain_suite") {
       _all_variant_names += [ _variant.name ]
     }
     _enabled_names = invoker.enable_variants
-    _unknown_enabled = invoker.enable_variants + _all_variant_names - _all_variant_names
-    assert(_unknown_enabled == [],
-           "Unknown variant names in enable_variants argument: $_unknown_enabled")
+    _unknown_enabled =
+        invoker.enable_variants + _all_variant_names - _all_variant_names
+    assert(
+        _unknown_enabled == [],
+        "Unknown variant names in enable_variants argument: $_unknown_enabled")
   }
 
   _with_shared = defined(invoker.with_shared) && invoker.with_shared
@@ -161,7 +167,8 @@ template("variant_toolchain_suite") {
         }
       }
     }
-    if (_enabled_names + [ _variant.name ] - [ _variant.name ] != _enabled_names) {
+    if (_enabled_names + [ _variant.name ] - [ _variant.name ] !=
+        _enabled_names) {
       _variant_used = true
     }
 
@@ -208,7 +215,8 @@ template("variant_toolchain_suite") {
       }
 
       if (_with_shared) {
-        target(invoker.toolchain_template, "${target_name}${_variant.suffix}-shared") {
+        target(invoker.toolchain_template,
+               "${target_name}${_variant.suffix}-shared") {
           forward_variables_from(invoker,
                                  "*",
                                  [
@@ -236,6 +244,7 @@ template("variant_toolchain_suite") {
             variant_suffix = _variant.suffix
             exclude_variant_tags = _exclude_variant_tags
           }
+
           # The shared companion makes PIC the default.
           is_pic_default = true
         }

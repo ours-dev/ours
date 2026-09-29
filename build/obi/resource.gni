@@ -22,7 +22,6 @@
 # binary under bin/ or test/ must go through renamed_binary() so instrumented
 # variants keep their runtime libraries.
 
-
 # PROVENANCE: adapted from Fuchsia's //build/dist/resource.gni
 # (Copyright 2020 The Fuchsia Authors, BSD-style license).
 
