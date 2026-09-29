@@ -59,7 +59,8 @@ Formatting is automatic and covers only the lines you changed. In Claude Code
 a PostToolUse hook (`.claude/settings.json`) runs `scripts/format_cpp.py` after
 every Edit and Write, so there is nothing to remember; it tells you when it
 reformatted something, and then you Read the file again before editing it
-further. Any other agent, or a change made through Bash, runs it by hand:
+further. Any other agent, or a change made through Bash, runs it by hand
+(the pre-commit hook refuses the commit otherwise):
 
 ```bash
 python3 scripts/format_cpp.py <path-to-file>          # format your changes

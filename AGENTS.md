@@ -74,6 +74,18 @@ leaving yours uncommitted. Commit with `git commit -- <paths>`, never
 `git add` followed by a bare `git commit`: the sessions share one index, and a
 bare commit takes whatever the others have staged.
 
+A pre-commit hook (`.githooks/pre-commit`) refuses a commit whose changed C/C++
+lines are not clang-format clean or whose documents break the layout standard.
+Fix what it reports; do not bypass it with `--no-verify`. It only reports, and
+only about what you changed. Turn it on once in each worktree (per worktree on
+purpose: they share one `.git/config`, and a branch that predates the hook must
+not start running the old one):
+
+```bash
+git config extensions.worktreeConfig true
+git config --worktree core.hooksPath .githooks
+```
+
 ## Working with the user
 
 This project exists for the user's own learning, not to ship an impressive
@@ -186,9 +198,11 @@ concurrently, so never rewrite the whole file**.
 ## Formatting
 
 Many agents write documents here in turn, so a document's shape must not
-depend on who wrote it: copy the template instead of inventing a layout, and
-run `python3 scripts/lint_docs.py` before committing a document. It checks
-what you changed, so an older document's habits are not yours to fix.
+depend on who wrote it: copy the template instead of inventing a layout.
+`scripts/lint_docs.py` checks what you changed, so an older document's habits
+are not yours to fix. Claude Code runs it after every edit of a document, and
+the pre-commit hook runs it again on what you commit; elsewhere run
+`python3 scripts/lint_docs.py --changed <path>`.
 
 - Change record: `docs/changes/<YYMMDD>/<MODULE>.md`, template
   `docs/changes/TEMPLATE.md`.
