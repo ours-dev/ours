@@ -522,7 +522,11 @@ namespace {
     /// rewrite it could place a trap anywhere inside the one range the kernel
     /// trusts.
     auto map_vdso(kelfload::Loader const &loader, elfload::Image &out) -> Status {
-        constexpr auto VDSO_PERMS = VmOptions::PermRead | VmOptions::PermExecute;
+        // Sealed, which the kernel requires of the vDSO's VMO: nothing may
+        // unmap it or change its protection once it is the range system calls
+        // are accepted from.
+        constexpr auto VDSO_PERMS =
+            VmOptions::PermRead | VmOptions::PermExecute | VmOptions::Sealed;
 
         auto const status = loader.map(shared_vdso.image, VDSO_BASE, VDSO_PERMS, "vdso", out);
         if (Status::Ok != status) {

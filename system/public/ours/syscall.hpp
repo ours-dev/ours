@@ -121,6 +121,11 @@ enum class VmoOptions : u32 {
 ///   CanMap*     The ceiling a later protect() is held to. Set by the kernel
 ///               from the handles' rights; a program may not pass them.
 ///   MapRange    Populate the whole range now rather than on first touch.
+///   Sealed      Make the mapping immutable from the moment it exists: it can
+///               never be unmapped, have its protection changed, or be
+///               destroyed with its region. Irreversible. Ours' own, with no
+///               ZX_VM_* counterpart, so it sits at bit 20, away from the bits
+///               Zircon uses. The vDSO's VMO can only be mapped this way.
 /// The rest are named so that a program asking for them gets NotSupported,
 /// not InvArgs: they are Zircon's, deferred here.
 enum class VmOptions : u32 {
@@ -140,6 +145,7 @@ enum class VmOptions : u32 {
     AllowFaults = 1U << 12,
     OffsetIsUpperLimit = 1U << 13,
     PermReadIfXomUnsupported = 1U << 14,
+    Sealed = 1U << 20,
 };
 USTL_ENABLE_ENUM_BITMASK(VmOptions);
 

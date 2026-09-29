@@ -164,7 +164,10 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
     // design 2.3); Zircon keeps the per-mapping ceiling for the same reason
     // (VmMapping's CAN_MAP_* flags, from the rights the mapping was made
     // with).
-    auto const vmaf = (m_vmaf & ~VmaFlags::PermMask) | allowed;
+    auto vmaf = (m_vmaf & ~VmaFlags::PermMask) | allowed;
+    if (!!(option & VmMapOption::Sealed)) {
+        vmaf |= VmaFlags::Sealed;
+    }
     ustl::Arc<VmAreaOrMapping> out_aom;
     auto const status = Builder(&m_aspace, vmaf, size)
                             .set_parent(this)
@@ -366,7 +369,29 @@ auto VmArea::unmap(VirtAddr base, usize size) -> Status {
     }
 
     Guard guard{get_lock()};
+
+    // A sealed mapping anywhere in the range -- in this area or in a sub-area
+    // below it, partly or wholly covered -- refuses the whole operation,
+    // before anything is torn down: the same asked-first rule protect() keeps,
+    // and for the same reason, that half an unmap cannot be undone.
+    if (has_sealed_mapping_locked(aligned_base, aligned_size)) {
+        return Status::AccessDenied;
+    }
     return unmap_locked(aligned_base, aligned_size);
+}
+
+/// Whether any mapping under this area that overlaps [base, base + size) is
+/// sealed. The overlap is what counts, not coverage: trimming a sealed
+/// mapping changes it as surely as removing it. A walk over the mappings the
+/// range touches, one enumerator however deep the areas nest, as protect()'s.
+auto VmArea::has_sealed_mapping_locked(VirtAddr const base, usize const size) -> bool {
+    MappingEnumerator enumerator{*this, base, base + size - 1};
+    while (auto *const mapping = enumerator.next()) {
+        if (mapping->is_sealed()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Tears down everything in [base, base + size), refusing a range that only
@@ -524,6 +549,9 @@ auto VmArea::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
     // one place in the area interface where a partial result is unrecoverable,
     // which is why unmap() does not need the same treatment: a range that is
     // half unmapped can simply be unmapped again.
+    if (has_sealed_mapping_locked(aligned_base, aligned_size)) {
+        return Status::AccessDenied;
+    }
     if (!can_protect_locked(aligned_base, aligned_size, mmuf)) {
         return Status::InvArgs;
     }

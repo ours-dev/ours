@@ -129,7 +129,13 @@ class VmArea final: public VmAreaOrMapping {
                       ustl::Arc<VmObject> vmo, VmMapOption option, char const *name)
         -> ktl::Result<ustl::Arc<VmMapping>>;
 
-    /// Tear down everything mapped in [base, base + size).
+    /// Tear down everything mapped in [base, base + size). AccessDenied, with
+    /// nothing torn down, if a sealed mapping (VmMapOption::Sealed) overlaps
+    /// the range.
+    ///
+    /// destroy() does not look: it is the address space's own teardown (and
+    /// the way a region is dissolved), and a vma_destroy that a program can
+    /// call has to check the region for sealed mappings first, as this does.
     auto unmap(VirtAddr base, usize size) -> Status;
 
     /// Update rights of the subset of the area covering [base, base + size).
@@ -201,6 +207,11 @@ class VmArea final: public VmAreaOrMapping {
     /// already held and the range was validated against this area.
     TA_REQUIRES(get_lock())
     auto unmap_locked(VirtAddr base, usize size) -> Status;
+
+    /// Whether a sealed mapping overlaps [base, base + size); the aspace lock
+    /// held. See unmap().
+    TA_REQUIRES(get_lock())
+    auto has_sealed_mapping_locked(VirtAddr base, usize size) -> bool;
 
     /// Fan a protect() down to the children overlapping [base, base + size),
     /// assuming the aspace lock is already held.

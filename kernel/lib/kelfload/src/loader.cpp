@@ -185,7 +185,8 @@ auto Loader::map(ImageVmo &image, VirtAddr const at, VmOptions const perms, char
     // a handle names.
     //
     // At |at| exactly, populated now, and never above |perms|: each Perm bit
-    // brings its CanMap bit and nothing else.
+    // brings its CanMap bit and nothing else. A Sealed in |perms| goes through
+    // to the mapping as it stands.
     auto ceiling = VmOptions::None;
     if (!!(perms & VmOptions::PermRead)) {
         ceiling |= VmOptions::CanMapRead;

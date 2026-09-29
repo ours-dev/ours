@@ -759,7 +759,7 @@ fault_probe 只打进 dbg_1（`kernel/products/image/dev.dbg_1/BUILD.gn:44`）�
   - Reference 子 VMO 的 rights 等于父句柄的 rights，永远不加 Write。
   - Snapshot 类的子 VMO 按 Zircon 加 Write、去 Execute（`zircon/kernel/lib/syscalls/vmo.rs:329-349`）。
   - 加一条内核测试：对带 Execute 的 VMO 做 create_child(Snapshot)，结果不带 Execute。
-- **vma 的其余调用**：unmap、protect、destroy；allocate 的自动放置与 CanMap 位。其中 unmap、protect、destroy 落地时必须拒绝与本地址空间 vDSO 范围（`VmAspace::vdso_contains()`）相交的操作，否则用户程序可以拆掉 vDSO、在原地址映射自己带 `syscall` 的代码，绕过“只有 vDSO 能发系统调用”的检查（接口设计 D2）。
+- **vma 的其余调用**：unmap、protect、destroy；allocate 的自动放置与 CanMap 位。其中 unmap、protect、destroy 落地时要接上 mm 已有的封印检查（`VmArea::unmap()`、`protect()` 遇到 `VmaFlags::Sealed` 的映射回 AccessDenied；`vma_destroy` 要先检查区域里有没有封印的映射），否则用户程序可以拆掉封印的 vDSO、在原地址映射自己带 `syscall` 的代码，绕过“只有 vDSO 能发系统调用”的检查（接口设计 D2）。
 - **BootFS 格式升级**（§6.2）。
 - **GetBackingMemory 的 Execute**：
   - 连接要有 Execute，条目也要带 Executable 标志，才授予 Execute（参照 `file/common.rs:72-87`）；

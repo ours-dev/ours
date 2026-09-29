@@ -53,8 +53,8 @@ class Loader final {
     explicit Loader(ours::object::VmaDispatcher &root_vma) : m_root_vma(root_vma) {}
 
     /// Lays |file|'s PT_LOAD segments out in a fresh paged VMO and maps it at
-    /// the address |at| with the protection |perms| (VmOptions::Perm* bits
-    /// only).
+    /// the address |at| with the protection |perms| (VmOptions::Perm* bits, and
+    /// Sealed, which the mapping is then made with).
     ///
     /// The segments land in one VMO covering one range, from the lowest
     /// p_vaddr any PT_LOAD claims to the highest. That is a simplification --

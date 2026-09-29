@@ -16,7 +16,7 @@ namespace {
     /// Every bit VmOptions names. Anything else is not an option at all
     /// (InvArgs); a named one the dispatcher does not act on yet is
     /// NotSupported, from VmaDispatcher::map().
-    constexpr auto KNOWN_VM_OPTIONS = static_cast<VmOptions>((1U << 15) - 1);
+    constexpr auto KNOWN_VM_OPTIONS = static_cast<VmOptions>((1U << 15) - 1) | VmOptions::Sealed;
 
     /// The bits the kernel sets from the handles' rights, and a program may
     /// not: they are the mapping's ceiling, and a ceiling the program chose

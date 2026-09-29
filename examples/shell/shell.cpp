@@ -2187,7 +2187,9 @@ auto check_process_start(ours::HandleValue const job) -> void {
 /// kernel says about the mapping, not what a running process does with it:
 ///   - the rights: the handle has no Write, so a writable mapping is
 ///     AccessDenied before the vDSO is looked at;
-///   - the shape, all InvArgs: read only, not execute; a part of the VMO
+///   - the shape, all InvArgs: not sealed (the launcher asks for it, and the
+///     kernel refuses the vDSO without it, so a launcher that forgot fails
+///     here and not silently); read only, not execute; a part of the VMO
 ///     rather than the whole (an offset past its start, and every length
 ///     short of its size -- the loop that finds the size is this check); and
 ///     the whole VMO mapped once in the allowed shape is Ok;
@@ -2203,7 +2205,8 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
 
     constexpr auto PAGE = u64{4096};
     constexpr auto RX = VmOptions::PermRead | VmOptions::PermExecute;
-    constexpr auto RW = VmOptions::PermRead | VmOptions::PermWrite;
+    constexpr auto SEALED_RX = RX | VmOptions::Sealed;
+    constexpr auto SEALED_RW = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Sealed;
 
     if (job == ours::HANDLE_INVALID || vdso == ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: vdso map checks skipped (no root job or vDSO)"));
@@ -2228,18 +2231,21 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
     }
 
     ours::VirtAddr at = 0;
-    ok &= expect("shell: vma_map(vdso, RW) = ", ou::vma_map(p_vma, RW, 0, vdso, 0, PAGE, &at),
-                 Status::AccessDenied);
-    ok &= expect("shell: vma_map(vdso, read only) = ",
-                 ou::vma_map(p_vma, VmOptions::PermRead, 0, vdso, 0, PAGE, &at), Status::InvArgs);
+    ok &= expect("shell: vma_map(vdso, RW, sealed) = ",
+                 ou::vma_map(p_vma, SEALED_RW, 0, vdso, 0, PAGE, &at), Status::AccessDenied);
+    ok &= expect("shell: vma_map(vdso, RX, not sealed) = ",
+                 ou::vma_map(p_vma, RX, 0, vdso, 0, PAGE, &at), Status::InvArgs);
+    ok &= expect("shell: vma_map(vdso, read only, sealed) = ",
+                 ou::vma_map(p_vma, VmOptions::PermRead | VmOptions::Sealed, 0, vdso, 0, PAGE, &at),
+                 Status::InvArgs);
     ok &= expect("shell: vma_map(vdso, from an offset) = ",
-                 ou::vma_map(p_vma, RX, 0, vdso, PAGE, PAGE, &at), Status::InvArgs);
+                 ou::vma_map(p_vma, SEALED_RX, 0, vdso, PAGE, PAGE, &at), Status::InvArgs);
 
     // Every length short of the whole is refused; the first that is not is
     // the whole, and it is mapped.
     u64 whole = 0;
     for (u64 pages = 1; pages <= 64 && whole == 0; ++pages) {
-        auto const status = ou::vma_map(p_vma, RX, 0, vdso, 0, pages * PAGE, &at);
+        auto const status = ou::vma_map(p_vma, SEALED_RX, 0, vdso, 0, pages * PAGE, &at);
         if (status == Status::Ok) {
             whole = pages * PAGE;
         } else if (status != Status::InvArgs) {
@@ -2255,10 +2261,11 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
 
     if (whole != 0) {
         ours::VirtAddr again = 0;
-        ok &= expect("shell: vma_map(vdso) a second time = ",
-                     ou::vma_map(p_vma, RX, 0, vdso, 0, whole, &again), Status::AccessDenied);
+        ok &=
+            expect("shell: vma_map(vdso) a second time = ",
+                   ou::vma_map(p_vma, SEALED_RX, 0, vdso, 0, whole, &again), Status::AccessDenied);
         ok &= expect("shell: vma_map(vdso) into another process = ",
-                     ou::vma_map(q_vma, RX, 0, vdso, 0, whole, &again), Status::Ok);
+                     ou::vma_map(q_vma, SEALED_RX, 0, vdso, 0, whole, &again), Status::Ok);
 
         // The same pages by way of a slice: a mapping, and no registration.
         ours::HandleValue slice = ours::HANDLE_INVALID;
@@ -2268,6 +2275,19 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
         ok &= expect("shell: vma_map(the slice, RX) = ",
                      ou::vma_map(s_vma, RX, 0, slice, 0, whole, &again), Status::Ok);
         ok &= expect("shell: close(the slice) = ", ou::handle_close(slice), Status::Ok);
+
+        // Sealing is not the vDSO's alone: any mapping may ask for it, and an
+        // ordinary VMO's is accepted. What a sealed mapping then refuses is
+        // checked in the kernel (vmaseal.test), since no program can unmap or
+        // protect yet.
+        ours::HandleValue plain = ours::HANDLE_INVALID;
+        ok &= expect("shell: vmo_create = ", ou::vmo_create(PAGE, ours::VmoOptions::None, &plain),
+                     Status::Ok);
+        ok &= expect(
+            "shell: vma_map(an ordinary VMO, sealed) = ",
+            ou::vma_map(q_vma, VmOptions::PermRead | VmOptions::Sealed, 0, plain, 0, PAGE, &again),
+            Status::Ok);
+        ok &= expect("shell: close(the VMO) = ", ou::handle_close(plain), Status::Ok);
 
         ours::HandleValue t = ours::HANDLE_INVALID;
         ok &= expect("shell: thread_create = ", ou::thread_create(s, "first", &t), Status::Ok);

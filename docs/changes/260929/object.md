@@ -167,3 +167,68 @@ None.
 - Why do the rules live in the kernel's `vma_map`, instead of trusting the launcher to do it right?
 - Why must unmap and protect of the range be refused once it is registered? How could a program otherwise get its own `syscall` instruction accepted?
 - The syscall entry reads the vDSO range on every call and takes no lock. What order must the writer follow for that to be safe?
+
+## Sealed mappings: the launcher asks, the kernel requires it for the vDSO (2026-09-29)
+
+**Files**
+- `system/public/ours/syscall.hpp` — `VmOptions::Sealed` (bit 20)
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp`, `kernel/mm/vm_area.cpp`, `kernel/mm/include/ours/mm/vm_area.hpp` — `VmMapOption::Sealed`, `VmaFlags::Sealed`, `is_sealed()`; `VmArea::unmap()` and `protect()` refuse a range that meets a sealed mapping (`has_sealed_mapping_locked()`)
+- `kernel/object/vma_dispatcher.cpp`, `kernel/lib/syscall/src/vma.cpp` — `Sealed` is an accepted option; a mapping of the vDSO's VMO without it is refused
+- `kernel/lib/userabi/src/userboot.cpp`, `kernel/lib/kelfload/src/loader.cpp`, `kernel/lib/kelfload/include/kelfload/loader.hpp` — the kernel's own vDSO mapping is sealed
+- `kernel/commands/vma_seal_test.cpp`, `kernel/commands/BUILD.gn` — the `vmaseal.test` console command
+- `examples/shell/shell.cpp` — `check_vdso_map()` updated
+- `docs/design/260923/userspace-interface.md`, `docs/design/260924/userspace-filesystem.md`
+
+**Symptom**
+The previous entry registered the vDSO's range from its mapping but left one gap open: once registered, nothing stopped a program from unmapping the real vDSO and mapping its own code, containing a `syscall`, at the same address. The gap was recorded as "must be refused when `vma_unmap` and `vma_protect` land".
+
+**Cause**
+"Only the vDSO can issue system calls" needs the range to hold real vDSO code and to go on holding it. Recognising the vDSO's VMO gave the first half; nothing gave the second, because a mapping had no way to say "I am not to be changed".
+
+**Change**
+A general immutability flag on mappings, requested by the launcher and required by the kernel for the vDSO. The user chose this shape after weighing three: an automatic refusal on the registered range (nothing to forget, no new interface), a general sealed flag applied automatically at registration, and a launcher request. The user wanted the launcher to ask, and proposed reusing `protect` to do so. It was rejected because `protect` changes permissions while sealing is a different property, the two would tangle (a `protect` that seals is itself refused by a seal), and it would make the vDSO's safety wait for a call that does not exist. The choice was `Sealed` as an option of `vma_map`, so the mapping is immutable from the moment it exists, with no gap between mapping and sealing, and no new system call.
+
+```cpp
+// mm: a bit set once, at creation, never cleared
+create_mapping(...): if (option & VmMapOption::Sealed) vmaf |= VmaFlags::Sealed;
+
+// mm: asked first, whole, before anything is torn down
+VmArea::unmap(base, size):  if (has_sealed_mapping_locked(base, size)) return AccessDenied;
+VmArea::protect(base, size): if (has_sealed_mapping_locked(base, size)) return AccessDenied;
+
+// object: the vDSO's VMO must be mapped sealed
+if (vmo.is_vdso() && !(options & VmOptions::Sealed)) return InvArgs;
+```
+
+- **Requested by the launcher, required by the kernel.** The launcher asks for `Sealed` as it would for any mapping it wants immutable, and the kernel refuses the vDSO's VMO without it. That keeps the user's choice (the launcher is explicit and the mechanism is general) and closes its one weakness: a launcher that forgot fails at its first start, loudly, instead of leaving a hole nobody sees.
+- **Sealing does not replace registration.** A seal makes a range unchangeable; it does not say that this range is the vDSO. That still comes from recognising the VMO by identity in `vma_map`. The two work together.
+- **Overlap counts, not coverage.** Trimming a sealed mapping changes it as surely as removing it, so any overlap refuses. A sub-area with a sealed mapping inside is refused too, since removing the area would remove what is inside. The walk is one `MappingEnumerator` however deep the areas nest, the same shape as `protect()`.
+- **Refused whole, asked first.** An unmap that covers a plain mapping and reaches a sealed one refuses everything and leaves the plain mapping mapped, because half an unmap cannot be undone. `protect()` already worked this way.
+- **The address space's own teardown is not refused.** `VmAspace::destroy()` goes through `VmArea::destroy()`, which does not look. Taking a space away is not a program changing its shape. A `vma_destroy` that a program can call must check the region for sealed mappings first; the doc comment on `unmap()` says so.
+- **Concurrency.** The bit is written when the mapping is created, before it is linked, and only read after, under the address space lock the enumerator already runs under. It needs nothing of its own.
+- **Kernel-internal callers are unaffected.** Only a mapping created with `Sealed` can refuse, and the kernel's own address space has none.
+
+**Reference**
+Linux `mseal()` (a sealed mapping refuses `munmap`, `mprotect`, `mremap`, `madvise(MADV_DONTNEED)` and the like) and OpenBSD `mimmutable(2)`. In Zircon the vDSO range is protected by the address space's `vdso_code_mapping_`, which unmap and protect consult; here the same protection is a property any mapping can carry.
+
+**Verification**
+- Both images build and boot with `boot_check.py` (dbg 18 passed; rel 13 passed, 9 skipped); `usercopy.test` is 18/18, `pmnode.test` 20/20 and the new `vmaseal.test` 13/13 on both.
+- `vmaseal.test` checks directly, in the kernel, what no program can reach yet: unmapping a sealed mapping, trimming it, and changing its protection are AccessDenied; an unmap that covers a plain mapping and reaches a sealed one is refused whole and the plain mapping is still there; unmapping a sub-area with a sealed mapping inside is refused and the mapping survives; the plain mapping alone can be protected and unmapped; and the address space with all of them in it can be destroyed.
+- The test was checked to fail without the code: with the two refusals removed, 7 of its 13 checks fail (every refusal, while the plain-mapping and teardown checks still pass), and it goes back to 13/13 with them restored.
+- The dbg_1 shell: a mapping of the vDSO's VMO that is not sealed is InvArgs; sealed read-and-execute of the whole VMO is Ok and registers; a sealed mapping of an ordinary VMO is Ok, so the option is general. Every process the kernel starts maps its vDSO sealed (through `Loader::map`) and still makes system calls.
+
+**Deliberately not done**
+- `vma_unmap`, `vma_protect` and `vma_destroy` themselves. When they land they reach the refusals that exist; `vma_destroy` has to check the region first.
+- A separate call to seal an existing mapping (like `mseal`). Nothing needs it yet.
+- Sealing is not visible from user space: no program can tell a mapping is sealed except by being refused, and there is no query.
+
+**How it was found**
+None.
+
+**The user's prediction**
+The user first proposed that the launcher lock the vDSO's block of the address space so nothing could be mapped, unmapped or changed there, and then chose the launcher-requested form, suggesting `protect` as the way to ask. The idea is sound and close to `mseal`; the correction was the verb (`protect` changes permissions, sealing is another property) and one gap (a launcher that forgets), closed by the kernel requiring `Sealed` for the vDSO. An earlier reply of mine misread "lock the VMA" as locking the whole root VMA; the user meant the vDSO's block only.
+
+**Three questions you should be able to answer**
+- Why is a seal not enough on its own, and why is recognising the vDSO's VMO not enough on its own?
+- Why does an unmap that reaches a sealed mapping refuse everything, including the plain mapping next to it?
+- Why is the address space's own teardown allowed to remove sealed mappings, and what must a `vma_destroy` system call do differently?

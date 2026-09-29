@@ -66,7 +66,7 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
 
     constexpr auto HANDLED = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute |
                              VmOptions::Specific | VmOptions::CanMapRead | VmOptions::CanMapWrite |
-                             VmOptions::CanMapExecute | VmOptions::MapRange;
+                             VmOptions::CanMapExecute | VmOptions::MapRange | VmOptions::Sealed;
     if ((options & ~HANDLED) != VmOptions::None) {
         return ktl::err(Status::NotSupported);
     }
@@ -103,6 +103,13 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // `syscall` is accepted from. So it is mapped only in the shape that makes
     // that range worth trusting, and once.
     //
+    //   - Sealed. Registered, the range has to stay what it was registered
+    //     as: sealed, nothing can unmap it or change its protection, so the
+    //     real vDSO cannot be swapped for a program's own code containing a
+    //     `syscall`. The launcher asks for it, as for any mapping it wants
+    //     immutable, and the kernel refuses the vDSO without it -- so a
+    //     launcher that forgot fails at the first start, loudly, instead of
+    //     leaving a hole nobody sees.
     //   - Whole, from offset 0: the range recorded is then exactly the image,
     //     not some part of it a program chose.
     //   - Read and execute, nothing else: the pages are code, and there is no
@@ -112,14 +119,12 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     //     the range is fixed after it is set, so a second mapping cannot move
     //     it to somewhere the first is not.
     //
-    // What keeps the range trustworthy after this -- nothing can be unmapped,
-    // protected or replaced there -- is the address space's, and is not built:
-    // there is no vma_unmap or vma_protect yet, and each must refuse a range
-    // that meets the vDSO when it lands (interface design 2.3).
+    // What refuses the unmap or protect is mm::VmArea (VmaFlags::Sealed); the
+    // vma_unmap and vma_protect calls, when they land, reach it.
     auto const registers_vdso = vmo.is_vdso();
     if (registers_vdso) {
         constexpr auto CODE = VmOptions::PermRead | VmOptions::PermExecute;
-        if (vmo_offset != 0 || rounded != vmo_size ||
+        if (vmo_offset != 0 || rounded != vmo_size || !(options & VmOptions::Sealed) ||
             (options & (VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute)) !=
                 CODE) {
             return ktl::err(Status::InvArgs);
@@ -161,8 +166,11 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     if (!!(options & VmOptions::CanMapExecute)) {
         ceiling |= mm::VmaFlags::Exec;
     }
-    auto const populate =
+    auto populate =
         !!(options & VmOptions::MapRange) ? mm::VmMapOption::Commit : mm::VmMapOption::None;
+    if (!!(options & VmOptions::Sealed)) {
+        populate |= mm::VmMapOption::Sealed;
+    }
 
     // map_with_vmo(), not create_mapping(). create_mapping() builds the
     // mapping object and stops there: it accepts a VmMapOption and never acts

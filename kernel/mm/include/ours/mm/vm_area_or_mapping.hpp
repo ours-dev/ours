@@ -27,6 +27,11 @@ enum class VmMapOption {
     None,
     Commit = BIT(0),
     Pinned = BIT(1),
+
+    /// The mapping is immutable from the moment it exists: nothing may unmap
+    /// it, change its protection, or destroy it with its parent. See
+    /// VmaFlags::Sealed.
+    Sealed = BIT(2),
 };
 USTL_ENABLE_ENUM_BITMASK(VmMapOption);
 
@@ -113,6 +118,15 @@ enum class VmaFlags : u32 {
     Anonymous = 0x40000,
     Mergeable = 0x80000,
 
+    // Set once, when a mapping is created with VmMapOption::Sealed, and never
+    // cleared: an unmap, protect or destroy that meets a sealed mapping is
+    // refused (AccessDenied) whole, without touching anything else in its
+    // range. The address space's own teardown is not such an operation; it
+    // is the kernel taking the space away, not a program changing its shape.
+    // Read under the address space lock and never written after the mapping
+    // is linked, so it needs nothing more. Linux mseal(), OpenBSD mimmutable().
+    Sealed = 0x100000,
+
     // Types
     Area = 0x0000'0000, // For semantics, no any actual effects.
     Mapping = 0x1000'0000,
@@ -197,6 +211,12 @@ class VmAreaOrMapping: public ustl::RefCounted<VmAreaOrMapping, ustl::sync::Thre
         return m_vmaf & VmaFlags::PermMask;
     }
 
+    FORCE_INLINE
+    auto is_sealed() const -> bool {
+        return !!(m_vmaf & VmaFlags::Sealed);
+    }
+
+    [[nodiscard]]
     FORCE_INLINE
     auto is_active() const -> bool {
         return !!(m_vmaf & VmaFlags::Active);

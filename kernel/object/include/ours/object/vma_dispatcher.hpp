@@ -84,8 +84,8 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// rights instead; the options word says the same and keeps one meaning
     /// for CanMap from the kernel up to vma_allocate.
     ///
-    /// Only Perm*, Specific, CanMap* and MapRange are acted on; any other bit
-    /// is NotSupported. Otherwise:
+    /// Only Perm*, Specific, CanMap*, MapRange and Sealed are acted on; any
+    /// other bit is NotSupported. Otherwise:
     ///   - InvArgs: length 0; vmo_offset not page-aligned; vma_offset
     ///     without Specific, or not page-aligned, or outside this region;
     ///   - AccessDenied: a Perm bit without its CanMap bit;
