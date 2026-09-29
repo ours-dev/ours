@@ -95,7 +95,7 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// leave one behind either.
     ///
     /// BadState when the process is not Initial or has no vDSO registered
-    /// (set_vdso_code_range()): a process that could not make one system call
+    /// (VmAspace::has_vdso()): a process that could not make one system call
     /// is not started. Anything thread.start() answers otherwise.
     ///
     /// Zircon: ProcessDispatcher::Start().
@@ -137,40 +137,17 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     auto detach_thread(ThreadDispatcher &thread) -> Status;
 
-    /// Records where this process's vDSO landed.
-    ///
-    /// The syscall path refuses -- and kills the process for -- a trap whose
-    /// `syscall` instruction is not wholly inside this range (vdso_contains()
-    /// over the SYSCALL_INSN_SIZE bytes before the return address), which is
-    /// what makes "syscalls only through the vDSO" a property
-    /// the kernel enforces rather than a convention programs are asked to
-    /// follow. Set once, while the process is still being built and before any
-    /// thread of it has run.
-    ///
-    /// Zircon counterpart: VmAspace::vdso_code_mapping_, consulted by
-    /// VDso::ValidSyscallPC on the same path.
-    auto set_vdso_code_range(VirtAddr base, usize size) -> void {
-        DEBUG_ASSERT(m_state == State::Initial, "the vDSO range is fixed before the process runs");
-        m_vdso_code_base = base;
-        m_vdso_code_size = size;
-    }
-
-    /// Whether all of [addr, addr + len) lies inside this process's vDSO.
-    ///
-    /// A range and not a point, because what is asked about is an instruction
-    /// -- the `syscall` a trap came from -- and all of its bytes have to be the
-    /// vDSO's. A process with no vDSO answers false for every range, which is
-    /// the safe direction: it can make no system call at all rather than any.
-    ///
-    /// Written as two comparisons that cannot wrap: |len| no larger than the
-    /// vDSO, then |addr|'s offset into it no further than what leaves room for
-    /// |len|. The subtraction wraps an |addr| below the base to a huge offset,
-    /// which the second comparison refuses -- the same shape
-    /// ours::mm::is_kernel_address() uses for one end.
+    /// Whether all of [addr, addr + len) lies inside this process's vDSO: the
+    /// question the syscall path asks of every trap, to refuse -- and kill the
+    /// process for -- one whose `syscall` instruction is anywhere else. That is
+    /// what makes "syscalls only through the vDSO" a property the kernel
+    /// enforces rather than a convention programs are asked to follow. The
+    /// range is the address space's (mm::VmAspace::vdso_contains()), put there
+    /// by the mapping of the vDSO's VMO.
     [[nodiscard]]
     FORCE_INLINE
     auto vdso_contains(VirtAddr addr, usize len) const -> bool {
-        return len <= m_vdso_code_size && addr - m_vdso_code_base <= m_vdso_code_size - len;
+        return m_aspace->vdso_contains(addr, len);
     }
 
     /// The address space every thread of this process runs in.
@@ -204,9 +181,7 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     Self *m_parent;
 
-    /// Guarded by get_lock(), together with m_thread_list. The one read
-    /// outside it is set_vdso_code_range()'s assertion, made while the
-    /// process is still being built by one thread.
+    /// Guarded by get_lock(), together with m_thread_list.
     State m_state;
 
     /// The code the process ends with; see kill() and exit(). Guarded by
@@ -240,11 +215,6 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// See handle_account(). Shared, not owned: the handles this process
     /// made keep it as long as they live.
     ustl::Arc<HandleAccount> m_handle_account;
-
-    /// Where this process's vDSO is mapped. Zero until set_vdso_code_range(),
-    /// and a zero size is what makes vdso_contains() refuse everything.
-    VirtAddr m_vdso_code_base;
-    usize m_vdso_code_size;
 
     /// All sub-process forked from this process.
     ustl::collections::intrusive::ListMemberHook<> m_sibling_hook;

@@ -278,7 +278,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
   - 头部：`struct ProcArgs { u32 protocol, version, handle_info_off, args_off, args_num, environ_off, environ_num, names_off, names_num; }`，字段顺序与 `zx_proc_args` 相同；`PROCARGS_PROTOCOL` 用 ours 自己的 magic，避免让人误以为与 Zircon 线上兼容。
   - 每个句柄对应一个 u32：`handle_info(HandleType type, u16 arg) = u32(type) | u32(arg) << 16`，位布局同 `PA_HND`。
   - 字节布局：`[ProcArgs][u32 handle_info × nh][argv][environ][names]`，所有字符串以 NUL 结尾、首尾相接。消息里的句柄数组与 handle_info 按下标一一对应。上限就是 channel 的上限。
-- **`enum class HandleType : u8`** 沿用 Zircon 的数值：ProcSelf 0x01、ThreadSelf 0x02、JobDefault 0x03、VmaRoot 0x04、VmaLoaded 0x05、VmoStack 0x13、VmoExecutable 0x14、VmoBootdata 0x1A、VmoBootfs 0x1B、NsDir 0x20、Fd 0x30、DirectoryRequest 0x3B、LogSink 0x3D、Resource 0x3F、MmioResource 0x50、IrqResource 0x51、IoportResource 0x52、SystemResource 0x54、User0..2 0xF0..0xF2。ours 自有的类型（如 Debuglog）放在 0xE0–0xEF。VmoVdso 0x11 保留不用，因为 vDSO VMO 不外发。
+- **`enum class HandleType : u8`** 沿用 Zircon 的数值：ProcSelf 0x01、ThreadSelf 0x02、JobDefault 0x03、VmaRoot 0x04、VmaLoaded 0x05、VmoVdso 0x11、VmoStack 0x13、VmoExecutable 0x14、VmoBootdata 0x1A、VmoBootfs 0x1B、NsDir 0x20、Fd 0x30、DirectoryRequest 0x3B、LogSink 0x3D、Resource 0x3F、MmioResource 0x50、IrqResource 0x51、IoportResource 0x52、SystemResource 0x54、User0..2 0xF0..0xF2。ours 自有的类型（如 Debuglog）放在 0xE0–0xEF。VmoVdso 0x11 保留不用，因为 vDSO VMO 不外发。
 
 ### 3.4 进程初始环境
 
@@ -547,7 +547,7 @@ P1 的前置：
 | # | 问题 | 选项 | 推荐 |
 |---|---|---|---|
 | D1 | P0 用什么方式起第二个程序 | A 临时的 `process_spawn_boot`（6 个新调用）；B 直接做用户态加载器（约 12 个新调用，还要先修 `VmObjectPaged::write`、做用户 libc、移植 Binder、定 vDSO 归属） | **A**。先跑通，B 的全部工作在 P1-C 照做，届时删掉 A。它违背分层规则，理由见 2.8 |
-| D2 | 用户创建的进程由谁映射 vDSO，范围记在哪 | A 由内核在 `ProcessDispatcher::create` 内映射，vDSO VMO 不外发，范围记在 `mm::VmAspace`；B 照 Zircon 发 vDSO VMO，由 vma_map 按对象身份识别 | **A**。不变式在 Initial 状态下就成立；只有 mm 能在 unmap/protect/destroy 路径上拒绝对 vDSO 的改动；不必分发一个还得防 create_child、防“只读映射后再 protect”的特权 VMO。基址通过 `get_property(ProcessVdsoBaseAddress)` 读出 |
+| D2 | 用户创建的进程由谁映射 vDSO，范围记在哪 | A 由内核在 `ProcessDispatcher::create` 内映射，vDSO VMO 不外发，范围记在 `mm::VmAspace`；B 照 Zircon 发 vDSO VMO，由 vma_map 按对象身份识别 | **2026-09-28 改选 B（用户决定：能在用户态完成的事就在用户态完成；内核已有足够的内存操作能力）**。范围仍记在 `mm::VmAspace`，由对 vDSO 的 VMO 的映射登记（`VmaDispatcher::map()`），映射的形状受限：整个 VMO、只读加执行、每个地址空间一次；对 vDSO 范围的 unmap/protect/destroy 必须被拒绝，等这几个调用落地时补上（今天靠“没有这几个调用”成立）。以下是原先选 A 的理由，改选后其中“不必分发特权 VMO”一条变成了要付的代价：**A**。不变式在 Initial 状态下就成立；只有 mm 能在 unmap/protect/destroy 路径上拒绝对 vDSO 的改动；不必分发一个还得防 create_child、防“只读映射后再 protect”的特权 VMO。基址通过 `get_property(ProcessVdsoBaseAddress)` 读出 |
 | D3 | P0 之后 ELF 由谁加载 | A 用户态 launcher，父进程用共享的 Binder 绑定导入，P2 改为 crt0 自绑定；B 保留一个永久的内核加载调用 | **A**。否则 ring 0 要为每次启动解析不可信的 ELF |
 | D4 | 公共句柄值类型叫什么 | A 改名为 `ours::HandleValue`，用户侧 `ou::Handle` 做 RAII；B 保留 `ours::Handle` | **A**。系统调用层会同时出现 `ours::Handle` 和 `object::Handle` |
 | D5 | 从公共 Signals 挪出的线程控制位叫什么 | A `task::ThreadSignals`；B `task::PendingActions`；C `task::ThreadRequests` | **A**，便于对照 Zircon 的 `THREAD_SIGNAL_*` |

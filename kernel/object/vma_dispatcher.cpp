@@ -98,6 +98,34 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
         return ktl::err(Status::OutOfRange);
     }
 
+    // The vDSO's VMO is the one object whose mapping the kernel takes part in:
+    // where it lands becomes the address space's vDSO range, the only place a
+    // `syscall` is accepted from. So it is mapped only in the shape that makes
+    // that range worth trusting, and once.
+    //
+    //   - Whole, from offset 0: the range recorded is then exactly the image,
+    //     not some part of it a program chose.
+    //   - Read and execute, nothing else: the pages are code, and there is no
+    //     handle that lets a program write them, but the rule does not lean on
+    //     that -- it holds for whoever holds the VMO.
+    //   - Once per address space (claim_vdso(), taken just before the mapping):
+    //     the range is fixed after it is set, so a second mapping cannot move
+    //     it to somewhere the first is not.
+    //
+    // What keeps the range trustworthy after this -- nothing can be unmapped,
+    // protected or replaced there -- is the address space's, and is not built:
+    // there is no vma_unmap or vma_protect yet, and each must refuse a range
+    // that meets the vDSO when it lands (interface design 2.3).
+    auto const registers_vdso = vmo.is_vdso();
+    if (registers_vdso) {
+        constexpr auto CODE = VmOptions::PermRead | VmOptions::PermExecute;
+        if (vmo_offset != 0 || rounded != vmo_size ||
+            (options & (VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute)) !=
+                CODE) {
+            return ktl::err(Status::InvArgs);
+        }
+    }
+
     // Where: vma_offset counts from this region's start, and only means
     // something with Specific -- without it the kernel picks, and an offset
     // would be a request nobody reads. Zircon refuses that as well.
@@ -148,12 +176,27 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     // The VMO Arc is copied rather than moved: mapping does not consume a VMO,
     // which is the point of it being a separate object -- the handle the
     // caller holds goes on naming the same memory afterwards.
+    //
+    // The claim on the vDSO is taken last, after everything that can refuse
+    // for a reason of its own, and given back if the mapping fails: a claim
+    // held by a call that returned an error would keep the vDSO from ever
+    // being mapped.
+    if (registers_vdso && !m_vma->aspace()->claim_vdso()) {
+        return ktl::err(Status::AccessDenied);
+    }
     auto mapping =
         m_vma->map_with_vmo(where, rounded, vmo_offset, mmuf, ceiling, vmo.vmo(), populate, name);
     if (mapping.is_err()) {
+        if (registers_vdso) {
+            m_vma->aspace()->release_vdso();
+        }
         return ktl::err(mapping.unwrap_err());
     }
-    return ktl::ok(mapping.unwrap()->base());
+    auto const base = mapping.unwrap()->base();
+    if (registers_vdso) {
+        m_vma->aspace()->set_vdso_code_range(base, rounded);
+    }
+    return ktl::ok(base);
 }
 
 auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize const size,

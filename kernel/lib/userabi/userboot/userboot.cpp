@@ -139,20 +139,26 @@ auto collect_handed_on() -> HandedOn {
 /// after the spawn loses them with the message, and the new process, finding
 /// PEER_CLOSED and no message, exits with runtime::EXIT_START_FAILED.
 auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
-                ours::HandleValue const vmex, std::string_view const name, HandedOn const &environ)
-    -> ours::Status {
+                ours::HandleValue const vmex, ours::HandleValue const vdso,
+                std::string_view const name, HandedOn const &environ) -> ours::Status {
     using ours::Status;
 
     // The child's root VMA first, filled in once process_spawn_boot has made
     // the child and handed it back; its handle_info is known already, so the
     // message can be encoded before.
-    ours::HandleValue handles[4] = {ours::HANDLE_INVALID, job};
-    u32 infos[4] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+    ours::HandleValue handles[5] = {ours::HANDLE_INVALID, job};
+    u32 infos[5] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                     ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 2;
     if (bootfs != ours::HANDLE_INVALID) {
         handles[count] = bootfs;
         infos[count++] = ours::handle_info(ours::HandleType::VmoBootfs, 0);
+    }
+    // The vDSO's VMO, handed on unused for now: it is the next program that
+    // starts processes, and maps the vDSO into them (K23).
+    if (vdso != ours::HANDLE_INVALID) {
+        handles[count] = vdso;
+        infos[count++] = ours::handle_info(ours::HandleType::VmoVdso, 0);
     }
     // Handed on unused: userboot has nothing to make executable before K19,
     // and the next program is the one design D3 gives it to.
@@ -162,13 +168,13 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
             ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE));
     }
 
-    // The header, four handle_infos, a name of at most 63 bytes and its NUL
+    // The header, five handle_infos, a name of at most 63 bytes and its NUL
     // -- the kernel keeps program names in 64 -- and the environment, a
     // subset of what the kernel relayed and so within USER_OPTIONS_BYTES:
     // the same sum the kernel sizes this program's own message by
     // (make_bootstrap()), so encoding cannot fail for want of room.
     constexpr usize MESSAGE_BYTES =
-        sizeof(ours::ProcArgs) + 4 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
+        sizeof(ours::ProcArgs) + 5 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
     u8 message[MESSAGE_BYTES];
     u32 length = 0;
     std::string_view const args[] = {name};
@@ -222,6 +228,7 @@ auto main(int, char **) -> int {
     auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
     auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    auto const vdso = runtime::take_startup_handle(ours::HandleType::VmoVdso, 0);
 
     static_cast<void>(ou::debug_line({"userboot: starting ", to_str(next)}));
     auto const handed_on = collect_handed_on();
@@ -229,7 +236,7 @@ auto main(int, char **) -> int {
         static_cast<void>(ou::debug_line(
             {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)}));
     }
-    if (auto const status = start_next(job, bootfs, vmex, next, handed_on);
+    if (auto const status = start_next(job, bootfs, vmex, vdso, next, handed_on);
         status != ours::Status::Ok) {
         report("userboot: starting the next program = ", status);
         return 1;

@@ -94,3 +94,76 @@ Zircon `sys_process_start()`：进程、线程各要 `ZX_RIGHT_WRITE`，线程�
 - 为什么句柄必须在线程可运行之前就放进新进程的表？把顺序反过来，会出现什么现象？
 - 启动失败后，那个被消耗的句柄由谁关闭？进程恰好并发地转成 Dead 时，会不会关两次？
 - `attach_thread()` 为什么不能靠“线程表是空的”来判断这是第一个线程？
+
+## The launcher maps the vDSO, and mapping it registers the range (2026-09-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_aspace.hpp` — `VmAspace` now holds the vDSO range: `claim_vdso()`, `release_vdso()`, `set_vdso_code_range()`, `has_vdso()`, `vdso_contains()`
+- `kernel/object/include/ours/object/process_dispatcher.hpp`, `kernel/object/process_dispatcher.cpp` — `set_vdso_code_range()` and `m_vdso_code_*` are gone; `vdso_contains()` asks the address space; `start()` uses `has_vdso()`
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp` — `mark_vdso()`, `is_vdso()`
+- `kernel/object/vma_dispatcher.cpp` — `VmaDispatcher::map()` recognises the vDSO's VMO by identity, restricts the shape of its mapping and registers it
+- `kernel/lib/userabi/src/userboot.cpp` — `lay_out_vdso()` marks the VMO; `write_bootstrap()` hands a `VmoVdso` handle to the first process; `launch()` no longer registers the range by hand
+- `system/public/ours/process_args.hpp` — `HandleType::VmoVdso = 0x11`
+- `kernel/lib/userabi/userboot/userboot.cpp`, `system/service/init/init.cpp` — userboot forwards the handle, init holds it
+- `examples/shell/shell.cpp` — `check_vdso_map()`
+- `docs/design/260923/userspace-interface.md` (D2 now chooses B), `docs/design/260924/userspace-filesystem.md`
+
+**Symptom**
+A user-space launcher has to map the vDSO into the processes it starts (the user's decision: whatever can be done in user space is done there, since the kernel already offers enough memory primitives). But the kernel mapped the vDSO itself in `launch()`, registered its range by hand, and never handed the VMO out. A launcher had no vDSO to map, and the kernel had no other way to learn where a process's vDSO is.
+
+**Cause**
+"Only the vDSO can issue system calls" rests on one premise: what sits in the registered range really is the vDSO. While the kernel did the mapping the premise held by construction. Once a user-space launcher does it, the VMO's handle is in user space and the kernel can no longer take the mapping on trust. It has to recognise the vDSO's VMO in `vma_map`, register the range itself once the mapping succeeds, and impose rules on that one kind of mapping.
+
+**Change**
+Recognise, restrict, register, and read cheaply:
+
+```cpp
+// Recognise: by object identity, not by name, address or contents.
+VmoDispatcher::mark_vdso();                       // once, when the kernel lays the vDSO out
+
+// Restrict and register: VmaDispatcher::map(), for a VMO with is_vdso()
+if (vmo_offset != 0 || length != vmo_size || perms != (Read | Execute)) return InvArgs;
+if (!aspace->claim_vdso()) return AccessDenied;   // once per address space, claimed last
+mapping = map_with_vmo(...);                      // on failure: release_vdso()
+aspace->set_vdso_code_range(base, size);          // on success
+
+// Read: asked on every system call, lock-free
+vdso_contains(addr, len): size = load(acquire); return len <= size && addr - base <= size - len;
+```
+
+- **This flips decision D2 from A to B.** The old reason for A, "no privileged VMO has to be handed out", becomes the price of B: user space holds a VMO handle, so the kernel must constrain mappings made through it.
+- **Each of the three rules has a job.** Whole VMO from offset 0: the recorded range is exactly the image, not a slice the caller picked. Read and execute only: the pages are code, and the rule does not lean on "no handle has Write", it holds for whoever holds the VMO. Once per address space: the range is fixed after it is set, so a second mapping cannot move it somewhere the first is not.
+- **The claim is taken last and given back on failure.** A call that claimed and then returned an error for another reason would keep the address space from ever mapping its vDSO. So `claim_vdso()` sits right before `map_with_vmo()`, and `release_vdso()` undoes it if the mapping fails.
+- **The range lives on `VmAspace`,** which is what D2 meant. Registration happens on a VMA (the launcher maps into the child's root VMA), and a VMA knows its address space but not its process; the process asks the address space.
+- **Reads take no lock, the write happens once.** The syscall entry reads the range every time. The writer stores the base first and the size last with release semantics; the reader loads the size first with acquire, so a reader that sees a size also sees its base. Each word is written once, so no torn pair is possible. A process with no vDSO answers false for every range: it can make no system call at all.
+- **A gap that is only recorded.** After registration nothing may be swapped into the range. Today user space has no `vma_unmap`, `vma_protect` or `vma_destroy`, so this holds by absence. When they land they must refuse any operation that meets the vDSO range, or a program can unmap the real vDSO and map its own code containing `syscall` at the same address. The design doc's list of deferred calls now says so.
+- **The kernel's own launches take the same path.** `launch()` maps the vDSO's VMO through `Loader::map`, so `VmaDispatcher::map()` registers it; the hand-written `set_vdso_code_range()` call is deleted.
+
+**Reference**
+Zircon's `VDso` class: the kernel owns the vDSO's VMOs and recognises their mapping by object identity; `VmAspace::vdso_code_mapping_`, consulted by `VDso::ValidSyscallPC` on the system call path.
+
+**Verification**
+- Both images build and boot with `boot_check.py` (dbg 18 passed; rel 13 passed, 9 skipped); `usercopy.test` is 18/18 and `pmnode.test` 20/20 on both.
+- Every process the kernel starts makes its system calls through the range registered by `VmaDispatcher::map()` (otherwise it would be killed as BadSyscall). The `trap_outside_vdso` probe is still refused and `pf_write_vdso` still killed, so the new registration path meets the old check correctly.
+- The dbg_1 shell, which userboot hands the `VmoVdso` handle (in the dev image init holds it and prints `init: vdso vmo ok`), prints `vdso map checks passed`:
+  - a writable mapping is AccessDenied (the handle has no Write); read-only without execute, and a mapping from an offset, are InvArgs;
+  - lengths from one page up are tried: every one short of the whole is InvArgs and the first Ok is the whole, which is 3 pages;
+  - a second mapping in the same address space is AccessDenied, while another process's first is Ok, so the claim belongs to the address space;
+  - a slice of the vDSO's VMO has the same pages and maps fine, but registers nothing: `process_start` on a process that has only that mapping is still BadState. The kernel goes by object identity, not by what the pages contain.
+
+**Deliberately not done**
+- No test of "a hostile process unmaps the vDSO and maps its own code": `vma_unmap` and `vma_protect` do not exist yet (see above).
+- The launcher does not yet use this handle to start a real process; that is K23b.
+- Who may receive the vDSO's VMO is not restricted: the handle keeps its Transfer right. Since the rules are in the kernel, holding it does not let anyone forge a vDSO range.
+
+**How it was found**
+None.
+
+**The user's prediction**
+- Question 1 (which mappings must be refused): the user answered "read plus execute", and thought that a dedicated launcher maps it and afterwards the VMA is locked so nothing more can be mapped. The first part is right and is one of the three rules. The second needs correcting: the launcher is the honest user, but the rules cannot depend on it, because the child also holds its own root VMA (`VmaRoot`) and it is the one to guard against. And the whole VMA cannot be locked, since the child maps its heap and stack through it; what needs protecting is the vDSO's range, not the VMA. Missing were three rules: recognise by object identity, map the whole VMO from offset 0, and once per address space.
+- Question 2 (which operations must be refused after registration): the user answered "Map, Unmap and Protect are all refused". The direction is right; the essential ones are Unmap and Protect (and Destroy), because they can replace the real vDSO in the range. Map needs no rule of its own: while the real vDSO is still there, its addresses cannot be covered by another mapping (AlreadyExists).
+
+**Three questions you should be able to answer**
+- Why do the rules live in the kernel's `vma_map`, instead of trusting the launcher to do it right?
+- Why must unmap and protect of the range be refused once it is registered? How could a program otherwise get its own `syscall` instruction accepted?
+- The syscall entry reads the vDSO range on every call and takes no lock. What order must the writer follow for that to be safe?

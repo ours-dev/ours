@@ -2178,6 +2178,115 @@ auto check_process_start(ours::HandleValue const job) -> void {
         static_cast<void>(ou::debug_line("shell: process_start checks FAILED"));
     }
 }
+
+/// Mapping the vDSO's VMO: the mapping is the registration of a process's vDSO
+/// range, so it is allowed in one shape only (K23a).
+///
+/// Runs where userboot started this program, which is handed the VMO. On
+/// processes made here and never started, so what is checked is what the
+/// kernel says about the mapping, not what a running process does with it:
+///   - the rights: the handle has no Write, so a writable mapping is
+///     AccessDenied before the vDSO is looked at;
+///   - the shape, all InvArgs: read only, not execute; a part of the VMO
+///     rather than the whole (an offset past its start, and every length
+///     short of its size -- the loop that finds the size is this check); and
+///     the whole VMO mapped once in the allowed shape is Ok;
+///   - once per address space: a second mapping there is AccessDenied, while
+///     another process's first is Ok -- the claim is the address space's;
+///   - by identity, not by content: a slice of the VMO, which has the same
+///     pages, maps as an ordinary mapping and registers nothing, so a process
+///     that has only that is still refused by process_start (BadState, no
+///     vDSO), where one that mapped the VMO itself would not be.
+auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -> void {
+    using ours::Status;
+    using ours::VmOptions;
+
+    constexpr auto PAGE = u64{4096};
+    constexpr auto RX = VmOptions::PermRead | VmOptions::PermExecute;
+    constexpr auto RW = VmOptions::PermRead | VmOptions::PermWrite;
+
+    if (job == ours::HANDLE_INVALID || vdso == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vdso map checks skipped (no root job or vDSO)"));
+        return;
+    }
+
+    auto ok = true;
+    ours::HandleValue p = ours::HANDLE_INVALID;
+    ours::HandleValue p_vma = ours::HANDLE_INVALID;
+    ours::HandleValue q = ours::HANDLE_INVALID;
+    ours::HandleValue q_vma = ours::HANDLE_INVALID;
+    ours::HandleValue s = ours::HANDLE_INVALID;
+    ours::HandleValue s_vma = ours::HANDLE_INVALID;
+    if (!expect("shell: process_create = ", ou::process_create(job, "vdso-p", &p, &p_vma),
+                Status::Ok) ||
+        !expect("shell: process_create = ", ou::process_create(job, "vdso-q", &q, &q_vma),
+                Status::Ok) ||
+        !expect("shell: process_create = ", ou::process_create(job, "vdso-s", &s, &s_vma),
+                Status::Ok)) {
+        static_cast<void>(ou::debug_line("shell: vdso map checks FAILED"));
+        return;
+    }
+
+    ours::VirtAddr at = 0;
+    ok &= expect("shell: vma_map(vdso, RW) = ", ou::vma_map(p_vma, RW, 0, vdso, 0, PAGE, &at),
+                 Status::AccessDenied);
+    ok &= expect("shell: vma_map(vdso, read only) = ",
+                 ou::vma_map(p_vma, VmOptions::PermRead, 0, vdso, 0, PAGE, &at), Status::InvArgs);
+    ok &= expect("shell: vma_map(vdso, from an offset) = ",
+                 ou::vma_map(p_vma, RX, 0, vdso, PAGE, PAGE, &at), Status::InvArgs);
+
+    // Every length short of the whole is refused; the first that is not is
+    // the whole, and it is mapped.
+    u64 whole = 0;
+    for (u64 pages = 1; pages <= 64 && whole == 0; ++pages) {
+        auto const status = ou::vma_map(p_vma, RX, 0, vdso, 0, pages * PAGE, &at);
+        if (status == Status::Ok) {
+            whole = pages * PAGE;
+        } else if (status != Status::InvArgs) {
+            ok = expect("shell: vma_map(vdso, a part of it) = ", status, Status::InvArgs);
+            break;
+        }
+    }
+    ok &= whole != 0;
+    char pages_text[10];
+    static_cast<void>(
+        ou::debug_line({"shell: the vDSO is ",
+                        ou::decimal(static_cast<u32>(whole / PAGE), pages_text), " page(s)"}));
+
+    if (whole != 0) {
+        ours::VirtAddr again = 0;
+        ok &= expect("shell: vma_map(vdso) a second time = ",
+                     ou::vma_map(p_vma, RX, 0, vdso, 0, whole, &again), Status::AccessDenied);
+        ok &= expect("shell: vma_map(vdso) into another process = ",
+                     ou::vma_map(q_vma, RX, 0, vdso, 0, whole, &again), Status::Ok);
+
+        // The same pages by way of a slice: a mapping, and no registration.
+        ours::HandleValue slice = ours::HANDLE_INVALID;
+        ok &= expect("shell: vmo_create_child(vdso, Slice) = ",
+                     ou::vmo_create_child(vdso, ours::VmoChildOptions::Slice, 0, whole, &slice),
+                     Status::Ok);
+        ok &= expect("shell: vma_map(the slice, RX) = ",
+                     ou::vma_map(s_vma, RX, 0, slice, 0, whole, &again), Status::Ok);
+        ok &= expect("shell: close(the slice) = ", ou::handle_close(slice), Status::Ok);
+
+        ours::HandleValue t = ours::HANDLE_INVALID;
+        ok &= expect("shell: thread_create = ", ou::thread_create(s, "first", &t), Status::Ok);
+        ok &= expect("shell: process_start(a slice of the vDSO mapped, no vDSO) = ",
+                     ou::process_start(s, t, 0x400000, 0x500000, ours::HANDLE_INVALID, 0),
+                     Status::BadState);
+        ok &= expect("shell: close(the thread) = ", ou::handle_close(t), Status::Ok);
+    }
+
+    for (auto const handle: {p_vma, q_vma, s_vma, p, q, s}) {
+        ok &= ou::handle_close(handle) == Status::Ok;
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: vdso map checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: vdso map checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -2197,6 +2306,9 @@ auto main(int, char **) -> int {
     // none, and that is right.
     auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    // The vDSO's VMO, from userboot: what a launcher maps into each process it
+    // starts. Only the shell userboot starts holds it.
+    auto const vdso_vmo = runtime::take_startup_handle(ours::HandleType::VmoVdso, 0);
     // The root VMA, which whoever started this put in the processargs.
     auto const vma = runtime::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (vmex != ours::HANDLE_INVALID) {
@@ -2214,6 +2326,7 @@ auto main(int, char **) -> int {
     check_process_create(job);
     check_thread_create(job);
     check_process_start(job);
+    check_vdso_map(job, vdso_vmo);
     // One startup handle closed twice: init's channel when there is one --
     // closing it is init's cue -- and otherwise the job, done with now.
     check_handle_close(peer != ours::HANDLE_INVALID ? peer : job);

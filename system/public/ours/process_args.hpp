@@ -81,14 +81,17 @@ inline constexpr auto PROCARGS_VERSION = u32{1};
 
 /// What a startup handle is for. Zircon's PA_* values, so that a reader who
 /// knows those knows these (design 3.3); types of ours' own go in 0xe0-0xef,
-/// which Zircon leaves unused. VmoVdso (0x11) is left out: the vDSO's VMO is
-/// never handed out.
+/// which Zircon leaves unused. VmoVdso goes to the process that starts others:
+/// it maps the vDSO's VMO into each, and the kernel registers the mapping as
+/// that process's vDSO (2026-09-28: it used to be left out, the kernel
+/// mapping the vDSO itself).
 enum class HandleType : u8 {
     ProcSelf = 0x01,
     ThreadSelf = 0x02,
     JobDefault = 0x03,
     VmaRoot = 0x04,
     VmaLoaded = 0x05,
+    VmoVdso = 0x11,
     VmoStack = 0x13,
     VmoExecutable = 0x14,
     VmoBootdata = 0x1a,

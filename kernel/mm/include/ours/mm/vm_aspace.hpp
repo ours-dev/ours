@@ -13,6 +13,8 @@
 #include <ours/sync/mutex.hpp>
 #include <ours/sync/spin_lock.hpp>
 
+#include <atomic>
+
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ktl/name.hpp>
@@ -95,6 +97,63 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     auto root_vma() -> ustl::Arc<VmArea>;
 
+    /// The vDSO of this address space: where its code is mapped, which is the
+    /// only place the kernel accepts a `syscall` from (vdso_contains()).
+    ///
+    /// Registered once, from the mapping of the vDSO's VMO and by nothing else
+    /// (object::VmaDispatcher::map()): claim_vdso() first, so that two
+    /// mappings racing for it cannot both win, then the mapping, then
+    /// set_vdso_code_range() with where it landed; a mapping that fails gives
+    /// the claim back (release_vdso()). The range is never changed after.
+    ///
+    /// Read without a lock, on every system call. The reader loads the size
+    /// first, with acquire, and the writer stores it last, with release, so a
+    /// reader that sees a size sees the base that goes with it; and it is one
+    /// word each, written once, so no torn pair is possible. A process that
+    /// has none answers false for every range -- it can make no system call at
+    /// all rather than any.
+    ///
+    /// Zircon counterpart: VmAspace::vdso_code_mapping_, consulted by
+    /// VDso::ValidSyscallPC on the same path.
+    [[nodiscard]]
+    auto claim_vdso() -> bool {
+        return !m_vdso_claimed.exchange(true, std::memory_order_acq_rel);
+    }
+
+    auto release_vdso() -> void {
+        m_vdso_claimed.store(false, std::memory_order_release);
+    }
+
+    auto set_vdso_code_range(VirtAddr base, usize size) -> void {
+        DEBUG_ASSERT(m_vdso_claimed.load(std::memory_order_relaxed), "registered without a claim");
+        m_vdso_code_base.store(base, std::memory_order_relaxed);
+        m_vdso_code_size.store(size, std::memory_order_release);
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE
+    auto has_vdso() const -> bool {
+        return m_vdso_code_size.load(std::memory_order_acquire) != 0;
+    }
+
+    /// Whether all of [addr, addr + len) lies inside the vDSO.
+    ///
+    /// A range and not a point, because what is asked about is an instruction
+    /// -- the `syscall` a trap came from -- and all of its bytes have to be the
+    /// vDSO's.
+    ///
+    /// Written as two comparisons that cannot wrap: |len| no larger than the
+    /// vDSO, then |addr|'s offset into it no further than what leaves room for
+    /// |len|. The subtraction wraps an |addr| below the base to a huge offset,
+    /// which the second comparison refuses -- the same shape
+    /// ours::mm::is_kernel_address() uses for one end.
+    [[nodiscard]]
+    FORCE_INLINE
+    auto vdso_contains(VirtAddr addr, usize len) const -> bool {
+        auto const size = m_vdso_code_size.load(std::memory_order_acquire);
+        return len <= size && addr - m_vdso_code_base.load(std::memory_order_relaxed) <= size - len;
+    }
+
     /// Tears down everything mapped in this user address space; see the
     /// definition. Once only; the object itself lives on until its last
     /// reference goes.
@@ -165,6 +224,12 @@ class VmAspace: public ustl::RefCounted<VmAspace, ustl::sync::ThreadSafePolicy> 
 
     /// Architecture specific context.
     ArchVmAspace m_arch;
+
+    /// See claim_vdso(). Zero size until registered, which is what makes
+    /// vdso_contains() refuse everything.
+    std::atomic<bool> m_vdso_claimed{false};
+    std::atomic<VirtAddr> m_vdso_code_base{0};
+    std::atomic<usize> m_vdso_code_size{0};
 
     /// The only root region.
     ustl::Arc<VmArea> m_root_vma;

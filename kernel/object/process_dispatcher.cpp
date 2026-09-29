@@ -38,9 +38,7 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
     , m_job(ustl::move(job))
     , m_aspace(ustl::move(aspace))
     , m_handle_table(ustl::move(handle_table))
-    , m_handle_account(ustl::move(handle_account))
-    , m_vdso_code_base(0)
-    , m_vdso_code_size(0) {}
+    , m_handle_account(ustl::move(handle_account)) {}
 
 /// The last reference is gone. Counted and logged because nothing else
 /// witnesses it: a killed process has no parent that waits on it yet (P1-B),
@@ -139,14 +137,15 @@ auto ProcessDispatcher::current() -> Self * {
 ///
 /// The check for a vDSO is here and not in the thread: a process is started,
 /// a thread only attached, and "could not make a system call" is about the
-/// process. It reads the range without the lock, as vdso_contains() does; it is
-/// fixed before the process is started and never changes after.
+/// process. It reads the range without the lock, as vdso_contains() does; the
+/// range is registered once, by the mapping of the vDSO's VMO, and never
+/// changes after.
 auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, VirtAddr const stack,
                               ustl::Box<Handle> arg1, usize const arg2) -> Status {
     verify_canary();
     DEBUG_ASSERT(&thread.process() == this, "a process starts one of its own threads");
 
-    if (m_vdso_code_size == 0) {
+    if (!m_aspace->has_vdso()) {
         return Status::BadState;
     }
 

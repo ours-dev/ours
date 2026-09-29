@@ -101,6 +101,29 @@ class VmoDispatcher final: public VmoDispatcherBase {
         return m_vmo;
     }
 
+    /// Marks this as the vDSO's VMO, the one kernel object every process's
+    /// system calls go through. Done once, by whoever lays the vDSO out, before
+    /// any process exists; nothing unmarks it.
+    ///
+    /// What the mark changes: a mapping of it is the registration of the
+    /// address space's vDSO range (VmaDispatcher::map()), and is allowed only
+    /// in the one shape that makes the range trustworthy. It is a property of
+    /// this object and not of a handle to it, so every handle, duplicate and
+    /// holder is subject to it alike; a child of it (vmo_create_child) is
+    /// another object and is not the vDSO.
+    ///
+    /// Zircon: the VDso class, which owns the vDSO's VMOs and is what the
+    /// vDSO mapping is recognised by.
+    auto mark_vdso() -> void {
+        m_is_vdso = true;
+    }
+
+    [[nodiscard]]
+    FORCE_INLINE
+    auto is_vdso() const -> bool {
+        return m_is_vdso;
+    }
+
     /// Copies |size| bytes starting at byte |offset| of the VMO into the
     /// kernel buffer |out|. A range not wholly inside the VMO is OutOfRange
     /// and copies nothing; a kind of VMO that cannot be read this way (a
@@ -174,6 +197,10 @@ class VmoDispatcher final: public VmoDispatcherBase {
     ~VmoDispatcher() final;
 
     ustl::Arc<mm::VmObject> m_vmo;
+
+    /// See mark_vdso(). Written before the object is shared, read after: no
+    /// synchronisation needed.
+    bool m_is_vdso = false;
 };
 
 } // namespace ours::object

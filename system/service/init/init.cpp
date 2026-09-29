@@ -237,6 +237,16 @@ auto main(int, char **) -> int {
         static_cast<void>(ou::debug_line("init: started without vmex"));
     }
 
+    // The vDSO's VMO, also handed on by userboot: init maps it into the
+    // processes it starts once its launcher exists (K23). Held, unused, until
+    // then.
+    auto const vdso = runtime::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    if (vdso != ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("init: vdso vmo ok"));
+    } else {
+        static_cast<void>(ou::debug_line("init: started without the vdso vmo"));
+    }
+
     ours::HandleValue here = ours::HANDLE_INVALID;
     ours::HandleValue peer = ours::HANDLE_INVALID;
     if (auto const status = ou::channel_create(&here, &peer); status != Status::Ok) {

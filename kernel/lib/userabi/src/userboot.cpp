@@ -334,7 +334,9 @@ namespace {
     ///               moved into the message, not copied, as Zircon's userboot
     ///               moves its VMO handles out;
     ///   VmaRoot     |root_vma|, the process's own root region, which launch()
-    ///               handed back.
+    ///               handed back;
+    ///   VmoVdso     the vDSO's VMO, to map it into the processes this one is
+    ///               to start.
     ///
     /// Everything is made on this kernel thread, which belongs to no process,
     /// so none of these handles is charged to anyone's quota (Handle::make()
@@ -354,8 +356,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[4];
-        u32 infos[4] = {};
+        ustl::Box<object::Handle> handles[5];
+        u32 infos[5] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -391,12 +393,28 @@ namespace {
         }
         infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_VMEX_BASE));
 
+        // The vDSO's VMO, for the launcher the first process is to become
+        // (K23): it maps the vDSO into each process it starts, and the kernel
+        // takes the mapping as the registration of that process's vDSO range.
+        // Read, map and execute, never write, and no other object has these
+        // rights over the vDSO's pages; the rights are the VMO defaults less
+        // Write plus Execute, which is a capability here as for any VMO
+        // (design D3) and is given because the kernel made this VMO itself.
+        handles[count] =
+            object::Handle::make(ustl::Arc<object::Dispatcher>(shared_vdso.image.vmo.dispatcher()),
+                                 (object::RIGHTS_DEFAULT_VMO & ~Rights::Write) | Rights::Execute);
+        if (!handles[count]) {
+            log::error("userabi: could not make a handle to the vDSO's VMO");
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::VmoVdso, 0);
+
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, four handle_infos, a program name
+        // fail for want of room: the header, five handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
         // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 4 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 5 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};
@@ -541,6 +559,9 @@ namespace {
             return status;
         }
         auto const pages = image.span / PAGE_SIZE;
+        // Marked before anything can map it: from here a mapping of this VMO
+        // registers an address space's vDSO range (VmaDispatcher::map()).
+        image.vmo.dispatcher()->mark_vdso();
         shared_vdso.image = ustl::move(image);
         shared_vdso.file = file.unwrap();
         log::info("userabi: vdso laid out once, {} page(s), shared by every process", pages);
@@ -654,10 +675,9 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
         return status;
     }
 
-    // Recorded on the process, not in a global: the range is a property of one
-    // address space, and the syscall path reaches it through the thread that
-    // trapped.
-    process.dispatcher()->set_vdso_code_range(vdso.base, vdso.span);
+    // Nothing to record: mapping the vDSO's VMO is what registered its range,
+    // on the address space, and the syscall path reaches it through the thread
+    // that trapped (VmaDispatcher::map()).
 
     // The thread comes from the object layer too: ThreadDispatcher::create()
     // makes the dispatcher, start() below makes its kernel thread with the
