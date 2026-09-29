@@ -12,9 +12,8 @@ The debugger already has `scripts/lldb_ours.py` loaded, so `cl`, `cpus`,
    before its first instruction, links the matching ELF to
    `out/.debug/kernel.elf`, and prints `gdbstub ready on localhost:<port>` when
    it can be attached. It never exits on its own.
-   - A private build: `OUT=$PWD/out/<dir>`. `OUT` must be absolute; a relative
-     one leaves a broken `out/.debug/kernel.elf` link and every breakpoint
-     silently stays unresolved.
+   - A private build: `OUT=out/<dir>` (relative to the repo root is fine;
+     `qemu_debug.py` resolves it before publishing the symlink).
    - Another session may be debugging too: pick your own `PORT`.
 2. Through the `command` tool, one command per call:
    `target create out/.debug/kernel.elf`, then

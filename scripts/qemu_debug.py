@@ -269,6 +269,14 @@ def main(argv: list[str] | None = None) -> int:
         image, elf, name = resolve(out, args.product, args.arch, args.switchset)
         note(f"{args.product}.{args.arch} {args.switchset} -> {name}")
 
+    # Absolute from here on. `elf` gets symlinked from out/.debug/kernel.elf
+    # below; a relative ELF (from a relative $OUT, or a relative $ELF override)
+    # would be stored in the link as-is and then resolved from out/.debug/'s
+    # own location instead of the caller's cwd, pointing nowhere. image has no
+    # such link, but is resolved alongside it so both name what they actually
+    # booted regardless of the caller's cwd.
+    image, elf = image.resolve(), elf.resolve()
+
     # Both checked before QEMU is touched. A missing ELF is the nastier of the
     # two: QEMU would boot fine and the attach would come up with no symbols at
     # all, which reads like a debugger problem rather than a missing build.
