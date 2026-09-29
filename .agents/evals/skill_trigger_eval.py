@@ -191,7 +191,10 @@ def main() -> int:
             r.update(id=c["id"], expect=c["expect"], ok=passed(c, r, skills))
             results.append(r)
             got = r["detail"] if r["outcome"] in ("skill", "acted") else ""
-            print(f"{'PASS' if r['ok'] else 'FAIL'} {c['id']:<22} {r['outcome']:<9} {str(got)[:60]:<30} "
+            # A stopped command is shown in full: whether the classifier was too strict or the
+            # session really started acting is only visible from what it tried to run.
+            shown = str(got) if r["outcome"] == "acted" else str(got)[:60]
+            print(f"{'PASS' if r['ok'] else 'FAIL'} {c['id']:<22} {r['outcome']:<9} {shown:<30} "
                   f"{r['secs']:>5}s  {r['trail']}", flush=True)
     if a.json:
         Path(a.json).write_text(json.dumps(sorted(results, key=lambda r: r["id"]), ensure_ascii=False, indent=1))

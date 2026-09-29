@@ -10,7 +10,10 @@
  {"id": "design-cpulocal",      "expect": ["ours-kernel-design"], "query": "CpuLocal 的动态分配该怎么设计？参考 Linux 还是 Zircon？"},
  {"id": "design-pi-chain",      "expect": ["ours-kernel-design"], "query": "OwnedWaitQueue 里 PI 链加锁那几个 stub 该怎么补？给个思路"},
  {"id": "design-vmalloc-layer", "expect": ["ours-kernel-design"], "query": "vmalloc 应该在哪一层实现？"},
- {"id": "design-review-vmo",    "expect": ["ours-kernel-design"], "query": "Review the design of VmoDispatcher::read_user and tell me what is wrong with it."},
+ {"id": "design-review-vmo",    "expect": ["ours-kernel-design", "cpp-code-review"], "query": "Review the design of VmoDispatcher::read_user and tell me what is wrong with it."},
+
+ {"id": "review-cpp-file",      "expect": ["cpp-code-review", "ours-kernel-design"], "query": "review 一下 system/lib/ustl/include/ustl/rc.hpp，看看有什么问题"},
+ {"id": "review-mm-file",       "expect": ["cpp-code-review", "ours-kernel-design"], "query": "帮我 review 一下 kernel/mm/vm_object_paged.cpp，有没有 bug"},
 
  {"id": "cpp-extract-const",    "expect": ["cpp-write-and-verify", "modern-cpp-development"], "allow_defer": true, "query": "把 kernel/time 里 TimerQueue 用到的魔数抽成常量"},
  {"id": "cpp-option-map",       "expect": ["cpp-write-and-verify", "modern-cpp-development"], "allow_defer": true, "query": "给 ustl::Option 加一个 map 方法"},
@@ -21,5 +24,6 @@
  {"id": "none-python-stats",    "expect": ["none"], "query": "用 Python 写个脚本，统计 docs/changes 下每天有多少条改动记录"},
  {"id": "none-repairs",         "expect": ["none"], "query": "docs/repairs 里现在最严重的待修项是哪几条？"},
  {"id": "none-translate",       "expect": ["none"], "query": "把这句话翻译成英文：内核是为用户层服务的"},
- {"id": "none-gitignore",       "expect": ["none"], "query": "这个仓库的 .gitignore 为什么把 .claude 整个忽略了？"}
+ {"id": "none-gitignore",       "expect": ["none"], "query": "这个仓库的 .gitignore 为什么把 .claude 整个忽略了？"},
+ {"id": "none-review-prose",    "expect": ["none"], "query": "帮我 review 一下这封英文邮件的措辞：Please find attached the report we discussed last week."}
 ]
