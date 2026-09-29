@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "lldb": {
+      "command": "python3",
+      "args": ["scripts/lldb_mcp.py"]
+    }
+  }
+}
