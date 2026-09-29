@@ -43,6 +43,15 @@ every task needs:
   commands go in `kernel/commands`; new C++ libraries are scaffolded with
   copier from `tools/templates/cpp_library`.
 
+## Workflow
+
+Ask for missing details before starting only when a request is genuinely
+underspecified or substantial enough to need a plan; proceed directly on a
+small, well-specified, or mechanical change. Once a request needs a plan,
+break it into subtasks, and give each one a dedicated workspace under
+`.agents/tasks/` in the project root to hold its plan, track progress, and
+record how it was validated and reviewed.
+
 ## Commit after every change
 
 One change, one commit, made as soon as that change builds and boots. Do not

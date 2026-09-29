@@ -40,6 +40,15 @@ task needs:
   commands go in `kernel/commands`; new C++ libraries are scaffolded with
   copier from `tools/templates/cpp_library`.
 
+## Workflow
+
+Ask for missing details before starting only when a request is genuinely
+underspecified or substantial enough to need a plan; proceed directly on a
+small, well-specified, or mechanical change. Once a request needs a plan,
+break it into subtasks, and give each one a dedicated workspace under
+`.agents/tasks/` in the project root to hold its plan, track progress, and
+record how it was validated and reviewed.
+
 ## Commit after every change
 
 One change, one commit, made as soon as that change builds and boots. Do not
@@ -138,17 +147,6 @@ under control — don't merge two things back into one ever-growing file.
 `docs/repairs-20260830.md` is the single running log from before this
 structure existed, a read-only archive; **several agents write to it
 concurrently, so never rewrite the whole file**.
-
-## Workflow
-
-Whenever a user presents a request, the first step should always be to ask
-for additional information to clarify and refine the requirements. Next,
-break the request down into a set of separate subtasks.
-
-For each subtask, we may need to explicitly create a plan, track progress,
-validate the results, and review the completed work. Therefore, create a
-dedicated workspace for each subtask under `.agents/tasks` in the project
-root to record and manage these materials.
 
 ## Extension
 
