@@ -227,3 +227,80 @@ Zircon `sys_process_create()`：ManageProcess 检查、名字截断到 `ZX_MAX_N
 - 引用计数和句柄数各管什么？为什么句柄数归零时要重查进程的状态？
 - `on_zero_handles()` 和 `attach_thread()` 并发时，为什么只有两种结果？把它们的检查放到锁外会多出哪一种？
 - 为什么 `finish_dead_transition()` 要在锁外做，又为什么它只会被执行一次？
+
+## thread_create，内核线程延到启动时才建（K23a-1 第 2 步，2026-09-28）
+
+**文件**
+- `kernel/object/include/ours/object/thread_dispatcher.hpp`、`thread_dispatcher.cpp`：`spawn()` 改名 `create()`，只建 dispatcher；新增 `create_kernel_thread()`；线程状态加 `Initial`；新增 `m_name`
+- `kernel/object/process_dispatcher.cpp`：`attach_thread()` 在锁内、检查状态之后调用 `create_kernel_thread()`
+- `kernel/lib/userabi/src/userboot.cpp`：`spawn` → `create`
+- `kernel/lib/syscall/src/task.cpp`：`syscall::thread_create()`，删掉占位的 `thread_spawn`
+- `system/public/ours/syscall.hpp`：`ThreadCreateOptions`；`system/public/ours/syscalls.gni`：`thread_create` 条目
+- `system/lib/ou/include/ou/thread.hpp`、`src/thread.cpp`（新）、`BUILD.gn`：`ou::thread_create()`
+- `examples/shell/shell.cpp`：`check_thread_create()`
+- `docs/repairs/260924/object.md`：删掉第 1 条“从未启动的线程，其内核线程泄漏”；`docs/repairs/260928/kernel-object.md`（新）：持锁时间的测量项
+
+**症状**
+用户态没法建线程；而按原来的做法（`spawn()` 一建 dispatcher 就建内核线程），加了 `thread_create` 之后，
+建了不启动、直接关掉句柄的线程，会永远留下一个内核线程：它挂在全局线程表上、带着内核栈，没有东西能释放它
+（内核里没有 Zircon 的 `Thread::Forget()`）。这是 repairs 里的那一条。
+
+**原因**
+内核线程建得太早。它的生命周期本来应该从“开始运行”算起，却从“对象创建”就开始了。
+
+**改法**
+
+```cpp
+// 之前：创建即建内核线程
+ThreadDispatcher::spawn(process, name, &out) { ...; task::Thread::spawn(...); m_kernel_thread = core; }
+
+// 之后：创建只建 dispatcher，启动时才建内核线程，在进程锁内、检查完进程状态之后
+ThreadDispatcher::create(process, name, &out)            // 状态 Initial，只有 m_name
+ProcessDispatcher::attach_thread(thread) {
+    Guard guard{get_lock()};
+    if (m_state != expected) { return BadState; }        // 先检查
+    thread.create_kernel_thread();                       // 再建：失败则状态、线程表原样
+    thread.mark_active(); thread.activate(false);        // activate 把线程状态置 Running
+    m_thread_list.push_back(thread); ...
+}
+```
+
+- 这样“进程已经 Dead，还有人来启动线程”的路径根本不会建内核线程，没有东西要销毁；建内核线程失败（栈分配不出来）也不会改动状态或线程表。
+  代价是启动线程做的所有事都在进程锁内，包括分配内核栈；持锁时间要多长、有没有人在等，还没有数据（见 `docs/repairs/260928/kernel-object.md`）。
+- Zircon 在创建线程时就建 core thread（`ThreadDispatcher::Create` → `Thread::Create`），所以需要 `Forget()` 收拾没启动的线程；
+  我们选择推迟到启动，不引入 `Forget()`。
+- 线程状态加了 `Initial`：`kill()` 遇到它什么也不做（它不在进程的线程表里，没有内核线程可杀）；
+  `create_kernel_thread()` 要求 Initial，所以一个线程只能启动一次（第二次回 BadState）。
+- `thread_create` 不检查进程状态：进程 Dying/Dead 时，启动会回 BadState，这是唯一可靠的检查点——建线程和启动之间状态随时会变。
+
+**参照**
+Zircon `sys_thread_create()`：ManageThread、名字截断、返回句柄；`ThreadDispatcher::Create()`（同时建 core thread，与我们不同，理由见上）；
+`ProcessDispatcher::AddInitializedThread()` 与 `ThreadDispatcher::MakeRunnable()`（一把进程锁下检查状态、挂线程、让线程可运行）。
+
+**验证**
+- 两个镜像均构建通过；`boot_check.py` 两个镜像都 PASS（dbg 16 passed；rel 13 passed、7 skipped）。
+  内核照常启动 userboot、init、shell 和各探针，走的是新的“创建、启动时才建内核线程”的路径。
+- dbg_1 的 shell 打出 `thread_create checks passed`：无效句柄回 BadHandle，传 VMA 句柄回 BadType，句柄不带 ManageThread 回 AccessDenied，
+  带选项位回 InvArgs；连续建 4 个再关掉都 Ok；表填到只剩两个空位后，连着 3 次用内核半区的输出地址失败，每次都是 InvArgs，
+  随后正常调用成功；先关掉进程的最后一个句柄、再关线程句柄，都 Ok。
+- 内核日志里名为 `host` 的进程下有 8 个线程 dispatcher 被销毁（4 + 3 + 1，与创建次数一致），而 `has its kernel thread` 的日志里
+  一条也没有属于 `host`：没启动的线程一个内核线程都没建。
+
+**故意没做**
+- `thread_start`（进程 Running 之后启动其余线程）：设计里的前置是 TLB shootdown 和缺页路径取 VMO 锁，不在 K23。
+- `Flags::Active` 现在和线程状态 `Initial` 重复（`kill()` 不再用它），先留着，另开一条清理。
+- 没有测“启动”和“最后一个句柄关闭”的真并发：这需要第二个用户线程，等 `process_start` 和 `thread_start` 都有了再造压力测试。
+
+**怎么发现的**
+无。
+
+**用户的预测**
+- 用户的想法是无锁状态机加锁保护共享资源，理由是避免大锁。讨论中把“大”拆成三个维度（覆盖多少不相关的不变量、持锁多久、多少人争），
+  结论是进程锁覆盖的东西小而相关、取它的都是低频操作，真正会变大的是持锁时间，本步把内核线程的创建放进了锁里。
+- 用户最后决定：先做全锁版本，之后用数据决定要不要拆（`docs/repairs/260928/kernel-object.md`）。
+- 预测题（kill 遇到 Starting 状态怎么办）没有用上：全锁版本里没有 Starting 状态，这道题留到要拆锁的时候再答。
+
+**你应该能回答的三个问题**
+- 为什么把内核线程延到启动时才建，就不需要 `Thread::Forget()`？代价是什么？
+- `attach_thread()` 里“检查状态”为什么必须先于“建内核线程”？反过来会怎样？
+- 一个线程被启动两次，第二次会发生什么，是哪一层拒绝的？

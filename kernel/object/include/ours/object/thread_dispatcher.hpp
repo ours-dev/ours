@@ -34,15 +34,22 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     /// Guarded by get_lock().
     ///
-    ///   Running  from creation until the thread starts to die; the kernel
-    ///            thread may not have started yet.
+    ///   Initial  created, and not started: there is no kernel thread yet, and
+    ///            the thread is not on its process's list. Every thread
+    ///            starts here, and only start() leaves it.
+    ///   Running  started, until it starts to die.
     ///   Dying    killed, and the kernel thread told so, but not yet gone.
     ///   Dead     the kernel thread has exited and left the process; it is
     ///            no longer reachable from this object.
     ///
-    /// Zircon's has Initial, Initialized and Suspended as well; nothing here
-    /// distinguishes those yet.
+    /// Zircon's has Initialized (created, with its core thread) and Suspended
+    /// as well: it makes the core thread at creation and so needs
+    /// Thread::Forget() to dispose of one that never starts, which this
+    /// kernel does not have. Making it at start, under the process's lock and
+    /// after the process's state was checked, means a thread that does not
+    /// start has nothing to dispose of.
     enum class State {
+        Initial,
         Running,
         Dying,
         Dead,
@@ -57,8 +64,16 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         usize arg2 = 0;
     };
 
-    static auto spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
-                      KernelHandle<Self> *out) -> Status;
+    static constexpr auto MAX_NAME_SIZE = 32;
+
+    /// A thread of |process| that has not started: the dispatcher and
+    /// nothing else. The kernel thread is made by start(), so that a thread
+    /// whose handle is closed before it ever ran leaves nothing behind.
+    ///
+    /// Zircon counterpart: ThreadDispatcher::Create(), which also makes the
+    /// core thread here (see State).
+    static auto create(ustl::Arc<ProcessDispatcher> process, char const *name,
+                       KernelHandle<Self> *out) -> Status;
 
     /// The user thread the calling kernel thread runs on behalf of, or null
     /// on an ordinary kernel thread. See ProcessDispatcher::current().
@@ -69,7 +84,21 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     [[noreturn]]
     static auto exit_current() -> void;
 
+    /// Starts this thread at |state|, the first thread of its process or a
+    /// later one. BadState unless it is Initial (a thread starts once) and its
+    /// process can take one (ProcessDispatcher::attach_thread()); InvArgs for
+    /// an entry point that is not a user address.
     auto start(TaskState const &state) -> Status;
+
+    /// The kernel thread this object will run as, made now and bound to the
+    /// process's address space. Called by ProcessDispatcher::attach_thread()
+    /// with the process's lock held, after the process's state was checked
+    /// and before anything else about the start is done, so that a failure
+    /// here -- out of memory for the stack -- leaves the process, the thread
+    /// and the list exactly as they were. BadState when this is not Initial.
+    ///
+    /// Takes this thread's own lock, the order attach_thread() uses.
+    auto create_kernel_thread() -> Status;
 
     auto resume() -> void;
 
@@ -79,8 +108,8 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     /// Tells this thread to die: a thread that has started moves to Dying and
     /// its kernel thread gets the Kill signal, which it acts on at its next
-    /// return towards ring 3. A thread that never started is left as it is,
-    /// and one already dying or dead is left alone.
+    /// return towards ring 3. A thread that never started (Initial) is left as
+    /// it is, and one already dying or dead is left alone.
     ///
     /// Called by ProcessDispatcher::kill() with the process's lock held; takes
     /// this thread's own lock after it.
@@ -165,6 +194,10 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     auto on_suspend() -> Status;
 
     static constexpr auto MAGIC = gktl::magic("ThreadDispatcher");
+
+    /// Kept from creation to start: the kernel thread is named when it is
+    /// made, and it is not made until then.
+    ktl::Name<MAX_NAME_SIZE> m_name;
 
     Flags m_flags;
     State m_state;

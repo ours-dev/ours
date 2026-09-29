@@ -45,6 +45,7 @@
 #include <ou/object.hpp>
 #include <ou/process.hpp>
 #include <ou/str.hpp>
+#include <ou/thread.hpp>
 #include <ou/vma.hpp>
 #include <ou/vmo.hpp>
 #include <runtime/main.hpp>
@@ -1931,6 +1932,114 @@ auto check_process_create(ours::HandleValue const job) -> void {
         static_cast<void>(ou::debug_line("shell: process_create checks FAILED"));
     }
 }
+
+/// thread_create (K23a): a thread that has not started is a dispatcher and
+/// nothing else.
+///
+/// Runs where userboot started this program, on a process of its own made
+/// here and never started. What it pins down:
+///   - the handles: none, a VMA handle in the process's place, and a process
+///     handle without ManageThread are BadHandle, BadType and AccessDenied;
+///     an option bit is InvArgs;
+///   - the out-pointer: one the kernel cannot write is InvArgs and leaves no
+///     handle behind (three failures with the table full to two slots, as for
+///     process_create);
+///   - the lifetime: a thread's handle closed unstarted is Ok, and so is
+///     closing the process's while a thread handle to it is still held --
+///     the process, never started, dies with its last *handle*, whatever
+///     still points at the object. The kernel log shows every thread here
+///     destroyed and none given a kernel thread: it is made by start, which
+///     nothing here calls.
+auto check_thread_create(ours::HandleValue const job) -> void {
+    using ours::Rights;
+    using ours::Status;
+
+    constexpr ou::Str NAME{"never-started"};
+
+    if (job == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: thread_create checks skipped (no root job)"));
+        return;
+    }
+
+    auto ok = true;
+    ours::HandleValue process = ours::HANDLE_INVALID;
+    ours::HandleValue region = ours::HANDLE_INVALID;
+    if (!expect("shell: process_create = ", ou::process_create(job, "host", &process, &region),
+                Status::Ok)) {
+        static_cast<void>(ou::debug_line("shell: thread_create checks FAILED"));
+        return;
+    }
+
+    ours::HandleValue thread = ours::HANDLE_INVALID;
+    ok &= expect("shell: thread_create(HANDLE_INVALID) = ",
+                 ou::thread_create(ours::HANDLE_INVALID, NAME, &thread), Status::BadHandle);
+    ok &= expect("shell: thread_create(process = its root VMA) = ",
+                 ou::thread_create(region, NAME, &thread), Status::BadType);
+    ours::HandleValue weak = ours::HANDLE_INVALID;
+    ok &= expect("shell: handle_duplicate(process, without ManageThread) = ",
+                 ou::handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
+    ok &= expect("shell: thread_create(process without ManageThread) = ",
+                 ou::thread_create(weak, NAME, &thread), Status::AccessDenied);
+    ok &= expect("shell: close(the weak process handle) = ", ou::handle_close(weak), Status::Ok);
+    ok &= expect("shell: thread_create(an option bit) = ",
+                 ours_thread_create(process, NAME.data(), NAME.size(),
+                                    static_cast<ours::ThreadCreateOptions>(1), &thread),
+                 Status::InvArgs);
+    ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
+
+    // A thread made and closed, more than once.
+    for (u32 i = 0; i < 4; ++i) {
+        if (expect("shell: thread_create = ", ou::thread_create(process, NAME, &thread),
+                   Status::Ok)) {
+            ok &= expect("shell: close(the unstarted thread) = ", ou::handle_close(thread),
+                         Status::Ok);
+        } else {
+            ok = false;
+        }
+    }
+
+    // The table full to exactly two slots, then failures that must leave none
+    // behind: a thread needs one, so this is stricter than it needs to be, and
+    // it is the same shape as process_create's, so the two read alike.
+    constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
+    static ours::HandleValue filler[ROOM];
+    u32 held = 0;
+    while (held + 2 <= ROOM && ou::channel_create(&filler[held], &filler[held + 1]) == Status::Ok) {
+        held += 2;
+    }
+    if (held < ROOM && ou::handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
+        held += 1;
+    }
+    ok &= held >= 2;
+    if (held >= 2) {
+        ok &= ou::handle_close(filler[held - 1]) == Status::Ok;
+        held -= 1;
+        for (u32 i = 0; i < 3; ++i) {
+            ok &= expect("shell: thread_create(out = kernel half), table nearly full = ",
+                         ours_thread_create(process, NAME.data(), NAME.size(),
+                                            ours::ThreadCreateOptions::None,
+                                            reinterpret_cast<ours::HandleValue *>(KERNEL)),
+                         Status::InvArgs);
+        }
+        ok &=
+            expect("shell: thread_create after that = ", ou::thread_create(process, NAME, &thread),
+                   Status::Ok);
+    }
+    for (u32 i = 0; i < held; ++i) {
+        ok &= ou::handle_close(filler[i]) == Status::Ok;
+    }
+
+    // The process's last handle first, with a thread handle still open.
+    ok &= expect("shell: close(the process) = ", ou::handle_close(process), Status::Ok);
+    ok &= expect("shell: close(the thread, after its process) = ", ou::handle_close(thread),
+                 Status::Ok);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: thread_create checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: thread_create checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -1965,6 +2074,7 @@ auto main(int, char **) -> int {
     }
     // Before the job is closed below: it is what a process is created under.
     check_process_create(job);
+    check_thread_create(job);
     // One startup handle closed twice: init's channel when there is one --
     // closing it is init's cue -- and otherwise the job, done with now.
     check_handle_close(peer != ours::HANDLE_INVALID ? peer : job);

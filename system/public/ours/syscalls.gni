@@ -331,6 +331,44 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "thread_create"
+    brief = "Makes a thread of |process| that is not running yet."
+    doc = [
+      "|process| needs ManageThread. The thread is Initial: it has no kernel",
+      "thread and is not counted among the process's threads until it is",
+      "started, so closing its handle first leaves nothing behind. |name| is",
+      "|name_size| bytes, cut to 31. The options must be None (InvArgs). The",
+      "handle's value is written to |out| before the handle is installed.",
+    ]
+    args = [
+      {
+        name = "process"
+        type = "HandleValue"
+      },
+      {
+        name = "name"
+        type = "char"
+        dir = "in"
+        count = "name_size"
+      },
+      {
+        name = "name_size"
+        type = "usize"
+      },
+      {
+        name = "options"
+        type = "ThreadCreateOptions"
+      },
+      {
+        name = "out"
+        type = "HandleValue"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     # TEMPORARY: goes when a user-space loader can build a process out of
     # VMOs and VMAs (design P1-C), and with it this entry, which is all that
     # removing the call takes on this side (docs/repairs/260923/syscall.md).

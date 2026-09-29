@@ -17,6 +17,7 @@ source_set("ou") {
     "src/handle.cpp",
     "src/object.cpp",
     "src/process.cpp",
+    "src/thread.cpp",
     "src/vma.cpp",
     "src/vmo.cpp",
   ]
@@ -36,6 +37,7 @@ cpp_interface("headers") {
     "include/ou/object.hpp",
     "include/ou/process.hpp",
     "include/ou/str.hpp",
+    "include/ou/thread.hpp",
     "include/ou/vma.hpp",
     "include/ou/vmo.hpp",
   ]

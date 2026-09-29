@@ -20,8 +20,9 @@ namespace ours::object {
 /// happened to hold.
 ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char const *name)
     : Base()
+    , m_name(name)
     , m_flags()
-    , m_state(State::Running)
+    , m_state(State::Initial)
     , m_parked_reason()
     , m_kernel_thread(nullptr)
     , m_process(ustl::move(process)) {
@@ -33,65 +34,69 @@ ThreadDispatcher::ThreadDispatcher(ustl::Arc<ProcessDispatcher> process, char co
     DISPATCHER_THREAD_SPAWN_COUNT.add(1);
 }
 
-/// See ~ProcessDispatcher() for why this is counted and logged. The thread
-/// keeps no name of its own -- its kernel thread has one -- so the line names
-/// it by koid and by the process it belonged to.
+/// See ~ProcessDispatcher() for why this is counted and logged. The line
+/// names the thread by koid and by the process it belonged to.
 ///
-/// For a thread that ran, the kernel thread is gone by the time this runs: it
-/// exited, detached itself (mark_dead()) and dropped its reference to this
-/// object as it was destroyed. For one that was spawned and never started,
-/// it is not: it is still on the global thread list in the Initial state,
-/// and nothing frees it -- there is no equivalent yet of Zircon's
-/// Thread::Forget() (docs/repairs/260924/object.md). No path reaches that
-/// today: userabi::launch() starts every thread it spawns.
+/// The kernel thread is gone by the time this runs, or never was: a thread
+/// that ran exited, detached itself (mark_dead()) and dropped its reference
+/// to this object as it was destroyed; one that never started has none,
+/// because start() is what makes it (create_kernel_thread()).
 ThreadDispatcher::~ThreadDispatcher() {
     DISPATCHER_THREAD_DESTROY_COUNT.add(1);
     log::info("object: thread (koid {}) of process '{}' destroyed", koid(), m_process->name());
 }
 
-auto ThreadDispatcher::spawn(ustl::Arc<ProcessDispatcher> process, char const *name,
-                             KernelHandle<Self> *out) -> Status {
+auto ThreadDispatcher::create(ustl::Arc<ProcessDispatcher> process, char const *name,
+                              KernelHandle<Self> *out) -> Status {
     if (!process || !out) {
         return Status::InvArgs;
     }
 
-    // Held before the kernel thread exists, because the kernel thread is
-    // handed a raw pointer to it: whatever happens below, this object has to
-    // outlive the thread that will run inside it.
-    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(process, name));
+    auto self = ustl::Arc<Self>::adopt(new (mm::GAF_USER) Self(ustl::move(process), name));
     if (!self) {
         return Status::OutOfMem;
     }
 
-    // The address space the kernel thread will run in, decided here rather
-    // than by whoever called spawn(). It used to be set by hand at the call
-    // site (userabi/userboot.cpp did `thread->set_aspace(...)`), which put a
-    // kernel/kernel detail in the hands of a caller that is supposed to see
-    // only the object layer -- and which only worked because the caller
-    // happened to know it must come before the first resume().
-    //
-    // Here it is unconditionally before resume(): activate() is what resumes,
-    // and that cannot be reached until start() is called on the handle this
-    // function has not returned yet. That ordering matters -- the scheduler
-    // reloads CR3 from Thread::aspace() on the way in, so an aspace set on a
-    // thread that is already running would leave the record and the hardware
-    // disagreeing.
-    auto core_thread = task::Thread::spawn(
-        name, [](void *arg) -> i32 { return Self::trampoline(static_cast<Self *>(arg)); },
-        self.as_ptr_mut(), task::DEFAULT_PRIORITY);
+    *out = KernelHandle<Self>(ustl::move(self));
+    return Status::Ok;
+}
+
+/// The kernel thread, made at start and not before, and the address space it
+/// runs in decided here rather than by whoever started it. That used to be set
+/// by hand at the call site (userabi/userboot.cpp did `thread->set_aspace(...)`),
+/// which put a kernel/kernel detail in the hands of a caller that is supposed
+/// to see only the object layer -- and which only worked because the caller
+/// happened to know it must come before the first resume().
+///
+/// Here it is unconditionally before resume(): activate() is what resumes, and
+/// it runs after this, under the same process lock. That ordering matters --
+/// the scheduler reloads CR3 from Thread::aspace() on the way in, so an aspace
+/// set on a thread that is already running would leave the record and the
+/// hardware disagreeing.
+///
+/// The kernel thread is handed a raw pointer to this object, which therefore
+/// has to outlive it: activate() gives the kernel thread its own reference
+/// (bind_user_thread()) before it can run, and until then the caller of
+/// start() holds one.
+auto ThreadDispatcher::create_kernel_thread() -> Status {
+    verify_canary();
+
+    Guard guard{get_lock()};
+    if (m_state != State::Initial || m_kernel_thread != nullptr) {
+        return Status::BadState;
+    }
+
+    auto *const core_thread = task::Thread::spawn(
+        m_name.data(), [](void *arg) -> i32 { return Self::trampoline(static_cast<Self *>(arg)); },
+        this, task::DEFAULT_PRIORITY);
     if (!core_thread) {
         return Status::OutOfMem;
     }
-    core_thread->set_aspace(self->m_process->aspace());
+    core_thread->set_aspace(m_process->aspace());
+    m_kernel_thread = core_thread;
 
-    self->m_kernel_thread = core_thread;
-
-    // Without this the object died here. `self` is the only reference, `out`
-    // was never written, and the caller therefore got back Status::Ok and
-    // nothing else -- while task::Thread went on holding the raw pointer to
-    // the freed dispatcher that its trampoline runs on. Nothing caught it
-    // because no caller existed.
-    *out = KernelHandle<Self>(ustl::move(self));
+    log::debug("object: thread (koid {}) of process '{}' has its kernel thread", koid(),
+               m_process->name());
     return Status::Ok;
 }
 
@@ -186,6 +191,7 @@ auto ThreadDispatcher::activate(bool suspend) -> Status {
     // written; the note is here because the name says the opposite of what it
     // does and the read-through is otherwise a double-free.
     m_kernel_thread->bind_user_thread(ustl::Arc<Self>::adopt(this));
+    m_state = State::Running;
 
     if (suspend) {
         m_kernel_thread->suspend();
@@ -264,13 +270,12 @@ auto ThreadDispatcher::kill() -> void {
 
     Guard guard{get_lock()};
     switch (m_state) {
+        case State::Initial:
+            // Never started: no kernel thread, and not on the process's list
+            // for a kill to reach it through. Zircon leaves INITIAL and
+            // INITIALIZED threads alone for the same reason.
+            break;
         case State::Running:
-            // Active is set when the thread starts (attach_thread()); one
-            // that never started has nothing running to kill. Zircon leaves
-            // INITIAL and INITIALIZED threads alone for the same reason.
-            if (!(m_flags & Flags::Active)) {
-                break;
-            }
             DEBUG_ASSERT(m_kernel_thread, "a started thread with no kernel thread");
             static_cast<void>(m_kernel_thread->kill());
             m_state = State::Dying;

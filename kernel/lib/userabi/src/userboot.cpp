@@ -659,11 +659,12 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // trapped.
     process.dispatcher()->set_vdso_code_range(vdso.base, vdso.span);
 
-    // The thread comes from the object layer too: ThreadDispatcher::spawn()
-    // does the aspace wiring (it knows the process), and its trampoline builds
-    // the frame that enters ring 3.
+    // The thread comes from the object layer too: ThreadDispatcher::create()
+    // makes the dispatcher, start() below makes its kernel thread with the
+    // aspace wiring (it knows the process), and the trampoline builds the
+    // frame that enters ring 3.
     object::KernelHandle<object::ThreadDispatcher> thread;
-    status = object::ThreadDispatcher::spawn(process.dispatcher(), program.text, &thread);
+    status = object::ThreadDispatcher::create(process.dispatcher(), program.text, &thread);
     if (Status::Ok != status) {
         log::error("userabi: could not create the entry thread: {}", to_string(status));
         return status;

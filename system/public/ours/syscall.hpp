@@ -94,6 +94,11 @@ enum class ProcessCreateOptions : u32 {
     None = 0,
 };
 
+/// thread_create's options, on the same terms.
+enum class ThreadCreateOptions : u32 {
+    None = 0,
+};
+
 enum class ChannelReadOptions : u32 {
     None = 0,
 };

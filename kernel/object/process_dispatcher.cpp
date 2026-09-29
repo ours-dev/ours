@@ -146,6 +146,18 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
         return Status::BadState;
     }
 
+    // The kernel thread is made here, under the lock and after the state
+    // check, and not when the thread was created: a start that finds the
+    // process Dead has made nothing, so there is nothing to dispose of, and a
+    // failure to make it (no memory for a stack) leaves the state and the
+    // list untouched. The cost is that everything a start does runs inside
+    // this lock, including allocating a kernel stack; how long that takes
+    // and whether anything waits for it is to be measured
+    // (docs/repairs/260928/kernel-object.md).
+    if (auto const status = thread.create_kernel_thread(); Status::Ok != status) {
+        return status;
+    }
+
     thread.mark_active();
     if (auto const status = thread.activate(false); Status::Ok != status) {
         return status;
