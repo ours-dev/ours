@@ -14,6 +14,13 @@ namespace ou {
 [[noreturn]]
 auto process_exit(i64 retcode) -> void;
 
+/// Makes a process under |job| (which must grant ManageProcess) that is not
+/// running yet: the handle to it goes in |process|, the handle to its root VMA
+/// in |root_vma|. Closing the last handle to it before it is started destroys
+/// it. Zircon zx_process_create().
+auto process_create(ours::HandleValue job, Str name, ours::HandleValue *process,
+                    ours::HandleValue *root_vma) -> ours::Status;
+
 /// TEMPORARY -- goes when a user-space loader exists.
 ///
 /// Starts |name| from the kernel package as a new process under |job| (which

@@ -158,6 +158,38 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
     return Status::Ok;
 }
 
+/// One critical section holds both the state check and the change, and the
+/// same lock is what attach_thread() checks Initial under, so a start racing
+/// this has exactly two outcomes and no third: it took the lock first and the
+/// process is Running, and this finds so and does nothing; or this took it
+/// first, and the start finds Dead and answers BadState. Without the one lock
+/// a start could pass its check, this could then make the process Dead, and
+/// the start would attach a thread to an address space being torn down.
+///
+/// A reference is not a handle. The starter holds an Arc to the process while
+/// it works, so the object's memory outlives its last handle; what this
+/// decides is the process's *state*, which the reference count says nothing
+/// about. Hence the check under the lock rather than an assumption that a
+/// caller who holds the process is holding a handle to it.
+///
+/// The teardown runs after the lock is released, exactly once: the lock is
+/// what makes this edge, and the ones in kill() and detach_thread(), each
+/// taken by at most one caller (see finish_dead_transition()).
+///
+/// Zircon counterpart: ProcessDispatcher::on_zero_handles().
+auto ProcessDispatcher::on_zero_handles() -> void {
+    verify_canary();
+
+    {
+        Guard guard{get_lock()};
+        if (m_state != State::Initial) {
+            return;
+        }
+        m_state = State::Dead;
+    }
+    finish_dead_transition();
+}
+
 auto ProcessDispatcher::kill(i64 const retcode) -> void {
     verify_canary();
 

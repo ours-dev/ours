@@ -1806,6 +1806,131 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
         static_cast<void>(ou::debug_line("shell: vma_allocate checks FAILED"));
     }
 }
+
+/// process_create, and what closing the last handle to a process that was
+/// never started does (K23a).
+///
+/// Runs where userboot started this program: the root job is what a process
+/// is created under. What it pins down:
+///   - the job: a value that names nothing is BadHandle, a channel BadType,
+///     a copy without ManageProcess AccessDenied; an option bit is InvArgs;
+///   - the handles: two distinct values come out, one to the process and one
+///     to its root VMA, and closing both is Ok;
+///   - the safety net: with a second handle to the process, closing the first
+///     leaves it Initial -- it does not raise TERMINATED -- and only closing
+///     the last takes it Dead. The kernel log shows the address space and the
+///     process destroyed then (`mm: aspace ... destroyed`, `object: process
+///     ... destroyed`), which this program cannot see;
+///   - a value the kernel cannot write back leaves nothing behind: failing
+///     more times than the quota allows and then succeeding once shows no
+///     handle was left in the table by any of them, and the log shows every
+///     process made by a failed call destroyed.
+auto check_process_create(ours::HandleValue const job) -> void {
+    using ours::Rights;
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr ou::Str NAME{"created"};
+
+    if (job == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: process_create checks skipped (no root job)"));
+        return;
+    }
+
+    auto ok = true;
+    ours::HandleValue process = ours::HANDLE_INVALID;
+    ours::HandleValue region = ours::HANDLE_INVALID;
+
+    ok &= expect("shell: process_create(HANDLE_INVALID) = ",
+                 ou::process_create(ours::HANDLE_INVALID, NAME, &process, &region),
+                 Status::BadHandle);
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        ok &= expect("shell: process_create(job = a channel) = ",
+                     ou::process_create(a, NAME, &process, &region), Status::BadType);
+        ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+        ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    } else {
+        ok = false;
+    }
+    ours::HandleValue weak = ours::HANDLE_INVALID;
+    ok &= expect("shell: handle_duplicate(job, without ManageProcess) = ",
+                 ou::handle_duplicate(job, Rights::Basic, &weak), Status::Ok);
+    ok &= expect("shell: process_create(job without ManageProcess) = ",
+                 ou::process_create(weak, NAME, &process, &region), Status::AccessDenied);
+    ok &= expect("shell: close(the weak job) = ", ou::handle_close(weak), Status::Ok);
+    ok &= expect("shell: process_create(an option bit) = ",
+                 ours_process_create(job, NAME.data(), NAME.size(),
+                                     static_cast<ours::ProcessCreateOptions>(1), &process, &region),
+                 Status::InvArgs);
+
+    // Two handles, and the safety net.
+    if (expect("shell: process_create = ", ou::process_create(job, NAME, &process, &region),
+               Status::Ok)) {
+        ok &=
+            process != ours::HANDLE_INVALID && region != ours::HANDLE_INVALID && process != region;
+        ours::HandleValue second = ours::HANDLE_INVALID;
+        ok &= expect("shell: handle_duplicate(process) = ",
+                     ou::handle_duplicate(process, Rights::SameRights, &second), Status::Ok);
+        ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
+        ok &= expect("shell: close(the first process handle) = ", ou::handle_close(process),
+                     Status::Ok);
+        // One handle left: still Initial, so not terminated.
+        auto observed = Signals::None;
+        ok &=
+            expect("shell: wait_one(process, TERMINATED, poll) with a handle left = ",
+                   ou::object_wait_one(second, Signals::Terminated, 0, &observed), Status::TimeOut);
+        ok &= expect("shell: close(the last process handle) = ", ou::handle_close(second),
+                     Status::Ok);
+    } else {
+        ok = false;
+    }
+
+    // Nothing left behind by a call that fails after the process is made:
+    // the table is filled to the quota except for exactly two slots, which is
+    // what one call needs, and then calls that fail are made more than once.
+    // A call that left its two handles behind would leave the next one none,
+    // and it would answer NoResource instead of InvArgs. (Failing quota-plus-
+    // one times instead would show the same thing but makes a process for
+    // each, which is slow enough to time the debug image out.)
+    constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
+    static ours::HandleValue filler[ROOM];
+    u32 held = 0;
+    while (held + 2 <= ROOM && ou::channel_create(&filler[held], &filler[held + 1]) == Status::Ok) {
+        held += 2;
+    }
+    // A pair needs two slots, so at most one is left; fill it too.
+    if (held < ROOM && ou::handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
+        held += 1;
+    }
+    ok &= held >= 2;
+    if (held >= 2) {
+        ok &= ou::handle_close(filler[held - 1]) == Status::Ok;
+        ok &= ou::handle_close(filler[held - 2]) == Status::Ok;
+        held -= 2;
+        for (u32 i = 0; i < 3; ++i) {
+            ok &= expect(
+                "shell: process_create(process_out = kernel half), table nearly full = ",
+                ours_process_create(job, NAME.data(), NAME.size(), ours::ProcessCreateOptions::None,
+                                    reinterpret_cast<ours::HandleValue *>(KERNEL), &region),
+                Status::InvArgs);
+        }
+        ok &= expect("shell: process_create after that = ",
+                     ou::process_create(job, NAME, &process, &region), Status::Ok);
+        ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
+        ok &= expect("shell: close(process) = ", ou::handle_close(process), Status::Ok);
+    }
+    for (u32 i = 0; i < held; ++i) {
+        ok &= ou::handle_close(filler[i]) == Status::Ok;
+    }
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: process_create checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: process_create checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -1838,6 +1963,8 @@ auto main(int, char **) -> int {
     if (job != ours::HANDLE_INVALID) {
         run_probes(job);
     }
+    // Before the job is closed below: it is what a process is created under.
+    check_process_create(job);
     // One startup handle closed twice: init's channel when there is one --
     // closing it is init's cue -- and otherwise the job, done with now.
     check_handle_close(peer != ours::HANDLE_INVALID ? peer : job);

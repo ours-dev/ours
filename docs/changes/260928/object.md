@@ -151,3 +151,79 @@ Builder(&m_aspace, (m_vmaf & ~PermMask) | allowed, size)...
 - ours 的 Vma 对应 Zircon 的哪个对象？为什么数值照搬而名字不照搬？
 - 批量改名时，怎样区分“ours 的 vmar”和“Zircon 的 vmar”？
 - `mm::VmArea` 和 `object::VmaDispatcher` 为什么是两个对象而不是一个？
+
+## process_create，以及从未启动的进程关掉最后一个句柄就销毁（K23a-1 第 1 步，2026-09-28）
+
+**文件**
+- `kernel/object/include/ours/object/process_dispatcher.hpp`、`process_dispatcher.cpp`：`ProcessDispatcher::on_zero_handles()`
+- `kernel/lib/syscall/src/process.cpp`：`syscall::process_create()`
+- `system/public/ours/syscall.hpp`：`ProcessCreateOptions`；`system/public/ours/syscalls.gni`：`process_create` 条目
+- `system/lib/ou/include/ou/process.hpp`、`src/process.cpp`：`ou::process_create()`
+- `examples/shell/shell.cpp`：`check_process_create()`
+- `docs/design/260923/userspace-interface.md` §2.2、`docs/design/260924/userspace-filesystem.md`：K23 行
+
+**症状**
+用户态没法建进程；就算有了 `process_create`，launcher 在“建进程”和“启动进程”之间任何一步失败，
+都会留下一个映射了 vDSO、状态永远是 Initial 的进程：没有线程，没人会把它转成 Dead，它的地址空间永远不会拆。
+
+**原因**
+进程的状态机里 Initial 只有一条出路：`attach_thread`（首线程启动）转 Running。
+“句柄全关了”这件事没有任何反应：`Dispatcher::on_zero_handles()` 对进程是空的。
+
+**改法**
+
+```cpp
+auto ProcessDispatcher::on_zero_handles() -> void {
+    { Guard guard{get_lock()};
+      if (m_state != State::Initial) { return; }   // Running 靠自己的线程活着，不靠句柄
+      m_state = State::Dead; }
+    finish_dead_transition();                        // 锁外：拆地址空间、清句柄表、置 TERMINATED
+}
+```
+
+- 状态检查和迁移在同一段进程锁内，而 `attach_thread()` 检查 Initial 用的是同一把锁。
+  “启动”和“最后一个句柄关掉”并发时只有两种结果：启动先拿到锁，进程 Running，`on_zero_handles()` 看到 Running 什么也不做；
+  或者它先拿到锁，进程 Dead，启动看到 Dead 回 BadState。没有第三种。
+- **引用不是句柄**：启动的一方手里有一个进程的引用，所以对象的内存不会因为句柄关光而释放；
+  但句柄数归零决定的是进程的**状态**，引用计数对此毫无说明，所以不能假定“持有进程的人一定还持有它的句柄”，必须在锁内重查状态。
+- 拆除放在锁外、只走一次：`kill()`、`detach_thread()` 和这里，三处都是在锁内把状态设成 Dead 的那一条边，每条边只有一个调用者会赢，
+  `finish_dead_transition()` 因此只跑一次。
+- `process_create` 的发布顺序照 `channel_create`（设计 4.1）：两个句柄（进程、根 VMA）的值先都写给调用者，再都入表；
+  写失败时两个句柄在栈上销毁，进程失去最后一个持有者，`on_zero_handles()` 把它拆掉，不需要手工清理。
+- vDSO 不在这里映射（用户决定，选 A）：launcher 拿到 vDSO 的 VMO 句柄后用 `vma_map` 映射，内核在映射时登记范围（K23a-2）。
+
+**参照**
+Zircon `ProcessDispatcher::on_zero_handles()`：Initial 状态下最后一个句柄关掉，转 DEAD，`FinishDeadTransition()`；
+Zircon `sys_process_create()`：ManageProcess 检查、名字截断到 `ZX_MAX_NAME_LEN`、一次返回进程句柄和根 VMAR 句柄。
+
+**验证**
+- 两个镜像均构建通过；`boot_check.py` 两个镜像都 PASS（dbg 15 passed；rel 13 passed、6 skipped）。
+- dbg_1 的 shell（有根 job）打出 `process_create checks passed`：
+  - job 传无效值回 BadHandle，传 channel 回 BadType，句柄不带 ManageProcess 回 AccessDenied，带选项位回 InvArgs；
+  - 成功时得到两个不同的句柄；复制出第二个进程句柄后关掉第一个，`wait_one(TERMINATED, poll)` 回 TimeOut
+    （还剩一个句柄，进程没死）；关掉最后一个，才销毁；
+  - 把表填到只剩正好两个空位，再用内核半区的输出地址连续调用 3 次，每次都是 InvArgs（若某次留下了句柄，
+    下一次会回 NoResource），随后一次正常调用成功。
+- 内核日志里 5 个名为 `created` 的进程创建、5 个 `aspace 'created' destroyed` 和 5 条 `process 'created' … destroyed`：一一对应，没有泄漏。
+- 最初的泄漏测试是“失败 quota+1 次”，每次都真的建一个地址空间，dbg 镜像慢到 60 秒超时；
+  改成“先填满表、只留两个空位”，同样能测出泄漏，只需要 4 次建进程。
+
+**故意没做**
+- 没测“启动与最后一个句柄关闭并发”的那两种结果：要等 `process_start` 出来才能构造（下一步）。
+- job 没有状态，所以“job 已 Dying/Dead 回 BadState”还没法做；进程也还没登记到 job 的子进程表里。
+
+**怎么发现的**
+无。
+
+**用户的预测**
+决策卡：进程从 Initial 启动，与“最后一个句柄关闭”并发，靠什么保证只有一个成功。
+- 用户先想的是 CAS：`CAS(Initial → Running)` 成功则继续启动，失败则检查当前状态；对方 `CAS(Initial → Dying)`。
+  这正确回答了“检查并修改必须是一个原子步骤”，但漏了 CAS 成功之后、线程还没挂上之前的那段窗口：
+  别的调用看到 Running 却是空的线程表，去杀进程，进程进入 Dying 却永远等不到最后一个线程退出。
+- 讨论后用户改选“锁内状态机”，理由是启动和杀死都要同时改状态和线程表，CAS 管不住多个变量的一致性。
+  结论：不变量只涉及一个字，无锁可以；涉及多个字，必须一把锁把它们圈在一起。
+
+**你应该能回答的三个问题**
+- 引用计数和句柄数各管什么？为什么句柄数归零时要重查进程的状态？
+- `on_zero_handles()` 和 `attach_thread()` 并发时，为什么只有两种结果？把它们的检查放到锁外会多出哪一种？
+- 为什么 `finish_dead_transition()` 要在锁外做，又为什么它只会被执行一次？

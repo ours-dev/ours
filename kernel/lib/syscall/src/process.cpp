@@ -2,12 +2,14 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <algorithm>
 #include <string_view>
 
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/vma_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <userabi/userboot.hpp>
@@ -27,6 +29,78 @@ namespace ours::syscall {
 /// ProcessDispatcher::ExitCurrent(retcode).
 auto process_exit(i64 const retcode) -> void {
     object::ProcessDispatcher::current()->exit(retcode);
+}
+
+/// A new Initial process under |job|, and the two handles to it.
+///
+/// Zircon's sys_process_create(): the job with ManageProcess, the name cut to
+/// what fits (Zircon truncates too, to ZX_MAX_NAME_LEN), the process and its
+/// root VMA made together -- one is no use without the other -- then both
+/// handles published as channel_create publishes its two (design 4.1): both
+/// values go out to the caller before either handle goes into the table, so a
+/// bad out-pointer leaves nothing behind. If it fails there, the handles die
+/// here, the process loses its last holder, and on_zero_handles() takes it
+/// from Initial to Dead: nothing is left to clean up by hand.
+///
+/// The vDSO is not mapped here. Whoever starts the process maps it through
+/// vma_map, as Zircon's launcher does; the kernel only records the range once
+/// that mapping is made.
+auto process_create(HandleValue const job, user_copy::UserInPtr<char const> const name,
+                    usize const name_size, ProcessCreateOptions const options,
+                    user_copy::UserOutPtr<HandleValue> const process_out,
+                    user_copy::UserOutPtr<HandleValue> const root_vma_out) -> Status {
+    ustl::Arc<object::JobDispatcher> parent;
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+    if (auto const status = table.get_dispatcher(job, Rights::ManageProcess, &parent);
+        status != Status::Ok) {
+        return status;
+    }
+
+    if (options != ProcessCreateOptions::None) {
+        return Status::InvArgs;
+    }
+
+    // One byte short of the buffer, for the terminator the object's name
+    // needs. A name longer than that is cut, not refused.
+    char text[object::ProcessDispatcher::MAX_NAME_SIZE] = {};
+    auto const length = std::min<usize>(name_size, sizeof(text) - 1);
+    if (auto const status = name.copy_array_from_user(text, length); status != Status::Ok) {
+        return status;
+    }
+
+    object::KernelHandle<object::ProcessDispatcher> process;
+    Rights process_rights = Rights::None;
+    object::KernelHandle<object::VmaDispatcher> root_vma;
+    Rights root_vma_rights = Rights::None;
+    if (auto const status = object::ProcessDispatcher::create(parent, text, process, process_rights,
+                                                              root_vma, root_vma_rights);
+        status != Status::Ok) {
+        return status;
+    }
+
+    auto process_handle = object::Handle::make(
+        object::KernelHandle<object::Dispatcher>(ustl::move(process)), process_rights);
+    if (!process_handle) {
+        return Status::NoResource;
+    }
+    auto root_vma_handle = object::Handle::make(
+        object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), root_vma_rights);
+    if (!root_vma_handle) {
+        return Status::NoResource;
+    }
+
+    if (auto const status = process_out.copy_to_user(table.value_of(*process_handle));
+        status != Status::Ok) {
+        return status;
+    }
+    if (auto const status = root_vma_out.copy_to_user(table.value_of(*root_vma_handle));
+        status != Status::Ok) {
+        return status;
+    }
+
+    static_cast<void>(table.add(ustl::move(process_handle)));
+    static_cast<void>(table.add(ustl::move(root_vma_handle)));
+    return Status::Ok;
 }
 
 /// TEMPORARY, and the one handler that breaks the rule every other one keeps:

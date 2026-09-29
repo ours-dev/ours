@@ -88,6 +88,12 @@ enum class ChannelWriteOptions : u32 {
     None = 0,
 };
 
+/// process_create's options. None is the only value it accepts today; anything
+/// else is InvArgs. Zircon's are also empty (the argument is reserved).
+enum class ProcessCreateOptions : u32 {
+    None = 0,
+};
+
 enum class ChannelReadOptions : u32 {
     None = 0,
 };

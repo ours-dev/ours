@@ -93,6 +93,16 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// Zircon counterpart: ProcessDispatcher::Kill() with KillAllThreadsLocked().
     auto kill(i64 retcode) -> void;
 
+    /// The last handle to this process is gone. A process that was never
+    /// started can never be: Initial goes straight to Dead and is torn down,
+    /// so a launcher that fails between process_create and process_start does
+    /// not leave an address space -- with the vDSO already mapped in it --
+    /// that nothing will ever destroy. Any other state is left alone: a
+    /// running process is kept alive by its own threads, not by handles.
+    ///
+    /// Zircon: ProcessDispatcher::on_zero_handles().
+    auto on_zero_handles() -> void override;
+
     /// The calling thread's process ends with |retcode|, and the calling
     /// thread with it; see the definition. Called on a thread of this process.
     ///

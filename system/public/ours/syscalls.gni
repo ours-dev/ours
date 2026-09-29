@@ -286,6 +286,51 @@ ours_syscalls = [
     ret = "void"
   },
   {
+    name = "process_create"
+    brief = "Makes a process under |job| that is not running yet."
+    doc = [
+      "The process is Initial: it has no thread, and gets one with",
+      "thread_create and process_start. |job| needs ManageProcess. |name| is",
+      "|name_size| bytes, cut to 31. Two handles are written, one to the",
+      "process and one to its root VMA, the only way to map anything into it,",
+      "and both are installed only once both values have been written. The",
+      "options must be None (InvArgs). Closing the last handle to a process",
+      "that was never started destroys it.",
+    ]
+    args = [
+      {
+        name = "job"
+        type = "HandleValue"
+      },
+      {
+        name = "name"
+        type = "char"
+        dir = "in"
+        count = "name_size"
+      },
+      {
+        name = "name_size"
+        type = "usize"
+      },
+      {
+        name = "options"
+        type = "ProcessCreateOptions"
+      },
+      {
+        name = "process_out"
+        type = "HandleValue"
+        dir = "out"
+      },
+      {
+        name = "root_vma_out"
+        type = "HandleValue"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     # TEMPORARY: goes when a user-space loader can build a process out of
     # VMOs and VMAs (design P1-C), and with it this entry, which is all that
     # removing the call takes on this side (docs/repairs/260923/syscall.md).
