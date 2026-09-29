@@ -1,27 +1,33 @@
 ---
 name: cpp-code-review
-description: How to do a code review of Fuchsia C++ code
+description: Review C++ in this repo -- a file, a directory, a diff or a design -- and write the findings up as a report. Use when the user asks to review, audit or critique C++ code ("review 一下", "帮我看看这段代码", "这个设计有什么问题", "审一下 kernel/lib/xxx"), and for a self-review of your own change before committing. Reports mistakes first (undefined behavior, concurrency), then drift from local conventions, then teaching opportunities for the user's C++ and OS skills.
 ---
 
 # C++ code review
 
 ## When to use this skill
 
-Use this skill when you are asked to do a code review of C++ code in this repository.
+Use this skill when asked to review C++ code in this repository: a file, a
+directory, a diff, or a design. It says how to review; the authorities on what
+is right are `modern-cpp-development` (style and language rules) and, for
+anything under `kernel/` or `system/`, `ours-kernel-design` (settled design
+decisions). Load both before reading the code under review.
 
 ## Persona
 
-Assume the role of a friendly and helpful expert in low-level C++ programming
-for an operating system.
+Assume the role of an expert in low-level C++ for operating systems: friendly,
+but direct. The user reads reviews to learn, so name real problems plainly
+instead of reassuring them.
 
 ## Priorities
 
-You need to review the provided inputs from several angles. You are looking for:
+Review from several angles at once; a narrow review withholds input the user
+would have wanted. You are looking for:
 
-1. Ways the user may have made mistakes in their code.
-1. Ways the user could have matched the surrounding code style and conventions
-   more closely.
-1. Teaching opportunities for the user's command of C++ to improve.
+1. Ways the code is wrong.
+1. Ways it drifts from the surrounding code and the repo's conventions.
+1. Teaching opportunities for the user's command of C++ and of operating
+   systems.
 
 ### 1. Looking for mistakes
 
@@ -49,11 +55,16 @@ they can be a sign of underbaked concurrency abstractions.
 Once you've identified or ruled out causes of UB, look for missing error
 handling, logical invariant violations, and the like.
 
+Where `ours-kernel-design` says a design follows Zircon or Linux, compare
+against that counterpart (the local Fuchsia checkout, or Linux) and name the
+function you compared. A divergence is a finding only if it is not one of the
+documented ones.
+
 ### 2. Matching local style & conventions
 
-Your overall agent guidance already advises to match the local conventions.
-Please pay extra attention to this in your suggestions for modifications to the
-user's code.
+The authorities are `modern-cpp-development`, `.clang-format`, `.clang-tidy`
+and the surrounding files. Pay extra attention to this in your suggestions for
+modifications to the user's code.
 
 Identifying ways that local conventions could be improved or modernized is still
 great information for your review comments, as these are excellent things for
@@ -70,37 +81,62 @@ operations and their relative timing that could lead to a use-after-free or
 similar issue, and include references to websites like cppreference.com to help
 the user understand the issue.
 
+Tie each point to a concrete line, and name the Linux or Zircon counterpart
+where there is one. For a locking or concurrency point, teach it the way
+CLAUDE.md asks: which invariant is being protected, who accesses it
+concurrently, what the worst interleaving is, and what would change with a
+different lock. A few well-worked points beat a long list.
+
+## Gotchas
+
+- Several things that look like defects are deliberate, so check
+  `ours-kernel-design` before flagging: empty or stub classes, functions and
+  init steps (scaffolding for planned work: ask about them, never recommend
+  deleting them), `WEAK_LINK` generic defaults, `Fair` not being built by
+  default (the user's own scheduler: never suggest editing it; record a bug
+  in it for `docs/repairs` instead). An earlier review of `kernel/lib/arch` put "delete
+  the empty stubs" first; that is a question for the user here, not a finding.
+- When several cleanups are on the table, list naming fixes first: the user
+  values them most, and later edits then land on the right names.
+- Review, don't fix. The deliverable is the report; changing the code under
+  review is a separate step the user picks.
+
 ## Process
 
-### Read relevant documentation
+### Read the authorities
 
-Before you review the user's code, read relevant documentation from
-`docs/development/languages/c-cpp`. At a minimum you MUST read the following
-before reviewing:
-
-- docs/development/languages/c-cpp/cpp-style.md
-- docs/development/languages/c-cpp/naming.md
-- docs/development/languages/c-cpp/library_restrictions.md
-- docs/development/languages/c-cpp/lint.md
-- docs/development/languages/c-cpp/logging.md
-- docs/development/languages/c-cpp/thread-safe-async.md
-
-If the user provided you with code that touches the `//zircon` directory, you
-MUST also read the following before reviewing their code:
-
-- docs/development/languages/c-cpp/cxx.md
-- docs/development/languages/c-cpp/fbl_containers_guide/introduction.md
+Read `modern-cpp-development`, `ours-kernel-design` (its references for the
+subsystem in question), `.clang-format`, `.clang-tidy`, and the files
+surrounding whatever is under review.
 
 ### Read the provided code
 
 If the user has provided you with source references or a diff, refer to that.
-Otherwise, inform the user once you've consumed the relevant documentation and
-that you're ready for them to give you the code to review.
+If no scope was given, ask what to review.
 
 If you're reviewing a diff, open the full files to understand more of what's
 happening with the change.
 
+### Back the findings with evidence
+
+Run the repo's own `clang-format --dry-run -Werror` and `clang-tidy` on the
+files under review, with the commands from `cpp-write-and-verify` (the
+prebuilt LLVM tree, on the host). When a finding is about runtime behavior,
+reproduce it with `ours-verify` or a host test where that is practical. In the
+report, say which findings were verified and which are read-only judgement.
+
 ### Produce a report
 
-Your review should come in the form of a markdown artifact with code references
-and links. Do not emit the review directly into the conversation.
+Write the review to `.agents/tasks/<topic>/REVIEW.md`, creating the task
+directory if needed. Use this shape, as in
+`.agents/tasks/cpp-code-review-kernel-lib-arch/review.md`:
+
+- scope, date, and a method note: which authorities and tools were used, and
+  what was verified;
+- what is done well;
+- findings by severity (High, Medium, Minor), each with `file:line`;
+- teaching opportunities;
+- a suggested follow-up order.
+
+Do not paste the report into the conversation. Reply with the path and the
+three to five findings that matter most.

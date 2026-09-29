@@ -28,6 +28,8 @@ get "fixed" back into a default.
    no workaround "to be replaced later".
 4. **Suspect the API, not just the call site.** When something is awkward, ask
    whether the interface, or the abstraction itself, should exist in this form.
+5. **For a review, also load `cpp-code-review`.** It sets the method and the
+   report; this skill supplies the decisions the code is reviewed against.
 
 ## Where to look
 
