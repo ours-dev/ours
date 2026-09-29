@@ -20,8 +20,12 @@ auto process_exit(i64 retcode) -> void;
 /// must grant ManageProcess), with |bootstrap| as its one handle. |bootstrap|
 /// is gone from this process when this returns, whether or not it succeeded.
 /// NotFound when the package has no such program.
-auto process_spawn_boot(ours::HandleValue job, Str name, ours::HandleValue bootstrap)
-    -> ours::Status;
+///
+/// The child's root VMA comes back in |root_vma|. The caller writes the
+/// child's processargs on its end of the bootstrap channel afterwards, with
+/// |root_vma| in it as VmaRoot: the child waits for that message.
+auto process_spawn_boot(ours::HandleValue job, Str name, ours::HandleValue bootstrap,
+                        ours::HandleValue *root_vma) -> ours::Status;
 } // namespace ou
 
 #endif // #ifndef OU_PROCESS_HPP

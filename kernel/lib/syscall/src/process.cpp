@@ -41,7 +41,8 @@ auto process_exit(i64 const retcode) -> void {
 /// first program, not a second path; and it goes, with the GN edge that
 /// allows it, when the loader lands (docs/repairs/260923/syscall.md).
 auto process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char const> const name,
-                        usize const name_size, HandleValue const bootstrap) -> Status {
+                        usize const name_size, HandleValue const bootstrap,
+                        user_copy::UserOutPtr<HandleValue> const root_vma) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
 
     // The job is resolved before the bootstrap handle leaves the table, so
@@ -88,6 +89,21 @@ auto process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char const> 
         return Status::InvArgs;
     }
 
-    return userabi::launch(ustl::move(parent), view, ustl::move(handed));
+    // The child's root VMA comes back to the caller, who writes it into the
+    // child's processargs next (VmaRoot). Value out, then into the table, as
+    // for every handle a call hands back (design 4.1). The child is already
+    // running by then: if the value cannot be written, the caller gets the
+    // error, never writes a message, and the child -- which waits for one --
+    // ends when the caller closes its end of the channel.
+    ustl::Box<object::Handle> region;
+    if (auto const status = userabi::launch(ustl::move(parent), view, ustl::move(handed), &region);
+        status != Status::Ok) {
+        return status;
+    }
+    if (auto const status = root_vma.copy_to_user(table.value_of(*region)); status != Status::Ok) {
+        return status;
+    }
+    static_cast<void>(table.add(ustl::move(region)));
+    return Status::Ok;
 }
 } // namespace ours::syscall

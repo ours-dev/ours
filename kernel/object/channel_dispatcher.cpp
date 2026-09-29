@@ -84,21 +84,6 @@ auto ChannelDispatcher::write_self_locked(ustl::Box<MessagePacket> &message) -> 
     return Status::Ok;
 }
 
-auto ChannelDispatcher::deliver_first(ustl::Box<MessagePacket> message) -> Status {
-    verify_canary();
-
-    // Under the shared lock, as write_self_locked() queues: that is the lock
-    // m_messages is guarded by, whichever end is doing the queueing.
-    Guard guard{peer_lock()};
-    if (m_message_count >= CHANNEL_MAX_PENDING_MESSAGES) {
-        return Status::NoResource;
-    }
-    m_messages.push_front(*message.into_raw());
-    m_message_count += 1;
-    update_state(Signals::None, Signals::Readable);
-    return Status::Ok;
-}
-
 auto ChannelDispatcher::read(u32 const max_bytes, u32 const max_handles, u32 *const actual_bytes,
                              u32 *const actual_handles, ustl::Box<MessagePacket> *const out)
     -> Status {

@@ -204,8 +204,9 @@ struct ProbeRun {
 ///
 /// The probe is started the way every program on the runtime is: a
 /// processargs message on its bootstrap channel (argv = {"fault_probe",
-/// probe}), written before the process starts, with one startup handle --
-/// the far end of a second channel, as User0, for the answer. The answer
+/// probe}), written once the process exists -- its root VMA, which the spawn
+/// hands back, is one of the two startup handles -- with the far end of a
+/// second channel, as User0, for the answer. The answer
 /// cannot come back on the bootstrap channel, because the runtime closes that
 /// as soon as it has read the message: waiting on it, this would see
 /// PeerClosed before the probe had even reached main and count every probe
@@ -220,7 +221,8 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
     // encode leaves nothing to clean up.
     u8 message[128];
     u32 length = 0;
-    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0)};
+    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0),
+                         ours::handle_info(ours::HandleType::VmaRoot, 0)};
     std::string_view const args[] = {"fault_probe", {probe.data(), probe.size()}};
     if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
         status != Status::Ok) {
@@ -243,27 +245,30 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
         return run;
     }
 
-    // |answer_there| leaves this process with the message, whatever the
-    // write answers.
-    auto status = ou::channel_write(bootstrap, message, length, &answer_there, 1);
-    // The message is queued; this end has nothing more to say, and holding it
-    // would keep a handle charged to this process for nothing.
-    static_cast<void>(ou::handle_close(bootstrap));
+    // The process first: |bootstrap_there| leaves this process whatever
+    // happens, and its root VMA comes back for the message.
+    ours::HandleValue root_vma = ours::HANDLE_INVALID;
+    auto status = ou::process_spawn_boot(job, "fault_probe", bootstrap_there, &root_vma);
     if (status != Status::Ok) {
-        report("shell: writing the probe's processargs = ", status);
-        static_cast<void>(ou::handle_close(answer));
-        static_cast<void>(ou::handle_close(bootstrap_there));
-        return run;
-    }
-
-    // |bootstrap_there| leaves this process whatever happens.
-    if (status = ou::process_spawn_boot(job, "fault_probe", bootstrap_there);
-        status != Status::Ok) {
         report("shell: spawning fault_probe = ", status);
+        static_cast<void>(ou::handle_close(bootstrap));
         static_cast<void>(ou::handle_close(answer));
+        static_cast<void>(ou::handle_close(answer_there));
         return run;
     }
     run.started = true;
+
+    // Then the message. Both handles leave this process with it, whatever the
+    // write answers; the probe waits for it, and if it never comes, sees this
+    // end close and ends itself.
+    ours::HandleValue handed[] = {answer_there, root_vma};
+    status = ou::channel_write(bootstrap, message, length, handed, 2);
+    // This end has nothing more to say, and holding it would keep a handle
+    // charged to this process for nothing.
+    static_cast<void>(ou::handle_close(bootstrap));
+    if (status != Status::Ok) {
+        report("shell: writing the probe's processargs = ", status);
+    }
 
     auto observed = Signals::None;
     static_cast<void>(ou::object_wait_one(answer, Signals::Readable | Signals::PeerClosed,
@@ -1820,8 +1825,7 @@ auto main(int, char **) -> int {
     // none, and that is right.
     auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_VMEX_BASE));
-    // The root VMA, from the kernel's own processargs message (TEMPORARY,
-    // until K23's launcher puts it in the starter's).
+    // The root VMA, which whoever started this put in the processargs.
     auto const vma = runtime::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (vmex != ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: vmex resource ok"));

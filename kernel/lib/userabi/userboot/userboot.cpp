@@ -143,9 +143,13 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
     -> ours::Status {
     using ours::Status;
 
-    ours::HandleValue handles[3] = {job};
-    u32 infos[3] = {ours::handle_info(ours::HandleType::JobDefault, 0)};
-    u32 count = 1;
+    // The child's root VMA first, filled in once process_spawn_boot has made
+    // the child and handed it back; its handle_info is known already, so the
+    // message can be encoded before.
+    ours::HandleValue handles[4] = {ours::HANDLE_INVALID, job};
+    u32 infos[4] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
+                    ours::handle_info(ours::HandleType::JobDefault, 0)};
+    u32 count = 2;
     if (bootfs != ours::HANDLE_INVALID) {
         handles[count] = bootfs;
         infos[count++] = ours::handle_info(ours::HandleType::VmoBootfs, 0);
@@ -158,13 +162,13 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
             ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE));
     }
 
-    // The header, three handle_infos, a name of at most 63 bytes and its NUL
+    // The header, four handle_infos, a name of at most 63 bytes and its NUL
     // -- the kernel keeps program names in 64 -- and the environment, a
     // subset of what the kernel relayed and so within USER_OPTIONS_BYTES:
     // the same sum the kernel sizes this program's own message by
     // (make_bootstrap()), so encoding cannot fail for want of room.
     constexpr usize MESSAGE_BYTES =
-        sizeof(ours::ProcArgs) + 3 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
+        sizeof(ours::ProcArgs) + 4 * sizeof(u32) + 64 + ours::USER_OPTIONS_BYTES;
     u8 message[MESSAGE_BYTES];
     u32 length = 0;
     std::string_view const args[] = {name};
@@ -179,7 +183,7 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
     if (auto const status = ou::channel_create(&here, &there); status != Status::Ok) {
         return status;
     }
-    if (auto const status = ou::process_spawn_boot(job, to_str(name), there);
+    if (auto const status = ou::process_spawn_boot(job, to_str(name), there, &handles[0]);
         status != Status::Ok) {
         static_cast<void>(ou::handle_close(here));
         return status;

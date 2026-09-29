@@ -36,6 +36,7 @@
 #include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 
+#include <span>
 #include <string_view>
 
 #include <bootfs/format.hpp>
@@ -104,6 +105,38 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
         ou::debug_line({"init: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
 }
 
+/// Spawns |name| with |there| as its bootstrap end, then writes |message| on
+/// |here| with the child's root VMA (VmaRoot) after |handles| -- the order a
+/// launcher keeps: the process first, then the processargs, since the root
+/// VMA only exists once the process does. The message's handle_infos must
+/// list |handles| and then VmaRoot. Closes |here|; |there| and |handles|
+/// leave this process whatever the answer.
+auto spawn_then_write(ours::HandleValue const job, ou::Str const name, ours::HandleValue here,
+                      ours::HandleValue there, std::span<u8 const> const message,
+                      std::span<ours::HandleValue const> const handles) -> ours::Status {
+    using ours::Status;
+
+    ours::HandleValue all[4] = {};
+    ours::HandleValue root_vma = ours::HANDLE_INVALID;
+    auto const spawned = ou::process_spawn_boot(job, name, there, &root_vma);
+    if (spawned != Status::Ok) {
+        for (auto const handle: handles) {
+            static_cast<void>(ou::handle_close(handle));
+        }
+        static_cast<void>(ou::handle_close(here));
+        return spawned;
+    }
+    u32 count = 0;
+    for (auto const handle: handles) {
+        all[count++] = handle;
+    }
+    all[count++] = root_vma;
+    auto const written =
+        ou::channel_write(here, message.data(), static_cast<u32>(message.size()), all, count);
+    static_cast<void>(ou::handle_close(here));
+    return written;
+}
+
 /// Starts the autorun |command| under |job|, split by
 /// init::AutorunCommand::parse(): its first `+`-separated word is the BootFS
 /// name, and all of them, the name included, are its argv.
@@ -122,10 +155,13 @@ auto start_autorun(ours::HandleValue const job, std::string_view const command) 
     // The header and the words. The words and their NULs take no more than
     // the option they came from, and the kernel relays options within
     // USER_OPTIONS_BYTES (<ours/process_args.hpp>), so a command always fits.
-    constexpr usize MESSAGE_BYTES = sizeof(ours::ProcArgs) + ours::USER_OPTIONS_BYTES;
+    // One handle, the program's root VMA, known only once it is spawned.
+    constexpr usize MESSAGE_BYTES = sizeof(ours::ProcArgs) + sizeof(u32) + ours::USER_OPTIONS_BYTES;
     u8 message[MESSAGE_BYTES];
     u32 length = 0;
-    if (auto const status = ours::encode_process_args(message, {}, parsed.words(), {}, {}, &length);
+    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0)};
+    if (auto const status =
+            ours::encode_process_args(message, infos, parsed.words(), {}, {}, &length);
         status != Status::Ok) {
         return status;
     }
@@ -136,13 +172,8 @@ auto start_autorun(ours::HandleValue const job, std::string_view const command) 
         status != Status::Ok) {
         return status;
     }
-    auto const written = ou::channel_write(bootstrap, message, length);
-    static_cast<void>(ou::handle_close(bootstrap));
-    if (written != Status::Ok) {
-        static_cast<void>(ou::handle_close(bootstrap_there));
-        return written;
-    }
-    return ou::process_spawn_boot(job, to_str(parsed.name()), bootstrap_there);
+    return spawn_then_write(job, to_str(parsed.name()), bootstrap, bootstrap_there,
+                            {message, length}, {});
 }
 
 /// Starts the shell under |job| with |peer| -- the far end of the channel
@@ -154,15 +185,16 @@ auto start_autorun(ours::HandleValue const job, std::string_view const command) 
 /// either -- it needs none to answer a ping, and the dev image packages
 /// nothing for it to start.
 ///
-/// The message is written before the shell exists, as the kernel writes the
-/// first process's. |peer| and the shell's bootstrap end leave this process
-/// whatever the answer.
+/// The message is written after the shell exists (spawn_then_write()), since
+/// its root VMA goes in it. |peer| and the shell's bootstrap end leave this
+/// process whatever the answer.
 auto start_shell(ours::HandleValue const job, ours::HandleValue peer) -> ours::Status {
     using ours::Status;
 
     u8 message[128];
     u32 length = 0;
-    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0)};
+    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0),
+                         ours::handle_info(ours::HandleType::VmaRoot, 0)};
     std::string_view const args[] = {{SHELL.data(), SHELL.size()}};
     if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
         status != Status::Ok) {
@@ -177,13 +209,8 @@ auto start_shell(ours::HandleValue const job, ours::HandleValue peer) -> ours::S
         static_cast<void>(ou::handle_close(peer));
         return status;
     }
-    auto const written = ou::channel_write(bootstrap, message, length, &peer, 1);
-    static_cast<void>(ou::handle_close(bootstrap));
-    if (written != Status::Ok) {
-        static_cast<void>(ou::handle_close(bootstrap_there));
-        return written;
-    }
-    return ou::process_spawn_boot(job, SHELL, bootstrap_there);
+    ours::HandleValue const handed[] = {peer};
+    return spawn_then_write(job, SHELL, bootstrap, bootstrap_there, {message, length}, handed);
 }
 } // namespace
 

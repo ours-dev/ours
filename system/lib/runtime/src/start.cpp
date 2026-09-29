@@ -6,8 +6,6 @@
 #include <runtime/startup.hpp>
 #include <runtime/startup_handles.hpp>
 
-#include <span>
-
 #include <ou/channel.hpp>
 #include <ou/debug.hpp>
 #include <ou/handle.hpp>
@@ -38,13 +36,9 @@ namespace {
     // A channel message is at most 4 KiB and 64 handles, so fixed buffers
     // hold any bootstrap message, and there is no need for Zircon's size
     // query before the read.
-    //
-    // One slot more than a message can carry, for the root VMA the kernel
-    // sends ahead of the starter's message (read_processargs()).
-    constexpr u32 KERNEL_HANDLES = 1;
     alignas(ours::ProcArgs) constinit u8 message[ours::CHANNEL_MAX_MSG_BYTES] = {};
-    constinit ours::HandleValue handles[ours::CHANNEL_MAX_MSG_HANDLES + KERNEL_HANDLES] = {};
-    constinit u32 infos[ours::CHANNEL_MAX_MSG_HANDLES + KERNEL_HANDLES] = {};
+    constinit ours::HandleValue handles[ours::CHANNEL_MAX_MSG_HANDLES] = {};
+    constinit u32 infos[ours::CHANNEL_MAX_MSG_HANDLES] = {};
     constinit ProcessArgs startup_args;
     constinit StartupHandles startup_handles;
     constinit ours::VirtAddr vdso = 0;
@@ -56,73 +50,42 @@ namespace {
         ou::process_exit(EXIT_START_FAILED);
     }
 
-    /// Waits for a message on |bootstrap| and reads it into |bytes| and
-    /// |into|; fails the process if there is none. See read_processargs().
+    /// Reads the processargs message off |bootstrap| into the buffers above,
+    /// checks it, and closes |bootstrap|.
     ///
     /// Waits for the message first, as Zircon's newer start-up code does
     /// (ld::ProcessargsBuffer, which says why: the parent "might have started
-    /// this process before sending its bootstrap message"). No starter here
-    /// does that today -- the kernel, init and the shell all write the
-    /// message before the child exists -- but the protocol allows the other
-    /// order, and a child that read before such a write landed, on another
-    /// CPU, would find nothing. The wait ends on READABLE, or on PEER_CLOSED
+    /// this process before sending its bootstrap message"). Every starter
+    /// here does exactly that: the message carries the child's root VMA, which
+    /// only exists once the child does, so the kernel, userboot, init and the
+    /// shell all write it after the spawn -- and a child that read before the
+    /// write landed, on another CPU, would find nothing. The wait ends on READABLE, or on PEER_CLOSED
     /// if the starter drops its end without writing, and then the read
     /// reports PeerClosed rather than hanging; only a starter that keeps its
     /// end and never writes leaves this waiting, which is that starter's bug.
     ///
     /// Then one read, which must find the message: a message that does not
-    /// fit is bigger than any channel message can be. On failure the channel
-    /// is closed before the process ends, as on success below.
+    /// fit is bigger than any channel message can be.
     ///
-    /// The channel is closed once both messages are read (read_processargs()),
-    /// whatever came of it, as Zircon's
+    /// The channel is closed once read, whatever came of it, as Zircon's
     /// start-up code closes it: the message was its only purpose, and a
     /// program that needs to talk to its starter is handed a channel for
     /// that among its startup handles. Its peer sees PEER_CLOSED as soon as
     /// the runtime has read the message, before main runs.
-    auto read_one(ours::HandleValue const bootstrap, std::span<u8> const bytes,
-                  std::span<ours::HandleValue> const into, u32 *const num_bytes,
-                  u32 *const num_handles) -> void {
+    auto read_processargs(ours::HandleValue const bootstrap) -> void {
         auto observed = ours::Signals::None;
         static_cast<void>(ou::object_wait_one(bootstrap,
                                               ours::Signals::Readable | ours::Signals::PeerClosed,
                                               ours::INSTANT_INFINITE, &observed));
-        auto const status =
-            ou::channel_read(bootstrap, bytes.data(), static_cast<u32>(bytes.size()), num_bytes,
-                             into.data(), static_cast<u32>(into.size()), num_handles);
+
+        u32 num_bytes = 0;
+        u32 num_handles = 0;
+        auto status = ou::channel_read(bootstrap, message, sizeof(message), &num_bytes, handles,
+                                       ours::CHANNEL_MAX_MSG_HANDLES, &num_handles);
+        static_cast<void>(ou::handle_close(bootstrap));
         if (status != ours::Status::Ok) {
-            static_cast<void>(ou::handle_close(bootstrap));
             fail("no processargs message on the bootstrap channel: ", status);
         }
-    }
-
-    /// Two messages, TEMPORARY until K23: first the kernel's, carrying only
-    /// the root VMA (VmaRoot), then the starter's. The kernel's comes first
-    /// whenever the starter wrote, because the kernel queues it ahead of
-    /// anything already there (ChannelDispatcher::deliver_first()); it had to
-    /// be sent separately because the starter wrote before the process, and
-    /// so the region, existed. Its handle joins the starter's in one table,
-    /// after them; argv and the environment are the starter's. With K23 a
-    /// user-space launcher creates the process first and puts VmaRoot in the
-    /// one message, and this goes back to a single read.
-    auto read_processargs(ours::HandleValue const bootstrap) -> void {
-        // The kernel's: small, and read into a buffer of its own so that the
-        // starter's strings keep |message| to themselves.
-        alignas(ours::ProcArgs) u8 kernel_message[sizeof(ours::ProcArgs) + KERNEL_HANDLES * 4];
-        ours::HandleValue kernel_handles[KERNEL_HANDLES] = {};
-        u32 num_bytes = 0;
-        u32 num_kernel = 0;
-        read_one(bootstrap, kernel_message, kernel_handles, &num_bytes, &num_kernel);
-        ProcessArgs kernel_args;
-        auto status = ProcessArgs::parse({kernel_message, num_bytes}, num_kernel, &kernel_args);
-        if (status != ours::Status::Ok) {
-            fail("the kernel's processargs message is malformed: ", status);
-        }
-
-        u32 num_handles = 0;
-        read_one(bootstrap, message, {handles, ours::CHANNEL_MAX_MSG_HANDLES}, &num_bytes,
-                 &num_handles);
-        static_cast<void>(ou::handle_close(bootstrap));
 
         status = ProcessArgs::parse({message, num_bytes}, num_handles, &startup_args);
         if (status != ours::Status::Ok) {
@@ -130,16 +93,11 @@ namespace {
         }
 
         // A copy of the handle_infos the table can clear as handles are
-        // taken; the messages themselves stay as they arrived.
+        // taken; the message itself stays as it arrived.
         for (u32 i = 0; i < num_handles; ++i) {
             infos[i] = startup_args.handle_info(i);
         }
-        for (u32 i = 0; i < num_kernel; ++i) {
-            handles[num_handles + i] = kernel_handles[i];
-            infos[num_handles + i] = kernel_args.handle_info(i);
-        }
-        auto const total = num_handles + num_kernel;
-        startup_handles = StartupHandles({handles, total}, {infos, total});
+        startup_handles = StartupHandles({handles, num_handles}, {infos, num_handles});
     }
 } // namespace
 

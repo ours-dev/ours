@@ -198,7 +198,7 @@ namespace {
     /// The BootFS user space is given (make_user_bootfs()), built once from
     /// the resident package, and the rights a handle to it is to carry.
     ///
-    /// Held here only between being built and being sent: make_bootstrap()
+    /// Held here only between being built and being sent: write_bootstrap()
     /// moves it into the first process's processargs message, and this is
     /// empty from then on. The first process decides who else gets it.
     object::KernelHandle<object::VmoDispatcher> resident_bootfs;
@@ -236,11 +236,11 @@ namespace {
     ///
     /// At most MAX_USER_OPTIONS of them, USER_OPTIONS_BYTES in all
     /// (<ours/process_args.hpp>): the message is built in a fixed buffer on
-    /// this thread's stack (make_bootstrap()), and the programs that pass
+    /// this thread's stack (write_bootstrap()), and the programs that pass
     /// the options on size theirs from the same bound.
     ///
     /// Views into the boot package's Config item, which stays mapped for the
-    /// kernel's lifetime; they are only held until make_bootstrap() has
+    /// kernel's lifetime; they are only held until write_bootstrap() has
     /// copied them into the message.
     struct UserOptions {
         std::string_view tokens[MAX_USER_OPTIONS];
@@ -300,8 +300,27 @@ namespace {
         return options;
     }
 
-    /// The first process's bootstrap channel: the end the process gets in
-    /// %rdi, with its processargs message already queued on it (design 3.3).
+    /// The first process's bootstrap channel. The end returned is the one the
+    /// process gets in %rdi; |kernel_end| stays here, to write the processargs
+    /// on once the process exists (write_bootstrap()), because one of the
+    /// handles in it -- the root VMA -- only exists from then on.
+    auto make_bootstrap_channel(object::KernelHandle<object::ChannelDispatcher> &kernel_end)
+        -> ustl::Box<object::Handle> {
+        object::KernelHandle<object::ChannelDispatcher> user_end;
+        Rights channel_rights;
+        if (auto const status =
+                object::ChannelDispatcher::create(&kernel_end, &user_end, &channel_rights);
+            Status::Ok != status) {
+            log::error("userabi: could not make the bootstrap channel: {}", to_string(status));
+            return {};
+        }
+        return object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(user_end)),
+                                    channel_rights);
+    }
+
+    /// The first process's processargs message (design 3.3), written on
+    /// |kernel_end| after the process was launched: the order a launcher
+    /// keeps, and Zircon's kernel keeps for its userboot.
     ///
     /// The message carries argv = {|program|}, the environment
     /// collect_user_options() finds -- the image's user-space options, which
@@ -313,13 +332,15 @@ namespace {
     ///               can start the rest of the system;
     ///   VmoBootfs   the user BootFS (resident_bootfs), when there is one:
     ///               moved into the message, not copied, as Zircon's userboot
-    ///               moves its VMO handles out.
+    ///               moves its VMO handles out;
+    ///   VmaRoot     |root_vma|, the process's own root region, which launch()
+    ///               handed back.
     ///
     /// Everything is made on this kernel thread, which belongs to no process,
     /// so none of these handles is charged to anyone's quota (Handle::make()
     /// charges the current process, and there is none).
     ///
-    /// The kernel's end is dropped on the way out, as a KernelHandle, whose
+    /// The caller drops the kernel's end after this, as a KernelHandle, whose
     /// destructor tells the channel its last holder is gone. Its message
     /// stays queued and readable; the process sees PEER_CLOSED alongside it,
     /// which the runtime is ready for (it waits for READABLE or PEER_CLOSED,
@@ -327,30 +348,23 @@ namespace {
     /// KernelHandle with release() first (BootstrapChannel::Create), which
     /// skips that notice: its userboot never sees PEER_CLOSED on the channel.
     ///
-    /// Null on any failure, after saying why.
-    auto make_bootstrap(std::string_view const program) -> ustl::Box<object::Handle> {
-        object::KernelHandle<object::ChannelDispatcher> kernel_end;
-        object::KernelHandle<object::ChannelDispatcher> user_end;
-        Rights channel_rights;
-        if (auto const status =
-                object::ChannelDispatcher::create(&kernel_end, &user_end, &channel_rights);
-            Status::Ok != status) {
-            log::error("userabi: could not make the bootstrap channel: {}", to_string(status));
-            return {};
-        }
-
+    /// Says why on any failure.
+    auto write_bootstrap(object::ChannelDispatcher &kernel_end, std::string_view const program,
+                         ustl::Box<object::Handle> root_vma) -> Status {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[3];
-        u32 infos[3] = {};
+        ustl::Box<object::Handle> handles[4];
+        u32 infos[4] = {};
         u32 count = 0;
+        handles[count] = ustl::move(root_vma);
+        infos[count++] = handle_info(HandleType::VmaRoot, 0);
         handles[count] =
             object::Handle::make(ustl::Arc<object::Dispatcher>(object::JobDispatcher::root_job()),
                                  object::JobDispatcher::default_right());
         if (!handles[count]) {
             log::error("userabi: could not make a handle to the root job");
-            return {};
+            return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::JobDefault, 0);
 
@@ -360,7 +374,7 @@ namespace {
                 resident_bootfs_rights);
             if (!handles[count]) {
                 log::error("userabi: could not make a handle to the BootFS");
-                return {};
+                return Status::NoResource;
             }
             infos[count++] = handle_info(HandleType::VmoBootfs, 0);
         }
@@ -373,16 +387,16 @@ namespace {
         // slot it wants.
         handles[count] = make_system_resource_handle(RSRC_SYSTEM_VMEX_BASE, "vmex");
         if (!handles[count]) {
-            return {};
+            return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_VMEX_BASE));
 
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, three handle_infos, a program name
+        // fail for want of room: the header, four handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
         // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 3 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 4 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};
@@ -394,7 +408,7 @@ namespace {
                                                     {environ.tokens, environ.count}, {}, &length);
             Status::Ok != status) {
             log::error("userabi: could not encode the processargs: {}", to_string(status));
-            return {};
+            return status;
         }
 
         ustl::Box<object::MessagePacket> packet;
@@ -402,16 +416,13 @@ namespace {
                 object::MessagePacket::create({message, length}, handles, count, &packet);
             Status::Ok != status) {
             log::error("userabi: could not make the processargs packet: {}", to_string(status));
-            return {};
+            return status;
         }
-        if (auto const status = kernel_end.dispatcher()->write(ustl::move(packet));
-            Status::Ok != status) {
+        if (auto const status = kernel_end.write(ustl::move(packet)); Status::Ok != status) {
             log::error("userabi: could not queue the processargs: {}", to_string(status));
-            return {};
+            return status;
         }
-
-        return object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(user_end)),
-                                    channel_rights);
+        return Status::Ok;
     }
 
     /// Where the vDSO goes.
@@ -535,55 +546,11 @@ namespace {
         log::info("userabi: vdso laid out once, {} page(s), shared by every process", pages);
         return Status::Ok;
     }
-
-    /// Queues the VmaRoot message on |bootstrap|, the channel end a new
-    /// process is about to be given; see launch(). TEMPORARY, until K23.
-    ///
-    /// A processargs message like any other, with no arguments and one
-    /// handle, so that the runtime reads it with the parser it already has.
-    /// The handle is made on the caller's thread, so it is charged to the
-    /// process that asked for the launch, as K11 charges every handle to the
-    /// process that creates it -- the region is one of the handles a starter
-    /// is accountable for (userspace-filesystem design, the init quota).
-    auto deliver_root_vma(object::Handle &bootstrap,
-                          object::KernelHandle<object::VmaDispatcher> root_vma, Rights const rights)
-        -> Status {
-        auto channel = bootstrap.dispatcher().downcast<object::ChannelDispatcher>();
-        if (!channel) {
-            // Not a channel: nothing the runtime could read a message from.
-            log::error("userabi: the bootstrap handle is not a channel");
-            return Status::BadType;
-        }
-
-        ustl::Box<object::Handle> handles[1];
-        handles[0] = object::Handle::make(
-            object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), rights);
-        if (!handles[0]) {
-            return Status::NoResource;
-        }
-        u32 const infos[1] = {handle_info(HandleType::VmaRoot, 0)};
-
-        constexpr usize MESSAGE_BYTES = sizeof(ProcArgs) + sizeof(u32);
-        u8 message[MESSAGE_BYTES];
-        u32 length = 0;
-        if (auto const status = encode_process_args(message, {infos, 1}, {}, {}, {}, &length);
-            Status::Ok != status) {
-            log::error("userabi: could not encode the VmaRoot message: {}", to_string(status));
-            return status;
-        }
-
-        ustl::Box<object::MessagePacket> packet;
-        if (auto const status =
-                object::MessagePacket::create({message, length}, handles, 1, &packet);
-            Status::Ok != status) {
-            return status;
-        }
-        return channel->deliver_first(ustl::move(packet));
-    }
 } // namespace
 
 auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
-            ustl::Box<object::Handle> bootstrap) -> Status {
+            ustl::Box<object::Handle> bootstrap, ustl::Box<object::Handle> *const root_vma_out)
+    -> Status {
     if (!resident_package) {
         log::error("userabi: launch('{}') before the kernel package was loaded", name);
         return Status::BadState;
@@ -702,16 +669,19 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
         return status;
     }
 
-    // The root VMA, in a processargs message of its own ahead of the
-    // starter's (ChannelDispatcher::deliver_first()). TEMPORARY, until K23:
-    // whoever wrote the process's processargs did so before the process -- and
-    // so the region -- existed, and only this function ever holds the region.
-    // A process with no bootstrap channel gets no region handle, as it gets no
-    // other handle.
-    if (bootstrap) {
-        status = deliver_root_vma(*bootstrap, ustl::move(root_vma), root_vma_rights);
-        if (Status::Ok != status) {
-            return status;
+    // The root VMA goes back to whoever asked for the launch, who puts it in
+    // the processargs it writes once this returns: the one message a process
+    // gets is written after the process exists, as a launcher does it --
+    // first process_create, which hands back the root VMA, then the message
+    // (Zircon's process_builder; design 3.2). Made before the thread starts,
+    // so that a handle that cannot be made fails the launch rather than
+    // leaving a process running that nobody can give its region to.
+    // TEMPORARY in this form: until K23 the launch itself is in the kernel.
+    if (root_vma_out) {
+        *root_vma_out = object::Handle::make(
+            object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), root_vma_rights);
+        if (!*root_vma_out) {
+            return Status::NoResource;
         }
     }
 
@@ -790,7 +760,7 @@ auto userboot_init() -> void {
 
     // The userboot program, always: `kernel.select.userboot` only picks which
     // build of it (see boot::BootOptions::userboot()), and what runs after it
-    // is its own decision, from the `userboot.next` that make_bootstrap()
+    // is its own decision, from the `userboot.next` that write_bootstrap()
     // forwards. A name that is not in the package is a hard error rather
     // than something to fall back from: the image said which userboot it
     // wants, and quietly starting a different program would turn a packaging
@@ -799,22 +769,35 @@ auto userboot_init() -> void {
     auto const program = boot::options().userboot();
 
     // The first process starts like every other one on the runtime: a
-    // bootstrap channel in %rdi with a processargs message on it, written
-    // before the process exists (make_bootstrap()). What it gets is the root
-    // job, the BootFS and the user-space options -- everything userboot
-    // needs to start the next program and hand the rest on to it.
+    // bootstrap channel in %rdi with a processargs message on it. The process
+    // first, then the message (write_bootstrap()): its root VMA is one of the
+    // handles in it, and that only exists once launch() has made the process.
+    // The runtime waits for the message, so a thread that starts before it
+    // lands just waits. What it gets is its root VMA, the root job, the
+    // BootFS and the user-space options -- everything userboot needs to
+    // start the next program and hand the rest on to it.
     auto const has_bootfs = static_cast<bool>(resident_bootfs.dispatcher());
-    auto bootstrap = make_bootstrap(program);
+    object::KernelHandle<object::ChannelDispatcher> kernel_end;
+    auto bootstrap = make_bootstrap_channel(kernel_end);
     if (!bootstrap) {
         return;
     }
-    log::info("userabi: handing {} its processargs: the root job{}", program,
-              has_bootfs ? " and the BootFS" : "");
 
-    auto const status = launch(object::JobDispatcher::root_job(), program, ustl::move(bootstrap));
+    ustl::Box<object::Handle> root_vma;
+    auto status =
+        launch(object::JobDispatcher::root_job(), program, ustl::move(bootstrap), &root_vma);
     if (Status::Ok != status) {
         log::error("userboot: {}={} could not be started: {}", boot::BootOptions::USERBOOT_OPTION,
                    program, to_string(status));
+        return;
     }
+
+    log::info("userabi: handing {} its processargs: its root VMA, the root job{}", program,
+              has_bootfs ? " and the BootFS" : "");
+    // A failure is said inside. The process is already running, and with the
+    // kernel's end dropped below it sees PEER_CLOSED and no message, and ends
+    // itself (runtime::EXIT_START_FAILED).
+    status = write_bootstrap(*kernel_end.dispatcher(), program, ustl::move(root_vma));
+    static_cast<void>(status);
 }
 } // namespace userabi

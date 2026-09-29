@@ -191,3 +191,74 @@ Zircon `kernel/lib/userabi/vdso/syscalls-x86.S` 的 `m_syscall` 宏：7 个参�
 **故意没做**
 - 7 参数桩在真实调用下的验证，留给 K21 的 `vmar_map`：它的第 7 个参数是输出地址，
   取错了，shell 的映射检查就会失败。
+
+## 先建进程、后写消息：VmaRoot 进唯一那条 processargs，删掉临时的补发通道（2026-09-28）
+
+**文件**
+- `kernel/lib/userabi/src/userboot.cpp`、`include/userabi/userboot.hpp`：`launch()` 多一个出参，把子进程的根 VMA 句柄交回调用方；
+  删掉 `deliver_root_vma()`；`make_bootstrap()` 拆成 `make_bootstrap_channel()` 和 `write_bootstrap()`，`userboot_init()` 先 launch、后写消息
+- `kernel/object/include/ours/object/channel_dispatcher.hpp`、`channel_dispatcher.cpp`：删掉 `deliver_first()`
+- `kernel/lib/syscall/src/process.cpp`、`system/public/ours/syscalls.gni`、`system/lib/ou/include/ou/process.hpp`、`src/process.cpp`：
+  `process_spawn_boot` 多一个出参 `root_vma`
+- `system/lib/runtime/src/start.cpp`：回到只读一条消息（还原到 K21b 之前的版本，再改一段注释）
+- 三个用户态启动者改成先 spawn、后写消息：`kernel/lib/userabi/userboot/userboot.cpp` 的 `start_next()`、
+  `system/service/init/init.cpp`（新增 `spawn_then_write()`，`start_autorun()`、`start_shell()` 用它）、`examples/shell/shell.cpp` 的 `run_probe()`
+- `docs/design/260924/userspace-filesystem.md`：K21、K23 行
+
+**症状**
+K21b 为了让进程拿到根 VMA，加了一条临时通道：`launch()` 往子进程的 bootstrap channel 队首
+（`deliver_first()`）塞一条只带 VmaRoot 的消息，runtime 读两条。用户问：为什么要先写消息、再建进程，这合理吗？
+
+**原因**
+不合理，这是临时的 `process_spawn_boot` 带出来的顺序：它一次做完建进程、装程序、启动线程，而且什么都不返回，
+启动者只能事先把消息备好；内核启动 userboot 也沿用了同一个 `launch()`，同样先写消息。
+可 VmaRoot 这类句柄只有进程建好之后才存在，“先写消息”的顺序注定放不进它，于是才要内核再补一条。
+正确的顺序是 launcher 的顺序（Zircon `process_builder`）：先 `process_create` 拿到进程和根 VMAR，再写消息、再启动。
+
+**改法**
+在 K23 之前，“建进程”这一步仍在内核里，但顺序已经和最终方案一致：
+
+```cpp
+// 用户态启动者（init、userboot、shell）
+channel_create(&here, &there);
+process_spawn_boot(job, name, there, &root_vma);             // 先建进程，拿回根 VMA
+channel_write(here, message, length, {..., root_vma}, n);     // 再写唯一那条消息，VmaRoot 在里面
+handle_close(here);
+
+// 内核启动 userboot
+auto bootstrap = make_bootstrap_channel(kernel_end);
+launch(root_job, program, ustl::move(bootstrap), &root_vma);  // 先建进程
+write_bootstrap(*kernel_end.dispatcher(), program, ustl::move(root_vma));
+```
+
+几处取舍：
+- **消息晚于线程启动，没关系**：runtime 本来就先等 READABLE 或 PEER_CLOSED 再读（照 Zircon 的
+  `ld::ProcessargsBuffer`）。启动者如果写失败或根本没写，关掉自己那端，子进程看到 PEER_CLOSED、读不到消息，以 `EXIT_START_FAILED` 退出。
+- **句柄的记账**：`process_spawn_boot` 在调用者的系统调用里建根 VMA 句柄，按 K11 记在调用者名下，
+  随后随消息转移给子进程。值先写给调用者再入表（设计 4.1）；写不出去时调用者拿到错误，子进程已在运行，
+  但等不到消息，会随调用者关掉那端而退出。
+- **根 VMA 句柄在线程启动前建好**：建不出来（配额满）就让 launch 失败，而不是留下一个没人能把区域交给它的进程。
+- 与 K21b 的做法相比，少了一个只为过渡而存在的内核接口（`deliver_first`）和 runtime 里“读两条、谁先谁后”的约定。
+
+**参照**
+- Zircon `process_builder`（`ProcessBuilder::Start`）：`zx_process_create` → 装段 → 写 processargs（含 `PA_VMAR_ROOT`）→ `zx_process_start`。
+- Zircon 内核启动 userboot（`kernel/lib/userabi/userboot.cc`）：先建进程和根 VMAR，再往 bootstrap channel 写消息。
+
+**验证**
+- 两个镜像均构建通过；`boot_check.py` 两个镜像都 PASS（dbg 14 passed；rel 13 passed、5 skipped）。
+- 启动链上每一对都走了新顺序：内核 → userboot → init（dev）/ shell（dbg_1），init → shell、autorun，shell → 各 fault_probe；
+  shell 的 `vma_map checks passed`、`vma_allocate checks passed` 照旧（VmaRoot 现在来自启动者写的那条消息），探针全部照常。
+
+**故意没做**
+- `process_spawn_boot` 的 `root_vma` 出参随 K25 删掉整个调用时一起消失，不单独登记。
+
+**怎么发现的**
+用户追问“为什么先写消息再创建进程”，回头看顺序才发现临时通道只是在弥补一个错误的顺序。
+
+**用户的预测**
+无。
+
+**你应该能回答的三个问题**
+- 为什么“先写消息、后建进程”的顺序放不进 VmaRoot？哪些句柄也有同样的问题？
+- 子进程的线程如果先于消息开始运行，runtime 为什么不会读空？启动者写失败时子进程会怎样？
+- 根 VMA 句柄为什么要在子进程线程启动之前建好，而不是之后？

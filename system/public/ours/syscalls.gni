@@ -299,7 +299,10 @@ ours_syscalls = [
       "whatever the outcome and becomes the new process's one handle, its",
       "value in the program's %rdi; HANDLE_INVALID starts it with none.",
       "NotFound when the package has no such file. Returns no handle to the",
-      "process: nothing can wait on or kill one yet.",
+      "process: nothing can wait on or kill one yet. Returns its root VMA in",
+      "|root_vma|, for the caller to hand on as VmaRoot in the processargs it",
+      "writes on its end of |bootstrap| after this call: the child waits for",
+      "that message.",
     ]
     args = [
       {
@@ -320,6 +323,11 @@ ours_syscalls = [
         name = "bootstrap"
         type = "HandleValue"
         release = true
+      },
+      {
+        name = "root_vma"
+        type = "HandleValue"
+        dir = "out"
       },
     ]
     attrs = []

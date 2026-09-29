@@ -35,10 +35,17 @@ auto userboot_init() -> void;
 /// records the vDSO range, gives it a 64 KiB stack, and starts its thread --
 /// the same sequence for the first program and for any started later.
 ///
+/// A handle to the new process's root VMA goes into |root_vma|, when it is
+/// not null, for the caller to put in the processargs it writes on the other
+/// end of |bootstrap| -- after this returns, since the region only exists
+/// from here on. TEMPORARY in this form, until K23 lets a user-space launcher
+/// create the process itself (process_create), as Zircon's does.
+///
 /// Only files in the kernel package, which the kernel itself loaded: nothing
 /// here parses ELF a user program supplied.
 auto launch(ustl::Arc<ours::object::JobDispatcher> job, std::string_view name,
-            ustl::Box<ours::object::Handle> bootstrap) -> ours::Status;
+            ustl::Box<ours::object::Handle> bootstrap, ustl::Box<ours::object::Handle> *root_vma)
+    -> ours::Status;
 
 } // namespace userabi
 

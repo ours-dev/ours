@@ -10,7 +10,8 @@ auto process_exit(i64 const retcode) -> void {
 }
 
 auto process_spawn_boot(ours::HandleValue const job, Str const name,
-                        ours::HandleValue const bootstrap) -> ours::Status {
-    return ours_process_spawn_boot(job, name.data(), name.size(), bootstrap);
+                        ours::HandleValue const bootstrap, ours::HandleValue *const root_vma)
+    -> ours::Status {
+    return ours_process_spawn_boot(job, name.data(), name.size(), bootstrap, root_vma);
 }
 } // namespace ou
