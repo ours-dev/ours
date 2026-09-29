@@ -34,6 +34,11 @@ every task needs:
 ## Repo conventions
 
 - Tooling scripts are Python, never shell.
+- C/C++ you change is formatted for you, on the lines you changed only: in
+  Claude Code by a hook (`.claude/settings.json`), elsewhere by
+  `python3 scripts/format_cpp.py <path>`. Never run `clang-format -i` on a
+  whole existing file: a sixth of the tree is not clean, so it buries your
+  change in unrelated churn.
 - Toolchains come from official upstream releases into `prebuilt/`. Never
   build the dev container or install anything into system directories.
 - Lists describing build products are generated from GN metadata, not kept by

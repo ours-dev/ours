@@ -55,16 +55,22 @@ report a host-side approximation as a clang-format/clang-tidy pass.
 
 ## Step 1 — clang-format
 
+Formatting is automatic and covers only the lines you changed. In Claude Code
+a PostToolUse hook (`.claude/settings.json`) runs `scripts/format_cpp.py` after
+every Edit and Write, so there is nothing to remember; it tells you when it
+reformatted something, and then you Read the file again before editing it
+further. Any other agent, or a change made through Bash, runs it by hand:
+
 ```bash
-prebuilt/clang/llvm-23/bin/clang-format -i <path-to-file>
+python3 scripts/format_cpp.py <path-to-file>          # format your changes
+python3 scripts/format_cpp.py --check <path-to-file>  # only report
 ```
 
-Run from the repo root. `-i` formats in place. Uses `.clang-format` at the
-repo root automatically — no need to pass `-style=file` explicitly,
-clang-format finds it by walking up from the file.
-
-Do this for every file you wrote or edited, not just ones you're unsure
-about — formatting drift is easy to introduce by hand and cheap to fix here.
+It formats the lines that differ from HEAD, and a new file whole, using the
+prebuilt `clang-format` and the repo's `.clang-format`. Do **not** run
+`clang-format -i` on a whole existing file: about one C++ file in six here is
+not clang-format clean, mostly under `system/lib`, so that buries a three-line
+change in unrelated churn.
 
 ## Step 2 — clang-tidy
 
@@ -98,8 +104,9 @@ are.
 
 Before considering a C++ change complete, confirm:
 
-- [ ] `clang-format -i` was run on every `.hpp`/`.h`/`.cpp`/`.cc`/`.cxx` file
-      touched, and the diff shows no leftover formatting-only hunks
+- [ ] The lines you changed in every `.hpp`/`.h`/`.cpp`/`.cc`/`.cxx` file are
+      formatted (the hook did it, or `scripts/format_cpp.py --check` is quiet),
+      and the diff shows no formatting-only hunks on lines you did not change
 - [ ] `clang-tidy` was run on every touched file against a build directory
       that actually covers it
 - [ ] Every diagnostic clang-tidy reported on changed lines is either fixed
