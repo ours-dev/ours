@@ -242,7 +242,18 @@ namespace {
             entrol_preset_vma(PRESET_VMAS[i]);
         }
 
-        auto frame = alloc_frames(GAF_KERNEL, usize(0));
+        // Gaf::Zero is asked for by name: GAF_KERNEL does not imply it (only
+        // GAF_BOOT and GAF_USER do), and the buddy allocator hands back the
+        // frame as the previous owner left it. A page whose whole job is to
+        // stand in for "nothing has been written here" and which is not zero
+        // is worse than having none, and nothing could have told: no code
+        // reads ZERO_PAGE yet, so this went unnoticed until the first reader
+        // -- a copy-on-write child answering a read of a hole -- would have
+        // returned another owner's bytes as if they were zeros.
+        //
+        // Zircon zeroes it by hand after pmm_alloc_page() in vm_init_preheap(),
+        // and this is the same thing done by the allocator.
+        auto frame = alloc_frames(GAF_KERNEL | Gaf::Zero, usize(0));
         if (!frame) {
             panic("Failed to allocate the zero page");
         }
@@ -251,6 +262,14 @@ namespace {
         frame->become<page::VmmBody>();
         ZERO_PAGE = frame;
         ZERO_PAGE->mark_pinned();
+
+        // Checked rather than trusted, because a booted kernel is the only
+        // evidence a change here can offer and nothing else looks at the page.
+        // One page, once; and DEBUG_ASSERT, so the release image pays nothing.
+        DEBUG_ASSERT(std::all_of(frame_to_virt<isize>(ZERO_PAGE),
+                                 frame_to_virt<isize>(ZERO_PAGE) + PAGE_SIZE / sizeof(isize),
+                                 [](isize const word) { return word == 0; }),
+                     "the zero page is not zero");
 
         VmAspace::kernel_aspace()->root_vma()->dump();
     }
