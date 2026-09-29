@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/format_cpp.py\" --claude-hook",
+            "timeout": 30,
+            "statusMessage": "clang-format"
+          }
+        ]
+      }
+    ]
+  }
+}

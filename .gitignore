@@ -53,9 +53,11 @@ MODULE.bazel.lock
 .cache
 .codex
 # Claude Code state stays local, except the root .claude/skills/ links that
-# make .agents/skills visible to it.
+# make .agents/skills visible to it, and .claude/settings.json, whose hooks
+# every agent working here needs. settings.local.json stays personal.
 **/.claude/*
 !/.claude/skills/
+!/.claude/settings.json
 .reasonix
 .zcode
 .mypy_cache
