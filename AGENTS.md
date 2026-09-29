@@ -176,6 +176,14 @@ system, so weigh a decision's teaching value alongside getting the task done
   above is the deliberate exception — and leave out background the user
   already knows. Depth is welcome on request: offer to expand one point in a
   short line and let them ask, rather than writing the expansion up front.
+- **Explain a mechanism as objects, then events.** When asked what a scenario,
+  flow or mechanism is, first list the objects involved, one line each saying
+  what it is; then list the events that happen to them, in order, one line
+  each. Do not open with a metaphor or a long timeline, and do not follow the
+  first example with a fuller one. "I did not follow" or "too complicated"
+  means the answer was too long or too dense: shorten it into those two lists,
+  never add detail (the user said so three times in a row on 2026-09-29, about
+  a copy-on-write design).
 
 ## Documentation
 
