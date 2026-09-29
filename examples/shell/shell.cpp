@@ -2040,6 +2040,144 @@ auto check_thread_create(ours::HandleValue const job) -> void {
         static_cast<void>(ou::debug_line("shell: thread_create checks FAILED"));
     }
 }
+
+/// process_start (K23a): the handle argument moves, and a start that fails
+/// leaves the process as it was.
+///
+/// Runs where userboot started this program, on processes made here. None of
+/// them can be started: no vDSO is mapped into them yet (that is what makes a
+/// process able to make a system call, and vma_map does not register one
+/// yet), so every well-formed call answers BadState. That is what lets this
+/// check the failure paths, which are what the call is careful about:
+///   - the handles named: none is BadHandle, a VMA in the process's or a
+///     process in the thread's place BadType, a process without Write
+///     AccessDenied, another process's thread AccessDenied;
+///   - the handle moved: one that names nothing is BadHandle, one without
+///     Transfer AccessDenied and gone all the same;
+///   - the handle consumed on failure: a channel end passed in is closed by
+///     the failed start -- its peer reads PEER_CLOSED, which is the only way
+///     from here to see that nothing was left behind in the process's table --
+///     and the same on a second try, so the process is as it was;
+///   - the resolving order: the thread's own handle passed as the handle
+///     argument is consumed, and does not stop the call being answered as
+///     any other would be.
+auto check_process_start(ours::HandleValue const job) -> void {
+    using ours::Rights;
+    using ours::Signals;
+    using ours::Status;
+
+    constexpr auto ENTRY = ours::VirtAddr{0x400000};
+    constexpr auto STACK = ours::VirtAddr{0x500000};
+
+    if (job == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: process_start checks skipped (no root job)"));
+        return;
+    }
+
+    auto ok = true;
+    ours::HandleValue process = ours::HANDLE_INVALID;
+    ours::HandleValue region = ours::HANDLE_INVALID;
+    ours::HandleValue other = ours::HANDLE_INVALID;
+    ours::HandleValue other_region = ours::HANDLE_INVALID;
+    ours::HandleValue thread = ours::HANDLE_INVALID;
+    ours::HandleValue other_thread = ours::HANDLE_INVALID;
+    if (!expect("shell: process_create = ", ou::process_create(job, "starts", &process, &region),
+                Status::Ok) ||
+        !expect("shell: process_create = ", ou::process_create(job, "other", &other, &other_region),
+                Status::Ok) ||
+        !expect("shell: thread_create = ", ou::thread_create(process, "first", &thread),
+                Status::Ok) ||
+        !expect("shell: thread_create = ", ou::thread_create(other, "theirs", &other_thread),
+                Status::Ok)) {
+        static_cast<void>(ou::debug_line("shell: process_start checks FAILED"));
+        return;
+    }
+
+    // The handles named.
+    auto const H = ours::HANDLE_INVALID;
+    ok &= expect("shell: process_start(HANDLE_INVALID) = ",
+                 ou::process_start(H, thread, ENTRY, STACK, H, 0), Status::BadHandle);
+    ok &= expect("shell: process_start(process = its root VMA) = ",
+                 ou::process_start(region, thread, ENTRY, STACK, H, 0), Status::BadType);
+    ok &= expect("shell: process_start(thread = a process) = ",
+                 ou::process_start(process, process, ENTRY, STACK, H, 0), Status::BadType);
+    ours::HandleValue weak = ours::HANDLE_INVALID;
+    ok &= expect("shell: handle_duplicate(process, without Write) = ",
+                 ou::handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
+    ok &= expect("shell: process_start(process without Write) = ",
+                 ou::process_start(weak, thread, ENTRY, STACK, H, 0), Status::AccessDenied);
+    ok &= expect("shell: close(the weak process handle) = ", ou::handle_close(weak), Status::Ok);
+    ok &=
+        expect("shell: process_start(another process's thread) = ",
+               ou::process_start(process, other_thread, ENTRY, STACK, H, 0), Status::AccessDenied);
+
+    // The handle moved.
+    ours::HandleValue a = ours::HANDLE_INVALID;
+    ours::HandleValue b = ours::HANDLE_INVALID;
+    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+        ok = false;
+    } else {
+        ours::HandleValue stale = b;
+        ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+        ok &= expect("shell: process_start(a handle that names nothing) = ",
+                     ou::process_start(process, thread, ENTRY, STACK, stale, 0), Status::BadHandle);
+
+        // A VMO's handle can be duplicated (a channel's cannot), so it is what
+        // gives a copy without Transfer.
+        ours::HandleValue vmo = ours::HANDLE_INVALID;
+        ours::HandleValue untransferable = ours::HANDLE_INVALID;
+        if (expect("shell: vmo_create = ", ou::vmo_create(4096, ours::VmoOptions::None, &vmo),
+                   Status::Ok) &&
+            expect("shell: handle_duplicate(vmo, without Transfer) = ",
+                   ou::handle_duplicate(vmo, Rights::Duplicate | Rights::Read, &untransferable),
+                   Status::Ok)) {
+            ok &= expect("shell: process_start(a handle without Transfer) = ",
+                         ou::process_start(process, thread, ENTRY, STACK, untransferable, 0),
+                         Status::AccessDenied);
+            ok &= expect("shell: close(that handle, gone all the same) = ",
+                         ou::handle_close(untransferable), Status::BadHandle);
+        } else {
+            ok = false;
+        }
+        ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
+        ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+    }
+
+    // Consumed and closed on failure, twice: the process is as it was.
+    for (u32 i = 0; i < 2; ++i) {
+        ours::HandleValue c = ours::HANDLE_INVALID;
+        ours::HandleValue d = ours::HANDLE_INVALID;
+        if (!expect("shell: channel_create = ", ou::channel_create(&c, &d), Status::Ok)) {
+            ok = false;
+            break;
+        }
+        ok &= expect("shell: process_start(no vDSO in the process) = ",
+                     ou::process_start(process, thread, ENTRY, STACK, c, 0), Status::BadState);
+        auto observed = Signals::None;
+        ok &= expect("shell: wait_one(the peer, PEER_CLOSED, poll) = ",
+                     ou::object_wait_one(d, Signals::PeerClosed, 0, &observed), Status::Ok);
+        ok &= !!(observed & Signals::PeerClosed);
+        ok &= expect("shell: close(c, gone) = ", ou::handle_close(c), Status::BadHandle);
+        ok &= expect("shell: close(d) = ", ou::handle_close(d), Status::Ok);
+    }
+
+    // The thread's own handle as the handle argument.
+    ok &= expect("shell: process_start(arg1 = the thread's own handle) = ",
+                 ou::process_start(process, thread, ENTRY, STACK, thread, 0), Status::BadState);
+    ok &= expect("shell: close(the thread, gone) = ", ou::handle_close(thread), Status::BadHandle);
+
+    ok &= expect("shell: close(other thread) = ", ou::handle_close(other_thread), Status::Ok);
+    ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
+    ok &= expect("shell: close(other region) = ", ou::handle_close(other_region), Status::Ok);
+    ok &= expect("shell: close(process) = ", ou::handle_close(process), Status::Ok);
+    ok &= expect("shell: close(other process) = ", ou::handle_close(other), Status::Ok);
+
+    if (ok) {
+        static_cast<void>(ou::debug_line("shell: process_start checks passed"));
+    } else {
+        static_cast<void>(ou::debug_line("shell: process_start checks FAILED"));
+    }
+}
 } // namespace
 
 /// Finding the system calls is not this program's problem: the calls below
@@ -2075,6 +2213,7 @@ auto main(int, char **) -> int {
     // Before the job is closed below: it is what a process is created under.
     check_process_create(job);
     check_thread_create(job);
+    check_process_start(job);
     // One startup handle closed twice: init's channel when there is one --
     // closing it is init's cue -- and otherwise the job, done with now.
     check_handle_close(peer != ours::HANDLE_INVALID ? peer : job);

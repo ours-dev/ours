@@ -686,27 +686,21 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
         }
     }
 
-    // The one handle the program starts with goes into its own table, and its
-    // value into %rdi. A process may also start with none (%rdi = 0).
-    auto bootstrap_value = HANDLE_INVALID;
-    if (bootstrap) {
-        bootstrap_value = process.dispatcher()->handle_table().add(ustl::move(bootstrap));
-    }
-    log::info("userabi: '{}' starts with handle {:#x}", program.view(), bootstrap_value);
+    log::info("userabi: '{}' starts with {}", program.view(),
+              bootstrap ? "a bootstrap handle" : "no handle");
 
-    // start(), not resume(): where a kernel thread only needs to be made
-    // runnable, a user thread has to be told where in user space to begin.
+    // The same call a user-space launcher makes (process_start): the one
+    // handle the program starts with goes into its own table and its value
+    // into %rdi -- a process may also start with none (%rdi = 0) -- and a
+    // thread is told where in user space to begin.
     //
     // %rsi is the vDSO's base. It is not needed to make a system call -- the
     // program's imports are bound before it runs -- but it is the one fact
     // about its own address space a program cannot otherwise find, and a
     // runtime that walks its own stack or binds itself later (P2) wants it.
-    status = thread.dispatcher()->start({
-        .entry = loaded.image.entry,
-        .stack = initial_stack_pointer(loaded.stack_top),
-        .arg1 = bootstrap_value,
-        .arg2 = vdso.base,
-    });
+    status = process.dispatcher()->start(*thread.dispatcher(), loaded.image.entry,
+                                         initial_stack_pointer(loaded.stack_top),
+                                         ustl::move(bootstrap), vdso.base);
     if (Status::Ok != status) {
         log::error("userabi: could not start '{}': {}", program.view(), to_string(status));
         return status;

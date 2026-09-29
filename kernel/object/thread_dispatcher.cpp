@@ -154,7 +154,7 @@ auto ThreadDispatcher::trampoline(Self *self) -> i32 {
     arch_enter_uspace(&frame);
 }
 
-auto ThreadDispatcher::start(TaskState const &state) -> Status {
+auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) -> Status {
     verify_canary();
 
     // Every user thread's first instruction is named here, so this is where
@@ -171,7 +171,7 @@ auto ThreadDispatcher::start(TaskState const &state) -> Status {
     }
 
     m_user_entry = state;
-    auto status = m_process->attach_thread(*this);
+    auto status = m_process->attach_thread(*this, first_thread);
     if (Status::Ok != status) {
         m_user_entry = ustl::none();
         return status;

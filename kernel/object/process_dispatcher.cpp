@@ -119,6 +119,50 @@ auto ProcessDispatcher::current() -> Self * {
     return &thread->process();
 }
 
+/// The order the steps are in is the whole of it. The handle goes into the
+/// table before the thread starts, because a thread that is runnable can run
+/// this instant, on another CPU, and its first act may be to use the value it
+/// was given; put in after, the value would name nothing for as long as this
+/// thread took to get there, and correctness would rest on how fast it was.
+/// Put in before, nobody can reach the table yet -- the process has no thread
+/// -- so nothing is missing from it and nothing can see the handle early,
+/// bar the one thing that also touches the table: the process's own teardown
+/// (finish_dead_transition() clears it), which is why the failure path below
+/// takes the handle out by value and does not assume it is still there.
+///
+/// On failure the handle is closed here, after the process's lock is gone
+/// (attach_thread() takes and drops it): closing a handle can run its object's
+/// on_zero_handles(), which must not nest inside this process's lock. If the
+/// process has already gone Dead, its table is empty and the removal finds
+/// nothing; the table's own lock is what decides which of the two -- the
+/// teardown or this -- closes the handle, and only one of them does.
+///
+/// The check for a vDSO is here and not in the thread: a process is started,
+/// a thread only attached, and "could not make a system call" is about the
+/// process. It reads the range without the lock, as vdso_contains() does; it is
+/// fixed before the process is started and never changes after.
+auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, VirtAddr const stack,
+                              ustl::Box<Handle> arg1, usize const arg2) -> Status {
+    verify_canary();
+    DEBUG_ASSERT(&thread.process() == this, "a process starts one of its own threads");
+
+    if (m_vdso_code_size == 0) {
+        return Status::BadState;
+    }
+
+    auto arg1_value = HANDLE_INVALID;
+    if (arg1) {
+        arg1_value = m_handle_table->add(ustl::move(arg1));
+    }
+
+    auto const status =
+        thread.start({.entry = entry, .stack = stack, .arg1 = arg1_value, .arg2 = arg2}, true);
+    if (Status::Ok != status && arg1_value != HANDLE_INVALID) {
+        static_cast<void>(m_handle_table->remove(arg1_value));
+    }
+    return status;
+}
+
 /// Makes |thread| one of this process's running threads.
 ///
 /// One lock, the process's own, over the three things that have to change
@@ -130,21 +174,26 @@ auto ProcessDispatcher::current() -> Self * {
 /// who takes that lock, either without the thread or with it running.
 ///
 /// The first thread moves the process from Initial to Running; any later one
-/// requires Running, so that nothing is added to a process that is dying.
+/// requires Running, so that nothing is added to a process that is dying. The
+/// caller says which it is, and the state has to agree: inferring it from an
+/// empty list would let a second "first" start -- two callers of process_start,
+/// or one that had lost the race -- pass as an ordinary later thread of a
+/// process that is already Running.
 ///
 /// Lock order: this process's lock, then the thread's (activate() takes it).
 ///
 /// Zircon counterpart: ProcessDispatcher::AddInitializedThread().
-auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
+auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first_thread) -> Status {
     verify_canary();
 
     Guard guard{get_lock()};
 
-    auto const initial_thread = m_thread_list.empty();
-    auto const expected = initial_thread ? State::Initial : State::Running;
+    auto const expected = first_thread ? State::Initial : State::Running;
     if (m_state != expected) {
         return Status::BadState;
     }
+    DEBUG_ASSERT(m_thread_list.empty() == first_thread,
+                 "a process is Initial exactly while it has no thread");
 
     // The kernel thread is made here, under the lock and after the state
     // check, and not when the thread was created: a start that finds the
@@ -164,7 +213,7 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread) -> Status {
     }
     m_thread_list.push_back(thread);
 
-    if (initial_thread) {
+    if (first_thread) {
         m_state = State::Running;
     }
     return Status::Ok;

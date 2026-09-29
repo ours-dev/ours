@@ -331,6 +331,52 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "process_start"
+    brief = "Starts |process| with |thread| as its first thread."
+    doc = [
+      "|process| and |thread| each need Write, and |thread| must be one of",
+      "|process|'s own (AccessDenied). The thread runs at |entry| with |stack|",
+      "as its stack pointer, |arg1| in %rdi as the value of the one handle the",
+      "process starts with, and |arg2| in %rsi (by convention the vDSO's base).",
+      "|arg1| moves from the caller's table into the new process's, needs",
+      "Transfer (AccessDenied), and is gone from the caller's table whatever",
+      "the answer: a failed start closes it. HANDLE_INVALID starts the process",
+      "with none. BadState unless the process is Initial and has the vDSO",
+      "mapped; InvArgs for an entry that is not a user address. A failed start",
+      "leaves the process as it was, so it may be started again with a new",
+      "|arg1|.",
+    ]
+    args = [
+      {
+        name = "process"
+        type = "HandleValue"
+      },
+      {
+        name = "thread"
+        type = "HandleValue"
+      },
+      {
+        name = "entry"
+        type = "VirtAddr"
+      },
+      {
+        name = "stack"
+        type = "VirtAddr"
+      },
+      {
+        name = "arg1"
+        type = "HandleValue"
+        release = true
+      },
+      {
+        name = "arg2"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "thread_create"
     brief = "Makes a thread of |process| that is not running yet."
     doc = [

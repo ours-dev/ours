@@ -9,6 +9,7 @@
 #include <ours/object/handle_table.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
+#include <ours/object/thread_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
@@ -101,6 +102,58 @@ auto process_create(HandleValue const job, user_copy::UserInPtr<char const> cons
     static_cast<void>(table.add(ustl::move(process_handle)));
     static_cast<void>(table.add(ustl::move(root_vma_handle)));
     return Status::Ok;
+}
+
+/// Starts |process| with |thread| as its first thread, running at |entry| with
+/// |stack|, and |arg1| -- a handle, which moves into the new process -- as the
+/// handle it starts with.
+///
+/// Zircon's sys_process_start(): the process and the thread each with Write,
+/// the thread must be one of that process's own (AccessDenied), |arg1| taken
+/// out of the caller's table and needing Transfer. Like the handles
+/// process_spawn_boot() and channel_write() take, |arg1| is gone from the
+/// caller's table whatever the outcome -- a caller that gets an error back
+/// never has to guess whether it still holds it -- so it is removed once
+/// everything else has been resolved, and after them a missing or
+/// untransferable one does not stop it being removed. The process and thread
+/// are resolved before it leaves the table, so |arg1| may name either: the
+/// references held here outlive its removal.
+///
+/// The order of the errors is the order of the checks: the handles named
+/// first (BadHandle, BadType, AccessDenied for a missing right), then that the
+/// thread is the process's own, then |arg1|, then what ProcessDispatcher::
+/// start() finds (BadState, InvArgs for an entry that is not a user address).
+auto process_start(HandleValue const process, HandleValue const thread, VirtAddr const entry,
+                   VirtAddr const stack, HandleValue const arg1, usize const arg2) -> Status {
+    auto &table = object::ProcessDispatcher::current()->handle_table();
+
+    ustl::Arc<object::ProcessDispatcher> target;
+    ustl::Arc<object::ThreadDispatcher> first;
+    auto const process_status = table.get_dispatcher(process, Rights::Write, &target);
+    auto const thread_status = table.get_dispatcher(thread, Rights::Write, &first);
+
+    ustl::Box<object::Handle> handed;
+    if (arg1 != HANDLE_INVALID) {
+        handed = table.remove(arg1);
+        if (process_status == Status::Ok && thread_status == Status::Ok && !handed) {
+            return Status::BadHandle;
+        }
+    }
+    if (process_status != Status::Ok) {
+        return process_status;
+    }
+    if (thread_status != Status::Ok) {
+        return thread_status;
+    }
+
+    if (&first->process() != target.as_ptr()) {
+        return Status::AccessDenied;
+    }
+    if (handed && !handed->has_rights(Rights::Transfer)) {
+        return Status::AccessDenied;
+    }
+
+    return target->start(*first, entry, stack, ustl::move(handed), arg2);
 }
 
 /// TEMPORARY, and the one handler that breaks the rule every other one keeps:

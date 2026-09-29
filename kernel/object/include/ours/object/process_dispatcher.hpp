@@ -80,7 +80,32 @@ class ProcessDispatcher: public ProcessDispatcherBase {
         return m_handle_account;
     }
 
-    auto attach_thread(ThreadDispatcher &thread) -> Status;
+    /// Starts this process: |thread|, which must be one of its own and not
+    /// started, becomes its first thread and runs at |entry| with |stack|,
+    /// |arg1| in the first argument register as a handle value, and |arg2|
+    /// in the second. The process goes Initial -> Running with it.
+    ///
+    /// |arg1| is the handle the new process starts with (empty for none): it is
+    /// put into this process's handle table, where its value is known, and
+    /// only then is the thread started -- once it is runnable it may use that
+    /// value at once, so the handle must already be there. |arg1| is consumed
+    /// whatever the answer: if the start fails, the handle is taken out of the
+    /// table again and closed, here, so a failed start leaves the process
+    /// exactly as it was and the caller, who no longer has the handle, cannot
+    /// leave one behind either.
+    ///
+    /// BadState when the process is not Initial or has no vDSO registered
+    /// (set_vdso_code_range()): a process that could not make one system call
+    /// is not started. Anything thread.start() answers otherwise.
+    ///
+    /// Zircon: ProcessDispatcher::Start().
+    auto start(ThreadDispatcher &thread, VirtAddr entry, VirtAddr stack, ustl::Box<Handle> arg1,
+               usize arg2) -> Status;
+
+    /// Makes |thread| one of this process's running threads: the first one,
+    /// which takes the process from Initial to Running (|first_thread|), or a
+    /// later one, which needs it Running. Called by ThreadDispatcher::start().
+    auto attach_thread(ThreadDispatcher &thread, bool first_thread) -> Status;
 
     /// Ends this process with |retcode|: it starts dying, and every thread
     /// in it is told to die. Returns at once; the threads exit on their own

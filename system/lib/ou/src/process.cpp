@@ -15,6 +15,12 @@ auto process_create(ours::HandleValue const job, Str const name, ours::HandleVal
                                process, root_vma);
 }
 
+auto process_start(ours::HandleValue const process, ours::HandleValue const thread,
+                   ours::VirtAddr const entry, ours::VirtAddr const stack,
+                   ours::HandleValue const arg1, usize const arg2) -> ours::Status {
+    return ours_process_start(process, thread, entry, stack, arg1, arg2);
+}
+
 auto process_spawn_boot(ours::HandleValue const job, Str const name,
                         ours::HandleValue const bootstrap, ours::HandleValue *const root_vma)
     -> ours::Status {

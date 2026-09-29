@@ -21,6 +21,14 @@ auto process_exit(i64 retcode) -> void;
 auto process_create(ours::HandleValue job, Str name, ours::HandleValue *process,
                     ours::HandleValue *root_vma) -> ours::Status;
 
+/// Starts |process| with |thread| as its first thread, at |entry| with |stack|.
+/// |arg1|, the one handle the process starts with (HANDLE_INVALID for none),
+/// moves into the new process and its value there is passed in %rdi; |arg2| in
+/// %rsi. |arg1| is gone from this process whether or not the start worked.
+/// Zircon zx_process_start().
+auto process_start(ours::HandleValue process, ours::HandleValue thread, ours::VirtAddr entry,
+                   ours::VirtAddr stack, ours::HandleValue arg1, usize arg2) -> ours::Status;
+
 /// TEMPORARY -- goes when a user-space loader exists.
 ///
 /// Starts |name| from the kernel package as a new process under |job| (which

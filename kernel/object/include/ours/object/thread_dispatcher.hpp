@@ -84,11 +84,12 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     [[noreturn]]
     static auto exit_current() -> void;
 
-    /// Starts this thread at |state|, the first thread of its process or a
-    /// later one. BadState unless it is Initial (a thread starts once) and its
+    /// Starts this thread at |state|: the first thread of its process
+    /// (|first_thread|, only ProcessDispatcher::start() says so) or a later
+    /// one. BadState unless it is Initial (a thread starts once) and its
     /// process can take one (ProcessDispatcher::attach_thread()); InvArgs for
     /// an entry point that is not a user address.
-    auto start(TaskState const &state) -> Status;
+    auto start(TaskState const &state, bool first_thread) -> Status;
 
     /// The kernel thread this object will run as, made now and bound to the
     /// process's address space. Called by ProcessDispatcher::attach_thread()
