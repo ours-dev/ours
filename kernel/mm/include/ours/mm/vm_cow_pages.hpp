@@ -39,7 +39,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// the lock in the object, parent and child would each lock the same page
     /// tree with a different mutex, which is no lock at all. Zircon keeps it
     /// with the pages for the same reason: VmObjectPaged::lock() answers
-    /// cow_pages_->lock(), shared by the whole hierarchy.
+    /// cow_pages_->lock().
+    ///
+    /// The mutex is not this object's own but its tree's (HierarchyState), so
+    /// that when nodes come to hang under one another one lock covers the
+    /// walk from a leaf to the pages it reads. A VmCowPages that has no
+    /// relatives is a tree of one, and behaves as before.
     TA_RETURN_CAPABILITY(m_lock) FORCE_INLINE auto lock() -> sync::Mutex & {
         return m_lock;
     }
@@ -50,6 +55,36 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     }
 
   private:
+    /// The lock of one whole tree of VmCowPages, held by every node in it.
+    ///
+    /// A node cannot own the tree's mutex, because any node can die first:
+    /// the file VMO a launcher clones is closed while its clones run, and the
+    /// clones still have to lock the same mutex as each other and as whatever
+    /// remains of the tree above them. So the mutex is an object of its own,
+    /// kept alive by a reference from each node, and it goes when the last
+    /// node does. The same shape as PeerHolder for the two ends of a channel.
+    ///
+    /// Zircon counterpart: VmHierarchyState, which every VmCowPages held as
+    /// `hierarchy_state_ptr_` until commit 2dad682fe14 replaced it with one
+    /// lock per node and a lock order (the comment at `VmCowPages::lock()` in
+    /// vm_cow_pages.h still describes the old scheme). One mutex per tree is
+    /// decision 3 of the vmo-snapshot-child design: the simplest thing that is
+    /// correct. Every process that clones one program contends on it, and the
+    /// benchmark that says whether that matters comes after the feature works.
+    class HierarchyState final
+        : public ustl::RefCounted<HierarchyState, ustl::sync::ThreadSafePolicy> {
+      public:
+        HierarchyState() = default;
+
+        [[nodiscard]]
+        auto lock() -> sync::Mutex & {
+            return m_lock;
+        }
+
+      private:
+        sync::Mutex m_lock;
+    };
+
     /// RefCounted::destroy() calls ~T() when the last reference goes; the
     /// destructor stays private otherwise, as MemCache and Dispatcher do.
     friend class ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePolicy>;
@@ -59,7 +94,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     template <typename, typename...>
     friend class ObjectCache::Instance;
 
-    VmCowPages(Gaf gaf, usize size);
+    /// |hierarchy| is the tree this node belongs to: a new one for a node with
+    /// no relatives, the parent's for one that will hang under it. It is a
+    /// parameter, not made here, because making one can fail and a constructor
+    /// cannot say so.
+    VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy);
 
     ~VmCowPages();
 
@@ -72,10 +111,17 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ustl::Arc<PageSource> m_page_source;
     usize m_size;
 
+    /// Declared before m_lock, which is initialised from it, and destroyed
+    /// after it: the reference is what keeps the mutex alive.
+    ustl::Arc<HierarchyState> m_hierarchy;
+
     // Not TA_GUARDED over m_pages: the pages are walked by Cursor, a separate
     // object that the analysis cannot tie back to this lock. The entry points
     // that make a cursor or commit require it instead.
-    sync::Mutex m_lock;
+    //
+    // A reference to the tree's mutex, as VmObject::m_lock is to this one, so
+    // the annotations keep naming a member.
+    sync::Mutex &m_lock;
 };
 
 /// A walk over one contiguous byte range of a VmCowPages, handing out the page

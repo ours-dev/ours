@@ -82,8 +82,8 @@ The core that stays: the hidden-node insert with its page-list move and back-poi
 ### Order of work
 Each step is one commit, builds and boots, and is introduced to the user before it starts. The list can change as the steps teach us things.
 1. `Cursor::require_*` return the page with a `writable` bit. Done, `add18462`.
-2. `VmCowPages` gains the parent link, the hidden flag and the child list, and the lock (decision 3). No caller yet.
-3. The read walk up the chain, with `ZERO_PAGE` past a limit and `writable = false` for a page from an ancestor. Tested by a kernel command `vmosnapshot.test` (modelled on `user_copy_test.cpp`) that builds a small chain by hand.
+2. One mutex per tree (decision 3): the lock moves out of `VmCowPages` into `HierarchyState`, which every node of a tree holds. No node has a parent yet, so every tree has one node and nothing changes. Done.
+3. `VmCowPages` gains the parent link (`m_parent`, offset, limit), the hidden flag and a factory that makes a node under a parent and adopts its `HierarchyState`. The read walk up the chain, with `ZERO_PAGE` past a limit and `writable = false` for a page from an ancestor. Tested by a kernel command `vmosnapshot.test` (modelled on `user_copy_test.cpp`) that builds a small chain by hand, including that the lock outlives a parent that dies first. The list of children comes with the clone and the merge (steps 5 and 6), the first code that walks it.
 4. The share count on pages and the fork-or-migrate write, tested through `VmObject::read`/`write`.
 5. The clone: the hidden-node insert, the page move, the back-pointer rewrite, and `RemoveWrite` on the original's mappings.
 6. Death: release and merge.

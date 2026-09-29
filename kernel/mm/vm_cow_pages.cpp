@@ -8,7 +8,11 @@
 namespace ours::mm {
 using VmCowPagesCache = ObjectCache::Instance<VmCowPages>;
 
-VmCowPages::VmCowPages(Gaf gaf, usize size) : m_gaf(gaf), m_size(size) {}
+VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy)
+    // Initializer order follows the member declaration order in the header:
+    // the reference to the mutex can only be taken from a hierarchy that is
+    // already held.
+    : m_gaf(gaf), m_size(size), m_hierarchy(ustl::move(hierarchy)), m_lock(m_hierarchy->lock()) {}
 
 /// Returns every page this object owns.
 ///
@@ -27,7 +31,13 @@ VmCowPages::~VmCowPages() {
 }
 
 auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status {
-    auto cow_pages = VmCowPagesCache::get(GAF_KERNEL, gaf, size);
+    // A tree of one: this node is its own root, so it starts its own lock.
+    auto hierarchy = ustl::Arc<HierarchyState>::adopt(new (GAF_KERNEL) HierarchyState());
+    if (!hierarchy) {
+        return Status::OutOfMem;
+    }
+
+    auto cow_pages = VmCowPagesCache::get(GAF_KERNEL, gaf, size, ustl::move(hierarchy));
     if (!cow_pages) {
         return Status::OutOfMem;
     }

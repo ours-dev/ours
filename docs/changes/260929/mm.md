@@ -119,3 +119,67 @@ None.
 - Why is "may this page be written" a property of the lookup, not of the page?
 - Which branch of `page_fault()` would turn a borrowed read-only entry into a writable one, and why is that branch correct today?
 - Why does `map_paged()` assert `writable` instead of mapping by it?
+
+## Title: VmCowPages takes its lock from a shared HierarchyState (2026-09-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — new private `HierarchyState`, a reference-counted holder of one `sync::Mutex`; `VmCowPages` keeps an `Arc<HierarchyState>`, and `m_lock` becomes a reference to that mutex. The constructor takes the hierarchy as a parameter.
+- `kernel/mm/vm_cow_pages.cpp` — `create()` makes a `HierarchyState` for the new node and hands it to the constructor.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — the order of work: this step is only the lock, and the parent link moves to the next one.
+
+**Symptom**
+None. Latent, cannot be triggered today: no `VmCowPages` has a parent, so every tree has exactly one node, and the lock behaves as the member it replaces. It matters once a node can hang under another.
+
+**Cause**
+The mutex was a member of `VmCowPages`, so it lived and died with that one node. A copy-on-write tree has many nodes that must be locked by one mutex (a read walks from a leaf up through its ancestors, and a clone changes several nodes at once), and any node can die before the others: the launcher closes its handle to the file VMO while the clones of it run. A mutex that is a member of the node that dies is then gone while the survivors still hold references to it, and a lock that is not shared is not a lock over the tree. So the mutex has to be an object of its own, kept alive by a reference from every node.
+
+**Change**
+Before:
+
+```cpp
+VmCowPages(Gaf gaf, usize size);
+...
+sync::Mutex m_lock;
+```
+
+After:
+
+```cpp
+class HierarchyState final: public ustl::RefCounted<HierarchyState, ustl::sync::ThreadSafePolicy> {
+    ...
+    sync::Mutex m_lock;
+};
+VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy);
+...
+ustl::Arc<HierarchyState> m_hierarchy;
+sync::Mutex &m_lock; // the hierarchy's
+```
+
+`lock()` still answers a `sync::Mutex &`, and `VmObject::m_lock` is still a reference to it, so no `Guard` and no `TA_REQUIRES` had to change. `m_lock` stays a member name (now a reference) so the thread-safety annotations still name a member, as `VmObject::m_lock` already does. The hierarchy is a constructor parameter and not made inside it, because making one can fail and a constructor cannot say so; `create()` makes one and returns `OutOfMem` if it cannot.
+
+Rejected: one lock per node with a lock-order number, as Zircon does now. That is decision 3 of the design and the user chose one mutex per tree for now; the benchmark after the fault path works decides whether it is worth the lock-order argument.
+
+**Reference**
+Zircon `VmHierarchyState`, held by every `VmCowPages` as `hierarchy_state_ptr_` and returned by `lock()`, until commit `2dad682fe14` ("Cleanup old locking") replaced it with one lock per node. In this tree `PeerHolder` (`kernel/object/include/ours/object/dispatcher.hpp`) has the same shape for the two ends of a channel.
+
+**Verification**
+- `scripts/format_cpp.py --check`: clean. `clang-tidy -p out/vmo-snapshot kernel/mm/vm_cow_pages.cpp`: nothing on the changed lines; the one warning is the existing destructor without `override`.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts as before. dbg: 18 passed, 0 failed, 0 error lines. rel: 13 passed, 9 skipped, 0 failed, 0 error lines.
+- What the boot does exercise: every VMO the system makes goes through `create()` and takes and releases this lock, so the plumbing is used by the whole boot, kernel stacks and BootFS included.
+- Not exercised: sharing one hierarchy between two nodes, and a node dying while another still holds the hierarchy. No node can hang under another yet; the next step's test builds a chain by hand and checks both.
+
+**Deliberately not done**
+- No `m_parent`, offset, limit or hidden flag yet. They would have no user in this commit and a boot cannot test them; they arrive with the walk that reads them and the test that builds a chain.
+- No list of children: the first code that walks it is the clone and the merge.
+- The mutex was not given a name for lock tracing; it has none today either.
+
+**How it was found**
+Designing where the lock lives once a clone exists: the design asked what happens when the node that made the lock is the first to die, which is the launcher's case (it closes the file handle and the clones live on).
+
+**The user's prediction**
+None. The user chose one mutex per tree (decision 3) without writing the invariant argument, and said to go on; the argument is still owed and matters most from the step that gives a node a parent.
+
+**Three questions you should be able to answer**
+- Why can the tree's mutex not be a member of the first node?
+- What does a node hold to keep the mutex alive, and what would go wrong if it held a plain reference?
+- Why does `VmObject::m_lock` need no change, given the mutex moved?
