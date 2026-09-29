@@ -1,65 +1,56 @@
-# 改动记录条目模板
+# Change record entry template
 
-一条改动一节，追加在 `docs/changes/<YYMMDD>/<MODULE>.md` 末尾。
-字段是固定的，因为读的人是来学的：想知道"这为什么是个错"和"该照着谁改"，
-而不只是"改了哪一行"。
+One entry per change, appended to the end of `docs/changes/<YYMMDD>/<MODULE>.md`. A new file starts with the H1 `# <MODULE> changes`, where `<MODULE>` is the file name without `.md`.
 
-没有内容的字段写"无"，不要删掉——留着比缺着好读。
+The fields are fixed because the reader is here to learn: they want to know "why was this a mistake" and "what should it have been modeled on", not just "which line changed".
+
+A field with nothing to say gets the word "None", not a deleted heading. A visible "None" reads better than a missing field.
+
+Entries written before this template was translated are in Chinese and use the labels 文件, 症状, 原因, 改法, 参照, 验证, 故意没做. They are not rewritten; new entries use the labels below, even when they are appended to an older file.
 
 ---
 
 ```markdown
-## 标题：一句话说清改了什么（YYYY-MM-DD）
+## Title: one sentence saying what changed (YYYY-MM-DD)
 
-**文件**
-- `path/to/file.cpp` — 一句话说这个文件里改了什么
+**Files**
+- `path/to/file.cpp` — one line on what changed in this file
 
-**症状**
-能观察到什么：报错、挂死、算出来的数不对。潜伏性的问题写"潜伏，当前触发不到"，
-并说明什么条件下会触发。
+**Symptom**
+What can be observed: an error, a hang, a wrong number. For a latent problem write "Latent, cannot be triggered today" and say under what condition it would be.
 
-**原因**
-为什么这是个错。**这一段是主要的学习价值，写厚一点**：不只说"少了一次写入"，
-要说清"为什么少这一次就完全不工作"（比如 HPET 的比较器是相等比较，晚一拍不是晚，
-是永远不来）。
+**Cause**
+Why this was a mistake. **This section is the main learning value, so write it thick**: not just "one write was missing", but why missing that one write means it does not work at all (for example, the HPET comparator is an equality comparison, so being one tick late is not late, it is never).
 
-**改法**
-做了什么。贴出关键代码改前和改后的样子，不能只用文字描述。
-涉及取舍时把被否掉的方案也写上，以及为什么否掉。
+**Change**
+What was done. Quote the key code as it was before and as it is after; prose alone is not enough. Where there was a trade-off, also write down the rejected options and why they were rejected.
 
-**参照**
-Linux 或 Zircon 里的对应物，**写到函数名**，方便去对照。
-例：`Linux clockevents_program_min_delta()`、`Zircon Timer::Cancel()`。
-没有对应物就写"无，本项目自有设计"，并说清设计理由。
+**Reference**
+The counterpart in Linux or Zircon, **down to the function name**, so the reader can go compare. For example: `Linux clockevents_program_min_delta()`, `Zircon Timer::Cancel()`. If there is no counterpart write "None, this project's own design" and give the design reason.
 
-**验证**
-构建、clang-tidy、QEMU 实测。有数字就把数字放进来，包括对比表。
-没验证到的要明说"未实测"。
+**Verification**
+Build, clang-tidy, QEMU runs. Put numbers in when there are numbers, including comparison tables. Say "not measured" for anything that was not verified.
 
-**故意没做**
-以及为什么。这条经常比"做了什么"更有用——它告诉后来的人边界在哪，
-以及哪些是已经想过而不是漏掉的。
+**Deliberately not done**
+And why. This often says more than what was done: it tells later readers where the boundary is and which things were considered rather than missed.
 
-**怎么发现的**
-修 bug 时写：从症状到根因用了哪些命令、看了哪些输出（日志、寄存器、lldb）。
-这是调试手艺的教材。新功能写"无"。
+**How it was found**
+For a bug: which commands were run and which outputs were read (logs, registers, lldb) to get from the symptom to the root cause. This is teaching material for debugging craft. For a new feature write "None".
 
-**用户的预测**
-有决策卡或测量时写：用户事先的预测，和实际结果对照，差在哪。没有写"无"。
+**The user's prediction**
+When there was a decision card or a measurement: the user's prediction made in advance, compared with the actual result, and where they differ. Otherwise write "None".
 
-**你应该能回答的三个问题**
-合上这份记录，用户应当能凭记忆回答的三个问题，用来复习和自测。
-问理由和后果，不问“改了哪个文件”。
+**Three questions you should be able to answer**
+Three questions the user should be able to answer from memory after closing this record, for review and self-testing. Ask about reasons and consequences, not "which file was changed".
 ```
 
 ---
 
-## 一个写好了的例子
+## A well-written example
 
-见 `260903/x86-clock.md` 的「频率改用比值法，窗口拉长到 200 ms」一节。
+See the section "频率改用比值法，窗口拉长到 200 ms" (frequency by the ratio method, window lengthened to 200 ms) in `260903/x86-clock.md`.
 
-## 与 `docs/repairs/` 的分工
+## Relation to `docs/repairs/`
 
-- `docs/changes/<YYMMDD>/<MODULE>.md` — 改了什么、为什么。**只增不改**，是历史。
-- `docs/repairs/<YYMMDD>/<MODULE>.md` — 还没修的。修掉一条就从里面删掉，
-  同时在 changes 里追加一条。
+- `docs/changes/<YYMMDD>/<MODULE>.md` — what changed and why. **Append-only**; it is history.
+- `docs/repairs/<YYMMDD>/<MODULE>.md` — what is not fixed yet (template: `docs/repairs/TEMPLATE.md`). When an item is fixed, delete it from there and append an entry here.
