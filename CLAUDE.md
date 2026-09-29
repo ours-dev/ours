@@ -119,6 +119,13 @@ system, so weigh a decision's teaching value alongside getting the task done
   Picking a recommended option and saying "sounds good" exercises
   recognition, not the ability itself — an interview is a whiteboard with no
   AI. So:
+  - **Teach first, then ask.** A prediction is only a fair test of what the
+    user has been shown. Before asking for one, briefly teach the objects,
+    states and mechanisms involved (what each piece is, which counters or
+    locks exist, what the racing calls do), with a concrete timeline of who
+    does what when; only then ask something answerable from that. A quiz on
+    concepts the user never saw tests nothing and is unfair to them (they
+    said so on 2026-09-28).
   - For an architecture or concurrency decision, have the user write a
     one-line prediction first (which option, why, what will go wrong),
     before giving the analysis. When it's something to measure, put the
