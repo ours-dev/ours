@@ -1,25 +1,63 @@
 # Agents
 
-This file provides guidance to AI coding agents (Claude Code, Cursor, Codex, Copilot, Antigravity, etc.) when working with code in this repository.
+This file provides guidance to AI coding agents (Claude Code, Cursor, Codex,
+Copilot, Antigravity, etc.) when working with code in this repository. Claude
+Code reads CLAUDE.md instead of this file when both are present, so its
+standing rules are mirrored there; keep the two in sync when you change one.
 
 ## Repository Overview
 
-A microkernel **modeled after** these proven architectures, designed to explore the next generation of OS design. It embraces a **bleeding-edge** stack, adopting state-of-the-art technologies and solutions **to the fullest extent possible**
+A microkernel modeled primarily on Zircon (Fuchsia's kernel), with a few
+deliberate exceptions modeled on Linux instead (see `ours-kernel-design`),
+built to explore the next generation of OS design. It embraces a
+bleeding-edge stack — modern C++ (C++20/23), current LLVM, no legacy
+compatibility constraints.
 
-## Preset Knowledges
+## Skills
 
-### Requirements
+If a task matches a skill, invoke it — follow its instructions exactly rather
+than partially applying them or reimplementing what it already covers.
 
-### Skill Rules
+Skills live in `.agents/skills/<skill-name>/SKILL.md`. The ones nearly every
+task needs:
 
-- If a task matches a skill, you MUST invoke it
-- Skills are located in .agents/skills/<skill-name>/SKILL.md
-- Never implement directly if a skill applies
-- Always follow the skill instructions exactly (do not partially apply them)
+- `ours-verify`: done means it builds and **both** images boot. Run it before
+  every commit.
+- `ours-kernel-design`: settled design decisions. Load it before reading code
+  for any design, placement or review question about `kernel/` or `system/`.
+- `cpp-write-and-verify`: every C++ edit, with `modern-cpp-development` for
+  style.
 
-### Automatic Evolution And Explicitly Recruiting
+## Repo conventions
 
-- 
+- Tooling scripts are Python, never shell.
+- Toolchains come from official upstream releases into `prebuilt/`. Never
+  build the dev container or install anything into system directories.
+- Lists describing build products are generated from GN metadata, not kept by
+  hand. GN templates are named for their artifact (`rust_library`), not the
+  tool.
+- Benchmarks go in `benches/`; files that only register kshell console
+  commands go in `kernel/commands`; new C++ libraries are scaffolded with
+  copier from `tools/templates/cpp_library`.
+
+## Commit after every change
+
+One change, one commit, made as soon as that change builds and boots. Do not
+let several fixes pile up in the working tree: once they blur together the
+commit messages stop being writable, which is how this tree reached ~280
+uncommitted paths.
+
+The rhythm is: diagnose -> fix -> build and boot it (`ours-verify`) -> commit
+-> next thing.
+An update to the running repair document belongs in the same commit as the
+change it describes.
+
+This worktree often holds work from other concurrent sessions. Check
+`git diff <file>` before staging: a file can carry both your hunks and someone
+else's in-flight feature, and sweeping theirs into your commit is worse than
+leaving yours uncommitted. Commit with `git commit -- <paths>`, never
+`git add` followed by a bare `git commit`: the sessions share one index, and a
+bare commit takes whatever the others have staged.
 
 ## Working with the user
 
@@ -79,13 +117,43 @@ A microkernel **modeled after** these proven architectures, designed to explore 
 - **Keep answers short.** Lead with the conclusion, minimize setup, don't
   pile on.
 
+## Documentation
+
+**Change records** go in `docs/changes/<YYMMDD>/<MODULE>.md`, one section per
+change, in a fixed format; the template and field descriptions are in
+`docs/changes/TEMPLATE.md`. Write it the same round as the change, not after
+the fact. This document is for learning, so "why this was a mistake" and
+"which Linux/Zircon function it was fixed to match" need to be spelled out in
+full — not just which line changed. Append-only.
+
+**Outstanding repairs** go in `docs/repairs/<YYMMDD>/<MODULE>.md`, listing
+only what is not yet fixed, ordered by severity, each item independently
+claimable. Once an item is fixed, delete it from here and add an entry to
+changes.
+
+`<YYMMDD>` is a six-digit date, `<MODULE>` a hyphenated module path name
+(`kernel-time`, `x86-clock`). Splitting by module is how the length is kept
+under control — don't merge two things back into one ever-growing file.
+
+`docs/repairs-20260830.md` is the single running log from before this
+structure existed, a read-only archive; **several agents write to it
+concurrently, so never rewrite the whole file**.
+
 ## Workflow
 
-Whenever a user presents a request, the first step should always be to ask for additional information to clarify and refine the requirements. Next, break the request down into a set of separate subtasks.
+Whenever a user presents a request, the first step should always be to ask
+for additional information to clarify and refine the requirements. Next,
+break the request down into a set of separate subtasks.
 
-For each subtask, we may need to explicitly create a plan, track progress, validate the results, and review the completed work. Therefore, create a dedicated workspace for each subtask under `.agents/tasks` in the project root to record and manage these materials.
-
+For each subtask, we may need to explicitly create a plan, track progress,
+validate the results, and review the completed work. Therefore, create a
+dedicated workspace for each subtask under `.agents/tasks` in the project
+root to record and manage these materials.
 
 ## Extension
 
 ### Creating a New Skill
+
+Use the `skill-creator` skill (`.agents/skills/skill-creator/`): it drafts a
+new skill, runs its eval suite, and can tune the description for reliable
+triggering.

@@ -1,6 +1,23 @@
 # CLAUDE.md
 
+This file gives Claude Code the standing rules for this repository. Claude
+Code reads this file instead of AGENTS.md when both are present, so it
+mirrors AGENTS.md's tool-agnostic sections in full and adds only what's
+specific to Claude Code (the skill-discovery mechanics below). Keep the two
+in sync when you change one.
+
+## Repository Overview
+
+A microkernel modeled primarily on Zircon (Fuchsia's kernel), with a few
+deliberate exceptions modeled on Linux instead (see `ours-kernel-design`),
+built to explore the next generation of OS design. It embraces a
+bleeding-edge stack — modern C++ (C++20/23), current LLVM, no legacy
+compatibility constraints.
+
 ## Skills
+
+If a task matches a skill, invoke it — follow its instructions exactly rather
+than partially applying them or reimplementing what it already covers.
 
 Skills live in `.agents/skills/` so every agent can use them. Claude Code only
 discovers the ones linked from `.claude/skills/`
