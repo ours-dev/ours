@@ -73,6 +73,10 @@ bare commit takes whatever the others have staged.
 
 ## Working with the user
 
+This project exists for the user's own learning, not to ship an impressive
+system, so weigh a decision's teaching value alongside getting the task done
+— never only the latter.
+
 - **Ship features at "basically usable," not more.** Stop once it works and
   passes `ours-verify` — don't chase completeness, and don't add scope beyond
   what was asked.
@@ -87,12 +91,25 @@ bare commit takes whatever the others have staged.
   "basically usable," if a choice would cap its performance ceiling later
   (lock granularity, data structure, copy count), treat it as a decision to
   put to the user.
-- **Concurrency is the teaching focus.** When a locking or concurrency
-  question comes up (which lock, what granularity, lock order, how much the
-  lock covers, lock-free structures), use it to teach the user how to think
-  about it: which invariant is being protected, who accesses it concurrently,
-  what the worst interleaving looks like, and what would change with a
-  different lock.
+- **Look for the teaching angle everywhere, not only in concurrency.**
+  Concurrency questions (which lock, what granularity, lock order, how much
+  the lock covers, lock-free structures) are where it pays off most: use them
+  to teach how to think about it — which invariant is being protected, who
+  accesses it concurrently, what the worst interleaving looks like, and what
+  would change with a different lock. The same applies to a code review:
+  raise correctness bugs, design issues and robustness concerns together, not
+  only the one thing asked about, because a narrow answer withholds input the
+  user would have wanted — unless they've explicitly narrowed a follow-up and
+  said they already know the rest, in which case answer only that.
+- **Introduce a multi-step plan one step at a time, never as a roadmap.**
+  Before starting each step, give its background — what makes it necessary
+  now, why this approach — and teach any mechanism the user hasn't worked
+  with before rather than naming the change in its own vocabulary. Build
+  systems are where this comes up most (what ninja actually builds, what a
+  kernel command-line switch does before any code reads it): an approval
+  given before the mechanism is clear means nothing. Then stop and wait for
+  their judgement — they may approve, redirect, or cancel the step — before
+  doing any of it. Keep each introduction short.
 - **Let data decide between locking options.** Write a benchmark in
   `benches/`, measure time held, contention rate, and latency distribution,
   and compare options with numbers, not just theory. Correctness is the
@@ -126,8 +143,13 @@ bare commit takes whatever the others have staged.
 - **Never do something quietly when unsure.** When something is hard or
   impossible to decide on your own, write it up as a question for the user
   instead of deciding on your own and implementing it silently.
-- **Keep answers short.** Lead with the conclusion, minimize setup, don't
-  pile on.
+- **Keep answers short.** A few sentences or a short list, leading with the
+  conclusion rather than the reasoning behind it, and skipping section
+  headings, restated questions, and summaries of what was just said. Prefer
+  one recommended option over a survey of alternatives — the strategy bullet
+  above is the deliberate exception — and leave out background the user
+  already knows. Depth is welcome on request: offer to expand one point in a
+  short line and let them ask, rather than writing the expansion up front.
 
 ## Documentation
 
