@@ -330,19 +330,22 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// node that dies has to find the sibling that is left. Both come later;
     /// until they do only creation and destruction touch it.
     ///
-    /// Two rules for whoever walks it, both from the same fact: a node's
-    /// destructor takes the tree's lock to leave this list.
+    /// Two things about walking it are enforced, not asked for, both from the
+    /// fact that a node's destructor takes the tree's lock to leave this list.
     ///
-    ///  - A node on the list has intact memory, but its reference count may
-    ///    already be zero: once the last reference is gone the node stays here
-    ///    until its destructor gets the lock. Read it and change its fields, but
-    ///    take no reference to it (Arc::adopt, retain): that brings a node that
-    ///    is being destroyed back to life, and it is then destroyed twice.
-    ///    No walker needs one today. The merge of a dying node into its sibling
-    ///    changes the sibling's fields and nothing else.
-    ///  - Never release the last reference to a node while holding the lock: its
-    ///    destructor takes the lock again and the thread waits for itself. Hand
-    ///    the reference out and let the caller drop it after the lock, as Zircon's
+    ///  - A node on the list may already have lost its last reference: it stays
+    ///    here until its destructor gets the lock. Its memory is intact, so its
+    ///    fields can be read and changed, but a reference cannot be taken to it
+    ///    with Arc::adopt(): RefCounted::retain() stops the program on an object
+    ///    that is being destroyed, in every build, where it would otherwise be
+    ///    destroyed twice. A walker that has to hold a node asks
+    ///    Arc::try_adopt(), which answers empty for one that is dying, and is
+    ///    ready for that. No walker needs one today: the merge of a dying node
+    ///    into its sibling changes the sibling's fields and nothing else.
+    ///  - The last reference to a node must not be released while the lock is
+    ///    held. ~VmCowPages() stops the program, with a message, in every build,
+    ///    where the thread would otherwise wait for itself. The way out is to
+    ///    hand the reference to the caller to drop after the lock, as Zircon's
     ///    MaybeDeadTransition() does.
     ///
     /// Under the tree's lock, like everything else here that more than one

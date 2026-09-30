@@ -615,3 +615,51 @@ None.
 - Why does releasing the last reference to a node that has a parent, while holding the tree's lock, never return?
 - Why did no test show it, and what would have?
 - Why is the hidden node given its parent only after the last allocation?
+
+## Title: Releasing the last reference to a VmCowPages under its tree's lock stops the program with a message (2026-09-30)
+
+**Files**
+- `kernel/mm/vm_cow_pages.cpp` — `~VmCowPages()` asserts, in every build, that the thread destroying a node with a parent does not hold the tree's lock.
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — the comment at `m_children` now says what is enforced, and where.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — the open question about walking the list of children, restated.
+
+**Symptom**
+Latent. A `VmCowPages` with a parent takes the tree's lock in its destructor, so releasing its last reference on a thread that already holds that lock waits for itself for ever; lockdep reports it only in the builds that have it. One instance was found and fixed the same day (the clone's failure path); the next is whoever writes a code path that drops a node while holding the lock, most likely the merge of the next step.
+
+**Cause**
+The rule that was written down, "never release the last reference to a node under the lock", is one the next person can break without noticing, and a hang in a release image says nothing about where it happened. The user asked that it not depend on being remembered.
+
+**Change**
+```cpp
+ASSERT(m_lock.holder() != task::Thread::Current::get(),
+       "the last reference to a VmCowPages was released with its tree's lock held");
+```
+before the destructor takes the lock. It uses the mutex's own record of who holds it, so it is exact, not a guess, and is on in every build. It is a failure that names its cause, not a prevention: a node cannot be freed without its lock, and deferring the free to another thread (the `rc_recycle()` hook and a worker would do it) is a larger mechanism that nothing needs while nothing but the merge drops nodes under the lock, and the merge is written to hand its references out.
+
+The other half, that a walker of the list may not bring a dying node back to life, is closed in the `Arc` itself (`docs/changes/260930/ustl.md`): `retain()` stops on it, and `Arc::try_adopt()` is the way to ask.
+
+Checked by a one-off experiment, not kept in the tree: a node made under a parent was released inside a `Guard` of its own lock. Both images stopped with `Assertion failed on m_lock.holder() != task::Thread::Current::get() with message: the last reference to a VmCowPages was released with its tree's lock held`, where a hang would have been.
+
+**Reference**
+Zircon: `MaybeDeadTransition()` returns the parent `RefPtr` it would drop, so the caller releases it after the lock (`vm_cow_pages.cc:1022`); its `~VmCowPages()` also asserts the node is off every list. Linux: a mutex is not recursive either, and `lockdep` reports the same mistake as a possible recursive locking.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines (the existing destructor warning only).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 95 checks ok on both images; `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel.
+- The experiment above, on both images.
+- Not tested in the tree: the stop, since it ends the kernel.
+
+**Deliberately not done**
+- No deferral of the destruction to a worker; see Change.
+- No test that stops the kernel.
+
+**How it was found**
+The user's review: the safety must not rely on the next person writing it right.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the destructor need the tree's lock only for a node that has a parent?
+- What does the assertion do that lockdep does not, and why is it on in every build?
+- Why is stopping the failure the merge must not reach, and what does the merge do so that it does not?

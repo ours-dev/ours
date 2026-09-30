@@ -5,6 +5,7 @@
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
 #include <ours/mm/vmm.hpp>
+#include <ours/task/thread.hpp>
 
 #include <algorithm>
 
@@ -58,6 +59,14 @@ VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
 /// now, since each child held a reference to it.
 VmCowPages::~VmCowPages() {
     if (m_parent) {
+        // Stops the program, in every build, where the thread would otherwise
+        // wait for itself for ever: the last reference to this node was released
+        // by a thread that holds the tree's lock, and the lock taken below is
+        // that one. The mutex is not recursive, and lockdep only reports it
+        // in the builds that have lockdep.
+        ASSERT(m_lock.holder() != task::Thread::Current::get(),
+               "the last reference to a VmCowPages was released with its tree's lock held");
+
         Guard guard{m_lock};
         m_parent->lock().assert_held();
         // Not linked when the node was made and dropped before anything linked
