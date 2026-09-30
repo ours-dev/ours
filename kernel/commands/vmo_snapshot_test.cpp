@@ -844,6 +844,76 @@ namespace {
                 "the address space of the mapped clone checks is destroyed");
     }
 
+    // A clone whose page tables are filled in at once (VmMapping::map()): what they
+    // hold is what the cursor says -- the node's own pages writable, the shared ones and
+    // the zero page read-only -- without a page copied.
+    // and what they hold is what the cursor says -- the node's own pages
+    // writable, the shared ones and the zero page read-only -- without a page copied.
+    auto check_committed_clone_mapping(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test committed clone", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the committed clone checks is made");
+            return;
+        }
+        auto root = aspace->root_vma();
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+
+        ustl::Arc<mm::VmObjectPaged> parent;
+        ustl::Arc<mm::VmObjectPaged> child;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &parent) == Status::Ok &&
+                          poke(parent, 0, 0x5100'0000) && poke(parent, 1, 0x5200'0000) &&
+                          parent->create_clone(0, 4 * PAGE_SIZE, &child) == Status::Ok &&
+                          poke(child, 1, 0x5a00'0000);
+        verdict(tally, made,
+                "an object of three pages, a clone of it four pages long, and a write to the "
+                "clone's page 1 are made");
+        if (made) {
+            Node parent_pages = parent->cow_pages();
+            Node child_pages = child->cow_pages();
+            auto const shared = lookup(parent_pages, false, 0);
+            auto const own_before = pages_in(child_pages, child_pages.as_ptr());
+            verdict(tally, shared && own_before == 1,
+                    "the clone holds one page of its own, the one it wrote");
+
+            // Mapped, and then populated by the mapping itself: map_with_vmo() with
+            // Commit would commit the object first, which copies every shared page.
+            auto mapped = root->map_with_vmo(mm::VmPlacement::at(AT), 4 * PAGE_SIZE, 0, rw, PERMS,
+                                             child, mm::VmMapOption::None, "committed clone");
+            verdict(tally,
+                    mapped.is_ok() &&
+                        mapped.unwrap()->map(AT, 4 * PAGE_SIZE, true,
+                                             mm::MapOptions::ErrorIfExisting) == Status::Ok,
+                    "the clone is mapped read-write and its page tables are filled in");
+            if (mapped.is_ok() && shared) {
+                auto const zero = mm::frame_to_phys(mm::get_zero_page());
+                verdict(tally,
+                        entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
+                            !is_writable(aspace, AT) && is_readable(aspace, AT),
+                        "a page the clone only sees is mapped on the object's frame, read-only");
+                verdict(tally,
+                        is_writable(aspace, AT + PAGE_SIZE) && is_readable(aspace, AT + PAGE_SIZE),
+                        "the page it wrote is mapped writable, in the middle of the run");
+                verdict(tally,
+                        entry_pa(aspace, AT + 2 * PAGE_SIZE) == zero &&
+                            entry_pa(aspace, AT + 3 * PAGE_SIZE) == zero &&
+                            !is_writable(aspace, AT + 2 * PAGE_SIZE) &&
+                            !is_writable(aspace, AT + 3 * PAGE_SIZE),
+                        "a hole of the object and a page past its end are the shared zero page, "
+                        "read-only");
+                verdict(tally, pages_in(child_pages, child_pages.as_ptr()) == own_before,
+                        "and mapping the clone copied nothing: it still holds the one page");
+            }
+        }
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the committed clone checks is destroyed");
+    }
+
     auto vmosnapshot_test_command(int, char **) -> int {
         Tally tally;
 
@@ -1398,6 +1468,7 @@ namespace {
         check_clone_of_mapped_object(tally);
         check_create_clone(tally);
         check_mapped_clone(tally);
+        check_committed_clone_mapping(tally);
 
         if (tally.failed != 0) {
             log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,

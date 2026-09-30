@@ -40,6 +40,15 @@ class MappingCoalescer {
     [[nodiscard]]
     auto commit() -> Status;
 
+    /// The permissions of the pages appended from here on. The batch must be
+    /// empty, since it maps with one set of permissions: a run of pages whose
+    /// permissions change is committed at the change and continues at the next
+    /// address with the new ones.
+    auto set_flags(MmuFlags mmuf) -> void {
+        DEBUG_ASSERT(nr_pages_ == 0);
+        mmuf_ = mmuf;
+    }
+
   private:
     VmMapping *mapping_;
     VirtAddr va_;
@@ -242,20 +251,41 @@ auto VmMapping::map_paged(VmObjectPaged *vmo, VirtAddr base, usize size, bool co
         MappingCoalescer<MAX_BATCH_PAGES> coalescer(this, region_base, mmuf, options);
 
         // TODO: Request pages in larger batches (e.g. folios) instead of
-        // page-by-page.  Currently require_owned_page(1) is called per
-        // page, which prevents the VMO from returning compound pages and
-        // also precludes the arch layer from using large-page mappings.
+        // page-by-page.  Currently require_page(1) is called per page, which
+        // prevents the VMO from returning compound pages and also precludes
+        // the arch layer from using large-page mappings.
         MultiPageRequest page_request;
+        auto batch_mmuf = mmuf;
         for (usize i = 0; i < region_size; i += PAGE_SIZE) {
-            auto result = cursor->require_owned_page(1, &page_request);
+            // Nobody is writing: this maps what the object has, and a write
+            // that comes later faults and asks for a page of its own then. A
+            // page the node owns comes back writable; one it only sees through
+            // an ancestor, or the shared zero page, does not, and asking for an
+            // owned page here would copy every shared page of the window at
+            // the moment of mapping, which is the copying a clone exists to put
+            // off. For a node with no ancestor the two are the same: a hole is
+            // a zeroed page of its own.
+            auto result = cursor->require_page(false, 1, &page_request);
             if (!result) {
                 return result.unwrap_err();
             }
 
-            // An owned page is asked for, so it is always writable; a mapping
-            // that takes borrowed pages will have to ask for reads instead and
-            // map what comes back by |writable|.
-            DEBUG_ASSERT(result->writable);
+            // What the entry may have is what the region allows, less Write for
+            // a page that is not the node's to write, as the fault path maps it.
+            // The batch is one set of permissions, so a run that changes them is
+            // committed at the change and goes on with the new ones.
+            auto page_mmuf = mmuf;
+            if (!result->writable) {
+                page_mmuf &= ~MmuFlags::Writable;
+            }
+            if (page_mmuf != batch_mmuf) {
+                if (auto const status = coalescer.commit(); Status::Ok != status) {
+                    return status;
+                }
+                coalescer.set_flags(page_mmuf);
+                batch_mmuf = page_mmuf;
+            }
+
             if (auto const status = coalescer.append(frame_to_phys(result->page));
                 Status::Ok != status) {
                 return status;

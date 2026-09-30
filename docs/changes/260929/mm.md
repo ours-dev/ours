@@ -989,3 +989,51 @@ None.
 - Why is the refusal of a Pinned object in the object and not in the pages?
 - What does a clone of a slice read past the slice, and what would it read if the end of the window were not passed to the pages?
 - Why is the new object made after the lock is released?
+
+## Title: map_paged() maps what the cursor says, and copies nothing (2026-10-01)
+
+**Files**
+- `kernel/mm/vm_mapping.cpp` — `map_paged()` asks for `require_page(false, ...)` and maps each page by its `writable`; `MappingCoalescer::set_flags()`.
+- `kernel/commands/vmo_snapshot_test.cpp` — 8 more checks, 194 in all.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — step 9 done; a new finding about `Commit`, in the open questions.
+
+**Symptom**
+Latent, cannot be triggered by a program yet: nothing maps a clone but the tests. `map_paged()` asked for an owned page for every page of the window, so filling in the page tables of a mapping of a clone copied every shared page it covered, at the moment of mapping, and mapped each copy writable. That is the copying a clone exists to put off, done up front, and for a region of a large file it is all of it.
+
+**Cause**
+`map_paged()` was written when a page was either the node's own or did not exist, so "the page for this offset" had one answer and it was writable. A node that can see pages of its ancestors has three: its own, writable; one of an ancestor's, on loan and read-only; and the shared zero page, read-only. Populating a mapping has no writer, so it is a read, and the existing interface for the choice is `Cursor::require_page(will_write, ...)`, which the fault path already uses; the user pointed out that it exists, where I had said to call `require_read_page()` directly. For a node with no ancestor a read of a hole is a zeroed page of its own, which is what it was.
+
+What each page may have is what the region allows, less Write when the cursor says the page is not the node's to write, which is how the fault path maps it. The batch that installs the entries takes one set of permissions, so a run of pages whose permissions change is committed at the change and continues with the new ones: `MappingCoalescer::set_flags()`, allowed only when the batch is empty.
+
+**Change**
+```cpp
+auto result = cursor->require_page(false, 1, &page_request);
+auto page_mmuf = mmuf;
+if (!result->writable) { page_mmuf &= ~MmuFlags::Writable; }
+if (page_mmuf != batch_mmuf) { coalescer.commit(); coalescer.set_flags(page_mmuf); batch_mmuf = page_mmuf; }
+coalescer.append(frame_to_phys(result->page));
+```
+
+**Reference**
+Zircon `VmMapping::MapRange()`, which maps the pages that exist without committing any, read-only where the page belongs to an ancestor (the same rule as `page_fault()`); `LookupCursor::RequireReadPage()` with `writable = false` for a page from a parent.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts, and the shell's mapping checks run through the changed function. `vmosnapshot.test` 194 checks ok on both images (186 before, 8 new); `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel.
+- The new checks map a clone four pages long of an object of three, after the clone has written its page 1, and fill its page tables: the page it only sees is on the object's frame, read-only, in a mapping that allows Write; the page it wrote is writable, in the middle of the run; a hole of the object and a page past its end are the shared zero page, read-only; and the clone still holds exactly one page, so mapping copied nothing.
+- The checks can fail. Three mutants: asking for an owned page again fails three of 194; not splitting the batch at a change fails two; a shared page mapped with Write fails two.
+- Not verified: anything with another CPU.
+
+**Deliberately not done**
+- `VmMapOption::Commit` still commits the object first (`VmArea::map_with_vmo()` calls `commit_range()` and then `map()`), and `commit_range()` on a clone copies every page of the range, since an owned page is what it asks for. So populating a mapping of a clone through `map_with_vmo()` still copies, and the test fills the page tables through `VmMapping::map()` directly. What populate and commit should mean on a node with ancestors is a question for the user and is recorded in the design; Zircon's populate maps what exists and leaves commit to the explicit operation.
+
+**How it was found**
+The user's question whether `require_page()` was not the interface; and a first version of the test that mapped with `Commit` and found the page tables full of copies, which led to `commit_range()`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is populating a mapping a read and not a write, and what does it return for a page the node only sees?
+- Why must the batch be committed when the permissions change?
+- Why did mapping with `Commit` still copy, after this change?
