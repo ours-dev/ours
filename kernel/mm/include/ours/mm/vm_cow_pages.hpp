@@ -323,13 +323,27 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// The nodes that hang directly under this one, in no particular order.
     /// Not references: each child already holds this node, and a list
     /// that held the children would hold them for as long as this node lives.
-    /// A child takes itself off in its destructor, so every node on the list is
-    /// alive whenever the lock is free.
+    /// A child takes itself off in its destructor, under the lock.
     ///
     /// What reads it is what has to go down the tree: a clone that puts a new
     /// node above an old one has to replace it in its parent's list, and a
     /// node that dies has to find the sibling that is left. Both come later;
     /// until they do only creation and destruction touch it.
+    ///
+    /// Two rules for whoever walks it, both from the same fact: a node's
+    /// destructor takes the tree's lock to leave this list.
+    ///
+    ///  - A node on the list has intact memory, but its reference count may
+    ///    already be zero: once the last reference is gone the node stays here
+    ///    until its destructor gets the lock. Read it and change its fields, but
+    ///    take no reference to it (Arc::adopt, retain): that brings a node that
+    ///    is being destroyed back to life, and it is then destroyed twice.
+    ///    No walker needs one today. The merge of a dying node into its sibling
+    ///    changes the sibling's fields and nothing else.
+    ///  - Never release the last reference to a node while holding the lock: its
+    ///    destructor takes the lock again and the thread waits for itself. Hand
+    ///    the reference out and let the caller drop it after the lock, as Zircon's
+    ///    MaybeDeadTransition() does.
     ///
     /// Under the tree's lock, like everything else here that more than one
     /// node can see.
