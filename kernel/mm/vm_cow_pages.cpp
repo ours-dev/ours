@@ -4,6 +4,7 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
+#include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vmm.hpp>
 #include <ours/task/thread.hpp>
 
@@ -89,6 +90,14 @@ VmCowPages::~VmCowPages() {
     }
 
     m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
+}
+
+auto VmCowPages::remove_write_locked(u64 const offset, u64 const len) -> void {
+    for (auto &attachment: m_attachments) {
+        // The object's lock is this node's, one mutex under two names.
+        attachment.m_owner->lock().assert_held();
+        attachment.m_owner->remove_write_of_cow_range_locked(offset, len);
+    }
 }
 
 auto VmCowPages::release_viewed_pages_locked() -> void {
@@ -363,6 +372,13 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
         }
 
         // Nothing fails from here.
+        //
+        // First, Write comes off every mapping of the pages that are about to be
+        // shared, of every object over this node: a writable entry left over a
+        // page that another node is about to see would write to all of them.
+        // Under the lock, so no fault can map a page writable in between.
+        remove_write_locked(0, m_size);
+
         hidden_node->m_parent = m_parent;
         hidden_node->m_parent_offset = m_parent_offset;
         hidden_node->m_parent_limit = m_parent_limit;

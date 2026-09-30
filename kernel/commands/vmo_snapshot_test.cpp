@@ -492,6 +492,179 @@ namespace {
                 "the address space of the protect checks is destroyed");
     }
 
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto nr_attached(ustl::Arc<mm::VmCowPages> const &cow) -> usize {
+        Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
+        return cow->nr_attached_locked();
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto cow_remove_write(ustl::Arc<mm::VmCowPages> const &cow, u64 const offset, u64 const len)
+        -> void {
+        Guard guard{const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->lock()};
+        const_cast<ustl::Arc<mm::VmCowPages> &>(cow)->remove_write_locked(offset, len);
+    }
+
+    // Objects over the same pages: a slice shares its parent's pages and has its own
+    // mappings, and an operation on the pages reaches all of them.
+    auto check_attachments(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test attach", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the attachment checks is made");
+            return;
+        }
+        auto root = aspace->root_vma();
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        constexpr auto WHOLE_AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto SLICE_AT = WHOLE_AT + 8 * PAGE_SIZE;
+        constexpr auto FIRST_AT = SLICE_AT + 8 * PAGE_SIZE;
+
+        ustl::Arc<mm::VmObjectPaged> whole;
+        ustl::Arc<mm::VmObjectPaged> slice;
+        ustl::Arc<mm::VmObjectPaged> gone;
+        auto const made =
+            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy, &whole) ==
+                Status::Ok &&
+            whole->create_child_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok &&
+            whole->create_child_slice(0, PAGE_SIZE, &gone) == Status::Ok;
+        verdict(tally, made, "an object, a slice of its last two pages, and a slice of its first");
+        if (!made) {
+            return;
+        }
+        auto const cow = whole->cow_pages();
+        verdict(tally,
+                slice->cow_pages() == cow && gone->cow_pages() == cow && nr_attached(cow) == 3,
+                "all three are over the same pages, and the pages know all three");
+        gone = nullptr;
+        verdict(tally, nr_attached(cow) == 2, "an object that dies is off the list of the pages");
+
+        auto whole_map = root->map_with_vmo(mm::VmPlacement::at(WHOLE_AT), 3 * PAGE_SIZE, 0, rw,
+                                            PERMS, whole, mm::VmMapOption::Commit, "attach whole");
+        auto slice_map = root->map_with_vmo(mm::VmPlacement::at(SLICE_AT), 2 * PAGE_SIZE, 0, rw,
+                                            PERMS, slice, mm::VmMapOption::Commit, "attach slice");
+        // A slice of the first page, mapped too: it is over the pages but shows none the
+        // operation below is about, and it is made and dropped while the mappings live.
+        ustl::Arc<mm::VmObjectPaged> first;
+        auto const first_made = whole->create_child_slice(0, PAGE_SIZE, &first) == Status::Ok;
+        verdict(tally, first_made, "a slice of the first page is made");
+        if (!first_made) {
+            return;
+        }
+        auto first_map = root->map_with_vmo(mm::VmPlacement::at(FIRST_AT), PAGE_SIZE, 0, rw, PERMS,
+                                            first, mm::VmMapOption::Commit, "attach first");
+        verdict(tally, whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok(),
+                "the object and both slices are mapped");
+        if (!(whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok())) {
+            return;
+        }
+
+        // The pages' second page: the object's page 1, the slice's page 0.
+        cow_remove_write(cow, PAGE_SIZE, PAGE_SIZE);
+        verdict(tally,
+                is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + PAGE_SIZE) &&
+                    is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
+                    !is_writable(aspace, SLICE_AT) && is_writable(aspace, SLICE_AT + PAGE_SIZE),
+                "an operation on the pages takes Write from the page in the object's mapping "
+                "and in the slice's, each at its own offset, and from no other");
+        verdict(tally, is_writable(aspace, FIRST_AT),
+                "and not from a slice that does not show that page");
+
+        cow_remove_write(cow, 0, ~u64{0});
+        verdict(tally,
+                !is_writable(aspace, WHOLE_AT) && !is_writable(aspace, WHOLE_AT + 2 * PAGE_SIZE) &&
+                    !is_writable(aspace, SLICE_AT + PAGE_SIZE) && !is_writable(aspace, FIRST_AT),
+                "the whole range takes it from every mapping of every object over the pages");
+
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the attachment checks is destroyed");
+    }
+
+    auto holds_bytes(Node &node, u8 const (&bytes)[4]) -> bool {
+        auto found = lookup(node, false, 0);
+        return found && std::memcmp(mm::PhysMap::phys_to_virt<u8>(mm::frame_to_phys(found->page)),
+                                    bytes, sizeof(bytes)) == 0;
+    }
+
+    // The clone of the pages of a mapped object, end to end: Write comes off the
+    // object's mappings when the pages become shared, and the first write through
+    // the mapping gets a page of its own, while the clone keeps the old one.
+    auto check_clone_of_mapped_object(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test clone", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the clone checks is made");
+            return;
+        }
+        auto *const previous = attach(aspace.as_ptr_mut());
+
+        auto root = aspace->root_vma();
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &vmo) == Status::Ok;
+        verdict(tally, made, "an object to clone is made");
+        if (made) {
+            static constexpr u8 BEFORE[4] = {0x11, 0x22, 0x33, 0x44};
+            static constexpr u8 AFTER[4] = {0xaa, 0xbb, 0xcc, 0xdd};
+            auto mapped = root->map_with_vmo(mm::VmPlacement::at(AT), 3 * PAGE_SIZE, 0, rw, PERMS,
+                                             vmo, mm::VmMapOption::Commit, "clone checks");
+            verdict(tally, mapped.is_ok() && vmo->write(BEFORE, 0, sizeof(BEFORE)) == Status::Ok,
+                    "it is mapped writable and holds a pattern");
+            if (mapped.is_ok()) {
+                auto const old_pa = entry_pa(aspace, AT);
+                Node pages = vmo->cow_pages();
+                Node clone;
+                verdict(tally, clone_of(pages, 0, 3, clone) == Status::Ok,
+                        "the pages of the object are cloned");
+                verdict(tally,
+                        !is_writable(aspace, AT) && !is_writable(aspace, AT + PAGE_SIZE) &&
+                            !is_writable(aspace, AT + 2 * PAGE_SIZE) && is_readable(aspace, AT) &&
+                            entry_pa(aspace, AT) == old_pa,
+                        "Write is off every entry of the object's mapping, on the frames it had");
+
+                // The mapping still allows the write; the fault path resolves it with a page
+                // of the object's own.
+                verdict(tally,
+                        task::Thread::Current::soft_fault(AT, mm::VmfCause::Write) == Status::Ok,
+                        "a write through the mapping is resolved");
+                verdict(tally,
+                        is_writable(aspace, AT) && entry_pa(aspace, AT) != old_pa &&
+                            !is_writable(aspace, AT + PAGE_SIZE),
+                        "the entry is writable on a frame of its own, and the other pages are not");
+                u8 seen[4] = {};
+                verdict(tally,
+                        vmo->read(seen, 0, sizeof(seen)) == Status::Ok &&
+                            std::memcmp(seen, BEFORE, sizeof(seen)) == 0,
+                        "the object's page holds the bytes it had, copied");
+
+                // Writes to the object's page do not reach the clone's.
+                verdict(tally, vmo->write(AFTER, 0, sizeof(AFTER)) == Status::Ok,
+                        "the object writes its page");
+                auto const mine = lookup(pages, false, 0);
+                auto const theirs = lookup(clone, false, 0);
+                verdict(tally,
+                        mine && theirs && mine->page != theirs->page && mine->writable &&
+                            !theirs->writable && holds_bytes(pages, AFTER) &&
+                            holds_bytes(clone, BEFORE),
+                        "and the clone still sees the bytes from before the clone, in the page "
+                        "the object gave up");
+            }
+        }
+
+        attach(previous);
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the clone checks is destroyed");
+    }
+
     auto vmosnapshot_test_command(int, char **) -> int {
         Tally tally;
 
@@ -1042,6 +1215,8 @@ namespace {
 
         check_remove_write(tally);
         check_narrowing_protect(tally);
+        check_attachments(tally);
+        check_clone_of_mapped_object(tally);
 
         if (tally.failed != 0) {
             log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,

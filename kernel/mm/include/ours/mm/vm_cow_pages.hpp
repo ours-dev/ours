@@ -13,12 +13,42 @@
 #include <ustl/rc.hpp>
 
 namespace ours::mm {
+class VmObjectPaged;
+
 /// A group of the copy on write page.
 class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePolicy> {
     using Self = VmCowPages;
 
   public:
     class Cursor;
+
+    /// One VmObjectPaged over these pages, as the node knows it. A member of the
+    /// object, which registers it with the node it is over and takes it off
+    /// again when it dies, both under the tree's lock.
+    ///
+    /// The node has to know its objects because an operation on the pages has to
+    /// reach every mapping of them, and the mappings belong to the objects: a
+    /// slice shares its parent's pages and has a list of mappings of its own.
+    /// Zircon has no such thing to keep, since a VmCowPages there has one
+    /// VmObject, and holds a single back pointer to it (paged_ref_). This is
+    /// composition and not a base class of the object, so that the node's header
+    /// need not know the object's.
+    class Attachment {
+        using Self = Attachment;
+
+      public:
+        explicit Attachment(VmObjectPaged *owner) : m_owner(owner) {}
+        USTL_NO_MOVEABLE_AND_COPYABLE(Attachment);
+
+      private:
+        friend class VmCowPages;
+
+        VmObjectPaged *const m_owner;
+
+        ustl::collections::intrusive::ListMemberHook<> m_hook;
+        USTL_DECLARE_HOOK_OPTION(Self, m_hook, Options);
+        USTL_DECLARE_LIST(Self, List, Options);
+    };
 
     /// What kind of node this is, fixed when it is made. A group of flags and
     /// not a bool for each, because a node will have more of them, and each new
@@ -80,12 +110,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// reads as zero however large |size| is. |offset| and |size| must be page
     /// aligned, and a hidden node cannot be cloned: BadState.
     ///
-    /// Two things this cannot check, because a VmCowPages does not know the
-    /// objects over it, and the caller must have seen to. Nothing may map this
-    /// node's pages writable while it is cloned: the pages become shared, and a
-    /// writable mapping would write to all of their viewers. And none of them
-    /// may be pinned. Zircon refuses both itself (RemoveWrite on the mappings,
-    /// BadState for a pinned page); the VmObject that calls this has to.
+    /// Write is taken from every mapping of the pages that move, through the
+    /// objects registered over this node (remove_write_locked()), since the
+    /// pages become shared and a writable mapping would write to all of their
+    /// viewers. What this cannot check, because pinning is the object's and not
+    /// the pages', is that none of them is pinned: Zircon answers BadState for a
+    /// pinned page, and the object that calls this has to.
     ///
     /// The lock is taken by the caller, who has the answer to both anyway.
     /// Zircon: VmCowPages::CreateCloneLocked(), bidirectional path.
@@ -120,6 +150,33 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     TA_REQUIRES(m_lock) auto nr_pages_locked() const -> usize {
         return m_pages.size();
     }
+
+    /// Registers and takes off an object over these pages; see Attachment.
+    TA_REQUIRES(m_lock)
+    auto attach_locked(Attachment &attachment) -> void {
+        m_attachments.push_back(attachment);
+    }
+
+    TA_REQUIRES(m_lock)
+    auto detach_locked(Attachment &attachment) -> void {
+        if (attachment.m_hook.is_linked()) {
+            m_attachments.erase(attachment);
+        }
+    }
+
+    /// How many objects are over these pages.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto nr_attached_locked() const -> usize {
+        return m_attachments.size();
+    }
+
+    /// Takes Write away from the page tables of every mapping, of every object
+    /// over these pages, of [offset, offset + len) of them (offsets in this
+    /// node's bytes, which each object translates into its own). What a clone
+    /// does to the node it clones, since the pages are about to be shared.
+    /// See VmObject::remove_write_locked().
+    TA_REQUIRES(m_lock)
+    auto remove_write_locked(u64 offset, u64 len) -> void;
 
     /// How many nodes hang directly under this one.
     [[nodiscard]]
@@ -382,6 +439,10 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// Under the tree's lock, like everything else here that more than one
     /// node can see.
     ChildList m_children TA_GUARDED(m_lock);
+
+    /// The objects over these pages. Under the tree's lock. Empty for a hidden
+    /// node, which is no object's.
+    Attachment::List m_attachments TA_GUARDED(m_lock);
 };
 
 /// A walk over one contiguous byte range of a VmCowPages, handing out the page

@@ -50,6 +50,14 @@ class VmObjectPaged: public VmObject {
     /// Zircon: VmObjectPaged::CreateChildSlice(), with the same answers.
     auto create_child_slice(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
 
+    /// The pages this object is over, for an operation that acts on the tree of
+    /// them: the clone. Not for reaching into the pages, which are under the
+    /// lock this object hands out.
+    [[nodiscard]]
+    auto cow_pages() const -> ustl::Arc<VmCowPages> const & {
+        return m_cow_pages;
+    }
+
     auto commit_range(VirtAddr offset, usize size, CommitOptions option) -> Status override;
 
     ///
@@ -111,9 +119,11 @@ class VmObjectPaged: public VmObject {
     /// 0 and the pages' size for an object created on its own pages, a range
     /// inside them for a slice.
     VmObjectPaged(Flags vmof, ustl::Arc<VmCowPages> cowpages, u64 cow_offset, usize size);
-    virtual ~VmObjectPaged() = default;
+    ~VmObjectPaged() override;
 
   private:
+    friend class VmCowPages;
+
     /// Tells the analysis that m_cow_pages's lock is held, given m_lock is.
     ///
     /// The two are one mutex -- the constructor hands the VmCowPages's lock to
@@ -153,6 +163,13 @@ class VmObjectPaged: public VmObject {
     auto copy_page_by_page(VirtAddr offset, usize size, bool will_write, CopyPage const &copy)
         -> Status;
 
+    /// Takes Write away from the page tables of this object's mappings of the
+    /// part of [cow_offset, cow_offset + len) of the pages that it shows, given
+    /// in the pages' bytes and translated into this object's. Called by the
+    /// node, for each object over it: VmCowPages::remove_write_locked().
+    TA_REQUIRES(m_lock)
+    auto remove_write_of_cow_range_locked(u64 cow_offset, u64 len) -> void;
+
     ustl::Arc<VmCowPages> m_cow_pages;
 
     /// Where this object's byte 0 sits in m_cow_pages, and how many bytes it
@@ -162,6 +179,11 @@ class VmObjectPaged: public VmObject {
     /// the whole tree, so the window lives on the object instead.
     u64 const m_cow_offset;
     usize const m_size;
+
+    /// How the pages know this object is over them, so that an operation on
+    /// the pages can reach this object's mappings. Registered when the object
+    /// is made and taken off when it dies.
+    VmCowPages::Attachment m_attachment;
 };
 
 } // namespace ours::mm

@@ -872,3 +872,60 @@ None.
 - Why is unmap then map the only way this design adds a permission, and what does that force the caller to have?
 - Why does a `protect()` that widens in the middle of a range leave a shared page writable, and what does a narrowing `protect()` do instead?
 - Why is the entry that lacks a needed permission not spurious, when an entry that has everything is?
+
+## Title: A VmCowPages knows the objects over it, and a clone takes Write from all their mappings (2026-09-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `VmCowPages::Attachment`, `attach_locked()`, `detach_locked()`, `nr_attached_locked()`, `remove_write_locked()`; `create_clone_locked()` calls it when it puts a hidden node above a node.
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`, `kernel/mm/vm_object_paged.cpp` — a `VmCowPages::Attachment` member registered at construction and taken off in the destructor, `cow_pages()`, `remove_write_of_cow_range_locked()`.
+- `kernel/commands/vmo_snapshot_test.cpp` — 19 more checks, 161 in all.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — 8c done; 8d renamed.
+
+**Symptom**
+Latent, cannot be triggered today: nothing but the test clones a node that has an object over it. Without this a clone would take Write from the mappings of one object over the pages and leave the mappings of another, a slice, writable over pages that are now shared, and a write through the slice's mapping would go to the page every node sees, with no fault and no error.
+
+**Cause**
+The mappings of a page belong to the objects over it, and this tree lets more than one object sit on one `VmCowPages`: a slice shares its parent's pages and keeps its own list of mappings. Zircon has one object per `VmCowPages`, so a single back pointer (`paged_ref_`) is enough there, and the clone reaches every mapping through it. Here the node has to know all its objects, and a walk of the node's own bookkeeping is not enough to find the mappings.
+
+The list is a member of the object, an `Attachment`, and not a base class: the node's header names the object only by a forward declaration, and the node calls into the object in its `.cpp`, so the two headers do not include each other. The object registers in its constructor and takes itself off in its destructor, both under the tree's lock; the lock the walk holds is the lock each object is registered under, so the walk never sees an object half destroyed, and the reference to the pages is released after the destructor's body, outside the lock, as the last reference to a node must be.
+
+An object shows a window of the pages, so the node passes each object the range in the pages' bytes and the object translates it into its own, clamps it to its window, and hands it to `VmObject::remove_write_locked()`.
+
+**Change**
+```cpp
+auto VmCowPages::remove_write_locked(u64 offset, u64 len) -> void {
+    for (auto &attachment: m_attachments) {
+        attachment.m_owner->lock().assert_held();
+        attachment.m_owner->remove_write_of_cow_range_locked(offset, len);
+    }
+}
+```
+and in `create_clone_locked()`, in the part that cannot fail and before the pages move: `remove_write_locked(0, m_size);`. Only when a hidden node is put above the node: a node that holds nothing in the window and hangs under a hidden node already has no page of its own there, so its entries are read-only or absent already.
+
+Rejected: a count of writable mappings on the node, which would have needed hooks in four places and refused to clone what a writable mapping shows; and making a slice a `VmCowPages` of its own, as Zircon does, which is a redesign of how slices are built.
+
+**Reference**
+Zircon `VmCowPages::CloneNewHiddenParentLocked()`: `RangeChangeUpdateLocked(0, size_, RangeChangeOp::RemoveWrite)` before the pages move, reaching the object through `paged_ref_` (`vm_cow_pages.cc:1618`).
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 161 checks ok on both images (142 before, 19 new); `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel.
+- The checks with real mappings: an object and two slices are over the same pages and the pages know all three, and one that dies is off the list; an operation on the pages' second page takes Write from that page in the object's mapping and in the slice's, each at its own offset, and from no other, and not from a slice that does not show it; the whole range takes it from every mapping of every object. End to end: an object is mapped writable, holds a pattern, and its pages are cloned: Write is off every entry on the frames it had; a write through the mapping is resolved, and the entry is writable on a frame of its own while the other pages are not; the object's page holds the bytes it had, copied; and after the object writes its page the clone still sees the old bytes in the page the object gave up.
+- The checks can fail. Three mutants: reaching only the first object fails two of 151; not translating the offset fails one; the clone not taking Write off the mappings fails two of 161.
+- Not verified: another CPU's translation of an entry that lost Write, as in the entries before.
+
+**Deliberately not done**
+- No `create_clone()` on the object yet: the clone is made on the pages, in the test. 8d gives it its own name and the pinned refusal.
+- No registry for an object that is not paged: physical objects have no copy-on-write.
+- No cost measurement: the walk is proportional to the objects over the pages, which is a slice or two.
+
+**How it was found**
+Designing 8c: reading how Zircon reaches the mappings, and finding that this tree shares a node between objects.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a slice need its own registration with the pages, and why could a single back pointer do in Zircon?
+- Why is the range translated by each object, and what would a slice's mapping lose Write on if it were not?
+- Why is the object's reference to the pages released outside the lock?

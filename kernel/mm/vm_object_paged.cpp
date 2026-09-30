@@ -26,7 +26,39 @@ VmObjectPaged::VmObjectPaged(VmoFlags vmof, ustl::Arc<VmCowPages> cowpages, u64 
     : Base(gktl::magic<Self>(), Type::Paged, vmof, cowpages->lock())
     , m_cow_pages(ustl::move(cowpages))
     , m_cow_offset(cow_offset)
-    , m_size(size) {}
+    , m_size(size)
+    , m_attachment(this) {
+    // Registered with the pages, under their lock, so that an operation on the
+    // pages can reach this object's mappings. Not yet reachable by anyone else,
+    // so nothing can be missed between the two.
+    Guard guard{m_cow_pages->lock()};
+    m_cow_pages->lock().assert_held();
+    m_cow_pages->attach_locked(m_attachment);
+}
+
+/// Off the pages' list before anything of this object is gone, under the same
+/// lock: an operation on the pages that is walking the list holds it, so it
+/// never sees an object half destroyed. The reference to the pages is released
+/// after this body, outside the lock, as the last reference to a node must be.
+VmObjectPaged::~VmObjectPaged() {
+    Guard guard{m_cow_pages->lock()};
+    m_cow_pages->lock().assert_held();
+    m_cow_pages->detach_locked(m_attachment);
+}
+
+auto VmObjectPaged::remove_write_of_cow_range_locked(u64 const cow_offset, u64 const len) -> void {
+    // This object shows [m_cow_offset, m_cow_offset + m_size) of the pages.
+    u64 end = cow_offset + len;
+    if (len > ~u64{0} - cow_offset) {
+        end = ~u64{0};
+    }
+    u64 const first = std::max<u64>(cow_offset, m_cow_offset);
+    u64 const last = std::min<u64>(end, m_cow_offset + m_size);
+    if (first >= last) {
+        return;
+    }
+    remove_write_locked(first - m_cow_offset, last - first);
+}
 
 auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjectPaged> *out)
     -> Status {
