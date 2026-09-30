@@ -503,6 +503,68 @@ namespace {
                 "a page held by a node that is not hidden is copied, never taken, and its count "
                 "is left alone");
 
+        // Two windows of one node that do not overlap: two programs' segments of
+        // one boot image. They hang under one hidden node and share nothing but
+        // the lock; what each reads, writes and counts is its own.
+        Node image;
+        verdict(tally, make(image, 6), "a six-page image is made");
+        VmPage *img[6] = {};
+        for (usize i = 0; i < 6; ++i) {
+            img[i] = fill(image, i, static_cast<u8>(0x30 + i));
+        }
+        Node seg_x;
+        Node seg_y;
+        verdict(tally,
+                img[5] != nullptr && clone_of(image, 1, 2, seg_x) == Status::Ok &&
+                    clone_of(image, 4, 2, seg_y) == Status::Ok,
+                "two windows of it, pages 1-2 and 4-5, are cloned");
+        auto const *const image_hidden = parent_of(image);
+        verdict(tally,
+                image_hidden != nullptr && parent_of(seg_x) == image_hidden &&
+                    parent_of(seg_y) == image_hidden && children_in(image, image_hidden) == 3 &&
+                    pages_in(image, image_hidden) == 6,
+                "both hang under the one hidden node, which holds all six pages");
+        verdict(tally,
+                img[0]->share_count() == 0 && img[1]->share_count() == 1 &&
+                    img[2]->share_count() == 1 && img[3]->share_count() == 0 &&
+                    img[4]->share_count() == 1 && img[5]->share_count() == 1,
+                "each window's pages have one more viewer, and the pages in neither have none");
+        verdict(tally,
+                reads_lenders_page(seg_x, 0, img[1]) && reads_lenders_page(seg_x, 1, img[2]) &&
+                    reads_lenders_page(seg_y, 0, img[4]) && reads_lenders_page(seg_y, 1, img[5]),
+                "each window reads its own pages of the image");
+
+        // A write in one window does not touch the other's pages or counts.
+        auto const x_wrote = lookup(seg_x, true, 0);
+        verdict(tally,
+                x_wrote && x_wrote->page != img[1] && holds_only(x_wrote->page, 0x31) &&
+                    img[1]->share_count() == 0 && img[4]->share_count() == 1 &&
+                    img[5]->share_count() == 1 && reads_lenders_page(seg_y, 0, img[4]),
+                "a write in the first window forks its page and leaves the second's alone");
+        auto const y_wrote = lookup(seg_y, true, 1);
+        verdict(tally,
+                y_wrote && y_wrote->page != img[5] && holds_only(y_wrote->page, 0x35) &&
+                    img[5]->share_count() == 0 && img[2]->share_count() == 1 &&
+                    reads_lenders_page(seg_x, 1, img[2]),
+                "and a write in the second forks its page and leaves the first's alone");
+
+        // The image itself sees every page, so once a window has left a page
+        // the image is the last to see it, and takes it; the pages no window
+        // saw, it takes at once.
+        auto const image_1 = lookup(image, true, 1);
+        auto const image_0 = lookup(image, true, 0);
+        auto const image_3 = lookup(image, true, 3);
+        verdict(tally,
+                image_1 && image_0 && image_3 && image_1->page == img[1] &&
+                    image_0->page == img[0] && image_3->page == img[3] &&
+                    pages_in(image, image_hidden) == 3 && img[2]->share_count() == 1 &&
+                    img[4]->share_count() == 1,
+                "the image takes the pages nobody else still sees, and the rest stay shared");
+        verdict(tally,
+                holds_only(img[0], 0x30) && holds_only(img[1], 0x31) && holds_only(img[3], 0x33) &&
+                    reads_lenders_page(seg_x, 1, img[2]) && reads_lenders_page(seg_y, 0, img[4]),
+                "and the windows still read the pages that stayed");
+
         // The new hidden node takes the node's place on its parent's list.
         Node top;
         Node under_top;

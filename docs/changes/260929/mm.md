@@ -529,3 +529,40 @@ None.
 - What decides whether the page `find_page()` returns may be written, and why is it the node that holds it and not the page?
 - Why does a node with no parent use the same function, and what does it cost there?
 - Why does the clone's counting loop find only ancestors' pages, though it calls the function that also looks in the node's own store?
+
+## Title: A test for two windows of one node that do not overlap (2026-09-30)
+
+**Files**
+- `kernel/commands/vmo_snapshot_test.cpp` — 9 more checks in `vmosnapshot.test`, 95 in all.
+
+**Symptom**
+None. The case was asked about, not seen fail: several clones of one node, each looking at a range of pages the others do not, which is what a launcher does with a boot image that holds many programs' files. The tests had one window, and every other clone looked at the whole node.
+
+**Cause**
+The share count, the copy-or-take decision and the offset arithmetic all work per page and per window, and a test in which every clone sees the same pages cannot tell a count that is kept per page from one that is kept per node, or an offset that is composed from one that is only ever zero. Two disjoint windows are the smallest case in which a page's count depends on which clone can reach it, and in which a write in one window must leave the other's pages and counts alone.
+
+**Change**
+A six-page image with two windows, pages 1-2 and 4-5, hung under one hidden node. The checks: the hidden node lists three children and holds all six pages; each window's pages have a count of one and the two pages in neither have zero; each window reads its own pages of the image; a write in one window forks its page and leaves the other's untouched; the image, which sees every page, takes the pages nobody else still sees, one at a time, and the pages a window still sees stay shared; and the windows still read the pages that stayed.
+
+**Reference**
+None, this project's own test. The case is the one the launcher will produce: `vmo_create_child(bootfs, offset, size)` for each program's segments of one image.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the test.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` over COM1: 95 checks ok on both images (86 before, 9 new).
+- The new checks can fail: with the composition of the parent offset removed from the walk, 12 of 95 checks fail, six of them among the new nine (the counts, each window's reads, both writes, the image's takes and the reads after them); the line was restored and all 95 pass.
+
+**Deliberately not done**
+- No lock contention measurement. The two windows share the tree's lock although their pages are disjoint; that is decision 3 of the design, to be measured with the benchmark after the fault step.
+- No death of a window: a window's pages keep their count when it dies until the death step.
+
+**How it was found**
+The user's question, whether a hidden node's observers could each look at a completely different range.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the image, which is not a clone, count as a viewer of every page it has cloned windows of?
+- After both windows have written their first page, why does the image take pages 0, 1 and 3 but not 2 or 4?
+- Why do two windows with no page in common still contend on one lock, and where is that decided?
