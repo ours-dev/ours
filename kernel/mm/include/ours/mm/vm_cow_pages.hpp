@@ -209,11 +209,20 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     auto alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status;
 
+    /// A page found above a node, with where it was found. |page| is null when
+    /// nothing was: the walk reached the top, or a node's limit, and what lies
+    /// past nothing reads as zero.
+    struct AncestorPage {
+        VmPage *page;
+        /// The node that holds it, and its offset in that node's coordinates:
+        /// what a write needs to take the page out.
+        VmCowPages *owner;
+        u64 offset;
+    };
+
     /// The page an ancestor holds for |offset|, an offset in this node's own
-    /// coordinates, or nullptr when the walk up reaches the top, or a node's
-    /// limit, without finding one; what lies past nothing reads as zero. The
-    /// nearest ancestor that has a page wins, and the walk never looks at this
-    /// node's own store: the callers have already done that.
+    /// coordinates. The nearest ancestor that has a page wins, and the walk
+    /// never looks at this node's own store: the callers have already done that.
     ///
     /// The lock is held by every caller. It is not annotated, for the reason
     /// m_pages is not guarded: the callers include Cursor, which the analysis
@@ -223,7 +232,38 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// `while (offset < cur.parent_limit_)` in the same way, adding the
     /// parent offset at each hop.
     [[nodiscard]]
-    auto find_ancestor_page(u64 offset) const -> VmPage *;
+    auto find_ancestor_page(u64 offset) -> AncestorPage;
+
+    /// Gives this node a page of its own at |offset|, out of |found|, the page
+    /// an ancestor shows there now, and answers it. The node may write the page
+    /// it gets.
+    ///
+    /// A page held by a hidden node is shared with every node that sees it, and
+    /// its share count says how many others do. Above zero, someone else still
+    /// sees it, so this node gets a copy (a fork) and the count drops by one.
+    /// At zero this node is the only one left, so it takes the page itself (a
+    /// migrate): the hidden node lets go of it and this node holds it, and
+    /// nothing is copied. Never worse than a copy. A page held by a node that is
+    /// not hidden belongs to a node that can still write it, so it is only ever
+    /// copied, and no count is touched.
+    ///
+    /// Everything that can fail is done before anything changes: the copy is
+    /// allocated and put into this node's store first, and only then is the
+    /// share count dropped or the page taken from the hidden node, neither of
+    /// which can fail, so a failure leaves the tree as it was.
+    ///
+    /// All of it under the one lock the caller holds, from the count that decides
+    /// to the count that changes. Two writers that each read "one other viewer"
+    /// and then both fork would leave the count below zero and the page in the
+    /// hidden node for good; a writer that reads zero while another still reads
+    /// the page would take a page the other keeps seeing, and its writes would
+    /// show there.
+    ///
+    /// Zircon: VmCowPages::CloneCowPageLocked(). What it also does, unmapping the
+    /// writer's old read-only mapping on a fork, is not done here: this does not
+    /// know the mappings.
+    [[nodiscard]]
+    auto cow_page(u64 offset, AncestorPage const &found) -> ktl::Result<VmPage *>;
 
     /// Makes a node and adopts it. The one place a VmCowPages is allocated, so
     /// create(), create_child() and the clone do not each spell out the cache
@@ -335,10 +375,12 @@ class VmCowPages::Cursor {
     /// same dispatch as LookupCursor::RequirePage(bool write, ...); ours took
     /// no such flag, which is one reason it could never be defined.
     ///
-    /// A request to write always comes back |writable|; a request to read may
-    /// not, and every caller has to look, because it decides how the page is
-    /// mapped. Until an object can have an ancestor every page an object hands
-    /// out is its own, so every answer is |writable| today.
+    /// A request to write always comes back |writable|: a node that sees the
+    /// page only through an ancestor is given a page of its own first, by a
+    /// copy or by taking the page (see cow_page()). A request to read may not:
+    /// a node with an ancestor answers with the ancestor's page, on loan, or
+    /// the shared zero page, and every caller has to look, because it decides
+    /// how the page is mapped.
     ///
     /// |nr_pages| is how far ahead the caller would accept pages for, and is
     /// only consulted when a page source has to be asked; |request| is the

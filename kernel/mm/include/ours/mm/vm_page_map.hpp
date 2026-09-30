@@ -83,6 +83,23 @@ class VmPageMap {
         return at.value()->first < last;
     }
 
+    /// Takes the page at |index| out of the map and hands it back, or nullptr
+    /// when the slot is empty. Ownership goes with it: the map no longer knows
+    /// the page, so it will not free it, and whoever asked now has to.
+    ///
+    /// A page moves between two maps by being inserted into the second before
+    /// this is called on the first, so that a failed insertion leaves it where
+    /// it was.
+    auto remove_page(PgOff index) -> VmPage * {
+        auto const slot = m_slots.find(index);
+        if (slot.is_none()) {
+            return nullptr;
+        }
+        auto *const page = slot_page(slot.value()->second);
+        static_cast<void>(m_slots.erase(index));
+        return page;
+    }
+
     /// Takes every slot of |from|, leaving it empty. This map must be empty:
     /// a slot here would be dropped without its page being given back.
     ///

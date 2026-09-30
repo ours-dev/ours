@@ -420,3 +420,64 @@ None.
 - Why is one `Flags` parameter safer than one `bool` per attribute once there are two attributes?
 - What did `enum class` refuse at compile time here that a `bool` would have accepted?
 - Why does `is_hidden()` need no lock, when other reads of a node do?
+
+## Title: A write to a page a node sees only through a hidden node copies it, or takes it (2026-09-30)
+
+**Files**
+- `kernel/mm/vm_cow_pages.cpp`, `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — `VmCowPages::cow_page()`; `find_ancestor_page()` now returns the page with the node that holds it and its offset there (`AncestorPage`); `Cursor::require_owned_page()` calls it instead of refusing.
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `PageFrame::drop_share()`.
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` — `remove_page()`.
+- `kernel/commands/vmo_snapshot_test.cpp` — 12 more checks, 86 in all.
+- `docs/repairs/260930/mm.md` (new) — the fork zero-fills a frame it then overwrites.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — this step done.
+
+**Symptom**
+None. Latent, cannot be triggered today: nothing but the test makes a node with a parent. It is the second half of the copy-on-write child: a write to a page the node sees through a hidden ancestor used to answer `Unimplemented`, and would otherwise have been answered with a fresh zeroed page, which silently throws away what the ancestor holds.
+
+**Cause**
+A page shared through a hidden node cannot be written by any of the nodes that see it, and each of them must still be able to write it as if it were its own. The two ways to give a writer a page of its own are a copy, which is always right, and taking the page itself, which is right only when the writer is the last node that sees it. The share count is what tells them apart, and it is why the count exists: with it a program started once and written to often does not copy every page it writes, and without it every first write would.
+
+What decides the case is one number read and one number written, and in between the copy is made. That is why all of it has to happen under one hold of the tree's lock. Two writers that each read "one other viewer" and then both fork would drop the count from one to below zero, and, unsigned, to four billion, so no writer would ever see zero again and the page would stay in the hidden node for good. A writer that reads zero while another still reads the page would take a page the other keeps seeing, and the taker's writes would show there: two processes sharing writable memory that neither asked for, with no error anywhere.
+
+**Change**
+```cpp
+if (holder->is_hidden() && 0 == source->share_count()) {
+    insert into this node; then remove from holder;   // a migrate: nothing is copied
+    return source;
+}
+allocate a frame; copy PAGE_SIZE bytes; insert into this node;   // a fork
+if (holder->is_hidden()) source->drop_share();
+return copy;
+```
+Everything that can fail comes first: the frame is allocated and put into this node's store before the count is dropped or the page is taken out of the hidden node, and the page is inserted into this node before it is removed from the other, so a failed insertion leaves it where it was. A page a node that is not hidden holds is only ever copied and no count is touched, because that node can still write it; taking it would steal a live node's page. A page with nothing above it, a hole or the zero tail, is not shared content at all and is allocated as a hole is.
+
+`drop_share()` asserts the count is above zero, for the reason above.
+
+Rejected: dropping the lock between the decision and the copy, as `copy_page_by_page()` does around a user copy. That function has a user buffer that can fault; this has none, and the window is exactly where the two failures above live.
+
+**Reference**
+Zircon `VmCowPages::CloneCowPageLocked()` (`vm_cow_pages.cc:2671`): a share count above zero forks with `AllocateCopyPage()` and decrements, zero migrates the page from the hidden owner, and the slot is reserved first so that an allocation failure changes nothing. Zircon also unmaps the writer's old read-only mapping on a fork; ours does not know the mappings, so that belongs to the fault path.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines (the existing destructor warning only).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts as before. dbg: 18 passed, 0 failed, 0 error lines. rel: 13 passed, 9 skipped, 0 failed, 0 error lines.
+- `vmosnapshot.test` over COM1: 86 checks ok on both images (74 before, 12 new). One node with two clones: the count is two; the first writer forks and the page stays; what it writes does not reach the others; it reads its own page afterwards; the second writer forks and the count is zero; the last node takes the page and the hidden node lets go; on page 1 in the other order two forks and then a take; a write to a hole and a write to the zero tail allocate a zeroed page; a page a node that is not hidden holds is copied and its count is left alone. `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel, still pass.
+- The test can fail. Three mutants: taking the page whatever the count, five of 86 checks fail (among them that a write reaches the page the others read); never dropping the count, four; never taking the page, the kernel stops on `drop_share()`'s assertion, "a page with no other viewer lost one", before the test ends, which is the assertion doing what it is there for.
+- Not exercised: a failure part way (there is no way to make an allocation or an insertion fail on demand), a second CPU, and the mappings: no node with a parent is behind a mapping, so the write fault of a read-only page is not reached. The same writes through `VmObject::read`/`write` wait for the `VmObject` layer.
+
+**Deliberately not done**
+- No unmap of the writer's old read-only mapping on a fork: the mapping step.
+- No merge when a node dies: counts only go down through writes, and a node that dies without writing leaves its count behind, which the death step fixes.
+- No skipping of the zero-fill of the frame a fork overwrites; recorded in `docs/repairs/260930/mm.md`, to be measured before it is changed.
+- No lock-free path. One mutex per tree is decision 3 of the design and this is the code that holds it longest, a page copy under it, which is what the benchmark after the fault step will measure.
+
+**How it was found**
+None: a step of the design. The two failures under Cause are the ones named in the user's answer to the invariant exercise ("the count and the number of viewers must agree"; two writers reading the count and both dropping it) and the one that answer did not name, a taker racing a reader.
+
+**The user's prediction**
+"The shared count and the number of objects that actually hold the page must agree. Without a lock A and B can reach the count one after the other, and both delete, making the count negative." Graded: the invariant is right but it is the number of leaves that can *see* the page, minus one, not the number that hold it (only the hidden node holds it); the underflow is right but unsigned wraps instead of going negative, which is worse because nothing notices; and the more dangerous interleaving is a taker racing a reader, which breaks isolation without any visible symptom.
+
+**Three questions you should be able to answer**
+- Why is "a write to a page in an ancestor" the test for copy-on-write, and what does the share count decide once that test is true?
+- Why must the count be read, the copy made and the count written under one hold of the lock, and what are the two ways it fails if they are not?
+- Why is a page held by a node that is not hidden never taken, whatever its count?

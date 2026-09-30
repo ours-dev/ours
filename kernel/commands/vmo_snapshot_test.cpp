@@ -416,6 +416,93 @@ namespace {
                     reads_zero_page(blank_clone, 1),
                 "it gets one, empty, and both read zero");
 
+        // The write. A node that writes a page it sees only through the hidden
+        // node above it gets a page of its own: a copy while someone else still
+        // sees the page, the page itself when it is the last.
+        Node w_origin;
+        verdict(tally, make(w_origin, 3), "a node to write through is made");
+        auto *const w0 = fill(w_origin, 0, 0xD0);
+        auto *const w1 = fill(w_origin, 1, 0xD1);
+        Node w_a;
+        Node w_b;
+        verdict(tally,
+                w0 && w1 && clone_of(w_origin, 0, 3, w_a) == Status::Ok &&
+                    clone_of(w_origin, 0, 3, w_b) == Status::Ok,
+                "it holds two pages and has two clones");
+        auto const *const w_hidden = parent_of(w_origin);
+        verdict(tally,
+                w_hidden != nullptr && pages_in(w_origin, w_hidden) == 2 &&
+                    w0->share_count() == 2 && w1->share_count() == 2,
+                "three nodes see each page, so each has a count of two");
+
+        // The first writer of a page others still see gets a copy.
+        auto const wrote_a = lookup(w_a, true, 0);
+        verdict(tally,
+                wrote_a && wrote_a->writable && wrote_a->page != w0 &&
+                    holds_only(wrote_a->page, 0xD0) && nr_pages(w_a) == 1 &&
+                    w0->share_count() == 1 && pages_in(w_origin, w_hidden) == 2,
+                "the first writer of a shared page gets a copy of it, and the page stays");
+        std::memset(bytes_of(wrote_a->page), 0xEE, PAGE_SIZE);
+        verdict(tally,
+                holds_only(w0, 0xD0) && reads_lenders_page(w_b, 0, w0) &&
+                    reads_lenders_page(w_origin, 0, w0),
+                "what it writes does not reach the page the others read");
+        auto const again_a = lookup(w_a, false, 0);
+        verdict(tally,
+                again_a && again_a->page == wrote_a->page && again_a->writable &&
+                    holds_only(again_a->page, 0xEE),
+                "and it reads its own page afterwards, writable");
+
+        // The second writer forks as well: one other viewer is still there.
+        auto const wrote_b = lookup(w_b, true, 0);
+        verdict(tally,
+                wrote_b && wrote_b->page != w0 && wrote_b->page != wrote_a->page &&
+                    holds_only(wrote_b->page, 0xD0) && w0->share_count() == 0 &&
+                    pages_in(w_origin, w_hidden) == 2,
+                "the second writer forks too, and the count is now zero");
+
+        // The last node that sees the page takes it: nothing is copied.
+        auto const wrote_o = lookup(w_origin, true, 0);
+        verdict(tally,
+                wrote_o && wrote_o->page == w0 && wrote_o->writable &&
+                    pages_in(w_origin, w_hidden) == 1 && nr_pages(w_origin) == 1 &&
+                    holds_only(w0, 0xD0),
+                "the last node that sees a page takes the page itself, and the hidden node "
+                "lets go of it");
+
+        // The other order, on page 1: two forks and then the take.
+        auto const o1w = lookup(w_origin, true, 1);
+        auto const a1w = lookup(w_a, true, 1);
+        auto const b1w = lookup(w_b, true, 1);
+        verdict(tally,
+                o1w && a1w && b1w && o1w->page != w1 && a1w->page != w1 && b1w->page == w1 &&
+                    w1->share_count() == 0 && pages_in(w_origin, w_hidden) == 0 &&
+                    holds_only(o1w->page, 0xD1) && holds_only(a1w->page, 0xD1) &&
+                    holds_only(w1, 0xD1),
+                "whoever writes last takes the page, whichever node that is");
+
+        // A hole, and the zero tail, are allocated, not copied.
+        auto const hole = lookup(w_a, true, 2);
+        verdict(tally,
+                hole && hole->writable && hole->page != mm::get_zero_page() &&
+                    holds_only(hole->page, 0) && nr_pages(w_a) == 3,
+                "a write to a hole gets a zeroed page of its own");
+        auto const tail = lookup(longer, true, 4);
+        verdict(tally,
+                tail && tail->writable && tail->page != mm::get_zero_page() &&
+                    holds_only(tail->page, 0) && nr_pages(longer) == 1,
+                "and so does a write past the end of what the clone can see");
+
+        // A page a node that is not hidden holds is only ever copied.
+        auto const before_pages = nr_pages(parent);
+        auto const under_plain = lookup(child, true, 0);
+        verdict(tally,
+                under_plain && under_plain->page != p0 && holds_only(under_plain->page, 0xA0) &&
+                    nr_pages(parent) == before_pages && p0->share_count() == 0 &&
+                    nr_pages(child) == 1,
+                "a page held by a node that is not hidden is copied, never taken, and its count "
+                "is left alone");
+
         // The new hidden node takes the node's place on its parent's list.
         Node top;
         Node under_top;

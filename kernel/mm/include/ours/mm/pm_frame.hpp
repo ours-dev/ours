@@ -401,6 +401,16 @@ class PageFrame {
         as<page::VmmBody>().share_count += 1;
     }
 
+    /// One viewer fewer. The count is unsigned, so a drop of zero would not go
+    /// negative but wrap to four billion, and no writer would ever see zero
+    /// again: the page would be stuck in the hidden node, copied by every
+    /// writer and taken by none. It is an assertion for that reason.
+    auto drop_share() -> void {
+        auto &body = as<page::VmmBody>();
+        DEBUG_ASSERT(body.share_count > 0, "a page with no other viewer lost one");
+        body.share_count -= 1;
+    }
+
     /// The PageQueues list this frame is filed on, as the raw enumerator
     /// value -- PageQueues::QueueType is private to that class, so the
     /// descriptor carries the byte and leaves its meaning there.
