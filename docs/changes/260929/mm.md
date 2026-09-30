@@ -718,3 +718,49 @@ None.
 - Why must a dying leaf drop its counts before it leaves the list, and both in the same hold of the lock?
 - Why does the survivor take the hidden node's place on the list, and what would a count that changed there cause?
 - Why does a failed insertion in the merge leave a tree that is still correct, and what does it cost?
+
+## Title: A mapping's protection ranges are written under the object's lock as well as the address space's (2026-09-30)
+
+**Files**
+- `kernel/mm/vm_mapping.cpp` — `protect_locked()` and `unmap_locked()` take the object's lock for their whole body.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — step 8 split into four commits (8a to 8d), and steps 9 to 11 renumbered.
+
+**Symptom**
+Latent, cannot be triggered today: nothing reads a mapping's protection ranges without the address space's lock. The reader this prepares for is the clone, which has to remove Write from every mapping of the pages it is about to share.
+
+**Cause**
+The clone runs on an object, holding the object's lock, and the mappings of that object belong to address spaces whose lock is taken first: aspace lock, then object lock, on every path the fault handler takes. So from the object's side the address space's lock cannot be taken to look at a mapping, and the mapping's record of its permissions, `m_protection_ranges`, was guarded by that lock alone. Two locks that do not know of each other over one piece of data is the whole problem: the clone reads the ranges while a `protect()` rewrites them.
+
+The fix is to have the writers hold the object's lock too, and the reason it has to be the whole of each function and not just the update of the record is an interleaving. `protect_locked()` updates the record to include Write, and then applies Write to the page tables. If the clone slips between the two, it reads the new record, removes Write from the page tables, and the `protect_locked()` then applies Write to them again: a page that became shared, writable in one mapping for good. Holding the object's lock across both makes the record and the page tables change together as far as the clone can see.
+
+The lock order stays aspace, then object, then the page table's own. That last is not new: `PageTable` already has its own innermost spin lock, taken with interrupts off, in `map_pages()`, `unmap_pages()`, `protect_pages()`, `query_mapping()` and `destroy()` (`kernel/arch/x86/mm/page_table.cpp`), which is what Zircon's `X86PageTableBase::lock_` is. I said earlier in this design that `ArchVmAspace` had no lock of its own; that was wrong, I had read the wrapper and not the page table under it.
+
+**Change**
+```cpp
+DEBUG_ASSERT(m_vmo);
+Guard guard{m_vmo->lock()};
+```
+at the top of `protect_locked()` and of `unmap_locked()`. Neither is called with the object's lock held: `VmMapping::destroy()` takes it only around its own removal from the list, and calls the arch unmap directly, and every other caller holds only the address space's.
+
+**Reference**
+Zircon `VmMapping::EnumerateProtectionRangesLockedObject()` and `AspaceRemoveWriteLockedObject()` (`vm_mapping.cc:699`): the mapping's protection ranges are read under the object's lock, and the remove-write takes no address space lock, which is safe because the mapping is on the object's list, in the ALIVE state, only while the object's lock is not held by whoever removes it.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines (two old `(void)` casts are reported near them).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts, and the debug image has lockdep on, which reports a wrong order as an error and reported none. `vmosnapshot.test` 114 checks; `usercopy.test` 18 and `vmaseal.test` 13 on both images, `pmnode.test` 20 on dbg. The shell's `vma_map`, `protect` and `unmap` checks run through both functions in every image.
+- Not verified: that the lock is what excludes the reader, because there is no reader yet. The clone's remove-write is the next step, and its test will be the first to hold the object's lock and read the ranges.
+
+**Deliberately not done**
+- No reader. The remove-write is 8b.
+- No change to what the fault path takes: it reads the ranges holding the address space's lock, which no writer can hold without it.
+
+**How it was found**
+Working out how the clone removes Write from other mappings: the user chose Zircon's way over a counter of writable mappings, and reading Zircon's `AspaceRemoveWriteLockedObject()` gave the requirement that its protection ranges be readable under the object's lock alone.
+
+**The user's prediction**
+None: asked for the invariant argument (which two things must agree in the ranges, and what does not agree when the writer holds only the address space's lock and the clone only the object's) and the user said to go on. The intended answer: the record of a mapping's permissions and the permissions in its page tables must agree whenever no one holds the lock; and with two different locks the clone can read the record between a `protect()`'s update and its application to the page tables.
+
+**Three questions you should be able to answer**
+- Why must `protect_locked()` hold the object's lock across the page tables too, and not only across the update of the record?
+- Why can the clone not simply take the address space's lock to read the record?
+- What is the lock order these three locks make, and which path already used it?

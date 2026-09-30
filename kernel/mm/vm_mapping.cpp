@@ -369,6 +369,28 @@ auto VmMapping::protect(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
 }
 
 auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status {
+    // The object's lock as well as the address space's, for the whole of it:
+    // the record of the permissions and the page tables they are applied to.
+    //
+    // An operation on the object -- the clone that removes Write from every
+    // mapping of the pages it is about to share -- reaches the mappings from
+    // the object's side, holding the object's lock and not the address
+    // space's, since taking that one inside this one is the wrong way round.
+    // What it reads is m_protection_ranges, so whoever writes it has to hold the
+    // object's lock too, or the two race on it.
+    //
+    // And the page tables belong in the same hold, not only the record. Left
+    // out, the widening could be interleaved with the clone: the record says
+    // Write, the clone removes it from the page tables, and this then applies
+    // Write to them, which leaves a page that has become shared writable for
+    // good. Aspace lock, then object lock, then the page table's own: the order
+    // the fault path takes them in.
+    //
+    // Zircon has the mapping's protection ranges under the object's lock as
+    // well (EnumerateProtectionRangesLockedObject()).
+    DEBUG_ASSERT(m_vmo);
+    Guard guard{m_vmo->lock()};
+
     auto &arch_aspace = m_aspace->arch_aspace();
     auto status = m_protection_ranges.update(base, size, mmuf);
     if (Status::Ok != status) {
@@ -415,6 +437,12 @@ auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status
 }
 
 auto VmMapping::unmap_locked(VirtAddr base, usize size, UnmapOptions options) -> Status {
+    // The object's lock, for what protect_locked() takes it for: it writes
+    // m_protection_ranges, which an operation reaching this mapping from the
+    // object's side reads without the address space's lock. See there.
+    DEBUG_ASSERT(m_vmo);
+    Guard guard{m_vmo->lock()};
+
     auto &arch_aspace = m_aspace->arch_aspace();
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [valid, region_base, region_size, mmuf] = enumerator.next()) {

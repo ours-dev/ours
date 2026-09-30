@@ -88,9 +88,14 @@ Each step is one commit, builds and boots, and is introduced to the user before 
 5. Done. The clone: the hidden-node insert, the page move, the share count (a field in `page::VmmBody`), the replacement of the original in its parent's list, and the case where the new child attaches under an existing hidden node. `RemoveWrite` on the original's mappings cannot be done here, because a `VmCowPages` does not know the `VmObject`s over it: the caller must guarantee that nothing maps the original writable, and the `VmObject` layer (step 9) enforces it, and refuses a Pinned VMO for the same reason.
 6. Done. The fork-or-migrate write, tested through the cursor on nodes the clone made; the same writes through `VmObject::read`/`write` need the `VmObject` layer, so they are checked when that layer exists (step 9). Unmapping the writer's old read-only mapping on a fork belongs to the fault and mapping step (8).
 7. Done. Death: a leaf that dies is one viewer fewer of what it sees (a page it was the last to see is freed, any other has its count dropped), and a hidden node left with one child is merged into it.
-8. The fault and mapping rules above, tested through a real mapping and `soft_fault`.
-9. `create_child()` accepting the option, the rights, the refusal of a Pinned VMO and of a writable mapping of the source, `ou::vmo_create_child`, and a check in `examples/shell/shell.cpp`.
-10. The launcher: `Copy` becomes a snapshot child plus clearing the tail of the last file page.
+8. The object layer of the clone, in four commits. The clone must be able to remove Write from every mapping of the pages it shares, from the object's side, holding the object's lock and not the address space's (the wrong way round); the user chose Zircon's way (`AspaceRemoveWriteLockedObject()`, `vm_mapping.cc:699`) over a count of writable mappings, on 2026-09-30. The page table already has its own innermost lock (`PageTable::m_lock`), which is what Zircon's arch lock is, so lock order is address space, object, page table.
+   - 8a. A mapping's protection ranges are written under the object's lock as well as the address space's (`protect_locked()`, `unmap_locked()`). Done.
+   - 8b. `VmMapping::remove_write_locked_object()`.
+   - 8c. Reaching every `VmObject` over the same `VmCowPages`: a slice shares its parent's pages and has its own list of mappings, and Zircon has no such case, since a `VmCowPages` there has one `VmObject`.
+   - 8d. `VmObjectPaged::create_child_snapshot()`, which refuses a Pinned VMO and removes Write from the mappings.
+9. The fault and mapping rules above, tested through a real mapping and `soft_fault`; a write to a present read-only entry takes `protect()` when the page it gets is the one already mapped (a take) and unmap then map when it is another (a fork); the fork also has to reach the other CPUs' translations (open question).
+10. `create_child()` accepting the option, the rights, `ou::vmo_create_child`, and a check in `examples/shell/shell.cpp`.
+11. The launcher: `Copy` becomes a snapshot child plus clearing the tail of the last file page.
 
 ## Alternatives considered
 - **A one-level unidirectional clone of a parent that never changes** (the plan until 2026-09-29). Much smaller: no hidden node, no share count, no merge. It needs the parent sealed against writes so that no clone can observe a change, and it cannot serve a parent that is written later. Rejected by the user on 2026-09-29 for the hidden node; the `sealed` flag it needed is dropped.
