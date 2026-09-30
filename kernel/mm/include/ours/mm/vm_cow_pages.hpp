@@ -9,6 +9,7 @@
 #include <ours/mm/vm_page_map.hpp>
 #include <ours/sync/mutex.hpp>
 
+#include <ustl/collections/intrusive/list.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours::mm {
@@ -65,6 +66,12 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     [[nodiscard]]
     TA_REQUIRES(m_lock) auto nr_pages_locked() const -> usize {
         return m_pages.size();
+    }
+
+    /// How many nodes hang directly under this one.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto nr_children_locked() const -> usize {
+        return m_children.size();
     }
 
     TA_REQUIRES(m_lock)
@@ -158,16 +165,20 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     /// The node this one hangs under, or empty. It is a strong reference, so a
     /// parent lives as long as any node below it, whichever handle to it the
-    /// user closes first; a parent cannot point back the same way without a
-    /// cycle, which is one more reason it keeps no list of children.
+    /// user closes first. The parent's list of children points back with a
+    /// bare link and owns nothing, which is what keeps the two from being a
+    /// cycle.
     ustl::Arc<VmCowPages> m_parent;
     /// Where this node's byte 0 is in the parent, and how many of its bytes
     /// from there on the parent's content covers: this node sees the parent
     /// only in [0, m_parent_limit). Past that it reads as zero. Zircon:
-    /// parent_offset_ and parent_limit_. All fixed at creation, so they are
-    /// read without the lock.
-    u64 const m_parent_offset;
-    u64 const m_parent_limit;
+    /// parent_offset_ and parent_limit_.
+    ///
+    /// Set when the node is made and rewritten only when a clone puts a new
+    /// node above this one, under the lock. The readers are cursors, which
+    /// are made under it too.
+    u64 m_parent_offset;
+    u64 m_parent_limit;
     bool const m_hidden;
 
     /// Declared before m_lock, which is initialised from it, and destroyed
@@ -181,6 +192,28 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     // A reference to the tree's mutex, as VmObject::m_lock is to this one, so
     // the annotations keep naming a member.
     sync::Mutex &m_lock;
+
+    /// How this node is strung on its parent's list of children. A safe link:
+    /// the hook's destructor traps if the node is still linked, so a node that
+    /// forgot to leave its parent's list cannot be freed quietly.
+    ustl::collections::intrusive::ListMemberHook<> m_sibling_hook;
+    USTL_DECLARE_HOOK_OPTION(Self, m_sibling_hook, SiblingOptions);
+    USTL_DECLARE_LIST(Self, ChildList, SiblingOptions);
+
+    /// The nodes that hang directly under this one, in the order they were
+    /// made. Not references: each child already holds this node, and a list
+    /// that held the children would hold them for as long as this node lives.
+    /// A child takes itself off in its destructor, so every node on the list is
+    /// alive whenever the lock is free.
+    ///
+    /// What reads it is what has to go down the tree: a clone that puts a new
+    /// node above an old one has to replace it in its parent's list, and a
+    /// node that dies has to find the sibling that is left. Both come later;
+    /// until they do only creation and destruction touch it.
+    ///
+    /// Under the tree's lock, like everything else here that more than one
+    /// node can see.
+    ChildList m_children TA_GUARDED(m_lock);
 };
 
 /// A walk over one contiguous byte range of a VmCowPages, handing out the page

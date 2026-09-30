@@ -86,6 +86,12 @@ namespace {
         return node->nr_pages_locked();
     }
 
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto nr_children(Node &node) -> usize {
+        Guard guard{node->lock()};
+        return node->nr_children_locked();
+    }
+
     auto bytes_of(VmPage *const page) -> u8 * {
         return mm::PhysMap::phys_to_virt<u8>(mm::frame_to_phys(page));
     }
@@ -250,6 +256,35 @@ namespace {
         verdict(tally,
                 again && again->page == first->page && again->writable && nr_pages(alone) == 1,
                 "and the next read finds that page");
+
+        // The list of children: each node made under a parent is on its list,
+        // and leaves it when it dies.
+        Node family;
+        Node kid_a;
+        Node kid_b;
+        Node kid_c;
+        verdict(tally,
+                make(family, 2) && make_child(family, 0, 2, 2, false, kid_a) &&
+                    make_child(family, 0, 2, 2, false, kid_b) &&
+                    make_child(family, 1, 1, 1, true, kid_c),
+                "a parent and three children are made");
+        verdict(tally, nr_children(family) == 3, "the parent lists all three");
+        verdict(tally, nr_children(kid_a) == 0, "and a child with none of its own lists none");
+        kid_b = nullptr;
+        verdict(tally, nr_children(family) == 2, "a child that dies leaves the list");
+        Node kid_a_child;
+        verdict(tally, make_child(kid_a, 0, 2, 2, false, kid_a_child),
+                "a child of a child is made");
+        verdict(tally, nr_children(kid_a) == 1 && nr_children(family) == 2,
+                "it is on its own parent's list, not on its grandparent's");
+        kid_a = nullptr;
+        verdict(tally, nr_children(family) == 2 && reads_zero_page(kid_a_child, 0),
+                "a child whose parent handle is dropped stays on the grandparent's list, alive");
+        kid_a_child = nullptr;
+        verdict(tally, nr_children(family) == 1,
+                "and leaves it when it dies, taking its parent with it");
+        kid_c = nullptr;
+        verdict(tally, nr_children(family) == 0, "the parent ends up with none");
 
         // The last handle to the parent goes; the children keep the tree.
         Node orphan_parent;

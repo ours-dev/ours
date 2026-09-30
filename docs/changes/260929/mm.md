@@ -249,3 +249,61 @@ None.
 - In `find_ancestor_page()`, why is the offset compared with the node's limit before the parent offset is added, and what does a page-3 read of the grandchild do at the middle node?
 - Why does a node with no relatives still commit a zeroed page on a read, when `ZERO_PAGE` exists?
 - Why is a write to a node with a parent refused, rather than answered with a zeroed page like a hole of a plain node?
+
+## Title: A VmCowPages keeps a list of the nodes hanging under it (2026-09-29)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — the sibling hook, `ChildList` and `m_children`, `nr_children_locked()`; `m_parent_offset` and `m_parent_limit` are no longer `const`.
+- `kernel/mm/vm_cow_pages.cpp` — `create_child()` links the new node onto its parent's list, and the destructor takes the node off it.
+- `kernel/commands/vmo_snapshot_test.cpp` — 9 more checks, 44 in all.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — the order of work, and a correction (below).
+
+**Symptom**
+None. Latent, cannot be triggered today: nothing reads the list. It has to be right from the first node, because a clone that replaces a node in its parent's list, and a merge that looks for the sibling that is left, can only trust a list that was never wrong.
+
+**Cause**
+A parent could not find its children. The parent's list is a bare link in each child, not a reference, because a child already holds its parent and a list that held the children would make a cycle that nothing could break. A bare link means the child has to take itself off before it is freed, or the parent's list points at freed memory; and taking itself off means taking the tree's lock, because a walk of the list is only safe against a child that is either wholly on it or wholly off. That is why the destructor now takes the lock, and why this needed its own step rather than being a line in the clone.
+
+**Change**
+```cpp
+VmCowPages::~VmCowPages() {
+    if (m_parent) {
+        Guard guard{m_lock};
+        m_parent->lock().assert_held();
+        m_parent->m_children.erase(*this);
+    }
+    m_pages.drain_owned(...);
+}
+```
+`create_child()` adopts the node into an `Arc` first and then pushes it onto the parent's list under the lock, so that the destructor that would unlink it is the one that runs whatever happens between the two lines. The hook is a safe link: its destructor traps on a node still linked, so a node that forgot to leave cannot be freed quietly. The mutation check below relied on that.
+
+`m_parent_offset` and `m_parent_limit` lose their `const`: a clone puts a new node above an existing one and rewrites its parent link. They are read by cursors, which are made under the lock, and written only under it.
+
+**Correction to the design**
+DESIGN.md said a clone rewrites each page's owner back-pointer through the page queues, as Zircon does. `set_queue_backlink_locked()` is called by nothing outside `page_queues.cpp`, and no VMO page is ever put on a queue or given a back-pointer, so there is nothing to rewrite. The design now says so, and keeps the note for the day pages are queued for reclamation.
+
+**Reference**
+Zircon `VmCowPages::children_list_` and `AddChildLocked()` / `RemoveChildLocked()` (`vm_cow_pages.cc:1488`, `:2030`), where a child is added to its parent's list under the parent's lock and removed from it when it dies. Zircon's `~VmCowPages` asserts the node is off every list; here the destructor does the removal itself.
+
+**Verification**
+- `scripts/format_cpp.py --check`: clean. `clang-tidy -p out/vmo-snapshot`: nothing on the changed lines; the one warning is the existing destructor without `override`.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts as before. dbg: 18 passed, 0 failed, 0 error lines. rel: 13 passed, 9 skipped, 0 failed, 0 error lines.
+- `vmosnapshot.test` over COM1: 44 checks ok on both images (35 before, 9 new: three children listed, none listed for a childless node, a dying child leaves the list, a grandchild is on its own parent's list and not its grandparent's, a child stays alive and listed when its parent handle is dropped, and leaves with its parent when it dies, and the parent ends with none). `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel, still pass.
+- With the `erase` line removed, the debug image took an invalid-opcode trap in the test, from the safe hook's destructor, so a node that fails to leave is loud. The line was restored and all 44 pass again.
+- Not exercised: concurrency. The test is single-threaded, and nothing reads the list yet.
+
+**Deliberately not done**
+- Nothing reads the list. The clone (replacing a node in its parent's list) and the merge (finding the sibling that is left) are the first that will.
+- No protection against resurrecting a child that is being destroyed. It cannot happen while nothing takes a reference from the list; the merge will need a dead transition and a try-acquire, as Zircon's does. Written up under the open questions of the design.
+- The order of the list is creation order and nothing depends on it.
+
+**How it was found**
+None: a step of the design. The open question about walking the list against a dying child came out of writing the destructor, since it is exactly the window in which the node is still on the list and its count is already zero.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the parent's link to its children not a reference, and what would happen if it were?
+- Why does the destructor need the tree's lock, given that nobody else can hold a reference to the node?
+- What can go wrong for a reader that takes a reference from the list while a child is being destroyed, and why is it not a problem yet?

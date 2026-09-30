@@ -1,3 +1,4 @@
+#include <ours/lockdep.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
@@ -39,7 +40,25 @@ VmCowPages::VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
 ///
 /// Zircon counterpart: VmCowPages::~VmCowPages(), which calls
 /// page_list_.RemoveAllPages() and frees the batch.
+///
+/// Before that, off its parent's list of children, under the tree's lock: the
+/// list holds a bare link to this node and would otherwise be left pointing
+/// at freed memory, and the lock is what keeps a walk of that list from
+/// seeing the node half unlinked. The node can take it here because its
+/// hierarchy is still held (m_hierarchy goes with the members, after this
+/// body) and because nobody can be holding the lock waiting for this node:
+/// the last reference is already gone. It may sleep, as any lock of this tree
+/// may, so a VmCowPages must not be released from a context that cannot.
+///
+/// A node with no parent is on no list. Its own list of children is empty by
+/// now, since each child held a reference to it.
 VmCowPages::~VmCowPages() {
+    if (m_parent) {
+        Guard guard{m_lock};
+        m_parent->lock().assert_held();
+        m_parent->m_children.erase(*this);
+    }
+
     m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
 }
 
@@ -93,7 +112,17 @@ auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_off
     if (!cow_pages) {
         return Status::OutOfMem;
     }
+    // Held before it is linked, so that whatever happens between the two lines
+    // the node has an owner, and the destructor that would take it off the list
+    // is the one that runs.
     *out = ustl::Arc<Self>::adopt(cow_pages);
+
+    // Onto the parent's list under the tree's lock, which is also the child's.
+    // Nothing can fail from here, and the list needs no allocation: the hook is
+    // in the node.
+    Guard guard{cow_pages->m_lock};
+    cow_pages->m_parent->lock().assert_held();
+    cow_pages->m_parent->m_children.push_back(*cow_pages);
 
     return Status::Ok;
 }

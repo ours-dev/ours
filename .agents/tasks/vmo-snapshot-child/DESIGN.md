@@ -34,7 +34,7 @@ Non-goals:
 ### Events
 - **Clone** (`CreateCloneLocked()`, `zircon/kernel/vm/vm_cow_pages.cc:1831`). If the parent has no page of its own in the range (it has been cloned before), the walk in `FindParentAndRangeForCloneLocked()` (`:1526`) finds the hidden node above it and the new child simply hangs under that node, which now has three children. Otherwise `CloneNewHiddenParentLocked()` (`:1582`) runs:
   1. Remove Write from every mapping of the original (`RangeChangeUpdateLocked` with `RemoveWrite`), because its pages are about to be shared.
-  2. Move all of the original's pages into a new hidden node, at the same offsets, and rewrite each page's owner back-pointer through the page queues.
+  2. Move all of the original's pages into a new hidden node, at the same offsets. (Zircon also rewrites each page's owner back-pointer through the page queues; ours has nothing to rewrite, because no VMO page has a back-pointer or is on a queue.)
   3. Give every page in the child's window a share count, one more than it had.
   4. Link the original (offset 0, limit its size) and the new child (offset, limit) under the hidden node. The original keeps its identity and its `VmObject`; only its page list is now empty.
 - **Read** (`FindPageContentLocked()`, `:2958`). Look in the node; if absent and the offset is below `m_parent_limit`, add `m_parent_offset` and look in the parent, up the chain. Nothing found, or past a limit: `ZERO_PAGE`. A page found anywhere but in the node itself comes back with `writable = false`, and is mapped read-only.
@@ -77,19 +77,20 @@ Each node needs the lock that guards its page store, and a walk up the chain tou
 | Parent-content markers (`tree_has_parent_content_markers`) | An optimisation: an empty slot in a leaf can simply mean "look in the parent" |
 | `TreeWalkCursor`, high-priority counts, attribution tracking, `ever_pinned_` | Only for the parts above, or accounting |
 
-The core that stays: the hidden-node insert with its page-list move and back-pointer rewrite, the share count, the offset and limit arithmetic, `CloneCowPageLocked()` (fork or migrate), release plus merge on death, `RemoveWrite` on the original's mappings, and the unmap of the writer's old read-only mapping on a fork.
+The core that stays: the hidden-node insert with its page-list move, the share count, the offset and limit arithmetic, `CloneCowPageLocked()` (fork or migrate), release plus merge on death, `RemoveWrite` on the original's mappings, and the unmap of the writer's old read-only mapping on a fork.
 
 ### Order of work
 Each step is one commit, builds and boots, and is introduced to the user before it starts. The list can change as the steps teach us things.
 1. `Cursor::require_*` return the page with a `writable` bit. Done, `add18462`.
 2. One mutex per tree (decision 3): the lock moves out of `VmCowPages` into `HierarchyState`, which every node of a tree holds. No node has a parent yet, so every tree has one node and nothing changes. Done.
-3. Done. `VmCowPages` gains the parent link (`m_parent`, offset, limit), the hidden flag and a factory that makes a node under a parent and adopts its `HierarchyState`. The read walk up the chain, with `ZERO_PAGE` past a limit and `writable = false` for a page from an ancestor. Tested by a kernel command `vmosnapshot.test` (modelled on `user_copy_test.cpp`, and run over COM1, since `boot_check.py` does not run kernel commands) that builds small chains by hand, including that a child still has its lock when its parent handle is dropped. The list of children comes with the clone and the merge (steps 5 and 6), the first code that walks it.
-4. The share count on pages and the fork-or-migrate write, tested through `VmObject::read`/`write`.
-5. The clone: the hidden-node insert, the page move, the back-pointer rewrite, and `RemoveWrite` on the original's mappings.
-6. Death: release and merge.
-7. The fault and mapping rules above, tested through a real mapping and `soft_fault`.
-8. `create_child()` accepting the option, the rights, `ou::vmo_create_child`, and a check in `examples/shell/shell.cpp`.
-9. The launcher: `Copy` becomes a snapshot child plus clearing the tail of the last file page.
+3. Done. `VmCowPages` gains the parent link (`m_parent`, offset, limit), the hidden flag and a factory that makes a node under a parent and adopts its `HierarchyState`. The read walk up the chain, with `ZERO_PAGE` past a limit and `writable = false` for a page from an ancestor. Tested by a kernel command `vmosnapshot.test` (modelled on `user_copy_test.cpp`, and run over COM1, since `boot_check.py` does not run kernel commands) that builds small chains by hand, including that a child still has its lock when its parent handle is dropped.
+4. Done. The list of children: `create_child()` links the new node onto its parent's list and the destructor unlinks it, both under the tree's lock. The parent link fields stop being `const`, because a clone rewrites them. Nothing reads the list yet.
+5. The clone: the hidden-node insert, the page move, the share count (a field in `page::VmmBody`), the replacement of the original in its parent's list, and the case where the new child attaches under an existing hidden node. `RemoveWrite` on the original's mappings cannot be done here, because a `VmCowPages` does not know the `VmObject`s over it: the caller must guarantee that nothing maps the original writable, and the `VmObject` layer (step 9) enforces it.
+6. The fork-or-migrate write, tested through `VmObject::read`/`write` on nodes the clone made.
+7. Death: release and merge.
+8. The fault and mapping rules above, tested through a real mapping and `soft_fault`.
+9. `create_child()` accepting the option, the rights, `ou::vmo_create_child`, and a check in `examples/shell/shell.cpp`.
+10. The launcher: `Copy` becomes a snapshot child plus clearing the tail of the last file page.
 
 ## Alternatives considered
 - **A one-level unidirectional clone of a parent that never changes** (the plan until 2026-09-29). Much smaller: no hidden node, no share count, no merge. It needs the parent sealed against writes so that no clone can observe a change, and it cannot serve a parent that is written later. Rejected by the user on 2026-09-29 for the hidden node; the `sealed` flag it needed is dropped.
@@ -119,7 +120,8 @@ The lock caps the ceiling. With one mutex per tree, every process that starts th
 ## Open questions
 - **TLB shootdown, and it is now a correctness question.** Step 1 of a clone removes Write from the original's mappings, and `PageTable::protect_pages()` does a local `invlpg` only. Another CPU running the same address space can keep a stale writable translation of a page that has just become shared, and write into it. The one-level design avoided this because nothing was ever writable; this one cannot. It needs a cross-CPU invalidation in the `RemoveWrite` path before a clone is allowed on a machine with more than one CPU, or the clone must be refused there until it exists.
 - Where the share count lives. `page::VmmBody` (`kernel/mm/include/ours/mm/pm_frame.hpp`) has `vmo`, `vmo_index`, `num_mappings`, `num_users` and `pinned_count`, and no count; Zircon puts a `uint32_t` in the same union.
-- The page queues already hold a back-pointer per page (`set_queue_backlink_locked()` in `kernel/mm/page_queues.cpp`); moving pages into the hidden node has to go through it, as Zircon's `BatchPQUpdateBacklink` does.
+- No VMO page has an owner back-pointer or is on a page queue today (`set_queue_backlink_locked()` in `kernel/mm/page_queues.cpp` is called by nothing outside that file). The day pages are put on queues for reclamation, moving them into a hidden node has to update it, as Zircon's `BatchPQUpdateBacklink` does.
+- Walking the list of children while a child dies. A child whose count has reached zero is still on the list until its destructor gets the lock, so a reader that takes a reference from the list can resurrect an object that is being destroyed. Zircon handles it with a dead transition and a try-acquire; whoever writes the merge must too.
 - What `protect_locked()` should do to PTEs of shared pages (skip and re-fault, or track which are shared).
 - What `commit_range` and pin mean on a node with ancestors: Zircon forks or migrates first.
 - The merge can fail only on an allocation failure, and then leaves a one-child hidden node until its child dies (Zircon `vm_cow_pages.cc:2048`). Whether ours needs the same escape or can panic.
