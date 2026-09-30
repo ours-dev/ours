@@ -259,9 +259,9 @@ namespace {
 
         // Committed, so the page tables hold entries to change.
         auto writable = root->map_with_vmo(mm::VmPlacement::at(RW_AT), 3 * PAGE_SIZE, 0, rw, PERMS,
-                                           vmo, mm::VmMapOption::Commit, "remove-write rw");
+                                           vmo, mm::VmMapOption::Populate, "remove-write rw");
         auto read_only = root->map_with_vmo(mm::VmPlacement::at(RO_AT), 2 * PAGE_SIZE, 0, ro, PERMS,
-                                            ro_vmo, mm::VmMapOption::Commit, "remove-write ro");
+                                            ro_vmo, mm::VmMapOption::Populate, "remove-write ro");
         // Mapped, not committed: no entries yet.
         auto lazy = root->map_with_vmo(mm::VmPlacement::at(LAZY_AT), 2 * PAGE_SIZE, 0, rw, PERMS,
                                        lazy_vmo, mm::VmMapOption::None, "remove-write lazy");
@@ -338,10 +338,10 @@ namespace {
         if (shared_made) {
             auto full =
                 root->map_with_vmo(mm::VmPlacement::at(FULL_AT), 3 * PAGE_SIZE, 0, rw, PERMS,
-                                   shared_vmo, mm::VmMapOption::Commit, "remove-write full");
+                                   shared_vmo, mm::VmMapOption::Populate, "remove-write full");
             auto window =
                 root->map_with_vmo(mm::VmPlacement::at(WIN_AT), 2 * PAGE_SIZE, PAGE_SIZE, rw, PERMS,
-                                   shared_vmo, mm::VmMapOption::Commit, "remove-write window");
+                                   shared_vmo, mm::VmMapOption::Populate, "remove-write window");
             verdict(tally, full.is_ok() && window.is_ok(), "the whole and the window are mapped");
             if (full.is_ok() && window.is_ok()) {
                 remove_write(shared_vmo, 2 * PAGE_SIZE, PAGE_SIZE);
@@ -408,7 +408,7 @@ namespace {
         if (made) {
             static constexpr u8 PATTERN[4] = {0xde, 0xad, 0xbe, 0xef};
             auto mapped = root->map_with_vmo(mm::VmPlacement::at(AT), 2 * PAGE_SIZE, 0, rw, PERMS,
-                                             vmo, mm::VmMapOption::Commit, "protect checks");
+                                             vmo, mm::VmMapOption::Populate, "protect checks");
             verdict(tally, mapped.is_ok() && vmo->write(PATTERN, 0, sizeof(PATTERN)) == Status::Ok,
                     "it is mapped writable and holds a pattern");
             if (mapped.is_ok()) {
@@ -467,7 +467,7 @@ namespace {
                                                          mm::VmoFlags::Lazy, &code) == Status::Ok;
         if (code_made) {
             auto code_mapped = root->map_with_vmo(mm::VmPlacement::at(CODE_AT), PAGE_SIZE, 0, rx,
-                                                  PERMS, code, mm::VmMapOption::Commit, "code");
+                                                  PERMS, code, mm::VmMapOption::Populate, "code");
             verdict(tally, code_mapped.is_ok() && is_executable(aspace, CODE_AT),
                     "an executable mapping has an executable entry");
             if (code_mapped.is_ok()) {
@@ -542,10 +542,12 @@ namespace {
         gone = nullptr;
         verdict(tally, nr_attached(cow) == 2, "an object that dies is off the list of the pages");
 
-        auto whole_map = root->map_with_vmo(mm::VmPlacement::at(WHOLE_AT), 3 * PAGE_SIZE, 0, rw,
-                                            PERMS, whole, mm::VmMapOption::Commit, "attach whole");
-        auto slice_map = root->map_with_vmo(mm::VmPlacement::at(SLICE_AT), 2 * PAGE_SIZE, 0, rw,
-                                            PERMS, slice, mm::VmMapOption::Commit, "attach slice");
+        auto whole_map =
+            root->map_with_vmo(mm::VmPlacement::at(WHOLE_AT), 3 * PAGE_SIZE, 0, rw, PERMS, whole,
+                               mm::VmMapOption::Populate, "attach whole");
+        auto slice_map =
+            root->map_with_vmo(mm::VmPlacement::at(SLICE_AT), 2 * PAGE_SIZE, 0, rw, PERMS, slice,
+                               mm::VmMapOption::Populate, "attach slice");
         // A slice of the first page, mapped too: it is over the pages but shows none the
         // operation below is about, and it is made and dropped while the mappings live.
         ustl::Arc<mm::VmObjectPaged> first;
@@ -555,7 +557,7 @@ namespace {
             return;
         }
         auto first_map = root->map_with_vmo(mm::VmPlacement::at(FIRST_AT), PAGE_SIZE, 0, rw, PERMS,
-                                            first, mm::VmMapOption::Commit, "attach first");
+                                            first, mm::VmMapOption::Populate, "attach first");
         verdict(tally, whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok(),
                 "the object and both slices are mapped");
         if (!(whole_map.is_ok() && slice_map.is_ok() && first_map.is_ok())) {
@@ -616,7 +618,7 @@ namespace {
             static constexpr u8 BEFORE[4] = {0x11, 0x22, 0x33, 0x44};
             static constexpr u8 AFTER[4] = {0xaa, 0xbb, 0xcc, 0xdd};
             auto mapped = root->map_with_vmo(mm::VmPlacement::at(AT), 3 * PAGE_SIZE, 0, rw, PERMS,
-                                             vmo, mm::VmMapOption::Commit, "clone checks");
+                                             vmo, mm::VmMapOption::Populate, "clone checks");
             verdict(tally, mapped.is_ok() && vmo->write(BEFORE, 0, sizeof(BEFORE)) == Status::Ok,
                     "it is mapped writable and holds a pattern");
             if (mapped.is_ok()) {

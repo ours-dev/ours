@@ -151,7 +151,7 @@ auto x86_setup_idt() -> void {
     DEBUG_ASSERT(rvma);
     auto result =
         rvma->map_phys(mm::virt_to_phys(VirtAddr(PIDT)), VmPlacement::anywhere(), PAGE_SIZE,
-                       MmuFlags::Readable, VmMapOption::Commit | VmMapOption::Pinned, "k:IDT");
+                       MmuFlags::Readable, VmMapOption::Populate | VmMapOption::Pinned, "k:IDT");
     ASSERT(result, "Failed to set readonly GDT");
 
     PIDT = reinterpret_cast<decltype(PIDT)>((*result)->base());

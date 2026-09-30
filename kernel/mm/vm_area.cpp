@@ -308,7 +308,7 @@ auto VmArea::map_with_vmo(VmPlacement where, usize size, u64 vmo_ofs, MmuFlags m
     }
 
     // Do we immediately commit current mapping request?
-    if (!!(VmMapOption::Commit & option)) {
+    if (!!(VmMapOption::Populate & option)) {
         status = vmo->commit_range(vmo_ofs, size);
         if (Status::Ok == status) {
             status = mapping->map(mapping->base(), size, true, MapOptions::ErrorIfExisting);

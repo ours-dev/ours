@@ -41,7 +41,13 @@ namespace ours::mm {
 enum class VmMapOption {
     // For semenatics, no any effects.
     None,
-    Commit = BIT(0),
+    /// Fill the page tables in when the mapping is made, rather than leaving
+    /// each page to the first access that faults on it. Only that: it maps what
+    /// the object has, and does not ask the object for pages of its own, which
+    /// on a copy-on-write clone would copy every shared page. Zircon:
+    /// ZX_VM_MAP_RANGE, and ours::VmOptions::MapRange is what becomes it. It was
+    /// called Commit, which is the name of the other thing.
+    Populate = BIT(0),
     Pinned = BIT(1),
 
     /// The mapping is immutable from the moment it exists: nothing may unmap

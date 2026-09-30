@@ -167,7 +167,7 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
         ceiling |= mm::VmaFlags::Exec;
     }
     auto populate =
-        !!(options & VmOptions::MapRange) ? mm::VmMapOption::Commit : mm::VmMapOption::None;
+        !!(options & VmOptions::MapRange) ? mm::VmMapOption::Populate : mm::VmMapOption::None;
     if (!!(options & VmOptions::Sealed)) {
         populate |= mm::VmMapOption::Sealed;
     }

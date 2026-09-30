@@ -108,8 +108,8 @@ auto x86_setup_gdt() -> void {
         mm::virt_to_phys(VirtAddr(PGDT)),
         mm::VmPlacement::anywhere(), // Wherever the VMM has room
         PAGE_SIZE,
-        mm::MmuFlags::Readable,                            // Read only
-        mm::VmMapOption::Commit | mm::VmMapOption::Pinned, // Disable swapping out.
+        mm::MmuFlags::Readable,                              // Read only
+        mm::VmMapOption::Populate | mm::VmMapOption::Pinned, // Disable swapping out.
         "k:GDT");
     ASSERT(result, "Failed to create readonly GDT");
 

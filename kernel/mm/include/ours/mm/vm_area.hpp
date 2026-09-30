@@ -97,7 +97,7 @@ class VmArea final: public VmAreaOrMapping {
     /// of them took. Two axes were spelt as one, and neither was spelt as
     /// itself.
     ///
-    /// With |VmMapOption::Commit| the mapping is populated immediately rather
+    /// With |VmMapOption::Populate| the mapping is populated immediately rather
     /// than left for a page fault to resolve.
 
     /// Map |size| bytes of physical memory starting at |phys_base|.
