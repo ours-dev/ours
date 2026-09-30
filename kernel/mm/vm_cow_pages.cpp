@@ -182,7 +182,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
     //
     // |at| is the window's start in the coordinates of |chosen|; each step up
     // compares it with that node's limit before it adds that node's offset, as
-    // find_ancestor_page() does.
+    // find_page() does.
     // Zircon: FindParentAndRangeForCloneLocked().
     VmCowPages *chosen = this;
     u64 at = offset;
@@ -243,7 +243,7 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
     // has one more viewer. Counted after the tree is settled, by the walk a read
     // takes, so that what is counted is exactly what a read of the clone finds.
     for (u64 at_clone = 0; at_clone < visible; at_clone += PAGE_SIZE) {
-        if (auto *const page = clone->find_ancestor_page(at_clone).page) {
+        if (auto *const page = clone->find_page(at_clone).page) {
             page->add_share();
         }
     }
@@ -312,24 +312,25 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_comm
     return status;
 }
 
-auto VmCowPages::find_ancestor_page(u64 offset) -> AncestorPage {
+auto VmCowPages::find_page(u64 offset) -> FoundPage {
     auto *node = this;
 
     // |offset| is in the coordinates of |node|; the limit and the parent offset
     // are that node's own, so the offset is compared with the limit first and
     // only then moved into the parent's coordinates.
-    while (node->m_parent && offset < node->m_parent_limit) {
-        offset += node->m_parent_offset;
-        node = node->m_parent.as_ptr_mut();
+    while (true) {
         if (auto *const page = node->m_pages.get_page(PgOff(offset >> PAGE_SHIFT))) {
             return {.page = page, .owner = node, .offset = offset};
         }
+        if (!node->m_parent || offset >= node->m_parent_limit) {
+            return {.page = nullptr, .owner = nullptr, .offset = 0};
+        }
+        offset += node->m_parent_offset;
+        node = node->m_parent.as_ptr_mut();
     }
-
-    return {.page = nullptr, .owner = nullptr, .offset = 0};
 }
 
-auto VmCowPages::cow_page(u64 const offset, AncestorPage const &found) -> ktl::Result<VmPage *> {
+auto VmCowPages::cow_page(u64 const offset, FoundPage const &found) -> ktl::Result<VmPage *> {
     auto *const source = found.page;
     auto *const holder = found.owner;
     DEBUG_ASSERT(source && holder);
@@ -406,34 +407,31 @@ auto VmCowPages::Cursor::require_owned_page(usize nr_pages, MultiPageRequest *re
         return ktl::err(Status::BadState);
     }
 
-    // The slot first, before any thought of allocating. This ordering is the
-    // whole point of the class: a fault on an offset this VMO has already
-    // populated must resolve to the page that is already there, or two
+    // The page this node sees first, before any thought of allocating. This
+    // ordering is the whole point of the class: a fault on an offset this VMO
+    // already sees must resolve to the page that is already there, or two
     // mappings of the same VMO see different memory and a re-fault silently
     // discards what the first fault wrote.
     //
-    // A page found in this object's own store is its own, so it may be written.
-    if (auto *page = m_target->m_pages.get_page(index())) {
-        advance();
-        return ktl::ok(RequireResult{.page = page, .writable = true});
-    }
-
-    // Nothing of its own here, but a node with a parent may see content there,
-    // and then this is a write to a shared page: the node gets a page of its
-    // own out of it, a copy or the page itself (VmCowPages::cow_page()), and
-    // the writer never touches the one the others see. Nothing above either
-    // -- a hole, or the zero tail past a limit -- leaves nothing to copy, and
-    // falls through to be allocated as a hole of a node with no parent is.
-    if (m_target->m_parent) {
-        auto const found = m_target->find_ancestor_page(m_offset);
-        if (found.page) {
-            auto owned = m_target->cow_page(m_offset, found);
-            if (!owned) {
-                return ktl::err(owned.unwrap_err());
-            }
+    // Found in this node's own store, the page is its own and may be written.
+    // Found further up, it is shared content: the node gets a page of its own
+    // out of it, a copy or the page itself (VmCowPages::cow_page()), and the
+    // writer never touches the one the others see. Not found at all -- a hole,
+    // or the zero tail past a limit -- there is nothing to copy, and it falls
+    // through to be allocated as a hole is.
+    auto const found = m_target->find_page(m_offset);
+    if (found.page) {
+        if (found.owner == m_target) {
             advance();
-            return ktl::ok(RequireResult{.page = *owned, .writable = true});
+            return ktl::ok(RequireResult{.page = found.page, .writable = true});
         }
+
+        auto owned = m_target->cow_page(m_offset, found);
+        if (!owned) {
+            return ktl::err(owned.unwrap_err());
+        }
+        advance();
+        return ktl::ok(RequireResult{.page = *owned, .writable = true});
     }
 
     // Nothing here. Who answers that depends on whether anyone can:
@@ -473,25 +471,24 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     -> ktl::Result<RequireResult> {
     DEBUG_ASSERT(m_offset < m_end, "the cursor stepped past the range it was made for");
 
-    // Its own page: writable, unless this is a hidden node, whose pages are
-    // shared with every node below it and are never written through it.
-    if (auto *page = m_target->m_pages.get_page(index())) {
+    // What the node sees here, wherever it is held. Writable only when it is the
+    // node's own page, and not even then for a hidden node, whose pages are
+    // shared with every node below it and are never written through it. A page
+    // found further up is on loan and read-only, and allocates nothing.
+    // Zircon: RequireReadPage() returning a parent page with writable = false.
+    auto const found = m_target->find_page(m_offset);
+    if (found.page) {
         advance();
-        return ktl::ok(RequireResult{.page = page, .writable = !m_target->is_hidden()});
+        return ktl::ok(RequireResult{
+            .page = found.page, .writable = found.owner == m_target && !m_target->is_hidden()});
     }
 
-    // A node that hangs under another, and a hidden one, answers a read of
-    // what it does not hold from above, and allocates nothing to do so: the
-    // nearest ancestor's page, on loan and read-only, or the shared zero page
-    // when the walk finds none (which includes an offset past the node's limit,
-    // where the parent's content does not reach). Zircon: RequireReadPage()
-    // returning a parent page, or vm_get_zero_page(), with writable = false.
+    // Nothing there. A node that hangs under another, and a hidden one, reads
+    // that as the shared zero page, read-only, and allocates nothing: what the
+    // walk found none of includes an offset past the node's limit, where the
+    // parent's content does not reach. Zircon: vm_get_zero_page().
     if (m_target->m_parent || m_target->is_hidden()) {
-        auto *const page = m_target->find_ancestor_page(m_offset).page;
         advance();
-        if (page) {
-            return ktl::ok(RequireResult{.page = page, .writable = false});
-        }
         return ktl::ok(RequireResult{.page = get_zero_page(), .writable = false});
     }
 
@@ -514,7 +511,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
 ///
 /// VmPageMap stores pages and nothing else: it has no marker for a zero slot
 /// and no reference entry for a page owned by a parent VMO, because a parent's
-/// page is found by walking up (find_ancestor_page()), not recorded below. So a
+/// page is found by walking up (find_page()), not recorded below. So a
 /// slot is either populated with a plain page or empty, and these answer
 /// accordingly rather than guessing. When zero markers arrive, these three are
 /// where the slot's kind gets decoded.

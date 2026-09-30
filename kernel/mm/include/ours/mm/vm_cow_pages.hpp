@@ -209,30 +209,33 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     auto alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status;
 
-    /// A page found above a node, with where it was found. |page| is null when
-    /// nothing was: the walk reached the top, or a node's limit, and what lies
-    /// past nothing reads as zero.
-    struct AncestorPage {
+    /// A page a node sees, with where it was found. |page| is null when nothing
+    /// was: the walk reached the top, or a node's limit, and what lies past
+    /// nothing reads as zero.
+    struct FoundPage {
         VmPage *page;
-        /// The node that holds it, and its offset in that node's coordinates:
-        /// what a write needs to take the page out.
+        /// The node that holds it, this one or an ancestor, and its offset in
+        /// that node's coordinates: what a write needs to take the page out.
         VmCowPages *owner;
         u64 offset;
     };
 
-    /// The page an ancestor holds for |offset|, an offset in this node's own
-    /// coordinates. The nearest ancestor that has a page wins, and the walk
-    /// never looks at this node's own store: the callers have already done that.
+    /// The page this node sees at |offset|, an offset in its own coordinates:
+    /// the one in its own store if it has one, and if not the nearest ancestor's.
+    /// One walk for both, because they are one question -- what does this node
+    /// see here -- and its answer is where the page was found: a page in the
+    /// node's own store may be written, and a page found further up is shared
+    /// content that a writer has to copy or take first.
     ///
     /// The lock is held by every caller. It is not annotated, for the reason
     /// m_pages is not guarded: the callers include Cursor, which the analysis
     /// cannot tie to the lock.
     ///
     /// Zircon: VmCowPages::FindPageContentLocked(), which loops
-    /// `while (offset < cur.parent_limit_)` in the same way, adding the
-    /// parent offset at each hop.
+    /// `while (offset < cur.parent_limit_)`, looking in the node and then adding
+    /// the parent offset to go up.
     [[nodiscard]]
-    auto find_ancestor_page(u64 offset) -> AncestorPage;
+    auto find_page(u64 offset) -> FoundPage;
 
     /// Gives this node a page of its own at |offset|, out of |found|, the page
     /// an ancestor shows there now, and answers it. The node may write the page
@@ -263,7 +266,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// writer's old read-only mapping on a fork, is not done here: this does not
     /// know the mappings.
     [[nodiscard]]
-    auto cow_page(u64 offset, AncestorPage const &found) -> ktl::Result<VmPage *>;
+    auto cow_page(u64 offset, FoundPage const &found) -> ktl::Result<VmPage *>;
 
     /// Makes a node and adopts it. The one place a VmCowPages is allocated, so
     /// create(), create_child() and the clone do not each spell out the cache

@@ -481,3 +481,51 @@ None: a step of the design. The two failures under Cause are the ones named in t
 - Why is "a write to a page in an ancestor" the test for copy-on-write, and what does the share count decide once that test is true?
 - Why must the count be read, the copy made and the count written under one hold of the lock, and what are the two ways it fails if they are not?
 - Why is a page held by a node that is not hidden never taken, whatever its count?
+
+## Title: One find_page() answers what a node sees, own page or an ancestor's (2026-09-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `find_ancestor_page()` becomes `find_page()`, which looks in the node's own store first and then walks up; `AncestorPage` becomes `FoundPage`. `Cursor::require_read_page()` and `require_owned_page()` each ask it once.
+
+**Symptom**
+None. Suggested by the user while reading the code: no `find_ancestor_page`, just `find_page`, with the two lookups in one function.
+
+**Cause**
+The question a cursor asks is "what does this node see at this offset", and the code answered it in two pieces, in two places each: look in the node's own store, and then, if that failed and the node had a parent, call a second function that walked the ancestors. The pieces were written in that order because the walk was added after the own-store lookup, not because they are two questions. Split like that, every caller had to remember to do both, in that order, and to work out afterwards which one had answered, since the answer decides whether the page may be written. One function returning the page with the node that holds it gives that decision to a comparison, `found.owner == this`, and leaves no caller able to skip the first half.
+
+**Change**
+```cpp
+while (true) {
+    if (auto *const page = node->m_pages.get_page(PgOff(offset >> PAGE_SHIFT))) {
+        return {.page = page, .owner = node, .offset = offset};
+    }
+    if (!node->m_parent || offset >= node->m_parent_limit) {
+        return {.page = nullptr, .owner = nullptr, .offset = 0};
+    }
+    offset += node->m_parent_offset;
+    node = node->m_parent.as_ptr_mut();
+}
+```
+A read is writable when the page is the node's own and the node is not hidden; a write that finds its page anywhere but in the node's own store goes to `cow_page()`; a write that finds nothing is allocated. The own-store hit costs what it cost, one lookup. `create_clone_locked()` counts through it too: the clone is new and its own store is empty, so what it finds is what it can see above.
+
+**Reference**
+Zircon `VmCowPages::FindPageContentLocked()`, which also looks in the node first and then in its parents in one loop, and `LookupCursor::PageAsResultNoIncrement()`, where `writable` is true only when the page is in the target itself.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines (the existing destructor warning only).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 86 checks ok on both images, unchanged; `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel. No behaviour changed, and the 86 include every case that reaches this code: own page, ancestor page, zero, hole, forks and takes.
+- Not run: the mutation checks of the earlier entries; nothing they cover was touched but the shape of the lookup.
+
+**Deliberately not done**
+- The message the user wrote was short, and I read "two logic in one function" as the own-store lookup and the ancestor walk becoming one function. If it meant something else, this is the part to change.
+
+**How it was found**
+The user's review comment.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What decides whether the page `find_page()` returns may be written, and why is it the node that holds it and not the page?
+- Why does a node with no parent use the same function, and what does it cost there?
+- Why does the clone's counting loop find only ancestors' pages, though it calls the function that also looks in the node's own store?
