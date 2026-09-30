@@ -19,7 +19,7 @@ Goals:
 Non-goals:
 - Page sources and pagers, dirty tracking, discardable VMOs, compression, reclamation and eviction, unidirectional clones. Table in "Design" says which parts of Zircon these are.
 - `Snapshot` (full), `SnapshotModified`, `Resizable`, `NoWrite`, `Reference`: each still answers `NotSupported`.
-- Cloning a parent that has pinned pages: refused with `BadState`, as Zircon does.
+- Cloning a parent that has pinned pages: refused, as Zircon does (`BadState`). Pinning is per object here (`VmoFlags::Pinned`), not per page, so the `VmObject` layer does the refusing, not `VmCowPages`.
 - Any change to the launcher; that is the step after this one.
 - Performance work. Where a choice caps the ceiling (the lock) it is a decision for the user, and the measurement comes after the feature works.
 
@@ -85,11 +85,11 @@ Each step is one commit, builds and boots, and is introduced to the user before 
 2. One mutex per tree (decision 3): the lock moves out of `VmCowPages` into `HierarchyState`, which every node of a tree holds. No node has a parent yet, so every tree has one node and nothing changes. Done.
 3. Done. `VmCowPages` gains the parent link (`m_parent`, offset, limit), the hidden flag and a factory that makes a node under a parent and adopts its `HierarchyState`. The read walk up the chain, with `ZERO_PAGE` past a limit and `writable = false` for a page from an ancestor. Tested by a kernel command `vmosnapshot.test` (modelled on `user_copy_test.cpp`, and run over COM1, since `boot_check.py` does not run kernel commands) that builds small chains by hand, including that a child still has its lock when its parent handle is dropped.
 4. Done. The list of children: `create_child()` links the new node onto its parent's list and the destructor unlinks it, both under the tree's lock. The parent link fields stop being `const`, because a clone rewrites them. Nothing reads the list yet.
-5. The clone: the hidden-node insert, the page move, the share count (a field in `page::VmmBody`), the replacement of the original in its parent's list, and the case where the new child attaches under an existing hidden node. `RemoveWrite` on the original's mappings cannot be done here, because a `VmCowPages` does not know the `VmObject`s over it: the caller must guarantee that nothing maps the original writable, and the `VmObject` layer (step 9) enforces it.
+5. Done. The clone: the hidden-node insert, the page move, the share count (a field in `page::VmmBody`), the replacement of the original in its parent's list, and the case where the new child attaches under an existing hidden node. `RemoveWrite` on the original's mappings cannot be done here, because a `VmCowPages` does not know the `VmObject`s over it: the caller must guarantee that nothing maps the original writable, and the `VmObject` layer (step 9) enforces it, and refuses a Pinned VMO for the same reason.
 6. The fork-or-migrate write, tested through `VmObject::read`/`write` on nodes the clone made.
 7. Death: release and merge.
 8. The fault and mapping rules above, tested through a real mapping and `soft_fault`.
-9. `create_child()` accepting the option, the rights, `ou::vmo_create_child`, and a check in `examples/shell/shell.cpp`.
+9. `create_child()` accepting the option, the rights, the refusal of a Pinned VMO and of a writable mapping of the source, `ou::vmo_create_child`, and a check in `examples/shell/shell.cpp`.
 10. The launcher: `Copy` becomes a snapshot child plus clearing the tail of the last file page.
 
 ## Alternatives considered

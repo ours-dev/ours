@@ -92,6 +92,37 @@ namespace {
         return node->nr_children_locked();
     }
 
+    // The clone helpers hold the tree's lock through `tree`, any node in it, and
+    // look at another node of the same tree through a plain pointer: the
+    // analysis cannot tell that the two are under one mutex.
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto parent_of(Node &node) -> VmCowPages const * {
+        Guard guard{node->lock()};
+        return node->parent_locked();
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto pages_in(Node &tree, VmCowPages const *const node) -> usize {
+        Guard guard{tree->lock()};
+        return node->nr_pages_locked();
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto children_in(Node &tree, VmCowPages const *const node) -> usize {
+        Guard guard{tree->lock()};
+        return node->nr_children_locked();
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto clone_raw(Node &source, u64 const offset, usize const size, Node &out) -> Status {
+        Guard guard{source->lock()};
+        return source->create_clone_locked(offset, size, &out);
+    }
+
+    auto clone_of(Node &source, usize const offset_pages, usize const pages, Node &out) -> Status {
+        return clone_raw(source, offset_pages * PAGE_SIZE, pages * PAGE_SIZE, out);
+    }
+
     auto bytes_of(VmPage *const page) -> u8 * {
         return mm::PhysMap::phys_to_virt<u8>(mm::frame_to_phys(page));
     }
@@ -285,6 +316,128 @@ namespace {
                 "and leaves it when it dies, taking its parent with it");
         kid_c = nullptr;
         verdict(tally, nr_children(family) == 0, "the parent ends up with none");
+
+        // The clone. A node that holds pages is cloned: its pages move into a
+        // new hidden node above it, and it and the clone hang under that.
+        Node origin;
+        verdict(tally, make(origin, 3), "a node to clone is made");
+        auto *const o0 = fill(origin, 0, 0xC0);
+        auto *const o1 = fill(origin, 1, 0xC1);
+        verdict(tally, o0 && o1 && pages_in(origin, origin.as_ptr()) == 2,
+                "it holds two pages and a hole");
+        Node clone1;
+        verdict(tally, clone_of(origin, 0, 3, clone1) == Status::Ok, "it is cloned");
+        auto const *const shared = parent_of(origin);
+        verdict(tally, shared != nullptr && shared->is_hidden() && parent_of(clone1) == shared,
+                "the node and its clone hang under one hidden node");
+        verdict(tally, &clone1->lock() == &origin->lock(), "in one tree, under one lock");
+        verdict(tally, pages_in(origin, origin.as_ptr()) == 0 && pages_in(origin, shared) == 2,
+                "the pages moved up into the hidden node, and the node holds none");
+        verdict(tally, children_in(origin, shared) == 2, "which lists the node and the clone");
+        verdict(tally, o0->share_count() == 1 && o1->share_count() == 1,
+                "each page both of them see has one more viewer");
+        verdict(tally,
+                reads_lenders_page(origin, 0, o0) && reads_lenders_page(clone1, 0, o0) &&
+                    reads_lenders_page(clone1, 1, o1) && reads_zero_page(clone1, 2),
+                "both read the same pages, and the hole as zero");
+        verdict(tally, holds_only(o0, 0xC0) && holds_only(o1, 0xC1),
+                "and the bytes are what was written before the clone");
+
+        // A second clone of the same node finds it holds nothing and hangs
+        // under the same hidden node: no new one, and no chain.
+        Node clone2;
+        verdict(tally, clone_of(origin, 0, 3, clone2) == Status::Ok, "it is cloned again");
+        verdict(tally,
+                parent_of(clone2) == shared && parent_of(origin) == shared &&
+                    children_in(origin, shared) == 3 && pages_in(origin, shared) == 2,
+                "the second clone hangs under the same hidden node");
+        verdict(tally, o0->share_count() == 2 && o1->share_count() == 2,
+                "and the pages have one more viewer again");
+
+        // A window: only the page it can see gains a viewer.
+        Node window;
+        verdict(tally, clone_of(origin, 1, 1, window) == Status::Ok, "a one-page window is cloned");
+        verdict(tally,
+                reads_lenders_page(window, 0, o1) && o0->share_count() == 2 &&
+                    o1->share_count() == 3,
+                "its page 0 is the node's page 1, and only that page gained a viewer");
+
+        // A window longer than the node: the rest reads as zero.
+        Node longer;
+        verdict(tally, clone_of(origin, 0, 5, longer) == Status::Ok,
+                "a clone longer than the node");
+        verdict(tally,
+                reads_lenders_page(longer, 1, o1) && reads_zero_page(longer, 2) &&
+                    reads_zero_page(longer, 4) && o0->share_count() == 3 && o1->share_count() == 4,
+                "reads the node, then zero past its end");
+
+        // A clone of a clone: the clone holds nothing, so this one hangs there too.
+        Node of_clone;
+        verdict(tally, clone_of(clone1, 0, 3, of_clone) == Status::Ok, "a clone of a clone");
+        verdict(tally,
+                parent_of(of_clone) == shared && children_in(origin, shared) == 6 &&
+                    reads_lenders_page(of_clone, 0, o0),
+                "hangs under the same hidden node, six nodes under it now");
+
+        // Refused.
+        Node refused_clone;
+        verdict(tally, clone_of(origin, 0, 1, refused_clone) == Status::Ok && refused_clone,
+                "a clone is made for the refusals");
+        Node refused_hidden;
+        Node hidden_source;
+        verdict(tally,
+                make(hidden_source, 1) && make_child(hidden_source, 0, 1, 1, true, refused_hidden),
+                "a hidden node is made");
+        verdict(tally, clone_of(refused_hidden, 0, 1, refused_clone) == Status::BadState,
+                "a hidden node cannot be cloned");
+        {
+            Node misaligned;
+            verdict(tally, clone_raw(origin, 1, PAGE_SIZE, misaligned) == Status::InvArgs,
+                    "an offset that is not page aligned is refused");
+            verdict(tally, clone_raw(origin, 0, 1, misaligned) == Status::InvArgs,
+                    "and so is a size that is not");
+        }
+
+        // A clone of a node with nothing at all still gets a hidden node above,
+        // because what the node writes later must not reach the clone.
+        Node blank;
+        Node blank_clone;
+        verdict(tally, make(blank, 2) && clone_of(blank, 0, 2, blank_clone) == Status::Ok,
+                "a node with no pages is cloned");
+        auto const *const blank_hidden = parent_of(blank);
+        verdict(tally,
+                blank_hidden != nullptr && blank_hidden->is_hidden() &&
+                    parent_of(blank_clone) == blank_hidden && pages_in(blank, blank_hidden) == 0 &&
+                    children_in(blank, blank_hidden) == 2 && reads_zero_page(blank, 0) &&
+                    reads_zero_page(blank_clone, 1),
+                "it gets one, empty, and both read zero");
+
+        // The new hidden node takes the node's place on its parent's list.
+        Node top;
+        Node under_top;
+        Node under_top_clone;
+        verdict(tally,
+                make(top, 2) && make_child(top, 0, 2, 2, false, under_top) &&
+                    children_in(top, top.as_ptr()) == 1,
+                "a node under a parent is made");
+        verdict(tally, clone_of(under_top, 0, 2, under_top_clone) == Status::Ok, "and cloned");
+        auto const *const between = parent_of(under_top);
+        verdict(tally,
+                between != nullptr && between->is_hidden() &&
+                    parent_of(under_top_clone) == between && children_in(top, top.as_ptr()) == 1 &&
+                    children_in(top, between) == 2,
+                "the hidden node stands between them, and the parent still lists one child");
+
+        // The hidden node and its pages outlive every handle but one.
+        origin = nullptr;
+        clone1 = nullptr;
+        clone2 = nullptr;
+        window = nullptr;
+        of_clone = nullptr;
+        verdict(tally,
+                reads_lenders_page(longer, 0, o0) && reads_lenders_page(longer, 1, o1) &&
+                    holds_only(o0, 0xC0),
+                "with every other handle dropped the last clone still reads the pages");
 
         // The last handle to the parent goes; the children keep the tree.
         Node orphan_parent;

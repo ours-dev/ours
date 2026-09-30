@@ -56,10 +56,29 @@ VmCowPages::~VmCowPages() {
     if (m_parent) {
         Guard guard{m_lock};
         m_parent->lock().assert_held();
-        m_parent->m_children.erase(*this);
+        // Not linked when the node was made and dropped before anything linked
+        // it: a clone that runs out of memory half way frees the node it had
+        // already made.
+        if (m_sibling_hook.is_linked()) {
+            m_parent->m_children.erase(*this);
+        }
     }
 
     m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
+}
+
+auto VmCowPages::make_node(Gaf const gaf, usize const size, ustl::Arc<HierarchyState> hierarchy,
+                           ustl::Arc<VmCowPages> parent, u64 const parent_offset,
+                           u64 const parent_limit, bool const hidden,
+                           ustl::Arc<VmCowPages> *const out) -> Status {
+    auto cow_pages = VmCowPagesCache::get(GAF_KERNEL, gaf, size, ustl::move(hierarchy),
+                                          ustl::move(parent), parent_offset, parent_limit, hidden);
+    if (!cow_pages) {
+        return Status::OutOfMem;
+    }
+    *out = ustl::Arc<Self>::adopt(cow_pages);
+
+    return Status::Ok;
 }
 
 auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status {
@@ -69,14 +88,7 @@ auto VmCowPages::create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Stat
         return Status::OutOfMem;
     }
 
-    auto cow_pages = VmCowPagesCache::get(GAF_KERNEL, gaf, size, ustl::move(hierarchy),
-                                          ustl::Arc<VmCowPages>{}, u64(0), u64(0), false);
-    if (!cow_pages) {
-        return Status::OutOfMem;
-    }
-    *out = ustl::Arc<Self>::adopt(cow_pages);
-
-    return Status::Ok;
+    return make_node(gaf, size, ustl::move(hierarchy), ustl::Arc<VmCowPages>{}, 0, 0, false, out);
 }
 
 auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_offset,
@@ -107,22 +119,131 @@ auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_off
     auto const gaf = parent->m_gaf;
     auto hierarchy = parent->m_hierarchy;
 
-    auto cow_pages = VmCowPagesCache::get(GAF_KERNEL, gaf, size, ustl::move(hierarchy),
-                                          ustl::move(parent), parent_offset, limit, hidden);
-    if (!cow_pages) {
-        return Status::OutOfMem;
-    }
-    // Held before it is linked, so that whatever happens between the two lines
+    // Held before it is linked, so that whatever happens between the two steps
     // the node has an owner, and the destructor that would take it off the list
     // is the one that runs.
-    *out = ustl::Arc<Self>::adopt(cow_pages);
+    ustl::Arc<VmCowPages> node;
+    if (auto const status = make_node(gaf, size, ustl::move(hierarchy), ustl::move(parent),
+                                      parent_offset, limit, hidden, &node);
+        Status::Ok != status) {
+        return status;
+    }
 
     // Onto the parent's list under the tree's lock, which is also the child's.
     // Nothing can fail from here, and the list needs no allocation: the hook is
     // in the node.
-    Guard guard{cow_pages->m_lock};
-    cow_pages->m_parent->lock().assert_held();
-    cow_pages->m_parent->m_children.push_back(*cow_pages);
+    {
+        Guard guard{node->m_lock};
+        node->m_parent->lock().assert_held();
+        node->m_parent->m_children.push_back(*node);
+    }
+    *out = ustl::move(node);
+
+    return Status::Ok;
+}
+
+/// Where the clone hangs is decided first, and everything that can fail --
+/// the two allocations -- is done before anything is changed, so a failure
+/// leaves the tree as it was and the tail of the function, which links and
+/// counts, cannot fail at all.
+///
+/// The analysis is off for the body: it names a lock by the object it is a
+/// member of, and this touches the lists of several nodes, every one of them
+/// in this tree and so under the one mutex that is required on entry (asserted
+/// below in the debug build).
+TA_NO_THREAD_SAFETY_ANALYSIS
+auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
+                                     ustl::Arc<VmCowPages> *const out) -> Status {
+    m_lock.assert_held();
+
+    if (m_hidden) {
+        return Status::BadState;
+    }
+    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+
+    // How much of the window is this node's own content: past this node's end
+    // there is nothing to see, and the clone reads zero there.
+    u64 visible = offset >= m_size ? 0 : std::min<u64>(size, m_size - offset);
+
+    // Look for a node the clone can hang under without a new hidden node above
+    // this one. Going up is worth it only while the node holds nothing of its
+    // own in the window and its parent is hidden: then everything this node
+    // shows in the window is in the hidden parent, and the clone can see it
+    // there directly. This is what keeps a program started many times from
+    // growing a chain: after the first clone this node holds nothing, and every
+    // later clone finds the same hidden node.
+    //
+    // |at| is the window's start in the coordinates of |chosen|; each step up
+    // compares it with that node's limit before it adds that node's offset, as
+    // find_ancestor_page() does.
+    // Zircon: FindParentAndRangeForCloneLocked().
+    VmCowPages *chosen = this;
+    u64 at = offset;
+    while (chosen->m_parent && chosen->m_parent->m_hidden &&
+           !chosen->m_pages.has_page_in(PgOff(at >> PAGE_SHIFT),
+                                        PgOff((at + visible) >> PAGE_SHIFT))) {
+        visible =
+            at >= chosen->m_parent_limit ? 0 : std::min<u64>(visible, chosen->m_parent_limit - at);
+        at += chosen->m_parent_offset;
+        chosen = chosen->m_parent.as_ptr_mut();
+    }
+
+    ustl::Arc<VmCowPages> clone;
+    if (chosen->m_hidden) {
+        // Hangs under a hidden node that is already there. The window is
+        // translated into that node's coordinates by the walk above.
+        if (auto const status =
+                make_node(m_gaf, size, m_hierarchy, ustl::Arc<VmCowPages>::adopt(chosen), at,
+                          visible, false, &clone);
+            Status::Ok != status) {
+            return status;
+        }
+        chosen->m_children.push_back(*clone);
+    } else {
+        // A new hidden node between this one and its parent. It stands in this
+        // node's place, so it is this node's size and has this node's parent
+        // and window of it; this node then hangs under it, with everything it
+        // held, and so does the clone.
+        ustl::Arc<VmCowPages> hidden_node;
+        if (auto const status = make_node(m_gaf, m_size, m_hierarchy, m_parent, m_parent_offset,
+                                          m_parent_limit, true, &hidden_node);
+            Status::Ok != status) {
+            return status;
+        }
+        if (auto const status =
+                make_node(m_gaf, size, m_hierarchy, hidden_node, at, visible, false, &clone);
+            Status::Ok != status) {
+            // |hidden_node| goes with this return, never linked.
+            return status;
+        }
+
+        // Nothing fails from here.
+        hidden_node->m_pages.take_all_from(m_pages);
+        if (m_parent) {
+            // Not an in-place replacement: the list is in no particular order.
+            m_parent->m_children.erase(*this);
+            m_parent->m_children.push_back(*hidden_node);
+        }
+        m_parent = hidden_node;
+        m_parent_offset = 0;
+        m_parent_limit = m_size;
+        hidden_node->m_children.push_back(*this);
+        hidden_node->m_children.push_back(*clone);
+    }
+
+    // The clone is one more node that sees every page it can reach through its
+    // ancestors, all of them held by hidden nodes now, so each of those pages
+    // has one more viewer. Counted after the tree is settled, by the walk a read
+    // takes, so that what is counted is exactly what a read of the clone finds.
+    for (u64 at_clone = 0; at_clone < visible; at_clone += PAGE_SIZE) {
+        if (auto *const page = clone->find_ancestor_page(at_clone)) {
+            page->add_share();
+        }
+    }
+
+    *out = ustl::move(clone);
 
     return Status::Ok;
 }
@@ -184,6 +305,23 @@ auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_comm
     }
 
     return status;
+}
+
+auto VmCowPages::find_ancestor_page(u64 offset) const -> VmPage * {
+    auto const *node = this;
+
+    // |offset| is in the coordinates of |node|; the limit and the parent offset
+    // are that node's own, so the offset is compared with the limit first and
+    // only then moved into the parent's coordinates.
+    while (node->m_parent && offset < node->m_parent_limit) {
+        offset += node->m_parent_offset;
+        node = node->m_parent.as_ptr();
+        if (auto *const page = node->m_pages.get_page(PgOff(offset >> PAGE_SHIFT))) {
+            return page;
+        }
+    }
+
+    return nullptr;
 }
 
 /// The followings are in class VmCowPages::Cursor.
@@ -290,7 +428,7 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     // where the parent's content does not reach). Zircon: RequireReadPage()
     // returning a parent page, or vm_get_zero_page(), with writable = false.
     if (m_target->m_parent || m_target->m_hidden) {
-        auto *const page = find_ancestor_page();
+        auto *const page = m_target->find_ancestor_page(m_offset);
         advance();
         if (page) {
             return ktl::ok(RequireResult{.page = page, .writable = false});
@@ -312,23 +450,6 @@ auto VmCowPages::Cursor::require_read_page(usize nr_pages, MultiPageRequest *req
     return require_owned_page(nr_pages, request);
 }
 
-auto VmCowPages::Cursor::find_ancestor_page() const -> VmPage * {
-    auto const *node = m_target;
-    auto offset = m_offset;
-
-    // |offset| is in the coordinates of |node|; the limit and the parent offset
-    // are that node's own, so the offset is compared with the limit first and
-    // only then moved into the parent's coordinates.
-    while (node->m_parent && offset < node->m_parent_limit) {
-        offset += node->m_parent_offset;
-        node = node->m_parent.as_ptr();
-        if (auto *const page = node->m_pages.get_page(PgOff(offset >> PAGE_SHIFT))) {
-            return page;
-        }
-    }
-
-    return nullptr;
-}
 
 /// What the cursor is currently sitting on.
 ///

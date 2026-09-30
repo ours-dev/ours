@@ -307,3 +307,67 @@ None.
 - Why is the parent's link to its children not a reference, and what would happen if it were?
 - Why does the destructor need the tree's lock, given that nobody else can hold a reference to the node?
 - What can go wrong for a reader that takes a reference from the list while a child is being destroyed, and why is it not a problem yet?
+
+## Title: A VmCowPages can be cloned by putting a hidden node above it (2026-09-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `create_clone_locked()`, `parent_locked()`, `find_ancestor_page()` (the walk, moved from the cursor onto the node), `make_node()` (the one allocation of a node, now used by `create()`, `create_child()` and the clone). The destructor skips a node that was never linked.
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — `VmmBody::share_count`, `PageFrame::share_count()` and `add_share()`.
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` — `has_page_in()` and `take_all_from()`.
+- `kernel/commands/vmo_snapshot_test.cpp` — 30 more checks, 74 in all.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — this step done; pinning is refused by the `VmObject` layer.
+
+**Symptom**
+None. Latent, cannot be triggered today: `create_clone_locked()` has no caller outside the test. It is the step that makes a copy-on-write child possible: a node that shares its source's pages without copying them, and that neither the source's nor its own later writes can reach.
+
+**Cause**
+A child that only borrows its parent's pages is correct while the parent never changes, and wrong the moment it does: the child would see the parent's later writes. The way out is to make no node that others share ever writable. The pages every side sees are put in a node above all of them, a hidden node that nobody writes; each side then writes into its own store, and a write to a shared page copies it out first. That is why a clone does not hang the new node under the old one but inserts a new node between the old one and its parent, and moves the old node's pages up into it.
+
+The second thing is the share count, which is what will later let a write skip the copy. A page a hidden node holds is seen by some number of leaves; when a leaf writes it, the leaf must copy if any other leaf still sees it, and may take the page itself if it is the only one left. A count of "leaves that see it, minus one" answers that with one comparison, and it is incremented for exactly the pages a new clone can reach, once each, by walking from the clone upward the way a read does, after the tree is settled, so that what is counted is what a read of the clone finds.
+
+**Change**
+After the two allocations, which are the only thing that can fail:
+
+```cpp
+hidden_node->m_pages.take_all_from(m_pages);   // a swap of two trees: no page moves
+m_parent->m_children.erase(*this);             // this node's place in its parent's list
+m_parent->m_children.push_back(*hidden_node);  //   goes to the hidden node
+m_parent = hidden_node;                        // this node now hangs under it
+m_parent_offset = 0;
+m_parent_limit = m_size;
+hidden_node->m_children.push_back(*this);
+hidden_node->m_children.push_back(*clone);
+```
+
+When the node holds nothing in the window and its parent is already hidden, the search goes up (`FindParentAndRangeForCloneLocked()`) and the clone hangs under that hidden node, translated into its coordinates; no new node is made. That is what keeps a program started many times, which is the launcher's case, at one hidden node with many leaves, not a chain that a lookup would have to climb.
+
+`VmCowPages` does not know the `VmObject`s over it, so `create_clone_locked()` cannot remove the write permission from the source's mappings, as Zircon's clone does, or refuse a pinned page (pinning is per object here). Both are documented on the function as the caller's to have seen to; the `VmObject` layer that calls it does it, in the step that adds that layer. Nothing else calls it until then.
+
+Rejected: keeping the share count in the hidden node, in a table by page number. The descriptor has room, Zircon keeps it there, and a table would need a lookup on every write and its own allocation, which a clone that must not fail half way cannot afford.
+
+**Reference**
+Zircon `VmCowPages::CreateCloneLocked()` (`vm_cow_pages.cc:1831`), with `FindParentAndRangeForCloneLocked()` (`:1526`), `CloneNewHiddenParentLocked()` (`:1582`, its `page_list_` move at `:1730`), `CloneChildLocked()` (`:1782`, the hang-under-existing case), and `vm_page_t::object.share_count` (`page.h:72`). Zircon also removes Write from the source's mappings first (`RangeChangeUpdateLocked`), and rewrites each moved page's back-pointer through the page queues; ours does neither, for the two reasons above and because no VMO page has a back-pointer.
+
+**Verification**
+- `scripts/format_cpp.py --check`: clean. `clang-tidy -p out/vmo-snapshot`: nothing on the changed lines; the one warning is the existing destructor without `override`.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts as before. dbg: 18 passed, 0 failed, 0 error lines. rel: 13 passed, 9 skipped, 0 failed, 0 error lines.
+- `vmosnapshot.test` over COM1: 74 checks ok on both images (44 before, 30 new): a node that holds pages is cloned and both hang under one new hidden node with the pages moved up and one more viewer counted; a second clone hangs under the same hidden node with no new node; a one-page window counts only its page; a clone longer than the node reads zero past its end; a clone of a clone hangs under the same node, six under it; a misaligned offset or size and a clone of a hidden node are refused; a node with no pages still gets a hidden node above it; the hidden node takes the node's place on its parent's list, which still lists one child; with every other handle dropped the last clone still reads the pages. `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel, still pass.
+- The test can fail. Three mutants were built and each failed the checks that name it: with no page move, eight checks; with no share count, four of 74; with the reuse of an existing hidden node turned off, two of 74. (A first attempt at the count mutant did not compile, and its "ok" was the previous binary; it was redone with a mutant that builds.)
+- Not exercised: a node that holds its own pages under a hidden parent (a node cannot get one until a write copies it), the counts after any node dies or writes (neither is written yet), a clone that runs out of memory, and concurrency. The test is single-threaded.
+
+**Deliberately not done**
+- No write path: the fork-or-migrate write, and the drop of a share count, are the next step. Counts only go up until then.
+- No merge when a node dies: a hidden node left with one child stays.
+- No `RemoveWrite` on the source's mappings and no refusal of pinned pages; see above.
+- No rollback of counts on failure, because nothing fails after the counting starts: the allocations are done first.
+
+**How it was found**
+None: a step of the design. The walk that counts was moved from the cursor onto the node so that the clone can use exactly the walk a read uses; a test of the offset arithmetic (an earlier mutation of the walk) covers both.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a clone insert a hidden node above the source instead of hanging the clone under it, and what would the clone see if it hung under the source?
+- Why does the second clone of the same node not make a new hidden node, and what would a program started a hundred times cost if it did?
+- What does a share count of zero on a page in a hidden node tell a writer, and why is it counted after the tree is settled and not before?

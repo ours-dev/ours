@@ -70,6 +70,30 @@ class VmPageMap {
         return m_slots.size();
     }
 
+    /// Whether any slot in [first, last) holds a page, of either tag.
+    ///
+    /// Asked by a clone, to tell whether the node being cloned has anything of
+    /// its own in the range or only what it sees through its parent.
+    [[nodiscard]]
+    auto has_page_in(PgOff first, PgOff last) const -> bool {
+        auto const at = m_slots.lower_bound(first);
+        if (at.is_none()) {
+            return false;
+        }
+        return at.value()->first < last;
+    }
+
+    /// Takes every slot of |from|, leaving it empty. This map must be empty:
+    /// a slot here would be dropped without its page being given back.
+    ///
+    /// A swap of the two trees, not a copy: no page moves and nothing is
+    /// allocated, so it cannot fail half way. A clone puts a node's whole page
+    /// store under a new hidden node this way.
+    auto take_all_from(Self &from) -> void {
+        DEBUG_ASSERT(m_slots.empty(), "the slots here would be lost");
+        m_slots.swap(from.m_slots);
+    }
+
     /// Install |page| at |index|.
     ///
     /// Refuses to overwrite an occupied slot rather than replacing it: the

@@ -119,6 +119,17 @@ namespace page {
         std::atomic<u16> num_users;    // 65536 users
         std::atomic<u8> pinned_count;
 
+        /// How many more than one of the copy-on-write tree's leaves can see
+        /// this page: zero for a page that has one viewer, and only ever above
+        /// zero for a page held by a hidden node, which is what makes it shared.
+        /// It says whether a writer may take the page (zero: it is the only
+        /// one who sees it) or has to copy it (above zero: someone else does).
+        ///
+        /// Plain, not atomic: it is read and written only under the lock of the
+        /// tree whose node holds the page, which is the same lock that decides
+        /// who sees the page. Zircon: vm_page_t::object.share_count.
+        u32 share_count;
+
         /// Which of PageQueues' lists currently holds this frame, as a
         /// PageQueues::QueueType. Zero is that enum's `None`, so a frame that
         /// has just become() a VMM page reads as unqueued without anyone
@@ -378,6 +389,16 @@ class PageFrame {
 
     auto num_mappings() const -> usize {
         return as<page::VmmBody>().num_mappings.load();
+    }
+
+    /// See VmmBody::share_count. The caller holds the lock of the tree whose
+    /// node holds this page.
+    auto share_count() const -> u32 {
+        return as<page::VmmBody>().share_count;
+    }
+
+    auto add_share() -> void {
+        as<page::VmmBody>().share_count += 1;
     }
 
     /// The PageQueues list this frame is filed on, as the raw enumerator

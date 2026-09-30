@@ -41,10 +41,50 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ///
     /// The child keeps |parent| alive and takes over its lock (lock()), which
     /// is what lets a walk from the child up through its ancestors run under
-    /// one mutex. Nothing links the child into the parent yet: the parent does
-    /// not know its children, because nothing walks down.
+    /// one mutex. It is put on the parent's list of children, and takes itself
+    /// off when it dies.
+    ///
+    /// Nothing but a test makes a node this way. The tree the rest of the
+    /// kernel builds has a parent above a node only because a clone put it
+    /// there, and it is a hidden node; see create_clone_locked().
     static auto create_child(ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
                              usize size, bool hidden, ustl::Arc<VmCowPages> *out) -> Status;
+
+    /// A copy-on-write clone of [offset, offset + size) of this node: a new
+    /// node that sees what this one sees there, and neither ever sees the
+    /// other's later writes.
+    ///
+    /// Nothing is copied. If this node holds pages of its own in the range they
+    /// move, all of this node's pages together, into a new hidden node put
+    /// between this node and its parent, and this node and the clone hang under
+    /// it; every page the clone can see is then seen by one more node, which its
+    /// share count records. If this node holds nothing in the range and hangs
+    /// under a hidden node already, the clone hangs under that one, which is why
+    /// a program started many times makes one hidden node with many leaves, not
+    /// a chain.
+    ///
+    /// The clone sees this node's bytes only up to the end of this node: past it
+    /// reads as zero however large |size| is. |offset| and |size| must be page
+    /// aligned, and a hidden node cannot be cloned: BadState.
+    ///
+    /// Two things this cannot check, because a VmCowPages does not know the
+    /// objects over it, and the caller must have seen to. Nothing may map this
+    /// node's pages writable while it is cloned: the pages become shared, and a
+    /// writable mapping would write to all of their viewers. And none of them
+    /// may be pinned. Zircon refuses both itself (RemoveWrite on the mappings,
+    /// BadState for a pinned page); the VmObject that calls this has to.
+    ///
+    /// The lock is taken by the caller, who has the answer to both anyway.
+    /// Zircon: VmCowPages::CreateCloneLocked(), bidirectional path.
+    TA_REQUIRES(m_lock)
+    auto create_clone_locked(u64 offset, usize size, ustl::Arc<VmCowPages> *out) -> Status;
+
+    /// The node this one hangs under, or null. A raw pointer for the life of
+    /// the lock: it is only valid while the tree does not change.
+    [[nodiscard]]
+    TA_REQUIRES(m_lock) auto parent_locked() const -> VmCowPages const * {
+        return m_parent.as_ptr();
+    }
 
     /// Whether this is a node that only holds pages its children share.
     ///
@@ -156,6 +196,30 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
 
     auto alloc_pages(usize order, VmPage **page, PageRequest *page_request) -> Status;
 
+    /// The page an ancestor holds for |offset|, an offset in this node's own
+    /// coordinates, or nullptr when the walk up reaches the top, or a node's
+    /// limit, without finding one; what lies past nothing reads as zero. The
+    /// nearest ancestor that has a page wins, and the walk never looks at this
+    /// node's own store: the callers have already done that.
+    ///
+    /// The lock is held by every caller. It is not annotated, for the reason
+    /// m_pages is not guarded: the callers include Cursor, which the analysis
+    /// cannot tie to the lock.
+    ///
+    /// Zircon: VmCowPages::FindPageContentLocked(), which loops
+    /// `while (offset < cur.parent_limit_)` in the same way, adding the
+    /// parent offset at each hop.
+    [[nodiscard]]
+    auto find_ancestor_page(u64 offset) const -> VmPage *;
+
+    /// Makes a node and adopts it. The one place a VmCowPages is allocated, so
+    /// create(), create_child() and the clone do not each spell out the cache
+    /// call and its OutOfMem. The node is not linked onto any list: that is
+    /// the caller's, under the lock.
+    static auto make_node(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
+                          ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
+                          bool hidden, ustl::Arc<VmCowPages> *out) -> Status;
+
     /// When no page sources exists, it will be used in frame allocation request.
     Gaf m_gaf;
     /// Page map that operates within the virtual memory range of the VMO, from [0, N).
@@ -200,8 +264,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     USTL_DECLARE_HOOK_OPTION(Self, m_sibling_hook, SiblingOptions);
     USTL_DECLARE_LIST(Self, ChildList, SiblingOptions);
 
-    /// The nodes that hang directly under this one, in the order they were
-    /// made. Not references: each child already holds this node, and a list
+    /// The nodes that hang directly under this one, in no particular order.
+    /// Not references: each child already holds this node, and a list
     /// that held the children would hold them for as long as this node lives.
     /// A child takes itself off in its destructor, so every node on the list is
     /// alive whenever the lock is free.
@@ -278,18 +342,6 @@ class VmCowPages::Cursor {
     auto create_dirty_request(usize nr_pages, PageRequest *request) -> Status;
 
   private:
-    /// The page an ancestor of the target holds for the offset the cursor sits
-    /// on, or nullptr when the walk up reaches the top, or a node's limit,
-    /// without finding one; what lies past nothing reads as zero. The nearest
-    /// ancestor that has a page wins, and the walk never looks at the target's
-    /// own store: the callers have already done that.
-    ///
-    /// Zircon: VmCowPages::FindPageContentLocked(), which loops
-    /// `while (offset < cur.parent_limit_)` in the same way, adding the
-    /// parent offset at each hop.
-    [[nodiscard]]
-    auto find_ancestor_page() const -> VmPage *;
-
     auto convert_reference_to_page(AnonymousPageRequest *request) -> Status;
 
     [[nodiscard]]
