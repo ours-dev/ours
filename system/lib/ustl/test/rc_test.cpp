@@ -97,6 +97,26 @@ struct Cacheable: ustl::RefCounted<Cacheable> {
 // link. Without the hook, dropping the head recurses once per link; with it,
 // the outermost release runs the chain as a loop -- the kernel's SafeDeleter
 // for dispatchers, in miniature.
+// An object whose last release is parked instead of finished, so that the state
+// between "the last owner let go" and "the destructor is over" can be looked at.
+// The state is what a destructor blocked on a lock is in.
+struct Parked: ustl::RefCounted<Parked> {
+    static Parked *PARKED;
+
+    static auto rc_recycle(Parked *object) noexcept -> void {
+        PARKED = object;
+    }
+
+    auto finish() -> void {
+        rc_finish();
+    }
+
+    ~Parked() {
+        ++DESTROYED;
+    }
+};
+Parked *Parked::PARKED = nullptr;
+
 struct Link: ustl::RefCounted<Link> {
     static Link *PENDING;
     static bool DELETING;
@@ -303,6 +323,38 @@ auto test_recycle() {
     assert(Link::PENDING == nullptr && !Link::DELETING);
 }
 
+auto test_dying() {
+    DESTROYED = 0;
+    Parked::PARKED = nullptr;
+
+    // Nobody has owned a fresh object, and it is not being destroyed.
+    auto *fresh = new Parked();
+    assert(fresh->strong_count() == 0 && !fresh->is_dying());
+
+    // A live object can be adopted again from its bare pointer.
+    auto owner = ustl::Rc<Parked>::adopt(fresh);
+    assert(fresh->strong_count() == 1 && !fresh->is_dying());
+    {
+        auto again = ustl::Rc<Parked>::try_adopt(fresh);
+        assert(again && again.as_ptr() == fresh);
+        assert(fresh->strong_count() == 2);
+    }
+    assert(fresh->strong_count() == 1);
+
+    // Once the last owner lets go the object is dying, and refuses everything
+    // that would give it a new one, until its destructor is over.
+    owner = nullptr;
+    assert(Parked::PARKED == fresh);
+    assert(fresh->strong_count() == 0 && fresh->is_dying());
+    assert(!fresh->lock_strong());
+    assert(!ustl::Rc<Parked>::try_adopt(fresh));
+    assert(fresh->strong_count() == 0 && DESTROYED == 0);
+
+    // The state the refusals leave behind is the state they found.
+    fresh->finish();
+    assert(DESTROYED == 1);
+}
+
 } // namespace
 
 auto main() -> int {
@@ -316,6 +368,7 @@ auto main() -> int {
     test_into_raw();
     test_custom_deallocate();
     test_recycle();
+    test_dying();
     std::printf("all rc tests passed\n");
     return 0;
 }

@@ -118,9 +118,38 @@ class RefCounted {
 
     /// Take one strong reference. Every strong reference also holds one weak
     /// reference, so the storage stays alive as long as the object is owned.
+    ///
+    /// A strong count of zero is the state of an object nobody owns yet, where
+    /// the first retain() is how it gets an owner, and also the state of one
+    /// whose last owner has let go and whose destructor has not finished. Only
+    /// the first is somewhere to take a reference. Taking one in the second
+    /// brings back to life an object that is being destroyed, and it is then
+    /// destroyed a second time, when the reference is let go or when the
+    /// destructor already running finishes. So that stops the program instead,
+    /// at the retain that did it and in every build. The two are told apart
+    /// by the weak count: the owners held one weak reference alongside each
+    /// strong one, and the last of those is not dropped until the payload is
+    /// gone (rc_finish()), so a strong count of zero with a weak reference
+    /// outstanding is an object being destroyed, and a fresh one has none.
+    ///
+    /// A caller that holds only a pointer, and cannot know whether the object
+    /// has an owner left, asks lock_strong(), or Rc::try_adopt(), which refuse
+    /// instead. The check costs nothing on the way that matters: it looks at
+    /// the weak count only when the strong count was zero.
     auto retain() noexcept -> void {
-        strong_add();
+        if (strong_add() == 0 && is_dying()) {
+            __builtin_trap();
+        }
         weak_add();
+    }
+
+    /// Whether the last owner has let go and the destructor has not finished:
+    /// a strong count of zero with the owners' weak reference still held. False
+    /// for an object nobody has owned yet, which has neither. Only the answer
+    /// for a caller that keeps the storage alive some other way.
+    [[nodiscard]]
+    auto is_dying() const noexcept -> bool {
+        return strong_count() == 0 && weak_count() != 0;
     }
 
     /// Drop one strong reference. The payload is destroyed when the count
@@ -241,11 +270,12 @@ class RefCounted {
     }
 
   private:
-    auto strong_add() noexcept -> void {
+    /// The count before the addition.
+    auto strong_add() noexcept -> std::size_t {
         if constexpr (detail::IsThreadSafe<Policy>::value) {
-            m_strong.fetch_add(1, std::memory_order_relaxed);
+            return m_strong.fetch_add(1, std::memory_order_relaxed);
         } else {
-            ++m_strong;
+            return m_strong++;
         }
     }
 
@@ -321,6 +351,27 @@ class Rc final {
     /// Named form of the adopting constructor.
     static auto adopt(T *pointer) noexcept -> Rc {
         return Rc(pointer);
+    }
+
+    /// A strong reference to an object that may already have lost its last
+    /// one: an empty Rc if it has, which is the answer a caller must be ready
+    /// for. The way to take a reference from a bare pointer whose owners the
+    /// caller cannot see, such as a node found on an intrusive list; adopt()
+    /// there would stop the program if the object is being destroyed.
+    ///
+    /// The storage must stay allocated for the call, which is the caller's to
+    /// guarantee: an object whose destructor is waiting on a lock the caller
+    /// holds does, and one that may already be freed does not.
+    [[nodiscard]]
+    static auto try_adopt(T *pointer) noexcept -> Rc {
+        static_assert(std::is_same_v<typename detail::ThreadPolicyOf<T>::Type, Policy>,
+                      "policy mismatch: single-threaded objects use Rc<T>, "
+                      "thread-safe (cross-CPU) objects use Arc<T> (= Rc<T, ThreadSafePolicy>)");
+        Rc result;
+        if (pointer->lock_strong()) {
+            result.m_pointer = pointer;
+        }
+        return result;
     }
 
     Rc(Rc const &other) noexcept : m_pointer(other.m_pointer) {
