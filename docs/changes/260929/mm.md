@@ -566,3 +566,52 @@ None.
 - Why does the image, which is not a clone, count as a viewer of every page it has cloned windows of?
 - After both windows have written their first page, why does the image take pages 0, 1 and 3 but not 2 or 4?
 - Why do two windows with no page in common still contend on one lock, and where is that decided?
+
+## Title: A clone that runs out of memory half way no longer takes the tree's lock twice (2026-09-30)
+
+**Files**
+- `kernel/mm/vm_cow_pages.cpp` — `create_clone_locked()` makes the new hidden node with no parent and gives it this node's parent only in the part that cannot fail.
+
+**Symptom**
+Latent, cannot be triggered by the tests: it needs an allocation to fail. When the node being cloned has a parent, and the allocation of the hidden node succeeds and the allocation of the clone then fails, `create_clone_locked()` returned with the caller holding the tree's lock, freed the hidden node, and the hidden node's destructor took that same lock. The mutex is not recursive, so the thread would wait for itself for ever.
+
+**Cause**
+A `VmCowPages` that has a parent takes the tree's lock in its destructor, to take itself off the parent's list. `create_clone_locked()` runs with that lock held by its caller, and it made the hidden node with the parent already set, so freeing it on the failure path was destroying a node that has a parent while holding the lock its destructor wants. The bug is the general one: the last reference to a node must never be released with the tree's lock held, if the node has a parent. On the success path nothing is freed, and the node with no parent (a root being cloned, which every test does) never takes the lock, so it did not show.
+
+**Change**
+The hidden node is made with an empty parent, offset and limit, and given this node's in the part after the last allocation, where nothing can fail:
+
+```cpp
+make_node(m_gaf, m_size, m_hierarchy, ustl::Arc<VmCowPages>{}, 0, 0, Flags::Hidden, &hidden_node)
+...
+// Nothing fails from here.
+hidden_node->m_parent = m_parent;
+hidden_node->m_parent_offset = m_parent_offset;
+hidden_node->m_parent_limit = m_parent_limit;
+```
+A failure now frees a node with no parent, whose destructor takes no lock.
+
+Rejected: having the destructor look at whether the node is linked before it takes the lock. That reads the hook without the lock, which the merge in the next step will change under it.
+
+**Reference**
+Zircon returns the parent it would drop to the caller, so that it is released after the lock (`MaybeDeadTransition()` returns a `RefPtr`, `vm_cow_pages.cc:1022`); the same rule, applied by handing the reference out instead of by not holding it yet.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines (the existing destructor warning only).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 95 checks ok on both images.
+- Not verified: the failure path itself. There is no way to make an allocation fail on demand, so the fix rests on the reading above and on no success path having changed, which the 95 checks cover.
+
+**Deliberately not done**
+- No allocation-failure injection, which would make this and the other "nothing fails from here" claims testable, and is a larger piece of work.
+- The rule for the merge in the next step (never release the last reference to a node under the lock) is written in the design, not enforced.
+
+**How it was found**
+Judging whether any real scenario has a walker retain a node that is being destroyed: it does not, but the same question asked of the other half, what frees a node while the lock is held, found this one.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does releasing the last reference to a node that has a parent, while holding the tree's lock, never return?
+- Why did no test show it, and what would have?
+- Why is the hidden node given its parent only after the last allocation?

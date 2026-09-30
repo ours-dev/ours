@@ -211,20 +211,31 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
         // node's place, so it is this node's size and has this node's parent
         // and window of it; this node then hangs under it, with everything it
         // held, and so does the clone.
+        //
+        // It is made with no parent, and is given this node's only in the part
+        // that cannot fail. A node with a parent takes the tree's lock in its
+        // destructor (to leave the parent's list), and the caller holds that
+        // lock: if the clone's allocation failed after this one's, freeing a
+        // node that already had a parent would take the lock a second time on
+        // the same thread and never return.
         ustl::Arc<VmCowPages> hidden_node;
-        if (auto const status = make_node(m_gaf, m_size, m_hierarchy, m_parent, m_parent_offset,
-                                          m_parent_limit, Flags::Hidden, &hidden_node);
+        if (auto const status = make_node(m_gaf, m_size, m_hierarchy, ustl::Arc<VmCowPages>{}, 0, 0,
+                                          Flags::Hidden, &hidden_node);
             Status::Ok != status) {
             return status;
         }
         if (auto const status =
                 make_node(m_gaf, size, m_hierarchy, hidden_node, at, visible, Flags::None, &clone);
             Status::Ok != status) {
-            // |hidden_node| goes with this return, never linked.
+            // |hidden_node| goes with this return: never linked, and with no
+            // parent, so its destructor takes no lock.
             return status;
         }
 
         // Nothing fails from here.
+        hidden_node->m_parent = m_parent;
+        hidden_node->m_parent_offset = m_parent_offset;
+        hidden_node->m_parent_limit = m_parent_limit;
         hidden_node->m_pages.take_all_from(m_pages);
         if (m_parent) {
             // Not an in-place replacement: the list is in no particular order.
