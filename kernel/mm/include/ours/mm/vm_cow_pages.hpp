@@ -268,6 +268,37 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     [[nodiscard]]
     auto cow_page(u64 offset, FoundPage const &found) -> ktl::Result<VmPage *>;
 
+    /// A leaf that dies is one viewer fewer of every page it sees through its
+    /// ancestors: a page it was the only viewer of has none left and is freed,
+    /// and the share count of any other drops by one. Pages of its own are the
+    /// destructor's, and a page it forked or took is no longer one it sees.
+    /// Nothing for a node that is not a viewer, a hidden one.
+    ///
+    /// Zircon: ReleaseOwnedPagesLocked(), which frees the pages with a share
+    /// count of zero and decrements the rest.
+    TA_REQUIRES(m_lock)
+    auto release_viewed_pages_locked() -> void;
+
+    /// A hidden node left with one child is a pointless step for everything
+    /// below it to climb, so it is merged into that child. Its pages the child
+    /// can see move into the child, the rest are freed because nobody sees them,
+    /// and the child takes over its parent link, with its offset and limit
+    /// composed with the child's own. The hidden node is then off every list,
+    /// holds nothing, has no parent, and is freed by whoever holds the last
+    /// reference to it, which takes no lock.
+    ///
+    /// Moving a page can fail, for the tree that holds it may have to grow, and
+    /// then the merge stops where it is: the pages moved are the child's, the
+    /// rest are still visible through the hidden node, and the hidden node stays
+    /// a step between them until its child dies. Nothing is lost or seen twice.
+    ///
+    /// The caller holds a reference to this node, and still does when this
+    /// returns: the child's own is dropped here and must not be the last.
+    /// Nothing here takes a reference to the child. Zircon:
+    /// MergeContentWithChildLocked().
+    TA_REQUIRES(m_lock)
+    auto merge_into_only_child_locked() -> void;
+
     /// Makes a node and adopts it. The one place a VmCowPages is allocated, so
     /// create(), create_child() and the clone do not each spell out the cache
     /// call and its OutOfMem. The node is not linked onto any list: that is

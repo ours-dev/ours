@@ -69,15 +69,136 @@ VmCowPages::~VmCowPages() {
 
         Guard guard{m_lock};
         m_parent->lock().assert_held();
+
+        // In this order, in one hold of the lock. What this node sees has to be
+        // let go of while its parent chain is still what it saw; it leaves the
+        // list before anyone can count it a child; and whether the parent is now
+        // left with one is only known after it has left.
+        release_viewed_pages_locked();
+
         // Not linked when the node was made and dropped before anything linked
         // it: a clone that runs out of memory half way frees the node it had
         // already made.
         if (m_sibling_hook.is_linked()) {
             m_parent->m_children.erase(*this);
         }
+
+        if (m_parent->is_hidden() && 1 == m_parent->m_children.size()) {
+            m_parent->merge_into_only_child_locked();
+        }
     }
 
     m_pages.drain_owned([](VmPage *const page) { free_frames(page, 0); });
+}
+
+auto VmCowPages::release_viewed_pages_locked() -> void {
+    if (is_hidden()) {
+        return;
+    }
+
+    // Everything this node sees through its parent: [0, m_parent_limit) in its
+    // own coordinates, walked the way a read walks it. A page of its own at an
+    // offset shadows what is above, and this node is no viewer of that.
+    for (u64 at = 0; at < m_parent_limit; at += PAGE_SIZE) {
+        if (m_pages.get_page(PgOff(at >> PAGE_SHIFT))) {
+            continue;
+        }
+
+        auto const found = find_page(at);
+        // A page a node that is not hidden holds belongs to that node, and has
+        // no count.
+        if (!found.page || !found.owner->is_hidden()) {
+            continue;
+        }
+
+        auto *const page = found.page;
+        if (page->share_count() > 0) {
+            page->drop_share();
+            continue;
+        }
+
+        // The last viewer. Nobody else can see the page, and it is in a hidden
+        // node that nobody writes, so it is freed here rather than left until the
+        // hidden node goes.
+        [[maybe_unused]]
+        auto *const taken = found.owner->m_pages.remove_page(PgOff(found.offset >> PAGE_SHIFT));
+        DEBUG_ASSERT(taken == page, "the page left a slot other than the one it was found in");
+        free_frames(page, 0);
+    }
+}
+
+auto VmCowPages::merge_into_only_child_locked() -> void {
+    DEBUG_ASSERT(is_hidden() && 1 == m_children.size());
+    // A reference to the survivor is never taken: it may be a node whose last
+    // reference has gone and whose destructor is waiting for the lock held here,
+    // and its fields are all this needs.
+    VmCowPages &survivor = m_children.front().value();
+
+    // Where the survivor sees this node: [survivor_at, survivor_at + survivor_limit).
+    u64 const survivor_at = survivor.m_parent_offset;
+    u64 const survivor_limit = survivor.m_parent_limit;
+
+    PgOff index = 0;
+    PgOff next = 0;
+    while (auto *const page = m_pages.next_page(next, &index)) {
+        next = index + 1;
+        u64 const here = static_cast<u64>(index) << PAGE_SHIFT;
+
+        // Not in the survivor's window, or in it but under a page of the survivor's
+        // own: nobody sees this page, and it goes.
+        bool visible = here >= survivor_at && here - survivor_at < survivor_limit;
+        PgOff const there = static_cast<PgOff>((here - survivor_at) >> PAGE_SHIFT);
+        if (visible && survivor.m_pages.get_page(there)) {
+            visible = false;
+        }
+        if (!visible) {
+            [[maybe_unused]]
+            auto *const taken = m_pages.remove_page(index);
+            DEBUG_ASSERT(taken == page);
+            free_frames(page, 0);
+            continue;
+        }
+
+        // Only the survivor sees this page now, so it has no count to keep,
+        // unless the survivor is itself a hidden node that leaves below it see.
+        DEBUG_ASSERT(survivor.is_hidden() || 0 == page->share_count(),
+                     "a page with another viewer in a hidden node with one child");
+
+        // Into the survivor first and out of this node after, so that a failed
+        // insertion leaves the page where it was. It is the one thing here that
+        // can fail, and stopping leaves a consistent tree: see the declaration.
+        if (Status::Ok != survivor.m_pages.insert_page(there, page, VmPageMap::Tag::Owned)) {
+            return;
+        }
+        [[maybe_unused]]
+        auto *const taken = m_pages.remove_page(index);
+        DEBUG_ASSERT(taken == page);
+    }
+
+    // What the survivor sees of this node's parent: its window in this node,
+    // cut at the end of this node's own window in the parent. The limit is
+    // computed from the survivor's offset as it was, before it is composed.
+    u64 window = 0;
+    if (survivor_at < m_parent_limit) {
+        window = std::min<u64>(survivor_limit, m_parent_limit - survivor_at);
+    }
+
+    // The survivor takes this node's place on the parent's list, and off this one.
+    m_children.erase(survivor);
+    if (m_parent) {
+        m_parent->lock().assert_held();
+        m_parent->m_children.erase(*this);
+        m_parent->m_children.push_back(survivor);
+    }
+
+    survivor.m_parent_offset = survivor_at + m_parent_offset;
+    survivor.m_parent_limit = window;
+    // Moves this node's parent, so that it has none and its destructor takes no
+    // lock, and drops the survivor's reference to this node. That is not the last
+    // one: the caller holds another.
+    survivor.m_parent = ustl::move(m_parent);
+    m_parent_offset = 0;
+    m_parent_limit = 0;
 }
 
 auto VmCowPages::make_node(Gaf const gaf, usize const size, ustl::Arc<HierarchyState> hierarchy,

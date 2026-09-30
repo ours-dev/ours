@@ -83,6 +83,20 @@ class VmPageMap {
         return at.value()->first < last;
     }
 
+    /// The first page at or after |from|, its index in |index|, or nullptr when
+    /// there is none. A step of a walk over the map that may take pages out as
+    /// it goes, which an iterator would not survive: the caller asks again from
+    /// the index after the one it just handled.
+    [[nodiscard]]
+    auto next_page(PgOff from, PgOff *index) const -> VmPage * {
+        auto const at = m_slots.lower_bound(from);
+        if (at.is_none()) {
+            return nullptr;
+        }
+        *index = at.value()->first;
+        return slot_page(at.value()->second);
+    }
+
     /// Takes the page at |index| out of the map and hands it back, or nullptr
     /// when the slot is empty. Ownership goes with it: the map no longer knows
     /// the page, so it will not free it, and whoever asked now has to.

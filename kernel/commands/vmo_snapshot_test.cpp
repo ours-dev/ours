@@ -102,6 +102,12 @@ namespace {
     }
 
     TA_NO_THREAD_SAFETY_ANALYSIS
+    auto parent_of_node(Node &tree, VmCowPages const *const node) -> VmCowPages const * {
+        Guard guard{tree->lock()};
+        return node->parent_locked();
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
     auto pages_in(Node &tree, VmCowPages const *const node) -> usize {
         Guard guard{tree->lock()};
         return node->nr_pages_locked();
@@ -564,6 +570,122 @@ namespace {
                 holds_only(img[0], 0x30) && holds_only(img[1], 0x31) && holds_only(img[3], 0x33) &&
                     reads_lenders_page(seg_x, 1, img[2]) && reads_lenders_page(seg_y, 0, img[4]),
                 "and the windows still read the pages that stayed");
+
+        // Death. A leaf that dies is one viewer fewer of what it sees: a page it
+        // was the last to see is freed, and the count of any other drops. A hidden
+        // node left with one child is merged into it.
+        Node dsrc;
+        verdict(tally, make(dsrc, 3), "a node for the death checks is made");
+        auto *const d0 = fill(dsrc, 0, 0x50);
+        auto *const d1 = fill(dsrc, 1, 0x51);
+        Node da;
+        Node db;
+        verdict(tally,
+                d0 && d1 && clone_of(dsrc, 0, 3, da) == Status::Ok &&
+                    clone_of(dsrc, 0, 3, db) == Status::Ok,
+                "it has two pages and two clones");
+        auto const *const d_hidden = parent_of(dsrc);
+        verdict(tally,
+                d_hidden != nullptr && d0->share_count() == 2 && d1->share_count() == 2 &&
+                    children_in(dsrc, d_hidden) == 3,
+                "three nodes see each page");
+        da = nullptr;
+        verdict(tally,
+                d0->share_count() == 1 && d1->share_count() == 1 &&
+                    children_in(dsrc, d_hidden) == 2 && pages_in(dsrc, d_hidden) == 2 &&
+                    parent_of(dsrc) == d_hidden,
+                "one clone dies: each page has one viewer fewer, and the hidden node, with two "
+                "children left, stays");
+        db = nullptr;
+        verdict(tally,
+                parent_of(dsrc) == nullptr && nr_pages(dsrc) == 2 && d0->share_count() == 0 &&
+                    d1->share_count() == 0,
+                "the other dies: the hidden node is merged away and the node that is left has "
+                "no parent");
+        auto const d_own = lookup(dsrc, false, 0);
+        verdict(tally,
+                d_own && d_own->page == d0 && d_own->writable && holds_only(d0, 0x50) &&
+                    holds_only(d1, 0x51),
+                "and it holds the very pages, writable, not copies");
+
+        // The last viewer of a page frees it, and the hidden node stays while others remain.
+        Node ea;
+        Node eb;
+        Node esrc;
+        verdict(tally, make(esrc, 2), "a node for the last-viewer checks is made");
+        auto *const e0 = fill(esrc, 0, 0x54);
+        verdict(tally,
+                e0 && clone_of(esrc, 0, 2, ea) == Status::Ok &&
+                    clone_of(esrc, 0, 2, eb) == Status::Ok,
+                "it has a page and two clones");
+        auto const *const e_hidden = parent_of(esrc);
+        auto const e_src_wrote = lookup(esrc, true, 0);
+        auto const e_a_wrote = lookup(ea, true, 0);
+        verdict(tally,
+                e_src_wrote && e_a_wrote && e_src_wrote->page != e0 && e_a_wrote->page != e0 &&
+                    e0->share_count() == 0 && pages_in(esrc, e_hidden) == 1,
+                "the other two write it, and only the last clone still sees the page in the "
+                "hidden node");
+        eb = nullptr;
+        verdict(tally,
+                pages_in(esrc, e_hidden) == 0 && children_in(esrc, e_hidden) == 2 &&
+                    parent_of(esrc) == e_hidden,
+                "the last viewer dies: the page is freed, and the hidden node stays for the "
+                "two that are left");
+
+        // The source dies first, and the window it was cloned for is all that is kept.
+        Node fsrc;
+        Node fwin;
+        verdict(tally, make(fsrc, 4), "a node for the source-dies checks is made");
+        VmPage *f[4] = {};
+        for (usize i = 0; i < 4; ++i) {
+            f[i] = fill(fsrc, i, static_cast<u8>(0x70 + i));
+        }
+        verdict(tally, f[3] != nullptr && clone_of(fsrc, 1, 1, fwin) == Status::Ok,
+                "a one-page window of it is cloned");
+        fsrc = nullptr;
+        auto const f_own = lookup(fwin, false, 0);
+        verdict(tally,
+                parent_of(fwin) == nullptr && nr_pages(fwin) == 1 && f_own && f_own->page == f[1] &&
+                    f_own->writable && holds_only(f[1], 0x71),
+                "the source dies: the window is left with its page, moved and not copied, and no "
+                "parent");
+
+        // A merge composes the offsets and limits, and leaves the counts as they were.
+        Node rsrc;
+        verdict(tally, make(rsrc, 4), "a node for the merge checks is made");
+        VmPage *r[4] = {};
+        for (usize i = 0; i < 4; ++i) {
+            r[i] = fill(rsrc, i, static_cast<u8>(0x60 + i));
+        }
+        Node rc1;
+        verdict(tally, r[3] != nullptr && clone_of(rsrc, 1, 2, rc1) == Status::Ok,
+                "a two-page window of it, at page 1, is cloned");
+        auto const *const r_top = parent_of(rsrc);
+        auto const rc1_wrote = lookup(rc1, true, 0);
+        Node rc2;
+        verdict(tally, rc1_wrote && clone_of(rc1, 0, 2, rc2) == Status::Ok,
+                "the window writes its page 0 and is cloned in turn");
+        auto const *const r_mid = parent_of(rc1);
+        verdict(tally,
+                r_mid != nullptr && r_mid != r_top && parent_of(rc2) == r_mid &&
+                    parent_of_node(rsrc, r_mid) == r_top && rc1_wrote->page->share_count() == 1 &&
+                    r[2]->share_count() == 2,
+                "the clone of a node that holds a page gets a hidden node of its own, below "
+                "the first, and counts the pages it sees");
+        rc2 = nullptr;
+        verdict(tally,
+                parent_of(rc1) == r_top && children_in(rsrc, r_top) == 2 &&
+                    rc1_wrote->page->share_count() == 0 && r[2]->share_count() == 1 &&
+                    nr_pages(rc1) == 1,
+                "the clone dies: the hidden node between is merged away, and the window hangs "
+                "under the first again with the counts left as if it had never been");
+        auto const rc1_own = lookup(rc1, false, 0);
+        verdict(tally,
+                rc1_own && rc1_own->page == rc1_wrote->page && rc1_own->writable &&
+                    holds_only(rc1_own->page, 0x61) && reads_lenders_page(rc1, 1, r[2]),
+                "and the window still reads its own page, and the page above it that the "
+                "composed offset points to");
 
         // The new hidden node takes the node's place on its parent's list.
         Node top;

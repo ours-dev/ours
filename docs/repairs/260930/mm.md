@@ -19,3 +19,23 @@ Zircon `VmCowPages::AllocateCopyPage()` (`vm_cow_pages.cc`), which takes a page 
 
 **Acceptance**
 `cow_page()` copies into a frame that was not zeroed first; `vmosnapshot.test` still passes, including the checks that a copied page holds exactly the source's bytes; the measurement is recorded in the change entry that removes this item.
+
+## 2. A leaf's death walks every page of its window
+
+**Severity**
+Low. Correct and only a cost, paid once per leaf that dies: `release_viewed_pages_locked()` asks `find_page()` for every offset in the window the leaf saw, whether or not anything is there, under the tree's lock.
+
+**Symptom**
+None observable. A window of N pages costs N walks up the chain of hidden nodes, so the death of a process that cloned a large segment holds the lock of every other process of that program for that long. A window of a 100 MB boot image is about 25,000 lookups.
+
+**Cause**
+The loop is written per offset because it had to be right first: each offset needs the nearest page that the leaf saw, and a page of its own at an offset shadows what is above. Most offsets of a large window hold nothing, and the loop still visits them.
+
+**Change**
+Walk the pages that exist instead of the offsets that might: for each ancestor, iterate its store between the limits of the window (`VmPageMap::next_page()` is there for it), skipping an offset a nearer node or the leaf itself holds. Measure first, as CLAUDE.md asks of a performance item: the time of a death with N pages of window, and how much of it is lock hold time, with the benchmark planned for decision 3 of the design.
+
+**Reference**
+Zircon `ReleaseOwnedPagesRangeLocked()` (`vm_cow_pages.cc:2842`), which walks the page list of each node in the range, not the offsets.
+
+**Acceptance**
+A death touches only the pages in the window; `vmosnapshot.test` still passes, including the count checks of the death scenarios; the measurement is recorded in the change entry that removes this item.

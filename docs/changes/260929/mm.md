@@ -663,3 +663,58 @@ None.
 - Why does the destructor need the tree's lock only for a node that has a parent?
 - What does the assertion do that lockdep does not, and why is it on in every build?
 - Why is stopping the failure the merge must not reach, and what does the merge do so that it does not?
+
+## Title: A leaf that dies lets go of what it sees, and a hidden node left with one child is merged away (2026-09-30)
+
+**Files**
+- `kernel/mm/vm_cow_pages.cpp`, `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — `~VmCowPages()` runs `release_viewed_pages_locked()` and, if its parent is then left with one child, `merge_into_only_child_locked()`.
+- `kernel/mm/include/ours/mm/vm_page_map.hpp` — `next_page()`.
+- `kernel/commands/vmo_snapshot_test.cpp` — 19 more checks, 114 in all.
+- `docs/repairs/260930/mm.md` — item 2, the cost of the walk.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — this step done.
+
+**Symptom**
+None. Latent, cannot be triggered today: nothing but the test makes a tree. Without this step every page a clone ever saw stays in its hidden node until the whole tree is gone: a program started a thousand times and closed a thousand times would keep the pages it copied from and the hidden node it shared, for good, and every lookup would climb through nodes with a single child.
+
+**Cause**
+The share count says how many leaves see a page, and a leaf that dies is one fewer, so the count has to drop when it does, or the page is never seen as unshared again: the last viewer would still be told to copy it, not to take it. And when the count would go below zero the last viewer has died and the page is nobody's and has to be freed, which is the only place a page in a hidden node is ever freed before the hidden node is. A hidden node with one child is a step every lookup below it climbs for nothing, and the child's own pages and the pages it shares with nobody else can live in one node. The merge is what makes the tree shrink back to what is live.
+
+Two things the merge relies on, and one thing it cannot do. It relies on every dying leaf having already dropped its counts, under the same hold of the lock and before it leaves the list: so by the time a hidden node has one child left, the only pages in it with a count above zero are ones a node above it also sees, and the pages the survivor sees are its alone. It relies on the survivor being reachable only through the list, so it changes the survivor's fields and never takes a reference to it (the survivor may itself be dying, with its destructor waiting for the lock). And it cannot fail in the middle: moving a page into the survivor is the one step that allocates, so it goes into the survivor before it comes out of the hidden node, and if it fails the merge stops where it is, which is a consistent tree: the pages moved are the survivor's, the rest are still seen through the hidden node, and it stays a step until its child dies.
+
+**Change**
+```cpp
+release_viewed_pages_locked();                 // counts down, last viewer frees
+if (m_sibling_hook.is_linked()) { m_parent->m_children.erase(*this); }
+if (m_parent->is_hidden() && 1 == m_parent->m_children.size()) {
+    m_parent->merge_into_only_child_locked();  // pages up into the survivor, parent link composed
+}
+```
+The merge moves each page of the hidden node the survivor sees and that the survivor holds no page of its own over, frees each one nobody sees, and gives the survivor the hidden node's parent, with its offset the sum of the two offsets and its limit cut where the hidden node's window in its parent ends. The survivor takes the hidden node's place on its parent's list, so the parent's count of children does not change and no merge cascades. The hidden node then has no parent, no children and no pages, and is freed by whoever holds the last reference, which is the dying node the merge runs in: its own release of the reference is what frees it, after the lock, and it takes no lock because it has no parent.
+
+The counting rule is the same as `create_clone_locked()`'s, run backwards: the pages a leaf is a viewer of are the ones a walk from it finds in a hidden node, at offsets where it has no page of its own.
+
+**Reference**
+Zircon `VmCowPages::ReleaseOwnedPagesRangeLocked()` (`vm_cow_pages.cc:2842`), which frees the pages with a share count of zero and decrements the rest; `RemoveChildLocked()` (`:2030`) and `MergeContentWithChildLocked()` (`:2117`), which merges a hidden node with one child left into it and which can fail only on an allocation failure, leaving the node until its child dies.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines (the existing destructor warning only).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 114 checks ok on both images (95 before, 19 new); `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel.
+- The new checks: a node with two clones, one clone dies, each page has one viewer fewer and the hidden node with two children left stays; the other dies, the hidden node is merged away, the node that is left has no parent and holds the very pages, writable, not copies. A page seen only by the last clone: the other two write it, the last clone dies and the page is freed from the hidden node, which stays for the two left. The source dies first: a one-page window is left with its page, moved, and no parent. A window at page 1 writes a page and is cloned in turn, which gives it a hidden node of its own below the first; the clone dies and the node between is merged away with the offsets composed: the window hangs under the first again, still reads its own page and the page the composed offset points to, and the counts are as if the clone had never been.
+- The checks can fail. Four mutants: no viewer accounting stops the kernel on the merge's own assertion, "a page with another viewer in a hidden node with one child", which is the invariant the merge relies on; no merge fails five of 114; offsets not composed fails one; the last viewer not freeing the page fails one. (One first attempt did not match the text it meant to change and its "ok" was the unmutated build; it was redone.)
+- Not tested: a page insertion that fails in the merge, a second CPU, and the frame of a freed page: the tests see a page leave its hidden node, and that a page is freed rests on the line that follows it.
+
+**Deliberately not done**
+- No lock-free or deferred destruction; the node that is merged away is freed by the node whose destructor runs the merge, and takes no lock.
+- No faster walk: the death visits every offset of its window, recorded in `docs/repairs/260930/mm.md` for measurement.
+- No accounting for a node under a parent that is not hidden: such a parent's pages belong to a live node and have no count. Only a test builds one.
+
+**How it was found**
+None: a step of the design. The rule about not taking a reference to the survivor came from the user's review of the list of children, and the guards for it are in the `Arc` and the destructor, from the entries before this one.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must a dying leaf drop its counts before it leaves the list, and both in the same hold of the lock?
+- Why does the survivor take the hidden node's place on the list, and what would a count that changed there cause?
+- Why does a failed insertion in the merge leave a tree that is still correct, and what does it cost?
