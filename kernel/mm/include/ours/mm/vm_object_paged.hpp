@@ -50,6 +50,28 @@ class VmObjectPaged: public VmObject {
     /// Zircon: VmObjectPaged::CreateChildSlice(), with the same answers.
     auto create_child_slice(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
 
+    /// A copy-on-write clone of [offset, offset + size) of this object, as an
+    /// object of its own: it reads what this one holds there, and neither ever
+    /// sees the other's writes after the clone. Nothing is copied; the pages
+    /// are shared until one side writes one, and that side then gets a page of
+    /// its own. Write is taken from every mapping of the pages, this object's
+    /// and every other object's over them, so that the first write faults.
+    ///
+    /// |offset| and |size| must be page aligned and |offset| no further than the
+    /// end of this object, else InvArgs; |size| may be more than what is left,
+    /// and the clone reads zero past this object's end, and never the bytes of
+    /// the pages past a slice's window. BadState for an object with a pinned
+    /// page (Pinned), whose pages cannot be shared: pinning is the object's
+    /// and not the pages', which is why the refusal is here.
+    ///
+    /// The clone is not resizable and has no pages of its own until it writes;
+    /// its flags are this object's.
+    ///
+    /// Zircon: VmObjectPaged::CreateClone() with SnapshotType::OnWrite, the
+    /// bidirectional path; its sibling for a window with no copy-on-write is
+    /// CreateChildSlice(), which create_child_slice() mirrors.
+    auto create_clone(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status;
+
     /// The pages this object is over, for an operation that acts on the tree of
     /// them: the clone. Not for reaching into the pages, which are under the
     /// lock this object hands out.

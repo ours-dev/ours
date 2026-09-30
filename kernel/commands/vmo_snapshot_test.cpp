@@ -130,7 +130,7 @@ namespace {
     TA_NO_THREAD_SAFETY_ANALYSIS
     auto clone_raw(Node &source, u64 const offset, usize const size, Node &out) -> Status {
         Guard guard{source->lock()};
-        return source->create_clone_locked(offset, size, &out);
+        return source->create_clone_locked(offset, size, ~u64{0}, &out);
     }
 
     auto clone_of(Node &source, usize const offset_pages, usize const pages, Node &out) -> Status {
@@ -663,6 +663,185 @@ namespace {
         attach(previous);
         verdict(tally, aspace->destroy() == Status::Ok,
                 "the address space of the clone checks is destroyed");
+    }
+
+    // Four bytes at the start of a page of an object, as a number: what the
+    // clone checks write and read.
+    auto peek(ustl::Arc<mm::VmObjectPaged> &vmo, usize const page_index) -> u32 {
+        u32 word = 0xffff'ffff;
+        if (vmo->read(&word, page_index * PAGE_SIZE, sizeof(word)) != Status::Ok) {
+            return 0xdead'0001;
+        }
+        return word;
+    }
+
+    auto poke(ustl::Arc<mm::VmObjectPaged> &vmo, usize const page_index, u32 const word) -> bool {
+        return vmo->write(&word, page_index * PAGE_SIZE, sizeof(word)) == Status::Ok;
+    }
+
+    // The clone of an object, through the object's own interface: what it reads, what
+    // is not shared after a write on either side, what it may not see, and what is
+    // refused.
+    auto check_create_clone(Tally &tally) -> void {
+        ustl::Arc<mm::VmObjectPaged> parent;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &parent) == Status::Ok;
+        verdict(tally, made, "an object to clone is made");
+        if (!made) {
+            return;
+        }
+        verdict(tally, poke(parent, 0, 0x1100'0001) && poke(parent, 1, 0x1200'0002),
+                "it holds two pages and a hole");
+
+        ustl::Arc<mm::VmObjectPaged> child;
+        verdict(tally, parent->create_clone(0, 3 * PAGE_SIZE, &child) == Status::Ok,
+                "it is cloned");
+        verdict(tally,
+                peek(child, 0) == 0x1100'0001 && peek(child, 1) == 0x1200'0002 &&
+                    peek(child, 2) == 0,
+                "the clone reads what the object held: its pages, and zero for the hole");
+
+        // Neither sees the other's writes after the clone.
+        verdict(tally, poke(child, 0, 0xc000'0001) && poke(parent, 1, 0x9900'0002),
+                "the clone writes its page 0 and the object its page 1");
+        verdict(tally,
+                peek(child, 0) == 0xc000'0001 && peek(parent, 0) == 0x1100'0001 &&
+                    peek(parent, 1) == 0x9900'0002 && peek(child, 1) == 0x1200'0002,
+                "each reads its own write and the other's page as it was at the clone");
+
+        // A later clone sees the object as it is then; a second clone of the same object.
+        ustl::Arc<mm::VmObjectPaged> second;
+        verdict(tally, parent->create_clone(PAGE_SIZE, 2 * PAGE_SIZE, &second) == Status::Ok,
+                "the object is cloned again, from its page 1");
+        verdict(tally,
+                peek(second, 0) == 0x9900'0002 && peek(second, 1) == 0 &&
+                    peek(child, 1) == 0x1200'0002,
+                "the second clone reads the object as it is now, and the first is unchanged");
+
+        // A clone longer than the object reads zero past its end.
+        ustl::Arc<mm::VmObjectPaged> longer;
+        verdict(tally, parent->create_clone(0, 5 * PAGE_SIZE, &longer) == Status::Ok,
+                "a clone longer than the object is made");
+        verdict(tally,
+                peek(longer, 0) == 0x1100'0001 && peek(longer, 3) == 0 && peek(longer, 4) == 0 &&
+                    poke(longer, 4, 0x4400'0004) && peek(longer, 4) == 0x4400'0004 &&
+                    peek(parent, 2) == 0,
+                "it reads zero past the object's end, and a write there is its own");
+
+        // A clone of a clone.
+        ustl::Arc<mm::VmObjectPaged> grand;
+        verdict(tally,
+                child->create_clone(0, 3 * PAGE_SIZE, &grand) == Status::Ok &&
+                    peek(grand, 0) == 0xc000'0001 && peek(grand, 1) == 0x1200'0002,
+                "a clone of a clone reads what the clone held");
+
+        // Refusals.
+        ustl::Arc<mm::VmObjectPaged> none;
+        verdict(tally,
+                parent->create_clone(1, PAGE_SIZE, &none) == Status::InvArgs &&
+                    parent->create_clone(0, 1, &none) == Status::InvArgs &&
+                    parent->create_clone(4 * PAGE_SIZE, PAGE_SIZE, &none) == Status::InvArgs,
+                "an offset or size that is not page aligned, and an offset past the end, are "
+                "refused");
+        ustl::Arc<mm::VmObjectPaged> pinned;
+        verdict(tally,
+                mm::VmObjectPaged::create(mm::GAF_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
+                                          &pinned) == Status::Ok &&
+                    pinned->create_clone(0, PAGE_SIZE, &none) == Status::BadState,
+                "an object with pinned pages is refused: BadState");
+
+        // A slice: the clone of a window does not see the pages past it.
+        ustl::Arc<mm::VmObjectPaged> whole;
+        ustl::Arc<mm::VmObjectPaged> slice;
+        ustl::Arc<mm::VmObjectPaged> of_slice;
+        verdict(tally,
+                mm::VmObjectPaged::create(mm::GAF_USER, 4 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                          &whole) == Status::Ok &&
+                    poke(whole, 0, 0x2100'0000) && poke(whole, 1, 0x2200'0000) &&
+                    poke(whole, 2, 0x2300'0000) && poke(whole, 3, 0x2400'0000) &&
+                    whole->create_child_slice(PAGE_SIZE, 2 * PAGE_SIZE, &slice) == Status::Ok,
+                "an object and a slice of its pages 1 and 2 are made");
+        verdict(tally, slice->create_clone(0, 3 * PAGE_SIZE, &of_slice) == Status::Ok,
+                "the slice is cloned, to more than it shows");
+        verdict(tally,
+                peek(of_slice, 0) == 0x2200'0000 && peek(of_slice, 1) == 0x2300'0000 &&
+                    peek(of_slice, 2) == 0,
+                "the clone reads the slice's pages, and zero past the slice, not the object's "
+                "page after it");
+        verdict(tally,
+                poke(whole, 1, 0x7700'0000) && poke(slice, 1, 0x7800'0000) &&
+                    peek(of_slice, 0) == 0x2200'0000 && peek(of_slice, 1) == 0x2300'0000,
+                "a write through the object or the slice does not reach the clone of the slice");
+    }
+
+    // The clone behind a mapping: a read maps the shared page read-only, on the frame
+    // the object holds; a write to it, or to a page not yet mapped, gets a page of its own.
+    auto check_mapped_clone(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test mapped clone", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the mapped clone checks is made");
+            return;
+        }
+        auto *const previous = attach(aspace.as_ptr_mut());
+
+        auto root = aspace->root_vma();
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+
+        ustl::Arc<mm::VmObjectPaged> parent;
+        ustl::Arc<mm::VmObjectPaged> child;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &parent) == Status::Ok &&
+                          poke(parent, 0, 0x3100'0000) && poke(parent, 1, 0x3200'0000) &&
+                          parent->create_clone(0, 2 * PAGE_SIZE, &child) == Status::Ok;
+        verdict(tally, made, "an object with two pages, and a clone of it, are made");
+        if (made) {
+            // Not committed: nothing is mapped until it is touched.
+            auto mapped = root->map_with_vmo(mm::VmPlacement::at(AT), 2 * PAGE_SIZE, 0, rw, PERMS,
+                                             child, mm::VmMapOption::None, "mapped clone");
+            verdict(tally, mapped.is_ok(),
+                    "the clone is mapped read-write, and nothing is in "
+                    "the page tables yet");
+            if (mapped.is_ok()) {
+                Node parent_pages = parent->cow_pages();
+                auto const shared = lookup(parent_pages, false, 0);
+                verdict(tally,
+                        task::Thread::Current::soft_fault(AT, mm::VmfCause::Absent) == Status::Ok,
+                        "a read of the clone's page 0 is resolved");
+                verdict(tally,
+                        shared && entry_pa(aspace, AT) == mm::frame_to_phys(shared->page) &&
+                            !is_writable(aspace, AT) && is_readable(aspace, AT),
+                        "it maps the page the object holds, read-only, in a mapping that "
+                        "allows Write");
+
+                // A write to that entry gets the clone a page of its own.
+                verdict(tally,
+                        task::Thread::Current::soft_fault(AT, mm::VmfCause::Write) == Status::Ok,
+                        "a write to it is resolved");
+                verdict(tally,
+                        is_writable(aspace, AT) && shared &&
+                            entry_pa(aspace, AT) != mm::frame_to_phys(shared->page) &&
+                            peek(child, 0) == 0x3100'0000 && peek(parent, 0) == 0x3100'0000,
+                        "the entry is writable on another frame, holding the bytes copied, and "
+                        "the object's page is as it was");
+
+                // A write to a page that was never mapped goes straight to a page of its own.
+                verdict(tally,
+                        task::Thread::Current::soft_fault(AT + PAGE_SIZE,
+                                                          mm::VmfCause::Write |
+                                                              mm::VmfCause::Absent) == Status::Ok &&
+                            is_writable(aspace, AT + PAGE_SIZE) && peek(child, 1) == 0x3200'0000,
+                        "a write to an unmapped page is mapped writable, on a copy");
+            }
+        }
+
+        attach(previous);
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the mapped clone checks is destroyed");
     }
 
     auto vmosnapshot_test_command(int, char **) -> int {
@@ -1217,6 +1396,8 @@ namespace {
         check_narrowing_protect(tally);
         check_attachments(tally);
         check_clone_of_mapped_object(tally);
+        check_create_clone(tally);
+        check_mapped_clone(tally);
 
         if (tally.failed != 0) {
             log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,

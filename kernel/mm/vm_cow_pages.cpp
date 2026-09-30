@@ -296,7 +296,7 @@ auto VmCowPages::create_child(ustl::Arc<VmCowPages> parent, u64 const parent_off
 /// in this tree and so under the one mutex that is required on entry (asserted
 /// below in the debug build).
 TA_NO_THREAD_SAFETY_ANALYSIS
-auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
+auto VmCowPages::create_clone_locked(u64 const offset, usize const size, u64 const end,
                                      ustl::Arc<VmCowPages> *const out) -> Status {
     m_lock.assert_held();
 
@@ -309,7 +309,11 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
 
     // How much of the window is this node's own content: past this node's end
     // there is nothing to see, and the clone reads zero there.
-    u64 visible = offset >= m_size ? 0 : std::min<u64>(size, m_size - offset);
+    u64 const window_end = std::min<u64>(end, m_size);
+    u64 visible = 0;
+    if (offset < window_end) {
+        visible = std::min<u64>(size, window_end - offset);
+    }
 
     // Look for a node the clone can hang under without a new hidden node above
     // this one. Going up is worth it only while the node holds nothing of its
@@ -328,8 +332,11 @@ auto VmCowPages::create_clone_locked(u64 const offset, usize const size,
     while (chosen->m_parent && chosen->m_parent->is_hidden() &&
            !chosen->m_pages.has_page_in(PgOff(at >> PAGE_SHIFT),
                                         PgOff((at + visible) >> PAGE_SHIFT))) {
-        visible =
-            at >= chosen->m_parent_limit ? 0 : std::min<u64>(visible, chosen->m_parent_limit - at);
+        if (at >= chosen->m_parent_limit) {
+            visible = 0;
+        } else {
+            visible = std::min<u64>(visible, chosen->m_parent_limit - at);
+        }
         at += chosen->m_parent_offset;
         chosen = chosen->m_parent.as_ptr_mut();
     }

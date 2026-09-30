@@ -929,3 +929,63 @@ None.
 - Why does a slice need its own registration with the pages, and why could a single back pointer do in Zircon?
 - Why is the range translated by each object, and what would a slice's mapping lose Write on if it were not?
 - Why is the object's reference to the pages released outside the lock?
+
+## Title: VmObjectPaged::create_clone() makes a copy-on-write clone of an object (2026-09-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`, `kernel/mm/vm_object_paged.cpp` — `VmObjectPaged::create_clone(offset, size, out)`.
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `create_clone_locked()` takes the end of the window the caller shows; two ternaries I had written there became `if` statements.
+- `kernel/commands/vmo_snapshot_test.cpp` — 25 more checks, 186 in all.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — 8d done.
+
+**Symptom**
+None: this is the interface the rest was built for. Until it a copy-on-write clone could only be made on the pages, in the test; nothing that owns an object could ask for one.
+
+**Cause**
+The object is what the rest of the kernel holds: it has the flags, the window into the pages and the mappings. Three things belong to it and not to the pages.
+
+Pinning is the object's: `VmoFlags::Pinned` says its pages are not to move, and a page that is shared is a page that another node may take, so an object with pinned pages is refused, `BadState`, as Zircon refuses a clone while a page is pinned. The pages cannot see the flag.
+
+The window is the object's: a slice shows part of the pages it shares with its parent, and a clone of a slice must not see the parent's bytes past the slice, however long it is asked to be. The object passes the end of its window to the pages (`create_clone_locked(..., end, ...)`), which clamp what the clone sees to it, and the clone reads zero past that. Without it a clone of a slice would read the next page of the parent.
+
+And the new object is made outside the lock: its constructor registers with the pages under the tree's lock, which the clone holds. If it cannot be made the clone goes with the reference to its pages, and the object's pages are left as the clone put them, which is consistent: the hidden node is merged away when the clone that hung under it is gone.
+
+**Change**
+```cpp
+auto VmObjectPaged::create_clone(u64 offset, u64 size, ustl::Arc<VmObjectPaged> *out) -> Status
+    // page aligned, offset no further than the end, size at most MAX_SIZE: InvArgs
+    // Pinned: BadState
+    // under the lock: m_cow_pages->create_clone_locked(m_cow_offset + offset, size,
+    //                                                  m_cow_offset + m_size, &pages)
+    // outside it: VmoPagedCache::get(...)  // registers with the pages
+```
+The clone has this object's flags, is not resizable, and has no pages of its own until it writes.
+
+Named after Zircon's `CreateClone()` and this design's `VmCowPages::create_clone_locked()`, and not `create_child_snapshot()`, on the user's review: Zircon's "snapshot" names three different guarantees (`SnapshotType::Full`, `Modified`, `OnWrite`), and a function called `snapshot` would not say which. `create_child_slice()` keeps its name, as Zircon's `CreateChildSlice()` does.
+
+**Reference**
+Zircon `VmObjectPaged::CreateClone()` with `SnapshotType::OnWrite`, the bidirectional path (`vm_object_paged.cc:732`), which calls `VmCowPages::CreateCloneLocked()`; `CreateChildSlice()` for the pair.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 186 checks ok on both images (161 before, 25 new); `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel.
+- Through the object's own interface: a clone reads what the object held, pages and the hole as zero; each side's writes after the clone do not reach the other; a second clone reads the object as it is then, and the first is unchanged; a clone longer than the object reads zero past its end and a write there is its own; a clone of a clone; a misaligned offset or size and an offset past the end are `InvArgs`; a Pinned object is `BadState`; the clone of a slice, asked to be longer than the slice, reads the slice's pages and zero past it, not the parent's next page, and writes through the object or the slice do not reach it.
+- Behind a mapping: a read fault of a clone's page maps the frame the object holds, read-only, in a mapping that allows Write; a write to it is resolved onto another frame holding the bytes copied, and the object's page is as it was; a write to a page never mapped is mapped writable on a copy.
+- The checks can fail. Four mutants: not passing the end of the window fails one; not moving the offset into the pages' bytes fails two; the Pinned refusal removed fails one; a shared page mapped with Write fails two of 186. (Two of the first attempts did not match the text they meant to change and reported the unmutated build; they were redone.)
+- Not verified: another CPU's TLB (a clone leaves the old frame read-only in a stale translation there until it is flushed); the failure of the object's construction after the clone was made, for want of a way to make it fail on demand.
+
+**Deliberately not done**
+- No option or syscall: `VmoDispatcher::create_child()` still answers `NotSupported` for it, and there is no `ou::vmo_create_child` for a program to ask; that is step 10.
+- `map_paged()` still asks for an owned page for every page, so a mapping made with `Commit` copies every shared page at map time; the fault path is right and is what a lazy mapping uses. It has to map by what the cursor says, and flush its batch when the permission changes.
+- No `SnapshotType`: one guarantee, the one implemented.
+
+**How it was found**
+None: a step of the design. The name is the user's review.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the refusal of a Pinned object in the object and not in the pages?
+- What does a clone of a slice read past the slice, and what would it read if the end of the window were not passed to the pages?
+- Why is the new object made after the lock is released?

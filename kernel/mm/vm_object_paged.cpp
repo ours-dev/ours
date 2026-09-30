@@ -138,6 +138,46 @@ auto VmObjectPaged::create_child_slice(u64 const offset, u64 const size,
     return Status::Ok;
 }
 
+auto VmObjectPaged::create_clone(u64 const offset, u64 const size,
+                                 ustl::Arc<VmObjectPaged> *const out) -> Status {
+    m_canary.verify<Self>();
+
+    if (!ustl::mm::is_aligned(offset, PAGE_SIZE) || !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+    if (offset > m_size || size > MAX_SIZE) {
+        return Status::InvArgs;
+    }
+    if (!!(m_flags & Flags::Pinned)) {
+        return Status::BadState;
+    }
+
+    ustl::Arc<VmCowPages> pages;
+    {
+        Guard guard{m_lock};
+        assert_cow_pages_locked();
+        // In the pages' bytes, and no further than the end of this object's
+        // window of them: what lies past a slice is the parent's, not the
+        // slice's to show.
+        if (auto const status = m_cow_pages->create_clone_locked(m_cow_offset + offset, size,
+                                                                 m_cow_offset + m_size, &pages);
+            Status::Ok != status) {
+            return status;
+        }
+    }
+
+    // The object is made outside the lock: its constructor registers it with the
+    // pages, under that lock. If it cannot be made the clone goes with |pages|,
+    // and this object's pages stay as the clone left them, which is consistent:
+    // the hidden node is merged away when the clone that hung under it is gone.
+    auto child = VmoPagedCache::get(GAF_KERNEL, m_flags, ustl::move(pages), u64{0}, usize(size));
+    if (!child) {
+        return Status::OutOfMem;
+    }
+    *out = ustl::Arc<Self>::adopt(child);
+    return Status::Ok;
+}
+
 FORCE_INLINE
 auto VmObjectPaged::commit_range_internal(VirtAddr offset, usize size, CommitOptions option)
     -> Status {

@@ -119,8 +119,13 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     ///
     /// The lock is taken by the caller, who has the answer to both anyway.
     /// Zircon: VmCowPages::CreateCloneLocked(), bidirectional path.
+    ///
+    /// |end| is where the clone stops seeing this node: an object that shows a
+    /// window of the pages passes the end of its window, so that a clone of a
+    /// slice does not see the parent's bytes past the slice. It is clamped to
+    /// this node's own size, so a caller with no window passes ~0.
     TA_REQUIRES(m_lock)
-    auto create_clone_locked(u64 offset, usize size, ustl::Arc<VmCowPages> *out) -> Status;
+    auto create_clone_locked(u64 offset, usize size, u64 end, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// The node this one hangs under, or null. A raw pointer for the life of
     /// the lock: it is only valid while the tree does not change.
