@@ -20,6 +20,19 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
   public:
     class Cursor;
 
+    /// What kind of node this is, fixed when it is made. A group of flags and
+    /// not a bool for each, because a node will have more of them, and each new
+    /// bool would have to be threaded through every factory by hand.
+    enum class Flags : u8 {
+        /// No flag: an ordinary node.
+        None = 0,
+
+        /// A node that holds pages for the nodes below it and is never a VMO of
+        /// its own. See is_hidden().
+        Hidden = BIT(0),
+    };
+    USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+
     static auto create(Gaf gaf, usize size, ustl::Arc<VmCowPages> *out) -> Status;
 
     static auto with_source(ustl::Arc<PageSource> src, Gaf gaf, usize size,
@@ -36,8 +49,8 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// caller may pass a length it has not checked. All three must be page
     /// aligned.
     ///
-    /// |hidden| makes a node that holds pages for its children and is never a
-    /// VMO of its own; see is_hidden().
+    /// |flags| is what kind of node it is; Flags::Hidden makes one that holds
+    /// pages for its children and is never a VMO of its own, see is_hidden().
     ///
     /// The child keeps |parent| alive and takes over its lock (lock()), which
     /// is what lets a walk from the child up through its ancestors run under
@@ -48,7 +61,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// kernel builds has a parent above a node only because a clone put it
     /// there, and it is a hidden node; see create_clone_locked().
     static auto create_child(ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
-                             usize size, bool hidden, ustl::Arc<VmCowPages> *out) -> Status;
+                             usize size, Flags flags, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// A copy-on-write clone of [offset, offset + size) of this node: a new
     /// node that sees what this one sees there, and neither ever sees the
@@ -94,11 +107,11 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// writes, never by a write to it, so an owned page is refused here and its
     /// pages are never reported writable. Zircon: VmCowPages::is_hidden().
     ///
-    /// Fixed when the node is made, so it needs no lock.
+    /// Flags::Hidden, fixed when the node is made, so it needs no lock.
     [[nodiscard]]
     FORCE_INLINE
     auto is_hidden() const -> bool {
-        return m_hidden;
+        return !!(m_flags & Flags::Hidden);
     }
 
     /// How many pages this node itself holds, not counting any it can see
@@ -190,7 +203,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// cannot say so. |parent| is empty for a node that hangs under nothing;
     /// create_child() clamps |parent_limit| before it gets here.
     VmCowPages(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
-               ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit, bool hidden);
+               ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit, Flags flags);
 
     ~VmCowPages();
 
@@ -218,7 +231,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// the caller's, under the lock.
     static auto make_node(Gaf gaf, usize size, ustl::Arc<HierarchyState> hierarchy,
                           ustl::Arc<VmCowPages> parent, u64 parent_offset, u64 parent_limit,
-                          bool hidden, ustl::Arc<VmCowPages> *out) -> Status;
+                          Flags flags, ustl::Arc<VmCowPages> *out) -> Status;
 
     /// When no page sources exists, it will be used in frame allocation request.
     Gaf m_gaf;
@@ -243,7 +256,7 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
     /// are made under it too.
     u64 m_parent_offset;
     u64 m_parent_limit;
-    bool const m_hidden;
+    Flags const m_flags;
 
     /// Declared before m_lock, which is initialised from it, and destroyed
     /// after it: the reference is what keeps the mutex alive.

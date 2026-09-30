@@ -371,3 +371,52 @@ None.
 - Why does a clone insert a hidden node above the source instead of hanging the clone under it, and what would the clone see if it hung under the source?
 - Why does the second clone of the same node not make a new hidden node, and what would a program started a hundred times cost if it did?
 - What does a share count of zero on a page in a hidden node tell a writer, and why is it counted after the tree is settled and not before?
+
+## Title: A VmCowPages node's kind is a group of flags, not a bool (2026-09-30)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp` — `VmCowPages::Flags` (`None`, `Hidden`); `create_child()`, the constructor and `make_node()` take a `Flags`; `m_hidden` becomes `m_flags`, and `is_hidden()` tests the bit.
+- `kernel/mm/vm_cow_pages.cpp` — the callers, and every read of `m_hidden` now goes through `is_hidden()`.
+- `kernel/commands/vmo_snapshot_test.cpp` — the test's helper and one direct call pass a `Flags`.
+
+**Symptom**
+None. Suggested by the user while reading the header: a node will have more attributes, and each one as its own bool would have to be threaded through every factory by hand.
+
+**Cause**
+`bool hidden` was the first attribute of a node, and it was spelled as a bool all the way down: a member, a constructor parameter, a parameter of `make_node()` and of `create_child()`. A second attribute would have added a second `bool` beside it in each of those four places, and two adjacent bools of a call are the kind of arguments that get swapped without the compiler noticing. An `enum class` bitmask has one parameter however many attributes there are, and the call site names the one it sets (`Flags::Hidden`) instead of passing `true`.
+
+**Change**
+```cpp
+enum class Flags : u8 {
+    None = 0,
+    Hidden = BIT(0),
+};
+USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
+...
+Flags const m_flags;
+auto is_hidden() const -> bool { return !!(m_flags & Flags::Hidden); }
+```
+The shape is that of `VmObject::Flags`, which is what `VmoFlags` names. The type-safety paid for itself at once: the compiler refused the one call in the test that still passed `false`.
+
+**Reference**
+None, this project's own design: Zircon keeps the same attribute as the `is_hidden()` test on a node's kind, and its other attributes are `VmCowPagesOptions` bits, an `enum class` bitmask as well.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean; `clang-tidy` nothing on the changed lines.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 74 checks ok on both images; `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg. No behaviour changed, and the check that would notice is the test's 74, which builds hidden nodes and clones of them.
+- The first build after the edit failed on the test's stale `false`; the tests that ran in that same command ran on the previous binary, and were rerun after the fix, on images newer than the change.
+
+**Deliberately not done**
+- No second flag: none is needed yet.
+- The test's own helper keeps its `bool hidden` argument and translates it, so the sixty-odd call sites did not have to change; it is a helper, not the interface.
+
+**How it was found**
+The user's suggestion, made on the line `bool const m_hidden;`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is one `Flags` parameter safer than one `bool` per attribute once there are two attributes?
+- What did `enum class` refuse at compile time here that a `bool` would have accepted?
+- Why does `is_hidden()` need no lock, when other reads of a node do?

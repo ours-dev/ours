@@ -169,8 +169,12 @@ namespace {
 
     auto make_child(Node const &parent, usize const parent_page, usize const limit_pages,
                     usize const pages, bool const hidden, Node &out) -> bool {
+        auto flags = VmCowPages::Flags::None;
+        if (hidden) {
+            flags = VmCowPages::Flags::Hidden;
+        }
         return VmCowPages::create_child(parent, parent_page * PAGE_SIZE, limit_pages * PAGE_SIZE,
-                                        pages * PAGE_SIZE, hidden, &out) == Status::Ok;
+                                        pages * PAGE_SIZE, flags, &out) == Status::Ok;
     }
 
     auto vmosnapshot_test_command(int, char **) -> int {
@@ -230,8 +234,8 @@ namespace {
         // A misaligned argument is refused.
         Node refused;
         verdict(tally,
-                VmCowPages::create_child(parent, 1, PAGE_SIZE, PAGE_SIZE, false, &refused) ==
-                    Status::InvArgs,
+                VmCowPages::create_child(parent, 1, PAGE_SIZE, PAGE_SIZE, VmCowPages::Flags::None,
+                                         &refused) == Status::InvArgs,
                 "an offset that is not page aligned is refused");
 
         // A chain: the grandchild's offset and limit compose with its parent's.
