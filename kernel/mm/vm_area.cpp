@@ -307,12 +307,20 @@ auto VmArea::map_with_vmo(VmPlacement where, usize size, u64 vmo_ofs, MmuFlags m
         return ustl::err(status);
     }
 
-    // Do we immediately commit current mapping request?
+    // Populate: fill the page tables in now, with what the object has. Only
+    // that. It used to commit the object first (commit_range()), which asks for
+    // every page to be the object's own: the same pages as mapping them for a
+    // node with no ancestors, but for a copy-on-write clone it copies every
+    // shared page of the window at the moment of mapping. map() maps what the
+    // cursor answers a read with -- the node's own pages writable, pages it only
+    // sees read-only -- and a write faults and copies then, one page at a time.
+    // Zircon's ZX_VM_MAP_RANGE is VmMapping::MapRange(..., /*commit=*/false).
+    //
+    // The kernel's own populated mappings lose nothing: a stack and vmalloc's
+    // memory are Pinned objects, committed when they were made, and the rest
+    // map physical objects, which have no pages to commit.
     if (!!(VmMapOption::Populate & option)) {
-        status = vmo->commit_range(vmo_ofs, size);
-        if (Status::Ok == status) {
-            status = mapping->map(mapping->base(), size, true, MapOptions::ErrorIfExisting);
-        }
+        status = mapping->map(mapping->base(), size, true, MapOptions::ErrorIfExisting);
 
         if (Status::Ok != status) {
             // The mapping is already live by this point: create_mapping() ends

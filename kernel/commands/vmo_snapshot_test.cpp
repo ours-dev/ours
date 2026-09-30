@@ -883,15 +883,13 @@ namespace {
             verdict(tally, shared && own_before == 1,
                     "the clone holds one page of its own, the one it wrote");
 
-            // Mapped, and then populated by the mapping itself: map_with_vmo() with
-            // Commit would commit the object first, which copies every shared page.
+            // Populated the way a program asks for it (VmOptions::MapRange): the page
+            // tables are filled in when the mapping is made, and nothing is committed.
             auto mapped = root->map_with_vmo(mm::VmPlacement::at(AT), 4 * PAGE_SIZE, 0, rw, PERMS,
-                                             child, mm::VmMapOption::None, "committed clone");
-            verdict(tally,
-                    mapped.is_ok() &&
-                        mapped.unwrap()->map(AT, 4 * PAGE_SIZE, true,
-                                             mm::MapOptions::ErrorIfExisting) == Status::Ok,
-                    "the clone is mapped read-write and its page tables are filled in");
+                                             child, mm::VmMapOption::Populate, "populated clone");
+            verdict(tally, mapped.is_ok(),
+                    "the clone is mapped read-write with Populate, and its page tables are "
+                    "filled in");
             if (mapped.is_ok() && shared) {
                 auto const zero = mm::frame_to_phys(mm::get_zero_page());
                 verdict(tally,
