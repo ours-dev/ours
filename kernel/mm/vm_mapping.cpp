@@ -409,6 +409,10 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
             continue;
         }
 
+        // Narrows the entries to what the region now allows and gives none of them
+        // a permission. When the region gained one, the entries are as they were
+        // and the first access that needs it faults; page_fault() adds it there,
+        // after it has shown the page may have it.
         arch_aspace.protect(region_base, region_size >> PAGE_SHIFT, region_mmuf);
     }
 
@@ -445,7 +449,7 @@ auto VmMapping::remove_write_locked_object(u64 const vmo_offset, u64 const len) 
         if (!(region_mmuf & MmuFlags::Writable)) {
             continue;
         }
-        auto const status = arch_aspace.restrict(region_base, region_size >> PAGE_SHIFT, KEEP);
+        auto const status = arch_aspace.protect(region_base, region_size >> PAGE_SHIFT, KEEP);
         ASSERT(Status::Ok == status,
                "could not take Write off a mapping of pages about to be shared");
     }
@@ -581,16 +585,23 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     PhysAddr existing = 0;
     MmuFlags existing_mmuf{};
     if (Status::Ok == arch_aspace.query(va, &existing, &existing_mmuf)) {
-        // An entry left behind by a protect() that widened the permissions
-        // without reaching it. protect() is the only entry point that can
-        // rewrite flags in place -- map() cannot, and unmapping first would
-        // open a window in which the page is missing for everyone else.
-        if ((existing_mmuf & MmuFlags::PermMask) != (mmuf & MmuFlags::PermMask)) {
-            if (auto const status = arch_aspace.protect(va, 1, mmuf); Status::Ok != status) {
-                return {status, 0};
-            }
+        // What this access needs and the entry lacks. Protection only ever
+        // narrows the entries (ArchVmAspace::protect()), so when the mapping is
+        // given a permission its entries are left as they were, and the first
+        // access that needs it lands here. An entry that has all it needs is
+        // stale in another CPU's TLB, and the faulting instruction succeeds on
+        // retry.
+        auto needs = MmuFlags{};
+        if (will_write) {
+            needs |= MmuFlags::Writable;
         }
-        return {Status::Ok, 0};
+        if (will_execute) {
+            needs |= MmuFlags::Executable;
+        }
+        if (!(needs & ~existing_mmuf)) {
+            return {Status::Ok, 0};
+        }
+        return widen_present_locked(vmf, va, existing, existing_mmuf, mmuf, will_write);
     }
 
     // Only a paged VMO has pages to demand. map_physical() installs a physical
@@ -631,15 +642,17 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
         return {page.unwrap_err(), 0};
     }
 
-    // |page->writable| is not consulted, and has to be the day it can be false.
-    // A read of a node that hangs under another is answered with a page on
-    // loan, or the shared zero page, and that must be mapped without Write even
-    // in a mapping that allows it, or the first write would go through to the
-    // lender's page instead of faulting. No such node is behind a mapping yet,
-    // so this asserts rather than handles, and stops the day one is.
-    DEBUG_ASSERT(page->writable, "the fault path does not yet map a page on loan read-only");
+    // A page that is not the node's to write -- content on loan from an
+    // ancestor, or the shared zero page -- is mapped without Write even in a
+    // mapping that allows it. The mapping's own permission stays as it is; only
+    // the entry lacks Write, so a write to the page faults again, asks for a page
+    // of its own, and gets the copy (widen_present_locked()). Mapped with Write,
+    // the first write would go through to every node that shares the page.
+    auto page_mmuf = mmuf;
+    if (!page->writable) {
+        page_mmuf &= ~MmuFlags::Writable;
+    }
 
-    //
     // ErrorIfExisting states the expectation rather than papering over its
     // failure: the query above established that the entry is absent, so
     // anything present by now was installed while this ran, which the address
@@ -647,12 +660,81 @@ auto VmMapping::page_fault(VmFault *vmf) -> ustl::Pair<Status, usize> {
     // (PageTable::map_pages() ignores it and errors regardless), so this only
     // records the intent for when the arch layer starts reading it.
     usize nr_mapped = 0;
-    if (auto const status = arch_aspace.map(va, frame_to_phys(page->page), 1, mmuf,
+    if (auto const status = arch_aspace.map(va, frame_to_phys(page->page), 1, page_mmuf,
                                             MapOptions::ErrorIfExisting, &nr_mapped);
         Status::Ok != status) {
         return {status, 0};
     }
 
+    return {Status::Ok, nr_mapped};
+}
+
+/// Gives an entry that is present a permission an access needs and it lacks.
+///
+/// The only place a permission is ever added to an entry: protection narrows
+/// and this widens, and it does so by mapping the page again, so that the frame
+/// is named and whoever names it has shown the entry may have the permission.
+/// For a write to a paged object that is `require_owned_page()`: the page the
+/// writer gets is its own, a copy of the shared one or the shared one itself
+/// when the writer was the last to see it, and mapped with Write. The frame
+/// may be the one already mapped or another; either way the entry is replaced.
+/// An access that needs only Execute keeps the entry's frame and whatever Write
+/// it has, since it proves nothing about the page being the writer's.
+///
+/// Unmap and then map, under the address space's lock the fault holds, so no
+/// other fault in this address space sees the gap. Another CPU running it and
+/// touching the page in the gap faults, waits for that lock, and finds the entry
+/// present. What such a CPU holds in its TLB of the old entry is the open
+/// question of the design: a stale entry with less than the new one only faults
+/// again, which is safe, but a fork leaves the old frame mapped read-only there
+/// until it is flushed, and a reader on that CPU sees the page as it was.
+auto VmMapping::widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existing,
+                                     MmuFlags existing_mmuf, MmuFlags mmuf, bool will_write)
+    -> ustl::Pair<Status, usize> {
+    auto pa = existing;
+    auto new_mmuf = mmuf;
+    if (auto *paged = as<VmObjectPaged>(m_vmo.as_ptr_mut())) {
+        // Same lock, same order as the demand path: the object's, inside the
+        // address space's.
+        Guard guard{paged->lock()};
+        if (will_write) {
+            auto cursor = paged->make_cursor(m_vmo_ofs + (va - m_base), PAGE_SIZE);
+            if (!cursor) {
+                return {cursor.unwrap_err(), 0};
+            }
+            auto page = cursor->require_owned_page(1, &vmf->page_request);
+            if (!page) {
+                return {page.unwrap_err(), 0};
+            }
+            pa = frame_to_phys(page->page);
+        } else {
+            // Nothing was shown about the page: it keeps the Write it has.
+            new_mmuf = (mmuf & ~MmuFlags::Writable) | (existing_mmuf & MmuFlags::Writable);
+        }
+
+        // Inside the object's lock, so the page cannot be taken from the object
+        // between being chosen and being mapped.
+        return remap_locked(va, pa, new_mmuf);
+    }
+
+    // A physical object has no copy-on-write: the frame is the mapping's, and
+    // the region says what it may have.
+    return remap_locked(va, pa, new_mmuf);
+}
+
+auto VmMapping::remap_locked(VirtAddr va, PhysAddr pa, MmuFlags mmuf) -> ustl::Pair<Status, usize> {
+    auto &arch_aspace = m_aspace->arch_aspace();
+    if (auto const status = arch_aspace.unmap(va, 1, UnmapOptions::None, 0); Status::Ok != status) {
+        return {status, 0};
+    }
+    usize nr_mapped = 0;
+    if (auto const status =
+            arch_aspace.map(va, pa, 1, mmuf, MapOptions::ErrorIfExisting, &nr_mapped);
+        Status::Ok != status) {
+        // The entry is gone and the next access faults and maps it afresh, which is
+        // the safe way for this to fail.
+        return {status, 0};
+    }
     return {Status::Ok, nr_mapped};
 }
 

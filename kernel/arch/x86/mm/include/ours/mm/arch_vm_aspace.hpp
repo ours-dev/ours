@@ -42,12 +42,10 @@ class ArchVmAspace {
 
     auto unmap(VirtAddr, usize n, UnmapOptions options, usize *unmapped) -> Status;
 
-    auto protect(VirtAddr, usize n, MmuFlags) -> Status;
-
     /// Takes permissions away and never gives one: each entry keeps only the
-    /// permissions it has that are also in |keep|. protect() sets them, so it
-    /// widens what it is told to; this cannot.
-    auto restrict(VirtAddr, usize n, MmuFlags keep) -> Status;
+    /// permissions it has that are also in the flags. A permission is added by
+    /// mapping the page again (unmap, then map), which names the frame.
+    auto protect(VirtAddr, usize n, MmuFlags) -> Status;
 
     auto query(VirtAddr, PhysAddr *, MmuFlags *) -> Status;
 

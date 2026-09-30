@@ -818,3 +818,57 @@ None.
 - Why does `protect()` widen a page that is mapped read-only because it is shared, and how does `restrict()` not?
 - Why is it correct to leave the mapping's record with Write when the entries have lost it?
 - Why is it safe to do this holding the object's lock and not the address space's?
+
+## Title: protect() only narrows, and the fault path is the one place a permission is added (2026-09-30)
+
+**Files**
+- `kernel/lib/arch/include/arch/paging/mod.hpp` — `ProtectVisitor` clears bits (AND) instead of setting them; `restrict()` and `RestrictVisitor`, added in the entry above, are gone.
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp`, `kernel/arch/x86/mm/page_table.cpp`, `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp`, `kernel/arch/x86/mm/arch_vm_aspace.cpp` — `restrict_pages()` and `ArchVmAspace::restrict()` removed; `protect` documented as narrowing.
+- `kernel/mm/vm_mapping.cpp`, `kernel/mm/include/ours/mm/vm_mapping.hpp` — `remove_write_locked_object()` calls `protect()`; `page_fault()` widens through the new `widen_present_locked()` and `remap_locked()`, and maps a page that is not the node's to write without Write.
+- `kernel/commands/vmo_snapshot_test.cpp` — 15 more checks, 142 in all, through real faults.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — 8b and 8b' done.
+
+**Symptom**
+Latent, cannot be triggered today: no mapping sees a shared page yet. Before this, `protect()` set the permissions of the entries in a range to the value it was given, so a `protect()` of a mapping to the permissions it already had would give Write back to a page that had lost it, and the clone that made those pages shared would be undone by anyone who called it. The fault path did the same, in its branch for an entry whose permissions differed from the region's.
+
+**Cause**
+The user's review of the previous entry: I had added `restrict()` beside `protect()` to have an operation that only narrows, and left `protect()` able to widen. Two operations for one job, and the wrong one left available. "Protect" is a narrowing verb, and a page-table operation that can also widen is a hazard for the next caller, who will pick it. So the semantics moved into `protect()` itself and the second operation went away.
+
+What that leaves is a question: how does a permission ever get added? By mapping the page again, unmap and then map, because that names the frame, and whoever names the frame has to have shown the page may have the permission. That is one place, `widen_present_locked()`: a write to an entry without Write asks the object for a page of its own (`require_owned_page()`: a copy of the shared page, or the shared page itself for the last node that sees it) and maps that; a fetch from an entry without Execute maps the entry's frame with Execute; a physical object has no copy-on-write and maps its frame with what the region allows. A mapping given a permission by `protect_locked()` (an `mprotect` that widens) leaves its entries as they are, and the first access that needs the permission is what adds it, to that page only.
+
+**Change**
+```cpp
+// mod.hpp, ProtectVisitor::on_terminal
+auto const current = MmuFlagsConv<ArchMmuFlags>::from_arch(entry.arch_mmu_flags());
+auto const kept = (current & ~MmuFlags::PermMask) | (current & m_flags & MmuFlags::PermMask);
+entry = entry.with_protection(MmuFlagsConv<ArchMmuFlags>::to_arch(kept));
+```
+In `page_fault()`, an entry that is present is now stale for the access unless it lacks something the access needs (Write for a write, Execute for a fetch); if it does, the permission is added by `widen_present_locked()` and if it does not the fault is spurious. The old branch that called `protect()` on an entry whose permissions differed from the region's is gone: with a `protect()` that cannot widen, it had nothing left to do but loop. A page the cursor says is not the node's to write is mapped without Write even in a mapping that allows it, and the debug assertion that stood in for that case is gone.
+
+Rejected: keeping `restrict()` under its own name and `protect()` as it was. That is the state of the previous commit, and it leaves the hazard one call away.
+
+**Reference**
+Linux `mprotect()` widens lazily in the same way: `change_protection()` never adds Write to a present PTE of a private mapping, and the write fault (`do_wp_page()`) decides whether the page can be written, copied or reused. Zircon's `VmMapping::ProtectLocked()` widens by unmapping ranges that gain a permission and faulting them back in. Its `ProtectOrUnmap()` is what the narrowing here corresponds to.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean on all files; `clang-tidy` nothing on the changed lines (old naming and `virtual` warnings elsewhere in `vm_mapping`).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts, and the shell's `vma_map`, `protect` and `unmap` checks run through the new code in each. `vmosnapshot.test` 142 checks ok on both images (127 before, 15 new); `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel.
+- The new checks take real soft faults, on a thread attached to an address space of its own: a page made read-only stays so through a `protect()` to what the mapping already allows; a write to it is resolved by the fault path, which leaves it writable on the same frame with the bytes it had; `protect()` to read-only takes Write from every entry at once, a write to a mapping that no longer allows it is refused and the entry stays; `protect()` back to read-write leaves the entries read-only, and the first write to a page adds Write to that page only; an executable mapping loses Execute on `protect()` to read-only, does not get it back on `protect()` to executable, and gets it from an instruction fetch, with no Write.
+- The checks can fail. Three mutants: `protect()` setting the permissions again fails four of 139; the fault path never widening fails two; the fault path not counting an instruction fetch as needing Execute fails one. A fourth, an execute-only widening that adds Write, could not be told from the original and was not counted: a mapping cannot have both Write and Execute, so the case does not arise, and the expression is kept as the plainer statement of what that path may do.
+- Not verified: a fault on a page shared with another node, which needs a node that has one. That is the next commits, and the same fault path is what they will exercise. Also not verified: another CPU's TLB, as in the previous entry.
+
+**Deliberately not done**
+- `map_paged()` still asks for an owned page for every page, so mapping a node that shares pages copies them all at map time. It has to map by what the cursor says, and flush its batch when the permission changes; that comes with the first mapping of a shared node.
+- No shootdown: `protect()` and the unmap in `remap_locked()` flush the local TLB only.
+- No change to how a physical object is faulted: it still maps its whole window at creation, and a fault on an absent page is still refused.
+
+**How it was found**
+The user asked why a new operation had been written, and whether `protect` was not already the narrowing one.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is unmap then map the only way this design adds a permission, and what does that force the caller to have?
+- Why does a `protect()` that widens in the middle of a range leave a shared page writable, and what does a narrowing `protect()` do instead?
+- Why is the entry that lacks a needed permission not spurious, when an entry that has everything is?

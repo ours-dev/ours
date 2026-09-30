@@ -101,6 +101,16 @@ class VmMapping final: public VmAreaOrMapping {
     /// be undone, so it stops the program.
     auto remove_write_locked_object(u64 vmo_offset, u64 len) -> void;
 
+    /// Gives a present entry a permission an access needs and it lacks; see the
+    /// definition. Part of page_fault(), split out for its length.
+    TA_REQUIRES(get_lock())
+    auto widen_present_locked(VmFault *vmf, VirtAddr va, PhysAddr existing, MmuFlags existing_mmuf,
+                              MmuFlags mmuf, bool will_write) -> ustl::Pair<Status, usize>;
+
+    /// Replaces the entry at |va| with one for |pa| and |mmuf|: unmap, then map.
+    TA_REQUIRES(get_lock())
+    auto remap_locked(VirtAddr va, PhysAddr pa, MmuFlags mmuf) -> ustl::Pair<Status, usize>;
+
     TA_REQUIRES(get_lock())
     virtual auto activate() -> Status override;
     TA_REQUIRES(get_lock())

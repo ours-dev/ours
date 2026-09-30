@@ -38,9 +38,12 @@
 #include <ours/mm/vm_area.hpp>
 #include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
+#include <ours/mm/vm_fault.hpp>
 #include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vmm.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
+#include <ours/task/thread.hpp>
 
 #include <cstring>
 
@@ -204,6 +207,11 @@ namespace {
         return flags.is_some() && !!(*flags & mm::MmuFlags::Writable);
     }
 
+    auto is_executable(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va) -> bool {
+        auto const flags = pte_flags(aspace, va);
+        return flags.is_some() && !!(*flags & mm::MmuFlags::Executable);
+    }
+
     auto is_readable(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va) -> bool {
         auto const flags = pte_flags(aspace, va);
         return flags.is_some() && !!(*flags & mm::MmuFlags::Readable);
@@ -347,6 +355,141 @@ namespace {
         }
 
         verdict(tally, aspace->destroy() == Status::Ok, "the address space is destroyed");
+    }
+
+    // Puts the calling thread on |next| and loads its page tables, as usercopy.test
+    // does, so that soft_fault() resolves a fault against the test's address
+    // space. Preemption is off across the two steps: the scheduler loads the
+    // page tables from the thread's address space on every switch.
+    auto attach(mm::VmAspace *const next) -> mm::VmAspace * {
+        task::AutoPreemptDisabler no_preemption;
+        auto *const thread = task::Thread::Current::get();
+        auto *const previous = thread->aspace();
+        thread->set_aspace(next);
+        mm::VmAspace::switch_aspace(previous, next);
+        return previous;
+    }
+
+    auto entry_pa(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va) -> PhysAddr {
+        PhysAddr pa = 0;
+        mm::MmuFlags flags{};
+        if (aspace->arch_aspace().query(va, &pa, &flags) != Status::Ok) {
+            return 0;
+        }
+        return pa;
+    }
+
+    // Protection only narrows the page table entries, and a permission a mapping
+    // is given is added by the first access that needs it, in the fault path:
+    // which is what keeps a page that was made read-only for a reason from being
+    // made writable by anyone asking for the permissions the mapping has.
+    auto check_narrowing_protect(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test protect", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the protect checks is made");
+            return;
+        }
+        auto *const previous = attach(aspace.as_ptr_mut());
+
+        auto root = aspace->root_vma();
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto WRITE = mm::VmfCause::Write;
+
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &vmo) == Status::Ok;
+        verdict(tally, made, "an object for the protect checks is made");
+        if (made) {
+            static constexpr u8 PATTERN[4] = {0xde, 0xad, 0xbe, 0xef};
+            auto mapped = root->map_with_vmo(mm::VmPlacement::at(AT), 2 * PAGE_SIZE, 0, rw, PERMS,
+                                             vmo, mm::VmMapOption::Commit, "protect checks");
+            verdict(tally, mapped.is_ok() && vmo->write(PATTERN, 0, sizeof(PATTERN)) == Status::Ok,
+                    "it is mapped writable and holds a pattern");
+            if (mapped.is_ok()) {
+                auto mapping = mapped.unwrap();
+                auto const pa0 = entry_pa(aspace, AT);
+
+                // A page made read-only for a reason stays read-only through a protect()
+                // that asks for what the mapping already allows.
+                remove_write(vmo, 0, PAGE_SIZE);
+                verdict(tally, mapping->protect(AT, 2 * PAGE_SIZE, rw) == Status::Ok,
+                        "protect() to the permissions the mapping has is accepted");
+                verdict(tally, !is_writable(aspace, AT) && is_writable(aspace, AT + PAGE_SIZE),
+                        "and does not give Write back to the page that lost it");
+
+                // The permission is added by the access that needs it: same frame, same bytes.
+                verdict(tally, task::Thread::Current::soft_fault(AT, WRITE) == Status::Ok,
+                        "a write to the read-only page is resolved by the fault path");
+                u8 back[4] = {};
+                verdict(tally,
+                        is_writable(aspace, AT) && entry_pa(aspace, AT) == pa0 &&
+                            vmo->read(back, 0, sizeof(back)) == Status::Ok &&
+                            std::memcmp(back, PATTERN, sizeof(back)) == 0,
+                        "which leaves it writable, on the same frame, with the bytes it had");
+
+                // Narrowing takes effect at once, on every entry.
+                verdict(tally, mapping->protect(AT, 2 * PAGE_SIZE, ro) == Status::Ok,
+                        "protect() to read-only is accepted");
+                verdict(tally,
+                        !is_writable(aspace, AT) && !is_writable(aspace, AT + PAGE_SIZE) &&
+                            is_readable(aspace, AT) && is_readable(aspace, AT + PAGE_SIZE),
+                        "and takes Write from every entry at once");
+                verdict(tally,
+                        task::Thread::Current::soft_fault(AT + PAGE_SIZE, WRITE) != Status::Ok &&
+                            !is_writable(aspace, AT + PAGE_SIZE),
+                        "a write to a mapping that no longer allows it is refused, and the entry "
+                        "stays");
+
+                // Widening again does not touch the entries; the write does.
+                verdict(tally,
+                        mapping->protect(AT, 2 * PAGE_SIZE, rw) == Status::Ok &&
+                            !is_writable(aspace, AT + PAGE_SIZE),
+                        "protect() back to read-write leaves the entries read-only");
+                verdict(tally,
+                        task::Thread::Current::soft_fault(AT + PAGE_SIZE, WRITE) == Status::Ok &&
+                            is_writable(aspace, AT + PAGE_SIZE) && !is_writable(aspace, AT),
+                        "and the first write to a page adds Write to that page only");
+            }
+        }
+
+        // Execute is added the same way: an instruction fetch from a page whose entry
+        // lost it is what puts it back, after the mapping has been given it again.
+        ustl::Arc<mm::VmObjectPaged> code;
+        constexpr auto CODE_AT = AT + 8 * PAGE_SIZE;
+        auto const rx = mm::MmuFlags::Readable | mm::MmuFlags::Executable | mm::MmuFlags::User;
+        auto const code_made = mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE,
+                                                         mm::VmoFlags::Lazy, &code) == Status::Ok;
+        if (code_made) {
+            auto code_mapped = root->map_with_vmo(mm::VmPlacement::at(CODE_AT), PAGE_SIZE, 0, rx,
+                                                  PERMS, code, mm::VmMapOption::Commit, "code");
+            verdict(tally, code_mapped.is_ok() && is_executable(aspace, CODE_AT),
+                    "an executable mapping has an executable entry");
+            if (code_mapped.is_ok()) {
+                auto code_mapping = code_mapped.unwrap();
+                verdict(tally,
+                        code_mapping->protect(CODE_AT, PAGE_SIZE, ro) == Status::Ok &&
+                            !is_executable(aspace, CODE_AT) &&
+                            code_mapping->protect(CODE_AT, PAGE_SIZE, rx) == Status::Ok &&
+                            !is_executable(aspace, CODE_AT),
+                        "protect() to read-only takes Execute from the entry and back to "
+                        "executable does not give it back");
+                verdict(tally,
+                        task::Thread::Current::soft_fault(CODE_AT, mm::VmfCause::Instruction) ==
+                                Status::Ok &&
+                            is_executable(aspace, CODE_AT) && !is_writable(aspace, CODE_AT),
+                        "an instruction fetch adds Execute to the entry, and no Write");
+            }
+        }
+
+        attach(previous);
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the protect checks is destroyed");
     }
 
     auto vmosnapshot_test_command(int, char **) -> int {
@@ -898,6 +1041,7 @@ namespace {
         }
 
         check_remove_write(tally);
+        check_narrowing_protect(tally);
 
         if (tally.failed != 0) {
             log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,

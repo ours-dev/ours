@@ -70,10 +70,8 @@ class PageTable {
 
     auto unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status;
 
+    /// Takes permissions away and never gives one; see Engine::protect().
     auto protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status;
-
-    /// Takes permissions away and never gives one: see Engine::restrict().
-    auto restrict_pages(VirtAddr va, usize n, MmuFlags keep) -> Status;
 
     auto query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags) -> Status;
 

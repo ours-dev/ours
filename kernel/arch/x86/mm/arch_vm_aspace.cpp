@@ -184,9 +184,4 @@ auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
     return m_page_table.protect_pages(va, n, mmuf);
 }
-
-auto ArchVmAspace::restrict(VirtAddr va, usize n, MmuFlags keep) -> Status {
-    m_canary.verify<Self>();
-    return m_page_table.restrict_pages(va, n, keep);
-}
 } // namespace ours::mm
