@@ -764,3 +764,57 @@ None: asked for the invariant argument (which two things must agree in the range
 - Why must `protect_locked()` hold the object's lock across the page tables too, and not only across the update of the record?
 - Why can the clone not simply take the address space's lock to read the record?
 - What is the lock order these three locks make, and which path already used it?
+
+## Title: Write can be taken away from the mappings of an object's pages, by an operation that only narrows (2026-09-30)
+
+**Files**
+- `kernel/lib/arch/include/arch/paging/mod.hpp` — `Paging::restrict()` and its `RestrictVisitor`; `protect()` and `restrict()` now share one walk, `visit_range()`.
+- `kernel/arch/x86/kernel/include/ours/arch/x86/page_table.hpp`, `kernel/arch/x86/mm/page_table.cpp` — `PageTable::restrict_pages()`.
+- `kernel/arch/x86/mm/include/ours/mm/arch_vm_aspace.hpp`, `kernel/arch/x86/mm/arch_vm_aspace.cpp` — `ArchVmAspace::restrict()`.
+- `kernel/mm/vm_mapping.cpp`, `kernel/mm/include/ours/mm/vm_mapping.hpp` — `VmMapping::remove_write_locked_object()`.
+- `kernel/mm/vm_object.cpp`, `kernel/mm/include/ours/mm/vm_object.hpp` — `VmObject::remove_write_locked()`.
+- `kernel/commands/vmo_snapshot_test.cpp` — 13 more checks, 127 in all, through real mappings and the page tables.
+- `.agents/tasks/vmo-snapshot-child/DESIGN.md` — 8b done, 8b' added.
+
+**Symptom**
+Latent, cannot be triggered today: nothing calls `remove_write_locked()` yet. It is the half of the clone that makes pages safe to share: a page that another node is about to see must not stay writable through a mapping that will not know.
+
+**Cause**
+When a clone moves the pages of a node into a hidden node above it, the node's own mappings still have those pages in their page tables, and if the entries are writable a write goes straight to a page that every other viewer now shares, with no fault, no copy and no error. The fix is to take Write from those entries and to leave each mapping's record of what it allows untouched: the mapping is still allowed to write, but a write now faults and is resolved by the copy-on-write path.
+
+The way it is done is the user's rule. `protect()` sets the permissions of the entries in a range to a value, so given the permissions a range may have it also gives back what an entry lacks: a page mapped read-only because it is shared comes out writable. An operation that is meant to narrow cannot be built on that. `restrict()` is the primitive that only narrows: each entry becomes what it was AND what is kept, on the permission bits only, and an entry that already has less keeps what it has. Widening is then left to the one place that can show a page may be widened, the fault path after the page has been shown to be the writer's own. The same primitive serves the clone here and, in the next commit, `protect()` itself.
+
+**Change**
+```cpp
+auto const kept = (current & ~MmuFlags::PermMask) | (current & m_keep & MmuFlags::PermMask);
+entry = entry.with_protection(MmuFlagsConv<ArchMmuFlags>::to_arch(kept));
+```
+`remove_write_locked_object()` finds the part of the given range that the mapping shows (the mapping's offset into the object, its base and size, none of which change after it is made), walks its protection ranges, and for each region that has Write calls `restrict()` with everything but Write. It takes no address space lock: the mapping is on the object's list and cannot be destroyed, the fields it reads do not change, and the ranges are written only under the object's lock since the previous commit. It stops the program if `restrict()` fails, since a failure would leave a shared page writable.
+
+Rejected: `protect()` with the region's flags less Write, as Zircon does. Right for narrowing a whole region, and wrong for a region whose entries are already lower: it would set them.
+
+**Reference**
+Zircon `VmObject::RangeChangeUpdateLocked()` with `RemoveWrite`, which calls `VmMapping::AspaceRemoveWriteLockedObject()` (`vm_mapping.cc:699`); the entry is `ProtectOrUnmap()`.
+
+**Verification**
+- `scripts/format_cpp.py --check` clean on all ten files; `clang-tidy` nothing on the changed lines (the one warning reported is an old `virtual` destructor).
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts. `vmosnapshot.test` 127 checks ok on both images (114 before, 13 new); `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg, and `usercopy.test` 18 on rel.
+- The new checks build an address space, map committed VMOs, and read the page table entries back: Write is taken from one page of three and from no other; the entry is exactly what it was, less Write (in particular nothing is added); doing it again, or for a range past the object, changes nothing; a read-only mapping and another object's mapping are not touched; a mapping with no entries is left with none; a length that reaches the end of the address space takes Write from every page; and two mappings of one object at different offsets each lose Write on the address that shows the page.
+- The checks can fail. Three mutants: taking nothing away fails three of 126, the address computed from the wrong offset fails four, and the primitive setting the permissions to what is kept instead of clearing fails one, the exact-entry check, which a first version of the test missed (it only asked whether the entry was writable, and the mutant only added Execute).
+- Not verified: another CPU's translation of an entry that lost Write. `restrict_pages()` invalidates the local TLB only, as `protect_pages()` does; this is the first open question of the design, and it now has a concrete failure to point at.
+
+**Deliberately not done**
+- No callers: `create_child_snapshot()` (8d) calls it. The next commit makes `protect_locked()` use `restrict()`.
+- Slices: a slice shares its parent's pages and has its own list of mappings, so removing Write from one object's mappings does not reach the other's. That is 8c.
+- No shootdown to other CPUs.
+
+**How it was found**
+The user's question whether `protect` can still widen, and the rule that it must only narrow.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does `protect()` widen a page that is mapped read-only because it is shared, and how does `restrict()` not?
+- Why is it correct to leave the mapping's record with Write when the entries have lost it?
+- Why is it safe to do this holding the object's lock and not the address space's?

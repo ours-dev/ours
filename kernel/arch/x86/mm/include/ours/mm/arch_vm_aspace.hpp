@@ -44,6 +44,11 @@ class ArchVmAspace {
 
     auto protect(VirtAddr, usize n, MmuFlags) -> Status;
 
+    /// Takes permissions away and never gives one: each entry keeps only the
+    /// permissions it has that are also in |keep|. protect() sets them, so it
+    /// widens what it is told to; this cannot.
+    auto restrict(VirtAddr, usize n, MmuFlags keep) -> Status;
+
     auto query(VirtAddr, PhysAddr *, MmuFlags *) -> Status;
 
     auto mark_accessed(VirtAddr, usize) -> Status {

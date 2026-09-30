@@ -81,6 +81,26 @@ class VmMapping final: public VmAreaOrMapping {
     TA_REQUIRES(get_lock())
     auto protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Status;
 
+    /// Takes Write away from the page tables of the part of this mapping that
+    /// shows [vmo_offset, vmo_offset + len) of its object; see
+    /// VmObject::remove_write_locked(). Called with the object's lock held and
+    /// without the address space's.
+    ///
+    /// Only the page tables change. The record of what the mapping allows
+    /// keeps its Write, because the mapping still allows it: what changed is
+    /// that a write now faults and the page is copied or taken first.
+    ///
+    /// Safe without the address space's lock for three reasons. The mapping is
+    /// on the object's list, which it leaves under the object's lock before it
+    /// is destroyed, so it cannot be gone. Its base, size and offset in the
+    /// object never change after it is made. And the record it reads is
+    /// written only under the object's lock as well (protect_locked(),
+    /// unmap_locked()). The page table takes its own lock.
+    ///
+    /// A failure to remove Write would leave a shared page writable and cannot
+    /// be undone, so it stops the program.
+    auto remove_write_locked_object(u64 vmo_offset, u64 len) -> void;
+
     TA_REQUIRES(get_lock())
     virtual auto activate() -> Status override;
     TA_REQUIRES(get_lock())

@@ -115,35 +115,33 @@ class Paging final {
     [[nodiscard]]
     static auto protect(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va, usize n,
                         MmuFlags flags) -> ustl::Result<usize, MapError> {
-        if (n == 0) {
-            return ustl::ok(0);
-        }
-        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
-            return ustl::err(MapError::InvArgs);
-        }
-        auto const size = n * PAGE_SIZE;
-        if (size - 1 > (~VirtAddr{0}) - va) {
-            return ustl::err(MapError::InvArgs);
-        }
+        return visit_range(table, phys_to_table, va, n, [flags](VirtAddr address, usize remaining) {
+            return ProtectVisitor(address, remaining, flags);
+        });
+    }
 
-        auto remaining = n;
-        auto protected_pages = usize{0};
-        auto address = va;
-        while (remaining != 0) {
-            ProtectVisitor visitor(address, remaining, flags);
-            auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
-            if (result.is_err()) {
-                return ustl::err(result.error());
-            }
-
-            auto const bytes = result.unwrap();
-            auto const pages = bytes / PAGE_SIZE;
-            address += bytes;
-            remaining -= pages;
-            protected_pages += pages;
-        }
-
-        return ustl::ok(protected_pages);
+    /// Takes permissions away and never gives one: the permission bits of every
+    /// leaf in the range become what they were AND |keep|, and no other bit is
+    /// touched. An entry that already has less than |keep| keeps what it has.
+    ///
+    /// This is what protect() cannot be. protect() sets the permissions to a
+    /// value, so given the permissions a range is allowed it also gives back
+    /// what an entry lacked: a page that was mapped read-only because it is
+    /// shared comes out writable, and the next write goes through to every node
+    /// that shares it. A caller that must only narrow -- a clone removing Write
+    /// from the mappings of pages it is about to share, an mprotect that
+    /// narrows -- asks this, and leaves widening to whoever can show the page
+    /// may be widened.
+    ///
+    /// Returns the number of pages visited, as protect() does, for the TLB
+    /// invalidation that the caller owes for each.
+    template <typename PhysToVirt>
+    [[nodiscard]]
+    static auto restrict(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va, usize n,
+                         MmuFlags keep) -> ustl::Result<usize, MapError> {
+        return visit_range(table, phys_to_table, va, n, [keep](VirtAddr address, usize remaining) {
+            return RestrictVisitor(address, remaining, keep);
+        });
     }
 
     /// What free_tables() did: the table pages it gave back, and the leaves it
@@ -305,6 +303,44 @@ class Paging final {
         }
     };
 
+    /// The walk protect() and restrict() share: the leaves of [va, va + n pages),
+    /// each visited by a fresh visitor for the address it starts at and the pages
+    /// still to do. |make_visitor| makes one.
+    template <typename PhysToVirt, typename MakeVisitor>
+    [[nodiscard]]
+    static auto visit_range(PhysAddr table, PhysToVirt &&phys_to_table, VirtAddr va, usize n,
+                            MakeVisitor &&make_visitor) -> ustl::Result<usize, MapError> {
+        if (n == 0) {
+            return ustl::ok(0);
+        }
+        if (va % PAGE_SIZE != 0 || n > (~usize{0}) / PAGE_SIZE) {
+            return ustl::err(MapError::InvArgs);
+        }
+        auto const size = n * PAGE_SIZE;
+        if (size - 1 > (~VirtAddr{0}) - va) {
+            return ustl::err(MapError::InvArgs);
+        }
+
+        auto remaining = n;
+        auto visited_pages = usize{0};
+        auto address = va;
+        while (remaining != 0) {
+            auto visitor = make_visitor(address, remaining);
+            auto result = walk_levels<Traits::PAGING_LEVEL>(table, phys_to_table, address, visitor);
+            if (result.is_err()) {
+                return ustl::err(result.error());
+            }
+
+            auto const bytes = result.unwrap();
+            auto const pages = bytes / PAGE_SIZE;
+            address += bytes;
+            remaining -= pages;
+            visited_pages += pages;
+        }
+
+        return ustl::ok(visited_pages);
+    }
+
     class ProtectVisitor final {
         VirtAddr const m_addr;
         usize const m_remaining;
@@ -328,6 +364,44 @@ class Paging final {
                 return ustl::err(MapError::InvArgs);
             }
             entry = entry.with_protection(MmuFlagsConv<ArchMmuFlags>::to_arch(m_flags));
+            return ustl::ok(page_size);
+        }
+
+        template <Level Level>
+        [[nodiscard]]
+        auto on_final_non_terminal() const -> ustl::Result<usize, MapError> {
+            return ustl::err(MapError::InvArgs);
+        }
+    };
+
+    class RestrictVisitor final {
+        VirtAddr const m_addr;
+        usize const m_remaining;
+        MmuFlags const m_keep;
+
+      public:
+        constexpr RestrictVisitor(VirtAddr const addr, usize const remaining, MmuFlags const keep)
+            : m_addr(addr), m_remaining(remaining), m_keep(keep) {}
+
+        template <Level Level>
+        [[nodiscard]]
+        auto on_absent() const -> ustl::Result<usize, MapError> {
+            return ustl::ok(PAGE_SIZE);
+        }
+
+        template <Level Level>
+        [[nodiscard]]
+        auto on_terminal(Pte<Level> &entry) const -> ustl::Result<usize, MapError> {
+            auto const page_size = Traits::page_size(Level);
+            if (m_addr % page_size != 0 || m_remaining < page_size / PAGE_SIZE) {
+                return ustl::err(MapError::InvArgs);
+            }
+            // Only the permission bits are ANDed; Present, User and the rest of
+            // what the entry says are carried through as they are.
+            auto const current = MmuFlagsConv<ArchMmuFlags>::from_arch(entry.arch_mmu_flags());
+            auto const kept =
+                (current & ~MmuFlags::PermMask) | (current & m_keep & MmuFlags::PermMask);
+            entry = entry.with_protection(MmuFlagsConv<ArchMmuFlags>::to_arch(kept));
             return ustl::ok(page_size);
         }
 

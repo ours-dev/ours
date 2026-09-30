@@ -202,6 +202,23 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
         return m_lock;
     }
 
+    /// Takes Write away from the page tables of every mapping of
+    /// [offset, offset + len) of this object -- offsets in this object's own
+    /// bytes -- and leaves each mapping's record of what it allows alone, so
+    /// that a write to the page faults and is resolved instead of being refused.
+    ///
+    /// For an operation that is about to make pages shared, the clone: a page
+    /// that another node is about to see must not be writable through a
+    /// mapping that will not know. Held under the object's lock and not the
+    /// address space's, which is what the mappings' records are written under
+    /// (VmMapping::protect_locked()) so that this can read them.
+    ///
+    /// Zircon: VmObject::RangeChangeUpdateLocked() with
+    /// RangeChangeOp::RemoveWrite, which calls
+    /// VmMapping::AspaceRemoveWriteLockedObject() on each.
+    TA_REQUIRES(m_lock)
+    auto remove_write_locked(u64 offset, u64 len) -> void;
+
   protected:
     friend class VmMapping;
 

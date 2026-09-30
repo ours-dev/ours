@@ -185,6 +185,27 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
     return Status::Ok;
 }
 
+auto PageTable::restrict_pages(VirtAddr va, usize n, MmuFlags keep) -> Status {
+    auto result = [&] {
+        Guard<sync::SpinLock, IrqSave> guard(m_lock);
+        return Engine::restrict(m_pgd_phys, phys_to_virt, va, n, keep);
+    }();
+
+    if (result.is_err()) {
+        return to_status(result.error());
+    }
+
+    // The local TLB only, as protect_pages() flushes it. What another CPU
+    // running this address space still holds is the open question of the
+    // clone's design: an entry that had Write and lost it here can still be
+    // written through there until that CPU's TLB is flushed.
+    auto const pages = result.unwrap();
+    for (usize i = 0; i < pages; ++i) {
+        arch::x86_invlpg(va + i * PAGE_SIZE);
+    }
+    return Status::Ok;
+}
+
 auto PageTable::query_mapping(VirtAddr va, PhysAddr *pa, MmuFlags *flags) -> Status {
     auto result = [&] {
         Guard<sync::SpinLock, IrqSave> guard(m_lock);

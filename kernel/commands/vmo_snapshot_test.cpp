@@ -29,12 +29,17 @@
 //
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
+#include <ours/arch/aspace_layout.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/page_request.hpp>
 #include <ours/mm/physmap.hpp>
+#include <ours/mm/vm_area.hpp>
+#include <ours/mm/vm_aspace.hpp>
 #include <ours/mm/vm_cow_pages.hpp>
+#include <ours/mm/vm_mapping.hpp>
+#include <ours/mm/vm_object_paged.hpp>
 #include <ours/mm/vmm.hpp>
 
 #include <cstring>
@@ -181,6 +186,167 @@ namespace {
         }
         return VmCowPages::create_child(parent, parent_page * PAGE_SIZE, limit_pages * PAGE_SIZE,
                                         pages * PAGE_SIZE, flags, &out) == Status::Ok;
+    }
+
+    // Whether the page at |va| is mapped, and with what.
+    auto pte_flags(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va)
+        -> ustl::Option<mm::MmuFlags> {
+        PhysAddr pa = 0;
+        mm::MmuFlags flags{};
+        if (aspace->arch_aspace().query(va, &pa, &flags) != Status::Ok) {
+            return ustl::NONE;
+        }
+        return ustl::some(flags);
+    }
+
+    auto is_writable(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va) -> bool {
+        auto const flags = pte_flags(aspace, va);
+        return flags.is_some() && !!(*flags & mm::MmuFlags::Writable);
+    }
+
+    auto is_readable(ustl::Arc<mm::VmAspace> &aspace, VirtAddr const va) -> bool {
+        auto const flags = pte_flags(aspace, va);
+        return flags.is_some() && !!(*flags & mm::MmuFlags::Readable);
+    }
+
+    TA_NO_THREAD_SAFETY_ANALYSIS
+    auto remove_write(ustl::Arc<mm::VmObjectPaged> &vmo, u64 const offset, u64 const len) -> void {
+        Guard guard{vmo->lock()};
+        vmo->remove_write_locked(offset, len);
+    }
+
+    // Removing Write from the page tables of the mappings of an object, from the
+    // object's side: which pages it reaches, what it leaves, and what it does
+    // not touch.
+    auto check_remove_write(Tally &tally) -> void {
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the remove-write checks is made");
+            return;
+        }
+        auto root = aspace->root_vma();
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        auto const ro = mm::MmuFlags::Readable | mm::MmuFlags::User;
+        constexpr auto RW_AT = USER_ASPACE_BASE + MB(16);
+        constexpr auto RO_AT = RW_AT + 8 * PAGE_SIZE;
+        constexpr auto LAZY_AT = RO_AT + 8 * PAGE_SIZE;
+
+        ustl::Arc<mm::VmObjectPaged> vmo;
+        ustl::Arc<mm::VmObjectPaged> ro_vmo;
+        ustl::Arc<mm::VmObjectPaged> lazy_vmo;
+        auto const made = mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &vmo) == Status::Ok &&
+                          mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &ro_vmo) == Status::Ok &&
+                          mm::VmObjectPaged::create(mm::GAF_USER, 2 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &lazy_vmo) == Status::Ok;
+        verdict(tally, made, "three VMOs for the remove-write checks are made");
+        if (!made) {
+            return;
+        }
+
+        // Committed, so the page tables hold entries to change.
+        auto writable = root->map_with_vmo(mm::VmPlacement::at(RW_AT), 3 * PAGE_SIZE, 0, rw, PERMS,
+                                           vmo, mm::VmMapOption::Commit, "remove-write rw");
+        auto read_only = root->map_with_vmo(mm::VmPlacement::at(RO_AT), 2 * PAGE_SIZE, 0, ro, PERMS,
+                                            ro_vmo, mm::VmMapOption::Commit, "remove-write ro");
+        // Mapped, not committed: no entries yet.
+        auto lazy = root->map_with_vmo(mm::VmPlacement::at(LAZY_AT), 2 * PAGE_SIZE, 0, rw, PERMS,
+                                       lazy_vmo, mm::VmMapOption::None, "remove-write lazy");
+        verdict(tally, writable.is_ok() && read_only.is_ok() && lazy.is_ok(),
+                "the mappings are made");
+        if (!(writable.is_ok() && read_only.is_ok() && lazy.is_ok())) {
+            return;
+        }
+        verdict(
+            tally,
+            is_writable(aspace, RW_AT) && is_writable(aspace, RW_AT + PAGE_SIZE) &&
+                is_writable(aspace, RW_AT + 2 * PAGE_SIZE) && !is_writable(aspace, RO_AT) &&
+                is_readable(aspace, RO_AT),
+            "the committed mappings have entries: writable in the writable one, not in the other");
+
+        // One page of three. What is left is exactly what the entry had, less
+        // Write: nothing else changes, and above all nothing is added, which is
+        // what makes this different from protect().
+        auto const before = pte_flags(aspace, RW_AT + PAGE_SIZE);
+        remove_write(vmo, PAGE_SIZE, PAGE_SIZE);
+        verdict(
+            tally,
+            is_writable(aspace, RW_AT) && !is_writable(aspace, RW_AT + PAGE_SIZE) &&
+                is_readable(aspace, RW_AT + PAGE_SIZE) &&
+                is_writable(aspace, RW_AT + 2 * PAGE_SIZE),
+            "removing Write from one page takes it from that page only, and leaves it readable");
+        auto const after = pte_flags(aspace, RW_AT + PAGE_SIZE);
+        verdict(tally,
+                before.is_some() && after.is_some() &&
+                    *after == (*before & ~mm::MmuFlags::Writable),
+                "and leaves the entry exactly as it was, less Write");
+
+        // Idempotent, and a range that names nothing the mapping shows changes nothing.
+        // Doing it again is a restriction of an entry that already lacks what is taken,
+        // which must leave it as it is, not set it to what is kept.
+        remove_write(vmo, PAGE_SIZE, PAGE_SIZE);
+        remove_write(vmo, 3 * PAGE_SIZE, 4 * PAGE_SIZE);
+        auto const again = pte_flags(aspace, RW_AT + PAGE_SIZE);
+        verdict(tally,
+                is_writable(aspace, RW_AT) && is_writable(aspace, RW_AT + 2 * PAGE_SIZE) &&
+                    again.is_some() && *again == *after,
+                "doing it again, or for a range past the object, changes nothing at all");
+
+        // The other objects' mappings are not touched by this one's.
+        remove_write(ro_vmo, 0, 2 * PAGE_SIZE);
+        verdict(tally,
+                is_writable(aspace, RW_AT) && !is_writable(aspace, RO_AT) &&
+                    is_readable(aspace, RO_AT),
+                "a read-only mapping keeps what it has, and another object's is not reached");
+
+        // A mapping with no entries yet: nothing to change, and nothing goes wrong.
+        remove_write(lazy_vmo, 0, 2 * PAGE_SIZE);
+        verdict(tally, !pte_flags(aspace, LAZY_AT).is_some(),
+                "a mapping with no entries is left with none");
+
+        // The whole object, with a length that reaches the end of the address space.
+        remove_write(vmo, 0, ~u64{0});
+        verdict(tally,
+                !is_writable(aspace, RW_AT) && !is_writable(aspace, RW_AT + PAGE_SIZE) &&
+                    !is_writable(aspace, RW_AT + 2 * PAGE_SIZE) && is_readable(aspace, RW_AT) &&
+                    is_readable(aspace, RW_AT + 2 * PAGE_SIZE),
+                "the whole object, with a length that does not fit, takes Write from every page");
+
+        // Two mappings of one object that show different parts of it: the whole,
+        // and two pages from its page 1. A range is in the object's bytes, so it
+        // lands on each mapping at that mapping's own offset.
+        ustl::Arc<mm::VmObjectPaged> shared_vmo;
+        constexpr auto FULL_AT = LAZY_AT + 8 * PAGE_SIZE;
+        constexpr auto WIN_AT = FULL_AT + 8 * PAGE_SIZE;
+        auto const shared_made =
+            mm::VmObjectPaged::create(mm::GAF_USER, 3 * PAGE_SIZE, mm::VmoFlags::Lazy,
+                                      &shared_vmo) == Status::Ok;
+        verdict(tally, shared_made, "an object to map twice is made");
+        if (shared_made) {
+            auto full =
+                root->map_with_vmo(mm::VmPlacement::at(FULL_AT), 3 * PAGE_SIZE, 0, rw, PERMS,
+                                   shared_vmo, mm::VmMapOption::Commit, "remove-write full");
+            auto window =
+                root->map_with_vmo(mm::VmPlacement::at(WIN_AT), 2 * PAGE_SIZE, PAGE_SIZE, rw, PERMS,
+                                   shared_vmo, mm::VmMapOption::Commit, "remove-write window");
+            verdict(tally, full.is_ok() && window.is_ok(), "the whole and the window are mapped");
+            if (full.is_ok() && window.is_ok()) {
+                remove_write(shared_vmo, 2 * PAGE_SIZE, PAGE_SIZE);
+                verdict(tally,
+                        is_writable(aspace, FULL_AT) && is_writable(aspace, FULL_AT + PAGE_SIZE) &&
+                            !is_writable(aspace, FULL_AT + 2 * PAGE_SIZE) &&
+                            is_writable(aspace, WIN_AT) && !is_writable(aspace, WIN_AT + PAGE_SIZE),
+                        "the object's page 2 loses Write in both mappings, at the address each "
+                        "shows it at");
+            }
+        }
+
+        verdict(tally, aspace->destroy() == Status::Ok, "the address space is destroyed");
     }
 
     auto vmosnapshot_test_command(int, char **) -> int {
@@ -730,6 +896,8 @@ namespace {
                     holds_only(kept, 0xB0),
                 "a child whose parent handle is dropped still reads it, and still has its lock");
         }
+
+        check_remove_write(tally);
 
         if (tally.failed != 0) {
             log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,

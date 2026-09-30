@@ -1,3 +1,4 @@
+#include <ours/mm/vm_mapping.hpp>
 #include <ours/mm/vm_object.hpp>
 
 namespace ours::mm {
@@ -10,5 +11,11 @@ VmObject::VmObject(u32 magic, Type type, Flags vmof, sync::Mutex &lock)
     , m_children_hook()
     , m_children() {
     DEBUG_ASSERT(type == Type::Paged || type == Type::Physical);
+}
+
+auto VmObject::remove_write_locked(u64 const offset, u64 const len) -> void {
+    for (auto &mapping: m_mappings) {
+        mapping.remove_write_locked_object(offset, len);
+    }
 }
 } // namespace ours::mm

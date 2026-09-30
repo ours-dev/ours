@@ -415,6 +415,42 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     return Status::Ok;
 }
 
+auto VmMapping::remove_write_locked_object(u64 const vmo_offset, u64 const len) -> void {
+    m_canary.verify<Self>();
+    DEBUG_ASSERT(m_vmo);
+    m_vmo->lock().assert_held();
+
+    // The part of the range this mapping shows, in the object's bytes and then
+    // as addresses. |len| may reach the end of the address space, so the end is
+    // clamped rather than added.
+    u64 end = vmo_offset + len;
+    if (len > ~u64{0} - vmo_offset) {
+        end = ~u64{0};
+    }
+    u64 const first = std::max<u64>(vmo_offset, m_vmo_ofs);
+    u64 const last = std::min<u64>(end, m_vmo_ofs + m_size);
+    if (first >= last) {
+        return;
+    }
+    VirtAddr const base = m_base + (first - m_vmo_ofs);
+    usize const size = last - first;
+
+    // Only what can be written is worth touching: a region without Write has
+    // page table entries without it, since entries never have more than their
+    // region. What is kept is Read and Execute, whatever the region has of them.
+    auto &arch_aspace = m_aspace->arch_aspace();
+    constexpr auto KEEP = MmuFlags::PermMask & ~MmuFlags::Writable;
+    auto enumerator = m_protection_ranges.make_enumerator(base, size);
+    while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
+        if (!(region_mmuf & MmuFlags::Writable)) {
+            continue;
+        }
+        auto const status = arch_aspace.restrict(region_base, region_size >> PAGE_SHIFT, KEEP);
+        ASSERT(Status::Ok == status,
+               "could not take Write off a mapping of pages about to be shared");
+    }
+}
+
 auto VmMapping::unmap(VirtAddr base, usize size, UnmapOptions options) -> Status {
     m_canary.verify<Self>();
 
