@@ -152,22 +152,12 @@ USTL_ENABLE_ENUM_BITMASK(VmOptions);
 /// vmo_create_child's options: which kind of child, and how it may be used.
 /// Slice, SnapshotFull and SnapshotOnWrite are built, each alone; every other
 /// bit named here is recognised and answered NotSupported, and any bit not
-/// named here is InvArgs. The values are
-/// Zircon's ZX_VMO_CHILD_*, so a request ported from Zircon asks the same
-/// question.
+/// named here is InvArgs. The values are Zircon's ZX_VMO_CHILD_*, so a request
+/// ported from Zircon asks the same question.
 ///
 /// The three snapshots are named for how much of the parent they freeze, as
 /// Zircon's kernel names them internally (SnapshotType::Full, OnWrite,
-/// Modified), rather than as its syscall header does:
-///
-///   - SnapshotFull is ZX_VMO_CHILD_SNAPSHOT: everything as it was at the clone;
-///     neither side ever sees the other's later writes.
-///   - SnapshotOnWrite is ZX_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE: only a page
-///     the child has written is its own for certain; a page it has not may
-///     still show the parent's later writes.
-///   - SnapshotModified is ZX_VMO_CHILD_SNAPSHOT_MODIFIED: the pages the parent
-///     has modified are frozen, the ones still as a pager supplied them are
-///     not. For fork() of a mapping of a pager-backed file.
+/// Modified), rather than as its syscall header does.
 ///
 /// Declared by what they are, not by value: first the kind of child, of which a
 /// request names one, then what may be added to it. The values stay Zircon's,
@@ -177,14 +167,41 @@ enum class VmoChildOptions : u32 {
     None = 0,
 
     // The kind of child.
+
+    /// A copy-on-write copy of everything as it was at the clone: neither the
+    /// child nor the parent ever sees the other's later writes. Built:
+    /// mm::VmObjectPaged::create_clone().
     SnapshotFull = 1U << 0,
+
+    /// Only a page the child has written is certainly its own; a page it has
+    /// not written may still show the parent's later writes. What a loader asks
+    /// for a data segment (Zircon's elfldltl). Built as SnapshotFull, which
+    /// gives more than this asks: the child never sees the parent's later
+    /// writes.
     SnapshotOnWrite = 1U << 4,
+
+    /// The pages the parent has modified are frozen; the ones still as a pager
+    /// supplied them are not, and keep following the pager. For fork() of a
+    /// mapping of a pager-backed file. NotSupported: no VMO here has a pager.
     SnapshotModified = 1U << 7,
+
+    /// A window onto the parent's own pages, no copy: a write through either is
+    /// seen through both. Its rights are the parent handle's, never more.
+    /// Built: mm::VmObjectPaged::create_child_slice().
     Slice = 1U << 3,
+
+    /// The whole parent again as another VMO: the same pages and the same size,
+    /// so offset and size must both be 0. NotSupported.
     Reference = 1U << 6,
 
     // What may be added to it.
+
+    /// The child can be resized later. NotSupported: a child is made at its
+    /// final size.
     Resizable = 1U << 2,
+
+    /// The child's handle has no Write, which a snapshot otherwise gets.
+    /// NotSupported.
     NoWrite = 1U << 5,
 };
 } // namespace ours
