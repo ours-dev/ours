@@ -30,6 +30,7 @@
 // The name has no underscore for the reason usercopy.test's does not: gktl's
 // command table does not encode '_'.
 #include <ours/arch/aspace_layout.hpp>
+#include <ours/cpu.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/mm/memmap.hpp>
@@ -44,12 +45,18 @@
 #include <ours/mm/vmm.hpp>
 #include <ours/task/auto_preempt_disabler.hpp>
 #include <ours/task/thread.hpp>
+#include <ours/time/clock.hpp>
+
+#include <atomic>
 
 #include <cstring>
 
+#include <arch/spin_hint.hpp>
 #include <gktl/command.hpp>
+#include <heap/new.hpp>
 #include <ktl/result.hpp>
 #include <logz4/log.hpp>
+#include <user_copy/user_copy.hpp>
 #include <ustl/rc.hpp>
 
 namespace ours {
@@ -914,6 +921,175 @@ namespace {
                 "the address space of the committed clone checks is destroyed");
     }
 
+    // A TLB shootdown, run on two CPUs at once. The writer, pinned to one CPU,
+    // writes a page through a writable mapping, which leaves that CPU's TLB
+    // holding a writable translation of it; the cloner, pinned to another,
+    // then clones the object behind the mapping, which takes Write off the
+    // entry; the writer writes again. Unless the clone also shot down the
+    // writer's translation, that second write goes through the stale one,
+    // into the page the clone now shares.
+    //
+    // The writer holds preemption off from its first write to its second. A
+    // thread switched away from this CPU would load another root, which
+    // flushes the translation by itself, and the check would pass whether or
+    // not anything was shot down. Both writes capture their faults, which may
+    // be done with preemption off, so the second one is a status to read
+    // rather than a fault to resolve.
+    struct ShootdownRun {
+        mm::VmAspace *aspace = nullptr;
+        ustl::Arc<mm::VmObjectPaged> object;
+        ustl::Arc<mm::VmObjectPaged> clone;
+        VirtAddr at = 0;
+        std::atomic<bool> warm{false};
+        std::atomic<bool> cloned{false};
+        std::atomic<usize> finished{0};
+        bool first_write = false;
+        bool second_refused = false;
+        bool waited_out = false;
+        Status clone_status = Status::Ok;
+    };
+
+    constexpr u32 BEFORE_CLONE = 0x6100'0000;
+    constexpr u32 AFTER_CLONE = 0x6200'0000;
+    constexpr auto SHOOTDOWN_WAIT = Seconds(5);
+
+    auto shootdown_writer(void *const arg) -> i32 {
+        auto &run = *static_cast<ShootdownRun *>(arg);
+        auto *const previous = attach(run.aspace);
+        {
+            task::AutoPreemptDisabler stay;
+            auto const first =
+                user_copy::copy_to_user_capture_faults(run.at, &BEFORE_CLONE, sizeof(u32));
+            run.first_write = first.status == Status::Ok && !first.fault;
+            run.warm.store(true, std::memory_order_release);
+
+            auto const give_up = time::SteadyClock::now() + SHOOTDOWN_WAIT;
+            while (!run.cloned.load(std::memory_order_acquire)) {
+                if (time::SteadyClock::now() > give_up) {
+                    run.waited_out = true;
+                    break;
+                }
+                arch::spin_hint();
+            }
+            if (!run.waited_out) {
+                auto const second =
+                    user_copy::copy_to_user_capture_faults(run.at, &AFTER_CLONE, sizeof(u32));
+                run.second_refused = static_cast<bool>(second.fault);
+            }
+        }
+        attach(previous);
+        run.finished.fetch_add(1, std::memory_order_release);
+        return 0;
+    }
+
+    auto shootdown_cloner(void *const arg) -> i32 {
+        auto &run = *static_cast<ShootdownRun *>(arg);
+        auto const give_up = time::SteadyClock::now() + SHOOTDOWN_WAIT;
+        while (!run.warm.load(std::memory_order_acquire) && time::SteadyClock::now() < give_up) {
+            arch::spin_hint();
+        }
+        run.clone_status = run.object->create_clone(0, PAGE_SIZE, &run.clone);
+        // Set whatever the clone answered, so that the writer is never left waiting.
+        run.cloned.store(true, std::memory_order_release);
+        run.finished.fetch_add(1, std::memory_order_release);
+        return 0;
+    }
+
+    auto spawn_on(char const *const name, task::Thread::StartRoutine const routine,
+                  ShootdownRun *const run, CpuNum const cpu) -> bool {
+        auto *const thread = task::Thread::spawn(name, routine, run, task::DEFAULT_PRIORITY);
+        if (thread == nullptr) {
+            return false;
+        }
+        thread->set_cpu_affinity_hard(CpuMask::of(cpu));
+        static_cast<void>(thread->detach());
+        static_cast<void>(thread->resume());
+        return true;
+    }
+
+    auto check_shootdown(Tally &tally) -> void {
+        auto const cpus = Cpu::num_online_cpus();
+        if (cpus < 2) {
+            log::info("vmosnapshot.test: the shootdown checks need two CPUs, have {}", cpus);
+            return;
+        }
+
+        ustl::Arc<mm::VmAspace> aspace;
+        if (auto const status = mm::VmAspace::create(USER_ASPACE_BASE, USER_ASPACE_RESTRICTED_SIZE,
+                                                     mm::VmasKind::User, mm::VmasFlags::None,
+                                                     "vmosnapshot.test shootdown", &aspace);
+            status != Status::Ok) {
+            verdict(tally, false, "an address space for the shootdown checks is made");
+            return;
+        }
+        constexpr auto PERMS = mm::VmaFlags::PermMask;
+        auto const rw = mm::MmuFlags::Readable | mm::MmuFlags::Writable | mm::MmuFlags::User;
+        constexpr auto AT = USER_ASPACE_BASE + MB(16);
+
+        // Heap, not the stack: if a thread never finishes it still points here, and
+        // this has to be leaked rather than popped.
+        auto *const run = new (mm::GAF_KERNEL) ShootdownRun{};
+        auto const made = run != nullptr &&
+                          mm::VmObjectPaged::create(mm::GAF_USER, PAGE_SIZE, mm::VmoFlags::Lazy,
+                                                    &run->object) == Status::Ok &&
+                          poke(run->object, 0, 0x6000'0000) &&
+                          aspace->root_vma()
+                              ->map_with_vmo(mm::VmPlacement::at(AT), PAGE_SIZE, 0, rw, PERMS,
+                                             run->object, mm::VmMapOption::Populate, "shootdown")
+                              .is_ok() &&
+                          is_writable(aspace, AT);
+        verdict(tally, made, "an object of one page is mapped writable, its entry filled in");
+        if (!made) {
+            delete run;
+            verdict(tally, aspace->destroy() == Status::Ok,
+                    "the address space of the shootdown checks is destroyed");
+            return;
+        }
+        run->aspace = aspace.as_ptr_mut();
+        run->at = AT;
+
+        // Two different CPUs, the writer's not this thread's own. The writer spins
+        // with preemption off, so a thread on its CPU does not run until it is
+        // done: had this thread been there, it could not have spawned the
+        // cloner, and the writer would wait it out. The cloner is spawned first
+        // for the same reason. Online CPUs are taken to be numbered from 0.
+        CpuNum here = 0;
+        {
+            task::AutoPreemptDisabler stay;
+            here = Cpu::id();
+        }
+        auto const writer_cpu = static_cast<CpuNum>((here + 1) % cpus);
+        auto const cloner_cpu = static_cast<CpuNum>(cpus > 2 ? (here + 2) % cpus : here);
+        auto const spawned = spawn_on("shootdown-cloner", shootdown_cloner, run, cloner_cpu) &&
+                             spawn_on("shootdown-writer", shootdown_writer, run, writer_cpu);
+        auto const started = time::SteadyClock::now();
+        auto const expected = spawned ? usize{2} : usize{0};
+        while (spawned && run->finished.load(std::memory_order_acquire) < expected &&
+               time::SteadyClock::now() < started + 2 * SHOOTDOWN_WAIT) {
+            static_cast<void>(
+                task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No));
+        }
+        auto const finished = spawned && run->finished.load(std::memory_order_acquire) == 2;
+        verdict(tally, finished, "the writer and the cloner both ran, on two CPUs, and finished");
+        if (!finished) {
+            // Leaked, with the address space: a thread may still be using both.
+            static_cast<void>(aspace.into_raw());
+            return;
+        }
+
+        verdict(tally, run->first_write && !run->waited_out && run->clone_status == Status::Ok,
+                "the writer's first write goes through, and the clone is made while it waits");
+        verdict(tally, run->second_refused,
+                "its next write, with no switch in between, faults: the clone on the other CPU "
+                "shot down the writable translation it held");
+        verdict(tally, run->clone && peek(run->clone, 0) == BEFORE_CLONE,
+                "the clone holds what the page held when it was made, not a write after it");
+
+        delete run;
+        verdict(tally, aspace->destroy() == Status::Ok,
+                "the address space of the shootdown checks is destroyed");
+    }
+
     auto vmosnapshot_test_command(int, char **) -> int {
         Tally tally;
 
@@ -1469,6 +1645,7 @@ namespace {
         check_create_clone(tally);
         check_mapped_clone(tally);
         check_committed_clone_mapping(tally);
+        check_shootdown(tally);
 
         if (tally.failed != 0) {
             log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,

@@ -5,8 +5,6 @@
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/pmm.hpp>
 
-#include <arch/x86/tlb.hpp>
-
 namespace ours::mm {
 namespace {
     auto phys_to_virt(PhysAddr pa) -> VirtAddr {
@@ -158,12 +156,10 @@ auto PageTable::unmap_pages(VirtAddr va, usize n, UnmapOptions options, usize *u
         return to_status(result.error());
     }
 
-    auto const pages = result.unwrap();
-    for (usize i = 0; i < pages; ++i) {
-        arch::x86_invlpg(va + i * PAGE_SIZE);
-    }
+    // No TLB is flushed here: ArchVmAspace::invalidate() does it, for every CPU
+    // running this address space, once this has dropped the lock.
     if (unmapped) {
-        *unmapped = pages;
+        *unmapped = result.unwrap();
     }
     return Status::Ok;
 }
@@ -178,14 +174,8 @@ auto PageTable::protect_pages(VirtAddr va, usize n, MmuFlags flags) -> Status {
         return to_status(result.error());
     }
 
-    // The local TLB only. What another CPU running this address space still
-    // holds is the open question of the clone's design: an entry that had Write
-    // and lost it here can still be written through there until that CPU's TLB
-    // is flushed.
-    auto const pages = result.unwrap();
-    for (usize i = 0; i < pages; ++i) {
-        arch::x86_invlpg(va + i * PAGE_SIZE);
-    }
+    // No TLB is flushed here: ArchVmAspace::invalidate() does it, for every CPU
+    // running this address space, once this has dropped the lock.
     return Status::Ok;
 }
 

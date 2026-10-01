@@ -1,10 +1,13 @@
 #include <ours/cpu.hpp>
 #include <ours/init.hpp>
+#include <ours/ipi_service.hpp>
 #include <ours/mm/arch_vm_aspace.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/vm_aspace.hpp>
+#include <ours/task/auto_preempt_disabler.hpp>
 
 #include <arch/x86/system.hpp>
+#include <arch/x86/tlb.hpp>
 
 namespace ours::mm {
 namespace {
@@ -162,8 +165,11 @@ auto ArchVmAspace::destroy() -> Teardown {
 ///    this CPU can be left in its TLB. Clearing it earlier would let a
 ///    shootdown skip a CPU that still holds |from|'s translations.
 ///
-/// Zircon: X86ArchVmAspace::ContextSwitch(), which keeps active_cpus_ the same
-/// way.
+/// Zircon: X86ArchVmAspace::ContextSwitch(), which keeps active_cpus_ too but
+/// clears the outgoing bit first, before the incoming one is set. That is safe
+/// without PCIDs as well -- a shootdown that skips this CPU in between is made
+/// good by the CR3 write that follows, and the switch touches no user page
+/// before it -- but clearing it last needs no such argument.
 auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     using arch::Cr3;
     if (to != nullptr) {
@@ -218,7 +224,15 @@ auto ArchVmAspace::map_bulk(VirtAddr va, PhysAddr *pa, usize n, MmuFlags flags, 
 
 auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapOptions options, usize *unmapped) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.unmap_pages(va, n, options, unmapped);
+    usize done = 0;
+    auto const status = m_page_table.unmap_pages(va, n, options, &done);
+    if (status == Status::Ok) {
+        invalidate(va, done);
+    }
+    if (unmapped) {
+        *unmapped = done;
+    }
+    return status;
 }
 
 auto ArchVmAspace::query(VirtAddr va, PhysAddr *pa, MmuFlags *mmuf) -> Status {
@@ -232,6 +246,82 @@ auto ArchVmAspace::active_cpus() const -> CpuMask {
 
 auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {
     m_canary.verify<Self>();
-    return m_page_table.protect_pages(va, n, mmuf);
+    auto const status = m_page_table.protect_pages(va, n, mmuf);
+    if (status == Status::Ok) {
+        invalidate(va, n);
+    }
+    return status;
+}
+
+/// The TLB shootdown: after an entry has lost a permission or its page, every
+/// CPU that may still hold the old translation drops it, and this returns
+/// only once they all have.
+///
+/// Without it a CPU keeps using what its TLB holds. A clone takes Write off an
+/// entry so that the next write faults and copies the page; another CPU that
+/// cached the entry while it was writable writes straight through, into the
+/// page the clone now shares. An unmap that frees a frame leaves another CPU
+/// reading and writing the frame's next owner.
+///
+/// Who is asked: the CPUs in |m_active_cpus|, read after the entries changed,
+/// behind a full barrier. switch_context() sets a CPU's bit before that CPU
+/// loads these tables, so one that is not in the mask either was not running
+/// here, and holds nothing (no PCIDs: loading another root flushed it), or
+/// loads the tables after the change and caches the new entry.
+///
+/// When it is done, which the callers rely on:
+///
+///  - After the page table's spin lock is dropped, never under it. That lock
+///    is held with interrupts off, and the other CPUs answer from their
+///    interrupt handlers: one of them spinning for the same lock, interrupts
+///    off, would never answer, and this one would never let go.
+///    sync_exec() asserts interrupts are on.
+///  - Before this returns, and so under the object's lock that the caller
+///    (the clone, the fault path) holds. A CPU that still has the stale entry
+///    can write through it until the shootdown completes; while the object's
+///    lock is held nothing can copy that page in the meantime, so such a
+///    write lands before any copy is taken, as if it had come before the
+///    clone. Were the object's lock dropped first, a fault on another CPU could
+///    copy the page, and the stale write would land in the original after the
+///    copy, lost to the writer.
+///
+/// With preemption off from the mask read to the end, so that "this CPU",
+/// which sync_exec() serves itself rather than interrupting, is the CPU the
+/// mask was read on.
+///
+/// A kernel address space is left as it was, with this CPU's TLB only. Its
+/// entries are Global and shared by every address space, so every online CPU
+/// would have to be asked, and its unmaps run from contexts that may have
+/// interrupts off, where sync_exec() cannot be used.
+///
+/// Zircon: X86PageTableBase's ConsistencyManager, whose Finish() calls
+/// x86_tlb_invalidate_page(), which mp_sync_exec()s to the aspace's
+/// active_cpus_. Linux: flush_tlb_mm_range() over mm_cpumask().
+auto ArchVmAspace::invalidate(VirtAddr const va, usize const n) -> void {
+    if (n == 0) {
+        return;
+    }
+
+    struct Range {
+        VirtAddr va;
+        usize n;
+    };
+    auto range = Range{va, n};
+    auto const invalidate_here = [](void *const context) {
+        auto const &range = *static_cast<Range const *>(context);
+        for (usize i = 0; i < range.n; ++i) {
+            arch::x86_invlpg(range.va + i * PAGE_SIZE);
+        }
+    };
+
+    if (m_kind != VmasKind::User) {
+        invalidate_here(&range);
+        return;
+    }
+
+    task::AutoPreemptDisabler stay;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    auto const targets = m_active_cpus.load(std::memory_order_relaxed);
+    IpiService::sync_exec(targets, invalidate_here, &range);
 }
 } // namespace ours::mm

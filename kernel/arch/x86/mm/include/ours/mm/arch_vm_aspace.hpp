@@ -69,6 +69,11 @@ class ArchVmAspace {
   private:
     USTL_NO_MOVEABLE_AND_COPYABLE(ArchVmAspace);
 
+    /// Drops every cached translation of the |n| pages at |va| that a CPU
+    /// running this address space may hold, and returns once they all have:
+    /// the TLB shootdown. See the definition.
+    auto invalidate(VirtAddr va, usize n) -> void;
+
     gktl::Canary m_canary;
 
     u16 m_pcid;
