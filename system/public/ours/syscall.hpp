@@ -154,15 +154,37 @@ USTL_ENABLE_ENUM_BITMASK(VmOptions);
 /// NotSupported, and any bit not named here is InvArgs. The values are
 /// Zircon's ZX_VMO_CHILD_*, so a request ported from Zircon asks the same
 /// question.
+///
+/// The three snapshots are named for how much of the parent they freeze, as
+/// Zircon's kernel names them internally (SnapshotType::Full, OnWrite,
+/// Modified), rather than as its syscall header does:
+///
+///   - SnapshotFull is ZX_VMO_CHILD_SNAPSHOT: everything as it was at the clone;
+///     neither side ever sees the other's later writes.
+///   - SnapshotOnWrite is ZX_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE: only a page
+///     the child has written is its own for certain; a page it has not may
+///     still show the parent's later writes.
+///   - SnapshotModified is ZX_VMO_CHILD_SNAPSHOT_MODIFIED: the pages the parent
+///     has modified are frozen, the ones still as a pager supplied them are
+///     not. For fork() of a mapping of a pager-backed file.
+///
+/// Declared by what they are, not by value: first the kind of child, of which a
+/// request names one, then what may be added to it. The values stay Zircon's,
+/// which were handed out one at a time as the kinds were added, so they do not
+/// run in order and bit 1 is not used.
 enum class VmoChildOptions : u32 {
     None = 0,
-    Snapshot = 1U << 0,
-    Resizable = 1U << 2,
-    Slice = 1U << 3,
-    SnapshotAtLeastOnWrite = 1U << 4,
-    NoWrite = 1U << 5,
-    Reference = 1U << 6,
+
+    // The kind of child.
+    SnapshotFull = 1U << 0,
+    SnapshotOnWrite = 1U << 4,
     SnapshotModified = 1U << 7,
+    Slice = 1U << 3,
+    Reference = 1U << 6,
+
+    // What may be added to it.
+    Resizable = 1U << 2,
+    NoWrite = 1U << 5,
 };
 } // namespace ours
 

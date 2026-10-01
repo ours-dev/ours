@@ -104,10 +104,10 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
 ///     the parent, or InvArgs -- mm::VmObjectPaged::create_child_slice().
 auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset, u64 const size,
                                  KernelHandle<Self> &handle_out) -> Status {
-    constexpr auto KNOWN = std::to_underlying(VmoChildOptions::Snapshot) |
+    constexpr auto KNOWN = std::to_underlying(VmoChildOptions::SnapshotFull) |
                            std::to_underlying(VmoChildOptions::Resizable) |
                            std::to_underlying(VmoChildOptions::Slice) |
-                           std::to_underlying(VmoChildOptions::SnapshotAtLeastOnWrite) |
+                           std::to_underlying(VmoChildOptions::SnapshotOnWrite) |
                            std::to_underlying(VmoChildOptions::NoWrite) |
                            std::to_underlying(VmoChildOptions::Reference) |
                            std::to_underlying(VmoChildOptions::SnapshotModified);

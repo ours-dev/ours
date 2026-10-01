@@ -1359,8 +1359,8 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: vmo_create_child(past the end) = ",
                  ou::vmo_create_child(parent, VmoChildOptions::Slice, 2 * PAGE, 2 * PAGE, &refused),
                  Status::InvArgs);
-    ok &= expect("shell: vmo_create_child(Snapshot) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::Snapshot, 0, PAGE, &refused),
+    ok &= expect("shell: vmo_create_child(SnapshotFull) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::SnapshotFull, 0, PAGE, &refused),
                  Status::NotSupported);
     ok &= expect("shell: vmo_create_child(Slice | NoWrite) = ",
                  ou::vmo_create_child(
