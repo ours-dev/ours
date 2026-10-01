@@ -82,3 +82,50 @@ None.
 - What would go wrong if a clone of a pinned VMO were allowed?
 - What did the BootFS need from `create_paged()`, and what did it get that it did not need?
 - Why does the new check run only in the dbg image?
+
+## Title: SnapshotModified is accepted, as a full snapshot, and the snapshot kinds are listed once (2026-10-02)
+
+**Files**
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp` — `VmoDispatcher::is_snapshot()`: the one list of the snapshot kinds, now with `SnapshotModified`.
+- `kernel/object/vmo_dispatcher.cpp` — `create_child()` makes a clone for whatever `is_snapshot()` names; its comment says what each kind asks and why one clone answers all three.
+- `kernel/lib/syscall/src/vmo.cpp` — `vmo_create_child()` gives Write and takes Execute away for whatever `is_snapshot()` names.
+- `system/public/ours/syscall.hpp` — the comments: `SnapshotModified` is built.
+- `examples/shell/shell.cpp` — a `SnapshotModified` of a handle without Write can be written, and does not see the source's later writes; the `NotSupported` example is now `Reference`.
+
+**Symptom**
+`vmo_create_child(SnapshotModified)` answered `NotSupported`, where Zircon answers the same request on an anonymous VMO with a full snapshot.
+
+**Cause**
+`SnapshotModified` was deferred as a pager feature. Its contract (`zircon/vdso/vmo.fidl`) is that every page of the parent not backed by a pager behaves as if copied eagerly, and pager-backed pages at least copy-on-write. With no pager, no page is pager-backed, so the contract is exactly a full snapshot; it is not an upgrade, as `SnapshotOnWrite` answered with a full snapshot is. Zircon does the same: `VmCowPages::CreateCloneLocked()` takes the unidirectional clone only when `can_unidirectional_clone_locked()`, which requires a pager-backed root, and otherwise the bidirectional one.
+
+The kinds were also listed twice, in `create_child()` and in `vmo_create_child()`'s rights; a kind added to one and not the other would make a clone with the parent's rights, or rights for a child that was never a snapshot. They are listed once now, in `is_snapshot()`.
+
+**Change**
+```cpp
+static constexpr auto is_snapshot(VmoChildOptions const options) -> bool {
+    return options == VmoChildOptions::SnapshotFull ||
+           options == VmoChildOptions::SnapshotOnWrite ||
+           options == VmoChildOptions::SnapshotModified;
+}
+```
+
+**Reference**
+Zircon `ZX_VMO_CHILD_SNAPSHOT_MODIFIED` (`zircon/vdso/vmo.fidl:857`); `VmCowPages::CreateCloneLocked()` (`zircon/kernel/vm/vm_cow_pages.cc`) and `can_unidirectional_clone_locked()` (`zircon/kernel/vm/include/vm/vm_cow_pages.h:1074`); RFC-0236, which says a `SNAPSHOT_MODIFIED` clone of an anonymous VMO is "upgraded to have snapshot semantics".
+
+**Verification**
+- Every changed C++ line formatted; `boot_check.py --out out/vmo-snapshot`: dbg PASS (18 passed), rel PASS (13 passed, 10 skipped), the shell's `vmo_create_child` checks passed in both.
+- Mutation: `SnapshotModified` dropped from `is_snapshot()`. Both images FAIL with `vmo_create_child(the read-only copy, SnapshotModified) = NotSupported (expected Ok)`. Restored.
+
+**Deliberately not done**
+- The pager semantics of `SnapshotModified`: there is no pager.
+
+**How it was found**
+The user's questions about the three snapshot kinds; checked against the Fuchsia source on the user's request, and changed on the user's decision on 2026-10-02.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which pages does `SnapshotModified` freeze, and which does it leave following the parent?
+- Why is `SnapshotModified` on an anonymous VMO a full snapshot by its own definition, while `SnapshotOnWrite` on one is a full snapshot only because the cheaper clone is not available?
+- What could go wrong if the snapshot kinds were listed in two places?

@@ -109,6 +109,16 @@ class VmoDispatcher final: public VmoDispatcherBase {
     auto create_child(VmoChildOptions options, u64 offset, u64 size, KernelHandle<Self> &handle_out)
         -> Status;
 
+    /// Whether |options| asks for a snapshot, of any kind, and nothing else.
+    /// The one list of them: create_child() makes a clone for exactly these,
+    /// and vmo_create_child() gives exactly these Write and takes Execute
+    /// away, so a kind added here is added to both.
+    static constexpr auto is_snapshot(VmoChildOptions const options) -> bool {
+        return options == VmoChildOptions::SnapshotFull ||
+               options == VmoChildOptions::SnapshotOnWrite ||
+               options == VmoChildOptions::SnapshotModified;
+    }
+
     static auto create_physical(PhysAddr base, usize size, KernelHandle<Self> &handle_out,
                                 Rights &rights_out) -> Status;
 

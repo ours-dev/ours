@@ -102,7 +102,7 @@ auto vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 
         return status;
     }
 
-    if (options == VmoChildOptions::SnapshotFull || options == VmoChildOptions::SnapshotOnWrite) {
+    if (VmoDispatcher::is_snapshot(options)) {
         rights &= ~Rights::Execute;
         rights |= Rights::Write;
     }

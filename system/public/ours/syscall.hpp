@@ -150,7 +150,7 @@ enum class VmOptions : u32 {
 USTL_ENABLE_ENUM_BITMASK(VmOptions);
 
 /// vmo_create_child's options: which kind of child, and how it may be used.
-/// Slice, SnapshotFull and SnapshotOnWrite are built, each alone; every other
+/// Slice and the three snapshots are built, each alone; every other
 /// bit named here is recognised and answered NotSupported, and any bit not
 /// named here is InvArgs. The values are Zircon's ZX_VMO_CHILD_*, so a request
 /// ported from Zircon asks the same question.
@@ -182,7 +182,9 @@ enum class VmoChildOptions : u32 {
 
     /// The pages the parent has modified are frozen; the ones still as a pager
     /// supplied them are not, and keep following the pager. For fork() of a
-    /// mapping of a pager-backed file. NotSupported: no VMO here has a pager.
+    /// mapping of a pager-backed file. Built as SnapshotFull, which is what
+    /// this asks when there is no pager: then no page is a pager's, so every
+    /// page is frozen.
     SnapshotModified = 1U << 7,
 
     /// A window onto the parent's own pages, no copy: a write through either is

@@ -108,15 +108,20 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
 /// VmObjectDispatcher::CreateChild() and VmObjectPaged::CreateChildSlice() and
 /// CreateClone() ask.
 ///
-///   - An unknown bit is InvArgs. A known kind other than Slice, SnapshotFull
-///     or SnapshotOnWrite, or one of those with any other bit beside it, is
-///     NotSupported (deferred, not wrong).
-///   - SnapshotFull and SnapshotOnWrite are the same clone,
-///     mm::VmObjectPaged::create_clone(): neither side ever sees the other's
-///     writes after it. That is everything SnapshotFull asks, and more than
-///     SnapshotOnWrite does, which lets a page the child has not written show
-///     the parent's later writes but does not require it. Zircon gives an
-///     anonymous VMO the same answer to both: its bidirectional clone.
+///   - An unknown bit is InvArgs. A known kind other than Slice or a
+///     snapshot (is_snapshot()), or one of those with any other bit beside
+///     it, is NotSupported (deferred, not wrong).
+///   - The three snapshots are the same clone, mm::VmObjectPaged::
+///     create_clone(): neither side ever sees the other's writes after it.
+///       - SnapshotFull asks exactly that.
+///       - SnapshotOnWrite asks less: a page the child has not written may
+///         show the parent's later writes, but need not.
+///       - SnapshotModified freezes every page that is not a pager's, and
+///         nothing here has a pager, so it asks exactly what SnapshotFull
+///         does.
+///     Zircon gives an anonymous VMO the same answer to all three: its
+///     bidirectional clone (VmCowPages::CreateCloneLocked(), which takes the
+///     unidirectional one only under a pager-backed root).
 ///   - A physical VMO is NotSupported: Zircon slices those too, but nothing
 ///     here needs it yet.
 ///   - The size rounds up to a page, as vmo_create's does (Zircon rounds it
@@ -140,8 +145,7 @@ auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset
     if ((bits & ~KNOWN) != 0) {
         return Status::InvArgs;
     }
-    auto const snapshot =
-        options == VmoChildOptions::SnapshotFull || options == VmoChildOptions::SnapshotOnWrite;
+    auto const snapshot = is_snapshot(options);
     if (options != VmoChildOptions::Slice && !snapshot) {
         return Status::NotSupported;
     }

@@ -1285,7 +1285,7 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
 ///     OutOfRange although the parent has it; a slice of a slice lands at the
 ///     sum of the offsets; a size of 1 rounds up to a page;
 ///   - the arguments: an unaligned offset, and a range past the parent's end,
-///     are InvArgs; Snapshot, and Slice with NoWrite beside it, NotSupported;
+///     are InvArgs; Reference, and Slice with NoWrite beside it, NotSupported;
 ///     an unknown bit InvArgs;
 ///   - the handle: a channel is BadType, one without Read AccessDenied.
 /// What needs the BootFS runs where userboot started this program: a slice of
@@ -1359,8 +1359,8 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: vmo_create_child(past the end) = ",
                  ou::vmo_create_child(parent, VmoChildOptions::Slice, 2 * PAGE, 2 * PAGE, &refused),
                  Status::InvArgs);
-    ok &= expect("shell: vmo_create_child(SnapshotModified) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::SnapshotModified, 0, PAGE, &refused),
+    ok &= expect("shell: vmo_create_child(Reference) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::Reference, 0, 0, &refused),
                  Status::NotSupported);
     ok &= expect("shell: vmo_create_child(SnapshotFull | SnapshotOnWrite) = ",
                  ou::vmo_create_child(parent,
@@ -1473,6 +1473,21 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                Status::Ok);
     ok &= same_bytes(theirs, got, sizeof(got));
     ok &= expect("shell: close(the writable snapshot) = ", ou::handle_close(writable), Status::Ok);
+    // SnapshotModified, of an anonymous VMO, is a full snapshot: it gets Write
+    // as the others do, and does not see the source's later writes.
+    ours::HandleValue modified = ours::HANDLE_INVALID;
+    ok &= expect(
+        "shell: vmo_create_child(the read-only copy, SnapshotModified) = ",
+        ou::vmo_create_child(readonly, VmoChildOptions::SnapshotModified, 0, PAGE, &modified),
+        Status::Ok);
+    ok &= expect("shell: vmo_write(source, 0) after SnapshotModified = ",
+                 ou::vmo_write(source, before, 0, sizeof(before)), Status::Ok);
+    ok &= expect("shell: vmo_read(modified snapshot, 0) = ",
+                 ou::vmo_read(modified, got, 0, sizeof(got)), Status::Ok);
+    ok &= same_bytes(theirs, got, sizeof(got));
+    ok &= expect("shell: vmo_write(modified snapshot, 0) = ",
+                 ou::vmo_write(modified, mine, 0, sizeof(mine)), Status::Ok);
+    ok &= expect("shell: close(modified snapshot) = ", ou::handle_close(modified), Status::Ok);
     ok &= expect("shell: close(the read-only copy) = ", ou::handle_close(readonly), Status::Ok);
     ok &= expect("shell: close(on-write snapshot) = ", ou::handle_close(on_write), Status::Ok);
     ok &= expect("shell: close(snapshot) = ", ou::handle_close(full), Status::Ok);
