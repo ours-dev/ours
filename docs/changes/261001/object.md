@@ -46,3 +46,57 @@ None.
 - What does each of the three snapshot kinds freeze?
 - Why can the values not be renumbered so the snapshots are adjacent?
 - Where did the new names come from?
+
+## Title: vmo_create_child makes a copy-on-write snapshot, for SnapshotFull and SnapshotOnWrite (2026-10-01)
+
+**Files**
+- `kernel/object/vmo_dispatcher.cpp` — `VmoDispatcher::create_child()` accepts `SnapshotFull` or `SnapshotOnWrite`, alone, and answers it with `mm::VmObjectPaged::create_clone()`.
+- `system/public/ours/syscall.hpp`, `kernel/lib/syscall/src/vmo.cpp` — comments: which options are built.
+- `examples/shell/shell.cpp` — the snapshot checks; the `SnapshotFull` refusal replaced by `SnapshotModified` and two kinds at once.
+
+**Symptom**
+A program could not make a copy-on-write child: every snapshot option answered `NotSupported`.
+
+**Cause**
+The kernel side was finished (`docs/changes/260929/mm.md`, through `VmObjectPaged::create_clone()`); the syscall's object layer only knew slices.
+
+Both snapshot kinds go to the one clone. It gives a full snapshot (neither side sees the other's later writes), which is everything `SnapshotFull` asks and more than `SnapshotOnWrite` does: the latter guarantees only that a page the child writes is its own, and allows, without requiring, that a page it has not written show the parent's later writes. Zircon answers both the same way for an anonymous VMO, with its bidirectional clone; only a pager-backed parent gets the cheaper unidirectional one, and there is no pager here. The user went through the three kinds and agreed. `SnapshotModified` exists for `fork()` of a mapping of a pager-backed file and stays `NotSupported`.
+
+**Change**
+```cpp
+auto const snapshot =
+    options == VmoChildOptions::SnapshotFull || options == VmoChildOptions::SnapshotOnWrite;
+if (options != VmoChildOptions::Slice && !snapshot) {
+    return Status::NotSupported;
+}
+...
+if (snapshot) {
+    paged->create_clone(offset, rounded, &child);
+} else {
+    paged->create_child_slice(offset, rounded, &child);
+}
+```
+The size is rounded and checked as for a slice; the offset must be page aligned and no further than the parent's end; the size may run past it, and that part reads as zero. The child handle takes the parent handle's rights, as a slice's does: what a snapshot should get is the next commit.
+
+**Reference**
+Zircon `VmObjectDispatcher::CreateChild()` and `sys_vmo_create_child()`; `VmObjectPaged::CreateClone()` with `SnapshotType::Full` and `OnWrite`.
+
+**Verification**
+- Every changed C++ line formatted; `clang-tidy` nothing on the changed lines.
+- `boot_check.py --out out/vmo-snapshot`: both images PASS, the same counts, and the shell's `vmo_create_child checks passed` in both, now with: a `SnapshotFull` child three pages long of a two-page VMO reads the parent's bytes; the child writes its page 0 and the parent still has its own; the parent writes its pages 0 and 1 and the child sees neither; the page past the parent's end reads zero; a `SnapshotOnWrite` child reads the parent as it is then; an unaligned offset is `InvArgs`; `SnapshotModified`, and `SnapshotFull | SnapshotOnWrite`, are `NotSupported`. `vmosnapshot.test` 194 checks on both images.
+- The checks can fail: with snapshots answered by a slice, the debug image's shell reported `vmo_create_child checks FAILED`.
+
+**Deliberately not done**
+- Rights: the child takes the parent handle's, so a snapshot of the read-only BootFS cannot be written. That is the next commit (Zircon adds Write to a snapshot, and drops Execute).
+- `Resizable`, `NoWrite` and `Reference` beside a snapshot stay `NotSupported`.
+
+**How it was found**
+None: step 10 of `.agents/tasks/vmo-snapshot-child/DESIGN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why may `SnapshotOnWrite` be answered with a full snapshot?
+- What does the child read past the parent's end, and why is that allowed for a snapshot and not for a slice?
+- Why can a snapshot of the BootFS not be written yet?

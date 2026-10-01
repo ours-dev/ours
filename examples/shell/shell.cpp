@@ -1359,8 +1359,15 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: vmo_create_child(past the end) = ",
                  ou::vmo_create_child(parent, VmoChildOptions::Slice, 2 * PAGE, 2 * PAGE, &refused),
                  Status::InvArgs);
-    ok &= expect("shell: vmo_create_child(SnapshotFull) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::SnapshotFull, 0, PAGE, &refused),
+    ok &= expect("shell: vmo_create_child(SnapshotModified) = ",
+                 ou::vmo_create_child(parent, VmoChildOptions::SnapshotModified, 0, PAGE, &refused),
+                 Status::NotSupported);
+    ok &= expect("shell: vmo_create_child(SnapshotFull | SnapshotOnWrite) = ",
+                 ou::vmo_create_child(parent,
+                                      static_cast<VmoChildOptions>(
+                                          std::to_underlying(VmoChildOptions::SnapshotFull) |
+                                          std::to_underlying(VmoChildOptions::SnapshotOnWrite)),
+                                      0, PAGE, &refused),
                  Status::NotSupported);
     ok &= expect("shell: vmo_create_child(Slice | NoWrite) = ",
                  ou::vmo_create_child(
@@ -1395,6 +1402,60 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                  Status::AccessDenied);
     ok &=
         expect("shell: close(the copy without Read) = ", ou::handle_close(unreadable), Status::Ok);
+
+    // Snapshots: a copy-on-write clone. Neither side sees the other's writes after
+    // it, and pages past the parent's end read as zero.
+    ours::HandleValue source = ours::HANDLE_INVALID;
+    ours::HandleValue full = ours::HANDLE_INVALID;
+    ours::HandleValue on_write = ours::HANDLE_INVALID;
+    u8 const before[4] = {0x5a, 0x5b, 0x5c, 0x5d};
+    u8 const theirs[4] = {0x6a, 0x6b, 0x6c, 0x6d};
+    u8 const mine[4] = {0x7a, 0x7b, 0x7c, 0x7d};
+    u8 const zero[4] = {};
+    ok &= expect("shell: vmo_create(snapshot source, 2 pages) = ",
+                 ou::vmo_create(2 * PAGE, VmoOptions::None, &source), Status::Ok);
+    ok &= expect("shell: vmo_write(source, 0) = ", ou::vmo_write(source, before, 0, sizeof(before)),
+                 Status::Ok);
+    ok &= expect("shell: vmo_create_child(SnapshotFull, 3 pages) = ",
+                 ou::vmo_create_child(source, VmoChildOptions::SnapshotFull, 0, 3 * PAGE, &full),
+                 Status::Ok);
+    ok &= expect("shell: vmo_read(snapshot, 0) = ", ou::vmo_read(full, got, 0, sizeof(got)),
+                 Status::Ok);
+    ok &= same_bytes(before, got, sizeof(got));
+    // The snapshot writes its page 0: the source still has its own.
+    ok &= expect("shell: vmo_write(snapshot, 0) = ", ou::vmo_write(full, mine, 0, sizeof(mine)),
+                 Status::Ok);
+    ok &= expect("shell: vmo_read(source, 0) = ", ou::vmo_read(source, got, 0, sizeof(got)),
+                 Status::Ok);
+    ok &= same_bytes(before, got, sizeof(got));
+    // The source writes its pages 0 and 1: the snapshot sees neither.
+    ok &= expect("shell: vmo_write(source, 0) again = ",
+                 ou::vmo_write(source, theirs, 0, sizeof(theirs)), Status::Ok);
+    ok &= expect("shell: vmo_write(source, page 1) = ",
+                 ou::vmo_write(source, theirs, PAGE, sizeof(theirs)), Status::Ok);
+    ok &= expect("shell: vmo_read(snapshot, 0) again = ", ou::vmo_read(full, got, 0, sizeof(got)),
+                 Status::Ok);
+    ok &= same_bytes(mine, got, sizeof(got));
+    ok &= expect("shell: vmo_read(snapshot, page 1) = ", ou::vmo_read(full, got, PAGE, sizeof(got)),
+                 Status::Ok);
+    ok &= same_bytes(zero, got, sizeof(got));
+    // Past the source's end.
+    ok &= expect("shell: vmo_read(snapshot, page 2) = ",
+                 ou::vmo_read(full, got, 2 * PAGE, sizeof(got)), Status::Ok);
+    ok &= same_bytes(zero, got, sizeof(got));
+    // SnapshotOnWrite: a snapshot of the source as it is now.
+    ok &= expect("shell: vmo_create_child(SnapshotOnWrite) = ",
+                 ou::vmo_create_child(source, VmoChildOptions::SnapshotOnWrite, 0, PAGE, &on_write),
+                 Status::Ok);
+    ok &= expect("shell: vmo_read(on-write snapshot, 0) = ",
+                 ou::vmo_read(on_write, got, 0, sizeof(got)), Status::Ok);
+    ok &= same_bytes(theirs, got, sizeof(got));
+    ok &= expect("shell: vmo_create_child(SnapshotFull, unaligned offset) = ",
+                 ou::vmo_create_child(source, VmoChildOptions::SnapshotFull, 8, PAGE, &refused),
+                 Status::InvArgs);
+    ok &= expect("shell: close(on-write snapshot) = ", ou::handle_close(on_write), Status::Ok);
+    ok &= expect("shell: close(snapshot) = ", ou::handle_close(full), Status::Ok);
+    ok &= expect("shell: close(snapshot source) = ", ou::handle_close(source), Status::Ok);
 
     ok &= expect("shell: close(slice) = ", ou::handle_close(slice), Status::Ok);
     ok &= expect("shell: close(parent) = ", ou::handle_close(parent), Status::Ok);

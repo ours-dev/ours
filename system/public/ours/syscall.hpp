@@ -150,8 +150,9 @@ enum class VmOptions : u32 {
 USTL_ENABLE_ENUM_BITMASK(VmOptions);
 
 /// vmo_create_child's options: which kind of child, and how it may be used.
-/// Only Slice is built; every other bit named here is recognised and answered
-/// NotSupported, and any bit not named here is InvArgs. The values are
+/// Slice, SnapshotFull and SnapshotOnWrite are built, each alone; every other
+/// bit named here is recognised and answered NotSupported, and any bit not
+/// named here is InvArgs. The values are
 /// Zircon's ZX_VMO_CHILD_*, so a request ported from Zircon asks the same
 /// question.
 ///

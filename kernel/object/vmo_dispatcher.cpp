@@ -90,18 +90,30 @@ auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
     return create(ustl::move(vmo), handle_out, rights_out);
 }
 
-/// Only a slice, and only of a paged VMO: the options first, then the size,
-/// then the window, in the order Zircon's VmObjectDispatcher::CreateChild()
-/// and VmObjectPaged::CreateChildSlice() ask.
+/// A slice or a copy-on-write snapshot, and only of a paged VMO: the options
+/// first, then the size, then the window, in the order Zircon's
+/// VmObjectDispatcher::CreateChild() and VmObjectPaged::CreateChildSlice() and
+/// CreateClone() ask.
 ///
-///   - An unknown bit is InvArgs; a known kind other than Slice, or Slice
-///     with any other bit beside it, is NotSupported (deferred, not wrong).
+///   - An unknown bit is InvArgs. A known kind other than Slice, SnapshotFull
+///     or SnapshotOnWrite, or one of those with any other bit beside it, is
+///     NotSupported (deferred, not wrong).
+///   - SnapshotFull and SnapshotOnWrite are the same clone,
+///     mm::VmObjectPaged::create_clone(): neither side ever sees the other's
+///     writes after it. That is everything SnapshotFull asks, and more than
+///     SnapshotOnWrite does, which lets a page the child has not written show
+///     the parent's later writes but does not require it. Zircon gives an
+///     anonymous VMO the same answer to both: its bidirectional clone.
 ///   - A physical VMO is NotSupported: Zircon slices those too, but nothing
 ///     here needs it yet.
 ///   - The size rounds up to a page, as vmo_create's does (Zircon rounds it
 ///     in sys_vmo_create_child); one too large to round is OutOfRange.
-///   - The offset must be page-aligned and the rounded range must lie inside
-///     the parent, or InvArgs -- mm::VmObjectPaged::create_child_slice().
+///   - A slice: the offset must be page-aligned and the rounded range must lie
+///     inside the parent, or InvArgs -- mm::VmObjectPaged::create_child_slice().
+///   - A snapshot: the offset must be page-aligned and no further than the
+///     parent's end, or InvArgs, and the size may run past the end, which reads
+///     as zero; a parent with pinned pages is BadState --
+///     mm::VmObjectPaged::create_clone().
 auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset, u64 const size,
                                  KernelHandle<Self> &handle_out) -> Status {
     constexpr auto KNOWN = std::to_underlying(VmoChildOptions::SnapshotFull) |
@@ -115,7 +127,9 @@ auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset
     if ((bits & ~KNOWN) != 0) {
         return Status::InvArgs;
     }
-    if (options != VmoChildOptions::Slice) {
+    auto const snapshot =
+        options == VmoChildOptions::SnapshotFull || options == VmoChildOptions::SnapshotOnWrite;
+    if (options != VmoChildOptions::Slice && !snapshot) {
         return Status::NotSupported;
     }
 
@@ -132,8 +146,13 @@ auto VmoDispatcher::create_child(VmoChildOptions const options, u64 const offset
     auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
 
     ustl::Arc<mm::VmObjectPaged> child;
-    if (auto const status = paged->create_child_slice(offset, rounded, &child);
-        Status::Ok != status) {
+    if (snapshot) {
+        if (auto const status = paged->create_clone(offset, rounded, &child);
+            Status::Ok != status) {
+            return status;
+        }
+    } else if (auto const status = paged->create_child_slice(offset, rounded, &child);
+               Status::Ok != status) {
         return status;
     }
 

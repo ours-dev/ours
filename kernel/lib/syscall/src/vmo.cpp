@@ -64,7 +64,7 @@ auto vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer, u64
     return dispatcher->read_user(buffer, offset, length);
 }
 
-/// A child of |vmo|'s VMO -- today only a slice -- with the rights of |vmo|'s
+/// A child of |vmo|'s VMO -- a slice or a snapshot -- with the rights of |vmo|'s
 /// handle, published as vmo_create does (design 4.1).
 ///
 /// The handle must grant Duplicate and Read, as Zircon's does: a slice is a
