@@ -1,3 +1,4 @@
+#include <ours/cpu.hpp>
 #include <ours/init.hpp>
 #include <ours/mm/arch_vm_aspace.hpp>
 #include <ours/mm/physmap.hpp>
@@ -8,7 +9,23 @@
 namespace ours::mm {
 namespace {
     constexpr auto INVALID_PCID = u16{0xffff};
-}
+
+    /// Sets or clears |cpu|'s bit in |mask|. std::atomic<CpuMask> has no
+    /// fetch_or or fetch_and, so it is a compare-and-swap loop, as
+    /// IpiService::handle_generic() clears its own bit: two CPUs switching at
+    /// once would otherwise each store a mask that lacks the other's change.
+    auto set_cpu(std::atomic<CpuMask> &mask, CpuNum const cpu, bool const value) -> void {
+        auto expected = mask.load(std::memory_order_relaxed);
+        for (;;) {
+            auto desired = expected;
+            desired.set(cpu, value);
+            if (mask.compare_exchange_weak(expected, desired, std::memory_order_seq_cst,
+                                           std::memory_order_relaxed)) {
+                return;
+            }
+        }
+    }
+} // namespace
 
 /// Take out 2MB-size large page mapping as the following showed:
 /// +-------+---------+----------------+-------------------------+----------+-------+
@@ -112,9 +129,9 @@ auto ArchVmAspace::init() -> Status {
 ///    every translation and paging-structure cache entry these tables fed;
 ///  - a process has one thread, so no other CPU is running on them either.
 ///
-/// The assertion below stands in for Zircon's `active_cpus_ == 0` (this tree
-/// does not maintain m_active_cpus): it catches, on this CPU at least, the day
-/// one of those premises stops holding.
+/// The assertions below are Zircon's `active_cpus_ == 0`: no CPU has these
+/// tables loaded, this one or any other. They catch the day one of those
+/// premises stops holding.
 auto ArchVmAspace::destroy() -> Teardown {
     m_canary.verify<Self>();
 
@@ -123,20 +140,49 @@ auto ArchVmAspace::destroy() -> Teardown {
     }
     DEBUG_ASSERT(arch::Cr3::read().get<arch::Cr3::PageTableAddress>() != m_page_table.pgd_phys(),
                  "freeing the page tables this CPU is running on");
+    DEBUG_ASSERT(active_cpus().none(), "freeing page tables another CPU is running on");
 
     return m_page_table.destroy(m_range.start, m_range.end);
 }
 
+/// Loads |to|'s page table on this CPU and moves this CPU's bit in the active
+/// masks from |from| to |to|. The caller keeps this thread on this CPU across
+/// the call: the scheduler holds its lock, and a test that attaches itself to
+/// an address space disables preemption.
+///
+/// The order is what makes the mask safe to read for a TLB shootdown:
+///
+///  - |to|'s bit is set before CR3 is written, by a sequentially consistent
+///    read-modify-write, and the write to CR3 is serialising. So by the time
+///    this CPU can walk |to|'s tables and cache a translation from them, the
+///    bit is visible to every CPU. One that changes an entry and then reads the
+///    mask either sees the bit, and invalidates here, or changed the entry
+///    before this CPU walked it, and this CPU caches the new entry.
+///  - |from|'s bit is cleared after CR3 is written, once nothing |from| fed
+///    this CPU can be left in its TLB. Clearing it earlier would let a
+///    shootdown skip a CPU that still holds |from|'s translations.
+///
+/// Zircon: X86ArchVmAspace::ContextSwitch(), which keeps active_cpus_ the same
+/// way.
 auto ArchVmAspace::switch_context(Self *from, Self *to) -> void {
     using arch::Cr3;
     if (to != nullptr) {
         to->m_canary.verify<Self>();
         VirtAddr const to_pgd = to->m_page_table.pgd_phys();
+        auto const cpu = Cpu::id();
+        set_cpu(to->m_active_cpus, cpu, true);
 
         if (to->m_pcid != INVALID_PCID) {
             Cr3::read().set<Cr3::Pcid>(to->m_pcid).set<Cr3::PageTableAddress>(to_pgd).write();
         } else {
             Cr3::write(to_pgd);
+        }
+
+        // Not when |from| is |to|: that would clear the bit just set, on a CPU
+        // that is running on these tables.
+        if (from != nullptr && from != to) {
+            from->m_canary.verify<Self>();
+            set_cpu(from->m_active_cpus, cpu, false);
         }
     } else {
         // Deliberately not "fall back to the kernel page table".
@@ -178,6 +224,10 @@ auto ArchVmAspace::unmap(VirtAddr va, usize n, UnmapOptions options, usize *unma
 auto ArchVmAspace::query(VirtAddr va, PhysAddr *pa, MmuFlags *mmuf) -> Status {
     m_canary.verify<Self>();
     return m_page_table.query_mapping(va, pa, mmuf);
+}
+
+auto ArchVmAspace::active_cpus() const -> CpuMask {
+    return m_active_cpus.load(std::memory_order_relaxed);
 }
 
 auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {

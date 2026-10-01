@@ -7,6 +7,8 @@
 #include <ours/cpu_mask.hpp>
 #include <ours/mm/vmas_flags.hpp>
 
+#include <atomic>
+
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
 #include <ustl/util/noncopyable.hpp>
@@ -55,6 +57,8 @@ class ArchVmAspace {
 
     auto harvest_accessed(VirtAddr va, usize n, HarvestOptions action) -> Status;
 
+    /// The CPUs whose CR3 holds this address space's page table right now.
+    /// A snapshot: by the time it is read a CPU may have switched in or out.
     auto active_cpus() const -> CpuMask;
 
     FORCE_INLINE
@@ -69,8 +73,15 @@ class ArchVmAspace {
 
     u16 m_pcid;
     Kind m_kind;
-    /// CPUs that are currently executing in this virtual address space.
-    CpuMask m_active_cpus;
+    /// The CPUs whose CR3 holds this page table, and so the only ones whose
+    /// TLB can hold a translation from it: a CPU that loads another root
+    /// flushes every translation this one fed it (no PCID is ever allocated,
+    /// and user leaves are never Global). Each CPU sets and clears its own bit,
+    /// in switch_context(); anyone may read it.
+    ///
+    /// Zircon: X86ArchVmAspace::active_cpus_, kept the same way in
+    /// ContextSwitch().
+    std::atomic<CpuMask> m_active_cpus;
     gktl::Range<VirtAddr> m_range;
     PageTable m_page_table;
 };
