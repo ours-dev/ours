@@ -4,27 +4,6 @@
 `WaitQueue::unpark_thread` 对 PI 锁重复加锁、`Thread::Current::tid()` 读错地址两条早已记在
 `docs/repairs/260924/kernel-task.md`（2、4 条），不在这里重复。
 
-## 1. `IpiService::sync_exec` 在线程上下文里、开着中断和抢占跑本地任务，违背「在中断上下文执行」的约定
-
-**现象**：今天唯一的使用者是 profiler：`prof start` 之后某个 CPU 可能完全不产生样本，而且不报错。
-
-**原因**：`kernel/kernel/task/ipi_service.cpp:164-203` 从取 `self` 到在本地执行任务，线程一直可被抢占，
-中断也开着；而 `ipi_service.hpp:49-50` 说任务「runs in interrupt context」。调用方
-`prof::Sampler::start/stop`（`sampler.cpp:145-196`，经 `commands/prof.cpp:192`）也没关抢占。
-具体坏法：线程 T 在 CPU A 上执行 `program_this_cpu()`（`prof_pmu.cpp:27-35`），已经以周期
-1'000'000 打开 counter0、但还没解除 `LvtPmi` 的屏蔽，这时一个时钟中断带着调度请求把 T 抢占，
-别的线程在 A 上跑超过约 0.3 ms，counter0 溢出而 LVT 被屏蔽，PMI 丢了；T 回来解除屏蔽，
-不会再触发，A 就一直没有样本。T 如果在 :206 的自旋里、`Sampler::start` 发布 Running 之前被抢占，
-别的 CPU 的 PMI 看到状态还是 Starting，`x86_handle_pmi` 会停掉计数器并且不再重新打开
-（`prof_pmu.cpp:116-121`），那些 CPU 也就停了。
-
-以后就绪线程能跨 CPU 迁移之后，还会多一种坏法：读到 `self = A` 后在 B 上继续，A 被跳过、
-B 执行两次。
-
-**照谁改**：Zircon `mp_sync_exec()`（`zircon/kernel/kernel/mp.cc`）在取 `arch_curr_cpu_num()` 之前
-先关中断，本地任务执行完才恢复，并在等待时处理自己的 mailbox。严重度今天是低，因为只有 profiler
-在用；一旦 TLB shootdown 之类正确性攸关的使用者接入，就是中到高。
-
 ## 2. 启动时 BSP 切到 idler0 之后、`init_percpu()` 之前，BSP 是可抢占的
 
 **现象**：潜伏，当前触发不到。

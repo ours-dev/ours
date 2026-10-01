@@ -4,7 +4,6 @@
 #include <ours/mm/arch_vm_aspace.hpp>
 #include <ours/mm/physmap.hpp>
 #include <ours/mm/vm_aspace.hpp>
-#include <ours/task/auto_preempt_disabler.hpp>
 
 #include <arch/x86/system.hpp>
 #include <arch/x86/tlb.hpp>
@@ -285,10 +284,6 @@ auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {
 ///    copy the page, and the stale write would land in the original after the
 ///    copy, lost to the writer.
 ///
-/// With preemption off from the mask read to the end, so that "this CPU",
-/// which sync_exec() serves itself rather than interrupting, is the CPU the
-/// mask was read on.
-///
 /// A kernel address space is left as it was, with this CPU's TLB only. Its
 /// entries are Global and shared by every address space, so every online CPU
 /// would have to be asked, and its unmaps run from contexts that may have
@@ -319,7 +314,6 @@ auto ArchVmAspace::invalidate(VirtAddr const va, usize const n) -> void {
         return;
     }
 
-    task::AutoPreemptDisabler stay;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     auto const targets = m_active_cpus.load(std::memory_order_relaxed);
     IpiService::sync_exec(targets, invalidate_here, &range);

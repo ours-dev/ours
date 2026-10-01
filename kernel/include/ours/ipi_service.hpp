@@ -39,7 +39,10 @@ class IpiService {
     /// target's mailbox now, and the vector only says "look at it".
     ///
     /// The calling CPU, if it is in |targets|, runs |task| itself rather than
-    /// interrupting itself with it.
+    /// interrupting itself with it, with interrupts off as the others run it:
+    /// they stay off from finding out which CPU this is until that share is
+    /// done, so it runs on the CPU that was left out of the IPI, and the caller
+    /// need not disable preemption for that.
     ///
     /// Requirements, both of which are asserted:
     ///

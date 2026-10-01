@@ -11,6 +11,7 @@
 #include <atomic>
 #include <new>
 
+#include <arch/auto_interrupt_disabler.hpp>
 #include <arch/spin_hint.hpp>
 #include <ustl/collections/intrusive/list.hpp>
 
@@ -161,6 +162,30 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
     DEBUG_ASSERT(task);
     DEBUG_ASSERT(!arch::irqs_disabled(), "sync_exec() spins on CPUs that answer from interrupts");
 
+    // Interrupts off from asking which CPU this is until this CPU's share has
+    // run, for two reasons.
+    //
+    //  - The thread stays on this CPU. |self| is taken out of the targets and
+    //    served here instead of being interrupted; a thread preempted and moved
+    //    in between would serve the CPU it moved to, which also gets the IPI,
+    //    and the CPU it left would never run |task| at all. For a TLB shootdown
+    //    that CPU keeps the stale translation.
+    //  - The share runs in the context |task| is promised: the other CPUs run
+    //    theirs in their interrupt handlers, with interrupts off. Run here with
+    //    them on, a task that takes a lock an interrupt handler also takes
+    //    would deadlock against the first interrupt to arrive on this CPU.
+    //
+    // Disabling preemption alone would give the first and not the second.
+    //
+    // Back on before the wait, which has to be able to take the other CPUs'
+    // requests: two CPUs each waiting on the other with interrupts off would
+    // wait for ever. Nothing in the wait depends on which CPU this is.
+    //
+    // Zircon's mp_sync_exec() does the same, with arch_interrupt_save() before
+    // arch_curr_cpu_num() and arch_interrupt_restore() after the local task.
+    // Linux's smp_call_function_many() asks its caller to hold preemption off,
+    // and runs the local share with interrupts off (local_irq_save()).
+    ::arch::AutoInterruptDisabler no_interrupts;
     auto const self = Cpu::id();
     auto const run_here = targets.test(self);
 
@@ -202,6 +227,7 @@ auto IpiService::sync_exec(CpuMask targets, SyncTask task, void *context) -> voi
     if (run_here) {
         task(context);
     }
+    no_interrupts.reenable();
 
     while (call.outstanding.load(std::memory_order_acquire).any()) {
         arch::spin_hint();
