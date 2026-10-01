@@ -41,3 +41,44 @@ None.
 - Why can a snapshot be given `Write` that the parent handle lacks, when a slice cannot?
 - What would a program be able to do if a snapshot of an executable VMO kept `Execute`?
 - Why does a clone refuse a Pinned VMO?
+
+## Title: The BootFS is committed, not pinned, so a file in it can be snapshotted (2026-10-02)
+
+**Files**
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp`, `kernel/object/vmo_dispatcher.cpp` — `VmoDispatcher::create_committed()`: anonymous memory with every page committed and zeroed when it is made, neither `Lazy` nor `Pinned`.
+- `kernel/lib/userabi/src/user_bootfs.cpp` — `make_user_bootfs()` makes the BootFS VMO with it instead of `create_paged()`.
+- `examples/shell/shell.cpp` — `check_vmo_create_child()`: a `SnapshotFull` of the `vdso` entry of the BootFS can be written, and the BootFS still reads the ELF magic.
+
+**Symptom**
+`vmo_create_child(bootfs, SnapshotFull, ...)` answered `BadState`, so a program's data segment could not be made as a snapshot of its file, which is what the launcher step needs.
+
+**Cause**
+The BootFS VMO was made by `create_paged()`, which makes it `Pinned`. `VmObjectPaged::create_clone()` refuses a Pinned VMO, rightly: a clone moves the original's pages into a hidden node, and a later write by the original forks its page, so the frame under a pinned offset would change. Zircon refuses the same clone (`ZX_ERR_BAD_STATE` for a VMO with pinned pages). The BootFS never needed the pin: it is data the kernel writes before user space starts, and nothing reaches it by physical address. Only the commit was wanted, so that the gaps between files read as zero; `create_paged()` gave both because it was the only factory that committed.
+
+**Change**
+```cpp
+// Neither Lazy nor Pinned: VmObjectPaged::create() commits every page of a
+// VMO that is not Lazy, and pins them only for Pinned.
+mm::VmObjectPaged::create(mm::GAF_USER, size, mm::VmoFlags{}, &vmo);
+```
+
+**Reference**
+Zircon's BootFS VMO is an ordinary paged VMO, never pinned: userboot decompresses the ZBI's BootFS into a VMO it makes with `zx_vmo_create`, and writes every page of it.
+
+**Verification**
+- Every changed C++ line formatted; `boot_check.py --out out/vmo-snapshot`: dbg PASS (18 passed), rel PASS (13 passed, 10 skipped; rel has no BootFS, so the new check runs in dbg only).
+- Mutation: the BootFS made by `create_paged()` again. dbg FAIL with `vmo_create_child(bootfs, SnapshotFull, vdso) = BadState (expected Ok)`. Restored.
+
+**Deliberately not done**
+- `create_paged()` itself, still Pinned for userboot's stack and the ELF images kelfload loads. Its comment says the pin is there because nothing could service a fault yet, which is no longer true for lazy VMOs; whether those two still need it is its own question.
+
+**How it was found**
+The first version of the previous change's test snapshotted the BootFS and was answered `BadState`. The user chose on 2026-10-02 to make the BootFS unpinned rather than allow a clone of a pinned VMO.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What would go wrong if a clone of a pinned VMO were allowed?
+- What did the BootFS need from `create_paged()`, and what did it get that it did not need?
+- Why does the new check run only in the dbg image?

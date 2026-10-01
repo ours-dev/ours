@@ -57,6 +57,19 @@ auto VmoDispatcher::create_paged(usize const size, KernelHandle<Self> &handle_ou
     return create(ustl::move(vmo), handle_out, rights_out);
 }
 
+auto VmoDispatcher::create_committed(usize const size, KernelHandle<Self> &handle_out,
+                                     Rights &rights_out) -> Status {
+    // Neither Lazy nor Pinned: VmObjectPaged::create() commits every page of a
+    // VMO that is not Lazy, and pins them only for Pinned.
+    ustl::Arc<mm::VmObjectPaged> vmo;
+    auto const status = mm::VmObjectPaged::create(mm::GAF_USER, size, mm::VmoFlags{}, &vmo);
+    if (Status::Ok != status) {
+        return status;
+    }
+
+    return create(ustl::move(vmo), handle_out, rights_out);
+}
+
 auto VmoDispatcher::create_user(u64 const size, VmoOptions const options,
                                 KernelHandle<Self> &handle_out, Rights &rights_out) -> Status {
     // Options first, as Zircon's parse_create_syscall_flags() does: an

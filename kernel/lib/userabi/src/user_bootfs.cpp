@@ -163,11 +163,13 @@ auto make_user_bootfs(phys::KernelPackage const &package, std::string_view const
 
     object::KernelHandle<object::VmoDispatcher> vmo;
     Rights rights;
-    // Pinned and committed whole (VmoDispatcher::create_paged()), so every
-    // page is there, zeroed, before a byte is written: the gaps between the
-    // name table and the data, and after each file, read as zero rather than
-    // as whatever the frames last held.
-    auto status = object::VmoDispatcher::create_paged(total_size, vmo, rights);
+    // Committed whole (VmoDispatcher::create_committed()), so every page is
+    // there, zeroed, before a byte is written: the gaps between the name table
+    // and the data, and after each file, read as zero rather than as whatever
+    // the frames last held. Not pinned, so that a program can snapshot a file
+    // in it: that is how its data segment is made. It used to be Pinned, by
+    // create_paged(), and a snapshot of it answered BadState.
+    auto status = object::VmoDispatcher::create_committed(total_size, vmo, rights);
     if (Status::Ok != status) {
         log::error("userabi: could not create a {}-byte BootFS VMO: {}", total_size,
                    to_string(status));

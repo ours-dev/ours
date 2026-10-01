@@ -63,6 +63,22 @@ class VmoDispatcher final: public VmoDispatcherBase {
     static auto create_paged(usize size, KernelHandle<Self> &handle_out, Rights &rights_out)
         -> Status;
 
+    /// Anonymous memory with every page committed when it is made, zeroed, and
+    /// not pinned -- for data the kernel fills before user space sees it, such
+    /// as the BootFS.
+    ///
+    /// Not pinned, because a pinned VMO cannot be snapshotted
+    /// (mm::VmObjectPaged::create_clone() answers BadState: a clone moves the
+    /// pages into a hidden node and a later write forks them, so they would
+    /// not stay where a pin says they are), and a program's data segment is a
+    /// snapshot of its file in the BootFS. Committed, so that the bytes the
+    /// kernel writes need no fault and the gaps it leaves read as zero.
+    ///
+    /// Zircon's BootFS VMO is likewise an ordinary paged VMO, never pinned:
+    /// userboot makes it with zx_vmo_create and writes every page of it.
+    static auto create_committed(usize size, KernelHandle<Self> &handle_out, Rights &rights_out)
+        -> Status;
+
     /// The VMO a vmo_create call makes: |size| bytes of anonymous memory,
     /// committed lazily -- a page exists only once it is touched.
     ///

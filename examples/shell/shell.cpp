@@ -1523,6 +1523,28 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                     expect("shell: vmo_write(the vdso slice) = ", ou::vmo_write(vdso, magic, 0, 1),
                            Status::AccessDenied);
                 ok &= expect("shell: close(the vdso slice) = ", ou::handle_close(vdso), Status::Ok);
+
+                // A snapshot of the same entry can be written, though the BootFS
+                // cannot, and what it writes stays its own.
+                ours::HandleValue copy = ours::HANDLE_INVALID;
+                char const mark[1] = {'X'};
+                ok &= expect("shell: vmo_create_child(bootfs, SnapshotFull, vdso) = ",
+                             ou::vmo_create_child(bootfs, VmoChildOptions::SnapshotFull,
+                                                  entry.data_offset, entry.data_size, &copy),
+                             Status::Ok);
+                ok &= expect("shell: vmo_write(the vdso snapshot) = ",
+                             ou::vmo_write(copy, mark, 0, sizeof(mark)), Status::Ok);
+                ok &= expect("shell: vmo_read(the vdso snapshot, 0) = ",
+                             ou::vmo_read(copy, magic, 0, sizeof(magic)), Status::Ok);
+                ok &= magic[0] == 'X';
+                ok &= expect("shell: vmo_read(bootfs, the vdso, 0) = ",
+                             ou::vmo_read(bootfs, magic, entry.data_offset, sizeof(magic)),
+                             Status::Ok);
+                ok &= spells(magic, sizeof(magic),
+                             "\x7f"
+                             "ELF");
+                ok &= expect("shell: close(the vdso snapshot) = ", ou::handle_close(copy),
+                             Status::Ok);
             }
         }
         if (!found) {
