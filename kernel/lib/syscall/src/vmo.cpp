@@ -64,15 +64,27 @@ auto vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer, u64
     return dispatcher->read_user(buffer, offset, length);
 }
 
-/// A child of |vmo|'s VMO -- a slice or a snapshot -- with the rights of |vmo|'s
-/// handle, published as vmo_create does (design 4.1).
+/// A child of |vmo|'s VMO -- a slice or a snapshot -- published as vmo_create
+/// does (design 4.1).
 ///
-/// The handle must grant Duplicate and Read, as Zircon's does: a slice is a
+/// The handle must grant Duplicate and Read, as Zircon's does: a child is a
 /// second way into the same bytes, so it takes what a duplicate takes plus the
-/// right to read them. The rights are the parent handle's, unchanged: never
-/// Write added, and not Zircon's extra SetProperty either (design §10) -- a
-/// slice of a read-only BootFS is read-only, which GetBackingMemory relies on
-/// alongside its own handle_duplicate. Zircon sys_vmo_create_child().
+/// right to read them.
+///
+/// A slice's rights are the parent handle's, unchanged: never Write added, and
+/// not Zircon's extra SetProperty either (design §10). A slice writes the
+/// parent's own pages, so a slice of a read-only BootFS has to be read-only,
+/// which GetBackingMemory relies on alongside its own handle_duplicate.
+///
+/// A snapshot's are the parent handle's with Write added and Execute taken
+/// away, as Zircon's are. Write, because a snapshot is made to be written --
+/// a program's data segment, cloned from a read-only file -- and a write to it
+/// can only ever reach its own copy of a page, never the parent's. Execute
+/// away, because an object a program may write is not one it may also run
+/// without asking: code that can be written then executed goes through
+/// vmo_replace_as_executable(). Zircon sys_vmo_create_child(), which does the
+/// same for every snapshot kind unless ZX_VMO_CHILD_NO_WRITE asks otherwise;
+/// NoWrite is not taken here yet.
 auto vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 const offset,
                       u64 const size, user_copy::UserOutPtr<HandleValue> const out) -> Status {
     ustl::Arc<VmoDispatcher> parent;
@@ -88,6 +100,11 @@ auto vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 
     if (auto const status = parent->create_child(options, offset, size, child);
         status != Status::Ok) {
         return status;
+    }
+
+    if (options == VmoChildOptions::SnapshotFull || options == VmoChildOptions::SnapshotOnWrite) {
+        rights &= ~Rights::Execute;
+        rights |= Rights::Write;
     }
 
     auto handle = Handle::make(KernelHandle<object::Dispatcher>(ustl::move(child)), rights);

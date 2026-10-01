@@ -1453,6 +1453,27 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: vmo_create_child(SnapshotFull, unaligned offset) = ",
                  ou::vmo_create_child(source, VmoChildOptions::SnapshotFull, 8, PAGE, &refused),
                  Status::InvArgs);
+    // A snapshot of a handle without Write can be written, and what it writes
+    // stays its own: unlike a slice, it has no way to the source's pages.
+    ours::HandleValue readonly = ours::HANDLE_INVALID;
+    ours::HandleValue writable = ours::HANDLE_INVALID;
+    ok &=
+        expect("shell: handle_duplicate(source, without Write) = ",
+               ou::handle_duplicate(source, Rights::Basic | Rights::Read | Rights::Map, &readonly),
+               Status::Ok);
+    ok &= expect("shell: vmo_write(source, through the read-only copy) = ",
+                 ou::vmo_write(readonly, mine, 0, sizeof(mine)), Status::AccessDenied);
+    ok &= expect("shell: vmo_create_child(the read-only copy, SnapshotFull) = ",
+                 ou::vmo_create_child(readonly, VmoChildOptions::SnapshotFull, 0, PAGE, &writable),
+                 Status::Ok);
+    ok &= expect("shell: vmo_write(a snapshot of the read-only copy) = ",
+                 ou::vmo_write(writable, mine, 0, sizeof(mine)), Status::Ok);
+    ok &=
+        expect("shell: vmo_read(source, 0) after it = ", ou::vmo_read(source, got, 0, sizeof(got)),
+               Status::Ok);
+    ok &= same_bytes(theirs, got, sizeof(got));
+    ok &= expect("shell: close(the writable snapshot) = ", ou::handle_close(writable), Status::Ok);
+    ok &= expect("shell: close(the read-only copy) = ", ou::handle_close(readonly), Status::Ok);
     ok &= expect("shell: close(on-write snapshot) = ", ou::handle_close(on_write), Status::Ok);
     ok &= expect("shell: close(snapshot) = ", ou::handle_close(full), Status::Ok);
     ok &= expect("shell: close(snapshot source) = ", ou::handle_close(source), Status::Ok);
@@ -1773,6 +1794,51 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
         }
         ok &= expect("shell: close(the executable BootFS) = ", ou::handle_close(executable),
                      Status::Ok);
+    }
+
+    if (vmex == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line("shell: vma_map of an executable snapshot skipped"));
+    } else {
+        // A snapshot of an executable VMO: Write added, Execute taken away. It maps
+        // read-write and not executable, and a store through that mapping takes a
+        // copy of the page, which the executable VMO's own mapping never sees.
+        ours::HandleValue plain = ours::HANDLE_INVALID;
+        ours::HandleValue executable = ours::HANDLE_INVALID;
+        ours::HandleValue snapshot = ours::HANDLE_INVALID;
+        u8 const first[1] = {0x5a};
+        ok &= expect("shell: vmo_create(to be executable) = ",
+                     ou::vmo_create(PAGE, VmoOptions::None, &plain), Status::Ok);
+        ok &= expect("shell: vmo_write(to be executable) = ",
+                     ou::vmo_write(plain, first, 0, sizeof(first)), Status::Ok);
+        ok &= expect("shell: vmo_replace_as_executable(it) = ",
+                     ou::vmo_replace_as_executable(plain, vmex, &executable), Status::Ok);
+        ours::VirtAddr code = 0;
+        ok &= expect("shell: vma_map(RX, the executable VMO) = ",
+                     ou::vma_map(vma, RX, 0, executable, 0, PAGE, &code), Status::Ok);
+        ok &= expect("shell: vmo_create_child(the executable VMO, SnapshotFull) = ",
+                     ou::vmo_create_child(executable, ours::VmoChildOptions::SnapshotFull, 0, PAGE,
+                                          &snapshot),
+                     Status::Ok);
+        ok &= expect("shell: vma_map(RX, its snapshot) = ",
+                     ou::vma_map(vma, RX, 0, snapshot, 0, PAGE, &refused), Status::AccessDenied);
+        ours::VirtAddr data = 0;
+        ok &= expect("shell: vma_map(RW, its snapshot) = ",
+                     ou::vma_map(vma, RW, 0, snapshot, 0, PAGE, &data), Status::Ok);
+        if (data != 0 && code != 0) {
+            auto *const mine = reinterpret_cast<u8 volatile *>(data);
+            auto const *const theirs = reinterpret_cast<u8 const volatile *>(code);
+            ok &= mine[0] == first[0];
+            mine[0] = 0xa5;
+            ok &= mine[0] == 0xa5;
+            ok &= theirs[0] == first[0];
+            if (mine[0] != 0xa5 || theirs[0] != first[0]) {
+                static_cast<void>(ou::debug_line("shell: a store through the snapshot's mapping "
+                                                 "reached the executable VMO, or did not land"));
+            }
+        }
+        ok &= expect("shell: close(the snapshot) = ", ou::handle_close(snapshot), Status::Ok);
+        ok &=
+            expect("shell: close(the executable VMO) = ", ou::handle_close(executable), Status::Ok);
     }
 
     if (ok) {
