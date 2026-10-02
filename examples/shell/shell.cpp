@@ -1894,11 +1894,15 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 ///     the parent region, not to the handle;
 ///   - the guard itself allows nothing: mapping into it is AccessDenied, its
 ///     handle having none of Read, Write or Execute;
+///   - a guard placed by the kernel holds its range the same way;
 ///   - a sub-region with CanMapRead and CanMapWrite, placed by the kernel:
-///     a mapping at an offset inside it lands at that offset from its start
-///     and can be written; it allows no more than it was given (an executable
-///     mapping is AccessDenied, and so is a nested sub-region asking for
-///     Execute), and nothing past its end;
+///     a mapping at an offset inside it lands at that offset from its start,
+///     and a store through it is what vmo_read finds; nothing goes past its
+///     end, and closing its handle leaves its range reserved;
+///   - a sub-region allows no more than it was given: one made with
+///     CanMapRead alone refuses a writable mapping that the VMO and the
+///     parent would both allow, and a nested sub-region asking for Execute
+///     is AccessDenied;
 ///   - kernel placement reaches a region's last page: a nested sub-region
 ///     fills its parent exactly, and with page 0 taken an anywhere mapping
 ///     lands on page 1, after which the full region answers NotFound;
@@ -1934,6 +1938,9 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::VirtAddr at = 0;
     ok &= expect("shell: vma_allocate(Specific, 1 page) = ",
                  ou::vma_allocate(vma, VmOptions::Specific, SPOT, PAGE, &guard, &at), Status::Ok);
+    // Where the root region starts, so that an address the kernel chose can be
+    // turned back into an offset for a Specific request.
+    auto const root_base = at - SPOT;
     ours::VirtAddr mapped = 0;
     ok &= expect("shell: vma_map(Specific, over the guard) = ",
                  ou::vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
@@ -1944,6 +1951,15 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: vma_map(Specific, over the guard, handle closed) = ",
                  ou::vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
 
+    // The same guard, placed by the kernel.
+    ours::VirtAddr guard_at = 0;
+    ok &= expect("shell: vma_allocate(no CanMap bit, anywhere, 1 page) = ",
+                 ou::vma_allocate(vma, VmOptions::None, 0, PAGE, &guard, &guard_at), Status::Ok);
+    ok &= expect("shell: vma_map(Specific, over the kernel-placed guard) = ",
+                 ou::vma_map(vma, SPECIFIC_R, guard_at - root_base, vmo, 0, PAGE, &mapped),
+                 Status::AlreadyExists);
+    ok &= expect("shell: close(the kernel-placed guard) = ", ou::handle_close(guard), Status::Ok);
+
     // A sub-region to map into, placed by the kernel: what the launcher reserves
     // for a program's span before it maps each segment at its offset.
     constexpr auto CAN_MAP_RW = VmOptions::CanMapRead | VmOptions::CanMapWrite;
@@ -1951,22 +1967,32 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::VirtAddr region_at = 0;
     ok &= expect("shell: vma_allocate(CanMapRead | CanMapWrite, anywhere, 2 pages) = ",
                  ou::vma_allocate(vma, CAN_MAP_RW, 0, 2 * PAGE, &region, &region_at), Status::Ok);
-    ok &= region_at != 0 && region_at % PAGE == 0;
+    if (region_at == 0 || region_at % PAGE != 0) {
+        static_cast<void>(ou::debug_line("shell: the sub-region is not at a page boundary"));
+        ok = false;
+    }
     ok &=
         expect("shell: vma_map(RW, Specific, page 1 of the sub-region) = ",
                ou::vma_map(region, VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Specific,
                            PAGE, vmo, 0, PAGE, &mapped),
                Status::Ok);
-    ok &= mapped == region_at + PAGE;
     if (mapped == region_at + PAGE) {
-        auto *const word = reinterpret_cast<u32 volatile *>(mapped);
-        *word = 0x5ec7'0001;
-        ok &= *word == 0x5ec7'0001;
+        // Read back through the VMO, not the same mapping: a mapping of some
+        // other page would read back its own store just as well.
+        *reinterpret_cast<u32 volatile *>(mapped) = 0x5ec7'0001;
+        u32 back = 0;
+        ok &= expect("shell: vmo_read(what the sub-region's mapping stored) = ",
+                     ou::vmo_read(vmo, &back, 0, sizeof(back)), Status::Ok);
+        if (back != 0x5ec7'0001) {
+            static_cast<void>(ou::debug_line("shell: a store through the sub-region's mapping "
+                                             "did not reach the VMO"));
+            ok = false;
+        }
+    } else {
+        static_cast<void>(
+            ou::debug_line("shell: page 1 of the sub-region was not mapped at its start + 1 page"));
+        ok = false;
     }
-    ok &= expect(
-        "shell: vma_map(RX, into the sub-region) = ",
-        ou::vma_map(region, VmOptions::PermRead | VmOptions::PermExecute, 0, vmo, 0, PAGE, &mapped),
-        Status::AccessDenied);
     ok &= expect("shell: vma_map(R, Specific, past the sub-region's end) = ",
                  ou::vma_map(region, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped), Status::InvArgs);
     ours::HandleValue nested = ours::HANDLE_INVALID;
@@ -1976,6 +2002,24 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
                                   &nested, &nested_at),
                  Status::AccessDenied);
     ok &= expect("shell: close(the sub-region) = ", ou::handle_close(region), Status::Ok);
+    ok &= expect("shell: vma_map(Specific, over the sub-region, handle closed) = ",
+                 ou::vma_map(vma, SPECIFIC_R, region_at - root_base, vmo, 0, PAGE, &mapped),
+                 Status::AlreadyExists);
+
+    // Only the sub-region can refuse here: the VMO's handle has Write, and so
+    // does the root's. One made with CanMapRead alone gets a handle without
+    // Write, and its mappings can be no more than readable.
+    ours::HandleValue read_only = ours::HANDLE_INVALID;
+    ours::VirtAddr read_only_at = 0;
+    ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 1 page) = ",
+                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, PAGE, &read_only, &read_only_at),
+                 Status::Ok);
+    ok &= expect("shell: vma_map(RW, into a sub-region with CanMapRead only) = ",
+                 ou::vma_map(read_only, VmOptions::PermRead | VmOptions::PermWrite, 0, vmo, 0, PAGE,
+                             &mapped),
+                 Status::AccessDenied);
+    ok &= expect("shell: close(the read-only sub-region) = ", ou::handle_close(read_only),
+                 Status::Ok);
 
     // The kernel places up to a region's last page, each case in a 2-page
     // sub-region of its own: a nested sub-region the whole size of its
@@ -2027,6 +2071,10 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
                  ou::vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapRead, FURTHER, PAGE,
                                   &guard, &at),
                  Status::Ok);
+    if (at != root_base + FURTHER) {
+        static_cast<void>(ou::debug_line("shell: the Specific sub-region is not at its offset"));
+        ok = false;
+    }
     ok &= expect("shell: close(the Specific sub-region) = ", ou::handle_close(guard), Status::Ok);
     ok &= expect("shell: vma_allocate(an offset without Specific) = ",
                  ou::vma_allocate(vma, VmOptions::CanMapRead, PAGE, PAGE, &guard, &at),

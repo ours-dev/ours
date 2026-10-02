@@ -112,14 +112,18 @@ enum class VmoOptions : u32 {
     Resizable = 1U << 1,
 };
 
-/// vma_map's options (and, later, vma_allocate's and vma_protect's): what
-/// the mapping may do, where it goes, and how it is populated. The values are
-/// Zircon's ZX_VM_*, so a request ported from Zircon asks the same question.
+/// vma_map's and vma_allocate's options (and, later, vma_protect's): what
+/// a mapping or sub-region may do, where it goes, and how it is populated.
+/// The values are Zircon's ZX_VM_*, so a request ported from Zircon asks the
+/// same question.
 ///
-///   Perm*       The protection the pages get.
-///   Specific    At vma_offset from the region's start, not wherever fits.
-///   CanMap*     The ceiling a later protect() is held to. Set by the kernel
-///               from the handles' rights; a program may not pass them.
+///   Perm*       The protection the pages get. vma_map only.
+///   Specific    At the offset from the region's start, not wherever fits.
+///   CanMap*     On vma_map, the ceiling a later protect() is held to: set by
+///               the kernel from the handles' rights, and a program may not
+///               pass them. On vma_allocate, what mappings in the new
+///               sub-region may allow, each needing the matching right on the
+///               parent's handle; none at all makes the sub-region a guard.
 ///   MapRange    Populate the whole range now rather than on first touch.
 ///   Sealed      Make the mapping immutable from the moment it exists: it can
 ///               never be unmapped, have its protection changed, or be
@@ -127,7 +131,8 @@ enum class VmoOptions : u32 {
 ///               ZX_VM_* counterpart, so it sits at bit 20, away from the bits
 ///               Zircon uses. The vDSO's VMO can only be mapped this way.
 /// The rest are named so that a program asking for them gets NotSupported,
-/// not InvArgs: they are Zircon's, deferred here.
+/// not InvArgs: they are Zircon's, deferred here. Zircon's alignment field
+/// (ZX_VM_ALIGN_*, bits 24 to 31) is not named yet, so it is still InvArgs.
 enum class VmOptions : u32 {
     None = 0,
     PermRead = 1U << 0,

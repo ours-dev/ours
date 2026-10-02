@@ -101,8 +101,9 @@ class VmaDispatcher final: public VmaDispatcherBase {
     auto map(VmOptions options, usize vma_offset, VmoDispatcher &vmo, u64 vmo_offset, usize length,
              char const *name) -> ktl::Result<VirtAddr>;
 
-    /// Reserves [offset, offset + size) of this region as a sub-region of its
-    /// own, and hands back a dispatcher for it, its rights and its address.
+    /// Reserves |size| bytes of this region, where the options below say, as
+    /// a sub-region of its own, and hands back a dispatcher for it, its rights
+    /// and its address.
     ///
     /// Two uses, as Zircon's zx_vmar_allocate:
     ///   - a guard: no CanMap bit, so the sub-region can hold no mapping at all

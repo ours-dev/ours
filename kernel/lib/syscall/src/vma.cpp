@@ -25,27 +25,9 @@ namespace {
                              VmOptions::CanMapWrite | VmOptions::CanMapExecute;
 } // namespace
 
-/// Maps [vmo_offset, vmo_offset + length) of |vmo| into |vma| and writes the
-/// address to |mapped_addr|.
-///
-/// Zircon's sys_vmar_map(), in its order:
-///   1. both handles, with their rights (BadHandle, BadType);
-///   2. Map on the VMO's handle (AccessDenied);
-///   3. the options: known bits only, no CanMap*, and a protection this
-///      kernel allows (InvArgs) -- Write and Execute each need Read, and
-///      never both at once (W^X, design D3; Zircon allows both and allows
-///      execute-only);
-///   4. each Perm bit against the two handles: PermRead needs Read on both,
-///      PermWrite Write, PermExecute Execute (AccessDenied);
-///   5. every right both handles grant becomes a CanMap bit -- the mapping's
-///      ceiling, which a later vma_protect is held to (interface design 2.3);
-///   6. the mapping (VmaDispatcher::map(): offsets, sizes, placement).
-/// The address can only be known once the mapping exists, so it cannot go out
-/// before the mapping is made, as a handle value does (design 4.1). Instead a
-/// write that fails takes the mapping back down: a program never ends up with
-/// memory mapped that it was told was not.
-/// Reserves [offset, offset + size) of |parent| as a sub-region, and writes
-/// its handle to |child| and its address to |child_addr|.
+/// Reserves |size| bytes of |parent| as a sub-region -- at |offset| with
+/// Specific, wherever the kernel finds room without -- and writes its handle
+/// to |child| and its address to |child_addr|.
 ///
 /// Zircon's sys_vmar_allocate(), in its order: the rights each CanMap bit
 /// would need of the parent (Read, Write, Execute), the parent with those
@@ -108,6 +90,26 @@ auto vma_allocate(HandleValue const parent, VmOptions const options, usize const
     return Status::Ok;
 }
 
+/// Maps [vmo_offset, vmo_offset + length) of |vmo| into |vma| and writes the
+/// address to |mapped_addr|.
+///
+/// Zircon's sys_vmar_map(), in its order:
+///   1. both handles, with their rights (BadHandle, BadType);
+///   2. Map on the VMO's handle (AccessDenied);
+///   3. the options: known bits only, no CanMap*, and a protection this
+///      kernel allows (InvArgs) -- Write and Execute each need Read, and
+///      never both at once (W^X, design D3; Zircon allows both and allows
+///      execute-only);
+///   4. each Perm bit against the two handles: PermRead needs Read on both,
+///      PermWrite Write, PermExecute Execute (AccessDenied);
+///   5. every right both handles grant becomes a CanMap bit -- the mapping's
+///      ceiling, which a later vma_protect is held to (interface design 2.3);
+///   6. the mapping (VmaDispatcher::map(): offsets, sizes, placement).
+/// The address can only be known once the mapping exists, so it cannot go out
+/// before the mapping is made, as a handle value does (design 4.1). Instead a
+/// write that fails takes the mapping back down: a program never ends up with
+/// memory mapped that it was told was not. Except a Sealed mapping, which the
+/// unmap refuses, so it stays (docs/repairs/261002/object.md, item 1).
 auto vma_map(HandleValue const vma, VmOptions const options, usize const vma_offset,
              HandleValue const vmo, u64 const vmo_offset, usize const length,
              user_copy::UserOutPtr<VirtAddr> const mapped_addr) -> Status {

@@ -188,3 +188,63 @@ None.
 - Why does a loader reserve a sub-region for a program instead of mapping its segments straight into the root region?
 - Which two checks keep a sub-region from allowing more than its parent, and why are both there?
 - Why must the offset be 0 when the kernel chooses the place?
+
+## Title: vma_allocate's comments and the shell's checks of it say what it does (2026-10-02)
+
+**Files**
+- `system/public/ours/syscall.hpp` — `VmOptions`: what CanMap* means on vma_allocate; Zircon's alignment field is not named, so it is InvArgs.
+- `kernel/object/include/ours/object/vma_dispatcher.hpp` — `allocate()`'s summary no longer says `[offset, offset + size)`.
+- `kernel/lib/syscall/src/vma.cpp` — vma_map's doc block moved back above `vma_map()` (it sat above `vma_allocate()`); vma_allocate's summary; the Sealed exception to vma_map's undo.
+- `examples/shell/shell.cpp` — `check_vma_allocate()`: a sub-region with CanMapRead alone refuses a writable mapping; the store is read back through `vmo_read`; a guard placed by the kernel holds its range; a sub-region's range stays reserved after its handle is closed; the Specific sub-region is at its offset; the address checks print when they fail.
+
+**Symptom**
+The previous entry and its checks claimed two things that were not so:
+- "An executable mapping in it is AccessDenied." The VMO refused it, not the sub-region: `vmo_create` gives no Execute, so the check passed whatever the sub-region allowed. `check_vma_map()` already pins that refusal on the root.
+- "Alignment bits: NotSupported." `VmOptions` does not name them, so the system call refuses them with InvArgs before anything else.
+
+The comments were out of date too:
+- `syscall.hpp` still said a program may not pass CanMap*, and that vma_allocate would take these options "later".
+- Two summaries said `[offset, offset + size)`, which is wrong without Specific.
+- vma_map's doc block sat above `vma_allocate()`.
+
+**Cause**
+A refusal check is evidence only if nothing but the code under test can refuse. vma_map computes `both = vma_rights & vmo_rights` and refuses PermExecute unless Execute is in both (`kernel/lib/syscall/src/vma.cpp`). That runs before the sub-region's allowance matters. With a VMO that lacks Execute, the answer is AccessDenied for every region, so the check could not tell a correct sub-region from one that allowed everything. The cure is to ask for something every other party grants and only the sub-region withholds. Write fits: the VMO's handle has it through Io, and so does the root region's.
+
+**Change**
+The executable check is replaced by one that only the sub-region can refuse:
+
+```cpp
+ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 1 page) = ",
+             ou::vma_allocate(vma, VmOptions::CanMapRead, 0, PAGE, &read_only, &read_only_at),
+             Status::Ok);
+ok &= expect("shell: vma_map(RW, into a sub-region with CanMapRead only) = ",
+             ou::vma_map(read_only, VmOptions::PermRead | VmOptions::PermWrite, 0, vmo, 0, PAGE,
+                         &mapped),
+             Status::AccessDenied);
+```
+
+A store through the sub-region's mapping is now read back with `vmo_read`, not through the same address: a mapping of the wrong page would read back its own store just as well. The guard placed by the kernel, dropped when the rest was rewritten, is back, now expecting Ok. `root_base = at - SPOT` turns an address the kernel chose into an offset, so that a Specific mapping over the guard, and over the sub-region after its handle is closed, can be shown refused (AlreadyExists).
+
+**Reference**
+None, this project's own tests and comments.
+
+**Verification**
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (18 passed), rel PASS (13 passed, 10 skipped); `vma_allocate checks passed` in both.
+- In the logs: `vma_allocate(no CanMap bit, anywhere, 1 page) = Ok`, `vma_map(Specific, over the kernel-placed guard) = AlreadyExists`, `vmo_read(what the sub-region's mapping stored) = Ok`, `vma_map(Specific, over the sub-region, handle closed) = AlreadyExists`, `vma_map(RW, into a sub-region with CanMapRead only) = AccessDenied`.
+- No mutation run. Two layers refuse that writable mapping, the sub-region's handle and its allowance in mm, so breaking either alone would not flip the check. Breaking both would.
+
+**Deliberately not done**
+- An executable mapping in a sub-region with CanMapExecute needs an executable VMO (vmex). The K23 launcher will exercise it: its image region is made with CanMapExecute and maps the program's code read and execute.
+- The status codes, and Zircon's CanMapSpecific rule, are the user's to decide. The status-code questions: NotFound for no room where Zircon answers NO_RESOURCES; an oversize request; NotSupported for bits Zircon refuses on allocate.
+- The allowance check in `VmaDispatcher::allocate()`: `docs/repairs/261002/object.md` item 4.
+
+**How it was found**
+The adversarial review of the change above: the correctness, Zircon and tests reviewers each found the vacuous check, and the Zircon reviewer the stale comments.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did `vma_map(RX, into the sub-region) = AccessDenied` pass whatever the sub-region allowed?
+- What has to be true of every other party for a refusal check to be evidence about the one it names?
+- Why read a store back through the VMO rather than through the mapping that made it?
