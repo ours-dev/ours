@@ -188,6 +188,8 @@ auto Binder::bind(Diagnostics const &diagnostics, Bytes const file, Image const 
         for (usize index = 0; index < table.size(); ++index) {
             auto const entry = table.relocation_at(index);
             if (entry.is_none()) {
+                diagnostics({.what = "a relocation entry cannot be read",
+                             .value = ustl::some(static_cast<u64>(index))});
                 return Status::InvArgs;
             }
             auto const &rela = entry.value();
@@ -204,6 +206,8 @@ auto Binder::bind(Diagnostics const &diagnostics, Bytes const file, Image const 
                 auto const symbol = symbols->symbol_at(static_cast<usize>(symbol_index));
                 auto const name = symbols->symbol_name(static_cast<usize>(symbol_index));
                 if (symbol.is_none() || name.is_none()) {
+                    diagnostics({.what = "a relocation names a symbol that cannot be read",
+                                 .value = ustl::some(static_cast<u64>(symbol_index))});
                     return Status::InvArgs;
                 }
                 auto const spelling =

@@ -56,3 +56,52 @@ None.
 - Why can a library used by both the kernel and a user program not log through the kernel's logger?
 - What does Zircon's elfldltl do instead, and what does the caller gain by it?
 - Why are the reports not formatted inside elfload?
+
+## Title: The binder reports the two refusals the Diagnostics change left silent (2026-10-02)
+
+**Files**
+- `system/lib/elfload/src/binder.cpp` — `Binder::bind()` reports a relocation entry it cannot read, and a relocation whose symbol or name it cannot read, before refusing with InvArgs.
+
+**Symptom**
+A program refused for either reason came back as a bare InvArgs, with nothing in the caller's diagnostics. The K23 launcher's header promises that elfload's refusals carry their reason, so a caller saw a silent refusal where every other one says why.
+
+**Cause**
+The change that moved elfload's reports into a caller's `Diagnostics` (earlier today) converted every refusal that already logged a line. These two never logged one, so a sweep for log calls did not find them. The rule the change set up is that every refusal says why, and a sweep for `return Status::` would have found them.
+
+**Change**
+
+```cpp
+if (entry.is_none()) {
+    diagnostics({.what = "a relocation entry cannot be read",
+                 .value = ustl::some(static_cast<u64>(index))});
+    return Status::InvArgs;
+}
+...
+if (symbol.is_none() || name.is_none()) {
+    diagnostics({.what = "a relocation names a symbol that cannot be read",
+                 .value = ustl::some(static_cast<u64>(symbol_index))});
+    return Status::InvArgs;
+}
+```
+
+**Reference**
+Zircon `elfldltl::RelocateSymbolic()` (`src/lib/elfldltl/include/lib/elfldltl/link.h:175`) reports `"relocation entry symbol table index out of bounds"` through its `Diagnostics` before it fails (`:223`), the counterpart of the second report here.
+
+**Verification**
+- Every changed C++ line formatted; `boot_check.py --out out/vmo-snapshot`: dbg PASS, rel PASS.
+- A script listed every `return` of a non-Ok status in `binder.cpp` and `program.cpp` and whether a `diagnostics(` call precedes it: these two were the only ones without. The two in `store()` are reported by its caller as "a relocation could not be written".
+- Neither path runs on the tree's programs.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+The review of the K23 launcher: its header said elfload's refusals all go to the diagnostics, and checking that claim found these two.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did converting log lines into reports leave these two silent?
+- What sweep finds every refusal, and not only every log line?
+- Why does a caller want the reason through the diagnostics when the status is already returned?
