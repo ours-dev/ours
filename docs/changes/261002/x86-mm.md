@@ -112,3 +112,59 @@ The open question in `.agents/tasks/vmo-snapshot-child/DESIGN.md` since 2026-09-
 - Why can a shootdown not be sent while holding the page table's spin lock, even when only one CPU is shooting?
 - What is lost, and where does it go, if the object's lock is dropped before the shootdown completes?
 - Why does the writer in the test keep preemption off between its two writes?
+
+## Title: A change to the kernel address space is shot down on every online CPU (2026-10-02)
+
+**Files**
+- `kernel/arch/x86/mm/arch_vm_aspace.cpp` — `ArchVmAspace::invalidate()`: for the kernel address space, the targets are every online CPU; while only this CPU is online, the local `invlpg` is the whole shootdown. The comment says why for both kinds of address space.
+- `kernel/commands/vmo_snapshot_test.cpp` — a two-CPU check of a kernel mapping (5 checks, 205 in all); `spawn_on()` takes any argument.
+- `docs/repairs/261002/x86-mm.md` — item 1, this one, removed; the rest renumbered. `docs/repairs/261002/mm.md` and `x86-kernel.md` — references updated. `.agents/tasks/vmo-snapshot-child/DESIGN.md` — the open question closed.
+
+**Symptom**
+Reproduced by the new check before the fix, on both images: a reader on one CPU reads a kernel page with preemption off, a remapper on another unmaps it and maps a different object at the same address, and the reader's next read still returned the first object's word (`FAIL its next read, with no switch in between, finds the second object`). Nothing in the kernel reaches this today after the APs are online, since no runtime code unmaps a kernel range; it would have been armed by the first one (a fix of the kernel-stack leak, or a runtime `delete` of an object above 4 KiB), as silent corruption of whatever reused the freed frame.
+
+**Cause**
+The previous entry left the kernel address space with the local `invlpg` it always had, on two premises; research on 2026-10-02 checked both.
+- Every CPU may hold kernel translations, whatever it runs. Leaves without `User` are Global (`X86Pte::make()`), CR4.PGE is on everywhere, and the kernel half is the one top-level slot `alias_to()` copies into every user root. So the kernel's `m_active_cpus`, which lists only CPUs running kernel threads, cannot be the target set: it has to be every online CPU, as Zircon's is for a global entry.
+- "Some kernel unmaps run with interrupts off", which was the reason not to call `sync_exec()`, was wrong. None does after the APs start: every kernel unmap holds a sleepable mutex. The interrupts-off ones (the vmalloc self-test, `reserve()`) run before any AP exists, when the local `invlpg` is already complete; skipping `sync_exec()` while only this CPU is online keeps its interrupts-on assertion out of their way.
+
+What it protects against is the reuse of an address, not the freeing of a frame alone: the kernel's allocator hands out the lowest free range first with no quarantine, so an unmapped range comes straight back on a new frame while another CPU still translates it to the old one. Linux tolerates the freed frame and instead keeps the range out of the allocator until a batched flush (lazy purge); Zircon flushes synchronously before anything is released. This follows Zircon; the Linux shape stays a performance option.
+
+**Change**
+```cpp
+CpuMask targets;
+if (m_kind == VmasKind::User) {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    targets = m_active_cpus.load(std::memory_order_relaxed);
+} else {
+    targets = Cpu::online_mask();
+    if (targets.count() <= 1) {
+        invalidate_here(&range);
+        return;
+    }
+}
+IpiService::sync_exec(targets, invalidate_here, &range);
+```
+
+**Reference**
+Zircon `X86PageTableMmu::TlbInvalidate()` (`zircon/kernel/arch/x86/mmu.cc:382`), which targets every CPU when the pending invalidation contains a global entry. Linux `flush_tlb_kernel_range()`, run on every CPU, from `__purge_vmap_area_lazy()` for vmalloc.
+
+**Verification**
+- Every changed C++ line formatted; `boot_check.py --out out/vmo-snapshot`: dbg PASS (18 passed), rel PASS (13 passed, 10 skipped); the boot-time self-test vfrees still run, single-CPU, without reaching `sync_exec()`.
+- `vmosnapshot.test` over COM1: 205 checks ok on both images (200 before, 5 new). `usercopy.test` 18, `vmaseal.test` 13 and `pmnode.test` 20 on dbg.
+- Before the fix the new check failed on both images as described under Symptom.
+
+**Deliberately not done**
+- Linux's lazy purge (batch kernel flushes, keep freed ranges out of the allocator until then): performance, `docs/repairs/261002/x86-mm.md` item 3, deferred by the user.
+- The kernel-stack leak, which this makes safe to fix: `docs/repairs/261002/mm.md` item 1.
+
+**How it was found**
+The question "does the kernel address space need it at all?" from the user, answered by a research workflow (Global bits, call sites, references, a concrete scenario, each finding checked by a skeptic). The user chose to fix it now (option A) over waiting for the stack-leak fix or doing Linux's lazy purge.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the kernel's own `m_active_cpus` the wrong set of CPUs to ask?
+- What makes a stale kernel translation dangerous: the freed frame, or the reused address?
+- Why can the boot-time unmaps, which run with interrupts off, skip `sync_exec()` safely?

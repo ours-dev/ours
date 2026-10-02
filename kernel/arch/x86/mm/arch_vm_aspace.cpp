@@ -262,11 +262,30 @@ auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {
 /// page the clone now shares. An unmap that frees a frame leaves another CPU
 /// reading and writing the frame's next owner.
 ///
-/// Who is asked: the CPUs in |m_active_cpus|, read after the entries changed,
-/// behind a full barrier. switch_context() sets a CPU's bit before that CPU
-/// loads these tables, so one that is not in the mask either was not running
-/// here, and holds nothing (no PCIDs: loading another root flushed it), or
-/// loads the tables after the change and caches the new entry.
+/// Who is asked depends on whose tables these are.
+///
+///  - A user address space: the CPUs in |m_active_cpus|, read after the
+///    entries changed, behind a full barrier. switch_context() sets a CPU's
+///    bit before that CPU loads these tables, so one that is not in the mask
+///    either was not running here, and holds nothing (no PCIDs: loading
+///    another root flushed it), or loads the tables after the change and
+///    caches the new entry.
+///  - The kernel's: every online CPU. Its leaf entries are Global
+///    (X86Pte::make()), so loading another root does not drop them, and its
+///    half is one top-level slot shared by every address space (alias_to()),
+///    so a CPU running any process walks the kernel's tables and caches from
+///    them. Its |m_active_cpus| names only the CPUs running kernel threads,
+///    which says nothing about who holds a kernel translation.
+///
+///    What goes wrong without it is the reuse of an address: CPU1 caches
+///    kernel address X to frame F; CPU0 unmaps X and frees F; the allocator,
+///    lowest address first, hands X out again on a new frame; CPU1 goes on
+///    reading and writing F, which now belongs to someone else.
+///
+///    While only this CPU is online -- the boot, before the APs start, when
+///    the vmalloc self-test and reserve() unmap with interrupts off -- the
+///    local invalidation is the whole shootdown, and sync_exec(), which
+///    asserts interrupts are on, is not called.
 ///
 /// When it is done, which the callers rely on:
 ///
@@ -284,14 +303,11 @@ auto ArchVmAspace::protect(VirtAddr va, usize n, MmuFlags mmuf) -> Status {
 ///    copy the page, and the stale write would land in the original after the
 ///    copy, lost to the writer.
 ///
-/// A kernel address space is left as it was, with this CPU's TLB only. Its
-/// entries are Global and shared by every address space, so every online CPU
-/// would have to be asked, and its unmaps run from contexts that may have
-/// interrupts off, where sync_exec() cannot be used.
-///
-/// Zircon: X86PageTableBase's ConsistencyManager, whose Finish() calls
-/// x86_tlb_invalidate_page(), which mp_sync_exec()s to the aspace's
-/// active_cpus_. Linux: flush_tlb_mm_range() over mm_cpumask().
+/// Zircon: X86PageTableMmu::TlbInvalidate(), which mp_sync_exec()s to the
+/// aspace's active_cpus_, and to every CPU when an entry is global. Linux:
+/// flush_tlb_mm_range() over mm_cpumask(), and flush_tlb_kernel_range() on
+/// every CPU for the kernel's (which Linux batches lazily for vmalloc; see
+/// docs/repairs for that option).
 auto ArchVmAspace::invalidate(VirtAddr const va, usize const n) -> void {
     if (n == 0) {
         return;
@@ -309,13 +325,17 @@ auto ArchVmAspace::invalidate(VirtAddr const va, usize const n) -> void {
         }
     };
 
-    if (m_kind != VmasKind::User) {
-        invalidate_here(&range);
-        return;
+    CpuMask targets;
+    if (m_kind == VmasKind::User) {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        targets = m_active_cpus.load(std::memory_order_relaxed);
+    } else {
+        targets = Cpu::online_mask();
+        if (targets.count() <= 1) {
+            invalidate_here(&range);
+            return;
+        }
     }
-
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    auto const targets = m_active_cpus.load(std::memory_order_relaxed);
     IpiService::sync_exec(targets, invalidate_here, &range);
 }
 } // namespace ours::mm

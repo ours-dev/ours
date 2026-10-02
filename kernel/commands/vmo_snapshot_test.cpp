@@ -995,9 +995,9 @@ namespace {
         return 0;
     }
 
-    auto spawn_on(char const *const name, task::Thread::StartRoutine const routine,
-                  ShootdownRun *const run, CpuNum const cpu) -> bool {
-        auto *const thread = task::Thread::spawn(name, routine, run, task::DEFAULT_PRIORITY);
+    auto spawn_on(char const *const name, task::Thread::StartRoutine const routine, void *const arg,
+                  CpuNum const cpu) -> bool {
+        auto *const thread = task::Thread::spawn(name, routine, arg, task::DEFAULT_PRIORITY);
         if (thread == nullptr) {
             return false;
         }
@@ -1088,6 +1088,153 @@ namespace {
         delete run;
         verdict(tally, aspace->destroy() == Status::Ok,
                 "the address space of the shootdown checks is destroyed");
+    }
+
+    // The same for the kernel's own address space, whose translations every CPU
+    // keeps whatever it is running: they are Global, so loading another root does
+    // not drop them, and the kernel's half is shared by every address space. The
+    // reader, pinned to one CPU with preemption off, reads a kernel page; the
+    // remapper, on another, unmaps it and maps a different object at the same
+    // address; the reader reads the address again. Unless the unmap reached the
+    // reader's CPU, the second read goes through the old translation, to the old
+    // object's frame. That frame stays alive (the run holds its object), so a
+    // missing shootdown shows as the old word rather than as corruption.
+    struct KernelRemapRun {
+        ustl::Arc<mm::VmObjectPaged> before;
+        ustl::Arc<mm::VmObjectPaged> after;
+        VirtAddr at = 0;
+        std::atomic<bool> warm{false};
+        std::atomic<bool> remapped{false};
+        std::atomic<usize> finished{0};
+        u32 first = 0;
+        u32 second = 0;
+        bool waited_out = false;
+        bool remap_made = false;
+    };
+
+    constexpr u32 OLD_KERNEL_WORD = 0x7100'0000;
+    constexpr u32 NEW_KERNEL_WORD = 0x7200'0000;
+
+    auto kernel_mapping_flags() -> mm::MmuFlags {
+        return mm::MmuFlags::Readable | mm::MmuFlags::Writable;
+    }
+
+    auto kernel_reader(void *const arg) -> i32 {
+        auto &run = *static_cast<KernelRemapRun *>(arg);
+        {
+            // Held from the first read to the second, for the reason the writer above
+            // holds it: a switch to another thread here could reload CR3, which on
+            // QEMU drops everything, and the check would pass by accident.
+            task::AutoPreemptDisabler stay;
+            auto const *const word = reinterpret_cast<u32 const volatile *>(run.at);
+            run.first = *word;
+            run.warm.store(true, std::memory_order_release);
+
+            auto const give_up = time::SteadyClock::now() + SHOOTDOWN_WAIT;
+            while (!run.remapped.load(std::memory_order_acquire)) {
+                if (time::SteadyClock::now() > give_up) {
+                    run.waited_out = true;
+                    break;
+                }
+                arch::spin_hint();
+            }
+            // Only once the new mapping is in: before it, the address maps nothing,
+            // and a kernel read there would be a fault the kernel dies of.
+            if (!run.waited_out && run.remap_made) {
+                run.second = *word;
+            }
+        }
+        run.finished.fetch_add(1, std::memory_order_release);
+        return 0;
+    }
+
+    auto kernel_remapper(void *const arg) -> i32 {
+        auto &run = *static_cast<KernelRemapRun *>(arg);
+        auto const give_up = time::SteadyClock::now() + SHOOTDOWN_WAIT;
+        while (!run.warm.load(std::memory_order_acquire) && time::SteadyClock::now() < give_up) {
+            arch::spin_hint();
+        }
+        auto root = mm::VmAspace::kernel_aspace()->root_vma();
+        run.remap_made =
+            root->unmap(run.at, PAGE_SIZE) == Status::Ok &&
+            root->map_with_vmo(mm::VmPlacement::at(run.at), PAGE_SIZE, 0, kernel_mapping_flags(),
+                               mm::VmaFlags::PermMask, run.after, mm::VmMapOption::Populate,
+                               "vmosnapshot.test after")
+                .is_ok();
+        // Set whatever happened, so that the reader is never left waiting.
+        run.remapped.store(true, std::memory_order_release);
+        run.finished.fetch_add(1, std::memory_order_release);
+        return 0;
+    }
+
+    auto check_kernel_shootdown(Tally &tally) -> void {
+        auto const cpus = Cpu::num_online_cpus();
+        if (cpus < 2) {
+            log::info("vmosnapshot.test: the kernel shootdown checks need two CPUs, have {}", cpus);
+            return;
+        }
+
+        // Heap, not the stack, for the reason ShootdownRun is.
+        auto *const run = new (mm::GAF_KERNEL) KernelRemapRun{};
+        auto root = mm::VmAspace::kernel_aspace()->root_vma();
+        auto const made = run != nullptr &&
+                          mm::VmObjectPaged::create(mm::GAF_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
+                                                    &run->before) == Status::Ok &&
+                          mm::VmObjectPaged::create(mm::GAF_KERNEL, PAGE_SIZE, mm::VmoFlags::Pinned,
+                                                    &run->after) == Status::Ok &&
+                          poke(run->before, 0, OLD_KERNEL_WORD) &&
+                          poke(run->after, 0, NEW_KERNEL_WORD);
+        ustl::Arc<mm::VmMapping> mapping;
+        if (made) {
+            auto mapped =
+                root->map_with_vmo(mm::VmPlacement::anywhere(), PAGE_SIZE, 0,
+                                   kernel_mapping_flags(), mm::VmaFlags::PermMask, run->before,
+                                   mm::VmMapOption::Populate, "vmosnapshot.test before");
+            if (mapped.is_ok()) {
+                mapping = mapped.unwrap();
+            }
+        }
+        verdict(tally, made && mapping,
+                "two kernel objects of one page are made, and the first is mapped in the kernel");
+        if (!made || !mapping) {
+            delete run;
+            return;
+        }
+        run->at = mapping->base();
+        mapping = nullptr;
+
+        CpuNum here = 0;
+        {
+            task::AutoPreemptDisabler stay;
+            here = Cpu::id();
+        }
+        auto const reader_cpu = static_cast<CpuNum>((here + 1) % cpus);
+        auto const remapper_cpu = static_cast<CpuNum>(cpus > 2 ? (here + 2) % cpus : here);
+        auto const spawned = spawn_on("kernel-remapper", kernel_remapper, run, remapper_cpu) &&
+                             spawn_on("kernel-reader", kernel_reader, run, reader_cpu);
+        auto const started = time::SteadyClock::now();
+        auto const expected = spawned ? usize{2} : usize{0};
+        while (spawned && run->finished.load(std::memory_order_acquire) < expected &&
+               time::SteadyClock::now() < started + 2 * SHOOTDOWN_WAIT) {
+            static_cast<void>(
+                task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No));
+        }
+        auto const finished = spawned && run->finished.load(std::memory_order_acquire) == 2;
+        verdict(tally, finished, "the reader and the remapper both ran, on two CPUs, and finished");
+        if (!finished) {
+            // Leaked: a thread may still be using it.
+            return;
+        }
+
+        verdict(tally, run->first == OLD_KERNEL_WORD && !run->waited_out && run->remap_made,
+                "the reader reads the first object, and the remap is made while it waits");
+        verdict(tally, run->second == NEW_KERNEL_WORD,
+                "its next read, with no switch in between, finds the second object: the unmap "
+                "on the other CPU shot down the translation it held");
+
+        verdict(tally, root->unmap(run->at, PAGE_SIZE) == Status::Ok,
+                "the kernel mapping of the shootdown checks is taken down");
+        delete run;
     }
 
     auto vmosnapshot_test_command(int, char **) -> int {
@@ -1646,6 +1793,7 @@ namespace {
         check_mapped_clone(tally);
         check_committed_clone_mapping(tally);
         check_shootdown(tally);
+        check_kernel_shootdown(tally);
 
         if (tally.failed != 0) {
             log::error("vmosnapshot.test: FAILED -- {} of {} checks", tally.failed,

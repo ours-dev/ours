@@ -12,7 +12,7 @@ Latent. After the APs are up, the kernel address space still maps, at virtual ad
 `setup_bootstrap()` maps `BOOTSTRAP16_BUFFER_BASE` and `gdt_base` 1:1 into the kernel address space (`kernel/arch/x86/kernel/bootstrap.cpp:105-113`), every AP walks them during bring-up (`bootstrap16.S`), and nothing unmaps them. `free_bootstrap16_buffer()` (`bootstrap.cpp:133-140`) frees the buffer's frames with the mapping still in place.
 
 **Change**
-Make the identity mappings in an address space of their own that only the trampoline uses, and destroy it once every AP is running, before the buffer's frames are freed, as Zircon does. Failing that, unmap both ranges after AP bring-up with a global invalidation on every CPU (which needs `docs/repairs/261002/x86-mm.md` item 2, since today's "global" invalidation keeps Global entries).
+Make the identity mappings in an address space of their own that only the trampoline uses, and destroy it once every AP is running, before the buffer's frames are freed, as Zircon does. Failing that, unmap both ranges after AP bring-up with a global invalidation on every CPU (which needs `docs/repairs/261002/x86-mm.md` item 1, since today's "global" invalidation keeps Global entries).
 
 **Reference**
 Zircon `x86_bootstrap16_acquire()` and `x86_bootstrap16_release()` (`zircon/kernel/arch/x86/bootstrap16.cc:62-213`), which build the identity mappings in a separate `LowKernel` `VmAspace` and release it after use.

@@ -11,10 +11,10 @@ Every thread that is destroyed leaves its 16 KiB kernel stack behind: the pinned
 **Cause**
 `Stack::init()` (`kernel/mm/stack.cpp:22-50`) makes the mapping with `create_mapping()` in the kernel's root VMA, which links it into the root's `VmaSet`; `VmaSet::insert()` takes a reference of its own (`vm_area_or_mapping.cpp:93`), released only by `VmaSet::erase()`, that is by destroying the mapping. `~Stack()` is defaulted (`kernel/mm/include/ours/mm/stack.hpp:20`): it drops the `Stack`'s own `Arc` and nothing else. `Thread::destroy()` (`kernel/kernel/task/thread.cpp:432-456`, run from a DPC) runs `~Thread()`, which runs `~Stack()`, and nothing ever destroys the mapping. The comment above `~VmCowPages()` (`kernel/mm/vm_cow_pages.cpp:38-46`) already notes that kernel stacks are never destroyed.
 
-Fixing it arms `docs/repairs/261002/x86-mm.md` item 1: the stack's range goes back to a lowest-address-first allocator, other CPUs routinely hold translations of a thread's stack (it migrates; `sync_exec()` requests live on it), and the next thread gets the same range. The two have to land together, the shootdown first.
+Fixing it gives the stack's range back to a lowest-address-first allocator while other CPUs routinely hold translations of a thread's stack (it migrates; `sync_exec()` requests live on it), and the next thread gets the same range. That is safe only because a kernel unmap is shot down on every online CPU, since 2026-10-02 (`ArchVmAspace::invalidate()`).
 
 **Change**
-Destroy the mapping when the stack goes (`~Stack()` or `Thread::destroy()` calls `destroy()` on it), after `x86-mm` item 1 is fixed so the unmap reaches every CPU. Zircon also puts guard pages around each kernel stack; this one has none, and that is a separate item if wanted.
+Destroy the mapping when the stack goes (`~Stack()` or `Thread::destroy()` calls `destroy()` on it); the unmap already reaches every CPU. Zircon also puts guard pages around each kernel stack; this one has none, and that is a separate item if wanted.
 
 **Reference**
 Zircon `KernelStack::Teardown()` (`zircon/kernel/vm/kstack.cc:248`), which destroys the stack's mappings and VMARs when the thread is freed.
