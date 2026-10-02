@@ -5,7 +5,7 @@ executable("plan") {
   testonly = true
   sources = [ "plan_test.cpp" ]
   deps = [
-    "//system/lib/launch",
+    "//system/lib/launch:plan",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]
@@ -19,7 +19,7 @@ executable("program") {
   sources = [ "program_test.cpp" ]
   deps = [
     "//system/lib/eftl:headers",
-    "//system/lib/launch",
+    "//system/lib/launch:plan",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]

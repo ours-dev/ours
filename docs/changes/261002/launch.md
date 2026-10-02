@@ -123,3 +123,120 @@ None.
 - Which program headers does the planner need, and which does it leave to the binder?
 - Why does `read()` not decide whether the file can be started, and who does?
 - Why is the RELRO's size `p_memsz` and not `p_filesz`?
+
+## Title: The launcher starts a program from user space: launch::start() carries out the plan through system calls (2026-10-02)
+
+**Files**
+- `system/lib/launch/include/launch/launch.hpp`, `system/lib/launch/src/launch.cpp` — `launch::Request`, `launch::Started` and `launch::start()`, the executor.
+- `system/lib/launch/include/launch/program.hpp`, `system/lib/launch/src/program.cpp`, `system/lib/launch/test/program_test.cpp` — `Program::stack_size()`, PT_GNU_STACK's p_memsz, and a host test for it.
+- `system/lib/launch/BUILD.gn`, `system/lib/launch/test/BUILD.gn` — the planner is `:plan`, built for the host too; `:launch` is defined only in the user toolchains; the headers depend on elfload's.
+- `examples/shell/shell.cpp`, `examples/shell/BUILD.gn` — `make_launcher()`, `launch_program()` and `print_launch_report()`; the control probe is started by the launcher, which gets a verdict line of its own; a probe's answer that cannot be read is no answer.
+- `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — a table of more than two pages of relocated pointers in writable data, checked before any probe runs: what makes the boot take the launcher's snapshot path.
+- `docs/repairs/261002/launch.md` — new: four items the review left open.
+- `docs/design/260923/userspace-interface.md` — D13 revised.
+- `docs/design/260924/userspace-filesystem.md` — §4.6's loading and placement, and the K23 row, marked superseded.
+
+**Symptom**
+None; K23's executor. Until now only the kernel could start a program, through process_spawn_boot.
+
+**Cause**
+What the launcher has to build, as objects:
+- The file VMO: the program's file, a Slice of the executable BootFS. Its read-only and code pages are mapped straight from it.
+- The snapshot VMOs and the zero-fill VMOs. A writable segment is cut where its file bytes stop filling whole pages, or at its end when it has no .bss. The pages before the cut are a SnapshotOnWrite child of the file, writable and sharing the file's pages until written. The pages from the cut on are a zero-fill VMO, with the partial page's file bytes copied in, and the .bss after them. Either part can be empty: the shell, init and, before this change, fault_probe have writable segments whose data starts in the page it ends in, so no snapshot at all.
+- The process and its root region, from process_create.
+- The image region: one sub-region as long as all the segments together, placed by the kernel, allowing read, write and execute.
+- The vDSO VMO, mapped whole into the root region, read and execute, sealed.
+- The stack region: a guard page at its bottom, and the stack VMO mapped above it.
+- The first thread.
+
+What happens, in order:
+1. The file is judged (`elfload::check_program()`), read (`Program::read()`) and planned (`Plan::build()`), and the stack is sized. Nothing exists yet, so a refusal leaves nothing behind.
+2. process_create makes the process and its root region.
+3. vma_allocate makes the image region; then the snapshot and zero-fill VMOs, and each partial page is copied into its zero-fill VMO.
+4. The vDSO is mapped, and the binder binds the program's imports to it. Each relocation goes through the Writer: an offset in the image, to the plan's mapping holding it, to a vmo_write into that mapping's VMO.
+5. Each mapping of the plan is mapped into the image region at `vaddr - first`, with its final protection.
+6. The stack region, its guard, and the stack VMO mapped above the guard.
+7. thread_create, then process_start at `entry + bias`, with the stack pointer, the bootstrap handle in %rdi and the vDSO's base in %rsi.
+
+Three of these choices carry the design:
+- Relocations are written before anything of the program is mapped, so each mapping is made once with its final protection. RELRO is read-only from the moment it exists, and the launcher needs no vma_protect, which does not exist yet. Only the vDSO is mapped first, because binding needs its address.
+- One region for the whole image keeps the segments at their link-time distances wherever the kernel puts it. So one bias, `image_base - first`, is right for every segment, and every relocation the binder computes with it lands where it should.
+- Every handle is held by an `Owned` that closes it on any early return. Closing the last handle to a process that never started destroys it with its address space (K23a), so a failure at any step leaves nothing behind.
+
+The review found that this check could not fail a boot. boot_check fails only on an error line, a FAILED line or a missing end. A program the launcher got wrong dies before main, which the kernel logs as a warning. And without a launcher the control probe still answered, through process_spawn_boot. So the shell now ends the control with `shell: launcher checks passed` or a FAILED line naming what went wrong.
+
+**Change**
+The sequence is the seven steps above; `launch.cpp` names each. Two pieces carry the rest. The Writer routes a relocation to the VMO that holds its page, and refuses a page that comes straight from the file:
+
+```cpp
+auto address = self.first + offset;
+// the plan's mapping that holds |address|, or InvArgs
+if (holder == nullptr || holder->source == Source::File) {
+    return Status::InvArgs;
+}
+auto const into = address - holder->vaddr;
+auto const piece = std::min<u64>(left, holder->size - into);
+ou::vmo_write(vmo, source, holder->vmo_offset + into, usize(piece));
+```
+
+Every step that fails says which, through the caller's diagnostics, before its status goes back:
+
+```cpp
+auto failed(Request const &request, std::string_view const step, Status const status,
+            ustl::Option<u64> const value = {}) -> Status {
+    request.diagnostics({.what = step, .name = ours::to_string(status), .value = value});
+    return status;
+}
+...
+return ustl::err(failed(request, "vma_map of a segment", status, mapping.vaddr));
+```
+
+The stack is the size PT_GNU_STACK asks for, rounded up to a page, or 64 KiB when it asks for none, as the interface design (§3.4) sets.
+
+**Reference**
+- Zircon `ld::RemoteDynamicLinker` (`sdk/lib/ld/include/lib/ld/remote-dynamic-linker.h:85-135`): Allocate, Relocate into the segments' VMOs, Load with RELRO read-only, Commit. That is the shape of steps 3 to 5.
+- Zircon `elfldltl::VmarLoader::AllocateVmar()` (`src/lib/elfldltl/vmar-loader.cc:68-85`): one VMAR for the image, segments mapped Specific inside it.
+- Zircon process_builder (`src/lib/process_builder/src/process_builder.rs`): the stack from PT_GNU_STACK or a default (`:506-524`), and the start (`:867`). Two departures from it are written in `launch.hpp`: `start()` starts the process before the caller writes processargs, and it hands back only the process and its root region.
+- The kernel's `userabi::launch()` (`kernel/lib/userabi/src/userboot.cpp:602`), which still starts userboot and process_spawn_boot's programs in the same order of steps. It maps the image as one writable and executable range at the fixed USER_ASPACE_BASE (`:501-504`) and binds it after mapping (`:689-704`), the order this executor reverses.
+
+**Verification**
+- Host tests: `program` 8 of 8 (one new: the stack size from PT_GNU_STACK, and 0 for none or a size of 0); `plan` 36 of 36.
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed, the launcher's verdict among them), rel PASS (13 passed, 10 skipped). The dbg log: `shell: starting the control probe with the launcher`, `fault_probe: unknown probe none`, `shell: control probe none answered "unknown"`, `shell: launcher checks passed`, and a `shell: launch: bound: ...` line per import.
+- Mutation: the Writer dropping every relocation. dbg FAILs with `shell: control probe none died without answering (expected "unknown")` and `shell: launcher checks FAILED (its control probe did not answer "unknown")`. Restored.
+- The snapshot path. Until fault_probe's table, no program in the tree had a whole page of writable file bytes, so the boot never made a snapshot: `vmo_create_child(SnapshotOnWrite)`, the Writer's snapshot branch and the mappings of a snapshot did not run. fault_probe's second writable segment is now `vaddr 0xbbb8, filesz 0x2260, memsz 0x34d8` (`llvm-readelf -lW`), so its plan has a 2-page snapshot, `[0xb000, 0xd000)`, and a zero-fill part from 0xd000 with the partial page copied in. The table's 1100 R_X86_64_RELATIVE relocations land in both parts.
+- Mutation: the Writer dropping every write into a snapshot page. dbg FAILs with `fault_probe: a pointer in its writable data was not relocated where it lies`, `shell: control probe none answered "relocation"` and the launcher's FAILED line. The probes the kernel starts still pass `11 killed, 0 survived`, so the kernel's loader relocates the same table right. Restored, and dbg passes again.
+- Not exercised: a relocation split across the cut. Relocations are 8-byte aligned and the cut is page-aligned, so none of today's programs has one.
+- An adversarial review in four lenses, each re-checked by a skeptic. Fixed from it:
+  - the GN gate, which did not keep `:launch` out of the host toolchain;
+  - the header's error contract;
+  - the launcher's verdict line;
+  - the shell's own failure reasons, and a probe failing to start before the control;
+  - PT_GNU_STACK, which was ignored against §3.4;
+  - the failed step reported through the diagnostics;
+  - the bound addresses printed, which nothing logged for a program the launcher starts;
+  - the Zircon citation;
+  - and, each in its own commit, `__cxa_pure_virtual` for user programs and the two binder refusals that said nothing.
+- A second review of the result, in two lenses, each re-checked by a skeptic, found the untested snapshot path above. It also found:
+  - the header's diagnostics and status contract, made exact;
+  - a probe answer longer than the shell's buffer, read past its end when printed;
+  - claims in this record and the repairs and design notes that the code did not bear out, corrected before commit.
+
+**Deliberately not done**
+- The probes that fault still start through process_spawn_boot (U6), and init still spawns the shell (U7).
+- Only the dbg image runs the launcher: the rel image's shell is started by init and holds no job.
+- Starting before processargs, and handing back only the process and its root region: the departures from process_builder above. Whether to split `start()` into a build and a start, as process_builder and BuiltProcess do, is the user's to decide.
+- The image region is made without CanMapSpecific, which Zircon's `AllocateVmar()` passes. Whether to adopt Zircon's rule is the user's to decide (the vma_allocate review).
+- `docs/repairs/261002/launch.md`: the vDSO and the program's bytes, neither checked against the VMO that is mapped; the BootFS paying for every snapshot; a system call per relocation.
+- No cap on the stack a program asks for, as in Zircon's process_builder: it is the program's own address space, and a size with no room fails at vma_allocate.
+- No ASLR: the kernel places everything at the lowest room that fits.
+
+**How it was found**
+None; K23.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why are the relocations written into the VMOs before anything of the program is mapped, and what would the other order need?
+- Why does one bias serve every segment, and what keeps it so?
+- Why could the shell's check not fail a boot before the launcher had a verdict line of its own?

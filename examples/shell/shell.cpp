@@ -33,11 +33,13 @@
 #include <ours/syscall/resource.hpp>
 #include <ours/vdso.hpp>
 
+#include <span>
 #include <string_view>
 
 #include <cstring>
 
 #include <bootfs/format.hpp>
+#include <launch/launch.hpp>
 #include <ou/channel.hpp>
 #include <ou/command.hpp>
 #include <ou/debug.hpp>
@@ -188,6 +190,193 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
         ou::debug_line({"shell: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
 }
 
+/// What the shell needs to start a program from the BootFS with the user-space
+/// launcher (K23): the BootFS made executable, which each program's file is a
+/// slice of; the BootFS itself, to read the files here; the vDSO's VMO, and
+/// the vDSO as a file, which the launcher binds the program's imports to.
+struct Launcher {
+    ours::HandleValue executable = ours::HANDLE_INVALID;
+    ours::HandleValue bootfs = ours::HANDLE_INVALID;
+    ours::HandleValue vdso = ours::HANDLE_INVALID;
+    std::span<u8 const> vdso_file;
+};
+
+/// A program read here before the launcher plans it, and the vDSO read once:
+/// static, not on the stack, because they are tens of kilobytes and there is
+/// no allocator. One launch at a time uses program_bytes.
+alignas(16) u8 program_bytes[64 * 1024];
+alignas(16) u8 vdso_bytes[16 * 1024];
+
+/// Finds |name| in the BootFS's directory, which it reads the way
+/// check_bootfs() does: NotFound when it is not there, OutOfRange for a
+/// directory larger than this function's buffers, or vmo_read's answer.
+auto find_in_bootfs(ours::HandleValue const bootfs, ou::Str const name, bootfs::Entry *const out)
+    -> ours::Status {
+    using ours::Status;
+
+    constexpr u32 MAX_ENTRIES = 16;
+    constexpr u32 MAX_NAMES = 512;
+    bootfs::Header header{};
+    bootfs::Entry entries[MAX_ENTRIES];
+    char names[MAX_NAMES];
+    if (auto const status = ou::vmo_read(bootfs, &header, 0, sizeof(header));
+        status != Status::Ok) {
+        return status;
+    }
+    if (header.file_count > MAX_ENTRIES || header.name_table_size > MAX_NAMES) {
+        return Status::OutOfRange;
+    }
+    auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
+    if (auto const status = ou::vmo_read(bootfs, entries, sizeof(header), entries_size);
+        status != Status::Ok) {
+        return status;
+    }
+    if (auto const status =
+            ou::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size);
+        status != Status::Ok) {
+        return status;
+    }
+    for (u32 i = 0; i < header.file_count; ++i) {
+        auto const &entry = entries[i];
+        if (u64{entry.name_offset} + entry.name_size <= header.name_table_size &&
+            spells(names + entry.name_offset, entry.name_size, name)) {
+            *out = entry;
+            return Status::Ok;
+        }
+    }
+    return Status::NotFound;
+}
+
+/// The launcher: the BootFS made executable with vmex, and the vDSO's bytes
+/// read out of it. Made only where the probes run, in the shell userboot
+/// starts, which userboot hands all three handles: there a launcher is
+/// expected, so failing to make one is a failed check, with its reason (the
+/// line boot_check sees). A launcher whose `executable` is HANDLE_INVALID is
+/// none, and the control probe falls back to process_spawn_boot.
+auto make_launcher(ours::HandleValue const bootfs, ours::HandleValue const vmex,
+                   ours::HandleValue const vdso) -> Launcher {
+    using ours::Status;
+
+    Launcher launcher{};
+    if (bootfs == ours::HANDLE_INVALID || vmex == ours::HANDLE_INVALID ||
+        vdso == ours::HANDLE_INVALID) {
+        static_cast<void>(ou::debug_line(
+            "shell: launcher checks FAILED (no BootFS, vmex or vDSO was handed over)"));
+        return launcher;
+    }
+    bootfs::Entry entry{};
+    if (auto const status = find_in_bootfs(bootfs, "vdso", &entry); status != Status::Ok) {
+        report("shell: launcher checks FAILED, finding the vdso in the BootFS = ", status);
+        return launcher;
+    }
+    if (entry.data_size > sizeof(vdso_bytes)) {
+        static_cast<void>(ou::debug_line(
+            "shell: launcher checks FAILED (the vdso is larger than the shell's buffer)"));
+        return launcher;
+    }
+    if (auto const status = ou::vmo_read(bootfs, vdso_bytes, entry.data_offset, entry.data_size);
+        status != Status::Ok) {
+        report("shell: launcher checks FAILED, reading the vdso = ", status);
+        return launcher;
+    }
+    ours::HandleValue copy = ours::HANDLE_INVALID;
+    if (auto const status = ou::handle_duplicate(bootfs, ours::Rights::SameRights, &copy);
+        status != Status::Ok) {
+        report("shell: launcher checks FAILED, handle_duplicate(the BootFS) = ", status);
+        return launcher;
+    }
+    // Consumes |copy| whatever it answers.
+    ours::HandleValue executable = ours::HANDLE_INVALID;
+    if (auto const status = ou::vmo_replace_as_executable(copy, vmex, &executable);
+        status != Status::Ok) {
+        report("shell: launcher checks FAILED, vmo_replace_as_executable(the BootFS) = ", status);
+        return launcher;
+    }
+    launcher.executable = executable;
+    launcher.bootfs = bootfs;
+    launcher.vdso = vdso;
+    launcher.vdso_file = {vdso_bytes, entry.data_size};
+    return launcher;
+}
+
+/// The launcher's reports, on the debug console: why it refused or failed,
+/// and where it bound each of the program's imports. The bound values are
+/// what a fault through a wrongly bound slot needs beside its register dump.
+/// The kernel logs them for the programs it starts; for the launcher's,
+/// nothing else would.
+auto print_launch_report(void *, elfload::Report const &report) -> void {
+    ou::Str prefix{"shell: launch: "};
+    if (report.severity == elfload::Severity::Error) {
+        prefix = "shell: launch failed: ";
+    }
+    ou::Str separator;
+    ou::Str name;
+    if (!report.name.empty()) {
+        separator = ": ";
+        name = {report.name.data(), report.name.size()};
+    }
+    char text[18];
+    ou::Str space;
+    ou::Str value;
+    if (report.value.is_some()) {
+        space = " ";
+        value = ou::hex(report.value.value(), text);
+    }
+    static_cast<void>(ou::debug_line(
+        {prefix, {report.what.data(), report.what.size()}, separator, name, space, value}));
+}
+
+/// Starts |name| from the BootFS under |job| with the launcher, |bootstrap|
+/// as its one handle (consumed whatever the answer, as launch::start()
+/// consumes it). The program's file is a slice of the executable BootFS, and
+/// its bytes are read into program_bytes for the launcher to plan and bind.
+/// What fails here before launch::start() says so itself, since its status
+/// alone could be mistaken for one of the launcher's.
+auto launch_program(Launcher const &launcher, ours::HandleValue const job, ou::Str const name,
+                    ours::HandleValue const bootstrap)
+    -> ustl::Result<launch::Started, ours::Status> {
+    using ours::Status;
+
+    bootfs::Entry entry{};
+    ours::HandleValue file = ours::HANDLE_INVALID;
+    auto status = find_in_bootfs(launcher.bootfs, name, &entry);
+    if (status != Status::Ok) {
+        report("shell: finding the program in the BootFS = ", status);
+    } else if (entry.data_size > sizeof(program_bytes)) {
+        static_cast<void>(ou::debug_line("shell: the program is larger than the shell's buffer"));
+        status = Status::OutOfRange;
+    } else {
+        status = ou::vmo_read(launcher.bootfs, program_bytes, entry.data_offset, entry.data_size);
+        if (status != Status::Ok) {
+            report("shell: reading the program = ", status);
+        } else {
+            status = ou::vmo_create_child(launcher.executable, ours::VmoChildOptions::Slice,
+                                          entry.data_offset, entry.data_size, &file);
+            if (status != Status::Ok) {
+                report("shell: slicing the program out of the BootFS = ", status);
+            }
+        }
+    }
+    if (status != Status::Ok) {
+        static_cast<void>(ou::handle_close(bootstrap));
+        return ustl::err(status);
+    }
+    auto started = launch::start({
+        .job = job,
+        .name = {name.data(), name.size()},
+        .file = file,
+        .file_bytes = {program_bytes, entry.data_size},
+        .vdso = launcher.vdso,
+        .vdso_file = launcher.vdso_file,
+        .bootstrap = bootstrap,
+        .diagnostics = {.report = print_launch_report, .context = nullptr},
+    });
+    // The mappings of the program's code hold the file's VMO; this handle is
+    // not needed for them.
+    static_cast<void>(ou::handle_close(file));
+    return started;
+}
+
 /// How one fault_probe run ended, from this side of its answer channel.
 struct ProbeRun {
     /// Started at all; false when making the channels or the process failed,
@@ -201,7 +390,8 @@ struct ProbeRun {
 };
 
 /// Starts fault_probe under |job| with |probe| as argv[1], and waits for it
-/// to answer or die.
+/// to answer or die. With a |launcher|, the program is started by the
+/// user-space launcher; without one, by process_spawn_boot.
 ///
 /// The probe is started the way every program on the runtime is: a
 /// processargs message on its bootstrap channel (argv = {"fault_probe",
@@ -212,7 +402,8 @@ struct ProbeRun {
 /// as soon as it has read the message: waiting on it, this would see
 /// PeerClosed before the probe had even reached main and count every probe
 /// as killed.
-auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
+auto run_probe(ours::HandleValue const job, ou::Str const probe,
+               Launcher const *const launcher = nullptr) -> ProbeRun {
     using ours::Signals;
     using ours::Status;
 
@@ -249,9 +440,21 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
     // The process first: |bootstrap_there| leaves this process whatever
     // happens, and its root VMA comes back for the message.
     ours::HandleValue root_vma = ours::HANDLE_INVALID;
-    auto status = ou::process_spawn_boot(job, "fault_probe", bootstrap_there, &root_vma);
+    ours::HandleValue process = ours::HANDLE_INVALID;
+    auto status = Status::Ok;
+    if (launcher != nullptr) {
+        auto const started = launch_program(*launcher, job, "fault_probe", bootstrap_there);
+        if (started.is_err()) {
+            status = started.unwrap_err();
+        } else {
+            process = started.unwrap().process;
+            root_vma = started.unwrap().root_vma;
+        }
+    } else {
+        status = ou::process_spawn_boot(job, "fault_probe", bootstrap_there, &root_vma);
+    }
     if (status != Status::Ok) {
-        report("shell: spawning fault_probe = ", status);
+        report("shell: starting fault_probe = ", status);
         static_cast<void>(ou::handle_close(bootstrap));
         static_cast<void>(ou::handle_close(answer));
         static_cast<void>(ou::handle_close(answer_there));
@@ -276,8 +479,15 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
                                           ours::INSTANT_INFINITE, &observed));
     run.killed = !(observed & Signals::Readable);
     if (!run.killed) {
-        static_cast<void>(
-            ou::channel_read(answer, run.answer, sizeof(run.answer), &run.answer_size));
+        // An answer that does not fit, or a read that fails, leaves no answer:
+        // the size the kernel writes back on BufferTooSmall is what it would
+        // need, not what is in run.answer.
+        if (auto const read =
+                ou::channel_read(answer, run.answer, sizeof(run.answer), &run.answer_size);
+            read != Status::Ok) {
+            report("shell: reading the probe's answer = ", read);
+            run.answer_size = 0;
+        }
 
         // And then until the probe has let go of its end. That end was made
         // here, so it is charged to this process (the per-creator handle
@@ -295,6 +505,9 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
             ou::object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed));
     }
     static_cast<void>(ou::handle_close(answer));
+    if (process != ours::HANDLE_INVALID) {
+        static_cast<void>(ou::handle_close(process));
+    }
     return run;
 }
 
@@ -317,10 +530,19 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe) -> ProbeRun {
 /// return from main, the one path through which the runtime ends a probe
 /// with main's own value.
 ///
+/// The control is started by the user-space launcher when this shell has what
+/// it needs (the BootFS, vmex and the vDSO's VMO, which userboot hands it):
+/// K23's check that a program the launcher planned, mapped, bound and started
+/// reaches main and answers. It ends in a verdict of its own, "launcher
+/// checks passed" or FAILED, because nothing else here would fail the boot:
+/// a program the launcher got wrong dies before main, which the kernel logs
+/// as a warning. The probes that fault are still spawned by the kernel until
+/// U6 moves them.
+///
 /// Run only by the shell userboot starts, which userboot hands the root job
 /// a new process needs; the dev image starts the shell from init, with a
 /// channel instead, and does not package fault_probe.
-auto run_probes(ours::HandleValue const job) -> void {
+auto run_probes(ours::HandleValue const job, Launcher const &launcher) -> void {
     constexpr ou::Str PROBES[] = {
         "pf_unmapped", "pf_kernel", "pf_write_vdso",     "ud2",
         "gp_hlt",      "gp_int80",  "gp_int3",           "de",
@@ -332,6 +554,12 @@ auto run_probes(ours::HandleValue const job) -> void {
     for (auto const probe: PROBES) {
         auto const run = run_probe(job, probe);
         if (!run.started) {
+            // The control, and with it the launcher's verdict below, is never
+            // reached; say so, or the launcher would go unchecked unnoticed.
+            if (launcher.executable != ours::HANDLE_INVALID) {
+                static_cast<void>(ou::debug_line(
+                    "shell: launcher checks FAILED (a probe before its control did not start)"));
+            }
             return;
         }
         if (run.killed) {
@@ -351,16 +579,35 @@ auto run_probes(ours::HandleValue const job) -> void {
                         ou::decimal(survived, survived_text), " survived)"}));
 
     constexpr ou::Str CONTROL{"none"};
-    auto const control = run_probe(job, CONTROL);
-    if (!control.started) {
-        return;
+    Launcher const *by = nullptr;
+    if (launcher.executable != ours::HANDLE_INVALID) {
+        by = &launcher;
+        static_cast<void>(ou::debug_line("shell: starting the control probe with the launcher"));
     }
-    if (control.killed) {
-        static_cast<void>(ou::debug_line(
-            "shell: control probe none died without answering (expected \"unknown\")"));
-    } else {
-        static_cast<void>(ou::debug_line({"shell: control probe none answered \"",
-                                          ou::Str(control.answer, control.answer_size), "\""}));
+    auto const control = run_probe(job, CONTROL, by);
+    auto answered_unknown = false;
+    if (control.started) {
+        if (control.killed) {
+            static_cast<void>(ou::debug_line(
+                "shell: control probe none died without answering (expected \"unknown\")"));
+        } else {
+            static_cast<void>(ou::debug_line({"shell: control probe none answered \"",
+                                              ou::Str(control.answer, control.answer_size), "\""}));
+            answered_unknown = spells(control.answer, control.answer_size, "unknown");
+        }
+    }
+
+    // K23's verdict, on a line of its own: nothing above fails the boot when
+    // the launcher breaks. A program it maps or binds wrongly dies before
+    // main, which the kernel logs as a warning, not an error, and without a
+    // launcher the control is started and answers all the same.
+    if (by != nullptr) {
+        if (answered_unknown) {
+            static_cast<void>(ou::debug_line("shell: launcher checks passed"));
+        } else {
+            static_cast<void>(ou::debug_line(
+                "shell: launcher checks FAILED (its control probe did not answer \"unknown\")"));
+        }
     }
 }
 
@@ -2643,7 +2890,11 @@ auto main(int, char **) -> int {
     answer_init(peer);
     describe_bootfs(bootfs);
     if (job != ours::HANDLE_INVALID) {
-        run_probes(job);
+        auto const launcher = make_launcher(bootfs, vmex, vdso_vmo);
+        run_probes(job, launcher);
+        if (launcher.executable != ours::HANDLE_INVALID) {
+            static_cast<void>(ou::handle_close(launcher.executable));
+        }
     }
     // Before the job is closed below: it is what a process is created under.
     check_process_create(job);

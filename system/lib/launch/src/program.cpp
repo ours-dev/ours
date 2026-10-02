@@ -48,6 +48,10 @@ auto Program::read(std::span<u8 const> const file) -> ustl::Result<Program, ours
             program.m_relro = Relro{.vaddr = header.p_vaddr, .size = header.p_memsz};
         }
     }
+    // The parser has already refused a second PT_GNU_STACK.
+    if (auto const stack = elf.gnu_stack(); stack.is_some()) {
+        program.m_stack_size = stack.value().size_hint();
+    }
     return ustl::ok(program);
 }
 } // namespace launch

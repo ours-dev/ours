@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// Program::read(): the PT_LOAD segments, the PT_GNU_RELRO and the entry point,
-/// read out of ELF images built here byte by byte.
+/// Program::read(): the PT_LOAD segments, the PT_GNU_RELRO, the PT_GNU_STACK
+/// size and the entry point, read out of ELF images built here byte by byte.
 #include <launch/plan.hpp>
 #include <launch/program.hpp>
 
@@ -54,8 +54,10 @@ auto relro(u64 const offset, u64 const vaddr, u64 const file_size, u64 const mem
                      mem_size);
 }
 
-auto gnu_stack() -> Phdr {
-    return header_of(static_cast<u32>(eftl::elf::SegType::GnuStack), PF_R | PF_W, 0, 0, 0, 0);
+/// A PT_GNU_STACK asking for |size| bytes of stack; 0, what a linker writes
+/// unless told -z stack-size, leaves the size to whoever starts the program.
+auto gnu_stack(u64 const size = 0) -> Phdr {
+    return header_of(static_cast<u32>(eftl::elf::SegType::GnuStack), PF_R | PF_W, 0, 0, 0, size);
 }
 
 /// An x86-64 ET_DYN of |file_size| bytes: the ELF header, then |headers| as
@@ -141,6 +143,17 @@ TEST(ProgramRead, NoRelroIsSizeZero) {
     PROGRAM_OF(program, elf_of({load(PF_R | PF_X, 0x0, 0x0, 0x100, 0x100)}, 0x10, 0x100));
     EXPECT_EQ(program.relro().size, 0U);
     EXPECT_EQ(program.segments().size(), 1U);
+}
+
+TEST(ProgramRead, StackSizeIsGnuStacksMemsz) {
+    PROGRAM_OF(
+        asks, elf_of({load(PF_R | PF_X, 0x0, 0x0, 0x100, 0x100), gnu_stack(0x40000)}, 0x10, 0x100));
+    EXPECT_EQ(asks.stack_size(), 0x40000U);
+    // typical() has a PT_GNU_STACK that names no size, and this one has none.
+    PROGRAM_OF(leaves, typical());
+    EXPECT_EQ(leaves.stack_size(), 0U);
+    PROGRAM_OF(none, elf_of({load(PF_R | PF_X, 0x0, 0x0, 0x100, 0x100)}, 0x10, 0x100));
+    EXPECT_EQ(none.stack_size(), 0U);
 }
 
 TEST(ProgramRead, ItsSegmentsMakeAPlan) {

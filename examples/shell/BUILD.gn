@@ -33,6 +33,7 @@ user_executable("shell") {
   # point and main's caller; bootfs is the format of the BootFS it reads.
   deps = [
     "//system/lib/bootfs:headers",
+    "//system/lib/launch",
     "//system/lib/ou",
     "//system/lib/runtime",
   ]

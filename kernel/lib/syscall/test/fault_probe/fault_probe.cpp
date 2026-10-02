@@ -21,6 +21,10 @@
 /// Every action is an `asm volatile`: a load whose result is unused, or a
 /// division the compiler can see is by zero, is exactly what an optimiser
 /// removes or folds, and the probe would then test nothing.
+///
+/// Before any of that, it checks that a table of pointers in its writable
+/// data was relocated where it lies (see RELOCATED), and answers "relocation"
+/// if not: the check on the loader that started it, whichever that was.
 
 #include <ou/channel.hpp>
 #include <ou/debug.hpp>
@@ -139,6 +143,48 @@ constexpr Probe PROBES[] = {
     {"trap_outside_vdso", trap_outside_vdso},
 };
 
+/// What every entry of |relocated| points at.
+constexpr char TAG[] = "relocated";
+
+/// More than two pages of pointers in writable data, each one an
+/// R_X86_64_RELATIVE relocation, with .bss after them. That is the one shape
+/// the K23 launcher maps partly from a snapshot of the program's file: the
+/// whole pages before the one its data ends in, and it writes these
+/// relocations into that snapshot. No other program in the tree has a page
+/// of writable file bytes, so without this table the boot never takes that
+/// path. A wrong page, or a relocation missed or written elsewhere, leaves an
+/// entry that does not point at TAG.
+///
+/// constinit, because nothing runs a dynamic initialiser in this program: the
+/// runtime has no .init_array, and the table must be built at link time, as
+/// relocations, or not at all.
+constexpr usize RELOCATED_COUNT = 1100;
+
+struct Relocated {
+    char const *entries[RELOCATED_COUNT];
+
+    constexpr Relocated() : entries{} {
+        for (auto &entry: entries) {
+            entry = TAG;
+        }
+    }
+};
+
+constinit Relocated relocated;
+
+/// Whether every entry of |relocated| points at TAG. Read through volatile:
+/// the compiler can see every entry was set to TAG, and would otherwise
+/// answer for the memory without reading it.
+auto relocations_hold() -> bool {
+    for (auto const &entry: relocated.entries) {
+        char const *const volatile *const at = &entry;
+        if (*at != TAG) {
+            return false;
+        }
+    }
+    return true;
+}
+
 auto same(ou::Str const a, ou::Str const b) -> bool {
     if (a.size() != b.size()) {
         return false;
@@ -161,6 +207,9 @@ enum ExitCode : int {
     UNKNOWN = 2,
     /// Started without a probe name.
     NO_NAME = 3,
+    /// A pointer in RELOCATED does not point at TAG: the loader got this
+    /// program's writable data wrong.
+    BAD_RELOCATION = 4,
 };
 
 /// Says |answer| to the driver on |channel|, the User0 startup handle.
@@ -176,6 +225,12 @@ auto reply(ours::HandleValue const channel, ou::Str const answer) -> void {
 
 auto main(int const argc, char **const argv) -> int {
     auto const answer = runtime::take_startup_handle(ours::HandleType::User0, 0);
+    if (!relocations_hold()) {
+        static_cast<void>(ou::debug_line("fault_probe: a pointer in its writable data was not "
+                                         "relocated where it lies"));
+        reply(answer, "relocation");
+        return BAD_RELOCATION;
+    }
     if (argc < 2) {
         static_cast<void>(ou::debug_line("fault_probe: no probe name"));
         reply(answer, "no probe name");

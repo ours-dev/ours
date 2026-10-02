@@ -14,13 +14,14 @@
 
 namespace launch {
 /// What the launcher needs from a program's ELF before it can plan it: the
-/// PT_LOAD segments in file order, the PT_GNU_RELRO, and where the program
-/// starts. Everything else in the headers -- PT_DYNAMIC for the binder, the
-/// section headers, notes -- is read from the file by whoever needs it.
+/// PT_LOAD segments in file order, the PT_GNU_RELRO, the stack size
+/// PT_GNU_STACK asks for, and where the program starts. Everything else in the
+/// headers -- PT_DYNAMIC for the binder, the section headers, notes -- is read
+/// from the file by whoever needs it.
 ///
-/// Read once, by read(), from the whole file: the launcher reads the program
-/// out of its VMO into memory before planning it, because binding it against
-/// the vDSO reads the file's dynamic tables as well. A Program is not changed
+/// Read once, by read(), from the whole file in memory, which the launcher is
+/// handed with the program's VMO (launch::Request): binding it against the
+/// vDSO reads the file's dynamic tables as well. A Program is not changed
 /// after it is read.
 ///
 /// Reading is not judging. Whether the file is a program this system can start
@@ -61,6 +62,14 @@ class Program {
         return m_entry;
     }
 
+    /// PT_GNU_STACK's p_memsz: how large a stack the program asks for. 0 when
+    /// it has no PT_GNU_STACK or leaves the size to whoever starts it, which
+    /// is the usual case: a linker writes a size only for -z stack-size.
+    [[nodiscard]]
+    auto stack_size() const -> u64 {
+        return m_stack_size;
+    }
+
   private:
     Program() = default;
 
@@ -68,6 +77,7 @@ class Program {
     usize m_segment_count = 0;
     Relro m_relro;
     u64 m_entry = 0;
+    u64 m_stack_size = 0;
 };
 } // namespace launch
 

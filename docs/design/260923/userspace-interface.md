@@ -558,7 +558,7 @@ P1 的前置：
 | D10 | ProcessDispatcher 上的 `m_parent`/`m_children`/`CREATED_PROCESS_LIST` 怎么处理 | A 新代码不读写它们，删除前问主人；B 做成 POSIX 式进程树 | **A**。层级由 job 表达（Zircon 同样没有进程父子关系）；这些成员可能是预留的脚手架 |
 | D11 | Channel 队列满时怎么办 | A 回 NoResource，不清 WRITABLE；B 真正背压，清 WRITABLE 并回 ShouldWait；C 照 Zircon 抛策略异常 | **A**。等异常机制落地后改成 C；B 会改变 WRITABLE 的含义 |
 | D12 | aspace 锁和 VMO 锁用什么类型 | A 都换成 Mutex，锁序 aspace → VMO；B 都用 SpinLock | **A**。前提是先让用户态来源的缺页在开中断的状态下处理，并规定持自旋锁时禁止缺页 |
-| D13 | 怎么保证内核与 vDSO 一致 | A 继续从 BootFS 加载，userboot 核对 build-id；B 像 Zircon rodso 那样把 vDSO 嵌进 vmours 映像 | **A**。改动小；等 vDSO 需要数据页时再考虑 B |
+| D13 | 怎么保证内核与 vDSO 一致 | A 继续从 BootFS 加载，userboot 核对 build-id；B 像 Zircon rodso 那样把 vDSO 嵌进 vmours 映像 | **A**。改动小；等 vDSO 需要数据页时再考虑 B。**Revised 2026-10-02 (K23):** no build-id check. The launcher binds a program against the BootFS `vdso` file, the one the kernel lays the vDSO VMO out from (`kernel/lib/userabi/src/userboot.cpp:43`), so the two agree by construction; nothing checks it at run time (`docs/repairs/261002/launch.md`, item 1). |
 | D14 | 根资源 | A 删掉 Root，交出四个按种类的 ranged root；B 保留单一 Root | **A**。一个能派生一切的句柄就是环境权威，Zircon 也已移除 ROOT 种类 |
 | D15 | lib/syscall 能否直接调时钟、CPRNG、logz4 这类无状态服务 | A 在 kernel/object 里做薄门面，lib/syscall 按依赖白名单只依赖它；B 允许直接调用 | **A**。这样主人的规则将来能由 GN 依赖图机械检查 |
 
