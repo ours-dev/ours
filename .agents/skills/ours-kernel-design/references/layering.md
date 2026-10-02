@@ -33,11 +33,22 @@
   process_builder do. `ProcessDispatcher::create` does not map it. The user
   chose Zircon's shape over "the kernel maps it at process creation"
   (2026-09-28); never copy the vDSO per process.
-- Adding a syscall means: kernel handler, vDSO stub exported in `.dynsym`,
-  declaration in `system/public/ours/vdso.hpp`, and exactly one named entry in
-  `//system/lib/ou` (even if it only forwards). Ring-3 code calls `ou::...`,
-  never raw `ours_*` symbols. Limits callers must respect (such as
-  `MAX_DEBUG_WRITE`) live in `system/public/ours/syscall.hpp`.
+- Adding a syscall means: an entry in `system/public/ours/syscalls.gni`, the
+  body of `ours::syscall::<name>()` in `//kernel/lib/syscall`, and exactly one
+  named entry in `//system/lib/ou` (even if it only forwards). The vDSO stub,
+  the `extern "C"` declaration `<ours/vdso.hpp>` includes and the kernel
+  shim are generated from the entry; never write them by hand. Limits callers
+  must respect (such as `MAX_DEBUG_WRITE`) live in
+  `system/public/ours/syscall.hpp`.
+- Ring-3 code calls `ou::...`, never raw `ours_*` symbols, with no exception:
+  ABI conformance tests (bad pointers, unknown option bits) go through `ou`
+  too, so an `ou` entry passes every ABI parameter through, options included,
+  and forwards pointers unchanged (the user's call, 2026-10-02, over an
+  exception list for tests).
+- `ou` is to be generated from `syscalls.gni`, with typed handles in the
+  shape of Zircon's `lib/zx` (a consumed handle taken by value): the user's
+  call, 2026-10-02, because a generator was always the plan. Until it lands
+  the entries are hand-written. Plan: `.agents/tasks/system-abi-surface`.
 - The address-region object is **Vma** at every layer: `VmaDispatcher`,
   `ours_vma_*`, `ou::vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
   `mm::VmArea` -- not Zircon's "Vmar" (the user's call, 2026-09-28, after a
