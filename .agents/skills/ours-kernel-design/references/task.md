@@ -44,3 +44,26 @@ word.
 
 `kernel/time` has no TimerScheduler layer: `TimerQueue` is the per-CPU timer
 engine and does that work itself.
+
+## Prof
+
+The user's call, 2026-10-02; the design is in
+`.agents/tasks/prof-sampler-object/DESIGN.md`.
+
+- Profiling is a kernel object userspace holds, after Zircon's
+  `SamplerDispatcher` and `ThreadSampler`
+  (`zircon/kernel/lib/thread_sampler/`): created from the System resource
+  slot SAMPLING (15), at most one session system-wide, ended when its last
+  handle closes. Nothing samples and nothing is allocated while no session
+  runs: no hook on the tick path, no buffers built at boot.
+- A per-CPU `time::Timer`, armed only while a session runs, triggers
+  samples. The PMU is not a sampler source; it returns later as a facility
+  of its own, as Zircon's perfmon is.
+- Both user and kernel stacks, chosen in the config. User stacks follow
+  Zircon: the timer only marks the thread, which walks its own stack by
+  frame pointers on its way back to ring 3. Kernel stacks are unwound in the
+  timer interrupt with `.eh_frame`, a deliberate departure: Zircon does not
+  sample kernel stacks.
+- Kernel facts (current CPU, thread, time, output) never go through an arch
+  seam. `kernel/lib/prof` is a host-testable core that takes them as
+  arguments; arch supplies only pc, sp, fp and privilege level from a frame.
