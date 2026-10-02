@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <launch/plan.hpp>
 
+#include <algorithm>
 #include <limits>
 
 #include <ustl/mem/align.hpp>
@@ -17,15 +18,16 @@ namespace {
 } // namespace
 
 /// Works out how to map the PT_LOAD segments of a program into this Plan: which pages come
-/// straight from its file, which are copied into VMOs of their own, and with
-/// what protection each is mapped.
+/// straight from its file, which from a copy-on-write snapshot of it, which
+/// from a zero-filled VMO, and with what protection each is mapped.
 ///
 /// This is the core of the launcher and it does no I/O: it only decides. The
-/// launcher then does what the Plan says -- vmo_create and vmo_write for every
-/// private VMO, the relocations written into them, then vma_map for every
-/// mapping -- and, because relocation is done before anything is mapped, each
-/// mapping is made with its final protection and nothing has to be protected
-/// afterwards (interface design 3.2, step 5).
+/// launcher then does what the Plan says -- vmo_create_child(SnapshotOnWrite)
+/// of the file for every snapshot, vmo_create for every zero-fill VMO and
+/// vmo_write for every Copy into it, the relocations written into those VMOs,
+/// then vma_map for every mapping -- and, because relocation is done before
+/// anything is mapped, each mapping is made with its final protection and
+/// nothing has to be protected afterwards (interface design 3.2, step 5).
 ///
 /// |segments| are the PT_LOAD entries in the order the file has them, at most
 /// Plan::MAX_SEGMENTS. |relro| is PT_GNU_RELRO. |file_size| is how many bytes
@@ -60,19 +62,49 @@ namespace {
 ///
 ///   Not writable (PF_W not set). One mapping, Source::File: vaddr `first`,
 ///   size `end - first`, vmo_offset the file_offset rounded down to a page,
-///   Perm::RX if PF_X is set and Perm::R if not. No private VMO.
+///   Perm::RX if PF_X is set and Perm::R if not. No snapshot and no zero-fill
+///   VMO.
 ///
-///   Writable (PF_W set). A private VMO of `end - first` bytes
-///   (set_private_size(i, ...)). If file_size is not 0, one Copy: vmo_offset
-///   `vaddr - first`, file_offset and size the segment's. The mappings are of
-///   the private VMO, Source::Private, vmo_offset `page - first` for each
-///   `page` that starts one, and cover [first, end) once each:
-///     - with no RELRO in this segment, one, Perm::RW;
+///   Writable (PF_W set). The pages [first, end) are split at `zero_from`:
+///     - `zero_from` is `end` when mem_size == file_size (no .bss), and
+///       otherwise `vaddr + file_size` rounded down to a page: the page the
+///       file bytes end in, which .bss shares with them, or where .bss starts
+///       when they end on a page boundary.
+///     - [first, zero_from), if not empty, is the snapshot: Snapshot{
+///       file_offset rounded down to a page, zero_from - first}. These pages
+///       hold file bytes only (the bytes before vaddr in the first page are
+///       whatever the file has there, as the file's own pages would show), so
+///       they need no copy: they are shared until written.
+///     - [zero_from, end), if not empty, is the zero-fill VMO, of
+///       `end - zero_from` bytes. If file bytes reach into it -- the segment's
+///       data does not end on a page boundary -- one Copy writes them in:
+///       from `max(vaddr, zero_from)` to `vaddr + file_size`, at vmo_offset
+///       `max(vaddr, zero_from) - zero_from`, from the matching file_offset.
+///       A pure .bss (file_size 0) has no snapshot and no Copy.
+///   The mappings cover [first, end) once each, cut at `zero_from` (Snapshot
+///   below it, vmo_offset `page - first`; Zero at or above it, vmo_offset
+///   `page - zero_from`) and at the end of RELRO:
+///     - with no RELRO in this segment, everything is Perm::RW;
 ///     - with RELRO {vaddr, size}: the pages that are wholly RELRO are Perm::R
 ///       -- from `first` up to `vaddr + size` rounded down to a page -- and
 ///       the rest are Perm::RW. A page that holds RELRO and something else
 ///       cannot be read-only, so it stays RW, and if no page is wholly RELRO
-///       there is no R mapping. Empty parts are not mapped.
+///       there is no R mapping.
+///   Empty parts are not mapped, so a writable segment gives one to three
+///   mappings, in ascending order of vaddr.
+///
+/// The cut at `zero_from` is Zircon's elfldltl::VmarLoader's: file pages, then
+/// the intersecting page and .bss as zero-fill memory with the partial page's
+/// file bytes copied in (vmar-loader.h:274-310, PartialPagePolicy::
+/// kCopyInProcess). The bytes after the file data in that page cannot come
+/// from the file, which has whatever follows the segment there, and they
+/// must read as zero. One difference: when the segment starts in that page,
+/// Zircon copies from the start of the page (it rounds the segment's offset
+/// down first, load.h:342-359), so the bytes before vaddr show the file's;
+/// here the Copy starts at vaddr and they read as zero. Neither is the
+/// segment's, and ELF promises nothing about them.
+///
+/// |relro| is PT_GNU_RELRO with size its p_memsz (see Relro).
 ///
 /// A segment with PF_W and without PF_R is mapped RW, and one with PF_X and
 /// without PF_R is mapped RX.
@@ -139,7 +171,8 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
         }
         // Pages taken straight from the file cannot be zero-filled: the bytes of
         // the last page past file_size are whatever follows in the file, not
-        // zeros. Only a private VMO, which starts zeroed, can hold .bss.
+        // zeros. Only a zero-fill VMO can hold .bss, and a segment that is not
+        // writable has none.
         if (!writable && segment.mem_size != segment.file_size) {
             return Status::InvArgs;
         }
@@ -195,54 +228,62 @@ auto Plan::make(std::span<Segment const> segments, Relro const relro, u64 const 
             continue;
         }
 
-        // A writable segment gets a VMO of its own, sized in whole pages from
-        // `first`, because it starts zeroed: that is .bss, and the bytes of the
-        // first page that are not the segment's. Its size cannot be worked out
-        // from the Copy (a pure .bss has none) or from one Mapping (RELRO splits
-        // the VMO into several), which is why it is recorded on its own.
-        set_private_size(index, end - first);
-        if (segment.file_size != 0) {
-            // The segment's first byte is `vaddr - first` into its first page.
-            add_copy({
-                .segment = index,
-                .vmo_offset = segment.vaddr - first,
-                .file_offset = segment.file_offset,
-                .size = segment.file_size,
-            });
+        // Where the file bytes stop being the whole of a page. With no .bss
+        // the last page's bytes past file_size are past mem_size too, and
+        // nothing promises what they hold, so every page can come from the file.
+        // With .bss they must read as zero, and the file has whatever follows
+        // the segment there, so that page and everything after it are zero-fill.
+        auto const data_end = segment.vaddr + segment.file_size;
+        auto zero_from = end;
+        if (segment.mem_size != segment.file_size) {
+            zero_from = ustl::mm::align_down(data_end, PAGE_SIZE);
+        }
+
+        // The pages before it are file bytes only, and are shared until written.
+        // vaddr and file_offset fall at the same place in their pages (checked
+        // in pass 1), so `first` is the page of the file at file_offset rounded
+        // down.
+        if (zero_from > first) {
+            set_snapshot(index,
+                         {
+                             .file_offset = ustl::mm::align_down(segment.file_offset, PAGE_SIZE),
+                             .size = zero_from - first,
+                         });
+        }
+        if (end > zero_from) {
+            set_zero_size(index, end - zero_from);
+            // The file bytes that share their page with .bss. `copy_from` is
+            // vaddr itself when the segment also starts in that page.
+            auto const copy_from = std::max(segment.vaddr, zero_from);
+            if (data_end > copy_from) {
+                add_copy({
+                    .segment = index,
+                    .vmo_offset = copy_from - zero_from,
+                    .file_offset = segment.file_offset + (copy_from - segment.vaddr),
+                    .size = data_end - copy_from,
+                });
+            }
         }
 
         // The pages that are wholly RELRO are read-only from the start: the
-        // launcher relocates into the VMO before mapping it, so there is nothing
-        // to protect afterwards. The RELRO ends at `vaddr + size`, and a page
-        // that it only partly fills also holds data that is written to, so it is
-        // rounded down and that page stays writable. `writable_from` is where
-        // the read-write part starts.
-        auto writable_from = first;
+        // launcher relocates into the VMOs before mapping them, so there is
+        // nothing to protect afterwards. The RELRO ends at `vaddr + size`, and a
+        // page that it only partly fills also holds data that is written to, so
+        // it is rounded down and that page stays writable. It is at most
+        // mem_size long (pass 1), so `relro_end` is never past `end`.
+        auto relro_end = first;
         if (relro.size != 0 && segment.vaddr == relro.vaddr) {
-            auto const relro_end = ustl::mm::align_down(segment.vaddr + relro.size, PAGE_SIZE);
-            if (relro_end > first) {
-                add_mapping({
-                    .source = Source::Private,
-                    .segment = index,
-                    .vaddr = first,
-                    .size = relro_end - first,
-                    .vmo_offset = 0,
-                    .perm = Perm::R,
-                });
-                writable_from = relro_end;
-            }
+            relro_end =
+                std::max(first, ustl::mm::align_down(segment.vaddr + relro.size, PAGE_SIZE));
         }
-        // Empty when RELRO is the whole segment.
-        if (end > writable_from) {
-            add_mapping({
-                .source = Source::Private,
-                .segment = index,
-                .vaddr = writable_from,
-                .size = end - writable_from,
-                .vmo_offset = writable_from - first,
-                .perm = Perm::RW,
-            });
-        }
+
+        // [first, end) cut at the two places where the source or the protection
+        // changes; a part between two cuts has one of each.
+        auto const lower_cut = std::min(zero_from, relro_end);
+        auto const upper_cut = std::max(zero_from, relro_end);
+        add_writable_mapping(index, first, zero_from, relro_end, first, lower_cut);
+        add_writable_mapping(index, first, zero_from, relro_end, lower_cut, upper_cut);
+        add_writable_mapping(index, first, zero_from, relro_end, upper_cut, end);
     }
 
     return Status::Ok;
@@ -275,9 +316,43 @@ auto Plan::add_copy(Copy const &copy) -> void {
     }
 }
 
-auto Plan::set_private_size(u32 const segment, u64 const size) -> void {
+auto Plan::set_snapshot(u32 const segment, Snapshot const &snapshot) -> void {
     if (segment < MAX_SEGMENTS) {
-        m_private_size[segment] = size;
+        m_snapshots[segment] = snapshot;
     }
+}
+
+auto Plan::set_zero_size(u32 const segment, u64 const size) -> void {
+    if (segment < MAX_SEGMENTS) {
+        m_zero_sizes[segment] = size;
+    }
+}
+
+/// An empty part is not mapped. Whether a part is the snapshot's or the
+/// zero-fill VMO's, and whether it is read-only, is the same for all of it,
+/// because the caller cuts at both places where either changes.
+auto Plan::add_writable_mapping(u32 const segment, u64 const first, u64 const zero_from,
+                                u64 const relro_end, u64 const from, u64 const to) -> void {
+    if (to <= from) {
+        return;
+    }
+    auto source = Source::Snapshot;
+    auto vmo_offset = from - first;
+    if (from >= zero_from) {
+        source = Source::Zero;
+        vmo_offset = from - zero_from;
+    }
+    auto perm = Perm::RW;
+    if (from < relro_end) {
+        perm = Perm::R;
+    }
+    add_mapping({
+        .source = source,
+        .segment = segment,
+        .vaddr = from,
+        .size = to - from,
+        .vmo_offset = vmo_offset,
+        .perm = perm,
+    });
 }
 } // namespace launch

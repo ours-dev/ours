@@ -2,7 +2,7 @@
 
 The user-space launcher: how a program from BootFS becomes a running process.
 
-- `launch/plan.hpp`: `plan_mappings()`, which decides how the segments of a program are mapped (which pages come straight from the file, which are copied into VMOs of their own, and with what protection) from numbers alone. It does no I/O, so it is tested on the host.
+- `launch/plan.hpp`: `Plan::build()`, which decides how the segments of a program are mapped from numbers alone: which pages come straight from the file, which from a copy-on-write snapshot of it, which from a zero-fill VMO with the file bytes of one partial page copied in, and with what protection each is mapped. It does no I/O, so it is tested on the host.
 
 ## Layout
 

@@ -33,6 +33,11 @@ struct Segment {
 
 /// PT_GNU_RELRO: a range that must be read-only once the image is relocated.
 /// size == 0 means there is none.
+///
+/// size is the header's p_memsz, not its p_filesz. LLD 18 and later end RELRO
+/// with a .relro_padding section that takes no room in the file and rounds
+/// RELRO up to a page, so only p_memsz reaches the end of the last RELRO page.
+/// Given p_filesz, that page would be left writable.
 struct Relro {
     u64 vaddr = 0;
     u64 size = 0;
@@ -52,30 +57,45 @@ enum class Source : u8 {
     /// The program's own file (the executable BootFS), mapped as it is. Only
     /// for segments that are not writable: the file is shared and never written.
     File,
-    /// A VMO of this segment's own, made for it and filled from the file
-    /// before it is mapped (Copy). For writable segments, and for the pages of
-    /// one that are read-only once relocated (RELRO).
-    Private,
+    /// The segment's snapshot: a copy-on-write child of the file over the pages
+    /// of a writable segment that hold nothing but file bytes. Every process
+    /// running the program shares them until it writes one, which then becomes
+    /// its own copy (vmo_create_child, SnapshotOnWrite).
+    Snapshot,
+    /// The segment's zero-fill VMO, made for it: the page its file bytes end in,
+    /// when .bss follows them there, and the pages of .bss after it. Filled
+    /// from the file where a Copy says so.
+    Zero,
 };
 
 /// One vma_map the launcher is to make.
 struct Mapping {
     Source source;
-    u32 segment;    ///< Index in the segments given. For Private: whose VMO.
+    u32 segment;    ///< Index in the segments given. Snapshot, Zero: whose VMO.
     u64 vaddr;      ///< Where, page-aligned.
     u64 size;       ///< How much, page-aligned and not zero.
-    u64 vmo_offset; ///< Page-aligned. File: an offset in the file. Private: an
-                    ///< offset in that segment's private VMO.
+    u64 vmo_offset; ///< Page-aligned. File: an offset in the file. Snapshot,
+                    ///< Zero: an offset in that segment's VMO of that kind.
     Perm perm;
 };
 
-/// Bytes to write into a segment's private VMO before it is mapped.
+/// Where a writable segment's snapshot starts in the file and how long it is.
+/// A size of 0 means the segment has none.
+struct Snapshot {
+    u64 file_offset; ///< Page-aligned.
+    u64 size;        ///< Page-aligned.
+};
+
+/// Bytes to write into a segment's zero-fill VMO before it is mapped: the file
+/// bytes of the page that .bss starts in. Every other file byte reaches memory
+/// through a snapshot, without being copied.
 struct Copy {
     u32 segment;
-    u64 vmo_offset;  ///< In the private VMO. Not page-aligned: the segment
-                     ///< starts wherever its vaddr falls in its first page.
+    u64 vmo_offset;  ///< In the zero-fill VMO: 0, unless the segment starts in
+                     ///< the page .bss starts in, where it is vaddr's offset in
+                     ///< that page.
     u64 file_offset; ///< Where they come from in the file.
-    u64 size;
+    u64 size;        ///< Less than PAGE_SIZE.
 };
 
 /// What the launcher is to do to map a program: the VMOs to make, what to copy
@@ -86,16 +106,18 @@ struct Copy {
 /// error and there is none. Its contents are read, never changed, from outside.
 ///
 /// This is the core of the launcher and it does no I/O: it only decides. The
-/// launcher then does what the Plan says -- vmo_create and vmo_write for every
-/// private VMO, the relocations written into them, then vma_map for every
-/// mapping -- and, because relocation is done before anything is mapped, each
-/// mapping is made with its final protection and nothing has to be protected
-/// afterwards (interface design 3.2, step 5).
+/// launcher then does what the Plan says -- vmo_create_child(SnapshotOnWrite)
+/// of the file for every snapshot, vmo_create for every zero-fill VMO and
+/// vmo_write for every Copy into it, the relocations written into those VMOs,
+/// then vma_map for every mapping -- and, because relocation is done before
+/// anything is mapped, each mapping is made with its final protection and
+/// nothing has to be protected afterwards (interface design 3.2, step 5).
 class Plan {
   public:
     static constexpr usize MAX_SEGMENTS = 8;
-    /// A segment gives at most three: the RELRO pages, and the writable pages
-    /// before and after them (in this order of address, not of importance).
+    /// A segment gives at most three: [first, end) cut where the source changes
+    /// (from the snapshot to the zero-fill VMO) and where the protection
+    /// changes (the end of RELRO).
     static constexpr usize MAX_MAPPINGS = 3 * MAX_SEGMENTS;
 
     /// Works out how to map |segments|, the PT_LOAD entries in file order, with
@@ -118,10 +140,25 @@ class Plan {
         return {m_copies.data(), m_copy_count};
     }
 
-    /// How big the private VMO of segment |segment| is, or 0 if it has none.
+    /// The snapshot of segment |segment|; its size is 0 if it has none. The
+    /// zero-fill VMO starts where it ends, at `vaddr` rounded down to a page plus
+    /// its size: a relocation that straddles that address is written in two
+    /// parts, one into each VMO.
     [[nodiscard]]
-    auto private_size(u32 segment) const -> u64 {
-        return segment < MAX_SEGMENTS ? m_private_size[segment] : 0;
+    auto snapshot(u32 segment) const -> Snapshot {
+        if (segment >= MAX_SEGMENTS) {
+            return {};
+        }
+        return m_snapshots[segment];
+    }
+
+    /// How big the zero-fill VMO of segment |segment| is, or 0 if it has none.
+    [[nodiscard]]
+    auto zero_size(u32 segment) const -> u64 {
+        if (segment >= MAX_SEGMENTS) {
+            return 0;
+        }
+        return m_zero_sizes[segment];
     }
 
   private:
@@ -136,13 +173,23 @@ class Plan {
     /// its capacity whatever make() does.
     auto add_mapping(Mapping const &mapping) -> void;
     auto add_copy(Copy const &copy) -> void;
-    auto set_private_size(u32 segment, u64 size) -> void;
+    auto set_snapshot(u32 segment, Snapshot const &snapshot) -> void;
+    auto set_zero_size(u32 segment, u64 size) -> void;
+
+    /// Maps [from, to) of writable segment |segment| as one mapping; an empty
+    /// range maps nothing. Both are page-aligned and inside the segment, and
+    /// neither |zero_from| nor |relro_end| lies strictly between them: the
+    /// mapping is the snapshot's if |from| is below |zero_from| and the
+    /// zero-fill VMO's if not, read-only if |from| is below |relro_end|.
+    auto add_writable_mapping(u32 segment, u64 first, u64 zero_from, u64 relro_end, u64 from,
+                              u64 to) -> void;
 
     std::array<Mapping, MAX_MAPPINGS> m_mappings = {};
     usize m_mapping_count = 0;
     std::array<Copy, MAX_SEGMENTS> m_copies = {};
     usize m_copy_count = 0;
-    std::array<u64, MAX_SEGMENTS> m_private_size = {};
+    std::array<Snapshot, MAX_SEGMENTS> m_snapshots = {};
+    std::array<u64, MAX_SEGMENTS> m_zero_sizes = {};
 };
 } // namespace launch
 
