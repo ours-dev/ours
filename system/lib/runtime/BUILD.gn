@@ -52,6 +52,7 @@ group("tests") {
 if (!is_host_toolchain && toolchain_environment == "user") {
   source_set("runtime") {
     sources = [
+      "src/cpp_dependencies.cpp",
       "src/crt0.S",
       "src/start.cpp",
     ]
