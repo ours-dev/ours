@@ -44,6 +44,32 @@ namespace {
     /// //kernel/lib/userabi/vdso with the same has_patches = false convention.
     constexpr std::string_view VDSO_FILE{"vdso"};
 
+    /// elfload's reports as lines in the kernel log: the lines elfload used to
+    /// write itself, before it took a Diagnostics so that a user program could
+    /// link it without logz4. The Note is the one it wrote at info: where an
+    /// import was bound, the first thing a later fault through it needs.
+    auto log_elfload(void *, elfload::Report const &report) -> void {
+        u64 value = 0;
+        if (report.value.is_some()) {
+            value = report.value.value();
+        }
+        if (report.severity == elfload::Severity::Note) {
+            log::info("elfload: {} '{}' to {:X}", report.what, report.name, value);
+            return;
+        }
+        if (!report.name.empty() && report.value.is_some()) {
+            log::error("elfload: {}: {} at {:#x}", report.what, report.name, value);
+        } else if (!report.name.empty()) {
+            log::error("elfload: {}: {}", report.what, report.name);
+        } else if (report.value.is_some()) {
+            log::error("elfload: {}: {:#x}", report.what, value);
+        } else {
+            log::error("elfload: {}", report.what);
+        }
+    }
+
+    constexpr elfload::Diagnostics ELFLOAD_LOG{.report = log_elfload, .context = nullptr};
+
     /// A program name, kept as a NUL-terminated buffer rather than as a view.
     ///
     /// launch() is handed a view -- from the boot options for the first
@@ -612,7 +638,8 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // ring-3 fault the kernel cannot contain, and even after that a process
     // that dies on its first instruction is a worse answer to the caller
     // than an error from this call.
-    if (auto const status = elfload::check_program(image.unwrap()); Status::Ok != status) {
+    if (auto const status = elfload::check_program(ELFLOAD_LOG, image.unwrap());
+        Status::Ok != status) {
         log::error("userabi: '{}' is not a program this kernel can start", program.view());
         return status;
     }
@@ -668,13 +695,13 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // the vDSO's exports. This has to happen before the thread starts and
     // after both load addresses are known, which is the only reason the
     // program is not simply bound as it is mapped.
-    auto const binder = elfload::Binder::from(shared_vdso.file, vdso);
+    auto const binder = elfload::Binder::from(ELFLOAD_LOG, shared_vdso.file, vdso);
     if (binder.is_err()) {
         log::error("userboot: the vDSO cannot be bound against: {}",
                    to_string(binder.unwrap_err()));
         return binder.unwrap_err();
     }
-    status = binder.unwrap().bind(image.unwrap(), loaded.image);
+    status = binder.unwrap().bind(ELFLOAD_LOG, image.unwrap(), loaded.image);
     if (Status::Ok != status) {
         return status;
     }

@@ -6,7 +6,6 @@
 #include <eftl/elf/load_policy.hpp>
 #include <eftl/elf/parser.hpp>
 #include <eftl/elf/traits.hpp>
-#include <logz4/log.hpp>
 #include <ustl/collections/static_vec.hpp>
 
 namespace elfload {
@@ -39,11 +38,12 @@ namespace {
     using Policy = eftl::elf::KernelElfLoadPolicy<Traits, Segments, MACHINE>;
 } // namespace
 
-auto check_program(ustl::views::Span<u8 const> const file) -> Status {
+auto check_program(Diagnostics const &diagnostics, ustl::views::Span<u8 const> const file)
+    -> Status {
     auto const parsed = eftl::elf::Parser::parse_as<Traits>(file.data(), file.size());
     if (parsed.is_err()) {
-        log::error("elfload: not an ELF this kernel can read: {}",
-                   eftl::elf::to_string(parsed.unwrap_err()));
+        diagnostics({.what = "not an ELF this system can read",
+                     .name = eftl::elf::to_string(parsed.unwrap_err())});
         return Status::InvArgs;
     }
 
@@ -53,14 +53,15 @@ auto check_program(ustl::views::Span<u8 const> const file) -> Status {
     // below of the plan, for both types.
     auto const image = eftl::elf::BasicImage<Traits>::from(parsed.value());
     if (image.is_none()) {
-        log::error("elfload: not a loadable image");
+        diagnostics({.what = "not a loadable image"});
         return Status::InvArgs;
     }
 
     // Type, machine, overlap, and an entry inside some PT_LOAD.
     auto const plan = Policy::make_plan(image.value());
     if (plan.is_err()) {
-        log::error("elfload: cannot be laid out: {}", eftl::elf::to_string(plan.unwrap_err()));
+        diagnostics(
+            {.what = "cannot be laid out", .name = eftl::elf::to_string(plan.unwrap_err())});
         return Status::InvArgs;
     }
 
@@ -79,7 +80,8 @@ auto check_program(ustl::views::Span<u8 const> const file) -> Status {
         }
         break;
     }
-    log::error("elfload: the entry point {:X} is not in an executable segment", entry);
+    diagnostics({.what = "the entry point is not in an executable segment",
+                 .value = ustl::some(static_cast<u64>(entry))});
     return Status::InvArgs;
 }
 } // namespace elfload

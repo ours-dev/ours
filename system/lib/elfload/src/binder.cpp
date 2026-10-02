@@ -6,7 +6,6 @@
 
 #include <eftl/elf/dynamic_image.hpp>
 #include <eftl/elf/parser.hpp>
-#include <logz4/log.hpp>
 
 namespace elfload {
 using ours::Status;
@@ -55,22 +54,22 @@ namespace {
     }
 } // namespace
 
-auto Binder::from(Bytes const file, Image const &image) -> Result {
+auto Binder::from(Diagnostics const &diagnostics, Bytes const file, Image const &image) -> Result {
     auto binary = eftl::elf::Parser::parse_as<Traits>(file.data(), file.size());
     if (binary.is_err()) {
-        log::error("elfload: the exporter is not an ELF this loader can read");
+        diagnostics({.what = "the exporter is not an ELF this loader can read"});
         return ustl::err(Status::InvArgs);
     }
 
     auto const dynamic = binary->dynamic_image();
     if (dynamic.is_none()) {
-        log::error("elfload: the exporter has no PT_DYNAMIC, so it exports nothing");
+        diagnostics({.what = "the exporter has no PT_DYNAMIC, so it exports nothing"});
         return ustl::err(Status::InvArgs);
     }
 
     auto const exports = dynamic->dynamic_symbols();
     if (exports.is_none()) {
-        log::error("elfload: the exporter has no readable .dynsym");
+        diagnostics({.what = "the exporter has no readable .dynsym"});
         return ustl::err(Status::InvArgs);
     }
 
@@ -100,10 +99,11 @@ auto Binder::resolve(std::string_view const name) const -> ustl::Option<u64> {
     return ustl::NONE;
 }
 
-auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
+auto Binder::bind(Diagnostics const &diagnostics, Bytes const file, Image const &importer) const
+    -> Status {
     auto binary = eftl::elf::Parser::parse_as<Traits>(file.data(), file.size());
     if (binary.is_err()) {
-        log::error("elfload: the importer is not an ELF this loader can read");
+        diagnostics({.what = "the importer is not an ELF this loader can read"});
         return Status::InvArgs;
     }
 
@@ -119,11 +119,11 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
     // A table the image declares and eftl could not produce is refused, not
     // skipped: skipping it leaves every pointer in it at its link-time value.
     if (relas.is_none() && declares(dynamic.value(), eftl::elf::DynTag::Rela)) {
-        log::error("elfload: the importer declares DT_RELA but it cannot be read");
+        diagnostics({.what = "the importer declares DT_RELA but it cannot be read"});
         return Status::InvArgs;
     }
     if (plt_relas.is_none() && declares(dynamic.value(), eftl::elf::DynTag::JmpRel)) {
-        log::error("elfload: the importer declares DT_JMPREL but it cannot be read");
+        diagnostics({.what = "the importer declares DT_JMPREL but it cannot be read"});
         return Status::InvArgs;
     }
 
@@ -140,11 +140,11 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
     // glibc's elf_dynamic_do_Rel() walks whichever of the three an image
     // declares. Until this one does, it has to refuse what it cannot apply.
     if (declares(dynamic.value(), eftl::elf::DynTag::Rel)) {
-        log::error("elfload: the importer declares DT_REL, which this binder does not apply");
+        diagnostics({.what = "the importer declares DT_REL, which this binder does not apply"});
         return Status::Unsupported;
     }
     if (declares(dynamic.value(), eftl::elf::DynTag::Relr)) {
-        log::error("elfload: the importer declares DT_RELR, which this binder does not apply");
+        diagnostics({.what = "the importer declares DT_RELR, which this binder does not apply"});
         return Status::Unsupported;
     }
 
@@ -155,7 +155,7 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
     auto const symbols = dynamic->dynamic_symbols();
     if (symbols.is_none()) {
         // Relocations that name symbols, and no table to name them from.
-        log::error("elfload: the importer has relocations but no readable .dynsym");
+        diagnostics({.what = "the importer has relocations but no readable .dynsym"});
         return Status::InvArgs;
     }
 
@@ -218,8 +218,8 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
                 } else {
                     auto const definition = resolve(spelling);
                     if (definition.is_none()) {
-                        log::error("elfload: '{}' is imported but the exporter does not define it",
-                                   spelling);
+                        diagnostics({.what = "imported, but the exporter does not define it",
+                                     .name = spelling});
                         return Status::NotFound;
                     }
                     value = m_bias + definition.value() + static_cast<u64>(rela.r_addend);
@@ -231,10 +231,14 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
                     // floor in both. What a loader resolved is a handful of
                     // lines per program and it is the first thing the next
                     // such dump needs beside it.
-                    log::info("elfload: bound '{}' to {:X}", spelling, value);
+                    diagnostics({.severity = Severity::Note,
+                                 .what = "bound",
+                                 .name = spelling,
+                                 .value = ustl::some(value)});
                 }
             } else {
-                log::error("elfload: relocation type {} is one this binder does not apply", type);
+                diagnostics({.what = "a relocation type this binder does not apply",
+                             .value = ustl::some(static_cast<u64>(type))});
                 return Status::Unsupported;
             }
 
@@ -243,8 +247,9 @@ auto Binder::bind(Bytes const file, Image const &importer) const -> Status {
             // double-count the load address and push the write outside it.
             if (auto const status = store(static_cast<u64>(rela.r_offset), value);
                 Status::Ok != status) {
-                log::error("elfload: relocation {} at {:#x} could not be written: {}", index,
-                           static_cast<u64>(rela.r_offset), to_string(status));
+                diagnostics({.what = "a relocation could not be written",
+                             .name = to_string(status),
+                             .value = ustl::some(static_cast<u64>(rela.r_offset))});
                 return status;
             }
         }

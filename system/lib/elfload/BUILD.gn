@@ -10,19 +10,18 @@ import("//build/cpp/cpp_interface.gni")
 # the kernel's is //kernel/lib/kelfload (through the object layer), a
 # launcher's goes through vma_map.
 #
-# Logs through logz4's interface only: whoever links this installs the logger
-# -- the kernel its serial one (//kernel/lib/logz4), a user program the
-# runtime's.
+# Says why it refused through elfload::Diagnostics, which the caller passes
+# in (Zircon elfldltl's shape): the kernel turns a report into a logz4 line,
+# a user program into whatever it prints. It used to log through logz4, which
+# a user program cannot link: logz4 needs an allocator, libc++'s
+# floating-point formatting and a linker section that only the kernel has.
 source_set("elfload") {
   sources = [
     "src/binder.cpp",
     "src/program.cpp",
   ]
   public_deps = [ ":headers" ]
-  deps = [
-    "//system/lib/eftl",
-    "//system/lib/logz4",
-  ]
+  deps = [ "//system/lib/eftl" ]
   visibility = [ "*" ]
 }
 
@@ -32,6 +31,7 @@ source_set("elfload") {
 cpp_interface("headers") {
   public = [
     "include/elfload/binder.hpp",
+    "include/elfload/diagnostics.hpp",
     "include/elfload/image.hpp",
     "include/elfload/program.hpp",
   ]

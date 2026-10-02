@@ -3,6 +3,7 @@
 #ifndef ELFLOAD_BINDER_HPP
 #define ELFLOAD_BINDER_HPP 1
 
+#include <elfload/diagnostics.hpp>
 #include <elfload/image.hpp>
 
 #include <string_view>
@@ -46,9 +47,10 @@ class Binder final {
     ///
     /// |file| is the ELF as a file, not as it was mapped: the dynamic tables
     /// are read from there, while writes go through the image. Both must
-    /// outlive the Binder, which holds views into the file's bytes.
+    /// outlive the Binder, which holds views into the file's bytes. Why it
+    /// refused goes to |diagnostics|.
     [[nodiscard]]
-    static auto from(Bytes file, Image const &image) -> Result;
+    static auto from(Diagnostics const &diagnostics, Bytes file, Image const &image) -> Result;
 
     /// Applies |importer|'s relocations, resolving each undefined symbol
     /// against the exporter.
@@ -57,9 +59,12 @@ class Binder final {
     /// -- it imports nothing, which is a legal way for a program to be. A
     /// symbol the exporter does not define is: binding it to zero would turn a
     /// missing entry point into a jump to address zero somewhere later, with
-    /// nothing left to say which name was missing.
+    /// nothing left to say which name was missing -- which goes to
+    /// |diagnostics|, with every other refusal, and each import's address as a
+    /// Note.
     [[nodiscard]]
-    auto bind(Bytes file, Image const &importer) const -> ours::Status;
+    auto bind(Diagnostics const &diagnostics, Bytes file, Image const &importer) const
+        -> ours::Status;
 
   private:
     using Traits = eftl::elf::TraitsNative;

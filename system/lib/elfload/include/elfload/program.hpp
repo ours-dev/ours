@@ -3,6 +3,8 @@
 #ifndef ELFLOAD_PROGRAM_HPP
 #define ELFLOAD_PROGRAM_HPP 1
 
+#include <elfload/diagnostics.hpp>
+
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 #include <ustl/views/span.hpp>
@@ -22,8 +24,11 @@ namespace elfload {
 ///
 /// Not asked of the vDSO, whose e_entry means nothing -- nothing jumps to a
 /// vDSO -- and which this would rightly refuse.
+///
+/// Why it refused goes to |diagnostics|, as an Error.
 [[nodiscard]]
-auto check_program(ustl::views::Span<u8 const> file) -> ours::Status;
+auto check_program(Diagnostics const &diagnostics, ustl::views::Span<u8 const> file)
+    -> ours::Status;
 } // namespace elfload
 
 #endif // #ifndef ELFLOAD_PROGRAM_HPP
