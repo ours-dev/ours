@@ -199,16 +199,29 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
     // instead of needing separate cases.
     struct GapSeeker final {
         /// Candidate placement at the head of the current gap, checked
-        /// against the alignment, the window, and the gap itself.
-        auto fits(VirtAddr gap_start, VirtAddr gap_end) -> bool {
+        /// against the alignment, the window, and the area that ends the gap,
+        /// if one does (the gap after the last area runs to the window's top).
+        ///
+        /// The two ends are measured differently, on purpose. An area ends a
+        /// gap with its base, one past the gap's last address. The window's
+        /// top, m_high_limit, is its last address itself: one past it is 2^64
+        /// for the kernel root VMA, which a VirtAddr cannot hold. Measuring
+        /// the window as if it were the first kind cost every window its top
+        /// page: a request that would fill the free tail of a region exactly
+        /// was refused, where Zircon's region_list_get_alloc_spot_test expects
+        /// it to fit.
+        auto fits(VirtAddr gap_start, ustl::Option<VirtAddr> next_base) -> bool {
             auto const start = ustl::mm::align_up(std::max(gap_start, m_floor), m_align);
             if (start < gap_start) {
                 return false; // alignment overflowed
             }
-            if (start > m_high_limit || m_high_limit - start < m_requested_size) {
+            // The request's last address, start + size - 1, at or below the
+            // window's; written as a difference so that it cannot wrap.
+            if (start > m_high_limit || m_high_limit - start < m_requested_size - 1) {
                 return false;
             }
-            if (gap_end < start || gap_end - start < m_requested_size) {
+            if (next_base.is_some() &&
+                (*next_base < start || *next_base - start < m_requested_size)) {
                 return false;
             }
             m_found = start;
@@ -269,9 +282,16 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
         VirtAddr m_prev_end;
     };
 
+    // fits() counts on a request of at least one byte: a size so close to
+    // 2^64 that rounding it up wraps to 0 fits no window either.
+    auto const requested = ustl::mm::align_up(size, align);
+    if (!requested) {
+        return ustl::err(Status::InvArgs);
+    }
+
     VirtAddr const floor = ustl::mm::align_up(low_limit, PAGE_SIZE);
     auto seeker = GapSeeker{
-        .m_requested_size = ustl::mm::align_up(size, align),
+        .m_requested_size = requested,
         .m_align = align,
         .m_floor = floor,
         .m_high_limit = high_limit,
@@ -282,8 +302,9 @@ auto VmaSet::find_spot(usize size, usize align, VirtAddr low_limit, VirtAddr hig
         // Only a found spot stops the seeker mid-walk.
         return ustl::ok(seeker.m_found);
     }
-    // Whatever is left between the last area and the top of the window.
-    if (seeker.fits(seeker.m_prev_end, high_limit)) {
+    // Whatever is left between the last area and the top of the window, which
+    // no area ends.
+    if (seeker.fits(seeker.m_prev_end, ustl::NONE)) {
         return ustl::ok(seeker.m_found);
     }
     return ustl::err(Status::NotFound);

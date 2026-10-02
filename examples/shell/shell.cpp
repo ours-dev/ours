@@ -1899,6 +1899,9 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 ///     and can be written; it allows no more than it was given (an executable
 ///     mapping is AccessDenied, and so is a nested sub-region asking for
 ///     Execute), and nothing past its end;
+///   - kernel placement reaches a region's last page: a nested sub-region
+///     fills its parent exactly, and with page 0 taken an anywhere mapping
+///     lands on page 1, after which the full region answers NotFound;
 ///   - the options: CanMap bits need the matching right on the parent
 ///     (AccessDenied), an offset without Specific is InvArgs, CanMapSpecific
 ///     is NotSupported, and a Perm bit is InvArgs;
@@ -1973,6 +1976,35 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
                                   &nested, &nested_at),
                  Status::AccessDenied);
     ok &= expect("shell: close(the sub-region) = ", ou::handle_close(region), Status::Ok);
+
+    // The kernel places up to a region's last page, each case in a 2-page
+    // sub-region of its own: a nested sub-region the whole size of its
+    // parent; and, with page 0 taken, a mapping on page 1, the top, after
+    // which the region is full and the next one is refused.
+    ours::HandleValue outer = ours::HANDLE_INVALID;
+    ours::VirtAddr outer_at = 0;
+    ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
+                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &outer, &outer_at),
+                 Status::Ok);
+    ok &= expect("shell: vma_allocate(CanMapRead, anywhere, the whole of its parent) = ",
+                 ou::vma_allocate(outer, VmOptions::CanMapRead, 0, 2 * PAGE, &nested, &nested_at),
+                 Status::Ok);
+    ok &= nested_at == outer_at;
+    ok &= expect("shell: close(the nested sub-region) = ", ou::handle_close(nested), Status::Ok);
+    ok &= expect("shell: close(its parent) = ", ou::handle_close(outer), Status::Ok);
+
+    ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
+                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &outer, &outer_at),
+                 Status::Ok);
+    ok &= expect("shell: vma_map(R, Specific, page 0 of the sub-region) = ",
+                 ou::vma_map(outer, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+    ok &= expect("shell: vma_map(R, anywhere, the sub-region's last page) = ",
+                 ou::vma_map(outer, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+    ok &= mapped == outer_at + PAGE;
+    ok &=
+        expect("shell: vma_map(R, anywhere, the sub-region full) = ",
+               ou::vma_map(outer, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::NotFound);
+    ok &= expect("shell: close(the full sub-region) = ", ou::handle_close(outer), Status::Ok);
 
     // CanMap bits need the matching right on the parent.
     ours::HandleValue no_execute = ours::HANDLE_INVALID;
