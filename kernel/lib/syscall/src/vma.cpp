@@ -50,8 +50,9 @@ namespace {
 /// Zircon's sys_vmar_allocate(), in its order: the rights each CanMap bit
 /// would need of the parent (Read, Write, Execute), the parent with those
 /// rights (BadHandle, BadType, AccessDenied), then the region
-/// (VmaDispatcher::allocate(): only Specific without CanMap today). A bit
-/// VmOptions does not name is InvArgs before any of that.
+/// (VmaDispatcher::allocate(): Specific or not, and CanMapRead, CanMapWrite,
+/// CanMapExecute). A bit VmOptions does not name is InvArgs before any of
+/// that.
 ///
 /// Two values go out, and both before the handle goes into the table (design
 /// 4.1), so a program never holds a handle it was told it did not get. If

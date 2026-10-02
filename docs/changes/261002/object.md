@@ -129,3 +129,62 @@ None.
 - Which pages does `SnapshotModified` freeze, and which does it leave following the parent?
 - Why is `SnapshotModified` on an anonymous VMO a full snapshot by its own definition, while `SnapshotOnWrite` on one is a full snapshot only because the cheaper clone is not available?
 - What could go wrong if the snapshot kinds were listed in two places?
+
+## Title: vma_allocate places a sub-region where the kernel finds room, and makes one that can be mapped into (2026-10-02)
+
+**Files**
+- `kernel/object/vma_dispatcher.cpp` — `VmaDispatcher::allocate()`: Specific is optional (without it the kernel places the sub-region and the offset must be 0), and CanMapRead, CanMapWrite and CanMapExecute become the sub-region's allowance, never wider than this region's (AccessDenied). A sub-region with none of them is still a guard.
+- `kernel/object/include/ours/object/vma_dispatcher.hpp`, `kernel/lib/syscall/src/vma.cpp` — the comments.
+- `system/public/ours/syscalls.gni`, `system/lib/ou/include/ou/vma.hpp` — the call's documentation.
+- `examples/shell/shell.cpp` — `check_vma_allocate()`: the two checks that expected NotSupported now expect the new behaviour, and nine new ones.
+
+**Symptom**
+The K23 launcher had no way to reserve a program's span: `vma_allocate` took only Specific with no CanMap bit, a guard that nothing can be mapped into. Without a sub-region to map into, the launcher would have had to map each segment straight into the root region at fixed offsets it chose itself.
+
+**Cause**
+K22 built only the shape it needed then, a stack guard. Zircon's `zx_vmar_allocate` does two more things, and a loader uses both. Objects: the root region, the whole user address space; and the image's sub-region, as long as the program's segments together. Events:
+1. The launcher allocates the sub-region without Specific, so the kernel picks where it goes (which is also where ASLR will randomise, later, without touching the launcher), with CanMapRead, CanMapWrite and CanMapExecute.
+2. It maps every segment into the sub-region with Specific, at the segment's offset from the program's first address.
+The segments keep their places relative to each other, which the program's code assumes, while the span as a whole lands wherever the kernel put it. Mapping each segment straight into the root region at fixed offsets would have routed around the missing interface with an existing one, which the design rules call a stand-in (ours-kernel-design, layering.md "Sequencing a feature"); the user agreed to extend `vma_allocate` first.
+
+Two rules come with it, both Zircon's. A sub-region may narrow its parent's allowance and never widen it; the system call already asks the parent handle for Read, Write or Execute for each CanMap bit, and the dispatcher checks the region itself as well, for a caller that has no handle to ask. And an offset without Specific is InvArgs: it would be a request nothing reads.
+
+**Change**
+```cpp
+auto where = mm::VmPlacement::anywhere();
+if (!!(options & VmOptions::Specific)) {
+    // offset inside this region, else InvArgs
+    where = mm::VmPlacement::at(m_vma->base() + offset);
+} else if (offset != 0) {
+    return Status::InvArgs;
+}
+auto allows = mm::VmaFlags::None;   // Read/Write/Exec from CanMapRead/Write/Execute
+if ((allows & RWX & ~m_vma->permissions()) != mm::VmaFlags::None) {
+    return Status::AccessDenied;
+}
+m_vma->create_subvma(where, rounded, allows, "vma_allocate", mm::VmMapOption::None, &child);
+```
+
+**Reference**
+Zircon `sys_vmar_allocate()` (`zircon/kernel/lib/syscalls/vmar.cc:30`), `VmAddressRegionDispatcher::Allocate()` and `split_syscall_flags()` (`zircon/kernel/object/vm_address_region_dispatcher.cc:46-152`), and `VmAddressRegion::CreateSubVmarInner()` (`zircon/kernel/vm/vm_address_region.cc:122`), whose `vmar_flags & ~flags_ & VMAR_CAN_RWX_FLAGS` is the AccessDenied here.
+
+**Verification**
+- Every changed C++ line formatted; `boot_check.py --out out/vmo-snapshot`: dbg PASS (18 passed), rel PASS (13 passed, 10 skipped); the shell's `vma_allocate checks passed` in both.
+- The new checks: a kernel-placed sub-region with CanMapRead and CanMapWrite, page-aligned; a RW mapping at page 1 of it lands at its start plus a page and can be written and read; an executable mapping in it is AccessDenied, and so is one past its end (InvArgs); a nested sub-region asking for Execute is AccessDenied; a parent handle without Execute cannot give CanMapExecute; Specific with CanMapRead is Ok; an offset without Specific is InvArgs; CanMapSpecific is NotSupported.
+- Mutation: every sub-region made a guard again; both images FAIL (`vma_map(RW, Specific, page 1 of the sub-region) = AccessDenied (expected Ok)`). Restored.
+
+**Deliberately not done**
+- CanMapSpecific: every region here already takes a Specific mapping, so the bit would mean nothing; it stays NotSupported rather than being accepted and ignored.
+- Alignment bits, Compact, OffsetIsUpperLimit and SpecificOverwrite: NotSupported until a caller needs them.
+- Randomised placement (ASLR): the kernel takes the lowest room that fits.
+
+**How it was found**
+Introducing K23's executor: the plan was to place the program at fixed offsets because `vma_allocate` could not place or be mapped into; the user asked why, and that plan was withdrawn for this.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a loader reserve a sub-region for a program instead of mapping its segments straight into the root region?
+- Which two checks keep a sub-region from allowing more than its parent, and why are both there?
+- Why must the offset be 0 when the kernel chooses the place?

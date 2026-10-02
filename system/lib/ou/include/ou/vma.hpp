@@ -8,10 +8,11 @@
 #include <ours/types.hpp>
 
 namespace ou {
-/// Reserves [offset, offset + size) of |parent| as a sub-region: its handle
-/// into |child|, its address into |child_addr|. |options| must be Specific;
-/// the sub-region allows no mapping, so it keeps the range empty (a guard).
-/// Zircon zx_vmar_allocate().
+/// Reserves part of |parent| as a sub-region: its handle into |child|, its
+/// address into |child_addr|. With Specific at |offset|; without it where the
+/// kernel finds room, |offset| 0. CanMapRead/Write/Execute say what mappings
+/// in it may have; with none it allows no mapping (a guard). Zircon
+/// zx_vmar_allocate().
 auto vma_allocate(ours::HandleValue parent, ours::VmOptions options, usize offset, usize size,
                   ours::HandleValue *child, ours::VirtAddr *child_addr) -> ours::Status;
 

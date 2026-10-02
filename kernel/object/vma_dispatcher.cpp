@@ -212,15 +212,23 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
     -> Status {
     verify_canary();
 
+    // A region has no protection of its own, only what it allows mappings in
+    // it to have, so a Perm bit means nothing here. Zircon refuses it the same
+    // way (VmAddressRegionDispatcher::Allocate(), "MMU-related flags").
     constexpr auto PERM = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute;
     if ((options & PERM) != VmOptions::None) {
         return Status::InvArgs;
     }
-    if (options != VmOptions::Specific) {
+    // Anything else not acted on yet: CanMapSpecific (every region here takes
+    // a Specific mapping), Compact, OffsetIsUpperLimit, SpecificOverwrite and
+    // the mapping-only bits.
+    constexpr auto CAN_MAP_RWX =
+        VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapExecute;
+    if ((options & ~(VmOptions::Specific | CAN_MAP_RWX)) != VmOptions::None) {
         return Status::NotSupported;
     }
 
-    if (size == 0 || !ustl::mm::is_aligned(offset, PAGE_SIZE) || offset >= m_vma->size()) {
+    if (size == 0 || !ustl::mm::is_aligned(offset, PAGE_SIZE)) {
         return Status::InvArgs;
     }
     auto const rounded = ustl::mm::align_up(size, PAGE_SIZE);
@@ -228,13 +236,44 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
         return Status::OutOfRange;
     }
 
-    // VmaFlags::None: the sub-region allows no permission, so every mapping
-    // asked of it fails -- which is what a guard is for. mm places it and
-    // refuses a range that is taken or runs off this region.
+    // Where: |offset| counts from this region's start with Specific; without
+    // it the kernel finds room, and an offset would be a request nobody reads,
+    // so it must be 0 (Zircon: VmAddressRegion::CreateSubVmarInner()).
+    auto where = mm::VmPlacement::anywhere();
+    if (!!(options & VmOptions::Specific)) {
+        if (offset >= m_vma->size()) {
+            return Status::InvArgs;
+        }
+        where = mm::VmPlacement::at(m_vma->base() + offset);
+    } else if (offset != 0) {
+        return Status::InvArgs;
+    }
+
+    // What the sub-region allows, from the CanMap bits. With none of them it
+    // allows nothing, and every mapping asked of it fails -- a guard. It may
+    // narrow this region's allowance and never widen it: AccessDenied, as
+    // Zircon's "vmar_flags & ~flags_ & VMAR_CAN_RWX_FLAGS". The system call has
+    // already asked the handle for the matching rights; this is the region's
+    // own word, for a caller that has no handle to ask.
+    auto allows = mm::VmaFlags::None;
+    if (!!(options & VmOptions::CanMapRead)) {
+        allows |= mm::VmaFlags::Read;
+    }
+    if (!!(options & VmOptions::CanMapWrite)) {
+        allows |= mm::VmaFlags::Write;
+    }
+    if (!!(options & VmOptions::CanMapExecute)) {
+        allows |= mm::VmaFlags::Exec;
+    }
+    constexpr auto RWX = mm::VmaFlags::Read | mm::VmaFlags::Write | mm::VmaFlags::Exec;
+    if ((allows & RWX & ~m_vma->permissions()) != mm::VmaFlags::None) {
+        return Status::AccessDenied;
+    }
+
+    // mm places it, and refuses a range that is taken or runs off this region.
     ustl::Arc<mm::VmArea> child;
-    if (auto const status =
-            m_vma->create_subvma(mm::VmPlacement::at(m_vma->base() + offset), rounded,
-                                 mm::VmaFlags::None, "vma_allocate", mm::VmMapOption::None, &child);
+    if (auto const status = m_vma->create_subvma(where, rounded, allows, "vma_allocate",
+                                                 mm::VmMapOption::None, &child);
         Status::Ok != status) {
         return status;
     }

@@ -1886,7 +1886,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 }
 
 /// vma_allocate: a guard, a range of the root VMA that nothing can be
-/// mapped into (K22).
+/// mapped into (K22), and a sub-region that can be (K23).
 ///
 /// Runs in every image. What it pins down:
 ///   - the guard holds its range: a Specific mapping over it is refused, and
@@ -1894,8 +1894,14 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 ///     the parent region, not to the handle;
 ///   - the guard itself allows nothing: mapping into it is AccessDenied, its
 ///     handle having none of Read, Write or Execute;
-///   - the options: only Specific is taken today, so CanMapRead and a missing
-///     Specific are NotSupported, and a Perm bit is InvArgs;
+///   - a sub-region with CanMapRead and CanMapWrite, placed by the kernel:
+///     a mapping at an offset inside it lands at that offset from its start
+///     and can be written; it allows no more than it was given (an executable
+///     mapping is AccessDenied, and so is a nested sub-region asking for
+///     Execute), and nothing past its end;
+///   - the options: CanMap bits need the matching right on the parent
+///     (AccessDenied), an offset without Specific is InvArgs, CanMapSpecific
+///     is NotSupported, and a Perm bit is InvArgs;
 ///   - the arguments: a size of 0 and an unaligned offset are InvArgs;
 ///   - a value the kernel cannot write back releases the range: the same
 ///     spot can be reserved on the next call.
@@ -1935,15 +1941,68 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: vma_map(Specific, over the guard, handle closed) = ",
                  ou::vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
 
+    // A sub-region to map into, placed by the kernel: what the launcher reserves
+    // for a program's span before it maps each segment at its offset.
+    constexpr auto CAN_MAP_RW = VmOptions::CanMapRead | VmOptions::CanMapWrite;
+    ours::HandleValue region = ours::HANDLE_INVALID;
+    ours::VirtAddr region_at = 0;
+    ok &= expect("shell: vma_allocate(CanMapRead | CanMapWrite, anywhere, 2 pages) = ",
+                 ou::vma_allocate(vma, CAN_MAP_RW, 0, 2 * PAGE, &region, &region_at), Status::Ok);
+    ok &= region_at != 0 && region_at % PAGE == 0;
+    ok &=
+        expect("shell: vma_map(RW, Specific, page 1 of the sub-region) = ",
+               ou::vma_map(region, VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Specific,
+                           PAGE, vmo, 0, PAGE, &mapped),
+               Status::Ok);
+    ok &= mapped == region_at + PAGE;
+    if (mapped == region_at + PAGE) {
+        auto *const word = reinterpret_cast<u32 volatile *>(mapped);
+        *word = 0x5ec7'0001;
+        ok &= *word == 0x5ec7'0001;
+    }
+    ok &= expect(
+        "shell: vma_map(RX, into the sub-region) = ",
+        ou::vma_map(region, VmOptions::PermRead | VmOptions::PermExecute, 0, vmo, 0, PAGE, &mapped),
+        Status::AccessDenied);
+    ok &= expect("shell: vma_map(R, Specific, past the sub-region's end) = ",
+                 ou::vma_map(region, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped), Status::InvArgs);
+    ours::HandleValue nested = ours::HANDLE_INVALID;
+    ours::VirtAddr nested_at = 0;
+    ok &= expect("shell: vma_allocate(CanMapExecute, inside a sub-region without it) = ",
+                 ou::vma_allocate(region, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0, PAGE,
+                                  &nested, &nested_at),
+                 Status::AccessDenied);
+    ok &= expect("shell: close(the sub-region) = ", ou::handle_close(region), Status::Ok);
+
+    // CanMap bits need the matching right on the parent.
+    ours::HandleValue no_execute = ours::HANDLE_INVALID;
+    // The root region's handle has Basic without Wait (RIGHTS_DEFAULT_VMA), so
+    // the copy asks for Read and Write and nothing it does not hold.
+    ok &= expect("shell: handle_duplicate(vma, Read | Write only) = ",
+                 ou::handle_duplicate(vma, ours::Rights::Read | ours::Rights::Write, &no_execute),
+                 Status::Ok);
+    ok &= expect("shell: vma_allocate(CanMapExecute, parent handle without Execute) = ",
+                 ou::vma_allocate(no_execute, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0,
+                                  PAGE, &nested, &nested_at),
+                 Status::AccessDenied);
+    ok &= expect("shell: close(the copy without Execute) = ", ou::handle_close(no_execute),
+                 Status::Ok);
+
     // The options and the arguments.
     constexpr auto ELSEWHERE = SPOT + 16 * PAGE;
+    constexpr auto FURTHER = SPOT + 32 * PAGE;
     ok &= expect("shell: vma_allocate(Specific | CanMapRead) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapRead, ELSEWHERE, PAGE,
+                 ou::vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapRead, FURTHER, PAGE,
                                   &guard, &at),
+                 Status::Ok);
+    ok &= expect("shell: close(the Specific sub-region) = ", ou::handle_close(guard), Status::Ok);
+    ok &= expect("shell: vma_allocate(an offset without Specific) = ",
+                 ou::vma_allocate(vma, VmOptions::CanMapRead, PAGE, PAGE, &guard, &at),
+                 Status::InvArgs);
+    ok &= expect("shell: vma_allocate(Specific | CanMapSpecific) = ",
+                 ou::vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapSpecific, ELSEWHERE,
+                                  PAGE, &guard, &at),
                  Status::NotSupported);
-    ok &=
-        expect("shell: vma_allocate(without Specific) = ",
-               ou::vma_allocate(vma, VmOptions::None, 0, PAGE, &guard, &at), Status::NotSupported);
     ok &= expect("shell: vma_allocate(Specific | PermRead) = ",
                  ou::vma_allocate(vma, SPECIFIC_R, ELSEWHERE, PAGE, &guard, &at), Status::InvArgs);
     ok &= expect("shell: vma_allocate(size 0) = ",

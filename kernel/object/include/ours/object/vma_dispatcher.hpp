@@ -104,14 +104,23 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// Reserves [offset, offset + size) of this region as a sub-region of its
     /// own, and hands back a dispatcher for it, its rights and its address.
     ///
-    /// Only the one shape the launcher needs today, a guard: Specific, and no
-    /// CanMap bit, so the sub-region can hold no mapping at all and nothing
-    /// placed "anywhere" later can land in it (interface design 3.4). A Perm
-    /// bit is InvArgs, as in Zircon -- a region has no protection of its own,
-    /// only what it allows -- and anything else, CanMap* and a missing
-    /// Specific included, is NotSupported until a caller needs it. Otherwise
-    /// InvArgs for a size of 0, and for an offset that is not page-aligned or
-    /// lies outside this region; |size| rounds up to a page.
+    /// Two uses, as Zircon's zx_vmar_allocate:
+    ///   - a guard: no CanMap bit, so the sub-region can hold no mapping at all
+    ///     and nothing placed "anywhere" later can land in it (interface
+    ///     design 3.4);
+    ///   - a place to map into: CanMapRead, CanMapWrite and CanMapExecute say
+    ///     what mappings in it may have, never more than this region allows
+    ///     (AccessDenied). The launcher reserves a program's whole span this
+    ///     way and maps each segment into it at its offset, so that the
+    ///     segments keep their places relative to each other wherever the
+    ///     span lands.
+    /// With Specific, |offset| from this region's start; without it the kernel
+    /// finds room, and |offset| must be 0. A Perm bit is InvArgs, as in Zircon
+    /// -- a region has no protection of its own, only what it allows -- and any
+    /// other bit (CanMapSpecific, Compact, OffsetIsUpperLimit, ...) is
+    /// NotSupported until a caller needs it. Otherwise InvArgs for a size of 0,
+    /// and for an offset that is not page-aligned or lies outside this region;
+    /// |size| rounds up to a page.
     ///
     /// The sub-region belongs to this one, not to the handle: closing every
     /// handle to it leaves it in place, and it goes with the address space.

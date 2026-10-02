@@ -536,15 +536,19 @@ ours_syscalls = [
     name = "vma_allocate"
     brief = "Reserves part of the region |parent| as a sub-region."
     doc = [
-      "Reserves [offset, offset + size) of |parent|, size rounded up to a",
-      "page, and writes a handle to the sub-region to |child| and its",
-      "address to |child_addr|. Today |options| must be exactly Specific:",
-      "the sub-region allows no mapping, which makes it a guard. CanMap*",
-      "and a missing Specific are NotSupported, a Perm bit or an unknown bit",
-      "InvArgs. A size of 0, or an offset that is not page-aligned or lies",
-      "outside |parent|, is InvArgs. Closing the handle does not release the",
-      "range; it goes with the address space. If either value cannot be",
-      "written, the range is released again and no handle is made.",
+      "Reserves size bytes of |parent|, rounded up to a page, and writes a",
+      "handle to the sub-region to |child| and its address to |child_addr|.",
+      "With Specific it is [offset, offset + size) of |parent|; without it the",
+      "kernel finds room and |offset| must be 0. CanMapRead, CanMapWrite and",
+      "CanMapExecute say what mappings in it may have, each needing the",
+      "matching right on |parent| (AccessDenied) and never more than |parent|",
+      "allows; with none of them it allows no mapping, which makes it a",
+      "guard. A Perm bit or an unknown bit is InvArgs; CanMapSpecific and the",
+      "other named bits are NotSupported. A size of 0, or an offset that is",
+      "not page-aligned or lies outside |parent|, is InvArgs. Closing the",
+      "handle does not release the range; it goes with the address space. If",
+      "either value cannot be written, the range is released again and no",
+      "handle is made.",
     ]
     args = [
       {
