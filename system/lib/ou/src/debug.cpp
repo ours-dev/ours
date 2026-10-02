@@ -74,4 +74,16 @@ auto decimal(u32 value, char (&buffer)[10]) -> Str {
     } while (value != 0);
     return {buffer + at, sizeof(buffer) - at};
 }
+
+auto hex(u64 value, char (&buffer)[18]) -> Str {
+    constexpr char DIGITS[] = "0123456789abcdef";
+    auto at = sizeof(buffer);
+    do {
+        buffer[--at] = DIGITS[value % 16];
+        value /= 16;
+    } while (value != 0);
+    buffer[--at] = 'x';
+    buffer[--at] = '0';
+    return {buffer + at, sizeof(buffer) - at};
+}
 } // namespace ou

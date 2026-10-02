@@ -48,6 +48,11 @@ auto debug_line(Str text) -> ours::Status;
 /// because there is nothing else to format a number with: the C library a
 /// program links is mem* and strlen (//system/lib/libc), with no printf.
 auto decimal(u32 value, char (&buffer)[10]) -> Str;
+
+/// |value| in hexadecimal with a leading "0x" and no leading zeros, written
+/// into |buffer| as decimal() does: `ou::debug_line({"at ", hex(address, text)})`.
+/// Eighteen characters is every u64 with its prefix.
+auto hex(u64 value, char (&buffer)[18]) -> Str;
 } // namespace ou
 
 #endif // #ifndef OU_DEBUG_HPP
