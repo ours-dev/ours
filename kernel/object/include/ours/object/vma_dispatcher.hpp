@@ -84,11 +84,14 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// rights instead; the options word says the same and keeps one meaning
     /// for CanMap from the kernel up to vma_allocate.
     ///
-    /// Only Perm*, Specific, CanMap*, MapRange and Sealed are acted on; any
-    /// other bit is NotSupported. Otherwise:
+    /// Only Perm*, Specific, CanMapRead/Write/Execute, MapRange and Sealed
+    /// are acted on; any other bit is NotSupported. Otherwise:
     ///   - InvArgs: length 0; vmo_offset not page-aligned; vma_offset
     ///     without Specific, or not page-aligned, or outside this region;
-    ///   - AccessDenied: a Perm bit without its CanMap bit;
+    ///   - AccessDenied: a Perm bit without its CanMap bit; Specific into a
+    ///     region without CanMapSpecific (mm::VmArea refuses it), which is
+    ///     asked before whether vma_offset lies inside this region, as in
+    ///     Zircon;
     ///   - OutOfRange: the range, rounded up to a page, not inside the VMO.
     ///     Zircon lets a mapping run past its VMO's end and faults the
     ///     access instead; interface design 2.3 refuses it at the door.
@@ -115,13 +118,16 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///     way and maps each segment into it at its offset, so that the
     ///     segments keep their places relative to each other wherever the
     ///     span lands.
-    /// With Specific, |offset| from this region's start; without it the kernel
-    /// finds room, and |offset| must be 0. A Perm bit is InvArgs, as in Zircon
-    /// -- a region has no protection of its own, only what it allows -- and any
-    /// other bit (CanMapSpecific, Compact, OffsetIsUpperLimit, ...) is
-    /// NotSupported until a caller needs it. Otherwise InvArgs for a size of 0,
-    /// and for an offset that is not page-aligned or lies outside this region;
-    /// |size| rounds up to a page.
+    /// With Specific, |offset| from this region's start, which this region
+    /// must have CanMapSpecific for (AccessDenied, asked before whether the
+    /// range lies inside this region, as in Zircon); without it the kernel
+    /// finds room, and |offset| must be 0. CanMapSpecific gives the sub-region
+    /// that right in turn, whether or not this region has it, as in Zircon. A
+    /// Perm bit is InvArgs, as in Zircon -- a region has no protection of its
+    /// own, only what it allows -- and any other bit (Compact,
+    /// OffsetIsUpperLimit, ...) is NotSupported until a caller needs it.
+    /// Otherwise InvArgs for a size of 0, and for an offset that is not
+    /// page-aligned or lies outside this region; |size| rounds up to a page.
     ///
     /// The sub-region belongs to this one, not to the handle: closing every
     /// handle to it leaves it in place, and it goes with the address space.

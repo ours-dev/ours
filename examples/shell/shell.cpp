@@ -2153,9 +2153,15 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 ///   - kernel placement reaches a region's last page: a nested sub-region
 ///     fills its parent exactly, and with page 0 taken an anywhere mapping
 ///     lands on page 1, after which the full region answers NotFound;
+///   - CanMapSpecific: a sub-region without it refuses a place chosen in it,
+///     for a mapping or a sub-region (AccessDenied), and takes one the
+///     kernel places; a sub-region of it may have it all the same, and then
+///     takes a chosen place; the root has it, so a Specific sub-region of
+///     the root may ask for it too;
 ///   - the options: CanMap bits need the matching right on the parent
-///     (AccessDenied), an offset without Specific is InvArgs, CanMapSpecific
-///     is NotSupported, and a Perm bit is InvArgs;
+///     (AccessDenied), an offset without Specific is InvArgs, a Perm bit is
+///     InvArgs, and an option named but not acted on yet (Compact) is
+///     NotSupported;
 ///   - the arguments: a size of 0 and an unaligned offset are InvArgs;
 ///   - a value the kernel cannot write back releases the range: the same
 ///     spot can be reserved on the next call.
@@ -2208,12 +2214,15 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: close(the kernel-placed guard) = ", ou::handle_close(guard), Status::Ok);
 
     // A sub-region to map into, placed by the kernel: what the launcher reserves
-    // for a program's span before it maps each segment at its offset.
-    constexpr auto CAN_MAP_RW = VmOptions::CanMapRead | VmOptions::CanMapWrite;
+    // for a program's span before it maps each segment at its offset, which is
+    // what CanMapSpecific is for.
+    constexpr auto CAN_MAP_RW_SPECIFIC =
+        VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapSpecific;
     ours::HandleValue region = ours::HANDLE_INVALID;
     ours::VirtAddr region_at = 0;
-    ok &= expect("shell: vma_allocate(CanMapRead | CanMapWrite, anywhere, 2 pages) = ",
-                 ou::vma_allocate(vma, CAN_MAP_RW, 0, 2 * PAGE, &region, &region_at), Status::Ok);
+    ok &= expect(
+        "shell: vma_allocate(CanMapRead | CanMapWrite | CanMapSpecific, anywhere, 2 pages) = ",
+        ou::vma_allocate(vma, CAN_MAP_RW_SPECIFIC, 0, 2 * PAGE, &region, &region_at), Status::Ok);
     if (region_at == 0 || region_at % PAGE != 0) {
         static_cast<void>(ou::debug_line("shell: the sub-region is not at a page boundary"));
         ok = false;
@@ -2284,8 +2293,9 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: close(the nested sub-region) = ", ou::handle_close(nested), Status::Ok);
     ok &= expect("shell: close(its parent) = ", ou::handle_close(outer), Status::Ok);
 
-    ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
-                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &outer, &outer_at),
+    ok &= expect("shell: vma_allocate(CanMapRead | CanMapSpecific, anywhere, 2 pages) = ",
+                 ou::vma_allocate(vma, VmOptions::CanMapRead | VmOptions::CanMapSpecific, 0,
+                                  2 * PAGE, &outer, &outer_at),
                  Status::Ok);
     ok &= expect("shell: vma_map(R, Specific, page 0 of the sub-region) = ",
                  ou::vma_map(outer, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
@@ -2296,6 +2306,43 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
         expect("shell: vma_map(R, anywhere, the sub-region full) = ",
                ou::vma_map(outer, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::NotFound);
     ok &= expect("shell: close(the full sub-region) = ", ou::handle_close(outer), Status::Ok);
+
+    // CanMapSpecific: without it a sub-region takes only what the kernel
+    // places. A sub-region of it may have it all the same, and then takes a
+    // place chosen in it: that sub-region itself landed where the kernel put
+    // it, so the choice fixes only where things lie inside it.
+    ours::HandleValue plain = ours::HANDLE_INVALID;
+    ours::VirtAddr plain_at = 0;
+    ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
+                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &plain, &plain_at),
+                 Status::Ok);
+    ok &= expect("shell: vma_map(R, Specific, into a sub-region without CanMapSpecific) = ",
+                 ou::vma_map(plain, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::AccessDenied);
+    // The flag is asked before the range, as in Zircon: a place past the end
+    // of a region without it is AccessDenied, not InvArgs.
+    ok &= expect("shell: vma_map(R, Specific, past the end of a sub-region without it) = ",
+                 ou::vma_map(plain, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped),
+                 Status::AccessDenied);
+    ours::HandleValue inner = ours::HANDLE_INVALID;
+    ours::VirtAddr inner_at = 0;
+    ok &= expect("shell: vma_allocate(Specific, into a sub-region without CanMapSpecific) = ",
+                 ou::vma_allocate(plain, VmOptions::Specific, 0, PAGE, &inner, &inner_at),
+                 Status::AccessDenied);
+    ok &= expect("shell: vma_map(R, anywhere, into a sub-region without CanMapSpecific) = ",
+                 ou::vma_map(plain, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+    ok &= expect("shell: vma_allocate(CanMapRead | CanMapSpecific, anywhere, inside it) = ",
+                 ou::vma_allocate(plain, VmOptions::CanMapRead | VmOptions::CanMapSpecific, 0, PAGE,
+                                  &inner, &inner_at),
+                 Status::Ok);
+    ok &= expect("shell: vma_map(R, Specific, into its sub-region with CanMapSpecific) = ",
+                 ou::vma_map(inner, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+    if (mapped != inner_at) {
+        static_cast<void>(ou::debug_line("shell: the Specific mapping is not at its offset"));
+        ok = false;
+    }
+    ok &= expect("shell: close(the inner sub-region) = ", ou::handle_close(inner), Status::Ok);
+    ok &= expect("shell: close(the sub-region without CanMapSpecific) = ", ou::handle_close(plain),
+                 Status::Ok);
 
     // CanMap bits need the matching right on the parent.
     ours::HandleValue no_execute = ours::HANDLE_INVALID;
@@ -2314,6 +2361,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     // The options and the arguments.
     constexpr auto ELSEWHERE = SPOT + 16 * PAGE;
     constexpr auto FURTHER = SPOT + 32 * PAGE;
+    constexpr auto CHOSEN = SPOT + 48 * PAGE;
     ok &= expect("shell: vma_allocate(Specific | CanMapRead) = ",
                  ou::vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapRead, FURTHER, PAGE,
                                   &guard, &at),
@@ -2326,10 +2374,22 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: vma_allocate(an offset without Specific) = ",
                  ou::vma_allocate(vma, VmOptions::CanMapRead, PAGE, PAGE, &guard, &at),
                  Status::InvArgs);
-    ok &= expect("shell: vma_allocate(Specific | CanMapSpecific) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapSpecific, ELSEWHERE,
-                                  PAGE, &guard, &at),
+    ok &= expect("shell: vma_allocate(Compact) = ",
+                 ou::vma_allocate(vma, VmOptions::Compact, 0, PAGE, &guard, &at),
                  Status::NotSupported);
+    ok &= expect("shell: vma_allocate(Specific | CanMapRead | CanMapSpecific) = ",
+                 ou::vma_allocate(
+                     vma, VmOptions::Specific | VmOptions::CanMapRead | VmOptions::CanMapSpecific,
+                     CHOSEN, PAGE, &guard, &at),
+                 Status::Ok);
+    ok &= expect("shell: vma_map(R, Specific, into it) = ",
+                 ou::vma_map(guard, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+    if (at != root_base + CHOSEN || mapped != at) {
+        static_cast<void>(
+            ou::debug_line("shell: the chosen sub-region or its mapping is not at its offset"));
+        ok = false;
+    }
+    ok &= expect("shell: close(the chosen sub-region) = ", ou::handle_close(guard), Status::Ok);
     ok &= expect("shell: vma_allocate(Specific | PermRead) = ",
                  ou::vma_allocate(vma, SPECIFIC_R, ELSEWHERE, PAGE, &guard, &at), Status::InvArgs);
     ok &= expect("shell: vma_allocate(size 0) = ",

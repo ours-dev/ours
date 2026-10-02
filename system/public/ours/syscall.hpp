@@ -118,12 +118,19 @@ enum class VmoOptions : u32 {
 /// same question.
 ///
 ///   Perm*       The protection the pages get. vma_map only.
-///   Specific    At the offset from the region's start, not wherever fits.
-///   CanMap*     On vma_map, the ceiling a later protect() is held to: set by
-///               the kernel from the handles' rights, and a program may not
-///               pass them. On vma_allocate, what mappings in the new
-///               sub-region may allow, each needing the matching right on the
-///               parent's handle; none at all makes the sub-region a guard.
+///   Specific    At the offset from the region's start, not wherever fits;
+///               only into a region that has CanMapSpecific (AccessDenied
+///               otherwise, before the range is looked at). A process's root
+///               region has it.
+///   CanMap*     On vma_map, none may be passed (InvArgs): the kernel sets
+///               CanMapRead, CanMapWrite and CanMapExecute from the handles'
+///               rights, as the ceiling a later protect() is held to. On
+///               vma_allocate, CanMapRead, CanMapWrite and
+///               CanMapExecute say what mappings in the new sub-region may
+///               allow, each needing the matching right on the parent's
+///               handle, and none at all makes the sub-region a guard;
+///               CanMapSpecific lets the sub-region take Specific placements,
+///               whether or not the parent can.
 ///   MapRange    Populate the whole range now rather than on first touch.
 ///   Sealed      Make the mapping immutable from the moment it exists: it can
 ///               never be unmapped, have its protection changed, or be

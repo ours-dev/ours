@@ -157,6 +157,19 @@ enum class VmaFlags : u32 {
     // is linked, so it needs nothing more. Linux mseal(), OpenBSD mimmutable().
     Sealed = 0x100000,
 
+    // Only serves VmArea: whether a mapping or sub-area may go at a place its
+    // creator chose (VmPlacement::at). Without it everything in the area is
+    // placed by the VMM, the one placement that randomisation can reach, so a
+    // program handed such an area cannot pin anything at an address it picked.
+    // VmArea::reserve() is a placement like any other and asks it too. A
+    // mapping never carries it.
+    // Every root area has it. A sub-area has it when it is made with it,
+    // whether or not its parent does: the sub-area itself was placed by the
+    // VMM, so places chosen inside it fix only where things lie relative to
+    // each other. Set when the area is made and never changed. Zircon's
+    // VMAR_FLAG_CAN_MAP_SPECIFIC.
+    CanMapSpecific = 0x200000,
+
     // Types
     Area = 0x0000'0000, // For semantics, no any actual effects.
     Mapping = 0x1000'0000,

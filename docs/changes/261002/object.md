@@ -248,3 +248,125 @@ None.
 - Why did `vma_map(RX, into the sub-region) = AccessDenied` pass whatever the sub-region allowed?
 - What has to be true of every other party for a refusal check to be evidence about the one it names?
 - Why read a store back through the VMO rather than through the mapping that made it?
+
+## Title: A region takes a place its user chose only with CanMapSpecific, as in Zircon (2026-10-02)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_area_or_mapping.hpp` — `VmaFlags::CanMapSpecific`.
+- `kernel/mm/vm_aspace.cpp` — every root area has it.
+- `kernel/mm/vm_area.cpp` — `create_subaom_preamble()` and `reserve()` refuse a fixed placement into an area without it (AccessDenied); a mapping never takes the flag from its area.
+- `kernel/mm/init_vmm.cpp` — the kernel's preset areas, which `reserve()` records mappings in, are made with it.
+- `kernel/object/vma_dispatcher.cpp`, `kernel/object/include/ours/object/vma_dispatcher.hpp` — `allocate()` accepts CanMapSpecific and gives it to the sub-region; `map()` and `allocate()` leave the range of a Specific request to mm, so the flag is asked first; the rule in their comments.
+- `kernel/lib/syscall/src/vma.cpp`, `system/public/ours/syscall.hpp`, `system/public/ours/syscalls.gni`, `system/lib/ou/include/ou/vma.hpp` — the rule in the ABI's words.
+- `system/lib/launch/src/launch.cpp` — the image's region and the stack's region ask for it.
+- `examples/shell/shell.cpp` — `check_vma_allocate()`: the regions it maps into at chosen places ask for it, and the rule is checked.
+- `kernel/commands/vma_seal_test.cpp` — its sub-area asks for it.
+- `docs/design/260923/userspace-interface.md` — vma_allocate's row and the P2 deferral.
+
+**Symptom**
+A request copied from Zircon failed. elfldltl's image region asks for CanMapRead, CanMapWrite, CanMapExecute and CanMapSpecific, and vma_allocate answered NotSupported to CanMapSpecific. The only spelling that worked left the bit out, which is the spelling Zircon's rule refuses. Every region here took a Specific placement whatever it was made with.
+
+**Cause**
+The objects:
+- A region (VMA): a range of an address space that holds mappings and sub-regions.
+- Kernel placement: no place given, the kernel chooses. Zircon randomises it.
+- Specific placement: the caller gives the offset.
+- CanMapSpecific: a flag on the region, set when it is made.
+
+The events, in Zircon:
+1. Every root region is made with the flag.
+2. vma_allocate gives a sub-region the flag when the request asks for it, whether or not the parent has it. The sub-region itself was placed by the kernel unless the parent has the flag, so places chosen inside it fix only where things lie relative to each other, never an absolute address.
+3. A Specific placement, of a mapping or a sub-region, into a region without the flag is ACCESS_DENIED.
+
+So a region without the flag holds only what the kernel placed. With randomised placement, a program handed only such regions cannot pin anything at an address it picked. The flag is how a region keeps ASLR intact, and how a loader still gets fixed distances: a sub-region the kernel places, with the flag, and every segment at its offset inside it.
+
+This kernel has no ASLR yet, and the kernel places at the lowest room that fits, so today the rule protects nothing. Done now because only the launcher, the shell's checks and `vmaseal.test` spelled the old way. Every caller written later would have to change once ASLR made the rule matter.
+
+**Change**
+The rule is mm's, where Zircon has it (`VmAddressRegion::CreateSubVmarInner()`), so the kernel's own callers meet it too. It sits in the fixed branch of `create_subaom_preamble()`, which every mapping and sub-area goes through, in Zircon's order: after the alignment, before the range. `reserve()`, which builds its mapping directly, asks it too.
+
+```cpp
+// new, in create_subaom_preamble()'s fixed branch
+if (!(m_vmaf & VmaFlags::CanMapSpecific)) {
+    return ktl::err(Status::AccessDenied);
+}
+```
+
+```cpp
+// before
+constexpr auto ROOT_VMAF = VmaFlags::PermMask | VmaFlags::Share;
+// after
+constexpr auto ROOT_VMAF = VmaFlags::PermMask | VmaFlags::Share | VmaFlags::CanMapSpecific;
+```
+
+```cpp
+// before, VmaDispatcher::allocate()
+if ((options & ~(VmOptions::Specific | CAN_MAP_RWX)) != VmOptions::None) {
+    return Status::NotSupported;
+}
+// after: CanMapSpecific is acted on, and becomes the sub-region's own
+constexpr auto ACTED_ON = VmOptions::Specific | CAN_MAP_RWX | VmOptions::CanMapSpecific;
+...
+if (!!(options & VmOptions::CanMapSpecific)) {
+    allows |= mm::VmaFlags::CanMapSpecific;
+}
+```
+
+`allocate()` asks no right for the bit. The system call's rule that a program may not pass a CanMap bit to vma_map is unchanged.
+
+For the order to hold through the system calls too, `map()` and `allocate()` no longer refuse an offset past the region's end themselves, before mm: they did, with InvArgs, where Zircon answers ACCESS_DENIED for a Specific request into a region without the flag however far off it points. mm's `check_range()` is in offset form, so an offset that wraps the address is still refused, with InvArgs, after the flag.
+
+Rejected:
+- Accepting the bit and enforcing nothing. Callers could copy Zircon's options, but nothing would tell one that forgot the bit, and enforcing it later would break them with no check having caught them.
+- Keeping the P2 deferral. Every caller written meanwhile spells it the way the rule refuses, so the cost of adopting it grows with each one.
+
+The kernel's fixed placements are into roots, which have the flag: vmalloc's window, init_vmm's areas, userboot's image and the vDSO through `kelfload::Loader::map()` (`kernel/lib/kelfload/src/loader.cpp:200-202`), userboot's stack, and `vmosnapshot.test`'s mappings. Two were not:
+- `vmaseal.test`'s sub-area, which now asks for the flag.
+- init_vmm's preset areas, in which `VmArea::reserve()` records the mappings phys made at each area's own base. A first version exempted `reserve()` instead, as the kernel describing memory already mapped. Zircon does not: its `ReserveSpace()` goes through `CreateVmMapping()` with VMAR_FLAG_SPECIFIC and meets the same check, and its handoff VMARs are made with CAN_MAP_SPECIFIC (`ToVmarFlags()`, `zircon/kernel/vm/vm.cc:65`, used at `:122`). So `reserve()` asks, and `entrol_preset_vma()` makes every preset area with the flag.
+
+A mapping never carries the flag. `create_mapping()` used to copy its area's state bits into the mapping, so every mapping in a root came out marked CanMapSpecific. Nothing read it there, but it was a flag nobody asked for, and Zircon's `CreateVmMapping()` does not let it reach a mapping:
+
+```cpp
+// before
+auto vmaf = (m_vmaf & ~VmaFlags::PermMask) | allowed;
+// after
+auto vmaf = (m_vmaf & ~(VmaFlags::PermMask | VmaFlags::CanMapSpecific)) | allowed;
+```
+
+**Reference**
+- Zircon `VmAddressRegion::CreateSubVmarInner()` (`zircon/kernel/vm/vm_address_region.cc:166-169`): specific or upper-limit placement without VMAR_FLAG_CAN_MAP_SPECIFIC is ZX_ERR_ACCESS_DENIED.
+- Zircon `VmAspace::Init()` (`zircon/kernel/vm/vm_aspace.cc:169`): the root VMAR is made with the flag.
+- `zx_vmar_allocate()` (`zircon/vdso/vmar.fidl:46-48`): "It is NOT an error if the parent does not have ZX_VM_CAN_MAP_SPECIFIC permissions."
+- `docs/reference/kernel_objects/vm_address_region.md:35-46`: placement is randomised by default; specific mapping is for guard pages and relative placement.
+- elfldltl `VmarLoader::AllocateVmar()` (`src/lib/elfldltl/vmar-loader.cc:73`) asks for it for the image's VMAR, as the launcher now does.
+
+**Verification**
+- Every changed C++ line formatted; `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped); `vma_allocate checks passed` in both, `launcher checks passed` in dbg, the only image that runs the launcher.
+- The new lines in both logs:
+  - `vma_map(R, Specific, into a sub-region without CanMapSpecific) = AccessDenied`
+  - `vma_map(R, Specific, past the end of a sub-region without it) = AccessDenied`, the flag asked before the range
+  - `vma_allocate(Specific, into a sub-region without CanMapSpecific) = AccessDenied`
+  - `vma_map(R, anywhere, into a sub-region without CanMapSpecific) = Ok`
+  - `vma_allocate(CanMapRead | CanMapSpecific, anywhere, inside it) = Ok`
+  - `vma_map(R, Specific, into its sub-region with CanMapSpecific) = Ok`
+  - `vma_allocate(Specific | CanMapRead | CanMapSpecific) = Ok`
+- `vma_allocate(Compact) = NotSupported` in both logs: the review found that turning the old NotSupported check into an Ok one had left that branch untested.
+- Kernel commands, on both images, through `scripts/kshell_run.py` (committed next): `vmaseal.test: ok -- 13 checks`, `vmosnapshot.test: ok -- 205 checks`; on rel, `usercopy.test` and `pmnode.test` too.
+- Mutation 1, mm's check removed: both images FAIL (`vma_map(R, Specific, into a sub-region without CanMapSpecific) = Ok (expected AccessDenied)`, with the checks after it). Mutation 2, the launcher's image region without the bit: dbg FAILs with `shell: launch failed: vma_map of a segment: AccessDenied 0x0` and the launcher's FAILED line. Mutation 3, init_vmm's preset areas without the flag: dbg stops at boot with `Assertion failed on Status::Ok == status`, `reserve()` having refused. rel boots on and passes, its assertions compiled out, with none of the kernel's preset areas protected. That is the case for booting both images. All restored; both images pass.
+
+**Deliberately not done**
+- SpecificOverwrite and OffsetIsUpperLimit, which in Zircon need the flag too: still NotSupported.
+- ASLR: kernel placement stays lowest-first, so the flag guards nothing until then.
+
+**How it was found**
+The adversarial review of the vma_allocate extension, which found the rule inverted. It was put to the user as a decision: Zircon's rule now, the bit accepted but not enforced, or the P2 deferral kept.
+
+**The user's prediction**
+The user chose Zircon's rule now (A), before the analysis, giving no reason or expected failure. The analysis expected two failure points:
+- Every chosen place inside a sub-region needs the bit. That held: the launcher's two regions, three of the shell's checks and one kernel command, and mutation 2 shows what one missed does.
+- Where the check lives. Putting it in mm, as Zircon does, reached two kernel paths beyond the roots: `vmaseal.test`'s sub-area, and init_vmm's preset areas through `reserve()`. The second was first exempted, a departure from Zircon the review caught. Mutation 3 shows what missing it does.
+
+**Three questions you should be able to answer**
+- Why may a sub-region have CanMapSpecific when its parent does not, without weakening the parent's rule?
+- What does the flag protect in a kernel without ASLR, and why was it done now anyway?
+- Why is the check in mm rather than in the system call?

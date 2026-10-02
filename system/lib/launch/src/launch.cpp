@@ -238,12 +238,16 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
 
     // 3. The image's place: one sub-region as long as every segment together,
     // where the kernel finds room, so that the segments keep their places
-    // relative to each other wherever it lands.
+    // relative to each other wherever it lands. CanMapSpecific, because each
+    // segment goes at its own offset in it: what Zircon's
+    // VmarLoader::AllocateVmar() asks for, and for the same reason.
     Owned image_region;
     VirtAddr image_base = 0;
-    if (auto const status = ou::vma_allocate(
-            root.get(), VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapExecute,
-            0, usize(image.size), image_region.out(), &image_base);
+    if (auto const status =
+            ou::vma_allocate(root.get(),
+                             VmOptions::CanMapRead | VmOptions::CanMapWrite |
+                                 VmOptions::CanMapExecute | VmOptions::CanMapSpecific,
+                             0, usize(image.size), image_region.out(), &image_base);
         status != Status::Ok) {
         return ustl::err(failed(request, "vma_allocate of the image's region", status));
     }
@@ -344,12 +348,13 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
 
     // 6. The stack, in a sub-region of its own: a guard page that allows nothing,
     // then the stack above it. Running off the stack's end faults on the
-    // guard instead of writing into whatever the kernel placed below.
+    // guard instead of writing into whatever the kernel placed below. Both go
+    // at chosen offsets in it, hence CanMapSpecific.
     Owned stack_region;
     VirtAddr stack_region_base = 0;
     if (auto const status = ou::vma_allocate(
-            root.get(), VmOptions::CanMapRead | VmOptions::CanMapWrite, 0,
-            STACK_GUARD + stack_size.unwrap(), stack_region.out(), &stack_region_base);
+            root.get(), VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapSpecific,
+            0, STACK_GUARD + stack_size.unwrap(), stack_region.out(), &stack_region_base);
         status != Status::Ok) {
         return ustl::err(failed(request, "vma_allocate of the stack's region", status));
     }

@@ -131,7 +131,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 | `Status ours_vmo_op_range(HandleValue vmo, VmoOp op, u64 offset, u64 size, void *buffer, usize buffer_size)` | Commit / Decommit / Zero。VmoOp 是枚举，不是位掩码，所以不叫 *Options。malloc 释放内存靠 Decommit | Write | P1 | `ou::vmo_op_range` |
 | `Status ours_vma_map(HandleValue vma, VmOptions options, usize vma_offset, HandleValue vmo, u64 vmo_offset, usize length, VirtAddr *mapped_addr)` | 7 个参数，第 7 个走 r12。PermWrite 和 PermExecute 都要求同时有 PermRead；拒绝 Write+Execute；每一位 Perm 都必须被两边句柄允许，交集存为映射上限。带 Specific 时 vma_offset 相对 vma 起点。vmo_offset 必须页对齐，且 `vmo_offset + length ≤ size`，否则 OutOfRange。自动加 `MmuFlags::User`，不预先提交 | vmo: Map；每位 Perm 两边都要对应的 Read/Write/Execute | P1 | `ou::vma_map` |
 | `Status ours_vma_unmap(HandleValue vma, VirtAddr addr, usize length)` | addr 未对齐回 InvArgs（mm 会悄悄对齐，所以 dispatcher 先拦）；与 vDSO 区间相交回 AccessDenied（由 mm 执行）；只部分覆盖子区域时拒绝 | 整块覆盖子区域时需 OpChildren | P1 | `ou::vma_unmap` |
-| `Status ours_vma_allocate(HandleValue parent, VmOptions options, usize offset, usize size, HandleValue *child, VirtAddr *child_addr)` | 只接受 CanMapR/W/X 与 Specific；子区域 rights = 默认值 + 由 CanMap 位推出的 R/W/X。用于栈 guard 和 PIE 整体预留 | 每个 CanMap 位都要求 parent 有对应 rights | P1 | `ou::vma_allocate` |
+| `Status ours_vma_allocate(HandleValue parent, VmOptions options, usize offset, usize size, HandleValue *child, VirtAddr *child_addr)` | 只接受 CanMapR/W/X 与 Specific；子区域 rights = 默认值 + 由 CanMap 位推出的 R/W/X。用于栈 guard 和 PIE 整体预留。**Revised 2026-10-02:** CanMapSpecific is accepted too, as in Zircon: Specific into a region without it is AccessDenied (vma_map as well), the root has it, and a sub-region has it when asked, whether or not its parent does | 每个 CanMap 位都要求 parent 有对应 rights；CanMapSpecific 不要求 | P1 | `ou::vma_allocate` |
 | `Status ours_vma_protect(HandleValue vma, VmOptions options, VirtAddr addr, usize length)` | 新权限必须 ⊆ 映射上限且 ⊆ vma 句柄的 rights；对 vDSO 拒绝。**只能和 per-mapping 上限同一个提交上线** | 对应的 Read/Write/Execute | P1 | `ou::vma_protect` |
 | `Status ours_vma_destroy(HandleValue vma)` | 拆掉所有映射和子区域，并把区域标为失效；root 回 NotSupported；包含 vDSO 的拒绝。前置：`VmArea::destroy` 改为公开并持锁 | OpChildren | P1 | `ou::vma_destroy` |
 | `ours_vmo_set_size`、`ours_vmo_create_child`（Slice，Snapshot 先用急切复制）、`ours_vmo_create_physical(HandleValue resource, PhysAddr paddr, usize size, HandleValue *out)`、`ours_vmo_set_cache_policy`、`ours_vmo_replace_as_executable`、`ours_vmo_create_contiguous`、`ours_vma_op_range` | 形状照 Zircon。physical 要求 Mmio 资源覆盖所请求的范围；cache policy 要求 arch 先有 WC/UC 位 | 同 Zircon | P2 | 同名 |
@@ -584,7 +584,7 @@ P1 的前置：
 | 64 KiB 消息 | ipc | 推迟到 P1-D | 要等 BufferChain；vmalloc 有区间数限制，vfree 没有 shootdown |
 | exception channel、thread_read_state | task | 推迟到 P2 | init 用 TERMINATED、ProcessInfo 的 retcode 加内核打印的故障报告就能监督；异常通道是给调试器和崩溃报告器的 |
 | SuspendToken、Profile、JobPolicy、job_set_critical 系统调用 | task | P2 | 服务于调试、安全加固、实时性 |
-| Vma 的 CanMapSpecific / SpecificOverwrite | memory | P2 | `VmPlacement::at` 遇到已占用地址一律拒绝 |
+| Vma 的 CanMapSpecific / SpecificOverwrite | memory | P2 | `VmPlacement::at` 遇到已占用地址一律拒绝。CanMapSpecific done 2026-10-02: the user chose Zircon's rule over accepting the bit unenforced or deferring it (`docs/changes/261002/object.md`); SpecificOverwrite stays P2 |
 | 在 ABI 里给 Profile 预留 Deadline 字段 | task | 否决（暂不进 ABI） | 调度器还没有这些参数，不预留可能写错的字段 |
 | 删除 ProcessDispatcher 的进程树成员 | task | 暂缓 | 可能是预留的脚手架，先问主人 |
 | 用 vdso_only 属性或隐藏符号当安全边界 | object_model、resource | 否决 | 精确的 sysret 校验落地之前，跳进桩就能陷入 |

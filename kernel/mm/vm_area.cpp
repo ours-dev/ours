@@ -164,7 +164,10 @@ auto VmArea::create_mapping(VmPlacement where, usize requested_size, usize vmo_o
     // design 2.3); Zircon keeps the per-mapping ceiling for the same reason
     // (VmMapping's CAN_MAP_* flags, from the rights the mapping was made
     // with).
-    auto vmaf = (m_vmaf & ~VmaFlags::PermMask) | allowed;
+    // Nor does a mapping take the area's CanMapSpecific: it is a rule about
+    // what goes into an area, and nothing goes into a mapping. Zircon's
+    // CreateVmMapping() does not let it reach a mapping either.
+    auto vmaf = (m_vmaf & ~(VmaFlags::PermMask | VmaFlags::CanMapSpecific)) | allowed;
     if (!!(option & VmMapOption::Sealed)) {
         vmaf |= VmaFlags::Sealed;
     }
@@ -238,6 +241,13 @@ auto VmArea::create_subaom_preamble(VmPlacement where, usize size)
     auto const [base_aligned, aligned] = resolve_page_range(where.base(), size);
     if (!aligned) {
         return ktl::err(Status::InvArgs);
+    }
+
+    // A place the caller chose, which only an area made to take one accepts
+    // (VmaFlags::CanMapSpecific). In Zircon's order: after the alignment,
+    // before the range (VmAddressRegion::CreateSubVmarInner()).
+    if (!(m_vmaf & VmaFlags::CanMapSpecific)) {
+        return ktl::err(Status::AccessDenied);
     }
 
     if (!check_range(base_aligned, aligned)) {
@@ -690,12 +700,18 @@ auto VmArea::reserve(VirtAddr base, usize size_bytes, MmuFlags mmuf, char const 
     }
 
     // Created under the address space lock, as create_mapping() does, and
-    // released before protect() below takes it again for itself.
+    // released before protect() below takes it again for itself. A
+    // reservation is a mapping at a place chosen for it, so this area must
+    // take one, as Zircon's ReserveSpace() goes through CreateVmMapping() with
+    // VMAR_FLAG_SPECIFIC and meets the same check.
     ustl::Arc<VmMapping> mapping;
     {
         Guard guard{get_lock()};
-        status = VmMapping::create(this, aligned_base, size, m_vmaf, ustl::move(vmo), 0, mmuf, name,
-                                   &mapping);
+        if (!(m_vmaf & VmaFlags::CanMapSpecific)) {
+            return Status::AccessDenied;
+        }
+        status = VmMapping::create(this, aligned_base, size, m_vmaf & ~VmaFlags::CanMapSpecific,
+                                   ustl::move(vmo), 0, mmuf, name, &mapping);
     }
     if (Status::Ok != status) {
         return status;

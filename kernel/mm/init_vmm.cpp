@@ -108,9 +108,13 @@ namespace {
         auto root_vma = kaspace->root_vma();
         ustl::Arc<VmArea> vma;
         [[maybe_unused]]
-        auto status =
-            root_vma->create_subvma(VmPlacement::at(phys_vma.base), phys_vma.size, phys_vma.vmaf,
-                                    phys_vma.name, VmMapOption::None, &vma);
+        // CanMapSpecific: reserve() below records the mapping at the area's
+        // own base, a place chosen for it, which only such an area takes.
+        // Zircon gives every handoff VMAR the same flag for the same reason
+        // (ToVmarFlags(), zircon/kernel/vm/vm.cc).
+        auto status = root_vma->create_subvma(VmPlacement::at(phys_vma.base), phys_vma.size,
+                                              phys_vma.vmaf | VmaFlags::CanMapSpecific,
+                                              phys_vma.name, VmMapOption::None, &vma);
         DEBUG_ASSERT(Status::Ok == status);
 
         if (PhysVma::Backing::AddressSpace == phys_vma.backing) {

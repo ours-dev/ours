@@ -168,8 +168,9 @@ auto VmAspace::init() -> Status {
     }
 
     // In the normal case, the root VMA always ownes RWX permissions so that the sub-VMA derived from
-    // it can be created with arbitrary permissions combination.
-    constexpr auto ROOT_VMAF = VmaFlags::PermMask | VmaFlags::Share;
+    // it can be created with arbitrary permissions combination. It takes places its users choose,
+    // as Zircon's root VMAR does (VmAspace::Init(), VMAR_FLAG_CAN_MAP_SPECIFIC).
+    constexpr auto ROOT_VMAF = VmaFlags::PermMask | VmaFlags::Share | VmaFlags::CanMapSpecific;
 
     status = VmArea::create_root(m_base, m_size, ROOT_VMAF, this, "Root", &m_root_vma);
     if (status != Status::Ok) {

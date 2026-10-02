@@ -133,10 +133,15 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
 
     // Where: vma_offset counts from this region's start, and only means
     // something with Specific -- without it the kernel picks, and an offset
-    // would be a request nobody reads. Zircon refuses that as well.
+    // would be a request nobody reads. Zircon refuses that as well. Whether
+    // the place lies inside this region is mm's to answer, after whether this
+    // region takes a chosen place at all (CanMapSpecific): Zircon's order, so
+    // a Specific request into a region without it is AccessDenied however far
+    // off it points. mm's check is in offset form, so an offset that wraps the
+    // address is refused there too.
     auto where = mm::VmPlacement::anywhere();
     if (!!(options & VmOptions::Specific)) {
-        if (!ustl::mm::is_aligned(vma_offset, PAGE_SIZE) || vma_offset >= m_vma->size()) {
+        if (!ustl::mm::is_aligned(vma_offset, PAGE_SIZE)) {
             return ktl::err(Status::InvArgs);
         }
         where = mm::VmPlacement::at(m_vma->base() + vma_offset);
@@ -219,12 +224,12 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
     if ((options & PERM) != VmOptions::None) {
         return Status::InvArgs;
     }
-    // Anything else not acted on yet: CanMapSpecific (every region here takes
-    // a Specific mapping), Compact, OffsetIsUpperLimit, SpecificOverwrite and
-    // the mapping-only bits.
+    // Anything else not acted on yet: Compact, OffsetIsUpperLimit,
+    // SpecificOverwrite and the mapping-only bits.
     constexpr auto CAN_MAP_RWX =
         VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapExecute;
-    if ((options & ~(VmOptions::Specific | CAN_MAP_RWX)) != VmOptions::None) {
+    constexpr auto ACTED_ON = VmOptions::Specific | CAN_MAP_RWX | VmOptions::CanMapSpecific;
+    if ((options & ~ACTED_ON) != VmOptions::None) {
         return Status::NotSupported;
     }
 
@@ -238,12 +243,11 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
 
     // Where: |offset| counts from this region's start with Specific; without
     // it the kernel finds room, and an offset would be a request nobody reads,
-    // so it must be 0 (Zircon: VmAddressRegion::CreateSubVmarInner()).
+    // so it must be 0 (Zircon: VmAddressRegion::CreateSubVmarInner()). As in
+    // map(), whether the place lies inside this region is mm's to answer,
+    // after CanMapSpecific.
     auto where = mm::VmPlacement::anywhere();
     if (!!(options & VmOptions::Specific)) {
-        if (offset >= m_vma->size()) {
-            return Status::InvArgs;
-        }
         where = mm::VmPlacement::at(m_vma->base() + offset);
     } else if (offset != 0) {
         return Status::InvArgs;
@@ -268,6 +272,15 @@ auto VmaDispatcher::allocate(VmOptions const options, usize const offset, usize 
     constexpr auto RWX = mm::VmaFlags::Read | mm::VmaFlags::Write | mm::VmaFlags::Exec;
     if ((allows & RWX & ~m_vma->permissions()) != mm::VmaFlags::None) {
         return Status::AccessDenied;
+    }
+    // Places chosen inside the sub-region: no right asked, and no ceiling
+    // from this region, whose own CanMapSpecific decides only whether the
+    // sub-region itself can go at |offset| (mm refuses that below). Without
+    // it the sub-region lands where the kernel puts it, so places chosen
+    // inside it fix only distances. Zircon: "It is NOT an error if the parent
+    // does not have ZX_VM_CAN_MAP_SPECIFIC permissions" (zx_vmar_allocate).
+    if (!!(options & VmOptions::CanMapSpecific)) {
+        allows |= mm::VmaFlags::CanMapSpecific;
     }
 
     // mm places it, and refuses a range that is taken or runs off this region.

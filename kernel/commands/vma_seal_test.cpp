@@ -99,9 +99,9 @@ namespace {
             root->map_with_vmo(mm::VmPlacement::at(PLAIN), PAGE_SIZE, 0, flags, PERMS,
                                make_vmo(PAGE_SIZE), mm::VmMapOption::None, "vmaseal.test plain");
         ustl::Arc<mm::VmArea> area;
-        auto const area_status =
-            root->create_subvma(mm::VmPlacement::at(AREA), 4 * PAGE_SIZE, PERMS,
-                                "vmaseal.test area", mm::VmMapOption::None, &area);
+        auto const area_status = root->create_subvma(
+            mm::VmPlacement::at(AREA), 4 * PAGE_SIZE, PERMS | mm::VmaFlags::CanMapSpecific,
+            "vmaseal.test area", mm::VmMapOption::None, &area);
         verdict(tally, sealed.is_ok() && plain.is_ok() && area_status == Status::Ok,
                 "the mappings and the sub-area are made");
         if (tally.failed != 0) {
