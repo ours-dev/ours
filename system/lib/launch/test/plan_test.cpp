@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// plan_mappings(): how the PT_LOAD segments of a program are mapped. The
-/// specification is the comment on its definition, in src/plan.cpp.
+/// Plan::build(): how the PT_LOAD segments of a program are mapped. The
+/// specification is the comment on Plan::make(), in src/plan.cpp.
 #include <launch/plan.hpp>
 
 #include <array>
@@ -26,42 +26,23 @@ using ours::Status;
 
 constexpr u64 FILE_SIZE = 0x4000;
 
-/// A plan that starts out full of something else, so that a function which
-/// only appends to it, or leaves a field it had nothing to say about, is caught.
-auto dirty() -> Plan {
-    Plan plan;
-    for (auto &m: plan.mappings) {
-        m = Mapping{Source::Private, 99, 0xdead000, 0xbeef000, 0xf00d000, Perm::RW};
-    }
-    plan.mapping_count = 5;
-    for (auto &c: plan.copies) {
-        c = Copy{99, 1, 2, 3};
-    }
-    plan.copy_count = 3;
-    for (auto &s: plan.private_size) {
-        s = 0x123000;
-    }
-    return plan;
+auto build(std::vector<Segment> const &segments, Relro const relro, u64 const file_size = FILE_SIZE)
+    -> ustl::Result<Plan, Status> {
+    return Plan::build(segments, relro, file_size);
 }
 
-auto plan_of(std::vector<Segment> const &segments, Relro const relro, Plan &plan,
-             u64 const file_size = FILE_SIZE) -> Status {
-    plan = dirty();
-    return launch::plan_mappings(segments, relro, file_size, plan);
-}
-
-void expect_empty(Plan const &plan) {
-    EXPECT_EQ(plan.mapping_count, 0U);
-    EXPECT_EQ(plan.copy_count, 0U);
-    for (auto const size: plan.private_size) {
-        EXPECT_EQ(size, 0U);
-    }
-}
+/// |name| is the plan build() gives for the rest of the arguments; the test
+/// stops if build() refuses them.
+#define PLAN_OF(name, ...)                                                                         \
+    auto const name##_result = build(__VA_ARGS__);                                                 \
+    ASSERT_TRUE(name##_result.is_ok())                                                             \
+        << "build() answered " << static_cast<int>(name##_result.unwrap_err());                    \
+    auto const &name = name##_result.unwrap()
 
 void expect_mapping(Plan const &plan, usize const index, Source const source, u32 const segment,
                     u64 const vaddr, u64 const size, u64 const vmo_offset, Perm const perm) {
-    ASSERT_LT(index, plan.mapping_count);
-    auto const &m = plan.mappings[index];
+    ASSERT_LT(index, plan.mappings().size());
+    auto const &m = plan.mappings()[index];
     EXPECT_EQ(m.source, source) << "mapping " << index;
     EXPECT_EQ(m.segment, segment) << "mapping " << index;
     EXPECT_EQ(m.vaddr, vaddr) << "mapping " << index;
@@ -72,8 +53,8 @@ void expect_mapping(Plan const &plan, usize const index, Source const source, u3
 
 void expect_copy(Plan const &plan, usize const index, u32 const segment, u64 const vmo_offset,
                  u64 const file_offset, u64 const size) {
-    ASSERT_LT(index, plan.copy_count);
-    auto const &c = plan.copies[index];
+    ASSERT_LT(index, plan.copies().size());
+    auto const &c = plan.copies()[index];
     EXPECT_EQ(c.segment, segment);
     EXPECT_EQ(c.vmo_offset, vmo_offset);
     EXPECT_EQ(c.file_offset, file_offset);
@@ -98,11 +79,10 @@ std::vector<Segment> const TYPICAL = {
 constexpr Relro TYPICAL_RELRO{0x3f00, 0x100};
 
 TEST(PlanMappings, TypicalLayout) {
-    Plan plan;
-    ASSERT_EQ(plan_of(TYPICAL, TYPICAL_RELRO, plan), Status::Ok);
+    PLAN_OF(plan, TYPICAL, TYPICAL_RELRO);
 
     // The three segments that are not writable come from the file, a page each.
-    ASSERT_EQ(plan.mapping_count, 5U);
+    ASSERT_EQ(plan.mappings().size(), 5U);
     expect_mapping(plan, 0, Source::File, 0, 0x0000, 0x1000, 0x0000, Perm::R);
     expect_mapping(plan, 1, Source::File, 1, 0x1000, 0x1000, 0x1000, Perm::RX);
     expect_mapping(plan, 2, Source::File, 2, 0x2000, 0x1000, 0x2000, Perm::R);
@@ -114,32 +94,18 @@ TEST(PlanMappings, TypicalLayout) {
     expect_mapping(plan, 3, Source::Private, 3, 0x3000, 0x1000, 0x0000, Perm::R);
     expect_mapping(plan, 4, Source::Private, 3, 0x4000, 0x3000, 0x1000, Perm::RW);
 
-    ASSERT_EQ(plan.copy_count, 1U);
+    ASSERT_EQ(plan.copies().size(), 1U);
     expect_copy(plan, 0, 3, 0xf00, 0x2f00, 0x180);
 
-    EXPECT_EQ(plan.private_size[0], 0U);
-    EXPECT_EQ(plan.private_size[1], 0U);
-    EXPECT_EQ(plan.private_size[2], 0U);
-    EXPECT_EQ(plan.private_size[3], 0x4000U);
-}
-
-TEST(PlanMappings, ResetsWhatWasThere) {
-    // The plan handed in was full, and the answer is exactly five mappings and
-    // one copy: not five over the top of a leftover fifth, and not a stale
-    // private_size on a segment that has none.
-    Plan plan;
-    ASSERT_EQ(plan_of({{0x0, 0x0, 0x10, 0x10, PF_R}}, {}, plan), Status::Ok);
-    EXPECT_EQ(plan.mapping_count, 1U);
-    EXPECT_EQ(plan.copy_count, 0U);
-    for (auto const size: plan.private_size) {
-        EXPECT_EQ(size, 0U);
-    }
+    EXPECT_EQ(plan.private_size(0), 0U);
+    EXPECT_EQ(plan.private_size(1), 0U);
+    EXPECT_EQ(plan.private_size(2), 0U);
+    EXPECT_EQ(plan.private_size(3), 0x4000U);
 }
 
 TEST(PlanMappings, NoRelroIsOneWritableMapping) {
-    Plan plan;
-    ASSERT_EQ(plan_of(TYPICAL, {}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 4U);
+    PLAN_OF(plan, TYPICAL, {});
+    ASSERT_EQ(plan.mappings().size(), 4U);
     expect_mapping(plan, 3, Source::Private, 3, 0x3000, 0x4000, 0x0000, Perm::RW);
 }
 
@@ -147,17 +113,15 @@ TEST(PlanMappings, RelroThatIsNotAWholePageIsNotProtected) {
     // 0x800 bytes of RELRO at the start of a page: the page also holds what
     // follows, which is written to, so it cannot be read-only.
     std::vector<Segment> const segments = {{0x3000, 0x2000, 0x1000, 0x1000, PF_R | PF_W}};
-    Plan plan;
-    ASSERT_EQ(plan_of(segments, {0x3000, 0x800}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 1U);
+    PLAN_OF(plan, segments, {0x3000, 0x800});
+    ASSERT_EQ(plan.mappings().size(), 1U);
     expect_mapping(plan, 0, Source::Private, 0, 0x3000, 0x1000, 0x0000, Perm::RW);
 }
 
 TEST(PlanMappings, RelroThatIsTheWholeSegmentLeavesNothingWritable) {
     std::vector<Segment> const segments = {{0x3000, 0x2000, 0x2000, 0x2000, PF_R | PF_W}};
-    Plan plan;
-    ASSERT_EQ(plan_of(segments, {0x3000, 0x2000}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 1U);
+    PLAN_OF(plan, segments, {0x3000, 0x2000});
+    ASSERT_EQ(plan.mappings().size(), 1U);
     expect_mapping(plan, 0, Source::Private, 0, 0x3000, 0x2000, 0x0000, Perm::R);
 }
 
@@ -165,47 +129,42 @@ TEST(PlanMappings, RelroSpanningPagesRoundsItsEndDown) {
     // RELRO from the start of the segment to 0x3a00 (offset 0x2a00): two whole
     // pages, then a page it only starts to fill.
     std::vector<Segment> const segments = {{0x1000, 0x0000, 0x3000, 0x3000, PF_R | PF_W}};
-    Plan plan;
-    ASSERT_EQ(plan_of(segments, {0x1000, 0x2a00}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 2U);
+    PLAN_OF(plan, segments, {0x1000, 0x2a00});
+    ASSERT_EQ(plan.mappings().size(), 2U);
     expect_mapping(plan, 0, Source::Private, 0, 0x1000, 0x2000, 0x0000, Perm::R);
     expect_mapping(plan, 1, Source::Private, 0, 0x3000, 0x1000, 0x2000, Perm::RW);
 }
 
 TEST(PlanMappings, ProtectionFollowsTheFlags) {
-    Plan plan;
     // Execute without read is still readable when mapped, and write without
     // read is still a writable mapping.
-    ASSERT_EQ(plan_of({{0x0, 0x0, 0x10, 0x10, PF_X}}, {}, plan), Status::Ok);
-    expect_mapping(plan, 0, Source::File, 0, 0x0, 0x1000, 0x0, Perm::RX);
-    ASSERT_EQ(plan_of({{0x0, 0x0, 0x10, 0x10, PF_W}}, {}, plan), Status::Ok);
-    expect_mapping(plan, 0, Source::Private, 0, 0x0, 0x1000, 0x0, Perm::RW);
+    PLAN_OF(executable, {{0x0, 0x0, 0x10, 0x10, PF_X}}, {});
+    expect_mapping(executable, 0, Source::File, 0, 0x0, 0x1000, 0x0, Perm::RX);
+    PLAN_OF(writable, {{0x0, 0x0, 0x10, 0x10, PF_W}}, {});
+    expect_mapping(writable, 0, Source::Private, 0, 0x0, 0x1000, 0x0, Perm::RW);
 }
 
 TEST(PlanMappings, WritableSegmentWithNothingInTheFileIsAllZero) {
     // A pure .bss: a private VMO, mapped, and nothing to copy into it.
-    Plan plan;
-    ASSERT_EQ(plan_of({{0x5000, 0x0, 0x0, 0x1800, PF_R | PF_W}}, {}, plan), Status::Ok);
-    EXPECT_EQ(plan.copy_count, 0U);
-    EXPECT_EQ(plan.private_size[0], 0x2000U);
-    ASSERT_EQ(plan.mapping_count, 1U);
+    PLAN_OF(plan, {{0x5000, 0x0, 0x0, 0x1800, PF_R | PF_W}}, {});
+    EXPECT_EQ(plan.copies().size(), 0U);
+    EXPECT_EQ(plan.private_size(0), 0x2000U);
+    ASSERT_EQ(plan.mappings().size(), 1U);
     expect_mapping(plan, 0, Source::Private, 0, 0x5000, 0x2000, 0x0, Perm::RW);
 }
 
 TEST(PlanMappings, SegmentThatStartsMidPageIsMappedFromItsPage) {
     // A read-only segment at 0x1234 in the file and in memory: the page it is
     // in is mapped, from the start of that page of the file.
-    Plan plan;
-    ASSERT_EQ(plan_of({{0x1234, 0x1234, 0x100, 0x100, PF_R}}, {}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 1U);
+    PLAN_OF(plan, {{0x1234, 0x1234, 0x100, 0x100, PF_R}}, {});
+    ASSERT_EQ(plan.mappings().size(), 1U);
     expect_mapping(plan, 0, Source::File, 0, 0x1000, 0x1000, 0x1000, Perm::R);
 }
 
 TEST(PlanMappings, SegmentThatRunsIntoTheNextPage) {
     // 0x1f00 + 0x200 crosses a page boundary: two pages.
-    Plan plan;
-    ASSERT_EQ(plan_of({{0x1f00, 0x1f00, 0x200, 0x200, PF_R}}, {}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 1U);
+    PLAN_OF(plan, {{0x1f00, 0x1f00, 0x200, 0x200, PF_R}}, {});
+    ASSERT_EQ(plan.mappings().size(), 1U);
     expect_mapping(plan, 0, Source::File, 0, 0x1000, 0x2000, 0x1000, Perm::R);
 }
 
@@ -214,16 +173,15 @@ TEST(PlanMappings, TwoWritableSegmentsEachHaveTheirOwnVmo) {
         {0x1000, 0x2000, 0x10, 0x10, PF_R | PF_W},
         {0x3000, 0x3000, 0x20, 0x3000, PF_R | PF_W},
     };
-    Plan plan;
-    ASSERT_EQ(plan_of(segments, {}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 2U);
+    PLAN_OF(plan, segments, {});
+    ASSERT_EQ(plan.mappings().size(), 2U);
     expect_mapping(plan, 0, Source::Private, 0, 0x1000, 0x1000, 0x0, Perm::RW);
     expect_mapping(plan, 1, Source::Private, 1, 0x3000, 0x3000, 0x0, Perm::RW);
-    ASSERT_EQ(plan.copy_count, 2U);
+    ASSERT_EQ(plan.copies().size(), 2U);
     expect_copy(plan, 0, 0, 0x0, 0x2000, 0x10);
     expect_copy(plan, 1, 1, 0x0, 0x3000, 0x20);
-    EXPECT_EQ(plan.private_size[0], 0x1000U);
-    EXPECT_EQ(plan.private_size[1], 0x3000U);
+    EXPECT_EQ(plan.private_size(0), 0x1000U);
+    EXPECT_EQ(plan.private_size(1), 0x3000U);
 }
 
 TEST(PlanMappings, RelroBelongsToTheSegmentItStartsIn) {
@@ -233,9 +191,8 @@ TEST(PlanMappings, RelroBelongsToTheSegmentItStartsIn) {
         {0x1000, 0x1000, 0x1000, 0x1000, PF_R | PF_W},
         {0x3000, 0x2000, 0x1000, 0x1000, PF_R | PF_W},
     };
-    Plan plan;
-    ASSERT_EQ(plan_of(segments, {0x3000, 0x1000}, plan), Status::Ok);
-    ASSERT_EQ(plan.mapping_count, 2U);
+    PLAN_OF(plan, segments, {0x3000, 0x1000});
+    ASSERT_EQ(plan.mappings().size(), 2U);
     expect_mapping(plan, 0, Source::Private, 0, 0x1000, 0x1000, 0x0, Perm::RW);
     expect_mapping(plan, 1, Source::Private, 1, 0x3000, 0x1000, 0x0, Perm::R);
 }
@@ -245,18 +202,17 @@ TEST(PlanMappings, MaximumSegments) {
     for (u64 i = 0; i < Plan::MAX_SEGMENTS; ++i) {
         segments.push_back({i * 0x1000, i * 0x1000, 0x10, 0x10, PF_R});
     }
-    Plan plan;
-    ASSERT_EQ(plan_of(segments, {}, plan, Plan::MAX_SEGMENTS * 0x1000), Status::Ok);
-    EXPECT_EQ(plan.mapping_count, Plan::MAX_SEGMENTS);
+    PLAN_OF(plan, segments, {}, Plan::MAX_SEGMENTS * 0x1000);
+    EXPECT_EQ(plan.mappings().size(), Plan::MAX_SEGMENTS);
 }
 
-// ---- What is refused. Every one leaves the plan empty.
+// ---- What is refused: build() answers the error, and there is no Plan.
 
 void expect_refused(std::vector<Segment> const &segments, Relro const relro, Status const status,
                     u64 const file_size = FILE_SIZE) {
-    Plan plan;
-    EXPECT_EQ(plan_of(segments, relro, plan, file_size), status);
-    expect_empty(plan);
+    auto const result = build(segments, relro, file_size);
+    ASSERT_TRUE(result.is_err());
+    EXPECT_EQ(result.unwrap_err(), status);
 }
 
 TEST(PlanMappings, RefusesNoSegments) {
@@ -297,8 +253,7 @@ TEST(PlanMappings, RefusesAddressAndOffsetThatDisagreeWithinAPage) {
 TEST(PlanMappings, RefusesBytesPastTheEndOfTheFile) {
     // The last byte is at 0x3fff: the segment ends exactly at the end of the
     // file and is fine, one byte more is not.
-    Plan plan;
-    EXPECT_EQ(plan_of({{0x3f00, 0x3f00, 0x100, 0x100, PF_R}}, {}, plan), Status::Ok);
+    EXPECT_TRUE(build({{0x3f00, 0x3f00, 0x100, 0x100, PF_R}}, {}).is_ok());
     expect_refused({{0x3f00, 0x3f00, 0x101, 0x101, PF_R}}, {}, Status::InvArgs);
 }
 
@@ -326,11 +281,9 @@ TEST(PlanMappings, RefusesSegmentsThatShareAPage) {
     expect_refused({{0x0, 0x0, 0x1900, 0x1900, PF_R}, {0x1a00, 0x1a00, 0x100, 0x100, PF_R | PF_X}},
                    {}, Status::InvArgs);
     // The next page is fine.
-    Plan plan;
-    EXPECT_EQ(
-        plan_of({{0x0, 0x0, 0x1900, 0x1900, PF_R}, {0x2000, 0x2000, 0x100, 0x100, PF_R | PF_X}}, {},
-                plan),
-        Status::Ok);
+    EXPECT_TRUE(
+        build({{0x0, 0x0, 0x1900, 0x1900, PF_R}, {0x2000, 0x2000, 0x100, 0x100, PF_R | PF_X}}, {})
+            .is_ok());
 }
 
 TEST(PlanMappings, RefusesRelroThatDoesNotStartTheSegment) {

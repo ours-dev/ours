@@ -47,3 +47,54 @@ None. The planner is the user's core function for this milestone, to be written 
 - Why can the launcher map every segment with its final protection, when the kernel's loader had to map the whole image writable and executable?
 - Why can a page that holds RELRO and something else not be mapped read-only, and what does the planner do with it?
 - Why are segments that share a page refused instead of merged into one mapping?
+
+## The planner became `Plan::build()` and `Plan::make()`, and `make()` is written (2026-09-29)
+
+**Files**
+- `system/lib/launch/include/launch/plan.hpp` — `plan_mappings()` and its out-parameter became the class `Plan`: `build()` returns `ustl::Result<Plan, Status>`, the storage is `std::array`, and the only writers are `add_mapping()`, `add_copy()` and `set_private_size()`
+- `system/lib/launch/src/plan.cpp` — `Plan::make()`, the body of the planner, written; the specification comment above it is unchanged apart from the name
+- `system/lib/launch/test/plan_test.cpp` — the tests call `Plan::build()`; 28 of them now (the earlier entry said 29)
+- `.agents/tasks/launch-plan-exercise/` — the exercise brief, the review of the user's draft, and a diagram of a writable segment
+
+**Symptom**
+The earlier entry above describes a free function `plan_mappings(segments, relro, file_size, plan)` that fills a caller-owned `Plan`. Nothing stops a caller from reading a `Plan` that the function left half written, and the fixed-size arrays were C arrays with the counts held by the caller's code. The body was a stub, so every test that needed a mapping failed.
+
+**Cause**
+The free function with an out-parameter is C style: the invariant "a Plan is whole or does not exist" was in the caller's head, not in a type. `Plan` owns that invariant now. Its constructor is private, so `build()` is the only way to get one, and `build()` throws away a plan that `make()` did not finish, which is why `make()` may stop part way and needs no cleanup path.
+
+The body has two passes because of what a hostile file can do to the arithmetic. Pass 1 only judges: sizes, flags, the page offset of `vaddr` against `file_offset`, the bytes being in the file, `vaddr + mem_size` and its rounding up not wrapping, no zero-fill of a file mapping, order and shared pages through `first < previous_end`, and RELRO being a prefix of a writable segment. Pass 2 then adds and subtracts without a check on every line. The two checks that are easy to get wrong are written so that they cannot wrap themselves: the bytes-in-file test compares `file_size` with what is left of the file after `file_offset`, since `file_offset + file_size > file_size` wraps for an offset near 2^64 and then passes; and the address check compares against `UINT64_MAX - b` instead of testing `a + b < a`.
+
+**Change**
+The writable branch is the core. Before, in the draft the user wrote, every segment became one `Source::File` mapping:
+
+```cpp
+mapping.vmo_offset = ustl::mm::align_up(segment.file_offset, PAGE_SIZE);
+```
+
+which rounds the wrong way (the page holding the first byte starts at the rounded-down offset) and mapped writable data straight from the shared file. Now a writable segment gets `set_private_size(i, end - first)`, one `Copy{vmo_offset = vaddr - first}` when `file_size` is not 0, and `Source::Private` mappings whose `vmo_offset` is `page - first` in that segment's own VMO. With RELRO the VMO is cut at `align_down(vaddr + size)`: the whole pages before it are `Perm::R`, the rest `Perm::RW`, and either part is left out when empty.
+
+Considered and left: mapping the data from a copy-on-write snapshot of the file VMO, of the kind Zircon's `ld` makes for data VMOs with `ZX_VMO_CHILD_SNAPSHOT_AT_LEAST_ON_WRITE` (`sdk/lib/ld/include/lib/ld/remote-abi-heap.h`). The kernel only supports slice children (`VmoDispatcher::create_child()` answers `NotSupported` for the rest), and the planner would still need to zero the tail of the last file page, so the explicit `Copy` stays until snapshot children exist. Decided by the user on 2026-09-29.
+
+**Reference**
+Zircon `elfldltl` load planning (`LoadInfo`, `RelroBounds`), whose layout expects RELRO at the start of a writable segment, and glibc `_dl_protect_relro`; here the protection is final at mapping time.
+
+**Verification**
+- Host tests: `prebuilt/ninja/ninja -C out/phys-host-tests`, then the `plan` binary: 28 of 28 pass.
+- `clang-tidy -p out/phys-host-tests system/lib/launch/src/plan.cpp`: no diagnostics. `scripts/format_cpp.py --check`: clean.
+- Not booted: nothing uses the library yet, so `ours-verify` is not run for this change.
+
+**Deliberately not done**
+- The user's hand-written `make()`. The plan was for the user to write it under a time limit and be reviewed; the user's draft reached 13 of 28 tests, was reviewed (`.agents/tasks/launch-plan-exercise/REVIEW.md`), and then the user asked for it to be written, on the view that a program-header parser teaches little. So this `make()` is not the user's and there is no row in `docs/authored.md`. The milestone still has no hand-written core function.
+- The executor that does what a `Plan` says (`vmo_create`, `vmo_write`, `vma_map`), placement of the image, the stack, and ASLR, as in the earlier entry.
+- Copy-on-write for writable segments, above.
+
+**How it was found**
+None. This is the specified feature, written against the tests.
+
+**The user's prediction**
+None. The user did not predict before the exercise; the draft's 13 of 28 is recorded here instead of a comparison.
+
+**Three questions you should be able to answer**
+- Why is `file_offset + file_size > file_size` not a safe bounds check, and what does `make()` compare instead?
+- Why does a writable segment need its own private VMO whose size is recorded apart from the `Copy` and the mappings?
+- Why is `Copy.vmo_offset` `vaddr - first` and not 0, while the first `Source::Private` mapping's `vmo_offset` is 0?

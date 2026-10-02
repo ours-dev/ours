@@ -13,6 +13,8 @@ Scope: `Plan::fill()` only. The class around it (`build()`, the accessors, `add_
 |---|---|---|---|---|
 | Which core function for K23b | `Plan::fill()`; K26's `port_wait` | `Plan::fill()` | None | `Plan::fill()`, 2026-09-29 |
 | Shape of Plan | free function with an out-parameter; class with `build()` returning `ustl::Result` | class | None | class, 2026-09-29 (the user: prefer classes to C style; `std::array`, not C arrays) |
+| How writable segments are backed | private VMO filled by an explicit Copy (the specification as it is); copy-on-write snapshot child of the file VMO, which needs `VmoChildOptions::SnapshotAtLeastOnWrite` in the kernel first | explicit Copy now, copy-on-write as a separate task | None | explicit Copy for this exercise, 2026-09-29; copy-on-write is a later task with its own design, after the kernel supports snapshot children |
+| Who writes `Plan::make()` | the user under a time limit, reviewed afterwards; the AI | the user | None | the AI, 2026-09-29: the user's draft reached 13 of 28 tests and was reviewed, then the user asked for it to be written, saying a program-header parser teaches little; no row in `docs/authored.md`, and the change record says so |
 
 ## Steps
 1. The user writes `Plan::fill()`. Time limit 45 minutes, counted from when they start. The user already has a partial draft in the file; it is theirs, and it stays. The AI gives no hints, writes no part of the function, and does not reveal how any test is passed. The AI may explain what a test's expectation means in terms of the specification when asked, and may point out a contradiction between a test and the specification if the user finds one (the AI then admits it and fixes the test).
