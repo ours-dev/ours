@@ -565,11 +565,12 @@ namespace {
         // through it -- a table from another tree meant an indirect jump into
         // whatever happened to be there, so it had to be recognised first.
         //
-        // What replaces it is a better check, and it happens in bind_imports():
-        // a vDSO that does not export what the program imports fails by name
-        // ("the program needs 'ours_command_list', which the vDSO does not
-        // export"), before anything runs. A version number says two images
-        // disagree; this says which call is missing.
+        // What replaces it is a better check, made by elfload::Binder when
+        // launch() binds the program: a vDSO that does not export what the
+        // program imports fails by name ("elfload: imported, but the exporter
+        // does not define it: ours_command_list"), before anything runs. A
+        // version number says two images disagree; this says which call is
+        // missing.
         log::info("userboot: vdso mapped [{:X}, {:X})", out.base, out.base + out.span);
         return Status::Ok;
     }
@@ -678,8 +679,8 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
 
     // The vDSO, mapped into the same address space. It is what the program
     // enters the kernel through, and the only thing that can: the syscall
-    // path refuses a trap whose return address lies outside the range
-    // recorded below.
+    // path kills a process whose `syscall` instruction does not lie wholly
+    // inside the range that mapping the vDSO registers (VmaDispatcher::map()).
     if (!shared_vdso.ready()) {
         log::error("userabi: launch('{}') before the vDSO was laid out", name);
         return Status::BadState;
@@ -728,7 +729,9 @@ auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
     // (Zircon's process_builder; design 3.2). Made before the thread starts,
     // so that a handle that cannot be made fails the launch rather than
     // leaving a process running that nobody can give its region to.
-    // TEMPORARY in this form: until K23 the launch itself is in the kernel.
+    // TEMPORARY in this form: system/lib/launch does this from user space
+    // now. Once process_spawn_boot goes (K25), the kernel launches only
+    // userboot this way.
     if (root_vma_out) {
         *root_vma_out = object::Handle::make(
             object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), root_vma_rights);

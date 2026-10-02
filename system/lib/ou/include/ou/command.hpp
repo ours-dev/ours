@@ -10,7 +10,9 @@
 
 namespace ou {
 /// Fetches the kernel's command registry into |buffer| as text, one command
-/// per line ("name  help"), always NUL terminated.
+/// per line ("name  help", or the name alone), NUL terminated on Ok and on
+/// NoSpace. InvArgs for a null buffer, a capacity of 0, or a buffer the
+/// kernel cannot write, which may then be left part-written and unterminated.
 ///
 /// Status::NoSpace when the registry did not fit; what did fit is still
 /// terminated, so a caller can show that much and ask for more room.

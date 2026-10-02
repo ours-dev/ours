@@ -15,11 +15,13 @@ vDSO         mov $n, %eax; syscall           ← 唯一允许陷入内核的代�
 只是转发（`ou::command_list`）——程序应该到这里找「怎么调用某个系统调用」，而不是绕过
 它直接调 `ours_*`。
 
+This is the rule, not yet the tree: `examples/shell` still includes `<ours/vdso.hpp>` and calls `ours_*` directly at 18 sites, which step 5 of `.agents/tasks/system-abi-surface` moves to `ou`.
+
 两个调用约定由本库而不是调用方负责：
 
 - **ABI 限制**。`ou::debug_write` 按 `ours::MAX_DEBUG_WRITE` 切分，常量来自两边共用的
   `<ours/syscall.hpp>`，不需要调用方照着内核的数字手抄一份。
-- **长度与指针配对**。所有入口收 `ou::Str` 或定长数组，长度不会配错指针。
+- **长度与指针配对**。所有入口收 `ou::Str` 或定长数组，长度不会配错指针。**Corrected 2026-10-02:** this holds for text only: those entries take an `ou::Str`, and `ou::command_list` has an array overload; byte buffers and handle arrays (`channel_*`, `vmo_read`, `vmo_write`) and `command_list(char *, usize)` are still a pointer and a count, forwarded unchanged.
 
 ## 为什么有 `ou::Str` 而不用 `std::string_view`
 
@@ -37,3 +39,5 @@ vDSO         mov $n, %eax; syscall           ← 唯一允许陷入内核的代�
 
 线程生命周期（创建、启动、退出、等待）等内核一侧的系统调用出现之后，在这里加
 `ou::Thread`。目前内核只有两个系统调用，本库就只有两个入口。
+
+**Outdated (2026-10-02):** typed handles in `lib/zx`'s shape (`ou::Vmo`, `ou::Channel`, ...), and `ou` generated from `syscalls.gni`, are planned in `.agents/tasks/system-abi-surface` (steps 8 and 9). Until then every call in `syscalls.gni` has one hand-written entry here, `thread_create` among them, and a handle goes in and out as a bare `ours::HandleValue`. Of a thread's lifecycle the kernel has only `thread_create`, `process_start` (which starts a process's first thread) and `process_exit` (which ends every thread of the caller's process): there is no `thread_start` or `thread_exit`, and nothing raises TERMINATED on a thread.

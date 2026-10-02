@@ -5,12 +5,14 @@
 # The system calls, described once.
 #
 # Everything that has to agree about a call is generated from this list by
-# //build/abi/gen_syscalls.py: the private call numbers the kernel and the
-# vDSO share, the vDSO stubs, the extern "C" declarations a program calls, the
-# kernel's typed sys_* declarations and the shims that unpack a register frame
-# into them. Before this file each of those was written by hand, in four
-# places, kept in step by nothing but care; a handler whose definition drifts
-# from the entry here now fails to link (design 4.7).
+# //build/abi/gen_syscalls.py: the private call numbers the kernel and the vDSO
+# share, the vDSO stubs, the extern "C" declarations <ours/vdso.hpp> includes,
+# the kernel's typed syscall::<name> declarations (no sys_ prefix) and the shims
+# that unpack a register frame into them. GN derives libours.ifs, which the
+# vDSO's exports are checked against, from the same list. Before this file each
+# of those was written by hand, in four places, kept in step by nothing but
+# care; a handler whose definition drifts from the entry here now fails to link
+# (design 4.7).
 #
 # Adding a call is three things by hand: an entry here, the body of
 # syscall::<name>() in //kernel/lib/syscall, and its ou:: wrapper.
@@ -30,31 +32,36 @@
 #   args    In order, at most 8.
 #           Each is a scope:
 #             name     The parameter's name.
-#             type     A primitive (u8 .. u64, i8 .. i64, usize, char, void) or
-#                      a type in namespace ours.
+#             type     A primitive (u8 .. u64, i8 .. i64, usize, isize, char,
+#                      void) or a type in namespace ours.
 #             dir      Only on a pointer, and what makes it one: "in" (the
 #                      kernel reads through it) or "out" (it writes).
 #             count    Only on a pointer: the name of the argument that holds
 #                      its length in elements. Without one the pointer names
 #                      exactly one element.
 #             release  Only on a HandleValue passed by value or as an input
-#                      array: true when the call consumes the handle (every
-#                      handle in the array) whatever its outcome.
+#                      array: true when the call consumes the handle whatever
+#                      its outcome. An array is consumed once the kernel has
+#                      read it: a count past the call's limit, or an array it
+#                      cannot read, consumes nothing.
 #   attrs   Any of "blocking" (may wait), "noreturn" (never comes back; the
 #           stub ends in ud2), "debug" (a debug facility with no counterpart
 #           in a finished system).
-#   ret     The return type. "Status" unless the call returns a plain value.
+#   ret     The return type, "Status" when left out: "Status" unless the call
+#           returns a plain value, and "void" exactly when it is noreturn.
 
 ours_syscalls = [
   {
     name = "debug_write"
     brief = "Writes |length| bytes of |buffer| to the kernel's debug console."
     doc = [
-      "A debug facility, not a console: it exists so a program can prove it",
-      "reached ring 3 and got back. One call takes at most MAX_DEBUG_WRITE",
-      "bytes (<ours/syscall.hpp>) and answers OutOfRange past it rather than",
-      "truncating, so that a program cannot hold a CPU in the kernel for as",
-      "long as it likes by asking for a gigabyte of output.",
+      "A debug facility, not a console: it is how a program says what it is",
+      "doing while the system is brought up. One call takes at most",
+      "MAX_DEBUG_WRITE bytes (<ours/syscall.hpp>) and answers OutOfRange past",
+      "it rather than truncating, so that a program cannot hold a CPU in the",
+      "kernel for as long as it likes by asking for a gigabyte of output. A",
+      "|buffer| the kernel cannot read is InvArgs, and nothing is written; a",
+      "|length| of 0 is Ok without |buffer| being looked at.",
     ]
     args = [
       {
@@ -73,11 +80,13 @@ ours_syscalls = [
   },
   {
     name = "command_list"
-    brief = "Writes the kshell command registry into |buffer| as text."
+    brief = "Writes the kernel's command registry into |buffer| as text."
     doc = [
-      "One command per line, always NUL terminated. NoSpace when the registry",
-      "does not fit; what did fit is still terminated, so a caller can show",
-      "it and ask again with more room.",
+      "One command per line, NUL terminated when the answer is Ok or",
+      "NoSpace. NoSpace when the registry does not fit; what did fit is still",
+      "terminated, so a caller can show it and ask again with more room. A",
+      "null |buffer| or a |length| of 0 is InvArgs, and so is a buffer the",
+      "kernel cannot write, which may be left part-written and unterminated.",
     ]
     args = [
       {
@@ -118,7 +127,8 @@ ours_syscalls = [
     brief = "Makes a channel and writes a handle to each end into |out0| and |out1|."
     doc = [
       "Both values are written out before either handle is installed, so a",
-      "bad out-pointer leaves nothing behind.",
+      "bad out-pointer leaves no handle behind. If |out1| faults, |out0|",
+      "is already written, with a value that names no handle.",
     ]
     args = [
       {
@@ -144,11 +154,13 @@ ours_syscalls = [
     brief = "Queues |bytes| and |handles| on the channel's other end."
     doc = [
       "At most CHANNEL_MAX_MSG_BYTES bytes and CHANNEL_MAX_MSG_HANDLES",
-      "handles (<ours/syscall.hpp>). Every handle in |handles| leaves the",
-      "caller's table whatever the outcome: on success it is in the message,",
-      "on failure it is closed. Each needs Transfer (AccessDenied), none may",
-      "be |channel| itself (NotSupported), and a value named twice is gone",
-      "the second time (BadHandle).",
+      "handles (<ours/syscall.hpp>). A count past CHANNEL_MAX_MSG_HANDLES",
+      "(OutOfRange) or a |handles| the kernel cannot read (InvArgs) is",
+      "answered first and consumes nothing. Otherwise every handle in",
+      "|handles| leaves the caller's table whatever the outcome: on success",
+      "it is in the message, on failure it is closed. Each needs Transfer",
+      "(AccessDenied), none may be |channel| itself (NotSupported), and a",
+      "value named twice is gone the second time (BadHandle).",
     ]
     args = [
       {
@@ -239,9 +251,15 @@ ours_syscalls = [
     name = "object_wait_one"
     brief = "Waits until the object asserts any of |signals|."
     doc = [
-      "Returns when the object asserts any of |signals|, the handle is",
-      "closed, or |deadline| passes (0 polls; INSTANT_INFINITE waits for",
-      "ever), and writes what was asserted into |observed|.",
+      "Returns Ok when the object asserts any of |signals| (at once if one",
+      "already is), TimeOut when a poll finds none, and Cancelled when",
+      "|handle| leaves this process's table under the wait -- closed, or",
+      "consumed by another call. |deadline| is 0 to poll or INSTANT_INFINITE",
+      "to wait for ever; any other value, a negative one included, is",
+      "NotSupported until a program can read a clock. |handle| needs Wait",
+      "(AccessDenied). What was asserted when the wait ended is written to",
+      "|observed|, with HandleClosed added on Cancelled; |observed| may be",
+      "null, and one that cannot be written answers InvArgs.",
     ]
     args = [
       {
@@ -382,9 +400,12 @@ ours_syscalls = [
     doc = [
       "|process| needs ManageThread. The thread is Initial: it has no kernel",
       "thread and is not counted among the process's threads until it is",
-      "started, so closing its handle first leaves nothing behind. |name| is",
-      "|name_size| bytes, cut to 31. The options must be None (InvArgs). The",
-      "handle's value is written to |out| before the handle is installed.",
+      "started, so closing its handle first leaves nothing behind. Only",
+      "process_start starts one, as the first thread of a process not yet",
+      "started; a thread made for a running process cannot be started yet.",
+      "|name| is |name_size| bytes, cut to 31. The options must be None",
+      "(InvArgs). The handle's value is written to |out| before the handle",
+      "is installed.",
     ]
     args = [
       {
@@ -415,24 +436,30 @@ ours_syscalls = [
     ret = "Status"
   },
   {
-    # TEMPORARY: goes when a user-space loader can build a process out of
-    # VMOs and VMAs (design P1-C), and with it this entry, which is all that
-    # removing the call takes on this side (docs/repairs/260923/syscall.md).
+    # TEMPORARY: the user-space launcher (system/lib/launch) builds a process
+    # out of VMOs and VMAs now; this call goes once userboot, init and the
+    # shell's fault probes use it instead (step K25 of
+    # docs/design/260924/userspace-filesystem.md), and with it this entry,
+    # which is all that removing the call takes on this side
+    # (docs/repairs/260923/syscall.md).
     name = "process_spawn_boot"
     brief =
         "TEMPORARY: starts a program from the kernel package as a new process."
     doc = [
-      "Goes when a user-space loader exists (design P1-C).",
+      "Goes once its callers start programs with the user-space launcher",
+      "(system/lib/launch) instead.",
       "",
       "Starts the program named by |name_size| bytes of |name| under |job|,",
-      "which must grant ManageProcess. |bootstrap| leaves the caller's table",
-      "whatever the outcome and becomes the new process's one handle, its",
-      "value in the program's %rdi; HANDLE_INVALID starts it with none.",
-      "NotFound when the package has no such file. Returns no handle to the",
-      "process: nothing can wait on or kill one yet. Returns its root VMA in",
-      "|root_vma|, for the caller to hand on as VmaRoot in the processargs it",
-      "writes on its end of |bootstrap| after this call: the child waits for",
-      "that message.",
+      "which must grant ManageProcess; the name is 1 to PROCESS_BOOT_NAME_MAX",
+      "bytes with no '/' or NUL (InvArgs). |bootstrap| needs Transfer",
+      "(AccessDenied), leaves the caller's table whatever the outcome and",
+      "becomes the new process's one handle, its value in the program's %rdi;",
+      "HANDLE_INVALID starts it with none. NotFound when the package has no",
+      "such file, InvArgs when the file is not a program (the vDSO included).",
+      "Returns no handle to the process, so nothing can wait on it for",
+      "Terminated. Returns its root VMA in |root_vma|, for the caller to hand",
+      "on as VmaRoot in the processargs it writes on its end of |bootstrap|",
+      "after this call: the child waits for that message.",
     ]
     args = [
       {
@@ -511,8 +538,8 @@ ours_syscalls = [
       "a VMO can have. The handle has the default VMO rights, never Execute.",
       "Its value goes to |out|, and it is in this process's table only once",
       "that write has worked: InvArgs, and no new handle, when |out| cannot be",
-      "written. It counts against this process's handle quota (NoResource",
-      "past it).",
+      "written. It counts against this process's handle quota: NoResource",
+      "past it, or when the handle arena is full.",
     ]
     args = [
       {
@@ -536,21 +563,27 @@ ours_syscalls = [
     name = "vma_allocate"
     brief = "Reserves part of the region |parent| as a sub-region."
     doc = [
-      "Reserves size bytes of |parent|, rounded up to a page, and writes a",
+      "Reserves |size| bytes of |parent|, rounded up to a page, and writes a",
       "handle to the sub-region to |child| and its address to |child_addr|.",
       "With Specific it is [offset, offset + size) of |parent|, which must",
-      "have CanMapSpecific (AccessDenied, before the range is looked at);",
-      "without it the kernel finds room and |offset| must be 0. CanMapRead,",
-      "CanMapWrite and CanMapExecute say what mappings in it may have, each",
-      "needing the matching right on |parent| (AccessDenied) and never more",
-      "than |parent| allows; with none of them it allows no mapping, which",
-      "makes it a guard. CanMapSpecific lets it take Specific placements",
-      "itself, whether or not |parent| can. A Perm bit or an unknown bit is",
-      "InvArgs; the other named bits are NotSupported. A size of 0, or an",
-      "offset that is not page-aligned or lies outside |parent|, is InvArgs.",
-      "Closing the handle does not release the range; it goes with the",
-      "address space. If either value cannot be written, the range is",
-      "released again and no handle is made.",
+      "have CanMapSpecific (AccessDenied, asked before whether the range lies",
+      "inside |parent|); the range must lie inside |parent| (InvArgs) and",
+      "overlap nothing already there (AlreadyExists). Without it the kernel",
+      "finds room (NotFound when there is none) and |offset| must be 0",
+      "(InvArgs). CanMapRead, CanMapWrite and CanMapExecute say what mappings",
+      "in it may have, each needing the matching right on |parent|",
+      "(AccessDenied) and never more than |parent| allows; the new handle has",
+      "Read, Write and Execute to match. With none of them it allows no",
+      "mapping, which makes it a guard. CanMapSpecific lets it take Specific",
+      "placements itself, whether or not |parent| can. A Perm bit or an",
+      "unknown bit is InvArgs; the other named bits are NotSupported. A size",
+      "of 0 or an offset that is not page-aligned is InvArgs, a size too",
+      "large to round up OutOfRange. BadState once |parent|'s address space",
+      "has been torn down. Closing the handle does not release the range; it",
+      "goes with the address space. If the handle cannot be made (NoResource",
+      "past this process's handle quota, or when the handle arena is full) or",
+      "either value cannot be written (InvArgs), the range is released again",
+      "and no handle is made.",
     ]
     args = [
       {
@@ -590,17 +623,26 @@ ours_syscalls = [
       "Maps [vmo_offset, vmo_offset + length) of |vmo|, length rounded up to",
       "a page, and writes the address to |mapped_addr|. |options| is",
       "PermRead, optionally with PermWrite or PermExecute (never both, and",
-      "neither without PermRead: InvArgs), Specific to map at vma_offset from",
-      "the region's start, into a region that has CanMapSpecific",
-      "(AccessDenied, before the range is looked at; a process's root region",
-      "has it), vma_offset being 0 without it, and MapRange to populate the",
-      "range now. No CanMap bit may be passed (InvArgs): the kernel sets",
+      "neither without PermRead: InvArgs), plus any of Specific, MapRange to",
+      "populate the range now, and Sealed to make the mapping immutable (see",
+      "VmOptions). No CanMap bit may be passed (InvArgs): the kernel sets",
       "CanMapRead/Write/Execute itself. |vmo| needs Map, and each Perm bit",
       "needs the matching right on both handles (AccessDenied); the rights",
-      "both grant become the mapping's ceiling. vmo_offset must be",
-      "page-aligned (InvArgs) and the range inside the VMO (OutOfRange).",
-      "Named options not acted on yet are NotSupported. If |mapped_addr|",
-      "cannot be written, the mapping is taken down again.",
+      "both grant become the mapping's ceiling. Named options not acted on",
+      "yet are NotSupported. A length of 0 or a vmo_offset that is not",
+      "page-aligned is InvArgs, and the range must lie inside the VMO",
+      "(OutOfRange). The vDSO's VMO is mapped only whole, from 0, Sealed and",
+      "PermRead | PermExecute (InvArgs), and once per address space",
+      "(AccessDenied). With Specific, vma_offset counts from the region's",
+      "start and must be page-aligned (InvArgs); the region must have",
+      "CanMapSpecific (AccessDenied, asked before whether the range lies",
+      "inside it; a process's root region has it), the range must lie inside",
+      "it (InvArgs) and overlap nothing already there (AlreadyExists).",
+      "Without Specific, vma_offset must be 0 (InvArgs) and the kernel finds",
+      "room (NotFound when there is none). BadState once the region's address",
+      "space has been torn down. If |mapped_addr| cannot be written",
+      "(InvArgs), the mapping is taken down again, except a Sealed one, which",
+      "stays.",
     ]
     args = [
       {
@@ -638,17 +680,29 @@ ours_syscalls = [
   },
   {
     name = "vmo_create_child"
-    brief = "Creates a child of the VMO |vmo| names: today, a slice of it."
+    brief =
+        "Creates a slice or a copy-on-write snapshot of the VMO |vmo| names."
     doc = [
-      "|options| must be Slice: a window [offset, offset + size) of the",
-      "parent, over the same pages, so a write through either is seen",
-      "through the other. Any other known option is NotSupported, an unknown",
-      "bit InvArgs. |size| rounds up to a page; |offset| must be page-aligned",
-      "and the range must lie inside the parent (InvArgs). The handle must",
-      "grant Duplicate and Read (AccessDenied); the child's handle has the",
-      "same rights. Its value goes to |out|, and it is in this process's",
-      "table only once that write has worked. It counts against this",
-      "process's handle quota (NoResource past it).",
+      "|options| is one of Slice, SnapshotFull, SnapshotOnWrite and",
+      "SnapshotModified, alone; any other combination of named bits, None",
+      "included, is NotSupported, an unknown bit InvArgs. A slice is the",
+      "window [offset, offset + size) of the parent, over the same pages, so",
+      "a write through either is seen through the other; |offset| must be",
+      "page-aligned and the range must lie inside the parent (InvArgs). A",
+      "snapshot is a copy-on-write copy of that range: neither side sees the",
+      "other's later writes (all three kinds are built as SnapshotFull). Its",
+      "|offset| must be page-aligned and no further than the parent's end",
+      "(InvArgs); the range may run past the end, and reads as zero there.",
+      "BadState for a snapshot of a VMO whose pages are pinned, such as the",
+      "vDSO's. |size| rounds up to a page; OutOfRange past the largest size a",
+      "VMO can have. NotSupported on a VMO that is a window onto physical",
+      "memory. The handle must grant Duplicate and Read (AccessDenied). A",
+      "slice's handle has the same rights; a snapshot's has them with Write",
+      "added and Execute taken away. Its value goes to |out|, and it is in",
+      "this process's table only once that write has worked: InvArgs, and no",
+      "new handle, when |out| cannot be written. It counts against this",
+      "process's handle quota: NoResource past it, or when the handle arena",
+      "is full.",
     ]
     args = [
       {
@@ -682,18 +736,20 @@ ours_syscalls = [
     doc = [
       "|vmex| must name a System resource covering the VMEX slot",
       "(AccessDenied for HANDLE_INVALID, BadHandle for a value naming",
-      "nothing, BadType for anything else); no right is required of it.",
-      "|vmo| is consumed whatever the answer -- duplicate it first to keep",
-      "a copy -- and BadHandle when it names nothing or is not a VMO. The",
-      "new handle has |vmo|'s rights less Write, plus Execute. Its value goes",
-      "to |out|, and it is in this process's table only once that write has",
-      "worked. It counts against this process's handle quota (NoResource",
-      "past it).",
+      "nothing, BadType for anything but a System resource, OutOfRange for",
+      "one of another slot); no right is required of it. |vmo| is consumed",
+      "whatever the answer -- duplicate it first to keep a copy -- and",
+      "BadHandle when it names nothing or is not a VMO. The new handle has",
+      "|vmo|'s rights less Write, plus Execute. Its value goes to |out|, and",
+      "it is in this process's table only once that write has worked. It",
+      "counts against this process's handle quota: NoResource past it, or",
+      "when the handle arena is full.",
     ]
     args = [
       {
         name = "vmo"
         type = "HandleValue"
+        release = true
       },
       {
         name = "vmex"
@@ -755,8 +811,8 @@ ours_syscalls = [
       "The new handle's value goes to |out|, and it is in this process's",
       "table only once that write has worked: InvArgs, and no new handle,",
       "when |out| cannot be written. It counts against this process's handle",
-      "quota (NoResource past it). |handle| is left as it was, whatever the",
-      "answer.",
+      "quota: NoResource past it, or when the handle arena is full. |handle|",
+      "is left as it was, whatever the answer.",
     ]
     args = [
       {

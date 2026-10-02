@@ -22,9 +22,11 @@ auto vmo_create(u64 size, ours::VmoOptions options, ours::HandleValue *out) -> o
 /// by then, so after any failure its contents are unspecified.
 auto vmo_read(ours::HandleValue vmo, void *buffer, u64 offset, usize length) -> ours::Status;
 
-/// A child of the VMO |vmo| -- options must be Slice today -- into |out|: the
-/// window [offset, offset + size) of it, over the same pages, with |vmo|'s
-/// rights. |vmo| must grant Duplicate and Read.
+/// A child of the VMO |vmo| into |out|. With Slice, the window [offset,
+/// offset + size) of it, over the same pages, with |vmo|'s rights. With
+/// SnapshotFull, SnapshotOnWrite or SnapshotModified (one of them), a
+/// copy-on-write copy of that range, with |vmo|'s rights plus Write, less
+/// Execute. |vmo| must grant Duplicate and Read.
 auto vmo_create_child(ours::HandleValue vmo, ours::VmoChildOptions options, u64 offset, u64 size,
                       ours::HandleValue *out) -> ours::Status;
 

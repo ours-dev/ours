@@ -31,15 +31,20 @@ auto userboot_init() -> void;
 /// the program receives the handle's value in %rdi and its vDSO's base in
 /// %rsi.
 ///
-/// Maps the image and the vDSO, binds the image's imports to the vDSO,
-/// records the vDSO range, gives it a 64 KiB stack, and starts its thread --
+/// Maps the image and the vDSO (mapping the vDSO's VMO is what registers its
+/// range, VmaDispatcher::map()), binds the image's imports to the vDSO, gives
+/// it a 64 KiB stack, and starts its thread --
 /// the same sequence for the first program and for any started later.
 ///
 /// A handle to the new process's root VMA goes into |root_vma|, when it is
 /// not null, for the caller to put in the processargs it writes on the other
 /// end of |bootstrap| -- after this returns, since the region only exists
-/// from here on. TEMPORARY in this form, until K23 lets a user-space launcher
-/// create the process itself (process_create), as Zircon's does.
+/// from here on. TEMPORARY in this form: the user-space launcher
+/// (system/lib/launch) creates a process itself (process_create) now, as
+/// Zircon's does. This leaves the public header with process_spawn_boot at
+/// K25, once userboot, init and the shell start their programs with that
+/// launcher, and then starts only userboot
+/// (docs/design/260924/userspace-filesystem.md).
 ///
 /// Only files in the kernel package, which the kernel itself loaded: nothing
 /// here parses ELF a user program supplied.

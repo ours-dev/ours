@@ -9,17 +9,18 @@
 
 namespace ours::object {
 /// Waits until the object |handle| names asserts any of |signals|, the handle
-/// is closed, or |deadline| passes, and reports the signals asserted when the
-/// wait ended in |observed|.
+/// leaves the caller's table, or |deadline| passes, and reports the signals
+/// asserted when the wait ended in |observed|.
 ///
 /// Level-triggered: a condition that already holds returns at once. Ok when a
 /// signal matched, TimeOut when the deadline passed first, Cancelled when the
-/// handle was closed under the wait (and |observed| then includes
-/// HandleClosed). The handle must grant Wait.
+/// handle left the table under the wait -- closed, or consumed by a call such
+/// as channel_write; HandleTable::unlink_locked() cancels either way -- and
+/// |observed| then includes HandleClosed. The handle must grant Wait.
 ///
-/// |deadline| is 0 for a poll or INSTANT_INFINITE; anything in between is
-/// NotSupported for now, because a user program cannot read the clock yet and
-/// so has no way to compute one.
+/// |deadline| is 0 for a poll or INSTANT_INFINITE; any other value, a negative
+/// one included, is NotSupported for now, because a user program cannot read
+/// the clock yet and so has no way to compute one.
 ///
 /// This is the whole of the waiting machinery, so that lib/syscall only has
 /// to move arguments: attach an observer under the handle table's lock, sleep

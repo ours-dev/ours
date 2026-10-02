@@ -2,6 +2,8 @@
 
 > 输入：task、memory、ipc、resource、object_model、startup 六个方向的设计，加三位评审（最小闭环、一致性与安全、与代码的契合度）的意见。评审核实为错误的状态判断已经改正；互相冲突的地方给出了统一方案；超出需求的部分降了级或删掉，理由写在第 8 节。“现状”一栏以代码为准，给出文件路径。
 
+**Revised 2026-10-02:** where the plan text below disagrees with a "Revised 2026-10-02" note or with the "Corrected 2026-10-02" block after section 9, the note or the block is what the tree does.
+
 ## 1 总览
 
 内核是为用户层服务的，所以接口从“第一个用户程序要做成什么”倒推。结果是 9 个对象集、约 90 个系统调用，分成三档。
@@ -54,8 +56,8 @@ P0 期间有三条不变量：
 | 签名 | 语义 | rights | 优先级 | ou 入口 |
 |---|---|---|---|---|
 | `Status ours_handle_close(HandleValue handle)` | `HANDLE_INVALID` 回 Ok。持表锁摘除，放锁后销毁；句柄数归零时调 `on_zero_handles`。经这个句柄挂着的等待以 Cancelled 结束 | 无 | P0 | `ou::handle_close` |
-| `Status ours_object_wait_one(HandleValue handle, Signals signals, Instant deadline, Signals *observed)` | 电平触发，条件已满足就立即回 Ok。否则可中断地睡眠，满足回 Ok，超时回 TimeOut，句柄被关回 Cancelled（observed 带 HANDLE_CLOSED）。P0 的 deadline 只接受 0 和 `INFINITE_TIME`，其余回 NotSupported，因为用户态还读不到时钟 | Wait | P0 | `ou::object_wait_one` |
-| `Status ours_handle_duplicate(HandleValue handle, Rights rights, HandleValue *out)` | rights 必须是 `SameRights` 或源权限的子集，否则 InvArgs。顺序是预留槽 → 写出 → 发布；arena 满回 NoResource | Duplicate | P1 | `ou::handle_duplicate` |
+| `Status ours_object_wait_one(HandleValue handle, Signals signals, Instant deadline, Signals *observed)` | 电平触发，条件已满足就立即回 Ok。否则可中断地睡眠，满足回 Ok，超时回 TimeOut，句柄被关回 Cancelled（observed 带 HANDLE_CLOSED）。P0 的 deadline 只接受 0 和 `INFINITE_TIME`，其余回 NotSupported，因为用户态还读不到时钟 **Revised 2026-10-02:** the constant is `INSTANT_INFINITE` (`<ours/syscall.hpp>`). Cancelled ends the wait whenever the handle leaves the caller's table, closed or consumed (channel_write, process_start, process_spawn_boot, vmo_replace_as_executable); TimeOut comes only from a poll. | Wait | P0 | `ou::object_wait_one` |
+| `Status ours_handle_duplicate(HandleValue handle, Rights rights, HandleValue *out)` | rights 必须是 `SameRights` 或源权限的子集，否则 InvArgs。顺序是预留槽 → 写出 → 发布；arena 满回 NoResource。**Revised 2026-10-02:** NoResource also when `HANDLE_MAX_PER_PROCESS` handles the calling process created are still live, wherever they now are; the quota is checked before the arena (`Handle::clone()`). | Duplicate | P1 | `ou::handle_duplicate` |
 | `Status ours_handle_replace(HandleValue handle, Rights rights, HandleValue *out)` | 原子地换权。除了 BadHandle，其余情况源句柄一律失效；rights 越权时也关掉源句柄并回 InvArgs | 无 | P1 | `ou::handle_replace` |
 | `Status ours_object_get_info(HandleValue handle, InfoTopic topic, void *buffer, usize buffer_size, usize *actual, usize *avail)` | topic 高 4 位是版本号。单记录 topic 缓冲不够回 BufferTooSmall；数组类 topic 写回 actual/avail。topic 列表见 4.4 | HandleValid/HandleBasic 不要求；其余要 Inspect；枚举类另要 Enumerate | P1 | `ou::object_get_info` |
 | `Status ours_object_get_property(HandleValue handle, Property property, void *value, usize value_size)` | Name（`MAX_NAME_SIZE` 32 字节，含 NUL）；ProcessVdsoBaseAddress（只读，launcher 绑定导入时要用） | GetProperty | P1 | `ou::object_get_property` |
@@ -151,7 +153,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 | 签名 | 语义 | rights | 优先级 | ou 入口 |
 |---|---|---|---|---|
 | `Status ours_channel_create(ChannelCreateOptions options, HandleValue *out0, HandleValue *out1)` | 建一对共享 PeerHolder 的端点，两端初始都置 WRITABLE。options 必须为 None。两个出参都写出成功后才发布 | 无（P2 加 job policy） | P0 | `ou::channel_create` |
-| `Status ours_channel_write(HandleValue channel, ChannelWriteOptions options, void const *bytes, u32 num_bytes, HandleValue const *handles, u32 num_handles)` | 原子地排进对端队列，并给对端置 READABLE；字节先拷进 MessagePacket 再取锁。超过 `CHANNEL_MAX_MSG_BYTES` 回 OutOfRange；对端已关回 PeerClosed；对端队列满回 NoResource，不清 WRITABLE。**P0：num_handles > 0 回 NotSupported。** P1：handles 一进调用就摘下，成败都被消耗；handles 含 channel 自身回 NotSupported；同一值出现两次回 BadHandle | channel: Write；P1 起每个被传的句柄要 Transfer | P0 | `ou::channel_write` |
+| `Status ours_channel_write(HandleValue channel, ChannelWriteOptions options, void const *bytes, u32 num_bytes, HandleValue const *handles, u32 num_handles)` | 原子地排进对端队列，并给对端置 READABLE；字节先拷进 MessagePacket 再取锁。超过 `CHANNEL_MAX_MSG_BYTES` 回 OutOfRange；对端已关回 PeerClosed；对端队列满回 NoResource，不清 WRITABLE。**P0：num_handles > 0 回 NotSupported。** P1：handles 一进调用就摘下，成败都被消耗；handles 含 channel 自身回 NotSupported；同一值出现两次回 BadHandle. **Revised 2026-10-02:** a count past `CHANNEL_MAX_MSG_HANDLES` (OutOfRange) or an unreadable handles array (InvArgs) is answered before any handle is taken and consumes none; every other outcome consumes them all. Unlike ours, Zircon consumes the handles of an over-limit count as well (`RemoveUserHandles` reads them in chunks). | channel: Write；P1 起每个被传的句柄要 Transfer | P0 | `ou::channel_write` |
 | `Status ours_channel_read(HandleValue channel, ChannelReadOptions options, void *bytes, HandleValue *handles, u32 num_bytes, u32 num_handles, u32 *actual_bytes, u32 *actual_handles)` | 非阻塞地取队首消息。队空且对端存活回 ShouldWait；队空且对端已关回 PeerClosed。缓冲不够回 BufferTooSmall，写出所需的 actual_*，消息留在队首。读空后清 READABLE。8 个参数，第 7、8 个走 r12/r13。P0 的 actual_handles 恒为 0 | Read | P0 | `ou::channel_read` |
 | `Status ours_channel_call(HandleValue channel, ChannelCallOptions options, Instant deadline, ChannelCallArgs const *args, u32 *actual_bytes, u32 *actual_handles)` | 内核生成 txid（≥ 0x8000_0000）写进前 4 字节，按 txid 把回复定向投递给调用者，并经 OwnedWaitQueue 把调用者的调度属性继承给服务端。被挂起后能重入（拆成 call_noretry + call_finish）。在它落地前，`ou::channel_call` 用 write + wait_one + read 组合实现，单线程、单个未决请求时两者等价 | Read+Write | P1（后期） | `ou::channel_call` |
 | `Status ours_event_create(EventCreateOptions options, HandleValue *out)` | 状态就是 `m_signals`，用 object_signal 置或清 SIGNALED | 无 | P1 | `ou::event_create` |
@@ -387,8 +389,8 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 - **新增** BufferTooSmall、PeerClosed。
 - **内部码隔离**：`InternalIrqKilled`、`InternalIrqRetry`、`Delayed` 移进内核私有的枚举，生成的 shim 用 DEBUG_ASSERT 保证它们不漏到用户态。唯一要跨过边界的是 blocking 调用的重试码，由 vDSO 桩自己消化。
 - **越界调用号和非 vDSO 陷入**：P0 都回 BadSyscall（今天分别回 OutOfRange 和 AccessDenied，`table.cpp:113-115`、`:79-82`）。P1 的 fault-kill 落地后，非 vDSO 陷入改为打印报告并杀掉进程。
-- **错误优先级**：BadHandle > BadType > AccessDenied > InvArgs，即先解析句柄、再检查参数。
-- **出参**只在 Ok 时写入；唯一例外是 handle_replace 会让源句柄失效。
+- **错误优先级**：BadHandle > BadType > AccessDenied > InvArgs，即先解析句柄、再检查参数。 **Revised 2026-10-02:** channel_write reads its handle values first, so a count past `CHANNEL_MAX_MSG_HANDLES` (OutOfRange) or an unreadable handles array (InvArgs) is answered before its channel handle is resolved. vma_allocate likewise answers an unknown option bit (InvArgs) before it resolves |parent|, and channel_write answers a bad option before a transferred handle's BadHandle, AccessDenied or NotSupported.
+- **出参**只在 Ok 时写入；唯一例外是 handle_replace 会让源句柄失效。 **Revised 2026-10-02:** some calls write out-parameters on other answers too: channel_read writes actual_bytes and actual_handles on BufferTooSmall, as Zircon does; object_wait_one writes |observed| on TimeOut and Cancelled; command_list writes its truncated text on NoSpace. A call that copies out more than one value can also fail after writing the first, for example channel_create's out0 when out1 faults, or channel_read's actual_* and bytes when a later copy faults, the message then being lost; no handle is installed in such a case.
 - **跨 ABI 的枚举**一律写 `: u32` 并给显式值。
 
 ### 4.6 用户指针拷贝
@@ -495,7 +497,7 @@ init: shell says "pong"
 |---|---|---|---|
 | P1-A 边界 | 系统调用生成器；UserPtr 的 `data_fault_resume`；fault-kill（`on_user_exception`；Kill 分支先开中断再 `Thread::Current::exit`；sysret 前检查挂起信号）；非 vDSO 陷入改为杀进程；KoId 改 u64；句柄查找的常数时间选择（Spectre V1）。arena 惰性提交推迟到 P1-C，每表随机数推迟到 P1-E 的 CPRNG（2026-09-24 定） | 无（随机数暂取 0） | 把坏指针交给系统调用得到 `InvArgs`；自己解引用坏指针、#GP、ud2、从 vDSO 外陷入的程序被杀掉；两种情况内核都继续运行。计划见 `.agents/tasks/syscall-boundary/PLAN.md` |
 | P1-B 生命周期 | 进程状态机、`process_exit`、线程 `on_exit` 摘表并清 `m_kernel_thread`、`VmAspace::destroy`、TERMINATED、get_info(HandleValid/HandleBasic/Process)、`task_kill`、job 子表与 `job_create`、内核内部的 init critical | P1-A | init 读到 shell 的退出码；循环起停 100 次，内存不增长 |
-| P1-C 加载器专线 | D2、D3 定案；Vma 命名；process_create/thread_create/process_start；vmo_create/get_size；vma_map；handle_duplicate/replace；句柄随消息转移与每进程记账；processargs；独立的 userboot；runtime/crt0；用户侧 libc；Binder 和 bootfs::View 移到 system/lib；BootFS VMO；**删除 spawn_boot** | P1-B；mm 的 `size()`、边界检查、偏移透传、`write()` | init 在用户态从 BootFS 装载 shell；lib/syscall 不再依赖 userabi |
+| P1-C 加载器专线 | D2、D3 定案；Vma 命名；process_create/thread_create/process_start；vmo_create/get_size；vma_map；handle_duplicate/replace；句柄随消息转移与每进程记账；processargs；独立的 userboot；runtime/crt0；用户侧 libc；Binder 和 bootfs::View 移到 system/lib；BootFS VMO；**删除 spawn_boot** **Revised 2026-10-02:** not in P1-C: process_spawn_boot still starts init's shell and the faulting probes, and goes at K25 (`docs/design/260924/userspace-filesystem.md`). | P1-B；mm 的 `size()`、边界检查、偏移透传、`write()` | init 在用户态从 BootFS 装载 shell；lib/syscall 不再依赖 userabi |
 | P1-D 多路与同步 | wait_many、event、eventpair、object_signal/signal_peer、port、get/set_property；thread_start/exit；futex；内核版 channel_call；消息上限升到 64 KiB | TLB shootdown、缺页路径的 VMO 锁、OwnedWaitQueue 退避协议、Semaphore | 一个多线程服务用 port 同时服务两个客户端 |
 | P1-E 时间与诊断 | clock/deadline/nanosleep、timer、debuglog、cprng、系统信息、ResourceDispatcher 重写与 ranged root 交付、debug_write 收口 | P1-C 的 processargs | shell 用 Log 句柄输出；带 deadline 的 wait_one 按时回 TimeOut |
 | P1-F 内存补全 | vmo_read/write、op_range、vma_unmap/allocate/protect/destroy（protect 与 per-mapping 上限同一提交）、修 OOM 死循环（heap.md #3） | P1-C | malloc 能 Decommit 回收内存；对只读 BootFS 映射 protect 成可写会被拒绝 |
@@ -619,3 +621,12 @@ P1 的前置：
 | clock_get_monotonic | 在 vDSO 里计算 | 先以陷入实现 | ours 只有 HPET（MMIO）一个时钟源，vDSO 也没有数据页 |
 | Profile | 支持多种调度 discipline，入口是 object_set_profile | 只暴露 priority 与 affinity，入口是 thread_set_profile | 调度器今天只表达得了这两项 |
 | 句柄数量限制 | 靠 job policy 与内存压力兜底 | 每进程句柄上限，在途句柄也计入 | ours 这两样都还没有 |
+
+**Corrected 2026-10-02** (system-abi-surface step 1): these rows no longer describe the tree.
+
+- 用户进程的 vDSO: D2 was re-decided on 2026-09-28 to Zircon's shape. `ProcessDispatcher::create` maps nothing. Whoever starts a process maps the one vDSO VMO: the kernel's `userabi::launch()` for the programs it starts, and the user-space launcher (`//system/lib/launch`) through `vma_map` on the `VmoVdso` handle the kernel gives the first process. The mapping must be the whole VMO, read and execute, `Sealed`, once per address space. It registers the range system calls are accepted from (`VmaDispatcher::map()`), and `process_start` answers BadState until it exists. Unlike Zircon, the whole image is mapped executable, not only its code segment.
+- 对象类型标签: there is no stored field. `Dispatcher::type()` returns `rc_type_tag()`, ustl::RefCounted's virtual function, which `SoloDispatcher` and `PeeredDispatcher` override (final) to return the class's `TYPE_TAG`, its ObjectType value. That is Zircon's shape, a virtual `get_type()`, reused from ustl's checked downcast rather than added.
+- 消息上限: vfree has a TLB shootdown now: a change to the kernel address space is invalidated on every online CPU (`ArchVmAspace::invalidate()`). What keeps a message at 4 KiB is kmalloc's largest size class and vmalloc's 256 live ranges. It is still 4 KiB in P1, and 64 KiB waits for P1-D.
+- sysret 白名单: not built. The kernel accepts a trap whose two-byte `syscall` instruction lies inside the range the vDSO's mapping registered (`trapped_from_vdso()`). That is coarser than one offset per call number. The per-call check (4.7) is deferred.
+- Snapshot 子 VMO: snapshots are copy-on-write (`mm::VmObjectPaged::create_clone()`), not eager copies. SnapshotFull, SnapshotOnWrite and SnapshotModified are each built as a full snapshot, which is Zircon's answer for an anonymous VMO. A snapshot's handle gets Write and loses Execute, as in Zircon. Unlike Zircon, which refuses one, a snapshot of a slice is built (`docs/repairs/261002/launch.md`, item 3).
+- Not yet rows: C++-only ABI headers. `<ours/vdso.hpp>` declares nothing outside `__cplusplus` and the others use `enum class` and namespaces, where Zircon's are C; whether to keep this is still open. Raw calls: Zircon's own tests call `zx_*` directly, while here ring 3 is to call only `ou::`, and `ou` is to pass every ABI parameter through (the user's call, 2026-10-02). Neither holds yet: `examples/shell` makes 18 direct calls, and `ou::channel_read`, `ou::channel_write`, `ou::process_create` and `ou::thread_create` fix their options to None. Both change in step 5 of `.agents/tasks/system-abi-surface`.

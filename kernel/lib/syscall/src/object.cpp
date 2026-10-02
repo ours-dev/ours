@@ -12,9 +12,10 @@ auto object_wait_one(HandleValue const handle, Signals const signals, Instant co
     auto const status = object::wait_one(handle, signals, deadline, &current);
 
     // What was asserted is reported for every way a wait can end -- matched,
-    // timed out, or cancelled by a close -- since each is a real answer about
-    // the object. Not for a wait that never started (a bad handle, a missing
-    // right), where there is no object to report on. Optional, as in Zircon.
+    // timed out, or cancelled by the handle leaving the table -- since each is
+    // a real answer about the object. Not for a wait that never began: a bad
+    // handle or a missing right, where there is no object to report on, or a
+    // deadline other than 0 and INSTANT_INFINITE. Optional, as in Zircon.
     auto const ended =
         status == Status::Ok || status == Status::TimeOut || status == Status::Cancelled;
     if (ended && !observed.is_null()) {

@@ -15,12 +15,15 @@ namespace ours::syscall {
 namespace {
     /// Every bit VmOptions names. Anything else is not an option at all
     /// (InvArgs); a named one the dispatcher does not act on yet is
-    /// NotSupported, from VmaDispatcher::map().
+    /// NotSupported, from VmaDispatcher::map() or allocate().
     constexpr auto KNOWN_VM_OPTIONS = static_cast<VmOptions>((1U << 15) - 1) | VmOptions::Sealed;
 
-    /// The bits the kernel sets from the handles' rights, and a program may
-    /// not: they are the mapping's ceiling, and a ceiling the program chose
-    /// would be no ceiling. Zircon refuses them the same way.
+    /// CanMapRead/Write/Execute, which the kernel sets from the handles'
+    /// rights as the mapping's ceiling -- a ceiling the program chose would be
+    /// no ceiling -- and CanMapSpecific, which a mapping never carries.
+    /// vma_map refuses all four from a program (InvArgs), as Zircon's
+    /// sys_vmar_map() does; vma_allocate takes them as the sub-region's
+    /// allowance.
     constexpr auto CAN_MAP = VmOptions::CanMapSpecific | VmOptions::CanMapRead |
                              VmOptions::CanMapWrite | VmOptions::CanMapExecute;
 } // namespace

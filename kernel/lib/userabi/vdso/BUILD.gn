@@ -49,8 +49,9 @@ kernel_elf_binary("vdso") {
 
   # User-visible: a user-space loader binds a program's imports against this
   # file's .dynsym, so it has to find it in the BootFS the kernel hands out
-  # (//kernel/kernel_package.gni). It is the vDSO's image as data; the one the
-  # kernel maps into every process is the kernel's own copy.
+  # (//kernel/kernel_package.gni). It is the vDSO's image as data. What every
+  # process maps is the kernel's own copy, the one VMO lay_out_vdso() made at
+  # boot, mapped by whoever starts the process.
   metadata = {
     bootfs_user_visible = [ "vdso" ]
   }
@@ -73,13 +74,13 @@ kernel_elf_binary("vdso") {
   # No -Wl,-e: nothing jumps to a vDSO, and nothing needs to find anything at
   # its entry point any more. It used to point at the export table, which was
   # how a program with no dynamic linker reached the stubs; the stubs are in
-  # .dynsym now and the kernel binds against them there.
+  # .dynsym now and the loader binds against them there.
   ldflags = [
     # Without a SONAME, a linker handed this file on the command line records
     # its build-directory path in the importer's DT_NEEDED. Nothing reads
-    # DT_NEEDED here -- the kernel maps the one vDSO it has -- but a path from
-    # someone's out/ directory baked into every program is a fact that would
-    # be wrong the moment anyone looked at it.
+    # DT_NEEDED here -- every process maps the one vDSO VMO the kernel laid
+    # out -- but a path from someone's out/ directory baked into every program
+    # is a fact that would be wrong the moment anyone looked at it.
     "-Wl,-soname,libours.so",
   ]
 }

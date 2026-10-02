@@ -22,8 +22,10 @@ auto debug_write(user_copy::UserInPtr<char const> const buffer, usize const leng
     // memory happened inside the logger with its lock held. A copy can fault;
     // on a SMAP CPU that one did, and the fault handler's own log line waited
     // on the lock this CPU already held, so the machine hung with nothing
-    // printed. The rule is general: user memory is copied before any lock is
-    // taken, never under one.
+    // printed. The rule is general: a plain copy, which resolves its own
+    // fault, is never made under a spin lock or a lock the fault path takes;
+    // a copy that has to run under one uses the *_capture_faults variants
+    // (user_copy/user_copy.hpp).
     //
     // MAX_DEBUG_WRITE bounds the buffer, which is what makes a stack array
     // the right place for it.

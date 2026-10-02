@@ -99,10 +99,6 @@ class VmoDispatcher final: public VmoDispatcherBase {
     static auto create_user(u64 size, VmoOptions options, KernelHandle<Self> &handle_out,
                             Rights &rights_out) -> Status;
 
-    /// A window onto physical memory that already exists and that this object
-    /// does not own, such as MMIO. Nothing here frees it. (Loaded ELF images
-    /// used to come through here too, which is how their frames leaked; they
-    /// are paged VMOs now.)
     /// A child of this VMO, for vmo_create_child; see the definition. The
     /// rights are the caller's to decide -- they come from the parent's
     /// handle, which this object never sees.
@@ -119,6 +115,10 @@ class VmoDispatcher final: public VmoDispatcherBase {
                options == VmoChildOptions::SnapshotModified;
     }
 
+    /// A window onto physical memory that already exists and that this object
+    /// does not own, such as MMIO. Nothing here frees it. (Loaded ELF images
+    /// used to come through here too, which is how their frames leaked; they
+    /// are paged VMOs now.)
     static auto create_physical(PhysAddr base, usize size, KernelHandle<Self> &handle_out,
                                 Rights &rights_out) -> Status;
 

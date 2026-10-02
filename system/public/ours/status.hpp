@@ -17,8 +17,8 @@ enum class Status : u32 {
     /// Indicates a successful operation.
     Ok = 0,
 
-    /// The operation is delayed and will be performed later.
-    /// For example, the operation is enqueued to a DPC queue.
+    /// Kernel-internal, and no system call returns it: the scheduler's answer
+    /// for a dequeue it deferred (task/sched/fair.cpp).
     Delayed = 1,
 
     /// The host, device, or service is not reachable.
@@ -36,7 +36,8 @@ enum class Status : u32 {
     NoMemory = 5,
     OutOfMem = NoMemory,
 
-    /// The filesystem or device space is exhausted.
+    /// The filesystem or device space is exhausted, or an output buffer is
+    /// full: command_list answers it having written as much of its text as fits.
     NoSpace = 6,
 
     /// The resource, like peripherals or network interfaces, is not available.
@@ -77,8 +78,11 @@ enum class Status : u32 {
     /// The operation is not allowed due to insufficient permissions.
     AccessDenied = 20,
 
-    /// The path is not a directory.
+    /// A path is not valid (Zircon ZX_ERR_BAD_PATH, whose errors.h says "too
+    /// long"; fuchsia.io answers it for any invalid path, as the filesystem
+    /// design here does). Nothing returns it yet.
     BadPath = 21,
+    /// The path is not a directory.
     NotDir = 22,
     NotFile = 23,
     NotEmpty = 24,
@@ -95,7 +99,6 @@ enum class Status : u32 {
     InternalIrqKilled = 30,
     InternalIrqRetry = 31,
 
-    /// The maximum number of status values.
     /// A peer object -- the other end of a channel -- has gone: every handle
     /// to it was closed. Distinct from BadHandle (this caller's handle is
     /// fine) and from BadState (nothing this caller can do will change it).
@@ -104,10 +107,13 @@ enum class Status : u32 {
 
     /// The caller's buffer cannot hold what there is to return, and the
     /// operation left it where it was so the caller can retry with a larger
-    /// one -- channel_read reports the sizes it needed. Not NoSpace, which is
-    /// about a filesystem or device filling up. Zircon ZX_ERR_BUFFER_TOO_SMALL.
+    /// one -- channel_read reports the sizes it needed. Not NoSpace, which
+    /// command_list answers after filling the buffer with what fits. Zircon
+    /// ZX_ERR_BUFFER_TOO_SMALL.
     BufferTooSmall = 33,
 
+    /// Not a status: one past the largest value. It is the one value not
+    /// written out, since it moves whenever a status is appended.
     MaxCount,
 };
 

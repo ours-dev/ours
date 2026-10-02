@@ -26,8 +26,10 @@ namespace {
     /// user memory, so every piece crosses the boundary through a copy; there
     /// is no buffer large enough on a kernel stack to assemble the whole list
     /// first. It keeps the old contract: what fits is written, the length that
-    /// *would* have been written is still counted so a caller can tell "filled
-    /// exactly" from "truncated", and the result is always NUL terminated.
+    /// *would* have been written is still counted so the answer can tell "filled
+    /// exactly" (Ok) from "truncated" (NoSpace), and either answer leaves the
+    /// text NUL terminated; after a failed copy the answer is that copy's status
+    /// and no terminator is written.
     ///
     /// One byte of the caller's buffer is held back for that terminator.
     class UserTextWriter final {
@@ -50,7 +52,9 @@ namespace {
             m_length += length;
         }
 
-        /// Terminates the text and says whether all of it fitted.
+        /// Terminates the text and says whether all of it fitted (Ok or
+        /// NoSpace), unless a copy already failed: then that copy's status, and
+        /// no terminator.
         [[nodiscard]]
         auto finish() -> Status {
             if (m_status != Status::Ok) {

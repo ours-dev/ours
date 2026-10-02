@@ -20,9 +20,11 @@ auto vma_allocate(ours::HandleValue parent, ours::VmOptions options, usize offse
 /// Maps [vmo_offset, vmo_offset + length) of |vmo| into |vma| and puts the
 /// address in |mapped_addr|. |options| is PermRead, optionally with one of
 /// PermWrite or PermExecute, plus Specific (at |vma_offset| from the region's
-/// start, if the region has CanMapSpecific) and MapRange (populate now). |vmo|
-/// needs Map; each Perm bit needs the matching right on both handles. Zircon
-/// zx_vmar_map().
+/// start, if the region has CanMapSpecific), MapRange (populate now) and
+/// Sealed (no call can unmap or reprotect it, only the process's death takes
+/// it down; the vDSO's VMO maps only this way, whole and PermRead |
+/// PermExecute). |vmo| needs Map; each Perm bit needs the matching right on
+/// both handles. Zircon zx_vmar_map().
 auto vma_map(ours::HandleValue vma, ours::VmOptions options, usize vma_offset,
              ours::HandleValue vmo, u64 vmo_offset, usize length, ours::VirtAddr *mapped_addr)
     -> ours::Status;

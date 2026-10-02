@@ -86,15 +86,22 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///
     /// Only Perm*, Specific, CanMapRead/Write/Execute, MapRange and Sealed
     /// are acted on; any other bit is NotSupported. Otherwise:
-    ///   - InvArgs: length 0; vmo_offset not page-aligned; vma_offset
-    ///     without Specific, or not page-aligned, or outside this region;
-    ///   - AccessDenied: a Perm bit without its CanMap bit; Specific into a
-    ///     region without CanMapSpecific (mm::VmArea refuses it), which is
-    ///     asked before whether vma_offset lies inside this region, as in
-    ///     Zircon;
-    ///   - OutOfRange: the range, rounded up to a page, not inside the VMO.
-    ///     Zircon lets a mapping run past its VMO's end and faults the
-    ///     access instead; interface design 2.3 refuses it at the door.
+    ///   - InvArgs: length 0; vmo_offset not page-aligned; the vDSO's VMO
+    ///     other than whole, from 0, Sealed and PermRead | PermExecute;
+    ///     vma_offset without Specific, or not page-aligned; no Perm bit, or
+    ///     one this region does not allow; a Specific range not wholly inside
+    ///     this region;
+    ///   - AccessDenied: a Perm bit without its CanMap bit; a second mapping
+    ///     of the vDSO in one address space; Specific into a region without
+    ///     CanMapSpecific (mm::VmArea refuses it), which is asked before
+    ///     whether vma_offset lies inside this region, as in Zircon;
+    ///   - OutOfRange: the length too large to round up, or the range,
+    ///     rounded up to a page, not inside the VMO. Zircon lets a mapping run
+    ///     past its VMO's end and faults the access instead; interface design
+    ///     2.3 refuses it at the door;
+    ///   - AlreadyExists: a Specific range over something already there;
+    ///   - NotFound: no room for it without Specific;
+    ///   - BadState: this region went with its address space.
     /// W^X and "Write needs Read" are not checked here: they are rules for
     /// what a program may ask (vma_map), and userboot still maps its image
     /// writable and executable as one range until segments get their own.
@@ -126,8 +133,12 @@ class VmaDispatcher final: public VmaDispatcherBase {
     /// Perm bit is InvArgs, as in Zircon -- a region has no protection of its
     /// own, only what it allows -- and any other bit (Compact,
     /// OffsetIsUpperLimit, ...) is NotSupported until a caller needs it.
-    /// Otherwise InvArgs for a size of 0, and for an offset that is not
-    /// page-aligned or lies outside this region; |size| rounds up to a page.
+    /// Otherwise InvArgs for a size of 0, an offset that is not page-aligned,
+    /// or a Specific range not wholly inside this region; OutOfRange for a size
+    /// too large to round up to a page; AlreadyExists for a Specific range over
+    /// something already there; NotFound when the kernel finds no room; BadState
+    /// once this region has gone with its address space. |size| rounds up to a
+    /// page.
     ///
     /// The sub-region belongs to this one, not to the handle: closing every
     /// handle to it leaves it in place, and it goes with the address space.
@@ -135,10 +146,15 @@ class VmaDispatcher final: public VmaDispatcherBase {
     auto allocate(VmOptions options, usize offset, usize size, KernelHandle<Self> &child_out,
                   Rights &rights_out, VirtAddr &base_out) -> Status;
 
-    /// Tears down whatever is mapped in [base, base + length) of this region.
+    /// Tears down whatever is mapped in [base, base + length) of this region,
+    /// or nothing at all: AccessDenied when a sealed mapping overlaps the range,
+    /// InvArgs when it only partly covers a sub-region, when |length| is 0 or
+    /// the range is not inside this region, and BadState once the region has
+    /// gone with its address space (mm::VmArea::unmap()).
     /// Today vma_map and vma_allocate call it, to take back what they made
-    /// when they could not report it; vma_unmap will be the next caller. A
-    /// sub-region wholly inside the range is destroyed, not left empty.
+    /// when they could not report it, which it cannot do for a Sealed mapping;
+    /// vma_unmap will be the next caller. A sub-region wholly inside the range
+    /// is destroyed, not left empty.
     auto unmap(VirtAddr base, usize length) -> Status {
         verify_canary();
         return m_vma->unmap(base, length);

@@ -175,7 +175,7 @@
     // exception.S has always passed %rsp here, for the same reason.
     mov %rsp, %rdi
 
-    // One call, into ours::syscall_dispatch (kernel/lib/syscall/table.cpp),
+    // One call, into ours::syscall_dispatch (kernel/lib/syscall/src/table.cpp),
     // rather than indexing SYSCALL_TABLE from here.
     //
     // The bounds clamp on %rax used to live here as a `cmov`, and it moved

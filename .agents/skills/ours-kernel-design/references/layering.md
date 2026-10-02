@@ -23,12 +23,14 @@
   that traps. The kernel side is finished only when a trap from outside the
   vDSO's code range is refused (Zircon: `VDso::ValidSyscallPC`).
 - Programs bind to the vDSO by dynamic linking at load time: PIEs built with
-  `//system/user_executable.gni`, relocations resolved by `bind_imports()` in
-  `kernel/lib/userabi/src/userboot.cpp`. Never reintroduce a hand-resolved
-  export table.
+  `//system/user_executable.gni`, relocations resolved by `elfload::Binder`
+  (`system/lib/elfload`), which both loaders run: `userabi::launch()` in
+  `kernel/lib/userabi/src/userboot.cpp` and `launch::start()` in
+  `system/lib/launch`. Never reintroduce a hand-resolved export table.
 - There is one vDSO VMO, laid out once by the kernel (`userboot_init()`, like
   Zircon's `VDso::Create()`), and it is mapped by whoever starts the process
-  -- today `userabi::launch()`, after K23 the user-space launcher through
+  -- `userabi::launch()` for the programs the kernel starts (the first one
+  and `process_spawn_boot`'s), and since K23 the user-space launcher through
   `vma_map` on a vDSO VMO handle it is given, as Zircon's userboot and
   process_builder do. `ProcessDispatcher::create` does not map it. The user
   chose Zircon's shape over "the kernel maps it at process creation"
@@ -44,7 +46,9 @@
   ABI conformance tests (bad pointers, unknown option bits) go through `ou`
   too, so an `ou` entry passes every ABI parameter through, options included,
   and forwards pointers unchanged (the user's call, 2026-10-02, over an
-  exception list for tests).
+  exception list for tests). This is the rule, not yet the tree:
+  `examples/shell` still calls `ours_*` directly for its ABI checks, until
+  step 5 of `.agents/tasks/system-abi-surface`.
 - `ou` is to be generated from `syscalls.gni`, with typed handles in the
   shape of Zircon's `lib/zx` (a consumed handle taken by value): the user's
   call, 2026-10-02, because a generator was always the plan. Until it lands

@@ -330,11 +330,13 @@ def user_param(arg: Arg) -> str:
 
 
 def render_vdso_decls(calls: List[Call]) -> str:
-    """The vDSO's entry points as a program calls them, included by
-    <ours/vdso.hpp> inside its extern "C" block.
+    """The vDSO's entry points as //system/lib/ou calls them (and, until
+    system-abi-surface step 5, examples/shell), included by <ours/vdso.hpp>
+    inside its extern "C" block.
 
-    The documentation is the description's, written for the caller: this
-    is the one place a program reads it.
+    The documentation is the description's, written for the caller. A
+    program reads ou's headers, which restate it by hand until ou is
+    generated from the description as well.
     """
     lines = [HEADER_BANNER]
     for call in calls:

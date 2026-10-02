@@ -165,7 +165,8 @@ config("user.executable") {
 #
 # The difference from :user.executable is that this one is NOT closed over its
 # own symbols: it calls ours_debug_write() and friends and leaves them
-# undefined, for userboot to resolve against the vDSO's .dynsym. -static is
+# undefined. Whoever loads it (the kernel's userabi::launch() or the
+# user-space launcher) resolves them against the vDSO's .dynsym. -static is
 # what forbids exactly that, which is why the two configs cannot be one.
 #
 # Still a PIE: the kernel picks the load address, and the relocation pass that
@@ -182,12 +183,13 @@ config("user.program") {
     "-nostdlib",
     "-nostdlib++",
 
-    # Nothing here can service a lazily bound PLT stub, since the kernel binds
-    # an image once, at load.
+    # Nothing here can service a lazily bound PLT stub: an image is bound
+    # once, before it runs.
     "-Wl,-z,now",
 
-    # There is no dynamic linker: the kernel maps the vDSO and binds against
-    # it itself, so a PT_INTERP would name something that cannot exist.
+    # There is no dynamic linker: whoever starts the process maps the vDSO and
+    # binds the program against it, so a PT_INTERP would name something that
+    # does not exist.
     "-Wl,--no-dynamic-linker",
 
     # The program's references to its own definitions are resolved at link
@@ -205,8 +207,9 @@ config("user.program") {
 #     :user.standalone's -fpie, which every ring-3 target already has, along
 #     with -fno-plt).
 #   * `-z now`, because nothing here can service a lazily bound PLT stub.
-#   * --no-dynamic-linker because there is none: the kernel maps this image
-#     and binds against it itself.
+#   * --no-dynamic-linker because there is none: whoever starts a process
+#     (the kernel's userabi::launch() or the user-space launcher) maps this
+#     image and binds the program against it.
 #   * -Bsymbolic so the object's references to its own default-visibility
 #     symbols are resolved at link time. Default visibility here is not an
 #     invitation to preempt the definition -- nothing can -- it is how a

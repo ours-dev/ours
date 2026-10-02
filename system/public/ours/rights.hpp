@@ -47,8 +47,9 @@ enum class Rights : u32 {
     AttachVmo = 23_bit,
     ManageVmo = 24_bit,
 
-    /// Not a right. Passed to handle_duplicate/handle_replace to mean "the
-    /// rights the source handle already has".
+    /// Not a right. Passed to handle_duplicate, as the whole word, to mean
+    /// "the rights the source handle already has"; beside any other bit it is
+    /// just bit 31, which no handle has (InvArgs).
     SameRights = 31_bit,
 
     /// The groups Zircon composes its defaults from (ZX_RIGHTS_BASIC and

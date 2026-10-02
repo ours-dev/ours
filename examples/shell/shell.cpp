@@ -11,11 +11,13 @@
 /// other side of the privilege boundary: the names come out of the kernel's
 /// linker sections, and nothing in this file knows any of them.
 ///
-/// Every system call it makes goes through //system/lib/ou, which is the one
-/// place that knows what the raw ABI looks like. This file names what it wants
-/// (ou::debug_line, ou::command_list) and knows nothing else -- not the
-/// per-call size limit, not the symbols the loader binds, not that a trap is
-/// involved at all.
+/// Its system calls go through //system/lib/ou, which is the one place that
+/// knows what the raw ABI looks like, except the checks of the raw ABI itself
+/// (bad pointers, option words), which call ours_* directly until step 5 of
+/// .agents/tasks/system-abi-surface gives ou a way to reach them. Through ou
+/// this file names what it wants (ou::debug_line, ou::command_list) and knows
+/// nothing else -- not the per-call size limit, not the symbols the loader
+/// binds, not that a trap is involved at all.
 ///
 /// It runs on the runtime (//system/lib/runtime): the entry point is the
 /// runtime's, which reads the processargs message this program was started

@@ -9,10 +9,11 @@
 //
 // What is not here is the call numbers. They used to be, as OURS_SYS_* macros
 // with a count beside them, on the grounds that "a user program puts one of
-// them in the syscall-number register". No user program does: the only
-// `syscall` instruction in a user address space is in the vDSO, and the kernel
-// refuses a trap from anywhere else. A program names a call by its vDSO symbol
-// (<ours/vdso.hpp>), so the numbers are a private agreement between the vDSO
+// them in the syscall-number register". No user program needs to: the kernel
+// accepts a `syscall` only from the vDSO and kills a process that traps from
+// anywhere else (fault_probe's trap.S does it on purpose, to show this). A
+// program names a call by its vDSO symbol (<ours/vdso.hpp>), so the numbers
+// are a private agreement between the vDSO
 // and the kernel's dispatch table (design D8). Both are now generated from
 // //system/public/ours/syscalls.gni, into a header only those two can see
 // (//system/public:syscalls.private). Publishing the numbers would only have
@@ -38,7 +39,7 @@ inline constexpr auto INSTANT_INFINITE = std::numeric_limits<Instant>::max();
 /// 4 KiB, which is the largest single kmalloc: a message is copied into one
 /// kernel allocation before the channel's lock is taken, and that allocation
 /// does not go through vmalloc, whose 256 regions are shared by the whole
-/// system and whose vfree has no TLB shootdown yet. Zircon allows 64 KiB;
+/// system. Zircon allows 64 KiB;
 /// raising this later is compatible, lowering it would not be.
 inline constexpr auto CHANNEL_MAX_MSG_BYTES = u32{4096};
 
@@ -69,8 +70,10 @@ inline constexpr auto HANDLE_MAX_PER_PROCESS = u32{1024};
 inline constexpr auto MAX_DEBUG_WRITE = usize{256};
 
 /// The longest program name process_spawn_boot accepts, in bytes, not
-/// counting a terminator (none is passed). The kernel keeps names in 64-byte
-/// buffers, as Zircon's kernel.select.userboot does.
+/// counting a terminator (none is passed). The kernel looks the program up
+/// through a 64-byte buffer, the terminator it adds included
+/// (userabi::launch()); the process it starts keeps only the first 31 bytes as
+/// its name (ProcessDispatcher::MAX_NAME_SIZE).
 inline constexpr auto PROCESS_BOOT_NAME_MAX = usize{63};
 
 /// Options for the channel calls. None is the only value any of them accepts
@@ -89,12 +92,15 @@ enum class ChannelWriteOptions : u32 {
 };
 
 /// process_create's options. None is the only value it accepts today; anything
-/// else is InvArgs. Zircon's are also empty (the argument is reserved).
+/// else is InvArgs. Zircon's one option, ZX_PROCESS_SHARED (a process whose
+/// address space zx_process_create_shared() can share), has no counterpart
+/// in this ABI.
 enum class ProcessCreateOptions : u32 {
     None = 0,
 };
 
-/// thread_create's options, on the same terms.
+/// thread_create's options: None only, anything else InvArgs, as in Zircon,
+/// whose zx_thread_create() takes no option either.
 enum class ThreadCreateOptions : u32 {
     None = 0,
 };
@@ -120,8 +126,8 @@ enum class VmoOptions : u32 {
 ///   Perm*       The protection the pages get. vma_map only.
 ///   Specific    At the offset from the region's start, not wherever fits;
 ///               only into a region that has CanMapSpecific (AccessDenied
-///               otherwise, before the range is looked at). A process's root
-///               region has it.
+///               otherwise, asked before whether the range lies inside the
+///               region). A process's root region has it.
 ///   CanMap*     On vma_map, none may be passed (InvArgs): the kernel sets
 ///               CanMapRead, CanMapWrite and CanMapExecute from the handles'
 ///               rights, as the ceiling a later protect() is held to. On
@@ -132,14 +138,17 @@ enum class VmoOptions : u32 {
 ///               CanMapSpecific lets the sub-region take Specific placements,
 ///               whether or not the parent can.
 ///   MapRange    Populate the whole range now rather than on first touch.
-///   Sealed      Make the mapping immutable from the moment it exists: it can
-///               never be unmapped, have its protection changed, or be
-///               destroyed with its region. Irreversible. Ours' own, with no
+///   Sealed      Make the mapping immutable from the moment it exists: no
+///               call can unmap it, change its protection, or destroy it with
+///               its region (AccessDenied, and nothing else in the range is
+///               touched). Irreversible. Only the address space's teardown,
+///               when the process dies, takes it down. Ours' own, with no
 ///               ZX_VM_* counterpart, so it sits at bit 20, away from the bits
 ///               Zircon uses. The vDSO's VMO can only be mapped this way.
 /// The rest are named so that a program asking for them gets NotSupported,
-/// not InvArgs: they are Zircon's, deferred here. Zircon's alignment field
-/// (ZX_VM_ALIGN_*, bits 24 to 31) is not named yet, so it is still InvArgs.
+/// not InvArgs: they are Zircon's, deferred here. Zircon's
+/// ZX_VM_FAULT_BEYOND_STREAM_SIZE (bit 15) and its alignment field
+/// (ZX_VM_ALIGN_*, bits 24 to 31) are not named yet, so they are still InvArgs.
 enum class VmOptions : u32 {
     None = 0,
     PermRead = 1U << 0,

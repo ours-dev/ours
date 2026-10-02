@@ -21,9 +21,12 @@ cpp_interface("headers") {
 }
 
 source_set("syscall") {
-  # table.cpp owns the dispatch table syscall.S indexes and the shims that
-  # unpack its frame; every other file holds the handlers of one family.
-  # task.cpp is still Unimplemented stubs.
+  # table.cpp owns syscall_dispatch(), which syscall.S calls, the dispatch
+  # table it indexes and the shims that unpack the frame. argument.hpp is the
+  # shims' register conversion, and every other file holds the handlers of one
+  # family. task.cpp has thread_create beside three Unimplemented stubs
+  # (thread_start, thread_suspend, thread_exit) that no entry in syscalls.gni
+  # reaches.
   sources = [
     "src/argument.hpp",
     "src/channel.cpp",
@@ -48,8 +51,11 @@ source_set("syscall") {
     ":headers",
 
     # TEMPORARY: only for syscall::process_spawn_boot (src/process.cpp), the one
-    # handler allowed to reach below kernel/object. The edge goes with it when
-    # the user-space loader lands (docs/repairs/260923/syscall.md).
+    # handler allowed to reach below kernel/object. The edge goes with it at
+    # step K25, once userboot, init and the shell's fault probes start their
+    # programs with the user-space launcher
+    # (docs/design/260924/userspace-filesystem.md; what goes is listed in
+    # docs/repairs/260923/syscall.md, item 1).
     "//kernel/lib/userabi",
 
     # command.cpp walks the GKTL_COMMAND registry the linker collects; it reads

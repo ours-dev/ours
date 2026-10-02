@@ -61,9 +61,10 @@ auto thread_create(HandleValue const process, user_copy::UserInPtr<char const> c
     return Status::Ok;
 }
 
-// object::Handle is a Box-backed, factory-constructed type -- no public
-// constructor and no copy -- so the typed syscall layer passes it by pointer:
-// a by-value parameter could never be initialized from a caller's argument.
+// Placeholders for thread calls that do not exist yet: none has an entry in
+// syscalls.gni, so nothing declares or calls them. Their parameters are not
+// the ABI's: a handler takes a handle as the HandleValue the generated shim
+// passes, never as an object::Handle.
 auto thread_start(object::Handle *thread, VirtAddr entry, VirtAddr stack, usize arg0, usize arg1)
     -> Status {
     return Status::Unimplemented;

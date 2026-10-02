@@ -29,12 +29,13 @@ auto process_create(ours::HandleValue job, Str name, ours::HandleValue *process,
 auto process_start(ours::HandleValue process, ours::HandleValue thread, ours::VirtAddr entry,
                    ours::VirtAddr stack, ours::HandleValue arg1, usize arg2) -> ours::Status;
 
-/// TEMPORARY -- goes when a user-space loader exists.
+/// TEMPORARY -- goes once its callers start programs with the user-space
+/// launcher (system/lib/launch) instead.
 ///
 /// Starts |name| from the kernel package as a new process under |job| (which
-/// must grant ManageProcess), with |bootstrap| as its one handle. |bootstrap|
-/// is gone from this process when this returns, whether or not it succeeded.
-/// NotFound when the package has no such program.
+/// must grant ManageProcess), with |bootstrap| (which must grant Transfer) as
+/// its one handle. |bootstrap| is gone from this process when this returns,
+/// whether or not it succeeded. NotFound when the package has no such program.
 ///
 /// The child's root VMA comes back in |root_vma|. The caller writes the
 /// child's processargs on its end of the bootstrap channel afterwards, with

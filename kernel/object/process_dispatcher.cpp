@@ -365,9 +365,10 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
 }
 
 /// What a process does once it is Dead, outside its lock and exactly once:
-/// both ways in (kill() with no threads, detach_thread() of the last one) set
-/// Dead under the lock only on the Running/Dying -> Dead edge, so only one of
-/// them ever gets here.
+/// the three ways in -- on_zero_handles() and kill() on a process with no
+/// thread (Initial -> Dead), detach_thread() of the last thread (Running or
+/// Dying -> Dead) -- each set Dead under the lock from a state that is not
+/// Dead, and nothing leaves Dead, so only one of them ever gets here.
 ///
 /// Three parts of Zircon's FinishDeadTransition(). The address space is
 /// torn down, so the process's memory comes back now rather than never. And

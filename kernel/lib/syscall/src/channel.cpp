@@ -66,8 +66,11 @@ auto channel_write(HandleValue const channel, ChannelWriteOptions const options,
     // The handle values first, out of user memory and outside every lock:
     // every handle they name leaves the caller's table below whatever this
     // call ends up answering, and that needs the values. A count over the
-    // limit or a buffer that faults consumes nothing -- there are no values
-    // to consume -- which is the one way out that leaves the table as it was.
+    // limit or a buffer that faults consumes nothing -- no value reaches the
+    // table: the count is refused before the copy, and a copy that faults
+    // returns before remove_for_transfer() -- which is the one way out that
+    // leaves the table as it was. Zircon reads an
+    // over-limit array in chunks and consumes it (RemoveUserHandles()).
     if (num_handles > CHANNEL_MAX_MSG_HANDLES) {
         return Status::OutOfRange;
     }
@@ -86,9 +89,11 @@ auto channel_write(HandleValue const channel, ChannelWriteOptions const options,
     auto const resolved = table.get_dispatcher(channel, Rights::Write, &dispatcher);
 
     // Consumed now, whatever comes next: every handle named is out of the
-    // table and in |taken|, and whatever does not end up in a queued message
-    // is closed when |taken| goes, after every lock. Zircon's channel_write()
-    // gets the same effect from a deferred RemoveUserHandles().
+    // table and in |taken|. One that never reaches a packet is closed when
+    // |taken| goes; one in a packet write() refuses is closed with the
+    // packet as write() returns; both after every lock. Zircon's
+    // channel_write() gets the same effect from a deferred
+    // RemoveUserHandles().
     ustl::Box<Handle> taken[CHANNEL_MAX_MSG_HANDLES];
     auto const removed = table.remove_for_transfer(values, num_handles, dispatcher.as_ptr(), taken);
 

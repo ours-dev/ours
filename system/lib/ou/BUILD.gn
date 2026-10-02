@@ -42,7 +42,8 @@ cpp_interface("headers") {
     "include/ou/vmo.hpp",
   ]
 
-  # <ours/vdso.hpp> for the symbols the kernel binds these to,
+  # <ours/vdso.hpp> for the vDSO symbols these call, which the program's
+  # loader binds,
   # <ours/syscall.hpp> for the ABI limits a caller has to respect.
   public_deps = [ "//system/public" ]
   visibility = [ "*" ]

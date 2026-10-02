@@ -22,10 +22,13 @@ auto channel_create(ours::HandleValue *out0, ours::HandleValue *out1,
 /// NoResource when its queue is full.
 ///
 /// Every handle named leaves this process's table, whatever the answer: sent
-/// with the message, or closed if the write fails. Each needs Transfer
-/// (AccessDenied), none may be |channel| itself (NotSupported), and a value
-/// that names nothing -- or one already named earlier in the array -- is
-/// BadHandle. A caller must not use any of the values afterwards.
+/// with the message, or closed if the write fails. The exceptions are more
+/// than CHANNEL_MAX_MSG_HANDLES handles (OutOfRange) and a |handles| that
+/// cannot be read (InvArgs): answered before any handle is touched, they
+/// leave every one in the table, still the caller's to close. Each needs
+/// Transfer (AccessDenied), none may be |channel| itself (NotSupported), and
+/// a value that names nothing -- or one already named earlier in the array --
+/// is BadHandle. After any other answer a caller must not use the values.
 ///
 /// The handle parameters default to none, for the common message of bytes
 /// alone; this is still the one entry for channel_write, with arguments a

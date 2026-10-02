@@ -20,9 +20,9 @@ namespace ou {
 /// One call to this may become several traps. The kernel caps how much one
 /// system call will copy -- it will not spend unbounded time in the kernel on
 /// a program's say-so -- and answers OutOfRange past that instead of
-/// truncating. Splitting the text to fit is the kind of thing every caller
-/// would otherwise write for itself, out of a constant it would have to keep
-/// in step with the kernel by hand.
+/// truncating. Splitting the text to fit, at MAX_DEBUG_WRITE
+/// (<ours/syscall.hpp>), is the kind of thing every caller would otherwise
+/// write for itself.
 auto debug_write(Str text) -> ours::Status;
 
 /// Writes |pieces| one after another, then a newline, as one line.

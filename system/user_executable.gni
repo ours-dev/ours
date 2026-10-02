@@ -9,10 +9,11 @@ import("//kernel/phys/kernel_elf_binary.gni")
 #
 # What this template exists to do is make the syscall surface reachable by
 # *calling it*. A program written against it declares nothing and binds
-# nothing: it includes <ours/vdso.hpp>, calls ours_debug_write(), and the
-# linker records an undefined symbol that userboot resolves against the vDSO's
-# .dynsym when it loads the image (kernel/lib/userabi/src/userboot.cpp,
-# bind_imports()). Before this, every program carried its own copy of the
+# nothing: it calls ou::debug_write(), and the linker records ou's call to
+# ours_debug_write() as an undefined symbol. Whoever loads the program (the
+# kernel's userabi::launch() or the user-space launcher in //system/lib/launch)
+# resolves it against the vDSO's .dynsym with elfload::Binder before it runs.
+# Before this, every program carried its own copy of the
 # lookup -- an entry-table struct, a magic/version check, and one accessor per
 # entry doing `table + offset` arithmetic -- which is a dynamic linker written
 # by hand, once per program, for a table the ELF format already describes.
@@ -24,23 +25,29 @@ import("//kernel/phys/kernel_elf_binary.gni")
 #     applies to every executable by default, so it is subtracted here.
 #   * -fno-plt with -z now: an imported function then reaches the GOT the way
 #     an imported variable does, so the loader has one relocation type to
-#     apply and never has to service a lazily-bound PLT stub -- there is no
-#     lazy binding in a kernel that binds an image once, at load.
-#   * --no-dynamic-linker: there is none. The kernel maps the vDSO and binds
-#     against it itself, so a PT_INTERP would name something that cannot exist.
+#     apply and never has to service a lazily-bound PLT stub. There is no
+#     lazy binding: whoever loads an image binds it once, before it runs.
+#   * --no-dynamic-linker: there is none. Whoever starts the process (the
+#     kernel's userabi::launch() or the user-space launcher) maps the vDSO
+#     and binds the program against it, so a PT_INTERP would name something
+#     that does not exist.
 #   * The vDSO on the link line, so an import that no vDSO entry defines is a
 #     link error here rather than an unresolved symbol discovered at boot.
 #
 # This mirrors //kernel/phys/physload_module.gni, which is the same
 # arrangement one layer down: a phys module leaves the phys runtime undefined
 # and physload binds it at load time. Zircon does it with libzircon.so, which
-# its programs link against and userboot relocates with elfldltl.
+# its programs link against. A dynamically linked program is bound by its
+# PT_INTERP dynamic linker, and a static PIE such as userboot binds itself at
+# startup with elfldltl (LinkStaticPieWithVdso()).
 #
 # Parameters:
 #
 #   install_name (optional)
-#     BootFS file name for the packaged program. Defaults to target_name --
-#     this is the name kernel.select.userboot selects.
+#     BootFS file name for the packaged program. Defaults to target_name. It
+#     is the name the program is started by: kernel.select.userboot for a
+#     build of userboot, and userboot.next, process_spawn_boot or a
+#     launcher's BootFS lookup for any other program.
 #
 #   deps, sources, configs, testonly, visibility
 #     Standard GN meanings.

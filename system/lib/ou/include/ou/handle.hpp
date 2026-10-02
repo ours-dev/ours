@@ -8,8 +8,8 @@
 #include <ours/types.hpp>
 
 namespace ou {
-/// Closes |handle|: this process stops holding the object it names, and when
-/// it was the last holder anywhere the object learns so -- a channel's peer
+/// Closes |handle|: it leaves this process's table, and when it was the last
+/// handle to its object anywhere the object learns so -- a channel's peer
 /// sees PEER_CLOSED, for instance.
 ///
 /// HANDLE_INVALID is accepted and does nothing, so a cleanup path may close
@@ -27,10 +27,12 @@ auto handle_close(ours::HandleValue handle) -> ours::Status;
 /// InvArgs. A duplicate is the one way to make a second handle to an object
 /// -- a channel_write moves the handles it sends rather than copying them --
 /// and it must never be a way to widen one. Narrowing is what it is for:
-/// keep the original, and send a copy that can read but not pass on.
+/// keep the original, and send a copy that can read but not write -- it
+/// still needs Transfer, or it cannot be sent at all.
 ///
 /// The new handle is this process's, charged to its quota (NoResource when
-/// that is used up). |handle| is untouched either way.
+/// that is used up, or when the system-wide handle arena is full). |handle|
+/// is untouched either way.
 auto handle_duplicate(ours::HandleValue handle, ours::Rights rights, ours::HandleValue *out)
     -> ours::Status;
 } // namespace ou

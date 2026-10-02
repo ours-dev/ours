@@ -84,8 +84,10 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     auto update_state(Signals clear, Signals set) -> void;
 
     /// Ends every observation that was made through |handle|: the handle is
-    /// being closed, and a wait through a closed handle cannot be satisfied.
-    /// Each such observer is told on_cancel().
+    /// leaving its process's table -- closed, or consumed by a call that takes
+    /// it (channel_write, process_start, ...) -- and nothing there can satisfy
+    /// a wait through it any more. Each such observer is told on_cancel().
+    /// HandleTable calls it, from unlink_locked() and from clean().
     auto cancel(void const *handle) -> void;
 
     /// The signals asserted right now. A snapshot: they may change the moment

@@ -136,9 +136,10 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// the caller can stop watching later.
     ///
     /// Under this table's lock, and that is the point of it being a verb here
-    /// rather than a lookup followed by an attach: the handle cannot be closed
-    /// between being found and being watched through. A close that comes after
-    /// cancels the observer instead (remove() calls Dispatcher::cancel()).
+    /// rather than a lookup followed by an attach: the handle cannot leave the
+    /// table between being found and being watched through. One that leaves
+    /// after -- closed, or consumed by a call such as channel_write -- cancels
+    /// the observer instead (unlink_locked() calls Dispatcher::cancel()).
     /// Lock order: this table, then the object -- as everywhere else.
     auto attach_observer(HandleValue value, SignalObserver *observer, Signals signals,
                          ustl::Arc<Dispatcher> *object) -> Status;

@@ -18,9 +18,11 @@ namespace ou {
 /// to make this type an alias of std::string_view; the API stops changing
 /// shape then.
 ///
-/// Every entry point in this library takes one of these rather than a
-/// (pointer, length) pair, so a length can never be passed for the wrong
-/// pointer.
+/// Every entry point that takes text takes one of these rather than a
+/// (pointer, length) pair, so that length can never be passed for the wrong
+/// pointer. Byte buffers and handle arrays (channel_*, vmo_read, vmo_write)
+/// and command_list(char *, usize) are still a pointer and a count, forwarded
+/// as given.
 class Str {
   public:
     constexpr Str() = default;

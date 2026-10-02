@@ -162,9 +162,11 @@ auto ThreadDispatcher::start(TaskState const &state, bool const first_thread) ->
     // it would reach the iretq in x86_enter_uspace, which on Intel faults in
     // ring 0 on a non-canonical address with the user's %gs already loaded
     // (arch_is_valid_user_pc() has the details); arch_enter_uspace() would
-    // stop it only by panicking. The entry comes from an ELF header today
-    // (elfload does not check e_entry), and from a caller of process_start
-    // once P1-C lands. Zircon refuses it the same way, with
+    // stop it only by panicking. The entry is whatever the starter chose: a
+    // program's, through process_start, or, for a program the kernel starts
+    // itself (userabi::launch()), the ELF's e_entry moved by its load
+    // address, which elfload::check_program() has already checked lies in an
+    // executable segment. Zircon refuses it the same way, with
     // ZX_ERR_INVALID_ARGS, in ThreadDispatcher::MakeRunnable().
     if (!arch_is_valid_user_pc(state.entry)) {
         return Status::InvArgs;

@@ -63,13 +63,14 @@ class ChannelDispatcher final: public ChannelDispatcherBase {
     auto write(ustl::Box<MessagePacket> message) -> Status;
 
     /// Takes the message at the head of this end's queue, provided it fits in
-    /// |max_bytes|.
+    /// |max_bytes| and |max_handles|.
     ///
     /// ShouldWait when the queue is empty and the peer alive, PeerClosed when
     /// it is empty and the peer gone -- a closed peer's last messages are
-    /// still delivered first. BufferTooSmall when the head message is longer
-    /// than |max_bytes|; it stays where it is, and |actual_bytes| says how
-    /// long it is, so the caller can retry with a larger buffer.
+    /// still delivered first. BufferTooSmall when the head message has more
+    /// bytes than |max_bytes| or more handles than |max_handles|; it stays
+    /// where it is, and |actual_bytes| and |actual_handles| say how big it
+    /// is, so the caller can retry with larger buffers.
     auto read(u32 max_bytes, u32 max_handles, u32 *actual_bytes, u32 *actual_handles,
               ustl::Box<MessagePacket> *out) -> Status;
 

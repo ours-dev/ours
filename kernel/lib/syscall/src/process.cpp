@@ -119,10 +119,12 @@ auto process_create(HandleValue const job, user_copy::UserInPtr<char const> cons
 /// are resolved before it leaves the table, so |arg1| may name either: the
 /// references held here outlive its removal.
 ///
-/// The order of the errors is the order of the checks: the handles named
-/// first (BadHandle, BadType, AccessDenied for a missing right), then that the
-/// thread is the process's own, then |arg1|, then what ProcessDispatcher::
-/// start() finds (BadState, InvArgs for an entry that is not a user address).
+/// The order of the errors is the order of the checks: |process|, then
+/// |thread| (BadHandle, BadType, AccessDenied for a missing right), then an
+/// |arg1| that names nothing (BadHandle), then that the thread is the
+/// process's own (AccessDenied), then |arg1|'s Transfer (AccessDenied), then
+/// what ProcessDispatcher::start() finds (BadState, InvArgs for an entry that
+/// is not a user address, OutOfMem for the kernel thread).
 auto process_start(HandleValue const process, HandleValue const thread, VirtAddr const entry,
                    VirtAddr const stack, HandleValue const arg1, usize const arg2) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
@@ -158,15 +160,17 @@ auto process_start(HandleValue const process, HandleValue const thread, VirtAddr
 
 /// TEMPORARY, and the one handler that breaks the rule every other one keeps:
 /// a system call touches kernel/object and nothing below it. This one reaches
-/// into userabi, and through it elfload, which maps frames and writes through
-/// the physmap directly. It is allowed because it is the only way to start a
-/// second program before a user-space loader exists -- that needs working VMO
-/// reads and writes, a user libc and the binder moved out of the kernel
-/// (design P1-C) -- and because it is fenced three ways: it takes only files
+/// into userabi, and through it kelfload and elfload, which write the image
+/// and its relocations into a VMO through mm::VmObject rather than through a
+/// handle. It was allowed as the only way to start a second program before
+/// the user-space launcher (system/lib/launch) existed. It is tolerated until
+/// userboot, init and the shell's fault probes start their programs with that
+/// launcher (step K25) because it is fenced three ways: it takes only files
 /// the kernel itself loaded from its own package, so ring 0 parses no ELF a
 /// program supplied; the loading code is exactly the code that starts the
 /// first program, not a second path; and it goes, with the GN edge that
-/// allows it, when the loader lands (docs/repairs/260923/syscall.md).
+/// allows it, at K25 (docs/design/260924/userspace-filesystem.md; what goes
+/// is listed in docs/repairs/260923/syscall.md, item 1).
 auto process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char const> const name,
                         usize const name_size, HandleValue const bootstrap,
                         user_copy::UserOutPtr<HandleValue> const root_vma) -> Status {

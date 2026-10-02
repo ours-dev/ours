@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 ours Developers
 //
-// The vDSO: the only image in a user address space that contains a `syscall`
-// instruction.
+// The vDSO: the only image in a user address space whose `syscall` the
+// kernel accepts.
 //
 // Zircon counterpart: //zircon/kernel/lib/userabi/vdso, from which the shape
 // of a stub is copied deliberately -- put the number in %eax, trap, and label
@@ -11,10 +11,10 @@
 //
 // This file used to carry an export table at the ELF entry point as well, so
 // that a program with no dynamic linker could find the stubs by offset. It is
-// gone: the image is linked -shared now, so the stubs are in .dynsym, and the
-// kernel binds a program's imports to them as it loads the program
-// (kernel/lib/userabi/src/userboot.cpp). The ELF format's own answer, in place
-// of a private one.
+// gone: the image is linked -shared now, so the stubs are in .dynsym, and
+// whoever loads a program binds its imports to them (elfload::Binder, from the
+// kernel's userabi::launch() or the user-space launcher). The ELF format's own
+// answer, in place of a private one.
 //
 // Written in assembly rather than C++ because of the `syscall` instruction and
 // because the return-address labels have to be exact: a stub that did anything
@@ -43,8 +43,8 @@
 // table lookup of its own. The sysret label stays `.hidden` -- it is this
 // image's own business, and an exported symbol is a promise to something
 // outside it. The kernel reads the return address out of the syscall frame
-// and refuses any trap whose return address is outside this image; that
-// address is the label's.
+// and kills a process whose `syscall` (the two bytes that end there) is not
+// inside this image's mapped range; that address is the label's.
 //
 // Registers. The arguments arrive in the SysV argument registers and the
 // kernel reads them from %rdi, %rsi, %rdx, %r10, %r8, %r9, %r12, %r13 -- the

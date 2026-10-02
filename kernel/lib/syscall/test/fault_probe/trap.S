@@ -5,12 +5,13 @@
 //
 // The rule is that a user program enters the kernel only through the vDSO:
 // the kernel refuses, and since P1-A kills the process for, a trap whose
-// return address is not inside the vDSO (kernel/lib/syscall/src/table.cpp,
-// trapped_from_vdso()). A rule the kernel enforces needs a program that
-// breaks it, or nothing shows the enforcement still works. This is that
-// program's one instruction: part of lib/syscall's test, packaged only into
-// the diagnostics image and run only as the trap_outside_vdso probe. Nothing
-// else may copy it.
+// `syscall` instruction (the two bytes that end at the return address) does
+// not lie wholly inside the range the vDSO's mapping registered
+// (kernel/lib/syscall/src/table.cpp, trapped_from_vdso()). A rule the kernel
+// enforces needs a program that breaks it, or nothing shows the enforcement
+// still works. This is that program's one instruction: part of lib/syscall's
+// test, packaged only into the diagnostics image and run only as the
+// trap_outside_vdso probe. Nothing else may copy it.
 //
 // void fault_probe_trap_outside_vdso()
 //
