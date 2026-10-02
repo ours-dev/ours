@@ -98,6 +98,7 @@ Later, each with its own trigger: the internal status codes and the `blocking` r
 | Typed handles in `ou` | bare `HandleValue`; `lib/zx`-style move-only owners, consumed arguments taken by value | typed, piloted on the vmo family, settled before K23 | None | Typed, 2026-10-02 |
 | Who writes `ou` | hand-written plus a completeness check; generated from `syscalls.gni` | completeness check (the panel) | None | Generated, 2026-10-02 (the user: a generator has always been the plan) |
 | `[[nodiscard]]` on `Status` | on the type; per `ou` entry; none | on the type | None | On the type, 2026-10-02 |
+| The K23 executor before or after the typed `ou` | write it now against today's `ou` and migrate it with step 9; pilot the typed `ou` first and write it after | now, and migrate | None | Now, 2026-10-02: the executor is one more caller step 9 migrates |
 | Kernel-internal status codes | a kernel-private enum with a boundary guard (touches `fair.cpp`, which is hands-off); keep them public, have the vDSO retry `InternalIrqRetry` and assert the others never cross (Zircon keeps `ZX_ERR_INTERNAL_INTR_RETRY` public and consumes it in the vDSO); leave as is | keep public, vDSO retry plus a boundary assertion | None | |
 | License of `system/public/ours/syscall/resource.hpp` (GPL-2.0 in an MIT directory, included by ring 3) | relicense to MIT; keep and move out of `system/public` | relicense (the copyright holder's call) | None | |
 | C++-only ABI headers | keep, with `#error` for other languages and a deviation row; add a C layer | keep and record | None | |

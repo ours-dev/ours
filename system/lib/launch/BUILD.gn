@@ -5,8 +5,10 @@ source_set("launch") {
   sources = [
     "src/launch.cpp",
     "src/plan.cpp",
+    "src/program.cpp",
   ]
   public_deps = [ ":headers" ]
+  deps = [ "//system/lib/eftl" ]
 }
 
 # The headers are a target of their own so that a dependant needing only the
@@ -16,11 +18,15 @@ cpp_interface("headers") {
   public = [
     "include/launch/launch.hpp",
     "include/launch/plan.hpp",
+    "include/launch/program.hpp",
   ]
   public_deps = [ "//system/public" ]
 }
 
 group("tests") {
   testonly = true
-  public_deps = [ "test:plan($host_toolchain)" ]
+  public_deps = [
+    "test:plan($host_toolchain)",
+    "test:program($host_toolchain)",
+  ]
 }

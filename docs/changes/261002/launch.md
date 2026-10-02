@@ -66,3 +66,60 @@ None.
 - Why can the page the file bytes end in not come from the snapshot when .bss follows them, but can when there is no .bss?
 - Why copy the partial page's bytes into zero-fill memory rather than snapshot that page and zero its tail?
 - When does a writable segment give three mappings, and from which VMO is each?
+
+## Title: The launcher reads a program's segments, RELRO and entry point out of its ELF (2026-10-02)
+
+**Files**
+- `system/lib/launch/include/launch/program.hpp`, `system/lib/launch/src/program.cpp` — `launch::Program::read()`: the PT_LOAD segments in file order, the one PT_GNU_RELRO and `e_entry`, out of the file's ELF and program headers, through eftl's parser.
+- `system/lib/launch/BUILD.gn`, `system/lib/launch/test/BUILD.gn` — the source, eftl as a dependency, and a second host test, `program`.
+- `system/lib/launch/test/program_test.cpp` — seven tests on ELF images built byte by byte.
+- `.agents/tasks/system-abi-surface/DESIGN.md` — the user's choice to write the K23 executor against today's `ou`.
+
+**Symptom**
+None; the first step of K23's executor. `Plan::build()` takes segments and a RELRO as numbers, and nothing turned a program file into those numbers.
+
+**Cause**
+An ELF file says how it wants to be loaded in its program headers, one entry each:
+- PT_LOAD: a range of the file (`p_offset`, `p_filesz`) to place at an address (`p_vaddr`), `p_memsz` long in memory (the rest is .bss), with `p_flags` for read, write and execute.
+- PT_GNU_RELRO: a range that becomes read-only once relocations are written. Its size is `p_memsz`, because LLD's `.relro_padding` rounds RELRO up to a page without taking room in the file (the previous entry).
+- Everything else (PT_DYNAMIC, PT_GNU_STACK, notes) is not the planner's business; the binder reads PT_DYNAMIC from the file itself later.
+
+`read()` only takes the numbers out; it does not decide whether the file is a program this system can start. That question already has one answer, `elfload::check_program()`, which the kernel's loader asks and which the executor will ask before it reads, so that the launcher refuses exactly what the kernel would. Keeping the two apart is also what lets `read()` be tested here at all: `elfload` picks its ELF machine from the compiler's architecture and stops with `#error` on the arm64 machine the host tests run on, so `read()` parses with `eftl::elf::Traits64`, the programs' class, whatever it is compiled for.
+
+A program with more than one PT_GNU_RELRO is refused as `NotSupported`: a linker gives a program one, more come from linker scripts that scatter the RELRO sections (the kernel's own `kernel.ld` does), and a `Plan` takes one.
+
+**Change**
+```cpp
+for (auto const header: elf.segments()) {
+    if (header.type() == eftl::elf::SegType::Load) {
+        // at most Plan::MAX_SEGMENTS, else OutOfRange
+        program.m_segments[program.m_segment_count++] = Segment{p_vaddr, p_offset, p_filesz, p_memsz, p_flags};
+    } else if (header.type() == eftl::elf::SegType::GnuRelro) {
+        // a second one is NotSupported
+        program.m_relro = Relro{.vaddr = header.p_vaddr, .size = header.p_memsz};
+    }
+}
+```
+
+**Reference**
+Zircon `elfldltl::LoadInfo` and its `RelroBounds`, filled from the program headers by `elfldltl::DecodePhdrs()`; Linux `load_elf_binary()` reads the same headers with `load_elf_phdrs()`.
+
+**Verification**
+- Host tests: `program` 7 of 7 (segments in file order with every field, RELRO size from `p_memsz` when `p_filesz` is shorter, no RELRO, the numbers building a `Plan` with the expected four mappings, two RELROs refused, nine segments refused, not an ELF and truncated program headers refused); `plan` still 36 of 36.
+- `clang-tidy -p out/phys-host-tests` on both new files: no diagnostics in the library's files.
+- `boot_check.py`: both images boot; nothing in them uses the library yet.
+
+**Deliberately not done**
+- The executor itself, the next step.
+- Making `elfload` build on the host: its machine should be the target's, not the compiler's (`docs/repairs/261002/elfload.md` item 1).
+
+**How it was found**
+None; K23.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which program headers does the planner need, and which does it leave to the binder?
+- Why does `read()` not decide whether the file can be started, and who does?
+- Why is the RELRO's size `p_memsz` and not `p_filesz`?

@@ -11,3 +11,17 @@ executable("plan") {
   ]
   visibility = [ "*" ]
 }
+
+# Reading a program's PT_LOAD segments, PT_GNU_RELRO and entry point out of its
+# ELF headers, checked on ELF images built in the test.
+executable("program") {
+  testonly = true
+  sources = [ "program_test.cpp" ]
+  deps = [
+    "//system/lib/eftl:headers",
+    "//system/lib/launch",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
