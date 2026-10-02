@@ -15,6 +15,14 @@ and backspace) and dispatches them through `gktl::run_command`.
 Drive it interactively over QEMU's serial console, or from scripts:
 `prof.start tick 4` / `prof.stop` / `prof.dump` (see libprof).
 
+`scripts/kshell_run.py` does the typing for you: it boots an image, waits for
+the boot to end, types each command and reports what it printed, for example
+`python3 scripts/kshell_run.py --out out/mine --image rel vmosnapshot.test`.
+A `*.test` command is done at its `<name>: ok` or `FAILED` line, any other at
+the next prompt. The prompt is written a byte at a time, outside the log's
+lock, so on the dbg image other CPUs' log lines break it up: there only a
+test's verdict line is a dependable end.
+
 ## Turning it on and off
 
 The shell runs every registered command, in ring 0, for whoever can write to

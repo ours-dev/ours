@@ -28,6 +28,21 @@ Flags: `--out out/<dir>` (configured automatically if new), `--no-build`,
 For C++ edits, `cpp-write-and-verify` (clang-format and clang-tidy) comes
 first; this skill checks behaviour, that one checks the source.
 
+## Kernel tests
+
+The kernel's `*.test` commands (`//kernel/commands`) do not run at boot.
+After a change to what one covers, run it on both images, after the build:
+
+```bash
+python3 scripts/kshell_run.py --out out/<dir> vmosnapshot.test
+python3 scripts/kshell_run.py --out out/<dir> --image rel vmosnapshot.test
+```
+
+It boots the image in `--out` without building it, types the commands once
+the boot ends, and exits 0 if every one passed: no FAILED or error line, and
+a test's own `<name>: ok` line. A misspelt test name is a FAIL, after
+`--command-timeout`. Logs go to `$TMPDIR/ours-kshell-<out>/`.
+
 ## Reading a failure
 
 | Summary says | Meaning | Next step |
