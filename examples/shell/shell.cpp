@@ -11,13 +11,10 @@
 /// other side of the privilege boundary: the names come out of the kernel's
 /// linker sections, and nothing in this file knows any of them.
 ///
-/// Its system calls go through //system/lib/ou, which is the one place that
-/// knows what the raw ABI looks like, the checks of the raw ABI itself (bad
-/// pointers, option words) included: ou passes every argument through as
-/// given, options too, so a check can still hand the kernel what it must
-/// refuse. Through ou this file names what it wants (ou::debug_line,
-/// ou::command_list) and knows nothing else -- not the per-call size limit,
-/// not the symbols the loader binds, not that a trap is involved at all.
+/// Its system calls are the vDSO's entries, ours_* from <ours/vdso.hpp>,
+/// called directly, the checks of the raw ABI (bad pointers, option words)
+/// among them. It knows nothing else about the boundary -- not the symbols
+/// the loader binds, not that a trap is involved at all.
 ///
 /// It runs on the runtime (//system/lib/runtime): the entry point is the
 /// runtime's, which reads the processargs message this program was started
@@ -33,6 +30,7 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/syscall/resource.hpp>
+#include <ours/vdso.hpp>
 
 #include <span>
 #include <string_view>
@@ -41,16 +39,9 @@
 
 #include <bootfs/format.hpp>
 #include <launch/launch.hpp>
-#include <ou/channel.hpp>
 #include <ou/command.hpp>
 #include <ou/debug.hpp>
-#include <ou/handle.hpp>
-#include <ou/object.hpp>
-#include <ou/process.hpp>
 #include <ou/str.hpp>
-#include <ou/thread.hpp>
-#include <ou/vma.hpp>
-#include <ou/vmo.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 
@@ -63,7 +54,7 @@ namespace {
 class Registry {
   public:
     auto fetch() -> ours::Status {
-        return ou::command_list(m_text);
+        return ours_command_list(m_text, sizeof(m_text));
     }
 
     [[nodiscard]]
@@ -100,8 +91,8 @@ auto report(ou::Str const what, ours::Status const status) -> void {
 /// writer's end is gone. It is also what makes init print "shell closed its
 /// channel", here rather than when this process ends.
 auto check_handle_close(ours::HandleValue const startup) -> void {
-    report("shell: close(startup handle) = ", ou::handle_close(startup));
-    report("shell: close again = ", ou::handle_close(startup));
+    report("shell: close(startup handle) = ", ours_handle_close(startup));
+    report("shell: close again = ", ours_handle_close(startup));
 }
 
 /// Prints "<what><got>" and whether that was |want|; answers whether it was.
@@ -148,12 +139,13 @@ auto answer_init(ours::HandleValue const peer) -> void {
     }
 
     auto observed = Signals::None;
-    auto status = ou::object_wait_one(peer, Signals::Readable | Signals::PeerClosed,
-                                      ours::INSTANT_INFINITE, &observed);
+    auto status = ours_object_wait_one(peer, Signals::Readable | Signals::PeerClosed,
+                                       ours::INSTANT_INFINITE, &observed);
     char buffer[32] = {};
     u32 actual = 0;
     if (status == Status::Ok) {
-        status = ou::channel_read(peer, buffer, sizeof(buffer), &actual);
+        status = ours_channel_read(peer, ours::ChannelReadOptions::None, buffer, nullptr,
+                                   sizeof(buffer), 0, &actual, nullptr);
     }
     if (status != Status::Ok) {
         report("shell: reading init's channel = ", status);
@@ -162,7 +154,8 @@ auto answer_init(ours::HandleValue const peer) -> void {
     static_cast<void>(ou::debug_line({"shell: init says \"", ou::Str(buffer, actual), "\""}));
 
     constexpr ou::Str PONG{"pong"};
-    status = ou::channel_write(peer, PONG.data(), static_cast<u32>(PONG.size()));
+    status = ours_channel_write(peer, ours::ChannelWriteOptions::None, PONG.data(),
+                                static_cast<u32>(PONG.size()), nullptr, 0);
     if (status != Status::Ok) {
         report("shell: answering = ", status);
     }
@@ -177,7 +170,7 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
         return;
     }
     bootfs::Header header{};
-    if (auto const status = ou::vmo_read(bootfs, &header, 0, sizeof(header));
+    if (auto const status = ours_vmo_read(bootfs, &header, 0, sizeof(header));
         status != ours::Status::Ok) {
         report("shell: reading the BootFS header = ", status);
         return;
@@ -220,7 +213,7 @@ auto find_in_bootfs(ours::HandleValue const bootfs, ou::Str const name, bootfs::
     bootfs::Header header{};
     bootfs::Entry entries[MAX_ENTRIES];
     char names[MAX_NAMES];
-    if (auto const status = ou::vmo_read(bootfs, &header, 0, sizeof(header));
+    if (auto const status = ours_vmo_read(bootfs, &header, 0, sizeof(header));
         status != Status::Ok) {
         return status;
     }
@@ -228,12 +221,12 @@ auto find_in_bootfs(ours::HandleValue const bootfs, ou::Str const name, bootfs::
         return Status::OutOfRange;
     }
     auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
-    if (auto const status = ou::vmo_read(bootfs, entries, sizeof(header), entries_size);
+    if (auto const status = ours_vmo_read(bootfs, entries, sizeof(header), entries_size);
         status != Status::Ok) {
         return status;
     }
     if (auto const status =
-            ou::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size);
+            ours_vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size);
         status != Status::Ok) {
         return status;
     }
@@ -275,20 +268,20 @@ auto make_launcher(ours::HandleValue const bootfs, ours::HandleValue const vmex,
             "shell: launcher checks FAILED (the vdso is larger than the shell's buffer)"));
         return launcher;
     }
-    if (auto const status = ou::vmo_read(bootfs, vdso_bytes, entry.data_offset, entry.data_size);
+    if (auto const status = ours_vmo_read(bootfs, vdso_bytes, entry.data_offset, entry.data_size);
         status != Status::Ok) {
         report("shell: launcher checks FAILED, reading the vdso = ", status);
         return launcher;
     }
     ours::HandleValue copy = ours::HANDLE_INVALID;
-    if (auto const status = ou::handle_duplicate(bootfs, ours::Rights::SameRights, &copy);
+    if (auto const status = ours_handle_duplicate(bootfs, ours::Rights::SameRights, &copy);
         status != Status::Ok) {
         report("shell: launcher checks FAILED, handle_duplicate(the BootFS) = ", status);
         return launcher;
     }
     // Consumes |copy| whatever it answers.
     ours::HandleValue executable = ours::HANDLE_INVALID;
-    if (auto const status = ou::vmo_replace_as_executable(copy, vmex, &executable);
+    if (auto const status = ours_vmo_replace_as_executable(copy, vmex, &executable);
         status != Status::Ok) {
         report("shell: launcher checks FAILED, vmo_replace_as_executable(the BootFS) = ", status);
         return launcher;
@@ -347,19 +340,19 @@ auto launch_program(Launcher const &launcher, ours::HandleValue const job, ou::S
         static_cast<void>(ou::debug_line("shell: the program is larger than the shell's buffer"));
         status = Status::OutOfRange;
     } else {
-        status = ou::vmo_read(launcher.bootfs, program_bytes, entry.data_offset, entry.data_size);
+        status = ours_vmo_read(launcher.bootfs, program_bytes, entry.data_offset, entry.data_size);
         if (status != Status::Ok) {
             report("shell: reading the program = ", status);
         } else {
-            status = ou::vmo_create_child(launcher.executable, ours::VmoChildOptions::Slice,
-                                          entry.data_offset, entry.data_size, &file);
+            status = ours_vmo_create_child(launcher.executable, ours::VmoChildOptions::Slice,
+                                           entry.data_offset, entry.data_size, &file);
             if (status != Status::Ok) {
                 report("shell: slicing the program out of the BootFS = ", status);
             }
         }
     }
     if (status != Status::Ok) {
-        static_cast<void>(ou::handle_close(bootstrap));
+        static_cast<void>(ours_handle_close(bootstrap));
         return ustl::err(status);
     }
     auto started = launch::start({
@@ -374,7 +367,7 @@ auto launch_program(Launcher const &launcher, ours::HandleValue const job, ou::S
     });
     // The mappings of the program's code hold the file's VMO; this handle is
     // not needed for them.
-    static_cast<void>(ou::handle_close(file));
+    static_cast<void>(ours_handle_close(file));
     return started;
 }
 
@@ -427,14 +420,16 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe,
     ours::HandleValue answer_there = ours::HANDLE_INVALID;
     ours::HandleValue bootstrap = ours::HANDLE_INVALID;
     ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
-    if (!expect("shell: probe channel_create = ", ou::channel_create(&answer, &answer_there),
+    if (!expect("shell: probe channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &answer, &answer_there),
                 Status::Ok)) {
         return run;
     }
-    if (!expect("shell: probe channel_create = ", ou::channel_create(&bootstrap, &bootstrap_there),
+    if (!expect("shell: probe channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there),
                 Status::Ok)) {
-        static_cast<void>(ou::handle_close(answer));
-        static_cast<void>(ou::handle_close(answer_there));
+        static_cast<void>(ours_handle_close(answer));
+        static_cast<void>(ours_handle_close(answer_there));
         return run;
     }
 
@@ -452,13 +447,14 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe,
             root_vma = started.unwrap().root_vma;
         }
     } else {
-        status = ou::process_spawn_boot(job, "fault_probe", bootstrap_there, &root_vma);
+        status = ours_process_spawn_boot(job, "fault_probe", sizeof("fault_probe") - 1,
+                                         bootstrap_there, &root_vma);
     }
     if (status != Status::Ok) {
         report("shell: starting fault_probe = ", status);
-        static_cast<void>(ou::handle_close(bootstrap));
-        static_cast<void>(ou::handle_close(answer));
-        static_cast<void>(ou::handle_close(answer_there));
+        static_cast<void>(ours_handle_close(bootstrap));
+        static_cast<void>(ours_handle_close(answer));
+        static_cast<void>(ours_handle_close(answer_there));
         return run;
     }
     run.started = true;
@@ -467,24 +463,26 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe,
     // write answers; the probe waits for it, and if it never comes, sees this
     // end close and ends itself.
     ours::HandleValue handed[] = {answer_there, root_vma};
-    status = ou::channel_write(bootstrap, message, length, handed, 2);
+    status =
+        ours_channel_write(bootstrap, ours::ChannelWriteOptions::None, message, length, handed, 2);
     // This end has nothing more to say, and holding it would keep a handle
     // charged to this process for nothing.
-    static_cast<void>(ou::handle_close(bootstrap));
+    static_cast<void>(ours_handle_close(bootstrap));
     if (status != Status::Ok) {
         report("shell: writing the probe's processargs = ", status);
     }
 
     auto observed = Signals::None;
-    static_cast<void>(ou::object_wait_one(answer, Signals::Readable | Signals::PeerClosed,
-                                          ours::INSTANT_INFINITE, &observed));
+    static_cast<void>(ours_object_wait_one(answer, Signals::Readable | Signals::PeerClosed,
+                                           ours::INSTANT_INFINITE, &observed));
     run.killed = !(observed & Signals::Readable);
     if (!run.killed) {
         // An answer that does not fit, or a read that fails, leaves no answer:
         // the size the kernel writes back on BufferTooSmall is what it would
         // need, not what is in run.answer.
         if (auto const read =
-                ou::channel_read(answer, run.answer, sizeof(run.answer), &run.answer_size);
+                ours_channel_read(answer, ours::ChannelReadOptions::None, run.answer, nullptr,
+                                  sizeof(run.answer), 0, &run.answer_size, nullptr);
             read != Status::Ok) {
             report("shell: reading the probe's answer = ", read);
             run.answer_size = 0;
@@ -503,11 +501,11 @@ auto run_probe(ours::HandleValue const job, ou::Str const probe,
         // this wakes the handle may still be counted. The checks that run
         // before the quota check are what make that gap unobservable today.
         static_cast<void>(
-            ou::object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed));
+            ours_object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed));
     }
-    static_cast<void>(ou::handle_close(answer));
+    static_cast<void>(ours_handle_close(answer));
     if (process != ours::HANDLE_INVALID) {
-        static_cast<void>(ou::handle_close(process));
+        static_cast<void>(ours_handle_close(process));
     }
     return run;
 }
@@ -624,30 +622,37 @@ auto check_channel_loopback() -> void {
     auto ok = true;
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (!expect("shell: channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
     }
 
     constexpr ou::Str PING{"ping"};
     ok &= expect("shell: write(ping) = ",
-                 ou::channel_write(a, PING.data(), static_cast<u32>(PING.size())), Status::Ok);
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, PING.data(),
+                                    static_cast<u32>(PING.size()), nullptr, 0),
+                 Status::Ok);
 
     // Already readable, so a poll must succeed and report Readable.
     auto observed = Signals::None;
     ok &= expect("shell: wait_one(READABLE, poll) = ",
-                 ou::object_wait_one(b, Signals::Readable, 0, &observed), Status::Ok);
+                 ours_object_wait_one(b, Signals::Readable, 0, &observed), Status::Ok);
     ok &= !!(observed & Signals::Readable) && !!(observed & Signals::Writable);
 
     // Too small a buffer leaves the message where it is and says how long it
     // is.
     char buffer[16] = {};
     u32 actual = 0;
-    ok &= expect("shell: read(2 bytes) = ", ou::channel_read(b, buffer, 2, &actual),
+    ok &= expect("shell: read(2 bytes) = ",
+                 ours_channel_read(b, ours::ChannelReadOptions::None, buffer, nullptr, 2, 0,
+                                   &actual, nullptr),
                  Status::BufferTooSmall);
     ok &= actual == PING.size();
 
-    ok &=
-        expect("shell: read = ", ou::channel_read(b, buffer, sizeof(buffer), &actual), Status::Ok);
+    ok &= expect("shell: read = ",
+                 ours_channel_read(b, ours::ChannelReadOptions::None, buffer, nullptr,
+                                   sizeof(buffer), 0, &actual, nullptr),
+                 Status::Ok);
     if (spells(buffer, actual, PING)) {
         static_cast<void>(ou::debug_line("shell: loopback ping ok"));
     } else {
@@ -655,22 +660,27 @@ auto check_channel_loopback() -> void {
         static_cast<void>(ou::debug_line("shell: loopback read the wrong bytes"));
     }
 
-    ok &= expect("shell: read on empty = ", ou::channel_read(b, buffer, sizeof(buffer), &actual),
+    ok &= expect("shell: read on empty = ",
+                 ours_channel_read(b, ours::ChannelReadOptions::None, buffer, nullptr,
+                                   sizeof(buffer), 0, &actual, nullptr),
                  Status::ShouldWait);
 
     // Closing one end tells the other: PeerClosed goes up, Writable comes
     // down, and every further read or write says so.
-    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+    ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
     ok &= expect("shell: wait_one(PEER_CLOSED) = ",
-                 ou::object_wait_one(b, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed),
+                 ours_object_wait_one(b, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed),
                  Status::Ok);
     ok &= !!(observed & Signals::PeerClosed) && !(observed & Signals::Writable);
     ok &= expect("shell: read after peer closed = ",
-                 ou::channel_read(b, buffer, sizeof(buffer), &actual), Status::PeerClosed);
-    ok &= expect("shell: write after peer closed = ",
-                 ou::channel_write(b, PING.data(), static_cast<u32>(PING.size())),
+                 ours_channel_read(b, ours::ChannelReadOptions::None, buffer, nullptr,
+                                   sizeof(buffer), 0, &actual, nullptr),
                  Status::PeerClosed);
-    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    ok &= expect("shell: write after peer closed = ",
+                 ours_channel_write(b, ours::ChannelWriteOptions::None, PING.data(),
+                                    static_cast<u32>(PING.size()), nullptr, 0),
+                 Status::PeerClosed);
+    ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: channel checks passed"));
@@ -689,8 +699,6 @@ auto check_channel_loopback() -> void {
 /// wonder about. And a chain of channel ends, each queued in the next, a
 /// thousand deep, can be dropped from the top: the kernel frees it as a loop
 /// (Dispatcher::rc_recycle), not a thousand destructors deep on one stack.
-///
-/// Through ou, whose channel_read and channel_write carry handles.
 auto check_handle_transfer() -> void {
     using ours::HandleValue;
     using ours::Status;
@@ -702,47 +710,55 @@ auto check_handle_transfer() -> void {
     HandleValue b = ours::HANDLE_INVALID;
     HandleValue c = ours::HANDLE_INVALID;
     HandleValue d = ours::HANDLE_INVALID;
-    if (!expect("shell: transfer channel_create(a, b) = ", ou::channel_create(&a, &b),
-                Status::Ok) ||
-        !expect("shell: transfer channel_create(c, d) = ", ou::channel_create(&c, &d),
-                Status::Ok)) {
+    if (!expect("shell: transfer channel_create(a, b) = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok) ||
+        !expect("shell: transfer channel_create(c, d) = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok)) {
         return;
     }
 
     // d travels a -> b; what comes out of b is a new value for the same end.
-    ok &= expect("shell: write(a, handles = [d]) = ", ou::channel_write(a, nullptr, 0, &d, 1),
+    ok &= expect("shell: write(a, handles = [d]) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, nullptr, 0, &d, 1),
                  Status::Ok);
-    ok &= expect("shell: close(d) after sending it = ", ou::handle_close(d), Status::BadHandle);
+    ok &= expect("shell: close(d) after sending it = ", ours_handle_close(d), Status::BadHandle);
     HandleValue got = ours::HANDLE_INVALID;
     u32 actual_bytes = 0;
     u32 actual_handles = 0;
     ok &= expect("shell: read(b) = ",
-                 ou::channel_read(b, nullptr, 0, &actual_bytes, &got, 1, &actual_handles),
+                 ours_channel_read(b, ours::ChannelReadOptions::None, nullptr, &got, 0, 1,
+                                   &actual_bytes, &actual_handles),
                  Status::Ok);
     ok &= actual_handles == 1 && got != ours::HANDLE_INVALID;
     ok &= expect("shell: write(c, ping) = ",
-                 ou::channel_write(c, PING.data(), static_cast<u32>(PING.size())), Status::Ok);
+                 ours_channel_write(c, ours::ChannelWriteOptions::None, PING.data(),
+                                    static_cast<u32>(PING.size()), nullptr, 0),
+                 Status::Ok);
     char buffer[8] = {};
     u32 length = 0;
     ok &= expect("shell: read(the received end) = ",
-                 ou::channel_read(got, buffer, sizeof(buffer), &length), Status::Ok);
+                 ours_channel_read(got, ours::ChannelReadOptions::None, buffer, nullptr,
+                                   sizeof(buffer), 0, &length, nullptr),
+                 Status::Ok);
     ok &= spells(buffer, length, PING);
 
     // A channel sent through itself is refused -- and consumed like any
     // other handle in the array.
-    ok &= expect("shell: write(a, handles = [a]) = ", ou::channel_write(a, nullptr, 0, &a, 1),
+    ok &= expect("shell: write(a, handles = [a]) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, nullptr, 0, &a, 1),
                  Status::NotSupported);
-    ok &= expect("shell: close(a) after that = ", ou::handle_close(a), Status::BadHandle);
+    ok &= expect("shell: close(a) after that = ", ours_handle_close(a), Status::BadHandle);
 
     // One bad value fails the write and takes the good handle anyway.
     HandleValue e = ours::HANDLE_INVALID;
     HandleValue f = ours::HANDLE_INVALID;
-    ok &= expect("shell: transfer channel_create(e, f) = ", ou::channel_create(&e, &f), Status::Ok);
+    ok &= expect("shell: transfer channel_create(e, f) = ",
+                 ours_channel_create(ours::ChannelCreateOptions::None, &e, &f), Status::Ok);
     HandleValue const mixed[] = {e, HandleValue{0x7ffffff3}};
-    ok &=
-        expect("shell: write(c, handles = [e, bad]) = ", ou::channel_write(c, nullptr, 0, mixed, 2),
-               Status::BadHandle);
-    ok &= expect("shell: close(e) after that = ", ou::handle_close(e), Status::BadHandle);
+    ok &= expect("shell: write(c, handles = [e, bad]) = ",
+                 ours_channel_write(c, ours::ChannelWriteOptions::None, nullptr, 0, mixed, 2),
+                 Status::BadHandle);
+    ok &= expect("shell: close(e) after that = ", ours_handle_close(e), Status::BadHandle);
 
     // A thousand deep: each end queued in the next channel, then only the
     // last one kept -- and closed.
@@ -752,12 +768,14 @@ auto check_handle_transfer() -> void {
     for (u32 i = 0; i < DEPTH && chain_ok; ++i) {
         HandleValue writer = ours::HANDLE_INVALID;
         HandleValue holder = ours::HANDLE_INVALID;
-        chain_ok &= ou::channel_create(&writer, &holder) == Status::Ok;
-        chain_ok &= ou::channel_write(writer, nullptr, 0, &inner, 1) == Status::Ok;
-        chain_ok &= ou::handle_close(writer) == Status::Ok;
+        chain_ok &=
+            ours_channel_create(ours::ChannelCreateOptions::None, &writer, &holder) == Status::Ok;
+        chain_ok &= ours_channel_write(writer, ours::ChannelWriteOptions::None, nullptr, 0, &inner,
+                                       1) == Status::Ok;
+        chain_ok &= ours_handle_close(writer) == Status::Ok;
         inner = holder;
     }
-    chain_ok &= ou::handle_close(inner) == Status::Ok;
+    chain_ok &= ours_handle_close(inner) == Status::Ok;
     ok &= chain_ok;
     if (chain_ok) {
         static_cast<void>(ou::debug_line("shell: a 1000-deep chain of ends, closed"));
@@ -765,9 +783,9 @@ auto check_handle_transfer() -> void {
         static_cast<void>(ou::debug_line("shell: the 1000-deep chain FAILED"));
     }
 
-    ok &= ou::handle_close(b) == Status::Ok;
-    ok &= ou::handle_close(c) == Status::Ok;
-    ok &= ou::handle_close(got) == Status::Ok;
+    ok &= ours_handle_close(b) == Status::Ok;
+    ok &= ours_handle_close(c) == Status::Ok;
+    ok &= ours_handle_close(got) == Status::Ok;
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: handle transfer checks passed"));
@@ -795,7 +813,8 @@ auto check_handle_quota() -> void {
     u32 count = 0;
     auto status = Status::Ok;
     while (count + 2 <= ROOM) {
-        status = ou::channel_create(&made[count], &made[count + 1]);
+        status =
+            ours_channel_create(ours::ChannelCreateOptions::None, &made[count], &made[count + 1]);
         if (status != Status::Ok) {
             break;
         }
@@ -808,13 +827,15 @@ auto check_handle_quota() -> void {
         {"shell: ", ou::decimal(count / 2, count_text), " channels made before the quota"}));
 
     if (count >= 2) {
-        ok &= ou::handle_close(made[count - 1]) == Status::Ok;
-        ok &= ou::handle_close(made[count - 2]) == Status::Ok;
+        ok &= ours_handle_close(made[count - 1]) == Status::Ok;
+        ok &= ours_handle_close(made[count - 2]) == Status::Ok;
         ok &= expect("shell: channel_create after closing one = ",
-                     ou::channel_create(&made[count - 2], &made[count - 1]), Status::Ok);
+                     ours_channel_create(ours::ChannelCreateOptions::None, &made[count - 2],
+                                         &made[count - 1]),
+                     Status::Ok);
     }
     for (u32 i = 0; i < count; ++i) {
-        ok &= ou::handle_close(made[i]) == Status::Ok;
+        ok &= ours_handle_close(made[i]) == Status::Ok;
     }
 
     if (ok) {
@@ -832,9 +853,7 @@ constexpr auto KERNEL = ours::VirtAddr{0xffff'8000'0000'0000};
 /// Bad user pointers handed to the kernel: each call must come back InvArgs,
 /// and the kernel must still be here to answer the next one.
 ///
-/// The calls go through ou, which passes every pointer to the kernel as it is
-/// given, so the pointers reach the kernel exactly as written here. Three
-/// kinds:
+/// The pointers reach the kernel exactly as written here. Three kinds:
 ///
 ///   UNMAPPED  inside the user half of the address space, so the range check
 ///             passes, but nothing is mapped there: the copy faults, the fault
@@ -865,17 +884,21 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (!expect("shell: channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
     }
 
     // The message is copied in before the channel is touched, so a bad source
     // leaves the channel as it was.
-    ok &=
-        expect("shell: channel_write(from unmapped) = ",
-               ou::channel_write(a, reinterpret_cast<void const *>(UNMAPPED), 8), Status::InvArgs);
+    ok &= expect("shell: channel_write(from unmapped) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None,
+                                    reinterpret_cast<void const *>(UNMAPPED), 8, nullptr, 0),
+                 Status::InvArgs);
     constexpr char BYTE = 'x';
-    ok &= expect("shell: channel_write(1 byte) = ", ou::channel_write(a, &BYTE, 1), Status::Ok);
+    ok &= expect("shell: channel_write(1 byte) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, &BYTE, 1, nullptr, 0),
+                 Status::Ok);
 
     // Read into nothing: the message is taken off the queue before it is
     // copied out, so when the copy fails the message is gone -- the same
@@ -883,20 +906,21 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     u32 actual_bytes = 0;
     u32 actual_handles = 0;
     ok &= expect("shell: channel_read(into unmapped) = ",
-                 ou::channel_read(b, reinterpret_cast<void *>(UNMAPPED), 1, &actual_bytes, nullptr,
-                                  0, &actual_handles),
+                 ours_channel_read(b, ours::ChannelReadOptions::None,
+                                   reinterpret_cast<void *>(UNMAPPED), nullptr, 1, 0, &actual_bytes,
+                                   &actual_handles),
                  Status::InvArgs);
     char buffer[4] = {};
-    ok &= expect(
-        "shell: channel_read(after the lost message) = ",
-        ou::channel_read(b, buffer, sizeof(buffer), &actual_bytes, nullptr, 0, &actual_handles),
-        Status::ShouldWait);
+    ok &= expect("shell: channel_read(after the lost message) = ",
+                 ours_channel_read(b, ours::ChannelReadOptions::None, buffer, nullptr,
+                                   sizeof(buffer), 0, &actual_bytes, &actual_handles),
+                 Status::ShouldWait);
 
     // A poll, so that the wait ends at once and the kernel goes on to write
     // |observed| -- into nothing.
     ok &=
         expect("shell: wait_one(observed = unmapped, poll) = ",
-               ou::object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(UNMAPPED)),
+               ours_object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(UNMAPPED)),
                Status::InvArgs);
 
     // Both handle values are written out before either handle is installed,
@@ -904,30 +928,36 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     ours::HandleValue c = ours::HANDLE_INVALID;
     ours::HandleValue d = ours::HANDLE_INVALID;
     ok &= expect("shell: channel_create(out0 = unmapped) = ",
-                 ou::channel_create(reinterpret_cast<ours::HandleValue *>(UNMAPPED), &d),
+                 ours_channel_create(ours::ChannelCreateOptions::None,
+                                     reinterpret_cast<ours::HandleValue *>(UNMAPPED), &d),
                  Status::InvArgs);
-    ok &= expect("shell: channel_create(after that) = ", ou::channel_create(&c, &d), Status::Ok);
+    ok &= expect("shell: channel_create(after that) = ",
+                 ours_channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok);
 
     // The same three destinations, pointed at the vDSO: mapped, but not for
     // writing. The message is lost the same way, and nothing reaches the
     // vDSO -- the next call through it still works, which is the proof.
-    ok &= expect("shell: channel_write(1 byte) = ", ou::channel_write(a, &BYTE, 1), Status::Ok);
-    ok &= expect("shell: channel_read(into the vDSO) = ",
-                 ou::channel_read(b, reinterpret_cast<void *>(vdso), 1, &actual_bytes, nullptr, 0,
-                                  &actual_handles),
-                 Status::InvArgs);
+    ok &= expect("shell: channel_write(1 byte) = ",
+                 ours_channel_write(a, ours::ChannelWriteOptions::None, &BYTE, 1, nullptr, 0),
+                 Status::Ok);
+    ok &=
+        expect("shell: channel_read(into the vDSO) = ",
+               ours_channel_read(b, ours::ChannelReadOptions::None, reinterpret_cast<void *>(vdso),
+                                 nullptr, 1, 0, &actual_bytes, &actual_handles),
+               Status::InvArgs);
     ok &= expect("shell: wait_one(observed = vDSO, poll) = ",
-                 ou::object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(vdso)),
+                 ours_object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(vdso)),
                  Status::InvArgs);
     ours::HandleValue e = ours::HANDLE_INVALID;
     ok &= expect("shell: channel_create(out0 = vDSO) = ",
-                 ou::channel_create(reinterpret_cast<ours::HandleValue *>(vdso), &e),
+                 ours_channel_create(ours::ChannelCreateOptions::None,
+                                     reinterpret_cast<ours::HandleValue *>(vdso), &e),
                  Status::InvArgs);
 
-    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
-    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
-    ok &= expect("shell: close(c) = ", ou::handle_close(c), Status::Ok);
-    ok &= expect("shell: close(d) = ", ou::handle_close(d), Status::Ok);
+    ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
+    ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
+    ok &= expect("shell: close(c) = ", ours_handle_close(c), Status::Ok);
+    ok &= expect("shell: close(d) = ", ours_handle_close(d), Status::Ok);
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: bad-pointer checks passed"));
@@ -1058,27 +1088,28 @@ auto check_vmo_read() -> void {
     auto ok = true;
     char buffer[16] = {};
     ok &= expect("shell: vmo_read(HANDLE_INVALID) = ",
-                 ou::vmo_read(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
+                 ours_vmo_read(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
 
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (!expect("shell: channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
     }
-    ok &= expect("shell: vmo_read(a channel) = ", ou::vmo_read(a, buffer, 0, sizeof(buffer)),
+    ok &= expect("shell: vmo_read(a channel) = ", ours_vmo_read(a, buffer, 0, sizeof(buffer)),
                  Status::BadType);
-    ok &= expect("shell: vmo_read(a channel, 0 bytes) = ", ou::vmo_read(a, buffer, 0, 0),
+    ok &= expect("shell: vmo_read(a channel, 0 bytes) = ", ours_vmo_read(a, buffer, 0, 0),
                  Status::BadType);
     ok &= expect("shell: vmo_read(a channel, into the kernel half) = ",
-                 ou::vmo_read(a, reinterpret_cast<void *>(KERNEL), 0, sizeof(buffer)),
+                 ours_vmo_read(a, reinterpret_cast<void *>(KERNEL), 0, sizeof(buffer)),
                  Status::BadType);
     ok &= expect("shell: vmo_read(a channel, far offset) = ",
-                 ou::vmo_read(a, buffer, FAR, sizeof(buffer)), Status::BadType);
+                 ours_vmo_read(a, buffer, FAR, sizeof(buffer)), Status::BadType);
 
-    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
-    ok &= expect("shell: vmo_read(closed) = ", ou::vmo_read(b, buffer, 0, sizeof(buffer)),
+    ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
+    ok &= expect("shell: vmo_read(closed) = ", ours_vmo_read(b, buffer, 0, sizeof(buffer)),
                  Status::BadHandle);
-    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+    ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: vmo_read checks passed"));
@@ -1106,40 +1137,42 @@ auto check_vmo_write(ours::HandleValue const bootfs) -> void {
 
     auto ok = true;
     char const buffer[16] = {'o', 'v', 'e', 'r', 'w', 'r', 'i', 't', 't', 'e', 'n'};
-    ok &= expect("shell: vmo_write(HANDLE_INVALID) = ",
-                 ou::vmo_write(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
+    ok &=
+        expect("shell: vmo_write(HANDLE_INVALID) = ",
+               ours_vmo_write(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
 
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (!expect("shell: channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
     }
-    ok &= expect("shell: vmo_write(a channel) = ", ou::vmo_write(a, buffer, 0, sizeof(buffer)),
+    ok &= expect("shell: vmo_write(a channel) = ", ours_vmo_write(a, buffer, 0, sizeof(buffer)),
                  Status::BadType);
     ok &= expect("shell: vmo_write(a channel, from the kernel half) = ",
-                 ou::vmo_write(a, reinterpret_cast<void const *>(KERNEL), 0, sizeof(buffer)),
+                 ours_vmo_write(a, reinterpret_cast<void const *>(KERNEL), 0, sizeof(buffer)),
                  Status::BadType);
-    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
-    ok &= expect("shell: vmo_write(closed) = ", ou::vmo_write(b, buffer, 0, sizeof(buffer)),
+    ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
+    ok &= expect("shell: vmo_write(closed) = ", ours_vmo_write(b, buffer, 0, sizeof(buffer)),
                  Status::BadHandle);
-    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+    ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
 
     if (bootfs != ours::HANDLE_INVALID) {
         char before[sizeof(buffer)] = {};
         char after[sizeof(buffer)] = {};
         ok &= expect("shell: vmo_read(bootfs, before writing) = ",
-                     ou::vmo_read(bootfs, before, 0, sizeof(before)), Status::Ok);
+                     ours_vmo_read(bootfs, before, 0, sizeof(before)), Status::Ok);
         ok &=
-            expect("shell: vmo_write(bootfs) = ", ou::vmo_write(bootfs, buffer, 0, sizeof(buffer)),
+            expect("shell: vmo_write(bootfs) = ", ours_vmo_write(bootfs, buffer, 0, sizeof(buffer)),
                    Status::AccessDenied);
-        ok &= expect("shell: vmo_write(bootfs, 0 bytes) = ", ou::vmo_write(bootfs, buffer, 0, 0),
+        ok &= expect("shell: vmo_write(bootfs, 0 bytes) = ", ours_vmo_write(bootfs, buffer, 0, 0),
                      Status::AccessDenied);
         ok &= expect(
             "shell: vmo_write(bootfs, from the kernel half, far offset) = ",
-            ou::vmo_write(bootfs, reinterpret_cast<void const *>(KERNEL), FAR, sizeof(buffer)),
+            ours_vmo_write(bootfs, reinterpret_cast<void const *>(KERNEL), FAR, sizeof(buffer)),
             Status::AccessDenied);
         ok &= expect("shell: vmo_read(bootfs, after writing) = ",
-                     ou::vmo_read(bootfs, after, 0, sizeof(after)), Status::Ok);
+                     ours_vmo_read(bootfs, after, 0, sizeof(after)), Status::Ok);
         auto unchanged = true;
         for (usize i = 0; i < sizeof(before); ++i) {
             if (before[i] != after[i]) {
@@ -1183,44 +1216,43 @@ auto check_vmo_create() -> void {
 
     auto ok = true;
     ours::HandleValue vmo = ours::HANDLE_INVALID;
-    ok &=
-        expect("shell: vmo_create(Resizable) = ", ou::vmo_create(PAGE, VmoOptions::Resizable, &vmo),
-               Status::NotSupported);
+    ok &= expect("shell: vmo_create(Resizable) = ",
+                 ours_vmo_create(PAGE, VmoOptions::Resizable, &vmo), Status::NotSupported);
     ok &= expect("shell: vmo_create(an unknown option) = ",
-                 ou::vmo_create(PAGE, static_cast<VmoOptions>(1U << 5), &vmo), Status::InvArgs);
+                 ours_vmo_create(PAGE, static_cast<VmoOptions>(1U << 5), &vmo), Status::InvArgs);
     ok &= expect("shell: vmo_create(Resizable and an unknown option) = ",
-                 ou::vmo_create(PAGE, static_cast<VmoOptions>((1U << 1) | (1U << 5)), &vmo),
+                 ours_vmo_create(PAGE, static_cast<VmoOptions>((1U << 1) | (1U << 5)), &vmo),
                  Status::InvArgs);
     ok &= expect("shell: vmo_create(the largest u64) = ",
-                 ou::vmo_create(~u64{0}, VmoOptions::None, &vmo), Status::OutOfRange);
+                 ours_vmo_create(~u64{0}, VmoOptions::None, &vmo), Status::OutOfRange);
     ok &= expect(
         "shell: vmo_create(out = kernel half) = ",
-        ou::vmo_create(PAGE, VmoOptions::None, reinterpret_cast<ours::HandleValue *>(KERNEL)),
+        ours_vmo_create(PAGE, VmoOptions::None, reinterpret_cast<ours::HandleValue *>(KERNEL)),
         Status::InvArgs);
 
     // Empty: valid, and every non-empty range is past its end.
     ours::HandleValue empty = ours::HANDLE_INVALID;
-    if (expect("shell: vmo_create(0 bytes) = ", ou::vmo_create(0, VmoOptions::None, &empty),
+    if (expect("shell: vmo_create(0 bytes) = ", ours_vmo_create(0, VmoOptions::None, &empty),
                Status::Ok)) {
         u8 byte = 0;
-        ok &= expect("shell: vmo_read(empty, 0 bytes) = ", ou::vmo_read(empty, &byte, 0, 0),
+        ok &= expect("shell: vmo_read(empty, 0 bytes) = ", ours_vmo_read(empty, &byte, 0, 0),
                      Status::Ok);
-        ok &= expect("shell: vmo_write(empty, 1 byte) = ", ou::vmo_write(empty, &byte, 0, 1),
+        ok &= expect("shell: vmo_write(empty, 1 byte) = ", ours_vmo_write(empty, &byte, 0, 1),
                      Status::OutOfRange);
-        ok &= expect("shell: close(empty) = ", ou::handle_close(empty), Status::Ok);
+        ok &= expect("shell: close(empty) = ", ours_handle_close(empty), Status::Ok);
     } else {
         ok = false;
     }
 
     // 3 pages and a byte: rounded up to 4.
     if (!expect("shell: vmo_create(3 pages + 1 byte) = ",
-                ou::vmo_create(3 * PAGE + 1, VmoOptions::None, &vmo), Status::Ok)) {
+                ours_vmo_create(3 * PAGE + 1, VmoOptions::None, &vmo), Status::Ok)) {
         static_cast<void>(ou::debug_line("shell: vmo_create checks FAILED"));
         return;
     }
     u8 tail[8] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     ok &= expect("shell: vmo_read(the last bytes of page 4) = ",
-                 ou::vmo_read(vmo, tail, 4 * PAGE - sizeof(tail), sizeof(tail)), Status::Ok);
+                 ours_vmo_read(vmo, tail, 4 * PAGE - sizeof(tail), sizeof(tail)), Status::Ok);
     auto zero = true;
     for (auto const b: tail) {
         if (b != 0) {
@@ -1231,15 +1263,15 @@ auto check_vmo_create() -> void {
     if (zero) {
         static_cast<void>(ou::debug_line("shell: an unwritten page reads as zero"));
     }
-    ok &= expect("shell: vmo_read(one byte past page 4) = ", ou::vmo_read(vmo, tail, 4 * PAGE, 1),
+    ok &= expect("shell: vmo_read(one byte past page 4) = ", ours_vmo_read(vmo, tail, 4 * PAGE, 1),
                  Status::OutOfRange);
 
     // A write across the first page boundary, read back.
     u8 const written[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
     u8 back[16] = {};
     ok &= expect("shell: vmo_write(across a page boundary) = ",
-                 ou::vmo_write(vmo, written, PAGE - 8, sizeof(written)), Status::Ok);
-    ok &= expect("shell: vmo_read(it back) = ", ou::vmo_read(vmo, back, PAGE - 8, sizeof(back)),
+                 ours_vmo_write(vmo, written, PAGE - 8, sizeof(written)), Status::Ok);
+    ok &= expect("shell: vmo_read(it back) = ", ours_vmo_read(vmo, back, PAGE - 8, sizeof(back)),
                  Status::Ok);
     auto same = true;
     for (usize i = 0; i < sizeof(written); ++i) {
@@ -1252,25 +1284,26 @@ auto check_vmo_create() -> void {
         static_cast<void>(ou::debug_line("shell: vmo_write reads back the same"));
     }
     ok &= expect("shell: vmo_write(offset = size, 1 byte) = ",
-                 ou::vmo_write(vmo, written, 4 * PAGE, 1), Status::OutOfRange);
+                 ours_vmo_write(vmo, written, 4 * PAGE, 1), Status::OutOfRange);
     ok &=
-        expect("shell: vmo_write(size + 1 bytes) = ", ou::vmo_write(vmo, written, 0, 4 * PAGE + 1),
+        expect("shell: vmo_write(size + 1 bytes) = ", ours_vmo_write(vmo, written, 0, 4 * PAGE + 1),
                Status::OutOfRange);
-    ok &= expect("shell: vmo_write(from the kernel half) = ",
-                 ou::vmo_write(vmo, reinterpret_cast<void const *>(KERNEL), 0, 8), Status::InvArgs);
+    ok &=
+        expect("shell: vmo_write(from the kernel half) = ",
+               ours_vmo_write(vmo, reinterpret_cast<void const *>(KERNEL), 0, 8), Status::InvArgs);
 
     // A copy that may read but not write.
     ours::HandleValue readonly = ours::HANDLE_INVALID;
     if (expect("shell: handle_duplicate(vmo, without Write) = ",
-               ou::handle_duplicate(vmo, Rights::Basic | Rights::Read | Rights::Map, &readonly),
+               ours_handle_duplicate(vmo, Rights::Basic | Rights::Read | Rights::Map, &readonly),
                Status::Ok)) {
         ok &= expect("shell: vmo_write(without Write) = ",
-                     ou::vmo_write(readonly, written, 0, sizeof(written)), Status::AccessDenied);
-        ok &= expect("shell: close(readonly) = ", ou::handle_close(readonly), Status::Ok);
+                     ours_vmo_write(readonly, written, 0, sizeof(written)), Status::AccessDenied);
+        ok &= expect("shell: close(readonly) = ", ours_handle_close(readonly), Status::Ok);
     } else {
         ok = false;
     }
-    ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
+    ok &= expect("shell: close(vmo) = ", ours_handle_close(vmo), Status::Ok);
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: vmo_create checks passed"));
@@ -1302,7 +1335,7 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
 
     auto ok = true;
     bootfs::Header header{};
-    ok &= expect("shell: vmo_read(header) = ", ou::vmo_read(bootfs, &header, 0, sizeof(header)),
+    ok &= expect("shell: vmo_read(header) = ", ours_vmo_read(bootfs, &header, 0, sizeof(header)),
                  Status::Ok);
 
     // The entry table and the names, into fixed buffers: this image's BootFS
@@ -1318,10 +1351,11 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
     }
     auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
     ok &= expect("shell: vmo_read(entries) = ",
-                 ou::vmo_read(bootfs, entries, sizeof(header), entries_size), Status::Ok);
-    ok &= expect("shell: vmo_read(names) = ",
-                 ou::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size),
-                 Status::Ok);
+                 ours_vmo_read(bootfs, entries, sizeof(header), entries_size), Status::Ok);
+    ok &=
+        expect("shell: vmo_read(names) = ",
+               ours_vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size),
+               Status::Ok);
 
     for (u32 i = 0; ok && i < header.file_count; ++i) {
         auto const &entry = entries[i];
@@ -1386,11 +1420,11 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
             b = 0x3c;
         }
         ok &= expect("shell: vmo_read(across a page boundary) = ",
-                     ou::vmo_read(bootfs, across, boundary - 8, sizeof(across)), Status::Ok);
+                     ours_vmo_read(bootfs, across, boundary - 8, sizeof(across)), Status::Ok);
         ok &= expect("shell: vmo_read(the page before) = ",
-                     ou::vmo_read(bootfs, before, boundary - 8, sizeof(before)), Status::Ok);
+                     ours_vmo_read(bootfs, before, boundary - 8, sizeof(before)), Status::Ok);
         ok &= expect("shell: vmo_read(the page after) = ",
-                     ou::vmo_read(bootfs, after, boundary, sizeof(after)), Status::Ok);
+                     ours_vmo_read(bootfs, after, boundary, sizeof(after)), Status::Ok);
         ok &= same_bytes(across, before, sizeof(before)) &&
               same_bytes(across + sizeof(before), after, sizeof(after));
     }
@@ -1399,22 +1433,23 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
     // there is not, and neither is one byte more than the whole VMO.
     auto const size = header.total_size;
     u8 byte = 0;
-    ok &= expect("shell: vmo_read(offset = size, 0 bytes) = ", ou::vmo_read(bootfs, &byte, size, 0),
-                 Status::Ok);
-    ok &= expect("shell: vmo_read(offset = size, 1 byte) = ", ou::vmo_read(bootfs, &byte, size, 1),
+    ok &=
+        expect("shell: vmo_read(offset = size, 0 bytes) = ", ours_vmo_read(bootfs, &byte, size, 0),
+               Status::Ok);
+    ok &= expect("shell: vmo_read(offset = size, 1 byte) = ", ours_vmo_read(bootfs, &byte, size, 1),
                  Status::OutOfRange);
     ok &= expect("shell: vmo_read(size + 1 bytes) = ",
-                 ou::vmo_read(bootfs, &byte, 0, static_cast<usize>(size) + 1), Status::OutOfRange);
+                 ours_vmo_read(bootfs, &byte, 0, static_cast<usize>(size) + 1), Status::OutOfRange);
 
     // Destinations the kernel may not write: the kernel half (refused before
     // any page is read), nothing mapped, and the read-only vDSO (both found
     // while copying).
     ok &= expect("shell: vmo_read(into the kernel half) = ",
-                 ou::vmo_read(bootfs, reinterpret_cast<void *>(KERNEL), 0, 8), Status::InvArgs);
+                 ours_vmo_read(bootfs, reinterpret_cast<void *>(KERNEL), 0, 8), Status::InvArgs);
     ok &= expect("shell: vmo_read(into unmapped) = ",
-                 ou::vmo_read(bootfs, reinterpret_cast<void *>(UNMAPPED), 0, 8), Status::InvArgs);
+                 ours_vmo_read(bootfs, reinterpret_cast<void *>(UNMAPPED), 0, 8), Status::InvArgs);
     ok &= expect("shell: vmo_read(into the vDSO) = ",
-                 ou::vmo_read(bootfs, reinterpret_cast<void *>(vdso), 0, 8), Status::InvArgs);
+                 ours_vmo_read(bootfs, reinterpret_cast<void *>(vdso), 0, 8), Status::InvArgs);
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: bootfs checks passed"));
@@ -1440,52 +1475,53 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
     auto ok = true;
     ours::HandleValue copy = ours::HANDLE_INVALID;
     ok &= expect("shell: handle_duplicate(HANDLE_INVALID) = ",
-                 ou::handle_duplicate(ours::HANDLE_INVALID, Rights::SameRights, &copy),
+                 ours_handle_duplicate(ours::HANDLE_INVALID, Rights::SameRights, &copy),
                  Status::BadHandle);
 
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (!expect("shell: channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
     }
     ok &= expect("shell: handle_duplicate(a channel) = ",
-                 ou::handle_duplicate(a, Rights::SameRights, &copy), Status::AccessDenied);
-    ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
-    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+                 ours_handle_duplicate(a, Rights::SameRights, &copy), Status::AccessDenied);
+    ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
+    ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
 
     if (bootfs == ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: handle_duplicate on a VMO skipped (no BootFS)"));
     } else {
         // Same rights: both read the same header.
         ok &= expect("shell: handle_duplicate(bootfs, SameRights) = ",
-                     ou::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
+                     ours_handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
         bootfs::Header original{};
         bootfs::Header copied{};
         ok &= expect("shell: vmo_read(original) = ",
-                     ou::vmo_read(bootfs, &original, 0, sizeof(original)), Status::Ok);
-        ok &= expect("shell: vmo_read(copy) = ", ou::vmo_read(copy, &copied, 0, sizeof(copied)),
+                     ours_vmo_read(bootfs, &original, 0, sizeof(original)), Status::Ok);
+        ok &= expect("shell: vmo_read(copy) = ", ours_vmo_read(copy, &copied, 0, sizeof(copied)),
                      Status::Ok);
         ok &= copy != bootfs && same_bytes(&original, &copied, sizeof(original)) &&
               original.magic == bootfs::Header::MAGIC;
-        ok &= expect("shell: close(copy) = ", ou::handle_close(copy), Status::Ok);
+        ok &= expect("shell: close(copy) = ", ours_handle_close(copy), Status::Ok);
 
         // Never wider: the BootFS is handed out without Write, and bit 31
         // beside another right is not "the same rights".
         ok &= expect("shell: handle_duplicate(bootfs, Write) = ",
-                     ou::handle_duplicate(bootfs, Rights::Write, &copy), Status::InvArgs);
+                     ours_handle_duplicate(bootfs, Rights::Write, &copy), Status::InvArgs);
         ok &= expect("shell: handle_duplicate(bootfs, SameRights | Read) = ",
-                     ou::handle_duplicate(bootfs, Rights::SameRights | Rights::Read, &copy),
+                     ours_handle_duplicate(bootfs, Rights::SameRights | Rights::Read, &copy),
                      Status::InvArgs);
 
         // Narrower: without Read, the copy cannot be read through.
         ours::HandleValue unreadable = ours::HANDLE_INVALID;
         ok &= expect("shell: handle_duplicate(bootfs, without Read) = ",
-                     ou::handle_duplicate(bootfs, Rights::Basic | Rights::Map, &unreadable),
+                     ours_handle_duplicate(bootfs, Rights::Basic | Rights::Map, &unreadable),
                      Status::Ok);
         u8 byte = 0;
         ok &= expect("shell: vmo_read(the copy without Read) = ",
-                     ou::vmo_read(unreadable, &byte, 0, 1), Status::AccessDenied);
-        ok &= expect("shell: close(the copy without Read) = ", ou::handle_close(unreadable),
+                     ours_vmo_read(unreadable, &byte, 0, 1), Status::AccessDenied);
+        ok &= expect("shell: close(the copy without Read) = ", ours_handle_close(unreadable),
                      Status::Ok);
 
         // The out pointer is written before the handle is published: one the
@@ -1498,15 +1534,15 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
         // and the last call would answer NoResource.
         auto leaked = false;
         for (u32 i = 0; i < ours::HANDLE_MAX_PER_PROCESS + 1 && !leaked; ++i) {
-            leaked = ou::handle_duplicate(bootfs, Rights::SameRights,
-                                          reinterpret_cast<ours::HandleValue *>(KERNEL)) !=
+            leaked = ours_handle_duplicate(bootfs, Rights::SameRights,
+                                           reinterpret_cast<ours::HandleValue *>(KERNEL)) !=
                      Status::InvArgs;
         }
         ok &= expect("shell: handle_duplicate(out = kernel half), past the quota = ",
                      leaked ? Status::InternalError : Status::InvArgs, Status::InvArgs);
         ok &= expect("shell: handle_duplicate(bootfs) after that = ",
-                     ou::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
-        ok &= expect("shell: close(copy) = ", ou::handle_close(copy), Status::Ok);
+                     ours_handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
+        ok &= expect("shell: close(copy) = ", ours_handle_close(copy), Status::Ok);
     }
 
     if (ok) {
@@ -1543,7 +1579,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     auto ok = true;
     ours::HandleValue parent = ours::HANDLE_INVALID;
     if (!expect("shell: vmo_create(3 pages) = ",
-                ou::vmo_create(3 * PAGE, VmoOptions::None, &parent), Status::Ok)) {
+                ours_vmo_create(3 * PAGE, VmoOptions::None, &parent), Status::Ok)) {
         static_cast<void>(ou::debug_line("shell: vmo_create_child checks FAILED"));
         return;
     }
@@ -1552,66 +1588,67 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     u8 const down[4] = {0xd0, 0xd1, 0xd2, 0xd3};
     u8 got[4] = {};
     ok &= expect("shell: vmo_write(parent, page 2) = ",
-                 ou::vmo_write(parent, down, PAGE, sizeof(down)), Status::Ok);
+                 ours_vmo_write(parent, down, PAGE, sizeof(down)), Status::Ok);
     ours::HandleValue slice = ours::HANDLE_INVALID;
     ok &= expect("shell: vmo_create_child(Slice, page 2) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::Slice, PAGE, PAGE, &slice),
+                 ours_vmo_create_child(parent, VmoChildOptions::Slice, PAGE, PAGE, &slice),
                  Status::Ok);
-    ok &= expect("shell: vmo_read(slice, 0) = ", ou::vmo_read(slice, got, 0, sizeof(got)),
+    ok &= expect("shell: vmo_read(slice, 0) = ", ours_vmo_read(slice, got, 0, sizeof(got)),
                  Status::Ok);
     ok &= same_bytes(down, got, sizeof(got));
 
     // Slice to parent: the slice commits the page the parent reads.
     u8 const up[4] = {0xa0, 0xa1, 0xa2, 0xa3};
-    ok &= expect("shell: vmo_write(slice, 8) = ", ou::vmo_write(slice, up, 8, sizeof(up)),
+    ok &= expect("shell: vmo_write(slice, 8) = ", ours_vmo_write(slice, up, 8, sizeof(up)),
                  Status::Ok);
     ok &= expect("shell: vmo_read(parent, page 2 + 8) = ",
-                 ou::vmo_read(parent, got, PAGE + 8, sizeof(got)), Status::Ok);
+                 ours_vmo_read(parent, got, PAGE + 8, sizeof(got)), Status::Ok);
     ok &= same_bytes(up, got, sizeof(got));
 
     // The window's end, which the parent's pages do not stop at.
     ok &= expect("shell: vmo_read(slice, one byte past its end) = ",
-                 ou::vmo_read(slice, got, PAGE, 1), Status::OutOfRange);
+                 ours_vmo_read(slice, got, PAGE, 1), Status::OutOfRange);
 
     // A slice of a slice: the parent's pages 2..3, then page 1 of that.
     ours::HandleValue wide = ours::HANDLE_INVALID;
     ours::HandleValue nested = ours::HANDLE_INVALID;
     ok &= expect("shell: vmo_create_child(Slice, pages 2-3) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::Slice, PAGE, 2 * PAGE, &wide),
+                 ours_vmo_create_child(parent, VmoChildOptions::Slice, PAGE, 2 * PAGE, &wide),
                  Status::Ok);
     ok &= expect("shell: vmo_create_child(Slice of it, its page 1) = ",
-                 ou::vmo_create_child(wide, VmoChildOptions::Slice, 0, 1, &nested), Status::Ok);
-    ok &= expect("shell: vmo_read(nested, 8) = ", ou::vmo_read(nested, got, 8, sizeof(got)),
+                 ours_vmo_create_child(wide, VmoChildOptions::Slice, 0, 1, &nested), Status::Ok);
+    ok &= expect("shell: vmo_read(nested, 8) = ", ours_vmo_read(nested, got, 8, sizeof(got)),
                  Status::Ok);
     ok &= same_bytes(up, got, sizeof(got));
     // A size of 1 was a page: its last byte is there, the next is not.
     ok &= expect("shell: vmo_read(nested, last byte of the page) = ",
-                 ou::vmo_read(nested, got, PAGE - 1, 1), Status::Ok);
-    ok &= expect("shell: vmo_read(nested, one past) = ", ou::vmo_read(nested, got, PAGE, 1),
+                 ours_vmo_read(nested, got, PAGE - 1, 1), Status::Ok);
+    ok &= expect("shell: vmo_read(nested, one past) = ", ours_vmo_read(nested, got, PAGE, 1),
                  Status::OutOfRange);
-    ok &= expect("shell: close(nested) = ", ou::handle_close(nested), Status::Ok);
-    ok &= expect("shell: close(wide) = ", ou::handle_close(wide), Status::Ok);
+    ok &= expect("shell: close(nested) = ", ours_handle_close(nested), Status::Ok);
+    ok &= expect("shell: close(wide) = ", ours_handle_close(wide), Status::Ok);
 
     // The arguments.
     ours::HandleValue refused = ours::HANDLE_INVALID;
     ok &= expect("shell: vmo_create_child(unaligned offset) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::Slice, 8, PAGE, &refused),
+                 ours_vmo_create_child(parent, VmoChildOptions::Slice, 8, PAGE, &refused),
                  Status::InvArgs);
-    ok &= expect("shell: vmo_create_child(past the end) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::Slice, 2 * PAGE, 2 * PAGE, &refused),
-                 Status::InvArgs);
+    ok &=
+        expect("shell: vmo_create_child(past the end) = ",
+               ours_vmo_create_child(parent, VmoChildOptions::Slice, 2 * PAGE, 2 * PAGE, &refused),
+               Status::InvArgs);
     ok &= expect("shell: vmo_create_child(Reference) = ",
-                 ou::vmo_create_child(parent, VmoChildOptions::Reference, 0, 0, &refused),
+                 ours_vmo_create_child(parent, VmoChildOptions::Reference, 0, 0, &refused),
                  Status::NotSupported);
     ok &= expect("shell: vmo_create_child(SnapshotFull | SnapshotOnWrite) = ",
-                 ou::vmo_create_child(parent,
-                                      static_cast<VmoChildOptions>(
-                                          std::to_underlying(VmoChildOptions::SnapshotFull) |
-                                          std::to_underlying(VmoChildOptions::SnapshotOnWrite)),
-                                      0, PAGE, &refused),
+                 ours_vmo_create_child(parent,
+                                       static_cast<VmoChildOptions>(
+                                           std::to_underlying(VmoChildOptions::SnapshotFull) |
+                                           std::to_underlying(VmoChildOptions::SnapshotOnWrite)),
+                                       0, PAGE, &refused),
                  Status::NotSupported);
     ok &= expect("shell: vmo_create_child(Slice | NoWrite) = ",
-                 ou::vmo_create_child(
+                 ours_vmo_create_child(
                      parent,
                      static_cast<VmoChildOptions>(std::to_underlying(VmoChildOptions::Slice) |
                                                   std::to_underlying(VmoChildOptions::NoWrite)),
@@ -1619,30 +1656,31 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                  Status::NotSupported);
     ok &= expect(
         "shell: vmo_create_child(an unknown bit) = ",
-        ou::vmo_create_child(parent, static_cast<VmoChildOptions>(1U << 9), 0, PAGE, &refused),
+        ours_vmo_create_child(parent, static_cast<VmoChildOptions>(1U << 9), 0, PAGE, &refused),
         Status::InvArgs);
 
     // The handle.
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (expect("shell: channel_create = ",
+               ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         ok &= expect("shell: vmo_create_child(a channel) = ",
-                     ou::vmo_create_child(a, VmoChildOptions::Slice, 0, PAGE, &refused),
+                     ours_vmo_create_child(a, VmoChildOptions::Slice, 0, PAGE, &refused),
                      Status::BadType);
-        ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
-        ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+        ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
+        ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
     } else {
         ok = false;
     }
     ours::HandleValue unreadable = ours::HANDLE_INVALID;
     ok &=
         expect("shell: handle_duplicate(parent, without Read) = ",
-               ou::handle_duplicate(parent, Rights::Basic | Rights::Map, &unreadable), Status::Ok);
+               ours_handle_duplicate(parent, Rights::Basic | Rights::Map, &unreadable), Status::Ok);
     ok &= expect("shell: vmo_create_child(without Read) = ",
-                 ou::vmo_create_child(unreadable, VmoChildOptions::Slice, 0, PAGE, &refused),
+                 ours_vmo_create_child(unreadable, VmoChildOptions::Slice, 0, PAGE, &refused),
                  Status::AccessDenied);
     ok &=
-        expect("shell: close(the copy without Read) = ", ou::handle_close(unreadable), Status::Ok);
+        expect("shell: close(the copy without Read) = ", ours_handle_close(unreadable), Status::Ok);
 
     // Snapshots: a copy-on-write clone. Neither side sees the other's writes after
     // it, and pages past the parent's end read as zero.
@@ -1654,45 +1692,48 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     u8 const mine[4] = {0x7a, 0x7b, 0x7c, 0x7d};
     u8 const zero[4] = {};
     ok &= expect("shell: vmo_create(snapshot source, 2 pages) = ",
-                 ou::vmo_create(2 * PAGE, VmoOptions::None, &source), Status::Ok);
-    ok &= expect("shell: vmo_write(source, 0) = ", ou::vmo_write(source, before, 0, sizeof(before)),
-                 Status::Ok);
+                 ours_vmo_create(2 * PAGE, VmoOptions::None, &source), Status::Ok);
+    ok &=
+        expect("shell: vmo_write(source, 0) = ", ours_vmo_write(source, before, 0, sizeof(before)),
+               Status::Ok);
     ok &= expect("shell: vmo_create_child(SnapshotFull, 3 pages) = ",
-                 ou::vmo_create_child(source, VmoChildOptions::SnapshotFull, 0, 3 * PAGE, &full),
+                 ours_vmo_create_child(source, VmoChildOptions::SnapshotFull, 0, 3 * PAGE, &full),
                  Status::Ok);
-    ok &= expect("shell: vmo_read(snapshot, 0) = ", ou::vmo_read(full, got, 0, sizeof(got)),
+    ok &= expect("shell: vmo_read(snapshot, 0) = ", ours_vmo_read(full, got, 0, sizeof(got)),
                  Status::Ok);
     ok &= same_bytes(before, got, sizeof(got));
     // The snapshot writes its page 0: the source still has its own.
-    ok &= expect("shell: vmo_write(snapshot, 0) = ", ou::vmo_write(full, mine, 0, sizeof(mine)),
+    ok &= expect("shell: vmo_write(snapshot, 0) = ", ours_vmo_write(full, mine, 0, sizeof(mine)),
                  Status::Ok);
-    ok &= expect("shell: vmo_read(source, 0) = ", ou::vmo_read(source, got, 0, sizeof(got)),
+    ok &= expect("shell: vmo_read(source, 0) = ", ours_vmo_read(source, got, 0, sizeof(got)),
                  Status::Ok);
     ok &= same_bytes(before, got, sizeof(got));
     // The source writes its pages 0 and 1: the snapshot sees neither.
     ok &= expect("shell: vmo_write(source, 0) again = ",
-                 ou::vmo_write(source, theirs, 0, sizeof(theirs)), Status::Ok);
+                 ours_vmo_write(source, theirs, 0, sizeof(theirs)), Status::Ok);
     ok &= expect("shell: vmo_write(source, page 1) = ",
-                 ou::vmo_write(source, theirs, PAGE, sizeof(theirs)), Status::Ok);
-    ok &= expect("shell: vmo_read(snapshot, 0) again = ", ou::vmo_read(full, got, 0, sizeof(got)),
+                 ours_vmo_write(source, theirs, PAGE, sizeof(theirs)), Status::Ok);
+    ok &= expect("shell: vmo_read(snapshot, 0) again = ", ours_vmo_read(full, got, 0, sizeof(got)),
                  Status::Ok);
     ok &= same_bytes(mine, got, sizeof(got));
-    ok &= expect("shell: vmo_read(snapshot, page 1) = ", ou::vmo_read(full, got, PAGE, sizeof(got)),
-                 Status::Ok);
+    ok &=
+        expect("shell: vmo_read(snapshot, page 1) = ", ours_vmo_read(full, got, PAGE, sizeof(got)),
+               Status::Ok);
     ok &= same_bytes(zero, got, sizeof(got));
     // Past the source's end.
     ok &= expect("shell: vmo_read(snapshot, page 2) = ",
-                 ou::vmo_read(full, got, 2 * PAGE, sizeof(got)), Status::Ok);
+                 ours_vmo_read(full, got, 2 * PAGE, sizeof(got)), Status::Ok);
     ok &= same_bytes(zero, got, sizeof(got));
     // SnapshotOnWrite: a snapshot of the source as it is now.
-    ok &= expect("shell: vmo_create_child(SnapshotOnWrite) = ",
-                 ou::vmo_create_child(source, VmoChildOptions::SnapshotOnWrite, 0, PAGE, &on_write),
-                 Status::Ok);
+    ok &=
+        expect("shell: vmo_create_child(SnapshotOnWrite) = ",
+               ours_vmo_create_child(source, VmoChildOptions::SnapshotOnWrite, 0, PAGE, &on_write),
+               Status::Ok);
     ok &= expect("shell: vmo_read(on-write snapshot, 0) = ",
-                 ou::vmo_read(on_write, got, 0, sizeof(got)), Status::Ok);
+                 ours_vmo_read(on_write, got, 0, sizeof(got)), Status::Ok);
     ok &= same_bytes(theirs, got, sizeof(got));
     ok &= expect("shell: vmo_create_child(SnapshotFull, unaligned offset) = ",
-                 ou::vmo_create_child(source, VmoChildOptions::SnapshotFull, 8, PAGE, &refused),
+                 ours_vmo_create_child(source, VmoChildOptions::SnapshotFull, 8, PAGE, &refused),
                  Status::InvArgs);
     // A snapshot of a handle without Write can be written, and what it writes
     // stays its own: unlike a slice, it has no way to the source's pages.
@@ -1700,42 +1741,42 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ours::HandleValue writable = ours::HANDLE_INVALID;
     ok &=
         expect("shell: handle_duplicate(source, without Write) = ",
-               ou::handle_duplicate(source, Rights::Basic | Rights::Read | Rights::Map, &readonly),
+               ours_handle_duplicate(source, Rights::Basic | Rights::Read | Rights::Map, &readonly),
                Status::Ok);
     ok &= expect("shell: vmo_write(source, through the read-only copy) = ",
-                 ou::vmo_write(readonly, mine, 0, sizeof(mine)), Status::AccessDenied);
+                 ours_vmo_write(readonly, mine, 0, sizeof(mine)), Status::AccessDenied);
     ok &= expect("shell: vmo_create_child(the read-only copy, SnapshotFull) = ",
-                 ou::vmo_create_child(readonly, VmoChildOptions::SnapshotFull, 0, PAGE, &writable),
+                 ours_vmo_create_child(readonly, VmoChildOptions::SnapshotFull, 0, PAGE, &writable),
                  Status::Ok);
     ok &= expect("shell: vmo_write(a snapshot of the read-only copy) = ",
-                 ou::vmo_write(writable, mine, 0, sizeof(mine)), Status::Ok);
+                 ours_vmo_write(writable, mine, 0, sizeof(mine)), Status::Ok);
     ok &=
-        expect("shell: vmo_read(source, 0) after it = ", ou::vmo_read(source, got, 0, sizeof(got)),
+        expect("shell: vmo_read(source, 0) after it = ", ours_vmo_read(source, got, 0, sizeof(got)),
                Status::Ok);
     ok &= same_bytes(theirs, got, sizeof(got));
-    ok &= expect("shell: close(the writable snapshot) = ", ou::handle_close(writable), Status::Ok);
+    ok &= expect("shell: close(the writable snapshot) = ", ours_handle_close(writable), Status::Ok);
     // SnapshotModified, of an anonymous VMO, is a full snapshot: it gets Write
     // as the others do, and does not see the source's later writes.
     ours::HandleValue modified = ours::HANDLE_INVALID;
     ok &= expect(
         "shell: vmo_create_child(the read-only copy, SnapshotModified) = ",
-        ou::vmo_create_child(readonly, VmoChildOptions::SnapshotModified, 0, PAGE, &modified),
+        ours_vmo_create_child(readonly, VmoChildOptions::SnapshotModified, 0, PAGE, &modified),
         Status::Ok);
     ok &= expect("shell: vmo_write(source, 0) after SnapshotModified = ",
-                 ou::vmo_write(source, before, 0, sizeof(before)), Status::Ok);
+                 ours_vmo_write(source, before, 0, sizeof(before)), Status::Ok);
     ok &= expect("shell: vmo_read(modified snapshot, 0) = ",
-                 ou::vmo_read(modified, got, 0, sizeof(got)), Status::Ok);
+                 ours_vmo_read(modified, got, 0, sizeof(got)), Status::Ok);
     ok &= same_bytes(theirs, got, sizeof(got));
     ok &= expect("shell: vmo_write(modified snapshot, 0) = ",
-                 ou::vmo_write(modified, mine, 0, sizeof(mine)), Status::Ok);
-    ok &= expect("shell: close(modified snapshot) = ", ou::handle_close(modified), Status::Ok);
-    ok &= expect("shell: close(the read-only copy) = ", ou::handle_close(readonly), Status::Ok);
-    ok &= expect("shell: close(on-write snapshot) = ", ou::handle_close(on_write), Status::Ok);
-    ok &= expect("shell: close(snapshot) = ", ou::handle_close(full), Status::Ok);
-    ok &= expect("shell: close(snapshot source) = ", ou::handle_close(source), Status::Ok);
+                 ours_vmo_write(modified, mine, 0, sizeof(mine)), Status::Ok);
+    ok &= expect("shell: close(modified snapshot) = ", ours_handle_close(modified), Status::Ok);
+    ok &= expect("shell: close(the read-only copy) = ", ours_handle_close(readonly), Status::Ok);
+    ok &= expect("shell: close(on-write snapshot) = ", ours_handle_close(on_write), Status::Ok);
+    ok &= expect("shell: close(snapshot) = ", ours_handle_close(full), Status::Ok);
+    ok &= expect("shell: close(snapshot source) = ", ours_handle_close(source), Status::Ok);
 
-    ok &= expect("shell: close(slice) = ", ou::handle_close(slice), Status::Ok);
-    ok &= expect("shell: close(parent) = ", ou::handle_close(parent), Status::Ok);
+    ok &= expect("shell: close(slice) = ", ours_handle_close(slice), Status::Ok);
+    ok &= expect("shell: close(parent) = ", ours_handle_close(parent), Status::Ok);
 
     if (bootfs == ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: vmo_create_child on the BootFS skipped"));
@@ -1747,15 +1788,16 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
         bootfs::Entry entries[MAX_ENTRIES];
         char names[MAX_NAMES];
         auto found = false;
-        ok &= expect("shell: vmo_read(header) = ", ou::vmo_read(bootfs, &header, 0, sizeof(header)),
-                     Status::Ok);
+        ok &=
+            expect("shell: vmo_read(header) = ", ours_vmo_read(bootfs, &header, 0, sizeof(header)),
+                   Status::Ok);
         if (header.file_count <= MAX_ENTRIES && header.name_table_size <= MAX_NAMES) {
             auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
             ok &= expect("shell: vmo_read(entries) = ",
-                         ou::vmo_read(bootfs, entries, sizeof(header), entries_size), Status::Ok);
+                         ours_vmo_read(bootfs, entries, sizeof(header), entries_size), Status::Ok);
             ok &= expect(
                 "shell: vmo_read(names) = ",
-                ou::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size),
+                ours_vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size),
                 Status::Ok);
             for (u32 i = 0; ok && !found && i < header.file_count; ++i) {
                 auto const &entry = entries[i];
@@ -1766,40 +1808,41 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                 found = true;
                 ours::HandleValue vdso = ours::HANDLE_INVALID;
                 ok &= expect("shell: vmo_create_child(bootfs, Slice, vdso) = ",
-                             ou::vmo_create_child(bootfs, VmoChildOptions::Slice, entry.data_offset,
-                                                  entry.data_size, &vdso),
+                             ours_vmo_create_child(bootfs, VmoChildOptions::Slice,
+                                                   entry.data_offset, entry.data_size, &vdso),
                              Status::Ok);
                 char magic[4] = {};
                 ok &= expect("shell: vmo_read(the vdso slice, 0) = ",
-                             ou::vmo_read(vdso, magic, 0, sizeof(magic)), Status::Ok);
+                             ours_vmo_read(vdso, magic, 0, sizeof(magic)), Status::Ok);
                 ok &= spells(magic, sizeof(magic),
                              "\x7f"
                              "ELF");
                 ok &=
-                    expect("shell: vmo_write(the vdso slice) = ", ou::vmo_write(vdso, magic, 0, 1),
+                    expect("shell: vmo_write(the vdso slice) = ", ours_vmo_write(vdso, magic, 0, 1),
                            Status::AccessDenied);
-                ok &= expect("shell: close(the vdso slice) = ", ou::handle_close(vdso), Status::Ok);
+                ok &=
+                    expect("shell: close(the vdso slice) = ", ours_handle_close(vdso), Status::Ok);
 
                 // A snapshot of the same entry can be written, though the BootFS
                 // cannot, and what it writes stays its own.
                 ours::HandleValue copy = ours::HANDLE_INVALID;
                 char const mark[1] = {'X'};
                 ok &= expect("shell: vmo_create_child(bootfs, SnapshotFull, vdso) = ",
-                             ou::vmo_create_child(bootfs, VmoChildOptions::SnapshotFull,
-                                                  entry.data_offset, entry.data_size, &copy),
+                             ours_vmo_create_child(bootfs, VmoChildOptions::SnapshotFull,
+                                                   entry.data_offset, entry.data_size, &copy),
                              Status::Ok);
                 ok &= expect("shell: vmo_write(the vdso snapshot) = ",
-                             ou::vmo_write(copy, mark, 0, sizeof(mark)), Status::Ok);
+                             ours_vmo_write(copy, mark, 0, sizeof(mark)), Status::Ok);
                 ok &= expect("shell: vmo_read(the vdso snapshot, 0) = ",
-                             ou::vmo_read(copy, magic, 0, sizeof(magic)), Status::Ok);
+                             ours_vmo_read(copy, magic, 0, sizeof(magic)), Status::Ok);
                 ok &= magic[0] == 'X';
                 ok &= expect("shell: vmo_read(bootfs, the vdso, 0) = ",
-                             ou::vmo_read(bootfs, magic, entry.data_offset, sizeof(magic)),
+                             ours_vmo_read(bootfs, magic, entry.data_offset, sizeof(magic)),
                              Status::Ok);
                 ok &= spells(magic, sizeof(magic),
                              "\x7f"
                              "ELF");
-                ok &= expect("shell: close(the vdso snapshot) = ", ou::handle_close(copy),
+                ok &= expect("shell: close(the vdso snapshot) = ", ours_handle_close(copy),
                              Status::Ok);
             }
         }
@@ -1842,19 +1885,20 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
     // A fresh VMO for each refusal: every one of them consumes it.
     auto const refused = [&](ou::Str const what, ours::HandleValue const with, Status const want) {
         ours::HandleValue vmo = ours::HANDLE_INVALID;
-        if (!expect("shell: vmo_create = ", ou::vmo_create(PAGE, VmoOptions::None, &vmo),
+        if (!expect("shell: vmo_create = ", ours_vmo_create(PAGE, VmoOptions::None, &vmo),
                     Status::Ok)) {
             return false;
         }
-        auto passed = expect(what, ou::vmo_replace_as_executable(vmo, with, &exec), want);
-        passed &= expect("shell: vmo_read(the consumed handle) = ", ou::vmo_read(vmo, &byte, 0, 1),
+        auto passed = expect(what, ours_vmo_replace_as_executable(vmo, with, &exec), want);
+        passed &= expect("shell: vmo_read(the consumed handle) = ", ours_vmo_read(vmo, &byte, 0, 1),
                          Status::BadHandle);
         return passed;
     };
 
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (!expect("shell: channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
     }
     ok &=
@@ -1864,14 +1908,14 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
 
     // A value that names nothing: b's, once b is closed.
     auto const stale = b;
-    ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+    ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
     ok &= refused("shell: vmo_replace_as_executable(vmex = a closed handle) = ", stale,
                   Status::BadHandle);
 
     // Not a VMO: refused, and consumed all the same.
     ok &= expect("shell: vmo_replace_as_executable(vmo = a channel) = ",
-                 ou::vmo_replace_as_executable(a, vmex, &exec), Status::BadHandle);
-    ok &= expect("shell: close(the consumed channel) = ", ou::handle_close(a), Status::BadHandle);
+                 ours_vmo_replace_as_executable(a, vmex, &exec), Status::BadHandle);
+    ok &= expect("shell: close(the consumed channel) = ", ours_handle_close(a), Status::BadHandle);
 
     if (vmex == ours::HANDLE_INVALID || bootfs == ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: vmo_replace_as_executable with vmex skipped"));
@@ -1880,22 +1924,21 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
                       Status::BadType);
 
         ours::HandleValue vmo = ours::HANDLE_INVALID;
-        if (expect("shell: vmo_create = ", ou::vmo_create(PAGE, VmoOptions::None, &vmo),
+        if (expect("shell: vmo_create = ", ours_vmo_create(PAGE, VmoOptions::None, &vmo),
                    Status::Ok)) {
             u8 const written = 0x5a;
             ok &= expect("shell: vmo_write(before the replace) = ",
-                         ou::vmo_write(vmo, &written, 0, 1), Status::Ok);
+                         ours_vmo_write(vmo, &written, 0, 1), Status::Ok);
             ok &= expect("shell: vmo_replace_as_executable(vmex) = ",
-                         ou::vmo_replace_as_executable(vmo, vmex, &exec), Status::Ok);
-            ok &= expect("shell: vmo_read(the original) = ", ou::vmo_read(vmo, &byte, 0, 1),
+                         ours_vmo_replace_as_executable(vmo, vmex, &exec), Status::Ok);
+            ok &= expect("shell: vmo_read(the original) = ", ours_vmo_read(vmo, &byte, 0, 1),
                          Status::BadHandle);
-            ok &=
-                expect("shell: vmo_read(the executable handle) = ", ou::vmo_read(exec, &byte, 0, 1),
-                       Status::Ok);
+            ok &= expect("shell: vmo_read(the executable handle) = ",
+                         ours_vmo_read(exec, &byte, 0, 1), Status::Ok);
             ok &= byte == written;
             ok &= expect("shell: vmo_write(the executable handle) = ",
-                         ou::vmo_write(exec, &written, 0, 1), Status::AccessDenied);
-            ok &= expect("shell: close(the executable handle) = ", ou::handle_close(exec),
+                         ours_vmo_write(exec, &written, 0, 1), Status::AccessDenied);
+            ok &= expect("shell: close(the executable handle) = ", ours_handle_close(exec),
                          Status::Ok);
         } else {
             ok = false;
@@ -1946,19 +1989,19 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 
     auto ok = true;
     ours::HandleValue vmo = ours::HANDLE_INVALID;
-    if (!expect("shell: vmo_create(2 pages) = ", ou::vmo_create(2 * PAGE, VmoOptions::None, &vmo),
+    if (!expect("shell: vmo_create(2 pages) = ", ours_vmo_create(2 * PAGE, VmoOptions::None, &vmo),
                 Status::Ok)) {
         static_cast<void>(ou::debug_line("shell: vma_map checks FAILED"));
         return;
     }
     u8 const second[4] = {0x21, 0x22, 0x23, 0x24};
-    ok &= expect("shell: vmo_write(page 2) = ", ou::vmo_write(vmo, second, PAGE, sizeof(second)),
+    ok &= expect("shell: vmo_write(page 2) = ", ours_vmo_write(vmo, second, PAGE, sizeof(second)),
                  Status::Ok);
 
     // Read-only, from vmo_offset = one page: the mapping starts at page 2.
     ours::VirtAddr at = 0;
     ok &= expect("shell: vma_map(R, vmo_offset = page 2) = ",
-                 ou::vma_map(vma, R, 0, vmo, PAGE, PAGE, &at), Status::Ok);
+                 ours_vma_map(vma, R, 0, vmo, PAGE, PAGE, &at), Status::Ok);
     if (at != 0) {
         auto const *const bytes = reinterpret_cast<u8 const volatile *>(at);
         u8 got[4] = {bytes[0], bytes[1], bytes[2], bytes[3]};
@@ -1967,11 +2010,11 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 
     // Read-write: a store through the mapping is what vmo_read finds.
     ours::VirtAddr rw = 0;
-    ok &= expect("shell: vma_map(RW) = ", ou::vma_map(vma, RW, 0, vmo, 0, PAGE, &rw), Status::Ok);
+    ok &= expect("shell: vma_map(RW) = ", ours_vma_map(vma, RW, 0, vmo, 0, PAGE, &rw), Status::Ok);
     if (rw != 0) {
         *reinterpret_cast<u8 volatile *>(rw + 16) = 0x77;
         u8 back = 0;
-        ok &= expect("shell: vmo_read(what the mapping wrote) = ", ou::vmo_read(vmo, &back, 16, 1),
+        ok &= expect("shell: vmo_read(what the mapping wrote) = ", ours_vmo_read(vmo, &back, 16, 1),
                      Status::Ok);
         ok &= back == 0x77;
     }
@@ -1979,54 +2022,56 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     // A slice maps like any VMO, and no further than its own end.
     ours::HandleValue slice = ours::HANDLE_INVALID;
     ok &= expect("shell: vmo_create_child(Slice, page 2) = ",
-                 ou::vmo_create_child(vmo, ours::VmoChildOptions::Slice, PAGE, PAGE, &slice),
+                 ours_vmo_create_child(vmo, ours::VmoChildOptions::Slice, PAGE, PAGE, &slice),
                  Status::Ok);
     ours::VirtAddr sliced = 0;
-    ok &= expect("shell: vma_map(R, the slice) = ", ou::vma_map(vma, R, 0, slice, 0, PAGE, &sliced),
-                 Status::Ok);
+    ok &=
+        expect("shell: vma_map(R, the slice) = ", ours_vma_map(vma, R, 0, slice, 0, PAGE, &sliced),
+               Status::Ok);
     if (sliced != 0) {
         ok &= *reinterpret_cast<u8 const volatile *>(sliced) == second[0];
     }
     ok &= expect("shell: vma_map(R, 2 pages of a 1-page slice) = ",
-                 ou::vma_map(vma, R, 0, slice, 0, 2 * PAGE, &sliced), Status::OutOfRange);
-    ok &= expect("shell: close(slice) = ", ou::handle_close(slice), Status::Ok);
+                 ours_vma_map(vma, R, 0, slice, 0, 2 * PAGE, &sliced), Status::OutOfRange);
+    ok &= expect("shell: close(slice) = ", ours_handle_close(slice), Status::Ok);
 
     // The protection.
     ours::VirtAddr refused = 0;
     ok &=
         expect("shell: vma_map(W without R) = ",
-               ou::vma_map(vma, VmOptions::PermWrite, 0, vmo, 0, PAGE, &refused), Status::InvArgs);
+               ours_vma_map(vma, VmOptions::PermWrite, 0, vmo, 0, PAGE, &refused), Status::InvArgs);
     ok &= expect("shell: vma_map(X without R) = ",
-                 ou::vma_map(vma, VmOptions::PermExecute, 0, vmo, 0, PAGE, &refused),
+                 ours_vma_map(vma, VmOptions::PermExecute, 0, vmo, 0, PAGE, &refused),
                  Status::InvArgs);
     ok &= expect("shell: vma_map(RWX) = ",
-                 ou::vma_map(vma, RW | VmOptions::PermExecute, 0, vmo, 0, PAGE, &refused),
+                 ours_vma_map(vma, RW | VmOptions::PermExecute, 0, vmo, 0, PAGE, &refused),
                  Status::InvArgs);
     ok &= expect("shell: vma_map(R | CanMapWrite) = ",
-                 ou::vma_map(vma, R | VmOptions::CanMapWrite, 0, vmo, 0, PAGE, &refused),
+                 ours_vma_map(vma, R | VmOptions::CanMapWrite, 0, vmo, 0, PAGE, &refused),
                  Status::InvArgs);
 
     // The rights.
     ok &= expect("shell: vma_map(RX, a VMO without Execute) = ",
-                 ou::vma_map(vma, RX, 0, vmo, 0, PAGE, &refused), Status::AccessDenied);
+                 ours_vma_map(vma, RX, 0, vmo, 0, PAGE, &refused), Status::AccessDenied);
     ours::HandleValue unmappable = ours::HANDLE_INVALID;
     ok &= expect("shell: handle_duplicate(vmo, without Map) = ",
-                 ou::handle_duplicate(vmo, Rights::Basic | Rights::Read, &unmappable), Status::Ok);
+                 ours_handle_duplicate(vmo, Rights::Basic | Rights::Read, &unmappable), Status::Ok);
     ok &= expect("shell: vma_map(R, a handle without Map) = ",
-                 ou::vma_map(vma, R, 0, unmappable, 0, PAGE, &refused), Status::AccessDenied);
-    ok &= expect("shell: close(the copy without Map) = ", ou::handle_close(unmappable), Status::Ok);
+                 ours_vma_map(vma, R, 0, unmappable, 0, PAGE, &refused), Status::AccessDenied);
+    ok &=
+        expect("shell: close(the copy without Map) = ", ours_handle_close(unmappable), Status::Ok);
 
     // The arguments.
-    ok &= expect("shell: vma_map(length 0) = ", ou::vma_map(vma, R, 0, vmo, 0, 0, &refused),
+    ok &= expect("shell: vma_map(length 0) = ", ours_vma_map(vma, R, 0, vmo, 0, 0, &refused),
                  Status::InvArgs);
     ok &= expect("shell: vma_map(unaligned vmo_offset) = ",
-                 ou::vma_map(vma, R, 0, vmo, 8, PAGE, &refused), Status::InvArgs);
+                 ours_vma_map(vma, R, 0, vmo, 8, PAGE, &refused), Status::InvArgs);
     ok &= expect("shell: vma_map(vma_offset without Specific) = ",
-                 ou::vma_map(vma, R, PAGE, vmo, 0, PAGE, &refused), Status::InvArgs);
+                 ours_vma_map(vma, R, PAGE, vmo, 0, PAGE, &refused), Status::InvArgs);
     ok &= expect("shell: vma_map(past the VMO) = ",
-                 ou::vma_map(vma, R, 0, vmo, PAGE, 2 * PAGE, &refused), Status::OutOfRange);
+                 ours_vma_map(vma, R, 0, vmo, PAGE, 2 * PAGE, &refused), Status::OutOfRange);
     ok &= expect("shell: vma_map(Compact) = ",
-                 ou::vma_map(vma, R | VmOptions::Compact, 0, vmo, 0, PAGE, &refused),
+                 ours_vma_map(vma, R | VmOptions::Compact, 0, vmo, 0, PAGE, &refused),
                  Status::NotSupported);
 
     // An address the kernel cannot write back: the mapping is taken down, so
@@ -2034,33 +2079,33 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     // would find the spot taken.
     constexpr auto SPOT = usize{1} << 30;
     ok &= expect("shell: vma_map(Specific, mapped_addr = kernel half) = ",
-                 ou::vma_map(vma, R | VmOptions::Specific, SPOT, vmo, 0, PAGE,
-                             reinterpret_cast<ours::VirtAddr *>(KERNEL)),
+                 ours_vma_map(vma, R | VmOptions::Specific, SPOT, vmo, 0, PAGE,
+                              reinterpret_cast<ours::VirtAddr *>(KERNEL)),
                  Status::InvArgs);
-    ok &=
-        expect("shell: vma_map(Specific, the same spot) = ",
-               ou::vma_map(vma, R | VmOptions::Specific, SPOT, vmo, 0, PAGE, &refused), Status::Ok);
+    ok &= expect("shell: vma_map(Specific, the same spot) = ",
+                 ours_vma_map(vma, R | VmOptions::Specific, SPOT, vmo, 0, PAGE, &refused),
+                 Status::Ok);
 
     // Handles of the wrong kind.
-    ok &= expect("shell: vma_map(vma = a VMO) = ", ou::vma_map(vmo, R, 0, vmo, 0, PAGE, &refused),
+    ok &= expect("shell: vma_map(vma = a VMO) = ", ours_vma_map(vmo, R, 0, vmo, 0, PAGE, &refused),
                  Status::BadType);
-    ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
+    ok &= expect("shell: close(vmo) = ", ours_handle_close(vmo), Status::Ok);
 
     if (bootfs == ours::HANDLE_INVALID || vmex == ours::HANDLE_INVALID) {
         static_cast<void>(ou::debug_line("shell: vma_map of the BootFS skipped"));
     } else {
         ok &= expect("shell: vma_map(RW, the BootFS) = ",
-                     ou::vma_map(vma, RW, 0, bootfs, 0, PAGE, &refused), Status::AccessDenied);
+                     ours_vma_map(vma, RW, 0, bootfs, 0, PAGE, &refused), Status::AccessDenied);
 
         ours::HandleValue copy = ours::HANDLE_INVALID;
         ours::HandleValue executable = ours::HANDLE_INVALID;
         ok &= expect("shell: handle_duplicate(bootfs) = ",
-                     ou::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
+                     ours_handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
         ok &= expect("shell: vmo_replace_as_executable(the copy) = ",
-                     ou::vmo_replace_as_executable(copy, vmex, &executable), Status::Ok);
+                     ours_vmo_replace_as_executable(copy, vmex, &executable), Status::Ok);
         ours::VirtAddr code = 0;
         ok &= expect("shell: vma_map(RX, the executable BootFS) = ",
-                     ou::vma_map(vma, RX, 0, executable, 0, PAGE, &code), Status::Ok);
+                     ours_vma_map(vma, RX, 0, executable, 0, PAGE, &code), Status::Ok);
         if (code != 0) {
             bootfs::Header header{};
             auto const *const bytes = reinterpret_cast<u8 const volatile *>(code);
@@ -2070,7 +2115,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
             }
             ok &= header.magic == bootfs::Header::MAGIC;
         }
-        ok &= expect("shell: close(the executable BootFS) = ", ou::handle_close(executable),
+        ok &= expect("shell: close(the executable BootFS) = ", ours_handle_close(executable),
                      Status::Ok);
     }
 
@@ -2085,23 +2130,23 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
         ours::HandleValue snapshot = ours::HANDLE_INVALID;
         u8 const first[1] = {0x5a};
         ok &= expect("shell: vmo_create(to be executable) = ",
-                     ou::vmo_create(PAGE, VmoOptions::None, &plain), Status::Ok);
+                     ours_vmo_create(PAGE, VmoOptions::None, &plain), Status::Ok);
         ok &= expect("shell: vmo_write(to be executable) = ",
-                     ou::vmo_write(plain, first, 0, sizeof(first)), Status::Ok);
+                     ours_vmo_write(plain, first, 0, sizeof(first)), Status::Ok);
         ok &= expect("shell: vmo_replace_as_executable(it) = ",
-                     ou::vmo_replace_as_executable(plain, vmex, &executable), Status::Ok);
+                     ours_vmo_replace_as_executable(plain, vmex, &executable), Status::Ok);
         ours::VirtAddr code = 0;
         ok &= expect("shell: vma_map(RX, the executable VMO) = ",
-                     ou::vma_map(vma, RX, 0, executable, 0, PAGE, &code), Status::Ok);
+                     ours_vma_map(vma, RX, 0, executable, 0, PAGE, &code), Status::Ok);
         ok &= expect("shell: vmo_create_child(the executable VMO, SnapshotFull) = ",
-                     ou::vmo_create_child(executable, ours::VmoChildOptions::SnapshotFull, 0, PAGE,
-                                          &snapshot),
+                     ours_vmo_create_child(executable, ours::VmoChildOptions::SnapshotFull, 0, PAGE,
+                                           &snapshot),
                      Status::Ok);
         ok &= expect("shell: vma_map(RX, its snapshot) = ",
-                     ou::vma_map(vma, RX, 0, snapshot, 0, PAGE, &refused), Status::AccessDenied);
+                     ours_vma_map(vma, RX, 0, snapshot, 0, PAGE, &refused), Status::AccessDenied);
         ours::VirtAddr data = 0;
         ok &= expect("shell: vma_map(RW, its snapshot) = ",
-                     ou::vma_map(vma, RW, 0, snapshot, 0, PAGE, &data), Status::Ok);
+                     ours_vma_map(vma, RW, 0, snapshot, 0, PAGE, &data), Status::Ok);
         if (data != 0 && code != 0) {
             auto *const mine = reinterpret_cast<u8 volatile *>(data);
             auto const *const theirs = reinterpret_cast<u8 const volatile *>(code);
@@ -2114,9 +2159,9 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
                                                  "reached the executable VMO, or did not land"));
             }
         }
-        ok &= expect("shell: close(the snapshot) = ", ou::handle_close(snapshot), Status::Ok);
-        ok &=
-            expect("shell: close(the executable VMO) = ", ou::handle_close(executable), Status::Ok);
+        ok &= expect("shell: close(the snapshot) = ", ours_handle_close(snapshot), Status::Ok);
+        ok &= expect("shell: close(the executable VMO) = ", ours_handle_close(executable),
+                     Status::Ok);
     }
 
     if (ok) {
@@ -2176,7 +2221,8 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
 
     auto ok = true;
     ours::HandleValue vmo = ours::HANDLE_INVALID;
-    if (!expect("shell: vmo_create = ", ou::vmo_create(PAGE, VmoOptions::None, &vmo), Status::Ok)) {
+    if (!expect("shell: vmo_create = ", ours_vmo_create(PAGE, VmoOptions::None, &vmo),
+                Status::Ok)) {
         static_cast<void>(ou::debug_line("shell: vma_allocate checks FAILED"));
         return;
     }
@@ -2184,28 +2230,28 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::HandleValue guard = ours::HANDLE_INVALID;
     ours::VirtAddr at = 0;
     ok &= expect("shell: vma_allocate(Specific, 1 page) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific, SPOT, PAGE, &guard, &at), Status::Ok);
+                 ours_vma_allocate(vma, VmOptions::Specific, SPOT, PAGE, &guard, &at), Status::Ok);
     // Where the root region starts, so that an address the kernel chose can be
     // turned back into an offset for a Specific request.
     auto const root_base = at - SPOT;
     ours::VirtAddr mapped = 0;
     ok &= expect("shell: vma_map(Specific, over the guard) = ",
-                 ou::vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
+                 ours_vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
     ok &= expect("shell: vma_map(into the guard) = ",
-                 ou::vma_map(guard, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped),
+                 ours_vma_map(guard, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped),
                  Status::AccessDenied);
-    ok &= expect("shell: close(guard) = ", ou::handle_close(guard), Status::Ok);
+    ok &= expect("shell: close(guard) = ", ours_handle_close(guard), Status::Ok);
     ok &= expect("shell: vma_map(Specific, over the guard, handle closed) = ",
-                 ou::vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
+                 ours_vma_map(vma, SPECIFIC_R, SPOT, vmo, 0, PAGE, &mapped), Status::AlreadyExists);
 
     // The same guard, placed by the kernel.
     ours::VirtAddr guard_at = 0;
     ok &= expect("shell: vma_allocate(no CanMap bit, anywhere, 1 page) = ",
-                 ou::vma_allocate(vma, VmOptions::None, 0, PAGE, &guard, &guard_at), Status::Ok);
+                 ours_vma_allocate(vma, VmOptions::None, 0, PAGE, &guard, &guard_at), Status::Ok);
     ok &= expect("shell: vma_map(Specific, over the kernel-placed guard) = ",
-                 ou::vma_map(vma, SPECIFIC_R, guard_at - root_base, vmo, 0, PAGE, &mapped),
+                 ours_vma_map(vma, SPECIFIC_R, guard_at - root_base, vmo, 0, PAGE, &mapped),
                  Status::AlreadyExists);
-    ok &= expect("shell: close(the kernel-placed guard) = ", ou::handle_close(guard), Status::Ok);
+    ok &= expect("shell: close(the kernel-placed guard) = ", ours_handle_close(guard), Status::Ok);
 
     // A sub-region to map into, placed by the kernel: what the launcher reserves
     // for a program's span before it maps each segment at its offset, which is
@@ -2216,23 +2262,23 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::VirtAddr region_at = 0;
     ok &= expect(
         "shell: vma_allocate(CanMapRead | CanMapWrite | CanMapSpecific, anywhere, 2 pages) = ",
-        ou::vma_allocate(vma, CAN_MAP_RW_SPECIFIC, 0, 2 * PAGE, &region, &region_at), Status::Ok);
+        ours_vma_allocate(vma, CAN_MAP_RW_SPECIFIC, 0, 2 * PAGE, &region, &region_at), Status::Ok);
     if (region_at == 0 || region_at % PAGE != 0) {
         static_cast<void>(ou::debug_line("shell: the sub-region is not at a page boundary"));
         ok = false;
     }
-    ok &=
-        expect("shell: vma_map(RW, Specific, page 1 of the sub-region) = ",
-               ou::vma_map(region, VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Specific,
-                           PAGE, vmo, 0, PAGE, &mapped),
-               Status::Ok);
+    ok &= expect("shell: vma_map(RW, Specific, page 1 of the sub-region) = ",
+                 ours_vma_map(region,
+                              VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Specific,
+                              PAGE, vmo, 0, PAGE, &mapped),
+                 Status::Ok);
     if (mapped == region_at + PAGE) {
         // Read back through the VMO, not the same mapping: a mapping of some
         // other page would read back its own store just as well.
         *reinterpret_cast<u32 volatile *>(mapped) = 0x5ec7'0001;
         u32 back = 0;
         ok &= expect("shell: vmo_read(what the sub-region's mapping stored) = ",
-                     ou::vmo_read(vmo, &back, 0, sizeof(back)), Status::Ok);
+                     ours_vmo_read(vmo, &back, 0, sizeof(back)), Status::Ok);
         if (back != 0x5ec7'0001) {
             static_cast<void>(ou::debug_line("shell: a store through the sub-region's mapping "
                                              "did not reach the VMO"));
@@ -2243,17 +2289,18 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
             ou::debug_line("shell: page 1 of the sub-region was not mapped at its start + 1 page"));
         ok = false;
     }
-    ok &= expect("shell: vma_map(R, Specific, past the sub-region's end) = ",
-                 ou::vma_map(region, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped), Status::InvArgs);
+    ok &=
+        expect("shell: vma_map(R, Specific, past the sub-region's end) = ",
+               ours_vma_map(region, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped), Status::InvArgs);
     ours::HandleValue nested = ours::HANDLE_INVALID;
     ours::VirtAddr nested_at = 0;
     ok &= expect("shell: vma_allocate(CanMapExecute, inside a sub-region without it) = ",
-                 ou::vma_allocate(region, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0, PAGE,
-                                  &nested, &nested_at),
+                 ours_vma_allocate(region, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0,
+                                   PAGE, &nested, &nested_at),
                  Status::AccessDenied);
-    ok &= expect("shell: close(the sub-region) = ", ou::handle_close(region), Status::Ok);
+    ok &= expect("shell: close(the sub-region) = ", ours_handle_close(region), Status::Ok);
     ok &= expect("shell: vma_map(Specific, over the sub-region, handle closed) = ",
-                 ou::vma_map(vma, SPECIFIC_R, region_at - root_base, vmo, 0, PAGE, &mapped),
+                 ours_vma_map(vma, SPECIFIC_R, region_at - root_base, vmo, 0, PAGE, &mapped),
                  Status::AlreadyExists);
 
     // Only the sub-region can refuse here: the VMO's handle has Write, and so
@@ -2262,13 +2309,13 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::HandleValue read_only = ours::HANDLE_INVALID;
     ours::VirtAddr read_only_at = 0;
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 1 page) = ",
-                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, PAGE, &read_only, &read_only_at),
+                 ours_vma_allocate(vma, VmOptions::CanMapRead, 0, PAGE, &read_only, &read_only_at),
                  Status::Ok);
     ok &= expect("shell: vma_map(RW, into a sub-region with CanMapRead only) = ",
-                 ou::vma_map(read_only, VmOptions::PermRead | VmOptions::PermWrite, 0, vmo, 0, PAGE,
-                             &mapped),
+                 ours_vma_map(read_only, VmOptions::PermRead | VmOptions::PermWrite, 0, vmo, 0,
+                              PAGE, &mapped),
                  Status::AccessDenied);
-    ok &= expect("shell: close(the read-only sub-region) = ", ou::handle_close(read_only),
+    ok &= expect("shell: close(the read-only sub-region) = ", ours_handle_close(read_only),
                  Status::Ok);
 
     // The kernel places up to a region's last page, each case in a 2-page
@@ -2278,28 +2325,28 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::HandleValue outer = ours::HANDLE_INVALID;
     ours::VirtAddr outer_at = 0;
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
-                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &outer, &outer_at),
+                 ours_vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &outer, &outer_at),
                  Status::Ok);
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, the whole of its parent) = ",
-                 ou::vma_allocate(outer, VmOptions::CanMapRead, 0, 2 * PAGE, &nested, &nested_at),
+                 ours_vma_allocate(outer, VmOptions::CanMapRead, 0, 2 * PAGE, &nested, &nested_at),
                  Status::Ok);
     ok &= nested_at == outer_at;
-    ok &= expect("shell: close(the nested sub-region) = ", ou::handle_close(nested), Status::Ok);
-    ok &= expect("shell: close(its parent) = ", ou::handle_close(outer), Status::Ok);
+    ok &= expect("shell: close(the nested sub-region) = ", ours_handle_close(nested), Status::Ok);
+    ok &= expect("shell: close(its parent) = ", ours_handle_close(outer), Status::Ok);
 
     ok &= expect("shell: vma_allocate(CanMapRead | CanMapSpecific, anywhere, 2 pages) = ",
-                 ou::vma_allocate(vma, VmOptions::CanMapRead | VmOptions::CanMapSpecific, 0,
-                                  2 * PAGE, &outer, &outer_at),
+                 ours_vma_allocate(vma, VmOptions::CanMapRead | VmOptions::CanMapSpecific, 0,
+                                   2 * PAGE, &outer, &outer_at),
                  Status::Ok);
     ok &= expect("shell: vma_map(R, Specific, page 0 of the sub-region) = ",
-                 ou::vma_map(outer, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+                 ours_vma_map(outer, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
     ok &= expect("shell: vma_map(R, anywhere, the sub-region's last page) = ",
-                 ou::vma_map(outer, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+                 ours_vma_map(outer, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::Ok);
     ok &= mapped == outer_at + PAGE;
-    ok &=
-        expect("shell: vma_map(R, anywhere, the sub-region full) = ",
-               ou::vma_map(outer, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::NotFound);
-    ok &= expect("shell: close(the full sub-region) = ", ou::handle_close(outer), Status::Ok);
+    ok &= expect("shell: vma_map(R, anywhere, the sub-region full) = ",
+                 ours_vma_map(outer, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped),
+                 Status::NotFound);
+    ok &= expect("shell: close(the full sub-region) = ", ours_handle_close(outer), Status::Ok);
 
     // CanMapSpecific: without it a sub-region takes only what the kernel
     // places. A sub-region of it may have it all the same, and then takes a
@@ -2308,34 +2355,34 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::HandleValue plain = ours::HANDLE_INVALID;
     ours::VirtAddr plain_at = 0;
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
-                 ou::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &plain, &plain_at),
+                 ours_vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &plain, &plain_at),
                  Status::Ok);
     ok &= expect("shell: vma_map(R, Specific, into a sub-region without CanMapSpecific) = ",
-                 ou::vma_map(plain, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::AccessDenied);
+                 ours_vma_map(plain, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::AccessDenied);
     // The flag is asked before the range, as in Zircon: a place past the end
     // of a region without it is AccessDenied, not InvArgs.
     ok &= expect("shell: vma_map(R, Specific, past the end of a sub-region without it) = ",
-                 ou::vma_map(plain, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped),
+                 ours_vma_map(plain, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped),
                  Status::AccessDenied);
     ours::HandleValue inner = ours::HANDLE_INVALID;
     ours::VirtAddr inner_at = 0;
     ok &= expect("shell: vma_allocate(Specific, into a sub-region without CanMapSpecific) = ",
-                 ou::vma_allocate(plain, VmOptions::Specific, 0, PAGE, &inner, &inner_at),
+                 ours_vma_allocate(plain, VmOptions::Specific, 0, PAGE, &inner, &inner_at),
                  Status::AccessDenied);
     ok &= expect("shell: vma_map(R, anywhere, into a sub-region without CanMapSpecific) = ",
-                 ou::vma_map(plain, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+                 ours_vma_map(plain, VmOptions::PermRead, 0, vmo, 0, PAGE, &mapped), Status::Ok);
     ok &= expect("shell: vma_allocate(CanMapRead | CanMapSpecific, anywhere, inside it) = ",
-                 ou::vma_allocate(plain, VmOptions::CanMapRead | VmOptions::CanMapSpecific, 0, PAGE,
-                                  &inner, &inner_at),
+                 ours_vma_allocate(plain, VmOptions::CanMapRead | VmOptions::CanMapSpecific, 0,
+                                   PAGE, &inner, &inner_at),
                  Status::Ok);
     ok &= expect("shell: vma_map(R, Specific, into its sub-region with CanMapSpecific) = ",
-                 ou::vma_map(inner, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+                 ours_vma_map(inner, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
     if (mapped != inner_at) {
         static_cast<void>(ou::debug_line("shell: the Specific mapping is not at its offset"));
         ok = false;
     }
-    ok &= expect("shell: close(the inner sub-region) = ", ou::handle_close(inner), Status::Ok);
-    ok &= expect("shell: close(the sub-region without CanMapSpecific) = ", ou::handle_close(plain),
+    ok &= expect("shell: close(the inner sub-region) = ", ours_handle_close(inner), Status::Ok);
+    ok &= expect("shell: close(the sub-region without CanMapSpecific) = ", ours_handle_close(plain),
                  Status::Ok);
 
     // CanMap bits need the matching right on the parent.
@@ -2343,13 +2390,13 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     // The root region's handle has Basic without Wait (RIGHTS_DEFAULT_VMA), so
     // the copy asks for Read and Write and nothing it does not hold.
     ok &= expect("shell: handle_duplicate(vma, Read | Write only) = ",
-                 ou::handle_duplicate(vma, ours::Rights::Read | ours::Rights::Write, &no_execute),
+                 ours_handle_duplicate(vma, ours::Rights::Read | ours::Rights::Write, &no_execute),
                  Status::Ok);
     ok &= expect("shell: vma_allocate(CanMapExecute, parent handle without Execute) = ",
-                 ou::vma_allocate(no_execute, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0,
-                                  PAGE, &nested, &nested_at),
+                 ours_vma_allocate(no_execute, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0,
+                                   PAGE, &nested, &nested_at),
                  Status::AccessDenied);
-    ok &= expect("shell: close(the copy without Execute) = ", ou::handle_close(no_execute),
+    ok &= expect("shell: close(the copy without Execute) = ", ours_handle_close(no_execute),
                  Status::Ok);
 
     // The options and the arguments.
@@ -2357,53 +2404,53 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     constexpr auto FURTHER = SPOT + 32 * PAGE;
     constexpr auto CHOSEN = SPOT + 48 * PAGE;
     ok &= expect("shell: vma_allocate(Specific | CanMapRead) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapRead, FURTHER, PAGE,
-                                  &guard, &at),
+                 ours_vma_allocate(vma, VmOptions::Specific | VmOptions::CanMapRead, FURTHER, PAGE,
+                                   &guard, &at),
                  Status::Ok);
     if (at != root_base + FURTHER) {
         static_cast<void>(ou::debug_line("shell: the Specific sub-region is not at its offset"));
         ok = false;
     }
-    ok &= expect("shell: close(the Specific sub-region) = ", ou::handle_close(guard), Status::Ok);
+    ok &= expect("shell: close(the Specific sub-region) = ", ours_handle_close(guard), Status::Ok);
     ok &= expect("shell: vma_allocate(an offset without Specific) = ",
-                 ou::vma_allocate(vma, VmOptions::CanMapRead, PAGE, PAGE, &guard, &at),
+                 ours_vma_allocate(vma, VmOptions::CanMapRead, PAGE, PAGE, &guard, &at),
                  Status::InvArgs);
     ok &= expect("shell: vma_allocate(Compact) = ",
-                 ou::vma_allocate(vma, VmOptions::Compact, 0, PAGE, &guard, &at),
+                 ours_vma_allocate(vma, VmOptions::Compact, 0, PAGE, &guard, &at),
                  Status::NotSupported);
     ok &= expect("shell: vma_allocate(Specific | CanMapRead | CanMapSpecific) = ",
-                 ou::vma_allocate(
+                 ours_vma_allocate(
                      vma, VmOptions::Specific | VmOptions::CanMapRead | VmOptions::CanMapSpecific,
                      CHOSEN, PAGE, &guard, &at),
                  Status::Ok);
     ok &= expect("shell: vma_map(R, Specific, into it) = ",
-                 ou::vma_map(guard, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
+                 ours_vma_map(guard, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
     if (at != root_base + CHOSEN || mapped != at) {
         static_cast<void>(
             ou::debug_line("shell: the chosen sub-region or its mapping is not at its offset"));
         ok = false;
     }
-    ok &= expect("shell: close(the chosen sub-region) = ", ou::handle_close(guard), Status::Ok);
+    ok &= expect("shell: close(the chosen sub-region) = ", ours_handle_close(guard), Status::Ok);
     ok &= expect("shell: vma_allocate(Specific | PermRead) = ",
-                 ou::vma_allocate(vma, SPECIFIC_R, ELSEWHERE, PAGE, &guard, &at), Status::InvArgs);
+                 ours_vma_allocate(vma, SPECIFIC_R, ELSEWHERE, PAGE, &guard, &at), Status::InvArgs);
     ok &= expect("shell: vma_allocate(size 0) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific, ELSEWHERE, 0, &guard, &at),
+                 ours_vma_allocate(vma, VmOptions::Specific, ELSEWHERE, 0, &guard, &at),
                  Status::InvArgs);
     ok &= expect("shell: vma_allocate(unaligned offset) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific, ELSEWHERE + 8, PAGE, &guard, &at),
+                 ours_vma_allocate(vma, VmOptions::Specific, ELSEWHERE + 8, PAGE, &guard, &at),
                  Status::InvArgs);
 
     // A child_addr the kernel cannot write: the range goes back, so the same
     // spot can be taken right after.
     ok &= expect("shell: vma_allocate(child_addr = kernel half) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific, ELSEWHERE, PAGE, &guard,
-                                  reinterpret_cast<ours::VirtAddr *>(KERNEL)),
+                 ours_vma_allocate(vma, VmOptions::Specific, ELSEWHERE, PAGE, &guard,
+                                   reinterpret_cast<ours::VirtAddr *>(KERNEL)),
                  Status::InvArgs);
     ok &= expect("shell: vma_allocate(the same spot) = ",
-                 ou::vma_allocate(vma, VmOptions::Specific, ELSEWHERE, PAGE, &guard, &at),
+                 ours_vma_allocate(vma, VmOptions::Specific, ELSEWHERE, PAGE, &guard, &at),
                  Status::Ok);
-    ok &= expect("shell: close(guard) = ", ou::handle_close(guard), Status::Ok);
-    ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
+    ok &= expect("shell: close(guard) = ", ours_handle_close(guard), Status::Ok);
+    ok &= expect("shell: close(vmo) = ", ours_handle_close(vmo), Status::Ok);
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: vma_allocate checks passed"));
@@ -2447,46 +2494,54 @@ auto check_process_create(ours::HandleValue const job) -> void {
     ours::HandleValue region = ours::HANDLE_INVALID;
 
     ok &= expect("shell: process_create(HANDLE_INVALID) = ",
-                 ou::process_create(ours::HANDLE_INVALID, NAME, &process, &region),
+                 ours_process_create(ours::HANDLE_INVALID, NAME.data(), NAME.size(),
+                                     ours::ProcessCreateOptions::None, &process, &region),
                  Status::BadHandle);
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (expect("shell: channel_create = ",
+               ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         ok &= expect("shell: process_create(job = a channel) = ",
-                     ou::process_create(a, NAME, &process, &region), Status::BadType);
-        ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
-        ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
+                     ours_process_create(a, NAME.data(), NAME.size(),
+                                         ours::ProcessCreateOptions::None, &process, &region),
+                     Status::BadType);
+        ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
+        ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
     } else {
         ok = false;
     }
     ours::HandleValue weak = ours::HANDLE_INVALID;
     ok &= expect("shell: handle_duplicate(job, without ManageProcess) = ",
-                 ou::handle_duplicate(job, Rights::Basic, &weak), Status::Ok);
+                 ours_handle_duplicate(job, Rights::Basic, &weak), Status::Ok);
     ok &= expect("shell: process_create(job without ManageProcess) = ",
-                 ou::process_create(weak, NAME, &process, &region), Status::AccessDenied);
-    ok &= expect("shell: close(the weak job) = ", ou::handle_close(weak), Status::Ok);
+                 ours_process_create(weak, NAME.data(), NAME.size(),
+                                     ours::ProcessCreateOptions::None, &process, &region),
+                 Status::AccessDenied);
+    ok &= expect("shell: close(the weak job) = ", ours_handle_close(weak), Status::Ok);
     ok &= expect("shell: process_create(an option bit) = ",
-                 ou::process_create(job, NAME, &process, &region,
-                                    static_cast<ours::ProcessCreateOptions>(1)),
+                 ours_process_create(job, NAME.data(), NAME.size(),
+                                     static_cast<ours::ProcessCreateOptions>(1), &process, &region),
                  Status::InvArgs);
 
     // Two handles, and the safety net.
-    if (expect("shell: process_create = ", ou::process_create(job, NAME, &process, &region),
+    if (expect("shell: process_create = ",
+               ours_process_create(job, NAME.data(), NAME.size(), ours::ProcessCreateOptions::None,
+                                   &process, &region),
                Status::Ok)) {
         ok &=
             process != ours::HANDLE_INVALID && region != ours::HANDLE_INVALID && process != region;
         ours::HandleValue second = ours::HANDLE_INVALID;
         ok &= expect("shell: handle_duplicate(process) = ",
-                     ou::handle_duplicate(process, Rights::SameRights, &second), Status::Ok);
-        ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
-        ok &= expect("shell: close(the first process handle) = ", ou::handle_close(process),
+                     ours_handle_duplicate(process, Rights::SameRights, &second), Status::Ok);
+        ok &= expect("shell: close(region) = ", ours_handle_close(region), Status::Ok);
+        ok &= expect("shell: close(the first process handle) = ", ours_handle_close(process),
                      Status::Ok);
         // One handle left: still Initial, so not terminated.
         auto observed = Signals::None;
-        ok &=
-            expect("shell: wait_one(process, TERMINATED, poll) with a handle left = ",
-                   ou::object_wait_one(second, Signals::Terminated, 0, &observed), Status::TimeOut);
-        ok &= expect("shell: close(the last process handle) = ", ou::handle_close(second),
+        ok &= expect("shell: wait_one(process, TERMINATED, poll) with a handle left = ",
+                     ours_object_wait_one(second, Signals::Terminated, 0, &observed),
+                     Status::TimeOut);
+        ok &= expect("shell: close(the last process handle) = ", ours_handle_close(second),
                      Status::Ok);
     } else {
         ok = false;
@@ -2502,31 +2557,36 @@ auto check_process_create(ours::HandleValue const job) -> void {
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
     static ours::HandleValue filler[ROOM];
     u32 held = 0;
-    while (held + 2 <= ROOM && ou::channel_create(&filler[held], &filler[held + 1]) == Status::Ok) {
+    while (held + 2 <= ROOM && ours_channel_create(ours::ChannelCreateOptions::None, &filler[held],
+                                                   &filler[held + 1]) == Status::Ok) {
         held += 2;
     }
     // A pair needs two slots, so at most one is left; fill it too.
-    if (held < ROOM && ou::handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
+    if (held < ROOM &&
+        ours_handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
         held += 1;
     }
     ok &= held >= 2;
     if (held >= 2) {
-        ok &= ou::handle_close(filler[held - 1]) == Status::Ok;
-        ok &= ou::handle_close(filler[held - 2]) == Status::Ok;
+        ok &= ours_handle_close(filler[held - 1]) == Status::Ok;
+        ok &= ours_handle_close(filler[held - 2]) == Status::Ok;
         held -= 2;
         for (u32 i = 0; i < 3; ++i) {
-            ok &= expect("shell: process_create(process_out = kernel half), table nearly full = ",
-                         ou::process_create(job, NAME,
-                                            reinterpret_cast<ours::HandleValue *>(KERNEL), &region),
-                         Status::InvArgs);
+            ok &= expect(
+                "shell: process_create(process_out = kernel half), table nearly full = ",
+                ours_process_create(job, NAME.data(), NAME.size(), ours::ProcessCreateOptions::None,
+                                    reinterpret_cast<ours::HandleValue *>(KERNEL), &region),
+                Status::InvArgs);
         }
         ok &= expect("shell: process_create after that = ",
-                     ou::process_create(job, NAME, &process, &region), Status::Ok);
-        ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
-        ok &= expect("shell: close(process) = ", ou::handle_close(process), Status::Ok);
+                     ours_process_create(job, NAME.data(), NAME.size(),
+                                         ours::ProcessCreateOptions::None, &process, &region),
+                     Status::Ok);
+        ok &= expect("shell: close(region) = ", ours_handle_close(region), Status::Ok);
+        ok &= expect("shell: close(process) = ", ours_handle_close(process), Status::Ok);
     }
     for (u32 i = 0; i < held; ++i) {
-        ok &= ou::handle_close(filler[i]) == Status::Ok;
+        ok &= ours_handle_close(filler[i]) == Status::Ok;
     }
 
     if (ok) {
@@ -2567,7 +2627,9 @@ auto check_thread_create(ours::HandleValue const job) -> void {
     auto ok = true;
     ours::HandleValue process = ours::HANDLE_INVALID;
     ours::HandleValue region = ours::HANDLE_INVALID;
-    if (!expect("shell: process_create = ", ou::process_create(job, "host", &process, &region),
+    if (!expect("shell: process_create = ",
+                ours_process_create(job, "host", sizeof("host") - 1,
+                                    ours::ProcessCreateOptions::None, &process, &region),
                 Status::Ok)) {
         static_cast<void>(ou::debug_line("shell: thread_create checks FAILED"));
         return;
@@ -2575,26 +2637,34 @@ auto check_thread_create(ours::HandleValue const job) -> void {
 
     ours::HandleValue thread = ours::HANDLE_INVALID;
     ok &= expect("shell: thread_create(HANDLE_INVALID) = ",
-                 ou::thread_create(ours::HANDLE_INVALID, NAME, &thread), Status::BadHandle);
+                 ours_thread_create(ours::HANDLE_INVALID, NAME.data(), NAME.size(),
+                                    ours::ThreadCreateOptions::None, &thread),
+                 Status::BadHandle);
     ok &= expect("shell: thread_create(process = its root VMA) = ",
-                 ou::thread_create(region, NAME, &thread), Status::BadType);
+                 ours_thread_create(region, NAME.data(), NAME.size(),
+                                    ours::ThreadCreateOptions::None, &thread),
+                 Status::BadType);
     ours::HandleValue weak = ours::HANDLE_INVALID;
     ok &= expect("shell: handle_duplicate(process, without ManageThread) = ",
-                 ou::handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
+                 ours_handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
     ok &= expect("shell: thread_create(process without ManageThread) = ",
-                 ou::thread_create(weak, NAME, &thread), Status::AccessDenied);
-    ok &= expect("shell: close(the weak process handle) = ", ou::handle_close(weak), Status::Ok);
-    ok &=
-        expect("shell: thread_create(an option bit) = ",
-               ou::thread_create(process, NAME, &thread, static_cast<ours::ThreadCreateOptions>(1)),
-               Status::InvArgs);
-    ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
+                 ours_thread_create(weak, NAME.data(), NAME.size(), ours::ThreadCreateOptions::None,
+                                    &thread),
+                 Status::AccessDenied);
+    ok &= expect("shell: close(the weak process handle) = ", ours_handle_close(weak), Status::Ok);
+    ok &= expect("shell: thread_create(an option bit) = ",
+                 ours_thread_create(process, NAME.data(), NAME.size(),
+                                    static_cast<ours::ThreadCreateOptions>(1), &thread),
+                 Status::InvArgs);
+    ok &= expect("shell: close(region) = ", ours_handle_close(region), Status::Ok);
 
     // A thread made and closed, more than once.
     for (u32 i = 0; i < 4; ++i) {
-        if (expect("shell: thread_create = ", ou::thread_create(process, NAME, &thread),
+        if (expect("shell: thread_create = ",
+                   ours_thread_create(process, NAME.data(), NAME.size(),
+                                      ours::ThreadCreateOptions::None, &thread),
                    Status::Ok)) {
-            ok &= expect("shell: close(the unstarted thread) = ", ou::handle_close(thread),
+            ok &= expect("shell: close(the unstarted thread) = ", ours_handle_close(thread),
                          Status::Ok);
         } else {
             ok = false;
@@ -2607,33 +2677,37 @@ auto check_thread_create(ours::HandleValue const job) -> void {
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
     static ours::HandleValue filler[ROOM];
     u32 held = 0;
-    while (held + 2 <= ROOM && ou::channel_create(&filler[held], &filler[held + 1]) == Status::Ok) {
+    while (held + 2 <= ROOM && ours_channel_create(ours::ChannelCreateOptions::None, &filler[held],
+                                                   &filler[held + 1]) == Status::Ok) {
         held += 2;
     }
-    if (held < ROOM && ou::handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
+    if (held < ROOM &&
+        ours_handle_duplicate(job, Rights::SameRights, &filler[held]) == Status::Ok) {
         held += 1;
     }
     ok &= held >= 2;
     if (held >= 2) {
-        ok &= ou::handle_close(filler[held - 1]) == Status::Ok;
+        ok &= ours_handle_close(filler[held - 1]) == Status::Ok;
         held -= 1;
         for (u32 i = 0; i < 3; ++i) {
-            ok &= expect(
-                "shell: thread_create(out = kernel half), table nearly full = ",
-                ou::thread_create(process, NAME, reinterpret_cast<ours::HandleValue *>(KERNEL)),
-                Status::InvArgs);
+            ok &= expect("shell: thread_create(out = kernel half), table nearly full = ",
+                         ours_thread_create(process, NAME.data(), NAME.size(),
+                                            ours::ThreadCreateOptions::None,
+                                            reinterpret_cast<ours::HandleValue *>(KERNEL)),
+                         Status::InvArgs);
         }
-        ok &=
-            expect("shell: thread_create after that = ", ou::thread_create(process, NAME, &thread),
-                   Status::Ok);
+        ok &= expect("shell: thread_create after that = ",
+                     ours_thread_create(process, NAME.data(), NAME.size(),
+                                        ours::ThreadCreateOptions::None, &thread),
+                     Status::Ok);
     }
     for (u32 i = 0; i < held; ++i) {
-        ok &= ou::handle_close(filler[i]) == Status::Ok;
+        ok &= ours_handle_close(filler[i]) == Status::Ok;
     }
 
     // The process's last handle first, with a thread handle still open.
-    ok &= expect("shell: close(the process) = ", ou::handle_close(process), Status::Ok);
-    ok &= expect("shell: close(the thread, after its process) = ", ou::handle_close(thread),
+    ok &= expect("shell: close(the process) = ", ours_handle_close(process), Status::Ok);
+    ok &= expect("shell: close(the thread, after its process) = ", ours_handle_close(thread),
                  Status::Ok);
 
     if (ok) {
@@ -2683,13 +2757,21 @@ auto check_process_start(ours::HandleValue const job) -> void {
     ours::HandleValue other_region = ours::HANDLE_INVALID;
     ours::HandleValue thread = ours::HANDLE_INVALID;
     ours::HandleValue other_thread = ours::HANDLE_INVALID;
-    if (!expect("shell: process_create = ", ou::process_create(job, "starts", &process, &region),
+    if (!expect("shell: process_create = ",
+                ours_process_create(job, "starts", sizeof("starts") - 1,
+                                    ours::ProcessCreateOptions::None, &process, &region),
                 Status::Ok) ||
-        !expect("shell: process_create = ", ou::process_create(job, "other", &other, &other_region),
+        !expect("shell: process_create = ",
+                ours_process_create(job, "other", sizeof("other") - 1,
+                                    ours::ProcessCreateOptions::None, &other, &other_region),
                 Status::Ok) ||
-        !expect("shell: thread_create = ", ou::thread_create(process, "first", &thread),
+        !expect("shell: thread_create = ",
+                ours_thread_create(process, "first", sizeof("first") - 1,
+                                   ours::ThreadCreateOptions::None, &thread),
                 Status::Ok) ||
-        !expect("shell: thread_create = ", ou::thread_create(other, "theirs", &other_thread),
+        !expect("shell: thread_create = ",
+                ours_thread_create(other, "theirs", sizeof("theirs") - 1,
+                                   ours::ThreadCreateOptions::None, &other_thread),
                 Status::Ok)) {
         static_cast<void>(ou::debug_line("shell: process_start checks FAILED"));
         return;
@@ -2698,81 +2780,84 @@ auto check_process_start(ours::HandleValue const job) -> void {
     // The handles named.
     auto const H = ours::HANDLE_INVALID;
     ok &= expect("shell: process_start(HANDLE_INVALID) = ",
-                 ou::process_start(H, thread, ENTRY, STACK, H, 0), Status::BadHandle);
+                 ours_process_start(H, thread, ENTRY, STACK, H, 0), Status::BadHandle);
     ok &= expect("shell: process_start(process = its root VMA) = ",
-                 ou::process_start(region, thread, ENTRY, STACK, H, 0), Status::BadType);
+                 ours_process_start(region, thread, ENTRY, STACK, H, 0), Status::BadType);
     ok &= expect("shell: process_start(thread = a process) = ",
-                 ou::process_start(process, process, ENTRY, STACK, H, 0), Status::BadType);
+                 ours_process_start(process, process, ENTRY, STACK, H, 0), Status::BadType);
     ours::HandleValue weak = ours::HANDLE_INVALID;
     ok &= expect("shell: handle_duplicate(process, without Write) = ",
-                 ou::handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
+                 ours_handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
     ok &= expect("shell: process_start(process without Write) = ",
-                 ou::process_start(weak, thread, ENTRY, STACK, H, 0), Status::AccessDenied);
-    ok &= expect("shell: close(the weak process handle) = ", ou::handle_close(weak), Status::Ok);
+                 ours_process_start(weak, thread, ENTRY, STACK, H, 0), Status::AccessDenied);
+    ok &= expect("shell: close(the weak process handle) = ", ours_handle_close(weak), Status::Ok);
     ok &=
         expect("shell: process_start(another process's thread) = ",
-               ou::process_start(process, other_thread, ENTRY, STACK, H, 0), Status::AccessDenied);
+               ours_process_start(process, other_thread, ENTRY, STACK, H, 0), Status::AccessDenied);
 
     // The handle moved.
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
-    if (!expect("shell: channel_create = ", ou::channel_create(&a, &b), Status::Ok)) {
+    if (!expect("shell: channel_create = ",
+                ours_channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         ok = false;
     } else {
         ours::HandleValue stale = b;
-        ok &= expect("shell: close(b) = ", ou::handle_close(b), Status::Ok);
-        ok &= expect("shell: process_start(a handle that names nothing) = ",
-                     ou::process_start(process, thread, ENTRY, STACK, stale, 0), Status::BadHandle);
+        ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
+        ok &=
+            expect("shell: process_start(a handle that names nothing) = ",
+                   ours_process_start(process, thread, ENTRY, STACK, stale, 0), Status::BadHandle);
 
         // A VMO's handle can be duplicated (a channel's cannot), so it is what
         // gives a copy without Transfer.
         ours::HandleValue vmo = ours::HANDLE_INVALID;
         ours::HandleValue untransferable = ours::HANDLE_INVALID;
-        if (expect("shell: vmo_create = ", ou::vmo_create(4096, ours::VmoOptions::None, &vmo),
+        if (expect("shell: vmo_create = ", ours_vmo_create(4096, ours::VmoOptions::None, &vmo),
                    Status::Ok) &&
             expect("shell: handle_duplicate(vmo, without Transfer) = ",
-                   ou::handle_duplicate(vmo, Rights::Duplicate | Rights::Read, &untransferable),
+                   ours_handle_duplicate(vmo, Rights::Duplicate | Rights::Read, &untransferable),
                    Status::Ok)) {
             ok &= expect("shell: process_start(a handle without Transfer) = ",
-                         ou::process_start(process, thread, ENTRY, STACK, untransferable, 0),
+                         ours_process_start(process, thread, ENTRY, STACK, untransferable, 0),
                          Status::AccessDenied);
             ok &= expect("shell: close(that handle, gone all the same) = ",
-                         ou::handle_close(untransferable), Status::BadHandle);
+                         ours_handle_close(untransferable), Status::BadHandle);
         } else {
             ok = false;
         }
-        ok &= expect("shell: close(vmo) = ", ou::handle_close(vmo), Status::Ok);
-        ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
+        ok &= expect("shell: close(vmo) = ", ours_handle_close(vmo), Status::Ok);
+        ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
     }
 
     // Consumed and closed on failure, twice: the process is as it was.
     for (u32 i = 0; i < 2; ++i) {
         ours::HandleValue c = ours::HANDLE_INVALID;
         ours::HandleValue d = ours::HANDLE_INVALID;
-        if (!expect("shell: channel_create = ", ou::channel_create(&c, &d), Status::Ok)) {
+        if (!expect("shell: channel_create = ",
+                    ours_channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok)) {
             ok = false;
             break;
         }
         ok &= expect("shell: process_start(no vDSO in the process) = ",
-                     ou::process_start(process, thread, ENTRY, STACK, c, 0), Status::BadState);
+                     ours_process_start(process, thread, ENTRY, STACK, c, 0), Status::BadState);
         auto observed = Signals::None;
         ok &= expect("shell: wait_one(the peer, PEER_CLOSED, poll) = ",
-                     ou::object_wait_one(d, Signals::PeerClosed, 0, &observed), Status::Ok);
+                     ours_object_wait_one(d, Signals::PeerClosed, 0, &observed), Status::Ok);
         ok &= !!(observed & Signals::PeerClosed);
-        ok &= expect("shell: close(c, gone) = ", ou::handle_close(c), Status::BadHandle);
-        ok &= expect("shell: close(d) = ", ou::handle_close(d), Status::Ok);
+        ok &= expect("shell: close(c, gone) = ", ours_handle_close(c), Status::BadHandle);
+        ok &= expect("shell: close(d) = ", ours_handle_close(d), Status::Ok);
     }
 
     // The thread's own handle as the handle argument.
     ok &= expect("shell: process_start(arg1 = the thread's own handle) = ",
-                 ou::process_start(process, thread, ENTRY, STACK, thread, 0), Status::BadState);
-    ok &= expect("shell: close(the thread, gone) = ", ou::handle_close(thread), Status::BadHandle);
+                 ours_process_start(process, thread, ENTRY, STACK, thread, 0), Status::BadState);
+    ok &= expect("shell: close(the thread, gone) = ", ours_handle_close(thread), Status::BadHandle);
 
-    ok &= expect("shell: close(other thread) = ", ou::handle_close(other_thread), Status::Ok);
-    ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
-    ok &= expect("shell: close(other region) = ", ou::handle_close(other_region), Status::Ok);
-    ok &= expect("shell: close(process) = ", ou::handle_close(process), Status::Ok);
-    ok &= expect("shell: close(other process) = ", ou::handle_close(other), Status::Ok);
+    ok &= expect("shell: close(other thread) = ", ours_handle_close(other_thread), Status::Ok);
+    ok &= expect("shell: close(region) = ", ours_handle_close(region), Status::Ok);
+    ok &= expect("shell: close(other region) = ", ours_handle_close(other_region), Status::Ok);
+    ok &= expect("shell: close(process) = ", ours_handle_close(process), Status::Ok);
+    ok &= expect("shell: close(other process) = ", ours_handle_close(other), Status::Ok);
 
     if (ok) {
         static_cast<void>(ou::debug_line("shell: process_start checks passed"));
@@ -2822,11 +2907,17 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
     ours::HandleValue q_vma = ours::HANDLE_INVALID;
     ours::HandleValue s = ours::HANDLE_INVALID;
     ours::HandleValue s_vma = ours::HANDLE_INVALID;
-    if (!expect("shell: process_create = ", ou::process_create(job, "vdso-p", &p, &p_vma),
+    if (!expect("shell: process_create = ",
+                ours_process_create(job, "vdso-p", sizeof("vdso-p") - 1,
+                                    ours::ProcessCreateOptions::None, &p, &p_vma),
                 Status::Ok) ||
-        !expect("shell: process_create = ", ou::process_create(job, "vdso-q", &q, &q_vma),
+        !expect("shell: process_create = ",
+                ours_process_create(job, "vdso-q", sizeof("vdso-q") - 1,
+                                    ours::ProcessCreateOptions::None, &q, &q_vma),
                 Status::Ok) ||
-        !expect("shell: process_create = ", ou::process_create(job, "vdso-s", &s, &s_vma),
+        !expect("shell: process_create = ",
+                ours_process_create(job, "vdso-s", sizeof("vdso-s") - 1,
+                                    ours::ProcessCreateOptions::None, &s, &s_vma),
                 Status::Ok)) {
         static_cast<void>(ou::debug_line("shell: vdso map checks FAILED"));
         return;
@@ -2834,20 +2925,21 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
 
     ours::VirtAddr at = 0;
     ok &= expect("shell: vma_map(vdso, RW, sealed) = ",
-                 ou::vma_map(p_vma, SEALED_RW, 0, vdso, 0, PAGE, &at), Status::AccessDenied);
+                 ours_vma_map(p_vma, SEALED_RW, 0, vdso, 0, PAGE, &at), Status::AccessDenied);
     ok &= expect("shell: vma_map(vdso, RX, not sealed) = ",
-                 ou::vma_map(p_vma, RX, 0, vdso, 0, PAGE, &at), Status::InvArgs);
-    ok &= expect("shell: vma_map(vdso, read only, sealed) = ",
-                 ou::vma_map(p_vma, VmOptions::PermRead | VmOptions::Sealed, 0, vdso, 0, PAGE, &at),
-                 Status::InvArgs);
+                 ours_vma_map(p_vma, RX, 0, vdso, 0, PAGE, &at), Status::InvArgs);
+    ok &=
+        expect("shell: vma_map(vdso, read only, sealed) = ",
+               ours_vma_map(p_vma, VmOptions::PermRead | VmOptions::Sealed, 0, vdso, 0, PAGE, &at),
+               Status::InvArgs);
     ok &= expect("shell: vma_map(vdso, from an offset) = ",
-                 ou::vma_map(p_vma, SEALED_RX, 0, vdso, PAGE, PAGE, &at), Status::InvArgs);
+                 ours_vma_map(p_vma, SEALED_RX, 0, vdso, PAGE, PAGE, &at), Status::InvArgs);
 
     // Every length short of the whole is refused; the first that is not is
     // the whole, and it is mapped.
     u64 whole = 0;
     for (u64 pages = 1; pages <= 64 && whole == 0; ++pages) {
-        auto const status = ou::vma_map(p_vma, SEALED_RX, 0, vdso, 0, pages * PAGE, &at);
+        auto const status = ours_vma_map(p_vma, SEALED_RX, 0, vdso, 0, pages * PAGE, &at);
         if (status == Status::Ok) {
             whole = pages * PAGE;
         } else if (status != Status::InvArgs) {
@@ -2865,42 +2957,45 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
         ours::VirtAddr again = 0;
         ok &=
             expect("shell: vma_map(vdso) a second time = ",
-                   ou::vma_map(p_vma, SEALED_RX, 0, vdso, 0, whole, &again), Status::AccessDenied);
+                   ours_vma_map(p_vma, SEALED_RX, 0, vdso, 0, whole, &again), Status::AccessDenied);
         ok &= expect("shell: vma_map(vdso) into another process = ",
-                     ou::vma_map(q_vma, SEALED_RX, 0, vdso, 0, whole, &again), Status::Ok);
+                     ours_vma_map(q_vma, SEALED_RX, 0, vdso, 0, whole, &again), Status::Ok);
 
         // The same pages by way of a slice: a mapping, and no registration.
         ours::HandleValue slice = ours::HANDLE_INVALID;
         ok &= expect("shell: vmo_create_child(vdso, Slice) = ",
-                     ou::vmo_create_child(vdso, ours::VmoChildOptions::Slice, 0, whole, &slice),
+                     ours_vmo_create_child(vdso, ours::VmoChildOptions::Slice, 0, whole, &slice),
                      Status::Ok);
         ok &= expect("shell: vma_map(the slice, RX) = ",
-                     ou::vma_map(s_vma, RX, 0, slice, 0, whole, &again), Status::Ok);
-        ok &= expect("shell: close(the slice) = ", ou::handle_close(slice), Status::Ok);
+                     ours_vma_map(s_vma, RX, 0, slice, 0, whole, &again), Status::Ok);
+        ok &= expect("shell: close(the slice) = ", ours_handle_close(slice), Status::Ok);
 
         // Sealing is not the vDSO's alone: any mapping may ask for it, and an
         // ordinary VMO's is accepted. What a sealed mapping then refuses is
         // checked in the kernel (vmaseal.test), since no program can unmap or
         // protect yet.
         ours::HandleValue plain = ours::HANDLE_INVALID;
-        ok &= expect("shell: vmo_create = ", ou::vmo_create(PAGE, ours::VmoOptions::None, &plain),
+        ok &= expect("shell: vmo_create = ", ours_vmo_create(PAGE, ours::VmoOptions::None, &plain),
                      Status::Ok);
         ok &= expect(
             "shell: vma_map(an ordinary VMO, sealed) = ",
-            ou::vma_map(q_vma, VmOptions::PermRead | VmOptions::Sealed, 0, plain, 0, PAGE, &again),
+            ours_vma_map(q_vma, VmOptions::PermRead | VmOptions::Sealed, 0, plain, 0, PAGE, &again),
             Status::Ok);
-        ok &= expect("shell: close(the VMO) = ", ou::handle_close(plain), Status::Ok);
+        ok &= expect("shell: close(the VMO) = ", ours_handle_close(plain), Status::Ok);
 
         ours::HandleValue t = ours::HANDLE_INVALID;
-        ok &= expect("shell: thread_create = ", ou::thread_create(s, "first", &t), Status::Ok);
+        ok &= expect("shell: thread_create = ",
+                     ours_thread_create(s, "first", sizeof("first") - 1,
+                                        ours::ThreadCreateOptions::None, &t),
+                     Status::Ok);
         ok &= expect("shell: process_start(a slice of the vDSO mapped, no vDSO) = ",
-                     ou::process_start(s, t, 0x400000, 0x500000, ours::HANDLE_INVALID, 0),
+                     ours_process_start(s, t, 0x400000, 0x500000, ours::HANDLE_INVALID, 0),
                      Status::BadState);
-        ok &= expect("shell: close(the thread) = ", ou::handle_close(t), Status::Ok);
+        ok &= expect("shell: close(the thread) = ", ours_handle_close(t), Status::Ok);
     }
 
     for (auto const handle: {p_vma, q_vma, s_vma, p, q, s}) {
-        ok &= ou::handle_close(handle) == Status::Ok;
+        ok &= ours_handle_close(handle) == Status::Ok;
     }
 
     if (ok) {
@@ -2945,7 +3040,7 @@ auto main(int, char **) -> int {
         auto const launcher = make_launcher(bootfs, vmex, vdso_vmo);
         run_probes(job, launcher);
         if (launcher.executable != ours::HANDLE_INVALID) {
-            static_cast<void>(ou::handle_close(launcher.executable));
+            static_cast<void>(ours_handle_close(launcher.executable));
         }
     }
     // Before the job is closed below: it is what a process is created under.

@@ -159,3 +159,40 @@ None.
 - Why could the rewrite be done by a script, and what had it to know about each forwarder?
 - What did `ou::channel_read` hide that the raw call makes the caller write?
 - Where else in the tree was a call's contract written down, and which copy is now the only one?
+
+## Title: The shell calls ours_* where it called an ou forwarder (remove-ou, step 2) (2026-10-03)
+
+**Files**
+- `examples/shell/shell.cpp` — 427 calls of `ou`'s forwarders now call the `ours_*` entry directly; it includes `<ours/vdso.hpp>` and only the `ou` headers of the print helpers; the comments that said its calls go through `ou` say they do not.
+- `examples/shell/BUILD.gn` — the same, in the comments on its dependencies.
+
+**Symptom**
+As for step 1: the shell, the largest caller, reached the kernel through a layer of forwarders the user decided to remove.
+
+**Cause**
+See step 1. One thing new here: the first run of the rewriting script left 68 calls behind. It took the `'` of a digit separator (`0xffff'ffff'ffff'0000`, in `check_vmo_read()`) for the start of a character literal, and skipped what followed as if it were quoted. Because `ou` still existed, every call it skipped still compiled. They surfaced only because the step also removed the `ou` headers they needed. With the separator recognised, the second run rewrote them, and a check of every file from step 1 found no call left behind there.
+
+**Change**
+The same rewrite as step 1. A name given as a string literal becomes the literal and its length, `"host", sizeof("host") - 1`, at the 10 places that did so.
+
+**Reference**
+None beyond step 1.
+
+**Verification**
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped).
+- The shell's own checks, counted in the logs: 19 groups passed in dbg; in rel 13 passed and 5 skipped, as before.
+- No call of an `ou` forwarder is left anywhere outside `//system/lib/ou`.
+
+**Deliberately not done**
+- Removing `ou` and moving its print helpers (step 3).
+
+**How it was found**
+Step 2 of `.agents/tasks/remove-ou/PLAN.md`; the missed calls by the build, once their headers were gone.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did the calls the script missed still build, and what made them fail at last?
+- How does a digit separator differ from a character literal to something that reads C++ one character at a time?
+- Which of `ours_channel_read`'s arguments did `ou::channel_read` let a caller leave out, and what did it pass for them?
