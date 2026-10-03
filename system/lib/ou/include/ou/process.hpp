@@ -6,6 +6,7 @@
 #include <ou/str.hpp>
 
 #include <ours/status.hpp>
+#include <ours/syscall.hpp>
 #include <ours/types.hpp>
 
 namespace ou {
@@ -17,9 +18,12 @@ auto process_exit(i64 retcode) -> void;
 /// Makes a process under |job| (which must grant ManageProcess) that is not
 /// running yet: the handle to it goes in |process|, the handle to its root VMA
 /// in |root_vma|. Closing the last handle to it before it is started destroys
-/// it. Zircon zx_process_create().
+/// it. |options| must be None (InvArgs otherwise), and is passed through as
+/// given. Zircon zx_process_create().
 auto process_create(ours::HandleValue job, Str name, ours::HandleValue *process,
-                    ours::HandleValue *root_vma) -> ours::Status;
+                    ours::HandleValue *root_vma,
+                    ours::ProcessCreateOptions options = ours::ProcessCreateOptions::None)
+    -> ours::Status;
 
 /// Starts |process| with |thread| as its first thread, at |entry| with |stack|.
 /// |arg1|, the one handle the process starts with (HANDLE_INVALID for none),

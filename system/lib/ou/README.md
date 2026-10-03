@@ -15,7 +15,7 @@ vDSO         mov $n, %eax; syscall           ← 唯一允许陷入内核的代�
 只是转发（`ou::command_list`）——程序应该到这里找「怎么调用某个系统调用」，而不是绕过
 它直接调 `ours_*`。
 
-This is the rule, not yet the tree: `examples/shell` still includes `<ours/vdso.hpp>` and calls `ours_*` directly at 18 sites, which step 5 of `.agents/tasks/system-abi-surface` moves to `ou`.
+The tree follows this rule since 2026-10-03: `examples/shell`'s 18 direct calls, its checks of the raw ABI, moved to `ou`. Every entry passes every ABI parameter through as given: options included, as a last parameter defaulting to None, and pointers unchanged, so a check can still hand the kernel what it must refuse. Nothing in the build stops a program that includes `<ours/vdso.hpp>` yet; that is the second half of step 5 of `.agents/tasks/system-abi-surface`.
 
 两个调用约定由本库而不是调用方负责：
 

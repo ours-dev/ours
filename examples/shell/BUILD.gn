@@ -14,7 +14,7 @@ assert(
     "examples/shell must be built in a //build/toolchain/ours:user-* toolchain")
 
 # A program bound to the vDSO at load time: the ours_* entries it calls,
-# mostly through //system/lib/ou, are left undefined by the linker, and the
+# all through //system/lib/ou, are left undefined by the linker, and the
 # kernel resolves them against the vDSO's .dynsym (elfload::Binder, in
 # userabi::launch()) when process_spawn_boot starts it.
 # The template is what says so -- everything this file used to spell out
@@ -28,13 +28,13 @@ user_executable("shell") {
 
   sources = [ "shell.cpp" ]
 
-  # The system calls this program makes go through //system/lib/ou, except
-  # its checks of the raw ABI (bad pointers, option words), which call ours_*
-  # directly until step 5 of .agents/tasks/system-abi-surface gives ou a way
-  # to reach them. The vDSO is already on the link line (user_executable()
-  # puts it there); what this dependency adds is the library that gives each
-  # of its entry points a name. The runtime is its entry point and main's
-  # caller; bootfs is the format of the BootFS it reads.
+  # The system calls this program makes go through //system/lib/ou, its
+  # checks of the raw ABI (bad pointers, option words) included: ou passes
+  # every argument through as given. The vDSO is already on the link line
+  # (user_executable() puts it there); what this dependency adds is the
+  # library that gives each of its entry points a name. The runtime is its
+  # entry point and main's caller; bootfs is the format of the BootFS it
+  # reads.
   deps = [
     "//system/lib/bootfs:headers",
     "//system/lib/launch",

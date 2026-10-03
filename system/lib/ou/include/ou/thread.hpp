@@ -12,8 +12,12 @@
 namespace ou {
 /// Makes a thread of |process| (which must grant ManageThread) that is not
 /// running yet, and puts a handle to it in |out|. Closing that handle before
-/// the thread is started leaves nothing behind. Zircon zx_thread_create().
-auto thread_create(ours::HandleValue process, Str name, ours::HandleValue *out) -> ours::Status;
+/// the thread is started leaves nothing behind. |options| must be None
+/// (InvArgs otherwise), and is passed through as given. Zircon
+/// zx_thread_create().
+auto thread_create(ours::HandleValue process, Str name, ours::HandleValue *out,
+                   ours::ThreadCreateOptions options = ours::ThreadCreateOptions::None)
+    -> ours::Status;
 } // namespace ou
 
 #endif // #ifndef OU_THREAD_HPP

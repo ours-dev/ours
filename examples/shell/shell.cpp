@@ -12,12 +12,12 @@
 /// linker sections, and nothing in this file knows any of them.
 ///
 /// Its system calls go through //system/lib/ou, which is the one place that
-/// knows what the raw ABI looks like, except the checks of the raw ABI itself
-/// (bad pointers, option words), which call ours_* directly until step 5 of
-/// .agents/tasks/system-abi-surface gives ou a way to reach them. Through ou
-/// this file names what it wants (ou::debug_line, ou::command_list) and knows
-/// nothing else -- not the per-call size limit, not the symbols the loader
-/// binds, not that a trap is involved at all.
+/// knows what the raw ABI looks like, the checks of the raw ABI itself (bad
+/// pointers, option words) included: ou passes every argument through as
+/// given, options too, so a check can still hand the kernel what it must
+/// refuse. Through ou this file names what it wants (ou::debug_line,
+/// ou::command_list) and knows nothing else -- not the per-call size limit,
+/// not the symbols the loader binds, not that a trap is involved at all.
 ///
 /// It runs on the runtime (//system/lib/runtime): the entry point is the
 /// runtime's, which reads the processargs message this program was started
@@ -33,7 +33,6 @@
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
 #include <ours/syscall/resource.hpp>
-#include <ours/vdso.hpp>
 
 #include <span>
 #include <string_view>
@@ -833,8 +832,9 @@ constexpr auto KERNEL = ours::VirtAddr{0xffff'8000'0000'0000};
 /// Bad user pointers handed to the kernel: each call must come back InvArgs,
 /// and the kernel must still be here to answer the next one.
 ///
-/// The vDSO entry points are called directly rather than through ou, so that
-/// the pointers reach the kernel exactly as written here. Three kinds:
+/// The calls go through ou, which passes every pointer to the kernel as it is
+/// given, so the pointers reach the kernel exactly as written here. Three
+/// kinds:
 ///
 ///   UNMAPPED  inside the user half of the address space, so the range check
 ///             passes, but nothing is mapped there: the copy faults, the fault
@@ -857,9 +857,11 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 
     auto ok = true;
     ok &= expect("shell: debug_write(unmapped) = ",
-                 ours_debug_write(reinterpret_cast<char const *>(UNMAPPED), 8), Status::InvArgs);
+                 ou::debug_write(ou::Str{reinterpret_cast<char const *>(UNMAPPED), 8}),
+                 Status::InvArgs);
     ok &= expect("shell: debug_write(kernel half) = ",
-                 ours_debug_write(reinterpret_cast<char const *>(KERNEL), 8), Status::InvArgs);
+                 ou::debug_write(ou::Str{reinterpret_cast<char const *>(KERNEL), 8}),
+                 Status::InvArgs);
 
     ours::HandleValue a = ours::HANDLE_INVALID;
     ours::HandleValue b = ours::HANDLE_INVALID;
@@ -869,14 +871,11 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 
     // The message is copied in before the channel is touched, so a bad source
     // leaves the channel as it was.
-    ok &= expect("shell: channel_write(from unmapped) = ",
-                 ours_channel_write(a, ours::ChannelWriteOptions::None,
-                                    reinterpret_cast<void const *>(UNMAPPED), 8, nullptr, 0),
-                 Status::InvArgs);
+    ok &=
+        expect("shell: channel_write(from unmapped) = ",
+               ou::channel_write(a, reinterpret_cast<void const *>(UNMAPPED), 8), Status::InvArgs);
     constexpr char BYTE = 'x';
-    ok &= expect("shell: channel_write(1 byte) = ",
-                 ours_channel_write(a, ours::ChannelWriteOptions::None, &BYTE, 1, nullptr, 0),
-                 Status::Ok);
+    ok &= expect("shell: channel_write(1 byte) = ", ou::channel_write(a, &BYTE, 1), Status::Ok);
 
     // Read into nothing: the message is taken off the queue before it is
     // copied out, so when the copy fails the message is gone -- the same
@@ -884,21 +883,20 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     u32 actual_bytes = 0;
     u32 actual_handles = 0;
     ok &= expect("shell: channel_read(into unmapped) = ",
-                 ours_channel_read(b, ours::ChannelReadOptions::None,
-                                   reinterpret_cast<void *>(UNMAPPED), nullptr, 1, 0, &actual_bytes,
-                                   &actual_handles),
+                 ou::channel_read(b, reinterpret_cast<void *>(UNMAPPED), 1, &actual_bytes, nullptr,
+                                  0, &actual_handles),
                  Status::InvArgs);
     char buffer[4] = {};
-    ok &= expect("shell: channel_read(after the lost message) = ",
-                 ours_channel_read(b, ours::ChannelReadOptions::None, buffer, nullptr,
-                                   sizeof(buffer), 0, &actual_bytes, &actual_handles),
-                 Status::ShouldWait);
+    ok &= expect(
+        "shell: channel_read(after the lost message) = ",
+        ou::channel_read(b, buffer, sizeof(buffer), &actual_bytes, nullptr, 0, &actual_handles),
+        Status::ShouldWait);
 
     // A poll, so that the wait ends at once and the kernel goes on to write
     // |observed| -- into nothing.
     ok &=
         expect("shell: wait_one(observed = unmapped, poll) = ",
-               ours_object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(UNMAPPED)),
+               ou::object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(UNMAPPED)),
                Status::InvArgs);
 
     // Both handle values are written out before either handle is installed,
@@ -906,30 +904,24 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     ours::HandleValue c = ours::HANDLE_INVALID;
     ours::HandleValue d = ours::HANDLE_INVALID;
     ok &= expect("shell: channel_create(out0 = unmapped) = ",
-                 ours_channel_create(ours::ChannelCreateOptions::None,
-                                     reinterpret_cast<ours::HandleValue *>(UNMAPPED), &d),
+                 ou::channel_create(reinterpret_cast<ours::HandleValue *>(UNMAPPED), &d),
                  Status::InvArgs);
-    ok &= expect("shell: channel_create(after that) = ",
-                 ours_channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok);
+    ok &= expect("shell: channel_create(after that) = ", ou::channel_create(&c, &d), Status::Ok);
 
     // The same three destinations, pointed at the vDSO: mapped, but not for
     // writing. The message is lost the same way, and nothing reaches the
     // vDSO -- the next call through it still works, which is the proof.
-    ok &= expect("shell: channel_write(1 byte) = ",
-                 ours_channel_write(a, ours::ChannelWriteOptions::None, &BYTE, 1, nullptr, 0),
-                 Status::Ok);
-    ok &=
-        expect("shell: channel_read(into the vDSO) = ",
-               ours_channel_read(b, ours::ChannelReadOptions::None, reinterpret_cast<void *>(vdso),
-                                 nullptr, 1, 0, &actual_bytes, &actual_handles),
-               Status::InvArgs);
+    ok &= expect("shell: channel_write(1 byte) = ", ou::channel_write(a, &BYTE, 1), Status::Ok);
+    ok &= expect("shell: channel_read(into the vDSO) = ",
+                 ou::channel_read(b, reinterpret_cast<void *>(vdso), 1, &actual_bytes, nullptr, 0,
+                                  &actual_handles),
+                 Status::InvArgs);
     ok &= expect("shell: wait_one(observed = vDSO, poll) = ",
-                 ours_object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(vdso)),
+                 ou::object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(vdso)),
                  Status::InvArgs);
     ours::HandleValue e = ours::HANDLE_INVALID;
     ok &= expect("shell: channel_create(out0 = vDSO) = ",
-                 ours_channel_create(ours::ChannelCreateOptions::None,
-                                     reinterpret_cast<ours::HandleValue *>(vdso), &e),
+                 ou::channel_create(reinterpret_cast<ours::HandleValue *>(vdso), &e),
                  Status::InvArgs);
 
     ok &= expect("shell: close(a) = ", ou::handle_close(a), Status::Ok);
@@ -1506,8 +1498,8 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
         // and the last call would answer NoResource.
         auto leaked = false;
         for (u32 i = 0; i < ours::HANDLE_MAX_PER_PROCESS + 1 && !leaked; ++i) {
-            leaked = ours_handle_duplicate(bootfs, Rights::SameRights,
-                                           reinterpret_cast<ours::HandleValue *>(KERNEL)) !=
+            leaked = ou::handle_duplicate(bootfs, Rights::SameRights,
+                                          reinterpret_cast<ours::HandleValue *>(KERNEL)) !=
                      Status::InvArgs;
         }
         ok &= expect("shell: handle_duplicate(out = kernel half), past the quota = ",
@@ -2474,8 +2466,8 @@ auto check_process_create(ours::HandleValue const job) -> void {
                  ou::process_create(weak, NAME, &process, &region), Status::AccessDenied);
     ok &= expect("shell: close(the weak job) = ", ou::handle_close(weak), Status::Ok);
     ok &= expect("shell: process_create(an option bit) = ",
-                 ours_process_create(job, NAME.data(), NAME.size(),
-                                     static_cast<ours::ProcessCreateOptions>(1), &process, &region),
+                 ou::process_create(job, NAME, &process, &region,
+                                    static_cast<ours::ProcessCreateOptions>(1)),
                  Status::InvArgs);
 
     // Two handles, and the safety net.
@@ -2523,11 +2515,10 @@ auto check_process_create(ours::HandleValue const job) -> void {
         ok &= ou::handle_close(filler[held - 2]) == Status::Ok;
         held -= 2;
         for (u32 i = 0; i < 3; ++i) {
-            ok &= expect(
-                "shell: process_create(process_out = kernel half), table nearly full = ",
-                ours_process_create(job, NAME.data(), NAME.size(), ours::ProcessCreateOptions::None,
-                                    reinterpret_cast<ours::HandleValue *>(KERNEL), &region),
-                Status::InvArgs);
+            ok &= expect("shell: process_create(process_out = kernel half), table nearly full = ",
+                         ou::process_create(job, NAME,
+                                            reinterpret_cast<ours::HandleValue *>(KERNEL), &region),
+                         Status::InvArgs);
         }
         ok &= expect("shell: process_create after that = ",
                      ou::process_create(job, NAME, &process, &region), Status::Ok);
@@ -2593,10 +2584,10 @@ auto check_thread_create(ours::HandleValue const job) -> void {
     ok &= expect("shell: thread_create(process without ManageThread) = ",
                  ou::thread_create(weak, NAME, &thread), Status::AccessDenied);
     ok &= expect("shell: close(the weak process handle) = ", ou::handle_close(weak), Status::Ok);
-    ok &= expect("shell: thread_create(an option bit) = ",
-                 ours_thread_create(process, NAME.data(), NAME.size(),
-                                    static_cast<ours::ThreadCreateOptions>(1), &thread),
-                 Status::InvArgs);
+    ok &=
+        expect("shell: thread_create(an option bit) = ",
+               ou::thread_create(process, NAME, &thread, static_cast<ours::ThreadCreateOptions>(1)),
+               Status::InvArgs);
     ok &= expect("shell: close(region) = ", ou::handle_close(region), Status::Ok);
 
     // A thread made and closed, more than once.
@@ -2627,11 +2618,10 @@ auto check_thread_create(ours::HandleValue const job) -> void {
         ok &= ou::handle_close(filler[held - 1]) == Status::Ok;
         held -= 1;
         for (u32 i = 0; i < 3; ++i) {
-            ok &= expect("shell: thread_create(out = kernel half), table nearly full = ",
-                         ours_thread_create(process, NAME.data(), NAME.size(),
-                                            ours::ThreadCreateOptions::None,
-                                            reinterpret_cast<ours::HandleValue *>(KERNEL)),
-                         Status::InvArgs);
+            ok &= expect(
+                "shell: thread_create(out = kernel half), table nearly full = ",
+                ou::thread_create(process, NAME, reinterpret_cast<ours::HandleValue *>(KERNEL)),
+                Status::InvArgs);
         }
         ok &=
             expect("shell: thread_create after that = ", ou::thread_create(process, NAME, &thread),

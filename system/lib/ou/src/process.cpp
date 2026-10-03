@@ -10,9 +10,9 @@ auto process_exit(i64 const retcode) -> void {
 }
 
 auto process_create(ours::HandleValue const job, Str const name, ours::HandleValue *const process,
-                    ours::HandleValue *const root_vma) -> ours::Status {
-    return ours_process_create(job, name.data(), name.size(), ours::ProcessCreateOptions::None,
-                               process, root_vma);
+                    ours::HandleValue *const root_vma, ours::ProcessCreateOptions const options)
+    -> ours::Status {
+    return ours_process_create(job, name.data(), name.size(), options, process, root_vma);
 }
 
 auto process_start(ours::HandleValue const process, ours::HandleValue const thread,

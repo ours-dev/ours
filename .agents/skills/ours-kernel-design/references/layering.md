@@ -46,9 +46,9 @@
   ABI conformance tests (bad pointers, unknown option bits) go through `ou`
   too, so an `ou` entry passes every ABI parameter through, options included,
   and forwards pointers unchanged (the user's call, 2026-10-02, over an
-  exception list for tests). This is the rule, not yet the tree:
-  `examples/shell` still calls `ours_*` directly for its ABI checks, until
-  step 5 of `.agents/tasks/system-abi-surface`.
+  exception list for tests). The tree follows it since 2026-10-03; nothing
+  in the build stops a program that includes `<ours/vdso.hpp>` yet, which
+  is the second half of step 5 of `.agents/tasks/system-abi-surface`.
 - `ou` is to be generated from `syscalls.gni`, with typed handles in the
   shape of Zircon's `lib/zx` (a consumed handle taken by value): the user's
   call, 2026-10-02, because a generator was always the plan. Until it lands

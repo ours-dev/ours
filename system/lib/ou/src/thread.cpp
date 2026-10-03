@@ -5,9 +5,8 @@
 #include <ours/vdso.hpp>
 
 namespace ou {
-auto thread_create(ours::HandleValue const process, Str const name, ours::HandleValue *const out)
-    -> ours::Status {
-    return ours_thread_create(process, name.data(), name.size(), ours::ThreadCreateOptions::None,
-                              out);
+auto thread_create(ours::HandleValue const process, Str const name, ours::HandleValue *const out,
+                   ours::ThreadCreateOptions const options) -> ours::Status {
+    return ours_thread_create(process, name.data(), name.size(), options, out);
 }
 } // namespace ou

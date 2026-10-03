@@ -11,15 +11,16 @@ auto channel_create(ours::HandleValue *const out0, ours::HandleValue *const out1
 }
 
 auto channel_write(ours::HandleValue const channel, void const *const bytes, u32 const num_bytes,
-                   ours::HandleValue const *const handles, u32 const num_handles) -> ours::Status {
-    return ours_channel_write(channel, ours::ChannelWriteOptions::None, bytes, num_bytes, handles,
-                              num_handles);
+                   ours::HandleValue const *const handles, u32 const num_handles,
+                   ours::ChannelWriteOptions const options) -> ours::Status {
+    return ours_channel_write(channel, options, bytes, num_bytes, handles, num_handles);
 }
 
 auto channel_read(ours::HandleValue const channel, void *const bytes, u32 const num_bytes,
                   u32 *const actual_bytes, ours::HandleValue *const handles, u32 const num_handles,
-                  u32 *const actual_handles) -> ours::Status {
-    return ours_channel_read(channel, ours::ChannelReadOptions::None, bytes, handles, num_bytes,
-                             num_handles, actual_bytes, actual_handles);
+                  u32 *const actual_handles, ours::ChannelReadOptions const options)
+    -> ours::Status {
+    return ours_channel_read(channel, options, bytes, handles, num_bytes, num_handles, actual_bytes,
+                             actual_handles);
 }
 } // namespace ou

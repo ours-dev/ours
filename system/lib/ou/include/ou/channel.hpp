@@ -32,9 +32,13 @@ auto channel_create(ours::HandleValue *out0, ours::HandleValue *out1,
 ///
 /// The handle parameters default to none, for the common message of bytes
 /// alone; this is still the one entry for channel_write, with arguments a
-/// caller may leave out.
+/// caller may leave out. |options| must be None (InvArgs otherwise); it is
+/// passed through as given, so that a caller can check the kernel refuses
+/// anything else.
 auto channel_write(ours::HandleValue channel, void const *bytes, u32 num_bytes,
-                   ours::HandleValue const *handles = nullptr, u32 num_handles = 0) -> ours::Status;
+                   ours::HandleValue const *handles = nullptr, u32 num_handles = 0,
+                   ours::ChannelWriteOptions options = ours::ChannelWriteOptions::None)
+    -> ours::Status;
 
 /// Takes the next message on |channel|: its bytes into |bytes| and its length
 /// into |actual_bytes|, its handles into |handles| and their number into
@@ -49,10 +53,13 @@ auto channel_write(ours::HandleValue channel, void const *bytes, u32 num_bytes,
 /// The handles received are this process's from then on: new values in its
 /// table, which it must close or pass on. The handle parameters default to
 /// none, for a reader that expects bytes alone -- a message that does carry
-/// handles is then BufferTooSmall rather than having them dropped.
+/// handles is then BufferTooSmall rather than having them dropped. |options|
+/// must be None (InvArgs otherwise), and is passed through as given.
 auto channel_read(ours::HandleValue channel, void *bytes, u32 num_bytes, u32 *actual_bytes,
                   ours::HandleValue *handles = nullptr, u32 num_handles = 0,
-                  u32 *actual_handles = nullptr) -> ours::Status;
+                  u32 *actual_handles = nullptr,
+                  ours::ChannelReadOptions options = ours::ChannelReadOptions::None)
+    -> ours::Status;
 } // namespace ou
 
 #endif // #ifndef OU_CHANNEL_HPP
