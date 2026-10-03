@@ -26,9 +26,20 @@
 /// CMDLINE item instead (get_options() in main.rs) and hands the whole ZBI
 /// on; the kernel forwarding tokens spares both programs a boot-container
 /// parser.
+///
+/// It starts the next program itself, with the user-space launcher
+/// (launch::launch_from_bootfs(), U8): the BootFS mapped into its own address
+/// space and made executable with vmex. The kernel loads this program and
+/// no other; Zircon's userboot likewise loads its next program from the
+/// BootFS itself (launch_program() in main.rs). The mapping and the
+/// executable copy go with this
+/// process when it exits.
 
 #include <string_view>
 
+#include <elfload/diagnostics.hpp>
+#include <launch/bootfs.hpp>
+#include <launch/launch.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
@@ -116,32 +127,48 @@ auto collect_handed_on() -> HandedOn {
     return handed_on;
 }
 
-/// Starts |name| from the kernel package under |job|, handing it |job|,
-/// |bootfs|, |vmex| and |debug| as its JobDefault, VmoBootfs and SystemResource
-/// startup handles -- exactly what the kernel handed
-/// this program, so the next program starts as it would
-/// have had the kernel started it directly. argv is {|name|}; the environment
-/// is |environ|, the options that were not this program's.
+/// The launcher's failures, on the debug console: only the errors, each
+/// naming the step.
+auto print_launch_error(void *, elfload::Report const &report) -> void {
+    if (report.severity != elfload::Severity::Error) {
+        return;
+    }
+    std::string_view separator;
+    std::string_view name;
+    if (!report.name.empty()) {
+        separator = ": ";
+        name = {report.name.data(), report.name.size()};
+    }
+    auto _ = ort::debug_line(
+        {"userboot: launch failed: ", {report.what.data(), report.what.size()}, separator, name});
+}
+
+/// Starts |name| from the BootFS with |launcher| under |job|, handing it
+/// |job|, |bootfs|, |vmex|, |vdso| and |debug| as its startup handles --
+/// exactly what the kernel handed this program, so the next program starts
+/// as it would have had the kernel started it directly. argv is {|name|};
+/// the environment is |environ|, the options that were not this program's.
 ///
 /// The process is started before its processargs are written, the reverse
 /// of the kernel's order (make_bootstrap()): |job| has to go into the
 /// message, and channel_write takes every handle it sends out of this
-/// process, so written first it would leave nothing to spawn under. The
+/// process, so written first it would leave nothing to launch under. The
 /// other way round costs nothing -- the runtime waits for READABLE before
 /// it reads -- and saves a handle_duplicate that would only leave userboot
 /// holding a second root job handle it has no use for.
 ///
-/// On success both handles have left this process. On failure to spawn they
+/// On success the handles have left this process. On failure to launch they
 /// are still here, and the caller decides what to do with them; a failure
-/// after the spawn loses them with the message, and the new process, finding
-/// PEER_CLOSED and no message, exits with ort::EXIT_START_FAILED.
-auto start_next(ours::Uandle const job, ours::Uandle const bootfs, ours::Uandle const vmex,
-                ours::Uandle const vdso, ours::Uandle const debug, std::string_view const name,
-                HandedOn const &environ) -> ours::Status {
+/// after the launch loses them with the message, and the new process,
+/// finding PEER_CLOSED and no message, exits with ort::EXIT_START_FAILED.
+auto start_next(launch::BootfsLauncher const &launcher, ours::Uandle const job,
+                ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
+                ours::Uandle const debug, std::string_view const name, HandedOn const &environ)
+    -> ours::Status {
     using ours::Status;
 
-    // The child's root VMA first, filled in once process_spawn_boot has made
-    // the child and handed it back; its handle_info is known already, so the
+    // The child's root VMA first, filled in once the launcher has made the
+    // child and handed it back; its handle_info is known already, so the
     // message can be encoded before.
     ours::Uandle handles[6] = {ours::Uandle::Invalid, job};
     u32 infos[6] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
@@ -151,14 +178,14 @@ auto start_next(ours::Uandle const job, ours::Uandle const bootfs, ours::Uandle 
         handles[count] = bootfs;
         infos[count++] = ours::handle_info(ours::HandleType::VmoBootfs, 0);
     }
-    // The vDSO's VMO, handed on unused for now: it is the next program that
-    // starts processes, and maps the vDSO into them (K23).
+    // The vDSO's VMO: the next program starts processes too, and maps the
+    // vDSO into them (K23).
     if (vdso != ours::Uandle::Invalid) {
         handles[count] = vdso;
         infos[count++] = ours::handle_info(ours::HandleType::VmoVdso, 0);
     }
-    // Handed on unused: userboot has nothing to make executable before K19,
-    // and the next program is the one design D3 gives it to.
+    // Handed on after this program's own use of it, the BootFS's executable
+    // copy: the next program makes its own (design D3).
     if (vmex != ours::Uandle::Invalid) {
         handles[count] = vmex;
         infos[count++] =
@@ -192,12 +219,17 @@ auto start_next(ours::Uandle const job, ours::Uandle const bootfs, ours::Uandle 
         status != Status::Ok) {
         return status;
     }
-    if (auto const status = ours::process_spawn_boot(job, (to_str(name)).data(),
-                                                     (to_str(name)).size(), there, &handles[0]);
-        status != Status::Ok) {
+    // |there| leaves this process whatever the launch answers.
+    auto const started = launch::launch_from_bootfs(
+        launcher, job, name, there, {.report = print_launch_error, .context = nullptr});
+    if (started.is_err()) {
         auto _ = ours::handle_close(here);
-        return status;
+        return started.unwrap_err();
     }
+    handles[0] = started.unwrap().root_vma;
+    // userboot does not wait for the next program: it exits once the message
+    // is written. Closing the handle does not stop a started process.
+    auto _ = ours::handle_close(started.unwrap().process);
     auto const written =
         ours::channel_write(here, ours::ChannelWriteOptions::None, message, length, handles, count);
     auto _ = ours::handle_close(here);
@@ -227,15 +259,29 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("userboot: started without the root job");
         return 1;
     }
-    // Absent is allowed: the kernel starts this program without a BootFS
-    // when it could not build one, and the next program is the one that has
-    // to cope with that, as init already does.
     auto const bootfs = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
+
+    // The launcher. Without the BootFS there is nothing to start the next
+    // program from: the kernel loads no program but this one.
+    if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
+        vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line(
+            {"userboot: cannot start ", to_str(next), " (missing BootFS, vmex, vDSO or VmaRoot)"});
+        return 1;
+    }
+    auto const made = launch::make_bootfs_launcher(
+        bootfs, vmex, vdso, vma, {.report = print_launch_error, .context = nullptr});
+    if (made.is_err()) {
+        report("userboot: setting the launcher up = ", made.unwrap_err());
+        return 1;
+    }
+    auto const &launcher = made.unwrap();
 
     auto _ = ort::debug_line({"userboot: starting ", to_str(next)});
     auto const handed_on = collect_handed_on();
@@ -243,8 +289,11 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line(
             {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)});
     }
-    if (auto const status = start_next(job, bootfs, vmex, vdso, debug, next, handed_on);
-        status != ours::Status::Ok) {
+    auto const status = start_next(launcher, job, bootfs, vmex, vdso, debug, next, handed_on);
+    // The executable copy was only for the launch; the next program makes
+    // its own from the BootFS handed on.
+    auto _ = ours::handle_close(launcher.executable);
+    if (status != ours::Status::Ok) {
         report("userboot: starting the next program = ", status);
         return 1;
     }

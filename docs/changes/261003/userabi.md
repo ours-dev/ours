@@ -197,3 +197,70 @@ None. The user accepted both recommendations: the splitting in elfload, and W^X 
 - Why could the RELRO pages be read-only from the start, though the loader writes them after mapping?
 - Why does a page that RELRO only partly fills stay writable?
 - What does each of the three new probes prove, and why had each to be shown surviving on the old mapping?
+
+## Title: userboot starts the next program with the user-space launcher; the kernel loads userboot only (2026-10-03)
+
+**Files**
+- `kernel/lib/userabi/userboot/userboot.cpp` — userboot now:
+  - takes its VmaRoot;
+  - makes a `launch::BootfsLauncher` from the BootFS, vmex and the vDSO's VMO;
+  - starts `userboot.next` with `launch_from_bootfs()` instead of `process_spawn_boot`, and closes the process handle and the executable copy once the message is written;
+  - prints the launcher's errors (`print_launch_error()`).
+- `kernel/lib/userabi/userboot/BUILD.gn` — depends on `//system/lib/launch`.
+
+**Symptom**
+None: step U8 of `docs/design/260924/userspace-filesystem.md`, under the user's rule that user space uses nothing on the kernel side but system calls. userboot was the last user program that asked the kernel to load the next one (`process_spawn_boot`). It starts init on the rel image and the shell on the dbg image.
+
+**Cause**
+The objects:
+- userboot: the one program the kernel loads, with `userabi::launch()`.
+- What the kernel hands it: the root job, the BootFS, vmex, the vDSO's VMO, the Debug resource and its own root region (VmaRoot).
+- The BootFS launcher, which needs exactly the BootFS, vmex, the vDSO's VMO and a root region to map into.
+
+The events:
+1. The kernel loads userboot.
+2. userboot makes the launcher, mapping the BootFS into its own address space and making an executable copy of it.
+3. It launches `userboot.next` and writes the processargs, handing on the same handles it got.
+4. It exits. Its address space goes with it, the BootFS mapping included. The executable copy is closed first.
+
+Before this change, step 3 was the kernel's own ELF loader, run on userboot's request. That kept a second loading path in ring 0 alive for every boot. Its other users went in the previous commits: init's shell and autorun, and the shell's probes.
+
+**Change**
+
+```cpp
+// before
+ours::process_spawn_boot(job, name.data(), name.size(), there, &handles[0]);
+
+// after
+auto const started = launch::launch_from_bootfs(launcher, job, name, there, {...});
+handles[0] = started.unwrap().root_vma;
+auto _ = ours::handle_close(started.unwrap().process);
+```
+
+Without the BootFS, vmex, the vDSO's VMO or VmaRoot, userboot cannot start anything. It says so and exits 1. Before, a missing BootFS was allowed through to the next program.
+
+**Reference**
+- Zircon's userboot starts its next program itself: `launch_program()` in `zircon/kernel/lib/userabi/userboot/main.rs`, with the BootFS VMO it extracted.
+- Its kernel loads userboot alone (`zircon/kernel/lib/userabi/userboot.cc`).
+
+**Verification**
+- `boot_check.py` on `out/bringup.x86`:
+  - dbg PASS, 20 passed: `userboot: started shell`, 16 probes killed, launcher checks passed;
+  - rel PASS, 18 passed: `userboot: started init`, `init: launched shell`.
+- In both images, `object: process 'userboot' ... destroyed` follows the start.
+- In both logs, the kernel's own loading lines (`userboot: found '<name>'`, `userabi: '<name>' starts with a bootstrap handle`) appear once each, for `userboot` alone.
+
+**Deliberately not done**
+- `process_spawn_boot` still exists, with one caller left: the shell's self-checks, when they have no launcher. Removing the call, the system call and the kernel's resident package is K25.
+- The launcher's error printer now has three copies: the shell, init and userboot. Each is about ten lines and differs only in its prefix. The launch library prints nothing on purpose, so a shared printer would need a home that knows both `elfload` and the debug console.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which handles does the launcher need, and which of them did userboot not use before this change?
+- Why can userboot exit right after writing the processargs without taking the next program down with it?
+- After this change, which program does the kernel load, and through which function?

@@ -20,7 +20,8 @@ assert(toolchain_environment == "user",
 #
 # The kernel always starts it first (kernel.select.userboot names another
 # build of it, and defaults to this one).  It starts the program the image's
-# userboot.next option names, handing on the root job and the BootFS; with
+# userboot.next option names, with the user-space launcher out of the BootFS
+# (//system/lib/launch), handing on the root job and the BootFS; with
 # no userboot.next it only proves the path works -- reach ring 3, read its
 # processargs, say so.  It runs on the runtime, as init does, because the
 # processargs message is how it learns both what to start and what to start
@@ -29,5 +30,8 @@ user_executable("userboot") {
   visibility = [ "//kernel/products/image/*" ]
 
   sources = [ "userboot.cpp" ]
-  deps = [ "//system/lib/ort" ]
+  deps = [
+    "//system/lib/launch",
+    "//system/lib/ort",
+  ]
 }
