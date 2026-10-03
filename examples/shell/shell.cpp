@@ -549,9 +549,10 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
 /// channel instead, and does not package fault_probe.
 auto run_probes(ours::Uandle const job, Launcher const &launcher) -> void {
     constexpr std::string_view PROBES[] = {
-        "pf_unmapped", "pf_kernel", "pf_write_vdso", "pf_exec_vdso_data",
-        "ud2",         "gp_hlt",    "gp_int80",      "gp_int3",
-        "de",          "db_tf",     "gp_io",         "trap_outside_vdso",
+        "pf_unmapped",   "pf_kernel",    "pf_write_vdso",     "pf_exec_vdso_data",
+        "pf_write_text", "pf_exec_data", "pf_write_relro",    "ud2",
+        "gp_hlt",        "gp_int80",     "gp_int3",           "de",
+        "db_tf",         "gp_io",        "trap_outside_vdso",
     };
 
     u32 killed = 0;

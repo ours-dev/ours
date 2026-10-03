@@ -14,12 +14,13 @@
 
 namespace kelfload {
 /// An ELF image laid out in a VMO and not yet mapped anywhere: what
-/// Loader::load() makes and Loader::map() places.
+/// Loader::load() makes and Loader::map_segments() places.
 ///
 /// The split exists for the vDSO. It is one image every process maps, and
 /// Zircon lays it out once (VDso::Create(), zircon/kernel/lib/userabi/vdso.cc)
 /// and maps that same VMO into each process; laying it out per process, as
-/// map() alone does, gave every process a private copy of the vDSO's pages.
+/// the loader once did with every image it mapped, gave every process a
+/// private copy of the vDSO's pages.
 struct ImageVmo {
     /// Owns the VMO. Every mapping of it takes its own reference as well.
     ours::object::KernelHandle<ours::object::VmoDispatcher> vmo;
@@ -53,62 +54,56 @@ class Loader final {
 
     explicit Loader(ours::object::VmaDispatcher &root_vma) : m_root_vma(root_vma) {}
 
-    /// Lays |file|'s PT_LOAD segments out in a fresh paged VMO and maps it at
-    /// the address |at| with the protection |perms| (VmOptions::Perm* bits, and
-    /// Sealed, which the mapping is then made with).
+    /// Lays |file|'s PT_LOAD segments out in a fresh paged VMO and maps it
+    /// nowhere. Static because it needs no address space -- which is what lets
+    /// one layout be mapped into many.
     ///
     /// The segments land in one VMO covering one range, from the lowest
-    /// p_vaddr any PT_LOAD claims to the highest. That is a simplification --
-    /// a real loader honours each segment's own permissions and the gaps
-    /// between them, as map_segments() does for the vDSO -- and it is also
-    /// the invariant Binder relies on when it describes the image to eftl as
-    /// a single load region. A program is still mapped this way
-    /// (docs/repairs/260919/elfload.md, item 1).
+    /// p_vaddr any PT_LOAD claims to the highest, each at its own offset from
+    /// the lowest. The mappings are by segment (map_segments()); the VMO is
+    /// one so that an image has one origin, which is the invariant Binder
+    /// relies on when it describes the image to eftl as a single load region
+    /// and writes a relocation at an offset of it (elfload::Image::writer),
+    /// whatever the page there is mapped as.
     ///
-    /// |name| is a plain C string because it becomes the mapping's name and is
-    /// only ever a literal or a program name the caller already keeps
-    /// terminated.
-    [[nodiscard]]
-    auto map(Bytes file, ours::VirtAddr at, ours::VmOptions perms, char const *name,
-             elfload::Image &out) const -> ours::Status;
-
-    /// The first half of the above: lays |file|'s PT_LOAD segments out in a
-    /// fresh paged VMO and maps it nowhere. Static because it needs no address
-    /// space -- which is what lets one layout be mapped into many.
+    /// |name| names the image in what the log says about it.
     [[nodiscard]]
     static auto load(Bytes file, char const *name, ImageVmo &out) -> ours::Status;
 
-    /// The second half: maps an image load() laid out at |at| with |perms|.
-    /// The VMO is shared, not copied; every address space it is mapped into
-    /// sees the same pages.
+    /// Maps an image load() laid out at |at|, as the mappings
+    /// elfload::mapping_pages() reads from |file|, the file |image| was laid
+    /// out from: each segment at its own offset from |at| with the protection
+    /// its p_flags ask for, its pages wholly inside PT_GNU_RELRO read-only,
+    /// and the pages between segments unmapped. A segment both writable and
+    /// executable, two that share a page, and RELRO anywhere but at the start
+    /// of a writable segment are refused (InvArgs), with why through
+    /// |diagnostics|. |extra| goes on every mapping as well (Sealed, or
+    /// nothing).
     ///
-    /// The mapping's ceiling is |perms| itself (the matching CanMap bits):
+    /// Every image the kernel starts is mapped this way: a program, so that
+    /// none of it is writable and executable at once, and the vDSO, so that
+    /// its code is the only part of it executable and the kernel's
+    /// registration of it (VmaDispatcher::map()) sees exactly that segment.
+    /// Each mapping is made with its final protection, before the image is
+    /// bound: elfload::Binder writes relocations through the VMO
+    /// (elfload::Image::writer), never through a mapping, so a page mapped
+    /// read-only -- RELRO above all -- takes them all the same.
+    ///
+    /// A mapping's ceiling is its own protection (the matching CanMap bits):
     /// the kernel maps these images for the program, and nothing the program
     /// does later should raise them -- the vDSO above all, which must never
     /// become writable.
     ///
-    /// |image| is not const because mapping takes a reference on its VMO, and
-    /// ustl::Arc carries const through to the object it points at.
-    [[nodiscard]]
-    auto map(ImageVmo &image, ours::VirtAddr at, ours::VmOptions perms, char const *name,
-             elfload::Image &out) const -> ours::Status;
-
-    /// Maps an image load() laid out at |at| segment by segment, each with the
-    /// protection its p_flags ask for, at its own offset from |at|; the pages
-    /// between segments stay unmapped. |extra| goes on every mapping as well
-    /// (Sealed, or nothing). |file| is the file |image| was laid out from:
-    /// the segments are read from it (elfload::segment_pages()), and two that
-    /// share a page are refused, since they could not be given different
-    /// protections.
+    /// The VMO is shared, not copied; every address space it is mapped into
+    /// sees the same pages. |image| is not const because mapping takes a
+    /// reference on its VMO, and ustl::Arc carries const through to the object
+    /// it points at. |name| is every mapping's name, a plain C string because
+    /// it is only ever a literal or a program name the caller already keeps
+    /// terminated.
     ///
-    /// What map() is not: a writable segment is mapped writable and nothing
-    /// else, a code segment executable and not writable. It is how the vDSO
-    /// is mapped, so that only its code is executable and the kernel's
-    /// registration of it (VmaDispatcher::map()) sees exactly that segment.
-    ///
-    /// A segment that fails to map leaves the ones before it in place: a
-    /// sealed one cannot be taken down, and the caller is building an address
-    /// space it abandons on failure anyway.
+    /// A mapping that fails leaves the ones before it in place: a sealed one
+    /// cannot be taken down, and the caller is building an address space it
+    /// abandons on failure anyway.
     [[nodiscard]]
     auto map_segments(ImageVmo &image, Bytes file, ours::VirtAddr at, ours::VmOptions extra,
                       char const *name, elfload::Diagnostics const &diagnostics,

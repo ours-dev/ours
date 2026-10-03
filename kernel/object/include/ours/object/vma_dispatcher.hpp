@@ -104,8 +104,11 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///   - NotFound: no room for it without Specific;
     ///   - BadState: this region went with its address space.
     /// W^X and "Write needs Read" are not checked here: they are rules for
-    /// what a program may ask (vma_map), and userboot still maps its image
-    /// writable and executable as one range until segments get their own.
+    /// what a program may ask (vma_map). The kernel's own callers keep to
+    /// them -- its loader maps every image by segment, each mapping readable
+    /// and none both writable and executable (elfload::mapping_pages()), and
+    /// userboot's stack is read and write -- but nothing here holds them to
+    /// it.
     ///
     /// |name| names the mapping in the kernel's dumps; the system call passes
     /// its own.

@@ -4,12 +4,6 @@
 
 ---
 
-## 1. userboot 的映射同时可写可执行
-
-`load_image()` 把三个 PT_LOAD（R / RX / RW）当成一整段用 `MmuFlags::User | R | W | X` 映射。
-这正是 W^X 要禁止的形状。应当逐段映射，各按自己的 `p_flags` 给权限
-（段之间已经是页对齐的，`llvm-readelf -l` 显示 Align 0x1000）。
-
 ## 2. 解压 BootFS 的那块帧永不释放
 
 `materialize_kernel_package()` 按页分配整个解压后的内核包（当前约 0.5 MB，主要是 vmours

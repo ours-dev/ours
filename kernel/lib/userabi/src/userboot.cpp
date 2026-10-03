@@ -489,20 +489,25 @@ namespace {
     auto load_program(ustl::views::Span<u8 const> bytes, char const *name,
                       kelfload::Loader const &loader, object::VmaDispatcher &root_vma,
                       LoadedImage &out) -> Status {
-        // Mapped through the root VMA, which always maps for ring 3 (User).
-        // Writable as well as executable for now because the three
-        // segments (R, RX, RW) are being mapped as one range; giving each its
-        // own permissions is a later step, and one worth taking -- an image
-        // that is writable and executable at once is exactly what W^X exists
-        // to forbid.
+        // Laid out in a VMO of its own, then mapped through the root VMA,
+        // which always maps for ring 3 (User), by segment: each with its own
+        // protection, so that the code is executable and not writable, the
+        // data writable and not executable, and RELRO read-only from the
+        // start. Binding, which comes after, writes the relocations through
+        // the VMO rather than through these mappings, so nothing has to be
+        // protected afterwards. Not sealed: the launcher does not seal a
+        // program's mappings either; only the vDSO must stay as it was
+        // mapped.
         //
-        // Note it does not defeat the vDSO rule: a program that writes a
-        // `syscall` into its own text still traps from an address outside the
-        // vDSO, which is exactly what the kernel refuses.
-        constexpr auto IMAGE_PERMS =
-            VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute;
-
-        auto status = loader.map(bytes, USER_ASPACE_BASE, IMAGE_PERMS, name, out.image);
+        // The VMO's handle goes when this returns; the mappings keep the VMO
+        // alive by their own references.
+        kelfload::ImageVmo image;
+        auto status = kelfload::Loader::load(bytes, name, image);
+        if (Status::Ok != status) {
+            return status;
+        }
+        status = loader.map_segments(image, bytes, USER_ASPACE_BASE, VmOptions::None, name,
+                                     ELFLOAD_LOG, out.image);
         if (Status::Ok != status) {
             return status;
         }
@@ -596,22 +601,24 @@ namespace {
         // maps the same pages. A vDSO built otherwise -- linked without
         // -z rodynamic, say, so that .dynamic gets a writable segment -- stops
         // the boot here, with the reason, instead of being mapped in a shape
-        // the registration rule was not written for.
-        elfload::SegmentPagesList segments;
-        if (auto const status = elfload::segment_pages(ELFLOAD_LOG, file.unwrap(), segments);
+        // the registration rule was not written for. RELRO counts as
+        // writable though it is mapped read-only: it is what a loader writes
+        // once, and nothing relocates the vDSO.
+        elfload::MappingPagesList mappings;
+        if (auto const status = elfload::mapping_pages(ELFLOAD_LOG, file.unwrap(), mappings);
             Status::Ok != status) {
             log::error("userabi: the vDSO cannot be mapped by segment");
             return status;
         }
         auto code = object::VmoDispatcher::VdsoCode{};
         auto executable = usize{0};
-        for (auto const &segment: segments) {
-            if (segment.write) {
-                log::error("userabi: the vDSO has a writable segment at +{:#x}", segment.offset);
+        for (auto const &mapping: mappings) {
+            if (mapping.write || mapping.relro) {
+                log::error("userabi: the vDSO has a writable segment at +{:#x}", mapping.offset);
                 return Status::InvArgs;
             }
-            if (segment.execute) {
-                code = {.offset = segment.offset, .size = segment.size};
+            if (mapping.execute) {
+                code = {.offset = mapping.offset, .size = mapping.size};
                 executable += 1;
             }
         }

@@ -3,6 +3,7 @@
 #include <kelfload/loader.hpp>
 
 #include <algorithm>
+#include <string_view>
 
 #include <cstring>
 
@@ -29,9 +30,8 @@ namespace {
     ///
     /// Mapping segments with their own permissions is where that trade stops
     /// being worth it, and map_segments() does not read these: it takes its
-    /// segments from elfload::segment_pages(), which asks eftl's
-    /// LoadPolicy::make_plan() at page granularity
-    /// (docs/repairs/260919/elfload.md).
+    /// mappings from elfload::mapping_pages(), which asks eftl's
+    /// LoadPolicy::make_plan() at page granularity.
     struct [[gnu::packed]] Elf64Header {
         u8 ident[16];
         u16 type;
@@ -68,6 +68,21 @@ namespace {
     auto write_through_vmo(void *const context, usize const offset, void const *const bytes,
                            usize const size) -> Status {
         return static_cast<mm::VmObject *>(context)->write(bytes, offset, size);
+    }
+
+    /// How a debug line spells |mapping|'s protection. Every mapping is
+    /// readable (elfload::MappingPages).
+    auto protection_of(elfload::MappingPages const &mapping) -> std::string_view {
+        if (mapping.write) {
+            return "rw-";
+        }
+        if (mapping.execute) {
+            return "r-x";
+        }
+        if (mapping.relro) {
+            return "r-- (RELRO)";
+        }
+        return "r--";
     }
 } // namespace
 
@@ -174,44 +189,58 @@ auto Loader::load(Bytes const bytes, char const *const name, ImageVmo &out) -> S
     return Status::Ok;
 }
 
-auto Loader::map(ImageVmo &image, VirtAddr const at, VmOptions const perms, char const *const name,
-                 Image &out) const -> Status {
+auto Loader::map_segments(ImageVmo &image, Bytes const file, VirtAddr const at,
+                          VmOptions const extra, char const *const name,
+                          elfload::Diagnostics const &diagnostics, Image &out) const -> Status {
+    elfload::MappingPagesList mappings;
+    if (auto const status = elfload::mapping_pages(diagnostics, file, mappings);
+        Status::Ok != status) {
+        log::error("elfload: {} cannot be mapped by segment", name);
+        return status;
+    }
+
     auto &vmo = image.vmo;
     auto memory = vmo.dispatcher()->vmo();
+    for (auto const &mapping: mappings) {
+        // Through the dispatcher, not through the VmArea it stands for: a
+        // VmArea knows what a mapping is allowed to be, but cannot know who is
+        // asking, and every syscall::vma_map has to answer that. Rights live
+        // on the handle, so the entry point has to be on the object that a
+        // handle names.
+        //
+        // At its place exactly, populated now, readable always (why is on
+        // elfload::MappingPages), and never above its own protection: each
+        // Perm bit brings its CanMap bit and nothing else, so nothing the
+        // program does later raises a mapping above what its p_flags say.
+        auto options = extra | VmOptions::PermRead | VmOptions::CanMapRead | VmOptions::Specific |
+                       VmOptions::MapRange;
+        if (mapping.write) {
+            options |= VmOptions::PermWrite | VmOptions::CanMapWrite;
+        }
+        if (mapping.execute) {
+            options |= VmOptions::PermExecute | VmOptions::CanMapExecute;
+        }
+        // The VMO starts at the image's first page, and so does |at|: a
+        // mapping is at the same offset in both.
+        auto const base = at + mapping.offset;
+        auto const mapped = m_root_vma.map(options, base - m_root_vma.vma()->base(),
+                                           *vmo.dispatcher(), mapping.offset, mapping.size, name);
+        if (mapped.is_err()) {
+            log::error("elfload: could not map {} at +{:#x}: {}", name, mapping.offset,
+                       to_string(mapped.unwrap_err()));
+            return mapped.unwrap_err();
+        }
+        log::debug("elfload: {} [{:X}, {:X}) {}", name, base, base + mapping.size,
+                   protection_of(mapping));
+    }
+
+    out.base = at;
     out.span = image.span;
-
-    // Through the dispatcher, not through the VmArea it stands for: a
-    // VmArea knows what a mapping is allowed to be, but cannot know who is
-    // asking, and every future syscall::vma_map has to answer that. Rights
-    // live on the handle, so the entry point has to be on the object that
-    // a handle names.
-    //
-    // At |at| exactly, populated now, and never above |perms|: each Perm bit
-    // brings its CanMap bit and nothing else. A Sealed in |perms| goes through
-    // to the mapping as it stands.
-    auto ceiling = VmOptions::None;
-    if (!!(perms & VmOptions::PermRead)) {
-        ceiling |= VmOptions::CanMapRead;
-    }
-    if (!!(perms & VmOptions::PermWrite)) {
-        ceiling |= VmOptions::CanMapWrite;
-    }
-    if (!!(perms & VmOptions::PermExecute)) {
-        ceiling |= VmOptions::CanMapExecute;
-    }
-    auto const options = perms | ceiling | VmOptions::Specific | VmOptions::MapRange;
-    auto const vma_offset = at - m_root_vma.vma()->base();
-    auto mapping = m_root_vma.map(options, vma_offset, *vmo.dispatcher(), 0, out.span, name);
-    if (mapping.is_err()) {
-        log::error("elfload: could not map {}: {}", name, to_string(mapping.unwrap_err()));
-        return mapping.unwrap_err();
-    }
-
-    out.base = mapping.unwrap();
     // The Binder writes relocations through the VMO as well. The pointer
-    // stays valid for as long as the image does: the mapping holds its own
-    // reference to the VMO, so the object outlives both references dropped
-    // at the end of this function.
+    // stays valid for as long as the image is mapped: every mapping holds its
+    // own reference to the VMO, so the object outlives |memory|, dropped at
+    // the end of this function, and the handle in |image|, which a caller may
+    // drop as soon as this returns.
     out.writer = {.write = write_through_vmo, .context = memory.as_ptr_mut()};
     out.image_base = image.image_base;
     // e_entry is a file-relative address for a PIE, so it moves with the
@@ -220,62 +249,5 @@ auto Loader::map(ImageVmo &image, VirtAddr const at, VmOptions const perms, char
     // vDSO -- and is recorded here only because one routine maps both.
     out.entry = out.base + image.entry_offset;
     return Status::Ok;
-}
-
-auto Loader::map_segments(ImageVmo &image, Bytes const file, VirtAddr const at,
-                          VmOptions const extra, char const *const name,
-                          elfload::Diagnostics const &diagnostics, Image &out) const -> Status {
-    elfload::SegmentPagesList segments;
-    if (auto const status = elfload::segment_pages(diagnostics, file, segments);
-        Status::Ok != status) {
-        log::error("elfload: {} cannot be mapped by segment", name);
-        return status;
-    }
-
-    auto &vmo = image.vmo;
-    auto memory = vmo.dispatcher()->vmo();
-    for (auto const &segment: segments) {
-        // Each Perm bit brings its CanMap bit and nothing else, as in map():
-        // nothing the program does later raises a segment above what its
-        // p_flags say.
-        auto options = extra | VmOptions::Specific | VmOptions::MapRange;
-        if (segment.read) {
-            options |= VmOptions::PermRead | VmOptions::CanMapRead;
-        }
-        if (segment.write) {
-            options |= VmOptions::PermWrite | VmOptions::CanMapWrite;
-        }
-        if (segment.execute) {
-            options |= VmOptions::PermExecute | VmOptions::CanMapExecute;
-        }
-        // The VMO starts at the image's first page, and so does |at|: a
-        // segment is at the same offset in both.
-        auto const vma_offset = at + segment.offset - m_root_vma.vma()->base();
-        auto mapping = m_root_vma.map(options, vma_offset, *vmo.dispatcher(), segment.offset,
-                                      segment.size, name);
-        if (mapping.is_err()) {
-            log::error("elfload: could not map a segment of {} at +{:#x}: {}", name, segment.offset,
-                       to_string(mapping.unwrap_err()));
-            return mapping.unwrap_err();
-        }
-    }
-
-    out.base = at;
-    out.span = image.span;
-    out.writer = {.write = write_through_vmo, .context = memory.as_ptr_mut()};
-    out.image_base = image.image_base;
-    out.entry = out.base + image.entry_offset;
-    return Status::Ok;
-}
-
-auto Loader::map(Bytes const bytes, VirtAddr const at, VmOptions const perms,
-                 char const *const name, Image &out) const -> Status {
-    // Laid out for this one mapping. The ImageVmo's handle goes when this
-    // returns; the mapping keeps the VMO alive by its own reference.
-    ImageVmo image;
-    if (auto const status = load(bytes, name, image); Status::Ok != status) {
-        return status;
-    }
-    return map(image, at, perms, name, out);
 }
 } // namespace kelfload

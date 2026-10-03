@@ -85,6 +85,58 @@ auto pf_exec_vdso_data(ours::VirtAddr const vdso_base) -> void {
     data();
 }
 
+/// A store into this program's own code: the first byte of this function,
+/// written back with the byte it holds, so that a store that goes through
+/// changes nothing and the probe returns to say so. #PF, present, user
+/// write. While the kernel mapped a program as one range, read, write and
+/// execute, it went through.
+auto pf_write_text(ours::VirtAddr) -> void {
+    auto const code = reinterpret_cast<ours::VirtAddr>(&pf_write_text);
+    __asm__ volatile("movb (%0), %%al\n\t"
+                     "movb %%al, (%0)"
+                     :
+                     : "r"(code)
+                     : "rax", "memory");
+}
+
+/// A `ret`, in writable data: not const, so that the linker puts it in .data,
+/// and its address handed to an asm (pf_exec_data()), so that the compiler
+/// cannot prove nothing writes it and move it to .rodata itself.
+u8 ret_in_data[] = {0xC3};
+
+/// A call into |ret_in_data|, whose page is the program's data, mapped read
+/// and write and not executable. #PF, present, user instruction fetch. While
+/// the kernel mapped a program as one range, read, write and execute, the
+/// `ret` ran and the probe returned.
+auto pf_exec_data(ours::VirtAddr) -> void {
+    auto code = reinterpret_cast<ours::VirtAddr>(ret_in_data);
+    // From here the compiler knows nothing of where |code| points: what is
+    // called is whatever is there, not a call through a pointer to an object,
+    // which it could take for undefined behaviour and drop.
+    __asm__ volatile("" : "+r"(code) : : "memory");
+    reinterpret_cast<void (*)()>(code)();
+}
+
+/// Pointers to string literals, constant. In a PIE each is a relocation
+/// (R_X86_64_RELATIVE) that the loader writes once, so the linker puts the
+/// array in .data.rel.ro, inside PT_GNU_RELRO, rather than in .rodata.
+constexpr char const *RELRO_WORDS[] = {"written", "once", "by", "the", "loader"};
+
+/// A store into |RELRO_WORDS|, through a pointer that casts its const away:
+/// its first entry, written back with what it holds, so that a store that
+/// goes through changes nothing. The page is wholly RELRO -- LLD pads RELRO
+/// to a page -- and so mapped read-only. #PF, present, user write. While the
+/// kernel mapped a program as one range, read, write and execute, it went
+/// through.
+auto pf_write_relro(ours::VirtAddr) -> void {
+    auto *const entry = const_cast<char const **>(&RELRO_WORDS[0]);
+    __asm__ volatile("movq (%0), %%rax\n\t"
+                     "movq %%rax, (%0)"
+                     :
+                     : "r"(entry)
+                     : "rax", "memory");
+}
+
 /// #UD.
 auto ud2(ours::VirtAddr) -> void {
     __asm__ volatile("ud2");
@@ -146,6 +198,9 @@ constexpr Probe PROBES[] = {
     {"pf_kernel", pf_kernel},
     {"pf_write_vdso", pf_write_vdso},
     {"pf_exec_vdso_data", pf_exec_vdso_data},
+    {"pf_write_text", pf_write_text},
+    {"pf_exec_data", pf_exec_data},
+    {"pf_write_relro", pf_write_relro},
     {"ud2", ud2},
     {"gp_hlt", gp_hlt},
     {"gp_int80", gp_int80},

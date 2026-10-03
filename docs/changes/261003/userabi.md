@@ -127,3 +127,73 @@ None. The user asked for the better engineering choice, not the simpler one: the
 - What could a program have done with data that is executable inside the trusted range, and why was it not possible today?
 - Why does the kernel read the code segment from the vDSO's file rather than from build-time constants, as Zircon does?
 - What does error code `0x15` on the new probe's page fault say, bit by bit?
+
+## Title: The kernel maps a program by segment, with RELRO read-only, and no longer read-write-execute (2026-10-03)
+
+**Files**
+- `system/lib/elfload/include/elfload/program.hpp`, `src/program.cpp` — `segment_pages()` becomes `mapping_pages()` (`MappingPages`, `MappingPagesList`). A writable segment that RELRO starts gives two mappings, its wholly-RELRO pages read-only and the rest read-write. The launcher's rules are applied: no segment both writable and executable, none without access bits, none sharing a page or out of order, and RELRO only at the start of a writable segment.
+- `kernel/lib/kelfload/include/kelfload/loader.hpp`, `src/loader.cpp` — `map_segments()` maps every mapping readable plus its own protection, and logs each one. `Loader::map()`, both overloads, is deleted: it mapped an image as one range, and has no caller left.
+- `kernel/lib/userabi/src/userboot.cpp` — `load_program()` lays the image out with `Loader::load()` and maps it with `map_segments()`. The vDSO check counts a RELRO mapping as writable.
+- `kernel/lib/syscall/test/fault_probe/fault_probe.cpp`, `examples/shell/shell.cpp` — three new probes, `pf_write_text`, `pf_exec_data` and `pf_write_relro`, which the shell expects to be killed.
+- `kernel/object/include/ours/object/vma_dispatcher.hpp`, `system/lib/launch/include/launch/launch.hpp` — the comments that said userboot maps its image writable and executable.
+- `docs/repairs/260919/elfload.md` item 1 and `docs/repairs/260905/userabi.md` item 1, the same defect recorded twice — deleted, fixed.
+
+**Symptom**
+Every program the kernel starts was mapped as one range, readable, writable and executable: userboot, and whatever `process_spawn_boot` starts (init, the shell, fault_probe). Its code could be written, its data executed, and its RELRO, the GOT and everything else the loader writes once, stayed writable for the life of the process. A probe proved each: on HEAD with only the new probes added, `pf_write_text`, `pf_exec_data` and `pf_write_relro` all survived.
+
+**Cause**
+The objects:
+- A program's segments. lld gives every program here four: read-only (headers, read-only data), code, RELRO (a whole segment of its own, padded to a page), and data with `.bss`.
+- `kelfload::Loader`, which laid an image out in one VMO and mapped the whole span with one protection.
+- `elfload::Binder`, which writes relocations through that VMO, never through the program's mappings.
+
+The events:
+1. The loader was written to place an image somewhere, with per-segment protection left for later, as its own comment said.
+2. Binding only works if the pages it relocates are writable: true by accident, since everything was.
+3. So the cheap mapping stayed, and with it a writable, executable image. The user-space launcher maps by segment, with RELRO read-only from the start, so the same program got a different shape depending on who started it.
+
+Step 2 was never true of this binder: it writes through the VMO. So nothing ties the mapping to binding, and every mapping can be made with its final protection before the image is bound, as the launcher does.
+
+**Change**
+
+```text
+userboot, before                          userboot, after
+[200000, 207000) rwx  (one range)         [200000, 201000) r--
+                                          [201000, 203000) r-x
+                                          [203000, 205000) r--  RELRO
+                                          [205000, 207000) rw-
+```
+
+`mapping_pages()` judges every segment before it writes any mapping, so a refused image leaves nothing behind. It takes RELRO from eftl's plan (`relro_intervals()`), and rounds RELRO's end down: a page RELRO only partly fills also holds data that is written, so it stays read-write. These are `launch::Plan::make()`'s rules, so a program now gets the same mappings from the kernel as from the launcher.
+
+The image is still one VMO. The Binder addresses an image by offsets from one origin (`elfload::Image::writer`), and a read-only page takes relocations all the same because they go through the VMO.
+
+**Reference**
+- Linux maps each PT_LOAD with its own `p_flags` (`load_elf_binary()` and `elf_map()` in `fs/binfmt_elf.c`), and the dynamic linker makes RELRO read-only after relocating (`_dl_protect_relro()` in glibc's `elf/dl-reloc.c`).
+- Zircon's elfldltl maps each segment with its own protection (`LoadInfo` and `VmarLoader`), and `ld::RemoteDynamicLinker` relocates into the segments' VMOs before mapping.
+
+**Verification**
+- The shared worktree did not build during this change: another session's unfinished rework of the vDSO range in `kernel/mm` (`vm_aspace.hpp`) breaks it, and it is not part of this commit. So the change was verified on an export of HEAD (434ce216) with exactly this commit's files laid over it, built in its own `out` directory:
+  - `ninja -k 0`: no error, no warning;
+  - `boot_check.py`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped); the shell's groups 19 passed in dbg, and 13 passed and 5 skipped in rel; launcher checks passed;
+  - `shell: probes done (15 killed, 0 survived)`;
+  - `pf_write_text`: page fault, error code `0x7` (present, user, write) at the probe's own code;
+  - `pf_exec_data`: `0x15` (present, user, instruction fetch) with rip and cr2 both in the data page;
+  - `pf_write_relro`: `0x7` in the RELRO page.
+- The same three probes on HEAD alone, the old one-range mapping, all SURVIVED. They test what they claim.
+- The loader's log shows the four mappings above for userboot and the same shape for the shell.
+
+**Deliberately not done**
+- Enforcing W^X in `VmaDispatcher::map()` for every caller: the next commit, which this one makes possible, since no kernel caller asks for a writable, executable mapping any more.
+- Sealing a program's mappings: the launcher does not seal them either; only the vDSO's must stay as mapped.
+
+**How it was found**
+`docs/repairs/260919/elfload.md` item 1, and `docs/repairs/260905/userabi.md` item 1 before it. The user chose it as the next step after the vDSO work.
+
+**The user's prediction**
+None. The user accepted both recommendations: the splitting in elfload, and W^X enforced in the dispatcher next.
+
+**Three questions you should be able to answer**
+- Why could the RELRO pages be read-only from the start, though the loader writes them after mapping?
+- Why does a page that RELRO only partly fills stay writable?
+- What does each of the three new probes prove, and why had each to be shown surviving on the old mapping?
