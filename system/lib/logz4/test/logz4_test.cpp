@@ -129,6 +129,23 @@ auto main() -> int {
         assert(dump.text == "[info] one\n[warn] two\n");
     }
 
+    // A tail replays the newest records only, oldest of them first, and a
+    // tail longer than what the ring holds is the whole ring.
+    {
+        reset();
+        logger = CaptureLogger{};
+        logz4::set_global_logger(logger);
+        log::info("one");
+        log::info("two");
+        log::info("three");
+        CaptureLogger tail;
+        assert(logz4::ring::dump_tail_to(tail, 2) == 2);
+        assert(tail.text == "[info] two\n[info] three\n");
+        CaptureLogger all;
+        assert(logz4::ring::dump_tail_to(all, logz4::ring::SLOT_COUNT + 1) == 3);
+        assert(all.text == "[info] one\n[info] two\n[info] three\n");
+    }
+
     {
         reset();
         logger = CaptureLogger{};

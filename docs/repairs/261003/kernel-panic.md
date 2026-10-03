@@ -1,25 +1,5 @@
 # kernel-panic outstanding repairs
 
-## 4. The replay repeats lines the console already showed, with nothing marking where it starts
-
-**Severity**
-Low: noise, and a report that is hard to read.
-
-**Symptom**
-After the logger is installed, every line that reaches the ring has also been written to the console as it happened. So a panic's replay prints those same lines a second time, straight after them in the log and with no boundary, and a reader cannot tell where the live log ends and the replay begins. Only lines from before the logger was installed are new in a replay; they reached the ring and, except for Error lines, nothing else.
-
-**Cause**
-`dump_recent()` replays every surviving record unconditionally. It cannot tell which records already reached the console, and the panic path adds no marker around the replay. Depends on nothing. The panic message now comes before the replay (docs/changes/261003/kernel-panic.md), so the replay is the last thing a panic prints.
-
-**Change**
-Bracket the replay with marker lines (for example "--- recent log ---" and "--- end of recent log ---"). Then either replay only the records that never reached a logger, or limit the replay to the last N lines and say so in the marker; record in the ring whether a line was written live, so the dump can choose. Keep the full replay for the case where no logger was ever installed (an early panic), which is the case the ring exists for at panic time.
-
-**Reference**
-Linux does not replay the kernel log onto the console at panic: the console has printed it already, and `kmsg_dump(KMSG_DUMP_PANIC)` sends it to persistent storage instead (pstore, item 5). Zircon's `BluescreenInit()` leaves a "replay debuglog?" note and does not replay.
-
-**Acceptance**
-A panic after boot prints the replay between its markers and without the lines the console already showed, or as a bounded tail that says so. An early panic, with no logger, still replays everything; `ours-verify` passes.
-
 ## 5. No crash record survives the panic
 
 **Severity**

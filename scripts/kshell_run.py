@@ -37,7 +37,9 @@ panic message, an error-level line, and if the CPU that panicked printed
 nothing between the command and the banner: the reason comes first, before
 any context (other CPUs saying they have stopped may come before it). The
 console is then read for PANIC_SETTLE seconds more, and the banner must have
-come out exactly once: one panic report, however many CPUs panicked.
+come out exactly once: one panic report, however many CPUs panicked. In it,
+the ring's replay must stand between its two marker lines, and a replay the
+first marker calls a tail of N lines must be no longer than that.
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -67,6 +69,10 @@ ERROR_LINE = re.compile(LEVEL.format("error"))
 ERROR_CPU = re.compile(r"\[(?:\d+ )?(cpu\d+) error\]")
 # The line a kernel panic report starts with (kernel/top/panic.cpp).
 PANIC_BANNER = "OURS KERNEL PANIC"
+# The marker lines around a panic's replay of the record ring
+# (kernel/top/panic.cpp). The first gives the tail's length, when it is one.
+RECENT_START = re.compile(r"--- recent log: (?:the last (\d+) lines|every line kept)[^\n]*\n")
+RECENT_END = "--- end of recent log ---"
 FAILED_LINE = re.compile(r"\bFAILED\b")
 NOISE = re.compile(LEVEL.format("debug|trace"))
 SETTLE = 1.0  # seconds between the end marker and the first command
@@ -101,6 +107,7 @@ class Console:
         self.pending = ""  # the start of an escape sequence not yet whole
         self.parts: list[str] = []
         self.keeping = False
+        self.after = ""  # what came in behind wait_for()'s last match
         self.gone = False
         self.chunks: queue.Queue[bytes | None] = queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
@@ -153,8 +160,11 @@ class Console:
         return "".join(self.parts)
 
     def take(self, seconds: float) -> str:
-        """Takes in whatever arrives for |seconds|, and returns it."""
-        parts = []
+        """Takes in whatever arrives for |seconds|, and returns it, starting
+        with what came in behind wait_for()'s last match: a panic report
+        often arrives in one read, and the match is only its first lines."""
+        parts = [self.after]
+        self.after = ""
         until = time.monotonic() + seconds
         while time.monotonic() < until and not self.gone:
             parts.append(self._pump(0.2))
@@ -177,6 +187,7 @@ class Console:
             window = tail + fresh
             match = pattern.search(window)
             if match:
+                self.after = window[match.end():]
                 if self.keeping:
                     stop = (match.end() if through else match.start()) - len(tail)
                     if stop >= 0:
@@ -246,14 +257,27 @@ def judge_crash(command: str, lines: list[str], after: str) -> bool:
     if not found:
         print(f"{command}: FAIL, the line after the panic banner is not an error-level message")
         return False
-    tag = found.group(1) + " "
-    early = [l for l in lines[:banner] if tag in l and not NOISE.search(l)]
+    # Lines the panicking CPU logged above debug level, by their intact tag.
+    # Not "every line naming the CPU that is not noise": on dbg the shell's
+    # echo lands a byte at a time inside other lines' prefixes, and a debug
+    # line whose tag it broke no longer reads as noise.
+    own = re.compile(r"\[(?:\d+ )?" + re.escape(found.group(1)) + r" (?:info|warn|error)\]")
+    early = [l for l in lines[:banner] if own.search(l)]
     if early:
         print(f"{command}: FAIL, {found.group(1)} printed {len(early)} line(s) before its panic banner")
         return False
     banners = sum(PANIC_BANNER in l for l in lines) + after.count(PANIC_BANNER)
     if banners != 1:
         print(f"{command}: FAIL, {banners} panic banners within {PANIC_SETTLE:.0f}s; want one report")
+        return False
+    start = RECENT_START.search(after)
+    end = after.find(RECENT_END, start.end()) if start else -1
+    if end < 0:
+        print(f"{command}: FAIL, no ring replay between its markers within {PANIC_SETTLE:.0f}s")
+        return False
+    replayed = [l for l in after[start.end():end].splitlines() if l.strip()]
+    if start.group(1) and len(replayed) > int(start.group(1)):
+        print(f"{command}: FAIL, a replay of {len(replayed)} lines under a {start.group(1)}-line marker")
         return False
     print(f"{command}: ok")
     return True

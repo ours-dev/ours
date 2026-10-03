@@ -77,14 +77,18 @@ auto append(char const *line, usize len, Time time, u32 cpu, Level level, Domain
 }
 
 namespace {
-    /// Both dumps in one loop. `only` null means every record, which is not
+    /// Every dump in one loop. `only` null means every record, which is not
     /// the same as "the anonymous domain's records" -- nothing asks for
-    /// those alone, so the null needs no second meaning.
-    auto replay(Logger &sink, Domain const *only) -> usize {
+    /// those alone, so the null needs no second meaning. `newest` caps how
+    /// many of the latest tickets are looked at; SLOT_COUNT means all.
+    auto replay(Logger &sink, Domain const *only, u64 newest) -> usize {
         auto const next = next_ticket.load(std::memory_order_acquire);
+        if (newest > SLOT_COUNT) {
+            newest = SLOT_COUNT;
+        }
         auto first = u64{0};
-        if (next > SLOT_COUNT) {
-            first = next - SLOT_COUNT;
+        if (next > newest) {
+            first = next - newest;
         }
 
         usize replayed = 0;
@@ -134,11 +138,15 @@ namespace {
 } // namespace
 
 auto dump_to(Logger &sink) -> usize {
-    return replay(sink, nullptr);
+    return replay(sink, nullptr, SLOT_COUNT);
 }
 
 auto dump_to(Logger &sink, Domain const &only) -> usize {
-    return replay(sink, &only);
+    return replay(sink, &only, SLOT_COUNT);
+}
+
+auto dump_tail_to(Logger &sink, usize count) -> usize {
+    return replay(sink, nullptr, count);
 }
 
 auto reset_for_test() -> void {

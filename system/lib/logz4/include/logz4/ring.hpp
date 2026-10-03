@@ -43,6 +43,10 @@ auto dump_to(Logger &sink) -> usize;
 /// The same, replaying only the records `only` wrote.
 auto dump_to(Logger &sink, Domain const &only) -> usize;
 
+/// The same, replaying only the newest `count` records, or fewer if some of
+/// those are still being written or the ring holds fewer.
+auto dump_tail_to(Logger &sink, usize count) -> usize;
+
 /// Wipe every record and restart ticketing. Test scaffolding only.
 auto reset_for_test() -> void;
 

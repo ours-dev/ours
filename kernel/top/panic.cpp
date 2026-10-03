@@ -7,6 +7,7 @@
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/halt.hpp>
 #include <logz4/log.hpp>
+#include <logz4/ring.hpp>
 
 namespace ours {
 namespace {
@@ -77,23 +78,63 @@ namespace {
     /// outside the logger -- so the banner always starts a line of its own.
     constexpr auto BANNER = std::string_view("\nOURS KERNEL PANIC\n");
 
-    /// Written to the sink directly rather than logged. A log line also goes
-    /// into the record ring, and the replay that follows the message would
-    /// then print the banner a second time, at its end, where a tool counting
-    /// panics would count two. The routing is the one every logz4 line takes:
-    /// the installed logger, or the emergency port before there is one.
-    auto print_banner() -> void {
+    /// Writes a line of the report's own -- the banner, the replay's markers
+    /// -- to the sink directly rather than logging it. A log line also goes
+    /// into the record ring, and the replay would then print it a second
+    /// time: the banner at the replay's end, where a tool counting panics
+    /// would count two. The routing is the one every logz4 line takes: the
+    /// installed logger, or the emergency port before there is one.
+    auto print_raw(std::string_view text) -> void {
         auto &logger = logz4::get_global_logger();
         if (logger.is_null()) {
-            logz4::emergency_write(BANNER.data(), BANNER.size());
+            logz4::emergency_write(text.data(), text.size());
             return;
         }
-        logger.write(BANNER.data(), BANNER.size());
+        logger.write(text.data(), text.size());
     }
 
-    /// What led up to the panic: the record ring, replayed.
+    auto print_banner() -> void {
+        print_raw(BANNER);
+    }
+
+    /// How many of the ring's newest lines a panic replays once a logger is
+    /// installed. Spelled out again in TAIL_MARKER, which says so to the
+    /// reader.
+    constexpr auto TAIL_LINES = usize{32};
+
+    constexpr auto TAIL_MARKER = std::string_view(
+        "--- recent log: the last 32 lines, most of them shown above already ---\n");
+    constexpr auto FULL_MARKER =
+        std::string_view("--- recent log: every line kept, from before any console ---\n");
+    constexpr auto END_MARKER = std::string_view("--- end of recent log ---\n");
+
+    /// What led up to the panic: the record ring, replayed between two
+    /// marker lines, so that a reader can tell where the live log stops and
+    /// the replay begins.
+    ///
+    /// Once a logger is installed, every line that reaches the ring is also
+    /// written to the console as it happens, so replaying the whole ring
+    /// printed up to 256 lines the reader had just seen. Only a short tail
+    /// is replayed then: the lines right before the panic, which are the
+    /// ones worth having next to the message. They are also where a line
+    /// that a stopped CPU put in the ring but never printed would be: its
+    /// write still waiting on the serial lock, or a later panic that only
+    /// records itself (see stop_this_cpu()). Linux and Zircon replay nothing
+    /// at all; the tail is the middle ground that keeps those lines.
+    ///
+    /// Before any logger is installed, nothing in the ring reached a console
+    /// except Error lines, and the ring is the only record there is. That is
+    /// the case the ring exists for at panic time, so it is replayed whole.
     auto print_context() -> void {
-        logz4::dump_recent();
+        auto &logger = logz4::get_global_logger();
+        if (logger.is_null()) {
+            print_raw(FULL_MARKER);
+            logz4::dump_recent();
+        } else {
+            print_raw(TAIL_MARKER);
+            logz4::ring::dump_tail_to(logger, TAIL_LINES);
+        }
+        print_raw(END_MARKER);
     }
 } // namespace
 

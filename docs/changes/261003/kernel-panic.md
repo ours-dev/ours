@@ -262,3 +262,90 @@ None. The user asked for the code first and the reasoning afterwards, because ti
 - Why is a relaxed `exchange()` enough to elect exactly one reporter, when the CPUs race with no other synchronisation?
 - How does a losing CPU's message get into the winner's replay, and which release and acquire make sure it is visible there?
 - Why must a losing CPU clear its own Online bit, and what would the winner do if it did not?
+
+## Title: a panic's replay is bracketed by marker lines and, once a logger is installed, cut to the last 32 lines (2026-10-03)
+
+**Files**
+- `system/lib/logz4/include/logz4/ring.hpp`, `system/lib/logz4/src/ring.cpp` — `ring::dump_tail_to(sink, count)`; the shared `replay()` takes how many of the newest tickets to look at
+- `system/lib/logz4/test/logz4_test.cpp` — a tail replays the newest records oldest first, and a tail longer than the ring is the whole ring
+- `kernel/top/panic.cpp` — `print_context()` prints a start marker, the replay and an end marker; the replay is a 32-line tail when a logger is installed and the whole ring when none is; `print_raw()` carries the banner's routing for all three report lines
+- `scripts/kshell_run.py` — a crash's replay must stand between its markers and be no longer than its marker says; text that arrives in the same read as a match is no longer dropped; the "nothing from the panicking CPU before the banner" check counts only intact info, warn and error tags
+- `docs/repairs/261003/kernel-panic.md` — item 4 removed
+
+**Symptom**
+After the logger is installed, every line that reaches the ring has also been written to the console as it happened. A panic's replay therefore printed up to 256 lines the reader had just seen, straight after them and with no boundary, so nobody could tell where the live log ended and the replay began.
+
+**Cause**
+`dump_recent()` replays every surviving record. The ring cannot tell which records reached a console, and the panic path printed nothing around the replay. The ring's value at panic time lies in lines that never reached a console. In the kernel the logger is installed at the top of `start_kernel()`, so those are almost only the lines of a CPU that stopped between putting its line in the ring and writing it out. For the rest, a full replay is noise that buries the report.
+
+**Change**
+Before:
+
+```cpp
+auto print_context() -> void {
+    logz4::dump_recent();
+}
+```
+
+After:
+
+```cpp
+auto print_context() -> void {
+    auto &logger = logz4::get_global_logger();
+    if (logger.is_null()) {
+        print_raw(FULL_MARKER);
+        logz4::dump_recent();
+    } else {
+        print_raw(TAIL_MARKER);
+        logz4::ring::dump_tail_to(logger, TAIL_LINES);
+    }
+    print_raw(END_MARKER);
+}
+```
+
+The markers read "--- recent log: the last 32 lines, most of them shown above already ---" (or "every line kept, from before any console") and "--- end of recent log ---". Like the banner they are written raw, outside the ring, so a later replay never contains them.
+
+The repair item offered two ways to stop the repetition. This takes the second, a bounded tail, and rejects the first, replaying only records that never reached a logger. The first needs a "shown" mark per record, and the only safe moment to set it is when the line is appended, which happens before the line is written. So it marks lines that were never written:
+- A CPU stopped by the suspend IPI between appending its line and writing it.
+- A CPU spinning in `SerialLogger::write()` on a lock that will never be released. On dbg, `crash panic-locked` leaves three CPUs in exactly that state.
+
+Those are the lines the replay most needs to show. Setting the mark after the write instead would mean updating a committed slot that a newer producer may already have taken over, which is a change to the ring's slot protocol. The tail keeps those lines, because they are the newest, and so do the ring-only lines that losing CPUs leave since the previous entry. Its cost is up to 32 repeated lines, and the marker says so.
+
+The full replay stays for a panic before any logger is installed. There, nothing in the ring reached a console except Error lines, through `emergency_write()`, and the ring is the only record.
+
+`kshell_run.py` needed three fixes to check this:
+- It now requires the markers, and a replay no longer than the start marker says.
+- `Console.wait_for()` used to drop whatever followed its match within the same read. A panic report often arrives in one read, so on dbg `crash panic-locked` the markers were lost even though the console showed them. The rest of the read is kept for `take()` now.
+- The check from the first entry, that the panicking CPU printed nothing before its banner, counted every line naming that CPU that did not read as debug or trace. On dbg the shell's echo lands a byte at a time inside other lines (`[208035320nic-smp00 cpu2 debug]`), and a debug line with a broken tag counted as context. It now counts only intact info, warn and error tags of that CPU.
+
+**Reference**
+- Linux does not replay the kernel log onto the console at panic. The console printed it already, and `kmsg_dump(KMSG_DUMP_PANIC)` (`kernel/printk/printk.c`) hands it to persistent storage instead.
+- Zircon's `DLog::BluescreenInit()` (`zircon/kernel/lib/debuglog/debuglog.cc`) has only a "replay debuglog?" comment and replays nothing.
+- The tail is this project's middle ground. It keeps the lines a stopped CPU left only in the ring, which neither of those keeps on the console.
+
+**Verification**
+- `logz4-test` (host) passes, with the new tail cases.
+- `boot_check.py --out out/kernel-panic`: dbg PASS (19 passed, 0 error lines), rel PASS (13 passed, 10 skipped, 0 error lines).
+- `kshell_run.py`, `crash panic`, `crash panic-locked` and `crash panic-smp`: ok on both images (six runs).
+  - On rel, `crash panic` printed the banner, the message, the tail marker, exactly 32 replayed lines ending with "CPU[3] suspended" and the panic message, then the end marker.
+  - On dbg, `crash panic-smp` showed the three losers' "panicked while another panic was under way" lines inside the tail.
+  - On dbg, `crash panic-locked` showed the other CPUs' last debug lines.
+- `vmaseal.test` on rel still ok, as a check that ordinary commands still work through the changed harness.
+- clang-format clean; clang-tidy reports nothing in the changed files.
+- Not exercised: the full replay of a panic before any logger is installed. Nothing can panic that early on demand, and that branch runs the unchanged `dump_recent()`.
+
+**Deliberately not done**
+- No "shown" mark per record, for the reason in Change.
+- The tail's length is a constant, 32, written out again in the marker text rather than formatted into it. That keeps the report free of formatting work beyond what the message needs.
+- On dbg the tail is mostly "I'm Thread" debug lines. That is the dbg image's own noise and is not filtered here.
+
+**How it was found**
+None for the problem, which was recorded by reading the panic path (commit 59a0e665). Both harness bugs showed up while running the new checks on dbg: a FAIL whose report on the console was correct, and the log then showed what the harness had missed.
+
+**The user's prediction**
+None. The user asked for the code first and the reasoning afterwards.
+
+**Three questions you should be able to answer**
+- Why does replaying only "lines never shown" need the mark set after the write, and why is that hard in this ring?
+- Which lines does the 32-line tail exist to keep, given that the console already showed nearly everything?
+- Why are the markers written raw rather than logged, as the banner is?
