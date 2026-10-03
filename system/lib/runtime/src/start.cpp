@@ -6,15 +6,12 @@
 #include <runtime/startup.hpp>
 #include <runtime/startup_handles.hpp>
 
-#include <ou/channel.hpp>
 #include <ou/debug.hpp>
-#include <ou/handle.hpp>
-#include <ou/object.hpp>
-#include <ou/process.hpp>
 #include <ou/str.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/vdso.hpp>
 
 /// crt0.S: a tail jump to main, which C++ may not call itself.
 extern "C" auto runtime_call_main(int argc, char **argv) -> int;
@@ -47,7 +44,7 @@ namespace {
     auto fail(ou::Str const what, ours::Status const status) -> void {
         static_cast<void>(
             ou::debug_line({"runtime: ", what, ou::Str::from_c_str(ours::to_string(status), 32)}));
-        ou::process_exit(EXIT_START_FAILED);
+        ours_process_exit(EXIT_START_FAILED);
     }
 
     /// Reads the processargs message off |bootstrap| into the buffers above,
@@ -74,15 +71,16 @@ namespace {
     /// the runtime has read the message, before main runs.
     auto read_processargs(ours::HandleValue const bootstrap) -> void {
         auto observed = ours::Signals::None;
-        static_cast<void>(ou::object_wait_one(bootstrap,
-                                              ours::Signals::Readable | ours::Signals::PeerClosed,
-                                              ours::INSTANT_INFINITE, &observed));
+        static_cast<void>(ours_object_wait_one(bootstrap,
+                                               ours::Signals::Readable | ours::Signals::PeerClosed,
+                                               ours::INSTANT_INFINITE, &observed));
 
         u32 num_bytes = 0;
         u32 num_handles = 0;
-        auto status = ou::channel_read(bootstrap, message, sizeof(message), &num_bytes, handles,
-                                       ours::CHANNEL_MAX_MSG_HANDLES, &num_handles);
-        static_cast<void>(ou::handle_close(bootstrap));
+        auto status = ours_channel_read(bootstrap, ours::ChannelReadOptions::None, message, handles,
+                                        sizeof(message), ours::CHANNEL_MAX_MSG_HANDLES, &num_bytes,
+                                        &num_handles);
+        static_cast<void>(ours_handle_close(bootstrap));
         if (status != ours::Status::Ok) {
             fail("no processargs message on the bootstrap channel: ", status);
         }
@@ -145,5 +143,5 @@ auto runtime_start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_
     }
     *slot = nullptr;
 
-    ou::process_exit(runtime_call_main(static_cast<int>(args.size()), argv));
+    ours_process_exit(runtime_call_main(static_cast<int>(args.size()), argv));
 }

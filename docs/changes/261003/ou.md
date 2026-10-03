@@ -104,3 +104,58 @@ None.
 - Why can `ours_*` never be removed, while `ou` can change at any time?
 - What would a typed `ou` catch at compile time that `ours_*` cannot, and what concrete problem would justify building it?
 - Why is a build-time gate on `<ours/vdso.hpp>` a guard against mistakes and not a security boundary?
+
+## Title: Everything but the shell calls ours_* where it called an ou forwarder (remove-ou, step 1) (2026-10-03)
+
+**Files**
+- `system/lib/runtime/src/start.cpp`, `system/lib/launch/src/launch.cpp`, `system/service/init/init.cpp`, `kernel/lib/userabi/userboot/userboot.cpp`, `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — 41 calls of `ou`'s forwarders now call the `ours_*` entry directly, and include `<ours/vdso.hpp>` instead of the `ou` headers they no longer use.
+- `.agents/tasks/remove-ou/PLAN.md` — new: the plan for removing `ou`.
+
+**Symptom**
+`ou` was a second copy of the system-call API: one forwarding function per call, with its contract restated by hand in its headers. Adding a call meant writing the forwarder too, and the restated contracts drifted from `syscalls.gni` (several of the false statements step 1 of system-abi-surface corrected were in `ou`'s headers).
+
+**Cause**
+The objects:
+- `ours::syscall::*`: the kernel's handlers.
+- `ours_*`: the vDSO's exported entry points, which are the user-level API.
+- `ou::*`: C++ functions that, apart from a few helpers, only called the matching `ours_*`, in a different argument order and with defaults.
+
+The events:
+1. `ou` was written as the one place a program would learn how to reach the kernel, and to grow typed handles later.
+2. The typed layer was deferred (the user, 2026-10-03), and what was left was a forwarder per call.
+3. The user decided to remove it: a layer that adds nothing is one more thing to keep true.
+
+**Change**
+A script rewrote each call by the forwarder's own definition: the same arguments for the calls `ou` passed straight through, and for the others the raw order with `ou`'s defaults written out.
+
+```cpp
+// before
+ou::channel_read(here, buffer, sizeof(buffer), &actual);
+// after
+ours_channel_read(here, ours::ChannelReadOptions::None, buffer, nullptr, sizeof(buffer), 0, &actual,
+                  nullptr);
+```
+
+A name passed as an `ou::Str` becomes the pointer and the length the raw call takes. The helpers that are not forwarders (`ou::debug_line`, `ou::decimal`, `ou::Str`) stay until step 3 moves them.
+
+**Reference**
+Zircon programs call `zx_*` directly from C and C++. `lib/zx` is an optional C++ layer over it, which this tree no longer has.
+
+**Verification**
+- `ninja -k 0` on `out/vmo-snapshot`: no error.
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped). The init-shell exchange and the launcher's checks both run through the rewritten calls.
+
+**Deliberately not done**
+- The shell (step 2) and the removal of `ou` itself (step 3), each its own commit.
+- Two comments that describe `ou`'s design (`runtime/startup.hpp`, `launch.cpp`'s `Owned`): they go with `ou` in step 3.
+
+**How it was found**
+The user's question of what `ou` adds over `ours_*`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why could the rewrite be done by a script, and what had it to know about each forwarder?
+- What did `ou::channel_read` hide that the raw call makes the caller write?
+- Where else in the tree was a call's contract written down, and which copy is now the only one?

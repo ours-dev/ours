@@ -29,15 +29,13 @@
 
 #include <string_view>
 
-#include <ou/channel.hpp>
 #include <ou/debug.hpp>
-#include <ou/handle.hpp>
-#include <ou/process.hpp>
 #include <ou/str.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
+#include <ours/vdso.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 
@@ -186,16 +184,19 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
 
     ours::HandleValue here = ours::HANDLE_INVALID;
     ours::HandleValue there = ours::HANDLE_INVALID;
-    if (auto const status = ou::channel_create(&here, &there); status != Status::Ok) {
-        return status;
-    }
-    if (auto const status = ou::process_spawn_boot(job, to_str(name), there, &handles[0]);
+    if (auto const status = ours_channel_create(ours::ChannelCreateOptions::None, &here, &there);
         status != Status::Ok) {
-        static_cast<void>(ou::handle_close(here));
         return status;
     }
-    auto const written = ou::channel_write(here, message, length, handles, count);
-    static_cast<void>(ou::handle_close(here));
+    if (auto const status = ours_process_spawn_boot(job, (to_str(name)).data(),
+                                                    (to_str(name)).size(), there, &handles[0]);
+        status != Status::Ok) {
+        static_cast<void>(ours_handle_close(here));
+        return status;
+    }
+    auto const written =
+        ours_channel_write(here, ours::ChannelWriteOptions::None, message, length, handles, count);
+    static_cast<void>(ours_handle_close(here));
     return written;
 }
 } // namespace

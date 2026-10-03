@@ -26,10 +26,10 @@
 /// data was relocated where it lies (see RELOCATED), and answers "relocation"
 /// if not: the check on the loader that started it, whichever that was.
 
-#include <ou/channel.hpp>
 #include <ou/debug.hpp>
 #include <ou/str.hpp>
 #include <ours/process_args.hpp>
+#include <ours/vdso.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 
@@ -219,7 +219,8 @@ auto reply(ours::HandleValue const channel, ou::Str const answer) -> void {
         static_cast<void>(ou::debug_line("fault_probe: no answer channel (User0)"));
         return;
     }
-    static_cast<void>(ou::channel_write(channel, answer.data(), static_cast<u32>(answer.size())));
+    static_cast<void>(ours_channel_write(channel, ours::ChannelWriteOptions::None, answer.data(),
+                                         static_cast<u32>(answer.size()), nullptr, 0));
 }
 } // namespace
 

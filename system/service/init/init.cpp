@@ -35,19 +35,15 @@
 #include <ours/syscall.hpp>
 #include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
+#include <ours/vdso.hpp>
 
 #include <span>
 #include <string_view>
 
 #include <bootfs/format.hpp>
 #include <init/autorun.hpp>
-#include <ou/channel.hpp>
 #include <ou/debug.hpp>
-#include <ou/handle.hpp>
-#include <ou/object.hpp>
-#include <ou/process.hpp>
 #include <ou/str.hpp>
-#include <ou/vmo.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 
@@ -91,7 +87,7 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
         return;
     }
     bootfs::Header header{};
-    if (auto const status = ou::vmo_read(bootfs, &header, 0, sizeof(header));
+    if (auto const status = ours_vmo_read(bootfs, &header, 0, sizeof(header));
         status != ours::Status::Ok) {
         report("init: reading the BootFS header = ", status);
         return;
@@ -118,12 +114,12 @@ auto spawn_then_write(ours::HandleValue const job, ou::Str const name, ours::Han
 
     ours::HandleValue all[4] = {};
     ours::HandleValue root_vma = ours::HANDLE_INVALID;
-    auto const spawned = ou::process_spawn_boot(job, name, there, &root_vma);
+    auto const spawned = ours_process_spawn_boot(job, name.data(), name.size(), there, &root_vma);
     if (spawned != Status::Ok) {
         for (auto const handle: handles) {
-            static_cast<void>(ou::handle_close(handle));
+            static_cast<void>(ours_handle_close(handle));
         }
-        static_cast<void>(ou::handle_close(here));
+        static_cast<void>(ours_handle_close(here));
         return spawned;
     }
     u32 count = 0;
@@ -131,9 +127,9 @@ auto spawn_then_write(ours::HandleValue const job, ou::Str const name, ours::Han
         all[count++] = handle;
     }
     all[count++] = root_vma;
-    auto const written =
-        ou::channel_write(here, message.data(), static_cast<u32>(message.size()), all, count);
-    static_cast<void>(ou::handle_close(here));
+    auto const written = ours_channel_write(here, ours::ChannelWriteOptions::None, message.data(),
+                                            static_cast<u32>(message.size()), all, count);
+    static_cast<void>(ours_handle_close(here));
     return written;
 }
 
@@ -168,7 +164,8 @@ auto start_autorun(ours::HandleValue const job, std::string_view const command) 
 
     ours::HandleValue bootstrap = ours::HANDLE_INVALID;
     ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
-    if (auto const status = ou::channel_create(&bootstrap, &bootstrap_there);
+    if (auto const status =
+            ours_channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
         status != Status::Ok) {
         return status;
     }
@@ -198,15 +195,16 @@ auto start_shell(ours::HandleValue const job, ours::HandleValue peer) -> ours::S
     std::string_view const args[] = {{SHELL.data(), SHELL.size()}};
     if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
         status != Status::Ok) {
-        static_cast<void>(ou::handle_close(peer));
+        static_cast<void>(ours_handle_close(peer));
         return status;
     }
 
     ours::HandleValue bootstrap = ours::HANDLE_INVALID;
     ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
-    if (auto const status = ou::channel_create(&bootstrap, &bootstrap_there);
+    if (auto const status =
+            ours_channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
         status != Status::Ok) {
-        static_cast<void>(ou::handle_close(peer));
+        static_cast<void>(ours_handle_close(peer));
         return status;
     }
     ours::HandleValue const handed[] = {peer};
@@ -249,7 +247,8 @@ auto main(int, char **) -> int {
 
     ours::HandleValue here = ours::HANDLE_INVALID;
     ours::HandleValue peer = ours::HANDLE_INVALID;
-    if (auto const status = ou::channel_create(&here, &peer); status != Status::Ok) {
+    if (auto const status = ours_channel_create(ours::ChannelCreateOptions::None, &here, &peer);
+        status != Status::Ok) {
         report("init: channel_create = ", status);
         halt();
     }
@@ -259,7 +258,8 @@ auto main(int, char **) -> int {
     }
     static_cast<void>(ou::debug_line("init: spawned shell"));
 
-    if (auto const status = ou::channel_write(here, PING.data(), static_cast<u32>(PING.size()));
+    if (auto const status = ours_channel_write(here, ours::ChannelWriteOptions::None, PING.data(),
+                                               static_cast<u32>(PING.size()), nullptr, 0);
         status != Status::Ok) {
         report("init: write(ping) = ", status);
         halt();
@@ -282,8 +282,8 @@ auto main(int, char **) -> int {
 
     // Asleep until the shell writes back, or its end of the channel goes.
     auto observed = Signals::None;
-    auto status = ou::object_wait_one(here, Signals::Readable | Signals::PeerClosed,
-                                      ours::INSTANT_INFINITE, &observed);
+    auto status = ours_object_wait_one(here, Signals::Readable | Signals::PeerClosed,
+                                       ours::INSTANT_INFINITE, &observed);
     if (status != Status::Ok || !(observed & Signals::Readable)) {
         report("init: waiting for the shell = ", status);
         static_cast<void>(ou::debug_line("init: the shell closed the channel without answering"));
@@ -292,7 +292,8 @@ auto main(int, char **) -> int {
 
     char buffer[32] = {};
     u32 actual = 0;
-    status = ou::channel_read(here, buffer, sizeof(buffer), &actual);
+    status = ours_channel_read(here, ours::ChannelReadOptions::None, buffer, nullptr,
+                               sizeof(buffer), 0, &actual, nullptr);
     if (status != Status::Ok) {
         report("init: read = ", status);
         halt();
@@ -304,7 +305,7 @@ auto main(int, char **) -> int {
     // this is the shell being done with init, not necessarily the shell being
     // gone -- that sign is TERMINATED on a process handle, which comes with
     // the user-space loader (design K23).
-    status = ou::object_wait_one(here, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
+    status = ours_object_wait_one(here, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
     if (status != Status::Ok) {
         report("init: waiting for the shell to finish = ", status);
         halt();
