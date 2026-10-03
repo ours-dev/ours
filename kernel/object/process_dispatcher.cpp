@@ -4,6 +4,7 @@
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
+#include <ours/time/clock.hpp>
 
 #include <utility>
 
@@ -36,6 +37,7 @@ ProcessDispatcher::ProcessDispatcher(ustl::Arc<JobDispatcher> job, char const *c
     , m_parent(nullptr)
     , m_state(State::Initial)
     , m_retcode(0)
+    , m_start_time(0)
     , m_name(name)
     , m_job(ustl::move(job))
     , m_aspace(ustl::move(aspace))
@@ -219,6 +221,10 @@ auto ProcessDispatcher::attach_thread(ThreadDispatcher &thread, bool const first
     m_thread_list.push_back(thread);
 
     if (first_thread) {
+        // Under the same lock as the state, as Zircon sets start_time_ in
+        // AddInitializedThread(): a reader that sees Running sees the time.
+        DEBUG_ASSERT(m_start_time == 0, "a process starts once");
+        m_start_time = time::SteadyClock::now().time_since_epoch().count();
         m_state = State::Running;
     }
     return Status::Ok;
@@ -417,6 +423,35 @@ auto ProcessDispatcher::finish_dead_transition() -> void {
     }();
     update_state(Signals::None, Signals::Terminated);
     log::debug("object: process '{}' (koid {}) terminated, retcode {}", name(), koid(), retcode);
+}
+
+/// Started from Running on, and Exited from Dying on, as Zircon's switch
+/// does. A process killed before it started (Initial straight to Dead) so
+/// reports both, with a start time of zero; Zircon answers the same.
+auto ProcessDispatcher::get_info() -> InfoProcess {
+    verify_canary();
+
+    State state;
+    InfoProcess info{};
+    {
+        Guard guard{get_lock()};
+        state = m_state;
+        info.return_code = m_retcode;
+        info.start_time = m_start_time;
+    }
+
+    switch (state) {
+        case State::Dead:
+        case State::Dying:
+            info.flags |= InfoProcessFlags::Exited;
+            [[fallthrough]];
+        case State::Running:
+            info.flags |= InfoProcessFlags::Started;
+            break;
+        case State::Initial:
+            break;
+    }
+    return info;
 }
 
 } // namespace ours::object

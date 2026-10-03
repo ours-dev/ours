@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <ours/object/process_dispatcher.hpp>
 #include <ours/object/wait.hpp>
 #include <ours/status.hpp>
 
@@ -24,5 +25,73 @@ auto object_wait_one(ours::Uandle const handle, Signals const signals, Instant c
         }
     }
     return status;
+}
+
+namespace {
+    /// Writes |record|, the one record a single-record topic has, and the
+    /// counts that go with it.
+    ///
+    /// |actual| and |avail| are written whether or not the record fits: avail
+    /// is how a caller with too small a buffer learns what to ask for. The
+    /// record goes first, so a buffer that cannot be written answers InvArgs
+    /// with nothing else touched.
+    ///
+    /// Zircon: single_record_result() and actual_avail_result()
+    /// (kernel/lib/syscalls/object_info.rs).
+    template <typename Record>
+    auto single_record_result(user_copy::UserOutPtr<u8> const buffer, usize const buffer_size,
+                              user_copy::UserOutPtr<usize> const actual,
+                              user_copy::UserOutPtr<usize> const avail, Record const &record)
+        -> Status {
+        usize written = 0;
+        if (buffer_size >= sizeof(Record)) {
+            // The buffer arrives as bytes, since its type depends on the
+            // topic; this topic's type is known, so the pointer is retyped.
+            // Zircon does the same (UserOutPtr::reinterpret).
+            auto const typed = user_copy::UserOutPtr<Record>(buffer.address());
+            if (auto const status = typed.copy_to_user(record); status != Status::Ok) {
+                return status;
+            }
+            written = 1;
+        }
+        if (!actual.is_null()) {
+            if (auto const status = actual.copy_to_user(written); status != Status::Ok) {
+                return status;
+            }
+        }
+        if (!avail.is_null()) {
+            if (auto const status = avail.copy_to_user(usize{1}); status != Status::Ok) {
+                return status;
+            }
+        }
+        return written == 0 ? Status::BufferTooSmall : Status::Ok;
+    }
+} // namespace
+
+/// The topic decides everything, the object type and right included, so it is
+/// looked at first: an unknown topic is NotSupported before the handle is,
+/// as in Zircon, whose default case answers ZX_ERR_NOT_SUPPORTED without a
+/// lookup.
+///
+/// Zircon: sys_object_get_info() (kernel/lib/syscalls/object_info.rs), whose
+/// ZX_INFO_PROCESS case is ProcessDispatcher::GetInfo() under Inspect.
+auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
+                     user_copy::UserOutPtr<u8> const buffer, usize const buffer_size,
+                     user_copy::UserOutPtr<usize> const actual,
+                     user_copy::UserOutPtr<usize> const avail) -> Status {
+    switch (topic) {
+        case InfoTopic::Process: {
+            ustl::Arc<object::ProcessDispatcher> process;
+            if (auto const status =
+                    object::ProcessDispatcher::current()->handle_table().get_dispatcher(
+                        handle, Rights::Inspect, &process);
+                status != Status::Ok) {
+                return status;
+            }
+            return single_record_result(buffer, buffer_size, actual, avail, process->get_info());
+        }
+        default:
+            return Status::NotSupported;
+    }
 }
 } // namespace ours::syscall

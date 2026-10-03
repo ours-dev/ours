@@ -3,6 +3,7 @@
 #ifndef SYSCALL_HANDLERS_HPP
 #define SYSCALL_HANDLERS_HPP 1
 
+#include <ours/object_info.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>

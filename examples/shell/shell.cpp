@@ -24,6 +24,7 @@
 /// links is mem* and strlen (//system/lib/libc), and check_libc() is where
 /// this program makes sure it is there and right.
 
+#include <ours/object_info.hpp>
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
 #include <ours/signals.hpp>
@@ -385,11 +386,17 @@ struct ProbeRun {
     bool killed;
     char answer[32];
     u32 answer_size;
+    /// The process, for a probe the launcher started -- the one way this
+    /// shell gets a handle to one -- and Uandle::Invalid otherwise. The caller
+    /// owns it.
+    ours::Uandle process;
 };
 
 /// Starts fault_probe under |job| with |probe| as argv[1], and waits for it
 /// to answer or die. With a |launcher|, the program is started by the
-/// user-space launcher; without one, by process_spawn_boot.
+/// user-space launcher, and the handle to the process it returns is handed
+/// back in run.process; without one, by process_spawn_boot, which returns no
+/// such handle.
 ///
 /// The probe is started the way every program on the runtime is: a
 /// processargs message on its bootstrap channel (argv = {"fault_probe",
@@ -510,10 +517,96 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
             ours::object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
     }
     auto _ = ours::handle_close(answer);
-    if (process != ours::Uandle::Invalid) {
-        auto _ = ours::handle_close(process);
-    }
+    run.process = process;
     return run;
+}
+
+/// object_get_info on a process that has ended (K24): the control probe, the
+/// one process this shell holds a handle to.
+///
+/// TERMINATED first. The probe answers before it has finished dying, and
+/// until it has, the return code is not final; TERMINATED is raised last,
+/// once nothing can change it (ProcessDispatcher::finish_dead_transition()).
+///
+/// Then the record, and every way the call refuses: a buffer one byte short,
+/// a topic this kernel does not answer, an object that is not a process (the
+/// job), and a handle without Inspect.
+auto check_object_get_info(ours::Uandle const process, ours::Uandle const job) -> void {
+    using ours::InfoProcess;
+    using ours::InfoProcessFlags;
+    using ours::InfoTopic;
+    using ours::Signals;
+    using ours::Status;
+
+    auto ok =
+        expect("shell: wait_one(the control, Terminated) = ",
+               ours::object_wait_one(process, Signals::Terminated, ours::INSTANT_INFINITE, nullptr),
+               Status::Ok);
+
+    InfoProcess info{};
+    usize actual = 0;
+    usize avail = 0;
+    ok &= expect(
+        "shell: object_get_info(the control, Process) = ",
+        ours::object_get_info(process, InfoTopic::Process, &info, sizeof(info), &actual, &avail),
+        Status::Ok);
+    // fault_probe's main returns UNKNOWN, 2, for a probe name it does not
+    // know, which is what makes the control the one run that ends by
+    // returning from main.
+    constexpr auto UNKNOWN = i64{2};
+    constexpr auto ENDED = InfoProcessFlags::Started | InfoProcessFlags::Exited;
+    if (info.return_code == UNKNOWN && info.flags == ENDED && actual == 1 && avail == 1) {
+        auto _ = ort::debug_line("shell: the control returned 2, started and exited");
+    } else {
+        ok = false;
+        char code_text[18];
+        char flags_text[18];
+        char actual_text[10];
+        auto _ =
+            ort::debug_line({"shell: the control's record is wrong: return_code ",
+                             ort::hex(static_cast<u64>(info.return_code), code_text), ", flags ",
+                             ort::hex(static_cast<u64>(info.flags), flags_text), ", actual ",
+                             ort::decimal(static_cast<u32>(actual), actual_text)});
+    }
+
+    // avail is written even when the record is not, so that the caller
+    // learns what to ask for.
+    actual = 1;
+    avail = 0;
+    ok &= expect("shell: object_get_info(one byte short) = ",
+                 ours::object_get_info(process, InfoTopic::Process, &info, sizeof(info) - 1,
+                                       &actual, &avail),
+                 Status::BufferTooSmall);
+    if (actual != 0 || avail != 1) {
+        ok = false;
+        auto _ = ort::debug_line("shell: one byte short did not write actual 0 and avail 1");
+    }
+
+    ok &= expect("shell: object_get_info(HandleBasic) = ",
+                 ours::object_get_info(process, InfoTopic::HandleBasic, &info, sizeof(info),
+                                       nullptr, nullptr),
+                 Status::NotSupported);
+    ok &= expect(
+        "shell: object_get_info(a job, Process) = ",
+        ours::object_get_info(job, InfoTopic::Process, &info, sizeof(info), nullptr, nullptr),
+        Status::BadType);
+
+    ours::Uandle blind = ours::Uandle::Invalid;
+    constexpr auto WITHOUT_INSPECT =
+        ours::Rights::Transfer | ours::Rights::Duplicate | ours::Rights::Wait;
+    if (expect("shell: handle_duplicate(the control, without Inspect) = ",
+               ours::handle_duplicate(process, WITHOUT_INSPECT, &blind), Status::Ok)) {
+        ok &= expect(
+            "shell: object_get_info(without Inspect) = ",
+            ours::object_get_info(blind, InfoTopic::Process, &info, sizeof(info), nullptr, nullptr),
+            Status::AccessDenied);
+        auto _ = ours::handle_close(blind);
+    } else {
+        ok = false;
+    }
+
+    auto _ = ort::debug_line(ok ? "shell: object_get_info checks passed"
+                                : "shell: object_get_info checks FAILED");
 }
 
 /// Programs that fault, and the kernel still here afterwards (P1-A).
@@ -613,6 +706,11 @@ auto run_probes(ours::Uandle const job, Launcher const &launcher) -> void {
             auto _ = ort::debug_line(
                 "shell: launcher checks FAILED (its control probe did not answer \"unknown\")");
         }
+    }
+
+    if (control.process != ours::Uandle::Invalid) {
+        check_object_get_info(control.process, job);
+        auto _ = ours::handle_close(control.process);
     }
 }
 

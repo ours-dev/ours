@@ -10,6 +10,7 @@ ours_public_headers = [
   "ours/assert.hpp",
   "ours/compiler.hpp",
   "ours/macro_abi.hpp",
+  "ours/object_info.hpp",
   "ours/panic.hpp",
   "ours/process_args.hpp",
   "ours/rights.hpp",

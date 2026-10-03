@@ -9,6 +9,7 @@
 #include <ours/object/handle_table.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
+#include <ours/object_info.hpp>
 #include <ours/syscall.hpp>
 #include <ours/task/thread.hpp>
 
@@ -136,6 +137,19 @@ class ProcessDispatcher: public ProcessDispatcherBase {
 
     auto detach_thread(ThreadDispatcher &thread) -> Status;
 
+    /// This process's state as object_get_info reports it for
+    /// InfoTopic::Process.
+    ///
+    /// The return code, the state and the start time are copied in one hold
+    /// of the lock that guards them. kill() writes the return code and the
+    /// state together, so two holds could pair Exited with the code from
+    /// before the kill. The flags are worked out from the copied state after
+    /// the lock is released.
+    ///
+    /// Zircon counterpart: ProcessDispatcher::GetInfo().
+    [[nodiscard]]
+    auto get_info() -> InfoProcess;
+
     /// Whether all of [addr, addr + len) lies inside this process's vDSO: the
     /// question the syscall path asks of every trap, to refuse -- and kill the
     /// process for -- one whose `syscall` instruction is anywhere else. That is
@@ -184,9 +198,13 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     State m_state;
 
     /// The code the process ends with; see kill() and exit(). Guarded by
-    /// get_lock(). Nothing reads it yet: get_info does, in step K24 of
-    /// docs/design/260924/userspace-filesystem.md.
+    /// get_lock(). Read by get_info().
     i64 m_retcode;
+
+    /// When the process went Running, in nanoseconds on the monotonic clock;
+    /// zero until then. Written once, by attach_thread() with the first
+    /// thread. Guarded by get_lock(), and read by get_info().
+    Instant m_start_time;
 
     ktl::Name<MAX_NAME_LEN> m_name;
 

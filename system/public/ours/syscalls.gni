@@ -285,6 +285,54 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "object_get_info"
+    brief = "Writes what the object |handle| names reports for |topic|."
+    doc = [
+      "Each topic has its own record layout (<ours/object_info.hpp>). Only",
+      "InfoTopic::Process is answered, one InfoProcess; any other topic is",
+      "NotSupported, whatever |handle| is. For Process, |handle| must name a",
+      "process (BadType) and grant Inspect (AccessDenied).",
+      "",
+      "|actual| and |avail| count records, not bytes: how many were written,",
+      "and how many there are. A |buffer_size| too small for one record is",
+      "BufferTooSmall, and |avail| is still written, so the caller learns",
+      "what to ask for. Both may be null. Any of the three that cannot be",
+      "written is InvArgs.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "topic"
+        type = "InfoTopic"
+      },
+      {
+        name = "buffer"
+        type = "void"
+        dir = "out"
+        count = "buffer_size"
+      },
+      {
+        name = "buffer_size"
+        type = "usize"
+      },
+      {
+        name = "actual"
+        type = "usize"
+        dir = "out"
+      },
+      {
+        name = "avail"
+        type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
     name = "process_exit"
     brief = "Ends the calling process with |retcode|; never returns."
     doc = [
