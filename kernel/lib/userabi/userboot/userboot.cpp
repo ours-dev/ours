@@ -399,14 +399,6 @@ auto main(int, char **) -> int {
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
 
-    // The BootFS the kernel still builds from its own package, until it stops
-    // (step 3 of .agents/tasks/userboot-bootfs/PLAN.md): unused, since this
-    // program unpacks its own from the boot image.
-    if (auto const kernel_built = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
-        kernel_built != ours::Uandle::Invalid) {
-        auto _ = ours::handle_close(kernel_built);
-    }
-
     // Without the boot image there is no BootFS, and without the BootFS
     // nothing to start the next program from: the kernel loads no program
     // but this one.

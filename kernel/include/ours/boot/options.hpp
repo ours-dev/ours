@@ -120,21 +120,19 @@ class BootOptions final {
     ///
     /// The directory of the kernel package that holds this kernel's own
     /// files, under KernelPackage's fixed names (IMAGE_ELF, CODE_PATCHES).
-    /// phys reads the option to find the image it loads (physboot_init());
-    /// vmours reads it to know which part of the package is its own, which is
-    /// what userabi refuses to copy into the BootFS it hands to user space
-    /// (the blacklist of docs/repairs/260925/userabi.md item 1). Zircon's
-    /// counterpart is `kernel.select` (lib/boot-options/options.inc), which
-    /// names the kernel package to boot out of STORAGE_KERNEL.
+    /// phys reads the option to find the image it loads (physboot_init()).
+    /// Zircon's counterpart is `kernel.select` (lib/boot-options/options.inc),
+    /// which names the kernel package to boot out of STORAGE_KERNEL.
     ///
-    /// The two readers can disagree, where Zircon's cannot: its kernel is
-    /// handed physboot's parsed gBootOptions, while this parses the image's
-    /// Config item again and never sees the bootloader's command line (see
-    /// the class comment). So `kernel.name=` typed at GRUB boots a directory
-    /// other than the one named here. For the one use so far that is
-    /// tolerable -- the blacklist is a backstop, and the whitelist in front
-    /// of it is what decides -- but a use that must know the directory phys
-    /// actually booted should take it from the handoff, not from this.
+    /// vmours has no reader of it now. Its one use was to keep the kernel's
+    /// own files out of the BootFS userabi built for user space, and the
+    /// kernel builds no BootFS since userboot unpacks the image's
+    /// StorageBootFs item itself (.agents/tasks/userboot-bootfs). A new use
+    /// must also know that this copy can disagree with phys's, where Zircon's
+    /// cannot: this parses the image's Config item again and never sees the
+    /// bootloader's command line (see the class comment), so `kernel.name=`
+    /// typed at GRUB boots a directory other than the one named here. Such a
+    /// use should take the directory from the handoff instead.
     [[nodiscard]]
     auto kernel_name() const -> std::string_view {
         return m_kernel_name;

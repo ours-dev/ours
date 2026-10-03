@@ -12,9 +12,9 @@
 
 namespace init {
 /// Where init's startup list lives in the BootFS it is given. The build writes
-/// it there -- kernel_package(init_startup = true) gathers every
-/// init_startup() entry an image lists (//system/service/init/init_startup.gni)
-/// -- and marks it user-visible, which is what lets init see it at all.
+/// it there -- user_bootfs(init_startup = true) gathers every init_startup()
+/// entry an image lists (//system/service/init/init_startup.gni) into the
+/// user BootFS (//kernel/user_bootfs.gni).
 ///
 /// Fuchsia's component_manager reads its root manifest from a path in the
 /// boot image the same way (root.cml, and bootstrap.cml's `children` with

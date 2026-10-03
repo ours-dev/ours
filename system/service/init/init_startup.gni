@@ -28,10 +28,10 @@ init_startup_capabilities = [
 # (`children: [ { name, url, startup: "eager" } ]` in bootstrap.cml), together
 # with what that child `use`s. The entry is a GN target, not a line someone
 # writes into a file: it carries the line as `init_startup` metadata, and the
-# kernel_package() that has `init_startup = true` gathers every such line in
-# its deps into `config/init/startup` in the BootFS -- the same way it builds
-# the user-visible whitelist. Which services an image starts is therefore the
-# image's choice, made by listing entries in its package's deps; the same
+# user_bootfs() that has `init_startup = true` gathers every such line in its
+# deps into `config/init/startup` in the user BootFS
+# (//kernel/user_bootfs.gni). Which services an image starts is therefore the
+# image's choice, made by listing entries in its BootFS's deps; the same
 # program can be an entry in one image and merely packaged in another.
 #
 # Each line is `<name>[+<arg>...] [<capability>,...]`: the command in the form

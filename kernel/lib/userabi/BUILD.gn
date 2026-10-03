@@ -12,8 +12,6 @@ cpp_interface("headers") {
 source_set("userabi") {
   sources = [
     "src/resource.cpp",
-    "src/user_bootfs.cpp",
-    "src/user_bootfs.hpp",
     "src/userboot.cpp",
   ]
   public_deps = [ ":headers" ]

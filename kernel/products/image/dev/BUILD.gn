@@ -49,7 +49,7 @@ if (defined(ours.with)) {
 
 # init's startup list for this image: what init starts once userboot has
 # started it, and with which startup handles. Ours' counterpart of the eager
-# children of Fuchsia's bootstrap.cml; kernel_package("ours") below gathers
+# children of Fuchsia's bootstrap.cml; user_bootfs("bootfs") below gathers
 # these into config/init/startup (init_startup = true).
 #
 # 示例
@@ -67,12 +67,6 @@ init_startup("shell") {
 # 写法）。prefix="" ——BootFS 顶层是扁平命名空间，内核落在
 # vmours/image.elf 等顶层路径。
 kernel_package("ours") {
-  # This package carries the image's user programs, so it carries the
-  # whitelist of what user space may see (//kernel/kernel_package.gni), and
-  # init's startup list.
-  user_bootfs = true
-  init_startup = true
-
   visibility = [
     ":*",
     "//products/*",
@@ -83,27 +77,15 @@ kernel_package("ours") {
   testonly = true
   prefix = ""
   deps = [
-    ":shell",
     "..:common_package_items",
     "//kernel/products/bin:vmours.with-tests(//build/switch/set/dbg.0:kernel_${target_cpu}.dbg.0)",
   ]
-
-  # 工具链后缀在这里统一补上：不写就会在内核工具链里编出一个
-  # -mcmodel=kernel 的“用户程序”。So the list above takes plain
-  # labels, and a label that already names a toolchain is rejected rather than
-  # suffixed a second time into something GN cannot parse.
-  foreach(program, _user_programs) {
-    assert(get_label_info(program, "toolchain") == current_toolchain,
-           "ours.with takes plain labels without a toolchain suffix: $program")
-    deps += [ "$program(//build/toolchain/ours:user-${target_cpu})" ]
-  }
 }
 
 # The BootFS user space boots from, a StorageBootFs item of its own
 # (//kernel/user_bootfs.gni): the shell, the user programs and the vDSO they
-# bind against, and init's startup list. Nothing reads it yet: the kernel
-# still builds the user BootFS out of the kernel package above, until
-# userboot unpacks this item itself (.agents/tasks/userboot-bootfs/PLAN.md).
+# bind against, and init's startup list. userboot unpacks it and hands it on;
+# the kernel never reads it.
 user_bootfs("bootfs") {
   init_startup = true
   visibility = [ ":*" ]
@@ -112,7 +94,15 @@ user_bootfs("bootfs") {
     ":shell",
     "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
   ]
+
+  # The toolchain suffix is added here, once: without it a program would be
+  # built in the kernel toolchain as a -mcmodel=kernel "user program". So the
+  # list above takes plain labels, and a label that already names a toolchain
+  # is rejected rather than suffixed a second time into something GN cannot
+  # parse.
   foreach(program, _user_programs) {
+    assert(get_label_info(program, "toolchain") == current_toolchain,
+           "ours.with takes plain labels without a toolchain suffix: $program")
     deps += [ "$program(//build/toolchain/ours:user-${target_cpu})" ]
   }
 }

@@ -341,3 +341,67 @@ None given.
 - Why must userboot drop `Write` before it builds its launcher, not only before it hands the BootFS on?
 - What does the kernel still read from the boot image after this change, and what does it no longer?
 - Why does `unpack_bootfs()` read the container header with `vmo_read` before mapping the image?
+
+## Title: The kernel no longer builds the user BootFS; its package holds only what it boots from (2026-10-03)
+
+**Files**
+- `kernel/lib/userabi/src/user_bootfs.{hpp,cpp}` — deleted: `make_user_bootfs()` and the whitelist reader.
+- `kernel/lib/userabi/BUILD.gn` — the two sources removed.
+- `kernel/lib/userabi/src/userboot.cpp` — `resident_bootfs` is gone, and `write_bootstrap()` sends no `VmoBootfs`. The processargs carry six handles again: VmaRoot, the root job, vmex, the vDSO, the boot image and the Debug resource.
+- `kernel/lib/userabi/userboot/userboot.cpp` — no kernel-built BootFS to close.
+- `kernel/kernel_package.gni` — the `user_bootfs` and `init_startup` options and their generated files are gone. `config/init/startup` now comes from `user_bootfs(init_startup = true)`.
+- `kernel/products/image/dev/BUILD.gn`, `kernel/products/image/dev.dbg_1/BUILD.gn` — the user programs leave `kernel_package("ours")` for `user_bootfs("bootfs")`, with their comments and the toolchain assert.
+- `system/user_executable.gni`, `kernel/lib/userabi/vdso/BUILD.gn` — the `bootfs_user_visible` metadata is gone; nothing reads it.
+- `system/service/init/init_startup.gni`, `system/service/init/include/init/startup.hpp`, `kernel/include/ours/boot/options.hpp` — comments that described the whitelist.
+- `docs/repairs/261003/userabi.md` — the package-buffer item updated: five files now, and a better fix, phys's copy.
+
+**Symptom**
+None: step 3 of `.agents/tasks/userboot-bootfs/PLAN.md`. After step 2 the kernel still built a user BootFS that userboot closed unread. The user programs also sat in the kernel package twice over, once for that BootFS and once in the image's StorageBootFs item.
+
+**Cause**
+The objects:
+- The kernel package (StorageKernel). It is what phys boots the kernel from, and what the kernel loads userboot and lays out the vDSO from.
+- The user BootFS (StorageBootFs), which userboot unpacks since step 2.
+- The whitelist, `config/user_bootfs`. It was generated from `bootfs_user_visible` metadata and read by `make_user_bootfs()`. Its job was to keep the kernel's own files out of what user space got from a package that held both.
+
+With two items, what user space gets is decided by which item a file is packed into. A list applied at boot is no longer needed, and neither are the backstop that refused the kernel's own files by place and name, the copy into a fresh VMO, or the rights mask on it. In Zircon, too, the kernel neither builds nor reads STORAGE_BOOTFS.
+
+**Change**
+
+```text
+before: [KSTR] kernel — 9 files: config/init/startup, config/user_bootfs, init, shell,
+        userboot, vdso, vmours/code-patches, vmours/image.elf, physboot
+after:  [KSTR] kernel — 5 files: userboot, vdso, vmours/code-patches, vmours/image.elf, physboot
+        [BTSF] bootfs — 4 files: config/init/startup, init, shell, vdso
+```
+
+The kernel's whole part in user space's files is now one copy of the boot image into a VMO for userboot (step 2).
+
+**Reference**
+- Zircon: the kernel hands userboot the ZBI (`zircon/kernel/lib/userabi/userboot.cc`), and userboot unpacks STORAGE_BOOTFS itself (`get_bootfs_vmo()`, `src/bringup/lib/userboot/rust/src/bootfs.rs`).
+- Nothing in Zircon's kernel builds a BootFS.
+
+**Verification**
+- `boot_check.py` on `out/bringup.x86`:
+  - dbg PASS, 20 passed: 16 probes killed, launcher and object_get_info checks passed, `shell: bootfs has 3 entries`;
+  - rel PASS, 18 passed: `init: bootfs has 4 entries`, `init: launched shell`.
+- Both logs have `userboot: kernel package holds 5 files`, and `userabi: handing userboot its processargs: its root VMA, the root job and the boot image`.
+- `obit tree` shows the layout above for the rel image. The dbg_1 image's package has the same five files, with its own `vmours/image.elf`.
+- On the rel image's serial port, the shell's `ls` lists `config/init/startup`, `init`, `shell` and `vdso`.
+- `out/autorun-launch` (`with = [fault_probe]`, `autorun = "fault_probe+none"`): dbg and rel PASS. init sees five entries and starts the autorun probe, which reaches main.
+- `git grep` finds no `make_user_bootfs`, `resident_bootfs`, `bootfs_user_visible` or `config/user_bootfs` under `kernel/`, `system/`, `examples/` or `build/`.
+
+**Deliberately not done**
+- The kernel still decompresses its own package for userboot and the vDSO, into a buffer it never frees. That is `docs/repairs/261003/userabi.md`, item 1. It names a better fix now: phys has decompressed the same package already.
+- `BootOptions::kernel_name()` in vmours has no reader left. It stays, with its comment updated, since the option is part of the boot-options contract phys shares.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None given.
+
+**Three questions you should be able to answer**
+- What did the whitelist protect against, and why is it not needed once the image has two BootFS items?
+- Which files must be in both items, and why each?
+- What does the kernel still do with the boot image after this change?

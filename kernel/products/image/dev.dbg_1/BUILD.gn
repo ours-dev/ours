@@ -16,10 +16,6 @@ import("//kernel/kernel_package.gni")
 import("//kernel/user_bootfs.gni")
 
 kernel_package("ours") {
-  # This package carries the image's user programs, so it carries the
-  # whitelist of what user space may see (//kernel/kernel_package.gni).
-  user_bootfs = true
-
   visibility = [
     ":*",
     "//products/*",
@@ -33,30 +29,26 @@ kernel_package("ours") {
     # DEBUG_ASSERT and logz4's Debug/Trace levels).
     # Built against dbg.0 it was a byte-for-byte policy twin of kernel.dev.
     "//kernel/products/bin:vmours(//build/switch/set/dbg.1:kernel_${target_cpu}.dbg.1)",
-
-    # 这个镜像里 userboot 启动的程序：示例
-    # shell。它不在共享零件里，因为「跑哪个程序」
-    # 是镜像的属性 —— 由本镜像声明它，再由下面 cmdline 的
-    # userboot.next 指名它。工具链后缀同上：
-    # 不写就会在内核工具链里编出一个 -mcmodel=kernel
-    # 的“用户程序”。
-    "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
-
-    # lib/syscall's test: the program the shell starts and watches die, one
-    # probe at a time (examples/shell/shell.cpp, run_probes()). Here only:
-    # this is the image whose shell holds the root job, and the one with
-    # DEBUG_ASSERT on, so the kill path runs under every assertion it has.
-    "//kernel/lib/syscall/test/fault_probe(//build/toolchain/ours:user-${target_cpu})",
   ]
 }
 
 # The BootFS user space boots from, a StorageBootFs item of its own
-# (//kernel/user_bootfs.gni): the shell, fault_probe and the vDSO. Nothing
-# reads it yet; see //kernel/products/image/dev/BUILD.gn.
+# (//kernel/user_bootfs.gni), which userboot unpacks and hands on.
 user_bootfs("bootfs") {
   visibility = [ ":*" ]
   deps = [
+    # The program userboot starts in this image: the example shell. Not in
+    # the shared parts, because which program runs is the image's choice --
+    # declared here, and named by userboot.next in the cmdline below. The
+    # toolchain suffix keeps it from being built as a -mcmodel=kernel "user
+    # program" in the kernel toolchain.
     "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
+
+    # lib/syscall's test: the program the shell starts and watches die, one
+    # probe at a time (examples/shell/shell_tests.cpp, run_probes()). Here
+    # only: this is the image whose shell holds the root job, and the one
+    # with DEBUG_ASSERT on, so the kill path runs under every assertion it
+    # has.
     "//kernel/lib/syscall/test/fault_probe(//build/toolchain/ours:user-${target_cpu})",
     "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
   ]

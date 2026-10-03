@@ -11,7 +11,6 @@
 #include <cstring>
 
 #include "resource.hpp"
-#include "user_bootfs.hpp"
 #include <elfload/binder.hpp>
 #include <elfload/program.hpp>
 #include <heap/new.hpp>
@@ -212,15 +211,6 @@ namespace {
     };
     SharedVdso shared_vdso;
 
-    /// The BootFS user space is given (make_user_bootfs()), built once from
-    /// the resident package, and the rights a handle to it is to carry.
-    ///
-    /// Held here only between being built and being sent: write_bootstrap()
-    /// moves it into the first process's processargs message, and this is
-    /// empty from then on. The first process decides who else gets it.
-    object::KernelHandle<object::VmoDispatcher> resident_bootfs;
-    Rights resident_bootfs_rights;
-
     /// The command-line options that belong to user space rather than to the
     /// kernel: `userboot.*`, the userboot program's own -- `userboot.next`,
     /// the program it starts next, first among them -- and `ours.autorun.*`,
@@ -394,15 +384,13 @@ namespace {
     ///   JobDefault  the root job, with its default rights -- what processes
     ///               are created under, so the first process is the one that
     ///               can start the rest of the system;
-    ///   VmoBootfs   the user BootFS (resident_bootfs), when there is one:
-    ///               moved into the message, not copied, as Zircon's userboot
-    ///               moves its VMO handles out;
     ///   VmaRoot     |root_vma|, the process's own root region, which launch()
     ///               handed back;
     ///   VmoVdso     the vDSO's VMO, to map it into the processes this one is
     ///               to start;
     ///   VmoBootdata the boot image (make_boot_image_handle()), which userboot
-    ///               unpacks the user BootFS from.
+    ///               unpacks the user BootFS from. The kernel gives it no
+    ///               BootFS: it neither builds nor reads the user's.
     ///
     /// Everything is made on this kernel thread, which belongs to no process,
     /// so none of these handles is charged to anyone's quota
@@ -423,8 +411,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[7];
-        u32 infos[7] = {};
+        ustl::Box<object::Handle> handles[6];
+        u32 infos[6] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -436,17 +424,6 @@ namespace {
             return Status::NoResource;
         }
         infos[count++] = handle_info(HandleType::JobDefault, 0);
-
-        if (resident_bootfs.dispatcher()) {
-            handles[count] = object::Handle::make(
-                object::KernelHandle<object::Dispatcher>(ustl::move(resident_bootfs)),
-                resident_bootfs_rights);
-            if (!handles[count]) {
-                log::error("userabi: could not make a handle to the BootFS");
-                return Status::NoResource;
-            }
-            infos[count++] = handle_info(HandleType::VmoBootfs, 0);
-        }
 
         // vmex: the one capability that turns a VMO executable (design D3,
         // K18). Minted here and nowhere else, so the first process is the only
@@ -491,11 +468,11 @@ namespace {
         }
 
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, seven handle_infos, a program name
+        // fail for want of room: the header, six handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
         // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 7 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 6 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};
@@ -894,16 +871,10 @@ auto userboot_init() -> void {
         return;
     }
 
-    // Built before the first process starts, so that the VMO exists by the
-    // time anything could ask for it. A failure is logged inside and is not
-    // fatal: the first program runs without a BootFS, which it can say, and
-    // which is less than it would otherwise get rather than more.
-    //
     // The decompressed package stays where it is, though nothing reads it
-    // once userboot has started: the BootFS VMO is a copy, and the vDSO VMO
-    // too. Freeing it waits on vfree() (docs/repairs/261003/userabi.md).
-    auto _ = make_user_bootfs(package.unwrap(), boot::options().kernel_name(), resident_bootfs,
-                              resident_bootfs_rights);
+    // once userboot has started: the vDSO VMO is a copy. Freeing it waits on
+    // vfree() (docs/repairs/261003/userabi.md). The user BootFS is not in it:
+    // that is the boot image's StorageBootFs item, which userboot unpacks.
 
     // The userboot program, always: `kernel.select.userboot` only picks which
     // build of it (see boot::BootOptions::userboot()), and what runs after it
@@ -920,10 +891,9 @@ auto userboot_init() -> void {
     // first, then the message (write_bootstrap()): its root VMA is one of the
     // handles in it, and that only exists once launch() has made the process.
     // The runtime waits for the message, so a thread that starts before it
-    // lands just waits. What it gets is its root VMA, the root job, the
-    // BootFS and the user-space options -- everything userboot needs to
+    // lands just waits. What it gets is its root VMA, the root job, the boot
+    // image and the user-space options -- everything userboot needs to
     // start the next program and hand the rest on to it.
-    auto const has_bootfs = static_cast<bool>(resident_bootfs.dispatcher());
     object::KernelHandle<object::ChannelDispatcher> kernel_end;
     auto bootstrap = make_bootstrap_channel(kernel_end);
     if (!bootstrap) {
@@ -939,8 +909,9 @@ auto userboot_init() -> void {
         return;
     }
 
-    log::info("userabi: handing {} its processargs: its root VMA, the root job{}", program,
-              has_bootfs ? " and the BootFS" : "");
+    log::info("userabi: handing {} its processargs: its root VMA, the root job and the boot "
+              "image",
+              program);
     // A failure is said inside. The process is already running, and with the
     // kernel's end dropped below it sees PEER_CLOSED and no message, and ends
     // itself (ort::EXIT_START_FAILED).

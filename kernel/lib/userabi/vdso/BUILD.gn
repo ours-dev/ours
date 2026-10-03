@@ -47,14 +47,10 @@ kernel_elf_binary("vdso") {
   # is installed as a bare `vdso` file rather than a `vdso/` subtree.
   has_patches = false
 
-  # User-visible: a user-space loader binds a program's imports against this
-  # file's .dynsym, so it has to find it in the BootFS the kernel hands out
-  # (//kernel/kernel_package.gni). It is the vDSO's image as data. What every
-  # process maps is the kernel's own copy, the one VMO lay_out_vdso() made at
-  # boot, mapped by whoever starts the process.
-  metadata = {
-    bootfs_user_visible = [ "vdso" ]
-  }
+  # It goes into both BootFS items of an image. In the kernel package the
+  # kernel lays out the one vDSO VMO from it (lay_out_vdso()), which every
+  # process maps. In the user BootFS (//kernel/user_bootfs.gni) a user-space
+  # loader reads its .dynsym to bind a program's imports: there it is data.
 
   sources = [ "vdso.S" ]
 
