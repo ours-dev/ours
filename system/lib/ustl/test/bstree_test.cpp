@@ -35,7 +35,7 @@ auto main() -> int {
         two_it->m_key != 2 || duplicate_it->m_key != 2) {
         return 1;
     }
-    static_cast<void>(tree.insert_equal(duplicate));
+    auto _ = tree.insert_equal(duplicate);
     if (tree.count(two) != 2U) {
         return 2;
     }
@@ -54,7 +54,7 @@ auto main() -> int {
     Value multi_one{.m_key = 4};
     Value multi_two{.m_key = 4};
     BsMultiset multiset{};
-    static_cast<void>(multiset.insert(multi_one));
-    static_cast<void>(multiset.insert(multi_two));
+    auto _ = multiset.insert(multi_one);
+    auto _ = multiset.insert(multi_two);
     return tree.count(two) == 1U && multiset.count(multi_one) == 2U ? 0 : 4;
 }

@@ -91,7 +91,7 @@ auto CpuStopper::queue_work(Work &work) -> bool {
     if (is_enabled) {
         // This stopper is enabled so wakes up it to execute |work|. resume()
         // answers only Ok.
-        static_cast<void>(m_worker->resume());
+        auto _ = m_worker->resume();
     }
 
     return is_enabled;

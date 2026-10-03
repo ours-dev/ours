@@ -134,12 +134,12 @@ auto Sampler::is_running() const -> bool {
 // value: it pairs with the release that published Running after the field
 // was written, which is what makes the plain read after it well-defined.
 auto Sampler::active_source() const -> Source {
-    static_cast<void>(m_state.load(std::memory_order_acquire));
+    auto _ = m_state.load(std::memory_order_acquire);
     return m_source;
 }
 
 auto Sampler::active_period() const -> u64 {
-    static_cast<void>(m_state.load(std::memory_order_acquire));
+    auto _ = m_state.load(std::memory_order_acquire);
     return m_period;
 }
 
@@ -216,12 +216,12 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
         // User stacks need the user address space + user unwind info;
         // out of scope for now.
         record.flags = RecordFlags::RecordFromUspace;
-        static_cast<void>(m_sink.produce(cpu, record));
+        auto _ = m_sink.produce(cpu, record);
         return;
     }
 
     unwind_context(context, &record);
-    static_cast<void>(m_sink.produce(cpu, record));
+    auto _ = m_sink.produce(cpu, record);
 }
 
 auto Sampler::on_scheduler_tick() -> void {

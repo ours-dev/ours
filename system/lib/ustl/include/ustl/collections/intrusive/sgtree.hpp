@@ -173,10 +173,10 @@ class Sgtree final {
     constexpr auto erase(T &value) noexcept -> void {
         const auto node = to_node(value);
         if (!Algorithms::unique(node)) {
-            static_cast<void>(Algorithms::erase(&m_header, node, m_size, m_max_tree_size,
-                                                [this](std::size_t const maximum_size) noexcept {
-                                                    return deletion_threshold(maximum_size);
-                                                }));
+            auto _ = Algorithms::erase(&m_header, node, m_size, m_max_tree_size,
+                                       [this](std::size_t const maximum_size) noexcept {
+                                           return deletion_threshold(maximum_size);
+                                       });
             --m_size;
         }
     }

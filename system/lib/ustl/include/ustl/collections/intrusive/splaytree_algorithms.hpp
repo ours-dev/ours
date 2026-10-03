@@ -99,7 +99,7 @@ class SplaytreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
 
     static constexpr auto unlink(NodePtr const node) noexcept -> void {
         if (!unique(node)) {
-            static_cast<void>(erase(get_header(node), node));
+            auto _ = erase(get_header(node), node);
         }
     }
 

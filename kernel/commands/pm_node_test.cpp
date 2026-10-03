@@ -277,7 +277,7 @@ namespace {
 
         // AllocationContext: ThisNode walks only the local zones.
         mm::AllocationContext local;
-        static_cast<void>(local.build(&node, mm::GAF_KERNEL | mm::Gaf::ThisNode, 0, online));
+        auto _ = local.build(&node, mm::GAF_KERNEL | mm::Gaf::ThisNode, 0, online);
         auto this_node_ok = true;
         while (auto *const zone = local.ziter.move_next()) {
             if (zone->which_node() != node.nid()) {
@@ -288,7 +288,7 @@ namespace {
         // has to be taken out to ask for the whole fallback order; GAF_KERNEL's
         // zone type is Normal, which lets every zone through.
         mm::AllocationContext everywhere;
-        static_cast<void>(everywhere.build(&node, mm::GAF_KERNEL & ~mm::Gaf::ThisNode, 0, online));
+        auto _ = everywhere.build(&node, mm::GAF_KERNEL & ~mm::Gaf::ThisNode, 0, online);
         auto const walked = count_walk(everywhere.ziter);
         log::info("pmnode.test:   AllocationContext without ThisNode walked {} of {} zone(s)",
                   walked, list->fallback().size());

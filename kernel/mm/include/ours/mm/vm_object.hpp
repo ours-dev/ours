@@ -175,7 +175,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     auto set_name(char const *name) -> void {
         // set() refuses only a null name, which it records as empty; a long
         // one is cut short, and a name is only ever read in dumps.
-        static_cast<void>(m_name.set(name));
+        auto _ = m_name.set(name);
     }
 
     FORCE_INLINE
@@ -259,7 +259,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     TA_REQUIRES(m_lock)
     FORCE_INLINE
     auto remove_mapping(VmMapping &mapping) -> void {
-        (void)m_mappings.erase(m_mappings.iterator_to(mapping));
+        auto _ = m_mappings.erase(m_mappings.iterator_to(mapping));
     }
 
     gktl::Canary m_canary;

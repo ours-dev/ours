@@ -278,7 +278,7 @@ namespace {
         if (root->unmap(qhole, PAGE_SIZE) != Status::Ok) {
             log::error("usercopy.test: could not punch the VMO test hole");
             tally.failed += 1;
-            static_cast<void>(root->unmap(q0, 3 * PAGE_SIZE));
+            auto _ = root->unmap(q0, 3 * PAGE_SIZE);
             return;
         }
         log::info("usercopy.test: VMO buffers Q0={:#x} Q1={:#x} hole={:#x}", q0, q1, qhole);
@@ -358,11 +358,11 @@ namespace {
                 verdict(
                     tally, status == Status::Ok && back == Status::Ok && got[0] == A && got[1] == E,
                     "read_user into a mapping of the same VMO neither deadlocks nor loses bytes");
-                static_cast<void>(root->unmap(m, 2 * PAGE_SIZE));
+                auto _ = root->unmap(m, 2 * PAGE_SIZE);
             }
         }
 
-        static_cast<void>(root->unmap(q0, 3 * PAGE_SIZE));
+        auto _ = root->unmap(q0, 3 * PAGE_SIZE);
     }
 
     /// Puts the calling thread on |next| and loads its page tables, and hands

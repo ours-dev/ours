@@ -70,7 +70,7 @@ auto build(std::vector<Area> &store, Tree &tree, std::size_t n) -> void {
         store[i] = Area{.base = u64(i) * 3 * PAGE, .size = 2 * PAGE};
     }
     for (auto &area: store) {
-        (void)tree.insert(&area);
+        auto _ = tree.insert(&area);
     }
 }
 

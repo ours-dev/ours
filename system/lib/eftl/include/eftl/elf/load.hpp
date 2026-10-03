@@ -153,9 +153,9 @@ struct LoadInfoObserver
         m_loadinfo->m_va_maximal = std::max(
             m_loadinfo->m_va_maximal, static_cast<typename LoadInfo::Addr>(segment.va_limit()));
         auto const old_size = m_loadinfo->m_segments.size();
-        (void)m_loadinfo->m_segments.emplace_back(segment.va_begin(), segment.va_size(), file_size,
-                                                  segment.alignment(), segment.permissions(),
-                                                  content);
+        auto _ = m_loadinfo->m_segments.emplace_back(segment.va_begin(), segment.va_size(),
+                                                     file_size, segment.alignment(),
+                                                     segment.permissions(), content);
 
         return m_loadinfo->m_segments.size() == old_size + 1;
     }

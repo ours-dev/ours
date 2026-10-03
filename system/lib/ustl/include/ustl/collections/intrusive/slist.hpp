@@ -160,11 +160,11 @@ class Slist final {
     }
 
     constexpr auto push_front(T &value) noexcept -> void {
-        static_cast<void>(insert_after(before_begin(), value));
+        auto _ = insert_after(before_begin(), value);
     }
 
     constexpr auto push_back(T &value) noexcept -> void {
-        static_cast<void>(insert_after(IterMut(last_node()), value));
+        auto _ = insert_after(IterMut(last_node()), value);
     }
 
     [[nodiscard]]
@@ -173,7 +173,7 @@ class Slist final {
         if (value.is_none()) {
             return ustl::NONE;
         }
-        static_cast<void>(erase_after(before_begin()));
+        auto _ = erase_after(before_begin());
         return value;
     }
 
@@ -181,7 +181,7 @@ class Slist final {
         requires(std::is_nothrow_invocable_v<Disposer &, T *>)
     constexpr auto pop_front_and_dispose(Disposer disposer) noexcept -> void {
         detail::require(!empty());
-        static_cast<void>(erase_after_and_dispose(before_begin(), disposer));
+        auto _ = erase_after_and_dispose(before_begin(), disposer);
     }
 
     [[nodiscard]]
@@ -282,13 +282,13 @@ class Slist final {
     }
 
     constexpr auto clear() noexcept -> void {
-        static_cast<void>(erase_after(before_begin(), end()));
+        auto _ = erase_after(before_begin(), end());
     }
 
     template <typename Disposer>
         requires(std::is_nothrow_invocable_v<Disposer &, T *>)
     constexpr auto clear_and_dispose(Disposer disposer) noexcept -> void {
-        static_cast<void>(erase_after_and_dispose(before_begin(), end(), disposer));
+        auto _ = erase_after_and_dispose(before_begin(), end(), disposer);
     }
 
     constexpr auto swap(Slist &other) noexcept -> void {
@@ -495,7 +495,7 @@ class Slist final {
         while (NodeTraits::get_next(before_current.pointed_node()) != end_node()) {
             const auto current = IterMut(NodeTraits::get_next(before_current.pointed_node()));
             if (std::invoke(predicate, *current)) {
-                static_cast<void>(erase_after_and_dispose(before_current, disposer));
+                auto _ = erase_after_and_dispose(before_current, disposer);
                 ++removed;
             } else {
                 ++before_current;

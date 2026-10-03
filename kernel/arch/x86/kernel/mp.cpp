@@ -209,7 +209,7 @@ auto x86_bring_aps(CpuMask targets) -> void {
         //
         // Woken early by a signal, it answers InternalIrqRetry; that only
         // shortens this pause, and the bounded wait below decides either way.
-        static_cast<void>(Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes));
+        auto _ = Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes);
 
         // Wait for |cpu| to join, but do not wait for ever.
         //

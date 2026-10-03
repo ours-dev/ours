@@ -117,7 +117,7 @@ auto Dispatcher::detach_observer(SignalObserver *observer, Signals *signals) -> 
     }
 
     if (observer->m_managed_hook.is_linked()) {
-        (void)m_observers.erase(m_observers.iterator_to(*observer));
+        auto _ = m_observers.erase(m_observers.iterator_to(*observer));
     }
 
     return Status::Ok;

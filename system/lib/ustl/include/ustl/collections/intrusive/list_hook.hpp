@@ -93,7 +93,7 @@ class ListBaseHook
                       "unlink requires AutoUnlink mode.");
         const auto node = this_ptr();
         if (!Algorithms::inited(node)) {
-            static_cast<void>(Algorithms::unlink(node));
+            auto _ = Algorithms::unlink(node);
             Algorithms::init(node);
         }
     }
@@ -164,7 +164,7 @@ class ListMemberHook final
                       "unlink requires AutoUnlink mode.");
         const auto node = this_ptr();
         if (!Algorithms::inited(node)) {
-            static_cast<void>(Algorithms::unlink(node));
+            auto _ = Algorithms::unlink(node);
             Algorithms::init(node);
         }
     }

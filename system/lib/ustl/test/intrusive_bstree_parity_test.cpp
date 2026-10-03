@@ -24,8 +24,8 @@ auto main() -> int {
     Value two{.m_key = 2};
     Value replacement{.m_key = 2};
     Tree tree{};
-    static_cast<void>(tree.insert_equal(one));
-    static_cast<void>(tree.insert_before(tree.end(), two));
+    auto _ = tree.insert_equal(one);
+    auto _ = tree.insert_before(tree.end(), two);
     tree.replace_node(tree.iterator_to(two), replacement);
     const auto after = tree.erase(tree.iterator_to(one));
     return after->m_key == 2 && !one.is_linked() && !two.is_linked() && replacement.is_linked() ? 0

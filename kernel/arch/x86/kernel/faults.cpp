@@ -401,7 +401,7 @@ extern "C" auto x86_handle_paranoid_exception(arch::IrqFrame *frame) -> void {
     mm::CpuLocal::ScopedInstall const kernel_gs{x86_cpu_num_from_tr()};
 
     task::ExceptionContext unused{};
-    static_cast<void>(x86_dispatch_exception(frame->vector, frame, &unused));
+    auto _ = x86_dispatch_exception(frame->vector, frame, &unused);
 }
 
 extern "C" auto arch_handle_exception(arch::IrqFrame *frame) -> void {

@@ -33,13 +33,13 @@ auto IrqObject::attach(IrqObserver &observer) -> Status {
 }
 
 auto IrqObject::detach(IrqObserver &observer) -> Status {
-    static_cast<void>(observers_.erase(observers_.iterator_to(observer)));
+    auto _ = observers_.erase(observers_.iterator_to(observer));
     return Status::Ok;
 }
 
 auto IrqObject::notify() -> void {
     for (auto &observer: observers_) {
-        static_cast<void>(observer.on_event());
+        auto _ = observer.on_event();
     }
 }
 

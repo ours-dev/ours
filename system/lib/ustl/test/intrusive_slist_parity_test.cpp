@@ -29,7 +29,7 @@ auto main() -> int {
     const auto before = list.before_begin();
     const auto first = list.insert_after(before, one);
     const auto second = list.insert_after(first, two);
-    static_cast<void>(list.insert(list.end(), three));
+    auto _ = list.insert(list.end(), three);
     if (++list.before_begin() != list.begin() || list.previous(list.iterator_to(three)) != second ||
         list.front().value().m_key != 1 || list.size() != 3U) {
         return 1;
@@ -38,8 +38,8 @@ auto main() -> int {
     if (next->m_key != 2 || one.is_linked() || list.size() != 2U) {
         return 2;
     }
-    static_cast<void>(list.insert_after(before, four));
-    static_cast<void>(list.erase(list.iterator_to(three)));
+    auto _ = list.insert_after(before, four);
+    auto _ = list.erase(list.iterator_to(three));
     Slist source{};
     source.push_front(one);
     source.push_front(three);

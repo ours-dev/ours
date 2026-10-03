@@ -121,13 +121,13 @@ auto segment_pages(Diagnostics const &diagnostics, ustl::views::Span<u8 const> c
         auto const has = [&region](eftl::elf::SegPerms const perm) {
             return (region.permissions & perm) == perm;
         };
-        static_cast<void>(out.push_back({
+        auto _ = out.push_back({
             .offset = start - first_page,
             .size = page_up(region.virtual_end) - start,
             .read = has(eftl::elf::SegPerms::Readable),
             .write = has(eftl::elf::SegPerms::Writable),
             .execute = has(eftl::elf::SegPerms::Executable),
-        }));
+        });
     }
     return Status::Ok;
 }

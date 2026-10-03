@@ -11,7 +11,7 @@ HandleTable::HandleTable()
     : m_koid(KoIdGenerator::generate()), m_random(0), m_lock(), m_handles(), m_count(0) {}
 
 HandleTable::~HandleTable() {
-    static_cast<void>(clean());
+    auto _ = clean();
 }
 
 /// Closes every handle in the table, one at a time: each is taken out under
@@ -35,7 +35,7 @@ auto HandleTable::clean() -> u32 {
                 break;
             }
             auto &raw = *front;
-            static_cast<void>(m_handles.erase(m_handles.iterator_to(raw)));
+            auto _ = m_handles.erase(m_handles.iterator_to(raw));
             raw.set_table_koid(0);
             m_count -= 1;
             raw.dispatcher()->cancel(&raw);
@@ -85,7 +85,7 @@ auto HandleTable::add(ustl::Box<Handle> handle) -> ours::Uandle {
 /// handle leaving the process it was made in -- and doing it once, here,
 /// covers both.
 auto HandleTable::unlink_locked(Handle *const handle) -> ustl::Box<Handle> {
-    static_cast<void>(m_handles.erase(m_handles.iterator_to(*handle)));
+    auto _ = m_handles.erase(m_handles.iterator_to(*handle));
     handle->set_table_koid(0);
     m_count -= 1;
     handle->dispatcher()->cancel(handle);

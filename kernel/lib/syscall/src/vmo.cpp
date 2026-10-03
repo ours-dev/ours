@@ -40,7 +40,7 @@ auto vmo_create(u64 const size, VmoOptions const options,
     if (auto const status = out.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
         return status;
     }
-    static_cast<void>(table.add(ustl::move(handle)));
+    auto _ = table.add(ustl::move(handle));
     return Status::Ok;
 }
 
@@ -113,7 +113,7 @@ auto vmo_create_child(ours::Uandle const vmo, VmoChildOptions const options, u64
     if (auto const status = out.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
         return status;
     }
-    static_cast<void>(table.add(ustl::move(handle)));
+    auto _ = table.add(ustl::move(handle));
     return Status::Ok;
 }
 
@@ -164,7 +164,7 @@ auto vmo_replace_as_executable(ours::Uandle const vmo, ours::Uandle const vmex,
     if (auto const status = out.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
         return status;
     }
-    static_cast<void>(table.add(ustl::move(handle)));
+    auto _ = table.add(ustl::move(handle));
     return Status::Ok;
 }
 

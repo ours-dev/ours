@@ -154,15 +154,14 @@ namespace {
             thread->set_cpu_affinity_hard(CpuMask::of(static_cast<CpuNum>((i + 1) % num_cpus)));
             // detach() and resume() separately: detach_and_resume() is declared
             // but has no definition yet.
-            static_cast<void>(thread->detach());
-            static_cast<void>(thread->resume());
+            auto _ = thread->detach();
+            auto _ = thread->resume();
         }
 
         auto const give_up = started + STUCK_AFTER;
         while (state->finished.load(std::memory_order_acquire) < NUM_WORKERS &&
                time::SteadyClock::now() < give_up) {
-            static_cast<void>(
-                task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No));
+            auto _ = task::Thread::Current::sleep_for(POLL_INTERVAL, task::Interruptible::No);
         }
         auto const elapsed = time::SteadyClock::now() - started;
 

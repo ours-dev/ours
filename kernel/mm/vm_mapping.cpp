@@ -130,7 +130,7 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     mapping->get_lock().assert_held();
     // FIXME: the same unwinding is missing as below. docs/repairs/260908/heap.md,
     // item 4.
-    static_cast<void>(mapping->activate());
+    auto _ = mapping->activate();
 
     *out = ustl::Arc<Self>::adopt(mapping);
     return Status::Ok;
@@ -142,7 +142,7 @@ auto VmMapping::activate() -> Status {
     // FIXME: an insert that fails (OutOfMem) leaves this mapping unlinked yet
     // answered Ok, and the VMO's list takes it below all the same.
     // docs/repairs/260908/heap.md, item 4.
-    static_cast<void>(Base::activate());
+    auto _ = Base::activate();
 
     // Note when a mapping was added into a VMO's mapping list, the inside counter
     // has not been increased implicitly. It is required to pay attention to manually
@@ -208,7 +208,7 @@ auto VmMapping::destroy() -> Status {
         m_parent->m_num_mappings -= 1;
     }
     // Unlinking cannot fail: VmAreaOrMapping::destroy() answers only Ok.
-    static_cast<void>(Base::destroy());
+    auto _ = Base::destroy();
 
     // Reported rather than swallowed: the caller learns the page tables may
     // still hold something, while the object itself is safely unregistered.
@@ -447,7 +447,8 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
         if (!(region_mmuf & MmuFlags::PermMask)) {
             // Unmap those regions which has no any permission.
-            (void)arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, UnmapOptions::None, 0);
+            auto _ =
+                arch_aspace.unmap(region_base, region_size >> PAGE_SHIFT, UnmapOptions::None, 0);
             continue;
         }
 

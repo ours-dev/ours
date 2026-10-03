@@ -89,8 +89,8 @@ namespace {
         std::size_t length = 0;
         for (;;) {
             if (!serial_read_ready()) {
-                static_cast<void>(ours::task::Thread::Current::sleep_for(
-                    ours::Milliseconds(10), ours::task::Interruptible::No));
+                auto _ = ours::task::Thread::Current::sleep_for(ours::Milliseconds(10),
+                                                                ours::task::Interruptible::No);
                 continue;
             }
 
@@ -167,7 +167,7 @@ namespace {
         [[maybe_unused]]
         auto const detached = thread->detach();
         DEBUG_ASSERT(ours::Status::Ok == detached);
-        static_cast<void>(thread->resume());
+        auto _ = thread->resume();
         log::info("console on COM1");
     }
 

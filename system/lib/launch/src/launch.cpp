@@ -58,7 +58,7 @@ namespace {
 
         ~Owned() {
             if (m_value != ours::Uandle::Invalid) {
-                static_cast<void>(ours::handle_close(m_value));
+                auto _ = ours::handle_close(m_value);
             }
         }
 

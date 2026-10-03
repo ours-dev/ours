@@ -19,7 +19,7 @@ ChannelDispatcher::~ChannelDispatcher() {
     // none is needed: nothing else can reach the queue any more.
     while (auto front = m_messages.front()) {
         auto &message = *front;
-        static_cast<void>(m_messages.erase(m_messages.iterator_to(message)));
+        auto _ = m_messages.erase(m_messages.iterator_to(message));
         auto owned = ustl::Box<MessagePacket>::from_raw(&message);
     }
 }
@@ -112,7 +112,7 @@ auto ChannelDispatcher::read(u32 const max_bytes, u32 const max_handles, u32 *co
         return Status::BufferTooSmall;
     }
 
-    static_cast<void>(m_messages.erase(m_messages.iterator_to(message)));
+    auto _ = m_messages.erase(m_messages.iterator_to(message));
     m_message_count -= 1;
     if (m_message_count == 0) {
         update_state(Signals::Readable, Signals::None);

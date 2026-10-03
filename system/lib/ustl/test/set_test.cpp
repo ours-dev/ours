@@ -94,9 +94,9 @@ auto main() -> int {
     Value range_seven{.m_key = 7};
     Value range_nine{.m_key = 9};
     LegacyMultiset range{};
-    static_cast<void>(range.insert(range_three));
-    static_cast<void>(range.insert(range_seven));
-    static_cast<void>(range.insert(range_nine));
+    auto _ = range.insert(range_three);
+    auto _ = range.insert(range_seven);
+    auto _ = range.insert(range_nine);
 
     const auto lower = range.lower_bound(
         6, [](Value const &value, int key) noexcept { return value.m_key < key; });
@@ -106,9 +106,9 @@ auto main() -> int {
         return 6;
     }
 
-    static_cast<void>(range.erase(range.iterator_to(range_seven)));
+    auto _ = range.erase(range.iterator_to(range_seven));
     int disposed = 0;
-    static_cast<void>(range.erase_and_dispose(range.begin(), range.end(),
-                                              [&disposed](Value *) noexcept { ++disposed; }));
+    auto _ = range.erase_and_dispose(range.begin(), range.end(),
+                                     [&disposed](Value *) noexcept { ++disposed; });
     return range.empty() && disposed == 2 ? 0 : 7;
 }

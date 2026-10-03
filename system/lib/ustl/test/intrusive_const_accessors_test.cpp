@@ -153,7 +153,7 @@ auto check_const_lookups(int const key) -> void {
     Value const below{.m_key = key - 1};
     Tree tree{};
     Tree const &const_tree = tree;
-    static_cast<void>(tree.insert_unique(member));
+    auto _ = tree.insert_unique(member);
     assert(&const_tree.find(member).value() == &member);
     assert(const_tree.find(below).is_none());
     assert(&const_tree.lower_bound(below).value() == &member);
@@ -190,7 +190,7 @@ auto main() -> int {
     TreeValue const sgtree_absent{.m_key = 5};
     Sgtree sgtree{};
     Sgtree const &const_sgtree = sgtree;
-    static_cast<void>(sgtree.insert_unique(sgtree_member));
+    auto _ = sgtree.insert_unique(sgtree_member);
     assert(&const_sgtree.find(sgtree_member).value() == &sgtree_member);
     assert(const_sgtree.find(sgtree_absent).is_none());
 
@@ -198,7 +198,7 @@ auto main() -> int {
     TreeValue const treap_absent{.m_key = 7};
     Treap treap{};
     Treap const &const_treap = treap;
-    static_cast<void>(treap.insert_unique(treap_member));
+    auto _ = treap.insert_unique(treap_member);
     assert(&const_treap.find(treap_member).value() == &treap_member);
     assert(const_treap.find(treap_absent).is_none());
 
@@ -207,7 +207,7 @@ auto main() -> int {
     std::array<Hashtable::BucketType, 4> buckets{};
     Hashtable table{std::span{buckets}};
     Hashtable const &const_table = table;
-    static_cast<void>(table.insert_unique(hash_member));
+    auto _ = table.insert_unique(hash_member);
     assert(&const_table.find(hash_member).value() == &hash_member);
     assert(const_table.find(hash_absent).is_none());
 

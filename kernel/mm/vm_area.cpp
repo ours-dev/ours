@@ -60,7 +60,7 @@ auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *par
         // FIXME: an insert that fails (OutOfMem) leaves the area active and
         // unlinked; it should unwind instead. docs/repairs/261002/mm.md,
         // item 2.
-        static_cast<void>(self->activate());
+        auto _ = self->activate();
     }
 
     *out = ustl::Arc<VmArea>::adopt(self);
@@ -783,7 +783,7 @@ auto VmArea::destroy() -> Status {
         auto *const parent = curr->m_parent;
         curr->get_lock().assert_held();
         // Unlinking cannot fail: VmAreaOrMapping::destroy() answers only Ok.
-        static_cast<void>(curr->Base::destroy());
+        auto _ = curr->Base::destroy();
         if (curr.as_ptr() == this) {
             break;
         }

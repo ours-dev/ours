@@ -479,7 +479,7 @@ auto Thread::erase_from_global_list() -> void {
 FORCE_INLINE
 auto Thread::erase_from_global_list_locked() -> void {
     m_canary.verify<Self>();
-    (void)SPAWNED_THREADS.erase(SPAWNED_THREADS.iterator_to(*this));
+    auto _ = SPAWNED_THREADS.erase(SPAWNED_THREADS.iterator_to(*this));
 }
 
 auto Thread::Current::preempt() -> void {
@@ -639,7 +639,7 @@ auto Thread::Current::do_suspend() -> void {
 
     if (current_thread->m_user_thread) {
         // ThreadDispatcher::on_suspend() answers only Ok.
-        static_cast<void>(current_thread->m_user_thread->on_suspend());
+        auto _ = current_thread->m_user_thread->on_suspend();
     }
 
     auto need_exit = false;
@@ -679,7 +679,7 @@ auto Thread::Current::do_suspend() -> void {
 
     if (current_thread->m_user_thread) {
         // ThreadDispatcher::on_resume() answers only Ok.
-        static_cast<void>(current_thread->m_user_thread->on_resume());
+        auto _ = current_thread->m_user_thread->on_resume();
     }
 }
 
@@ -757,7 +757,7 @@ auto Thread::Current::kill() -> void {
     // !IsIdle() in the same place.
     DEBUG_ASSERT(!current_thread->is_idle_thread(), "Try to kill the idle thread");
     // suspend_or_kill() answers only Ok.
-    static_cast<void>(current_thread->kill());
+    auto _ = current_thread->kill();
 }
 
 auto Thread::Current::exit(i32 retcode) -> void {
@@ -784,7 +784,7 @@ auto Thread::Current::exit(i32 retcode) -> void {
     if (current_thread->m_user_thread) {
         // ThreadDispatcher::on_exit() answers ProcessDispatcher::detach_thread()'s
         // Ok, the only answer it has.
-        static_cast<void>(current_thread->m_user_thread->on_exit());
+        auto _ = current_thread->m_user_thread->on_exit();
     }
 
     arch::AutoInterruptDisabler irq_guard;
@@ -863,7 +863,7 @@ auto Thread::Current::set_name(const char *name) -> void {
 
     // set() refuses only a null name, which it records as empty; a long one
     // is cut short.
-    static_cast<void>(current_thread->m_name.set(name));
+    auto _ = current_thread->m_name.set(name);
 }
 
 template <typename F>

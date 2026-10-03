@@ -542,7 +542,7 @@ class BTree {
             if (node == nullptr) {
                 return;
             }
-            static_cast<void>(recompute_node(node));
+            auto _ = recompute_node(node);
             for (node = node->m_parent; node != nullptr; node = node->m_parent) {
                 if (recompute_node(node)) {
                     break;
@@ -1016,8 +1016,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::
     move_value(parent->m_values[slot], full->m_values[MIN_DEGREE - 1]);
     ++parent->m_count;
 
-    static_cast<void>(recompute_node(full));
-    static_cast<void>(recompute_node(right));
+    auto _ = recompute_node(full);
+    auto _ = recompute_node(right);
     refresh_augment(parent);
     if constexpr (IS_INSTRUMENTED) {
         Policy::on_node_split(m_impl.m_context.get());
@@ -1214,7 +1214,7 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::
     --node->m_count;
 
     destroy_node(right);
-    static_cast<void>(recompute_node(left));
+    auto _ = recompute_node(left);
     refresh_augment(node);
     if constexpr (IS_INSTRUMENTED) {
         Policy::on_node_merge(m_impl.m_context.get());
@@ -1237,8 +1237,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::
     move_value(node->m_values[slot - 1], sibling->m_values[sibling->m_count - 1]);
     ++child->m_count;
     --sibling->m_count;
-    static_cast<void>(recompute_node(sibling));
-    static_cast<void>(recompute_node(child));
+    auto _ = recompute_node(sibling);
+    auto _ = recompute_node(child);
     refresh_augment(node);
     if constexpr (IS_INSTRUMENTED) {
         Policy::on_node_rebalance(m_impl.m_context.get());
@@ -1262,8 +1262,8 @@ auto BTree<Key, Value, KeyOfValue, Compare, Allocator, Policy, Options, Order>::
 
     ++child->m_count;
     --sibling->m_count;
-    static_cast<void>(recompute_node(sibling));
-    static_cast<void>(recompute_node(child));
+    auto _ = recompute_node(sibling);
+    auto _ = recompute_node(child);
     refresh_augment(node);
     if constexpr (IS_INSTRUMENTED) {
         Policy::on_node_rebalance(m_impl.m_context.get());

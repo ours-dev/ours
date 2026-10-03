@@ -378,8 +378,8 @@ auto hpet_init(PhysAddr mmio) -> Status {
 
     // enroll() logs every failure it answers, and the clocks then keep the
     // source they had; the comparators below do not depend on it.
-    static_cast<void>(ClockSource::enroll(&HPET_CLOCK_SOURCE.high_level_source(), HPET_FREQUENCY,
-                                          HPET_CLKSRC_RATING));
+    auto _ = ClockSource::enroll(&HPET_CLOCK_SOURCE.high_level_source(), HPET_FREQUENCY,
+                                 HPET_CLKSRC_RATING);
 
     auto &device = HPET_CHANNELS[0].device();
     ClockEventDevice::enroll(device, HPET_FREQUENCY, HPET_MIN_CYCLES, 0x7FFFFFFF);

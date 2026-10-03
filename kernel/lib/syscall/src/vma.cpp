@@ -78,7 +78,7 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
     auto handle =
         object::Handle::make(object::KernelHandle<object::Dispatcher>(ustl::move(sub)), rights);
     if (!handle) {
-        static_cast<void>(region->unmap(base, size));
+        auto _ = region->unmap(base, size);
         return Status::NoResource;
     }
     auto status = child.copy_to_user(table.value_of(*handle));
@@ -86,10 +86,10 @@ auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize cons
         status = child_addr.copy_to_user(base);
     }
     if (status != Status::Ok) {
-        static_cast<void>(region->unmap(base, size));
+        auto _ = region->unmap(base, size);
         return status;
     }
-    static_cast<void>(table.add(ustl::move(handle)));
+    auto _ = table.add(ustl::move(handle));
     return Status::Ok;
 }
 
@@ -175,7 +175,7 @@ auto vma_map(ours::Uandle const vma, VmOptions const options, usize const vma_of
         return mapped.unwrap_err();
     }
     if (auto const status = mapped_addr.copy_to_user(mapped.unwrap()); status != Status::Ok) {
-        static_cast<void>(region->unmap(mapped.unwrap(), length));
+        auto _ = region->unmap(mapped.unwrap(), length);
         return status;
     }
     return Status::Ok;

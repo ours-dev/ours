@@ -838,8 +838,8 @@ auto userboot_init() -> void {
     //
     // The decompressed package stays where it is. Every program is still
     // loaded out of it (launch()), and the kernel's own files are in it.
-    static_cast<void>(make_user_bootfs(*resident_package, boot::options().kernel_name(),
-                                       resident_bootfs, resident_bootfs_rights));
+    auto _ = make_user_bootfs(*resident_package, boot::options().kernel_name(), resident_bootfs,
+                              resident_bootfs_rights);
 
     // The userboot program, always: `kernel.select.userboot` only picks which
     // build of it (see boot::BootOptions::userboot()), and what runs after it
@@ -867,7 +867,7 @@ auto userboot_init() -> void {
     }
 
     ustl::Box<object::Handle> root_vma;
-    auto status =
+    auto const status =
         launch(object::JobDispatcher::root_job(), program, ustl::move(bootstrap), &root_vma);
     if (Status::Ok != status) {
         log::error("userboot: {}={} could not be started: {}", boot::BootOptions::USERBOOT_OPTION,
@@ -880,7 +880,6 @@ auto userboot_init() -> void {
     // A failure is said inside. The process is already running, and with the
     // kernel's end dropped below it sees PEER_CLOSED and no message, and ends
     // itself (ort::EXIT_START_FAILED).
-    status = write_bootstrap(*kernel_end.dispatcher(), program, ustl::move(root_vma));
-    static_cast<void>(status);
+    auto _ = write_bootstrap(*kernel_end.dispatcher(), program, ustl::move(root_vma));
 }
 } // namespace userabi

@@ -127,7 +127,7 @@ auto main() -> int {
     Value multi_one{.m_key = 9, .m_priority = 9};
     Value multi_two{.m_key = 9, .m_priority = 3};
     TreapMultiset multiset{};
-    static_cast<void>(multiset.insert(multi_one));
-    static_cast<void>(multiset.insert(multi_two));
+    auto _ = multiset.insert(multi_one);
+    auto _ = multiset.insert(multi_two);
     return multiset.count(multi_one) == 2U && multiset.top()->m_priority == 3 ? 0 : 6;
 }

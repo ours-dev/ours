@@ -174,8 +174,7 @@ auto OwnedWaitQueue::reset_owner() -> void {
     DEBUG_ASSERT(m_owner != nullptr);
     m_owner->get_pi_lock().assert_held();
 
-    static_cast<void>(
-        m_owner->m_owned_wait_queues.erase(m_owner->m_owned_wait_queues.iterator_to(*this)));
+    auto _ = m_owner->m_owned_wait_queues.erase(m_owner->m_owned_wait_queues.iterator_to(*this));
     m_owner = nullptr;
 }
 

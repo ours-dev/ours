@@ -16,10 +16,11 @@ namespace ours {
 ///
 /// [[nodiscard]] on the type marks every function that returns a Status, so
 /// a caller that ignores one is a compile error (-Werror). A drop that is
-/// meant is written `static_cast<void>(...)`, with the reason beside it; one
-/// that rests on the callee not failing in this caller's state is an
-/// assertion instead. Zircon's zx_status_t is a plain int32_t, which cannot
-/// carry the attribute, so Zircon marks its functions one by one.
+/// meant is written `auto _ = f(...);`, C++26's placeholder variable, with
+/// the reason beside it; one that rests on the callee not failing in this
+/// caller's state is an assertion instead. Zircon's zx_status_t is a plain
+/// int32_t, which cannot carry the attribute, so Zircon marks its functions
+/// one by one.
 enum class [[nodiscard]] Status : u32 {
     /// Indicates a successful operation.
     Ok = 0,

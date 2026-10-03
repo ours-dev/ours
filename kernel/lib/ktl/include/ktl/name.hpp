@@ -31,11 +31,11 @@ class Name {
     // A null |name| answers InvArgs from set() and leaves the name empty,
     // which is all a constructor can do with one.
     Name(Char const *name, usize len) {
-        static_cast<void>(set(name, len));
+        auto _ = set(name, len);
     }
 
     Name(Char const *name) {
-        static_cast<void>(set(name));
+        auto _ = set(name);
     }
 
     ~Name() = default;

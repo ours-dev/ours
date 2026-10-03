@@ -75,7 +75,7 @@ class FrameBuddy {
     FORCE_INLINE
     auto remove_frame(PmFrame *frame, Order order) -> void {
         auto const to_erase = m_lists[order].iterator_to(*frame);
-        static_cast<void>(m_lists[order].erase(to_erase));
+        auto _ = m_lists[order].erase(to_erase);
         frame->set_role(PageFrame::Role::None);
     }
 

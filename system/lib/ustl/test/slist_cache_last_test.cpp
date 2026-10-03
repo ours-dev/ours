@@ -78,7 +78,7 @@ auto cache_holds(List &list, Model const &model, Value &probe) -> bool {
     if (!matches(list, expected)) {
         return false;
     }
-    static_cast<void>(list.erase(list.iterator_to(probe)));
+    auto _ = list.erase(list.iterator_to(probe));
     return matches(list, model);
 }
 
@@ -129,7 +129,7 @@ auto run(char const *const name, unsigned const seed) -> void {
                 const auto key = free_key();
                 if (key != POOL_SIZE) {
                     const auto index = below(model.size() + 1);
-                    static_cast<void>(list.insert_after(at(list, index), pool[key]));
+                    auto _ = list.insert_after(at(list, index), pool[key]);
                     model.insert(model.begin() + static_cast<std::ptrdiff_t>(index),
                                  static_cast<int>(key));
                 }
@@ -147,7 +147,7 @@ auto run(char const *const name, unsigned const seed) -> void {
                 // insert(end(), ...) finds the node before end() through the cache.
                 const auto key = free_key();
                 if (key != POOL_SIZE) {
-                    static_cast<void>(list.insert(list.end(), pool[key]));
+                    auto _ = list.insert(list.end(), pool[key]);
                     model.push_back(static_cast<int>(key));
                 }
                 break;
@@ -163,7 +163,7 @@ auto run(char const *const name, unsigned const seed) -> void {
             case 4: {
                 if (!model.empty()) {
                     const auto index = below(model.size());
-                    static_cast<void>(list.erase_after(at(list, index)));
+                    auto _ = list.erase_after(at(list, index));
                     model.erase(model.begin() + static_cast<std::ptrdiff_t>(index));
                 }
                 break;
@@ -172,7 +172,7 @@ auto run(char const *const name, unsigned const seed) -> void {
                 if (!model.empty()) {
                     const auto index = below(model.size());
                     const auto key = static_cast<std::size_t>(model[index]);
-                    static_cast<void>(list.erase(list.iterator_to(pool[key])));
+                    auto _ = list.erase(list.iterator_to(pool[key]));
                     model.erase(model.begin() + static_cast<std::ptrdiff_t>(index));
                 }
                 break;
@@ -262,8 +262,8 @@ auto run(char const *const name, unsigned const seed) -> void {
             }
             case 13: {
                 const auto odd = [](int const key) { return key % 2 != 0; };
-                static_cast<void>(list.remove_if(
-                    [&odd](Value const &value) noexcept { return odd(value.m_key); }));
+                auto _ = list.remove_if(
+                    [&odd](Value const &value) noexcept { return odd(value.m_key); });
                 std::erase_if(model, odd);
                 break;
             }

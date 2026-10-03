@@ -163,7 +163,7 @@ auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, Vi
         {.entry = entry, .stack = stack, .arg1 = std::to_underlying(arg1_value), .arg2 = arg2},
         true);
     if (Status::Ok != status && arg1_value != ours::Uandle::Invalid) {
-        static_cast<void>(m_handle_table->remove(arg1_value));
+        auto _ = m_handle_table->remove(arg1_value);
     }
     return status;
 }
@@ -355,7 +355,7 @@ auto ProcessDispatcher::detach_thread(ThreadDispatcher &thread) -> Status {
     {
         Guard guard{get_lock()};
         thread.mark_dead();
-        static_cast<void>(m_thread_list.erase(m_thread_list.iterator_to(thread)));
+        auto _ = m_thread_list.erase(m_thread_list.iterator_to(thread));
         if (m_thread_list.empty()) {
             DEBUG_ASSERT(m_state == State::Running || m_state == State::Dying,
                          "a process with threads is Running or Dying");
@@ -399,7 +399,7 @@ auto ProcessDispatcher::finish_dead_transition() -> void {
     // m_aspace itself is kept until this object is destroyed: the process's
     // threads reach it through here (aspace()), and the last of them is
     // still running, on these page tables, as this runs.
-    static_cast<void>(m_aspace->destroy());
+    auto _ = m_aspace->destroy();
 
     auto const closed = m_handle_table->clean();
     log::debug("object: process '{}' (koid {}) dead, {} handles closed", name(), koid(), closed);

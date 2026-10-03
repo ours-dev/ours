@@ -894,7 +894,7 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
         // thread's own schedule never preempts it and waits for its tick
         // (docs/repairs/260917/kernel-task-sched.md, item 2). There is nothing
         // else in the answer to act on.
-        static_cast<void>(x_schedule->unpark_preempt(m_run_queue, current_thread, thread, options));
+        auto _ = x_schedule->unpark_preempt(m_run_queue, current_thread, thread, options);
     } else if (x_schedule > y_schedule) {
         m_run_queue.mark_preempt_pending();
     }

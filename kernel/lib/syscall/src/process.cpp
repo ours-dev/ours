@@ -99,8 +99,8 @@ auto process_create(ours::Uandle const job, user_copy::UserInPtr<char const> con
         return status;
     }
 
-    static_cast<void>(table.add(ustl::move(process_handle)));
-    static_cast<void>(table.add(ustl::move(root_vma_handle)));
+    auto _ = table.add(ustl::move(process_handle));
+    auto _ = table.add(ustl::move(root_vma_handle));
     return Status::Ok;
 }
 
@@ -234,7 +234,7 @@ auto process_spawn_boot(ours::Uandle const job, user_copy::UserInPtr<char const>
     if (auto const status = root_vma.copy_to_user(table.value_of(*region)); status != Status::Ok) {
         return status;
     }
-    static_cast<void>(table.add(ustl::move(region)));
+    auto _ = table.add(ustl::move(region));
     return Status::Ok;
 }
 } // namespace ours::syscall

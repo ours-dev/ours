@@ -97,7 +97,7 @@ auto main() -> int {
     Value multi_one{.m_key = 101};
     Value multi_two{.m_key = 101};
     SgMultiset multiset{};
-    static_cast<void>(multiset.insert(multi_one));
-    static_cast<void>(multiset.insert(multi_two));
+    auto _ = multiset.insert(multi_one);
+    auto _ = multiset.insert(multi_two);
     return multiset.count(multi_one) == 2U ? 0 : 6;
 }

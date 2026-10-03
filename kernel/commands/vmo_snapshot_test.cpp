@@ -1002,8 +1002,8 @@ namespace {
             return false;
         }
         thread->set_cpu_affinity_hard(CpuMask::of(cpu));
-        static_cast<void>(thread->detach());
-        static_cast<void>(thread->resume());
+        auto _ = thread->detach();
+        auto _ = thread->resume();
         return true;
     }
 
@@ -1066,14 +1066,13 @@ namespace {
         auto const expected = spawned ? usize{2} : usize{0};
         while (spawned && run->finished.load(std::memory_order_acquire) < expected &&
                time::SteadyClock::now() < started + 2 * SHOOTDOWN_WAIT) {
-            static_cast<void>(
-                task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No));
+            auto _ = task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
         }
         auto const finished = spawned && run->finished.load(std::memory_order_acquire) == 2;
         verdict(tally, finished, "the writer and the cloner both ran, on two CPUs, and finished");
         if (!finished) {
             // Leaked, with the address space: a thread may still be using both.
-            static_cast<void>(aspace.into_raw());
+            auto _ = aspace.into_raw();
             return;
         }
 
@@ -1216,8 +1215,7 @@ namespace {
         auto const expected = spawned ? usize{2} : usize{0};
         while (spawned && run->finished.load(std::memory_order_acquire) < expected &&
                time::SteadyClock::now() < started + 2 * SHOOTDOWN_WAIT) {
-            static_cast<void>(
-                task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No));
+            auto _ = task::Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
         }
         auto const finished = spawned && run->finished.load(std::memory_order_acquire) == 2;
         verdict(tally, finished, "the reader and the remapper both ran, on two CPUs, and finished");

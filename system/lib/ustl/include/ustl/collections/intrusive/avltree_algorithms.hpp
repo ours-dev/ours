@@ -162,7 +162,7 @@ class AvltreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
         while (!is_header(header)) {
             header = NodeTraits::get_parent(header);
         }
-        static_cast<void>(erase(header, node));
+        auto _ = erase(header, node);
     }
 
   private:
@@ -241,7 +241,7 @@ class AvltreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
                 if (child_is_left) {
                     NodeTraits::set_balance(parent, NodeTraits::zero());
                 } else if (NodeTraits::get_balance(child) == NodeTraits::negative()) {
-                    static_cast<void>(rotate_right_left(parent, child, header));
+                    auto _ = rotate_right_left(parent, child, header);
                 } else {
                     rotate_left(parent, child, header);
                 }
@@ -249,7 +249,7 @@ class AvltreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
             }
             if (child_is_left) {
                 if (NodeTraits::get_balance(child) == NodeTraits::positive()) {
-                    static_cast<void>(rotate_left_right(parent, child, header));
+                    auto _ = rotate_left_right(parent, child, header);
                 } else {
                     rotate_right(parent, child, header);
                 }

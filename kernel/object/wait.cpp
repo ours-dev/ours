@@ -62,7 +62,7 @@ auto wait_one(ours::Uandle const handle, Signals const signals, Instant const de
     // argument (design 4.5). The observer has to come off again.
     if (deadline != 0 && deadline != INSTANT_INFINITE) {
         auto ignored = Signals::None;
-        static_cast<void>(object->detach_observer(&observer, &ignored));
+        auto _ = object->detach_observer(&observer, &ignored);
         return Status::NotSupported;
     }
 
@@ -80,7 +80,7 @@ auto wait_one(ours::Uandle const handle, Signals const signals, Instant const de
     // sleep it is still linked and has to come off before this frame -- which
     // it lives in -- goes away.
     Signals current = Signals::None;
-    static_cast<void>(object->detach_observer(&observer, &current));
+    auto _ = object->detach_observer(&observer, &current);
 
     if (observer.cancelled()) {
         *observed = current | Signals::HandleClosed;

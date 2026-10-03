@@ -229,24 +229,24 @@ enum ExitCode : int {
 /// Without one there is no one to tell, and the exit code has to do.
 auto reply(ours::Uandle const channel, std::string_view const answer) -> void {
     if (channel == ours::Uandle::Invalid) {
-        static_cast<void>(ort::debug_line("fault_probe: no answer channel (User0)"));
+        auto _ = ort::debug_line("fault_probe: no answer channel (User0)");
         return;
     }
-    static_cast<void>(ours::channel_write(channel, ours::ChannelWriteOptions::None, answer.data(),
-                                          static_cast<u32>(answer.size()), nullptr, 0));
+    auto _ = ours::channel_write(channel, ours::ChannelWriteOptions::None, answer.data(),
+                                 static_cast<u32>(answer.size()), nullptr, 0);
 }
 } // namespace
 
 auto main(int const argc, char **const argv) -> int {
     auto const answer = ort::take_startup_handle(ours::HandleType::User0, 0);
     if (!relocations_hold()) {
-        static_cast<void>(ort::debug_line("fault_probe: a pointer in its writable data was not "
-                                          "relocated where it lies"));
+        auto _ = ort::debug_line("fault_probe: a pointer in its writable data was not "
+                                 "relocated where it lies");
         reply(answer, "relocation");
         return BAD_RELOCATION;
     }
     if (argc < 2) {
-        static_cast<void>(ort::debug_line("fault_probe: no probe name"));
+        auto _ = ort::debug_line("fault_probe: no probe name");
         reply(answer, "no probe name");
         return NO_NAME;
     }
@@ -255,7 +255,7 @@ auto main(int const argc, char **const argv) -> int {
     auto const *const arg = argv[1];
     auto const name =
         std::string_view{arg, static_cast<usize>(std::find(arg, arg + 32, '\0') - arg)};
-    static_cast<void>(ort::debug_line({"fault_probe: ", name}));
+    auto _ = ort::debug_line({"fault_probe: ", name});
 
     for (auto const &probe: PROBES) {
         if (same(name, probe.name)) {
@@ -264,7 +264,7 @@ auto main(int const argc, char **const argv) -> int {
             return SURVIVED;
         }
     }
-    static_cast<void>(ort::debug_line({"fault_probe: unknown probe ", name}));
+    auto _ = ort::debug_line({"fault_probe: unknown probe ", name});
     reply(answer, "unknown");
     return UNKNOWN;
 }

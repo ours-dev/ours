@@ -177,7 +177,7 @@ auto test_both_extensions() -> void {
 
     BothSet tree;
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(tree.insert(i));
+        auto _ = tree.insert(i);
     }
     check(Counters::s_inserts == COUNT, "insert events missing");
     check(Counters::s_splits > 0, "no node splits were reported");
@@ -249,7 +249,7 @@ auto test_visit_ordered() -> void {
 
     MaxSet tree;
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(tree.insert(i));
+        auto _ = tree.insert(i);
     }
 
     std::vector<int> seen;

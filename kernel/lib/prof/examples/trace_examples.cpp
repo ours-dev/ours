@@ -69,9 +69,9 @@ auto fault(VirtAddr va, bool present, bool permitted) -> int {
 }
 
 auto example_region() -> void {
-    static_cast<void>(fault(0x1000, true, false)); // denied
-    static_cast<void>(fault(0x2000, false, true)); // not present
-    static_cast<void>(fault(0x3000, true, true));  // handled
+    auto _ = fault(0x1000, true, false); // denied
+    auto _ = fault(0x2000, false, true); // not present
+    auto _ = fault(0x3000, true, true);  // handled
 }
 
 } // namespace ours::mm
@@ -251,7 +251,7 @@ auto Tracepoint::write(EventKind kind, Args... args) const noexcept -> void {
         usize slot = 0;
         ((record.m_args[slot++] = to_slot(args)), ...);
 
-        static_cast<void>(g_buffer.try_produce(record));
+        auto _ = g_buffer.try_produce(record);
     }
 }
 } // namespace prof

@@ -91,7 +91,7 @@ class TreapAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
     static constexpr auto unlink(NodePtr const node,
                                  NodePointerPriorityCompare priority_compare) noexcept -> void {
         if (!unique(node)) {
-            static_cast<void>(erase(get_header(node), node, priority_compare));
+            auto _ = erase(get_header(node), node, priority_compare);
         }
     }
 

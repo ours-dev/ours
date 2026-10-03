@@ -37,7 +37,7 @@ auto DpcRunner::Queue::start(char const *name, CpuNum cpu) -> Status {
     [[maybe_unused]]
     auto const detached = m_thread->detach();
     DEBUG_ASSERT(Status::Ok == detached);
-    static_cast<void>(m_thread->resume());
+    auto _ = m_thread->resume();
     return Status::Ok;
 }
 

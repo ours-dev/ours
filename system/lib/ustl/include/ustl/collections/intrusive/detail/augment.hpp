@@ -94,7 +94,7 @@ struct AugmentAdapter final {
         // when it matters: a new leaf whose own aggregate happens to equal
         // what it was seeded with still has to be accounted for by its
         // ancestors, whose child set just grew.
-        static_cast<void>(recompute(node));
+        auto _ = recompute(node);
         node = NodeTraits::get_parent(node);
 
         // From here up the premise holds -- each node's stored aggregate was
@@ -114,7 +114,7 @@ struct AugmentAdapter final {
 
     static constexpr auto rotate(NodePtr const old_root, NodePtr const new_root) noexcept -> void {
         Policy::copy(*element_of(old_root), *element_of(new_root));
-        static_cast<void>(recompute(old_root));
+        auto _ = recompute(old_root);
     }
 };
 

@@ -166,7 +166,7 @@ class Avltree final {
     template <std::input_iterator InputIter>
     constexpr auto insert_unique(InputIter first, InputIter last) noexcept -> void {
         while (first != last) {
-            static_cast<void>(insert_unique(*first));
+            auto _ = insert_unique(*first);
             ++first;
         }
     }
@@ -183,7 +183,7 @@ class Avltree final {
     template <std::input_iterator InputIter>
     constexpr auto insert_equal(InputIter first, InputIter last) noexcept -> void {
         while (first != last) {
-            static_cast<void>(insert_equal(*first));
+            auto _ = insert_equal(*first);
             ++first;
         }
     }
@@ -198,11 +198,11 @@ class Avltree final {
     }
 
     constexpr auto push_back(T &value) noexcept -> void {
-        static_cast<void>(insert_before(end(), value));
+        auto _ = insert_before(end(), value);
     }
 
     constexpr auto push_front(T &value) noexcept -> void {
-        static_cast<void>(insert_before(begin(), value));
+        auto _ = insert_before(begin(), value);
     }
 
     [[nodiscard]]
@@ -218,7 +218,7 @@ class Avltree final {
     constexpr auto erase(T &value) noexcept -> void {
         const auto node = ValueTraits::to_node_ptr(value);
         if (!Algorithms::unique(node)) {
-            static_cast<void>(erase(IterMut(node)));
+            auto _ = erase(IterMut(node));
         }
     }
 
@@ -229,7 +229,7 @@ class Avltree final {
         const auto node = position.pointed_node();
         detail::require(node != header());
         const auto next = Algorithms::next_node(node);
-        static_cast<void>(Algorithms::erase(header(), node));
+        auto _ = Algorithms::erase(header(), node);
         Algorithms::init(node);
         --m_size;
         std::invoke(disposer, ValueTraits::to_value_ptr(node));
@@ -248,13 +248,13 @@ class Avltree final {
     }
 
     constexpr auto clear() noexcept -> void {
-        static_cast<void>(erase(begin(), end()));
+        auto _ = erase(begin(), end());
     }
 
     template <typename Disposer>
         requires(std::is_nothrow_invocable_v<Disposer &, T *>)
     constexpr auto clear_and_dispose(Disposer disposer) noexcept -> void {
-        static_cast<void>(erase_and_dispose(begin(), end(), disposer));
+        auto _ = erase_and_dispose(begin(), end(), disposer);
     }
 
     constexpr auto remove_node(T &value) noexcept -> void {

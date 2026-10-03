@@ -61,7 +61,7 @@ VmAspace::~VmAspace() {
     {
         Guard<sync::SpinLock, IrqSave> guard{ALL_ASPACE_LIST_LOCK};
         if (m_managed_hook.is_linked()) {
-            static_cast<void>(ALL_ASPACE_LIST.erase(ALL_ASPACE_LIST.iterator_to(*this)));
+            auto _ = ALL_ASPACE_LIST.erase(ALL_ASPACE_LIST.iterator_to(*this));
         }
     }
 

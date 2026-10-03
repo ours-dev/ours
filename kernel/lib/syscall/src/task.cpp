@@ -57,7 +57,7 @@ auto thread_create(ours::Uandle const process, user_copy::UserInPtr<char const> 
     if (auto const status = out.copy_to_user(table.value_of(*handle)); status != Status::Ok) {
         return status;
     }
-    static_cast<void>(table.add(ustl::move(handle)));
+    auto _ = table.add(ustl::move(handle));
     return Status::Ok;
 }
 

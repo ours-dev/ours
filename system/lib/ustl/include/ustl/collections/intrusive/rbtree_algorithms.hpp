@@ -209,8 +209,7 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
 
     static constexpr auto unlink(NodePtr const node) noexcept -> void {
         if (!unique(node)) {
-            static_cast<void>(
-                erase_impl<Extension::None>(BstreeAlgo::get_header(node), node, Hooks{}));
+            auto _ = erase_impl<Extension::None>(BstreeAlgo::get_header(node), node, Hooks{});
         }
     }
 
@@ -219,7 +218,7 @@ class RBTreeAlgorithms final: public BstreeAlgorithms<TNodeTraits> {
         -> void {
         while (!unique(header)) {
             const auto node = begin_node(header);
-            static_cast<void>(erase_impl<Extension::None>(header, node, Hooks{}));
+            auto _ = erase_impl<Extension::None>(header, node, Hooks{});
             disposer(node);
         }
     }

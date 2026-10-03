@@ -57,9 +57,9 @@ auto main() -> int {
     Value three{.m_key = 3};
     Value replacement{.m_key = 2};
     Tree tree{};
-    static_cast<void>(tree.insert_equal(one));
-    static_cast<void>(tree.insert_equal(two));
-    static_cast<void>(tree.insert_before(tree.end(), three));
+    auto _ = tree.insert_equal(one);
+    auto _ = tree.insert_equal(two);
+    auto _ = tree.insert_before(tree.end(), three);
 
     Tree const &const_tree = tree;
     if (const_tree.cbegin()->m_key != 1 || const_tree.crbegin()->m_key != 3 ||

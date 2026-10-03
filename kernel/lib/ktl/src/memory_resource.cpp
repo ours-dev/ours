@@ -44,7 +44,7 @@ auto kernel_memory_resource() noexcept -> KernelMemoryResource & {
 }
 
 auto init_memory_resource() -> void {
-    static_cast<void>(ustl::collections::set_default_resource(&kernel_memory_resource()));
+    auto _ = ustl::collections::set_default_resource(&kernel_memory_resource());
 }
 
 } // namespace ktl

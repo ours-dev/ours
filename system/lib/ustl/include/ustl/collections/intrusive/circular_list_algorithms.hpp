@@ -143,7 +143,7 @@ class CircularListAlgorithms final {
         auto first = NodeTraits::get_next(node);
         if (first == NodeTraits::get_previous(node))
             return;
-        static_cast<void>(unlink(node));
+        auto _ = unlink(node);
         while (positions-- != 0)
             first = NodeTraits::get_next(first);
         link_before(first, node);
@@ -154,7 +154,7 @@ class CircularListAlgorithms final {
         auto last = NodeTraits::get_previous(node);
         if (last == NodeTraits::get_next(node))
             return;
-        static_cast<void>(unlink(node));
+        auto _ = unlink(node);
         while (positions-- != 0)
             last = NodeTraits::get_previous(last);
         link_after(last, node);

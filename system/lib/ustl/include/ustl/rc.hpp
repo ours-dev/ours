@@ -173,7 +173,7 @@ class RefCounted {
                 rc_finish();
             }
         } else {
-            static_cast<void>(weak_sub());
+            auto _ = weak_sub();
         }
     }
 

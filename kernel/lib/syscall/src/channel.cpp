@@ -53,8 +53,8 @@ auto channel_create(ChannelCreateOptions const options,
         return status;
     }
 
-    static_cast<void>(table.add(ustl::move(handle0)));
-    static_cast<void>(table.add(ustl::move(handle1)));
+    auto _ = table.add(ustl::move(handle0));
+    auto _ = table.add(ustl::move(handle1));
     return Status::Ok;
 }
 
@@ -194,7 +194,7 @@ auto channel_read(ours::Uandle const channel, ChannelReadOptions const options,
         return copied;
     }
     for (u32 i = 0; i < count; ++i) {
-        static_cast<void>(table.add(ustl::move(taken[i])));
+        auto _ = table.add(ustl::move(taken[i]));
     }
     return Status::Ok;
 }

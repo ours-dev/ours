@@ -58,6 +58,21 @@ Activate (satisfy any of the following criteria):
 
 1. Using `[[maybe_unused]]` attribute for variables, functions, or parameters that may not be used to avoid compiler warnings.
 
+1. Discard a `[[nodiscard]]` result on purpose with C++26's placeholder
+   variable, `auto _ = f(...);`, and say why in a comment beside it -- not
+   `static_cast<void>(...)` or `(void)` (the user's call, 2026-10-03).
+   `[[maybe_unused]]` cannot do this: it applies to a declaration, never to
+   an expression. When an assertion checks the value, name it instead:
+   `[[maybe_unused]] auto const status = f(); DEBUG_ASSERT(Status::Ok ==
+   status);` -- a release build drops the assertion, so the name would
+   otherwise be unused. `auto _` keeps the result alive to the end of the
+   enclosing block, where the cast destroyed it at the end of the statement:
+   nothing changes for a trivially destructible result (a `Status`, an enum,
+   an integer, an iterator), but for one that owns something (a `Box`, an
+   `Arc`, a guard) check that the later destruction changes nothing, or keep
+   the cast and say why. Under a `case` label with another after it, brace
+   the case: a declaration cannot be jumped over.
+
 1. Using `nullptr` over `NULL` or `0`.
 
 1. Using `override` and `final` for virtual functions.

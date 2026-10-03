@@ -251,10 +251,10 @@ namespace {
 } // namespace
 
 auto dump_recent() -> void {
-    dump_to_current([](Logger &sink) { static_cast<void>(ring::dump_to(sink)); });
+    dump_to_current([](Logger &sink) { auto _ = ring::dump_to(sink); });
 }
 
 auto dump_recent(Domain const &only) -> void {
-    dump_to_current([&](Logger &sink) { static_cast<void>(ring::dump_to(sink, only)); });
+    dump_to_current([&](Logger &sink) { auto _ = ring::dump_to(sink, only); });
 }
 } // namespace logz4

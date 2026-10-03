@@ -27,8 +27,8 @@ auto main() -> int {
     List list{};
 
     const auto first = list.insert(list.end(), one);
-    static_cast<void>(list.insert(list.end(), two));
-    static_cast<void>(list.insert(list.end(), three));
+    auto _ = list.insert(list.end(), two);
+    auto _ = list.insert(list.end(), three);
     const auto inserted = list.insert(first, four);
     if (inserted->m_key != 4 || list.front().value().m_key != 4 || list.back().value().m_key != 3) {
         return 1;

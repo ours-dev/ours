@@ -110,7 +110,7 @@ class VmPageMap {
             return nullptr;
         }
         auto *const page = slot_page(slot.value()->second);
-        static_cast<void>(m_slots.erase(index));
+        auto _ = m_slots.erase(index);
         return page;
     }
 

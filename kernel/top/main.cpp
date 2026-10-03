@@ -90,14 +90,14 @@ namespace {
         [[maybe_unused]]
         auto const t1_detached = t1->detach();
         DEBUG_ASSERT(Status::Ok == t1_detached);
-        static_cast<void>(t1->resume());
+        auto _ = t1->resume();
 
         auto t2 = Thread::spawn("Sample2", gibberish, const_cast<char *>("Thread 2"),
                                 task::DEFAULT_PRIORITY);
         [[maybe_unused]]
         auto const t2_detached = t2->detach();
         DEBUG_ASSERT(Status::Ok == t2_detached);
-        static_cast<void>(t2->resume());
+        auto _ = t2->resume();
 
         return 0;
     }
@@ -190,7 +190,7 @@ auto start_kernel(PhysAddr handoff) -> void {
     [[maybe_unused]]
     auto const detached = laborer->detach();
     DEBUG_ASSERT(Status::Ok == detached);
-    static_cast<void>(laborer->resume());
+    auto _ = laborer->resume();
 
     // Let the main thread become an idle thread.
     Thread::Current::become_idle();

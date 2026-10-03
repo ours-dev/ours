@@ -192,16 +192,15 @@ class Treap final {
     constexpr auto erase(T &value) noexcept -> void {
         const auto node = to_node(value);
         if (!Algorithms::unique(node)) {
-            static_cast<void>(
-                Algorithms::erase(&m_header, node, NodePriorityCompare{&m_priority_compare}));
+            auto _ = Algorithms::erase(&m_header, node, NodePriorityCompare{&m_priority_compare});
             --m_size;
         }
     }
 
     constexpr auto clear() noexcept -> void {
         while (!empty()) {
-            static_cast<void>(Algorithms::erase(&m_header, Algorithms::begin_node(&m_header),
-                                                NodePriorityCompare{&m_priority_compare}));
+            auto _ = Algorithms::erase(&m_header, Algorithms::begin_node(&m_header),
+                                       NodePriorityCompare{&m_priority_compare});
             --m_size;
         }
     }

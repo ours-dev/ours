@@ -137,7 +137,7 @@ auto test_random_operations(unsigned seed, int count) -> void {
 
     // Insert one at a time, checking the whole tree after every single step.
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(tree.insert_equal(storage[order[i]]));
+        auto _ = tree.insert_equal(storage[order[i]]);
         if (!verify(tree)) {
             fail("stale aggregate after insertion");
             return;
@@ -190,8 +190,8 @@ auto test_shape_matches_plain_tree() -> void {
     PlainTree plain;
     AugmentedTree augmented;
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(plain.insert_equal(plain_storage[i]));
-        static_cast<void>(augmented.insert_equal(augmented_storage[i]));
+        auto _ = plain.insert_equal(plain_storage[i]);
+        auto _ = augmented.insert_equal(augmented_storage[i]);
     }
 
     auto plain_it = plain.begin();
@@ -249,7 +249,7 @@ auto test_hooks_actually_fire() -> void {
 
     CountingTree tree;
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(tree.insert_equal(storage[i]));
+        auto _ = tree.insert_equal(storage[i]);
     }
     if (Counters::s_recompute == 0) {
         fail("recompute was never called during insertion");
@@ -282,7 +282,7 @@ auto test_refresh_augment() -> void {
 
     AugmentedTree tree;
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(tree.insert_equal(storage[i]));
+        auto _ = tree.insert_equal(storage[i]);
     }
 
     // Push one element's end far past everything else.

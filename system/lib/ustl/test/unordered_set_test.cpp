@@ -71,8 +71,8 @@ auto main() -> int {
     Value multi_two{.m_key = 7};
     std::array<Multiset::BucketType, 3> multiset_buckets{};
     Multiset multiset{std::span{multiset_buckets}};
-    static_cast<void>(multiset.insert(multi_one));
-    static_cast<void>(multiset.insert(multi_two));
+    auto _ = multiset.insert(multi_one);
+    auto _ = multiset.insert(multi_two);
     return multiset.size() == 2U && multiset.count(multi_one) == 2U &&
                    multiset.find(multi_one).is_some()
                ? 0

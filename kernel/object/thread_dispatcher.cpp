@@ -198,9 +198,9 @@ auto ThreadDispatcher::activate(bool suspend) -> Status {
     // Both answer only Ok: suspend() is suspend_or_kill(), which sets a
     // signal and returns, and resume() does nothing to a Dead thread.
     if (suspend) {
-        static_cast<void>(m_kernel_thread->suspend());
+        auto _ = m_kernel_thread->suspend();
     } else {
-        static_cast<void>(m_kernel_thread->resume());
+        auto _ = m_kernel_thread->resume();
     }
     return Status::Ok;
 }
@@ -279,11 +279,12 @@ auto ThreadDispatcher::kill() -> void {
             // for a kill to reach it through. Zircon leaves INITIAL and
             // INITIALIZED threads alone for the same reason.
             break;
-        case State::Running:
+        case State::Running: {
             DEBUG_ASSERT(m_kernel_thread, "a started thread with no kernel thread");
-            static_cast<void>(m_kernel_thread->kill());
+            auto _ = m_kernel_thread->kill();
             m_state = State::Dying;
             break;
+        }
         case State::Dying:
         case State::Dead:
             break;

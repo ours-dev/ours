@@ -191,7 +191,7 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
         // finds nothing to run. Taking the handler is what leaves it empty.
         handler = m_clkdev->take_event_handler();
         next_event = m_clkdev->next_event();
-        (void)m_clkdev->switch_mode(ClockEventDevice::Mode::Detached);
+        auto _ = m_clkdev->switch_mode(ClockEventDevice::Mode::Detached);
     } else {
         // The first device this CPU ever gets. There is no deadline to carry
         // over, so the oneshot path below arms it for "now", which is what
@@ -208,12 +208,12 @@ auto TickDevice::rebind_device(ClockEventDevice *new_clkdev) -> Status {
     }
 
     m_clkdev = new_clkdev;
-    (void)new_clkdev->switch_mode(ClockEventDevice::Mode::Shutdown);
+    auto _ = new_clkdev->switch_mode(ClockEventDevice::Mode::Shutdown);
 
     // A global device is steered at this CPU; the old code set the *old*
     // device's affinity here, to its own mask, which changed nothing.
     if (new_clkdev->cpumask() != percpu_mask && new_clkdev->irqnum() != irq::INVALID_V_IRQ_NUM) {
-        (void)irq::set_affinity(new_clkdev->irqnum(), percpu_mask);
+        auto _ = irq::set_affinity(new_clkdev->irqnum(), percpu_mask);
     }
 
     if (m_mode == Mode::Periodic) {

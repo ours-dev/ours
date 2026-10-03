@@ -55,7 +55,7 @@ auto handle_duplicate(ours::Uandle const handle, Rights const rights,
     if (auto const status = out.copy_to_user(table.value_of(*duplicate)); status != Status::Ok) {
         return status;
     }
-    static_cast<void>(table.add(ustl::move(duplicate)));
+    auto _ = table.add(ustl::move(duplicate));
     return Status::Ok;
 }
 } // namespace ours::syscall

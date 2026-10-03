@@ -92,7 +92,7 @@ auto ClockSource::enqueue_source(Self *self) -> void {
         }
     }
 
-    (void)REGISTERED_SOURCES.insert(iter, *self);
+    auto _ = REGISTERED_SOURCES.insert(iter, *self);
 }
 
 /// The list is kept in priority order by enqueue_source(), so the best

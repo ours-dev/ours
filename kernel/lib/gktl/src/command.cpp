@@ -79,7 +79,7 @@ namespace {
         }
 
         for (auto const *command = COMMANDS_START; command != COMMANDS_END; ++command) {
-            static_cast<void>(TREE.insert(*command));
+            auto _ = TREE.insert(*command);
         }
 
         TREE_BUILT = true;
@@ -98,7 +98,7 @@ auto run_command(int argc, char **argv) -> void {
         return;
     }
 
-    static_cast<void>(command->callback(argc, argv));
+    auto _ = command->callback(argc, argv);
 }
 
 } // namespace gktl

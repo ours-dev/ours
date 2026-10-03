@@ -154,9 +154,9 @@ auto WaitQueue::update_parked_thread_effective_profile(Thread *thread) -> void {
     // come out before it changes and go back in afterwards. The arrival
     // sequence is deliberately left alone: a waiter re-keyed by PI should
     // not lose the tiebreak it earned by getting here first.
-    static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
+    auto _ = m_waiters.erase(m_waiters.iterator_to(waiter));
     // recompute it's effective profile.
-    static_cast<void>(m_waiters.insert(waiter));
+    auto _ = m_waiters.insert(waiter);
 }
 
 auto WaitQueue::enqueue_waiter(WaiterState &waiter) -> void {
@@ -173,7 +173,7 @@ auto WaitQueue::enqueue_waiter_locked(WaiterState &waiter) -> void {
     waiter.m_queue_key.vdeadline = thread->scheduling_entity().virtual_deadline();
     waiter.m_queue_key.seq = m_next_seq++;
     waiter.m_waitqueue = this;
-    static_cast<void>(m_waiters.insert(waiter));
+    auto _ = m_waiters.insert(waiter);
 }
 
 auto WaitQueue::dequeue_waiter(WaiterState &waiter, Status status) -> bool {
@@ -186,7 +186,7 @@ auto WaitQueue::dequeue_waiter(WaiterState &waiter, Status status) -> bool {
         return false;
     }
 
-    static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
+    auto _ = m_waiters.erase(m_waiters.iterator_to(waiter));
     waiter.m_waitqueue = nullptr;
     waiter.m_blocked_status = status;
     return true;
@@ -196,7 +196,7 @@ auto WaitQueue::dequeue_waiter(WaiterState &waiter, Status status) -> bool {
 /// held; the four callers differ only in what they do afterwards.
 auto WaitQueue::dequeue_front_locked(Status status) -> Thread * {
     auto &waiter = *m_waiters.begin();
-    static_cast<void>(m_waiters.erase(m_waiters.iterator_to(waiter)));
+    auto _ = m_waiters.erase(m_waiters.iterator_to(waiter));
     waiter.m_waitqueue = nullptr;
     waiter.m_blocked_status = status;
     return Thread::of(&waiter);

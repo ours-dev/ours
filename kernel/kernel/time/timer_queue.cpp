@@ -72,7 +72,7 @@ auto TimerQueue::reprogram_locked() -> void {
 
     // In Periodic mode this is a no-op and the tick runs us anyway; in
     // Oneshot mode INFINITE_TIME parks the device. See TickDevice.
-    (void)TickDevice::Current::get().program_event(deadline);
+    auto _ = TickDevice::Current::get().program_event(deadline);
     m_next_deadline = deadline;
 }
 
@@ -92,7 +92,7 @@ auto TimerQueue::remove_locked(Timer &timer) -> void {
     auto &active = base_of(timer.clockid()).active;
 
     auto const was_head = &*active.begin() == &timer;
-    (void)active.erase(active.iterator_to(timer));
+    auto _ = active.erase(active.iterator_to(timer));
 
     if (was_head && this == &TimerQueue::get()) {
         reprogram_locked();
@@ -149,7 +149,7 @@ auto TimerQueue::pop_expired_locked(TimePoint<> now) -> Timer * {
             continue;
         }
 
-        (void)active.erase(active.iterator_to(timer));
+        auto _ = active.erase(active.iterator_to(timer));
         timer.m_active_cpu.store(m_cpunum, std::memory_order_release);
         return &timer;
     }

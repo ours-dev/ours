@@ -107,7 +107,7 @@ auto test_init_and_full_window() -> int {
 
 auto test_middle_update_splits_in_three() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
 
     auto const mid_base = WINDOW_BASE + 4 * PAGE;
     if (check(ranges.update(mid_base, 4 * PAGE, RX) == Status::Ok, "middle update succeeds")) {
@@ -133,9 +133,9 @@ auto test_middle_update_splits_in_three() -> int {
 
 auto test_restore_coalesces_back() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
     auto const mid_base = WINDOW_BASE + 4 * PAGE;
-    (void)ranges.update(mid_base, 4 * PAGE, RX);
+    auto _ = ranges.update(mid_base, 4 * PAGE, RX);
 
     if (check(ranges.update(mid_base, 4 * PAGE, RW) == Status::Ok, "restore succeeds")) {
         return 1;
@@ -150,10 +150,10 @@ auto test_restore_coalesces_back() -> int {
 
 auto test_regime_widening_keeps_boundaries_tight() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
     auto const mid_base = WINDOW_BASE + 4 * PAGE;
-    (void)ranges.update(mid_base, 4 * PAGE, RX);
-    (void)ranges.update(WINDOW_BASE + 2 * PAGE, 8 * PAGE, RX);
+    auto _ = ranges.update(mid_base, 4 * PAGE, RX);
+    auto _ = ranges.update(WINDOW_BASE + 2 * PAGE, 8 * PAGE, RX);
 
     ranges.validate();
     return check_spans(collect(ranges, WINDOW_BASE, 16 * PAGE),
@@ -165,7 +165,7 @@ auto test_regime_widening_keeps_boundaries_tight() -> int {
 
 auto test_range_inside_one_region_splits_both_ends() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
 
     // Both endpoints land inside the single RW region, so the update must
     // detach a tail on each side and leave both carrying the old flags.
@@ -184,7 +184,7 @@ auto test_range_inside_one_region_splits_both_ends() -> int {
 
 auto test_zero_permission_round_trip() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
     auto const mid_base = WINDOW_BASE + 4 * PAGE;
 
     // The "unmapped" convention: unmap() marks its range permission-less, and
@@ -210,7 +210,7 @@ auto test_zero_permission_round_trip() -> int {
     }
 
     // And mapping it again coalesces the window back together.
-    (void)ranges.update(mid_base, 4 * PAGE, RW);
+    auto _ = ranges.update(mid_base, 4 * PAGE, RW);
     ranges.validate();
     return check_spans(collect(ranges, WINDOW_BASE, 16 * PAGE), {{WINDOW_BASE, 16 * PAGE, RW}},
                        "re-mapping coalesces the window back into one region");
@@ -218,13 +218,13 @@ auto test_zero_permission_round_trip() -> int {
 
 auto test_edge_aligned_updates() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
 
     // Updates whose bounds coincide with existing region edges must not split
     // anything: carve an RX regime, then overwrite its lower quarter with the
     // original flags, leaving exactly two regions.
-    (void)ranges.update(WINDOW_BASE + 8 * PAGE, 8 * PAGE, RX);
-    (void)ranges.update(WINDOW_BASE + 8 * PAGE, 4 * PAGE, RW);
+    auto _ = ranges.update(WINDOW_BASE + 8 * PAGE, 8 * PAGE, RX);
+    auto _ = ranges.update(WINDOW_BASE + 8 * PAGE, 4 * PAGE, RW);
     ranges.validate();
 
     return check_spans(collect(ranges, WINDOW_BASE, 16 * PAGE),
@@ -234,7 +234,7 @@ auto test_edge_aligned_updates() -> int {
 
 auto test_invalid_updates_are_rejected() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
 
     if (check(ranges.update(WINDOW_BASE, 0, RX) == Status::InvArgs, "zero-sized update rejected")) {
         return 1;
@@ -255,7 +255,7 @@ auto test_invalid_updates_are_rejected() -> int {
 
 auto test_repeated_cycles_stay_flat() -> int {
     ProtectionRanges ranges;
-    (void)ranges.init(WINDOW_BASE, 16 * PAGE, RW);
+    auto _ = ranges.init(WINDOW_BASE, 16 * PAGE, RW);
 
     // Flip one page's regime back and forth many times; coalescing must keep
     // the representation at three regions, not grow with the history.

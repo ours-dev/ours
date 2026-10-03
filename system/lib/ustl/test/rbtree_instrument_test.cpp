@@ -100,7 +100,7 @@ auto test_events_fire() -> void {
     tree.set_instrument_context(&stats);
 
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(tree.insert_equal(storage[i]));
+        auto _ = tree.insert_equal(storage[i]);
     }
     check(stats.inserts == COUNT, "one insert event per insertion");
     check(stats.rotations > 0, "ascending inserts should have forced rotations");
@@ -139,10 +139,10 @@ auto test_context_is_per_tree() -> void {
     b.set_instrument_context(&b_stats);
 
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(a.insert_equal(a_storage[i]));
+        auto _ = a.insert_equal(a_storage[i]);
     }
     for (int i = 0; i < COUNT / 2; ++i) {
-        static_cast<void>(b.insert_equal(b_storage[i]));
+        auto _ = b.insert_equal(b_storage[i]);
     }
 
     check(a_stats.inserts == COUNT, "tree A's tally is wrong");
@@ -168,8 +168,8 @@ auto test_shape_is_unaffected() -> void {
     WatchedTree watched;
     watched.set_instrument_context(&stats);
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(plain.insert_equal(plain_storage[i]));
-        static_cast<void>(watched.insert_equal(watched_storage[i]));
+        auto _ = plain.insert_equal(plain_storage[i]);
+        auto _ = watched.insert_equal(watched_storage[i]);
     }
 
     auto plain_it = plain.begin();
@@ -253,7 +253,7 @@ auto test_both_extensions_at_once() -> void {
     BothTree tree;
     tree.set_instrument_context(&stats);
     for (int i = 0; i < COUNT; ++i) {
-        static_cast<void>(tree.insert_equal(storage[i]));
+        auto _ = tree.insert_equal(storage[i]);
     }
 
     // The instrumentation half fired ...

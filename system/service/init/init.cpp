@@ -49,7 +49,7 @@
 namespace {
 /// Prints "<what><status name>".
 auto report(std::string_view const what, ours::Status const status) -> void {
-    static_cast<void>(ort::debug_line({what, std::string_view{ours::to_string(status)}}));
+    auto _ = ort::debug_line({what, std::string_view{ours::to_string(status)}});
 }
 
 [[noreturn]]
@@ -82,7 +82,7 @@ auto to_str(std::string_view const text) -> std::string_view {
 /// would take handle_duplicate (K15), since init is about to need its own.
 auto describe_bootfs(ours::Uandle const bootfs) -> void {
     if (bootfs == ours::Uandle::Invalid) {
-        static_cast<void>(ort::debug_line("init: started without a BootFS"));
+        auto _ = ort::debug_line("init: started without a BootFS");
         return;
     }
     bootfs::Header header{};
@@ -92,12 +92,12 @@ auto describe_bootfs(ours::Uandle const bootfs) -> void {
         return;
     }
     if (header.magic != bootfs::Header::MAGIC) {
-        static_cast<void>(ort::debug_line("init: the BootFS header has the wrong magic"));
+        auto _ = ort::debug_line("init: the BootFS header has the wrong magic");
         return;
     }
     char count[10];
-    static_cast<void>(
-        ort::debug_line({"init: bootfs has ", ort::decimal(header.file_count, count), " entries"}));
+    auto _ =
+        ort::debug_line({"init: bootfs has ", ort::decimal(header.file_count, count), " entries"});
 }
 
 /// Spawns |name| with |there| as its bootstrap end, then writes |message| on
@@ -116,9 +116,9 @@ auto spawn_then_write(ours::Uandle const job, std::string_view const name, ours:
     auto const spawned = ours::process_spawn_boot(job, name.data(), name.size(), there, &root_vma);
     if (spawned != Status::Ok) {
         for (auto const handle: handles) {
-            static_cast<void>(ours::handle_close(handle));
+            auto _ = ours::handle_close(handle);
         }
-        static_cast<void>(ours::handle_close(here));
+        auto _ = ours::handle_close(here);
         return spawned;
     }
     u32 count = 0;
@@ -128,7 +128,7 @@ auto spawn_then_write(ours::Uandle const job, std::string_view const name, ours:
     all[count++] = root_vma;
     auto const written = ours::channel_write(here, ours::ChannelWriteOptions::None, message.data(),
                                              static_cast<u32>(message.size()), all, count);
-    static_cast<void>(ours::handle_close(here));
+    auto _ = ours::handle_close(here);
     return written;
 }
 
@@ -194,7 +194,7 @@ auto start_shell(ours::Uandle const job, ours::Uandle peer) -> ours::Status {
     std::string_view const args[] = {{SHELL.data(), SHELL.size()}};
     if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
         status != Status::Ok) {
-        static_cast<void>(ours::handle_close(peer));
+        auto _ = ours::handle_close(peer);
         return status;
     }
 
@@ -203,7 +203,7 @@ auto start_shell(ours::Uandle const job, ours::Uandle peer) -> ours::Status {
     if (auto const status =
             ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
         status != Status::Ok) {
-        static_cast<void>(ours::handle_close(peer));
+        auto _ = ours::handle_close(peer);
         return status;
     }
     ours::Uandle const handed[] = {peer};
@@ -217,10 +217,10 @@ auto main(int, char **) -> int {
 
     auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);
     if (job == ours::Uandle::Invalid) {
-        static_cast<void>(ort::debug_line("init: started without the root job"));
+        auto _ = ort::debug_line("init: started without the root job");
         halt();
     }
-    static_cast<void>(ort::debug_line("init: started with the root job"));
+    auto _ = ort::debug_line("init: started with the root job");
     describe_bootfs(ort::take_startup_handle(ours::HandleType::VmoBootfs, 0));
 
     // vmex, handed on by userboot: the capability to make a VMO executable
@@ -229,9 +229,9 @@ auto main(int, char **) -> int {
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     if (vmex != ours::Uandle::Invalid) {
-        static_cast<void>(ort::debug_line("init: vmex resource ok"));
+        auto _ = ort::debug_line("init: vmex resource ok");
     } else {
-        static_cast<void>(ort::debug_line("init: started without vmex"));
+        auto _ = ort::debug_line("init: started without vmex");
     }
 
     // The vDSO's VMO, also handed on by userboot: init maps it into the
@@ -239,9 +239,9 @@ auto main(int, char **) -> int {
     // then.
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     if (vdso != ours::Uandle::Invalid) {
-        static_cast<void>(ort::debug_line("init: vdso vmo ok"));
+        auto _ = ort::debug_line("init: vdso vmo ok");
     } else {
-        static_cast<void>(ort::debug_line("init: started without the vdso vmo"));
+        auto _ = ort::debug_line("init: started without the vdso vmo");
     }
 
     ours::Uandle here = ours::Uandle::Invalid;
@@ -255,7 +255,7 @@ auto main(int, char **) -> int {
         report("init: spawning shell = ", status);
         halt();
     }
-    static_cast<void>(ort::debug_line("init: spawned shell"));
+    auto _ = ort::debug_line("init: spawned shell");
 
     if (auto const status = ours::channel_write(here, ours::ChannelWriteOptions::None, PING.data(),
                                                 static_cast<u32>(PING.size()), nullptr, 0);
@@ -272,7 +272,7 @@ auto main(int, char **) -> int {
     // not the system, and the shell is already running.
     // The last one on the command line wins (ort::ProcessArgs::option()).
     if (auto const autorun = ort::process_args().option(init::AUTORUN_OPTION); !autorun.empty()) {
-        static_cast<void>(ort::debug_line({"init: autorun ", to_str(autorun)}));
+        auto _ = ort::debug_line({"init: autorun ", to_str(autorun)});
         if (auto const status = start_autorun(job, autorun); status != Status::Ok) {
             report("init: starting the autorun command = ", status);
         }
@@ -284,7 +284,7 @@ auto main(int, char **) -> int {
                                         ours::INSTANT_INFINITE, &observed);
     if (status != Status::Ok || !(observed & Signals::Readable)) {
         report("init: waiting for the shell = ", status);
-        static_cast<void>(ort::debug_line("init: the shell closed the channel without answering"));
+        auto _ = ort::debug_line("init: the shell closed the channel without answering");
         halt();
     }
 
@@ -296,8 +296,7 @@ auto main(int, char **) -> int {
         report("init: read = ", status);
         halt();
     }
-    static_cast<void>(
-        ort::debug_line({"init: shell says \"", std::string_view(buffer, actual), "\""}));
+    auto _ = ort::debug_line({"init: shell says \"", std::string_view(buffer, actual), "\""});
 
     // And then until the shell lets go of its end: it closes it as it checks
     // that closing a handle works, or its process dying closes it. Either way
@@ -309,7 +308,7 @@ auto main(int, char **) -> int {
         report("init: waiting for the shell to finish = ", status);
         halt();
     }
-    static_cast<void>(ort::debug_line("init: shell closed its channel"));
+    auto _ = ort::debug_line("init: shell closed its channel");
 
     halt();
 }

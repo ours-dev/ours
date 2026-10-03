@@ -131,7 +131,7 @@ auto main() -> int {
     constexpr std::array<int, 15U> ERASURE_ORDER{7, 0, 14, 3, 11, 1, 5, 9, 13, 2, 4, 6, 8, 10, 12};
     for (const auto key: ERASURE_ORDER) {
         const auto node = &nodes[static_cast<std::size_t>(key)];
-        static_cast<void>(Algorithms::erase(&header, node));
+        auto _ = Algorithms::erase(&header, node);
         if (!Algorithms::inited(node) || !is_valid_tree(&header)) {
             return 2;
         }
