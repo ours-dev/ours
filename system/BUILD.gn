@@ -111,9 +111,10 @@ config("user.standalone") {
   # reach the GOT the way an imported variable does, so the loader has one
   # relocation type to apply and no PLT stub to service. It used to sit on
   # :user.program alone, which covered the executable's own translation units
-  # and missed every library linked into it: //system/lib/ou's calls into the
-  # vDSO went through a PLT, the program grew a .rela.plt, and the image's
-  # relocations stopped being the shape the rest of this config describes.
+  # and missed every library linked into it: a library's calls into the vDSO
+  # (//system/lib/ou's, then) went through a PLT, the program grew a .rela.plt,
+  # and the image's relocations stopped being the shape the rest of this config
+  # describes.
   cflags = [
     "-fpie",
     "-fno-plt",

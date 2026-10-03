@@ -29,13 +29,12 @@
 
 #include <string_view>
 
-#include <ou/debug.hpp>
-#include <ou/str.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
+#include <runtime/debug.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 
@@ -65,11 +64,11 @@ struct HandedOn {
 };
 
 /// Prints "<what><status name>".
-auto report(ou::Str const what, ours::Status const status) -> void {
-    static_cast<void>(ou::debug_line({what, ou::Str::from_c_str(ours::to_string(status), 32)}));
+auto report(std::string_view const what, ours::Status const status) -> void {
+    static_cast<void>(runtime::debug_line({what, std::string_view{ours::to_string(status)}}));
 }
 
-auto to_str(std::string_view const text) -> ou::Str {
+auto to_str(std::string_view const text) -> std::string_view {
     return {text.data(), text.size()};
 }
 
@@ -108,8 +107,8 @@ auto collect_handed_on() -> HandedOn {
             continue;
         }
         if (handed_on.count == ours::MAX_USER_OPTIONS) {
-            static_cast<void>(
-                ou::debug_line({"userboot: dropping ", to_str(entry), ": no room to hand it on"}));
+            static_cast<void>(runtime::debug_line(
+                {"userboot: dropping ", to_str(entry), ": no room to hand it on"}));
             continue;
         }
         handed_on.entries[handed_on.count++] = entry;
@@ -207,7 +206,7 @@ auto main(int, char **) -> int {
         // No program named: the proof-of-life image. Reaching this line at
         // all is what it proves -- the kernel built a process, mapped this
         // ELF and the vDSO into it, and the runtime read its processargs.
-        static_cast<void>(ou::debug_line("userboot: hello from ring 3"));
+        static_cast<void>(runtime::debug_line("userboot: hello from ring 3"));
         halt();
     }
 
@@ -220,7 +219,7 @@ auto main(int, char **) -> int {
     // under userboot, and holds the only handles userboot had.
     auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
     if (job == ours::HANDLE_INVALID) {
-        static_cast<void>(ou::debug_line("userboot: started without the root job"));
+        static_cast<void>(runtime::debug_line("userboot: started without the root job"));
         return 1;
     }
     // Absent is allowed: the kernel starts this program without a BootFS
@@ -231,10 +230,10 @@ auto main(int, char **) -> int {
                                                    u16(ours::RSRC_SYSTEM_VMEX_BASE));
     auto const vdso = runtime::take_startup_handle(ours::HandleType::VmoVdso, 0);
 
-    static_cast<void>(ou::debug_line({"userboot: starting ", to_str(next)}));
+    static_cast<void>(runtime::debug_line({"userboot: starting ", to_str(next)}));
     auto const handed_on = collect_handed_on();
     for (auto index = u32(0); index < handed_on.count; ++index) {
-        static_cast<void>(ou::debug_line(
+        static_cast<void>(runtime::debug_line(
             {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)}));
     }
     if (auto const status = start_next(job, bootfs, vmex, vdso, next, handed_on);
@@ -242,6 +241,6 @@ auto main(int, char **) -> int {
         report("userboot: starting the next program = ", status);
         return 1;
     }
-    static_cast<void>(ou::debug_line({"userboot: started ", to_str(next)}));
+    static_cast<void>(runtime::debug_line({"userboot: started ", to_str(next)}));
     return 0;
 }

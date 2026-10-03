@@ -35,26 +35,22 @@
   process_builder do. `ProcessDispatcher::create` does not map it. The user
   chose Zircon's shape over "the kernel maps it at process creation"
   (2026-09-28); never copy the vDSO per process.
-- Adding a syscall means: an entry in `system/public/ours/syscalls.gni`, the
-  body of `ours::syscall::<name>()` in `//kernel/lib/syscall`, and exactly one
-  named entry in `//system/lib/ou` (even if it only forwards). The vDSO stub,
-  the `extern "C"` declaration `<ours/vdso.hpp>` includes and the kernel
-  shim are generated from the entry; never write them by hand. Limits callers
-  must respect (such as `MAX_DEBUG_WRITE`) live in
+- Adding a syscall means: an entry in `system/public/ours/syscalls.gni` and
+  the body of `ours::syscall::<name>()` in `//kernel/lib/syscall`. The vDSO
+  stub, the `extern "C"` declaration `<ours/vdso.hpp>` includes and the
+  kernel shim are generated from the entry; never write them by hand. Limits
+  callers must respect (such as `MAX_DEBUG_WRITE`) live in
   `system/public/ours/syscall.hpp`.
-- Ring-3 code calls `ou::...` by convention, ABI conformance tests (bad
-  pointers, unknown option bits) included, so an `ou` entry passes every ABI
-  parameter through, options included, and forwards pointers unchanged (the
-  user's call, 2026-10-02). It is a convention, not a rule the build
-  enforces: `ou` is a convenience layer a program may bypass, as Zircon's
-  `lib/zx` is (the user's call, 2026-10-03, against build machinery that
-  guards against a mistake nothing has made).
-- `ou` is hand-written. Generating it from `syscalls.gni`, with typed
-  handles in the shape of Zircon's `lib/zx`, was decided on 2026-10-02 and
-  deferred on 2026-10-03 until a concrete need shows up (a leaked handle, a
-  handle of the wrong type passed). Plan: `.agents/tasks/system-abi-surface`.
+- Ring-3 code calls the vDSO's `ours_*` entries directly, from
+  `<ours/vdso.hpp>`; there is no wrapper library. `//system/lib/ou`, one
+  forwarding function per call, was removed on 2026-10-03 (the user's call:
+  `ours_*` is already the user-level API, and a layer that only forwards is
+  one more copy of each contract to keep true). Do not reintroduce one
+  without a concrete need; a typed-handle layer in the shape of Zircon's
+  `lib/zx` was planned and deferred for the same reason. A program prints
+  with `runtime::debug_line` (`<runtime/debug.hpp>`).
 - The address-region object is **Vma** at every layer: `VmaDispatcher`,
-  `ours_vma_*`, `ou::vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
+  `ours_vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
   `mm::VmArea` -- not Zircon's "Vmar" (the user's call, 2026-09-28, after a
   rename to Vmar was reverted). Values stay Zircon's.
 - The kernel handler for `ours_<name>` is `ours::syscall::<name>`, with no

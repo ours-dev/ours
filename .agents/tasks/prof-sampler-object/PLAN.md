@@ -41,7 +41,7 @@ Each step is introduced to the user, with its background, and waits for approval
 - `kernel/commands/prof.cpp`: deleted in step 5.
 - `system/public/ours/syscall/resource.hpp`: the SAMPLING slot.
 - `system/public/ours/types.hpp`: `ObjectType::Sampler`.
-- `system/public/ours/syscalls.gni`, `system/lib/ou/`: the four calls.
+- `system/public/ours/syscalls.gni`, `system/lib/ou/`: the four calls. (2026-10-03: `//system/lib/ou` has been removed; the entry in `syscalls.gni` is all a call needs.)
 - `kernel/object/sampler_dispatcher.cpp`, `kernel/object/include/ours/object/sampler_dispatcher.hpp` (new).
 - `kernel/lib/syscall/src/sampler.cpp` (new).
 - `kernel/include/ours/task/types.hpp`, `kernel/kernel/task/`: the `SampleStack` signal and its handling.

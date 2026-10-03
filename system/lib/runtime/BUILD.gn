@@ -42,25 +42,27 @@ group("tests") {
 #
 # User programs only. Not in the host toolchain (keyed on is_host_toolchain,
 # since toolchain_environment reads "user" there) nor the kernel ones:
-# _start, a system call through ou, and a main to call exist only in a ring-3
-# program. Not yet a default dependency of user_executable() either:
-# userboot still defines its own _start, which this one would collide with,
-# until it becomes a launcher (U8). Programs moved one producer-consumer pair
-# at a time -- fault_probe, then init and the shell together with the
-# kernel's own processargs (design K14) -- and until userboot follows, each
-# names this dependency itself.
+# _start, a system call, and a main to call exist only in a ring-3
+# program. Not a default dependency of user_executable(): programs moved onto
+# it one producer-consumer pair at a time -- fault_probe, then init and the
+# shell together with the kernel's own processargs (design K14), then
+# userboot -- and each names this dependency itself.
+#
+# It also carries the print helpers (<runtime/debug.hpp>), which every
+# program uses and which came from //system/lib/ou when that library was
+# removed.
 if (!is_host_toolchain && toolchain_environment == "user") {
   source_set("runtime") {
     sources = [
       "src/cpp_dependencies.cpp",
       "src/crt0.S",
+      "src/debug.cpp",
       "src/start.cpp",
     ]
     public_deps = [
       ":process_args",
       ":start.headers",
     ]
-    deps = [ "//system/lib/ou" ]
     visibility = [ "*" ]
   }
 
@@ -68,6 +70,7 @@ if (!is_host_toolchain && toolchain_environment == "user") {
   # declaring main extern "C" is an error.
   cpp_interface("start.headers") {
     public = [
+      "include/runtime/debug.hpp",
       "include/runtime/main.hpp",
       "include/runtime/startup.hpp",
     ]

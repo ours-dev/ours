@@ -27,6 +27,7 @@ The problems that matter, most severe first (panel ids in brackets):
 
 ## Goals and non-goals
 Goals:
+- **`ou` itself was removed on 2026-10-03** (`.agents/tasks/remove-ou`): ring 3 calls `ours_*` directly. Every goal and step below that names `ou` is void.
 - Ring 3 reaches the kernel only through `ou`, and the build makes any other route a compile error. **Dropped 2026-10-03** (the user, 2026-10-03: `ou` stays a convenience layer a program may bypass, as Zircon's `lib/zx` is, rather than gain build machinery that guards against a mistake nothing has made). The tree does call only `ou`; nothing enforces it.
 - `ou` is generated from `syscalls.gni`, with typed handles, so that adding a call is a description entry plus a handler body, and a call's ownership rules are in the types. **Deferred 2026-10-03** by the user, until a concrete need for it shows up (a leaked handle, a handle of the wrong type passed).
 - The ABI headers compile on their own, and the set of public headers is an explicit list the build checks.

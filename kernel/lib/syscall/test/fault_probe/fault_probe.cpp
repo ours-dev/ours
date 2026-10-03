@@ -26,10 +26,12 @@
 /// data was relocated where it lies (see RELOCATED), and answers "relocation"
 /// if not: the check on the loader that started it, whichever that was.
 
-#include <ou/debug.hpp>
-#include <ou/str.hpp>
+#include <algorithm>
+#include <string_view>
+
 #include <ours/process_args.hpp>
 #include <ours/vdso.hpp>
+#include <runtime/debug.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 
@@ -43,7 +45,7 @@ namespace {
 using Action = auto (*)(ours::VirtAddr vdso_base) -> void;
 
 struct Probe {
-    ou::Str name;
+    std::string_view name;
     Action action;
 };
 
@@ -185,7 +187,7 @@ auto relocations_hold() -> bool {
     return true;
 }
 
-auto same(ou::Str const a, ou::Str const b) -> bool {
+auto same(std::string_view const a, std::string_view const b) -> bool {
     if (a.size() != b.size()) {
         return false;
     }
@@ -214,9 +216,9 @@ enum ExitCode : int {
 
 /// Says |answer| to the driver on |channel|, the User0 startup handle.
 /// Without one there is no one to tell, and the exit code has to do.
-auto reply(ours::HandleValue const channel, ou::Str const answer) -> void {
+auto reply(ours::HandleValue const channel, std::string_view const answer) -> void {
     if (channel == ours::HANDLE_INVALID) {
-        static_cast<void>(ou::debug_line("fault_probe: no answer channel (User0)"));
+        static_cast<void>(runtime::debug_line("fault_probe: no answer channel (User0)"));
         return;
     }
     static_cast<void>(ours_channel_write(channel, ours::ChannelWriteOptions::None, answer.data(),
@@ -227,18 +229,22 @@ auto reply(ours::HandleValue const channel, ou::Str const answer) -> void {
 auto main(int const argc, char **const argv) -> int {
     auto const answer = runtime::take_startup_handle(ours::HandleType::User0, 0);
     if (!relocations_hold()) {
-        static_cast<void>(ou::debug_line("fault_probe: a pointer in its writable data was not "
-                                         "relocated where it lies"));
+        static_cast<void>(runtime::debug_line("fault_probe: a pointer in its writable data was not "
+                                              "relocated where it lies"));
         reply(answer, "relocation");
         return BAD_RELOCATION;
     }
     if (argc < 2) {
-        static_cast<void>(ou::debug_line("fault_probe: no probe name"));
+        static_cast<void>(runtime::debug_line("fault_probe: no probe name"));
         reply(answer, "no probe name");
         return NO_NAME;
     }
-    auto const name = ou::Str::from_c_str(argv[1], 32);
-    static_cast<void>(ou::debug_line({"fault_probe: ", name}));
+    // Up to its NUL or 32 bytes, whichever comes first: no probe name is
+    // longer, and the argument came from a message another program wrote.
+    auto const *const arg = argv[1];
+    auto const name =
+        std::string_view{arg, static_cast<usize>(std::find(arg, arg + 32, '\0') - arg)};
+    static_cast<void>(runtime::debug_line({"fault_probe: ", name}));
 
     for (auto const &probe: PROBES) {
         if (same(name, probe.name)) {
@@ -247,7 +253,7 @@ auto main(int const argc, char **const argv) -> int {
             return SURVIVED;
         }
     }
-    static_cast<void>(ou::debug_line({"fault_probe: unknown probe ", name}));
+    static_cast<void>(runtime::debug_line({"fault_probe: unknown probe ", name}));
     reply(answer, "unknown");
     return UNKNOWN;
 }

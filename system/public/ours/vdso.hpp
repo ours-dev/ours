@@ -28,8 +28,7 @@
 #include <ours/syscall.hpp>
 #include <ours/types.hpp>
 
-/// The vDSO's exported entry points, as //system/lib/ou calls them (and,
-/// until system-abi-surface step 5, examples/shell directly).
+/// The vDSO's exported entry points: the system-call API a program calls.
 ///
 /// A caller declares nothing and looks up nothing: it calls ours_debug_write()
 /// the way it would call any function. The linker records an undefined

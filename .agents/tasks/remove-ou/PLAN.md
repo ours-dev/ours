@@ -1,7 +1,7 @@
 # remove-ou: ring 3 calls the vDSO's ours_* directly, and ou goes
 
 **Date**: 2026-10-03
-**Status**: Accepted
+**Status**: Done
 
 ## Request
 The user, on 2026-10-03: `ours::syscall::*` is the kernel side and `ours_*` is already the user-level API, so `ou` is a layer with no reason to exist. Remove it: every program calls `ours_*` directly, and the few helpers in `ou` that are not forwarders (`debug_write`'s splitting, `debug_line`, `decimal`, `hex`) move to the runtime. The scope ends there: no change to the ABI, to `syscalls.gni`, or to what any program does.
@@ -10,13 +10,13 @@ The user, on 2026-10-03: `ours::syscall::*` is the kernel side and `ours_*` is a
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | Keep `ou` | keep it as is, unenforced (A); remove it, call `ours_*` directly (B); enforce it and generate a typed `ou` (C) | A at first, then B' (remove the forwarders, keep the helpers in the runtime) once the user pointed out `ours_*` is already the API | None | B, 2026-10-03 |
-| Where the helpers go | the `runtime` source set; a target of their own beside it; a new library | a target of their own in `//system/lib/runtime` (`:debug`): the runtime source set carries `crt0.S`, and userboot and fault_probe, which use the helpers, have entry points of their own | None | The runtime, 2026-10-03 (the target follows from crt0) |
-| `ou::Str` | move it with the helpers; replace it with `std::string_view` | `std::string_view`: `ou`'s own README names that as the step left, since every program now links the strlen and memcmp it needs | None | |
+| Where the helpers go | the `runtime` source set; a target of their own beside it; a new library | first a target of their own (`:debug`), on the belief that userboot had an entry point of its own; it has not (it runs on the runtime, as every program does), so the runtime source set itself | None | The runtime, 2026-10-03 |
+| `ou::Str` | move it with the helpers; replace it with `std::string_view` | `std::string_view`: `ou`'s own README names that as the step left, since every program now links the strlen and memcmp it needs | None | `std::string_view`, 2026-10-03 |
 
 ## Steps
 1. Every caller outside the shell (runtime, launch, init, userboot, fault_probe) calls `ours_*` where it called an `ou` forwarder. Mechanical, by a script that knows each forwarder's argument order and defaults. Verified by `ours-verify`. One commit.
 2. The same for the shell, the largest caller (about 520 sites). Verified by `ours-verify` and the shell's checks in both logs. One commit.
-3. The helpers move to `//system/lib/runtime:debug` (`<runtime/debug.hpp>`, namespace `runtime`), on `std::string_view`; `ou::Str` and `ou::command_text` go with them; `//system/lib/ou` is deleted, and the documents and skills that describe it are corrected. Verified by `ours-verify`. One commit.
+3. The helpers move to `//system/lib/runtime` (`<runtime/debug.hpp>`, namespace `runtime`), on `std::string_view`; `ou::Str` and `ou::command_text` go with them; `//system/lib/ou` is deleted, and the documents and skills that describe it are corrected. Verified by `ours-verify`. One commit.
 
 ## Files
 - `system/lib/runtime/src/start.cpp`, `include/runtime/startup.hpp`, `system/lib/launch/src/launch.cpp`, `system/service/init/init.cpp`, `kernel/lib/userabi/userboot/userboot.cpp`, `kernel/lib/syscall/test/fault_probe/*` — step 1.

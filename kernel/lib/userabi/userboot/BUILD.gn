@@ -29,8 +29,5 @@ user_executable("userboot") {
   visibility = [ "//kernel/products/image/*" ]
 
   sources = [ "userboot.cpp" ]
-  deps = [
-    "//system/lib/ou",
-    "//system/lib/runtime",
-  ]
+  deps = [ "//system/lib/runtime" ]
 }

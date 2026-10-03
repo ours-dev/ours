@@ -1,14 +1,14 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <ou/debug.hpp>
+#include <runtime/debug.hpp>
 
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
 
-namespace ou {
+namespace runtime {
 using ours::Status;
 
-auto debug_write(Str const text) -> Status {
+auto debug_write(std::string_view const text) -> Status {
     auto const *at = text.data();
     auto left = text.size();
 
@@ -32,7 +32,7 @@ auto debug_write(Str const text) -> Status {
     return Status::Ok;
 }
 
-auto debug_line(std::initializer_list<Str> const pieces) -> Status {
+auto debug_line(std::initializer_list<std::string_view> const pieces) -> Status {
     usize total = 1; // the newline
     for (auto const &piece: pieces) {
         total += piece.size();
@@ -45,7 +45,7 @@ auto debug_line(std::initializer_list<Str> const pieces) -> Status {
         usize at = 0;
         for (auto const &piece: pieces) {
             for (usize i = 0; i < piece.size(); ++i) {
-                line[at] = piece.data()[i];
+                line[at] = piece[i];
                 at += 1;
             }
         }
@@ -62,11 +62,11 @@ auto debug_line(std::initializer_list<Str> const pieces) -> Status {
     return debug_write("\n");
 }
 
-auto debug_line(Str const text) -> Status {
+auto debug_line(std::string_view const text) -> Status {
     return debug_line({text});
 }
 
-auto decimal(u32 value, char (&buffer)[10]) -> Str {
+auto decimal(u32 value, char (&buffer)[10]) -> std::string_view {
     auto at = sizeof(buffer);
     do {
         buffer[--at] = static_cast<char>('0' + value % 10);
@@ -75,7 +75,7 @@ auto decimal(u32 value, char (&buffer)[10]) -> Str {
     return {buffer + at, sizeof(buffer) - at};
 }
 
-auto hex(u64 value, char (&buffer)[18]) -> Str {
+auto hex(u64 value, char (&buffer)[18]) -> std::string_view {
     constexpr char DIGITS[] = "0123456789abcdef";
     auto at = sizeof(buffer);
     do {
@@ -86,4 +86,4 @@ auto hex(u64 value, char (&buffer)[18]) -> Str {
     buffer[--at] = '0';
     return {buffer + at, sizeof(buffer) - at};
 }
-} // namespace ou
+} // namespace runtime

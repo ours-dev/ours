@@ -32,9 +32,8 @@ inline constexpr auto EXIT_START_FAILED = i64{-2'147'483'648} - 1;
 /// as does asking for one the process was not given. Zircon
 /// zx_take_startup_handle().
 ///
-/// Here rather than in ou, which the design once named (ou::
-/// take_startup_handle): ou is one named entry per system call, and this is
-/// not a system call but the runtime's own bookkeeping.
+/// The runtime's own bookkeeping, not a system call: nothing reaches the
+/// kernel here.
 [[nodiscard]]
 auto take_startup_handle(ours::HandleType type, u16 arg) -> ours::HandleValue;
 

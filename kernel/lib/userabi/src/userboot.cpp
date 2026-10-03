@@ -162,9 +162,9 @@ namespace {
     /// it, so that address space is the guard. 64 KiB rather than the one page
     /// it was: that was enough for a program whose whole text was a spin
     /// loop, and it is not enough for one that keeps a 2 KiB registry buffer
-    /// and calls through several layers of ou. The address is fixed only
-    /// because there is no ASLR yet; every process has its own address space,
-    /// so two programs do not collide there.
+    /// and calls through several layers. The address is fixed only because
+    /// there is no ASLR yet; every process has its own address space, so two
+    /// programs do not collide there.
     constexpr VirtAddr USER_STACK_TOP = USER_ASPACE_BASE + MB(16);
     constexpr usize USER_STACK_SIZE = KB(64);
 

@@ -14,8 +14,8 @@
 # care; a handler whose definition drifts from the entry here now fails to link
 # (design 4.7).
 #
-# Adding a call is three things by hand: an entry here, the body of
-# syscall::<name>() in //kernel/lib/syscall, and its ou:: wrapper.
+# Adding a call is two things by hand: an entry here, and the body of
+# syscall::<name>() in //kernel/lib/syscall.
 #
 # The position of an entry is its call number. The numbers are private to the
 # kernel and the vDSO -- a program names a call by its vDSO symbol, never by a

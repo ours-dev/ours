@@ -196,3 +196,56 @@ None.
 - Why did the calls the script missed still build, and what made them fail at last?
 - How does a digit separator differ from a character literal to something that reads C++ one character at a time?
 - Which of `ours_channel_read`'s arguments did `ou::channel_read` let a caller leave out, and what did it pass for them?
+
+## Title: ou is removed; its print helpers live in the runtime, on std::string_view (remove-ou, step 3) (2026-10-03)
+
+**Files**
+- `system/lib/ou/` — deleted.
+- `system/lib/runtime/include/runtime/debug.hpp`, `src/debug.cpp`, `BUILD.gn` — new: `runtime::debug_write`, `debug_line`, `decimal` and `hex`, as they were in `ou`, taking and returning `std::string_view`. They are part of the runtime source set.
+- `system/lib/runtime/src/start.cpp`, `system/service/init/init.cpp`, `kernel/lib/userabi/userboot/userboot.cpp`, `kernel/lib/syscall/test/fault_probe/fault_probe.cpp`, `examples/shell/shell.cpp` — `runtime::` for the helpers, `std::string_view` for `ou::Str`; the two bounded reads of a NUL-terminated buffer (`Str::from_c_str`, `ou::command_text`) are `std::find` over the buffer.
+- `system/lib/launch/BUILD.gn`, `system/service/init/BUILD.gn`, `kernel/lib/userabi/userboot/BUILD.gn`, `kernel/lib/syscall/test/fault_probe/BUILD.gn`, `examples/shell/BUILD.gn` — no dependency on `//system/lib/ou`.
+- Comments that named `ou`: `system/BUILD.gn`, `system/user_executable.gni`, `system/public/ours/vdso.hpp`, `system/public/ours/syscalls.gni`, `build/abi/gen_syscalls.py`, `kernel/lib/userabi/src/userboot.cpp`, `system/lib/launch/src/launch.cpp`, `system/lib/runtime/include/runtime/startup.hpp`.
+- `.agents/skills/ours-kernel-design/references/layering.md`, `SKILL.md` — ring 3 calls `ours_*`; adding a call is the description entry and the handler.
+- `.agents/tasks/system-abi-surface/DESIGN.md`, `.agents/tasks/prof-sampler-object/PLAN.md`, `DESIGN.md`, `docs/design/260923/userspace-interface.md` — a note that `ou` is gone.
+- `.agents/tasks/remove-ou/PLAN.md`, `RESULT.md` — done.
+
+**Symptom**
+After steps 1 and 2, `ou` held nothing but four print helpers and `Str`, a hand-written string view.
+
+**Cause**
+`Str` existed because a ring-3 program once linked no C library, and `std::string_view{"text"}` needs `strlen`. Every program now links `//system/lib/libc`, so `ou`'s own README named "make `Str` an alias of `std::string_view`" as the step left. The helpers are not a system-call layer: they make `ours_debug_write` fit to call. They split text at `MAX_DEBUG_WRITE`, assemble a line so it goes out in one call, and format numbers with no printf to do it.
+
+**Change**
+The helpers moved to the runtime, which every program links. A separate target was tried first, on the belief that userboot had an entry point of its own and could not link the runtime's `crt0.S`. It has not: userboot runs on the runtime like every other program. So the runtime's own BUILD.gn comment saying otherwise was stale too, and is corrected. `Str` became `std::string_view` (the user's choice).
+
+```cpp
+// before
+static_cast<void>(ou::debug_line({what, ou::Str::from_c_str(ours::to_string(status), 32)}));
+// after
+static_cast<void>(runtime::debug_line({what, std::string_view{ours::to_string(status)}}));
+```
+
+`ours::to_string()` returns a string literal, so the bounded scan `from_c_str` did was not needed there. The two buffers another program or the kernel wrote keep their bound, by `std::find` up to the buffer's end: the shell's command registry, and fault_probe's probe name.
+
+**Reference**
+Zircon's programs print through libc's `printf` over `zx_debug_write`. Here there is no printf, so the runtime keeps the line-at-once helper.
+
+**Verification**
+- `ninja -k 0` on `out/vmo-snapshot`: no error. Every ring-3 program, the launcher library and the host tests build.
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped). The shell's groups: 19 passed in dbg; 13 passed and 5 skipped in rel, as before. fault_probe ran every probe in dbg.
+- init builds, but neither image starts it (userboot starts the shell), so its changes are checked by the compiler only.
+- No `ou::`, `<ou/` or `//system/lib/ou` is left in code or build files, except three comments saying where the helpers came from.
+
+**Deliberately not done**
+- The change records and old task logs that name `ou` are history and stay as written.
+
+**How it was found**
+Step 3 of `.agents/tasks/remove-ou/PLAN.md`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why could `Str` become `std::string_view` now, when it could not when `ou` was written?
+- Why do the shell's registry and fault_probe's probe name still need a bounded scan, while a status name does not?
+- What does `runtime::debug_line` do that a bare `ours_debug_write` per piece would get wrong?

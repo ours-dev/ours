@@ -36,7 +36,7 @@ get "fixed" back into a default.
 
 | Working on | Read |
 |---|---|
-| syscalls, kernel objects, userabi, vDSO, `ou`, system/lib vs kernel/lib, reusing a library, trust boundaries | [references/layering.md](references/layering.md) |
+| syscalls, kernel objects, userabi, vDSO, `ours_*`, system/lib vs kernel/lib, reusing a library, trust boundaries | [references/layering.md](references/layering.md) |
 | physical memory, MemMap, VmObject, user copies, CpuLocal, allocators | [references/mm.md](references/mm.md) |
 | scheduler, threads, locking, wait queues, timers, prof | [references/task.md](references/task.md) |
 | phys, boot shim, physload modules, linker script, boot options, userboot/init, filesystems | [references/boot.md](references/boot.md) |

@@ -70,7 +70,7 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 - The kernel-side session (timers, buffers, FDE index, state): `kernel/kernel/prof` (D6). `process_pending_signals()` in `kernel/kernel/task` and `SamplerDispatcher` in `kernel/object` both call it, so it has to sit below `kernel/object`.
 - `kernel/object/sampler_dispatcher.{hpp,cpp}` and `kernel/lib/syscall/src/sampler.cpp`.
 - Retired: `kernel/commands/prof.cpp` (the kshell `prof.*` commands and the boot-time `prof_init`), the `prof::arch` seam, the `tick_sched` hook and the COM1 `debug_write`.
-- A user program under `examples/` drives a session and prints the existing `PROF1`/`SAMP` hex lines through `ou::debug_write`, so `prof-fold` keeps working for kernel samples.
+- A user program under `examples/` drives a session and prints the existing `PROF1`/`SAMP` hex lines through `ou::debug_write`, so `prof-fold` keeps working for kernel samples. (2026-10-03: `ou` has been removed; that is `runtime::debug_write` now.)
 
 ### Concurrency
 

@@ -2,12 +2,13 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// What runs between the entry point (crt0.S) and main, and after main.
+#include <runtime/debug.hpp>
 #include <runtime/process_args.hpp>
 #include <runtime/startup.hpp>
 #include <runtime/startup_handles.hpp>
 
-#include <ou/debug.hpp>
-#include <ou/str.hpp>
+#include <string_view>
+
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
@@ -41,9 +42,9 @@ namespace {
     constinit ours::VirtAddr vdso = 0;
 
     [[noreturn]]
-    auto fail(ou::Str const what, ours::Status const status) -> void {
+    auto fail(std::string_view const what, ours::Status const status) -> void {
         static_cast<void>(
-            ou::debug_line({"runtime: ", what, ou::Str::from_c_str(ours::to_string(status), 32)}));
+            runtime::debug_line({"runtime: ", what, std::string_view{ours::to_string(status)}}));
         ours_process_exit(EXIT_START_FAILED);
     }
 

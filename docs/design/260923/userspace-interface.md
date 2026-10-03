@@ -37,7 +37,7 @@ P0 期间有三条不变量：
 - `HandleValue` 是公共句柄值类型（u32，是否改名见 D4）。
 - `Instant` 是 i64 纳秒。
 - “rights”一栏写的是调用所需的句柄权限。
-- ou 入口是 `system/lib/ou` 里的具名函数。P1 起在这些函数之上加 RAII 类型（`ou::Handle`、`ou::Channel`、`ou::Process` 等）。
+- ou 入口是 `system/lib/ou` 里的具名函数。P1 起在这些函数之上加 RAII 类型（`ou::Handle`、`ou::Channel`、`ou::Process` 等）。**Corrected 2026-10-03:** `//system/lib/ou` was removed (the user's call): a program calls the `ours_*` entries directly, and prints with `runtime::debug_line`. The RAII types were never built. The "ou 入口" column of the tables below names what was, not what is.
 - 所有新对象都派生自现有的 `SoloDispatcher`/`PeeredDispatcher`，或组合进现有 dispatcher，**不新增基类**。
 
 ### 2.1 A 句柄与对象核心

@@ -49,8 +49,7 @@ namespace {
     }
 
     /// One handle this function made, closed when it goes out of scope unless
-    /// it was handed on. Local to the launcher: the typed handles of `ou` are
-    /// to replace it (.agents/tasks/system-abi-surface, step 9).
+    /// it was handed on. Local to the launcher, the one place that needs it.
     class Owned {
       public:
         Owned() = default;

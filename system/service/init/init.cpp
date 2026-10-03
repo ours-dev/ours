@@ -42,15 +42,14 @@
 
 #include <bootfs/format.hpp>
 #include <init/autorun.hpp>
-#include <ou/debug.hpp>
-#include <ou/str.hpp>
+#include <runtime/debug.hpp>
 #include <runtime/main.hpp>
 #include <runtime/startup.hpp>
 
 namespace {
 /// Prints "<what><status name>".
-auto report(ou::Str const what, ours::Status const status) -> void {
-    static_cast<void>(ou::debug_line({what, ou::Str::from_c_str(ours::to_string(status), 32)}));
+auto report(std::string_view const what, ours::Status const status) -> void {
+    static_cast<void>(runtime::debug_line({what, std::string_view{ours::to_string(status)}}));
 }
 
 [[noreturn]]
@@ -68,10 +67,10 @@ auto halt() -> void {
     }
 }
 
-constexpr ou::Str SHELL{"shell"};
-constexpr ou::Str PING{"ping"};
+constexpr std::string_view SHELL{"shell"};
+constexpr std::string_view PING{"ping"};
 
-auto to_str(std::string_view const text) -> ou::Str {
+auto to_str(std::string_view const text) -> std::string_view {
     return {text.data(), text.size()};
 }
 
@@ -83,7 +82,7 @@ auto to_str(std::string_view const text) -> ou::Str {
 /// would take handle_duplicate (K15), since init is about to need its own.
 auto describe_bootfs(ours::HandleValue const bootfs) -> void {
     if (bootfs == ours::HANDLE_INVALID) {
-        static_cast<void>(ou::debug_line("init: started without a BootFS"));
+        static_cast<void>(runtime::debug_line("init: started without a BootFS"));
         return;
     }
     bootfs::Header header{};
@@ -93,12 +92,12 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
         return;
     }
     if (header.magic != bootfs::Header::MAGIC) {
-        static_cast<void>(ou::debug_line("init: the BootFS header has the wrong magic"));
+        static_cast<void>(runtime::debug_line("init: the BootFS header has the wrong magic"));
         return;
     }
     char count[10];
-    static_cast<void>(
-        ou::debug_line({"init: bootfs has ", ou::decimal(header.file_count, count), " entries"}));
+    static_cast<void>(runtime::debug_line(
+        {"init: bootfs has ", runtime::decimal(header.file_count, count), " entries"}));
 }
 
 /// Spawns |name| with |there| as its bootstrap end, then writes |message| on
@@ -107,8 +106,9 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
 /// VMA only exists once the process does. The message's handle_infos must
 /// list |handles| and then VmaRoot. Closes |here|; |there| and |handles|
 /// leave this process whatever the answer.
-auto spawn_then_write(ours::HandleValue const job, ou::Str const name, ours::HandleValue here,
-                      ours::HandleValue there, std::span<u8 const> const message,
+auto spawn_then_write(ours::HandleValue const job, std::string_view const name,
+                      ours::HandleValue here, ours::HandleValue there,
+                      std::span<u8 const> const message,
                       std::span<ours::HandleValue const> const handles) -> ours::Status {
     using ours::Status;
 
@@ -218,10 +218,10 @@ auto main(int, char **) -> int {
 
     auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
     if (job == ours::HANDLE_INVALID) {
-        static_cast<void>(ou::debug_line("init: started without the root job"));
+        static_cast<void>(runtime::debug_line("init: started without the root job"));
         halt();
     }
-    static_cast<void>(ou::debug_line("init: started with the root job"));
+    static_cast<void>(runtime::debug_line("init: started with the root job"));
     describe_bootfs(runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0));
 
     // vmex, handed on by userboot: the capability to make a VMO executable
@@ -230,9 +230,9 @@ auto main(int, char **) -> int {
     auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
                                                    u16(ours::RSRC_SYSTEM_VMEX_BASE));
     if (vmex != ours::HANDLE_INVALID) {
-        static_cast<void>(ou::debug_line("init: vmex resource ok"));
+        static_cast<void>(runtime::debug_line("init: vmex resource ok"));
     } else {
-        static_cast<void>(ou::debug_line("init: started without vmex"));
+        static_cast<void>(runtime::debug_line("init: started without vmex"));
     }
 
     // The vDSO's VMO, also handed on by userboot: init maps it into the
@@ -240,9 +240,9 @@ auto main(int, char **) -> int {
     // then.
     auto const vdso = runtime::take_startup_handle(ours::HandleType::VmoVdso, 0);
     if (vdso != ours::HANDLE_INVALID) {
-        static_cast<void>(ou::debug_line("init: vdso vmo ok"));
+        static_cast<void>(runtime::debug_line("init: vdso vmo ok"));
     } else {
-        static_cast<void>(ou::debug_line("init: started without the vdso vmo"));
+        static_cast<void>(runtime::debug_line("init: started without the vdso vmo"));
     }
 
     ours::HandleValue here = ours::HANDLE_INVALID;
@@ -256,7 +256,7 @@ auto main(int, char **) -> int {
         report("init: spawning shell = ", status);
         halt();
     }
-    static_cast<void>(ou::debug_line("init: spawned shell"));
+    static_cast<void>(runtime::debug_line("init: spawned shell"));
 
     if (auto const status = ours_channel_write(here, ours::ChannelWriteOptions::None, PING.data(),
                                                static_cast<u32>(PING.size()), nullptr, 0);
@@ -274,7 +274,7 @@ auto main(int, char **) -> int {
     // The last one on the command line wins (runtime::ProcessArgs::option()).
     if (auto const autorun = runtime::process_args().option(init::AUTORUN_OPTION);
         !autorun.empty()) {
-        static_cast<void>(ou::debug_line({"init: autorun ", to_str(autorun)}));
+        static_cast<void>(runtime::debug_line({"init: autorun ", to_str(autorun)}));
         if (auto const status = start_autorun(job, autorun); status != Status::Ok) {
             report("init: starting the autorun command = ", status);
         }
@@ -286,7 +286,8 @@ auto main(int, char **) -> int {
                                        ours::INSTANT_INFINITE, &observed);
     if (status != Status::Ok || !(observed & Signals::Readable)) {
         report("init: waiting for the shell = ", status);
-        static_cast<void>(ou::debug_line("init: the shell closed the channel without answering"));
+        static_cast<void>(
+            runtime::debug_line("init: the shell closed the channel without answering"));
         halt();
     }
 
@@ -298,7 +299,8 @@ auto main(int, char **) -> int {
         report("init: read = ", status);
         halt();
     }
-    static_cast<void>(ou::debug_line({"init: shell says \"", ou::Str(buffer, actual), "\""}));
+    static_cast<void>(
+        runtime::debug_line({"init: shell says \"", std::string_view(buffer, actual), "\""}));
 
     // And then until the shell lets go of its end: it closes it as it checks
     // that closing a handle works, or its process dying closes it. Either way
@@ -310,7 +312,7 @@ auto main(int, char **) -> int {
         report("init: waiting for the shell to finish = ", status);
         halt();
     }
-    static_cast<void>(ou::debug_line("init: shell closed its channel"));
+    static_cast<void>(runtime::debug_line("init: shell closed its channel"));
 
     halt();
 }
