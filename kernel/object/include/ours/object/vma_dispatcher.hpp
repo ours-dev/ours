@@ -86,9 +86,10 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///
     /// Only Perm*, Specific, CanMapRead/Write/Execute, MapRange and Sealed
     /// are acted on; any other bit is NotSupported. Otherwise:
-    ///   - InvArgs: length 0; vmo_offset not page-aligned; an executable
-    ///     mapping of the vDSO's VMO other than exactly its code segment,
-    ///     Sealed and PermRead | PermExecute, or a writable one;
+    ///   - InvArgs: length 0; vmo_offset not page-aligned; both PermWrite and
+    ///     PermExecute (W^X, for every caller, the kernel's own included); an
+    ///     executable mapping of the vDSO's VMO other than exactly its code
+    ///     segment, Sealed and PermRead | PermExecute, or a writable one;
     ///     vma_offset without Specific, or not page-aligned; no Perm bit, or
     ///     one this region does not allow; a Specific range not wholly inside
     ///     this region;
@@ -103,12 +104,12 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///   - AlreadyExists: a Specific range over something already there;
     ///   - NotFound: no room for it without Specific;
     ///   - BadState: this region went with its address space.
-    /// W^X and "Write needs Read" are not checked here: they are rules for
-    /// what a program may ask (vma_map). The kernel's own callers keep to
-    /// them -- its loader maps every image by segment, each mapping readable
-    /// and none both writable and executable (elfload::mapping_pages()), and
-    /// userboot's stack is read and write -- but nothing here holds them to
-    /// it.
+    /// W^X is checked here, for every caller: no mapping anywhere is both
+    /// writable and executable, so the kernel's own callers are held to it as
+    /// a program is (its loader maps every image by segment,
+    /// elfload::mapping_pages()). "Write needs Read" is not: it is a rule for
+    /// what a program may ask (vma_map), which every kernel caller keeps by
+    /// mapping readable.
     ///
     /// |name| names the mapping in the kernel's dumps; the system call passes
     /// its own.

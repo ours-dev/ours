@@ -74,6 +74,21 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     if (length == 0 || !ustl::mm::is_aligned(vmo_offset, PAGE_SIZE)) {
         return ktl::err(Status::InvArgs);
     }
+
+    // W^X, for every caller (design D3): no mapping in any address space is
+    // both writable and executable. vma_map refuses a program's request for
+    // one before it gets here; this holds the kernel's own callers to the
+    // same rule -- its loader maps every image by segment
+    // (elfload::mapping_pages()), stacks are read and write, the vDSO's code
+    // read and execute -- so that none can start to ask for one unnoticed.
+    // Only the protection asked for now is checked: a ceiling may allow both
+    // (CanMapWrite and CanMapExecute), and vma_protect, when it lands, has to
+    // refuse raising a mapping to both. Zircon allows such a mapping and
+    // leaves W^X to policy; here it is the system's rule.
+    if (!!(options & VmOptions::PermWrite) && !!(options & VmOptions::PermExecute)) {
+        return ktl::err(Status::InvArgs);
+    }
+
     auto const rounded = ustl::mm::align_up(length, PAGE_SIZE);
     if (rounded == 0) {
         // Rounding wrapped: no VMO is that big, and no region either.

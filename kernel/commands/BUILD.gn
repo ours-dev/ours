@@ -21,6 +21,7 @@ source_set("commands") {
     "prof.cpp",
     "user_copy_test.cpp",
     "vma_seal_test.cpp",
+    "vma_wx_test.cpp",
     "vmo_snapshot_test.cpp",
   ]
   deps = [
@@ -31,6 +32,7 @@ source_set("commands") {
     "//kernel/lib/unwind:headers",
     "//kernel/lib/user_copy",
     "//kernel/mm:headers",
+    "//kernel/object:headers",
     "//system/lib/lockdep",
     "//system/lib/logz4:headers",
   ]
