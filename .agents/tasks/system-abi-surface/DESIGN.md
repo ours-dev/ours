@@ -27,8 +27,8 @@ The problems that matter, most severe first (panel ids in brackets):
 
 ## Goals and non-goals
 Goals:
-- Ring 3 reaches the kernel only through `ou`, and the build makes any other route a compile error.
-- `ou` is generated from `syscalls.gni`, with typed handles, so that adding a call is a description entry plus a handler body, and a call's ownership rules are in the types.
+- Ring 3 reaches the kernel only through `ou`, and the build makes any other route a compile error. **Dropped 2026-10-03** (the user, 2026-10-03: `ou` stays a convenience layer a program may bypass, as Zircon's `lib/zx` is, rather than gain build machinery that guards against a mistake nothing has made). The tree does call only `ou`; nothing enforces it.
+- `ou` is generated from `syscalls.gni`, with typed handles, so that adding a call is a description entry plus a handler body, and a call's ownership rules are in the types. **Deferred 2026-10-03** by the user, until a concrete need for it shows up (a leaked handle, a handle of the wrong type passed).
 - The ABI headers compile on their own, and the set of public headers is an explicit list the build checks.
 - Every fact about a call is written once, in the description, or checked against it.
 - Nothing kernel-internal leaks through the boundary: status codes, padding bytes, the vDSO's non-code segments.
@@ -52,12 +52,12 @@ Non-goals:
 - `gen_syscalls.py` is the one front end: it also renders `libours.ifs`, resolves every type name, checks that a `count` names an integer, and is covered by host unit tests and fixture goldens.
 - Rules recorded in the description's header: a published signature is never retyped or reordered (a changed call gets a new name), as status values are already append-only.
 
-**`ou`, generated and typed (decided).**
+**`ou`, generated and typed (decided; deferred 2026-10-03, see Goals).**
 - The generator emits `ou`: one entry per call, every ABI parameter passed through (options included, defaulting to `None`), pointers forwarded unchanged, a `[[nodiscard]]` status.
 - Handles are typed, in Zircon's `lib/zx` shape: a move-only owner per object type (`ou::Vmo`, `ou::Channel`, ...) closing on destruction; a consumed argument is taken by value (`ou::Vmo&&`), so ownership is in the signature; a raw value can be wrapped explicitly, which is how ABI conformance tests pass bad handle values through `ou`.
 - The shape is piloted on the vmo family before it is generated for every call, and settled before the K23 launcher executor is written, since that is the first ring-3 code to chain `vmo_replace_as_executable`, `process_start` and multi-handle `channel_write`.
 
-**The boundary in the build.**
+**The boundary in the build.** The first bullet was dropped on 2026-10-03 (see Goals).
 - `<ours/vdso.hpp>` and the generated declarations are reachable only from `//system/lib/ou` (a private dependency, with an exact GN visibility list); anywhere else an `#include <ours/vdso.hpp>` stops on an `#error` that names `ou::`. `//system:user.headers` stops carrying the generated include directory.
 - `:public.config` stops being toolchain-wide for ring 3: a program gets the ABI headers through a dependency, so a missing one is an error. The kernel toolchains keep it toolchain-wide as one trust domain, recorded as a deviation from Zircon's `visibility = [":*"]`.
 - `gn check` runs over ring 3, the ABI and the syscall libraries.
@@ -74,11 +74,11 @@ Each step is one commit, builds and boots both images, and is introduced to the 
 2. **`[[nodiscard]] Status`**, and the silent drops it surfaces, kernel and ring 3; counted first and split by module if large. **Done 2026-10-03:** 44 drops, all in the kernel, answered in four module commits, then the attribute; the record is `docs/changes/261003/abi.md`.
 3. **ABI values.** `RsrcKind : u32` with Zircon's values (`MmIo 0, Irq 1, IoPort 2, System 5`, no `Root`), `NAME_MAX` published in `syscall.hpp`, `Clock` and the other kernel-only names out of `types.hpp` as far as they have no ring-3 user. **Done 2026-10-03, in part:** `RsrcKind` and `MAX_NAME_LEN` (not `NAME_MAX`, a `<limits.h>` macro) landed, and the seven names nothing used were deleted (`docs/changes/261003/abi.md`). The nine kernel-only names that have users (`PhysAddr`, `CpuNum`, `INVALID_CPU_NUM`, `NnId`, `HIrqNum`, `VIrqNum`, `PgOff`, `Ticks`, `Time`) stay in `types.hpp`: the user deferred where they go.
 4. **`UserPtr` requires ABI-safe types.** **Done 2026-10-03:** the `CopyAllowed` concept (trivially copyable, standard layout, unique object representations), with its cases in the user_copy host test; the record is `docs/changes/261003/user-copy.md`.
-5. **Everything through `ou`, and only `ou` can reach the raw calls.** `ou` exposes the option words it hides; the shell's 18 raw sites move to `ou`; then the GN visibility and the `#error` (two commits).
+5. **Everything through `ou`, and only `ou` can reach the raw calls.** `ou` exposes the option words it hides; the shell's 18 raw sites move to `ou`; then the GN visibility and the `#error` (two commits). **Done 2026-10-03, the first commit only:** `ou` passes every option and the shell calls only `ou` (`docs/changes/261003/ou.md`). The second, the GN visibility and the `#error`, was dropped (the user, 2026-10-03: `ou` stays a convenience layer a program may bypass, as Zircon's `lib/zx` is, rather than gain build machinery that guards against a mistake nothing has made).
 6. **Self-contained ABI headers.** `ours/int.hpp`, the bitmask macro in the enum's namespace, the ustl edge removed from the ABI closure, the standalone-compile check.
 7. **The lists made real.** `public_headers.gni` split and checked; kernel-only headers moved; `:public.config` by dependency for ring 3; `gn check` on.
 8. **The generator, tested and single-sourced.** Unit tests and fixture goldens; `libours.ifs` rendered by it; the description gains handle object types and option enum types.
-9. **Generated, typed `ou`.** A short design of the typed layer first (introduced to the user), the vmo family as the pilot, then every call. Several commits; before the K23 launcher executor.
+9. **Generated, typed `ou`.** A short design of the typed layer first (introduced to the user), the vmo family as the pilot, then every call. Several commits; before the K23 launcher executor. **Deferred 2026-10-03** by the user, until a concrete need shows up; so are the parts of step 8 that only a typed `ou` needs (handle object types and option enum types in the description).
 10. **The vDSO mapped by segment**, its check narrowed to the code segment.
 
 Later, each with its own trigger: the internal status codes and the `blocking` retry (once decided); the per-call sysret check and build-id (design 4.7 item 7, D13); CFI in the vDSO stubs; a ring-3 libc++ configuration of its own before anyone wires the shared one to kernel primitives (BUILD-11); the sysroot and the link stub (first separately built binary).
@@ -94,9 +94,9 @@ Later, each with its own trigger: the internal status codes and the `blocking` r
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| How the ou-only rule holds for ABI conformance tests | everything through `ou`, which passes every ABI parameter; an explicit exception list for conformance tests | everything through `ou` | None | Everything through `ou`, 2026-10-02 |
-| Typed handles in `ou` | bare `HandleValue`; `lib/zx`-style move-only owners, consumed arguments taken by value | typed, piloted on the vmo family, settled before K23 | None | Typed, 2026-10-02 |
-| Who writes `ou` | hand-written plus a completeness check; generated from `syscalls.gni` | completeness check (the panel) | None | Generated, 2026-10-02 (the user: a generator has always been the plan) |
+| How the ou-only rule holds for ABI conformance tests | everything through `ou`, which passes every ABI parameter; an explicit exception list for conformance tests | everything through `ou` | None | Everything through `ou`, 2026-10-02; by convention only, not enforced, 2026-10-03 |
+| Typed handles in `ou` | bare `HandleValue`; `lib/zx`-style move-only owners, consumed arguments taken by value | typed, piloted on the vmo family, settled before K23 | None | Typed, 2026-10-02; deferred until a concrete need, 2026-10-03 |
+| Who writes `ou` | hand-written plus a completeness check; generated from `syscalls.gni` | completeness check (the panel) | None | Generated, 2026-10-02 (the user: a generator has always been the plan); deferred with the typed layer, 2026-10-03 |
 | `[[nodiscard]]` on `Status` | on the type; per `ou` entry; none | on the type | None | On the type, 2026-10-02 |
 | The K23 executor before or after the typed `ou` | write it now against today's `ou` and migrate it with step 9; pilot the typed `ou` first and write it after | now, and migrate | None | Now, 2026-10-02: the executor is one more caller step 9 migrates |
 | Kernel-internal status codes | a kernel-private enum with a boundary guard (touches `fair.cpp`, which is hands-off); keep them public, have the vDSO retry `InternalIrqRetry` and assert the others never cross (Zircon keeps `ZX_ERR_INTERNAL_INTR_RETRY` public and consumes it in the vDSO); leave as is | keep public, vDSO retry plus a boundary assertion | None | |
@@ -106,7 +106,7 @@ Later, each with its own trigger: the internal status codes and the `blocking` r
 ## Testing and verification
 - `ours-verify` on both images at every step; the shell's checks keep passing after they move to `ou` (step 5), and the snapshot, user-copy and seal commands keep passing on dbg.
 - Host tests: the generator's unit tests and fixture goldens (step 8); a standalone compile of every ABI header in the user and host toolchains (step 6); the list-versus-directory check (step 7).
-- The boundary: after step 5, a probe target that includes `<ours/vdso.hpp>` outside `ou` must fail to build; it is run once by hand and recorded, since a build that is meant to fail cannot sit in the default graph.
+- The boundary: after step 5, a probe target that includes `<ours/vdso.hpp>` outside `ou` must fail to build; it is run once by hand and recorded, since a build that is meant to fail cannot sit in the default graph. Dropped with the enforcement, 2026-10-03.
 - Not verifiable yet: compatibility with a separately built binary (none exists), and the `blocking` retry (nothing can suspend a thread inside a call).
 
 ## Open questions

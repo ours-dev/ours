@@ -62,3 +62,45 @@ None; the user approved the step without one.
 - Why could the bad-pointer checks move to `ou` with no change to `ou`, while the option-bit checks could not?
 - Why do the options go last, with a default, rather than where the raw call has them?
 - What does a rule like "ring 3 calls only `ou`" need besides every program following it today?
+
+## Title: ou stays a convenience layer; the build does not enforce it, and the typed layer is deferred (system-abi-surface steps 5 and 9) (2026-10-03)
+
+**Files**
+- `.agents/tasks/system-abi-surface/DESIGN.md` — the goal "only through `ou`, enforced" dropped; step 5's second commit dropped; step 9 (generated, typed `ou`) and the parts of step 8 only it needs deferred; the decision rows updated.
+- `.agents/skills/ours-kernel-design/references/layering.md`, `system/lib/ou/README.md` — `ou` by convention, not enforced.
+
+**Symptom**
+The plan was to gate `<ours/vdso.hpp>` in the build so that only `ou` could include it, and then to generate `ou` with typed handles. Asked what `ou` adds over `ours_*` today, the honest answer was little: most entries forward unchanged. The value was all in the typed layer still to come.
+
+**Cause**
+The objects:
+- `ours_*`: the vDSO's C ABI, fixed once published. It cannot go, and `ou` is built on it.
+- `ou`: a C++ layer that can change freely. Today it adds `Str`, option defaults and `debug_write`'s splitting.
+- The enforcement: GN visibility on the generated declarations plus an `#error` in `<ours/vdso.hpp>`. It guards against a mistake, not an attack: a program can always declare an `ours_*` symbol itself.
+
+The events:
+1. The user asked why there are two layers if they hardly differ.
+2. Of three ways forward, the user kept `ou` and declined to add build machinery or a generator until a concrete need for them appears: keep `ou` as it is, unenforced (A); remove `ou` (B); or enforce it and generate a typed `ou` (C).
+
+**Change**
+Documents only. The code is as the previous section left it: every `ou` entry passes every parameter through, and the shell calls nothing but `ou`.
+
+**Reference**
+Zircon's arrangement: `zx_*` from the vDSO, `lib/zx` as an optional C++ layer, and nothing in the build that stops a program, its own core tests included, from calling `zx_*` directly.
+
+**Verification**
+- `lint_docs.py` on the changed documents. No code changed.
+
+**Deliberately not done**
+- The second commit of step 5 (the GN visibility and the `#error`) and step 9. The previous section's "Deliberately not done", which named the enforcement as the next commit, no longer holds.
+
+**How it was found**
+The user's question, before step 5's second commit: what `ou` is for, if `ours_*` already exists.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can `ours_*` never be removed, while `ou` can change at any time?
+- What would a typed `ou` catch at compile time that `ours_*` cannot, and what concrete problem would justify building it?
+- Why is a build-time gate on `<ours/vdso.hpp>` a guard against mistakes and not a security boundary?

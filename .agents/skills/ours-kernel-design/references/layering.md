@@ -42,17 +42,17 @@
   shim are generated from the entry; never write them by hand. Limits callers
   must respect (such as `MAX_DEBUG_WRITE`) live in
   `system/public/ours/syscall.hpp`.
-- Ring-3 code calls `ou::...`, never raw `ours_*` symbols, with no exception:
-  ABI conformance tests (bad pointers, unknown option bits) go through `ou`
-  too, so an `ou` entry passes every ABI parameter through, options included,
-  and forwards pointers unchanged (the user's call, 2026-10-02, over an
-  exception list for tests). The tree follows it since 2026-10-03; nothing
-  in the build stops a program that includes `<ours/vdso.hpp>` yet, which
-  is the second half of step 5 of `.agents/tasks/system-abi-surface`.
-- `ou` is to be generated from `syscalls.gni`, with typed handles in the
-  shape of Zircon's `lib/zx` (a consumed handle taken by value): the user's
-  call, 2026-10-02, because a generator was always the plan. Until it lands
-  the entries are hand-written. Plan: `.agents/tasks/system-abi-surface`.
+- Ring-3 code calls `ou::...` by convention, ABI conformance tests (bad
+  pointers, unknown option bits) included, so an `ou` entry passes every ABI
+  parameter through, options included, and forwards pointers unchanged (the
+  user's call, 2026-10-02). It is a convention, not a rule the build
+  enforces: `ou` is a convenience layer a program may bypass, as Zircon's
+  `lib/zx` is (the user's call, 2026-10-03, against build machinery that
+  guards against a mistake nothing has made).
+- `ou` is hand-written. Generating it from `syscalls.gni`, with typed
+  handles in the shape of Zircon's `lib/zx`, was decided on 2026-10-02 and
+  deferred on 2026-10-03 until a concrete need shows up (a leaked handle, a
+  handle of the wrong type passed). Plan: `.agents/tasks/system-abi-surface`.
 - The address-region object is **Vma** at every layer: `VmaDispatcher`,
   `ours_vma_*`, `ou::vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
   `mm::VmArea` -- not Zircon's "Vmar" (the user's call, 2026-09-28, after a
