@@ -26,6 +26,14 @@
 /// the right user stack (73bb1ca), that the wake is not lost (0f9e32b), and
 /// that an allocation on an AP works (5b1ce2f).
 ///
+/// The shell is started by the user-space launcher (U7,
+/// launch::launch_from_bootfs()), which hands init the process handle: once
+/// the shell has let go of init's channel, init waits for it to terminate
+/// and says what it ended with (object_get_info). Without what a launcher
+/// needs -- the BootFS, vmex, the vDSO's VMO and init's own root region --
+/// the kernel spawns it instead (process_spawn_boot), and there is no handle
+/// to wait on.
+///
 /// It never returns from main: it is the process the system's other programs
 /// are started from, and nothing yet would notice it gone.
 
@@ -42,7 +50,10 @@
 #include <string_view>
 
 #include <bootfs/format.hpp>
+#include <elfload/diagnostics.hpp>
 #include <init/autorun.hpp>
+#include <launch/bootfs.hpp>
+#include <launch/launch.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
@@ -101,20 +112,55 @@ auto describe_bootfs(ours::Uandle const bootfs) -> void {
         ort::debug_line({"init: bootfs has ", ort::decimal(header.file_count, count), " entries"});
 }
 
-/// Spawns |name| with |there| as its bootstrap end, then writes |message| on
+/// The launcher's failures, on the debug console. Only the errors: the
+/// shell's printer also shows every import bound, which init's log does not
+/// need.
+auto print_launch_error(void *, elfload::Report const &report) -> void {
+    if (report.severity != elfload::Severity::Error) {
+        return;
+    }
+    std::string_view separator;
+    std::string_view name;
+    if (!report.name.empty()) {
+        separator = ": ";
+        name = {report.name.data(), report.name.size()};
+    }
+    auto _ = ort::debug_line(
+        {"init: launch failed: ", {report.what.data(), report.what.size()}, separator, name});
+}
+
+/// Starts |name| with |there| as its bootstrap end, then writes |message| on
 /// |here| with the child's root VMA (VmaRoot) after |handles| -- the order a
 /// launcher keeps: the process first, then the processargs, since the root
 /// VMA only exists once the process does. The message's handle_infos must
 /// list |handles| and then VmaRoot. Closes |here|; |there| and |handles|
 /// leave this process whatever the answer.
-auto spawn_then_write(ours::Uandle const job, std::string_view const name, ours::Uandle here,
-                      ours::Uandle there, std::span<u8 const> const message,
-                      std::span<ours::Uandle const> const handles) -> ours::Status {
+///
+/// With a |launcher| the program is started by it and its process handle
+/// comes back in |process|, which the caller then owns; with none, the
+/// kernel spawns it (process_spawn_boot) and |process| stays Invalid.
+auto start_then_write(launch::BootfsLauncher const *const launcher, ours::Uandle const job,
+                      std::string_view const name, ours::Uandle here, ours::Uandle there,
+                      std::span<u8 const> const message,
+                      std::span<ours::Uandle const> const handles, ours::Uandle *const process)
+    -> ours::Status {
     using ours::Status;
 
     ours::Uandle all[8] = {};
     ours::Uandle root_vma = ours::Uandle::Invalid;
-    auto const spawned = ours::process_spawn_boot(job, name.data(), name.size(), there, &root_vma);
+    auto spawned = Status::Ok;
+    if (launcher != nullptr) {
+        auto const started = launch::launch_from_bootfs(
+            *launcher, job, name, there, {.report = print_launch_error, .context = nullptr});
+        if (started.is_err()) {
+            spawned = started.unwrap_err();
+        } else {
+            *process = started.unwrap().process;
+            root_vma = started.unwrap().root_vma;
+        }
+    } else {
+        spawned = ours::process_spawn_boot(job, name.data(), name.size(), there, &root_vma);
+    }
     if (spawned != Status::Ok) {
         for (auto const handle: handles) {
             auto _ = ours::handle_close(handle);
@@ -169,8 +215,11 @@ auto start_autorun(ours::Uandle const job, std::string_view const command) -> ou
         status != Status::Ok) {
         return status;
     }
-    return spawn_then_write(job, to_str(parsed.name()), bootstrap, bootstrap_there,
-                            {message, length}, {});
+    // Spawned by the kernel still: U7 moves the shell to the launcher, and
+    // nothing else.
+    auto process = ours::Uandle::Invalid;
+    return start_then_write(nullptr, job, to_str(parsed.name()), bootstrap, bootstrap_there,
+                            {message, length}, {}, &process);
 }
 
 /// Starts the shell under |job| with |peer| as its User0 startup handle,
@@ -180,11 +229,16 @@ auto start_autorun(ours::Uandle const job, std::string_view const command) -> ou
 /// runtime closes as soon as it has read processargs. The shell answers init's
 /// ping on the liveness channel, then keeps running its command loop.
 ///
-/// The message is written after the shell exists (spawn_then_write()), since
+/// The message is written after the shell exists (start_then_write()), since
 /// its root VMA goes in it. The duplicated handles and |peer| leave init with
 /// the processargs message; init retains its original launcher handles.
-auto start_shell(ours::Uandle const job, ours::Uandle const bootfs, ours::Uandle const vmex,
-                 ours::Uandle const vdso, ours::Uandle debug, ours::Uandle peer) -> ours::Status {
+///
+/// Started by |launcher| when there is one, which puts the shell's process
+/// handle in |process|.
+auto start_shell(launch::BootfsLauncher const *const launcher, ours::Uandle const job,
+                 ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
+                 ours::Uandle debug, ours::Uandle peer, ours::Uandle *const process)
+    -> ours::Status {
     using ours::Status;
 
     if (debug == ours::Uandle::Invalid) {
@@ -270,8 +324,31 @@ auto start_shell(ours::Uandle const job, ours::Uandle const bootfs, ours::Uandle
         }
         return status;
     }
-    return spawn_then_write(job, SHELL, bootstrap, bootstrap_there, {message, length},
-                            {handed, count});
+    return start_then_write(launcher, job, SHELL, bootstrap, bootstrap_there, {message, length},
+                            {handed, count}, process);
+}
+
+/// The code |process| ended with, said on the console: TERMINATED first,
+/// since until then a kill may still change it, then object_get_info.
+auto report_exit(ours::Uandle const process) -> void {
+    using ours::Status;
+
+    if (auto const status = ours::object_wait_one(process, ours::Signals::Terminated,
+                                                  ours::INSTANT_INFINITE, nullptr);
+        status != Status::Ok) {
+        report("init: waiting for the shell to end = ", status);
+        return;
+    }
+    ours::InfoProcess info{};
+    if (auto const status = ours::object_get_info(process, ours::InfoTopic::Process, &info,
+                                                  sizeof(info), nullptr, nullptr);
+        status != Status::Ok) {
+        report("init: object_get_info(the shell) = ", status);
+        return;
+    }
+    char code[21];
+    auto _ =
+        ort::debug_line({"init: shell exited with ", ort::signed_decimal(info.return_code, code)});
 }
 } // namespace
 
@@ -311,6 +388,25 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("init: started without the vdso vmo");
     }
 
+    // The launcher (U7): the BootFS mapped into init's own root region and
+    // made executable with vmex. Without one -- a handle missing, or a step
+    // failing, which it reports -- the kernel spawns the shell instead.
+    auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
+    auto launcher = launch::BootfsLauncher{};
+    launch::BootfsLauncher const *by = nullptr;
+    if (bootfs != ours::Uandle::Invalid && vmex != ours::Uandle::Invalid &&
+        vdso != ours::Uandle::Invalid && vma != ours::Uandle::Invalid) {
+        auto made = launch::make_bootfs_launcher(
+            bootfs, vmex, vdso, vma, {.report = print_launch_error, .context = nullptr});
+        if (made.is_ok()) {
+            launcher = made.unwrap();
+            by = &launcher;
+        }
+    }
+    if (by == nullptr) {
+        auto _ = ort::debug_line("init: no launcher; the kernel spawns the shell");
+    }
+
     ours::Uandle here = ours::Uandle::Invalid;
     ours::Uandle peer = ours::Uandle::Invalid;
     if (auto const status = ours::channel_create(ours::ChannelCreateOptions::None, &here, &peer);
@@ -318,12 +414,17 @@ auto main(int, char **) -> int {
         report("init: channel_create = ", status);
         halt();
     }
-    if (auto const status = start_shell(job, bootfs, vmex, vdso, debug, peer);
+    auto shell = ours::Uandle::Invalid;
+    if (auto const status = start_shell(by, job, bootfs, vmex, vdso, debug, peer, &shell);
         status != Status::Ok) {
-        report("init: spawning shell = ", status);
+        report("init: starting the shell = ", status);
         halt();
     }
-    auto _ = ort::debug_line("init: spawned shell");
+    if (by != nullptr) {
+        auto _ = ort::debug_line("init: launched shell with the launcher");
+    } else {
+        auto _ = ort::debug_line("init: spawned shell");
+    }
 
     if (auto const status = ours::channel_write(here, ours::ChannelWriteOptions::None, PING.data(),
                                                 static_cast<u32>(PING.size()), nullptr, 0);
@@ -369,8 +470,7 @@ auto main(int, char **) -> int {
     // And then until the shell lets go of its end: it closes it as it checks
     // that closing a handle works, or its process dying closes it. Either way
     // this is the shell being done with init, not necessarily the shell being
-    // gone -- that sign is TERMINATED on a process handle, which comes with
-    // the user-space loader (design K23).
+    // gone -- that sign is TERMINATED on its process handle, below.
     status = ours::object_wait_one(here, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
     if (status != Status::Ok) {
         report("init: waiting for the shell to finish = ", status);
@@ -378,5 +478,9 @@ auto main(int, char **) -> int {
     }
     auto _ = ort::debug_line("init: shell closed its channel");
 
+    // The shell is interactive: this sleeps until someone types `exit`.
+    if (shell != ours::Uandle::Invalid) {
+        report_exit(shell);
+    }
     halt();
 }

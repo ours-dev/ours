@@ -52,6 +52,12 @@ auto debug_line(std::string_view text) -> ours::Status;
 /// program links is mem* and strlen (//system/lib/libc), with no printf.
 auto decimal(u32 value, char (&buffer)[10]) -> std::string_view;
 
+/// |value| in decimal with its sign, written into |buffer| as decimal() does:
+/// for a process's return code, which is negative when the kernel chose it
+/// (TASK_RETCODE_*). Twenty-one characters is every i64, the most negative
+/// with its '-' included.
+auto signed_decimal(i64 value, char (&buffer)[21]) -> std::string_view;
+
 /// |value| in hexadecimal with a leading "0x" and no leading zeros, written
 /// into |buffer| as decimal() does: `ort::debug_line({"at ", hex(address, text)})`.
 /// Eighteen characters is every u64 with its prefix.

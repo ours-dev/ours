@@ -297,24 +297,6 @@ auto check_object_get_info(ours::Uandle const process, ours::Uandle const job) -
                                 : "shell: object_get_info checks FAILED");
 }
 
-/// |value| in decimal, sign and all. ort::decimal() takes a u32, and a return
-/// code is an i64, negative when the kernel chose it (TASK_RETCODE_*).
-auto signed_decimal(i64 const value, char (&buffer)[21]) -> std::string_view {
-    // Negated as a u64, which is defined for every value, the most negative
-    // included: its magnitude does not fit an i64.
-    auto magnitude = value < 0 ? 0 - static_cast<u64>(value) : static_cast<u64>(value);
-    auto *const end = buffer + sizeof(buffer);
-    auto *at = end;
-    do {
-        *--at = static_cast<char>('0' + magnitude % 10);
-        magnitude /= 10;
-    } while (magnitude != 0);
-    if (value < 0) {
-        *--at = '-';
-    }
-    return {at, static_cast<usize>(end - at)};
-}
-
 /// The code |process| ended with, once it has: TERMINATED first, since until
 /// then a kill may still change it, then object_get_info. Either call
 /// failing is reported and is the error.
@@ -401,11 +383,11 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
             char code_text[21];
             if (code.is_ok() && code.unwrap() == ours::TASK_RETCODE_EXCEPTION_KILL) {
                 auto _ = ort::debug_line({"shell: probe ", probe, " killed (retcode ",
-                                          signed_decimal(code.unwrap(), code_text), ")"});
+                                          ort::signed_decimal(code.unwrap(), code_text), ")"});
                 ++killed;
             } else {
                 auto const ended =
-                    code.is_ok() ? signed_decimal(code.unwrap(), code_text) : "unknown";
+                    code.is_ok() ? ort::signed_decimal(code.unwrap(), code_text) : "unknown";
                 auto _ = ort::debug_line({"shell: probe ", probe, " SURVIVED (retcode ", ended,
                                           ", answered \"",
                                           std::string_view(run.answer, run.answer_size), "\")"});

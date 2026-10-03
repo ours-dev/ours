@@ -53,6 +53,7 @@ if (!is_host_toolchain) {
     deps = [
       ":autorun",
       "//system/lib/bootfs:headers",
+      "//system/lib/launch",
       "//system/lib/ort",
     ]
   }

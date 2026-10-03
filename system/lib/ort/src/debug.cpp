@@ -75,6 +75,21 @@ auto decimal(u32 value, char (&buffer)[10]) -> std::string_view {
     return {buffer + at, sizeof(buffer) - at};
 }
 
+auto signed_decimal(i64 const value, char (&buffer)[21]) -> std::string_view {
+    // Negated as a u64, which is defined for every value, the most negative
+    // included: its magnitude does not fit an i64.
+    auto magnitude = value < 0 ? 0 - static_cast<u64>(value) : static_cast<u64>(value);
+    auto at = sizeof(buffer);
+    do {
+        buffer[--at] = static_cast<char>('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude != 0);
+    if (value < 0) {
+        buffer[--at] = '-';
+    }
+    return {buffer + at, sizeof(buffer) - at};
+}
+
 auto hex(u64 value, char (&buffer)[18]) -> std::string_view {
     constexpr char DIGITS[] = "0123456789abcdef";
     auto at = sizeof(buffer);
