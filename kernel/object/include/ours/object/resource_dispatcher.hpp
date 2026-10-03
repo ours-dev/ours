@@ -6,6 +6,7 @@
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/types.hpp>
+#include <ours/syscall.hpp>
 #include <ours/syscall/resource.hpp>
 
 #include <ustl/collections/intrusive/list.hpp>
@@ -31,11 +32,9 @@ class ResourceDispatcher: public ResourceDispatcherBase {
   public:
     static constexpr auto TYPE_TAG = type_tag(ObjectType::Resource);
 
-    static constexpr auto MAX_NAME_SIZE = 32;
-
     using Kind = RsrcKind;
     using Flag = RsrcFlag;
-    using Name = ktl::Name<MAX_NAME_SIZE>;
+    using Name = ktl::Name<MAX_NAME_LEN>;
     USTL_DECLARE_LIST(Self, List, ManagedOption);
 
     struct Storage {

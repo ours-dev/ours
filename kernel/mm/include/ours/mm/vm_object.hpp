@@ -8,6 +8,7 @@
 #include <ours/mm/vm_page.hpp>
 #include <ours/status.hpp>
 #include <ours/sync/mutex.hpp>
+#include <ours/syscall.hpp>
 
 #include <gktl/canary.hpp>
 #include <gktl/range.hpp>
@@ -268,8 +269,7 @@ class VmObject: public ustl::RefCounted<VmObject, ustl::sync::ThreadSafePolicy> 
     sync::Mutex &m_lock;
     VmMapping::List m_mappings TA_GUARDED(m_lock);
 
-    constexpr static auto MAX_NAME_SIZE = 32;
-    ktl::Name<MAX_NAME_SIZE> m_name;
+    ktl::Name<MAX_NAME_LEN> m_name;
 
     ustl::collections::intrusive::ListMemberHook<> m_children_hook;
     USTL_DECLARE_HOOK_OPTION(Self, m_children_hook, ChildrenOptions);

@@ -63,7 +63,7 @@ auto process_create(HandleValue const job, user_copy::UserInPtr<char const> cons
 
     // One byte short of the buffer, for the terminator the object's name
     // needs. A name longer than that is cut, not refused.
-    char text[object::ProcessDispatcher::MAX_NAME_SIZE] = {};
+    char text[MAX_NAME_LEN] = {};
     auto const length = std::min<usize>(name_size, sizeof(text) - 1);
     if (auto const status = name.copy_array_from_user(text, length); status != Status::Ok) {
         return status;

@@ -69,11 +69,21 @@ inline constexpr auto HANDLE_MAX_PER_PROCESS = u32{1024};
 /// knows is a limit the caller discovers as Status::OutOfRange.
 inline constexpr auto MAX_DEBUG_WRITE = usize{256};
 
+/// The size of an object's name, its terminator included: a process, thread,
+/// VMO or resource keeps at most the first 31 bytes of the name it is given,
+/// and process_create and thread_create cut a longer one rather than refuse
+/// it. Zircon's ZX_MAX_NAME_LEN, with the same value.
+///
+/// Not NAME_MAX, which <limits.h> defines as a macro (the longest file name,
+/// 255 in musl), and which would replace this name in any program that
+/// includes both.
+inline constexpr auto MAX_NAME_LEN = usize{32};
+
 /// The longest program name process_spawn_boot accepts, in bytes, not
 /// counting a terminator (none is passed). The kernel looks the program up
 /// through a 64-byte buffer, the terminator it adds included
 /// (userabi::launch()); the process it starts keeps only the first 31 bytes as
-/// its name (ProcessDispatcher::MAX_NAME_SIZE).
+/// its name (MAX_NAME_LEN).
 inline constexpr auto PROCESS_BOOT_NAME_MAX = usize{63};
 
 /// Options for the channel calls. None is the only value any of them accepts

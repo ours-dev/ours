@@ -9,6 +9,7 @@
 #include <ours/object/handle_table.hpp>
 #include <ours/object/job_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
+#include <ours/syscall.hpp>
 #include <ours/task/thread.hpp>
 
 #include <ktl/name.hpp>
@@ -37,8 +38,6 @@ class ProcessDispatcher: public ProcessDispatcherBase {
         Dying,
         Dead,
     };
-
-    static constexpr auto MAX_NAME_SIZE = 32;
 
     static auto create(ustl::Arc<JobDispatcher> &job, char const *name,
                        KernelHandle<Self> &process_out, Rights &process_rights,
@@ -189,7 +188,7 @@ class ProcessDispatcher: public ProcessDispatcherBase {
     /// docs/design/260924/userspace-filesystem.md.
     i64 m_retcode;
 
-    ktl::Name<MAX_NAME_SIZE> m_name;
+    ktl::Name<MAX_NAME_LEN> m_name;
 
     /// The job this process belongs to, held so the job outlives it.
     ///

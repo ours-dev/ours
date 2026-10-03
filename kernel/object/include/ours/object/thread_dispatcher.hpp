@@ -5,6 +5,7 @@
 
 #include <ours/object/dispatcher.hpp>
 #include <ours/object/handle.hpp>
+#include <ours/syscall.hpp>
 #include <ours/task/types.hpp>
 
 #include <gktl/canary.hpp>
@@ -63,8 +64,6 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         usize arg1 = 0;
         usize arg2 = 0;
     };
-
-    static constexpr auto MAX_NAME_SIZE = 32;
 
     /// A thread of |process| that has not started: the dispatcher and
     /// nothing else. The kernel thread is made by start(), so that a thread
@@ -198,7 +197,7 @@ class ThreadDispatcher: public ThreadDispatcherBase {
 
     /// Kept from creation to start: the kernel thread is named when it is
     /// made, and it is not made until then.
-    ktl::Name<MAX_NAME_SIZE> m_name;
+    ktl::Name<MAX_NAME_LEN> m_name;
 
     Flags m_flags;
     State m_state;

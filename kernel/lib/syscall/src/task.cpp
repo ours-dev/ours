@@ -37,7 +37,7 @@ auto thread_create(HandleValue const process, user_copy::UserInPtr<char const> c
         return Status::InvArgs;
     }
 
-    char text[object::ThreadDispatcher::MAX_NAME_SIZE] = {};
+    char text[MAX_NAME_LEN] = {};
     auto const length = std::min<usize>(name_size, sizeof(text) - 1);
     if (auto const status = name.copy_array_from_user(text, length); status != Status::Ok) {
         return status;

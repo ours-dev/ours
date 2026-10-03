@@ -12,16 +12,28 @@
 #define OURS_SYSCALL_RESOURCE_HPP 1
 
 namespace ours {
-enum class RsrcKind {
-    MmIo,
-    Irq,
-    IoPort,
-    Root,
-    System,
-    NumKinds,
+/// What a resource is a capability over. The values are Zircon's
+/// ZX_RSRC_KIND_* (zircon/system/public/zircon/syscalls/resource.h), written
+/// out and in a u32, because a kind is a number a program and the kernel will
+/// exchange (Zircon's zx_info_resource_t reports it, and zx_resource_create
+/// takes one in its options), so both have to mean the same thing by it. 3
+/// was Zircon's root kind, which it has since removed, and 4 is its ARM-only
+/// SMC kind; neither is named here, so neither number means anything.
+///
+/// They were implicit, with a Root kind at 3 and System at 4: code ported
+/// from Zircon would have asked for SMC where it meant System. Nothing passes
+/// a kind as a number yet (resources are minted only by the kernel), which
+/// is what made this the cheap time to renumber.
+enum class RsrcKind : u32 {
+    MmIo = 0,
+    Irq = 1,
+    IoPort = 2,
+    System = 5,
 };
 
-enum class RsrcFlag {
+/// A resource's flags. None is named yet; Zircon's one,
+/// ZX_RSRC_FLAG_EXCLUSIVE, is 0x00010000.
+enum class RsrcFlag : u32 {
 
 };
 

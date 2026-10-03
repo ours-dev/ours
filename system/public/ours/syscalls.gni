@@ -309,11 +309,11 @@ ours_syscalls = [
     doc = [
       "The process is Initial: it has no thread, and gets one with",
       "thread_create and process_start. |job| needs ManageProcess. |name| is",
-      "|name_size| bytes, cut to 31. Two handles are written, one to the",
-      "process and one to its root VMA, the only way to map anything into it,",
-      "and both are installed only once both values have been written. The",
-      "options must be None (InvArgs). Closing the last handle to a process",
-      "that was never started destroys it.",
+      "|name_size| bytes, cut to MAX_NAME_LEN - 1 (31). Two handles are",
+      "written, one to the process and one to its root VMA, the only way to",
+      "map anything into it, and both are installed only once both values",
+      "have been written. The options must be None (InvArgs). Closing the",
+      "last handle to a process that was never started destroys it.",
     ]
     args = [
       {
@@ -403,9 +403,9 @@ ours_syscalls = [
       "started, so closing its handle first leaves nothing behind. Only",
       "process_start starts one, as the first thread of a process not yet",
       "started; a thread made for a running process cannot be started yet.",
-      "|name| is |name_size| bytes, cut to 31. The options must be None",
-      "(InvArgs). The handle's value is written to |out| before the handle",
-      "is installed.",
+      "|name| is |name_size| bytes, cut to MAX_NAME_LEN - 1 (31). The",
+      "options must be None (InvArgs). The handle's value is written to |out|",
+      "before the handle is installed.",
     ]
     args = [
       {

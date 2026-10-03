@@ -31,14 +31,6 @@ using Time = usize;
 /// alias of the unsigned Time, and nothing used it.
 using Instant = i64;
 
-using TicksSteady = Ticks;
-using InstantSteady = Instant;
-using DurationTicksSteady = usize;
-
-using TicksSystem = Ticks;
-using InstantSystem = Instant;
-using DurationTicksSystem = usize;
-
 /// A kernel object's id: unique for the life of the system, never reused.
 ///
 /// 64 bits, as Zircon's zx_koid_t, because "never reused" is the whole
@@ -95,11 +87,6 @@ enum class ObjectType : u32 {
     Job = 17,
     Vma = 18,
     Pager = 28,
-};
-
-enum class Clock : u32 {
-    System,
-    Steady,
 };
 
 /// The return code a task ends with when the kernel, not the task, ended it.
