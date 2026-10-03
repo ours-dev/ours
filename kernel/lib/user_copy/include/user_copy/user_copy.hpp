@@ -3,6 +3,8 @@
 #ifndef USER_COPY_USER_COPY_HPP
 #define USER_COPY_USER_COPY_HPP 1
 
+#include <user_copy/copy_allowed.hpp>
+
 #include <limits>
 #include <type_traits>
 
@@ -95,13 +97,14 @@ enum class Direction {
 /// ABI documents as input -- that mistake becomes a compile error rather than
 /// a user buffer the kernel quietly scribbles on.
 ///
-/// The element type must be trivially copyable, because copying is all that
-/// will ever happen to it.
+/// The element type must be one that may cross the boundary as bytes
+/// (CopyAllowed): copying is all that will ever happen to it, and a type with
+/// padding would carry kernel stack out with it.
 template <typename T, Direction D>
 class UserPtr final {
     using Value = std::remove_const_t<T>;
-    static_assert(std::is_trivially_copyable_v<Value>,
-                  "a user pointer's element is copied as bytes, and nothing else");
+    static_assert(CopyAllowed<Value>, "a user pointer's element is copied as bytes, so it must be "
+                                      "trivially copyable, standard layout and without padding");
 
   public:
     constexpr UserPtr() = default;

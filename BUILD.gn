@@ -162,6 +162,12 @@ group("default") {
     # because the program exists only in the user one.
     "//system/lib/runtime/test:runtime_smoke(//build/toolchain/ours:user-$current_cpu)",
 
+    # The user-copy range check, and CopyAllowed, what a type must be to cross
+    # the user/kernel boundary as bytes. CopyAllowed's cases are static_asserts,
+    # so building this target is what checks them. It was compiled by nothing
+    # until it was named here.
+    "//kernel/lib/user_copy/test:user_copy($host_toolchain)",
+
     # Fixed-point arithmetic, which the scheduler's weighting needs and which
     # the kernel cannot get from floating point. Almost all of its checking is
     # static_assert inside the test translation unit, so building this target
