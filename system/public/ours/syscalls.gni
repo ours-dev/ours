@@ -25,7 +25,8 @@
 # Each entry:
 #
 #   name    The call, without the ours_ prefix. The vDSO exports ours_<name>,
-#           the kernel defines syscall::<name>.
+#           a program calls ours::<name> (<ours/vdso.hpp>), and the kernel
+#           defines syscall::<name>.
 #   brief   One line.
 #   doc     More lines, as a list of strings. Written for the program that
 #           calls it; what the kernel does inside belongs with syscall::<name>.

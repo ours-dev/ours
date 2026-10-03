@@ -41,23 +41,27 @@
   kernel shim are generated from the entry; never write them by hand. Limits
   callers must respect (such as `MAX_DEBUG_WRITE`) live in
   `system/public/ours/syscall.hpp`.
-- Ring-3 code calls the vDSO's `ours_*` entries directly, from
-  `<ours/vdso.hpp>`; there is no wrapper library. `//system/lib/ou`, one
-  forwarding function per call, was removed on 2026-10-03 (the user's call:
-  `ours_*` is already the user-level API, and a layer that only forwards is
-  one more copy of each contract to keep true). Do not reintroduce one
-  without a concrete need; a typed-handle layer in the shape of Zircon's
-  `lib/zx` was planned and deferred for the same reason. A program prints
-  with `ort::debug_line` (`<ort/debug.hpp>`, in the ours runtime,
-  `//system/lib/ort`).
+- Ring-3 code calls the vDSO's entries directly, as `ours::<name>()` from
+  `<ours/vdso.hpp>`; there is no wrapper library. Each declaration carries
+  an asm label naming the vDSO's symbol, `ours_<name>`, so the C++ name is
+  in namespace `ours` and the symbol stays a plain C name (the user's call,
+  2026-10-03; Zircon's C API has `zx_<name>` for both). `//system/lib/ou`,
+  one forwarding function per call, was removed on 2026-10-03 (the user's
+  call: the vDSO's entries are already the user-level API, and a layer that
+  only forwards is one more copy of each contract to keep true). Do not
+  reintroduce one without a concrete need; a typed-handle layer in the shape
+  of Zircon's `lib/zx` was planned and deferred for the same reason. A
+  program prints with `ort::debug_line` (`<ort/debug.hpp>`, in the ours
+  runtime, `//system/lib/ort`).
 - The address-region object is **Vma** at every layer: `VmaDispatcher`,
-  `ours_vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
+  `ours::vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
   `mm::VmArea` -- not Zircon's "Vmar" (the user's call, 2026-09-28, after a
   rename to Vmar was reverted). Values stay Zircon's.
-- The kernel handler for `ours_<name>` is `ours::syscall::<name>`, with no
-  `sys_` prefix: Zircon needs `sys_` because its handlers share the global
-  namespace, and here the namespace already says it (the user's call,
-  2026-09-28). Internal handlers in `table.cpp` follow suit.
+- The kernel handler for `ours::<name>` (symbol `ours_<name>`) is
+  `ours::syscall::<name>`, with no `sys_` prefix: Zircon needs `sys_`
+  because its handlers share the global namespace, and here the namespace
+  already says it (the user's call, 2026-09-28). Internal handlers in
+  `table.cpp` follow suit.
 
 ## system/lib versus kernel/lib/k*
 

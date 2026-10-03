@@ -183,19 +183,19 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
 
     ours::HandleValue here = ours::HANDLE_INVALID;
     ours::HandleValue there = ours::HANDLE_INVALID;
-    if (auto const status = ours_channel_create(ours::ChannelCreateOptions::None, &here, &there);
+    if (auto const status = ours::channel_create(ours::ChannelCreateOptions::None, &here, &there);
         status != Status::Ok) {
         return status;
     }
-    if (auto const status = ours_process_spawn_boot(job, (to_str(name)).data(),
-                                                    (to_str(name)).size(), there, &handles[0]);
+    if (auto const status = ours::process_spawn_boot(job, (to_str(name)).data(),
+                                                     (to_str(name)).size(), there, &handles[0]);
         status != Status::Ok) {
-        static_cast<void>(ours_handle_close(here));
+        static_cast<void>(ours::handle_close(here));
         return status;
     }
     auto const written =
-        ours_channel_write(here, ours::ChannelWriteOptions::None, message, length, handles, count);
-    static_cast<void>(ours_handle_close(here));
+        ours::channel_write(here, ours::ChannelWriteOptions::None, message, length, handles, count);
+    static_cast<void>(ours::handle_close(here));
     return written;
 }
 } // namespace

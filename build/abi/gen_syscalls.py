@@ -331,7 +331,9 @@ def user_param(arg: Arg) -> str:
 
 def render_vdso_decls(calls: List[Call]) -> str:
     """The vDSO's entry points as a program calls them, included by
-    <ours/vdso.hpp> inside its extern "C" block.
+    <ours/vdso.hpp> inside namespace ours: `ours::<name>`, with an asm label
+    that names the vDSO's symbol, `ours_<name>`, so that the call binds to
+    that symbol and not to a mangled C++ name (see <ours/vdso.hpp>).
 
     The documentation is the description's, written for the caller, and this
     is the one place a program reads it: there is no wrapper library that
@@ -347,12 +349,13 @@ def render_vdso_decls(calls: List[Call]) -> str:
             lines.append("[[noreturn]]")
         params = [user_param(a) for a in call.args]
         ret = user_type(call.ret)
-        one_line = f"auto ours_{call.name}({', '.join(params)}) -> {ret};"
+        label = f'__asm__("ours_{call.name}")'
+        one_line = f"auto {call.name}({', '.join(params)}) -> {ret} {label};"
         if len(one_line) <= LINE_WIDTH:
             lines.append(one_line)
         else:
             joined = ",\n    ".join(params)
-            lines.append(f"auto ours_{call.name}(\n    {joined}) -> {ret};")
+            lines.append(f"auto {call.name}(\n    {joined}) -> {ret} {label};")
         lines.append("")
     return "\n".join(lines)
 
@@ -370,7 +373,7 @@ def main() -> int:
     parser.add_argument("--kernel-shims", type=pathlib.Path,
                         help="write the kernel's frame-unpacking shims here")
     parser.add_argument("--vdso-decls", type=pathlib.Path,
-                        help="write the vDSO's extern \"C\" declarations here")
+                        help="write the declarations of the vDSO's entries here")
     args = parser.parse_args()
 
     try:

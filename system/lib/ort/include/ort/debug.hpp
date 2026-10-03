@@ -9,7 +9,7 @@
 #include <ours/status.hpp>
 
 /// A program's way to say what it is doing while the system is brought up:
-/// ours_debug_write, made fit to call. In the runtime because every program
+/// ours::debug_write, made fit to call. In the runtime because every program
 /// links it and every program prints; they came from //system/lib/ou, removed
 /// once the user decided ours_* is the API a program calls.
 namespace ort {

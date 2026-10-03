@@ -30,23 +30,32 @@
 
 /// The vDSO's exported entry points: the system-call API a program calls.
 ///
-/// A caller declares nothing and looks up nothing: it calls ours_debug_write()
-/// the way it would call any function. The linker records an undefined
-/// symbol. Whoever loads the program resolves it against the vDSO's .dynsym
-/// before the program runs (elfload::Binder, from the kernel's
+/// A caller declares nothing and looks up nothing: it calls
+/// ours::debug_write() the way it would call any function. The linker records
+/// an undefined symbol. Whoever loads the program resolves it against the
+/// vDSO's .dynsym before the program runs (elfload::Binder, from the kernel's
 /// userabi::launch() or the user-space launcher in //system/lib/launch), and
 /// the call lands on the stub that traps. That is the same arrangement
 /// Zircon's programs have with libzircon.so, and the same one a phys module
 /// has with physload one layer down.
 ///
-/// `extern "C"` because binding is by name and a mangled name is an
-/// implementation detail of one compiler: these names are the ABI.
-extern "C" {
+/// The name a program writes and the symbol it binds to differ, on purpose.
+/// The symbol is `ours_<name>`: binding is by name, so the symbols are the
+/// ABI, and they are plain C names because a mangled name is one compiler's
+/// detail. The name in C++ is `ours::<name>`, beside the types the calls take
+/// (ours::Status, ours::HandleValue). Each declaration carries an asm label,
+/// `__asm__("ours_<name>")`, which sets the symbol a function's calls refer
+/// to; without it, `ours::debug_write` would refer to its mangled name, which
+/// the vDSO does not export, and `extern "C"` would drop the namespace from
+/// the symbol instead (`debug_write`). The label is a GNU extension, which
+/// clang and GCC both honour; the header is C++ only already. Zircon's API is
+/// C, so its names and symbols are both `zx_<name>`.
+namespace ours {
 // One declaration per entry of //system/public/ours/syscalls.gni, with that
 // entry's documentation: generated, like the stubs they bind to, so that the
 // two cannot disagree about a call's arguments (design 4.7).
 #include <ours/vdso_decls.inc>
-}
+} // namespace ours
 
 #endif // __cplusplus
 

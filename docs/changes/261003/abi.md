@@ -118,3 +118,62 @@ None; the user approved the step without one.
 - Why does an enum that crosses the system-call boundary need both written-out values and a fixed underlying type?
 - What would code ported from Zircon have asked for with `ZX_RSRC_KIND_SYSTEM` against the old numbering?
 - Why can a constant in a public header not be called `NAME_MAX`?
+
+## Title: A program calls ours::name; the vDSO's symbol stays ours_name (2026-10-03)
+
+**Files**
+- `build/abi/gen_syscalls.py` — the declarations it generates (`vdso_decls.inc`) are `auto <name>(...) -> ours::Status __asm__("ours_<name>");`.
+- `system/public/ours/vdso.hpp` — includes them inside `namespace ours`, where it had an `extern "C"` block, and says why the name and the symbol differ.
+- `system/lib/ort/src/start.cpp`, `debug.cpp`, `system/lib/launch/src/launch.cpp`, `system/service/init/init.cpp`, `kernel/lib/userabi/userboot/userboot.cpp`, `kernel/lib/syscall/test/fault_probe/fault_probe.cpp`, `examples/shell/shell.cpp` — 470 calls `ours_<name>(` → `ours::<name>(`.
+- `system/public/ours/syscalls.gni`, `signals.hpp`, `system/user_executable.gni`, `system/lib/ort/include/ort/debug.hpp`, `.agents/skills/ours-kernel-design/references/layering.md` — the texts that named a call as `ours_<name>`.
+
+**Symptom**
+The system-call API a program calls was the only part of the ABI outside namespace `ours`: `ours::Status`, `ours::HandleValue` and `ours::Signals`, but `ours_channel_create`.
+
+**Cause**
+The objects:
+- A symbol: the string the linker leaves undefined in a program and the loader looks up in the vDSO's `.dynsym`. The vDSO exports `ours_<name>`.
+- C++ name mangling: a function declared as `ours::channel_create` refers, by default, to the symbol `_ZN4ours14channel_create...`, which the vDSO does not export.
+- `extern "C"`: no mangling, so the symbol is the function's own name; declared inside a namespace, the namespace is dropped from the symbol (`channel_create`).
+
+The events, for a call:
+1. The compiler emits a call to a symbol.
+2. The linker leaves it undefined.
+3. The loader binds it by that exact string.
+
+So the declarations were `extern "C"` and outside any namespace: the only standard way to have a call refer to `ours_<name>`.
+
+**Change**
+An asm label sets the symbol a declaration refers to, whatever its C++ name.
+
+```cpp
+// vdso_decls.inc, before (inside extern "C")
+auto ours_handle_close(ours::HandleValue handle) -> ours::Status;
+// after (inside namespace ours)
+auto handle_close(ours::HandleValue handle) -> ours::Status __asm__("ours_handle_close");
+```
+
+The vDSO, its `.dynsym`, `libours.ifs` and the ABI check are untouched: the symbols are the ABI and did not change. The user chose this over generated inline forwarders (two names for every call, a generated `ou` again) and over exporting bare names (`channel_create`, which any program's C code could also define).
+
+**Reference**
+Zircon's API is C, so its names and symbols are both `zx_<name>`. The asm label is a GNU extension, which clang and GCC both honour; `<ours/vdso.hpp>` is C++ only already.
+
+**Verification**
+- `ninja -k 0` on `out/vmo-snapshot`: no error, the vDSO ABI check included.
+- `llvm-nm -D --undefined-only` on the linked programs: shell 20, init 9, userboot 8 and fault_probe 6 undefined `ours_*` symbols, and no mangled `_ZN4ours` one.
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped); the shell's groups as before (19 passed in dbg; 13 passed and 5 skipped in rel).
+- No syscall name clashes with a name already in `ours::` in ring-3 code. `ort::debug_write(std::string_view)` shares a name with `ours::debug_write(char const *, usize)` in another namespace.
+
+**Deliberately not done**
+- The kernel's texts that name a call by its symbol (`ours_vma_map` and the like) stay: the symbol is still the call's name in the ABI.
+
+**How it was found**
+The user's naming convention, 2026-10-03: the generated API a program calls goes in namespace `ours`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What symbol does a call to `ours::handle_close` refer to without the asm label, and what with `extern "C"` instead?
+- Why could the vDSO, its `.dynsym` and `libours.ifs` stay exactly as they were?
+- What would a generated inline `ours::handle_close` that calls `ours_handle_close` cost, compared with the label?

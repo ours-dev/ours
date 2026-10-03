@@ -221,8 +221,8 @@ auto reply(ours::HandleValue const channel, std::string_view const answer) -> vo
         static_cast<void>(ort::debug_line("fault_probe: no answer channel (User0)"));
         return;
     }
-    static_cast<void>(ours_channel_write(channel, ours::ChannelWriteOptions::None, answer.data(),
-                                         static_cast<u32>(answer.size()), nullptr, 0));
+    static_cast<void>(ours::channel_write(channel, ours::ChannelWriteOptions::None, answer.data(),
+                                          static_cast<u32>(answer.size()), nullptr, 0));
 }
 } // namespace
 

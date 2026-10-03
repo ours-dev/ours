@@ -58,7 +58,7 @@ namespace {
 
         ~Owned() {
             if (m_value != ours::HANDLE_INVALID) {
-                static_cast<void>(ours_handle_close(m_value));
+                static_cast<void>(ours::handle_close(m_value));
             }
         }
 
@@ -145,7 +145,7 @@ namespace {
                 auto const into = address - holder->vaddr;
                 auto const piece = std::min<u64>(left, holder->size - into);
                 if (auto const status =
-                        ours_vmo_write(vmo, source, holder->vmo_offset + into, usize(piece));
+                        ours::vmo_write(vmo, source, holder->vmo_offset + into, usize(piece));
                     status != Status::Ok) {
                     return status;
                 }
@@ -224,8 +224,8 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     Owned process;
     Owned root;
     if (auto const status =
-            ours_process_create(request.job, request.name.data(), request.name.size(),
-                                ours::ProcessCreateOptions::None, process.out(), root.out());
+            ours::process_create(request.job, request.name.data(), request.name.size(),
+                                 ours::ProcessCreateOptions::None, process.out(), root.out());
         status != Status::Ok) {
         return ustl::err(failed(request, "process_create", status));
     }
@@ -238,10 +238,10 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     Owned image_region;
     VirtAddr image_base = 0;
     if (auto const status =
-            ours_vma_allocate(root.get(),
-                              VmOptions::CanMapRead | VmOptions::CanMapWrite |
-                                  VmOptions::CanMapExecute | VmOptions::CanMapSpecific,
-                              0, usize(image.size), image_region.out(), &image_base);
+            ours::vma_allocate(root.get(),
+                               VmOptions::CanMapRead | VmOptions::CanMapWrite |
+                                   VmOptions::CanMapExecute | VmOptions::CanMapSpecific,
+                               0, usize(image.size), image_region.out(), &image_base);
         status != Status::Ok) {
         return ustl::err(failed(request, "vma_allocate of the image's region", status));
     }
@@ -254,7 +254,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     for (u32 index = 0; index < program.unwrap().segments().size(); ++index) {
         auto const snapshot = plan.snapshot(index);
         if (snapshot.size != 0) {
-            if (auto const status = ours_vmo_create_child(
+            if (auto const status = ours::vmo_create_child(
                     request.file, ours::VmoChildOptions::SnapshotOnWrite, snapshot.file_offset,
                     snapshot.size, snapshot_owners[index].out());
                 status != Status::Ok) {
@@ -264,7 +264,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         }
         if (auto const size = plan.zero_size(index); size != 0) {
             if (auto const status =
-                    ours_vmo_create(size, ours::VmoOptions::None, zero_owners[index].out());
+                    ours::vmo_create(size, ours::VmoOptions::None, zero_owners[index].out());
                 status != Status::Ok) {
                 return ustl::err(
                     failed(request, "vmo_create of a segment's zero-fill", status, index));
@@ -275,8 +275,8 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     }
     for (auto const &copy: plan.copies()) {
         if (auto const status =
-                ours_vmo_write(zeros[copy.segment], request.file_bytes.data() + copy.file_offset,
-                               copy.vmo_offset, usize(copy.size));
+                ours::vmo_write(zeros[copy.segment], request.file_bytes.data() + copy.file_offset,
+                                copy.vmo_offset, usize(copy.size));
             status != Status::Ok) {
             return ustl::err(
                 failed(request, "vmo_write of a segment's partial page", status, copy.segment));
@@ -288,7 +288,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // relocations go into the VMOs above, before anything of the program is
     // mapped, so every mapping can be made with its final protection.
     VirtAddr vdso_base = 0;
-    if (auto const status = ours_vma_map(
+    if (auto const status = ours::vma_map(
             root.get(), VmOptions::PermRead | VmOptions::PermExecute | VmOptions::Sealed, 0,
             request.vdso, 0, usize(vdso_span.size), &vdso_base);
         status != Status::Ok) {
@@ -332,9 +332,9 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
             vmo = zeros[mapping.segment];
         }
         VirtAddr at = 0;
-        if (auto const status = ours_vma_map(image_region.get(), options_for(mapping.perm),
-                                             usize(mapping.vaddr - image.first), vmo,
-                                             mapping.vmo_offset, usize(mapping.size), &at);
+        if (auto const status = ours::vma_map(image_region.get(), options_for(mapping.perm),
+                                              usize(mapping.vaddr - image.first), vmo,
+                                              mapping.vmo_offset, usize(mapping.size), &at);
             status != Status::Ok) {
             return ustl::err(failed(request, "vma_map of a segment", status, mapping.vaddr));
         }
@@ -346,7 +346,7 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // at chosen offsets in it, hence CanMapSpecific.
     Owned stack_region;
     VirtAddr stack_region_base = 0;
-    if (auto const status = ours_vma_allocate(
+    if (auto const status = ours::vma_allocate(
             root.get(), VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapSpecific,
             0, STACK_GUARD + stack_size.unwrap(), stack_region.out(), &stack_region_base);
         status != Status::Ok) {
@@ -354,19 +354,19 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     }
     Owned guard;
     VirtAddr guard_at = 0;
-    if (auto const status = ours_vma_allocate(stack_region.get(), VmOptions::Specific, 0,
-                                              STACK_GUARD, guard.out(), &guard_at);
+    if (auto const status = ours::vma_allocate(stack_region.get(), VmOptions::Specific, 0,
+                                               STACK_GUARD, guard.out(), &guard_at);
         status != Status::Ok) {
         return ustl::err(failed(request, "vma_allocate of the stack's guard", status));
     }
     Owned stack;
     if (auto const status =
-            ours_vmo_create(stack_size.unwrap(), ours::VmoOptions::None, stack.out());
+            ours::vmo_create(stack_size.unwrap(), ours::VmoOptions::None, stack.out());
         status != Status::Ok) {
         return ustl::err(failed(request, "vmo_create of the stack", status));
     }
     VirtAddr stack_bottom = 0;
-    if (auto const status = ours_vma_map(
+    if (auto const status = ours::vma_map(
             stack_region.get(), VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Specific,
             STACK_GUARD, stack.get(), 0, stack_size.unwrap(), &stack_bottom);
         status != Status::Ok) {
@@ -377,15 +377,15 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // whatever it answers: into the process, or closed when it fails.
     Owned thread;
     if (auto const status =
-            ours_thread_create(process.get(), request.name.data(), request.name.size(),
-                               ours::ThreadCreateOptions::None, thread.out());
+            ours::thread_create(process.get(), request.name.data(), request.name.size(),
+                                ours::ThreadCreateOptions::None, thread.out());
         status != Status::Ok) {
         return ustl::err(failed(request, "thread_create", status));
     }
     if (auto const status =
-            ours_process_start(process.get(), thread.get(), program_image.entry,
-                               initial_stack_pointer(stack_bottom + stack_size.unwrap()),
-                               bootstrap.release(), vdso_base);
+            ours::process_start(process.get(), thread.get(), program_image.entry,
+                                initial_stack_pointer(stack_bottom + stack_size.unwrap()),
+                                bootstrap.release(), vdso_base);
         status != Status::Ok) {
         return ustl::err(failed(request, "process_start", status));
     }

@@ -10,7 +10,7 @@
 
 namespace ours {
 /// Object signals: the state of a kernel object that a program can wait on
-/// through a handle (ours_object_wait_one).
+/// through a handle (ours::object_wait_one).
 ///
 /// The bit positions are Zircon's, deliberately -- ZX_OBJECT_READABLE and
 /// friends in zircon/types.h -- so that anything written against Zircon's

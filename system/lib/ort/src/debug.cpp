@@ -18,7 +18,7 @@ auto debug_write(std::string_view const text) -> Status {
     // the caller had to guess would be a limit it discovered as OutOfRange.
     while (left != 0) {
         auto const chunk = left < ours::MAX_DEBUG_WRITE ? left : ours::MAX_DEBUG_WRITE;
-        auto const status = ours_debug_write(at, chunk);
+        auto const status = ours::debug_write(at, chunk);
         if (Status::Ok != status) {
             // Reported rather than retried. Whatever stopped the kernel from
             // taking this chunk will stop it taking the next one, and a caller
@@ -51,7 +51,7 @@ auto debug_line(std::initializer_list<std::string_view> const pieces) -> Status 
         }
         line[at] = '\n';
         at += 1;
-        return ours_debug_write(line, at);
+        return ours::debug_write(line, at);
     }
 
     for (auto const &piece: pieces) {

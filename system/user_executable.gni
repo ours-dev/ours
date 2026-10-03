@@ -9,9 +9,9 @@ import("//kernel/phys/kernel_elf_binary.gni")
 #
 # What this template exists to do is make the syscall surface reachable by
 # *calling it*. A program written against it declares nothing and binds
-# nothing: it calls ours_debug_write(), and the linker records the call as an
-# undefined symbol. Whoever loads the program (the
-# kernel's userabi::launch() or the user-space launcher in //system/lib/launch)
+# nothing: it calls ours::debug_write(), and the linker records the call as an
+# undefined symbol, ours_debug_write. Whoever loads the program (the kernel's
+# userabi::launch() or the user-space launcher in //system/lib/launch)
 # resolves it against the vDSO's .dynsym with elfload::Binder before it runs.
 # Before this, every program carried its own copy of the
 # lookup -- an entry-table struct, a magic/version check, and one accessor per

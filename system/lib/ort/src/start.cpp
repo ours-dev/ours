@@ -45,7 +45,7 @@ namespace {
     auto fail(std::string_view const what, ours::Status const status) -> void {
         static_cast<void>(
             ort::debug_line({"ort: ", what, std::string_view{ours::to_string(status)}}));
-        ours_process_exit(EXIT_START_FAILED);
+        ours::process_exit(EXIT_START_FAILED);
     }
 
     /// Reads the processargs message off |bootstrap| into the buffers above,
@@ -72,16 +72,16 @@ namespace {
     /// the runtime has read the message, before main runs.
     auto read_processargs(ours::HandleValue const bootstrap) -> void {
         auto observed = ours::Signals::None;
-        static_cast<void>(ours_object_wait_one(bootstrap,
-                                               ours::Signals::Readable | ours::Signals::PeerClosed,
-                                               ours::INSTANT_INFINITE, &observed));
+        static_cast<void>(ours::object_wait_one(bootstrap,
+                                                ours::Signals::Readable | ours::Signals::PeerClosed,
+                                                ours::INSTANT_INFINITE, &observed));
 
         u32 num_bytes = 0;
         u32 num_handles = 0;
-        auto status = ours_channel_read(bootstrap, ours::ChannelReadOptions::None, message, handles,
-                                        sizeof(message), ours::CHANNEL_MAX_MSG_HANDLES, &num_bytes,
-                                        &num_handles);
-        static_cast<void>(ours_handle_close(bootstrap));
+        auto status = ours::channel_read(bootstrap, ours::ChannelReadOptions::None, message,
+                                         handles, sizeof(message), ours::CHANNEL_MAX_MSG_HANDLES,
+                                         &num_bytes, &num_handles);
+        static_cast<void>(ours::handle_close(bootstrap));
         if (status != ours::Status::Ok) {
             fail("no processargs message on the bootstrap channel: ", status);
         }
@@ -144,5 +144,5 @@ auto ort_start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base
     }
     *slot = nullptr;
 
-    ours_process_exit(ort_call_main(static_cast<int>(args.size()), argv));
+    ours::process_exit(ort_call_main(static_cast<int>(args.size()), argv));
 }
