@@ -66,7 +66,7 @@ struct Started {
 };
 
 /// Starts the program |request| describes in a new process. The kernel's
-/// userabi::launch() starts its programs in the same order of steps, but maps
+/// userabi::launch() starts userboot in the same order of steps, but maps
 /// the image at a fixed base out of one VMO, and binds it after mapping,
 /// through that VMO; this reverses that. Steps 3 to 5 -- regions, relocations
 /// written into the segments' VMOs, then every mapping made with its final

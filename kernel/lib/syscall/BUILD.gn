@@ -50,14 +50,6 @@ source_set("syscall") {
     # headers behind them.
     ":headers",
 
-    # TEMPORARY: only for syscall::process_spawn_boot (src/process.cpp), the one
-    # handler allowed to reach below kernel/object. The edge goes with it at
-    # step K25, once userboot, init and the shell's fault probes start their
-    # programs with the user-space launcher
-    # (docs/design/260924/userspace-filesystem.md; what goes is listed in
-    # docs/repairs/260923/syscall.md, item 1).
-    "//kernel/lib/userabi",
-
     # command.cpp walks the GKTL_COMMAND registry the linker collects; it reads
     # the records and copies text out, and deliberately does not call
     # gktl::run_command() -- running kernel code on argv that came from ring 3

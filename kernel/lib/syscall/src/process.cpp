@@ -3,7 +3,6 @@
 #include <syscall/handlers.hpp>
 
 #include <algorithm>
-#include <string_view>
 
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
@@ -13,7 +12,6 @@
 #include <ours/object/vma_dispatcher.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
-#include <userabi/userboot.hpp>
 
 namespace ours::syscall {
 /// The calling process ends. All of it happens in the object layer
@@ -111,8 +109,8 @@ auto process_create(ours::Uandle const job, user_copy::UserInPtr<char const> con
 /// Zircon's sys_process_start(): the process and the thread each with Write,
 /// the thread must be one of that process's own (AccessDenied), |arg1| taken
 /// out of the caller's table and needing Transfer. Like the handles
-/// process_spawn_boot() and channel_write() take, |arg1| is gone from the
-/// caller's table whatever the outcome -- a caller that gets an error back
+/// channel_write() takes, |arg1| is gone from the caller's table whatever
+/// the outcome -- a caller that gets an error back
 /// never has to guess whether it still holds it -- so it is removed once
 /// everything else has been resolved, and after them a missing or
 /// untransferable one does not stop it being removed. The process and thread
@@ -156,85 +154,5 @@ auto process_start(ours::Uandle const process, ours::Uandle const thread, VirtAd
     }
 
     return target->start(*first, entry, stack, ustl::move(handed), arg2);
-}
-
-/// TEMPORARY, and the one handler that breaks the rule every other one keeps:
-/// a system call touches kernel/object and nothing below it. This one reaches
-/// into userabi, and through it kelfload and elfload, which write the image
-/// and its relocations into a VMO through mm::VmObject rather than through a
-/// handle. It was allowed as the only way to start a second program before
-/// the user-space launcher (system/lib/launch) existed. It is tolerated until
-/// userboot, init and the shell's fault probes start their programs with that
-/// launcher (step K25) because it is fenced three ways: it takes only files
-/// the kernel itself loaded from its own package, so ring 0 parses no ELF a
-/// program supplied; the loading code is exactly the code that starts the
-/// first program, not a second path; and it goes, with the GN edge that
-/// allows it, at K25 (docs/design/260924/userspace-filesystem.md; what goes
-/// is listed in docs/repairs/260923/syscall.md, item 1).
-auto process_spawn_boot(ours::Uandle const job, user_copy::UserInPtr<char const> const name,
-                        usize const name_size, ours::Uandle const bootstrap,
-                        user_copy::UserOutPtr<ours::Uandle> const root_vma) -> Status {
-    auto &table = object::ProcessDispatcher::current()->handle_table();
-
-    // The job is resolved before the bootstrap handle leaves the table, so
-    // that the two may name the same handle: a caller handing its only job
-    // handle to the child holds a reference to the job from here on, and the
-    // removal below then takes nothing this call still needs. The other order
-    // made that case fail with BadHandle, after the handle was already gone.
-    ustl::Arc<object::JobDispatcher> parent;
-    auto const resolved = table.get_dispatcher(job, Rights::ManageProcess, &parent);
-
-    // The bootstrap handle leaves the caller's table whatever the outcome,
-    // failure included, as a handle written into a channel is consumed in
-    // Zircon: a caller that gets an error back does not have to guess
-    // whether it still holds the handle -- it never does. It is dropped at
-    // return, after the table's lock is long released.
-    ustl::Box<object::Handle> handed;
-    if (bootstrap != ours::Uandle::Invalid) {
-        handed = table.remove(bootstrap);
-        if (resolved == Status::Ok && !handed) {
-            return Status::BadHandle;
-        }
-    }
-    if (resolved != Status::Ok) {
-        return resolved;
-    }
-
-    // Moving a handle into another process is what Transfer is for.
-    if (handed && !handed->has_rights(Rights::Transfer)) {
-        return Status::AccessDenied;
-    }
-
-    if (name_size == 0 || name_size > PROCESS_BOOT_NAME_MAX) {
-        return Status::InvArgs;
-    }
-    char text[PROCESS_BOOT_NAME_MAX] = {};
-    if (auto const status = name.copy_array_from_user(text, name_size); status != Status::Ok) {
-        return status;
-    }
-    // A bare file name: a '/' is refused, which also keeps this from ever
-    // naming vmours/image.elf -- the kernel itself -- or anything else under
-    // a directory the package uses for its own parts.
-    auto const view = std::string_view(text, name_size);
-    if (view.find('/') != std::string_view::npos || view.find('\0') != std::string_view::npos) {
-        return Status::InvArgs;
-    }
-
-    // The child's root VMA comes back to the caller, who writes it into the
-    // child's processargs next (VmaRoot). Value out, then into the table, as
-    // for every handle a call hands back (design 4.1). The child is already
-    // running by then: if the value cannot be written, the caller gets the
-    // error, never writes a message, and the child -- which waits for one --
-    // ends when the caller closes its end of the channel.
-    ustl::Box<object::Handle> region;
-    if (auto const status = userabi::launch(ustl::move(parent), view, ustl::move(handed), &region);
-        status != Status::Ok) {
-        return status;
-    }
-    if (auto const status = root_vma.copy_to_user(table.value_of(*region)); status != Status::Ok) {
-        return status;
-    }
-    auto _ = table.add(ustl::move(region));
-    return Status::Ok;
 }
 } // namespace ours::syscall

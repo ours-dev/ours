@@ -72,30 +72,26 @@ struct ProbeRun {
     bool killed;
     char answer[32];
     u32 answer_size;
-    /// The process, for a probe the launcher started -- the one way this
-    /// shell gets a handle to one -- and Uandle::Invalid otherwise. The caller
-    /// owns it.
+    /// The process, as the launcher handed it back; Uandle::Invalid when it
+    /// did not start. The caller owns it.
     ours::Uandle process;
 };
 
-/// Starts fault_probe under |job| with |probe| as argv[1], and waits for it
-/// to answer or die. With a |launcher|, the program is started by the
-/// user-space launcher, and the handle to the process it returns is handed
-/// back in run.process; without one, by process_spawn_boot, which returns no
-/// such handle.
+/// Starts fault_probe under |job| with |probe| as argv[1] with |launcher|,
+/// and waits for it to answer or die. The handle to the process the launcher
+/// returns is handed back in run.process.
 ///
 /// The probe is started the way every program on the runtime is: a
 /// processargs message on its bootstrap channel (argv = {"fault_probe",
-/// probe}), written once the process exists -- its root VMA, which the spawn
-/// hands back, is one of the two startup handles -- with the far end of a
+/// probe}), written once the process exists -- its root VMA, which the
+/// launcher hands back, is one of the two startup handles -- with the far end of a
 /// second channel, as User0, for the answer. The answer
 /// cannot come back on the bootstrap channel, because the runtime closes that
 /// as soon as it has read the message: waiting on it, this would see
 /// PeerClosed before the probe had even reached main and count every probe
 /// as killed.
 auto run_probe(ours::Uandle const job, std::string_view const probe,
-               shell::LaunchProgram const launcher = nullptr,
-               void *const launcher_context = nullptr) -> ProbeRun {
+               shell::LaunchProgram const launcher, void *const launcher_context) -> ProbeRun {
     using ours::Signals;
     using ours::Status;
 
@@ -137,17 +133,12 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
     ours::Uandle root_vma = ours::Uandle::Invalid;
     ours::Uandle process = ours::Uandle::Invalid;
     auto status = Status::Ok;
-    if (launcher != nullptr) {
-        auto const started = launcher(launcher_context, job, "fault_probe", bootstrap_there);
-        if (started.is_err()) {
-            status = started.unwrap_err();
-        } else {
-            process = started.unwrap().process;
-            root_vma = started.unwrap().root_vma;
-        }
+    auto const started = launcher(launcher_context, job, "fault_probe", bootstrap_there);
+    if (started.is_err()) {
+        status = started.unwrap_err();
     } else {
-        status = ours::process_spawn_boot(job, "fault_probe", sizeof("fault_probe") - 1,
-                                          bootstrap_there, &root_vma);
+        process = started.unwrap().process;
+        root_vma = started.unwrap().root_vma;
     }
     if (status != Status::Ok) {
         report("shell: starting fault_probe = ", status);
@@ -331,30 +322,27 @@ auto return_code_of(ours::Uandle const process) -> ustl::Result<i64, ours::Statu
 /// destruction of the process and thread objects -- the parts of the chain
 /// this program cannot see.
 ///
-/// With the launcher (U6), every probe is started by it, and "killed" is the
+/// Every probe is started by the launcher (U6), and "killed" is the
 /// kernel's own word: the code the process ended with is
 /// TASK_RETCODE_EXCEPTION_KILL, read through its handle once it has
 /// terminated (return_code_of()). A probe that survives ends with SURVIVED
 /// instead, and one whose image the launcher got wrong dies before main
 /// with an exception like any other -- which is why the log's
 /// `fault_probe: <name>` line before each kill still matters: it shows the
-/// probe ran. Without the launcher the kernel spawns them, gives back no
-/// process handle, and "killed" falls back to the answer channel closing
-/// empty. And one more run, with a name no probe has, is the control: it
+/// probe ran. And one more run, with a name no probe has, is the control: it
 /// must answer "unknown" and return from main, the one path through which
 /// the runtime ends a probe with main's own value.
 ///
-/// The control is started by the user-space launcher when this shell has what
-/// it needs (the BootFS, vmex and the vDSO's VMO, which userboot hands it):
-/// K23's check that a program the launcher planned, mapped, bound and started
+/// The control is K23's check that a program the launcher planned, mapped, bound and started
 /// reaches main and answers. It ends in a verdict of its own, "launcher
 /// checks passed" or FAILED, because nothing else here would fail the boot:
 /// a program the launcher got wrong dies before main, which the kernel logs
 /// as a warning.
 ///
 /// Run only by the shell userboot starts, which userboot hands the root job
-/// a new process needs; the dev image starts the shell from init, with a
-/// channel instead, and does not package fault_probe.
+/// a new process needs, and only once its launcher is set up; the dev image
+/// starts the shell from init, with a channel instead, and does not package
+/// fault_probe.
 auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
                 void *const launcher_context) -> void {
     constexpr std::string_view PROBES[] = {
@@ -371,34 +359,23 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
         if (!run.started) {
             // The control, and with it the launcher's verdict below, is never
             // reached; say so, or the launcher would go unchecked unnoticed.
-            if (launcher != nullptr) {
-                auto _ = ort::debug_line(
-                    "shell: launcher checks FAILED (a probe before its control did not start)");
-            }
+            auto _ = ort::debug_line(
+                "shell: launcher checks FAILED (a probe before its control did not start)");
             return;
         }
-        if (run.process != ours::Uandle::Invalid) {
-            auto const code = return_code_of(run.process);
-            auto _ = ours::handle_close(run.process);
-            char code_text[21];
-            if (code.is_ok() && code.unwrap() == ours::TASK_RETCODE_EXCEPTION_KILL) {
-                auto _ = ort::debug_line({"shell: probe ", probe, " killed (retcode ",
-                                          ort::signed_decimal(code.unwrap(), code_text), ")"});
-                ++killed;
-            } else {
-                auto const ended =
-                    code.is_ok() ? ort::signed_decimal(code.unwrap(), code_text) : "unknown";
-                auto _ = ort::debug_line({"shell: probe ", probe, " SURVIVED (retcode ", ended,
-                                          ", answered \"",
-                                          std::string_view(run.answer, run.answer_size), "\")"});
-                ++survived;
-            }
-        } else if (run.killed) {
-            auto _ = ort::debug_line({"shell: probe ", probe, " killed"});
+        auto const code = return_code_of(run.process);
+        auto _ = ours::handle_close(run.process);
+        char code_text[21];
+        if (code.is_ok() && code.unwrap() == ours::TASK_RETCODE_EXCEPTION_KILL) {
+            auto _ = ort::debug_line({"shell: probe ", probe, " killed (retcode ",
+                                      ort::signed_decimal(code.unwrap(), code_text), ")"});
             ++killed;
         } else {
-            auto _ = ort::debug_line({"shell: probe ", probe, " SURVIVED (",
-                                      std::string_view(run.answer, run.answer_size), ")"});
+            auto const ended =
+                code.is_ok() ? ort::signed_decimal(code.unwrap(), code_text) : "unknown";
+            auto _ = ort::debug_line({"shell: probe ", probe, " SURVIVED (retcode ", ended,
+                                      ", answered \"",
+                                      std::string_view(run.answer, run.answer_size), "\")"});
             ++survived;
         }
     }
@@ -409,9 +386,7 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
                               " killed, ", ort::decimal(survived, survived_text), " survived)"});
 
     constexpr std::string_view CONTROL{"none"};
-    if (launcher != nullptr) {
-        auto _ = ort::debug_line("shell: starting the control probe with the launcher");
-    }
+    auto _ = ort::debug_line("shell: starting the control probe with the launcher");
     auto const control = run_probe(job, CONTROL, launcher, launcher_context);
     auto answered_unknown = false;
     if (control.started) {
@@ -427,15 +402,12 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
 
     // K23's verdict, on a line of its own: nothing above fails the boot when
     // the launcher breaks. A program it maps or binds wrongly dies before
-    // main, which the kernel logs as a warning, not an error, and without a
-    // launcher the control is started and answers all the same.
-    if (launcher != nullptr) {
-        if (answered_unknown) {
-            auto _ = ort::debug_line("shell: launcher checks passed");
-        } else {
-            auto _ = ort::debug_line(
-                "shell: launcher checks FAILED (its control probe did not answer \"unknown\")");
-        }
+    // main, which the kernel logs as a warning, not an error.
+    if (answered_unknown) {
+        auto _ = ort::debug_line("shell: launcher checks passed");
+    } else {
+        auto _ = ort::debug_line(
+            "shell: launcher checks FAILED (its control probe did not answer \"unknown\")");
     }
 
     if (control.process != ours::Uandle::Invalid) {

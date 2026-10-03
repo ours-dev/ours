@@ -29,12 +29,13 @@
   `system/lib/launch`. Never reintroduce a hand-resolved export table.
 - There is one vDSO VMO, laid out once by the kernel (`userboot_init()`, like
   Zircon's `VDso::Create()`), and it is mapped by whoever starts the process
-  -- `userabi::launch()` for the programs the kernel starts (the first one
-  and `process_spawn_boot`'s), and since K23 the user-space launcher through
-  `vma_map` on a vDSO VMO handle it is given, as Zircon's userboot and
-  process_builder do. `ProcessDispatcher::create` does not map it. The user
-  chose Zircon's shape over "the kernel maps it at process creation"
-  (2026-09-28); never copy the vDSO per process.
+  -- `userabi::launch()` for the one program the kernel starts, userboot,
+  and the user-space launcher for every other, through `vma_map` on a vDSO
+  VMO handle it is given, as Zircon's userboot and process_builder do. Since
+  K25 the kernel loads no program but userboot (no `process_spawn_boot`).
+  `ProcessDispatcher::create` does not map it. The user chose Zircon's shape
+  over "the kernel maps it at process creation" (2026-09-28); never copy the
+  vDSO per process.
 - The vDSO is mapped by segment, as Zircon maps it: its data read-only, its
   code read and execute. An executable mapping of its VMO must be exactly
   its code segment, sealed, once per address space, and only that is

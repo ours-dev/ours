@@ -46,8 +46,8 @@ import("//kernel/phys/kernel_elf_binary.gni")
 #   install_name (optional)
 #     BootFS file name for the packaged program. Defaults to target_name. It
 #     is the name the program is started by: kernel.select.userboot for a
-#     build of userboot, and userboot.next, process_spawn_boot or a
-#     launcher's BootFS lookup for any other program.
+#     build of userboot, and userboot.next or a launcher's BootFS lookup for
+#     any other program.
 #
 #   deps, sources, configs, testonly, visibility
 #     Standard GN meanings.

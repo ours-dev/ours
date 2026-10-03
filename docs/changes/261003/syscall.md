@@ -111,3 +111,77 @@ None. The user chose Zircon's 24-byte layout over a 16-byte one.
 - Why must `get_info()` copy the state and the return code in one hold of the lock, and what could a reader see otherwise?
 - Why does the shell wait for TERMINATED before asking, when the probe has already answered on its channel?
 - Why is `avail` written even when the buffer is too small, and why does it count records rather than bytes?
+
+## Title: process_spawn_boot is gone; the kernel loads userboot and nothing else (2026-10-03)
+
+**Files**
+- `system/public/ours/syscalls.gni` — the `process_spawn_boot` entry removed. Its vDSO stub, its `<ours/vdso.hpp>` declaration, its kernel shim and its call number were generated from it and went with it.
+- `system/public/ours/syscall.hpp` — `PROCESS_BOOT_NAME_MAX` removed.
+- `kernel/lib/syscall/src/process.cpp` — `syscall::process_spawn_boot()` and the `userabi` include removed.
+- `kernel/lib/syscall/BUILD.gn` — the edge to `//kernel/lib/userabi` removed. It was the one exception to "a system call reaches kernel/object and nothing below".
+- `kernel/lib/userabi/include/userabi/userboot.hpp` — `userabi::launch()` no longer declared; only `userboot_init()` is public.
+- `kernel/lib/userabi/src/userboot.cpp` — `launch()` is in the file's anonymous namespace and takes the package as a parameter. The global `resident_package` is gone; `userboot_init()` uses its local.
+- `examples/shell/shell_tests.cpp` — `run_probe()` requires the launcher; the spawn fallback and the dead `launcher == nullptr` branches are gone.
+- `examples/shell/BUILD.gn`, `system/user_executable.gni`, `system/lib/launch/include/launch/launch.hpp`, `.agents/skills/ours-kernel-design/references/layering.md` — comments that named the call.
+- `docs/repairs/260923/syscall.md` — removed. Its one item was this call.
+- `docs/repairs/261003/userabi.md` (new) — freeing the decompressed package, which nothing reads after userboot starts.
+
+**Symptom**
+None: step K25 of `docs/design/260924/userspace-filesystem.md`, under the user's rule that user space uses nothing on the kernel side but system calls. After U8 the call had no live caller.
+
+**Cause**
+The objects:
+- `process_spawn_boot`: a system call that ran the kernel's own loader (`userabi::launch()`) on any file in the kernel package, by name.
+- The kernel package: the decompressed BootFS the kernel boots from. It was kept resident (`resident_package`) only so that this call could reach it later.
+- The GN edge from `//kernel/lib/syscall` to `//kernel/lib/userabi`. It let one handler reach below the object layer, into kelfload and the VMOs it writes through `mm::VmObject`.
+
+Why the call had to go, beyond having no callers:
+- It was a second way to start a program, with its own rules: a bare name, the kernel package only, no process handle returned.
+- It kept loader code reachable from ring 3 on demand, where it otherwise runs exactly once, at boot.
+- It kept the system-call layer depending on userabi.
+
+Zircon's kernel has no such call: it loads userboot, and every other program is loaded from user space.
+
+**Change**
+
+```cpp
+// before: public, and callable for any program in the package, at any time
+auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view name,
+            ustl::Box<object::Handle> bootstrap, ustl::Box<object::Handle> *root_vma) -> Status;
+ustl::Option<phys::KernelPackage> resident_package;
+
+// after: file-local, given the package by userboot_init(), its only caller
+namespace {
+    auto launch(phys::KernelPackage const &package, ustl::Arc<object::JobDispatcher> job, ...)
+}
+```
+
+The decompressed buffer is still not freed. Nothing reads it once userboot has started, but `vfree()` is not yet safe across CPUs (`docs/repairs/260908/heap.md`, item 2). That is now item 1 of `docs/repairs/261003/userabi.md`.
+
+**Reference**
+- Zircon: the kernel starts userboot alone (`zircon/kernel/lib/userabi/userboot.cc`).
+- Zircon's userboot starts the next program with `launch_program()` (`zircon/kernel/lib/userabi/userboot/main.rs`).
+
+**Verification**
+- `ninja -k 0` on `out/bringup.x86`: no error or warning.
+- `boot_check.py`:
+  - dbg PASS, 20 passed: `userboot: started shell`, 16 probes killed, launcher and object_get_info checks passed;
+  - rel PASS, 18 passed: `userboot: started init`, `init: launched shell`.
+- `kshell_run.py vmawx.test`: ok.
+- `git grep spawn_boot -- kernel system examples build`: nothing.
+- The vDSO's `.dynsym` has 21 `ours_*` exports and none with `spawn`. The generated `vdso_decls.inc` has none either.
+
+**Deliberately not done**
+- The package buffer is not freed (above).
+- U9, installing programs under `bin/`, is the next step of the plan.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did the kernel keep the decompressed package resident, and why need it no longer?
+- What rule did the GN edge from lib/syscall to lib/userabi break, and why was it tolerated until now?
+- After this change, how does a program other than userboot get loaded, and which object system calls does that take?

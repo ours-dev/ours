@@ -14,9 +14,9 @@ assert(
     "examples/shell must be built in a //build/toolchain/ours:user-* toolchain")
 
 # A program bound to the vDSO at load time: the ours_* entries it calls are
-# left undefined by the linker, and the kernel resolves them against the
-# vDSO's .dynsym (elfload::Binder, in userabi::launch()) when
-# process_spawn_boot starts it.
+# left undefined by the linker, and the launcher that starts it -- userboot's
+# or init's (//system/lib/launch) -- resolves them against the vDSO's .dynsym
+# (elfload::Binder).
 # The template is what says so -- everything this file used to spell out
 # about packaging and about not asking for a code-patches section lives
 # there now.

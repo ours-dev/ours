@@ -72,8 +72,7 @@ namespace {
 
     /// A program name, kept as a NUL-terminated buffer rather than as a view.
     ///
-    /// launch() is handed a view -- from the boot options for the first
-    /// program, from a user buffer for process_spawn_boot -- while
+    /// launch() is handed a view, from the boot options, while
     /// ProcessDispatcher and the loader below both want a C string; copying
     /// once here is cheaper than having each caller find that out. The
     /// capacity is the one boot::BootOptions gives `kernel.select.userboot`,
@@ -184,18 +183,10 @@ namespace {
     }
     static_assert(initial_stack_pointer(USER_STACK_TOP) % 16 == 8);
 
-    /// The kernel package, decompressed once at boot and kept.
-    ///
-    /// Every program started later -- the first one by userboot_init(),
-    /// others through launch() on a user process's behalf -- comes out of the
-    /// same package, and decompressing it again for each would cost megabytes
-    /// every time. It used to be a local of userboot_init(), so nothing after
-    /// the first program could reach it. Written once, before any user thread
-    /// exists, and only read after that.
-    ustl::Option<phys::KernelPackage> resident_package;
-
-    /// The vDSO, laid out in one VMO once and mapped into every process
-    /// launch() starts. Zircon's VDso::Create() makes its instance_ the same
+    /// The vDSO, laid out in one VMO once and mapped into every process:
+    /// into userboot by launch(), and into every other by a user-space
+    /// launcher, through the handle userboot is given (VmoVdso) and hands on.
+    /// Zircon's VDso::Create() makes its instance_ the same
     /// way (zircon/kernel/lib/userabi/vdso.cc), and every process maps that one
     /// VMO.
     ///
@@ -207,8 +198,8 @@ namespace {
     struct SharedVdso {
         kelfload::ImageVmo image;
 
-        /// The vDSO's file in the resident package, which the Binder reads the
-        /// vDSO's exports from when it binds a program.
+        /// The vDSO's file in the kernel package, which the Binder reads the
+        /// vDSO's exports from when launch() binds userboot.
         ustl::views::Span<u8 const> file;
 
         /// Laid out yet: the VMO handle is empty until lay_out_vdso() runs.
@@ -647,175 +638,180 @@ namespace {
                   pages, code.offset, code.size / PAGE_SIZE);
         return Status::Ok;
     }
-} // namespace
-
-auto launch(ustl::Arc<object::JobDispatcher> job, std::string_view const name,
-            ustl::Box<object::Handle> bootstrap, ustl::Box<object::Handle> *const root_vma_out)
-    -> Status {
-    if (!resident_package) {
-        log::error("userabi: launch('{}') before the kernel package was loaded", name);
-        return Status::BadState;
-    }
-    auto const &package = *resident_package;
-
-    // A C string for the process and the mappings, and a hard limit: a name
-    // cut short would be looked up, not found, and reported as missing.
-    ProgramName program{};
-    if (name.size() >= sizeof(program.text)) {
-        return Status::OutOfRange;
-    }
-    std::memcpy(program.text, name.data(), name.size());
-
-    // The vDSO is in the package beside the programs, but it is not one:
-    // it is mapped into every process by this function, and a process
-    // started *from* it would begin at an e_entry that means nothing.
-    // check_program() below would refuse it as well, for its entry lying in
-    // a non-executable segment; it is named here so the refusal says why.
-    if (program.view() == VDSO_FILE) {
-        log::error("userabi: '{}' is the vDSO, not a program", program.view());
-        return Status::InvArgs;
-    }
-
-    auto const image = package.file(program.view());
-    if (image.is_err()) {
-        log::error("userabi: '{}' is not in the kernel package: {}", program.view(),
-                   to_string(image.unwrap_err()));
-        return Status::NotFound;
-    }
-
-    // Checked before the process exists, not left to the loader: until the
-    // fault path can kill a process (design P1-A), a bad entry point is a
-    // ring-3 fault the kernel cannot contain, and even after that a process
-    // that dies on its first instruction is a worse answer to the caller
-    // than an error from this call.
-    if (auto const status = elfload::check_program(ELFLOAD_LOG, image.unwrap());
-        Status::Ok != status) {
-        log::error("userabi: '{}' is not a program this kernel can start", program.view());
-        return status;
-    }
-
-    log::info("userboot: found '{}', {} bytes of ELF", program.view(), image.unwrap().size());
-
-    // One call builds both the process and the only object that may map into
-    // it. They come back together because neither is useful alone: a process
-    // with no root VMA cannot be given any memory, and a VMA dispatcher with
-    // no process names a region nothing will ever run in.
-    object::KernelHandle<object::ProcessDispatcher> process;
-    object::KernelHandle<object::VmaDispatcher> root_vma;
-    Rights process_rights;
-    Rights root_vma_rights;
-    auto status = object::ProcessDispatcher::create(job, program.text, process, process_rights,
-                                                    root_vma, root_vma_rights);
-    if (Status::Ok != status) {
-        log::error("userabi: could not create the process: {}", to_string(status));
-        return status;
-    }
-
-    // One loader for this process's address space: every image it is built
-    // out of goes through the same one, and the object that may map into it is
-    // what they have in common.
-    kelfload::Loader const loader{*root_vma.dispatcher()};
-
-    LoadedImage loaded;
-    status = load_program(image.unwrap(), program.text, loader, *root_vma.dispatcher(), loaded);
-    if (Status::Ok != status) {
-        return status;
-    }
-
-    log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}, stack {:X}",
-              loaded.image.base, loaded.image.base + loaded.image.span, loaded.image.entry,
-              loaded.stack_top);
-
-    // The vDSO, mapped into the same address space. It is what the program
-    // enters the kernel through, and the only thing that can: the syscall
-    // path kills a process whose `syscall` instruction does not lie wholly
-    // inside the range that mapping the vDSO registers (VmaDispatcher::map()).
-    if (!shared_vdso.ready()) {
-        log::error("userabi: launch('{}') before the vDSO was laid out", name);
-        return Status::BadState;
-    }
-
-    elfload::Image vdso;
-    status = map_vdso(loader, vdso);
-    if (Status::Ok != status) {
-        return status;
-    }
-
-    // Both images are placed, so the program's imports can be resolved against
-    // the vDSO's exports. This has to happen before the thread starts and
-    // after both load addresses are known, which is the only reason the
-    // program is not simply bound as it is mapped.
-    auto const binder = elfload::Binder::from(ELFLOAD_LOG, shared_vdso.file, vdso);
-    if (binder.is_err()) {
-        log::error("userboot: the vDSO cannot be bound against: {}",
-                   to_string(binder.unwrap_err()));
-        return binder.unwrap_err();
-    }
-    status = binder.unwrap().bind(ELFLOAD_LOG, image.unwrap(), loaded.image);
-    if (Status::Ok != status) {
-        return status;
-    }
-
-    // Nothing to record: mapping the vDSO's VMO is what registered its range,
-    // on the address space, and the syscall path reaches it through the thread
-    // that trapped (VmaDispatcher::map()).
-
-    // The thread comes from the object layer too: ThreadDispatcher::create()
-    // makes the dispatcher, start() below makes its kernel thread with the
-    // aspace wiring (it knows the process), and the trampoline builds the
-    // frame that enters ring 3.
-    object::KernelHandle<object::ThreadDispatcher> thread;
-    status = object::ThreadDispatcher::create(process.dispatcher(), program.text, &thread);
-    if (Status::Ok != status) {
-        log::error("userabi: could not create the entry thread: {}", to_string(status));
-        return status;
-    }
-
-    // The root VMA goes back to whoever asked for the launch, who puts it in
-    // the processargs it writes once this returns: the one message a process
-    // gets is written after the process exists, as a launcher does it --
-    // first process_create, which hands back the root VMA, then the message
-    // (Zircon's process_builder; design 3.2). Made before the thread starts,
-    // so that a handle that cannot be made fails the launch rather than
-    // leaving a process running that nobody can give its region to.
-    // TEMPORARY in this form: system/lib/launch does this from user space
-    // now. Once process_spawn_boot goes (K25), the kernel launches only
-    // userboot this way.
-    if (root_vma_out) {
-        *root_vma_out = object::Handle::make(
-            object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), root_vma_rights);
-        if (!*root_vma_out) {
-            return Status::NoResource;
+    /// Starts the program |name| from |package| as a new process under |job|,
+    /// with |bootstrap| (which may be empty) as the one handle it holds; the
+    /// program receives the handle's value in %rdi and its vDSO's base in %rsi.
+    ///
+    /// Maps the image and the vDSO (mapping the vDSO's VMO is what registers its
+    /// range, VmaDispatcher::map()), binds the image's imports to the vDSO, gives
+    /// it a 64 KiB stack, and starts its thread. A handle to the new process's
+    /// root VMA goes into |root_vma_out|, when it is not null, for the caller to
+    /// put in the processargs it writes on the other end of |bootstrap|.
+    ///
+    /// The kernel starts one program this way, userboot (userboot_init()); every
+    /// other is started from user space by a launcher (system/lib/launch), as
+    /// in Zircon, whose kernel loads userboot alone. Only files in the kernel
+    /// package, which the kernel itself loaded: nothing here parses ELF a user
+    /// program supplied.
+    auto launch(phys::KernelPackage const &package, ustl::Arc<object::JobDispatcher> job,
+                std::string_view const name, ustl::Box<object::Handle> bootstrap,
+                ustl::Box<object::Handle> *const root_vma_out) -> Status {
+        // A C string for the process and the mappings, and a hard limit: a name
+        // cut short would be looked up, not found, and reported as missing.
+        ProgramName program{};
+        if (name.size() >= sizeof(program.text)) {
+            return Status::OutOfRange;
         }
+        std::memcpy(program.text, name.data(), name.size());
+
+        // The vDSO is in the package beside the programs, but it is not one:
+        // it is mapped into every process by this function, and a process
+        // started *from* it would begin at an e_entry that means nothing.
+        // check_program() below would refuse it as well, for its entry lying in
+        // a non-executable segment; it is named here so the refusal says why.
+        if (program.view() == VDSO_FILE) {
+            log::error("userabi: '{}' is the vDSO, not a program", program.view());
+            return Status::InvArgs;
+        }
+
+        auto const image = package.file(program.view());
+        if (image.is_err()) {
+            log::error("userabi: '{}' is not in the kernel package: {}", program.view(),
+                       to_string(image.unwrap_err()));
+            return Status::NotFound;
+        }
+
+        // Checked before the process exists, not left to the loader: until the
+        // fault path can kill a process (design P1-A), a bad entry point is a
+        // ring-3 fault the kernel cannot contain, and even after that a process
+        // that dies on its first instruction is a worse answer to the caller
+        // than an error from this call.
+        if (auto const status = elfload::check_program(ELFLOAD_LOG, image.unwrap());
+            Status::Ok != status) {
+            log::error("userabi: '{}' is not a program this kernel can start", program.view());
+            return status;
+        }
+
+        log::info("userboot: found '{}', {} bytes of ELF", program.view(), image.unwrap().size());
+
+        // One call builds both the process and the only object that may map into
+        // it. They come back together because neither is useful alone: a process
+        // with no root VMA cannot be given any memory, and a VMA dispatcher with
+        // no process names a region nothing will ever run in.
+        object::KernelHandle<object::ProcessDispatcher> process;
+        object::KernelHandle<object::VmaDispatcher> root_vma;
+        Rights process_rights;
+        Rights root_vma_rights;
+        auto status = object::ProcessDispatcher::create(job, program.text, process, process_rights,
+                                                        root_vma, root_vma_rights);
+        if (Status::Ok != status) {
+            log::error("userabi: could not create the process: {}", to_string(status));
+            return status;
+        }
+
+        // One loader for this process's address space: every image it is built
+        // out of goes through the same one, and the object that may map into it is
+        // what they have in common.
+        kelfload::Loader const loader{*root_vma.dispatcher()};
+
+        LoadedImage loaded;
+        status = load_program(image.unwrap(), program.text, loader, *root_vma.dispatcher(), loaded);
+        if (Status::Ok != status) {
+            return status;
+        }
+
+        log::info("userboot: mapped [{:X}, {:X}) into its own aspace, entry at {:X}, stack {:X}",
+                  loaded.image.base, loaded.image.base + loaded.image.span, loaded.image.entry,
+                  loaded.stack_top);
+
+        // The vDSO, mapped into the same address space. It is what the program
+        // enters the kernel through, and the only thing that can: the syscall
+        // path kills a process whose `syscall` instruction does not lie wholly
+        // inside the range that mapping the vDSO registers (VmaDispatcher::map()).
+        if (!shared_vdso.ready()) {
+            log::error("userabi: launch('{}') before the vDSO was laid out", name);
+            return Status::BadState;
+        }
+
+        elfload::Image vdso;
+        status = map_vdso(loader, vdso);
+        if (Status::Ok != status) {
+            return status;
+        }
+
+        // Both images are placed, so the program's imports can be resolved against
+        // the vDSO's exports. This has to happen before the thread starts and
+        // after both load addresses are known, which is the only reason the
+        // program is not simply bound as it is mapped.
+        auto const binder = elfload::Binder::from(ELFLOAD_LOG, shared_vdso.file, vdso);
+        if (binder.is_err()) {
+            log::error("userboot: the vDSO cannot be bound against: {}",
+                       to_string(binder.unwrap_err()));
+            return binder.unwrap_err();
+        }
+        status = binder.unwrap().bind(ELFLOAD_LOG, image.unwrap(), loaded.image);
+        if (Status::Ok != status) {
+            return status;
+        }
+
+        // Nothing to record: mapping the vDSO's VMO is what registered its range,
+        // on the address space, and the syscall path reaches it through the thread
+        // that trapped (VmaDispatcher::map()).
+
+        // The thread comes from the object layer too: ThreadDispatcher::create()
+        // makes the dispatcher, start() below makes its kernel thread with the
+        // aspace wiring (it knows the process), and the trampoline builds the
+        // frame that enters ring 3.
+        object::KernelHandle<object::ThreadDispatcher> thread;
+        status = object::ThreadDispatcher::create(process.dispatcher(), program.text, &thread);
+        if (Status::Ok != status) {
+            log::error("userabi: could not create the entry thread: {}", to_string(status));
+            return status;
+        }
+
+        // The root VMA goes back to whoever asked for the launch, who puts it in
+        // the processargs it writes once this returns: the one message a process
+        // gets is written after the process exists, as a launcher does it --
+        // first process_create, which hands back the root VMA, then the message
+        // (Zircon's process_builder; design 3.2). Made before the thread starts,
+        // so that a handle that cannot be made fails the launch rather than
+        // leaving a process running that nobody can give its region to.
+        if (root_vma_out) {
+            *root_vma_out = object::Handle::make(
+                object::KernelHandle<object::Dispatcher>(ustl::move(root_vma)), root_vma_rights);
+            if (!*root_vma_out) {
+                return Status::NoResource;
+            }
+        }
+
+        log::info("userabi: '{}' starts with {}", program.view(),
+                  bootstrap ? "a bootstrap handle" : "no handle");
+
+        // The same call a user-space launcher makes (process_start): the one
+        // handle the program starts with goes into its own table and its value
+        // into %rdi -- a process may also start with none (%rdi = 0) -- and a
+        // thread is told where in user space to begin.
+        //
+        // %rsi is the vDSO's base. It is not needed to make a system call -- the
+        // program's imports are bound before it runs -- but it is the one fact
+        // about its own address space a program cannot otherwise find, and a
+        // runtime that walks its own stack or binds itself later (P2) wants it.
+        status = process.dispatcher()->start(*thread.dispatcher(), loaded.image.entry,
+                                             initial_stack_pointer(loaded.stack_top),
+                                             ustl::move(bootstrap), vdso.base);
+        if (Status::Ok != status) {
+            log::error("userabi: could not start '{}': {}", program.view(), to_string(status));
+            return status;
+        }
+
+        // Every handle in this function goes out of scope here, and nothing leaks:
+        // the kernel thread holds the ThreadDispatcher, which holds the
+        // ProcessDispatcher, which owns the address space the mappings live in.
+        // The VMA and VMO dispatchers were the objects that were *allowed* to
+        // create those mappings, not the things that hold them.
+        return Status::Ok;
     }
-
-    log::info("userabi: '{}' starts with {}", program.view(),
-              bootstrap ? "a bootstrap handle" : "no handle");
-
-    // The same call a user-space launcher makes (process_start): the one
-    // handle the program starts with goes into its own table and its value
-    // into %rdi -- a process may also start with none (%rdi = 0) -- and a
-    // thread is told where in user space to begin.
-    //
-    // %rsi is the vDSO's base. It is not needed to make a system call -- the
-    // program's imports are bound before it runs -- but it is the one fact
-    // about its own address space a program cannot otherwise find, and a
-    // runtime that walks its own stack or binds itself later (P2) wants it.
-    status = process.dispatcher()->start(*thread.dispatcher(), loaded.image.entry,
-                                         initial_stack_pointer(loaded.stack_top),
-                                         ustl::move(bootstrap), vdso.base);
-    if (Status::Ok != status) {
-        log::error("userabi: could not start '{}': {}", program.view(), to_string(status));
-        return status;
-    }
-
-    // Every handle in this function goes out of scope here, and nothing leaks:
-    // the kernel thread holds the ThreadDispatcher, which holds the
-    // ProcessDispatcher, which owns the address space the mappings live in.
-    // The VMA and VMO dispatchers were the objects that were *allowed* to
-    // create those mappings, not the things that hold them.
-    return Status::Ok;
-}
+} // namespace
 
 auto userboot_init() -> void {
     u8 *package_buffer = nullptr;
@@ -836,12 +832,9 @@ auto userboot_init() -> void {
                   bootfs.file_data(index).size());
     }
 
-    // Kept, so that programs started later come out of the same package.
-    resident_package = ustl::some(package.unwrap());
-
     // The vDSO, once, before the first process: no process can run without
     // it, so failing here is failing to start user space at all.
-    if (auto const status = lay_out_vdso(*resident_package); Status::Ok != status) {
+    if (auto const status = lay_out_vdso(package.unwrap()); Status::Ok != status) {
         log::error("userabi: could not lay out the vDSO: {}", to_string(status));
         return;
     }
@@ -851,9 +844,10 @@ auto userboot_init() -> void {
     // fatal: the first program runs without a BootFS, which it can say, and
     // which is less than it would otherwise get rather than more.
     //
-    // The decompressed package stays where it is. Every program is still
-    // loaded out of it (launch()), and the kernel's own files are in it.
-    auto _ = make_user_bootfs(*resident_package, boot::options().kernel_name(), resident_bootfs,
+    // The decompressed package stays where it is, though nothing reads it
+    // once userboot has started: the BootFS VMO is a copy, and the vDSO VMO
+    // too. Freeing it waits on vfree() (docs/repairs/261003/userabi.md).
+    auto _ = make_user_bootfs(package.unwrap(), boot::options().kernel_name(), resident_bootfs,
                               resident_bootfs_rights);
 
     // The userboot program, always: `kernel.select.userboot` only picks which
@@ -882,8 +876,8 @@ auto userboot_init() -> void {
     }
 
     ustl::Box<object::Handle> root_vma;
-    auto const status =
-        launch(object::JobDispatcher::root_job(), program, ustl::move(bootstrap), &root_vma);
+    auto const status = launch(package.unwrap(), object::JobDispatcher::root_job(), program,
+                               ustl::move(bootstrap), &root_vma);
     if (Status::Ok != status) {
         log::error("userboot: {}={} could not be started: {}", boot::BootOptions::USERBOOT_OPTION,
                    program, to_string(status));
