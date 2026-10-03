@@ -1,25 +1,5 @@
 # kernel-panic outstanding repairs
 
-## 3. Two CPUs that panic at once both replay the ring and print
-
-**Severity**
-Low: the output is doubled and interleaved; nothing hangs.
-
-**Symptom**
-If two CPUs panic close together, each disables its own interrupts and asks the other to stop, which it cannot take. Each then waits out `suspend_others()`'s spin bound and goes on, so two replays and two messages come out interleaved, line by line.
-
-**Cause**
-`vpanic()` has no "a panic has already started" guard. Each CPU behaves as if it were the only one.
-
-**Change**
-An atomic flag claimed at the start of `vpanic()`. The first CPU to claim it does the report. Any later one halts at once, or prints only its own one-line message after a short marker, without replaying the ring.
-
-**Reference**
-Zircon `platform_panic_start()` guards the banner and the dump with `static ktl::atomic<int> panic_started`. Linux `panic()` uses `panic_cpu` (`atomic_try_cmpxchg`) and sends a second panicking CPU into `panic_smp_self_stop()`.
-
-**Acceptance**
-A test that makes two CPUs panic together shows one banner and one replay on dbg.
-
 ## 4. The replay repeats lines the console already showed, with nothing marking where it starts
 
 **Severity**

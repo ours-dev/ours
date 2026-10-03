@@ -35,7 +35,9 @@ leads to rather than by a prompt that never comes back. It is done once the
 panic banner and the line after it are in. It passes if that line is the
 panic message, an error-level line, and if the CPU that panicked printed
 nothing between the command and the banner: the reason comes first, before
-any context (other CPUs saying they have stopped may come before it).
+any context (other CPUs saying they have stopped may come before it). The
+console is then read for PANIC_SETTLE seconds more, and the banner must have
+come out exactly once: one panic report, however many CPUs panicked.
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -68,6 +70,11 @@ PANIC_BANNER = "OURS KERNEL PANIC"
 FAILED_LINE = re.compile(r"\bFAILED\b")
 NOISE = re.compile(LEVEL.format("debug|trace"))
 SETTLE = 1.0  # seconds between the end marker and the first command
+# Seconds a crash command's console is read after its first lines, for a
+# second panic report. A CPU that panics while another's report is under way
+# would, without the guard in vpanic(), first wait out suspend_others()'s
+# bound, which is several seconds under QEMU.
+PANIC_SETTLE = 10.0
 AFTER_VERDICT = 0.5  # seconds for a test to return from its verdict to the prompt
 TAIL = 512  # characters searched again, for a match that straddles two reads
 BURST = 64  # reads taken in per pump, so that a deadline is looked at in between
@@ -145,6 +152,14 @@ class Console:
     def kept(self) -> str:
         return "".join(self.parts)
 
+    def take(self, seconds: float) -> str:
+        """Takes in whatever arrives for |seconds|, and returns it."""
+        parts = []
+        until = time.monotonic() + seconds
+        while time.monotonic() < until and not self.gone:
+            parts.append(self._pump(0.2))
+        return "".join(parts)
+
     def drain(self, seconds: float) -> None:
         """Takes in, and drops, whatever arrives for |seconds|."""
         until = time.monotonic() + seconds
@@ -219,10 +234,12 @@ def judge(command: str, lines: list[str]) -> bool:
     return True
 
 
-def judge_crash(command: str, lines: list[str]) -> bool:
+def judge_crash(command: str, lines: list[str], after: str) -> bool:
     """Says whether the panic report |command| led to opens as it should:
     the banner, then the message, and nothing from the panicking CPU before
-    them. |lines| ends with the line after the banner."""
+    them; and whether it is the only report. |lines| ends with the line after
+    the banner, and |after| is what came in the PANIC_SETTLE seconds after
+    that."""
     banner = next(i for i, l in enumerate(lines) if PANIC_BANNER in l)
     message = lines[banner + 1] if banner + 1 < len(lines) else ""
     found = ERROR_CPU.search(message)
@@ -233,6 +250,10 @@ def judge_crash(command: str, lines: list[str]) -> bool:
     early = [l for l in lines[:banner] if tag in l and not NOISE.search(l)]
     if early:
         print(f"{command}: FAIL, {found.group(1)} printed {len(early)} line(s) before its panic banner")
+        return False
+    banners = sum(PANIC_BANNER in l for l in lines) + after.count(PANIC_BANNER)
+    if banners != 1:
+        print(f"{command}: FAIL, {banners} panic banners within {PANIC_SETTLE:.0f}s; want one report")
         return False
     print(f"{command}: ok")
     return True
@@ -292,7 +313,7 @@ def main(argv: list[str]) -> int:
                 results.append(False)
                 break
             if crash:
-                results.append(judge_crash(command, lines))
+                results.append(judge_crash(command, lines, console.take(PANIC_SETTLE)))
                 break
             results.append(judge(command, lines))
             if test:

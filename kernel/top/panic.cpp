@@ -1,5 +1,8 @@
+#include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/panic.hpp>
+
+#include <atomic>
 
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/halt.hpp>
@@ -7,6 +10,47 @@
 
 namespace ours {
 namespace {
+    /// Set by the first CPU to panic, which is the one that prints the report.
+    ///
+    /// Relaxed. The read-modify-writes of one atomic form a single total
+    /// order whatever memory order each uses, so exactly one exchange() ever
+    /// reads false. Nothing else is published through the flag: what a later
+    /// CPU leaves for the report reaches the first one through the Online
+    /// mask (see stop_this_cpu()).
+    std::atomic<bool> panic_started{false};
+
+    /// True for the first panic only. Zircon's platform_panic_start() elects
+    /// its reporter with an exchange on `panic_started` in the same way, and
+    /// Linux's panic() with a compare-exchange on `panic_cpu`.
+    auto claim_report() -> bool {
+        return !panic_started.exchange(true, std::memory_order_relaxed);
+    }
+
+    /// A sink that drops every line, for a line that belongs in the record
+    /// ring and nowhere else.
+    class RingOnly final: public logz4::Logger {
+      public:
+        auto write(char const *, usize) -> void override {}
+    };
+
+    /// Where every panic but the first ends: this CPU stops the way a
+    /// suspended one does (x86_handle_ipi_suspend()). Linux's
+    /// panic_smp_self_stop() is the counterpart.
+    ///
+    /// The Online bit goes first. This CPU has interrupts off and will never
+    /// take the first CPU's suspend IPI, so without the bit
+    /// IpiService::suspend_others() would wait out its whole bound for it.
+    /// Clearing it is also a release, and suspend_others() reads the mask
+    /// with an acquire: whatever this CPU put in the ring before it is there
+    /// when the first CPU replays the ring.
+    [[noreturn]]
+    auto stop_this_cpu() -> void {
+        Cpu::set_state(Cpu::id(), Cpu::State::Online, false);
+        while (1) {
+            arch::halt();
+        }
+    }
+
     /// Stops the rest of the machine before this CPU says anything.
     ///
     /// Disabling interrupts silences this CPU; it does nothing about the
@@ -69,6 +113,14 @@ namespace {
 /// time and CPU prefix, and the level tag that boot checks look for. It also
 /// puts it in the ring, so the replay ends with it once more.
 ///
+/// One report per machine, whoever panics. A CPU that panics while another
+/// CPU's panic is already under way prints nothing: without that, four CPUs
+/// panicking together printed four whole reports one after another, banner,
+/// message and replay each, as each in turn waited out the others in
+/// quiesce_machine(). It puts its message in the record ring instead, where
+/// the first CPU's replay shows it in time order, and stops. That includes a panic inside the panic path on
+/// the same CPU, which would otherwise start the report over from the top.
+///
 /// Panic mode comes first, before anything prints, the other CPUs' last
 /// words in quiesce_machine() included: the serial logger's lock may be held
 /// by a CPU that will never let go, and in panic mode a write stops waiting
@@ -77,6 +129,11 @@ template <typename String, typename FormatArgs>
 [[noreturn]]
 auto vpanic(String fmt, FormatArgs const &args) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
+    if (!claim_report()) {
+        RingOnly ring_only;
+        log::vlog(ring_only, logz4::Level::Error, fmt, args);
+        stop_this_cpu();
+    }
     logz4::enter_panic_mode();
     quiesce_machine();
 
@@ -104,6 +161,13 @@ template auto vpanic(std::string_view, std::format_args const &) -> void;
 [[noreturn]]
 auto vpanic(std::string_view message) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
+    if (!claim_report()) {
+        RingOnly ring_only;
+        log::vlog(ring_only, logz4::Level::Error,
+                  std::string_view("panicked while another panic was under way: {}"),
+                  std::make_format_args(message));
+        stop_this_cpu();
+    }
     logz4::enter_panic_mode();
     quiesce_machine();
 

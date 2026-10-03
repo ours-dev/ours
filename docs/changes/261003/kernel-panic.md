@@ -177,3 +177,88 @@ None. The user asked for the code first and the reasoning afterwards, because ti
 - Which invariant does the serial logger's lock protect, and which two ways can it be held by a CPU that will never release it at panic time?
 - Why must a write that went ahead without the lock leave it set, and what breaks if it clears it?
 - Why is the bound measured in TSC ticks and sized to one line, and why is it paid only once per panic?
+
+## Title: only the first CPU to panic prints a report; a later one leaves its message in the ring and stops (2026-10-03)
+
+**Files**
+- `kernel/top/panic.cpp` — `panic_started` and `claim_report()` elect the reporter; a CPU that loses logs its message into the ring only (`RingOnly`) and stops in `stop_this_cpu()`
+- `kernel/commands/crash.cpp` — `crash panic-smp`: every online CPU meets in a `sync_exec()` task and panics at the same moment
+- `scripts/kshell_run.py` — after a crash command's first lines the console is read for `PANIC_SETTLE` (10 s) more, and the banner must have come out exactly once
+- `docs/repairs/261003/kernel-panic.md` — item 3 removed
+
+**Symptom**
+With `crash panic-smp` on the old code, all four CPUs printed a full report. Both images showed four banners within 10 s. In the rel log the reports came one after another: cpu0's banner, message and replay, then cpu3's, then cpu2's, then cpu1's, each replay ending with the messages of every report before it. Nothing hung, but the first report, the one that matters, was followed by three more that looked just like it.
+
+**Cause**
+`vpanic()` had no notion that a panic might already be under way. Each panicking CPU behaved as if it were the only one:
+- It disabled its own interrupts, so it could not take the others' suspend IPIs.
+- It called `suspend_others()`, which sent IPIs nobody could take and then waited out its whole bound. The CPUs left that wait at slightly different moments, which is why the reports came out one after another rather than mixed.
+- Each then printed a banner, a message and a full replay.
+
+The repair item expected line-by-line interleaving. The serial lock keeps lines whole, and the staggered exits from `suspend_others()` turned that into four whole reports instead. Either way the report is not one report, and a tool counting banners counts four panics.
+
+**Change**
+One atomic flag, claimed right after interrupts go off:
+
+```cpp
+std::atomic<bool> panic_started{false};
+
+auto claim_report() -> bool {
+    return !panic_started.exchange(true, std::memory_order_relaxed);
+}
+```
+
+```cpp
+arch::AutoInterruptDisabler local_irq_disabler{};
+if (!claim_report()) {
+    RingOnly ring_only;
+    log::vlog(ring_only, logz4::Level::Error,
+              std::string_view("panicked while another panic was under way: {}"),
+              std::make_format_args(message));
+    stop_this_cpu();
+}
+logz4::enter_panic_mode();
+quiesce_machine();
+```
+
+The pieces, and why each is enough:
+- **The election is relaxed.** The read-modify-writes of one atomic form a single total order (its modification order) whatever memory order each uses, so exactly one `exchange()` reads false. The flag publishes nothing else, so it needs no acquire or release.
+- **A loser prints nothing, but its message is not lost.** It logs into a sink that drops every line (`RingOnly`), so the line goes into the record ring and nowhere else. The winner's replay then shows it in time order. The ring needs no lock (`ring::append()` claims a slot by CAS), so this is safe from any CPU.
+- **A loser stops the way a suspended CPU does.** `stop_this_cpu()` clears its Online bit and halts, as `x86_handle_ipi_suspend()` does. It has interrupts off and will never take the winner's IPI, so without the bit `suspend_others()` would wait out its whole bound for it.
+- **The ring line reaches the replay through the Online mask.** The loser appends to the ring, then clears its bit with a release CAS. `suspend_others()` reads the mask with an acquire, and returns only once the bit is clear. So by the time the winner replays, the loser's slot is committed and visible.
+- **The claim comes before panic mode and before quiesce.** A loser must not stop other CPUs or touch the console at all.
+
+A panic inside the panic path, on the winning CPU itself, also loses the election: its message goes to the ring and the CPU stops. Before, it would have started the whole report again from the top, and if the report itself was what faulted, it would recurse until the stack ran out.
+
+The test, `crash panic-smp`, gives every online CPU a `panic_together()` task through `IpiService::sync_exec()`: the others run it from their interrupt handlers, and this CPU runs it after the IPIs are out. Each task counts itself in and spins until all have arrived, then panics, so the panics start within a few instructions of each other. Without the rendezvous they would start an IPI's latency apart, and the first CPU could stop the others before they reached `panic()`. The rendezvous is unbounded on purpose: panicking anyway after a timeout would let the test pass without the panics having overlapped.
+
+Options considered:
+- Print the loser's message live, as Zircon's `vpanic()` does after `platform_panic_start()`. Rejected: it lands somewhere in the middle of the winner's report, and the ring puts it in the replay in its right place for free.
+- Let a nested panic on the same CPU carry on, as Linux's `panic()` does when `panic_cpu` is already this CPU. Rejected for now: if the report is what faulted, it faults again.
+
+**Reference**
+- Zircon `platform_panic_start()` (`zircon/kernel/platform/pc/power.cc`): `static ktl::atomic<int> panic_started`, and `panic_started.exchange(1) == 0` guards `dlog_bluescreen_init()`, the banner.
+- Linux `panic()` (`kernel/panic.c`): `atomic_try_cmpxchg(&panic_cpu, &old_cpu, this_cpu)`; a CPU that loses to another CPU calls `panic_smp_self_stop()`, which spins for ever.
+
+**Verification**
+- With `claim_report()` forced to true (the guard off), `kshell_run.py "crash panic-smp"`: FAIL on both images, "4 panic banners within 10s".
+- With the guard, `crash panic-smp`: ok on both images. On rel, cpu3 won. The replay held the three losers' lines, each "panicked while another panic was under way: crash: ...", from cpu2, cpu1 and cpu0, at TSC 4543156000, 4543162000 and 4543187000. After them came cpu3's own message at 4543365000. One banner, one replay. On dbg, cpu1 won, and cpu3, cpu2 and cpu0 left their lines in the same way.
+- `crash panic` and `crash panic-locked`: still ok on both images, now also checked for a single banner.
+- `boot_check.py --out out/kernel-panic`: dbg PASS (19 passed, 0 error lines), rel PASS (13 passed, 10 skipped, 0 error lines).
+- clang-format clean; clang-tidy reports nothing in the changed files.
+
+**Deliberately not done**
+- A nested panic on the winning CPU leaves its message in the ring only, and the report it interrupted is cut short. A one-line note on the console for that case would need the winner's CPU number, and a second guard against the note itself faulting.
+- `suspend_others()` still bounds its wait in spins, so under QEMU a CPU that never answers costs it seconds (the previous entry measured a spin at about 640 ns). It was not needed here, because losers now clear their own Online bit.
+- The losers' lines are not marked in the replay beyond their text. Bracketing the replay is repair item 4.
+
+**How it was found**
+None for the problem, which was recorded by reading the panic path (commit 59a0e665). The four-reports-in-a-row shape was seen by running `crash panic-smp` with the guard disabled, which is also how the test was shown to fail without the fix.
+
+**The user's prediction**
+None. The user asked for the code first and the reasoning afterwards, because time was short.
+
+**Three questions you should be able to answer**
+- Why is a relaxed `exchange()` enough to elect exactly one reporter, when the CPUs race with no other synchronisation?
+- How does a losing CPU's message get into the winner's replay, and which release and acquire make sure it is visible there?
+- Why must a losing CPU clear its own Online bit, and what would the winner do if it did not?
