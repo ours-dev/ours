@@ -69,6 +69,9 @@ inline constexpr auto HANDLE_MAX_PER_PROCESS = u32{1024};
 /// knows is a limit the caller discovers as Status::OutOfRange.
 inline constexpr auto MAX_DEBUG_WRITE = usize{256};
 
+/// The most bytes one debug_read call may return.
+inline constexpr auto MAX_DEBUG_READ = usize{256};
+
 /// The size of an object's name, its terminator included: a process, thread,
 /// VMO or resource keeps at most the first 31 bytes of the name it is given,
 /// and process_create and thread_create cut a longer one rather than refuse

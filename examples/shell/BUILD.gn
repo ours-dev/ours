@@ -26,7 +26,10 @@ user_executable("shell") {
     "//kernel/products/image/*",
   ]
 
-  sources = [ "shell.cpp" ]
+  sources = [
+    "shell.cpp",
+    "shell_tests.cpp",
+  ]
 
   # The system calls this program makes are the vDSO's, already on the link
   # line (user_executable() puts it there). The runtime is its entry point,

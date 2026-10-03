@@ -80,6 +80,43 @@ ours_syscalls = [
     ret = "Status"
   },
   {
+    name = "debug_read"
+    brief = "Reads bytes from the serial debug console."
+    doc = [
+      "Requires the System Debug resource and kernel.debug_read=true. Waits",
+      "for at least one byte, then reads up to |length| currently available",
+      "bytes. Carriage return is translated to newline. A |length| of 0 is",
+      "Ok without waiting. The debug console is not a general terminal or",
+      "standard-input service.",
+    ]
+    args = [
+      {
+        name = "resource"
+        type = "Uandle"
+      },
+      {
+        name = "buffer"
+        type = "char"
+        dir = "out"
+        count = "length"
+      },
+      {
+        name = "length"
+        type = "usize"
+      },
+      {
+        name = "actual"
+        type = "usize"
+        dir = "out"
+      },
+    ]
+    attrs = [
+      "blocking",
+      "debug",
+    ]
+    ret = "Status"
+  },
+  {
     name = "command_list"
     brief = "Writes the kernel's command registry into |buffer| as text."
     doc = [

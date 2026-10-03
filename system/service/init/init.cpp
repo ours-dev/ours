@@ -30,6 +30,7 @@
 /// are started from, and nothing yet would notice it gone.
 
 #include <ours/process_args.hpp>
+#include <ours/rights.hpp>
 #include <ours/signals.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
@@ -111,7 +112,7 @@ auto spawn_then_write(ours::Uandle const job, std::string_view const name, ours:
                       std::span<ours::Uandle const> const handles) -> ours::Status {
     using ours::Status;
 
-    ours::Uandle all[4] = {};
+    ours::Uandle all[8] = {};
     ours::Uandle root_vma = ours::Uandle::Invalid;
     auto const spawned = ours::process_spawn_boot(job, name.data(), name.size(), there, &root_vma);
     if (spawned != Status::Ok) {
@@ -172,29 +173,90 @@ auto start_autorun(ours::Uandle const job, std::string_view const command) -> ou
                             {message, length}, {});
 }
 
-/// Starts the shell under |job| with |peer| -- the far end of the channel
-/// init talks to it on -- as its User0 startup handle, and argv {"shell"}.
+/// Starts the shell under |job| with |peer| as its User0 startup handle,
+/// duplicated launcher handles, and the System Debug resource for COM1.
 ///
-/// The conversation cannot use the shell's bootstrap channel, which the
-/// runtime closes as soon as it has read the processargs off it: init would
-/// see PEER_CLOSED before the shell had said anything. The shell gets no job
-/// either -- it needs none to answer a ping, and the dev image packages
-/// nothing for it to start.
+/// The liveness channel is separate from the bootstrap channel, which the
+/// runtime closes as soon as it has read processargs. The shell answers init's
+/// ping on the liveness channel, then keeps running its command loop.
 ///
 /// The message is written after the shell exists (spawn_then_write()), since
-/// its root VMA goes in it. |peer| and the shell's bootstrap end leave this
-/// process whatever the answer.
-auto start_shell(ours::Uandle const job, ours::Uandle peer) -> ours::Status {
+/// its root VMA goes in it. The duplicated handles and |peer| leave init with
+/// the processargs message; init retains its original launcher handles.
+auto start_shell(ours::Uandle const job, ours::Uandle const bootfs, ours::Uandle const vmex,
+                 ours::Uandle const vdso, ours::Uandle debug, ours::Uandle peer) -> ours::Status {
     using ours::Status;
 
-    u8 message[128];
-    u32 length = 0;
-    u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0),
-                         ours::handle_info(ours::HandleType::VmaRoot, 0)};
-    std::string_view const args[] = {{SHELL.data(), SHELL.size()}};
-    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
-        status != Status::Ok) {
+    if (debug == ours::Uandle::Invalid) {
         auto _ = ours::handle_close(peer);
+        return Status::BadHandle;
+    }
+
+    ours::Uandle handed[6] = {};
+    u32 infos[7] = {};
+    u32 count = 0;
+    handed[count] = peer;
+    infos[count++] = ours::handle_info(ours::HandleType::User0, 0);
+
+    auto const append_duplicate = [&](ours::Uandle const original, ours::HandleType const type,
+                                      u16 const arg) -> Status {
+        if (original == ours::Uandle::Invalid) {
+            return Status::Ok;
+        }
+        auto duplicate = ours::Uandle::Invalid;
+        if (auto const status =
+                ours::handle_duplicate(original, ours::Rights::SameRights, &duplicate);
+            status != Status::Ok) {
+            return status;
+        }
+        handed[count] = duplicate;
+        infos[count++] = ours::handle_info(type, arg);
+        return Status::Ok;
+    };
+
+    if (auto const status = append_duplicate(job, ours::HandleType::JobDefault, 0);
+        status != Status::Ok) {
+        for (u32 index = 0; index < count; ++index) {
+            auto _ = ours::handle_close(handed[index]);
+        }
+        return status;
+    }
+    if (auto const status = append_duplicate(bootfs, ours::HandleType::VmoBootfs, 0);
+        status != Status::Ok) {
+        for (u32 index = 0; index < count; ++index) {
+            auto _ = ours::handle_close(handed[index]);
+        }
+        return status;
+    }
+    if (auto const status = append_duplicate(vmex, ours::HandleType::SystemResource,
+                                             u16(ours::RSRC_SYSTEM_VMEX_BASE));
+        status != Status::Ok) {
+        for (u32 index = 0; index < count; ++index) {
+            auto _ = ours::handle_close(handed[index]);
+        }
+        return status;
+    }
+    if (auto const status = append_duplicate(vdso, ours::HandleType::VmoVdso, 0);
+        status != Status::Ok) {
+        for (u32 index = 0; index < count; ++index) {
+            auto _ = ours::handle_close(handed[index]);
+        }
+        return status;
+    }
+    handed[count] = debug;
+    infos[count++] =
+        ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_DEBUG_BASE));
+    infos[count] = ours::handle_info(ours::HandleType::VmaRoot, 0);
+
+    u8 message[256];
+    u32 length = 0;
+    std::string_view const args[] = {{SHELL.data(), SHELL.size()}};
+    if (auto const status =
+            ours::encode_process_args(message, {infos, count + 1}, args, {}, {}, &length);
+        status != Status::Ok) {
+        for (u32 index = 0; index < count; ++index) {
+            auto _ = ours::handle_close(handed[index]);
+        }
         return status;
     }
 
@@ -203,11 +265,13 @@ auto start_shell(ours::Uandle const job, ours::Uandle peer) -> ours::Status {
     if (auto const status =
             ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
         status != Status::Ok) {
-        auto _ = ours::handle_close(peer);
+        for (u32 index = 0; index < count; ++index) {
+            auto _ = ours::handle_close(handed[index]);
+        }
         return status;
     }
-    ours::Uandle const handed[] = {peer};
-    return spawn_then_write(job, SHELL, bootstrap, bootstrap_there, {message, length}, handed);
+    return spawn_then_write(job, SHELL, bootstrap, bootstrap_there, {message, length},
+                            {handed, count});
 }
 } // namespace
 
@@ -221,7 +285,8 @@ auto main(int, char **) -> int {
         halt();
     }
     auto _ = ort::debug_line("init: started with the root job");
-    describe_bootfs(ort::take_startup_handle(ours::HandleType::VmoBootfs, 0));
+    auto const bootfs = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+    describe_bootfs(bootfs);
 
     // vmex, handed on by userboot: the capability to make a VMO executable
     // (design D3). init keeps it for its own launcher and hands it to nobody
@@ -238,6 +303,8 @@ auto main(int, char **) -> int {
     // processes it starts once its launcher exists (K23). Held, unused, until
     // then.
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                                u16(ours::RSRC_SYSTEM_DEBUG_BASE));
     if (vdso != ours::Uandle::Invalid) {
         auto _ = ort::debug_line("init: vdso vmo ok");
     } else {
@@ -251,7 +318,8 @@ auto main(int, char **) -> int {
         report("init: channel_create = ", status);
         halt();
     }
-    if (auto const status = start_shell(job, peer); status != Status::Ok) {
+    if (auto const status = start_shell(job, bootfs, vmex, vdso, debug, peer);
+        status != Status::Ok) {
         report("init: spawning shell = ", status);
         halt();
     }

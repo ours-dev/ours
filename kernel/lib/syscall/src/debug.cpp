@@ -3,8 +3,12 @@
 #include <syscall/handlers.hpp>
 
 #include <logz4/log.hpp>
+#include <ours/boot/options.hpp>
+#include <ours/object/resource_dispatcher.hpp>
+#include <ours/platform/debug_console.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall.hpp>
+#include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 
 namespace ours::syscall {
@@ -56,5 +60,38 @@ auto debug_write(user_copy::UserInPtr<char const> const buffer, usize const leng
     // of a line the program intends to continue.
     log::get_global_logger().write(text, length);
     return Status::Ok;
+}
+
+auto debug_read(Uandle const resource, user_copy::UserOutPtr<char> const buffer, usize const length,
+                user_copy::UserOutPtr<usize> const actual) -> Status {
+    if (!ours::boot::options().debug_read()) {
+        return Status::NotSupported;
+    }
+    if (auto const status =
+            object::validate_ranged_resource(resource, RsrcKind::System, RSRC_SYSTEM_DEBUG_BASE, 1);
+        status != Status::Ok) {
+        return status;
+    }
+    if (length > MAX_DEBUG_READ) {
+        return Status::OutOfRange;
+    }
+
+    usize bytes_read = 0;
+    if (auto const status = actual.copy_to_user(bytes_read); status != Status::Ok) {
+        return status;
+    }
+    if (length == 0) {
+        return Status::Ok;
+    }
+
+    char text[MAX_DEBUG_READ];
+    if (auto const status = platform::debug_console_read(text, length, &bytes_read);
+        status != Status::Ok) {
+        return status;
+    }
+    if (auto const status = buffer.copy_array_to_user(text, bytes_read); status != Status::Ok) {
+        return status;
+    }
+    return actual.copy_to_user(bytes_read);
 }
 } // namespace ours::syscall

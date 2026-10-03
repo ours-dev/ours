@@ -3,6 +3,7 @@ source_set("pc") {
     # acpi.cpp was absent from this list, so g_acpi_parser had no definition and
     # the AcpiInit hook that fills it never got linked in.
     "acpi.cpp",
+    "debug_console.cpp",
     "init.cpp",
     "memory.cpp",
     "hpet.cpp",

@@ -383,8 +383,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[5];
-        u32 infos[5] = {};
+        ustl::Box<object::Handle> handles[6];
+        u32 infos[6] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -436,12 +436,20 @@ namespace {
         }
         infos[count++] = handle_info(HandleType::VmoVdso, 0);
 
+        if (boot::options().debug_read()) {
+            handles[count] = make_system_resource_handle(RSRC_SYSTEM_DEBUG_BASE, "debug");
+            if (!handles[count]) {
+                return Status::NoResource;
+            }
+            infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_DEBUG_BASE));
+        }
+
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, five handle_infos, a program name
+        // fail for want of room: the header, six handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
         // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 5 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 6 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};

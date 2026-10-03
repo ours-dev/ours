@@ -12,6 +12,7 @@ if (toolchain_environment == "kernel") {
 cpp_interface("headers") {
   public = [
     "include/ours/platform/acpi.hpp",
+    "include/ours/platform/debug_console.hpp",
     "include/ours/platform/init.hpp",
     "include/ours/platform/interrupt.hpp",
     "include/ours/platform/isa.hpp",

@@ -39,6 +39,9 @@ class BootOptions final {
     /// the same default; see shell().
     static constexpr std::string_view SHELL_OPTION{"kernel.shell"};
 
+    /// Whether userspace may read from the serial debug console.
+    static constexpr std::string_view DEBUG_READ_OPTION{"kernel.debug_read"};
+
     /// The kernel's own directory in the kernel package, by the option phys
     /// boots it by; see kernel_name().
     static constexpr std::string_view KERNEL_NAME_OPTION{"kernel.name"};
@@ -105,6 +108,13 @@ class BootOptions final {
         return m_shell;
     }
 
+    /// `kernel.debug_read`, `kernel.debug_read=true`: permit debug_read when
+    /// the caller also holds the System Debug resource. False when absent.
+    [[nodiscard]]
+    auto debug_read() const -> bool {
+        return m_debug_read;
+    }
+
     /// `kernel.name=<dir>`; "vmours" when absent -- phys::BootOptions'
     /// default, since both must name the same directory.
     ///
@@ -132,6 +142,7 @@ class BootOptions final {
 
   private:
     bool m_shell{false};
+    bool m_debug_read{false};
 
     /// A copy, NUL-terminated, rather than a view into the command line: the
     /// value is a slice of the Config item that ends at a space, and holding

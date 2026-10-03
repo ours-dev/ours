@@ -48,8 +48,11 @@ enum class RsrcFlag : u32 {
 /// mints this one slot and hands it to the first process only.
 inline constexpr u64 RSRC_SYSTEM_VMEX_BASE = 1;
 
+/// Reading bytes from the serial debug console.
+inline constexpr u64 RSRC_SYSTEM_DEBUG_BASE = 2;
+
 /// One past the last System slot this kernel knows.
-inline constexpr u64 RSRC_SYSTEM_COUNT = 2;
+inline constexpr u64 RSRC_SYSTEM_COUNT = 3;
 
 } // namespace ours
 

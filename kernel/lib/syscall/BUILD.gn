@@ -65,6 +65,7 @@ source_set("syscall") {
     "//kernel/lib/gktl",
     "//kernel/lib/logz4",
     "//kernel/mm",
+    "//kernel/platform:headers",
 
     # The call numbers, generated from //system/public/ours/syscalls.gni.
     "//system/public:syscalls.private",

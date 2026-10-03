@@ -129,7 +129,8 @@ kernel_cmdline("cmdline") {
   ]
   args = [
     "userboot.next=init",
-    "kernel.shell=true",
+    "kernel.shell=false",
+    "kernel.debug_read=true",
   ]
 
   # A build's own program to run once the shell is up (ours.autorun,
