@@ -15,19 +15,26 @@ source_set("plan") {
 }
 
 # The user-space launcher: how a program from BootFS becomes a running process.
-# start() carries out a plan through system calls, so it is defined only in
-# the user toolchains, where a program has the vDSO to call. Keyed on
+# start() carries out a plan through system calls, and the BootFS launcher
+# (launch/bootfs.hpp) finds a program by name for it, so both are defined only
+# in the user toolchains, where a program has the vDSO to call. Keyed on
 # is_host_toolchain as well, since toolchain_environment reads "user" in the
-# host toolchain too (see //system/lib/ort): the host builds the
-# planner's tests, and must never reach a system call.
+# host toolchain too (see //system/lib/ort): the host builds the planner's
+# tests, and must never reach a system call.
 if (!is_host_toolchain && toolchain_environment == "user") {
   source_set("launch") {
-    sources = [ "src/launch.cpp" ]
+    sources = [
+      "src/launch.cpp",
+      "src/bootfs.cpp",
+    ]
     public_deps = [
       ":headers",
       ":plan",
     ]
-    deps = [ "//system/lib/elfload" ]
+    deps = [
+      "//system/lib/bootfs:headers",
+      "//system/lib/elfload",
+    ]
   }
 }
 
@@ -36,6 +43,7 @@ if (!is_host_toolchain && toolchain_environment == "user") {
 # //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
   public = [
+    "include/launch/bootfs.hpp",
     "include/launch/launch.hpp",
     "include/launch/plan.hpp",
     "include/launch/program.hpp",

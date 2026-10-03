@@ -41,6 +41,8 @@
 #include "shell_launcher.hpp"
 #include "shell_tests.hpp"
 #include <bootfs/format.hpp>
+#include <bootfs/view.hpp>
+#include <launch/bootfs.hpp>
 #include <launch/launch.hpp>
 #include <launch/program.hpp>
 #include <ort/debug.hpp>
@@ -76,7 +78,6 @@ class Registry {
 };
 
 constexpr std::string_view BANNER{"ours shell: user-mode serial command shell"};
-constexpr u64 SHELL_PAGE_BYTES = 4096;
 
 /// Prints "<what><status name>" on a line of its own.
 auto report(std::string_view const what, ours::Status const status) -> void {
@@ -145,162 +146,17 @@ auto describe_bootfs(ours::Uandle const bootfs) -> void {
         ort::debug_line({"shell: bootfs has ", ort::decimal(header.file_count, count), " entries"});
 }
 
-/// The vDSO is read once into static storage because there is no allocator.
-alignas(16) u8 vdso_bytes[16 * 1024];
-
-/// Finds |name| in the BootFS's directory, which it reads the way
-/// check_bootfs() does: NotFound when it is not there, OutOfRange for a
-/// directory larger than this function's buffers, or vmo_read's answer.
-auto find_in_bootfs(ours::Uandle const bootfs, std::string_view const name,
-                    bootfs::Entry *const out) -> ours::Status {
-    using ours::Status;
-
-    constexpr u32 MAX_ENTRIES = 16;
-    constexpr u32 MAX_NAMES = 512;
-    bootfs::Header header{};
-    bootfs::Entry entries[MAX_ENTRIES];
-    char names[MAX_NAMES];
-    if (auto const status = ours::vmo_read(bootfs, &header, 0, sizeof(header));
-        status != Status::Ok) {
-        return status;
+/// The `ls` built-in: every file's name, from the BootFS the launcher mapped
+/// (launch::BootfsLauncher::bootfs_file), checked by bootfs::View on the way.
+auto list_bootfs(std::span<u8 const> const bootfs_file) -> ours::Status {
+    auto const view = bootfs::View::from({bootfs_file.data(), bootfs_file.size()});
+    if (view.is_err()) {
+        return view.unwrap_err();
     }
-    if (header.file_count > MAX_ENTRIES || header.name_table_size > MAX_NAMES) {
-        return Status::OutOfRange;
+    for (u32 index = 0; index < view.unwrap().file_count(); ++index) {
+        auto _ = ort::debug_line(view.unwrap().file_name(index));
     }
-    auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
-    if (auto const status = ours::vmo_read(bootfs, entries, sizeof(header), entries_size);
-        status != Status::Ok) {
-        return status;
-    }
-    if (auto const status =
-            ours::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size);
-        status != Status::Ok) {
-        return status;
-    }
-    for (u32 i = 0; i < header.file_count; ++i) {
-        auto const &entry = entries[i];
-        if (u64{entry.name_offset} + entry.name_size <= header.name_table_size &&
-            spells(names + entry.name_offset, entry.name_size, name)) {
-            *out = entry;
-            return Status::Ok;
-        }
-    }
-    return Status::NotFound;
-}
-
-auto list_bootfs(ours::Uandle const bootfs) -> ours::Status {
-    using ours::Status;
-
-    constexpr u32 MAX_ENTRIES = 16;
-    constexpr u32 MAX_NAMES = 512;
-    bootfs::Header header{};
-    bootfs::Entry entries[MAX_ENTRIES];
-    char names[MAX_NAMES];
-    if (auto const status = ours::vmo_read(bootfs, &header, 0, sizeof(header));
-        status != Status::Ok) {
-        return status;
-    }
-    if (header.magic != bootfs::Header::MAGIC) {
-        return Status::InvArgs;
-    }
-    if (header.file_count > MAX_ENTRIES || header.name_table_size > MAX_NAMES) {
-        return Status::OutOfRange;
-    }
-    auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
-    if (auto const status = ours::vmo_read(bootfs, entries, sizeof(header), entries_size);
-        status != Status::Ok) {
-        return status;
-    }
-    if (auto const status =
-            ours::vmo_read(bootfs, names, sizeof(header) + entries_size, header.name_table_size);
-        status != Status::Ok) {
-        return status;
-    }
-    for (u32 index = 0; index < header.file_count; ++index) {
-        auto const &entry = entries[index];
-        if (u64{entry.name_offset} + entry.name_size > header.name_table_size) {
-            return Status::InvArgs;
-        }
-        auto _ = ort::debug_line(std::string_view{names + entry.name_offset, entry.name_size});
-    }
-    return Status::Ok;
-}
-
-/// The launcher: the BootFS made executable with vmex, and the vDSO's bytes
-/// read out of it. An invalid `executable` means program launching is
-/// unavailable, while the shell's built-ins remain usable.
-auto make_launcher(ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
-                   ours::Uandle const vma) -> Launcher {
-    using ours::Status;
-
-    Launcher launcher{};
-    if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
-        vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
-        auto _ = ort::debug_line(
-            "shell: launcher checks FAILED (missing BootFS, vmex, vDSO or VmaRoot)");
-        return launcher;
-    }
-    bootfs::Entry entry{};
-    if (auto const status = find_in_bootfs(bootfs, "vdso", &entry); status != Status::Ok) {
-        report("shell: launcher checks FAILED, finding the vdso in the BootFS = ", status);
-        return launcher;
-    }
-    if (entry.data_size > sizeof(vdso_bytes)) {
-        auto _ = ort::debug_line(
-            "shell: launcher checks FAILED (the vdso is larger than the shell's buffer)");
-        return launcher;
-    }
-    if (auto const status = ours::vmo_read(bootfs, vdso_bytes, entry.data_offset, entry.data_size);
-        status != Status::Ok) {
-        report("shell: launcher checks FAILED, reading the vdso = ", status);
-        return launcher;
-    }
-    ours::Uandle copy = ours::Uandle::Invalid;
-    if (auto const status = ours::handle_duplicate(bootfs, ours::Rights::SameRights, &copy);
-        status != Status::Ok) {
-        report("shell: launcher checks FAILED, handle_duplicate(the BootFS) = ", status);
-        return launcher;
-    }
-    // Consumes |copy| whatever it answers.
-    ours::Uandle executable = ours::Uandle::Invalid;
-    if (auto const status = ours::vmo_replace_as_executable(copy, vmex, &executable);
-        status != Status::Ok) {
-        report("shell: launcher checks FAILED, vmo_replace_as_executable(the BootFS) = ", status);
-        return launcher;
-    }
-
-    bootfs::Header header{};
-    if (auto const status = ours::vmo_read(bootfs, &header, 0, sizeof(header));
-        status != Status::Ok) {
-        report("shell: mapping the BootFS, reading its header = ", status);
-        auto _ = ours::handle_close(executable);
-        return launcher;
-    }
-    auto const padding =
-        (SHELL_PAGE_BYTES - header.total_size % SHELL_PAGE_BYTES) % SHELL_PAGE_BYTES;
-    auto const mapping_size = header.total_size + padding;
-    if (mapping_size < header.total_size ||
-        mapping_size > static_cast<u64>(std::numeric_limits<usize>::max())) {
-        auto _ = ort::debug_line("shell: mapping the BootFS would overflow its address space");
-        auto _ = ours::handle_close(executable);
-        return launcher;
-    }
-    ours::VirtAddr bootfs_address = 0;
-    if (auto const status = ours::vma_map(vma, ours::VmOptions::PermRead, 0, bootfs, 0,
-                                          static_cast<usize>(mapping_size), &bootfs_address);
-        status != Status::Ok) {
-        report("shell: mapping the BootFS = ", status);
-        auto _ = ours::handle_close(executable);
-        return launcher;
-    }
-
-    launcher.executable = executable;
-    launcher.bootfs = bootfs;
-    launcher.vdso = vdso;
-    launcher.bootfs_file = {reinterpret_cast<u8 const *>(bootfs_address),
-                            static_cast<usize>(header.total_size)};
-    launcher.vdso_file = {vdso_bytes, entry.data_size};
-    return launcher;
+    return ours::Status::Ok;
 }
 
 /// The launcher's reports, on the debug console: why it refused or failed,
@@ -330,53 +186,35 @@ auto print_launch_report(void *, elfload::Report const &report) -> void {
         {prefix, {report.what.data(), report.what.size()}, separator, name, space, value});
 }
 
+/// The launcher (launch::make_bootfs_launcher()): the BootFS mapped and made
+/// executable with vmex, and the vDSO found in it. An invalid `executable`
+/// means program launching is unavailable, while the shell's built-ins
+/// remain usable. The library says which step failed (print_launch_report());
+/// this adds the verdict K23's check reads.
+auto make_launcher(ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
+                   ours::Uandle const vma) -> Launcher {
+    if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
+        vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
+        auto _ = ort::debug_line(
+            "shell: launcher checks FAILED (missing BootFS, vmex, vDSO or VmaRoot)");
+        return {};
+    }
+    auto made = launch::make_bootfs_launcher(bootfs, vmex, vdso, vma,
+                                             {.report = print_launch_report, .context = nullptr});
+    if (made.is_err()) {
+        report("shell: launcher checks FAILED, setting the launcher up = ", made.unwrap_err());
+        return {};
+    }
+    return made.unwrap();
+}
+
 /// Starts |name| from the BootFS under |job| with the launcher, |bootstrap|
-/// as its one handle (consumed whatever the answer, as launch::start()
-/// consumes it). The program's file is a slice of the executable BootFS, and
-/// its bytes come from the shell's read-only BootFS mapping.
-/// What fails here before launch::start() says so itself, since its status
-/// alone could be mistaken for one of the launcher's.
+/// as its one handle, consumed whatever the answer
+/// (launch::launch_from_bootfs()).
 auto launch_program(Launcher const &launcher, ours::Uandle const job, std::string_view const name,
                     ours::Uandle const bootstrap) -> ustl::Result<launch::Started, ours::Status> {
-    using ours::Status;
-
-    bootfs::Entry entry{};
-    ours::Uandle file = ours::Uandle::Invalid;
-    std::span<u8 const> file_bytes;
-    auto status = find_in_bootfs(launcher.bootfs, name, &entry);
-    if (status != Status::Ok) {
-        report("shell: finding the program in the BootFS = ", status);
-    } else if (entry.data_offset + entry.data_size < entry.data_offset ||
-               entry.data_offset + entry.data_size > launcher.bootfs_file.size()) {
-        auto _ = ort::debug_line("shell: the program lies outside the BootFS mapping");
-        status = Status::OutOfRange;
-    } else {
-        file_bytes = launcher.bootfs_file.subspan(static_cast<usize>(entry.data_offset),
-                                                  static_cast<usize>(entry.data_size));
-        status = ours::vmo_create_child(launcher.executable, ours::VmoChildOptions::Slice,
-                                        entry.data_offset, entry.data_size, &file);
-        if (status != Status::Ok) {
-            report("shell: slicing the program out of the BootFS = ", status);
-        }
-    }
-    if (status != Status::Ok) {
-        auto _ = ours::handle_close(bootstrap);
-        return ustl::err(status);
-    }
-    auto started = launch::start({
-        .job = job,
-        .name = {name.data(), name.size()},
-        .file = file,
-        .file_bytes = file_bytes,
-        .vdso = launcher.vdso,
-        .vdso_file = launcher.vdso_file,
-        .bootstrap = bootstrap,
-        .diagnostics = {.report = print_launch_report, .context = nullptr},
-    });
-    // The mappings of the program's code hold the file's VMO; this handle is
-    // not needed for them.
-    auto _ = ours::handle_close(file);
-    return started;
+    return launch::launch_from_bootfs(launcher, job, name, bootstrap,
+                                      {.report = print_launch_report, .context = nullptr});
 }
 
 auto launch_for_tests(void *const context, ours::Uandle const job, std::string_view const name,
@@ -486,7 +324,7 @@ auto dispatch_command(Launcher const &launcher, ours::Uandle const job,
         return false;
     }
     if (args[0] == "ls") {
-        if (auto const status = list_bootfs(launcher.bootfs); status != ours::Status::Ok) {
+        if (auto const status = list_bootfs(launcher.bootfs_file); status != ours::Status::Ok) {
             report("shell: listing BootFS = ", status);
         }
         return false;

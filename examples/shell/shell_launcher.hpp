@@ -9,16 +9,12 @@
 #include <span>
 #include <string_view>
 
+#include <launch/bootfs.hpp>
 #include <launch/launch.hpp>
 
 namespace shell {
-struct Launcher {
-    ours::Uandle executable = ours::Uandle::Invalid;
-    ours::Uandle bootfs = ours::Uandle::Invalid;
-    ours::Uandle vdso = ours::Uandle::Invalid;
-    std::span<u8 const> bootfs_file;
-    std::span<u8 const> vdso_file;
-};
+/// The shell's launcher is the library's (U7), which init uses too.
+using Launcher = launch::BootfsLauncher;
 
 using LaunchProgram = ustl::Result<launch::Started, ours::Status> (*)(void *, ours::Uandle,
                                                                       std::string_view,
