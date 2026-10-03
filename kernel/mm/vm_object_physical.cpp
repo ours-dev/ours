@@ -3,10 +3,10 @@
 #include <heap/new.hpp>
 
 namespace ours::mm {
-VmObjectPhysical::VmObjectPhysical(PhysAddr base, usize size, VmoFlags VmoFlags)
-    : Base(gktl::magic<Self>(), VmObject::Type::Physical, VmoFlags, m_own_lock)
-    , phys_base_(base)
-    , size_(size) {}
+VmObjectPhysical::VmObjectPhysical(PhysAddr base, usize size, VmoFlags flags)
+    : Base(gktl::magic<Self>(), VmObject::Type::Physical, flags, m_own_lock)
+    , m_phys_base(base)
+    , m_size(size) {}
 
 auto VmObjectPhysical::create(PhysAddr base, usize size, Flags vmof, ustl::Arc<Self> *out)
     -> Status {

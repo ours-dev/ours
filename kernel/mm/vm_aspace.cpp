@@ -217,15 +217,20 @@ auto VmAspace::destroy() -> Status {
 
     ustl::Arc<VmArea> root;
     ustl::Arc<VmMapping> last_fault;
+    ustl::Arc<VmMapping> vdso;
     Status status;
     {
         Guard guard{m_lock};
-        if (m_destroyed) {
+        if (!!(m_flags & Flags::Destroyed)) {
             return Status::BadState;
         }
-        m_destroyed = true;
+        m_flags |= Flags::Destroyed;
 
         last_fault = ustl::move(m_last_fault);
+        // The vDSO's mapping is one of the root's, gone with it below. Its
+        // lock-free copy stays: no thread of a destroyed aspace asks it.
+        // Zircon resets vdso_code_mapping_ in VmAspace::Destroy() the same way.
+        vdso = ustl::move(m_vdso_mapping);
         // m_lock is the root VMA's lock; the analysis only sees two names.
         m_root_vma->get_lock().assert_held();
         status = m_root_vma->destroy();
@@ -238,6 +243,39 @@ auto VmAspace::destroy() -> Status {
     }
     log::debug("mm: aspace '{}' destroyed", name());
     return status;
+}
+
+/// This and set_vdso() are out of line only because VmMapping is incomplete in
+/// the header, and copying an Arc of it retains it.
+auto VmAspace::vdso() const -> ustl::Arc<VmMapping> {
+    Guard guard{m_lock};
+    return m_vdso_mapping;
+}
+
+/// The Arc goes in under m_lock; the range is published after, base first and
+/// the size last with release, as vdso_contains() expects. Called once per
+/// aspace: the claim admits one caller, and the check below keeps a second
+/// call from moving a range a reader may already trust.
+auto VmAspace::set_vdso(ustl::Arc<VmMapping> mapping) -> void {
+    DEBUG_ASSERT(mapping, "registered an empty mapping");
+    auto const base = mapping->base();
+    auto const size = mapping->size();
+    {
+        Guard guard{m_lock};
+        DEBUG_ASSERT(!!(m_flags & Flags::Vdso), "registered without a claim");
+        DEBUG_ASSERT(!m_vdso_mapping, "registered twice");
+        // destroy() ran between the mapping and here; it took the mapping
+        // down with the root. Keeping it would make a cycle nothing breaks: a
+        // mapping holds an Arc to its aspace, and only destroy() resets this
+        // one. So it is dropped instead, after the lock, and nothing is
+        // published: no thread of a destroyed aspace makes a system call.
+        if (!!(m_flags & Flags::Destroyed)) {
+            return;
+        }
+        m_vdso_mapping = ustl::move(mapping);
+    }
+    m_vdso_code_base.store(base, std::memory_order_relaxed);
+    m_vdso_code_size.store(size, std::memory_order_release);
 }
 
 /// Because of cyclic dependency between VmAspace and VmArea, there is not yet
@@ -302,7 +340,7 @@ auto VmAspace::page_fault_internal(VirtAddr va, VmfCause cause, usize extra_page
             // Nothing is mapped in a destroyed aspace, and its root VMA is gone.
             // No thread of a dead process runs user code, so this is not
             // reached in practice; Zircon asserts it (VmAspace::PageFault()).
-            if (m_destroyed) {
+            if (!!(m_flags & Flags::Destroyed)) {
                 return Status::NotFound;
             }
 

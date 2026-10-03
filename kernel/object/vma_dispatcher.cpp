@@ -240,7 +240,7 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     }
     auto const base = mapping.unwrap()->base();
     if (registers_vdso) {
-        m_vma->aspace()->set_vdso_code_range(base, rounded);
+        m_vma->aspace()->set_vdso(ustl::move(mapping.unwrap()));
     }
     return ktl::ok(base);
 }

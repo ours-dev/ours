@@ -12,14 +12,14 @@ class VmObjectPhysical: public VmObject {
     using Base = VmObject;
 
   public:
-    static auto create(PhysAddr pa, usize size, Flags VmoFlags, ustl::Arc<Self> *out) -> Status;
+    static auto create(PhysAddr pa, usize size, Flags flags, ustl::Arc<Self> *out) -> Status;
 
     ///
     virtual auto commit_range(VirtAddr offset, usize size, CommitOptions option)
         -> Status override {
         m_canary.verify<Self>();
 
-        if (offset > size_ || size > size_ || offset > size_ - size) {
+        if (!check_range(offset, size)) {
             return Status::OutOfRange;
         }
         return Status::Ok;
@@ -27,25 +27,29 @@ class VmObjectPhysical: public VmObject {
 
     [[nodiscard]]
     auto size() const -> usize override {
-        return size_;
+        return m_size;
     }
 
     auto lookup_range(usize offset, usize size, PhysAddr *pa) -> Status {
         m_canary.verify<Self>();
 
-        if (offset > size_ || size > size_ || offset > size_ - size) {
+        if (!check_range(offset, size)) {
             return Status::OutOfRange;
         }
 
-        *pa = phys_base_ + offset;
+        *pa = m_phys_base + offset;
         return Status::Ok;
     }
 
   private:
-    VmObjectPhysical(PhysAddr pa, usize size, Flags VmoFlags);
+    VmObjectPhysical(PhysAddr pa, usize size, Flags flags);
 
-    PhysAddr phys_base_;
-    usize size_;
+    auto check_range(usize offset, usize size) const -> bool {
+        return !(offset > m_size || size > m_size || offset > m_size - size);
+    }
+
+    PhysAddr m_phys_base;
+    usize m_size;
 
     /// The lock VmObject::lock() answers for this object. Its own, because
     /// a physical VMO shares no pages with anything; Zircon's

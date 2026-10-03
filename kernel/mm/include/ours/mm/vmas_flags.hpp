@@ -47,8 +47,17 @@ enum class VmasFlags : usize {
     OomIgnored = 0_bit,
     AreaMergeable = 1_bit,
     Shared = 2_bit,
+
+    /// When the Aspace is mounted
     Active = 3_bit,
 
+    /// Set by VmAspace::destroy(). A destroyed aspace answers no more faults:
+    /// its root VMA is gone.
+    Destroyed = 4_bit,
+
+    /// Set if has VDSO: from VmAspace::claim_vdso() on, so that only one
+    /// mapping of the vDSO's code can register.
+    Vdso = 30_bit,
     /// Set if ASLR enabled.
     Aslr = 31_bit,
 };
