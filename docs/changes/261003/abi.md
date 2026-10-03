@@ -177,3 +177,79 @@ None.
 - What symbol does a call to `ours::handle_close` refer to without the asm label, and what with `extern "C"` instead?
 - Why could the vDSO, its `.dynsym` and `libours.ifs` stay exactly as they were?
 - What would a generated inline `ours::handle_close` that calls `ours_handle_close` cost, compared with the label?
+
+## Title: A handle as a program holds it is ours::Uandle, a scoped enum, not an integer (2026-10-03)
+
+**Files**
+- `system/public/ours/types.hpp` — `using HandleValue = u32` and `HANDLE_INVALID` become `enum class Uandle : u32 { Invalid = 0 }`, documented as a coined word; `HANDLE_FIXED_BITS_MASK` is a `u32`.
+- `system/public/ours/syscalls.gni`, `build/abi/gen_syscalls.py` — arguments typed `Uandle`; the generated kernel declarations qualify every non-primitive type (`ours::Uandle`), so a declaration means the same thing in every file that includes it.
+- `kernel/object/handle_table.*`, `wait.*`, `resource_dispatcher.*`, `process_dispatcher.cpp`, `kernel/lib/syscall/src/*.cpp`, `argument.hpp` — the handlers and the handle table take and return `ours::Uandle`; `channel.cpp` and `vmo.cpp` no longer bring `object::Handle` in with a using-declaration.
+- `system/public/ours/vdso.hpp`, `system/lib/ort/**`, `system/lib/launch/**`, `system/service/init/init.cpp`, `examples/shell/shell.cpp`, `kernel/lib/userabi/**`, `kernel/lib/syscall/test/fault_probe/fault_probe.cpp`, `kernel/lib/user_copy/test/user_copy_test.cpp` — the users.
+- `docs/architecture/object/handle-lookup.md`, `docs/design/260923/userspace-interface.md`, `docs/design/260924/userspace-filesystem.md`, `.agents/tasks/system-abi-surface/DESIGN.md` — English notes; `.agents/skills/ours-kernel-design/references/layering.md` — the naming rule.
+
+**Symptom**
+A handle was a `u32` by another name. Anything that took a handle took any integer, and a count, a size or an option word passed where a handle was expected compiled. Arithmetic on a handle compiled too, and so did a handle where a count was expected.
+
+**Cause**
+The objects:
+- The handle as a program holds it: a number naming an entry in the calling process's handle table, meaningless anywhere else.
+- The handle as the kernel holds it, `object::Handle`: the table entry, a reference to an object and the rights it grants.
+- The system call between them, which is given the first and resolves it to the second.
+
+The events:
+1. The number was declared `using HandleValue = u32`, an alias, which C++ treats as the same type as `u32`.
+2. Every signature that took one took any `u32`.
+3. Nothing but a test at run time could catch a wrong argument.
+
+**Change**
+A scoped enum with a fixed underlying type is a type of its own: no implicit conversion to or from an integer, no arithmetic. It still has `u32`'s size, alignment and calling convention, so it crosses the ABI in the same register as before.
+
+```cpp
+// before
+using HandleValue = u32;
+constexpr auto HANDLE_INVALID = HandleValue{0};
+// after
+enum class Uandle : u32 {
+    Invalid = 0,
+};
+```
+
+The only conversions are where a number really becomes a handle or the reverse:
+- the argument register, in either direction: `from_register()`, which already truncated an enum to its underlying type, and `ProcessDispatcher::start()`'s `arg1`;
+- the handle table encoding and decoding a value: `value_of()`, `lookup_locked()`.
+
+Only two places in the whole tree did anything with a handle but pass it on: a smoke test's `handle & 1`, now a comparison with `Uandle::Invalid`, and the processargs test's literal handles, now named constants.
+
+The name is the user's, a coined word: "u" for the user side that holds it, and "handle". The kernel's `object::Handle` is the entry it names, and a system call has both in view at once, so they are never spelled alike. The user decided to type handles strictly over keeping the alias, and chose the name over `HandleValue`, `Handle` and `UHandle`.
+
+How it was done: a workflow.
+1. One agent made the change as `ours::Handle` and built and booted it.
+2. Three reviewers read the diff, one each for integer semantics, the ABI and generated code, and naming and documentation.
+3. A skeptic checked each finding against the code: 12 findings, 11 confirmed, all comments or naming.
+4. A last agent fixed them.
+5. The rename to `Uandle` followed, by hand, driven by the compiler.
+
+**Reference**
+Zircon's `zx_handle_t` is a plain `uint32_t` typedef, so its C API cannot tell a handle from an integer. Its C++ `lib/zx` does, with classes that also own the handle. This is the middle step: typed against integers, not an owner.
+
+**Verification**
+- The type change, before the rename, was checked for being behaviour-neutral by building the tree with the change reversed and comparing the loaded sections. Both kernel images, the vDSO, userboot, init, fault_probe and the runtime smoke program were byte-identical. Only the shell differed, by seven relabelled strings and the offsets to them; its disassembly with addresses normalised was instruction for instruction the same.
+- `ninja -k 0` on `out/vmo-snapshot`: no error, no new warning.
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped). The shell's groups: 19 passed in dbg, 13 passed and 5 skipped in rel. 12 probes killed, launcher checks passed.
+- Host tests: processargs 16 passed, user_copy 6 passed, with `CopyAllowed<ours::Uandle>` asserted.
+- No `HandleValue`, `HANDLE_INVALID` or `ours::Handle` left in code, build files or skills.
+
+**Deliberately not done**
+- Dropping the `ours::` prefix at call sites, so that a call such as `channel_write(h, ...)` finds `ours::channel_write` by argument-dependent lookup on a `Uandle` argument. It is possible now, and left for the user to decide. Against it: calls with no `ours` argument (`debug_write`, `process_exit`, `command_list`) would still need the prefix; the prefix marks where a call enters the kernel; and a local function of the same name could be picked or made ambiguous.
+- The older Chinese task plans that still spell `HandleValue` describe what they planned at the time.
+
+**How it was found**
+The user's request: rename `HandleValue`, make it an enum with an `Invalid` variant, and prefer type safety.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does a scoped enum with a fixed underlying type forbid that an alias of `u32` allows, and what does it keep the same at the ABI?
+- Where does a number legitimately become a `Uandle`, and why only there?
+- Why are `Uandle` and `object::Handle` named apart, and what would argument-dependent lookup do with a `Uandle` argument?

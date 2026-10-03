@@ -18,8 +18,8 @@
 
 namespace launch {
 namespace {
-    using ours::HandleValue;
     using ours::Status;
+    using ours::Uandle;
     using ours::VirtAddr;
     using ours::VmOptions;
 
@@ -57,30 +57,30 @@ namespace {
         auto operator=(Owned const &) -> Owned & = delete;
 
         ~Owned() {
-            if (m_value != ours::HANDLE_INVALID) {
+            if (m_value != ours::Uandle::Invalid) {
                 static_cast<void>(ours::handle_close(m_value));
             }
         }
 
         /// Where a system call writes the handle it makes.
         [[nodiscard]]
-        auto out() -> HandleValue * {
+        auto out() -> Uandle * {
             return &m_value;
         }
 
         [[nodiscard]]
-        auto get() const -> HandleValue {
+        auto get() const -> Uandle {
             return m_value;
         }
 
         /// Hands the handle on; this no longer closes it.
         [[nodiscard]]
-        auto release() -> HandleValue {
-            return std::exchange(m_value, ours::HANDLE_INVALID);
+        auto release() -> Uandle {
+            return std::exchange(m_value, ours::Uandle::Invalid);
         }
 
       private:
-        HandleValue m_value = ours::HANDLE_INVALID;
+        Uandle m_value = ours::Uandle::Invalid;
     };
 
     /// The x86-64 ABI wants %rsp + 8 sixteen-byte aligned at a function's
@@ -118,8 +118,8 @@ namespace {
     struct Writer {
         Plan const *plan;
         u64 first; // The link-time address an offset counts from.
-        std::array<HandleValue, Plan::MAX_SEGMENTS> const *snapshots;
-        std::array<HandleValue, Plan::MAX_SEGMENTS> const *zeros;
+        std::array<Uandle, Plan::MAX_SEGMENTS> const *snapshots;
+        std::array<Uandle, Plan::MAX_SEGMENTS> const *zeros;
 
         static auto write(void *const context, usize const offset, void const *const bytes,
                           usize const size) -> Status {
@@ -249,8 +249,8 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     // The VMOs the plan asks for, and the Copy of each partial page.
     std::array<Owned, Plan::MAX_SEGMENTS> snapshot_owners;
     std::array<Owned, Plan::MAX_SEGMENTS> zero_owners;
-    std::array<HandleValue, Plan::MAX_SEGMENTS> snapshots{};
-    std::array<HandleValue, Plan::MAX_SEGMENTS> zeros{};
+    std::array<Uandle, Plan::MAX_SEGMENTS> snapshots{};
+    std::array<Uandle, Plan::MAX_SEGMENTS> zeros{};
     for (u32 index = 0; index < program.unwrap().segments().size(); ++index) {
         auto const snapshot = plan.snapshot(index);
         if (snapshot.size != 0) {

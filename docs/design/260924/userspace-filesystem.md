@@ -8,6 +8,8 @@
 > 3. 主人要求依赖先行、文件系统不再建在自己依赖的替身上：D1、D2 定为加载器、userboot 和删除 spawn_boot 排在文件系统之前；D5 定为哈希 ordinal 加 selector；§7 改为四个阶段共 45 个提交。新增的代码引用在 HEAD（353c875f）上复核过。
 > 4. 步骤按阶段顺序统一重新编号：K、G、U 各自从 1 起连续编号，编号的先后就是做的先后。此前各版的编号作废。
 
+**Revised 2026-10-03:** the handle type `HandleValue` in the signatures below is now `ours::Uandle`, a scoped enum over u32, and `HANDLE_INVALID` is `Uandle::Invalid`; the ABI is unchanged.
+
 ## 1 总览
 
 **文件句柄与协议。** 每次 Open 都产生一条新 channel，即一条连接。协议取 fuchsia.io 的子集：Open、Close、GetAttributes、ReadDirents、Rewind、Read/ReadAt/Seek，外加事件 OnRepresentation。GetBackingMemory 在 M1 实现 Read，给出文件的只读 Slice；Execute 到 M2。

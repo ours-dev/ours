@@ -227,8 +227,8 @@ enum ExitCode : int {
 
 /// Says |answer| to the driver on |channel|, the User0 startup handle.
 /// Without one there is no one to tell, and the exit code has to do.
-auto reply(ours::HandleValue const channel, std::string_view const answer) -> void {
-    if (channel == ours::HANDLE_INVALID) {
+auto reply(ours::Uandle const channel, std::string_view const answer) -> void {
+    if (channel == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("fault_probe: no answer channel (User0)"));
         return;
     }

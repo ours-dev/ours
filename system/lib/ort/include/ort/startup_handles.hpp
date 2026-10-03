@@ -30,16 +30,16 @@ class StartupHandles {
 
     /// |handles[i]| is described by |infos[i]|; the two must be the same
     /// length.
-    StartupHandles(std::span<ours::HandleValue> handles, std::span<u32> infos);
+    StartupHandles(std::span<ours::Uandle> handles, std::span<u32> infos);
 
     /// Takes the first handle whose handle_info is exactly (|type|, |arg|):
-    /// both have to match. HANDLE_INVALID when there is none, or it was
+    /// both have to match. Uandle::Invalid when there is none, or it was
     /// taken already.
     [[nodiscard]]
-    auto take(ours::HandleType type, u16 arg) -> ours::HandleValue;
+    auto take(ours::HandleType type, u16 arg) -> ours::Uandle;
 
   private:
-    std::span<ours::HandleValue> m_handles;
+    std::span<ours::Uandle> m_handles;
     std::span<u32> m_infos;
 };
 } // namespace ort

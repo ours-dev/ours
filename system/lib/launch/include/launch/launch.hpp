@@ -17,7 +17,7 @@ namespace launch {
 /// What start() needs to start one program.
 struct Request {
     /// The job the process goes under; it must grant ManageProcess.
-    ours::HandleValue job;
+    ours::Uandle job;
 
     /// The process's name.
     std::string_view name;
@@ -26,7 +26,7 @@ struct Request {
     /// slice of an executable BootFS, say. It must grant Read, Map and
     /// Duplicate, and Execute for the program's code, which is mapped from it
     /// as it is; the writable segments are snapshots of it. Not consumed.
-    ours::HandleValue file;
+    ours::Uandle file;
 
     /// The same file, readable in this process: its headers, and the dynamic
     /// tables the binder reads. Not changed.
@@ -35,7 +35,7 @@ struct Request {
     /// The vDSO's VMO (HandleType::VmoVdso), which is mapped into the process
     /// whole, read and execute, sealed: the kernel takes that mapping as the
     /// registration of the process's vDSO range. Not consumed.
-    ours::HandleValue vdso;
+    ours::Uandle vdso;
 
     /// The vDSO as a file, the same one the kernel laid the VMO out from (the
     /// BootFS's `vdso`): the program's imports are bound to its exports.
@@ -44,7 +44,7 @@ struct Request {
     /// The one handle the program starts with, its value in %rdi; usually the
     /// far end of the channel its processargs will come on. Consumed whatever
     /// start() answers, as process_start consumes it.
-    ours::HandleValue bootstrap;
+    ours::Uandle bootstrap;
 
     /// Where start() says what it did, for the caller to make into whatever it
     /// wants; none by default. Every failing step is reported once, as an
@@ -58,11 +58,11 @@ struct Request {
 /// A started program, as the caller keeps it.
 struct Started {
     /// A handle to the process: Initial until start() returned, running now.
-    ours::HandleValue process;
+    ours::Uandle process;
 
     /// A handle to its root region, for the processargs the caller writes on
     /// its end of the bootstrap channel next (HandleType::VmaRoot).
-    ours::HandleValue root_vma;
+    ours::Uandle root_vma;
 };
 
 /// Starts the program |request| describes in a new process. The kernel's

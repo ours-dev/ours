@@ -62,10 +62,10 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// copy it to the caller, and only then install the handle: if the copy
     /// fails, nothing was ever visible and nothing has to be taken back.
     [[nodiscard]]
-    auto value_of(Handle const &handle) const -> HandleValue;
+    auto value_of(Handle const &handle) const -> ours::Uandle;
 
     /// Installs |handle| and returns its value.
-    auto add(ustl::Box<Handle> handle) -> HandleValue;
+    auto add(ustl::Box<Handle> handle) -> ours::Uandle;
 
     /// Closes every handle in the table and says how many there were. The
     /// table stays usable -- it is simply empty -- which is what a process
@@ -79,20 +79,20 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// names nothing here. The caller owns the handle now, and destroying it
     /// -- which closes it -- happens outside this table's lock.
     [[nodiscard]]
-    auto remove(HandleValue value) -> ustl::Box<Handle>;
+    auto remove(ours::Uandle value) -> ustl::Box<Handle>;
 
     /// Takes the |count| handles |values| names out of this table, for a
     /// message written to |channel|; see the definition. Every handle found
     /// is removed and ends up in |out|, whatever the answer.
     [[nodiscard]]
-    auto remove_for_transfer(HandleValue const *values, u32 count, Dispatcher const *channel,
+    auto remove_for_transfer(ours::Uandle const *values, u32 count, Dispatcher const *channel,
                              ustl::Box<Handle> *out) -> Status;
 
     /// The object |value| names, as a T, provided the handle grants every
     /// right in |required|.
     template <typename T>
     [[nodiscard]]
-    auto get_dispatcher(HandleValue const value, Rights const required, ustl::Arc<T> *const out)
+    auto get_dispatcher(ours::Uandle const value, Rights const required, ustl::Arc<T> *const out)
         -> Status {
         Rights ignored = Rights::None;
         return get_dispatcher_with_rights(value, required, out, &ignored);
@@ -105,7 +105,7 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// Zircon: HandleTable::GetDispatcherWithRights().
     template <typename T>
     [[nodiscard]]
-    auto get_dispatcher_with_rights(HandleValue const value, Rights const required,
+    auto get_dispatcher_with_rights(ours::Uandle const value, Rights const required,
                                     ustl::Arc<T> *const out, Rights *const rights) -> Status {
         Guard guard{m_lock};
         auto const *const handle = lookup_locked(value);
@@ -129,7 +129,7 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// no table yet: the caller works out its value (value_of()), copies it
     /// to the program, and only then add()s it.
     [[nodiscard]]
-    auto duplicate(HandleValue value, Rights rights, ustl::Box<Handle> *out) -> Status;
+    auto duplicate(ours::Uandle value, Rights rights, ustl::Box<Handle> *out) -> Status;
 
     /// Starts |observer| watching the object |value| names for |signals|,
     /// provided the handle grants Wait, and reports the object in |object| so
@@ -141,13 +141,13 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// after -- closed, or consumed by a call such as channel_write -- cancels
     /// the observer instead (unlink_locked() calls Dispatcher::cancel()).
     /// Lock order: this table, then the object -- as everywhere else.
-    auto attach_observer(HandleValue value, SignalObserver *observer, Signals signals,
+    auto attach_observer(ours::Uandle value, SignalObserver *observer, Signals signals,
                          ustl::Arc<Dispatcher> *object) -> Status;
 
   private:
     /// The five checks. Null when any of them fails.
     [[nodiscard]]
-    TA_REQUIRES(m_lock) auto lookup_locked(HandleValue value) const -> Handle *;
+    TA_REQUIRES(m_lock) auto lookup_locked(ours::Uandle value) const -> Handle *;
 
     /// Takes |handle|, which is in this table, out of it; see the definition.
     TA_REQUIRES(m_lock) auto unlink_locked(Handle *handle) -> ustl::Box<Handle>;

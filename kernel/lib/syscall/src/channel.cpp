@@ -11,14 +11,13 @@
 
 namespace ours::syscall {
 using object::ChannelDispatcher;
-using object::Handle;
 using object::KernelHandle;
 using object::MessagePacket;
 using object::ProcessDispatcher;
 
 auto channel_create(ChannelCreateOptions const options,
-                    user_copy::UserOutPtr<HandleValue> const out0,
-                    user_copy::UserOutPtr<HandleValue> const out1) -> Status {
+                    user_copy::UserOutPtr<ours::Uandle> const out0,
+                    user_copy::UserOutPtr<ours::Uandle> const out1) -> Status {
     if (options != ChannelCreateOptions::None) {
         return Status::InvArgs;
     }
@@ -31,11 +30,11 @@ auto channel_create(ChannelCreateOptions const options,
         return status;
     }
 
-    auto handle0 = Handle::make(KernelHandle<object::Dispatcher>(ustl::move(end0)), rights);
+    auto handle0 = object::Handle::make(KernelHandle<object::Dispatcher>(ustl::move(end0)), rights);
     if (!handle0) {
         return Status::NoResource;
     }
-    auto handle1 = Handle::make(KernelHandle<object::Dispatcher>(ustl::move(end1)), rights);
+    auto handle1 = object::Handle::make(KernelHandle<object::Dispatcher>(ustl::move(end1)), rights);
     if (!handle1) {
         return Status::NoResource;
     }
@@ -59,9 +58,9 @@ auto channel_create(ChannelCreateOptions const options,
     return Status::Ok;
 }
 
-auto channel_write(HandleValue const channel, ChannelWriteOptions const options,
+auto channel_write(ours::Uandle const channel, ChannelWriteOptions const options,
                    user_copy::UserInPtr<u8 const> const bytes, u32 const num_bytes,
-                   user_copy::UserInPtr<HandleValue const> const handles, u32 const num_handles)
+                   user_copy::UserInPtr<ours::Uandle const> const handles, u32 const num_handles)
     -> Status {
     // The handle values first, out of user memory and outside every lock:
     // every handle they name leaves the caller's table below whatever this
@@ -74,7 +73,7 @@ auto channel_write(HandleValue const channel, ChannelWriteOptions const options,
     if (num_handles > CHANNEL_MAX_MSG_HANDLES) {
         return Status::OutOfRange;
     }
-    HandleValue values[CHANNEL_MAX_MSG_HANDLES];
+    ours::Uandle values[CHANNEL_MAX_MSG_HANDLES];
     if (num_handles != 0) {
         if (auto const status = handles.copy_array_from_user(values, num_handles);
             status != Status::Ok) {
@@ -94,7 +93,7 @@ auto channel_write(HandleValue const channel, ChannelWriteOptions const options,
     // packet as write() returns; both after every lock. Zircon's
     // channel_write() gets the same effect from a deferred
     // RemoveUserHandles().
-    ustl::Box<Handle> taken[CHANNEL_MAX_MSG_HANDLES];
+    ustl::Box<object::Handle> taken[CHANNEL_MAX_MSG_HANDLES];
     auto const removed = table.remove_for_transfer(values, num_handles, dispatcher.as_ptr(), taken);
 
     // Then the answer, in the order of design 4.5: the channel handle first
@@ -122,9 +121,9 @@ auto channel_write(HandleValue const channel, ChannelWriteOptions const options,
     return dispatcher->write(ustl::move(message));
 }
 
-auto channel_read(HandleValue const channel, ChannelReadOptions const options,
+auto channel_read(ours::Uandle const channel, ChannelReadOptions const options,
                   user_copy::UserOutPtr<u8> const bytes,
-                  user_copy::UserOutPtr<HandleValue> const handles, u32 const num_bytes,
+                  user_copy::UserOutPtr<ours::Uandle> const handles, u32 const num_bytes,
                   u32 const num_handles, user_copy::UserOutPtr<u32> const actual_bytes,
                   user_copy::UserOutPtr<u32> const actual_handles) -> Status {
     // The handle first, then the arguments: BadHandle > BadType >
@@ -185,9 +184,9 @@ auto channel_read(HandleValue const channel, ChannelReadOptions const options,
     // msg_get_handles(), which copies the values out before it moves a
     // single handle into the table.
     auto &table = ProcessDispatcher::current()->handle_table();
-    ustl::Box<Handle> taken[CHANNEL_MAX_MSG_HANDLES];
+    ustl::Box<object::Handle> taken[CHANNEL_MAX_MSG_HANDLES];
     message->take_handles(taken);
-    HandleValue values[CHANNEL_MAX_MSG_HANDLES];
+    ours::Uandle values[CHANNEL_MAX_MSG_HANDLES];
     for (u32 i = 0; i < count; ++i) {
         values[i] = table.value_of(*taken[i]);
     }

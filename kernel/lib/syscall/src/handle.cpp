@@ -8,11 +8,11 @@
 #include <ours/types.hpp>
 
 namespace ours::syscall {
-auto handle_close(HandleValue const handle) -> Status {
+auto handle_close(ours::Uandle const handle) -> Status {
     // Zircon's zx_handle_close() accepts ZX_HANDLE_INVALID as a no-op, and so
     // does this: it lets a program close a slot it may or may not have
     // filled without asking first, which is what every cleanup path wants.
-    if (handle == HANDLE_INVALID) {
+    if (handle == ours::Uandle::Invalid) {
         return Status::Ok;
     }
 
@@ -20,11 +20,11 @@ auto handle_close(HandleValue const handle) -> Status {
     // from a user process's vDSO before a handler runs.
     auto *const process = object::ProcessDispatcher::current();
 
-    // remove() returns the Handle rather than destroying it, and it goes out
-    // of scope at the end of this statement -- after the table's lock was
-    // released inside remove(). Destroying the last handle to an object runs
-    // its on_zero_handles(), which may take locks of its own; the table's
-    // lock must not be held around that.
+    // remove() returns the object::Handle rather than destroying it, and it
+    // goes out of scope at the end of this statement -- after the table's
+    // lock was released inside remove(). Destroying the last handle to an
+    // object runs its on_zero_handles(), which may take locks of its own; the
+    // table's lock must not be held around that.
     auto closed = process->handle_table().remove(handle);
     if (!closed) {
         return Status::BadHandle;
@@ -45,8 +45,8 @@ auto handle_close(HandleValue const handle) -> Status {
 /// when that copy fails the handle is already in the table, so the wrapper
 /// raises a HANDLE_LEAK policy exception on the thread
 /// (kernel-wrappers.inc.tmpl). Writing first leaves nothing to leak.
-auto handle_duplicate(HandleValue const handle, Rights const rights,
-                      user_copy::UserOutPtr<HandleValue> const out) -> Status {
+auto handle_duplicate(ours::Uandle const handle, Rights const rights,
+                      user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
     ustl::Box<object::Handle> duplicate;
     if (auto const status = table.duplicate(handle, rights, &duplicate); status != Status::Ok) {

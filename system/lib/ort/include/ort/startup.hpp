@@ -28,14 +28,14 @@ namespace ort {
 inline constexpr auto EXIT_START_FAILED = i64{-2'147'483'648} - 1;
 
 /// Takes the startup handle described by (|type|, |arg|): the caller owns it
-/// from then on, and a second take of the same one answers HANDLE_INVALID,
+/// from then on, and a second take of the same one answers Uandle::Invalid,
 /// as does asking for one the process was not given. Zircon
 /// zx_take_startup_handle().
 ///
 /// The runtime's own bookkeeping, not a system call: nothing reaches the
 /// kernel here.
 [[nodiscard]]
-auto take_startup_handle(ours::HandleType type, u16 arg) -> ours::HandleValue;
+auto take_startup_handle(ours::HandleType type, u16 arg) -> ours::Uandle;
 
 /// The processargs message the process was started with: its environment
 /// and namespace names, and the arguments main() already has. Empty for a

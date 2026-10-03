@@ -18,7 +18,7 @@
 extern "C" auto ort_call_main(int argc, char **argv) -> int;
 
 extern "C" [[noreturn]]
-auto ort_start(ours::HandleValue bootstrap, ours::VirtAddr vdso_base) -> void;
+auto ort_start(ours::Uandle bootstrap, ours::VirtAddr vdso_base) -> void;
 
 namespace ort {
 namespace {
@@ -35,7 +35,7 @@ namespace {
     // hold any bootstrap message, and there is no need for Zircon's size
     // query before the read.
     alignas(ours::ProcArgs) constinit u8 message[ours::CHANNEL_MAX_MSG_BYTES] = {};
-    constinit ours::HandleValue handles[ours::CHANNEL_MAX_MSG_HANDLES] = {};
+    constinit ours::Uandle handles[ours::CHANNEL_MAX_MSG_HANDLES] = {};
     constinit u32 infos[ours::CHANNEL_MAX_MSG_HANDLES] = {};
     constinit ProcessArgs startup_args;
     constinit StartupHandles startup_handles;
@@ -70,7 +70,7 @@ namespace {
     /// program that needs to talk to its starter is handed a channel for
     /// that among its startup handles. Its peer sees PEER_CLOSED as soon as
     /// the runtime has read the message, before main runs.
-    auto read_processargs(ours::HandleValue const bootstrap) -> void {
+    auto read_processargs(ours::Uandle const bootstrap) -> void {
         auto observed = ours::Signals::None;
         static_cast<void>(ours::object_wait_one(bootstrap,
                                                 ours::Signals::Readable | ours::Signals::PeerClosed,
@@ -100,7 +100,7 @@ namespace {
     }
 } // namespace
 
-auto take_startup_handle(ours::HandleType const type, u16 const arg) -> ours::HandleValue {
+auto take_startup_handle(ours::HandleType const type, u16 const arg) -> ours::Uandle {
     return startup_handles.take(type, arg);
 }
 
@@ -116,7 +116,7 @@ auto vdso_base() -> ours::VirtAddr {
 /// Reads what the process was started with, calls main, and ends the process
 /// with main's return value. Never returns: there is nothing to return to.
 ///
-/// A process started without a bootstrap channel (HANDLE_INVALID in %rdi,
+/// A process started without a bootstrap channel (Uandle::Invalid in %rdi,
 /// which design 3.4 allows) gets no handles and argc 0, and argv is still a
 /// valid array with its terminating nullptr.
 ///
@@ -127,9 +127,9 @@ auto vdso_base() -> ours::VirtAddr {
 /// stack. Zircon's old __libc_start_main kept argv the same way, in a
 /// variable-length array on the start-up frame.
 extern "C" [[noreturn]]
-auto ort_start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -> void {
+auto ort_start(ours::Uandle const bootstrap, ours::VirtAddr const vdso_base) -> void {
     ort::vdso = vdso_base;
-    if (bootstrap != ours::HANDLE_INVALID) {
+    if (bootstrap != ours::Uandle::Invalid) {
         ort::read_processargs(bootstrap);
     }
 

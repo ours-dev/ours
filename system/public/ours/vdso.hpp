@@ -43,7 +43,7 @@
 /// The symbol is `ours_<name>`: binding is by name, so the symbols are the
 /// ABI, and they are plain C names because a mangled name is one compiler's
 /// detail. The name in C++ is `ours::<name>`, beside the types the calls take
-/// (ours::Status, ours::HandleValue). Each declaration carries an asm label,
+/// (ours::Status, ours::Uandle). Each declaration carries an asm label,
 /// `__asm__("ours_<name>")`, which sets the symbol a function's calls refer
 /// to; without it, `ours::debug_write` would refer to its mangled name, which
 /// the vDSO does not export, and `extern "C"` would drop the namespace from

@@ -5,6 +5,8 @@
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/vma_dispatcher.hpp>
 
+#include <utility>
+
 #include <gktl/counter.hpp>
 #include <heap/new.hpp>
 #include <logz4/log.hpp>
@@ -149,14 +151,18 @@ auto ProcessDispatcher::start(ThreadDispatcher &thread, VirtAddr const entry, Vi
         return Status::BadState;
     }
 
-    auto arg1_value = HANDLE_INVALID;
+    auto arg1_value = ours::Uandle::Invalid;
     if (arg1) {
         arg1_value = m_handle_table->add(ustl::move(arg1));
     }
 
-    auto const status =
-        thread.start({.entry = entry, .stack = stack, .arg1 = arg1_value, .arg2 = arg2}, true);
-    if (Status::Ok != status && arg1_value != HANDLE_INVALID) {
+    // The handle goes out as a number in the first argument register: the
+    // register is where it stops being a handle, as from_register() is where
+    // a handle argument starts being one.
+    auto const status = thread.start(
+        {.entry = entry, .stack = stack, .arg1 = std::to_underlying(arg1_value), .arg2 = arg2},
+        true);
+    if (Status::Ok != status && arg1_value != ours::Uandle::Invalid) {
         static_cast<void>(m_handle_table->remove(arg1_value));
     }
     return status;

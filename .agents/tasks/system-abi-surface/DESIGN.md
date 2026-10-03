@@ -96,7 +96,7 @@ Later, each with its own trigger: the internal status codes and the `blocking` r
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | How the ou-only rule holds for ABI conformance tests | everything through `ou`, which passes every ABI parameter; an explicit exception list for conformance tests | everything through `ou` | None | Everything through `ou`, 2026-10-02; by convention only, not enforced, 2026-10-03 |
-| Typed handles in `ou` | bare `HandleValue`; `lib/zx`-style move-only owners, consumed arguments taken by value | typed, piloted on the vmo family, settled before K23 | None | Typed, 2026-10-02; deferred until a concrete need, 2026-10-03 |
+| Typed handles in `ou` | bare `HandleValue`; `lib/zx`-style move-only owners, consumed arguments taken by value | typed, piloted on the vmo family, settled before K23 | None | Typed, 2026-10-02; deferred until a concrete need, 2026-10-03; the bare `HandleValue` became `ours::Uandle`, a scoped enum over u32 (typed against integers, not an owner), 2026-10-03 |
 | Who writes `ou` | hand-written plus a completeness check; generated from `syscalls.gni` | completeness check (the panel) | None | Generated, 2026-10-02 (the user: a generator has always been the plan); deferred with the typed layer, 2026-10-03 |
 | `[[nodiscard]]` on `Status` | on the type; per `ou` entry; none | on the type | None | On the type, 2026-10-02 |
 | The K23 executor before or after the typed `ou` | write it now against today's `ou` and migrate it with step 9; pilot the typed `ou` first and write it after | now, and migrate | None | Now, 2026-10-02: the executor is one more caller step 9 migrates |

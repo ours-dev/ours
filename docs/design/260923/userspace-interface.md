@@ -34,7 +34,7 @@ P0 期间有三条不变量：
 ## 2 对象集与接口
 
 表格约定：
-- `HandleValue` 是公共句柄值类型（u32，是否改名见 D4）。
+- `HandleValue` 是公共句柄值类型（u32，是否改名见 D4）。 **Revised 2026-10-03:** the type is `ours::Uandle`, a scoped enum over u32 (`enum class Uandle : u32 { Invalid = 0 }`), and `HANDLE_INVALID` is `Uandle::Invalid`; read every `HandleValue` and `HANDLE_INVALID` in this document that way. The ABI is unchanged.
 - `Instant` 是 i64 纳秒。
 - “rights”一栏写的是调用所需的句柄权限。
 - ou 入口是 `system/lib/ou` 里的具名函数。P1 起在这些函数之上加 RAII 类型（`ou::Handle`、`ou::Channel`、`ou::Process` 等）。**Corrected 2026-10-03:** `//system/lib/ou` was removed (the user's call): a program calls the `ours_*` entries directly, and prints with `runtime::debug_line`. The RAII types were never built. The "ou 入口" column of the tables below names what was, not what is.
@@ -324,7 +324,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 ### 4.1 句柄编码与 koid
 
-- **编码**：句柄值 = `((base_value << 2) | 0b11) ^ (random << 2)`。base_value 的布局是 [31:30]=0、[29:18]=generation、[17:0]=arena 下标。`HANDLE_INVALID = 0`，公开 `HANDLE_FIXED_BITS_MASK = 0x3`。
+- **编码**：句柄值 = `((base_value << 2) | 0b11) ^ (random << 2)`。base_value 的布局是 [31:30]=0、[29:18]=generation、[17:0]=arena 下标。`HANDLE_INVALID = 0`，公开 `HANDLE_FIXED_BITS_MASK = 0x3`。 **Revised 2026-10-03:** the invalid value is `Uandle::Invalid` (still 0); `HANDLE_FIXED_BITS_MASK` stays a u32 and is tested against `std::to_underlying()` of a handle.
 - **解析过五道关**，失败统一回 BadHandle；类型不符回 BadType；权限不足回 AccessDenied：
   1. 低两位为 1；
   2. 异或去掉随机数；
@@ -551,7 +551,7 @@ P1 的前置：
 | D1 | P0 用什么方式起第二个程序 | A 临时的 `process_spawn_boot`（6 个新调用）；B 直接做用户态加载器（约 12 个新调用，还要先修 `VmObjectPaged::write`、做用户 libc、移植 Binder、定 vDSO 归属） | **A**。先跑通，B 的全部工作在 P1-C 照做，届时删掉 A。它违背分层规则，理由见 2.8 |
 | D2 | 用户创建的进程由谁映射 vDSO，范围记在哪 | A 由内核在 `ProcessDispatcher::create` 内映射，vDSO VMO 不外发，范围记在 `mm::VmAspace`；B 照 Zircon 发 vDSO VMO，由 vma_map 按对象身份识别 | **2026-09-28 改选 B（用户决定：能在用户态完成的事就在用户态完成；内核已有足够的内存操作能力）**。范围仍记在 `mm::VmAspace`，由对 vDSO 的 VMO 的映射登记（`VmaDispatcher::map()`），映射的形状受限：整个 VMO、只读加执行、每个地址空间一次；vDSO 的 VMO 必须带 `VmOptions::Sealed` 才能映射（用户决定，2026-09-29：由 launcher 请求，封印是通用机制，内核对 vDSO 强制要求）；封印的映射不能被 unmap、protect、destroy，mm 层已拒绝（`VmArea::unmap()`、`protect()`），`vma_unmap`、`vma_protect`、`vma_destroy` 落地时接上，`vma_destroy` 要先检查区域里有没有封印的映射。以下是原先选 A 的理由，改选后其中“不必分发特权 VMO”一条变成了要付的代价：**A**。不变式在 Initial 状态下就成立；只有 mm 能在 unmap/protect/destroy 路径上拒绝对 vDSO 的改动；不必分发一个还得防 create_child、防“只读映射后再 protect”的特权 VMO。基址通过 `get_property(ProcessVdsoBaseAddress)` 读出 |
 | D3 | P0 之后 ELF 由谁加载 | A 用户态 launcher，父进程用共享的 Binder 绑定导入，P2 改为 crt0 自绑定；B 保留一个永久的内核加载调用 | **A**。否则 ring 0 要为每次启动解析不可信的 ELF |
-| D4 | 公共句柄值类型叫什么 | A 改名为 `ours::HandleValue`，用户侧 `ou::Handle` 做 RAII；B 保留 `ours::Handle` | **A**。系统调用层会同时出现 `ours::Handle` 和 `object::Handle` |
+| D4 | 公共句柄值类型叫什么 | A 改名为 `ours::HandleValue`，用户侧 `ou::Handle` 做 RAII；B 保留 `ours::Uandle` | **A**。系统调用层会同时出现 `ours::Uandle` 和 `object::Handle` **Revised 2026-10-03:** reversed to B, as a scoped enum: `ours::Uandle` is `enum class Handle : u32 { Invalid = 0 }`, so a handle cannot be mixed up with an integer. Code in `ours::object`, where an unqualified `Handle` is the kernel class, spells it `ours::Uandle`. |
 | D5 | 从公共 Signals 挪出的线程控制位叫什么 | A `task::ThreadSignals`；B `task::PendingActions`；C `task::ThreadRequests` | **A**，便于对照 Zircon 的 `THREAD_SIGNAL_*` |
 | D6 | Rights 位布局 | A 整体换成 Zircon 位值；B 保留现有 5 位，按需追加 | **A**。现在还没有用户态依赖，换的成本最低，之后可以直接对照 Zircon 的权限文档 |
 | D7 | 系统调用描述用什么格式 | A GN scope 列表 + 只用标准库的 Python 生成器；B `.pyl` 文件；C FIDL 子集 + fidlc/zither | **A**。它就在构建图里，不用写解析器，也能直接喂给 `generated_ifs_file` |

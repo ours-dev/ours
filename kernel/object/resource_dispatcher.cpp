@@ -53,7 +53,7 @@ auto ResourceDispatcher::create(KernelHandle<Self> *out, Rights &rights, Kind ki
     return Status::Ok;
 }
 
-auto validate_ranged_resource(HandleValue const handle, RsrcKind const kind, u64 const base,
+auto validate_ranged_resource(ours::Uandle const handle, RsrcKind const kind, u64 const base,
                               u64 const size) -> Status {
     ustl::Arc<ResourceDispatcher> resource;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(

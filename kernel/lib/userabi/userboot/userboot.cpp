@@ -135,31 +135,31 @@ auto collect_handed_on() -> HandedOn {
 /// are still here, and the caller decides what to do with them; a failure
 /// after the spawn loses them with the message, and the new process, finding
 /// PEER_CLOSED and no message, exits with ort::EXIT_START_FAILED.
-auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
-                ours::HandleValue const vmex, ours::HandleValue const vdso,
-                std::string_view const name, HandedOn const &environ) -> ours::Status {
+auto start_next(ours::Uandle const job, ours::Uandle const bootfs, ours::Uandle const vmex,
+                ours::Uandle const vdso, std::string_view const name, HandedOn const &environ)
+    -> ours::Status {
     using ours::Status;
 
     // The child's root VMA first, filled in once process_spawn_boot has made
     // the child and handed it back; its handle_info is known already, so the
     // message can be encoded before.
-    ours::HandleValue handles[5] = {ours::HANDLE_INVALID, job};
+    ours::Uandle handles[5] = {ours::Uandle::Invalid, job};
     u32 infos[5] = {ours::handle_info(ours::HandleType::VmaRoot, 0),
                     ours::handle_info(ours::HandleType::JobDefault, 0)};
     u32 count = 2;
-    if (bootfs != ours::HANDLE_INVALID) {
+    if (bootfs != ours::Uandle::Invalid) {
         handles[count] = bootfs;
         infos[count++] = ours::handle_info(ours::HandleType::VmoBootfs, 0);
     }
     // The vDSO's VMO, handed on unused for now: it is the next program that
     // starts processes, and maps the vDSO into them (K23).
-    if (vdso != ours::HANDLE_INVALID) {
+    if (vdso != ours::Uandle::Invalid) {
         handles[count] = vdso;
         infos[count++] = ours::handle_info(ours::HandleType::VmoVdso, 0);
     }
     // Handed on unused: userboot has nothing to make executable before K19,
     // and the next program is the one design D3 gives it to.
-    if (vmex != ours::HANDLE_INVALID) {
+    if (vmex != ours::Uandle::Invalid) {
         handles[count] = vmex;
         infos[count++] =
             ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE));
@@ -181,8 +181,8 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
         return status;
     }
 
-    ours::HandleValue here = ours::HANDLE_INVALID;
-    ours::HandleValue there = ours::HANDLE_INVALID;
+    ours::Uandle here = ours::Uandle::Invalid;
+    ours::Uandle there = ours::Uandle::Invalid;
     if (auto const status = ours::channel_create(ours::ChannelCreateOptions::None, &here, &there);
         status != Status::Ok) {
         return status;
@@ -218,7 +218,7 @@ auto main(int, char **) -> int {
     // takes nothing with it: the next program lives under the root job, not
     // under userboot, and holds the only handles userboot had.
     auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);
-    if (job == ours::HANDLE_INVALID) {
+    if (job == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("userboot: started without the root job"));
         return 1;
     }

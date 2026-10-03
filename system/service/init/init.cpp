@@ -80,8 +80,8 @@ auto to_str(std::string_view const text) -> std::string_view {
 ///
 /// init keeps the handle: the shell gets no BootFS from it. Passing one on
 /// would take handle_duplicate (K15), since init is about to need its own.
-auto describe_bootfs(ours::HandleValue const bootfs) -> void {
-    if (bootfs == ours::HANDLE_INVALID) {
+auto describe_bootfs(ours::Uandle const bootfs) -> void {
+    if (bootfs == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("init: started without a BootFS"));
         return;
     }
@@ -106,14 +106,13 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
 /// VMA only exists once the process does. The message's handle_infos must
 /// list |handles| and then VmaRoot. Closes |here|; |there| and |handles|
 /// leave this process whatever the answer.
-auto spawn_then_write(ours::HandleValue const job, std::string_view const name,
-                      ours::HandleValue here, ours::HandleValue there,
-                      std::span<u8 const> const message,
-                      std::span<ours::HandleValue const> const handles) -> ours::Status {
+auto spawn_then_write(ours::Uandle const job, std::string_view const name, ours::Uandle here,
+                      ours::Uandle there, std::span<u8 const> const message,
+                      std::span<ours::Uandle const> const handles) -> ours::Status {
     using ours::Status;
 
-    ours::HandleValue all[4] = {};
-    ours::HandleValue root_vma = ours::HANDLE_INVALID;
+    ours::Uandle all[4] = {};
+    ours::Uandle root_vma = ours::Uandle::Invalid;
     auto const spawned = ours::process_spawn_boot(job, name.data(), name.size(), there, &root_vma);
     if (spawned != Status::Ok) {
         for (auto const handle: handles) {
@@ -140,7 +139,7 @@ auto spawn_then_write(ours::HandleValue const job, std::string_view const name,
 /// The program gets argv and nothing else: no job, since nothing it could be
 /// asked to do yet starts processes, and no BootFS, which init keeps. What it
 /// prints goes to the debug log like everyone else's.
-auto start_autorun(ours::HandleValue const job, std::string_view const command) -> ours::Status {
+auto start_autorun(ours::Uandle const job, std::string_view const command) -> ours::Status {
     using ours::Status;
 
     init::AutorunCommand parsed;
@@ -162,8 +161,8 @@ auto start_autorun(ours::HandleValue const job, std::string_view const command) 
         return status;
     }
 
-    ours::HandleValue bootstrap = ours::HANDLE_INVALID;
-    ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
+    ours::Uandle bootstrap = ours::Uandle::Invalid;
+    ours::Uandle bootstrap_there = ours::Uandle::Invalid;
     if (auto const status =
             ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
         status != Status::Ok) {
@@ -185,7 +184,7 @@ auto start_autorun(ours::HandleValue const job, std::string_view const command) 
 /// The message is written after the shell exists (spawn_then_write()), since
 /// its root VMA goes in it. |peer| and the shell's bootstrap end leave this
 /// process whatever the answer.
-auto start_shell(ours::HandleValue const job, ours::HandleValue peer) -> ours::Status {
+auto start_shell(ours::Uandle const job, ours::Uandle peer) -> ours::Status {
     using ours::Status;
 
     u8 message[128];
@@ -199,15 +198,15 @@ auto start_shell(ours::HandleValue const job, ours::HandleValue peer) -> ours::S
         return status;
     }
 
-    ours::HandleValue bootstrap = ours::HANDLE_INVALID;
-    ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
+    ours::Uandle bootstrap = ours::Uandle::Invalid;
+    ours::Uandle bootstrap_there = ours::Uandle::Invalid;
     if (auto const status =
             ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
         status != Status::Ok) {
         static_cast<void>(ours::handle_close(peer));
         return status;
     }
-    ours::HandleValue const handed[] = {peer};
+    ours::Uandle const handed[] = {peer};
     return spawn_then_write(job, SHELL, bootstrap, bootstrap_there, {message, length}, handed);
 }
 } // namespace
@@ -217,7 +216,7 @@ auto main(int, char **) -> int {
     using ours::Status;
 
     auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);
-    if (job == ours::HANDLE_INVALID) {
+    if (job == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("init: started without the root job"));
         halt();
     }
@@ -229,7 +228,7 @@ auto main(int, char **) -> int {
     // (K23); until then holding it is all there is to check (K18).
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
-    if (vmex != ours::HANDLE_INVALID) {
+    if (vmex != ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("init: vmex resource ok"));
     } else {
         static_cast<void>(ort::debug_line("init: started without vmex"));
@@ -239,14 +238,14 @@ auto main(int, char **) -> int {
     // processes it starts once its launcher exists (K23). Held, unused, until
     // then.
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
-    if (vdso != ours::HANDLE_INVALID) {
+    if (vdso != ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("init: vdso vmo ok"));
     } else {
         static_cast<void>(ort::debug_line("init: started without the vdso vmo"));
     }
 
-    ours::HandleValue here = ours::HANDLE_INVALID;
-    ours::HandleValue peer = ours::HANDLE_INVALID;
+    ours::Uandle here = ours::Uandle::Invalid;
+    ours::Uandle peer = ours::Uandle::Invalid;
     if (auto const status = ours::channel_create(ours::ChannelCreateOptions::None, &here, &peer);
         status != Status::Ok) {
         report("init: channel_create = ", status);

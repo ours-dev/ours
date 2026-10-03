@@ -365,8 +365,9 @@ namespace {
     ///               to start.
     ///
     /// Everything is made on this kernel thread, which belongs to no process,
-    /// so none of these handles is charged to anyone's quota (Handle::make()
-    /// charges the current process, and there is none).
+    /// so none of these handles is charged to anyone's quota
+    /// (object::Handle::make() charges the current process, and there is
+    /// none).
     ///
     /// The caller drops the kernel's end after this, as a KernelHandle, whose
     /// destructor tells the channel its last holder is gone. Its message

@@ -87,13 +87,13 @@ class Arg:
             raise DescriptionError(f"{where}: count on an argument that is not a pointer")
         if self.dir is None and self.type == "void":
             raise DescriptionError(f"{where}: void is only a pointee")
-        # A handle a call consumes is a handle *value* the caller hands in:
+        # A handle a call consumes is an ours::Uandle the caller hands in:
         # one passed by value, or an input array of them (channel_write's
         # handles). Never an output -- a handle the kernel writes out is one
         # the caller receives, not one it gives up.
-        if self.release and (self.type != "HandleValue" or self.dir not in (None, "in")):
+        if self.release and (self.type != "Uandle" or self.dir not in (None, "in")):
             raise DescriptionError(
-                f"{where}: release is only for a HandleValue passed by value or as an input array")
+                f"{where}: release is only for a Uandle passed by value or as an input array")
 
     @property
     def is_pointer(self) -> bool:
@@ -240,16 +240,25 @@ def render_vdso_stubs(calls: List[Call]) -> str:
 
 
 def kernel_type(arg: Arg) -> str:
-    """The type a handler takes |arg| as, spelled inside namespace ours::syscall.
+    """The type a handler takes |arg| as: primitives bare, every other type
+    fully qualified as ours::<name> (user_type()).
+
+    Qualified so that a declaration means the same thing in every file that
+    includes it. A file in ours::syscall may carry `using object::Handle;`,
+    and there a bare `Handle` is the kernel's object::Handle class, a
+    different type from the value ours::Uandle.
 
     A pointer is a user_copy::UserPtr and never a C++ pointer: the kernel can
     copy through it but cannot dereference it, and its direction is part of
     the type, so writing through an input does not compile. `void` data is
     carried as bytes.
     """
+    # user_type() is defined further down; Python looks the name up when this
+    # runs, not when it is defined.
+    base = user_type(arg.type)
     if not arg.is_pointer:
-        return arg.type
-    pointee = "u8" if arg.type == "void" else arg.type
+        return base
+    pointee = "u8" if arg.type == "void" else base
     if arg.dir == "in":
         return f"user_copy::UserInPtr<{pointee} const>"
     return f"user_copy::UserOutPtr<{pointee}>"

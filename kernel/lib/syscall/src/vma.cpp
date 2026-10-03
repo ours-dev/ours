@@ -43,8 +43,8 @@ namespace {
 /// 4.1), so a program never holds a handle it was told it did not get. If
 /// either write fails, the sub-region is taken down again: closing the handle
 /// alone would leave it reserved, since the parent region holds it.
-auto vma_allocate(HandleValue const parent, VmOptions const options, usize const offset,
-                  usize const size, user_copy::UserOutPtr<HandleValue> const child,
+auto vma_allocate(ours::Uandle const parent, VmOptions const options, usize const offset,
+                  usize const size, user_copy::UserOutPtr<ours::Uandle> const child,
                   user_copy::UserOutPtr<VirtAddr> const child_addr) -> Status {
     if ((options & ~KNOWN_VM_OPTIONS) != VmOptions::None) {
         return Status::InvArgs;
@@ -113,8 +113,8 @@ auto vma_allocate(HandleValue const parent, VmOptions const options, usize const
 /// write that fails takes the mapping back down: a program never ends up with
 /// memory mapped that it was told was not. Except a Sealed mapping, which the
 /// unmap refuses, so it stays (docs/repairs/261002/object.md, item 1).
-auto vma_map(HandleValue const vma, VmOptions const options, usize const vma_offset,
-             HandleValue const vmo, u64 const vmo_offset, usize const length,
+auto vma_map(ours::Uandle const vma, VmOptions const options, usize const vma_offset,
+             ours::Uandle const vmo, u64 const vmo_offset, usize const length,
              user_copy::UserOutPtr<VirtAddr> const mapped_addr) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
     ustl::Arc<object::VmaDispatcher> region;

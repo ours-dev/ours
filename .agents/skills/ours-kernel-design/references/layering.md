@@ -64,6 +64,13 @@
   of Zircon's `lib/zx` was planned and deferred for the same reason. A
   program prints with `ort::debug_line` (`<ort/debug.hpp>`, in the ours
   runtime, `//system/lib/ort`).
+- A handle as a program holds it is `ours::Uandle`, a coined word ("u" for
+  the user side, and "handle"): a scoped enum over u32 with
+  `Uandle::Invalid`, so that it cannot be mixed with an integer. The
+  kernel's table entry it names is `object::Handle`. A system call has both
+  in view at once, so they are never spelled alike (the user's call,
+  2026-10-03; it was `HandleValue`, an alias of u32). Zircon: `zx_handle_t`
+  and `Handle`.
 - The address-region object is **Vma** at every layer: `VmaDispatcher`,
   `ours::vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
   `mm::VmArea` -- not Zircon's "Vmar" (the user's call, 2026-09-28, after a

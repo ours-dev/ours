@@ -309,16 +309,20 @@ TEST(Parse, RefusesReservedHandleInfoBitsButNotUnknownTypes) {
 }
 
 TEST(StartupHandles, TakesByTypeAndArgOnce) {
-    std::array<ours::HandleValue, 3> handles{0x11, 0x23, 0x37};
+    // Made-up values: the table only hands back what it was given.
+    constexpr auto FIRST = ours::Uandle{0x11};
+    constexpr auto SECOND = ours::Uandle{0x23};
+    constexpr auto THIRD = ours::Uandle{0x37};
+    std::array<ours::Uandle, 3> handles{FIRST, SECOND, THIRD};
     std::array<u32, 3> infos{GOLDEN_INFO[0], GOLDEN_INFO[1], GOLDEN_INFO[2]};
     ort::StartupHandles table(handles, infos);
 
-    EXPECT_EQ(table.take(HandleType::NsDir, 1), 0x37u);
-    EXPECT_EQ(table.take(HandleType::NsDir, 1), ours::HANDLE_INVALID) << "taken already";
-    EXPECT_EQ(table.take(HandleType::User1, 0), ours::HANDLE_INVALID) << "wrong arg";
-    EXPECT_EQ(table.take(HandleType::User1, 0x1234), 0x11u);
-    EXPECT_EQ(table.take(HandleType::JobDefault, 0), ours::HANDLE_INVALID) << "never there";
-    EXPECT_EQ(table.take(HandleType::NsDir, 0), 0x23u);
-    EXPECT_EQ(handles, (std::array<ours::HandleValue, 3>{}));
+    EXPECT_EQ(table.take(HandleType::NsDir, 1), THIRD);
+    EXPECT_EQ(table.take(HandleType::NsDir, 1), ours::Uandle::Invalid) << "taken already";
+    EXPECT_EQ(table.take(HandleType::User1, 0), ours::Uandle::Invalid) << "wrong arg";
+    EXPECT_EQ(table.take(HandleType::User1, 0x1234), FIRST);
+    EXPECT_EQ(table.take(HandleType::JobDefault, 0), ours::Uandle::Invalid) << "never there";
+    EXPECT_EQ(table.take(HandleType::NsDir, 0), SECOND);
+    EXPECT_EQ(handles, (std::array<ours::Uandle, 3>{}));
 }
 } // namespace

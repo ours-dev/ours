@@ -46,10 +46,10 @@ auto process_exit(i64 const retcode) -> void {
 /// The vDSO is not mapped here. Whoever starts the process maps it through
 /// vma_map, as Zircon's launcher does; the kernel only records the range once
 /// that mapping is made.
-auto process_create(HandleValue const job, user_copy::UserInPtr<char const> const name,
+auto process_create(ours::Uandle const job, user_copy::UserInPtr<char const> const name,
                     usize const name_size, ProcessCreateOptions const options,
-                    user_copy::UserOutPtr<HandleValue> const process_out,
-                    user_copy::UserOutPtr<HandleValue> const root_vma_out) -> Status {
+                    user_copy::UserOutPtr<ours::Uandle> const process_out,
+                    user_copy::UserOutPtr<ours::Uandle> const root_vma_out) -> Status {
     ustl::Arc<object::JobDispatcher> parent;
     auto &table = object::ProcessDispatcher::current()->handle_table();
     if (auto const status = table.get_dispatcher(job, Rights::ManageProcess, &parent);
@@ -125,8 +125,8 @@ auto process_create(HandleValue const job, user_copy::UserInPtr<char const> cons
 /// process's own (AccessDenied), then |arg1|'s Transfer (AccessDenied), then
 /// what ProcessDispatcher::start() finds (BadState, InvArgs for an entry that
 /// is not a user address, OutOfMem for the kernel thread).
-auto process_start(HandleValue const process, HandleValue const thread, VirtAddr const entry,
-                   VirtAddr const stack, HandleValue const arg1, usize const arg2) -> Status {
+auto process_start(ours::Uandle const process, ours::Uandle const thread, VirtAddr const entry,
+                   VirtAddr const stack, ours::Uandle const arg1, usize const arg2) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
 
     ustl::Arc<object::ProcessDispatcher> target;
@@ -135,7 +135,7 @@ auto process_start(HandleValue const process, HandleValue const thread, VirtAddr
     auto const thread_status = table.get_dispatcher(thread, Rights::Write, &first);
 
     ustl::Box<object::Handle> handed;
-    if (arg1 != HANDLE_INVALID) {
+    if (arg1 != ours::Uandle::Invalid) {
         handed = table.remove(arg1);
         if (process_status == Status::Ok && thread_status == Status::Ok && !handed) {
             return Status::BadHandle;
@@ -171,9 +171,9 @@ auto process_start(HandleValue const process, HandleValue const thread, VirtAddr
 /// first program, not a second path; and it goes, with the GN edge that
 /// allows it, at K25 (docs/design/260924/userspace-filesystem.md; what goes
 /// is listed in docs/repairs/260923/syscall.md, item 1).
-auto process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char const> const name,
-                        usize const name_size, HandleValue const bootstrap,
-                        user_copy::UserOutPtr<HandleValue> const root_vma) -> Status {
+auto process_spawn_boot(ours::Uandle const job, user_copy::UserInPtr<char const> const name,
+                        usize const name_size, ours::Uandle const bootstrap,
+                        user_copy::UserOutPtr<ours::Uandle> const root_vma) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
 
     // The job is resolved before the bootstrap handle leaves the table, so
@@ -190,7 +190,7 @@ auto process_spawn_boot(HandleValue const job, user_copy::UserInPtr<char const> 
     // whether it still holds the handle -- it never does. It is dropped at
     // return, after the table's lock is long released.
     ustl::Box<object::Handle> handed;
-    if (bootstrap != HANDLE_INVALID) {
+    if (bootstrap != ours::Uandle::Invalid) {
         handed = table.remove(bootstrap);
         if (resolved == Status::Ok && !handed) {
             return Status::BadHandle;

@@ -10,8 +10,8 @@
 // here and nowhere else: C++ forbids a program to call main
 // ([basic.start.main]), so the one call to it is written below the language.
 //
-// [[noreturn]] void _start(HandleValue bootstrap, VirtAddr vdso_base)
-//   %rdi  the bootstrap channel, HANDLE_INVALID when the process has none
+// [[noreturn]] void _start(ours::Uandle bootstrap, VirtAddr vdso_base)
+//   %rdi  the bootstrap channel, Uandle::Invalid when the process has none
 //   %rsi  where the vDSO is mapped
 //
 // Both go on untouched to ort_start() (start.cpp), which reads the

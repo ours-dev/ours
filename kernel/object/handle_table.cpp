@@ -4,6 +4,8 @@
 #include <ours/lockdep.hpp>
 #include <ours/object/handle_table.hpp>
 
+#include <utility>
+
 namespace ours::object {
 HandleTable::HandleTable()
     : m_koid(KoIdGenerator::generate()), m_random(0), m_lock(), m_handles(), m_count(0) {}
@@ -44,11 +46,17 @@ auto HandleTable::clean() -> u32 {
     return closed;
 }
 
-auto HandleTable::value_of(Handle const &handle) const -> HandleValue {
-    return ((handle.base_value() << HANDLE_RESERVED_BITS) | HANDLE_FIXED_BITS_MASK) ^ m_random;
+/// Where a handle value is minted: the encoding is arithmetic on the number,
+/// and this is the only place the kernel makes a new ours::Uandle out of one.
+/// A value a program passes in becomes an ours::Uandle in from_register()
+/// (kernel/lib/syscall/src/argument.hpp), or as a handle array is copied from
+/// user memory.
+auto HandleTable::value_of(Handle const &handle) const -> ours::Uandle {
+    return static_cast<ours::Uandle>(
+        ((handle.base_value() << HANDLE_RESERVED_BITS) | HANDLE_FIXED_BITS_MASK) ^ m_random);
 }
 
-auto HandleTable::add(ustl::Box<Handle> handle) -> HandleValue {
+auto HandleTable::add(ustl::Box<Handle> handle) -> ours::Uandle {
     DEBUG_ASSERT(handle);
     auto *const raw = handle.into_raw();
     DEBUG_ASSERT(raw->table_koid() == 0, "a handle is in at most one table");
@@ -84,7 +92,7 @@ auto HandleTable::unlink_locked(Handle *const handle) -> ustl::Box<Handle> {
     return ustl::Box<Handle>::from_raw(handle);
 }
 
-auto HandleTable::remove(HandleValue const value) -> ustl::Box<Handle> {
+auto HandleTable::remove(ours::Uandle const value) -> ustl::Box<Handle> {
     Guard guard{m_lock};
     auto *const handle = lookup_locked(value);
     if (handle == nullptr) {
@@ -112,7 +120,7 @@ auto HandleTable::remove(HandleValue const value) -> ustl::Box<Handle> {
 /// Removed first and checked after, as Zircon's
 /// get_handle_for_message_locked() does (user_handles.cc), so a check that
 /// fails cannot leave the handle half-way.
-auto HandleTable::remove_for_transfer(HandleValue const *const values, u32 const count,
+auto HandleTable::remove_for_transfer(ours::Uandle const *const values, u32 const count,
                                       Dispatcher const *const channel, ustl::Box<Handle> *const out)
     -> Status {
     auto status = Status::Ok;
@@ -159,7 +167,7 @@ auto HandleTable::remove_for_transfer(HandleValue const *const values, u32 const
 /// the object from the source handle, which must not be closed in between
 /// (Handle::clone()). The clone takes the arena's lock inside this one --
 /// table, then arena -- and the arena's lock takes nothing further.
-auto HandleTable::duplicate(HandleValue const value, Rights rights, ustl::Box<Handle> *const out)
+auto HandleTable::duplicate(ours::Uandle const value, Rights rights, ustl::Box<Handle> *const out)
     -> Status {
     Guard guard{m_lock};
     auto *const source = lookup_locked(value);
@@ -181,7 +189,7 @@ auto HandleTable::duplicate(HandleValue const value, Rights rights, ustl::Box<Ha
     return Status::Ok;
 }
 
-auto HandleTable::attach_observer(HandleValue const value, SignalObserver *const observer,
+auto HandleTable::attach_observer(ours::Uandle const value, SignalObserver *const observer,
                                   Signals const signals, ustl::Arc<Dispatcher> *const object)
     -> Status {
     Guard guard{m_lock};
@@ -196,14 +204,17 @@ auto HandleTable::attach_observer(HandleValue const value, SignalObserver *const
     return (*object)->attach_observer(observer, handle, signals);
 }
 
-auto HandleTable::lookup_locked(HandleValue const value) const -> Handle * {
+auto HandleTable::lookup_locked(ours::Uandle const value) const -> Handle * {
+    // Decoding is value_of() run backwards, arithmetic on the number.
+    auto const number = std::to_underlying(value);
+
     // 1. The fixed bits.
-    if ((value & HANDLE_FIXED_BITS_MASK) != HANDLE_FIXED_BITS_MASK) {
+    if ((number & HANDLE_FIXED_BITS_MASK) != HANDLE_FIXED_BITS_MASK) {
         return nullptr;
     }
 
     // 2. Undo this table's random, then drop the fixed bits.
-    auto const base_value = (value ^ m_random) >> HANDLE_RESERVED_BITS;
+    auto const base_value = (number ^ m_random) >> HANDLE_RESERVED_BITS;
 
     // 3 and 4. In the backed arena, and a live handle with this base value.
     auto *const handle = Handle::from_base_value(base_value);

@@ -6,7 +6,7 @@
 #include <ours/status.hpp>
 
 namespace ours::syscall {
-auto object_wait_one(HandleValue const handle, Signals const signals, Instant const deadline,
+auto object_wait_one(ours::Uandle const handle, Signals const signals, Instant const deadline,
                      user_copy::UserOutPtr<Signals> const observed) -> Status {
     Signals current = Signals::None;
     auto const status = object::wait_one(handle, signals, deadline, &current);

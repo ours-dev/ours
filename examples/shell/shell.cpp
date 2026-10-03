@@ -95,7 +95,7 @@ auto report(std::string_view const what, ours::Status const status) -> void {
 /// already queued on init's end, and a message stays readable after the
 /// writer's end is gone. It is also what makes init print "shell closed its
 /// channel", here rather than when this process ends.
-auto check_handle_close(ours::HandleValue const startup) -> void {
+auto check_handle_close(ours::Uandle const startup) -> void {
     report("shell: close(startup handle) = ", ours::handle_close(startup));
     report("shell: close again = ", ours::handle_close(startup));
 }
@@ -134,11 +134,11 @@ auto spells(char const *const bytes, u32 const length, std::string_view const te
 /// the first slice, whose log lines are the completion criterion (design 5).
 /// Started by userboot (dbg_1's `userboot.next=shell`) there is no such
 /// handle, and nobody to answer.
-auto answer_init(ours::HandleValue const peer) -> void {
+auto answer_init(ours::Uandle const peer) -> void {
     using ours::Signals;
     using ours::Status;
 
-    if (peer == ours::HANDLE_INVALID) {
+    if (peer == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: started by userboot; no one to answer"));
         return;
     }
@@ -170,8 +170,8 @@ auto answer_init(ours::HandleValue const peer) -> void {
 /// Reads the BootFS header through vmo_read and says how many files it
 /// holds, as init does (the design's check for this step, K14). Only the
 /// shell userboot starts has a BootFS; init keeps its own.
-auto describe_bootfs(ours::HandleValue const bootfs) -> void {
-    if (bootfs == ours::HANDLE_INVALID) {
+auto describe_bootfs(ours::Uandle const bootfs) -> void {
+    if (bootfs == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: started without a BootFS"));
         return;
     }
@@ -195,9 +195,9 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
 /// slice of; the BootFS itself, to read the files here; the vDSO's VMO, and
 /// the vDSO as a file, which the launcher binds the program's imports to.
 struct Launcher {
-    ours::HandleValue executable = ours::HANDLE_INVALID;
-    ours::HandleValue bootfs = ours::HANDLE_INVALID;
-    ours::HandleValue vdso = ours::HANDLE_INVALID;
+    ours::Uandle executable = ours::Uandle::Invalid;
+    ours::Uandle bootfs = ours::Uandle::Invalid;
+    ours::Uandle vdso = ours::Uandle::Invalid;
     std::span<u8 const> vdso_file;
 };
 
@@ -210,7 +210,7 @@ alignas(16) u8 vdso_bytes[16 * 1024];
 /// Finds |name| in the BootFS's directory, which it reads the way
 /// check_bootfs() does: NotFound when it is not there, OutOfRange for a
 /// directory larger than this function's buffers, or vmo_read's answer.
-auto find_in_bootfs(ours::HandleValue const bootfs, std::string_view const name,
+auto find_in_bootfs(ours::Uandle const bootfs, std::string_view const name,
                     bootfs::Entry *const out) -> ours::Status {
     using ours::Status;
 
@@ -251,15 +251,15 @@ auto find_in_bootfs(ours::HandleValue const bootfs, std::string_view const name,
 /// read out of it. Made only where the probes run, in the shell userboot
 /// starts, which userboot hands all three handles: there a launcher is
 /// expected, so failing to make one is a failed check, with its reason (the
-/// line boot_check sees). A launcher whose `executable` is HANDLE_INVALID is
+/// line boot_check sees). A launcher whose `executable` is Uandle::Invalid is
 /// none, and the control probe falls back to process_spawn_boot.
-auto make_launcher(ours::HandleValue const bootfs, ours::HandleValue const vmex,
-                   ours::HandleValue const vdso) -> Launcher {
+auto make_launcher(ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso)
+    -> Launcher {
     using ours::Status;
 
     Launcher launcher{};
-    if (bootfs == ours::HANDLE_INVALID || vmex == ours::HANDLE_INVALID ||
-        vdso == ours::HANDLE_INVALID) {
+    if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
+        vdso == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line(
             "shell: launcher checks FAILED (no BootFS, vmex or vDSO was handed over)"));
         return launcher;
@@ -279,14 +279,14 @@ auto make_launcher(ours::HandleValue const bootfs, ours::HandleValue const vmex,
         report("shell: launcher checks FAILED, reading the vdso = ", status);
         return launcher;
     }
-    ours::HandleValue copy = ours::HANDLE_INVALID;
+    ours::Uandle copy = ours::Uandle::Invalid;
     if (auto const status = ours::handle_duplicate(bootfs, ours::Rights::SameRights, &copy);
         status != Status::Ok) {
         report("shell: launcher checks FAILED, handle_duplicate(the BootFS) = ", status);
         return launcher;
     }
     // Consumes |copy| whatever it answers.
-    ours::HandleValue executable = ours::HANDLE_INVALID;
+    ours::Uandle executable = ours::Uandle::Invalid;
     if (auto const status = ours::vmo_replace_as_executable(copy, vmex, &executable);
         status != Status::Ok) {
         report("shell: launcher checks FAILED, vmo_replace_as_executable(the BootFS) = ", status);
@@ -332,13 +332,12 @@ auto print_launch_report(void *, elfload::Report const &report) -> void {
 /// its bytes are read into program_bytes for the launcher to plan and bind.
 /// What fails here before launch::start() says so itself, since its status
 /// alone could be mistaken for one of the launcher's.
-auto launch_program(Launcher const &launcher, ours::HandleValue const job,
-                    std::string_view const name, ours::HandleValue const bootstrap)
-    -> ustl::Result<launch::Started, ours::Status> {
+auto launch_program(Launcher const &launcher, ours::Uandle const job, std::string_view const name,
+                    ours::Uandle const bootstrap) -> ustl::Result<launch::Started, ours::Status> {
     using ours::Status;
 
     bootfs::Entry entry{};
-    ours::HandleValue file = ours::HANDLE_INVALID;
+    ours::Uandle file = ours::Uandle::Invalid;
     auto status = find_in_bootfs(launcher.bootfs, name, &entry);
     if (status != Status::Ok) {
         report("shell: finding the program in the BootFS = ", status);
@@ -402,7 +401,7 @@ struct ProbeRun {
 /// as soon as it has read the message: waiting on it, this would see
 /// PeerClosed before the probe had even reached main and count every probe
 /// as killed.
-auto run_probe(ours::HandleValue const job, std::string_view const probe,
+auto run_probe(ours::Uandle const job, std::string_view const probe,
                Launcher const *const launcher = nullptr) -> ProbeRun {
     using ours::Signals;
     using ours::Status;
@@ -422,10 +421,10 @@ auto run_probe(ours::HandleValue const job, std::string_view const probe,
         return run;
     }
 
-    ours::HandleValue answer = ours::HANDLE_INVALID;
-    ours::HandleValue answer_there = ours::HANDLE_INVALID;
-    ours::HandleValue bootstrap = ours::HANDLE_INVALID;
-    ours::HandleValue bootstrap_there = ours::HANDLE_INVALID;
+    ours::Uandle answer = ours::Uandle::Invalid;
+    ours::Uandle answer_there = ours::Uandle::Invalid;
+    ours::Uandle bootstrap = ours::Uandle::Invalid;
+    ours::Uandle bootstrap_there = ours::Uandle::Invalid;
     if (!expect("shell: probe channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &answer, &answer_there),
                 Status::Ok)) {
@@ -442,8 +441,8 @@ auto run_probe(ours::HandleValue const job, std::string_view const probe,
 
     // The process first: |bootstrap_there| leaves this process whatever
     // happens, and its root VMA comes back for the message.
-    ours::HandleValue root_vma = ours::HANDLE_INVALID;
-    ours::HandleValue process = ours::HANDLE_INVALID;
+    ours::Uandle root_vma = ours::Uandle::Invalid;
+    ours::Uandle process = ours::Uandle::Invalid;
     auto status = Status::Ok;
     if (launcher != nullptr) {
         auto const started = launch_program(*launcher, job, "fault_probe", bootstrap_there);
@@ -469,7 +468,7 @@ auto run_probe(ours::HandleValue const job, std::string_view const probe,
     // Then the message. Both handles leave this process with it, whatever the
     // write answers; the probe waits for it, and if it never comes, sees this
     // end close and ends itself.
-    ours::HandleValue handed[] = {answer_there, root_vma};
+    ours::Uandle handed[] = {answer_there, root_vma};
     status =
         ours::channel_write(bootstrap, ours::ChannelWriteOptions::None, message, length, handed, 2);
     // This end has nothing more to say, and holding it would keep a handle
@@ -503,15 +502,16 @@ auto run_probe(ours::HandleValue const job, std::string_view const probe,
         // killed probe's end has closed already; that is what woke the wait.
         //
         // This narrows the window rather than closing it: the kernel raises
-        // PEER_CLOSED in ~Handle before it refunds the handle to its creator
-        // (docs/repairs/260926/object.md), so for a few instructions after
-        // this wakes the handle may still be counted. The checks that run
-        // before the quota check are what make that gap unobservable today.
+        // PEER_CLOSED in its object::Handle destructor before it refunds the
+        // handle to its creator (docs/repairs/260926/object.md), so for a few
+        // instructions after this wakes the handle may still be counted. The
+        // checks that run before the quota check are what make that gap
+        // unobservable today.
         static_cast<void>(
             ours::object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed));
     }
     static_cast<void>(ours::handle_close(answer));
-    if (process != ours::HANDLE_INVALID) {
+    if (process != ours::Uandle::Invalid) {
         static_cast<void>(ours::handle_close(process));
     }
     return run;
@@ -548,7 +548,7 @@ auto run_probe(ours::HandleValue const job, std::string_view const probe,
 /// Run only by the shell userboot starts, which userboot hands the root job
 /// a new process needs; the dev image starts the shell from init, with a
 /// channel instead, and does not package fault_probe.
-auto run_probes(ours::HandleValue const job, Launcher const &launcher) -> void {
+auto run_probes(ours::Uandle const job, Launcher const &launcher) -> void {
     constexpr std::string_view PROBES[] = {
         "pf_unmapped", "pf_kernel", "pf_write_vdso", "pf_exec_vdso_data",
         "ud2",         "gp_hlt",    "gp_int80",      "gp_int3",
@@ -562,7 +562,7 @@ auto run_probes(ours::HandleValue const job, Launcher const &launcher) -> void {
         if (!run.started) {
             // The control, and with it the launcher's verdict below, is never
             // reached; say so, or the launcher would go unchecked unnoticed.
-            if (launcher.executable != ours::HANDLE_INVALID) {
+            if (launcher.executable != ours::Uandle::Invalid) {
                 static_cast<void>(ort::debug_line(
                     "shell: launcher checks FAILED (a probe before its control did not start)"));
             }
@@ -587,7 +587,7 @@ auto run_probes(ours::HandleValue const job, Launcher const &launcher) -> void {
 
     constexpr std::string_view CONTROL{"none"};
     Launcher const *by = nullptr;
-    if (launcher.executable != ours::HANDLE_INVALID) {
+    if (launcher.executable != ours::Uandle::Invalid) {
         by = &launcher;
         static_cast<void>(ort::debug_line("shell: starting the control probe with the launcher"));
     }
@@ -629,8 +629,8 @@ auto check_channel_loopback() -> void {
     using ours::Status;
 
     auto ok = true;
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (!expect("shell: channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
@@ -709,16 +709,16 @@ auto check_channel_loopback() -> void {
 /// thousand deep, can be dropped from the top: the kernel frees it as a loop
 /// (Dispatcher::rc_recycle), not a thousand destructors deep on one stack.
 auto check_handle_transfer() -> void {
-    using ours::HandleValue;
     using ours::Status;
+    using ours::Uandle;
 
     constexpr std::string_view PING{"ping"};
 
     auto ok = true;
-    HandleValue a = ours::HANDLE_INVALID;
-    HandleValue b = ours::HANDLE_INVALID;
-    HandleValue c = ours::HANDLE_INVALID;
-    HandleValue d = ours::HANDLE_INVALID;
+    Uandle a = ours::Uandle::Invalid;
+    Uandle b = ours::Uandle::Invalid;
+    Uandle c = ours::Uandle::Invalid;
+    Uandle d = ours::Uandle::Invalid;
     if (!expect("shell: transfer channel_create(a, b) = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok) ||
         !expect("shell: transfer channel_create(c, d) = ",
@@ -731,14 +731,14 @@ auto check_handle_transfer() -> void {
                  ours::channel_write(a, ours::ChannelWriteOptions::None, nullptr, 0, &d, 1),
                  Status::Ok);
     ok &= expect("shell: close(d) after sending it = ", ours::handle_close(d), Status::BadHandle);
-    HandleValue got = ours::HANDLE_INVALID;
+    Uandle got = ours::Uandle::Invalid;
     u32 actual_bytes = 0;
     u32 actual_handles = 0;
     ok &= expect("shell: read(b) = ",
                  ours::channel_read(b, ours::ChannelReadOptions::None, nullptr, &got, 0, 1,
                                     &actual_bytes, &actual_handles),
                  Status::Ok);
-    ok &= actual_handles == 1 && got != ours::HANDLE_INVALID;
+    ok &= actual_handles == 1 && got != ours::Uandle::Invalid;
     ok &= expect("shell: write(c, ping) = ",
                  ours::channel_write(c, ours::ChannelWriteOptions::None, PING.data(),
                                      static_cast<u32>(PING.size()), nullptr, 0),
@@ -759,11 +759,11 @@ auto check_handle_transfer() -> void {
     ok &= expect("shell: close(a) after that = ", ours::handle_close(a), Status::BadHandle);
 
     // One bad value fails the write and takes the good handle anyway.
-    HandleValue e = ours::HANDLE_INVALID;
-    HandleValue f = ours::HANDLE_INVALID;
+    Uandle e = ours::Uandle::Invalid;
+    Uandle f = ours::Uandle::Invalid;
     ok &= expect("shell: transfer channel_create(e, f) = ",
                  ours::channel_create(ours::ChannelCreateOptions::None, &e, &f), Status::Ok);
-    HandleValue const mixed[] = {e, HandleValue{0x7ffffff3}};
+    Uandle const mixed[] = {e, Uandle{0x7ffffff3}};
     ok &= expect("shell: write(c, handles = [e, bad]) = ",
                  ours::channel_write(c, ours::ChannelWriteOptions::None, nullptr, 0, mixed, 2),
                  Status::BadHandle);
@@ -773,10 +773,10 @@ auto check_handle_transfer() -> void {
     // last one kept -- and closed.
     constexpr u32 DEPTH = 1000;
     auto chain_ok = true;
-    HandleValue inner = f;
+    Uandle inner = f;
     for (u32 i = 0; i < DEPTH && chain_ok; ++i) {
-        HandleValue writer = ours::HANDLE_INVALID;
-        HandleValue holder = ours::HANDLE_INVALID;
+        Uandle writer = ours::Uandle::Invalid;
+        Uandle holder = ours::Uandle::Invalid;
         chain_ok &=
             ours::channel_create(ours::ChannelCreateOptions::None, &writer, &holder) == Status::Ok;
         chain_ok &= ours::channel_write(writer, ours::ChannelWriteOptions::None, nullptr, 0, &inner,
@@ -812,13 +812,13 @@ auto check_handle_transfer() -> void {
 /// handles this program already holds when it gets here depends on how it was
 /// started.
 auto check_handle_quota() -> void {
-    using ours::HandleValue;
     using ours::Status;
+    using ours::Uandle;
 
     // One pair more than the quota could ever allow, so that the loop ends on
     // the kernel's refusal and never on running out of room here.
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
-    static HandleValue made[ROOM];
+    static Uandle made[ROOM];
     u32 count = 0;
     auto status = Status::Ok;
     while (count + 2 <= ROOM) {
@@ -891,8 +891,8 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
                  ort::debug_write(std::string_view{reinterpret_cast<char const *>(KERNEL), 8}),
                  Status::InvArgs);
 
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (!expect("shell: channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
@@ -934,11 +934,11 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
 
     // Both handle values are written out before either handle is installed,
     // so the failed create leaves nothing behind and the next one works.
-    ours::HandleValue c = ours::HANDLE_INVALID;
-    ours::HandleValue d = ours::HANDLE_INVALID;
+    ours::Uandle c = ours::Uandle::Invalid;
+    ours::Uandle d = ours::Uandle::Invalid;
     ok &= expect("shell: channel_create(out0 = unmapped) = ",
                  ours::channel_create(ours::ChannelCreateOptions::None,
-                                      reinterpret_cast<ours::HandleValue *>(UNMAPPED), &d),
+                                      reinterpret_cast<ours::Uandle *>(UNMAPPED), &d),
                  Status::InvArgs);
     ok &= expect("shell: channel_create(after that) = ",
                  ours::channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok);
@@ -957,10 +957,10 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     ok &= expect("shell: wait_one(observed = vDSO, poll) = ",
                  ours::object_wait_one(b, Signals::Readable, 0, reinterpret_cast<Signals *>(vdso)),
                  Status::InvArgs);
-    ours::HandleValue e = ours::HANDLE_INVALID;
+    ours::Uandle e = ours::Uandle::Invalid;
     ok &= expect("shell: channel_create(out0 = vDSO) = ",
                  ours::channel_create(ours::ChannelCreateOptions::None,
-                                      reinterpret_cast<ours::HandleValue *>(vdso), &e),
+                                      reinterpret_cast<ours::Uandle *>(vdso), &e),
                  Status::InvArgs);
 
     ok &= expect("shell: close(a) = ", ours::handle_close(a), Status::Ok);
@@ -1097,11 +1097,11 @@ auto check_vmo_read() -> void {
     auto ok = true;
     char buffer[16] = {};
     ok &=
-        expect("shell: vmo_read(HANDLE_INVALID) = ",
-               ours::vmo_read(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
+        expect("shell: vmo_read(Uandle::Invalid) = ",
+               ours::vmo_read(ours::Uandle::Invalid, buffer, 0, sizeof(buffer)), Status::BadHandle);
 
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (!expect("shell: channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
@@ -1140,19 +1140,19 @@ auto check_vmo_read() -> void {
 ///
 /// A write that succeeds needs a VMO this program may write, and only
 /// vmo_create makes one; those checks come with it.
-auto check_vmo_write(ours::HandleValue const bootfs) -> void {
+auto check_vmo_write(ours::Uandle const bootfs) -> void {
     using ours::Status;
 
     constexpr auto FAR = u64{0xffff'ffff'ffff'0000};
 
     auto ok = true;
     char const buffer[16] = {'o', 'v', 'e', 'r', 'w', 'r', 'i', 't', 't', 'e', 'n'};
-    ok &=
-        expect("shell: vmo_write(HANDLE_INVALID) = ",
-               ours::vmo_write(ours::HANDLE_INVALID, buffer, 0, sizeof(buffer)), Status::BadHandle);
+    ok &= expect("shell: vmo_write(Uandle::Invalid) = ",
+                 ours::vmo_write(ours::Uandle::Invalid, buffer, 0, sizeof(buffer)),
+                 Status::BadHandle);
 
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (!expect("shell: channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
@@ -1167,7 +1167,7 @@ auto check_vmo_write(ours::HandleValue const bootfs) -> void {
                  Status::BadHandle);
     ok &= expect("shell: close(a) = ", ours::handle_close(a), Status::Ok);
 
-    if (bootfs != ours::HANDLE_INVALID) {
+    if (bootfs != ours::Uandle::Invalid) {
         char before[sizeof(buffer)] = {};
         char after[sizeof(buffer)] = {};
         ok &= expect("shell: vmo_read(bootfs, before writing) = ",
@@ -1224,7 +1224,7 @@ auto check_vmo_create() -> void {
     constexpr auto PAGE = u64{4096};
 
     auto ok = true;
-    ours::HandleValue vmo = ours::HANDLE_INVALID;
+    ours::Uandle vmo = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create(Resizable) = ",
                  ours::vmo_create(PAGE, VmoOptions::Resizable, &vmo), Status::NotSupported);
     ok &= expect("shell: vmo_create(an unknown option) = ",
@@ -1234,13 +1234,12 @@ auto check_vmo_create() -> void {
                  Status::InvArgs);
     ok &= expect("shell: vmo_create(the largest u64) = ",
                  ours::vmo_create(~u64{0}, VmoOptions::None, &vmo), Status::OutOfRange);
-    ok &= expect(
-        "shell: vmo_create(out = kernel half) = ",
-        ours::vmo_create(PAGE, VmoOptions::None, reinterpret_cast<ours::HandleValue *>(KERNEL)),
-        Status::InvArgs);
+    ok &= expect("shell: vmo_create(out = kernel half) = ",
+                 ours::vmo_create(PAGE, VmoOptions::None, reinterpret_cast<ours::Uandle *>(KERNEL)),
+                 Status::InvArgs);
 
     // Empty: valid, and every non-empty range is past its end.
-    ours::HandleValue empty = ours::HANDLE_INVALID;
+    ours::Uandle empty = ours::Uandle::Invalid;
     if (expect("shell: vmo_create(0 bytes) = ", ours::vmo_create(0, VmoOptions::None, &empty),
                Status::Ok)) {
         u8 byte = 0;
@@ -1301,7 +1300,7 @@ auto check_vmo_create() -> void {
                ours::vmo_write(vmo, reinterpret_cast<void const *>(KERNEL), 0, 8), Status::InvArgs);
 
     // A copy that may read but not write.
-    ours::HandleValue readonly = ours::HANDLE_INVALID;
+    ours::Uandle readonly = ours::Uandle::Invalid;
     if (expect("shell: handle_duplicate(vmo, without Write) = ",
                ours::handle_duplicate(vmo, Rights::Basic | Rights::Read | Rights::Map, &readonly),
                Status::Ok)) {
@@ -1333,10 +1332,10 @@ auto check_vmo_create() -> void {
 ///
 /// Only the shell userboot starts holds the BootFS; started by init, this
 /// says so and checks nothing.
-auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> void {
+auto check_bootfs(ours::Uandle const bootfs, ours::VirtAddr const vdso) -> void {
     using ours::Status;
 
-    if (bootfs == ours::HANDLE_INVALID) {
+    if (bootfs == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: bootfs checks skipped (no BootFS here)"));
         return;
     }
@@ -1478,18 +1477,18 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
 /// with a right beside it, is refused; a copy without Read cannot vmo_read;
 /// and an out pointer the kernel cannot write gives no handle -- checked by
 /// failing more times than the quota allows and then succeeding once.
-auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
+auto check_handle_duplicate(ours::Uandle const bootfs) -> void {
     using ours::Rights;
     using ours::Status;
 
     auto ok = true;
-    ours::HandleValue copy = ours::HANDLE_INVALID;
-    ok &= expect("shell: handle_duplicate(HANDLE_INVALID) = ",
-                 ours::handle_duplicate(ours::HANDLE_INVALID, Rights::SameRights, &copy),
+    ours::Uandle copy = ours::Uandle::Invalid;
+    ok &= expect("shell: handle_duplicate(Uandle::Invalid) = ",
+                 ours::handle_duplicate(ours::Uandle::Invalid, Rights::SameRights, &copy),
                  Status::BadHandle);
 
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (!expect("shell: channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
@@ -1499,7 +1498,7 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: close(a) = ", ours::handle_close(a), Status::Ok);
     ok &= expect("shell: close(b) = ", ours::handle_close(b), Status::Ok);
 
-    if (bootfs == ours::HANDLE_INVALID) {
+    if (bootfs == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: handle_duplicate on a VMO skipped (no BootFS)"));
     } else {
         // Same rights: both read the same header.
@@ -1524,7 +1523,7 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
                      Status::InvArgs);
 
         // Narrower: without Read, the copy cannot be read through.
-        ours::HandleValue unreadable = ours::HANDLE_INVALID;
+        ours::Uandle unreadable = ours::Uandle::Invalid;
         ok &= expect("shell: handle_duplicate(bootfs, without Read) = ",
                      ours::handle_duplicate(bootfs, Rights::Basic | Rights::Map, &unreadable),
                      Status::Ok);
@@ -1544,9 +1543,9 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
         // and the last call would answer NoResource.
         auto leaked = false;
         for (u32 i = 0; i < ours::HANDLE_MAX_PER_PROCESS + 1 && !leaked; ++i) {
-            leaked = ours::handle_duplicate(bootfs, Rights::SameRights,
-                                            reinterpret_cast<ours::HandleValue *>(KERNEL)) !=
-                     Status::InvArgs;
+            leaked =
+                ours::handle_duplicate(bootfs, Rights::SameRights,
+                                       reinterpret_cast<ours::Uandle *>(KERNEL)) != Status::InvArgs;
         }
         ok &= expect("shell: handle_duplicate(out = kernel half), past the quota = ",
                      leaked ? Status::InternalError : Status::InvArgs, Status::InvArgs);
@@ -1578,7 +1577,7 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
 /// What needs the BootFS runs where userboot started this program: a slice of
 /// the `vdso` entry starts with the ELF magic, and inherits the BootFS
 /// handle's lack of Write.
-auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
+auto check_vmo_create_child(ours::Uandle const bootfs) -> void {
     using ours::Rights;
     using ours::Status;
     using ours::VmoChildOptions;
@@ -1587,7 +1586,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     constexpr auto PAGE = u64{4096};
 
     auto ok = true;
-    ours::HandleValue parent = ours::HANDLE_INVALID;
+    ours::Uandle parent = ours::Uandle::Invalid;
     if (!expect("shell: vmo_create(3 pages) = ",
                 ours::vmo_create(3 * PAGE, VmoOptions::None, &parent), Status::Ok)) {
         static_cast<void>(ort::debug_line("shell: vmo_create_child checks FAILED"));
@@ -1599,7 +1598,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     u8 got[4] = {};
     ok &= expect("shell: vmo_write(parent, page 2) = ",
                  ours::vmo_write(parent, down, PAGE, sizeof(down)), Status::Ok);
-    ours::HandleValue slice = ours::HANDLE_INVALID;
+    ours::Uandle slice = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create_child(Slice, page 2) = ",
                  ours::vmo_create_child(parent, VmoChildOptions::Slice, PAGE, PAGE, &slice),
                  Status::Ok);
@@ -1620,8 +1619,8 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                  ours::vmo_read(slice, got, PAGE, 1), Status::OutOfRange);
 
     // A slice of a slice: the parent's pages 2..3, then page 1 of that.
-    ours::HandleValue wide = ours::HANDLE_INVALID;
-    ours::HandleValue nested = ours::HANDLE_INVALID;
+    ours::Uandle wide = ours::Uandle::Invalid;
+    ours::Uandle nested = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create_child(Slice, pages 2-3) = ",
                  ours::vmo_create_child(parent, VmoChildOptions::Slice, PAGE, 2 * PAGE, &wide),
                  Status::Ok);
@@ -1639,7 +1638,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: close(wide) = ", ours::handle_close(wide), Status::Ok);
 
     // The arguments.
-    ours::HandleValue refused = ours::HANDLE_INVALID;
+    ours::Uandle refused = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create_child(unaligned offset) = ",
                  ours::vmo_create_child(parent, VmoChildOptions::Slice, 8, PAGE, &refused),
                  Status::InvArgs);
@@ -1670,8 +1669,8 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
         Status::InvArgs);
 
     // The handle.
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (expect("shell: channel_create = ",
                ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         ok &= expect("shell: vmo_create_child(a channel) = ",
@@ -1682,7 +1681,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     } else {
         ok = false;
     }
-    ours::HandleValue unreadable = ours::HANDLE_INVALID;
+    ours::Uandle unreadable = ours::Uandle::Invalid;
     ok &= expect("shell: handle_duplicate(parent, without Read) = ",
                  ours::handle_duplicate(parent, Rights::Basic | Rights::Map, &unreadable),
                  Status::Ok);
@@ -1694,9 +1693,9 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
 
     // Snapshots: a copy-on-write clone. Neither side sees the other's writes after
     // it, and pages past the parent's end read as zero.
-    ours::HandleValue source = ours::HANDLE_INVALID;
-    ours::HandleValue full = ours::HANDLE_INVALID;
-    ours::HandleValue on_write = ours::HANDLE_INVALID;
+    ours::Uandle source = ours::Uandle::Invalid;
+    ours::Uandle full = ours::Uandle::Invalid;
+    ours::Uandle on_write = ours::Uandle::Invalid;
     u8 const before[4] = {0x5a, 0x5b, 0x5c, 0x5d};
     u8 const theirs[4] = {0x6a, 0x6b, 0x6c, 0x6d};
     u8 const mine[4] = {0x7a, 0x7b, 0x7c, 0x7d};
@@ -1747,8 +1746,8 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                  Status::InvArgs);
     // A snapshot of a handle without Write can be written, and what it writes
     // stays its own: unlike a slice, it has no way to the source's pages.
-    ours::HandleValue readonly = ours::HANDLE_INVALID;
-    ours::HandleValue writable = ours::HANDLE_INVALID;
+    ours::Uandle readonly = ours::Uandle::Invalid;
+    ours::Uandle writable = ours::Uandle::Invalid;
     ok &= expect(
         "shell: handle_duplicate(source, without Write) = ",
         ours::handle_duplicate(source, Rights::Basic | Rights::Read | Rights::Map, &readonly),
@@ -1768,7 +1767,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
         expect("shell: close(the writable snapshot) = ", ours::handle_close(writable), Status::Ok);
     // SnapshotModified, of an anonymous VMO, is a full snapshot: it gets Write
     // as the others do, and does not see the source's later writes.
-    ours::HandleValue modified = ours::HANDLE_INVALID;
+    ours::Uandle modified = ours::Uandle::Invalid;
     ok &= expect(
         "shell: vmo_create_child(the read-only copy, SnapshotModified) = ",
         ours::vmo_create_child(readonly, VmoChildOptions::SnapshotModified, 0, PAGE, &modified),
@@ -1789,7 +1788,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: close(slice) = ", ours::handle_close(slice), Status::Ok);
     ok &= expect("shell: close(parent) = ", ours::handle_close(parent), Status::Ok);
 
-    if (bootfs == ours::HANDLE_INVALID) {
+    if (bootfs == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vmo_create_child on the BootFS skipped"));
     } else {
         // The `vdso` entry, found the way check_bootfs() reads the directory.
@@ -1817,7 +1816,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
                     continue;
                 }
                 found = true;
-                ours::HandleValue vdso = ours::HANDLE_INVALID;
+                ours::Uandle vdso = ours::Uandle::Invalid;
                 ok &= expect("shell: vmo_create_child(bootfs, Slice, vdso) = ",
                              ours::vmo_create_child(bootfs, VmoChildOptions::Slice,
                                                     entry.data_offset, entry.data_size, &vdso),
@@ -1835,7 +1834,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
 
                 // A snapshot of the same entry can be written, though the BootFS
                 // cannot, and what it writes stays its own.
-                ours::HandleValue copy = ours::HANDLE_INVALID;
+                ours::Uandle copy = ours::Uandle::Invalid;
                 char const mark[1] = {'X'};
                 ok &= expect("shell: vmo_create_child(bootfs, SnapshotFull, vdso) = ",
                              ours::vmo_create_child(bootfs, VmoChildOptions::SnapshotFull,
@@ -1874,28 +1873,27 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
 ///
 /// What needs no vmex runs in every image, each on a VMO of its own so that
 /// "the original is gone" can be checked after every call:
-///   - vmex = HANDLE_INVALID is AccessDenied, and the VMO handle is gone;
+///   - vmex = Uandle::Invalid is AccessDenied, and the VMO handle is gone;
 ///   - vmex a channel is BadType; vmex a value that names nothing, BadHandle;
 ///   - a VMO handle that is a channel is BadHandle, and the channel is gone.
 /// What needs vmex runs where userboot started this program: the BootFS as
 /// vmex is BadType (a VMO, not a resource), and the real vmex gives a handle
 /// that reads what the original wrote, cannot be written through (Write is
 /// dropped, design D3), and leaves the original's value naming nothing.
-auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::HandleValue const vmex)
-    -> void {
+auto check_vmo_replace_as_executable(ours::Uandle const bootfs, ours::Uandle const vmex) -> void {
     using ours::Status;
     using ours::VmoOptions;
 
     constexpr auto PAGE = u64{4096};
 
     auto ok = true;
-    ours::HandleValue exec = ours::HANDLE_INVALID;
+    ours::Uandle exec = ours::Uandle::Invalid;
     u8 byte = 0;
 
     // A fresh VMO for each refusal: every one of them consumes it.
-    auto const refused = [&](std::string_view const what, ours::HandleValue const with,
+    auto const refused = [&](std::string_view const what, ours::Uandle const with,
                              Status const want) {
-        ours::HandleValue vmo = ours::HANDLE_INVALID;
+        ours::Uandle vmo = ours::Uandle::Invalid;
         if (!expect("shell: vmo_create = ", ours::vmo_create(PAGE, VmoOptions::None, &vmo),
                     Status::Ok)) {
             return false;
@@ -1907,15 +1905,14 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
         return passed;
     };
 
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (!expect("shell: channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         return;
     }
-    ok &=
-        refused("shell: vmo_replace_as_executable(vmex = HANDLE_INVALID) = ", ours::HANDLE_INVALID,
-                Status::AccessDenied);
+    ok &= refused("shell: vmo_replace_as_executable(vmex = Uandle::Invalid) = ",
+                  ours::Uandle::Invalid, Status::AccessDenied);
     ok &= refused("shell: vmo_replace_as_executable(vmex = a channel) = ", a, Status::BadType);
 
     // A value that names nothing: b's, once b is closed.
@@ -1929,13 +1926,13 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
                  ours::vmo_replace_as_executable(a, vmex, &exec), Status::BadHandle);
     ok &= expect("shell: close(the consumed channel) = ", ours::handle_close(a), Status::BadHandle);
 
-    if (vmex == ours::HANDLE_INVALID || bootfs == ours::HANDLE_INVALID) {
+    if (vmex == ours::Uandle::Invalid || bootfs == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vmo_replace_as_executable with vmex skipped"));
     } else {
         ok &= refused("shell: vmo_replace_as_executable(vmex = the BootFS) = ", bootfs,
                       Status::BadType);
 
-        ours::HandleValue vmo = ours::HANDLE_INVALID;
+        ours::Uandle vmo = ours::Uandle::Invalid;
         if (expect("shell: vmo_create = ", ours::vmo_create(PAGE, VmoOptions::None, &vmo),
                    Status::Ok)) {
             u8 const written = 0x5a;
@@ -1982,8 +1979,8 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
 /// Where userboot started this program it also maps an executable copy of
 /// the BootFS (vmo_replace_as_executable) read and execute, and the BootFS
 /// itself, which has no Write, read-write is AccessDenied.
-auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
-                   ours::HandleValue const vmex) -> void {
+auto check_vma_map(ours::Uandle const vma, ours::Uandle const bootfs, ours::Uandle const vmex)
+    -> void {
     using ours::Rights;
     using ours::Status;
     using ours::VmoOptions;
@@ -1994,13 +1991,13 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     constexpr auto RW = VmOptions::PermRead | VmOptions::PermWrite;
     constexpr auto RX = VmOptions::PermRead | VmOptions::PermExecute;
 
-    if (vma == ours::HANDLE_INVALID) {
+    if (vma == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vma_map checks FAILED (no VmaRoot)"));
         return;
     }
 
     auto ok = true;
-    ours::HandleValue vmo = ours::HANDLE_INVALID;
+    ours::Uandle vmo = ours::Uandle::Invalid;
     if (!expect("shell: vmo_create(2 pages) = ", ours::vmo_create(2 * PAGE, VmoOptions::None, &vmo),
                 Status::Ok)) {
         static_cast<void>(ort::debug_line("shell: vma_map checks FAILED"));
@@ -2033,7 +2030,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     }
 
     // A slice maps like any VMO, and no further than its own end.
-    ours::HandleValue slice = ours::HANDLE_INVALID;
+    ours::Uandle slice = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create_child(Slice, page 2) = ",
                  ours::vmo_create_child(vmo, ours::VmoChildOptions::Slice, PAGE, PAGE, &slice),
                  Status::Ok);
@@ -2066,7 +2063,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     // The rights.
     ok &= expect("shell: vma_map(RX, a VMO without Execute) = ",
                  ours::vma_map(vma, RX, 0, vmo, 0, PAGE, &refused), Status::AccessDenied);
-    ours::HandleValue unmappable = ours::HANDLE_INVALID;
+    ours::Uandle unmappable = ours::Uandle::Invalid;
     ok &=
         expect("shell: handle_duplicate(vmo, without Map) = ",
                ours::handle_duplicate(vmo, Rights::Basic | Rights::Read, &unmappable), Status::Ok);
@@ -2105,14 +2102,14 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
                  Status::BadType);
     ok &= expect("shell: close(vmo) = ", ours::handle_close(vmo), Status::Ok);
 
-    if (bootfs == ours::HANDLE_INVALID || vmex == ours::HANDLE_INVALID) {
+    if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vma_map of the BootFS skipped"));
     } else {
         ok &= expect("shell: vma_map(RW, the BootFS) = ",
                      ours::vma_map(vma, RW, 0, bootfs, 0, PAGE, &refused), Status::AccessDenied);
 
-        ours::HandleValue copy = ours::HANDLE_INVALID;
-        ours::HandleValue executable = ours::HANDLE_INVALID;
+        ours::Uandle copy = ours::Uandle::Invalid;
+        ours::Uandle executable = ours::Uandle::Invalid;
         ok &= expect("shell: handle_duplicate(bootfs) = ",
                      ours::handle_duplicate(bootfs, Rights::SameRights, &copy), Status::Ok);
         ok &= expect("shell: vmo_replace_as_executable(the copy) = ",
@@ -2133,15 +2130,15 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
                      Status::Ok);
     }
 
-    if (vmex == ours::HANDLE_INVALID) {
+    if (vmex == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vma_map of an executable snapshot skipped"));
     } else {
         // A snapshot of an executable VMO: Write added, Execute taken away. It maps
         // read-write and not executable, and a store through that mapping takes a
         // copy of the page, which the executable VMO's own mapping never sees.
-        ours::HandleValue plain = ours::HANDLE_INVALID;
-        ours::HandleValue executable = ours::HANDLE_INVALID;
-        ours::HandleValue snapshot = ours::HANDLE_INVALID;
+        ours::Uandle plain = ours::Uandle::Invalid;
+        ours::Uandle executable = ours::Uandle::Invalid;
+        ours::Uandle snapshot = ours::Uandle::Invalid;
         u8 const first[1] = {0x5a};
         ok &= expect("shell: vmo_create(to be executable) = ",
                      ours::vmo_create(PAGE, VmoOptions::None, &plain), Status::Ok);
@@ -2218,7 +2215,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
 ///   - the arguments: a size of 0 and an unaligned offset are InvArgs;
 ///   - a value the kernel cannot write back releases the range: the same
 ///     spot can be reserved on the next call.
-auto check_vma_allocate(ours::HandleValue const vma) -> void {
+auto check_vma_allocate(ours::Uandle const vma) -> void {
     using ours::Status;
     using ours::VmoOptions;
     using ours::VmOptions;
@@ -2228,20 +2225,20 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     constexpr auto SPOT = (usize{1} << 30) + 64 * PAGE;
     constexpr auto SPECIFIC_R = VmOptions::PermRead | VmOptions::Specific;
 
-    if (vma == ours::HANDLE_INVALID) {
+    if (vma == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vma_allocate checks FAILED (no VmaRoot)"));
         return;
     }
 
     auto ok = true;
-    ours::HandleValue vmo = ours::HANDLE_INVALID;
+    ours::Uandle vmo = ours::Uandle::Invalid;
     if (!expect("shell: vmo_create = ", ours::vmo_create(PAGE, VmoOptions::None, &vmo),
                 Status::Ok)) {
         static_cast<void>(ort::debug_line("shell: vma_allocate checks FAILED"));
         return;
     }
 
-    ours::HandleValue guard = ours::HANDLE_INVALID;
+    ours::Uandle guard = ours::Uandle::Invalid;
     ours::VirtAddr at = 0;
     ok &= expect("shell: vma_allocate(Specific, 1 page) = ",
                  ours::vma_allocate(vma, VmOptions::Specific, SPOT, PAGE, &guard, &at), Status::Ok);
@@ -2274,7 +2271,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     // what CanMapSpecific is for.
     constexpr auto CAN_MAP_RW_SPECIFIC =
         VmOptions::CanMapRead | VmOptions::CanMapWrite | VmOptions::CanMapSpecific;
-    ours::HandleValue region = ours::HANDLE_INVALID;
+    ours::Uandle region = ours::Uandle::Invalid;
     ours::VirtAddr region_at = 0;
     ok &= expect(
         "shell: vma_allocate(CanMapRead | CanMapWrite | CanMapSpecific, anywhere, 2 pages) = ",
@@ -2308,7 +2305,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &=
         expect("shell: vma_map(R, Specific, past the sub-region's end) = ",
                ours::vma_map(region, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped), Status::InvArgs);
-    ours::HandleValue nested = ours::HANDLE_INVALID;
+    ours::Uandle nested = ours::Uandle::Invalid;
     ours::VirtAddr nested_at = 0;
     ok &= expect("shell: vma_allocate(CanMapExecute, inside a sub-region without it) = ",
                  ours::vma_allocate(region, VmOptions::CanMapRead | VmOptions::CanMapExecute, 0,
@@ -2322,7 +2319,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     // Only the sub-region can refuse here: the VMO's handle has Write, and so
     // does the root's. One made with CanMapRead alone gets a handle without
     // Write, and its mappings can be no more than readable.
-    ours::HandleValue read_only = ours::HANDLE_INVALID;
+    ours::Uandle read_only = ours::Uandle::Invalid;
     ours::VirtAddr read_only_at = 0;
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 1 page) = ",
                  ours::vma_allocate(vma, VmOptions::CanMapRead, 0, PAGE, &read_only, &read_only_at),
@@ -2338,7 +2335,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     // sub-region of its own: a nested sub-region the whole size of its
     // parent; and, with page 0 taken, a mapping on page 1, the top, after
     // which the region is full and the next one is refused.
-    ours::HandleValue outer = ours::HANDLE_INVALID;
+    ours::Uandle outer = ours::Uandle::Invalid;
     ours::VirtAddr outer_at = 0;
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
                  ours::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &outer, &outer_at),
@@ -2368,7 +2365,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     // places. A sub-region of it may have it all the same, and then takes a
     // place chosen in it: that sub-region itself landed where the kernel put
     // it, so the choice fixes only where things lie inside it.
-    ours::HandleValue plain = ours::HANDLE_INVALID;
+    ours::Uandle plain = ours::Uandle::Invalid;
     ours::VirtAddr plain_at = 0;
     ok &= expect("shell: vma_allocate(CanMapRead, anywhere, 2 pages) = ",
                  ours::vma_allocate(vma, VmOptions::CanMapRead, 0, 2 * PAGE, &plain, &plain_at),
@@ -2380,7 +2377,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: vma_map(R, Specific, past the end of a sub-region without it) = ",
                  ours::vma_map(plain, SPECIFIC_R, 2 * PAGE, vmo, 0, PAGE, &mapped),
                  Status::AccessDenied);
-    ours::HandleValue inner = ours::HANDLE_INVALID;
+    ours::Uandle inner = ours::Uandle::Invalid;
     ours::VirtAddr inner_at = 0;
     ok &= expect("shell: vma_allocate(Specific, into a sub-region without CanMapSpecific) = ",
                  ours::vma_allocate(plain, VmOptions::Specific, 0, PAGE, &inner, &inner_at),
@@ -2403,7 +2400,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
                Status::Ok);
 
     // CanMap bits need the matching right on the parent.
-    ours::HandleValue no_execute = ours::HANDLE_INVALID;
+    ours::Uandle no_execute = ours::Uandle::Invalid;
     // The root region's handle has Basic without Wait (RIGHTS_DEFAULT_VMA), so
     // the copy asks for Read and Write and nothing it does not hold.
     ok &= expect("shell: handle_duplicate(vma, Read | Write only) = ",
@@ -2495,28 +2492,28 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
 ///     more times than the quota allows and then succeeding once shows no
 ///     handle was left in the table by any of them, and the log shows every
 ///     process made by a failed call destroyed.
-auto check_process_create(ours::HandleValue const job) -> void {
+auto check_process_create(ours::Uandle const job) -> void {
     using ours::Rights;
     using ours::Signals;
     using ours::Status;
 
     constexpr std::string_view NAME{"created"};
 
-    if (job == ours::HANDLE_INVALID) {
+    if (job == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: process_create checks skipped (no root job)"));
         return;
     }
 
     auto ok = true;
-    ours::HandleValue process = ours::HANDLE_INVALID;
-    ours::HandleValue region = ours::HANDLE_INVALID;
+    ours::Uandle process = ours::Uandle::Invalid;
+    ours::Uandle region = ours::Uandle::Invalid;
 
-    ok &= expect("shell: process_create(HANDLE_INVALID) = ",
-                 ours::process_create(ours::HANDLE_INVALID, NAME.data(), NAME.size(),
+    ok &= expect("shell: process_create(Uandle::Invalid) = ",
+                 ours::process_create(ours::Uandle::Invalid, NAME.data(), NAME.size(),
                                       ours::ProcessCreateOptions::None, &process, &region),
                  Status::BadHandle);
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (expect("shell: channel_create = ",
                ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         ok &= expect("shell: process_create(job = a channel) = ",
@@ -2528,7 +2525,7 @@ auto check_process_create(ours::HandleValue const job) -> void {
     } else {
         ok = false;
     }
-    ours::HandleValue weak = ours::HANDLE_INVALID;
+    ours::Uandle weak = ours::Uandle::Invalid;
     ok &= expect("shell: handle_duplicate(job, without ManageProcess) = ",
                  ours::handle_duplicate(job, Rights::Basic, &weak), Status::Ok);
     ok &= expect("shell: process_create(job without ManageProcess) = ",
@@ -2547,9 +2544,9 @@ auto check_process_create(ours::HandleValue const job) -> void {
                ours::process_create(job, NAME.data(), NAME.size(), ours::ProcessCreateOptions::None,
                                     &process, &region),
                Status::Ok)) {
-        ok &=
-            process != ours::HANDLE_INVALID && region != ours::HANDLE_INVALID && process != region;
-        ours::HandleValue second = ours::HANDLE_INVALID;
+        ok &= process != ours::Uandle::Invalid && region != ours::Uandle::Invalid &&
+              process != region;
+        ours::Uandle second = ours::Uandle::Invalid;
         ok &= expect("shell: handle_duplicate(process) = ",
                      ours::handle_duplicate(process, Rights::SameRights, &second), Status::Ok);
         ok &= expect("shell: close(region) = ", ours::handle_close(region), Status::Ok);
@@ -2574,7 +2571,7 @@ auto check_process_create(ours::HandleValue const job) -> void {
     // one times instead would show the same thing but makes a process for
     // each, which is slow enough to time the debug image out.)
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
-    static ours::HandleValue filler[ROOM];
+    static ours::Uandle filler[ROOM];
     u32 held = 0;
     while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &filler[held],
                                                     &filler[held + 1]) == Status::Ok) {
@@ -2592,9 +2589,9 @@ auto check_process_create(ours::HandleValue const job) -> void {
         held -= 2;
         for (u32 i = 0; i < 3; ++i) {
             ok &= expect("shell: process_create(process_out = kernel half), table nearly full = ",
-                         ours::process_create(
-                             job, NAME.data(), NAME.size(), ours::ProcessCreateOptions::None,
-                             reinterpret_cast<ours::HandleValue *>(KERNEL), &region),
+                         ours::process_create(job, NAME.data(), NAME.size(),
+                                              ours::ProcessCreateOptions::None,
+                                              reinterpret_cast<ours::Uandle *>(KERNEL), &region),
                          Status::InvArgs);
         }
         ok &= expect("shell: process_create after that = ",
@@ -2632,20 +2629,20 @@ auto check_process_create(ours::HandleValue const job) -> void {
 ///     still points at the object. The kernel log shows every thread here
 ///     destroyed and none given a kernel thread: it is made by start, which
 ///     nothing here calls.
-auto check_thread_create(ours::HandleValue const job) -> void {
+auto check_thread_create(ours::Uandle const job) -> void {
     using ours::Rights;
     using ours::Status;
 
     constexpr std::string_view NAME{"never-started"};
 
-    if (job == ours::HANDLE_INVALID) {
+    if (job == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: thread_create checks skipped (no root job)"));
         return;
     }
 
     auto ok = true;
-    ours::HandleValue process = ours::HANDLE_INVALID;
-    ours::HandleValue region = ours::HANDLE_INVALID;
+    ours::Uandle process = ours::Uandle::Invalid;
+    ours::Uandle region = ours::Uandle::Invalid;
     if (!expect("shell: process_create = ",
                 ours::process_create(job, "host", sizeof("host") - 1,
                                      ours::ProcessCreateOptions::None, &process, &region),
@@ -2654,16 +2651,16 @@ auto check_thread_create(ours::HandleValue const job) -> void {
         return;
     }
 
-    ours::HandleValue thread = ours::HANDLE_INVALID;
-    ok &= expect("shell: thread_create(HANDLE_INVALID) = ",
-                 ours::thread_create(ours::HANDLE_INVALID, NAME.data(), NAME.size(),
+    ours::Uandle thread = ours::Uandle::Invalid;
+    ok &= expect("shell: thread_create(Uandle::Invalid) = ",
+                 ours::thread_create(ours::Uandle::Invalid, NAME.data(), NAME.size(),
                                      ours::ThreadCreateOptions::None, &thread),
                  Status::BadHandle);
     ok &= expect("shell: thread_create(process = its root VMA) = ",
                  ours::thread_create(region, NAME.data(), NAME.size(),
                                      ours::ThreadCreateOptions::None, &thread),
                  Status::BadType);
-    ours::HandleValue weak = ours::HANDLE_INVALID;
+    ours::Uandle weak = ours::Uandle::Invalid;
     ok &= expect("shell: handle_duplicate(process, without ManageThread) = ",
                  ours::handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
     ok &= expect("shell: thread_create(process without ManageThread) = ",
@@ -2694,7 +2691,7 @@ auto check_thread_create(ours::HandleValue const job) -> void {
     // behind: a thread needs one, so this is stricter than it needs to be, and
     // it is the same shape as process_create's, so the two read alike.
     constexpr u32 ROOM = ours::HANDLE_MAX_PER_PROCESS + 2;
-    static ours::HandleValue filler[ROOM];
+    static ours::Uandle filler[ROOM];
     u32 held = 0;
     while (held + 2 <= ROOM && ours::channel_create(ours::ChannelCreateOptions::None, &filler[held],
                                                     &filler[held + 1]) == Status::Ok) {
@@ -2712,7 +2709,7 @@ auto check_thread_create(ours::HandleValue const job) -> void {
             ok &= expect("shell: thread_create(out = kernel half), table nearly full = ",
                          ours::thread_create(process, NAME.data(), NAME.size(),
                                              ours::ThreadCreateOptions::None,
-                                             reinterpret_cast<ours::HandleValue *>(KERNEL)),
+                                             reinterpret_cast<ours::Uandle *>(KERNEL)),
                          Status::InvArgs);
         }
         ok &= expect("shell: thread_create after that = ",
@@ -2756,7 +2753,7 @@ auto check_thread_create(ours::HandleValue const job) -> void {
 ///   - the resolving order: the thread's own handle passed as the handle
 ///     argument is consumed, and does not stop the call being answered as
 ///     any other would be.
-auto check_process_start(ours::HandleValue const job) -> void {
+auto check_process_start(ours::Uandle const job) -> void {
     using ours::Rights;
     using ours::Signals;
     using ours::Status;
@@ -2764,18 +2761,18 @@ auto check_process_start(ours::HandleValue const job) -> void {
     constexpr auto ENTRY = ours::VirtAddr{0x400000};
     constexpr auto STACK = ours::VirtAddr{0x500000};
 
-    if (job == ours::HANDLE_INVALID) {
+    if (job == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: process_start checks skipped (no root job)"));
         return;
     }
 
     auto ok = true;
-    ours::HandleValue process = ours::HANDLE_INVALID;
-    ours::HandleValue region = ours::HANDLE_INVALID;
-    ours::HandleValue other = ours::HANDLE_INVALID;
-    ours::HandleValue other_region = ours::HANDLE_INVALID;
-    ours::HandleValue thread = ours::HANDLE_INVALID;
-    ours::HandleValue other_thread = ours::HANDLE_INVALID;
+    ours::Uandle process = ours::Uandle::Invalid;
+    ours::Uandle region = ours::Uandle::Invalid;
+    ours::Uandle other = ours::Uandle::Invalid;
+    ours::Uandle other_region = ours::Uandle::Invalid;
+    ours::Uandle thread = ours::Uandle::Invalid;
+    ours::Uandle other_thread = ours::Uandle::Invalid;
     if (!expect("shell: process_create = ",
                 ours::process_create(job, "starts", sizeof("starts") - 1,
                                      ours::ProcessCreateOptions::None, &process, &region),
@@ -2797,14 +2794,14 @@ auto check_process_start(ours::HandleValue const job) -> void {
     }
 
     // The handles named.
-    auto const H = ours::HANDLE_INVALID;
-    ok &= expect("shell: process_start(HANDLE_INVALID) = ",
+    auto const H = ours::Uandle::Invalid;
+    ok &= expect("shell: process_start(Uandle::Invalid) = ",
                  ours::process_start(H, thread, ENTRY, STACK, H, 0), Status::BadHandle);
     ok &= expect("shell: process_start(process = its root VMA) = ",
                  ours::process_start(region, thread, ENTRY, STACK, H, 0), Status::BadType);
     ok &= expect("shell: process_start(thread = a process) = ",
                  ours::process_start(process, process, ENTRY, STACK, H, 0), Status::BadType);
-    ours::HandleValue weak = ours::HANDLE_INVALID;
+    ours::Uandle weak = ours::Uandle::Invalid;
     ok &= expect("shell: handle_duplicate(process, without Write) = ",
                  ours::handle_duplicate(process, Rights::Basic, &weak), Status::Ok);
     ok &= expect("shell: process_start(process without Write) = ",
@@ -2815,13 +2812,13 @@ auto check_process_start(ours::HandleValue const job) -> void {
                  Status::AccessDenied);
 
     // The handle moved.
-    ours::HandleValue a = ours::HANDLE_INVALID;
-    ours::HandleValue b = ours::HANDLE_INVALID;
+    ours::Uandle a = ours::Uandle::Invalid;
+    ours::Uandle b = ours::Uandle::Invalid;
     if (!expect("shell: channel_create = ",
                 ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
         ok = false;
     } else {
-        ours::HandleValue stale = b;
+        ours::Uandle stale = b;
         ok &= expect("shell: close(b) = ", ours::handle_close(b), Status::Ok);
         ok &=
             expect("shell: process_start(a handle that names nothing) = ",
@@ -2829,8 +2826,8 @@ auto check_process_start(ours::HandleValue const job) -> void {
 
         // A VMO's handle can be duplicated (a channel's cannot), so it is what
         // gives a copy without Transfer.
-        ours::HandleValue vmo = ours::HANDLE_INVALID;
-        ours::HandleValue untransferable = ours::HANDLE_INVALID;
+        ours::Uandle vmo = ours::Uandle::Invalid;
+        ours::Uandle untransferable = ours::Uandle::Invalid;
         if (expect("shell: vmo_create = ", ours::vmo_create(4096, ours::VmoOptions::None, &vmo),
                    Status::Ok) &&
             expect("shell: handle_duplicate(vmo, without Transfer) = ",
@@ -2850,8 +2847,8 @@ auto check_process_start(ours::HandleValue const job) -> void {
 
     // Consumed and closed on failure, twice: the process is as it was.
     for (u32 i = 0; i < 2; ++i) {
-        ours::HandleValue c = ours::HANDLE_INVALID;
-        ours::HandleValue d = ours::HANDLE_INVALID;
+        ours::Uandle c = ours::Uandle::Invalid;
+        ours::Uandle d = ours::Uandle::Invalid;
         if (!expect("shell: channel_create = ",
                     ours::channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok)) {
             ok = false;
@@ -2908,7 +2905,7 @@ auto check_process_start(ours::HandleValue const job) -> void {
 ///     pages, maps as an ordinary mapping and registers nothing, so a process
 ///     that has only that is still refused by process_start (BadState, no
 ///     vDSO), where one that mapped the VMO itself would not be.
-auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -> void {
+auto check_vdso_map(ours::Uandle const job, ours::Uandle const vdso) -> void {
     using ours::Status;
     using ours::VmOptions;
 
@@ -2917,18 +2914,18 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
     constexpr auto SEALED_RX = RX | VmOptions::Sealed;
     constexpr auto SEALED_RW = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Sealed;
 
-    if (job == ours::HANDLE_INVALID || vdso == ours::HANDLE_INVALID) {
+    if (job == ours::Uandle::Invalid || vdso == ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vdso map checks skipped (no root job or vDSO)"));
         return;
     }
 
     auto ok = true;
-    ours::HandleValue p = ours::HANDLE_INVALID;
-    ours::HandleValue p_vma = ours::HANDLE_INVALID;
-    ours::HandleValue q = ours::HANDLE_INVALID;
-    ours::HandleValue q_vma = ours::HANDLE_INVALID;
-    ours::HandleValue s = ours::HANDLE_INVALID;
-    ours::HandleValue s_vma = ours::HANDLE_INVALID;
+    ours::Uandle p = ours::Uandle::Invalid;
+    ours::Uandle p_vma = ours::Uandle::Invalid;
+    ours::Uandle q = ours::Uandle::Invalid;
+    ours::Uandle q_vma = ours::Uandle::Invalid;
+    ours::Uandle s = ours::Uandle::Invalid;
+    ours::Uandle s_vma = ours::Uandle::Invalid;
     if (!expect("shell: process_create = ",
                 ours::process_create(job, "vdso-p", sizeof("vdso-p") - 1,
                                      ours::ProcessCreateOptions::None, &p, &p_vma),
@@ -3006,7 +3003,7 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
                  ours::vma_map(q_vma, SEALED_RX, 0, vdso, code, code_size, &again), Status::Ok);
 
     // The same pages by way of a slice: a mapping, and no registration.
-    ours::HandleValue slice = ours::HANDLE_INVALID;
+    ours::Uandle slice = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create_child(vdso, Slice) = ",
                  ours::vmo_create_child(vdso, ours::VmoChildOptions::Slice, 0, whole, &slice),
                  Status::Ok);
@@ -3018,7 +3015,7 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
     // ordinary VMO's is accepted. What a sealed mapping then refuses is
     // checked in the kernel (vmaseal.test), since no program can unmap or
     // protect yet.
-    ours::HandleValue plain = ours::HANDLE_INVALID;
+    ours::Uandle plain = ours::Uandle::Invalid;
     ok &= expect("shell: vmo_create = ", ours::vmo_create(PAGE, ours::VmoOptions::None, &plain),
                  Status::Ok);
     ok &= expect(
@@ -3027,13 +3024,13 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
         Status::Ok);
     ok &= expect("shell: close(the VMO) = ", ours::handle_close(plain), Status::Ok);
 
-    ours::HandleValue t = ours::HANDLE_INVALID;
+    ours::Uandle t = ours::Uandle::Invalid;
     ok &= expect(
         "shell: thread_create = ",
         ours::thread_create(s, "first", sizeof("first") - 1, ours::ThreadCreateOptions::None, &t),
         Status::Ok);
     ok &= expect("shell: process_start(a slice of the vDSO mapped, no vDSO) = ",
-                 ours::process_start(s, t, 0x400000, 0x500000, ours::HANDLE_INVALID, 0),
+                 ours::process_start(s, t, 0x400000, 0x500000, ours::Uandle::Invalid, 0),
                  Status::BadState);
     ok &= expect("shell: close(the thread) = ", ours::handle_close(t), Status::Ok);
 
@@ -3071,7 +3068,7 @@ auto main(int, char **) -> int {
     auto const vdso_vmo = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     // The root VMA, which whoever started this put in the processargs.
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
-    if (vmex != ours::HANDLE_INVALID) {
+    if (vmex != ours::Uandle::Invalid) {
         static_cast<void>(ort::debug_line("shell: vmex resource ok"));
     } else {
         static_cast<void>(ort::debug_line("shell: started without vmex"));
@@ -3079,10 +3076,10 @@ auto main(int, char **) -> int {
 
     answer_init(peer);
     describe_bootfs(bootfs);
-    if (job != ours::HANDLE_INVALID) {
+    if (job != ours::Uandle::Invalid) {
         auto const launcher = make_launcher(bootfs, vmex, vdso_vmo);
         run_probes(job, launcher);
-        if (launcher.executable != ours::HANDLE_INVALID) {
+        if (launcher.executable != ours::Uandle::Invalid) {
             static_cast<void>(ours::handle_close(launcher.executable));
         }
     }
@@ -3093,7 +3090,7 @@ auto main(int, char **) -> int {
     check_vdso_map(job, vdso_vmo);
     // One startup handle closed twice: init's channel when there is one --
     // closing it is init's cue -- and otherwise the job, done with now.
-    check_handle_close(peer != ours::HANDLE_INVALID ? peer : job);
+    check_handle_close(peer != ours::Uandle::Invalid ? peer : job);
     check_channel_loopback();
     check_handle_transfer();
     check_handle_quota();

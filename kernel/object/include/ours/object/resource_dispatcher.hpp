@@ -106,7 +106,7 @@ class ResourceDispatcher: public ResourceDispatcherBase {
 /// Zircon: validate_ranged_resource() (zircon/kernel/object/resource.rs), with
 /// the same three answers.
 [[nodiscard]]
-auto validate_ranged_resource(HandleValue handle, RsrcKind kind, u64 base, u64 size) -> Status;
+auto validate_ranged_resource(ours::Uandle handle, RsrcKind kind, u64 base, u64 size) -> Status;
 } // namespace ours::object
 
 #endif // OURS_OBJECT_RESOURCE_DISPATCHER_HPP

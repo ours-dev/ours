@@ -43,7 +43,7 @@ namespace {
     };
 } // namespace
 
-auto wait_one(HandleValue const handle, Signals const signals, Instant const deadline,
+auto wait_one(ours::Uandle const handle, Signals const signals, Instant const deadline,
               Signals *const observed) -> Status {
     // Never null: the syscall layer refuses a trap from anything but a user
     // process's vDSO before a handler runs.

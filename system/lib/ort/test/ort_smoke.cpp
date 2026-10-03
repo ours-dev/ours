@@ -13,6 +13,6 @@ auto main(int const argc, char **const argv) -> int {
     // Touch what the runtime hands out, so that none of it is optimised away
     // unlinked: the arguments, a startup handle, the vDSO's address.
     auto const handle = ort::take_startup_handle(ours::HandleType::User0, 0);
-    return argc + (argv[0] != nullptr) + static_cast<int>(handle & 1) +
+    return argc + (argv[0] != nullptr) + static_cast<int>(handle != ours::Uandle::Invalid) +
            static_cast<int>(ort::vdso_base() & 1);
 }

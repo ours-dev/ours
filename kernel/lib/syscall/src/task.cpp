@@ -23,9 +23,9 @@ namespace ours::syscall {
 /// it is started (BadState, ProcessDispatcher::attach_thread()), which is the
 /// only place the answer is reliable, since the state can change between
 /// here and there whatever is checked now.
-auto thread_create(HandleValue const process, user_copy::UserInPtr<char const> const name,
+auto thread_create(ours::Uandle const process, user_copy::UserInPtr<char const> const name,
                    usize const name_size, ThreadCreateOptions const options,
-                   user_copy::UserOutPtr<HandleValue> const out) -> Status {
+                   user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     auto &table = object::ProcessDispatcher::current()->handle_table();
     ustl::Arc<object::ProcessDispatcher> owner;
     if (auto const status = table.get_dispatcher(process, Rights::ManageThread, &owner);
@@ -63,8 +63,8 @@ auto thread_create(HandleValue const process, user_copy::UserInPtr<char const> c
 
 // Placeholders for thread calls that do not exist yet: none has an entry in
 // syscalls.gni, so nothing declares or calls them. Their parameters are not
-// the ABI's: a handler takes a handle as the HandleValue the generated shim
-// passes, never as an object::Handle.
+// the ABI's: a handler takes a handle as the ours::Uandle the generated shim
+// passes, never as an object::Handle *.
 auto thread_start(object::Handle *thread, VirtAddr entry, VirtAddr stack, usize arg0, usize arg1)
     -> Status {
     return Status::Unimplemented;

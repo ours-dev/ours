@@ -38,31 +38,48 @@ using Instant = i64;
 /// table draws one, a channel_create() draws two, and at one id per
 /// microsecond -- a tight loop of creates on one core -- 2^32 runs out in
 /// 72 minutes. The wrap then hands out 0, which is KOID_INVALID and also
-/// what Handle::table_koid() reads while a handle is in no table, and after
-/// that ids already in use: a handle moved into a table that happens to share
-/// its koid with the old one passes the table check it was meant to fail.
-/// At 2^64 the same loop runs for half a million years.
+/// what object::Handle::table_koid() reads while a handle is in no table,
+/// and after that ids already in use: a handle moved into a table that
+/// happens to share its koid with the old one passes the table check it was
+/// meant to fail. At 2^64 the same loop runs for half a million years.
 using KoId = u64;
 
 /// A handle as a program holds it: a number that names an entry in the
 /// calling process's handle table, and means nothing anywhere else.
 ///
-/// Called HandleValue rather than Handle, which it used to be, because the
-/// system-call layer has both in view at once: this number, and the
-/// object::Handle it resolves to. Two types spelled `Handle` in one function
-/// is a misreading waiting to happen.
-using HandleValue = u32;
-
-/// The value no handle ever has. Closing it is a no-op that succeeds, which
-/// is what lets a caller close a slot without first asking whether it was
-/// filled (Zircon ZX_HANDLE_INVALID).
-constexpr auto HANDLE_INVALID = HandleValue{0};
+/// The word is coined: "u", for the user side that holds it, and "handle".
+/// The kernel has a Handle of its own, object::Handle: the table entry a
+/// Uandle names, which holds a reference to an object and the rights the
+/// entry grants. A system call has both in view at once -- it is given a
+/// Uandle and resolves it to an object::Handle -- so the two are never
+/// spelled alike, in code or in conversation. Zircon calls the number
+/// zx_handle_t and the entry Handle. This was HandleValue, an alias of u32,
+/// until 2026-10-03.
+///
+/// A scoped enum rather than an alias of u32, so that a handle cannot be
+/// confused with a count, a size or any other integer -- passing one where
+/// the other is expected does not compile -- and cannot take part in
+/// arithmetic. Only the places where a number really becomes a handle or a
+/// handle a number (an argument register, in either direction, and the
+/// handle table encoding or decoding a value) and where a handle is shown as
+/// a number convert, and they say so. The value crosses the ABI exactly as
+/// before: a scoped enum with a fixed u32 underlying type has u32's size and
+/// calling convention, so it travels in the same 32-bit register.
+///
+/// Zircon's zx_handle_t is a plain uint32_t typedef.
+enum class Uandle : u32 {
+    /// The value no handle ever has. Closing it is a no-op that succeeds,
+    /// which is what lets a caller close a slot without first asking whether
+    /// it was filled (Zircon ZX_HANDLE_INVALID).
+    Invalid = 0,
+};
 
 /// The two low bits every valid handle value has set. A value without them is
 /// refused before anything else is looked at, which is what keeps zero and
 /// small hand-made integers from naming anything (Zircon
-/// ZX_HANDLE_FIXED_BITS_MASK).
-constexpr auto HANDLE_FIXED_BITS_MASK = HandleValue{0x3};
+/// ZX_HANDLE_FIXED_BITS_MASK). A mask over the number, so it is a u32 and is
+/// tested against std::to_underlying() of a handle.
+constexpr auto HANDLE_FIXED_BITS_MASK = u32{0x3};
 
 enum class Status : u32;
 enum class Signals : u32;

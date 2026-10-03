@@ -40,7 +40,7 @@
 #             count    Only on a pointer: the name of the argument that holds
 #                      its length in elements. Without one the pointer names
 #                      exactly one element.
-#             release  Only on a HandleValue passed by value or as an input
+#             release  Only on a Uandle passed by value or as an input
 #                      array: true when the call consumes the handle whatever
 #                      its outcome. An array is consumed once the kernel has
 #                      read it: a count past the call's limit, or an array it
@@ -108,7 +108,7 @@ ours_syscalls = [
     name = "handle_close"
     brief = "Closes |handle|."
     doc = [
-      "HANDLE_INVALID is accepted and ignored; any other value that names",
+      "Uandle::Invalid is accepted and ignored; any other value that names",
       "nothing in the caller's table answers BadHandle. No right is needed to",
       "give a handle up. When it was the last handle to its object, the",
       "object learns it has no holders left.",
@@ -116,7 +116,7 @@ ours_syscalls = [
     args = [
       {
         name = "handle"
-        type = "HandleValue"
+        type = "Uandle"
         release = true
       },
     ]
@@ -138,12 +138,12 @@ ours_syscalls = [
       },
       {
         name = "out0"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
       {
         name = "out1"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]
@@ -166,7 +166,7 @@ ours_syscalls = [
     args = [
       {
         name = "channel"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "options"
@@ -184,7 +184,7 @@ ours_syscalls = [
       },
       {
         name = "handles"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "in"
         count = "num_handles"
         release = true
@@ -208,7 +208,7 @@ ours_syscalls = [
     args = [
       {
         name = "channel"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "options"
@@ -222,7 +222,7 @@ ours_syscalls = [
       },
       {
         name = "handles"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
         count = "num_handles"
       },
@@ -265,7 +265,7 @@ ours_syscalls = [
     args = [
       {
         name = "handle"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "signals"
@@ -319,7 +319,7 @@ ours_syscalls = [
     args = [
       {
         name = "job"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "name"
@@ -337,12 +337,12 @@ ours_syscalls = [
       },
       {
         name = "process_out"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
       {
         name = "root_vma_out"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]
@@ -359,7 +359,7 @@ ours_syscalls = [
       "process starts with, and |arg2| in %rsi (by convention the vDSO's base).",
       "|arg1| moves from the caller's table into the new process's, needs",
       "Transfer (AccessDenied), and is gone from the caller's table whatever",
-      "the answer: a failed start closes it. HANDLE_INVALID starts the process",
+      "the answer: a failed start closes it. Uandle::Invalid starts the process",
       "with none. BadState unless the process is Initial and has the vDSO",
       "mapped; InvArgs for an entry that is not a user address. A failed start",
       "leaves the process as it was, so it may be started again with a new",
@@ -368,11 +368,11 @@ ours_syscalls = [
     args = [
       {
         name = "process"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "thread"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "entry"
@@ -384,7 +384,7 @@ ours_syscalls = [
       },
       {
         name = "arg1"
-        type = "HandleValue"
+        type = "Uandle"
         release = true
       },
       {
@@ -411,7 +411,7 @@ ours_syscalls = [
     args = [
       {
         name = "process"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "name"
@@ -429,7 +429,7 @@ ours_syscalls = [
       },
       {
         name = "out"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]
@@ -455,7 +455,7 @@ ours_syscalls = [
       "bytes with no '/' or NUL (InvArgs). |bootstrap| needs Transfer",
       "(AccessDenied), leaves the caller's table whatever the outcome and",
       "becomes the new process's one handle, its value in the program's %rdi;",
-      "HANDLE_INVALID starts it with none. NotFound when the package has no",
+      "Uandle::Invalid starts it with none. NotFound when the package has no",
       "such file, InvArgs when the file is not a program (the vDSO included).",
       "Returns no handle to the process, so nothing can wait on it for",
       "Terminated. Returns its root VMA in |root_vma|, for the caller to hand",
@@ -465,7 +465,7 @@ ours_syscalls = [
     args = [
       {
         name = "job"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "name"
@@ -479,12 +479,12 @@ ours_syscalls = [
       },
       {
         name = "bootstrap"
-        type = "HandleValue"
+        type = "Uandle"
         release = true
       },
       {
         name = "root_vma"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]
@@ -508,7 +508,7 @@ ours_syscalls = [
     args = [
       {
         name = "vmo"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "buffer"
@@ -553,7 +553,7 @@ ours_syscalls = [
       },
       {
         name = "out"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]
@@ -589,7 +589,7 @@ ours_syscalls = [
     args = [
       {
         name = "parent"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "options"
@@ -605,7 +605,7 @@ ours_syscalls = [
       },
       {
         name = "child"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
       {
@@ -649,7 +649,7 @@ ours_syscalls = [
     args = [
       {
         name = "vma"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "options"
@@ -661,7 +661,7 @@ ours_syscalls = [
       },
       {
         name = "vmo"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "vmo_offset"
@@ -709,7 +709,7 @@ ours_syscalls = [
     args = [
       {
         name = "vmo"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "options"
@@ -725,7 +725,7 @@ ours_syscalls = [
       },
       {
         name = "out"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]
@@ -737,7 +737,7 @@ ours_syscalls = [
     brief = "Replaces |vmo| with a handle to the same VMO that may be executed."
     doc = [
       "|vmex| must name a System resource covering the VMEX slot",
-      "(AccessDenied for HANDLE_INVALID, BadHandle for a value naming",
+      "(AccessDenied for Uandle::Invalid, BadHandle for a value naming",
       "nothing, BadType for anything but a System resource, OutOfRange for",
       "one of another slot); no right is required of it. |vmo| is consumed",
       "whatever the answer -- duplicate it first to keep a copy -- and",
@@ -750,16 +750,16 @@ ours_syscalls = [
     args = [
       {
         name = "vmo"
-        type = "HandleValue"
+        type = "Uandle"
         release = true
       },
       {
         name = "vmex"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "out"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]
@@ -783,7 +783,7 @@ ours_syscalls = [
     args = [
       {
         name = "vmo"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "buffer"
@@ -819,7 +819,7 @@ ours_syscalls = [
     args = [
       {
         name = "handle"
-        type = "HandleValue"
+        type = "Uandle"
       },
       {
         name = "rights"
@@ -827,7 +827,7 @@ ours_syscalls = [
       },
       {
         name = "out"
-        type = "HandleValue"
+        type = "Uandle"
         dir = "out"
       },
     ]

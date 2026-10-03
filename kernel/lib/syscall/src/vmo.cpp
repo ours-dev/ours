@@ -11,7 +11,6 @@
 #include <ours/types.hpp>
 
 namespace ours::syscall {
-using object::Handle;
 using object::KernelHandle;
 using object::ProcessDispatcher;
 using object::VmoDispatcher;
@@ -22,7 +21,7 @@ using object::VmoDispatcher;
 /// the options and the size is the object's (VmoDispatcher::create_user()).
 /// Zircon sys_vmo_create().
 auto vmo_create(u64 const size, VmoOptions const options,
-                user_copy::UserOutPtr<HandleValue> const out) -> Status {
+                user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     KernelHandle<VmoDispatcher> vmo;
     Rights rights = Rights::None;
     if (auto const status = VmoDispatcher::create_user(size, options, vmo, rights);
@@ -32,7 +31,7 @@ auto vmo_create(u64 const size, VmoOptions const options,
 
     // Counts against this process's handle quota: make() is what refuses past
     // it, as it does for channel_create.
-    auto handle = Handle::make(KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights);
+    auto handle = object::Handle::make(KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights);
     if (!handle) {
         return Status::NoResource;
     }
@@ -53,7 +52,7 @@ auto vmo_create(u64 const size, VmoOptions const options,
 /// the length, as Zircon's core-vmo test pins. Everything about the range,
 /// the buffer and the copy is the object's (VmoDispatcher::read_user()); this
 /// layer reaches nothing below kernel/object.
-auto vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer, u64 const offset,
+auto vmo_read(ours::Uandle const vmo, user_copy::UserOutPtr<u8> const buffer, u64 const offset,
               usize const length) -> Status {
     ustl::Arc<VmoDispatcher> dispatcher;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
@@ -85,8 +84,8 @@ auto vmo_read(HandleValue const vmo, user_copy::UserOutPtr<u8> const buffer, u64
 /// vmo_replace_as_executable(). Zircon sys_vmo_create_child(), which does the
 /// same for every snapshot kind unless ZX_VMO_CHILD_NO_WRITE asks otherwise;
 /// NoWrite is not taken here yet.
-auto vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 const offset,
-                      u64 const size, user_copy::UserOutPtr<HandleValue> const out) -> Status {
+auto vmo_create_child(ours::Uandle const vmo, VmoChildOptions const options, u64 const offset,
+                      u64 const size, user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     ustl::Arc<VmoDispatcher> parent;
     Rights rights = Rights::None;
     auto &table = ProcessDispatcher::current()->handle_table();
@@ -107,7 +106,7 @@ auto vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 
         rights |= Rights::Write;
     }
 
-    auto handle = Handle::make(KernelHandle<object::Dispatcher>(ustl::move(child)), rights);
+    auto handle = object::Handle::make(KernelHandle<object::Dispatcher>(ustl::move(child)), rights);
     if (!handle) {
         return Status::NoResource;
     }
@@ -123,8 +122,9 @@ auto vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 
 ///
 /// Zircon's sys_vmo_replace_as_executable(), step for step:
 ///   1. vmex is checked first and its answer kept: a System resource covering
-///      the VMEX slot, or HANDLE_INVALID, which is AccessDenied here (Zircon
-///      asks the job policy, and ours has no ambient Execute to allow).
+///      the VMEX slot, or ours::Uandle::Invalid, which is AccessDenied here
+///      (Zircon asks the job policy, and ours has no ambient Execute to
+///      allow).
 ///   2. |vmo| is taken out of the table. From here it is gone, whether or not
 ///      the call succeeds; a caller that wants to keep a copy duplicates it
 ///      first (handle_duplicate). BadHandle when it names nothing, and also
@@ -135,10 +135,10 @@ auto vmo_create_child(HandleValue const vmo, VmoChildOptions const options, u64 
 ///      Write (for JITs); ours drops it (D3), so a program cannot write the
 ///      code it is about to run through the handle that lets it run it.
 /// The value goes out before the handle goes in, as for vmo_create.
-auto vmo_replace_as_executable(HandleValue const vmo, HandleValue const vmex,
-                               user_copy::UserOutPtr<HandleValue> const out) -> Status {
+auto vmo_replace_as_executable(ours::Uandle const vmo, ours::Uandle const vmex,
+                               user_copy::UserOutPtr<ours::Uandle> const out) -> Status {
     auto vmex_status = Status::AccessDenied;
-    if (vmex != HANDLE_INVALID) {
+    if (vmex != ours::Uandle::Invalid) {
         vmex_status =
             object::validate_ranged_resource(vmex, RsrcKind::System, RSRC_SYSTEM_VMEX_BASE, 1);
     }
@@ -157,7 +157,7 @@ auto vmo_replace_as_executable(HandleValue const vmo, HandleValue const vmex,
     }
 
     auto const rights = (original->rights() & ~Rights::Write) | Rights::Execute;
-    auto handle = Handle::make(original->dispatcher(), rights);
+    auto handle = object::Handle::make(original->dispatcher(), rights);
     if (!handle) {
         return Status::NoResource;
     }
@@ -170,8 +170,8 @@ auto vmo_replace_as_executable(HandleValue const vmo, HandleValue const vmex,
 
 /// vmo_read()'s mirror: the handle with Write, then the VMO. Zircon
 /// sys_vmo_write().
-auto vmo_write(HandleValue const vmo, user_copy::UserInPtr<u8 const> const buffer, u64 const offset,
-               usize const length) -> Status {
+auto vmo_write(ours::Uandle const vmo, user_copy::UserInPtr<u8 const> const buffer,
+               u64 const offset, usize const length) -> Status {
     ustl::Arc<VmoDispatcher> dispatcher;
     if (auto const status = ProcessDispatcher::current()->handle_table().get_dispatcher(
             vmo, Rights::Write, &dispatcher);

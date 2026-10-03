@@ -25,14 +25,17 @@ struct IsUserPtr<user_copy::UserPtr<T, D>>: std::true_type {};
 ///     register holds a number the user chose, and this is the point where it
 ///     is given a type that can only be copied through, never dereferenced.
 ///
-///   - An enum -- an option word, a signal set -- is truncated to its
-///     underlying type first and then converted.
+///   - An enum -- a handle, an option word, a signal set -- is truncated to
+///     its underlying type first and then converted. This is where a number
+///     becomes an ours::Uandle on the way in.
 ///
-///   - An integer is truncated to its width. A handle, a count or an option
-///     word arrives as a u32 in the low half of a 64-bit register, and SysV
-///     leaves the upper half of that register unspecified. It is cut off here
-///     rather than trusted to be zero: a caller whose compiler left garbage
-///     above a valid handle has still passed a valid handle.
+///   - An integer is truncated to its width.
+///
+///   Both truncate for one reason. A handle, a count or an option word
+///   arrives as a u32 in the low half of a 64-bit register, and SysV leaves
+///   the upper half of that register unspecified. It is cut off here rather
+///   than trusted to be zero: a caller whose compiler left garbage above a
+///   valid handle has still passed a valid handle.
 ///
 /// Zircon counterpart: SafeSyscallArgument<T>::Sanitize() in
 /// kernel/lib/syscalls/include/lib/syscalls/safe-syscall-argument.h, applied

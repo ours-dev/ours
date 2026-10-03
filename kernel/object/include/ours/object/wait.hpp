@@ -26,7 +26,7 @@ namespace ours::object {
 /// to move arguments: attach an observer under the handle table's lock, sleep
 /// on an event it signals, detach, read what is asserted. Zircon's
 /// sys_object_wait_one() with WaitSignalObserver.
-auto wait_one(HandleValue handle, Signals signals, Instant deadline, Signals *observed) -> Status;
+auto wait_one(ours::Uandle handle, Signals signals, Instant deadline, Signals *observed) -> Status;
 } // namespace ours::object
 
 #endif // #ifndef OURS_OBJECT_WAIT_HPP

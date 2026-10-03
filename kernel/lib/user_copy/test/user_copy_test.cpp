@@ -99,7 +99,9 @@ namespace copy_allowed {
     // What the system calls copy today.
     static_assert(CopyAllowed<u8>);
     static_assert(CopyAllowed<char>);
-    static_assert(CopyAllowed<ours::HandleValue>);
+    // A scoped enum over u32: every u32 is one of its values, so copying any
+    // bytes into one is as safe as copying them into the u32 it was.
+    static_assert(CopyAllowed<ours::Uandle>);
     static_assert(CopyAllowed<ours::VirtAddr>);
 } // namespace copy_allowed
 

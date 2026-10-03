@@ -15,6 +15,8 @@
 `object::Handle *` 而不是 `Dispatcher *`——权限检查发生在解析 handle 的那一刻，一次，
 在系统调用的入口，而不是散落在每个对象方法里。
 
+**Revised 2026-10-03:** in C++ the third row, the handle value, is `ours::Uandle` (a coined word: "u" for the user side, and "handle"), a scoped enum over u32 (`enum class Uandle : u32 { Invalid = 0 }`). The `Handle` row in this document is the kernel class `object::Handle`; the two are named apart because a system call has both in view at once. System-call handlers (for example `ours::syscall::thread_create` in `kernel/lib/syscall/src/task.cpp`) take an `ours::Uandle`, not an `object::Handle *`. They resolve it through `HandleTable` (`get_dispatcher()` -> `lookup_locked()`), which finds the `object::Handle` and checks its rights once, at entry. Only the uncalled placeholder handlers in task.cpp still take `object::Handle *`.
+
 `KernelHandle<T>` 是第四种东西，容易和 `Handle` 混：它是**还没装进任何表**之前，内核自己
 持有对象的那种引用（Zircon 同名同义）。造完对象、还没决定给谁之前，拿的是它。
 
