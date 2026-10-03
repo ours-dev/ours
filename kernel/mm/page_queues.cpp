@@ -91,7 +91,10 @@ auto PageQueues::LruRunner::run() -> void {
         // manual rotation pushes the next automatic one out instead of the
         // two landing on top of each other.
         auto const next = m_owner->m_last_age_time + m_owner->m_min_rotate_time;
-        task::Thread::Current::sleep_until(time::Deadline::at(next), task::Interruptible::Yes);
+        // Whether it slept the whole way or was woken is read from m_state
+        // below, not from the answer.
+        static_cast<void>(
+            task::Thread::Current::sleep_until(time::Deadline::at(next), task::Interruptible::Yes));
 
         // Re-read rather than falling through to the loop condition: an
         // interruptible sleep is how a shutdown request cuts the wait short,

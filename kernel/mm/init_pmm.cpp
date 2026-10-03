@@ -103,7 +103,11 @@ auto init_pmm(ustl::views::Span<Pfn> max_zone_pfn) -> void {
 /// after there is an address space to carve from.
 INIT_CODE
 auto init_cache() -> void {
-    MemCache::init();
+    // Every object cache is built on these two; without them no allocation
+    // after this point can work, so there is nothing to fall back to.
+    if (auto const status = MemCache::init(); status != Status::Ok) {
+        panic("mm: the object caches' own caches could not be made: {}", to_string(status));
+    }
 
     heap::init_kmalloc();
     // The allocator-aware containers in `ustl::collections` default to a

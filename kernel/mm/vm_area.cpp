@@ -57,7 +57,10 @@ auto VmArea::create_common(VirtAddr base, usize size, VmaFlags vmaf, VmArea *par
         // live in one address space. Asserted, because the analysis does not
         // follow the lock from create_subvma() through Builder to here.
         self->get_lock().assert_held();
-        self->activate();
+        // FIXME: an insert that fails (OutOfMem) leaves the area active and
+        // unlinked; it should unwind instead. docs/repairs/261002/mm.md,
+        // item 2.
+        static_cast<void>(self->activate());
     }
 
     *out = ustl::Arc<VmArea>::adopt(self);
@@ -779,7 +782,8 @@ auto VmArea::destroy() -> Status {
         // one level deep, which is why the shape of the loop hid it.
         auto *const parent = curr->m_parent;
         curr->get_lock().assert_held();
-        curr->Base::destroy();
+        // Unlinking cannot fail: VmAreaOrMapping::destroy() answers only Ok.
+        static_cast<void>(curr->Base::destroy());
         if (curr.as_ptr() == this) {
             break;
         }

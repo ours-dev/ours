@@ -116,13 +116,21 @@ auto VmAspace::create(VirtAddr base, usize size, Kind kind, Flags flags, char co
         return Status::OutOfMem;
     }
 
-    aspace->init();
+    // Owned from here, so that a failed init() is undone by dropping this,
+    // the only reference: ~VmAspace copes with what init() did not finish --
+    // no root VMA, not yet on the list, page tables freed only if they were
+    // made. It used to ignore init()'s answer and publish the half-built
+    // address space anyway.
+    auto owned = ustl::Arc<VmAspace>::adopt(aspace);
+    if (auto const status = aspace->init(); status != Status::Ok) {
+        return status;
+    }
     {
         // Entrollment into the global list.
         Guard<sync::SpinLock, IrqSave> guard{ALL_ASPACE_LIST_LOCK};
         ALL_ASPACE_LIST.push_back(*aspace);
     }
-    *out = ustl::Arc<VmAspace>::adopt(aspace);
+    *out = ustl::move(owned);
     return Status::Ok;
 }
 

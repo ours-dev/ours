@@ -128,7 +128,9 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
     // Created under the parent area's lock, which is the new mapping's too.
     // Asserted, because the analysis does not follow it through Builder.
     mapping->get_lock().assert_held();
-    mapping->activate();
+    // FIXME: the same unwinding is missing as below. docs/repairs/260908/heap.md,
+    // item 4.
+    static_cast<void>(mapping->activate());
 
     *out = ustl::Arc<Self>::adopt(mapping);
     return Status::Ok;
@@ -137,7 +139,10 @@ auto VmMapping::create(VmArea *parent, VirtAddr base, usize size, VmaFlags vmaf,
 auto VmMapping::activate() -> Status {
     m_canary.verify<Self>();
 
-    Base::activate();
+    // FIXME: an insert that fails (OutOfMem) leaves this mapping unlinked yet
+    // answered Ok, and the VMO's list takes it below all the same.
+    // docs/repairs/260908/heap.md, item 4.
+    static_cast<void>(Base::activate());
 
     // Note when a mapping was added into a VMO's mapping list, the inside counter
     // has not been increased implicitly. It is required to pay attention to manually
@@ -202,7 +207,8 @@ auto VmMapping::destroy() -> Status {
     if (m_parent) {
         m_parent->m_num_mappings -= 1;
     }
-    Base::destroy();
+    // Unlinking cannot fail: VmAreaOrMapping::destroy() answers only Ok.
+    static_cast<void>(Base::destroy());
 
     // Reported rather than swallowed: the caller learns the page tables may
     // still hold something, while the object itself is safely unregistered.
@@ -431,6 +437,12 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
     // counts per mapping are single digits, so re-walking costs nothing worth
     // entangling the API for. Recorded as won't-do in
     // .agents/tasks/protection-ranges-redesign/DESIGN.md.
+    //
+    // A region the page tables could not be brought to -- a split of a large
+    // page that found no memory, say -- is reported, not swallowed: when the
+    // change took a permission away, the caller has to know it did not. The
+    // rest are still done, and the first failure is the answer.
+    auto first_failure = Status::Ok;
     auto enumerator = m_protection_ranges.make_enumerator(base, size);
     while (auto [valid, region_base, region_size, region_mmuf] = enumerator.next()) {
         if (!(region_mmuf & MmuFlags::PermMask)) {
@@ -443,10 +455,14 @@ auto VmMapping::protect_locked(VirtAddr base, usize size, MmuFlags mmuf) -> Stat
         // a permission. When the region gained one, the entries are as they were
         // and the first access that needs it faults; page_fault() adds it there,
         // after it has shown the page may have it.
-        arch_aspace.protect(region_base, region_size >> PAGE_SHIFT, region_mmuf);
+        auto const protected_status =
+            arch_aspace.protect(region_base, region_size >> PAGE_SHIFT, region_mmuf);
+        if (protected_status != Status::Ok && first_failure == Status::Ok) {
+            first_failure = protected_status;
+        }
     }
 
-    return Status::Ok;
+    return first_failure;
 }
 
 auto VmMapping::remove_write_locked_object(u64 const vmo_offset, u64 const len) -> void {
