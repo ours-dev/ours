@@ -157,13 +157,17 @@ namespace {
         // spawn() builds a thread; it does not start one. Without these the
         // console thread sits parked forever -- no prompt, no input, and no
         // complaint, because nothing failed. Every other caller in the tree
-        // pairs spawn() with both (kernel/top/main.cpp:86, kernel/kernel/task/
+        // pairs spawn() with both (kernel/top/main.cpp, kernel/kernel/task/
         // dpc.cpp), and this one was the omission.
         //
         // detach() as well as resume(): nothing joins this thread and it never
         // returns, so leaving it joinable only keeps a corpse nobody collects.
-        thread->detach();
-        thread->resume();
+        // detach() fails only reaping a thread that is already Dead, which one
+        // just spawned is not; resume() answers only Ok.
+        [[maybe_unused]]
+        auto const detached = thread->detach();
+        DEBUG_ASSERT(ours::Status::Ok == detached);
+        static_cast<void>(thread->resume());
         log::info("console on COM1");
     }
 

@@ -195,10 +195,12 @@ auto ThreadDispatcher::activate(bool suspend) -> Status {
     m_kernel_thread->bind_user_thread(ustl::Arc<Self>::adopt(this));
     m_state = State::Running;
 
+    // Both answer only Ok: suspend() is suspend_or_kill(), which sets a
+    // signal and returns, and resume() does nothing to a Dead thread.
     if (suspend) {
-        m_kernel_thread->suspend();
+        static_cast<void>(m_kernel_thread->suspend());
     } else {
-        m_kernel_thread->resume();
+        static_cast<void>(m_kernel_thread->resume());
     }
     return Status::Ok;
 }

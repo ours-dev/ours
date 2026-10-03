@@ -83,15 +83,21 @@ namespace {
             return 0;
         };
 
+        // As for the laborer below: detach() of a thread just spawned and
+        // resume() both answer Ok.
         auto t1 = Thread::spawn("Sample1", gibberish, const_cast<char *>("Thread 1"),
                                 task::DEFAULT_PRIORITY);
-        t1->detach();
-        t1->resume();
+        [[maybe_unused]]
+        auto const t1_detached = t1->detach();
+        DEBUG_ASSERT(Status::Ok == t1_detached);
+        static_cast<void>(t1->resume());
 
         auto t2 = Thread::spawn("Sample2", gibberish, const_cast<char *>("Thread 2"),
                                 task::DEFAULT_PRIORITY);
-        t2->detach();
-        t2->resume();
+        [[maybe_unused]]
+        auto const t2_detached = t2->detach();
+        DEBUG_ASSERT(Status::Ok == t2_detached);
+        static_cast<void>(t2->resume());
 
         return 0;
     }
@@ -179,8 +185,12 @@ auto start_kernel(PhysAddr handoff) -> void {
 
     auto const laborer = Thread::spawn("laborer", labour_routine, nullptr, task::DEFAULT_PRIORITY);
     laborer->set_cpu_affinity_hard(CpuMask::of(0));
-    laborer->detach();
-    laborer->resume();
+    // detach() fails only reaping a thread that is already Dead, which one
+    // just spawned is not; resume() answers only Ok.
+    [[maybe_unused]]
+    auto const detached = laborer->detach();
+    DEBUG_ASSERT(Status::Ok == detached);
+    static_cast<void>(laborer->resume());
 
     // Let the main thread become an idle thread.
     Thread::Current::become_idle();
