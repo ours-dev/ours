@@ -30,7 +30,11 @@ auto CpuStopper::stop_cpu(CpuNum cpu, Fn fn) -> Status {
     }
 
     task::Thread::Current::reschedule();
-    done.completion.wait();
+    // Not interruptible and with no deadline, wait() answers what signal() was
+    // given, and the stopper gives only Ok.
+    [[maybe_unused]]
+    auto const waited = done.completion.wait();
+    DEBUG_ASSERT(Status::Ok == waited);
     return Status::Ok;
 }
 
@@ -42,7 +46,11 @@ auto CpuStopper::stop_cpus(CpuMask const &cpus, Fn fn) -> Status {
         if (!queue_work_cpus(cpus, fn, &done)) {
             return Status::NotFound;
         }
-        done.completion.wait();
+        // Not interruptible and with no deadline, wait() answers what signal() was
+        // given, and the stopper gives only Ok.
+        [[maybe_unused]]
+        auto const waited = done.completion.wait();
+        DEBUG_ASSERT(Status::Ok == waited);
     }
 
     return Status::Ok;
@@ -81,8 +89,9 @@ auto CpuStopper::queue_work(Work &work) -> bool {
     }
 
     if (is_enabled) {
-        // This stopper is enabled so wakes up it to execute |work|
-        m_worker->resume();
+        // This stopper is enabled so wakes up it to execute |work|. resume()
+        // answers only Ok.
+        static_cast<void>(m_worker->resume());
     }
 
     return is_enabled;

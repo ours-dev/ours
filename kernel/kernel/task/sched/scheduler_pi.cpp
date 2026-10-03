@@ -36,7 +36,10 @@ auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
         if (state == Thread::State::Ready) {
             using enum DequeueOptions;
             // We are in queue. The change of it's priority must effects on where to place this thread.
-            scheduler.dequeue_thread(&thread, Save | SkipClock);
+            // Not a sleeper's dequeue, so it is never delayed.
+            [[maybe_unused]]
+            auto const status = scheduler.dequeue_thread(&thread, Save | SkipClock);
+            DEBUG_ASSERT(Status::Ok == status);
         } else if (state == Thread::State::Running) {
             scheduler.put_prev_thread(&thread);
         }
@@ -49,7 +52,10 @@ auto Scheduler::Pi::common(Upstream &upstream, Thread &thread,
 
         if (state == Thread::State::Ready) {
             using enum EnqueueOptions;
-            scheduler.enqueue_thread(&thread, Restore | SkipClock);
+            // No schedule refuses an enqueue.
+            [[maybe_unused]]
+            auto const status = scheduler.enqueue_thread(&thread, Restore | SkipClock);
+            DEBUG_ASSERT(Status::Ok == status);
         } else if (state == Thread::State::Running) {
             scheduler.set_next_thread(&thread);
         }

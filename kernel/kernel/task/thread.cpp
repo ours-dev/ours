@@ -638,7 +638,8 @@ auto Thread::Current::do_suspend() -> void {
     current_thread->m_canary.verify<Self>();
 
     if (current_thread->m_user_thread) {
-        current_thread->m_user_thread->on_suspend();
+        // ThreadDispatcher::on_suspend() answers only Ok.
+        static_cast<void>(current_thread->m_user_thread->on_suspend());
     }
 
     auto need_exit = false;
@@ -677,7 +678,8 @@ auto Thread::Current::do_suspend() -> void {
     }
 
     if (current_thread->m_user_thread) {
-        current_thread->m_user_thread->on_resume();
+        // ThreadDispatcher::on_resume() answers only Ok.
+        static_cast<void>(current_thread->m_user_thread->on_resume());
     }
 }
 
@@ -754,7 +756,8 @@ auto Thread::Current::kill() -> void {
     // refused every other one. Zircon Thread::Current::Kill() asserts
     // !IsIdle() in the same place.
     DEBUG_ASSERT(!current_thread->is_idle_thread(), "Try to kill the idle thread");
-    current_thread->kill();
+    // suspend_or_kill() answers only Ok.
+    static_cast<void>(current_thread->kill());
 }
 
 auto Thread::Current::exit(i32 retcode) -> void {
@@ -779,7 +782,9 @@ auto Thread::Current::exit(i32 retcode) -> void {
     log::trace("Thread |{}| is preparing exiting", current_thread->name());
 
     if (current_thread->m_user_thread) {
-        current_thread->m_user_thread->on_exit();
+        // ThreadDispatcher::on_exit() answers ProcessDispatcher::detach_thread()'s
+        // Ok, the only answer it has.
+        static_cast<void>(current_thread->m_user_thread->on_exit());
     }
 
     arch::AutoInterruptDisabler irq_guard;
@@ -856,7 +861,9 @@ auto Thread::Current::set_name(const char *name) -> void {
     auto const current_thread = Thread::Current::get();
     current_thread->m_canary.verify<Self>();
 
-    current_thread->m_name.set(name);
+    // set() refuses only a null name, which it records as empty; a long one
+    // is cut short.
+    static_cast<void>(current_thread->m_name.set(name));
 }
 
 template <typename F>

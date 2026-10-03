@@ -45,7 +45,12 @@ auto SchedClock::reset_preempt(SchedDuration delta) -> void {
     // Back across the boundary: the tick device takes a TimePoint, so the
     // deadline is assembled in the scheduler's arithmetic and converted once.
     auto const deadline = to_sched_time(SteadyClock::now()) + delta;
-    TickDevice::Current::get().program_event(to_time_point(deadline));
+    // A one-shot tick device takes any deadline, forcing a late one to the
+    // soonest it can make, and a periodic one ignores it. A failure would
+    // leave this CPU with no preemption tick, so a debug build stops on it.
+    [[maybe_unused]]
+    auto const programmed = TickDevice::Current::get().program_event(to_time_point(deadline));
+    DEBUG_ASSERT(Status::Ok == programmed);
 }
 
 } // namespace ours::task::sched

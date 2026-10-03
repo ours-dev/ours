@@ -54,9 +54,11 @@
 /// EnqueueOptions::Migrated. deactivate_thread asserts this distinction with
 /// `DEBUG_ASSERT(thread->is_state_sleeping() == false)`.
 ///
-/// TODO(SmallHuaZi): both return void and discard the Status underneath them,
-/// so a Status::Delayed dequeue leaves a thread marked Migrating while it is in
-/// fact still queued.
+/// Both return void, and assert in a debug build that the Status underneath
+/// them is Ok. No schedule refuses an enqueue. A dequeue is delayed
+/// (Status::Delayed) only for a sleeper, with DequeueOptions::Sleep, and
+/// deactivate_thread's callers never pass it: a delayed one would leave a
+/// thread marked Migrating while it is in fact still queued.
 
 #include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>
@@ -795,7 +797,10 @@ auto Scheduler::activate_thread(Thread *thread, EnqueueOptions options) -> void 
         options |= EnqueueOptions::Migrated;
     }
 
-    enqueue_thread(thread, options);
+    // No schedule refuses an enqueue: Fair::enqueue_thread() answers only Ok.
+    [[maybe_unused]]
+    auto const status = enqueue_thread(thread, options);
+    DEBUG_ASSERT(Status::Ok == status);
     rqs.set_transient_state_queueing();
 }
 
@@ -807,7 +812,12 @@ auto Scheduler::deactivate_thread(Thread *thread, DequeueOptions options) -> voi
     auto &rqs = thread->scheduling_entity().runqueue_state();
     rqs.set_transient_state_migrating();
 
-    dequeue_thread(thread, options);
+    // Without DequeueOptions::Sleep no schedule delays a dequeue (Fair delays
+    // only a sleeper's, try_to_delay_dequeue()), so the thread is off the
+    // queue when this returns, as Migrating promises.
+    [[maybe_unused]]
+    auto const status = dequeue_thread(thread, options);
+    DEBUG_ASSERT(Status::Ok == status, "a dequeue for a migration was delayed");
 }
 
 auto Scheduler::Current::park_thread(Thread *curr) -> void {
@@ -880,7 +890,11 @@ auto Scheduler::unpark_preempt(Thread *thread, UnparkOptions options) -> void {
     auto &preemption_state = current_thread->preemption_state();
     if (x_schedule == y_schedule) {
         // To the same schedule, preemption depends on schedule's internal implementation.
-        x_schedule->unpark_preempt(m_run_queue, current_thread, thread, options);
+        // Fair answers Unimplemented today: a thread woken into the running
+        // thread's own schedule never preempts it and waits for its tick
+        // (docs/repairs/260917/kernel-task-sched.md, item 2). There is nothing
+        // else in the answer to act on.
+        static_cast<void>(x_schedule->unpark_preempt(m_run_queue, current_thread, thread, options));
     } else if (x_schedule > y_schedule) {
         m_run_queue.mark_preempt_pending();
     }
