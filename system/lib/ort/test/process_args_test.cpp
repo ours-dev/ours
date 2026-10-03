@@ -2,10 +2,10 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// The processargs encoder (<ours/process_args.hpp>) and decoder
-/// (runtime::ProcessArgs) against each other, against Zircon's own golden
+/// (ort::ProcessArgs) against each other, against Zircon's own golden
 /// bytes, and against messages broken one check at a time.
-#include <runtime/process_args.hpp>
-#include <runtime/startup_handles.hpp>
+#include <ort/process_args.hpp>
+#include <ort/startup_handles.hpp>
 
 #include <array>
 #include <string>
@@ -58,7 +58,7 @@ auto encode_golden(std::span<u8> const out, u32 *const length) -> Status {
                                      length);
 }
 
-auto strings(runtime::ProcessArgs::Strings const run) -> std::vector<std::string_view> {
+auto strings(ort::ProcessArgs::Strings const run) -> std::vector<std::string_view> {
     std::vector<std::string_view> out;
     for (auto const string: run) {
         out.push_back(string);
@@ -98,8 +98,8 @@ auto refused(std::span<u32 const> const infos, std::span<std::string_view const>
 }
 
 auto parses(std::span<u8 const> const message, u32 const num_handles) -> Status {
-    runtime::ProcessArgs view;
-    return runtime::ProcessArgs::parse(message, num_handles, &view);
+    ort::ProcessArgs view;
+    return ort::ProcessArgs::parse(message, num_handles, &view);
 }
 
 TEST(HandleInfo, PacksTypeLowAndArgHigh) {
@@ -123,8 +123,8 @@ TEST(Encode, AnEmptyMessageIsTheHeaderAlone) {
     ASSERT_EQ(ours::encode_process_args(buffer, {}, {}, {}, {}, &length), Status::Ok);
     EXPECT_EQ(length, sizeof(ours::ProcArgs));
 
-    runtime::ProcessArgs view;
-    ASSERT_EQ(runtime::ProcessArgs::parse({buffer.data(), length}, 0, &view), Status::Ok);
+    ort::ProcessArgs view;
+    ASSERT_EQ(ort::ProcessArgs::parse({buffer.data(), length}, 0, &view), Status::Ok);
     EXPECT_EQ(view.num_handles(), 0u);
     EXPECT_EQ(view.args().size(), 0u);
     EXPECT_EQ(view.args().begin(), view.args().end());
@@ -174,8 +174,8 @@ TEST(Encode, BufferTooSmallWritesNothing) {
 }
 
 TEST(Parse, ReadsBackWhatWasWritten) {
-    runtime::ProcessArgs view;
-    ASSERT_EQ(runtime::ProcessArgs::parse(GOLDEN, 3, &view), Status::Ok);
+    ort::ProcessArgs view;
+    ASSERT_EQ(ort::ProcessArgs::parse(GOLDEN, 3, &view), Status::Ok);
     ASSERT_EQ(view.num_handles(), 3u);
     for (u32 i = 0; i < 3; ++i) {
         EXPECT_EQ(view.handle_info(i), GOLDEN_INFO[i]) << "handle " << i;
@@ -200,8 +200,8 @@ TEST(Option, TakesTheLastWholeNameMatch) {
     u8 buffer[256];
     u32 length = 0;
     ASSERT_EQ(ours::encode_process_args(buffer, {}, {}, environ, {}, &length), Status::Ok);
-    runtime::ProcessArgs view;
-    ASSERT_EQ(runtime::ProcessArgs::parse({buffer, length}, 0, &view), Status::Ok);
+    ort::ProcessArgs view;
+    ASSERT_EQ(ort::ProcessArgs::parse({buffer, length}, 0, &view), Status::Ok);
 
     EXPECT_EQ(view.option("userboot.next"), "shell");
     EXPECT_EQ(view.option("userboot.next-is-test"), "1");
@@ -311,7 +311,7 @@ TEST(Parse, RefusesReservedHandleInfoBitsButNotUnknownTypes) {
 TEST(StartupHandles, TakesByTypeAndArgOnce) {
     std::array<ours::HandleValue, 3> handles{0x11, 0x23, 0x37};
     std::array<u32, 3> infos{GOLDEN_INFO[0], GOLDEN_INFO[1], GOLDEN_INFO[2]};
-    runtime::StartupHandles table(handles, infos);
+    ort::StartupHandles table(handles, infos);
 
     EXPECT_EQ(table.take(HandleType::NsDir, 1), 0x37u);
     EXPECT_EQ(table.take(HandleType::NsDir, 1), ours::HANDLE_INVALID) << "taken already";

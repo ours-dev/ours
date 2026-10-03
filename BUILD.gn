@@ -140,9 +140,9 @@ group("default") {
     "//system/lib/libc:tests",
 
     # processargs, the message a process is started with: the encoder in
-    # <ours/process_args.hpp> and //system/lib/runtime's decoder, against
+    # <ours/process_args.hpp> and //system/lib/ort's decoder, against
     # each other and against Zircon's golden bytes.
-    "//system/lib/runtime:tests",
+    "//system/lib/ort:tests",
 
     # The launcher's planner: how the segments of a program are mapped, decided
     # from numbers alone.
@@ -160,7 +160,7 @@ group("default") {
     # A user program on the runtime's start-up code, built to be linked and
     # inspected rather than run; nothing packages it. The toolchain is named
     # because the program exists only in the user one.
-    "//system/lib/runtime/test:runtime_smoke(//build/toolchain/ours:user-$current_cpu)",
+    "//system/lib/ort/test:ort_smoke(//build/toolchain/ours:user-$current_cpu)",
 
     # The user-copy range check, and CopyAllowed, what a type must be to cross
     # the user/kernel boundary as bytes. CopyAllowed's cases are static_asserts,

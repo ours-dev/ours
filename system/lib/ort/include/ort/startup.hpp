@@ -1,9 +1,9 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef RUNTIME_STARTUP_HPP
-#define RUNTIME_STARTUP_HPP 1
+#ifndef ORT_STARTUP_HPP
+#define ORT_STARTUP_HPP 1
 
-#include <runtime/process_args.hpp>
+#include <ort/process_args.hpp>
 
 #include <ours/process_args.hpp>
 #include <ours/types.hpp>
@@ -14,10 +14,10 @@
 /// the processargs message on the bootstrap channel, keeps it, and calls
 /// main(argc, argv) with the arguments in it. Everything else in the message
 /// is reached through here.
-namespace runtime {
+namespace ort {
 /// The exit code of a process the runtime could not start: its bootstrap
 /// channel held no processargs message, or one that failed a check. main
-/// never ran; the reason is in the debug log, one line starting "runtime:".
+/// never ran; the reason is in the debug log, one line starting "ort:".
 ///
 /// Outside the range of int on purpose. main returns an int, which the
 /// runtime widens to process_exit's i64, so no main can exit with this: a
@@ -48,6 +48,6 @@ auto process_args() -> ProcessArgs const &;
 /// call it; calls into it are bound when the program is loaded.
 [[nodiscard]]
 auto vdso_base() -> ours::VirtAddr;
-} // namespace runtime
+} // namespace ort
 
-#endif // #ifndef RUNTIME_STARTUP_HPP
+#endif // #ifndef ORT_STARTUP_HPP

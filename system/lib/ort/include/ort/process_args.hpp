@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef RUNTIME_PROCESS_ARGS_HPP
-#define RUNTIME_PROCESS_ARGS_HPP 1
+#ifndef ORT_PROCESS_ARGS_HPP
+#define ORT_PROCESS_ARGS_HPP 1
 
 #include <span>
 #include <string_view>
@@ -10,7 +10,7 @@
 #include <ours/status.hpp>
 #include <ours/types.hpp>
 
-namespace runtime {
+namespace ort {
 /// A processargs message (<ours/process_args.hpp>), checked, and read in
 /// place: every string handed out points into the message, so the message
 /// must outlive this view.
@@ -161,6 +161,6 @@ class ProcessArgs {
     Strings m_environ;
     Strings m_names;
 };
-} // namespace runtime
+} // namespace ort
 
-#endif // #ifndef RUNTIME_PROCESS_ARGS_HPP
+#endif // #ifndef ORT_PROCESS_ARGS_HPP

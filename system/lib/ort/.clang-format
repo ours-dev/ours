@@ -10,13 +10,13 @@ BasedOnStyle: InheritParentConfig
 # since which prefix counts as "internal" depends on which library the file
 # being formatted belongs to.
 #
-#   1. <runtime/...>
+#   1. <ort/...>
 #   2. C++ standard library
 #   3. C standard library
 #   4. everything else -- other libraries, and every quoted include
 IncludeCategories:
   # 1. This library.
-  - Regex: '^<runtime/'
+  - Regex: '^<ort/'
     Priority: 1
 
   # 2. C++ standard library.

@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef RUNTIME_DEBUG_HPP
-#define RUNTIME_DEBUG_HPP 1
+#ifndef ORT_DEBUG_HPP
+#define ORT_DEBUG_HPP 1
 
 #include <initializer_list>
 #include <string_view>
@@ -12,7 +12,7 @@
 /// ours_debug_write, made fit to call. In the runtime because every program
 /// links it and every program prints; they came from //system/lib/ou, removed
 /// once the user decided ours_* is the API a program calls.
-namespace runtime {
+namespace ort {
 /// Writes |text| to the kernel's debug console.
 ///
 /// A debug facility, not a console: it exists so a program can say what it is
@@ -44,7 +44,7 @@ auto debug_line(std::initializer_list<std::string_view> pieces) -> ours::Status;
 auto debug_line(std::string_view text) -> ours::Status;
 
 /// |value| in decimal, written into |buffer| and returned as the piece that
-/// holds it, for a debug_line: `runtime::debug_line({"made ", decimal(n, text)})`.
+/// holds it, for a debug_line: `ort::debug_line({"made ", decimal(n, text)})`.
 ///
 /// Ten characters is every u32. The caller owns the buffer, so the view stays
 /// valid as long as the line being built does, with nothing allocated. Here
@@ -53,9 +53,9 @@ auto debug_line(std::string_view text) -> ours::Status;
 auto decimal(u32 value, char (&buffer)[10]) -> std::string_view;
 
 /// |value| in hexadecimal with a leading "0x" and no leading zeros, written
-/// into |buffer| as decimal() does: `runtime::debug_line({"at ", hex(address, text)})`.
+/// into |buffer| as decimal() does: `ort::debug_line({"at ", hex(address, text)})`.
 /// Eighteen characters is every u64 with its prefix.
 auto hex(u64 value, char (&buffer)[18]) -> std::string_view;
-} // namespace runtime
+} // namespace ort
 
-#endif // #ifndef RUNTIME_DEBUG_HPP
+#endif // #ifndef ORT_DEBUG_HPP

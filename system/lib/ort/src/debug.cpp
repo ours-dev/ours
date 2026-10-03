@@ -1,11 +1,11 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <runtime/debug.hpp>
+#include <ort/debug.hpp>
 
 #include <ours/syscall.hpp>
 #include <ours/vdso.hpp>
 
-namespace runtime {
+namespace ort {
 using ours::Status;
 
 auto debug_write(std::string_view const text) -> Status {
@@ -86,4 +86,4 @@ auto hex(u64 value, char (&buffer)[18]) -> std::string_view {
     buffer[--at] = '0';
     return {buffer + at, sizeof(buffer) - at};
 }
-} // namespace runtime
+} // namespace ort

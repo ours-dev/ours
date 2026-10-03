@@ -16,7 +16,7 @@
 /// among them. It knows nothing else about the boundary -- not the symbols
 /// the loader binds, not that a trap is involved at all.
 ///
-/// It runs on the runtime (//system/lib/runtime): the entry point is the
+/// It runs on the runtime (//system/lib/ort): the entry point is the
 /// runtime's, which reads the processargs message this program was started
 /// with and calls main. What main finds among the startup handles says who
 /// started it and what to do -- a channel to init (User0) to answer, the root
@@ -41,9 +41,9 @@
 
 #include <bootfs/format.hpp>
 #include <launch/launch.hpp>
-#include <runtime/debug.hpp>
-#include <runtime/main.hpp>
-#include <runtime/startup.hpp>
+#include <ort/debug.hpp>
+#include <ort/main.hpp>
+#include <ort/startup.hpp>
 
 namespace {
 /// The kshell command registry, fetched into this program's own memory.
@@ -74,7 +74,7 @@ constexpr std::string_view BANNER{"ours shell: the kernel's command registry, se
 
 /// Prints "<what><status name>" on a line of its own.
 auto report(std::string_view const what, ours::Status const status) -> void {
-    static_cast<void>(runtime::debug_line({what, std::string_view{ours::to_string(status)}}));
+    static_cast<void>(ort::debug_line({what, std::string_view{ours::to_string(status)}}));
 }
 
 /// Gives up a handle this program was started with, and checks that the
@@ -103,11 +103,11 @@ auto check_handle_close(ours::HandleValue const startup) -> void {
 auto expect(std::string_view const what, ours::Status const got, ours::Status const want) -> bool {
     auto const got_name = std::string_view{ours::to_string(got)};
     if (got == want) {
-        static_cast<void>(runtime::debug_line({what, got_name}));
+        static_cast<void>(ort::debug_line({what, got_name}));
         return true;
     }
     auto const want_name = std::string_view{ours::to_string(want)};
-    static_cast<void>(runtime::debug_line({what, got_name, " (expected ", want_name, ")"}));
+    static_cast<void>(ort::debug_line({what, got_name, " (expected ", want_name, ")"}));
     return false;
 }
 
@@ -138,7 +138,7 @@ auto answer_init(ours::HandleValue const peer) -> void {
     using ours::Status;
 
     if (peer == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: started by userboot; no one to answer"));
+        static_cast<void>(ort::debug_line("shell: started by userboot; no one to answer"));
         return;
     }
 
@@ -156,7 +156,7 @@ auto answer_init(ours::HandleValue const peer) -> void {
         return;
     }
     static_cast<void>(
-        runtime::debug_line({"shell: init says \"", std::string_view(buffer, actual), "\""}));
+        ort::debug_line({"shell: init says \"", std::string_view(buffer, actual), "\""}));
 
     constexpr std::string_view PONG{"pong"};
     status = ours_channel_write(peer, ours::ChannelWriteOptions::None, PONG.data(),
@@ -171,7 +171,7 @@ auto answer_init(ours::HandleValue const peer) -> void {
 /// shell userboot starts has a BootFS; init keeps its own.
 auto describe_bootfs(ours::HandleValue const bootfs) -> void {
     if (bootfs == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: started without a BootFS"));
+        static_cast<void>(ort::debug_line("shell: started without a BootFS"));
         return;
     }
     bootfs::Header header{};
@@ -181,12 +181,12 @@ auto describe_bootfs(ours::HandleValue const bootfs) -> void {
         return;
     }
     if (header.magic != bootfs::Header::MAGIC) {
-        static_cast<void>(runtime::debug_line("shell: the BootFS header has the wrong magic"));
+        static_cast<void>(ort::debug_line("shell: the BootFS header has the wrong magic"));
         return;
     }
     char count[10];
-    static_cast<void>(runtime::debug_line(
-        {"shell: bootfs has ", runtime::decimal(header.file_count, count), " entries"}));
+    static_cast<void>(ort::debug_line(
+        {"shell: bootfs has ", ort::decimal(header.file_count, count), " entries"}));
 }
 
 /// What the shell needs to start a program from the BootFS with the user-space
@@ -259,7 +259,7 @@ auto make_launcher(ours::HandleValue const bootfs, ours::HandleValue const vmex,
     Launcher launcher{};
     if (bootfs == ours::HANDLE_INVALID || vmex == ours::HANDLE_INVALID ||
         vdso == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line(
+        static_cast<void>(ort::debug_line(
             "shell: launcher checks FAILED (no BootFS, vmex or vDSO was handed over)"));
         return launcher;
     }
@@ -269,7 +269,7 @@ auto make_launcher(ours::HandleValue const bootfs, ours::HandleValue const vmex,
         return launcher;
     }
     if (entry.data_size > sizeof(vdso_bytes)) {
-        static_cast<void>(runtime::debug_line(
+        static_cast<void>(ort::debug_line(
             "shell: launcher checks FAILED (the vdso is larger than the shell's buffer)"));
         return launcher;
     }
@@ -319,9 +319,9 @@ auto print_launch_report(void *, elfload::Report const &report) -> void {
     std::string_view value;
     if (report.value.is_some()) {
         space = " ";
-        value = runtime::hex(report.value.value(), text);
+        value = ort::hex(report.value.value(), text);
     }
-    static_cast<void>(runtime::debug_line(
+    static_cast<void>(ort::debug_line(
         {prefix, {report.what.data(), report.what.size()}, separator, name, space, value}));
 }
 
@@ -342,8 +342,7 @@ auto launch_program(Launcher const &launcher, ours::HandleValue const job,
     if (status != Status::Ok) {
         report("shell: finding the program in the BootFS = ", status);
     } else if (entry.data_size > sizeof(program_bytes)) {
-        static_cast<void>(
-            runtime::debug_line("shell: the program is larger than the shell's buffer"));
+        static_cast<void>(ort::debug_line("shell: the program is larger than the shell's buffer"));
         status = Status::OutOfRange;
     } else {
         status = ours_vmo_read(launcher.bootfs, program_bytes, entry.data_offset, entry.data_size);
@@ -562,45 +561,44 @@ auto run_probes(ours::HandleValue const job, Launcher const &launcher) -> void {
             // The control, and with it the launcher's verdict below, is never
             // reached; say so, or the launcher would go unchecked unnoticed.
             if (launcher.executable != ours::HANDLE_INVALID) {
-                static_cast<void>(runtime::debug_line(
+                static_cast<void>(ort::debug_line(
                     "shell: launcher checks FAILED (a probe before its control did not start)"));
             }
             return;
         }
         if (run.killed) {
-            static_cast<void>(runtime::debug_line({"shell: probe ", probe, " killed"}));
+            static_cast<void>(ort::debug_line({"shell: probe ", probe, " killed"}));
             ++killed;
         } else {
             static_cast<void>(
-                runtime::debug_line({"shell: probe ", probe, " SURVIVED (",
-                                     std::string_view(run.answer, run.answer_size), ")"}));
+                ort::debug_line({"shell: probe ", probe, " SURVIVED (",
+                                 std::string_view(run.answer, run.answer_size), ")"}));
             ++survived;
         }
     }
 
     char killed_text[10];
     char survived_text[10];
-    static_cast<void>(runtime::debug_line(
-        {"shell: probes done (", runtime::decimal(killed, killed_text), " killed, ",
-         runtime::decimal(survived, survived_text), " survived)"}));
+    static_cast<void>(
+        ort::debug_line({"shell: probes done (", ort::decimal(killed, killed_text), " killed, ",
+                         ort::decimal(survived, survived_text), " survived)"}));
 
     constexpr std::string_view CONTROL{"none"};
     Launcher const *by = nullptr;
     if (launcher.executable != ours::HANDLE_INVALID) {
         by = &launcher;
-        static_cast<void>(
-            runtime::debug_line("shell: starting the control probe with the launcher"));
+        static_cast<void>(ort::debug_line("shell: starting the control probe with the launcher"));
     }
     auto const control = run_probe(job, CONTROL, by);
     auto answered_unknown = false;
     if (control.started) {
         if (control.killed) {
-            static_cast<void>(runtime::debug_line(
+            static_cast<void>(ort::debug_line(
                 "shell: control probe none died without answering (expected \"unknown\")"));
         } else {
             static_cast<void>(
-                runtime::debug_line({"shell: control probe none answered \"",
-                                     std::string_view(control.answer, control.answer_size), "\""}));
+                ort::debug_line({"shell: control probe none answered \"",
+                                 std::string_view(control.answer, control.answer_size), "\""}));
             answered_unknown = spells(control.answer, control.answer_size, "unknown");
         }
     }
@@ -611,9 +609,9 @@ auto run_probes(ours::HandleValue const job, Launcher const &launcher) -> void {
     // launcher the control is started and answers all the same.
     if (by != nullptr) {
         if (answered_unknown) {
-            static_cast<void>(runtime::debug_line("shell: launcher checks passed"));
+            static_cast<void>(ort::debug_line("shell: launcher checks passed"));
         } else {
-            static_cast<void>(runtime::debug_line(
+            static_cast<void>(ort::debug_line(
                 "shell: launcher checks FAILED (its control probe did not answer \"unknown\")"));
         }
     }
@@ -663,10 +661,10 @@ auto check_channel_loopback() -> void {
                                    sizeof(buffer), 0, &actual, nullptr),
                  Status::Ok);
     if (spells(buffer, actual, PING)) {
-        static_cast<void>(runtime::debug_line("shell: loopback ping ok"));
+        static_cast<void>(ort::debug_line("shell: loopback ping ok"));
     } else {
         ok = false;
-        static_cast<void>(runtime::debug_line("shell: loopback read the wrong bytes"));
+        static_cast<void>(ort::debug_line("shell: loopback read the wrong bytes"));
     }
 
     ok &= expect("shell: read on empty = ",
@@ -692,9 +690,9 @@ auto check_channel_loopback() -> void {
     ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: channel checks passed"));
+        static_cast<void>(ort::debug_line("shell: channel checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: channel checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: channel checks FAILED"));
     }
 }
 
@@ -787,9 +785,9 @@ auto check_handle_transfer() -> void {
     chain_ok &= ours_handle_close(inner) == Status::Ok;
     ok &= chain_ok;
     if (chain_ok) {
-        static_cast<void>(runtime::debug_line("shell: a 1000-deep chain of ends, closed"));
+        static_cast<void>(ort::debug_line("shell: a 1000-deep chain of ends, closed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: the 1000-deep chain FAILED"));
+        static_cast<void>(ort::debug_line("shell: the 1000-deep chain FAILED"));
     }
 
     ok &= ours_handle_close(b) == Status::Ok;
@@ -797,9 +795,9 @@ auto check_handle_transfer() -> void {
     ok &= ours_handle_close(got) == Status::Ok;
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: handle transfer checks passed"));
+        static_cast<void>(ort::debug_line("shell: handle transfer checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: handle transfer checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: handle transfer checks FAILED"));
     }
 }
 
@@ -832,8 +830,8 @@ auto check_handle_quota() -> void {
 
     auto ok = expect("shell: channel_create past the quota = ", status, Status::NoResource);
     char count_text[10];
-    static_cast<void>(runtime::debug_line(
-        {"shell: ", runtime::decimal(count / 2, count_text), " channels made before the quota"}));
+    static_cast<void>(ort::debug_line(
+        {"shell: ", ort::decimal(count / 2, count_text), " channels made before the quota"}));
 
     if (count >= 2) {
         ok &= ours_handle_close(made[count - 1]) == Status::Ok;
@@ -848,9 +846,9 @@ auto check_handle_quota() -> void {
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: handle quota checks passed"));
+        static_cast<void>(ort::debug_line("shell: handle quota checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: handle quota checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: handle quota checks FAILED"));
     }
 }
 
@@ -884,12 +882,11 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     using ours::Status;
 
     auto ok = true;
-    ok &=
-        expect("shell: debug_write(unmapped) = ",
-               runtime::debug_write(std::string_view{reinterpret_cast<char const *>(UNMAPPED), 8}),
-               Status::InvArgs);
+    ok &= expect("shell: debug_write(unmapped) = ",
+                 ort::debug_write(std::string_view{reinterpret_cast<char const *>(UNMAPPED), 8}),
+                 Status::InvArgs);
     ok &= expect("shell: debug_write(kernel half) = ",
-                 runtime::debug_write(std::string_view{reinterpret_cast<char const *>(KERNEL), 8}),
+                 ort::debug_write(std::string_view{reinterpret_cast<char const *>(KERNEL), 8}),
                  Status::InvArgs);
 
     ours::HandleValue a = ours::HANDLE_INVALID;
@@ -970,9 +967,9 @@ auto check_bad_pointers(ours::VirtAddr const vdso) -> void {
     ok &= expect("shell: close(d) = ", ours_handle_close(d), Status::Ok);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: bad-pointer checks passed"));
+        static_cast<void>(ort::debug_line("shell: bad-pointer checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: bad-pointer checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: bad-pointer checks FAILED"));
     }
 }
 
@@ -1073,9 +1070,9 @@ auto check_libc(u8 const seed) -> void {
     ok &= zero;
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: libc checks passed"));
+        static_cast<void>(ort::debug_line("shell: libc checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: libc checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: libc checks FAILED"));
     }
 }
 
@@ -1122,9 +1119,9 @@ auto check_vmo_read() -> void {
     ok &= expect("shell: close(a) = ", ours_handle_close(a), Status::Ok);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vmo_read checks passed"));
+        static_cast<void>(ort::debug_line("shell: vmo_read checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vmo_read checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vmo_read checks FAILED"));
     }
 }
 
@@ -1191,16 +1188,16 @@ auto check_vmo_write(ours::HandleValue const bootfs) -> void {
         }
         ok &= unchanged;
         if (unchanged) {
-            static_cast<void>(runtime::debug_line("shell: the BootFS is as it was"));
+            static_cast<void>(ort::debug_line("shell: the BootFS is as it was"));
         } else {
-            static_cast<void>(runtime::debug_line("shell: the BootFS CHANGED"));
+            static_cast<void>(ort::debug_line("shell: the BootFS CHANGED"));
         }
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vmo_write checks passed"));
+        static_cast<void>(ort::debug_line("shell: vmo_write checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vmo_write checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vmo_write checks FAILED"));
     }
 }
 
@@ -1257,7 +1254,7 @@ auto check_vmo_create() -> void {
     // 3 pages and a byte: rounded up to 4.
     if (!expect("shell: vmo_create(3 pages + 1 byte) = ",
                 ours_vmo_create(3 * PAGE + 1, VmoOptions::None, &vmo), Status::Ok)) {
-        static_cast<void>(runtime::debug_line("shell: vmo_create checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vmo_create checks FAILED"));
         return;
     }
     u8 tail[8] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
@@ -1271,7 +1268,7 @@ auto check_vmo_create() -> void {
     }
     ok &= zero;
     if (zero) {
-        static_cast<void>(runtime::debug_line("shell: an unwritten page reads as zero"));
+        static_cast<void>(ort::debug_line("shell: an unwritten page reads as zero"));
     }
     ok &= expect("shell: vmo_read(one byte past page 4) = ", ours_vmo_read(vmo, tail, 4 * PAGE, 1),
                  Status::OutOfRange);
@@ -1291,7 +1288,7 @@ auto check_vmo_create() -> void {
     }
     ok &= same;
     if (same) {
-        static_cast<void>(runtime::debug_line("shell: vmo_write reads back the same"));
+        static_cast<void>(ort::debug_line("shell: vmo_write reads back the same"));
     }
     ok &= expect("shell: vmo_write(offset = size, 1 byte) = ",
                  ours_vmo_write(vmo, written, 4 * PAGE, 1), Status::OutOfRange);
@@ -1316,9 +1313,9 @@ auto check_vmo_create() -> void {
     ok &= expect("shell: close(vmo) = ", ours_handle_close(vmo), Status::Ok);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vmo_create checks passed"));
+        static_cast<void>(ort::debug_line("shell: vmo_create checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vmo_create checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vmo_create checks FAILED"));
     }
 }
 
@@ -1339,7 +1336,7 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
     using ours::Status;
 
     if (bootfs == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: bootfs checks skipped (no BootFS here)"));
+        static_cast<void>(ort::debug_line("shell: bootfs checks skipped (no BootFS here)"));
         return;
     }
 
@@ -1356,7 +1353,7 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
     char names[MAX_NAMES];
     if (!ok || header.file_count == 0 || header.file_count > MAX_ENTRIES ||
         header.name_table_size > MAX_NAMES) {
-        static_cast<void>(runtime::debug_line("shell: bootfs checks FAILED (header)"));
+        static_cast<void>(ort::debug_line("shell: bootfs checks FAILED (header)"));
         return;
     }
     auto const entries_size = usize{header.file_count} * sizeof(bootfs::Entry);
@@ -1375,9 +1372,9 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
         }
         auto const name = std::string_view(names + entry.name_offset, entry.name_size);
         char size_text[10];
-        static_cast<void>(runtime::debug_line(
+        static_cast<void>(ort::debug_line(
             {"shell: bootfs entry ", name, " (",
-             runtime::decimal(static_cast<u32>(entry.data_size), size_text), " bytes)"}));
+             ort::decimal(static_cast<u32>(entry.data_size), size_text), " bytes)"}));
 
         // The kernel's own files, wherever they sit: the names
         // KernelPackage gives a kernel image and its patches.
@@ -1390,7 +1387,7 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
         }
         if (spells(base.data(), static_cast<u32>(base.size()), "image.elf") ||
             spells(base.data(), static_cast<u32>(base.size()), "code-patches")) {
-            static_cast<void>(runtime::debug_line({"shell: bootfs holds a kernel file: ", name}));
+            static_cast<void>(ort::debug_line({"shell: bootfs holds a kernel file: ", name}));
             ok = false;
         }
     }
@@ -1413,7 +1410,7 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
         }
     }
     if (spanning == nullptr) {
-        static_cast<void>(runtime::debug_line("shell: no BootFS file spans two pages"));
+        static_cast<void>(ort::debug_line("shell: no BootFS file spans two pages"));
         ok = false;
     } else {
         auto const boundary = spanning->data_offset + page;
@@ -1462,9 +1459,9 @@ auto check_bootfs(ours::HandleValue const bootfs, ours::VirtAddr const vdso) -> 
                  ours_vmo_read(bootfs, reinterpret_cast<void *>(vdso), 0, 8), Status::InvArgs);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: bootfs checks passed"));
+        static_cast<void>(ort::debug_line("shell: bootfs checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: bootfs checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: bootfs checks FAILED"));
     }
 }
 
@@ -1500,8 +1497,7 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: close(b) = ", ours_handle_close(b), Status::Ok);
 
     if (bootfs == ours::HANDLE_INVALID) {
-        static_cast<void>(
-            runtime::debug_line("shell: handle_duplicate on a VMO skipped (no BootFS)"));
+        static_cast<void>(ort::debug_line("shell: handle_duplicate on a VMO skipped (no BootFS)"));
     } else {
         // Same rights: both read the same header.
         ok &= expect("shell: handle_duplicate(bootfs, SameRights) = ",
@@ -1557,9 +1553,9 @@ auto check_handle_duplicate(ours::HandleValue const bootfs) -> void {
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: handle_duplicate checks passed"));
+        static_cast<void>(ort::debug_line("shell: handle_duplicate checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: handle_duplicate checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: handle_duplicate checks FAILED"));
     }
 }
 
@@ -1591,7 +1587,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ours::HandleValue parent = ours::HANDLE_INVALID;
     if (!expect("shell: vmo_create(3 pages) = ",
                 ours_vmo_create(3 * PAGE, VmoOptions::None, &parent), Status::Ok)) {
-        static_cast<void>(runtime::debug_line("shell: vmo_create_child checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vmo_create_child checks FAILED"));
         return;
     }
 
@@ -1790,7 +1786,7 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
     ok &= expect("shell: close(parent) = ", ours_handle_close(parent), Status::Ok);
 
     if (bootfs == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: vmo_create_child on the BootFS skipped"));
+        static_cast<void>(ort::debug_line("shell: vmo_create_child on the BootFS skipped"));
     } else {
         // The `vdso` entry, found the way check_bootfs() reads the directory.
         bootfs::Header header{};
@@ -1858,15 +1854,15 @@ auto check_vmo_create_child(ours::HandleValue const bootfs) -> void {
             }
         }
         if (!found) {
-            static_cast<void>(runtime::debug_line("shell: no vdso entry in the BootFS"));
+            static_cast<void>(ort::debug_line("shell: no vdso entry in the BootFS"));
             ok = false;
         }
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vmo_create_child checks passed"));
+        static_cast<void>(ort::debug_line("shell: vmo_create_child checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vmo_create_child checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vmo_create_child checks FAILED"));
     }
 }
 
@@ -1930,8 +1926,7 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
     ok &= expect("shell: close(the consumed channel) = ", ours_handle_close(a), Status::BadHandle);
 
     if (vmex == ours::HANDLE_INVALID || bootfs == ours::HANDLE_INVALID) {
-        static_cast<void>(
-            runtime::debug_line("shell: vmo_replace_as_executable with vmex skipped"));
+        static_cast<void>(ort::debug_line("shell: vmo_replace_as_executable with vmex skipped"));
     } else {
         ok &= refused("shell: vmo_replace_as_executable(vmex = the BootFS) = ", bootfs,
                       Status::BadType);
@@ -1959,9 +1954,9 @@ auto check_vmo_replace_as_executable(ours::HandleValue const bootfs, ours::Handl
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vmo_replace_as_executable checks passed"));
+        static_cast<void>(ort::debug_line("shell: vmo_replace_as_executable checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vmo_replace_as_executable checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vmo_replace_as_executable checks FAILED"));
     }
 }
 
@@ -1996,7 +1991,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     constexpr auto RX = VmOptions::PermRead | VmOptions::PermExecute;
 
     if (vma == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: vma_map checks FAILED (no VmaRoot)"));
+        static_cast<void>(ort::debug_line("shell: vma_map checks FAILED (no VmaRoot)"));
         return;
     }
 
@@ -2004,7 +1999,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     ours::HandleValue vmo = ours::HANDLE_INVALID;
     if (!expect("shell: vmo_create(2 pages) = ", ours_vmo_create(2 * PAGE, VmoOptions::None, &vmo),
                 Status::Ok)) {
-        static_cast<void>(runtime::debug_line("shell: vma_map checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vma_map checks FAILED"));
         return;
     }
     u8 const second[4] = {0x21, 0x22, 0x23, 0x24};
@@ -2105,7 +2100,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     ok &= expect("shell: close(vmo) = ", ours_handle_close(vmo), Status::Ok);
 
     if (bootfs == ours::HANDLE_INVALID || vmex == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: vma_map of the BootFS skipped"));
+        static_cast<void>(ort::debug_line("shell: vma_map of the BootFS skipped"));
     } else {
         ok &= expect("shell: vma_map(RW, the BootFS) = ",
                      ours_vma_map(vma, RW, 0, bootfs, 0, PAGE, &refused), Status::AccessDenied);
@@ -2133,7 +2128,7 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     }
 
     if (vmex == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: vma_map of an executable snapshot skipped"));
+        static_cast<void>(ort::debug_line("shell: vma_map of an executable snapshot skipped"));
     } else {
         // A snapshot of an executable VMO: Write added, Execute taken away. It maps
         // read-write and not executable, and a store through that mapping takes a
@@ -2168,9 +2163,8 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
             ok &= mine[0] == 0xa5;
             ok &= theirs[0] == first[0];
             if (mine[0] != 0xa5 || theirs[0] != first[0]) {
-                static_cast<void>(
-                    runtime::debug_line("shell: a store through the snapshot's mapping "
-                                        "reached the executable VMO, or did not land"));
+                static_cast<void>(ort::debug_line("shell: a store through the snapshot's mapping "
+                                                  "reached the executable VMO, or did not land"));
             }
         }
         ok &= expect("shell: close(the snapshot) = ", ours_handle_close(snapshot), Status::Ok);
@@ -2179,9 +2173,9 @@ auto check_vma_map(ours::HandleValue const vma, ours::HandleValue const bootfs,
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vma_map checks passed"));
+        static_cast<void>(ort::debug_line("shell: vma_map checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vma_map checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vma_map checks FAILED"));
     }
 }
 
@@ -2229,7 +2223,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     constexpr auto SPECIFIC_R = VmOptions::PermRead | VmOptions::Specific;
 
     if (vma == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: vma_allocate checks FAILED (no VmaRoot)"));
+        static_cast<void>(ort::debug_line("shell: vma_allocate checks FAILED (no VmaRoot)"));
         return;
     }
 
@@ -2237,7 +2231,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ours::HandleValue vmo = ours::HANDLE_INVALID;
     if (!expect("shell: vmo_create = ", ours_vmo_create(PAGE, VmoOptions::None, &vmo),
                 Status::Ok)) {
-        static_cast<void>(runtime::debug_line("shell: vma_allocate checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vma_allocate checks FAILED"));
         return;
     }
 
@@ -2278,7 +2272,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
         "shell: vma_allocate(CanMapRead | CanMapWrite | CanMapSpecific, anywhere, 2 pages) = ",
         ours_vma_allocate(vma, CAN_MAP_RW_SPECIFIC, 0, 2 * PAGE, &region, &region_at), Status::Ok);
     if (region_at == 0 || region_at % PAGE != 0) {
-        static_cast<void>(runtime::debug_line("shell: the sub-region is not at a page boundary"));
+        static_cast<void>(ort::debug_line("shell: the sub-region is not at a page boundary"));
         ok = false;
     }
     ok &= expect("shell: vma_map(RW, Specific, page 1 of the sub-region) = ",
@@ -2294,12 +2288,12 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
         ok &= expect("shell: vmo_read(what the sub-region's mapping stored) = ",
                      ours_vmo_read(vmo, &back, 0, sizeof(back)), Status::Ok);
         if (back != 0x5ec7'0001) {
-            static_cast<void>(runtime::debug_line("shell: a store through the sub-region's mapping "
-                                                  "did not reach the VMO"));
+            static_cast<void>(ort::debug_line("shell: a store through the sub-region's mapping "
+                                              "did not reach the VMO"));
             ok = false;
         }
     } else {
-        static_cast<void>(runtime::debug_line(
+        static_cast<void>(ort::debug_line(
             "shell: page 1 of the sub-region was not mapped at its start + 1 page"));
         ok = false;
     }
@@ -2392,7 +2386,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: vma_map(R, Specific, into its sub-region with CanMapSpecific) = ",
                  ours_vma_map(inner, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
     if (mapped != inner_at) {
-        static_cast<void>(runtime::debug_line("shell: the Specific mapping is not at its offset"));
+        static_cast<void>(ort::debug_line("shell: the Specific mapping is not at its offset"));
         ok = false;
     }
     ok &= expect("shell: close(the inner sub-region) = ", ours_handle_close(inner), Status::Ok);
@@ -2422,8 +2416,7 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
                                    &guard, &at),
                  Status::Ok);
     if (at != root_base + FURTHER) {
-        static_cast<void>(
-            runtime::debug_line("shell: the Specific sub-region is not at its offset"));
+        static_cast<void>(ort::debug_line("shell: the Specific sub-region is not at its offset"));
         ok = false;
     }
     ok &= expect("shell: close(the Specific sub-region) = ", ours_handle_close(guard), Status::Ok);
@@ -2441,8 +2434,8 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: vma_map(R, Specific, into it) = ",
                  ours_vma_map(guard, SPECIFIC_R, 0, vmo, 0, PAGE, &mapped), Status::Ok);
     if (at != root_base + CHOSEN || mapped != at) {
-        static_cast<void>(runtime::debug_line(
-            "shell: the chosen sub-region or its mapping is not at its offset"));
+        static_cast<void>(
+            ort::debug_line("shell: the chosen sub-region or its mapping is not at its offset"));
         ok = false;
     }
     ok &= expect("shell: close(the chosen sub-region) = ", ours_handle_close(guard), Status::Ok);
@@ -2468,9 +2461,9 @@ auto check_vma_allocate(ours::HandleValue const vma) -> void {
     ok &= expect("shell: close(vmo) = ", ours_handle_close(vmo), Status::Ok);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vma_allocate checks passed"));
+        static_cast<void>(ort::debug_line("shell: vma_allocate checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vma_allocate checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vma_allocate checks FAILED"));
     }
 }
 
@@ -2500,8 +2493,7 @@ auto check_process_create(ours::HandleValue const job) -> void {
     constexpr std::string_view NAME{"created"};
 
     if (job == ours::HANDLE_INVALID) {
-        static_cast<void>(
-            runtime::debug_line("shell: process_create checks skipped (no root job)"));
+        static_cast<void>(ort::debug_line("shell: process_create checks skipped (no root job)"));
         return;
     }
 
@@ -2606,9 +2598,9 @@ auto check_process_create(ours::HandleValue const job) -> void {
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: process_create checks passed"));
+        static_cast<void>(ort::debug_line("shell: process_create checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: process_create checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: process_create checks FAILED"));
     }
 }
 
@@ -2636,7 +2628,7 @@ auto check_thread_create(ours::HandleValue const job) -> void {
     constexpr std::string_view NAME{"never-started"};
 
     if (job == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: thread_create checks skipped (no root job)"));
+        static_cast<void>(ort::debug_line("shell: thread_create checks skipped (no root job)"));
         return;
     }
 
@@ -2647,7 +2639,7 @@ auto check_thread_create(ours::HandleValue const job) -> void {
                 ours_process_create(job, "host", sizeof("host") - 1,
                                     ours::ProcessCreateOptions::None, &process, &region),
                 Status::Ok)) {
-        static_cast<void>(runtime::debug_line("shell: thread_create checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: thread_create checks FAILED"));
         return;
     }
 
@@ -2727,9 +2719,9 @@ auto check_thread_create(ours::HandleValue const job) -> void {
                  Status::Ok);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: thread_create checks passed"));
+        static_cast<void>(ort::debug_line("shell: thread_create checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: thread_create checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: thread_create checks FAILED"));
     }
 }
 
@@ -2762,7 +2754,7 @@ auto check_process_start(ours::HandleValue const job) -> void {
     constexpr auto STACK = ours::VirtAddr{0x500000};
 
     if (job == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: process_start checks skipped (no root job)"));
+        static_cast<void>(ort::debug_line("shell: process_start checks skipped (no root job)"));
         return;
     }
 
@@ -2789,7 +2781,7 @@ auto check_process_start(ours::HandleValue const job) -> void {
                 ours_thread_create(other, "theirs", sizeof("theirs") - 1,
                                    ours::ThreadCreateOptions::None, &other_thread),
                 Status::Ok)) {
-        static_cast<void>(runtime::debug_line("shell: process_start checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: process_start checks FAILED"));
         return;
     }
 
@@ -2876,9 +2868,9 @@ auto check_process_start(ours::HandleValue const job) -> void {
     ok &= expect("shell: close(other process) = ", ours_handle_close(other), Status::Ok);
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: process_start checks passed"));
+        static_cast<void>(ort::debug_line("shell: process_start checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: process_start checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: process_start checks FAILED"));
     }
 }
 
@@ -2912,8 +2904,7 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
     constexpr auto SEALED_RW = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::Sealed;
 
     if (job == ours::HANDLE_INVALID || vdso == ours::HANDLE_INVALID) {
-        static_cast<void>(
-            runtime::debug_line("shell: vdso map checks skipped (no root job or vDSO)"));
+        static_cast<void>(ort::debug_line("shell: vdso map checks skipped (no root job or vDSO)"));
         return;
     }
 
@@ -2936,7 +2927,7 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
                 ours_process_create(job, "vdso-s", sizeof("vdso-s") - 1,
                                     ours::ProcessCreateOptions::None, &s, &s_vma),
                 Status::Ok)) {
-        static_cast<void>(runtime::debug_line("shell: vdso map checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vdso map checks FAILED"));
         return;
     }
 
@@ -2966,9 +2957,9 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
     }
     ok &= whole != 0;
     char pages_text[10];
-    static_cast<void>(runtime::debug_line(
-        {"shell: the vDSO is ", runtime::decimal(static_cast<u32>(whole / PAGE), pages_text),
-         " page(s)"}));
+    static_cast<void>(
+        ort::debug_line({"shell: the vDSO is ",
+                         ort::decimal(static_cast<u32>(whole / PAGE), pages_text), " page(s)"}));
 
     if (whole != 0) {
         ours::VirtAddr again = 0;
@@ -3016,9 +3007,9 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
     }
 
     if (ok) {
-        static_cast<void>(runtime::debug_line("shell: vdso map checks passed"));
+        static_cast<void>(ort::debug_line("shell: vdso map checks passed"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: vdso map checks FAILED"));
+        static_cast<void>(ort::debug_line("shell: vdso map checks FAILED"));
     }
 }
 } // namespace
@@ -3027,28 +3018,28 @@ auto check_vdso_map(ours::HandleValue const job, ours::HandleValue const vdso) -
 /// are undefined symbols that the kernel binds to the vDSO's definitions while
 /// it loads this image (elfload::Binder).
 auto main(int, char **) -> int {
-    static_cast<void>(runtime::debug_line(BANNER));
+    static_cast<void>(ort::debug_line(BANNER));
 
     // Started by init: a channel to answer on. Started by userboot: the root
     // job, to start probes under, and the BootFS. Which ones are there is how
     // this program knows who started it.
-    auto const peer = runtime::take_startup_handle(ours::HandleType::User0, 0);
-    auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
-    auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+    auto const peer = ort::take_startup_handle(ours::HandleType::User0, 0);
+    auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);
+    auto const bootfs = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
     // vmex comes only from userboot (design D3): init keeps its own and hands
     // it to nobody, so in the image where init starts this program there is
     // none, and that is right.
-    auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
-                                                   u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                               u16(ours::RSRC_SYSTEM_VMEX_BASE));
     // The vDSO's VMO, from userboot: what a launcher maps into each process it
     // starts. Only the shell userboot starts holds it.
-    auto const vdso_vmo = runtime::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    auto const vdso_vmo = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     // The root VMA, which whoever started this put in the processargs.
-    auto const vma = runtime::take_startup_handle(ours::HandleType::VmaRoot, 0);
+    auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (vmex != ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("shell: vmex resource ok"));
+        static_cast<void>(ort::debug_line("shell: vmex resource ok"));
     } else {
-        static_cast<void>(runtime::debug_line("shell: started without vmex"));
+        static_cast<void>(ort::debug_line("shell: started without vmex"));
     }
 
     answer_init(peer);
@@ -3071,30 +3062,30 @@ auto main(int, char **) -> int {
     check_channel_loopback();
     check_handle_transfer();
     check_handle_quota();
-    check_bad_pointers(runtime::vdso_base());
+    check_bad_pointers(ort::vdso_base());
     check_vmo_read();
     check_vmo_write(bootfs);
     check_vmo_create();
-    check_bootfs(bootfs, runtime::vdso_base());
+    check_bootfs(bootfs, ort::vdso_base());
     check_handle_duplicate(bootfs);
     check_vmo_create_child(bootfs);
     check_vmo_replace_as_executable(bootfs, vmex);
     check_vma_map(vma, bootfs, vmex);
     check_vma_allocate(vma);
-    check_libc(static_cast<u8>(runtime::vdso_base() >> 20));
+    check_libc(static_cast<u8>(ort::vdso_base() >> 20));
 
     static Registry registry;
     auto const status = registry.fetch();
 
-    static_cast<void>(runtime::debug_line("--- commands ---"));
-    static_cast<void>(runtime::debug_write(registry.text()));
+    static_cast<void>(ort::debug_line("--- commands ---"));
+    static_cast<void>(ort::debug_write(registry.text()));
     if (status == ours::Status::NoSpace) {
         static_cast<void>(
-            runtime::debug_line("(truncated: the registry outgrew this program's buffer)"));
+            ort::debug_line("(truncated: the registry outgrew this program's buffer)"));
     } else if (status != ours::Status::Ok) {
-        static_cast<void>(runtime::debug_line("(command_list failed)"));
+        static_cast<void>(ort::debug_line("(command_list failed)"));
     }
-    static_cast<void>(runtime::debug_line("--- end ---"));
+    static_cast<void>(ort::debug_line("--- end ---"));
 
     // Done: the runtime ends the process with this. Its remaining handles
     // close as it dies.

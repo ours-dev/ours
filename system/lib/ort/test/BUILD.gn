@@ -6,7 +6,7 @@ executable("process_args") {
   testonly = true
   sources = [ "process_args_test.cpp" ]
   deps = [
-    "//system/lib/runtime:process_args",
+    "//system/lib/ort:process_args",
     "//vendor/googletest:gtest",
     "//vendor/googletest:gtest_main",
   ]
@@ -14,12 +14,12 @@ executable("process_args") {
 }
 
 # A user program on the runtime, built only to be linked and inspected; see
-# runtime_smoke.cpp. User toolchain only, like the runtime itself.
+# ort_smoke.cpp. User toolchain only, like the runtime itself.
 if (!is_host_toolchain && toolchain_environment == "user") {
   import("//system/user_executable.gni")
 
-  user_executable("runtime_smoke") {
-    sources = [ "runtime_smoke.cpp" ]
-    deps = [ "//system/lib/runtime" ]
+  user_executable("ort_smoke") {
+    sources = [ "ort_smoke.cpp" ]
+    deps = [ "//system/lib/ort" ]
   }
 }

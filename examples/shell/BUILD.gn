@@ -35,6 +35,6 @@ user_executable("shell") {
   deps = [
     "//system/lib/bootfs:headers",
     "//system/lib/launch",
-    "//system/lib/runtime",
+    "//system/lib/ort",
   ]
 }

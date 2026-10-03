@@ -3,7 +3,7 @@
 ///
 /// Faults on command.
 ///
-/// Started on the runtime (//system/lib/runtime): the probe's name is
+/// Started on the runtime (//system/lib/ort): the probe's name is
 /// argv[1], and the one startup handle is a channel (User0) whose other end
 /// the driver holds. It prints the name and does the one thing the probe
 /// names -- each of them something a user program is not allowed to get
@@ -29,11 +29,11 @@
 #include <algorithm>
 #include <string_view>
 
+#include <ort/debug.hpp>
+#include <ort/main.hpp>
+#include <ort/startup.hpp>
 #include <ours/process_args.hpp>
 #include <ours/vdso.hpp>
-#include <runtime/debug.hpp>
-#include <runtime/main.hpp>
-#include <runtime/startup.hpp>
 
 // trap.S: a `syscall` executed from this program's own text rather than the
 // vDSO's.
@@ -218,7 +218,7 @@ enum ExitCode : int {
 /// Without one there is no one to tell, and the exit code has to do.
 auto reply(ours::HandleValue const channel, std::string_view const answer) -> void {
     if (channel == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("fault_probe: no answer channel (User0)"));
+        static_cast<void>(ort::debug_line("fault_probe: no answer channel (User0)"));
         return;
     }
     static_cast<void>(ours_channel_write(channel, ours::ChannelWriteOptions::None, answer.data(),
@@ -227,15 +227,15 @@ auto reply(ours::HandleValue const channel, std::string_view const answer) -> vo
 } // namespace
 
 auto main(int const argc, char **const argv) -> int {
-    auto const answer = runtime::take_startup_handle(ours::HandleType::User0, 0);
+    auto const answer = ort::take_startup_handle(ours::HandleType::User0, 0);
     if (!relocations_hold()) {
-        static_cast<void>(runtime::debug_line("fault_probe: a pointer in its writable data was not "
-                                              "relocated where it lies"));
+        static_cast<void>(ort::debug_line("fault_probe: a pointer in its writable data was not "
+                                          "relocated where it lies"));
         reply(answer, "relocation");
         return BAD_RELOCATION;
     }
     if (argc < 2) {
-        static_cast<void>(runtime::debug_line("fault_probe: no probe name"));
+        static_cast<void>(ort::debug_line("fault_probe: no probe name"));
         reply(answer, "no probe name");
         return NO_NAME;
     }
@@ -244,16 +244,16 @@ auto main(int const argc, char **const argv) -> int {
     auto const *const arg = argv[1];
     auto const name =
         std::string_view{arg, static_cast<usize>(std::find(arg, arg + 32, '\0') - arg)};
-    static_cast<void>(runtime::debug_line({"fault_probe: ", name}));
+    static_cast<void>(ort::debug_line({"fault_probe: ", name}));
 
     for (auto const &probe: PROBES) {
         if (same(name, probe.name)) {
-            probe.action(runtime::vdso_base());
+            probe.action(ort::vdso_base());
             reply(answer, "survived");
             return SURVIVED;
         }
     }
-    static_cast<void>(runtime::debug_line({"fault_probe: unknown probe ", name}));
+    static_cast<void>(ort::debug_line({"fault_probe: unknown probe ", name}));
     reply(answer, "unknown");
     return UNKNOWN;
 }

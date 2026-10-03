@@ -1,10 +1,10 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <runtime/process_args.hpp>
+#include <ort/process_args.hpp>
 
 #include <cstring>
 
-namespace runtime {
+namespace ort {
 using ours::Status;
 
 namespace {
@@ -118,4 +118,4 @@ auto ProcessArgs::handle_info(u32 const index) const -> u32 {
     std::memcpy(&info, m_message + m_handle_info_off + usize{index} * sizeof(u32), sizeof(info));
     return info;
 }
-} // namespace runtime
+} // namespace ort

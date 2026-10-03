@@ -14,8 +14,8 @@
 //   %rdi  the bootstrap channel, HANDLE_INVALID when the process has none
 //   %rsi  where the vDSO is mapped
 //
-// Both go on untouched to runtime_start() (start.cpp), which reads the
-// processargs message and calls back into runtime_call_main() below.
+// Both go on untouched to ort_start() (start.cpp), which reads the
+// processargs message and calls back into ort_call_main() below.
 
 .section .text._start, "ax", @progbits
 .balign 16
@@ -25,22 +25,22 @@ _start:
     // The outermost frame: a frame-pointer walk stops at a zero %rbp.
     xorl %ebp, %ebp
     andq $-16, %rsp
-    call runtime_start
+    call ort_start
     ud2
 .size _start, . - _start
 
-// int runtime_call_main(int argc, char **argv)
+// int ort_call_main(int argc, char **argv)
 //
-// A tail jump, so main() returns straight to runtime_start() with its code in
+// A tail jump, so main() returns straight to ort_start() with its code in
 // %eax. The arguments are already where main() wants them. Hidden, like
 // everything else in a program: it is the runtime's, not an export.
-.section .text.runtime_call_main, "ax", @progbits
+.section .text.ort_call_main, "ax", @progbits
 .balign 16
-.globl runtime_call_main
-.hidden runtime_call_main
-.type runtime_call_main, @function
-runtime_call_main:
+.globl ort_call_main
+.hidden ort_call_main
+.type ort_call_main, @function
+ort_call_main:
     jmp main
-.size runtime_call_main, . - runtime_call_main
+.size ort_call_main, . - ort_call_main
 
 .section .note.GNU-stack, "", @progbits

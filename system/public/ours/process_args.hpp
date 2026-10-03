@@ -25,7 +25,7 @@
 // exchange with Zircon.
 //
 // There is one encoder, encode_process_args() below, and one decoder,
-// runtime::ProcessArgs (//system/lib/runtime); everything that starts a
+// ort::ProcessArgs (//system/lib/ort); everything that starts a
 // process -- the kernel for the first one, the launcher for the rest --
 // writes the message with the former (design 3.3).
 

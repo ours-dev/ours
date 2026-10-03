@@ -45,7 +45,7 @@ cpp_interface("startup") {
 #
 # Not in the host toolchain, which reaches this file only for :autorun's
 # test: GN defines every target of a file it loads, and a user program does
-# not configure there (//system/lib/runtime draws the same line).
+# not configure there (//system/lib/ort draws the same line).
 if (!is_host_toolchain) {
   user_executable("init") {
     visibility = [ "//kernel/products/image/*" ]
@@ -53,7 +53,7 @@ if (!is_host_toolchain) {
     deps = [
       ":autorun",
       "//system/lib/bootfs:headers",
-      "//system/lib/runtime",
+      "//system/lib/ort",
     ]
   }
 }

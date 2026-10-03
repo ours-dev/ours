@@ -2,10 +2,10 @@
 /// Copyright (c) 2026 ours Developers
 ///
 /// What runs between the entry point (crt0.S) and main, and after main.
-#include <runtime/debug.hpp>
-#include <runtime/process_args.hpp>
-#include <runtime/startup.hpp>
-#include <runtime/startup_handles.hpp>
+#include <ort/debug.hpp>
+#include <ort/process_args.hpp>
+#include <ort/startup.hpp>
+#include <ort/startup_handles.hpp>
 
 #include <string_view>
 
@@ -15,12 +15,12 @@
 #include <ours/vdso.hpp>
 
 /// crt0.S: a tail jump to main, which C++ may not call itself.
-extern "C" auto runtime_call_main(int argc, char **argv) -> int;
+extern "C" auto ort_call_main(int argc, char **argv) -> int;
 
 extern "C" [[noreturn]]
-auto runtime_start(ours::HandleValue bootstrap, ours::VirtAddr vdso_base) -> void;
+auto ort_start(ours::HandleValue bootstrap, ours::VirtAddr vdso_base) -> void;
 
-namespace runtime {
+namespace ort {
 namespace {
     // Everything the process was started with, for as long as it runs:
     // argv's strings and every string process_args() hands out point into
@@ -44,7 +44,7 @@ namespace {
     [[noreturn]]
     auto fail(std::string_view const what, ours::Status const status) -> void {
         static_cast<void>(
-            runtime::debug_line({"runtime: ", what, std::string_view{ours::to_string(status)}}));
+            ort::debug_line({"ort: ", what, std::string_view{ours::to_string(status)}}));
         ours_process_exit(EXIT_START_FAILED);
     }
 
@@ -111,7 +111,7 @@ auto process_args() -> ProcessArgs const & {
 auto vdso_base() -> ours::VirtAddr {
     return vdso;
 }
-} // namespace runtime
+} // namespace ort
 
 /// Reads what the process was started with, calls main, and ends the process
 /// with main's return value. Never returns: there is nothing to return to.
@@ -127,13 +127,13 @@ auto vdso_base() -> ours::VirtAddr {
 /// stack. Zircon's old __libc_start_main kept argv the same way, in a
 /// variable-length array on the start-up frame.
 extern "C" [[noreturn]]
-auto runtime_start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -> void {
-    runtime::vdso = vdso_base;
+auto ort_start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_base) -> void {
+    ort::vdso = vdso_base;
     if (bootstrap != ours::HANDLE_INVALID) {
-        runtime::read_processargs(bootstrap);
+        ort::read_processargs(bootstrap);
     }
 
-    auto const args = runtime::startup_args.args();
+    auto const args = ort::startup_args.args();
     auto **const argv =
         static_cast<char **>(__builtin_alloca(sizeof(char *) * (usize{args.size()} + 1)));
     auto **slot = argv;
@@ -144,5 +144,5 @@ auto runtime_start(ours::HandleValue const bootstrap, ours::VirtAddr const vdso_
     }
     *slot = nullptr;
 
-    ours_process_exit(runtime_call_main(static_cast<int>(args.size()), argv));
+    ours_process_exit(ort_call_main(static_cast<int>(args.size()), argv));
 }

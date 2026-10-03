@@ -845,7 +845,7 @@ auto userboot_init() -> void {
               has_bootfs ? " and the BootFS" : "");
     // A failure is said inside. The process is already running, and with the
     // kernel's end dropped below it sees PEER_CLOSED and no message, and ends
-    // itself (runtime::EXIT_START_FAILED).
+    // itself (ort::EXIT_START_FAILED).
     status = write_bootstrap(*kernel_end.dispatcher(), program, ustl::move(root_vma));
     static_cast<void>(status);
 }

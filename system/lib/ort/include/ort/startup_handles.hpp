@@ -1,14 +1,14 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef RUNTIME_STARTUP_HANDLES_HPP
-#define RUNTIME_STARTUP_HANDLES_HPP 1
+#ifndef ORT_STARTUP_HANDLES_HPP
+#define ORT_STARTUP_HANDLES_HPP 1
 
 #include <span>
 
 #include <ours/process_args.hpp>
 #include <ours/types.hpp>
 
-namespace runtime {
+namespace ort {
 /// The handles a process was started with, each tagged with its handle_info,
 /// waiting to be claimed.
 ///
@@ -42,6 +42,6 @@ class StartupHandles {
     std::span<ours::HandleValue> m_handles;
     std::span<u32> m_infos;
 };
-} // namespace runtime
+} // namespace ort
 
-#endif // #ifndef RUNTIME_STARTUP_HANDLES_HPP
+#endif // #ifndef ORT_STARTUP_HANDLES_HPP

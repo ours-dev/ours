@@ -1,8 +1,8 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#include <runtime/startup_handles.hpp>
+#include <ort/startup_handles.hpp>
 
-namespace runtime {
+namespace ort {
 StartupHandles::StartupHandles(std::span<ours::HandleValue> const handles,
                                std::span<u32> const infos)
     : m_handles(handles), m_infos(infos) {}
@@ -24,4 +24,4 @@ auto StartupHandles::take(ours::HandleType const type, u16 const arg) -> ours::H
     }
     return ours::HANDLE_INVALID;
 }
-} // namespace runtime
+} // namespace ort

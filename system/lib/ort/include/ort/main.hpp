@@ -1,7 +1,7 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
-#ifndef RUNTIME_MAIN_HPP
-#define RUNTIME_MAIN_HPP 1
+#ifndef ORT_MAIN_HPP
+#define ORT_MAIN_HPP 1
 
 /// The program's main, as the runtime calls it: include this in the file that
 /// defines main.
@@ -20,4 +20,4 @@
 /// end -- a main that can run off its end is a -Wreturn-type error here.
 extern "C" auto main(int argc, char **argv) -> int;
 
-#endif // #ifndef RUNTIME_MAIN_HPP
+#endif // #ifndef ORT_MAIN_HPP

@@ -48,7 +48,8 @@
   one more copy of each contract to keep true). Do not reintroduce one
   without a concrete need; a typed-handle layer in the shape of Zircon's
   `lib/zx` was planned and deferred for the same reason. A program prints
-  with `runtime::debug_line` (`<runtime/debug.hpp>`).
+  with `ort::debug_line` (`<ort/debug.hpp>`, in the ours runtime,
+  `//system/lib/ort`).
 - The address-region object is **Vma** at every layer: `VmaDispatcher`,
   `ours_vma_*`, `HandleType::VmaRoot`, `ObjectType::Vma`, after
   `mm::VmArea` -- not Zircon's "Vmar" (the user's call, 2026-09-28, after a

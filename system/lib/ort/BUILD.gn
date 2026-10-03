@@ -22,8 +22,8 @@ source_set("process_args") {
 # //build/cpp/cpp_interface.gni.
 cpp_interface("headers") {
   public = [
-    "include/runtime/process_args.hpp",
-    "include/runtime/startup_handles.hpp",
+    "include/ort/process_args.hpp",
+    "include/ort/startup_handles.hpp",
   ]
 
   # <ours/process_args.hpp>, the format this decodes.
@@ -48,11 +48,11 @@ group("tests") {
 # shell together with the kernel's own processargs (design K14), then
 # userboot -- and each names this dependency itself.
 #
-# It also carries the print helpers (<runtime/debug.hpp>), which every
+# It also carries the print helpers (<ort/debug.hpp>), which every
 # program uses and which came from //system/lib/ou when that library was
 # removed.
 if (!is_host_toolchain && toolchain_environment == "user") {
-  source_set("runtime") {
+  source_set("ort") {
     sources = [
       "src/cpp_dependencies.cpp",
       "src/crt0.S",
@@ -70,9 +70,9 @@ if (!is_host_toolchain && toolchain_environment == "user") {
   # declaring main extern "C" is an error.
   cpp_interface("start.headers") {
     public = [
-      "include/runtime/debug.hpp",
-      "include/runtime/main.hpp",
-      "include/runtime/startup.hpp",
+      "include/ort/debug.hpp",
+      "include/ort/main.hpp",
+      "include/ort/startup.hpp",
     ]
     public_deps = [ ":headers" ]
     visibility = [ ":*" ]

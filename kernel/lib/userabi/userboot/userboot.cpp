@@ -29,19 +29,19 @@
 
 #include <string_view>
 
+#include <ort/debug.hpp>
+#include <ort/main.hpp>
+#include <ort/startup.hpp>
 #include <ours/process_args.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
-#include <runtime/debug.hpp>
-#include <runtime/main.hpp>
-#include <runtime/startup.hpp>
 
 namespace {
 /// The option naming the program to start next. Only the `key=value` form
 /// means anything, since a bare `userboot.next` names no program;
-/// runtime::ProcessArgs::option() reads both as empty. Zircon's key of the
+/// ort::ProcessArgs::option() reads both as empty. Zircon's key of the
 /// same name (parse_option() in main.rs).
 constexpr std::string_view NEXT_OPTION{"userboot.next"};
 
@@ -65,7 +65,7 @@ struct HandedOn {
 
 /// Prints "<what><status name>".
 auto report(std::string_view const what, ours::Status const status) -> void {
-    static_cast<void>(runtime::debug_line({what, std::string_view{ours::to_string(status)}}));
+    static_cast<void>(ort::debug_line({what, std::string_view{ours::to_string(status)}}));
 }
 
 auto to_str(std::string_view const text) -> std::string_view {
@@ -102,13 +102,13 @@ auto halt() -> void {
 /// named, as the kernel does with a token it has no room for.
 auto collect_handed_on() -> HandedOn {
     HandedOn handed_on;
-    for (auto const entry: runtime::process_args().environ()) {
+    for (auto const entry: ort::process_args().environ()) {
         if (entry.starts_with(USERBOOT_OPTION_PREFIX)) {
             continue;
         }
         if (handed_on.count == ours::MAX_USER_OPTIONS) {
-            static_cast<void>(runtime::debug_line(
-                {"userboot: dropping ", to_str(entry), ": no room to hand it on"}));
+            static_cast<void>(
+                ort::debug_line({"userboot: dropping ", to_str(entry), ": no room to hand it on"}));
             continue;
         }
         handed_on.entries[handed_on.count++] = entry;
@@ -134,7 +134,7 @@ auto collect_handed_on() -> HandedOn {
 /// On success both handles have left this process. On failure to spawn they
 /// are still here, and the caller decides what to do with them; a failure
 /// after the spawn loses them with the message, and the new process, finding
-/// PEER_CLOSED and no message, exits with runtime::EXIT_START_FAILED.
+/// PEER_CLOSED and no message, exits with ort::EXIT_START_FAILED.
 auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
                 ours::HandleValue const vmex, ours::HandleValue const vdso,
                 std::string_view const name, HandedOn const &environ) -> ours::Status {
@@ -201,12 +201,12 @@ auto start_next(ours::HandleValue const job, ours::HandleValue const bootfs,
 } // namespace
 
 auto main(int, char **) -> int {
-    auto const next = runtime::process_args().option(NEXT_OPTION);
+    auto const next = ort::process_args().option(NEXT_OPTION);
     if (next.empty()) {
         // No program named: the proof-of-life image. Reaching this line at
         // all is what it proves -- the kernel built a process, mapped this
         // ELF and the vDSO into it, and the runtime read its processargs.
-        static_cast<void>(runtime::debug_line("userboot: hello from ring 3"));
+        static_cast<void>(ort::debug_line("userboot: hello from ring 3"));
         halt();
     }
 
@@ -217,23 +217,23 @@ auto main(int, char **) -> int {
     // on failure (main() in main.rs logs the error and returns). Its exit
     // takes nothing with it: the next program lives under the root job, not
     // under userboot, and holds the only handles userboot had.
-    auto const job = runtime::take_startup_handle(ours::HandleType::JobDefault, 0);
+    auto const job = ort::take_startup_handle(ours::HandleType::JobDefault, 0);
     if (job == ours::HANDLE_INVALID) {
-        static_cast<void>(runtime::debug_line("userboot: started without the root job"));
+        static_cast<void>(ort::debug_line("userboot: started without the root job"));
         return 1;
     }
     // Absent is allowed: the kernel starts this program without a BootFS
     // when it could not build one, and the next program is the one that has
     // to cope with that, as init already does.
-    auto const bootfs = runtime::take_startup_handle(ours::HandleType::VmoBootfs, 0);
-    auto const vmex = runtime::take_startup_handle(ours::HandleType::SystemResource,
-                                                   u16(ours::RSRC_SYSTEM_VMEX_BASE));
-    auto const vdso = runtime::take_startup_handle(ours::HandleType::VmoVdso, 0);
+    auto const bootfs = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+    auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
+                                               u16(ours::RSRC_SYSTEM_VMEX_BASE));
+    auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
 
-    static_cast<void>(runtime::debug_line({"userboot: starting ", to_str(next)}));
+    static_cast<void>(ort::debug_line({"userboot: starting ", to_str(next)}));
     auto const handed_on = collect_handed_on();
     for (auto index = u32(0); index < handed_on.count; ++index) {
-        static_cast<void>(runtime::debug_line(
+        static_cast<void>(ort::debug_line(
             {"userboot: passing ", to_str(handed_on.entries[index]), " to ", to_str(next)}));
     }
     if (auto const status = start_next(job, bootfs, vmex, vdso, next, handed_on);
@@ -241,6 +241,6 @@ auto main(int, char **) -> int {
         report("userboot: starting the next program = ", status);
         return 1;
     }
-    static_cast<void>(runtime::debug_line({"userboot: started ", to_str(next)}));
+    static_cast<void>(ort::debug_line({"userboot: started ", to_str(next)}));
     return 0;
 }
