@@ -28,6 +28,14 @@ misspelt test would otherwise pass. Debug and trace lines are left out
 of what is printed unless --all is given; the whole serial log stays on disk.
 Environment variables such as SMP=1 pass straight through to
 scripts/qemu_boot.py, as they do for the ours-verify skill's boot_check.py.
+
+A `crash` command (//kernel/commands/crash.cpp) panics the kernel on purpose,
+so it has to be the last command, and it is judged by the panic report it
+leads to rather than by a prompt that never comes back. It is done once the
+panic banner and the line after it are in. It passes if that line is the
+panic message, an error-level line, and if the CPU that panicked printed
+nothing between the command and the banner: the reason comes first, before
+any context (other CPUs saying they have stopped may come before it).
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -53,6 +61,10 @@ ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # The log-level tags, as boot_check.py reads them.
 LEVEL = r"\[(?:\d+ )?(?:cpu\d+ )?(?:{})\]"
 ERROR_LINE = re.compile(LEVEL.format("error"))
+# The CPU an error line was printed on, as its prefix gives it.
+ERROR_CPU = re.compile(r"\[(?:\d+ )?(cpu\d+) error\]")
+# The line a kernel panic report starts with (kernel/top/panic.cpp).
+PANIC_BANNER = "OURS KERNEL PANIC"
 FAILED_LINE = re.compile(r"\bFAILED\b")
 NOISE = re.compile(LEVEL.format("debug|trace"))
 SETTLE = 1.0  # seconds between the end marker and the first command
@@ -207,6 +219,25 @@ def judge(command: str, lines: list[str]) -> bool:
     return True
 
 
+def judge_crash(command: str, lines: list[str]) -> bool:
+    """Says whether the panic report |command| led to opens as it should:
+    the banner, then the message, and nothing from the panicking CPU before
+    them. |lines| ends with the line after the banner."""
+    banner = next(i for i, l in enumerate(lines) if PANIC_BANNER in l)
+    message = lines[banner + 1] if banner + 1 < len(lines) else ""
+    found = ERROR_CPU.search(message)
+    if not found:
+        print(f"{command}: FAIL, the line after the panic banner is not an error-level message")
+        return False
+    tag = found.group(1) + " "
+    early = [l for l in lines[:banner] if tag in l and not NOISE.search(l)]
+    if early:
+        print(f"{command}: FAIL, {found.group(1)} printed {len(early)} line(s) before its panic banner")
+        return False
+    print(f"{command}: ok")
+    return True
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("commands", nargs="+", metavar="command", help="a kernel-shell command line")
@@ -216,6 +247,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--command-timeout", type=float, default=120, help="seconds per command (default: 120)")
     parser.add_argument("--all", action="store_true", help="print debug and trace lines too")
     args = parser.parse_args(argv)
+
+    crashes = [i for i, c in enumerate(args.commands) if c.split()[0] == "crash"]
+    if crashes and crashes[0] != len(args.commands) - 1:
+        print("a crash command ends the machine, so it can only be the last command")
+        return 1
 
     out = (ROOT / args.out).resolve()
     image = out / IMAGES[args.image]
@@ -236,7 +272,11 @@ def main(argv: list[str]) -> int:
         for command in args.commands:
             name = command.split()[0]
             test = name.endswith(".test")
-            if test:
+            crash = name == "crash"
+            if crash:
+                done = re.compile(re.escape(PANIC_BANNER) + r"[^\n]*\n[^\n]*\n")
+                awaited = f'"{PANIC_BANNER}" and the line after it'
+            elif test:
                 done = re.compile(re.escape(name) + r": (?:ok|FAILED)\b[^\n]*\n")
                 awaited = f'"{name}: ok" or FAILED line'
             else:
@@ -244,11 +284,15 @@ def main(argv: list[str]) -> int:
                 awaited = "prompt (on dbg, other CPUs' log lines can break it up; try --image rel)"
             console.keep()
             console.type(command)
-            ended = console.wait_for(done, time.monotonic() + args.command_timeout, through=test)
+            ended = console.wait_for(done, time.monotonic() + args.command_timeout,
+                                     through=test or crash)
             lines = show(command, console.kept(), args.all)
             if not ended:
                 print(f"{command}: FAIL, no {awaited} within {args.command_timeout:.0f}s")
                 results.append(False)
+                break
+            if crash:
+                results.append(judge_crash(command, lines))
                 break
             results.append(judge(command, lines))
             if test:

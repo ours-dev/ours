@@ -22,16 +22,61 @@ namespace {
     auto quiesce_machine() -> void {
         IpiService::suspend_others();
     }
+
+    /// The line a panic report starts with, fixed so that a tool reading the
+    /// serial log can tell a panic from any other error line. Zircon's
+    /// "ZIRCON KERNEL PANIC" (DLog::BluescreenInit()) is the model, and its
+    /// test harnesses match it the way scripts/kshell_run.py matches this.
+    ///
+    /// The leading newline ends whatever line the console was in the middle
+    /// of -- the kernel shell writes its prompt and its echo a byte at a time,
+    /// outside the logger -- so the banner always starts a line of its own.
+    constexpr auto BANNER = std::string_view("\nOURS KERNEL PANIC\n");
+
+    /// Written to the sink directly rather than logged. A log line also goes
+    /// into the record ring, and the replay that follows the message would
+    /// then print the banner a second time, at its end, where a tool counting
+    /// panics would count two. The routing is the one every logz4 line takes:
+    /// the installed logger, or the emergency port before there is one.
+    auto print_banner() -> void {
+        auto &logger = logz4::get_global_logger();
+        if (logger.is_null()) {
+            logz4::emergency_write(BANNER.data(), BANNER.size());
+            return;
+        }
+        logger.write(BANNER.data(), BANNER.size());
+    }
+
+    /// What led up to the panic: the record ring, replayed.
+    auto print_context() -> void {
+        logz4::dump_recent();
+    }
 } // namespace
 
+/// The report is the banner, then the message, then the context.
+///
+/// The message used to come last, after a replay of the whole record ring,
+/// so that the context read top to bottom like a log with the reason at the
+/// bottom. But a panic report is read for its reason, and the replay is up
+/// to 256 lines of polled serial output -- 2 s at 100 bytes a line and up to
+/// 12 s at full lines, at 115200 baud -- any of which can stall. Whatever is
+/// printed first is what survives a stall, so the reason goes first. Linux's
+/// panic() prints "Kernel panic - not syncing: ..." before dump_stack() and
+/// kmsg_dump(), and Zircon's platform_panic_start() prints its banner before
+/// anything else, for the same reason.
+///
+/// The message is logged, not written raw like the banner: that gives it the
+/// time and CPU prefix, and the level tag that boot checks look for. It also
+/// puts it in the ring, so the replay ends with it once more.
 template <typename String, typename FormatArgs>
 [[noreturn]]
 auto vpanic(String fmt, FormatArgs const &args) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
     quiesce_machine();
 
-    logz4::dump_recent();
+    print_banner();
     log::vlog(logz4::get_global_logger(), logz4::Level::Error, fmt, args);
+    print_context();
     while (1) {
         arch::halt();
     }
@@ -48,14 +93,17 @@ template auto vpanic(std::string_view, std::format_args const &) -> void;
 /// message quoting a format string, a symbol with braces in it) was read as a
 /// replacement field with no argument behind it, and the panic died inside
 /// std::format instead of printing.
+///
+/// The report comes out in the same order as the overload above prints it.
 [[noreturn]]
 auto vpanic(std::string_view message) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
     quiesce_machine();
 
-    logz4::dump_recent();
+    print_banner();
     log::vlog(logz4::get_global_logger(), logz4::Level::Error, std::string_view("{}"),
               std::make_format_args(message));
+    print_context();
     while (1) {
         arch::halt();
     }

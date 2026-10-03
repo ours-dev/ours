@@ -1,25 +1,5 @@
 # kernel-panic outstanding repairs
 
-## 1. The panic message is printed after a replay of up to 256 log lines
-
-**Severity**
-Medium: every panic shows its reason last and late, and if anything stalls during the replay the reason is never shown at all.
-
-**Symptom**
-On a panic the serial console first prints the whole log ring, then the panic message. `vpanic()` (`kernel/top/panic.cpp`) calls `logz4::dump_recent()` before `log::vlog()` of the message. The ring holds up to 256 lines (`logz4::ring::SLOT_COUNT`) of up to 512 bytes each. At 115200 baud, about 11.5 KB/s, that is roughly 2 s of output at 100 bytes a line and up to 12 s at full lines, before the one line that says what went wrong.
-
-**Cause**
-The order was chosen so that the context reads top to bottom with the reason at the end, as a log does. But a panic report is read for its reason first, and the replay is a slow, polled serial write that can itself be the thing that fails (item 2). Whatever is printed first is what survives a stall.
-
-**Change**
-Print the panic message first, under a fixed banner line that tools can match (as Zircon prints "ZIRCON KERNEL PANIC"), then whatever context follows (item 4). Keep the message's "{}" format-string handling as it is (see the comment above `vpanic(std::string_view)`).
-
-**Reference**
-Linux `panic()` (`kernel/panic.c`) prints "Kernel panic - not syncing: %s" before the stack dump and before `kmsg_dump(KMSG_DUMP_PANIC)`. Zircon `platform_panic_start()` (`zircon/kernel/platform/pc/power.cc`) prints its banner through `dlog_bluescreen_init()` before anything else.
-
-**Acceptance**
-A deliberate panic (a kshell command or a test that calls `panic()`) shows the banner and the message as the first lines after the panic begins, in both images; `ours-verify` passes.
-
 ## 2. The serial logger's lock can keep a panic from printing anything
 
 **Severity**
@@ -72,7 +52,7 @@ Low: noise, and a report that is hard to read.
 After the logger is installed, every line that reaches the ring has also been written to the console as it happened. So a panic's replay prints those same lines a second time, straight after them in the log and with no boundary, and a reader cannot tell where the live log ends and the replay begins. Only lines from before the logger was installed are new in a replay; they reached the ring and, except for Error lines, nothing else.
 
 **Cause**
-`dump_recent()` replays every surviving record unconditionally. It cannot tell which records already reached the console, and the panic path adds no marker around the replay. Depends on nothing; reads best together with item 1.
+`dump_recent()` replays every surviving record unconditionally. It cannot tell which records already reached the console, and the panic path adds no marker around the replay. Depends on nothing. The panic message now comes before the replay (docs/changes/261003/kernel-panic.md), so the replay is the last thing a panic prints.
 
 **Change**
 Bracket the replay with marker lines (for example "--- recent log ---" and "--- end of recent log ---"). Then either replay only the records that never reached a logger, or limit the replay to the last N lines and say so in the marker; record in the ring whether a line was written live, so the dump can choose. Keep the full replay for the case where no logger was ever installed (an early panic), which is the case the ring exists for at panic time.
