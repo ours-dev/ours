@@ -32,6 +32,12 @@ namespace {
 
     Time (*registered_clock)() = nullptr;
     u32 (*registered_cpu)() = nullptr;
+
+    /// Relaxed, because it publishes nothing but itself. The CPU that sets it
+    /// reads it back in its own later writes, which program order covers. A
+    /// CPU that sees it late only waits for the lock in the ordinary way for
+    /// a little longer.
+    std::atomic<bool> panic_mode{false};
 } // namespace
 
 /// Default: drop. Architectures with a known-good boot port define this
@@ -39,6 +45,14 @@ namespace {
 WEAK_LINK
 auto emergency_write(char const *, usize n) -> void {
     static_cast<void>(n);
+}
+
+auto enter_panic_mode() -> void {
+    panic_mode.store(true, std::memory_order_relaxed);
+}
+
+auto in_panic_mode() -> bool {
+    return panic_mode.load(std::memory_order_relaxed);
 }
 
 auto init(Logger *logger) -> void {

@@ -68,10 +68,16 @@ namespace {
 /// The message is logged, not written raw like the banner: that gives it the
 /// time and CPU prefix, and the level tag that boot checks look for. It also
 /// puts it in the ring, so the replay ends with it once more.
+///
+/// Panic mode comes first, before anything prints, the other CPUs' last
+/// words in quiesce_machine() included: the serial logger's lock may be held
+/// by a CPU that will never let go, and in panic mode a write stops waiting
+/// for it after a bound (logz4::enter_panic_mode()).
 template <typename String, typename FormatArgs>
 [[noreturn]]
 auto vpanic(String fmt, FormatArgs const &args) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
+    logz4::enter_panic_mode();
     quiesce_machine();
 
     print_banner();
@@ -98,6 +104,7 @@ template auto vpanic(std::string_view, std::format_args const &) -> void;
 [[noreturn]]
 auto vpanic(std::string_view message) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
+    logz4::enter_panic_mode();
     quiesce_machine();
 
     print_banner();

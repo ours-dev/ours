@@ -1,28 +1,5 @@
 # kernel-panic outstanding repairs
 
-## 2. The serial logger's lock can keep a panic from printing anything
-
-**Severity**
-Medium: not reached today, but if it is, the panic prints nothing and the machine just stops.
-
-**Symptom**
-Latent, cannot be triggered today. If the serial logger's lock is held when a panic starts, the panicking CPU spins on it forever in its first write. Neither the ring replay nor the message ever appears.
-
-**Cause**
-`SerialLogger::write()` (`kernel/lib/logz4/kernel.cpp`) takes a test-and-set lock with interrupts disabled around the polled COM1 output, and the panic path writes through the same logger. The lock can be held at panic time in two ways:
-- The panicking CPU itself was inside `write()`, and an exception or NMI there led to `panic()`.
-- `IpiService::suspend_others()` is best effort by design: it waits a bounded time and goes on. A CPU that holds the lock with interrupts off and never answers keeps it held.
-
-**Change**
-A panic mode in logz4, entered at the start of `vpanic()`. In it, the serial output does not wait for the lock: it either try-locks and writes anyway after a bounded wait, or bypasses the lock entirely. Interleaving with a CPU that did not stop is acceptable; silence is not. Optionally, `emergency_write()` takes the same unlocked path.
-
-**Reference**
-- Linux sets `oops_in_progress` through `bust_spinlocks(1)` in `panic()`. Its 8250 console write then only try-locks the port (`serial8250_console_write()`), and `console_flush_on_panic()` flushes without the console lock.
-- Zircon `platform_panic_start()` calls `dlog_panic_start()`, after which the debuglog stops queueing and writes fall through to the kernel console and serial directly.
-
-**Acceptance**
-A test panics while the serial logger's lock is held deliberately, from a kshell command that takes it and then panics. It still prints the banner and message on dbg; `ours-verify` passes.
-
 ## 3. Two CPUs that panic at once both replay the ring and print
 
 **Severity**

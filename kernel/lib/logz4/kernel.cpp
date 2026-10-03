@@ -14,6 +14,7 @@
 #include <atomic>
 
 #include <arch/interrupt.hpp>
+#include <arch/spin_hint.hpp>
 #include <arch/tick.hpp>
 #include <arch/x86/io.hpp>
 #include <gktl/init_hook.hpp>
@@ -21,15 +22,32 @@
 namespace {
 constexpr u16 COM1 = 0x3F8;
 
+/// How long a write in panic mode waits for the lock before it writes
+/// without it, in TSC ticks.
+///
+/// Long enough for a live holder to finish its line: 512 bytes at 115200
+/// baud take about 45 ms, and this is 50 ms at a 5 GHz TSC and 250 ms at a
+/// 1 GHz one. It is paid at most once per panic; see
+/// SerialLogger::m_abandoned.
+///
+/// Ticks, not spins. A spin's cost varies by more than a hundred times:
+/// PAUSE takes about ten cycles on some cores and about 140 on others, and
+/// under QEMU's TCG one spin of this loop measured about 640 ns -- a bound
+/// of ten million spins held the rel image's panic up for 6.4 s.
+constexpr auto PANIC_LOCK_TICKS = usize{250'000'000};
+
 /// Polls COM1. The lock is a TAS, not ours::sync::SpinLock: bootstrap
 /// logging is installed before CpuLocal::init_early(), and SpinLock
 /// reads current_cpu() on acquire.
+///
+/// The lock keeps one line's bytes together on the wire. Without it, two
+/// CPUs each poll the transmitter, each see it empty, and their bytes
+/// alternate.
 class SerialLogger final: public logz4::Logger {
   public:
     auto write(char const *s, usize n) -> void override {
         auto const irq = arch::local_irq_save_state();
-        while (m_lock.test_and_set(std::memory_order_acquire)) {
-        }
+        auto const locked = acquire();
 
         auto const is_transmit_empty = [&]() { return arch::inb(COM1 + 5) & 0x20; };
         for (usize i = 0; i < n; ++i) {
@@ -38,12 +56,69 @@ class SerialLogger final: public logz4::Logger {
             arch::outb(COM1, static_cast<u8>(s[i]));
         }
 
-        m_lock.clear(std::memory_order_release);
+        // Only a write that took the lock gives it back. Clearing a lock
+        // held by someone else would let a third CPU in while the holder is
+        // still writing, and the holder's own clear would later let in a
+        // fourth: mutual exclusion would be gone for everyone, not just for
+        // this one write. A write that went ahead without the lock leaves it
+        // exactly as it found it.
+        if (locked) {
+            m_lock.clear(std::memory_order_release);
+        }
         arch::local_irq_restore_state(irq);
     }
 
+    /// Takes the lock the way write() holds it, interrupts off and then the
+    /// lock, and gives neither back. For `crash panic-locked` only.
+    auto hold_lock_forever() -> void {
+        arch::local_irq_disable();
+        while (m_lock.test_and_set(std::memory_order_acquire)) {
+        }
+    }
+
   private:
+    /// Takes the lock and says whether it did.
+    ///
+    /// Outside panic mode it waits for as long as it takes, and always does.
+    ///
+    /// In panic mode it waits PANIC_LOCK_TICKS at most, and then gives up,
+    /// so that write() goes ahead without the lock. A holder that is alive
+    /// finishes its line well inside that bound, so lines stay whole. A
+    /// holder that never lets go -- this CPU, if it panicked inside write();
+    /// another CPU that stopped answering with the lock held -- costs one
+    /// bound, after which the panic prints, interleaved with whatever the
+    /// holder may still write. Interleaved output can be read; no output
+    /// cannot. Linux's serial8250_console_write() only try-locks the port
+    /// while oops_in_progress is set, for the same reason.
+    auto acquire() -> bool {
+        if (!logz4::in_panic_mode()) {
+            while (m_lock.test_and_set(std::memory_order_acquire)) {
+            }
+            return true;
+        }
+        if (m_abandoned.load(std::memory_order_relaxed)) {
+            return !m_lock.test_and_set(std::memory_order_acquire);
+        }
+
+        auto const start = arch::Tick::get().tsc;
+        while (m_lock.test_and_set(std::memory_order_acquire)) {
+            if (arch::Tick::get().tsc - start >= PANIC_LOCK_TICKS) {
+                m_abandoned.store(true, std::memory_order_relaxed);
+                return false;
+            }
+            arch::spin_hint();
+        }
+        return true;
+    }
+
     std::atomic_flag m_lock = ATOMIC_FLAG_INIT;
+
+    /// Set once a write in panic mode has waited out the whole bound. A
+    /// holder that outlasted it is taken to be gone for good, so every later
+    /// write tries the lock once and does not wait again. Without this a
+    /// panic on a held lock would wait the bound for every one of the 256
+    /// lines the replay prints.
+    std::atomic<bool> m_abandoned{false};
 };
 
 SerialLogger g_serial;
@@ -113,6 +188,10 @@ auto init_bootstrap_logging() -> void {
     logz4::set_clock(read_time);
     logz4::init(&g_serial);
 }
+
+auto hold_console_lock_forever() -> void {
+    g_serial.hold_lock_forever();
+}
 } // namespace ours
 
 GKTL_INIT_HOOK(Logz4Cpu, install_cpu, gktl::InitLevel::CpuLocal);
@@ -120,5 +199,6 @@ GKTL_INIT_HOOK(Logz4DomainSlot, install_domain_slot, gktl::InitLevel::CpuLocal);
 #else
 namespace ours {
 auto init_bootstrap_logging() -> void {}
+auto hold_console_lock_forever() -> void {}
 } // namespace ours
 #endif

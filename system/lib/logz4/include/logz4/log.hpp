@@ -21,6 +21,23 @@ class Domain;
 /// override this with a strong definition (e.g. direct COM1 polling).
 auto emergency_write(char const *s, usize n) -> void;
 
+/// Panic mode: entered by the kernel's panic path before it prints anything,
+/// and never left.
+///
+/// It tells every sink that serializes its writes with a lock that, from now
+/// on, output that gets printed matters more than output that stays whole.
+/// The lock may be held by a CPU that will never release it: the panicking
+/// CPU itself, if it panicked inside a write, or another CPU that stopped
+/// answering with the lock held. Such a sink waits for its lock for a bounded
+/// time only, then writes without it (the kernel's serial logger,
+/// kernel/lib/logz4/kernel.cpp). Linux's oops_in_progress, set by
+/// bust_spinlocks(1) in panic(), makes the same promise to its console
+/// drivers.
+auto enter_panic_mode() -> void;
+
+[[nodiscard]]
+auto in_panic_mode() -> bool;
+
 /// Installs `logger` as the global logger. Safe to call again to replace
 /// the current one; a null pointer is ignored, leaving the current logger
 /// installed.
