@@ -82,6 +82,14 @@ kernel_elf_binary("vdso") {
     # out -- but a path from someone's out/ directory baked into every program
     # is a fact that would be wrong the moment anyone looked at it.
     "-Wl,-soname,libours.so",
+
+    # .dynamic in the read-only segment rather than a writable one of its
+    # own, so the vDSO has two loadable segments, read-only and code, and no
+    # writable one. Nothing writes a vDSO's .dynamic: it has no dynamic
+    # linker and no relocations, and every process maps the same pages. With
+    # it writable the ELF claimed a segment the kernel never maps writable.
+    # Fuchsia's toolchain passes this for all user code by default.
+    "-Wl,-z,rodynamic",
   ]
 }
 
