@@ -52,6 +52,18 @@ Activate (satisfy any of the following criteria):
 
 1. Always prefer `enum class` over traditional `enum` for better type safety and scoping. Enum constants are `CamelCase` (`.clang-tidy`'s `EnumConstantCase`), e.g. `Status::Ok`, `AllocationDirection::TopDown` — not `SCREAMING_SNAKE_CASE`.
 
+1. Prefer a `Flags` word (an `enum class` with `USTL_ENABLE_ENUM_BITMASK`,
+   tested and set with bit operations) over separate `bool` members or
+   variables wherever state is a set of yes/no facts about one object (the
+   user's rule, 2026-10-03): `VmasFlags::Destroyed` rather than
+   `bool m_destroyed`. One condition comes with it, because two `bool`s are
+   two memory locations and one word is one: every bit in a word must be
+   written under the same protection -- the same lock, or atomic read-modify-
+   writes (`fetch_or`, `fetch_and`) on an atomic word. A bit set under one
+   lock and another set without it, or under another lock, makes each
+   write's read-modify-write erase the other's. A fact guarded differently
+   from the rest gets a word, or an atomic, of its own.
+
 1. Always use trailing return types for all function signatures, even for functions which return void. This is universal in the real codebase: `auto init() -> Status;`, `auto bootmem_allocate(...) -> bootmem::Range`.
 
 1. Using `[[nodiscard]]` attribute for functions that return a value that should not be ignored — `ustl::Result` itself is declared `[[nodiscard]]` at the class level (`system/lib/ustl/include/ustl/result.hpp:43`); do the same for any function returning a `Result`/`Status`-like value, not just the type definition.
