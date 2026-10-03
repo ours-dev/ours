@@ -75,3 +75,64 @@ None.
 - Why does a closed liveness channel not mean the shell has ended, and what does?
 - Why does init keep a fallback to `process_spawn_boot` rather than halting when it cannot make a launcher?
 - Where does the launcher map the BootFS, and why does init need a VmaRoot startup handle for that?
+
+## Title: init starts the autorun command with the launcher too, and never asks the kernel to load a program (2026-10-03)
+
+**Files**
+- `system/service/init/init.cpp`:
+  - `start_then_write()` takes a launcher by reference and no longer has a `process_spawn_boot` branch;
+  - `start_autorun()` starts the command with the launcher and closes the process handle it gets;
+  - `main()` halts with `init: cannot start programs (...)` when it cannot make a launcher, instead of falling back to the kernel.
+
+**Symptom**
+None. The user set the rule: once user space runs, it uses nothing on the kernel side except system calls. `process_spawn_boot` is a system call, but what it does is the kernel's own ELF loading from its package. init still used it for the autorun command, and as a fallback for the shell.
+
+**Cause**
+The objects:
+- `process_spawn_boot`: the kernel finds a program by name in its resident package and loads it with `userabi::launch()`. That is loader policy running in ring 0.
+- The user-space launcher (`launch::launch_from_bootfs()`): the same work done by the calling process, using only object system calls (`process_create`, `vma_map`, `vmo_create_child`, `thread_create`, `process_start`).
+
+Each program that `spawn_boot` starts keeps a second loader alive in the kernel, one that user space could do without. Zircon's kernel loads exactly one program, userboot. Everything after it, userboot's own next program included, is loaded from user space.
+
+The fallback hid a broken launcher. A boot whose launcher failed would still show a shell, started by the kernel, and the failure would read as one line among many.
+
+**Change**
+
+```cpp
+// before
+auto start_then_write(launch::BootfsLauncher const *launcher, ...) {
+    if (launcher != nullptr) { ... launch_from_bootfs ... }
+    else { spawned = ours::process_spawn_boot(job, name.data(), name.size(), there, &root_vma); }
+
+// after: the launcher, or nothing
+auto start_then_write(launch::BootfsLauncher const &launcher, ...) {
+    auto const started = launch::launch_from_bootfs(launcher, job, name, there, {...});
+```
+
+init does not wait for the autorun program. It closes the process handle at once: closing a handle does not stop a process that has started. Only a process still Initial dies with its last handle.
+
+**Reference**
+- Zircon's userboot is the only program its kernel loads (`zircon/kernel/lib/userabi/userboot.cc`). console-launcher starts both the shell and `zircon.autorun.boot` itself.
+
+**Verification**
+- `boot_check.py` on `out/bringup.x86`: dbg PASS (20 passed), rel PASS (18 passed); the rel log has `init: launched shell`.
+- `out/autorun-launch` is the same build with `ours = { with = [fault_probe], autorun = "fault_probe+none" }` (tools/set.py). On it:
+  - dbg PASS, rel PASS;
+  - the rel log has `init: autorun fault_probe+none`, then the probe's own `fault_probe: unknown probe none` and `fault_probe: no answer channel (User0)`, so the launcher started it and it reached main.
+- `git grep spawn_boot system/service/init`: nothing.
+
+**Deliberately not done**
+- userboot still starts its next program with `process_spawn_boot` (step U8).
+- The shell's self-checks still call it when they have no launcher.
+- The system call itself stays until K25.
+
+**How it was found**
+None: the user's rule.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does `process_spawn_boot` do in the kernel that the user-space launcher does with ordinary object system calls?
+- Why can init close the autorun program's process handle at once without killing it?
+- What did the fallback to the kernel hide?
