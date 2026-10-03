@@ -35,19 +35,27 @@
 /// executable copy go with this
 /// process when it exits.
 
+#include <limits>
 #include <string_view>
 
 #include <elfload/diagnostics.hpp>
 #include <launch/bootfs.hpp>
 #include <launch/launch.hpp>
+#include <launch/plan.hpp>
+#include <obi/container_view.hpp>
+#include <obi/package_format.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
 #include <ours/process_args.hpp>
+#include <ours/rights.hpp>
 #include <ours/status.hpp>
 #include <ours/syscall/resource.hpp>
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
+#include <ustl/mem/align.hpp>
+#include <ustl/option.hpp>
+#include <ustl/result.hpp>
 
 namespace {
 /// The option naming the program to start next. Only the `key=value` form
@@ -125,6 +133,130 @@ auto collect_handed_on() -> HandedOn {
         handed_on.entries[handed_on.count++] = entry;
     }
     return handed_on;
+}
+
+/// The rights the BootFS is handed on with: the ones the kernel gave it when
+/// it built the BootFS itself. No Write: every program's code is mapped from
+/// slices of this VMO, through an executable duplicate of it, so a holder
+/// that could write it could change the code of every program started from
+/// it.
+constexpr auto BOOTFS_RIGHTS =
+    ours::Rights::Basic | ours::Rights::Read | ours::Rights::Map | ours::Rights::GetProperty;
+
+/// |length| rounded up to whole pages, as a mapping is; OutOfRange if it
+/// wraps or does not fit a usize.
+auto mapping_size(u64 const length) -> ustl::Result<usize, ours::Status> {
+    auto const rounded = ustl::mm::align_up(length, launch::PAGE_SIZE);
+    if (rounded < length || rounded > std::numeric_limits<usize>::max()) {
+        return ustl::err(ours::Status::OutOfRange);
+    }
+    return ustl::ok(static_cast<usize>(rounded));
+}
+
+/// The user BootFS, unpacked from |image|, the boot image the kernel handed
+/// over (VmoBootdata), into a VMO of its own: a read-only handle to it, or
+/// the step that failed, said on the console.
+///
+/// The image is mapped read-only and parsed as an OBI container; its
+/// StorageBootFs item is the BootFS, LZ4-compressed. A VMO of the item's
+/// decompressed size is mapped read-write and the item materialized into
+/// it (obi::ItemView::materialize(), which decompresses or copies). Then
+/// Write goes: the handle handed back is a duplicate without it, and the
+/// writable one is closed.
+///
+/// Both mappings stay until this process exits, which it does once the next
+/// program is started: there is no vma_unmap. Zircon's userboot unmaps the
+/// read-write one at once (get_bootfs_vmo() in
+/// src/bringup/lib/userboot/rust/src/bootfs.rs, which this follows).
+auto unpack_bootfs(ours::Uandle const image, ours::Uandle const vma)
+    -> ustl::Result<ours::Uandle, ours::Status> {
+    using ours::Status;
+
+    // The header through the VMO first: it alone says how long the image is.
+    obi::ContainerHeader header{};
+    if (auto const status = ours::vmo_read(image, &header, 0, sizeof(header));
+        status != Status::Ok) {
+        report("userboot: reading the boot image header = ", status);
+        return ustl::err(status);
+    }
+    auto const image_size = mapping_size(header.container_size);
+    if (image_size.is_err()) {
+        report("userboot: sizing the boot image = ", image_size.unwrap_err());
+        return ustl::err(image_size.unwrap_err());
+    }
+    ours::VirtAddr image_address = 0;
+    if (auto const status = ours::vma_map(vma, ours::VmOptions::PermRead, 0, image, 0,
+                                          image_size.unwrap(), &image_address);
+        status != Status::Ok) {
+        report("userboot: mapping the boot image = ", status);
+        return ustl::err(status);
+    }
+    // ContainerView checks what the header claims against the bytes there.
+    auto const container = obi::ContainerView::from(reinterpret_cast<u8 const *>(image_address),
+                                                    static_cast<usize>(header.container_size));
+    if (container.is_err()) {
+        report("userboot: checking the boot image = ", container.unwrap_err());
+        return ustl::err(container.unwrap_err());
+    }
+
+    // The first StorageBootFs item, as Zircon's userboot takes the first
+    // STORAGE_BOOTFS.
+    auto found = ustl::Option<obi::ItemView>{ustl::NONE};
+    for (usize index = 0; index < container.unwrap().item_count() && found.is_none(); ++index) {
+        auto const candidate = container.unwrap().item(index);
+        if (candidate.is_err()) {
+            report("userboot: reading a boot image item = ", candidate.unwrap_err());
+            return ustl::err(candidate.unwrap_err());
+        }
+        if (candidate.unwrap().type() == obi::ItemType::StorageBootFs) {
+            found = ustl::Option<obi::ItemView>(candidate.unwrap());
+        }
+    }
+    if (found.is_none() || found.value().format() != obi::ItemFormat::BootFs) {
+        auto _ = ort::debug_line("userboot: the boot image has no BootFS item");
+        return ustl::err(Status::NotFound);
+    }
+    auto const &item = found.value();
+
+    auto const bootfs_size = mapping_size(item.memory_size());
+    if (bootfs_size.is_err()) {
+        report("userboot: sizing the BootFS = ", bootfs_size.unwrap_err());
+        return ustl::err(bootfs_size.unwrap_err());
+    }
+    auto writable = ours::Uandle::Invalid;
+    if (auto const status =
+            ours::vmo_create(bootfs_size.unwrap(), ours::VmoOptions::None, &writable);
+        status != Status::Ok) {
+        report("userboot: creating the BootFS VMO = ", status);
+        return ustl::err(status);
+    }
+    ours::VirtAddr bootfs_address = 0;
+    auto status = ours::vma_map(vma, ours::VmOptions::PermRead | ours::VmOptions::PermWrite, 0,
+                                writable, 0, bootfs_size.unwrap(), &bootfs_address);
+    if (status != Status::Ok) {
+        report("userboot: mapping the BootFS VMO = ", status);
+    } else if (auto const materialized =
+                   item.materialize({reinterpret_cast<u8 *>(bootfs_address), bootfs_size.unwrap()});
+               materialized.is_err()) {
+        status = materialized.unwrap_err();
+        report("userboot: decompressing the BootFS = ", status);
+    }
+    auto readonly = ours::Uandle::Invalid;
+    if (status == Status::Ok) {
+        status = ours::handle_duplicate(writable, BOOTFS_RIGHTS, &readonly);
+        if (status != Status::Ok) {
+            report("userboot: dropping Write from the BootFS = ", status);
+        }
+    }
+    auto _ = ours::handle_close(writable);
+    if (status != Status::Ok) {
+        return ustl::err(status);
+    }
+
+    char size_text[18];
+    auto _ = ort::debug_line({"userboot: unpacked the BootFS from the boot image, ",
+                              ort::hex(item.memory_size(), size_text), " bytes"});
+    return ustl::ok(readonly);
 }
 
 /// The launcher's failures, on the debug console: only the errors, each
@@ -259,7 +391,7 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("userboot: started without the root job");
         return 1;
     }
-    auto const bootfs = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+    auto const image = ort::take_startup_handle(ours::HandleType::VmoBootdata, 0);
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
@@ -267,14 +399,31 @@ auto main(int, char **) -> int {
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
 
-    // The launcher. Without the BootFS there is nothing to start the next
-    // program from: the kernel loads no program but this one.
-    if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
+    // The BootFS the kernel still builds from its own package, until it stops
+    // (step 3 of .agents/tasks/userboot-bootfs/PLAN.md): unused, since this
+    // program unpacks its own from the boot image.
+    if (auto const kernel_built = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
+        kernel_built != ours::Uandle::Invalid) {
+        auto _ = ours::handle_close(kernel_built);
+    }
+
+    // Without the boot image there is no BootFS, and without the BootFS
+    // nothing to start the next program from: the kernel loads no program
+    // but this one.
+    if (image == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
-        auto _ = ort::debug_line(
-            {"userboot: cannot start ", to_str(next), " (missing BootFS, vmex, vDSO or VmaRoot)"});
+        auto _ = ort::debug_line({"userboot: cannot start ", to_str(next),
+                                  " (missing the boot image, vmex, vDSO or VmaRoot)"});
         return 1;
     }
+    auto const unpacked = unpack_bootfs(image, vma);
+    // Read once; the BootFS is the next program's, the rest of the image
+    // nobody's.
+    auto _ = ours::handle_close(image);
+    if (unpacked.is_err()) {
+        return 1;
+    }
+    auto const bootfs = unpacked.unwrap();
     auto const made = launch::make_bootfs_launcher(
         bootfs, vmex, vdso, vma, {.report = print_launch_error, .context = nullptr});
     if (made.is_err()) {

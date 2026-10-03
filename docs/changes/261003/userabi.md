@@ -264,3 +264,80 @@ None.
 - Which handles does the launcher need, and which of them did userboot not use before this change?
 - Why can userboot exit right after writing the processargs without taking the next program down with it?
 - After this change, which program does the kernel load, and through which function?
+
+## Title: userboot unpacks the user BootFS from the boot image the kernel hands it (2026-10-03)
+
+**Files**
+- `kernel/lib/userabi/src/userboot.cpp` — `make_boot_image_handle()` copies the whole boot image (the OBI container) into a committed VMO. `write_bootstrap()` puts that VMO in userboot's processargs as `VmoBootdata`, with `Basic | Read | Map`, which makes room for seven handles.
+- `kernel/lib/userabi/userboot/userboot.cpp` — `unpack_bootfs()`:
+  - maps the boot image read-only and finds its StorageBootFs item with `obi::ContainerView`;
+  - decompresses the item into a fresh VMO mapped read-write (`obi::ItemView::materialize()`);
+  - hands back a duplicate without `Write`.
+
+  `main()` builds the launcher from that VMO and hands it on as `VmoBootfs`. It closes the kernel-built BootFS, which the kernel still sends for one more step, and closes the boot image once read.
+- `kernel/lib/userabi/userboot/BUILD.gn` — depends on `//kernel/lib/obi:headers`.
+
+**Symptom**
+None: step 2 of `.agents/tasks/userboot-bootfs/PLAN.md`. The kernel built the BootFS user space starts from: it decompressed its package and copied the whitelisted files into a VMO. In Zircon, userboot does that from the boot image itself.
+
+**Cause**
+The objects:
+- The boot image: the OBI container phys hands over, in physical memory the kernel reaches through the physmap.
+- Its StorageBootFs item: the user BootFS, LZ4-compressed, added in step 1.
+- `VmoBootdata` (0x1a, Zircon's `PA_VMO_BOOTDATA`): the handle type that carries the image to userboot.
+- The unpacked BootFS VMO, and the two handles userboot holds to it, one writable and one read-only.
+
+The events:
+1. The kernel copies the image into a VMO and sends it to userboot.
+2. userboot reads the container header with `vmo_read`, maps the image read-only, and lets `ContainerView` check it.
+3. It takes the first StorageBootFs item.
+4. It creates a VMO of the item's decompressed size, maps it read-write, and materializes the item into it.
+5. It duplicates the handle without `Write` and closes the writable one.
+6. It launches `userboot.next` from the read-only BootFS and hands that on.
+
+Why `Write` goes before anything else sees the VMO: every program's code is mapped from slices of it, through an executable duplicate. A holder with `Write` could change the code of every program started from it. The kernel-built BootFS never carried `Write` either (`USER_BOOTFS_RIGHTS`).
+
+Why a copy of the image rather than a VMO over its own pages, as Zircon's `CreatePhysVmoHandle()` makes: `vmo_read` answers NotSupported on a physical VMO here. That is decision D2 of the design.
+
+**Change**
+
+```cpp
+// kernel: one more handle in userboot's processargs
+handles[count] = make_boot_image_handle();
+infos[count++] = handle_info(HandleType::VmoBootdata, 0);
+
+// userboot: the BootFS is its own, not the kernel's
+auto const unpacked = unpack_bootfs(image, vma);
+auto _ = ours::handle_close(image);
+auto const bootfs = unpacked.unwrap();
+```
+
+Two smaller choices:
+- The item search keeps its result in a `ustl::Option<obi::ItemView>` rather than a `bool` beside an item. `ItemView` has no default constructor, and the Option is the found flag.
+- The design planned on `//kernel/lib/lz4`, but `obi::ItemView::materialize()` decodes LZ4 itself (`obi/compression.hpp`, header-only), so userboot needs only `obi:headers`.
+
+**Reference**
+- Zircon's kernel hands userboot the ZBI as a VMO: `.zbi = CreatePhysVmoHandle(...)` in `zircon/kernel/top/handoff.cc`, pushed in `zircon/kernel/lib/userabi/userboot.cc`.
+- userboot unpacks STORAGE_BOOTFS with `get_bootfs_vmo()` (`src/bringup/lib/userboot/rust/src/bootfs.rs`): create, map read-write, decompress, unmap.
+
+**Verification**
+- `boot_check.py`:
+  - dbg PASS, 20 passed: `userboot: unpacked the BootFS from the boot image, 0x2e000 bytes`, `userboot: started shell`, 16 probes killed, launcher and object_get_info checks passed, `shell: bootfs has 3 entries`;
+  - rel PASS, 18 passed: `0x35000 bytes`, `userboot: started init`, `init: bootfs has 4 entries` (5 before: the kernel-built BootFS also held `userboot`), `init: launched shell`.
+- On the rel image's serial port, the shell's `ls` lists `config/init/startup`, `init`, `shell` and `vdso`: the step 1 item exactly.
+- The first boot of this step failed to slice a program out of the unpacked BootFS. The builder aligned file data to 8 bytes; that was fixed first, in its own commit (`docs/changes/261003/bootfs.md`).
+
+**Deliberately not done**
+- The kernel still builds and sends its own BootFS, and the user programs are still in the kernel package. Both go in step 3.
+- The read-write mapping is not unmapped: there is no `vma_unmap`. It goes when userboot exits, right after the launch.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None given.
+
+**Three questions you should be able to answer**
+- Why must userboot drop `Write` before it builds its launcher, not only before it hands the BootFS on?
+- What does the kernel still read from the boot image after this change, and what does it no longer?
+- Why does `unpack_bootfs()` read the container header with `vmo_read` before mapping the image?

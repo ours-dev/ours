@@ -317,6 +317,53 @@ namespace {
         return options;
     }
 
+    /// The rights userboot's handle to the boot image carries: enough to read
+    /// it and map it, and nothing to change it with.
+    constexpr auto BOOT_IMAGE_RIGHTS = Rights::Basic | Rights::Read | Rights::Map;
+
+    /// The boot image -- the whole OBI container phys handed over -- copied
+    /// into a VMO for userboot (VmoBootdata). userboot finds the user BootFS
+    /// in it, a StorageBootFs item, and unpacks it itself, so the kernel
+    /// never reads that item (.agents/tasks/userboot-bootfs/DESIGN.md).
+    ///
+    /// The whole image rather than the one item: it describes itself, with
+    /// each item's compression and decompressed size in its descriptor, and
+    /// cutting an item out would mean parsing it here. Zircon hands userboot
+    /// the whole ZBI the same way, as a physical VMO over the image's own
+    /// pages (CreatePhysVmoHandle() in zircon/kernel/top/handoff.cc); here it
+    /// is a copy, since a physical VMO cannot be read with vmo_read (D2 of the
+    /// design). An empty Box, said why, if it cannot be made.
+    auto make_boot_image_handle() -> ustl::Box<object::Handle> {
+        auto const package = boot::boot_package();
+        if (package.is_err()) {
+            log::error("userabi: no boot image to hand userboot: {}",
+                       to_string(package.unwrap_err()));
+            return {};
+        }
+        auto const bytes = package.unwrap().package().bytes();
+
+        object::KernelHandle<object::VmoDispatcher> vmo;
+        Rights rights;
+        auto status = object::VmoDispatcher::create_committed(
+            ustl::mm::align_up(bytes.size(), PAGE_SIZE), vmo, rights);
+        if (Status::Ok != status) {
+            log::error("userabi: could not create a {}-byte VMO for the boot image: {}",
+                       bytes.size(), to_string(status));
+            return {};
+        }
+        status = vmo.dispatcher()->write(bytes.data(), 0, bytes.size());
+        if (Status::Ok != status) {
+            log::error("userabi: could not copy the boot image: {}", to_string(status));
+            return {};
+        }
+        auto handle = object::Handle::make(
+            object::KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights & BOOT_IMAGE_RIGHTS);
+        if (!handle) {
+            log::error("userabi: could not make a handle to the boot image");
+        }
+        return handle;
+    }
+
     /// The first process's bootstrap channel. The end returned is the one the
     /// process gets in %rdi; |kernel_end| stays here, to write the processargs
     /// on once the process exists (write_bootstrap()), because one of the
@@ -353,7 +400,9 @@ namespace {
     ///   VmaRoot     |root_vma|, the process's own root region, which launch()
     ///               handed back;
     ///   VmoVdso     the vDSO's VMO, to map it into the processes this one is
-    ///               to start.
+    ///               to start;
+    ///   VmoBootdata the boot image (make_boot_image_handle()), which userboot
+    ///               unpacks the user BootFS from.
     ///
     /// Everything is made on this kernel thread, which belongs to no process,
     /// so none of these handles is charged to anyone's quota
@@ -374,8 +423,8 @@ namespace {
         // Only handles that exist go in, and each info beside its handle in
         // the same position: MessagePacket takes the kernel's word that none
         // is empty.
-        ustl::Box<object::Handle> handles[6];
-        u32 infos[6] = {};
+        ustl::Box<object::Handle> handles[7];
+        u32 infos[7] = {};
         u32 count = 0;
         handles[count] = ustl::move(root_vma);
         infos[count++] = handle_info(HandleType::VmaRoot, 0);
@@ -427,6 +476,12 @@ namespace {
         }
         infos[count++] = handle_info(HandleType::VmoVdso, 0);
 
+        handles[count] = make_boot_image_handle();
+        if (!handles[count]) {
+            return Status::NoResource;
+        }
+        infos[count++] = handle_info(HandleType::VmoBootdata, 0);
+
         if (boot::options().debug_read()) {
             handles[count] = make_system_resource_handle(RSRC_SYSTEM_DEBUG_BASE, "debug");
             if (!handles[count]) {
@@ -436,11 +491,11 @@ namespace {
         }
 
         // Sized to hold the most this can ever write, so that encoding cannot
-        // fail for want of room: the header, six handle_infos, a program name
+        // fail for want of room: the header, seven handle_infos, a program name
         // of at most 63 bytes and its NUL (boot::BootOptions keeps it in 64),
         // and the environment collect_user_options() has already bounded.
         constexpr usize MESSAGE_BYTES =
-            sizeof(ProcArgs) + 6 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
+            sizeof(ProcArgs) + 7 * sizeof(u32) + 64 + USER_OPTIONS_BYTES;
         u8 message[MESSAGE_BYTES];
         u32 length = 0;
         std::string_view const args[] = {program};

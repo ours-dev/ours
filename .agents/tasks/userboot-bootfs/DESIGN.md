@@ -43,7 +43,7 @@ The events at boot, after the change:
 2. The kernel decompresses StorageKernel, lays out the vDSO and launches userboot, as today.
 3. The kernel copies the boot image into a paged VMO and puts it in userboot's processargs as `VmoBootdata`. It no longer sends a `VmoBootfs`.
 4. userboot parses the VMO with `obi::ContainerView` and finds the StorageBootFs item.
-5. userboot creates a VMO of the item's `memory_size`, maps it read-write, and decompresses into the mapping with `lz4::decompress()`.
+5. userboot creates a VMO of the item's `memory_size`, maps it read-write, and decompresses into the mapping with `obi::ItemView::materialize()`, whose LZ4 decoder is header-only (`obi/compression.hpp`).
 6. userboot makes a handle to that VMO without `Write` (`handle_duplicate`) and closes the writable one.
 7. userboot builds its `BootfsLauncher` from the read-only handle, launches `userboot.next`, and hands the handle on as `VmoBootfs`. It closes the boot image VMO and exits; the read-write mapping goes with it.
 

@@ -22,7 +22,8 @@ The user chose to carry "user space uses nothing on the kernel side but system c
    - The kernel adds `VmoBootdata` to userboot's processargs: a paged VMO holding a copy of the boot image.
    - userboot finds the StorageBootFs item, decompresses it into a VMO, drops `Write`, and uses that VMO for its launcher and the hand-off.
    - It closes the kernel-built `VmoBootfs`, which the kernel still sends for one more step.
-   - GN: userboot depends on `//kernel/lib/obi:headers` and `//kernel/lib/lz4` in the user toolchain.
+   - GN: userboot depends on `//kernel/lib/obi:headers` in the user toolchain; its LZ4 decoder is header-only, so `//kernel/lib/lz4` is not needed.
+   - Found while doing it: the BootFS builder aligned file data to 8 bytes, and a slice needs a page. Fixed in its own commit first (`fix(bootfs)`).
    - Verified by: `boot_check.py` on dbg and rel; userboot's new log lines; the shell's `ls` over serial lists the files of the new item.
    - Commit: `feat(userboot): unpack the BootFS from the boot image`.
 3. **The kernel stops building the user BootFS.**
