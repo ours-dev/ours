@@ -50,3 +50,80 @@ None. The user asked for whichever option is the better engineering practice, no
 - Why do linkers put `.dynamic` in a writable segment by default, and why does the vDSO not need that?
 - What did the third page of the vDSO's image hold, and why is it gone?
 - What would the kernel have to do with a writable segment when it maps the vDSO by segment?
+
+## Title: The vDSO is mapped by segment, and only its code is executable and trusted (system-abi-surface step 10, part 2) (2026-10-03)
+
+**Files**
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp` — `mark_vdso()` takes the vDSO's code segment (`VdsoCode`), and `vdso_code()` gives it back.
+- `kernel/object/vma_dispatcher.cpp`, `include/ours/object/vma_dispatcher.hpp` — an executable mapping of the vDSO's VMO must be exactly its code segment, sealed, read and execute, once per address space, and only it registers the trusted range; any other mapping of it is read-only.
+- `system/lib/elfload/include/elfload/program.hpp`, `src/program.cpp` — new `segment_pages()`: each PT_LOAD's whole pages and protection, planned by eftl's load policy at page granularity.
+- `kernel/lib/kelfload/include/kelfload/loader.hpp`, `src/loader.cpp`, `BUILD.gn` — new `Loader::map_segments()`: an image mapped segment by segment, each with its own protection.
+- `kernel/lib/userabi/src/userboot.cpp` — `lay_out_vdso()` checks the vDSO has exactly one executable segment and no writable one, and marks its VMO with the code; `map_vdso()` maps it by segment.
+- `system/lib/launch/src/launch.cpp` — the launcher maps the vDSO by segment, in a sub-region of its own.
+- `examples/shell/shell.cpp` — the vDSO mapping checks rewritten for the new rule, and a new probe in the list.
+- `kernel/lib/syscall/test/fault_probe/fault_probe.cpp` — new probe `pf_exec_vdso_data`.
+- `system/public/ours/syscalls.gni`, `syscall.hpp`, `docs/design/260923/userspace-interface.md`, `docs/repairs/260919/elfload.md`, `.agents/skills/ours-kernel-design/references/layering.md`, `.agents/tasks/system-abi-surface/DESIGN.md` — the texts that described the vDSO as mapped whole.
+
+**Symptom**
+The vDSO was mapped as one range, every page of it read and execute, and the whole range was registered as the place a `syscall` is accepted from. Its first page is data: the ELF header, `.dynsym`, the hash tables and `.dynstr`. That data was executable inside the one range the kernel trusts. Latent: neither data page held the bytes `0F 05` today. But a symbol value or a hash that came to contain them would have been a `syscall` no stub put there, accepted by the kernel.
+
+**Cause**
+The objects:
+- The vDSO's image: since part 1, a read-only page (the headers and tables) and a code page (`.text`, the 20 stubs).
+- The registration: the mapping of the vDSO's VMO that the kernel records as the address space's vDSO range (`VmaDispatcher::map()` → `set_vdso_code_range()`). `trapped_from_vdso()` checks every trap against it.
+- The two loaders that map the vDSO: the kernel's `userabi::launch()` (through `kelfload::Loader`) and the user-space launcher.
+
+The events:
+1. The kernel laid the vDSO out as one VMO, and the rule for mapping it was "whole, from 0, sealed, read and execute".
+2. Both loaders mapped it that way: one mapping, all of it executable.
+3. The registered range was the whole image, data included.
+
+`kelfload::Loader` could map an image only as one range with one protection, which its own comment called a simplification. So there was no way to map the vDSO otherwise without first giving the loader that ability.
+
+**Change**
+- The code segment comes from the vDSO itself. When the kernel lays the vDSO out, it asks `elfload::segment_pages()` for its segments. It refuses to boot unless there is exactly one executable segment and no writable one, and marks the VMO with that segment.
+- The rule, in `VmaDispatcher::map()`:
+
+  ```cpp
+  auto const registers_vdso = vmo.is_vdso() && !!(options & VmOptions::PermExecute);
+  if (vmo.is_vdso()) {
+      if (!!(options & VmOptions::PermWrite)) { return InvArgs; }
+      if (registers_vdso && (vmo_offset != code.offset || rounded != code.size ||
+                             !Sealed || perms != Read | Execute)) { return InvArgs; }
+  }
+  ```
+
+- Both loaders map it by segment, with each segment's own protection. The kernel does it through `Loader::map_segments()`. The launcher allocates a sub-region the size of the image and maps each segment into it at its offset.
+- `segment_pages()` is built on eftl's `KernelElfLoadPolicy` with a 4 KiB granule. This is the route `docs/repairs/260919/elfload.md` item 1 named for mapping by segment, and that policy also refuses two segments sharing a page. The same two functions are what mapping a program by segment will use.
+
+**Reference**
+- Zircon: `VmAddressRegion::CreateSubVmarInner()` checks an executable mapping of the vDSO's VMO with `VDso::valid_code_mapping()`, which compares it with `kVdsoCodeStart` and `kVdsoCodeSize`. It refuses a second one and records the first as the address space's `vdso_code_mapping_`. Non-executable mappings of the VMO are unrestricted.
+- The one difference is where the code segment comes from. Zircon generates it at build time, because its vDSO is linked into the kernel image. Here the vDSO is a separate file of the kernel package, so the kernel reads it from that file. A constant could disagree with the file; this cannot.
+
+**Verification**
+- `ninja -k 0` on `out/vmo-snapshot`: no error.
+- `boot_check.py --out out/vmo-snapshot`: dbg PASS (19 passed), rel PASS (13 passed, 10 skipped). The shell's groups: 19 passed in dbg; 13 passed and 5 skipped in rel. The kernel logs "vdso laid out once, 2 page(s), code at +0x1000 (1 page(s))". "launcher checks passed": the launcher's by-segment mapping starts a working process.
+- The shell's vDSO checks, each with the answer expected:
+  - a writable mapping: AccessDenied;
+  - the code not sealed, the data executable, and the whole image executable: InvArgs;
+  - the data read-only and the whole image read-only: Ok;
+  - the code sealed: Ok, and a second time AccessDenied;
+  - another process: Ok;
+  - a slice mapped executable: Ok, and still no vDSO for `process_start` (BadState).
+- The new probe `pf_exec_vdso_data` calls the vDSO's first page and is killed by a page fault. Its error code is `0x15`: present, user, instruction fetch. Its rip and cr2 are both `0xa00000`, the vDSO's base. All 12 probes were killed, none survived, and `trap_outside_vdso` is still refused.
+- No host test of `segment_pages()`. elfload stops with `#error` on anything but x86-64 and the build host is arm64. Its rounding and page-overlap refusal are eftl's, which `load_policy_test` covers on the host.
+
+**Deliberately not done**
+- Mapping a program by segment in the kernel's loader (`userabi::launch()` still uses `Loader::map()`, one range read, write and execute), and narrowing PT_GNU_RELRO: `docs/repairs/260919/elfload.md` item 1, whose progress note says what is left.
+- Zircon's finer check, against the exact return address of each stub (`VDso::ValidSyscallPC`), which a range cannot give: the recorded deferral (design 4.7 item 7). The kernel could now read those addresses from the vDSO the same way it reads the code segment.
+
+**How it was found**
+Step 10 of `.agents/tasks/system-abi-surface/DESIGN.md`, from the expert panel's finding that the vDSO was mapped executable as a whole.
+
+**The user's prediction**
+None. The user asked for the better engineering choice, not the simpler one: the code segment read from the vDSO itself, and `-z rodynamic` (part 1).
+
+**Three questions you should be able to answer**
+- What could a program have done with data that is executable inside the trusted range, and why was it not possible today?
+- Why does the kernel read the code segment from the vDSO's file rather than from build-time constants, as Zircon does?
+- What does error code `0x15` on the new probe's page fault say, bit by bit?

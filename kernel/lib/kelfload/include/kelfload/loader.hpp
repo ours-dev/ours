@@ -3,6 +3,7 @@
 #ifndef KELFLOAD_LOADER_HPP
 #define KELFLOAD_LOADER_HPP 1
 
+#include <elfload/diagnostics.hpp>
 #include <elfload/image.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/vma_dispatcher.hpp>
@@ -59,8 +60,10 @@ class Loader final {
     /// The segments land in one VMO covering one range, from the lowest
     /// p_vaddr any PT_LOAD claims to the highest. That is a simplification --
     /// a real loader honours each segment's own permissions and the gaps
-    /// between them -- and it is also the invariant Binder relies on when it
-    /// describes the image to eftl as a single load region.
+    /// between them, as map_segments() does for the vDSO -- and it is also
+    /// the invariant Binder relies on when it describes the image to eftl as
+    /// a single load region. A program is still mapped this way
+    /// (docs/repairs/260919/elfload.md, item 1).
     ///
     /// |name| is a plain C string because it becomes the mapping's name and is
     /// only ever a literal or a program name the caller already keeps
@@ -89,6 +92,27 @@ class Loader final {
     [[nodiscard]]
     auto map(ImageVmo &image, ours::VirtAddr at, ours::VmOptions perms, char const *name,
              elfload::Image &out) const -> ours::Status;
+
+    /// Maps an image load() laid out at |at| segment by segment, each with the
+    /// protection its p_flags ask for, at its own offset from |at|; the pages
+    /// between segments stay unmapped. |extra| goes on every mapping as well
+    /// (Sealed, or nothing). |file| is the file |image| was laid out from:
+    /// the segments are read from it (elfload::segment_pages()), and two that
+    /// share a page are refused, since they could not be given different
+    /// protections.
+    ///
+    /// What map() is not: a writable segment is mapped writable and nothing
+    /// else, a code segment executable and not writable. It is how the vDSO
+    /// is mapped, so that only its code is executable and the kernel's
+    /// registration of it (VmaDispatcher::map()) sees exactly that segment.
+    ///
+    /// A segment that fails to map leaves the ones before it in place: a
+    /// sealed one cannot be taken down, and the caller is building an address
+    /// space it abandons on failure anyway.
+    [[nodiscard]]
+    auto map_segments(ImageVmo &image, Bytes file, ours::VirtAddr at, ours::VmOptions extra,
+                      char const *name, elfload::Diagnostics const &diagnostics,
+                      elfload::Image &out) const -> ours::Status;
 
   private:
     ours::object::VmaDispatcher &m_root_vma;

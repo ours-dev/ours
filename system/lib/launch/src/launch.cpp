@@ -283,16 +283,38 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         }
     }
 
-    // 4. The vDSO, whole, read and execute, sealed: the kernel registers it as
-    // this process's vDSO range. Then the program's imports, bound to it; the
+    // 4. The vDSO, by segment and sealed, in a sub-region of its own so that
+    // its segments keep their places relative to each other: its data read
+    // only, its code read and execute. The kernel registers the code alone as
+    // this process's vDSO range, and refuses an executable mapping of
+    // anything else of it. Then the program's imports, bound to it; the
     // relocations go into the VMOs above, before anything of the program is
     // mapped, so every mapping can be made with its final protection.
+    Owned vdso_region;
     VirtAddr vdso_base = 0;
-    if (auto const status = ours::vma_map(
-            root.get(), VmOptions::PermRead | VmOptions::PermExecute | VmOptions::Sealed, 0,
-            request.vdso, 0, usize(vdso_span.size), &vdso_base);
+    if (auto const status = ours::vma_allocate(
+            root.get(),
+            VmOptions::CanMapRead | VmOptions::CanMapExecute | VmOptions::CanMapSpecific, 0,
+            usize(vdso_span.size), vdso_region.out(), &vdso_base);
         status != Status::Ok) {
-        return ustl::err(failed(request, "vma_map of the vDSO", status));
+        return ustl::err(failed(request, "vma_allocate for the vDSO", status));
+    }
+    for (auto const &segment: vdso_program.unwrap().segments()) {
+        // The VMO lays the vDSO out from its first page, as the sub-region
+        // does, so a segment is at the same offset in both.
+        auto const first = ustl::mm::align_down(segment.vaddr, PAGE_SIZE);
+        auto const end = ustl::mm::align_up(segment.vaddr + segment.mem_size, PAGE_SIZE);
+        auto const offset = first - vdso_span.first;
+        auto options = VmOptions::PermRead | VmOptions::Specific | VmOptions::Sealed;
+        if ((segment.flags & PF_X) != 0) {
+            options |= VmOptions::PermExecute;
+        }
+        VirtAddr at = 0;
+        if (auto const status = ours::vma_map(vdso_region.get(), options, usize(offset),
+                                              request.vdso, offset, usize(end - first), &at);
+            status != Status::Ok) {
+            return ustl::err(failed(request, "vma_map of a vDSO segment", status, offset));
+        }
     }
     elfload::Image const vdso_image{
         .base = vdso_base,

@@ -154,7 +154,8 @@ enum class VmoOptions : u32 {
 ///               touched). Irreversible. Only the address space's teardown,
 ///               when the process dies, takes it down. Ours' own, with no
 ///               ZX_VM_* counterpart, so it sits at bit 20, away from the bits
-///               Zircon uses. The vDSO's VMO can only be mapped this way.
+///               Zircon uses. The vDSO's code can only be mapped executable
+///               this way.
 /// The rest are named so that a program asking for them gets NotSupported,
 /// not InvArgs: they are Zircon's, deferred here. Zircon's
 /// ZX_VM_FAULT_BEYOND_STREAM_SIZE (bit 15) and its alignment field

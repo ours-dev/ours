@@ -13,6 +13,8 @@
 所以不受用户侧权限影响，绑定完成后再按 PT_GNU_RELRO 收权限。eftl 的
 `LoadPolicy::make_plan()` 已经给出每段的 `LoadRegion` 和 `RelroInterval`。
 
+**Progress 2026-10-03:** the mapping half exists. `elfload::segment_pages()` asks eftl's plan at page granularity for each PT_LOAD's pages and protection, and `kelfload::Loader::map_segments()` maps an image by segment with them; the vDSO is mapped that way (system-abi-surface step 10). What is left of this item is a program: `userabi::launch()` still maps it with `Loader::map()` as one range, read, write and execute, and narrowing PT_GNU_RELRO after binding is still to do.
+
 ## 2. eftl 的宿主测试没有挂进任何构建图
 
 `system/lib/eftl/test/BUILD.gn` 定义了二十多个测试可执行文件，但没有任何目标依赖

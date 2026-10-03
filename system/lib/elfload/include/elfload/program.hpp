@@ -7,6 +7,7 @@
 
 #include <ours/status.hpp>
 #include <ours/types.hpp>
+#include <ustl/collections/static_vec.hpp>
 #include <ustl/views/span.hpp>
 
 namespace elfload {
@@ -29,6 +30,46 @@ namespace elfload {
 [[nodiscard]]
 auto check_program(Diagnostics const &diagnostics, ustl::views::Span<u8 const> file)
     -> ours::Status;
+
+/// The granule a mapping is made of, the x86-64 page: a segment's protection
+/// can only be given to whole pages of it.
+inline constexpr u64 MAPPING_PAGE_SIZE = 4096;
+
+/// One PT_LOAD of an image, as the whole pages a mapping of it with its own
+/// protection takes.
+struct SegmentPages {
+    /// From the image's first page, the one that holds its lowest PT_LOAD
+    /// address: where the segment's first page is in a VMO that lays the image
+    /// out from there, and in the range it is mapped into.
+    u64 offset = 0;
+    /// Whole pages, at least one.
+    u64 size = 0;
+    bool read = false;
+    bool write = false;
+    bool execute = false;
+};
+
+/// The most PT_LOAD segments an image may have here: well above what lld
+/// produces (read-only, code, RELRO and data make four).
+inline constexpr usize MAX_LOAD_SEGMENTS = 12;
+
+using SegmentPagesList = ustl::collections::StaticVec<SegmentPages, MAX_LOAD_SEGMENTS>;
+
+/// |file|'s PT_LOAD segments, in program-header order, each as the pages a
+/// mapping of it with its own protection takes: what a loader needs to map
+/// an image by segment rather than as one range (docs/repairs/260919/
+/// elfload.md, item 1).
+///
+/// Planned by eftl's load policy at page granularity, so beside what
+/// check_program() refuses -- not an ELF for this machine, overlapping
+/// segments, more than MAX_LOAD_SEGMENTS -- it refuses two segments that
+/// share a page, which could not be given different protections. InvArgs,
+/// with why through |diagnostics|. Unlike check_program(), it asks nothing of
+/// the entry point beyond its lying in some segment, so it serves the vDSO
+/// as well as a program.
+[[nodiscard]]
+auto segment_pages(Diagnostics const &diagnostics, ustl::views::Span<u8 const> file,
+                   SegmentPagesList &out) -> ours::Status;
 } // namespace elfload
 
 #endif // #ifndef ELFLOAD_PROGRAM_HPP

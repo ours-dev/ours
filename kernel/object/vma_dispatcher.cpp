@@ -99,10 +99,19 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     }
 
     // The vDSO's VMO is the one object whose mapping the kernel takes part in:
-    // where it lands becomes the address space's vDSO range, the only place a
-    // `syscall` is accepted from. So it is mapped only in the shape that makes
-    // that range worth trusting, and once.
+    // where its code lands becomes the address space's vDSO range, the only
+    // place a `syscall` is accepted from. So its code is mapped executable only
+    // in the shape that makes that range worth trusting, and once, and nothing
+    // else of it is mapped executable at all.
     //
+    // An executable mapping is the registration, and must be:
+    //   - Exactly the code segment (VmoDispatcher::vdso_code()): the range
+    //     recorded is then the vDSO's code and nothing else. The rest of the
+    //     image -- the ELF header, the symbol and hash tables -- is data, and
+    //     data that is executable inside the one trusted range is a place a
+    //     jump can find the bytes of a `syscall` (0F 05) that no stub put
+    //     there. It used to be mapped whole, all of it executable and all of
+    //     it trusted.
     //   - Sealed. Registered, the range has to stay what it was registered
     //     as: sealed, nothing can unmap it or change its protection, so the
     //     real vDSO cannot be swapped for a program's own code containing a
@@ -110,23 +119,32 @@ auto VmaDispatcher::map(VmOptions const options, usize const vma_offset, VmoDisp
     //     immutable, and the kernel refuses the vDSO without it -- so a
     //     launcher that forgot fails at the first start, loudly, instead of
     //     leaving a hole nobody sees.
-    //   - Whole, from offset 0: the range recorded is then exactly the image,
-    //     not some part of it a program chose.
-    //   - Read and execute, nothing else: the pages are code, and there is no
-    //     handle that lets a program write them, but the rule does not lean on
-    //     that -- it holds for whoever holds the VMO.
+    //   - Read and execute, nothing else.
     //   - Once per address space (claim_vdso(), taken just before the mapping):
     //     the range is fixed after it is set, so a second mapping cannot move
     //     it to somewhere the first is not.
+    // Any other mapping of it is read-only, anywhere in it, as often as
+    // wanted, and registers nothing: it is how the rest of the image is
+    // placed beside the code. Never writable: there is no handle that lets a
+    // program write these pages, but the rule does not lean on that -- it
+    // holds for whoever holds the VMO.
     //
     // What refuses the unmap or protect is mm::VmArea (VmaFlags::Sealed); the
     // vma_unmap and vma_protect calls, when they land, reach it.
-    auto const registers_vdso = vmo.is_vdso();
-    if (registers_vdso) {
+    //
+    // Zircon: VmAddressRegion::CreateSubVmarInner() lets an executable
+    // mapping of the vDSO through only if VDso::valid_code_mapping() and the
+    // address space has none yet, and records it as vdso_code_mapping_.
+    auto const registers_vdso = vmo.is_vdso() && !!(options & VmOptions::PermExecute);
+    if (vmo.is_vdso()) {
+        constexpr auto PERMS = VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute;
         constexpr auto CODE = VmOptions::PermRead | VmOptions::PermExecute;
-        if (vmo_offset != 0 || rounded != vmo_size || !(options & VmOptions::Sealed) ||
-            (options & (VmOptions::PermRead | VmOptions::PermWrite | VmOptions::PermExecute)) !=
-                CODE) {
+        auto const code = vmo.vdso_code();
+        if (!!(options & VmOptions::PermWrite)) {
+            return ktl::err(Status::InvArgs);
+        }
+        if (registers_vdso && (vmo_offset != code.offset || rounded != code.size ||
+                               !(options & VmOptions::Sealed) || (options & PERMS) != CODE)) {
             return ktl::err(Status::InvArgs);
         }
     }

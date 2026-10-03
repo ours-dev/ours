@@ -75,6 +75,16 @@ auto pf_write_vdso(ours::VirtAddr const vdso_base) -> void {
     __asm__ volatile("movb $0, (%0)" : : "r"(vdso_base) : "memory");
 }
 
+/// A call into the vDSO's first page: its ELF header and symbol tables, data
+/// mapped read-only and not executable since the vDSO is mapped by segment.
+/// #PF, present, user instruction fetch. While the vDSO was mapped whole and
+/// executable, this ran the header's bytes as code, inside the one range the
+/// kernel accepts a `syscall` from.
+auto pf_exec_vdso_data(ours::VirtAddr const vdso_base) -> void {
+    auto const data = reinterpret_cast<void (*)()>(vdso_base);
+    data();
+}
+
 /// #UD.
 auto ud2(ours::VirtAddr) -> void {
     __asm__ volatile("ud2");
@@ -135,6 +145,7 @@ constexpr Probe PROBES[] = {
     {"pf_unmapped", pf_unmapped},
     {"pf_kernel", pf_kernel},
     {"pf_write_vdso", pf_write_vdso},
+    {"pf_exec_vdso_data", pf_exec_vdso_data},
     {"ud2", ud2},
     {"gp_hlt", gp_hlt},
     {"gp_int80", gp_int80},

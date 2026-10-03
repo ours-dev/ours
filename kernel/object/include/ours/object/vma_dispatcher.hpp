@@ -86,8 +86,9 @@ class VmaDispatcher final: public VmaDispatcherBase {
     ///
     /// Only Perm*, Specific, CanMapRead/Write/Execute, MapRange and Sealed
     /// are acted on; any other bit is NotSupported. Otherwise:
-    ///   - InvArgs: length 0; vmo_offset not page-aligned; the vDSO's VMO
-    ///     other than whole, from 0, Sealed and PermRead | PermExecute;
+    ///   - InvArgs: length 0; vmo_offset not page-aligned; an executable
+    ///     mapping of the vDSO's VMO other than exactly its code segment,
+    ///     Sealed and PermRead | PermExecute, or a writable one;
     ///     vma_offset without Specific, or not page-aligned; no Perm bit, or
     ///     one this region does not allow; a Specific range not wholly inside
     ///     this region;

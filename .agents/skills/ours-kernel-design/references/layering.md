@@ -35,10 +35,21 @@
   process_builder do. `ProcessDispatcher::create` does not map it. The user
   chose Zircon's shape over "the kernel maps it at process creation"
   (2026-09-28); never copy the vDSO per process.
+- The vDSO is mapped by segment, as Zircon maps it: its data read-only, its
+  code read and execute. An executable mapping of its VMO must be exactly
+  its code segment, sealed, once per address space, and only that is
+  registered as the range a `syscall` is accepted from
+  (`VmaDispatcher::map()`, Zircon's `VDso::valid_code_mapping()`); any other
+  mapping of it is read-only. The kernel reads the code segment from the
+  vDSO's own ELF when it lays it out, rather than from build-time constants
+  as Zircon does, because here the vDSO is a separate file of the kernel
+  package that constants could disagree with; it refuses to boot with a
+  vDSO that has a writable segment or not exactly one executable one. The
+  vDSO is linked with `-z rodynamic` so that it has neither.
 - Adding a syscall means: an entry in `system/public/ours/syscalls.gni` and
   the body of `ours::syscall::<name>()` in `//kernel/lib/syscall`. The vDSO
-  stub, the `extern "C"` declaration `<ours/vdso.hpp>` includes and the
-  kernel shim are generated from the entry; never write them by hand. Limits
+  stub, the declaration `<ours/vdso.hpp>` includes and the kernel shim are
+  generated from the entry; never write them by hand. Limits
   callers must respect (such as `MAX_DEBUG_WRITE`) live in
   `system/public/ours/syscall.hpp`.
 - Ring-3 code calls the vDSO's entries directly, as `ours::<name>()` from

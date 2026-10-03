@@ -127,27 +127,47 @@ class VmoDispatcher final: public VmoDispatcherBase {
         return m_vmo;
     }
 
+    /// Where the vDSO's code lies in its VMO: whole pages, from |offset|.
+    struct VdsoCode {
+        u64 offset = 0;
+        u64 size = 0;
+    };
+
     /// Marks this as the vDSO's VMO, the one kernel object every process's
-    /// system calls go through. Done once, by whoever lays the vDSO out, before
-    /// any process exists; nothing unmarks it.
+    /// system calls go through, whose one executable segment is |code|. Done
+    /// once, by whoever lays the vDSO out, before any process exists; nothing
+    /// unmarks it.
     ///
-    /// What the mark changes: a mapping of it is the registration of the
-    /// address space's vDSO range (VmaDispatcher::map()), and is allowed only
-    /// in the one shape that makes the range trustworthy. It is a property of
-    /// this object and not of a handle to it, so every handle, duplicate and
-    /// holder is subject to it alike; a child of it (vmo_create_child) is
-    /// another object and is not the vDSO.
+    /// What the mark changes (VmaDispatcher::map()): an executable mapping of
+    /// it is the registration of the address space's vDSO range, and is
+    /// allowed only as exactly |code|, sealed, once per address space; any
+    /// other mapping of it is read-only and registers nothing. It is a
+    /// property of this object and not of a handle to it, so every handle,
+    /// duplicate and holder is subject to it alike; a child of it
+    /// (vmo_create_child) is another object and is not the vDSO.
     ///
     /// Zircon: the VDso class, which owns the vDSO's VMOs and is what the
-    /// vDSO mapping is recognised by.
-    auto mark_vdso() -> void {
+    /// vDSO mapping is recognised by; its kVdsoCodeStart and kVdsoCodeSize
+    /// are |code|, generated at build time because its vDSO is linked into
+    /// the kernel. Here the vDSO is a file of the kernel package, so |code| is
+    /// read from that file when it is laid out, and cannot disagree with it.
+    auto mark_vdso(VdsoCode const code) -> void {
         m_is_vdso = true;
+        m_vdso_code = code;
     }
 
     [[nodiscard]]
     FORCE_INLINE
     auto is_vdso() const -> bool {
         return m_is_vdso;
+    }
+
+    /// The vDSO's code, as mark_vdso() was given it. Meaningful only when
+    /// is_vdso().
+    [[nodiscard]]
+    FORCE_INLINE
+    auto vdso_code() const -> VdsoCode {
+        return m_vdso_code;
     }
 
     /// Copies |size| bytes starting at byte |offset| of the VMO into the
@@ -227,6 +247,7 @@ class VmoDispatcher final: public VmoDispatcherBase {
     /// See mark_vdso(). Written before the object is shared, read after: no
     /// synchronisation needed.
     bool m_is_vdso = false;
+    VdsoCode m_vdso_code;
 };
 
 } // namespace ours::object

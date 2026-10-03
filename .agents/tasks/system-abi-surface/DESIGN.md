@@ -80,7 +80,7 @@ Each step is one commit, builds and boots both images, and is introduced to the 
 7. **The lists made real.** `public_headers.gni` split and checked; kernel-only headers moved; `:public.config` by dependency for ring 3; `gn check` on.
 8. **The generator, tested and single-sourced.** Unit tests and fixture goldens; `libours.ifs` rendered by it; the description gains handle object types and option enum types.
 9. **Generated, typed `ou`.** A short design of the typed layer first (introduced to the user), the vmo family as the pilot, then every call. Several commits; before the K23 launcher executor. **Deferred 2026-10-03** by the user, until a concrete need shows up; so are the parts of step 8 that only a typed `ou` needs (handle object types and option enum types in the description).
-10. **The vDSO mapped by segment**, its check narrowed to the code segment.
+10. **The vDSO mapped by segment**, its check narrowed to the code segment. **Done 2026-10-03:** the vDSO is linked with `-z rodynamic` (two segments, read-only and code); the kernel reads its code segment when it lays it out and accepts an executable mapping of exactly that, registered as the trusted range; both loaders map it by segment; the records are `docs/changes/261003/userabi.md`.
 
 Later, each with its own trigger: the internal status codes and the `blocking` retry (once decided); the per-call sysret check and build-id (design 4.7 item 7, D13); CFI in the vDSO stubs; a ring-3 libc++ configuration of its own before anyone wires the shared one to kernel primitives (BUILD-11); the sysroot and the link stub (first separately built binary).
 

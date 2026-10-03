@@ -543,18 +543,17 @@ namespace {
     /// Maps the shared vDSO, which is the image every user program's imports
     /// are bound to, into the address space |loader| is for.
     ///
-    /// Read-only and executable, never writable: this is the only code in the
-    /// address space allowed to enter the kernel, so a program that could
-    /// rewrite it could place a trap anywhere inside the one range the kernel
-    /// trusts.
+    /// By segment: its read-only data read-only, its code read and execute,
+    /// nothing writable. The code is the only part executable, and the only
+    /// part the kernel registers as the range a `syscall` is accepted from
+    /// (VmaDispatcher::map()), so a program cannot jump into the vDSO's data
+    /// and find a trap there that no stub put.
     auto map_vdso(kelfload::Loader const &loader, elfload::Image &out) -> Status {
-        // Sealed, which the kernel requires of the vDSO's VMO: nothing may
+        // Sealed, which the kernel requires of the vDSO's code: nothing may
         // unmap it or change its protection once it is the range system calls
-        // are accepted from.
-        constexpr auto VDSO_PERMS =
-            VmOptions::PermRead | VmOptions::PermExecute | VmOptions::Sealed;
-
-        auto const status = loader.map(shared_vdso.image, VDSO_BASE, VDSO_PERMS, "vdso", out);
+        // are accepted from. The data is sealed too, so the image stays whole.
+        auto const status = loader.map_segments(shared_vdso.image, shared_vdso.file, VDSO_BASE,
+                                                VmOptions::Sealed, "vdso", ELFLOAD_LOG, out);
         if (Status::Ok != status) {
             return status;
         }
@@ -589,13 +588,47 @@ namespace {
             Status::Ok != status) {
             return status;
         }
+
+        // The vDSO's shape, checked once here rather than trusted: exactly one
+        // executable segment, which becomes the only range of it the kernel
+        // accepts a `syscall` from, and nothing writable, since every process
+        // maps the same pages. A vDSO built otherwise -- linked without
+        // -z rodynamic, say, so that .dynamic gets a writable segment -- stops
+        // the boot here, with the reason, instead of being mapped in a shape
+        // the registration rule was not written for.
+        elfload::SegmentPagesList segments;
+        if (auto const status = elfload::segment_pages(ELFLOAD_LOG, file.unwrap(), segments);
+            Status::Ok != status) {
+            log::error("userabi: the vDSO cannot be mapped by segment");
+            return status;
+        }
+        auto code = object::VmoDispatcher::VdsoCode{};
+        auto executable = usize{0};
+        for (auto const &segment: segments) {
+            if (segment.write) {
+                log::error("userabi: the vDSO has a writable segment at +{:#x}", segment.offset);
+                return Status::InvArgs;
+            }
+            if (segment.execute) {
+                code = {.offset = segment.offset, .size = segment.size};
+                executable += 1;
+            }
+        }
+        if (executable != 1) {
+            log::error("userabi: the vDSO has {} executable segments, not one", executable);
+            return Status::InvArgs;
+        }
+
         auto const pages = image.span / PAGE_SIZE;
-        // Marked before anything can map it: from here a mapping of this VMO
-        // registers an address space's vDSO range (VmaDispatcher::map()).
-        image.vmo.dispatcher()->mark_vdso();
+        // Marked before anything can map it: from here an executable mapping
+        // of this VMO, of exactly |code|, registers an address space's vDSO
+        // range (VmaDispatcher::map()).
+        image.vmo.dispatcher()->mark_vdso(code);
         shared_vdso.image = ustl::move(image);
         shared_vdso.file = file.unwrap();
-        log::info("userabi: vdso laid out once, {} page(s), shared by every process", pages);
+        log::info("userabi: vdso laid out once, {} page(s), code at +{:#x} ({} page(s)), shared by "
+                  "every process",
+                  pages, code.offset, code.size / PAGE_SIZE);
         return Status::Ok;
     }
 } // namespace
