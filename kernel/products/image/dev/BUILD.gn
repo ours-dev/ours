@@ -16,6 +16,7 @@ import("//build/obi/kernel_cmdline.gni")
 import("//build/product/ours_args.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
+import("//kernel/user_bootfs.gni")
 import("//system/service/init/init_startup.gni")
 
 # The user programs this image carries: its boot flow first, then whatever
@@ -98,6 +99,24 @@ kernel_package("ours") {
   }
 }
 
+# The BootFS user space boots from, a StorageBootFs item of its own
+# (//kernel/user_bootfs.gni): the shell, the user programs and the vDSO they
+# bind against, and init's startup list. Nothing reads it yet: the kernel
+# still builds the user BootFS out of the kernel package above, until
+# userboot unpacks this item itself (.agents/tasks/userboot-bootfs/PLAN.md).
+user_bootfs("bootfs") {
+  init_startup = true
+  visibility = [ ":*" ]
+  testonly = true
+  deps = [
+    ":shell",
+    "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
+  ]
+  foreach(program, _user_programs) {
+    deps += [ "$program(//build/toolchain/ours:user-${target_cpu})" ]
+  }
+}
+
 # The image-level kernel cmdline. `userboot.next` names the program userboot
 # starts next: init, which takes the root job userboot hands it and starts the
 # shell with it (P0's first vertical slice,
@@ -164,6 +183,7 @@ kernel_image("dev") {
   # kernel toolchain and lands at a different path than the packer expects.
   # This mirrors //kernel/products/image/fake, which builds.
   deps = [
+    ":bootfs",
     ":cmdline",
     ":ours",
     "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",

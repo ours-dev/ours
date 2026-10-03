@@ -13,6 +13,7 @@
 import("//build/obi/kernel_cmdline.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
+import("//kernel/user_bootfs.gni")
 
 kernel_package("ours") {
   # This package carries the image's user programs, so it carries the
@@ -46,6 +47,18 @@ kernel_package("ours") {
     # this is the image whose shell holds the root job, and the one with
     # DEBUG_ASSERT on, so the kill path runs under every assertion it has.
     "//kernel/lib/syscall/test/fault_probe(//build/toolchain/ours:user-${target_cpu})",
+  ]
+}
+
+# The BootFS user space boots from, a StorageBootFs item of its own
+# (//kernel/user_bootfs.gni): the shell, fault_probe and the vDSO. Nothing
+# reads it yet; see //kernel/products/image/dev/BUILD.gn.
+user_bootfs("bootfs") {
+  visibility = [ ":*" ]
+  deps = [
+    "//examples/shell(//build/toolchain/ours:user-${target_cpu})",
+    "//kernel/lib/syscall/test/fault_probe(//build/toolchain/ours:user-${target_cpu})",
+    "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
   ]
 }
 
@@ -86,6 +99,7 @@ kernel_image("dev.dbg_1") {
   # Same topology fix as //kernel/products/image/dev: physload has to be item
   # 0 for obit's --bootable check, and physboot has to name the phys toolchain.
   deps = [
+    ":bootfs",
     ":cmdline",
     ":ours",
     "//kernel/phys:physload(//build/switch/set/phys.dbg_0:kernel.phys_${target_cpu}.phys.dbg_0)",
