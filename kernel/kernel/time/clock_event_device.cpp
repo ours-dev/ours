@@ -1,5 +1,6 @@
 #include "ours/time/clock_event_device.hpp"
 
+#include <ours/cpu.hpp>
 #include <ours/irq/types.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/mm/cpu_local.hpp>
@@ -47,7 +48,7 @@ ClockEventDevice::ClockEventDevice(char const *name, Vtable const *vtable, Featu
     , m_event_handler()
     , m_enrolled_hook() {}
 
-auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> Status {
+auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> void {
     self.m_canary.verify<Self>();
 
     // A device must be able to do what it advertises.
@@ -58,23 +59,26 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
     // slot, and the device then reports Unsupported at the first mode switch,
     // several layers away from the mistake. Checking the features against the
     // table at enrollment turns that back into one message naming the device.
+    //
+    // A driver bug, not something the driver could act on at run time, so it
+    // is not answered as a Status: the device is refused, and a debug build
+    // stops here.
+    char const *missing = nullptr;
     if (!!(self.m_feature & Feature::Periodic) && !self.m_vtable->set_mode_periodic) {
-        log::error("ClockEventDevice {} claims Periodic but has no set_mode_periodic", self.m_name);
-        return Status::InvArgs;
-    }
-    if (!!(self.m_feature & Feature::Oneshot) && !self.m_vtable->set_mode_oneshot) {
-        log::error("ClockEventDevice {} claims Oneshot but has no set_mode_oneshot", self.m_name);
-        return Status::InvArgs;
-    }
-    if (!!(self.m_feature & Feature::TimePoint)) {
+        missing = "claims Periodic but has no set_mode_periodic";
+    } else if (!!(self.m_feature & Feature::Oneshot) && !self.m_vtable->set_mode_oneshot) {
+        missing = "claims Oneshot but has no set_mode_oneshot";
+    } else if (!!(self.m_feature & Feature::TimePoint)) {
         if (!self.m_vtable->set_next_event_time) {
-            log::error("ClockEventDevice {} claims TimePoint but has no set_next_event_time",
-                       self.m_name);
-            return Status::InvArgs;
+            missing = "claims TimePoint but has no set_next_event_time";
         }
     } else if (!self.m_vtable->set_next_event_tick) {
-        log::error("ClockEventDevice {} can be armed by neither ticks nor time", self.m_name);
-        return Status::InvArgs;
+        missing = "can be armed by neither ticks nor time";
+    }
+    if (missing) {
+        log::error("ClockEventDevice {} {}", self.m_name, missing);
+        DEBUG_ASSERT(!missing, "a clock-event driver lacks a method its features claim");
+        return;
     }
 
     if (self.m_cpumask == nullptr || self.m_cpumask->none() ||
@@ -94,7 +98,14 @@ auto ClockEventDevice::enroll(Self &self, usize freq, Ticks min_delta, Ticks max
         GCED.push_back(self);
     }
 
-    return TickDevice::Current::get().check_new_device(&self);
+    // Whether this CPU takes the device is TickDevice's decision, not the
+    // driver's: AlreadyBound means it keeps the one it has, which is logged
+    // there and is no failure. Anything else stopped the swap part-way.
+    auto const status = TickDevice::Current::get().check_new_device(&self);
+    if (Status::Ok != status && Status::AlreadyBound != status) {
+        log::error("ClockEventDevice {} could not be put into service on CPU[{}]: {}", self.m_name,
+                   Cpu::id(), to_string(status));
+    }
 }
 
 auto ClockEventDevice::configure(usize freq, Ticks min_delta, Ticks max_delta) -> void {

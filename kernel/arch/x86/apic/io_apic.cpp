@@ -62,7 +62,11 @@ namespace {
     auto ioapic_issue_eoi(IrqData &data) -> void {
         auto chip_data = static_cast<IoApicChipData *>(data.platform_data);
         for (auto &node: chip_data->pins_) {
-            resolve_ioapic(node.apic_)->issue_eoi(data.hirqnum);
+            // NotSupported from an IOAPIC older than version 0x20, which has
+            // no EOI register; the pin's EOI is then simply not sent, where
+            // Linux falls back to toggling the entry to edge and back
+            // (docs/repairs/261003/x86-apic.md, item 1).
+            static_cast<void>(resolve_ioapic(node.apic_)->issue_eoi(data.hirqnum));
         }
     }
 

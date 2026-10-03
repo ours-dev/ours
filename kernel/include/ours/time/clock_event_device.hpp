@@ -91,7 +91,13 @@ class ClockEventDevice {
     /// that one tick was 10 ms -- every delta it was ever asked for came out
     /// a hundred thousand times too long. Linux's
     /// clockevents_config_and_register() makes all three mandatory too.
-    static auto enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> Status;
+    ///
+    /// Nothing is returned, as from Linux's: there is nothing a driver could
+    /// do with an answer. Whether this CPU takes the device is the
+    /// TickDevice's choice (it may keep a better one), a device that lacks a
+    /// method its features claim is a driver bug, refused with a message and
+    /// an assertion, and a device that fails to start is logged here.
+    static auto enroll(Self &self, usize freq, Ticks min_delta, Ticks max_delta) -> void;
 
     /// |cpumask| is the set of CPUs this device can interrupt; a null mask
     /// means "any" and is replaced with cpu_possible_mask() at enrollment.

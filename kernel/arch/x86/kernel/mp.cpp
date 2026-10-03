@@ -168,7 +168,10 @@ auto x86_bring_aps(CpuMask targets) -> void {
     auto const now = time::SteadyClock::now();
     log::trace("CPU[0]-time={}ns", now.time_since_epoch().count());
 
-    Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
+    // Not interruptible, so only the timeout wakes it, and that answers Ok.
+    [[maybe_unused]]
+    auto const slept = Thread::Current::sleep_for(Milliseconds(10), task::Interruptible::No);
+    DEBUG_ASSERT(Status::Ok == slept);
     auto const vec = arch::IrqVec(trampoline >> PAGE_SHIFT);
 
     targets.for_each([bootstrap_data, vec](CpuNum cpu) {
@@ -203,7 +206,10 @@ auto x86_bring_aps(CpuMask targets) -> void {
         // spawned from labour_routine(), all the way to the first context
         // switch, which restored them by accident. It also meant this CPU
         // could not take a tick while waiting up to a second for an AP.
-        Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes);
+        //
+        // Woken early by a signal, it answers InternalIrqRetry; that only
+        // shortens this pause, and the bounded wait below decides either way.
+        static_cast<void>(Thread::Current::sleep_for(Milliseconds(1), task::Interruptible::Yes));
 
         // Wait for |cpu| to join, but do not wait for ever.
         //

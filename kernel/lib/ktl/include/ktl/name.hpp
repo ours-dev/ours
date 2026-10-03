@@ -28,12 +28,14 @@ class Name {
 
     // Create a name from the given data. This will be guaranteed to
     // be nul terminated, so the given data may be truncated.
+    // A null |name| answers InvArgs from set() and leaves the name empty,
+    // which is all a constructor can do with one.
     Name(Char const *name, usize len) {
-        set(name, len);
+        static_cast<void>(set(name, len));
     }
 
     Name(Char const *name) {
-        set(name);
+        static_cast<void>(set(name));
     }
 
     ~Name() = default;
