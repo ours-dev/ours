@@ -137,6 +137,28 @@ auto pf_write_relro(ours::VirtAddr) -> void {
                      : "rax", "memory");
 }
 
+/// Constant bytes that hold no pointer, so they need no relocation and the
+/// linker puts them in .rodata: the program's first segment, which carries no
+/// write and no execute and is mapped read-only. Their address goes to an asm
+/// (pf_write_rodata()), so the compiler can neither drop them nor fold them
+/// into the instructions.
+constexpr char RODATA_BYTES[] = "read only";
+
+/// A store into |RODATA_BYTES|: its first byte, written back with the byte it
+/// holds, so that a store that goes through changes nothing. #PF, present,
+/// user write. Beside pf_write_text() and pf_write_relro() it covers the
+/// third segment a loader must map without write: the read-only one, whose
+/// protection comes from the program header alone, with no RELRO to narrow
+/// it afterwards.
+auto pf_write_rodata(ours::VirtAddr) -> void {
+    auto const bytes = reinterpret_cast<ours::VirtAddr>(&RODATA_BYTES[0]);
+    __asm__ volatile("movb (%0), %%al\n\t"
+                     "movb %%al, (%0)"
+                     :
+                     : "r"(bytes)
+                     : "rax", "memory");
+}
+
 /// #UD.
 auto ud2(ours::VirtAddr) -> void {
     __asm__ volatile("ud2");
@@ -201,6 +223,7 @@ constexpr Probe PROBES[] = {
     {"pf_write_text", pf_write_text},
     {"pf_exec_data", pf_exec_data},
     {"pf_write_relro", pf_write_relro},
+    {"pf_write_rodata", pf_write_rodata},
     {"ud2", ud2},
     {"gp_hlt", gp_hlt},
     {"gp_int80", gp_int80},

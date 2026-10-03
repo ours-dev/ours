@@ -209,7 +209,8 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
 }
 
 /// object_get_info on a process that has ended (K24): the control probe, the
-/// one process this shell holds a handle to.
+/// one probe that ends by returning from main, so the one whose code is its
+/// own rather than the kernel's.
 ///
 /// TERMINATED first. The probe answers before it has finished dying, and
 /// until it has, the return code is not final; TERMINATED is raised last,
@@ -296,6 +297,46 @@ auto check_object_get_info(ours::Uandle const process, ours::Uandle const job) -
                                 : "shell: object_get_info checks FAILED");
 }
 
+/// |value| in decimal, sign and all. ort::decimal() takes a u32, and a return
+/// code is an i64, negative when the kernel chose it (TASK_RETCODE_*).
+auto signed_decimal(i64 const value, char (&buffer)[21]) -> std::string_view {
+    // Negated as a u64, which is defined for every value, the most negative
+    // included: its magnitude does not fit an i64.
+    auto magnitude = value < 0 ? 0 - static_cast<u64>(value) : static_cast<u64>(value);
+    auto *const end = buffer + sizeof(buffer);
+    auto *at = end;
+    do {
+        *--at = static_cast<char>('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude != 0);
+    if (value < 0) {
+        *--at = '-';
+    }
+    return {at, static_cast<usize>(end - at)};
+}
+
+/// The code |process| ended with, once it has: TERMINATED first, since until
+/// then a kill may still change it, then object_get_info. Either call
+/// failing is reported and is the error.
+auto return_code_of(ours::Uandle const process) -> ustl::Result<i64, ours::Status> {
+    using ours::Status;
+
+    if (auto const status = ours::object_wait_one(process, ours::Signals::Terminated,
+                                                  ours::INSTANT_INFINITE, nullptr);
+        status != Status::Ok) {
+        report("shell: waiting for a probe to end = ", status);
+        return ustl::err(status);
+    }
+    ours::InfoProcess info{};
+    if (auto const status = ours::object_get_info(process, ours::InfoTopic::Process, &info,
+                                                  sizeof(info), nullptr, nullptr);
+        status != Status::Ok) {
+        report("shell: object_get_info(a probe) = ", status);
+        return ustl::err(status);
+    }
+    return ustl::ok(info.return_code);
+}
+
 /// Programs that fault, and the kernel still here afterwards (P1-A).
 ///
 /// Each probe is a fresh fault_probe process (lib/syscall's test,
@@ -308,12 +349,18 @@ auto check_object_get_info(ours::Uandle const process, ours::Uandle const job) -
 /// destruction of the process and thread objects -- the parts of the chain
 /// this program cannot see.
 ///
-/// "killed" here only means the answer channel closed empty, which is also
-/// what a probe that never reached main looks like. That each one ran is in
-/// the log: a `fault_probe: <name>` line before each kill. And one more run,
-/// with a name no probe has, is the control: it must answer "unknown" and
-/// return from main, the one path through which the runtime ends a probe
-/// with main's own value.
+/// With the launcher (U6), every probe is started by it, and "killed" is the
+/// kernel's own word: the code the process ended with is
+/// TASK_RETCODE_EXCEPTION_KILL, read through its handle once it has
+/// terminated (return_code_of()). A probe that survives ends with SURVIVED
+/// instead, and one whose image the launcher got wrong dies before main
+/// with an exception like any other -- which is why the log's
+/// `fault_probe: <name>` line before each kill still matters: it shows the
+/// probe ran. Without the launcher the kernel spawns them, gives back no
+/// process handle, and "killed" falls back to the answer channel closing
+/// empty. And one more run, with a name no probe has, is the control: it
+/// must answer "unknown" and return from main, the one path through which
+/// the runtime ends a probe with main's own value.
 ///
 /// The control is started by the user-space launcher when this shell has what
 /// it needs (the BootFS, vmex and the vDSO's VMO, which userboot hands it):
@@ -321,8 +368,7 @@ auto check_object_get_info(ours::Uandle const process, ours::Uandle const job) -
 /// reaches main and answers. It ends in a verdict of its own, "launcher
 /// checks passed" or FAILED, because nothing else here would fail the boot:
 /// a program the launcher got wrong dies before main, which the kernel logs
-/// as a warning. The probes that fault are still spawned by the kernel until
-/// U6 moves them.
+/// as a warning.
 ///
 /// Run only by the shell userboot starts, which userboot hands the root job
 /// a new process needs; the dev image starts the shell from init, with a
@@ -333,13 +379,13 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
         "pf_unmapped",   "pf_kernel",    "pf_write_vdso",     "pf_exec_vdso_data",
         "pf_write_text", "pf_exec_data", "pf_write_relro",    "ud2",
         "gp_hlt",        "gp_int80",     "gp_int3",           "de",
-        "db_tf",         "gp_io",        "trap_outside_vdso",
+        "db_tf",         "gp_io",        "trap_outside_vdso", "pf_write_rodata",
     };
 
     u32 killed = 0;
     u32 survived = 0;
     for (auto const probe: PROBES) {
-        auto const run = run_probe(job, probe);
+        auto const run = run_probe(job, probe, launcher, launcher_context);
         if (!run.started) {
             // The control, and with it the launcher's verdict below, is never
             // reached; say so, or the launcher would go unchecked unnoticed.
@@ -349,7 +395,23 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
             }
             return;
         }
-        if (run.killed) {
+        if (run.process != ours::Uandle::Invalid) {
+            auto const code = return_code_of(run.process);
+            auto _ = ours::handle_close(run.process);
+            char code_text[21];
+            if (code.is_ok() && code.unwrap() == ours::TASK_RETCODE_EXCEPTION_KILL) {
+                auto _ = ort::debug_line({"shell: probe ", probe, " killed (retcode ",
+                                          signed_decimal(code.unwrap(), code_text), ")"});
+                ++killed;
+            } else {
+                auto const ended =
+                    code.is_ok() ? signed_decimal(code.unwrap(), code_text) : "unknown";
+                auto _ = ort::debug_line({"shell: probe ", probe, " SURVIVED (retcode ", ended,
+                                          ", answered \"",
+                                          std::string_view(run.answer, run.answer_size), "\")"});
+                ++survived;
+            }
+        } else if (run.killed) {
             auto _ = ort::debug_line({"shell: probe ", probe, " killed"});
             ++killed;
         } else {
