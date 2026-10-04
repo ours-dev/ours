@@ -12,6 +12,8 @@
 - `kernel/arch/x86/kernel/include/ours/arch/time.hpp` — `extern CLOCK_EVENT` gives way to `global_clock_event()` and `set_global_clock_event()`.
 - `kernel/arch/x86/kernel/time/hpet.cpp` — the hand-over to the HPET calls `set_global_clock_event()`.
 - `kernel/platform/pc/keyboard.cpp` — the decoder's shift keys, last scancode and character buffer move into a `KeyboardState` handed to the handler as its context; the line's observer is a static.
+- `kernel/kernel/time/tick_device.cpp` — a comment that named `CLOCK_EVENT` as an example of an UPPER_CASE object names `LEGACY_TIMER`, its replacement.
+- `docs/repairs/261004/x86-clock.md` — two items on the HPET's hand-over of the legacy timer line, both older than this change.
 
 **Symptom**
 Latent, cannot be triggered today. Three defects of the interface, numbered 4 and 5 in `.agents/tasks/microkernel-interrupts/DESIGN.md`:
@@ -103,7 +105,8 @@ The trade-offs:
 - The PIT still registers by ISA number and the keyboard by GSI (PLAN step 7), and the PIT still unmasks its line after a failed attach (defect 9, PLAN steps 6 and 8).
 - The keyboard's init still drains the controller by calling `i8042_interrupt(0, &KEYBOARD)` in thread context after unmasking the line, so an interrupt in the middle of it would run the decoder on the same state re-entrantly. That predates this change, and the file goes in PLAN step 12.
 - `IrqObject`'s members keep their trailing-underscore names; PLAN step 6 rewrites the class.
-- The HPET's hand-over is published after the HPET is already driving the line; recorded as `docs/repairs/261004/x86-clock.md` item 1.
+- The HPET's hand-over is published after the HPET is already driving the line; recorded as `docs/repairs/261004/x86-clock.md` item 2.
+- `hpet_init()` enrolls channel 0 and hands it the line even when the HPET has no legacy replacement route, which `set_global_clock_event()`'s comment assumes it has; found in review and recorded as `docs/repairs/261004/x86-clock.md` item 1. Both predate this change, which only renamed the assignment `time::CLOCK_EVENT = &device`.
 
 **How it was found**
 None. PLAN step 5 of `.agents/tasks/microkernel-interrupts/`, from defects 4 and 5 of its design.

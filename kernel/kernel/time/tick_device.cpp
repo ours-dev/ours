@@ -40,7 +40,7 @@ namespace {
     /// pointer.
     constexpr ClockEventDevice::Vtable NOOP_VTABLE{};
     // Namespace-scope objects are UPPER_CASE throughout this tree (I8253_CLKEVT,
-    // CLOCK_EVENT, HPET_MMIO); .clang-tidy's lower_case rule predates that.
+    // LEGACY_TIMER, HPET_MMIO); .clang-tidy's lower_case rule predates that.
     // NOLINTNEXTLINE(readability-identifier-naming)
     ClockEventDevice NOOP_DEVICE{"Noop Device", &NOOP_VTABLE, ClockEventDevice::Feature::None,
                                  ClockEventDevice::Rating(0), &cpu_none_mask()};
