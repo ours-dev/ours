@@ -105,6 +105,7 @@ enum class ObjectType : u32 {
     Job = 17,
     Vma = 18,
     Pager = 28,
+    Exception = 29,
 };
 
 /// The return code a task ends with when the kernel, not the task, ended it.

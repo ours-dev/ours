@@ -3,6 +3,7 @@
 #ifndef OURS_TASK_EXCEPTION_HPP
 #define OURS_TASK_EXCEPTION_HPP 1
 
+#include <ours/exception.hpp>
 #include <ours/types.hpp>
 
 namespace arch {
@@ -10,27 +11,11 @@ struct IrqFrame;
 } // namespace arch
 
 namespace ours::task {
-/// What kind of exception a user thread raised, as the kernel reports it.
-///
-/// Kernel-private for now: nothing outside the kernel sees one until there
-/// are exception channels (Zircon's zx_task_create_exception_channel), and
-/// the kind is only printed on the way to killing the process. The values
-/// are Zircon's ZX_EXCP_* so that the day it becomes ABI it needs no
-/// renumbering.
-enum class ExceptionType : u32 {
-    /// Any architectural fault not given a kind of its own below: #GP, #DE,
-    /// #SS, #NP, #AC, the floating-point ones.
-    General = 0x008,
-    /// A page fault the address space could not resolve.
-    FatalPageFault = 0x108,
-    UndefinedInstruction = 0x208,
-    SwBreakpoint = 0x308,
-    HwBreakpoint = 0x408,
-    UnalignedAccess = 0x508,
-    /// Synthetic: the thread broke a rule rather than a CPU check -- a
-    /// system call trapped from outside the vDSO, for one.
-    PolicyError = 0x8208,
-};
+/// The kinds of exception and policy codes are ABI since exception channels
+/// report them (<ours/exception.hpp>); the kernel uses the same definitions
+/// rather than a copy that could drift.
+using ours::ExceptionType;
+using ours::PolicyCode;
 
 [[nodiscard]]
 constexpr auto to_string(ExceptionType const type) -> char const * {
@@ -52,14 +37,6 @@ constexpr auto to_string(ExceptionType const type) -> char const * {
     }
     return "?";
 }
-
-/// Which rule a PolicyError broke. The values are Zircon's
-/// ZX_EXCP_POLICY_CODE_*, for the same reason as ExceptionType's.
-enum class PolicyCode : u32 {
-    /// A system call trapped from outside the process's vDSO. The detail is
-    /// the call number the program put in the register.
-    BadSyscall = 18,
-};
 
 [[nodiscard]]
 constexpr auto to_string(PolicyCode const code) -> char const * {

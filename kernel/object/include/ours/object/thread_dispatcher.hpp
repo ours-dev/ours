@@ -13,10 +13,13 @@
 #include <ustl/collections/intrusive/list.hpp>
 #include <ustl/option.hpp>
 
+namespace ours {
+enum class PolicyCode : u32;
+} // namespace ours
+
 namespace ours::task {
 struct ExceptionContext;
 enum class ExceptionOutcome : u8;
-enum class PolicyCode : u32;
 } // namespace ours::task
 
 namespace ours::object {
@@ -136,7 +139,7 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// process is killed for it (a PolicyError, BadSyscall).
     ///
     /// Its own entry point, rather than the system-call layer naming a
-    /// task::PolicyCode, so that //kernel/lib/syscall keeps to kernel/object's
+    /// PolicyCode, so that //kernel/lib/syscall keeps to kernel/object's
     /// headers (design 4.7). Zircon's sys_invalid_syscall() calls
     /// Thread::Current::SignalPolicyException() directly; this is the same
     /// call, one layer up.
@@ -193,7 +196,7 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     /// thread exits at the pending-signal check on the way back out.
     ///
     /// Zircon counterpart: Thread::Current::SignalPolicyException().
-    auto on_policy_exception(task::PolicyCode code, u64 data, VirtAddr ip, VirtAddr sp) -> void;
+    auto on_policy_exception(PolicyCode code, u64 data, VirtAddr ip, VirtAddr sp) -> void;
 
     auto on_resume() -> Status;
 
