@@ -737,9 +737,14 @@ namespace task {
 
         static auto soft_fault(VirtAddr va, mm::VmfCause cause) -> Status;
 
+        /// Through get(), like every accessor below. CpuLocal::read() takes a
+        /// CPU_LOCAL variable itself, never a field reached through one:
+        /// `CURRENT_INSTANCE->m_tid` dereferences the template copy, which is
+        /// a null pointer, so the "variable" read() was given was address
+        /// 0x88, and %gs:0x88 is no address at all.
         FORCE_INLINE
         static auto tid() -> KoId {
-            return mm::CpuLocal::read(CURRENT_INSTANCE->m_tid);
+            return Thread::Current::get()->tid();
         }
 
         FORCE_INLINE
