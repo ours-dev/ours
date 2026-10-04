@@ -40,6 +40,14 @@ enum class Ordinal : u32 {
     /// Not answered. This is how a client that has a connection gives
     /// another program one of its own.
     Connect = 2,
+
+    /// The answer to a Launch, sent by the launcher only. Its own ordinal,
+    /// top bit set, so that an answer is never a request. The launcher closes
+    /// a connection that sends it anything but Launch or Connect; without
+    /// that, a client that handed the launcher both ends of one channel would
+    /// have it read its own answer, answer that, and so on for ever. The
+    /// planned wire format draws the same line with a direction field.
+    LaunchReply = 0x8000'0001,
 };
 
 struct Header {
@@ -48,9 +56,9 @@ struct Header {
 };
 static_assert(sizeof(Header) == 8);
 
-/// The answer to a Launch: the request's ordinal and how it went. On Ok the
-/// message carries one handle, the new process, with the rights the launcher
-/// got from process_create.
+/// The answer to a Launch: LaunchReply and how it went. On Ok the message
+/// carries one handle, the new process, with the rights the launcher got from
+/// process_create.
 struct Reply {
     Ordinal ordinal;
     ours::Status status;

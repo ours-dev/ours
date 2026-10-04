@@ -1267,7 +1267,7 @@ auto check_launcher_service(ours::Uandle const connection, ours::Uandle const jo
                          Status::Ok);
             ok &=
                 expect("shell: the reply to a malformed request = ", reply.status, Status::InvArgs);
-            ok &= actual == sizeof(reply) && reply.ordinal == protocol::Ordinal::Launch;
+            ok &= actual == sizeof(reply) && reply.ordinal == protocol::Ordinal::LaunchReply;
         } else {
             ok = false;
             auto _ = ort::debug_line("shell: the launcher went away after a malformed request");
@@ -1284,6 +1284,19 @@ auto check_launcher_service(ours::Uandle const connection, ours::Uandle const jo
             "shell: launch(over a second connection) = ",
             answer_of(launch::Client(second.unwrap()).launch(job, MISSING, args, {}, {}, {})),
             Status::NotFound);
+        // An answer sent back as if it were a request: the launcher closes
+        // the connection rather than answer it.
+        auto const echo =
+            protocol::Reply{.ordinal = protocol::Ordinal::LaunchReply, .status = Status::Ok};
+        ok &= expect("shell: write(a reply, as a request) = ",
+                     ours::channel_write(second.unwrap(), ours::ChannelWriteOptions::None, &echo,
+                                         sizeof(echo), nullptr, 0),
+                     Status::Ok);
+        auto closed = ours::Signals::None;
+        ok &= expect("shell: wait_one(the launcher closes that connection) = ",
+                     ours::object_wait_one(second.unwrap(), ours::Signals::PeerClosed,
+                                           ours::INSTANT_INFINITE, &closed),
+                     Status::Ok);
         ok &= ours::handle_close(second.unwrap()) == Status::Ok;
     } else {
         ok &= expect("shell: connect = ", second.unwrap_err(), Status::Ok);

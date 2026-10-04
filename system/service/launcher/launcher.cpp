@@ -238,9 +238,14 @@ auto serve_launch(launch::BootfsLauncher const &launcher, std::span<u8 const> co
     return Status::Ok;
 }
 
-/// Reads one message from the connection in |slot| and serves it.
+/// Reads one message from the connection in |slot| and serves it. Answers
+/// whether the connection is to be kept: one that sent anything but a Launch
+/// or a well-formed Connect is closed, as the planned wire format closes a
+/// connection on an unknown ordinal. Answering such a message instead would
+/// let two connections the launcher holds both ends of answer each other for
+/// ever (protocol::Ordinal::LaunchReply).
 auto serve_message(launch::BootfsLauncher const &launcher, Connections &connections,
-                   usize const slot) -> void {
+                   usize const slot) -> bool {
     auto const channel = connections.at(slot);
     u8 message[ours::CHANNEL_MAX_MSG_BYTES];
     Uandle handles[ours::CHANNEL_MAX_MSG_HANDLES];
@@ -251,28 +256,34 @@ auto serve_message(launch::BootfsLauncher const &launcher, Connections &connecti
                                sizeof(message), std::size(handles), &actual_bytes, &actual_handles);
         status != Status::Ok) {
         report("launcher: reading a request = ", status);
-        return;
+        return false;
     }
     auto const bytes = std::span<u8 const>{message, actual_bytes};
     auto const carried = std::span<Uandle const>{handles, actual_handles};
 
     auto const ordinal = protocol::ordinal_of(bytes);
     if (ordinal.is_some() && *ordinal == protocol::Ordinal::Connect) {
-        if (actual_handles == 1 && actual_bytes == sizeof(protocol::Header)) {
-            if (connections.add(handles[0])) {
-                auto _ = ort::debug_line("launcher: a new connection");
-            }
-        } else {
+        if (actual_handles != 1 || actual_bytes != sizeof(protocol::Header)) {
             close_all(carried);
+            auto _ = ort::debug_line("launcher: closed a connection that sent a bad Connect");
+            return false;
         }
-        return;
+        if (connections.add(handles[0])) {
+            auto _ = ort::debug_line("launcher: a new connection");
+        }
+        return true;
+    }
+    if (ordinal.is_none() || *ordinal != protocol::Ordinal::Launch) {
+        close_all(carried);
+        auto _ = ort::debug_line("launcher: closed a connection that sent no request");
+        return false;
     }
 
-    // Anything else is answered as a Launch, a malformed one with InvArgs:
+    // A Launch, answered whatever it holds -- a malformed one with InvArgs:
     // the client is waiting for a reply.
     auto process = Uandle::Invalid;
     auto const status = serve_launch(launcher, bytes, carried, &process);
-    auto const reply = protocol::Reply{.ordinal = protocol::Ordinal::Launch, .status = status};
+    auto const reply = protocol::Reply{.ordinal = protocol::Ordinal::LaunchReply, .status = status};
     auto const with_process = status == Status::Ok;
     if (auto const written =
             ours::channel_write(channel, ours::ChannelWriteOptions::None, &reply, sizeof(reply),
@@ -280,6 +291,7 @@ auto serve_message(launch::BootfsLauncher const &launcher, Connections &connecti
         written != Status::Ok) {
         report("launcher: replying = ", written);
     }
+    return true;
 }
 } // namespace
 
@@ -332,10 +344,9 @@ auto main(int, char **) -> int {
             continue;
         }
         if (!!(packet.signal.observed & ours::Signals::Readable)) {
-            serve_message(launcher, connections, slot);
             // Re-armed even if more messages wait: the wait is
             // level-triggered, so it queues again at once.
-            if (!connections.arm(slot)) {
+            if (!serve_message(launcher, connections, slot) || !connections.arm(slot)) {
                 connections.drop(slot);
             }
             continue;

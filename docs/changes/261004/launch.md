@@ -244,3 +244,65 @@ None.
 - After boot of the dev image, which process holds VMEX, and what did each of the others do with the handle it had?
 - Why does the dbg_1 image's shell still hold VMEX?
 - Why does the shell map the BootFS itself for `ls` now?
+
+## Title: A launcher reply is never a request, and a connection that sends no request is closed (2026-10-04)
+
+**Files**
+- `system/lib/launch/include/launch/protocol.hpp` — `Ordinal::LaunchReply` (`0x8000'0001`), the reply's own ordinal
+- `system/lib/launch/src/client.cpp` — the client expects it
+- `system/service/launcher/launcher.cpp` — `serve_message()` answers only a Launch; anything else but a well-formed Connect closes the connection
+- `examples/shell/shell_tests.cpp` — a reply sent back as a request closes the connection
+
+**Symptom**
+Found by the VFS design research, not seen running. A client could make the launcher spin for ever and hold two of its 16 connection slots after the client itself had gone.
+
+**Cause**
+The objects:
+- A Reply was `{Ordinal::Launch, status}`: 8 bytes, which is also a valid Header `{Launch, name_size = status}`.
+- The launcher answered every message that was not a Connect, as a Launch: a malformed one with an InvArgs Reply.
+- A Connect accepted any channel end, so a client could hand the launcher both ends of one channel.
+
+The events:
+1. The client makes a channel (A, B), writes one byte of garbage into A (so it waits on B), then sends Connect(B) and Connect(A).
+2. The launcher reads B's garbage and answers InvArgs on B. The answer arrives at A.
+3. It reads A's message, which is its own Reply, decodes it as a Launch whose name runs off the message, and answers InvArgs on A. That answer arrives at B.
+4. Back to step 2, for ever. The launcher holds both ends, so PeerClosed never comes and the slots are never freed.
+
+The plan's wire format (`docs/design/260924/userspace-filesystem.md`, section 2.1) has a direction field for exactly this reason: a message from the server must not be mistakable for one to it.
+
+**Change**
+- The Reply carries `Ordinal::LaunchReply`, top bit set, so it is never a request.
+- The launcher answers a Launch, malformed or not, since the client is waiting. It closes a connection that sends a bad Connect or any other ordinal, as the planned format closes one on an unknown ordinal, rather than answering it.
+
+```cpp
+if (ordinal.is_none() || *ordinal != protocol::Ordinal::Launch) {
+    close_all(carried);
+    return false;  // the loop drops the connection
+}
+```
+
+In the scenario above, step 3 now reads a LaunchReply and closes A, and B's peer is gone.
+
+**Reference**
+The planned `MessageHeader.direction` and its rule, the server rejects ToClient (`docs/design/260924/userspace-filesystem.md`, section 2.1); FIDL's message header, `fidl_message_header_t`, whose flags and ordinal space play the same part.
+
+**Verification**
+- Host tests: 3 passed.
+- `boot_check.py`: dbg PASS (24, 1 skipped), rel PASS (22, 3 skipped).
+- The rel log: "launcher: closed a connection that sent no request" when the shell sends a LaunchReply on its second connection, and the shell sees that connection's PeerClosed.
+- Not run: the two-ended loop itself. It needs a client that hands the launcher both ends, which nothing in the tree is.
+
+**Deliberately not done**
+- Moving the launcher protocol onto the planned wire header (txid, direction, magic), which waits for the VFS design's decision on the protocol generator.
+- A per-client connection limit: one client can still fill the 16 slots with Connects whose peers it keeps.
+
+**How it was found**
+The VFS design research (old-plan report, item 23): the plan's argument for the direction field applied to the launcher's protocol, which has none.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why did a reply that decoded as a request let a client make the launcher loop?
+- Why is a malformed Launch still answered, while an unknown ordinal closes the connection?
+- What does the planned wire format's direction field do that this ordinal now does?

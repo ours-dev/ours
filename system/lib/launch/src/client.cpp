@@ -83,7 +83,7 @@ auto Client::launch(Uandle const job, std::string_view const name,
         return ustl::err(status);
     }
     auto const well_formed =
-        actual_bytes == sizeof(reply) && reply.ordinal == protocol::Ordinal::Launch &&
+        actual_bytes == sizeof(reply) && reply.ordinal == protocol::Ordinal::LaunchReply &&
         (reply.status == Status::Ok ? actual_handles == 1 : actual_handles == 0);
     if (!well_formed) {
         if (actual_handles != 0) {
