@@ -1,7 +1,7 @@
 # exception-channels: plan slice 1, a process exception channel
 
 **Date**: 2026-10-04
-**Status**: Proposed
+**Status**: Done
 
 ## Request
 The user asked (2026-10-03) to bring in "the mechanism Starnix uses to let user space catch exceptions", and chose Zircon's exception channels (2026-10-04). This plan covers slice 1 of `DESIGN.md`: a supervisor binds a channel to a process, reads each exception's type, and either passes it on (the process is killed, as today) or marks it handled (the thread resumes). Register access, the thread and job slots, and restricted mode are outside it.
@@ -19,7 +19,7 @@ Each step is introduced to the user before it starts, builds and boots both imag
 3. **The objects.** `ExceptionDispatcher` and `Exceptionate` in `kernel/object`; `ProcessDispatcher` gains its exceptionate, shut down first in `finish_dead_transition()`; a `Handle::make` form that charges nobody. Nothing delivers yet. Verified by boot. Done 2026-10-04.
 4. **The system calls.** `task_create_exception_channel` and `object_set_property` (ExceptionState only). A channel can be bound; nothing is sent on it yet. Verified by boot and a shell check that a bound channel reports PeerClosed when the process dies. Done 2026-10-04: every fault probe gets one, with the second-bind and write refusals checked too.
 5. **Delivery.** `ThreadDispatcher::on_user_exception()` marks the thread, sends under its lock and the exceptionate's (the amended order, written into `userspace-interface.md` §4.8 in this commit), waits interruptibly, checks Dying, and answers the disposition. `on_bad_syscall()` goes through it too. Done 2026-10-04, with the shell draining each probe's exceptions (TryNext) before its answer, which delivery made necessary.
-6. **The test.** `run_probe()` binds a channel per probe, checks each exception's type, passes it on, and marks `trap_outside_vdso` handled; the shell prints `shell: exception channel checks passed`.
+6. **The test.** `run_probe()` binds a channel per probe, checks each exception's type, passes it on, and marks `trap_outside_vdso` handled; the shell prints `shell: exception channel checks passed`. Done 2026-10-04.
 
 ## Files
 - `kernel/arch/x86/kernel/faults.cpp`: step 1.

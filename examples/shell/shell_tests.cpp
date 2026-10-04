@@ -125,9 +125,12 @@ auto bind_exception_channel(ours::Uandle const process, ours::Uandle *const out)
 /// process it is bound to is dead and the channel closes, and counts them
 /// into |run|. A faulting probe stops in the kernel until its exception is
 /// answered, so this has to come before waiting for the probe's own answer.
-/// False, with the reason reported, when the channel misbehaved. Step 5 of
+/// With |handle|, each exception is marked Handled before its handle is
+/// closed, and the probe resumes instead of dying. False, with the reason
+/// reported, when the channel misbehaved. Steps 5 and 6 of
 /// .agents/tasks/exception-channels/PLAN.md.
-auto pass_on_exceptions(ours::Uandle const channel, ProbeRun *const run) -> bool {
+auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun *const run)
+    -> bool {
     using ours::Signals;
     using ours::Status;
 
@@ -158,9 +161,23 @@ auto pass_on_exceptions(ours::Uandle const channel, ProbeRun *const run) -> bool
         ++run->exceptions_seen;
         run->exception_type = info.type;
 
-        // Closed with no state set: TryNext. No other handler is bound, so
-        // the kernel kills the probe, and the channel closes with it.
+        // Handled resumes the thread where it stopped. Without it the close
+        // means TryNext: no other handler is bound, so the kernel kills the
+        // probe, and the channel closes with it.
+        auto ok = true;
+        if (handle) {
+            constexpr auto HANDLED = ours::ExceptionState::Handled;
+            if (auto const set = ours::object_set_property(
+                    exception, ours::Property::ExceptionState, &HANDLED, sizeof(HANDLED));
+                set != Status::Ok) {
+                report("shell: marking an exception handled = ", set);
+                ok = false;
+            }
+        }
         auto _ = ours::handle_close(exception);
+        if (!ok) {
+            return false;
+        }
     }
 }
 
@@ -177,7 +194,7 @@ auto pass_on_exceptions(ours::Uandle const channel, ProbeRun *const run) -> bool
 /// as soon as it has read the message: waiting on it, this would see
 /// PeerClosed before the probe had even reached main and count every probe
 /// as killed.
-auto run_probe(ours::Uandle const job, std::string_view const probe,
+auto run_probe(ours::Uandle const job, std::string_view const probe, bool const handle,
                shell::LaunchProgram const launcher, void *const launcher_context) -> ProbeRun {
     using ours::Signals;
     using ours::Status;
@@ -258,7 +275,7 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
     // The exceptions first: a probe that faults waits in the kernel for its
     // answer, and would never get to the answer channel below.
     if (exceptions != ours::Uandle::Invalid) {
-        run.exception_channel_ok &= pass_on_exceptions(exceptions, &run);
+        run.exception_channel_ok &= pass_on_exceptions(exceptions, handle, &run);
         auto _ = ours::handle_close(exceptions);
     }
 
@@ -446,11 +463,37 @@ auto return_code_of(ours::Uandle const process) -> ustl::Result<i64, ours::Statu
 /// fault_probe.
 auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
                 void *const launcher_context) -> void {
-    constexpr std::string_view PROBES[] = {
-        "pf_unmapped",   "pf_kernel",    "pf_write_vdso",     "pf_exec_vdso_data",
-        "pf_write_text", "pf_exec_data", "pf_write_relro",    "ud2",
-        "gp_hlt",        "gp_int80",     "gp_int3",           "de",
-        "db_tf",         "gp_io",        "trap_outside_vdso", "pf_write_rodata",
+    using ours::ExceptionType;
+    /// Each probe, the exception it raises, and whether this handles it. Only
+    /// a system call from outside the vDSO can be resumed without changing
+    /// the thread's registers: the kernel refuses the call with BadSyscall
+    /// and the probe goes on, answers "survived" and returns 1. A fault
+    /// resumed unchanged would only fault again.
+    struct Probe {
+        std::string_view name;
+        ExceptionType type;
+        bool handled;
+    };
+    constexpr Probe PROBES[] = {
+        {"pf_unmapped", ExceptionType::FatalPageFault, false},
+        {"pf_kernel", ExceptionType::FatalPageFault, false},
+        {"pf_write_vdso", ExceptionType::FatalPageFault, false},
+        {"pf_exec_vdso_data", ExceptionType::FatalPageFault, false},
+        {"pf_write_text", ExceptionType::FatalPageFault, false},
+        {"pf_exec_data", ExceptionType::FatalPageFault, false},
+        {"pf_write_relro", ExceptionType::FatalPageFault, false},
+        {"ud2", ExceptionType::UndefinedInstruction, false},
+        {"gp_hlt", ExceptionType::General, false},
+        {"gp_int80", ExceptionType::General, false},
+        // General, not SwBreakpoint: the #BP gate is DPL 0, so an int3 from
+        // ring 3 raises #GP instead.
+        {"gp_int3", ExceptionType::General, false},
+        // A divide error has no kind of its own (task/exception.hpp).
+        {"de", ExceptionType::General, false},
+        {"db_tf", ExceptionType::HwBreakpoint, false},
+        {"gp_io", ExceptionType::General, false},
+        {"trap_outside_vdso", ExceptionType::PolicyError, true},
+        {"pf_write_rodata", ExceptionType::FatalPageFault, false},
     };
 
     // What a channel is refused for, once: a job, which Zircon would take and
@@ -470,9 +513,9 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
 
     u32 killed = 0;
     u32 survived = 0;
-    u32 channels_ok = 0;
-    for (auto const probe: PROBES) {
-        auto const run = run_probe(job, probe, launcher, launcher_context);
+    u32 as_expected = 0;
+    for (auto const &probe: PROBES) {
+        auto const run = run_probe(job, probe.name, probe.handled, launcher, launcher_context);
         if (!run.started) {
             // The control, and with it the launcher's verdict below, is never
             // reached; say so, or the launcher would go unchecked unnoticed.
@@ -480,25 +523,44 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
                 "shell: launcher checks FAILED (a probe before its control did not start)");
             return;
         }
-        // Each probe faults once, so its channel has to have delivered exactly
-        // one exception before the probe was killed.
-        if (run.exception_channel_ok && run.exceptions_seen == 1) {
-            ++channels_ok;
-        }
         auto const code = return_code_of(run.process);
         auto _ = ours::handle_close(run.process);
+
+        // Each probe faults once, so its channel has to have delivered exactly
+        // one exception, of the kind the probe raises.
+        auto const delivered = run.exception_channel_ok && run.exceptions_seen == 1 &&
+                               run.exception_type == probe.type;
+        char type_text[18];
+        auto const type = ort::hex(static_cast<u64>(run.exception_type), type_text);
+
         char code_text[21];
         if (code.is_ok() && code.unwrap() == ours::TASK_RETCODE_EXCEPTION_KILL) {
-            auto _ = ort::debug_line({"shell: probe ", probe, " killed (retcode ",
-                                      ort::signed_decimal(code.unwrap(), code_text), ")"});
+            auto _ = ort::debug_line({"shell: probe ", probe.name, " killed (retcode ",
+                                      ort::signed_decimal(code.unwrap(), code_text),
+                                      ") after exception ", type});
             ++killed;
+            if (delivered && !probe.handled) {
+                ++as_expected;
+            }
         } else {
             auto const ended =
                 code.is_ok() ? ort::signed_decimal(code.unwrap(), code_text) : "unknown";
-            auto _ = ort::debug_line({"shell: probe ", probe, " SURVIVED (retcode ", ended,
-                                      ", answered \"",
-                                      std::string_view(run.answer, run.answer_size), "\")"});
+            auto const answer = std::string_view(run.answer, run.answer_size);
+            if (probe.handled) {
+                auto _ = ort::debug_line({"shell: probe ", probe.name, " handled exception ", type,
+                                          " and survived (retcode ", ended, ", answered \"", answer,
+                                          "\")"});
+            } else {
+                auto _ = ort::debug_line({"shell: probe ", probe.name, " SURVIVED (retcode ", ended,
+                                          ", answered \"", answer, "\")"});
+            }
             ++survived;
+            // Returning 1 from main, after answering "survived": the
+            // probe's own exit (fault_probe.cpp, ExitCode::SURVIVED).
+            if (delivered && probe.handled && code.is_ok() && code.unwrap() == 1 &&
+                spells(run.answer, run.answer_size, "survived")) {
+                ++as_expected;
+            }
         }
     }
 
@@ -509,7 +571,7 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
 
     constexpr std::string_view CONTROL{"none"};
     auto _ = ort::debug_line("shell: starting the control probe with the launcher");
-    auto const control = run_probe(job, CONTROL, launcher, launcher_context);
+    auto const control = run_probe(job, CONTROL, false, launcher, launcher_context);
     auto answered_unknown = false;
     if (control.started) {
         if (control.killed) {
@@ -535,12 +597,13 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
     // A verdict line of its own: a channel that misbehaves fails nothing else.
     // The control probe raises no exception, so its channel delivers none.
     char channels_text[10];
-    auto const channels_all = channels_ok == std::size(PROBES);
+    auto const channels_all = as_expected == std::size(PROBES);
     auto const control_quiet =
         control.started && control.exception_channel_ok && control.exceptions_seen == 0;
-    auto _ = ort::debug_line({"shell: exception channels delivered one exception to ",
-                              ort::decimal(channels_ok, channels_text), " of the probes",
-                              control_quiet ? ", none to the control" : ", and the control?"});
+    auto _ =
+        ort::debug_line({"shell: exception channels: ", ort::decimal(as_expected, channels_text),
+                         " probes delivered their exception and ended as expected",
+                         control_quiet ? ", none for the control" : ", and the control?"});
     if (exception_checks_ok && channels_all && control_quiet) {
         auto _ = ort::debug_line("shell: exception channel checks passed");
     } else {
