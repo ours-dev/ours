@@ -233,6 +233,24 @@ auto encode_epitaph(std::span<u8> out, ours::Status status) -> ustl::Result<Mess
 [[nodiscard]]
 auto decode_epitaph(Message message) -> ustl::Result<ours::Status, ours::Status>;
 
+/// Whether |header| is an epitaph's: its ordinal is EPITAPH_ORDINAL, which
+/// no method's can be.
+///
+/// A client asks this of a message's header, from decode_header(), before
+/// it decodes the message as the reply it expects: an epitaph is what
+/// arrives instead of a reply when the server closed the connection, and
+/// checking the ordinal first keeps "the server said why it closed" apart
+/// from "the server sent a malformed reply", which both fail the reply's
+/// decoder. Fuchsia's C++ client makes the same check before it matches a
+/// reply to its txid: ClientBase::Dispatch() asks
+/// IncomingHeaderAndMessage::maybe_epitaph(), which compares the header's
+/// ordinal with kFidlOrdinalEpitaph (sdk/lib/fidl/cpp/wire/client_base.cc,
+/// incoming_message.cc). The rest of the epitaph, decode_epitaph() checks.
+[[nodiscard]]
+constexpr auto is_epitaph(Header const &header) -> bool {
+    return header.ordinal == EPITAPH_ORDINAL;
+}
+
 /// The handle of the field at |offset|, the |index|th handle field of the
 /// message: the field must hold HANDLE_PRESENT and handle |index| must exist
 /// and be valid. The caller has checked that the field lies inside the bytes

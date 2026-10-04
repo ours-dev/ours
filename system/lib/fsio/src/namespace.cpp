@@ -157,6 +157,11 @@ auto Namespace::resolve(PathBuffer const &path) const -> ustl::Result<Resolved, 
     for (auto index = usize{0}; index < m_count; ++index) {
         auto const &binding = m_bindings[index];
         auto const bound = path_of(binding);
+        auto const under = bound == view || lies_below(view, bound);
+        if (under && binding.closed != Status::Ok) {
+            // Its server is gone, and said why once (mark_closed()).
+            return ustl::err(binding.closed);
+        }
         if (bound == view) {
             return ustl::ok(Resolved{.directory = binding.directory, .rest = "."});
         }
@@ -179,5 +184,22 @@ auto Namespace::resolve(PathBuffer const &path) const -> ustl::Result<Resolved, 
         return ustl::err(Status::NotSupported);
     }
     return ustl::err(Status::NotFound);
+}
+
+auto Namespace::mark_closed(Uandle const directory, Status const status) -> Status {
+    if (status == Status::Ok) {
+        return Status::InvArgs;
+    }
+    for (auto index = usize{0}; index < m_count; ++index) {
+        auto &binding = m_bindings[index];
+        if (binding.directory != directory) {
+            continue;
+        }
+        if (binding.closed == Status::Ok) {
+            binding.closed = status;
+        }
+        return Status::Ok;
+    }
+    return Status::NotFound;
 }
 } // namespace fsio

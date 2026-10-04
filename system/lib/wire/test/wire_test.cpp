@@ -330,6 +330,34 @@ TEST(WireEpitaph, Refusals) {
     EXPECT_TRUE(wire::decode_epitaph(as_message(good, handle)).is_err());
 }
 
+TEST(WireEpitaph, IsEpitaphLooksAtTheOrdinal) {
+    // What a client checks before decoding a reply: an epitaph's header says
+    // so, and no reply's does, whatever its status.
+    auto buffer = dirty_buffer();
+    auto const epitaph = wire::encode_epitaph(buffer, Status::AccessDenied).unwrap();
+    auto const epitaph_header = wire::decode_header(epitaph.bytes, Direction::ToClient);
+    ASSERT_TRUE(epitaph_header.is_ok());
+    EXPECT_TRUE(wire::is_epitaph(epitaph_header.unwrap()));
+
+    auto reply_buffer = dirty_buffer();
+    auto const reply = encoded_status_reply(reply_buffer, 7, Status::AccessDenied);
+    auto const reply_header = wire::decode_header(reply.bytes, Direction::ToClient);
+    ASSERT_TRUE(reply_header.is_ok());
+    EXPECT_FALSE(wire::is_epitaph(reply_header.unwrap()));
+
+    // The ordinal alone decides; the rest is decode_epitaph()'s to check.
+    static_assert(wire::is_epitaph(Header{.txid = 3,
+                                          .direction = Direction::ToServer,
+                                          .reserved = {},
+                                          .magic = wire::MAGIC,
+                                          .ordinal = wire::EPITAPH_ORDINAL}));
+    static_assert(!wire::is_epitaph(Header{.txid = 0,
+                                           .direction = Direction::ToClient,
+                                           .reserved = {},
+                                           .magic = wire::MAGIC,
+                                           .ordinal = TWO_WAY.ordinal}));
+}
+
 TEST(WireHandle, RoundTripAndRefusals) {
     auto bytes = dirty_buffer();
     std::array<Uandle, 2> handles{};

@@ -114,7 +114,9 @@ class Namespace final {
     ///                 nodes fdio makes to hold mount points, the root among
     ///                 them, which has nothing to connect to ("Cannot connect
     ///                 to non-mount-points");
-    ///   NotFound      no bound path is |path|, above it or below it.
+    ///   NotFound      no bound path is |path|, above it or below it;
+    ///   any other     |path| lies under a binding whose server closed it,
+    ///                 and this is the status mark_closed() recorded for it.
     ///
     /// fdio checks a name's length only where its walk reaches it: up to the
     /// first name below the mount point, and not past a name it cannot find.
@@ -128,6 +130,27 @@ class Namespace final {
     [[nodiscard]]
     auto resolve(PathBuffer const &path) const -> ustl::Result<Resolved, ours::Status>;
 
+    /// Records that the server of the binding holding |directory| has closed
+    /// it, and why: from now on resolve() answers |status| for every path
+    /// under it, without a channel being touched. The binding keeps its
+    /// channel, which unbind() still hands back.
+    ///
+    /// This is how an entry the root could not route reads (component-framework
+    /// design D8). The root routes a directory use when it starts the
+    /// component, and when the route fails it closes the entry's server end
+    /// with an epitaph before the component runs. fsio::open() finds the
+    /// channel closed, reads that epitaph once, and records its status here,
+    /// since the epitaph is the channel's last message and cannot be read
+    /// twice; every later open() under the entry answers the same status.
+    /// fdio has no such state: its Open on a closed channel fails, and the
+    /// reason is lost.
+    ///
+    /// InvArgs for |status| Ok, which would mark nothing; NotFound when no
+    /// binding holds |directory|. The first status recorded stays: a binding
+    /// closes once.
+    [[nodiscard]]
+    auto mark_closed(ours::Uandle directory, ours::Status status) -> ours::Status;
+
     /// How many paths are bound.
     [[nodiscard]]
     auto size() const -> usize {
@@ -135,11 +158,14 @@ class Namespace final {
     }
 
   private:
-    /// One bound path: its channel, and where its text lies in m_paths.
+    /// One bound path: its channel, where its text lies in m_paths, and, once
+    /// its server has closed it, the status resolve() answers under it (Ok
+    /// while it is open).
     struct Binding {
         ours::Uandle directory = ours::Uandle::Invalid;
         u16 offset = 0;
         u16 size = 0;
+        ours::Status closed = ours::Status::Ok;
     };
     static_assert(BOUND_PATHS_CAPACITY <= 0xFFFF, "a Binding's offset and size are u16");
 

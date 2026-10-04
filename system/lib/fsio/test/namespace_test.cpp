@@ -311,4 +311,54 @@ TEST(Namespace, UnbindUnderARootBinding) {
     EXPECT_EQ(ns.size(), 0U);
     EXPECT_EQ(ns.bind("/boot", BOOT), Status::Ok);
 }
+
+// An entry whose server closed it with an epitaph answers that epitaph's
+// status for every path under it, and for its mount point; the others are
+// untouched (option (a) of the step 5 review, design D8).
+TEST(Namespace, AClosedBindingAnswersItsStatus) {
+    auto ns = component();
+    EXPECT_EQ(ns.mark_closed(BOOT, Status::AccessDenied), Status::Ok);
+    EXPECT_EQ(resolved(ns, "/boot"), "AccessDenied");
+    EXPECT_EQ(resolved(ns, "/boot/bin/x"), "AccessDenied");
+    EXPECT_EQ(resolved(ns, "/boot/bin/x"), "AccessDenied");
+    EXPECT_EQ(resolved(ns, "/svc/x"), at(SVC, "x"));
+    // A path beside it is still nobody's, and one that only starts with its
+    // characters is not under it.
+    EXPECT_EQ(resolved(ns, "/bootfs"), "NotFound");
+
+    // It closes once: a later status does not replace the first.
+    EXPECT_EQ(ns.mark_closed(BOOT, Status::PeerClosed), Status::Ok);
+    EXPECT_EQ(resolved(ns, "/boot/x"), "AccessDenied");
+
+    // The binding keeps its channel, which unbind() still hands back, and
+    // the path is free to bind again.
+    auto const boot = ns.unbind("/boot");
+    ASSERT_TRUE(boot.is_ok());
+    EXPECT_EQ(boot.unwrap(), BOOT);
+    ASSERT_EQ(ns.bind("/boot", OTHER), Status::Ok);
+    EXPECT_EQ(resolved(ns, "/boot/x"), at(OTHER, "x"));
+}
+
+TEST(Namespace, MarkClosedRefusals) {
+    auto ns = component();
+    EXPECT_EQ(ns.mark_closed(BOOT, Status::Ok), Status::InvArgs);
+    EXPECT_EQ(ns.mark_closed(OTHER, Status::NotFound), Status::NotFound);
+    EXPECT_EQ(resolved(ns, "/boot/x"), at(BOOT, "x"));
+    EXPECT_EQ(resolved(ns, "/svc/x"), at(SVC, "x"));
+}
+
+// Unbinding a closed entry in the middle moves the closed mark with the
+// entries after it, not onto them.
+TEST(Namespace, UnbindKeepsEachClosedMarkWithItsBinding) {
+    Namespace ns;
+    ASSERT_EQ(ns.bind("/a", BOOT), Status::Ok);
+    ASSERT_EQ(ns.bind("/bb", SVC), Status::Ok);
+    ASSERT_EQ(ns.bind("/ccc", OTHER), Status::Ok);
+    ASSERT_EQ(ns.mark_closed(OTHER, Status::NotFound), Status::Ok);
+    ASSERT_TRUE(ns.unbind("/a").is_ok());
+    EXPECT_EQ(resolved(ns, "/bb/x"), at(SVC, "x"));
+    EXPECT_EQ(resolved(ns, "/ccc/x"), "NotFound");
+    // NotFound here is the mark's, not the table's: /ccc is still bound.
+    EXPECT_EQ(ns.size(), 2U);
+}
 } // namespace

@@ -140,19 +140,50 @@ namespace {
         return reply.read(channel);
     }
 
-    /// Why |message| was not the reply its caller decoded it as: the status
-    /// of an epitaph, when it is one, and InvArgs, a malformed reply,
-    /// otherwise. An Ok epitaph closed the connection with nothing wrong, but
-    /// the request still got no answer: PeerClosed.
-    auto not_a_reply(wire::Message const message) -> Status {
+    /// When |message| is an epitaph, the status the call that read it
+    /// answers; none for any other message, which the caller then decodes as
+    /// the reply it expects.
+    ///
+    /// The header is asked first (wire::is_epitaph()), before any reply
+    /// decoder sees the message: an epitaph also fails every reply's decoder,
+    /// and only its ordinal tells "the server closed the connection and said
+    /// why" from "the server sent a malformed reply". An epitaph that is
+    /// itself malformed is InvArgs, as any malformed message; an Ok one
+    /// closed the connection with nothing wrong, but the request still got
+    /// no answer, so PeerClosed.
+    auto epitaph_of(wire::Message const message) -> ustl::Option<Status> {
+        auto const header = wire::decode_header(message.bytes, wire::Direction::ToClient);
+        if (header.is_err() || !wire::is_epitaph(header.unwrap())) {
+            return ustl::NONE;
+        }
         auto const epitaph = wire::decode_epitaph(message);
         if (epitaph.is_err()) {
-            return Status::InvArgs;
+            return ustl::some(Status::InvArgs);
         }
         if (epitaph.unwrap() == Status::Ok) {
+            return ustl::some(Status::PeerClosed);
+        }
+        return ustl::some(epitaph.unwrap());
+    }
+
+    /// Why the server of |directory|, a namespace entry, closed it: the
+    /// status of the epitaph it left there, read off the channel, or
+    /// PeerClosed when it left none.
+    ///
+    /// Only the first message is looked at. The root writes nothing on an
+    /// entry's server end but the epitaph that closes it (design D8), so
+    /// that is the one there is; a reply left over from a call that gave up
+    /// on this channel would hide it, and PeerClosed is then the answer.
+    auto closed_status(Uandle const directory) -> Status {
+        Incoming last;
+        if (last.read(directory) != Status::Ok) {
             return Status::PeerClosed;
         }
-        return epitaph.unwrap();
+        auto const epitaph = epitaph_of(last.message());
+        if (epitaph.is_none()) {
+            return Status::PeerClosed;
+        }
+        return *epitaph;
     }
 
     /// A request with a small body: every one but Open.
@@ -227,9 +258,24 @@ auto open(std::string_view const path, Flags const flags, Uandle const object) -
         return refuse(encoded.unwrap_err());
     }
     auto const message = encoded.unwrap();
-    return ours::channel_write(resolved->directory, ours::ChannelWriteOptions::None,
-                               message.bytes.data(), static_cast<u32>(message.bytes.size()),
-                               message.handles.data(), static_cast<u32>(message.handles.size()));
+    auto const written =
+        ours::channel_write(resolved->directory, ours::ChannelWriteOptions::None,
+                            message.bytes.data(), static_cast<u32>(message.bytes.size()),
+                            message.handles.data(), static_cast<u32>(message.handles.size()));
+    if (written != Status::PeerClosed) {
+        return written;
+    }
+    // The entry's server has closed it. When the root could not route the
+    // entry, it closed the server end with an epitaph before this process
+    // ran (design D8), and the epitaph says why: AccessDenied for rights an
+    // offer narrowed, NotFound for a capability nobody offers. It is the
+    // channel's last message and can be read once, so its status is kept in
+    // the binding, and every later open() under this entry answers it from
+    // there, through resolve(), without touching the channel.
+    auto const closed = closed_status(resolved->directory);
+    // Cannot fail: the binding was found just now, and |closed| is never Ok.
+    auto _ = installed.mark_closed(resolved->directory, closed);
+    return closed;
 }
 
 auto open(std::string_view const path, Flags const flags) -> ustl::Result<Uandle, Status> {
@@ -264,9 +310,12 @@ auto read(Uandle const file, std::span<u8> const buffer) -> ustl::Result<usize, 
     if (auto const status = call(file, request.unwrap(), reply); status != Status::Ok) {
         return ustl::err(status);
     }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        return ustl::err(*closed);
+    }
     auto const decoded = fuchsia_io::decode_read_reply(reply.message(), txid);
     if (decoded.is_err()) {
-        return ustl::err(not_a_reply(reply.message()));
+        return ustl::err(Status::InvArgs);
     }
     if (decoded->status != Status::Ok) {
         return ustl::err(decoded->status);
@@ -288,9 +337,12 @@ auto read_dirents(Uandle const directory, std::span<u8> const buffer)
     if (auto const status = call(directory, request.unwrap(), reply); status != Status::Ok) {
         return ustl::err(status);
     }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        return ustl::err(*closed);
+    }
     auto const decoded = fuchsia_io::decode_read_dirents_reply(reply.message(), txid);
     if (decoded.is_err()) {
-        return ustl::err(not_a_reply(reply.message()));
+        return ustl::err(Status::InvArgs);
     }
     if (decoded->status != Status::Ok) {
         return ustl::err(decoded->status);
@@ -311,9 +363,12 @@ auto get_backing_memory(Uandle const file, fuchsia_io::VmoFlags const flags)
     if (auto const status = call(file, request.unwrap(), reply); status != Status::Ok) {
         return ustl::err(status);
     }
+    if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+        return ustl::err(*closed);
+    }
     auto const decoded = fuchsia_io::decode_get_backing_memory_reply(reply.message(), txid);
     if (decoded.is_err()) {
-        return ustl::err(not_a_reply(reply.message()));
+        return ustl::err(Status::InvArgs);
     }
     if (decoded->status != Status::Ok) {
         return ustl::err(decoded->status);
@@ -335,9 +390,12 @@ auto close(Uandle const node) -> Status {
         if (auto const status = call(node, request.unwrap(), reply); status != Status::Ok) {
             return status;
         }
+        if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+            return *closed;
+        }
         auto const decoded = fuchsia_io::decode_close_reply(reply.message(), txid);
         if (decoded.is_err()) {
-            return not_a_reply(reply.message());
+            return Status::InvArgs;
         }
         return decoded->status;
     }();

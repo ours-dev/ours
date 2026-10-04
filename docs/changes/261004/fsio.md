@@ -126,3 +126,83 @@ None.
 - `/boot` and `/svc` are bound. Where does `/boot/../svc/x` go, and where would it go if fsio did not clean paths before looking them up? Why must the /boot server refuse what it would then receive?
 - fdio refuses to bind `/boot/bin` when `/boot` is bound. What would a client lose if that were allowed, and why does the refusal let a flat table replace fdio's tree?
 - `open("/boot/missing")` returns Ok. When, and through which message, does the caller learn that the file does not exist, and what status does `read()` then return?
+
+## Title: fsio checks a reply's header for an epitaph first, and a namespace entry the root closed answers its epitaph's status from then on (2026-10-04)
+
+**Files**
+- `system/lib/wire/include/wire/wire.hpp` — `wire::is_epitaph(Header)`: the ordinal check a client makes before it decodes a reply
+- `system/lib/wire/test/wire_test.cpp` — `WireEpitaph.IsEpitaphLooksAtTheOrdinal`
+- `system/lib/fsio/include/fsio/namespace.hpp`, `src/namespace.cpp` — a binding's `closed` status; `Namespace::mark_closed()`; `resolve()` answers it for every path under a closed binding
+- `system/lib/fsio/include/fsio/fsio.hpp`, `src/fsio.cpp` — every call asks `epitaph_of()` before its reply decoder; `open()` reads the epitaph of an entry whose server closed it and records its status with `mark_closed()`
+- `system/lib/fsio/test/namespace_test.cpp` — three tests of the closed mark
+
+**Symptom**
+Latent until step 13: the root closes a namespace entry it cannot route with an epitaph before the component runs (design D8). Without this change, `fsio::open("/denied/x")` wrote Open on that closed channel and answered the write's PeerClosed, and the AccessDenied the root sent was never read: routing_checks could not tell "the root refused this entry" from "the root is gone". A second reason: the calls decoded a reply first and asked whether it was an epitaph only after the decoder refused it, so whether an epitaph was recognised depended on every reply decoder refusing the epitaph's bytes.
+
+**Cause**
+- **The epitaph on a namespace entry is a different case from the epitaph on a connection.** After a failed Open, the client's first call on its new connection reads the epitaph in place of a reply (step 5's `call()` handles that, including the write that meets a closed peer). An entry is different: the client never makes a call on the entry's own channel; it writes one-way Opens there and makes its calls on the new channels. So nothing ever reads the entry's epitaph unless `open()` does, at the moment its write finds the peer closed. And an epitaph is the channel's last message: once read, it is gone. If `open()` read it and did not keep it, the second `open()` would find an empty, closed channel and answer PeerClosed. That is why the status is cached in the binding (option (a) of the step 5 review): every later `open()` and `connect()` under the entry answers the same status, from `resolve()`, without touching the channel.
+- **Why the header first.** A message that comes back on a call is the reply, or an epitaph sent instead of it. The two share the first 16 bytes' layout and differ in the ordinal: an epitaph's is `EPITAPH_ORDINAL`, which no method's can be, since method ordinals have their top bit clear. Asking the header first, `wire::is_epitaph()`, is the one test that cannot be fooled by a reply decoder that happens to accept 24 bytes; it also keeps "the server closed and said why" apart from "the server sent a malformed reply", which used to share a code path. Fuchsia's C++ client does the same: `ClientBase::Dispatch()` checks `maybe_epitaph()`, an ordinal comparison, before it matches a reply to its txid.
+
+**Change**
+Before, each call decoded the reply and fell back to the epitaph:
+
+```cpp
+auto const decoded = fuchsia_io::decode_read_reply(reply.message(), txid);
+if (decoded.is_err()) {
+    return ustl::err(not_a_reply(reply.message()));   // decode_epitaph() or InvArgs
+}
+```
+
+After, the epitaph first, by its header:
+
+```cpp
+if (auto const closed = epitaph_of(reply.message()); closed.is_some()) {
+    return ustl::err(*closed);                        // the status; Ok becomes PeerClosed
+}
+auto const decoded = fuchsia_io::decode_read_reply(reply.message(), txid);
+if (decoded.is_err()) {
+    return ustl::err(Status::InvArgs);
+}
+```
+
+and `open()`, when its write finds the entry closed:
+
+```cpp
+if (written != Status::PeerClosed) {
+    return written;
+}
+auto const closed = closed_status(resolved->directory);    // the epitaph's status, or PeerClosed
+auto _ = installed.mark_closed(resolved->directory, closed);
+return closed;
+```
+
+`Namespace::mark_closed()` keeps the first status (a binding closes once), refuses Ok, and leaves the channel in the binding, so `unbind()` still hands it back.
+
+Rejected:
+- Reading the entry's epitaph in `install()`, before anything is opened: a live entry has nothing to read, and peeking at it would need a non-blocking read on every entry at start for the one that failed.
+- Unbinding a closed entry: the path would then answer NotFound, which loses the reason, and a later bind at the same path would be allowed where the component's manifest says the entry exists.
+
+**Reference**
+- Fuchsia `ClientBase::Dispatch()` (`sdk/lib/fidl/cpp/wire/client_base.cc:214-218`) over `IncomingHeaderAndMessage::maybe_epitaph()` (`sdk/lib/fidl/cpp/wire/incoming_message.cc:80-85`), and `kFidlOrdinalEpitaph`.
+- Fuchsia closes a namespace entry it cannot route with `server.close_with_epitaph(e.as_zx_status())` in `NamespaceBuilder::serve()` (`src/sys/component_manager/lib/serve_processargs/src/namespace.rs:145-175`); fdio has no state for it, so a client there learns the reason only on its own connection.
+- Design D8 and "Events: a component opening a file in /boot".
+
+**Verification**
+- `out/bringup.x86/host/obj/system/lib/fsio/test/fsio`: `[  PASSED  ] 33 tests.` (30 before, and three new: a closed binding answers its status at and under its mount point, beside others that stay open; `mark_closed()`'s refusals; the mark moving with its binding through `unbind()`).
+- `out/bringup.x86/host/obj/system/lib/wire/test/wire`: `[  PASSED  ] 12 tests.`, the new one among them.
+- On the target, routing_checks opens three paths under `/denied` and gets AccessDenied each time: the first from the epitaph, the second and third from the binding. With the root's offer widened to rx*, the same three opens answer Ok and the boot fails (`init.md`, step 13).
+
+**Deliberately not done**
+- A closed entry is not reopened or rebound: nothing in the design reroutes an entry after start (D8).
+- `closed_status()` reads one message. The root writes nothing on an entry but the epitaph that closes it, so a reply left over there would only come from a call a program made on the entry's own channel and abandoned; PeerClosed is then the answer, which is still true.
+
+**How it was found**
+Review of step 5: the AccessDenied check routing_checks needed in step 13 had no way to read the root's answer.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- A failed Open's epitaph is read by the first call on the new connection, but a failed namespace entry's epitaph needs `open()` to read it. What is different about the two channels?
+- Why is the entry's status cached in the binding rather than read again each time, and what would the second `open()` under `/denied` answer without the cache?
+- Why must a client ask whether a message is an epitaph before it decodes it as a reply, rather than after the reply decoder refuses it?

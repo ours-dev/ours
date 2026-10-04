@@ -64,8 +64,17 @@ auto install() -> ours::Status;
 ///
 /// |object| is consumed whatever the answer. The answer is this side's
 /// alone: clean_path()'s and resolve()'s refusals (NotFound for a relative
-/// path, there being no working directory), or the write's, PeerClosed when
-/// the directory's server is gone.
+/// path, there being no working directory), or the write's.
+///
+/// One case reads the channel. When the write finds the directory's server
+/// gone, the server may have left an epitaph saying why: the root closes a
+/// namespace entry it could not route that way before the component runs
+/// (component-framework design D8). open() reads it, answers its status
+/// (AccessDenied for an offer that narrowed the rights, say), and records it
+/// in the binding (Namespace::mark_closed()), since an epitaph can be read
+/// only once; every later open() and connect() under the entry answers the
+/// same status from there. Without an epitaph, or with an Ok one, the
+/// answer is PeerClosed, recorded the same way.
 [[nodiscard]]
 auto open(std::string_view path, fuchsia_io::Flags flags, ours::Uandle object) -> ours::Status;
 
@@ -89,9 +98,11 @@ auto connect(std::string_view path, ours::Uandle server) -> ours::Status;
 ///
 /// Errors: the server's status (AccessDenied without READ_BYTES, say); an
 /// epitaph's status, when the connection was closed with one -- a failed
-/// Open, for instance; PeerClosed when it was closed without one, or with
-/// an Ok epitaph; InvArgs for a reply that is not a well-formed answer to
-/// this request; and the channel calls' own.
+/// Open, for instance -- told apart from a reply by its header's ordinal
+/// (wire::is_epitaph()) before the reply is decoded; PeerClosed when it was
+/// closed without one, or with an Ok epitaph; InvArgs for a reply that is
+/// not a well-formed answer to this request, or a malformed epitaph; and the
+/// channel calls' own.
 [[nodiscard]]
 auto read(ours::Uandle file, std::span<u8> buffer) -> ustl::Result<usize, ours::Status>;
 
