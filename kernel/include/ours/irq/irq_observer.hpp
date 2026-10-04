@@ -8,34 +8,72 @@
 #include <ustl/collections/intrusive/list.hpp>
 
 namespace ours::irq {
-class IrqObserver {
+class IrqObject;
+
+/// One handler hung on an interrupt line: Linux's `struct irqaction`,
+/// Zircon's `interrupt_handler_t {cookie, fn}`.
+///
+/// Whoever registers a handler owns its observer -- a kernel driver keeps it
+/// in a static, an interrupt object will embed it -- and passes it to
+/// irq::attach(). The irq layer never allocates one, so a failed attach has
+/// nothing to free, and irq::detach() names the very observer to take off
+/// the line rather than a line number that cannot tell two observers apart.
+///
+/// The owner keeps the observer alive, and at the same address, until
+/// irq::detach() has returned: the line links it into its list through
+/// `m_hook`. The hook is a SafeLink one, so destroying an observer that is
+/// still linked traps instead of leaving the line a dangling pointer, and
+/// the class can be neither copied nor moved.
+class IrqObserver final {
     using Self = IrqObserver;
 
   public:
-    IrqObserver(VIrqNum const virqnum, IrqFlags const flags, IrqHandler const handler,
-                char const *const name) noexcept
-        : virqnum_(virqnum), flags_(flags), handler_(handler), name_(name) {}
+    /// `context` is handed back to `handler` on every interrupt, untouched.
+    constexpr IrqObserver(IrqHandler const handler, void *const context, IrqFlags const flags,
+                          char const *const name) noexcept
+        : m_handler(handler), m_context(context), m_flags(flags), m_name(name) {}
+
+    IrqObserver(Self const &) = delete;
+    auto operator=(Self const &) -> Self & = delete;
 
     [[nodiscard]]
     auto on_event() const -> IrqReturn {
-        return handler_(virqnum_, nullptr);
+        return m_handler(m_virqnum, m_context);
     }
 
     [[nodiscard]]
     auto is_shared() const -> bool {
-        return !!(flags_ & IrqFlags::Shared);
+        return !!(m_flags & IrqFlags::Shared);
+    }
+
+    /// The line this observer is attached to, or INVALID_V_IRQ_NUM when it
+    /// is on none.
+    [[nodiscard]]
+    auto virqnum() const -> VIrqNum {
+        return m_virqnum;
+    }
+
+    [[nodiscard]]
+    auto is_attached() const -> bool {
+        return m_virqnum != INVALID_V_IRQ_NUM;
     }
 
   private:
-    VIrqNum virqnum_;
-    IrqFlags flags_;
-    IrqHandler handler_;
+    // Only the line may say which line an observer is on: IrqObject::attach()
+    // and detach() write `m_virqnum` together with linking `m_hook`, so the two
+    // cannot disagree.
+    friend class IrqObject;
+
+    IrqHandler m_handler;
+    void *m_context;
+    IrqFlags m_flags;
     [[maybe_unused]]
-    char const *name_;
-    ustl::collections::intrusive::ListMemberHook<> managed_hook_;
+    char const *m_name;
+    VIrqNum m_virqnum = INVALID_V_IRQ_NUM;
+    ustl::collections::intrusive::ListMemberHook<> m_hook;
 
   public:
-    USTL_DECLARE_HOOK_OPTION(Self, managed_hook_, ManagedOption);
+    USTL_DECLARE_HOOK_OPTION(Self, m_hook, ManagedOption);
     USTL_DECLARE_LIST(Self, List, ManagedOption);
 };
 } // namespace ours::irq

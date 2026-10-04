@@ -10,13 +10,13 @@
 
 namespace ours::irq {
 class IrqObject;
+class IrqObserver;
 
 class IrqDispatcher {
   public:
     auto init(usize nr_irqs) -> Status;
-    auto request_irq(VIrqNum irqnum, IrqHandler handler, IrqFlags flags, char const *name)
-        -> Status;
-    auto release_irq(VIrqNum virqnum) -> Status;
+    auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status;
+    auto detach(IrqObserver &observer) -> Status;
     auto handle_irq(VIrqNum virqnum) -> IrqReturn;
 
   private:

@@ -36,29 +36,30 @@ auto IrqDispatcher::irqnum_to_object(VIrqNum virqnum) -> IrqObject * {
     return objects_[virqnum];
 }
 
-auto IrqDispatcher::request_irq(VIrqNum irqnum, IrqHandler handler, IrqFlags flags,
-                                char const *name) -> Status {
-    if (irqnum == INVALID_V_IRQ_NUM) {
-        return Status::InvArgs;
-    }
-    if (!handler) {
+/// Nothing is allocated here: the observer is the caller's, so a refused attach
+/// leaves nothing behind to free.
+auto IrqDispatcher::attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
+    if (virqnum == INVALID_V_IRQ_NUM) {
         return Status::InvArgs;
     }
 
-    auto object = irqnum_to_object(irqnum);
+    auto object = irqnum_to_object(virqnum);
     if (!object) {
         return Status::NoResource;
     }
 
-    auto observer = new (mm::GAF_KERNEL) IrqObserver(irqnum, flags, handler, name);
-    if (!observer) {
-        return Status::OutOfMem;
-    }
-    return object->attach(*observer);
+    return object->attach(observer);
 }
 
-auto IrqDispatcher::release_irq(VIrqNum virqnum) -> Status {
-    return Status::Unimplemented;
+/// The observer knows its line, so the caller names only the observer: on a
+/// shared line a number alone cannot say which of its observers to remove.
+auto IrqDispatcher::detach(IrqObserver &observer) -> Status {
+    auto object = irqnum_to_object(observer.virqnum());
+    if (!object) {
+        return Status::NotFound;
+    }
+
+    return object->detach(observer);
 }
 
 auto IrqDispatcher::handle_irq(VIrqNum virqnum) -> IrqReturn {

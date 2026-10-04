@@ -29,14 +29,12 @@ auto init_early(usize num_irqs) -> void {
     ASSERT(Status::Ok == status);
 }
 
-auto request_irq(VIrqNum virqnum, IrqHandler handler, IrqFlags flags, char const *name) -> Status {
-    ASSERT(virqnum != INVALID_V_IRQ_NUM);
-    return get_irq_dispatcher()->request_irq(virqnum, handler, flags, name);
+auto attach(VIrqNum virqnum, IrqObserver &observer) -> Status {
+    return get_irq_dispatcher()->attach(virqnum, observer);
 }
 
-auto release_irq(VIrqNum virqnum) -> Status {
-    ASSERT(virqnum != INVALID_V_IRQ_NUM);
-    return get_irq_dispatcher()->release_irq(virqnum);
+auto detach(IrqObserver &observer) -> Status {
+    return get_irq_dispatcher()->detach(observer);
 }
 
 auto set_affinity(VIrqNum, const CpuMask &targets) -> Status {

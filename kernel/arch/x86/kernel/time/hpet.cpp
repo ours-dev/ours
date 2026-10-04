@@ -37,9 +37,10 @@ constexpr static auto HPET_MIN_CYCLES = 128;
 /// tested against it. Here the PIT is enrolled first (arch_time_init(), at
 /// Irq + 1) and the HPET after (Irq + 2), and enabling the legacy replacement
 /// route below takes IRQ0 away from the PIT -- from then on the HPET is the
-/// device on that line, and time::CLOCK_EVENT is pointed at it. The device
-/// that owns the interrupt has to be the one TickDevice is bound to, so the
-/// HPET must win the comparison it would lose on Linux's numbers.
+/// device on that line, and time::set_global_clock_event() points the line
+/// at it. The device that owns the interrupt has to be the one TickDevice is
+/// bound to, so the HPET must win the comparison it would lose on Linux's
+/// numbers.
 constexpr static auto HPET_CLKEVT_RATING = ClockEventDevice::Rating(120);
 
 /// As a *time source* the HPET keeps Linux's number (drivers/clocksource has
@@ -384,7 +385,7 @@ auto hpet_init(PhysAddr mmio) -> Status {
     auto &device = HPET_CHANNELS[0].device();
     ClockEventDevice::enroll(device, HPET_FREQUENCY, HPET_MIN_CYCLES, 0x7FFFFFFF);
 
-    time::CLOCK_EVENT = &device;
+    time::set_global_clock_event(device);
     return Status::Ok;
 }
 

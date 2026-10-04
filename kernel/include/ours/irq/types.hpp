@@ -22,7 +22,10 @@ enum class IrqFlags : u32 {
 };
 USTL_ENABLE_ENUM_BITMASK(IrqFlags);
 
-using IrqHandler = auto (*)(VIrqNum, void *) -> IrqReturn;
+/// An interrupt handler. `context` is whatever the observer that carries the
+/// handler was constructed with (IrqObserver), so the handler finds its
+/// device's state there rather than in a global.
+using IrqHandler = auto (*)(VIrqNum virqnum, void *context) -> IrqReturn;
 } // namespace ours::irq
 
 #endif // OURS_IRQ_TYPES_HPP

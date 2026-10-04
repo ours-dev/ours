@@ -21,6 +21,14 @@ auto IrqObject::init(IrqChip *chip) -> Status {
 }
 
 auto IrqObject::attach(IrqObserver &observer) -> Status {
+    if (!observer.m_handler) {
+        return Status::InvArgs;
+    }
+    // An observer hangs on one line at a time: its hook has room for one
+    // list, and pushing a linked hook again would corrupt both lists.
+    if (observer.is_attached()) {
+        return Status::BadState;
+    }
     if (observers_.size() != 0 && (!is_shared() || !observer.is_shared())) {
         return Status::AlreadyBound;
     }
@@ -29,11 +37,19 @@ auto IrqObject::attach(IrqObserver &observer) -> Status {
     }
 
     observers_.push_back(observer);
+    observer.m_virqnum = irqdata_.virqnum;
     return Status::Ok;
 }
 
 auto IrqObject::detach(IrqObserver &observer) -> Status {
+    // iterator_to() trusts that the observer is in this very list; erasing one
+    // that is not would unlink it from whichever list it is on, or from none.
+    if (observer.m_virqnum != irqdata_.virqnum) {
+        return Status::NotFound;
+    }
+
     auto _ = observers_.erase(observers_.iterator_to(observer));
+    observer.m_virqnum = INVALID_V_IRQ_NUM;
     return Status::Ok;
 }
 

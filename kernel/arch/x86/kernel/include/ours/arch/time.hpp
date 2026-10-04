@@ -7,11 +7,13 @@
 #include <ours/time/types.hpp>
 
 namespace ours::time {
-extern ClockEventDevice *CLOCK_EVENT;
+/// The clock-event device the legacy timer line, ISA 0, drives: the PIT's
+/// until the HPET takes the line over. Linux's `global_clock_event`.
+auto global_clock_event() -> ClockEventDevice *;
 
-inline auto global_clock_event() -> ClockEventDevice * {
-    return CLOCK_EVENT;
-}
+/// Points the legacy timer line at `device`. hpet_init() calls it once it
+/// has taken IRQ0 from the PIT through the legacy replacement route.
+auto set_global_clock_event(ClockEventDevice &device) -> void;
 
 auto hpet_init() -> Status;
 auto pit_init() -> Status;

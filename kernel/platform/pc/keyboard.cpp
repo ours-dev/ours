@@ -1,5 +1,6 @@
 #include <ours/arch/apic.hpp>
 #include <ours/assert.hpp>
+#include <ours/irq/irq_observer.hpp>
 #include <ours/irq/mod.hpp>
 #include <ours/platform/isa.hpp>
 
@@ -8,6 +9,7 @@
 #include <ktl/allocator.hpp>
 #include <logz4/log.hpp>
 #include <ustl/io/circular_buffer.hpp>
+#include <ustl/util/enum_bits.hpp>
 
 /// i8042 keyboard controller registers
 #define I8042_COMMAND_REG 0x64
@@ -434,24 +436,51 @@ const uint8_t PC_KEY_MAP_SET1_E0[128] = {/* 0x00 */ 0,
                                          0,
                                          0};
 
-/// State key flags
-static bool key_lshift;
-static bool key_rshift;
-static int LAST_CODE;
+namespace {
+    /// The shift keys held down.
+    enum class ShiftKeys : u8 {
+        None = 0,
+        Left = 0_bit,
+        Right = 1_bit,
+    };
+    USTL_ENABLE_ENUM_BITMASK(ShiftKeys);
 
-static ustl::io::CircularBuffer<u8, ktl::Allocator<u8>> KEY_BUF;
+    /// What the keyboard's interrupt handler keeps from one interrupt to the
+    /// next. The handler is handed it as its context rather than reading
+    /// globals of its own.
+    struct KeyboardState final {
+        ShiftKeys shift = ShiftKeys::None;
+        /// The previous scancode: 0xE0 announces an extended key.
+        u8 last_code = 0;
+        /// The decoded characters. Nothing reads them yet.
+        ustl::io::CircularBuffer<u8, ktl::Allocator<u8>> buffer;
+    };
+
+    // Namespace-scope objects are UPPER_CASE throughout this tree; .clang-tidy's
+    // lower_case rule predates that.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    KeyboardState KEYBOARD;
+
+    auto set_held(ShiftKeys &keys, ShiftKeys const key, bool const held) -> void {
+        if (held) {
+            keys |= key;
+        } else {
+            keys &= ~key;
+        }
+    }
+} // namespace
 
 FORCE_INLINE
 static auto isprint(u8 c) -> bool {
     return 0x20 <= c && c <= 0x7E;
 }
 
-static auto i8042_process_scode(u8 scode, i32 flags) -> void {
+static auto i8042_process_scode(KeyboardState &state, u8 scode, i32 flags) -> void {
     // is this a multi code sequence?
-    bool multi = (LAST_CODE == 0xe0);
+    bool multi = (state.last_code == 0xe0);
 
     // update the last received code
-    LAST_CODE = scode;
+    state.last_code = scode;
 
     // save the key up event bit
     bool key_up = !!(scode & 0x80);
@@ -461,7 +490,7 @@ static auto i8042_process_scode(u8 scode, i32 flags) -> void {
     uint8_t key_code;
     if (multi) {
         key_code = PC_KEY_MAP_SET1_E0[scode];
-    } else if (key_lshift || key_rshift) {
+    } else if (state.shift != ShiftKeys::None) {
         key_code = PC_KEY_MAP_SET1_UPPER[scode];
     } else {
         key_code = PC_KEY_MAP_SET1_LOWER[scode];
@@ -514,10 +543,10 @@ static auto i8042_process_scode(u8 scode, i32 flags) -> void {
 
         // left and right shift are special
         case KEY_LSHIFT:
-            key_lshift = !key_up;
+            set_held(state.shift, ShiftKeys::Left, !key_up);
             break;
         case KEY_RSHIFT:
-            key_rshift = !key_up;
+            set_held(state.shift, ShiftKeys::Right, !key_up);
             break;
 
         // everything else we just eat
@@ -527,7 +556,7 @@ static auto i8042_process_scode(u8 scode, i32 flags) -> void {
     if (!key_up) {
         for (u32 i = 0; str[i] != '\0'; ++i) {
             log::trace("char 0x{:X} ({})\n", str[i], isprint(str[i]) ? (str[i]) : ' ');
-            KEY_BUF.push_back(str[i]);
+            state.buffer.push_back(str[i]);
         }
     }
 }
@@ -638,7 +667,9 @@ static auto keyboard_command(uint8_t *param, int command) -> i32 {
     return retval;
 }
 
-static auto i8042_interrupt(VIrqNum, void *) -> irq::IrqReturn {
+static auto i8042_interrupt(VIrqNum, void *context) -> irq::IrqReturn {
+    auto &state = *static_cast<KeyboardState *>(context);
+
     // keep handling status on the keyboard controller until no bits are set we care about
     bool retry;
     do {
@@ -649,8 +680,9 @@ static auto i8042_interrupt(VIrqNum, void *) -> irq::IrqReturn {
         // check for incoming data from the controller
         if (str & I8042_STR_OBF) {
             uint8_t data = i8042_read_data();
-            i8042_process_scode(data, ((str & I8042_STR_PARITY) ? I8042_STR_PARITY : 0) |
-                                          ((str & I8042_STR_TIMEOUT) ? I8042_STR_TIMEOUT : 0));
+            i8042_process_scode(state, data,
+                                ((str & I8042_STR_PARITY) ? I8042_STR_PARITY : 0) |
+                                    ((str & I8042_STR_TIMEOUT) ? I8042_STR_TIMEOUT : 0));
 
             retry = true;
         }
@@ -661,10 +693,18 @@ static auto i8042_interrupt(VIrqNum, void *) -> irq::IrqReturn {
     return irq::IrqReturn::Handled;
 }
 
+namespace {
+    /// The keyboard line's observer. It lives as long as the kernel: nothing
+    /// detaches the keyboard.
+    // NOLINTNEXTLINE(readability-identifier-naming): UPPER_CASE, as KEYBOARD is.
+    constinit irq::IrqObserver KEYBOARD_OBSERVER{&i8042_interrupt, &KEYBOARD, irq::IrqFlags::None,
+                                                 "Keyboard"};
+} // namespace
+
 static auto platform_init_keyboard() -> void {
     uint8_t ctr;
 
-    if (KEY_BUF.resize(KB(1)).is_err()) {
+    if (KEYBOARD.buffer.resize(KB(1)).is_err()) {
         log::debug("Failed to allocate the keyboard input ring\n");
         return;
     }
@@ -696,11 +736,11 @@ static auto platform_init_keyboard() -> void {
 
     auto const irqnum = apic_io_isa_to_global(ISA_IRQ_KEYBOARD);
     [[maybe_unused]]
-    auto status = irq::request_irq(irqnum, i8042_interrupt, irq::IrqFlags::None, "Keyboard");
+    auto status = irq::attach(irqnum, KEYBOARD_OBSERVER);
     DEBUG_ASSERT(status == Status::Ok);
     apic_unmask_irq(irqnum);
 
-    i8042_interrupt(0, NULL);
+    i8042_interrupt(0, &KEYBOARD);
     {
         int x = 0;
         *(volatile int *)&x = 10;
