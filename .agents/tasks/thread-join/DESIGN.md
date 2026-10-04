@@ -25,26 +25,47 @@ Non-goals:
 - A general chain-lock facility, unless the lock-order decision below needs one.
 
 ## Design
-To be designed in this task. The objects involved:
-- `Thread::m_task_state`: the return code and `m_result_wait_queue`, the queue joiners park on.
-- The thread's PI lock, `get_pi_lock()`, which guards its state and `m_flags` (Detached, NoFree).
-- `SPAWNED_THREADS` and `SPAWNED_THREADS_LOCK`.
-- The free Dpc that `exit()` queues today.
+Option B of the lock-order decision (decided 2026-10-04): no code path ever holds two threads' PI locks at once. The joiners do not wait for "T is Dead". They wait for "T is off its stack", and a Dpc publishes that after T's last context switch.
 
-Zircon's order of events, to compare against:
-1. The joiner locks the global list and the target. If the target is Detached, it fails with BAD_STATE.
-2. If the target is not Dead, the joiner trades those locks for its own lock and the wait queue's (with backoff), parks, and retries from step 1 once woken.
-3. If the target is Dead, the joiner reads the return code, unlinks the thread from the lists, drops its locks, and frees the thread.
-4. On the exit side, the dying thread sets itself Dead under its lock, wakes the joiners (retrying on backoff), queues no free Dpc, and reschedules for the last time.
+Objects:
+- `TaskState::m_exited`: a manual-reset `sync::Event`, replacing `m_result_wait_queue`. It is signalled once, with `Ok`, after T has switched out for the last time. `event.hpp` includes only `wait_queue.hpp`, so `thread.hpp` can hold one without an include cycle.
+- T's PI lock: guards `state()` (Dead) and `m_flags`. It gains `Joined`, the claim of the one thread allowed to reap T. T holds this lock from setting Dead until its final switch completes; the next thread releases it in `Scheduler::complete_context_switch()` (`kernel/kernel/task/sched/scheduler.cpp:591-595`).
+- The exit Dpc: queued by `exit()` for a joinable T, as the detached path already queues its free Dpc, and on T's stack like that one. The DPC worker that runs it is pinned to T's CPU (`kernel/kernel/task/dpc.cpp:34`), and T keeps preemption off until its final switch, so the Dpc runs only after T has left its stack. `DpcRunner` does not touch a Dpc after invoking it (`dpc.cpp:99-108`).
+- `SPAWNED_THREADS` and `SPAWNED_THREADS_LOCK`: the reaper unlinks T, as Zircon's `Join()` calls `EraseFromListsLocked()`.
+
+Ownership rule: at any moment exactly one party may free T. That is T itself through the free Dpc if T is Detached, or the joiner that holds the `Joined` claim. `Detached` and `Joined` are never set together.
+
+Exit side, joinable T:
+1. Under T's PI lock: set Dead and the return code; T is not Detached, so it is not unlinked and no free Dpc is queued.
+2. Drop the PI lock, queue the exit Dpc, retake the PI lock, final reschedule. The gap is safe for the reason the detached path's is: the Dpc cannot run before the switch, and nothing frees T before the Dpc signals.
+3. The Dpc, on T's CPU after the switch: take and release T's PI lock (it is free only once the switch has completed), then `m_exited.signal(Ok)`. It wakes the joiner with no PI lock held.
+
+Joiner side, `Thread::join(retcode, deadline)` (the user's hand-written function):
+1. `DEBUG_ASSERT(this != current)`.
+2. Under T's PI lock: `Detached` or `Joined` already set means `BadState`; otherwise set `Joined`.
+3. Wait on `m_exited` with the deadline, not interruptible (Zircon's `TaskState::Join()` blocks `Interruptible::No`). `Event::wait_etc()` already makes "is it signalled?" and the enqueue one step under the queue lock.
+4. On a timeout: under T's PI lock, clear `Joined`, return `TimeOut`. Safe: a claimed T is freed by nobody else.
+5. On `Ok`: read the return code, unlink T from `SPAWNED_THREADS`, `destroy()` it.
+
+`detach()`:
+- Under T's PI lock: `Joined` set means `BadState` (see the decision below). Not Dead: set `Detached`, done.
+- Dead and joinable: drop the PI lock, then `join(nullptr, infinite)`. Zircon's `Detach()` drops its lock before joining too; the old body here joined with the lock held.
+
+Removed: `TaskState::join()`, `TaskState::try_wake_joiners()`, the `notify_all()` in `TaskState::invoke()` (it woke joiners before T was even Dead), and `exit()`'s panic on a joinable thread.
+
+Locks: T's PI lock is only ever held alone, or outside `SPAWNED_THREADS_LOCK` and the event's queue lock, which is the existing order. The Dpc and the joiner each hold one PI lock at a time.
 
 ## Alternatives considered
-None yet.
+- **A. Zircon's shape with a local backoff.** The joined thread's PI lock is taken before the joiner's. The joiner takes its own with `SpinLock::try_acquire()` and drops everything and retries on failure, and `exit()` wakes the joiners inline under its own PI lock. Rejected: it nests two locks of one class with an ad hoc protocol that the planned ChainLock (`.agents/skills/ours-kernel-design/references/task.md`) would replace; mutual joins livelock; and whether this lockdep accepts same-class nesting was not established. Zircon's own TODO in `Thread::Current::Exit()` (`zircon/kernel/kernel/thread.cc:1067-1093`) prefers dropping the thread's lock to wake joiners unconditionally, with a cleanup lock guarding the stack; the exit Dpc plays that role here.
+- **A2. A fixed order with no backoff.** As A, but joined before joiner always. Rejected: a join cycle spins two CPUs for good with interrupts off, where Zircon at worst leaves two threads blocked.
+- **Reference counting, as Linux's `finish_task_switch()` drops the last reference to a dead task.** Rejected: it needs a hook after the switch in `scheduler.cpp`, generic scheduler machinery the user is to be asked about first, and it changes the thread lifetime model the rest of the kernel assumes.
 
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| Lock order between the exiting thread's PI lock, the result wait queue and each joiner's PI lock | To be laid out once the design is drafted: chain-lock backoff as in Zircon, or an order that avoids nesting | None yet | | |
-| Who writes the core function | The user writes the joiner side (park the caller, atomic with exit's wake) under a time limit, as the milestone hand-written function in `docs/authored.md`; or the agent writes it | The user, by CLAUDE.md's milestone rule | | |
+| Lock order between the exiting thread's PI lock, the joiners' wake and each joiner's PI lock | A: Zircon's order with a local try-lock backoff; B: never nest two PI locks, a Dpc signals an Event after the final switch | B | B; the written argument is pending | B, 2026-10-04 |
+| `detach()` while a joiner holds the claim | Zircon: `Detach()` wakes the joiners with `ZX_ERR_BAD_STATE`; here: refuse the detach with `BadState` while `Joined` is set | Refuse: with B, waking the joiner from `detach()` either nests PI locks or signals an event T may already have freed, and a timed-out joiner's un-claim would race T freeing itself | | |
+| Who writes the core function | The user writes the joiner side under a time limit, as the milestone hand-written function in `docs/authored.md`; or the agent writes it | The user, by CLAUDE.md's milestone rule | | |
 
 Per CLAUDE.md, the concurrency decision needs the user's written argument first: which invariant the lock protects, who accesses it concurrently, and the worst interleaving. The agent grades it after.
 
@@ -54,5 +75,6 @@ Per CLAUDE.md, the concurrency decision needs the user's written argument first:
 - `ours-verify` on both images, and the test run with `scripts/kshell_run.py` on both.
 
 ## Open questions
-- Whether `TaskState::join()`'s current shape, which parks a given thread on the result queue, survives, or whether the park moves into `Thread::join()` around `park_thread_preamble_locked()`.
-- How this interacts with the `wait_queue` work another session has in flight (`kernel/include/ours/task/wait_queue.hpp`, `kernel/kernel/task/wait_queue.cpp`, `kernel/commands/wait_queue_test.cpp`, uncommitted on 2026-10-03).
+- `sync::Event` exposes a deadline wait only as interruptible (`Event::wait(deadline)`); the join needs a non-interruptible one, so `Event` needs a public form of `wait_etc()`'s choice.
+- The `kshell_run.py` runs of the test can only happen on dbg_1: the rel image has booted with `kernel.shell=false` since `ead5d12f`.
+- Whether `destroy()` should take over the `SPAWNED_THREADS` unlink for both paths, rather than the reaper doing it.
