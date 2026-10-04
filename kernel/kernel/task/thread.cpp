@@ -629,7 +629,16 @@ auto Thread::Current::sleep_etc(time::Deadline const &deadline, Interruptible in
             if (timer->trylock_or_cancel(pi_lock)) {
                 return Timer::HandlerResult::Handled;
             }
-            current_thread->m_waiter_state.unsleep(current_thread, Status::Ok);
+            // Winning the lock does not mean the thread still sleeps. A
+            // suspend or kill may have woken it early (suspend_or_kill()'s
+            // Sleeping branch); it then stays armed until the thread runs
+            // and reaches timer.cancel() below, and a thread woken onto a
+            // busy CPU can wait a whole time slice for that. Unsleeping it
+            // again would put a Ready or Running thread back on a run queue.
+            // Zircon's Thread::HandleSleep() checks the same.
+            if (current_thread->is_state_sleeping()) {
+                current_thread->m_waiter_state.unsleep(current_thread, Status::Ok);
+            }
             pi_lock.release();
             return Timer::HandlerResult::Handled;
         });

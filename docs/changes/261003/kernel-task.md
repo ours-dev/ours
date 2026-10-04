@@ -246,3 +246,63 @@ None.
 - Why must a suspend's wake answer differently from a kill's, and what should each waiter do with its answer?
 - Why did changing the status not require touching any waiter?
 - What would an exception-channel wait have done with a kill that answered `Ok`?
+
+## Title: A sleep's timer leaves alone a thread that is no longer asleep (2026-10-03)
+
+**Files**
+- `kernel/kernel/task/thread.cpp` — `sleep_etc()`'s timer callback unsleeps the thread only while it is still Sleeping.
+- `kernel/commands/sleep_test.cpp` — new `sleep.test`: holds the race open and lands the timer on an early-woken sleeper.
+- `kernel/commands/BUILD.gn` — builds it.
+
+**Symptom**
+Latent: no system call suspends or kills a sleeping thread. When something does, and the sleeper's timer fires before the woken thread has run, dbg_1 stops with `Assertion failed on thread->state() & (Initial | Suspend | Parked | Sleeping)` in the unpark, and a build without assertions puts a thread on a run queue it is already on. `sleep.test` on the code before this change panicked that way on the sleeper's CPU, at its deadline.
+
+**Cause**
+A sleep has two ways to end: its timer, and a suspend or kill through `suspend_or_kill()`'s Sleeping branch. Both end in `unsleep()`, under the thread's PI lock, so they cannot run at the same time. But nothing stopped them running one after the other. After an early wake, the timer is still armed: the sleeper cancels it in its own code, after `sleep()` returns, which is only once the scheduler runs it again. A thread woken onto a busy CPU can wait a whole time slice for that, and the timer can fire in between.
+
+The callback's `trylock_or_cancel()` does not catch this. It answers a different question: whether the sleeper is *in the middle of cancelling*, in which case taking the lock would deadlock against the canceller. A thread that is Ready and has not reached `cancel()` yet holds no lock and has marked nothing, so the callback takes the lock and unsleeps a thread that is no longer asleep. Holding the lock tells you that nobody else is changing the thread right now. It does not tell you the thread is still in the state your timer was armed for. You have to look.
+
+**Change**
+
+```cpp
+// before
+if (timer->trylock_or_cancel(pi_lock)) {
+    return Timer::HandlerResult::Handled;
+}
+current_thread->m_waiter_state.unsleep(current_thread, Status::Ok);
+pi_lock.release();
+
+// after
+if (timer->trylock_or_cancel(pi_lock)) {
+    return Timer::HandlerResult::Handled;
+}
+if (current_thread->is_state_sleeping()) {
+    current_thread->m_waiter_state.unsleep(current_thread, Status::Ok);
+}
+pi_lock.release();
+```
+
+The check is enough because the PI lock guards the state, and a thread leaves Sleeping only through `unsleep()`, under that lock. Rejected: cancelling the timer in the early-wake path (`suspend_or_kill()` would have to reach the timer on the sleeper's stack and spin on a callback that is spinning on the lock `suspend_or_kill()` holds), and a generation counter per sleep (more state for what one state check already decides).
+
+**Reference**
+Zircon `Thread::HandleSleep()` (kernel/kernel/thread.cc): `if (state() != THREAD_SLEEPING) { get_lock().Release(); return; }` after `TrylockOrCancel()`.
+
+**Verification**
+- Isolated copy of HEAD with this change: `boot_check.py --out out/task-wake`, dbg PASS (20 passed), rel PASS (18 passed), 0 error lines.
+- `sleep.test` on dbg: `ok -- 4 checks`; the suspend landed 53010 us before the deadline, so the timer fired on the early-woken sleeper while the hog held its CPU. `waitqueue.test` still `ok`.
+- The same test on the code before this change: the assertion above, on the sleeper's CPU, at its deadline.
+- clang-tidy: no finding on the changed lines.
+
+**Deliberately not done**
+The Sleeping branch itself (it wakes non-interruptible sleepers, and with `Ok`) is the rest of repair item 3 and the next change.
+
+**How it was found**
+Recorded as repair item 3 on 2026-09-24. To reproduce it, `sleep.test` holds the window open on purpose: it pins the sleeper and a hog thread to one CPU, and the hog spins there with preemption disabled from before the suspend until after the deadline.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- After `trylock_or_cancel()` succeeds, what does the timer callback know, and what does it not know?
+- Why does the sleeper cancel its timer only after it runs again, and how long can that take?
+- How does `sleep.test` make a race window of a few microseconds wide enough to hit every time?

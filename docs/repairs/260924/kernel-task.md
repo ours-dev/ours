@@ -1,11 +1,24 @@
 # kernel-task 待修项（2026-09-24）
 
-## 3. `suspend_or_kill` 的 Sleeping 分支与睡眠定时器竞争（已交接给独立会话）
+## 3. `suspend_or_kill()`'s Sleeping branch wakes a sleeper it should leave alone, with the wrong status
 
-Sleeping 分支不看 `is_interruptible()`、以 `Status::Ok` 唤醒；`sleep_etc` 的定时器回调在
-`trylock_or_cancel` 成功后不检查线程是否仍在 Sleeping。提前唤醒之后定时器仍挂着，到期时会去
-unpark 一个已是 Ready/Running 的线程（dbg_1 触发 `scheduler.cpp` 的状态断言，dbg_0 重复入队）。
-改法照 Zircon：不唤醒不可中断的睡眠者；`HandleSleep()` 在 `state() != THREAD_SLEEPING` 时直接返回。
+**Severity**
+Medium: wrong behaviour, on a path no system call reaches yet.
+
+**Symptom**
+`sleep.test` prints "the early-woken sleep answered Ok". A suspend or kill of a thread in `Thread::Current::sleep_etc()` wakes it even when it sleeps with `Interruptible::No`, and an interruptible sleeper woken this way reads `Ok`, as if it had slept its full time.
+
+**Cause**
+The Sleeping branch calls `m_waiter_state.unsleep(this, Status())` without the `is_interruptible()` check the Parked branch makes, and with a default-constructed status (`Ok`) rather than the kill or retry status the Parked branch now passes. A non-interruptible sleep is a promise that only the deadline ends it; the kernel's own bring-up sleeps rely on that.
+
+**Change**
+As in the Parked branch: return with only the signal set when the sleeper is not interruptible, and otherwise unsleep with `wakeup_status` (`InternalIrqKilled` or `InternalIrqRetry`).
+
+**Reference**
+Zircon `Thread::SuspendOrKillInternal()` (kernel/kernel/thread.cc): one interruptible check for `THREAD_BLOCKED` and `THREAD_SLEEPING` alike, then `wait_queue_state_.Unsleep(this, wakeup_status)`.
+
+**Acceptance**
+`sleep.test` checks that an interruptible sleeper woken early answers `InternalIrqRetry`, and that a non-interruptible one is not woken before its deadline.
 
 ## 4. `Thread::Current::tid()` 读的是 `%gs:0x70`，不是当前线程的 tid（已交接给独立会话）
 
