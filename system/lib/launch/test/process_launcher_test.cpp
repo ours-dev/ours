@@ -329,6 +329,18 @@ TEST(ProcessLauncherState, StringBytesFitTheProcessargs) {
         EXPECT_TRUE(client.fake.started.empty());
         client.expect_accounted();
     }
+    {
+        // A path that does not fit the arena the arguments filled: AddNames
+        // checks the same arena, so its directory is closed at once rather
+        // than kept, and its path is never copied past the arena's end.
+        Client client;
+        ASSERT_EQ(client.add_args({most}).outcome, Outcome::Continue);
+        ASSERT_EQ(client.add_names({"/boot"}).outcome, Outcome::Continue);
+        EXPECT_EQ(client.fake.closed, (std::vector<Uandle>{client.given.back()}));
+        expect_reply(client.launch(), Status::InvArgs);
+        EXPECT_TRUE(client.fake.started.empty());
+        client.expect_accounted();
+    }
 }
 
 TEST(ProcessLauncherState, HandlesAndBytesShareTheMessage) {
