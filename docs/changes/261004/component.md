@@ -413,3 +413,64 @@ None.
 1. A manifest names itself as a child and exposes a capability from that child under the same name. Trace a walk into it, say what stops it in the root, and say what step 13's `resolve()` must never do for that to stay true.
 2. Why does refusing an expose from the parent keep the walk monotone without bounding it, and why does the pool bound it only together with that refusal?
 3. If `route()` ignored a use's own subdir that does not fit, what directory would the component be handed instead of the one it asked for, and why does the error name the target with the verb Use rather than the parent with Offer?
+
+## Title: route()'s spec says which hop an AccessDenied names, and which Fuchsia router that matches (component-framework step 8, review) (2026-10-04)
+
+**Files**
+- `system/lib/component/include/component/route.hpp` — the spec's rights rule gains three sentences: the error names the hop that holds less, as Fuchsia's current router does, while the legacy RightsWalker that the walk otherwise follows named the hop before it
+
+**Symptom**
+Latent, cannot be triggered today: no behavior changed. A reader comparing the AccessDenied answers with the counterpart the spec cites for the rights rule, `RightsWalker::validate_next()` at `9e015f591c4^`, would find them disagreeing on every rights failure and could "fix" route() back to it. For `Route.RightsAreHeldAgainstTheHopBeforeNotTheUse` (leaf asks r* of `wide`, user offers it rx*, top offered user only r*) route() answers AccessDenied at `.`, Offer; the legacy walker answers at `user`. For `Route.AnOfferNarrowerThanTheUseIsAccessDenied` (user asks rx*, top offers r*) route() answers at `.`; the legacy walker answers at `user`, the target.
+
+**Cause**
+The objects: a rights failure always involves two hops, the earlier one that stated more (the requester) and the later one that states less (the provider), and the error can name only one instance. The events in the legacy router: `DirectoryState::advance()` hands each hop's rights to `WalkState::advance()`, which calls `last_seen_state.validate_next(proposed_state)`; on failure `validate_next()` builds `RightsRoutingError::Invalid { moniker: self.moniker, requested: self.rights, provided: next.rights }`, and `self` is the last seen state, so the moniker is the requester's. In the current bedrock router each declaration is its own `IntermediateRouter`, and `handle_directory_rights()` checks the request against the rights its own declaration states, passing its own moniker, "the moniker of the component which created this router", that is, the component that declares the offer; so the moniker is the provider's.
+
+route() follows the legacy router's walk (D9) but the current router's blame, and the spec had cited only the legacy function for the rule. The blame it chose is the better one for ours, which is why the code stays as it is: every other RouteError names the instance whose declaration the walk was looking at when it stopped, with that declaration's verb (Offer at the parent, Expose at a child, Declare at the declaring instance or the built-ins, Use at the target). Naming the requester instead would make AccessDenied the one error whose instance and verb point at a different record from the one the check failed on, and in the narrow-offer case it would blame the component that asked, whose manifest is usually right. The record names the counterpart so that the difference reads as a choice, not as a drift from Fuchsia.
+
+**Change**
+Before, the rule ended with the example:
+
+```cpp
+///   offered more than it had, and the walk answers AccessDenied at the
+///   grandparent.
+```
+
+After, it also says which Fuchsia router that matches:
+
+```cpp
+///   offered more than it had, and the walk answers AccessDenied at the
+///   grandparent. The error names the hop that holds less, as Fuchsia's
+///   current router does: IntermediateRouter::handle_directory_rights()
+///   passes its own moniker, the component that declares the hop, to
+///   validate_rights() (intermediate_router.rs:404-415, rights.rs:108-139 at
+///   `51f05104c13`). The legacy RightsWalker, whose walk this one follows,
+///   named the hop before it instead: validate_next() reports self.moniker
+///   (rights.rs:93-104 at `9e015f591c4^`), so it would answer at the parent
+///   here, and at |target| when an offer is narrower than the use.
+```
+
+Rejected: switching route() to the legacy blame. It would change the two tests above and step 13's log lines, and make AccessDenied the only RouteError whose instance is not the one whose declaration failed the check.
+
+**Reference**
+- `IntermediateRouter::handle_directory_rights()` (`src/sys/lib/routing/src/intermediate_router.rs:404-415` at `51f05104c13`), with the field it passes documented at `:136-137`, over `validate_rights()` (`src/sys/lib/routing/src/rights.rs:108-139`) and `Rights::validate_next()` (`:19-33`).
+- The legacy blame: `RightsWalker::validate_next()` (`rights.rs:93-104` at `9e015f591c4^`), called from `WalkState::advance()` and `finalize()` (`walk_state.rs:45-98`) as `last_seen_state.validate_next(proposed_state)`.
+
+**Verification**
+- Host tests: `out/bringup.x86/host/obj/system/lib/component/test/route`: `[  PASSED  ] 32 tests.`; `.../test/decl`: `[  PASSED  ] 16 tests.`
+- `scripts/format_cpp.py --check` on `route.hpp`: clean.
+- `boot_check.py`: both images PASS.
+
+**Deliberately not done**
+- The design's "Where ours departs from Fuchsia" table gains no row: ours matches the current router's blame, which the design's rights rule already cites (`rights.rs:19-33`).
+- No test changes: the two tests above already pin the blame.
+
+**How it was found**
+The review of step 8 compared each RouteError's instance with the counterpart the spec cites, reading `validate_next()` and `WalkState::advance()` at `9e015f591c4^`, then the current `validate_rights()` and its caller in `intermediate_router.rs`.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+1. In a rights failure, which two hops are involved, and which one does route() name, with which verb?
+2. Why does the legacy RightsWalker name the other hop, and what in `WalkState::advance()` decides that?
+3. Why does naming the hop that holds less keep AccessDenied consistent with every other RouteError ours answers?

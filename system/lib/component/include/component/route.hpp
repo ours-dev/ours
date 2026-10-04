@@ -271,7 +271,14 @@ namespace detail {
 ///   against the hop before, not against the use: if the use asks r*, the
 ///   parent offers rx* and the grandparent offered only r*, the parent
 ///   offered more than it had, and the walk answers AccessDenied at the
-///   grandparent.
+///   grandparent. The error names the hop that holds less, as Fuchsia's
+///   current router does: IntermediateRouter::handle_directory_rights()
+///   passes its own moniker, the component that declares the hop, to
+///   validate_rights() (intermediate_router.rs:404-415, rights.rs:108-139 at
+///   `51f05104c13`). The legacy RightsWalker, whose walk this one follows,
+///   named the hop before it instead: validate_next() reports self.moniker
+///   (rights.rs:93-104 at `9e015f591c4^`), so it would answer at the parent
+///   here, and at |target| when an offer is narrower than the use.
 /// - Subdir. Each hop's subdir goes in front of the one the walk carries
 ///   (Subdir::prepend()), the use's own being the first, so the source's side
 ///   comes first in the result. If the result would be too long: NotFound at
