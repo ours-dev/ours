@@ -1,0 +1,63 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+import("//system/user_executable.gni")
+
+# Read only in a user toolchain: dev's root.cm names the manifest below, and
+# component_manifest() moves its children and their programs there.
+assert(
+    toolchain_environment == "user",
+    "routing_checks must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The root's on-target test component (component-framework design D24):
+# what its namespace gives it through fsio, checked from inside
+# (routing_checks.cpp).
+user_executable("routing_checks") {
+  visibility = [ ":*" ]
+  sources = [ "routing_checks.cpp" ]
+  deps = [
+    "//system/lib/fsio",
+    "//system/lib/fuchsia-io",
+    "//system/lib/ort",
+  ]
+}
+
+# Four uses of the root's built-in `boot`, which dev's root.cm offers in the
+# matching ways (kernel/products/image/dev/BUILD.gn):
+#   /boot    rx*, offered as is;
+#   /boot-r  r*, offered under another name with `as`;
+#   /bin     rx*, the bin subdirectory, joined from this use's subdir;
+#   /denied  rx*, through an offer of only r*, so the route answers
+#            AccessDenied at the root's offer and the entry arrives closed.
+component_manifest("routing_checks.cm") {
+  visibility = [ "//kernel/products/image/*" ]
+  program = ":routing_checks"
+  manifest = {
+    use = [
+      {
+        directory = "boot"
+        path = "/boot"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "boot-r"
+        path = "/boot-r"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "boot"
+        path = "/bin"
+        rights = [ "rx*" ]
+        subdir = "bin"
+      },
+      {
+        directory = "denied"
+        path = "/denied"
+        rights = [ "rx*" ]
+      },
+    ]
+  }
+}

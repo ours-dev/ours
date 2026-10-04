@@ -39,9 +39,11 @@ cpp_interface("startup") {
 }
 
 # init: the first system service, the program userboot starts (userboot.next)
-# with the root job and the BootFS. For now its whole job is to look at the
-# BootFS, start the next program and prove the two can talk; supervising
-# services is what it grows into (design 3.6).
+# with the root job and the BootFS, and the root of the component tree
+# (docs/design/261004/component-framework.md): it serves /boot from the
+# BootFS (boot_server.cpp), resolves meta/root.cm and starts its components
+# (realm.cpp), and waits for all of it on one Loop. Until steps 14 to 16 of
+# the plan it also starts the standalone launcher and the shell itself.
 #
 # Not in the host toolchain, which reaches this file only for :autorun's
 # test: GN defines every target of a file it loads, and a user program does
@@ -61,13 +63,25 @@ if (!is_host_toolchain) {
 
   user_executable("init") {
     visibility = [ "//kernel/products/image/*" ]
-    sources = [ "init.cpp" ]
+    sources = [
+      "boot_server.cpp",
+      "boot_server.hpp",
+      "init.cpp",
+      "pools.hpp",
+      "realm.cpp",
+      "realm.hpp",
+    ]
     deps = [
       ":autorun",
       ":programs",
       "//system/lib/bootfs:headers",
+      "//system/lib/component",
+      "//system/lib/fuchsia-io",
       "//system/lib/launch",
+      "//system/lib/loop",
       "//system/lib/ort",
+      "//system/lib/vfs",
+      "//system/lib/wire",
     ]
   }
 }

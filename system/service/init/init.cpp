@@ -1,45 +1,37 @@
 /// SPDX-License-Identifier: MIT
 /// Copyright (c) 2026 ours Developers
 ///
-/// init -- the first system service.
+/// init -- the first system service, and the root of the component tree.
 ///
 /// userboot starts it on the runtime (//system/lib/ort), when the image
-/// names it with `userboot.next=bin/init`, with a processargs message holding
-/// two startup handles: the root job and the BootFS VMO -- the ones the
-/// kernel gave userboot, handed on unchanged. What it does with them today is the whole of the first
-/// vertical slice (docs/design/260923/userspace-interface.md, section 5):
-/// look at the BootFS, start the shell, say "ping" to it, sleep until the
-/// shell answers, and print the answer. Every step goes through the vDSO;
-/// nothing here executes a syscall instruction.
+/// names it with `userboot.next=bin/init`, with the root job, the read-only
+/// BootFS, VMEX, the vDSO's VMO, the Debug resource and its root region. It
+/// is growing into ours's counterpart of Fuchsia's component_manager
+/// (docs/design/261004/component-framework.md); this is step 13 of that
+/// plan, where it:
 ///
-/// Between the ping and the wait it also starts the program the image's
+///   - ingests the BootFS into /boot (BootServer): a read-only slice per
+///     file, made executable under bin/, and keeps VMEX for good;
+///   - resolves meta/root.cm, starts its eager children with the ELF runner
+///     (Realm), each with a namespace of /boot entries routed from its
+///     manifest, and supervises them;
+///   - still starts the standalone launcher, now with launch::start() on the
+///     launcher's file from its own /boot, and the shell through it, as
+///     before, until steps 14 to 16 move both into the tree;
+///   - then waits for everything at once on one Loop: every /boot
+///     connection, every component's exit, the shell's answer to its ping
+///     and the shell's exit.
+///
+/// Between the shell and the Loop it also starts the program the image's
 /// `ours.autorun.boot` option names, if there is one -- Zircon's
 /// `zircon.autorun.boot`, which console-launcher, the component that starts
 /// Zircon's shell, runs in the same place. The option reaches init as an
 /// environment string: the kernel forwards it to userboot, and userboot
 /// hands on what is not its own.
 ///
-/// The wait in the middle is the first in the system that really sleeps: the
-/// answer can only come from another process, which has to be started,
-/// scheduled -- on another CPU, as often as not -- and run to its reply. So
-/// this program is also the test that a blocked system call comes back to
-/// the right user stack (73bb1ca), that the wake is not lost (0f9e32b), and
-/// that an allocation on an AP works (5b1ce2f).
-///
-/// init starts one program itself, with the launcher library
-/// (launch::launch_from_bootfs()): bin/launcher, the service that starts
-/// every other one. It hands the launcher the BootFS, vmex and the vDSO's
-/// VMO, and keeps a connection to it; the shell and the autorun command are
-/// then Launch requests on that connection (launch::Client), and once user
-/// space is running the kernel loads no program at all. The launcher hands
-/// back the process handle: once the shell has let go of init's channel,
-/// init waits for it to terminate and says what it ended with
-/// (object_get_info). Without what starting the launcher needs -- the
-/// BootFS, vmex, the vDSO's VMO and init's own root region -- init starts
-/// nothing and halts.
-///
-/// It never returns from main: it is the process the system's other programs
-/// are started from, and nothing yet would notice it gone.
+/// A root that cannot start -- no BootFS, VMEX, vDSO or root region, a BootFS
+/// it cannot serve, or no meta/root.cm that decodes -- says so in one line and
+/// halts (D28). It never returns from main: nothing yet would notice it gone.
 
 #include <ours/process_args.hpp>
 #include <ours/rights.hpp>
@@ -50,20 +42,25 @@
 #include <ours/types.hpp>
 #include <ours/vdso.hpp>
 
+#include <array>
 #include <span>
 #include <string_view>
 
+#include "boot_server.hpp"
+#include "pools.hpp"
 #include "programs.hpp"
-#include <bootfs/format.hpp>
+#include "realm.hpp"
 #include <elfload/diagnostics.hpp>
 #include <init/autorun.hpp>
 #include <launch/bootfs.hpp>
 #include <launch/client.hpp>
 #include <launch/launch.hpp>
 #include <launch/protocol.hpp>
+#include <loop/loop.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
 #include <ort/startup.hpp>
+#include <ustl/lazy_init.hpp>
 
 namespace {
 /// Prints "<what><status name>".
@@ -98,30 +95,17 @@ auto to_str(std::string_view const text) -> std::string_view {
     return {text.data(), text.size()};
 }
 
-/// Reads the BootFS header through vmo_read and says how many files it
-/// holds -- the first time a program looks at the BootFS the kernel built
-/// for it (design K12), and the first vmo_read of a real VMO.
-///
-/// init keeps the handle; the launcher and the shell each get a duplicate.
-auto describe_bootfs(ours::Uandle const bootfs) -> void {
-    if (bootfs == ours::Uandle::Invalid) {
-        auto _ = ort::debug_line("init: started without a BootFS");
-        return;
-    }
-    bootfs::Header header{};
-    if (auto const status = ours::vmo_read(bootfs, &header, 0, sizeof(header));
-        status != ours::Status::Ok) {
-        report("init: reading the BootFS header = ", status);
-        return;
-    }
-    if (header.magic != bootfs::Header::MAGIC) {
-        auto _ = ort::debug_line("init: the BootFS header has the wrong magic");
-        return;
-    }
-    char count[10];
-    auto _ =
-        ort::debug_line({"init: bootfs has ", ort::decimal(header.file_count, count), " entries"});
-}
+// What the root keeps, sized by its pools (pools.hpp): globals, because
+// together they are far more than the stack, and constinit, because nothing
+// runs a user program's dynamic initialisers. The storage of /boot and the
+// instance pool hold types with destructors (ustl::Option among their
+// members), which as plain globals would register those destructors with
+// __cxa_atexit, which the runtime does not have and the root never needs,
+// since it never exits; ustl::LazyInit is raw storage that main() builds
+// them in instead.
+constinit ustl::LazyInit<init::BootServer::Storage> boot_storage;
+constinit ustl::LazyInit<std::array<init::Instance, init::MAX_INSTANCES>> instances;
+constinit std::array<loop::Slot, init::LOOP_SLOTS> slots{};
 
 /// The launcher's failures, on the debug console. Only the errors: the
 /// shell's printer also shows every import bound, which init's log does not
@@ -140,15 +124,20 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
         {"init: launch failed: ", {report.what.data(), report.what.size()}, separator, name});
 }
 
-/// Starts the launcher (bin/launcher) under |job| with the library: the one
-/// program init starts itself, since every later start is a request to it.
+/// Starts the launcher (bin/launcher) under |job| with launch::start(), on
+/// |file|, the launcher's executable VMO from init's own /boot: the program
+/// init starts itself besides its components, until the Launcher moves into
+/// the root (step 14) and the standalone one goes (step 16). |vma| is init's
+/// root region, where start() reads the program, and |vdso_file| the vDSO's
+/// bytes, which it binds the program against.
 ///
 /// It gets |connection| (User0), the far end of init's own connection to it,
 /// and what starting programs takes: a duplicate of the BootFS, of VMEX and
 /// of the vDSO's VMO, and its root region. |connection| leaves init whatever
 /// the answer. The processargs is written after the launcher exists, since
 /// its root region goes in it -- the order the library keeps.
-auto start_launcher(launch::BootfsLauncher const &library, ours::Uandle const job,
+auto start_launcher(ours::Uandle const file, ours::Uandle const vma,
+                    std::span<u8 const> const vdso_file, ours::Uandle const job,
                     ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
                     ours::Uandle const connection) -> ours::Status {
     using ours::Status;
@@ -187,9 +176,16 @@ auto start_launcher(launch::BootfsLauncher const &library, ours::Uandle const jo
         close_all({handed, count});
         return status;
     }
-    auto const started =
-        launch::launch_from_bootfs(library, job, user_programs::LAUNCHER, there,
-                                   {.report = print_launch_error, .context = nullptr});
+    auto const started = launch::start({
+        .job = job,
+        .name = user_programs::LAUNCHER,
+        .file = file,
+        .vma = vma,
+        .vdso = vdso,
+        .vdso_file = vdso_file,
+        .bootstrap = there,
+        .diagnostics = {.report = print_launch_error, .context = nullptr},
+    });
     if (started.is_err()) {
         close_all({handed, count});
         auto _ = ours::handle_close(here);
@@ -298,27 +294,59 @@ auto start_shell(launch::Client const &launcher, ours::Uandle const job, ours::U
     return Status::Ok;
 }
 
-/// The code |process| ended with, said on the console: TERMINATED first,
-/// since until then a kill may still change it, then object_get_info.
-auto report_exit(ours::Uandle const process) -> void {
-    using ours::Status;
+/// The channel the shell answers init's ping on, as its Loop slot sees it.
+/// One slot serves both of init's old waits on it: the answer, then the
+/// shell letting go of its end.
+struct ShellChannel {
+    ours::Uandle channel = ours::Uandle::Invalid;
+    bool answered = false;
+};
 
-    if (auto const status = ours::object_wait_one(process, ours::Signals::Terminated,
-                                                  ours::INSTANT_INFINITE, nullptr);
-        status != Status::Ok) {
-        report("init: waiting for the shell to end = ", status);
-        return;
+/// The shell's channel slot: its answer to the ping, printed, then, once the
+/// shell lets go of its end, that. Letting go is not the shell being gone --
+/// it closes its end as it checks that closing a handle works -- which is
+/// what the process slot below says.
+auto on_shell_channel(void *const context, ours::Signals const observed) -> loop::Action {
+    auto &shell = *static_cast<ShellChannel *>(context);
+    if (!(observed & ours::Signals::Readable)) {
+        if (shell.answered) {
+            auto _ = ort::debug_line("init: shell closed its channel");
+        } else {
+            auto _ = ort::debug_line("init: the shell closed the channel without answering");
+        }
+        return loop::Action::Close;
     }
+    char buffer[32] = {};
+    u32 actual = 0;
+    if (auto const status =
+            ours::channel_read(shell.channel, ours::ChannelReadOptions::None, buffer, nullptr,
+                               sizeof(buffer), 0, &actual, nullptr);
+        status != ours::Status::Ok) {
+        report("init: read = ", status);
+        return loop::Action::Close;
+    }
+    auto _ = ort::debug_line({"init: shell says \"", std::string_view(buffer, actual), "\""});
+    shell.answered = true;
+    return loop::Action::Rearm;
+}
+
+/// The shell's process slot: the code it ended with, said on the console --
+/// TERMINATED first, since until then a kill may still change it, then
+/// object_get_info. The shell is interactive, so this fires when someone
+/// types `exit`.
+auto on_shell_exit(void *const context, ours::Signals) -> loop::Action {
+    auto const process = *static_cast<ours::Uandle const *>(context);
     ours::InfoProcess info{};
     if (auto const status = ours::object_get_info(process, ours::InfoTopic::Process, &info,
                                                   sizeof(info), nullptr, nullptr);
-        status != Status::Ok) {
+        status != ours::Status::Ok) {
         report("init: object_get_info(the shell) = ", status);
-        return;
+        return loop::Action::Close;
     }
     char code[21];
     auto _ =
         ort::debug_line({"init: shell exited with ", ort::signed_decimal(info.return_code, code)});
+    return loop::Action::Close;
 }
 } // namespace
 
@@ -333,50 +361,71 @@ auto main(int, char **) -> int {
     }
     auto _ = ort::debug_line("init: started with the root job");
     auto const bootfs = ort::take_startup_handle(ours::HandleType::VmoBootfs, 0);
-    describe_bootfs(bootfs);
-
-    // vmex, handed on by userboot: the capability to make a VMO executable
-    // (design D3). init uses it to start the launcher, hands the launcher a
-    // duplicate, and closes its own: from then on only the launcher holds it.
+    // VMEX, which the root keeps for life (design "Events: boot", step 2):
+    // only it can make a VMO executable, and it makes the files under bin/
+    // executable at ingest.
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
-    if (vmex != ours::Uandle::Invalid) {
-        auto _ = ort::debug_line("init: vmex resource ok");
-    } else {
-        auto _ = ort::debug_line("init: started without vmex");
-    }
-
-    // The vDSO's VMO, also handed on by userboot: mapped into the launcher by
-    // the library, and duplicated to the launcher and the shell.
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
-    if (vdso != ours::Uandle::Invalid) {
-        auto _ = ort::debug_line("init: vdso vmo ok");
-    } else {
-        auto _ = ort::debug_line("init: started without the vdso vmo");
-    }
-
-    // The library: the BootFS mapped into init's own root region and made
-    // executable with vmex, for the one program init starts itself. Without
-    // it there is no way to start anything: the kernel loads no program once
-    // user space runs.
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
-        auto _ =
-            ort::debug_line("init: cannot start programs (missing BootFS, vmex, vDSO or VmaRoot)");
+        auto _ = ort::debug_line("init: cannot start (missing BootFS, vmex, vDSO or VmaRoot)");
         halt();
     }
-    auto made = launch::make_bootfs_launcher(bootfs, vmex, vdso, vma,
-                                             {.report = print_launch_error, .context = nullptr});
-    if (made.is_err()) {
-        report("init: cannot start programs, setting the launcher up = ", made.unwrap_err());
-        halt();
-    }
-    auto const library = made.unwrap();
 
-    // The launcher first, with the library; everything after it through it.
+    // The BootFS, mapped read-only for good: /boot's Read copies from it,
+    // and its names and manifests are read in place.
+    auto const mapped =
+        launch::map_bootfs(bootfs, vma, {.report = print_launch_error, .context = nullptr});
+    if (mapped.is_err()) {
+        report("init: cannot map the BootFS = ", mapped.unwrap_err());
+        halt();
+    }
+    auto port = ours::Uandle::Invalid;
+    if (auto const status = ours::port_create(ours::PortCreateOptions::None, &port);
+        status != Status::Ok) {
+        report("init: port_create = ", status);
+        halt();
+    }
+    loop::Loop loop(port, slots);
+    init::BootServer boot(*boot_storage.init(), loop);
+    auto const ingested = boot.ingest(mapped.unwrap(), bootfs, vmex);
+    if (ingested.is_err()) {
+        report("init: cannot serve the BootFS = ", ingested.unwrap_err());
+        halt();
+    }
+    char files[10];
+    char executable[10];
+    auto _ = ort::debug_line({"init: /boot has ", ort::decimal(ingested->files, files), " files, ",
+                              ort::decimal(ingested->executable, executable), " executable"});
+
+    // What every start needs besides the program: the vDSO's bytes, which
+    // programs are bound against, read from /boot like any file.
+    auto const vdso_file = boot.file("vdso");
+    if (vdso_file.is_err()) {
+        report("init: cannot start programs, finding the vDSO = ", vdso_file.unwrap_err());
+        halt();
+    }
+
+    // The component tree: meta/root.cm, then its eager children.
+    init::Realm realm(*instances.init(), boot, loop,
+                      {.job = job, .vdso = vdso, .vdso_file = vdso_file->bytes, .vma = vma});
+    if (auto const status = realm.resolve_root(); status != Status::Ok) {
+        report("init: cannot resolve meta/root.cm = ", status);
+        halt();
+    }
+    realm.start_root();
+
+    // The standalone launcher and the shell, as before the root existed,
+    // until the shell becomes a component (step 15).
+    auto const launcher_file = boot.file(user_programs::LAUNCHER);
+    if (launcher_file.is_err()) {
+        report("init: cannot find the launcher = ", launcher_file.unwrap_err());
+        halt();
+    }
     ours::Uandle connection = ours::Uandle::Invalid;
     ours::Uandle connection_there = ours::Uandle::Invalid;
     if (auto const status =
@@ -385,20 +434,14 @@ auto main(int, char **) -> int {
         report("init: channel_create = ", status);
         halt();
     }
-    if (auto const status = start_launcher(library, job, bootfs, vmex, vdso, connection_there);
+    if (auto const status = start_launcher(launcher_file->vmo, vma, vdso_file->bytes, job, bootfs,
+                                           vmex, vdso, connection_there);
         status != Status::Ok) {
         report("init: starting the launcher = ", status);
         halt();
     }
     auto _ = ort::debug_line("init: launched the launcher");
     auto const launcher = launch::Client(connection);
-
-    // The launcher has its own VMEX now, and is to be the only holder: init
-    // lets go of its own and of the executable BootFS made with it, and
-    // starts nothing more itself (.agents/tasks/launcher-service).
-    auto _ = ours::handle_close(library.executable);
-    auto _ = ours::handle_close(vmex);
-    auto _ = ort::debug_line("init: vmex is the launcher's alone");
 
     ours::Uandle here = ours::Uandle::Invalid;
     ours::Uandle peer = ours::Uandle::Invalid;
@@ -424,8 +467,7 @@ auto main(int, char **) -> int {
 
     // The autorun program, now that the shell is up -- console-launcher
     // starts `zircon.autorun.boot` beside the console shell too
-    // (LaunchAutorun() in its main.cc, just before RunSerialConsole()). Before the wait rather than after it: the shell may
-    // never let go of its channel, and the command should not wait on that.
+    // (LaunchAutorun() in its main.cc, just before RunSerialConsole()).
     // A failure is reported and nothing more; it is the command that failed,
     // not the system, and the shell is already running.
     // The last one on the command line wins (ort::ProcessArgs::option()).
@@ -436,38 +478,23 @@ auto main(int, char **) -> int {
         }
     }
 
-    // Asleep until the shell writes back, or its end of the channel goes.
-    auto observed = Signals::None;
-    auto status = ours::object_wait_one(here, Signals::Readable | Signals::PeerClosed,
-                                        ours::INSTANT_INFINITE, &observed);
-    if (status != Status::Ok || !(observed & Signals::Readable)) {
-        report("init: waiting for the shell = ", status);
-        auto _ = ort::debug_line("init: the shell closed the channel without answering");
-        halt();
+    // init's two old blocking waits on the shell become slots: the answer to
+    // the ping and the shell letting go of the channel on one, TERMINATED on
+    // its process on the other. The Loop owns both handles from here.
+    auto shell_channel = ShellChannel{.channel = here, .answered = false};
+    if (auto const added = loop.add(here, Signals::Readable | Signals::PeerClosed,
+                                    &on_shell_channel, &shell_channel);
+        added.is_err()) {
+        report("init: waiting for the shell = ", added.unwrap_err());
+    }
+    if (auto const added = loop.add(shell, Signals::Terminated, &on_shell_exit, &shell);
+        added.is_err()) {
+        report("init: watching the shell = ", added.unwrap_err());
     }
 
-    char buffer[32] = {};
-    u32 actual = 0;
-    status = ours::channel_read(here, ours::ChannelReadOptions::None, buffer, nullptr,
-                                sizeof(buffer), 0, &actual, nullptr);
-    if (status != Status::Ok) {
-        report("init: read = ", status);
-        halt();
-    }
-    auto _ = ort::debug_line({"init: shell says \"", std::string_view(buffer, actual), "\""});
-
-    // And then until the shell lets go of its end: it closes it as it checks
-    // that closing a handle works, or its process dying closes it. Either way
-    // this is the shell being done with init, not necessarily the shell being
-    // gone -- that sign is TERMINATED on its process handle, below.
-    status = ours::object_wait_one(here, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
-    if (status != Status::Ok) {
-        report("init: waiting for the shell to finish = ", status);
-        halt();
-    }
-    auto _ = ort::debug_line("init: shell closed its channel");
-
-    // The shell is interactive: this sleeps until someone types `exit`.
-    report_exit(shell);
+    // Everything from here is a callback: /boot's connections, the
+    // components' exits and the shell's. run() never returns while the port
+    // works.
+    report("init: the loop ended = ", loop.run(ours::INSTANT_INFINITE));
     halt();
 }

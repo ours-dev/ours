@@ -7,9 +7,10 @@ Run from the repo root:
     python3 .agents/skills/ours-verify/scripts/boot_check.py --out out/mine
     python3 .agents/skills/ours-verify/scripts/boot_check.py --only dbg --no-build
 
-A boot passes when the shell prints its closing "--- end ---" line, no
-"FAILED" line appeared, and nothing logged at error level -- panic() and a
-failed ASSERT both log at error level before halting. The kernel never exits,
+A boot passes when the shell prints its closing "--- end ---" line, every
+line the image requires (REQUIRED) appeared, no "FAILED" line appeared, and
+nothing logged at error level -- panic() and a failed ASSERT both log at error
+level before halting. The kernel never exits,
 so each QEMU is killed as soon as its verdict is known or the timeout runs
 out. Full serial logs stay on disk; only a summary is printed.
 
@@ -41,6 +42,18 @@ IMAGES = {
 }
 
 END_MARKER = "--- end ---"  # the last line examples/shell/shell.cpp prints
+
+# Lines an image must print besides the end marker, matched as substrings of a
+# line. They come from other processes than the shell, so they may arrive
+# after END_MARKER: the reader keeps going until the marker and every one of
+# them have appeared, or the timeout runs out. On dev (rel), init is the root
+# of the component tree and starts routing_checks, which checks the namespace
+# it was given and says so (.agents/tasks/component-framework/PLAN.md, step
+# 13); dbg_1 has no root.
+REQUIRED = {
+    "dbg": [],
+    "rel": ["routing_checks: passed"],
+}
 ANSI = re.compile(r"\x1b\[[0-9;=?]*[A-Za-z]")
 # Log tags come as "[error]" (phys), "[123 error]" (early kernel, before
 # per-CPU state) and "[123 cpu0 error]". Searched, not anchored: early serial
@@ -119,6 +132,8 @@ class Boot:
         self.errors: list[str] = []
         self.after_error: list[str] = []
         self.tail: collections.deque[str] = collections.deque(maxlen=15)
+        self.required = list(REQUIRED[tag])
+        self.seen: set[str] = set()
         self.end_at: float | None = None
         self.stop_after: float | None = None  # monotonic deadline once verdict is known
         self.timed_out = False
@@ -160,12 +175,21 @@ class Boot:
             self.errors.append(line)
             if self.stop_after is None:
                 self.stop_after = now + ERROR_GRACE
+        for required in self.required:
+            if required in line:
+                self.seen.add(required)
         if END_MARKER in line and self.end_at is None:
             self.end_at = now - self.started
-            if self.stop_after is None:
-                self.stop_after = now + END_GRACE
+        # Done once the shell has finished and every required line is in,
+        # whichever came last.
+        if self.end_at is not None and self.stop_after is None and not self.missing():
+            self.stop_after = now + END_GRACE
         if line.strip() and not NOISE.search(line):
             self.tail.append(line)
+
+    def missing(self) -> list[str]:
+        """The required lines that have not appeared yet."""
+        return [r for r in self.required if r not in self.seen]
 
     def poll(self) -> bool:
         """Kill QEMU when its time is up; return True once it is gone."""
@@ -176,7 +200,7 @@ class Boot:
         if self.stop_after is not None and now >= self.stop_after:
             self.proc.kill()
         elif now - self.started >= self.timeout:
-            self.timed_out = self.end_at is None
+            self.timed_out = self.end_at is None or bool(self.missing())
             self.proc.kill()
         return False
 
@@ -194,14 +218,20 @@ class Boot:
             if self.timed_out:
                 return False, f'no "{END_MARKER}" within {self.timeout:.0f}s (hung or looping)'
             return False, f"QEMU exited (rc {self.proc.returncode}) before the shell finished -- reset or triple fault?"
+        if self.missing():
+            lines = ", ".join(f'"{r}"' for r in self.missing())
+            return False, f"no {lines} within {self.timeout:.0f}s"
         return True, f"shell finished at {self.end_at:.1f}s"
 
     def report(self) -> bool:
         ok, why = self.verdict()
         stage = MILESTONES[self.reached][0] if self.reached >= 0 else "nothing"
+        required = ""
+        if self.required:
+            required = f" · {len(self.seen)}/{len(self.required)} required"
         print(f"{self.tag:<10} {'PASS' if ok else 'FAIL'}  {why} · "
-              f"{len(self.passed)} passed, {len(self.skipped)} skipped, {len(self.failed)} failed · "
-              f"{len(self.errors)} error line(s) · reached: {stage}")
+              f"{len(self.passed)} passed, {len(self.skipped)} skipped, {len(self.failed)} failed"
+              f"{required} · {len(self.errors)} error line(s) · reached: {stage}")
         if not ok:
             for title, lines in (("FAILED lines", self.failed[:10]),
                                  ("error lines", self.errors[:5]),

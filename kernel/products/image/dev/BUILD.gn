@@ -17,6 +17,7 @@ import("//build/product/ours_args.gni")
 import("//kernel/kernel_image.gni")
 import("//kernel/kernel_package.gni")
 import("//kernel/user_bootfs.gni")
+import("//system/component_manifest.gni")
 import("//system/service/init/init_startup.gni")
 
 # The user programs this image carries: its boot flow first, then whatever
@@ -66,6 +67,53 @@ init_startup("shell") {
   capabilities = [ "init" ]
 }
 
+# The root manifest, meta/root.cm (component-framework design D5): the
+# component tree init grows from on this image. Like Fuchsia's root.cml it has
+# children and no program. Its one child for now is routing_checks, the root's
+# on-target test, which uses the built-in `boot` the four ways offered here:
+# whole with rx*, renamed with `as` and r*, through a subdir of its own use,
+# and once through an offer narrower than its use, which the root answers
+# AccessDenied.
+component_manifest("root.cm") {
+  visibility = [ ":*" ]
+  children = [
+    {
+      name = "routing_checks"
+      manifest = "//system/service/init/test/routing_checks:routing_checks.cm"
+      startup = "eager"
+    },
+  ]
+  manifest = {
+    offer = [
+      # /boot and, through its own use's subdir, /bin.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#routing_checks"
+        rights = [ "rx*" ]
+      },
+
+      # The same directory under another name, with fewer rights.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#routing_checks"
+        as = "boot-r"
+        rights = [ "r*" ]
+      },
+
+      # r* where the use asks rx*: the route answers AccessDenied here.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#routing_checks"
+        as = "denied"
+        rights = [ "r*" ]
+      },
+    ]
+  }
+}
+
 # 内核存储块：共享配方 + 带单测的内核可执行文件（dbg.0
 # switchset 工具链，对标 Fuchsia kernel_package("zircon") 的 deps
 # 写法）。prefix="" ——BootFS 顶层是扁平命名空间，内核落在
@@ -88,13 +136,15 @@ kernel_package("ours") {
 
 # The BootFS user space boots from, a StorageBootFs item of its own
 # (//kernel/user_bootfs.gni): the shell, the user programs and the vDSO they
-# bind against, and init's startup list. userboot unpacks it and hands it on;
+# bind against, init's startup list, and meta/root.cm with every manifest and
+# program of its tree. userboot unpacks it and hands it on;
 # the kernel never reads it.
 user_bootfs("bootfs") {
   init_startup = true
   visibility = [ ":*" ]
   testonly = true
   deps = [
+    ":root.cm",
     ":shell",
     "//kernel/lib/userabi/vdso(//build/toolchain/ours:user-${target_cpu})",
   ]
