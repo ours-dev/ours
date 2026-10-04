@@ -120,6 +120,14 @@ class WaitQueue {
 
     auto park_thread_common(Thread *thread, time::Deadline, ThreadSignals) -> Status;
 
+    /// Wakes |thread| out of this queue, if it is still waiting in it.
+    ///
+    /// The caller holds |thread|'s PI lock, and keeps it: this is the wake
+    /// aimed at one particular thread, and the only reason to aim at one is
+    /// that the caller has just looked at it under that lock and decided --
+    /// suspend_or_kill() saw it Parked and interruptible, handle_timeout()
+    /// won the lock against the thread's own timer cancel. Zircon's
+    /// WaitQueueBase::UnblockThread() has the same contract.
     auto unpark_thread(Thread *thread, Status = Status::Ok) -> void;
 
     /// The two halves of park_thread(), for a waiter that must look at the
@@ -243,6 +251,14 @@ class WaitQueue {
     /// which is why the queue lock has to be gone first (PI lock is the outer
     /// one).
     auto wake_dequeued_thread(Thread *thread, Status status) -> void;
+
+    /// wake_dequeued_thread() for a caller that already holds |thread|'s PI
+    /// lock: unpark_thread(). SpinLock does not nest, so that caller must not
+    /// go through the form that takes the lock. The caller's hold has to give
+    /// what wake_dequeued_thread()'s own does, interrupts and preemption off:
+    /// suspend_or_kill() takes it IrqSaveAndPreemptDisable, and
+    /// handle_timeout() runs in the timer interrupt.
+    auto wake_dequeued_thread_locked(Thread *thread, Status status) -> void;
 
     /// Handler for time counted tasks.
     static auto handle_timeout(time::Timer *timer, Thread *thread) -> void;

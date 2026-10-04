@@ -1,16 +1,44 @@
 # kernel-task 待修项（2026-09-24）
 
-## 2. `suspend_or_kill` 的 Parked 分支对同一把 PI 锁加锁两次（已交接给独立会话）
+## 2. `suspend_or_kill()` and `handle_timeout()` call through a `wait_queue()` that may be null
 
-`Thread::suspend_or_kill()` 持着目标线程的 PI 锁调用 `wq->unpark_thread(this)`，后者经
-`dequeue_waiter` → `wake_dequeued_thread`（`kernel/kernel/task/wait_queue.cpp`）再拿同一把锁。
-自旋锁不可重入：dbg_1 在 `SpinLock::acquire` 的 `!is_held()` 断言失败，dbg_0 关着中断永远自旋。
-同一分支还有两处：`wq` 可能为空（`Event::signal` 在队列锁下清掉 `m_waitqueue`、放队列锁之后才拿 PI 锁）；
-被唤醒的线程拿到的是 `Status::Ok`，而不是 kill/retry 状态。
+**Severity**
+Medium: a null dereference, but only in a race no caller can start today.
 
-早于 P1-A（唤醒侧的 PI 锁来自 d851d9bf）。今天没有调用者走到——唯一的 kill 是线程在 Running 时杀自己；
-杀一个阻塞在 `object_wait_one` 里的线程（P1-B 的 `task_kill`、多线程进程被杀）就会走到。
-改法照 Zircon `Thread::SuspendOrKillInternal()`：以 `InternalIrqKilled`/`InternalIrqRetry` 唤醒，且不重复拿 PI 锁。
+**Symptom**
+Latent, cannot be triggered today. A suspend, a kill or a timeout that targets a parked thread in the window after a queue-driven wake has claimed it dereferences null (dbg: `handle_timeout()`'s `DEBUG_ASSERT(wq)` first).
+
+**Cause**
+`Event::signal()` dequeues its waiters under the queue lock, which clears each waiter's `m_waitqueue`, then drops the queue lock and only afterwards takes each thread's PI lock to unpark it (`Scheduler::unpark_thread(UnparkList)`). In between, the thread is still `Parked` but in no queue. `Thread::suspend_or_kill()`'s Parked branch and `WaitQueue::handle_timeout()` both hold the PI lock, see `Parked`, read `wait_queue()` and call `wq->unpark_thread()` without checking for null. `unpark_thread()` itself already copes with a waiter claimed by someone else (`dequeue_waiter()` returns false), but it cannot be reached through a null `wq`.
+
+**Change**
+A null `wait_queue()` means the wake is already claimed: do nothing. The signal is set already, and the waker that holds the claim wakes the thread, which then meets the signal. Zircon's timeout handler returns on `wq == nullptr` in the same way.
+
+**Reference**
+Zircon `WaitQueue::TimeoutHandler()` (kernel/kernel/wait.cc), `if (wq == nullptr) { ... return Done; }`.
+
+**Acceptance**
+`waitqueue.test` and `boot_check.py` still pass; the null case is argued, not tested, as the window is a few instructions wide.
+
+## 5. A waiter woken by a suspend or a kill reads `Status::Ok`
+
+**Severity**
+Medium: a wrong result, on a path no system call reaches yet.
+
+**Symptom**
+`waitqueue.test` prints "the suspended wait answered Ok": a thread suspended or killed while parked interruptibly returns from its wait as if the wait had been satisfied.
+
+**Cause**
+`Thread::suspend_or_kill()`'s Parked branch calls `wq->unpark_thread(this)` with the default status, `Status::Ok`. The waiter cannot tell an interruption from the event it waited for; an exception-channel wait would read a kill as "the handler closed the exception". The preamble of the same wait already answers a signal pending at park time with `InternalIrqKilled` or `InternalIrqRetry` (`Thread::check_kill_or_suspend_signal()`), so every caller handles those two already.
+
+**Change**
+Wake with `InternalIrqKilled` for a kill and `InternalIrqRetry` for a suspend, as the preamble does.
+
+**Reference**
+Zircon `Thread::SuspendOrKillInternal()` (kernel/kernel/thread.cc), `wakeup_status`.
+
+**Acceptance**
+`waitqueue.test` checks that the suspended wait answers `InternalIrqRetry`.
 
 ## 3. `suspend_or_kill` 的 Sleeping 分支与睡眠定时器竞争（已交接给独立会话）
 

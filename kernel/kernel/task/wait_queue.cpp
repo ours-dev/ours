@@ -129,6 +129,13 @@ auto WaitQueue::park_thread_postamble(Thread *thread, time::Deadline deadline) -
 }
 
 auto WaitQueue::unpark_thread(Thread *thread, Status status) -> void {
+    // Both callers come here holding |thread|'s PI lock, and this used to
+    // end in wake_dequeued_thread(), which takes that lock again. SpinLock
+    // does not nest: in dbg_1 that is SpinLock::acquire()'s !is_held()
+    // assertion, and without assertions the CPU spins for good, interrupts
+    // off, on a lock it holds itself. See WaiterState::sleep() for why this
+    // is an assert and not TA_REQUIRES.
+    thread->get_pi_lock().assert_held();
     DEBUG_ASSERT(!!(thread->state() & Thread::State::Parked));
 
     if (!dequeue_waiter(thread->waiter_state(), status)) {
@@ -137,7 +144,7 @@ auto WaitQueue::unpark_thread(Thread *thread, Status status) -> void {
         return;
     }
 
-    wake_dequeued_thread(thread, status);
+    wake_dequeued_thread_locked(thread, status);
 }
 
 auto WaitQueue::update_parked_thread_effective_profile(Thread *thread) -> void {
@@ -216,6 +223,11 @@ auto WaitQueue::wake_dequeued_thread(Thread *thread, Status status) -> void {
     // a PI lock around the unpark does (Thread::resume()): the thread being
     // woken must not preempt us while we still hold its lock.
     Guard<sync::SpinLock, IrqSaveAndPreemptDisable> guard{thread->get_pi_lock()};
+    wake_dequeued_thread_locked(thread, status);
+}
+
+auto WaitQueue::wake_dequeued_thread_locked(Thread *thread, Status status) -> void {
+    thread->get_pi_lock().assert_held();
 
     if (auto owq = as<OwnedWaitQueue>(this)) {
         OwnedWaitQueue::begin_propagate(*thread, *owq, OwnedWaitQueue::REMOVE_SINGLE_EDGE_OP);
