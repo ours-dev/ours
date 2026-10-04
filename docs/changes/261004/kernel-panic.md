@@ -117,3 +117,81 @@ None.
 - Why does the magic go in last, and why must the constructor clear the old magic first?
 - Why is a compiler fence enough, with no atomic, for a write that a reset may interrupt?
 - Why is the header CRC computed with the magic taken as zero?
+
+## Title: a panic leaves a crash record and, with kernel.panic.reboot, resets; the next boot reports the record and clears it (2026-10-04)
+
+**Files**
+- `kernel/top/crash_record.hpp`, `kernel/top/crash_record.cpp` — find the Crashlog range in the handoff's memory map (PlatformEarly hook); `record_panic()` writes the message and the ring tail; the Platform-level hook logs the previous boot's record and clears it
+- `kernel/top/panic.cpp` — after the console report: `record_panic()`, then `platform_reboot()` when `kernel.panic.reboot` is set; the template `vpanic()` renders its message and delegates to the one body
+- `kernel/include/ours/boot/options.hpp`, `kernel/top/boot_options.cpp` — `kernel.panic.reboot`, and `boot::try_options()`, which does not panic before the options are parsed
+- `kernel/platform/include/ours/platform/power.hpp`, `kernel/platform/pc/power.cpp` — `platform_reboot()`: port 0xCF9, then the i8042 pulse, then a triple fault
+- `kernel/lib/arch/include/arch/cache.hpp`, `kernel/arch/x86/lib/arch/include/arch/x86/cache.hpp` — `arch::clean_cache_range()`, CLFLUSH between MFENCEs, filling the x86 header that was a TODO placeholder
+- `kernel/products/image/dev.dbg_1/BUILD.gn` — `kernel.panic.reboot=true`
+- `scripts/qemu_boot.py` — `REBOOT=1` drops `-no-reboot`
+- `scripts/kshell_run.py` — `--reboot`: after a crash's report, the next boot must log the record, its first line the panic message
+- BUILD files for the new sources and dependencies
+
+**Symptom**
+None; step 3 of the panic-crashlog feature. Before it, a panic halted for good and its report existed only on the console.
+
+**Cause**
+Three pieces were missing:
+- **A writer.** Nothing put the report anywhere but the console.
+- **A way back.** Nothing reset the machine, so no boot ever followed a panic.
+- **A reader.** Nothing in early boot looked for what a panic had left.
+
+**Change**
+The panic path, after the console report:
+
+```cpp
+print_context();
+
+record_panic(message, TAIL_LINES);
+if (reboot_requested()) {
+    print_raw(REBOOT_MARKER);
+    platform_reboot();
+}
+```
+
+The decisions in it:
+- **The record comes after the console.** The console is what someone may be watching now, and a fault while writing the record must not cost the report.
+- **The record holds the message first, then the same 32-line ring tail the console shows,** fed through a `logz4::Logger` that appends to the record. It has no banner and no markers. The next boot logs the record, and a banner in it would read to a harness as a new panic.
+- **The cache is written back before the reset.** `record_panic()` ends with `arch::clean_cache_range()` over the region. A reset discards dirty lines rather than writing them back. QEMU models no cache, so no test here can catch a missing flush; it rests on that argument.
+- **The reset tries three ways, in Zircon's order.** First 0x06 to the chipset's Reset Control Register at 0xCF9, as Zircon's `cf9_reboot_system()` does. Then the i8042 pulse-reset command, as `pc_keyboard_reboot()` does. Last, an empty IDT and an `int3`, which escalates to a triple fault, as Linux's `BOOT_TRIPLE` does. Each method gets 100 M TSC ticks to take effect before the next is tried.
+- **The option is read without panicking.** `reboot_requested()` uses `boot::try_options()`. A panic before the options are parsed would otherwise raise a second panic inside `options()`, and that CPU would lose `claim_report()` and halt silently.
+- **Reboot is off by default.** A panic stays on screen, and a kernel that panics on every boot does not loop. Only dev.dbg_1 turns it on, and under `qemu_boot.py` its reset still ends QEMU unless `REBOOT=1`.
+
+The reader runs in two hooks:
+- **`find_region()`, at PlatformEarly.** It scans `boot::handoff().mem.ranges` for `MemoryType::Crashlog` and keeps a physmap span. It runs early so that a panic during the rest of the boot still leaves a record.
+- **`recover_record()`, at Platform on the laborer thread.** It reads the region with `crashlog::read()`. A whole record is logged line by line at Warn under `crashlog: | `, then cleared, and the cleared header is written back from the cache. Warn rather than Error, because this boot is fine; the panic was the previous one's.
+
+The template `vpanic(fmt, args)` now renders into a 512-byte buffer the way `panic()` does and calls `vpanic(std::string_view)`. This removes the second copy of the sequence, which every change in this series had to make twice.
+
+**Reference**
+- Zircon: `platform_panic_start()` and `PanicFinish()` lead to `platform_halt(HALT_ACTION_REBOOT)`. `MappedCrashlog::Finalize()` (`zircon/kernel/platform/mapped_crashlog.cc`) writes the record, and `crashlog_to_vmo()` (`zircon/kernel/lib/userabi/userboot.cc:278`) recovers it on the next boot. The pc reset is `reboot()` in `zircon/kernel/platform/pc/power.cc`.
+- Linux: `panic()` calls `kmsg_dump(KMSG_DUMP_PANIC)` into ramoops, then `emergency_restart()` once `panic_timeout` is set. `native_machine_emergency_restart()` (`arch/x86/kernel/reboot.c`) walks ACPI, KBD, EFI, CF9 and TRIPLE.
+
+**Verification**
+- `kshell_run.py --image dbg --reboot "crash panic"`: ok. The console showed the report, then `--- rebooting: kernel.panic.reboot is set ---`, then OVMF, GRUB and phys again (`crashlog: reserved [0x4000000, 0x4004000)`). The second boot logged `crashlog: the previous boot panicked; its record (1304 bytes) follows`, then `crashlog: | crash: deliberate panic from the kernel shell`, then the 32 tail lines ending with the panic message and its prefix. This is also the measurement the design asked for first: on QEMU q35 with OVMF, 16 KiB at 64 MiB survives a warm reset.
+- `kshell_run.py --image dbg --reboot "crash panic-smp"`: ok, and the second boot reported the record.
+- `crash panic-locked` on dbg without `--reboot`: ok. The reset ends QEMU after the report.
+- `boot_check.py`: dbg PASS (21 passed, 0 error lines), rel PASS (19 passed, 0 error lines). A fresh boot logs `crashlog: no record from the previous boot`.
+- clang-format clean; clang-tidy reports nothing in the changed files.
+- **Not run:** `crash` on rel. Since commit `ead5d12f` (another session's), the rel image runs the interactive user shell with the kernel shell off, so a kernel command cannot be typed there. The panic path is the same code on both images.
+- **Not verified:** that a third boot reports nothing, that is, that the clear sticks. That needs a reset without a panic, and there is no reboot command. `crashlog::clear()` is covered by the host test.
+
+**Deliberately not done**
+- No reboot command and no reboot delay, such as Linux's `panic=<seconds>`.
+- The tail repeats lines the console already showed, as the console replay does; the record is for a boot that never saw that console.
+- The record is not handed to user space yet; that is step 4.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the cache written back before the reset, and why can no test under QEMU catch it missing?
+- Why does the panic path read the reboot option through `try_options()`, and what would an early panic do with `options()` instead?
+- Why does the record carry no banner, and why is the recovered record logged at Warn rather than Error?

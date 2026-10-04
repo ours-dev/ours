@@ -40,6 +40,12 @@ console is then read for PANIC_SETTLE seconds more, and the banner must have
 come out exactly once: one panic report, however many CPUs panicked. In it,
 the ring's replay must stand between its two marker lines, and a replay the
 first marker calls a tail of N lines must be no longer than that.
+
+With --reboot, QEMU runs with REBOOT=1, so a guest reset reboots it instead
+of ending it. A crash command on an image with kernel.panic.reboot then
+resets the machine after its report, and it passes only if the next boot
+logs the crash record the panic left, with the panic's message as its first
+line ("crashlog: | <message>"), within --boot-timeout.
 """
 
 # macOS still ships Python 3.9 as python3; this keeps the annotations lazy.
@@ -283,6 +289,22 @@ def judge_crash(command: str, lines: list[str], after: str) -> bool:
     return True
 
 
+def judge_recovery(console: Console, command: str, lines: list[str], after: str,
+                   timeout: float) -> bool:
+    """With --reboot: says whether the boot after the panic logged the crash
+    record the panic left. Its first line is the panic message, which the line
+    after the banner in |lines| carries behind its prefix. The next boot may
+    already have said so in |after|; otherwise it is waited for."""
+    banner = next(i for i, l in enumerate(lines) if PANIC_BANNER in l)
+    message = re.sub(r"^\[[^\]]*\] ", "", lines[banner + 1]).strip()
+    recovered = re.compile(r"crashlog: \| " + re.escape(message))
+    if not recovered.search(after) and not console.wait_for(recovered, time.monotonic() + timeout):
+        print(f"{command}: FAIL, the next boot did not report the crash record within {timeout:.0f}s")
+        return False
+    print(f"{command}: the next boot reported the crash record")
+    return True
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("commands", nargs="+", metavar="command", help="a kernel-shell command line")
@@ -291,6 +313,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--boot-timeout", type=float, default=60, help="seconds for the boot to end (default: 60)")
     parser.add_argument("--command-timeout", type=float, default=120, help="seconds per command (default: 120)")
     parser.add_argument("--all", action="store_true", help="print debug and trace lines too")
+    parser.add_argument("--reboot", action="store_true",
+                        help="let a guest reset reboot QEMU, and check the crash record a crash leaves")
     args = parser.parse_args(argv)
 
     crashes = [i for i, c in enumerate(args.commands) if c.split()[0] == "crash"]
@@ -306,6 +330,8 @@ def main(argv: list[str]) -> int:
     logdir = Path(tempfile.gettempdir()) / f"ours-kshell-{out.name}"
     logdir.mkdir(parents=True, exist_ok=True)
 
+    if args.reboot:
+        os.environ["REBOOT"] = "1"
     console = Console(out, args.image, logdir)
     results: list[bool] = []
     try:
@@ -337,7 +363,11 @@ def main(argv: list[str]) -> int:
                 results.append(False)
                 break
             if crash:
-                results.append(judge_crash(command, lines, console.take(PANIC_SETTLE)))
+                after = console.take(PANIC_SETTLE)
+                passed = judge_crash(command, lines, after)
+                if passed and args.reboot:
+                    passed = judge_recovery(console, command, lines, after, args.boot_timeout)
+                results.append(passed)
                 break
             results.append(judge(command, lines))
             if test:

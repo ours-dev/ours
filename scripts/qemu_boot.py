@@ -20,6 +20,9 @@ Environment:
     MEM     megabytes (default: 512; 1024 under NUMA)
     CPU     QEMU cpu model (default: Nehalem)
     NUMA    non-zero for the four-node topology described below
+    REBOOT  1 to let a guest reset reboot the machine instead of ending QEMU
+            (-no-reboot is passed otherwise); a panic crash record is only
+            read by the boot after a reset
 
 Anything after the options is forwarded to QEMU untouched, which is how
 qemu_debug.py adds -S -gdb.
@@ -220,7 +223,8 @@ def main(argv: list[str]) -> int:
         "-M", "q35", "-cpu", os.environ.get("CPU", "Nehalem"),
         "-m", str(mem), "-smp", str(smp),
         *(numa_args(mem) if numa else []),
-        "-no-reboot", "-nographic",
+        *([] if os.environ.get("REBOOT") == "1" else ["-no-reboot"]),
+        "-nographic",
         "-drive", f"if=pflash,format=raw,unit=0,readonly=on,file={work}/code.fd",
         "-drive", f"if=pflash,format=raw,unit=1,file={work}/vars.fd",
         "-drive", f"format=raw,file={esp_img}",

@@ -10,6 +10,7 @@ source_set("pc") {
     "interrupt.cpp",
     "keyboard.cpp",
     "pic.cpp",
+    "power.cpp",
   ]
   public_deps = [ "//kernel/platform:headers" ]
 

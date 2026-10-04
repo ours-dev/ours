@@ -61,6 +61,7 @@ auto BootOptions::apply(obi::CommandLineView const &cmdline) -> void {
     }
     parse_flag(cmdline, SHELL_OPTION, m_shell);
     parse_flag(cmdline, DEBUG_READ_OPTION, m_debug_read);
+    parse_flag(cmdline, PANIC_REBOOT_OPTION, m_panic_reboot);
     if (auto const value = cmdline.value(KERNEL_NAME_OPTION); value.is_some()) {
         parse_name(KERNEL_NAME_OPTION, value.value(), m_kernel_name);
     }
@@ -86,5 +87,9 @@ auto options() -> BootOptions const & {
         panic("Boot options have not been parsed");
     }
     return *installed;
+}
+
+auto try_options() -> BootOptions const * {
+    return installed;
 }
 } // namespace ours::boot

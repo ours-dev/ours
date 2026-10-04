@@ -5,6 +5,7 @@ import("//kernel/kernel_params.gni")
 source_set("top") {
   sources = [
     "boot_options.cpp",
+    "crash_record.cpp",
     "handoff.cpp",
     "main.cpp",
     "panic.cpp",
@@ -16,6 +17,7 @@ source_set("top") {
     "//kernel/kernel",
     "//kernel/lib/acpi:header",
     "//kernel/lib/ccrt",
+    "//kernel/lib/crashlog",
     "//kernel/lib/gktl",
     "//kernel/lib/logz4",
     "//kernel/lib/prof",
@@ -25,6 +27,7 @@ source_set("top") {
     "//kernel/mm",
     "//kernel/object",
     "//kernel/phys:handoff",
+    "//kernel/platform:headers",
     "//system/lib/logz4",
   ]
 

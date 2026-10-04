@@ -16,6 +16,7 @@ cpp_interface("headers") {
     "include/ours/platform/init.hpp",
     "include/ours/platform/interrupt.hpp",
     "include/ours/platform/isa.hpp",
+    "include/ours/platform/power.hpp",
     "include/ours/platform/timer.hpp",
   ]
 

@@ -1,9 +1,12 @@
+#include <ours/boot/options.hpp>
 #include <ours/cpu.hpp>
 #include <ours/ipi_service.hpp>
 #include <ours/panic.hpp>
+#include <ours/platform/power.hpp>
 
 #include <atomic>
 
+#include "crash_record.hpp"
 #include <arch/auto_interrupt_disabler.hpp>
 #include <arch/halt.hpp>
 #include <logz4/log.hpp>
@@ -107,6 +110,16 @@ namespace {
     constexpr auto FULL_MARKER =
         std::string_view("--- recent log: every line kept, from before any console ---\n");
     constexpr auto END_MARKER = std::string_view("--- end of recent log ---\n");
+    constexpr auto REBOOT_MARKER =
+        std::string_view("--- rebooting: kernel.panic.reboot is set ---\n");
+
+    /// `kernel.panic.reboot`, read without the panic boot::options() raises
+    /// before the options are parsed: a panic that early halts, as every
+    /// panic did before the option existed.
+    auto reboot_requested() -> bool {
+        auto const *const options = boot::try_options();
+        return options != nullptr && options->panic_reboot();
+    }
 
     /// What led up to the panic: the record ring, replayed between two
     /// marker lines, so that a reader can tell where the live log stops and
@@ -138,6 +151,20 @@ namespace {
     }
 } // namespace
 
+/// Renders the message the way panic() does, into a bounded stack buffer,
+/// and reports it through the overload below, which is the one body: two
+/// copies of the sequence below had to be kept in step by hand.
+template <typename String, typename FormatArgs>
+[[noreturn]]
+auto vpanic(String fmt, FormatArgs const &args) -> void {
+    char buffer[512];
+    auto sink = PanicSink{buffer, buffer + sizeof(buffer)};
+    std::vformat_to(PanicSink::Iterator{&sink}, fmt, args);
+    vpanic(std::string_view(buffer, static_cast<usize>(sink.m_out - buffer)));
+}
+
+template auto vpanic(std::string_view, std::format_args const &) -> void;
+
 /// The report is the banner, then the message, then the context.
 ///
 /// The message used to come last, after a replay of the whole record ring,
@@ -150,44 +177,6 @@ namespace {
 /// kmsg_dump(), and Zircon's platform_panic_start() prints its banner before
 /// anything else, for the same reason.
 ///
-/// The message is logged, not written raw like the banner: that gives it the
-/// time and CPU prefix, and the level tag that boot checks look for. It also
-/// puts it in the ring, so the replay ends with it once more.
-///
-/// One report per machine, whoever panics. A CPU that panics while another
-/// CPU's panic is already under way prints nothing: without that, four CPUs
-/// panicking together printed four whole reports one after another, banner,
-/// message and replay each, as each in turn waited out the others in
-/// quiesce_machine(). It puts its message in the record ring instead, where
-/// the first CPU's replay shows it in time order, and stops. That includes a panic inside the panic path on
-/// the same CPU, which would otherwise start the report over from the top.
-///
-/// Panic mode comes first, before anything prints, the other CPUs' last
-/// words in quiesce_machine() included: the serial logger's lock may be held
-/// by a CPU that will never let go, and in panic mode a write stops waiting
-/// for it after a bound (logz4::enter_panic_mode()).
-template <typename String, typename FormatArgs>
-[[noreturn]]
-auto vpanic(String fmt, FormatArgs const &args) -> void {
-    arch::AutoInterruptDisabler local_irq_disabler{};
-    if (!claim_report()) {
-        RingOnly ring_only;
-        log::vlog(ring_only, logz4::Level::Error, fmt, args);
-        stop_this_cpu();
-    }
-    logz4::enter_panic_mode();
-    quiesce_machine();
-
-    print_banner();
-    log::vlog(logz4::get_global_logger(), logz4::Level::Error, fmt, args);
-    print_context();
-    while (1) {
-        arch::halt();
-    }
-}
-
-template auto vpanic(std::string_view, std::format_args const &) -> void;
-
 /// The message arrives already rendered -- panic() and panic_assertion() both
 /// format into a bounded stack buffer before they get here -- so it is passed
 /// to the logger as an *argument* of a "{}" format string rather than as the
@@ -198,7 +187,29 @@ template auto vpanic(std::string_view, std::format_args const &) -> void;
 /// replacement field with no argument behind it, and the panic died inside
 /// std::format instead of printing.
 ///
-/// The report comes out in the same order as the overload above prints it.
+/// The message is logged, not written raw like the banner: that gives it the
+/// time and CPU prefix, and the level tag that boot checks look for. It also
+/// puts it in the ring, so the replay ends with it once more.
+///
+/// One report per machine, whoever panics. A CPU that panics while another
+/// CPU's panic is already under way prints nothing: without that, four CPUs
+/// panicking together printed four whole reports one after another, banner,
+/// message and replay each, as each in turn waited out the others in
+/// quiesce_machine(). It puts its message in the record ring instead, where
+/// the first CPU's replay shows it in time order, and stops. That includes a
+/// panic inside the panic path on the same CPU, which would otherwise start
+/// the report over from the top.
+///
+/// Panic mode comes first, before anything prints, the other CPUs' last
+/// words in quiesce_machine() included: the serial logger's lock may be held
+/// by a CPU that will never let go, and in panic mode a write stops waiting
+/// for it after a bound (logz4::enter_panic_mode()).
+///
+/// After the console report, the same message and log tail go into the crash
+/// record (record_panic()), and with `kernel.panic.reboot` the machine resets
+/// so that the next boot can read it. The record comes after the console:
+/// the console is what someone may be watching now, and a fault while
+/// writing the record must not cost the report.
 [[noreturn]]
 auto vpanic(std::string_view message) -> void {
     arch::AutoInterruptDisabler local_irq_disabler{};
@@ -216,6 +227,12 @@ auto vpanic(std::string_view message) -> void {
     log::vlog(logz4::get_global_logger(), logz4::Level::Error, std::string_view("{}"),
               std::make_format_args(message));
     print_context();
+
+    record_panic(message, TAIL_LINES);
+    if (reboot_requested()) {
+        print_raw(REBOOT_MARKER);
+        platform_reboot();
+    }
     while (1) {
         arch::halt();
     }

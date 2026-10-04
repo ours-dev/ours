@@ -84,6 +84,12 @@ kernel_cmdline("cmdline") {
     # boot (from 9 MiB) and far below the top of RAM, where OVMF keeps its own
     # memory. See .agents/tasks/panic-crashlog/DESIGN.md.
     "kernel.crashlog=0x4000@0x4000000",
+
+    # A panic resets the machine once its report and crash record are out,
+    # so that the next boot reports the record. Only here: the dev image
+    # halts on a panic, as every image did before the option. Under
+    # scripts/qemu_boot.py the reset ends QEMU unless REBOOT=1.
+    "kernel.panic.reboot=true",
   ]
 }
 

@@ -46,6 +46,10 @@ class BootOptions final {
     /// boots it by; see kernel_name().
     static constexpr std::string_view KERNEL_NAME_OPTION{"kernel.name"};
 
+    /// Whether a panic resets the machine once its report is out; see
+    /// panic_reboot().
+    static constexpr std::string_view PANIC_REBOOT_OPTION{"kernel.panic.reboot"};
+
     /// Applies the options `cmdline` names and leaves the rest at their
     /// defaults. A value an option cannot take is logged and ignored rather
     /// than refused: nothing downstream could act on an error, and the
@@ -138,9 +142,25 @@ class BootOptions final {
         return m_kernel_name;
     }
 
+    /// `kernel.panic.reboot`, `kernel.panic.reboot=true`: after a panic has
+    /// printed its report and left its crash record, reset the machine
+    /// rather than halt. False when absent.
+    ///
+    /// Off by default, so that a panic stays on the screen for whoever is
+    /// watching, and a kernel that panics on every boot does not reboot in a
+    /// loop. Zircon's `kernel.halt-on-panic` is the same switch the other way
+    /// round (Zircon reboots by default); Linux's `panic=<seconds>` adds a
+    /// delay. The crash record exists for this case: the next boot reads it
+    /// (.agents/tasks/panic-crashlog/DESIGN.md).
+    [[nodiscard]]
+    auto panic_reboot() const -> bool {
+        return m_panic_reboot;
+    }
+
   private:
     bool m_shell{false};
     bool m_debug_read{false};
+    bool m_panic_reboot{false};
 
     /// A copy, NUL-terminated, rather than a view into the command line: the
     /// value is a slice of the Config item that ends at a space, and holding
@@ -166,6 +186,12 @@ auto setup_options() -> void;
 /// for them.
 [[nodiscard]]
 auto options() -> BootOptions const &;
+
+/// The same, or null before setup_options() has run. For the one reader that
+/// must not panic over their absence: the panic path itself, which would
+/// otherwise turn an early panic into a second one.
+[[nodiscard]]
+auto try_options() -> BootOptions const *;
 } // namespace ours::boot
 
 #endif // OURS_BOOT_OPTIONS_HPP

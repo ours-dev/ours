@@ -6,6 +6,7 @@ cpp_interface("headers") {
   public = [
     "include/arch/asm.hpp",
     "include/arch/auto_interrupt_disabler.hpp",
+    "include/arch/cache.hpp",
     "include/arch/halt.hpp",
     "include/arch/interrupt.hpp",
     "include/arch/io/register_addr.hpp",
