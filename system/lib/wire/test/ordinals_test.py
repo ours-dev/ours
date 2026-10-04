@@ -85,7 +85,7 @@ class OrdinalTest(unittest.TestCase):
 
     def test_codec_headers_declare_methods(self) -> None:
         selectors = {selector for _, selector, _ in declarations()}
-        # The fuchsia.io subset (component-framework design, "The protocol
+        # The protocol subset (component-framework design, "The protocol
         # subset"): if the scan finds none of these, it is looking in the
         # wrong place, and every other check here would pass vacuously.
         for selector in (
@@ -95,6 +95,11 @@ class OrdinalTest(unittest.TestCase):
             "fuchsia.io/File.Read",
             "fuchsia.io/File.GetBackingMemory",
             "fuchsia.io1/Directory.ReadDirents",
+            "fuchsia.process/Launcher.AddArgs",
+            "fuchsia.process/Launcher.AddHandles",
+            "fuchsia.process/Launcher.AddNames",
+            "fuchsia.process/Launcher.Launch",
+            "fuchsia.kernel/DebugResource.Get",
         ):
             self.assertIn(selector, selectors)
 

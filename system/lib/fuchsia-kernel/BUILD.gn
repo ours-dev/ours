@@ -1,0 +1,41 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The part of fuchsia.kernel ours speaks -- DebugResource.Get -- encoded and
+# decoded by hand on //system/lib/wire (component-framework design S6, D19).
+# Bytes and handle values alone, no system call, so it builds in every
+# toolchain, the host one included, where its tests run.
+#
+# The target is named after the directory, so that //system/lib/fuchsia-kernel
+# is its label; the include prefix and the namespace are fuchsia_kernel, as a
+# C++ name cannot hold a hyphen, which is also how Fuchsia's own C++ bindings
+# spell the library (fuchsia_kernel::).
+source_set("fuchsia-kernel") {
+  sources = [ "src/fuchsia_kernel.cpp" ]
+
+  # Its messages are wire::Message and its method a wire::Method, so a user of
+  # the codec is a user of the framing too.
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/fuchsia_kernel/fuchsia_kernel.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:fuchsia_kernel($host_toolchain)" ]
+}

@@ -3,6 +3,7 @@
 The user-space launcher: how a program from BootFS becomes a running process.
 
 - `launch/plan.hpp`: `Plan::build()`, which decides how the segments of a program are mapped from numbers alone: which pages come straight from the file, which from a copy-on-write snapshot of it, which from a zero-fill VMO with the file bytes of one partial page copied in, and with what protection each is mapped. It does no I/O, so it is tested on the host.
+- `launch/process_launcher.hpp`: `ProcessLauncherState`, one fuchsia.process.Launcher connection as its server keeps it: what the client's AddArgs, AddHandles and AddNames have given, judged at Launch against what one processargs message can carry, then handed to a start hook the server supplies. It makes no system call itself, so it is tested on the host too.
 
 ## Layout
 

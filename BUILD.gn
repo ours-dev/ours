@@ -158,6 +158,11 @@ group("default") {
     "//system/lib/wire:tests",
     "//system/lib/fuchsia-io:tests",
 
+    # The Launcher and DebugResource codecs, on the same framing; the
+    # Launcher's per-connection state is in //system/lib/launch:tests.
+    "//system/lib/fuchsia-process:tests",
+    "//system/lib/fuchsia-kernel:tests",
+
     # The fuchsia.io server: its tree, and its connections driven one encoded
     # message at a time -- the Open checks in order, rights, ReadDirents,
     # Read, GetBackingMemory, Clone, Close and malformed messages.

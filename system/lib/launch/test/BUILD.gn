@@ -38,3 +38,18 @@ executable("protocol") {
   ]
   visibility = [ "*" ]
 }
+
+# The Launcher's per-connection state: Add* calls taken in, Launch judged and
+# its program handed to a fake start hook, the processargs it would get read
+# back with the runtime's decoder, every handle accounted for.
+executable("process_launcher") {
+  testonly = true
+  sources = [ "process_launcher_test.cpp" ]
+  deps = [
+    "//system/lib/launch:process_launcher",
+    "//system/lib/ort:process_args",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

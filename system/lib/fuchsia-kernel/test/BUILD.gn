@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine:
+# DebugResource.Get and its reply are written, read back and broken on
+# purpose, from bytes and handle values alone.
+executable("fuchsia_kernel") {
+  testonly = true
+  sources = [ "fuchsia_kernel_test.cpp" ]
+  deps = [
+    "//system/lib/fuchsia-kernel",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

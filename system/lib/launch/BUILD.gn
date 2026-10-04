@@ -27,6 +27,18 @@ source_set("protocol") {
   ]
 }
 
+# fuchsia.process.Launcher's per-connection state (launch/process_launcher.hpp):
+# what a client's Add* calls have given, and the judging of each message it
+# sends. The program is started through a hook its server supplies, so the
+# state makes no system call and builds for the host too, where its tests run.
+source_set("process_launcher") {
+  sources = [ "src/process_launcher.cpp" ]
+  public_deps = [
+    ":headers",
+    "//system/lib/fuchsia-process",
+  ]
+}
+
 # The user-space launcher: how a program from BootFS becomes a running process.
 # start() carries out a plan through system calls, and the BootFS launcher
 # (launch/bootfs.hpp) finds a program by name for it, so both are defined only
@@ -62,6 +74,7 @@ cpp_interface("headers") {
     "include/launch/client.hpp",
     "include/launch/launch.hpp",
     "include/launch/plan.hpp",
+    "include/launch/process_launcher.hpp",
     "include/launch/program.hpp",
     "include/launch/protocol.hpp",
   ]
@@ -75,6 +88,7 @@ group("tests") {
   testonly = true
   public_deps = [
     "test:plan($host_toolchain)",
+    "test:process_launcher($host_toolchain)",
     "test:program($host_toolchain)",
     "test:protocol($host_toolchain)",
   ]
