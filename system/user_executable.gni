@@ -4,6 +4,11 @@
 
 import("//kernel/phys/kernel_elf_binary.gni")
 
+# The BootFS directory user programs install to unless given an install_name
+# of their own. init_startup() names programs by the same rule. Defined
+# before the template, which sees only what its file had defined by then.
+user_program_dir = "bin"
+
 # Defines a program that runs in ring 3 and reaches the kernel through the
 # vDSO, packaged as a file in the kernel package's BootFS.
 #
@@ -44,14 +49,47 @@ import("//kernel/phys/kernel_elf_binary.gni")
 # Parameters:
 #
 #   install_name (optional)
-#     BootFS file name for the packaged program. Defaults to target_name. It
-#     is the name the program is started by: kernel.select.userboot for a
-#     build of userboot, and userboot.next or a launcher's BootFS lookup for
-#     any other program.
+#     BootFS file name for the packaged program. Defaults to
+#     "$user_program_dir/$target_name", "bin/shell" for the shell, as Zircon
+#     installs its programs under /boot/bin. It is the name the program is
+#     started by: kernel.select.userboot for a build of userboot (which pins
+#     it at the top level, where the kernel looks), and userboot.next, init's
+#     startup list or a launcher's BootFS lookup for any other program.
 #
 #   deps, sources, configs, testonly, visibility
 #     Standard GN meanings.
 template("user_executable") {
+  if (defined(invoker.install_name)) {
+    _install_name = invoker.install_name
+  } else {
+    _install_name = "$user_program_dir/$target_name"
+  }
+
+  # The install name on its own, for whoever starts this program by name
+  # (user_program_names(), //system/user_program_names.gni). A target apart
+  # from the program because a starter must not depend on the program:
+  #   - the dependency would package it: the BootFS takes every file in its
+  #     deps, so the dev image, which carries the shell but not fault_probe,
+  #     would get fault_probe through the shell;
+  #   - two programs that start each other would be a dependency cycle.
+  # This one carries a name and no files, so neither happens.
+  #
+  # The program's own name is taken out here: inside the group, target_name
+  # is the group's.
+  _program_name = target_name
+  group("$target_name.install_name") {
+    forward_variables_from(invoker, [ "testonly" ])
+    metadata = {
+      user_program_names = [
+        {
+          name = _program_name
+          path = _install_name
+          label = get_label_info(":$_program_name", "label_no_toolchain")
+        },
+      ]
+    }
+  }
+
   # The vDSO as a link input: the linker target's own output, not the
   # packaged copy. kernel_elf_image() strips section headers from what goes
   # into the package, and a linker needs them to read .dynsym -- the *loader*
@@ -65,11 +103,13 @@ template("user_executable") {
                            [
                              "configs",
                              "deps",
+                             "install_name",
                              "ldflags",
                              "metadata",
                              "visibility",
                            ])
     forward_variables_from(invoker, [ "visibility" ])
+    install_name = _install_name
 
     if (defined(invoker.metadata)) {
       metadata = invoker.metadata

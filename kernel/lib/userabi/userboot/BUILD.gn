@@ -29,6 +29,12 @@ assert(toolchain_environment == "user",
 user_executable("userboot") {
   visibility = [ "//kernel/products/image/*" ]
 
+  # At the top level, not under bin/ with the other programs: the kernel looks
+  # it up by kernel.select.userboot, whose default is the bare "userboot"
+  # (ours::boot::BootOptions), as Zircon's kernel looks up a bare "userboot"
+  # in its STORAGE_KERNEL BootFS.
+  install_name = "userboot"
+
   sources = [ "userboot.cpp" ]
   deps = [
     "//kernel/lib/obi:headers",

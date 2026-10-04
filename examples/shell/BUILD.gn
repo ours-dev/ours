@@ -4,6 +4,7 @@
 
 import("//build/toolchain/toolchain_environment.gni")
 import("//system/user_executable.gni")
+import("//system/user_program_names.gni")
 
 # The kernel toolchain would compile this happily and produce something that
 # cannot run in ring 3 (-mcmodel=kernel puts every symbol reference in the top
@@ -12,6 +13,13 @@ import("//system/user_executable.gni")
 assert(
     toolchain_environment == "user",
     "examples/shell must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The BootFS names of the programs the shell's checks start, from their
+# install names (programs.hpp), and the directory its command lookup searches.
+user_program_names("programs") {
+  visibility = [ ":*" ]
+  programs = [ "//kernel/lib/syscall/test/fault_probe" ]
+}
 
 # A program bound to the vDSO at load time: the ours_* entries it calls are
 # left undefined by the linker, and the launcher that starts it -- userboot's
@@ -36,6 +44,7 @@ user_executable("shell") {
   # main's caller and its print helpers; bootfs is the format of the BootFS
   # it reads.
   deps = [
+    ":programs",
     "//system/lib/bootfs:headers",
     "//system/lib/launch",
     "//system/lib/ort",

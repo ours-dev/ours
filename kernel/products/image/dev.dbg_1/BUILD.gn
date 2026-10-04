@@ -54,7 +54,7 @@ user_bootfs("bootfs") {
   ]
 }
 
-# The image-level kernel cmdline. `userboot.next=shell` names the program
+# The image-level kernel cmdline. `userboot.next=bin/shell` names the program
 # userboot starts next.
 #
 # The first user process is always userboot (kernel.select.userboot is left
@@ -63,9 +63,9 @@ user_bootfs("bootfs") {
 # directly. Zircon's userboot.next; the mechanism is described at the same
 # place in //kernel/products/image/dev.
 #
-# The value is a file name in the BootFS, not a label:
-# kernel_elf_binary("shell") sets has_patches = false, so it lands as a bare
-# `shell` file rather than a `shell/` subtree.
+# The value is a file name in the user BootFS, not a label: user_executable()
+# installs shell as `bin/shell` (//system/user_executable.gni), one bare file
+# rather than a `shell/` subtree since a user program has no code-patches.
 #
 # `kernel.shell=true`: the kernel shell is off by default (see
 # //kernel/products/image/dev), and this image had it before the option
@@ -76,7 +76,7 @@ kernel_cmdline("cmdline") {
     "//products/*",
   ]
   args = [
-    "userboot.next=shell",
+    "userboot.next=bin/shell",
     "kernel.shell=true",
   ]
 }

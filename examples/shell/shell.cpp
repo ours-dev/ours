@@ -38,6 +38,7 @@
 
 #include <cstring>
 
+#include "programs.hpp"
 #include "shell_launcher.hpp"
 #include "shell_tests.hpp"
 #include <bootfs/format.hpp>
@@ -89,7 +90,7 @@ auto report(std::string_view const what, ours::Status const status) -> void {
 /// Started by init, the User0 startup handle is a channel with "ping" on it
 /// (or about to be): read it, print it, answer "pong" -- the other half of
 /// the first slice, whose log lines are the completion criterion (design 5).
-/// Started by userboot (dbg_1's `userboot.next=shell`) there is no such
+/// Started by userboot (dbg_1's `userboot.next=bin/shell`) there is no such
 /// handle, and nobody to answer.
 auto answer_init(ours::Uandle const peer) -> void {
     using ours::Signals;
@@ -226,10 +227,46 @@ auto launch_for_tests(void *const context, ours::Uandle const job, std::string_v
 constexpr usize SHELL_LINE_BYTES = 128;
 constexpr usize SHELL_ARG_MAX = 16;
 
+/// Room for any command's BootFS name: the directory, a `/`, and a word of
+/// a line.
+using CommandPath = char[user_programs::DIRECTORY.size() + 1 + SHELL_LINE_BYTES];
+
+/// The BootFS name |command| runs from, built in |path| when it is not
+/// |command| itself.
+///
+/// A command with a `/` in it is a path and is taken as typed. Any other is
+/// looked up in the directory programs install to (user_programs::DIRECTORY,
+/// "bin"), as a Unix shell finds it on a PATH of one entry: `shell` runs
+/// bin/shell. Nothing else is searched. The other top-level files are the
+/// vDSO and configuration, which no command names, and a fallback would
+/// only turn a mistyped program name into an attempt to run one of them.
+auto command_path(std::string_view const command, CommandPath &path) -> std::string_view {
+    if (command.find('/') != std::string_view::npos) {
+        return command;
+    }
+    auto const directory = user_programs::DIRECTORY;
+    if (directory.size() + 1 + command.size() > sizeof(path)) {
+        return {};
+    }
+    std::memcpy(path, directory.data(), directory.size());
+    path[directory.size()] = '/';
+    std::memcpy(path + directory.size() + 1, command.data(), command.size());
+    return {path, directory.size() + 1 + command.size()};
+}
+
 auto launch_command(Launcher const &launcher, ours::Uandle const job,
                     std::span<std::string_view const> const args) -> void {
     using ours::Signals;
     using ours::Status;
+
+    // argv[0] stays as typed, as a Unix shell leaves it; only the lookup
+    // takes the full name.
+    CommandPath path_buffer;
+    auto const path = command_path(args[0], path_buffer);
+    if (path.empty()) {
+        auto _ = ort::debug_line("shell: command name too long");
+        return;
+    }
 
     ours::Uandle bootstrap = ours::Uandle::Invalid;
     ours::Uandle bootstrap_there = ours::Uandle::Invalid;
@@ -240,7 +277,7 @@ auto launch_command(Launcher const &launcher, ours::Uandle const job,
         return;
     }
 
-    auto const started = launch_program(launcher, job, args[0], bootstrap_there);
+    auto const started = launch_program(launcher, job, path, bootstrap_there);
     if (started.is_err()) {
         auto _ = ours::handle_close(bootstrap);
         return;

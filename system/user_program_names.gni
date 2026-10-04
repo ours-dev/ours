@@ -1,0 +1,101 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//system/user_executable.gni")
+
+# user_program_names() -- a C++ header naming the programs a program starts.
+#
+# A program that starts another by its BootFS name -- init the shell, the
+# shell fault_probe -- would otherwise spell the name as a string literal,
+# and the literal and the install name the build chose for the program
+# (user_executable()'s install_name, //system/user_executable.gni) could
+# drift apart. The drift shows only at boot, as a NotFound. Here the header
+# is written from the install names themselves, so a renamed program renames
+# the constant, and a program that is no longer built is a compile error in
+# whoever still names it.
+#
+# The header is `<target_name>.hpp`. In namespace user_programs it has one
+# constant per program, named after the program's target in capitals, and
+# DIRECTORY, where programs install unless they say otherwise
+# (user_program_dir):
+#
+#   inline constexpr std::string_view FAULT_PROBE{"bin/fault_probe"};
+#   inline constexpr std::string_view DIRECTORY{"bin"};
+#
+# The names are read from each program's `<name>.install_name` target, which
+# carries only the name. A dependency on the program itself would package it
+# wherever its starter goes and could close a cycle (see user_executable()).
+#
+# Parameters:
+#
+#   programs (required)
+#     Plain labels of the user_executable()s whose names the header carries,
+#     in the current toolchain: "//kernel/lib/syscall/test/fault_probe".
+#
+#   testonly, visibility
+#     Standard GN meanings.
+template("user_program_names") {
+  assert(defined(invoker.programs) && invoker.programs != [],
+         "user_program_names($target_name) requires `programs`")
+
+  _main_target = target_name
+  _json_target = "$target_name.json"
+  _gen_target = "$target_name.gen"
+  _config_target = "$target_name.config"
+  _json = "$target_gen_dir/$target_name.json"
+  _header = "$target_gen_dir/$target_name.hpp"
+
+  _name_targets = []
+  foreach(program, invoker.programs) {
+    assert(
+        get_label_info(program, "toolchain") == current_toolchain,
+        "user_program_names($target_name): `programs` takes plain labels without a toolchain suffix: $program")
+    _dir = get_label_info(program, "dir")
+    _name = get_label_info(program, "name")
+    _name_targets += [ "$_dir:$_name.install_name" ]
+  }
+
+  # Gathered at gen time from the name targets' metadata.
+  generated_file(_json_target) {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_gen_target" ]
+    deps = _name_targets
+    data_keys = [ "user_program_names" ]
+    output_conversion = "json"
+    outputs = [ _json ]
+  }
+
+  action(_gen_target) {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_main_target" ]
+    script = "//system/user_program_names.py"
+    sources = [ _json ]
+    outputs = [ _header ]
+    args = [
+      rebase_path(_json, root_build_dir),
+      rebase_path(_header, root_build_dir),
+      get_label_info(":$_main_target", "label_no_toolchain"),
+      "--directory",
+      user_program_dir,
+    ]
+    deps = [ ":$_json_target" ]
+  }
+
+  config(_config_target) {
+    visibility = [ ":$_main_target" ]
+    include_dirs = [ target_gen_dir ]
+  }
+
+  # The include path and the edge that orders the consumer's compiles after
+  # the generator, together, as //system/public:vdso_decls does.
+  group(_main_target) {
+    forward_variables_from(invoker,
+                           [
+                             "testonly",
+                             "visibility",
+                           ])
+    public_deps = [ ":$_gen_target" ]
+    public_configs = [ ":$_config_target" ]
+  }
+}

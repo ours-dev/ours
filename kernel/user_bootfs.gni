@@ -19,9 +19,10 @@ import("//build/obi/obi_input.gni")
 # therefore decided here, by what goes into the item, and not by a list the
 # kernel applies at boot.
 #
-# Every file of everything in deps goes in, as its distribution entries name
-# it (a user_executable() installs its program under its install_name), at
-# the BootFS's top level. LZ4-compressed, like the kernel package.
+# Every file of everything in deps goes in, at the path its distribution
+# entries name, with no prefix: a user_executable() installs its program
+# under its install_name, `bin/<name>` by default, and the vDSO lands at the
+# top level as `vdso`. LZ4-compressed, like the kernel package.
 #
 # With `init_startup = true` it also packages `config/init/startup`: init's
 # startup list, one line per init_startup() entry in deps

@@ -16,6 +16,7 @@
 
 #include <cstring>
 
+#include "programs.hpp"
 #include <bootfs/format.hpp>
 #include <launch/program.hpp>
 #include <ort/debug.hpp>
@@ -82,7 +83,7 @@ struct ProbeRun {
 /// returns is handed back in run.process.
 ///
 /// The probe is started the way every program on the runtime is: a
-/// processargs message on its bootstrap channel (argv = {"fault_probe",
+/// processargs message on its bootstrap channel (argv = {"bin/fault_probe",
 /// probe}), written once the process exists -- its root VMA, which the
 /// launcher hands back, is one of the two startup handles -- with the far end of a
 /// second channel, as User0, for the answer. The answer
@@ -103,7 +104,7 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
     u32 length = 0;
     u32 const infos[] = {ours::handle_info(ours::HandleType::User0, 0),
                          ours::handle_info(ours::HandleType::VmaRoot, 0)};
-    std::string_view const args[] = {"fault_probe", {probe.data(), probe.size()}};
+    std::string_view const args[] = {user_programs::FAULT_PROBE, {probe.data(), probe.size()}};
     if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
         status != Status::Ok) {
         report("shell: encoding the probe's processargs = ", status);
@@ -133,7 +134,8 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
     ours::Uandle root_vma = ours::Uandle::Invalid;
     ours::Uandle process = ours::Uandle::Invalid;
     auto status = Status::Ok;
-    auto const started = launcher(launcher_context, job, "fault_probe", bootstrap_there);
+    auto const started =
+        launcher(launcher_context, job, user_programs::FAULT_PROBE, bootstrap_there);
     if (started.is_err()) {
         status = started.unwrap_err();
     } else {

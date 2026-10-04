@@ -123,9 +123,9 @@ user_bootfs("bootfs") {
 # as Zircon's userboot reads its own userboot.next. Without this line
 # userboot only says hello and halts.
 #
-# The value is a file name in the BootFS, not a label:
-# kernel_elf_binary("shell") sets has_patches = false, so it lands as a bare
-# `shell` file rather than a `shell/` subtree.
+# The value is a file name in the user BootFS, not a label: user_executable()
+# installs init as `bin/init` (//system/user_executable.gni), one bare file
+# rather than an `init/` subtree since a user program has no code-patches.
 #
 # `kernel.shell=true` starts the kernel shell on COM1 (the option is off by
 # default, as in Zircon; see ours::boot::BootOptions::shell()). This image is
@@ -137,7 +137,7 @@ kernel_cmdline("cmdline") {
     "//products/*",
   ]
   args = [
-    "userboot.next=init",
+    "userboot.next=bin/init",
     "kernel.shell=false",
     "kernel.debug_read=true",
   ]

@@ -7,7 +7,7 @@ Usage:
   tools/set.py <product>.<arch> --variant lto[,ubsan-trap]
   tools/set.py <product>.<arch> --clang-dir <path>  # override the clang tool dir
   tools/set.py <product>.<arch> --args kernel_shell_enabled=false  # any GN arg
-  tools/set.py <product>.<arch> --out out/mine --with //examples/foo --autorun foo+arg
+  tools/set.py <product>.<arch> --out out/mine --with //examples/foo --autorun bin/foo+arg
   tools/set.py --list                 # list valid products and arches
 
 This is the equivalent of `fx set <product>.<board>`: it writes args.gn
@@ -42,7 +42,9 @@ programs without changing what boots: the image's boot flow (userboot, then
 init, then the shell) is its own.
 
 --autorun is the `zircon.autorun.boot` counterpart: a command,
-`<BootFS name>[+arg...]`, that init runs once the shell is up. It is how a
+`<BootFS name>[+arg...]`, that init runs once the shell is up. The name is
+the program's whole BootFS path, `bin/foo` for //examples/foo, as Zircon's
+takes `/boot/bin/foo`. It is how a
 build runs its own program at boot, since --with only packages it. After gn gen
 the command's program is checked against what the image actually carries, and
 a directory that fails the check is put back the way it was.

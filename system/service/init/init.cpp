@@ -4,7 +4,7 @@
 /// init -- the first system service.
 ///
 /// userboot starts it on the runtime (//system/lib/ort), when the image
-/// names it with `userboot.next=init`, with a processargs message holding
+/// names it with `userboot.next=bin/init`, with a processargs message holding
 /// two startup handles: the root job and the BootFS VMO -- the ones the
 /// kernel gave userboot, handed on unchanged. What it does with them today is the whole of the first
 /// vertical slice (docs/design/260923/userspace-interface.md, section 5):
@@ -49,6 +49,7 @@
 #include <span>
 #include <string_view>
 
+#include "programs.hpp"
 #include <bootfs/format.hpp>
 #include <elfload/diagnostics.hpp>
 #include <init/autorun.hpp>
@@ -79,7 +80,6 @@ auto halt() -> void {
     }
 }
 
-constexpr std::string_view SHELL{"shell"};
 constexpr std::string_view PING{"ping"};
 
 auto to_str(std::string_view const text) -> std::string_view {
@@ -303,7 +303,7 @@ auto start_shell(launch::BootfsLauncher const &launcher, ours::Uandle const job,
 
     u8 message[256];
     u32 length = 0;
-    std::string_view const args[] = {{SHELL.data(), SHELL.size()}};
+    std::string_view const args[] = {user_programs::SHELL};
     if (auto const status =
             ours::encode_process_args(message, {infos, count + 1}, args, {}, {}, &length);
         status != Status::Ok) {
@@ -323,8 +323,8 @@ auto start_shell(launch::BootfsLauncher const &launcher, ours::Uandle const job,
         }
         return status;
     }
-    return start_then_write(launcher, job, SHELL, bootstrap, bootstrap_there, {message, length},
-                            {handed, count}, process);
+    return start_then_write(launcher, job, user_programs::SHELL, bootstrap, bootstrap_there,
+                            {message, length}, {handed, count}, process);
 }
 
 /// The code |process| ended with, said on the console: TERMINATED first,

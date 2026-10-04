@@ -55,11 +55,15 @@ kernel option belongs in the OBI container.
 
 userboot is always the first user process, and it starts init: Zircon's
 `kernel.select.userboot` picks the userboot binary, and `userboot.next` names
-what it starts. Today the tree conflates the two: the dev image sets
-`kernel.select.userboot=init`, dev.dbg_1 sets `=shell`, and the kernel launches
-that program directly. Treat this as a known bug, not the design. Say "what
-userboot starts next", and never name a field `userboot` when its value is the
-next program.
+what it starts. The dev image sets `userboot.next=bin/init`, dev.dbg_1
+`userboot.next=bin/shell`. Say "what userboot starts next", and never name a
+field `userboot` when its value is the next program.
+
+User programs install under `bin/` in the user BootFS, as Zircon's do under
+`/boot/bin`; userboot stays at the top level of the kernel package, where the
+kernel looks it up. Code never spells a program's name: it includes the header
+`user_program_names()` generates from the install names
+(`//system/user_program_names.gni`).
 
 ## Filesystems
 

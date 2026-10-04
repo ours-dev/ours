@@ -2,6 +2,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+# For user_program_dir: an entry names its program by user_executable()'s
+# install rule.
+import("//system/user_executable.gni")
+
 # The capabilities an init_startup() entry may ask for. Each names one startup
 # handle init hands the program in its processargs:
 #
@@ -45,10 +49,10 @@ init_startup_capabilities = [
 #     suffix -- "//examples/shell". The entry depends on it in the user
 #     toolchain, so listing an entry also packages its program.
 #
-#   name (optional, default: the label's target name)
-#     BootFS name to start. user_executable() installs a program under its
-#     target name unless given install_name, so this only needs saying when
-#     that was overridden.
+#   name (optional, default: "$user_program_dir/" and the label's target name)
+#     BootFS name to start. user_executable() installs a program under
+#     "$user_program_dir/<target name>", "bin/shell", unless given
+#     install_name, so this only needs saying when that was overridden.
 #
 #   args (optional, default [])
 #     Arguments, after argv[0]. A `+`, space or comma in one would be read as
@@ -69,7 +73,7 @@ template("init_startup") {
   if (defined(invoker.name)) {
     _name = invoker.name
   } else {
-    _name = get_label_info(_program, "name")
+    _name = "$user_program_dir/" + get_label_info(_program, "name")
   }
 
   _words = [ _name ]

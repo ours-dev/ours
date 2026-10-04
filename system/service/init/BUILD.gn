@@ -47,11 +47,21 @@ cpp_interface("startup") {
 # test: GN defines every target of a file it loads, and a user program does
 # not configure there (//system/lib/ort draws the same line).
 if (!is_host_toolchain) {
+  import("//system/user_program_names.gni")
+
+  # The BootFS names of the programs init starts, from their install names
+  # (programs.hpp).
+  user_program_names("programs") {
+    visibility = [ ":*" ]
+    programs = [ "//examples/shell" ]
+  }
+
   user_executable("init") {
     visibility = [ "//kernel/products/image/*" ]
     sources = [ "init.cpp" ]
     deps = [
       ":autorun",
+      ":programs",
       "//system/lib/bootfs:headers",
       "//system/lib/launch",
       "//system/lib/ort",

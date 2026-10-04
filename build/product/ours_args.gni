@@ -30,6 +30,7 @@ declare_args() {
   #
   #   autorun
   #     A command init runs once the shell is up: `<BootFS name>[+arg...]`,
+  #     with the program's whole BootFS path, `bin/fault_probe+none`,
   #     written into the image's cmdline as `ours.autorun.boot=` -- Ours'
   #     counterpart of Zircon's `zircon.autorun.boot`, which console-launcher
   #     runs after starting the shell. This is how a build asks for its own
