@@ -5,6 +5,7 @@
 #include <array>
 #include <functional>
 #include <ostream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -380,6 +381,58 @@ TEST_F(LoopTest, RunDropsPacketsThatNameNoSlotInUse) {
     EXPECT_EQ(fake::kernel().waits().size(), waits_before + 1);
     EXPECT_EQ(fake::kernel().closes().size(), closes_before);
     EXPECT_EQ(fake::kernel().queued_on(m_port), 0U);
+}
+
+// Step 1's bound: an index equal to the table's size is past it, whatever the
+// memory there holds. In the test above, the bytes past the fixture's table
+// happen not to look like a slot in use at generation 0, so a run() that let
+// index == size through still dropped Key{SLOTS, 0} and passed. Here two
+// Loops share one array, the first over its first slot and the second over
+// the next, so that the slot just past the first Loop's table is in use at
+// generation 0: such a run() reads it and calls the second Loop's callback.
+TEST(LoopRun, DropsAnIndexOnePastTheTableWhateverLiesThere) {
+    fake::kernel().reset();
+    std::array<loop::Slot, 2> storage{};
+    auto const port = fake::kernel().make_port();
+    auto const neighbour_port = fake::kernel().make_port();
+    loop::Loop table{port, std::span{storage}.first(1)};
+    loop::Loop neighbour{neighbour_port, std::span{storage}.last(1)};
+
+    auto log = std::string{};
+    auto client = Client{};
+    client.name = 'n';
+    client.handle = fake::kernel().make_object();
+    client.log = &log;
+    auto const added = neighbour.add(client.handle, MESSAGES, serve, &client);
+    ASSERT_TRUE(added.is_ok());
+    ASSERT_EQ(added.unwrap(), (Key{0, 0}));
+
+    fake::kernel().queue(port, signal_packet(Key{1, 0}));
+    EXPECT_EQ(table.run(0), Status::TimeOut);
+    EXPECT_EQ(log, "");
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
+    EXPECT_TRUE(fake::kernel().closes().empty());
+}
+
+// Step 1's "in use" is the handle, not the callback. The free slot of the
+// test above was never used, so its callback is null and a run() that skipped
+// the check crashed rather than failed. A slot freed by Close keeps its old
+// callback and context unless run() clears them, and its generation is
+// already that of its next life, so a packet with that key passes every other
+// check: only the Invalid handle says the slot is free.
+TEST_F(LoopTest, RunDropsAPacketForASlotFreedInItsNextLife) {
+    Client gone;
+    gone.answer = Answer::Close;
+    add(gone, 'g');
+    fake::kernel().write(gone.handle, 1);
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    ASSERT_EQ(m_log, "g");
+
+    fake::kernel().queue(m_port, signal_packet(Key{0, 1}));
+    EXPECT_EQ(m_loop.run(0), Status::TimeOut);
+    EXPECT_EQ(m_log, "g");
+    EXPECT_EQ(fake::kernel().closes().size(), 1U);
+    EXPECT_EQ(fake::kernel().waits().size(), 1U);
 }
 
 // The slot whose callback runs stays in use meanwhile: an add() from inside
