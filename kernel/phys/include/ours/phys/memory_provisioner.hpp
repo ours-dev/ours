@@ -4,6 +4,7 @@
 #define OURS_PHYS_MEMORY_PROVISIONER_HPP 1
 
 #include <ours/phys/arch_bootmem.hpp>
+#include <ours/phys/boot_options.hpp>
 #include <ours/phys/boot_package_input.hpp>
 #include <ours/types.hpp>
 
@@ -46,6 +47,14 @@ class MemoryProvisioner final {
 
     /// Reserve the outer OBI package the boot loader supplied.
     auto reserve_package(BootPackageInput const &input) -> void;
+
+    /// Reserve the crash record's region the image declares, if it declares
+    /// one, as MemoryType::Crashlog. Not fatal when it cannot: a crash record
+    /// is a convenience, and a boot without one is still a boot. After the
+    /// boot image and the package, so that a region overlapping either is
+    /// refused (BootMem::reserve() refuses a range another type holds) rather
+    /// than reserved over memory GRUB has already filled.
+    auto reserve_crashlog(BootOptions const &options) -> void;
 
     /// Bind the aspace (the ASPACE global, null-guarded), run the arch hook
     /// (unconditionally -- the arch implementation handles a null aspace

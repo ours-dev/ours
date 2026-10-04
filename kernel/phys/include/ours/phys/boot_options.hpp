@@ -58,12 +58,33 @@ class BootOptions final {
         return m_kernel_name;
     }
 
+    /// The crash record's region, from `kernel.crashlog=<size>@<address>`.
+    /// Both numbers are decimal or 0x-prefixed hex; a size of zero means the
+    /// image declares none. Which RAM survives the firmware's run on a warm
+    /// reset is a fact about the platform, so the image states it and phys
+    /// only reserves it (.agents/tasks/panic-crashlog/DESIGN.md). Linux's
+    /// ramoops takes the same two numbers as ramoops.mem_size and
+    /// ramoops.mem_address.
+    [[nodiscard]]
+    constexpr auto crashlog_base() const -> u64 {
+        return m_crashlog_base;
+    }
+
+    [[nodiscard]]
+    constexpr auto crashlog_size() const -> u64 {
+        return m_crashlog_size;
+    }
+
   private:
     bool m_aslr_disabled{true};
 
     char m_next_module[64]{"physboot"};
 
     char m_kernel_name[64]{"vmours"};
+
+    u64 m_crashlog_base{0};
+
+    u64 m_crashlog_size{0};
 };
 
 /// physload owns the parsed options; modules bind to this object.

@@ -124,6 +124,27 @@ auto MemoryProvisioner::reserve_package(BootPackageInput const &input) -> void {
     }
 }
 
+auto MemoryProvisioner::reserve_crashlog(BootOptions const &options) -> void {
+    auto const base = options.crashlog_base();
+    auto const size = options.crashlog_size();
+    if (size == 0) {
+        return;
+    }
+    if (base % PAGE_SIZE != 0 || size % PAGE_SIZE != 0) {
+        log::warn("crashlog: [{:#x}, +{:#x}) is not page-aligned; no crash record this boot", base,
+                  size);
+        return;
+    }
+    auto const range = bootmem::Range::from(PhysAddr(base), static_cast<usize>(size));
+    if (range.is_err() ||
+        m_memory.reserve(range.unwrap(), bootmem::MemoryType::Crashlog) != Status::Ok) {
+        log::warn("crashlog: [{:#x}, {:#x}) cannot be reserved; no crash record this boot", base,
+                  base + size);
+        return;
+    }
+    log::info("crashlog: reserved [{:#x}, {:#x})", base, base + size);
+}
+
 auto MemoryProvisioner::install(Aspace *aspace) -> void {
     // The null guard is load-bearing asymmetry: ASPACE has readers (physboot)
     // that must not see a null, while arch_init_memory is always called and

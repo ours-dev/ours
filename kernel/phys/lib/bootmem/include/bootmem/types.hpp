@@ -117,6 +117,13 @@ enum class MemoryType : u8 {
     /// nothing in bootmem is Free, so find_free() finds nothing.
     Mmu,
 
+    /// The crash record's region, which the image declares with
+    /// `kernel.crashlog=<size>@<address>`. It is reserved on every boot, so a
+    /// panic's record written into it on one boot is still there on the next.
+    /// It is never handed to the page allocator: unlike Transient, it outlives
+    /// the boot that reserved it.
+    Crashlog,
+
     /// Not a type: the bound for arrays indexed by one, the way Role::Count and
     /// ZoneType::Count are used in this tree.
     Count,
@@ -149,6 +156,8 @@ constexpr auto to_string(MemoryType const type) -> char const * {
             return "transient";
         case MemoryType::Mmu:
             return "mmu";
+        case MemoryType::Crashlog:
+            return "crashlog";
         case MemoryType::Count:
             break;
     }

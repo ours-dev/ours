@@ -1,7 +1,7 @@
 # panic-crashlog: keep a panic's report in RAM across a warm reset, and read it on the next boot
 
 **Date**: 2026-10-04
-**Status**: Proposed
+**Status**: Accepted (2026-10-04)
 
 ## Problem
 A panic leaves its report only on the serial console. This is repair item 5 in `docs/repairs/261003/kernel-panic.md`. Nothing stores the message or the log tail anywhere a later boot could read them. Today that costs nothing, because `vpanic()` ends in `arch::halt()` for good and nothing ever boots after a panic. It matters once a panic can reboot the machine: then the console of the crashed boot may be gone, and the next boot is the only place left to say what happened.
@@ -52,10 +52,10 @@ Linux's counterpart is ramoops (`fs/pstore/ram.c`). It takes an address and size
 ## Decisions
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| D0. Build this now? | (a) Now, the minimal slice below. (b) Defer until something needs reboot-on-panic. | (a), for the teaching value: reserving memory across the boot chain, a reset that keeps RAM, cache write-back before a reset, and detecting a torn write. (b) is what "the user-facing interface comes first" argues for, since nothing needs this yet. | | |
-| D1. How a panic reaches the next boot | (a) A kernel option `kernel.panic.reboot`, off by default, as Zircon's `kernel.halt-on-panic` and Linux's `panic=` work. When it is on, the panic resets the machine through port 0xCF9, then the keyboard controller, then a triple fault. (b) Panic keeps halting, and the test resets the guest from the QEMU monitor. | (a). The record exists for the reboot, and the reset is a small, real piece of the platform. (b) needs no kernel change, but it tests a machine that never reboots itself. | | |
-| D2. Where the region's address comes from | (a) An option the image declares, `kernel.crashlog=<size>@<address>`, which phys reads and reserves (Linux's `ramoops.mem_address`/`mem_size`). (b) A fixed address in phys code. | (a). Which range survives OVMF is a platform fact, so the image states it. Moving it means changing a build argument, not code. | | |
-| D3. How the next boot reports it | (a) The kernel logs the recovered record at boot under a fixed marker line. (b) Also hand it to userboot as a read-only "crashlog" VMO, a 7th bootstrap handle, as Zircon does. | (a) now. (b) once a user program wants to read it, per "the user-facing interface comes first". | | |
+| D0. Build this now? | (a) Now, the minimal slice below. (b) Defer until something needs reboot-on-panic. | (a), for the teaching value: reserving memory across the boot chain, a reset that keeps RAM, cache write-back before a reset, and detecting a torn write. (b) is what "the user-facing interface comes first" argues for, since nothing needs this yet. | | (a), as an MVP (2026-10-04) |
+| D1. How a panic reaches the next boot | (a) A kernel option `kernel.panic.reboot`, off by default, as Zircon's `kernel.halt-on-panic` and Linux's `panic=` work. When it is on, the panic resets the machine through port 0xCF9, then the keyboard controller, then a triple fault. (b) Panic keeps halting, and the test resets the guest from the QEMU monitor. | (a). The record exists for the reboot, and the reset is a small, real piece of the platform. (b) needs no kernel change, but it tests a machine that never reboots itself. | | (a) (2026-10-04) |
+| D2. Where the region's address comes from | (a) An option the image declares, `kernel.crashlog=<size>@<address>`, which phys reads and reserves (Linux's `ramoops.mem_address`/`mem_size`). (b) A fixed address in phys code. | (a). Which range survives OVMF is a platform fact, so the image states it. Moving it means changing a build argument, not code. | | (a) (2026-10-04) |
+| D3. How the next boot reports it | (a) The kernel logs the recovered record at boot under a fixed marker line. (b) Also hand it to userboot as a read-only "crashlog" VMO, a 7th bootstrap handle, as Zircon does. | (a) now. (b) once a user program wants to read it, per "the user-facing interface comes first". | | (b): log it and hand userboot a read-only VMO (2026-10-04) |
 
 ## Testing and verification
 - **Step 0, a measurement before any design is final.** Under QEMU q35 with OVMF, does a chosen RAM range survive a warm reset? Write a pattern into a candidate range, reset, and compare on the next boot. Try a few addresses (low, middle, near the top of low RAM). This decides D2's default address, and whether the plan works at all on this firmware.

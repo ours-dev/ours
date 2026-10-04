@@ -108,6 +108,7 @@ auto obi_main(PhysAddr package_base, usize package_size, LegacyPlatformInfo cons
     memory.detect(boot.package(), legacy_memory_ranges);
     memory.reserve_boot_image();
     memory.reserve_package(input.unwrap());
+    memory.reserve_crashlog(BOOT_OPTIONS);
     memory.install(&aspace);
 
     // ---- Stage 4: Load the next phys module ----

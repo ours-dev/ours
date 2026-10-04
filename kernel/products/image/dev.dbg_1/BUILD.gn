@@ -78,6 +78,12 @@ kernel_cmdline("cmdline") {
   args = [
     "userboot.next=bin/shell",
     "kernel.shell=true",
+
+    # 16 KiB at 64 MiB for the panic crash record. Phys reserves it on every
+    # boot; it lies above the range OVMF unpacks its DXE volume into on each
+    # boot (from 9 MiB) and far below the top of RAM, where OVMF keeps its own
+    # memory. See .agents/tasks/panic-crashlog/DESIGN.md.
+    "kernel.crashlog=0x4000@0x4000000",
   ]
 }
 
