@@ -470,3 +470,56 @@ None.
 - Why could the kernel not simply free its decompressed buffer once userboot had started?
 - What guarantees that physload's copy is still there, unchanged, when the kernel reads it?
 - What would the kernel stop doing if phys handed it userboot and the vDSO as images, as Zircon's does?
+
+## Title: The kernel takes the boot image once it has read it, and a late reader panics (2026-10-03)
+
+**Files**
+- `kernel/include/ours/boot/handoff.hpp`, `kernel/top/handoff.cpp` — `take_boot_image()` returns the image's range and sets a latch (`BootImage::Taken`). After that, `boot_package()`, and through it `kernel_package()`, panic.
+- `kernel/lib/userabi/src/userboot.cpp`:
+  - `make_boot_image_handle()` copies from the taken range;
+  - `write_bootstrap()` encodes the processargs first, with the boot image's handle_info in a slot reserved for it, and only then makes the handle that takes the image.
+
+**Symptom**
+None: step 3 of `.agents/tasks/boot-image-pages/PLAN.md`. The next step gives the image's frames to userboot's VMO, which frees them when userboot closes it. From then on the kernel must not read the image, and nothing enforced that.
+
+**Cause**
+The readers of the boot image in the kernel, in order:
+1. the boot options, copied out at init (`boot_options.cpp`);
+2. the kernel package's item header (`kernel_package()`), early in `userboot_init()`;
+3. the user-space options for userboot's environment (`collect_user_options()`).
+
+The user-space options were read in `write_bootstrap()` after the boot image's handle was made. They are also views into the image's command-line item, encoded into the processargs later still. `boot_package()` went on describing the range for good, so any later caller would read frames that, after the next step, may belong to someone else.
+
+**Change**
+
+```cpp
+auto take_boot_image() -> phys::PackagePayloadHandoff {
+    ASSERT(BOOT_IMAGE == BootImage::Held, "the boot image was taken twice");
+    BOOT_IMAGE = BootImage::Taken;
+    return handoff().boot_package.package;
+}
+```
+
+In `write_bootstrap()`, the VmoBootdata handle_info takes the last slot before encoding. The handle fills that slot after encoding, so the environment's views are used while the image is still the kernel's. The latch is a two-state enum rather than a `bool`, written once, on the boot thread, before any user thread exists.
+
+**Reference**
+Zircon `EndHandoff()` (`zircon/kernel/top/handoff.cc`): after it, nothing reads `gPhysHandoff`'s ZBI, whose pages belong to userboot's VMO.
+
+**Verification**
+- `boot_check.py`: dbg PASS (20 passed), rel PASS (18 passed).
+- The `userabi: passing ... to userboot` lines are identical before and after.
+- In a copy of HEAD with this change and one extra `boot::boot_package()` after the image is taken, dbg stops with `the boot image was read after it was handed to userboot`. That line was not kept.
+
+**Deliberately not done**
+- The adoption of the frames (step 4). Until then, the kernel still copies, now from the taken range.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None given.
+
+**Three questions you should be able to answer**
+- Why must the processargs be encoded before the boot image's handle is made?
+- Which kernel readers of the boot image are there, and why do all of them run before the take?
+- Why does a late `boot_package()` panic rather than return an error?

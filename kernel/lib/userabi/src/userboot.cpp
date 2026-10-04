@@ -270,14 +270,18 @@ namespace {
     /// pages (CreatePhysVmoHandle() in zircon/kernel/top/handoff.cc); here it
     /// is a copy, since a physical VMO cannot be read with vmo_read (D2 of the
     /// design). An empty Box, said why, if it cannot be made.
+    ///
+    /// The image is taken here (boot::take_boot_image()): after this the
+    /// kernel reads nothing of it, and a late reader panics. So this runs
+    /// last of everything that reads the image, in write_bootstrap().
     auto make_boot_image_handle() -> ustl::Box<object::Handle> {
-        auto const package = boot::boot_package();
-        if (package.is_err()) {
-            log::error("userabi: no boot image to hand userboot: {}",
-                       to_string(package.unwrap_err()));
+        auto const image = boot::take_boot_image();
+        auto const *const base = mm::PhysMap::phys_to_virt<u8 const>(image.base);
+        if (base == nullptr) {
+            log::error("userabi: the boot image is outside the physmap");
             return {};
         }
-        auto const bytes = package.unwrap().package().bytes();
+        auto const bytes = ustl::views::Span<u8 const>(base, image.size);
 
         object::KernelHandle<object::VmoDispatcher> vmo;
         Rights rights;
@@ -400,12 +404,6 @@ namespace {
         }
         infos[count++] = handle_info(HandleType::VmoVdso, 0);
 
-        handles[count] = make_boot_image_handle();
-        if (!handles[count]) {
-            return Status::NoResource;
-        }
-        infos[count++] = handle_info(HandleType::VmoBootdata, 0);
-
         if (boot::options().debug_read()) {
             handles[count] = make_system_resource_handle(RSRC_SYSTEM_DEBUG_BASE, "debug");
             if (!handles[count]) {
@@ -413,6 +411,13 @@ namespace {
             }
             infos[count++] = handle_info(HandleType::SystemResource, u16(RSRC_SYSTEM_DEBUG_BASE));
         }
+
+        // The boot image's slot, filled last: its handle_info goes into the
+        // message now, the handle only once the message is encoded, because
+        // making the handle takes the image away from the kernel, and the
+        // environment below is a set of views into the image's command line.
+        auto const image_slot = count;
+        infos[count++] = handle_info(HandleType::VmoBootdata, 0);
 
         // Sized to hold the most this can ever write, so that encoding cannot
         // fail for want of room: the header, six handle_infos, a program name
@@ -432,6 +437,11 @@ namespace {
             Status::Ok != status) {
             log::error("userabi: could not encode the processargs: {}", to_string(status));
             return status;
+        }
+
+        handles[image_slot] = make_boot_image_handle();
+        if (!handles[image_slot]) {
+            return Status::NoResource;
         }
 
         ustl::Box<object::MessagePacket> packet;

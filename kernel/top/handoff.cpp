@@ -7,6 +7,15 @@ namespace ours::boot {
 namespace {
     phys::Handoff const *HANDOFF;
 
+    /// Whether the boot image is still the kernel's to read. Taken once, by
+    /// take_boot_image(), on the boot thread before any user thread exists;
+    /// read only on that thread too.
+    enum class BootImage : u8 {
+        Held,
+        Taken,
+    };
+    BootImage BOOT_IMAGE = BootImage::Held;
+
     auto handoff_fits_physmap(PhysAddr const base) -> bool {
         if (base < mm::PhysMap::PHYS_BASE) {
             return false;
@@ -65,7 +74,16 @@ auto handoff() -> phys::Handoff const & {
 }
 
 auto boot_package() -> phys::BootObi::Result {
+    if (BOOT_IMAGE == BootImage::Taken) {
+        panic("the boot image was read after it was handed to userboot");
+    }
     return boot_package_from_handoff(handoff().boot_package);
+}
+
+auto take_boot_image() -> phys::PackagePayloadHandoff {
+    ASSERT(BOOT_IMAGE == BootImage::Held, "the boot image was taken twice");
+    BOOT_IMAGE = BootImage::Taken;
+    return handoff().boot_package.package;
 }
 
 auto kernel_package() -> phys::KernelPackage::Result {
