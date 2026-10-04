@@ -29,14 +29,11 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     /// zones to ask for, Linux merges by default and opts out with
     /// SLAB_NO_MERGE, and Reclaim mapped to a Gaf that would have made slab
     /// refills block, where Linux's SLAB_RECLAIM_ACCOUNT is a grouping hint.
+    /// RedZone and Poison went with the layout they reserved room in: nothing
+    /// ever wrote the guard bytes or checked them.
     enum class Option {
         /// Requires to align objects on cache line boundaries.
         CacheAlign = BIT(4),
-
-        /// DEBUG
-        RedZone = BIT(6),
-        /// DEBUG
-        Poison = BIT(7),
 
         /// Back this cache's slabs with folios (compound pages).
         ///
@@ -81,7 +78,7 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
 
     auto init(char const *name, usize size, usize align, Option) -> Status;
 
-    auto compute_layout(usize size, Option flags) -> Status;
+    auto compute_layout(usize size) -> Status;
 
     auto allocate(Gaf gaf, NnId nid, CpuCache *cc) -> void *;
 
@@ -97,10 +94,6 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     u32 m_next_offset;
     /// The alignment of user object.
     u32 m_user_align;
-    /// The size of bytes ocuppied by the redzone and user object.
-    u32 m_inuse;
-
-    u32 m_red_left_pad;
 
     u32 m_min_partial;
 

@@ -13,7 +13,6 @@
 #include <logz4/log.hpp>
 #include <ustl/lazy_init.hpp>
 
-#define CONFIG_MEM_CACHE_DEBUG 1
 // Currently inert: the per-cpu partial list was removed because it cannot be
 // made race-free against the node list without a per-slab lock. See the note
 // in MemCache::CpuCache for what bringing it back would take.
@@ -441,21 +440,6 @@ constexpr static auto MAX_PARTIAL_SLABS = 8U;
 
 constexpr static auto MIN_PARTIAL_SLABS = 4U;
 
-[[maybe_unused]]
-constexpr static auto RED_INACTIVE = 0xccU;
-
-[[maybe_unused]]
-constexpr static auto RED_ACTIVE = 0xddU;
-
-[[maybe_unused]]
-constexpr static auto POISON_INUSE = 0x5aU;
-
-[[maybe_unused]]
-constexpr static auto POISON_FREE = 0x6bU;
-
-[[maybe_unused]]
-constexpr static auto POISON_END = 0xa5U;
-
 // Out-of-line definitions for MemCache's static data members. The header only
 // declares them, so without these every use -- and there are many, this file
 // locks CACHE_LOCK and reads SLAB_NODES throughout -- is an undefined
@@ -478,8 +462,6 @@ MemCache::MemCache(char const *name, usize size, usize align, Option option)
     , m_user_size(static_cast<u32>(size))
     , m_next_offset(0)
     , m_user_align(static_cast<u32>(align ? align : alignof(usize)))
-    , m_inuse(0)
-    , m_red_left_pad(0)
     , m_min_partial(MIN_PARTIAL_SLABS)
     , m_num_objects(0)
     , m_order(0)
@@ -518,43 +500,15 @@ auto MemCache::init() -> Status {
     return Self::create_boot(*SELF_CACHE, "cache:self", sizeof(MemCache), 0, Option::CacheAlign);
 }
 
-auto MemCache::compute_layout(usize size, Option option) -> Status {
+auto MemCache::compute_layout(usize size) -> Status {
     constexpr auto WORD_SIZE = sizeof(void *);
 
     // At least keep a size of FP.
     usize phys_size = ustl::mm::align_up(size, WORD_SIZE);
 
-    if constexpr (CONFIG_MEM_CACHE_DEBUG) {
-        // Check if there is left spaces for readzone between the end of object and
-        // word boundaries. May it be the readzone rather than additional spaces.
-        if (!!(option & Option::RedZone) && phys_size == m_user_size) {
-            phys_size += WORD_SIZE + size;
-        }
-    }
-
-    m_inuse = static_cast<u32>(phys_size);
-
-    if constexpr (CONFIG_MEM_CACHE_DEBUG) {
-        // Under debug mode and debug options enabled, only placing the FP after
-        // user object is permitted.
-        if (!!(option & Option::Poison) ||
-            (!!(option & Option::RedZone) && m_user_size < phys_size)) {
-            m_next_offset = static_cast<u32>(phys_size);
-            phys_size += WORD_SIZE; // Put the FP
-        } else {
-            m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
-        }
-    } else {
-        // Default case, we store freelist pointer near middle of object.
-        m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
-    }
-
-    if constexpr (CONFIG_MEM_CACHE_DEBUG) {
-        if (!!(option & Option::RedZone)) {
-            m_red_left_pad = static_cast<u32>(ustl::mm::align_up(WORD_SIZE, m_user_align));
-            phys_size += m_red_left_pad;
-        }
-    }
+    // A free object holds the free-list pointer near its middle, as Linux's
+    // SLUB does when no debugging moves it out of the object.
+    m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
 
     phys_size = ustl::mm::align_up(phys_size, m_user_align);
 
@@ -573,7 +527,7 @@ auto MemCache::compute_layout(usize size, Option option) -> Status {
 }
 
 auto MemCache::init(char const *name, usize size, usize align, Option option) -> Status {
-    if (auto const status = compute_layout(size, option); Status::Ok != status) {
+    if (auto const status = compute_layout(size); Status::Ok != status) {
         return status;
     }
 

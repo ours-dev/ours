@@ -394,3 +394,88 @@ None.
 - What would a cache created with the old Option::Reclaim have done on a slab refill, and why is that not what Linux's SLAB_RECLAIM_ACCOUNT means?
 - Why did the Option-to-Gaf mapping have to go before the Gaf bits themselves?
 - Why were the remaining values left at their old bit positions?
+
+## Title: The slab's red-zone and poison layout goes, since nothing wrote or checked the guard bytes (flag-consolidation step 7) (2026-10-04)
+
+**Files**
+- `kernel/mm/include/ours/mm/object_cache.hpp` — `Option::RedZone`, `Option::Poison`, `m_inuse` and `m_red_left_pad` go; `compute_layout()` loses its Option parameter, whose only readers were the deleted branches
+- `kernel/mm/object_cache.cpp` — `CONFIG_MEM_CACHE_DEBUG`, its three branches in `compute_layout()`, and the five `RED_*`/`POISON_*` constants go
+- `.agents/tasks/flag-consolidation/DESIGN.md` — D8 decided for this stub
+
+**Symptom**
+Latent. No cache was created with RedZone or Poison, so every cache took the non-debug layout and nothing changed at run time. Had one been created with RedZone, `compute_layout()` would have doubled its object size.
+
+**Cause**
+The objects, as Linux's SLUB has them:
+- A red zone: guard bytes on either side of each object, filled with a known value.
+- Poison: a freed object filled with 0x6b, with a different byte at its end.
+- The free pointer: SLUB keeps it near the middle of a free object; poisoning overwrites the whole object, so with poisoning on it moves the pointer outside the object.
+
+The events in Linux:
+1. `kfree()` checks the red zones; a changed byte is a write past the object, reported there.
+2. The next allocation of that object checks the poison; a changed byte is a write after free.
+
+Ours copied only the room-making half: `compute_layout()` grew the object and moved the free pointer for these options. Nothing filled the guard bytes or checked them, the constants were `[[maybe_unused]]`, and `m_inuse` and `m_red_left_pad` were written and never read. `CONFIG_MEM_CACHE_DEBUG` was hard-defined to 1, so the dead branches were compiled into every build. And the one red-zone branch was wrong: Linux adds one word when the object fills its last word,
+
+```c
+if ((flags & SLAB_RED_ZONE) && size == s->object_size)
+    size += sizeof(void *);
+```
+
+where ours added `WORD_SIZE + size`, the object a second time. Half a debugging feature looks like protection and gives none.
+
+**Change**
+Before:
+
+```cpp
+usize phys_size = ustl::mm::align_up(size, WORD_SIZE);
+if constexpr (CONFIG_MEM_CACHE_DEBUG) {
+    if (!!(option & Option::RedZone) && phys_size == m_user_size) {
+        phys_size += WORD_SIZE + size;
+    }
+}
+m_inuse = static_cast<u32>(phys_size);
+if constexpr (CONFIG_MEM_CACHE_DEBUG) {
+    if (!!(option & Option::Poison) || (!!(option & Option::RedZone) && m_user_size < phys_size)) {
+        m_next_offset = static_cast<u32>(phys_size);
+        phys_size += WORD_SIZE;
+    } else {
+        m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
+    }
+} else { ... }
+// and a third branch adding m_red_left_pad
+```
+
+After:
+
+```cpp
+usize phys_size = ustl::mm::align_up(size, WORD_SIZE);
+m_next_offset = ustl::mm::align_down(m_user_size / 2, WORD_SIZE);
+phys_size = ustl::mm::align_up(phys_size, m_user_align);
+```
+
+Every existing cache already took the branch that remains, so its layout is unchanged. Decision D8 offered keeping the scaffolding with only the double add fixed; the user chose to delete it. If slab debugging is wanted, it comes back as a feature with its checks, not as layout alone.
+
+**Reference**
+- Linux `calculate_sizes()` in `mm/slub.c` (the layout), and `check_object()`, `init_object()` and `check_bytes_and_report()` there (the half that was never copied); `SLAB_RED_ZONE` and `SLAB_POISON` in `include/linux/slab.h`; the byte values in `include/linux/poison.h` (from memory).
+- Zircon's `ObjectCache` (`zircon/kernel/lib/object_cache/object_cache.cc`) has no red zones or poisoning; its heap leaves those checks to KASAN, through the asan hooks in `kernel/lib/heap/cmpctmalloc/cmpctmalloc.cc`.
+
+**Verification**
+- `boot_check.py` in a scratch worktree at `b7501a93` with this change applied: dbg PASS (24 passed, 1 skipped), rel PASS (22 passed, 3 skipped). The skip counts come from the shell tests at that commit, not from this change.
+- `git grep` for `RedZone`, `Poison`, `CONFIG_MEM_CACHE_DEBUG`, `m_inuse` and `m_red_left_pad` under `kernel/` finds only the enum's doc comment.
+- clang-tidy on `object_cache.cpp`: nothing on the changed lines. clang-format: clean.
+
+**Deliberately not done**
+- `MemCache::init()` still takes an Option it now only forwards to nothing. The whole Option parameter goes in step 13, with CacheAlign and Folio (D10).
+- Slab debugging as a real feature. Not asked for.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the RedZone and Poison rows) found no caller and no checker, and compared the layout with Linux's `calculate_sizes()`.
+
+**The user's prediction**
+None: a keep-or-delete decision on scaffolding.
+
+**Three questions you should be able to answer**
+- What does each of Linux's two halves of slab debugging do, and which half did ours have?
+- Why must the free pointer move out of the object when poisoning is on?
+- What did the old red-zone branch add to the object size, and what does Linux add?
