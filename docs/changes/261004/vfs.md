@@ -101,3 +101,62 @@ None.
 - A component holds /boot bound with TRAVERSE taken away. It opens `bin` and then `nope`. What does each answer, and what would it learn if the lookup came before the TRAVERSE check?
 - A client opens `bin/x` with `PERM_READABLE | PERM_EXECUTE` through a /boot connection bound rx*. Which rights does the new connection hold, which of the requested rights were dropped and which would have been refused, and what decides the difference?
 - Why does GetBackingMemory with PRIVATE_CLONE get the same duplicate here when Fuchsia makes a snapshot, and which property of the BootFS makes that safe?
+
+## Title: a vfs ConnectionId with generation 0 never names a live connection (2026-10-04)
+
+**Files**
+- `system/lib/vfs/include/vfs/server.hpp` — `FIRST_GENERATION` (1), every slot's starting generation, and the rule on `ConnectionId`
+- `system/lib/vfs/src/server.cpp` — `Server::release()` skips 0 when a slot's generation wraps
+- `system/lib/vfs/test/server_test.cpp` — `GenerationZeroNamesNoConnection`
+
+**Symptom**
+Latent, cannot be triggered today: nothing kept a ConnectionId it had not been given. With step 13 the root keeps one per Loop slot (`BootServer::Storage::bindings`), in a table that starts zeroed; any entry read before it was filled in would have been `{0, 0}`, and that named the first connection ever made in slot 0, which was live. A dispatch through it would have served another client's connection, and a release through it would have ended that connection under its client.
+
+**Cause**
+A ConnectionId is a slot index plus the generation the slot was in when the connection was made, so that an id kept past its connection's end goes stale instead of naming whatever comes next in that slot. That only works if no id that nobody issued can match a live slot. Every slot started at generation 0, and 0 is also what a zeroed or default-constructed id holds: `ConnectionId{}` was, by accident, a valid id for slot 0's first connection. The generation scheme protected against an id outliving its connection, but not against an id that never belonged to one. Zircon closes the same hole for handle values: a free slot's first handle gets generation 1 (`NewHandleValue()` adds 1 to a generation of 0), and `map_handle_to_value()` sets the low bits, so no valid handle value is 0, `ZX_HANDLE_INVALID`.
+
+**Change**
+Before, a slot started at 0 and release added one, wrapping to 0:
+
+```cpp
+u32 m_generation = 0;
+...
+slot->m_generation = id.generation + 1;
+```
+
+After, it starts at 1 and skips 0 when it wraps:
+
+```cpp
+inline constexpr auto FIRST_GENERATION = u32{1};
+u32 m_generation = FIRST_GENERATION;
+...
+auto next = id.generation + 1;
+if (next == 0) {
+    next = FIRST_GENERATION;
+}
+```
+
+So `{*, 0}` names no live connection, ever. This was the recommended option of the open review point on step 4.
+
+Rejected: keeping 0 valid and making every holder of an id carry a "filled in" flag beside it. That moves the rule to every caller, where the type can carry it once.
+
+**Reference**
+Zircon `NewHandleValue()` (`zircon/kernel/object/handle.cc`, the generation starting at 1 for a slot's first handle) and `map_handle_to_value()` (`zircon/kernel/object/handle_table.cc:18`, `kHandleMustBeOneMask`, so that no handle value is `ZX_HANDLE_INVALID`).
+
+**Verification**
+- `out/bringup.x86/host/obj/system/lib/vfs/test/vfs`: `[  PASSED  ] 42 tests.`, the new test among them: slot 0's first connection has generation 1, and `ConnectionId{}` is dropped while it is live, leaving it alone.
+- `boot_check.py`: dbg PASS, rel PASS, as recorded in `init.md`'s step 13 entry, where the root first serves connections.
+
+**Deliberately not done**
+- The Loop's keys (`loop::Key`) start at generation 0 too, and the same reasoning applies to a key nobody issued. Nothing builds one by hand, and its packets come only from waits the Loop armed, so it is left as it is.
+
+**How it was found**
+Review of step 4, before its first caller existed.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why is the generation check enough to make a released connection's id stale, but not enough to make a zeroed id stale, before this change?
+- Zircon reaches the same property for handle values in two ways at once. What are they, and which one does this change copy?
+- After 2^32 releases of one slot, what generation does the next connection get, and why not 0?

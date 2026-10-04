@@ -681,6 +681,18 @@ TEST_F(VfsServer, AStaleIdIsDropped) {
     EXPECT_EQ(next.generation, root.generation + 1);
 }
 
+TEST_F(VfsServer, GenerationZeroNamesNoConnection) {
+    // A slot's first connection has generation 1, so an id nobody filled in,
+    // {0, 0}, does not name the connection in slot 0 even while it is live.
+    auto const root = bind(m_root, fuchsia_io::R_STAR_DIR);
+    EXPECT_EQ(root.index, 0U);
+    EXPECT_EQ(root.generation, vfs::FIRST_GENERATION);
+    EXPECT_TRUE(m_server.channel(ConnectionId{}).is_none());
+    EXPECT_EQ(read_dirents_outcome(ConnectionId{}), Action::Drop);
+    // The Drop for the stale id left the live connection alone.
+    EXPECT_TRUE(m_server.channel(root).is_some());
+}
+
 // --- bind ------------------------------------------------------------------------
 
 TEST_F(VfsServer, BindRefusals) {

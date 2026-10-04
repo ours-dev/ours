@@ -159,9 +159,15 @@ auto Server::release(ConnectionId const id) -> void {
         return;
     }
     // A new generation, so that |id| and every copy of it go stale. It wraps
-    // after 2^32 uses of one slot, which is far past any connection's life.
+    // after 2^32 uses of one slot, which is far past any connection's life,
+    // and skips 0 when it does, so that no live connection is ever {*, 0}
+    // (see ConnectionId).
+    auto next = id.generation + 1;
+    if (next == 0) {
+        next = FIRST_GENERATION;
+    }
     *slot = Connection{};
-    slot->m_generation = id.generation + 1;
+    slot->m_generation = next;
 }
 
 auto Server::drop(ConnectionId const id) -> Outcome {

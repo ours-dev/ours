@@ -33,12 +33,21 @@ namespace vfs {
 /// stale and names nothing, rather than naming whichever connection came
 /// next. The Loop keys its packets the same way
 /// (docs/design/260924/userspace-filesystem.md §4.2).
+///
+/// Generation 0 never names a live connection: every slot starts at
+/// FIRST_GENERATION, and a release that would wrap a slot's generation to 0
+/// skips it. So a ConnectionId that was never filled in, `ConnectionId{}` or
+/// a table of them zeroed in .bss, is stale by construction instead of
+/// naming whatever connection happens to sit in slot 0.
 struct ConnectionId {
     u32 index;
     u32 generation;
 
     friend constexpr auto operator==(ConnectionId, ConnectionId) -> bool = default;
 };
+
+/// The generation a slot has before its first connection.
+inline constexpr auto FIRST_GENERATION = u32{1};
 
 /// The one system call the core needs: GetBackingMemory hands out a
 /// duplicate of a file's VMO. The program passes ours::handle_duplicate; a
@@ -135,7 +144,8 @@ class Connection final {
     /// the listing is done.
     DirentPhase m_phase = DirentPhase::Dot;
     ustl::Option<NodeId> m_next_entry = ustl::NONE;
-    u32 m_generation = 0;
+    /// Never 0 (see ConnectionId).
+    u32 m_generation = FIRST_GENERATION;
 };
 
 /// Serves the nodes of a Tree over connections kept in storage the program
