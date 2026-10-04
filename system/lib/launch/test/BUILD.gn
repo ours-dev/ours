@@ -25,3 +25,16 @@ executable("program") {
   ]
   visibility = [ "*" ]
 }
+
+# The launcher service's requests: encoded, then checked, and every malformed
+# one refused, from bytes alone.
+executable("protocol") {
+  testonly = true
+  sources = [ "protocol_test.cpp" ]
+  deps = [
+    "//system/lib/launch:protocol",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
