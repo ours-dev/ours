@@ -56,6 +56,7 @@ a test's own `<name>: ok` line. A misspelt test name is a FAIL, after
 | dbg FAIL, rel PASS | an assertion caught it; rel ran past it with assertions compiled out | fix the assertion's cause, not the assertion |
 | both FAIL at the same point | nothing is masked by an assertion | debug the shared stage shown in `reached:` |
 | `no "--- end ---" within Ns` | hang or livelock | `reached:` shows the last stage; rerun with `SMP=1` to test for an SMP race |
+| `no "<line>" within Ns` | the shell finished, but a line the image requires (`REQUIRED` in `boot_check.py`) never came: on rel, `routing_checks: passed`, from the root's test component | read the `init:` lines in `rel.log`: a component that did not start, or a use that routes nowhere or cannot be served, is logged there |
 | `QEMU exited` | reset or triple fault (`-no-reboot` turns a reset into an exit) | debug under the gdbstub |
 
 ## Gotchas

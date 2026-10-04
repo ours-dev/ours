@@ -181,8 +181,12 @@ class Boot:
         if END_MARKER in line and self.end_at is None:
             self.end_at = now - self.started
         # Done once the shell has finished and every required line is in,
-        # whichever came last.
-        if self.end_at is not None and self.stop_after is None and not self.missing():
+        # whichever came last -- or, once it has finished, as soon as a
+        # FAILED line has decided the verdict: a required line may then never
+        # come (routing_checks prints "passed" only when nothing failed), and
+        # waiting for it would only run the timeout out.
+        if (self.end_at is not None and self.stop_after is None
+                and (not self.missing() or self.failed)):
             self.stop_after = now + END_GRACE
         if line.strip() and not NOISE.search(line):
             self.tail.append(line)

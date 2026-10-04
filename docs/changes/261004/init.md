@@ -235,3 +235,57 @@ None.
 - routing_checks' `/bin` entry and its `/denied` entry are both closed before it runs. How does the component tell them apart, and how does the root's log?
 - Name the three ways `BootServer::serve()` can refuse an entry whose route succeeded.
 - Why does Fuchsia not need this second log line?
+
+## Title: boot_check stops once a FAILED line has decided a boot with a required line, and the skill names the new verdict (2026-10-04)
+
+**Files**
+- `.agents/skills/ours-verify/scripts/boot_check.py` — `Boot.feed()` sets the stop once the shell has finished and either every required line is in or a FAILED line has appeared
+- `.agents/skills/ours-verify/SKILL.md` — a row for `no "<line>" within Ns` in "Reading a failure"
+
+**Symptom**
+Any failure in routing_checks made the rel boot run to the 60-second timeout before boot_check printed FAIL. With dev's `denied` offer widened to rx*, the old script took 61 s for a verdict whose cause, three FAILED lines, was on the console within the first five seconds; the new one takes 5 s for the same verdict and the same lines. And a boot that failed only for a missing required line printed a verdict the skill's table did not list.
+
+**Cause**
+Step 13 made boot_check wait past `--- end ---` for every required line, because `routing_checks: passed` comes from another process and may follow the shell's last line. But that line has a precondition: routing_checks prints it only when none of its checks failed. So the wait had two ways to end, the required line or the timeout, and a failing routing_checks always took the second, even though its FAILED lines had decided the verdict already (`verdict()` looks at FAILED lines before required ones). The stop condition tested "is anything still missing" when the question was "can anything still change the verdict". After a FAILED line, nothing can.
+
+**Change**
+Before:
+
+```python
+if self.end_at is not None and self.stop_after is None and not self.missing():
+    self.stop_after = now + END_GRACE
+```
+
+After:
+
+```python
+if (self.end_at is not None and self.stop_after is None
+        and (not self.missing() or self.failed)):
+    self.stop_after = now + END_GRACE
+```
+
+Still only once the end marker is in, as before step 13: a FAILED line from the shell's own checks keeps the old stop, one second after the end marker. The skill's table gains the row for `no "<line>" within Ns`, which points at the root's `init:` lines.
+
+Rejected: stopping at the first FAILED line even before the end marker. The shell's later checks would then go unreported, and a boot with one FAILED check would print less than it used to.
+
+**Reference**
+None, this project's own tooling.
+
+**Verification**
+- Offline, by feeding lines to `Boot.feed()`: the end marker alone sets no stop; the required line after it does; the required line before it, then the marker, does; the marker then a routing_checks FAILED line does, with a FAIL verdict; a FAILED line before the marker sets none until the marker comes.
+- The mutation above (dev's `denied` offer at rx*, reverted): the old script 61 s, the new one 5 s, both `rel FAIL 4 FAILED line(s) ... 0/1 required`.
+- `boot_check.py` on the real tree: dbg PASS, rel PASS (see the commit message).
+
+**Deliberately not done**
+- Waiting for the root's `init: routing_checks exited with N` line as well. `routing_checks: passed` already says every check ran and passed; the exit line adds nothing a verdict needs.
+
+**How it was found**
+Review of step 13, on the step's own mutation check: its FAIL took a full minute.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can `routing_checks: passed` come after `--- end ---`, and why does that force boot_check to wait past the end marker at all?
+- After this change, what are the three ways a rel boot's reading ends, and which verdict does each give?
+- Why does a FAILED line before the end marker still not stop the boot early?
