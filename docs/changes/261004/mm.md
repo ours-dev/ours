@@ -312,3 +312,85 @@ None: a rename decision, not a prediction.
 - Which function is the only one that may write Role::Pmm, and under which lock?
 - What goes wrong when a frame says Pmm while it is on no free list, and what did each of the two past cases look like?
 - Why was deleting an unused empty struct a safety change rather than a tidy-up?
+
+## Title: MemCache::Option loses the five values no caller passes, and their mapping onto Gaf (flag-consolidation step 6) (2026-10-04)
+
+**Files**
+- `kernel/mm/include/ours/mm/object_cache.hpp` — Dma, Dma32, Merge, Reclaim and Alias go; the enum's doc says why
+- `kernel/mm/object_cache.cpp` — `MemCache::init()` no longer turns Dma, Dma32 and Reclaim into Gaf bits; `alias()`'s TODO no longer names the deleted value
+
+**Symptom**
+None observable: no cache was ever created with these options.
+
+**Cause**
+The objects:
+- `MemCache::Option`: creation options for a slab cache, copied by name from Linux's SLAB_* flags.
+- `MemCache::m_gaf`: the Gaf every slab refill of that cache allocates its frames with.
+- `MemCache::init()`: turned Dma into `Gaf::Dma`, Dma32 into `Gaf::Dma32` and Reclaim into `Gaf::Reclaim` on `m_gaf`.
+
+Each value stood for a Linux feature this kernel does not have, and two were wrong even as copies:
+- Dma and Dma32 asked for DMA zones. `PmNode::ALLOWED_GAF` strips `Gaf::Dma*` before use, and the zone walk ignores zone type, so the request went nowhere.
+- Merge had the opposite polarity to Linux, which merges compatible caches by default and opts out with SLAB_NO_MERGE.
+- Reclaim mapped to `Gaf::Reclaim`, which is DirectReclaim plus DaemonReclaim. DirectReclaim means "this allocation may wait", so a cache created with it would have had slab refills that block. Linux's SLAB_RECLAIM_ACCOUNT means something else: it adds `__GFP_RECLAIMABLE`, a hint for which pageblocks to group the slab's pages in.
+- Alias was read by nothing, not even by `MemCache::alias()`, which ignores its Option argument and returns Unimplemented.
+
+The mapping also had to go before the Gaf bits it writes can be deleted (step 9).
+
+**Change**
+Before:
+
+```cpp
+enum class Option {
+    Dma = BIT(0),
+    Dma32 = BIT(1),
+    CacheAlign = BIT(4),
+    RedZone = BIT(6),
+    Poison = BIT(7),
+    Merge = BIT(10),
+    Reclaim = BIT(11),
+    Alias = BIT(12),
+    Folio = BIT(13),
+};
+...
+if (!!(option & Option::Dma)) {
+    m_gaf |= Gaf::Dma;
+}
+// and the same for Dma32 and Reclaim
+```
+
+After:
+
+```cpp
+enum class Option {
+    CacheAlign = BIT(4),
+    RedZone = BIT(6),
+    Poison = BIT(7),
+    Folio = BIT(13),
+};
+```
+
+The surviving values keep their bits: the whole enum is up for deletion in step 13, so renumbering now would be churn.
+
+**Reference**
+- Linux `SLAB_CACHE_DMA`, `SLAB_CACHE_DMA32`, `SLAB_NO_MERGE` and `SLAB_RECLAIM_ACCOUNT` in `include/linux/slab.h`; `calculate_sizes()` in `mm/slub.c` turns SLAB_RECLAIM_ACCOUNT into `__GFP_RECLAIMABLE` in the cache's `allocflags` (from memory).
+- Zircon's slab allocator has no creation flags at all; `ObjectCache` takes only a Single/PerCpu template option.
+
+**Verification**
+- `boot_check.py` in a scratch worktree at `daf846e7` with this change applied: dbg PASS (24 passed), rel PASS (21 passed).
+- `git grep` for the five names as `Option::` or `Flags::` under `kernel/` is empty.
+- clang-tidy on `object_cache.cpp`: nothing on the changed lines. clang-format: clean.
+
+**Deliberately not done**
+- CacheAlign, RedZone, Poison and Folio: they are steps 7 and 13, with decisions D8 and D10.
+- `MemCache::alias()` itself: a stub, decision D8.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the MemCache::Option rows): `git grep` found no caller passing these values.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What would a cache created with the old Option::Reclaim have done on a slab refill, and why is that not what Linux's SLAB_RECLAIM_ACCOUNT means?
+- Why did the Option-to-Gaf mapping have to go before the Gaf bits themselves?
+- Why were the remaining values left at their old bit positions?

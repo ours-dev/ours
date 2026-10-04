@@ -577,15 +577,6 @@ auto MemCache::init(char const *name, usize size, usize align, Option option) ->
         return status;
     }
 
-    if (!!(option & Option::Dma)) {
-        m_gaf |= Gaf::Dma;
-    }
-    if (!!(option & Option::Dma32)) {
-        m_gaf |= Gaf::Dma32;
-    }
-    if (!!(option & Option::Reclaim)) {
-        m_gaf |= Gaf::Reclaim;
-    }
     m_min_partial =
         std::clamp(ustl::bit_ceil(m_phys_size) / 2, MIN_PARTIAL_SLABS, MAX_PARTIAL_SLABS);
 
@@ -615,8 +606,8 @@ auto MemCache::init(char const *name, usize size, usize align, Option option) ->
 
 auto MemCache::alias(const char *name, usize size, usize align, Option, ustl::Arc<Self> *)
     -> Status {
-    // TODO(SmallHuaZi): unimplemented -- Option::Alias exists but nothing
-    // creates an aliasing cache yet.
+    // TODO(SmallHuaZi): unimplemented -- nothing creates an aliasing cache
+    // yet.
     return Status::Unimplemented;
 }
 

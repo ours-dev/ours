@@ -24,10 +24,12 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
     using Self = MemCache;
 
   public:
+    /// Only what some caller passes. Dma and Dma32 (Linux's SLAB_CACHE_DMA*),
+    /// Merge, Reclaim and Alias went because none did: there are no DMA
+    /// zones to ask for, Linux merges by default and opts out with
+    /// SLAB_NO_MERGE, and Reclaim mapped to a Gaf that would have made slab
+    /// refills block, where Linux's SLAB_RECLAIM_ACCOUNT is a grouping hint.
     enum class Option {
-        Dma = BIT(0),
-        Dma32 = BIT(1),
-
         /// Requires to align objects on cache line boundaries.
         CacheAlign = BIT(4),
 
@@ -35,13 +37,6 @@ class MemCache: public ustl::RefCounted<MemCache, ustl::sync::ThreadSafePolicy> 
         RedZone = BIT(6),
         /// DEBUG
         Poison = BIT(7),
-
-        /// Capablity to permit that |this| merged with another.
-        Merge = BIT(10),
-        /// Capablity to permit that |this| is reclaimed by Deamon.
-        Reclaim = BIT(11),
-        /// Capablity to permit.
-        Alias = BIT(12),
 
         /// Back this cache's slabs with folios (compound pages).
         ///
