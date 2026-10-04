@@ -343,10 +343,14 @@ auto WaitQueue::handle_timeout(time::Timer *timer, Thread *thread) -> void {
         return;
     }
 
+    // No queue: a notify dequeued the thread and is now waiting for this PI
+    // lock to unpark it (Event::signal() takes it only after dropping the
+    // queue lock). That wake is the thread's; there is nothing to time out.
+    // Zircon's TimeoutHandler() returns on a null queue too.
     auto const wq = thread->waiter_state().wait_queue();
-    DEBUG_ASSERT(wq);
-
-    wq->unpark_thread(thread, Status::TimeOut);
+    if (wq != nullptr) {
+        wq->unpark_thread(thread, Status::TimeOut);
+    }
     pi_lock.release();
 }
 } // namespace ours::task

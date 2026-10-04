@@ -136,3 +136,57 @@ None.
 - Why must `suspend_or_kill()` keep the target's PI lock from its state check through the wake, instead of dropping it and calling the ordinary wake?
 - Why does the queue-driven wake take the PI lock only after dropping the queue lock, and what would happen if it took it first?
 - Why can `handle_timeout()` not simply acquire the PI lock, and what does `trylock_or_cancel()` give it instead?
+
+## Title: A suspend, kill or timeout that finds its waiter already claimed leaves the wake to the claimer (2026-10-03)
+
+**Files**
+- `kernel/kernel/task/thread.cpp` — `suspend_or_kill()`'s Parked branch does nothing when the thread's `wait_queue()` is null.
+- `kernel/kernel/task/wait_queue.cpp` — `handle_timeout()` does the same, in place of `DEBUG_ASSERT(wq)`.
+
+**Symptom**
+Latent, cannot be triggered today. A suspend, kill or timeout that lands in the window just after a queue-driven wake has claimed the thread dereferenced null in `suspend_or_kill()`, and failed `DEBUG_ASSERT(wq)` in `handle_timeout()` (in a build without assertions, the same null dereference).
+
+**Cause**
+Being `Parked` and being in a queue are two facts with two different locks. The state belongs to the thread's PI lock; the queue membership (`m_waitqueue`) belongs to the queue's lock. A queue-driven wake changes them one at a time: `Event::signal()` takes the waiter off the queue under the queue lock (which clears `m_waitqueue`), drops the queue lock, and only then takes the thread's PI lock to unpark it, because the PI lock is the outer lock and cannot be taken while the queue lock is held. Between the two steps the thread is `Parked` but in no queue. Anyone who holds the PI lock in that window sees exactly that, and both thread-directed wakes do hold it: `suspend_or_kill()` and `handle_timeout()`. They read `wait_queue()` and called through it.
+
+The window is not a defect to close; it is the price of the lock order. What it means is already decided: the waiter belongs to whoever dequeued it. `unpark_thread()` already honours that when the claim happens after it has read the queue (`dequeue_waiter()` returns false under the queue lock); the null pointer is the same claim seen one step earlier.
+
+**Change**
+
+```cpp
+// before (suspend_or_kill, Parked branch)
+auto const wq = m_waiter_state.wait_queue();
+wq->unpark_thread(this);
+
+// after
+auto const wq = m_waiter_state.wait_queue();
+if (wq == nullptr) {
+    break;   // claimed: the claimer unparks it, and it meets the signal set above
+}
+wq->unpark_thread(this);
+```
+
+`handle_timeout()` likewise calls `unpark_thread()` only for a non-null queue and releases the PI lock either way. Nothing is lost by stepping aside. For a suspend or kill, the signal bit is already set before the branch runs, and the woken thread meets it on its way out of the kernel. For a timeout, the thread has been given what it waited for, which supersedes the deadline.
+
+**Reference**
+Zircon `WaitQueue::TimeoutHandler()` (kernel/kernel/wait.cc): `if (wq == nullptr) { DEBUG_ASSERT(thread.state() == THREAD_READY); return Done; }`. Zircon can assert READY there because its ChainLock transaction unblocks the thread in the same step that clears the queue; here the state lags behind the queue, so the assertion does not carry over.
+
+**Verification**
+- Isolated copy of HEAD with this change: `boot_check.py --out out/task-wake`, dbg PASS (20 passed), rel PASS (18 passed), 0 error lines; `waitqueue.test` on dbg `ok -- 3 checks`.
+- The null case itself is argued, not tested: the window is a few instructions wide, and hitting it needs a signal and a suspend or timeout on two CPUs within it.
+- clang-tidy: no finding on the changed lines.
+
+**Deliberately not done**
+- `wait_queue()` is a plain load of a pointer that another CPU writes under a lock this one does not hold. The value read can only be the thread's queue or null, since the PI lock keeps the thread from parking anywhere else, and a stale non-null is caught by `dequeue_waiter()` under the queue lock. A `ktl::read_once` would make that explicit; it was left as it was in every other reader, for a change of its own.
+- The wake status (repair item 5) is the next change.
+
+**How it was found**
+Recorded with repair item 2 on 2026-09-24; re-read against Zircon's `TimeoutHandler()` while fixing the double PI lock, which showed `handle_timeout()` had the same gap.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why can a thread be `Parked` while its `wait_queue()` is null, and why does the lock order make that window unavoidable?
+- Why is "do nothing" correct for a kill that finds the waiter claimed, rather than waiting until the claimer is done?
+- Why can Zircon assert READY in the same spot, and ours cannot?

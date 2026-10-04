@@ -336,7 +336,17 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
                 return Status::Ok;
             }
 
+            // Parked but in no queue: a queue-driven wake has claimed it.
+            // Event::signal() dequeues under the queue lock -- which clears
+            // the waiter's queue -- and takes this PI lock only afterwards, to
+            // unpark it: it is waiting for us, or about to. Leave the wake to it:
+            // the signal is set already, and the thread meets it once it
+            // runs. Zircon's WaitQueue::TimeoutHandler() returns on a null
+            // queue for the same reason.
             auto const wq = m_waiter_state.wait_queue();
+            if (wq == nullptr) {
+                break;
+            }
             wq->unpark_thread(this);
             break;
         }

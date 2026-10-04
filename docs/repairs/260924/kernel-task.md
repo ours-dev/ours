@@ -1,25 +1,5 @@
 # kernel-task 待修项（2026-09-24）
 
-## 2. `suspend_or_kill()` and `handle_timeout()` call through a `wait_queue()` that may be null
-
-**Severity**
-Medium: a null dereference, but only in a race no caller can start today.
-
-**Symptom**
-Latent, cannot be triggered today. A suspend, a kill or a timeout that targets a parked thread in the window after a queue-driven wake has claimed it dereferences null (dbg: `handle_timeout()`'s `DEBUG_ASSERT(wq)` first).
-
-**Cause**
-`Event::signal()` dequeues its waiters under the queue lock, which clears each waiter's `m_waitqueue`, then drops the queue lock and only afterwards takes each thread's PI lock to unpark it (`Scheduler::unpark_thread(UnparkList)`). In between, the thread is still `Parked` but in no queue. `Thread::suspend_or_kill()`'s Parked branch and `WaitQueue::handle_timeout()` both hold the PI lock, see `Parked`, read `wait_queue()` and call `wq->unpark_thread()` without checking for null. `unpark_thread()` itself already copes with a waiter claimed by someone else (`dequeue_waiter()` returns false), but it cannot be reached through a null `wq`.
-
-**Change**
-A null `wait_queue()` means the wake is already claimed: do nothing. The signal is set already, and the waker that holds the claim wakes the thread, which then meets the signal. Zircon's timeout handler returns on `wq == nullptr` in the same way.
-
-**Reference**
-Zircon `WaitQueue::TimeoutHandler()` (kernel/kernel/wait.cc), `if (wq == nullptr) { ... return Done; }`.
-
-**Acceptance**
-`waitqueue.test` and `boot_check.py` still pass; the null case is argued, not tested, as the window is a few instructions wide.
-
 ## 5. A waiter woken by a suspend or a kill reads `Status::Ok`
 
 **Severity**
