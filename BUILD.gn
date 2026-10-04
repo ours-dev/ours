@@ -184,8 +184,9 @@ group("default") {
     "//system/lib/component:tests",
 
     # The Loop, one port and a fixed table of wait slots, against a fake of
-    # the three system calls it makes. Its Run* tests fail until the user
-    # writes Loop::run() by hand (P3 of the component-framework plan).
+    # the three system calls it makes. Its Run* tests pin down Loop::run(),
+    # which P3 of the component-framework plan reserves for the user to write
+    # by hand; they pass on the body the AI wrote for the MVP.
     "//system/lib/loop:tests",
 
     # init's `ours.autorun.boot` parsing: which argv a value becomes. The

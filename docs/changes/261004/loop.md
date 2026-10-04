@@ -105,8 +105,8 @@ None.
 
 **Files**
 - `system/lib/loop/src/loop.cpp` — `run()` replaces the stub that answered NotSupported: `port_wait`, the drop rule, the callback, then re-arm or close. Written by the AI on the user's instruction of 2026-10-04; the hand-writing exercise of P3 stays open
-- `system/lib/loop/include/loop/loop.hpp` — the spec's sentence on who writes `run()` now says so; the spec itself is unchanged
-- `system/lib/loop/test/loop_test.cpp`, `test/BUILD.gn`, `README.md` — comments that said the `Run*` tests fail until `run()` exists; no test changed
+- `system/lib/loop/include/loop/loop.hpp` — the spec's sentence on who writes `run()` now says so; the spec itself is unchanged. `Callback`'s comment gains a paragraph on when Rearm is safe (added in review)
+- `system/lib/loop/test/loop_test.cpp`, `test/BUILD.gn`, `README.md`, and the root `BUILD.gn` (added in review) — comments that said the `Run*` tests fail until `run()` exists; no test changed
 - `examples/shell/shell_tests.cpp` — `check_loop()` is called from `shell::tests::run()`, right after `check_port_observer_limit()`, on both images
 - `examples/shell/shell_tests.hpp` — `check_loop()`'s comment says where it runs
 - `docs/repairs/261004/loop.md` — item 2: two system calls of the Loop's own per message, a performance observation
@@ -181,6 +181,8 @@ auto Loop::run(ours::Instant const deadline) -> ours::Status {
 ```
 
 The shell's `run()` gains one line, `check_loop();` after `check_port_observer_limit();`. It is not gated on the image: the check makes its own port and channels and needs nothing either image hands the shell.
+
+The review added one paragraph to `Callback`'s comment: a callback answers Rearm only once it has consumed what asserted the signal. The wait is level-triggered, so a Rearm with the message still unread, or with only PeerClosed or Terminated asserted, has its packet queued again at once, and `run()` calls the callback on every turn without end: a spin on the root's one thread, and a `run(0)` that never finds the port empty. I4 keeps it from starving the other slots, since the new packet queues behind theirs, but nothing in `run()` can stop it: the Loop does not know what consuming a signal means for an object, so the rule belongs to the callback. Step 13's callback on a shell's Terminated is the first that could break it, by answering Rearm instead of Close. Linux's epoll(7) warns of the same trap for level-triggered descriptors, and Fuchsia's FIDL binding tears down, rather than waiting again, when a wait finishes with PEER_CLOSED and nothing READABLE (`ChannelWaiter::HandleWaitFinished()`, `sdk/lib/fidl/cpp/wire/transport_channel.cc:185-193`, at `51f05104c13`).
 
 Rejected:
 - A private `dispatch(PortPacket const &)` helper, called from `run()`. It would add a member to the header, whose `run()` comment is the spec of one function. The body is about thirty lines, which the spec expected.

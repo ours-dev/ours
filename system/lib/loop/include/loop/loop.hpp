@@ -47,6 +47,14 @@ enum class Action : u8 {
 /// reported -- and answers. It never closes its own handle (it answers Close
 /// instead), never closes another slot's handle, and never arms a wait; it
 /// may add() new slots.
+///
+/// It answers Rearm only once it has consumed what asserted the signal. The
+/// wait is level-triggered, so a callback that answers Rearm with its message
+/// still unread, or with only PeerClosed or Terminated asserted, has its
+/// packet queued again at once: run() calls it again on every turn, without
+/// end, and run(0) never finds the port empty. That is a spin, not a stall
+/// (the packet queues behind everyone else's, I4), but it is the one thread's
+/// CPU.
 using Callback = auto (*)(void *context, ours::Signals observed) -> Action;
 
 /// The key of a slot's waits: its generation in the high 32 bits and its
