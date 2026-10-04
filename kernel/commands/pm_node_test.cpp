@@ -284,11 +284,10 @@ namespace {
                 this_node_ok = false;
             }
         }
-        // Without ThisNode. GAF_KERNEL itself carries ThisNode (gaf.hpp), so it
-        // has to be taken out to ask for the whole fallback order; the walk's
-        // zone bound is Normal, which lets every zone through.
+        // Without ThisNode, the whole fallback order. The walk's zone bound is
+        // Normal, which lets every zone through.
         mm::AllocationContext everywhere;
-        auto _ = everywhere.build(&node, mm::GAF_KERNEL & ~mm::Gaf::ThisNode, 0, online);
+        auto _ = everywhere.build(&node, mm::GAF_KERNEL, 0, online);
         auto const walked = count_walk(everywhere.ziter);
         log::info("pmnode.test:   AllocationContext without ThisNode walked {} of {} zone(s)",
                   walked, list->fallback().size());

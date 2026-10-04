@@ -26,6 +26,13 @@ enum class Gaf : u32 {
     /// ends (docs/repairs/260908/heap.md item 3).
     DirectReclaim = 7_bit,
 
+    /// Only the node the allocation starts from: the local node, or the one
+    /// named by an alloc_frames(nid, ...) overload. When that node has nothing
+    /// the allocation fails (or, with DirectReclaim, retries) rather than
+    /// spilling to another node. Linux's __GFP_THISNODE. No preset carries
+    /// it: local-first is already the zone walk's order (PmNode::m_fallback),
+    /// so ask for this only where memory on another node would defeat the
+    /// allocation's purpose.
     ThisNode = 9_bit,
 
     /// Return a zeroed frame on success.
@@ -39,10 +46,10 @@ USTL_ENABLE_ENUM_BITMASK(Gaf);
 /// for that by name.
 ///
 /// The kernel's own memory: may wait.
-inline constexpr auto GAF_KERNEL = Gaf::ThisNode | Gaf::DirectReclaim;
+inline constexpr auto GAF_KERNEL = Gaf::DirectReclaim;
 
 /// Memory a process will see: zeroed, and fails rather than waits.
-inline constexpr auto GAF_USER = Gaf::ThisNode | Gaf::Zero;
+inline constexpr auto GAF_USER = Gaf::Zero;
 
 enum class AllocationOptions : u32 {
     NoFragment = 0_bit,

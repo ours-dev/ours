@@ -84,7 +84,7 @@ auto SparseMemMap::init() -> Status {
     // all-zero entry -- init_index() decides whether to descend or to build a new
     // level purely from is_state_present() -- so uninitialised memory reads as a
     // random mixture of present entries pointing at whatever the previous owner
-    // left behind. GAF_KERNEL is ThisNode|DirectReclaim and does *not* imply
+    // left behind. GAF_KERNEL is DirectReclaim alone and does *not* imply
     // Gaf::Zero, so it has to be asked for.
     auto root_section =
         Impl::allocate<MemSection>(ENTRIES_PER_SECTION, PAGE_SIZE, GAF_KERNEL | Gaf::Zero, 0);

@@ -196,10 +196,12 @@ auto PmNode::alloc_frames_preamble(Gaf gaf, usize order, NodeMask const &fallbac
     // get_frame_from_zone_list() rejects everything, since an unset NodeMask
     // answers false for every node.
     //
-    // Gaf::ThisNode narrows it to the local node; it is a preference rather than
-    // a restriction, so an empty intersection falls back to the caller's mask
-    // rather than failing -- a node with no memory of its own must still be able
-    // to allocate.
+    // Gaf::ThisNode narrows it to this node whenever the caller's mask
+    // includes it, so the walk then skips every other node's zones even when
+    // this one has nothing: a restriction, as Linux's __GFP_THISNODE is. Only
+    // a mask that leaves this node out keeps its own nodes. That is not the
+    // memoryless-node case: a node with no memory is still in the online
+    // mask, so ThisNode leaves it nothing to allocate from.
     context->allowed_nodes = fallback;
     if (!!(gaf & Gaf::ThisNode)) {
         auto local = fallback;

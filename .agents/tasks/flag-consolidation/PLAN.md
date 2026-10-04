@@ -34,7 +34,7 @@ Each commit must pass ours-verify (builds, and both images boot). Check `git dif
    - Also goes: gaf_zone_type() and its static_asserts, the zone bound at zone_iterator.hpp:81, NoRetry in GAF_GROW, the never_fail branches and the comment at pm_node.cpp:397, and finally ALLOWED_GAF itself.
    - Update pm_node_test. No behaviour change, because every one of these bits was stripped before use.
 10. **Presets become plain constants.** cpu_local.cpp:403 and :447 use `GAF_KERNEL | Gaf::Zero` instead of GAF_BOOT. Delete Gaf::Boot, User and Kernel; define GAF_KERNEL and GAF_USER outside the enum. Fix the comments at cpu_local.cpp:54/402/445, init_vmm.cpp:250 and sparse_memmap.cpp:88.
-11. **[U] [B, multi-node only] Delete Gaf::ThisNode** from the presets, GAF_GROW, alloc_frames_preamble, zone_iterator.hpp:83-87 and pm_node_test :280/:291. Verify: also boot a NUMA QEMU configuration if one exists.
+11. **[U] [B, multi-node only] Delete Gaf::ThisNode** from the presets, GAF_GROW, alloc_frames_preamble, zone_iterator.hpp:83-87 and pm_node_test :280/:291. Verify: also boot a NUMA QEMU configuration if one exists. Narrowed by D5: the bit stays, and only the presets and GAF_GROW lose it.
 12. **[U] [B] Callers ask for Gaf::Zero by name.** GAF_USER no longer carries it, and MemCache::allocate memsets the object when Zero is passed explicitly.
 13. **[U] Delete MemCache's creation options.**
     - CacheAlign goes, with a docs/repairs performance item to measure cache-line alignment as an `align` value.

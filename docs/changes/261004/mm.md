@@ -643,3 +643,92 @@ None.
 - Why does a preset inside a bitmask enum make the enum worse, even when its value is right?
 - What was GAF_BOOT after step 9, and why is asking for Zero by name clearer than a boot preset?
 - Which preset may wait, and which one fails instead?
+
+## Title: No preset carries Gaf::ThisNode any more; the bit stays, documented as strict (flag-consolidation step 11) (2026-10-04)
+
+**Files**
+- `kernel/mm/include/ours/mm/gaf.hpp` — `GAF_KERNEL` is DirectReclaim alone and `GAF_USER` is Zero alone; ThisNode gets a doc comment saying it is strict, Linux's `__GFP_THISNODE`, and when to ask for it
+- `kernel/mm/cpu_local.cpp` — `GAF_GROW` is Zero alone
+- `kernel/mm/pm_node.cpp` — `alloc_frames_preamble()`'s comment says what ThisNode does instead of calling it a preference
+- `kernel/mm/sparse_memmap.cpp` — a comment that spelled GAF_KERNEL's bits
+- `kernel/commands/pm_node_test.cpp` — the "without ThisNode" case passes `GAF_KERNEL` as is
+- `.agents/tasks/flag-consolidation/DESIGN.md`, `PLAN.md` — D5 decided, step 11 narrowed
+
+**Symptom**
+Latent on the single-node images. On a NUMA machine every `GAF_KERNEL` allocation, almost every allocation in the kernel, was confined to the node it started from. When that node ran out, the zone walk skipped the other nodes' free memory, and DirectReclaim sent it round the slow path for ever: a hang, not a failure.
+
+**Cause**
+The objects:
+- `Gaf::ThisNode`: carried by `GAF_KERNEL`, `GAF_USER` and cpu_local's `GAF_GROW`.
+- `allowed_nodes`: the nodes one allocation may take frames from.
+- `PmNode::m_fallback`: the node's zone list, its own zones first and then the other nodes'.
+- `alloc_frames_preamble()`: sets `allowed_nodes` to the caller's mask, and with ThisNode narrows it to this node whenever the mask includes it.
+- `get_frame_from_zone_list()`: walks `m_fallback` and skips zones on nodes not in `allowed_nodes`.
+
+The events, on node 0 of a two-node machine, with node 0 empty and node 1 free:
+1. The preamble narrows `allowed_nodes` from {0,1} to {0}.
+2. The walk reaches node 1's zones and skips them.
+3. No frame; DirectReclaim; the reclaim and compaction stubs return nothing; back to 1.
+
+The comment in the preamble called ThisNode "a preference rather than a restriction", because a mask without this node keeps its own nodes. But that branch never runs for the normal masks, which all include this node, so the bit was strict in practice. Its stated reason, that a memoryless node must still allocate, did not hold either: `PmNode::init()` sets every node Online whether or not it has memory, so a memoryless node is in the mask and ThisNode left it nothing.
+
+Local-first, the thing a preset wants, already comes from `m_fallback`'s order. Strictness is for callers to whom memory on another node is useless.
+
+**Change**
+Before:
+
+```cpp
+inline constexpr auto GAF_KERNEL = Gaf::ThisNode | Gaf::DirectReclaim;
+inline constexpr auto GAF_USER = Gaf::ThisNode | Gaf::Zero;
+constexpr auto GAF_GROW = Gaf::ThisNode | Gaf::Zero;
+```
+
+After:
+
+```cpp
+inline constexpr auto GAF_KERNEL = Gaf::DirectReclaim;
+inline constexpr auto GAF_USER = Gaf::Zero;
+constexpr auto GAF_GROW = Gaf::Zero;
+```
+
+Decision D5 offered deleting the bit. The user kept it, strict as Linux's is, for a caller that needs it by name, and asked for an audit of which callers do. By the path each request takes to the PMM:
+
+| Path | Examples | Needs strict? |
+|---|---|---|
+| Node-less frame allocations | zero page, `alloc_page_table()`, vmalloc | No: placement only |
+| VMO pages | `VmCowPages` with `GAF_USER` | No |
+| Slab refills | kmalloc, ObjectCache, dispatchers' `new (GAF_USER)` | No: `SlabBody::node_cache` already expects frames from a fallback node |
+| CpuLocal units | `build_dense()`, `build_scattered()` | No, see below |
+| CpuLocal growth | `GAF_GROW` | No |
+| Memmap | `SparseMemMap` | No |
+
+CpuLocal was weighed separately, since per-CPU data is where locality matters most. It still drops the bit: its unit-to-node map is mostly round-robin until CPU enumeration moves ahead of the PMM, so strictness would pin a unit to an arbitrary node, and with `GAF_KERNEL`'s DirectReclaim a node without memory would hang the boot instead of failing it. The only remaining user is `pmnode.test`, which tests the bit itself.
+
+The preamble's empty-intersection branch is kept as code; only its comment now says what it does.
+
+**Reference**
+- Linux `GFP_KERNEL` and `GFP_USER` carry no `__GFP_THISNODE` (`include/linux/gfp_types.h`). `__GFP_THISNODE` selects the `ZONELIST_NOFALLBACK` zonelist (`gfp_zonelist()` in `include/linux/gfp.h`), which `AllocationContext::build()` mirrors with `local_zones()`. Linux's percpu allocator, `pcpu_alloc_pages()` in `mm/percpu-vm.c`, uses `alloc_pages_node(cpu_to_node(cpu), gfp, 0)` without it (from memory).
+- Zircon's PMM has no NUMA.
+
+**Verification**
+- `boot_check.py` in a scratch worktree at `ed96b20a` with this change applied: dbg PASS (24 passed, 1 skipped), rel PASS (22 passed, 3 skipped).
+- The same with a NUMA build (`mm_numa = true`) under `NUMA=1`, four nodes of 256 MiB each in the memory map: dbg PASS, rel PASS. A first try booted the default build under `NUMA=1` and saw one node, which is why the build argument matters.
+- `kshell_run.py pmnode.test`: ok, 56 checks on the NUMA dbg image (the walk without ThisNode covers 5 of 5 zones) and 20 on the single-node one.
+- clang-tidy on `pm_node.cpp` and `pm_node_test.cpp`: nothing on the changed lines. clang-format: clean.
+
+**Deliberately not done**
+- Deleting the bit: D5, the user kept it.
+- Making the empty-intersection branch fail as Linux would: no caller reaches it, and it was not asked for.
+- A real per-CPU node map for CpuLocal: it needs CPU enumeration before the PMM.
+- The endless DirectReclaim retry: D7, `docs/repairs/260908/heap.md` item 3. Without ThisNode it can no longer be reached while another node has memory, but a machine that is out of memory everywhere still spins.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the ThisNode row) read the preamble against its comment; the per-caller audit came from the user's decision.
+
+**The user's prediction**
+The user held that ThisNode's strict behaviour is normal and the bit should stay, and asked which callers really need it, naming CpuLocal. The audit found none. CpuLocal's case rested on locality, which the fallback order already gives; its round-robin unit map and the DirectReclaim hang tipped it, and the user chose to drop it there too.
+
+**Three questions you should be able to answer**
+- With ThisNode set, why does a two-node machine with free memory on node 1 hang an allocation that starts on an empty node 0?
+- Where does "local node first" come from once no preset carries ThisNode?
+- What would a caller that genuinely needs ThisNode look like, and why is CpuLocal not one yet?
