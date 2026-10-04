@@ -1,7 +1,7 @@
 # libprof
 
 A perf-style sampling profiler for the kernel: PMU counter overflow (or a
-scheduler-tick fallback) raises an interrupt; the handler captures the
+per-CPU sampling timer) raises an interrupt; the handler captures the
 interrupted context, unwinds the kernel call stack with `.eh_frame` CFI
 (libunwind) and stores raw, un-symbolized samples into pre-allocated
 per-CPU buffers. A serial export plus the host `prof-fold` tool turn the
@@ -35,11 +35,15 @@ without this library changing at all.
 - **Sources.** `Source::Pmu` programs IA32_PERFEVTSEL0/PMC0 for
   UnHalted-Core-Cycles with the PMI bit and hands the overflow to
   `IrqVec::ApicPmi`. Machines without an architectural PMU (QEMU TCG)
-  fail detection, and `Source::TimerTick` samples every N-th scheduler
-  tick via `Sampler::on_scheduler_tick()` instead — same record path.
+  fail detection, and `Source::Timer` samples every `period`
+  nanoseconds from a per-CPU kernel timer instead — same record path.
+  This library only names that source: `ours::sampler`
+  (`kernel/kernel/sampler`) arms the timers when a session starts and
+  cancels them when it stops, so no tick, and no CPU, pays for the
+  profiler while it is off.
 - **Interrupt-safe sampling.** The PMI handler halts the counter first so
   it never samples itself, records with zero allocation and bounded work,
-  then re-arms. Tick samples recover the interrupted context through
+  then re-arms. Timer samples recover the interrupted context through
   `arch::capture_sample_context()` (per-CPU, set by the IRQ preamble).
 - **Unwinding.** `Sampler::record_sample` walks at most 16 frames with
   `unwind::Unwinder` over the kernel's `.eh_frame` (kept in the loaded
@@ -60,10 +64,11 @@ without this library changing at all.
   cursor); the consumer only runs after `Sampler::stop()` has quiesced
   every CPU (each acknowledges by bumping a counter in its stop IPI), so
   records are never read torn.
-- **Control.** `prof.start [pmu|tick] [period]`, `prof.stop`, `prof.dump`
+- **Control.** `prof.start [pmu|timer] [period]`, `prof.stop`, `prof.dump`
   are gktl commands defined in `kernel/commands/prof.cpp` — drive them
   interactively over the serial console (libkshell) or from a script. They
-  are thin wrappers over `prof::Sampler::get()`. Inside `Sampler` the only
+  go through `ours::sampler::start()`/`stop()`, which own the timers, and
+  read the results from `prof::Sampler::get()`. Inside `Sampler` the only
   atomic is the state; source and period are plain fields that `start()`
   writes while the state is `Starting` (which no reader acts on) and
   publishes with the release store of `Running`.
@@ -77,7 +82,7 @@ prof_pmu.cpp`):
 | Function | Used for |
 |---|---|
 | `pmu_present` / `start_pmu_sampling` / `stop_pmu_sampling` | PMU-based sampling control |
-| `capture_sample_context` | Recovering the interrupted context for the timer-tick fallback |
+| `capture_sample_context` | Recovering the interrupted context for the timer source |
 | `current_cpu` | Picking a sample's buffer and tagging its `SampleRecord::cpu` |
 | `timestamp` | `SampleRecord::tsc` |
 | `debug_write` | The raw bytes `Sampler::export_dump` produces (COM1 on x86) |

@@ -13,7 +13,6 @@ source_set("time") {
     "//kernel/lib/gktl:headers",
     "//kernel/lib/ktl:headers",
     "//kernel/lib/mtl:headers",
-    "//kernel/lib/prof:headers",
     "//kernel/mm:headers",
     "//system/lib/lockdep",
   ]

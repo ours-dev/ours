@@ -13,9 +13,9 @@ namespace ours::time {
 /// What a tick *means* on this CPU, separated from where it comes from.
 ///
 /// A tick is the scheduler's heartbeat: account the running thread's time
-/// and maybe preempt it, take a profiler sample, run the local timers that
-/// have expired. That is on_tick(), and it is Linux's update_process_times()
-/// plus run_local_timers(). Who calls it depends on the work mode:
+/// and maybe preempt it, run the local timers that have expired. That is
+/// on_tick(), and it is Linux's update_process_times() plus
+/// run_local_timers(). Who calls it depends on the work mode:
 ///
 ///  * Legacy: the tick device fires every 1/HZ and its periodic handler
 ///    (TickDevice::handle_periodic_event) calls on_tick() directly. Nothing

@@ -29,7 +29,7 @@ namespace arch {
     /// by incrementing the quiesce counter once its own counter is off.
     auto stop_pmu_sampling() -> void;
 
-    /// Capture the interrupted context on this CPU (tick-fallback source).
+    /// Capture the interrupted context on this CPU (the timer source).
     /// Returns none when no trap frame is active.
     [[nodiscard]]
     auto capture_sample_context() -> ustl::Option<SampleContext>;

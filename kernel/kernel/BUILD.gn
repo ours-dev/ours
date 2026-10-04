@@ -3,6 +3,7 @@ source_set("kernel") {
 
   deps = [
     "//kernel/kernel/irq",
+    "//kernel/kernel/sampler",
     "//kernel/kernel/sync",
     "//kernel/kernel/task",
     "//kernel/kernel/time",

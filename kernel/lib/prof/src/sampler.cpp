@@ -156,12 +156,6 @@ auto Sampler::start(Config const &config) -> ours::Status {
     m_source = config.source;
     m_period = config.period;
     m_sink.reset();
-    // Relaxed on purpose. This reset is not a publication point; it is one
-    // more write that the release store of Running below publishes, exactly
-    // like the two plain assignments above it (a release orders *every*
-    // preceding write, atomic or not, before the acquire that reads it). A
-    // release here would claim an ordering role this store does not have.
-    m_tick_counter.store(0, std::memory_order_relaxed);
 
     auto const stop_again = [&]() -> void {
         m_state.store(State::Stopped, std::memory_order_release);
@@ -222,31 +216,6 @@ auto Sampler::record_sample(SampleContext const &context) -> void {
 
     unwind_context(context, &record);
     auto _ = m_sink.produce(cpu, record);
-}
-
-auto Sampler::on_scheduler_tick() -> void {
-    // Acquire first, fields after: see the note on `m_state` in the header
-    // for why the two plain reads below are ordered by this load.
-    if (m_state.load(std::memory_order_acquire) != State::Running) {
-        return;
-    }
-    if (m_source != Source::TimerTick) {
-        return;
-    }
-
-    u64 const period = m_period;
-    if (period == 0) {
-        return;
-    }
-    if ((m_tick_counter.fetch_add(1, std::memory_order_relaxed) % period) != 0) {
-        return;
-    }
-
-    auto const context = arch::capture_sample_context();
-    if (context.is_none()) {
-        return;
-    }
-    record_sample(*context);
 }
 
 } // namespace prof

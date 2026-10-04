@@ -48,7 +48,7 @@ Non-goals:
 | `sampler_stop` | `sampler` | `zx_sampler_stop` |
 | `sampler_read` | `sampler`, `data`, `data_size`, out `actual` | `zx_sampler_read` |
 
-`SamplerConfig` holds `period` (nanoseconds, at least `SAMPLER_MIN_PERIOD` = 10 us, Zircon's value), `buffer_size` (bytes per CPU) and `targets` (`User`, `Kernel` or both). `targets` is ours; Zircon's third field is the iobuffer discipline. Each call gets its `ou::` entry.
+`SamplerConfig` holds `period` (nanoseconds, at least `SAMPLER_MIN_PERIOD` = 10 us, Zircon's value), `buffer_size` (bytes per CPU) and `targets` (`User`, `Kernel` or both). `targets` is ours; Zircon's third field is the iobuffer discipline. Programs call them as `ours::sampler_*()` from `<ours/vdso.hpp>`; the `syscalls.gni` entry is all a call needs.
 
 ### Events
 
@@ -67,10 +67,10 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 ### Placement
 
 - `kernel/lib/prof`: the pure core; its host tests stay.
-- The kernel-side session (timers, buffers, FDE index, state): `kernel/kernel/prof` (D6). `process_pending_signals()` in `kernel/kernel/task` and `SamplerDispatcher` in `kernel/object` both call it, so it has to sit below `kernel/object`.
+- The kernel-side session (timers, buffers, FDE index, state): `kernel/kernel/sampler`, namespace `ours::sampler`, header `<ours/sampler/mod.hpp>` (D6). `process_pending_signals()` in `kernel/kernel/task` and `SamplerDispatcher` in `kernel/object` both call it, so it has to sit below `kernel/object`. It is named `sampler`, not `prof` as first proposed, because an `ours::prof` would hide the core library's `prof` namespace from every caller inside namespace ours.
 - `kernel/object/sampler_dispatcher.{hpp,cpp}` and `kernel/lib/syscall/src/sampler.cpp`.
 - Retired: `kernel/commands/prof.cpp` (the kshell `prof.*` commands and the boot-time `prof_init`), the `prof::arch` seam, the `tick_sched` hook and the COM1 `debug_write`.
-- A user program under `examples/` drives a session and prints the existing `PROF1`/`SAMP` hex lines through `ou::debug_write`, so `prof-fold` keeps working for kernel samples. (2026-10-03: `ou` has been removed; that is `runtime::debug_write` now.)
+- A user program under `examples/` drives a session and prints the existing `PROF1`/`SAMP` hex lines through `ort::debug_write` (`<ort/debug.hpp>`; `ou` was removed on 2026-10-03), so `prof-fold` keeps working for kernel samples.
 
 ### Concurrency
 
@@ -97,7 +97,7 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 | D3 Session model | one global session, the handle stands for it (Zircon); one session per dispatcher | One global session | Not given | One global session, 2026-10-02 |
 | D4 Who may create one | System resource SAMPLING (15); plus a boot option and job policy | Resource only for now | Not given | Resource only, 2026-10-02 |
 | D5 Shape of `lib/prof` | standalone through an arch seam (today); a pure core taking cpu, tid and time as arguments; merged into the kernel | Pure core | Not given | Pure core, 2026-10-02 |
-| D6 Where the kernel-side session lives | `kernel/kernel/prof`; `kernel/lib/prof` itself (its host tests go); `kernel/object` | `kernel/kernel/prof` | | |
+| D6 Where the kernel-side session lives | `kernel/kernel/prof`; `kernel/lib/prof` itself (its host tests go); `kernel/object` | `kernel/kernel/prof` | Not given | `kernel/kernel/sampler` (the recommendation, renamed; see Placement), 2026-10-04: the user asked not to wait for approvals |
 | D7 Who owns the buffers | the global session, with a reference count against a concurrent read and destroy (Zircon); the dispatcher, kept alive by the reference an in-flight syscall holds | The dispatcher | | |
 | D8 How stop waits for writers | counters packed into the state word, sleep-polled (Zircon); clear the running state, then a `sync_exec()` on every CPU as a barrier, since every writer checks and writes with interrupts off | The barrier | | |
 
@@ -115,3 +115,4 @@ After the change, what each architecture supplies is reading pc, sp, fp and "cam
 - How the driving program receives the SAMPLING resource from the first process, as VMEX is handed on.
 - The user-sample record: `SampleRecord` carries a tid but no process identity, and `prof-fold` symbolises against the kernel ELF only.
 - The maximum `buffer_size` (Zircon allows 1 GiB per CPU).
+- The timer source's real resolution is one tick (1/HZ), whatever the period asks for: TickDevice stays Periodic, where `program_event()` is a no-op and timers expire only from the tick (`docs/repairs/260903/kernel-time.md` item 6, `docs/repairs/260926/kernel-time.md` item 2). Measured 2026-10-04: a 100 us and a 200 us session both took one sample per ~10 ms. Fixed by the kernel entering HpTick, not here.

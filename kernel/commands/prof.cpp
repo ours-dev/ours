@@ -13,6 +13,7 @@
 #include <ours/cpu.hpp>
 #include <ours/mm/cpu_local.hpp>
 #include <ours/mm/pmm.hpp>
+#include <ours/sampler/mod.hpp>
 #include <ours/status.hpp>
 
 #include <gktl/command.hpp>
@@ -168,15 +169,15 @@ namespace {
         if (prof::arch::pmu_present()) {
             log::info("prof: architectural PMU available");
         } else {
-            log::info("prof: no architectural PMU; use 'prof.start tick'");
+            log::info("prof: no architectural PMU; use 'prof.start timer'");
         }
     }
 
     auto prof_start_command(int argc, char **argv) -> int {
         prof::Config config{.source = prof::Source::Pmu, .period = 1'000'000};
         if (argc > 1 && argv[1][0] == 't') {
-            config.source = prof::Source::TimerTick;
-            config.period = 8; // every 8th scheduler tick
+            config.source = prof::Source::Timer;
+            config.period = 1'000'000; // nanoseconds: 1 kHz on every CPU
         }
         if (argc > 2) {
             config.period = 0;
@@ -189,7 +190,7 @@ namespace {
             }
         }
 
-        auto const status = prof::Sampler::get().start(config);
+        auto const status = sampler::start(config);
         if (status != Status::Ok) {
             log::info("prof: start failed: {}", to_string(status));
             return 1;
@@ -197,7 +198,7 @@ namespace {
         if (config.source == prof::Source::Pmu) {
             log::info("prof: sampling cycles every {} events", config.period);
         } else {
-            log::info("prof: sampling every {} scheduler ticks", config.period);
+            log::info("prof: sampling every {} ns", config.period);
         }
         return 0;
     }
@@ -223,7 +224,7 @@ namespace {
     }
 
     auto prof_stop_command(int, char **) -> int {
-        prof::Sampler::get().stop();
+        sampler::stop();
         log::info("prof: stopped");
         log_summary();
         return 0;
@@ -240,7 +241,8 @@ namespace {
     }
 
     GKTL_COMMAND(ProfStart, "prof.start", prof_start_command,
-                 "prof.start [pmu|tick] [period]: start the sampling profiler")
+                 "prof.start [pmu|timer] [period]: start the sampling profiler "
+                 "(period: PMU events, or timer nanoseconds)")
     GKTL_COMMAND(ProfStop, "prof.stop", prof_stop_command, "prof.stop: stop the sampling profiler")
     GKTL_COMMAND(ProfDump, "prof.dump", prof_dump_command,
                  "prof.dump: export raw samples as hex lines over COM1")

@@ -13,7 +13,7 @@ and backspace) and dispatches them through `gktl::run_command`.
   bring-up scope by design.
 
 Drive it interactively over QEMU's serial console, or from scripts:
-`prof.start tick 4` / `prof.stop` / `prof.dump` (see libprof).
+`prof.start timer 1000000` / `prof.stop` / `prof.dump` (see libprof).
 
 `scripts/kshell_run.py` does the typing for you: it boots an image, waits for
 the boot to end, types each command and reports what it printed, for example

@@ -46,19 +46,18 @@ class SamplerTest: public ::testing::Test {
     }
 };
 
-TEST_F(SamplerTest, StartsAndStopsOnTimerTick) {
+TEST_F(SamplerTest, StartsAndStopsOnTheTimerSource) {
     EXPECT_FALSE(prof::Sampler::get().is_running());
 
-    auto const status =
-        prof::Sampler::get().start({.source = prof::Source::TimerTick, .period = 4});
+    auto const status = prof::Sampler::get().start({.source = prof::Source::Timer, .period = 4});
     EXPECT_EQ(status, ours::Status::Ok);
     EXPECT_TRUE(prof::Sampler::get().is_running());
-    EXPECT_EQ(prof::Sampler::get().active_source(), prof::Source::TimerTick);
+    EXPECT_EQ(prof::Sampler::get().active_source(), prof::Source::Timer);
     EXPECT_EQ(prof::Sampler::get().active_period(), 4u);
 
     prof::Sampler::get().stop();
     EXPECT_FALSE(prof::Sampler::get().is_running());
-    EXPECT_EQ(prof_test::pmu_stop_calls(), 0); // TimerTick never touches the PMU.
+    EXPECT_EQ(prof_test::pmu_stop_calls(), 0); // The timer source never touches the PMU.
 }
 
 TEST_F(SamplerTest, PmuSourceFailsWithoutAnArchitecturalCounter) {
@@ -82,7 +81,7 @@ TEST_F(SamplerTest, PmuSourceProgramsThroughTheArchSeam) {
 
 TEST_F(SamplerTest, RecordSampleGoesToTheCurrentCpusBuffer) {
     prof_test::set_current_cpu(1);
-    ASSERT_EQ(prof::Sampler::get().start({.source = prof::Source::TimerTick, .period = 1}),
+    ASSERT_EQ(prof::Sampler::get().start({.source = prof::Source::Timer, .period = 1}),
               ours::Status::Ok);
 
     prof::Sampler::get().record_sample({
@@ -98,32 +97,9 @@ TEST_F(SamplerTest, RecordSampleGoesToTheCurrentCpusBuffer) {
     EXPECT_EQ(prof::Sampler::get().buffer_stats(1).retained, 1u);
 }
 
-TEST_F(SamplerTest, OnSchedulerTickSamplesEveryNthTickOnlyWhileTimerTickIsActive) {
-    prof_test::set_current_cpu(0);
-    prof_test::set_next_sample_context(prof::SampleContext{
-        .pc = 0x2000,
-        .sp = 0,
-        .bp = 0,
-        .tid = 7,
-        .from_uspace = true,
-    });
-    ASSERT_EQ(prof::Sampler::get().start({.source = prof::Source::TimerTick, .period = 3}),
-              ours::Status::Ok);
-
-    prof::Sampler::get().on_scheduler_tick(); // tick 0: 0 % 3 == 0 -> samples.
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(0).total, 1u);
-
-    prof::Sampler::get().on_scheduler_tick(); // tick 1: no sample.
-    prof::Sampler::get().on_scheduler_tick(); // tick 2: no sample.
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(0).total, 1u);
-
-    prof::Sampler::get().on_scheduler_tick(); // tick 3: 3 % 3 == 0 -> samples.
-    EXPECT_EQ(prof::Sampler::get().buffer_stats(0).total, 2u);
-}
-
 TEST_F(SamplerTest, ExportDumpWritesTheDocumentedLineFraming) {
     prof_test::set_current_cpu(0);
-    ASSERT_EQ(prof::Sampler::get().start({.source = prof::Source::TimerTick, .period = 1}),
+    ASSERT_EQ(prof::Sampler::get().start({.source = prof::Source::Timer, .period = 1}),
               ours::Status::Ok);
     prof::Sampler::get().record_sample({.pc = 1, .sp = 0, .bp = 0, .tid = 0, .from_uspace = true});
     prof::Sampler::get().stop();

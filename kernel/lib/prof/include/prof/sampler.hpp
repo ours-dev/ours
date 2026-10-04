@@ -21,15 +21,17 @@ enum class Source : u8 {
     /// PMU counter overflow (unhalted core cycles); fails when the machine
     /// has no architectural PMU (e.g. QEMU TCG).
     Pmu,
-    /// Sample on scheduler ticks via the timekeeping subsystem; always
-    /// available, coarser (OURS_CONFIG_HZ).
-    TimerTick,
+    /// A per-CPU kernel timer, armed by the caller only while sampling runs
+    /// (ours::sampler, in kernel/kernel/sampler); always available. This
+    /// library only names it: arming the timers is the kernel's job, and the
+    /// timer's handler hands each interrupted context to `record_sample()`.
+    Timer,
 };
 
 struct Config final {
     Source source;
-    /// For `Pmu`: counter counts between interrupts. For `TimerTick`: take
-    /// a sample every N-th scheduler tick.
+    /// For `Pmu`: counter counts between interrupts. For `Timer`:
+    /// nanoseconds between samples on each CPU.
     u64 period;
 };
 
@@ -116,11 +118,6 @@ class Sampler final {
     /// bounded work, unwinds at most `MAX_STACK_DEPTH` frames.
     auto record_sample(SampleContext const &context) -> void;
 
-    /// Timer-fallback hook, called from the scheduler tick. No-op unless
-    /// the `TimerTick` source is running; samples on every `period`-th
-    /// tick.
-    auto on_scheduler_tick() -> void;
-
     [[nodiscard]]
     auto num_cpus() const -> u32;
 
@@ -176,9 +173,6 @@ class Sampler final {
     std::atomic<State> m_state{State::Stopped};
     Source m_source{Source::Pmu};
     u64 m_period{0};
-    /// Not part of the configuration: a free-running counter the tick source
-    /// advances, read only while `Running`.
-    std::atomic<u64> m_tick_counter{0};
 
     /// Where records land. Everything about *storing* a record lives here
     /// and is shared with any other producer; `Sampler` only decides when a

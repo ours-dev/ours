@@ -8,7 +8,6 @@
 #include <ours/time/timer_queue.hpp>
 
 #include <gktl/init_hook.hpp>
-#include <prof/sampler.hpp>
 
 namespace ours::time {
 TickSched::TickSched()
@@ -39,8 +38,10 @@ auto TickSched::emulate(WorkMode workmode) -> void {
     m_workmode = workmode;
 }
 
-/// Linux's update_process_times(): the three consumers of a tick, in the
-/// order Linux runs them.
+/// Linux's update_process_times(): the consumers of a tick, in the order
+/// Linux runs them. The sampling profiler is not one of them; it arms timers
+/// of its own while it runs (kernel/kernel/sampler), so a tick costs nothing
+/// extra when nobody is profiling.
 auto TickSched::on_tick(TimePoint<> now) -> void {
     m_canary.verify<Self>();
 
@@ -54,10 +55,6 @@ auto TickSched::on_tick(TimePoint<> now) -> void {
     // The scheduler works in bare nanoseconds (sched::SchedTime); the clock
     // typing stops at its door.
     task::Scheduler::Current::tick(task::sched::to_sched_time(now));
-
-    // The sampling profiler's timer-fallback source samples the interrupted
-    // context here; a no-op unless 'prof.start tick' is running.
-    prof::Sampler::get().on_scheduler_tick();
 
     TimerQueue::get().run_expired_timers();
 }
