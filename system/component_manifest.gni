@@ -1,0 +1,259 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# component_manifest() -- one component's manifest, compiled into the BootFS
+# as `meta/<target name>`.
+#
+# ours's counterpart of fuchsia_component_manifest()
+# (build/components/fuchsia_component.gni:82-148 in Fuchsia) over a GN scope
+# instead of a .cml file (D1 in docs/design/261004/component-framework.md).
+# The scope uses CML's key names; what is a GN label in ours -- the program
+# and the children -- is a template parameter instead, so nothing is spelled
+# twice and a dangling child fails at gn gen:
+#
+#   component_manifest("shell.cm") {
+#     program = ":shell"
+#     manifest = {
+#       use = [
+#         {
+#           directory = "boot"
+#           path = "/boot"
+#           rights = [ "rx*" ]
+#         },
+#       ]
+#     }
+#   }
+#
+#   component_manifest("root.cm") {
+#     children = [
+#       {
+#         name = "shell"
+#         manifest = "//examples/shell:shell.cm"
+#         startup = "eager"
+#       },
+#     ]
+#     manifest = {
+#       offer = [
+#         {
+#           directory = "boot"
+#           from = "parent"
+#           to = "#shell"
+#         },
+#       ]
+#     }
+#   }
+#
+# //system/component_manifest.py compiles it, with cmc's per-manifest checks,
+# into the flat format //system/lib/component decodes (D2). The child's URL
+# is written as `fuchsia-boot:///#meta/<its target name>` (D26).
+#
+# Programs and child manifests are built in the user toolchain, whatever
+# toolchain this target is in: the template adds it to their labels, as
+# user_bootfs() adds it to programs (//kernel/products/image/dev/BUILD.gn).
+# Without that, root.cm in an image's BUILD.gn, which is read in the default
+# toolchain, would load //examples/shell/BUILD.gn there, whose assert fails
+# gen. So a label that already names a toolchain is refused rather than
+# suffixed a second time into something GN cannot parse.
+#
+# Depending on the target packages the manifest, the program and every child,
+# recursively: a BootFS that lists root.cm gets the whole tree.
+#
+# Five targets, for a target named <name>:
+#   <name>.source    the target's scope, as JSON (generated_file, the pattern
+#                    //system/public:syscalls.json uses);
+#   <name>.program   the program's install name, read from its
+#                    `<program>.install_name` metadata as user_program_names()
+#                    does, so no program name is spelled by hand;
+#   <name>.children  each child's meta path, from the children's own
+#                    `component_manifest` metadata;
+#   <name>.compile   the compiler, writing $target_gen_dir/<name> and naming
+#                    it as `meta/<name>` for the BootFS;
+#   <name>           the group a BootFS or a parent depends on.
+#
+# Parameters:
+#
+#   program (optional)
+#     Plain label of the user_executable() the component runs, without a
+#     toolchain suffix. It must install under bin/. Without it the component
+#     has no program, as Fuchsia's root.cml has none.
+#
+#   children (optional)
+#     List of scopes { name, manifest, startup }: `manifest` is the plain
+#     label of the child's component_manifest() target, and `startup` must
+#     be written out as "eager" (D4).
+#
+#   manifest (optional)
+#     Scope with CML's keys: program (args only), capabilities, use, offer,
+#     expose. The subset and its rules are D3 and the design's "The
+#     manifest".
+#
+#   testonly, visibility
+#     Standard GN meanings.
+template("component_manifest") {
+  assert(get_path_info(target_name, "extension") == "cm",
+         "component_manifest($target_name): the target's name ends in .cm")
+
+  # Unused by a manifest with neither a program nor children.
+  _user_toolchain = "//build/toolchain/ours:user-${target_cpu}"
+  not_needed([ "_user_toolchain" ])
+  _label = get_label_info(":$target_name", "label_no_toolchain")
+  _meta_path = "meta/$target_name"
+
+  _main_target = target_name
+  _source_target = "$target_name.source"
+  _program_target = "$target_name.program"
+  _children_target = "$target_name.children"
+  _compile_target = "$target_name.compile"
+
+  _source_json = "$target_gen_dir/$target_name.source.json"
+  _program_json = "$target_gen_dir/$target_name.program.json"
+  _children_json = "$target_gen_dir/$target_name.children.json"
+  _output = "$target_gen_dir/$target_name"
+
+  _program_deps = []
+  _install_name_deps = []
+  if (defined(invoker.program)) {
+    assert(
+        string_replace(invoker.program, "(", "") == invoker.program,
+        "component_manifest($target_name): `program` takes a plain label without a toolchain suffix: ${invoker.program}")
+    _program = get_label_info(invoker.program, "label_no_toolchain")
+    _program_dir = get_label_info(_program, "dir")
+    _program_name = get_label_info(_program, "name")
+    _program_deps = [ "$_program($_user_toolchain)" ]
+    _install_name_deps =
+        [ "$_program_dir:$_program_name.install_name($_user_toolchain)" ]
+  }
+
+  _children = []
+  _child_deps = []
+  if (defined(invoker.children)) {
+    foreach(child, invoker.children) {
+      assert(defined(child.manifest),
+             "component_manifest($target_name): a child needs `manifest`")
+      assert(
+          string_replace(child.manifest, "(", "") == child.manifest,
+          "component_manifest($target_name): a child's `manifest` takes a plain label without a toolchain suffix: ${child.manifest}")
+      _child = get_label_info(child.manifest, "label_no_toolchain")
+      _child_deps += [ "$_child($_user_toolchain)" ]
+
+      # Every other key goes through as written, so that the compiler can
+      # refuse one it does not know rather than have it vanish here.
+      _children += [
+        {
+          forward_variables_from(child, "*", [ "manifest" ])
+          manifest = _child
+        },
+      ]
+    }
+  }
+
+  generated_file(_source_target) {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_compile_target" ]
+    outputs = [ _source_json ]
+    output_conversion = "json"
+    contents = {
+      label = _label
+      if (defined(_program)) {
+        program = _program
+      }
+      if (_children != []) {
+        children = _children
+      }
+      if (defined(invoker.manifest)) {
+        manifest = invoker.manifest
+      }
+    }
+  }
+
+  generated_file(_program_target) {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_compile_target" ]
+    outputs = [ _program_json ]
+    output_conversion = "json"
+    deps = _install_name_deps
+    data_keys = [ "user_program_names" ]
+  }
+
+  # Stops at each child: the barrier in every component_manifest() group
+  # keeps a grandchild's entry out of this list.
+  generated_file(_children_target) {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_compile_target" ]
+    outputs = [ _children_json ]
+    output_conversion = "json"
+    deps = _child_deps
+    data_keys = [ "component_manifest" ]
+    walk_keys = [ "component_manifest_barrier" ]
+  }
+
+  action(_compile_target) {
+    forward_variables_from(invoker, [ "testonly" ])
+    visibility = [ ":$_main_target" ]
+    script = "//system/component_manifest.py"
+    sources = [
+      _children_json,
+      _program_json,
+      _source_json,
+    ]
+    outputs = [ _output ]
+    args = [
+      "--source",
+      rebase_path(_source_json, root_build_dir),
+      "--program",
+      rebase_path(_program_json, root_build_dir),
+      "--children",
+      rebase_path(_children_json, root_build_dir),
+      "--output",
+      rebase_path(_output, root_build_dir),
+    ]
+    deps = [
+      ":$_children_target",
+      ":$_program_target",
+      ":$_source_target",
+    ]
+
+    # The file a BootFS takes from this target, as generated_resource()
+    # names one (//build/dist/generated_resource.gni). The barrier keeps the
+    # walk out of the JSON targets above: the children they reach are this
+    # template's group's deps already.
+    metadata = {
+      distribution_entries = [
+        {
+          source = rebase_path(_output, root_build_dir)
+          destination = _meta_path
+          label = get_label_info(":$_compile_target", "label_with_toolchain")
+        },
+      ]
+      distribution_entries_barrier = []
+    }
+  }
+
+  group(_main_target) {
+    forward_variables_from(invoker,
+                           [
+                             "testonly",
+                             "visibility",
+                           ])
+
+    # Public, so that a dependant may name the manifest's file as an input:
+    # the decoder's test does.
+    public_deps = [ ":$_compile_target" ]
+    deps = _program_deps + _child_deps
+
+    # What a parent's <name>.children reads: where this manifest lands in the
+    # BootFS, keyed by the label the parent names it by. The barrier stops
+    # that walk here, as fuchsia_component_manifest() stops its
+    # component_manifest_path walk.
+    metadata = {
+      component_manifest = [
+        {
+          label = _label
+          path = _meta_path
+        },
+      ]
+      component_manifest_barrier = []
+    }
+  }
+}

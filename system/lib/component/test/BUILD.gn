@@ -1,0 +1,73 @@
+# Host-side tests. These link googletest and run on the build machine: the
+# decoder works on bytes alone, so a manifest can be decoded, and broken on
+# purpose, without a kernel.
+
+_fixtures = "//system/lib/component/test/fixtures"
+_user_toolchain = "//build/toolchain/ours:user-${target_cpu}"
+
+# The manifests the test decodes, as the template built them from the targets
+# in fixtures/. realm.cm is built in the default toolchain, the one an image's
+# BUILD.gn is read in, as root.cm will be; its children are built in the user
+# toolchain the template moves them to.
+_manifests = [
+  {
+    name = "REALM"
+    label = "$_fixtures:realm.cm($default_toolchain)"
+  },
+  {
+    name = "PROVIDER"
+    label = "$_fixtures:provider.cm($_user_toolchain)"
+  },
+  {
+    name = "CONSUMER"
+    label = "$_fixtures:consumer.cm($_user_toolchain)"
+  },
+  {
+    name = "HOLLOW"
+    label = "$_fixtures:hollow.cm($_user_toolchain)"
+  },
+]
+
+_header = "$target_gen_dir/fixtures/manifests.hpp"
+
+# The compiled manifests as byte arrays in a header, so the test carries them
+# and runs from anywhere.
+action("manifests") {
+  testonly = true
+  visibility = [ ":*" ]
+  script = "embed_manifests.py"
+  outputs = [ _header ]
+  args = [
+    "--output",
+    rebase_path(_header, root_build_dir),
+  ]
+  sources = []
+  deps = []
+  foreach(manifest, _manifests) {
+    _file = get_label_info(manifest.label, "target_gen_dir") + "/" +
+            get_label_info(manifest.label, "name")
+    sources += [ _file ]
+    args += [ manifest.name + "=" + rebase_path(_file, root_build_dir) ]
+    deps += [ manifest.label ]
+  }
+}
+
+config("manifests.config") {
+  visibility = [ ":*" ]
+  include_dirs = [ target_gen_dir ]
+}
+
+# Decodes the fixtures' manifests and checks every field the compiler wrote,
+# then refuses truncated, out-of-range and otherwise broken copies of them.
+executable("decl") {
+  testonly = true
+  sources = [ "decl_test.cpp" ]
+  configs += [ ":manifests.config" ]
+  deps = [
+    ":manifests",
+    "//system/lib/component",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

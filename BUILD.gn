@@ -158,6 +158,10 @@ group("default") {
     "//system/lib/wire:tests",
     "//system/lib/fuchsia-io:tests",
 
+    # The compiled component manifest's decoder, against manifests that
+    # component_manifest() built from fixture targets in two toolchains.
+    "//system/lib/component:tests",
+
     # init's `ours.autorun.boot` parsing: which argv a value becomes. The
     # test itself is named, not a tests group beside init: that file asserts
     # a user toolchain, which the default one is not and the host one is.

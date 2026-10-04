@@ -1,0 +1,168 @@
+# Manifests for the decoder's test, built by component_manifest() as any
+# image's would be. Read in two toolchains: in the default one for realm.cm,
+# which the test names there, and in the user one for the children and their
+# program, where the template moves them.
+#
+# Between them they hold every record the format has: a program with
+# arguments, children, a declared capability, directory and protocol uses,
+# offers from the parent, from self and from a child, with `as`, rights and
+# a subdir, and exposes from self and from a child.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/component_manifest.gni")
+
+# The parent, with no program, as the root's manifest has none.
+component_manifest("realm.cm") {
+  testonly = true
+  visibility = [ "//system/lib/component/test:*" ]
+  children = [
+    {
+      name = "provider"
+      manifest = ":provider.cm"
+      startup = "eager"
+    },
+    {
+      name = "consumer"
+      manifest = ":consumer.cm"
+      startup = "eager"
+    },
+    {
+      name = "hollow"
+      manifest = ":hollow.cm"
+      startup = "eager"
+    },
+  ]
+  manifest = {
+    offer = [
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#consumer"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#consumer"
+        as = "config"
+        subdir = "config"
+        rights = [ "r*" ]
+      },
+      {
+        protocol = "fuchsia.example.Echo"
+        from = "#provider"
+        to = "#consumer"
+        as = "echo"
+      },
+      {
+        protocol = "fuchsia.process.Launcher"
+        from = "parent"
+        to = [
+          "#provider",
+          "#consumer",
+        ]
+      },
+      {
+        protocol = "fuchsia.example.Hollow"
+        from = "#hollow"
+        to = "#consumer"
+      },
+    ]
+    expose = [
+      {
+        protocol = "fuchsia.example.Echo"
+        from = "#provider"
+        as = "fuchsia.example.RealmEcho"
+      },
+    ]
+  }
+}
+
+component_manifest("provider.cm") {
+  testonly = true
+  program = ":fixture_program"
+  manifest = {
+    program = {
+      args = [
+        "--serve",
+        "echo",
+      ]
+    }
+    capabilities = [
+      {
+        protocol = "fuchsia.example.Echo"
+      },
+    ]
+    use = [
+      {
+        protocol = "fuchsia.process.Launcher"
+      },
+    ]
+    expose = [
+      {
+        protocol = "fuchsia.example.Echo"
+        from = "self"
+      },
+    ]
+  }
+}
+
+component_manifest("consumer.cm") {
+  testonly = true
+  program = ":fixture_program"
+  manifest = {
+    use = [
+      {
+        directory = "boot"
+        path = "/boot"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "config"
+        path = "/config"
+        rights = [ "r*" ]
+        subdir = "ours"
+      },
+      {
+        protocol = [
+          "echo",
+          "fuchsia.process.Launcher",
+          "fuchsia.example.Hollow",
+        ]
+      },
+    ]
+  }
+}
+
+# Declares and exposes a protocol with no program to serve it: the route that
+# ends here is the one the router answers NotFound.
+component_manifest("hollow.cm") {
+  testonly = true
+  manifest = {
+    capabilities = [
+      {
+        protocol = "fuchsia.example.Hollow"
+      },
+    ]
+    expose = [
+      {
+        protocol = "fuchsia.example.Hollow"
+        from = "self"
+      },
+    ]
+  }
+}
+
+# The program provider.cm and consumer.cm name. Built, so that the template's
+# install-name lookup runs against a real user_executable(), and never
+# packaged or run. User toolchain only, like the runtime; the host toolchain
+# reads "user" too, hence the second test (see //system/lib/ort/test).
+if (!is_host_toolchain && toolchain_environment == "user") {
+  import("//system/user_executable.gni")
+
+  user_executable("fixture_program") {
+    testonly = true
+    sources = [ "fixture_program.cpp" ]
+    deps = [ "//system/lib/ort" ]
+  }
+}
