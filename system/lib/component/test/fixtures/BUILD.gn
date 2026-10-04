@@ -1,20 +1,29 @@
-# Manifests for the decoder's test, built by component_manifest() as any
-# image's would be. Read in two toolchains: in the default one for realm.cm,
-# which the test names there, and in the user one for the children and their
-# program, where the template moves them.
+# Manifests for the decoder's and the router's tests, built by
+# component_manifest() as any image's would be. Read in two toolchains: in the
+# default one for realm.cm and top.cm, which the tests name there, and in the
+# user one for the children and their program, where the template moves them.
 #
 # Between them they hold every record the format has: a program with
 # arguments, children, a declared capability, directory and protocol uses,
 # offers from the parent, from self and from a child, with `as`, rights and
 # a subdir, and exposes from self and from a child.
+#
+# Two trees for the router: realm.cm as the root, and top.cm as the root with
+# realm.cm one level down beside user.cm, whose child is leaf.cm. Each route
+# the router's test checks is named in a comment on the declaration that
+# decides it.
 
 import("//build/toolchain/toolchain_environment.gni")
 import("//system/component_manifest.gni")
 
-# The parent, with no program, as the root's manifest has none.
+# The parent, with no program, as the root's manifest has none. top.cm names
+# it as a child too.
 component_manifest("realm.cm") {
   testonly = true
-  visibility = [ "//system/lib/component/test:*" ]
+  visibility = [
+    ":*",
+    "//system/lib/component/test:*",
+  ]
   children = [
     {
       name = "provider"
@@ -153,10 +162,254 @@ component_manifest("hollow.cm") {
   }
 }
 
-# The program provider.cm and consumer.cm name. Built, so that the template's
-# install-name lookup runs against a real user_executable(), and never
-# packaged or run. User toolchain only, like the runtime; the host toolchain
-# reads "user" too, hence the second test (see //system/lib/ort/test).
+# The router's second root. realm.cm sits one level down, so a route from
+# user.cm or leaf.cm turns down through two exposes; and each way a route can
+# fail has an offer of its own here, named in its comment.
+component_manifest("top.cm") {
+  testonly = true
+  visibility = [ "//system/lib/component/test:*" ]
+  children = [
+    {
+      name = "realm"
+      manifest = ":realm.cm"
+      startup = "eager"
+    },
+    {
+      name = "user"
+      manifest = ":user.cm"
+      startup = "eager"
+    },
+  ]
+  manifest = {
+    # Declared with no program to serve it: user's use of it is NotFound
+    # here, Declare.
+    capabilities = [
+      {
+        protocol = "fuchsia.example.TopSelf"
+      },
+    ]
+    offer = [
+      # What realm.cm's own offers from its parent ask for.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#realm"
+        rights = [ "rx*" ]
+      },
+      {
+        protocol = "fuchsia.process.Launcher"
+        from = "parent"
+        to = "#realm"
+      },
+
+      # The first of the three subdirs leaf's /config joins: etc/config/ours.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#user"
+        rights = [ "rx*" ]
+        subdir = "etc"
+      },
+
+      # r* where user's use asks rx*: AccessDenied here.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#user"
+        as = "narrow"
+        rights = [ "r*" ]
+      },
+
+      # States no rights, so user's rw* is held against the built-in's rx*:
+      # AccessDenied at the built-ins.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#user"
+        as = "writable"
+      },
+
+      # r*, which user offers on to leaf as rx*: wide enough for leaf's r*,
+      # narrower than the hop before it, so AccessDenied here.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#user"
+        as = "thin"
+        rights = [ "r*" ]
+      },
+
+      # A directory under a protocol's name: user's protocol use of the name
+      # must not match it.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#user"
+        as = "fuchsia.example.Kind"
+      },
+
+      # A protocol named `boot`: the built-in `boot` is a directory, so this
+      # is no built-in.
+      {
+        protocol = "boot"
+        from = "parent"
+        to = "#user"
+        as = "fuchsia.example.BootProtocol"
+      },
+
+      # Down through realm's expose and provider's: two levels.
+      {
+        protocol = "fuchsia.example.RealmEcho"
+        from = "#realm"
+        to = "#user"
+      },
+
+      # realm exposes nothing by this name: NotFound at realm, Expose.
+      {
+        protocol = "fuchsia.example.Unexposed"
+        from = "#realm"
+        to = "#user"
+      },
+
+      # No built-in by this name: NotFound at the built-ins.
+      {
+        protocol = "fuchsia.example.NotBuiltin"
+        from = "parent"
+        to = "#user"
+      },
+      {
+        protocol = "fuchsia.example.TopSelf"
+        from = "self"
+        to = "#user"
+      },
+
+      # Offered to realm only: user's use of it is NotFound here, Offer.
+      {
+        protocol = "fuchsia.example.ForRealm"
+        from = "parent"
+        to = "#realm"
+      },
+    ]
+  }
+}
+
+# The middle of top.cm's tree: a component with a program and a child, which
+# offers its own capability to that child and passes on what it was offered.
+component_manifest("user.cm") {
+  testonly = true
+  program = ":fixture_program"
+  children = [
+    {
+      name = "leaf"
+      manifest = ":leaf.cm"
+      startup = "eager"
+    },
+  ]
+  manifest = {
+    capabilities = [
+      {
+        protocol = "fuchsia.example.UserEcho"
+      },
+    ]
+    use = [
+      {
+        directory = "boot"
+        path = "/boot"
+        rights = [ "r*" ]
+      },
+      {
+        directory = "narrow"
+        path = "/narrow"
+        rights = [ "rx*" ]
+      },
+      {
+        directory = "writable"
+        path = "/writable"
+        rights = [ "rw*" ]
+      },
+      {
+        # fuchsia.example.Missing: nobody offers it, NotFound at top, Offer.
+        protocol = [
+          "fuchsia.example.RealmEcho",
+          "fuchsia.example.Unexposed",
+          "fuchsia.example.NotBuiltin",
+          "fuchsia.example.TopSelf",
+          "fuchsia.example.Kind",
+          "fuchsia.example.BootProtocol",
+          "fuchsia.example.ForRealm",
+          "fuchsia.example.Missing",
+        ]
+      },
+    ]
+    offer = [
+      # From self, with a program to serve it.
+      {
+        protocol = "fuchsia.example.UserEcho"
+        from = "self"
+        to = "#leaf"
+      },
+
+      # The second subdir of leaf's etc/config/ours.
+      {
+        directory = "boot"
+        from = "parent"
+        to = "#leaf"
+        as = "config"
+        rights = [ "r*" ]
+        subdir = "config"
+      },
+
+      # More than top offered user as `thin`.
+      {
+        directory = "thin"
+        from = "parent"
+        to = "#leaf"
+        as = "wide"
+        rights = [ "rx*" ]
+      },
+
+      # Renamed again on the way down: leaf's `echo` is provider's
+      # fuchsia.example.Echo, two levels up and two down.
+      {
+        protocol = "fuchsia.example.RealmEcho"
+        from = "parent"
+        to = "#leaf"
+        as = "echo"
+      },
+    ]
+  }
+}
+
+component_manifest("leaf.cm") {
+  testonly = true
+  program = ":fixture_program"
+  manifest = {
+    use = [
+      {
+        directory = "config"
+        path = "/config"
+        rights = [ "r*" ]
+        subdir = "ours"
+      },
+      {
+        directory = "wide"
+        path = "/wide"
+        rights = [ "r*" ]
+      },
+      {
+        protocol = [
+          "echo",
+          "fuchsia.example.UserEcho",
+        ]
+      },
+    ]
+  }
+}
+
+# The program provider.cm, consumer.cm, user.cm and leaf.cm name. Built, so that
+# the template's install-name lookup runs against a real user_executable(), and
+# never packaged or run. User toolchain only, like the runtime; the host
+# toolchain reads "user" too, hence the second test (see //system/lib/ort/test).
 if (!is_host_toolchain && toolchain_environment == "user") {
   import("//system/user_executable.gni")
 

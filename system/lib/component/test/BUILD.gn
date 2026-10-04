@@ -5,10 +5,11 @@
 _fixtures = "//system/lib/component/test/fixtures"
 _user_toolchain = "//build/toolchain/ours:user-${target_cpu}"
 
-# The manifests the test decodes, as the template built them from the targets
-# in fixtures/. realm.cm is built in the default toolchain, the one an image's
-# BUILD.gn is read in, as root.cm will be; its children are built in the user
-# toolchain the template moves them to.
+# The manifests the tests decode and route through, as the template built
+# them from the targets in fixtures/. realm.cm and top.cm are built in the
+# default toolchain, the one an image's BUILD.gn is read in, as root.cm will
+# be; their children are built in the user toolchain the template moves them
+# to. realm.cm is a child of top.cm too, and its bytes are the same in both.
 _manifests = [
   {
     name = "REALM"
@@ -25,6 +26,18 @@ _manifests = [
   {
     name = "HOLLOW"
     label = "$_fixtures:hollow.cm($_user_toolchain)"
+  },
+  {
+    name = "TOP"
+    label = "$_fixtures:top.cm($default_toolchain)"
+  },
+  {
+    name = "USER"
+    label = "$_fixtures:user.cm($_user_toolchain)"
+  },
+  {
+    name = "LEAF"
+    label = "$_fixtures:leaf.cm($_user_toolchain)"
   },
 ]
 
@@ -62,6 +75,23 @@ config("manifests.config") {
 executable("decl") {
   testonly = true
   sources = [ "decl_test.cpp" ]
+  configs += [ ":manifests.config" ]
+  deps = [
+    ":manifests",
+    "//system/lib/component",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
+
+# Routes uses of the fixtures' components through two trees, realm.cm's and
+# top.cm's, with an instance tree of the test's own that resolves children on
+# demand. Most of it fails until the user writes route() by hand (P3 of the
+# component-framework plan); the Subdir tests pass.
+executable("route") {
+  testonly = true
+  sources = [ "route_test.cpp" ]
   configs += [ ":manifests.config" ]
   deps = [
     ":manifests",

@@ -1,11 +1,15 @@
 import("//build/cpp/cpp_interface.gni")
 
 # The compiled component manifest: its format (component/format.hpp), which
-# //system/component_manifest.py writes, and the decoder the root reads it
-# with (component/decl.hpp), which checks structure only. It makes no system
-# call, so it builds for the host too, where its tests run.
+# //system/component_manifest.py writes, the decoder the root reads it with
+# (component/decl.hpp), which checks structure only, and the router that walks
+# a use to its source (component/route.hpp). It makes no system call, so it
+# builds for the host too, where its tests run.
 source_set("component") {
-  sources = [ "src/decl.cpp" ]
+  sources = [
+    "src/decl.cpp",
+    "src/route.cpp",
+  ]
   public_deps = [ ":headers" ]
 }
 
@@ -16,6 +20,7 @@ cpp_interface("headers") {
   public = [
     "include/component/decl.hpp",
     "include/component/format.hpp",
+    "include/component/route.hpp",
   ]
   public_deps = [
     "//system/lib/ustl:headers",
@@ -25,5 +30,8 @@ cpp_interface("headers") {
 
 group("tests") {
   testonly = true
-  public_deps = [ "test:decl($host_toolchain)" ]
+  public_deps = [
+    "test:decl($host_toolchain)",
+    "test:route($host_toolchain)",
+  ]
 }
