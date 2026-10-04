@@ -144,6 +144,10 @@ group("default") {
     # each other and against Zircon's golden bytes.
     "//system/lib/ort:tests",
 
+    # The BootFS reader, bootfs::View: the page rule it holds every BootFS
+    # to, so that a file sliced out of one carries no neighbour's bytes.
+    "//system/lib/bootfs:tests",
+
     # The launcher's planner: how the segments of a program are mapped, decided
     # from numbers alone.
     "//system/lib/launch:tests",

@@ -14,16 +14,6 @@
 #include <ustl/views/span.hpp>
 
 namespace bootfs {
-/// Where every file's data starts, and what the BootFS is padded out to: a
-/// page, as Zircon's BootFS format requires (ZBI_BOOTFS_PAGE_SIZE in
-/// lib/zbi-format/internal/bootfs.h). A program is started by slicing its
-/// file out of the BootFS VMO (vmo_create_child, launch::launch_from_bootfs()),
-/// and a slice begins on a page; at 8 bytes, the alignment this had before,
-/// no file of a BootFS userboot unpacked could be sliced. The BootFS the
-/// kernel used to lay out itself aligned its files to a page for the same
-/// reason.
-inline constexpr auto ALIGNMENT = u64{4096};
-
 struct File final {
     std::string name;
     ustl::views::Span<u8 const> data;

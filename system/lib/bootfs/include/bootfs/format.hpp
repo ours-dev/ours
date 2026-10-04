@@ -10,6 +10,30 @@
 #include <ours/types.hpp>
 
 namespace bootfs {
+/// The page of the format: every file's data starts on one, the Builder pads
+/// the BootFS out to one, and the page rule below is stated in them. It is
+/// Zircon's ZBI_BOOTFS_PAGE_SIZE (lib/zbi-format/internal/bootfs.h).
+///
+/// The page rule, which bootfs::View enforces:
+///   - a file's data starts on a page;
+///   - no two files put bytes on a common page, unless they are the same
+///     file under two names (the same offset and the same size). A file
+///     without bytes covers no page, so it shares none.
+///
+/// Why: a program is given its file by slicing it out of the BootFS VMO, and
+/// a slice is made of whole pages (vmo_create_child, which also refuses an
+/// offset off a page). A file sharing its last page with a neighbour would
+/// carry the neighbour's bytes in its slice, and once that slice is made
+/// executable, those bytes would be executable too. Zircon's format states
+/// the same rule: "Each range of pages can be used for multiple files, but
+/// all those files must have the same offset and size, that is, no partial
+/// sharing of ranges."
+///
+/// At 8 bytes, the alignment the Builder had before 2026-10-03, no file of a
+/// BootFS userboot unpacked could be sliced. The BootFS the kernel used to
+/// lay out itself aligned its files to a page for the same reason.
+inline constexpr auto ALIGNMENT = u64{4096};
+
 /// Header at the start of a BootFS blob.
 ///
 /// Layout: Header | Entry[*] | NameTable | FileData (aligned).

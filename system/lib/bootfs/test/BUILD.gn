@@ -1,0 +1,15 @@
+# Host-side tests. These link googletest and run on the build machine: a
+# BootFS is bytes, so View::from() is checked without a kernel.
+
+# The page rule View::from() enforces (bootfs::ALIGNMENT), each refusal on a
+# Builder image with one entry edited, and a Builder round trip.
+executable("view") {
+  testonly = true
+  sources = [ "view_test.cpp" ]
+  deps = [
+    "//system/lib/bootfs",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

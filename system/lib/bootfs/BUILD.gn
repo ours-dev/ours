@@ -17,3 +17,8 @@ cpp_interface("headers") {
   ]
   visibility = [ "*" ]
 }
+
+group("tests") {
+  testonly = true
+  public_deps = [ "test:view($host_toolchain)" ]
+}
