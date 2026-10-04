@@ -51,8 +51,8 @@ namespace {
     constexpr auto MAP_FLAGS = MmuFlags::Present | MmuFlags::Readable | MmuFlags::Writable;
 
     /// Growth runs under Dyn's spin lock, i.e. with preemption off, so it must
-    /// not take a path that can reclaim or wait. GAF_BOOT and GAF_KERNEL both
-    /// carry DirectReclaim; this one leaves it out, so the allocator refuses
+    /// not take a path that can reclaim or wait. GAF_KERNEL carries
+    /// DirectReclaim; this one leaves it out, so the allocator refuses
     /// instead of retrying, and a refusal only means the allocation fails.
     constexpr auto GAF_GROW = Gaf::ThisNode | Gaf::Zero;
 
@@ -399,8 +399,8 @@ auto CpuLocal::Mapper::build_scattered() -> Status {
             return Status::OutOfRange;
         }
 
-        // GAF_BOOT implies Gaf::Zero, so a unit's dynamic area starts clean.
-        auto frame = alloc_frames(nid, mm::GAF_BOOT, order);
+        // Zeroed, so a unit's dynamic area starts clean.
+        auto frame = alloc_frames(nid, mm::GAF_KERNEL | mm::Gaf::Zero, order);
         if (!frame) {
             for (auto done = u32(0); done < group; ++done) {
                 free_frames(&m_group_frames[done]);
@@ -442,9 +442,8 @@ auto CpuLocal::Mapper::init() -> Status {
     if constexpr (ArchCpuLocal::HAS_RESERVED_WINDOW) {
         if (chunk_span() <= usize(ARCH_CPU_LOCAL_CHUNK_SLOT) && Status::Ok == m_aspace.init()) {
             auto const slot = slot_at(m_next_slot);
-            // GAF_BOOT implies Gaf::Zero, so a unit's dynamic area starts
-            // clean.
-            if (Status::Ok == build_dense(slot, mm::GAF_BOOT)) {
+            // Zeroed, so a unit's dynamic area starts clean.
+            if (Status::Ok == build_dense(slot, mm::GAF_KERNEL | mm::Gaf::Zero)) {
                 ++m_next_slot;
                 m_base = slot;
                 for (auto unit = u32(0); unit < MAX_CPU; ++unit) {

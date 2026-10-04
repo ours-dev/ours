@@ -572,3 +572,74 @@ None.
 - Which bits did `ALLOWED_GAF` let through, and why did that make NoFail and NoRetry dead even though the slow path tested them?
 - Why did `ALLOWED_GAF` have to go in the same commit as the bits, not before them?
 - What would `AllocationContext::build()` have done had its zone bound simply been deleted?
+
+## Title: The Gaf presets become constants outside the enum, and GAF_BOOT gives way to GAF_KERNEL | Gaf::Zero (flag-consolidation step 10) (2026-10-04)
+
+**Files**
+- `kernel/mm/include/ours/mm/gaf.hpp` — `Gaf::Boot`, `Gaf::User`, `Gaf::Kernel` and `GAF_BOOT` go; `GAF_KERNEL` and `GAF_USER` are spelled from the bits, outside the enum
+- `kernel/mm/cpu_local.cpp` — the two `GAF_BOOT` allocations ask for `GAF_KERNEL | Gaf::Zero`; three comments follow
+- `kernel/mm/init_vmm.cpp`, `kernel/mm/sparse_memmap.cpp` — comments that named GAF_BOOT, or described GAF_KERNEL as ThisNode|Reclaim|Write
+
+**Symptom**
+None observable. Two spellings of the same presets: the `Gaf::` forms were never used directly, and the `GAF_*` constants on about a hundred lines were aliases of them.
+
+**Cause**
+The objects:
+- `Gaf`: the bits of a frame request.
+- The presets: `GAF_KERNEL`, `GAF_USER` and `GAF_BOOT`, the combinations callers actually write.
+
+Keeping the presets inside the enum made Gaf two things at once, a set of bits and a list of named combinations, and it made every combination a value of the type, so a switch over Gaf or a printer of its bits would meet them. Linux keeps `GFP_KERNEL` and `GFP_USER` as #defines beside the bit list for that reason.
+
+GAF_BOOT had become exactly `GAF_KERNEL | Gaf::Zero` once step 9 removed Write and DaemonReclaim. "Boot" named a phase, but what its two callers needed was zeroed memory, so the name hid the one bit that mattered.
+
+**Change**
+Before:
+
+```cpp
+enum class Gaf : u32 {
+    DirectReclaim = 7_bit, ThisNode = 9_bit, Zero = 10_bit,
+    Boot = ThisNode | DirectReclaim | Zero,
+    User = ThisNode | Zero,
+    Kernel = ThisNode | DirectReclaim,
+};
+inline constexpr auto GAF_BOOT = Gaf::Boot;
+inline constexpr auto GAF_USER = Gaf::User;
+inline constexpr auto GAF_KERNEL = Gaf::Kernel;
+...
+auto frame = alloc_frames(nid, mm::GAF_BOOT, order);
+```
+
+After:
+
+```cpp
+enum class Gaf : u32 { DirectReclaim = 7_bit, ThisNode = 9_bit, Zero = 10_bit };
+inline constexpr auto GAF_KERNEL = Gaf::ThisNode | Gaf::DirectReclaim;
+inline constexpr auto GAF_USER = Gaf::ThisNode | Gaf::Zero;
+...
+auto frame = alloc_frames(nid, mm::GAF_KERNEL | mm::Gaf::Zero, order);
+```
+
+Every preset keeps its bits, so no allocation changes.
+
+**Reference**
+- Linux `GFP_KERNEL` and `GFP_USER` in `include/linux/gfp_types.h`, defined from the `__GFP_*` bits; there is no boot preset, only the `GFP_BOOT_MASK` mask (from memory).
+- Zircon passes `PMM_ALLOC_FLAG_ANY` or `PMM_ALLOC_FLAG_CAN_WAIT` directly and has no presets.
+
+**Verification**
+- `boot_check.py` in a scratch worktree at `048bab4c` with this change applied: dbg PASS (24 passed, 1 skipped), rel PASS (22 passed, 3 skipped).
+- `git grep` for `GAF_BOOT`, `Gaf::Boot` and `Gaf::Kernel` outside the change history and task documents is empty.
+- clang-tidy on `cpu_local.cpp`: nothing on the changed lines. clang-format: clean.
+
+**Deliberately not done**
+- ThisNode in the presets (D5, step 11) and Zero in GAF_USER (D6, step 12): both change behaviour and wait for the user.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the Gaf Boot and User/Kernel rows).
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a preset inside a bitmask enum make the enum worse, even when its value is right?
+- What was GAF_BOOT after step 9, and why is asking for Zero by name clearer than a boot preset?
+- Which preset may wait, and which one fails instead?

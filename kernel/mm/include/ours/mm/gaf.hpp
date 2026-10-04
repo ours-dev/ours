@@ -30,16 +30,19 @@ enum class Gaf : u32 {
 
     /// Return a zeroed frame on success.
     Zero = 10_bit,
-
-    Boot = static_cast<u32>(ThisNode) | static_cast<u32>(DirectReclaim) | static_cast<u32>(Zero),
-    User = static_cast<u32>(ThisNode) | static_cast<u32>(Zero),
-    Kernel = static_cast<u32>(ThisNode) | static_cast<u32>(DirectReclaim),
 };
 USTL_ENABLE_ENUM_BITMASK(Gaf);
 
-inline constexpr auto GAF_BOOT = Gaf::Boot;
-inline constexpr auto GAF_USER = Gaf::User;
-inline constexpr auto GAF_KERNEL = Gaf::Kernel;
+/// The presets live outside the enum, so that Gaf is only a set of bits, as
+/// Linux's GFP_KERNEL and GFP_USER are #defines beside the bit list. There is
+/// no boot preset: what boot code needs beyond GAF_KERNEL is Zero, and it asks
+/// for that by name.
+///
+/// The kernel's own memory: may wait.
+inline constexpr auto GAF_KERNEL = Gaf::ThisNode | Gaf::DirectReclaim;
+
+/// Memory a process will see: zeroed, and fails rather than waits.
+inline constexpr auto GAF_USER = Gaf::ThisNode | Gaf::Zero;
 
 enum class AllocationOptions : u32 {
     NoFragment = 0_bit,

@@ -247,7 +247,7 @@ namespace {
         }
 
         // Gaf::Zero is asked for by name: GAF_KERNEL does not imply it (only
-        // GAF_BOOT and GAF_USER do), and the buddy allocator hands back the
+        // GAF_USER does), and the buddy allocator hands back the
         // frame as the previous owner left it. A page whose whole job is to
         // stand in for "nothing has been written here" and which is not zero
         // is worse than having none, and nothing could have told: no code
