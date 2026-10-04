@@ -437,6 +437,14 @@ auto Realm::run(Instance &instance) -> Status {
             served = m_boot->serve(server, routed->subdir.view(), to_operations(*routed->rights));
         }
         if (served != Status::Ok) {
+            if (routed.is_ok()) {
+                // Routed, but not served: a subdir /boot does not have, a
+                // file where a directory has to be, or no room for the
+                // connection. The component reads the same epitaph as for a
+                // failed route, so the root's log is where the two differ.
+                auto _ = ort::debug_line({"init: ", moniker.view(), "'s use of \"", use.source_name,
+                                          "\" cannot be served: ", ours::to_string(served)});
+            }
             close_with_epitaph(server, served);
         }
         names[num_names] = use.target_path;

@@ -177,3 +177,61 @@ None.
 - init holds the root job handle userboot gave it. Does that handle count against init's quota, and why does the kernel charge handles that way rather than by holder?
 - The shell's process handle sits in init's table and its Loop slot. Why is it still not one of init's charges?
 - The launcher's root region is held by the launcher. Why is it charged to init?
+
+## Title: the root logs a namespace entry it routed but could not serve (2026-10-04)
+
+**Files**
+- `system/service/init/realm.cpp` — `Realm::run()` logs one line when a directory use routes but `BootServer::serve()` (or the D3 check after the route) refuses it
+
+**Symptom**
+Latent, cannot be triggered by today's manifests. A directory use whose route succeeds can still fail to be served: its joined subdir names nothing in /boot (NotFound), names a file (NotDir), or the /boot connections or the Loop are full (NoResource). The root then closed the entry with an epitaph, as it should, but logged nothing, so the boot log of a component whose /bin was empty looked exactly like a healthy one. With `subdir = "bin"` in routing_checks.cm changed to `"nobin"`, the only trace was routing_checks' own `/bin/routing_checks = NotFound (expected Ok) FAILED`; nothing in the root's lines said which entry, or why.
+
+**Cause**
+Step 13 logged in one of the two ways an entry can end up closed. A failed route gets a line naming the target, the hop, the verb and the capability, as the design asks ("Events: starting a component", step 2). A failed serve went straight to `close_with_epitaph()`. From the component's side the two look the same: in both, the entry's first Open finds the channel closed and reads the epitaph's status. Fuchsia gets away with logging only routing errors because its serving step cannot fail on its own: the source is opened with the route's rights and path through the provider's own vfs, which answers on the request channel. Here the root is both the router and the server of /boot, and its server has failure modes of its own (a pool, a lookup), so they need their own line; otherwise the root's log is not enough to say why a component's namespace is broken.
+
+**Change**
+Before:
+
+```cpp
+if (served != Status::Ok) {
+    close_with_epitaph(server, served);
+}
+```
+
+After:
+
+```cpp
+if (served != Status::Ok) {
+    if (routed.is_ok()) {
+        auto _ = ort::debug_line({"init: ", moniker.view(), "'s use of \"", use.source_name,
+                                  "\" cannot be served: ", ours::to_string(served)});
+    }
+    close_with_epitaph(server, served);
+}
+```
+
+A failed route still logs its own, more detailed line, and only that one.
+
+Rejected: failing the component's start instead. The design closes a broken entry and lets the component run (D8), as Fuchsia does; the component decides what a missing entry means.
+
+**Reference**
+Fuchsia `NamespaceBuilder::serve()` (`src/sys/component_manager/lib/serve_processargs/src/namespace.rs:145-175`), which closes an entry it cannot route with `close_with_epitaph()` and leaves the logging of routing errors to the ErrorReporter router (the comment at `:167-169`); serving the source is the provider's vfs, which answers on the request channel.
+
+**Verification**
+- Mutation: with routing_checks' `/bin` use given `subdir = "nobin"` (reverted afterwards), the rel log read `init: routing_checks's use of "boot" cannot be served: NotFound`, then routing_checks' two `/bin` FAILED lines and `init: routing_checks exited with 1`; boot_check failed.
+- `boot_check.py` on the real manifests: dbg PASS, rel PASS (see the commit message); no new line, since every entry is served.
+- clang-format clean; clang-tidy reports nothing on `realm.cpp`.
+
+**Deliberately not done**
+None.
+
+**How it was found**
+Review of step 13: following each way out of the directory-use loop in `Realm::run()` and asking which of them leaves a line in the root's log.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- routing_checks' `/bin` entry and its `/denied` entry are both closed before it runs. How does the component tell them apart, and how does the root's log?
+- Name the three ways `BootServer::serve()` can refuse an entry whose route succeeded.
+- Why does Fuchsia not need this second log line?
