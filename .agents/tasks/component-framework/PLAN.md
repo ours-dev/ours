@@ -14,16 +14,16 @@ Each step below is introduced to the user, with its background, before work on i
 - the shell spawns commands through the Launcher;
 - one sibling route works (step 17, which D3 (c) would drop).
 
-Performance work is out of scope; the choices that cap it are DESIGN decisions D11, D13-D18 and D27.
+Performance work is out of scope; the choices that cap it are decisions D11, D13-D18 and D27 of the design, `docs/design/261004/component-framework.md`.
 
 ## Decisions
-The S and D decisions live in DESIGN.md's table only and are decided there; the steps below follow their recommendations, and a different choice changes the steps it names. This table holds the plan's own decisions.
+The S and D decisions live only in the design's table (`docs/design/261004/component-framework.md`, where step 1 moved DESIGN.md) and are decided there; the steps below follow their recommendations, and a different choice changes the steps it names. This table holds the plan's own decisions.
 
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
-| P1. Where `vma_unmap` and `vmo_get_size` land | (a) steps 9 and 10 of this plan; (b) a kernel task first | (a): they exist only because the Launcher takes a VMO. Under D14 (c), step 9 goes and step 11 changes | | |
-| P2. How the switch is cut | (a) four commits: the root with a test component while the shell still uses the old launcher (13), /svc and the Launcher (14), the shell (15), the deletions (16); (b) one switch commit | (a), so that each failure points at one piece | | |
-| P3. Functions the user writes by hand (CLAUDE.md, one per milestone, recorded in `docs/authored.md`) | (a) `route()` for the libraries milestone (step 8) and the Loop's dispatch for the root milestone (step 12); (b) CleanPath (step 5) instead of `route()`; (c) none | (a): `route()` is the walk this design is about, and the Loop's dispatch is where I3 and I4 are kept. The AI gives the spec and a failing test, the user writes it under a time limit, and the AI reviews it as a strict interviewer | | |
+| P1. Where `vma_unmap` and `vmo_get_size` land | (a) steps 9 and 10 of this plan; (b) a kernel task first | (a): they exist only because the Launcher takes a VMO. Under D14 (c), step 9 goes and step 11 changes | Not asked | (a), as recommended (2026-10-04) |
+| P2. How the switch is cut | (a) four commits: the root with a test component while the shell still uses the old launcher (13), /svc and the Launcher (14), the shell (15), the deletions (16); (b) one switch commit | (a), so that each failure points at one piece | Not asked | (a), as recommended (2026-10-04) |
+| P3. Functions the user writes by hand (CLAUDE.md, one per milestone, recorded in `docs/authored.md`) | (a) `route()` for the libraries milestone (step 8) and the Loop's dispatch for the root milestone (step 12); (b) CleanPath (step 5) instead of `route()`; (c) none | (a): `route()` is the walk this design is about, and the Loop's dispatch is where I3 and I4 are kept. The AI gives the spec and a failing test, the user writes it under a time limit, and the AI reviews it as a strict interviewer | Not asked | (a), as recommended (2026-10-04) |
 
 ## Steps
 Every step:
@@ -54,7 +54,7 @@ Every step:
 ### 3. Framing and the fuchsia.io codec
 - What:
   - `system/lib/wire`: the 16-byte header with the direction byte, the epitaph, handle placeholders, and the 24-byte error reply (FS:57-79).
-  - `system/lib/fuchsia-io`: the six fuchsia.io messages and the epitaph of DESIGN's "The protocol subset", each ordinal declared beside its exact selector string.
+  - `system/lib/fuchsia-io`: the six fuchsia.io messages and the epitaph of the design's "The protocol subset", each ordinal declared beside its exact selector string.
   - Host tests: a round trip for every message, every malformed form refused.
   - `system/lib/wire/test/ordinals_test.py`: reads every `{selector, ordinal}` pair from the codec headers and recomputes it with hashlib, since the tree has no SHA-256 in C++.
 - Why now: everything after this speaks it; it needs no kernel.
@@ -96,7 +96,7 @@ Every step:
 ### 7. Manifest template, compiler and decoder
 - What:
   - `system/component_manifest.gni`, which expands into five targets: source JSON, program name, children, compile, group. It adds the user toolchain to program and child labels and refuses a label that names one, as `user_bootfs` does (`kernel/products/image/dev/BUILD.gn:102-111`), so manifest targets resolve their programs in the user toolchain from any BUILD.gn.
-  - `system/component_manifest.py` (Python 3.9, standard library only) and its unit test `system/test_component_manifest.py`. It writes child URLs as D26 says and fixes the name length (DESIGN's open question).
+  - `system/component_manifest.py` (Python 3.9, standard library only) and its unit test `system/test_component_manifest.py`. It writes child URLs as D26 says and fixes the name length (the design's open question).
   - `system/lib/component` with the decl format and its decoder, which checks structure only.
   - A gtest that decodes `.cm` files the template built from fixture targets, one of them declared in a BUILD.gn loaded in the default toolchain with a child in the user toolchain.
 - Why now: the router and the root read what it writes.
@@ -105,7 +105,7 @@ Every step:
 - Commit: `feat(component): manifest template, compiler and decoder`.
 
 ### 8. The routing walk
-- What: `route()` in `system/lib/component`, written by the user by hand (P3) from DESIGN's spec ("The routing walk") against failing host tests the AI writes first; the AI then reviews it as a strict interviewer, and `docs/authored.md` gets a row.
+- What: `route()` in `system/lib/component`, written by the user by hand (P3) from the design's spec ("The routing walk") against failing host tests the AI writes first; the AI then reviews it as a strict interviewer, and `docs/authored.md` gets a row.
 - Why now: the root needs it in step 13, and it is pure, so it is tested on the host.
 - Verified: host tests over the compiled fixtures:
   - a built-in source;
@@ -153,7 +153,7 @@ Every step:
   - init ingests the BootFS into BootServer (a read-only slice per file, made executable under `bin/`), keeps VMEX, and starts the standalone launcher with `start()` on the file from its own tree instead of `BootfsLauncher`.
   - Its three blocking waits become Loop slots: the pong (`init.cpp:441`), the shell's PeerClosed (`:463`) and TERMINATED on the shell (`report_exit`, `:306`).
   - It resolves `meta/root.cm`, routes directory uses, runs the ELF runner on `launch::start()`, and supervises TERMINATED. A root that cannot start logs one line and halts (D28).
-  - Its pools are the ones D27 settles, with static_asserts against PORT_MAX_OBSERVERS and the handle arithmetic of DESIGN's "Handle charges".
+  - Its pools are the ones D27 settles, with static_asserts against PORT_MAX_OBSERVERS and the handle arithmetic of the design's "Handle charges".
   - dev's root manifest gets one eager child, `routing_checks`, which uses `boot` in four ways: rx* at `/boot`; an r* copy renamed with `as`; the `bin` subdir; and one use whose route narrows rights the wrong way.
   - routing_checks checks Read, ReadDirents, GetBackingMemory with and without EXECUTE, and the AccessDenied entry. It then prints `routing_checks: passed` and exits 0.
   - init still starts the standalone launcher and the shell as before.

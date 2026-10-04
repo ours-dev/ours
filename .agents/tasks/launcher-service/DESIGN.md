@@ -1,7 +1,7 @@
 # launcher-service: one launcher process starts every program, and only it holds VMEX
 
 **Date**: 2026-10-03
-**Status**: Accepted
+**Status**: Superseded by `docs/design/261004/component-framework.md` (2026-10-04)
 
 ## Problem
 Today every process that starts programs links `//system/lib/launch` and holds what launching takes: VMEX, the BootFS and the vDSO's VMO. That is userboot, init and the shell. Each maps the BootFS and makes an executable copy of its own.

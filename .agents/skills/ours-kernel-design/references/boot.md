@@ -53,11 +53,19 @@ kernel option belongs in the OBI container.
 
 ## userboot and init
 
-userboot is always the first user process, and it starts init: Zircon's
-`kernel.select.userboot` picks the userboot binary, and `userboot.next` names
-what it starts. The dev image sets `userboot.next=bin/init`, dev.dbg_1
+userboot is always the first user process, and it starts what
+`userboot.next` names: Zircon's `kernel.select.userboot` picks the userboot
+binary. The dev image sets `userboot.next=bin/init`, dev.dbg_1
 `userboot.next=bin/shell`. Say "what userboot starts next", and never name a
 field `userboot` when its value is the next program.
+
+On dev, init is the root of the component framework, ours's counterpart of
+Fuchsia's component_manager (`docs/design/261004/component-framework.md`,
+decided 2026-10-04). It keeps VMEX for life, serves `/boot` from the BootFS
+itself, starts the components its root manifest (`meta/root.cm`) names,
+routes their capabilities, serves each one's `/svc`, and hosts
+`fuchsia.process.Launcher`. dev.dbg_1 has no root: userboot starts the shell
+directly, as Fuchsia's userboot tests run without component_manager.
 
 User programs install under `bin/` in the user BootFS, as Zircon's do under
 `/boot/bin`; userboot stays at the top level of the kernel package, where the
@@ -65,12 +73,24 @@ kernel looks it up. Code never spells a program's name: it includes the header
 `user_program_names()` generates from the install names
 (`//system/user_program_names.gni`).
 
-## Filesystems
+## Filesystems and namespaces
 
-Everything plugs into one Linux-style VFS. A filesystem library only parses,
-looks up and reads; an adapter exposes it as the VFS's file-operation set.
-Don't build per-filesystem directory trees or servers. Design documents that
-describe `bootfs::Tree` or init serving `/boot` predate this decision.
+Follow Fuchsia, not Linux (decided 2026-10-04, reversing the Linux-style VFS
+of 2026-09-26). There is no VFS process and no global mount table: each
+process has its own namespace, a client-side table from path prefix to
+directory channel (fdio's `fdio_ns_t`), filled from its startup handles.
+Files are served over a hand-written fuchsia.io subset by servers built on one
+server library, ours's counterpart of `src/storage/lib/vfs`.
+
+A file may be executed only if the VMO handle its server hands out carries
+the Execute right. Only a VMEX holder can add that right; the root marks the
+BootFS files under `bin/` at ingest, as component_manager's BootfsSvc does.
+The Launcher takes an executable VMO and resolves no names.
+
+A filesystem library such as `system/lib/bootfs` only parses, looks up and
+reads flat names; any directory tree lives in the server. Design documents
+that describe a VFS process with a mount table, the standalone launcher or
+launching by BootFS name predate this decision.
 
 ## Debug switches
 

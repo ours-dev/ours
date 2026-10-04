@@ -1,7 +1,7 @@
 # vfs: a user-space VFS service that mounts the BootFS at /boot
 
 **Date**: 2026-10-04
-**Status**: Proposed
+**Status**: Superseded by `docs/design/261004/component-framework.md` (2026-10-04)
 
 ## Problem
 The launcher service finds a program by name in a BootFS it maps itself (`launch::launch_from_bootfs`, `system/lib/launch/src/bootfs.cpp`). The user's intent since 2026-09-26 is different: file systems follow Linux's VFS structure, a VFS service is started during boot, the BootFS is mounted in it at /boot as one adapter among later ones, and the launcher opens programs through that service. The launcher-service recommendation of 2026-10-03 bypassed that intent; this design restores it. It supersedes the parts of stage 4 in `docs/design/260924/userspace-filesystem.md` that have init serve /boot (BootServer, bootfs::Tree, GetBackingMemory with Execute in M2).

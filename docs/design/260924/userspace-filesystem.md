@@ -333,6 +333,8 @@ class Init {              // composition, no base class
 
 ### 4.3 服务清单
 
+> **Superseded 2026-10-04**: the fixed service list below gives way to component manifests and capability routing; see `docs/design/261004/component-framework.md`.
+
 `/boot/config/services` 是文本，一行一个服务，由 `//build/service/gen_service_manifest.py` 从 GN metadata 生成：
 
 ```
@@ -368,6 +370,8 @@ service shell binary=bin/shell start=eager restart=never uses=/boot:rx,/svc/ours
    - Outgoing 跑在 `system/lib/loop` 的 Loop 上（§4.2）：o_s 和 on_connect 收下的每条 channel 都 add 到同一个 Loop，所以 echo 能同时服务多个客户端，on_connect 也不会阻塞 o_s。
 
 ### 4.5 BootFS 库
+
+> **Revised again 2026-10-04**: the 2026-09-26 revision below (one Linux-style VFS) is itself superseded. The user chose Fuchsia's model: init, grown into a component_manager-style root, serves /boot from the BootFS again, holds VMEX and marks `bin/` executable at ingest; any directory tree lives in that server, not in the bootfs library. See `docs/design/261004/component-framework.md`.
 
 > **2026-09-26 修订（主人）**：文件系统走 Linux 那种多文件系统结构——一个公共的 VFS（"宏文件系统"），每个具体文件系统只把自己和它的
 > 文件操作集适配上去，就像 Linux 的文件系统向 VFS 提供 super/inode/file 的操作集。所以**不再给 bootfs 单独建 `Tree`**，也不让 init
