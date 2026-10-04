@@ -219,8 +219,10 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
     // each range are the cases a wrong bound gets wrong: the last pin when
     // the bound is off by one, the first when it forgets the IO-APIC's own
     // GSI base. A pin that resolves to another IO-APIC means the firmware
-    // gave two of them overlapping ranges. This runs only once all of
-    // IOAPICS is initialised: a default-constructed slot claims GSI 0.
+    // gave two of them overlapping ranges. It has to come after
+    // reset_mmio(): until that reads the version register, a slot's maximum
+    // redirection index is 0, so its last GSI is its first and the check
+    // of the last pin would test nothing.
     for (auto const &ioapic: IOAPICS) {
         [[maybe_unused]]
         auto const first = static_cast<HIrqNum>(ioapic.gsi_base());

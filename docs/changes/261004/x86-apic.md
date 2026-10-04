@@ -79,7 +79,7 @@ for (auto const &ioapic: IOAPICS) {
 }
 ```
 
-The last pin catches an off-by-one bound, the first a forgotten base, and either one resolving to another IO-APIC means the firmware gave two of them overlapping ranges. It runs after the setup loop, not inside it, because a default-constructed `IoApic` slot has base 0 and maximum index 0, so it claims GSI 0 until it is initialised. The plan asked for the last pin only; the first costs one more comparison and covers the second half of the bug.
+The last pin catches an off-by-one bound, the first a forgotten base, and either one resolving to another IO-APIC means the firmware gave two of them overlapping ranges. That catches the overlaps Linux's check in `mp_register_ioapic()` catches, one range's end inside another's, and shares its blind spot: an earlier IO-APIC whose range lies strictly inside a later one's resolves to itself at both ends, and so does the later one. The check has to come after `reset_mmio()`: the `IoApic` copied from the MADT has a maximum redirection index of 0 until `reset_mmio()` reads the version register, so before that its last GSI is its first and the last-pin check would pass without testing the bound. It runs after the setup loop, where the table is complete; slots not yet set up could not have disturbed a check inside the loop either, since they come later in `IOAPICS` and the lookup returns the first match. The plan asked for the last pin only; the first costs one more comparison and covers the second half of the bug.
 
 The override loop iterates the overrides themselves, refuses an out-of-range one, and logs the entry it stored:
 
@@ -125,6 +125,7 @@ ISA Irq | Remapped | Trigger mode | Polarity | Global IRQ
 - The table's header is logged at info and its rows at trace, so the rel image shows a header with no rows. The plan only asked for the right rows; the levels were left as they were.
 - `IoApicChipData` and the chip operations that walk its `pins_` are untouched: step 8 replaces them with a lookup by `data.hirqnum`, which goes through the function fixed here.
 - `max_local_irqnum()` keeps its name. It is accurate (the highest local pin number), and after this change only the debug dump reads it.
+- An override whose ISA number is valid but whose GSI no IO-APIC owns is not refused: `platform_init_apic()` configures all 16 ISA lines, so `apic_configure_irq()`'s ASSERT still stops the boot on it, which narrows the "booting on" argument above to the ISA number. Linux's `mp_register_ioapic_irq()` warns "Failed to find ioapic for gsi" and skips such an override; Zircon's `apic_io_configure_irq()` panics in `resolve_global_irq()`, as ours does. q35 cannot produce it, and step 7 rewrites the loop that programs the ISA lines, so that is where to decide it.
 
 **How it was found**
 From the design review behind `.agents/tasks/microkernel-interrupts/DESIGN.md` (defect 3): reading `io_apic.cpp:107` against `ioapic.hpp:112-124`, where `max_local_irqnum()` returns the version register's maximum and `owns_global_irq()` already did the right arithmetic. The override log bug came from reading the loop at `io_apic.cpp:210-216`, and the before and after logs above confirm it. The lookup bug was confirmed by booting the old bound against the new assertion.
@@ -134,5 +135,5 @@ None.
 
 **Three questions you should be able to answer**
 - Why did the old test lose every pin of a second IO-APIC, but only the last pin of the first one?
-- Why does the boot check run after all IO-APICs are initialised rather than as each one is set up, and what would a default-constructed slot do to it?
+- Why must the boot check come after `reset_mmio()`, and what would the last-pin check test if it ran before?
 - Why does `init_io_apic()` refuse a bad override and keep booting, while `apic_configure_isa_irq()` asserts on a bad ISA number?
