@@ -1,0 +1,36 @@
+---
+BasedOnStyle: InheritParentConfig
+
+# Same four groups as the repository root, with one substitution: group 1 is
+# this library's own headers rather than <ours/...>.
+#
+# A library sorts its own headers first because that is the reading order that
+# matches how it is built -- everything else, <ours/...> included, is a
+# dependency it reaches out to. The root configuration cannot express this,
+# since which prefix counts as "internal" depends on which library the file
+# being formatted belongs to.
+#
+#   1. <fuchsia_io/...>
+#   2. C++ standard library
+#   3. C standard library
+#   4. everything else -- other libraries, and every quoted include
+IncludeCategories:
+  # 1. This library.
+  - Regex: '^<fuchsia_io/'
+    Priority: 1
+
+  # 2. C++ standard library.
+  - Regex: '^<[a-bd-z][a-z_0-9]*>$'
+    Priority: 2
+  - Regex: '^<(charconv|chrono|codecvt|compare|complex|concepts|condition_variable|coroutine)>$'
+    Priority: 2
+
+  # 3. C standard library.
+  - Regex: '^<c[a-z_]+>$'
+    Priority: 3
+  - Regex: '^<[a-z_]+\.h>$'
+    Priority: 3
+
+  # 4. Everything else, angle-bracketed or quoted.
+  - Regex: '.*'
+    Priority: 4

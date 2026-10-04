@@ -1,0 +1,41 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The fuchsia.io subset ours speaks, encoded and decoded by hand on
+# //system/lib/wire (component-framework design S6). Bytes and handle values
+# alone, no system call, so it builds in every toolchain, the host one
+# included, where its tests run.
+#
+# The target is named after the directory, so that //system/lib/fuchsia-io is
+# its label; the include prefix and the namespace are fuchsia_io, as a C++
+# name cannot hold a hyphen, which is also how Fuchsia's own C++ bindings
+# spell the library (fuchsia_io::).
+source_set("fuchsia-io") {
+  sources = [ "src/fuchsia_io.cpp" ]
+
+  # Its messages are wire::Message and its methods wire::Method, so a user of
+  # the codec is a user of the framing too.
+  public_deps = [
+    ":headers",
+    "//system/lib/wire",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/fuchsia_io/fuchsia_io.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:fuchsia_io($host_toolchain)" ]
+}

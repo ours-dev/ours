@@ -152,6 +152,12 @@ group("default") {
     # from numbers alone.
     "//system/lib/launch:tests",
 
+    # The framing every hand-written protocol codec shares, and the codec of
+    # the fuchsia.io subset on top of it: each message written, read back and
+    # broken on purpose, from bytes alone.
+    "//system/lib/wire:tests",
+    "//system/lib/fuchsia-io:tests",
+
     # init's `ours.autorun.boot` parsing: which argv a value becomes. The
     # test itself is named, not a tests group beside init: that file asserts
     # a user toolchain, which the default one is not and the host one is.

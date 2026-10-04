@@ -1,0 +1,13 @@
+# Host-side tests. These link googletest and run on the build machine: every
+# message of the subset is written, read back and broken on purpose, from
+# bytes and handle values alone.
+executable("fuchsia_io") {
+  testonly = true
+  sources = [ "fuchsia_io_test.cpp" ]
+  deps = [
+    "//system/lib/fuchsia-io",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

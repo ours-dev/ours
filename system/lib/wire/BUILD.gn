@@ -1,0 +1,31 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The framing every hand-written protocol codec shares: the 16-byte header
+# with its direction byte, handle placeholders, the 24-byte status form of a
+# reply and the epitaph (component-framework design D20). It works on bytes
+# and handle values alone and makes no system call, so it builds in every
+# toolchain, the host one included, where its tests run.
+source_set("wire") {
+  sources = [ "src/wire.cpp" ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/wire/wire.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default. test/ordinals_test.py is run by
+# hand: python3 system/lib/wire/test/ordinals_test.py.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:wire($host_toolchain)" ]
+}
