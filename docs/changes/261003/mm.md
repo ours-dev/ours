@@ -323,3 +323,73 @@ None given.
 - What does `unwire_frame()` change about a frame, and what does it leave to the frame's next owner?
 - Why does the runtime free path need its own Reserved check when the boot-time path has one?
 - Why is a check-then-subtract on an atomic counter acceptable here?
+
+## Title: page::Flags loses the six bits nothing read (flag-consolidation step 1) (2026-10-03)
+
+**Files**
+- `kernel/mm/include/ours/mm/pm_frame.hpp` — Active, Dirty, UpToDate, Foreign, BeginWaiting and Reclaimable go, with `PageFrame::mark_active()`; `init()` sets only Initialized
+
+**Symptom**
+None, dead code. Six of the nine frame flags had no reader anywhere in the tree. Two of them, Active and UpToDate, were written into every frame by `init()`; the other four were never written at all.
+
+**Cause**
+The enum was copied by name from Linux's page flags: PG_active and PG_reclaim for the LRU, PG_dirty and PG_uptodate for the page cache, PG_foreign for Xen, and a waiters bit for sleeping on a locked page. This kernel has none of those features. Where it does have the concept, it keeps it elsewhere, as Zircon does: whether a page is active or reclaimable is which page queue it is on (`PageQueues::QueueType`), not a bit in the frame. A bit nobody reads costs more than its storage. It reads as a feature that exists, and it hid a real bug: `set_flags()` assigns the whole field, so every `mark_*()` erases the others (`docs/repairs/261003/mm.md`, item 1), and nobody noticed, because nothing read most of what it erased.
+
+**Change**
+Before:
+
+```cpp
+enum class Flags {
+    Active = BIT(0),
+    Pinned = BIT(1),
+    Dirty = BIT(2),
+    UpToDate = BIT(3),
+    Foreign = BIT(4),
+    BeginWaiting = BIT(5),
+    Reclaimable = BIT(7),
+    Reserved = BIT(8),
+    Initialized = BIT(9),
+    Count,
+};
+...
+set_flags(Flags::Active | Flags::UpToDate | Flags::Initialized);
+```
+
+After:
+
+```cpp
+enum class Flags {
+    Pinned = BIT(1),
+    Reserved = BIT(8),
+    Initialized = BIT(9),
+    Count,
+};
+...
+set_flags(Flags::Initialized);
+```
+
+The values are left where they were. The next step deletes Pinned along with the setter fix and renumbers the two survivors once, rather than twice.
+
+**Reference**
+- Linux `include/linux/page-flags.h`: PG_active, PG_dirty, PG_uptodate, PG_foreign, PG_reclaim, PG_waiters.
+- Zircon `vm_page` (`zircon/kernel/vm/include/vm/page.h`) has no such bits: a page's state is `vm_page_state`, and activity and reclaimability come from the page queue it is on (`PageQueues`).
+
+**Verification**
+- `git grep` for the six names and `mark_active` finds only `VmaFlags`, `VmasFlags` and `ThreadDispatcher`, which are other enums.
+- `boot_check.py`: dbg PASS (20 passed), rel PASS (18 passed). The tree also held another session's uncommitted `wait_queue` work, which is not in this commit.
+- clang-tidy over `kernel/mm/memmap_init.cpp`: nothing new in `pm_frame.hpp`.
+
+**Deliberately not done**
+- Pinned, the setter fix and the renumbering: step 2, which needs decision D1 (`.agents/tasks/flag-consolidation/DESIGN.md`).
+- Shrinking the Status field. It sizes itself from `Flags::Count`, so it narrows when the values are renumbered.
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`): an auditor listed every writer and reader of each bit, and the judges ruled with Zircon's and Linux's sources.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Where does this kernel keep "this page is active" or "this page is reclaimable", and why there rather than in the frame?
+- Why did the `set_flags()` overwrite go unnoticed for so long?
+- Why are the surviving values not renumbered in this step?

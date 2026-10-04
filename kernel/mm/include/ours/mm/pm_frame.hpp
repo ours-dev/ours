@@ -45,14 +45,14 @@ namespace page {
         Count,
     };
 
+    /// What a frame's role does not say. The Linux page flags this once
+    /// copied by name (PG_active, PG_dirty, PG_uptodate, PG_foreign,
+    /// PG_reclaim and a waiters bit) stood for an LRU, a page cache, Xen and
+    /// reclaim, none of which this kernel has, and nothing read them. Whether
+    /// a page is active or reclaimable is its page-queue membership
+    /// (PageQueues), as in Zircon, not a bit here.
     enum class Flags {
-        Active = BIT(0),
         Pinned = BIT(1),
-        Dirty = BIT(2),
-        UpToDate = BIT(3),
-        Foreign = BIT(4),
-        BeginWaiting = BIT(5),
-        Reclaimable = BIT(7),
         Reserved = BIT(8),
 
         Initialized = BIT(9),
@@ -213,7 +213,7 @@ class PageFrame {
         m_status.set<Index::Section>(secnum);
         m_status.set<Index::Node>(nid);
         m_status.set<Index::Role>(Role::None);
-        set_flags(Flags::Active | Flags::UpToDate | Flags::Initialized);
+        set_flags(Flags::Initialized);
     }
 
     FORCE_INLINE
@@ -249,11 +249,6 @@ class PageFrame {
     FORCE_INLINE
     constexpr auto mark_reserved() -> void {
         set_flags(Flags::Reserved);
-    }
-
-    FORCE_INLINE
-    constexpr auto mark_active() -> void {
-        set_flags(Flags::Active);
     }
 
     /// Clears Reserved: one half of taking a frame off the reserved books, which
