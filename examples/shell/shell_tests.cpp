@@ -19,7 +19,10 @@
 
 #include "programs.hpp"
 #include <bootfs/format.hpp>
+#include <bootfs/view.hpp>
+#include <elfload/diagnostics.hpp>
 #include <launch/client.hpp>
+#include <launch/launch.hpp>
 #include <launch/program.hpp>
 #include <launch/protocol.hpp>
 #include <loop/loop.hpp>
@@ -4220,6 +4223,165 @@ auto check_vma_unmap(ours::Uandle const vma, ours::Uandle const job, ours::Uandl
     }
 }
 
+/// launch::start() reads a program only out of a VMO whose handle carries
+/// Execute. Before it reads a byte, it maps the whole file into this process
+/// with PermRead and PermExecute, and vma_map refuses that with AccessDenied
+/// when the handle lacks Execute (component-framework design, D14 and I6):
+///   - a page of zeros without Execute, which the judge (check_program())
+///     would refuse with InvArgs, is AccessDenied: nothing judged it;
+///   - fault_probe's file sliced out of the read-only BootFS, the bytes
+///     run_probes() starts, is AccessDenied too: Execute is all it lacks;
+///   - the same page of zeros made executable with vmex gets past the
+///     mapping, and the judge refuses it with InvArgs.
+/// Each refusal reports exactly one failed step, printed with its answer, and
+/// consumes the bootstrap handle all the same: the peer sees PeerClosed.
+///
+/// Run only where this shell has a launcher of its own (dbg_1): start() needs
+/// the vDSO and this process's region besides the file, which that launcher
+/// holds, and the contrast needs vmex.
+auto check_start_needs_execute(ours::Uandle const job, ours::Uandle const bootfs,
+                               ours::Uandle const vmex, shell::Launcher const &library) -> void {
+    using ours::Status;
+
+    // The failed steps one start() reports, and the first one's words.
+    struct Reported {
+        u32 errors = 0;
+        std::string_view first;
+    };
+    constexpr auto RECORD = [](void *const context, elfload::Report const &report) -> void {
+        auto &reported = *static_cast<Reported *>(context);
+        if (report.severity != elfload::Severity::Error) {
+            return;
+        }
+        if (reported.errors == 0) {
+            reported.first = report.what;
+        }
+        ++reported.errors;
+    };
+
+    // One start() of |file|: its answer against |want| on one line with the
+    // step it reported, then that it reported one step, and that its
+    // bootstrap handle is gone.
+    auto const refuses = [&](std::string_view const what, ours::Uandle const file,
+                             Status const want) -> bool {
+        auto here = ours::Uandle::Invalid;
+        auto there = ours::Uandle::Invalid;
+        if (!expect("shell: channel_create = ",
+                    ours::channel_create(ours::ChannelCreateOptions::None, &here, &there),
+                    Status::Ok)) {
+            return false;
+        }
+        Reported reported;
+        auto const started = launch::start({
+            .job = job,
+            .name = "start_needs_execute",
+            .file = file,
+            .vma = library.vma,
+            .vdso = library.vdso,
+            .vdso_file = library.vdso_file,
+            .bootstrap = there,
+            .diagnostics = {.report = RECORD, .context = &reported},
+        });
+        auto got = Status::Ok;
+        if (started.is_ok()) {
+            // Started after all: taken down again, and the check fails below.
+            auto _ = ours::handle_close(started.unwrap().process);
+            auto _ = ours::handle_close(started.unwrap().root_vma);
+        } else {
+            got = started.unwrap_err();
+        }
+        auto const got_name = std::string_view{ours::to_string(got)};
+        auto ok = got == want;
+        if (ok) {
+            auto _ = ort::debug_line(
+                {"shell: start(", what, ") = ", got_name, ", at \"", reported.first, "\""});
+        } else {
+            auto _ = ort::debug_line({"shell: start(", what, ") = ", got_name, " (expected ",
+                                      std::string_view{ours::to_string(want)}, "), at \"",
+                                      reported.first, "\""});
+        }
+        if (reported.errors != 1) {
+            char count[10];
+            auto _ = ort::debug_line({"shell: start(", what, ") reported ",
+                                      ort::decimal(reported.errors, count),
+                                      " failed steps (expected 1)"});
+            ok = false;
+        }
+        // A poll: start() has returned, so the bootstrap handle is closed or
+        // never will be.
+        constexpr ours::Instant NOW = 0;
+        auto seen = ours::Signals::None;
+        ok &=
+            expect("shell: wait_one(the bootstrap's peer, PeerClosed) = ",
+                   ours::object_wait_one(here, ours::Signals::PeerClosed, NOW, &seen), Status::Ok);
+        ok &= expect("shell: close(the bootstrap's peer) = ", ours::handle_close(here), Status::Ok);
+        return ok;
+    };
+
+    auto ok = true;
+    constexpr auto PAGE = usize{4096};
+    auto zeros = ours::Uandle::Invalid;
+    if (!expect("shell: vmo_create(1 page) = ",
+                ours::vmo_create(PAGE, ours::VmoOptions::None, &zeros), Status::Ok)) {
+        auto _ = ort::debug_line("shell: start() Execute checks FAILED");
+        return;
+    }
+    ok &= refuses("a page of zeros, no Execute", zeros, Status::AccessDenied);
+
+    // fault_probe, out of the read-only BootFS: a program start() runs when
+    // it comes from the executable copy instead.
+    auto const view = bootfs::View::from({library.bootfs_file.data(), library.bootfs_file.size()});
+    auto entry = ustl::Option<bootfs::Entry>{ustl::NONE};
+    if (view.is_ok()) {
+        if (auto const found = view.unwrap().find(user_programs::FAULT_PROBE); found.is_ok()) {
+            entry = found.unwrap();
+        }
+    }
+    if (entry.is_some()) {
+        auto probe = ours::Uandle::Invalid;
+        if (expect("shell: vmo_create_child(the read-only BootFS, Slice, fault_probe) = ",
+                   ours::vmo_create_child(bootfs, ours::VmoChildOptions::Slice,
+                                          entry.value().data_offset, entry.value().data_size,
+                                          &probe),
+                   Status::Ok)) {
+            ok &= refuses("fault_probe, no Execute", probe, Status::AccessDenied);
+            ok &= expect("shell: close(the fault_probe slice) = ", ours::handle_close(probe),
+                         Status::Ok);
+        } else {
+            ok = false;
+        }
+    } else {
+        auto _ = ort::debug_line("shell: fault_probe is not in the BootFS");
+        ok = false;
+    }
+
+    // The zeros made executable: vmo_replace_as_executable consumes the
+    // handle it is given, so it is given a duplicate, and the original is
+    // closed below either way. The original stays writable meanwhile, so this
+    // is the very VMO D14 (b) is safe from only because, on the dev image,
+    // one process holds vmex and makes nothing but BootFS files executable
+    // (I6); here this shell holds vmex itself.
+    auto copy = ours::Uandle::Invalid;
+    auto executable = ours::Uandle::Invalid;
+    if (expect("shell: handle_duplicate(the zeros) = ",
+               ours::handle_duplicate(zeros, ours::Rights::SameRights, &copy), Status::Ok) &&
+        expect("shell: vmo_replace_as_executable(the zeros) = ",
+               ours::vmo_replace_as_executable(copy, vmex, &executable), Status::Ok)) {
+        ok &= refuses("a page of zeros, with Execute", executable, Status::InvArgs);
+        ok &= expect("shell: close(the executable zeros) = ", ours::handle_close(executable),
+                     Status::Ok);
+    } else {
+        ok = false;
+    }
+    ok &= expect("shell: close(the zeros) = ", ours::handle_close(zeros), Status::Ok);
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: start() Execute checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: start() Execute checks FAILED");
+    }
+}
+
 /// The order in which check_loop()'s callbacks ran, one name per call.
 struct LoopLog {
     std::array<char, 16> names{};
@@ -4405,6 +4567,10 @@ auto run(Inputs const &inputs) -> void {
     // started this program, and the job is what makes the process for the
     // sealed checks.
     check_vma_unmap(inputs.vma, inputs.job, inputs.vdso);
+    // Also before check_handle_close(), for the same reason.
+    if (inputs.library != nullptr) {
+        check_start_needs_execute(inputs.job, inputs.bootfs, inputs.vmex, *inputs.library);
+    }
     check_handle_close(inputs.startup_to_close);
     check_channel_loopback();
     check_handle_transfer();

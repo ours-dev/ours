@@ -67,17 +67,26 @@ auto make_bootfs_launcher(Uandle const bootfs, Uandle const vmex, Uandle const v
     }
     auto const file = mapped.unwrap();
 
+    // Every failure from here takes the mapping down again before it is
+    // reported, so a caller that gets an error is left with nothing of the
+    // launcher in its address space. The length rounds up to the pages
+    // map_bootfs() mapped.
+    auto const unmapped = [&](std::string_view const step, Status const status) -> Status {
+        auto _ = ours::vma_unmap(vma, reinterpret_cast<ours::VirtAddr>(file.data()), file.size());
+        return failed(diagnostics, step, status);
+    };
+
     // From here the BootFS is read in place, through the mapping.
     auto const view = view_of(file);
     if (view.is_err()) {
-        return ustl::err(failed(diagnostics, "checking the BootFS", view.unwrap_err()));
+        return ustl::err(unmapped("checking the BootFS", view.unwrap_err()));
     }
     auto const found = view.unwrap().find("vdso");
     if (found.is_err()) {
-        return ustl::err(failed(diagnostics, "finding the vdso in the BootFS", found.unwrap_err()));
+        return ustl::err(unmapped("finding the vdso in the BootFS", found.unwrap_err()));
     }
     if (found.unwrap().is_none()) {
-        return ustl::err(failed(diagnostics, "finding the vdso in the BootFS", Status::NotFound));
+        return ustl::err(unmapped("finding the vdso in the BootFS", Status::NotFound));
     }
     auto const vdso_file = view.unwrap().file_data(found.unwrap().value());
 
@@ -87,17 +96,18 @@ auto make_bootfs_launcher(Uandle const bootfs, Uandle const vmex, Uandle const v
     Uandle copy = ours::Uandle::Invalid;
     if (auto const status = ours::handle_duplicate(bootfs, ours::Rights::SameRights, &copy);
         status != Status::Ok) {
-        return ustl::err(failed(diagnostics, "duplicating the BootFS", status));
+        return ustl::err(unmapped("duplicating the BootFS", status));
     }
     Uandle executable = ours::Uandle::Invalid;
     if (auto const status = ours::vmo_replace_as_executable(copy, vmex, &executable);
         status != Status::Ok) {
-        return ustl::err(failed(diagnostics, "making the BootFS executable", status));
+        return ustl::err(unmapped("making the BootFS executable", status));
     }
 
     return ustl::ok(BootfsLauncher{
         .executable = executable,
         .vdso = vdso,
+        .vma = vma,
         .bootfs_file = file,
         .vdso_file = {vdso_file.data(), vdso_file.size()},
     });
@@ -129,9 +139,12 @@ auto launch_from_bootfs(BootfsLauncher const &launcher, Uandle const job,
         return ustl::err(status);
     }
 
-    // The program's file VMO: a slice of the executable BootFS, so that its
-    // code can be mapped executable as it is. View has checked that the
-    // slice lies inside the BootFS.
+    // The program's file VMO: a slice of the executable BootFS, so that it
+    // carries Execute, which start() asks of the file it reads, and its code
+    // can be mapped executable as it is. View has checked that the slice
+    // lies inside the BootFS. start() reads the program through the slice,
+    // not through this process's mapping of the BootFS: one VMO feeds both
+    // the plan and the mappings, so they cannot be of two different files.
     Uandle file = ours::Uandle::Invalid;
     if (auto const sliced =
             ours::vmo_create_child(launcher.executable, ours::VmoChildOptions::Slice,
@@ -140,12 +153,11 @@ auto launch_from_bootfs(BootfsLauncher const &launcher, Uandle const job,
         auto _ = ours::handle_close(bootstrap);
         return ustl::err(failed(diagnostics, "slicing the program out of the BootFS", sliced));
     }
-    auto const bytes = view.unwrap().file_data(entry);
     auto started = start({
         .job = job,
         .name = name,
         .file = file,
-        .file_bytes = {bytes.data(), bytes.size()},
+        .vma = launcher.vma,
         .vdso = launcher.vdso,
         .vdso_file = launcher.vdso_file,
         .bootstrap = bootstrap,

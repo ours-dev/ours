@@ -555,8 +555,10 @@ auto main(int, char **) -> int {
         startup_to_close = peer;
     }
     shell::LaunchProgram test_launcher = nullptr;
+    Launcher const *test_library = nullptr;
     if (launcher.executable != ours::Uandle::Invalid) {
         test_launcher = launch_for_tests;
+        test_library = &launcher;
     }
     shell::tests::Inputs const test_inputs{
         .peer = peer,
@@ -568,6 +570,7 @@ auto main(int, char **) -> int {
         .startup_to_close = startup_to_close,
         .launch_program = test_launcher,
         .launcher_context = &launcher,
+        .library = test_library,
         .connection = connection,
     };
     shell::tests::run(test_inputs);

@@ -20,26 +20,6 @@ Zircon's process_builder decodes the vDSO from the VMO it maps, `Elf64Headers::f
 **Acceptance**
 A launch handed a `vdso_file` that differs from the VMO is refused with InvArgs and a report saying so; the shell's launcher checks still pass on dbg.
 
-## 2. The program is planned and bound from bytes that nothing checks against the VMO it is mapped from
-
-**Severity**
-Medium: wrong under a condition no caller meets today.
-
-**Symptom**
-Latent, cannot be triggered today. A caller that passes `file_bytes` of one file and `file` of another gets one ELF's code pages mapped with the other ELF's entry point, W^X split, RELRO and relocations, and a writable page can mix the two: its snapshot pages come from `file`, its partial page from `file_bytes`. It can only hurt the caller's own child: the caller could launch either file anyway.
-
-**Cause**
-In `launch::start()` (`system/lib/launch/src/launch.cpp`), `request.file_bytes` feeds steps 1 (judging and planning) and 4 (binding), and step 3's copy of each partial page. `request.file` feeds step 3's snapshots and step 5's mappings. `launch.hpp` states that they are the same file, and nothing enforces it. The shell reads and slices the same BootFS entry, so it holds today.
-
-**Change**
-Let `start()` read the file out of `request.file` into a buffer the caller provides, so that one source feeds both the plan and the mappings, which is Zircon's shape. A cheaper option is to compare the first page of the VMO with `file_bytes` and refuse with InvArgs on a mismatch. That catches a different file, but not different code pages behind the same headers.
-
-**Reference**
-Zircon's process_builder reads the headers out of the VMO it then maps, `Elf64Headers::from_vmo(&self.executable)` (`src/lib/process_builder/src/process_builder.rs:437`); Fuchsia's userboot does the same (`src/bringup/lib/userboot/rust/src/program.rs:294`).
-
-**Acceptance**
-`start()` no longer takes the program's bytes and its VMO as separate inputs, or refuses a mismatch with InvArgs; the shell's launcher checks still pass on dbg.
-
 ## 3. A launch that snapshots a program makes the whole BootFS pay for it
 
 **Severity**
@@ -75,12 +55,12 @@ Low: a performance cost, nothing wrong.
 Not measured. A launch makes one `vmo_write` per relocation, and two for one that straddles a cut. fault_probe, the program the launcher starts, has 1142 (20 R_X86_64_GLOB_DAT and 1122 R_X86_64_RELATIVE, 1100 of them its table of relocated pointers), so each launch of it makes 1142 system calls. The shell has 106.
 
 **Cause**
-The binder hands each 8-byte relocation to the Writer separately (`system/lib/elfload/src/binder.cpp`, `store()`). `Writer::write()` (`system/lib/launch/src/launch.cpp`) searches the plan's mappings and then makes one `ou::vmo_write` per piece. `vmo_write` was chosen so that the launcher maps nothing into itself and needs no `vma_unmap` (the filesystem design, §4.6).
+The binder hands each 8-byte relocation to the Writer separately (`system/lib/elfload/src/binder.cpp`, `store()`). `Writer::write()` (`system/lib/launch/src/launch.cpp`) searches the plan's mappings and then makes one `ou::vmo_write` per piece. `vmo_write` was chosen when the launcher mapped nothing into itself and the kernel had no `vma_unmap` (the filesystem design, §4.6). Neither holds since 2026-10-04: `vma_unmap` exists (component-framework step 9), and `start()` maps the program's whole file into the caller for as long as it reads it, then unmaps it (step 11, design D14). Only the writable VMOs are still written by system call, so the rule that made them so is gone; what is left is the trade the Change below measures.
 
 **Change**
 Measure first, with the user: the number of `vmo_write` calls and the launch latency of fault_probe, whose table makes the count large. Candidates:
 - Batch neighbouring relocations into one `vmo_write` per page or per run.
-- Map each writable VMO, snapshot or zero-fill, into the launcher once and write in memory, as Zircon's remote linker does. That needs `vma_unmap`, and the TLB shootdown it brings.
+- Map each writable VMO, snapshot or zero-fill, into the launcher once and write in memory, as Zircon's remote linker does. `vma_unmap` exists now, and `start()` already maps and unmaps the file once per launch; this adds one map and one unmap, with its TLB shootdown, per writable VMO, against one system call per relocation.
 
 **Reference**
 Zircon `ld::RemoteLoadModule::Relocate()` (`sdk/lib/ld/include/lib/ld/remote-load-module.h:304-327`) writes through `elfldltl::SegmentWithVmo`'s `GetMutableMemory()` (`src/lib/elfldltl/include/lib/elfldltl/segment-with-vmo.h:323-360`), which maps each mutable VMO once.

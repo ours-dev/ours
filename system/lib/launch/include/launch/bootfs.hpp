@@ -20,11 +20,14 @@ namespace launch {
 /// (system/service/launcher) and the dbg_1 shell, which has no launcher to
 /// ask, start programs this way.
 ///
-/// Three things, each because of how start() takes a program:
+/// Four things, each because of how start() takes a program:
 ///   - the BootFS made executable, which every program's file VMO is a slice
-///     of, since start() maps a program's code from its file as it is;
-///   - the BootFS mapped read-only into this process, from which start()
-///     reads a program's headers and dynamic tables;
+///     of, since start() maps a program's file with Execute to read it, and
+///     maps its code from it as it is;
+///   - this process's root region, where start() maps that file while it
+///     reads it;
+///   - the BootFS mapped read-only into this process, where a program is
+///     found by name;
 ///   - the vDSO's file, inside that mapping, which start() binds a program's
 ///     imports against.
 ///
@@ -42,33 +45,44 @@ struct BootfsLauncher {
     /// started. Not owned: the handle the caller passed in.
     ours::Uandle vdso = ours::Uandle::Invalid;
 
-    /// The whole BootFS, mapped read-only into this process for good: there
-    /// is no vma_unmap to take it out again.
+    /// This process's root region (HandleType::VmaRoot), where start() maps
+    /// each program's file while it reads it. Not owned: the handle the
+    /// caller passed in, kept here because the runtime hands VmaRoot out
+    /// once (ort::take_startup_handle()), and every launch needs it.
+    ours::Uandle vma = ours::Uandle::Invalid;
+
+    /// The whole BootFS, mapped read-only into this process for as long as
+    /// the launcher is used: every launch finds its program in it by name,
+    /// and binds against |vdso_file| in it. Nothing unmaps it but the
+    /// process's exit, or the caller with vma_unmap once it launches nothing
+    /// more.
     std::span<u8 const> bootfs_file;
 
     /// The vDSO's file, a part of |bootfs_file|.
     std::span<u8 const> vdso_file;
 };
 
-/// Maps the whole BootFS |bootfs| read-only into |vma| for good (there is no
-/// vma_unmap), and answers the mapping, |total_size| bytes long. Its header is
-/// read through the VMO first, since it alone says how much to map; nothing
-/// in it is trusted, and bootfs::View checks it against the mapping. For a
-/// program that reads the BootFS without starting anything from it.
-/// Failures are reported to |diagnostics| as make_bootfs_launcher()'s are.
+/// Maps the whole BootFS |bootfs| read-only into |vma|, and answers the
+/// mapping, |total_size| bytes long; it is the caller's from then on, to keep
+/// or to take down with vma_unmap. Its header is read through the VMO first,
+/// since it alone says how much to map; nothing in it is trusted, and
+/// bootfs::View checks it against the mapping. For a program that reads the
+/// BootFS without starting anything from it. Failures are reported to
+/// |diagnostics| as make_bootfs_launcher()'s are.
 [[nodiscard]]
 auto map_bootfs(ours::Uandle bootfs, ours::Uandle vma, elfload::Diagnostics diagnostics = {})
     -> ustl::Result<std::span<u8 const>, ours::Status>;
 
 /// Makes the launcher out of |bootfs| (which must grant Read, Map and
 /// Duplicate), |vmex| (the VMEX resource), |vdso| (the vDSO's VMO) and |vma|
-/// (this process's root region, where the BootFS is mapped). Consumes none of
-/// them.
+/// (this process's root region, where the BootFS is mapped, and each program
+/// while start() reads it). Consumes none of them; the launcher keeps |vdso|
+/// and |vma| without owning them, so both must stay open while it is used.
 ///
 /// The steps: read the BootFS header, map the whole BootFS read-only, check
 /// it (bootfs::View::from()) and find `vdso` in it, then duplicate the BootFS
 /// handle and make the copy executable. On failure nothing it made is left
-/// behind, except the mapping (no vma_unmap). The status is that of the step
+/// behind: the mapping is taken down again. The status is that of the step
 /// that failed, which is also reported to |diagnostics| as an Error, |what|
 /// naming the step: InvArgs or OutOfRange for a BootFS that View refuses,
 /// NotFound when it has no `vdso`, or the system call's own answer.
@@ -79,8 +93,9 @@ auto make_bootfs_launcher(ours::Uandle bootfs, ours::Uandle vmex, ours::Uandle v
 
 /// Starts the BootFS file |name| in a new process under |job|, |bootstrap| as
 /// its one handle: consumed whatever the answer, as start() consumes it. The
-/// program's file VMO is a slice of the executable BootFS, closed again once
-/// the process holds its mappings.
+/// program's file VMO is a slice of the executable BootFS, which start()
+/// reads through a mapping of its own and maps the code from; the slice is
+/// closed again once the process holds its mappings.
 ///
 /// NotFound when the BootFS has no such file; otherwise start()'s answer.
 /// Every failure is reported to |diagnostics|, as start() reports its own.

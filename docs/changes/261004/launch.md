@@ -459,3 +459,135 @@ None.
 - AddHandles is one-way. When a client sends a 63rd handle, how does it find out, and why not by having the connection closed?
 - Why may a client not send its own VmaRoot or NsDir through AddHandles, and what could a child do with each if the Launcher let it through?
 - A client adds ten handles and 4040 bytes of arguments. The state takes both in, yet Launch answers InvArgs. Which two numbers did Launch add up that the Add* calls could not?
+
+## Title: start() maps the program's VMO with Execute and reads it in place (component-framework step 11) (2026-10-04)
+
+**Files**
+- `system/lib/launch/include/launch/launch.hpp` — `Request` loses `file_bytes` and gains `vma`, the caller's root region, not consumed; `start()` documents its new step 0 and the answers it can give there.
+- `system/lib/launch/src/launch.cpp` — `MappedFile`: `vmo_get_size`, then one `vma_map` of the whole file into `request.vma` with PermRead and PermExecute, read in place, and `vma_unmap` in its destructor. `start()` reads the program only through it: the judge, the planner, the partial-page copies and the binder.
+- `system/lib/launch/include/launch/bootfs.hpp`, `src/bootfs.cpp` — `BootfsLauncher` keeps the VMA `make_bootfs_launcher()` is given, and `launch_from_bootfs()` passes it instead of the file's bytes. `make_bootfs_launcher()` unmaps the BootFS again when it fails.
+- `kernel/lib/userabi/userboot/userboot.cpp` — the read-write mapping of the BootFS is unmapped as soon as the BootFS is unpacked into it.
+- `examples/shell/shell_tests.cpp`, `shell_tests.hpp`, `shell.cpp` — `check_start_needs_execute()`, run on dbg_1, where the shell has a launcher of its own; `Inputs::library` hands it that launcher.
+- `system/lib/launch/README.md` — `start()` and the BootFS launcher.
+- `docs/repairs/261002/launch.md` — item 2 removed, since this fixes it; item 4's premise rewritten. The other items keep their numbers, which the component-framework design and plan cite.
+- `docs/repairs/261004/launch.md` — new: the per-launch map and unmap, not measured.
+
+**Symptom**
+None: a planned step, step 11 of `.agents/tasks/component-framework/PLAN.md`. Until now `start()` took the program twice: as a VMO, which it mapped the code from, and as bytes already in the caller's memory, which it judged, planned and bound from. The root's Launcher (step 14) is handed a VMO and nothing else, as `fuchsia.process.Launcher` is, so it would have no bytes to pass. Launch repair item 2 was the latent bug in the same shape: nothing checked that the bytes and the VMO were the same file.
+
+**Cause**
+Why `start()` had two inputs. The filesystem design's §4.6 had "the launcher maps nothing into itself", because the kernel had no `vma_unmap`: a mapping made for one launch would have stayed for the life of the launcher. Every caller already had the whole BootFS mapped for good anyway (`BootfsLauncher::bootfs_file`, for finding a program by name), so it could hand `start()` a span into that mapping and a slice of the executable BootFS for the same entry. Two inputs that must agree, and nothing to make them agree, is a bug waiting for a second caller: a span of one ELF and a slice of another would map one program's code with the other's entry point, W^X split, RELRO and relocations (item 2).
+
+Why the root cannot keep that shape. A client of the Launcher sends a VMO. The root has no mapping of it, so it must read the file itself, and the design's D14 weighed three ways:
+- (a) Map it read-only and parse in place. The client may have made that VMO itself and kept a writable handle, or a writable mapping. Parsing in place is then a double fetch: the parser reads a field, checks it, and reads it again to use it, and the client rewrites it in between. The binder, for one, walks the dynamic section more than once (`system/lib/elfload/src/binder.cpp:110-146`: once to find the relocation tables, again to ask which tags are declared) and reads each relocation in place while it applies it, so a client that rewrites the section between two walks makes the second act on what the first never checked. A memory-safety bug there is one in the process that holds VMEX, the root job and every BootFS slice.
+- (c) `vmo_read` the headers and tables into private buffers, as Fuchsia's process_builder does. No double fetch, since the copy is the root's own, but elfload's Binder takes the whole file as one span, so it needs a range reader first.
+- (b), chosen: map the VMO with PermRead and PermExecute, and parse in place only if that mapping is allowed. `vma_map` refuses PermExecute when the VMO's handle lacks the Execute right (AccessDenied, `kernel/lib/syscall/src/vma.cpp:153-159`, Zircon's `sys_vmar_map()` the same). A handle gets Execute only from `vmo_replace_as_executable`, which needs VMEX, or from the kernel, for the vDSO. That alone does not make a VMO immutable: vmex takes Write off the handle it makes, not off the others. What does is who holds VMEX. On the dev image one process does, and it makes nothing executable but BootFS files, whose VMO nobody holds writable. That is the design's I6, and it is why a file that passes the mapping cannot change while it is parsed. The check costs one kernel-enforced refusal and no change to elfload.
+
+Why the size comes from `vmo_get_size` (step 10) and not from the caller. `Plan::build()` and the binder check every offset in the file against the file's size (`system/lib/launch/include/launch/plan.hpp:123-129`). If the size came from the client, a size larger than the VMO would make the root read past the end of its mapping, which is a page fault in the root, and so every client's problem. The kernel's size is whole pages: a slice of a BootFS file runs to the end of its last page, past the file's own end. That is safe to parse because the BootFS fills the rest of a file's last page with zeros, and the checks only ever accept a range inside the size.
+
+Why the mapping must go again. The root never exits. A mapping per launch left behind would hold an address range and a reference to the VMO for ever, one per program started. So the mapping is an object whose destructor unmaps it, declared before everything else `start()` makes, and gone on every way out, refusals included.
+
+Why userboot changes too. I6 says nobody can write a BootFS file, and userboot broke it for a moment: it decompressed the BootFS through a read-write mapping and kept that mapping until it exited. Dropping Write from the handle it hands on does not revoke a mapping that already exists. A handle's rights are checked when a mapping is made, never again, and the mapping keeps its own protection. So for as long as userboot ran on, every later launcher was parsing bytes that a mapping in another process could still write. With `vma_unmap` it goes as soon as the BootFS is in it, which is what Zircon's userboot has always done. The step 9 record left this decision, and the stale "there is no vma_unmap" comments, to this step.
+
+Why `make_bootfs_launcher()` changes. On failure it used to leave the BootFS mapped, "except the mapping (no vma_unmap)". The dbg_1 shell then maps the BootFS again for `ls`, so a failed launcher cost a second mapping. Now it takes its mapping down before it reports.
+
+**Change**
+`Request` before and after:
+
+```cpp
+// before
+ours::Uandle file;
+std::span<u8 const> file_bytes;   // the same file, readable in this process
+// after
+ours::Uandle file;                // must grant Read, Map, Duplicate and Execute
+ours::Uandle vma;                 // this process's root region; not consumed
+```
+
+`start()` before read the caller's bytes:
+
+```cpp
+if (auto const status = elfload::check_program(
+        request.diagnostics, {request.file_bytes.data(), request.file_bytes.size()});
+```
+
+and now reads only through the mapping, made first:
+
+```cpp
+MappedFile mapped;
+if (auto const status = mapped.map(request); status != Status::Ok) {
+    return ustl::err(status);
+}
+auto const file = mapped.bytes();
+if (auto const status = elfload::check_program(request.diagnostics, {file.data(), file.size()});
+```
+
+where `MappedFile::map()` is
+
+```cpp
+u64 size = 0;
+ours::vmo_get_size(request.file, &size);                  // "vmo_get_size of the program's file"
+ours::vma_map(request.vma, VmOptions::PermRead | VmOptions::PermExecute, 0,
+              request.file, 0, usize(size), &address);    // AccessDenied without Execute
+m_bytes = {reinterpret_cast<u8 const *>(address), usize(size)};
+```
+
+and `~MappedFile()` calls `vma_unmap(m_vma, address, size)`. Each failure is reported once, as `start()` reports its other steps: "mapping the program's file into this process" with the status.
+
+userboot, before:
+
+```cpp
+} else if (auto const materialized = item.materialize({...}); materialized.is_err()) {
+    status = materialized.unwrap_err();
+    report("userboot: decompressing the BootFS = ", status);
+}
+```
+
+after, the mapping goes whether or not the BootFS came out whole:
+
+```cpp
+} else {
+    if (auto const materialized = item.materialize({...}); materialized.is_err()) { ... }
+    if (auto const unmapped = ours::vma_unmap(vma, bootfs_address, bootfs_size.unwrap());
+        unmapped != Status::Ok && status == Status::Ok) { ... }
+}
+```
+
+The callers. init and the standalone launcher needed no code change: both already passed their VmaRoot to `make_bootfs_launcher()` and never close it, and `launch_from_bootfs()` kept its signature because the launcher now carries the region. Every launch on both images, userboot's of the next program, init's of the launcher, the launcher's of the shell and the commands, and the dbg_1 shell's of fault_probe, goes through the new path.
+
+Rejected:
+- Keeping `file_bytes` as a fast path for `BootfsLauncher`, which has the BootFS mapped already. That is two inputs again (item 2), and one path for every caller means today's launches already test the root's path.
+- Unmapping right after binding instead of at the end of `start()`. It frees nothing sooner that matters, and a scope is the one shape an early return cannot get wrong.
+- Mapping only the pages the parser reads. Which pages those are is known only after parsing the headers, which is (c)'s range reader.
+
+**Reference**
+- Zircon `elfldltl::MappedVmoFile::Init()` and `~MappedVmoFile()` (`src/lib/elfldltl/mapped-vmo-file.cc:13-33`, `:48-55`): the VMO's size, one read-only mapping of all of it into the caller's root VMAR, the file read in place, and the unmap in the destructor. `ld::RemoteDecodedModule::Init()` reads every module of the remote dynamic linker through one (`sdk/lib/ld/include/lib/ld/remote-decoded-module.h:83`). `MappedFile` is that object, mapping with Execute as well, as the check above.
+- Zircon `sys_vmar_map()` (`zircon/kernel/lib/syscalls/vmar.cc:134-145`): `can_exec` needs ZX_RIGHT_EXECUTE on the VMO handle, and ZX_VM_PERM_EXECUTE without it is ZX_ERR_ACCESS_DENIED. Ours's `vma_map` makes the same check (`kernel/lib/syscall/src/vma.cpp:153-159`).
+- Fuchsia `ProcessBuilder::build()` reads the headers with `Elf64Headers::from_vmo()` (`src/lib/process_builder/src/process_builder.rs:437`): D14 (c), the way kept for the day anything but the BootFS can be executable.
+- Fuchsia userboot `get_bootfs_vmo()` unmaps its read-write BootFS mapping as soon as the BootFS is decompressed (`src/bringup/lib/userboot/rust/src/bootfs.rs:58-77`), and keeps the ZBI mapped (`zircon/kernel/lib/userabi/userboot/main.rs:69`).
+- Linux takes both halves of the problem on: `load_elf_phdrs()` reads the program headers into a kernel buffer with `elf_read()` rather than parsing the file where it lies, and `do_open_execat()` makes the file unwritable while it runs (`deny_write_access()`, ETXTBSY for a writer).
+
+**Verification**
+- `TMPDIR=$PWD/out/tmp python3 .agents/skills/ours-verify/scripts/boot_check.py`: build ok; dbg PASS (27 passed, 1 skipped, 0 failed, 0 error lines); rel PASS (24 passed, 3 skipped, 0 failed, 0 error lines). Before the change: dbg 26 passed, rel 24, the difference being the new check.
+- dbg_1's new lines: `shell: start(a page of zeros, no Execute) = AccessDenied, at "mapping the program's file into this process"`, `shell: start(fault_probe, no Execute) = AccessDenied, at "mapping the program's file into this process"`, `shell: start(a page of zeros, with Execute) = InvArgs, at "not an ELF this system can read"`, each with the bootstrap's peer seeing PeerClosed, then `shell: start() Execute checks passed`. The first and the third differ only in Execute, so the AccessDenied is the mapping refusing before the judge ever ran.
+- userboot on both images still unpacks and starts its next program (`userboot: started bin/shell` on dbg_1, `userboot: started bin/init` on dev) after unmapping the writable BootFS; the launcher's checks pass on dbg_1 (`shell: launcher checks passed`), and dev's launcher starts the shell.
+- Host tests: `//system/lib/launch:tests` plan 36, program 8, protocol 3 passed. They do not cover `start()`, which exists only in the user toolchain.
+- clang-tidy (`prebuilt/clang/llvm-23/bin/clang-tidy -p out/bringup.x86`) on `launch.cpp`, `bootfs.cpp`, `userboot.cpp`, `shell_tests.cpp` and `shell.cpp`: no finding on a changed line. What it reports is in headers this change does not touch (`bootfs/view.hpp`, `obi/container_view.hpp`) and the old `H` in `shell_tests.cpp`. `scripts/format_cpp.py --check`: clean.
+- Not verified: that the mapping is really gone after a launch. Nothing in user space can list a process's mappings yet, so a leak would show only as address space and VMOs kept alive. Not measured: the cost of the map, the faults and the unmap per launch (`docs/repairs/261004/launch.md`, item 1). The dbg image's finish time moved between 15 s and 46 s across four boots of the same build, which is the console's debug logging, not a launch.
+
+**Deliberately not done**
+- D14 (c), reading into private buffers: the design keeps it for the day a second process holds VMEX or anything but the BootFS can be executable.
+- The image mapping in userboot stays until userboot exits: it is read-only, userboot exits right after, and Zircon's userboot keeps its ZBI mapped the same way.
+- `BootfsLauncher`'s own BootFS mapping stays for as long as the launcher is used: every launch finds its program in it by name and binds against the vDSO's file in it.
+- Launch repair item 1, binding against a `vdso_file` nothing checks against the vDSO VMO: the same shape as item 2, but for the vDSO, and outside this step.
+- The dev shell does not run the new check: it has no launcher of its own, and the plan places the check on dbg_1. The refusal itself needs no vmex, so a later step could run it on dev too.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- `start()` asks for PermExecute on a file it never runs. What would go wrong in the root if it asked for PermRead alone, and which invariant makes PermExecute enough?
+- vmex takes Write off the handle it returns. Why is that not what keeps a BootFS file from changing under the parser, and what is?
+- userboot had already dropped Write from the BootFS handle before it handed it on. Why was its read-write mapping still a writer, and what does that say about when a handle's rights are checked?

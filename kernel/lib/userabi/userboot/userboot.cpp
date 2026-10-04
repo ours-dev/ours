@@ -164,10 +164,15 @@ auto mapping_size(u64 const length) -> ustl::Result<usize, ours::Status> {
 /// Write goes: the handle handed back is a duplicate without it, and the
 /// writable one is closed.
 ///
-/// Both mappings stay until this process exits, which it does once the next
-/// program is started: there is no vma_unmap. Zircon's userboot unmaps the
-/// read-write one at once (get_bootfs_vmo() in
-/// src/bringup/lib/userboot/rust/src/bootfs.rs, which this follows).
+/// The read-write mapping is taken down as soon as the BootFS is in it, as
+/// Zircon's userboot does (get_bootfs_vmo() in
+/// src/bringup/lib/userboot/rust/src/bootfs.rs, which this follows). Dropping
+/// Write from the handle is not enough on its own: a writable mapping still
+/// writes the VMO, and the launcher in every later program reads the BootFS
+/// in place, trusting that nobody can write it (the component-framework
+/// design's I6). The image's read-only mapping stays until this process
+/// exits, which it does once the next program is started; Zircon's userboot
+/// keeps its ZBI mapped too.
 auto unpack_bootfs(ours::Uandle const image, ours::Uandle const vma)
     -> ustl::Result<ours::Uandle, ours::Status> {
     using ours::Status;
@@ -235,11 +240,20 @@ auto unpack_bootfs(ours::Uandle const image, ours::Uandle const vma)
                                 writable, 0, bootfs_size.unwrap(), &bootfs_address);
     if (status != Status::Ok) {
         report("userboot: mapping the BootFS VMO = ", status);
-    } else if (auto const materialized =
-                   item.materialize({reinterpret_cast<u8 *>(bootfs_address), bootfs_size.unwrap()});
-               materialized.is_err()) {
-        status = materialized.unwrap_err();
-        report("userboot: decompressing the BootFS = ", status);
+    } else {
+        if (auto const materialized =
+                item.materialize({reinterpret_cast<u8 *>(bootfs_address), bootfs_size.unwrap()});
+            materialized.is_err()) {
+            status = materialized.unwrap_err();
+            report("userboot: decompressing the BootFS = ", status);
+        }
+        // Done with whether or not it worked: the BootFS is read through its
+        // VMO from here on, and never written again.
+        if (auto const unmapped = ours::vma_unmap(vma, bootfs_address, bootfs_size.unwrap());
+            unmapped != Status::Ok && status == Status::Ok) {
+            status = unmapped;
+            report("userboot: unmapping the writable BootFS = ", status);
+        }
     }
     auto readonly = ours::Uandle::Invalid;
     if (status == Status::Ok) {

@@ -16,6 +16,10 @@ struct Inputs {
     ours::Uandle startup_to_close;
     shell::LaunchProgram launch_program;
     void *launcher_context;
+    /// The library launcher where this shell has one (dbg_1), or nullptr:
+    /// check_start_needs_execute() calls launch::start() with its vDSO and
+    /// this process's region.
+    shell::Launcher const *library;
 
     /// A connection to the launcher service, where init started the shell.
     ours::Uandle connection;

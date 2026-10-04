@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -178,6 +179,92 @@ namespace {
         request.diagnostics({.what = step, .name = ours::to_string(status), .value = value});
         return status;
     }
+
+    /// The program's file, mapped whole into this process for as long as
+    /// start() reads it, and unmapped when this goes out of scope -- on every
+    /// way out of start(), refusals included, so a launch leaves nothing of
+    /// the program in this address space.
+    ///
+    /// Zircon's elfldltl::MappedVmoFile is the same object, and its
+    /// ld::RemoteDecodedModule reads every module it loads through one: the
+    /// VMO's size, one mapping of all of it into the caller's root VMAR, the
+    /// headers and tables read in place, and an unmap in the destructor
+    /// (src/lib/elfldltl/mapped-vmo-file.cc, Init() and ~MappedVmoFile()).
+    /// It maps read-only. This maps read and execute, on purpose: see map().
+    class MappedFile {
+      public:
+        MappedFile() = default;
+        MappedFile(MappedFile const &) = delete;
+        auto operator=(MappedFile const &) -> MappedFile & = delete;
+
+        ~MappedFile() {
+            if (m_bytes.empty()) {
+                return;
+            }
+            // The answer is ignored, as Zircon's destructor ignores it in a
+            // release build: none is expected (the range is exactly one
+            // mapping this made, not sealed, in a region this process holds),
+            // and if the region were gone the mapping would be gone with it.
+            auto _ =
+                ours::vma_unmap(m_vma, reinterpret_cast<VirtAddr>(m_bytes.data()), m_bytes.size());
+        }
+
+        /// Maps all of |request|'s file into its |vma|, at the size
+        /// vmo_get_size answers, with PermRead and PermExecute. The status of
+        /// the step that failed, reported as start() reports its own; Ok and
+        /// bytes() the file otherwise.
+        ///
+        /// Execute is asked for although nothing here runs the file, because
+        /// vma_map grants it only when the VMO's handle carries Execute
+        /// (AccessDenied otherwise), and a handle gets Execute only from
+        /// vmex (vmo_replace_as_executable) or, for the vDSO, from the
+        /// kernel; a slice keeps its parent's, a snapshot loses it. That
+        /// alone does not make the VMO read-only -- vmex takes Write off the
+        /// handle it makes, not off the others -- but on the dev image the
+        /// one holder of vmex makes only BootFS files executable, and nobody
+        /// holds the BootFS writable. So every file that gets past this is
+        /// one nobody can write, and that is what makes reading it in place
+        /// safe. A VMO the client made itself, and still holds writable,
+        /// could change under the parser between a check and the read it
+        /// guards -- a double fetch, in the root of the system once the
+        /// Launcher lives there (component-framework design, D14 and I6).
+        /// The refusal comes before a byte is read, which is the point of
+        /// asking here rather than when the code is mapped into the new
+        /// process.
+        ///
+        /// The size is the VMO's, whole pages (vmo_get_size), never one the
+        /// caller states: it bounds every offset Plan::build() and the
+        /// binder check, and only the kernel can say it truthfully. For a
+        /// slice of a BootFS file it runs past the file's end to the end of
+        /// its last page, which the BootFS fills with zeros.
+        [[nodiscard]]
+        auto map(Request const &request) -> Status {
+            u64 size = 0;
+            if (auto const status = ours::vmo_get_size(request.file, &size); status != Status::Ok) {
+                return failed(request, "vmo_get_size of the program's file", status);
+            }
+            VirtAddr address = 0;
+            if (auto const status =
+                    ours::vma_map(request.vma, VmOptions::PermRead | VmOptions::PermExecute, 0,
+                                  request.file, 0, usize(size), &address);
+                status != Status::Ok) {
+                return failed(request, "mapping the program's file into this process", status);
+            }
+            m_vma = request.vma;
+            m_bytes = {reinterpret_cast<u8 const *>(address), usize(size)};
+            return Status::Ok;
+        }
+
+        /// The file, read in place; empty until map() answered Ok.
+        [[nodiscard]]
+        auto bytes() const -> std::span<u8 const> {
+            return m_bytes;
+        }
+
+      private:
+        Uandle m_vma = ours::Uandle::Invalid;
+        std::span<u8 const> m_bytes;
+    };
 } // namespace
 
 auto start(Request const &request) -> ustl::Result<Started, Status> {
@@ -186,20 +273,28 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
     Owned bootstrap;
     *bootstrap.out() = request.bootstrap;
 
+    // 0. The file, mapped read and execute so that one nobody can write is the
+    // only kind read at all (MappedFile::map()). Declared before everything
+    // below, it is unmapped after all of it, on every way out.
+    MappedFile mapped;
+    if (auto const status = mapped.map(request); status != Status::Ok) {
+        return ustl::err(status);
+    }
+    auto const file = mapped.bytes();
+
     // 1. Judged, read and planned before anything exists: refusing a file then
     // leaves nothing to take down. The judgement is the kernel loader's own.
-    if (auto const status = elfload::check_program(
-            request.diagnostics, {request.file_bytes.data(), request.file_bytes.size()});
+    if (auto const status = elfload::check_program(request.diagnostics, {file.data(), file.size()});
         status != Status::Ok) {
         return ustl::err(status);
     }
-    auto const program = Program::read(request.file_bytes);
+    auto const program = Program::read(file);
     if (program.is_err()) {
         return ustl::err(failed(request, "the launcher cannot take the program's headers",
                                 program.unwrap_err()));
     }
-    auto const planned = Plan::build(program.unwrap().segments(), program.unwrap().relro(),
-                                     request.file_bytes.size());
+    auto const planned =
+        Plan::build(program.unwrap().segments(), program.unwrap().relro(), file.size());
     if (planned.is_err()) {
         return ustl::err(
             failed(request, "the program's segments cannot be planned", planned.unwrap_err()));
@@ -274,9 +369,8 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         zeros[index] = zero_owners[index].get();
     }
     for (auto const &copy: plan.copies()) {
-        if (auto const status =
-                ours::vmo_write(zeros[copy.segment], request.file_bytes.data() + copy.file_offset,
-                                copy.vmo_offset, usize(copy.size));
+        if (auto const status = ours::vmo_write(zeros[copy.segment], file.data() + copy.file_offset,
+                                                copy.vmo_offset, usize(copy.size));
             status != Status::Ok) {
             return ustl::err(
                 failed(request, "vmo_write of a segment's partial page", status, copy.segment));
@@ -337,9 +431,8 @@ auto start(Request const &request) -> ustl::Result<Started, Status> {
         .writer = {.write = &Writer::write, .context = &writer},
         .image_base = image.first,
     };
-    if (auto const status = binder.unwrap().bind(
-            request.diagnostics, {request.file_bytes.data(), request.file_bytes.size()},
-            program_image);
+    if (auto const status =
+            binder.unwrap().bind(request.diagnostics, {file.data(), file.size()}, program_image);
         status != Status::Ok) {
         return ustl::err(status);
     }

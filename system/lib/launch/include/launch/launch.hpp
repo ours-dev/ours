@@ -23,14 +23,18 @@ struct Request {
     std::string_view name;
 
     /// The program's file as a VMO, offset 0 being the file's first byte: a
-    /// slice of an executable BootFS, say. It must grant Read, Map and
-    /// Duplicate, and Execute for the program's code, which is mapped from it
-    /// as it is; the writable segments are snapshots of it. Not consumed.
+    /// slice of an executable BootFS, say. It must grant Read, Map, Duplicate
+    /// and Execute. start() reads the program through a mapping of all of it
+    /// into |vma|, made with PermRead and PermExecute, so a VMO without
+    /// Execute is refused there, before a byte of it is read (see start()).
+    /// The program's code is then mapped from it as it is, and the writable
+    /// segments are snapshots of it. Not consumed.
     ours::Uandle file;
 
-    /// The same file, readable in this process: its headers, and the dynamic
-    /// tables the binder reads. Not changed.
-    std::span<u8 const> file_bytes;
+    /// This process's own root region (HandleType::VmaRoot), where |file| is
+    /// mapped while start() reads it and unmapped before start() returns,
+    /// whatever it answers. Not consumed.
+    ours::Uandle vma;
 
     /// The vDSO's VMO (HandleType::VmoVdso), which is mapped into the process
     /// whole, read and execute, sealed: the kernel takes that mapping as the
@@ -79,6 +83,20 @@ struct Started {
 /// closing the thread, the image's region and the stack's VMO, which
 /// process_builder passes on as ThreadSelf, LoadedVmar and StackVmo.
 ///
+///   0. Map |file| whole into |vma|, read and execute, at the size
+///      vmo_get_size answers, and read the program from that mapping, in
+///      place, in steps 1, 3 and 4; it is unmapped on every way out. vma_map
+///      refuses Execute on a VMO whose handle lacks it, before a byte of it
+///      is read. A handle carries Execute only from vmex
+///      (vmo_replace_as_executable) or, for the vDSO, from the kernel, and
+///      while the one holder of vmex makes only BootFS files executable,
+///      whose VMO nobody can write, a file that passes is one nobody can
+///      change while it is read (component-framework design, D14 and I6).
+///      The VMO's size, whole pages, bounds every offset below; a BootFS
+///      file's last page is zero-filled past its end. Zircon's remote
+///      dynamic linker reads a module the same way, through a read-only
+///      mapping of its VMO (elfldltl::MappedVmoFile); process_builder reads
+///      the headers with vmo_read instead.
 ///   1. Judge the file (elfload::check_program()), read its headers
 ///      (Program::read()) and plan its mappings (Plan::build()), before
 ///      anything exists.
@@ -103,6 +121,9 @@ struct Started {
 /// a process that never started destroys it), and nothing is left in this
 /// process but what it had. The status is the answer of the step that
 /// failed, which is not always a system call:
+///   - mapping |file| (step 0): AccessDenied for a VMO without Execute (or
+///     without Read or Map), BadHandle or BadType for a handle that names no
+///     VMO, InvArgs for an empty one;
 ///   - judging, before anything exists, the program or the vDSO: InvArgs for
 ///     a file check_program() refuses (more than its 12 PT_LOADs among the
 ///     reasons) or a layout Plan::build() refuses; OutOfRange for more
