@@ -34,6 +34,10 @@ _user_programs = [
   # (userboot.next in the cmdline below), and it starts the entries of its
   # startup list (the init_startup() targets below).
   "//system/service/init",
+
+  # The launcher, which init starts first and hands VMEX to; every program
+  # after it is started by it, at a request.
+  "//system/service/launcher",
 ]
 
 if (defined(ours.with)) {

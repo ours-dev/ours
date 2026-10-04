@@ -31,7 +31,8 @@ class Client {
     ///
     /// The answer is the launcher's -- NotFound for a name its BootFS lacks,
     /// InvArgs for a request it cannot read, or what starting the program
-    /// answered -- or this side's: encode_launch()'s refusals, the duplicate
+    /// answered -- or this side's: encode_launch()'s refusals (OutOfRange
+    /// for more than protocol::MAX_STRINGS arguments, say), the duplicate
     /// of |job|, the write, PeerClosed if the launcher went away, InvArgs for
     /// a reply that is not one.
     [[nodiscard]]

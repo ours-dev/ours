@@ -62,6 +62,11 @@ static_assert(sizeof(Reply) == 8);
 /// notes.
 inline constexpr u32 MAX_PROGRAM_NAME = 255;
 
+/// The most strings of each kind -- args, environ, names -- a Launch may
+/// carry. A limit of the protocol's, not a consequence of the message size: a
+/// launcher keeps the strings of the request it is serving in fixed arrays.
+inline constexpr u32 MAX_STRINGS = 64;
+
 /// Where a program finds its connection to the launcher among its startup
 /// handles, when whoever started it gave it one.
 inline constexpr auto CONNECTION = ours::HandleType::User1;
@@ -74,8 +79,9 @@ inline constexpr auto CONNECTION = ours::HandleType::User1;
 /// job, so it has one entry per handle and must not name VmaRoot, which the
 /// launcher adds. InvArgs for an empty name, one longer than MAX_PROGRAM_NAME, or a
 /// VmaRoot in |handle_info|; OutOfRange when the whole does not fit in |out|
-/// or in one channel message, or names more than CHANNEL_MAX_MSG_HANDLES - 1
-/// handles (the job takes one); otherwise encode_process_args()'s answer.
+/// or in one channel message, names more than CHANNEL_MAX_MSG_HANDLES - 1
+/// handles (the job takes one), or has more than MAX_STRINGS strings of a
+/// kind; otherwise encode_process_args()'s answer.
 [[nodiscard]]
 auto encode_launch(std::span<u8> out, std::string_view name, std::span<u32 const> handle_info,
                    std::span<std::string_view const> args,
@@ -103,8 +109,9 @@ struct Launch {
 ///     its padding;
 ///   - there is a job: |num_handles| is at least 1;
 ///   - what follows the padding is a processargs message that
-///     ort::ProcessArgs::parse() accepts for |num_handles| - 1 handles, and
-///     none of whose handle_info names VmaRoot.
+///     ort::ProcessArgs::parse() accepts for |num_handles| - 1 handles, none
+///     of whose handle_info names VmaRoot, and with no more than MAX_STRINGS
+///     strings of a kind.
 [[nodiscard]]
 auto decode_launch(std::span<u8 const> message, u32 num_handles, Launch *out) -> ours::Status;
 

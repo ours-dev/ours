@@ -72,3 +72,81 @@ None. The user asked to go straight to the work, so the request format and the r
 - Why can a Launch request never be too large to send, when the program it starts gets its arguments the same way?
 - Why does `decode_launch()` parse the processargs for one handle fewer than the message carried, and refuse a VmaRoot?
 - Why does `Client::launch()` duplicate the job but consume every other handle?
+
+## Title: The launcher program, and init starting everything through it (launcher-service step 2) (2026-10-04)
+
+**Files**
+- `system/service/launcher/launcher.cpp`, `BUILD.gn` — new: `bin/launcher`
+- `system/service/init/init.cpp`, `BUILD.gn` — init starts the launcher with the library (`start_launcher()`), then the shell and the autorun command with `launch::Client` requests; `start_then_write()` goes
+- `kernel/products/image/dev/BUILD.gn` — the dev image packages the launcher
+- `system/lib/launch/include/launch/protocol.hpp`, `src/protocol.cpp`, `client.hpp`, `test/protocol_test.cpp` — `MAX_STRINGS` (64 of each kind) becomes a protocol limit, refused by both the encoder and the decoder, instead of a constant only the launcher knew
+
+**Symptom**
+None, a planned change: step 2 of `.agents/tasks/launcher-service/PLAN.md`. Until now init started the shell and the autorun command itself, with the library and its own VMEX.
+
+**Cause**
+The launcher is a server, and its loop is the first program built on the port (K26 to K28). How it serves is worth learning.
+
+The objects:
+- **The port**, created at start. The launcher sleeps on nothing else.
+- **A connection**: a channel, in a slot of a fixed table of 16. Each slot's index is the key its waits carry.
+- **One wait per connection**: `object_wait_async` for Readable or PeerClosed. It is one-shot, so it is re-armed after every message.
+
+The events, for one request:
+1. A client writes a Launch on its connection. The channel turns Readable, the armed wait queues a packet whose key is the slot.
+2. The launcher's `port_wait` returns the packet. It reads one message from that slot's channel and serves it: a Connect adds a slot, and anything else is answered as a Launch.
+3. It re-arms the slot's wait. If a second message is already queued, the wait is level-triggered, so it queues a packet at once and the loop comes straight back.
+4. A packet with PeerClosed and no Readable means the client is gone: the slot's channel is closed and the slot freed.
+
+Serving a Launch encodes the child's processargs before starting the program, so every check that can fail is made first, and once the program has started only the write itself can fail. A program whose processargs never comes does not hang: when the launcher closes its end of the bootstrap channel, the program's runtime sees PeerClosed and exits with EXIT_START_FAILED. But it would have been started only to die, after the client was told it started.
+
+**Change**
+The loop in `main()`:
+
+```cpp
+for (;;) {
+    ours::PortPacket packet{};
+    ours::port_wait(port, ours::INSTANT_INFINITE, &packet);
+    auto const slot = static_cast<usize>(packet.key);
+    if (!!(packet.signal.observed & ours::Signals::Readable)) {
+        serve_message(launcher, connections, slot);
+        if (!connections.arm(slot)) {
+            connections.drop(slot);
+        }
+        continue;
+    }
+    connections.drop(slot);  // PeerClosed, nothing to read
+}
+```
+
+init now starts one program itself, the launcher: `start_launcher()` gives it init's connection's far end (User0), duplicates of the BootFS, VMEX and the vDSO, and its root region. The shell and the autorun command become `Client::launch()` calls with the same startup handles as before, minus VmaRoot, which the launcher adds. init still holds VMEX in this step, and the shell still receives a duplicate and launches its own commands; step 3 takes both away.
+
+**Reference**
+- Fuchsia's component_manager serving `fuchsia.process.Launcher` (`src/sys/lib/elf_runner/src/process_launcher.rs`).
+- Zircon `async::Loop` and `async::Wait`, the pattern the port loop is: a one-shot wait per object, re-armed in the handler.
+
+**Verification**
+- `boot_check.py`: dbg PASS (24), rel PASS (21).
+- The rel log, in order: "init: launched the launcher", "launcher: serving", "launcher: started bin/shell", "init: launched shell", "init: shell says "pong"".
+- `out/autorun-launch` (rel, `bin/fault_probe+none`): "launcher: started bin/fault_probe" and fault_probe's own lines.
+- clang-tidy over `launcher.cpp` and `init.cpp`: nothing reported.
+- HEAD plus only these files, in a scratch copy: dbg PASS (24), rel PASS (21), and the same launcher lines.
+- A review workflow (two reviewers, each finding put to a refuter) left two standing findings, both wording, both fixed:
+  - the launcher's comments said a program that never gets its processargs waits for ever;
+  - several of init's comments still described the old arrangement.
+  Taken from its smaller notes: `MAX_STRINGS`, above. Refuted, so not done: limiting Connect to init's connection and refusing a non-channel in a Connect. No client in the tree can send either; holding a connection is the capability, and the cap of 16 connections is documented.
+
+**Deliberately not done**
+- Taking VMEX from init and the shell, and the shell's commands through the launcher: step 3.
+- An event-loop library: the loop is this program's own until U10.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the launcher re-arm a connection's wait after every message, and why does that not lose a second message that arrived meanwhile?
+- Why is the child's processargs encoded before the program is started?
+- Which program does init still start itself, and why that one?

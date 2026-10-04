@@ -92,6 +92,10 @@ TEST(LaunchProtocol, EncodeRefusals) {
                                     ours::handle_info(HandleType::User0, 0));
     EXPECT_EQ(encode_launch(buffer, "bin/x", too_many, args, {}, {}, &length), Status::OutOfRange);
 
+    std::vector<std::string_view> const too_many_args(launch::protocol::MAX_STRINGS + 1, "x");
+    EXPECT_EQ(encode_launch(buffer, "bin/x", {}, too_many_args, {}, {}, &length),
+              Status::OutOfRange);
+
     std::vector<u8> tiny(12);
     EXPECT_NE(encode_launch(tiny, "bin/x", {}, args, {}, {}, &length), Status::Ok);
 }

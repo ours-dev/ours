@@ -36,7 +36,8 @@ auto encode_launch(std::span<u8> const out, std::string_view const name,
         return Status::InvArgs;
     }
     // The job travels in front of the program's handles.
-    if (handle_info.size() > ours::CHANNEL_MAX_MSG_HANDLES - 1) {
+    if (handle_info.size() > ours::CHANNEL_MAX_MSG_HANDLES - 1 || args.size() > MAX_STRINGS ||
+        environ.size() > MAX_STRINGS || names.size() > MAX_STRINGS) {
         return Status::OutOfRange;
     }
 
@@ -85,6 +86,10 @@ auto decode_launch(std::span<u8 const> const message, u32 const num_handles, Lau
     ort::ProcessArgs parsed;
     if (auto const status = ort::ProcessArgs::parse(process_args, num_handles - 1, &parsed);
         status != Status::Ok) {
+        return Status::InvArgs;
+    }
+    if (parsed.args().size() > MAX_STRINGS || parsed.environ().size() > MAX_STRINGS ||
+        parsed.names().size() > MAX_STRINGS) {
         return Status::InvArgs;
     }
     for (u32 index = 0; index < parsed.num_handles(); ++index) {

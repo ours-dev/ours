@@ -53,7 +53,10 @@ if (!is_host_toolchain) {
   # (programs.hpp).
   user_program_names("programs") {
     visibility = [ ":*" ]
-    programs = [ "//examples/shell" ]
+    programs = [
+      "//examples/shell",
+      "//system/service/launcher",
+    ]
   }
 
   user_executable("init") {

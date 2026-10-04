@@ -1,0 +1,23 @@
+# Copyright 2026 The Ours Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/toolchain/toolchain_environment.gni")
+import("//system/user_executable.gni")
+
+assert(
+    toolchain_environment == "user",
+    "the launcher must be built in a //build/toolchain/ours:user-* toolchain")
+
+# The one process that starts programs: init starts it and hands it VMEX, the
+# BootFS and the vDSO, and every later start is a request to it over a channel
+# (//system/lib/launch's protocol; .agents/tasks/launcher-service).
+user_executable("launcher") {
+  visibility = [ "//kernel/products/image/*" ]
+  sources = [ "launcher.cpp" ]
+  deps = [
+    "//system/lib/bootfs:headers",
+    "//system/lib/launch",
+    "//system/lib/ort",
+  ]
+}

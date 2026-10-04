@@ -26,13 +26,17 @@
 /// the right user stack (73bb1ca), that the wake is not lost (0f9e32b), and
 /// that an allocation on an AP works (5b1ce2f).
 ///
-/// Every program init starts, the shell and the autorun command, is started
-/// by the user-space launcher (launch::launch_from_bootfs()); once user space
-/// is running, the kernel loads no program for it. The launcher hands init
-/// the process handle: once the shell has let go of init's channel, init
-/// waits for it to terminate and says what it ended with (object_get_info).
-/// Without what a launcher needs -- the BootFS, vmex, the vDSO's VMO and
-/// init's own root region -- init starts nothing and halts.
+/// init starts one program itself, with the launcher library
+/// (launch::launch_from_bootfs()): bin/launcher, the service that starts
+/// every other one. It hands the launcher the BootFS, vmex and the vDSO's
+/// VMO, and keeps a connection to it; the shell and the autorun command are
+/// then Launch requests on that connection (launch::Client), and once user
+/// space is running the kernel loads no program at all. The launcher hands
+/// back the process handle: once the shell has let go of init's channel,
+/// init waits for it to terminate and says what it ended with
+/// (object_get_info). Without what starting the launcher needs -- the
+/// BootFS, vmex, the vDSO's VMO and init's own root region -- init starts
+/// nothing and halts.
 ///
 /// It never returns from main: it is the process the system's other programs
 /// are started from, and nothing yet would notice it gone.
@@ -54,6 +58,7 @@
 #include <elfload/diagnostics.hpp>
 #include <init/autorun.hpp>
 #include <launch/bootfs.hpp>
+#include <launch/client.hpp>
 #include <launch/launch.hpp>
 #include <ort/debug.hpp>
 #include <ort/main.hpp>
@@ -82,6 +87,12 @@ auto halt() -> void {
 
 constexpr std::string_view PING{"ping"};
 
+auto close_all(std::span<ours::Uandle const> const handles) -> void {
+    for (auto const handle: handles) {
+        auto _ = ours::handle_close(handle);
+    }
+}
+
 auto to_str(std::string_view const text) -> std::string_view {
     return {text.data(), text.size()};
 }
@@ -90,8 +101,7 @@ auto to_str(std::string_view const text) -> std::string_view {
 /// holds -- the first time a program looks at the BootFS the kernel built
 /// for it (design K12), and the first vmo_read of a real VMO.
 ///
-/// init keeps the handle: the shell gets no BootFS from it. Passing one on
-/// would take handle_duplicate (K15), since init is about to need its own.
+/// init keeps the handle; the launcher and the shell each get a duplicate.
 auto describe_bootfs(ours::Uandle const bootfs) -> void {
     if (bootfs == ours::Uandle::Invalid) {
         auto _ = ort::debug_line("init: started without a BootFS");
@@ -129,52 +139,72 @@ auto print_launch_error(void *, elfload::Report const &report) -> void {
         {"init: launch failed: ", {report.what.data(), report.what.size()}, separator, name});
 }
 
-/// Starts |name| with |there| as its bootstrap end, then writes |message| on
-/// |here| with the child's root VMA (VmaRoot) after |handles| -- the order a
-/// launcher keeps: the process first, then the processargs, since the root
-/// VMA only exists once the process does. The message's handle_infos must
-/// list |handles| and then VmaRoot. Closes |here|; |there| and |handles|
-/// leave this process whatever the answer.
+/// Starts the launcher (bin/launcher) under |job| with the library: the one
+/// program init starts itself, since every later start is a request to it.
 ///
-/// The program is started by |launcher|, and its process handle comes back in
-/// |process|, which the caller then owns.
-auto start_then_write(launch::BootfsLauncher const &launcher, ours::Uandle const job,
-                      std::string_view const name, ours::Uandle here, ours::Uandle there,
-                      std::span<u8 const> const message,
-                      std::span<ours::Uandle const> const handles, ours::Uandle *const process)
-    -> ours::Status {
+/// It gets |connection| (User0), the far end of init's own connection to it,
+/// and what starting programs takes: a duplicate of the BootFS, of VMEX and
+/// of the vDSO's VMO, and its root region. |connection| leaves init whatever
+/// the answer. The processargs is written after the launcher exists, since
+/// its root region goes in it -- the order the library keeps.
+auto start_launcher(launch::BootfsLauncher const &library, ours::Uandle const job,
+                    ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
+                    ours::Uandle const connection) -> ours::Status {
     using ours::Status;
 
-    ours::Uandle all[8] = {};
-    ours::Uandle root_vma = ours::Uandle::Invalid;
-    auto spawned = Status::Ok;
-    auto const started = launch::launch_from_bootfs(
-        launcher, job, name, there, {.report = print_launch_error, .context = nullptr});
-    if (started.is_err()) {
-        spawned = started.unwrap_err();
-    } else {
-        *process = started.unwrap().process;
-        root_vma = started.unwrap().root_vma;
-    }
-    if (spawned != Status::Ok) {
-        for (auto const handle: handles) {
-            auto _ = ours::handle_close(handle);
+    ours::Uandle handed[5] = {connection};
+    u32 count = 1;
+    for (auto const original: {bootfs, vmex, vdso}) {
+        if (auto const status =
+                ours::handle_duplicate(original, ours::Rights::SameRights, &handed[count]);
+            status != Status::Ok) {
+            close_all({handed, count});
+            return status;
         }
+        count += 1;
+    }
+    u32 const infos[] = {
+        ours::handle_info(ours::HandleType::User0, 0),
+        ours::handle_info(ours::HandleType::VmoBootfs, 0),
+        ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE)),
+        ours::handle_info(ours::HandleType::VmoVdso, 0),
+        ours::handle_info(ours::HandleType::VmaRoot, 0),
+    };
+    std::string_view const args[] = {user_programs::LAUNCHER};
+    u8 message[256];
+    u32 length = 0;
+    if (auto const status = ours::encode_process_args(message, infos, args, {}, {}, &length);
+        status != Status::Ok) {
+        close_all({handed, count});
+        return status;
+    }
+
+    ours::Uandle here = ours::Uandle::Invalid;
+    ours::Uandle there = ours::Uandle::Invalid;
+    if (auto const status = ours::channel_create(ours::ChannelCreateOptions::None, &here, &there);
+        status != Status::Ok) {
+        close_all({handed, count});
+        return status;
+    }
+    auto const started =
+        launch::launch_from_bootfs(library, job, user_programs::LAUNCHER, there,
+                                   {.report = print_launch_error, .context = nullptr});
+    if (started.is_err()) {
+        close_all({handed, count});
         auto _ = ours::handle_close(here);
-        return spawned;
+        return started.unwrap_err();
     }
-    u32 count = 0;
-    for (auto const handle: handles) {
-        all[count++] = handle;
-    }
-    all[count++] = root_vma;
-    auto const written = ours::channel_write(here, ours::ChannelWriteOptions::None, message.data(),
-                                             static_cast<u32>(message.size()), all, count);
+    handed[count++] = started.unwrap().root_vma;
+    auto const written =
+        ours::channel_write(here, ours::ChannelWriteOptions::None, message, length, handed, count);
     auto _ = ours::handle_close(here);
+    // init does not wait for the launcher; the process lives on without this
+    // handle.
+    auto _ = ours::handle_close(started.unwrap().process);
     return written;
 }
 
-/// Starts the autorun |command| under |job|, split by
+/// Starts the autorun |command| under |job| through the launcher, split by
 /// init::AutorunCommand::parse(): its first `+`-separated word is the BootFS
 /// name, and all of them, the name included, are its argv.
 ///
@@ -183,7 +213,7 @@ auto start_then_write(launch::BootfsLauncher const &launcher, ours::Uandle const
 /// prints goes to the debug log like everyone else's. init does not wait for
 /// it, so the process handle the launcher hands back is closed at once:
 /// closing it does not stop a process that has started.
-auto start_autorun(launch::BootfsLauncher const &launcher, ours::Uandle const job,
+auto start_autorun(launch::Client const &launcher, ours::Uandle const job,
                    std::string_view const command) -> ours::Status {
     using ours::Status;
 
@@ -191,53 +221,28 @@ auto start_autorun(launch::BootfsLauncher const &launcher, ours::Uandle const jo
     if (auto const status = init::AutorunCommand::parse(command, &parsed); status != Status::Ok) {
         return status;
     }
-
-    // The header and the words. The words and their NULs take no more than
-    // the option they came from, and the kernel relays options within
-    // USER_OPTIONS_BYTES (<ours/process_args.hpp>), so a command always fits.
-    // One handle, the program's root VMA, known only once it is spawned.
-    constexpr usize MESSAGE_BYTES = sizeof(ours::ProcArgs) + sizeof(u32) + ours::USER_OPTIONS_BYTES;
-    u8 message[MESSAGE_BYTES];
-    u32 length = 0;
-    u32 const infos[] = {ours::handle_info(ours::HandleType::VmaRoot, 0)};
-    if (auto const status =
-            ours::encode_process_args(message, infos, parsed.words(), {}, {}, &length);
-        status != Status::Ok) {
-        return status;
+    auto const started = launcher.launch(job, to_str(parsed.name()), parsed.words(), {}, {}, {});
+    if (started.is_err()) {
+        return started.unwrap_err();
     }
-
-    ours::Uandle bootstrap = ours::Uandle::Invalid;
-    ours::Uandle bootstrap_there = ours::Uandle::Invalid;
-    if (auto const status =
-            ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
-        status != Status::Ok) {
-        return status;
-    }
-    auto process = ours::Uandle::Invalid;
-    auto const status = start_then_write(launcher, job, to_str(parsed.name()), bootstrap,
-                                         bootstrap_there, {message, length}, {}, &process);
-    if (process != ours::Uandle::Invalid) {
-        auto _ = ours::handle_close(process);
-    }
-    return status;
+    auto _ = ours::handle_close(started.unwrap());
+    return Status::Ok;
 }
 
-/// Starts the shell under |job| with |peer| as its User0 startup handle,
-/// duplicated launcher handles, and the System Debug resource for COM1.
+/// Starts the shell under |job| through the launcher, with |peer| as its
+/// User0 startup handle, duplicates of the job, the BootFS, VMEX and the
+/// vDSO's VMO, and the System Debug resource for COM1.
 ///
 /// The liveness channel is separate from the bootstrap channel, which the
 /// runtime closes as soon as it has read processargs. The shell answers init's
 /// ping on the liveness channel, then keeps running its command loop.
 ///
-/// The message is written after the shell exists (start_then_write()), since
-/// its root VMA goes in it. The duplicated handles and |peer| leave init with
-/// the processargs message; init retains its original launcher handles.
-///
-/// Started by |launcher|, which puts the shell's process handle in |process|.
-auto start_shell(launch::BootfsLauncher const &launcher, ours::Uandle const job,
-                 ours::Uandle const bootfs, ours::Uandle const vmex, ours::Uandle const vdso,
-                 ours::Uandle debug, ours::Uandle peer, ours::Uandle *const process)
-    -> ours::Status {
+/// |peer|, |debug| and the duplicates leave init with the request, whatever
+/// the answer; init keeps its originals. The shell's process handle comes
+/// back in |process|.
+auto start_shell(launch::Client const &launcher, ours::Uandle const job, ours::Uandle const bootfs,
+                 ours::Uandle const vmex, ours::Uandle const vdso, ours::Uandle debug,
+                 ours::Uandle peer, ours::Uandle *const process) -> ours::Status {
     using ours::Status;
 
     if (debug == ours::Uandle::Invalid) {
@@ -245,86 +250,42 @@ auto start_shell(launch::BootfsLauncher const &launcher, ours::Uandle const job,
         return Status::BadHandle;
     }
 
-    ours::Uandle handed[6] = {};
-    u32 infos[7] = {};
-    u32 count = 0;
-    handed[count] = peer;
-    infos[count++] = ours::handle_info(ours::HandleType::User0, 0);
-
-    auto const append_duplicate = [&](ours::Uandle const original, ours::HandleType const type,
-                                      u16 const arg) -> Status {
-        if (original == ours::Uandle::Invalid) {
-            return Status::Ok;
-        }
-        auto duplicate = ours::Uandle::Invalid;
+    ours::Uandle handed[6] = {peer};
+    u32 infos[6] = {ours::handle_info(ours::HandleType::User0, 0)};
+    u32 count = 1;
+    struct Duplicated {
+        ours::Uandle original;
+        u32 info;
+    };
+    Duplicated const duplicated[] = {
+        {job, ours::handle_info(ours::HandleType::JobDefault, 0)},
+        {bootfs, ours::handle_info(ours::HandleType::VmoBootfs, 0)},
+        {vmex,
+         ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_VMEX_BASE))},
+        {vdso, ours::handle_info(ours::HandleType::VmoVdso, 0)},
+    };
+    for (auto const &[original, info]: duplicated) {
         if (auto const status =
-                ours::handle_duplicate(original, ours::Rights::SameRights, &duplicate);
+                ours::handle_duplicate(original, ours::Rights::SameRights, &handed[count]);
             status != Status::Ok) {
+            close_all({handed, count});
+            auto _ = ours::handle_close(debug);
             return status;
         }
-        handed[count] = duplicate;
-        infos[count++] = ours::handle_info(type, arg);
-        return Status::Ok;
-    };
-
-    if (auto const status = append_duplicate(job, ours::HandleType::JobDefault, 0);
-        status != Status::Ok) {
-        for (u32 index = 0; index < count; ++index) {
-            auto _ = ours::handle_close(handed[index]);
-        }
-        return status;
-    }
-    if (auto const status = append_duplicate(bootfs, ours::HandleType::VmoBootfs, 0);
-        status != Status::Ok) {
-        for (u32 index = 0; index < count; ++index) {
-            auto _ = ours::handle_close(handed[index]);
-        }
-        return status;
-    }
-    if (auto const status = append_duplicate(vmex, ours::HandleType::SystemResource,
-                                             u16(ours::RSRC_SYSTEM_VMEX_BASE));
-        status != Status::Ok) {
-        for (u32 index = 0; index < count; ++index) {
-            auto _ = ours::handle_close(handed[index]);
-        }
-        return status;
-    }
-    if (auto const status = append_duplicate(vdso, ours::HandleType::VmoVdso, 0);
-        status != Status::Ok) {
-        for (u32 index = 0; index < count; ++index) {
-            auto _ = ours::handle_close(handed[index]);
-        }
-        return status;
+        infos[count++] = info;
     }
     handed[count] = debug;
     infos[count++] =
         ours::handle_info(ours::HandleType::SystemResource, u16(ours::RSRC_SYSTEM_DEBUG_BASE));
-    infos[count] = ours::handle_info(ours::HandleType::VmaRoot, 0);
 
-    u8 message[256];
-    u32 length = 0;
     std::string_view const args[] = {user_programs::SHELL};
-    if (auto const status =
-            ours::encode_process_args(message, {infos, count + 1}, args, {}, {}, &length);
-        status != Status::Ok) {
-        for (u32 index = 0; index < count; ++index) {
-            auto _ = ours::handle_close(handed[index]);
-        }
-        return status;
+    auto const started =
+        launcher.launch(job, user_programs::SHELL, args, {}, {handed, count}, {infos, count});
+    if (started.is_err()) {
+        return started.unwrap_err();
     }
-
-    ours::Uandle bootstrap = ours::Uandle::Invalid;
-    ours::Uandle bootstrap_there = ours::Uandle::Invalid;
-    if (auto const status =
-            ours::channel_create(ours::ChannelCreateOptions::None, &bootstrap, &bootstrap_there);
-        status != Status::Ok) {
-        for (u32 index = 0; index < count; ++index) {
-            auto _ = ours::handle_close(handed[index]);
-        }
-        return status;
-    }
-    return start_then_write(launcher, job, user_programs::SHELL, bootstrap, bootstrap_there,
-                            {message, length}, {handed, count}, process);
+    *process = started.unwrap();
+    return Status::Ok;
 }
 
 /// The code |process| ended with, said on the console: TERMINATED first,
@@ -365,8 +326,9 @@ auto main(int, char **) -> int {
     describe_bootfs(bootfs);
 
     // vmex, handed on by userboot: the capability to make a VMO executable
-    // (design D3). init keeps it for its own launcher and hands it to nobody
-    // (K23); until then holding it is all there is to check (K18).
+    // (design D3). init uses it to start the launcher and hands the launcher
+    // a duplicate; the shell still gets one too, until it launches through
+    // the launcher.
     auto const vmex = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                u16(ours::RSRC_SYSTEM_VMEX_BASE));
     if (vmex != ours::Uandle::Invalid) {
@@ -375,9 +337,8 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("init: started without vmex");
     }
 
-    // The vDSO's VMO, also handed on by userboot: init maps it into the
-    // processes it starts once its launcher exists (K23). Held, unused, until
-    // then.
+    // The vDSO's VMO, also handed on by userboot: mapped into the launcher by
+    // the library, and duplicated to the launcher and the shell.
     auto const vdso = ort::take_startup_handle(ours::HandleType::VmoVdso, 0);
     auto const debug = ort::take_startup_handle(ours::HandleType::SystemResource,
                                                 u16(ours::RSRC_SYSTEM_DEBUG_BASE));
@@ -387,9 +348,10 @@ auto main(int, char **) -> int {
         auto _ = ort::debug_line("init: started without the vdso vmo");
     }
 
-    // The launcher: the BootFS mapped into init's own root region and made
-    // executable with vmex. Without one there is no way to start anything:
-    // the kernel loads no program once user space runs.
+    // The library: the BootFS mapped into init's own root region and made
+    // executable with vmex, for the one program init starts itself. Without
+    // it there is no way to start anything: the kernel loads no program once
+    // user space runs.
     auto const vma = ort::take_startup_handle(ours::HandleType::VmaRoot, 0);
     if (bootfs == ours::Uandle::Invalid || vmex == ours::Uandle::Invalid ||
         vdso == ours::Uandle::Invalid || vma == ours::Uandle::Invalid) {
@@ -403,7 +365,24 @@ auto main(int, char **) -> int {
         report("init: cannot start programs, setting the launcher up = ", made.unwrap_err());
         halt();
     }
-    auto const launcher = made.unwrap();
+    auto const library = made.unwrap();
+
+    // The launcher first, with the library; everything after it through it.
+    ours::Uandle connection = ours::Uandle::Invalid;
+    ours::Uandle connection_there = ours::Uandle::Invalid;
+    if (auto const status =
+            ours::channel_create(ours::ChannelCreateOptions::None, &connection, &connection_there);
+        status != Status::Ok) {
+        report("init: channel_create = ", status);
+        halt();
+    }
+    if (auto const status = start_launcher(library, job, bootfs, vmex, vdso, connection_there);
+        status != Status::Ok) {
+        report("init: starting the launcher = ", status);
+        halt();
+    }
+    auto _ = ort::debug_line("init: launched the launcher");
+    auto const launcher = launch::Client(connection);
 
     ours::Uandle here = ours::Uandle::Invalid;
     ours::Uandle peer = ours::Uandle::Invalid;
