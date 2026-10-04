@@ -27,7 +27,7 @@ Goals:
 
 Non-goals:
 - Freeing the kernel's decompressed package (`docs/repairs/261003/userabi.md`). This design shrinks it to the kernel's own files but does not remove it. The kernel still needs `userboot` and `vdso` from it. Reusing the copy phys already decompressed is a separate change.
-- A real LZ4 encoder. Today's encoder writes literals only (`docs/repairs/260925/obi.md`, item 3), so "decompressing" is a copy until that lands. The decoder is a real LZ4 block decoder, and nothing here changes when the encoder does.
+- A real LZ4 encoder. Today's encoder writes literals only (`docs/repairs/260925/obi.md`, item 3; fixed since, with upstream LZ4 vendored for obit), so "decompressing" is a copy until that lands. The decoder is a real LZ4 block decoder, and nothing here changes when the encoder does.
 - Moving `//kernel/lib/obi` or `//kernel/lib/lz4` to `system/lib`.
 
 ## Design

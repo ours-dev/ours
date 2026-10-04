@@ -2,7 +2,9 @@
 """pack-smoke — round-trips a representative .rsp through the real `obit`
 binary: pack it, then confirm `obit validate`/`list`/`extract` agree with
 what was packed. Exercises the compressed-BootFS, cmdline, and raw
---type=container embed paths in one pass.
+--type=container embed paths in one pass, and checks that compression is
+real: the same files packed with and without lz4 extract to the same bytes,
+and the compressed image is the smaller.
 """
 from __future__ import annotations
 
@@ -140,6 +142,51 @@ def main() -> int:
             [str(args.obit), "pack", f"@{rsp_bad_exec}", "--output", str(bad_exec)],
             capture_output=True, text=True)
         assert failed.returncode != 0, "--type=executable accepted a non-ELF file"
+
+        # --- Scenario 3: real compression.
+        #
+        # The same files packed with and without --compressed=lz4 must
+        # extract to the same bytes, and the compressed image must be the
+        # smaller: obit compresses with upstream LZ4 (//vendor/lz4), and the
+        # literal-only encoder it replaced made images a few bytes larger,
+        # never smaller. The payload is repetitive so that LZ4 has matches to
+        # find -- back-references, the part of the decoder a literal-only
+        # stream never exercised -- including one longer than 64 KiB, the
+        # farthest an LZ4 match can reach back.
+        repetitive = directory / "repetitive.bin"
+        repetitive.write_bytes(b"ours boot image, compressed with lz4. " * 4096)
+        varied = directory / "varied.bin"
+        varied.write_bytes(bytes((i * 131 + i // 7) & 0xFF for i in range(70000)))
+        files = directory / "compress.fini"
+        files.write_text(f"repetitive={repetitive}\nvaried={varied}\n")
+
+        def pack_files(compressed: bool) -> pathlib.Path:
+            rsp_path = directory / f"compress-{compressed}.rsp"
+            rsp_path.write_text(
+                "--reset\n"
+                "--files-type=kernel-storage\n"
+                "--prefix=ours\n"
+                + ("--compressed=lz4\n" if compressed else "")
+                + f"--files\n{files}\n"
+            )
+            out_path = directory / f"compress-{compressed}.obi"
+            run([str(args.obit), "pack", f"@{rsp_path}", "--output", str(out_path)])
+            run([str(args.obit), "validate", str(out_path)])
+            return out_path
+
+        plain = pack_files(False)
+        squeezed = pack_files(True)
+        plain_kernel = directory / "plain-kernel.bin"
+        squeezed_kernel = directory / "squeezed-kernel.bin"
+        run([str(args.obit), "extract", str(plain), "kernel", str(plain_kernel)])
+        run([str(args.obit), "extract", str(squeezed), "kernel", str(squeezed_kernel)])
+        assert squeezed_kernel.read_bytes() == plain_kernel.read_bytes(), (
+            "the lz4-compressed item did not extract to the bytes of the uncompressed one"
+        )
+        assert squeezed.stat().st_size < plain.stat().st_size // 2, (
+            f"lz4 did not compress: {squeezed.stat().st_size} bytes against "
+            f"{plain.stat().st_size} uncompressed"
+        )
 
     args.stamp.write_text("ok\n")
     return 0

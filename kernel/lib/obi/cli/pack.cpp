@@ -25,6 +25,7 @@
 
 #include "command.hpp"
 #include "common.hpp"
+#include "lz4_block.hpp"
 #include <bootfs/builder.hpp>
 #include <cxxopts.hpp>
 
@@ -114,21 +115,17 @@ namespace {
         s.flags = obi::ItemFlags::Required;
 
         if (acc.compressed) {
-            auto const required = obi::compression::compressed_size(blob.size());
-            if (required.is_err()) {
-                std::println(std::cerr, "obit: cannot size compressed item '{}'", s.name);
+            // Upstream LZ4, checked against the boot chain's decoder before
+            // it goes in (lz4_compress_block()).
+            auto compressed = lz4_compress_block({blob.data(), blob.size()});
+            if (compressed.is_err()) {
+                std::println(std::cerr, "obit: cannot compress item '{}': status {}", s.name,
+                             static_cast<int>(compressed.unwrap_err()));
                 return 1;
             }
-            arena.push_back(std::vector<u8>(required.unwrap()));
-            auto &compressed = arena.back();
-            auto const written = obi::compression::compress_literals(
-                {blob.data(), blob.size()}, {compressed.data(), compressed.size()});
-            if (written.is_err()) {
-                std::println(std::cerr, "obit: cannot compress item '{}'", s.name);
-                return 1;
-            }
-            compressed.resize(written.unwrap());
-            s.data = {compressed.data(), compressed.size()};
+            arena.push_back(std::move(compressed.unwrap()));
+            auto const &owned = arena.back();
+            s.data = {owned.data(), owned.size()};
             s.compression = obi::Compression::Lz4;
         } else {
             arena.push_back(std::move(blob));

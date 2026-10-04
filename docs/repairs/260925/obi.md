@@ -35,19 +35,6 @@
 
 **验收**：改动任一条目的一个字节，或换上另一把私钥签出的镜像，physload 都拒绝启动；正常构建的两个镜像照常启动。
 
-## 3. 标着 LZ4 的条目实际没有压缩
-
-**现象**：`kernel_package()` 总是带 `--compressed=lz4`（`kernel/lib/obi/cli/pack.cpp:54`），但编码器 `compress_literals()` 只输出纯 literal 序列
-（`kernel/lib/obi/include/obi/compression.hpp:18-21、32-57`，调用在 `pack.cpp:124`），也就是原样存储、前面加几个长度字节。镜像并没有变小，
-条目上的"压缩"只是名义上的。
-
-**影响**：只影响镜像体积，不涉及安全；尤其不能把它当成对内核映像的"遮挡"。
-
-**改法**：接入真正的 LZ4 块编码器（按规矩从上游官方发布取、放进 vendor），解码侧（`compression.hpp:136` 的 `decompress()`）已经是
-标准 LZ4 块格式，不用改。或者在接入之前，让 `kernel_package()` 不再声称压缩。
-
-**验收**：`kernel.dev.obi` 明显变小；两个镜像照常启动；`kernel/lib/obi/test` 的压缩往返测试通过。
-
 ## 4. 合并多个 kernel-storage 条目时，同名文件不报错，两份都进 BootFS
 
 **现象**：一个镜像的多个 `kernel_package()`（镜像自己的与 physboot 的）被打进同一个 BootFS。2026-09-25 给 `kernel_package()`

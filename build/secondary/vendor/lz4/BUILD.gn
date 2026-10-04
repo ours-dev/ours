@@ -1,0 +1,26 @@
+# LZ4 — the reference LZ4 compressor, for host tools (obit packs the boot
+# image's BootFS items with it). Only lib/ is built: it is BSD-2-Clause
+# (vendor/lz4/lib/LICENSE); the rest of upstream is GPL-2.0 and stays out.
+# Release: v1.10.0
+# Upstream: https://github.com/lz4/lz4
+#
+# Host tools only. The kernel, phys and userboot decode with obi's own
+# header-only decoder (kernel/lib/obi/include/obi/compression.hpp), which
+# reads the same raw block format.
+
+config("lz4.config") {
+  include_dirs = [ "//vendor/lz4/lib" ]
+}
+
+# lz4hc.c includes lz4.c's common definitions itself (LZ4_COMMONDEFS_ONLY),
+# so both are listed, as upstream's own Makefile builds them.
+source_set("lz4") {
+  public_configs = [ ":lz4.config" ]
+  sources = [
+    "//vendor/lz4/lib/lz4.c",
+    "//vendor/lz4/lib/lz4.h",
+    "//vendor/lz4/lib/lz4hc.c",
+    "//vendor/lz4/lib/lz4hc.h",
+  ]
+  visibility = [ "*" ]
+}

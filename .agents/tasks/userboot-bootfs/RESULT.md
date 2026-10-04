@@ -17,7 +17,7 @@
   - the shell's `ls` over serial lists the item's files;
   - the autorun build (`out/autorun-launch`) passes and starts its autorun program.
 - The OBI host tests pass with the page-aligned builder.
-- Not measured: LZ4 back-references in the unpack path. The encoder writes literals only (`docs/repairs/260925/obi.md`, item 3).
+- Not measured: LZ4 back-references in the unpack path. The encoder wrote literals only (`docs/repairs/260925/obi.md`, item 3). Since fixed: obit compresses with upstream LZ4, and both images boot through the real decoder.
 
 ## Deviations from the design
 - userboot needs only `//kernel/lib/obi:headers`, not `//kernel/lib/lz4`: `obi::ItemView::materialize()` decodes LZ4 itself.

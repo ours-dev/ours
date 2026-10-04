@@ -16,9 +16,11 @@ using MutableBytes = ustl::views::Span<u8>;
 using Result = ustl::Result<usize, ours::Status>;
 
 // This is the raw LZ4 block format (the same sequence format used by
-// LZ4_decompress_safe), without a frame header.  The encoder deliberately
-// emits literal-only sequences: it is small, deterministic, and remains
-// useful for boot metadata where correctness matters more than ratio.
+// LZ4_decompress_safe), without a frame header.  The encoder below emits
+// literal-only sequences: it compresses nothing, and is kept because the OBI
+// tests build their inputs with it.  The boot image itself is compressed by
+// obit with upstream LZ4 (kernel/lib/obi/cli/lz4_block.hpp, //vendor/lz4);
+// the decoder further down reads both.
 [[nodiscard]]
 inline auto compressed_size(usize input_size) -> Result {
     auto const extension = input_size < 15 ? usize{0} : (input_size - 15) / 255 + 1;

@@ -2,6 +2,8 @@ executable("obit") {
   sources = [
     "extract.cpp",
     "list.cpp",
+    "lz4_block.cpp",
+    "lz4_block.hpp",
     "main.cpp",
     "modify.cpp",
     "pack.cpp",
@@ -12,6 +14,7 @@ executable("obit") {
     "//system/lib/bootfs:bootfs",
     "//kernel/lib/obi:obi",
     "//vendor/cxxopt",
+    "//vendor/lz4",
   ]
   visibility = [ "*" ]
 }
