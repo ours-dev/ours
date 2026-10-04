@@ -306,3 +306,58 @@ None.
 - After `trylock_or_cancel()` succeeds, what does the timer callback know, and what does it not know?
 - Why does the sleeper cancel its timer only after it runs again, and how long can that take?
 - How does `sleep.test` make a race window of a few microseconds wide enough to hit every time?
+
+## Title: A suspend or kill leaves an uninterruptible sleeper alone, and wakes an interruptible one with Retry or Killed (2026-10-03)
+
+**Files**
+- `kernel/kernel/task/thread.cpp` — `suspend_or_kill()`'s Sleeping branch makes the Parked branch's interruptible check and unsleeps with `wakeup_status`.
+- `kernel/commands/sleep_test.cpp` — `sleep.test` checks the status an early-woken sleep reads, and that an uninterruptible sleep runs to its deadline.
+
+**Symptom**
+`sleep.test` before this change: "the early-woken sleep answered Ok", and "the uninterruptible sleep answered Ok, -93654 us past its deadline", which means it was woken 94 ms early. Not reachable from a program: user threads do not sleep, and no system call suspends one.
+
+**Cause**
+The Sleeping branch was written as if every sleep could be cut short, and as if being cut short were the same as finishing:
+
+```cpp
+case State::Sleeping:
+    m_waiter_state.unsleep(this, Status());
+```
+
+`Interruptible::No` on a sleep is a promise to its caller that only the deadline ends it. The Parked branch kept that promise for waits (`if (!m_waiter_state.is_interruptible()) return Status::Ok;`); the Sleeping branch did not, although `WaiterState::sleep()` records the same flag for both. And `Status()` is `Ok`, the answer of a sleep that ran its course, so an interruptible sleeper could not tell that it had been interrupted. The two branches are one decision, "may this blocked thread be woken for a signal, and what does it read", and Zircon makes it once for both.
+
+**Change**
+
+```cpp
+// after
+case State::Sleeping: {
+    if (!m_waiter_state.is_interruptible()) {
+        return Status::Ok;   // the signal is set; the sleeper meets it at its deadline
+    }
+    m_waiter_state.unsleep(this, wakeup_status);   // InternalIrqRetry or InternalIrqKilled
+    break;
+}
+```
+
+**Reference**
+Zircon `Thread::SuspendOrKillInternal()` (kernel/kernel/thread.cc): `if ((is_blocked || cur_state == THREAD_SLEEPING) && wait_queue_state_.interruptible() == Interruptible::No) { set_signals.call(); return ZX_OK; }`, then `wait_queue_state_.Unsleep(this, wakeup_status)`.
+
+**Verification**
+- Isolated copy of HEAD with this change: `boot_check.py --out out/task-wake`, dbg PASS (20 passed), rel PASS (18 passed), 0 error lines.
+- `sleep.test` twice on dbg: `ok -- 10 checks` both times; the early-woken sleep answered `InternalIrqRetry` (42683 us and 43996 us before its deadline), the uninterruptible one `Ok`, 8847 us and 6948 us past its deadline. `waitqueue.test` `ok` both times.
+- clang-tidy: no finding on the changed lines.
+
+**Deliberately not done**
+- The Parked and Sleeping branches now repeat the interruptible check. Folding them into one test before the switch, as Zircon does, would also change the Ready, Running and Suspend cases' flow; left for a change that is only about that.
+- A kernel thread that a suspend did not wake keeps the Suspend bit after its sleep, and its next interruptible wait returns `InternalIrqRetry` at once until someone resumes it. That is the protocol, but no kernel thread is suspended today.
+
+**How it was found**
+Recorded as repair item 3 on 2026-09-24; `sleep.test` showed both halves before the fix.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- What does `Interruptible::No` promise the caller of a sleep, and who would break that promise if a suspend could end it?
+- Why must an interrupted sleep answer something other than `Ok`?
+- A kernel thread was suspended while sleeping uninterruptibly. What happens at its deadline, and at its next interruptible wait?

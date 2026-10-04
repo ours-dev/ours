@@ -363,9 +363,20 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             break;
         }
         case State::Sleeping: {
+            // The same rule as a parked thread's: a sleep that is not
+            // interruptible ends at its deadline and nowhere else, and the
+            // thread meets the signal when it does. sleep() records which
+            // kind this is. This branch used to wake every sleeper, and with
+            // Status() -- Ok -- so an interrupted sleep read as a full one.
+            // Zircon's SuspendOrKillInternal() applies one interruptible test
+            // to blocked and sleeping threads alike.
+            if (!m_waiter_state.is_interruptible()) {
+                return Status::Ok;
+            }
+
             // Same as the Suspend case: unsleep() ends in unpark_thread(),
             // which leaves the PI lock to us.
-            m_waiter_state.unsleep(this, Status());
+            m_waiter_state.unsleep(this, wakeup_status);
             break;
         }
         default:
