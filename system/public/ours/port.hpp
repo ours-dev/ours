@@ -89,6 +89,16 @@ enum class WaitAsyncOptions : u32 {
     None = 0,
 };
 
+/// The most object_wait_async observers one port has live: armed, or matched
+/// with their packet still queued. A wait past it answers NoResource.
+///
+/// Zircon counts armed observers only, and a program past its limit gets a
+/// policy exception. Counting queued packets too bounds what a port can hold
+/// for a reader that never reads: otherwise a program could arm a wait on a
+/// signal already asserted, have it queue at once, and arm again without
+/// end.
+inline constexpr u32 PORT_MAX_OBSERVERS = 1024;
+
 /// The most user packets (port_queue) one port holds unread. A port_queue
 /// that would exceed it answers ShouldWait: the reader has fallen behind,
 /// and the caller should wait for it rather than have the kernel buffer

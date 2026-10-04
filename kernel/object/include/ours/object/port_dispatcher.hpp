@@ -38,6 +38,57 @@ struct QueuedPacket {
     USTL_DECLARE_LIST(QueuedPacket, List, QueueOption);
 };
 
+/// A one-shot, level-triggered wait on an object that delivers into a port
+/// (object_wait_async). Zircon's PortObserver.
+///
+/// It is linked on the watched object's observer list, under that object's
+/// lock, until one of three things ends the wait:
+///   - the object asserts a signal it waits for: on_match() queues the
+///     embedded packet, and the observer goes with it into the port's queue;
+///   - the handle it was made through leaves its table: on_cancel() frees it
+///     and nothing is queued;
+///   - the port has lost its last handle by the time it matches: the packet
+///     is dropped and the observer freed.
+///
+/// on_match() and on_cancel() cannot both run for one observer. Each is
+/// called under the watched object's lock by the code that has just unlinked
+/// the observer (or, for an immediate match, never linked it), so whichever
+/// comes first is the only one that finds it.
+///
+/// |m_object| is for a race that object lock does not cover: a closing port
+/// tearing down its armed observers (PortDispatcher::on_zero_handles()),
+/// which runs under the port's lock and then takes the object's. It says
+/// whether the observer is still registered, is read and written under the
+/// port's lock, and whoever sets it to null frees the observer. A callback
+/// that finds it already null leaves the observer alone: the tear-down has
+/// it, and frees it once it has taken it off the object. Zircon's
+/// PortObserver::dispatcher_.
+class PortObserver final: public SignalObserver {
+  public:
+    PortObserver(ustl::Arc<PortDispatcher> port, Dispatcher *object, u64 key, Signals trigger);
+
+    // Out of line: the port is incomplete here, and the destructor drops a
+    // reference to it.
+    ~PortObserver() override;
+
+    auto on_match(Signals signals) -> void override;
+    auto on_cancel(Signals signals) -> void override;
+
+  private:
+    friend class PortDispatcher;
+
+    QueuedPacket m_packet;
+    ustl::Arc<PortDispatcher> const m_port;
+    Dispatcher *m_object;
+
+    /// On the port's m_armed while registered and not yet queued.
+    ustl::collections::intrusive::ListMemberHook<> m_armed_hook;
+    USTL_DECLARE_HOOK_OPTION(PortObserver, m_armed_hook, ArmedOption);
+
+  public:
+    USTL_DECLARE_LIST(PortObserver, ArmedList, ArmedOption);
+};
+
 using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 
 /// A queue of packets that threads wait on: the kernel half of an event
@@ -53,6 +104,11 @@ using PortDispatcherBase = SoloDispatcher<PortDispatcher, RIGHTS_DEFAULT_PORT>;
 ///     signalled over an empty queue, and every waiter would spin on it.
 ///   - m_zero_handles, set once the last handle is gone. Nothing may queue
 ///     after that.
+///   - m_armed, the observers registered and not yet matched, and
+///     m_live_observers, those plus the observers whose packets are queued.
+///     Guarded by m_port_lock. on_zero_handles() tears m_armed down, so a
+///     closed port does not live on through the waits it delivered to, and
+///     PORT_MAX_OBSERVERS bounds the count.
 ///
 /// m_port_lock is its own Mutex, not the Dispatcher's m_lock: once
 /// object_wait_async exists, an observer queues a packet while holding the
@@ -89,6 +145,30 @@ class PortDispatcher final: public PortDispatcherBase {
 
     ~PortDispatcher() override;
 
+    /// Since boot, across all ports: observers a closing port tore down, and
+    /// callbacks (on_match(), on_cancel()) that found their observer already
+    /// claimed by such a tear-down and left it alone. The second is the race
+    /// m_object exists for; port.test reads both to know its stress really
+    /// produced that race rather than only ever one order.
+    struct TearDownCounts {
+        isize torn_down;
+        isize yielded;
+    };
+    [[nodiscard]]
+    static auto tear_down_counts() -> TearDownCounts;
+
+    /// Registers |observer| with this port, as its first step: called by
+    /// Dispatcher::attach_port_observer() under the watched object's lock,
+    /// before the level check, as Zircon's MakeObserver() is. Registered
+    /// first so that on_zero_handles() can always find it -- an observer the
+    /// port did not know of could be linked on an object after the port's
+    /// tear-down had passed, and would never be freed.
+    ///
+    /// NoResource when PORT_MAX_OBSERVERS observers are live, armed or
+    /// queued; BadHandle if the port has no handles left.
+    [[nodiscard]]
+    auto register_observer(PortObserver *observer) -> Status;
+
   private:
     friend class PortObserver;
 
@@ -110,7 +190,7 @@ class PortDispatcher final: public PortDispatcherBase {
 
     /// The observer's wait is cancelled, its handle gone. Returns the observer
     /// for the caller to free if it is still registered (m_object set), which
-    /// it then no longer is; empty if someone else already took it.
+    /// it then no longer is; empty if the port's tear-down already took it.
     [[nodiscard]]
     auto maybe_reap(PortObserver *observer) -> ustl::Box<PortObserver>;
 
@@ -126,46 +206,9 @@ class PortDispatcher final: public PortDispatcherBase {
     QueuedPacket::List m_packets TA_GUARDED(m_port_lock);
     u32 m_user_packets TA_GUARDED(m_port_lock) = 0;
     bool m_zero_handles TA_GUARDED(m_port_lock) = false;
+    PortObserver::ArmedList m_armed TA_GUARDED(m_port_lock);
+    u32 m_live_observers TA_GUARDED(m_port_lock) = 0;
     sync::Event m_ready;
-};
-/// A one-shot, level-triggered wait on an object that delivers into a port
-/// (object_wait_async). Zircon's PortObserver.
-///
-/// It is linked on the watched object's observer list, under that object's
-/// lock, until one of three things ends the wait:
-///   - the object asserts a signal it waits for: on_match() queues the
-///     embedded packet, and the observer goes with it into the port's queue;
-///   - the handle it was made through leaves its table: on_cancel() frees it
-///     and nothing is queued;
-///   - the port has lost its last handle by the time it matches: the packet
-///     is dropped and the observer freed.
-///
-/// on_match() and on_cancel() cannot both run for one observer. Each is
-/// called under the watched object's lock by the code that has just unlinked
-/// the observer (or, for an immediate match, never linked it), so whichever
-/// comes first is the only one that finds it.
-///
-/// |m_object| is for a race that object lock does not cover: a closing port
-/// tearing down its armed observers, which runs under the port's lock rather
-/// than the object's. It says whether the observer is still registered, is
-/// read and written under the port's lock, and whoever sets it to null frees
-/// the observer. Until a port tears its observers down, only the callbacks
-/// set it, and it is always set when they look. Zircon's
-/// PortObserver::dispatcher_.
-class PortObserver final: public SignalObserver {
-  public:
-    PortObserver(ustl::Arc<PortDispatcher> port, Dispatcher *object, u64 key, Signals trigger);
-    ~PortObserver() override = default;
-
-    auto on_match(Signals signals) -> void override;
-    auto on_cancel(Signals signals) -> void override;
-
-  private:
-    friend class PortDispatcher;
-
-    QueuedPacket m_packet;
-    ustl::Arc<PortDispatcher> const m_port;
-    Dispatcher *m_object;
 };
 } // namespace ours::object
 

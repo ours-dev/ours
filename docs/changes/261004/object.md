@@ -219,3 +219,120 @@ None. The design was decided on 2026-09-25 (D4 of the filesystem design), and th
 - Three paths can end a PortObserver's wait. For each, who sets `m_object` to null, and who frees the observer?
 - Why can `~PortDispatcher` run under the lock of a channel the port never touched, and what does that rule out in the destructor?
 - Why does `attach_port_observer()` check the options only after both handles, and why must nothing be attached before every check passes?
+
+## Title: A closing port tears its armed observers down, and PORT_MAX_OBSERVERS bounds them (K28) (2026-10-04)
+
+**Files**
+- `kernel/object/include/ours/object/port_dispatcher.hpp`, `kernel/object/port_dispatcher.cpp` — `m_armed` and `m_live_observers`; `register_observer()`; the tear-down loop in `on_zero_handles()`; the `m_object` checks in `queue_observer_packet()` and `maybe_reap()`; two counters and `tear_down_counts()`. `PortObserver` moves ahead of `PortDispatcher` so that the port can hold a list of observers.
+- `kernel/object/include/ours/object/dispatcher.hpp`, `kernel/object/dispatcher.cpp`, `kernel/object/include/ours/object/types.hpp` — `Dispatcher::attach_port_observer()`
+- `kernel/object/handle_table.cpp` — attaches through it, and frees an observer the port refused
+- `system/public/ours/port.hpp` — `PORT_MAX_OBSERVERS` (1024)
+- `system/public/ours/syscalls.gni`, `kernel/object/include/ours/object/handle_table.hpp` — `object_wait_async`'s answers gain NoResource, and its waits end when the port loses its last handle
+- `examples/shell/shell_tests.cpp` — the closed-port check expects the tear-down; `check_port_observer_limit()`
+- `kernel/commands/port_test.cpp`, `kernel/commands/BUILD.gn` — new: `port.test [ROUNDS]`
+
+**Symptom**
+Before this step, a port closed with waits still armed was not destroyed. Each armed observer holds a reference to its port, so the port lived until every one of those waits fired or was cancelled. For a wait on something that never happens, that was for ever. K27's shell check showed it: the port was destroyed only during the write that fired its last wait. A program could also arm waits without limit.
+
+**Cause**
+The tear-down is a race with the observer's own callbacks, and it is the one race in the port that a single lock does not settle.
+
+The objects:
+- `m_armed`, on the port: the observers registered and not yet matched. It is guarded by the port lock. An observer is put there by `register_observer()` and taken off by whichever path ends it.
+- `m_object`, on each observer: non-null while it is registered. It is read and written under the port lock. Whoever sets it to null frees the observer.
+- The watched object's observer list, under the object's lock, from which the object unlinks an observer before calling `on_match()` or `on_cancel()`.
+
+The events, when the port closes on one CPU while the watched object fires on another:
+1. The port (`on_zero_handles()`), under the port lock: it takes the observer off `m_armed`, takes a reference to the object, sets `m_object` to null, and drops the port lock. The observer is now the tear-down's.
+2. The object, on the other CPU, under its own lock: it unlinks the observer and calls `on_match()`, which waits for the port lock and then finds `m_object` null. It queues nothing and frees nothing.
+3. The port, with no port lock held: `detach_observer()` waits for the object's lock, so for step 2 to finish, and finds the observer already unlinked. Then the tear-down frees it.
+
+In the other order, the callback takes the port lock first. It finds `m_object` set, nulls it, and takes the observer off `m_armed`, so the tear-down never sees it.
+
+Why each piece is needed:
+- **The reference to the object** (`Arc<Dispatcher>(m_object)`) keeps the object alive across step 3, after the port lock is gone. It is safe to take because `m_object` is still set: the handle the wait was attached through has not finished dying, and that handle holds the object.
+- **The port lock is dropped before `detach_observer()`.** The only lock order is object, then port. A port that held its lock while taking an object's would deadlock against step 2.
+- **Registration happens under the object's lock, before the level check** (`Dispatcher::attach_port_observer()`, Zircon's `MakePortObserver()`). Registering and linking are then one step as far as the tear-down can see. The tear-down's `detach_observer()` needs the same lock, so it finds the observer either linked or already handed to `on_match()`. An observer linked after the tear-down had passed would never be freed.
+
+The limit counts armed observers and observers whose packets are still queued, which Zircon's does not (design section 10). Otherwise a program could arm a wait on a signal that is already asserted, have it queue at once, and arm again without end.
+
+**Change**
+The tear-down loop in `on_zero_handles()`, after the queue has been emptied:
+
+```cpp
+for (;;) {
+    PortObserver *observer = nullptr;
+    ustl::Arc<Dispatcher> object;
+    {
+        Guard guard{m_port_lock};
+        auto front = m_armed.front();
+        if (!front) break;
+        observer = &*front;
+        auto _ = m_armed.erase(m_armed.iterator_to(*observer));
+        m_live_observers -= 1;
+        object = ustl::Arc<Dispatcher>(observer->m_object);
+        observer->m_object = nullptr;
+    }
+    auto _ = object->detach_observer(observer, &ignored);
+    auto torn_down = ustl::Box<PortObserver>::from_raw(observer);
+}
+```
+
+The callbacks' side, in `queue_observer_packet()` and `maybe_reap()`:
+
+```cpp
+if (observer->m_object == nullptr) {
+    return {};  // the tear-down has it
+}
+```
+
+`m_live_observers` goes up once, at registration, and down once, at whichever of these ends the observer:
+- `dequeue()` taking its packet;
+- `on_zero_handles()` clearing its packet;
+- the zero-handles drop in `queue_observer_packet()`;
+- `maybe_reap()`;
+- the tear-down.
+
+**Reference**
+- Zircon `PortDispatcher::on_zero_handles()`, `MakeObserver()` and `MaybeReapLocked()` in `zircon/kernel/object/port_dispatcher.cc`. Its tear-down runs `RemoveObserver()` inside `CallUnlocked()` for the same lock-order reason.
+- Zircon `Dispatcher::MakePortObserver()` in `zircon/kernel/object/dispatcher.cc`.
+
+**Verification**
+- `boot_check.py`: dbg PASS, rel PASS (21 passed on rel, one more than K27).
+- On both images, "object: port (koid N) destroyed" now comes between the shell's "closing a port with 3 waits armed" and the line after the close, and the later write to the watched channel produces nothing. On K27's code the same check showed the port destroyed only during that write.
+- `check_port_observer_limit()`, both images:
+  - waits on an idle end are refused at exactly 1024 (NoResource), and closing that end lets a new wait in;
+  - waits on a readable end each queue at once and are refused at 1024 as well; closing the end changes nothing, and reading one packet makes room for one wait.
+- `port.test 300` on the dbg image, two CPUs. Each round arms 64 raced waits on one channel end and 8 stranded waits on the other, which only the tear-down can end. The port is closed on one CPU while the other, after a delay that differs from round to round, ends the raced waits. In even rounds it raises Readable. In odd rounds it closes the end as a handle close would: it cancels the waits, then drops what may be the end's last reference, so that the tear-down's own reference to the object is what keeps it alive.
+  - Result: 5600 observers torn down (at least 300 × 8 required), 204 callbacks that met the tear-down and yielded (at least one required), 0 bad rounds, no assertion.
+  - A round is bad if a weak reference finds the port alive after both threads are joined. In dbg, `~Dispatcher` also asserts that nothing is still linked on either end as it goes.
+  - First, once, the command drives a handle table of its own past `PORT_MAX_OBSERVERS`: 1024 waits armed, then NoResource, then the port's handle closed. The port was destroyed, so the observers the table made for refused waits were freed.
+- The two checks fail when they should. Each mutation was run in a scratch copy:
+  - Without the tear-down loop, round 0 reports "the port outlived its last handle", and the refusal check fails too, since 1024 armed waits hold the port. Destroying the round's ends then stops the dbg kernel at `~Dispatcher`'s assertion.
+  - With the refused observer not freed in `HandleTable::attach_port_observer()`, the command prints "a wait refused at the limit was not freed" and FAILED.
+- `port.test` runs only on the dbg image. The rel image's console belongs to the user shell (`kernel.shell=false`), which takes the command for a program in `bin/`.
+- clang-tidy over the four changed kernel sources: nothing reported.
+- Built and booted as HEAD plus only these files, in a scratch copy: dbg PASS (24), rel PASS (21). The shared tree did not build at the time because of another session's work in progress (`thread_dispatcher.cpp`, exception channels).
+- A review workflow (two reviewers, each finding put to a refuter) left five standing findings:
+  - `object_wait_async`'s documented answers lacked NoResource and the port-close ending;
+  - `port.test`'s weak check could not fail without the tear-down, because the ender ended every wait;
+  - the cancel rounds never needed the tear-down's reference to the object;
+  - nothing that can fail covered the refused observer's free;
+  - the test's failure paths leaked, and a cleanup cancel made `~Dispatcher`'s assertion unreachable while a comment said it was a check.
+  All five are fixed as described above: the stranded waits, the cancel rounds that drop the end, the refusal check, and frees on the failure paths. A refuted finding stays open by design: the shell's closed-port check is read from the boot log, as the K28 plan specifies.
+
+**Deliberately not done**
+- lockdep: no image links it (`docs/repairs/260917/kernel-task-sched.md`, item 6), so the lock order is argued, not checked.
+- `port_cancel`, timestamps and edge-triggered waits.
+- A Semaphore in place of the event (one wake per packet), which waits for a second thread waiting on one port.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None. The user asked to go straight to the implementation.
+
+**Three questions you should be able to answer**
+- In the race between the port's tear-down and an `on_match()`, who frees the observer in each order, and why is it never freed twice?
+- Why must the tear-down drop the port lock before `detach_observer()`, and what keeps the object alive while it does?
+- Why does registration happen under the object's lock and before the level check?

@@ -72,6 +72,18 @@ class Dispatcher: public ustl::RefCounted<Dispatcher, ustl::sync::ThreadSafePoli
     /// handle the observer watches through, for cancel().
     auto attach_observer(SignalObserver *, void const *handle, Signals) -> Status;
 
+    /// attach_observer() for an object_wait_async observer, which is first
+    /// registered with |port|, under this object's lock and before the level
+    /// check, as Zircon's MakePortObserver() does. Under the lock, because a
+    /// port closing on another CPU tears its registered observers down by
+    /// taking each off its object: registered and linked in one hold of the
+    /// lock, the observer is either not yet known to the port or already on
+    /// this object's list, never one without the other. Fails as
+    /// PortDispatcher::register_observer() does, and then nothing is attached
+    /// and the caller still owns |observer|.
+    auto attach_port_observer(PortObserver *observer, PortDispatcher &port, void const *handle,
+                              Signals signals) -> Status;
+
     /// Stops |observer| watching, if it still is, and reports the signals
     /// asserted now.
     auto detach_observer(SignalObserver *, Signals *) -> Status;

@@ -12,6 +12,7 @@ class VmoDispatcher;
 class ChannelDispatcher;
 class ExceptionDispatcher;
 class PortDispatcher;
+class PortObserver;
 class ResourceDispatcher;
 
 } // namespace ours::object

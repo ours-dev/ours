@@ -154,9 +154,11 @@ class HandleTable: public ustl::RefCounted<HandleTable, ustl::sync::ThreadSafePo
     /// before or wholly after this call (Zircon's sys_object_wait_async()
     /// says the same). The answers, in order (design 4.5): BadHandle, BadType
     /// and AccessDenied (Write) for the port; BadHandle and AccessDenied
-    /// (Wait) for the object; InvArgs for |options|; NoMemory. Nothing is
-    /// attached until all of them pass, because a wait attached and then
-    /// taken back could already have queued its packet.
+    /// (Wait) for the object; InvArgs for |options|; NoMemory; NoResource
+    /// when the port already has PORT_MAX_OBSERVERS live observers. Nothing
+    /// is attached until all of them pass, because a wait attached and then
+    /// taken back could already have queued its packet; an observer the port
+    /// refuses is freed here.
     auto attach_port_observer(ours::Uandle value, ours::Uandle port, u64 key, Signals signals,
                               WaitAsyncOptions options) -> Status;
 

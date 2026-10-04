@@ -243,16 +243,21 @@ auto HandleTable::attach_port_observer(ours::Uandle const value, ours::Uandle co
     // the handle has to stay in the table until the observer is on the
     // object, or a close in between would never cancel it.
     auto &object = handle->dispatcher();
+    auto &port_ref = *port.as_ptr_mut();
     auto *const observer =
         new (mm::GAF_KERNEL) PortObserver(ustl::move(port), object.as_ptr_mut(), key, signals);
     if (observer == nullptr) {
         return Status::NoMemory;
     }
 
-    // Level-triggered: if the object already asserts one of |signals| the
-    // packet is queued now, under the object's lock, and the observer is
-    // never linked.
-    return object->attach_observer(observer, handle, signals);
+    // Registered with the port, then, level-triggered, either queued at once
+    // or linked on the object, all under the object's lock. Refused (the port
+    // is at PORT_MAX_OBSERVERS), it was never attached and is freed here.
+    auto const status = object->attach_port_observer(observer, port_ref, handle, signals);
+    if (status != Status::Ok) {
+        auto refused = ustl::Box<PortObserver>::from_raw(observer);
+    }
+    return status;
 }
 
 auto HandleTable::lookup_locked(ours::Uandle const value) const -> Handle * {

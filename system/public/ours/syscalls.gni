@@ -330,12 +330,15 @@ ours_syscalls = [
       "|key| is queued on |port|, with the signals asked for (trigger) and",
       "the signals asserted (observed). One packet per call: to wait again,",
       "call again. The wait ends without a packet if |handle| leaves this",
-      "process's table first, closed or consumed by another call.",
+      "process's table first, closed or consumed by another call, or if the",
+      "port loses its last handle first.",
       "",
       "|port| is resolved first: BadHandle, BadType if it is not a port,",
       "AccessDenied without Write. Then |handle|: BadHandle, AccessDenied",
-      "without Wait. Then |options|, which must be None (InvArgs). Nothing is",
-      "attached unless every check passes.",
+      "without Wait. Then |options|, which must be None (InvArgs). Then",
+      "NoResource if |port| already has PORT_MAX_OBSERVERS live waits, armed",
+      "or with their packet still queued: reading a packet or ending a wait",
+      "makes room. Nothing is attached unless every check passes.",
     ]
     args = [
       {

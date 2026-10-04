@@ -744,11 +744,11 @@ auto check_port() -> void {
 ///   - closing b ends its armed waits without a packet, while a packet
 ///     queued before the close is still delivered;
 ///   - a port cannot be waited on, and the port argument must be a port;
-///   - a port closed with a wait still armed lives on until the wait fires,
-///     because the wait holds it; the packet is then dropped and the port
-///     destroyed. The kernel's "object: port (koid N) destroyed" belongs
-///     after the second of the two marker lines, not after the first; the
-///     boot log is the check.
+///   - a port closed with waits still armed tears them down and is
+///     destroyed at once, though each wait holds a reference to it; the
+///     object they watched firing later finds nothing. The kernel's
+///     "object: port (koid N) destroyed" belongs between the two marker lines
+///     below; the boot log is the check.
 auto check_wait_async() -> void {
     using ours::PacketType;
     using ours::PortPacket;
@@ -877,20 +877,22 @@ auto check_wait_async() -> void {
     }
     ok &= expect("shell: wait_async close(port) = ", ours::handle_close(port), Status::Ok);
 
-    // A wait armed on an idle channel, then its port closed under it.
+    // Three waits armed on an idle channel, then their port closed under them.
     Uandle late = Uandle::Invalid;
     if (expect("shell: wait_async port_create(late) = ",
                ours::port_create(ours::PortCreateOptions::None, &late), Status::Ok) &&
         expect("shell: wait_async channel_create(c, d) again = ",
                ours::channel_create(ours::ChannelCreateOptions::None, &c, &d), Status::Ok)) {
-        ok &=
-            expect("shell: wait_async(d, Readable, then the port goes) = ",
-                   ours::object_wait_async(d, late, 14, Signals::Readable, WaitAsyncOptions::None),
-                   Status::Ok);
-        auto _ = ort::debug_line("shell: closing a port with a wait armed");
+        for (u64 key = 14; key < 17; ++key) {
+            ok &= expect(
+                "shell: wait_async(d, Readable, then the port goes) = ",
+                ours::object_wait_async(d, late, key, Signals::Readable, WaitAsyncOptions::None),
+                Status::Ok);
+        }
+        auto _ = ort::debug_line("shell: closing a port with 3 waits armed");
         ok &= expect("shell: wait_async close(late) = ", ours::handle_close(late), Status::Ok);
-        auto _ = ort::debug_line("shell: firing the wait the closed port's packet waits on");
-        ok &= expect("shell: wait_async write(c) = ",
+        auto _ = ort::debug_line("shell: the port with 3 waits armed is closed");
+        ok &= expect("shell: wait_async write(c) after the port went = ",
                      ours::channel_write(c, ours::ChannelWriteOptions::None, PING.data(),
                                          static_cast<u32>(PING.size()), nullptr, 0),
                      Status::Ok);
@@ -903,6 +905,90 @@ auto check_wait_async() -> void {
         auto _ = ort::debug_line("shell: wait_async checks passed");
     } else {
         auto _ = ort::debug_line("shell: wait_async checks FAILED");
+    }
+}
+
+/// PORT_MAX_OBSERVERS, which counts a port's live observers: armed, or
+/// matched with their packet still queued.
+///   - Armed on an idle channel end until NoResource; closing that end cancels
+///     them all, and a wait can be armed again.
+///   - Armed on a readable end until NoResource, each queued at once: queued
+///     packets count too. Closing the end changes nothing, since the packets
+///     stay; reading one packet makes room for one wait.
+auto check_port_observer_limit() -> void {
+    using ours::PortPacket;
+    using ours::Signals;
+    using ours::Status;
+    using ours::Uandle;
+    using ours::WaitAsyncOptions;
+
+    auto ok = true;
+    auto const arm_until_refused = [](Uandle const object, Uandle const port, u32 *const armed) {
+        *armed = 0;
+        for (;;) {
+            auto const status = ours::object_wait_async(object, port, *armed, Signals::Readable,
+                                                        WaitAsyncOptions::None);
+            if (status != Status::Ok || *armed > ours::PORT_MAX_OBSERVERS) {
+                return status;
+            }
+            *armed += 1;
+        }
+    };
+
+    // Armed, then cancelled.
+    Uandle port = Uandle::Invalid;
+    Uandle a = Uandle::Invalid;
+    Uandle b = Uandle::Invalid;
+    if (!expect("shell: limit port_create = ",
+                ours::port_create(ours::PortCreateOptions::None, &port), Status::Ok) ||
+        !expect("shell: limit channel_create = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
+        auto _ = ort::debug_line("shell: port observer limit checks FAILED");
+        return;
+    }
+    u32 armed = 0;
+    ok &= expect("shell: wait_async(b idle) until refused = ", arm_until_refused(b, port, &armed),
+                 Status::NoResource);
+    ok &= armed == ours::PORT_MAX_OBSERVERS;
+    ok &= expect("shell: limit close(b) = ", ours::handle_close(b), Status::Ok);
+    ok &= expect("shell: wait_async(a) after b's waits were cancelled = ",
+                 ours::object_wait_async(a, port, 0, Signals::Readable, WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= ours::handle_close(a) == Status::Ok && ours::handle_close(port) == Status::Ok;
+
+    // Queued at once.
+    if (!expect("shell: limit port_create again = ",
+                ours::port_create(ours::PortCreateOptions::None, &port), Status::Ok) ||
+        !expect("shell: limit channel_create again = ",
+                ours::channel_create(ours::ChannelCreateOptions::None, &a, &b), Status::Ok)) {
+        auto _ = ort::debug_line("shell: port observer limit checks FAILED");
+        return;
+    }
+    constexpr std::string_view PING{"ping"};
+    ok &= expect("shell: limit write(a) = ",
+                 ours::channel_write(a, ours::ChannelWriteOptions::None, PING.data(),
+                                     static_cast<u32>(PING.size()), nullptr, 0),
+                 Status::Ok);
+    ok &=
+        expect("shell: wait_async(b readable) until refused = ", arm_until_refused(b, port, &armed),
+               Status::NoResource);
+    ok &= armed == ours::PORT_MAX_OBSERVERS;
+    ok &= expect("shell: limit close(b) with its packets queued = ", ours::handle_close(b),
+                 Status::Ok);
+    ok &= expect("shell: wait_async(a) with the queue full of packets = ",
+                 ours::object_wait_async(a, port, 0, Signals::Readable, WaitAsyncOptions::None),
+                 Status::NoResource);
+    PortPacket got;
+    ok &= expect("shell: limit port_wait = ", ours::port_wait(port, 0, &got), Status::Ok);
+    ok &= expect("shell: wait_async(a) after one packet was read = ",
+                 ours::object_wait_async(a, port, 0, Signals::Readable, WaitAsyncOptions::None),
+                 Status::Ok);
+    ok &= ours::handle_close(a) == Status::Ok && ours::handle_close(port) == Status::Ok;
+
+    if (ok) {
+        auto _ = ort::debug_line("shell: port observer limit checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: port observer limit checks FAILED");
     }
 }
 
@@ -3270,6 +3356,7 @@ auto run(Inputs const &inputs) -> void {
     check_handle_transfer();
     check_port();
     check_wait_async();
+    check_port_observer_limit();
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());
     check_vmo_read();

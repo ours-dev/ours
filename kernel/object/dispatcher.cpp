@@ -1,6 +1,7 @@
 #include <ours/koid.hpp>
 #include <ours/lockdep.hpp>
 #include <ours/object/dispatcher.hpp>
+#include <ours/object/port_dispatcher.hpp>
 #include <ours/task/thread.hpp>
 
 #include <atomic>
@@ -108,6 +109,31 @@ auto Dispatcher::attach_observer(SignalObserver *observer, void const *handle, S
     // the observer is never linked. Zircon's Dispatcher::AddObserver() does
     // the same -- a wait for READABLE on a channel with a message queued
     // must not wait for the *next* message.
+    auto const current = m_signals.load(std::memory_order_relaxed);
+    if (!!(current & signals)) {
+        observer->on_match(current);
+        return Status::Ok;
+    }
+
+    m_observers.push_back(*observer);
+    return Status::Ok;
+}
+
+auto Dispatcher::attach_port_observer(PortObserver *const observer, PortDispatcher &port,
+                                      void const *const handle, Signals const signals) -> Status {
+    DEBUG_ASSERT(observer);
+
+    Guard guard{get_lock()};
+
+    if (auto const status = port.register_observer(observer); status != Status::Ok) {
+        return status;
+    }
+
+    observer->m_handle = handle;
+    observer->m_triggering_signals = signals;
+
+    // Level-triggered, as attach_observer(): a condition that already holds
+    // queues the packet now, and the observer is never linked.
     auto const current = m_signals.load(std::memory_order_relaxed);
     if (!!(current & signals)) {
         observer->on_match(current);
