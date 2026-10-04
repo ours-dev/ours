@@ -108,12 +108,23 @@ namespace {
     /// PeerClosed when the channel closes with nothing left to read. A
     /// server that closes after an epitaph leaves the epitaph readable, so
     /// that it is what the caller finds.
+    ///
+    /// That holds even when the server closed before the request went out,
+    /// which is the usual case after a failed Open: the server handles the
+    /// Open as soon as it runs, so its epitaph is often queued here before
+    /// the caller's first request is written. channel_write then answers
+    /// PeerClosed, but the epitaph is still readable, so the write's
+    /// PeerClosed is not the answer: the wait and the read below are, as
+    /// Fuchsia's Rust client ignores a write's PEER_CLOSED (Client::send_raw)
+    /// and then reads the epitaph (ClientInner::recv_all). Returning the
+    /// write's status would make a failed Open answer NotFound or PeerClosed
+    /// depending on which process the scheduler ran first.
     auto call(Uandle const channel, wire::Message const request, Incoming &reply) -> Status {
         if (auto const status =
                 ours::channel_write(channel, ours::ChannelWriteOptions::None, request.bytes.data(),
                                     static_cast<u32>(request.bytes.size()), request.handles.data(),
                                     static_cast<u32>(request.handles.size()));
-            status != Status::Ok) {
+            status != Status::Ok && status != Status::PeerClosed) {
             return status;
         }
         auto observed = ours::Signals::None;
