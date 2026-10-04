@@ -431,7 +431,7 @@ Exception、SuspendToken、Profile、JobPolicy 都是 missing（`faults.cpp:66-1
 
 ### 4.8 锁序与资源记账
 
-- **总序**：Job → Process → HandleTable → PeerHolder → Dispatcher `m_lock` → Port → VmAspace → VmCowPages → `task::Thread::m_pi_lock` → runqueue。这份总序写进 `docs/architecture/object/`，并用现有的 `lockdep::Guard` 给各锁分类，调试构建里就能抓到违规。
+- **总序**：Job → Process → HandleTable → PeerHolder → Dispatcher `m_lock` → Port → VmAspace → VmCowPages → `task::Thread::m_pi_lock` → runqueue。这份总序写进 `docs/architecture/object/`，并用现有的 `lockdep::Guard` 给各锁分类，调试构建里就能抓到违规。 **Revised 2026-10-04:** a ThreadDispatcher's lock and a task's Exceptionate lock come right after Process: Job → Process → ThreadDispatcher → Exceptionate → HandleTable → PeerHolder → any other Dispatcher `m_lock` → …. A thread raising an exception sends it under its own lock, as Zircon's `HandleException()` does (`.agents/tasks/exception-channels/DESIGN.md`, the user's call). The rule that follows: no code takes a ThreadDispatcher lock while it holds a PeerHolder. Nothing did when this was written; lockdep cannot check it until it links (`docs/repairs/260917/kernel-task-sched.md` item 6).
 - **硬规则**：
   1. Handle 销毁和 `on_zero_handles` 不在表锁或进程锁下执行；
   2. 不在 VmAspace 锁或任何自旋锁下拷贝用户内存；

@@ -77,8 +77,12 @@ struct ProbeRun {
     /// did not start. The caller owns it.
     ours::Uandle process;
     /// The exception channel bound to it behaved: bound, refused a second,
-    /// refused a write, and reported PeerClosed once the probe was dead.
+    /// refused a write, delivered whole messages, and closed once the probe
+    /// was dead.
     bool exception_channel_ok;
+    /// How many exceptions the channel delivered, and the type of the last.
+    u32 exceptions_seen;
+    ours::ExceptionType exception_type;
 };
 
 /// Binds an exception channel to |process| and checks what that promises
@@ -115,6 +119,49 @@ auto bind_exception_channel(ours::Uandle const process, ours::Uandle *const out)
         ok = false;
     }
     return ok;
+}
+
+/// Answers every exception |channel| delivers by passing it on, until the
+/// process it is bound to is dead and the channel closes, and counts them
+/// into |run|. A faulting probe stops in the kernel until its exception is
+/// answered, so this has to come before waiting for the probe's own answer.
+/// False, with the reason reported, when the channel misbehaved. Step 5 of
+/// .agents/tasks/exception-channels/PLAN.md.
+auto pass_on_exceptions(ours::Uandle const channel, ProbeRun *const run) -> bool {
+    using ours::Signals;
+    using ours::Status;
+
+    for (;;) {
+        auto seen = Signals::None;
+        auto const waited = ours::object_wait_one(channel, Signals::Readable | Signals::PeerClosed,
+                                                  ours::INSTANT_INFINITE, &seen);
+        if (waited != Status::Ok) {
+            report("shell: waiting on the exception channel = ", waited);
+            return false;
+        }
+        if (!(seen & Signals::Readable)) {
+            // Closed, with nothing left in it: the process is dead.
+            return true;
+        }
+
+        ours::ExceptionInfo info{};
+        auto exception = ours::Uandle::Invalid;
+        u32 bytes = 0;
+        u32 handles = 0;
+        auto const read = ours::channel_read(channel, ours::ChannelReadOptions::None, &info,
+                                             &exception, sizeof(info), 1, &bytes, &handles);
+        if (read != Status::Ok || bytes != sizeof(info) || handles != 1) {
+            report("shell: reading an exception = ", read);
+            auto _ = ours::handle_close(exception);
+            return false;
+        }
+        ++run->exceptions_seen;
+        run->exception_type = info.type;
+
+        // Closed with no state set: TryNext. No other handler is bound, so
+        // the kernel kills the probe, and the channel closes with it.
+        auto _ = ours::handle_close(exception);
+    }
 }
 
 /// Starts fault_probe under |job| with |probe| as argv[1] with |launcher|,
@@ -208,6 +255,13 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
         report("shell: writing the probe's processargs = ", status);
     }
 
+    // The exceptions first: a probe that faults waits in the kernel for its
+    // answer, and would never get to the answer channel below.
+    if (exceptions != ours::Uandle::Invalid) {
+        run.exception_channel_ok &= pass_on_exceptions(exceptions, &run);
+        auto _ = ours::handle_close(exceptions);
+    }
+
     auto observed = Signals::None;
     auto _ = ours::object_wait_one(answer, Signals::Readable | Signals::PeerClosed,
                                    ours::INSTANT_INFINITE, &observed);
@@ -241,21 +295,6 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
             ours::object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
     }
     auto _ = ours::handle_close(answer);
-
-    // The process's death shuts its exceptionate down: the channel reports
-    // PeerClosed, and nothing was ever sent on it -- delivery is step 5.
-    if (exceptions != ours::Uandle::Invalid) {
-        auto seen = Signals::None;
-        auto const waited =
-            ours::object_wait_one(exceptions, Signals::PeerClosed, ours::INSTANT_INFINITE, &seen);
-        auto const closed_empty =
-            waited == Status::Ok && !!(seen & Signals::PeerClosed) && !(seen & Signals::Readable);
-        if (!closed_empty) {
-            report("shell: waiting for the exception channel to close = ", waited);
-        }
-        run.exception_channel_ok &= closed_empty;
-        auto _ = ours::handle_close(exceptions);
-    }
 
     run.process = process;
     return run;
@@ -441,7 +480,9 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
                 "shell: launcher checks FAILED (a probe before its control did not start)");
             return;
         }
-        if (run.exception_channel_ok) {
+        // Each probe faults once, so its channel has to have delivered exactly
+        // one exception before the probe was killed.
+        if (run.exception_channel_ok && run.exceptions_seen == 1) {
             ++channels_ok;
         }
         auto const code = return_code_of(run.process);
@@ -466,17 +507,6 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
     auto _ = ort::debug_line({"shell: probes done (", ort::decimal(killed, killed_text),
                               " killed, ", ort::decimal(survived, survived_text), " survived)"});
 
-    // A verdict line of its own: a channel that misbehaves fails nothing else.
-    char channels_text[10];
-    auto const channels_all = channels_ok == std::size(PROBES);
-    auto _ = ort::debug_line({"shell: exception channels behaved on ",
-                              ort::decimal(channels_ok, channels_text), " of the probes"});
-    if (exception_checks_ok && channels_all) {
-        auto _ = ort::debug_line("shell: exception channel checks passed");
-    } else {
-        auto _ = ort::debug_line("shell: exception channel checks FAILED");
-    }
-
     constexpr std::string_view CONTROL{"none"};
     auto _ = ort::debug_line("shell: starting the control probe with the launcher");
     auto const control = run_probe(job, CONTROL, launcher, launcher_context);
@@ -500,6 +530,21 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
     } else {
         auto _ = ort::debug_line(
             "shell: launcher checks FAILED (its control probe did not answer \"unknown\")");
+    }
+
+    // A verdict line of its own: a channel that misbehaves fails nothing else.
+    // The control probe raises no exception, so its channel delivers none.
+    char channels_text[10];
+    auto const channels_all = channels_ok == std::size(PROBES);
+    auto const control_quiet =
+        control.started && control.exception_channel_ok && control.exceptions_seen == 0;
+    auto _ = ort::debug_line({"shell: exception channels delivered one exception to ",
+                              ort::decimal(channels_ok, channels_text), " of the probes",
+                              control_quiet ? ", none to the control" : ", and the control?"});
+    if (exception_checks_ok && channels_all && control_quiet) {
+        auto _ = ort::debug_line("shell: exception channel checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: exception channel checks FAILED");
     }
 
     if (control.process != ours::Uandle::Invalid) {

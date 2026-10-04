@@ -48,3 +48,75 @@ None.
 - Which references form the cycle that the shutdown in `finish_dead_transition()` breaks, and what keeps it alive without the shutdown?
 - Why must a handle that `MessagePacket::create()` refused be destroyed before `discard_handle_close()`, not after?
 - Why may `wait_for_handle_close()` unsignal the event after waking without racing a second signal?
+
+## Title: A user exception is sent to the process's exception channel, and the thread waits for the handler's answer (2026-10-04)
+
+**Files**
+- `kernel/object/thread_dispatcher.cpp`, `kernel/object/include/ours/object/thread_dispatcher.hpp` — `on_user_exception()` delivers through `deliver_exception()`, and reports and kills only what no handler resumed.
+- `examples/shell/shell_tests.cpp` — each probe's exceptions are read and passed on before its answer is waited for; the verdict counts one exception per faulting probe and none for the control.
+- `docs/design/260923/userspace-interface.md` — 4.8's total order, amended.
+- `.agents/tasks/exception-channels/PLAN.md` — step 5 done.
+
+**Symptom**
+Before: a bound channel never saw an exception; every faulting probe died unannounced. After: the shell receives each fault probe's exception and passes it on, and the probe is killed as before. Step 5 of `.agents/tasks/exception-channels/`.
+
+**Cause**
+The delivery path (step 1), the objects (step 3) and the calls (step 4) existed, but nothing connected a fault to a channel. The connection is where every concurrent party meets: the faulting thread, a supervisor answering, and a kill that may come at any moment. So its shape follows from one rule, Zircon's: a kill always wins.
+
+Three moments can see a kill. Before the send: the thread is Dying, and nothing is sent. During the wait: the interruptible wait answers `InternalIrqKilled`. And between the handler's close and the thread running again, which is the one that is easy to miss. Since `f94dd32b`, a kill that finds the waiter already claimed by the close's signal leaves the wake to it, so the wait answers Ok as if no kill had come. Only the thread's state tells the truth then, so the state is read again, under the lock, after the wait.
+
+**Change**
+
+```cpp
+auto ThreadDispatcher::deliver_exception(ExceptionType const type) -> Delivery {
+    auto self = ustl::Arc<Self>::try_adopt(this);
+    auto exception = ExceptionDispatcher::create(ustl::move(self), type);
+    ...
+    {
+        Guard guard{get_lock()};                 // the user's (a): send under this lock
+        if (m_state != State::Running) {
+            return Delivery::Killed;
+        }
+        if (m_process->exceptionate().send(exception) != Status::Ok) {
+            return Delivery::Undelivered;
+        }
+    }
+    auto const response = exception->wait_for_handle_close();   // no lock held
+    Guard guard{get_lock()};
+    if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
+        return Delivery::Killed;                 // a kill wins over any answer
+    }
+    ...
+}
+```
+
+`on_user_exception()` maps Handled to Resume, and Killed to End (the killer has sent the Kill signal). Undelivered and PassedOn kill the process outside the thread's lock, because the kill takes the process's lock and then each thread's. The fault report and register dump print only for Undelivered, as Zircon prints its crash report only for an exception no handler processed. A passed-on one gets a debug line. `try_adopt(this)` gives the exception its reference to the thread, since `adopt()` is only for an object nobody owns yet.
+
+The shell has to change with it, or it deadlocks: a faulting probe now waits in the kernel for its answer, so the shell drains the exception channel (read, close: TryNext) until it closes with the probe's death, and only then reads the answer channel. There is no `object_wait_many` to wait on both.
+
+The lock order gains ThreadDispatcher and Exceptionate after Process (4.8 amended), with the rule that no code takes a ThreadDispatcher lock while it holds a PeerHolder.
+
+**Reference**
+Zircon `ThreadDispatcher::HandleException()` (zircon/kernel/object/thread_dispatcher.cc:663-718), including the check after `WaitForHandleClose()` at :699-712, and `dispatch_user_exception()` (zircon/kernel/object/exception.cc), whose report prints only when `!processed`.
+
+**Verification**
+- Isolated copy of HEAD with only this change: `boot_check.py --out out/task-wake`, dbg PASS (23 passed), rel PASS (20 passed), 0 error lines.
+- dbg_1's log: all 16 fault probes `killed (retcode -1028)`; `exception channels delivered one exception to 16 of the probes, none to the control`; `exception channel checks passed`; no `terminating process` warning, since the shell saw every one.
+- `waitqueue.test`, `sleep.test`, `threadjoin.test`: ok.
+- clang-tidy: no finding on the changed lines.
+- Not exercised: a kill during the wait. Nothing can kill another process's thread before `task_kill`. The wait's kill path is the one `waitqueue.test` checks for any interruptible wait.
+
+**Deliberately not done**
+- Checking the exception's type per probe, and resuming one: step 6.
+- The thread and job slots, a debugger first: not in slice 1.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None. The lock order (send under the thread's lock) was the user's call, without the written argument.
+
+**Three questions you should be able to answer**
+- At which three moments can a kill reach an exception being delivered, and how does each one end?
+- Why can the wait answer Ok for a thread that was killed, and what catches it?
+- Why must the shell read the exception channel before the answer channel, and what happens if it does not?

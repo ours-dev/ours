@@ -1,5 +1,6 @@
 #include <ours/arch/entry.hpp>
 #include <ours/lockdep.hpp>
+#include <ours/object/exception_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 #include <ours/task/exception.hpp>
@@ -220,32 +221,101 @@ auto ThreadDispatcher::on_exit() -> Status {
     return m_process->detach_thread(*this);
 }
 
-/// The only answer there is yet: there are no exception channels (Zircon's
-/// zx_task_create_exception_channel) for a debugger or a supervisor to take
-/// the exception first, so it is reported and the process dies. What dies is
-/// the process, not the thread, as in Zircon: a thread that faulted has left
-/// its process in a state nothing else in it can be trusted to recover from.
+/// Slice 1 of .agents/tasks/exception-channels/ has one handler: the
+/// process's exception channel. Zircon walks a debugger, the thread, the
+/// process and the job chain; the walk here is that list with one entry.
 ///
-/// Logged as a warning rather than an error: a program dying of its own bug is
-/// not a kernel fault. The report goes out before the kill so that it is
-/// there even if the kill path itself goes wrong.
+/// What dies when nothing handles it is the process, not the thread, as in
+/// Zircon: a thread that faulted has left its process in a state nothing else
+/// in it can be trusted to recover from. The fault is reported, with the
+/// registers, only when no handler saw it, as in Zircon: a handler that
+/// passed it on knew what it was, and a warning for every fault a supervisor
+/// watched would bury the ones nothing watched. Logged as a warning rather
+/// than an error: a program dying of its own bug is not a kernel fault.
 ///
-/// Zircon counterpart: the end of dispatch_user_exception(), which prints the
-/// crash report and kills with ZX_TASK_RETCODE_EXCEPTION_KILL when no handler
-/// took the exception.
+/// Zircon counterpart: dispatch_user_exception(), whose unhandled end prints
+/// the crash report when the exception was not processed and kills with
+/// ZX_TASK_RETCODE_EXCEPTION_KILL.
 auto ThreadDispatcher::on_user_exception(task::ExceptionContext const &context)
     -> task::ExceptionOutcome {
     verify_canary();
 
-    log::warn("terminating process '{}' (koid {}) thread koid {}: type={} vector={} "
-              "error_code={:#x} rip={:#x} sp={:#x} cr2={:#x} synth_code={} synth_data={:#x}",
-              m_process->name(), m_process->koid(), koid(), task::to_string(context.type),
-              context.vector_name, context.error_code, context.ip, context.sp,
-              context.fault_address, context.synth_code, context.synth_data);
-    task::arch_dump_exception_context(context);
+    auto const delivery = deliver_exception(context.type);
+    switch (delivery) {
+        case Delivery::Handled:
+            return task::ExceptionOutcome::Resume;
+        case Delivery::Killed:
+            // Whoever killed it gave the thread the Kill signal already.
+            return task::ExceptionOutcome::End;
+        case Delivery::Undelivered:
+            log::warn("terminating process '{}' (koid {}) thread koid {}: type={} vector={} "
+                      "error_code={:#x} rip={:#x} sp={:#x} cr2={:#x} synth_code={} "
+                      "synth_data={:#x}",
+                      m_process->name(), m_process->koid(), koid(), task::to_string(context.type),
+                      context.vector_name, context.error_code, context.ip, context.sp,
+                      context.fault_address, context.synth_code, context.synth_data);
+            task::arch_dump_exception_context(context);
+            break;
+        case Delivery::PassedOn:
+            log::debug("object: process '{}' (koid {}) killed: its handler passed on {}",
+                       m_process->name(), m_process->koid(), task::to_string(context.type));
+            break;
+    }
 
+    // Not under this thread's lock: the kill takes the process's lock and
+    // then each thread's, this one's among them.
     m_process->kill(TASK_RETCODE_EXCEPTION_KILL);
     return task::ExceptionOutcome::End;
+}
+
+auto ThreadDispatcher::deliver_exception(ExceptionType const type) -> Delivery {
+    // The exception holds the thread, so it needs a reference of its own.
+    // This thread is running the call, so its object is alive and owned:
+    // try_adopt() only refuses an object whose last owner is gone.
+    auto self = ustl::Arc<Self>::try_adopt(this);
+    DEBUG_ASSERT(self, "a thread raising an exception has no owner");
+    // Not const: ustl::Rc's constness is deep, and the wait below changes it.
+    auto exception = ExceptionDispatcher::create(ustl::move(self), type);
+    if (!exception) {
+        // Out of memory: no handler can be told. Zircon kills here too.
+        return Delivery::Undelivered;
+    }
+
+    {
+        // Under this thread's lock, as Zircon's HandleException() sends: a
+        // kill takes the same lock, so it lands either before the check below
+        // -- and nothing is sent for a thread that is already dying -- or
+        // after the message is in the channel, where the wait below sees it.
+        // The order is ThreadDispatcher, then the exceptionate's lock, then
+        // the channel's PeerHolder (the user's call, 2026-10-04; see
+        // userspace-interface.md 4.8).
+        Guard guard{get_lock()};
+        if (m_state != State::Running) {
+            return Delivery::Killed;
+        }
+        if (m_process->exceptionate().send(exception) != Status::Ok) {
+            return Delivery::Undelivered;
+        }
+    }
+
+    // Without the lock: the handler may take as long as it likes, and a kill
+    // has to be able to take the lock meanwhile to reach this thread.
+    auto const response = exception->wait_for_handle_close();
+
+    // A kill wins over every answer. It can land after the handler's close
+    // has signalled the exception and before this thread runs again; the wake
+    // is then the close's (Thread::suspend_or_kill() leaves a waiter that
+    // another wake has claimed), and the wait answers as if no kill had come.
+    // The state says otherwise. Zircon checks the same, after
+    // WaitForHandleClose().
+    Guard guard{get_lock()};
+    if (m_state != State::Running || response == ExceptionDispatcher::Response::Killed) {
+        return Delivery::Killed;
+    }
+    if (response == ExceptionDispatcher::Response::Handled) {
+        return Delivery::Handled;
+    }
+    return Delivery::PassedOn;
 }
 
 auto ThreadDispatcher::on_policy_exception(task::PolicyCode const code, u64 const data,

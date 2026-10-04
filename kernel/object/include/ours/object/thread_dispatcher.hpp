@@ -14,6 +14,7 @@
 #include <ustl/option.hpp>
 
 namespace ours {
+enum class ExceptionType : u32;
 enum class PolicyCode : u32;
 } // namespace ours
 
@@ -179,15 +180,40 @@ class ThreadDispatcher: public ThreadDispatcherBase {
     auto on_exit() -> Status;
 
     /// This thread raised |context| in ring 3, and this decides what becomes
-    /// of it. Nothing handles an exception yet, so the answer is always End:
-    /// report it and kill the process with TASK_RETCODE_EXCEPTION_KILL, which
-    /// gives this thread the Kill signal. Called by
+    /// of it: the process's exception channel, if one is bound, is told and
+    /// answers. Handled resumes the thread (Resume). Anything else -- no
+    /// channel, a handler that passes it on, a kill meanwhile -- ends it
+    /// (End): the process is killed with TASK_RETCODE_EXCEPTION_KILL unless
+    /// it is being killed already. Called by
     /// task::Thread::Current::on_user_exception(), in the thread's own
-    /// context, interrupts on.
+    /// context, interrupts on; it may block for as long as the handler takes.
     ///
     /// Zircon counterpart: dispatch_user_exception().
     [[nodiscard]]
     auto on_user_exception(task::ExceptionContext const &context) -> task::ExceptionOutcome;
+
+    /// What became of an exception sent to a handler.
+    enum class Delivery {
+        /// No handler was told: none is bound, or the message could not be
+        /// made or queued.
+        Undelivered,
+        /// The handler set ExceptionState::Handled and closed the handle.
+        Handled,
+        /// The handler closed the handle without Handled.
+        PassedOn,
+        /// The thread was killed, before the send or while it waited.
+        Killed,
+    };
+
+    /// Sends an exception of |type| to the process's exception channel and
+    /// waits for the handler's answer. The send runs under this thread's
+    /// lock, so a kill cannot come between "still running" and "sent"; the
+    /// wait runs without it, and the state is looked at again after it, so a
+    /// kill that came during the wait wins over any answer.
+    ///
+    /// Zircon counterpart: ThreadDispatcher::HandleException().
+    [[nodiscard]]
+    auto deliver_exception(ExceptionType type) -> Delivery;
 
     /// This thread broke a rule the kernel enforces -- |code|, with |data| as
     /// its detail -- in a system call made from |ip|. Raised as a synthetic
