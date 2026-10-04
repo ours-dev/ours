@@ -4,8 +4,11 @@ report what each one printed.
 
 Run from the repo root, after a build:
 
-    python3 scripts/kshell_run.py --out out/mine vmosnapshot.test
-    python3 scripts/kshell_run.py --out out/mine --image rel vmaseal.test usercopy.test
+    python3 scripts/kshell_run.py --out out/mine vmosnapshot.test vmaseal.test usercopy.test
+
+Only the dbg image (the default) has a kernel shell on COM1. The rel image's
+belongs to the user shell (kernel.shell=false since the interactive user
+shell), so --image rel reaches no kernel command.
 
 The kernel shell (//kernel/lib/kshell) reads COM1 and runs registered console
 commands, the *.test commands of //kernel/commands among them. Nothing runs
@@ -18,7 +21,7 @@ serial port is read in raw chunks rather than by line, or a quiet image would
 never show it. It is also written a byte at a time, outside the log's lock, so
 on the dbg image, whose other CPUs log thousands of lines a second, its bytes
 land between theirs and it is seldom whole: there, only a test's verdict is a
-sure end, and a command that prints none is best run on rel.
+sure end, and a command that prints none may need a longer --command-timeout.
 
 A command fails if it prints a FAILED line or an error-level line, or if the
 prompt is not back within --command-timeout. A *.test command also fails
@@ -358,7 +361,7 @@ def main(argv: list[str]) -> int:
                 awaited = f'"{name}: ok" or FAILED line'
             else:
                 done = re.compile(re.escape(PROMPT))
-                awaited = "prompt (on dbg, other CPUs' log lines can break it up; try --image rel)"
+                awaited = "prompt (on dbg, other CPUs' log lines can break it up)"
             console.keep()
             console.type(command)
             ended = console.wait_for(done, time.monotonic() + args.command_timeout,

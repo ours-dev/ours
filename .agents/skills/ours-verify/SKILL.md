@@ -31,12 +31,17 @@ first; this skill checks behaviour, that one checks the source.
 ## Kernel tests
 
 The kernel's `*.test` commands (`//kernel/commands`) do not run at boot.
-After a change to what one covers, run it on both images, after the build:
+After a change to what one covers, run it on the dbg image, after the build:
 
 ```bash
 python3 scripts/kshell_run.py --out out/<dir> vmosnapshot.test
-python3 scripts/kshell_run.py --out out/<dir> --image rel vmosnapshot.test
 ```
+
+Only the dbg image has a kernel shell. Since the interactive user shell
+(`ead5d12f`), the rel image's COM1 belongs to the user shell
+(`kernel.shell=false`), which takes `vmosnapshot.test` for a program in
+`bin/` and answers "no such program". dbg is also the image with the
+assertions a test relies on.
 
 It boots the image in `--out` without building it, types the commands once
 the boot ends, and exits 0 if every one passed: no FAILED or error line, and
