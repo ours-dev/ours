@@ -26,7 +26,7 @@ Each commit must pass ours-verify (builds, and both images boot). Check `git dif
 ### Allocator and caches
 6. **Delete MemCache::Option values nobody passes:** Dma, Dma32, Merge, Reclaim and the Alias enumerator, plus the mapping at object_cache.cpp:579-587. Must come before 9.
 7. **[U] Delete RedZone, Poison and the CONFIG_MEM_CACHE_DEBUG layout.** If they are kept instead, fix the size added twice at object_cache.cpp:530.
-8. **[U] Delete PmZone::Flags, AllocationOptions and gaf_to_allocation_control().**
+8. **[U] Delete PmZone::Flags, AllocationOptions and gaf_to_allocation_control().** Dropped 2026-10-04: the user kept this scaffolding (D8), so none of the items below is done.
    - Also goes: the options parameter (get_frame_from_zone_list, alloc_frames_direct_reclaim/compact, PmZone::alloc_frames), is_below_high_wmark(), the dead branch at pm_zone.cpp:64-69, and m_watermarks.
    - The watermark and NoFragment TODOs move into a docs/repairs item.
    - The reclaim and compact stubs stay.
