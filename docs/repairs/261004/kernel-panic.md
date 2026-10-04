@@ -32,7 +32,7 @@ Low: a missing test. The clear is covered by the host test of `crashlog::clear()
 `platform_reboot()` (`kernel/platform/pc/power.cpp`) is reachable only from `vpanic()`.
 
 **Change**
-A `reboot` kshell command in `kernel/commands`, after Zircon's `reboot` console command (`zircon/kernel/platform/pc/debug.cc`, `cmd_reboot` reaching `platform_halt(HALT_ACTION_REBOOT)`). Then `kshell_run.py --reboot` can run `crash panic` and check that a third boot, reached through `reboot` after the record was reported, logs `crashlog: no record from the previous boot`.
+A `reboot` kshell command in `kernel/commands`, after Zircon's `reboot` console command (`cmd_reboot()`, registered in `zircon/kernel/platform/power.cc`). Then `kshell_run.py --reboot` can run `crash panic` and check that a third boot, reached through `reboot` after the record was reported, logs `crashlog: no record from the previous boot`.
 
 **Reference**
 Zircon's `reboot` and `poweroff` console commands; Linux's `reboot(2)` with `LINUX_REBOOT_CMD_RESTART`.
