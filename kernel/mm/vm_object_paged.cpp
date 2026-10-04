@@ -2,6 +2,7 @@
 #include <ours/mm/memmap.hpp>
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/physmap.hpp>
+#include <ours/mm/pmm.hpp>
 #include <ours/mm/vm_object_paged.hpp>
 #include <ours/task/thread.hpp>
 
@@ -106,6 +107,47 @@ auto VmObjectPaged::create(Gaf gaf, usize size, VmoFlags vmof, ustl::Arc<VmObjec
     }
     *out = ustl::move(vmo_ref);
 
+    return Status::Ok;
+}
+
+auto VmObjectPaged::create_from_wired_pages(Gaf const gaf, PhysAddr const base, usize const size,
+                                            ustl::Arc<VmObjectPaged> *const out) -> Status {
+    if (size == 0 || !ustl::mm::is_aligned(base, PAGE_SIZE) ||
+        !ustl::mm::is_aligned(size, PAGE_SIZE)) {
+        return Status::InvArgs;
+    }
+
+    ustl::Arc<VmCowPages> cow_pages;
+    if (auto const status = VmCowPages::create(gaf, size, &cow_pages); Status::Ok != status) {
+        return status;
+    }
+
+    // Under the pages' lock, though nobody else can reach them yet, as Zircon
+    // takes it around AddNewPageLocked(): the insert path is written for it.
+    // Each frame is unwired first and added second, Zircon's order; a failure
+    // of either is fatal, as it is there.
+    {
+        Guard guard{cow_pages->lock()};
+        cow_pages->lock().assert_held();
+        for (usize index = 0; index < size / PAGE_SIZE; ++index) {
+            auto const phys = base + index * PAGE_SIZE;
+            auto *const page = phys_to_frame(phys);
+            ASSERT(!!(page->flags() & page::Flags::Reserved),
+                   "frame {:#x} backing a wired VMO is not reserved", phys);
+            unwire_frame(page);
+            auto const status = cow_pages->add_new_page_locked(index, page);
+            ASSERT(Status::Ok == status, "adding wired frame {:#x} as page {} of {}: {}", phys,
+                   index, size / PAGE_SIZE, to_string(status));
+        }
+    }
+
+    // Constructed after the lock is released: the constructor takes the same
+    // mutex to attach, and it is not recursive.
+    auto *const vmo = VmoPagedCache::get(GAF_KERNEL, VmoFlags{}, ustl::move(cow_pages), 0, size);
+    if (!vmo) {
+        return Status::OutOfMem;
+    }
+    *out = ustl::Arc<Self>::adopt(vmo);
     return Status::Ok;
 }
 

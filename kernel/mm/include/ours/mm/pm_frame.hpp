@@ -256,10 +256,11 @@ class PageFrame {
         set_flags(Flags::Active);
     }
 
-    /// Takes a reserved frame off the reserved books, for the one path that
-    /// hands reserved frames to the buddy on purpose
-    /// (EarlyMem::reclaim_init_area()). Linux's free_reserved_page() does the
-    /// same with ClearPageReserved() before __free_page().
+    /// Clears Reserved: one half of taking a frame off the reserved books, which
+    /// unwire_frame() does for every frame that leaves them (the init area
+    /// freed after boot, the boot image adopted by userboot's VMO). Linux's
+    /// free_reserved_page() does the same with ClearPageReserved() before
+    /// __free_page().
     FORCE_INLINE
     constexpr auto clear_reserved() -> void {
         set_flags(flags() & ~Flags::Reserved);

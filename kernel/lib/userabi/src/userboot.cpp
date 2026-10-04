@@ -193,9 +193,11 @@ namespace {
     /// this thread's stack (write_bootstrap()), and the programs that pass
     /// the options on size theirs from the same bound.
     ///
-    /// Views into the boot package's Config item, which stays mapped for the
-    /// kernel's lifetime; they are only held until write_bootstrap() has
-    /// copied them into the message.
+    /// Views into the boot image's Config item. They are valid only while the
+    /// kernel holds the image: make_boot_image_handle() gives the image's
+    /// frames to userboot's VMO, and they go back to the page allocator when
+    /// userboot closes it. So they are held only until write_bootstrap() has
+    /// copied them into the message, which it does before it takes the image.
     struct UserOptions {
         std::string_view tokens[MAX_USER_OPTIONS];
         u32 count{0};
@@ -258,45 +260,57 @@ namespace {
     /// it and map it, and nothing to change it with.
     constexpr auto BOOT_IMAGE_RIGHTS = Rights::Basic | Rights::Read | Rights::Map;
 
-    /// The boot image -- the whole OBI container phys handed over -- copied
-    /// into a VMO for userboot (VmoBootdata). userboot finds the user BootFS
-    /// in it, a StorageBootFs item, and unpacks it itself, so the kernel
-    /// never reads that item (.agents/tasks/userboot-bootfs/DESIGN.md).
+    /// The boot image -- the whole OBI container phys handed over -- as a VMO
+    /// for userboot (VmoBootdata). userboot finds the user BootFS in it, a
+    /// StorageBootFs item, and unpacks it itself, so the kernel never reads
+    /// that item (.agents/tasks/userboot-bootfs/DESIGN.md).
     ///
     /// The whole image rather than the one item: it describes itself, with
     /// each item's compression and decompressed size in its descriptor, and
-    /// cutting an item out would mean parsing it here. Zircon hands userboot
-    /// the whole ZBI the same way, as a physical VMO over the image's own
-    /// pages (CreatePhysVmoHandle() in zircon/kernel/top/handoff.cc); here it
-    /// is a copy, since a physical VMO cannot be read with vmo_read (D2 of the
-    /// design). An empty Box, said why, if it cannot be made.
+    /// cutting an item out would mean parsing it here.
+    ///
+    /// Not a copy: the VMO takes the image's own frames
+    /// (VmoDispatcher::create_from_wired_pages()), and they go to the page
+    /// allocator when userboot closes it. Zircon hands userboot the ZBI the
+    /// same way, a paged VMO built with VmObjectPaged::CreateFromWiredPages()
+    /// (CreatePhysVmo() in zircon/kernel/top/handoff.cc) -- not a physical
+    /// VMO, which an earlier note here claimed
+    /// (.agents/tasks/boot-image-pages/DESIGN.md).
     ///
     /// The image is taken here (boot::take_boot_image()): after this the
     /// kernel reads nothing of it, and a late reader panics. So this runs
-    /// last of everything that reads the image, in write_bootstrap().
+    /// last of everything that reads the image, in write_bootstrap(). An
+    /// empty Box, said why, if the VMO cannot be made.
     auto make_boot_image_handle() -> ustl::Box<object::Handle> {
         auto const image = boot::take_boot_image();
-        auto const *const base = mm::PhysMap::phys_to_virt<u8 const>(image.base);
+        auto *const base = mm::PhysMap::phys_to_virt<u8>(image.base);
         if (base == nullptr) {
             log::error("userabi: the boot image is outside the physmap");
             return {};
         }
-        auto const bytes = ustl::views::Span<u8 const>(base, image.size);
+
+        // The slack after the image's last byte, in the frame phys reserved
+        // whole (BootPackageInput::reserve()): userboot would see it, so it is
+        // zeroed. Here and not in phys, as Zircon's MakePhysVmo() does it,
+        // because the RSDP pointer points into the unreserved Multiboot info
+        // block, which may share that frame, and ACPI read it long ago: its
+        // init hook runs at PlatformInitLevel::StartUp, in
+        // init_platform_early(), before the page allocator even starts, and
+        // keeps no pointer to it (docs/repairs/261003/x86-phys.md).
+        auto const size = ustl::mm::align_up(image.size, PAGE_SIZE);
+        std::memset(base + image.size, 0, size - image.size);
 
         object::KernelHandle<object::VmoDispatcher> vmo;
         Rights rights;
-        auto status = object::VmoDispatcher::create_committed(
-            ustl::mm::align_up(bytes.size(), PAGE_SIZE), vmo, rights);
-        if (Status::Ok != status) {
-            log::error("userabi: could not create a {}-byte VMO for the boot image: {}",
-                       bytes.size(), to_string(status));
+        if (auto const status =
+                object::VmoDispatcher::create_from_wired_pages(image.base, size, vmo, rights);
+            Status::Ok != status) {
+            log::error("userabi: could not give the boot image's frames to a VMO: {}",
+                       to_string(status));
             return {};
         }
-        status = vmo.dispatcher()->write(bytes.data(), 0, bytes.size());
-        if (Status::Ok != status) {
-            log::error("userabi: could not copy the boot image: {}", to_string(status));
-            return {};
-        }
+        log::info("userabi: {} frames of the boot image handed to userboot, not copied",
+                  size / PAGE_SIZE);
         auto handle = object::Handle::make(
             object::KernelHandle<object::Dispatcher>(ustl::move(vmo)), rights & BOOT_IMAGE_RIGHTS);
         if (!handle) {

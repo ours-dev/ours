@@ -57,12 +57,15 @@ auto VmoDispatcher::create_paged(usize const size, KernelHandle<Self> &handle_ou
     return create(ustl::move(vmo), handle_out, rights_out);
 }
 
-auto VmoDispatcher::create_committed(usize const size, KernelHandle<Self> &handle_out,
-                                     Rights &rights_out) -> Status {
-    // Neither Lazy nor Pinned: VmObjectPaged::create() commits every page of a
-    // VMO that is not Lazy, and pins them only for Pinned.
+auto VmoDispatcher::create_from_wired_pages(PhysAddr const base, usize const size,
+                                            KernelHandle<Self> &handle_out, Rights &rights_out)
+    -> Status {
     ustl::Arc<mm::VmObjectPaged> vmo;
-    auto const status = mm::VmObjectPaged::create(mm::GAF_USER, size, mm::VmoFlags{}, &vmo);
+    // The user class, as every VMO user space can reach: the create_committed()
+    // this replaced used it too. A snapshot of the boot image allocates its
+    // copies with it, and the kernel class would spin in the allocator's slow
+    // path when memory runs out instead of answering OutOfMem.
+    auto const status = mm::VmObjectPaged::create_from_wired_pages(mm::GAF_USER, base, size, &vmo);
     if (Status::Ok != status) {
         return status;
     }

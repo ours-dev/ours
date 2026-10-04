@@ -36,6 +36,28 @@ class VmObjectPaged: public VmObject {
     static auto create_contiguous(Gaf gaf, usize size, Flags vmof, ustl::Arc<VmObjectPaged> *out)
         -> Status;
 
+    /// A VMO that takes over |size| bytes of frames at |base|, reserved since
+    /// boot, as its own pages: no allocation and no copy, and when the VMO
+    /// dies the frames go to the buddy like any page it allocated. The boot
+    /// image is handed to userboot this way.
+    ///
+    /// Both ends must be page-aligned (InvArgs). Every frame must be reserved,
+    /// and each is taken off the reserved books (unwire_frame()) and added
+    /// (VmCowPages::add_new_page_locked()), in Zircon's order; a frame that is
+    /// not reserved, or a page map that cannot hold them all, is a panic, as
+    /// in Zircon: this runs once, at boot, for memory nothing else can use.
+    /// Neither Lazy nor Pinned: every page is there from the start, and
+    /// nothing pins them.
+    ///
+    /// Zircon: VmObjectPaged::CreateFromWiredPages(), whose kernel uses it
+    /// for the data ZBI (CreatePhysVmo() in zircon/kernel/top/handoff.cc).
+    ///
+    /// |gaf| is what the VMO allocates with afterwards -- a copy-on-write
+    /// clone of it inherits it -- so a VMO user space can reach takes the user
+    /// class, as create()'s callers choose theirs.
+    static auto create_from_wired_pages(Gaf gaf, PhysAddr base, usize size,
+                                        ustl::Arc<VmObjectPaged> *out) -> Status;
+
     ///
     /// A slice of this object: [offset, offset + size) of it, as an object of
     /// its own, over the very same pages. A write through either is seen

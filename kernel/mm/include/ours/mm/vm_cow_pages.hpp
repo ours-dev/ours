@@ -214,6 +214,18 @@ class VmCowPages: public ustl::RefCounted<VmCowPages, ustl::sync::ThreadSafePoli
         return m_lock;
     }
 
+    /// Makes |page| this node's page |index|: given the VMM role and inserted
+    /// Owned, so that this node frees it when it dies. |page| must be an
+    /// allocated frame nobody else owns -- one from the allocator, or one
+    /// taken off the reserved books with unwire_frame(). OutOfMem when the
+    /// page map cannot grow and AlreadyExists for a slot already full; the
+    /// caller still owns |page| then.
+    ///
+    /// Zircon: VmCowPages::AddNewPageLocked(), which initialises the page for
+    /// its object and adds it to the page list.
+    TA_REQUIRES(m_lock)
+    auto add_new_page_locked(usize index, VmPage *page) -> Status;
+
     FORCE_INLINE
     auto size_locked() const -> usize {
         return m_size;

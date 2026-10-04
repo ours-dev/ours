@@ -442,6 +442,12 @@ auto VmCowPages::alloc_pages(usize order, VmPage **page, PageRequest *page_reque
     return Status::Ok;
 }
 
+auto VmCowPages::add_new_page_locked(usize const index, VmPage *const page) -> Status {
+    DEBUG_ASSERT(index < m_size / PAGE_SIZE, "page {} is past the node's end", index);
+    page->become<page::VmmBody>();
+    return m_pages.insert_page(index, page, VmPageMap::Tag::Owned);
+}
+
 auto VmCowPages::commit_range_locked(VirtAddr offset, usize size, usize *nr_commited) -> Status {
     if (!size) {
         return Status::InvArgs;

@@ -99,7 +99,8 @@ static auto free_frames_pfn_range(Pfn start, Pfn end) -> void {
 /// 0x900 bytes into its last page on the rel image. Rounding the start down,
 /// as this did, handed that whole frame to the buddy, and the next owner could
 /// overwrite the image's tail while the kernel still read it (userboot_init()
-/// copies the image). A partial frame is not free, so it is not given away.
+/// reads it, then gives its frames to userboot). A partial frame is not free,
+/// so it is not given away.
 /// Linux's __free_memory_core() rounds the same way: PFN_UP(start),
 /// PFN_DOWN(end).
 INIT_CODE FORCE_INLINE

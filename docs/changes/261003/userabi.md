@@ -523,3 +523,82 @@ None given.
 - Why must the processargs be encoded before the boot image's handle is made?
 - Which kernel readers of the boot image are there, and why do all of them run before the take?
 - Why does a late `boot_package()` panic rather than return an error?
+
+## Title: userboot's boot image VMO owns the image's own frames, as Zircon's CreateFromWiredPages() does (2026-10-03)
+
+**Files**
+- `kernel/mm/include/ours/mm/vm_object_paged.hpp`, `kernel/mm/vm_object_paged.cpp` — `VmObjectPaged::create_from_wired_pages(gaf, base, size, out)`.
+- `kernel/mm/include/ours/mm/vm_cow_pages.hpp`, `kernel/mm/vm_cow_pages.cpp` — `VmCowPages::add_new_page_locked(index, page)`, the general "this frame is now this node's page".
+- `kernel/object/include/ours/object/vmo_dispatcher.hpp`, `kernel/object/vmo_dispatcher.cpp` — `VmoDispatcher::create_from_wired_pages()`, with `GAF_USER`, replacing `create_committed()`, whose last caller this was.
+- `kernel/lib/userabi/src/userboot.cpp` — `make_boot_image_handle()` zeroes the slack after the image's last byte and builds the VMO from the image's frames instead of copying.
+- `kernel/top/handoff.cpp`, `kernel/mm/include/ours/mm/pm_frame.hpp`, `kernel/mm/early_mem.cpp` — comments that the review found false or stale: which thread takes the image, who calls `clear_reserved()`, what `userboot_init()` does with the image.
+- `.agents/tasks/boot-image-pages/DESIGN.md` — D4 changed to Zircon's handling, and the latch's threads corrected; `.agents/tasks/userboot-bootfs/DESIGN.md` and `RESULT.md` — the claim that Zircon hands userboot a physical VMO, corrected.
+
+**Symptom**
+None: step 4 of `.agents/tasks/boot-image-pages/PLAN.md`. The boot image, about 1.2 MiB, was copied into a fresh VMO for userboot. The image's own frames stayed reserved for good.
+
+**Cause**
+The objects:
+- The image's frames. They are reserved (`Flags::Reserved`, Zircon's WIRED state), counted on their node and zone, and owned by nobody.
+- `unwire_frame()`. It turns such a frame into an allocated frame with no owner, as Zircon's `pmm_unwire_page()` moves a page from WIRED to ALLOC.
+- `VmCowPages::add_new_page_locked()`. It gives an allocated frame to a node as an Owned page, which the node frees when it dies (`~VmCowPages`, `drain_owned`, `free_frames`).
+
+The events, at boot:
+1. The kernel takes the image (step 3).
+2. It zeroes [size, align_up(size)) through the physmap. phys reserved that frame whole (step 1) but left the slack, since the RSDP pointer points into the unreserved Multiboot info block, and ACPI has read it by now.
+3. For each frame, it asserts the frame is Reserved, unwires it and adds it, under the new node's lock.
+4. userboot gets the VMO with `Basic | Read | Map` and reads it exactly as before. It closes the VMO when it exits, and the frames go to the buddy.
+
+The order and the failure handling are Zircon's: unwire, then add, and a failure of either is fatal. The user chose that over returning an error, to stay consistent with Zircon. The path runs once, at boot, and a page map that cannot hold about 300 pages means the system cannot boot anyway.
+
+**Change**
+
+```cpp
+// before: a copy
+object::VmoDispatcher::create_committed(align_up(size, PAGE_SIZE), vmo, rights);
+vmo.dispatcher()->write(bytes.data(), 0, bytes.size());
+
+// after: the frames themselves
+std::memset(base + image.size, 0, size - image.size);
+object::VmoDispatcher::create_from_wired_pages(image.base, size, vmo, rights);  // GAF_USER inside
+
+// in VmObjectPaged::create_from_wired_pages(), under the node's lock
+ASSERT(!!(page->flags() & page::Flags::Reserved), ...);
+unwire_frame(page);
+ASSERT(Status::Ok == cow_pages->add_new_page_locked(index, page), ...);
+```
+
+No interface was added beyond Zircon's own: `unwire_frame` is `pmm_unwire_page`, `add_new_page_locked` is `AddNewPageLocked`, `create_from_wired_pages` is `CreateFromWiredPages`. The dispatcher factory takes the place of `create_committed`.
+
+**Reference**
+- Zircon `VmObjectPaged::CreateFromWiredPages()` (`zircon/kernel/vm/vm_object_paged.cc`): `pmm_unwire_page()`, then `AddNewPageLocked()`, then `ASSERT`.
+- Zircon `CreatePhysVmo()` (`zircon/kernel/top/handoff.cc`), which uses it for the data ZBI handed to userboot.
+- Zircon `pmm_unwire_page()` (`vm/include/vm/pmm.h`): "Unwires a page and sets it in the ALLOC state".
+
+**Verification**
+- `boot_check.py`:
+  - dbg PASS, 20 passed: `userabi: 316 frames of the boot image handed to userboot, not copied`, the BootFS unpacked (0x2e000 bytes), 16 probes killed, launcher and object_get_info checks passed;
+  - rel PASS, 18 passed: 297 frames handed over, `init: launched shell`.
+- The frame count matches the stamping: `Reserved 316 frames of boot package` on dbg, 297 on rel.
+- Free frames after userboot exits, from the dbg `aspace ... gone` lines, against step 3: about 300 to 316 frames more, line by line, which is the image. The first run of this step gave exactly 316 at the first `fault_probe` line. Later runs vary by a dozen or so frames, from the dbg kernel's background allocations.
+- Both reserved-frame guards stayed armed, the boot-time one and the runtime one in `PmNode::free_frames()`. Neither fired when userboot's VMO died, so every adopted frame had been unwired.
+- `kshell_run.py vmosnapshot.test pmnode.test`: ok.
+- An adversarial review (three reviewers, each finding checked by an independent skeptic) confirmed 10 findings, 7 distinct, all fixed here:
+  - the VMO was built with `GAF_KERNEL`, while the `create_committed()` it replaces used `GAF_USER`. A snapshot child of the image, which userboot's rights allow, would then allocate its copies with the kernel class, which spins in the allocator's slow path when memory runs out instead of answering OutOfMem. The factory now takes a `Gaf`, and the dispatcher passes `GAF_USER`;
+  - six comments that stated something false.
+  - The review also found that ACPI reads the RSDP in `init_platform_early()`, before the page allocator, not in `init_platform()`. That corrects this change's comment and `docs/repairs/261003/x86-phys.md`.
+
+**Deliberately not done**
+- A release-build check that each frame is reserved. Zircon also asserts, and the one caller passes exactly the range phys reserved.
+- The MBI/RSDP hazard itself (`docs/repairs/261003/x86-phys.md`).
+
+**How it was found**
+None: a planned step. The `GAF` mistake was found by the review before commit.
+
+**The user's prediction**
+None given. On D4 the user asked to follow Zircon.
+
+**Three questions you should be able to answer**
+- What state is a boot image frame in before `unwire_frame()`, after it, and after `add_new_page_locked()`, in our terms and in Zircon's?
+- Why must the boot image VMO allocate with the user class, though the kernel builds it?
+- Why is the slack zeroed in the kernel rather than in phys, and why is it safe to zero it then?

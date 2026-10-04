@@ -32,10 +32,10 @@ The events at boot, after the change:
 1. phys reserves BootPackage rounded out to whole pages, with no zeroing (step 1). No other reservation can then claim the tail frame and be miscounted as BootPackage.
 2. The kernel reads what it needs from the image (boot options, kernel package, user options) and then *takes* it: a latch after which `boot_package()` and `kernel_package()` panic (step 3).
 3. The kernel zeroes the slack after the image's last byte, through the physmap. This happens after ACPI init, the only reader of the unreserved MBI that might share that page.
-4. `VmObjectPaged::create_from_wired_pages()` inserts each frame into a new page map, then un-wires it: clear Reserved, subtract the node and zone counts, `become<VmmBody>()`. On a failed insert, the frames not yet taken stay fully Reserved, and the partly built VMO is dropped after its lock is released (step 4).
+4. `VmObjectPaged::create_from_wired_pages()` takes each frame in Zircon's order: assert it is Reserved, un-wire it (`unwire_frame()`: clear Reserved, subtract the node and zone counts), then add it (`VmCowPages::add_new_page_locked()`: `become<VmmBody>()`, insert Owned). A failure is a panic, as in Zircon's `CreateFromWiredPages()` (step 4).
 5. userboot gets the VMO with `Basic | Read | Map`, reads it exactly as today, and closes it. The frames go to the buddy as ordinary VMO pages.
 
-Concurrency: the new VMO is unpublished while it is filled, so no other thread can reach its page map. The lock is still taken, as Zircon does in `CreateFromWiredPages()`, so that the annotations and the insert path's assumptions hold. The frames are reserved, so no allocator can hand them out meanwhile. The latch is written once, by the boot thread in `userboot_init()`, before any user thread exists.
+Concurrency: the new VMO is unpublished while it is filled, so no other thread can reach its page map. The lock is still taken, as Zircon does in `CreateFromWiredPages()`, so that the annotations and the insert path's assumptions hold. The frames are reserved, so no allocator can hand them out meanwhile. The latch is written once, by `take_boot_image()` from `userboot_init()` on the laborer thread, after userboot's thread has started; no system call reads the image, and the boot thread's reads happen before the laborer is spawned.
 
 ## Alternatives considered
 - **A physical VMO over the image** (`VmObjectPhysical`). Never frees the frames. `vmo_read` and faults are NotSupported on it, so userboot would have to change. Rejected by the user.
@@ -48,7 +48,7 @@ Concurrency: the new VMO is unpublished while it is filled, so no other thread c
 | D1. Where the slack is zeroed | (a) the kernel, at adoption, after ACPI init; (b) phys, as Zircon does, after passing it the MBI range | (a) | None given | 2026-10-03, as recommended |
 | D2. A boot image base that is not page-aligned | (a) phys panics, as the multiboot view already makes it; (b) also add the Multiboot2 module-align tag; (c) fall back to the copy | (a) | None given | 2026-10-03, as recommended |
 | D3. API shape | (a) `boot::take_boot_image()` returns the range, plus a `VmoDispatcher` factory, so top stays independent of kernel/object; (b) Zircon's shape: `end_handoff()` returns the VMO handle | (a) | None given | 2026-10-03, as recommended |
-| D4. A failed page-map insert (out of memory) | (a) return the error; (b) assert, as Zircon does | (a) | None given | 2026-10-03, as recommended |
+| D4. A failed page-map insert (out of memory) | (a) return the error; (b) assert, as Zircon does | (a), then (b) | None given | (b), 2026-10-03: the user asked to stay consistent with Zircon, so the order (unwire, then add) and the failure handling (assert) are Zircon's |
 | D5. Extra scope | (a) a `!Reserved` debug check on the runtime free path too; (b) delete `create_committed`, which loses its only caller; (c) a kshell adoption test | (a) and (b), not (c) | None given | 2026-10-03, as recommended |
 
 ## Testing and verification

@@ -7,9 +7,12 @@ namespace ours::boot {
 namespace {
     phys::Handoff const *HANDOFF;
 
-    /// Whether the boot image is still the kernel's to read. Taken once, by
-    /// take_boot_image(), on the boot thread before any user thread exists;
-    /// read only on that thread too.
+    /// Whether the boot image is still the kernel's to read. Written once, by
+    /// take_boot_image(), from userboot_init() on the laborer thread -- after
+    /// userboot's own thread has started, though no system call reads the
+    /// image. Read by boot_package(): on the boot thread (setup_options())
+    /// before the laborer is spawned, which orders those reads before the
+    /// write, and on the laborer itself. So plain is enough.
     enum class BootImage : u8 {
         Held,
         Taken,

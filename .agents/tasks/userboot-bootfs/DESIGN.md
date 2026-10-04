@@ -50,17 +50,17 @@ The events at boot, after the change:
 Why `Write` must go before the hand-off: every program's code is mapped from slices of this VMO, through an executable duplicate of it. A holder with `Write` could change the code of every program started from it.
 
 Zircon counterparts:
-- `zircon/kernel/top/handoff.cc`: `.zbi = CreatePhysVmoHandle(...)`, the ZBI as a VMO;
+- `zircon/kernel/top/handoff.cc`: `.zbi = CreatePhysVmoHandle(...)`, the ZBI as a VMO. Despite its name, it builds a paged VMO that takes the ZBI's own frames (`VmObjectPaged::CreateFromWiredPages()`), not a physical VMO; corrected 2026-10-03, and done so here by `.agents/tasks/boot-image-pages`;
 - `zircon/kernel/lib/userabi/userboot.cc`: pushes that handle to userboot;
 - `src/bringup/lib/userboot/rust/src/bootfs.rs`, `get_bootfs_vmo()`: create, map read-write, decompress, unmap.
 
 ## Alternatives considered
 - **One package, handed whole to userboot, which filters it.** Rejected. User space would receive the kernel's own image, and the whitelist logic would move instead of disappearing. Zircon keeps the two apart as STORAGE_KERNEL and STORAGE_BOOTFS.
-- **A physical VMO over the boot image's memory**, as Zircon's `CreatePhysVmoHandle()` does. No copy, but:
+- **A physical VMO over the boot image's memory.** This said Zircon's `CreatePhysVmoHandle()` does this; it does not (see above). No copy, but:
   - `vmo_read` answers NotSupported on a physical VMO here, so userboot would have to map it, and mapping a physical VMO from user space is untested;
   - the image's pages would have to stay reserved for good.
 
-  A copy of about 1.2 MiB at boot is cheaper to get right. It can become a physical VMO later without changing userboot.
+  A copy of about 1.2 MiB at boot is cheaper to get right. The claim that it could later become a physical VMO without changing userboot was wrong: userboot reads the header with `vmo_read`. The copy was replaced instead by a paged VMO over the image's own frames (`.agents/tasks/boot-image-pages`).
 - **Only the StorageBootFs item as the VMO.** The kernel would still parse the image to cut the item out, and userboot would need the item's compression and size from a side channel. The whole image describes itself, which is why Zircon hands over the whole ZBI.
 - **Decompressing into a buffer and `vmo_write`-ing it.** userboot has no allocator, and a static buffer would have to be as large as any BootFS.
 

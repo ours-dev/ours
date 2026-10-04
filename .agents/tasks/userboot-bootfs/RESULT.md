@@ -27,5 +27,5 @@
 - The kernel decompresses its package although phys already has: updated in `docs/repairs/261003/userabi.md`, item 1, with that as the preferred fix.
 
 ## Not done
-- A physical VMO over the boot image instead of a copy (D2 option b), left for later.
+- Handing over the image without a copy, left for later. Done since by `.agents/tasks/boot-image-pages`, as Zircon does it: a paged VMO that takes the image's frames, not D2's option (b), a physical VMO.
 - Unmapping userboot's read-write BootFS mapping: there is no `vma_unmap`. It goes when userboot exits.
