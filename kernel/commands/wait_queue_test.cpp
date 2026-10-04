@@ -3,12 +3,15 @@
 //
 // `waitqueue.test`: wake a parked thread the two ways that pick one
 // particular thread out of a wait queue, rather than whoever is at its head,
-// and check that the waiter comes back:
+// and check that the waiter comes back, with the status that says why:
 //
 //   - its own timeout: a wait with a deadline that nothing signals, which
-//     WaitQueue::handle_timeout() ends from the timer interrupt;
+//     WaitQueue::handle_timeout() ends from the timer interrupt, and which
+//     answers TimeOut;
 //   - a suspend from another thread while it waits interruptibly, which
-//     Thread::suspend_or_kill() ends through its Parked branch.
+//     Thread::suspend_or_kill() ends through its Parked branch, and which
+//     answers InternalIrqRetry -- not Ok, which would tell the waiter it got
+//     what it waited for.
 //
 // Both reach WaitQueue::unpark_thread() holding the woken thread's PI lock,
 // and until 2026-10-03 that function took the same lock again: dbg_1 would
@@ -163,6 +166,8 @@ namespace {
             }
         }
         log::info("waitqueue.test:   the suspended wait answered {}", to_string(c->woken_status));
+        verdict(tally, c->woken_status == Status::InternalIrqRetry,
+                "the suspended wait answers InternalIrqRetry, not Ok");
 
         // The other half of the protocol: drop the Suspend signal, then let
         // the waiter finish.

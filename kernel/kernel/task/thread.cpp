@@ -251,6 +251,18 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
     m_canary.verify<Self>();
 
     auto const is_to_suspend = SuspendOrKillOp::Suspend == op;
+    // What a waiter this wakes reads from its wait: the same two answers the
+    // wait's own preamble gives for a signal already pending when it parks
+    // (check_kill_or_suspend_signal()), so every caller handles them
+    // already. With Status::Ok, as it was, the waiter could not tell being
+    // interrupted from being given what it waited for. Zircon's
+    // SuspendOrKillInternal() wakes with the same pair.
+    auto const wakeup_status = [is_to_suspend] {
+        if (is_to_suspend) {
+            return Status::InternalIrqRetry;
+        }
+        return Status::InternalIrqKilled;
+    }();
     auto set_signals = gktl::defer([this, is_to_suspend]() {
         // write_once: the target reads its own signals with no lock held, on
         // its way back to ring 3 (process_pending_signals()), and a plain
@@ -347,7 +359,7 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
             if (wq == nullptr) {
                 break;
             }
-            wq->unpark_thread(this);
+            wq->unpark_thread(this, wakeup_status);
             break;
         }
         case State::Sleeping: {

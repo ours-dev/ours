@@ -190,3 +190,59 @@ None.
 - Why can a thread be `Parked` while its `wait_queue()` is null, and why does the lock order make that window unavoidable?
 - Why is "do nothing" correct for a kill that finds the waiter claimed, rather than waiting until the claimer is done?
 - Why can Zircon assert READY in the same spot, and ours cannot?
+
+## Title: A waiter that a suspend or kill wakes reads InternalIrqRetry or InternalIrqKilled, not Ok (2026-10-03)
+
+**Files**
+- `kernel/kernel/task/thread.cpp` — `suspend_or_kill()` computes the status its wake hands the waiter and passes it to `unpark_thread()`.
+- `kernel/commands/wait_queue_test.cpp` — `waitqueue.test` checks that a suspended wait answers `InternalIrqRetry`.
+
+**Symptom**
+`waitqueue.test` printed "the suspended wait answered Ok": a thread suspended while parked interruptibly came back from its wait as if what it waited for had happened. Not reachable from a program today: no system call suspends, and the only kill of a thread blocked in `object_wait_one` comes with its process's own exit.
+
+**Cause**
+`unpark_thread()` takes the status the woken waiter will read, with `Status::Ok` as its default, and `suspend_or_kill()` called it without one. A wait's status is the waiter's only way to learn why it woke, so an interruption that answers `Ok` is indistinguishable from success. For `object_wait_one` that is a harmless lie, because the thread is about to die on its way out of the system call. For a waiter that acts on its answer it is a real one: an exception-channel wait would read a kill as "the handler closed the exception" and go on to the next handler, still holding the thread in the kernel.
+
+The right answers already existed. A wait whose thread has a signal pending when it parks never parks; its preamble returns `check_kill_or_suspend_signal()`, which is `InternalIrqKilled` or `InternalIrqRetry`. So a signal before the park and a signal during it gave different answers for the same event, and every caller already had to handle the two right ones.
+
+**Change**
+
+```cpp
+// before
+wq->unpark_thread(this);               // the waiter reads Status::Ok
+
+// after
+auto const wakeup_status = [is_to_suspend] {
+    if (is_to_suspend) {
+        return Status::InternalIrqRetry;
+    }
+    return Status::InternalIrqKilled;
+}();
+...
+wq->unpark_thread(this, wakeup_status);
+```
+
+`InternalIrqRetry` for a suspend means "try again once resumed", and `InternalIrqKilled` means "give up, you are dying". Only interruptible waits are woken this way, and the only one today is `object::wait_one()`, which passes the status through to its system call, where the pending signal is acted on before SYSRET; mutex waits are not interruptible.
+
+**Reference**
+Zircon `Thread::SuspendOrKillInternal()` (kernel/kernel/thread.cc): `wakeup_status = suspend_op ? ZX_ERR_INTERNAL_INTR_RETRY : ZX_ERR_INTERNAL_INTR_KILLED`, passed to `UnblockThread()` and `Unsleep()`.
+
+**Verification**
+- Isolated copy of HEAD with this change: `boot_check.py --out out/task-wake`, dbg PASS (20 passed), rel PASS (18 passed), 0 error lines.
+- `waitqueue.test` on dbg: `ok -- 4 checks`, "the suspended wait answered InternalIrqRetry".
+- clang-tidy: no finding on the changed lines.
+
+**Deliberately not done**
+- The Sleeping branch still wakes with `Status()` and ignores `is_interruptible()`; that is repair item 3 of `docs/repairs/260924/kernel-task.md`, a separate defect.
+- Zircon's vDSO retries a `blocking` system call that answers `ZX_ERR_INTERNAL_INTR_RETRY`; ours's `blocking` attribute generates no retry, so once a suspend can reach `object_wait_one` the program would see `InternalIrqRetry` after resuming. Nothing suspends a user thread yet; it belongs with `task_suspend`.
+
+**How it was found**
+Recorded with repair item 2 on 2026-09-24; `waitqueue.test` showed it once the double PI lock no longer stopped the test first.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why must a suspend's wake answer differently from a kill's, and what should each waiter do with its answer?
+- Why did changing the status not require touching any waiter?
+- What would an exception-channel wait have done with a kill that answered `Ok`?

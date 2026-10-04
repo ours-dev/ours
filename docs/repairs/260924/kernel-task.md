@@ -1,25 +1,5 @@
 # kernel-task 待修项（2026-09-24）
 
-## 5. A waiter woken by a suspend or a kill reads `Status::Ok`
-
-**Severity**
-Medium: a wrong result, on a path no system call reaches yet.
-
-**Symptom**
-`waitqueue.test` prints "the suspended wait answered Ok": a thread suspended or killed while parked interruptibly returns from its wait as if the wait had been satisfied.
-
-**Cause**
-`Thread::suspend_or_kill()`'s Parked branch calls `wq->unpark_thread(this)` with the default status, `Status::Ok`. The waiter cannot tell an interruption from the event it waited for; an exception-channel wait would read a kill as "the handler closed the exception". The preamble of the same wait already answers a signal pending at park time with `InternalIrqKilled` or `InternalIrqRetry` (`Thread::check_kill_or_suspend_signal()`), so every caller handles those two already.
-
-**Change**
-Wake with `InternalIrqKilled` for a kill and `InternalIrqRetry` for a suspend, as the preamble does.
-
-**Reference**
-Zircon `Thread::SuspendOrKillInternal()` (kernel/kernel/thread.cc), `wakeup_status`.
-
-**Acceptance**
-`waitqueue.test` checks that the suspended wait answers `InternalIrqRetry`.
-
 ## 3. `suspend_or_kill` 的 Sleeping 分支与睡眠定时器竞争（已交接给独立会话）
 
 Sleeping 分支不看 `is_interruptible()`、以 `Status::Ok` 唤醒；`sleep_etc` 的定时器回调在
