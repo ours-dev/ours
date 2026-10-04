@@ -16,6 +16,7 @@
 #include <ours/time/timer.hpp>
 
 #include <arch/auto_interrupt_disabler.hpp>
+#include <arch/auto_interrupt_enabler.hpp>
 #include <gktl/counter.hpp>
 #include <gktl/defer.hpp>
 #include <gktl/init_hook.hpp>
@@ -780,9 +781,10 @@ auto Thread::Current::process_pending_signals() -> void {
         }
 
         if (!!(signals & ThreadSignals::Suspend)) {
-            arch::local_irq_enable();
-            Thread::Current::do_suspend();
-            arch::local_irq_disable();
+            {
+                arch::AutoInterruptEnabler const irqs_on;
+                Thread::Current::do_suspend();
+            }
             continue;
         }
 

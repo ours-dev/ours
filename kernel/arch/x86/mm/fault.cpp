@@ -7,6 +7,7 @@
 #include <ours/sync/spin_lock.hpp>
 #include <ours/task/thread.hpp>
 
+#include <arch/auto_interrupt_enabler.hpp>
 #include <arch/x86/interrupt.hpp>
 #include <arch/x86/macro/mmu.hpp>
 #include <arch/x86/system.hpp>
@@ -300,12 +301,12 @@ auto x86_handle_page_fault(arch::IrqFrame *frame, VirtAddr const addr) -> Status
     //
     // Zircon's x86_pfe_handler() enables interrupts at the same point and for
     // the same reason; Linux's do_user_addr_fault() does it before it takes
-    // mmap_lock.
-    arch::local_irq_enable();
-
-    auto const status = task::Thread::Current::page_fault(addr, cause);
-
-    arch::local_irq_disable();
+    // mmap_lock. Off again once it returns, as the rest of the exception path
+    // expects.
+    auto const status = [addr, cause] {
+        arch::AutoInterruptEnabler const irqs_on;
+        return task::Thread::Current::page_fault(addr, cause);
+    }();
 
     if (Status::Ok == status) {
         return Status::Ok;

@@ -144,6 +144,15 @@ This repo has three library tiers, not one flat "the STL":
 
 1. Take locks through `lockdep::Guard`/`lockdep::ScopedGuard` (re-exported at `kernel/include/ours/lockdep.hpp:8-14`), not by calling `lock()`/`unlock()` directly. That's what feeds `system/lib/lockdep`'s cycle detection — a lock taken outside a Guard is invisible to lockdep.
 
+1. The same goes for every paired state change, not only locks: a stretch
+   with interrupts on or off, or preemption off, is a scope with an RAII
+   object -- `arch::AutoInterruptEnabler`, `arch::AutoInterruptDisabler`,
+   `task::AutoPreemptDisabler` -- never a manual call and its matching undo,
+   which an early return or a later edit can separate (the user's call,
+   2026-10-04). A path that changes the state and never comes back, such as a
+   thread exiting or the idle loop, has no scope to give back; it makes the
+   one call and says why in a comment.
+
 ### Assertions & invariants
 
 1. Invariants that must hold in every build: `ASSERT(condition, "message", args...)` (`system/public/ours/assert.hpp`) — always panics via `ours::panic` on failure, never compiled out.

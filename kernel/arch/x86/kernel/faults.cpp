@@ -8,6 +8,7 @@
 #include <ours/task/exception.hpp>
 #include <ours/task/thread.hpp>
 
+#include <arch/auto_interrupt_enabler.hpp>
 #include <arch/halt.hpp>
 #include <arch/interrupt.hpp>
 #include <arch/x86/system.hpp>
@@ -315,9 +316,10 @@ namespace {
         DEBUG_ASSERT(where >= stack.base() && where < stack.top(),
                      "exception frame {:#x} is not on the thread's kernel stack", where);
 
-        arch::local_irq_enable();
-        Thread::Current::on_user_exception(context);
-        arch::local_irq_disable();
+        {
+            arch::AutoInterruptEnabler const irqs_on;
+            Thread::Current::on_user_exception(context);
+        }
         Thread::Current::process_pending_signals();
 
         panic("a user exception ({}) did not end thread {}", task::to_string(context.type),

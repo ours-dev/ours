@@ -6,6 +6,7 @@
 #include <iterator>
 
 #include "argument.hpp"
+#include <arch/auto_interrupt_enabler.hpp>
 #include <arch/interrupt.hpp>
 #include <arch/nospec.hpp>
 #include <arch/syscall.hpp>
@@ -203,7 +204,16 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
     // window into every wait a handler enters, and cost this CPU its timer
     // ticks for as long as a long call ran. Zircon's do_syscall_pre()
     // re-enables at the same point, "to maintain kernel preemptiveness".
-    arch::local_irq_enable();
+    //
+    // And off again when this returns, before the stub pops the frame. From
+    // its first pop onwards the stub is restoring user state on the kernel
+    // stack, then loads the user %rsp and swaps to the user GS: an interrupt
+    // taken in that window would find a kernel CS with a user stack, or a user
+    // GS it would not swap back. Zircon's do_syscall_post() disables there for
+    // the same reason, and so that the pending-signal check the stub makes
+    // next (x86_syscall_process_pending_signals) cannot lose a wakeup between
+    // the check and SYSRET.
+    arch::AutoInterruptEnabler const irqs_on;
 
     if (!trapped_from_vdso(frame)) [[unlikely]] {
         not_from_vdso(frame);
@@ -232,16 +242,6 @@ extern "C" auto syscall_dispatch(arch::SyscallFrame *const frame) -> void {
         number = arch::confine_array_index(number, TABLE_SIZE);
         SYSCALL_TABLE[number](frame);
     }
-
-    // Off again before the stub pops the frame. From its first pop onwards
-    // the stub is restoring user state on the kernel stack, then loads the
-    // user %rsp and swaps to the user GS: an interrupt taken in that window
-    // would find a kernel CS with a user stack, or a user GS it would not
-    // swap back. Zircon's do_syscall_post() disables here for the same
-    // reason, and so that the pending-signal check the stub makes next
-    // (x86_syscall_process_pending_signals) cannot lose a wakeup between the
-    // check and SYSRET.
-    arch::local_irq_disable();
 }
 
 } // namespace ours
