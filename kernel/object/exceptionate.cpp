@@ -17,7 +17,8 @@ Exceptionate::~Exceptionate() {
     shutdown();
 }
 
-auto Exceptionate::set_channel(KernelHandle<ChannelDispatcher> channel) -> Status {
+auto Exceptionate::set_channel(KernelHandle<ChannelDispatcher> channel, Rights const thread_rights,
+                               Rights const process_rights) -> Status {
     if (!channel.dispatcher()) {
         return Status::InvArgs;
     }
@@ -34,6 +35,8 @@ auto Exceptionate::set_channel(KernelHandle<ChannelDispatcher> channel) -> Statu
     // on_zero_handles(), which takes its PeerHolder: after this lock, in the
     // order.
     m_channel = ustl::move(channel);
+    m_thread_rights = thread_rights;
+    m_process_rights = process_rights;
     return Status::Ok;
 }
 
@@ -66,6 +69,11 @@ auto Exceptionate::send(ustl::Arc<ExceptionDispatcher> exception) -> Status {
         .type = exception->exception_type(),
         .padding1 = {},
     };
+
+    // Before the handle leaves the kernel: once the handler has it, it may ask
+    // for the task handles at once. A failed send leaves them set, and the
+    // next send overwrites them, as Zircon's does.
+    exception->set_task_rights(m_thread_rights, m_process_rights);
 
     // The handle before the packet: MessagePacket::create() takes finished
     // handles. Charged to no process (the user's call, 2026-10-04): there is

@@ -39,7 +39,10 @@ class Exceptionate {
     USTL_NO_MOVEABLE_AND_COPYABLE(Exceptionate);
 
     /// Binds |channel|, the kernel's end of a fresh channel; the caller hands
-    /// the other end to user space. First come, first served:
+    /// the other end to user space. |thread_rights| and |process_rights| are
+    /// what a handler on it gets on the handles it asks an exception for
+    /// (ExceptionDispatcher::set_task_rights()); None withholds one. First
+    /// come, first served:
     ///
     ///   - InvArgs when |channel| is empty;
     ///   - BadState after shutdown();
@@ -49,7 +52,8 @@ class Exceptionate {
     ///
     /// On any refusal |channel| is dropped, and the other end sees
     /// PeerClosed.
-    auto set_channel(KernelHandle<ChannelDispatcher> channel) -> Status;
+    auto set_channel(KernelHandle<ChannelDispatcher> channel, Rights thread_rights,
+                     Rights process_rights) -> Status;
 
     /// Unbinds the channel, if any, and refuses every later set_channel():
     /// the reader sees PeerClosed. Called as the task dies, and must not run
@@ -85,6 +89,10 @@ class Exceptionate {
 
     /// Guarded by m_lock.
     bool m_is_shutdown = false;
+
+    /// See set_channel(). Guarded by m_lock.
+    Rights m_thread_rights = Rights::None;
+    Rights m_process_rights = Rights::None;
 };
 
 } // namespace ours::object

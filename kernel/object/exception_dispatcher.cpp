@@ -3,6 +3,7 @@
 #include <ours/lockdep.hpp>
 #include <ours/mm/gaf.hpp>
 #include <ours/object/exception_dispatcher.hpp>
+#include <ours/object/process_dispatcher.hpp>
 #include <ours/object/thread_dispatcher.hpp>
 
 #include <utility>
@@ -21,6 +22,8 @@ ExceptionDispatcher::ExceptionDispatcher(ustl::Arc<ThreadDispatcher> thread,
     , m_thread(ustl::move(thread))
     , m_type(type)
     , m_state(ExceptionState::TryNext)
+    , m_thread_rights(Rights::None)
+    , m_process_rights(Rights::None)
     , m_response() {}
 
 // Out of line, where ThreadDispatcher is complete: m_thread's release needs it.
@@ -30,6 +33,50 @@ auto ExceptionDispatcher::set_state(ExceptionState const state) -> void {
     verify_canary();
     Guard guard{get_lock()};
     m_state = state;
+}
+
+auto ExceptionDispatcher::set_task_rights(Rights const thread_rights, Rights const process_rights)
+    -> void {
+    verify_canary();
+    Guard guard{get_lock()};
+    m_thread_rights = thread_rights;
+    m_process_rights = process_rights;
+}
+
+auto ExceptionDispatcher::make_thread_handle(ustl::Box<Handle> *const out) -> Status {
+    verify_canary();
+    auto const rights = [this] {
+        Guard guard{get_lock()};
+        return m_thread_rights;
+    }();
+    if (rights == Rights::None) {
+        return Status::AccessDenied;
+    }
+    // Arc<Dispatcher> spelled out: an Arc<ThreadDispatcher> converts to both
+    // of Handle::make()'s first parameters, KernelHandle and Arc, and this is
+    // one more holder of the thread, which is the Arc overload.
+    *out = Handle::make(ustl::Arc<Dispatcher>(m_thread), rights);
+    if (!*out) {
+        return Status::NoResource;
+    }
+    return Status::Ok;
+}
+
+auto ExceptionDispatcher::make_process_handle(ustl::Box<Handle> *const out) -> Status {
+    verify_canary();
+    auto const rights = [this] {
+        Guard guard{get_lock()};
+        return m_process_rights;
+    }();
+    if (rights == Rights::None) {
+        return Status::AccessDenied;
+    }
+    // The thread keeps its process alive, and this keeps the thread.
+    *out = Handle::make(ustl::Arc<Dispatcher>(m_thread->process_ref()), rights);
+    if (!*out) {
+        return Status::NoResource;
+    }
+    return Status::Ok;
 }
 
 auto ExceptionDispatcher::on_zero_handles() -> void {

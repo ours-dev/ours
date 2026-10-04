@@ -85,6 +85,48 @@ struct ProbeRun {
     ours::ExceptionType exception_type;
 };
 
+/// Asks |exception| for the faulting thread and its process, as a handler
+/// does to reach the state it would read or fix, and checks what comes back:
+/// the process answers object_get_info(Process), the thread is a live handle
+/// that does not. The koids cannot be compared with ExceptionInfo's until
+/// object_get_info answers HandleBasic. Slice 2, step 1, of
+/// .agents/tasks/exception-channels/.
+auto check_exception_tasks(ours::Uandle const exception) -> bool {
+    using ours::Status;
+
+    auto ok = true;
+    auto thread = ours::Uandle::Invalid;
+    auto process = ours::Uandle::Invalid;
+    if (auto const got = ours::exception_get_process(exception, &process); got != Status::Ok) {
+        report("shell: exception_get_process = ", got);
+        ok = false;
+    } else {
+        ours::InfoProcess info{};
+        if (auto const asked = ours::object_get_info(process, ours::InfoTopic::Process, &info,
+                                                     sizeof(info), nullptr, nullptr);
+            asked != Status::Ok) {
+            report("shell: object_get_info(the exception's process) = ", asked);
+            ok = false;
+        }
+    }
+    if (auto const got = ours::exception_get_thread(exception, &thread); got != Status::Ok) {
+        report("shell: exception_get_thread = ", got);
+        ok = false;
+    } else {
+        ours::InfoProcess info{};
+        if (auto const asked = ours::object_get_info(thread, ours::InfoTopic::Process, &info,
+                                                     sizeof(info), nullptr, nullptr);
+            asked != Status::BadType) {
+            report("shell: object_get_info(the exception's thread, Process) = ", asked);
+            ok = false;
+        }
+    }
+    // Both were charged to this process; they go at once.
+    auto _ = ours::handle_close(thread);
+    auto _ = ours::handle_close(process);
+    return ok;
+}
+
 /// Binds an exception channel to |process| and checks what that promises
 /// before anything is sent on it: a second channel is refused while this one
 /// is bound, and the end handed back reads but does not write. The channel
@@ -160,11 +202,11 @@ auto pass_on_exceptions(ours::Uandle const channel, bool const handle, ProbeRun 
         }
         ++run->exceptions_seen;
         run->exception_type = info.type;
+        auto ok = check_exception_tasks(exception);
 
         // Handled resumes the thread where it stopped. Without it the close
         // means TryNext: no other handler is bound, so the kernel kills the
         // probe, and the channel closes with it.
-        auto ok = true;
         if (handle) {
             constexpr auto HANDLED = ours::ExceptionState::Handled;
             if (auto const set = ours::object_set_property(
@@ -505,6 +547,10 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
         "shell: task_create_exception_channel(job) = ",
         ours::task_create_exception_channel(job, ours::ExceptionChannelOptions::None, &unbound),
         ours::Status::NotSupported);
+    auto not_a_task = ours::Uandle::Invalid;
+    exception_checks_ok &=
+        expect("shell: exception_get_thread(job) = ", ours::exception_get_thread(job, &not_a_task),
+               ours::Status::BadType);
     constexpr auto HANDLED = ours::ExceptionState::Handled;
     exception_checks_ok &= expect(
         "shell: object_set_property(job, ExceptionState) = ",

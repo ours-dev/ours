@@ -120,3 +120,49 @@ None. The lock order (send under the thread's lock) was the user's call, without
 - At which three moments can a kill reach an exception being delivered, and how does each one end?
 - Why can the wait answer Ok for a thread that was killed, and what catches it?
 - Why must the shell read the exception channel before the answer channel, and what happens if it does not?
+
+## Title: exception_get_thread and exception_get_process hand a handler the faulting tasks, with the rights its channel was bound with (2026-10-04)
+
+**Files**
+- `kernel/object/include/ours/object/exception_dispatcher.hpp`, `kernel/object/exception_dispatcher.cpp` — the task rights (`set_task_rights()`), `make_thread_handle()`, `make_process_handle()`.
+- `kernel/object/include/ours/object/exceptionate.hpp`, `kernel/object/exceptionate.cpp` — `set_channel()` takes the rights to hand out; `send()` gives them to each exception before its handle leaves the kernel.
+- `kernel/object/include/ours/object/thread_dispatcher.hpp` — `process_ref()`, an `Arc` of the caller's own to the process.
+- `system/public/ours/syscalls.gni`, `kernel/lib/syscall/src/exception.cpp` — the two calls; `task_create_exception_channel` passes its task handle's rights.
+- `examples/shell/shell_tests.cpp` — every exception's thread and process are asked for and checked.
+- `.agents/tasks/exception-channels/PLAN.md` — slice 2 planned, its step 1 done.
+
+**Symptom**
+None. A handler could see an exception and answer it, but could not reach the thread that raised it, and a handler that emulates a system call or fixes a fault has to read and write that thread's registers. Step 1 of slice 2, the thread-level capture the user asked for as the base of a Starnix-like supervisor.
+
+**Cause**
+The handle a handler needs is a capability, so the question is which rights it carries. Zircon's answer: the rights of the task handle the channel was bound with. Whoever bound the channel could have reached the task through that handle anyway, so the channel grants nothing it did not already have. The rights are recorded on the exceptionate at bind time and copied onto each exception as it is sent, before its handle reaches user space; one handler holds an exception at a time, so they never change under one. A channel bound to a thread will withhold the process (rights None): it grants no way up the task chain.
+
+**Change**
+- `Exceptionate::set_channel(channel, thread_rights, process_rights)`; `send()` calls `exception->set_task_rights()` before minting the exception's handle.
+- `ExceptionDispatcher::make_thread_handle()` / `make_process_handle()`: AccessDenied for rights None; otherwise a new handle charged to the calling process (the handler's to keep or close), NoResource when refused. The `Arc<Dispatcher>` is spelled out at `Handle::make()`, because an `Arc<ThreadDispatcher>` converts to both its first parameters, `KernelHandle` and `Arc`.
+- `exception_get_thread` / `exception_get_process`: the exception handle needs no right, as in Zircon; BadType for anything else; the value goes out before the handle is installed (design 4.1).
+- `task_create_exception_channel` binds with its handle's rights for both thread and process, Zircon's choice, including Zircon's acknowledged imprecision that task rights do not map one to one.
+- The shell asks each exception for its process (which must answer `object_get_info(Process)`) and its thread (a live handle that must not), and once checks that a job handle is BadType. The koids cannot be compared with `ExceptionInfo`'s until `object_get_info` answers HandleBasic.
+
+**Reference**
+Zircon `sys_exception_get_thread()` / `sys_exception_get_process()` and the rights in `sys_task_create_exception_channel()` (zircon/kernel/lib/syscalls/exceptions.cc), `ExceptionDispatcher::SetTaskRights()`, `MakeThreadHandle()`, `MakeProcessHandle()` (zircon/kernel/object/exception_dispatcher.cc), `Exceptionate::SendException()`.
+
+**Verification**
+- Isolated copy of HEAD with only this change: `boot_check.py --out out/task-wake`, dbg PASS (24 passed), rel PASS (21 passed), 0 error lines.
+- dbg_1's log: `exception_get_thread(job) = BadType`; no exception_get or object_get_info failure for any of the 16 probes; `exception channel checks passed`.
+- clang-tidy: no finding on the changed lines.
+
+**Deliberately not done**
+- Comparing koids: needs `object_get_info(HandleBasic)`.
+- The thread slot itself: step 2 of slice 2.
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does a handle got from an exception carry the rights of the task handle the channel was bound with, and what would go wrong if it carried the task's default rights?
+- Why must `send()` set the task rights before the exception's handle is minted, rather than after the write?
+- Why does a thread-level channel hand out no process handle?

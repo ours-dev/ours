@@ -5,6 +5,7 @@
 
 #include <ours/exception.hpp>
 #include <ours/object/dispatcher.hpp>
+#include <ours/object/handle.hpp>
 #include <ours/object/types.hpp>
 #include <ours/sync/event.hpp>
 
@@ -29,9 +30,8 @@ using ExceptionDispatcherBase = SoloDispatcher<ExceptionDispatcher, RIGHTS_DEFAU
 /// handle is out; it holds a reference throughout, so the object outlives
 /// both the wait and a handler that closes late.
 ///
-/// Zircon's ExceptionDispatcher, without what slice 1 has no consumer for:
-/// the exception report and register context, the task rights behind
-/// exception_get_thread / exception_get_process, and second chance.
+/// Zircon's ExceptionDispatcher, without what nothing here uses yet: the
+/// exception report and register context, and second chance.
 class ExceptionDispatcher final: public ExceptionDispatcherBase {
     using Base = ExceptionDispatcherBase;
     using Self = ExceptionDispatcher;
@@ -67,6 +67,27 @@ class ExceptionDispatcher final: public ExceptionDispatcherBase {
     /// Records the handler's decision, to take effect when it closes the
     /// handle: object_set_property(Property::ExceptionState).
     auto set_state(ExceptionState state) -> void;
+
+    /// The rights the thread and process handles the next handler can ask
+    /// for get (make_thread_handle(), make_process_handle()); None means it
+    /// may not have that one. Set by the exceptionate that sends this,
+    /// before the handle leaves the kernel, from the rights of the task
+    /// handle its channel was bound with -- so a handler never gets more than
+    /// whoever bound the channel had. One handler holds the exception at a
+    /// time, so the rights never change while one is looking. Zircon's
+    /// SetTaskRights().
+    auto set_task_rights(Rights thread_rights, Rights process_rights) -> void;
+
+    /// A new handle to the faulting thread, with the rights set above,
+    /// charged to the calling process: AccessDenied when its handler may not
+    /// have one, NoResource at the caller's quota or a full arena.
+    /// exception_get_thread. Zircon's MakeThreadHandle().
+    auto make_thread_handle(ustl::Box<Handle> *out) -> Status;
+
+    /// The same for the thread's process: exception_get_process. A
+    /// thread-level channel gives none (AccessDenied): it grants no way up
+    /// the task chain. Zircon's MakeProcessHandle().
+    auto make_process_handle(ustl::Box<Handle> *out) -> Status;
 
     /// The handle is gone, wherever it was -- closed by the handler, freed
     /// unread with its channel, or closed with the handler's process: the
@@ -106,6 +127,10 @@ class ExceptionDispatcher final: public ExceptionDispatcherBase {
 
     /// What the handler decided. Guarded by get_lock().
     ExceptionState m_state;
+
+    /// See set_task_rights(). Guarded by get_lock().
+    Rights m_thread_rights;
+    Rights m_process_rights;
 
     /// Signalled by on_zero_handles(). Manual-reset, and unsignalled again by
     /// the one thread that waits on it once it has the answer, and by

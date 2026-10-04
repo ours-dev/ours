@@ -3,6 +3,7 @@
 #include <syscall/handlers.hpp>
 
 #include <ours/object/channel_dispatcher.hpp>
+#include <ours/object/exception_dispatcher.hpp>
 #include <ours/object/exceptionate.hpp>
 #include <ours/object/handle.hpp>
 #include <ours/object/handle_table.hpp>
@@ -62,7 +63,9 @@ auto task_create_exception_channel(ours::Uandle const handle, ExceptionChannelOp
 
     auto &table = ProcessDispatcher::current()->handle_table();
     ustl::Arc<ProcessDispatcher> process;
-    if (auto const status = table.get_dispatcher(handle, RIGHTS_TO_BIND, &process);
+    Rights task_rights = Rights::None;
+    if (auto const status =
+            table.get_dispatcher_with_rights(handle, RIGHTS_TO_BIND, &process, &task_rights);
         status != Status::Ok) {
         if (status == Status::BadType && names_another_task(table, handle)) {
             return Status::NotSupported;
@@ -88,11 +91,58 @@ auto task_create_exception_channel(ours::Uandle const handle, ExceptionChannelOp
     if (auto const status = out.copy_to_user(table.value_of(*reading)); status != Status::Ok) {
         return status;
     }
-    if (auto const status = process->exceptionate().set_channel(ustl::move(kernel_end));
+    // The thread and process handles a handler can ask an exception for carry
+    // the rights of |handle|, so the channel grants no more than its binder
+    // had. Zircon passes the task handle's rights for both, likewise.
+    if (auto const status =
+            process->exceptionate().set_channel(ustl::move(kernel_end), task_rights, task_rights);
         status != Status::Ok) {
         return status;
     }
     auto _ = table.add(ustl::move(reading));
     return Status::Ok;
+}
+
+namespace {
+    /// The shared body of exception_get_thread and exception_get_process:
+    /// |make| asks the exception for the handle; the value goes out before
+    /// the handle is installed (design 4.1).
+    template <typename Make>
+    auto hand_out_task(ours::Uandle const handle, user_copy::UserOutPtr<ours::Uandle> const out,
+                       Make const &make) -> Status {
+        auto &table = ProcessDispatcher::current()->handle_table();
+        ustl::Arc<object::ExceptionDispatcher> exception;
+        if (auto const status = table.get_dispatcher(handle, Rights::None, &exception);
+            status != Status::Ok) {
+            return status;
+        }
+        ustl::Box<object::Handle> task;
+        if (auto const status = make(*exception, &task); status != Status::Ok) {
+            return status;
+        }
+        if (auto const status = out.copy_to_user(table.value_of(*task)); status != Status::Ok) {
+            return status;
+        }
+        auto _ = table.add(ustl::move(task));
+        return Status::Ok;
+    }
+} // namespace
+
+/// Zircon: sys_exception_get_thread() (kernel/lib/syscalls/exceptions.cc).
+auto exception_get_thread(ours::Uandle const handle, user_copy::UserOutPtr<ours::Uandle> const out)
+    -> Status {
+    return hand_out_task(
+        handle, out, [](object::ExceptionDispatcher &exception, ustl::Box<object::Handle> *task) {
+            return exception.make_thread_handle(task);
+        });
+}
+
+/// Zircon: sys_exception_get_process() (kernel/lib/syscalls/exceptions.cc).
+auto exception_get_process(ours::Uandle const handle, user_copy::UserOutPtr<ours::Uandle> const out)
+    -> Status {
+    return hand_out_task(
+        handle, out, [](object::ExceptionDispatcher &exception, ustl::Box<object::Handle> *task) {
+            return exception.make_process_handle(task);
+        });
 }
 } // namespace ours::syscall

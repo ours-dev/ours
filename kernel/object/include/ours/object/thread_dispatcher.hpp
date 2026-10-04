@@ -135,6 +135,13 @@ class ThreadDispatcher: public ThreadDispatcherBase {
         return m_process.as_ref();
     }
 
+    /// A reference of the caller's own to the process, for an object that
+    /// has to hold it: an exception's process handle (exception_get_process).
+    [[nodiscard]]
+    auto process_ref() const -> ustl::Arc<ProcessDispatcher> {
+        return m_process;
+    }
+
     /// This thread made a system call without going through the vDSO: the
     /// trap came from |ip|, with |number| in the call-number register. The
     /// process is killed for it (a PolicyError, BadSyscall).
