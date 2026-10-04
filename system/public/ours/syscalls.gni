@@ -980,4 +980,75 @@ ours_syscalls = [
     attrs = []
     ret = "Status"
   },
+  {
+    name = "task_create_exception_channel"
+    brief = "Binds a new exception channel to the task |handle| names, and writes its reading end to |out|."
+    doc = [
+      "From then on, every exception a thread of the task raises is sent on",
+      "the channel as one message: an ExceptionInfo (<ours/exception.hpp>)",
+      "and one handle, the exception's. The thread waits until that handle",
+      "is closed; Property::ExceptionState, set on it first with",
+      "object_set_property, says what happens then. The end written to |out|",
+      "can be read and waited on and nothing else (Transfer, Wait, Read).",
+      "Only a process takes a channel for now: a thread or a job answers",
+      "NotSupported, any other object BadType. |handle| needs Inspect,",
+      "Duplicate, Transfer, ManageThread and Enumerate (AccessDenied). One",
+      "channel per task: AlreadyBound while one is bound and its reader is",
+      "still there, BadState once the process is dead. |options| must be",
+      "None (InvArgs). The value goes to |out| before the channel is bound:",
+      "InvArgs, and nothing bound, when |out| cannot be written.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "options"
+        type = "ExceptionChannelOptions"
+      },
+      {
+        name = "out"
+        type = "Uandle"
+        dir = "out"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
+  {
+    name = "object_set_property"
+    brief = "Sets |property| of the object |handle| names to the |size| bytes at |value|."
+    doc = [
+      "Each property has its own value layout and the objects that have it",
+      "(<ours/object_property.hpp>). ExceptionState is the only one: on an",
+      "exception handle, an ExceptionState, TryNext or Handled (InvArgs",
+      "otherwise), to take effect when the handle is closed. |handle| needs",
+      "SetProperty (AccessDenied) and must name an object with |property|",
+      "(BadType). A |size| below the value's is BufferTooSmall, a |value|",
+      "the kernel cannot read InvArgs, an unknown |property| InvArgs.",
+    ]
+    args = [
+      {
+        name = "handle"
+        type = "Uandle"
+      },
+      {
+        name = "property"
+        type = "Property"
+      },
+      {
+        name = "value"
+        type = "void"
+        dir = "in"
+        count = "size"
+      },
+      {
+        name = "size"
+        type = "usize"
+      },
+    ]
+    attrs = []
+    ret = "Status"
+  },
 ]

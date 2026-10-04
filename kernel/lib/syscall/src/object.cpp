@@ -2,6 +2,7 @@
 /// Copyright (c) 2026 ours Developers
 #include <syscall/handlers.hpp>
 
+#include <ours/object/exception_dispatcher.hpp>
 #include <ours/object/process_dispatcher.hpp>
 #include <ours/object/wait.hpp>
 #include <ours/status.hpp>
@@ -101,6 +102,48 @@ auto object_get_info(ours::Uandle const handle, InfoTopic const topic,
         }
         default:
             return Status::NotSupported;
+    }
+}
+
+/// The property decides the object type, so it is looked at first, as in
+/// object_get_info(); an unknown property is InvArgs, Zircon's answer for
+/// one, though here it comes before the handle is looked up rather than
+/// after: the table has no lookup that does not name the type.
+///
+/// Zircon: sys_object_set_property() (kernel/lib/syscalls/object.cc), whose
+/// ZX_PROP_EXCEPTION_STATE case reads a uint32_t, takes TRY_NEXT, HANDLED
+/// and THREAD_EXIT, and calls ExceptionDispatcher::SetDisposition().
+auto object_set_property(ours::Uandle const handle, Property const property,
+                         user_copy::UserInPtr<u8 const> const value, usize const size) -> Status {
+    switch (property) {
+        case Property::ExceptionState: {
+            ustl::Arc<object::ExceptionDispatcher> exception;
+            if (auto const status =
+                    object::ProcessDispatcher::current()->handle_table().get_dispatcher(
+                        handle, Rights::SetProperty, &exception);
+                status != Status::Ok) {
+                return status;
+            }
+            if (size < sizeof(ExceptionState)) {
+                return Status::BufferTooSmall;
+            }
+            // As the plain number it arrives as: an ExceptionState read
+            // straight out of user memory could hold any value at all.
+            u32 raw = 0;
+            if (auto const status =
+                    user_copy::UserInPtr<u32 const>(value.address()).copy_from_user(&raw);
+                status != Status::Ok) {
+                return status;
+            }
+            auto const state = static_cast<ExceptionState>(raw);
+            if (state != ExceptionState::TryNext && state != ExceptionState::Handled) {
+                return Status::InvArgs;
+            }
+            exception->set_state(state);
+            return Status::Ok;
+        }
+        default:
+            return Status::InvArgs;
     }
 }
 } // namespace ours::syscall

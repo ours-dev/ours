@@ -32,6 +32,7 @@ source_set("syscall") {
     "src/channel.cpp",
     "src/command.cpp",
     "src/debug.cpp",
+    "src/exception.cpp",
     "src/handle.cpp",
     "src/object.cpp",
     "src/port.cpp",

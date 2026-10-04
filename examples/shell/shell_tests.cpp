@@ -76,7 +76,46 @@ struct ProbeRun {
     /// The process, as the launcher handed it back; Uandle::Invalid when it
     /// did not start. The caller owns it.
     ours::Uandle process;
+    /// The exception channel bound to it behaved: bound, refused a second,
+    /// refused a write, and reported PeerClosed once the probe was dead.
+    bool exception_channel_ok;
 };
+
+/// Binds an exception channel to |process| and checks what that promises
+/// before anything is sent on it: a second channel is refused while this one
+/// is bound, and the end handed back reads but does not write. The channel
+/// goes to |out|; false, with the reason reported, when anything differed.
+/// Step 4 of .agents/tasks/exception-channels/PLAN.md.
+auto bind_exception_channel(ours::Uandle const process, ours::Uandle *const out) -> bool {
+    using ours::Status;
+
+    auto const bound =
+        ours::task_create_exception_channel(process, ours::ExceptionChannelOptions::None, out);
+    if (bound != Status::Ok) {
+        report("shell: task_create_exception_channel = ", bound);
+        return false;
+    }
+
+    auto ok = true;
+    auto second = ours::Uandle::Invalid;
+    if (auto const again = ours::task_create_exception_channel(
+            process, ours::ExceptionChannelOptions::None, &second);
+        again != Status::AlreadyBound) {
+        report("shell: a second exception channel = ", again);
+        auto _ = ours::handle_close(second);
+        ok = false;
+    }
+
+    // The kernel's end never reads: anything written to it would stay there.
+    constexpr char BYTE = 'x';
+    if (auto const wrote =
+            ours::channel_write(*out, ours::ChannelWriteOptions::None, &BYTE, 1, nullptr, 0);
+        wrote != Status::AccessDenied) {
+        report("shell: channel_write on an exception channel = ", wrote);
+        ok = false;
+    }
+    return ok;
+}
 
 /// Starts fault_probe under |job| with |probe| as argv[1] with |launcher|,
 /// and waits for it to answer or die. The handle to the process the launcher
@@ -151,6 +190,11 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
     }
     run.started = true;
 
+    // An exception channel on the probe before it can fault: it waits in its
+    // runtime for the processargs written below.
+    auto exceptions = ours::Uandle::Invalid;
+    run.exception_channel_ok = bind_exception_channel(process, &exceptions);
+
     // Then the message. Both handles leave this process with it, whatever the
     // write answers; the probe waits for it, and if it never comes, sees this
     // end close and ends itself.
@@ -197,6 +241,22 @@ auto run_probe(ours::Uandle const job, std::string_view const probe,
             ours::object_wait_one(answer, Signals::PeerClosed, ours::INSTANT_INFINITE, &observed);
     }
     auto _ = ours::handle_close(answer);
+
+    // The process's death shuts its exceptionate down: the channel reports
+    // PeerClosed, and nothing was ever sent on it -- delivery is step 5.
+    if (exceptions != ours::Uandle::Invalid) {
+        auto seen = Signals::None;
+        auto const waited =
+            ours::object_wait_one(exceptions, Signals::PeerClosed, ours::INSTANT_INFINITE, &seen);
+        auto const closed_empty =
+            waited == Status::Ok && !!(seen & Signals::PeerClosed) && !(seen & Signals::Readable);
+        if (!closed_empty) {
+            report("shell: waiting for the exception channel to close = ", waited);
+        }
+        run.exception_channel_ok &= closed_empty;
+        auto _ = ours::handle_close(exceptions);
+    }
+
     run.process = process;
     return run;
 }
@@ -354,8 +414,24 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
         "db_tf",         "gp_io",        "trap_outside_vdso", "pf_write_rodata",
     };
 
+    // What a channel is refused for, once: a job, which Zircon would take and
+    // this kernel does not yet, and a property set on an object that is not
+    // an exception (the root job's handle carries SetProperty).
+    auto exception_checks_ok = true;
+    auto unbound = ours::Uandle::Invalid;
+    exception_checks_ok &= expect(
+        "shell: task_create_exception_channel(job) = ",
+        ours::task_create_exception_channel(job, ours::ExceptionChannelOptions::None, &unbound),
+        ours::Status::NotSupported);
+    constexpr auto HANDLED = ours::ExceptionState::Handled;
+    exception_checks_ok &= expect(
+        "shell: object_set_property(job, ExceptionState) = ",
+        ours::object_set_property(job, ours::Property::ExceptionState, &HANDLED, sizeof(HANDLED)),
+        ours::Status::BadType);
+
     u32 killed = 0;
     u32 survived = 0;
+    u32 channels_ok = 0;
     for (auto const probe: PROBES) {
         auto const run = run_probe(job, probe, launcher, launcher_context);
         if (!run.started) {
@@ -364,6 +440,9 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
             auto _ = ort::debug_line(
                 "shell: launcher checks FAILED (a probe before its control did not start)");
             return;
+        }
+        if (run.exception_channel_ok) {
+            ++channels_ok;
         }
         auto const code = return_code_of(run.process);
         auto _ = ours::handle_close(run.process);
@@ -386,6 +465,17 @@ auto run_probes(ours::Uandle const job, shell::LaunchProgram const launcher,
     char survived_text[10];
     auto _ = ort::debug_line({"shell: probes done (", ort::decimal(killed, killed_text),
                               " killed, ", ort::decimal(survived, survived_text), " survived)"});
+
+    // A verdict line of its own: a channel that misbehaves fails nothing else.
+    char channels_text[10];
+    auto const channels_all = channels_ok == std::size(PROBES);
+    auto _ = ort::debug_line({"shell: exception channels behaved on ",
+                              ort::decimal(channels_ok, channels_text), " of the probes"});
+    if (exception_checks_ok && channels_all) {
+        auto _ = ort::debug_line("shell: exception channel checks passed");
+    } else {
+        auto _ = ort::debug_line("shell: exception channel checks FAILED");
+    }
 
     constexpr std::string_view CONTROL{"none"};
     auto _ = ort::debug_line("shell: starting the control probe with the launcher");
