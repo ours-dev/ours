@@ -185,8 +185,9 @@ auto start_kernel(PhysAddr handoff) -> void {
 
     auto const laborer = Thread::spawn("laborer", labour_routine, nullptr, task::DEFAULT_PRIORITY);
     laborer->set_cpu_affinity_hard(CpuMask::of(0));
-    // detach() fails only reaping a thread that is already Dead, which one
-    // just spawned is not; resume() answers only Ok.
+    // detach() fails only for a thread that is already Dead or that a
+    // join() has claimed, and one just spawned is neither; resume()
+    // answers only Ok.
     [[maybe_unused]]
     auto const detached = laborer->detach();
     DEBUG_ASSERT(Status::Ok == detached);

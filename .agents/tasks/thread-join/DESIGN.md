@@ -64,14 +64,14 @@ Locks: T's PI lock is only ever held alone, or outside `SPAWNED_THREADS_LOCK` an
 | Decision | Options | Recommendation | User's prediction | Decided |
 |---|---|---|---|---|
 | Lock order between the exiting thread's PI lock, the joiners' wake and each joiner's PI lock | A: Zircon's order with a local try-lock backoff; B: never nest two PI locks, a Dpc signals an Event after the final switch | B | B; the written argument is pending | B, 2026-10-04 |
-| `detach()` while a joiner holds the claim | Zircon: `Detach()` wakes the joiners with `ZX_ERR_BAD_STATE`; here: refuse the detach with `BadState` while `Joined` is set | Refuse: with B, waking the joiner from `detach()` either nests PI locks or signals an event T may already have freed, and a timed-out joiner's un-claim would race T freeing itself | | |
+| `detach()` while a joiner holds the claim | Zircon: `Detach()` wakes the joiners with `ZX_ERR_BAD_STATE`; here: refuse the detach with `BadState` while `Joined` is set | Refuse: with B, waking the joiner from `detach()` either nests PI locks or signals an event T may already have freed, and a timed-out joiner's un-claim would race T freeing itself | Refuse, as recommended | Refuse, 2026-10-04 |
 | Who writes the core function | The user writes the joiner side under a time limit, as the milestone hand-written function in `docs/authored.md`; or the agent writes it | The user, by CLAUDE.md's milestone rule | | |
 
 Per CLAUDE.md, the concurrency decision needs the user's written argument first: which invariant the lock protects, who accesses it concurrently, and the worst interleaving. The agent grades it after.
 
 ## Testing and verification
 - A kernel test command in `kernel/commands` (`thread.join.test` or similar). It joins a thread that has already exited, a thread that exits while the joiner is parked, and a join that times out on its deadline. It also detaches an already-Dead thread.
-- A stress run on SMP: many spawn and join pairs racing exit against park. Run with lockdep on.
+- A stress run on SMP: many spawn and join pairs racing exit against park (`threadjoin.test stress ROUNDS`). Lockdep cannot be on for it: a `lockdep_enable = true` build does not link, `docs/repairs/260917/kernel-task-sched.md` item 6, a feature of its own; the stress runs on dbg_1 with the PI-lock assertions only.
 - `ours-verify` on both images, and the test run with `scripts/kshell_run.py` on both.
 
 ## Open questions

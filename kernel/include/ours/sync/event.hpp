@@ -41,6 +41,13 @@ class Event {
         return wait_etc(deadline, task::Interruptible::Yes, sigmask);
     }
 
+    /// A deadline the caller may choose not to be interrupted in: a join
+    /// waits out its deadline whatever signals the joiner gets, as Zircon's
+    /// TaskState::Join() blocks with Interruptible::No.
+    auto wait(time::Deadline const &deadline, task::Interruptible interruptible) -> Status {
+        return wait_etc(deadline, interruptible, task::ThreadSignals::None);
+    }
+
   protected:
     enum class Flags {
         None,

@@ -14,6 +14,7 @@
 #include <ours/mm/object_cache.hpp>
 #include <ours/mm/stack.hpp>
 #include <ours/mm/types.hpp>
+#include <ours/sync/event.hpp>
 #include <ours/sync/spin_lock.hpp>
 #include <ours/syscall/time.hpp>
 #include <ours/task/config.hpp>
@@ -61,11 +62,13 @@ namespace task {
             m_retcode = 0;
         }
 
+        /// Runs the entry point. It used to wake the joiners here as well, on
+        /// the way back from the entry -- before the thread was even Dead, let
+        /// alone off its stack. Joiners are woken through exited() now.
         FORCE_INLINE
         auto invoke() -> i32 {
             DEBUG_ASSERT(m_entry_point);
             m_retcode = m_entry_point(m_arg);
-            m_result_wait_queue.notify_all(Status::Ok);
             return m_retcode;
         }
 
@@ -79,15 +82,28 @@ namespace task {
             m_retcode = retcode;
         }
 
-        auto join(Thread *thread, time::Deadline) -> Status;
-
-        auto try_wake_joiners(Status status) -> bool;
+        /// Signalled once, with Ok, after the thread has switched out for the
+        /// last time -- by a Dpc that Thread::Current::exit() queues for a
+        /// joinable thread, which runs on the exiting thread's CPU only once
+        /// that thread is off it. Until then the thread is running on its
+        /// stack even if it is already Dead, so this, not the state, is what
+        /// tells a joiner that it may free the thread. Manual-reset: a join
+        /// that comes after the signal returns at once.
+        ///
+        /// It replaces a wait queue that exit() woke under the thread's own PI
+        /// lock, which took each joiner's PI lock inside it: two PI locks
+        /// nested, with nothing to order them (design option B in
+        /// .agents/tasks/thread-join/DESIGN.md).
+        FORCE_INLINE
+        auto exited() -> sync::Event & {
+            return m_exited;
+        }
 
       private:
         i32 m_retcode;
         ThreadStartRoutine m_entry_point;
         void *m_arg;
-        WaitQueue m_result_wait_queue;
+        sync::Event m_exited;
     };
 
     class Thread {
@@ -173,11 +189,34 @@ namespace task {
 
         /// Core method family.
 
-        /// Returns Status::NotSupported: joining is not implemented yet, and a
-        /// thread must be detach()ed before it exits. The definition lists
-        /// what a working join still needs.
+        /// Waits until this thread has exited and left its stack, then reaps
+        /// it: stores its return code in |retcode| when that is not null,
+        /// takes it off SPAWNED_THREADS and destroys it. The caller must not
+        /// be this thread.
+        ///
+        /// At most one thread may reap a given thread. The first join() claims
+        /// it (Flags::Joined); a second join(), or a join() of a thread that is
+        /// detached, answers BadState and touches nothing. The wait is not
+        /// interruptible and ends at |deadline|: on TimeOut the claim is given
+        /// back and the thread is left as it was, so it can be joined or
+        /// detached again.
+        ///
+        /// The wait is on TaskState::exited(), which the exit side signals only
+        /// once the thread has switched out for the last time; "Dead" alone is
+        /// not enough, because a Dead thread is still running on its stack
+        /// until its final reschedule. Zircon's Thread::Join(), without its
+        /// chain-lock transaction: see .agents/tasks/thread-join/DESIGN.md.
+        ///
+        /// Not implemented yet: answers NotSupported. It is the user's
+        /// hand-written function for this milestone (docs/authored.md), and
+        /// `threadjoin.test` is its failing test.
         auto join(i32 *retcode, time::Deadline deadline) -> Status;
 
+        /// Gives up the right to join this thread: it frees itself when it
+        /// exits. A thread that has already exited is reaped here, through
+        /// join(). A thread that a join() has claimed answers BadState --
+        /// Zircon's Detach() wakes the joiner instead, which here would race
+        /// the thread freeing itself (see the design).
         auto detach() -> Status;
 
         /// Make the thread transition to runnable or running state.
@@ -417,6 +456,11 @@ namespace task {
 
             Restricted = 4_bit,
 
+            /// A join() has claimed the right to reap this thread. Never set
+            /// together with Detached: exactly one party frees a thread, the
+            /// thread itself (Detached) or its one joiner (Joined).
+            Joined = 5_bit,
+
             NoFree = 30_bit,
         };
         USTL_ENABLE_INNER_ENUM_BITMASK(Flags);
@@ -596,13 +640,13 @@ namespace task {
         sched::SchedEntity m_scheduling_entity;
         PreemptionState m_preemption_state;
 
-        /// Self-synchronising: the exit side writes the retcode and then
-        /// wakes m_result_wait_queue, the join side parks on that queue and
-        /// reads the retcode after being woken, so the queue's own lock is
-        /// what orders the two. Nothing takes the resource lock around it and
-        /// the old annotation said it did. Zircon's task_state_ sits under the
-        /// global thread_lock instead; this tree has no such lock, and the
-        /// wait queue is the handshake.
+        /// Self-synchronising: the exit side writes the retcode under the PI
+        /// lock and later signals TaskState::exited(), the join side waits on
+        /// that event and reads the retcode after it returns, so the event's
+        /// own lock is what orders the two. Nothing takes the resource lock
+        /// around it and the old annotation said it did. Zircon's task_state_
+        /// sits under the global thread_lock instead; this tree has no such
+        /// lock, and the event is the handshake.
         TaskState m_task_state;
         WaiterState m_waiter_state;
         mm::MemoryAllocationState m_memory_allocation_state;

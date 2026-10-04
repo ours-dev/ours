@@ -77,22 +77,6 @@ auto to_string(Thread::State state) -> char const * {
     }
 }
 
-FORCE_INLINE
-auto TaskState::join(Thread *thread, time::Deadline deadline) -> Status {
-    return m_result_wait_queue.park_thread(thread, deadline);
-}
-
-/// Returns whether the joiners were woken, so a caller may retry on false --
-/// Zircon's TryWakeJoiners() fails when its chain-lock acquisition backs off.
-/// This one cannot fail: notify_all() spins for its locks and drains the queue
-/// rather than backing off. It used to return false regardless, and exit()'s
-/// joinable branch looped on it with interrupts off until the CPU was lost
-/// (see Thread::Current::exit(); nothing calls this now).
-auto TaskState::try_wake_joiners(Status status) -> bool {
-    m_result_wait_queue.notify_all(status);
-    return true;
-}
-
 Thread::Thread(KoId tid, char const *name, sched::BaseProfile const &profile)
     // Initializer order follows the member declaration order in thread.hpp.
     : m_arch_thread()
@@ -387,30 +371,21 @@ auto Thread::suspend_or_kill(SuspendOrKillOp op) -> Status {
     return Status::Ok;
 }
 
-/// Not supported yet: every thread is detached (spawn()'s callers detach()
-/// what they spawn, bind_user_thread() detaches every user thread), and
-/// Thread::Current::exit() refuses to let a joinable one die. What stands
-/// between this and a working join, compared against Zircon Thread::Join():
+/// The joiner side of option B in .agents/tasks/thread-join/DESIGN.md; the
+/// contract is on the declaration. Everything it relies on is in place: exit()
+/// signals TaskState::exited() once the thread is off its stack, Flags::Joined
+/// is the claim, and detach() refuses a claimed thread. What is left is the
+/// body, which is the user's to write (docs/authored.md); `threadjoin.test` is
+/// the failing test it has to pass. In outline:
 ///
-///  - It has to park the *caller* on the result queue. The old body parked
-///    `this` -- the thread being joined -- and asserted `this == Current`,
-///    i.e. a thread joining itself, which Zircon asserts against.
-///  - The "is it Dead yet?" check and the park have to be one step against
-///    exit()'s set_state_dead() and wake, or the wake can land in between
-///    and the joiner sleeps for good: WaitQueue::park_thread_preamble_locked()
-///    is the shape for that.
-///  - exit() must not queue the free Dpc for a joinable thread, and must go
-///    into its last reschedule still holding its PI lock, so the joiner --
-///    which frees the thread -- cannot free the stack exit() is running on
-///    (Zircon's `!queue_free_dpc` path). Today exit() drops that lock and
-///    queues the Dpc for everything that is not NoFree.
-///  - The joiner has to unlink the thread from SPAWNED_THREADS (Zircon's
-///    EraseFromListsLocked() in Join()); destroy() does not.
-///  - detach() of a Dead thread calls join() with the PI lock still held;
-///    Zircon's Detach() releases it first.
-///  - Waking joiners takes their PI locks inside the exiting thread's. With no
-///    global thread_lock by design, that nesting needs the ChainLock-style
-///    backoff the thread locks do not have yet.
+///  1. Claim: under this thread's PI lock, BadState if Detached or Joined is
+///     set, otherwise set Joined.
+///  2. Wait on m_task_state.exited() until |deadline|, not interruptible.
+///  3. TimeOut: give the claim back, under the PI lock, and answer TimeOut.
+///  4. Ok: read the return code, unlink from SPAWNED_THREADS, destroy().
+///
+/// Never hold this thread's PI lock across the wait: the waiter parks holding
+/// its *own* PI lock, and holding two is exactly what option B rules out.
 auto Thread::join([[maybe_unused]] i32 *retcode, [[maybe_unused]] time::Deadline deadline)
     -> Status {
     m_canary.verify<Self>();
@@ -420,18 +395,29 @@ auto Thread::join([[maybe_unused]] i32 *retcode, [[maybe_unused]] time::Deadline
 auto Thread::detach() -> Status {
     m_canary.verify<Self>();
 
-    Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
+    {
+        Guard<SpinLock, lockdep::IrqSave> guard{get_pi_lock()};
 
-    if (state() != State::Dead) {
-        m_flags |= Flags::Detached;
-        return Status::Ok;
+        // A join() has the claim, and with it the duty to free the thread.
+        // Zircon's Detach() wakes the joiner with BAD_STATE instead; here that
+        // would mean signalling an event the thread, once detached, may free
+        // with itself, or racing a timed-out joiner that is handing its claim
+        // back. So the detach is refused (the user's call, 2026-10-04).
+        if (!!(m_flags & Flags::Joined)) {
+            return Status::BadState;
+        }
+
+        if (state() != State::Dead) {
+            m_flags |= Flags::Detached;
+            return Status::Ok;
+        }
     }
 
-    // The thread has already dead. join() reaps it without ever parking --
-    // it only waits when the state is not Dead -- so the deadline below is
-    // never consulted; infinite is simply the honest value for "no wait was
-    // asked for".
-    m_flags &= ~Flags::Detached;
+    // Dead and not detached, so nobody else will free it: reap it here. Not
+    // under the PI lock, as the old body did -- join() takes that lock itself,
+    // and waits. Zircon's Detach() drops its lock before it joins, too.
+    // join() may still wait, briefly: a thread is Dead before it is off its
+    // stack, and exited() is signalled only after.
     return join(nullptr, time::Deadline::infinite());
 }
 
@@ -833,6 +819,7 @@ auto Thread::Current::exit(i32 retcode) -> void {
     AutoPreemptDisabler preempt_guard;
 
     auto thread_desc_recyclable = false;
+    auto joinable = false;
     {
         // The disablers above already hold interrupts and preemption off, and
         // this guard says the same of itself: it is carried into
@@ -849,17 +836,20 @@ auto Thread::Current::exit(i32 retcode) -> void {
                 thread_desc_recyclable = true;
             }
         } else {
-            // A joinable thread has to stay behind for join() to reap, and
-            // join() is not supported (see it), so no one ever would. Say so
-            // rather than leak it. This branch used to loop
-            // `while (!try_wake_joiners(Status::Ok)) arch::halt();` -- with
-            // interrupts off and this PI lock held, on a function that always
-            // returned false: the CPU stopped for good, silently, and any
-            // other CPU that later reached for this thread's PI lock spun
-            // behind it. Zircon's loop there calls arch::Yield() on a
-            // TryWakeJoiners() that fails only on chain-lock backoff.
-            panic("thread |{}| exited joinable, and join() is not supported: detach() it",
-                  current_thread->name());
+            // A joinable thread stays on SPAWNED_THREADS and is freed by its
+            // reaper -- join(), or detach() after the fact -- so no free Dpc.
+            // The reaper needs to know when that is safe, and Dead is too
+            // early: this thread runs on its stack until the reschedule
+            // below. The Dpc queued below tells it, from after the switch.
+            //
+            // This branch panicked while join() was missing, and before that
+            // looped `while (!try_wake_joiners(Status::Ok)) arch::halt();` --
+            // interrupts off, this PI lock held, on a function that always
+            // returned false. Waking the joiners here, under this lock, as
+            // Zircon's Exit() does, takes each joiner's PI lock inside this
+            // one, and nothing orders two PI locks without a chain-lock
+            // backoff (.agents/tasks/thread-join/DESIGN.md, option B).
+            joinable = true;
         }
 
         if (thread_desc_recyclable) {
@@ -868,10 +858,37 @@ auto Thread::Current::exit(i32 retcode) -> void {
         }
     }
 
-    // A captureless lambda, so it converts to a plain function pointer and
+    // Captureless lambdas, so they convert to plain function pointers and
     // nothing is allocated on the way into the Dpc -- see the note on
-    // Dpc::Func. The thread to tear down travels as the Dpc's arg.
-    Dpc dpc{[](Dpc *dpc) -> void { dpc->arg<Thread>()->destroy(); }, current_thread};
+    // Dpc::Func. The thread travels as the Dpc's arg.
+    //
+    // Either Dpc runs after this thread's final switch, never before: its
+    // worker is pinned to this CPU (DpcRunner::start_workers()), and this
+    // thread keeps preemption off from here until the reschedule below. Both
+    // are also the last code to see the Dpc, which lives on the stack they
+    // let go of: DpcRunner is done with a Dpc before it invokes it.
+    //
+    // A detached thread is freed. A joinable one tells its reaper that it is
+    // off its stack, and is freed by the reaper.
+    auto func = Dpc::Func{[](Dpc *dpc) -> void { dpc->arg<Thread>()->destroy(); }};
+    if (joinable) {
+        func = [](Dpc *dpc) -> void {
+            auto *const thread = dpc->arg<Thread>();
+            {
+                // The PI lock is free only once the switch away from
+                // |thread| is complete: the next thread releases it in
+                // Scheduler::complete_context_switch(). The pinning above
+                // already orders this after that, so this is the check that
+                // it did, not a wait.
+                Guard<SpinLock, lockdep::IrqSave> guard{thread->get_pi_lock()};
+                DEBUG_ASSERT(thread->state() == State::Dead);
+            }
+            // The last touch of |thread| from here: once signalled, its
+            // reaper may free it, this Dpc's storage with it.
+            thread->m_task_state.exited().signal(Status::Ok);
+        };
+    }
+    Dpc dpc{func, current_thread};
     [[maybe_unused]]
     auto const status = DpcRunner::enqueue(dpc, DpcRunner::Level::Normal);
     DEBUG_ASSERT(Status::Ok == status);

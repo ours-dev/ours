@@ -162,8 +162,9 @@ namespace {
         //
         // detach() as well as resume(): nothing joins this thread and it never
         // returns, so leaving it joinable only keeps a corpse nobody collects.
-        // detach() fails only reaping a thread that is already Dead, which one
-        // just spawned is not; resume() answers only Ok.
+        // detach() fails only for a thread that is already Dead or that a
+        // join() has claimed, and one just spawned is neither; resume()
+        // answers only Ok.
         [[maybe_unused]]
         auto const detached = thread->detach();
         DEBUG_ASSERT(ours::Status::Ok == detached);
