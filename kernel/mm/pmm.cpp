@@ -211,4 +211,20 @@ auto free_frames(PmFrame::List *list) -> void {
     PmNode::free_frames(list);
 }
 
+auto unwire_frame(PmFrame *const frame) -> void {
+    DEBUG_ASSERT(!!(frame->flags() & page::Flags::Reserved), "frame {:#x} is not reserved",
+                 frame_to_phys(frame));
+    DEBUG_ASSERT(frame->is_role(page::Role::None), "reserved frame {:#x} has a role",
+                 frame_to_phys(frame));
+    DEBUG_ASSERT(!frame->is_linked(), "reserved frame {:#x} is on a list", frame_to_phys(frame));
+
+    frame->clear_reserved();
+    if (auto *const node = PmNode::node(frame->nid())) {
+        node->sub_reserved_frames(1);
+        if (auto *const zone = node->zone_list()->local_zone(frame->zone())) {
+            zone->sub_reserved_frames(1);
+        }
+    }
+}
+
 } // namespace ours::mm

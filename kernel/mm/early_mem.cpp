@@ -258,16 +258,8 @@ auto EarlyMem::reclaim_init_area() -> void {
     auto const end_pfn = std::min(phys_to_pfn(end), max_pfn());
     for (auto pfn = start_pfn; pfn < end_pfn; ++pfn) {
         auto *const frame = pfn_to_frame(pfn);
-        if (!(frame->flags() & page::Flags::Reserved)) {
-            continue;
-        }
-        frame->clear_reserved();
-        frame->set_role(page::Role::None);
-        if (auto *const node = PmNode::node(frame->nid())) {
-            node->sub_reserved_frames(1);
-            if (auto *const zone = node->zone_list()->local_zone(frame->zone())) {
-                zone->sub_reserved_frames(1);
-            }
+        if (!!(frame->flags() & page::Flags::Reserved)) {
+            unwire_frame(frame);
         }
     }
 

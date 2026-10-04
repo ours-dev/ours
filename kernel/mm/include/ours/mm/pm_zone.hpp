@@ -178,11 +178,12 @@ class PmZone {
         m_reserved_frames += count;
     }
 
-    /// Gives back |count| reserved frames that have gone to the buddy: the
-    /// kernel's `.init*` sections, once boot is done
-    /// (EarlyMem::reclaim_init_area()). Plain, like add_reserved_frames(): its
-    /// one caller runs once, on one thread, and only diagnostics read the
-    /// count.
+    /// Gives back |count| reserved frames that are reserved no more
+    /// (unwire_frame()): the kernel's `.init*` sections once boot is done, and
+    /// the boot image's frames once userboot has them. The subtraction is
+    /// atomic, like the addition; the check before it is not, which is enough
+    /// for frames that each have one owner unwiring them, and for a count only
+    /// diagnostics read.
     FORCE_INLINE
     auto sub_reserved_frames(usize const count) -> void {
         DEBUG_ASSERT(count <= m_reserved_frames, "more reserved frames released than recorded");

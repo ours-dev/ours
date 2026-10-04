@@ -334,6 +334,12 @@ auto PmNode::alloc_frames_bulk(Gaf flags, usize n, NodeMask const &fallback)
 
 auto PmNode::free_frames(PmFrame *frame, usize order) -> void {
     DEBUG_ASSERT(frame, "");
+    // The runtime half of the guard in early_mem.cpp's free_frames_phys_range():
+    // a reserved frame reaches the buddy only through unwire_frame(). Nothing
+    // else on this path looks at the frame, so without this a reserved frame
+    // would be handed out again still flagged and still counted.
+    DEBUG_ASSERT(!(frame->flags() & page::Flags::Reserved),
+                 "frame {:#x} is reserved; unwire_frame() it before freeing", frame_to_phys(frame));
     auto const node = PmNode::node(frame->nid());
     auto const zone = node->m_zone_list.local_zone(frame->zone());
     DEBUG_ASSERT(zone, "");

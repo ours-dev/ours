@@ -208,7 +208,26 @@ auto alloc_page_table(usize size, usize alignment, NnId node = bootmem::ANY_NODE
 /// Only the buddy path returns anything; an early table page is not reclaimable.
 auto free_page_table(PhysAddr base, usize size) -> void;
 
+/// Returns |frame|'s block to its zone's buddy allocator. The frame must not
+/// be reserved: a frame stamped Reserved at boot has to go through
+/// unwire_frame() first, or the buddy would hold a frame the reserved counts
+/// still claim (a debug build asserts it, in PmNode::free_frames()).
 auto free_frames(PmFrame *frame, usize order = 0) -> void;
+
+/// Takes |frame|, reserved since boot, off the reserved books, so that it can
+/// be owned like a frame the allocator handed out: freed to the buddy
+/// (EarlyMem::reclaim_init_area()) or adopted into a VMO. Clears Reserved and
+/// subtracts the frame from its node's and zone's reserved counts. The role
+/// is the new owner's to set.
+///
+/// A debug build asserts the frame is reserved, has role None (no reserved
+/// frame of interest has another: only page tables get one, and their
+/// Reserved flag is lost to docs/repairs/261003/mm.md item 1) and is on no
+/// list.
+///
+/// Zircon: pmm_unwire_page(). Linux: ClearPageReserved() and
+/// adjust_managed_page_count(), as free_reserved_page() calls them.
+auto unwire_frame(PmFrame *frame) -> void;
 
 FORCE_INLINE
 inline auto free_frames(VirtAddr virt_addr, usize order = 0) -> void {

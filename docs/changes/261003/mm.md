@@ -266,3 +266,60 @@ None.
 - Why must a free range's start round up but its end round down?
 - What would a CRC over the boot image have done with the old rounding, and why did nothing notice without one?
 - Why does freeing the init area have to clear Reserved and the counts before the frames reach the buddy, and what in Linux does the same?
+
+## Title: One unwire_frame() takes a frame off the reserved books, and the runtime free path checks it was (2026-10-03)
+
+**Files**
+- `kernel/mm/include/ours/mm/pmm.hpp`, `kernel/mm/pmm.cpp` — `unwire_frame()`, documented beside `free_frames()`. `free_frames()` now says what it requires.
+- `kernel/mm/pm_node.cpp` — `PmNode::free_frames()` asserts, in debug builds, that the frame is not Reserved.
+- `kernel/mm/early_mem.cpp` — `reclaim_init_area()` calls `unwire_frame()` instead of its inline sequence.
+- `kernel/mm/include/ours/mm/pm_zone.hpp` — the comment on `sub_reserved_frames()` called the counter plain. It is `std::atomic`.
+
+**Symptom**
+None: step 2 of `.agents/tasks/boot-image-pages/PLAN.md`. The boot image's frames are about to be adopted into a VMO, which takes them off the reserved books the same way the init area's frames already were.
+
+**Cause**
+The previous fix put the "take a reserved frame off the books" sequence inline in `reclaim_init_area()`:
+- clear Reserved;
+- reset the role;
+- subtract the node's and zone's counts.
+
+A second user needs the same sequence. Two copies would drift, and one function is also the place to assert what a reserved frame looks like.
+
+The guard against freeing a reserved frame covered only the boot-time path (`free_frames_phys_range()`). The runtime path, `free_frames()` through `PmNode::free_frames()`, `PmZone::free_frame()` and `FrameBuddy::insert_frame()`, looks at nothing about the frame. A VMO built from boot frames that skipped the un-wiring would hand them to the buddy silently, still flagged and still counted.
+
+**Change**
+
+```cpp
+auto unwire_frame(PmFrame *const frame) -> void {
+    DEBUG_ASSERT(!!(frame->flags() & page::Flags::Reserved), ...);
+    DEBUG_ASSERT(frame->is_role(page::Role::None), ...);
+    DEBUG_ASSERT(!frame->is_linked(), ...);
+    frame->clear_reserved();
+    // and one less reserved frame on its node and its zone
+}
+```
+
+The role is left to the new owner. `reclaim_init_area()` frees the frames, and the buddy sets role Pmm; an adopting VMO will call `become<VmmBody>()`.
+
+**Reference**
+- Zircon `pmm_unwire_page()`.
+- Linux `free_reserved_page()`: `ClearPageReserved()`, `init_page_count()`, `__free_page()`, `adjust_managed_page_count()`.
+
+**Verification**
+- `boot_check.py`: dbg PASS (20 passed), rel PASS (18 passed), with both guards armed in dbg.
+- `kshell_run.py vmosnapshot.test pmnode.test usercopy.test`: all ok. They free many frames at run time through the newly guarded path.
+
+**Deliberately not done**
+- The adoption itself (step 4).
+
+**How it was found**
+None: a planned step.
+
+**The user's prediction**
+None given.
+
+**Three questions you should be able to answer**
+- What does `unwire_frame()` change about a frame, and what does it leave to the frame's next owner?
+- Why does the runtime free path need its own Reserved check when the boot-time path has one?
+- Why is a check-then-subtract on an atomic counter acceptable here?
