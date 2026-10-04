@@ -76,4 +76,4 @@ Per CLAUDE.md, the lock-order decision needs the user's written argument first: 
 - `ExceptionInfo` carries no synth code, so the test cannot check that a policy exception is BadSyscall (18) until the report exists (slice 2).
 - Whether `object_set_property` comes now as the general P1 property mechanism (Name, fs/gs base) or as ExceptionState only.
 - Where the "in exception" mark lives. `ThreadDispatcher` has an empty `ParkedReason` enum and an `m_parked_reason` that nothing reads, which look like scaffolding for Zircon's `Blocked` reasons; no document says so, and scaffolding is not repurposed without asking.
-- `docs/design/260923/userspace-interface.md` §4.8 states the total order this slice amends (ThreadDispatcher before HandleTable and PeerHolder). The amendment is to be written there when the change lands; that file has another session's uncommitted edits today.
+- `docs/design/260923/userspace-interface.md` §4.8 states the total order this slice amends (ThreadDispatcher before HandleTable and PeerHolder). The amendment is written there in the change that first takes the new order.
