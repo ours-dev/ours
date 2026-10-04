@@ -102,14 +102,20 @@ namespace {
     };
     std::array<arch::IoApicIsaOverride, arch::NUM_ISA_IRQS> IOAPIC_ISA_OVERRIDES;
 
+    /// Finds the IO-APIC whose pins cover the global system interrupt
+    /// `irqnum`: the one whose range [gsi_base, gsi_base + irq_count) holds
+    /// it. The range lives in `IoApic::owns_global_irq`, next to the two
+    /// numbers it is made of, so no caller has to remember that the version
+    /// register reports the highest redirection index rather than the pin
+    /// count, or that the pins are numbered from the IO-APIC's own base.
     auto resolve_irqnum_to_ioapic(HIrqNum irqnum) -> arch::IoApic * {
-        for (auto i = usize{0}; i < IOAPICS.size(); ++i) {
-            if (IOAPICS[i].gsi_base() <= irqnum && irqnum < IOAPICS[i].max_local_irqnum()) {
-                return &IOAPICS[i];
+        for (auto &ioapic: IOAPICS) {
+            if (ioapic.owns_global_irq(irqnum)) {
+                return &ioapic;
             }
         }
 
-        return 0;
+        return nullptr;
     }
 } // namespace
 
@@ -142,6 +148,10 @@ auto apic_configure_irq(HIrqNum global_irq, arch::ApicTriggerMode trimode,
 auto apic_configure_isa_irq(u8 isa_irq, arch::ApicDeliveryMode del_mode, bool mask,
                             arch::ApicDestinationMode dst_mode, u8 dst, arch::IrqVec vector)
     -> void {
+    // The override table has one slot per ISA line; a bigger number is a
+    // caller's bug, so stop here rather than read past the table.
+    ASSERT(isa_irq < arch::NUM_ISA_IRQS, "ISA IRQ {} is past the {} ISA lines", isa_irq,
+           arch::NUM_ISA_IRQS);
     HIrqNum irq = isa_irq;
     auto trigger_mode = arch::ApicTriggerMode::Edge;
     auto polarity = arch::ApicInterruptPolarity::ActiveHigh;
@@ -168,7 +178,6 @@ INIT_CODE
 auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
                   ustl::views::Span<arch::IoApicIsaOverride> const &overrides) -> void {
     auto const nr_ioapics = ioapics.size();
-    auto const nr_overrides = overrides.size();
     {
         auto raw_ioapics = new (mm::GAF_KERNEL) arch::IoApic[nr_ioapics]();
         ASSERT(raw_ioapics, "Failed to allocate IO-APIC");
@@ -206,14 +215,41 @@ auto init_io_apic(ustl::views::Span<arch::IoApic> const &ioapics,
         IOAPICS[i].reset_mmio(mmio_virt);
     }
 
-    log::info("ISA Irq | Remapped | Trigger mode | Polarity | Global IRQ");
-    for (auto i = usize{0}; i < nr_overrides; ++i) {
-        /// Make a linear mapping
-        IOAPIC_ISA_OVERRIDES[overrides[i].isa_irq] = overrides[i];
+    // Every pin of every IO-APIC has to resolve back to it. The two ends of
+    // each range are the cases a wrong bound gets wrong: the last pin when
+    // the bound is off by one, the first when it forgets the IO-APIC's own
+    // GSI base. A pin that resolves to another IO-APIC means the firmware
+    // gave two of them overlapping ranges. This runs only once all of
+    // IOAPICS is initialised: a default-constructed slot claims GSI 0.
+    for (auto const &ioapic: IOAPICS) {
+        [[maybe_unused]]
+        auto const first = static_cast<HIrqNum>(ioapic.gsi_base());
+        [[maybe_unused]]
+        auto const last = static_cast<HIrqNum>(ioapic.gsi_base() + ioapic.irq_count() - 1);
+        DEBUG_ASSERT(resolve_irqnum_to_ioapic(first) == &ioapic,
+                     "IO-APIC[{}]: its first GSI {} does not resolve to it", ioapic.id(), first);
+        DEBUG_ASSERT(resolve_irqnum_to_ioapic(last) == &ioapic,
+                     "IO-APIC[{}]: its last GSI {} does not resolve to it", ioapic.id(), last);
+    }
 
-        log::trace("{: <6} | {} | {} | {} | {}", IOAPIC_ISA_OVERRIDES[i].isa_irq,
-                   IOAPIC_ISA_OVERRIDES[i].remapped, to_string(IOAPIC_ISA_OVERRIDES[i].tri_mode),
-                   to_string(IOAPIC_ISA_OVERRIDES[i].polarity), IOAPIC_ISA_OVERRIDES[i].global_irq);
+    log::info("ISA Irq | Remapped | Trigger mode | Polarity | Global IRQ");
+    for (auto const &isa_override: overrides) {
+        // The MADT is firmware's data, and the table below is indexed by the
+        // ISA number it carries, so a number past the 16 ISA lines would be
+        // a write past the end. Refuse that one entry and keep the rest, as
+        // Linux's mp_override_legacy_irq() does.
+        if (isa_override.isa_irq >= arch::NUM_ISA_IRQS) {
+            log::warn("IO-APIC: ignoring an override of ISA IRQ {}, past the {} ISA lines",
+                      isa_override.isa_irq, arch::NUM_ISA_IRQS);
+            continue;
+        }
+
+        // Stored at its ISA number, where apic_configure_isa_irq() looks.
+        IOAPIC_ISA_OVERRIDES[isa_override.isa_irq] = isa_override;
+
+        log::trace("{: <6} | {} | {} | {} | {}", isa_override.isa_irq, isa_override.remapped,
+                   to_string(isa_override.tri_mode), to_string(isa_override.polarity),
+                   isa_override.global_irq);
     }
 }
 
