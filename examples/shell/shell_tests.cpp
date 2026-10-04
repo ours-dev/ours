@@ -4577,6 +4577,7 @@ auto run(Inputs const &inputs) -> void {
     check_port();
     check_wait_async();
     check_port_observer_limit();
+    check_loop();
     check_launcher_service(inputs.connection, inputs.job, inputs.vmex);
     check_handle_quota();
     check_bad_pointers(ort::vdso_base());

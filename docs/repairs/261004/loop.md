@@ -22,3 +22,28 @@ Fuchsia's async-loop has no table: the caller owns each `async_wait_t` and its a
 
 **Acceptance**
 The benchmark's numbers are in the change record, the user has chosen, and `system/lib/loop/test` still passes, with a test that a slot freed and taken again gets a new generation whichever slot the new policy picks.
+
+## 2. Loop::run() makes two system calls of its own for every message it dispatches
+
+**Severity**
+Low: a performance observation, not measured. Nothing is wrong; it is the cost of I4.
+
+**Symptom**
+Latent, cannot be observed today: no server runs on the Loop yet. Once the root does (step 13 of `.agents/tasks/component-framework/PLAN.md`), a client that sends N messages costs the root 2N system calls on top of the N `channel_read`s its callbacks make: one `port_wait` to take each packet, and one `object_wait_async` to re-arm after each message.
+
+**Cause**
+`Loop::run()` (`system/lib/loop/src/loop.cpp`) takes one packet per `port_wait`, because ours's `port_wait` hands out one packet (`system/public/ours/syscalls.gni`). It re-arms after every callback, because a callback handles one message and a wait is one-shot (I4 in `docs/design/261004/component-framework.md`). Both are deliberate. The first follows Zircon's ABI. The second is what serves a busy client in turns instead of letting it starve the rest. Their price is a system-call round trip that a batching design would share between several messages.
+
+**Change**
+Measure first, as CLAUDE.md asks of any performance work. Write a benchmark in `benches/` in which one client floods a channel and several others send one message each. Record the root's system calls per message, the time per message, and the latency of the quiet clients, before deciding with the user. Candidates:
+- a `port_wait` that hands out up to N packets, as `epoll_wait`'s `maxevents` does: one call for many packets, but an ABI change to the kernel, which is the user's decision;
+- callbacks that read up to K messages before answering Rearm: fewer re-arms, at the cost of weakening I4 from one message per turn to K;
+- leaving it, as Fuchsia does: `async_loop_run_once()` takes one packet per `zx_port_wait`, and its FIDL binding begins a new wait after every message.
+
+Rejected: an edge-triggered wait (Zircon's `ZX_WAIT_ASYNC_EDGE`), which ours does not have. It would also not remove the re-arm, since the wait stays one-shot.
+
+**Reference**
+Fuchsia, at `51f05104c13`: `async_loop_run_once()` (`sdk/lib/async-loop/loop.c:347-407`, one `zx_port_wait` at `:355`); `AsyncBinding::MessageHandler()` and `CheckForTeardownAndBeginNextWait()` (`sdk/lib/fidl/cpp/wire/async_binding.cc:83-108`, `:179-198`), which re-arm after every message. Linux, at `62cc90241548`: `ep_send_events()` (`fs/eventpoll.c:2128-2160`) copies up to `maxevents` ready items out in one `epoll_wait`.
+
+**Acceptance**
+The benchmark's numbers are in the change record, the user has chosen, and `system/lib/loop/test` still passes, including `LoopTest.RunServesABusyClientInTurns`, or a test of the new fairness bound if the user chose K messages per turn.

@@ -33,9 +33,10 @@ auto PrintTo(Key const key, std::ostream *const out) -> void {
 } // namespace loop
 
 // The Loop against the fake kernel of fake_kernel.hpp. The tests named Add*
-// and Loop* check what is written already; the tests named Run* pin down
-// Loop::run(), the dispatch the user writes by hand (P3), and fail until it
-// exists: the stub answers NotSupported and dispatches nothing.
+// and Loop* check add() and the Loop's own lifetime; the tests named Run* pin
+// down Loop::run(), the dispatch P3 reserves for the user to write by hand.
+// They were written against a stub that answered NotSupported, and are the
+// failing tests that exercise starts from.
 namespace {
 using loop::Action;
 using loop::Key;
@@ -139,7 +140,7 @@ class LoopTest: public ::testing::Test {
     std::string m_log;
 };
 
-// --- add() and the Loop's own lifetime: written already, passing now. ---
+// --- add() and the Loop's own lifetime. ---
 
 TEST_F(LoopTest, AddHandsOutTheLowestFreeSlotAtItsGeneration) {
     Client a;
@@ -227,7 +228,7 @@ TEST(Loop, ClosesItsHandlesAndThenItsPortWhenItGoes) {
     }
 }
 
-// --- run(): the user's function. Each of these fails until it is written. ---
+// --- run(): the function P3 reserves for the user. Each fails on a stub. ---
 
 // Output: TimeOut is how run(0) ends, after one port_wait with deadline 0.
 TEST_F(LoopTest, RunReturnsTimeOutOnceThePortIsEmpty) {

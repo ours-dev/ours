@@ -165,10 +165,11 @@ class Loop final {
         -> ustl::Result<Key, ours::Status>;
 
     /// Dispatches packets until port_wait answers anything but Ok, and
-    /// returns that answer. This is the Loop's dispatch, which the user
-    /// writes by hand (P3 in .agents/tasks/component-framework/PLAN.md); this
-    /// comment is its whole spec, and test/loop_test.cpp and the shell's
-    /// check_loop() pin it down.
+    /// returns that answer. This is the Loop's dispatch, which P3 in
+    /// .agents/tasks/component-framework/PLAN.md reserved for the user to
+    /// write by hand; the AI wrote it for the MVP on the user's instruction of
+    /// 2026-10-04, and the exercise stays open. This comment is its whole
+    /// spec, and test/loop_test.cpp and the shell's check_loop() pin it down.
     ///
     /// Input. |deadline| is handed to every port_wait unchanged:
     /// INSTANT_INFINITE for a server that never stops, as the root, or 0 to

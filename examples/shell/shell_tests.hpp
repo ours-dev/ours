@@ -30,12 +30,8 @@ auto run(Inputs const &inputs) -> void;
 /// The Loop (//system/lib/loop) on real channels and a real port: two
 /// channels served in turns, re-arming, a callback closing its own slot, and
 /// packets that name no slot in use dropped. Prints "shell: loop checks
-/// passed" or "FAILED".
-///
-/// Not called from run() yet: it passes only once the user has written
-/// Loop::run() by hand (P3 of .agents/tasks/component-framework/PLAN.md),
-/// and until then it would print FAILED, which boot_check refuses. Wiring it
-/// is one line in run(), `check_loop();` after check_port_observer_limit().
+/// passed" or "FAILED". Called from run() on both images, after
+/// check_port_observer_limit().
 auto check_loop() -> void;
 } // namespace shell::tests
 

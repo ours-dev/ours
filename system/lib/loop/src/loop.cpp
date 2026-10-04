@@ -70,11 +70,62 @@ auto Loop::arm(u32 const index) -> ours::Status {
                                    slot.m_signals, ours::WaitAsyncOptions::None);
 }
 
-// The spec is the comment on Loop::run() in <loop/loop.hpp>. Until the user
-// writes this body, run() dispatches nothing and answers NotSupported, which
-// every test of it in test/loop_test.cpp refuses.
-auto Loop::run([[maybe_unused]] ours::Instant const deadline) -> ours::Status {
-    // Written by the user (P3): see the spec above.
-    return ours::Status::NotSupported;
+// The spec is the comment on Loop::run() in <loop/loop.hpp>, and the step
+// numbers below are its. P3 reserved this body for the user to write by hand;
+// the AI wrote it for the MVP on the user's instruction of 2026-10-04, and the
+// exercise stays open (docs/changes/261004/loop.md).
+auto Loop::run(ours::Instant const deadline) -> ours::Status {
+    while (true) {
+        auto packet = ours::PortPacket{};
+        if (auto const status = ours::port_wait(m_port, deadline, &packet);
+            status != ours::Status::Ok) {
+            return status;
+        }
+
+        // 1. Only a SignalOne packet can be a wait's: port_queue delivers
+        //    User whatever its caller wrote, so a User packet is someone
+        //    else's, whatever its key says.
+        if (packet.type != ours::PacketType::SignalOne) {
+            continue;
+        }
+        // The bound comes before the slot is touched: m_slots[size] is
+        // whatever memory follows the table.
+        auto const key = Key::from_raw(packet.key);
+        if (key.index() >= m_slots.size()) {
+            continue;
+        }
+        // "In use" is the handle, the one field step 4 always clears; the
+        // generation then says whether the packet was armed in this life.
+        auto &slot = m_slots[key.index()];
+        if (slot.m_handle == ours::Uandle::Invalid || slot.m_generation != key.generation()) {
+            continue;
+        }
+
+        // 2. The slot stays in use while its callback runs, so an add() from
+        //    inside the callback takes another slot, and |slot| still names
+        //    this one afterwards: the table is the caller's span and never
+        //    moves.
+        auto const action = slot.m_callback(slot.m_context, packet.signal.observed);
+
+        // 3. One callback per packet, then the wait again (I4). A handle with
+        //    more queued is level-triggered, so the new wait's packet goes to
+        //    the back of the port's queue, behind every other slot's.
+        if (action == Action::Rearm && arm(key.index()) == ours::Status::Ok) {
+            continue;
+        }
+
+        // 4. Close, or a re-arm that failed and so left nothing armed: either
+        //    way the slot has no live wait (its packet was the one just
+        //    taken), so closing the handle here leaves nothing of it on the
+        //    port (I3). The new generation retires every key of this life.
+        // The Loop owns the handle, so the close cannot be refused.
+        auto _ = ours::handle_close(slot.m_handle);
+        slot.m_handle = ours::Uandle::Invalid;
+        slot.m_signals = ours::Signals::None;
+        slot.m_callback = nullptr;
+        slot.m_context = nullptr;
+        // Unsigned, so it wraps after 2^32 lives; see Slot::m_generation.
+        ++slot.m_generation;
+    }
 }
 } // namespace loop
