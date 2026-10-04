@@ -467,7 +467,7 @@ MemCache::MemCache(char const *name, usize size, usize align, Option option)
     , m_order(0)
     , m_min_num_objects(0)
     , m_min_order(0)
-    , m_gaf(Gaf::Compound)
+    , m_gaf()
     // std::array of raw pointers: without this the entries are indeterminate,
     // and ~MemCache walks every one of them and frees it.
     , m_node_caches{} {

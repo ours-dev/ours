@@ -78,7 +78,10 @@ inline auto ZoneIterator::move_next() -> ZoneRef {
 
 struct AllocationContext {
     auto build(PmNode *node, Gaf gaf, usize order, NodeMask const &nodemask) -> Status {
-        ziter.set_nodes(nodemask).set_zone_range(gaf_zone_type(gaf), gaf_zone_type(gaf));
+        // A Gaf names no zone, so every allocation may use zones up to
+        // Normal, Linux's highest zone for GFP_KERNEL. It used to be read from
+        // Gaf's Dma, Dma32 and Movable bits, which nothing ever passed.
+        ziter.set_nodes(nodemask).set_zone_range(ZoneType::Dma, ZoneType::Normal);
 
         // This node's zones only, for Gaf::ThisNode -- Linux's
         // ZONELIST_NOFALLBACK, which SharedSequential was presumably reserved

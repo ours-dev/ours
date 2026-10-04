@@ -52,9 +52,9 @@ namespace {
 
     /// Growth runs under Dyn's spin lock, i.e. with preemption off, so it must
     /// not take a path that can reclaim or wait. GAF_BOOT and GAF_KERNEL both
-    /// carry DirectReclaim; this one refuses instead, and a refusal only means
-    /// the allocation fails.
-    constexpr auto GAF_GROW = Gaf::ThisNode | Gaf::Zero | Gaf::NoRetry;
+    /// carry DirectReclaim; this one leaves it out, so the allocator refuses
+    /// instead of retrying, and a refusal only means the allocation fails.
+    constexpr auto GAF_GROW = Gaf::ThisNode | Gaf::Zero;
 
     FORCE_INLINE
     auto initial_area_size() -> usize {

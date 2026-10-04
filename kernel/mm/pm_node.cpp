@@ -86,7 +86,6 @@ auto ZoneList::dump_fallback() const -> void {
 decltype(PmNode::STATES) PmNode::STATES;
 decltype(PmNode::NODES) PmNode::NODES;
 decltype(PmNode::NUM_NODES) PmNode::NUM_NODES;
-decltype(PmNode::ALLOWED_GAF) PmNode::ALLOWED_GAF = GAF_BOOT;
 
 PmNode::PmNode(NnId nid)
     : m_canary(this)
@@ -161,9 +160,6 @@ auto PmNode::alloc_frames_direct_compact(Gaf gaf, usize order, AllocationOptions
 
 auto PmNode::alloc_frames_slowpath(Gaf gaf, usize order, MemoryAllocationContext const &context)
     -> PmFrame * {
-    auto const never_fail = !!(gaf & Gaf::NoFail);
-    if (never_fail) [[unlikely]] {
-    }
     auto const control = gaf_to_allocation_control(gaf);
     auto const can_direct_reclaim = !!(gaf & Gaf::DirectReclaim);
 
@@ -186,18 +182,6 @@ auto PmNode::alloc_frames_slowpath(Gaf gaf, usize order, MemoryAllocationContext
         frame = alloc_frames_direct_compact(gaf, order, control, context);
         if (frame) {
             break;
-        }
-
-        if (!!(gaf & Gaf::NoRetry)) {
-            break;
-        }
-
-        if (never_fail) [[unlikely]] {
-            if (!can_direct_reclaim) {
-                break;
-            }
-
-            task::Thread::Current::reschedule();
         }
     }
 
@@ -273,7 +257,6 @@ auto PmNode::alloc_frames(Gaf gaf, usize order, NodeMask const &fallback)
     if (order > MAX_FRAME_ORDER) {
         return ustl::err(Status::InvArgs);
     }
-    gaf &= ALLOWED_GAF;
 
     MemoryAllocationContext context;
     if (auto const status = alloc_frames_preamble(gaf, order, fallback, &context);
@@ -394,8 +377,7 @@ auto PmNode::Current::apply_thread_policy(Gaf &gaf) -> Status {
         // task_lock() guards task->mempolicy. It used to be held by every
         // node-less allocation entry around the whole allocation, slow path
         // included -- a spin lock with interrupts off, held across a path that
-        // may reschedule() for Gaf::NoFail. Copying the Arc out is all that
-        // needs it.
+        // could reschedule(). Copying the Arc out is all that needs it.
         auto const policy = [] {
             auto *const thread = task::Thread::Current::get();
             Guard<sync::SpinLock, IrqSave> guard{thread->get_resource_lock()};

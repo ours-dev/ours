@@ -285,8 +285,8 @@ namespace {
             }
         }
         // Without ThisNode. GAF_KERNEL itself carries ThisNode (gaf.hpp), so it
-        // has to be taken out to ask for the whole fallback order; GAF_KERNEL's
-        // zone type is Normal, which lets every zone through.
+        // has to be taken out to ask for the whole fallback order; the walk's
+        // zone bound is Normal, which lets every zone through.
         mm::AllocationContext everywhere;
         auto _ = everywhere.build(&node, mm::GAF_KERNEL & ~mm::Gaf::ThisNode, 0, online);
         auto const walked = count_walk(everywhere.ziter);

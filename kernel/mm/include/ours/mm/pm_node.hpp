@@ -458,8 +458,6 @@ class PmNode {
 
     // Th fields bottom is readonly after initializing logically.
     static usize NUM_NODES;
-
-    static Gaf ALLOWED_GAF;
 };
 
 /// The machine's NUMA layout, as the firmware describes it: how far apart the

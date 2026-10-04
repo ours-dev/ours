@@ -51,6 +51,8 @@ churn 半个 GiB。1975 轮之后约 494 MiB 已泄漏、512 MiB 的客机基本
 这是 `kernel/mm` 的 lane。修法要么让 slowpath 在 reclaim 无进展时放弃并返回空，要么
 让 `ALLOWED_GAF` 不再掩掉 `NoRetry`，两者都需要 mm 决定语义。
 
+Update 2026-10-04: `NoRetry`, `NoFail` and `ALLOWED_GAF` are gone (flag-consolidation step 9, `docs/changes/261004/mm.md`), so the second fix no longer exists. What remains is the first: give up and return null when reclaim and compaction make no progress, as Zircon's PMM returns `ZX_ERR_NO_MEMORY` or `ZX_ERR_SHOULD_WAIT` and never spins. That is decision D7 of `.agents/tasks/flag-consolidation/DESIGN.md`, planned as a task of its own.
+
 ## 4. `VmMapping::activate()` 丢掉 `VmaSet::insert()` 的失败（mm）
 
 ```cpp

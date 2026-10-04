@@ -479,3 +479,96 @@ None: a keep-or-delete decision on scaffolding.
 - What does each of Linux's two halves of slab debugging do, and which half did ours have?
 - Why must the free pointer move out of the object when poisoning is on?
 - What did the old red-zone branch add to the object size, and what does Linux add?
+
+## Title: Gaf loses the bits PmNode masked off before use, and ALLOWED_GAF goes with them (flag-consolidation step 9) (2026-10-04)
+
+**Files**
+- `kernel/mm/include/ours/mm/gaf.hpp` — Dma, Dma32, Movable, NoFail, NoRetry, Write, DaemonReclaim, Compound and the Reclaim combination go, and `gaf_zone_type()` with its static_asserts; DirectReclaim's doc now says what it means; the presets spell DirectReclaim directly
+- `kernel/mm/include/ours/mm/pm_node.hpp`, `kernel/mm/pm_node.cpp` — `ALLOWED_GAF` and the `gaf &= ALLOWED_GAF` in `alloc_frames()` go; the slow path loses its NoFail and NoRetry branches
+- `kernel/mm/include/ours/mm/priv/zone_iterator.hpp` — `AllocationContext::build()` bounds the walk at Normal directly instead of asking `gaf_zone_type()`
+- `kernel/mm/object_cache.cpp` — a cache's `m_gaf` starts empty instead of Compound
+- `kernel/mm/cpu_local.cpp` — `GAF_GROW` drops NoRetry; its comment says why leaving DirectReclaim out is enough
+- `kernel/commands/pm_node_test.cpp` — a comment no longer credits GAF_KERNEL's zone type
+- `docs/repairs/260908/heap.md` — item 3 loses one of its two fixes
+
+**Symptom**
+None observable: every removed bit was stripped before anything read it, or never read at all.
+
+**Cause**
+The objects:
+- `Gaf`: the flags a frame allocation is asked with, named after Linux's GFP flags.
+- `PmNode::ALLOWED_GAF`: a static mask, set to `GAF_BOOT` (ThisNode, DirectReclaim, DaemonReclaim, Zero) and never changed. `alloc_frames()` did `gaf &= ALLOWED_GAF` first thing.
+- `gaf_zone_type()`: turned Dma, Dma32 and Movable into a highest zone type, read only by `AllocationContext::build()`, which only `pmnode.test` uses.
+
+The events of one allocation:
+1. A caller passes, say, `GAF_KERNEL`, which carried Write, or a MemCache's `m_gaf`, which carried Compound.
+2. `alloc_frames()` masks it with `ALLOWED_GAF`. Dma, Dma32, Movable, NoFail, NoRetry, Write and Compound are not in the mask, so they are gone.
+3. The zone walk and the slow path read only DirectReclaim, ThisNode and Zero. DaemonReclaim survived the mask, but nothing read it.
+
+`ALLOWED_GAF` is Linux's `gfp_allowed_mask` with the polarity inverted. In Linux the mask starts at `GFP_BOOT_MASK` and `kernel_init_freeable()` widens it once the scheduler can sleep. Ours was never widened, so the bits outside it were names with no effect. The slow path's comments described NoFail ("retry infinitely") and NoRetry as working, and `GAF_GROW`'s comment relied on NoRetry, when neither could ever arrive.
+
+**Change**
+Before:
+
+```cpp
+enum class Gaf : u32 {
+    Dma = 0_bit, Dma32 = 1_bit, Movable = 2_bit,
+    NoFail = 3_bit, NoRetry = 4_bit, Write = 5_bit,
+    DaemonReclaim = 6_bit, DirectReclaim = 7_bit, Compound = 8_bit,
+    ThisNode = 9_bit, Zero = 10_bit,
+    Reclaim = DirectReclaim | DaemonReclaim,
+    Boot = ThisNode | Reclaim | Zero,
+    User = ThisNode | Zero,
+    Kernel = ThisNode | Reclaim | Write,
+};
+...
+gaf &= ALLOWED_GAF;
+...
+if (!!(gaf & Gaf::NoRetry)) { break; }
+if (never_fail) [[unlikely]] { ... task::Thread::Current::reschedule(); }
+```
+
+After:
+
+```cpp
+enum class Gaf : u32 {
+    DirectReclaim = 7_bit,
+    ThisNode = 9_bit,
+    Zero = 10_bit,
+    Boot = ThisNode | DirectReclaim | Zero,
+    User = ThisNode | Zero,
+    Kernel = ThisNode | DirectReclaim,
+};
+```
+
+With only DirectReclaim, ThisNode and Zero left, `ALLOWED_GAF` (which held all three) masks nothing, so it goes in the same commit. Deleting it before the bits would have changed behaviour: NoRetry and NoFail would have started to work.
+
+`AllocationContext::build()` used `gaf_zone_type(gaf)` as the walk's upper zone type, which was Normal for every Gaf without Dma bits. It now passes Normal directly, Linux's highest zone for GFP_KERNEL. The bound cannot simply go: `ZoneIterator::upper_zone_type` has no default, so leaving it unset would filter on an indeterminate value.
+
+The survivors keep their bit values: nothing stores a Gaf, and steps 10 to 12 change this enum again.
+
+**Reference**
+- Linux `gfp_allowed_mask`, set to `GFP_BOOT_MASK` and widened in `kernel_init_freeable()` (`init/main.c`); `__GFP_DMA`, `__GFP_DMA32`, `__GFP_MOVABLE`, `__GFP_NOFAIL`, `__GFP_NORETRY`, `__GFP_WRITE`, `__GFP_KSWAPD_RECLAIM`, `__GFP_COMP` and `__GFP_RECLAIM` in `include/linux/gfp_types.h`; `gfp_zone()` in `include/linux/gfp.h`, which `gaf_zone_type()` copied (from memory).
+- Zircon's PMM takes two flags, `PMM_ALLOC_FLAG_ANY` and `PMM_ALLOC_FLAG_CAN_WAIT` (`zircon/kernel/vm/include/vm/pmm_node.h`): no zone or retry-policy bits. CAN_WAIT is DirectReclaim's nearest counterpart, with one difference: it lets the PMM answer `ZX_ERR_SHOULD_WAIT` and leaves the waiting to the caller, where ours retries inside the allocator.
+
+**Verification**
+- `boot_check.py` in a scratch worktree at `b0350f9f` with this change applied: dbg PASS (24 passed, 1 skipped), rel PASS (22 passed, 3 skipped).
+- `kshell_run.py pmnode.test` on that dbg image: ok, 20 checks, including "ZoneIterator's type bound filters out higher zone types" and "AllocationContext walks the local zones for ThisNode, the fallback otherwise" (2 of 2 zones).
+- `git grep` for the removed names, `ALLOWED_GAF`, `gaf_zone_type` and `never_fail` under `kernel/` is empty.
+- clang-tidy on `pm_node.cpp`, `cpu_local.cpp` and `pm_node_test.cpp`: nothing on the changed lines (two pre-existing `use nullptr` in the reclaim and compact stubs). clang-format: clean.
+
+**Deliberately not done**
+- The endless DirectReclaim retry. NoRetry was one of the two fixes `docs/repairs/260908/heap.md` item 3 offered; with it gone, the remaining fix is giving up without progress, decision D7, a task of its own.
+- Gaf::Boot, User and Kernel as enum values, and ThisNode and Zero in the presets: steps 10 to 12.
+- AllocationOptions::Kswapd and NoBlock, which duplicate DaemonReclaim and the absence of DirectReclaim: the user kept AllocationOptions (D8, step 8 dropped).
+
+**How it was found**
+The flag audit (`.agents/tasks/flag-consolidation/DESIGN.md`, the Gaf rows) compared each bit with `ALLOWED_GAF` and found which ones reached a reader.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Which bits did `ALLOWED_GAF` let through, and why did that make NoFail and NoRetry dead even though the slow path tested them?
+- Why did `ALLOWED_GAF` have to go in the same commit as the bits, not before them?
+- What would `AllocationContext::build()` have done had its zone bound simply been deleted?
