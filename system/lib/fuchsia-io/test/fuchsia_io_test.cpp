@@ -55,6 +55,16 @@ struct Owned {
         return Message{.bytes = bytes, .handles = handles};
     }
 
+    /// The message cut to its first |size| bytes, with the rest still in
+    /// memory right behind the cut. A decoder that read a field past the end
+    /// of its message would find a valid value there and accept, so the test
+    /// sees it, where cutting the vector itself would only read out of
+    /// bounds without anything showing.
+    [[nodiscard]]
+    auto cut(usize const size) const -> Message {
+        return Message{.bytes = std::span{bytes}.first(size), .handles = handles};
+    }
+
     auto set_u32(usize const offset, u32 const value) -> void {
         wire::store(std::span{bytes}, offset, value);
     }
@@ -240,6 +250,8 @@ TEST(FuchsiaIoClose, Refusals) {
     auto reply_longer = reply;
     reply_longer.bytes.push_back(0);
     EXPECT_TRUE(fuchsia_io::decode_close_reply(reply_longer.view(), 3).is_err());
+    // Cut before the pad, whose zero still lies behind the cut.
+    EXPECT_TRUE(fuchsia_io::decode_close_reply(reply.cut(20), 3).is_err());
     auto reply_handle = reply;
     reply_handle.handles.push_back(OBJECT);
     EXPECT_TRUE(fuchsia_io::decode_close_reply(reply_handle.view(), 3).is_err());
@@ -282,6 +294,9 @@ TEST(FuchsiaIoClone, Refusals) {
     auto shorter = good;
     shorter.bytes.pop_back();
     EXPECT_TRUE(refused(shorter));
+    auto longer = good;
+    longer.bytes.push_back(0);
+    EXPECT_TRUE(refused(longer));
     auto with_txid = good;
     with_txid.set_u32(0, 2);
     EXPECT_TRUE(refused(with_txid));
@@ -401,6 +416,12 @@ TEST(FuchsiaIoRead, Refusals) {
     auto reply_handle = reply;
     reply_handle.handles.push_back(VMO);
     EXPECT_TRUE(refused(reply_handle));
+    // An Ok reply cut before the end of its size field. The decoder must not
+    // read the size at all: nothing would show here if it did, since no size
+    // makes 24 + size equal 20, but the read would be past the message.
+    for (auto const size: {usize{20}, usize{23}}) {
+        EXPECT_TRUE(fuchsia_io::decode_read_reply(reply.cut(size), 7).is_err()) << "size " << size;
+    }
     // A request is not a reply, nor the reply to another request.
     EXPECT_TRUE(refused(request));
     EXPECT_TRUE(fuchsia_io::decode_read_reply(reply.view(), 8).is_err());
@@ -476,6 +497,12 @@ TEST(FuchsiaIoGetBackingMemory, Refusals) {
     auto handle = request;
     handle.handles.push_back(VMO);
     EXPECT_TRUE(refused(handle));
+    // Exactly 24 bytes: one more is refused, and so is a cut before the pad,
+    // whose zero still lies behind the cut.
+    auto longer_request = request;
+    longer_request.bytes.push_back(0);
+    EXPECT_TRUE(refused(longer_request));
+    EXPECT_TRUE(fuchsia_io::decode_get_backing_memory(request.cut(20)).is_err());
 
     Buffer reply_buffer;
     auto const reply = owned(fuchsia_io::encode_get_backing_memory_reply(
@@ -495,6 +522,9 @@ TEST(FuchsiaIoGetBackingMemory, Refusals) {
     auto longer = reply;
     longer.bytes.push_back(0);
     EXPECT_TRUE(reply_refused(longer));
+    // Cut before the handle field, whose HANDLE_PRESENT still lies behind
+    // the cut.
+    EXPECT_TRUE(fuchsia_io::decode_get_backing_memory_reply(reply.cut(20), 1).is_err());
     auto invalid = reply;
     invalid.handles[0] = Uandle::Invalid;
     EXPECT_TRUE(reply_refused(invalid));
@@ -663,8 +693,9 @@ TEST(FuchsiaIoEpitaph, AFailedOpenIsAnEpitaphOnItsObject) {
     EXPECT_EQ(header->ordinal, wire::EPITAPH_ORDINAL);
     EXPECT_EQ(wire::decode_epitaph(epitaph.view()).unwrap(), Status::BadPath);
 
-    // A client that expected a Read reply refuses it as one, and so learns to
-    // read it as an epitaph instead.
-    EXPECT_TRUE(fuchsia_io::decode_read_reply(epitaph.view(), 0).is_err());
+    // A client that sent Read 7 refuses it as that Read's reply: its txid is
+    // 0 and its ordinal the epitaph's. The txid passed is a valid two-way
+    // one, so that it is the message that is refused, not the argument.
+    EXPECT_TRUE(fuchsia_io::decode_read_reply(epitaph.view(), 7).is_err());
 }
 } // namespace
