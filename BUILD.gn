@@ -168,6 +168,10 @@ group("default") {
     # until it was named here.
     "//kernel/lib/user_copy/test:user_copy($host_toolchain)",
 
+    # The panic crash record's format: write, read back, and reject a record
+    # that is torn, flipped or from another version.
+    "//kernel/lib/crashlog/test:crashlog($host_toolchain)",
+
     # Fixed-point arithmetic, which the scheduler's weighting needs and which
     # the kernel cannot get from floating point. Almost all of its checking is
     # static_assert inside the test translation unit, so building this target

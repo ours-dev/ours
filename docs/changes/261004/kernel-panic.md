@@ -56,3 +56,64 @@ None.
 - Why must the range be reserved in phys, rather than by the kernel when it first touches it?
 - Why is the reservation made after the boot image and the package, and what does `BootMem::reserve()` do with an overlap?
 - Why does the image, not phys code, choose the address?
+
+## Title: kernel/lib/crashlog holds the crash record's format, written magic-last and read back only when whole (2026-10-04)
+
+**Files**
+- `kernel/lib/crashlog/` — new library, scaffolded with copier from `tools/templates/cpp_library`: `Header`, `Writer`, `read()`, `clear()`
+- `kernel/lib/crashlog/test/crashlog_test.cpp` — nine host tests
+- `BUILD.gn` — the test joins the default build on the host toolchain
+
+**Symptom**
+None; step 2 of the panic-crashlog feature.
+
+**Cause**
+The region from step 1 is plain RAM that survives a warm reset, and nothing else. A reset can land halfway through the panic's write. The RAM can hold garbage from a cold boot, or a record from an older kernel. The reader has to tell a whole record from all of these, and a format that cannot is worse than none: it reports a crash that never happened.
+
+**Change**
+A 32-byte header in front of the text:
+
+```cpp
+struct Header {
+    u64 magic;          // MAGIC only when the record is whole
+    u32 version;
+    u32 payload_len;
+    u32 payload_crc32;
+    u32 header_crc32;   // over the header with magic and itself taken as zero
+    u64 time;
+};
+```
+
+How the three ways to go wrong are caught:
+- **A torn write.** `Writer`'s constructor clears the old magic before a byte of the new record goes in, and `seal()` writes the lengths and CRCs before the magic. A reset anywhere before the magic lands leaves no record; a reset after it leaves a whole one. The magic is the commit point. The header CRC is computed with the magic taken as zero, which is what lets it be written first.
+- **Reordering.** A reset is not another CPU, so no atomic is needed. What must hold is that the magic reaches memory after the bytes it vouches for. x86 makes stores visible in program order, and the kernel will write the cache back before it resets (step 3). That leaves the compiler, and an `atomic_signal_fence(release)` before the magic's store stops it from moving that store up.
+- **Garbage, decay and old formats.** These are caught by the magic, the version, a payload length that must fit the region, and both CRCs. `read()` returns `ustl::NONE` for anything else.
+
+The CRC is `obi::crc32()` (`kernel/lib/obi/include/obi/checksum.hpp`), CRC-32/ISO-HDLC, the same checksum as Zircon's ram-crashlog. It is reused rather than written a second time.
+
+The library knows nothing of where the region is or how it is mapped. The kernel passes it in as a byte span, so all of the above is tested on the host.
+
+Rejected: Zircon's two header copies. Zircon updates an uptime field while the system runs and needs that update to be atomic. This record is written once, by a panic, and never updated.
+
+**Reference**
+Zircon's ram-crashlog (`zircon/system/ulib/ram-crashlog/include/ram-crashlog/ram-crashlog.h`): a magic number flipped last to commit, and separate CRC32s for the header and the payload. Linux ramoops' `struct persistent_ram_buffer` (`fs/pstore/ram_core.c`) has a signature, a start and a size, and protects its payload with ECC rather than a CRC.
+
+**Verification**
+- The host test passes 9 of 9: a round trip; a region never written holds no record; clear() removes the record; a writer that never sealed leaves no record, even over an older whole one; a flipped payload bit, a flipped header bit and another version are each rejected; text longer than the region is cut and reported; a region smaller than a header holds nothing.
+- `boot_check.py --out out/kernel-panic`: dbg and rel PASS. The kernel does not link the library yet.
+- clang-format clean; clang-tidy reports nothing in the new files.
+
+**Deliberately not done**
+- A record whose payload CRC fails is dropped whole. Zircon still delivers the bytes, with a flag saying they may be damaged. Partial delivery can come when someone needs it.
+- No compression and no second record. Only the latest panic is kept.
+
+**How it was found**
+None.
+
+**The user's prediction**
+None.
+
+**Three questions you should be able to answer**
+- Why does the magic go in last, and why must the constructor clear the old magic first?
+- Why is a compiler fence enough, with no atomic, for a write that a reset may interrupt?
+- Why is the header CRC computed with the magic taken as zero?

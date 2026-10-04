@@ -1,0 +1,22 @@
+import("//build/cpp/cpp_interface.gni")
+
+# The panic crash record: a CRC-checked record in a byte region that outlives
+# a warm reset. Only the format: the kernel finds the region and passes it in
+# as bytes, so the library builds for the host test as it is.
+source_set("crashlog") {
+  sources = [ "src/crashlog.cpp" ]
+  public_deps = [ ":headers" ]
+  deps = [ "//kernel/lib/obi:headers" ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [ "include/crashlog/crashlog.hpp" ]
+  public_deps = [
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+}
