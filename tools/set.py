@@ -59,6 +59,7 @@ Both are written into args.gn as the `ours` argument bundle
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -78,12 +79,14 @@ DEFAULT_PRODUCT = "bringup"
 
 # The image that reads the `ours` bundle, and the two files `gn gen` writes for
 # it that the --autorun check reads: the pack response file, which carries the
-# image's `ours.autorun.boot=` entries, and the whitelist of user-visible
-# BootFS names gathered from its deps' metadata. Reading these instead of
-# re-deriving names from labels keeps one source of truth: whatever the build
-# decided the image carries is what gets checked.
+# image's `ours.autorun.boot=` entries, and the file list of its user BootFS
+# (user_bootfs("bootfs"), //kernel/user_bootfs.gni), gathered from its deps'
+# distribution entries. It is the list before the build expands it, the only
+# one that exists after gn gen; a user program is a plain entry in it. Reading
+# these instead of re-deriving names from labels keeps one source of truth:
+# whatever the build decided the image carries is what gets checked.
 OURS_IMAGE_RSP = "//kernel/products/image/dev:_obi.dev.rsp"
-OURS_IMAGE_WHITELIST = "//kernel/products/image/dev:ours.user_visible"
+OURS_IMAGE_BOOTFS = "//kernel/products/image/dev:bootfs_dist_generate"
 AUTORUN_ENTRY = "--entry=ours.autorun.boot="
 
 # An autorun command is spliced into the kernel command line, where whitespace
@@ -197,18 +200,18 @@ def check_autorun(gn: Path, out_dir: Path) -> str | None:
 
     Runs after `gn gen`, because both halves of the question are answers the
     build gives: which command the image's cmdline carries (the last
-    `ours.autorun.boot`, since init takes the last), and which user programs
-    the image actually carries (the whitelist its deps' metadata produce,
-    which --with shaped). Without the check the mismatch would surface only in
-    QEMU, as `init: starting the autorun command = NotFound`.
+    `ours.autorun.boot`, since init takes the last), and which files the
+    image's user BootFS actually carries (its file list, which --with
+    shaped). Without the check the mismatch would surface only in QEMU, as
+    `init: starting the autorun command = NotFound`.
     """
     result = subprocess.run(
-        [str(gn), "outputs", str(out_dir), OURS_IMAGE_RSP, OURS_IMAGE_WHITELIST],
+        [str(gn), "outputs", str(out_dir), OURS_IMAGE_RSP, OURS_IMAGE_BOOTFS],
         cwd=str(ROOT), capture_output=True, text=True)
     if result.returncode != 0:
         return (f"cannot locate the image files for the --autorun check:\n"
                 f"{result.stderr.strip()}")
-    rsp_path, whitelist_path = (out_dir / p for p in result.stdout.split())
+    rsp_path, bootfs_path = (out_dir / p for p in result.stdout.split())
 
     command = None
     for line in rsp_path.read_text().splitlines():
@@ -218,7 +221,8 @@ def check_autorun(gn: Path, out_dir: Path) -> str | None:
         return None
     program = autorun_program(command)
 
-    programs = whitelist_path.read_text().split()
+    entries = json.loads(bootfs_path.read_text())
+    programs = sorted(entry["destination"] for entry in entries if "destination" in entry)
     if program not in programs:
         return (f"--autorun would start '{program}', but the image only carries "
                 f"{', '.join(programs)}.\n"
