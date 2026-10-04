@@ -1,0 +1,60 @@
+import("//build/cpp/cpp_interface.gni")
+import("//build/toolchain/toolchain_environment.gni")
+
+# The client side of a process's namespace (component-framework design, the
+# fsio object): fdio's namespace and path cleaning, and the fuchsia.io calls a
+# program makes through them.
+
+# The namespace table and path cleaning (fsio/namespace.hpp, fsio/path.hpp).
+# They work on strings and handle values alone and make no system call, so
+# they build for the host too, where their tests run.
+source_set("namespace") {
+  sources = [
+    "src/namespace.cpp",
+    "src/path.cpp",
+  ]
+  public_deps = [ ":headers" ]
+  visibility = [ "*" ]
+}
+
+# The calls (fsio/fsio.hpp): open, connect, read, read_dirents,
+# get_backing_memory, close, and install, which binds the NsDir handles the
+# process was started with. They make system calls and take startup handles
+# from the runtime, so they exist only in the user toolchains. Keyed on
+# is_host_toolchain as well, since toolchain_environment reads "user" in the
+# host toolchain too (see //system/lib/ort).
+if (!is_host_toolchain && toolchain_environment == "user") {
+  source_set("fsio") {
+    sources = [ "src/fsio.cpp" ]
+    public_deps = [
+      ":headers",
+      ":namespace",
+      "//system/lib/fuchsia-io",
+    ]
+    deps = [ "//system/lib/ort" ]
+    visibility = [ "*" ]
+  }
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/fsio/fsio.hpp",
+    "include/fsio/namespace.hpp",
+    "include/fsio/path.hpp",
+  ]
+  public_deps = [
+    "//system/lib/fuchsia-io:headers",
+    "//system/lib/ustl:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:fsio($host_toolchain)" ]
+}

@@ -1,0 +1,18 @@
+# Host-side tests. These link googletest and run on the build machine: path
+# cleaning and the namespace table work on strings and handle values alone,
+# so every rule can be checked without a kernel. The calls that make system
+# calls are checked on the target, by routing_checks (component-framework
+# step 13).
+executable("fsio") {
+  testonly = true
+  sources = [
+    "namespace_test.cpp",
+    "path_test.cpp",
+  ]
+  deps = [
+    "//system/lib/fsio:namespace",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}

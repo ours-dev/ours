@@ -163,6 +163,15 @@ group("default") {
     # Read, GetBackingMemory, Clone, Close and malformed messages.
     "//system/lib/vfs:tests",
 
+    # The client side of a namespace: path cleaning, and fdio's rules for
+    # what may be bound where and which binding a path lies under.
+    "//system/lib/fsio:tests",
+
+    # fsio's calls, which make system calls and so exist only in the user
+    # toolchain. Nothing links them until routing_checks (component-framework
+    # step 13); naming them here keeps them compiled until then.
+    "//system/lib/fsio(//build/toolchain/ours:user-$current_cpu)",
+
     # The compiled component manifest's decoder, against manifests that
     # component_manifest() built from fixture targets in two toolchains.
     "//system/lib/component:tests",
