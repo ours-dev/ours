@@ -1,0 +1,45 @@
+import("//build/cpp/cpp_interface.gni")
+
+# A fuchsia.io server for read-only trees (component-framework design,
+# "vfs"): pseudo-directories, VMO files and services, the connection table,
+# the Open checks and the handlers. Its core takes a message and answers what
+# to write and what to wait on, without touching a channel, and makes its one
+# system call through a function it is given, so it builds in every
+# toolchain, the host one included, where its tests run.
+source_set("vfs") {
+  sources = [
+    "src/server.cpp",
+    "src/tree.cpp",
+  ]
+
+  # Its messages are fuchsia.io's, on the wire framing, so a user of the
+  # server is a user of both.
+  public_deps = [
+    ":headers",
+    "//system/lib/fuchsia-io",
+  ]
+  visibility = [ "*" ]
+}
+
+# The headers are a target of their own so that a dependant needing only the
+# declarations does not pull in the sources -- see
+# //build/cpp/cpp_interface.gni.
+cpp_interface("headers") {
+  public = [
+    "include/vfs/server.hpp",
+    "include/vfs/tree.hpp",
+  ]
+  public_deps = [
+    "//system/lib/fuchsia-io:headers",
+    "//system/lib/ustl:headers",
+    "//system/lib/wire:headers",
+    "//system/public",
+  ]
+  visibility = [ "*" ]
+}
+
+# Host unit tests; wired into //:default.
+group("tests") {
+  testonly = true
+  public_deps = [ "test:vfs($host_toolchain)" ]
+}

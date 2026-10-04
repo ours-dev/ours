@@ -158,6 +158,11 @@ group("default") {
     "//system/lib/wire:tests",
     "//system/lib/fuchsia-io:tests",
 
+    # The fuchsia.io server: its tree, and its connections driven one encoded
+    # message at a time -- the Open checks in order, rights, ReadDirents,
+    # Read, GetBackingMemory, Clone, Close and malformed messages.
+    "//system/lib/vfs:tests",
+
     # The compiled component manifest's decoder, against manifests that
     # component_manifest() built from fixture targets in two toolchains.
     "//system/lib/component:tests",

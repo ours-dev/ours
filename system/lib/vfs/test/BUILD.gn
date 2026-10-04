@@ -1,0 +1,17 @@
+# Host-side tests. These link googletest and run on the build machine: a
+# tree is built in memory, and the server is driven one encoded message at a
+# time, with a stand-in for the one system call it makes.
+executable("vfs") {
+  testonly = true
+  sources = [
+    "server_test.cpp",
+    "tree_test.cpp",
+  ]
+  deps = [
+    "//system/lib/fuchsia-io",
+    "//system/lib/vfs",
+    "//vendor/googletest:gtest",
+    "//vendor/googletest:gtest_main",
+  ]
+  visibility = [ "*" ]
+}
